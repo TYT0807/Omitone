@@ -225,6 +225,8 @@
 | 功能 | 说明 | 需要 API Key |
 | --- | --- | --- |
 | **视频 / 音频自动播放** | 自动开播、被暂停自动抢回、播完自动翻节 | ❌ |
+| **「继续学习」提示** | 弹题答完 / 挂机判定后播放器右下角的「继续学习」自动点掉，回到正常播放 | ❌ |
+| **视频内嵌弹题** | 播放中途弹出的题：认选项、作答、提交；认不出的最多问 3 次后放手 | ✅ 自己接 |
 | **自动最大倍速** | 读播放器菜单取速度上限（读不到就逐档试探） | ❌ |
 | **拖到结尾** | 可拖动视频直接 seek 到片尾，每个视频只试一次 | ❌ |
 | **PPT / 文档 / 图片** | 翻页、上报完成、等页内音频播完 | ❌ |
@@ -232,7 +234,7 @@
 | **多讨论任务点** | 同章节多张卡片各自独立处理、互不顶掉 | ❌ |
 | **跳过不必做的点** | 老师没设为任务点的内容直接跳过；反复做不完的记录后放弃 | ❌ |
 | **题库字体反爬** | 解析 `font-cxsecret` 自定义字体还原题目文本 | ❌ |
-| **AI 答题** | 单选 / 多选 / 判断 / 填空 / 简答 / 弹窗题（正确率有限，见上一节） | ✅ 自己接 |
+| **AI 答题** | 单选 / 多选 / 判断 / 填空 / 简答（正确率有限，见上一节） | ✅ 自己接 |
 | **答案缓存** | 交卷后记住正确答案，下次不再问模型，省 token | ✅ 自己接 |
 | **验证码识别** | 弹窗验证码与独立验证码页：抓图 → 视觉模型 → 填入 | ✅ 自己接（需视觉模型） |
 | **后台节流对抗** | Worker 心跳 + 音频保活，窗口最小化后仍推进 | ❌ |
@@ -749,6 +751,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 29 | 有一道题被**猜错**，然后整卷重答一遍 | 模型偶尔返回空答案，旧实现走 `_avoidKnownWrongAnswer` 的空答案兜底 —— 直接猜第一个选项。判断题猜错概率 50%，猜错就触发"整卷带 `禁:` 前缀重答" | **空答案补问**：一轮跑完还有题没收答案时，把这些题打包成一次小请求重问（`llm refill unanswered`），把"猜"换成"问" |
 | 30 | `npm run e2e` **全线失败**：14 个场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
 | 31 | **视频里弹出题后 AI 一直在扫描、但从不填空，课程永久空转** | 四层叠加：① 弹题请求**没有任何去重**，tick 每 250ms 一轮就重问一次模型；② `_matchOptionItem` 只在选项带 `.num_option` 徽标时才知道字母，原生 `li + input[value="A"]` 结构的字母恒为空 → 模型答裸字母 "A" 时一个都匹配不上；③ `_getOptionItems` 遇到无 `Zy_/Cy_`、无 `label` 的结构直接返回 `[]`；④ 题型靠**题干关键字**猜（含"正确"就判成判断题），"下列说法正确的是？"这类单选被误判。而弹窗分支在 `_runTick` 最前面 `return`、`_handleVideoPause` 又规定"有弹窗不恢复播放" → 死锁 | ① 新增 `_inferOptionLetter`（徽标 → 属性 → `input.value` → 文本前缀 → 位置兜底）；② `_getOptionItems` 补原生结构兜底（只取最内层）；③ 新增 `_detectPopupQuizType`（控件优先 + 判断题需选项为"正确/错误"这类对立表述）；④ 新增 `_activePopupBlock()`（含放弃窗口与已答放行），`_runTick`/`_handleVideoPause` 全走它；⑤ 同一弹题最多问 3 次后 `_giveUpPopupQuiz`（日志带 DOM 快照 → 点跳过 → 60s 冷却）；⑥ `_fillPopupAnswer` 没选中就不点提交 |
+| 32 | **弹题答对了，但视频右下角还挂着一个「继续学习」按钮，不点就进不去正常播放页，AI 照样空耗** | 代码里**根本没有这个按钮的处理**：它不属于弹窗题（没有选项），也不属于任何已有分支，于是 tick 每轮都跳过它，视频一直停在那儿 | 新增 `_findContinueStudyButton` + `_tryContinueStudyPrompt`：按文案（继续学习/继续观看/继续播放）+ 与视频同文档 + 形态打分定位，**叶子节点优先**（站点把 `onclick` 挂在按钮上，点到外层容器没反应）；挂在 `_runTick` 里弹题之后、播放之前。两道保险：同一按钮 3 秒内只点一次、连点 5 次没反应就停 60 秒并写日志 |
 
 ---
 
@@ -758,6 +761,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
+| **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
