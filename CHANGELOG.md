@@ -7,6 +7,87 @@
 
 ## 1.0.11 — 提示词收敛与工程化
 
+### 1.0.11 补丁：效率与 token 优化 + 测试脚手架修复
+
+**空答案补问（本轮最主要的 token 优化）**
+
+原来的行为是：模型偶尔对某道题给出空答案（空串 / `null` / 位置错位被丢弃），
+`page.js` 的 `_avoidKnownWrongAnswer` 会走到**空答案兜底 —— 直接猜第一个选项**。
+判断题猜错的概率是 50%，一旦猜错就触发"整卷带 `禁:` 前缀重答一遍"：
+几百 token + 一整轮"填→提交→判错"的页面往返，还会拖慢整章进度。
+
+现在 `handleLLMRequestDirect` 在一轮跑完之后再检查一次：**只对没拿到答案的那些题**
+打包成一次小请求重问（日志 `llm refill unanswered`，失败记 `llm refill failed`）。
+把"猜"换成"问"，成本通常只有一两百 token，正确率同步改善。
+
+要点：
+
+- 只在**部分成功**时补问 —— 全部失败说明 API/解析本身有问题，
+  `requestAnswersWithRetry` 已经重试过两次，再问是白烧
+- 补问与主批共用同一个 `mergeAnswers`（抽出局部函数），对齐规则不会漂移
+- 补问失败不会污染 `apiConnectionFailed`：后面的成功分支会把它重置回来
+- 集成测试新增用例覆盖这条路径（41 项）
+
+**DeepSeek 关掉思考模式**
+
+V4 系列默认开启思考，答一道选择题要先烧约 200 个推理 token。
+请求体加 `thinking: { type: 'disabled' }`（实测 2 题 361 → 133 token）。
+**只对 DeepSeek 加** —— 其他 OpenAI 兼容服务遇到未知参数会直接 400。
+
+**良性告警降级**：`submit confirm key mismatch` 从 `warn` 降为 `info`。
+提交确认弹窗出现时 URL 可能已经变了，而测验本就就绪、按设计继续提交，
+它不是故障线索，却很容易被当成故障排查。
+
+**测试脚手架：扩展 ID 不再靠"算"**
+
+`npm run e2e` 全线失败，14 个场景都报「page.js 在真实 Edge 中加载成功：失败」，
+页面里却一条异常都没有。查下来**错不在扩展**：
+
+- 扩展 ID 的算法是 `SHA256(目录绝对路径, UTF-16LE)`，**对路径大小写敏感**：
+  `D:\Omite` → `hdlemlcmf…`（真实），`d:\Omite` → `locncobd…`（错）
+- 从 Git Bash 风格的 cwd（`/d/Omite`）启动 node，`__dirname` 的盘符变成小写，
+  哈希整个错开 → 测试拿着错误的 ID 去注入 `page.js`（404）和打开 popup（错误页）
+- 扩展其实加载得好好的，页面里 `[Omitone] content bridge ready` 照常出现
+
+现在改为**运行时发现**真实 ID：content script 一跑就会有
+`Runtime.executionContextCreated`，事件里的 `origin` 就是 `chrome-extension://<真实ID>`；
+其次是 `/json/list` 里 title 含 Omitone 的 target；路径哈希降级为兜底，
+两者不一致时会打印一行警告。
+
+**工程杂项**：`npm run check` 排除 `.debug-profile` / `.workbuddy`（CDP 调试用的
+Edge 独立 profile 与本地记忆目录），消除长期存在的"游离 JS 文件"误报。
+
+### 1.0.11 补丁：真实页面联调（CDP 直连用户的浏览器）
+
+用 `--remote-debugging-port` + 独立 profile 只读观察真实学习通页面后定位到两个 bug：
+
+**`_detectQuiz` 的标题匹配导致章节永久卡住**
+
+`if (title.indexOf('考试') !== -1) return true` —— 只要章节标题里有"考试"二字就判定
+"这里有测验"。名为「10.1 课程考试」的章节（0 个任务点、早已完成）因此被判成有待答的
+测验，`_isCurrentCompleted` 拒绝跳过，插件陷入 5 秒一轮的
+`study begin → quiz handler → hold` 死循环，不断刷 `quiz scan found 0 questions`
+（正是用户描述的"卡住"）。
+
+现在判定**必须有证据**：标题命中之外，还要在 URL 链（`location.href`、主 iframe 的
+`src`、文档中所有 iframe 的 `src`）里真的看到 `ananas/modules/work`、`api/work`、
+`exam/test`、`testpaper`、`selectWorkQuestion` 等作业/考试页特征。
+
+**API 表单只有点「保存 API」按钮才落地**
+
+`apiUrl` / `apiKey` / `model` / `captchaModel` 只在点保存时才写入，
+而 **`apiType` 下拉根本没有 change 监听** —— 改了接入方式若不重填一次
+就不会保存。结果是 `apiKey` 为空 → `enableQuiz` 的硬守卫跳过全部答题，
+症状是"AI 完全不听题"，很容易被误判成扫描失败。
+
+现在输入类字段 800ms 防抖自动保存，`apiType` 也挂了监听，并给出 toast 提示。
+
+**模型预设更新至 2026-09 现行版本**
+
+ moonshot-v1-8k 已于 8 月 31 日下线（它的"失效"表现就是请求 400）。
+全部预设重新核对官方文档：MiniMax-M3 / gemini-flash-latest（唯一真正的常青别名）/
+claude-sonnet-5 / glm-4.7-flash / kimi-k2.6 / deepseek-v4-flash / qwen-plus。
+
 **逻辑审计：修掉三处判断错误（其中两处是本次新引入的）**
 
 对"任务点该不该做 / 做不完要不要放弃"这条链路做了完整复查：

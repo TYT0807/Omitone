@@ -351,6 +351,11 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 23 | 版本号在扩展详情/浮窗里对不上 | 版本号有三处（manifest / popup.html / content.js 品牌位），漏改一处 | `npm run check` 强制三处一致 |
 | 24 | 改了半天没生效，回头发现改动被覆盖 | **并行编辑同一个文件会互相覆盖**（工具都报成功，只有最后一个生效）；本项目还有过外部编辑器用旧快照覆盖文件的历史 | 改同一文件多处必须**串行**，每次改完 grep 回读；批量改动用 `git diff` 复核 |
 | 25 | 连跑两次测试，第二次"所有注入都失败" | 上一次的 Edge 被杀后调试端口未及时释放，新实例连到了正在退出的旧实例 | 收尾与启动前都会等端口释放（12 秒超时） |
+| 26 | **章节卡住不动**，日志每 5 秒一轮 `study begin` + `quiz scan found 0 questions` | `_detectQuiz` 只看了章节标题：`if (title.indexOf('考试') !== -1) return true`，于是**名为「10.1 课程考试」的章节**（0 任务点、已完成）被判成"有测验"，`_isCurrentCompleted` 因此拒绝跳过 → 永久循环 | 判定必须有**证据**：标题命中之外，还要在 URL 链（`location.href` / 主 iframe src / 文档内所有 iframe src）里真的看到 `ananas/modules/work`、`exam/test`、`testpaper` 等作业/考试页特征 |
+| 27 | **AI 完全不听题**，但密钥是填了的 | API 表单只有点「保存 API」按钮才落地，且 `apiType` 下拉**根本没有 change 监听** → 切了接入方式却不重填就没保存 → `apiKey` 为空 → `enableQuiz` 硬守卫跳过全部答题（症状是"读不到题"，很像扫描失败） | 输入类字段 800ms 防抖自动保存 + `apiType` 监听，并有 toast 提示 |
+| 28 | 用 DeepSeek 时每道题先烧 ~200 个推理 token | DeepSeek V4 默认开启思考模式，而答题是纯模式化任务 | 请求体加 `thinking:{type:'disabled'}`（**只对 DeepSeek 加**，其他 OpenAI 兼容服务会对未知参数报 400）。实测 2 题从 361 → 133 token |
+| 29 | 有一道题被**猜错**，然后整卷重答一遍 | 模型偶尔返回空答案，旧实现走 `_avoidKnownWrongAnswer` 的空答案兜底 —— 直接猜第一个选项。判断题猜错概率 50%，猜错就触发"整卷带 `禁:` 前缀重答" | **空答案补问**：一轮跑完还有题没收答案时，把这些题打包成一次小请求重问（`llm refill unanswered`），把"猜"换成"问" |
+| 30 | `npm run e2e` **全线失败**：14 个场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
 
 ---
 
@@ -358,7 +363,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 
 | 症状 | 先查 |
 | --- | --- |
-| 扫不到题目 | `xxtAI.diagnose()` 的 `hint`（见 §3） |
+| AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
@@ -427,7 +432,7 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 ```bash
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（35 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（41 项）
 npm test         # 上面三个
 npm run e2e      # 真实 Edge 功能交叉检验（135 项）
 npm run test:all # npm test + e2e
@@ -471,11 +476,16 @@ npm run build    # 打包到 dist/
 4. **输出改成纯位置式数组**，连 `i`/`a` 键名都省掉。每题输出约 11 token → 约 5 token。
 5. **分批 5 → 10 题**。system 与格式示例是每批重发的固定开销（约 88 token/批），
    40 题从 8 批降到 4 批。（开源实现 `cxmooc-tools` 的题库接口一批是 20 题，10 是保守取法。）
+6. **关掉 DeepSeek 的思考模式**。V4 默认 thinking，答一道选择题要先烧 ~200 个推理 token。
+   只对 DeepSeek 加 `thinking:{type:'disabled'}`（其他 OpenAI 兼容服务不认这个参数，会 400）。
 
-### 还有两条链路在减少**实际调用次数**
+### 还有几条链路在减少**实际调用次数**
 
 - 已有**确认正确**缓存、且本轮已填进 DOM 的题，不再发给模型
 - 交卷后的正确答案会被记入缓存，后续重做同题不再问模型
+- **空答案补问**（`content.js`）：模型漏答的题会被**单独**再问一次，而不是让 `page.js`
+  去猜第一个选项。猜错会触发整卷重答（几百 token + 一轮页面往返），补问通常只要一两百 token ——
+  这道防线同时省 token 和提正确率。日志关键词：`llm refill unanswered` / `llm refill failed`
 
 ### 压缩提示词的正确姿势
 

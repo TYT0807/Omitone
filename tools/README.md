@@ -84,7 +84,7 @@ OMITONE_TOKENIZER_DIR=/path/to/node_modules npm run bench
 
 把 **真实的 `content.js` 与 `libs/*.js`** 加载进一个 `vm` 隔离环境
 （打桩 `chrome.*` / `document` / `window.postMessage`），然后通过它自己注册的
-message 监听器驱动完整答题往返。当前 35 项断言：
+message 监听器驱动完整答题往返。当前 41 项断言：
 
 1. **稀疏 index 透传** —— 20 题的卷子只发 12 道（模拟已有正确缓存的题被跳过），
    12 题刚好跨 2 批（CHUNK_SIZE=10），验证跨批次回填的 index 与原始下标完全一致。
@@ -98,6 +98,9 @@ message 监听器驱动完整答题往返。当前 35 项断言：
 7. Claude 协议适配（`/v1/messages`、顶层 `system`、`anthropic-version` 头）
 8. Gemini 协议适配（`generateContent` + `key` 查询参数）
 9. 历史错误答案以 `禁:` 标注进提示词
+10. **空答案补问** —— 模型漏答一题（返回空串）时，必须只对漏掉的题补发一次请求，
+    答案按原始 index 回填。这道防线防止 `page.js` 走到"猜第一个选项"的兜底，
+    后者猜错会触发整卷重答
 
 其中的"假模型"是一个**独立实现的提示词解析器**（不 import `libs/prompt.js`）——
 如果提示词格式变得不可解析，它会直接答不上来，测试随即失败。
@@ -113,10 +116,16 @@ message 监听器驱动完整答题往返。当前 35 项断言：
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 14 个场景 / 129 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 14 个场景 / 135 项断言。
 
 前置：本机装有 Edge。路径用 `OMITONE_EDGE` 覆盖；端口用 `OMITONE_E2E_PORT` /
 `OMITONE_CDP_PORT` 覆盖；`OMITONE_E2E_DEBUG=1` 打印 target 列表与扩展 ID。
+
+> **扩展 ID 不再靠"算"**。过去用 `SHA256(目录路径)` 猜 ID，而它对路径大小写敏感
+> （`D:\Omite` 与 `d:\Omite` 会算出完全不同的 ID），一算错就是
+> **14 个场景全部失败、页面里一条异常都没有**。现在优先用运行时发现的真实 ID
+> （content script 的执行上下文 origin），路径哈希降级为兜底，
+> 两者不一致时会在输出里打印警告。详见 `discoverExtensionId` 的注释。
 
 | 场景 | mock 页面 | 验什么 |
 | --- | --- | --- |
