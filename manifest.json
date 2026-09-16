@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Omitone-1.0.11",
+  "version": "1.0.11",
+  "description": "支持学习通视频播放、API 自动答题",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Omitone-1.0.11",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.chaoxing.com/*",
+        "*://mooc1.chaoxing.com/*",
+        "*://*/*"
+      ],
+      "js": ["libs/md5.min.js", "libs/Typr.js", "libs/Typr.U.js", "libs/api-url.js", "libs/prompt.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page.js", "resources/table.json"],
+      "matches": ["*://*/*"]
+    }
+  ],
+  "host_permissions": [
+    "*://*.chaoxing.com/*",
+    "https://*/*",
+    "http://*/*"
+  ]
+}

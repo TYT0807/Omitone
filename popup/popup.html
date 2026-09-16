@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Omitone-1.0.11</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  width: 360px;
+  background: #fff;
+  color: #111;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", sans-serif;
+  font-size: 13px;
+}
+.container { padding: 20px; }
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #111;
+}
+.title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ver {
+  margin-left: auto;
+  color: #999;
+  font-size: 10px;
+}
+.section-title {
+  margin: 18px 0 10px;
+  color: #999;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+.range-wrap { margin-bottom: 12px; }
+.range-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.range-head span {
+  color: #999;
+  font-size: 11px;
+}
+.range-head .val {
+  color: #111;
+  font-size: 14px;
+  font-weight: 600;
+}
+input[type="range"] {
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: #e0e0e0;
+  outline: none;
+  -webkit-appearance: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #111;
+  cursor: pointer;
+  -webkit-appearance: none;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 0;
+  border-bottom: 1px solid #f0f0f0;
+}
+.row:last-of-type { border-bottom: none; }
+.row label {
+  color: #333;
+  font-size: 13px;
+}
+.toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 20px;
+  background: #e0e0e0;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+.toggle.on { background: #111; }
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s;
+}
+.toggle.on::after { transform: translateX(16px); }
+.field { margin-top: 10px; }
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  color: #333;
+  font-size: 12px;
+}
+input[type="text"],
+input[type="password"],
+select {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid #e0e0e0;
+  background: transparent;
+  color: #111;
+  outline: none;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.actions {
+  margin-top: 18px;
+  display: flex;
+  gap: 8px;
+}
+.btn {
+  flex: 1;
+  padding: 10px 0;
+  border: none;
+  border-radius: 4px;
+  background: #111;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.btn.secondary {
+  border: 1px solid #e0e0e0;
+  background: #fff;
+  color: #666;
+}
+.toast {
+  min-height: 16px;
+  margin-top: 12px;
+  opacity: 0;
+  color: #999;
+  text-align: center;
+  font-size: 11px;
+  transition: opacity 0.2s;
+}
+.toast.show { opacity: 1; }
+.log-panel {
+  display: none;
+  margin-top: 14px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 240px;
+  overflow: auto;
+  background: #fafafa;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.log-panel.show { display: block; }
+.log-item { padding: 6px 0; border-bottom: 1px solid #efefef; }
+.log-item:last-child { border-bottom: none; }
+.log-time { color: #999; margin-right: 6px; }
+.log-level.warn { color: #d97706; }
+.log-level.error { color: #dc2626; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="dot"></div>
+    <div class="title">Omitone-1.0.11</div>
+    <span class="ver">1.0.11</span>
+  </div>
+
+  <div class="section-title">播放与任务</div>
+  <div class="range-wrap">
+    <div class="range-head">
+      <span>播放速度</span>
+      <span class="val" id="rateVal">1.0x</span>
+    </div>
+    <input type="range" id="rate" min="0.5" max="3" step="0.1" value="1.0">
+  </div>
+
+  <div class="row">
+    <label for="autoMaxRate">自动倍速（跟随视频最大倍速）</label>
+    <div class="toggle on" id="autoMaxRate"></div>
+  </div>
+  <div class="row">
+    <label for="enableSeek">可拖动视频直接拖到结尾</label>
+    <div class="toggle on" id="enableSeek"></div>
+  </div>
+  <div class="row">
+    <label for="muted">静音</label>
+    <div class="toggle" id="muted"></div>
+  </div>
+  <div class="row">
+    <label for="audioMuted">音频静音播放（音频自动用最大倍速）</label>
+    <div class="toggle on" id="audioMuted"></div>
+  </div>
+  <div class="row">
+    <label for="autoNext">自动下一节</label>
+    <div class="toggle on" id="autoNext"></div>
+  </div>
+  <div class="row">
+    <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
+    <div class="toggle on" id="enableQuiz"></div>
+  </div>
+  <div class="row">
+    <label for="enableCaptcha">自动识别验证码（独立于 AI 答题，需视觉模型）</label>
+    <div class="toggle on" id="enableCaptcha"></div>
+  </div>
+  <div class="row">
+    <label for="enableDiscussion">讨论任务点自动发评论（跳转后自动返回）</label>
+    <div class="toggle on" id="enableDiscussion"></div>
+  </div>
+  <div class="field">
+    <label for="discussionReply">讨论回复内容</label>
+    <input id="discussionReply" type="text" placeholder="1" />
+  </div>
+  <div class="row">
+    <label for="restudy">已完成任务重学</label>
+    <div class="toggle" id="restudy"></div>
+  </div>
+
+  <div class="section-title">API</div>
+  <div class="field">
+    <label for="providerPreset">接入方式</label>
+    <select id="providerPreset">
+      <option value="minimax">MiniMax（默认）</option>
+      <option value="deepseek">DeepSeek</option>
+      <option value="gemini">Gemini</option>
+      <option value="claude">Claude</option>
+      <option value="qwen">阿里云百炼 / 通义千问</option>
+      <option value="glm">智谱 GLM</option>
+      <option value="moonshot">Moonshot / Kimi</option>
+      <option value="openrouter">OpenRouter</option>
+      <option value="siliconflow">SiliconFlow</option>
+      <option value="custom-openai">自定义 OpenAI 兼容</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="apiType">协议类型</label>
+    <select id="apiType">
+      <option value="openai">OpenAI 兼容</option>
+      <option value="claude">Anthropic / Claude</option>
+      <option value="gemini">Google Gemini</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="apiUrl">API URL</label>
+    <input type="text" id="apiUrl">
+  </div>
+  <div class="field">
+    <label for="apiKey">API Key</label>
+    <input type="password" id="apiKey">
+  </div>
+  <div class="field">
+    <label for="model">模型名</label>
+    <input type="text" id="model">
+  </div>
+  <div class="field">
+    <label for="captchaModel">验证码识别模型（需视觉模型，留空用主模型）</label>
+    <input type="text" id="captchaModel" placeholder="如 gemini-flash-latest / qwen-vl-max（视觉模型）">
+  </div>
+
+  <div class="actions">
+    <button class="btn secondary" id="reset">恢复默认</button>
+    <button class="btn secondary" id="saveApi">保存 API</button>
+    <button class="btn" id="start">开始运行</button>
+  </div>
+  <div class="actions">
+    <button class="btn secondary" id="testApi">检测 API 连接</button>
+  </div>
+  <div class="actions">
+    <button class="btn secondary" id="toggleLogs">查看日志</button>
+    <button class="btn secondary" id="clearLogs">清空日志</button>
+    <button class="btn secondary" id="stop">停止运行</button>
+  </div>
+
+  <div class="log-panel" id="logPanel"></div>
+
+  <div class="toast" id="toast"></div>
+</div>
+<script src="../libs/api-url.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

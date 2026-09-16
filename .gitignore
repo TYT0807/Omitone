@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+dist/
+*.zip
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+*.swp
+
+# 本地临时文件
+tmp/
+*.log
+.debug-profile/

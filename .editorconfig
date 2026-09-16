@@ -1,0 +1,18 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# 扩展运行时文件：全部保持 UTF-8 无 BOM。
+# manifest.json 带 BOM 时 Chrome/Edge 仍能加载（已验证），但会让任何用
+# JSON.parse 读它的工具链直接报错，所以统一要求无 BOM。
+[*.{js,json,html,css}]
+charset = utf-8
+
+[*.md]
+trim_trailing_whitespace = false
