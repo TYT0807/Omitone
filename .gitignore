@@ -14,3 +14,7 @@ Desktop.ini
 tmp/
 *.log
 .debug-profile/
+
+# ⚠️ 一次性 GitHub 令牌（用完即焚，绝不允许入库）
+.gh-token
+.gh-token.*
