@@ -182,6 +182,7 @@
     // 「继续学习」提示：弹题答完 / 视频暂停后，播放器右下角会出现这个按钮，
     // 不点它进不去正常播放页 —— 不处理就又变成"AI 一直在跑但课程不动"。
     _continueStudyAt: 0,
+    _continueStudyScanAt: 0,
     _continueStudyKey: '',
     _continueStudyClicks: 0,
     _continueStudyBlockedUntil: 0,
@@ -7792,7 +7793,9 @@
 
         for (var i = 0; i < nodes.length; i++) {
           var node = nodes[i];
-          if (!visible(node)) continue;
+          // 先做便宜的文案比对，再判可见性：
+          // visible() 会读 offsetParent / getBoundingClientRect，触发强制重排，
+          // 对每个 div/span 都调一遍在真实页面上是很可观的一笔开销
           var label = String((node.textContent || node.value || '')).replace(/\s+/g, '').trim();
           if (!label) continue;
 
@@ -7801,6 +7804,7 @@
             if (label.indexOf(texts[t]) !== -1) { hit = t; break; }
           }
           if (hit === -1) continue;
+          if (!visible(node)) continue;
           // 只接受文案很短的节点：整块浮层/面板的文字远不止这几个字，
           // 命中它说明这只是容器，点容器通常什么也不会发生
           if (label.length > 12) continue;
@@ -7828,13 +7832,21 @@
     /**
      * 看到「继续学习」就点一下。返回是否点过。
      *
-     * 两道保险：① 同一按钮 3 秒内只点一次；② 同一个按钮连点 5 次还在，
-     * 说明点了没反应（不是我们要找的按钮 / 页面另有机关），
+     * 三道保险：① **扫描节流**（遍历所有文档的 div/span 不便宜，而 tick 每 250ms 一轮，
+     * 视频正在正常播放时更是没必要，放到 6 秒一次）；② 同一按钮 3 秒内只点一次；
+     * ③ 同一个按钮连点 5 次还在，说明点了没反应（不是我们要找的 / 页面另有机关），
      * 停 60 秒并写日志 —— 免得把"点不动的按钮"变成新的空转源。
      */
     _tryContinueStudyPrompt: function () {
       var now = Date.now();
       if (now < (this._continueStudyBlockedUntil || 0)) return false;
+
+      var scanVideo = null;
+      try { scanVideo = this._getVideoEl(); } catch (e) { scanVideo = null; }
+      var scanInterval = (scanVideo && !scanVideo.paused) ? 6000 : 1200;
+      if (now - (this._continueStudyScanAt || 0) < scanInterval) return false;
+      this._continueStudyScanAt = now;
+
       if (now - (this._continueStudyAt || 0) < 3000) return false;
 
       var btn = this._findContinueStudyButton();
