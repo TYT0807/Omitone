@@ -170,6 +170,15 @@
     _quizForceSkipUntil: 0,
     _quizApiSkipLogAt: 0,
     _quizScanDiagAt: 0,
+    // 视频内嵌弹题（弹窗题）的失败计数。
+    // 弹题答不上来时弹窗不会消失，而 tick 每 250ms 一轮 —— 没有下面这三个字段，
+    // 同一道题会被反复发给模型：用户看到的就是"AI 一直在扫描、但从不填空、课程空转"。
+    _popupQuizKey: '',
+    _popupQuizAttempts: 0,
+    _popupQuizBlockedUntil: 0,
+    _popupQuizLogAt: 0,
+    _popupQuizSolvedKey: '',
+    _popupQuizSolvedAt: 0,
     _taskAttempts: null,
     _taskProgress: null,
     _detectedMaxRate: 0,
@@ -2705,7 +2714,10 @@
           return;
         }
 
-        var popup = this._checkPopupQuiz();
+        // 必须走 _activePopupBlock 而不是 _checkPopupQuiz：
+        // 弹题答不上来时弹窗不会消失，用 _checkPopupQuiz 会让这一支永远命中，
+        // 后面的刷课逻辑（播放、跳章、放弃机制）一次都跑不到 —— 课程就此空转。
+        var popup = this._activePopupBlock();
         if (popup) {
           await this._handlePopupQuiz(popup);
           var popupVideo = this._getVideoEl();
@@ -5157,7 +5169,8 @@
         // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
         try {
           if (self._captchaActive || self._checkCaptchaDialog()) return;
-          if (self._checkPopupQuiz && self._checkPopupQuiz()) return;
+          // 同理走 _activePopupBlock：弹题已经放弃过了就别再挡着恢复播放
+          if (self._activePopupBlock && self._activePopupBlock()) return;
           if (self._checkSubmitConfirmDialog && self._checkSubmitConfirmDialog()) return;
         } catch (e) {}
         var duration = Number(current.duration || 0);
@@ -5308,6 +5321,10 @@
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      // 换任务了，上一道弹题的失败记录不该带过来
+      this._popupQuizKey = '';
+      this._popupQuizAttempts = 0;
+      this._popupQuizBlockedUntil = 0;
     },
 
     _markQuizApiConnectionFailed: function (error) {
@@ -6982,6 +6999,22 @@
       var labels = Array.from(el.querySelectorAll('label')).filter(function (n) { return textOf(n).length > 0; });
       if (labels.length) return labels;
 
+      // 视频内嵌弹题 / 非学习通原生结构：选项就是普通 <li> 或 .xxx-option，
+      // 既没有 qid 也没有 .num_option 徽标（字母只能从文本前缀或 input value 推）。
+      // 走到这里说明上面的专用选择器全没命中，此时返回 [] 会让"扫到了题却抠不出选项"，
+      // AI 拿到一道没有选项的题，答了也无处可填 —— 必须继续往下捞。
+      // 只取最内层节点：否则整个选项容器会被当成一个选项。
+      var looseSelectors = ['[class*="option"]', '[class*="choice"]', 'li'];
+      for (var k = 0; k < looseSelectors.length; k++) {
+        var loose = [];
+        try { loose = Array.from(el.querySelectorAll(looseSelectors[k])); } catch (e) { continue; }
+        var leaf = loose.filter(function (node) {
+          if (textOf(node).length === 0) return false;
+          return !node.querySelector('li, [class*="option"], [class*="choice"]');
+        });
+        if (leaf.length) return leaf;
+      }
+
       var roles = Array.from(el.querySelectorAll('[role="radio"], [role="checkbox"]'));
       if (roles.length) return roles;
 
@@ -7092,14 +7125,66 @@
       });
     },
 
-    _matchOptionItem: function (el, answer) {
+    /**
+     * 推断某个选项对应的字母（A/B/C…）。
+     *
+     * 学习通把字母放在 .num_option 徽标上，但**视频内嵌弹题没有这个徽标** ——
+     * 字母只出现在 input 的 value 或选项文本前缀里。1.0.11 只认徽标，
+     * 于是弹题场景下 letter 恒为空串，模型回答一个裸字母 "A" 时一个选项都匹配不上，
+     * 表现为"AI 问了但从不填空"。这里按可靠度从高到低依次尝试。
+     */
+    _inferOptionLetter: function (item, index) {
+      if (!item) return '';
+
+      var badge = item.querySelector ? item.querySelector('.num_option, .num_option_dx') : null;
+      if (badge) {
+        var badgeRaw = String(badge.getAttribute('data') || textOf(badge) || '').trim();
+        if (/^[A-F]$/i.test(badgeRaw)) return badgeRaw.toUpperCase();
+      }
+
+      var attrs = ['aria-label', 'data', 'data-answer', 'data-value', 'value'];
+      for (var a = 0; a < attrs.length; a++) {
+        var attr = String((item.getAttribute && item.getAttribute(attrs[a])) || '').trim();
+        if (!attr) continue;
+        if (/^[A-F]$/i.test(attr)) return attr.toUpperCase();
+        var attrMatch = attr.match(/^([A-F])\s*[.、．)）:：]/i);
+        if (attrMatch) return attrMatch[1].toUpperCase();
+      }
+
+      // <input type="radio" value="A"> —— 原生表单（含弹题）最常见的字母来源
+      var input = item.querySelector ? item.querySelector('input') : null;
+      if (input) {
+        var inputValue = String(input.value || input.getAttribute('value') || '').trim();
+        if (/^[A-F]$/i.test(inputValue)) return inputValue.toUpperCase();
+        if (/^[A-F]\s*[.、．)）]/.test(inputValue)) return inputValue.charAt(0).toUpperCase();
+      }
+
+      // 文本前缀 "A." / "A、" / "(A)"
+      var rawText = textOf(item);
+      var textMatch = rawText.match(/^\s*\(?\s*([A-F])\s*[.、．)）:：]/);
+      if (textMatch) return textMatch[1].toUpperCase();
+
+      return '';
+    },
+
+    _matchOptionItem: function (el, answer, forcedType) {
       var items = this._getOptionItems(el);
       if (!items.length) return null;
 
       var answerStr = String(this._normalizeAnswerValue(answer) || '').trim();
       var answerUpper = answerStr.toUpperCase();
       var isLetterOnly = /^[A-F]$/.test(answerUpper);
-      var questionType = this._detectQuestionType(el);
+      // forcedType：弹窗题的题型由调用方按控件判定好了，
+      // 这里再用 _detectQuestionType 重判一遍可能与它不一致（判断题匹配分支因此失效）
+      var questionType = forcedType || this._detectQuestionType(el);
+      // 位置兜底只在"所有选项都认不出字母"时启用：
+      // 学习通的选项永远按 A,B,C… 顺序排列，此时第 n 个就是第 n 个字母。
+      // 一旦有任何选项认出了字母，就以认出来的为准，绝不靠位置猜。
+      var anyKnownLetter = false;
+      for (var p = 0; p < items.length; p++) {
+        if (this._inferOptionLetter(items[p], p)) { anyKnownLetter = true; break; }
+      }
+      var usePositionFallback = !anyKnownLetter && items.length >= 2 && items.length <= 6;
 
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
@@ -7112,11 +7197,8 @@
           labelValue = String(textOf(badge) || '').trim();
           letter = (/^[A-F]$/i.test(dataValue) ? dataValue : labelValue).toUpperCase();
         }
-        if (!letter) {
-          var aria = String((item.getAttribute && item.getAttribute('aria-label')) || '').trim();
-          var ariaMatch = aria.match(/^([A-F])(?:\s|[.、．])/i);
-          if (ariaMatch) letter = ariaMatch[1].toUpperCase();
-        }
+        if (!letter) letter = this._inferOptionLetter(item, i);
+        if (!letter && usePositionFallback) letter = String.fromCharCode(65 + i);
 
         var optionText = this._extractOptionText(item);
         if (questionType === 'judge' && this._isJudgeOptionMatch(item, answer, optionText, dataValue, letter)) return item;
@@ -7663,6 +7745,54 @@
       return true;
     },
 
+    /**
+     * 取"应该拦住刷课流程"的弹窗题。
+     *
+     * 与 _checkPopupQuiz 的区别：多了"放弃窗口"。弹题一旦答不上来（结构不认识 /
+     * 选项匹配不上），弹窗不会自动消失，而 tick 每 250ms 一轮 —— 没有这个窗口，
+     * 同一道题会被无限次发给模型，同时把后面的刷课逻辑全挡住，课程就此空转。
+     * 所有"有弹窗就别动"的判断都必须走这里，不能直接用 _checkPopupQuiz。
+     */
+    _activePopupBlock: function () {
+      if (this._popupQuizBlockedUntil && Date.now() < this._popupQuizBlockedUntil) return null;
+      var node = null;
+      try { node = this._checkPopupQuiz(); } catch (e) { node = null; }
+      if (!node) {
+        // 弹窗没了就清掉计数，下一次弹出的是新题，重新给满次数
+        this._popupQuizKey = '';
+        this._popupQuizAttempts = 0;
+        this._popupQuizSolvedKey = '';
+        return null;
+      }
+      // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
+      var key = String(node.className || '') + '|' + textOf(node).slice(0, 120);
+      if (key === this._popupQuizSolvedKey && Date.now() - (this._popupQuizSolvedAt || 0) < 30000) {
+        return null;
+      }
+      return node;
+    },
+
+    _getPopupQuizMaxAttempts: function () {
+      var max = Number(this.configs && this.configs.popupQuizMaxAttempts);
+      return max > 0 ? max : 3;
+    },
+
+    _describePopupQuiz: function (popup) {
+      try {
+        var optionItems = this._getOptionItems(popup);
+        return {
+          cls: String(popup.className || '').slice(0, 120),
+          text: textOf(popup).slice(0, 200),
+          optionCount: optionItems.length,
+          optionTexts: optionItems.slice(0, 6).map(this._extractOptionText.bind(this)),
+          optionLetters: optionItems.slice(0, 6).map(this._inferOptionLetter.bind(this)),
+          html: String(popup.outerHTML || '').replace(/\s+/g, ' ').slice(0, 900)
+        };
+      } catch (e) {
+        return { cls: String(popup && popup.className || ''), error: String(e && e.message || e) };
+      }
+    },
+
     _checkPopupQuiz: function () {
       var selectors = [
         '.ans-pop-quiz',
@@ -7684,16 +7814,25 @@
         for (var i = 0; i < selectors.length; i++) {
           var node = doc.querySelector(selectors[i]);
           if (node && app._isSubmitConfirmDialog(node)) continue;
+          // 播放器容器 / 含 video 的浮层（水印、广告、倍速提示）不是题。
+          // .vjs-overlay 这类选择器极易命中视频浮层，误判后插件会把它当题反复问模型。
+          if (node && node.querySelector && node.querySelector('video')) continue;
           if (node && visible(node) && textOf(node).length > 5) return node;
         }
 
         var sections = doc.querySelectorAll('div, section');
         for (var j = 0; j < sections.length; j++) {
           if (!visible(sections[j])) continue;
+          if (sections[j].querySelector && sections[j].querySelector('video')) continue;
           var sectionText = textOf(sections[j]);
           if (sectionText.length > 20 && sectionText.length < 600 && /[A-F][.、．))]/.test(sectionText)) {
             var button = sections[j].querySelector('button, .btn, [class*="submit"], [class*="confirm"], [class*="ans-btn"]');
-            if (button) return sections[j];
+            // 宽泛兜底必须同时看到"可点的选项"：只有一段像题目的文字 + 一个按钮
+            // 不足以证明这是道题，否则课程目录/知识点面板都会被当成弹窗题。
+            var optionish = sections[j].querySelector(
+              'input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"], li, label'
+            );
+            if (button && optionish) return sections[j];
           }
         }
 
@@ -7730,10 +7869,28 @@
         return;
       }
 
+      // 同一道弹题的指纹：弹窗没关就一定是同一道。换题（文本变了）才重新计数。
+      var key = String(popup.className || '') + '|' + popupText.slice(0, 120);
+      if (key === this._popupQuizKey) this._popupQuizAttempts++;
+      else {
+        this._popupQuizKey = key;
+        this._popupQuizAttempts = 1;
+      }
+
+      var maxAttempts = this._getPopupQuizMaxAttempts();
+      if (this._popupQuizAttempts > maxAttempts) {
+        this._giveUpPopupQuiz(popup, 'attempts-exceeded');
+        return;
+      }
+
       if (!this._isQuizApiUnavailable()) {
-        var type = 'single';
-        if (/多选/.test(popupText)) type = 'multiple';
-        if (/判断|对错|正确|错误/.test(popupText)) type = 'judge';
+        var optionItems = this._getOptionItems(popup);
+        // 题型不能靠"题干里有没有'正确/判断'这几个字"来猜 ——
+        // "下列说法正确的是？"是单选题，却因为含"正确"被判成判断题，
+        // 模型随之收到错误的题型并回 true/正确，而选项里根本没有这个文本，
+        // 于是一个都匹配不上（这就是"扫描了但从不填空"的另一种形态）。
+        // 可靠依据只有两个：控件类型（复选=多选、文本框=填空）和选项文本。
+        var type = this._detectPopupQuizType(popup, optionItems);
 
         var question = {
           index: 0,
@@ -7742,14 +7899,34 @@
           options: []
         };
 
-        var optionItems = this._getOptionItems(popup);
         question.options = optionItems.map(this._extractOptionText.bind(this)).filter(Boolean);
 
         try {
           var result = await bridgeSend('llm_request', { questions: [question] });
           if (result && result.success && result.data) {
             var answer = Array.isArray(result.data) ? result.data[0] : result.data;
-            this._fillPopupAnswer(popup, answer);
+            var filled = this._fillPopupAnswer(popup, answer, type);
+            if (filled) {
+              // 填进去了。此时弹窗多半还挂在 DOM 上（站点异步关闭），
+              // 记下指纹让 _activePopupBlock 把它当"已处理"放行，
+              // 否则下一轮 tick 会把同一道题再问一遍模型。
+              this._popupQuizSolvedKey = key;
+              this._popupQuizSolvedAt = Date.now();
+              this._popupQuizAttempts = 0;
+              this._popupQuizBlockedUntil = 0;
+              return;
+            }
+            // 模型答了但匹配不到任何选项：这是"空转"的真正成因，
+            // 必须把选项结构打进日志，否则只能靠猜
+            if (Date.now() - (this._popupQuizLogAt || 0) > 5000) {
+              this._popupQuizLogAt = Date.now();
+              emitRuntimeLog('error', 'popup quiz answer matched no option', {
+                attempt: this._popupQuizAttempts,
+                maxAttempts: maxAttempts,
+                answer: String(this._normalizeAnswerValue(answer) || '').slice(0, 80),
+                options: this._describePopupQuiz(popup)
+              });
+            }
             return;
           }
           if (result && result.parseError) {
@@ -7774,23 +7951,93 @@
       this._skipQuizForApiUnavailable(null, null);
     },
 
-    _fillPopupAnswer: function (popup, answer) {
+    /**
+     * 放弃这道弹题。
+     *
+     * 只能放弃"继续问模型"，不能放弃"让课程继续"—— 所以顺序是：
+     * 先把弹窗本身关掉（跳过/关闭），关不掉就进入冷却期，让 tick 不再拦住播放与跳章。
+     * 冷却是 60 秒而不是永久：万一弹窗其实是可答的（比如只是模型抽风），还能再试。
+     */
+    _giveUpPopupQuiz: function (popup, reason) {
+      emitRuntimeLog('error', 'popup quiz unanswerable, stop asking model', {
+        reason: reason || 'unknown',
+        attempts: this._popupQuizAttempts,
+        snapshot: this._describePopupQuiz(popup)
+      });
+
+      var closeButton = this._findDialogButtonByText(popup, ['跳过', '关闭', '取消', '知道了', '下次再说']);
+      if (closeButton) {
+        try { closeButton.click(); } catch (e) {}
+      }
+
+      this._popupQuizKey = '';
+      this._popupQuizAttempts = 0;
+      this._popupQuizBlockedUntil = Date.now() + 60000;
+    },
+
+    /**
+     * 弹窗题的题型判定。
+     * 先按控件形态走 _detectQuestionType，再对"判断题"做一次选项校验：
+     * 真判断题的选项必然是"正确/错误"这类两两对立的表述，
+     * 只看题干关键字（含"正确"二字）会把普通单选题误判成判断题。
+     */
+    _detectPopupQuizType: function (popup, optionItems) {
+      var type = this._detectQuestionType(popup);
+      if (type !== 'judge') return type;
+      var texts = (optionItems || []).map(this._extractOptionText.bind(this));
+      var looksJudge = texts.length === 2 && texts.every(function (t) {
+        return /^(正确|错误|對|錯|错|对|是|否|true|false|t|f)$/i.test(String(t || '').trim());
+      });
+      return looksJudge ? 'judge' : 'single';
+    },
+
+    /** 返回是否真的选中了至少一个选项（没选中就不该点提交） */
+    _fillPopupAnswer: function (popup, answer, type) {
       var value = this._normalizeAnswerValue(answer);
+      var selected = 0;
+      var inputType = type === 'multiple' ? 'checkbox' : 'radio';
+      if (!type) {
+        inputType = Array.from(popup.querySelectorAll('[role="checkbox"], input[type="checkbox"]')).length ? 'checkbox' : 'radio';
+      }
+
       if (Array.isArray(value)) {
         for (var i = 0; i < value.length; i++) {
-          var item = this._matchOptionItem(popup, value[i]);
-          if (item) this._clickOptionItem(item, 'checkbox');
+          var item = this._matchOptionItem(popup, value[i], type);
+          if (item) {
+            this._clickOptionItem(item, inputType);
+            selected++;
+          }
         }
       } else {
-        var target = this._matchOptionItem(popup, value);
+        var target = this._matchOptionItem(popup, value, type);
         if (target) {
-          var type = Array.from(popup.querySelectorAll('[role="checkbox"], input[type="checkbox"]')).length ? 'checkbox' : 'radio';
-          this._clickOptionItem(target, type);
+          this._clickOptionItem(target, inputType);
+          selected++;
         }
       }
 
-      var submit = popup.querySelector('button, .btn, [class*="submit"], [class*="confirm"]');
-      if (submit) submit.click();
+      // 视频里弹出的也可能是填空题：没有选项可点，但一定有输入框。
+      // 少了这一段，填空题会被当成"匹配不到选项"而反复重试直到放弃。
+      if (!selected) {
+        var hasTextInput = !!popup.querySelector('input[type="text"], input:not([type])');
+        var hasTextarea = !!popup.querySelector('textarea');
+        if (hasTextInput || hasTextarea) {
+          if (hasTextInput) this._fillText(popup, value);
+          if (hasTextarea) this._fillTextarea(popup, value);
+          selected = 1;
+        }
+      }
+
+      if (!selected) return false;
+
+      // 空答点提交没有任何意义：站点只会回一句"请选择答案"，弹窗原地不动，
+      // 于是下一轮再来一次 —— 空转就是这么来的。
+      var submit = this._findDialogButtonByText(popup, ['提交', '确定', '确认', '交卷', '完成'])
+        || popup.querySelector('button, .btn, [class*="submit"], [class*="confirm"]');
+      if (submit) {
+        try { submit.click(); } catch (e) {}
+      }
+      return true;
     }
   };
 
@@ -7970,6 +8217,26 @@
         types: questions.map(function (q) { return q.type; })
       });
       return questions;
+    },
+    /**
+     * 弹窗题诊断。视频里弹出的题"AI 扫描了但从不填空"时，在页面控制台执行
+     * `xxtAI.diagnosePopup()`：它会把弹窗的真实结构、抠到的选项、推断出的字母
+     * 以及放弃计数一起打出来，据此就能判断是结构不认识还是选项匹配不上。
+     */
+    diagnosePopup: function () {
+      if (!app) return null;
+      var node = null;
+      try { node = app._checkPopupQuiz(); } catch (e) { node = null; }
+      var report = {
+        found: !!node,
+        blocked: !!(app._popupQuizBlockedUntil && Date.now() < app._popupQuizBlockedUntil),
+        attempts: app._popupQuizAttempts,
+        maxAttempts: app._getPopupQuizMaxAttempts(),
+        popup: node ? app._describePopupQuiz(node) : null
+      };
+      console.log('[Omitone] popup quiz diagnose:', report);
+      emitRuntimeLog('info', 'popup quiz diagnose (manual)', report);
+      return report;
     },
     /**
      * 查看/清除"做不完的任务点"名单。

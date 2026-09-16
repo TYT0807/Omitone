@@ -204,6 +204,19 @@
 同理，验证码是平台的风控信号：它一旦频繁出现，说明平台已经在关注自动化行为 ——
 这时候最该做的是**停一停**，而不是继续硬刚。
 
+**8. 视频中途弹出的题（弹题）：模板多，认不出来就会放弃**
+
+视频播放到一半弹出的题**没有统一模板**，可能是原生 `li + input`、可能是自定义浮层，
+也可能根本不在主文档里。1.0.11 只能认带 `.num_option` 徽标的学习通标准结构，
+遇到别的模板就会**反复问模型却一个选项都填不进去**（典型表现：AI 日志一直在跑，课程原地空转）。
+
+现在的行为是：**同一道弹题最多问 3 次模型**，仍然填不进去就写一条 error 日志
+（含弹窗的真实 DOM 快照）→ 尝试点「跳过/关闭」→ 进入 60 秒冷却，不再拦着播放和跳章。
+
+也就是说：**它不会帮你把这类题答对，但也不会把整节课卡死。**
+如果你经常遇到弹题答不上来，在卡住的页面控制台跑 `xxtAI.diagnosePopup()`，
+把输出贴到 issue 里 —— 有了弹窗的真实结构才好加模板。
+
 ---
 
 ## 它能做什么
@@ -328,6 +341,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 - **紧急的事情（尤其是侵权删除）优先用邮件**联系我：见 GitHub 个人主页公开邮箱
 - 一般的 bug 反馈欢迎提 issue，附上：`xxtAI.diagnose()` 的输出、页面 URL、扩展版本
+  （**弹题答不上来**请另外附 `xxtAI.diagnosePopup()` 的输出 —— 里面带的 DOM 快照是加模板的唯一依据）
 - 看到了一定会处理，只是慢
 
 如果你愿意**参与维护**（PR 非常欢迎），那就更好了 ——
@@ -486,6 +500,7 @@ npm run build        # 产物：dist/omitone-1.0.11/
 ```js
 xxtAI.diagnose()        // 题目扫描诊断：每个 iframe 命中了什么选择器、为什么没抠出题、下一步该查什么
 xxtAI.scanQuiz()        // 只跑一次抠题并打印结果（不答题、不提交）
+xxtAI.diagnosePopup()   // 弹窗题诊断：视频里弹出的题认没认出来、选项抠到几个、推断出的字母是什么
 xxtAI.taskGiveUpList()  // 哪些任务点被判定"做不完"而放弃了（含原因、次数、加入时间）
 xxtAI.clearTaskGiveUp() // 清空放弃名单，让插件重新尝试这些任务点
 xxtAI.next()            // 手动跳到下一节
@@ -732,6 +747,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 28 | 用 DeepSeek 时每道题先烧 ~200 个推理 token | DeepSeek V4 默认开启思考模式，而答题是纯模式化任务 | 请求体加 `thinking:{type:'disabled'}`（**只对 DeepSeek 加**，其他 OpenAI 兼容服务会对未知参数报 400）。实测 2 题从 361 → 133 token |
 | 29 | 有一道题被**猜错**，然后整卷重答一遍 | 模型偶尔返回空答案，旧实现走 `_avoidKnownWrongAnswer` 的空答案兜底 —— 直接猜第一个选项。判断题猜错概率 50%，猜错就触发"整卷带 `禁:` 前缀重答" | **空答案补问**：一轮跑完还有题没收答案时，把这些题打包成一次小请求重问（`llm refill unanswered`），把"猜"换成"问" |
 | 30 | `npm run e2e` **全线失败**：14 个场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
+| 31 | **视频里弹出题后 AI 一直在扫描、但从不填空，课程永久空转** | 四层叠加：① 弹题请求**没有任何去重**，tick 每 250ms 一轮就重问一次模型；② `_matchOptionItem` 只在选项带 `.num_option` 徽标时才知道字母，原生 `li + input[value="A"]` 结构的字母恒为空 → 模型答裸字母 "A" 时一个都匹配不上；③ `_getOptionItems` 遇到无 `Zy_/Cy_`、无 `label` 的结构直接返回 `[]`；④ 题型靠**题干关键字**猜（含"正确"就判成判断题），"下列说法正确的是？"这类单选被误判。而弹窗分支在 `_runTick` 最前面 `return`、`_handleVideoPause` 又规定"有弹窗不恢复播放" → 死锁 | ① 新增 `_inferOptionLetter`（徽标 → 属性 → `input.value` → 文本前缀 → 位置兜底）；② `_getOptionItems` 补原生结构兜底（只取最内层）；③ 新增 `_detectPopupQuizType`（控件优先 + 判断题需选项为"正确/错误"这类对立表述）；④ 新增 `_activePopupBlock()`（含放弃窗口与已答放行），`_runTick`/`_handleVideoPause` 全走它；⑤ 同一弹题最多问 3 次后 `_giveUpPopupQuiz`（日志带 DOM 快照 → 点跳过 → 60s 冷却）；⑥ `_fillPopupAnswer` 没选中就不点提交 |
 
 ---
 
@@ -740,6 +756,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 症状 | 先查 |
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
+| **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
