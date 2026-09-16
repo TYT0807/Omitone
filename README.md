@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.0.11-blue)
+![版本](https://img.shields.io/badge/版本-1.0.12-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 
@@ -207,8 +207,9 @@
 **8. 视频中途弹出的题（弹题）：模板多，认不出来就会放弃**
 
 视频播放到一半弹出的题**没有统一模板**，可能是原生 `li + input`、可能是自定义浮层，
-也可能根本不在主文档里。1.0.11 只能认带 `.num_option` 徽标的学习通标准结构，
-遇到别的模板就会**反复问模型却一个选项都填不进去**（典型表现：AI 日志一直在跑，课程原地空转）。
+也可能根本不在主文档里。1.0.11 及更早只能认带 `.num_option` 徽标的学习通标准结构，
+遇到别的模板就会**反复问模型却一个选项都填不进去**（典型表现：AI 日志一直在跑，课程原地空转）；
+1.0.12 起补上了通用结构的识别，并加了兜底的放弃机制。
 
 现在的行为是：**同一道弹题最多问 3 次模型**，仍然填不进去就写一条 error 日志
 （含弹窗的真实 DOM 快照）→ 尝试点「跳过/关闭」→ 进入 60 秒冷却，不再拦着播放和跳章。
@@ -253,10 +254,10 @@
 **方式二：加载打包产物**
 
 ```bash
-npm run build        # 产物：dist/omitone-1.0.11/
+npm run build        # 产物：dist/omitone-1.0.12/
 ```
 
-再按上面第 2~3 步加载 `dist/omitone-1.0.11/`。
+再按上面第 2~3 步加载 `dist/omitone-1.0.12/`。
 
 > 扩展详情会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址。
 > 在其它网站上它检测到不是目标页面会立即静默退出，什么事都不做。
@@ -474,10 +475,10 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 ## 2. 安装与使用
 
 ```bash
-npm run build        # 产物：dist/omitone-1.0.11/
+npm run build        # 产物：dist/omitone-1.0.12/
 ```
 
-打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.0.11/`。
+打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.0.12/`。
 也可以直接加载仓库根目录（跳过打包）。
 
 > 扩展详情里会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址，
