@@ -1,5 +1,0 @@
-﻿git_exists=False
-content=True
-page=True
-manifest=True
-readme=True
