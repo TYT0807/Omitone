@@ -390,6 +390,45 @@ function buildPopupQuizHtml() {
     '</body></html>';
 }
 
+/**
+ * 视频内嵌弹题（原生表单结构，无 qid / 无 .num_option 徽标）。
+ *
+ * 这是真实站点上最常见的"视频里弹出来的题"：选项就是普通 li + input，
+ * 字母只在 input 的 value 和文本前缀里出现。1.0.11 的匹配逻辑认不出它，
+ * 于是"AI 问了但一个选项都没选中"，弹窗不关、视频不播、tick 空转。
+ */
+function buildPopupQuizNativeHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<div id="player"><video id="v"></video></div>' +
+    '<div class="ans-pop-quiz" style="position:fixed;left:60px;top:60px;width:460px;height:240px;background:#fff;border:2px solid #333;z-index:9999;padding:16px">' +
+    '  <div class="pop-quiz-title">1. 下列说法正确的是哪一项？</div>' +
+    '  <ul class="pop-quiz-options">' +
+    '    <li class="pop-quiz-option"><input type="radio" name="pq" value="A"><span>A. 说法甲</span></li>' +
+    '    <li class="pop-quiz-option"><input type="radio" name="pq" value="B"><span>B. 说法乙</span></li>' +
+    '    <li class="pop-quiz-option"><input type="radio" name="pq" value="C"><span>C. 说法丙</span></li>' +
+    '  </ul>' +
+    '  <div class="pop-quiz-footer"><span class="pop-quiz-submit">提交</span></div>' +
+    '</div>' +
+    '</body></html>';
+}
+
+/** 视频内嵌填空题弹窗（无选项，只有输入框） */
+function buildPopupQuizBlankHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div class="ans-pop-quiz" style="position:fixed;left:60px;top:60px;width:460px;height:200px;background:#fff;border:2px solid #333;z-index:9999;padding:16px">' +
+    '  <div class="pop-quiz-title">1. 请填写本讲提到的两个关键词。</div>' +
+    '  <div class="pop-quiz-body">' +
+    '    <input type="text" class="pop-blank" id="blank1">' +
+    '    <input type="text" class="pop-blank" id="blank2">' +
+    '  </div>' +
+    '  <div class="pop-quiz-footer"><span class="pop-quiz-submit">提交</span></div>' +
+    '</div>' +
+    '</body></html>';
+}
+
 var MOCK_PAGES = {
   '/quiz': buildQuizHtml,
   '/quiz-result': buildQuizResultHtml,
@@ -400,7 +439,9 @@ var MOCK_PAGES = {
   '/captcha-verify': buildStandaloneCaptchaHtml,
   '/discussion': buildDiscussionHtml,
   '/discussion-multi': buildDiscussionMultiHtml,
-  '/popup-quiz': buildPopupQuizHtml
+  '/popup-quiz': buildPopupQuizHtml,
+  '/popup-quiz-native': buildPopupQuizNativeHtml,
+  '/popup-quiz-blank': buildPopupQuizBlankHtml
 };
 
 // ===========================================================================
@@ -1173,6 +1214,166 @@ SCENARIOS.push({
     );
     check('_checkPopupQuiz 命中 .ans-pop-quiz', !!node, JSON.stringify(node));
     check('识别到的弹窗含题目文本', !!(node && node.text.indexOf('说法') !== -1), JSON.stringify(node));
+  }
+});
+
+/** ---- 6b. 视频弹题：原生结构能抠到选项 ---- */
+SCENARIOS.push({
+  name: '视频弹题选项识别（原生结构）',
+  path: '/popup-quiz-native',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var n=app._checkPopupQuiz();' +
+      'if(!n) return {found:false};' +
+      'var items=app._getOptionItems(n);' +
+      'return {found:true,' +
+      'count:items.length,' +
+      'texts:items.map(function(i){return app._extractOptionText(i);}),' +
+      'letters:items.map(function(i,k){return app._inferOptionLetter(i,k);})};})()'
+    );
+    check('原生结构弹题能被识别为弹窗', probe.found === true, JSON.stringify(probe));
+    check('抠到 3 个选项', probe.count === 3, JSON.stringify(probe));
+    check('选项文本已剥掉 A./B./C. 前缀',
+      JSON.stringify(probe.texts) === JSON.stringify(['说法甲', '说法乙', '说法丙']),
+      JSON.stringify(probe.texts));
+    check('每个选项都能推断出字母 A/B/C',
+      JSON.stringify(probe.letters) === JSON.stringify(['A', 'B', 'C']),
+      JSON.stringify(probe.letters));
+  }
+});
+
+/** ---- 6c. 视频弹题：完整往返（模型答题 → 选中选项） ---- */
+SCENARIOS.push({
+  name: '视频弹题答题往返',
+  path: '/popup-quiz-native',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var n=window._xxtApp._checkPopupQuiz();' +
+      'window.__pqNode = n; return window._xxtApp._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    check('弹题已发到模型接口', ctx.mock.requests.length > before,
+      '请求数 +' + (ctx.mock.requests.length - before));
+
+    var filled = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(\'.ans-pop-quiz input[type="radio"]\');' +
+      'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
+      'return {checked:checked};})()'
+    );
+    check('模型答 A → A 选项真的被选中',
+      JSON.stringify(filled.checked) === JSON.stringify(['A']), JSON.stringify(filled));
+
+    // 站点往往是异步收走弹窗的：这段时间里 tick 还会再看到它，
+    // 不能因为"还在"就把同一道题再问一遍模型（不然弹题就是个烧钱循环）
+    var after = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var n=window._xxtApp._activePopupBlock();' +
+      'if(n){window._xxtApp._handlePopupQuiz(n);} return !n;})()'
+    );
+    await sleep(1500);
+    check('已答过的弹窗不再重复问模型',
+      ctx.mock.requests.length === after, '又发了 ' + (ctx.mock.requests.length - after) + ' 次');
+  }
+});
+
+/** ---- 6c-2. 视频里的填空题弹窗（没有选项，只有输入框） ---- */
+SCENARIOS.push({
+  name: '视频填空题弹窗',
+  path: '/popup-quiz-blank',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    var type = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var n=app._checkPopupQuiz();' +
+      'if(!n) return null;' +
+      'return {type:app._detectPopupQuizType(n, app._getOptionItems(n))};})()'
+    );
+    check('无选项的输入框弹窗判为填空题', type && type.type === 'fill', JSON.stringify(type));
+
+    await ctx.client.evaluate(
+      '(function(){var n=window._xxtApp._activePopupBlock();' +
+      'if(n) return window._xxtApp._handlePopupQuiz(n); return false;})()'
+    );
+    await sleep(2500);
+
+    var vals = await ctx.client.evaluate(
+      '(function(){var g=function(id){var e=document.getElementById(id);return e?e.value:null;};' +
+      'return {b1:g("blank1"), b2:g("blank2")};})()'
+    );
+    check('填空弹窗两个空分别填 甲 / 乙',
+      vals.b1 === '甲' && vals.b2 === '乙', JSON.stringify(vals));
+  }
+});
+
+/** ---- 6d. 弹题答不上来时不无限空转 ---- */
+SCENARIOS.push({
+  name: '弹题反复失败会放弃而不是死循环',
+  path: '/popup-quiz-native',
+  run: async function (ctx) {
+    // 制造"选项一个都匹配不上"的极端情况：让 _matchOptionItem 恒定返回 null。
+    // 这正是真实站点上的失败形态 —— 弹窗结构不认识，AI 答了但填不进去。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizKey="";app._popupQuizAttempts=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._matchOptionItem=function(){return null;};' +
+      'var ins=document.querySelectorAll(\'.ans-pop-quiz input[type="radio"]\');' +
+      'for(var j=0;j<ins.length;j++){ins[j].checked=false;}' +
+      'return true;})()'
+    );
+
+    var before = ctx.mock.requests.length;
+    for (var round = 0; round < 8; round++) {
+      await ctx.client.evaluate(
+        '(function(){var n=window._xxtApp._activePopupBlock();' +
+        'if(!n) return false; return window._xxtApp._handlePopupQuiz(n);})()'
+      );
+      await sleep(300);
+    }
+    var asked = ctx.mock.requests.length - before;
+
+    var state = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;return {attempts:app._popupQuizAttempts,' +
+      'blocked: Date.now() < (app._popupQuizBlockedUntil||0)};})()'
+    );
+    check('失败后不再无限发请求（<=3 次）', asked <= 3, '实际发起了 ' + asked + ' 次');
+    check('放弃后 _activePopupBlock 不再拦截后续刷课', state.blocked === true, JSON.stringify(state));
   }
 });
 
