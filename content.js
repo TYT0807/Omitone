@@ -714,7 +714,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.0.11</span>',
+      '    <span class="brand">Omitone 1.0.12</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
