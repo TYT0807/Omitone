@@ -113,6 +113,22 @@ message 监听器驱动完整答题往返。当前 41 项断言：
 > 所以派发事件必须用 `vm.runInContext('window', sandbox)` 取出来的那个引用，
 > 否则事件会被静默丢弃，表现为"测试收不到任何应答"。
 
+## publish-github.ps1
+
+一键发布到 GitHub：先跑 `publish-audit.js`，再用 `gh` 建仓库并推送，最后填描述与主题。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\publish-github.ps1
+```
+
+**需要你本人操作一次的地方是登录**，脚本用的是浏览器 OAuth（device flow）：
+只在弹出的浏览器里点一次 Authorize，**密码和令牌都不会经过终端，也不会经过任何其他人**。
+
+> ⚠️ 永远不要把 GitHub 密码或 Personal Access Token 发给任何人 ——
+> 包括 AI 助手、群友、"技术支持"。授权只走浏览器 OAuth 这一条路。
+
+仓库名与公开/私有在脚本顶部改（`$RepoName` / `$Visibility`）。
+
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
