@@ -81,14 +81,29 @@ function findEdge() {
 }
 
 /**
- * 算出"未打包扩展"的确定性 ID。
+ * 算出"未打包扩展"的 ID —— **只作为兜底**，真值一律由 `discoverExtensionId` 在运行时发现。
  *
- * 算法：SHA256(扩展目录绝对路径) 的前 32 个十六进制位，逐位映射 0-f → a-p。
- * **Windows 上路径按 UTF-16LE 参与哈希**（不是 UTF-8）—— 靠 tools/ext-id.js
- * 拿真实 ID 反推出来的。
+ * 算法：SHA256(扩展目录绝对路径 UTF-16LE) 的前 32 位，逐位映射 0-f → a-p
+ * （Windows 上按 UTF-16LE 参与哈希，不是 UTF-8 —— 靠 tools/ext-id.js 反推出来的）。
+ *
+ * ⚠️ 这个算法对**路径大小写**极度敏感，别信它：
+ *
+ *   D:\Omite → hdlemlcmf…（真实）
+ *   d:\Omite → locncobd…（算出来是错的）
+ *
+ * 在 Git Bash / WSL / 某些 CI shell 里启动 node 时，cwd 会带成 `/d/Omite`
+ * 这种小写盘符形式，`__dirname` 随之变成小写，哈希就整个错开了。
+ *
+ * 错开之后的症状极具误导性：**扩展其实加载得好好的**
+ * （`[Omitone] content bridge ready` 照常出现在页面里），
+ * 但测试拿着错误的 ID 去注入 `chrome-extension://<错ID>/page.js` → 404，
+ * 打开 `chrome-extension://<错ID>/popup/popup.html` → 错误页，
+ * 于是 14 个场景全部报"page.js 在真实 Edge 中加载成功：失败"，
+ * 页面里却一条异常都没有，看起来就像"扩展坏了"。
  *
  * 为什么要算而不是去 CDP 里找：MV3 的 service worker 是懒启动的，
  * 不一定会出现在 target 列表里。靠"等它出现"会让测试随机失败。
+ * （这句话只对了一半 —— 真正可靠的是 content script 的执行上下文，见下。）
  */
 function computeExtensionId(dir) {
   var normalized = path.resolve(dir).replace(/[\\/]+$/, '');
@@ -608,6 +623,52 @@ function closeTab(tabId) {
  * `inject: false` 时跳过 page.js 注入 —— 扩展自己的页面（popup）不需要、
  * 而且它用的是 chrome.* 而不是 postMessage 桥接。
  */
+async function discoverExtensionId(fallbackId) {
+  // 第一选择：content script 的执行上下文。
+  // content_scripts 的 matches 是 `*://*/*`，mock 页一打开它就跑，
+  // 于是 Runtime.enable 之后必定能收到一条 origin 为 chrome-extension://<真实ID>
+  // 且 name 是扩展名的 executionContextCreated —— 这是唯一拿不错的信息源。
+  try {
+    var tab = await openTab('http://127.0.0.1:' + PORT + '/blank');
+    var client = new CdpClient(tab.webSocketDebuggerUrl);
+    await client.connect();
+    await client.send('Runtime.enable');
+
+    var deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      var hit = client.events.filter(function (e) {
+        if (!e.params || !e.params.context) return false;
+        var ctx = e.params.context;
+        return /^chrome-extension:\/\/[a-p]{32}$/.test(String(ctx.origin || ''))
+          && /Omitone/i.test(String(ctx.name || ''));
+      })[0];
+      if (hit) {
+        client.close();
+        await closeTab(tab.id);
+        return String(hit.params.context.origin).replace('chrome-extension://', '').replace('/', '');
+      }
+      await sleep(300);
+    }
+    client.close();
+    await closeTab(tab.id);
+  } catch (e) {
+    if (DEBUG) console.log('  [debug] 上下文探测失败: ' + e.message);
+  }
+
+  // 第二选择：target 列表（service worker / background page），按扩展名过滤
+  try {
+    var targets = await httpGetJson('http://127.0.0.1:' + CDP_PORT + '/json/list');
+    var ours = targets.filter(function (t) {
+      return /^chrome-extension:\/\//.test(String(t.url || '')) && /Omitone/i.test(String(t.title || ''));
+    })[0];
+    if (ours) {
+      return String(ours.url).replace(/^chrome-extension:\/\/([a-z]+)\/.*$/, '$1');
+    }
+  } catch (e) {}
+
+  return fallbackId;
+}
+
 async function openScenarioPage(extensionId, scenario) {
   var target = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
   var url = /^[a-z-]+:\/\//i.test(target) ? target : 'http://127.0.0.1:' + PORT + target;
@@ -1412,16 +1473,21 @@ async function main() {
     await waitForCdp(30000);
 
     var computedId = computeExtensionId(ROOT);
-    if (DEBUG) console.log('  [debug] 扩展 ID: ' + computedId);
+    // 真实 ID 以运行时发现为准（路径哈希会因盘符大小写算错，见 discoverExtensionId 的说明）
+    var extensionId = await discoverExtensionId(computedId);
+    console.log('  扩展 ID: ' + extensionId);
+    if (extensionId !== computedId) {
+      console.log('  ⚠️ 路径哈希给出的是 ' + computedId + '（盘符大小写不一致所致），已改用运行时发现的 ID。');
+    }
 
     for (var i = 0; i < SCENARIOS.length; i++) {
       var scenario = SCENARIOS[i];
-      var targetLabel = String(scenario.url || scenario.path).replace('{EXT}', computedId);
+      var targetLabel = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
       section(scenario.name + '  (' + targetLabel + ')');
 
       var ctx = null;
       try {
-        ctx = await openScenarioPage(computedId, scenario);
+        ctx = await openScenarioPage(extensionId, scenario);
         ctx.mock = mock;
 
         if (scenario.beforeInject) {
