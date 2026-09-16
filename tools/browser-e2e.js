@@ -1422,7 +1422,7 @@ SCENARIOS.push({
 
     var clickInfo = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app._continueStudyAt=0;app._continueStudyBlockedUntil=0;' +
+      'app._continueStudyAt=0;app._continueStudyScanAt=0;app._continueStudyBlockedUntil=0;' +
       'app._continueStudyKey="";app._continueStudyClicks=0;' +
       'var first=app._tryContinueStudyPrompt();' +
       'var second=app._tryContinueStudyPrompt();' + // 3 秒节流，紧接着的这一次必须被挡住
@@ -1435,12 +1435,23 @@ SCENARIOS.push({
     // 点了没反应（按钮还在）→ 连点到上限后必须停手，不能变成新的空转源
     var guard = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var r=[];' +
-      'for(var i=0;i<8;i++){app._continueStudyAt=0;r.push(app._tryContinueStudyPrompt());}' +
+      'for(var i=0;i<8;i++){app._continueStudyAt=0;app._continueStudyScanAt=0;' +
+      'r.push(app._tryContinueStudyPrompt());}' +
       'return {results:r, clicked:window.__clicked||0,' +
       'blocked: Date.now() < (app._continueStudyBlockedUntil||0)};})()'
     );
     check('点不动的按钮连点到上限后会停手',
       guard.blocked === true && guard.clicked <= 6, JSON.stringify(guard));
+
+    // 扫描节流：全文档遍历不能每 250ms 一轮地跑
+    var throttled = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._continueStudyBlockedUntil=0;' +
+      'app._continueStudyAt=0;app._continueStudyScanAt=Date.now();' +
+      'var again=app._tryContinueStudyPrompt();' +
+      'var scanAt=app._continueStudyScanAt;return {again:again, kept:scanAt>0};})()'
+    );
+    check('扫描有节流（刚扫过就不再重复遍历全文档）',
+      throttled.again === false, JSON.stringify(throttled));
   }
 });
 
