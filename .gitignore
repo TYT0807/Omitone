@@ -10,6 +10,9 @@ Thumbs.db
 Desktop.ini
 *.swp
 
+# 本地 Agent 记忆（工作日志，不随仓库公开）
+.workbuddy/
+
 # 本地临时文件
 tmp/
 *.log
