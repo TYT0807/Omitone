@@ -429,6 +429,21 @@ function buildPopupQuizBlankHtml() {
     '</body></html>';
 }
 
+/**
+ * 播放器右下角的「继续学习」提示。
+ * 外层是带长文案的浮层（不该被点中），内层才是真正的按钮。
+ */
+function buildVideoContinueHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div class="ans-video-tip" style="position:fixed;right:24px;bottom:24px;width:280px;height:110px;background:#fff;border:2px solid #333;padding:12px;z-index:9999">' +
+    '  <p>本节视频还有知识点需要确认，请点击下方按钮回到播放器继续本节内容的学习进度</p>' +
+    '  <span class="btn-continue" onclick="window.__clicked=(window.__clicked||0)+1">继续学习</span>' +
+    '</div>' +
+    '</body></html>';
+}
+
 var MOCK_PAGES = {
   '/quiz': buildQuizHtml,
   '/quiz-result': buildQuizResultHtml,
@@ -441,7 +456,8 @@ var MOCK_PAGES = {
   '/discussion-multi': buildDiscussionMultiHtml,
   '/popup-quiz': buildPopupQuizHtml,
   '/popup-quiz-native': buildPopupQuizNativeHtml,
-  '/popup-quiz-blank': buildPopupQuizBlankHtml
+  '/popup-quiz-blank': buildPopupQuizBlankHtml,
+  '/video-continue': buildVideoContinueHtml
 };
 
 // ===========================================================================
@@ -1374,6 +1390,57 @@ SCENARIOS.push({
     );
     check('失败后不再无限发请求（<=3 次）', asked <= 3, '实际发起了 ' + asked + ' 次');
     check('放弃后 _activePopupBlock 不再拦截后续刷课', state.blocked === true, JSON.stringify(state));
+  }
+});
+
+/** ---- 6e. 播放器右下角的「继续学习」必须被点掉 ---- */
+SCENARIOS.push({
+  name: '继续学习提示',
+  path: '/video-continue',
+  run: async function (ctx) {
+    var hit = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var b=app._findContinueStudyButton();' +
+      'return b ? {cls:String(b.className||""), text:String(b.textContent||"").trim(),' +
+      'tag:String(b.tagName||"").toLowerCase()} : null;})()'
+    );
+    check('定位到「继续学习」按钮', !!(hit && hit.text === '继续学习'), JSON.stringify(hit));
+    check('命中的是按钮本身而不是外层浮层',
+      !!(hit && hit.cls === 'btn-continue'), JSON.stringify(hit));
+
+    // 反向验证：按钮不带任何"像按钮"的类名时也必须命中它，而不是命中包着它的浮层
+    // （站点把 onclick 挂在按钮上，点到外层容器是没反应的）
+    var plain = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var s=document.querySelector(".btn-continue");' +
+      'var keep=s.className; s.className="";' +
+      'var b=app._findContinueStudyButton();' +
+      'var r={cls:String(b&&b.className||""), tag:String(b&&b.tagName||"").toLowerCase(),' +
+      'text:String(b&&b.textContent||"").trim()};' +
+      's.className=keep; return r;})()'
+    );
+    check('按钮去掉类名后仍命中的是按钮（不是外层浮层）',
+      plain.text === '继续学习' && plain.tag === 'span', JSON.stringify(plain));
+
+    var clickInfo = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._continueStudyAt=0;app._continueStudyBlockedUntil=0;' +
+      'app._continueStudyKey="";app._continueStudyClicks=0;' +
+      'var first=app._tryContinueStudyPrompt();' +
+      'var second=app._tryContinueStudyPrompt();' + // 3 秒节流，紧接着的这一次必须被挡住
+      'return {first:first, second:second, clicked:window.__clicked||0};})()'
+    );
+    check('点了一次「继续学习」', clickInfo.clicked === 1, JSON.stringify(clickInfo));
+    check('同一按钮 3 秒内不重复点', clickInfo.first === true && clickInfo.second === false,
+      JSON.stringify(clickInfo));
+
+    // 点了没反应（按钮还在）→ 连点到上限后必须停手，不能变成新的空转源
+    var guard = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var r=[];' +
+      'for(var i=0;i<8;i++){app._continueStudyAt=0;r.push(app._tryContinueStudyPrompt());}' +
+      'return {results:r, clicked:window.__clicked||0,' +
+      'blocked: Date.now() < (app._continueStudyBlockedUntil||0)};})()'
+    );
+    check('点不动的按钮连点到上限后会停手',
+      guard.blocked === true && guard.clicked <= 6, JSON.stringify(guard));
   }
 });
 

@@ -179,6 +179,12 @@
     _popupQuizLogAt: 0,
     _popupQuizSolvedKey: '',
     _popupQuizSolvedAt: 0,
+    // 「继续学习」提示：弹题答完 / 视频暂停后，播放器右下角会出现这个按钮，
+    // 不点它进不去正常播放页 —— 不处理就又变成"AI 一直在跑但课程不动"。
+    _continueStudyAt: 0,
+    _continueStudyKey: '',
+    _continueStudyClicks: 0,
+    _continueStudyBlockedUntil: 0,
     _taskAttempts: null,
     _taskProgress: null,
     _detectedMaxRate: 0,
@@ -2724,6 +2730,17 @@
           if (popupVideo && popupVideo.paused && this._isPlaying) {
             this._ensurePlaybackRate(popupVideo, "popup");
             try { popupVideo.play(); } catch (e) {}
+          }
+          return;
+        }
+
+        // 弹题答完之后，播放器右下角会冒出「继续学习」，点了才回到正常播放页。
+        // 必须放在弹题之后、播放逻辑之前 —— 顺序反了就会永远轮不到它。
+        if (this._tryContinueStudyPrompt()) {
+          var contVideo = this._getVideoEl();
+          if (contVideo && contVideo.paused && this._isPlaying) {
+            this._ensurePlaybackRate(contVideo, "continue-study");
+            try { contVideo.play(); } catch (e) {}
           }
           return;
         }
@@ -7742,6 +7759,120 @@
         this._markQuizSubmitPending(null, 'confirm-dialog');
       }
       try { submitBtn.click(); } catch (e) {}
+      return true;
+    },
+
+    /**
+     * 找「继续学习」按钮。
+     *
+     * 学习通在几种情况下会在**播放器右下角**挂一个「继续学习」：弹题答完之后、
+     * 视频被判定为挂机之后、或者从插题回到正常播放之前。**不点它进不去正常播放页**，
+     * 于是一切照常跑、课程一动不动 —— 和弹题空转是同一类"看着在忙其实卡住"的故障。
+     *
+     * 这个按钮没有稳定的类名（不同课程模板不一样），只能靠文案 + 位置 + 形态打分：
+     * 文案命中「继续学习/继续观看/继续播放」→ 只接受"按钮样"的小节点（避免点到大容器）
+     * → 与视频同文档的加分、本身是 button/a 的加分。
+     */
+    _findContinueStudyButton: function () {
+      var video = null;
+      try { video = this._getVideoEl(); } catch (e) { video = null; }
+      var videoDoc = video && video.ownerDocument ? video.ownerDocument : null;
+
+      var texts = ['继续学习', '继续观看', '继续播放'];
+      var best = null;
+      var bestScore = -1;
+
+      this._walkDocuments(function (doc) {
+        var nodes = [];
+        try {
+          nodes = Array.from(doc.querySelectorAll(
+            'a, button, .btn, [class*="btn"], [class*="continue"], [class*="study"], span, div'
+          ));
+        } catch (e) { return false; }
+
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          if (!visible(node)) continue;
+          var label = String((node.textContent || node.value || '')).replace(/\s+/g, '').trim();
+          if (!label) continue;
+
+          var hit = -1;
+          for (var t = 0; t < texts.length; t++) {
+            if (label.indexOf(texts[t]) !== -1) { hit = t; break; }
+          }
+          if (hit === -1) continue;
+          // 只接受文案很短的节点：整块浮层/面板的文字远不止这几个字，
+          // 命中它说明这只是容器，点容器通常什么也不会发生
+          if (label.length > 12) continue;
+
+          var score = 0;
+          if (videoDoc && doc === videoDoc) score += 4;
+          var tag = String(node.tagName || '').toLowerCase();
+          if (tag === 'button' || tag === 'a' || tag === 'input') score += 3;
+          var cls = String(node.className || '');
+          if (/btn|button|continue|study|resume/i.test(cls)) score += 2;
+          if (node.getAttribute && (node.getAttribute('onclick') || node.getAttribute('role'))) score += 1;
+          // 叶子节点优先：真正的按钮通常不含子元素，而外层容器带着标题/说明文字。
+          // 站点把 onclick 挂在按钮上，点到容器是没反应的 —— 这一分决定了会不会白点。
+          if (!node.children || node.children.length === 0) score += 2;
+          score -= hit; // 「继续学习」优先于「继续观看/继续播放」
+
+          if (score > bestScore) { bestScore = score; best = node; }
+        }
+        return false;
+      });
+
+      return bestScore >= 0 ? best : null;
+    },
+
+    /**
+     * 看到「继续学习」就点一下。返回是否点过。
+     *
+     * 两道保险：① 同一按钮 3 秒内只点一次；② 同一个按钮连点 5 次还在，
+     * 说明点了没反应（不是我们要找的按钮 / 页面另有机关），
+     * 停 60 秒并写日志 —— 免得把"点不动的按钮"变成新的空转源。
+     */
+    _tryContinueStudyPrompt: function () {
+      var now = Date.now();
+      if (now < (this._continueStudyBlockedUntil || 0)) return false;
+      if (now - (this._continueStudyAt || 0) < 3000) return false;
+
+      var btn = this._findContinueStudyButton();
+      if (!btn) {
+        if (this._continueStudyKey) {
+          this._continueStudyKey = '';
+          this._continueStudyClicks = 0;
+        }
+        return false;
+      }
+
+      var key = String(btn.className || '') + '|' + textOf(btn).slice(0, 30);
+      if (key === this._continueStudyKey) this._continueStudyClicks++;
+      else {
+        this._continueStudyKey = key;
+        this._continueStudyClicks = 1;
+      }
+
+      if (this._continueStudyClicks > 5) {
+        emitRuntimeLog('warn', 'continue-study button did not respond, stop clicking', {
+          text: textOf(btn).slice(0, 30),
+          clicks: this._continueStudyClicks
+        });
+        this._continueStudyBlockedUntil = now + 60000;
+        this._continueStudyKey = '';
+        this._continueStudyClicks = 0;
+        return false;
+      }
+
+      emitRuntimeLog('info', 'click continue-study prompt', {
+        text: textOf(btn).slice(0, 30),
+        cls: String(btn.className || '').slice(0, 60)
+      });
+      try {
+        if (typeof btn.click === 'function') btn.click();
+        else btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      } catch (e) {}
+      this._continueStudyAt = now;
       return true;
     },
 
