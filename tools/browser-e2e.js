@@ -1654,6 +1654,22 @@ SCENARIOS.push({
       JSON.stringify(ui.presetValues) === JSON.stringify(['deepseek', 'claude', 'gemini', 'custom-openai']),
       JSON.stringify(ui.presetValues));
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
+
+    // 无障碍：每个开关都必须能被键盘聚焦、且状态可被读屏播报。
+    // Chrome 官方文档写得很明确：「只有 a / button / 表单控件能获得键盘焦点」，
+    // 而这些开关是 div —— 所以 role="switch" + tabindex + aria-checked 缺一不可。
+    // （改之前这三样一个都没有，等于整个设置面板键盘用户完全用不了。）
+    var a11y = await ctx.client.evaluate(
+      '(function(){var ts=document.querySelectorAll(".toggle");var bad=[];' +
+      'for(var i=0;i<ts.length;i++){var t=ts[i];var on=t.className.indexOf("on")!==-1;' +
+      'if(t.getAttribute("role")!=="switch") bad.push((t.id||"?")+":role");' +
+      'if(t.getAttribute("tabindex")!=="0") bad.push((t.id||"?")+":tabindex");' +
+      'if(t.getAttribute("aria-checked")!==(on?"true":"false")) bad.push((t.id||"?")+":aria-checked");}' +
+      'return {count:ts.length, bad:bad};})()'
+    );
+    check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
+      a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
+
     check('「开始运行」按钮存在', ui.hasStart === true);
 
     // ---- 全新安装的默认值 ----

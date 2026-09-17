@@ -124,7 +124,7 @@ message 监听器驱动完整答题往返。当前 52 项断言：
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 19 个场景 / 184 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 19 个场景 / 185 项断言。
 
 前置：本机装有 Edge。路径用 `OMITONE_EDGE` 覆盖；端口用 `OMITONE_E2E_PORT` /
 `OMITONE_CDP_PORT` 覆盖；`OMITONE_E2E_DEBUG=1` 打印 target 列表与扩展 ID。
