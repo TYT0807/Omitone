@@ -218,6 +218,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | --- | --- | --- |
 | 刷课调度 / 任务点仲裁顺序 | `page.js` | `_runTick`（**判定顺序就是仲裁顺序，动它等于动心脏**） |
 | 视频播放、倍速、静音、拖到结尾 | `page.js` | `_ensurePlaybackRate` / `_trySeekToEnd` / `_getVideoEl` |
+| 防拖拽+锁1x 的视频「看到 90% 就进下一个」 | `page.js` | `_shouldAdvanceAtNinetyPercent` / `_isNinetyPercentVideo` / `_finishCurrentMedia`（**改前先读 §9 那条分叉**） |
 | 抠题（题干 / 选项 / 题型） | `page.js` | `_extractQuestions` / `_collectQuestionContainers` / `_getOptionItems` |
 | 答题回填与交卷 | `page.js` | `_handleQuiz` / `_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz` |
 | 视频内弹题、播放器右下角「继续学习」 | `page.js` | `_activePopupBlock` / `_handlePopupQuiz` / `_tryContinueStudyPrompt` |
@@ -423,6 +424,7 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | **密钥只在 `chrome.storage.local`** | 已经足够安全（无自有服务器），但没有加密 | 不必改；文档里已给出可自验方法 |
 | **验证码识别依赖视觉模型** | 留空会回退主模型并大概率失败 | 在弹窗里加一句更明确的提示 |
 | **图标 128px 占 28.6KB** | 偏大，可无损重压到 ~10KB | 低优先级 |
+| **三份「managed media job ended」收尾逻辑已分叉** | `_handleVideoEnded` 会清 `_activeDocumentJob*`，`_finishCurrentMedia` 与媒体等待循环那两处**不清**。同一份收尾写了三遍，"改一处漏两处"的风险已经存在 | 先确认哪一份才是对的（大概率 `_handleVideoEnded` 更完整），再让三处都走 `_finishCurrentMedia`；**改前先补 e2e 断言** |
 | **不支持连线 / 排序 / 拖拽题** | 平台交互题无法自动作答 | 保持现状，明确写在 README |
 
 ---
