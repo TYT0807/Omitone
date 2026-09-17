@@ -73,7 +73,9 @@ const els = {
   toggleLogs: $("toggleLogs"),
   clearLogs: $("clearLogs"),
   logPanel: $("logPanel"),
-  toast: $("toast")
+  toast: $("toast"),
+  runDot: $("runDot"),
+  runState: $("runState")
 };
 
 let config = { ...DEFAULTS };
@@ -366,8 +368,24 @@ const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (val
 const updateDiscussion = bindToggle(els.enableDiscussion, () => enableDiscussionVal, (value) => { enableDiscussionVal = value; });
 const updateRestudy = bindToggle(els.restudy, () => restudyVal, (value) => { restudyVal = value; });
 
+/** 更新顶部的运行状态指示：圆点 + 文字徽章。 */
+function updateRunState(running) {
+  if (!els.runDot || !els.runState) return;
+  els.runDot.classList.toggle("on", !!running);
+  els.runState.classList.toggle("on", !!running);
+  els.runState.textContent = running ? "运行中" : "未运行";
+}
+
 async function load() {
   const result = await chrome.storage.local.get("config");
+  // 运行状态：content.js 读它决定要不要干活，但弹窗以前**从来不读** ——
+  // 于是打开弹窗完全看不出当前是不是在跑。这里补上指示。
+  try {
+    const runResult = await chrome.storage.local.get("xxtRunning");
+    updateRunState(!!(runResult && runResult.xxtRunning));
+  } catch (e) {
+    updateRunState(false);
+  }
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 
   els.rate.value = config.playbackRate;
@@ -503,6 +521,7 @@ async function startRun() {
       return;
     }
     await chrome.tabs.sendMessage(tab.id, { type: "xxt_start" });
+    updateRunState(true);
     toast("已发送启动指令");
   } catch (error) {
     toast("请在学习通课程页面中使用");
@@ -582,6 +601,7 @@ els.start.addEventListener("click", startRun);
 els.stop.addEventListener("click", async () => {
   try {
     await chrome.storage.local.set({ xxtRunning: false });
+    updateRunState(false);
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab) {
       try { await chrome.tabs.reload(tab.id); } catch (reloadErr) {}

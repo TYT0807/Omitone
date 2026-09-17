@@ -1670,6 +1670,27 @@ SCENARIOS.push({
     check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
       a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
 
+    // 运行状态指示：content.js 一直读 xxtRunning 决定要不要干活，
+    // 但弹窗以前**从来不读** —— 打开后完全看不出当前是不是在跑。
+    // 这里不只查"有没有这个元素"，还要查它**跟着 xxtRunning 变**（否则就是个摆设）。
+    var runUi = await ctx.client.evaluate(
+      '(function(){var d=document.getElementById("runDot"),s=document.getElementById("runState");' +
+      'return {hasDot:!!d,hasState:!!s,text:s?s.textContent:null,dotOn:!!(d&&d.className.indexOf("on")!==-1)};})()'
+    );
+    check('顶部有运行状态指示（圆点 + 文字）', runUi.hasDot && runUi.hasState, JSON.stringify(runUi));
+
+    var runSync = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'chrome.storage.local.set({xxtRunning:true},function(){' +
+      'Promise.resolve(load()).then(function(){' +
+      'var s=document.getElementById("runState"),d=document.getElementById("runDot");' +
+      'var out={text:s.textContent,dotOn:d.className.indexOf("on")!==-1};' +
+      'chrome.storage.local.set({xxtRunning:false},function(){res(out);});' +
+      '});});});})()'
+    );
+    check('xxtRunning=true 时显示「运行中」且圆点点亮',
+      runSync.text === '运行中' && runSync.dotOn === true, JSON.stringify(runSync));
+
     check('「开始运行」按钮存在', ui.hasStart === true);
 
     // ---- 全新安装的默认值 ----

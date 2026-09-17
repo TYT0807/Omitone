@@ -19,9 +19,12 @@ body {
 
 /* 顶栏 */
 .header { display: flex; align-items: center; gap: 9px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); box-shadow: 0 0 0 3px var(--soft); transition: background .2s, box-shadow .2s; }
+.dot.on { background: #1a7f37; box-shadow: 0 0 0 3px #e8f6ec; }
+.run-state { margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.run-state.on { background: #e8f6ec; border-color: #bfe3c9; color: #1a7f37; }
 .title { font-size: 15px; font-weight: 650; letter-spacing: .2px; }
-.ver { margin-left: auto; color: var(--muted); font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.ver { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
 
 /* 分组标题 */
 .section-title { display: flex; align-items: center; gap: 6px; margin: 22px 0 2px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; }
@@ -87,8 +90,9 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
 <body>
 <div class="container">
   <div class="header">
-    <div class="dot"></div>
+    <div class="dot" id="runDot"></div>
     <div class="title">Omitone-1.1.3</div>
+    <span class="run-state" id="runState">未运行</span>
     <span class="ver">1.1.3</span>
   </div>
 
