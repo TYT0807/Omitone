@@ -6,11 +6,15 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.0.12-blue)
+![版本](https://img.shields.io/badge/版本-1.1.0-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
+![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
 
 **免费 · 公益 · 本地运行 · AI 由你自己接入**
+
+> **当前状态：功能已收官，进入 bug 修复期。**
+> 该有的能力都齐了，后续主要是修 bug 和跟随平台改版做适配，不再堆新功能。
 
 </div>
 
@@ -75,9 +79,28 @@
 但这也意味着：
 
 - **DeepSeek = 在真实章节测验里完整验证过**（抠题 → 作答 → 回填 → 交卷 → 记分）
-- **其他厂商 = 只按官方文档配好了预设，未在真实答题中逐一验证**
-- 换别的厂商时请先用「检测 API 连接」跑通，
-  再找一节**不重要**的测验试一遍手感，确认没问题再上正课
+- **其他厂商一律不预置** —— 见下面这段
+
+**关于"为什么只留 DeepSeek 一个预设"：**
+
+早期版本内置过 9 家厂商预设（MiniMax / 通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …），
+全是"照官方文档配好但没在真实答题里验证过"。结果很糟：
+预设里的**模型名是钉死的快照**，厂商一发新版就失效，
+用户照着下拉框一路填完，最后发现根本用不了 —— **比留空白更坑人**。
+
+所以现在只预置三种：
+
+| 接入方式 | 说明 |
+| --- | --- |
+| **DeepSeek** | 唯一在真实答题链路上完整验证过的，也是默认值 |
+| **Anthropic Claude** | 走独立协议（`/v1/messages`），协议适配有集成测试覆盖，但**没在真实题库上跑过** |
+| **Google Gemini** | 走独立协议（`generateContent`），同上 |
+
+**用别家怎么办？** 选「自定义 OpenAI 兼容」，API URL 和模型名按厂商文档自己填。
+那两格填什么都能用，反而比预置的过期快照可靠。
+
+换厂商时请先用「检测 API 连接」跑通，
+再找一节**不重要**的测验试一遍手感，确认没问题再上正课。
 
 ### 2. 关掉思考模式＝牺牲推理深度，正确率必然下降
 
@@ -145,11 +168,18 @@
 
 这一节不是免责套话，是**逐条对着代码和真机实测写的**。会不定期更新。
 
-**1. 目前真正跑通过的只有 DeepSeek，其他厂商是"按文档配好"但没实测**
+**1. 目前真正跑通过的只有 DeepSeek，其余厂商一律不预置**
 
-弹窗里内置了 9 家预设（MiniMax / DeepSeek / Gemini / Claude / 通义 / 智谱 / Kimi / OpenRouter / 硅基流动），
-其中**只有 DeepSeek 在真实答题链路上完整验证过**（抠题 → 作答 → 回填 → 交卷 → 记分）。
-其余的是按各家 2026-09 官方文档核对过的**配置**，没有逐一实测 —— 地址、参数、模型名都可能有出入。
+1.1.0 起，弹窗里**只保留三种接入方式**：DeepSeek（唯一在真实答题链路上完整验证过：
+抠题 → 作答 → 回填 → 交卷 → 记分）、Anthropic Claude、Google Gemini。
+
+之所以把原先的 9 家厂商预设全都删掉：那些预设是"照官方文档配好但没实测"的，
+而且模型名是**钉死的快照**，厂商一发新版就失效 ——
+用户照着下拉框一路填完却发现用不了，这比留空白更坑人。
+
+想用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选「自定义 OpenAI 兼容」，
+API URL 与模型名按厂商文档自己填。Claude 与 Gemini 走的是独立协议，
+协议适配有集成测试覆盖，但**没有在真实题库上跑过**，模型名要你自己填。
 
 换厂商时请先用「检测 API 连接」跑通，再拿一节不重要的测验试手感。
 
@@ -256,18 +286,19 @@
 **方式二：加载打包产物**
 
 ```bash
-npm run build        # 产物：dist/omitone-1.0.12/
+npm run build        # 产物：dist/omitone-1.1.0/
 ```
 
-再按上面第 2~3 步加载 `dist/omitone-1.0.12/`。
+再按上面第 2~3 步加载 `dist/omitone-1.1.0/`。
 
 > 扩展详情会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址。
 > 在其它网站上它检测到不是目标页面会立即静默退出，什么事都不做。
 
 **想用 AI 答题的话**，在弹窗里：
 
-1. 从「接入方式」选一家厂商（已内置 MiniMax / DeepSeek / Gemini / Claude / 通义 / 智谱 / Kimi 等预设）
-2. 填入你的 API URL、Key、模型名 —— **输入即自动保存**
+1. 「接入方式」默认就是 **DeepSeek**（唯一实测通过的一家）；
+   用别家就选「自定义 OpenAI 兼容」，自己填地址与模型名
+2. 填入你的 API Key、模型名 —— **输入即自动保存**
 3. 点「检测 API 连接」确认通路
 4. 要用验证码识别，**必须**另填「验证码识别模型」，且必须是带视觉能力的模型
 
@@ -289,7 +320,7 @@ npm run build        # 产物：dist/omitone-1.0.12/
 | 无自有服务器 | 项目**没有后端**，没有一个字节是你自己处理不了的 | 全仓库没有作者名下任何域名 |
 | 请求直达厂商 | AI 请求由 `background.js` 直接 `fetch` 你在弹窗填的那个地址 —— 填谁的门牌就走谁的网关 | `libs/api-url.js` 全程只做字符串拼接，**唯一的地址来源是你填的配置**（或厂商官方默认地址） |
 | 无遥测 | 不发统计、不发埋点、不上报日志、不检查更新 | 「更新检查」消息直接返回 `skipped`，从不联网 |
-| 默认域名全是厂商官方 | `api.minimaxi.com` / `api.deepseek.com` / `api.anthropic.com` / `generativelanguage.googleapis.com` … | 见 `popup/popup.js` 的 `PROVIDER_PRESETS` |
+| 默认域名全是厂商官方 | `api.deepseek.com` / `api.anthropic.com` / `generativelanguage.googleapis.com` | 见 `popup/popup.js` 的 `PROVIDER_PRESETS`（1.1.0 起只剩这三家 + 自定义） |
 | 日志不带密钥 | 请求失败时日志截断**错误信息**，不记录密钥，也不记录请求头 | `content.js` 里所有 `slice(0, 300)` 的报错分支 |
 
 **你可以自己复核**，在仓库根目录执行这条命令，看它列出来的每一个域名：
@@ -477,10 +508,10 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 ## 2. 安装与使用
 
 ```bash
-npm run build        # 产物：dist/omitone-1.0.12/
+npm run build        # 产物：dist/omitone-1.1.0/
 ```
 
-打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.0.12/`。
+打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.1.0/`。
 也可以直接加载仓库根目录（跳过打包）。
 
 > 扩展详情里会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址，

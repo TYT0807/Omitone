@@ -1562,14 +1562,55 @@ SCENARIOS.push({
     var ui = await ctx.client.evaluate(
       '(function(){return {' +
       'rateVal: document.getElementById("rateVal") ? document.getElementById("rateVal").textContent : null,' +
-      'providerOptions: document.getElementById("providerPreset") ? document.getElementById("providerPreset").options.length : 0,' +
+      'presetValues: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return o.value;}),' +
+      'presetSelected: document.getElementById("providerPreset").value,' +
+      'apiUrl: document.getElementById("apiUrl").value,' +
+      'model: document.getElementById("model").value,' +
       'toggleCount: document.querySelectorAll(".toggle").length,' +
       'hasStart: !!document.getElementById("start")};})()'
     );
     check('弹窗初始化完成（速度档显示已填充）', !!(ui.rateVal && ui.rateVal.indexOf('x') !== -1), JSON.stringify(ui.rateVal));
-    check('接入方式下拉有预设项', ui.providerOptions >= 9, 'options=' + ui.providerOptions);
+    // 只预置真正实测过的服务商：删掉未验证的厂商预置，避免"照着填却用不了"
+    check('接入方式只剩实测过的预设',
+      JSON.stringify(ui.presetValues) === JSON.stringify(['deepseek', 'claude', 'gemini', 'custom-openai']),
+      JSON.stringify(ui.presetValues));
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
     check('「开始运行」按钮存在', ui.hasStart === true);
+
+    // ---- 全新安装的默认值 ----
+    // ⚠️ 各场景共用同一个 chrome.storage，前面答过题的场景会把 apiUrl 写成 mock 地址，
+    // 直接读表单只会读到那份残留。所以先清空 config 再重新加载弹窗，
+    // 这样验的才是真实用户第一次装上时的路径。
+    await ctx.client.evaluate('(function(){return chrome.storage.local.set({config:{}});})()');
+    await ctx.client.send('Page.navigate', { url: ctx.url });
+    await sleep(1800);
+    var fresh = await ctx.client.evaluate(
+      '(function(){return {' +
+      'selected: document.getElementById("providerPreset").value,' +
+      'apiType: document.getElementById("apiType").value,' +
+      'apiUrl: document.getElementById("apiUrl").value,' +
+      'model: document.getElementById("model").value};})()'
+    );
+    check('全新安装默认落在 DeepSeek（唯一实测通过的服务商）',
+      fresh.selected === 'deepseek', JSON.stringify(fresh));
+    check('全新安装默认 API URL 是 DeepSeek 官方域名',
+      fresh.apiUrl === 'https://api.deepseek.com', String(fresh.apiUrl));
+    check('全新安装默认模型名已填充', !!fresh.model, String(fresh.model));
+
+    // 反向验证：切到「自定义」不能把用户已经填好的 URL / 模型名清空。
+    // 老版本存下的已删除预置（minimax）走的正是这条归一化路径。
+    var kept = await ctx.client.evaluate(
+      '(function(){var sel=document.getElementById("providerPreset");' +
+      'var url=document.getElementById("apiUrl"), md=document.getElementById("model");' +
+      'url.value="https://api.minimaxi.com"; md.value="MiniMax-M3";' +
+      'sel.value="custom-openai"; sel.dispatchEvent(new Event("change"));' +
+      'var r={url:url.value, model:md.value, selected:sel.value};' +
+      'return r;})()'
+    );
+    await sleep(400);
+    check('切到「自定义」不清空已填的 API URL 与模型名',
+      kept.url === 'https://api.minimaxi.com' && kept.model === 'MiniMax-M3',
+      JSON.stringify(kept));
 
     var errs = ctx.client.errors();
     check('弹窗无未捕获异常', errs.length === 0, errs.slice(0, 2).join(' | '));

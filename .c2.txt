@@ -1,0 +1,5 @@
+﻿  [ok]   璁剧疆寮圭獥  (chrome-extension://hdlemlcmfldkknipeccjhamkgomfgmhf/popup/popup.html) 路 榛樿钀藉湪 DeepSeek锛堝敮涓€瀹炴祴閫氳繃鐨勬湇鍔″晢锛?  [FAIL] 璁剧疆寮圭獥  (chrome-extension://hdlemlcmfldkknipeccjhamkgomfgmhf/popup/popup.html) 路 榛樿 API URL 鎸囧悜 DeepSeek 瀹樻柟鍩熷悕 鈫?http://127.0.0.1:8899
+---
+鍔熻兘浜ゅ弶妫€楠屾湭閫氳繃锛? / 162 椤瑰け璐?  - 璁剧疆寮圭獥  (chrome-extension://hdlemlcmfldkknipeccjhamkgomfgmhf/popup/popup.html) 路 榛樿 API URL 鎸囧悜 DeepSeek 瀹樻柟鍩熷悕 鈫?http://127.0.0.1:8899
+
+

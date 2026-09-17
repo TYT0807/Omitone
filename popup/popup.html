@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.0.12</title>
+<title>Omitone-1.1.0</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -110,6 +110,13 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .toggle.on::after { transform: translateX(16px); }
 .field { margin-top: 10px; }
+.hint {
+  margin: 8px 0 0;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.hint b { color: #555; font-weight: 600; }
 .field label {
   display: block;
   margin-bottom: 6px;
@@ -183,8 +190,8 @@ select {
 <div class="container">
   <div class="header">
     <div class="dot"></div>
-    <div class="title">Omitone-1.0.12</div>
-    <span class="ver">1.0.12</span>
+    <div class="title">Omitone-1.1.0</div>
+    <span class="ver">1.1.0</span>
   </div>
 
   <div class="section-title">播放与任务</div>
@@ -241,18 +248,17 @@ select {
   <div class="field">
     <label for="providerPreset">接入方式</label>
     <select id="providerPreset">
-      <option value="minimax">MiniMax（默认）</option>
-      <option value="deepseek">DeepSeek</option>
-      <option value="gemini">Gemini</option>
-      <option value="claude">Claude</option>
-      <option value="qwen">阿里云百炼 / 通义千问</option>
-      <option value="glm">智谱 GLM</option>
-      <option value="moonshot">Moonshot / Kimi</option>
-      <option value="openrouter">OpenRouter</option>
-      <option value="siliconflow">SiliconFlow</option>
+      <option value="deepseek">DeepSeek（唯一在真实答题中实测通过）</option>
+      <option value="claude">Anthropic Claude（协议已适配 · 未实测）</option>
+      <option value="gemini">Google Gemini（协议已适配 · 未实测）</option>
       <option value="custom-openai">自定义 OpenAI 兼容</option>
     </select>
   </div>
+  <p class="hint">
+    只预置了真正验证过的服务商。用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
+    <b>自定义 OpenAI 兼容</b>，API URL 与模型名按厂商文档自己填 ——
+    那两格填什么都能用，反而预置好的模型名是钉死的快照，厂商一发新版就失效。
+  </p>
   <div class="field">
     <label for="apiType">协议类型</label>
     <select id="apiType">
@@ -275,7 +281,7 @@ select {
   </div>
   <div class="field">
     <label for="captchaModel">验证码识别模型（需视觉模型，留空用主模型）</label>
-    <input type="text" id="captchaModel" placeholder="如 gemini-flash-latest / qwen-vl-max（视觉模型）">
+    <input type="text" id="captchaModel" placeholder="填支持图片输入的模型名，如 gemini-flash-latest / qwen-vl-max" />
   </div>
 
   <div class="actions">
