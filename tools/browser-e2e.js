@@ -1450,6 +1450,15 @@ SCENARIOS.push({
         '(function(){var n=window._xxtApp._activePopupBlock();' +
         'if(!n) return false; return window._xxtApp._handlePopupQuiz(n);})()'
       );
+      // ⚠️ 复现真实站点的形态：答错后弹窗里会**多出一行反馈文本**。
+      // 原来的 mock 弹窗文本恒定不变，所以"指纹随反馈变化 → 尝试计数被重置成 1
+      // → 永远到不了放弃阈值"这个 bug **测不出来**（真实站点会一直重问模型）。
+      // 这行就是让 mock 跟上真实平台的关键。
+      await ctx.client.evaluate(
+        '(function(){var d=document.createElement("div");d.className="pop-quiz-feedback";' +
+        'd.textContent="回答错误，请重新作答";' +
+        'document.querySelector(".ans-pop-quiz").appendChild(d);return true;})()'
+      );
       await sleep(300);
     }
     var asked = ctx.mock.requests.length - before;

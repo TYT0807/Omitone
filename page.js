@@ -8038,7 +8038,7 @@
         this._popupQuizSolvedKey = '';
       } else {
         // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
-        var key = String(node.className || '') + '|' + textOf(node).slice(0, 120);
+        var key = this._popupQuizFingerprint(node);
         if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < 30000) {
           node = null;
         }
@@ -8047,6 +8047,34 @@
       this._popupBlockCheckedAt = now;
       this._popupBlockCached = node;
       return node;
+    },
+
+    /**
+     * 弹题的**稳定指纹** —— 判断"还是不是同一道题"。
+     *
+     * ⚠️ 不能用整段文本当指纹。站点答错后会在弹窗里**加一行反馈**
+     * （"回答错误，请重新作答"），文本一变指纹就变，于是 `_popupQuizAttempts`
+     * 被重置成 1 —— "最多问 3 次就放手"这个安全阀**永远不会触发**，
+     * 表现就是：答错之后一直重问模型、弹窗关不掉、看着像卡死，而且**不会自己恢复**
+     * （60 秒冷却是 `_giveUpPopupQuiz` 设的，它根本没被调用）。
+     *
+     * 所以指纹改取**选项文本**：答错反馈只会加在题干或底部，不会改选项。
+     * 没有选项（填空题）时退回文本，但先剥掉常见反馈短语。
+     *
+     * 注意 `_activePopupBlock` 里的"已答放行"判断也用它，两边必须同一个函数，
+     * 否则 `_popupQuizSolvedKey` 对不上，已答过的弹窗会被反复重问。
+     */
+    _popupQuizFingerprint: function (popup, optionItems) {
+      var cls = String((popup && popup.className) || "");
+      try {
+        var opts = optionItems || this._getOptionItems(popup) || [];
+        var texts = opts.map(this._extractOptionText.bind(this)).filter(Boolean).join(String.fromCharCode(1));
+        if (texts) return cls + "|o|" + texts.slice(0, 240);
+      } catch (e) {}
+      var raw = "";
+      try { raw = textOf(popup); } catch (e2) {}
+      raw = raw.replace(/回答错误|答案错误|请重新作答|重新作答|再试一次|不正确|提交失败/g, "").replace(/\s+/g, "");
+      return cls + "|t|" + raw.slice(0, 120);
     },
 
     _getPopupQuizMaxAttempts: function () {
@@ -8147,7 +8175,7 @@
       }
 
       // 同一道弹题的指纹：弹窗没关就一定是同一道。换题（文本变了）才重新计数。
-      var key = String(popup.className || '') + '|' + popupText.slice(0, 120);
+      var key = this._popupQuizFingerprint(popup);
       if (key === this._popupQuizKey) this._popupQuizAttempts++;
       else {
         this._popupQuizKey = key;
