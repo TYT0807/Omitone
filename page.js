@@ -193,6 +193,8 @@
     // 由 libs/prompt.js 渲染成「禁:1=D;」前缀 —— 否则模型每轮都回同一个答案。
     _popupQuizWrongAnswers: [],
     _popupQuizLastFilled: '',
+    // 填完答案后的一段静默期：期间**完全不去碰弹题**，见 _activePopupBlock 的说明。
+    _popupQuizQuietUntil: 0,
     _popupBlockCheckedAt: 0,
     _popupBlockCached: null,
     // 前缀缓存：记住"本卷最近一次发过请求"，用于决定重试时是否整批重发
@@ -8038,6 +8040,17 @@
         this._popupBlockCached = null;
         return null;
       }
+      // ⚠️ 填完答案后的静默期：**站点会重绘弹窗**（给正确项打勾 / 加提示 / 重排），
+      // 而指纹取的是选项文本 —— 文本一变指纹就变，「已答放行」立刻失效，
+      // 弹窗被当成新题 → 再问模型 → 再点一次选项 → 站点再重绘 …… 死循环。
+      // 现场表现就是「选项一直闪」，而且因为指纹一变 attempts 就重置，
+      // 「最多问 3 次就放手」的安全阀**永远触发不了**。
+      // 所以填完之后先静默一段时间，无论指纹怎么变都不碰它。
+      if (now < (this._popupQuizQuietUntil || 0)) {
+        this._popupBlockCheckedAt = 0;
+        this._popupBlockCached = null;
+        return null;
+      }
       // _checkPopupQuiz 要遍历所有文档，而 tick 每 250ms 一轮。
       // 400ms 内复用上一次的结果：弹窗不会在这个尺度上凭空出现又消失。
       // 缓存的是**经过下面两道判断之后**的结果，所以"已答放行"不会被缓存绕过。
@@ -8054,6 +8067,7 @@
         this._popupQuizSolvedKey = '';
         this._popupQuizWrongAnswers = [];
         this._popupQuizLastFilled = '';
+        this._popupQuizQuietUntil = 0;
       } else {
         // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
         var key = this._popupQuizFingerprint(node);
@@ -8266,6 +8280,9 @@
               });
               // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
               this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');
+              // 静默 8 秒：给站点足够时间收走弹窗。这段时间内哪怕指纹变了也不碰它，
+              // 否则站点重绘 → 指纹变 → 重问重填 → 选项闪烁，就是这么来的。
+              this._popupQuizQuietUntil = Date.now() + 8000;
               return;
             }
             // 模型答了但匹配不到任何选项：这是"空转"的真正成因，
@@ -8326,6 +8343,7 @@
       this._popupQuizAttempts = 0;
       this._popupQuizWrongAnswers = [];
       this._popupQuizLastFilled = '';
+      this._popupQuizQuietUntil = 0;
       this._popupQuizBlockedUntil = Date.now() + 60000;
     },
 

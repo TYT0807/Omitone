@@ -1445,6 +1445,87 @@ SCENARIOS.push({
     );
     check('四选项弹题：模型答 A → 选中的就是 A（不是最后一个 D）',
       JSON.stringify(fourFilled.checked) === JSON.stringify(['A']), JSON.stringify(fourFilled));
+
+    // ---- 站点重绘不该导致「重问-重填」死循环（现场表现：选项一直闪）----
+    // 指纹取的是**选项文本**，而站点答完会重绘弹窗（给正确项打勾 / 加提示 / 重排）——
+    // 文本一变指纹就变，「已答放行」立刻失效，弹窗被当成新题 → 再问模型 → 再点一次选项
+    // → 站点再重绘 …… 死循环。而且指纹一变 attempts 就重置，安全阀永远触发不了。
+    // 这里先正常答一次（建立已答状态 + 静默期），再模拟一次站点重绘，断言不会重问。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;app._popupQuizAttempts=0;' +
+      'var n=app._checkPopupQuiz();' +
+      'if(!n) return false;' +
+      'return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    // 模拟站点重绘：往第一个选项的文字前面插一个勾
+    await ctx.client.evaluate(
+      '(function(){var s=document.querySelector(".ans-pop-quiz .pop-quiz-options span");' +
+      'if(s) s.textContent = "✓ " + s.textContent;' +
+      'return s ? s.textContent.slice(0, 20) : null;})()'
+    );
+    await sleep(200);
+
+    var beforeRedraw = ctx.mock.requests.length;
+    var redrawBlock = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      // ⚠️ 必须走**完整路径**：_activePopupBlock 只是"要不要拦"的判断，
+      // 真正去问模型的是 _handlePopupQuiz。只调前者的话，断言永远不可能失败
+      // —— 第一版就是这么写的，反向验证直接抓出来了。
+      'var n=app._activePopupBlock();' +
+      'if(n){app._handlePopupQuiz(n);}' +
+      'return !!n;})()'
+    );
+    await sleep(2500);
+    check('站点重绘弹窗后不会立刻重问模型（否则选项会一直闪）',
+      ctx.mock.requests.length === beforeRedraw,
+      '重绘后又发了 ' + (ctx.mock.requests.length - beforeRedraw) + ' 次请求 · 仍被当成活动弹窗=' + redrawBlock);
+
+    // ---- 五个选项的【多选题】 ----
+    // 现场报过「遇到五个选项的多选题」。多选与单选不只是选项数不同：
+    // 控件是 checkbox、答案是**多个字母**（模型回 ["A","C"]），走的是另一条填充分支。
+    await ctx.client.evaluate(
+      '(function(){' +
+      'var box=document.querySelector(".ans-pop-quiz");' +
+      'var ul=box.querySelector(".pop-quiz-options");' +
+      'ul.innerHTML="";' +
+      'var texts=["A. 说法甲","B. 说法乙","C. 说法丙","D. 说法丁","E. 说法戊"];' +
+      'for(var i=0;i<texts.length;i++){' +
+      '  var li=document.createElement("li");li.className="pop-quiz-option";' +
+      '  var inp=document.createElement("input");inp.type="checkbox";inp.name="pq";' +
+      '  inp.value=String.fromCharCode(65+i);' +
+      '  var sp=document.createElement("span");sp.textContent=texts[i];' +
+      '  li.appendChild(inp);li.appendChild(sp);ul.appendChild(li);}' +
+      'var t=box.querySelector(".pop-quiz-title");if(t)t.textContent="1. 下列哪些说法正确？（多选）";' +
+      'return ul.children.length;})()'
+    );
+    await sleep(300);
+
+    var beforeMulti = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;app._popupQuizAttempts=0;' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'var n=app._checkPopupQuiz(); if(!n) return false; return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    var multiPrompt = ctx.mock.requests.length > beforeMulti
+      ? ctx.mock.requests[ctx.mock.requests.length - 1].prompt : '';
+    var multiType = (multiPrompt.match(/\|\s*([a-z])\s*\|/) || [])[1];
+    check('五选项多选题：题型代号是 m，且 5 个选项都进了提示词',
+      multiType === 'm' && multiPrompt.indexOf('\nE.') !== -1,
+      '题型=' + multiType + ' · 尾部: ' + multiPrompt.slice(-90));
+
+    var multiFilled = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input[type=checkbox]");' +
+      'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
+      'return {checked:checked, count:ins.length};})()'
+    );
+    check('五选项多选题：模型回 ["A","C"] → 勾中的就是 A 和 C',
+      JSON.stringify(multiFilled.checked) === JSON.stringify(['A', 'C']), JSON.stringify(multiFilled));
   }
 });
 

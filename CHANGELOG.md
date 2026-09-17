@@ -100,7 +100,7 @@ AGENTS.md 里根本没有这个标题），改为指向真实章节。
   所以丢掉 alpha 转 RGB 是无损的，已逐像素比对确认（差异像素 = 0）
 - `configs` 那条改写：三份默认值本就不该一样，真正的风险已由第 12 项守卫覆盖，剩下不做
 
-测试：自检 13 项、集成 52 项、真实 Edge e2e **190 项**（19 个场景），全绿。
+测试：自检 13 项、集成 52 项、真实 Edge e2e **193 项**（19 个场景），全绿。
 
 > 已解决：三份「managed media job ended」收尾已经**统一** —— `_handleVideoEnded` 现在走
 > `_finishCurrentMedia`。它原本多清 `_activeDocumentJob*`，那三行是**过界的**
