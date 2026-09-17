@@ -1670,9 +1670,11 @@ SCENARIOS.push({
     check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
       a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
 
-    // 运行状态指示：content.js 一直读 xxtRunning 决定要不要干活，
-    // 但弹窗以前**从来不读** —— 打开后完全看不出当前是不是在跑。
-    // 这里不只查"有没有这个元素"，还要查它**跟着 xxtRunning 变**（否则就是个摆设）。
+    // 运行状态指示：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——
+    // 打开后完全看不出是不是已开启。这里不只查「有没有这个元素」，
+    // 还要查它**跟着 xxtRunning 变**（否则就是个摆设）。
+    // ⚠️ 期望值是「已开启」不是「运行中」：这个标记是持久的（驱动刷新后自动恢复），
+    // 不代表此刻正在跑。
     var runUi = await ctx.client.evaluate(
       '(function(){var d=document.getElementById("runDot"),s=document.getElementById("runState");' +
       'return {hasDot:!!d,hasState:!!s,text:s?s.textContent:null,dotOn:!!(d&&d.className.indexOf("on")!==-1)};})()'
@@ -1688,8 +1690,8 @@ SCENARIOS.push({
       'chrome.storage.local.set({xxtRunning:false},function(){res(out);});' +
       '});});});})()'
     );
-    check('xxtRunning=true 时显示「运行中」且圆点点亮',
-      runSync.text === '运行中' && runSync.dotOn === true, JSON.stringify(runSync));
+    check('xxtRunning=true 时显示「已开启」且圆点点亮',
+      runSync.text === '已开启' && runSync.dotOn === true, JSON.stringify(runSync));
 
     check('「开始运行」按钮存在', ui.hasStart === true);
 

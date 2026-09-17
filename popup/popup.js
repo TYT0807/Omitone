@@ -373,13 +373,17 @@ function updateRunState(running) {
   if (!els.runDot || !els.runState) return;
   els.runDot.classList.toggle("on", !!running);
   els.runState.classList.toggle("on", !!running);
-  els.runState.textContent = running ? "运行中" : "未运行";
+  // ⚠️ 措辞是「已开启」而不是「运行中」：xxtRunning 是个**持久标记**，
+  // 它驱动的是「页面刷新后自动恢复运行」（见 content.js 的 maybeMarkAutoResume）。
+  // 用户开启后切到别的网站，扩展并没有在跑，但这个标记仍然是 true ——
+  // 写成「运行中」就是骗人。
+  els.runState.textContent = running ? "已开启" : "未开启";
 }
 
 async function load() {
   const result = await chrome.storage.local.get("config");
-  // 运行状态：content.js 读它决定要不要干活，但弹窗以前**从来不读** ——
-  // 于是打开弹窗完全看不出当前是不是在跑。这里补上指示。
+  // 运行状态：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——
+  // 于是打开弹窗完全看不出是不是已开启。这里补上指示（语义见 updateRunState）。
   try {
     const runResult = await chrome.storage.local.get("xxtRunning");
     updateRunState(!!(runResult && runResult.xxtRunning));
