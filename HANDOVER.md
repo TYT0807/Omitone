@@ -384,16 +384,17 @@ system 70 + 消息头 14 = **84 token**，现场命中率**仍然是 0**。加�
 
 **核对「到底推上去了没」时注意三点：**
 
-1. 本仓库**没有** `origin/main` 这个本地引用，而这是**正常的 git 行为**，不是仓库配置坏了：
-   `git fetch origin main` 这种**显式给出 ref 的写法只写 `FETCH_HEAD`，不会更新 `origin/main`**
-   （命令行 refspec 会覆盖 `remote.origin.fetch` 里配的 `+refs/heads/*:refs/remotes/origin/*`）。
+1. 本仓库的 `origin/main` **时有时无**，而**这不是仓库配置问题** —— 实测 `remote.origin.fetch`
+   配着 `+refs/heads/*:refs/remotes/origin/*`，好好的。真实原因是：**这台机器的 git 通道会间歇性
+   报 `CONNECT tunnel failed, response 502`，fetch 一直失败，引用自然就建不出来**。
+   实测证据：某次 `git fetch origin main` 成功时，输出里出现了
+   `* [new branch]  main -> origin/main`，引用立刻就补上了。
    所以 `git rev-parse origin/main` 报 `unknown revision` **不代表没推上去**。
-   想真的把 `origin/main` 建出来：`git fetch origin`（不带 ref），
-   或 `git fetch origin main:refs/remotes/origin/main`。
-2. ⚠️ **不要吞掉 fetch 的错误**（`-q 2>/dev/null`），也不要把「没有 origin/main」当成仓库配置问题 ——
-   **这两条误判我本人都犯过，前后写错了两版说明**，第三版才对上机制。
-3. `git fetch` 一旦失败（这台机器上会间歇性 502），它还会**把 `FETCH_HEAD` 清掉**，
-   所以别拿 `FETCH_HEAD` 当长期引用。
+2. ⚠️ **不要吞掉 fetch 的错误**（`-q 2>/dev/null`），也不要把「没有 origin/main」当成仓库配置问题。
+3. `git fetch` 失败时还会**把 `FETCH_HEAD` 清掉**，别拿它当长期引用。
+
+> 这条说明我前后写错过**两版**（先说「仓库没有 refspec」、后说「显式 ref 不更新远端跟踪分支」），
+> 两版都是凭一次观察就下结论。**上面这一版只写实测到的现象**，不再给没验证过的机制解释。
 
 **对齐本地最稳的办法是直接用远端 sha**：`git reset --hard <sha>` ——
 fetch 成功过一次之后，那个 commit 对象就已经在本地库里了（实测可行，`git cat-file -t <sha>` 返回 `commit`）。
