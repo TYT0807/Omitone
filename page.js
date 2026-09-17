@@ -33,6 +33,11 @@
     blockedReload: true,
     enableMedia: true,
     enableSeek: true,
+    // 防拖拽 + 倍速锁 1x 的视频：老师要求的只是「观看时长 ≥ 总时长的 90%」，
+    // 拖不动、也加不了速，最后那 10% 纯粹是白等。
+    // 这类视频在**平台自己标记任务点已完成**之后立刻进下一个（判据见 _isNinetyPercentVideo）。
+    // 关键安全阀：只认平台给出的完成标记，不靠"播够 90% 就自己认定完成"。
+    advanceAtNinetyPercent: true,
     enablePPT: true,
     enableHyperlink: true,
     restudy: false,
@@ -1733,10 +1738,14 @@
       if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
       if (this._captchaActive) return false;
       if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);
+      if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
       if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次
-      if (Object.keys(this._seekTriedKeys).length > 300) this._seekTriedKeys = Object.create(null);
+      if (Object.keys(this._seekTriedKeys).length > 300) {
+        this._seekTriedKeys = Object.create(null);
+        this._seekRevertedKeys = Object.create(null);
+      }
 
       var duration = Number(video.duration);
       if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
@@ -1760,13 +1769,19 @@
       console.log('%c[Omitone] seekable video, seek to end: ' + current.toFixed(1) + 's -> ' + target.toFixed(1) + 's / ' + duration.toFixed(1) + 's', 'color:#4CAF50');
 
       // 1.5 秒后验证进度是否被网站弹回（仅记录日志，不再重试）
+      //
+      // 这个结论会被「防拖拽 + 锁 1 倍速 → 看到 90% 就够」的逻辑复用：
+      // **被弹回 = 这个视频不可拖拽**（见 _isNinetyPercentVideo）。
+      var self = this;
       this._workerDelay(function () {
         try {
           if (!video.isConnected) return;
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
+            self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
           } else {
+            self._seekRevertedKeys[key] = true;  // 被弹回 → 不可拖拽
             console.log('[Omitone] seek reverted by site player, continue normal playback');
             emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
           }
@@ -4666,32 +4681,106 @@
           }
         }
 
+        // 防拖拽 + 倍速锁 1x 的视频：平台只要求 ≥90%，平台标记完成后就别再白等最后 10%
+        if (!video.ended && this._isPlaying && this._shouldAdvanceAtNinetyPercent(video)) {
+          this._finishCurrentMedia('ninety-percent');
+          return;
+        }
+
         if (video.ended && this._isPlaying) {
-          this._clearCheckInterval();
-          if (this._activeMediaJobManaged) {
-            this._isPlaying = false;
-            this._activeMediaJobPending = false;
-            this._activeMediaJobManaged = false;
-            this._videoEl = null;
-            this._videoCount = 0;
-            this._currentVideoIndex = 0;
-            this._mediaWaitLogAt = 0;
-            emitRuntimeLog('info', 'managed media job ended', { reason: 'guard', jobid: this._activeJobId || '' });
-            return;
-          }
-          if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
-            this._currentVideoIndex++;
-            this._videoEl = null;
-            this._activeMediaJobPending = true;
-            this._mediaWaitLogAt = 0;
-            return;
-          }
-          this._isPlaying = false;
-          this._activeMediaJobPending = false;
-          this._mediaWaitLogAt = 0;
-          this.nextUnit();
+          this._finishCurrentMedia('guard');
         }
       } catch (e) {}
+    },
+
+    /**
+     * 当前视频"播完了"的统一收尾。
+     *
+     * 两条路径共用：正常的 `ended`，以及「防拖拽 + 锁 1 倍速」的视频到 90% 且平台已标记完成。
+     * 抽出来是为了不让两条路各写一份 —— 收尾漏掉一个字段（比如 `_activeMediaJobManaged`）
+     * 会让状态机卡住，而症状是"这个任务点过了但下一个不动"，很难查。
+     */
+    _finishCurrentMedia: function (reason) {
+      this._clearCheckInterval();
+      if (this._activeMediaJobManaged) {
+        this._isPlaying = false;
+        this._activeMediaJobPending = false;
+        this._activeMediaJobManaged = false;
+        this._videoEl = null;
+        this._videoCount = 0;
+        this._currentVideoIndex = 0;
+        this._mediaWaitLogAt = 0;
+        emitRuntimeLog('info', 'managed media job ended', { reason: reason || 'guard', jobid: this._activeJobId || '' });
+        return;
+      }
+      if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
+        this._currentVideoIndex++;
+        this._videoEl = null;
+        this._activeMediaJobPending = true;
+        this._mediaWaitLogAt = 0;
+        return;
+      }
+      this._isPlaying = false;
+      this._activeMediaJobPending = false;
+      this._mediaWaitLogAt = 0;
+      this.nextUnit();
+    },
+
+    // 倍速是否被平台锁在 1 倍速。探测没结果（0）时一律当作"没锁定" ——
+    // 宁可多播一会儿，也不要在没确认的情况下提前结束。
+    _isRateLockedAtOne: function () {
+      var rate = Number(this._detectedMaxRate);
+      return isFinite(rate) && rate > 0 && rate <= 1.001;
+    },
+
+    /**
+     * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
+     *
+     * 判据是两个"平台不让我们加速"的信号**同时**成立：
+     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
+     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
+     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
+     */
+    _isNinetyPercentVideo: function (video) {
+      if (!video) return false;
+      if (String(video.tagName || '').toLowerCase() !== 'video') return false; // 音频不适用
+      if (!this._isRateLockedAtOne()) return false;
+      var key = this._getMediaSeekKey(video);
+      if (!key) return false;
+      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
+    },
+
+    /**
+     * 该不该在播到 90% 时提前收尾。
+     *
+     * 最关键的一条：**必须由平台自己给出"任务点已完成"的标记**。
+     * 只按"播够 90% 就当作完成"会误跳过任务点，比多花十分钟严重得多 ——
+     * 这与本仓库对"拿不准"的一贯取舍一致（见 `_isJobCompleted` 的说明）。
+     */
+    _shouldAdvanceAtNinetyPercent: function (video) {
+      try {
+        if (this.configs.advanceAtNinetyPercent === false) return false;
+        if (!this._isNinetyPercentVideo(video)) return false;
+
+        var duration = Number(video.duration);
+        if (!isFinite(duration) || duration <= 0) return false;
+        var ratio = Number(video.currentTime || 0) / duration;
+        if (!(ratio >= 0.9)) return false;  // 还没到 90%
+        if (ratio >= 0.995) return false;   // 已到结尾，交给 ended 那条路，避免两条路抢
+
+        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false; // 平台没确认完成就不动
+
+        emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
+          ratio: Number(ratio.toFixed(3)),
+          duration: Number(duration.toFixed(1)),
+          jobid: this._activeJobId || ''
+        });
+        console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
+          '%，平台已标记完成，直接进下一个', 'color:#4CAF50');
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
 
     _tryResumePlayback: function (reason) {
