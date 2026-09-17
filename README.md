@@ -443,7 +443,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（约 7600 行 / 290 个方法）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（8000+ 行 / 300 多个方法）：
 
 | 你要做的事 | 直接跳到 |
 | --- | --- |
@@ -989,7 +989,7 @@ DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求**请�
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 8400 行 / 300 个方法）
+page.js                 页面上下文运行时（主体，约 8600 行 / 300 多个方法）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
@@ -1003,7 +1003,7 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么"软件这么大"——体积账本
 
-扩展**解压后约 751 KB**，`dist/*.zip` 约 322 KB。构成如下（`node tools/build.js` 会把
+扩展**解压后约 773 KB**，`dist/*.zip` 约 327 KB。构成如下（`node tools/build.js` 会把
 `resources/table.json` 排除掉，改由 122KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
