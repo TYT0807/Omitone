@@ -1379,6 +1379,30 @@ SCENARIOS.push({
     await sleep(1500);
     check('已答过的弹窗不再重复问模型',
       ctx.mock.requests.length === after, '又发了 ' + (ctx.mock.requests.length - after) + ' 次');
+
+    // ---- 答错重试必须告诉模型「上次那个是错的」 ----
+    // 不带禁选列表的话，每轮重试都是**一模一样的请求**，模型自然每轮都回同一个答案 ——
+    // 真实表现就是「答错之后一直选 D」，重试等于白问。
+    // 这里模拟「填了、但弹窗没被平台收走」，再问一次，看提示词里有没有禁选段。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizBlockedUntil=0;app._popupQuizAttempts=1;' +
+      'return true;})()'
+    );
+    var beforeRetry = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var n=app._checkPopupQuiz()||window.__pqNode;' +
+      'return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    var retryPrompt = ctx.mock.requests.length > beforeRetry
+      ? ctx.mock.requests[ctx.mock.requests.length - 1].prompt : '';
+    check('答错重试时提示词带上禁选项（否则模型每轮都回同一个答案）',
+      /禁:1=/.test(retryPrompt),
+      '重试请求数 +' + (ctx.mock.requests.length - beforeRetry) + ' · 提示词尾部: ' + retryPrompt.slice(-100));
   }
 });
 
