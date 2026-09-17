@@ -20,11 +20,34 @@
  *      page.js 的 `_fillAnswers` 在 type 缺失时回退 `question.type`（DOM 实测结果，
  *      比模型自报更可靠），所以 type 是冗余字段。
  *
- * v2（本次）
+ * v2
  *   4) **输出改成纯位置式数组**：`["A",["A","C"],true,"x|||y"]`，连 `i`/`a` 键名都省掉。
  *      答案与题目按位置一一对应 —— 这本来就是 content.js 在 index 缺失时的兜底行为，
  *      现在把它提升为唯一协议。每题输出约 11 token → 约 5 token，
  *      示例本身也短了一半。
+ *
+ * v3（本次）—— 为**前缀缓存命中**重排结构
+ *
+ *   ⚠️ 背景（踩过的坑，别再犯）：把提示词压到极短**会反向增加开销**。
+ *   DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求请求前缀**完整匹配**
+ *   某个已持久化的「缓存前缀单元」；单元来源之一是**跨请求被识别出的公共前缀**
+ *   （官方 Example 2：同一 system + 变动 user，要等到第二次请求之后才把这个
+ *   公共前缀持久化成单元，第三次才命中）。
+ *
+ *   v2 时代我们只有 3 行 system（约 50 token）是稳定的，且 user 的第一行就是
+ *   随时在变的题目 —— 公共前缀既短又不干净，**永远持久化不了，命中率恒为 0**。
+ *   省下的那点提示词，换来的是全部输入按未命中价计费。
+ *
+ *   所以 v3 把 user 消息固定成三段，**稳定在前、易变在后**：
+ *
+ *     [稳定头]   FORMAT_HINT —— 所有请求逐字节相同
+ *     [题目块]   题号|题型|题干 + 选项 —— 同一批题内逐字节相同
+ *     [易变尾]   禁:…… —— 只有这里随"上次答错了什么"变化
+ *
+ *   于是同一批题被重复提问时（交卷判错后的重试最多 20 次），第 2 次起的请求
+ *   前缀**完整覆盖**第 1 次的整个输入 → 直接命中，命中部分按约 1/10 价计费。
+ *   这也意味着**重试时不要把题目从中间删掉**（删了前缀就从删除处断掉）——
+ *   page.js 因此改为整批重发，见那里的注释。
  *
  * 兼容性：`normalizeItem` 同时接受三种形态，任何一种都能被正确解析：
  *   - 位置式：`"A"` / `["A","C"]` / `true` / `"填空甲|||填空乙"`
@@ -81,7 +104,7 @@
   var SYSTEM = [
     '答题。只输出JSON数组,长度=题目数,顺序一致,不解释不思考。',
     's"A" m["A","C"] j true|false f/t"文本"(多空用|||按序连)',
-    '"禁:"=已错答案,禁重复;不确定也给最可能答案。'
+    '"禁:"后的题号是已错答案,禁重复;不确定也给最可能答案。'
   ].join('\n');
 
   /**
@@ -111,15 +134,18 @@
   }
 
   /**
-   * 把题目数组渲染成紧凑文本块。
+   * 把题目数组渲染成紧凑文本块 —— **只有稳定内容**。
    * 每题形如：
    *   1|s|题干文本
    *   A.选项一
    *   B.选项二
-   *   禁:A,C
    *
    * 题号从 1 开始（人类可读），但模型返回的 index 从 0 开始 —— 这两者不一致是
    * 有意的：题号只是阅读锚点，index 由 FORMAT_HINT 明确指定为 0 基。
+   *
+   * ⚠️ 这里**不允许**出现任何随"上次答错了什么"变化的内容（历史上的 `禁:` 就是）。
+   * 前缀缓存要求这段文本逐字节相同，插入一个会变的字符就会让命中从那里断掉。
+   * 变动的内容一律交给 buildBannedText 放到消息末尾。
    */
   function buildQuestionsText(questions) {
     return (questions || []).map(function (q, i) {
@@ -135,21 +161,45 @@
         }).join('\n');
       }
 
-      var banned = (question.previousWrongAnswers || []).filter(function (item) {
-        return item !== null && item !== undefined && String(item).trim() !== '';
-      });
-      if (banned.length) {
-        text += '\n' + BANNED_PREFIX + banned.join(',');
-      }
-
       return text;
     }).join('\n\n');
   }
 
-  /** 完整 user 消息：题目块 + 一行输出格式示例。 */
+  /**
+   * 易变尾：历史错误答案，形如
+   *   `禁:题号=答案[,答案];题号=答案`
+   *
+   * 放在消息**最末**是为了让前面 [稳定头 + 题目块] 保持逐字节不变 ——
+   * 同一批题重试时，第 2 次请求的前缀就能完整覆盖第 1 次的全部输入，从而命中缓存。
+   * 之前把 `禁:` 插在每道题中间，前缀会从第一处错误标注就断掉，等于完全命中不了。
+   */
+  function buildBannedText(questions) {
+    var lines = [];
+    (questions || []).forEach(function (q, i) {
+      var question = q || {};
+      var banned = (question.previousWrongAnswers || []).filter(function (item) {
+        return item !== null && item !== undefined && String(item).trim() !== '';
+      });
+      if (!banned.length) return;
+      lines.push((i + 1) + '=' + banned.map(function (item) { return String(item).trim(); }).join(','));
+    });
+    return lines.length ? BANNED_PREFIX + lines.join(';') : '';
+  }
+
+  /**
+   * 完整 user 消息：**稳定头 → 题目块 → 易变尾**。
+   *
+   * 顺序是这个函数唯一重要的事（见文件头 v3 说明）：
+   *   - 稳定头 FORMAT_HINT 放最前，于是所有请求共享一个干净的公共前缀，
+   *     足以被识别成「缓存前缀单元」；
+   *   - 题目块紧随其后，同一批题内不变；
+   *   - `禁:` 这种每次都变的东西压在最后，不污染前缀。
+   * 空段自动省略，不留下多余空行（空行同样会影响前缀一致性）。
+   */
   function buildUserPrompt(questions) {
-    var body = buildQuestionsText(questions);
-    return body ? body + '\n\n' + FORMAT_HINT : FORMAT_HINT;
+    return [FORMAT_HINT, buildQuestionsText(questions), buildBannedText(questions)]
+      .filter(function (part) { return part; })
+      .join('\n\n');
   }
 
   /** 生效的 system 提示词：用户自定义优先，为空时用内置压缩版。 */
@@ -208,6 +258,7 @@
     typeCode: typeCode,
     typeFromCode: typeFromCode,
     buildQuestionsText: buildQuestionsText,
+    buildBannedText: buildBannedText,
     buildUserPrompt: buildUserPrompt,
     buildSystemPrompt: buildSystemPrompt,
     normalizeItem: normalizeItem

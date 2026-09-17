@@ -141,6 +141,9 @@
   // 这类诡异现象就有了土壤。这里只做转发，调用点保持不变。
   const API_URL = (typeof self !== 'undefined' && self.OmitoneApiUrl) || null;
 
+  // 字形哈希表的编解码唯一真源是 libs/font-table.js（同样排在 content.js 之前注入）
+  const FONT_TABLE = (typeof self !== 'undefined' && self.OmitoneFontTable) || null;
+
   function normalizeApiKey(apiKey) {
     return API_URL.normalizeApiKey(apiKey);
   }
@@ -289,6 +292,37 @@
     chrome.storage.local.set({ config: next });
   }
 
+  /**
+   * 记录前缀缓存命中情况。
+   *
+   * DeepSeek 在 usage 里给 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+   * （命中部分按约 1/10 价计费）。命中率是"省 token 改动"是否真的有效的唯一证据：
+   * 只看输入总长度会得出完全相反的结论 —— 我们曾经把提示词压到极短，
+   * 输入是短了，但公共前缀短到无法被识别成缓存单元，于是每一分输入都按原价计费。
+   *
+   * 命中为 0 时给一条 warn，因为那说明请求前缀被什么东西打脏了
+   * （提示词里混进了每次都变的内容，或重试时题目被从中间删掉）。
+   */
+  function logCacheUsage(usage) {
+    if (!usage || typeof usage !== 'object') return;
+    const hit = Number(usage.prompt_cache_hit_tokens);
+    const miss = Number(usage.prompt_cache_miss_tokens);
+    if (!isFinite(hit) && !isFinite(miss)) return; // 非 DeepSeek 服务不报这两个字段
+    const hitTokens = isFinite(hit) ? hit : 0;
+    const missTokens = isFinite(miss) ? miss : 0;
+    const total = hitTokens + missTokens;
+    const meta = {
+      hit: hitTokens,
+      miss: missTokens,
+      hitRate: total ? Math.round(hitTokens / total * 100) + '%' : 'n/a'
+    };
+    if (total && hitTokens === 0) {
+      appendRuntimeLog('warn', 'llm prefix cache all missed', meta);
+    } else {
+      appendRuntimeLog('info', 'llm prefix cache', meta);
+    }
+  }
+
   async function callOpenAICompatibleAPI(config, questions) {
     const url = buildOpenAICompatibleUrl(config.apiUrl);
     const messages = [
@@ -321,8 +355,13 @@
       }, 120000);
 
       if (response.success) {
-        const content = (((response.data || {}).choices || [])[0] || {}).message || {};
-        return parseLLMResponse(content.content || '');
+        const choice = (((response.data || {}).choices || [])[0] || {}).message || {};
+        // 把前缀缓存的命中情况记进日志。
+        // 不记的话，"省 token 的改动是不是把缓存打没了"只能靠猜 ——
+        // 我们真的这样翻过车：提示词压得太短，公共前缀无法被识别成缓存单元，
+        // 命中率长期恒为 0，而界面上看不出任何异常。
+        logCacheUsage((response.data || {}).usage);
+        return parseLLMResponse(choice.content || '');
       }
 
       const errText = String(response.text || response.error || '').slice(0, 300);
@@ -714,7 +753,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.1.0</span>',
+      '    <span class="brand">Omitone 1.1.1</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
@@ -916,15 +955,42 @@
   }
 
   function getDecryptTable() {
-    if (!decryptTablePromise) {
-      decryptTablePromise = fetch(chrome.runtime.getURL('resources/table.json'))
-        .then((resp) => resp.json())
-        .catch((err) => {
-          console.error('[Omitone] failed to load table.json', err);
-          return null;
-        });
-    }
+    if (!decryptTablePromise) decryptTablePromise = loadDecryptTable();
     return decryptTablePromise;
+  }
+
+  /**
+   * 加载字形映射表。
+   *
+   * 优先紧凑二进制 `resources/table.bin`（122KB，不需要解析 JSON，内存占用也小一个量级）；
+   * 退化到明文 `resources/table.json`（347KB）—— 源码目录在没跑过 `npm run build` 时
+   * 没有 .bin，这条退路保证"直接加载仓库根目录"仍然能用，只是慢一些、占得多一些。
+   */
+  async function loadDecryptTable() {
+    if (!FONT_TABLE) {
+      console.error('[Omitone] libs/font-table.js 未加载');
+      return null;
+    }
+    try {
+      const resp = await fetch(chrome.runtime.getURL('resources/table.bin'));
+      if (resp.ok) {
+        const table = FONT_TABLE.decode(await resp.arrayBuffer());
+        if (table) return table;
+        console.warn('[Omitone] table.bin 格式非法，回退到 table.json');
+      }
+    } catch (e) {}
+
+    try {
+      const resp = await fetch(chrome.runtime.getURL('resources/table.json'));
+      if (!resp.ok) return null;
+      const table = FONT_TABLE.fromObject(await resp.json());
+      if (!table) return null;
+      console.warn('[Omitone] 正在使用明文 table.json（347KB）—— 跑一次 npm run build 可生成 122KB 的 table.bin');
+      return table;
+    } catch (e2) {
+      console.error('[Omitone] failed to load decrypt table', e2);
+      return null;
+    }
   }
 
   function decodeBase64ToUint8Array(base64) {
@@ -995,8 +1061,8 @@
         if (!glyph) return;
         const path = Typr.U.glyphToPath(font, glyph);
         const hash = md5(JSON.stringify(path)).slice(24);
-        const codePoint = table[hash];
-        if (codePoint) map.set(char, String.fromCharCode(codePoint));
+        const decoded = table.get(hash);
+        if (decoded) map.set(char, decoded);
       } catch (e) {}
     });
 

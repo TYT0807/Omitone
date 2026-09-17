@@ -349,6 +349,75 @@ function main() {
   console.log('  baseline ' + perQuestionBase.toFixed(1) + ' tokens/题  → current ' + perQuestionCurr.toFixed(1) + ' tokens/题');
   console.log('');
 
+  // ---------------------------------------------------------------------------
+  // 前缀缓存可命中性（v3 新增，也是本轮最重要的一条）
+  //
+  // 只看"输入有多短"会得出**完全相反**的结论：提示词压得越短，
+  // 跨请求的公共前缀就越短，短到无法被识别成「缓存前缀单元」时，
+  // 全部输入都按未命中价计费 —— 输入短了，账单反而涨了。
+  //
+  // DeepSeek 的命中规则（官方 Context Caching 文档）：
+  //   - 缓存单元来源之一是"跨请求被识别出的公共前缀"
+  //   - 命中要求请求前缀**完整匹配**某个已持久化的单元
+  //   - 因此"同一批题重试"这种场景，第 2 次请求必须是第 1 次的**前缀超集**
+  //     （官方 Example 1：A+B → A+B+C 命中 A+B）
+  //
+  // 所以这里量两件事：
+  //   1) 稳定前缀有多长（system + 消息头）—— 它决定所有请求共享的那截能否被缓存
+  //   2) 同批重试时前缀能重合多少 —— 它决定重试（最多 20 次交卷）是不是白花钱
+  // ---------------------------------------------------------------------------
+  function commonPrefixLength(a, b) {
+    var n = Math.min(a.length, b.length);
+    var i = 0;
+    while (i < n && a.charAt(i) === b.charAt(i)) i++;
+    return i;
+  }
+
+  /** 命中部分按 1/10 价计费时的"等价输入量"，用于和全未命中对比 */
+  function equivalentCost(hit, miss) {
+    return hit * 0.1 + miss;
+  }
+
+  console.log('== 前缀缓存可命中性 ==');
+  var benchBatch = EXAM.slice(0, CHUNK_SIZE);
+  var systemTokens = countTokens(currentRequest(benchBatch).system);
+  var userHeadTokens = countTokens(prompt.FORMAT_HINT);
+  var stablePrefix = systemTokens + userHeadTokens;
+  console.log('  稳定前缀（system ' + systemTokens + ' + 消息头 ' + userHeadTokens + '）= ' + stablePrefix + ' tokens');
+  console.log('    -> 这一段对所有请求逐字节相同，是"跨请求公共前缀"能否被识别成缓存单元的关键');
+  if (stablePrefix < 64) {
+    console.log('    ⚠️ 低于 64 token：历史上 1.0.11 的稳定前缀只有约 50 token，' +
+      '缓存命中率恒为 0，全部输入按原价计费');
+  }
+
+  // 同批重试：第 1 次不带错误标注，第 2 次多出一条 `禁:`（放在末尾，不污染前缀）
+  var retryBatch = benchBatch.map(function (q, i) {
+    if (i !== 0) return q;
+    return Object.assign({}, q, { previousWrongAnswers: ['A', 'C'] });
+  });
+  var reqFirst = currentRequest(benchBatch);
+  var reqRetry = currentRequest(retryBatch);
+
+  var firstInput = reqFirst.system + reqFirst.user;
+  var retryInput = reqRetry.system + reqRetry.user;
+  var overlapChars = commonPrefixLength(firstInput, retryInput);
+  // 命中的 token 就是"重试输入里与首次输入完全一致的那段前缀"
+  var hitTokens = countTokens(retryInput.slice(0, overlapChars));
+  var retryTotal = countTokens(retryInput);
+  var missTokens = retryTotal - hitTokens;
+  var retryHitRate = retryTotal ? Math.round(hitTokens / retryTotal * 100) : 0;
+
+  console.log('  同批重试（第 2 次提问）');
+  console.log('    输入 ' + retryTotal + ' tokens，前缀完整重合 ' + hitTokens + ' tokens（命中率 ' + retryHitRate + '%）');
+  console.log('    等价费用（命中按 1/10 价）= ' + equivalentCost(hitTokens, missTokens).toFixed(1) +
+    '，全未命中 = ' + retryTotal +
+    '  → 省 ' + saved(equivalentCost(hitTokens, missTokens), retryTotal));
+  if (retryHitRate === 0) {
+    console.log('    ⚠️ 命中率为 0：说明有"每次都变"的内容跑到了前缀里，' +
+      '或者重试时题目被从中间删掉了（前缀会从删除处断掉）');
+  }
+  console.log('');
+
   // 断言：压缩不能把信息压掉 —— 题干与选项必须原样出现在新提示词里
   var currentUser = currentRequest(first).user;
   var missing = [];

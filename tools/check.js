@@ -15,6 +15,7 @@
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
+var spawnSync = require('child_process').spawnSync;
 
 var ROOT = path.join(__dirname, '..');
 
@@ -212,6 +213,9 @@ function checkSingleSources(manifest) {
   if (content.indexOf('OmitonePrompt') !== -1 && injected.indexOf('libs/prompt.js') === -1) {
     problems.push('manifest.content_scripts 未注入 libs/prompt.js，但 content.js 依赖它');
   }
+  if (content.indexOf('OmitoneFontTable') !== -1 && injected.indexOf('libs/font-table.js') === -1) {
+    problems.push('manifest.content_scripts 未注入 libs/font-table.js，但 content.js 依赖它');
+  }
 
   // 提示词
   [['buildQuestionsText', '提示词应只在 libs/prompt.js'],
@@ -245,6 +249,35 @@ function checkSingleSources(manifest) {
 
   if (problems.length) fail('唯一真源检查未通过:\n      ' + problems.join('\n      '));
   else pass('唯一真源检查通过（libs/prompt.js + libs/api-url.js）');
+}
+
+// ---------------------------------------------------------------------------
+// 5b. 字形映射表：resources/table.bin 必须与 table.json 完全一致
+//
+// table.json 是**唯一真源**（可读、可维护，347KB），table.bin 是给运行时用的
+// 紧凑二进制（122KB，占扩展体积的大头）。改了一个忘了重新打包，症状是
+// "部分题干继续显示乱码"——不报错、不影响启动，非常难查。
+// 所以这里逐条比对，而不是只比文件大小。
+// ---------------------------------------------------------------------------
+function checkFontTable() {
+  // 注意 exists() 会再拼一次 ROOT，这里用相对路径传参
+  var binRel = 'resources/table.bin';
+  var jsonRel = 'resources/table.json';
+  if (!exists(jsonRel)) { fail('resources/table.json 缺失（字形映射表的唯一真源）'); return; }
+  if (!exists(binRel)) {
+    fail('resources/table.bin 缺失 —— 跑 `node tools/table-pack.js --pack` 生成');
+    return;
+  }
+  var result = spawnSync(process.execPath, [path.join(__dirname, 'table-pack.js'), '--verify'],
+    { encoding: 'utf8' });
+  if (result.status !== 0) {
+    fail('字形映射表 bin/json 不同步:\n      ' +
+      String(result.stderr || result.stdout || '').trim().split('\n').join('\n      '));
+    return;
+  }
+  var jsonSize = Math.round(fs.statSync(path.join(ROOT, jsonRel)).size / 1024);
+  var binSize = Math.round(fs.statSync(path.join(ROOT, binRel)).size / 1024);
+  pass('字形映射表同步（json ' + jsonSize + 'KB → bin ' + binSize + 'KB）');
 }
 
 // ---------------------------------------------------------------------------
@@ -477,6 +510,7 @@ var manifest = checkManifest();
 checkManifestFiles(manifest);
 checkVersionConsistency(manifest);
 checkSingleSources(manifest);
+checkFontTable();
 checkEncodingDamage(jsFiles);
 checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);
