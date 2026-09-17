@@ -1403,6 +1403,48 @@ SCENARIOS.push({
     check('答错重试时提示词带上禁选项（否则模型每轮都回同一个答案）',
       /禁:1=/.test(retryPrompt),
       '重试请求数 +' + (ctx.mock.requests.length - beforeRetry) + ' · 提示词尾部: ' + retryPrompt.slice(-100));
+
+    // ---- 四个选项的弹题 ----
+    // 现场报过「四个选项的题一直选 D，三个选项的正常」，而现有 mock 只有 3 个选项 ——
+    // 这个盲区正好盖住那个问题。这里往同一个弹窗补第 4 个选项，验证选项数不影响匹配：
+    // 选项必须按 A/B/C/D **完整且不错位**地出现在提示词里，否则模型给的字母就会对到错的选项。
+    await ctx.client.evaluate(
+      '(function(){var ul=document.querySelector(".ans-pop-quiz .pop-quiz-options");' +
+      'var li=document.createElement("li");li.className="pop-quiz-option";' +
+      'li.innerHTML=\'<input type="radio" name="pq" value="D"><span>D. 说法丁</span>\';' +
+      'ul.appendChild(li);' +
+      'var ins=document.querySelectorAll(".ans-pop-quiz input[type=radio]");' +
+      'for(var i=0;i<ins.length;i++){ins[i].checked=false;}' +
+      'return ul.children.length;})()'
+    );
+    await sleep(300);
+
+    var beforeFour = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupQuizAttempts=0;app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";' +
+      'var n=app._checkPopupQuiz();return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    var fourPrompt = ctx.mock.requests.length > beforeFour
+      ? ctx.mock.requests[ctx.mock.requests.length - 1].prompt : '';
+    var iA = fourPrompt.indexOf('\nA.');
+    var iB = fourPrompt.indexOf('\nB.');
+    var iC = fourPrompt.indexOf('\nC.');
+    var iD = fourPrompt.indexOf('\nD.');
+    check('四选项弹题：提示词按 A/B/C/D 完整且按序列出（错位会选错选项）',
+      iA !== -1 && iB > iA && iC > iB && iD > iC,
+      'A=' + iA + ' B=' + iB + ' C=' + iC + ' D=' + iD);
+
+    var fourFilled = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input[type=radio]");' +
+      'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
+      'return {checked:checked, count:ins.length};})()'
+    );
+    check('四选项弹题：模型答 A → 选中的就是 A（不是最后一个 D）',
+      JSON.stringify(fourFilled.checked) === JSON.stringify(['A']), JSON.stringify(fourFilled));
   }
 });
 
