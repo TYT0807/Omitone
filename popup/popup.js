@@ -3,6 +3,10 @@ const DEFAULTS = {
   autoMaxPlaybackRate: true,
   playbackRateCap: 4,
   taskGiveUpAttempts: 4,
+  enableMedia: true,
+  enablePPT: true,
+  enableHyperlink: true,
+  blockedReload: true,
   enableSeek: true,
   advanceAtNinetyPercent: true,
   muted: false,
@@ -12,6 +16,7 @@ const DEFAULTS = {
   enableCaptcha: true,
   enableDiscussion: true,
   discussionReply: "1",
+  systemPrompt: "",
   restudy: false,
   providerPreset: "deepseek",
   apiType: "openai",
@@ -49,6 +54,10 @@ const els = {
   rate: $("rate"),
   rateVal: $("rateVal"),
   autoMaxRate: $("autoMaxRate"),
+  enableMedia: $("enableMedia"),
+  enablePPT: $("enablePPT"),
+  enableHyperlink: $("enableHyperlink"),
+  blockedReload: $("blockedReload"),
   enableSeek: $("enableSeek"),
   advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
   muted: $("muted"),
@@ -58,6 +67,7 @@ const els = {
   enableCaptcha: $("enableCaptcha"),
   enableDiscussion: $("enableDiscussion"),
   discussionReply: $("discussionReply"),
+  systemPrompt: $("systemPrompt"),
   restudy: $("restudy"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
@@ -82,6 +92,10 @@ let config = { ...DEFAULTS };
 let mutedVal = false;
 let audioMutedVal = true;
 let autoMaxRateVal = true;
+let enableMediaVal = true;
+let enablePPTVal = true;
+let enableHyperlinkVal = true;
+let blockedReloadVal = true;
 let enableSeekVal = true;
 let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
@@ -297,6 +311,10 @@ async function saveToggleConfig(showToast = true) {
     ...current,
     playbackRate: parseFloat(els.rate.value),
     autoMaxPlaybackRate: autoMaxRateVal,
+    enableMedia: enableMediaVal,
+    enablePPT: enablePPTVal,
+    enableHyperlink: enableHyperlinkVal,
+    blockedReload: blockedReloadVal,
     enableSeek: enableSeekVal,
     advanceAtNinetyPercent: advanceAtNinetyPercentVal,
     muted: mutedVal,
@@ -306,6 +324,7 @@ async function saveToggleConfig(showToast = true) {
     enableCaptcha: enableCaptchaVal,
     enableDiscussion: enableDiscussionVal,
     discussionReply: els.discussionReply.value.trim() || "1",
+    systemPrompt: els.systemPrompt.value.trim(),
     restudy: restudyVal
   });
   await chrome.storage.local.set({ config: merged });
@@ -360,6 +379,10 @@ function bindToggle(el, getter, setter) {
 const updateMuted = bindToggle(els.muted, () => mutedVal, (value) => { mutedVal = value; });
 const updateAudioMuted = bindToggle(els.audioMuted, () => audioMutedVal, (value) => { audioMutedVal = value; });
 const updateAutoMaxRate = bindToggle(els.autoMaxRate, () => autoMaxRateVal, (value) => { autoMaxRateVal = value; });
+const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) => { enableMediaVal = value; });
+const updatePpt = bindToggle(els.enablePPT, () => enablePPTVal, (value) => { enablePPTVal = value; });
+const updateHyperlink = bindToggle(els.enableHyperlink, () => enableHyperlinkVal, (value) => { enableHyperlinkVal = value; });
+const updateBlockedReload = bindToggle(els.blockedReload, () => blockedReloadVal, (value) => { blockedReloadVal = value; });
 const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; });
 const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
@@ -397,6 +420,10 @@ async function load() {
   mutedVal = !!config.muted;
   audioMutedVal = config.audioMuted !== false;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
+  enableMediaVal = config.enableMedia !== false;
+  enablePPTVal = config.enablePPT !== false;
+  enableHyperlinkVal = config.enableHyperlink !== false;
+  blockedReloadVal = config.blockedReload !== false;
   enableSeekVal = config.enableSeek !== false;
   advanceAtNinetyPercentVal = config.advanceAtNinetyPercent !== false;
   autoNextVal = config.autoNext !== false;
@@ -407,6 +434,10 @@ async function load() {
   updateMuted(mutedVal);
   updateAudioMuted(audioMutedVal);
   updateAutoMaxRate(autoMaxRateVal);
+  updateMedia(enableMediaVal);
+  updatePpt(enablePPTVal);
+  updateHyperlink(enableHyperlinkVal);
+  updateBlockedReload(blockedReloadVal);
   updateSeek(enableSeekVal);
   updateNinety(advanceAtNinetyPercentVal);
   updateAutoNext(autoNextVal);
@@ -430,6 +461,7 @@ async function load() {
   els.model.value = config.model || "";
   els.captchaModel.value = config.captchaModel || "";
   els.discussionReply.value = config.discussionReply || "1";
+  els.systemPrompt.value = config.systemPrompt || "";
   if (!config.apiUrl || !config.model) {
     applyProviderPreset(els.providerPreset.value);
   }
@@ -558,6 +590,9 @@ async function refreshLogs() {
   }
 }
 
+els.systemPrompt.addEventListener("change", () => {
+  saveToggleConfig();
+});
 els.discussionReply.addEventListener("change", () => {
   saveToggleConfig();
 });
