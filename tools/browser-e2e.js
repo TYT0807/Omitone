@@ -1842,13 +1842,23 @@ SCENARIOS.push({
     check('对不可拖拽视频仍会尝试 seek 一次', seek.ok === true, JSON.stringify(seek));
     check('拖拽被弹回（进度未被改动）', seek.ct === 0, JSON.stringify(seek));
 
-    await new Promise(function (r) { setTimeout(r, 1700); }); // 等 _trySeekToEnd 的 1.5s 回弹判定
-
-    var reverted = await ctx.client.evaluate(
-      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
-      'var k=app._getMediaSeekKey(v);' +
-      'return {flag:!!(app._seekRevertedKeys && app._seekRevertedKeys[k])};})()'
-    );
+    // 等 _trySeekToEnd 的 1.5s 回弹判定落地。
+    //
+    // ⚠️ 必须**轮询**，不能用固定 sleep：那个 1.5s 走的是 `_workerDelay`，
+    // 而它优先投给后台 Web Worker（postMessage → 定时器 → 再回一条消息），
+    // 首次启动 + 消息往返 + 后台标签页的定时器节流，都让实际耗时明显超过 1500ms。
+    // 实测固定等 1700ms 会偶发失败（同一个提交跑三次失败一次）——
+    // 一条偶发失败的断言比没有断言更糟：它会训练人忽略红色。
+    var reverted = { flag: false };
+    for (var wait = 0; wait < 30; wait++) {
+      reverted = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+        'var k=app._getMediaSeekKey(v);' +
+        'return {flag:!!(app._seekRevertedKeys && app._seekRevertedKeys[k])};})()'
+      );
+      if (reverted.flag) break;
+      await new Promise(function (r) { setTimeout(r, 200); });
+    }
     check('回弹判定被记下来（= 不可拖拽）', reverted.flag === true, JSON.stringify(reverted));
 
     // ---- 四个条件缺一不可
