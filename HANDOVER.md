@@ -403,7 +403,30 @@ system 70 + 消息头 14 = **84 token**，现场命中率**仍然是 0**。加�
 **唯一可靠的判据是 REST API**：`GET /repos/<owner>/<repo>/git/ref/heads/main`，
 与本地 `git rev-parse HEAD` 对比。实测 git 通道 502 的同时，API 一直是 200。
 
-### 7.7 令牌要等整件事做完再删
+### 7.7 `npm run release -- push` 报「失败」**不等于没推上去**
+
+`push` 子命令最后一步是 `git fetch origin main` + `git reset --hard`（把本地对齐到远端）。
+这一步走的是 **git 协议通道**，会间歇性 502；而**提交本身走 REST API**（一直可用）。
+所以会出现这种极易误判的输出：
+
+```
+  提交 → b069a08   ← 已经推到 GitHub 了
+  main → b069a08
+对齐本地（不要 push，代价见 AGENTS.md §7.3）...
+失败：Command failed: git fetch origin main
+fatal: unable to access ...: CONNECT tunnel failed, response 502
+```
+
+**看到这个「失败」不要重推** —— 重推会多一个内容重复的提交。正确做法：
+
+1. 先核对远端是否已经是那个 commit：`GET /repos/<owner>/<repo>/git/ref/heads/main`
+2. 确认推上去了，再补一次本地对齐：`git fetch origin main && git reset --hard origin/main`
+   （fetch 继续 502 就等网络恢复再试；本地文件内容不会因此丢失）
+
+判断依据很简单：**输出里出现过 `main → <sha>`，就说明提交成功了**，后面那个「失败」
+只是收尾没做完。
+
+### 7.8 令牌要等整件事做完再删
 
 本项目在这一条上栽过一次：Release 还没建就把 `.ghtoken` 删了，导致 tag 推上去了、
 main 也推上去了，**唯独 Release 和附件没发出去**，只能再向使用者要一次令牌。
