@@ -56,6 +56,8 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 /* 表单 */
 .field { margin-top: 14px; }
 .field label { display: block; margin-bottom: 6px; color: #2b2f36; font-size: 12px; font-weight: 500; }
+textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 9px 10px; font-size: 12px; font-family: inherit; line-height: 1.6; resize: vertical; transition: border-color .15s, box-shadow .15s; }
+textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 input[type="text"], input[type="password"], select { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 9px 10px; font-size: 12px; transition: border-color .15s, box-shadow .15s; }
 input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .hint { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
@@ -134,6 +136,24 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
     <label for="restudy">已完成任务重学</label>
     <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="restudy"></div>
   </div>
+  <div class="row">
+    <label for="blockedReload">被换页时自动刷新恢复</label>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="blockedReload"></div>
+  </div>
+
+  <div class="section-title">任务点类型<span class="tag">关掉就不处理这类</span></div>
+  <div class="row">
+    <label for="enableMedia">视频 / 音频</label>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableMedia"></div>
+  </div>
+  <div class="row">
+    <label for="enablePPT">文档 / PPT 翻页</label>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enablePPT"></div>
+  </div>
+  <div class="row">
+    <label for="enableHyperlink">超链接</label>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableHyperlink"></div>
+  </div>
 
   <div class="section-title">答题<span class="tag">需要 API Key</span></div>
   <div class="row">
@@ -195,6 +215,12 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
   <div class="field">
     <label for="model">模型名</label>
     <input type="text" id="model">
+  </div>
+  <div class="field">
+    <label for="systemPrompt">自定义 system 提示词（高级）</label>
+    <textarea id="systemPrompt" rows="3" placeholder="留空即用内置的压缩版提示词"></textarea>
+    <p class="hint">只有明确知道自己在做什么时才填。<b>内置那版是压过的</b>，
+    换成长提示词会让每次请求都更贵；填错格式也不会导致解析失败（有兜底）。</p>
   </div>
 
   <div class="actions">
