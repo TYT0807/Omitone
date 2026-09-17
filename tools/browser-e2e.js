@@ -1187,6 +1187,51 @@ SCENARIOS.push({
       snap.s1 === 'media:0' && snap.s2 === 'media:42', JSON.stringify(snap));
     check('快照只看整秒（亚秒抖动不会被误当成"有进展"）',
       snap.s3 === 'media:42', JSON.stringify(snap.s3));
+
+    // ---- ended 事件 与 _finishCurrentMedia 必须完全等价。
+    // 这两处原来各写了一份收尾逻辑，并且**已经分叉**：_handleVideoEnded 会顺手清掉
+    // 文档任务点的状态。现在统一走 _finishCurrentMedia，下面两条断言就是"别再分叉"的锁。
+    var viaEnded = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'function snap(){return {playing:app._isPlaying, managed:app._activeMediaJobManaged,' +
+      'pending:app._activeMediaJobPending, videoEl:!!app._videoEl};}' +
+      'var v=document.getElementById("omitone-video");' +
+      'app._isPlaying=true; app._activeMediaJobManaged=true; app._activeMediaJobPending=true;' +
+      'app._videoEl=v;' +
+      'app._finishCurrentMedia("test"); var a=snap();' +
+      'app._isPlaying=true; app._activeMediaJobManaged=true; app._activeMediaJobPending=true;' +
+      'app._videoEl=v;' +
+      'app._handleVideoEnded(); var b=snap();' +
+      'return {viaFinish:a, viaEnded:b};})()'
+    );
+    check('ended 事件与 _finishCurrentMedia 收尾结果一致（两条路不许再分叉）',
+      JSON.stringify(viaEnded.viaFinish) === JSON.stringify(viaEnded.viaEnded),
+      JSON.stringify(viaEnded));
+
+    // 非托管路径 + 关掉 autoNext：nextUnit() 会**提前返回**、不做全量 reset，
+    // 这正是两条路唯一会分叉的场景。旧实现在这里会把文档任务点状态一起清掉，
+    // 等于放弃一个可能正在进行的文档任务点（静默漏做）—— 必须锁住"不动文档状态"。
+    var unmanaged = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var saved=app.configs.autoNext;' +
+      'function snap(){return {docManaged:app._activeDocumentJobManaged,' +
+      'docPending:app._activeDocumentJobPending, docDoc:!!app._activeDocumentJobDoc,' +
+      'playing:app._isPlaying, pending:app._activeMediaJobPending};}' +
+      'function setup(){app.configs=Object.assign({},app.configs,{autoNext:false});' +
+      'app._isPlaying=true; app._activeMediaJobManaged=false; app._activeMediaJobPending=true;' +
+      'app._activeDocumentJobManaged=true; app._activeDocumentJobPending=true;' +
+      'app._activeDocumentJobDoc=document;}' +
+      'setup(); app._finishCurrentMedia("test"); var a=snap();' +
+      'setup(); app._handleVideoEnded(); var b=snap();' +
+      'app.configs=Object.assign({},app.configs,{autoNext:saved});' +
+      'return {viaFinish:a, viaEnded:b};})()'
+    );
+    check('非托管路径两条路结果一致',
+      JSON.stringify(unmanaged.viaFinish) === JSON.stringify(unmanaged.viaEnded),
+      JSON.stringify(unmanaged));
+    check('关掉 autoNext 时不清文档任务点状态（避免静默漏做）',
+      unmanaged.viaEnded.docManaged === true && unmanaged.viaEnded.pending === false,
+      JSON.stringify(unmanaged.viaEnded));
   }
 });
 

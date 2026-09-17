@@ -5203,35 +5203,23 @@
       }
     },
 
+    /**
+     * `ended` 事件的处理。收尾逻辑与 `_checkVideoStatus` 那条路**完全一致**，
+     * 所以统一走 `_finishCurrentMedia`。
+     *
+     * 这里原本多清了三个字段（`_activeDocumentJobPending` / `_activeDocumentJobManaged` /
+     * `_activeDocumentJobDoc`），已经确认那是**过界的**，理由有三条：
+     *   1) `nextUnit()` 末尾会调 `_resetRuntimeState()`，那些字段本来就会被清掉 ——
+     *      正常路径下多清一次是纯冗余；
+     *   2) 只有在 `nextUnit()` **提前返回**时（典型是 `autoNext:false`）才有差别，
+     *      而那时清掉它们等于**放弃一个可能正在进行的文档任务点** —— 正是本仓库
+     *      最怕的"静默漏做"。不清才是对的；
+     *   3) 对称：文档任务点完成时（约 2607 行）只清文档自己的状态，不去动媒体状态。
+     *      媒体这边同理，只管媒体。
+     * 万一真的残留了过期的文档状态，文档那条路自己有 `document stuck timeout` 会兜住。
+     */
     _handleVideoEnded: function () {
-      this._clearCheckInterval();
-      if (this._activeMediaJobManaged) {
-        this._isPlaying = false;
-        this._activeMediaJobPending = false;
-        this._activeMediaJobManaged = false;
-        this._videoEl = null;
-        this._videoCount = 0;
-        this._currentVideoIndex = 0;
-        this._mediaWaitLogAt = 0;
-        emitRuntimeLog('info', 'managed media job ended', { reason: 'event', jobid: this._activeJobId || '' });
-        return;
-      }
-      if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
-        this._currentVideoIndex++;
-        this._videoEl = null;
-        this._activeMediaJobPending = true;
-        this._mediaWaitLogAt = 0;
-        return;
-      }
-      this._isPlaying = false;
-      this._activeMediaJobPending = false;
-      this._activeMediaJobManaged = false;
-      this._activeDocumentJobPending = false;
-      this._activeDocumentJobManaged = false;
-      this._activeDocumentJobDoc = null;
-      this._mediaWaitLogAt = 0;
-      this._documentWaitLogAt = 0;
-      this.nextUnit();
+      this._finishCurrentMedia('event');
     },
 
     _handleVideoLoaded: function (event) {
