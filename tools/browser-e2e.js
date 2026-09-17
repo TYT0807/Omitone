@@ -2186,6 +2186,19 @@ async function main() {
     console.log('\n  临时 profile: ' + tmpRoot + '（可手动删除）');
   }
 
+  // 把本次真实项数落盘，供 tools/check.js 校验文档里的数字。
+  // 断言总数是**运行期**才算出来的（含每场景动态断言），静态数不出来 ——
+  // 所以只能由 e2e 自己交出来，否则文档里的数字永远靠人肉同步（已经漏过两次）。
+  // 落在 .workbuddy/ 下（已在 .gitignore），不入版本库。
+  try {
+    fs.writeFileSync(path.join(ROOT, '.workbuddy', 'e2e-counts.json'), JSON.stringify({
+      scenarios: SCENARIOS.length,
+      assertions: checks,
+      passed: failures.length === 0,
+      at: new Date().toISOString()
+    }, null, 2));
+  } catch (e) {}
+
   console.log('');
   if (failures.length) {
     console.log('功能交叉检验未通过：' + failures.length + ' / ' + checks + ' 项失败');
