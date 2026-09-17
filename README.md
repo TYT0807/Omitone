@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.0-blue)
+![版本](https://img.shields.io/badge/版本-1.1.1-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -58,6 +58,10 @@
 **另外，请顺手读完 [已知缺陷与重要限制](#-已知缺陷与重要限制)**
 —— 里面写清了"只有 DeepSeek 是真跑通过的"、"正确率没有保障，考试请别用"这类实情。
 把它读完，比读完剩下的部分都重要。
+
+> 📄 **不想读长文？** 有一份 12 页的图文说明书，带界面示意图，可以直接发给同学：
+> [使用说明书（PDF）](docs/Omitone-manual.pdf) ·
+> [网页版](docs/manual.html)
 
 > 下一节是**已知缺陷清单**，比上面任何一句话都具体。
 > 里面写了"只有 DeepSeek 是验证过的"以及"默认最多尝试交卷 20 次"这类真相 ——
@@ -286,10 +290,10 @@ API URL 与模型名按厂商文档自己填。Claude 与 Gemini 走的是独立
 **方式二：加载打包产物**
 
 ```bash
-npm run build        # 产物：dist/omitone-1.1.0/
+npm run build        # 产物：dist/omitone-1.1.1/
 ```
 
-再按上面第 2~3 步加载 `dist/omitone-1.1.0/`。
+再按上面第 2~3 步加载 `dist/omitone-1.1.1/`。
 
 > 扩展详情会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址。
 > 在其它网站上它检测到不是目标页面会立即静默退出，什么事都不做。
@@ -455,6 +459,8 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | 文件 | 内容 |
 | --- | --- |
 | **本文件** | **完整交接文档**：功能与验证状态、运行机制、**易错点**、**代码纠缠点**、调试手册、改哪里 |
+| [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
+| [`docs/manual.html`](docs/manual.html) · [`docs/Omitone-manual.pdf`](docs/Omitone-manual.pdf) | **给使用者的图文说明书**（12 页，含界面示意图）—— 可以直接发给同学 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 每个版本改了什么、为什么这么改 |
@@ -465,7 +471,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 14 个场景，135 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 17 个场景，162 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -508,10 +514,10 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 ## 2. 安装与使用
 
 ```bash
-npm run build        # 产物：dist/omitone-1.1.0/
+npm run build        # 产物：dist/omitone-1.1.1/
 ```
 
-打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.1.0/`。
+打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.1.1/`。
 也可以直接加载仓库根目录（跳过打包）。
 
 > 扩展详情里会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址，
@@ -917,6 +923,48 @@ npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 
   去猜第一个选项。猜错会触发整卷重答（几百 token + 一轮页面往返），补问通常只要一两百 token ——
   这道防线同时省 token 和提正确率。日志关键词：`llm refill unanswered` / `llm refill failed`
 
+### ⚠️ 11.1 前缀缓存：**把提示词压得太短会更贵**（1.1.1 的重要一课）
+
+这一节请务必读完再动 `libs/prompt.js`。
+
+DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求**请求前缀完整匹配**某个
+已持久化的「缓存前缀单元」；单元来源之一是**跨请求被识别出的公共前缀**
+（官方 Context Caching 文档的 Example 2：同一 system + 变动 user，要等到**第二次**请求之后
+才把这个公共前缀持久化成单元，第三次才命中）。命中部分按约 **1/10** 的价格计费。
+
+我们曾经踩的坑是：前几轮一直在"压提示词"，把稳定内容压到只剩 3 行 system，
+而且 user 消息的**第一行就是变化的题目**，`禁:`（历史错误答案）还插在每道题中间。
+结果——
+
+> 公共前缀既短又不干净 → 持久化不了 → **命中率恒为 0 → 全部输入按原价计费**
+
+输入总量是降了，账单反而涨了。**这就是"提示词太短导致 token 消耗变多"的完整机制。**
+
+1.1.1 的修法是把 user 消息固定成三段，**稳定在前、易变在后**：
+
+```
+[稳定头]  输出:["A",["A","C"],true,"填空1|||填空2"]        ← 所有请求逐字节相同
+[题目块]  1|s|题干 / A.选项 / B.选项 …                     ← 同一批题内逐字节相同
+[易变尾]  禁:1=A,C;5=B                                     ← 只有这里随"上次错了什么"变化
+```
+
+配套还改了一处 `page.js` 的行为：**同一份卷子重试时整批重发，而不是把已知正确的题从中间删掉**。
+删掉会让前缀从删除处断掉，整段缓存全废；整批重发时重试的输入是上一次的
+**超集且前缀一致**（官方 Example 1 的 `A+B` → `A+B+C`，命中 `A+B`），整段命中。
+
+实测（`npm run bench`，10 题一批）：
+
+| | 数值 |
+| --- | --- |
+| 稳定前缀（system + 消息头） | **84 token**（此前约 50，低于可识别粒度） |
+| 同批重试的输入 | 477 token，其中前缀完整重合 **474 token（命中率 99%）** |
+| 等价费用（命中按 1/10 价） | **降 89.4%** |
+
+`tools/prompt-bench.js` 现在有一节「前缀缓存可命中性」专门盯这两个数，
+`content.js` 也会把每次请求的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+写进运行日志（关键词 `llm prefix cache` / `llm prefix cache all missed`）——
+**改动提示词后先看这两个地方，别只看输入变短了没有。**
+
 ### 压缩提示词的正确姿势
 
 最大的风险是"把信息压掉"。改提示词时：
@@ -927,21 +975,53 @@ npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 
 
 ---
 
-## 12. 目录
+## 12. 目录与体积构成
 
 ```
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 7600 行 / 290 个方法）
+page.js                 页面上下文运行时（主体，约 8400 行 / 300 个方法）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
+libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
 libs/md5.min.js, Typr*.js   字体解析与哈希
-resources/table.json    字形哈希 → 真实字符 映射表（347KB）
+resources/table.json    字形哈希 → 真实字符 映射表的**可读源文件**（347KB，不进扩展包）
+resources/table.bin     由 json 生成的紧凑二进制表（122KB，运行时装的是它）
 popup/                  设置界面
 tools/                  开发脚本（自检 / 基准 / 测试 / 打包）
 legacy/                 已停用代码，不会被加载（原因见 legacy/README.md）
 ```
+
+### 12.1 为什么"软件这么大"——体积账本
+
+扩展**解压后约 751 KB**，`dist/*.zip` 约 322 KB。构成如下（`node tools/build.js` 会把
+`resources/table.json` 排除掉，改由 122KB 的 `table.bin` 顶上）：
+
+| 文件 | 体积 | 说明 |
+| --- | --- | --- |
+| `page.js` | 350 KB (47%) | 全部页面侧逻辑。它是唯一的大文件，也是**最值得小心对待**的文件 |
+| `resources/table.bin` | 122 KB (16%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `libs/Typr.js` + `Typr.U.js` | 95 KB (13%) | 第三方字体解析库（读字体的字形轮廓），不可省 |
+| `content.js` | 56 KB (7%) | 桥接层 |
+| `LICENSE` | 34 KB (5%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `icons/` | 34 KB (5%) | 三个尺寸的图标；128px 那个偏大，可无损重压（低优先级） |
+| 其余（popup / background / libs） | ~60 KB | |
+
+曾经的 `table.json` 是 347 KB 明文（全是十六进制与十进制数字），占整个扩展的 36% ——
+**这就是"软件怎么突然这么大"的答案**。1.1.1 起改成紧凑二进制：
+
+```
+[magic "OMT1"][条目数 uint32][哈希 uint32 × N（升序）][码点 uint16 × N]   每条 6 字节
+```
+
+- 体积 **347 KB → 122 KB**（−65%）
+- 加载时**不需要解析 JSON**，且不再造出两万多个字符串键的字典对象
+  （原先仅这一张表在 V8 里就要占约 1.5~2 MB 堆内存，现在只是一块 122 KB 的 ArrayBuffer）
+- 查找从"对象取属性"变成"有序 uint32 数组二分"，语义不变
+- `table.json` 仍是**唯一真源**（可读、可维护），`npm run check` 会逐条比对两者是否一致
+- 源码目录（没跑过 `build`）下没有 `.bin`，运行时会**自动退回**读明文 json，行为一致、只是慢一点
+
 
 ## 13. 边界
 

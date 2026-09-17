@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Omitone 使用说明书</title>
+<style>
+  @page { size: A4; margin: 16mm 15mm 18mm; }
+
+  :root {
+    --ink: #16181d;
+    --ink-2: #444a55;
+    --ink-3: #767d8a;
+    --line: #e3e6ec;
+    --bg-soft: #f6f7f9;
+    --accent: #1f6feb;
+    --accent-soft: #eaf1fe;
+    --warn: #b45309;
+    --warn-soft: #fff7ed;
+    --danger: #b42318;
+    --danger-soft: #fef3f2;
+    --ok: #067647;
+    --ok-soft: #ecfdf3;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Source Han Sans SC", sans-serif;
+    color: var(--ink);
+    font-size: 10.5pt;
+    line-height: 1.75;
+    background: #fff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .page { max-width: 190mm; margin: 0 auto; padding: 10mm 0; }
+
+  /* ---------- 封面 ---------- */
+  .cover { text-align: center; padding: 22mm 0 12mm; border-bottom: 3px solid var(--ink); margin-bottom: 10mm; }
+  .cover h1 { font-size: 30pt; margin: 0 0 4mm; letter-spacing: 1px; }
+  .cover .sub { font-size: 12pt; color: var(--ink-2); margin: 0 0 8mm; }
+  .cover .meta { font-size: 9.5pt; color: var(--ink-3); }
+  .cover .pill {
+    display: inline-block; margin: 0 3px 6mm; padding: 2px 10px; border-radius: 999px;
+    font-size: 9.5pt; color: var(--ink-2); border: 1px solid var(--line); background: var(--bg-soft);
+  }
+
+  h2 {
+    font-size: 15pt; margin: 11mm 0 3mm; padding-bottom: 2mm;
+    border-bottom: 2px solid var(--ink); break-after: avoid;
+  }
+  h3 { font-size: 12pt; margin: 7mm 0 2.5mm; break-after: avoid; }
+  h4 { font-size: 10.5pt; margin: 5mm 0 2mm; color: var(--ink-2); break-after: avoid; }
+  p { margin: 0 0 3mm; }
+  ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+  li { margin-bottom: 1.4mm; }
+  code {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 9.5pt;
+    background: var(--bg-soft); border: 1px solid var(--line); border-radius: 3px; padding: 0.5px 4px;
+  }
+  a { color: var(--accent); text-decoration: none; word-break: break-all; }
+
+  table { width: 100%; border-collapse: collapse; margin: 0 0 4mm; font-size: 9.5pt; }
+  th, td { border: 1px solid var(--line); padding: 2mm 2.5mm; text-align: left; vertical-align: top; }
+  th { background: var(--bg-soft); font-weight: 600; }
+  tbody tr:nth-child(even) td { background: #fcfcfd; }
+
+  .figure { margin: 4mm 0 6mm; break-inside: avoid; }
+  .figure svg { display: block; width: 100%; height: auto; }
+  .figure figcaption {
+    margin-top: 1.5mm; font-size: 9pt; color: var(--ink-3); text-align: center;
+  }
+
+  .box { border: 1px solid var(--line); border-left: 3px solid var(--accent); background: var(--accent-soft);
+         padding: 3mm 4mm; margin: 0 0 4mm; break-inside: avoid; }
+  .box .t { font-weight: 600; margin-bottom: 1mm; }
+  .box.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+  .box.danger { border-left-color: var(--danger); background: var(--danger-soft); }
+  .box.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+  .box p:last-child, .box ul:last-child { margin-bottom: 0; }
+
+  .steps { counter-reset: step; list-style: none; padding-left: 0; }
+  .steps > li { counter-increment: step; position: relative; padding-left: 9mm; margin-bottom: 3mm; }
+  .steps > li::before {
+    content: counter(step); position: absolute; left: 0; top: 0.4mm;
+    width: 6mm; height: 6mm; border-radius: 50%; background: var(--ink); color: #fff;
+    font-size: 9pt; text-align: center; line-height: 6mm; font-weight: 600;
+  }
+  .steps > li > b { display: block; margin-bottom: 0.5mm; }
+
+  .pagebreak { break-before: page; }
+  .nobreak { break-inside: avoid; }
+  .toc { columns: 2; column-gap: 10mm; font-size: 10pt; }
+  .toc a { display: block; padding: 1mm 0; border-bottom: 1px dotted var(--line); color: var(--ink-2); }
+  .small { font-size: 9pt; color: var(--ink-3); }
+  .footer-note { margin-top: 10mm; padding-top: 4mm; border-top: 1px solid var(--line); font-size: 9pt; color: var(--ink-3); }
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ==================== 封面 ==================== -->
+<div class="cover">
+  <h1>Omitone 使用说明书</h1>
+  <p class="sub">学习通（超星）网页版 · 学习辅助浏览器扩展</p>
+  <span class="pill">免费 · 公益</span>
+  <span class="pill">本地运行</span>
+  <span class="pill">AI 由你自己接入</span>
+  <span class="pill">适用于 Edge / Chrome</span>
+  <p class="meta">版本 1.1.1 &nbsp;·&nbsp; 配套仓库：github.com/TYT0807/Omitone</p>
+</div>
+
+<h2>目录</h2>
+<div class="toc">
+  <a href="#s1">1. 这是什么，能替你做什么</a>
+  <a href="#s2">2. 安装</a>
+  <a href="#s3">3. 第一次配置</a>
+  <a href="#s4">4. 开始刷课</a>
+  <a href="#s5">5. AI 答题是怎么工作的</a>
+  <a href="#s6">6. 验证码</a>
+  <a href="#s7">7. 常见问题排查</a>
+  <a href="#s8">8. 密钥安全：为什么说它偷不走</a>
+  <a href="#s9">9. 使用边界（请务必读）</a>
+</div>
+
+<!-- ==================== 1 ==================== -->
+<h2 id="s1">1. 这是什么，能替你做什么</h2>
+
+<p>
+  Omitone 是一个装在浏览器里的扩展。它替你处理学习通网页版里那些
+  <b>纯粹消耗时间</b>的部分：视频要播完、PPT 要翻到最后一页、讨论区要留一句言、
+  章节测验要答完。
+</p>
+
+<p>
+  它<b>不会</b>替你登录，也<b>不会</b>替你发布任何内容 —— 除了你自己开启的讨论区自动回复。
+  所有数据都在你本机，项目没有任何服务器。
+</p>
+
+<table>
+  <thead><tr><th style="width:30%">功能</th><th>说明</th><th style="width:20%">需要 API Key</th></tr></thead>
+  <tbody>
+    <tr><td>视频 / 音频自动播放</td><td>自动开播、被暂停自动抢回、播完自动翻节</td><td>不需要</td></tr>
+    <tr><td>自动最大倍速</td><td>读播放器菜单取速度上限；读不到就逐档试探</td><td>不需要</td></tr>
+    <tr><td>拖到结尾</td><td>可拖动的视频直接跳到片尾，每个视频只试一次</td><td>不需要</td></tr>
+    <tr><td>PPT / 文档 / 图片</td><td>自动翻页并上报完成</td><td>不需要</td></tr>
+    <tr><td>讨论任务点</td><td>跳转讨论区 → 自动回一句 → 返回继续刷课</td><td>不需要</td></tr>
+    <tr><td>跳过不必做的点</td><td>老师没设为任务点的内容直接跳过</td><td>不需要</td></tr>
+    <tr><td>题库字体反爬</td><td>还原学习通用自定义字体加密过的题目文字</td><td>不需要</td></tr>
+    <tr><td>AI 答题</td><td>单选 / 多选 / 判断 / 填空 / 简答 / 视频内弹题</td><td><b>需要</b></td></tr>
+    <tr><td>验证码识别</td><td>抓图交给视觉模型识别后自动填入</td><td><b>需要</b>（且必须是视觉模型）</td></tr>
+  </tbody>
+</table>
+
+<div class="box ok">
+  <div class="t">没有 API Key 也完全能用</div>
+  <p>上面标"不需要"的功能装了就能跑。没有 Key 时遇到测验会跳过不答，其余照常。</p>
+</div>
+
+<!-- ==================== 2 ==================== -->
+<h2 id="s2" class="pagebreak">2. 安装</h2>
+
+<p>扩展没有上架应用商店，需要在浏览器里手动加载。整个过程两分钟。</p>
+
+<ol class="steps">
+  <li>
+    <b>下载并解压</b>
+    从项目 Release 页面下载 <code>omitone-1.1.1.zip</code>（或 Source code），解压到一个
+    <b>不会被轻易挪动</b>的目录。解压后的文件夹里应该能直接看到 <code>manifest.json</code>。
+  </li>
+  <li>
+    <b>打开扩展管理页</b>
+    Edge 输入 <code>edge://extensions</code>；Chrome 输入 <code>chrome://extensions</code>。
+  </li>
+  <li>
+    <b>打开开发者模式</b>
+    页面左下角（Edge）或右上角（Chrome）的「开发人员模式 / 开发者模式」开关。
+  </li>
+  <li>
+    <b>加载解压缩的扩展程序</b>
+    点该按钮，选中<b>解压出来的那个文件夹</b>（里面直接就是 <code>manifest.json</code> 与
+    <code>page.js</code>）。选中后列表里会出现 Omitone。
+  </li>
+  <li>
+    <b>确认它要"在所有网站上运行"是正常的</b>
+    这不是权限滥用 —— 验证码有时会出现在与学习通无关的独立网址上。
+    扩展在其它网站上检测到不是目标页面会立刻静默退出，什么都不做。
+  </li>
+</ol>
+
+<figure class="figure">
+  <svg viewBox="0 0 680 250" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="加载解压缩扩展程序的示意图">
+    <rect x="0" y="0" width="680" height="250" fill="#fbfcfd" stroke="#e3e6ec"/>
+    <!-- 地址栏 -->
+    <rect x="18" y="16" width="644" height="26" rx="6" fill="#fff" stroke="#e3e6ec"/>
+    <text x="34" y="33" font-size="12" fill="#767d8a" font-family="Consolas, monospace">edge://extensions</text>
+    <!-- 开发者模式开关 -->
+    <rect x="470" y="56" width="192" height="26" rx="13" fill="#1f6feb"/>
+    <circle cx="648" cy="69" r="10" fill="#fff"/>
+    <text x="484" y="73" font-size="11.5" fill="#fff" font-family="sans-serif">开发人员模式 已开启</text>
+    <!-- 加载按钮 -->
+    <rect x="18" y="56" width="180" height="26" rx="6" fill="#fff" stroke="#1f6feb"/>
+    <text x="34" y="73" font-size="11.5" fill="#1f6feb" font-family="sans-serif">加载解压缩的扩展程序</text>
+    <!-- 扩展卡片 -->
+    <rect x="18" y="100" width="644" height="60" rx="8" fill="#fff" stroke="#e3e6ec"/>
+    <rect x="34" y="112" width="36" height="36" rx="8" fill="#16181d"/>
+    <text x="52" y="136" font-size="13" fill="#fff" text-anchor="middle" font-family="sans-serif">O</text>
+    <text x="84" y="128" font-size="12.5" fill="#16181d" font-family="sans-serif" font-weight="600">Omitone-1.1.1</text>
+    <text x="84" y="146" font-size="10.5" fill="#767d8a" font-family="sans-serif">支持学习通视频播放、API 自动答题</text>
+    <text x="600" y="134" font-size="10.5" fill="#067647" text-anchor="end" font-family="sans-serif">已启用</text>
+    <!-- 解压目录示意 -->
+    <rect x="18" y="176" width="300" height="56" rx="8" fill="#fff" stroke="#e3e6ec" stroke-dasharray="4 3"/>
+    <text x="34" y="196" font-size="11" fill="#444a55" font-family="sans-serif">解压后的文件夹（选它）</text>
+    <text x="34" y="216" font-size="10.5" fill="#767d8a" font-family="Consolas, monospace">manifest.json  page.js  libs/ …</text>
+    <text x="360" y="200" font-size="11" fill="#444a55" font-family="sans-serif">→ 文件夹里能直接看到 manifest.json</text>
+    <text x="360" y="218" font-size="11" fill="#444a55" font-family="sans-serif">→ 不要选到它的上一级目录</text>
+  </svg>
+  <figcaption>图 1　加载扩展的三个要点：开发者模式、加载解压缩的扩展程序、选中含 manifest.json 的那一层（示意图）</figcaption>
+</figure>
+
+<div class="box warn">
+  <div class="t">装完之后：改代码 / 更新版本要「重新加载 + 刷新页面」</div>
+  <p>
+    在扩展管理页点一下 Omitone 上的「重新加载」，然后<b>务必刷新学习通页面（F5）</b>。
+    只重载扩展不刷新页面，页面里旧的脚本会与扩展断连，症状是"功能全停、日志不动"。
+  </p>
+</div>
+
+<!-- ==================== 3 ==================== -->
+<h2 id="s3" class="pagebreak">3. 第一次配置</h2>
+
+<p>
+  打开任意学习通页面，页面右下角会出现一个 Omitone 面板（也可以点浏览器工具栏上的扩展图标打开设置弹窗）。
+</p>
+
+<h3>3.1 设置弹窗长这样</h3>
+
+<figure class="figure">
+  <svg viewBox="0 0 680 330" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="设置弹窗界面示意图">
+    <rect x="0" y="0" width="680" height="330" fill="#fbfcfd" stroke="#e3e6ec"/>
+    <!-- 弹窗 -->
+    <rect x="150" y="10" width="380" height="310" rx="10" fill="#fff" stroke="#e3e6ec"/>
+    <text x="170" y="36" font-size="13" fill="#16181d" font-family="sans-serif" font-weight="600">Omitone-1.1.1</text>
+    <text x="510" y="36" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">1.1.0</text>
+    <line x1="170" y1="46" x2="510" y2="46" stroke="#e3e6ec"/>
+
+    <!-- 开关组 -->
+    <text x="170" y="68" font-size="11" fill="#444a55" font-family="sans-serif">播放速度</text>
+    <rect x="440" y="58" width="60" height="16" rx="8" fill="#e3e6ec"/>
+    <circle cx="492" cy="66" r="6" fill="#fff"/>
+    <text x="500" y="70" font-size="10" fill="#767d8a" font-family="sans-serif">1.5x</text>
+
+    <text x="170" y="98" font-size="11" fill="#444a55" font-family="sans-serif">自动连播</text>
+    <rect x="464" y="88" width="36" height="18" rx="9" fill="#16181d"/>
+    <circle cx="491" cy="97" r="7" fill="#fff"/>
+
+    <text x="170" y="128" font-size="11" fill="#444a55" font-family="sans-serif">自动答题</text>
+    <rect x="464" y="118" width="36" height="18" rx="9" fill="#16181d"/>
+    <circle cx="491" cy="127" r="7" fill="#fff"/>
+
+    <text x="170" y="158" font-size="11" fill="#444a55" font-family="sans-serif">验证码自动识别</text>
+    <rect x="464" y="148" width="36" height="18" rx="9" fill="#e3e6ec"/>
+    <circle cx="473" cy="157" r="7" fill="#fff"/>
+
+    <!-- API 区 -->
+    <line x1="170" y1="178" x2="510" y2="178" stroke="#e3e6ec"/>
+    <text x="170" y="198" font-size="11.5" fill="#16181d" font-family="sans-serif" font-weight="600">API</text>
+
+    <text x="170" y="220" font-size="10.5" fill="#444a55" font-family="sans-serif">接入方式</text>
+    <rect x="170" y="226" width="340" height="22" rx="4" fill="#f6f7f9" stroke="#e3e6ec"/>
+    <text x="180" y="241" font-size="10.5" fill="#16181d" font-family="sans-serif">DeepSeek（唯一在真实答题中实测通过）</text>
+    <text x="498" y="241" font-size="9" fill="#767d8a" font-family="sans-serif">▼</text>
+
+    <text x="170" y="266" font-size="10.5" fill="#444a55" font-family="sans-serif">API Key</text>
+    <rect x="170" y="272" width="340" height="22" rx="4" fill="#fff" stroke="#e3e6ec"/>
+    <text x="180" y="287" font-size="10.5" fill="#c3c8d1" font-family="sans-serif">sk-••••••••••••••••••••••••</text>
+
+    <text x="170" y="312" font-size="10.5" fill="#444a55" font-family="sans-serif">模型名</text>
+    <rect x="240" y="300" width="270" height="20" rx="4" fill="#fff" stroke="#e3e6ec"/>
+    <text x="248" y="314" font-size="10.5" fill="#16181d" font-family="Consolas, monospace">deepseek-v4-flash</text>
+
+    <!-- 侧注 -->
+    <text x="24" y="120" font-size="10.5" fill="#767d8a" font-family="sans-serif">① 不需要 Key 的开关</text>
+    <text x="24" y="140" font-size="10.5" fill="#767d8a" font-family="sans-serif">　 默认就是开的</text>
+    <text x="24" y="240" font-size="10.5" fill="#1f6feb" font-family="sans-serif">② 默认已是</text>
+    <text x="24" y="258" font-size="10.5" fill="#1f6feb" font-family="sans-serif">　 DeepSeek，只</text>
+    <text x="24" y="276" font-size="10.5" fill="#1f6feb" font-family="sans-serif">　 要填 Key</text>
+    <text x="560" y="300" font-size="10.5" fill="#767d8a" font-family="sans-serif">③ 输入即</text>
+    <text x="560" y="318" font-size="10.5" fill="#767d8a" font-family="sans-serif">　 自动保存</text>
+  </svg>
+  <figcaption>图 2　设置弹窗：上半是开关，下半是 API 接入信息（示意图，实际界面以你看到的为准）</figcaption>
+</figure>
+
+<h3>3.2 拿到一个 API Key</h3>
+
+<ol class="steps">
+  <li>
+    <b>去 DeepSeek 开放平台注册</b>
+    打开 <code>platform.deepseek.com</code>，注册并登录。
+  </li>
+  <li>
+    <b>充值一点点就够</b>
+    这个工具每次答题消耗的是<b>输入 token 为主</b>，一节测验通常只花几分钱。
+    充 10 元能用很久很久。
+  </li>
+  <li>
+    <b>创建 API Key</b>
+    在「API keys」页面新建，复制那串 <code>sk-…</code>。
+    <b>它只在创建时显示一次</b>，复制好再关页面。
+  </li>
+  <li>
+    <b>回到扩展弹窗，粘贴进去</b>
+    输入框失焦后会<b>自动保存</b>，不需要再点别的按钮。粘贴时带上引号或
+    <code>Bearer </code> 前缀也没关系，会被自动清洗掉。
+  </li>
+  <li>
+    <b>点「检测 API 连接」</b>
+    看到成功提示说明通路正常。这一步别跳过 —— 它是唯一能在真正答题前发现问题的机会。
+  </li>
+</ol>
+
+<h3>3.3 想用别的模型怎么办</h3>
+
+<p>
+  「接入方式」里只预置了真正实测通过的服务商：
+  <b>DeepSeek</b>（唯一在真实答题里完整验证过）、<b>Anthropic Claude</b>、
+  <b>Google Gemini</b>（后两者协议已适配，但没在真实题库上跑过）。
+</p>
+
+<p>
+  用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
+  <b>「自定义 OpenAI 兼容」</b>，把官方文档上的 API 地址与模型名自己填进去。
+</p>
+
+<div class="box">
+  <div class="t">为什么不像别的工具那样内置十几种厂商？</div>
+  <p>
+    内置的厂商预置里，<b>模型名是钉死的快照</b>。厂商一发新版，预置就失效 ——
+    而用户是照着下拉框一路填完，最后才发现用不了。
+    <b>这比留空白更坑人</b>，所以现在只留实测过的，其余交给"自定义"。
+  </p>
+</div>
+
+<!-- ==================== 4 ==================== -->
+<h2 id="s4" class="pagebreak">4. 开始刷课</h2>
+
+<ol class="steps">
+  <li><b>打开课程页面</b>进入你要刷的那门课，停在章节列表或任意一节课里。</li>
+  <li><b>点扩展图标 → 确认开关 → 点「开始运行」</b>右下角会出现状态浮窗。</li>
+  <li><b>然后就可以去干别的了</b>它自己会：播放视频 → 做文档 → 答题 → 下一节。</li>
+  <li><b>想停就点「停止」</b>或者直接关掉标签页。</li>
+</ol>
+
+<figure class="figure">
+  <svg viewBox="0 0 680 260" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="刷课流程与状态浮窗示意图">
+    <rect x="0" y="0" width="680" height="260" fill="#fbfcfd" stroke="#e3e6ec"/>
+
+    <!-- 流程 -->
+    <g font-family="sans-serif" font-size="10.5">
+      <rect x="18" y="30" width="86" height="40" rx="8" fill="#fff" stroke="#1f6feb"/>
+      <text x="61" y="48" fill="#1f6feb" text-anchor="middle">找任务点</text>
+      <text x="61" y="62" fill="#767d8a" text-anchor="middle" font-size="9">(视频/文档/测验)</text>
+
+      <path d="M104 50 H128" stroke="#c3c8d1" stroke-width="1.5" marker-end="url(#a)"/>
+      <rect x="128" y="30" width="86" height="40" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="171" y="48" fill="#16181d" text-anchor="middle">播放视频</text>
+      <text x="171" y="62" fill="#767d8a" text-anchor="middle" font-size="9">倍速/静音/抢播</text>
+
+      <path d="M214 50 H238" stroke="#c3c8d1" stroke-width="1.5" marker-end="url(#a)"/>
+      <rect x="238" y="30" width="86" height="40" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="281" y="48" fill="#16181d" text-anchor="middle">遇到弹题</text>
+      <text x="281" y="62" fill="#767d8a" text-anchor="middle" font-size="9">答 → 点继续学习</text>
+
+      <path d="M324 50 H348" stroke="#c3c8d1" stroke-width="1.5" marker-end="url(#a)"/>
+      <rect x="348" y="30" width="86" height="40" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="391" y="48" fill="#16181d" text-anchor="middle">章节测验</text>
+      <text x="391" y="62" fill="#767d8a" text-anchor="middle" font-size="9">抠题→AI→回填→交卷</text>
+
+      <path d="M434 50 H458" stroke="#c3c8d1" stroke-width="1.5" marker-end="url(#a)"/>
+      <rect x="458" y="30" width="86" height="40" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="501" y="48" fill="#16181d" text-anchor="middle">讨论任务点</text>
+      <text x="501" y="62" fill="#767d8a" text-anchor="middle" font-size="9">发一句就返回</text>
+
+      <path d="M544 50 H568" stroke="#c3c8d1" stroke-width="1.5" marker-end="url(#a)"/>
+      <rect x="568" y="30" width="94" height="40" rx="8" fill="#16181d"/>
+      <text x="615" y="48" fill="#fff" text-anchor="middle">下一节</text>
+      <text x="615" y="62" fill="#c3c8d1" text-anchor="middle" font-size="9">直到做完</text>
+
+      <defs>
+        <marker id="a" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+          <path d="M0 0 L6 3 L0 6 z" fill="#c3c8d1"/>
+        </marker>
+      </defs>
+    </g>
+
+    <!-- 状态浮窗 -->
+    <rect x="18" y="100" width="330" height="140" rx="10" fill="#fff" stroke="#e3e6ec"/>
+    <text x="34" y="122" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">状态浮窗（页面右下角）</text>
+    <line x1="34" y1="132" x2="332" y2="132" stroke="#e3e6ec"/>
+    <circle cx="42" cy="152" r="5" fill="#067647"/>
+    <text x="56" y="156" font-size="10.5" fill="#16181d" font-family="sans-serif">运行中</text>
+    <text x="34" y="180" font-size="10.5" fill="#444a55" font-family="sans-serif">当前任务：播放视频</text>
+    <text x="34" y="200" font-size="10.5" fill="#444a55" font-family="sans-serif">进度：2.1 节 / 共 8 节</text>
+    <text x="34" y="220" font-size="10" fill="#767d8a" font-family="sans-serif">最近事件：answer filled 10/10</text>
+
+    <!-- 日志 -->
+    <rect x="366" y="100" width="296" height="140" rx="10" fill="#fff" stroke="#e3e6ec"/>
+    <text x="382" y="122" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">日志（弹窗 →「查看日志」）</text>
+    <line x1="382" y1="132" x2="662" y2="132" stroke="#e3e6ec"/>
+    <g font-family="Consolas, monospace" font-size="9.5">
+      <text x="382" y="150" fill="#767d8a">info  start</text>
+      <text x="382" y="167" fill="#767d8a">info  llm prefix cache hit:180 miss:120</text>
+      <text x="382" y="184" fill="#767d8a">info  quiz answers count: 10</text>
+      <text x="382" y="201" fill="#067647">info  click continue-study prompt</text>
+      <text x="382" y="218" fill="#b45309">warn  video paused unexpectedly, resuming</text>
+    </g>
+  </svg>
+  <figcaption>图 3　一次刷课的流程，以及两个观察窗口：状态浮窗看"在干什么"，日志看"为什么"</figcaption>
+</figure>
+
+<div class="box">
+  <div class="t">出问题先看日志</div>
+  <p>
+    点扩展图标 →「查看日志」，里面是最近 200 条运行记录。
+    <b>90% 的问题看一眼日志就能定位</b>，比反复猜测快得多。页面右下角浮窗只有摘要，
+    想看全的就去日志面板。
+  </p>
+</div>
+
+<!-- ==================== 5 ==================== -->
+<h2 id="s5" class="pagebreak">5. AI 答题是怎么工作的</h2>
+
+<p>理解这四步，你就知道它能做到什么、做不到什么：</p>
+
+<ol class="steps">
+  <li><b>抠题</b>从页面 DOM 里把题干、选项、题型读出来。遇到字体反爬会先还原文字。</li>
+  <li><b>问模型</b>把题目按 10 题一批打包发给<b>你自己填的那个 API 地址</b>，要求模型只回一个答案数组。</li>
+  <li><b>回填</b>把答案写进页面选项与隐藏答案域。</li>
+  <li><b>交卷</b>检查所有题都填上了才提交；判错会带着"已排除的错误答案"再来一轮。</li>
+</ol>
+
+<figure class="figure">
+  <svg viewBox="0 0 680 170" xmlns="http://www.w3.org/2000/svg" role="img"
+       aria-label="答题数据流示意图">
+    <rect x="0" y="0" width="680" height="170" fill="#fbfcfd" stroke="#e3e6ec"/>
+    <g font-family="sans-serif">
+      <rect x="20" y="40" width="120" height="52" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="80" y="62" font-size="11" fill="#16181d" text-anchor="middle">学习通页面</text>
+      <text x="80" y="78" font-size="9.5" fill="#767d8a" text-anchor="middle">题目 DOM</text>
+
+      <path d="M140 66 H186" stroke="#1f6feb" stroke-width="1.6" marker-end="url(#b)"/>
+      <text x="163" y="58" font-size="9" fill="#1f6feb" text-anchor="middle">抠题</text>
+
+      <rect x="186" y="40" width="140" height="52" rx="8" fill="#fff" stroke="#1f6feb"/>
+      <text x="256" y="62" font-size="11" fill="#16181d" text-anchor="middle">扩展（你本机）</text>
+      <text x="256" y="78" font-size="9.5" fill="#767d8a" text-anchor="middle">组提示词 / 回填</text>
+
+      <path d="M326 66 H372" stroke="#1f6feb" stroke-width="1.6" marker-end="url(#b)"/>
+      <text x="349" y="58" font-size="9" fill="#1f6feb" text-anchor="middle">你的 Key</text>
+
+      <rect x="372" y="40" width="140" height="52" rx="8" fill="#fff" stroke="#e3e6ec"/>
+      <text x="442" y="62" font-size="11" fill="#16181d" text-anchor="middle">模型厂商</text>
+      <text x="442" y="78" font-size="9.5" fill="#767d8a" text-anchor="middle">你在弹窗里填的地址</text>
+
+      <path d="M512 66 H558" stroke="#c3c8d1" stroke-width="1.6" marker-end="url(#b)"/>
+      <rect x="558" y="40" width="104" height="52" rx="8" fill="#f6f7f9" stroke="#e3e6ec"/>
+      <text x="610" y="68" font-size="10.5" fill="#444a55" text-anchor="middle">答案数组</text>
+
+      <text x="20" y="122" font-size="10.5" fill="#b42318">注意：中间没有 Omitone 的服务器</text>
+      <text x="20" y="142" font-size="10.5" fill="#767d8a">请求从你的浏览器直接发往你自己填的那个地址</text>
+      <defs>
+        <marker id="b" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto">
+          <path d="M0 0 L6 3 L0 6 z" fill="#1f6feb"/>
+        </marker>
+      </defs>
+    </g>
+  </svg>
+  <figcaption>图 4　答题链路：浏览器 → 你填的模型地址 → 回填。中间不存在第三方服务器</figcaption>
+</figure>
+
+<h3>5.1 关于正确率（重要）</h3>
+
+<div class="box danger">
+  <div class="t">AI 答题做不到全对，考试请不要用</div>
+  <ul>
+    <li>提示词要求"不确定也要给最可能的答案"，所以模型<b>会猜</b>，猜错就是真错。</li>
+    <li>答错后会自动重试，但<b>默认最多尝试交卷 20 次</b> —— 而这些提交<b>是真的会交上去的</b>。
+      如果这门课限制了提交次数，请先确认规则。</li>
+    <li>判断题、多选题的出错概率明显高于单选题。</li>
+    <li><b>成绩重要的测验，请在弹窗里关掉「自动答题」自己答。</b>
+      这个工具的价值在于省下刷视频的时间，<b>不在于替你拿分</b>。</li>
+  </ul>
+</div>
+
+<h3>5.2 怎么知道钱花在哪了</h3>
+
+<p>
+  日志里会出现 <code>llm prefix cache hit:… miss:…</code> 这样的记录。
+  DeepSeek 对<b>重复出现的提示词前缀</b>有缓存，命中部分按约<b>十分之一</b>的价格计费。
+</p>
+
+<p>
+  如果你看到 <code>hit:0</code> 一直不变，说明前缀没被缓存识别 ——
+  那通常意味着提示词被改动过（把每次都变的内容放到了前面）。
+  这是 1.1.0 专门修过的问题，日志留在这里就是为了让你能一眼看出来。
+</p>
+
+<!-- ==================== 6 ==================== -->
+<h2 id="s6">6. 验证码</h2>
+
+<p>
+  学习通会在检测到异常行为时弹验证码。开启「验证码自动识别」后，扩展会抓图、
+  交给视觉模型识别、再填进去。
+</p>
+
+<ul>
+  <li>必须<b>另填一个视觉模型名</b>（例如 <code>gemini-flash-latest</code>、
+    <code>qwen-vl-max</code> 这类支持图片输入的模型）。留空会退回主模型，
+    大概率识别失败。</li>
+  <li>识别并不总准，会重试，也可能识别错 —— 错了就是白跑一轮。</li>
+</ul>
+
+<div class="box warn">
+  <div class="t">验证码频繁出现，说明平台已经在关注自动化行为了</div>
+  <p>
+    这时候最稳妥的做法是<b>停一会儿，手动做几题</b>，而不是继续硬刚。
+    继续跑只会让风控升级。
+  </p>
+</div>
+
+<!-- ==================== 7 ==================== -->
+<h2 id="s7" class="pagebreak">7. 常见问题排查</h2>
+
+<table>
+  <thead><tr><th style="width:34%">症状</th><th>先查什么</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>点了开始，什么都不动</b></td>
+      <td>先确认是不是<b>没刷新页面</b>（只重载了扩展）。刷新学习通页面再看日志第一行有没有 <code>start</code>。</td>
+    </tr>
+    <tr>
+      <td><b>AI 一直读不到题</b></td>
+      <td>① 日志里有没有 <code>quiz scan found 0 questions</code>；<br>
+          ② 密钥是否真的保存上了（最常被忽略 —— 确认「检测 API 连接」能过）；<br>
+          ③ 是不是卡在标题含「作业 / 考试」的章节不动。</td>
+    </tr>
+    <tr>
+      <td><b>答案填了但不交卷</b></td>
+      <td>通常是有题没填上。看日志末尾几行有没有 <code>answers are not ready</code>。</td>
+    </tr>
+    <tr>
+      <td><b>视频里的弹题卡住不动</b></td>
+      <td>看日志里有没有 <code>popup quiz unanswerable</code> —— 那是"认不出的弹题模板，已放弃"。
+          这类题<b>最多问 3 次就放手</b>，课程会继续，不会卡死。</td>
+    </tr>
+    <tr>
+      <td><b>题干显示成乱码</b></td>
+      <td><b>立刻停手。</b>这是题库字体反爬表过期了，乱码喂给 AI 必然答错，还白烧 token。</td>
+    </tr>
+    <tr>
+      <td><b>窗口最小化后几乎不动</b></td>
+      <td>浏览器自己的「睡眠标签页」是整页冻结，插件绕不过。去
+          <code>edge://settings/system</code> 关掉它。</td>
+    </tr>
+    <tr>
+      <td><b>某个任务点一直做不完</b></td>
+      <td>多看日志：遇到老师设成防拖拽 / 不可翻页的点，连续几次做不完会被记入"放弃名单"。</td>
+    </tr>
+    <tr>
+      <td><b>讨论区发了「1」</b></td>
+      <td>默认回复内容就是 <code>1</code>，<b>请务必改成正常的话</b> ——
+          一串 <code>1</code> 在老师眼里就是灌水。</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>7.1 给愿意动手的人：页面控制台诊断命令</h3>
+
+<p>在学习通页面按 F12，在控制台里可以直接查现场：</p>
+
+<table>
+  <thead><tr><th style="width:38%">命令</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td><code>xxtAI.diagnose()</code></td><td>题目扫描诊断：每个框架命中了什么选择器、为什么没抠出题</td></tr>
+    <tr><td><code>xxtAI.scanQuiz()</code></td><td>只跑一次抠题并打印结果（不答题、不提交）</td></tr>
+    <tr><td><code>xxtAI.diagnosePopup()</code></td><td>弹题诊断：弹窗结构、抠到几个选项、推断出的字母</td></tr>
+    <tr><td><code>xxtAI.taskGiveUpList()</code></td><td>哪些任务点被判"做不完"而放弃了</td></tr>
+    <tr><td><code>xxtAI.clearTaskGiveUp()</code></td><td>清空放弃名单，让它重新尝试</td></tr>
+    <tr><td><code>xxtAI.next()</code> / <code>xxtAI.skipQuiz()</code></td><td>手动跳到下一节 / 跳过当前答题</td></tr>
+  </tbody>
+</table>
+
+<p class="small">
+  想让开发者修问题，把 <code>xxtAI.diagnose()</code> 的输出、页面地址、扩展版本号一起提上去，
+  比"用不了"三个字有效得多。
+</p>
+
+<!-- ==================== 8 ==================== -->
+<h2 id="s8" class="pagebreak">8. 密钥安全：为什么说它偷不走</h2>
+
+<p>
+  做这种工具最该被追问的就是这句话。所以把结论和<b>你可以自己验证的方法</b>都放在这里。
+</p>
+
+<div class="box ok">
+  <div class="t">结论</div>
+  <p>
+    密钥只写进你自己浏览器的 <code>chrome.storage.local</code>，
+    <b>永远不会被发送到本项目的任何地方 —— 因为根本不存在这个地方。</b>
+  </p>
+</div>
+
+<table>
+  <thead><tr><th style="width:26%">事实</th><th>怎么自己验证</th></tr></thead>
+  <tbody>
+    <tr><td>项目没有后端</td><td>全仓库没有作者名下任何域名</td></tr>
+    <tr><td>请求直达厂商</td><td>填谁的门牌就走谁的网关；地址构造只做字符串拼接，唯一的地址来源是你的配置</td></tr>
+    <tr><td>没有遥测</td><td>不发统计、不埋点、不上报日志、不检查更新</td></tr>
+    <tr><td>日志不带密钥</td><td>请求失败时只截断错误信息，不记录密钥，也不记录请求头</td></tr>
+  </tbody>
+</table>
+
+<p>在仓库根目录执行下面这条命令，看它列出的每一个域名：</p>
+
+<p><code>grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sort -u</code></p>
+
+<p class="small">
+  输出里若出现非厂商域名，请务必先提 issue 问清楚，再考虑要不要用。
+  安全边界本来就应该是可验证的，而不是靠一句"我保证"。
+</p>
+
+<!-- ==================== 9 ==================== -->
+<h2 id="s9">9. 使用边界（请务必读）</h2>
+
+<div class="box danger">
+  <div class="t">用途限定：仅供学习与技术交流。用于"作弊"的一切风险，由你自己承担。</div>
+  <ul>
+    <li><b>本工具的定位是"学习辅助"，不是"替你完成学业"。</b>
+      它适合的是那种"看了三遍还是这几句话、纯粹在消耗时间"的部分 ——
+      把这段时间还给你，去做真正需要动脑的事。</li>
+    <li><b>如果你用它来完成本应独立完成、且计入考核的作业或考试，那就是作弊。</b>
+      这是你的选择，<b>不是开发者的建议</b>。</li>
+    <li><b>由此产生的一切后果 —— 成绩作废、课程挂科、纪律处分、学籍影响 ——
+      全部由使用者本人承担。</b></li>
+    <li>请遵守你所在学校的规章制度与学习通的用户协议。
+      不同学校、不同课程对自动化工具的容忍度差别很大，<b>你比谁都清楚边界在哪</b>。</li>
+  </ul>
+</div>
+
+<h3>9.1 它不会做的事</h3>
+
+<ul>
+  <li>不会代替你输入账号密码</li>
+  <li>不会代替你发布任何内容（除了你自己开启的讨论区自动回复，且默认内容需要你改）</li>
+  <li>不会把任何数据传到外部，除了你自己配置的模型接口</li>
+</ul>
+
+<h3>9.2 已知限制清单（择要）</h3>
+
+<table>
+  <thead><tr><th style="width:40%">限制</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td>只完整实测过 DeepSeek</td><td>其余厂商请先用「检测 API 连接」跑通，再拿一节不重要的测验试手感</td></tr>
+    <tr><td>正确率没有保障</td><td>见 §5.1，考试请别用</td></tr>
+    <tr><td>字体反爬表会过期</td><td>表是快照，学习通更新字符集后就还原不出文字 —— 看到乱码立刻停</td></tr>
+    <tr><td>不支持交互题型</td><td>连线、排序、拖拽题无法自动作答</td></tr>
+    <tr><td>不支持投票与直播</td><td>遇到会跳过并留一条日志</td></tr>
+    <tr><td>平台一改版就可能失效</td><td>依赖页面结构，学习通随时可能改版</td></tr>
+    <tr><td>主要在 Edge 上验证</td><td>Chrome 同内核但没系统测过；Firefox 不支持</td></tr>
+  </tbody>
+</table>
+
+<div class="footer-note">
+  <p>
+    <b>Omitone 1.1.1</b> · 免费 · 公益 · 不盈利 · 不引流 ·
+    项目地址 <a href="https://github.com/TYT0807/Omitone">github.com/TYT0807/Omitone</a>
+  </p>
+  <p>
+    本说明书中的界面图为<b>示意图</b>，用于说明操作位置与含义；
+    实际界面可能随版本略有差异。遇到与本文不一致的地方，
+    以扩展里的实际界面与仓库 README 为准。
+  </p>
+</div>
+
+</div>
+</body>
+</html>

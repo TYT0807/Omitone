@@ -181,6 +181,9 @@
     _popupQuizSolvedAt: 0,
     _popupBlockCheckedAt: 0,
     _popupBlockCached: null,
+    // 前缀缓存：记住"本卷最近一次发过请求"，用于决定重试时是否整批重发
+    _quizBatchSentKey: '',
+    _quizBatchSentAt: 0,
     // 「继续学习」提示：弹题答完 / 视频暂停后，播放器右下角会出现这个按钮，
     // 不点它进不去正常播放页 —— 不处理就又变成"AI 一直在跑但课程不动"。
     _continueStudyAt: 0,
@@ -5337,6 +5340,9 @@
       this._popupQuizKey = '';
       this._popupQuizAttempts = 0;
       this._popupQuizBlockedUntil = 0;
+      // 换卷了，前缀缓存的"刚发过整批"记录也失效
+      this._quizBatchSentKey = '';
+      this._quizBatchSentAt = 0;
     },
 
     _markQuizApiConnectionFailed: function (error) {
@@ -6569,16 +6575,32 @@
       var self = this;
       var payload = [];
       var skippedConfirmed = 0;
+      var batchWorkKey = this._getQuizWorkKey(quizDoc);
+      // 这一轮是否**整批重发**（含已知正确答案的题）。
+      //
+      // 为什么要整批重发：DeepSeek 的前缀缓存要求请求前缀完整匹配某个已持久化的
+      // 「缓存前缀单元」。第一次提问只发"需要的题"，重试若再从中间删掉几道，
+      // 前缀就从删除处断掉 —— 命中率归零。
+      // 整批重发时，重试的输入是上一次输入的**超集且前缀一致**（官方 Example 1 的
+      // `A+B` → `A+B+C`），整段命中，按约 1/10 价计费。
+      //
+      // 但不能无条件整批重发：第一次提问时如果一个都没有发过，多带的题只会按原价
+      // 计费。所以只在"本卷刚发过请求"（30 分钟内）时才整批重发。
+      var batchRecent = batchWorkKey
+        && batchWorkKey === this._quizBatchSentKey
+        && (Date.now() - (this._quizBatchSentAt || 0) < 30 * 60 * 1000);
+
       questions.forEach(function (q, i) {
         // 已经"确认正确 + 本轮已填 + DOM 里确实有值"的题不再问模型：
         // _fillCachedQuizAnswers 已经把答案填回去了，重复提问纯属白花 token。
         // 三个条件必须同时成立 —— 只看缓存会让"缓存存在但填不进去"的题永远没人作答，
         // 导致表单填不满、反复重试。
-        if (self._getConfirmedCachedQuizAnswer(q, quizDoc)
+        var alreadyCorrect = self._getConfirmedCachedQuizAnswer(q, quizDoc)
           && self._wasQuizQuestionAnsweredThisRun(q)
-          && self._isQuizQuestionFilled(quizDoc, q)) {
+          && self._isQuizQuestionFilled(quizDoc, q);
+        if (alreadyCorrect) {
           skippedConfirmed++;
-          return;
+          if (!batchRecent) return;
         }
         var wrongAnswers = self._getKnownWrongQuizAnswers(q, quizDoc).map(function (item) {
           return item.answer || item.canonical;
@@ -6589,7 +6611,14 @@
       });
 
       if (skippedConfirmed > 0) {
-        emitRuntimeLog('info', 'skip llm for cached-correct questions', { skipped: skippedConfirmed, asked: payload.length });
+        emitRuntimeLog('info', batchRecent ? 'resend full batch for prefix cache' : 'skip llm for cached-correct questions',
+          { skipped: skippedConfirmed, asked: payload.length });
+      }
+      if (payload.length) {
+        // 记在"发出去"这一侧而不是"收到成功响应"那一侧：缓存单元是在请求到达时建立的，
+        // 即便这次解析失败，前缀也已经进了缓存，下次仍可命中。
+        this._quizBatchSentKey = batchWorkKey;
+        this._quizBatchSentAt = Date.now();
       }
       if (payload.length === 0) {
         // 兜底：全部题目都靠缓存填好了，却没能走上面的提前提交分支，说明状态自相矛盾，

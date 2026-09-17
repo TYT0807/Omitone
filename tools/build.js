@@ -14,6 +14,7 @@
 var fs = require('fs');
 var path = require('path');
 var zlib = require('zlib');
+var execFileSync = require('child_process').execFileSync;
 
 var ROOT = path.join(__dirname, '..');
 var DIST = path.join(ROOT, 'dist');
@@ -30,6 +31,15 @@ var INCLUDE = [
   'resources',
   'LICENSE'
 ];
+
+/**
+ * 不打进扩展包的文件。
+ *
+ * `resources/table.json` 是字形映射表的**可读源文件**（347KB）；
+ * 运行时读的是由它生成的 `resources/table.bin`（122KB）。
+ * 两个都塞进去等于白白多背 347KB —— 源文件留在仓库里就够维护用了。
+ */
+var EXCLUDE = ['resources/table.json'];
 
 // ---------------------------------------------------------------------------
 // crc32（ZIP 每个条目都要带）
@@ -178,6 +188,19 @@ function main() {
     return;
   }
 
+  // 0) 先把字形映射表按源文件重新生成一遍。
+  //    不这样做的话，改了 table.json 却忘了 pack，就会打出一份过期的 bin ——
+  //    这种错不会报错，只会让部分题干继续显示乱码，非常难查。
+  try {
+    var packOut = execFileSync(process.execPath, [path.join(__dirname, 'table-pack.js'), '--pack'],
+      { encoding: 'utf8' });
+    packOut.trim().split('\n').forEach(function (line) { if (line.trim()) console.log('  ' + line.trim()); });
+  } catch (e) {
+    console.error('生成 resources/table.bin 失败：' + (e.stdout || e.message));
+    process.exitCode = 1;
+    return;
+  }
+
   // 清空上一次的产物
   fs.rmSync(stageDir, { recursive: true, force: true });
   fs.rmSync(zipPath, { force: true });
@@ -188,6 +211,7 @@ function main() {
   INCLUDE.forEach(function (target) {
     collect(target, target).forEach(function (file) { entries.push(file); });
   });
+  entries = entries.filter(function (file) { return EXCLUDE.indexOf(file.name) === -1; });
 
   if (!entries.length) {
     console.error('没有收集到任何文件，检查 INCLUDE 列表');
@@ -201,6 +225,11 @@ function main() {
     var from = path.join(ROOT, target);
     if (!fs.existsSync(from)) return;
     copied += copyRecursive(from, path.join(stageDir, target));
+  });
+
+  // 展开目录也要剔掉 EXCLUDE（zip 那一边在收集时已经滤掉了，两边必须一致）
+  EXCLUDE.forEach(function (rel) {
+    fs.rmSync(path.join(stageDir, rel), { force: true });
   });
 
   // 3) 打包 zip

@@ -504,7 +504,19 @@ async function testPromptContainsBannedAnswers() {
   var sent = harness.sandbox.__sentRequests[0];
   var body = sent ? JSON.parse(sent.body) : null;
   var prompt = body ? extractPromptText(body) : '';
-  check('提示词含禁选项标注', prompt.indexOf('禁:A,C') !== -1, prompt.slice(0, 220));
+  // 断言只针对 **user 消息**：system 里也有「禁:」这个说明词，用整段 prompt 做 indexOf
+  // 会被它命中，得出的先后顺序是假的。
+  var userPrompt = (body && body.messages && body.messages[1]) ? String(body.messages[1].content) : '';
+  var bannedAt = userPrompt.indexOf('禁:');
+
+  check('提示词含禁选项标注', prompt.indexOf('禁:') !== -1, prompt.slice(0, 220));
+  check('禁选项标注带题号', bannedAt !== -1 && userPrompt.indexOf('禁:1=A,C') !== -1, userPrompt.slice(-120));
+  check('输出格式说明排在最前（稳定头，所有请求共享同一前缀）',
+    userPrompt.indexOf('输出:[') === 0, userPrompt.slice(0, 60));
+  check('禁选项标注位于全部题目之后（易变内容不污染前缀）',
+    bannedAt > userPrompt.lastIndexOf('丙'), userPrompt.slice(-120));
+  check('题目块内不再夹带禁选项（前缀逐字节稳定）',
+    bannedAt !== -1 && userPrompt.slice(0, bannedAt).indexOf('禁') === -1, userPrompt.slice(0, 200));
 }
 
 async function testEmptyAnswerRefill() {
@@ -555,6 +567,61 @@ async function testEmptyAnswerRefill() {
 }
 
 // ---------------------------------------------------------------------------
+// [9] 字形映射表：运行时解码器必须与明文表给出同样的结果
+//
+// 二进制表（122KB）替代了明文 JSON（347KB），这里验的就是 content.js 实际调用的
+// 那两个入口：`FONT_TABLE.decode`（正常路径）与 `FONT_TABLE.fromObject`（退路）。
+// 两者必须逐条等价，否则"扩展里能解出题干、源码目录下解不出"这种事会悄悄发生。
+// ---------------------------------------------------------------------------
+async function testFontTable() {
+  console.log('\n[9] 字形映射表（二进制与明文必须等价）');
+
+  var FONT_TABLE = require('../libs/font-table.js');
+  var fs = require('fs');
+  var path = require('path');
+  var root = path.join(__dirname, '..');
+
+  var json = JSON.parse(fs.readFileSync(path.join(root, 'resources', 'table.json'), 'utf8'));
+  var bin = fs.readFileSync(path.join(root, 'resources', 'table.bin'));
+
+  var binary = FONT_TABLE.decode(bin.buffer.slice(bin.byteOffset, bin.byteOffset + bin.byteLength));
+  var plain = FONT_TABLE.fromObject(json);
+
+  check('二进制表可解码', !!binary && binary.size > 10000, binary ? String(binary.size) : 'null');
+  check('明文表可包装成同一接口', !!plain && plain.size === binary.size,
+    plain ? String(plain.size) : 'null');
+
+  var hashes = Object.keys(json).filter(function (k) { return FONT_TABLE.hashCodePoint(k) >= 0; });
+  var mismatch = 0;
+  var sample = '';
+  for (var i = 0; i < hashes.length; i++) {
+    var a = binary.get(hashes[i]);
+    var b = plain.get(hashes[i]);
+    if (a !== b || !a) { mismatch++; if (!sample) sample = hashes[i] + ': bin=' + JSON.stringify(a) + ' json=' + JSON.stringify(b); }
+  }
+  check('两条路径逐条一致（' + hashes.length + ' 条）', mismatch === 0,
+    mismatch ? mismatch + ' 条不一致，样本 ' + sample : '全一致');
+
+  // 反向验证：坏数据必须被拒绝，否则 content.js 不会退回到明文表 ——
+  // 拿着一堆序号当哈希查，症状是"题干一直解不出来"，而日志里什么都不会有
+  var broken = Buffer.from(bin);
+  broken[0] = 0x00;
+  check('magic 被破坏时返回 null（据此回退明文表）', FONT_TABLE.decode(
+    broken.buffer.slice(broken.byteOffset, broken.byteOffset + broken.byteLength)) === null);
+
+  var truncated = Buffer.from(bin.subarray(0, 100));
+  check('数据被截断时返回 null', FONT_TABLE.decode(
+    truncated.buffer.slice(truncated.byteOffset, truncated.byteOffset + truncated.byteLength)) === null);
+
+  // 命中 / 未命中
+  var firstHash = hashes[0];
+  check('已知哈希能查到字符', binary.get(firstHash) === String.fromCharCode(json[firstHash]),
+    JSON.stringify(binary.get(firstHash)));
+  check('未知哈希返回空串（不是 undefined，调用点直接当假值用）',
+    binary.get('deadbeef') === '', JSON.stringify(binary.get('deadbeef')));
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -568,6 +635,7 @@ async function main() {
   await testGeminiProtocol();
   await testPromptContainsBannedAnswers();
   await testEmptyAnswerRefill();
+  await testFontTable();
 
   console.log('');
   if (failures.length) {
