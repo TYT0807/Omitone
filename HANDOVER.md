@@ -391,6 +391,14 @@ system 70 + 消息头 14 = **84 token**，现场命中率**仍然是 0**。加�
 - 提交后本地会与远端分叉（API 提交会被 GitHub 重新签名），
   用 `git fetch origin main` + `git reset --hard <远端sha>` 对齐，**不要再 push**
 
+**核对「到底推上去了没」不要用 `git rev-parse origin/main`** —— 这个仓库里 `origin/main`
+**根本不存在**：当年 `.git` 整个丢失后是 `git init` 重建的，没有 remote-tracking refspec，
+所以连 `git fetch origin main` 也不会把它建出来（只更新 `FETCH_HEAD`）。
+症状是 `fatal: ambiguous argument 'origin/main': unknown revision` ——
+**看着像「没推上去」，其实只是本地没有这个引用**，很容易误判。
+正确做法：`git ls-remote origin main`（不需要令牌，几秒返回），
+或直接问 API 要 `ref/heads/main` 与本地 `git rev-parse HEAD` 对比。
+
 ### 7.7 令牌要等整件事做完再删
 
 本项目在这一条上栽过一次：Release 还没建就把 `.ghtoken` 删了，导致 tag 推上去了、
