@@ -391,13 +391,17 @@ system 70 + 消息头 14 = **84 token**，现场命中率**仍然是 0**。加�
 - 提交后本地会与远端分叉（API 提交会被 GitHub 重新签名），
   用 `git fetch origin main` + `git reset --hard <远端sha>` 对齐，**不要再 push**
 
-**核对「到底推上去了没」不要用 `git rev-parse origin/main`** —— 这个仓库里 `origin/main`
-**根本不存在**：当年 `.git` 整个丢失后是 `git init` 重建的，没有 remote-tracking refspec，
-所以连 `git fetch origin main` 也不会把它建出来（只更新 `FETCH_HEAD`）。
-症状是 `fatal: ambiguous argument 'origin/main': unknown revision` ——
-**看着像「没推上去」，其实只是本地没有这个引用**，很容易误判。
-正确做法：`git ls-remote origin main`（不需要令牌，几秒返回），
-或直接问 API 要 `ref/heads/main` 与本地 `git rev-parse HEAD` 对比。
+**核对「到底推上去了没」时注意三点：**
+
+1. 本仓库**没有** `origin/main` 这个本地引用 —— 因为 `git fetch` 在这台机器上会**间歇性**报
+   `CONNECT tunnel failed, response 502`（git 协议那条通道不稳），而引用只有在 fetch 成功时才会建出来。
+   所以 `git rev-parse origin/main` 报 `unknown revision` **不代表没推上去**，只代表本地没同步过。
+2. ⚠️ **不要吞掉 fetch 的错误**：`git fetch origin main -q 2>/dev/null` 会把 502 藏起来，
+   看起来就像「这个仓库没有 origin/main」—— **这个误判我本人犯过一次**，还差点把它当成仓库配置问题写进文档。
+3. `git ls-remote` 走的是**同一条 git 通道**，同样会 502，**不能当兜底**。
+
+**唯一可靠的判据是 REST API**：`GET /repos/<owner>/<repo>/git/ref/heads/main`，
+与本地 `git rev-parse HEAD` 对比。实测 git 通道 502 的同时，API 一直是 200。
 
 ### 7.7 令牌要等整件事做完再删
 
