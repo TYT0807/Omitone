@@ -1,7 +1,0 @@
-﻿build exit=0
-tools/check.js exit=0
-tools/prompt-bench.js exit=0
-tools/integration-test.js exit=0
---- dist ---
-omitone-1.0.11, omitone-1.0.12, omitone-1.1.0
-omitone-1.0.11.zip 357798, omitone-1.0.12.zip 359988, omitone-1.1.0.zip 361582
