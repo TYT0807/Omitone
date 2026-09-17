@@ -447,6 +447,66 @@ function collectHtmlScriptRefs() {
 // 这时读到的永远是 undefined，开关会表现成"打开了也没用"，而且不报错、不留日志。
 // （实测查出过 popupQuizMaxAttempts / apiConnectionError 两个。）
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 13. 测试数字守卫：文档里写的场景数必须等于代码里真实的场景数
+//
+// 这个数字散在五份文档里，全靠手工同步 —— 历史上已经漂过三轮（14 → 18 → 19），
+// 每次都要人工找出"哪几份忘了改"。
+//
+// 场景数是**静态可数**的（browser-e2e.js 里几个 `SCENARIOS.push` 就是几个场景），
+// 所以这条能真正守住。断言总数是**运行期**才算出来的（含每场景动态断言），
+// 静态守不住，只能靠 e2e 自己打印，这里不查。
+//
+// ⚠️ CHANGELOG 是历史记录：里面「14 个场景」「18 个场景」都是**当时的事实**，
+// 不能拿今天的数字去要求它。所以只查它的「未发布」段，其余整篇跳过。
+// ---------------------------------------------------------------------------
+function checkTestCounts() {
+  var problems = [];
+
+  var src = read('tools/browser-e2e.js');
+  var actualScenes = (src.match(/SCENARIOS\.push\(/g) || []).length;
+  if (!actualScenes) {
+    problems.push('tools/browser-e2e.js 里没数到 SCENARIOS.push —— 守卫失效，请同步这段正则');
+  }
+
+  // 取 CHANGELOG 的「未发布」段（到下一个二级标题为止）
+  var unreleased = '';
+  try {
+    var cl = read('CHANGELOG.md');
+    var start = cl.indexOf('## 未发布');
+    if (start >= 0) {
+      var rest = cl.slice(start + 1);
+      var next = rest.indexOf('\n## ');
+      unreleased = next >= 0 ? rest.slice(0, next) : rest;
+    }
+  } catch (e) {}
+
+  var targets = [
+    ['AGENTS.md', null],
+    ['README.md', null],
+    ['tools/README.md', null],
+    ['HANDOVER.md', null],
+    ['CHANGELOG.md', unreleased]
+  ];
+
+  targets.forEach(function (t) {
+    var file = t[0], text = t[1];
+    if (text === null) {
+      try { text = read(file); } catch (e) { return; }
+    }
+    if (!text) return;
+    var re = /(\d+)\s*个场景/g, m;
+    while ((m = re.exec(text))) {
+      if (Number(m[1]) !== actualScenes) {
+        problems.push(file + ' 写的是 ' + m[1] + ' 个场景，代码里实际是 ' + actualScenes + ' 个');
+      }
+    }
+  });
+
+  if (problems.length) fail('测试数字检查未通过:\n      ' + problems.join('\n      '));
+  else pass('场景数与代码一致: ' + actualScenes + ' 个（CHANGELOG 只查「未发布」段，历史记录不查）');
+}
+
 function checkConfigDefaults() {
   var specs = [
     ['page.js', /var DEFAULT_CONFIG = \{/, /\bthis\.configs\.([A-Za-z_][A-Za-z0-9_]*)/g],
@@ -691,6 +751,7 @@ checkSingleSources(manifest);
 checkFontTable();
 checkUserEntryPoints();
 checkConfigDefaults();
+checkTestCounts();
 checkEncodingDamage(jsFiles);
 checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);

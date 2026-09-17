@@ -179,8 +179,10 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
     <input type="text" id="model">
   </div>
   <div class="field">
-    <label for="captchaModel">验证码识别模型（需视觉模型，留空用主模型）</label>
+    <label for="captchaModel">验证码识别模型</label>
     <input type="text" id="captchaModel" placeholder="填支持图片输入的模型名，如 gemini-flash-latest / qwen-vl-max" />
+    <p class="hint"><b>必须填一个能看图的模型。</b>留空会退回主模型，而主模型通常不支持图片输入，
+    验证码基本识别不出来 —— 识别失败会重试，也可能识别错，错了就白跑一轮。</p>
   </div>
 
   <div class="actions">
