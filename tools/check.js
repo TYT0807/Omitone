@@ -435,17 +435,22 @@ function collectHtmlScriptRefs() {
 }
 
 // ---------------------------------------------------------------------------
-// 12. 配置项守卫：读了就必须有自己的默认值
+// 12. 配置接线守卫（两件事，都属于"配好了却没生效"这一类）
 //
-// 三份默认值（page.js 的 DEFAULT_CONFIG / content.js 的 configs / popup.js 的 DEFAULTS）
-// 服务的目的本来就不同，**不该长得一样**：page 是全部运行期开关，popup 只管界面上有的，
-// content 是"配置还没加载时"的兜底。所以"三份键不一致"本身不是 bug ——
-// 这条守卫只查真正会出事的那一种：
+// A) 读了就必须有自己的默认值
+//    三份默认值（page.js 的 DEFAULT_CONFIG / content.js 的 configs / popup.js 的 DEFAULTS）
+//    服务的目的本来就不同，**不该长得一样**：page 是全部运行期开关，popup 只管界面上有的，
+//    content 是"配置还没加载时"的兜底。所以"三份键不一致"本身不是 bug ——
+//    真正会出事的是：**某个文件读了 configs.X，但它自己的默认值里没有 X。**
+//    这时读到的永远是 undefined，开关表现成"打开了也没用"，不报错、不留日志。
+//    （实测查出过 popupQuizMaxAttempts / apiConnectionError 两个。）
 //
-//   **某个文件读了 configs.X，但它自己的默认值里没有 X。**
-//
-// 这时读到的永远是 undefined，开关会表现成"打开了也没用"，而且不报错、不留日志。
-// （实测查出过 popupQuizMaxAttempts / apiConnectionError 两个。）
+// B) 界面上有的开关，就必须完整接线
+//    一个开关要能用，得同时满足三件事：bindToggle 绑上、load() 里读回、保存时写出去。
+//    少任何一件，开关就是"看着能点、其实不生效"或"存不住"。
+//    ⚠️ 不能用"UI 的 id 就是配置键"来推断 —— 实测 autoMaxRate 的配置键叫
+//    autoMaxPlaybackRate，按 id 猜会误报。这里用**变量名**做纽带：
+//    bindToggle(els.<id>, () => <VAR> …) 拿到 VAR，再看 VAR 与哪个 config.<KEY> 对应。
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // 13. 测试数字守卫：文档里写的场景数必须等于代码里真实的场景数
@@ -546,8 +551,42 @@ function checkConfigDefaults() {
     }
   });
 
-  if (problems.length) fail('配置项默认值检查未通过:\n      ' + problems.join('\n      '));
-  else pass('配置项默认值完整（每个文件读的 configs.X 都有自己的默认值）');
+  // ---- B) 界面上的开关必须完整接线 ----
+  try {
+    var html = read('popup/popup.html');
+    var popupJs = read('popup/popup.js');
+    var ids = [], mm2, reId = /class="toggle[^"]*"[^>]*id="([^"]+)"/g;
+    while ((mm2 = reId.exec(html))) ids.push(mm2[1]);
+    if (!ids.length) {
+      problems.push('popup/popup.html 里没找到开关 —— 守卫失效，请同步这段正则');
+    }
+    ids.forEach(function (id) {
+      // 用 bindToggle(els.<id>, () => <VAR> …) 里的变量名做纽带
+      var reBind = new RegExp('bindToggle\\(els\\.' + id + '\\b[^,]*,\\s*\\(\\)\\s*=>\\s*([A-Za-z_][A-Za-z0-9_]*)');
+      var bm = popupJs.match(reBind);
+      if (!bm) {
+        problems.push('开关 ' + id + ' 没有 bindToggle 绑定 —— 点了不会有反应');
+        return;
+      }
+      var v = bm[1];
+      var reLoad = new RegExp('\\b' + v + '\\s*=\\s*[^;]*config\\.([A-Za-z_][A-Za-z0-9_]*)');
+      var lm = popupJs.match(reLoad);
+      if (!lm) {
+        problems.push('开关 ' + id + '（变量 ' + v + '）在 load() 里没有从 config 读回 —— 重新打开弹窗会显示错误的状态');
+        return;
+      }
+      var key = lm[1];
+      var reSave = new RegExp('\\n\\s*' + key + '\\s*:\\s*' + v + '\\b');
+      if (!reSave.test(popupJs)) {
+        problems.push('开关 ' + id + '（配置键 ' + key + '）保存时没有写出去 —— 改了存不住');
+      }
+    });
+  } catch (e) {
+    problems.push('开关接线检查自身出错: ' + e.message);
+  }
+
+  if (problems.length) fail('配置接线检查未通过:\n      ' + problems.join('\n      '));
+  else pass('配置接线完整（默认值齐全 · 界面开关的绑定/读取/保存三件齐全）');
 }
 
 function checkDeadFiles(jsFiles, manifest) {
