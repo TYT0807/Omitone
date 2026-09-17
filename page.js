@@ -45,6 +45,8 @@
     apiUrl: 'https://api.deepseek.com',
     apiKey: '',
     apiConnectionFailed: false,
+    // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
+    apiConnectionError: '',
     model: 'deepseek-v4-flash',
     captchaModel: '',
     systemPrompt: '',
@@ -55,6 +57,9 @@
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 同一道弹题最多问模型几次，超过就放手并冷却（见 _giveUpPopupQuiz）。
+    // 以前只靠 _getPopupQuizMaxAttempts 里的 `|| 3` 兜底，默认值表里查不到。
+    popupQuizMaxAttempts: 3,
     documentSkipTimeoutMs: 120000,
     // 单个任务点连续多少次"派发了但没完成"就放弃（记入 24 小时跳过名单）。
     // 用于对付老师设成防拖拽/不可翻页、或本身不计分的任务点 —— 它们只会白耗时间。
