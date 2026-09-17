@@ -180,10 +180,30 @@ function checkVersionConsistency(manifest) {
     mismatch.push('content.js 读取失败');
   }
 
+  // package.json —— 以前只查 manifest / popup / content 三处，package.json 漏在检查之外。
+  // 它是 npm 脚本与发版脚本读的版本号，漂了不会有人发现。
+  try {
+    var pkg = JSON.parse(read('package.json'));
+    if (pkg.version !== version) mismatch.push('package.json = ' + pkg.version);
+  } catch (e) {
+    mismatch.push('package.json 读取或解析失败');
+  }
+
+  // README 顶部的「版本」徽章 —— 它是用户第一眼看到的版本号，
+  // 但一直没纳入自检，每发一版都可能忘了改（README 里其他 1.x.y 多是历史对照，不查）。
+  try {
+    var readme = read('README.md');
+    var badge = readme.match(/badge\/版本-(\d+\.\d+\.\d+)-/);
+    if (!badge) mismatch.push('README.md 未找到「版本」徽章');
+    else if (badge[1] !== version) mismatch.push('README.md 版本徽章 = ' + badge[1]);
+  } catch (e) {
+    mismatch.push('README.md 读取失败');
+  }
+
   if (mismatch.length) {
     fail('版本号不一致（manifest.version = ' + version + '）:\n      ' + mismatch.join('\n      '));
   } else {
-    pass('版本号三处一致: ' + version);
+    pass('版本号一致（manifest / popup / content / package.json / README 徽章）: ' + version);
   }
 }
 
