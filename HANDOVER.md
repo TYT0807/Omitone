@@ -29,34 +29,19 @@
 ### 0.2 交接时的工作区状态（快照：2026-09-17）
 
 > 这一段是**时间点快照**，会过期。先跑 `git log --oneline -3` 和 `git status --short`
-> 自己对一下；如果 v1.1.2 已经在远端了，这整节可以跳过。
+> 自己对一下；如果工作区干净、远端 main 已经跟上，这整节可以跳过。
 
-- **1.1.2 的全部改动已完成、测试全绿，但当时没拿到令牌，尚未推送到 GitHub。**
-- 因此接手时你可能会看到**一个脏工作区**（有未提交的修改和未跟踪的新文件）。
-  这是正常的，不是别人改坏了一半。**不要 `git checkout .` 把它们丢掉。**
-- 待提交的改动大致是这些：
-
-  ```
-  修改: README.md  AGENTS.md  CHANGELOG.md  HANDOVER.md  content.js
-        manifest.json  package.json  popup/popup.html  docs/manual.html
-        tools/README.md  tools/check.js  tools/publish-audit.js
-        tools/github-release.js  tools/manual-pdf.js
-        .github/ISSUE_TEMPLATE/bug_report.md
-  新增: 使用说明.pdf（仓库根目录）
-  删除: docs/Omitone-manual.pdf（已挪到根目录，改名为 使用说明.pdf）
-  ```
-
-- Release 说明已经写好，在 `.workbuddy/release-notes-1.1.2.md`。
-- 拿到令牌后发布（**先读 §0.5 的令牌规矩**）：
+- **1.1.2 已发布并核验过**（Release + 两个附件都在，下载直链可用）。
+- **1.1.3 的改动也已全部推送**：防拖拽视频 90%、弹题答错卡死修复、弹窗重做与无障碍、
+  三个新守卫、图标瘦身。版本号已同步五处。
+- 工作区**应当是干净的**。如果看到一堆未提交改动，先确认是不是别人的在制品，
+  **不要直接 `git checkout .` 丢掉**。
+- 发新版（**先读 §0.5 的令牌规矩**）：
 
   ```bash
-  npm run release -- push --message-file <提交信息文件> \
-    --delete docs/Omitone-manual.pdf \
-    README.md AGENTS.md CHANGELOG.md HANDOVER.md content.js manifest.json package.json \
-    popup/popup.html docs/manual.html tools/README.md tools/check.js tools/publish-audit.js \
-    tools/github-release.js tools/manual-pdf.js .github/ISSUE_TEMPLATE/bug_report.md 使用说明.pdf
-  npm run release -- release v1.1.2 --notes-file .workbuddy/release-notes-1.1.2.md
-  npm run release -- verify v1.1.2        # 必须跑，确认附件 state 与下载直链
+  npm run release -- push --message-file <提交信息文件> <文件...>
+  npm run release -- release v1.1.3 --notes-file .workbuddy/release-notes-1.1.3.md
+  npm run release -- verify v1.1.3        # 必须跑，确认附件 state 与下载直链
   ```
 
   注意 `push` 子命令**没有** `git add -A` 那种"全都提交"的用法 —— 文件必须一个个列出来。
@@ -185,7 +170,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | | |
 | --- | --- |
 | 项目 | 学习通（超星）网页版学习辅助浏览器扩展，Manifest V3，零依赖、无构建步骤、无后端 |
-| 当前版本 | **1.1.2**（功能收官，进入 bug 修复期） |
+| 当前版本 | **1.1.3**（功能收官，进入 bug 修复期） |
 | 代码规模 | `page.js` 约 8.6k 行 / 300 多个方法；`content.js` 约 1.4k 行；`libs/` 合计约 3.6k 行 |
 | 扩展体积 | 解压后约 **770 KB**（其中 `page.js` 365KB、`resources/table.bin` 122KB） |
 | 测试基线 | 自检 13 项 · 集成 52 项 · 真实 Edge 端到端 **185 项** · 提示词基准 1 份报告，**全绿** |
