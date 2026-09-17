@@ -393,14 +393,20 @@ system 70 + 消息头 14 = **84 token**，现场命中率**仍然是 0**。加�
 
 **核对「到底推上去了没」时注意三点：**
 
-1. 本仓库**没有** `origin/main` 这个本地引用 —— 因为 `git fetch` 在这台机器上会**间歇性**报
-   `CONNECT tunnel failed, response 502`（git 协议那条通道不稳），而引用只有在 fetch 成功时才会建出来。
-   所以 `git rev-parse origin/main` 报 `unknown revision` **不代表没推上去**，只代表本地没同步过。
-2. ⚠️ **不要吞掉 fetch 的错误**：`git fetch origin main -q 2>/dev/null` 会把 502 藏起来，
-   看起来就像「这个仓库没有 origin/main」—— **这个误判我本人犯过一次**，还差点把它当成仓库配置问题写进文档。
-3. `git ls-remote` 走的是**同一条 git 通道**，同样会 502，**不能当兜底**。
+1. 本仓库**没有** `origin/main` 这个本地引用，而这是**正常的 git 行为**，不是仓库配置坏了：
+   `git fetch origin main` 这种**显式给出 ref 的写法只写 `FETCH_HEAD`，不会更新 `origin/main`**
+   （命令行 refspec 会覆盖 `remote.origin.fetch` 里配的 `+refs/heads/*:refs/remotes/origin/*`）。
+   所以 `git rev-parse origin/main` 报 `unknown revision` **不代表没推上去**。
+   想真的把 `origin/main` 建出来：`git fetch origin`（不带 ref），
+   或 `git fetch origin main:refs/remotes/origin/main`。
+2. ⚠️ **不要吞掉 fetch 的错误**（`-q 2>/dev/null`），也不要把「没有 origin/main」当成仓库配置问题 ——
+   **这两条误判我本人都犯过，前后写错了两版说明**，第三版才对上机制。
+3. `git fetch` 一旦失败（这台机器上会间歇性 502），它还会**把 `FETCH_HEAD` 清掉**，
+   所以别拿 `FETCH_HEAD` 当长期引用。
 
-**唯一可靠的判据是 REST API**：`GET /repos/<owner>/<repo>/git/ref/heads/main`，
+**对齐本地最稳的办法是直接用远端 sha**：`git reset --hard <sha>` ——
+fetch 成功过一次之后，那个 commit 对象就已经在本地库里了（实测可行，`git cat-file -t <sha>` 返回 `commit`）。
+远端 sha 用 REST API 取：`GET /repos/<owner>/<repo>/git/ref/heads/main`，
 与本地 `git rev-parse HEAD` 对比。实测 git 通道 502 的同时，API 一直是 200。
 
 ### 7.7 `npm run release -- push` 报「失败」**不等于没推上去**
