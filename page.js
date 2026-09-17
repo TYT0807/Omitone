@@ -189,6 +189,10 @@
     _popupQuizLogAt: 0,
     _popupQuizSolvedKey: '',
     _popupQuizSolvedAt: 0,
+    // 本题已经填过、但没能让弹窗消失的答案（=错的）。重试时带给模型，
+    // 由 libs/prompt.js 渲染成「禁:1=D;」前缀 —— 否则模型每轮都回同一个答案。
+    _popupQuizWrongAnswers: [],
+    _popupQuizLastFilled: '',
     _popupBlockCheckedAt: 0,
     _popupBlockCached: null,
     // 前缀缓存：记住"本卷最近一次发过请求"，用于决定重试时是否整批重发
@@ -8041,6 +8045,8 @@
         this._popupQuizKey = '';
         this._popupQuizAttempts = 0;
         this._popupQuizSolvedKey = '';
+        this._popupQuizWrongAnswers = [];
+        this._popupQuizLastFilled = '';
       } else {
         // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
         var key = this._popupQuizFingerprint(node);
@@ -8181,10 +8187,23 @@
 
       // 同一道弹题的指纹：弹窗没关就一定是同一道。换题（文本变了）才重新计数。
       var key = this._popupQuizFingerprint(popup);
-      if (key === this._popupQuizKey) this._popupQuizAttempts++;
-      else {
+      if (key === this._popupQuizKey) {
+        this._popupQuizAttempts++;
+        // 走到这里说明：同一道题、弹窗还在 —— 上一轮填进去的答案没被平台接受，
+        // 那就是错的。记下来，本轮带给模型让它换个答案。
+        // （只在**确认没通过**时才记，所以不会把「其实答对了、只是弹窗关得慢」的答案误禁。）
+        if (this._popupQuizLastFilled) {
+          if (!this._popupQuizWrongAnswers) this._popupQuizWrongAnswers = [];
+          if (this._popupQuizWrongAnswers.indexOf(this._popupQuizLastFilled) === -1) {
+            this._popupQuizWrongAnswers.push(this._popupQuizLastFilled);
+          }
+          this._popupQuizLastFilled = '';
+        }
+      } else {
         this._popupQuizKey = key;
         this._popupQuizAttempts = 1;
+        this._popupQuizWrongAnswers = [];
+        this._popupQuizLastFilled = '';
       }
 
       var maxAttempts = this._getPopupQuizMaxAttempts();
@@ -8206,7 +8225,11 @@
           index: 0,
           type: type,
           title: popupText.slice(0, 300),
-          options: []
+          options: [],
+          // ⚠️ 必须带：不带的话每轮重试都是**一模一样的请求**，模型自然每轮都回
+          // 同一个答案（实测表现就是「答错之后一直选 D」），重试等于白问。
+          // 普通答题路径一直带着它（见 _requestAnswers），弹题这条路原先漏了。
+          previousWrongAnswers: (this._popupQuizWrongAnswers || []).slice()
         };
 
         question.options = optionItems.map(this._extractOptionText.bind(this)).filter(Boolean);
@@ -8224,6 +8247,18 @@
               this._popupQuizSolvedAt = Date.now();
               this._popupQuizAttempts = 0;
               this._popupQuizBlockedUntil = 0;
+              // 把「模型答了什么 + 实际匹配到哪个选项 + 选项原文」打进日志。
+              // 现场报过「四个选项的题正确答案是 A，却一直选 D」，光看代码猜不出来 ——
+              // 这条日志就是为了下次复现时能直接看出是模型答错还是匹配错。
+              emitRuntimeLog('info', 'popup quiz answered', {
+                attempt: this._popupQuizAttempts,
+                rawAnswer: String(this._normalizeAnswerValue(answer) || '').slice(0, 60),
+                type: type,
+                optionCount: question.options.length,
+                options: question.options.slice(0, 6)
+              });
+              // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
+              this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');
               return;
             }
             // 模型答了但匹配不到任何选项：这是"空转"的真正成因，
@@ -8282,6 +8317,8 @@
 
       this._popupQuizKey = '';
       this._popupQuizAttempts = 0;
+      this._popupQuizWrongAnswers = [];
+      this._popupQuizLastFilled = '';
       this._popupQuizBlockedUntil = Date.now() + 60000;
     },
 
