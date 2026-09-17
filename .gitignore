@@ -18,6 +18,13 @@ tmp/
 *.log
 .debug-profile/
 
+# 手工调试产物：根目录下以点开头或下划线开头的临时文件
+# （真踩过：`git add -A` 把 .c1.txt / .sync3.txt 这类自检输出一起提交并推上了 GitHub）
+/.*.txt
+/.*.json
+/_*
+/.*.js
+
 # ⚠️ 一次性 GitHub 令牌（用完即焚，绝不允许入库）
 .gh-token
 .gh-token.*
