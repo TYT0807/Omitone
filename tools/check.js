@@ -281,6 +281,86 @@ function checkFontTable() {
 }
 
 // ---------------------------------------------------------------------------
+// 5c. 用户入口守卫：下载直链与说明书
+//
+// 这两样是**非技术用户唯一的入手路径**。他们在 GitHub 上不会点绿色的 Code 按钮、
+// 不会装 Git、也不看 Release 页面长什么样 —— 只会点 README 顶部那个下载链接。
+//
+// 链接一断，整个项目对他们就是"打不开"，而且**不会报错、不会留日志**，
+// 只有用户默默走掉。所以当硬性检查：
+//
+//   1. 说明书 PDF 必须在**仓库根目录**（放 docs/ 里他们找不到）
+//   2. README 必须含指向 releases/latest/download/<固定附件名> 的直链
+//   3. README 里所有相对链接指向的本地文件/目录必须真实存在
+//   4. 说明书源文件里不许写死带版本号的压缩包名
+// ---------------------------------------------------------------------------
+var MANUAL_FILE = '使用说明.pdf';
+var ZIP_ASSET = 'omitone.zip';
+
+function checkUserEntryPoints() {
+  var problemsHere = [];
+
+  // 1) 说明书在根目录
+  if (!exists(MANUAL_FILE)) {
+    problemsHere.push('仓库根目录缺少 ' + MANUAL_FILE +
+      ' —— 跑 `npm run manual` 生成（README 顶部的下载入口直接指向它，缺了就是死链）');
+  } else {
+    var manualKb = Math.round(fs.statSync(path.join(ROOT, MANUAL_FILE)).size / 1024);
+    if (manualKb < 100) problemsHere.push(MANUAL_FILE + ' 只有 ' + manualKb + 'KB，疑似生成失败的空壳');
+  }
+  if (exists('docs/Omitone-manual.pdf')) {
+    problemsHere.push('docs/Omitone-manual.pdf 还在 —— 说明书已挪到根目录，' +
+      '旧文件留着会变成两份各自漂移的说明书');
+  }
+
+  var readme = read('README.md');
+
+  // 2) 下载直链
+  var zipRe = ZIP_ASSET.replace(/\./g, '\\.');
+  if (!new RegExp('releases/latest/download/' + zipRe).test(readme)) {
+    problemsHere.push('README.md 里没有 releases/latest/download/' + ZIP_ASSET + ' 直链 —— ' +
+      '不懂 GitHub 的人只认这个链接');
+  }
+  if (/releases\/latest\/download\/omitone-\d/.test(readme)) {
+    problemsHere.push('README.md 的下载直链用了带版本号的附件名 —— ' +
+      '附件名必须固定为 ' + ZIP_ASSET + '，否则每发一版直链就失效一次');
+  }
+
+  // 3) 给人读的文档里的相对链接必须真实存在
+  //
+  // 只查 README 是不够的：HANDOVER / AGENTS / ARCHITECTURE 之间互相引用很多，
+  // 而"重命名了文件却忘了改引用"不会报错、不会有人发现，点开就是 404。
+  // 文档链接的死活恰恰是接手的人最先踩到的坑。
+  var DOCS = ['README.md', 'HANDOVER.md', 'AGENTS.md', 'ARCHITECTURE.md'];
+  var broken = [];
+  DOCS.forEach(function (doc) {
+    if (!exists(doc)) return;
+    var text = read(doc);
+    var linkRe = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+    var m;
+    while ((m = linkRe.exec(text))) {
+      var target = m[1];
+      if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.charAt(0) === '#') continue; // 外链 / 页内锚点
+      target = target.split('#')[0];
+      if (target && !exists(target)) broken.push(doc + ' → ' + target);
+    }
+  });
+  if (broken.length) {
+    problemsHere.push('文档里有指向不存在文件的链接（点开就是 404）: ' + broken.join(', '));
+  }
+
+  // 4) 说明书源文件里不许写死带版本号的压缩包名
+  var hardcoded = read('docs/manual.html').match(/omitone-\d+\.\d+\.\d+\.zip/);
+  if (hardcoded) {
+    problemsHere.push('docs/manual.html 写死了压缩包名 ' + hardcoded[0] + ' —— ' +
+      '附件名固定为 ' + ZIP_ASSET + '，写版本号会让说明书一升级就过期');
+  }
+
+  if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
+  else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
+}
+
+// ---------------------------------------------------------------------------
 // 6. 死代码探测：没人引用的 .js
 //
 // 一个 JS 文件可以通过四种途径被加载，四种都要认，否则会误报：
@@ -511,6 +591,7 @@ checkManifestFiles(manifest);
 checkVersionConsistency(manifest);
 checkSingleSources(manifest);
 checkFontTable();
+checkUserEntryPoints();
 checkEncodingDamage(jsFiles);
 checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);

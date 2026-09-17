@@ -6,17 +6,85 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.1-blue)
+![版本](https://img.shields.io/badge/版本-1.1.2-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
 
 **免费 · 公益 · 本地运行 · AI 由你自己接入**
 
+## ⬇️ 想直接用？点这里
+
+### [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)
+
+### [**看图解说明书（PDF）**](使用说明.pdf)
+
+<sub>**不懂 GitHub 也没关系** —— 上面第一个链接点下去，浏览器会自己开始下载。<br>
+不用注册、不用登录、不用点绿色的 Code 按钮、不用装 Git。</sub>
+
+> 装不会？往下看 [**三步装好**](#三步装好不懂-github-也能做) —— 按"从没用过 GitHub"写的。
+> 说明书 [**使用说明.pdf**](使用说明.pdf) 就在仓库根目录，也可以直接发给同学。
+>
+> ⚠️ **用途限定见下面第 4 条**：拿它去考试、代刷计入考核的作业，那就是作弊，后果自负。
+
 > **当前状态：功能已收官，进入 bug 修复期。**
 > 该有的能力都齐了，后续主要是修 bug 和跟随平台改版做适配，不再堆新功能。
 
 </div>
+
+---
+
+## 三步装好（不懂 GitHub 也能做）
+
+> 这一段假设你**从没用过 GitHub、也没写过代码**。照着做就行，一共三步。
+
+### 第 1 步 · 下载
+
+点上面那个 [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)。
+
+浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 320 KB）。
+它通常会出现在你的「下载」文件夹里。
+
+> 点下去如果只是打开了一个网页、没有开始下载，就在那个页面里再找一下
+> `omitone.zip` 这一行，点一下它右边的下载图标。
+
+### 第 2 步 · 解压
+
+找到刚下载的 `omitone.zip` → **右键 → 全部解压缩**（Windows 自带的功能，不用装任何软件）。
+
+解压完会多出一个 `omitone` 文件夹，打开它，里面应该能**直接看到** `manifest.json` 和 `page.js`。
+
+> ⚠️ **这一步必须做，而且最容易做错。**
+> 浏览器要选的是**解压后的文件夹**，不是那个 `omitone.zip` 压缩包本身。
+>
+> 如果你直接双击 zip 打开、在里面选了东西 —— 一定会失败。
+> 请先「全部解压缩」，再去选解压出来的**文件夹**。
+
+### 第 3 步 · 装进浏览器
+
+以 **Edge** 为例（Chrome 完全一样，把 `edge://` 换成 `chrome://` 即可）：
+
+1. 打开浏览器，地址栏输入 `edge://extensions` 然后回车
+2. 打开页面上的「**开发人员模式**」开关
+   （Edge 在**左下角**，Chrome 在**右上角**）
+3. 点「**加载解压缩的扩展**」
+4. 在弹出的选择框里，选中**第 2 步解压出来的那个文件夹**
+   （就是里面有 `manifest.json` 的那一层，**不要进到它里面再选**）
+5. 列表里出现 **Omitone** 就成功了 —— 浏览器工具栏上也会多出它的图标
+
+到这里扩展就装好了。
+
+**第一次用**：打开学习通课程页 → 点浏览器工具栏上的那个扩展图标 → 点「**开始运行**」。
+（这一步要手动点一次，之后它自己跑。）
+
+**AI 答题需要额外填一次 API Key**（不填也能用，只是遇到测验会跳过不答），
+怎么申请、怎么填，见 [使用说明.pdf](使用说明.pdf) 第 3 节。
+
+**卡在哪一步了？** → [使用说明.pdf](使用说明.pdf) 里第 2 节有每一步的界面截图，
+第 7 节是常见问题排查（"装了没反应"、"扫不到题"、"日志不动"都在里面）。
+
+> **给想改代码的人**：这一节是给使用者的。开发环境的搭建、目录结构、
+> 测试怎么跑，见下面 [§10 开发命令](#10-开发命令) 与 [HANDOVER.md](HANDOVER.md)。
 
 ---
 
@@ -58,10 +126,6 @@
 **另外，请顺手读完 [已知缺陷与重要限制](#已知缺陷与重要限制)**
 —— 里面写清了"只有 DeepSeek 是真跑通过的"、"正确率没有保障，考试请别用"这类实情。
 把它读完，比读完剩下的部分都重要。
-
-> 📄 **不想读长文？** 有一份 12 页的图文说明书，带界面示意图，可以直接发给同学：
-> [使用说明书（PDF）](docs/Omitone-manual.pdf) ·
-> [网页版](docs/manual.html)
 
 > 下一节是**已知缺陷清单**，比上面任何一句话都具体。
 > 里面写了"只有 DeepSeek 是验证过的"以及"默认最多尝试交卷 20 次"这类真相 ——
@@ -193,20 +257,19 @@
 
 ## 快速开始
 
-**方式一：直接加载源码（推荐，便于更新）**
+**装扩展**：见上面 [三步装好](#三步装好不懂-github-也能做)（下载 → 解压 → 加载）。
 
-1. 下载本仓库 → 解压到本地任意位置（记住这个路径）
-2. Edge 打开 `edge://extensions`（Chrome 对应 `chrome://extensions`）
-3. 打开右上角「开发人员模式」→「加载解压缩的扩展」→ 选**解压后的整个目录**
-4. 打开学习通课程页 → 点扩展图标 → 点「开始运行」
+> **已经在本地有源码的人**：把整个仓库目录当扩展加载就行 ——
+> `edge://extensions` → 开发人员模式 → 加载解压缩的扩展 → 选**仓库根目录**
+> （根目录里就有 `manifest.json`，不用先 build）。
 
-**方式二：加载打包产物**
+**想改代码 / 加载打包产物**：
 
 ```bash
-npm run build        # 产物：dist/omitone-1.1.1/
+npm run build        # 产物：dist/omitone-<版本>/
 ```
 
-再按上面第 2~3 步加载 `dist/omitone-1.1.1/`。
+再按同样的步骤加载 `dist/omitone-<版本>/`。
 
 > 扩展详情会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址。
 > 在其它网站上它检测到不是目标页面会立即静默退出，什么事都不做。
@@ -373,7 +436,8 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | --- | --- |
 | **本文件** | **完整交接文档**：功能与验证状态、运行机制、**易错点**、**代码纠缠点**、调试手册、改哪里 |
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
-| [`docs/manual.html`](docs/manual.html) · [`docs/Omitone-manual.pdf`](docs/Omitone-manual.pdf) | **给使用者的图文说明书**（12 页，含界面示意图）—— 可以直接发给同学 |
+| [`使用说明.pdf`](使用说明.pdf) | **给使用者的图文说明书**（13 页，含界面示意图）—— 放在仓库根目录，方便不看文档的人一眼找到，也可以直接转发给同学 |
+| [`docs/manual.html`](docs/manual.html) | 上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS）。改内容改这个，再跑 `npm run manual` 重新出 PDF |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
 | [`CHANGELOG.md`](CHANGELOG.md) | 每个版本改了什么、为什么这么改 |
@@ -384,7 +448,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 17 个场景，162 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 18 个场景，162 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -427,10 +491,10 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 ## 2. 安装与使用
 
 ```bash
-npm run build        # 产物：dist/omitone-1.1.1/
+npm run build        # 产物：dist/omitone-<版本>/
 ```
 
-打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-1.1.1/`。
+打开 `edge://extensions` → 开启「开发人员模式」→「加载解压缩的扩展」→ 选 `dist/omitone-<版本>/`。
 也可以直接加载仓库根目录（跳过打包）。
 
 > 扩展详情里会显示「在所有网站上运行」，这是**必需的**：验证码有时是与学习通无关的独立网址，
@@ -699,7 +763,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 27 | **AI 完全不听题**，但密钥是填了的 | API 表单只有点「保存 API」按钮才落地，且 `apiType` 下拉**根本没有 change 监听** → 切了接入方式却不重填就没保存 → `apiKey` 为空 → `enableQuiz` 硬守卫跳过全部答题（症状是"读不到题"，很像扫描失败） | 输入类字段 800ms 防抖自动保存 + `apiType` 监听，并有 toast 提示 |
 | 28 | 用 DeepSeek 时每道题先烧 ~200 个推理 token | DeepSeek V4 默认开启思考模式，而答题是纯模式化任务 | 请求体加 `thinking:{type:'disabled'}`（**只对 DeepSeek 加**，其他 OpenAI 兼容服务会对未知参数报 400）。实测 2 题从 361 → 133 token |
 | 29 | 有一道题被**猜错**，然后整卷重答一遍 | 模型偶尔返回空答案，旧实现走 `_avoidKnownWrongAnswer` 的空答案兜底 —— 直接猜第一个选项。判断题猜错概率 50%，猜错就触发"整卷带 `禁:` 前缀重答" | **空答案补问**：一轮跑完还有题没收答案时，把这些题打包成一次小请求重问（`llm refill unanswered`），把"猜"换成"问" |
-| 30 | `npm run e2e` **全线失败**：14 个场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
+| 30 | `npm run e2e` **全线失败**：所有场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
 | 31 | **视频里弹出题后 AI 一直在扫描、但从不填空，课程永久空转** | 四层叠加：① 弹题请求**没有任何去重**，tick 每 250ms 一轮就重问一次模型；② `_matchOptionItem` 只在选项带 `.num_option` 徽标时才知道字母，原生 `li + input[value="A"]` 结构的字母恒为空 → 模型答裸字母 "A" 时一个都匹配不上；③ `_getOptionItems` 遇到无 `Zy_/Cy_`、无 `label` 的结构直接返回 `[]`；④ 题型靠**题干关键字**猜（含"正确"就判成判断题），"下列说法正确的是？"这类单选被误判。而弹窗分支在 `_runTick` 最前面 `return`、`_handleVideoPause` 又规定"有弹窗不恢复播放" → 死锁 | ① 新增 `_inferOptionLetter`（徽标 → 属性 → `input.value` → 文本前缀 → 位置兜底）；② `_getOptionItems` 补原生结构兜底（只取最内层）；③ 新增 `_detectPopupQuizType`（控件优先 + 判断题需选项为"正确/错误"这类对立表述）；④ 新增 `_activePopupBlock()`（含放弃窗口与已答放行），`_runTick`/`_handleVideoPause` 全走它；⑤ 同一弹题最多问 3 次后 `_giveUpPopupQuiz`（日志带 DOM 快照 → 点跳过 → 60s 冷却）；⑥ `_fillPopupAnswer` 没选中就不点提交 |
 | 32 | **弹题答对了，但视频右下角还挂着一个「继续学习」按钮，不点就进不去正常播放页，AI 照样空耗** | 代码里**根本没有这个按钮的处理**：它不属于弹窗题（没有选项），也不属于任何已有分支，于是 tick 每轮都跳过它，视频一直停在那儿 | 新增 `_findContinueStudyButton` + `_tryContinueStudyPrompt`：按文案（继续学习/继续观看/继续播放）+ 与视频同文档 + 形态打分定位，**叶子节点优先**（站点把 `onclick` 挂在按钮上，点到外层容器没反应）；挂在 `_runTick` 里弹题之后、播放之前。两道保险：同一按钮 3 秒内只点一次、连点 5 次没反应就停 60 秒并写日志 |
 
@@ -780,9 +844,9 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 ```bash
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（41 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（52 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（135 项）
+npm run e2e      # 真实 Edge 功能交叉检验（18 个场景 / 162 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库

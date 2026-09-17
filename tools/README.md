@@ -9,6 +9,8 @@
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型 |
 | `build.js` | `npm run build` | 打包到 `dist/` |
+| `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
+| `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 
@@ -29,11 +31,17 @@
    `buildQuestionsText` / `buildOutputFormat` / `Return format:` 字面量，
    或 `buildXxxApiUrl` 不再走 `API_URL.*`，即报错；
    同时校验 `manifest.content_scripts` 真的注入了 content.js 依赖的那两个 lib
-6. **编码损坏探测**（告警级）—— 非注释行里的 GBK 乱码残留字符，如 `閫夐」`
-7. **幽灵调用** —— 调用了但没定义的方法（剥注释后比对 `this._x(` 与定义）
-8. **死方法**（告警级）—— 定义了但全项目无人调用的下划线方法
-9. **死代码探测** —— 认出四条加载途径（`content_scripts` / `service_worker` /
-   `web_accessible_resources` / HTML 的 `<script src>`），都不沾的 `.js` 会告警
+6. **字形映射表同步** —— `resources/table.bin` 必须与唯一真源 `table.json` **逐条**一致
+   （只比文件大小会把"内容错位"放过去）
+7. **用户入口守卫** —— 守住**非技术用户唯一的入手路径**：根目录有 `使用说明.pdf`、
+   README 含**不带版本号**的 `releases/latest/download/omitone.zip` 直链、
+   README 里所有相对链接都指向真实存在的文件、说明书源文件没写死版本号压缩包名。
+   这四项都做过**反向验证**（临时造 5 个错，确认逐一被抓住）
+8. **编码损坏探测**（告警级）—— 非注释行里的 GBK 乱码残留字符，如 `閫夐」`
+9. **幽灵调用** —— 调用了但没定义的方法（剥注释后比对 `this._x(` 与定义）
+10. **死方法**（告警级）—— 定义了但全项目无人调用的下划线方法
+11. **死代码探测** —— 认出四条加载途径（`content_scripts` / `service_worker` /
+    `web_accessible_resources` / HTML 的 `<script src>`），都不沾的 `.js` 会告警
 
 失败时退出码为 1，可直接用于 CI。
 
@@ -84,7 +92,7 @@ OMITONE_TOKENIZER_DIR=/path/to/node_modules npm run bench
 
 把 **真实的 `content.js` 与 `libs/*.js`** 加载进一个 `vm` 隔离环境
 （打桩 `chrome.*` / `document` / `window.postMessage`），然后通过它自己注册的
-message 监听器驱动完整答题往返。当前 41 项断言：
+message 监听器驱动完整答题往返。当前 52 项断言：
 
 1. **稀疏 index 透传** —— 20 题的卷子只发 12 道（模拟已有正确缓存的题被跳过），
    12 题刚好跨 2 批（CHUNK_SIZE=10），验证跨批次回填的 index 与原始下标完全一致。
@@ -116,14 +124,14 @@ message 监听器驱动完整答题往返。当前 41 项断言：
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 14 个场景 / 135 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 18 个场景 / 162 项断言。
 
 前置：本机装有 Edge。路径用 `OMITONE_EDGE` 覆盖；端口用 `OMITONE_E2E_PORT` /
 `OMITONE_CDP_PORT` 覆盖；`OMITONE_E2E_DEBUG=1` 打印 target 列表与扩展 ID。
 
 > **扩展 ID 不再靠"算"**。过去用 `SHA256(目录路径)` 猜 ID，而它对路径大小写敏感
 > （`D:\Omite` 与 `d:\Omite` 会算出完全不同的 ID），一算错就是
-> **14 个场景全部失败、页面里一条异常都没有**。现在优先用运行时发现的真实 ID
+> **所有场景全部失败、页面里一条异常都没有**。现在优先用运行时发现的真实 ID
 > （content script 的执行上下文 origin），路径哈希降级为兜底，
 > 两者不一致时会在输出里打印警告。详见 `discoverExtensionId` 的注释。
 
@@ -203,6 +211,64 @@ node tools/ext-id.js "D:\Omite" <edge://extensions 里看到的 ID>
 
 ZIP 由脚本自己写（`zlib.deflateRawSync` + 自实现 crc32），
 条目名以 UTF-8 写入（通用位标记 `0x0800`）。
+
+## manual-pdf.js
+
+```bash
+npm run manual
+```
+
+- 源：`docs/manual.html`（排版真源，内联 SVG + A4 打印 CSS）
+- 产物：**`使用说明.pdf`，落在仓库根目录** —— 这是刻意的，见下
+
+为什么在根目录：这份 PDF 是给**完全不懂 GitHub 的同学**看的。
+放 `docs/` 里他们找不到；而 README 顶部的下载入口直接指向它，
+位置一改那条链接就是死链。`tools/check.js` 的第 7 项会守住这一点。
+
+版本号**自动从 `manifest.json` 盖入**（`Omitone-1.1.1` / `版本 1.1.1` 这类形态），
+并把压缩包名规范成固定的 `omitone.zip`。
+以前是手工同步版本号，结果 1.1.1 发布时手册里还写着旧号 —— 现在人没有机会漏。
+
+用系统已装的 Edge（找不到就退到 Chrome）无头模式打印，**不引入任何依赖**：
+
+- 临时 `--user-data-dir` 放 `%TEMP%`，不去抢用户正在用的浏览器 profile
+- PDF 先出到 ASCII 临时路径，再改名成中文名 —— 避免把中文路径交给浏览器命令行
+- 打印完**校验产物**：页数、位图数（**必须为 0**，说明图都是矢量）、字体数。
+  无头模式的 stdout 没有任何有用信息，"看产物"是唯一的成功判据
+- 页数异常少（< 5）直接报错退出 —— 通常是 HTML 没渲染完就打印了
+
+## github-release.js
+
+```bash
+npm run release -- push --message-file <提交信息文件> <改动文件...>
+npm run release -- release <tag> --notes-file <Release说明文件>
+npm run release -- verify  <tag>
+```
+
+**为什么不用 `git push`**：这台机器上 `git push` 能连上却永远不返回
+（实测挂满 5 分半），而同一条网络下 `git fetch` 几秒完成、
+`api.github.com` 与 `uploads.github.com` 都正常 —— push 通道单独不通。
+详见 AGENTS.md §7.3。
+
+三个子命令各自的关键点：
+
+- `push`：`blobs → trees（**必须带 `base_tree`**）→ commits（**必须带 `parents`**）→
+  PATCH refs（**必须带 `force: true`**）`。提交完自动 `git fetch` + `git reset --hard` 对齐本地 ——
+  API 提交会被 GitHub 重新签名，远端 sha 必然 ≠ 本地 sha
+- `release`：tag 指向**远端当前 sha**（不是本地 `git rev-parse HEAD`，否则 422）。
+  已存在的 tag / Release 会被更新而不是报错
+- `verify`：**发完必须跑**。确认 tag 指向 HEAD、每个附件 `state=uploaded`、
+  以及 README 那条下载直链确实有同名附件 —— **接口返 200 不等于传完了**
+
+⚠️ **附件名在脚本里写死**（`omitone.zip` / `使用说明.pdf`），不接受参数。
+这是刻意的：README 的下载入口用的是 GitHub 永久链接
+`/releases/latest/download/<附件名>`，它按**附件名**取最新一版的附件。
+附件名一旦带上版本号，这条链接每发一版就失效一次，
+而失效表现是"新用户点下载看到 404"——不报错、不留日志，
+受影响又恰好是那批"只会点这一个链接、也不会来反馈"的用户。
+
+令牌来源：环境变量 `GITHUB_TOKEN`，或 `.workbuddy/.ghtoken`（已 gitignore）。
+用完记得删，并提醒提供者 revoke。
 
 ## fix-bom.js
 
