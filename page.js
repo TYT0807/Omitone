@@ -37,10 +37,10 @@
     enableHyperlink: true,
     restudy: false,
     apiType: 'openai',
-    apiUrl: 'https://api.minimaxi.com',
+    apiUrl: 'https://api.deepseek.com',
     apiKey: '',
     apiConnectionFailed: false,
-    model: 'MiniMax-M3',
+    model: 'deepseek-v4-flash',
     captchaModel: '',
     systemPrompt: '',
     videoCheckInterval: 1500,
@@ -179,6 +179,8 @@
     _popupQuizLogAt: 0,
     _popupQuizSolvedKey: '',
     _popupQuizSolvedAt: 0,
+    _popupBlockCheckedAt: 0,
+    _popupBlockCached: null,
     // 「继续学习」提示：弹题答完 / 视频暂停后，播放器右下角会出现这个按钮，
     // 不点它进不去正常播放页 —— 不处理就又变成"AI 一直在跑但课程不动"。
     _continueStudyAt: 0,
@@ -2727,22 +2729,14 @@
         var popup = this._activePopupBlock();
         if (popup) {
           await this._handlePopupQuiz(popup);
-          var popupVideo = this._getVideoEl();
-          if (popupVideo && popupVideo.paused && this._isPlaying) {
-            this._ensurePlaybackRate(popupVideo, "popup");
-            try { popupVideo.play(); } catch (e) {}
-          }
+          this._resumeVideoAfterOverlay('popup');
           return;
         }
 
         // 弹题答完之后，播放器右下角会冒出「继续学习」，点了才回到正常播放页。
         // 必须放在弹题之后、播放逻辑之前 —— 顺序反了就会永远轮不到它。
         if (this._tryContinueStudyPrompt()) {
-          var contVideo = this._getVideoEl();
-          if (contVideo && contVideo.paused && this._isPlaying) {
-            this._ensurePlaybackRate(contVideo, "continue-study");
-            try { contVideo.play(); } catch (e) {}
-          }
+          this._resumeVideoAfterOverlay('continue-study');
           return;
         }
 
@@ -7774,9 +7768,25 @@
      * 文案命中「继续学习/继续观看/继续播放」→ 只接受"按钮样"的小节点（避免点到大容器）
      * → 与视频同文档的加分、本身是 button/a 的加分。
      */
-    _findContinueStudyButton: function () {
-      var video = null;
-      try { video = this._getVideoEl(); } catch (e) { video = null; }
+    /**
+     * 处理完一个覆盖层（弹题 / 「继续学习」）之后把视频拉起来。
+     *
+     * 两个分支原本各写一份，逻辑稍有出入就会出现"弹题这条能恢复、继续学习那条不能"
+     * 这种只在真机上才看得出的差别 —— 抽出来保证两条路走的是同一套动作。
+     * 注意只在 `_isPlaying` 时恢复：用户没开刷课时不该替他播。
+     */
+    _resumeVideoAfterOverlay: function (reason) {
+      if (!this._isPlaying) return;
+      var video = this._getVideoEl();
+      if (!video || !video.paused) return;
+      this._ensurePlaybackRate(video, reason || 'overlay');
+      try { video.play(); } catch (e) {}
+    },
+
+    _findContinueStudyButton: function (video) {
+      if (video === undefined) {
+        try { video = this._getVideoEl(); } catch (e) { video = null; }
+      }
       var videoDoc = video && video.ownerDocument ? video.ownerDocument : null;
 
       var texts = ['继续学习', '继续观看', '继续播放'];
@@ -7849,7 +7859,8 @@
 
       if (now - (this._continueStudyAt || 0) < 3000) return false;
 
-      var btn = this._findContinueStudyButton();
+      // 把已经取到的 video 传下去，省掉 _findContinueStudyButton 里的第二次全文档查找
+      var btn = this._findContinueStudyButton(scanVideo);
       if (!btn) {
         if (this._continueStudyKey) {
           this._continueStudyKey = '';
@@ -7897,7 +7908,21 @@
      * 所有"有弹窗就别动"的判断都必须走这里，不能直接用 _checkPopupQuiz。
      */
     _activePopupBlock: function () {
-      if (this._popupQuizBlockedUntil && Date.now() < this._popupQuizBlockedUntil) return null;
+      var now = Date.now();
+      if (this._popupQuizBlockedUntil && now < this._popupQuizBlockedUntil) {
+        // 放弃窗口一旦生效就立刻作废缓存：否则接下来几百毫秒还会拿到旧弹窗，
+        // 已经清空的计数又会被重新累加，"放弃"形同虚设
+        this._popupBlockCheckedAt = 0;
+        this._popupBlockCached = null;
+        return null;
+      }
+      // _checkPopupQuiz 要遍历所有文档，而 tick 每 250ms 一轮。
+      // 400ms 内复用上一次的结果：弹窗不会在这个尺度上凭空出现又消失。
+      // 缓存的是**经过下面两道判断之后**的结果，所以"已答放行"不会被缓存绕过。
+      if (this._popupBlockCheckedAt && now - this._popupBlockCheckedAt < 400) {
+        return this._popupBlockCached || null;
+      }
+
       var node = null;
       try { node = this._checkPopupQuiz(); } catch (e) { node = null; }
       if (!node) {
@@ -7905,13 +7930,16 @@
         this._popupQuizKey = '';
         this._popupQuizAttempts = 0;
         this._popupQuizSolvedKey = '';
-        return null;
+      } else {
+        // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
+        var key = String(node.className || '') + '|' + textOf(node).slice(0, 120);
+        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < 30000) {
+          node = null;
+        }
       }
-      // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
-      var key = String(node.className || '') + '|' + textOf(node).slice(0, 120);
-      if (key === this._popupQuizSolvedKey && Date.now() - (this._popupQuizSolvedAt || 0) < 30000) {
-        return null;
-      }
+
+      this._popupBlockCheckedAt = now;
+      this._popupBlockCached = node;
       return node;
     },
 
@@ -7920,9 +7948,9 @@
       return max > 0 ? max : 3;
     },
 
-    _describePopupQuiz: function (popup) {
+    _describePopupQuiz: function (popup, optionItems) {
       try {
-        var optionItems = this._getOptionItems(popup);
+        if (!optionItems) optionItems = this._getOptionItems(popup);
         return {
           cls: String(popup.className || '').slice(0, 120),
           text: textOf(popup).slice(0, 200),
@@ -8067,7 +8095,7 @@
                 attempt: this._popupQuizAttempts,
                 maxAttempts: maxAttempts,
                 answer: String(this._normalizeAnswerValue(answer) || '').slice(0, 80),
-                options: this._describePopupQuiz(popup)
+                options: this._describePopupQuiz(popup, optionItems)
               });
             }
             return;

@@ -12,32 +12,34 @@ const DEFAULTS = {
   enableDiscussion: true,
   discussionReply: "1",
   restudy: false,
-  providerPreset: "minimax",
+  providerPreset: "deepseek",
   apiType: "openai",
-  apiUrl: "https://api.minimaxi.com",
+  apiUrl: "https://api.deepseek.com",
   apiKey: "",
   apiConnectionFailed: false,
-  model: "MiniMax-M3",
+  model: "deepseek-v4-flash",
   captchaModel: ""
 };
 
 const RUNTIME_LOGS_KEY = "runtimeLogs";
 const MAX_LOGS = 200;
 
-// 模型预设（2026-09 核对过各家官方文档）。
-// 注意：主流厂商里只有 Gemini 提供常青别名（gemini-flash-latest 自动跟随最新 Flash）、
-// 阿里 qwen-plus 是常青档位；MiniMax / DeepSeek / Kimi / Claude 的旧别名均已退役，
-// 模型名是钉死的快照，厂商发新版就要手动更新这里。
+// 服务商预设。
+//
+// ⚠️ 这里只放**真的在真实答题链路上跑通过**的，其余一律不预置 ——
+// 曾经内置过 9 家（MiniMax / 通义 / 智谱 / Kimi / OpenRouter / SiliconFlow …），
+// 全是"按官方文档配好但没实测"，模型名还是钉死的快照，厂商一发新版就失效，
+// 用户照着填完发现用不了，反而比留空白更坑。
+// 现在只保留 DeepSeek（真实章节测验里完整验证过：抠题 → 作答 → 回填 → 交卷 → 记分）。
+//
+// 用别家怎么办？选「自定义 OpenAI 兼容」，自己填 API URL 和模型名即可 ——
+// 那两格填什么都能用，反而是预置的过期快照才容易不能用。
+// Claude / Gemini 走的是独立协议（在「协议类型」里选），代码有集成测试覆盖，
+// 但**没有在真实题库上跑过**，所以模型名留给你自己填。
 const PROVIDER_PRESETS = {
-  minimax: { apiType: "openai", apiUrl: "https://api.minimaxi.com", model: "MiniMax-M3" },
   deepseek: { apiType: "openai", apiUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" },
-  gemini: { apiType: "gemini", apiUrl: "https://generativelanguage.googleapis.com", model: "gemini-flash-latest" },
-  claude: { apiType: "claude", apiUrl: "https://api.anthropic.com", model: "claude-sonnet-5" },
-  qwen: { apiType: "openai", apiUrl: "https://dashscope.aliyuncs.com/compatible-mode", model: "qwen-plus" },
-  glm: { apiType: "openai", apiUrl: "https://open.bigmodel.cn/api/paas/v4", model: "glm-4.7-flash" },
-  moonshot: { apiType: "openai", apiUrl: "https://api.moonshot.cn", model: "kimi-k2.6" },
-  openrouter: { apiType: "openai", apiUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-5.4-mini" },
-  siliconflow: { apiType: "openai", apiUrl: "https://api.siliconflow.cn", model: "Qwen/Qwen3-32B" },
+  claude: { apiType: "claude", apiUrl: "https://api.anthropic.com", model: "" },
+  gemini: { apiType: "gemini", apiUrl: "https://generativelanguage.googleapis.com", model: "" },
   "custom-openai": { apiType: "openai", apiUrl: "", model: "" }
 };
 
@@ -364,7 +366,15 @@ async function load() {
   updateDiscussion(enableDiscussionVal);
   updateRestudy(restudyVal);
 
-  els.providerPreset.value = config.providerPreset || "minimax";
+  // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
+  // 把一个不存在的 value 赋给 <select> 只会得到空字符串，接着落盘就把无效值写进 storage，
+  // 用户下次打开弹窗看到的是空白下拉框。
+  // 判据：认识的预置照用；不认识但填过 API URL（说明是自己配的）→ 归到「自定义 OpenAI 兼容」；
+  // 两者都不是（全新安装）→ 落到唯一实测过的 DeepSeek。
+  var savedPreset = String(config.providerPreset || "");
+  els.providerPreset.value = PROVIDER_PRESETS[savedPreset]
+    ? savedPreset
+    : (String(config.apiUrl || "").trim() ? "custom-openai" : "deepseek");
   els.apiType.value = config.apiType || "openai";
   els.apiUrl.value = config.apiUrl || "";
   els.apiKey.value = config.apiKey || "";
@@ -377,7 +387,11 @@ async function load() {
 }
 
 function applyProviderPreset(presetId) {
-  const preset = PROVIDER_PRESETS[presetId] || PROVIDER_PRESETS["custom-openai"];
+  // 老版本存下来的 providerPreset 可能指向已删除的预置（比如 minimax）。
+  // 不归一化的话会命中 custom-openai 那一支，而 `presetId !== "custom-openai"`
+  // 仍成立 → 用空字符串覆盖用户已填好的 API URL 与模型名，等于把人家的配置清空。
+  if (!PROVIDER_PRESETS[presetId]) presetId = "custom-openai";
+  const preset = PROVIDER_PRESETS[presetId];
   els.providerPreset.value = presetId;
   els.apiType.value = preset.apiType;
   if (!els.apiUrl.value.trim() || presetId !== "custom-openai") els.apiUrl.value = preset.apiUrl;

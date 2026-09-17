@@ -1,0 +1,27 @@
+﻿--- 修复前的 fetch refspec ---
+[+refs/heads/*:refs/remotes/origin/*]
+--- branch -a ---
+* main
+
+--- 对齐本地到远端 ---
+git : fatal: ambiguous argument 'origin/main': unknown revision or path not in 
+the working tree.
+所在位置 行:454 字符: 8
++ $o += (git reset --hard origin/main 2>&1 | Out-String)
++        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (fatal: ambiguou...e working tree. 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Use '--' to separate paths from revisions, like this:
+'git <command> [<revision>...] -- [<file>...]'
+
+--- 对齐后 ---
+bf1d8da 缁欍€岀户缁涔犮€嶆悳绱㈠姞鎵弿鑺傛祦锛?.0.12锛?3885c49 淇銆岀户缁涔犮€嶆紡鐐瑰鑷寸殑瑙嗛绌鸿浆锛?.0.12锛?
+
+?? .bk.txt
+?? .net.txt
+?? .sync.txt
+?? .sync2.txt
+
+与 origin/main 差异: 0 字符
