@@ -307,7 +307,7 @@ npm run manual        # → 仓库根目录 使用说明.pdf
 ## 6. 发版流程
 
 1. `npm test` + `npm run e2e` 全绿（§0.6）
-2. **同步版本号四处**：`manifest.json`（`name` 与 `version`、`default_title`）、
+2. **同步版本号五处**（含 `package.json` 与 README 顶部的「版本」徽章）：`manifest.json`（`name` 与 `version`、`default_title`）、
    `popup/popup.html`（`<title>` 与 `.title`、`.ver`）、`content.js` 品牌位、`package.json`。
    漏一处 `check.js` 会直接报错。
    （`docs/manual.html` 里的版本号由 `npm run manual` 自动盖入，不用手工管）
@@ -462,7 +462,6 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | --- | --- | --- |
 | **`configs` 三份默认值无 schema 校验** | `content.js` / `page.js` / `popup.js` 各一份，靠人手工对齐 | 抽成 `libs/config-defaults.js` 单一真源（**收益明确、风险低，适合作为第一个任务**） |
 | **`page.js` 体量（350KB / 8.4k 行）** | 它是主体但也是唯一的巨石；分割收益大、风险更高 | **先补测试再动**，按"预览 / 答题 / 媒体 / 调度"切 |
-| **README 徽章版本号没纳入自检** | `check.js` 只校验 manifest / popup / content / package 四处 | 顺手加进「版本号一致」那一项 |
 | **密钥只在 `chrome.storage.local`** | 已经足够安全（无自有服务器），但没有加密 | 不必改；文档里已给出可自验方法 |
 | **验证码识别依赖视觉模型** | 留空会回退主模型并大概率失败 | 在弹窗里加一句更明确的提示 |
 | **图标 128px 占 28.6KB** | 偏大，可无损重压到 ~10KB | 低优先级 |

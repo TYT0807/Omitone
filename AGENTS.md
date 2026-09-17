@@ -61,7 +61,8 @@ npm run e2e       # 真实 Edge 功能交叉检验（19 个场景 / 185 项）
 ## 3. 改完的固定动作
 
 1. `npm test` 全绿；动了答题链路 / 抠题 / 媒体 / 任务点调度再跑 `npm run e2e`
-2. **同步版本号三处** —— `manifest.json`、`popup/popup.html`、`content.js` 状态面板品牌位。
+2. **同步版本号五处** —— `manifest.json`、`popup/popup.html`、`content.js` 状态面板品牌位、
+   `package.json`、`README.md` 顶部的「版本」徽章。
    漏一处 `npm run check` 直接报错；这是本项目历史上最常犯的错
 3. `edge://extensions` 重新加载 + **刷新学习通页面（F5）**。
    只重载扩展不刷新页面，旧 content script 与扩展断连，症状是"功能全停、日志不动"
@@ -75,7 +76,7 @@ npm run e2e       # 真实 Edge 功能交叉检验（19 个场景 / 185 项）
 
 - [ ] `npm test` 全绿
 - [ ] 动了真实浏览器行为 → `npm run e2e` 全绿
-- [ ] 版本号三处已同步（`npm run check` 会替你确认）
+- [ ] 版本号五处已同步（`npm run check` 会替你确认）
 - [ ] 改动涉及的页面路径手动跑过（视频 / 答题 / 验证码 / 讨论）
 - [ ] **新增的断言做过反向验证**：临时制造一个已知错误，确认它能被抓住。
       不会失败的检查等于没有检查

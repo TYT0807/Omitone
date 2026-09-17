@@ -25,7 +25,7 @@
 1. **JS 语法** —— 所有 `.js` 用 `vm.Script` 编译（会先剥掉 BOM，否则 `vm` 会当成非法 token）
 2. **manifest 解析与 BOM** —— 带 BOM 时浏览器能加载，但 `JSON.parse` 会失败，这里直接拦
 3. **引用文件存在性** —— manifest 里所有 `js` / `css` / `icons` / `popup` / `web_accessible_resources` / `service_worker`
-4. **版本号三处一致** —— 与 `manifest.version` 比对 `name` / `default_title` /
+4. **版本号一致（五处）** —— 与 `manifest.version` 比对 `name` / `default_title` /
    `popup.html`（`<title>` + `.ver`）/ `content.js` 状态面板品牌位
 5. **唯一真源**（提示词 + API 地址构造）—— `content.js` 里若重新出现
    `buildQuestionsText` / `buildOutputFormat` / `Return format:` 字面量，

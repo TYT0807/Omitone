@@ -1,6 +1,6 @@
 # 变更记录
 
-版本号三处同步规则见 [`AGENTS.md#24-改完必须同步版本号三处`](AGENTS.md)。
+版本号同步规则见 [`AGENTS.md`](AGENTS.md) 的「3. 改完的固定动作」。
 1.0.2 之前的记录未留存。
 
 ---
@@ -39,12 +39,23 @@
 以前只靠 `|| 3` 兜底，默认值表里根本查不到）与 `apiConnectionError`（诊断用，缺了不影响功能）。
 两个都已补进 `page.js`。**已反向验证**：删掉任一默认值，自检立刻失败并点名。
 
-测试：自检 11 项、集成 52 项、真实 Edge e2e **185 项**（19 个场景），全绿。
+### 版本号检查扩到五处（含 package.json 与 README 徽章）
 
-> 已知待办：`_handleVideoEnded` / `_checkVideoStatus` / 媒体等待循环里各有一份
-> "managed media job ended"的收尾逻辑，三份**已经出现真实分叉** ——
-> `_handleVideoEnded` 会清 `_activeDocumentJob*`，另两处不清。
-> 没有贸然统一（不确定哪一份才是对的），确认后再动。
+`check.js` 原先只比对 manifest / popup / content 三处，而 `package.json` 与 README 顶部的
+「版本」徽章**都不在检查范围内** —— 它们漂了不会有任何提示。README 那个徽章尤其要紧：
+它是用户第一眼看到的版本号。
+
+现在两处都纳入「版本号一致」这一项，并做过**反向验证**：把徽章改成 1.1.1、package.json 改成 1.0.9，
+自检立刻失败并分别点名；还原后恢复通过。
+
+顺带修掉本文件开头一个**指向不存在锚点**的链接（`#24-改完必须同步版本号三处`，
+AGENTS.md 里根本没有这个标题），改为指向真实章节。
+
+测试：自检 12 项、集成 52 项、真实 Edge e2e **185 项**（19 个场景），全绿。
+
+> 已解决：三份「managed media job ended」收尾已经**统一** —— `_handleVideoEnded` 现在走
+> `_finishCurrentMedia`。它原本多清 `_activeDocumentJob*`，那三行是**过界的**
+> （`nextUnit()` 提前返回时会放弃正在进行的文档任务点）。e2e 有断言锁着，别再拆回去。
 
 ---
 
