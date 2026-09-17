@@ -325,13 +325,33 @@ async function saveApiConfig(showToast = true) {
 function bindToggle(el, getter, setter) {
   const update = (on) => {
     el.className = "toggle" + (on ? " on" : "");
+    // 无障碍：role="switch" 靠 aria-checked 表达开/关，读屏才知道当前状态
+    el.setAttribute("aria-checked", on ? "true" : "false");
   };
-  el.addEventListener("click", async () => {
+  const toggle = async () => {
     const value = !getter();
     setter(value);
     update(value);
     await saveToggleConfig();
+  };
+  el.addEventListener("click", toggle);
+  // 键盘可达性：div 默认既拿不到焦点、也不响应空格/回车。
+  // Chrome 官方文档写得很明确：「只有 a / button / 表单控件能获得键盘焦点」，
+  // 所以 role="switch" + tabindex="0" + 这里的键盘处理，缺一不可。
+  el.addEventListener("keydown", (event) => {
+    if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+      event.preventDefault();
+      toggle();
+    }
   });
+  // <label for> 只对表单控件生效，指向 div 时点了没反应 —— 手动补上
+  const label = document.querySelector("label[for=\"" + el.id + "\"]");
+  if (label) {
+    label.addEventListener("click", (event) => {
+      event.preventDefault();
+      toggle();
+    });
+  }
   return update;
 }
 

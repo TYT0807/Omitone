@@ -100,39 +100,39 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
 
   <div class="row">
     <label for="autoMaxRate">自动倍速（跟随视频最大倍速）</label>
-    <div class="toggle on" id="autoMaxRate"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoMaxRate"></div>
   </div>
   <div class="row">
     <label for="enableSeek">可拖动视频直接拖到结尾</label>
-    <div class="toggle on" id="enableSeek"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableSeek"></div>
   </div>
   <div class="row">
     <label for="advanceAtNinetyPercent">防拖拽视频看到 90% 就进下一个</label>
-    <div class="toggle on" id="advanceAtNinetyPercent"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="advanceAtNinetyPercent"></div>
   </div>
   <div class="row">
     <label for="muted">静音</label>
-    <div class="toggle" id="muted"></div>
+    <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="muted"></div>
   </div>
   <div class="row">
     <label for="audioMuted">音频静音播放（音频自动用最大倍速）</label>
-    <div class="toggle on" id="audioMuted"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="audioMuted"></div>
   </div>
   <div class="row">
     <label for="autoNext">自动下一节</label>
-    <div class="toggle on" id="autoNext"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoNext"></div>
   </div>
   <div class="row">
     <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
-    <div class="toggle on" id="enableQuiz"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableQuiz"></div>
   </div>
   <div class="row">
     <label for="enableCaptcha">自动识别验证码（独立于 AI 答题，需视觉模型）</label>
-    <div class="toggle on" id="enableCaptcha"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
   </div>
   <div class="row">
     <label for="enableDiscussion">讨论任务点自动发评论（跳转后自动返回）</label>
-    <div class="toggle on" id="enableDiscussion"></div>
+    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
   </div>
   <div class="field">
     <label for="discussionReply">讨论回复内容</label>
@@ -140,7 +140,7 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
   </div>
   <div class="row">
     <label for="restudy">已完成任务重学</label>
-    <div class="toggle" id="restudy"></div>
+    <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="restudy"></div>
   </div>
 
   <div class="section-title">API</div>
