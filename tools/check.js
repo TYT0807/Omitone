@@ -414,6 +414,62 @@ function collectHtmlScriptRefs() {
   return refs;
 }
 
+// ---------------------------------------------------------------------------
+// 12. 配置项守卫：读了就必须有自己的默认值
+//
+// 三份默认值（page.js 的 DEFAULT_CONFIG / content.js 的 configs / popup.js 的 DEFAULTS）
+// 服务的目的本来就不同，**不该长得一样**：page 是全部运行期开关，popup 只管界面上有的，
+// content 是"配置还没加载时"的兜底。所以"三份键不一致"本身不是 bug ——
+// 这条守卫只查真正会出事的那一种：
+//
+//   **某个文件读了 configs.X，但它自己的默认值里没有 X。**
+//
+// 这时读到的永远是 undefined，开关会表现成"打开了也没用"，而且不报错、不留日志。
+// （实测查出过 popupQuizMaxAttempts / apiConnectionError 两个。）
+// ---------------------------------------------------------------------------
+function checkConfigDefaults() {
+  var specs = [
+    ['page.js', /var DEFAULT_CONFIG = \{/, /\bthis\.configs\.([A-Za-z_][A-Za-z0-9_]*)/g],
+    ['content.js', /let configs = \{/, /\bconfigs\.([A-Za-z_][A-Za-z0-9_]*)/g],
+    ['popup/popup.js', /const DEFAULTS = \{/, /\bconfig\.([A-Za-z_][A-Za-z0-9_]*)/g]
+  ];
+  var problems = [];
+
+  specs.forEach(function (spec) {
+    var file = spec[0], objRe = spec[1], useRe = spec[2];
+    var src = read(file);
+    var m = src.match(objRe);
+    if (!m) {
+      problems.push(file + ' 里找不到默认值对象 —— 守卫读不到目标，请同步这段正则');
+      return;
+    }
+    // 括号配平，取出整个对象字面量
+    var i = src.indexOf('{', m.index), depth = 0, end = -1;
+    for (var j = i; j < src.length; j++) {
+      if (src.charAt(j) === '{') depth++;
+      else if (src.charAt(j) === '}') { depth--; if (depth === 0) { end = j; break; } }
+    }
+    var keys = Object.create(null);
+    src.slice(i + 1, end).split(/\r?\n/).forEach(function (line) {
+      var t = line.trim();
+      if (!t || t.indexOf('//') === 0) return;
+      var km = t.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:/);
+      if (km) keys[km[1]] = true;
+    });
+    var used = Object.create(null), mm;
+    useRe.lastIndex = 0;
+    while ((mm = useRe.exec(src))) used[mm[1]] = true;
+    var missing = Object.keys(used).filter(function (k) { return !keys[k]; }).sort();
+    if (missing.length) {
+      problems.push(file + ' 读了但没有默认值的配置项: ' + missing.join(', ') +
+        '（读到的永远是 undefined，开关会表现成「打开了也没用」）');
+    }
+  });
+
+  if (problems.length) fail('配置项默认值检查未通过:\n      ' + problems.join('\n      '));
+  else pass('配置项默认值完整（每个文件读的 configs.X 都有自己的默认值）');
+}
+
 function checkDeadFiles(jsFiles, manifest) {
   var loaded = [];
   if (manifest) {
@@ -614,6 +670,7 @@ checkVersionConsistency(manifest);
 checkSingleSources(manifest);
 checkFontTable();
 checkUserEntryPoints();
+checkConfigDefaults();
 checkEncodingDamage(jsFiles);
 checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);
