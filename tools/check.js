@@ -508,8 +508,47 @@ function checkTestCounts() {
     }
   });
 
+  // ---- 断言总数：e2e 跑完会落盘，有就拿来校验文档 ----
+  // 静态数不出来（含每场景动态断言），所以只能由 e2e 自己交出来。
+  // 没跑过 e2e 就跳过 —— 不能因为「文件不存在」就判失败。
+  var countsFile = path.join(ROOT, '.workbuddy', 'e2e-counts.json');
+  var assertionsChecked = false;
+  if (fs.existsSync(countsFile)) {
+    try {
+      var counts = JSON.parse(fs.readFileSync(countsFile, 'utf8'));
+      var actualAssertions = Number(counts.assertions);
+      if (actualAssertions > 0) {
+        assertionsChecked = true;
+        targets.forEach(function (t) {
+          var file = t[0], text = t[1];
+          if (text === null) { try { text = read(file); } catch (e) { return; } }
+          if (!text) return;
+          // 只看「提到了 e2e / 交叉检验 / 端到端」的行 —— 否则会把「集成 52 项」
+          // 「自检 13 项」这些别的数字一起误伤
+          text.split(/\r?\n/).forEach(function (line) {
+            // ⚠️ 只取**关键词之后的第一个**数字。整行扫所有数字会误伤：
+            // HANDOVER 有一行同时含「自检 13 项 / 集成 52 项 / 端到端 190 项」，
+            // 整行扫会把 13 和 52 也当成 e2e 项数报错（实测踩过）。
+            var km = line.search(/e2e|交叉检验|端到端/i);
+            if (km === -1) return;
+            var m2 = line.slice(km).match(/(\d+)\s*项/);
+            if (!m2) return;
+            var n2 = Number(m2[1]);
+            if (n2 !== actualAssertions && n2 !== Number(counts.scenarios)) {
+              problems.push(file + ' 写的是 ' + n2 + ' 项，e2e 实测是 ' + actualAssertions + ' 项');
+            }
+          });
+        });
+      }
+    } catch (e) {}
+  }
+
+  var sceneNote = '场景数与代码一致: ' + actualScenes + ' 个' +
+    (assertionsChecked ? '；断言总数与 e2e 实测一致' : '（断言总数未校验：还没跑过 e2e，跑一次即可）') +
+    '（CHANGELOG 只查「未发布」段，历史记录不查）';
+
   if (problems.length) fail('测试数字检查未通过:\n      ' + problems.join('\n      '));
-  else pass('场景数与代码一致: ' + actualScenes + ' 个（CHANGELOG 只查「未发布」段，历史记录不查）');
+  else pass(sceneNote);
 }
 
 function checkConfigDefaults() {
