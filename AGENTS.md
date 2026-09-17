@@ -25,13 +25,13 @@
 ## 1. 动手前
 
 ```bash
-npm test          # 自检 + 提示词基准 + 集成测试（41 项），必须全绿
+npm test          # 自检 + 提示词基准 + 集成测试（52 项），必须全绿
 ```
 
 改动可能影响真实浏览器行为时（答题链路、抠题、媒体、任务点调度）**先跑一次基线**：
 
 ```bash
-npm run e2e       # 真实 Edge 功能交叉检验（135 项）
+npm run e2e       # 真实 Edge 功能交叉检验（18 个场景 / 162 项）
 ```
 
 不要复用用户正在使用的浏览器实例。`npm run e2e` 自己会起一个独立临时 profile 并自动收尾。
@@ -127,7 +127,7 @@ npm run e2e       # 真实 Edge 功能交叉检验（135 项）
 | `d:\Omite` | `locncobd…`（错） |
 
 从 Git Bash / WSL 风格的 cwd（`/d/Omite`）启动 node，`__dirname` 的盘符会变成小写，
-哈希整个错开。症状是 **14 个场景全部报「page.js 在真实 Edge 中加载成功：失败」、
+哈希整个错开。症状是 **所有场景都报「page.js 在真实 Edge 中加载成功：失败」、
 页面里却一条异常都没有** —— 极具误导性，很容易误判成"扩展坏了"或"代码有回归"。
 
 判断方法：跑 `npm run e2e`，看输出的 `扩展 ID:` 一行。
@@ -158,12 +158,35 @@ npm run e2e       # 真实 Edge 功能交叉检验（135 项）
   远端 sha 必然 ≠ 本地 sha。要先提交、再看远端 sha、最后建 tag，
   顺序反了就会撞上 `422 Object does not exist`
 - **本地对齐**：`git fetch origin main` + `git reset --hard <远端sha>`，**不要 push**
-- 已经写好的脚本在 `.workbuddy/`（`release-only.js` 建 Release + 传附件、`api-commit.js` 提交文件），
-  用之前把令牌写进 `.workbuddy/.ghtoken`
+- **这整条链路已经脚本化了**：`tools/github-release.js`（`npm run release -- <子命令>`）
+  - `push --message-file <文件> <文件...>` —— 提交改动到 main，并自动 fetch + reset 对齐本地
+  - `release <tag> --notes-file <文件>` —— 打 tag + 建 Release + 传两个附件
+  - `verify <tag>` —— **发完必须跑**，它会确认 tag 指向、附件 state、以及 README 那条下载直链是否可用
+  - 令牌：环境变量 `GITHUB_TOKEN`，或 `.workbuddy/.ghtoken`
 
 ### 7.4 令牌要等整件事做完再删
 
 本仓库栽过一次：tag 推上去了、main 推上去了，**唯独 Release 和附件没发出去** ——
 因为清理时提前把 `.ghtoken` 删了。**顺序是"发版 → 核验远端 → 再删令牌"。**
 （令牌本身按用户偏好应当是**一次性、最短有效期**，用完提醒他去 revoke。）
+
+### 7.5 **发布附件名固定为 `omitone.zip`，不要改**
+
+README 顶部的下载入口用的是 GitHub 的永久链接：
+
+```
+https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip
+```
+
+它按**附件名**去取"最新一版 Release"里的同名附件。所以：
+
+- 附件名一旦带上版本号（`omitone-1.1.2.zip`），每发一版这条链接就失效一次
+- 失效的表现是 **新用户点下载看到 404** —— 不报错、不留日志，
+  而且**恰好是"不会用 GitHub、只会点这一个链接"的那批用户**受影响，他们不会来反馈
+- `build.js` 的产物仍叫 `dist/omitone-<版本>.zip`（本地看版本方便），
+  **上传时改名**即可 —— `tools/github-release.js` 已经把名字写死，不给人改错的机会
+
+配套守卫：`tools/check.js` 的「用户入口守卫」会检查 README 里这条直链不许带版本号、
+根目录必须有 `使用说明.pdf`、且 README 里所有相对链接都指向真实存在的文件。
+
 
