@@ -4,6 +4,7 @@ const DEFAULTS = {
   playbackRateCap: 4,
   taskGiveUpAttempts: 4,
   enableSeek: true,
+  advanceAtNinetyPercent: true,
   muted: false,
   audioMuted: true,
   autoNext: true,
@@ -49,6 +50,7 @@ const els = {
   rateVal: $("rateVal"),
   autoMaxRate: $("autoMaxRate"),
   enableSeek: $("enableSeek"),
+  advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
   muted: $("muted"),
   audioMuted: $("audioMuted"),
   autoNext: $("autoNext"),
@@ -79,6 +81,7 @@ let mutedVal = false;
 let audioMutedVal = true;
 let autoMaxRateVal = true;
 let enableSeekVal = true;
+let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
 let enableQuizVal = true;
 let enableCaptchaVal = true;
@@ -293,6 +296,7 @@ async function saveToggleConfig(showToast = true) {
     playbackRate: parseFloat(els.rate.value),
     autoMaxPlaybackRate: autoMaxRateVal,
     enableSeek: enableSeekVal,
+    advanceAtNinetyPercent: advanceAtNinetyPercentVal,
     muted: mutedVal,
     audioMuted: audioMutedVal,
     autoNext: autoNextVal,
@@ -335,6 +339,7 @@ const updateMuted = bindToggle(els.muted, () => mutedVal, (value) => { mutedVal 
 const updateAudioMuted = bindToggle(els.audioMuted, () => audioMutedVal, (value) => { audioMutedVal = value; });
 const updateAutoMaxRate = bindToggle(els.autoMaxRate, () => autoMaxRateVal, (value) => { autoMaxRateVal = value; });
 const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; });
+const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
 const updateQuiz = bindToggle(els.enableQuiz, () => enableQuizVal, (value) => { enableQuizVal = value; });
 const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (value) => { enableCaptchaVal = value; });
@@ -351,6 +356,7 @@ async function load() {
   audioMutedVal = config.audioMuted !== false;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
   enableSeekVal = config.enableSeek !== false;
+  advanceAtNinetyPercentVal = config.advanceAtNinetyPercent !== false;
   autoNextVal = config.autoNext !== false;
   enableQuizVal = config.enableQuiz !== false;
   enableCaptchaVal = config.enableCaptcha !== false;
@@ -360,6 +366,7 @@ async function load() {
   updateAudioMuted(audioMutedVal);
   updateAutoMaxRate(autoMaxRateVal);
   updateSeek(enableSeekVal);
+  updateNinety(advanceAtNinetyPercentVal);
   updateAutoNext(autoNextVal);
   updateQuiz(enableQuizVal);
   updateCaptcha(enableCaptchaVal);
