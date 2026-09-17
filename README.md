@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.2-blue)
+![版本](https://img.shields.io/badge/版本-1.1.3-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -26,6 +26,11 @@
 > 说明书 [**使用说明.pdf**](使用说明.pdf) 就在仓库根目录，也可以直接发给同学。
 >
 > ⚠️ **用途限定见下面第 4 条**：拿它去考试、代刷计入考核的作业，那就是作弊，后果自负。
+
+> **1.1.3 新增**：防拖拽 + 锁 1 倍速的视频**看到 90% 就进下一个**（不再白等最后 10%）·
+> 弹窗界面重做，并补上无障碍（全部开关可键盘操作、读屏可播报）·
+> 修掉「视频内弹题答错后卡死」· 图标瘦身 28.6 → 21.9 KB。
+> [完整变更记录 →](CHANGELOG.md)
 
 > **当前状态：功能已收官，进入 bug 修复期。**
 > 该有的能力都齐了，后续主要是修 bug 和跟随平台改版做适配，不再堆新功能。
