@@ -452,6 +452,7 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | 发布附件改名导致下载直链失效 | **1.1.2 已加固**：附件名在 `tools/github-release.js` 里写死，`check.js` 有守卫 |
 | issue 模板里写着过期版本号 | **1.1.2 已修**：改成不写死版本，从扩展卡片上抄 |
 | 防拖拽视频白等最后 10% | **已做**：`advanceAtNinetyPercent`（默认开）。判据是「拖不动 **且** 倍速锁 1x」，**并且必须由平台自己给出完成标记**才提前结束。别把它改成「播够 90% 就算完成」—— 那会在平台还没认可时误跳过任务点 |
+| 三份「managed media job ended」收尾各写一遍 | **已统一**：`_handleVideoEnded` 现在走 `_finishCurrentMedia`。它原本多清 `_activeDocumentJob*`，**那三行是过界的**（`nextUnit()` 提前返回时会放弃正在进行的文档任务点）。别再把它加回去，e2e 有断言锁着 |
 
 ---
 
@@ -465,7 +466,6 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | **密钥只在 `chrome.storage.local`** | 已经足够安全（无自有服务器），但没有加密 | 不必改；文档里已给出可自验方法 |
 | **验证码识别依赖视觉模型** | 留空会回退主模型并大概率失败 | 在弹窗里加一句更明确的提示 |
 | **图标 128px 占 28.6KB** | 偏大，可无损重压到 ~10KB | 低优先级 |
-| **三份「managed media job ended」收尾逻辑已分叉** | `_handleVideoEnded` 会清 `_activeDocumentJob*`，`_finishCurrentMedia` 与媒体等待循环那两处**不清**。同一份收尾写了三遍，"改一处漏两处"的风险已经存在 | 先确认哪一份才是对的（大概率 `_handleVideoEnded` 更完整），再让三处都走 `_finishCurrentMedia`；**改前先补 e2e 断言** |
 | **不支持连线 / 排序 / 拖拽题** | 平台交互题无法自动作答 | 保持现状，明确写在 README |
 
 ---
