@@ -284,6 +284,30 @@ function buildMediaHtml() {
 }
 
 /**
+ * 「防拖拽 + 倍速锁 1x」视频页 —— 复现"平台只要求看 90%"这一类视频。
+ *
+ * 三个特征都靠打桩模拟（不依赖真实编解码器）：
+ *   1) 拖不动：currentTime 的 setter 忽略写入，进度停在原处（真站点由播放器弹回）
+ *   2) 倍速锁 1x：playbackRate 的 setter 把值压回 1
+ *   3) 完成标记：`.ans-job-finished` **只在进度 ≥ 90% 时被插入**（低于 90% 就移除）
+ *      —— 这是"平台自己说完成了"的唯一来源，插件必须靠它，不能自己认定。
+ *      注意是**插入/移除**而不是 display:none —— querySelector 不理会可见性，
+ *      用隐藏元素会让"平台还没完成"也判定为已完成，安全阀就测不出来了。
+ */
+function buildNinetyPercentHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<div id="iframe">' +
+    '  <div class="chapter-module" id="module">' +
+    '    <div class="video-js vjs-player">' +
+    '      <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>' +
+    '</body></html>';
+}
+
+/**
  * 多讨论任务点页面 —— 复现"多沟通任务"的坑。
  *
  * A 组：3 张讨论卡片挤在**同一个共用容器**里，容器内只有**一个** #isFinished。
@@ -449,6 +473,7 @@ var MOCK_PAGES = {
   '/quiz-result': buildQuizResultHtml,
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
+  '/media-90': buildNinetyPercentHtml,
   '/blank': buildBlankHtml,
   '/captcha-dialog': buildCaptchaDialogHtml,
   '/captcha-verify': buildStandaloneCaptchaHtml,
@@ -1738,6 +1763,153 @@ SCENARIOS.push({
       '!!(window.xxtAI && typeof window.xxtAI.taskGiveUpList === "function" && typeof window.xxtAI.clearTaskGiveUp === "function")'
     );
     check('xxtAI.taskGiveUpList / clearTaskGiveUp 可用', api === true);
+  }
+});
+
+/**
+ * 防拖拽 + 倍速锁 1x 的视频：平台只要求观看时长 ≥ 总时长的 90%。
+ *
+ * 这条路径最危险的地方是"自己认定完成" —— 一旦按"播够 90% 就收工"，
+ * 而平台并未认可，就会**误跳过任务点**，比多花十分钟严重得多。
+ * 所以断言分两层：
+ *   1) 判据层：四个条件缺一不可（不可拖拽 / 锁 1x / ≥90% / 平台已标记完成）
+ *   2) 收尾层：状态必须被清干净（漏一个字段会让状态机卡住，下一个任务点不动）
+ */
+SCENARIOS.push({
+  name: '防拖拽+锁1x 视频到 90% 提前结束',
+  path: '/media-90',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return (this.__ct || 0) >= 100; } });',
+      // 不可拖拽：写入 currentTime 被忽略（真站点上是播放器把进度弹回去）
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true, get: function(){ return this.__ct || 0; },',
+      '    set: function(v){ /* 拖拽被播放器弹回：不采纳 */ } });',
+      // 倍速锁 1x：写入 playbackRate 被压回 1
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
+      '    configurable: true, get: function(){ return 1; }, set: function(v){ /* 被压回 1x */ } });',
+      '  HTMLMediaElement.prototype.play = function(){ return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){};',
+      // 平台自己的完成标记：默认 ≥90% 才插入、低于 90% 就移除。
+      // 第二个参数可以**强行不插标记**，用来复现"进度已过 90%、平台还没认可"这种
+      // 最危险的情况 —— 那时插件必须按未完成处理。
+      '  window.__setProgress = function(ratio, withMarker){',
+      '    var v = document.getElementById("omitone-video");',
+      '    v.__ct = 100 * ratio;',
+      '    var want = (withMarker === undefined) ? (ratio >= 0.9) : !!withMarker;',
+      '    var marker = document.getElementById("finish-marker");',
+      '    if (want) {',
+      '      if (!marker) { var m = document.createElement("span"); m.id = "finish-marker";',
+      '        m.className = "ans-job-finished"; m.textContent = "任务点已完成";',
+      '        document.getElementById("module").appendChild(m); }',
+      '    } else if (marker) { marker.parentNode.removeChild(marker); }',
+      '    return v.__ct;',
+      '  };',
+      '  window.__patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__patched === true');
+    check('媒体打桩生效（不可拖拽 + 锁 1x）', patched === true);
+
+    // ---- 判据一：倍速是否被锁在 1x
+    var lock = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var r={};' +
+      'app._detectedMaxRate=0; r.unknown=app._isRateLockedAtOne();' +
+      'app._detectedMaxRate=1; r.one=app._isRateLockedAtOne();' +
+      'app._detectedMaxRate=2; r.two=app._isRateLockedAtOne();' +
+      'return r;})()'
+    );
+    check('倍速探测无结果时不算"锁 1x"（宁可多播）', lock.unknown === false, JSON.stringify(lock));
+    check('探测结果为 1x 时判定为锁定', lock.one === true, JSON.stringify(lock));
+    check('探测结果为 2x 时不算锁定', lock.two === false, JSON.stringify(lock));
+
+    // ---- 判据二：拖拽被弹回，且这个结论被记录下来
+    var seek = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,advanceAtNinetyPercent:true});' +
+      'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
+      'app._seekTriedKeys=null; app._seekRevertedKeys=null;' +
+      'var v=document.getElementById("omitone-video"); v.__ct=0;' +
+      'var ok=app._trySeekToEnd(v,"e2e-90");' +
+      'return {ok:ok, ct:v.__ct, key:app._getMediaSeekKey(v)};})()'
+    );
+    check('对不可拖拽视频仍会尝试 seek 一次', seek.ok === true, JSON.stringify(seek));
+    check('拖拽被弹回（进度未被改动）', seek.ct === 0, JSON.stringify(seek));
+
+    await new Promise(function (r) { setTimeout(r, 1700); }); // 等 _trySeekToEnd 的 1.5s 回弹判定
+
+    var reverted = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var k=app._getMediaSeekKey(v);' +
+      'return {flag:!!(app._seekRevertedKeys && app._seekRevertedKeys[k])};})()'
+    );
+    check('回弹判定被记下来（= 不可拖拽）', reverted.flag === true, JSON.stringify(reverted));
+
+    // ---- 四个条件缺一不可
+    var gate = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");var r={};' +
+      'var k=app._getMediaSeekKey(v);' +
+      'app._detectedMaxRate=1; app._seekRevertedKeys={}; app._seekRevertedKeys[k]=true;' +
+      'window.__setProgress(0.5); r.half=app._shouldAdvanceAtNinetyPercent(v);' +
+      'window.__setProgress(0.9); r.ninety=app._shouldAdvanceAtNinetyPercent(v);' +
+      'window.__setProgress(0.999); r.nearEnd=app._shouldAdvanceAtNinetyPercent(v);' +
+      'app._detectedMaxRate=2; window.__setProgress(0.9); r.notLocked=app._shouldAdvanceAtNinetyPercent(v);' +
+      'app._detectedMaxRate=1; app._seekRevertedKeys={}; window.__setProgress(0.9); r.seekable=app._shouldAdvanceAtNinetyPercent(v);' +
+      'return r;})()'
+    );
+    check('不到 90% 不提前结束', gate.half === false, JSON.stringify(gate));
+    check('到 90% 且平台已标记完成 → 提前结束', gate.ninety === true, JSON.stringify(gate));
+    check('接近结尾时让给 ended 路径（两条路不抢）', gate.nearEnd === false, JSON.stringify(gate));
+    check('能加速的视频不提前结束', gate.notLocked === false, JSON.stringify(gate));
+    check('可拖拽的视频不提前结束', gate.seekable === false, JSON.stringify(gate));
+
+    // ---- 最重要的安全阀：进度已经过了 90%，但**平台还没认可**时，绝不能提前结束。
+    //
+    // 这一条必须把进度放在 90% 以上：如果只在 50% 上断言，它会因为"不到 90%"而通过，
+    // 根本测不到"平台完成标记"这个条件 —— 反向验证时就是这样漏掉的。
+    var safety = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var k=app._getMediaSeekKey(v);' +
+      'app._detectedMaxRate=1; app._seekRevertedKeys={}; app._seekRevertedKeys[k]=true;' +
+      'window.__setProgress(0.95, false);' + // 95% 进度，但平台没标记完成
+      'return {gate:app._shouldAdvanceAtNinetyPercent(v),' +
+      'marker:!!document.getElementById("finish-marker"),' +
+      'finished:app._isDocumentFrameFinished(v.ownerDocument)};})()'
+    );
+    check('进度过 90% 但平台没标记完成 → 不提前结束（安全阀）',
+      safety.gate === false && safety.marker === false && safety.finished === false,
+      JSON.stringify(safety));
+
+    // ---- 收尾：状态必须被清干净（漏一个字段会让状态机卡住，下一个任务点不动）
+    var finish = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._isPlaying=true; app._activeMediaJobManaged=true; app._activeMediaJobPending=true;' +
+      'app._videoEl=document.getElementById("omitone-video"); app._videoCount=1; app._currentVideoIndex=0;' +
+      'app._finishCurrentMedia("ninety-percent");' +
+      'return {playing:app._isPlaying, managed:app._activeMediaJobManaged,' +
+      'pending:app._activeMediaJobPending, videoEl:!!app._videoEl, count:app._videoCount};})()'
+    );
+    check('收尾清掉 _isPlaying', finish.playing === false, JSON.stringify(finish));
+    check('收尾清掉 _activeMediaJobManaged（漏了会卡住）', finish.managed === false, JSON.stringify(finish));
+    check('收尾清掉 _activeMediaJobPending', finish.pending === false, JSON.stringify(finish));
+    check('收尾清掉 _videoEl / _videoCount', finish.videoEl === false && finish.count === 0, JSON.stringify(finish));
+
+    // ---- 开关
+    var off = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var k=app._getMediaSeekKey(v);' +
+      'app._detectedMaxRate=1; app._seekRevertedKeys={}; app._seekRevertedKeys[k]=true;' +
+      'window.__setProgress(0.9);' +
+      'app.configs=Object.assign({},app.configs,{advanceAtNinetyPercent:false});' +
+      'return {gate:app._shouldAdvanceAtNinetyPercent(v)};})()'
+    );
+    check('开关关闭后不提前结束', off.gate === false, JSON.stringify(off));
   }
 });
 
