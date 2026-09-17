@@ -135,3 +135,35 @@ npm run e2e       # 真实 Edge 功能交叉检验（135 项）
 （`discoverExtensionId` 会优先用运行时发现的真实 ID，路径哈希降级为兜底）。
 
 **所以：看到 e2e 全线失败，先看这一行，再去怀疑代码。**
+
+### 7.3 **`git push` 会永久挂起 —— 发版请走 REST API**
+
+这台机器上 `git push origin main` **能连上却永远不返回**（实测挂满 5 分半仍在运行），
+而同一条网络下：
+
+| 操作 | 结果 |
+| --- | --- |
+| `git push origin main` | 挂起，不返回、不报错 |
+| `git fetch origin main` | 几秒完成 ✅ |
+| `GET https://api.github.com/rate_limit` | 约 1 秒 200 ✅ |
+| `POST https://uploads.github.com/.../assets` | 正常 ✅ |
+
+也就是 **push 通道单独不通**，不是梯子整体问题。所以：
+
+- **提交走 REST API**：`GET /git/ref/heads/main` 拿 sha →
+  `POST /git/blobs`（`encoding: 'utf-8'`）→ `POST /git/trees`（**必须带 `base_tree`**，否则整棵树被替换）→
+  `POST /git/commits`（**必须带 `parents`**）→ `PATCH /git/refs/heads/main`（**必须带 `force: true`**，
+  否则 `422 Update is not a fast forward`）
+- **打完 tag 才知道 tag 该指向哪个 sha**：API 提交会被 GitHub 重新签名，
+  远端 sha 必然 ≠ 本地 sha。要先提交、再看远端 sha、最后建 tag，
+  顺序反了就会撞上 `422 Object does not exist`
+- **本地对齐**：`git fetch origin main` + `git reset --hard <远端sha>`，**不要 push**
+- 已经写好的脚本在 `.workbuddy/`（`release-only.js` 建 Release + 传附件、`api-commit.js` 提交文件），
+  用之前把令牌写进 `.workbuddy/.ghtoken`
+
+### 7.4 令牌要等整件事做完再删
+
+本仓库栽过一次：tag 推上去了、main 推上去了，**唯独 Release 和附件没发出去** ——
+因为清理时提前把 `.ghtoken` 删了。**顺序是"发版 → 核验远端 → 再删令牌"。**
+（令牌本身按用户偏好应当是**一次性、最短有效期**，用完提醒他去 revoke。）
+
