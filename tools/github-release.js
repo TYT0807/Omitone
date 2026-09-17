@@ -32,10 +32,21 @@ var REPO = 'Omitone';
 var API = 'https://api.github.com';
 var BRANCH = 'main';
 
-/** 固定附件名 —— 改这里等于改 README 的下载直链，别改。 */
+/**
+ * 固定附件名 —— 改这里等于改 README 的下载直链，别改。
+ *
+ * ⚠️ 附件名**必须是纯 ASCII**。GitHub 的上传接口会把非 ASCII 名字**悄悄洗掉**：
+ * 实测传 `使用说明.pdf` 会返回 **201 成功**，但落在 Release 上的名字变成 `default.pdf`；
+ * 而且从此**任何**非 ASCII 名字都返回 `422 already_exists`（它们被映射到同一个 `default.pdf`）。
+ * 这个坑不改内容、不改状态码、只改名字 —— 不逐个核对附件名根本发现不了，
+ * 而用户看到的就是 Release 页面上一个叫 `default.pdf` 的附件。
+ *
+ * 所以：仓库里的文件仍叫 `使用说明.pdf`（面向用户），**上传时的名字用 ASCII**。
+ * `verify` 会逐个核对附件名，`check.js` 也会拦下非 ASCII 的附件名。
+ */
 var ASSETS = [
-  { src: null, name: 'omitone.zip' },        // src 在运行时按 manifest.version 推出
-  { src: '使用说明.pdf', name: '使用说明.pdf' }
+  { src: null, name: 'omitone.zip' },                 // src 在运行时按 manifest.version 推出
+  { src: '使用说明.pdf', name: 'Omitone-manual.pdf' } // name 必须 ASCII（见上）
 ];
 
 /**
@@ -285,13 +296,25 @@ async function cmdVerify(tag) {
     console.log('  附件 ' + a.name + '  ' + (a.size / 1024).toFixed(1) + ' KB  state=' + a.state);
   });
 
+  // 附件名必须与 ASSETS 声明的**逐字一致**。
+  // GitHub 会把非 ASCII 名字洗成 `default.pdf` 并照常返回 201 ——
+  // 只看 state=uploaded 会放过这种"名字错了、其余全正常"的情况（v1.1.2 真踩过）。
+  var wantNames = ASSETS.map(function (a) { return a.name; });
+  var gotNames = rel.assets.map(function (a) { return a.name; });
+  var wrongNames = wantNames.filter(function (n) { return gotNames.indexOf(n) === -1; });
+
   // README 依赖的永久直链必须真的能用（用 HEAD 探一下最终地址，不下载全文）
   var linkOk = rel.assets.some(function (a) { return a.name === 'omitone.zip'; });
   console.log('\n下载直链      https://github.com/' + OWNER + '/' + REPO + '/releases/latest/download/omitone.zip');
   console.log('               ' + (linkOk ? '✓ 该 Release 里有同名附件，链接可用' : '✗ 缺 omitone.zip，README 的下载入口是死链！'));
 
   if (bad.length) console.log('\n未上传完成的附件: ' + bad.join(', '));
-  if (bad.length || !linkOk || tagTarget !== head) process.exitCode = 1;
+  if (wrongNames.length) {
+    console.log('\n附件名与 ASSETS 声明不符 —— 实际: ' + gotNames.join(', '));
+    console.log('  缺少: ' + wrongNames.join(', '));
+    console.log('  原因：非 ASCII 附件名会被 GitHub 洗成 default.pdf，附件名必须纯 ASCII');
+  }
+  if (bad.length || wrongNames.length || !linkOk || tagTarget !== head) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------

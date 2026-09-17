@@ -356,6 +356,28 @@ function checkUserEntryPoints() {
       '附件名固定为 ' + ZIP_ASSET + '，写版本号会让说明书一升级就过期');
   }
 
+  // 5) 发布附件名必须是纯 ASCII
+  //
+  // GitHub 的上传接口会把非 ASCII 附件名**洗成 `default.pdf`**，而且照常返回 201 成功 ——
+  // 不报错、不留日志，用户看到的就是 Release 页面上一个叫 default.pdf 的附件。
+  // v1.1.2 发布时真踩过（附件 `使用说明.pdf` 落成了 `default.pdf`），
+  // 所以在这里静态拦下：**文件可以叫中文名，上传的名字必须是 ASCII**。
+  var relSrc = read('tools/github-release.js');
+  var assetsBlock = relSrc.match(/var ASSETS = \[[\s\S]*?\];/);
+  if (!assetsBlock) {
+    problemsHere.push('tools/github-release.js 里找不到 ASSETS 声明 —— ' +
+      '附件名守卫读不到目标，请同步这段正则');
+  } else {
+    var nameRe = /name:\s*'([^']*)'/g;
+    var nm;
+    while ((nm = nameRe.exec(assetsBlock[0]))) {
+      if (/[^\x00-\x7F]/.test(nm[1])) {
+        problemsHere.push('发布附件名 "' + nm[1] + '" 含非 ASCII 字符 —— ' +
+          'GitHub 会把它洗成 default.pdf，且返回 201 不报错。附件名必须纯 ASCII');
+      }
+    }
+  }
+
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
   else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
 }

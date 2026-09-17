@@ -82,6 +82,17 @@ e2e **135 项 / 14 个场景**，而实测已经是 **52 项** 与 **162 项 / 1
 **纯 LF 的 3 行输入也会返回 3**。用错方法会把 LF 仓库"修"成 CRLF，
 正是「用户入口守卫」要防的那类事故。判据只认 `git ls-files --eol` 或直接数字节。
 
+### 发布时真踩到的坑：附件名被 GitHub 洗成 `default.pdf`
+
+发布 1.1.2 时，附件 `使用说明.pdf` 上传**返回 201 成功**，但落在 Release 上的名字
+变成了 **`default.pdf`**；而且从此**任何**非 ASCII 名字都返回 `422 already_exists`
+（它们都被映射到同一个 `default.pdf`）。接口不报错、`state` 也是 `uploaded`，
+**只有逐个核对附件名才会发现** —— 用户看到的就是 Release 页面上一个叫 default.pdf 的附件。
+
+- 上传用的名字改成纯 ASCII（`Omitone-manual.pdf`）；**仓库里的文件仍叫 `使用说明.pdf`**
+- `verify` 现在会逐个核对附件名是否与 `ASSETS` 声明一致（只看 `state=uploaded` 会放过它）
+- `check.js` 的「用户入口守卫」加一条：`ASSETS` 里的附件名含非 ASCII 直接报错（**已反向验证**）
+
 测试：自检 10 → **11 项**；集成 52 项、真实 Edge e2e 162 项不变，全绿。
 
 ---
