@@ -399,6 +399,13 @@
           }
           for (var j = 0; j < texts.length; j++) {
             if (t.indexOf(texts[j]) !== -1) {
+              // 记下到底点了什么。这个函数**只按文案匹配、点完就返回**，
+              // 现场报过「答对后选项一直闪」，但看不出是谁在点 —— 补上日志才能定位。
+              emitRuntimeLog('info', 'dismiss popups: click', {
+                text: String(t).slice(0, 30),
+                cls: String(buttons[i].className || '').slice(0, 60),
+                matched: texts[j]
+              });
               buttons[i].click();
               return true;
             }
