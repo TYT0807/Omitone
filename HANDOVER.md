@@ -162,13 +162,34 @@ DeepSeek 靠"请求前缀完整匹配已持久化的缓存单元"命中。把提
 临时文件放 `.workbuddy/`（已 gitignore）。**`git add -A` 之前先看 `git status`** ——
 本项目发生过把自检输出（`.c1.txt` 之流）一起提交并推上 GitHub 的事故（commit `00202a6` 修的）。
 
+### 7.6 `git push` 会挂起，但 `git fetch` 正常（本轮新增的地雷）
+
+本机网络下 `git push origin main` **能连上却永远不返回**（跑了 5 分半仍在挂），
+而 `git fetch` 只用几秒就完成、GitHub REST API 也是 1 秒内 200 —— 说明是 push 通道的问题，
+不是梯子整体不通。
+
+**发版别赌 `git push`。** 两条替代路径：
+
+1. **提交走 REST API**：取 `refs/heads/main` 的 sha → `POST /git/blobs` → `POST /git/trees`（带 `base_tree`）
+   → `POST /git/commits`（带 `parents`）→ `PATCH /git/refs/heads/main`（**必须带 `force: true`**，
+   否则报 `Update is not a fast forward`）
+2. **本地对齐远端**：API 提交会被 GitHub 重新签名（Verified），远端 sha 必然与本地不同。
+   提交后用 `git fetch origin main` + `git reset --hard <远端sha>` 对齐，**不要再 push**
+
+附件（zip / PDF）走 `uploads.github.com` 传，与 push 通道无关，一般正常。
+
+### 7.7 令牌要等整件事做完再删
+
+本项目在这一条上栽过一次：Release 还没建就把 `.ghtoken` 删了，导致 tag 推上去了、
+main 也推上去了，**唯独 Release 和附件没发出去**，只能再要一次令牌。
+**清理顺序是"发版 → 核验 → 再删令牌"。**
+
 ---
 
 ## 8. 当前已知未解决 / 建议下一步
 
 | 项 | 说明 | 建议 |
 | --- | --- | --- |
-| **README 有两节同名的「已知缺陷与重要限制」** | 一节约在 68 行、一节约在 167 行，内容高度重叠，有长期漂移风险 | 合并成一节，把另一处改成链接 |
 | **`configs` 三份默认值无 schema 校验** | `content.js` / `page.js` / `popup.js` 各一份，靠人手工对齐 | 抽成 `libs/config-defaults.js` 单一真源 |
 | **`page.js` 体量（350KB / 8.4k 行）** | 它是主体但也是唯一的巨石；分割收益大、风险更高 | 先补测试再动，按"预览 / 答题 / 媒体 / 调度"切 |
 | **密钥只在 `chrome.storage.local`** | 已经足够安全（无自有服务器），但没有加密 | 不必改；文档里已给出可自验方法 |
