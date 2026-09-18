@@ -61,6 +61,10 @@
     apiConnectionFailed: false,
     model: 'deepseek-v4-flash',
     systemPrompt: '',
+    // 思考强度：'off'（默认）/ 'low' / 'high'。详见 libs/thinking.js。
+    // 必须在这里也放一份：content.js 在配置还没加载完时靠它兜底，
+    // 缺了会读成 undefined（`tools/check.js` 的「读了就必须有自己的默认值」守卫会报错）。
+    thinkingLevel: 'off',
     retryInterval: 2000,
     maxRetries: 10,
     videoCheckInterval: 1500,
@@ -165,6 +169,12 @@
   // 此时宁可明确报错，也不要用一份悄悄分叉的兜底提示词继续答题。
   const PROMPT = (typeof self !== 'undefined' && self.OmitonePrompt) || null;
 
+  // 思考参数的唯一真源是 libs/thinking.js（同样排在 content.js 之前注入）。
+  // 原先这里写死成"只对 DeepSeek 加 thinking:{type:disabled}"，改为按渠道白名单：
+  // 不认识的渠道在"关闭"档一个参数都不发 —— 与升级前的行为完全一致，
+  // 所以不会把任何现有用户搞成 400。详见那个文件顶部的说明。
+  const THINKING = (typeof self !== 'undefined' && self.OmitoneThinking) || null;
+
   /**
    * 扩展自带资源缺失时的统一报错。
    *
@@ -177,7 +187,24 @@
   function missingModuleError() {
     if (!API_URL) return 'api-url module missing (libs/api-url.js) — 请在 edge://extensions 重新加载扩展';
     if (!PROMPT) return 'prompt module missing (libs/prompt.js) — 请在 edge://extensions 重新加载扩展';
+    if (!THINKING) return 'thinking module missing (libs/thinking.js) — 请在 edge://extensions 重新加载扩展';
     return '';
+  }
+
+  /**
+   * 这次请求该带哪些思考参数（按渠道白名单，见 libs/thinking.js）。
+   *
+   * 返回一个**可安全合并进请求体**的对象：认不出的渠道返回空对象 ——
+   * 每个厂商对未知参数的反应不一样，有的忽略、有的直接 400，
+   * 所以"不发"永远是安全默认。
+   */
+  function buildThinkingParams(config) {
+    if (!THINKING) return {};
+    try {
+      return THINKING.buildThinkingParams(config).params || {};
+    } catch (e) {
+      return {};
+    }
   }
 
   function buildSystemPrompt(config) {
@@ -337,17 +364,20 @@
     let maxTokens = Number(config.maxTokens) > 0 ? Number(config.maxTokens) : 8192;
     let tokenField = 'max_tokens';
 
+    // 思考参数：按渠道白名单算一次（见 libs/thinking.js）。
+    // 升级前这段写死成"只对 DeepSeek 加 thinking:{type:disabled}"，
+    // 所以旧行为 = 现在的 'off' 档，老用户升级后没有任何变化。
+    let thinkingParams = buildThinkingParams(config);
+    let thinkingStripped = false;
+    const thinkingSummary = THINKING ? THINKING.describe(config) : 'thinking module missing';
+
     for (let attempt = 0; attempt < 4; attempt++) {
       const body = { model: config.model, messages, temperature: 0.1 };
       body[tokenField] = maxTokens;
-      // DeepSeek V4 默认开启思考：一道选择题要先烧 ~200 个推理 token 才输出 5 个答案
-      // token（实测 361 → 133）。答题是模式化任务，不需要推理，关掉。
-      // ⚠️ 只对 DeepSeek 加：其他 OpenAI 兼容服务会对未知参数直接报 400。
-      // 实测关闭后模型可能改回 {"answer":...} 对象格式 —— normalizeItem 的兼容层
-      // 同时认识位置式与对象式两套输出，这是设计内的抖动，不是回归。
-      if (/deepseek/i.test(String(config.model || '')) || /api\.deepseek\.com/i.test(String(config.apiUrl || ''))) {
-        body.thinking = { type: 'disabled' };
-      }
+      // 思考参数合并进来。
+      // ⚠️ 只发白名单里的字段：其他 OpenAI 兼容服务商对未知参数的反应不一致，
+      // 有的忽略、有的直接 400，所以"不发"是安全默认（见 buildThinkingParams）。
+      Object.assign(body, thinkingParams);
       const response = await apiFetch(url, {
         method: 'POST',
         headers,
@@ -374,6 +404,19 @@
         if (/max_tokens|max_completion_tokens|token/i.test(errText) && /limit|exceed|too (large|big)|range|between|must be|参数/i.test(errText) && maxTokens > 1024) {
           appendRuntimeLog('warn', 'llm max_tokens out of range, retry lower', { maxTokens });
           maxTokens = Math.max(1024, Math.floor(maxTokens / 2));
+          continue;
+        }
+        // 服务商不认这套思考参数（用户选了"低/高"档时最可能碰到）：
+        // **摘掉它重试一次**，而不是把整次答题判死。
+        // 不这么做的话，症状是"换了个模型就一直 400" —— 看起来像插件坏了。
+        if (!thinkingStripped && Object.keys(thinkingParams).length &&
+            /reasoning_effort|enable_thinking|thinking|unsupported|unknown|unexpected|extra|not support|invalid|参数|不支持/i.test(errText)) {
+          thinkingStripped = true;
+          thinkingParams = {};
+          appendRuntimeLog('warn', 'llm rejected thinking params, retry without them', {
+            error: errText.slice(0, 160),
+            thinking: thinkingSummary
+          });
           continue;
         }
       }
@@ -455,7 +498,12 @@
   async function handleLLMRequestDirect(payload) {
     const questions = payload && payload.questions ? payload.questions : [];
     const config = await loadConfig();
-    appendRuntimeLog('info', 'llm_request direct', { questionCount: questions.length });
+    appendRuntimeLog('info', 'llm_request direct', {
+      questionCount: questions.length,
+      // 把"这次用的是哪家、什么思考强度、发了什么参数"记下来。
+      // 换渠道出问题时，第一个要问的就是这个 —— 否则只能靠猜。
+      thinking: THINKING ? THINKING.describe(config) : 'thinking module missing'
+    });
 
     const missing = missingModuleError();
     if (missing) {
@@ -753,7 +801,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.1.4</span>',
+      '    <span class="brand">Omitone 1.1.5</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',

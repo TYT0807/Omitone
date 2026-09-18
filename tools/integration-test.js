@@ -171,6 +171,10 @@ function createHarness(options) {
 
   // ---- chrome.* 桩
   var modelResponder = options.modelResponder || fakeAnswerPositional;
+  // 可选：自定义 api_fetch 的应答。返回 falsy 就走默认的"成功应答"。
+  // 加它是为了测**错误路径**（例如服务商拒绝思考参数时会不会摘掉重试）——
+  // 没有它就只能测成功路径，而现场出事的全是失败路径。
+  var apiResponder = options.apiResponder || null;
   var sentRequests = [];
   sandbox.__sentRequests = sentRequests;
 
@@ -196,6 +200,14 @@ function createHarness(options) {
       sendMessage: function (message, cb) {
         if (message && message.type === 'api_fetch') {
           sentRequests.push(message.payload);
+
+          if (apiResponder) {
+            var custom = apiResponder(message.payload, sentRequests.length);
+            if (custom) {
+              setTimeout(function () { cb(custom); }, 0);
+              return;
+            }
+          }
 
           var requestBody = null;
           try { requestBody = JSON.parse(message.payload.body); } catch (e) {}
@@ -228,8 +240,30 @@ function createHarness(options) {
     }
   };
 
-  // ---- 加载隔离世界里的三个脚本本体，顺序必须与 manifest.content_scripts.js 一致
-  ['libs/api-url.js', 'libs/prompt.js', 'content.js'].forEach(function (file) {
+  // ---- 加载隔离世界里的脚本本体，顺序必须与 manifest.content_scripts.js 一致
+  //
+  // ⚠️ 这份清单**必须与 manifest 同步**。历史教训：libs/thinking.js 加进 manifest 之后
+  // 忘了加到这里，content.js 在测试里读到 null 模块 —— 于是集成测试报的错
+  // 看起来像"答题功能坏了"，其实是测试环境自己缺文件。
+  // 下面这条守卫就是为了让这种漏项当场报错、而不是伪装成业务 bug。
+  var INJECTED_FILES = ['libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
+  (function guardInjectionList() {
+    var manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
+    var injectedLibs = [];
+    (((manifest.content_scripts || [])[0] || {}).js || []).forEach(function (f) {
+      if (f.indexOf('libs/') === 0) injectedLibs.push(f);
+    });
+    // 只盯"content.js 会读的模块"：md5 / Typr 这类纯浏览器库不进测试沙箱是有意的
+    ['libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
+      if (injectedLibs.indexOf(file) === -1) {
+        throw new Error('manifest 未注入 ' + file + '，但测试清单里有它 —— 两者已分叉');
+      }
+      if (INJECTED_FILES.indexOf(file) === -1) {
+        throw new Error('manifest 注入了 ' + file + '，但测试清单里没有 —— 请同步 INJECTED_FILES');
+      }
+    });
+  })();
+  INJECTED_FILES.forEach(function (file) {
     vm.runInContext(
       fs.readFileSync(path.join(ROOT, file), 'utf8'),
       sandbox,
@@ -622,6 +656,107 @@ async function testFontTable() {
 }
 
 // ---------------------------------------------------------------------------
+// [10] 思考强度按渠道白名单发参数
+//
+// 这一段的重点是**不该发的千万别发**：升级前写死"只对 DeepSeek 加 thinking"，
+// 其他服务商一个思考参数都收不到。现在改成表驱动，最大的回归风险就是
+// 给某家发了它不认识的字段 → 对方直接 400 → 用户看到"换成 Kimi 就不能答题了"。
+// 所以断言里"什么都没有"和"有正确的字段"一样重要。
+// ---------------------------------------------------------------------------
+async function testThinkingLevels() {
+  console.log('\n[10] 思考强度：按渠道白名单发参数');
+
+  var THINKING = require('../libs/thinking.js');
+  var CASES = [
+    { name: 'DeepSeek / 关闭（升级前的行为，必须一字不差）',
+      cfg: { apiUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingLevel: 'off' },
+      expect: { thinking: { type: 'disabled' } }, forbid: ['reasoning_effort'] },
+    { name: 'DeepSeek / 低',
+      cfg: { apiUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingLevel: 'low' },
+      expect: { thinking: { type: 'enabled' }, reasoning_effort: 'low' }, forbid: [] },
+    { name: 'Kimi / 关闭（K3 关不掉，那就一个参数都不发）',
+      cfg: { apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingLevel: 'off' },
+      expect: {}, forbid: ['thinking', 'reasoning_effort', 'enable_thinking'] },
+    { name: '通义 / 关闭（显式发 false，因为商业版默认关、开源版默认开）',
+      cfg: { apiUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen3.8-flash', thinkingLevel: 'off' },
+      expect: { enable_thinking: false }, forbid: ['thinking'] },
+    { name: '认不出的渠道 / 关闭 —— 一个参数都不发（最安全的默认）',
+      cfg: { apiUrl: 'https://my-proxy.example.com/v1', model: 'whatever', thinkingLevel: 'off' },
+      expect: {}, forbid: ['thinking', 'reasoning_effort', 'enable_thinking'] }
+  ];
+
+  for (var i = 0; i < CASES.length; i++) {
+    var c = CASES[i];
+    var harness = createHarness({ config: c.cfg });
+    var id = 100 + i;
+    harness.sendFromPage({
+      source: 'xxt_app', id: id, type: 'llm_request',
+      payload: { questions: [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }] }
+    });
+    await harness.waitForResponse(id);
+
+    var sent = harness.sandbox.__sentRequests[0];
+    var body = sent ? JSON.parse(sent.body) : null;
+    if (!body) {
+      check(c.name + ' —— 拿得到请求体', false, '没有发出请求');
+      continue;
+    }
+    var expectedKeys = Object.keys(c.expect);
+    var ok = expectedKeys.every(function (k) {
+      return JSON.stringify(body[k]) === JSON.stringify(c.expect[k]);
+    });
+    check(c.name + ' —— 该带的字段带对了', ok,
+      '期望 ' + JSON.stringify(c.expect) + '，实际 thinking=' + JSON.stringify(body.thinking)
+      + ' reasoning_effort=' + JSON.stringify(body.reasoning_effort)
+      + ' enable_thinking=' + JSON.stringify(body.enable_thinking));
+    var leaked = c.forbid.filter(function (k) { return k in body; });
+    check(c.name + ' —— 不该带的字段一个都没有', leaked.length === 0,
+      leaked.length ? '多发了：' + leaked.join(',') : '干净');
+  }
+
+  // 反向验证 ①：档位写成非法值必须回落 'off'（而不是让 undefined 混进请求体）
+  check('非法档位回落 off', THINKING.normalizeLevel('bogus') === 'off'
+    && Object.keys(THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingLevel: 'bogus' }).params).length === 1,
+    'normalizeLevel(bogus)=' + THINKING.normalizeLevel('bogus'));
+
+  // 反向验证 ②：服务商**拒绝**思考参数时必须摘掉重试，而不是把整次答题判死。
+  // 这条是失败路径，没有它就只能等用户现场撞上"换个模型就一直 400"。
+  var rejected = [];
+  var retryHarness = createHarness({
+    config: { apiUrl: 'https://my-proxy.example.com/v1', model: 'proxy-x', thinkingLevel: 'high' },
+    apiResponder: function (payload) {
+      var body = {};
+      try { body = JSON.parse(payload.body); } catch (e) {}
+      rejected.push(Object.keys(body).filter(function (k) {
+        return k === 'reasoning_effort' || k === 'thinking' || k === 'enable_thinking';
+      }));
+      if (body.reasoning_effort) {
+        return {
+          success: false, status: 400, statusText: 'Bad Request',
+          text: '{"error":"unknown parameter: reasoning_effort"}', data: null
+        };
+      }
+      return null; // 第二次放行，走默认成功应答
+    }
+  });
+  retryHarness.sendFromPage({
+    source: 'xxt_app', id: 200, type: 'llm_request',
+    payload: { questions: [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }] }
+  });
+  var retryData = await retryHarness.waitForResponse(200);
+  check('被拒绝后仍拿到答案（没有把整次答题判死）', !!retryData && retryData.success === true,
+    JSON.stringify(retryData).slice(0, 160));
+  check('共发 2 次请求（先带参数、再摘掉参数）', retryHarness.sandbox.__sentRequests.length === 2,
+    '实际 ' + retryHarness.sandbox.__sentRequests.length + ' 次');
+  check('第一次确实带了 reasoning_effort', rejected.length > 0 && rejected[0].indexOf('reasoning_effort') !== -1,
+    JSON.stringify(rejected));
+  var secondBody = retryHarness.sandbox.__sentRequests[1]
+    ? JSON.parse(retryHarness.sandbox.__sentRequests[1].body) : {};
+  check('第二次已经摘掉思考参数', !('reasoning_effort' in secondBody) && !('thinking' in secondBody),
+    JSON.stringify(secondBody).slice(0, 160));
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -636,6 +771,7 @@ async function main() {
   await testPromptContainsBannedAnswers();
   await testEmptyAnswerRefill();
   await testFontTable();
+  await testThinkingLevels();
 
   console.log('');
   if (failures.length) {

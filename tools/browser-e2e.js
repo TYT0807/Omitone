@@ -934,6 +934,151 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 2b. 多选题：连写字母 / 单字母 / 重试下限 / 幂等点击 ---- */
+SCENARIOS.push({
+  name: '多选题：连写字母 / 单字母 / 重试下限',
+  path: '/quiz',
+  run: async function (ctx) {
+    // 用户报的「多选题有时只选一个、然后卡住」有三条根因，这里逐条锁住：
+    //   ① 弹题那条路没有 "AC" → ["A","C"] 的拆分 → 一个选项都匹配不上（"一直选不对"）
+    //   ② 重试排序的目标规模被 canonical.length 带成 1 → 永远只试"选一项"的组合
+    //   ③ 复选被点两次 = 开关两次 = 抵消 → 少选一项
+    // 断言全部盯**最终 DOM 里真的选了几项**，不看中间调用了什么 ——
+    // 断言实现细节会把自己绑死，而且实现一改就误报。
+    var info = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var qs=app._extractQuestions(null);' +
+      'var mq=null;for(var i=0;i<qs.length;i++){if(qs[i].type==="multiple"){mq=qs[i];}}' +
+      'if(!mq) return {found:false};window.__mq=mq;' +
+      'var qid=app._getQuestionIdFromElement(mq._element);' +
+      'return {found:true,qid:qid,options:mq.options.length,min:app._getMultiChoiceMinSelections(mq._element)};})()'
+    );
+    check('fixture 里找得到多选题', info && info.found === true, JSON.stringify(info));
+    if (!info || !info.found) return;
+    check('题干标着「多选题」→ 最少选 2 项', info.min === 2, JSON.stringify(info));
+
+    // ① + ③ 连写 "AC" 必须拆开填进去，而且最终真的选中两项
+    var r1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var el=window.__mq._element;' +
+      'var qid=app._getQuestionIdFromElement(el);' +
+      'var clicked=app._applyChoiceAnswer(el,"AC","multiple");' +
+      'var hidden=document.getElementById("answer"+qid);' +
+      'var marked=[];var badges=document.querySelectorAll(".choice"+qid);' +
+      'for(var i=0;i<badges.length;i++){if(badges[i].classList.contains("check_answer_dx"))marked.push(String(badges[i].getAttribute("data")));}' +
+      'var checked=[];var ins=el.querySelectorAll("input[type=checkbox]");' +
+      'for(var j=0;j<ins.length;j++){if(ins[j].checked)checked.push(ins[j].value);}' +
+      'return {clicked:clicked,hidden:hidden?hidden.value:null,marked:marked.sort(),checked:checked.sort()};})()'
+    );
+    check('连写答案 "AC" 被拆成两项并全部点上',
+      r1 && r1.clicked === 2 && JSON.stringify(r1.checked) === '["A","C"]', JSON.stringify(r1));
+    check('隐藏域写的是两项的并集（不是只剩最后一项）',
+      r1 && r1.hidden === 'AC', JSON.stringify(r1 && r1.hidden));
+    check('两个选项徽标都带勾选态（复选没有被点两次抵消）',
+      r1 && JSON.stringify(r1.marked) === '["A","C"]', JSON.stringify(r1 && r1.marked));
+
+    // 幂等：同样的答案再填一遍，结果不能反过来变成"取消"
+    var r2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var el=window.__mq._element;' +
+      'var qid=app._getQuestionIdFromElement(el);' +
+      'app._fillMultiChoice(el,["A","C"]);' +
+      'app._fillMultiChoice(el,["A","C"]);' +
+      'var hidden=document.getElementById("answer"+qid);' +
+      'return {hidden:hidden?hidden.value:null};})()'
+    );
+    check('重复填同一答案不会把已选项切掉（幂等）', r2 && r2.hidden === 'AC', JSON.stringify(r2));
+
+    // ② 模型只给一个字母时：本地扩成两项，**不发额外请求**（token 一分不涨）
+    var beforeReq = ctx.mock.requests.length;
+    var r3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var el=window.__mq._element;' +
+      'var qid=app._getQuestionIdFromElement(el);' +
+      'var values=app._normalizeChoiceAnswerValues("B","multiple",el);' +
+      'app._fillMultiChoice(el,"B");' +
+      'var hidden=document.getElementById("answer"+qid);' +
+      'return {values:values,hidden:hidden?hidden.value:null};})()'
+    );
+    check('只给一个字母 → 本地扩成两项',
+      r3 && r3.values.length >= 2 && r3.values.indexOf('B') !== -1, JSON.stringify(r3));
+    check('扩展后的答案真的填进 DOM（不是只填一项）',
+      r3 && r3.hidden && r3.hidden.length >= 2, JSON.stringify(r3));
+    check('本地扩展不发任何模型请求（零 token）', ctx.mock.requests.length === beforeReq,
+      '多发了 ' + (ctx.mock.requests.length - beforeReq) + ' 次');
+
+    // ④ 重试下限：已知 "C" 是错的，下一个候选不能又是"只选一项"
+    var r4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=window.__mq;var el=q._element;' +
+      'var loaded=app._loadQuizCorrectAnswerCache(null);' +
+      'app._addWrongQuizAnswer(loaded.data,{qid:app._getQuestionIdFromElement(el),' +
+      'titleKey:app._getQuizTitleKeyFromElement(el,q.title),answer:"C",type:"multiple",canonical:"C"});' +
+      'app._saveQuizCorrectAnswerCache(null,loaded.data);' +
+      'var next=app._avoidKnownWrongAnswer("C","multiple",q,null);' +
+      'return {join:Array.isArray(next)?next.join(""):String(next)};})()'
+    );
+    check('多选题重试不会再给"只选一项"的组合',
+      r4 && r4.join.length >= 2 && r4.join !== 'C', JSON.stringify(r4));
+
+    // ④b 上面那条还不足以锁住"目标规模下限" —— 它同时被"低于最少项数的组合排最后"兜着，
+    // 所以把下限改回 preferredSize||2 也可能照样通过（实测过：改回去那条仍然绿）。
+    // 这里造一个**没有题型名**的复选题：此时 min=1，排序不再帮忙，
+    // 唯一挡住"退回只选一项"的就是目标规模下限本身。
+    var r4b = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var box=document.createElement("div");' +
+      'box.innerHTML="<div class=\'TiMu\'>" +' +
+      '"<span>下列说法正确的有</span>" +' +
+      '"<ul class=\'Zy_ulTop\'>" +' +
+      '["A","B","C","D"].map(function(L,i){var t=["甲","乙","丙","丁"][i];' +
+      'return "<li class=\'before-after\' qid=\'99001\' data=\'"+L+"\'><label>" +' +
+      '"<input type=\'checkbox\' value=\'"+L+"\'>" +' +
+      '"<span class=\'num_option num_option_dx choice99001\' data=\'"+L+"\'>"+L+"</span>" +' +
+      '"<span class=\'fl after\'>"+t+"</span></label></li>";}).join("") +' +
+      '"</ul><input type=\'hidden\' id=\'answer99001\' value=\'\'></div>";' +
+      'document.body.appendChild(box);' +
+      'var el=box.firstChild;' +
+      'var q={index:9,type:"multiple",title:"下列说法正确的有",options:["甲","乙","丙","丁"],_element:el};' +
+      'var loaded=app._loadQuizCorrectAnswerCache(null);' +
+      'app._addWrongQuizAnswer(loaded.data,{qid:"99001",' +
+      'titleKey:app._getQuizTitleKeyFromElement(el,q.title),answer:"C",type:"multiple",canonical:"C"});' +
+      'app._saveQuizCorrectAnswerCache(null,loaded.data);' +
+      'var next=app._avoidKnownWrongAnswer("C","multiple",q,null);' +
+      'return {min:app._getMultiChoiceMinSelections(el),' +
+      'join:Array.isArray(next)?next.join(""):String(next)};})()'
+    );
+    check('没有题型名时 min 回落 1（不硬套"最少两项"，免得误伤不定项）',
+      r4b && r4b.min === 1, JSON.stringify(r4b));
+    check('即便 min=1，重试也不会退回"只选一项"（靠的是目标规模下限 2）',
+      r4b && r4b.join.length >= 2 && r4b.join !== 'C', JSON.stringify(r4b));
+
+    // ⑤ 不定项：允许单选，别被上面的规则误伤（题型名判定必须区分这两者）
+    var r5 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=document.createElement("div");' +
+      'box.innerHTML="<span class=\'newZy_TItle\'>不定项选择题</span>";' +
+      'var v=app._normalizeChoiceAnswerValues("B","multiple",box);' +
+      'return {min:app._getMultiChoiceMinSelections(box),values:v};})()'
+    );
+    check('不定项选择题不扩成两项（单选也是正确答案）',
+      r5 && r5.min === 1 && JSON.stringify(r5.values) === '["B"]', JSON.stringify(r5));
+
+    // ⑥ 连续答错到阈值 → 放弃继续折腾，但**必须把题填上**：
+    //    章节小测的提交前置是"每题都有值"，空着就永远交不出去 —— 那才是真正的卡住。
+    var r6 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=window.__mq;var el=q._element;' +
+      'var before=app._isQuizQuestionBestEffort(q,null);' +
+      'var loaded=app._loadQuizCorrectAnswerCache(null);' +
+      '["AB","AC","AD"].forEach(function(a){' +
+      'app._addWrongQuizAnswer(loaded.data,{qid:app._getQuestionIdFromElement(el),' +
+      'titleKey:app._getQuizTitleKeyFromElement(el,q.title),answer:a,type:"multiple",canonical:a});});' +
+      'app._saveQuizCorrectAnswerCache(null,loaded.data);' +
+      'var after=app._isQuizQuestionBestEffort(q,null);' +
+      'var filled=app._fillBestEffortQuizAnswers(app._extractQuestions(null),null);' +
+      'return {before:before,after:after,filled:filled,' +
+      'value:app._getQuizQuestionFilledValue(null,q)};})()'
+    );
+    check('错够阈值前不放弃', r6 && r6.before === false, JSON.stringify(r6));
+    check('错够阈值后判定为"放弃继续折腾"', r6 && r6.after === true, JSON.stringify(r6));
+    check('放弃后仍把题填上（表单不满就永远交不出去）', r6 && !!r6.value, JSON.stringify(r6));
+  }
+});
+
 /** ---- 3. 记住正确答案（批改结果页） ---- */
 SCENARIOS.push({
   name: '记住正确答案（批改结果页）',
@@ -1829,17 +1974,103 @@ SCENARIOS.push({
       '(function(){return {' +
       'rateVal: document.getElementById("rateVal") ? document.getElementById("rateVal").textContent : null,' +
       'presetValues: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return o.value;}),' +
+      'presetLabels: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return String(o.textContent);}),' +
       'presetSelected: document.getElementById("providerPreset").value,' +
+      'thinkingValues: Array.prototype.map.call(document.getElementById("thinkingLevel").options, function(o){return o.value;}),' +
+      'thinkingSelected: document.getElementById("thinkingLevel").value,' +
+      'thinkingHint: document.getElementById("thinkingHint") ? document.getElementById("thinkingHint").textContent : null,' +
       'apiUrl: document.getElementById("apiUrl").value,' +
       'model: document.getElementById("model").value,' +
       'toggleCount: document.querySelectorAll(".toggle").length,' +
       'hasStart: !!document.getElementById("start")};})()'
     );
     check('弹窗初始化完成（速度档显示已填充）', !!(ui.rateVal && ui.rateVal.indexOf('x') !== -1), JSON.stringify(ui.rateVal));
-    // 只预置真正实测过的服务商：删掉未验证的厂商预置，避免"照着填却用不了"
-    check('接入方式只剩实测过的预设',
-      JSON.stringify(ui.presetValues) === JSON.stringify(['deepseek', 'claude', 'gemini', 'custom-openai']),
+    // 预置清单：1.1.5 起按需求加了 Kimi 与通义，所以这里不再要求"只剩 4 个"，
+    // 改成钉住**这一份确定的白名单** —— 目的是防止以后又悄悄塞回一堆没实测的厂商
+    // （历史上内置过 9 家，模型名全是钉死的快照，用户照着填完发现用不了）。
+    check('接入方式就是这份白名单（不许再悄悄加没实测的厂商）',
+      JSON.stringify(ui.presetValues) === JSON.stringify(['deepseek', 'kimi', 'qwen', 'claude', 'gemini', 'custom-openai']),
       JSON.stringify(ui.presetValues));
+    // 未实测的厂商必须在界面上**如实标注**，否则用户会以为它们和 DeepSeek 一样验证过
+    check('只有 DeepSeek 标"实测"，其余明标"未实测"',
+      ui.presetLabels[0].indexOf('实测') !== -1 && ui.presetLabels[0].indexOf('未实测') === -1 &&
+      ['kimi', 'qwen', 'claude', 'gemini'].every(function (v) {
+        var i = ui.presetValues.indexOf(v);
+        return i !== -1 && ui.presetLabels[i].indexOf('未实测') !== -1;
+      }),
+      JSON.stringify(ui.presetLabels));
+
+    // ---- 思考强度：三档 + 默认关闭 + 说明跟着渠道变 ----
+    // 这一段盯的是"用户看到的"和"实际发出去的"必须一致：
+    // 同一个"关闭"，DeepSeek 会发 thinking:{type:disabled}、Kimi 什么都不发（K3 关不掉）。
+    // 不把这个差别摊开给用户看，他会以为"我关了思考它却没关"是 bug。
+    check('思考强度只有三档，顺序是 关闭/低/高',
+      JSON.stringify(ui.thinkingValues) === JSON.stringify(['off', 'low', 'high']),
+      JSON.stringify(ui.thinkingValues));
+    check('思考强度默认是「关闭」（升级前的行为）', ui.thinkingSelected === 'off', String(ui.thinkingSelected));
+    // ⚠️ 不能直接断言"说明里是 DeepSeek 的参数"：这个场景与其它场景共用 chrome.storage，
+    // 前面答过题的场景已经把 apiUrl 写成 mock 地址了，那时渠道是"认不出"→ 说明是"不发参数"。
+    // 所以这里**显式**把表单设成 DeepSeek 再刷新说明（只改表单、不派发 input，
+    // 免得多写一次 storage 影响后面的场景）。
+    var deepseekHint = await ctx.client.evaluate(
+      '(function(){' +
+      'document.getElementById("apiUrl").value="https://api.deepseek.com";' +
+      'document.getElementById("model").value="deepseek-v4-flash";' +
+      'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
+      'updateThinkingHint();' +
+      'var h=document.getElementById("thinkingHint").textContent;' +
+      'tl.value="low";updateThinkingHint();' +
+      'var h2=document.getElementById("thinkingHint").textContent;' +
+      'tl.value="off";updateThinkingHint();' +
+      'return {off:h,low:h2};})()'
+    );
+    check('说明里摊开了 DeepSeek 关闭档**实际会发**的参数（不是只说"关了"）',
+      !!deepseekHint.off && deepseekHint.off.indexOf('当前实际发送') !== -1 &&
+      deepseekHint.off.indexOf('"type":"disabled"') !== -1 &&
+      deepseekHint.off.indexOf('已实测') !== -1,
+      String(deepseekHint.off).slice(-140));
+    check('切到"低"档后说明随之变化（含 reasoning_effort，且标为未验证）',
+      !!deepseekHint.low && deepseekHint.low.indexOf('reasoning_effort') !== -1 &&
+      deepseekHint.low.indexOf('未验证') !== -1,
+      String(deepseekHint.low).slice(-140));
+
+    // 换渠道 → 说明必须跟着换（Kimi 关闭档"不发参数"）
+    var kimi = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var sel=document.getElementById("providerPreset");sel.value="kimi";' +
+      'sel.dispatchEvent(new Event("change"));' +
+      'setTimeout(function(){' +
+      'var h=document.getElementById("thinkingHint");' +
+      'res({hint:h?h.textContent:null,url:document.getElementById("apiUrl").value,' +
+      'model:document.getElementById("model").value});},400);});})()'
+    );
+    check('切到 Kimi 后预设地址/模型名被填入',
+      kimi.url.indexOf('moonshot') !== -1 && kimi.model === 'kimi-k3', JSON.stringify(kimi));
+    check('切到 Kimi 后说明变成"不发参数"（渠道表真的联动了）',
+      !!kimi.hint && kimi.hint.indexOf('不发参数') !== -1, String(kimi.hint).slice(-160));
+
+    // 切换必须落盘，否则下次打开弹窗又跳回默认值
+    var persisted = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var sel=document.getElementById("providerPreset");sel.value="deepseek";' +
+      'sel.dispatchEvent(new Event("change"));' +
+      'var tl=document.getElementById("thinkingLevel");tl.value="high";' +
+      'tl.dispatchEvent(new Event("change"));' +
+      'setTimeout(function(){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{};' +
+      'res({level:c.thinkingLevel,preset:c.providerPreset,' +
+      'hint:document.getElementById("thinkingHint").textContent});});},600);});})()'
+    );
+    check('思考强度切换后落盘', persisted.level === 'high', JSON.stringify(persisted.level));
+    check('切换后说明跟着更新为高（含 reasoning_effort）',
+      !!persisted.hint && persisted.hint.indexOf('reasoning_effort') !== -1,
+      String(persisted.hint).slice(-160));
+    // 收尾：把思考强度改回默认，避免影响后面的场景读到 high
+    await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
+      'tl.dispatchEvent(new Event("change"));setTimeout(res,300);});})()'
+    );
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
 
     // 无障碍：每个开关都必须能被键盘聚焦、且状态可被读屏播报。

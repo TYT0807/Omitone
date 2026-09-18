@@ -65,6 +65,13 @@
     apiConnectionError: '',
     model: 'deepseek-v4-flash',
     captchaModel: '',
+    // 思考强度：'off'（默认，最省最快）/ 'low' / 'high'。
+    //
+    // ⚠️ 只有 'off' 是实测过的 —— 它就是本项目原来一直用的行为（DeepSeek 关思考）。
+    // 'low' / 'high' 会多发推理参数：支持的厂商没问题，不支持的厂商可能直接 400。
+    // 因此 content.js 里是**按渠道白名单**发参数的，未知渠道一个参数都不发
+    // （见 libs/thinking.js 的说明）。默认值选 'off' 也意味着老用户升级后行为不变。
+    thinkingLevel: 'off',
     systemPrompt: '',
     videoCheckInterval: 1500,
     stepSwitchGraceMs: 7000,
@@ -73,6 +80,10 @@
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 同一道选择题连续这么多次没被平台接受后，就"放弃继续折腾"：
+    // 不再为它扩错答列表、不再进 LLM 请求，直接填本地最优猜测，让整卷交得出去。
+    // 不设这条的后果是"一道多选把整卷钉在原地"——用户报的"章节小测一直卡住"。
+    quizQuestionMaxMisses: 3,
     // 同一道弹题最多问模型几次，超过就放手并冷却（见 _giveUpPopupQuiz）。
     // 以前只靠 _getPopupQuizMaxAttempts 里的 `|| 3` 兜底，默认值表里查不到。
     popupQuizMaxAttempts: 3,
@@ -6200,14 +6211,89 @@
       return changed;
     },
 
-    _sortMultiFallbackCombos: function (combos, preferredSize) {
+    /**
+     * 这道题是否该"放弃继续折腾"（best-effort）。
+     *
+     * 触发条件：同一道题已经在错答记录里攒够了失败次数 —— 模型与本地兜底
+     * 试过多轮都没被平台接受。继续换答案只会让整卷永远提交不出去
+     * （章节小测的提交前置是"每题都有值"），用户看到的就是"一直卡住"。
+     *
+     * 达到阈值后：不再为它扩错答列表、也不再进 LLM 请求，直接给本地最优猜测，
+     * 让整卷能提交、章节能往下走。
+     * **一定有日志**（见 _fillBestEffortQuizAnswers 与 _avoidKnownWrongAnswer），
+     * 也一定是可恢复的：阈值只影响本次作答，换卷 / 重做会重新计数。
+     */
+    _isQuizQuestionBestEffort: function (question, preferredDoc) {
+      if (!question) return false;
+      var max = Number(this.configs.quizQuestionMaxMisses || 3);
+      if (!(max > 0)) max = 3;
+      var known = this._getKnownWrongQuizAnswers(question, preferredDoc || null);
+      return known.length >= max;
+    },
+
+    /**
+     * 给"已放弃继续折腾"的题补上本地最优猜测。
+     *
+     * 为什么必须补：章节小测的提交前置条件是**每道题都有值**
+     * （_areQuizAnswersFilled），少一道就永远不提交 —— 那才是真正的"卡住"。
+     * 这些题已经不进 LLM 请求（见 _handleQuiz），所以必须在这里填，
+     * 否则表单不满、整卷原地打转。
+     *
+     * 代价说明（不藏着）：这道题会被填上一个**本地猜的**答案，
+     * 可能仍然不对。这是"跳过该题继续"换来的：整卷能交出去，
+     * 而不是被一道题钉死在原地。
+     */
+    _fillBestEffortQuizAnswers: function (questions, preferredDoc) {
+      if (!questions || !questions.length) return 0;
+      var filledCount = 0;
+      for (var i = 0; i < questions.length; i++) {
+        var question = questions[i];
+        if (!question || !question._element) continue;
+        if (!this._isQuizQuestionBestEffort(question, preferredDoc)) continue;
+        if (this._wasQuizQuestionAnsweredThisRun(question)) continue;
+        var type = question.type || this._getQuestionTypeFromElement(question._element, this._getQuestionIdFromElement(question._element));
+        if (type !== 'multiple' && type !== 'single' && type !== 'judge') continue;
+        var guess = this._chooseFallbackQuizAnswer(type, question, preferredDoc || null, '', type === 'multiple' ? 2 : 1);
+        if (type === 'multiple') this._fillMultiChoice(question._element, guess);
+        else this._fillChoice(question._element, guess, 'radio');
+        var value = this._getQuizQuestionFilledValue(preferredDoc || null, question);
+        if (value) {
+          this._markQuizQuestionAnsweredThisRun(question, 'best-effort', value, type);
+          filledCount++;
+        }
+      }
+      if (filledCount) {
+        emitRuntimeLog('warn', 'quiz filled best-effort guesses for repeatedly-wrong questions', { count: filledCount });
+      }
+      return filledCount;
+    },
+
+    /**
+     * 多选 fallback 组合的排序：决定"上一个组合（被判错）之后，下一个先试哪个"。
+     *
+     * 两个必须守住的点（都是踩过的坑）：
+     *
+     * 1. **目标规模至少 2**。原来 `targetSize = preferredSize || 2`，
+     *    而 preferredSize 常常是 `canonical.length` —— 模型只选了一个字母时就是 1，
+     *    于是排序把**所有"只选一项"的组合排在前面**：逐个 A、B、C、D 试过去，
+     *    每次都只选一个、每次都被判错。用户看到的"多选一直选不对"就是这么来的。
+     * 2. **低于最少项数的组合排到最后，但保留**。直接过滤掉它们会出事：
+     *    题型名带"不定项"时单选是正确答案，删掉就永远答不对。
+     *    排序偏好即可，不必硬删。
+     */
+    _sortMultiFallbackCombos: function (combos, preferredSize, minSelections) {
       if (!combos || !combos.length) return combos || [];
-      var targetSize = preferredSize || 2;
+      var min = Math.max(1, minSelections || 1);
+      var targetSize = Math.min(Math.max(2, preferredSize || 2), 6);
       return combos.sort(function (a, b) {
+        var belowA = a.length < min ? 1 : 0;
+        var belowB = b.length < min ? 1 : 0;
+        if (belowA !== belowB) return belowA - belowB;
         var da = Math.abs(a.length - targetSize);
         var db = Math.abs(b.length - targetSize);
         if (da !== db) return da - db;
-        return a.length - b.length;
+        if (a.length !== b.length) return a.length - b.length;
+        return a < b ? -1 : (a > b ? 1 : 0);
       });
     },
 
@@ -6232,13 +6318,25 @@
         return 'A';
       }
 
-      var combos = this._sortMultiFallbackCombos(this._generateChoiceCombinations(candidates), preferredSize);
+      var combos = this._sortMultiFallbackCombos(
+        this._generateChoiceCombinations(candidates),
+        preferredSize,
+        this._getMultiChoiceMinSelections(question && question._element)
+      );
       for (var k = 0; k < combos.length; k++) {
         var comboCanonical = this._canonicalQuizAnswerForQuestion(combos[k], type, question);
         if (comboCanonical && wrongSet.indexOf(comboCanonical) === -1) return combos[k].split('');
       }
 
-      this._clearKnownWrongQuizAnswersForQuestion(question, preferredDoc, 'multiple-exhausted');
+      // ⚠️ 这里**故意不清**已知错答记录（旧实现在这里 clear 了）。
+      // 清掉等于把"这卷已经试过哪些答案"整段忘掉：下一轮 `禁:` 为空，
+      // 模型很可能又给出同一个错答案 → 判错 → 再清 → 无限打转，
+      // 而且 _isQuizQuestionBestEffort 的计数也被抹平，跳过机制永远触发不了。
+      // 记着它反而有用：`禁:` 会继续推着模型换答案；换无可换时日志说清楚。
+      emitRuntimeLog('warn', 'multiple choice combos exhausted, keep wrong history', {
+        wrongs: wrongSet.join(',').slice(0, 120),
+        combos: combos.length
+      });
       for (var m = 0; m < combos.length; m++) {
         var fallbackComboCanonical = this._canonicalQuizAnswerForQuestion(combos[m], type, question);
         if (fallbackComboCanonical && fallbackComboCanonical !== avoidCanonical) return combos[m].split('');
@@ -6313,10 +6411,21 @@
       }
 
       if (type === 'multiple') {
+        // 已连续答错到"放弃折腾"的题：直接给本地最优猜测，不再扩 `禁:` 列表。
+        // 见 _isQuizQuestionBestEffort —— 这是"跳过该题继续"的落点，
+        // 目的是让整卷能提交出去，而不是让一道题把整卷钉死在原地。
+        if (this._isQuizQuestionBestEffort(question, preferredDoc)) {
+          var bestEffort = this._chooseFallbackQuizAnswer(type, question, preferredDoc, '', 2);
+          emitRuntimeLog('warn', 'multiple choice best-effort answer, stop retrying', {
+            index: (question && question.index != null) ? question.index : '',
+            fallback: Array.isArray(bestEffort) ? bestEffort.join('') : bestEffort
+          });
+          return bestEffort;
+        }
         var multiCandidates = this._getChoiceCandidateAnswers(question, type);
         var combos = this._generateChoiceCombinations(multiCandidates);
         var preferredSize = canonical ? canonical.length : 0;
-        this._sortMultiFallbackCombos(combos, preferredSize || 2);
+        this._sortMultiFallbackCombos(combos, preferredSize || 2, this._getMultiChoiceMinSelections(question && question._element));
         for (var j = 0; j < combos.length; j++) {
           var comboCanonical = this._canonicalQuizAnswerForQuestion(combos[j], type, question);
           if (comboCanonical && wrongSet.indexOf(comboCanonical) === -1) {
@@ -6689,6 +6798,7 @@
       var self = this;
       var payload = [];
       var skippedConfirmed = 0;
+      var skippedBestEffort = 0;
       var batchWorkKey = this._getQuizWorkKey(quizDoc);
       // 这一轮是否**整批重发**（含已知正确答案的题）。
       //
@@ -6705,6 +6815,13 @@
         && (Date.now() - (this._quizBatchSentAt || 0) < 30 * 60 * 1000);
 
       questions.forEach(function (q, i) {
+        // 已进入"放弃折腾"的题**不再问模型**：它已经试过好几轮都没被接受，
+        // 再问只会把整卷拖在同一个地方（用户报的"一直卡住"），而且白花 token。
+        // 这一类题的答案由 _fillBestEffortQuizAnswers 在本地补齐，有日志、可恢复。
+        if (self._isQuizQuestionBestEffort(q, quizDoc)) {
+          skippedBestEffort++;
+          return;
+        }
         // 已经"确认正确 + 本轮已填 + DOM 里确实有值"的题不再问模型：
         // _fillCachedQuizAnswers 已经把答案填回去了，重复提问纯属白花 token。
         // 三个条件必须同时成立 —— 只看缓存会让"缓存存在但填不进去"的题永远没人作答，
@@ -6724,9 +6841,9 @@
         payload.push({ index: i, type: q.type, title: q.title, options: q.options, previousWrongAnswers: wrongAnswers });
       });
 
-      if (skippedConfirmed > 0) {
+      if (skippedConfirmed > 0 || skippedBestEffort > 0) {
         emitRuntimeLog('info', batchRecent ? 'resend full batch for prefix cache' : 'skip llm for cached-correct questions',
-          { skipped: skippedConfirmed, asked: payload.length });
+          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, asked: payload.length });
       }
       if (payload.length) {
         // 记在"发出去"这一侧而不是"收到成功响应"那一侧：缓存单元是在请求到达时建立的，
@@ -6735,9 +6852,25 @@
         this._quizBatchSentAt = Date.now();
       }
       if (payload.length === 0) {
-        // 兜底：全部题目都靠缓存填好了，却没能走上面的提前提交分支，说明状态自相矛盾，
-        // 此时发一次空请求只会白白消耗配额
-        emitRuntimeLog('warn', 'quiz payload empty after cache filter', { total: questions.length });
+        // 两种情况：
+        //   ① 全部题目都靠缓存填好了，却没能走上面的提前提交分支 —— 状态自相矛盾，
+        //      此时发一次空请求只会白白消耗配额；
+        //   ② **全部题目都进了"放弃折腾"**。这种必须自己收尾：本地填猜测、能交就交，
+        //      否则这一卷会永远停在"不发请求、也不提交"的状态 —— 又是一种卡住。
+        emitRuntimeLog('warn', 'quiz payload empty after cache filter', {
+          total: questions.length,
+          bestEffort: skippedBestEffort
+        });
+        if (skippedBestEffort > 0) {
+          this._fillBestEffortQuizAnswers(questions, quizDoc);
+          var rescueReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
+          this._quizAnswered = rescueReady;
+          this._quizReadyToSubmit = rescueReady;
+          this._quizReadyWorkKey = rescueReady ? this._getQuizWorkKey(quizDoc) : '';
+          this._quizInProgress = false;
+          if (rescueReady) this._maybeSubmitQuiz(quizDoc, questions);
+          return;
+        }
         this._quizInProgress = false;
         return;
       }
@@ -6770,6 +6903,10 @@
         this._fillAnswers(answers, questions, quizDoc);
         this._fillCachedQuizAnswers(questions, quizDoc);
         this._clearKnownWrongFilledQuizAnswers(questions, quizDoc);
+        // 补填"放弃折腾"的题：它们没进这次请求，表单缺了它们就永远不提交。
+        // 放在清理之后是有意的：先让 `_clearKnownWrongFilledQuizAnswers` 处理其他题，
+        // 再补上这些题的本地猜测，本轮就不会被它误清。
+        this._fillBestEffortQuizAnswers(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
@@ -7363,6 +7500,19 @@
       return null;
     },
 
+    /**
+     * 点选一个选项 —— 调用返回后，这个选项**一定**处于"已选中"状态（幂等）。
+     *
+     * 为什么必须幂等（踩过的坑）：原来的顺序是"先按当前状态取反写 class，
+     * 再 item.click() + 内层徽标 click()"。单选无所谓，但**复选是开关** ——
+     * 站点自己的 click 处理会再切换一次，以及"点 li + 点徽标"本身就是两次，
+     * 偶数次点击等于没点。表现是多选**随机少选一项**（用户报的"只选一个"），
+     * 接着被判错，再进入"重试还是只选一个"的死循环。
+     *
+     * 现在的顺序：① 先点击，让站点自己的处理跑起来（它可能在点击时重绘、写隐藏域）；
+     * ② 再把**终态**强制写回（class / aria / input.checked / #answer{qid}）。
+     * 这样站点那边怎么切都不影响最终状态。
+     */
     _clickOptionItem: function (item, inputType) {
       if (!item) return;
       var doc = item.ownerDocument || document;
@@ -7371,66 +7521,248 @@
       var rawValue = badge ? String(badge.getAttribute('data') || textOf(badge)).trim() : '';
       var letter = /^[A-F]$/i.test(rawValue) ? rawValue.toUpperCase() : rawValue;
 
+      // ① 点击：先让站点自己的 handler 跑完
+      var input = item.querySelector ? item.querySelector('input[type="' + inputType + '"]') : null;
+      if (input) {
+        try { input.checked = true; } catch (e0) {}
+        this._dispatchQuizInputEvents(input);
+      }
+      try { item.click(); } catch (e) {}
+      if (item.querySelector) {
+        var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
+        // 徽标可能就在 item 自身这一层，重复点同一个元素只会多点一次（复选上就是再取消）
+        if (clickTarget && clickTarget !== item) {
+          try { clickTarget.click(); } catch (e2) {}
+        }
+      }
+
+      // ② 写回终态
       if (qid && badge) {
+        var group = '.choice' + qid;
         if (inputType === 'radio') {
-          Array.from(doc.querySelectorAll('.choice' + qid)).forEach(function (node) {
+          Array.from(doc.querySelectorAll(group)).forEach(function (node) {
             node.classList.remove('check_answer');
           });
           badge.classList.add('check_answer');
-          item.setAttribute('aria-checked', 'true');
-          item.setAttribute('aria-pressed', 'true');
           Array.from(item.parentElement ? item.parentElement.children : []).forEach(function (sibling) {
             if (sibling !== item) {
               sibling.setAttribute('aria-checked', 'false');
               sibling.setAttribute('aria-pressed', 'false');
             }
           });
-          var hidden = doc.getElementById('answer' + qid);
-          if (hidden) {
-            hidden.value = letter;
-            hidden.dispatchEvent(new Event('input', { bubbles: true }));
-            hidden.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          // 复选**只加不减**：取消是 _clearMultiChoiceSelection 的职责。
+          badge.classList.add('check_answer_dx');
+        }
+        item.setAttribute('aria-checked', 'true');
+        item.setAttribute('aria-pressed', 'true');
+
+        var hidden = doc.getElementById('answer' + qid);
+        if (hidden) {
+          var value = letter;
+          if (inputType !== 'radio') {
+            // 隐藏域必须是**全部已选项**的并集，而不是刚点的那一个字母 ——
+            // 否则多选提交上去永远只有最后一项。
+            value = '';
+            Array.from(doc.querySelectorAll(group)).forEach(function (node) {
+              if (node.classList.contains('check_answer_dx')) {
+                value += String(node.getAttribute('data') || '').trim();
+              }
+            });
           }
-        } else if (inputType === 'checkbox') {
-          var isChecked = badge.classList.contains('check_answer_dx');
-          if (isChecked) badge.classList.remove('check_answer_dx');
-          else badge.classList.add('check_answer_dx');
-          item.setAttribute('aria-checked', isChecked ? 'false' : 'true');
-          item.setAttribute('aria-pressed', isChecked ? 'false' : 'true');
-          var selected = '';
-          Array.from(doc.querySelectorAll('.choice' + qid)).forEach(function (node) {
-            if (node.classList.contains('check_answer_dx')) selected += String(node.getAttribute('data') || '').trim();
-          });
-          var hiddenMulti = doc.getElementById('answer' + qid);
-          if (hiddenMulti) {
-            hiddenMulti.value = selected;
-            hiddenMulti.dispatchEvent(new Event('input', { bubbles: true }));
-            hiddenMulti.dispatchEvent(new Event('change', { bubbles: true }));
-          }
+          hidden.value = value;
+          this._dispatchQuizInputEvents(hidden);
         }
       }
 
-      var input = item.querySelector ? item.querySelector('input[type="' + inputType + '"]') : null;
       if (input) {
-        input.checked = true;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        input.dispatchEvent(new Event('click', { bubbles: true }));
-      }
-      try { item.click(); } catch (e) {}
-      if (item.querySelector) {
-        var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
-        if (clickTarget) {
-          try { clickTarget.click(); } catch (e2) {}
-        }
+        try { input.checked = true; } catch (e3) {}
       }
       console.log('[Omitone] clicked option qid=', qid, 'letter=', letter, 'type=', inputType);
     },
 
+    /**
+     * 某个答案（字母或选项文本）对应的选项**当前是否已选中**。
+     *
+     * 只给"点完之后校验"用（多选重灾区）。**认不出来时返回 true** ——
+     * 宁可少修一次，也不要对已经选中的复选项再点一下：复选上多点一次就是取消，
+     * 那正是要修掉的病。
+     */
+    _isChoiceValueSelected: function (root, value, type) {
+      if (!root) return true;
+      var item = this._matchOptionItem(root, value, type);
+      if (!item) return false;
+      var badge = item.querySelector ? item.querySelector('.num_option, .num_option_dx') : null;
+      if (badge && badge.classList) {
+        if (badge.classList.contains('check_answer_dx') || badge.classList.contains('check_answer')) return true;
+      }
+      var aria = item.getAttribute ? String(item.getAttribute('aria-checked') || '') : '';
+      if (aria === 'true') return true;
+      var input = item.querySelector ? item.querySelector('input[type="checkbox"], input[type="radio"]') : null;
+      if (input) return !!input.checked;
+      return true;
+    },
+
+    /**
+     * 该用哪种控件去点：'radio' / 'checkbox'。
+     *
+     * 题型明确时照题型走；题型未知（弹题那条路）时按**控件形态**判 ——
+     * 页面里有复选就按复选填，这与原 `_fillPopupAnswer` 的行为一致。
+     */
+    _choiceInputTypeFor: function (root, type) {
+      if (type === 'multiple') return 'checkbox';
+      if (type === 'single' || type === 'judge') return 'radio';
+      var checkboxes = 0;
+      if (root && root.querySelectorAll) {
+        try { checkboxes = root.querySelectorAll('input[type="checkbox"], [role="checkbox"]').length; } catch (e) {}
+      }
+      return checkboxes ? 'checkbox' : 'radio';
+    },
+
+    /**
+     * 多选题"最少该选几项"。
+     *
+     * ⚠️ **不能一律钉成 2**：学习通的"不定项选择题"允许多选也允许单选，
+     * 钉成 2 会把本来正确的单答案判成无效，反而更卡。所以按题型名区分，
+     * 认不出来时取 1（保守，宁可维持旧行为）。
+     */
+    _getMultiChoiceMinSelections: function (root) {
+      var name = '';
+      if (root && root.getAttribute) {
+        name = String(root.getAttribute('typename') || root.getAttribute('typeName') || '').trim();
+        if (!name && root.querySelector) {
+          var titleEl = root.querySelector('.newZy_TItle');
+          if (titleEl) name = textOf(titleEl);
+        }
+      }
+      if (!name && root) name = textOf(root).slice(0, 80);
+      if (/不定项/.test(name)) return 1;
+      if (/多选|多项|多重/.test(name)) return 2;
+      return 1;
+    },
+
+    /**
+     * 把一个字母扩成"含它的相邻组合"，用于模型只给了一个字母的多选题。
+     *
+     * 这是**纯本地**补救：不发新请求，因此不产生任何 token。
+     * 依据是"复选题两项答案远比一项常见"，且随后若仍被判错，
+     * `禁:` 机制会把这次的结果记下来换别的组合。
+     */
+    _expandMultiChoiceLetters: function (letters, min, root) {
+      var out = (letters || []).slice();
+      var target = Math.max(2, min || 2);
+      var total = this._getOptionItems(root).length;
+      if (total < 2 || total > 8) total = 6;
+      var pool = [];
+      for (var i = 0; i < total; i++) pool.push(String.fromCharCode(65 + i));
+      for (var j = 0; j < out.length && out.length < target; j++) {
+        var idx = pool.indexOf(out[j]);
+        if (idx < 0) continue;
+        // 优先"紧邻的下一个"，其次上一个，最后再往后挑 —— 相邻组合最常见
+        var candidates = [pool[idx + 1], pool[idx - 1], pool[idx + 2], pool[idx + 3]];
+        for (var c = 0; c < candidates.length && out.length < target; c++) {
+          if (candidates[c] && out.indexOf(candidates[c]) === -1) out.push(candidates[c]);
+        }
+      }
+      return out.sort();
+    },
+
+    /**
+     * 把一个答案规整成"要点的选项列表"。
+     *
+     * 兼容模型的各种写法：数组 `["A","C"]`、带分隔符 `"A,C"`/`"A、C"`、
+     * **不带分隔符的连写** `"AC"`、以及整段选项文本。
+     * 最后一种在弹题里很常见（模型不认字母表，直接抄选项文字）。
+     */
+    _normalizeChoiceAnswerValues: function (answer, type, root) {
+      var value = this._normalizeAnswerValue(answer);
+      var values = [];
+      if (Array.isArray(value)) {
+        values = value.map(function (v) { return String(v == null ? '' : v).trim(); }).filter(Boolean);
+      } else {
+        var raw = String(value == null ? '' : value).trim();
+        if (!raw) return [];
+        if (/^[A-F,，、;；\s]+$/i.test(raw)) {
+          values = raw.replace(/[，、;；\s]+/g, ',').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+          // "AC" 这种连写：长度 > 1 的单个 token 按单字母拆开
+          if (values.length === 1 && values[0].length > 1) values = values[0].split('');
+        } else {
+          values = [raw];
+        }
+      }
+
+      // 去重：多选里同一个字母点两次 = 取消（复选是开关）
+      var seen = {};
+      values = values.filter(function (v) {
+        var key = String(v).toUpperCase();
+        if (seen[key]) return false;
+        seen[key] = true;
+        return true;
+      });
+
+      if (type === 'multiple') {
+        var letters = values.filter(function (v) { return /^[A-F]$/i.test(v); }).map(function (v) { return v.toUpperCase(); });
+        var min = this._getMultiChoiceMinSelections(root);
+        if (letters.length >= 1 && letters.length < min) {
+          var expanded = this._expandMultiChoiceLetters(letters, min, root);
+          if (expanded.length > letters.length) {
+            emitRuntimeLog('warn', 'multiple choice answer expanded locally', {
+              from: letters.join(''), to: expanded.join(''), minSelections: min
+            });
+          }
+          var texts = values.filter(function (v) { return !/^[A-F]$/i.test(v); });
+          return expanded.concat(texts);
+        }
+      }
+      return values;
+    },
+
+    /**
+     * 选项答案填充的**唯一入口**（单选 / 判断 / 多选共用，章节小测与视频弹题共用）。
+     *
+     * 参数：
+     *   root      题目元素或弹窗元素
+     *   answer    模型给的答案（数组 / 字母 / 连写字母 / 选项文本都行）
+     *   type      题型；传空串表示"交给 _matchOptionItem 自己判"（判断题要靠它）
+     *   inputType 强制控件类型（'radio' / 'checkbox'）；不传则按题型或控件形态推
+     *
+     * 返回**成功点上的选项数**；0 表示一个都没匹配上（调用方不该点提交）。
+     */
+    _applyChoiceAnswer: function (root, answer, type, inputType) {
+      if (!root) return 0;
+      var kind = inputType || this._choiceInputTypeFor(root, type);
+      var values = this._normalizeChoiceAnswerValues(answer, type, root);
+      if (!values.length) return 0;
+
+      // 复选先清空：上一轮留下的选择会让"这轮点了几项"完全失真
+      if (kind === 'checkbox') this._clearMultiChoiceSelection(root);
+
+      var clicked = 0;
+      for (var i = 0; i < values.length; i++) {
+        var item = this._matchOptionItem(root, values[i], type);
+        if (!item) continue;
+        this._clickOptionItem(item, kind);
+        clicked++;
+      }
+
+      // 校验 + 修补：站点自己的 handler 可能把刚点上的又切掉了（复选重灾区）。
+      // 只补"该选却没选中"的 —— 绝不碰已经选中的，避免把复选又切回去。
+      if (kind === 'checkbox' && clicked > 1) {
+        for (var j = 0; j < values.length; j++) {
+          if (this._isChoiceValueSelected(root, values[j], type)) continue;
+          var again = this._matchOptionItem(root, values[j], type);
+          if (!again) continue;
+          this._clickOptionItem(again, kind);
+        }
+      }
+      return clicked;
+    },
+
     _fillChoice: function (el, answer, inputType) {
-      var item = this._matchOptionItem(el, answer);
-      if (item) this._clickOptionItem(item, inputType);
-      else console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
+      // type 传空串：让 _matchOptionItem 自己判题型 —— 判断题的匹配分支靠它，
+      // 硬编码成 'single' 会让"正确/错误"这类答案匹配不上（老实现就是这样绕开的）。
+      var clicked = this._applyChoiceAnswer(el, answer, '', inputType);
+      if (!clicked) console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
     },
 
     _clearMultiChoiceSelection: function (el) {
@@ -7462,24 +7794,7 @@
     },
 
     _fillMultiChoice: function (el, answers) {
-      var values = [];
-      if (Array.isArray(answers)) {
-        values = answers.map(function (item) { return String(item).trim(); });
-      } else {
-        var raw = String(answers || '').trim();
-        if (/^[A-F,，、\s]+$/i.test(raw)) {
-          values = raw.replace(/，/g, ',').replace(/、/g, ',').split(',').map(function (item) { return item.trim(); }).filter(Boolean);
-          if (values.length === 1 && values[0].length > 1) values = values[0].split('');
-        } else {
-          values = [raw];
-        }
-      }
-
-      this._clearMultiChoiceSelection(el);
-      for (var i = 0; i < values.length; i++) {
-        var item = this._matchOptionItem(el, values[i]);
-        if (item) this._clickOptionItem(item, 'checkbox');
-      }
+      this._applyChoiceAnswer(el, answers, 'multiple', 'checkbox');
     },
 
     _fillText: function (el, answer) {
@@ -7616,6 +7931,10 @@
       var cleared = 0;
       for (var i = 0; i < questions.length; i++) {
         if (this._getConfirmedCachedQuizAnswer(questions[i], preferredDoc)) continue;
+        // "放弃折腾"的题例外：它填的就是本地猜的答案，很可能仍在错答记录里。
+        // 把它清掉 = 表单缺一道 = `_areQuizAnswersFilled` 为假 = 永远不提交，
+        // 那就正好回到了我们要消除的"卡住"。
+        if (this._isQuizQuestionBestEffort(questions[i], preferredDoc)) continue;
         if (!this._isQuizQuestionFilledWithKnownWrong(preferredDoc, questions[i])) continue;
         var qid = this._getQuestionIdFromElement(questions[i]._element);
         emitRuntimeLog('warn', 'clear known wrong filled answer', { qid: qid || '', index: questions[i].index });
@@ -8426,30 +8745,18 @@
       return looksJudge ? 'judge' : 'single';
     },
 
-    /** 返回是否真的选中了至少一个选项（没选中就不该点提交） */
+    /**
+     * 返回是否真的选中了至少一个选项（没选中就不该点提交）。
+     *
+     * ⚠️ 选项的匹配与点选一律走 `_applyChoiceAnswer`，**不要再在这里写一份**。
+     * 原先这里自己写了一套，与章节小测的 `_fillMultiChoice` 规则不同 ——
+     * 它没有 "AC" → ["A","C"] 的拆分，模型只要回一个不带分隔符的连写字母，
+     * 就一个选项都匹配不上（"扫到了题却从不填"），或者只中第一个字母
+     * （多选只选一个 → 站点判错 → 反复重试 → 用户看到的"一直选不对"）。
+     */
     _fillPopupAnswer: function (popup, answer, type) {
       var value = this._normalizeAnswerValue(answer);
-      var selected = 0;
-      var inputType = type === 'multiple' ? 'checkbox' : 'radio';
-      if (!type) {
-        inputType = Array.from(popup.querySelectorAll('[role="checkbox"], input[type="checkbox"]')).length ? 'checkbox' : 'radio';
-      }
-
-      if (Array.isArray(value)) {
-        for (var i = 0; i < value.length; i++) {
-          var item = this._matchOptionItem(popup, value[i], type);
-          if (item) {
-            this._clickOptionItem(item, inputType);
-            selected++;
-          }
-        }
-      } else {
-        var target = this._matchOptionItem(popup, value, type);
-        if (target) {
-          this._clickOptionItem(target, inputType);
-          selected++;
-        }
-      }
+      var selected = this._applyChoiceAnswer(popup, value, type || '');
 
       // 视频里弹出的也可能是填空题：没有选项可点，但一定有输入框。
       // 少了这一段，填空题会被当成"匹配不到选项"而反复重试直到放弃。

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.1.4</title>
+<title>Omitone-1.1.5</title>
 <style>
 :root{
   --bg:#fff; --fg:#16181d; --muted:#8a8f98; --line:#eceef1; --line-strong:#dcdfe4;
@@ -136,7 +136,7 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
     <div class="brand">
       <div class="dot" id="runDot"></div>
       <div class="title">Omitone</div>
-      <span class="ver">1.1.4</span>
+      <span class="ver">1.1.5</span>
       <span class="run-state" id="runState">未开启</span>
     </div>
     <div class="run-row">
@@ -256,17 +256,35 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
       <div class="field">
         <label for="providerPreset">接入方式</label>
         <select id="providerPreset">
-          <option value="deepseek">DeepSeek（唯一在真实答题中实测通过）</option>
+          <option value="deepseek">DeepSeek（推荐 · 唯一实测通过 · 便宜快）</option>
+          <option value="kimi">Kimi / Moonshot（未实测）</option>
+          <option value="qwen">通义千问 DashScope（未实测）</option>
           <option value="claude">Anthropic Claude（协议已适配 · 未实测）</option>
           <option value="gemini">Google Gemini（协议已适配 · 未实测）</option>
           <option value="custom-openai">自定义 OpenAI 兼容</option>
         </select>
       </div>
       <p class="hint">
-        只预置了真正验证过的服务商。用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
-        <b>自定义 OpenAI 兼容</b>，API URL 与模型名按厂商文档自己填 ——
-        那两格填什么都能用，反而预置好的模型名是钉死的快照，厂商一发新版就失效。
+        <b>推荐用 DeepSeek</b>：便宜、快，而且是唯一在真实答题链路上实测通过的。
+        其余渠道的地址与模型名是照厂商文档填的快照，<b>厂商换版就会失效</b> ——
+        失效了照新文档改「模型名」那一格即可；用表里没有的服务商就选
+        <b>自定义 OpenAI 兼容</b>，URL 与模型名自己填。<br>
+        怎么拿到密钥：见根目录 <b>《使用说明.pdf》</b> 的「申请 API 密钥」一节。
       </p>
+      <div class="field">
+        <label for="thinkingLevel">思考强度</label>
+        <select id="thinkingLevel">
+          <option value="off">关闭（默认 · 最省最快 · 推荐）</option>
+          <option value="low">低（会多花推理 token）</option>
+          <option value="high">高（最贵 · 仅难题才需要）</option>
+        </select>
+        <p class="hint" id="thinkingHint">
+          <b>「关闭」是唯一实测过的档位</b>，也是本项目一直以来的行为 ——
+          答题是模式化任务，实测关掉后一次请求从 361 token 降到 133。
+          另外两档照厂商文档填写，<b>未在真实题库验证</b>，个别服务商会直接拒绝；
+          真被拒绝时程序会自动摘掉参数重试一次，并把原因写进日志，不会把整次答题判死。
+        </p>
+      </div>
       <div class="field">
         <label for="apiType">协议类型</label>
         <select id="apiType">
@@ -311,6 +329,7 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
   <div class="toast" id="toast"></div>
 </div>
 <script src="../libs/api-url.js"></script>
+<script src="../libs/thinking.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>
