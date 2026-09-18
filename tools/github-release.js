@@ -86,16 +86,26 @@ function token() {
   process.exit(1);
 }
 
-var TOKEN = token();
-var H = {
-  'Authorization': 'Bearer ' + TOKEN,
-  'Accept': 'application/vnd.github+json',
-  'User-Agent': 'omitone-release',
-  'Content-Type': 'application/json'
-};
+/**
+ * 请求头**延迟构造** —— 不要把 `token()` 放在模块顶层。
+ * 因为 `check-msg` 子命令只做本地校验、根本不需要令牌，
+ * 顶层读令牌会让它在没令牌的机器上直接退出（那是没必要的失败）。
+ */
+var _headers = null;
+function headers() {
+  if (!_headers) {
+    _headers = {
+      'Authorization': 'Bearer ' + token(),
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'omitone-release',
+      'Content-Type': 'application/json'
+    };
+  }
+  return _headers;
+}
 
 async function api(method, urlPath, body) {
-  var opts = { method: method, headers: H };
+  var opts = { method: method, headers: headers() };
   if (body !== undefined) opts.body = JSON.stringify(body);
   var res = await fetch(API + urlPath, opts);
   var text = await res.text();
@@ -117,6 +127,66 @@ function git(args, quiet) {
 function manifestVersion() {
   var m = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
   return m.version;
+}
+
+/**
+ * 提交信息主题的字数上限。
+ *
+ * GitHub 文件列表右侧那一列的提交信息只放得下 30~40 字，超了就截断成"…"，
+ * 一列下来全是省略号。取 30 留点余量。
+ */
+var MSG_SUBJECT_MAX = 30;
+
+/**
+ * 提交信息的形状检查。
+ *
+ * 为什么在**提交这一端**拦，而不是只写进文档：
+ * 文档只能提醒，而"顺手把整段说明写进提交正文"是非常自然的动作。
+ * 而提交正文会**原样出现在 GitHub 文件列表的悬停卡片里** ——
+ * 用户反馈过"把光标放过去会出现一大堆东西，看起来很不干净"。
+ *
+ * 实测接手时的情况：最近 25 条提交，主题平均 35 字、最长 60 字；
+ * **25 条全都带正文**，正文平均 446 字、最长 834 字 —— 悬停出来就是一大块字。
+ *
+ * 详细说明请写进 `CHANGELOG.md`（它本来就是"为什么"的唯一真源），别在这儿重复一遍。
+ */
+function checkMessageShape(message) {
+  var lines = String(message).split('\n');
+  var subject = lines[0];
+  var body = lines.slice(1).join('\n').trim();
+  var problems = [];
+
+  if (!subject.trim()) problems.push('主题是空的');
+  if (subject.length > MSG_SUBJECT_MAX) {
+    problems.push('主题 ' + subject.length + ' 字，超过 ' + MSG_SUBJECT_MAX +
+      ' 字（文件列表那一列放不下，会被截断成"…"）');
+  }
+  if (body) {
+    problems.push('带了 ' + body.length + ' 字正文 —— GitHub 悬停那张卡片会把正文整段显示出来；' +
+      '详细说明请写进 CHANGELOG.md');
+  }
+  var prefix = subject.match(/^([A-Za-z]+)(\(.+?\))?!?:/);
+  if (prefix) {
+    problems.push('用了英文类型前缀「' + prefix[1] + ':」—— 本项目统一不用前缀，' +
+      '和中文主题混排在一起很显脏');
+  }
+  return problems;
+}
+
+/** 只校验提交信息，不碰网络、不需要令牌。用法：check-msg <文件> */
+function cmdCheckMsg(file) {
+  if (!file) throw new Error('check-msg 需要一个提交信息文件');
+  var message = fs.readFileSync(path.resolve(ROOT, file), 'utf8').replace(/\s+$/, '');
+  var problems = checkMessageShape(message);
+  if (problems.length) {
+    console.error('提交信息不合格：');
+    problems.forEach(function (p) { console.error('  · ' + p); });
+    console.error('\n现在第一行: ' + String(message).split('\n')[0]);
+    process.exitCode = 1;
+    return;
+  }
+  var subject = String(message).split('\n')[0];
+  console.log('提交信息合格：「' + subject + '」（' + subject.length + ' 字，无正文）');
 }
 
 function parseArgs(argv) {
@@ -144,6 +214,17 @@ async function cmdPush(files, messageFile, deletions) {
   if (!messageFile) throw new Error('push 需要 --message-file');
 
   var message = fs.readFileSync(path.resolve(ROOT, messageFile), 'utf8').replace(/\s+$/, '');
+
+  // ⚠️ 形状检查放在**任何网络请求之前**：不合格就一个字节都不发出去，
+  //    避免"提交了一半才发现信息不合格"
+  var shapeProblems = checkMessageShape(message);
+  if (shapeProblems.length) {
+    console.error('提交信息不合格，已在发起任何请求之前拦下：');
+    shapeProblems.forEach(function (p) { console.error('  · ' + p); });
+    console.error('\n现在第一行: ' + String(message).split('\n')[0]);
+    console.error('规则与原因见 AGENTS.md §3 第 5 条。');
+    throw new Error('提交信息不合格，本次没有提交任何东西');
+  }
 
   var ref = await api('GET', base + '/git/ref/heads/' + BRANCH);
   var parentSha = ref.object.sha;
@@ -259,7 +340,7 @@ async function cmdRelease(tag, notesFile) {
     var res = await fetch('https://uploads.github.com' + base + '/releases/' + rel.id +
       '/assets?name=' + encodeURIComponent(w.name), {
       method: 'POST',
-      headers: Object.assign({}, H, { 'Content-Type': 'application/octet-stream' }),
+      headers: Object.assign({}, headers(), { 'Content-Type': 'application/octet-stream' }),
       body: data
     });
     var text = await res.text();
@@ -331,11 +412,13 @@ async function cmdVerify(tag) {
   }
   else if (cmd === 'release') await cmdRelease(rest.positional[0], rest.flags['notes-file']);
   else if (cmd === 'verify') await cmdVerify(rest.positional[0]);
+  else if (cmd === 'check-msg') cmdCheckMsg(rest.positional[0]);
   else {
     console.log('用法:');
     console.log('  node tools/github-release.js push --message-file <文件> [--delete a,b] <文件...>');
     console.log('  node tools/github-release.js release <tag> --notes-file <文件>');
     console.log('  node tools/github-release.js verify <tag>');
+    console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');
     process.exitCode = 1;
   }
 })().catch(function (e) {
