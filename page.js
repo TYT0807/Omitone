@@ -31,6 +31,16 @@
    */
   var POPUP_QUIZ_QUIET_MS = 8000;
 
+  /**
+   * 模型接口返回 4xx（Key 无效 / 无权限 / 模型名不存在）之后，跳过答题的窗口。
+   *
+   * ⚠️ 它**不是退避**，绝不能和 `_markQuizApiConnectionFailed` 的 45 秒混为一谈：
+   * 4xx 是配置问题，重试一万次也还是 4xx，退避只会把"配置填错了"伪装成
+   * "网络连不上、插件卡死"（用户根本看不到服务商给的 "Invalid API key"）。
+   * 这里给 60 秒只是留出改配置的时间，改完下一轮自动恢复。
+   */
+  var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
+
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
     autoMaxPlaybackRate: true,
@@ -7231,6 +7241,22 @@
             this._quizForceSkipUntil = Date.now() + 8000;
             return;
           }
+          if (result && result.permanentError) {
+            // 服务商返回 4xx：配置问题（Key 无效 / 无权限 / 模型名不存在）。
+            //
+            // 这一支必须**早于** `_markQuizApiConnectionFailed`：
+            // 那会设一个 45 秒的 `_quizApiFailUntil` 退避窗口，于是"填错 Key"
+            // 在用户眼里变成"网络连不上、插件每隔 45 秒卡一下"，
+            // 而服务商明明把 "Invalid API key" 原话返回来了。
+            // 所以这里只跳过本轮、把原话留给用户，改好配置后自动恢复。
+            emitRuntimeLog('error', 'quiz llm rejected permanently, no retry', {
+              error: String(result.error || '').slice(0, 200),
+              skipMs: PERMANENT_LLM_ERROR_SKIP_MS
+            });
+            this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizForceSkipUntil = Date.now() + PERMANENT_LLM_ERROR_SKIP_MS;
+            return;
+          }
           this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
           this._skipQuizForApiUnavailable('llm-request-failed', quizDoc);
           return;
@@ -7628,7 +7654,7 @@
         var found;
         try { found = Array.from(el.querySelectorAll(listSelectors[i])); } catch (e) { continue; }
         var usable = found.filter(function (node) { return textOf(node).length > 0; });
-        if (usable.length) return usable;
+        if (usable.length) return this._pairOptionControls(el, usable);
       }
 
       var labels = Array.from(el.querySelectorAll('label')).filter(function (n) { return textOf(n).length > 0; });
@@ -7654,6 +7680,45 @@
       if (roles.length) return roles;
 
       return [];
+    },
+
+    /**
+     * 作业/考试页「文本与控件分离」的补偿。
+     *
+     * 结构上：选项**文本**在 `.Cy_ulTop` 的 li 里，可点的 **input 在 `.Cy_ulBottom` 的 li**，
+     * 是**两个分开的 ul**。而 `_clickOptionItem` 靠 `item.querySelector('input')` 找控件，
+     * 拿到文本那一列时 input 恒为 null —— 一下都没点到，站点一个答案都收不到。
+     * 表现是"题抠对了、日志也打了 clicked option，但一道都没答上"，然后空转。
+     *
+     * 参考实现（cxmooc-tools 的 `cxExamSelectQuestion`）干脆把 input 直接当选项节点、
+     * 文本另按位置取。这里不动整体结构，只把控件**按索引**配对挂到文本节点上：
+     * 文本 / qid / 徽标继续从文本节点读，点击时改用配到的 input。
+     *
+     * 只在「本列一个控件都没有」且「另一列数量刚好对得上」时才配 ——
+     * 对不上宁可不配，免得错位把答案点到别的选项上（那比不答更糟）。
+     */
+    _pairOptionControls: function (el, items) {
+      if (!el || !items || !items.length) return items;
+
+      for (var i = 0; i < items.length; i++) {
+        if (items[i] && items[i].querySelector && items[i].querySelector('input')) return items;
+      }
+
+      var controls = [];
+      try {
+        controls = Array.from(el.querySelectorAll('li')).filter(function (n) {
+          return n.querySelector && n.querySelector('input[type="radio"], input[type="checkbox"]');
+        });
+      } catch (e) { return items; }
+      if (controls.length !== items.length) return items;
+
+      for (var k = 0; k < items.length; k++) {
+        if (!items[k]) continue;
+        try {
+          items[k]._optionInput = controls[k].querySelector('input[type="radio"], input[type="checkbox"]');
+        } catch (e2) {}
+      }
+      return items;
     },
 
     _extractOptionText: function (node) {
@@ -7866,16 +7931,32 @@
 
       // ① 点击：先让站点自己的 handler 跑完
       var input = item.querySelector ? item.querySelector('input[type="' + inputType + '"]') : null;
+      if (!input && item._optionInput) {
+        var pairedType = String((item._optionInput.getAttribute && item._optionInput.getAttribute('type')) || '').toLowerCase();
+        if (pairedType === inputType) input = item._optionInput;
+      }
+
+      if (item._optionInput) {
+        // 文本与控件分离（作业/考试页）：文本节点上没有任何可点的东西，
+        // 直接点配对到的 input —— 事件从 input 冒泡，
+        // 站点把 handler 挂在 input / label / li 上都收得到。
+        // 必须**先点再置 checked**：复选上"先置 true 再 click"会被再切一次，反而变未选。
+        try { item._optionInput.click(); } catch (ePair) {}
+      }
+
       if (input) {
         try { input.checked = true; } catch (e0) {}
         this._dispatchQuizInputEvents(input);
       }
-      try { item.click(); } catch (e) {}
-      if (item.querySelector) {
-        var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
-        // 徽标可能就在 item 自身这一层，重复点同一个元素只会多点一次（复选上就是再取消）
-        if (clickTarget && clickTarget !== item) {
-          try { clickTarget.click(); } catch (e2) {}
+
+      if (!item._optionInput) {
+        try { item.click(); } catch (e) {}
+        if (item.querySelector) {
+          var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
+          // 徽标可能就在 item 自身这一层，重复点同一个元素只会多点一次（复选上就是再取消）
+          if (clickTarget && clickTarget !== item) {
+            try { clickTarget.click(); } catch (e2) {}
+          }
         }
       }
 
@@ -7942,6 +8023,7 @@
       var aria = item.getAttribute ? String(item.getAttribute('aria-checked') || '') : '';
       if (aria === 'true') return true;
       var input = item.querySelector ? item.querySelector('input[type="checkbox"], input[type="radio"]') : null;
+      if (!input && item._optionInput) input = item._optionInput; // 文本与控件分离时控件挂在配对节点上
       if (input) return !!input.checked;
       return true;
     },
@@ -9028,6 +9110,18 @@
               error: String(result.error || '').slice(0, 160)
             });
             this._quizForceSkipUntil = Date.now() + 8000;
+            return;
+          }
+          if (result && result.permanentError) {
+            // 与 _handleQuiz 同源：4xx 是配置问题，不是网络问题。
+            // 标记"连接失败"会让弹题也挤进 45 秒退避，用户同样只看到插件卡住。
+            // 这里改走"放弃这道弹题"：关掉弹窗 + 冷却 60 秒，
+            // 既不会拿坏 Key 反复去撞接口，也不把课程卡在这里。
+            emitRuntimeLog('error', 'popup quiz llm rejected permanently, no retry', {
+              error: String(result.error || '').slice(0, 200)
+            });
+            this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._giveUpPopupQuiz(popup, 'llm-permanent-error');
             return;
           }
           this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败');

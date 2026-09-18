@@ -550,7 +550,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 20 个场景，222 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 24 个场景，245 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -871,6 +871,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 32 | **弹题答对了，但视频右下角还挂着一个「继续学习」按钮，不点就进不去正常播放页，AI 照样空耗** | 代码里**根本没有这个按钮的处理**：它不属于弹窗题（没有选项），也不属于任何已有分支，于是 tick 每轮都跳过它，视频一直停在那儿 | 新增 `_findContinueStudyButton` + `_tryContinueStudyPrompt`：按文案（继续学习/继续观看/继续播放）+ 与视频同文档 + 形态打分定位，**叶子节点优先**（站点把 `onclick` 挂在按钮上，点到外层容器没反应）；挂在 `_runTick` 里弹题之后、播放之前。两道保险：同一按钮 3 秒内只点一次、连点 5 次没反应就停 60 秒并写日志 |
 | 33 | **多选题只选一个就提交，然后一直卡住**（章节小测无视后续、视频弹题反复选不对） | 四条叠加：① **没有任何地方规定"多选题至少选 2 项"**，只选 1 项也算"填好了" → 提交 → 判错 → 记为错答案 → ② 重试时 `preferredSize = canonical.length` 恰好是 **1**，于是 fallback 组合**优先挑"只选一项"的组合**，逐个字母试过去，每次都错 → 一直磨到 20 次交卷上限；③ 视频弹题那条路**自己另写了一份**选项填充，**没有** `"AC"` → `["A","C"]` 的拆分，模型回不带分隔符的连写字母时一个选项都匹配不上；④ `_clickOptionItem` 对复选框会点两次（`item.click()` + 内层徽标 click），**复选是开关，两次点击互相抵消** → 随机少选 | ① 新增唯一入口 `_applyChoiceAnswer`（章节小测与视频弹题共用），把重复的填充逻辑合成一份；② 连写字母按单字母拆开；③ 标着"多选"的题答案不足 2 项时**本地扩成相邻两项**（纯本地，**零 token**）；④ `_sortMultiFallbackCombos` 的目标规模**下限钉在 2**（低于下限的组合只排到最后、不删除 —— "不定项选择题"单选也是正确答案）；⑤ `_clickOptionItem` 改成幂等：先点、再把终态写回，复选只加不减；⑥ 同题错够 `quizQuestionMaxMisses`(3) 次后 `_isQuizQuestionBestEffort` 判真 → 不再进 LLM 请求、不再扩错答列表，直接填本地猜测让整卷交得出去（**这才叫真的"不卡住"**：章节小测的提交前置是每题都有值） |
 | 34 | 换了个模型就一直 **400**，看起来像插件坏了 | 思考参数**按厂商各写各的**（DeepSeek `thinking:{type}`、通义 `enable_thinking`、Kimi `reasoning_effort`），各家对未知字段的反应不一致：有的忽略、有的直接 400。旧实现写死"只对 DeepSeek 加"，一改成表驱动就容易给不支持的渠道发参数 | ① 参数映射收进唯一真源 `libs/thinking.js`，**按渠道白名单**发；认不出的渠道在"关闭"档**一个参数都不发**（= 升级前的行为）；② 服务商拒收时 `content.js` **自动摘掉思考参数重试一次**并记 `llm rejected thinking params, retry without them`，不让整次答题判死；③ 集成测试同时断言"该带的带对了"与"**不该带的一个都没有**"，后一条更重要 |
+| 35 | **作业 / 考试页点了选项却不生效**（日志写着"已点"，页面上一个都没选中） | 那套 `.Cy_*` 结构里，选项**文本**在 `.Cy_ulTop` 的 `<a>` 里、可点的 `input` 在**另一个** `.Cy_ulBottom` 里 —— 文本与控件是两个分开的 `ul`。`_getOptionItems` 抢先命中文本那一列 → `item.querySelector('input')` 恒为 null → 一下都没点到，但 `clicked++` 照样加，调用方当成功照样提交 → 空转 | 新增 `_pairOptionControls`：按索引把控件配到文本节点上；点击顺序改成**先点、再把终态写回**（反过来复选会被站点再切一次，反而变未选）。端到端新增作业页场景，断言"DOM 里真的有 1 个 radio / 2 个 checkbox 被选中"，**不是只看日志** |
+| 36 | **Key 填错了，表现却是「插件每隔 45 秒卡一下」** | `content.js` 认得 401/403（不重试、不写 `apiConnectionFailed`），但 `page.js` 拿回 `{permanentError:true}` 后**根本没读这个字段**，一律走 `_markQuizApiConnectionFailed` → 45 秒退避，把"配置填错了"伪装成"网络连不上"，而服务商明明把 `Invalid API key` 原话返回来了 | 4xx 单独一支：跳过本轮（60 秒）、把服务商原话留在 `_quizApiLastError`，**不进退避窗口**；视频弹题改走 `_giveUpPopupQuiz`（关弹窗 + 60 秒冷却，不拿坏 Key 反复撞接口）。**500 仍然退避**由对照场景守着 —— 否则"凡是失败都不退避"也能蒙混过关 |
 
 ---
 
@@ -884,6 +886,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | **多选题只选一个就卡住 / 一直选不对** | 见 §6 #33。日志里找 `multiple choice answer expanded locally`（本地把单字母扩成两项）、`multiple choice combos exhausted, keep wrong history`、`quiz filled best-effort guesses for repeatedly-wrong questions`（已放弃折腾这道题、改填本地猜测让整卷交出去） |
 | 换了模型就一直 400 | 见 §6 #34。日志里找 `llm rejected thinking params, retry without them`；把「思考强度」切回"关闭"即可（关闭档对认不出的渠道不发任何参数） |
+| **Key 填错 / 模型名写错，却表现成「每隔 45 秒卡一下」** | 见 §6 #36。日志里找 `quiz llm rejected permanently, no retry`，后面跟着服务商原话（如 `Invalid API key`）。它**不会**再进 45 秒退避，改好配置后下一轮自动恢复 |
+| **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
@@ -951,9 +955,9 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 ```bash
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（67 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（77 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（20 个场景 / 222 项）
+npm run e2e      # 真实 Edge 功能交叉检验（24 个场景 / 245 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库
