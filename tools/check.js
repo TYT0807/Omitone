@@ -529,6 +529,29 @@ function checkUserEntryPoints() {
         realPages + ' 页 —— 改完说明书要跑 `npm run manual` 并同步这一处');
     }
   }
+  // 7) 说明书**自己**也要能点着下载
+  //
+  // 这条是补漏：README 有双入口（上面第 4 条盯着），但说明书**正文里一个可点的
+  // 下载链接都没有** —— 只写着"打开项目首页，点最上面那个按钮"。
+  // 问题在于说明书是会被**单独转发**的：有人把 PDF 或在线版链接发给同学，
+  // 对方手里只有这一份文件，上面那句"打开项目首页"就成了空话 —— 他得自己
+  // 去搜仓库名。而且这两件事都不会报错，页面照样渲染得好好的。
+  //
+  // ⚠️ 判据只看"说明书里有没有指向这两个附件直链的 <a href>"，
+  //    不要求它出现在封面 —— 放哪儿都行，改版时挪位置不算故障。
+  if (exists(MANUAL_ONLINE)) {
+    var manLinks = read(MANUAL_ONLINE);
+    if (manLinks.indexOf('releases/latest/download/' + ZIP_ASSET) === -1) {
+      problemsHere.push(MANUAL_ONLINE + ' 里没有指向 releases/latest/download/' + ZIP_ASSET +
+        ' 的下载链接 —— 说明书会被单独转发，对方手里只有这一份，' +
+        '没有可点的链接他就只能自己去找仓库');
+    }
+    if (manLinks.indexOf('releases/latest/download/' + MANUAL_PDF_ASSET) === -1) {
+      problemsHere.push(MANUAL_ONLINE + ' 里没有指向 releases/latest/download/' + MANUAL_PDF_ASSET +
+        ' 的 PDF 下载链接 —— 同上：单独拿到这份说明书的人应该能就地转存 PDF 版');
+    }
+  }
+
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
   else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
 }
