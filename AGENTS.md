@@ -190,4 +190,10 @@ https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip
 配套守卫：`tools/check.js` 的「用户入口守卫」会检查 README 里这条直链不许带版本号、
 根目录必须有 `使用说明.pdf`、且 README 里所有相对链接都指向真实存在的文件。
 
+**另一个附件（说明书）必须用 ASCII 名上传。** 实测：传 `使用说明.pdf` 时 GitHub 返回
+**201 成功**，但落在 Release 上的名字会**静默变成 `default.pdf`** —— 接口说成功、结果不对，
+是这里最典型的一类坑。所以仓库里的文件仍叫 `使用说明.pdf`（给用户看），
+上传时用 `Omitone-manual.pdf`（`tools/github-release.js` 的 `ASSETS` 里已经写死，别改）。
+README 的说明书链接指向的是**仓库文件**，不是 Release 附件，因此不受这个限制影响。
+
 
