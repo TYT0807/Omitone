@@ -257,6 +257,153 @@ function buildQuizResultHtml() {
     '</body></html>';
 }
 
+/**
+ * 过关测试：题目在 iframe 里（学习通的真实结构）。
+ *
+ * 为什么必须单独有一个场景：学习通章节测验的题目根本不在顶层文档里，
+ * 而在 `#frame_content` 这个 iframe 内。_extractQuestions 为此专门准备了
+ * "先扒 preferredDoc 里的 frame_content，再 _walkDocuments 递归" 的路径，
+ * 但这条路径此前是**零覆盖** —— 全部用例都跑在"题就在顶层文档"的页面上，
+ * 于是 iframe 这条真实路径对不对，测试一句都没说过话。
+ *
+ * 题型照用户实测那一份配置：单选(4 选项) × 1 + 多选(4 选项) × 2 + 判断 × 1。
+ */
+function buildChapterQuizInnerHtml() {
+  function options(qid, list, multi) {
+    return list.map(function (text, i) {
+      var letter = String.fromCharCode(65 + i);
+      var badgeClass = multi ? 'num_option num_option_dx choice' + qid : 'num_option choice' + qid;
+      return '    <li class="before-after" qid="' + qid + '" data="' + letter + '">\n' +
+        '      <label>\n' +
+        '        <input type="' + (multi ? 'checkbox' : 'radio') + '" name="answer' + qid + '" value="' + letter + '">\n' +
+        '        <span class="' + badgeClass + '" data="' + letter + '">' + letter + '</span>\n' +
+        '        <span class="fl after">' + text + '</span>\n' +
+        '      </label>\n' +
+        '    </li>';
+    }).join('\n');
+  }
+
+  function judgeOptions(qid) {
+    return [
+      { letter: 'A', data: 'true', text: '正确' },
+      { letter: 'B', data: 'false', text: '错误' }
+    ].map(function (o) {
+      return '    <li class="before-after" qid="' + qid + '" data="' + o.letter + '">\n' +
+        '      <label>\n' +
+        '        <input type="radio" name="answer' + qid + '" value="' + o.letter + '">\n' +
+        '        <span class="num_option choice' + qid + '" data="' + o.data + '">' + o.letter + '</span>\n' +
+        '        <span class="fl after">' + o.text + '</span>\n' +
+        '      </label>\n' +
+        '    </li>';
+    }).join('\n');
+  }
+
+  function wrap(qid, no, typename, stem, inner, typeValue) {
+    return '  <div class="TiMu" qid="' + qid + '" typename="' + typename + '">\n' +
+      '    <div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">' + no + '.</span>【' + typename + '】' + stem + '</div></div>\n' +
+      inner + '\n' +
+      '    <input type="hidden" id="answer' + qid + '" value="">\n' +
+      '    <input type="hidden" id="answertype' + qid + '" value="' + typeValue + '">\n' +
+      '  </div>';
+  }
+
+  var q1 = wrap(3001, 1, '单选题', '在关系数据库中，用于唯一标识一条记录的是：',
+    '  <ul class="Zy_ulTop">\n' + options(3001, ['主键', '外键', '索引', '视图'], false) + '\n  </ul>', '0');
+  var q2 = wrap(3002, 2, '多选题', '以下属于操作系统核心功能的有：',
+    '  <ul class="Zy_ulTop">\n' + options(3002, ['进程管理', '内存管理', '文件系统管理', '编译源代码'], true) + '\n  </ul>', '1');
+  var q3 = wrap(3003, 3, '多选题', '下列哪些协议工作在传输层：',
+    '  <ul class="Zy_ulTop">\n' + options(3003, ['TCP', 'UDP', 'IP', 'HTTP'], true) + '\n  </ul>', '1');
+  var q4 = wrap(3004, 4, '判断题', '对称加密算法的加密密钥与解密密钥相同。',
+    '  <ul class="Zy_ulTop">\n' + judgeOptions(3004) + '\n  </ul>', '3');
+
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>章节测验</title></head><body>' +
+    '<h1 class="mark_title">章节测验</h1>' +
+    '<input type="hidden" id="courseId" value="123456">' +
+    '<input type="hidden" id="classId" value="654321">' +
+    '<input type="hidden" id="workId" value="999">' +
+    '<div id="Zyapl">\n' + [q1, q2, q3, q4].join('\n') + '\n</div>' +
+    '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>' +
+    '</body></html>';
+}
+
+/**
+ * 作业 / 考试页（`.Cy_*` 那一族结构）。
+ *
+ * 为什么必须单独有一个场景：学习通有**两套**题目标记，
+ *   章节测验：.TiMu + .Zy_ulTop        ← 此前全部场景用的都是这一套
+ *   作业考试：.Cy_TItle + .Cy_ulTop    ← 用户实际卡住的是这一套
+ * 在补这个场景之前，仓库里 Cy_TItle / Cy_ulTop / questionLi 的出现次数都是 0，
+ * 也就是说"作业考试页能不能抠到题"这件事，测试一句都没说过话。
+ *
+ * 结构照 cxmooc-tools 的 `cxExamSelectQuestion` 写：
+ *   - 选项**文本**在 `.Cy_ulTop li` 的 `<a>` 里
+ *   - 可点的 **input 在 `.Cy_ulBottom li`** 里 —— 两者是分开的两个 <ul>
+ * 这个"文本和控件分离"正是要验证的风险点：若 `_getOptionItems` 抢先命中
+ * `.Cy_ulTop li`（只有文本、没有 input），点下去就是空点，站点什么也收不到。
+ *
+ * 题型照用户实测：单选(4 选项) × 1 + 多选(4 选项) × 2 + 判断 × 1。
+ */
+function buildExamWorkHtml() {
+  function textList(list) {
+    return list.map(function (t, i) {
+      return '    <li><div class="clearfix"><a href="javascript:void(0)">' +
+        String.fromCharCode(65 + i) + '. ' + t + '</a></div></li>';
+    }).join('\n');
+  }
+
+  function inputList(qid, count, multi) {
+    var out = [];
+    for (var i = 0; i < count; i++) {
+      out.push('    <li><input type="' + (multi ? 'checkbox' : 'radio') +
+        '" name="answer' + qid + '" value="' + String.fromCharCode(65 + i) + '"></li>');
+    }
+    return out.join('\n');
+  }
+
+  function judgeInputs(qid) {
+    return '    <li><input type="radio" name="answer' + qid + '" value="true"></li>\n' +
+      '    <li><input type="radio" name="answer' + qid + '" value="false"></li>';
+  }
+
+  function wrap(qid, no, typename, stem, texts, inputs, typeValue) {
+    return '  <div class="Cy_TItle" qid="' + qid + '">\n' +
+      '    <div class="Cy_TItle clearfix"><span class="fontLabel">' + no + '.</span>【' + typename + '】' + stem + '</div>\n' +
+      '    <ul class="Cy_ulTop w-top">\n' + texts + '\n    </ul>\n' +
+      '    <ul class="Cy_ulBottom clearfix w-buttom">\n' + inputs + '\n    </ul>\n' +
+      '    <input type="hidden" id="answer' + qid + '" value="">\n' +
+      '    <input type="hidden" id="answertype' + qid + '" value="' + typeValue + '">\n' +
+      '  </div>';
+  }
+
+  var q1 = wrap(5001, 1, '单选题', '在关系数据库中，用于唯一标识一条记录的是：',
+    textList(['主键', '外键', '索引', '视图']), inputList(5001, 4, false), '0');
+  var q2 = wrap(5002, 2, '多选题', '以下属于操作系统核心功能的有：',
+    textList(['进程管理', '内存管理', '文件系统管理', '编译源代码']), inputList(5002, 4, true), '1');
+  var q3 = wrap(5003, 3, '多选题', '下列哪些协议工作在传输层：',
+    textList(['TCP', 'UDP', 'IP', 'HTTP']), inputList(5003, 4, true), '1');
+  var q4 = wrap(5004, 4, '判断题', '对称加密算法的加密密钥与解密密钥相同。',
+    textList(['正确', '错误']), judgeInputs(5004), '3');
+
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业 - 学习通</title></head><body>' +
+    '<div class="Cy_TItle1">一、题目</div>' +
+    '<div id="Zyapl">\n' + [q1, q2, q3, q4].join('\n') + '\n</div>' +
+    '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>' +
+    '</body></html>';
+}
+
+/** 学习通学生端外壳：题目内容整体装在 #frame_content 里 */
+function buildChapterQuizShellHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>学生学习 - 学习通</title></head><body>' +
+    '<div class="root">' +
+    '<iframe id="frame_content" name="frame_content" src="/quiz-inner" ' +
+    'style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    '</body></html>';
+}
+
 /** 插件完全不认识的 DOM 结构，用来验证"扫不到题"的诊断输出 */
 function buildWeirdHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -470,6 +617,9 @@ function buildVideoContinueHtml() {
 
 var MOCK_PAGES = {
   '/quiz': buildQuizHtml,
+  '/chapter-quiz': buildChapterQuizShellHtml,
+  '/quiz-inner': buildChapterQuizInnerHtml,
+  '/exam-work': buildExamWorkHtml,
   '/quiz-result': buildQuizResultHtml,
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
@@ -493,6 +643,9 @@ var MOCK_PAGES = {
 // ===========================================================================
 function startMockServer() {
   var requests = [];
+  // 场景用它让接口返回指定状态码（401 / 403 / 500 …）。
+  // 不改它时一律 200 —— 否则所有"正常答题"场景会一起挂掉。
+  var forcedStatus = 0;
 
   var server = http.createServer(function (req, res) {
     if (req.method === 'OPTIONS') {
@@ -522,6 +675,16 @@ function startMockServer() {
         else if (body.contents) prompt = body.contents[0].parts.map(function (p) { return p.text || ''; }).join('\n');
 
         requests.push({ prompt: prompt });
+
+        if (forcedStatus) {
+          // 模拟服务商拒绝：401 = Key 无效（永久错误），500 = 服务端抽风（可重试）。
+          // body 必须是 OpenAI 的报错形状 —— content.js 靠它取出 httpStatus 之外的原话。
+          var errText = forcedStatus === 401 ? 'Invalid API key'
+            : forcedStatus === 403 ? 'Forbidden'
+            : 'internal server error';
+          res.writeHead(forcedStatus, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+          return res.end(JSON.stringify({ error: { message: errText } }));
+        }
 
         // 独立解析提示词并按 libs/prompt.js 约定的**位置式数组**作答。
         // 这里刻意不 import libs/prompt.js：假模型就是一版独立实现，
@@ -554,7 +717,11 @@ function startMockServer() {
 
   return new Promise(function (resolve) {
     server.listen(PORT, '127.0.0.1', function () {
-      resolve({ server: server, requests: requests });
+      resolve({
+        server: server,
+        requests: requests,
+        setStatus: function (code) { forcedStatus = code || 0; }
+      });
     });
   });
 }
@@ -847,6 +1014,97 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 1b. 过关测试：题目装在 #frame_content iframe 里 ---- */
+SCENARIOS.push({
+  name: '抠题（题在 frame_content iframe 里）',
+  path: '/chapter-quiz',
+  run: async function (ctx) {
+    var scanned = await ctx.client.evaluate(
+      '(function(){return window._xxtApp._extractQuestions(null).map(function(q){' +
+      'return {type:q.type,title:q.title,options:q.options,inIframe:!!q._inIframe};});})()'
+    );
+
+    check('_detectQuiz 在 iframe 结构下也认得出这是测验',
+      await ctx.client.evaluate('!!window._xxtApp._detectQuiz()'));
+
+    check('iframe 里的 4 道题全部抠到', Array.isArray(scanned) && scanned.length === 4,
+      '实际 ' + (Array.isArray(scanned) ? scanned.length : 'n/a'));
+    if (!Array.isArray(scanned) || scanned.length !== 4) return;
+
+    check('题型识别为 单选/多选/多选/判断',
+      scanned.map(function (q) { return q.type; }).join(',') === 'single,multiple,multiple,judge',
+      scanned.map(function (q) { return q.type; }).join(','));
+
+    check('4 道题都被标记为来自 iframe',
+      scanned.every(function (q) { return q.inIframe; }),
+      JSON.stringify(scanned.map(function (q) { return q.inIframe; })));
+
+    check('两道多选题各 4 个选项',
+      scanned[1].options.length === 4 && scanned[2].options.length === 4,
+      scanned[1].options.length + '/' + scanned[2].options.length);
+
+    check('判断题选项为 正确/错误',
+      JSON.stringify(scanned[3].options) === JSON.stringify(['正确', '错误']),
+      JSON.stringify(scanned[3].options));
+  }
+});
+
+/** ---- 1c. 作业/考试页：`.Cy_*` 结构，选项文本与可点 input 分处两个 ul ---- */
+SCENARIOS.push({
+  name: '抠题（作业考试页 Cy_* 结构）',
+  path: '/exam-work',
+  run: async function (ctx) {
+    var scanned = await ctx.client.evaluate(
+      '(function(){return window._xxtApp._extractQuestions(null).map(function(q){' +
+      'var items=window._xxtApp._getOptionItems(q._element);' +
+      'return {type:q.type,title:q.title,options:q.options,' +
+      'itemTag:items[0]?items[0].tagName:null,' +
+      'itemsWithInput:items.filter(function(i){return i.querySelector("input")||i._optionInput;}).length,' +
+      'itemsTotal:items.length};});})()'
+    );
+
+    check('作业页 4 道题全部抠到', Array.isArray(scanned) && scanned.length === 4,
+      '实际 ' + (Array.isArray(scanned) ? scanned.length : 'n/a'));
+    if (!Array.isArray(scanned) || scanned.length !== 4) return;
+
+    check('题型识别为 单选/多选/多选/判断',
+      scanned.map(function (q) { return q.type; }).join(',') === 'single,multiple,multiple,judge',
+      scanned.map(function (q) { return q.type; }).join(','));
+
+    check('每题的 4 个选项文本都抠到了',
+      scanned[0].options.length === 4 && scanned[3].options.length === 2,
+      scanned.map(function (q) { return q.options.length; }).join('/'));
+
+    // 这条是本题的命门：抠出来的选项节点必须带可点的 input，
+    // 否则 _clickOptionItem 里的 input 为 null，点了等于没点，站点一个答案都收不到。
+    check('抠到的选项节点全部能找到可点控件（自身带 input，或经配对拿到 _optionInput）',
+      scanned.every(function (q) { return q.itemsTotal > 0 && q.itemsWithInput === q.itemsTotal; }),
+      JSON.stringify(scanned.map(function (q) {
+        return q.itemTag + ' ' + q.itemsWithInput + '/' + q.itemsTotal;
+      })));
+
+    // 光"带着控件"还不够，得真的点中。这条直接验证控件状态变了 ——
+    // 之前的表现正是"日志打了 clicked option，但 input 一个都没 checked"。
+    var single = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=app._extractQuestions(null)[0];' +
+      'var n=app._applyChoiceAnswer(q._element,"A","single");' +
+      'var ipt=q._element.querySelectorAll("input[type=radio]");' +
+      'return {clicked:n,checked:Array.from(ipt).filter(function(i){return i.checked;}).length};})()'
+    );
+    check('单选点 A：确实有 1 个 radio 被选中（不是只打日志）',
+      single.clicked === 1 && single.checked === 1, JSON.stringify(single));
+
+    var multi = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=app._extractQuestions(null)[1];' +
+      'var n=app._applyChoiceAnswer(q._element,["A","C"],"multiple");' +
+      'var ipt=q._element.querySelectorAll("input[type=checkbox]");' +
+      'return {clicked:n,checked:Array.from(ipt).filter(function(i){return i.checked;}).length};})()'
+    );
+    check('多选点 A、C：确实有 2 个 checkbox 被选中',
+      multi.clicked === 2 && multi.checked === 2, JSON.stringify(multi));
+  }
+});
+
 /** ---- 2. 完整答题往返：抠题 → 提示词 → 模型 → 回填 DOM ---- */
 SCENARIOS.push({
   name: '答题往返 + 回填 DOM',
@@ -931,6 +1189,79 @@ SCENARIOS.push({
       'return app._areQuizAnswersFilled(null, qs, {});})()'
     );
     check('_areQuizAnswersFilled 判定全部已填', allFilled === true, String(allFilled));
+  }
+});
+
+/**
+ * ---- 2a. 模型返回 401：跳过本轮，但不进 45 秒退避 ----
+ *
+ * 这条补的是"看代码得出的结论"和"真实行为"之间的那道缝：
+ * content.js 早就认得 401（不重试、不写 apiConnectionFailed），
+ * 但 page.js 拿回 `{permanentError:true}` 之后**根本没读这个字段**，
+ * 一律走 `_markQuizApiConnectionFailed` → 45 秒退避。
+ * 于是"Key 填错了"在用户眼里变成"网络连不上、插件每隔 45 秒卡一下"，
+ * 而服务商明明把 "Invalid API key" 原话返回来了。
+ */
+SCENARIOS.push({
+  name: '模型 401：不退避、不当成网络故障',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    // 两处配置都要喂：storage 是 content.js 发请求用的凭据，configs 是 page.js 的开关
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    var before = ctx.mock.requests.length;
+    ctx.mock.setStatus(401);
+    await ctx.client.evaluate(
+      'window._xxtApp._quizApiFailUntil = 0; window._xxtApp._quizApiLastError = "";' +
+      'window._xxtApp._quizForceSkipUntil = 0; window._xxtApp._handleQuiz(null); true'
+    );
+
+    // 两个条件都等到：只看请求数会在页面状态落地前就断言，只看状态会在请求还没发出时就断言
+    var asked = 0;
+    var deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      asked = ctx.mock.requests.length - before;
+      var settled = await ctx.client.evaluate(
+        'String(window._xxtApp._quizApiLastError || "").length > 0 || window._xxtApp._quizApiFailUntil > 0'
+      );
+      if (asked >= 1 && settled) break;
+      await sleep(300);
+    }
+
+    check('401 确实发了请求（配置是通的，是接口拒绝了）', asked >= 1, '请求数 +' + asked);
+    check('401 只发 1 次（永久错误不该重试）', asked === 1, '实际 ' + asked + ' 次');
+
+    var st = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {' +
+      'unavailable:a._isQuizApiUnavailable(), failUntil:a._quizApiFailUntil,' +
+      'lastError:String(a._quizApiLastError||"").slice(0,160),' +
+      'skipUntil:a._quizForceSkipUntil, inProgress:a._quizInProgress};})()'
+    );
+    // 这条是本次修复的核心：**没有** 45 秒退避窗口
+    check('401 不进 45 秒退避（不再被当成"网络连不上"）',
+      st.unavailable === false && !st.failUntil, JSON.stringify(st));
+    check('服务商原话留在页面上（用户能看出是 Key 错了）',
+      /401|Invalid API key/i.test(st.lastError), st.lastError);
+    check('本轮答题被跳过，且没卡在 _quizInProgress',
+      st.inProgress === false && st.skipUntil > Date.now(), JSON.stringify(st));
+
+    ctx.mock.setStatus(0);
   }
 });
 
@@ -2431,6 +2762,58 @@ SCENARIOS.push({
       'return {gate:app._shouldAdvanceAtNinetyPercent(v)};})()'
     );
     check('开关关闭后不提前结束', off.gate === false, JSON.stringify(off));
+  }
+});
+
+/**
+ * ---- 对照：500 仍然要进 45 秒退避 ----
+ *
+ * ⚠️ 必须放在**最后一个**场景：它会把 apiConnectionFailed 写进 chrome.storage，
+ * 而这个临时 profile 是全程共用的 —— 放在前面，后面每个场景都会被它连坐
+ * （page.js 收到配置更新就设 45 秒退避，答题场景会集体失败）。
+ *
+ * 为什么需要这条对照：没有它，"只要是失败就一律不退避"这种改法
+ * 也能通过 401 那组断言 —— 那等于把可重试的服务端错误也一起放过了。
+ */
+SCENARIOS.push({
+  name: '对照：500 仍然进 45 秒退避',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    var before = ctx.mock.requests.length;
+    ctx.mock.setStatus(500);
+    await ctx.client.evaluate(
+      'window._xxtApp._quizApiFailUntil = 0; window._xxtApp._quizApiLastError = "";' +
+      'window._xxtApp._handleQuiz(null); true'
+    );
+
+    var marked = await waitFor(ctx.client, 'window._xxtApp._quizApiFailUntil > Date.now()', 25000);
+    var st = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {failUntil:a._quizApiFailUntil,now:Date.now()};})()'
+    );
+    check('500（可重试的服务端错误）仍然进 45 秒退避', marked === true && st.failUntil > st.now,
+      JSON.stringify(st));
+    check('500 至少重试了一次（不是一次失败就放弃）',
+      ctx.mock.requests.length - before >= 2, '请求数 +' + (ctx.mock.requests.length - before));
+
+    ctx.mock.setStatus(0);
   }
 });
 
