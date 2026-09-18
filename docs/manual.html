@@ -79,7 +79,7 @@
   .box.warn { border-left-color: var(--warn); background: var(--warn-soft); }
   .box.danger { border-left-color: var(--danger); background: var(--danger-soft); }
   .box.ok { border-left-color: var(--ok); background: var(--ok-soft); }
-  .box p:last-child, .box ul:last-child { margin-bottom: 0; }
+  .box p:last-child, .box ul:last-child, .box ol:last-child { margin-bottom: 0; }
 
   .steps { counter-reset: step; list-style: none; padding-left: 0; }
   .steps > li { counter-increment: step; position: relative; padding-left: 9mm; margin-bottom: 3mm; }
@@ -89,6 +89,27 @@
     font-size: 9pt; text-align: center; line-height: 6mm; font-weight: 600;
   }
   .steps > li > b { display: block; margin-bottom: 0.5mm; }
+
+  /* ---------- 逐处「担架段」的四问表 ---------- */
+  .do { border: 1px solid var(--line); border-radius: 4px; margin: 2.5mm 0 5mm; break-inside: avoid; }
+  .do table { margin: 0; font-size: 9.5pt; }
+  .do th, .do td { border: 0; border-bottom: 1px solid var(--line); padding: 2mm 3mm; }
+  .do tr:last-child th, .do tr:last-child td { border-bottom: 0; }
+  .do th {
+    width: 26mm; background: var(--bg-soft); font-weight: 600; color: var(--ink-2);
+    white-space: nowrap; vertical-align: top;
+  }
+  .do tr:first-child th { color: var(--ok); }
+  .do tr:nth-child(2) th { color: var(--accent); }
+  .do tr:nth-child(3) th { color: var(--ok); }
+  .do tr:last-child th { color: var(--danger); }
+  .do td code { font-size: 9pt; }
+
+  kbd {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 9pt;
+    background: #fff; border: 1px solid #b9bfc9; border-bottom-width: 2px;
+    border-radius: 3px; padding: 0.5px 5px; color: var(--ink); white-space: nowrap;
+  }
 
   .pagebreak { break-before: page; }
   .nobreak { break-inside: avoid; }
@@ -112,10 +133,45 @@
   <p class="meta">版本 1.1.6 &nbsp;·&nbsp; 配套仓库：github.com/TYT0807/Omitone</p>
 </div>
 
+<div class="box ok">
+  <div class="t">这份说明书是怎么写的：每个动作都拆成四问</div>
+  <p>
+    凡是<b>需要你动手</b>的地方，都会配一张这样的表 —— 因为新手卡住，
+    几乎从来不是因为"不知道要装扩展"，而是<b>不知道自己看到的那一屏是不是对的</b>。
+  </p>
+  <div class="do">
+    <table>
+      <tbody>
+        <tr><th>① 你会看到什么</th><td>动手之前，屏幕上应该长什么样。</td></tr>
+        <tr><th>② 点哪里</th><td>具体点哪个字、哪个按钮。</td></tr>
+        <tr><th>③ 怎样才算对</th><td><b>做对了会出现什么</b> —— 没有这一条，你只能靠猜。</td></tr>
+        <tr><th>④ 不对怎么办</th><td>这一步做不成时，先查什么、去哪儿看。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="box">
+  <div class="t">完全没用过这类工具？先花两分钟读这两段</div>
+  <p>
+    <b>"扩展"是什么。</b>它是一个装进浏览器里的小程序，装完之后浏览器右上角会多一个按钮。
+    它不像普通软件那样有安装向导、有桌面图标 ——
+    <b>它平时是看不见的，只有你点那个按钮，或者打开学习通页面时，它才露面。</b>
+    所以"装完了却觉得什么都没发生"是正常的。
+  </p>
+  <p>
+    <b>"压缩包"要解压，是个高频坎。</b>你从网上下回来的那个 <code>omitone.zip</code>
+    不能直接交给浏览器。要先用鼠标右键点它，选<b>「全部解压缩」</b>（有的系统叫「解压到当前文件夹」），
+    得到一个和它同名的<b>文件夹</b>。<b>浏览器要的是那个文件夹，不是压缩包。</b>
+    这一步做错的表现是：浏览器报“清单文件缺失”或干脆没反应。
+  </p>
+</div>
+
 <h2>目录</h2>
 <div class="toc">
+  <a href="#s0">0. 五分钟装好（只看这一节也行）</a>
   <a href="#s1">1. 这是什么，能替你做什么</a>
-  <a href="#s2">2. 安装</a>
+  <a href="#s2">2. 安装（逐步版）</a>
   <a href="#s3">3. 第一次配置</a>
   <a href="#s4">4. 开始刷课</a>
   <a href="#s5">5. AI 答题是怎么工作的</a>
@@ -125,8 +181,121 @@
   <a href="#s9">9. 使用边界（请务必读）</a>
 </div>
 
+<!-- ==================== 0 ==================== -->
+<h2 id="s0" class="pagebreak">0. 五分钟装好（只看这一节也行）</h2>
+
+<p>
+  如果你只想<b>尽快让它跑起来</b>，照着这四步做，别管其余章节。
+  每一步都给了"怎样才算对"——<b>对不上就别往下走</b>。
+</p>
+
+<h3>第 1 步　下载并解压</h3>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>浏览器打开了项目首页，最上面有两个大链接。左边那个写着
+              <b>「点我下载插件（omitone.zip）」</b>。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点它。浏览器会下一个文件，通常是 <code>omitone.zip</code>，
+              落在你的「下载」文件夹里。<br>
+              下完之后，<b>用鼠标右键点这个 zip 文件 → 选「全部解压缩」</b>。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>解压出来的<b>文件夹</b>里，<b>直接就能看到</b>一个叫
+              <code>manifest.json</code> 的文件。<br>
+              <span class="small">（看不到文件后缀？在文件夹里点「查看」→勾上「文件扩展名」。）</span></td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>如果你解压后看到的是<b>又一个压缩包</b>，说明你只解开了外面一层，再解压一次。<br>
+              如果文件夹里是<b>另一个同名文件夹</b>，要进到<b>最里面</b>那一层，
+              直到眼前直接摆着 <code>manifest.json</code>。<br>
+              <b>把解压出来的文件夹放到一个你不会随手挪动的位置</b>（比如 <code>D:\omitone\</code>）——
+              放桌面然后手滑拖进垃圾桶，扩展就会失效。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>第 2 步　打开扩展管理页</h3>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th><td>浏览器顶部那条输入网址的栏。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点进地址栏，输入下面这串，回车：<br>
+              用 Edge：<code>edge://extensions</code><br>
+              用 Chrome：<code>chrome://extensions</code></td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>出现<b>「已安装的扩展」</b>列表页。你现在装过的东西会列在这里，
+              页面左下角（Edge）或右上角（Chrome）有个开关。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>如果这串地址被当成搜索词搜出去了，说明你没输全、或者多打了空格。<b>完整复制粘贴</b>最稳。<br>
+              如果你用的是别的浏览器：Firefox <b>不支持本扩展</b>；
+              国内套壳浏览器（QQ / 360 / 搜狗）没有开发者模式，也用不了。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>第 3 步　打开开发者模式</h3>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>刚刚那个扩展管理页。<b>页面左下角</b>（Edge）或<b>右上角</b>（Chrome）
+              有一个叫「开发人员模式 / 开发者模式」的拨动开关，现在是灰的。</td></tr>
+      <tr><th>② 点哪里</th><td>点一下那个开关，让它变蓝/变亮。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>页面顶部长出三个新按钮：<b>「加载解压缩的扩展程序」</b>、
+              「打包扩展程序」、「更新」。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>找不到这个开关，多半是页面没滚到顶 —— 它固定在左上角/右上角。
+              实在没有，说明你用的不是 Edge 或 Chrome。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>第 4 步　加载扩展</h3>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th><td>页面上已经出现「加载解压缩的扩展程序」这个按钮。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点它 → 会弹出一个"选择文件夹"的窗口 → <b>选中第 1 步解压出来的那个文件夹</b>
+              （就是里面能直接看见 <code>manifest.json</code> 的那一层）→ 点「选择文件夹」。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>列表里多出一张卡片，名字是 <b>Omitone-1.1.6</b>，下面写着
+              「支持学习通视频播放、API 自动答题」，右下角是<b>「已启用」</b>。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>报「清单文件缺失」→ 你选错层了，选到了压缩包或它的上一级，退回去重选。<br>
+              报「无法加载扩展程序」→ 看看文件是不是被解压软件放进了<b>临时目录</b>
+              （比如 <code>AppData\Local\Temp</code>），挪到普通目录再试。<br>
+              报「清单文件无效」→ 文件可能在下载或解压时损坏了，重新下一遍。</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="box warn">
+  <div class="t">装完先确认一件事：它要"在所有网站上运行"是正常的</div>
+  <p>
+    卡片上会出现这条提示，<b>不要关掉它</b>，也不要觉得这是权限滥用 ——
+    验证码有时会弹在与学习通无关的独立网址上。
+    扩展在其它网站上检测到不是目标页面会<b>立刻静默退出，什么都不做</b>。
+  </p>
+</div>
+
+<div class="box ok">
+  <div class="t">到这里就装完了。现在去做什么？</div>
+  <p>
+    打开任意一门学习通课程页面，<b>右下角会出现一个 Omitone 面板</b>。
+    看到它 = 装对了。接下来点「开始运行」就能刷课，
+    不需要 API Key（要 AI 答题才需要，见第 3 章）。
+  </p>
+</div>
+
 <!-- ==================== 1 ==================== -->
-<h2 id="s1">1. 这是什么，能替你做什么</h2>
+<h2 id="s1" class="pagebreak">1. 这是什么，能替你做什么</h2>
 
 <p>
   Omitone 是一个装在浏览器里的扩展。它替你处理学习通网页版里那些
@@ -160,9 +329,12 @@
 </div>
 
 <!-- ==================== 2 ==================== -->
-<h2 id="s2" class="pagebreak">2. 安装</h2>
+<h2 id="s2" class="pagebreak">2. 安装（逐步版）</h2>
 
-<p>扩展没有上架应用商店，需要在浏览器里手动加载。整个过程两分钟。</p>
+<p>
+  第 0 章已经走过一遍了。<b>这里是同一件事的详细版</b>：
+  多讲一些"为什么"和边角情况。已经装成功的同学，直接跳到第 3 章。
+</p>
 
 <ol class="steps">
   <li>
@@ -241,65 +413,138 @@
 
 <h3>3.1 设置弹窗长这样</h3>
 
+<p>
+  弹窗从上到下分三块：<b>顶部</b>是运行状态和开始/停止；
+  <b>中间</b>是六个可以折叠的分组（播放、任务点、任务点类型、答题、讨论任务点、AI 接入）；
+  <b>底部</b>是查看日志、恢复默认这类次要操作。
+</p>
+
 <figure class="figure">
-  <svg viewBox="0 0 680 330" xmlns="http://www.w3.org/2000/svg" role="img"
+  <svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" role="img"
        aria-label="设置弹窗界面示意图">
-    <rect x="0" y="0" width="680" height="330" fill="#fbfcfd" stroke="#e3e6ec"/>
-    <!-- 弹窗 -->
-    <rect x="150" y="10" width="380" height="310" rx="10" fill="#fff" stroke="#e3e6ec"/>
-    <text x="170" y="36" font-size="13" fill="#16181d" font-family="sans-serif" font-weight="600">Omitone-1.1.6</text>
-    <text x="510" y="36" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">版本 1.1.6</text>
-    <line x1="170" y1="46" x2="510" y2="46" stroke="#e3e6ec"/>
+    <rect x="0" y="0" width="700" height="430" fill="#fbfcfd" stroke="#e3e6ec"/>
 
-    <!-- 开关组 -->
-    <text x="170" y="68" font-size="11" fill="#444a55" font-family="sans-serif">播放速度</text>
-    <rect x="440" y="58" width="60" height="16" rx="8" fill="#e3e6ec"/>
-    <circle cx="492" cy="66" r="6" fill="#fff"/>
-    <text x="500" y="70" font-size="10" fill="#767d8a" font-family="sans-serif">1.5x</text>
+    <!-- 弹窗本体 -->
+    <rect x="110" y="10" width="400" height="410" rx="10" fill="#fff" stroke="#e3e6ec"/>
 
-    <text x="170" y="98" font-size="11" fill="#444a55" font-family="sans-serif">自动连播</text>
-    <rect x="464" y="88" width="36" height="18" rx="9" fill="#16181d"/>
-    <circle cx="491" cy="97" r="7" fill="#fff"/>
+    <!-- 顶部：品牌行 -->
+    <circle cx="132" cy="34" r="5" fill="#c3c8d1"/>
+    <text x="146" y="38" font-size="13" fill="#16181d" font-family="sans-serif" font-weight="700">Omitone</text>
+    <text x="208" y="38" font-size="9.5" fill="#767d8a" font-family="sans-serif">1.1.6</text>
+    <rect x="238" y="26" width="52" height="16" rx="8" fill="#f6f7f9" stroke="#e3e6ec"/>
+    <text x="264" y="38" font-size="9.5" fill="#767d8a" text-anchor="middle" font-family="sans-serif">未开启</text>
 
-    <text x="170" y="128" font-size="11" fill="#444a55" font-family="sans-serif">自动答题</text>
-    <rect x="464" y="118" width="36" height="18" rx="9" fill="#16181d"/>
-    <circle cx="491" cy="127" r="7" fill="#fff"/>
+    <!-- 开始/停止 -->
+    <rect x="128" y="54" width="176" height="26" rx="6" fill="#1f6feb"/>
+    <text x="216" y="71" font-size="11.5" fill="#fff" text-anchor="middle" font-family="sans-serif">开始运行</text>
+    <rect x="312" y="54" width="120" height="26" rx="6" fill="#fff" stroke="#c3c8d1"/>
+    <text x="372" y="71" font-size="11.5" fill="#444a55" text-anchor="middle" font-family="sans-serif">停止</text>
 
-    <text x="170" y="158" font-size="11" fill="#444a55" font-family="sans-serif">验证码自动识别</text>
-    <rect x="464" y="148" width="36" height="18" rx="9" fill="#e3e6ec"/>
-    <circle cx="473" cy="157" r="7" fill="#fff"/>
+    <!-- 提示句 -->
+    <text x="128" y="98" font-size="9" fill="#767d8a" font-family="sans-serif">刷课不需要 API Key。要用 AI 答题或验证码识别才需要，在下面「AI 接入」里填。</text>
+    <line x1="110" y1="110" x2="510" y2="110" stroke="#e3e6ec"/>
 
-    <!-- API 区 -->
-    <line x1="170" y1="178" x2="510" y2="178" stroke="#e3e6ec"/>
-    <text x="170" y="198" font-size="11.5" fill="#16181d" font-family="sans-serif" font-weight="600">API</text>
+    <!-- 分组 1：播放（展开） -->
+    <rect x="110" y="110" width="400" height="96" fill="#fbfcfd"/>
+    <text x="128" y="130" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">播放</text>
+    <text x="164" y="130" font-size="8.5" fill="#767d8a" font-family="sans-serif">不需 Key</text>
+    <text x="494" y="130" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▾</text>
+    <text x="128" y="150" font-size="10" fill="#444a55" font-family="sans-serif">播放速度</text>
+    <text x="494" y="150" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">1.0x</text>
+    <rect x="128" y="156" width="366" height="4" rx="2" fill="#e3e6ec"/>
+    <circle cx="132" cy="158" r="6" fill="#1f6feb"/>
+    <text x="128" y="178" font-size="10" fill="#444a55" font-family="sans-serif">自动倍速（跟随视频最大倍速）</text>
+    <rect x="462" y="169" width="32" height="16" rx="8" fill="#1f6feb"/>
+    <circle cx="486" cy="177" r="6" fill="#fff"/>
+    <text x="128" y="198" font-size="10" fill="#444a55" font-family="sans-serif">可拖动视频直接拖到结尾</text>
+    <rect x="462" y="189" width="32" height="16" rx="8" fill="#1f6feb"/>
+    <circle cx="486" cy="197" r="6" fill="#fff"/>
 
-    <text x="170" y="220" font-size="10.5" fill="#444a55" font-family="sans-serif">接入方式</text>
-    <rect x="170" y="226" width="340" height="22" rx="4" fill="#f6f7f9" stroke="#e3e6ec"/>
-    <text x="180" y="241" font-size="10.5" fill="#16181d" font-family="sans-serif">DeepSeek（推荐 · 唯一实测通过 · 便宜快）</text>
-    <text x="498" y="241" font-size="9" fill="#767d8a" font-family="sans-serif">▼</text>
+    <!-- 折叠的分组 -->
+    <line x1="110" y1="206" x2="510" y2="206" stroke="#e3e6ec"/>
+    <text x="128" y="226" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">任务点</text>
+    <text x="176" y="226" font-size="8.5" fill="#767d8a" font-family="sans-serif">不需 Key</text>
+    <text x="494" y="226" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▸</text>
 
-    <text x="170" y="266" font-size="10.5" fill="#444a55" font-family="sans-serif">思考强度</text>
-    <rect x="170" y="272" width="340" height="22" rx="4" fill="#f6f7f9" stroke="#e3e6ec"/>
-    <text x="180" y="287" font-size="10.5" fill="#16181d" font-family="sans-serif">关闭（默认 · 最省最快 · 推荐）</text>
-    <text x="498" y="287" font-size="9" fill="#767d8a" font-family="sans-serif">▼</text>
+    <line x1="110" y1="238" x2="510" y2="238" stroke="#e3e6ec"/>
+    <text x="128" y="258" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">任务点类型</text>
+    <text x="200" y="258" font-size="8.5" fill="#767d8a" font-family="sans-serif">关掉就不处理这类</text>
+    <text x="494" y="258" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▸</text>
 
-    <text x="170" y="312" font-size="10.5" fill="#444a55" font-family="sans-serif">API Key</text>
-    <rect x="240" y="300" width="270" height="20" rx="4" fill="#fff" stroke="#e3e6ec"/>
-    <text x="248" y="314" font-size="10.5" fill="#c3c8d1" font-family="Consolas, monospace">sk-••••••••••••••</text>
+    <!-- 答题组（展开，因为最关键） -->
+    <line x1="110" y1="270" x2="510" y2="270" stroke="#e3e6ec"/>
+    <text x="128" y="290" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">答题</text>
+    <text x="164" y="290" font-size="8.5" fill="#b45309" font-family="sans-serif">需要 API Key</text>
+    <text x="494" y="290" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▾</text>
+    <text x="128" y="310" font-size="10" fill="#444a55" font-family="sans-serif">AI 自动答题（关闭后只刷课不答题）</text>
+    <rect x="462" y="301" width="32" height="16" rx="8" fill="#1f6feb"/>
+    <circle cx="486" cy="309" r="6" fill="#fff"/>
+    <text x="128" y="330" font-size="10" fill="#444a55" font-family="sans-serif">自动识别验证码（独立于答题开关）</text>
+    <rect x="462" y="321" width="32" height="16" rx="8" fill="#e3e6ec"/>
+    <circle cx="470" cy="329" r="6" fill="#fff"/>
+
+    <!-- 讨论 + AI 接入 -->
+    <line x1="110" y1="342" x2="510" y2="342" stroke="#e3e6ec"/>
+    <text x="128" y="362" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">讨论任务点</text>
+    <text x="200" y="362" font-size="8.5" fill="#767d8a" font-family="sans-serif">不需 Key</text>
+    <text x="494" y="362" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▸</text>
+
+    <line x1="110" y1="374" x2="510" y2="374" stroke="#e3e6ec"/>
+    <text x="128" y="394" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">AI 接入</text>
+    <text x="184" y="394" font-size="8.5" fill="#b45309" font-family="sans-serif">需要 API Key</text>
+    <text x="494" y="394" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▸</text>
+
+    <!-- 底部按钮 -->
+    <line x1="110" y1="406" x2="510" y2="406" stroke="#e3e6ec"/>
+    <text x="128" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">查看日志</text>
+    <text x="186" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">清空日志</text>
+    <text x="488" y="418" font-size="9.5" fill="#767d8a" text-anchor="end" font-family="sans-serif">恢复默认</text>
 
     <!-- 侧注 -->
-    <text x="24" y="120" font-size="10.5" fill="#767d8a" font-family="sans-serif">① 不需要 Key 的开关</text>
-    <text x="24" y="140" font-size="10.5" fill="#767d8a" font-family="sans-serif">　 默认就是开的</text>
-    <text x="24" y="240" font-size="10.5" fill="#1f6feb" font-family="sans-serif">② 默认已是</text>
-    <text x="24" y="258" font-size="10.5" fill="#1f6feb" font-family="sans-serif">　 DeepSeek，只</text>
-    <text x="24" y="276" font-size="10.5" fill="#1f6feb" font-family="sans-serif">　 要填 Key</text>
-    <text x="560" y="300" font-size="10.5" fill="#767d8a" font-family="sans-serif">③ 输入即</text>
-    <text x="560" y="318" font-size="10.5" fill="#767d8a" font-family="sans-serif">　 自动保存</text>
+    <text x="16" y="72" font-size="10" fill="#1f6feb" font-family="sans-serif">① 认状态</text>
+    <text x="16" y="88" font-size="9" fill="#767d8a" font-family="sans-serif">　这里由「未</text>
+    <text x="16" y="102" font-size="9" fill="#767d8a" font-family="sans-serif">　开启」变「运</text>
+    <text x="16" y="116" font-size="9" fill="#767d8a" font-family="sans-serif">　行中」才算成</text>
+
+    <text x="530" y="130" font-size="10" fill="#444a55" font-family="sans-serif">② 分组可折叠</text>
+    <text x="530" y="146" font-size="9" fill="#767d8a" font-family="sans-serif">　点标题展开</text>
+    <text x="530" y="160" font-size="9" fill="#767d8a" font-family="sans-serif">　默认只展开</text>
+    <text x="530" y="174" font-size="9" fill="#767d8a" font-family="sans-serif">　「播放」这组</text>
+
+    <text x="530" y="290" font-size="10" fill="#b45309" font-family="sans-serif">③ 写「需要 Key」</text>
+    <text x="530" y="306" font-size="9" fill="#767d8a" font-family="sans-serif">　的分组才要填</text>
+    <text x="530" y="320" font-size="9" fill="#767d8a" font-family="sans-serif">　其余先不用管</text>
   </svg>
-  <figcaption>图 2　设置弹窗：上半是开关，下半是 API 接入信息（示意图，实际界面以你看到的为准）</figcaption>
+  <figcaption>图 2　设置弹窗的真实分组结构（示意图）。先认三个地方：顶部运行状态、可折叠的六个分组、底部次要操作</figcaption>
 </figure>
 
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>点浏览器工具栏上的 Omitone 图标，弹出这个面板。顶上写着
+              <b>「未开启」</b>，下面是一排折叠的分组。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td><b>先不要改任何开关。这一步只是"认地方"。</b><br>
+              想改设置时，<b>点分组的标题（比如「播放」）就能展开或收起</b>。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>你能一眼分辨出：哪个分组标着<b>「不需 Key」</b>、哪个标着
+              <b>「需要 API Key」</b>。<b>只有标「需要 Key」的才要你填东西</b>，
+              其余保持默认即可。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>点图标没反应 → 回第 2 章第 4 步，检查扩展卡片是不是「已启用」。<br>
+              弹窗打开了但一片空白/错乱 → 在扩展管理页点「重新加载」，
+              然后<b>刷新学习通页面</b>。<br>
+              面板太窄/字太小 → 那里是浏览器窗口宽度决定的，可以拉宽浏览器窗口。</td></tr>
+    </tbody>
+  </table>
+</div>
+
 <h3>3.2 拿到一个 API Key</h3>
+
+<p>
+  <b>这一步只在你想要 AI 答题时才需要。</b>只想刷课的话，跳过整节去第 4 章。
+</p>
 
 <ol class="steps">
   <li>
@@ -326,6 +571,31 @@
     看到成功提示说明通路正常。这一步别跳过 —— 它是唯一能在真正答题前发现问题的机会。
   </li>
 </ol>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>DeepSeek 网站的 API keys 页面，表格里有一列是密钥，通常被遮成
+              <code>sk-••••••</code>，旁边有个复制图标。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点「创建 API Key」（或 Create new API key）→ 它会<b>完整显示一次</b>那串
+              <code>sk-</code> 开头的字符串 → 点复制按钮。<br>
+              然后回扩展弹窗，展开<b>「AI 接入」</b>分组，粘贴进 <b>API Key</b> 那一格。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>粘贴后<b>不用点保存</b>（它自己就存了）。接着点
+              <b>「检测 API 连接」</b>，出现成功/绿色的提示 = 通了。
+              <b>看到成功提示才算这一步真的做完。</b></td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td><b>「密钥无效 / 401」</b> → 复制时多带了空格、少复制了尾巴，或者这个 Key 已经被删了。<br>
+              <b>「余额不足 / 402」</b> → 去平台充值。新号一般不送额度。<br>
+              <b>「连接超时」</b> → 网络问题，换个网络或稍后再试。<br>
+              <b>什么都不填也点检测</b> → 会提示你要先填 Key，这是正常的。<br>
+              <span class="small">还有一个隐蔽的坑：<b>弹窗里那格是密码框，显示的是圆点</b>，
+              看不出对错。真怀疑粘错了，重新粘一遍比盯着看更快。</span></td></tr>
+    </tbody>
+  </table>
+</div>
 
 <p>
   <b>其他服务商的密钥在哪申请</b>（申请流程都一样：注册 → 充值 → 建 Key → 粘贴）：
@@ -372,6 +642,28 @@
     <tr><td>通义千问</td><td><code>https://dashscope.aliyuncs.com/compatible-mode/v1</code><br><b>注意地址里那段 <code>compatible-mode</code> 不能少</b></td><td><code>qwen3.8-flash</code></td></tr>
   </tbody>
 </table>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>「AI 接入」分组里的<b>「接入方式」</b>下拉框，点开是一串预设：
+              DeepSeek / Kimi / 通义千问 / Claude / Gemini / 自定义 OpenAI 兼容。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点你要用的那一家。<b>API URL 和模型名会自动填好，你不用手打。</b>
+              然后只需要把对应那家的 API Key 粘进去。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td><b>API URL</b> 那格自己出现了地址（不是你手输的），
+              <b>模型名</b>那格自己出现了模型名。然后点「检测 API 连接」能成功。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>换了一家但地址没变 → 你只点了下拉框没选到项，重新点一次选中它。<br>
+              报「模型不存在」→ 这家的模型名过期了（见下面的说明框），
+              <b>只要改「模型名」那一格</b>，地址不用动。<br>
+              报「地址不对 / 404」→ 国内站和国际站搞混了（Kimi 尤其容易：
+              <code>.cn</code> 与 <code>.ai</code> 是两个不同的站）。</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <p>
   表里没有的服务商（智谱 / OpenRouter / 硅基流动 / 各种中转站 …）请选
@@ -436,6 +728,36 @@
 
 <!-- ==================== 4 ==================== -->
 <h2 id="s4" class="pagebreak">4. 开始刷课</h2>
+
+<p>
+  这一步是<b>整个工具的主干</b>。装好、配好之后，剩下的时间它都在做这件事。
+</p>
+
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>浏览器里已经打开了某门课的章节页面。点扩展图标，弹窗顶部写着
+              <b>「未开启」</b>，那个小圆点是灰的。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>先确认「播放」和「任务点」这两组里的开关<b>保持默认（开着的）</b>，
+              然后点顶部那个蓝色的<b>「开始运行」</b>。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td><b>两处同时变化</b>：<br>
+              ① 弹窗顶部由「未开启」变成 <b>「运行中」</b>，圆点变<b>绿色</b>；<br>
+              ② 学习通页面<b>右下角冒出一个状态浮窗</b>。<br>
+              然后视频自己开始播 —— 到这一步它就在干活了。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td><b>点了没反应、圆点还是灰的</b> → 最常见的两种：
+              没刷新学习通页面（按 <kbd>F5</kbd>），或者当前页面根本不是课程页
+              （在首页、作业页、考试成绩页它是不会启动的）。<br>
+              <b>圆点绿了但视频不动</b> → 点「查看日志」，看最后几行有没有报错，
+              拿日志里的原话去第 7 章对照。<br>
+              <b>开始之后又自己变回"未开启"</b> → 多半是页面被跳转/刷新过，
+              扩展会重新接管，稍等十几秒；一直不行就刷新页面重来。</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <ol class="steps">
   <li><b>打开课程页面</b>进入你要刷的那门课，停在章节列表或任意一节课里。</li>
@@ -521,6 +843,29 @@
   </p>
 </div>
 
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>弹窗底部有一行小字按钮，写着<b>「查看日志」</b>。
+              点下去，弹窗下面展开一个深色/灰底的记录区。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>点「查看日志」。里面每一行长这样：
+              <code>info  llm prefix cache hit:180 miss:120</code> ——
+              开头是等级（<code>info</code> / <code>warn</code> / <code>error</code>），
+              后面是英文的机器记录。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td><b>能看见行、而且最下面那几行是"刚刚"的</b> =
+              扩展还活着、还在往外吐记录。<br>
+              如果你点了「开始运行」之后这里<b>一个字都不增加</b>，
+              说明扩展没接上页面 —— 刷新页面。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>不知道某行什么意思 → 直接搜第 7 章的表格，里面有常见英文日志的中文对照。<br>
+              日志刷屏太快看不清 → 点「停止」再看，日志会留着。</td></tr>
+    </tbody>
+  </table>
+</div>
+
 <!-- ==================== 5 ==================== -->
 <h2 id="s5" class="pagebreak">5. AI 答题是怎么工作的</h2>
 
@@ -593,11 +938,26 @@
   DeepSeek 对<b>重复出现的提示词前缀</b>有缓存，命中部分按约<b>十分之一</b>的价格计费。
 </p>
 
-<p>
-  如果你看到 <code>hit:0</code> 一直不变，说明前缀没被缓存识别 ——
-  那通常意味着提示词被改动过（把每次都变的内容放到了前面）。
-  这是 1.1.0 专门修过的问题，日志留在这里就是为了让你能一眼看出来。
-</p>
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>日志里形如 <code>llm prefix cache hit:180 miss:120</code> 的行。<br>
+              <span class="small"><b>hit</b> = 走了缓存（便宜）的 token 数；
+              <b>miss</b> = 没走缓存的 token 数。</span></td></tr>
+      <tr><th>② 点哪里</th><td>不用点，它自己会记。看日志时留意这一行就行。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td><b>hit 是个明显大于 0 的数字</b>（比如 180 hit : 120 miss），
+              说明省钱机制在工作 —— 那一部分按十分之一计价。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td>如果 <code>hit:0</code> 一直不变，说明前缀没被缓存识别 ——
+              那通常意味着提示词被改动过（把每次都变的内容放到了前面）。
+              这是 1.1.0 专门修过的问题，日志留在这里就是为了让你能一眼看出来。<br>
+              <b>只是账单偏高、但 hit 正常</b> → 看看是不是把"思考强度"开到了「高」，
+              那个档每道题都会先烧一大段推理 token。</td></tr>
+    </tbody>
+  </table>
+</div>
 
 <!-- ==================== 6 ==================== -->
 <h2 id="s6">6. 验证码</h2>
@@ -614,6 +974,28 @@
   <li>识别并不总准，会重试，也可能识别错 —— 错了就是白跑一轮。</li>
 </ul>
 
+<div class="do">
+  <table>
+    <tbody>
+      <tr><th>① 你会看到什么</th>
+          <td>学习通页面上突然弹出一个小窗口，里面是一张<b>歪歪扭扭、带干扰线的字母数字图</b>，
+              下面有个输入框。</td></tr>
+      <tr><th>② 点哪里</th>
+          <td>你不用点 —— 前提是你在<b>「答题」分组</b>里开了
+              <b>「自动识别验证码」</b>，并且填了<b>「验证码识别模型」</b>。
+              开了之后它会自己抓图、识别、填进去。</td></tr>
+      <tr><th>③ 怎样才算对</th>
+          <td>验证码窗口<b>自己关掉</b>，课程继续往下走，
+              日志里出现识别相关的记录。到这一步就是成功了。</td></tr>
+      <tr><th>④ 不对怎么办</th>
+          <td><b>它一直重试、填不对</b> → 大概率是"验证码识别模型"留空或填错了 ——
+              留空会退回主模型，而主模型多半看不了图。<b>必须单独填一个能看图的模型。</b><br>
+              <b>你自己手动填一次</b> → 最快。填完继续刷课即可。<br>
+              <b>验证码越来越频繁</b> → 见下面的警告框，<b>别硬刚</b>。</td></tr>
+    </tbody>
+  </table>
+</div>
+
 <div class="box warn">
   <div class="t">验证码频繁出现，说明平台已经在关注自动化行为了</div>
   <p>
@@ -624,6 +1006,11 @@
 
 <!-- ==================== 7 ==================== -->
 <h2 id="s7" class="pagebreak">7. 常见问题排查</h2>
+
+<p>
+  用法：<b>先找最接近的症状那一行</b>，照着"先查什么"做。
+  右边出现英文日志时，直接在下面这张表里搜那串英文。
+</p>
 
 <table>
   <thead><tr><th style="width:34%">症状</th><th>先查什么</th></tr></thead>
@@ -668,7 +1055,52 @@
   </tbody>
 </table>
 
-<h3>7.1 给愿意动手的人：页面控制台诊断命令</h3>
+<h3>7.1 日志里的英文都在说什么</h3>
+
+<p>
+  日志是英文的，因为它首先是给开发者看的。但其中最常出现的几行，你也能直接读懂 ——
+  <b>知道它们在说什么，就基本能自己判断"是在正常干活"还是"真的坏了"。</b>
+</p>
+
+<table>
+  <thead><tr><th style="width:44%">日志里的字样</th><th>它的意思 / 你该做什么</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>start</code></td>
+      <td>扩展开始工作了。<b>看到它就说明"接上页面了"</b>，是最好的第一信号。</td>
+    </tr>
+    <tr>
+      <td><code>llm prefix cache hit:… miss:…</code></td>
+      <td>这次请求花掉多少 token、其中多少走了便宜的缓存。属于正常记录。</td>
+    </tr>
+    <tr>
+      <td><code>quiz answers count: N</code></td>
+      <td>这一卷抠出并回答了 N 道题。<b>N 与卷面题数一致就是对的。</b></td>
+    </tr>
+    <tr>
+      <td><code>quiz scan found 0 questions</code></td>
+      <td>一道题都没读到。要么这节不是测验，要么页面结构变了。</td>
+    </tr>
+    <tr>
+      <td><code>answers are not ready</code></td>
+      <td>还有题没填上，所以<b>没有提交</b>。这是保护动作，不是故障。</td>
+    </tr>
+    <tr>
+      <td><code>video paused unexpectedly, resuming</code></td>
+      <td>视频被人/网站暂停了，扩展正在抢回播放。<b>属正常拉锯，不用管。</b></td>
+    </tr>
+    <tr>
+      <td><code>popup quiz unanswerable</code></td>
+      <td>视频里那种弹题认不出来，已放弃这一道。<b>课程会继续走，不会卡死。</b></td>
+    </tr>
+    <tr>
+      <td><code>llm rejected thinking params, retry without them</code></td>
+      <td>这家服务商不认识"思考强度"那个参数，扩展自动摘掉后重试。<b>已自愈。</b></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>7.2 给愿意动手的人：页面控制台诊断命令</h3>
 
 <p>在学习通页面按 F12，在控制台里可以直接查现场：</p>
 
