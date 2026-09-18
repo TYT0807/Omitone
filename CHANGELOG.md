@@ -175,7 +175,47 @@
 
 222/222 全绿并不代表它是对的 —— 补了端到端场景，并把 iframe 的 `src` 指向空页做反向验证。
 
-测试：自检 13 项 · 集成 **77** 项 · 真实 Edge e2e **245 项**（24 个场景），全绿。
+### 发版后补的第四、五个修复（用户报「题目一直扫描，AI 重复提交」）
+
+用户贴出的真实控制台日志非常典型：抠题正常、答案也填了、`btnBlueSubmit()` 也调了，
+然后就停在 `waiting quiz submit result`，接着整页重载、重新扫描、重新答题、重新提交 ——
+**无限循环**。逐层查下来是两个各管一段的洞。
+
+**④ 作业/考试页点完选项，`#answer{qid}` 根本没被写。**
+
+`_clickOptionItem` 写隐藏域那一段的条件是 `qid && badge` **同时**成立：
+
+- `qid` 只从 `item.getAttribute('qid')` 取 —— **只认选项 `<li>` 自己身上的 qid**。
+  真实作业页把 qid 挂在容器 `.Cy_TItle[qid]` 上，选项 `<li>` 是干净的。
+- `badge` 要求 `.num_option / .num_option_dx` —— 真实作业页**根本没有这个徽标**
+  （对照 cxmooc-tools：考试选择题的字母是从 `li` 的文本前缀推的）。
+
+两个条件都不满足，于是**点击照做、日志照打 `clicked option`，隐藏域却一直是空串**。
+`_getQuizQuestionFilledValue` → `''` → `_areQuizAnswersFilled` false →
+`_quizReadyToSubmit` false → 整卷永不提交（或提交空表单）。
+→ qid 改成**三级回退**（自身 → 最近的 `[qid]` 祖先 → `_getQuestionIdFromElement`）；
+把"写隐藏域"从"徽标那一组操作"里**拆出来**，只要有 qid 就写；
+字母改用 `_inferOptionLetter`，并且**以控件自身的 `value` 为权威**
+（判断题的 `true`/`false` 就是这么来的 —— 写字母 `A` 进去平台不认）。
+
+**⑤ 提交之后认不出「已完成」，于是无限重来。**
+
+`_isQuizPassedOrFinished` 只认 `_isDocumentFrameFinished` 那一套标记
+（`.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete`
++ 父层 wrapper 的「任务点已完成」）—— 那是**课程章节页**的标记。
+作业/考试提交后翻出的是**判分结果页**（每题多出「我的答案 / 正确答案 / 解析」，
+控件全部 `disabled`），这套标记一个都不命中 →
+`_monitorQuizSubmit` 一直 hold → 25 秒超时 → 整页重载 → 重扫重答重交。
+→ 新增 `_isQuizResultPageFinished`：三条判据**同时**成立才算完成
+（出现判分痕迹 + 控件已不可交互或题目容器已消失 + 不含重做文案），
+宁可漏判也不误判（误判 = 把没交的卷当已完成，直接跳过这个任务点）。
+
+端到端相应补了两个场景（**26 个场景 / 262 项**）：
+「作业页选项写入隐藏答案域」与「作业页提交后认出已完成」。
+后者特意把 mock 的结果页做成**真实判分页**而不是一条「任务点已完成」横幅，
+并断言**旧判据对它确实认不出来** —— 否则新判据是不是多余的，根本无从判断。
+
+测试：自检 13 项 · 集成 **77** 项 · 真实 Edge e2e **262 项**（26 个场景），全绿。
 ---
 
 ## 1.1.5 — 修「多选题只选一个然后卡住」，加思考强度开关，铺开 AI 渠道

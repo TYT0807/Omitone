@@ -465,6 +465,82 @@ async function testParseErrorClassification() {
     'apiConnectionFailed=' + config.apiConnectionFailed);
 }
 
+/**
+ * HTTP 4xx（Key 无效 / 无权限 / 模型名错）是**永久错误**：重试一万次也一样。
+ *
+ * ⚠️ 这条补的是 [3] 没覆盖到的那条入口 ——
+ * [3] 已经保证了"解析失败不污染连接状态"，但服务商返回 401 走的是另一条路，
+ * 结果被一律当成网络故障，写进 apiConnectionFailed，
+ * 让 page.js 进入 45 秒退避循环。用户填错 Key 的表现是"插件卡死"，而不是"Key 错了"。
+ *
+ * 所以这里同时验证两件事：
+ *   1) 401/403 → 不重试、不写 apiConnectionFailed
+ *   2) 500/429 → 行为**不变**（仍重试、仍标记退避）—— 防止修 A 把 B 改坏
+ */
+async function testPermanentHttpError() {
+  console.log('\n[3b] HTTP 4xx 永久错误：不重试，也不能污染 API 连接状态');
+
+  var questions = [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }];
+
+  // ---- 1) 401：永久错误
+  var h401 = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 401, text: '{"error":{"message":"Invalid API key"}}', error: 'HTTP 401', data: null };
+    }
+  });
+  h401.sendFromPage({ source: 'xxt_app', id: 31, type: 'llm_request', payload: { questions: questions } });
+  var d401 = await h401.waitForResponse(31);
+
+  check('401 收到应答', d401 !== null);
+  if (d401) {
+    check('401 success = false', d401.success === false);
+    check('401 只发 1 次请求（永久错误不该重试）',
+      h401.sandbox.__sentRequests.length === 1,
+      '实际发了 ' + h401.sandbox.__sentRequests.length + ' 次');
+    check('401 带 permanentError 标记', d401.permanentError === true, JSON.stringify(d401).slice(0, 160));
+  }
+  check('401 未写入 apiConnectionFailed（否则会 45 秒退避死循环）',
+    (h401.sandbox.__store.config || {}).apiConnectionFailed !== true,
+    'apiConnectionFailed=' + (h401.sandbox.__store.config || {}).apiConnectionFailed);
+
+  // ---- 2) 403：同样是永久错误
+  var h403 = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 403, text: '{"error":{"message":"Forbidden"}}', error: 'HTTP 403', data: null };
+    }
+  });
+  h403.sendFromPage({ source: 'xxt_app', id: 32, type: 'llm_request', payload: { questions: questions } });
+  await h403.waitForResponse(32);
+  check('403 未写入 apiConnectionFailed',
+    (h403.sandbox.__store.config || {}).apiConnectionFailed !== true);
+  check('403 只发 1 次请求', h403.sandbox.__sentRequests.length === 1,
+    '实际发了 ' + h403.sandbox.__sentRequests.length + ' 次');
+
+  // ---- 3) 500：可重试的服务端错误，行为必须与修复前一致
+  var h500 = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 500, text: '{"error":{"message":"internal error"}}', error: 'HTTP 500', data: null };
+    }
+  });
+  h500.sendFromPage({ source: 'xxt_app', id: 33, type: 'llm_request', payload: { questions: questions } });
+  await h500.waitForResponse(33);
+  check('500 仍然重试（服务端错误可能恢复）', h500.sandbox.__sentRequests.length === 2,
+    '实际发了 ' + h500.sandbox.__sentRequests.length + ' 次');
+  check('500 仍然标记 apiConnectionFailed（退避对它是对的）',
+    (h500.sandbox.__store.config || {}).apiConnectionFailed === true);
+
+  // ---- 4) 429：限流，同样属于"等一会儿能恢复"，不能当成永久错误
+  var h429 = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 429, text: '{"error":{"message":"rate limited"}}', error: 'HTTP 429', data: null };
+    }
+  });
+  h429.sendFromPage({ source: 'xxt_app', id: 34, type: 'llm_request', payload: { questions: questions } });
+  await h429.waitForResponse(34);
+  check('429 不被当成永久错误（仍需重试）', h429.sandbox.__sentRequests.length === 2,
+    '实际发了 ' + h429.sandbox.__sentRequests.length + ' 次');
+}
+
 async function testMissingApiKey() {
   console.log('\n[4] 未配置 API Key 时明确拒绝');
 
@@ -765,6 +841,7 @@ async function main() {
   await testV1ObjectCompat();
   await testAnswerCoercion();
   await testParseErrorClassification();
+await testPermanentHttpError();
   await testMissingApiKey();
   await testClaudeProtocol();
   await testGeminiProtocol();

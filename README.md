@@ -550,7 +550,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 24 个场景，245 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 26 个场景，262 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -562,6 +562,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | **静音播放** | 视频静音；音频默认静音 + 最高倍速 | 配置 → 元素属性 | ✅ |
 | **PPT / 文档 / 图片** | 翻页、上报 `finishJob`、等页内音频播完 | — | ⚠️ 需真实任务点 |
 | **AI 答题** | 单选 / 多选 / 判断 / 填空 / 简答 / 弹窗题 | 抠题 → 提示词 → 模型 → 回填 DOM | ✅ 5 种题型全链路 |
+| **作业 / 考试页提交** | `.Cy_*` 结构：抠题 → 回填（含隐藏域 `#answer{qid}`）→ 调 `btnBlueSubmit` → 认判分结果页收尾 | 隐藏域真的被写上、提交后认得出已完成（不再重扫重答） | ✅ 含"旧判据对它认不出来"的守卫 |
 | **答案缓存** | 交卷后记住正确答案，下次不再问模型 | 对错判定、写入与读回 | ✅ |
 | **验证码（弹窗）** | 课程页弹窗验证码：抓图 → 视觉模型 → 填入提交 | 命中检测、结果清洗 | ✅ |
 | **验证码（独立网址）** | 验证码是独立页面时同样处理，处理完自动返回 | 页面判定、抓图 | ✅ |
@@ -873,6 +874,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 34 | 换了个模型就一直 **400**，看起来像插件坏了 | 思考参数**按厂商各写各的**（DeepSeek `thinking:{type}`、通义 `enable_thinking`、Kimi `reasoning_effort`），各家对未知字段的反应不一致：有的忽略、有的直接 400。旧实现写死"只对 DeepSeek 加"，一改成表驱动就容易给不支持的渠道发参数 | ① 参数映射收进唯一真源 `libs/thinking.js`，**按渠道白名单**发；认不出的渠道在"关闭"档**一个参数都不发**（= 升级前的行为）；② 服务商拒收时 `content.js` **自动摘掉思考参数重试一次**并记 `llm rejected thinking params, retry without them`，不让整次答题判死；③ 集成测试同时断言"该带的带对了"与"**不该带的一个都没有**"，后一条更重要 |
 | 35 | **作业 / 考试页点了选项却不生效**（日志写着"已点"，页面上一个都没选中） | 那套 `.Cy_*` 结构里，选项**文本**在 `.Cy_ulTop` 的 `<a>` 里、可点的 `input` 在**另一个** `.Cy_ulBottom` 里 —— 文本与控件是两个分开的 `ul`。`_getOptionItems` 抢先命中文本那一列 → `item.querySelector('input')` 恒为 null → 一下都没点到，但 `clicked++` 照样加，调用方当成功照样提交 → 空转 | 新增 `_pairOptionControls`：按索引把控件配到文本节点上；点击顺序改成**先点、再把终态写回**（反过来复选会被站点再切一次，反而变未选）。端到端新增作业页场景，断言"DOM 里真的有 1 个 radio / 2 个 checkbox 被选中"，**不是只看日志** |
 | 36 | **Key 填错了，表现却是「插件每隔 45 秒卡一下」** | `content.js` 认得 401/403（不重试、不写 `apiConnectionFailed`），但 `page.js` 拿回 `{permanentError:true}` 后**根本没读这个字段**，一律走 `_markQuizApiConnectionFailed` → 45 秒退避，把"配置填错了"伪装成"网络连不上"，而服务商明明把 `Invalid API key` 原话返回来了 | 4xx 单独一支：跳过本轮（60 秒）、把服务商原话留在 `_quizApiLastError`，**不进退避窗口**；视频弹题改走 `_giveUpPopupQuiz`（关弹窗 + 60 秒冷却，不拿坏 Key 反复撞接口）。**500 仍然退避**由对照场景守着 —— 否则"凡是失败都不退避"也能蒙混过关 |
+| 37 | **作业 / 考试页点了选项，但 `#answer{qid}` 一直是空**（点了却等于没填，整卷永不提交） | `_clickOptionItem` 写隐藏域的条件是 `qid && badge` **同时**成立：`qid` 只从选项 `<li>` 自身取（真实作业页把 qid 挂在容器 `.Cy_TItle[qid]` 上），`badge` 要求 `.num_option` 徽标（真实作业页**没有**这个徽标）。两个都不满足 → 点击照做、日志照打 `clicked option`、隐藏域却始终是空串 | qid 改**三级回退**（自身 → 最近的 `[qid]` 祖先 → `_getQuestionIdFromElement`）；把"写隐藏域"从"徽标那组操作"里**拆出来**，只要有 qid 就写；字母改用 `_inferOptionLetter`，并**以控件自身的 `value` 为权威**（判断题的 `true`/`false` 就是这么来的 —— 写 `A` 进去平台不认）。端到端断言隐藏域的值，**不是看日志** |
+| 38 | **提交后认不出「已完成」，题目一直扫描、AI 重复提交**（整页重载 → 重扫 → 重答 → 重交，无限循环） | `_isQuizPassedOrFinished` 只认 `_isDocumentFrameFinished` 那一套标记（`.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete` + 父层「任务点已完成」）—— 那是**课程章节页**的标记。作业/考试提交后翻出的是**判分结果页**（每题多出「我的答案 / 正确答案 / 解析」，控件全部 `disabled`），这套标记一个都不命中 → `_monitorQuizSubmit` 一直 hold → 25 秒超时 → 整页重载 → 重扫重答重交 | 新增 `_isQuizResultPageFinished`：三条判据**同时**成立才算完成（出现判分痕迹 + 控件已不可交互或题目容器已消失 + 不含重做文案），宁可漏判也不误判（误判 = 把没交的卷当已完成，直接跳过该任务点）。端到端把 mock 结果页做成**真实判分页**，并断言**旧判据对它确实认不出来** |
 
 ---
 
@@ -888,6 +891,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 换了模型就一直 400 | 见 §6 #34。日志里找 `llm rejected thinking params, retry without them`；把「思考强度」切回"关闭"即可（关闭档对认不出的渠道不发任何参数） |
 | **Key 填错 / 模型名写错，却表现成「每隔 45 秒卡一下」** | 见 §6 #36。日志里找 `quiz llm rejected permanently, no retry`，后面跟着服务商原话（如 `Invalid API key`）。它**不会**再进 45 秒退避，改好配置后下一轮自动恢复 |
 | **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
+| **点了选项、日志也写了 `clicked option`，但隐藏域 `#answer{qid}` 是空的** | 见 §6 #37。控制台跑 `_xxtApp._getQuizQuestionFilledValue(null, _xxtApp._extractQuestions(null)[0])`：返回空串就是没写上。这类页面 qid 在容器上、且没有 `.num_option` 徽标 |
+| **提交后一直停在 `waiting quiz submit result`，然后整页重载、重扫重答重交** | 见 §6 #38。先看结果页长什么样：`document.body.innerText` 里有「我的答案 / 正确答案」且 `document.querySelectorAll('.Py_answer').length > 0`，说明是判分结果页 —— 旧判据对它是瞎的。日志里找 `quiz submit wait timeout` |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
@@ -957,7 +962,7 @@ npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码�
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（77 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（24 个场景 / 245 项）
+npm run e2e      # 真实 Edge 功能交叉检验（26 个场景 / 262 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库
