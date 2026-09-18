@@ -384,7 +384,8 @@ async function cmdVerify(tag) {
   var tagRef = await api('GET', base + '/git/ref/tags/' + tag);
   var tagObj = await api('GET', base + '/git/tags/' + tagRef.object.sha);
   var tagTarget = tagObj.object.sha;
-  console.log('tag ' + tag + '     ' + tagTarget + (tagTarget === head ? '  ✓ 与 ' + BRANCH + ' 一致' : '  ✗ 与 ' + BRANCH + ' 不一致'));
+  // tag 与 main 的关系用 compare 接口判定（见下方 compareAfterTag）
+  console.log('tag ' + tag + '     ' + tagTarget);
 
   var rel = await api('GET', base + '/releases/tags/' + tag);
   console.log('release        ' + rel.html_url);
@@ -415,7 +416,34 @@ async function cmdVerify(tag) {
     console.log('  缺少: ' + wrongNames.join(', '));
     console.log('  原因：非 ASCII 附件名会被 GitHub 洗成 default.pdf，附件名必须纯 ASCII');
   }
-  if (bad.length || wrongNames.length || !linkOk || tagTarget !== head) process.exitCode = 1;
+  // tag 之后有没有新提交？有的话**只允许是文档**。
+  //
+  // 为什么不能简单地要求 `tagTarget === head`：发布之后补一条文档提交是正常操作，
+  // 而那条旧断言会把它误报成"tag 与 main 不一致"并 exit=1 ——
+  // 属于 AGENTS.md §5 警告的"断言实现细节而不是行为"。
+  var docOnly = true;
+  if (tagTarget !== head) {
+    var cmp = await api('GET', base + '/compare/' + tagTarget + '...' + head);
+    var files = (cmp.files || []).map(function (f) { return f.filename; });
+    var isDoc = function (p) { return /\.(md|txt)$/i.test(p) || /^docs\//.test(p); };
+    var codeFiles = files.filter(function (p) { return !isDoc(p); });
+    console.log('tag 之后 main 多了 ' + cmp.ahead_by + ' 个提交，改动 ' + files.length + ' 个文件：');
+    files.forEach(function (p) { console.log('    ' + p + (isDoc(p) ? '  [文档]' : '  ← 代码！')); });
+    if (cmp.behind_by > 0) {
+      console.log('  ✗ tag 落后 main ' + cmp.behind_by + ' 个提交 —— tag 分叉了，发布点不对');
+      docOnly = false;
+    } else if (codeFiles.length) {
+      console.log('  ✗ tag 之后有**代码**改动未进这一版：' + codeFiles.join(', '));
+      console.log('    → 用户下载到的不是最新代码。要么重发这一版，要么准备下一版');
+      docOnly = false;
+    } else {
+      console.log('  ✓ 只有文档改动，代码与 tag 一致 —— 用户下载到的东西是对的');
+    }
+  } else {
+    console.log('tag 与 ' + BRANCH + ' 完全一致 ✓');
+  }
+
+  if (bad.length || wrongNames.length || !linkOk || !docOnly) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
