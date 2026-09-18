@@ -3,11 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.1.3</title>
+<title>Omitone-1.1.4</title>
 <style>
 :root{
   --bg:#fff; --fg:#16181d; --muted:#8a8f98; --line:#eceef1; --line-strong:#dcdfe4;
-  --soft:#f7f8fa; --accent:#16181d; --accent-soft:#eef1f5; --warn:#b45309; --error:#c0392b;
+  --soft:#f7f8fa; --accent:#1f6feb; --accent-soft:#eaf1fe;
+  --ok:#1a7f37; --ok-soft:#e8f6ec; --ok-line:#bfe3c9;
+  --warn:#b45309; --warn-soft:#fff7ed; --error:#c0392b; --error-soft:#fef3f2;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -15,70 +17,108 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
 }
-.container { padding: 18px 20px 22px; }
+.container { padding: 0 16px 18px; }
 
-/* 顶栏 */
-.header { display: flex; align-items: center; gap: 9px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
-.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); box-shadow: 0 0 0 3px var(--soft); transition: background .2s, box-shadow .2s; }
-.dot.on { background: #1a7f37; box-shadow: 0 0 0 3px #e8f6ec; }
-.run-state { margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
-.run-state.on { background: #e8f6ec; border-color: #bfe3c9; color: #1a7f37; }
-.title { font-size: 15px; font-weight: 650; letter-spacing: .2px; }
-.ver { margin-left: 6px; color: var(--muted); font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+/* ---------- 顶部：状态 + 主操作（吸顶，不用滚到底才能点） ---------- */
+.top {
+  position: sticky; top: 0; z-index: 2; background: var(--bg);
+  padding: 13px 0 11px; border-bottom: 1px solid var(--line); margin-bottom: 4px;
+}
+.brand { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); box-shadow: 0 0 0 3px var(--soft); transition: background .2s, box-shadow .2s; flex: none; }
+.dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.title { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
+.ver { color: var(--muted); font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; }
+.run-state { margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; transition: background .2s, border-color .2s, color .2s; }
+.run-state.on { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
 
-/* 分组标题 */
-.section-title { display: flex; align-items: center; gap: 6px; margin: 22px 0 2px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; }
-.section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
-.section-title .tag { order: 2; flex: none; padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: #4a5058; font-size: 9px; font-weight: 600; letter-spacing: .3px; text-transform: none; }
-.section-title:first-of-type { margin-top: 8px; }
+.run-row { display: flex; gap: 8px; }
+.run-row .btn { flex: 1; }
+.run-row .btn#stop { flex: 0 0 auto; padding-left: 14px; padding-right: 14px; }
 
-/* 设置行 */
-.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 10px; margin: 0 -10px; border-radius: 8px; border-bottom: 1px solid var(--line); transition: background .12s; }
+/* ---------- 按钮 ---------- */
+.btn {
+  padding: 10px 0; border: 1px solid transparent; border-radius: 9px;
+  background: var(--accent); color: #fff; cursor: pointer;
+  font-size: 12.5px; font-weight: 600; font-family: inherit;
+  transition: background .15s, border-color .15s, transform .08s;
+}
+.btn:hover { background: #1a5fd0; }
+.btn:active { transform: scale(.985); }
+.btn.secondary { border-color: var(--line-strong); background: #fff; color: #4a5058; }
+.btn.secondary:hover { background: var(--soft); color: var(--fg); }
+
+/* 次要操作：小号文字按钮，不与主操作抢位置 */
+.minor { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.minor button {
+  flex: 1 1 auto; padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 7px;
+  background: #fff; color: #4a5058; cursor: pointer; font-size: 11px; font-weight: 500;
+  font-family: inherit; white-space: nowrap; transition: background .12s, color .12s;
+}
+.minor button:hover { background: var(--soft); color: var(--fg); }
+
+/* ---------- 分组（原生 details：零 JS、零依赖，且天然支持键盘） ---------- */
+details.group { border-bottom: 1px solid var(--line); }
+details.group:last-of-type { border-bottom: none; }
+details.group > summary {
+  display: flex; align-items: center; gap: 7px; padding: 10px 0;
+  cursor: pointer; list-style: none; color: var(--muted);
+  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+}
+details.group > summary::-webkit-details-marker { display: none; }
+details.group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+details.group > summary .rule { flex: 1; height: 1px; background: var(--line); }
+details.group > summary::after {
+  content: ""; flex: none; width: 5px; height: 5px; margin: 0 2px 1px 1px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted);
+  transform: rotate(45deg); transition: transform .18s;
+}
+details.group[open] > summary::after { transform: rotate(-135deg); margin-bottom: -2px; }
+details.group > summary:hover { color: #4a5058; }
+.group-head { font-size: 11px; letter-spacing: 0; }
+.group-body { padding-bottom: 10px; }
+
+.tag { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: #1a5fd0; font-size: 9px; font-weight: 600; letter-spacing: .2px; }
+.tag.plain { background: var(--soft); color: var(--muted); }
+
+/* ---------- 设置行 ---------- */
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 8px; margin: 0 -8px; border-radius: 8px; transition: background .12s; }
 .row:hover { background: var(--soft); }
-.row:last-of-type { border-bottom: none; }
-.row label { color: #2b2f36; font-size: 13px; cursor: pointer; flex: 1; }
+.row label { color: #2b2f36; font-size: 12.5px; cursor: pointer; flex: 1; }
+.row.sub { padding-left: 0; margin: 0; }
 
-/* 开关 */
-.toggle { position: relative; width: 38px; height: 22px; border-radius: 999px; background: var(--line-strong); cursor: pointer; flex-shrink: 0; transition: background .18s ease; }
+/* ---------- 开关 ---------- */
+.toggle { position: relative; width: 36px; height: 21px; border-radius: 999px; background: var(--line-strong); cursor: pointer; flex-shrink: 0; transition: background .18s ease; }
 .toggle.on { background: var(--accent); }
-.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .18s ease; }
-.toggle.on::after { transform: translateX(16px); }
+.toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.22); transition: transform .18s ease; }
+.toggle.on::after { transform: translateX(15px); }
 
-/* 倍速滑杆 */
-.range-wrap { margin: 12px 0 4px; }
-.range-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+/* ---------- 倍速滑杆 ---------- */
+.range-head { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0 8px; }
 .range-head span { color: var(--muted); font-size: 11px; }
 .range-head .val { color: var(--fg); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
-input[type="range"] { width: 100%; height: 4px; border-radius: 999px; background: var(--line-strong); outline: none; -webkit-appearance: none; cursor: pointer; }
+input[type="range"] { width: 100%; height: 4px; border-radius: 999px; background: var(--line-strong); outline: none; -webkit-appearance: none; cursor: pointer; margin-bottom: 10px; }
+input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 input[type="range"]::-webkit-slider-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); -webkit-appearance: none; transition: transform .12s; }
 input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 
-/* 表单 */
-.field { margin-top: 14px; }
-.field label { display: block; margin-bottom: 6px; color: #2b2f36; font-size: 12px; font-weight: 500; }
-textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 9px 10px; font-size: 12px; font-family: inherit; line-height: 1.6; resize: vertical; transition: border-color .15s, box-shadow .15s; }
+/* ---------- 表单 ---------- */
+.field { margin-top: 10px; }
+.field label { display: block; margin-bottom: 5px; color: #2b2f36; font-size: 11.5px; font-weight: 500; }
+textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 12px; font-family: inherit; line-height: 1.6; resize: vertical; transition: border-color .15s, box-shadow .15s; }
 textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-input[type="text"], input[type="password"], select { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 9px 10px; font-size: 12px; transition: border-color .15s, box-shadow .15s; }
+input[type="text"], input[type="password"], select { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 12px; font-family: inherit; transition: border-color .15s, box-shadow .15s; }
 input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.hint { margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.65; }
+.hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .hint b { color: #4a5058; font-weight: 600; }
 
-/* 按钮 */
-.actions { margin-top: 20px; display: flex; gap: 8px; }
-.btn { flex: 1; padding: 11px 0; border: none; border-radius: 9px; background: var(--accent); color: #fff; cursor: pointer; font-size: 12.5px; font-weight: 650; transition: opacity .15s, transform .08s; }
-.btn:hover { opacity: .88; }
-.btn:active { transform: scale(.985); }
-.btn.secondary { border: 1px solid var(--line-strong); background: #fff; color: #4a5058; }
-.btn.secondary:hover { background: var(--soft); opacity: 1; }
-
-/* 提示条 */
-.toast { min-height: 16px; margin-top: 12px; opacity: 0; color: #4a5058; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 0 10px; text-align: center; font-size: 11px; line-height: 1.9; transition: opacity .2s; }
+/* ---------- 提示条 / 日志 ---------- */
+.toast { min-height: 15px; margin-top: 10px; opacity: 0; color: #4a5058; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 0 10px; text-align: center; font-size: 11px; line-height: 1.9; transition: opacity .2s; }
 .toast.show { opacity: 1; }
-
-/* 运行日志 */
-.log-panel { display: none; margin-top: 14px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; max-height: 240px; overflow: auto; background: var(--soft); font-size: 11px; line-height: 1.55; }
+.log-panel { display: none; margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 5px 10px; max-height: 200px; overflow: auto; background: var(--soft); font-size: 11px; line-height: 1.55; }
 .log-panel.show { display: block; }
-.log-item { padding: 7px 2px; border-bottom: 1px solid var(--line); }
+.log-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
 .log-item:last-child { border-bottom: none; }
 .log-time { color: var(--muted); margin-right: 6px; font-variant-numeric: tabular-nums; }
 .log-level.warn { color: var(--warn); }
@@ -91,151 +131,181 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
 </head>
 <body>
 <div class="container">
-  <div class="header">
-    <div class="dot" id="runDot"></div>
-    <div class="title">Omitone-1.1.3</div>
-    <span class="run-state" id="runState">未开启</span>
-    <span class="ver">1.1.3</span>
-  </div>
 
-  <div class="section-title">播放</div>
-  <div class="range-wrap">
-    <div class="range-head">
-      <span>播放速度</span>
-      <span class="val" id="rateVal">1.0x</span>
+  <div class="top">
+    <div class="brand">
+      <div class="dot" id="runDot"></div>
+      <div class="title">Omitone</div>
+      <span class="ver">1.1.4</span>
+      <span class="run-state" id="runState">未开启</span>
     </div>
-    <input type="range" id="rate" min="0.5" max="3" step="0.1" value="1.0">
-  </div>
-  <div class="row">
-    <label for="autoMaxRate">自动倍速（跟随视频最大倍速）</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoMaxRate"></div>
-  </div>
-  <div class="row">
-    <label for="enableSeek">可拖动视频直接拖到结尾</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableSeek"></div>
-  </div>
-  <div class="row">
-    <label for="advanceAtNinetyPercent">防拖拽视频看到 90% 就进下一个</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="advanceAtNinetyPercent"></div>
-  </div>
-  <div class="row">
-    <label for="muted">静音</label>
-    <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="muted"></div>
-  </div>
-  <div class="row">
-    <label for="audioMuted">音频静音播放（音频自动用最大倍速）</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="audioMuted"></div>
+    <div class="run-row">
+      <button class="btn" id="start">开始运行</button>
+      <button class="btn secondary" id="stop">停止</button>
+    </div>
+    <p class="hint" style="margin-top:8px;">
+      刷课不需要 API Key。要用 <b>AI 答题</b> 或 <b>验证码识别</b> 才需要，在下面「AI 接入」里填。
+    </p>
   </div>
 
-  <div class="section-title">任务点</div>
-  <div class="row">
-    <label for="autoNext">自动下一节</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoNext"></div>
-  </div>
-  <div class="row">
-    <label for="restudy">已完成任务重学</label>
-    <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="restudy"></div>
-  </div>
-  <div class="row">
-    <label for="blockedReload">被换页时自动刷新恢复</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="blockedReload"></div>
+  <details class="group" open>
+    <summary><span>播放</span><i class="rule"></i><span class="tag plain">不需 Key</span></summary>
+    <div class="group-body">
+      <div class="range-head">
+        <span>播放速度</span>
+        <span class="val" id="rateVal">1.0x</span>
+      </div>
+      <input type="range" id="rate" min="0.5" max="3" step="0.1" value="1.0">
+      <div class="row">
+        <label for="autoMaxRate">自动倍速（跟随视频最大倍速）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoMaxRate"></div>
+      </div>
+      <div class="row">
+        <label for="enableSeek">可拖动视频直接拖到结尾</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableSeek"></div>
+      </div>
+      <div class="row">
+        <label for="advanceAtNinetyPercent">防拖拽视频看到 90% 就进下一个</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="advanceAtNinetyPercent"></div>
+      </div>
+      <div class="row">
+        <label for="muted">静音</label>
+        <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="muted"></div>
+      </div>
+      <div class="row">
+        <label for="audioMuted">音频静音播放（音频自动用最大倍速）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="audioMuted"></div>
+      </div>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary><span>任务点</span><i class="rule"></i><span class="tag plain">不需 Key</span></summary>
+    <div class="group-body">
+      <div class="row">
+        <label for="autoNext">自动下一节</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="autoNext"></div>
+      </div>
+      <div class="row">
+        <label for="restudy">已完成任务重学</label>
+        <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="restudy"></div>
+      </div>
+      <div class="row">
+        <label for="blockedReload">被换页时自动刷新恢复</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="blockedReload"></div>
+      </div>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary><span>任务点类型</span><i class="rule"></i><span class="tag plain">关掉就不处理这类</span></summary>
+    <div class="group-body">
+      <div class="row">
+        <label for="enableMedia">视频 / 音频</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableMedia"></div>
+      </div>
+      <div class="row">
+        <label for="enablePPT">文档 / PPT 翻页</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enablePPT"></div>
+      </div>
+      <div class="row">
+        <label for="enableHyperlink">超链接</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableHyperlink"></div>
+      </div>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary><span>答题</span><i class="rule"></i><span class="tag">需要 API Key</span></summary>
+    <div class="group-body">
+      <div class="row">
+        <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableQuiz"></div>
+      </div>
+      <div class="row">
+        <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
+      </div>
+      <div class="field">
+        <label for="captchaModel">验证码识别模型</label>
+        <input type="text" id="captchaModel" placeholder="如 gemini-flash-latest / qwen-vl-max" />
+        <p class="hint"><b>必须填一个能看图的模型。</b>留空会退回主模型，而主模型通常不支持图片输入，
+        验证码基本识别不出来 —— 识别失败会重试，也可能识别错，错了就白跑一轮。</p>
+      </div>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary><span>讨论任务点</span><i class="rule"></i><span class="tag plain">不需 Key</span></summary>
+    <div class="group-body">
+      <div class="row">
+        <label for="enableDiscussion">自动发评论（跳转后自动返回）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
+      </div>
+      <div class="field">
+        <label for="discussionReply">回复内容</label>
+        <input id="discussionReply" type="text" placeholder="1" />
+        <p class="hint">默认是 <b>1</b>，在老师眼里就是灌水 —— <b>请改成正常的话。</b></p>
+      </div>
+    </div>
+  </details>
+
+  <details class="group">
+    <summary><span>AI 接入</span><i class="rule"></i><span class="tag">需要 API Key</span></summary>
+    <div class="group-body">
+      <div class="field">
+        <label for="providerPreset">接入方式</label>
+        <select id="providerPreset">
+          <option value="deepseek">DeepSeek（唯一在真实答题中实测通过）</option>
+          <option value="claude">Anthropic Claude（协议已适配 · 未实测）</option>
+          <option value="gemini">Google Gemini（协议已适配 · 未实测）</option>
+          <option value="custom-openai">自定义 OpenAI 兼容</option>
+        </select>
+      </div>
+      <p class="hint">
+        只预置了真正验证过的服务商。用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
+        <b>自定义 OpenAI 兼容</b>，API URL 与模型名按厂商文档自己填 ——
+        那两格填什么都能用，反而预置好的模型名是钉死的快照，厂商一发新版就失效。
+      </p>
+      <div class="field">
+        <label for="apiType">协议类型</label>
+        <select id="apiType">
+          <option value="openai">OpenAI 兼容</option>
+          <option value="claude">Anthropic / Claude</option>
+          <option value="gemini">Google Gemini</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="apiUrl">API URL</label>
+        <input type="text" id="apiUrl">
+      </div>
+      <div class="field">
+        <label for="apiKey">API Key</label>
+        <input type="password" id="apiKey">
+      </div>
+      <div class="field">
+        <label for="model">模型名</label>
+        <input type="text" id="model">
+      </div>
+      <div class="field">
+        <label for="systemPrompt">自定义 system 提示词（高级）</label>
+        <textarea id="systemPrompt" rows="3" placeholder="留空即用内置的压缩版提示词"></textarea>
+        <p class="hint">只有明确知道自己在做什么时才填。<b>内置那版是压过的</b>，
+        换成长提示词会让每次请求都更贵；填错格式也不会导致解析失败（有兜底）。</p>
+      </div>
+      <div class="field">
+        <button class="btn" id="saveApi" style="width:100%">保存 API 设置</button>
+      </div>
+    </div>
+  </details>
+
+  <div class="minor">
+    <button id="testApi">检测 API 连接</button>
+    <button id="toggleLogs">查看日志</button>
+    <button id="clearLogs">清空日志</button>
+    <button id="reset">恢复默认</button>
   </div>
 
-  <div class="section-title">任务点类型<span class="tag">关掉就不处理这类</span></div>
-  <div class="row">
-    <label for="enableMedia">视频 / 音频</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableMedia"></div>
-  </div>
-  <div class="row">
-    <label for="enablePPT">文档 / PPT 翻页</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enablePPT"></div>
-  </div>
-  <div class="row">
-    <label for="enableHyperlink">超链接</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableHyperlink"></div>
-  </div>
-
-  <div class="section-title">答题<span class="tag">需要 API Key</span></div>
-  <div class="row">
-    <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableQuiz"></div>
-  </div>
-  <div class="row">
-    <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
-  </div>
-  <div class="field">
-    <label for="captchaModel">验证码识别模型</label>
-    <input type="text" id="captchaModel" placeholder="如 gemini-flash-latest / qwen-vl-max" />
-    <p class="hint"><b>必须填一个能看图的模型。</b>留空会退回主模型，而主模型通常不支持图片输入，
-    验证码基本识别不出来 —— 识别失败会重试，也可能识别错，错了就白跑一轮。</p>
-  </div>
-
-  <div class="section-title">讨论任务点</div>
-  <div class="row">
-    <label for="enableDiscussion">自动发评论（跳转后自动返回）</label>
-    <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
-  </div>
-  <div class="field">
-    <label for="discussionReply">回复内容</label>
-    <input id="discussionReply" type="text" placeholder="1" />
-  </div>
-
-  <div class="section-title">AI 接入<span class="tag">需要 API Key</span></div>
-  <div class="field">
-    <label for="providerPreset">接入方式</label>
-    <select id="providerPreset">
-      <option value="deepseek">DeepSeek（唯一在真实答题中实测通过）</option>
-      <option value="claude">Anthropic Claude（协议已适配 · 未实测）</option>
-      <option value="gemini">Google Gemini（协议已适配 · 未实测）</option>
-      <option value="custom-openai">自定义 OpenAI 兼容</option>
-    </select>
-  </div>
-  <p class="hint">
-    只预置了真正验证过的服务商。用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
-    <b>自定义 OpenAI 兼容</b>，API URL 与模型名按厂商文档自己填 ——
-    那两格填什么都能用，反而预置好的模型名是钉死的快照，厂商一发新版就失效。
-  </p>
-  <div class="field">
-    <label for="apiType">协议类型</label>
-    <select id="apiType">
-      <option value="openai">OpenAI 兼容</option>
-      <option value="claude">Anthropic / Claude</option>
-      <option value="gemini">Google Gemini</option>
-    </select>
-  </div>
-  <div class="field">
-    <label for="apiUrl">API URL</label>
-    <input type="text" id="apiUrl">
-  </div>
-  <div class="field">
-    <label for="apiKey">API Key</label>
-    <input type="password" id="apiKey">
-  </div>
-  <div class="field">
-    <label for="model">模型名</label>
-    <input type="text" id="model">
-  </div>
-  <div class="field">
-    <label for="systemPrompt">自定义 system 提示词（高级）</label>
-    <textarea id="systemPrompt" rows="3" placeholder="留空即用内置的压缩版提示词"></textarea>
-    <p class="hint">只有明确知道自己在做什么时才填。<b>内置那版是压过的</b>，
-    换成长提示词会让每次请求都更贵；填错格式也不会导致解析失败（有兜底）。</p>
-  </div>
-
-  <div class="actions">
-    <button class="btn secondary" id="reset">恢复默认</button>
-    <button class="btn secondary" id="saveApi">保存 API</button>
-  </div>
-  <div class="actions">
-    <button class="btn" id="start">开始运行</button>
-  </div>
-  <div class="actions">
-    <button class="btn secondary" id="testApi">检测 API 连接</button>
-    <button class="btn secondary" id="toggleLogs">查看日志</button>
-    <button class="btn secondary" id="clearLogs">清空日志</button>
-    <button class="btn secondary" id="stop">停止运行</button>
-  </div>
   <div class="log-panel" id="logPanel"></div>
 
   <div class="toast" id="toast"></div>

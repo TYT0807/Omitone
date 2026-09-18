@@ -1526,6 +1526,46 @@ SCENARIOS.push({
     );
     check('五选项多选题：模型回 ["A","C"] → 勾中的就是 A 和 C',
       JSON.stringify(multiFilled.checked) === JSON.stringify(['A', 'C']), JSON.stringify(multiFilled));
+
+    // ---- 答错之后必须能自己恢复（现场报的「视频里的题答完就卡住、等几秒没后续」）----
+    // 根因：填完答案后设了**两个**窗口 —— 静默期 8 秒 + 「已答放行」30 秒。
+    // `_activePopupBlock()` 在后者内一直返回 null，于是答错之后有 22 秒处于
+    // "静默期已过、却仍被当成已答"的没人管空档，弹窗挂着没人重试。
+    // 更隐蔽的一处：`_handleVideoPause` 也用同一个函数判断"有没有弹窗"，
+    // 于是那 22 秒还会去抢恢复被站点**有意暂停**的视频，两边对打。
+    // 这里不真等，直接把时间戳往回拨来模拟"静默期已经过去"。
+    const retryState = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var n=app._checkPopupQuiz(); if(!n) return {noPopup:true};' +
+      'function seed(){' +
+      '  app._popupQuizBlockedUntil=0;' +
+      '  var k=app._popupQuizFingerprint(n);' +
+      // 模拟"刚答完这道题、平台还没接受"
+      '  app._popupQuizKey=k; app._popupQuizAttempts=1; app._popupQuizLastFilled="A";' +
+      '  app._popupQuizSolvedKey=k; app._popupQuizSolvedAt=Date.now();' +
+      // 8000 与 page.js 的 POPUP_QUIZ_QUIET_MS 对应
+      '  app._popupQuizQuietUntil=Date.now()+8000;' +
+      '  app._popupBlockCheckedAt=0; app._popupBlockCached=null;}' +
+      'function snap(){return {active:!!app._activePopupBlock(), blocks:!!app._popupQuizBlocksPlayback()};}' +
+      'seed(); var duringQuiet=snap();' +
+      // 把静默期推到过去：弹窗仍在，说明平台没接受上一个答案 → 必须重新可处理
+      'app._popupQuizQuietUntil=Date.now()-1; app._popupQuizSolvedAt=Date.now()-8002;' +
+      'app._popupBlockCheckedAt=0; app._popupBlockCached=null;' +
+      'var afterQuiet=snap();' +
+      // 进入放弃窗口：这道题已经决定不管了，就不该再拦着恢复播放
+      'app._popupQuizBlockedUntil=Date.now()+60000;' +
+      'var afterGiveUp=snap(); app._popupQuizBlockedUntil=0;' +
+      'return {duringQuiet:duringQuiet, afterQuiet:afterQuiet, afterGiveUp:afterGiveUp};})()'
+    );
+    check('静默期内不重复处理弹题，但仍算「挡着播放」（否则会去抢恢复被站点暂停的视频）',
+      !retryState.noPopup && retryState.duringQuiet.active === false && retryState.duringQuiet.blocks === true,
+      JSON.stringify(retryState));
+    check('静默期一过必须重新可处理同一道题（否则就是「答完弹窗卡住、再也不重试」）',
+      !retryState.noPopup && retryState.afterQuiet.active === true,
+      JSON.stringify(retryState));
+    check('进入放弃窗口后不再拦住恢复播放',
+      !retryState.noPopup && retryState.afterGiveUp.blocks === false,
+      JSON.stringify(retryState));
   }
 });
 
