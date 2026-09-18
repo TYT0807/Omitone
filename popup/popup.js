@@ -24,7 +24,9 @@ const DEFAULTS = {
   apiKey: "",
   apiConnectionFailed: false,
   model: "deepseek-v4-flash",
-  captchaModel: ""
+  captchaModel: "",
+  // 思考强度：'off'（默认）/ 'low' / 'high'。参数映射的唯一真源是 libs/thinking.js。
+  thinkingLevel: "off"
 };
 
 const RUNTIME_LOGS_KEY = "runtimeLogs";
@@ -36,14 +38,20 @@ const MAX_LOGS = 200;
 // 曾经内置过 9 家（MiniMax / 通义 / 智谱 / Kimi / OpenRouter / SiliconFlow …），
 // 全是"按官方文档配好但没实测"，模型名还是钉死的快照，厂商一发新版就失效，
 // 用户照着填完发现用不了，反而比留空白更坑。
-// 现在只保留 DeepSeek（真实章节测验里完整验证过：抠题 → 作答 → 回填 → 交卷 → 记分）。
 //
-// 用别家怎么办？选「自定义 OpenAI 兼容」，自己填 API URL 和模型名即可 ——
-// 那两格填什么都能用，反而是预置的过期快照才容易不能用。
-// Claude / Gemini 走的是独立协议（在「协议类型」里选），代码有集成测试覆盖，
-// 但**没有在真实题库上跑过**，所以模型名留给你自己填。
+// 现在保留 DeepSeek（真实章节测验里完整验证过：抠题 → 作答 → 回填 → 交卷 → 记分），
+// 并按用户要求补上 Kimi 与通义千问 —— 这两家的**地址与模型名是照 2026-09 的官方文档
+// 填的快照，没有实测过**，所以标签里明写"未实测"。厂商改版后这里会过期：
+// 过期了照样能用，只要用户把「模型名」改成新名字（地址与协议通常不变）。
+// 找不到的服务商请选「自定义 OpenAI 兼容」自己填，那两格填什么都能用。
+// 渠道的核对方法与最后核对日期见 docs/channels.md。
 const PROVIDER_PRESETS = {
   deepseek: { apiType: "openai", apiUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" },
+  // Kimi / Moonshot：国际站 .ai、国内站 .cn，两者协议相同
+  kimi: { apiType: "openai", apiUrl: "https://api.moonshot.ai/v1", model: "kimi-k3" },
+  // 通义千问 DashScope 的 OpenAI 兼容入口。⭐ 注意地址里带 /compatible-mode/v1，
+  // 这是它和普通 /v1 不同的地方：填错会 404，看起来像"密钥无效"。
+  qwen: { apiType: "openai", apiUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.8-flash" },
   claude: { apiType: "claude", apiUrl: "https://api.anthropic.com", model: "" },
   gemini: { apiType: "gemini", apiUrl: "https://generativelanguage.googleapis.com", model: "" },
   "custom-openai": { apiType: "openai", apiUrl: "", model: "" }
@@ -75,6 +83,8 @@ const els = {
   apiKey: $("apiKey"),
   model: $("model"),
   captchaModel: $("captchaModel"),
+  thinkingLevel: $("thinkingLevel"),
+  thinkingHint: $("thinkingHint"),
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
@@ -301,8 +311,40 @@ function getApiFormConfig() {
     apiConnectionFailed: false,
     apiConnectionError: "",
     model: els.model.value.trim(),
-    captchaModel: els.captchaModel.value.trim()
+    captchaModel: els.captchaModel.value.trim(),
+    thinkingLevel: els.thinkingLevel.value
   };
+}
+
+/**
+ * 刷新「思考强度」下面那句说明。
+ *
+ * 为什么值得单独做：这张表是**按渠道**决定的 —— 同一个"关闭"，DeepSeek 会发
+ * `thinking:{type:disabled}`、Kimi 什么参数都不发（K3 关不掉），认不出的渠道
+ * 一个参数都不发。用户看不到这层差别，就会以为"我关了思考它却没关"是 bug。
+ * 这里把**实际会发出去的参数**摊开给他看。
+ * 说明文字由 libs/thinking.js 统一生成，避免 UI 与代码两处措辞分叉。
+ */
+function updateThinkingHint() {
+  if (!els.thinkingHint) return;
+  const desc = typeof OmitoneThinking !== "undefined"
+    ? OmitoneThinking.describe({
+        apiUrl: els.apiUrl.value.trim(),
+        model: els.model.value.trim(),
+        thinkingLevel: els.thinkingLevel.value
+      })
+    : "（缺少 libs/thinking.js，无法解析渠道）";
+  const base = "「关闭」是唯一实测过的档位，也是本项目一直以来的行为 —— 答题是模式化任务，"
+    + "实测关掉后一次请求从 361 token 降到 133。另外两档照厂商文档填写，未在真实题库验证；"
+    + "个别服务商会直接拒绝，程序会自动摘掉参数重试一次并把原因写进日志，不会把整次答题判死。";
+  els.thinkingHint.innerHTML = base + "<br><br><b>当前实际发送：</b>" + escapeHtml(desc);
+}
+
+function escapeHtml(text) {
+  return String(text == null ? "" : text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 async function saveToggleConfig(showToast = true) {
@@ -460,11 +502,17 @@ async function load() {
   els.apiKey.value = config.apiKey || "";
   els.model.value = config.model || "";
   els.captchaModel.value = config.captchaModel || "";
+  // 思考强度：老配置里没有这个键，回落 'off' —— 也就是升级前的行为，不会突变。
+  els.thinkingLevel.value = typeof OmitoneThinking !== "undefined"
+    ? OmitoneThinking.normalizeLevel(config.thinkingLevel)
+    : "off";
   els.discussionReply.value = config.discussionReply || "1";
   els.systemPrompt.value = config.systemPrompt || "";
   if (!config.apiUrl || !config.model) {
     applyProviderPreset(els.providerPreset.value);
   }
+  // 放在最后：这句依赖 apiUrl / model / thinkingLevel 三个字段都已填好
+  updateThinkingHint();
 }
 
 function applyProviderPreset(presetId) {
@@ -477,6 +525,9 @@ function applyProviderPreset(presetId) {
   els.apiType.value = preset.apiType;
   if (!els.apiUrl.value.trim() || presetId !== "custom-openai") els.apiUrl.value = preset.apiUrl;
   if (!els.model.value.trim() || presetId !== "custom-openai") els.model.value = preset.model;
+  // 换渠道会改变"实际发送什么参数"（DeepSeek 发 thinking、Kimi 不发、自定义发别的），
+  // 所以说明文字必须跟着刷新，否则用户会照着上一家的说明理解当前渠道。
+  updateThinkingHint();
 }
 
 async function resetDefault() {
@@ -629,7 +680,18 @@ function scheduleApiAutoSave() {
 [els.apiUrl, els.apiKey, els.model, els.captchaModel].forEach((el) => {
   el.addEventListener("input", scheduleApiAutoSave);
 });
+// 地址/模型名一改，渠道就可能变（自定义渠道尤其如此），说明文字要跟着变
+[els.apiUrl, els.model].forEach((el) => {
+  el.addEventListener("input", updateThinkingHint);
+});
 els.apiType.addEventListener("change", scheduleApiAutoSave);
+
+// 思考强度的选择器：切换即落盘，并刷新"当前实际发送"那句说明
+els.thinkingLevel.addEventListener("change", async () => {
+  updateThinkingHint();
+  await saveApiConfig(false);
+  toast("思考强度已保存");
+});
 
 els.reset.addEventListener("click", resetDefault);
 els.saveApi.addEventListener("click", async () => {

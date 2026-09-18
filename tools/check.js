@@ -236,6 +236,9 @@ function checkSingleSources(manifest) {
   if (content.indexOf('OmitoneFontTable') !== -1 && injected.indexOf('libs/font-table.js') === -1) {
     problems.push('manifest.content_scripts 未注入 libs/font-table.js，但 content.js 依赖它');
   }
+  if (content.indexOf('OmitoneThinking') !== -1 && injected.indexOf('libs/thinking.js') === -1) {
+    problems.push('manifest.content_scripts 未注入 libs/thinking.js，但 content.js 依赖它');
+  }
 
   // 提示词
   [['buildQuestionsText', '提示词应只在 libs/prompt.js'],

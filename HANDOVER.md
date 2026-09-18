@@ -26,40 +26,58 @@
 3. **每步都要有测试兜着。** 先跑一遍建立基线 → 改 → 再跑一遍。
    **"跑起来没报错"不算通过**，要看断言和日志。
 
-### 0.2 交接时的工作区状态（快照：2026-09-17）
+### 0.2 交接时的工作区状态（快照：2026-09-18）
 
 > 这一段是**时间点快照**，会过期。先跑 `git log --oneline -3` 和 `git status --short`
 > 自己对一下；如果工作区干净、远端 main 已经跟上，这整节可以跳过。
 
-- **1.1.2 / 1.1.3 均已发布并核验过**（tag / Release / 两个附件 `state=uploaded` / 下载直链可用）。
-  下载链接是按**附件名**取「最新一版 Release」的，所以现在点下载拿到的就是 1.1.3。
-- **1.1.4 的改动已完成、测试全绿，但还没推送**（接手时手头没有令牌）。
-  内容：修「视频弹题答错后卡住」的两个成因 + 设置弹窗重做。
+- **1.1.2 / 1.1.3 / 1.1.4 均已发布并核验过**（tag / Release / 两个附件 `state=uploaded` /
+  下载直链可用）。下载链接是按**附件名**取「最新一版 Release」的，所以现在点下载拿到的是 1.1.4。
+- **1.1.5 的改动已完成、测试全绿，但还没推送**（2026-09-18 当天没有可用的令牌）。
+  内容三块：① 修「多选题只选一个然后卡住」（含把选项填充逻辑合成一份）；
+  ② 新增「思考强度」三档开关（前端 + 按渠道白名单发参数）；③ 铺开 Kimi / 通义渠道 +
+  新增 `docs/channels.md` 渠道维护清单。
   因此你可能看到**一个脏工作区** —— 这是正常的，不是别人改坏了一半。
   **不要 `git checkout .` 把它丢掉。**
 - 待提交的改动大致是这些：
 
   ```
-  修改: page.js                       （弹题两个窗口合并 + 新增 _popupQuizBlocksPlayback）
-        popup/popup.html               （弹窗重做：吸顶主操作 + 分组折叠 + 蓝色强调）
-        popup/popup.js                 （顺带修掉英文按钮/提示串）
-        tools/browser-e2e.js           （+3 条断言，锁住弹题重试行为）
-        manifest.json  package.json  content.js  README.md
-        CHANGELOG.md  HANDOVER.md  AGENTS.md  tools/README.md
+  新增: libs/thinking.js               （思考参数唯一真源：渠道 × 档位 白名单）
+        docs/channels.md               （渠道核对清单，要定期更新）
+  修改: page.js                        （多选修复 + 选项填充统一入口 _applyChoiceAnswer）
+        content.js                     （按渠道白名单构造思考参数 + 被拒时自动摘掉重试）
+        popup/popup.html popup/popup.js （思考强度三档 + Kimi/通义预设 + 说明文字联动）
+        manifest.json                  （注入 libs/thinking.js）
+        tools/integration-test.js      （+15 条：思考参数白名单 + 错误路径）
+        tools/browser-e2e.js           （+1 场景 15 条断言 + 设置弹窗的渠道/档位断言）
+        tools/check.js                 （libs/thinking.js 注入守卫）
+        docs/manual.html               （密钥申请教程 + 渠道表 + 思考强度说明）
+        README.md  HANDOVER.md  AGENTS.md  CHANGELOG.md  tools/README.md
+        package.json
   ```
 - 发新版（**先读 §0.5 的令牌规矩**）：
 
   ```bash
+  npm run release -- check-msg .workbuddy/commit-msg.txt   # 先校验提交信息形状（不联网）
   npm run release -- push --message-file <提交信息文件> <上面那些文件...>
-  npm run release -- release v1.1.4 --notes-file <Release说明文件>
-  npm run release -- verify v1.1.4        # 必须跑，确认附件 state 与下载直链
+  npm run release -- release v1.1.5 --notes-file <Release说明文件>
+  npm run release -- verify v1.1.5        # 必须跑，确认附件 state 与下载直链
   ```
 
   注意 `push` 子命令**没有** `git add -A` 那种"全都提交"的用法 —— 文件必须一个个列出来。
   这是刻意的：本项目误提交过自检产物（见 §7.5）。
 
-- 交接前的整目录备份在 **`D:\Omite-backup-20260917-1846`**（含 `.git`，289 个文件 / 6.19 MB）。
+- 交接前的整目录备份在 **`D:\Omite-backup-20260918-1755`**（含 `.git`，554 个文件 / 10.9 MB）。
   出事了从那儿恢复。**做多文件改动之前先照 §0.4 再备份一次。**
+
+### 0.2.1 接手后请定期做的一件事：核对 AI 渠道
+
+`docs/channels.md` 记着各家 AI 的 base_url、模型名与思考参数，**并标着最后核对日期**。
+厂商改版很勤（本项目已经见过 `deepseek-chat` 退役、模型名换代），写死的快照一定会过期。
+
+**每隔一两个月，或收到"某个渠道用不了"的反馈时**，按那份文件第 2 节的 curl 逐家打一遍，
+把过期的模型名/参数改掉（改 `libs/thinking.js` 与 `popup/popup.js` 两处），并更新核对日期。
+这件事**不是可选项** —— 它是"用户照着预置填完却发现用不了"的唯一防线。
 
 ### 0.3 绝对不要做的事
 
@@ -153,8 +171,8 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 13 项 + 提示词基准 + 集成 52 项） |
-| 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **196 / 196**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器） |
+| 任何东西 | `npm test` | **全绿**（自检 13 项 + 提示词基准 + 集成 67 项） |
+| 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **222 / 222**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器） |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
 | 新增了任何断言 | 手动反向验证 | **临时制造一个已知错误，确认它能被抓住**。不会失败的检查等于没有检查 |
@@ -184,7 +202,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | 当前版本 | **1.1.3**（功能收官，进入 bug 修复期） |
 | 代码规模 | `page.js` 约 8.6k 行 / 300 多个方法；`content.js` 约 1.4k 行；`libs/` 合计约 3.6k 行 |
 | 扩展体积 | 解压后约 **770 KB**（其中 `page.js` 365KB、`resources/table.bin` 122KB） |
-| 测试基线 | 自检 13 项 · 集成 52 项 · 真实 Edge 端到端 **196 项** · 提示词基准 1 份报告，**全绿** |
+| 测试基线 | 自检 13 项 · 集成 67 项 · 真实 Edge 端到端 **222 项** · 提示词基准 1 份报告，**全绿** |
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
@@ -235,7 +253,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 ```bash
 git clone <repo> && cd Omitone
 npm test                      # 秒级：自检 + 提示词基准 + 集成测试
-npm run e2e                   # 约 1~2 分钟：起一个独立 Edge 临时 profile，196 项交叉检验
+npm run e2e                   # 约 1~2 分钟：起一个独立 Edge 临时 profile，222 项交叉检验
 ```
 
 **两条都要绿才算建立好基线**，之后每次改动都用它们对比（见 §0.6）。
@@ -252,6 +270,16 @@ npm run e2e                   # 约 1~2 分钟：起一个独立 Edge 临时 pro
 
 按 README §9 的清单逐处补齐（`DEFAULT_CONFIG` 三份 + 消费点 + content + popup）。
 **三份默认值没有 schema 校验，漏一处不会报错，只会表现成"开关不起作用"。**
+（1.1.5 加的 `thinkingLevel` 与 `quizQuestionMaxMisses` 就是这么补的 ——
+注意 `thinkingLevel` 只在 content.js 消费，`quizQuestionMaxMisses` 只在 page.js 消费，
+所以不是每个配置项都要三处都加，但**读取它的那个文件必须有自己的默认值**。）
+
+### 加 / 改一个 AI 渠道
+
+按 `docs/channels.md` 第 3 节走：改 `libs/thinking.js`（思考参数）
++ `popup/popup.js` 的 `PROVIDER_PRESETS`（地址与模型名）+ 说明书 + README，
+再更新那份文件的**最后核对日期**。改完必须跑 `npm test`（有渠道白名单断言）
+与 `npm run e2e`（设置弹窗那一段会核对预设清单与"未实测"标签）。
 
 ### 改提示词
 
@@ -475,6 +503,9 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | 防拖拽视频白等最后 10% | **已做**：`advanceAtNinetyPercent`（默认开）。判据是「拖不动 **且** 倍速锁 1x」，**并且必须由平台自己给出完成标记**才提前结束。别把它改成「播够 90% 就算完成」—— 那会在平台还没认可时误跳过任务点 |
 | 三份「managed media job ended」收尾各写一遍 | **已统一**（1.1.3，**1.1.4 复核确认正确**）：`_handleVideoEnded` 现在走 `_finishCurrentMedia`。它原本多清 `_activeDocumentJob*`，**那三行是过界的**（`nextUnit()` 在 `autoNext:false` 时提前返回，会放弃正在进行的文档任务点）。别再把它加回去，e2e 有断言锁着 |
 | 设置弹窗"太潦草"（主操作在底部、控件一长条） | **1.1.4 已重做**：吸顶主操作 + `<details>` 分组折叠 + 蓝色强调。改版前的结构问题见 CHANGELOG 1.1.4。⚠️ 每个开关的 `role="switch"` / `tabindex="0"` / `aria-checked` 与 `<label for>` 都不能少，e2e 有断言 |
+| **多选题只选一个、然后卡住**（章节小测不往下走、视频弹题反复选不对） | **1.1.5 已修**，四个成因见 README §6 #33。要点：① 选项填充原来有**三份**（章节小测 / 弹题各一份 + 各自的小工具），已合并为唯一入口 `_applyChoiceAnswer`；② `_sortMultiFallbackCombos` 的目标规模**下限必须≥2** —— 改回 `preferredSize \|\| 2` 会让"只选一项"的组合排到最前，重试就变成逐个字母试错；③ 低于下限的组合**只排最后、不删除**（"不定项选择题"单选也是正确答案，删了就永远答不对）；④ `_clickOptionItem` 顺序是"**先点、再写回终态**"，复选只加不减 —— 别改成"按当前状态取反"（复选被点两次会互相抵消，就是"随机少选"的来源）。e2e 新增一个场景（15 条断言）锁着 |
+| 换了个模型就一直 **400** | **1.1.5 已加固**：思考参数收进 `libs/thinking.js` 按渠道白名单发；服务商拒收时自动摘掉参数重试一次。⚠️ **别把 `unknown` 渠道的"关闭"档改成会发参数** —— 那正是升级前的行为，改了就会把用自定义渠道的用户搞成 400 |
+| 「只有 DeepSeek 实测过」这句话 | **1.1.5 起仍然成立**，只是预置里多了 Kimi / 通义（界面明确标"未实测"）。**不要把"未实测"的标签去掉**，e2e 有断言守着标签文字 —— 那是用户判断"能不能信"的唯一依据 |
 
 ---
 

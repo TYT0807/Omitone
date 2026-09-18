@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.4-blue)
+![版本](https://img.shields.io/badge/版本-1.1.5-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -146,42 +146,60 @@
 
 ### 1. 只有 DeepSeek 是真正在真实答题中跑通过的
 
-顺带解释原因：为了省 token，代码里给 DeepSeek 关掉了**思考模式**
-（`thinking: { type: 'disabled' }`）——答题是模式化任务，开着思考每道题要先烧约 200 个
-推理 token，关掉后 2 题从 361 token 降到 133 token。
-**这个参数是只对 DeepSeek 加的**，因为其他 OpenAI 兼容服务遇到未知参数会直接报 400。
+**DeepSeek = 在真实章节测验里完整验证过**（抠题 → 作答 → 回填 → 交卷 → 记分）。
+其他渠道的地址与模型名是照**厂商官方文档**填的快照，协议也适配过、集成测试覆盖了，
+但**没有在真实题库上跑过**，界面上都如实标着「未实测」。
 
-但这也意味着：
+预置清单（1.1.5 起）：
 
-- **DeepSeek = 在真实章节测验里完整验证过**（抠题 → 作答 → 回填 → 交卷 → 记分）
-- **其他厂商一律不预置** —— 见下面这段
+| 接入方式 | base_url | 模型名（快照） | 实测 |
+| --- | --- | --- | --- |
+| **DeepSeek** | `https://api.deepseek.com` | `deepseek-v4-flash` | ✅ 完整验证过，也是默认值 |
+| Kimi / Moonshot | `https://api.moonshot.ai/v1`（国内站 `.cn`） | `kimi-k3` | ❌ 未实测 |
+| 通义千问 / DashScope | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | ❌ 未实测 |
+| Anthropic Claude | `https://api.anthropic.com` | 自己填 | ❌ 未实测 |
+| Google Gemini | `https://generativelanguage.googleapis.com` | 自己填 | ❌ 未实测 |
+| 自定义 OpenAI 兼容 | 自己填 | 自己填 | — |
 
-**关于"为什么只留 DeepSeek 一个预设"：**
+**为什么不多预置几家？** 早期版本内置过 9 家（MiniMax / 智谱 / OpenRouter / 硅基流动 …），
+全是"照官方文档配好但没在真实答题里验证过"。结果很糟：预设里的**模型名是钉死的快照**，
+厂商一发新版就失效，用户照着下拉框一路填完，最后发现根本用不了 —— **比留空白更坑人**。
+所以这里只保留「点得出官方文档来源」+「有人真的会去用」的那几家，其余走"自定义"。
 
-早期版本内置过 9 家厂商预设（MiniMax / 通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …），
-全是"照官方文档配好但没在真实答题里验证过"。结果很糟：
-预设里的**模型名是钉死的快照**，厂商一发新版就失效，
-用户照着下拉框一路填完，最后发现根本用不了 —— **比留空白更坑人**。
-
-所以现在只预置三种：
-
-| 接入方式 | 说明 |
-| --- | --- |
-| **DeepSeek** | 唯一在真实答题链路上完整验证过的，也是默认值 |
-| **Anthropic Claude** | 走独立协议（`/v1/messages`），协议适配有集成测试覆盖，但**没在真实题库上跑过** |
-| **Google Gemini** | 走独立协议（`generateContent`），同上 |
-
-**用别家怎么办？** 选「自定义 OpenAI 兼容」，API URL 和模型名按厂商文档自己填。
-那两格填什么都能用，反而比预置的过期快照可靠。
+**模型名过期了怎么办**：改「模型名」那一格即可（地址与协议一般不变）。
+各家的核对方法、最后核对日期与已知坑，见 **[`docs/channels.md`](docs/channels.md)** ——
+那是一份要**定期更新**的清单，不是一次性文档。
 
 换厂商时请先用「检测 API 连接」跑通，
 再找一节**不重要**的测验试一遍手感，确认没问题再上正课。
 
-### 2. 关掉思考模式＝牺牲推理深度，正确率必然下降
+### 2. 思考强度：默认关掉，等于牺牲推理深度换便宜和快
 
 同一款模型，"带思考"答推理题就是比"不带思考"准。
-我们选了**便宜 + 快**，代价是碰到需要绕几个弯的题目更容易答错。
+默认选**关闭**（便宜 + 快），代价是碰到需要绕几个弯的题目更容易答错。
 哲学类、思修类这种偏语义理解的还好；涉及计算、因果链条判断的题，请自己复核。
+
+1.1.5 起，弹窗里有「思考强度」三档可选：**关闭（默认）/ 低 / 高**。
+
+| 档位 | 给厂商发什么 | 实测 |
+| --- | --- | --- |
+| 关闭 | DeepSeek `thinking:{type:disabled}`；通义 `enable_thinking:false`；**认不出的渠道一个参数都不发** | ✅ 就是本项目一直以来的行为 |
+| 低 | `reasoning_effort: low`（Kimi 是 `low`） | ❌ 照官方文档填的，未验证 |
+| 高 | DeepSeek `high` / 通义 `xhigh` / Kimi `max` | ❌ 同上 |
+
+三条必须说清楚的事：
+
+1. **"不发参数"是刻意的安全默认**。各家对未知字段的反应不一致（有的忽略、有的直接 400），
+   所以认不出的渠道在"关闭"档一个参数都不发 —— 这也正是升级前的行为，
+   不会把任何现有用户搞成 400。
+2. **万一家伙真的拒收**（选了低/高却碰上不支持的渠道），
+   `content.js` 会**自动摘掉思考参数重试一次**并把原因写进日志
+   （`llm rejected thinking params, retry without them`），不会让整次答题直接失败。
+3. **Kimi K3 是恒思考模型，关不掉**。选"关闭"不报错，但它仍然会推理 ——
+   这一点在弹窗里会明说，别以为是自己没设置成功。
+
+参数映射的唯一真源是 **[`libs/thinking.js`](libs/thinking.js)**，
+要加渠道或改参数只改那一个文件（UI 说明也跟着它生成，不会两处措辞分叉）。
 
 ### 3. 正确率没有保障 —— 考试 / 有次数限制的任务请勿使用
 
@@ -487,7 +505,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 19 个场景，196 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 20 个场景，222 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -806,6 +824,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 30 | `npm run e2e` **全线失败**：所有场景都报「page.js 在真实 Edge 中加载成功：失败」，页面里却一条异常都没有 | 测试脚本按 `SHA256(目录路径)` 猜扩展 ID，而**路径大小写敏感**：`D:\Omite` → `hdlemlcmf…`（真），`d:\Omite` → `locncobd…`（假）。从 Git Bash 风格 cwd 启动 node，`__dirname` 的盘符变小写，ID 就错开了 —— 扩展其实加载得好好的，是测试自己拿着错 ID 去注入 | 改为**运行时发现**真实 ID（content script 的 `Runtime.executionContextCreated` → `origin`），路径哈希降级为兜底；发现不一致时会打印一行警告。详见 [AGENTS §7.2](AGENTS.md) |
 | 31 | **视频里弹出题后 AI 一直在扫描、但从不填空，课程永久空转** | 四层叠加：① 弹题请求**没有任何去重**，tick 每 250ms 一轮就重问一次模型；② `_matchOptionItem` 只在选项带 `.num_option` 徽标时才知道字母，原生 `li + input[value="A"]` 结构的字母恒为空 → 模型答裸字母 "A" 时一个都匹配不上；③ `_getOptionItems` 遇到无 `Zy_/Cy_`、无 `label` 的结构直接返回 `[]`；④ 题型靠**题干关键字**猜（含"正确"就判成判断题），"下列说法正确的是？"这类单选被误判。而弹窗分支在 `_runTick` 最前面 `return`、`_handleVideoPause` 又规定"有弹窗不恢复播放" → 死锁 | ① 新增 `_inferOptionLetter`（徽标 → 属性 → `input.value` → 文本前缀 → 位置兜底）；② `_getOptionItems` 补原生结构兜底（只取最内层）；③ 新增 `_detectPopupQuizType`（控件优先 + 判断题需选项为"正确/错误"这类对立表述）；④ 新增 `_activePopupBlock()`（含放弃窗口与已答放行），`_runTick`/`_handleVideoPause` 全走它；⑤ 同一弹题最多问 3 次后 `_giveUpPopupQuiz`（日志带 DOM 快照 → 点跳过 → 60s 冷却）；⑥ `_fillPopupAnswer` 没选中就不点提交 |
 | 32 | **弹题答对了，但视频右下角还挂着一个「继续学习」按钮，不点就进不去正常播放页，AI 照样空耗** | 代码里**根本没有这个按钮的处理**：它不属于弹窗题（没有选项），也不属于任何已有分支，于是 tick 每轮都跳过它，视频一直停在那儿 | 新增 `_findContinueStudyButton` + `_tryContinueStudyPrompt`：按文案（继续学习/继续观看/继续播放）+ 与视频同文档 + 形态打分定位，**叶子节点优先**（站点把 `onclick` 挂在按钮上，点到外层容器没反应）；挂在 `_runTick` 里弹题之后、播放之前。两道保险：同一按钮 3 秒内只点一次、连点 5 次没反应就停 60 秒并写日志 |
+| 33 | **多选题只选一个就提交，然后一直卡住**（章节小测无视后续、视频弹题反复选不对） | 四条叠加：① **没有任何地方规定"多选题至少选 2 项"**，只选 1 项也算"填好了" → 提交 → 判错 → 记为错答案 → ② 重试时 `preferredSize = canonical.length` 恰好是 **1**，于是 fallback 组合**优先挑"只选一项"的组合**，逐个字母试过去，每次都错 → 一直磨到 20 次交卷上限；③ 视频弹题那条路**自己另写了一份**选项填充，**没有** `"AC"` → `["A","C"]` 的拆分，模型回不带分隔符的连写字母时一个选项都匹配不上；④ `_clickOptionItem` 对复选框会点两次（`item.click()` + 内层徽标 click），**复选是开关，两次点击互相抵消** → 随机少选 | ① 新增唯一入口 `_applyChoiceAnswer`（章节小测与视频弹题共用），把重复的填充逻辑合成一份；② 连写字母按单字母拆开；③ 标着"多选"的题答案不足 2 项时**本地扩成相邻两项**（纯本地，**零 token**）；④ `_sortMultiFallbackCombos` 的目标规模**下限钉在 2**（低于下限的组合只排到最后、不删除 —— "不定项选择题"单选也是正确答案）；⑤ `_clickOptionItem` 改成幂等：先点、再把终态写回，复选只加不减；⑥ 同题错够 `quizQuestionMaxMisses`(3) 次后 `_isQuizQuestionBestEffort` 判真 → 不再进 LLM 请求、不再扩错答列表，直接填本地猜测让整卷交得出去（**这才叫真的"不卡住"**：章节小测的提交前置是每题都有值） |
+| 34 | 换了个模型就一直 **400**，看起来像插件坏了 | 思考参数**按厂商各写各的**（DeepSeek `thinking:{type}`、通义 `enable_thinking`、Kimi `reasoning_effort`），各家对未知字段的反应不一致：有的忽略、有的直接 400。旧实现写死"只对 DeepSeek 加"，一改成表驱动就容易给不支持的渠道发参数 | ① 参数映射收进唯一真源 `libs/thinking.js`，**按渠道白名单**发；认不出的渠道在"关闭"档**一个参数都不发**（= 升级前的行为）；② 服务商拒收时 `content.js` **自动摘掉思考参数重试一次**并记 `llm rejected thinking params, retry without them`，不让整次答题判死；③ 集成测试同时断言"该带的带对了"与"**不该带的一个都没有**"，后一条更重要 |
 
 ---
 
@@ -817,6 +837,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
+| **多选题只选一个就卡住 / 一直选不对** | 见 §6 #33。日志里找 `multiple choice answer expanded locally`（本地把单字母扩成两项）、`multiple choice combos exhausted, keep wrong history`、`quiz filled best-effort guesses for repeatedly-wrong questions`（已放弃折腾这道题、改填本地猜测让整卷交出去） |
+| 换了模型就一直 400 | 见 §6 #34。日志里找 `llm rejected thinking params, retry without them`；把「思考强度」切回"关闭"即可（关闭档对认不出的渠道不发任何参数） |
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
@@ -884,9 +906,9 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 ```bash
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（52 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（67 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（19 个场景 / 196 项）
+npm run e2e      # 真实 Edge 功能交叉检验（20 个场景 / 222 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库

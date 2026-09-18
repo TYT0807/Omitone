@@ -247,8 +247,8 @@
     <rect x="0" y="0" width="680" height="330" fill="#fbfcfd" stroke="#e3e6ec"/>
     <!-- 弹窗 -->
     <rect x="150" y="10" width="380" height="310" rx="10" fill="#fff" stroke="#e3e6ec"/>
-    <text x="170" y="36" font-size="13" fill="#16181d" font-family="sans-serif" font-weight="600">Omitone-1.1.1</text>
-    <text x="510" y="36" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">1.1.0</text>
+    <text x="170" y="36" font-size="13" fill="#16181d" font-family="sans-serif" font-weight="600">Omitone-1.1.5</text>
+    <text x="510" y="36" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">版本 1.1.5</text>
     <line x1="170" y1="46" x2="510" y2="46" stroke="#e3e6ec"/>
 
     <!-- 开关组 -->
@@ -275,16 +275,17 @@
 
     <text x="170" y="220" font-size="10.5" fill="#444a55" font-family="sans-serif">接入方式</text>
     <rect x="170" y="226" width="340" height="22" rx="4" fill="#f6f7f9" stroke="#e3e6ec"/>
-    <text x="180" y="241" font-size="10.5" fill="#16181d" font-family="sans-serif">DeepSeek（唯一在真实答题中实测通过）</text>
+    <text x="180" y="241" font-size="10.5" fill="#16181d" font-family="sans-serif">DeepSeek（推荐 · 唯一实测通过 · 便宜快）</text>
     <text x="498" y="241" font-size="9" fill="#767d8a" font-family="sans-serif">▼</text>
 
-    <text x="170" y="266" font-size="10.5" fill="#444a55" font-family="sans-serif">API Key</text>
-    <rect x="170" y="272" width="340" height="22" rx="4" fill="#fff" stroke="#e3e6ec"/>
-    <text x="180" y="287" font-size="10.5" fill="#c3c8d1" font-family="sans-serif">sk-••••••••••••••••••••••••</text>
+    <text x="170" y="266" font-size="10.5" fill="#444a55" font-family="sans-serif">思考强度</text>
+    <rect x="170" y="272" width="340" height="22" rx="4" fill="#f6f7f9" stroke="#e3e6ec"/>
+    <text x="180" y="287" font-size="10.5" fill="#16181d" font-family="sans-serif">关闭（默认 · 最省最快 · 推荐）</text>
+    <text x="498" y="287" font-size="9" fill="#767d8a" font-family="sans-serif">▼</text>
 
-    <text x="170" y="312" font-size="10.5" fill="#444a55" font-family="sans-serif">模型名</text>
+    <text x="170" y="312" font-size="10.5" fill="#444a55" font-family="sans-serif">API Key</text>
     <rect x="240" y="300" width="270" height="20" rx="4" fill="#fff" stroke="#e3e6ec"/>
-    <text x="248" y="314" font-size="10.5" fill="#16181d" font-family="Consolas, monospace">deepseek-v4-flash</text>
+    <text x="248" y="314" font-size="10.5" fill="#c3c8d1" font-family="Consolas, monospace">sk-••••••••••••••</text>
 
     <!-- 侧注 -->
     <text x="24" y="120" font-size="10.5" fill="#767d8a" font-family="sans-serif">① 不需要 Key 的开关</text>
@@ -326,25 +327,110 @@
   </li>
 </ol>
 
+<p>
+  <b>其他服务商的密钥在哪申请</b>（申请流程都一样：注册 → 充值 → 建 Key → 粘贴）：
+</p>
+
+<table>
+  <thead><tr><th style="width:24%">服务商</th><th style="width:36%">去哪申请</th><th>备注</th></tr></thead>
+  <tbody>
+    <tr><td><b>DeepSeek</b></td><td><code>platform.deepseek.com</code></td>
+        <td>推荐。充 10 元能用很久；密钥只在创建时显示一次</td></tr>
+    <tr><td>Kimi</td><td><code>platform.moonshot.cn</code></td>
+        <td>国内站；有国际站 <code>platform.moonshot.ai</code>，地址要对应</td></tr>
+    <tr><td>通义千问</td><td>阿里云百炼 <code>bailian.console.aliyun.com</code></td>
+        <td>选「OpenAI 兼容」入口，地址里的 <code>compatible-mode</code> 不能少</td></tr>
+    <tr><td>Claude / Gemini</td><td><code>console.anthropic.com</code> / <code>aistudio.google.com</code></td>
+        <td>国内访问可能需要网络条件；这两家的协议和上面不同，在「协议类型」里要选对</td></tr>
+  </tbody>
+</table>
+
+<div class="box">
+  <div class="t">密钥被盗了会怎样？先看这一条再决定要不要用</div>
+  <p>
+    密钥等于你这张"话费卡"的密码。项目没有任何服务器，密钥只存在你本机的浏览器里、
+    只发给你填的那家服务商，扩展作者看不到也拿不到。
+    但<b>请务必在自己的账号里给它设一个消费上限</b>，并且不要在截图、
+    聊天记录里露出完整的密钥。详见第 8 节。
+  </p>
+</div>
+
 <h3>3.3 想用别的模型怎么办</h3>
 
 <p>
-  「接入方式」里只预置了真正实测通过的服务商：
-  <b>DeepSeek</b>（唯一在真实答题里完整验证过）、<b>Anthropic Claude</b>、
-  <b>Google Gemini</b>（后两者协议已适配，但没在真实题库上跑过）。
+  除了 <b>DeepSeek</b>（唯一在真实答题里完整验证过），现在也预置了
+  <b>Kimi（Moonshot）</b>、<b>通义千问（DashScope）</b>、<b>Anthropic Claude</b>、
+  <b>Google Gemini</b>。要提醒的是：<b>后四家的地址与模型名是按厂商文档填的快照，
+  没有在真实题库上跑过</b>，下拉框里也如实标了「未实测」。
 </p>
 
+<table>
+  <thead><tr><th style="width:22%">服务商</th><th style="width:44%">API URL（选好预设会自动填）</th><th>模型名（快照）</th></tr></thead>
+  <tbody>
+    <tr><td><b>DeepSeek</b></td><td><code>https://api.deepseek.com</code></td><td><code>deepseek-v4-flash</code></td></tr>
+    <tr><td>Kimi</td><td><code>https://api.moonshot.ai/v1</code><br>（国内站是 <code>api.moonshot.cn</code>）</td><td><code>kimi-k3</code></td></tr>
+    <tr><td>通义千问</td><td><code>https://dashscope.aliyuncs.com/compatible-mode/v1</code><br><b>注意地址里那段 <code>compatible-mode</code> 不能少</b></td><td><code>qwen3.8-flash</code></td></tr>
+  </tbody>
+</table>
+
 <p>
-  用别家（通义 / 智谱 / Kimi / OpenRouter / 硅基流动 …）请选
-  <b>「自定义 OpenAI 兼容」</b>，把官方文档上的 API 地址与模型名自己填进去。
+  表里没有的服务商（智谱 / OpenRouter / 硅基流动 / 各种中转站 …）请选
+  <b>「自定义 OpenAI 兼容」</b>，把官方文档上的 API 地址与模型名自己填进去 ——
+  只要对方兼容 OpenAI 的 <code>/chat/completions</code>，填什么都能用。
 </p>
 
 <div class="box">
-  <div class="t">为什么不像别的工具那样内置十几种厂商？</div>
+  <div class="t">为什么预置的模型名会过期？过期了怎么办？</div>
   <p>
-    内置的厂商预置里，<b>模型名是钉死的快照</b>。厂商一发新版，预置就失效 ——
-    而用户是照着下拉框一路填完，最后才发现用不了。
-    <b>这比留空白更坑人</b>，所以现在只留实测过的，其余交给"自定义"。
+    预置里的<b>模型名是钉死的快照</b>，厂商一发新版它就会失效。
+    失效的表现通常是报"模型不存在"，<b>改「模型名」那一格即可</b> ——
+    API 地址与协议一般不会变。项目里有一份
+    <code>docs/channels.md</code> 记录着各家地址、模型名与最后核对日期，
+    也会定期跟着更新。
+  </p>
+</div>
+
+<h3>3.4 思考强度：三档，默认关掉</h3>
+
+<p>
+  弹窗里有一个「思考强度」下拉框，只有三个选项。<b>默认是「关闭」，建议保持</b>。
+</p>
+
+<table>
+  <thead><tr><th style="width:16%">档位</th><th style="width:30%">给厂商发什么</th><th>什么时候选它</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>关闭</b>（默认）</td>
+      <td>DeepSeek 发 <code>thinking:disabled</code>；通义发 <code>enable_thinking:false</code>；
+          其他一律<b>不发任何参数</b></td>
+      <td>几乎总是选它。答题是模式化任务，不需要推理 ——
+          实测一次请求从 <b>361 token 降到 133</b>，又快又省</td>
+    </tr>
+    <tr>
+      <td>低</td>
+      <td><code>reasoning_effort: low</code></td>
+      <td>题目偏难、明显感觉答得不准时，可以试试</td>
+    </tr>
+    <tr>
+      <td>高</td>
+      <td>DeepSeek <code>high</code>；通义 <code>xhigh</code>；Kimi <code>max</code></td>
+      <td>基本不需要。每道题都会先烧掉一大段推理 token，账单会明显变高</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="box ok">
+  <div class="t">诚实说明：只有「关闭」是实测过的</div>
+  <p>
+    三档里<b>只有「关闭」在本项目一直被真实使用</b>（那是升级前的唯一行为）。
+    「低」「高」的参数是照各家官方文档写的，<b>没有在真实题库上验证过</b>：
+    有的服务商会直接拒绝不认识的参数。真被拒绝时程序会
+    <b>自动摘掉参数重试一次</b>并把原因写进日志，不会让答题功能整个失效 ——
+    但既然没必要多花钱，默认关着就好。
+  </p>
+  <p>
+    另外 <b>Kimi K3 是恒思考模型，关不掉</b>。选「关闭」不会报错，但它仍然会推理。
+    弹窗里那句"当前实际发送"会如实告诉你这一档到底发了什么。
   </p>
 </div>
 
