@@ -472,6 +472,63 @@ function checkUserEntryPoints() {
     problemsHere.push('README.md 里没有指向 releases/latest/download/' + MANUAL_PDF_ASSET +
       ' 的 PDF 下载入口 —— 走附件通道才不会赌渲染器（附件名必须是纯 ASCII）');
   }
+
+  // 5) 说明书的「四问结构」不许漏
+  //
+  // 这份说明书的全部价值就在那四问上：读者卡住几乎从来不是"不知道要装扩展"，
+  // 而是"不知道自己看到的那一屏算不算对"。所以每一处动手点都必须四问齐全 ——
+  // 漏掉"怎样才算对"这一行，读者就只能靠猜，而这是**看不出来**的（页面照样渲染）。
+  //
+  // 只数总数没用：四问是四行，光看「怎样才算对」出现几次，漏一个也发现不了
+  // —— 必须逐个检查每一张表里的四个关键词。
+  if (exists(MANUAL_ONLINE)) {
+    var man = read(MANUAL_ONLINE);
+    var blocks = man.split('class="do"').slice(1);
+    if (!blocks.length) {
+      problemsHere.push(MANUAL_ONLINE + ' 里一个"四问表"（class="do"）都没有 —— ' +
+        '说明书改版时把担架段删了？读者就没法判断"做对了没有"了');
+    }
+    var FOUR = ['你会看到什么', '点哪里', '怎样才算对', '不对怎么办'];
+    blocks.forEach(function (blk, i) {
+      var cut = blk.indexOf('</table>');
+      var inner = cut >= 0 ? blk.slice(0, cut) : blk;
+      var lack = FOUR.filter(function (k) { return inner.indexOf(k) === -1; });
+      if (lack.length) {
+        problemsHere.push('说明书第 ' + (i + 1) + ' 个四问表缺少：' + lack.join('、') +
+          ' —— 四问少一问，读者就只能靠猜（页面不会报错，只能靠这条守卫）');
+      }
+    });
+  }
+
+  // 6) README 写的说明书页数必须与 PDF 实际页数一致
+  //
+  // 这条以前是"等下次有人发现"的：README 长期写着 13 页而 PDF 是 14 页，
+  // 后来又写成 14 页而 PDF 变成 20 页。页数会随内容变，**必须机器核对**。
+  //
+  // ⚠️ 只在 PDF 存在时才查 —— 缺 PDF 那件事上面第 1 条已经报过了，
+  // 这里再报一次只会让同一个故障出现两条信息。
+  if (exists(MANUAL_FILE)) {
+    var pdfText = fs.readFileSync(path.join(ROOT, MANUAL_FILE)).toString('latin1');
+    var realPages = (pdfText.match(/\/Type \/Page[^s]/g) || []).length;
+    // ⚠️ 这段踩过两次坑，别再改回去：
+    //   1) 不能写 `使用说明\.pdf\*{0,2}\s*\|...` —— 实际那格是
+    //      `**\`使用说明.pdf\`** | ...（反引号+星号+竖线），放行星号匹配不上；
+    //   2) 固定窗口也**不够** —— 从文件名往后数 40 字才刚够到「PDF 版**」，
+    //      那个「（20 页」的括号落在窗口外，于是照样静默通过。
+    //   改成：先定位**整行**（到换行符为止），再在这一行里找「N 页」。
+    var claim = null;
+    var at = readme.indexOf(MANUAL_FILE);
+    if (at >= 0) {
+      var nl = readme.indexOf('\n', at);
+      var line = readme.slice(at, nl < 0 ? readme.length : nl);
+      var cm = line.match(/（\s*(\d+)\s*页/);
+      if (cm) claim = cm[1];
+    }
+    if (claim && realPages && Number(claim) !== realPages) {
+      problemsHere.push('README 说说明书 ' + claim + ' 页，而 使用说明.pdf 实际是 ' +
+        realPages + ' 页 —— 改完说明书要跑 `npm run manual` 并同步这一处');
+    }
+  }
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
   else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
 }
