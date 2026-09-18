@@ -2633,6 +2633,56 @@
       return fallback;
     },
 
+    /**
+     * 作业/考试提交之后，页面会翻成一张**判分结果页**：
+     * 每道题下面多出「我的答案 / 正确答案 / 本题得分」。
+     *
+     * 为什么单列一条判据（现场故障）：`_isDocumentFrameFinished` 认的是
+     * `.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete`
+     * 和父层 wrapper 的「任务点已完成」文本 —— 这套标记是**课程章节页**的。
+     * 作业结果页往往只有 `.Py_answer` 那一族，于是四条都不命中，
+     * `_isQuizPassedOrFinished` 恒为 false → `_monitorQuizSubmit` 一直 hold →
+     * 25 秒后超时、整页重载、重新扫描、重新答题、重新提交。
+     * 用户看到的就是"题目一直扫描，AI 重复提交"。
+     *
+     * 三条判据**同时**成立才算完成，宁可漏判也不要误判
+     * （误判 = 把没交的卷当已完成，直接跳过这个任务点）：
+     *   ① 出现判分痕迹（我的答案/正确答案/得分/解析）
+     *   ② 题目控件已不可交互（input 全 disabled）或题目容器已消失
+     *   ③ 不含重做文案
+     */
+    _isQuizResultPageFinished: function (doc) {
+      try {
+        if (!doc || !doc.body) return false;
+        var text = textOf(doc.body);
+        if (!text) return false;
+        // ③ 重做文案一票否决：这是"没通过、要重做"，绝不能算完成
+        if (/未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text)) return false;
+
+        // ① 判分痕迹：学习通结果页的标志性结构
+        var hasGradeMark = false;
+        if (doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer')) {
+          hasGradeMark = true;
+        } else if (/我的答案|正确答案|本题得分|答案解析/.test(text)) {
+          hasGradeMark = true;
+        }
+        if (!hasGradeMark) return false;
+
+        // ② 已不可交互：题目区被结果区替换，或所有控件都 disabled
+        var containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox');
+        if (!containers.length) return true;
+
+        var controls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
+        if (!controls.length) return true;
+        for (var i = 0; i < controls.length; i++) {
+          if (!controls[i].disabled) return false; // 还有能点的 → 结果页尚未落地
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
     _isDocumentFrameFinished: function (doc) {
       try {
         if (!doc) return false;
@@ -6949,6 +6999,9 @@
     _isQuizPassedOrFinished: function (preferredDoc) {
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
       try {
+        // 判分结果页优先于 frame 标记判断：作业/考试结果页两套标记都没有，
+        // 只有 .Py_answer 那一族（见 _isQuizResultPageFinished 的说明）。
+        if (doc && this._isQuizResultPageFinished(doc)) return true;
         if (doc && this._isDocumentFrameFinished(doc)) return true;
         var text = doc && doc.body ? textOf(doc.body) : '';
         if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|通过标准|恭喜/.test(text)) return true;
@@ -7924,10 +7977,56 @@
     _clickOptionItem: function (item, inputType) {
       if (!item) return;
       var doc = item.ownerDocument || document;
-      var qid = item.getAttribute && item.getAttribute('qid');
+      // qid 的**三级回退**（历史上只认第一级，于是作业页永远写不进隐藏域）。
+      //
+      //   ① 选项自身带 qid —— 章节测验的 <li qid="..."> 走这条
+      //   ② 向上找最近的 [qid] 祖先 —— 作业/考试页把 qid 挂在容器
+      //      `.Cy_TItle[qid]` 上，选项 <li> 自己是干净的
+      //   ③ `_getQuestionIdFromElement` —— 它还会试 `.singleQuesId[data]`、
+      //      `#answer{qid}` 的 id、以及 `.num_option` 徽标的 name
+      //
+      // 为什么必须回退：写隐藏域那一段原本要求 `qid && badge` **同时**成立，
+      // 而真实作业页两样都没有（无徽标、<li> 无 qid）。于是点击动作照做、
+      // 日志照打 "clicked option"，但 #answer{qid} 一直是空串 ——
+      // `_getQuizQuestionFilledValue` 返回 ''，`_areQuizAnswersFilled` 判 false，
+      // 整卷永不提交。表现就是"AI 扫到题、点了选项、然后什么都不发生"。
+      var qid = String((item.getAttribute && item.getAttribute('qid')) || '').trim();
+      if (!qid && item.closest) {
+        var qidHost = item.closest('[qid], [data-qid]');
+        qid = String((qidHost && qidHost.getAttribute && (qidHost.getAttribute('qid') || qidHost.getAttribute('data-qid'))) || '').trim();
+      }
+      if (!qid) qid = String(this._getQuestionIdFromElement(item) || '').trim();
+
       var badge = item.querySelector ? item.querySelector('.num_option, .num_option_dx') : null;
       var rawValue = badge ? String(badge.getAttribute('data') || textOf(badge)).trim() : '';
       var letter = /^[A-F]$/i.test(rawValue) ? rawValue.toUpperCase() : rawValue;
+      // 没有徽标时（作业/考试页的常态）用 _inferOptionLetter 取字母：
+      // 它已经支持 input.value / aria-label / 文本前缀 "A." 等来源。
+      // 拿不到就留空 —— 宁可让上层判"未填写"，也不要往隐藏域写错答案。
+      if (!letter) {
+        var idx = -1;
+        try {
+          var siblings = item.parentElement ? Array.from(item.parentElement.children) : [];
+          idx = siblings.indexOf(item);
+        } catch (eIdx) {}
+        letter = String(this._inferOptionLetter(item, idx < 0 ? 0 : idx) || '');
+      }
+
+      // 控件自身的 value 才是隐藏域的**权威值**，字母只是"认选项"用的。
+      //
+      // 判断题就是典型：选项文本是 `A. 正确` / `B. 错误`，字母能推出 A/B，
+      // 但站点在隐藏域里要的是 `true` / `false`（radio 的 value），
+      // 写字母进去会让平台收到一个它不认识的答案 —— 判分必然错。
+      // 所以：控件 value 是 `true/false` 这种非字母语义值时，以它为准。
+      var controlValue = '';
+      try {
+        var ctrl = item.querySelector ? item.querySelector('input[type="radio"], input[type="checkbox"], input[type="hidden"]') : null;
+        if (!ctrl && item._optionInput) ctrl = item._optionInput;
+        if (ctrl) controlValue = String(ctrl.value || ctrl.getAttribute('value') || '').trim();
+      } catch (eCtrl) {}
+      if (controlValue && !/^[A-F]$/i.test(controlValue)) {
+        letter = controlValue;
+      }
 
       // ① 点击：先让站点自己的 handler 跑完
       var input = item.querySelector ? item.querySelector('input[type="' + inputType + '"]') : null;
@@ -7961,6 +8060,13 @@
       }
 
       // ② 写回终态
+      //
+      // 拆成两段的原因（原本 `qid && badge` 一个大 if 把两件事焊死了）：
+      //   - 徽标那组操作（.choice{qid} 的 class、aria）**只在有 badge 时**做，
+      //     因为它就是给徽标用的；
+      //   - 写隐藏域 #answer{qid} **只要有 qid 就必须做** —— 那是平台提交时读的字段，
+      //     也是插件自己判"填没填"的依据。作业/考试页没有徽标，
+      //     焊在一起就等于"点了选项但隐藏域永远空着"，整卷永不提交。
       if (qid && badge) {
         var group = '.choice' + qid;
         if (inputType === 'radio') {
@@ -7978,6 +8084,8 @@
           // 复选**只加不减**：取消是 _clearMultiChoiceSelection 的职责。
           badge.classList.add('check_answer_dx');
         }
+      }
+      if (qid) {
         item.setAttribute('aria-checked', 'true');
         item.setAttribute('aria-pressed', 'true');
 
@@ -7988,14 +8096,33 @@
             // 隐藏域必须是**全部已选项**的并集，而不是刚点的那一个字母 ——
             // 否则多选提交上去永远只有最后一项。
             value = '';
-            Array.from(doc.querySelectorAll(group)).forEach(function (node) {
-              if (node.classList.contains('check_answer_dx')) {
-                value += String(node.getAttribute('data') || '').trim();
-              }
-            });
+            if (badge) {
+              Array.from(doc.querySelectorAll('.choice' + qid)).forEach(function (node) {
+                if (node.classList.contains('check_answer_dx')) {
+                  value += String(node.getAttribute('data') || '').trim();
+                }
+              });
+            } else {
+              // 无徽标（作业/考试页）：只能按"本组当前勾选的 input"汇总。
+              // 先清空再按勾选态重算，避免把上一轮遗留的字母一起带上。
+              var picked = [];
+              try {
+                var ipts = Array.from(doc.querySelectorAll('input[type="' + inputType + '"][name="answer' + qid + '"]'));
+                ipts.forEach(function (ip, order) {
+                  if (!ip.checked) return;
+                  var l = String(ip.value || ip.getAttribute('value') || '').trim();
+                  if (!/^[A-F]$/i.test(l)) l = String.fromCharCode(65 + order);
+                  picked.push(l.toUpperCase());
+                });
+              } catch (ePick) {}
+              picked.sort();
+              value = picked.join('');
+            }
           }
-          hidden.value = value;
-          this._dispatchQuizInputEvents(hidden);
+          if (value) {
+            hidden.value = value;
+            this._dispatchQuizInputEvents(hidden);
+          }
         }
       }
 

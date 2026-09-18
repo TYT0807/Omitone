@@ -343,6 +343,14 @@ function buildChapterQuizInnerHtml() {
  * `.Cy_ulTop li`（只有文本、没有 input），点下去就是空点，站点什么也收不到。
  *
  * 题型照用户实测：单选(4 选项) × 1 + 多选(4 选项) × 2 + 判断 × 1。
+ *
+ * ⚠️ **选项 <li> 上故意不带 qid、不带 .num_option 徽标** —— 这是真实作业页的样子，
+ * 也正是 e2e 用来守住的两个风险点：
+ *   ① qid 只在容器 `.Cy_TItle[qid]` 上。`_clickOptionItem` 若只认
+ *      `item.getAttribute('qid')`，就拿不到 qid → 不写 `#answer{qid}` →
+ *      插件判"未填写" → 整卷永不提交（现场症状：AI 点了选项然后什么都不发生）。
+ *   ② 判断字母只能从文本前缀 `A. ` 或 `input.value` 推（真实页没有徽标）。
+ *      对照 cxmooc-tools：考试选择题的字母就是从 `li` 文本前缀取的。
  */
 function buildExamWorkHtml() {
   function textList(list) {
@@ -389,7 +397,55 @@ function buildExamWorkHtml() {
     '<title>作业 - 学习通</title></head><body>' +
     '<div class="Cy_TItle1">一、题目</div>' +
     '<div id="Zyapl">\n' + [q1, q2, q3, q4].join('\n') + '\n</div>' +
-    '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>' +
+    '<div class="subBtn"><button id="submitBtn" type="button" class="btnSubmit">提交</button></div>' +
+    // ⚠️ 这两段此前**完全缺失**，于是"提交 → 判定完成"整条链在 e2e 里从没被走过。
+    //
+    // 补齐的原因（现场现象：AI 反复扫描题目、重复提交）：
+    //   ① `_shouldAutoSubmitQuiz` 认提交入口只看三样 ——
+    //      `window.btnBlueSubmit` / 标题含「章节测验」/ `.btnSubmit,.bluebtn,.workBtnIndex,#form1`。
+    //      真实作业页（`/mooc-ans/work/`）走的是**第一样**：站点在自己页面上挂了同名函数。
+    //      mock 页原先三样都没有 → `auto submit skipped` → 插件永不提交，只会重扫重答。
+    //   ② 真实站点提交时会弹自己的确认框（`#workpop` + `#popok`），
+    //      page.js 有一段专门的"1.2 秒后点 #popok"逻辑，同样从没被覆盖过。
+    //
+    // 所以这里照真实结构补齐：`window.btnBlueSubmit` 弹确认框，点 `#popok` 才真正提交。
+    //
+    // 提交后换成**判分结果页**（不是简单的「任务点已完成」横幅）：
+    // 真实结果页每道题下面多出「我的答案 / 正确答案 / 解析」，并且题目控件全部 disabled。
+    // 它既不命中 `.testTit_status_complete`，也不命中父层 wrapper 的「任务点已完成」——
+    // 这正是 `_isQuizResultPageFinished` 要守的场景。
+    // 若这里偷懒只放一条「任务点已完成」横幅，那条新判据就永远测不到。
+    '<script>' +
+    'window.btnBlueSubmit = function(){' +
+    '  if (window.__submitted) return;' +
+    '  var pop = document.createElement("div");' +
+    '  pop.id = "workpop"; pop.style.display = "block";' +
+    '  pop.innerHTML = \'<div id="popcontent">确认提交本次作业？</div>\' +' +
+    '    \'<a id="popok" href="javascript:void(0)">确定</a>\';' +
+    '  document.body.appendChild(pop);' +
+    '  document.getElementById("popok").addEventListener("click", function(){' +
+    '    window.__submitted = true;' +
+    // 判分结果页：容器还在（.Cy_TItle 仍在，走到"控件是否 disabled"那一条），
+    // 每题补 .Py_answer，所有控件 disabled。
+    '    Array.from(document.querySelectorAll("input[type=radio],input[type=checkbox]"))' +
+    '      .forEach(function(i){ i.disabled = true; });' +
+    '    Array.from(document.querySelectorAll(".Cy_TItle[qid]")).forEach(function(q,i){' +
+    '      var d = document.createElement("div");' +
+    '      d.className = "Py_answer clearfix";' +
+    '      d.innerHTML = \'<span class="fl">我的答案：A</span>\' +' +
+    '        \'<span class="fr">正确答案：A</span>\';' +
+    '      q.appendChild(d);' +
+    '    });' +
+    '    var s = document.createElement("div");' +
+    '    s.className = "answerScore";' +
+    '    s.textContent = "本次作业得分 100 分";' +
+    '    document.body.appendChild(s);' +
+    '    if (pop.parentNode) pop.parentNode.removeChild(pop);' +
+    '  });' +
+    '};' +
+    // 直接点"提交"按钮也走同一条路（覆盖 _findButtonByText 那条兜底分支）
+    'document.getElementById("submitBtn").addEventListener("click", function(){ window.btnBlueSubmit(); });' +
+    '</script>' +
     '</body></html>';
 }
 
@@ -1102,6 +1158,94 @@ SCENARIOS.push({
     );
     check('多选点 A、C：确实有 2 个 checkbox 被选中',
       multi.clicked === 2 && multi.checked === 2, JSON.stringify(multi));
+  }
+});
+
+/**
+ * ---- 1d. 作业/考试页：点完选项后 `#answer{qid}` **必须**被写上 ----
+ *
+ * 这一条盯的是一个曾经静默的洞（现场症状：AI 扫到题、点了选项，然后什么都不发生）：
+ * `_clickOptionItem` 写隐藏域那一段原本要求 `qid && badge` 同时成立，
+ * 而真实作业页（以及这个 mock）两样都没有 ——
+ * qid 只在容器 `.Cy_TItle[qid]` 上，选项 `<li>` 是干净的；也没有 `.num_option` 徽标。
+ * 于是点击照做、日志照打 "clicked option"，但 `#answer{qid}` 一直是空串，
+ * `_areQuizAnswersFilled` 判 false，整卷永不提交。
+ *
+ * 断言的是**行为**（隐藏域的值），不是实现细节（不查 `_optionInput` 之类的内部字段）。
+ */
+SCENARIOS.push({
+  name: '作业页选项写入隐藏答案域',
+  path: '/exam-work',
+  run: async function (ctx) {
+    var app = 'window._xxtApp';
+
+    // 前提：mock 页必须是"不友好"的那种（qid 在容器上、无徽标）——
+    // 否则这条断言测的是"好走的那条路"，等于没测。
+    var shape = await ctx.client.evaluate(
+      '(function(){var li=document.querySelector(".Cy_ulTop li");' +
+      'return {liQid:li?li.getAttribute("qid"):null,' +
+      'hostQid:(function(){var h=li?li.closest("[qid]"):null;return h?h.getAttribute("qid"):null;})(),' +
+      'badges:document.querySelectorAll(".num_option, .num_option_dx").length};})()'
+    );
+    check('前提：选项 <li> 上不带 qid（qid 只在容器上），且无 .num_option 徽标',
+      !shape.liQid && !!shape.hostQid && shape.badges === 0, JSON.stringify(shape));
+
+    // 单选：点 A → #answer5001 必须是 "A"
+    var single = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var q=a._extractQuestions(null)[0];' +
+      'var n=a._applyChoiceAnswer(q._element,"A","single");' +
+      'var h=document.getElementById("answer5001");' +
+      'return {clicked:n,hidden:h?h.value:null,' +
+      'filled:a._getQuizQuestionFilledValue(null,q)};})()'
+    );
+    check('单选点 A：隐藏域 #answer5001 被写成 A（不是点了却留空）',
+      single.clicked === 1 && single.hidden === 'A', JSON.stringify(single));
+    check('单选点 A：插件自己读出来的填写值也是 A',
+      single.filled === 'A', JSON.stringify(single));
+
+    // 多选：点 C、D → #answer5002 必须是 "CD"（并集、升序）
+    var multi = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var q=a._extractQuestions(null)[1];' +
+      'var n=a._applyChoiceAnswer(q._element,["C","D"],"multiple");' +
+      'var h=document.getElementById("answer5002");' +
+      'return {clicked:n,hidden:h?h.value:null,' +
+      'filled:a._getQuizQuestionFilledValue(null,q)};})()'
+    );
+    check('多选点 C、D：隐藏域 #answer5002 被写成 CD（并集，不是只留最后一项）',
+      multi.clicked === 2 && multi.hidden === 'CD', JSON.stringify(multi));
+
+    // 判断：点"正确" → #answer5004 必须是 "true"
+    var judge = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var q=a._extractQuestions(null)[3];' +
+      'var n=a._applyChoiceAnswer(q._element,"正确","judge");' +
+      'var h=document.getElementById("answer5004");' +
+      'return {clicked:n,hidden:h?h.value:null,' +
+      'filled:a._getQuizQuestionFilledValue(null,q)};})()'
+    );
+    check('判断题点"正确"：隐藏域 #answer5004 被写成 true',
+      judge.clicked === 1 && judge.hidden === 'true', JSON.stringify(judge));
+
+    // 把第 3 题（index 2，第二个多选）也点上 —— 上面只点了 0/1/3，
+    // 漏填一题会让下面那条"整卷填满"的守卫失败，那是测试自己的锅，不是产品。
+    var q3 = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var q=a._extractQuestions(null)[2];' +
+      'var n=a._applyChoiceAnswer(q._element,["A","B"],"multiple");' +
+      'var h=document.getElementById("answer5003");' +
+      'return {clicked:n,hidden:h?h.value:null};})()'
+    );
+    check('再点第 3 题：隐藏域 #answer5003 被写成 AB',
+      q3.clicked === 2 && q3.hidden === 'AB', JSON.stringify(q3));
+
+    // 反向守卫：整卷四题都填过之后，_areQuizAnswersFilled 必须为真 ——
+    // 它正是 _quizReadyToSubmit 的来源；它恒 false 就是"永不提交"。
+    var allFilled = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var qs=a._extractQuestions(null);' +
+      'return {filled:qs.length?qs.map(function(q){return a._getQuizQuestionFilledValue(null,q);}):[],' +
+      'ok:a._areQuizAnswersFilled(null,qs,{requireThisRun:false})};})()'
+    );
+    check('四题都点过之后，_areQuizAnswersFilled 为真（否则整卷永不提交）',
+      allFilled.ok === true && allFilled.filled.every(function (v) { return !!v; }),
+      JSON.stringify(allFilled));
   }
 });
 
@@ -2764,6 +2908,97 @@ SCENARIOS.push({
     check('开关关闭后不提前结束', off.gate === false, JSON.stringify(off));
   }
 });
+
+/** ---- 1d. 作业页提交：提交后必须认出"已完成"，不能一直等下去 ---- */
+SCENARIOS.push({
+  name: '作业页提交后认出已完成',
+  path: '/exam-work',
+  run: async function (ctx) {
+    var app = 'window._xxtApp';
+
+    // 走**完整的真实链路**，不手填绕过前置闸门。
+    // `_maybeSubmitQuiz` 在找提交按钮之前有四道闸门（总开关 / 无已知错答 / 答案填全 /
+    // `_quizReadyToSubmit` 且 workKey 匹配），手填 DOM 只能满足第一道，
+    // 于是在 8466 行就返回 false —— 那样测到的是"没走通"，不是"提交判定坏了"。
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+    await ctx.client.evaluate(
+      app + '.configs = Object.assign({}, ' + app + '.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    // 提交前必须判为"未完成" —— 否则这个守卫恒真，等于没测
+    var beforeSubmit = await ctx.client.evaluate(
+      '(function(){return {finished:' + app + '._isQuizPassedOrFinished(null),' +
+      'auto:' + app + '._shouldAutoSubmitQuiz(null)};})()'
+    );
+    check('提交前不算已完成（守卫不是恒真）', beforeSubmit.finished === false,
+      JSON.stringify(beforeSubmit));
+    // 这一条盯的是"插件认不认得出这个页面的提交入口" ——
+    // 作业页原先三样判据都不满足，`auto submit skipped`，永远不提交、只重扫。
+    check('作业页被认出"可以自动提交"（btnBlueSubmit / .btnSubmit / #form1 任一）',
+      beforeSubmit.auto === true, JSON.stringify(beforeSubmit));
+
+    // 跑真实答题链：抠题 → 问模型 → 回填 → 自动提交
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate(app + '._handleQuiz(null); true');
+    var gotRequest = await waitFor(ctx.client,
+      'window._xxtApp._quizReadyToSubmit === true', 20000);
+    check('作业页答题链真的问到了模型并填好（前置条件成立）',
+      gotRequest === true && ctx.mock.requests.length > before,
+      'readyToSubmit=' + gotRequest + ' 请求数 +' + (ctx.mock.requests.length - before));
+
+    // 提交确认框（#workpop + #popok）要被点到。真实站点/现场就是卡在这一步 ——
+    // 点不到就永远停在 `waiting quiz submit result`，然后整页重扫、重复答题。
+    var confirmed = await waitFor(ctx.client,
+      'window.__submitted === true', 15000);
+    check('站点确认框（#workpop/#popok）被点到，页面真的提交了', confirmed === true);
+
+    var afterSubmit = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';return {' +
+      'finished:a._isQuizPassedOrFinished(null),' +
+      'docFinished:a._isDocumentFrameFinished(document),' +
+      'resultPage:a._isQuizResultPageFinished(document),' +
+      // 关键：结果页**不**走 .testTit_status_complete / 「任务点已完成」那条老路 ——
+      // 它只有 .Py_answer 那一族 + 控件 disabled。所以 docFinished 应当为 false，
+      // 而新判据 resultPage 为 true。这两条一起证明"新判据确实在干活"。
+      'legacyMark:!!document.querySelector(".testTit_status_complete")||/任务点已完成/.test(document.body.innerText||""),' +
+      'pyAnswer:document.querySelectorAll(".Py_answer").length,' +
+      'disabled:Array.from(document.querySelectorAll("input[type=radio],input[type=checkbox]")).every(function(i){return i.disabled;}),' +
+      'text:(document.body.innerText||"").slice(0,120)};})()'
+    );
+    check('提交后页面确实是"判分结果页"（.Py_answer 出现 + 控件全 disabled），且不带旧标记',
+      afterSubmit.pyAnswer > 0 && afterSubmit.disabled === true && afterSubmit.legacyMark === false,
+      JSON.stringify(afterSubmit));
+    check('旧判据（_isDocumentFrameFinished）对结果页确实认不出来 —— 所以新判据不是多余的',
+      afterSubmit.docFinished === false, JSON.stringify({ docFinished: afterSubmit.docFinished }));
+    check('提交后判定为已完成（不再无限等待）', afterSubmit.finished === true,
+      JSON.stringify(afterSubmit));
+
+    // 这条是"不再重复提交"的核心：monitor 应当在认出完成后立刻收尾。
+    // 没修之前这里会返回 true（一直 hold），页面上就表现为"重扫 → 重答 → 重交"。
+    var monitored = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';a._quizSubmitPending=true;a._quizSubmitStartedAt=Date.now();' +
+      'var holding=a._monitorQuizSubmit(null);' +
+      'return {holding:holding,pending:a._quizSubmitPending,answered:a._quizAnswered};})()'
+    );
+    check('认出已完成之后不再继续 hold（否则会重扫重答）',
+      monitored.holding === false && monitored.pending === false && monitored.answered === true,
+      JSON.stringify(monitored));
+  }
+});
+
 
 /**
  * ---- 对照：500 仍然要进 45 秒退避 ----

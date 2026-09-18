@@ -375,6 +375,38 @@
     });
   }
 
+  /**
+   * 构造一个带 HTTP 状态码的错误。
+   *
+   * ⚠️ 带上 status 是为了让上层能分清「永久错误」和「可以重试的错误」——
+   * 之前所有失败都走同一个 throw，上层一律当成网络故障，见 httpErrorIsPermanent 的说明。
+   */
+  function makeHttpError(prefix, response) {
+    const status = response ? response.status : undefined;
+    const err = new Error(
+      prefix + ' request failed (' + (status || 'network') + '): ' +
+      String((response && (response.text || response.error)) || '').slice(0, 300)
+    );
+    err.httpStatus = status;
+    return err;
+  }
+
+  /**
+   * 判断一个 HTTP 状态码是不是「重试也没用」的永久错误。
+   *
+   * 为什么必须区分（实测踩出来的，不是推断）：
+   *   401 / 403 / 404 通常是「API Key 填错、没权限、模型名写错」，重试一万次也一样。
+   *   而上层过去把它们一律当成网络故障 → 写 apiConnectionFailed →
+   *   page.js 设 45 秒退避且每次续期。用户的真实体验是：
+   *   **填错 Key 之后插件表现为"卡死、整卷跳过"，而不是告诉他 Key 错了。**
+   *
+   * 429（限流）除外 —— 等一会儿是真的能恢复，退避对它恰恰是正确的处理。
+   * 5xx 是服务端自己的事，也可能恢复，同样归到可重试。
+   */
+  function httpErrorIsPermanent(status) {
+    return typeof status === 'number' && status >= 400 && status < 500 && status !== 429;
+  }
+
   async function callOpenAICompatibleAPI(config, questions) {
     const url = buildOpenAICompatibleUrl(config.apiUrl);
     const messages = [
@@ -446,7 +478,7 @@
           continue;
         }
       }
-      throw new Error(`API request failed (${response.status || 'network'}): ${errText}`);
+      throw makeHttpError('API', response);
     }
     throw new Error('API request failed after parameter retries');
   }
@@ -468,7 +500,7 @@
         messages: [{ role: 'user', content: PROMPT.buildUserPrompt(questions) }]
       })
     }, 120000);
-    if (!response.success) throw new Error(`Claude request failed (${response.status || 'network'}): ${response.text || response.error || ''}`);
+    if (!response.success) throw makeHttpError('Claude', response);
     const content = (((response.data || {}).content || [])[0] || {}).text || '';
     return parseLLMResponse(content);
   }
@@ -485,7 +517,7 @@
         generationConfig: { temperature: 0.1, maxOutputTokens: config.maxTokens || 8192 }
       })
     }, 120000);
-    if (!response.success) throw new Error(`Gemini request failed (${response.status || 'network'}): ${response.text || response.error || ''}`);
+    if (!response.success) throw makeHttpError('Gemini', response);
     const parts = ((((response.data || {}).candidates || [])[0] || {}).content || {}).parts || [];
     return parseLLMResponse(parts.map((part) => part && part.text ? part.text : '').join('\n').trim());
   }
@@ -508,6 +540,19 @@
         appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200) });
       } catch (error) {
         lastError = error && error.message ? error.message : String(error);
+
+        // 永久错误（401 Key 无效 / 403 无权限 / 404 模型名错）：**重试没有意义**，
+        // 更不能写 apiConnectionFailed —— 那会让 page.js 进入 45 秒退避循环，
+        // 把"配置填错了"伪装成"网络连不上、插件卡死"。
+        // 这里直接跳出重试，原样把服务商的报错返回给用户去看。
+        if (httpErrorIsPermanent(error && error.httpStatus)) {
+          appendRuntimeLog('error', 'llm_request rejected (permanent)', {
+            status: error.httpStatus,
+            error: lastError.slice(0, 300)
+          });
+          return { success: false, error: lastError, permanentError: true };
+        }
+
         lastWasNetwork = true;
         appendRuntimeLog('warn', 'llm request error' + (attempt === 0 ? ', retrying' : ''), { error: lastError.slice(0, 300) });
       }
