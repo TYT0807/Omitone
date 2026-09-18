@@ -25,6 +25,10 @@ const DEFAULTS = {
   apiConnectionFailed: false,
   model: "deepseek-v4-flash",
   captchaModel: "",
+  // 视觉（题目配图）：默认全关。图片计费远高于文本，不能替用户默认花钱。
+  visionEnabled: false,
+  visionModel: "",
+  visionBudgetPerChapter: 30,
   // 思考强度：'off'（默认）/ 'low' / 'high'。参数映射的唯一真源是 libs/thinking.js。
   thinkingLevel: "off"
 };
@@ -83,6 +87,9 @@ const els = {
   apiKey: $("apiKey"),
   model: $("model"),
   captchaModel: $("captchaModel"),
+  visionEnabled: $("visionEnabled"),
+  visionModel: $("visionModel"),
+  visionBudgetPerChapter: $("visionBudgetPerChapter"),
   thinkingLevel: $("thinkingLevel"),
   thinkingHint: $("thinkingHint"),
   reset: $("reset"),
@@ -111,6 +118,8 @@ let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
 let enableQuizVal = true;
 let enableCaptchaVal = true;
+// 视觉（看图）默认关：图片计费远高于文本，不能替用户默认花钱
+let visionEnabledVal = false;
 let enableDiscussionVal = true;
 let restudyVal = false;
 let logPanelOpen = false;
@@ -312,6 +321,7 @@ function getApiFormConfig() {
     apiConnectionError: "",
     model: els.model.value.trim(),
     captchaModel: els.captchaModel.value.trim(),
+    visionModel: els.visionModel.value.trim(),
     thinkingLevel: els.thinkingLevel.value
   };
 }
@@ -364,6 +374,15 @@ async function saveToggleConfig(showToast = true) {
     autoNext: autoNextVal,
     enableQuiz: enableQuizVal,
     enableCaptcha: enableCaptchaVal,
+    visionEnabled: visionEnabledVal,
+    visionBudgetPerChapter: (function () {
+      // 空输入回落默认 30；非法值同样回落，绝不把 NaN 写进存储。
+      var raw = els.visionBudgetPerChapter.value.trim();
+      if (!raw) return 30;
+      var num = Number(raw);
+      if (!isFinite(num) || num < 0) return 30;
+      return Math.min(500, Math.floor(num));
+    })(),
     enableDiscussion: enableDiscussionVal,
     discussionReply: els.discussionReply.value.trim() || "1",
     systemPrompt: els.systemPrompt.value.trim(),
@@ -430,6 +449,7 @@ const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinet
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
 const updateQuiz = bindToggle(els.enableQuiz, () => enableQuizVal, (value) => { enableQuizVal = value; });
 const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (value) => { enableCaptchaVal = value; });
+const updateVision = bindToggle(els.visionEnabled, () => visionEnabledVal, (value) => { visionEnabledVal = value; });
 const updateDiscussion = bindToggle(els.enableDiscussion, () => enableDiscussionVal, (value) => { enableDiscussionVal = value; });
 const updateRestudy = bindToggle(els.restudy, () => restudyVal, (value) => { restudyVal = value; });
 
@@ -471,6 +491,7 @@ async function load() {
   autoNextVal = config.autoNext !== false;
   enableQuizVal = config.enableQuiz !== false;
   enableCaptchaVal = config.enableCaptcha !== false;
+  visionEnabledVal = config.visionEnabled === true;
   enableDiscussionVal = config.enableDiscussion !== false;
   restudyVal = !!config.restudy;
   updateMuted(mutedVal);
@@ -485,6 +506,7 @@ async function load() {
   updateAutoNext(autoNextVal);
   updateQuiz(enableQuizVal);
   updateCaptcha(enableCaptchaVal);
+  updateVision(visionEnabledVal);
   updateDiscussion(enableDiscussionVal);
   updateRestudy(restudyVal);
 
@@ -502,6 +524,8 @@ async function load() {
   els.apiKey.value = config.apiKey || "";
   els.model.value = config.model || "";
   els.captchaModel.value = config.captchaModel || "";
+  els.visionModel.value = config.visionModel || "";
+  els.visionBudgetPerChapter.value = config.visionBudgetPerChapter !== undefined ? String(config.visionBudgetPerChapter) : "30";
   // 思考强度：老配置里没有这个键，回落 'off' —— 也就是升级前的行为，不会突变。
   els.thinkingLevel.value = typeof OmitoneThinking !== "undefined"
     ? OmitoneThinking.normalizeLevel(config.thinkingLevel)

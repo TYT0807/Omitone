@@ -65,6 +65,38 @@
     apiConnectionError: '',
     model: 'deepseek-v4-flash',
     captchaModel: '',
+    // ===== 视觉模型（图片理解）=====
+    //
+    // 背景：题干和选项里经常带图片（数学图形、化学结构、电路图、表格截图、
+    // "看图选择"），而题目解析只读文本 —— 图片被静默丢掉，模型只能瞎猜。
+    //
+    // ⚠️ 但这东西**默认必须是关的**。原因不是技术风险，是钱：
+    // 一张 1000×800 的 PNG 编码成 base64 后约 200~400KB，按视觉模型计费
+    // 往往是纯文本的几十倍，而一道题可能带好几张图。
+    // 用户能接受"刷不了课"，不能接受"花了钱还是不行" ——
+    // 所以没明确开启、没设预算之前，一张图都不发。
+    visionEnabled: false,
+    // 发图时用哪个模型。留空则回落 captchaModel，再回落 model。
+    //
+    // 单独一个字段是必要的：主模型往往是为"便宜快"挑的文本模型（deepseek-chat
+    // 这类），它**不支持图片**，塞图进去要么 400 要么被忽略掉、
+    // 用户只会看到"开了却没用，但钱扣了"。所以这里必须能单独指定。
+    visionModel: '',
+    // 单题最多带几张图。默认 2 —— 超过这个数的题通常是"资料题"，
+    // 图多得离谱、收益却很低，不如直接放弃。
+    visionMaxImagesPerQuestion: 2,
+    // 单张图最大字节数（base64 之前的原始大小）。超过就**跳过不缩放**：
+    // 缩放需要 canvas 重编码，在页面上下文里既慢又容易踩跨域污染，
+    // 而且缩放后的图模型未必看得清。跳过并写日志，比偷偷发一张大图省钱。
+    visionMaxImageBytes: 400000,
+    // 每章视觉调用预算（次）。用完就停，直到进入下一章。
+    // 这是最重要的那道闸：即使配置写错、或者页面版式异常导致重复抓图，
+    // 也不可能无限发请求。用完时**必定**写一条 warn 日志，
+    // 绝不静默 —— "钱花了但不知道花在哪"是最不能接受的失败方式。
+    visionBudgetPerChapter: 30,
+    // 一次请求里最多打包几张图（把同一题的图合到一次请求，而不是一题一请求）。
+    // 合包能显著省钱：省掉重复的系统提示词与题干。
+    visionImagesPerRequest: 2,
     // 思考强度：'off'（默认，最省最快）/ 'low' / 'high'。
     //
     // ⚠️ 只有 'off' 是实测过的 —— 它就是本项目原来一直用的行为（DeepSeek 关思考）。
@@ -1139,7 +1171,15 @@
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
-          timereader: doc.querySelector('iframe[name="bookifame"][src*="timing"]')
+          timereader: doc.querySelector('iframe[name="bookifame"][src*="timing"]'),
+          // 纯 PDF / WPS 文档帧：既没有 #img.imglook（那不是图片型阅读），
+          // 也没有 swiper（那不是带音频的 PPT），只有 #panView / .pageNum。
+          //
+          // 以前这里没有这一项，于是这类帧在下面那行 `!(found.xxx || ...)` 里
+          // 直接 `continue` —— **永远不进入 OCS 调度**。
+          // 「有些微课 PDF/WPS 文档卡住没有任何动作」正是由此而来。
+          // 注意这一项必须放在 || 链的**最后**：它是兜底，不能抢走上面更明确的类型。
+          pagedDoc: (doc.getElementById && doc.getElementById('panView')) || doc.querySelector('.pageNum')
         };
       };
 
@@ -1150,8 +1190,13 @@
           var win = frame.contentWindow;
           var doc = appRef._safeWinDoc(win);
           var found = searchJobElement(frame);
-          if (!win || !found || !(found.videojs || found.read || found.chapterTest || found.hyperlink || found.pptWithAudio || found.timereader)) {
+          if (!win || !found || !(found.videojs || found.read || found.chapterTest || found.hyperlink || found.pptWithAudio || found.timereader || found.pagedDoc)) {
             continue;
+          }
+          // 纯文档帧还有一道闸：外层容器必须真的带任务点。
+          // 否则它只是页面上的说明性/预览性文档，接管它会白白占住调度。
+          if (!found.videojs && !found.read && !found.chapterTest && !found.hyperlink && !found.pptWithAudio && !found.timereader) {
+            if (!appRef._frameHasTaskPoint(doc)) continue;
           }
           var frameDataStr = (win.frameElement && win.frameElement.getAttribute('data')) || (((win.frameElement && win.frameElement.contentWindow) && win.frameElement.contentWindow.parent && win.frameElement.contentWindow.parent.frameElement && win.frameElement.contentWindow.parent.frameElement.getAttribute('data'))) || '{}';
           var frameData = this._safeJsonParse(frameDataStr, {});
@@ -1171,7 +1216,7 @@
           }
 
           var jobName = this._getChaoxingJobName(attachment);
-          var jobKind = found.videojs ? 'video' : (found.chapterTest ? 'quiz' : (found.read ? 'read' : (found.timereader ? 'timereader' : (found.pptWithAudio ? 'ppt-audio' : 'hyperlink'))));
+          var jobKind = found.videojs ? 'video' : (found.chapterTest ? 'quiz' : (found.read ? 'read' : (found.timereader ? 'timereader' : (found.pptWithAudio ? 'ppt-audio' : (found.hyperlink ? 'hyperlink' : 'document')))));
           var workType = this._getAttachmentWorkType(attachment);
           if (this._isDocumentFrameFinished(doc) || (jobKind === 'quiz' && this._isQuizPassedOrFinished(doc))) {
             workType = 'finished';
@@ -1209,7 +1254,7 @@
                 await self._handleQuiz(jobDoc);
               };
             }(this, doc);
-          } else if (found.read || found.pptWithAudio || found.timereader) {
+          } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
             if (!this.configs.enablePPT) {
               continue;
             }
@@ -1227,7 +1272,10 @@
                     jobid: targetJobId
                   });
                 };
-              }(this, frame, win, doc, jobName, attachment, found.read ? 'read' : (found.timereader ? 'timereader' : 'ppt-audio'));
+              }(this, frame, win, doc, jobName, attachment,
+                found.read ? 'read'
+                  : (found.timereader ? 'timereader'
+                    : (found.pptWithAudio ? 'ppt-audio' : 'document')));
             }
           } else if (found.hyperlink) {
             if (!this.configs.enableHyperlink) {
@@ -2470,15 +2518,65 @@
       }
       return false;
     },
+    // 文档帧自己身上有没有「任务点」证据。
+    //
+    // 为什么不能只看 _hasTaskPoint()：那个方法只扫主文档 + 左侧章节目录，
+    // 而文档任务点在真实页面里是**挂在 iframe 外层包裹容器上**的
+    // （`<div class="ans-attach-ct ans-job-...">` 里再套 iframe），
+    // 主文档里往往只剩一个类名被改写过、或干脆没有标记。
+    //
+    // 这里沿 frameElement 往上找 4 层，看包裹容器上有没有任务点痕迹。
+    // 找不到就返回 false —— 调用方按「没有任务点」处理，让它走跳过逻辑，
+    // 而不是把它当成一个永远做不完的任务接管住。
+    _frameHasTaskPoint: function (doc) {
+      try {
+        if (!doc || !doc.defaultView) return false;
+        var node = doc.defaultView.frameElement;
+        for (var i = 0; i < 4 && node; i++) {
+          var cls = String(node.className || '');
+          if (/(^|\s)(ans-job-icon|ans-job-finished|ans-job-num|taskPoint)(\s|$)/.test(cls)) return true;
+          if (/(^|\s)ans-job-/.test(cls)) return true;
+          if (node.getAttribute && (node.getAttribute('jobid') || node.getAttribute('_jobid'))) return true;
+          var dataText = String(node.getAttribute ? (node.getAttribute('data') || '') : '');
+          if (dataText && /"job"\s*:\s*true/i.test(dataText)) return true;
+          if (textOf(node).indexOf('任务点') !== -1) return true;
+          node = node.parentElement;
+        }
+      } catch (e) {}
+      return false;
+    },
+
     _locateDocumentTask: function (preferredDoc) {
       var self = this;
       var startDoc = this._getMainDocument() || document;
 
+      // 没有任务点的文档不值得开一条长任务。
+      //
+      // 这是「有些微课 PDF/WPS 文档没有任务点时会卡住」的正解：
+      // 以前只要 DOM 结构像文档（有 #panView / .pageNum），就无条件接管，
+      // 于是 tick 每轮都在这里 `return true`，永远轮不到 tail 的
+      // `_isTextOnly() && !_hasTaskPoint() → nextUnit()` 跳过分支。
+      // 页面表现就是「一动不动，日志也不更新」。
+      //
+      // 判定顺序有讲究：
+      //   1. 外层容器明确写了任务点 → 接管（正常路径，绝不能误伤）
+      //   2. 主文档/章节目录有任务点   → 接管（老逻辑）
+      //   3. 两者都没有               → 不接管，交回 tick 走跳过
+      function worthHandling(doc) {
+        if (self._frameHasTaskPoint(doc)) return true;
+        if (self._hasTaskPoint()) return true;
+        return false;
+      }
+
       function buildTask(doc) {
         if (!doc) return null;
         try {
-          if (doc.getElementById && doc.getElementById('panView')) return self._buildPagedDocumentTask(doc);
-          if ((doc.getElementById && doc.getElementById('markDataStr')) || doc.querySelector('.pageNum')) return self._buildScrollDocumentTask(doc);
+          if (doc.getElementById && doc.getElementById('panView')) {
+            return worthHandling(doc) ? self._buildPagedDocumentTask(doc) : null;
+          }
+          if ((doc.getElementById && doc.getElementById('markDataStr')) || doc.querySelector('.pageNum')) {
+            return worthHandling(doc) ? self._buildScrollDocumentTask(doc) : null;
+          }
         } catch (e) {}
         return null;
       }
@@ -2656,7 +2754,20 @@
           console.log('%c[Omitone] document done', 'color:#4CAF50');
           emitRuntimeLog('info', 'document done', { key: task.key });
           if (this._activeDocumentJobManaged) {
+            // ⚠️ 这里以前只 clear 状态就 return true。
+            //
+            // 后果：_runChaoxingReadJob 的 document 分支只在**页面自己出现
+            // finishJob** 时才 clear（见 'document-finishJob'），而大多数
+            // PDF/WPS 文档页根本没有这个函数；于是任务真的读完了、
+            // task.finished 也变真了，这个分支却只是把状态抹掉，
+            // **永远不推进下一节** —— 表现就是「文档显示已完成，但卡在这一章不动」。
+            //
+            // 正确做法：清完状态后，跟非托管路径一样推进。
             this._clearDocumentPendingState('document-done');
+            if (this.configs.autoNext) {
+              this._skipChainCount++;
+              this.nextUnit();
+            }
             return true;
           }
           this.nextUnit();
@@ -2690,6 +2801,227 @@
 
       task.scrollStep(task.totalPages);
       return true;
+    },
+
+    // ===== 视觉理解：把题目配图转成文字 =====
+    //
+    // 为什么只转文字、不直接把图交给答题模型：
+    //   答题链的系统提示词 + 题目文本是一个**每次都一样的长前缀**，DeepSeek 会把它
+    //   当作缓存单元按约 1/10 价计费（见 content.js logCacheUsage 的说明）。
+    //   一旦把每次都不同的图片塞进这个前缀，缓存立刻全部失效 ——
+    //   省下的那点「模型看图」的钱，会乘以十倍从输入侧漏出去。
+    //   所以图片走独立请求，只把结果文字拼进题干。
+
+    // 每章视觉调用计数（进了新章就清零，见 _resetVisionBudget）。
+    _visionUsedInChapter: 0,
+    _visionBudgetChapterKey: '',
+
+    /**
+     * 视觉预算闸门 —— 这是整个视觉功能里**最重要的安全阀**。
+     *
+     * 用户能接受「刷不了课」，不能接受「花了钱还是不行」。所以要保证：
+     * 无论配置写错、页面版式异常、还是某道题反复触发，都不可能无限发请求。
+     *
+     * 返回 true = 允许再发一次；false = 预算耗尽，必须停。
+     * 耗尽时**必定写一条 warn 日志**，绝不静默 —— 静默烧钱是最糟的失败方式。
+     */
+    _takeVisionBudget: function (chapterKey) {
+      if (!this.configs.visionEnabled) return false;
+      var key = String(chapterKey || 'unknown');
+      if (this._visionBudgetChapterKey !== key) {
+        // 换章即重置。不清零的话，一学期下来后面所有章节都用不了视觉。
+        this._visionBudgetChapterKey = key;
+        this._visionUsedInChapter = 0;
+      }
+      var cap = Number(this.configs.visionBudgetPerChapter);
+      if (!isFinite(cap) || cap < 0) cap = 0;
+      if (this._visionUsedInChapter >= cap) {
+        // 同一章只提醒一次，否则每道题刷一条，日志会被淹掉
+        if (this._visionBudgetWarnedKey !== key) {
+          this._visionBudgetWarnedKey = key;
+          emitRuntimeLog('warn', 'vision budget exhausted for this chapter, images will be ignored', {
+            used: this._visionUsedInChapter,
+            cap: cap,
+            chapter: key
+          });
+        }
+        return false;
+      }
+      this._visionUsedInChapter++;
+      return true;
+    },
+
+    /**
+     * 从题目容器里挑出「值得发给视觉模型」的图。
+     *
+     * 全部判据都是为了让每一张发出的图都可能真的值一次钱：
+     *   - 忽略小图：图标 / 分隔线 / 表情（通常 < 64px，模型看了也说不出东西）
+     *   - 忽略透明/空白图：装饰性资源
+     *   - 超过体积上限的直接跳过（配置项 visionMaxImageBytes）
+     *   - 张数上限 visionMaxImagesPerQuestion
+     *   - 去重：同一张图在题干和选项里各出现一次时只发一次
+     *
+     * 返回 dataURL 数组（可能为空数组，调用方必须处理空的情况）。
+     */
+    _collectQuestionImages: function (el) {
+      var out = [];
+      if (!el || !this.configs.visionEnabled) return out;
+      var maxImages = Number(this.configs.visionMaxImagesPerQuestion);
+      if (!isFinite(maxImages) || maxImages < 1) return out;
+      var maxBytes = Number(this.configs.visionMaxImageBytes);
+      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
+
+      var imgs = [];
+      try { imgs = Array.from(el.querySelectorAll('img')) } catch (e) { return out; }
+
+      var seen = {};
+      for (var i = 0; i < imgs.length && out.length < maxImages; i++) {
+        var img = imgs[i];
+        try {
+          // 尺寸闸门：未加载完的图 naturalWidth 为 0，直接跳过（发出去也是浪费）
+          var w = Number(img.naturalWidth || 0);
+          var h = Number(img.naturalHeight || 0);
+          if (w < 64 || h < 64) continue;
+          if (w * h > 4000000) continue; // 超过 400 万像素的图多半是整页扫描件，不划算
+
+          var src = String(img.currentSrc || img.src || '');
+          if (!src || src.indexOf('data:') === 0) {
+            // 已经是 dataURL（平台用 base64 内联时常见）—— 直接量长度判断体积
+            if (src.indexOf('data:image/') === 0) {
+              if (src.length > maxBytes * 1.4) continue;
+              if (!seen[src]) { seen[src] = 1; out.push(src); }
+            }
+            continue;
+          }
+          var abs = this._resolveImageUrl(img);
+          if (!abs || seen[abs]) continue;
+          seen[abs] = 1;
+          out.push(abs);
+        } catch (e2) {}
+      }
+      return out;
+    },
+
+    /**
+     * 把图片 URL 转成 dataURL 并做体积闸门，然后一次性交给视觉模型。
+     *
+     * 返回值：描述文字（string），拿不到就返回空串。
+     * **永远不会抛异常** —— 视觉只是锦上添花，绝不能因为它把整条答题链打断。
+     */
+    _describeQuestionImages: async function (urls, chapterKey) {
+      if (!urls || !urls.length) return '';
+      if (!this.configs.visionEnabled) return '';
+
+      var maxBytes = Number(this.configs.visionMaxImageBytes);
+      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
+      var maxPerReq = Number(this.configs.visionImagesPerRequest);
+      if (!isFinite(maxPerReq) || maxPerReq < 1) maxPerReq = 2;
+
+      // 先抓图（这一步不花钱）
+      var dataUrls = [];
+      for (var i = 0; i < urls.length && dataUrls.length < maxPerReq; i++) {
+        var url = String(urls[i] || '');
+        if (!url) continue;
+        var dataUrl = '';
+        if (url.indexOf('data:image/') === 0) {
+          dataUrl = url;
+        } else {
+          try {
+            var fetched = await bridgeSend('fetch_image', { url: url });
+            if (fetched && fetched.success && fetched.dataUrl) dataUrl = String(fetched.dataUrl);
+          } catch (eF) {}
+        }
+        if (!dataUrl) continue;
+        // 体积闸门：base64 后约是原始字节的 4/3，这里用 dataURL 长度近似判断
+        if (dataUrl.length > maxBytes * 1.4) {
+          emitRuntimeLog('info', 'vision image too large, skipped', { bytes: Math.round(dataUrl.length * 0.75) });
+          continue;
+        }
+        dataUrls.push(dataUrl);
+      }
+      if (!dataUrls.length) return '';
+
+      // 抓完图才扣预算。反过来会出现「预算扣了但图没抓到」的冤枉账。
+      if (!this._takeVisionBudget(chapterKey)) return '';
+
+      try {
+        var result = await bridgeSend('llm_vision', { images: dataUrls });
+        if (!result || !result.success) {
+          emitRuntimeLog('warn', 'vision request failed, continue without image text', {
+            error: String((result && result.error) || 'no response').slice(0, 200)
+          });
+          return '';
+        }
+        var text = String(result.data || '').trim();
+        // 模型说「无」时不要往题干里塞噪音 —— 那会让答题模型分心
+        if (!text || text === '无' || text === '没有' || text === '无明显信息') return '';
+        emitRuntimeLog('info', 'vision described images', { images: dataUrls.length, chars: text.length });
+        return text;
+      } catch (e) {
+        emitRuntimeLog('warn', 'vision bridge failed', { message: e && e.message ? e.message : String(e) });
+        return '';
+      }
+    },
+
+    /**
+     * 给一批题目补上「配图转述」。
+     *
+     * 设计要点：
+     *   - **只处理真的有图、且过得了尺寸闸门的题**：没有图的题一次请求都不发。
+     *     这既省钱，也避免把「无图」退化成一次白花的调用。
+     *   - 逐题串行、限量处理。并发发图很容易瞬间打满预算，
+     *     而限额是这套功能里唯一的硬保险，不能被并发绕过。
+     *   - 单题失败不影响其他题，也绝不影响整卷作答。
+     *
+     * 全程受 visionEnabled / visionMaxImagesPerQuestion / visionBudgetPerChapter 三道闸门约束。
+     */
+    _applyVisionToQuestions: async function (questions, preferredDoc) {
+      if (!this.configs.visionEnabled) return;
+      if (!questions || !questions.length) return;
+
+      var chapterKey = this._getCurrentChapterId() || this._extractFrameKey('vision', 'chapter') || 'chapter';
+      var maxPerQuestion = Number(this.configs.visionMaxImagesPerQuestion);
+      if (!isFinite(maxPerQuestion) || maxPerQuestion < 1) return;
+
+      var touched = 0;
+      for (var i = 0; i < questions.length; i++) {
+        var q = questions[i];
+        if (!q || !q._element) continue;
+
+        var urls = this._collectQuestionImages(q._element);
+        if (!urls.length) continue;
+
+        // 扣预算前先确认这一章还有额度。额度用完时 _describeQuestionImages 会自己写日志，
+        // 这里就不再重复遍历后面的题 —— 直接整体退出，省掉剩下的抓图开销。
+        if (this._visionUsedInChapter >= Number(this.configs.visionBudgetPerChapter || 0) &&
+            this._visionBudgetChapterKey === chapterKey) {
+          this._takeVisionBudget(chapterKey); // 触发一次「预算耗尽」日志
+          emitRuntimeLog('info', 'vision skipped remaining questions', { from: i, total: questions.length });
+          break;
+        }
+
+        var described = await this._describeQuestionImages(urls, chapterKey);
+        if (described) {
+          q.title = this._mergeVisionIntoTitle(q.title, described);
+          touched++;
+        }
+      }
+
+      if (touched > 0) {
+        emitRuntimeLog('info', 'vision applied to quiz', {
+          questions: questions.length,
+          withImage: touched,
+          usedBudget: this._visionUsedInChapter
+        });
+      }
+    },
+
+    /** 把视觉描述拼进题干。格式固定，便于模型区分「题面」与「图的转述」。 */
+    _mergeVisionIntoTitle: function (title, visionText) {
+      var base = String(title || '');
+      var extra = String(visionText || '').trim();
+      if (!extra) return base;
+      return base + ' [配图: ' + extra + ']';
     },
 
     _isTextOnly: function () {
@@ -6779,6 +7111,17 @@
         return;
       }
       this._quizCurrentQuestions = questions;
+      // ===== 题目配图 → 文字（可选，默认关闭）=====
+      //
+      // 放在这里的原因：题目已经解析完、还没发请求。此时：
+      //   - 题干与选项都在手里，能准确判断哪道题真的带图（省掉无图题的冤枉请求）
+      //   - 一次只处理**这一卷**的题，开销天然有上界
+      //   - 失败也无所谓，往下走就是"和没开视觉时完全一样"
+      //
+      // 它是 async 的，会 await 一段时间。但预算与张数都有硬上限，
+      // 最坏情况就是这一卷慢一点，不会失控。
+      await this._applyVisionToQuestions(questions, preferredDoc || null);
+
       var quizDoc = preferredDoc || this._getQuizDocumentFromQuestions(questions) || null;
 
       this._clearUnconfirmedQuizAnswers(questions, quizDoc);

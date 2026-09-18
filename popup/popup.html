@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.1.5</title>
+<title>Omitone-1.1.6</title>
 <style>
 :root{
   --bg:#fff; --fg:#16181d; --muted:#8a8f98; --line:#eceef1; --line-strong:#dcdfe4;
@@ -13,9 +13,9 @@
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  width: 360px; background: var(--bg); color: var(--fg);
+  width: 400px; background: var(--bg); color: var(--fg);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 13px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+  font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased;
 }
 .container { padding: 0 16px 18px; }
 
@@ -27,9 +27,9 @@ body {
 .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line-strong); box-shadow: 0 0 0 3px var(--soft); transition: background .2s, box-shadow .2s; flex: none; }
 .dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-.title { font-size: 14px; font-weight: 600; letter-spacing: .2px; }
-.ver { color: var(--muted); font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; }
-.run-state { margin-left: auto; padding: 2px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; transition: background .2s, border-color .2s, color .2s; }
+.title { font-size: 15px; font-weight: 600; letter-spacing: .2px; }
+.ver { color: var(--muted); font-size: 12px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; }
+.run-state { margin-left: auto; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--soft); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; transition: background .2s, border-color .2s, color .2s; }
 .run-state.on { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
 
 .run-row { display: flex; gap: 8px; }
@@ -51,8 +51,8 @@ body {
 /* 次要操作：小号文字按钮，不与主操作抢位置 */
 .minor { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .minor button {
-  flex: 1 1 auto; padding: 7px 8px; border: 1px solid var(--line-strong); border-radius: 7px;
-  background: #fff; color: #4a5058; cursor: pointer; font-size: 11px; font-weight: 500;
+  flex: 1 1 auto; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 7px;
+  background: #fff; color: #4a5058; cursor: pointer; font-size: 12.5px; font-weight: 500;
   font-family: inherit; white-space: nowrap; transition: background .12s, color .12s;
 }
 .minor button:hover { background: var(--soft); color: var(--fg); }
@@ -63,7 +63,7 @@ details.group:last-of-type { border-bottom: none; }
 details.group > summary {
   display: flex; align-items: center; gap: 7px; padding: 10px 0;
   cursor: pointer; list-style: none; color: var(--muted);
-  font-size: 10px; font-weight: 700; letter-spacing: 1.2px;
+  font-size: 12px; font-weight: 700; letter-spacing: 1px;
 }
 details.group > summary::-webkit-details-marker { display: none; }
 details.group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
@@ -75,16 +75,16 @@ details.group > summary::after {
 }
 details.group[open] > summary::after { transform: rotate(-135deg); margin-bottom: -2px; }
 details.group > summary:hover { color: #4a5058; }
-.group-head { font-size: 11px; letter-spacing: 0; }
+.group-head { font-size: 12.5px; letter-spacing: 0; }
 .group-body { padding-bottom: 10px; }
 
-.tag { flex: none; padding: 1px 6px; border-radius: 999px; background: var(--accent-soft); color: #1a5fd0; font-size: 9px; font-weight: 600; letter-spacing: .2px; }
+.tag { flex: none; padding: 2px 7px; border-radius: 999px; background: var(--accent-soft); color: #1a5fd0; font-size: 12px; font-weight: 600; letter-spacing: .2px; }
 .tag.plain { background: var(--soft); color: var(--muted); }
 
 /* ---------- 设置行 ---------- */
 .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 8px; margin: 0 -8px; border-radius: 8px; transition: background .12s; }
 .row:hover { background: var(--soft); }
-.row label { color: #2b2f36; font-size: 12.5px; cursor: pointer; flex: 1; }
+.row label { color: #2b2f36; font-size: 13.5px; cursor: pointer; flex: 1; }
 .row.sub { padding-left: 0; margin: 0; }
 
 /* ---------- 开关 ---------- */
@@ -96,8 +96,8 @@ details.group > summary:hover { color: #4a5058; }
 
 /* ---------- 倍速滑杆 ---------- */
 .range-head { display: flex; justify-content: space-between; align-items: baseline; margin: 2px 0 8px; }
-.range-head span { color: var(--muted); font-size: 11px; }
-.range-head .val { color: var(--fg); font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.range-head span { color: var(--muted); font-size: 12.5px; }
+.range-head .val { color: var(--fg); font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
 input[type="range"] { width: 100%; height: 4px; border-radius: 999px; background: var(--line-strong); outline: none; -webkit-appearance: none; cursor: pointer; margin-bottom: 10px; }
 input[type="range"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 input[type="range"]::-webkit-slider-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--accent); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); -webkit-appearance: none; transition: transform .12s; }
@@ -105,18 +105,18 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.12); }
 
 /* ---------- 表单 ---------- */
 .field { margin-top: 10px; }
-.field label { display: block; margin-bottom: 5px; color: #2b2f36; font-size: 11.5px; font-weight: 500; }
-textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 12px; font-family: inherit; line-height: 1.6; resize: vertical; transition: border-color .15s, box-shadow .15s; }
+.field label { display: block; margin-bottom: 5px; color: #2b2f36; font-size: 13px; font-weight: 500; }
+textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 13px; font-family: inherit; line-height: 1.6; resize: vertical; transition: border-color .15s, box-shadow .15s; }
 textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 input[type="text"], input[type="password"], select { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 12px; font-family: inherit; transition: border-color .15s, box-shadow .15s; }
 input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.hint { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
 .hint b { color: #4a5058; font-weight: 600; }
 
 /* ---------- 提示条 / 日志 ---------- */
-.toast { min-height: 15px; margin-top: 10px; opacity: 0; color: #4a5058; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 0 10px; text-align: center; font-size: 11px; line-height: 1.9; transition: opacity .2s; }
+.toast { min-height: 15px; margin-top: 10px; opacity: 0; color: #4a5058; background: var(--soft); border: 1px solid var(--line); border-radius: 999px; padding: 0 11px; text-align: center; font-size: 12.5px; line-height: 2; transition: opacity .2s; }
 .toast.show { opacity: 1; }
-.log-panel { display: none; margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 5px 10px; max-height: 200px; overflow: auto; background: var(--soft); font-size: 11px; line-height: 1.55; }
+.log-panel { display: none; margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; padding: 5px 10px; max-height: 220px; overflow: auto; background: var(--soft); font-size: 12px; line-height: 1.6; }
 .log-panel.show { display: block; }
 .log-item { padding: 6px 2px; border-bottom: 1px solid var(--line); }
 .log-item:last-child { border-bottom: none; }
@@ -136,7 +136,7 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
     <div class="brand">
       <div class="dot" id="runDot"></div>
       <div class="title">Omitone</div>
-      <span class="ver">1.1.5</span>
+      <span class="ver">1.1.6</span>
       <span class="run-state" id="runState">未开启</span>
     </div>
     <div class="run-row">
@@ -225,6 +225,23 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
       <div class="row">
         <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
+      </div>
+      <div class="row">
+        <label for="visionEnabled">题目配图也交给 AI（看图题）</label>
+        <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="visionEnabled"></div>
+      </div>
+      <div class="field">
+        <label for="visionModel">看图模型</label>
+        <input type="text" id="visionModel" placeholder="如 qwen-vl-max / gemini-flash-latest" />
+        <p class="hint"><b>默认关闭，因为图片很贵。</b>开启后会先把题目里的图转成文字再答题，
+        能救「看图选择 / 图形题 / 表格题」，但每一张图都是一次额外计费，
+        费用通常是纯文本的十几到几十倍。<b>请务必单独填一个能看图的模型</b>（留空会退回主模型，
+        多半看不懂图，钱白花）。下面两项是花费上限，用完就停并写日志。</p>
+      </div>
+      <div class="field">
+        <label for="visionBudgetPerChapter">每章看图次数上限</label>
+        <input type="number" id="visionBudgetPerChapter" min="0" max="500" step="1" placeholder="30" />
+        <p class="hint">到顶后本章不再发任何看图请求（会在日志里记一条）。设 <b>0</b> 等于关闭。</p>
       </div>
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>

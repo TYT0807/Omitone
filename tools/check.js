@@ -312,7 +312,8 @@ function checkFontTable() {
 // 链接一断，整个项目对他们就是"打不开"，而且**不会报错、不会留日志**，
 // 只有用户默默走掉。所以当硬性检查：
 //
-//   1. 说明书 PDF 必须在**仓库根目录**（放 docs/ 里他们找不到）
+//   1. 说明书 PDF 必须在**仓库根目录**（放 docs/ 里他们找不到）—— 它现在是
+//      "离线 / 转发"入口，**在线**入口是 docs/manual.html（见第 7 条）
 //   2. README 必须含指向 releases/latest/download/<固定附件名> 的直链
 //   3. README 里所有相对链接指向的本地文件/目录必须真实存在
 //   4. 说明书源文件里不许写死带版本号的压缩包名
@@ -401,6 +402,76 @@ function checkUserEntryPoints() {
     }
   }
 
+
+  // 6) 说明书**源文件**里的版本号必须与当前版本一致
+  //
+  // 为什么单列一条：stamp() 只在生成 PDF 时盖**临时副本**，
+  // 源文件 docs/manual.html 不会被改回去 —— 于是它会一直烂着。
+  // 实测 1.1.6 时源文件里同时躺着 `1.1.1`（三处）与 `1.1.5`（两处）。
+  //
+  // 为什么是**真问题**：只要有人直接打开 docs/manual.html
+  // （浏览器打开、或将来开 GitHub Pages 当网页版入口），
+  // 他看到的就是一份自己写着"版本 1.1.1"的说明书。不报错、不留日志。
+  //
+  // 判定口径：带历史措辞的引用（「1.1.0 专门修过」）允许保留；
+  // 裸的 `版本 x.y.z` / `Omitone-x.y.z` 必须等于当前版本。
+  var manualHtml = read('docs/manual.html');
+  var manualVer = JSON.parse(read('manifest.json').replace(/^\uFEFF/, '')).version;
+  [['版本行', /版本\s+(\d+\.\d+\.\d+)/g], ['品牌名', /Omitone[-\s](\d+\.\d+\.\d+)/g]]
+    .forEach(function (pair) {
+      var label = pair[0], re = pair[1], m;
+      re.lastIndex = 0;
+      while ((m = re.exec(manualHtml))) {
+        if (m[1] === manualVer) continue;
+        var ls = manualHtml.lastIndexOf('\n', m.index) + 1;
+        var le = manualHtml.indexOf('\n', m.index);
+        var line = manualHtml.slice(ls, le === -1 ? undefined : le);
+        // 历史措辞（「1.1.0 专门修过」这类）是正文引用，允许保留
+        if (/\d+\.\d+\.\d+\s*(起|已修|专门|新增|时|之前|那时)/.test(line)) continue;
+        problemsHere.push('docs/manual.html 第 ' +
+          (manualHtml.slice(0, m.index).split('\n').length) + ' 行「' + m[0].trim() +
+          '」与当前版本 ' + manualVer + ' 不符 —— ' +
+          '直接打开这份源文件的人会看到过期版本号。跑 `npm run manual` 或手工同步');
+      }
+    });
+
+  // 7) 说明书必须有**双入口**：在线版 + PDF 版
+  //
+  // 本项目的真实故障：原来只有 `使用说明.pdf` 相对链接，在 GitHub 上会落到
+  // `blob/main/使用说明.pdf` —— 代码视图。PDF 走这条路是"赌运气"：
+  // GitHub 社区里 `Unable to render code block` 的头号成因是浏览器扩展
+  // （暗色模式 / 翻译 / 广告拦截），其次是代理与渲染器超时。用户实测点开就是报错。
+  //
+  // 所以两条都要有，且各自不赌渲染器：
+  //   - 在线版 docs/manual.html：纯 HTML，GitHub 一定显示得出来
+  //   - PDF 版 走 Release 附件直链：下载通道，与渲染器完全无关
+  //
+  // 将来若有人图省事删掉在线入口、只留 PDF，故障会原样复发 —— 且不报错。
+  var MANUAL_ONLINE = 'docs/manual.html';
+  var MANUAL_PDF_ASSET = 'Omitone-manual.pdf';
+  if (!exists(MANUAL_ONLINE)) {
+    problemsHere.push('缺少在线说明书 ' + MANUAL_ONLINE +
+      ' —— README 顶部的"在线看图解说明书"指向它，缺了就是死链');
+  }
+  // 在线入口当前走 GitHub Pages（真网页，比 blob 源码视图体验好得多），
+  // 但两种写法都认 —— 判据只看"有没有指向说明书的链接目标"：
+  //   1) Pages 外链   ](https://<user>.github.io/.../docs/manual.html)
+  //   2) 仓库内相对路径 ](docs/manual.html)
+  //
+  // ⚠️ 别把这里改成"README 里必须出现 docs/manual.html 这个字符串" ——
+  // 那会让"只留 Pages 外链"这种完全正确的写法被误判成失败（反向验证抓到过）。
+  var hasPagesLink = /\]\(https:\/\/[a-z0-9-]+\.github\.io\/[^)\s]*docs\/manual\.html/i.test(readme);
+  var hasRelLink = readme.indexOf('](' + MANUAL_ONLINE + ')') !== -1;
+  var hasOnlineEntry = hasPagesLink || hasRelLink;
+  if (!hasOnlineEntry) {
+    problemsHere.push('README.md 里没有指向在线说明书的入口（' + MANUAL_ONLINE + '）—— ' +
+      'Pages 外链或仓库内相对路径都行，但**必须有**。只留 PDF 的话，' +
+      'PDF 在 GitHub 上会赌渲染器（报 Unable to render code block）。双入口缺一不可');
+  }
+  if (readme.indexOf('releases/latest/download/' + MANUAL_PDF_ASSET) === -1) {
+    problemsHere.push('README.md 里没有指向 releases/latest/download/' + MANUAL_PDF_ASSET +
+      ' 的 PDF 下载入口 —— 走附件通道才不会赌渲染器（附件名必须是纯 ASCII）');
+  }
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
   else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
 }

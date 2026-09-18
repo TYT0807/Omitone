@@ -350,6 +350,31 @@
     }
   }
 
+  /**
+   * 记账：把一次请求的 token 消耗写进日志。
+   *
+   * 为什么必须做（尤其是视觉请求）：视觉请求的图占大头，而**图并不在提示词里** ——
+   * logCacheUsage 只看 prompt_cache_* 字段，对图片 token 一无所知。
+   * 于是出现了最糟的组合：用户在花钱、日志里一片安静、出了事也查不出原因。
+   *
+   * 这里把 input/output 总数记出来，带 tag 区分（text / captcha / vision），
+   * 让用户在弹窗「查看日志」里就能看到每一类花了多少。
+   */
+  function logTokenUsage(usage, tag) {
+    if (!usage || typeof usage !== 'object') return;
+    const prompt = Number(usage.prompt_tokens);
+    const completion = Number(usage.completion_tokens);
+    if (!isFinite(prompt) && !isFinite(completion)) return; // 该服务不报用量
+    const promptTokens = isFinite(prompt) ? prompt : 0;
+    const completionTokens = isFinite(completion) ? completion : 0;
+    appendRuntimeLog('info', 'llm usage', {
+      tag: tag || 'text',
+      in: promptTokens,
+      out: completionTokens,
+      total: promptTokens + completionTokens
+    });
+  }
+
   async function callOpenAICompatibleAPI(config, questions) {
     const url = buildOpenAICompatibleUrl(config.apiUrl);
     const messages = [
@@ -391,6 +416,7 @@
         // 我们真的这样翻过车：提示词压得太短，公共前缀无法被识别成缓存单元，
         // 命中率长期恒为 0，而界面上看不出任何异常。
         logCacheUsage((response.data || {}).usage);
+        logTokenUsage((response.data || {}).usage, 'text');
         return parseLLMResponse(choice.content || '');
       }
 
@@ -669,6 +695,7 @@
     const model = String(config.captchaModel || '').trim() || config.model;
 
     appendRuntimeLog('info', 'captcha llm request', { model });
+    let captchaUsage = null;
     try {
       let text = '';
 
@@ -697,6 +724,7 @@
         if (!response.success) {
           throw new Error(`Claude captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
         }
+        captchaUsage = (response.data || {}).usage || null;
         text = (((response.data || {}).content || [])[0] || {}).text || '';
       } else if (config.apiType === 'gemini') {
         const url = buildGeminiApiUrl(config.apiUrl, model, normalizeApiKey(config.apiKey));
@@ -717,6 +745,7 @@
         if (!response.success) {
           throw new Error(`Gemini captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
         }
+        captchaUsage = (response.data || {}).usageMetadata || null;
         const parts = ((((response.data || {}).candidates || [])[0] || {}).content || {}).parts || [];
         text = parts.map((part) => part && part.text ? part.text : '').join('\n').trim();
       } else {
@@ -743,7 +772,16 @@
         if (!response.success) {
           throw new Error(`API captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
         }
+        captchaUsage = (response.data || {}).usage || null;
         text = ((((response.data || {}).choices || [])[0] || {}).message || {}).content || '';
+      }
+
+      // 视觉请求的用量必须记账。图占大头，不记的话用户在花钱却什么都看不到。
+      if (captchaUsage) {
+        logTokenUsage({
+          prompt_tokens: captchaUsage.prompt_tokens !== undefined ? captchaUsage.prompt_tokens : captchaUsage.input_tokens,
+          completion_tokens: captchaUsage.completion_tokens !== undefined ? captchaUsage.completion_tokens : captchaUsage.output_tokens
+        }, 'captcha');
       }
 
       text = String(text || '').trim();
@@ -753,6 +791,137 @@
     } catch (error) {
       const message = error && error.message ? error.message : String(error);
       appendRuntimeLog('error', 'captcha request failed', { error: message.slice(0, 300) });
+      return { success: false, error: message };
+    }
+  }
+
+  // 视觉理解提示词：题目带图时用。
+  //
+  // ⚠️ 故意**不**要求模型看懂整张图，而是要求它把图里影响作答的关键信息转成文字。
+  // 理由：我们真正要的是「这道题选什么」，中间那步描述越短越省钱，
+  // 也让主答题链的提示词保持纯文本 —— 前缀缓存不会被图片打散。
+  const VISION_PROMPT = '这是一道题目的配图。用最简文字说明图中影响作答的关键信息（图形/数值/标签/关系），不要解释、不要复述题面。若图中没有对作答有用的信息，只输出：无。';
+
+  /**
+   * 视觉请求：把图里的信息转成文字，交回页面侧使用。
+   *
+   * 与 handleCaptchaRequestDirect 的分工：那个是「输出答案」，这个是「输出描述」。
+   * 三条多模态协议分支（Claude / Gemini / OpenAI 兼容）复用同一套写法，
+   * 避免出现第三份各自演化的实现。
+   *
+   * 成本是这里的第一约束：
+   *   - 只接受调用方已筛过的图（张数/体积由页面侧的预算闸门控制）
+   *   - 每次调用都记账（logTokenUsage），让用户能看见花了多少
+   *   - 失败立刻返回，**不做任何重试** —— 重试等于再花一次钱
+   */
+  async function handleVisionRequestDirect(payload) {
+    const images = payload && Array.isArray(payload.images) ? payload.images : [];
+    if (!images.length) return { success: false, error: 'no images' };
+
+    const config = await loadConfig();
+    const missing = missingModuleError();
+    if (missing) {
+      appendRuntimeLog('error', 'llm_vision aborted', { error: missing });
+      return { success: false, error: missing };
+    }
+    if (!config.apiKey) return { success: false, error: 'Please configure API Key first' };
+
+    // 模型挑选顺序：visionModel（专为看图标）→ captchaModel（老用户可能已配好）→ model。
+    // 最后一档回落有风险（文本模型多半看不懂图），但**不在这里静默降级** ——
+    // 页面侧会在开启视觉时提示用户单独指定一个支持图片的模型。
+    const model = String(config.visionModel || config.captchaModel || '').trim() || config.model;
+
+    // 逐张解析；任何一张格式不合法就整体拒绝。
+    // 不做「跳过坏图继续发」：那会变成发 N-1 张却按 N 张计费，账对不上。
+    const parsed = [];
+    for (let i = 0; i < images.length; i++) {
+      const dataUrl = String(images[i] || '');
+      const m = dataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.*)$/);
+      if (!m) {
+        appendRuntimeLog('warn', 'vision image rejected (bad format)', { index: i });
+        return { success: false, error: 'unsupported image format at index ' + i };
+      }
+      parsed.push({ mediaType: m[1] === 'image/jpg' ? 'image/jpeg' : m[1], base64: m[2] });
+    }
+
+    appendRuntimeLog('info', 'vision llm request', { model: model, images: parsed.length });
+    try {
+      let text = '';
+      let usage = null;
+
+      if (config.apiType === 'claude') {
+        const url = buildClaudeApiUrl(config.apiUrl);
+        const content = [{ type: 'text', text: VISION_PROMPT }];
+        parsed.forEach(function (p) { content.push({ type: 'image', source: { type: 'base64', media_type: p.mediaType, data: p.base64 } }); });
+        const response = await apiFetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': normalizeApiKey(config.apiKey),
+            'anthropic-version': '2023-06-01'
+          },
+          body: JSON.stringify({
+            model: model,
+            max_tokens: 1024,
+            temperature: 0,
+            messages: [{ role: 'user', content: content }]
+          })
+        }, 90000);
+        if (!response.success) throw new Error('Claude vision failed (' + (response.status || 'network') + '): ' + String(response.text || response.error || '').slice(0, 200));
+        usage = (response.data || {}).usage || null;
+        text = (((response.data || {}).content || [])[0] || {}).text || '';
+      } else if (config.apiType === 'gemini') {
+        const url = buildGeminiApiUrl(config.apiUrl, model, normalizeApiKey(config.apiKey));
+        const parts = [{ text: VISION_PROMPT }];
+        parsed.forEach(function (p) { parts.push({ inline_data: { mime_type: p.mediaType, data: p.base64 } }); });
+        const response = await apiFetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: parts }],
+            generationConfig: { temperature: 0, maxOutputTokens: 1024 }
+          })
+        }, 90000);
+        if (!response.success) throw new Error('Gemini vision failed (' + (response.status || 'network') + '): ' + String(response.text || response.error || '').slice(0, 200));
+        usage = (response.data || {}).usageMetadata || null;
+        const respParts = ((((response.data || {}).candidates || [])[0] || {}).content || {}).parts || [];
+        text = respParts.map(function (part) { return part && part.text ? part.text : ''; }).join('\n').trim();
+      } else {
+        const url = buildOpenAICompatibleUrl(config.apiUrl);
+        const content = [{ type: 'text', text: VISION_PROMPT }];
+        parsed.forEach(function (p) { content.push({ type: 'image_url', image_url: { url: 'data:' + p.mediaType + ';base64,' + p.base64 } }); });
+        const response = await apiFetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + normalizeApiKey(config.apiKey)
+          },
+          body: JSON.stringify({
+            model: model,
+            temperature: 0,
+            max_tokens: 1024,
+            messages: [{ role: 'user', content: content }]
+          })
+        }, 90000);
+        if (!response.success) throw new Error('API vision failed (' + (response.status || 'network') + '): ' + String(response.text || response.error || '').slice(0, 200));
+        usage = (response.data || {}).usage || null;
+        text = ((((response.data || {}).choices || [])[0] || {}).message || {}).content || '';
+      }
+
+      // 无论成败都记账 —— 失败的请求同样产生费用（图已经传上去了）。
+      if (usage) {
+        logTokenUsage({
+          prompt_tokens: usage.prompt_tokens !== undefined ? usage.prompt_tokens : usage.input_tokens,
+          completion_tokens: usage.completion_tokens !== undefined ? usage.completion_tokens : usage.output_tokens
+        }, 'vision');
+      }
+
+      text = String(text || '').trim();
+      if (!text) return { success: false, error: 'empty vision result (check model vision support)' };
+      return { success: true, data: text };
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      appendRuntimeLog('error', 'vision request failed', { error: message.slice(0, 300) });
       return { success: false, error: message };
     }
   }
@@ -801,7 +970,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.1.5</span>',
+      '    <span class="brand">Omitone 1.1.6</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
@@ -1261,6 +1430,25 @@
           id: msg.id,
           type: 'llm_response',
           data: { success: false, error: 'llm_request internal error: ' + (err && err.message ? err.message : String(err)) }
+        }, '*');
+      });
+      return;
+    }
+
+    if (msg.type === 'llm_vision') {
+      handleVisionRequestDirect(msg.payload).then((response) => {
+        window.postMessage({
+          source: 'xxt_bridge',
+          id: msg.id,
+          type: 'llm_response',
+          data: response
+        }, '*');
+      }).catch((err) => {
+        window.postMessage({
+          source: 'xxt_bridge',
+          id: msg.id,
+          type: 'llm_response',
+          data: { success: false, error: 'llm_vision internal error: ' + (err && err.message ? err.message : String(err)) }
         }, '*');
       });
       return;
