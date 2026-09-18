@@ -422,26 +422,91 @@ async function cmdVerify(tag) {
   // 而那条旧断言会把它误报成"tag 与 main 不一致"并 exit=1 ——
   // 属于 AGENTS.md §5 警告的"断言实现细节而不是行为"。
   //
-  // 这里要断的是**行为**：用户下载的 omitone.zip 里的代码是否与 tag 一致。
-  // 而 zip 的内容由 tools/build.js 的 INCLUDE 白名单决定（tools/、legacy/、
-  // docs/、根目录的 *.md 都不在名单里）。所以"改了 tools/github-release.js"
-  // 这一类**开发期文件**的改动根本进不了用户手里，不该报红。
-  var SAFE_RE = /^(tools|legacy|docs|\.workbuddy|dist)\//;
-  var safe = function (p) { return /\.(md|txt)$/i.test(p) || SAFE_RE.test(p); };
+  // 这里要断的是**行为**，而"用户下载到的东西"其实有**两路**：
+  //   (a) omitone.zip  —— 内容由 tools/build.js 的 INCLUDE 白名单决定
+  //   (b) Release 附件 —— 使用说明.pdf 走这一路，**不在 zip 里**
+  //
+  // ⚠️ 这段改过两次，两次都是"判定漏了一类"：
+  //   第一次：把"所有非 .md/.txt 文件"当成会进包的代码 —— 于是改 tools/ 下的
+  //           发版脚本也报红（而 tools/ 不在白名单，用户永远拿不到）。
+  //   第二次：改成按目录前缀放行后，**根目录的 使用说明.pdf 仍被误判成"进包"** ——
+  //           它压根不在 INCLUDE 里，是 Release 的另一个附件。
+  //           （这次是 verify 报红时发现的：它说"进包"，其实 zip 里没有。）
+  //
+  // 所以现在**不猜**：直接读 build.js 的 INCLUDE 白名单，
+  // 再叠加"Release 附件清单"作为第二类合法目标。
+  var INCLUDE = (function () {
+    try {
+      var bs = fs.readFileSync(path.join(ROOT, 'tools', 'build.js'), 'utf8');
+      var m = bs.match(/var INCLUDE\s*=\s*\[([\s\S]*?)\]/);
+      if (!m) return null;
+      return m[1].split(',').map(function (s) {
+        return s.trim().replace(/^['"]|['"]$/g, '');
+      }).filter(Boolean).map(function (s) { return s.replace(/\/+$/, ''); });
+    } catch (e) { return null; }
+  })();
+  if (!INCLUDE) {
+    console.log('\n⚠️  读不到 tools/build.js 的 INCLUDE 白名单，跳过"tag 之后改动是否进包"的判断。');
+    console.log('    （宁可只说不知道，也不要靠猜报红/报绿）');
+  }
+  // 附件名也来自 ASSETS，不写死
+  var assetSrcs = ASSETS.map(function (a) { return a.src || 'omitone.zip'; });
+  var affectsUser = function (p) {
+    if (!INCLUDE) return false;
+    if (assetSrcs.indexOf(p) !== -1) return true;          // 直接就是附件源文件
+    var top = p.split('/')[0].replace(/\/+$/, '');
+    return INCLUDE.indexOf(top) !== -1;                     // 落在白名单目录/文件里
+  };
   var clean = true;
-  if (tagTarget !== head) {
+  if (tagTarget !== head && INCLUDE) {
     var cmp = await api('GET', base + '/compare/' + tagTarget + '...' + head);
     var files = (cmp.files || []).map(function (f) { return f.filename; });
-    var shipped = files.filter(function (p) { return !safe(p); });
+    var shipped = files.filter(affectsUser);
     console.log('tag 之后 main 多了 ' + cmp.ahead_by + ' 个提交，改动 ' + files.length + ' 个文件：');
-    files.forEach(function (p) { console.log('    ' + p + (safe(p) ? '  [不进包]' : '  ← 进包！')); });
+    files.forEach(function (p) { console.log('    ' + p + (affectsUser(p) ? '  ← 影响用户下载' : '  [不影响]')); });
     if (cmp.behind_by > 0) {
       console.log('  ✗ tag 落后 main ' + cmp.behind_by + ' 个提交 —— tag 分叉了，发布点不对');
       clean = false;
     } else if (shipped.length) {
-      console.log('  ✗ tag 之后有**会被打进包**的改动未进这一版：' + shipped.join(', '));
-      console.log('    → 用户下载到的不是最新代码。要么重发这一版，要么准备下一版');
-      clean = false;
+      // 有"影响用户下载"的改动。但**改了文件 ≠ 用户拿到的还是旧的** ——
+      // 附件是可以在不重发版的情况下单独替换的（本项目就常这么做：
+      // 只改了说明书就只换 Omitone-manual.pdf，扩展代码一行没动）。
+      //
+      // 所以这里再补一刀**按内容核对**：把每个受影响的附件源文件
+      // 与它在 Release 上的实际大小比一遍。一致 = 已经换过了，绿灯。
+      var stale = [];
+      for (var i2 = 0; i2 < shipped.length; i2++) {
+        var p2 = shipped[i2].replace(/\\/g, '/');
+        var localPath = path.join(ROOT, p2);
+        var asset = (rel.assets || []).filter(function (a) {
+          // 附件名是 ASCII 的（中文名会被 GitHub 洗掉），所以按"源文件名 → 附件名"映射
+          return ASSETS.some(function (d) { return (d.src === p2) && d.name === a.name; });
+        })[0];
+        if (!asset) {
+          stale.push(p2 + '（Release 上没有对应附件）');
+          continue;
+        }
+        if (!fs.existsSync(localPath)) {
+          stale.push(p2 + '（本地文件不存在，无法核对）');
+          continue;
+        }
+        var lk = fs.statSync(localPath).size;
+        if (lk !== asset.size) {
+          stale.push(p2 + '（本地 ' + (lk / 1024).toFixed(1) + ' KB ≠ 线上 ' +
+            (asset.size / 1024).toFixed(1) + ' KB）');
+        } else {
+          console.log('    ' + p2 + ' 已与线上附件等大（' + (lk / 1024).toFixed(1) + ' KB）—— 已换过，不算过期');
+        }
+      }
+      if (stale.length) {
+        console.log('  ✗ tag 之后有会**影响用户下载**的改动，且线上附件还是旧的：');
+        stale.forEach(function (s2) { console.log('      ' + s2); });
+        console.log('    → 改了 zip 里的代码就重出 omitone.zip；只改了说明书这类附件，');
+        console.log('       直接替换该附件即可（删旧 assets → 重传同名），不必重发整版。');
+        clean = false;
+      } else {
+        console.log('  ✓ 改动涉及的附件都已换成最新内容，用户下载到的东西是对的');
+      }
     } else {
       console.log('  ✓ 改动都不进包（文档 / 开发期文件），用户下载到的东西与 tag 一致');
     }
