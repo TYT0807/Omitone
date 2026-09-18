@@ -416,34 +416,40 @@ async function cmdVerify(tag) {
     console.log('  缺少: ' + wrongNames.join(', '));
     console.log('  原因：非 ASCII 附件名会被 GitHub 洗成 default.pdf，附件名必须纯 ASCII');
   }
-  // tag 之后有没有新提交？有的话**只允许是文档**。
+  // tag 之后有没有新提交？有的话**必须都不能影响用户下载到的东西**。
   //
   // 为什么不能简单地要求 `tagTarget === head`：发布之后补一条文档提交是正常操作，
   // 而那条旧断言会把它误报成"tag 与 main 不一致"并 exit=1 ——
   // 属于 AGENTS.md §5 警告的"断言实现细节而不是行为"。
-  var docOnly = true;
+  //
+  // 这里要断的是**行为**：用户下载的 omitone.zip 里的代码是否与 tag 一致。
+  // 而 zip 的内容由 tools/build.js 的 INCLUDE 白名单决定（tools/、legacy/、
+  // docs/、根目录的 *.md 都不在名单里）。所以"改了 tools/github-release.js"
+  // 这一类**开发期文件**的改动根本进不了用户手里，不该报红。
+  var SAFE_RE = /^(tools|legacy|docs|\.workbuddy|dist)\//;
+  var safe = function (p) { return /\.(md|txt)$/i.test(p) || SAFE_RE.test(p); };
+  var clean = true;
   if (tagTarget !== head) {
     var cmp = await api('GET', base + '/compare/' + tagTarget + '...' + head);
     var files = (cmp.files || []).map(function (f) { return f.filename; });
-    var isDoc = function (p) { return /\.(md|txt)$/i.test(p) || /^docs\//.test(p); };
-    var codeFiles = files.filter(function (p) { return !isDoc(p); });
+    var shipped = files.filter(function (p) { return !safe(p); });
     console.log('tag 之后 main 多了 ' + cmp.ahead_by + ' 个提交，改动 ' + files.length + ' 个文件：');
-    files.forEach(function (p) { console.log('    ' + p + (isDoc(p) ? '  [文档]' : '  ← 代码！')); });
+    files.forEach(function (p) { console.log('    ' + p + (safe(p) ? '  [不进包]' : '  ← 进包！')); });
     if (cmp.behind_by > 0) {
       console.log('  ✗ tag 落后 main ' + cmp.behind_by + ' 个提交 —— tag 分叉了，发布点不对');
-      docOnly = false;
-    } else if (codeFiles.length) {
-      console.log('  ✗ tag 之后有**代码**改动未进这一版：' + codeFiles.join(', '));
+      clean = false;
+    } else if (shipped.length) {
+      console.log('  ✗ tag 之后有**会被打进包**的改动未进这一版：' + shipped.join(', '));
       console.log('    → 用户下载到的不是最新代码。要么重发这一版，要么准备下一版');
-      docOnly = false;
+      clean = false;
     } else {
-      console.log('  ✓ 只有文档改动，代码与 tag 一致 —— 用户下载到的东西是对的');
+      console.log('  ✓ 改动都不进包（文档 / 开发期文件），用户下载到的东西与 tag 一致');
     }
   } else {
     console.log('tag 与 ' + BRANCH + ' 完全一致 ✓');
   }
 
-  if (bad.length || wrongNames.length || !linkOk || !docOnly) process.exitCode = 1;
+  if (bad.length || wrongNames.length || !linkOk || !clean) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
