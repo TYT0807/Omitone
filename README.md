@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.3-blue)
+![版本](https://img.shields.io/badge/版本-1.1.4-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -487,7 +487,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 19 个场景，193 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 19 个场景，196 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -886,7 +886,7 @@ npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码�
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（52 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（19 个场景 / 193 项）
+npm run e2e      # 真实 Edge 功能交叉检验（19 个场景 / 196 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库

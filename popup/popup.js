@@ -500,21 +500,21 @@ async function testApiConnectionNoBackground() {
   });
 
   if (!cfg.apiKey) {
-    toast("Please enter API Key");
+    toast("请先填写 API Key");
     return;
   }
   if (!cfg.model) {
-    toast("Please enter model");
+    toast("请先填写模型名");
     return;
   }
   if ((cfg.apiType === "openai" || cfg.apiType === "gemini") && !cfg.apiUrl) {
-    toast("Please enter API URL");
+    toast("请先填写 API URL");
     return;
   }
 
   try {
     els.testApi.disabled = true;
-    els.testApi.textContent = "Testing...";
+    els.testApi.textContent = "检测中…";
     await appendPopupLog("info", "api test begin from popup direct", apiConfigSummary(cfg));
 
     const ping = await sendRuntimeMessageWithTimeout({ type: "ping" }, 1500, "background unavailable");
@@ -531,19 +531,20 @@ async function testApiConnectionNoBackground() {
     if (result && result.success) {
       config = withoutRemovedConfigFields({ ...config, apiConnectionFailed: false, apiConnectionError: "" });
       await saveApiConfig(false);
-      toast("API OK: " + (result.message || "connected"));
+      toast("连接正常" + (result.message ? "：" + result.message : ""));
     } else {
       config = withoutRemovedConfigFields({ ...config, apiConnectionFailed: true, apiConnectionError: (result && result.error) || "connection failed" });
-      toast((result && result.error) || "connection failed");
+      toast("连接失败：" + ((result && result.error) || "未知错误"));
     }
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
     config = withoutRemovedConfigFields({ ...config, apiConnectionFailed: true, apiConnectionError: message });
     await appendPopupLog("error", "api test direct failed", { error: message.slice(0, 300) });
-    toast("API test failed");
+    // 不把英文报错原文塞进提示条（多半是 Failed to fetch 之类），细节看日志
+    toast("检测失败，原因见日志");
   } finally {
     els.testApi.disabled = false;
-    els.testApi.textContent = "Test API";
+    els.testApi.textContent = "检测 API 连接";
   }
 }
 

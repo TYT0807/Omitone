@@ -15,6 +15,22 @@
   var APP_NAME = 'Omitone';
   var AUTO_START_ATTR = 'data-xxt-auto-start';
 
+  /**
+   * 弹题填完答案后的「静默期」。
+   *
+   * 为什么需要它：站点在答完之后会**重绘弹窗**（给正确项打勾 / 加提示 / 重排），
+   * 而防重问的指纹取的是**选项文本** —— 文本一变指纹就变、"已答放行"立刻失效，
+   * 弹窗被当成新题 → 再问模型 → 再点一次选项 → 站点再重绘 …… 死循环。
+   * 现场表现就是"选项一直闪"，而且指纹一变 `_popupQuizAttempts` 就被重置，
+   * "最多问 3 次就放手"这个安全阀**永远触发不了**。
+   * 所以填完之后统一静默一段时间，无论指纹怎么变都不碰它。
+   *
+   * ⚠️ 「已答放行」的窗口**必须与它相等，绝不能更长** ——
+   * 详见 `_handlePopupQuiz` 里填答成功那一段（曾经写成 30 秒，
+   * 于是答错后有 22 秒处于"静默期已过、却仍被当成已答"的没人管空档）。
+   */
+  var POPUP_QUIZ_QUIET_MS = 8000;
+
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
     autoMaxPlaybackRate: true,
@@ -5279,8 +5295,11 @@
         // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
         try {
           if (self._captchaActive || self._checkCaptchaDialog()) return;
-          // 同理走 _activePopupBlock：弹题已经放弃过了就别再挡着恢复播放
-          if (self._activePopupBlock && self._activePopupBlock()) return;
+          // ⚠️ 这里必须用 _popupQuizBlocksPlayback 而不是 _activePopupBlock：
+          // 后者在"刚答完的静默期"里会返回 null（那是给"要不要再问模型"用的），
+          // 但弹窗其实还挂在页面上、视频正是被它有意暂停的。用错就会去抢恢复播放、
+          // 和站点对打 —— 现场表现是"答完弹题后视频不动，看着像卡死"。
+          if (self._popupQuizBlocksPlayback && self._popupQuizBlocksPlayback()) return;
           if (self._checkSubmitConfirmDialog && self._checkSubmitConfirmDialog()) return;
         } catch (e) {}
         var duration = Number(current.duration || 0);
@@ -8069,9 +8088,18 @@
         this._popupQuizLastFilled = '';
         this._popupQuizQuietUntil = 0;
       } else {
-        // 已经答过、但站点还没把弹窗收走：别再问第二遍模型，也别继续拦着刷课
+        // 已经答过、但站点还没把弹窗收走：这段时间别再问第二遍模型，也别继续拦着刷课。
+        //
+        // 与上面那段静默期的分工：静默期管的是"刚填完、站点可能正在重绘"，
+        // 这一段管的是"弹窗消失又冒出来、指纹一模一样"（站点重开同一道题）——
+        // 那时静默期可能已经被上面"弹窗没了"的分支清掉，靠这个标记继续压住。
+        //
+        // ⚠️ 窗口必须与静默期**相等**，绝不能更长。曾经写死 30 秒，比 8 秒静默期长 22 秒，
+        // 于是答错之后有整整 22 秒处于"静默期已过、却仍被当成已答"的没人管空档：
+        // 弹窗挂在那儿没人重试，恢复播放那条路也以为"没有弹窗"去抢恢复被站点有意暂停的视频。
+        // 用户看到的就是"答完就卡住、等半天没反应"。现在两者共用同一个常量。
         var key = this._popupQuizFingerprint(node);
-        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < 30000) {
+        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < POPUP_QUIZ_QUIET_MS) {
           node = null;
         }
       }
@@ -8079,6 +8107,32 @@
       this._popupBlockCheckedAt = now;
       this._popupBlockCached = node;
       return node;
+    },
+
+    /**
+     * 弹题是否正在**挡着播放**。
+     *
+     * 与 `_activePopupBlock()` 的关键区别：**静默期也算挡着**。
+     *
+     * 这两个其实是不同的问题，以前共用一个函数才出的事：
+     *   · "现在该不该去处理这道弹题？" —— 静默期里的答案是"不"（怕站点重绘导致选项闪烁）
+     *   · "现在能不能恢复播放？"     —— 静默期里的答案必须是"不能"
+     * 静默期里 `_activePopupBlock()` 返回 null 只回答了前者，**不代表弹窗已经没了**。
+     * 而站点是为弹题**有意暂停**了视频；如果据此就去抢恢复播放，就会和站点对打，
+     * 现场表现就是"答完之后视频不动、看着像卡死"。
+     *
+     * 这里直接看 DOM 里还有没有弹窗。不做 400ms 缓存 —— 它只在 pause 事件里被调用，
+     * 频率远低于 tick，没必要为它维护一份可能与上面缓存语义冲突的状态。
+     * 放弃窗口内返回 false：那道题已经决定不管了，就别再拦着恢复播放。
+     */
+    _popupQuizBlocksPlayback: function () {
+      var now = Date.now();
+      if (this._popupQuizBlockedUntil && now < this._popupQuizBlockedUntil) return false;
+      try {
+        return !!this._checkPopupQuiz();
+      } catch (e) {
+        return false;
+      }
     },
 
     /**
@@ -8218,6 +8272,13 @@
           if (this._popupQuizWrongAnswers.indexOf(this._popupQuizLastFilled) === -1) {
             this._popupQuizWrongAnswers.push(this._popupQuizLastFilled);
           }
+          // 特意留一条日志：用户报过"答完弹题就卡住、不知道会不会自己好"，
+          // 这条能直接说明"不是卡住，是上一个答案被平台拒了、正在换一个重试"。
+          emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
+            attempt: this._popupQuizAttempts,
+            rejected: String(this._popupQuizLastFilled).slice(0, 40),
+            banned: (this._popupQuizWrongAnswers || []).slice(0, 6)
+          });
           this._popupQuizLastFilled = '';
         }
       } else {
@@ -8276,7 +8337,9 @@
                 rawAnswer: String(this._normalizeAnswerValue(answer) || '').slice(0, 60),
                 type: type,
                 optionCount: question.options.length,
-                options: question.options.slice(0, 6)
+                options: question.options.slice(0, 6),
+                // 告诉看日志的人"接下来会静一会儿，不是卡死"
+                waitMs: POPUP_QUIZ_QUIET_MS
               });
               // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
               this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');
