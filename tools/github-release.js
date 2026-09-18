@@ -445,9 +445,16 @@ async function cmdVerify(tag) {
       }).filter(Boolean).map(function (s) { return s.replace(/\/+$/, ''); });
     } catch (e) { return null; }
   })();
-  if (!INCLUDE) {
-    console.log('\n⚠️  读不到 tools/build.js 的 INCLUDE 白名单，跳过"tag 之后改动是否进包"的判断。');
-    console.log('    （宁可只说不知道，也不要靠猜报红/报绿）');
+  // ⚠️ 读不到白名单**不能让整段判定被跳过**。
+  //    这里的 `INCLUDE` 一旦是 null，下面 `if (tagTarget !== head && INCLUDE)` 的
+  //    后半截就是假 —— 不管 tag 之后改了多少东西，都会掉进最后一个 else 打印
+  //    「tag 与 main 完全一致 ✓」。**那不是"跳过"，那是"假装没问题"**，
+  //    比报红危险得多（本项目踩过：注入一处必错改动后 verify 依然退出 0）。
+  //    所以：读不到白名单 = 校验器自己坏了 = 必须报红。
+  var includeBroken = !INCLUDE;
+  if (includeBroken) {
+    console.log('\n  ✗ 读不到 tools/build.js 的 INCLUDE 白名单 —— 校验器失效，无法判断改动会不会进包。');
+    console.log('    （这一刻的绿灯是假的：不再往下打印"完全一致"，请先修 tools/build.js 或本文件）');
   }
   // 附件名也来自 ASSETS，不写死
   var assetSrcs = ASSETS.map(function (a) { return a.src || 'omitone.zip'; });
@@ -458,7 +465,9 @@ async function cmdVerify(tag) {
     return INCLUDE.indexOf(top) !== -1;                     // 落在白名单目录/文件里
   };
   var clean = true;
-  if (tagTarget !== head && INCLUDE) {
+  if (includeBroken) {
+    clean = false;
+  } else if (tagTarget !== head) {
     var cmp = await api('GET', base + '/compare/' + tagTarget + '...' + head);
     var files = (cmp.files || []).map(function (f) { return f.filename; });
     var shipped = files.filter(affectsUser);
