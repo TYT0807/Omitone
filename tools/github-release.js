@@ -12,7 +12,20 @@
  *   release <tag> --notes-file <文件>         打 tag + 建 Release + 传两个附件
  *   verify  <tag>                             核验远端状态（**发完必须跑一次**）
  *
- * 令牌：优先读环境变量 GITHUB_TOKEN，其次读 .workbuddy/.ghtoken（已 gitignore）。
+ * 令牌：优先读环境变量 GITHUB_TOKEN，其次读**用户主目录**下的
+ *   `~/.omitone-release.ghtoken` —— 用户主目录下的一个文件。
+ *
+ * ⚠️ 令牌路径**刻意放在仓库之外**，原因是安全，不是随手：
+ *   1) 仓库内的文件哪怕 .gitignore 挡住了，也随时可能被 `git add -f`、
+ *      被别的工具打包、或被 AI 自己误读进上下文；用户在 Windows 下还有 OneDrive 同步
+ *      （主目录下的一部分会被同步到云端）等意外扩散途径。
+ *   2) 放在用户主目录 + 收紧 ACL（只允许本账户读写）二者叠加，
+ *      仓库怎么折腾都不会碰到它。
+ *   3) 这个文件是**用完就该删**的：发版结束请立刻 revoke 令牌并删掉它。
+ *
+ *   为什么以"文件"为准而不是环境变量：本机实测让令牌经环境变量传入
+ *   连续 3 次都是空值（见 AGENTS.md §7.6），只有写文件这条通路是可靠的。
+ *   所以设计成"把文件放对地方"，而不是去赌环境变量。
  *
  * ⚠️ 附件名由本脚本**写死**，不接受参数 —— 这是刻意的：
  *   README 顶部的下载入口用的是 GitHub 的永久链接
@@ -79,11 +92,18 @@ function toLf(text) {
 // ---------------------------------------------------------------------------
 function token() {
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN.trim();
-  var file = path.join(ROOT, '.workbuddy', '.ghtoken');
+  var file = tokenPath();
   if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8').trim();
-  console.error('没有令牌。请设置环境变量 GITHUB_TOKEN，');
-  console.error('或把令牌写进 .workbuddy/.ghtoken（该目录已 gitignore）。');
+  console.error('没有找到令牌。');
+  console.error('请把令牌写进 ' + file);
+  console.error('（文件里只放令牌本身，不要引号、不要换行）');
+  console.error('用完请立刻 revoke 并删除该文件 —— 它不该长期留在磁盘上。');
   process.exit(1);
+}
+
+/** 令牌文件路径：用户主目录，刻意在仓库之外（原因见文件头注释）。 */
+function tokenPath() {
+  return path.join(require('os').homedir(), '.omitone-release.ghtoken');
 }
 
 /**

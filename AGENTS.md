@@ -184,9 +184,21 @@ npm run e2e       # 真实 Edge 功能交叉检验（20 个场景 / 222 项）
   - `push --message-file <文件> <文件...>` —— 提交改动到 main，并自动 fetch + reset 对齐本地
   - `release <tag> --notes-file <文件>` —— 打 tag + 建 Release + 传两个附件
   - `verify <tag>` —— **发完必须跑**，它会确认 tag 指向、附件 state、以及 README 那条下载直链是否可用
-  - 令牌：环境变量 `GITHUB_TOKEN`，或 `.workbuddy/.ghtoken`
+  - 令牌：**`~/.omitone-release.ghtoken`** —— 放在用户主目录下、仓库之外。
+    ⚠️ 刻意放在**仓库之外**（原因与 ACL 做法见 HANDOVER §0.5），脚本里的 `tokenPath()` 已按此路径读。
+    环境变量 `GITHUB_TOKEN` 仍优先，但**在本机不可靠** —— 见下面 §7.4
 
-### 7.4 令牌要等整件事做完再删
+### 7.4 令牌经**环境变量**传入在本机不可靠 —— 走文件
+
+实测连续 3 次经环境变量传入令牌都是**空值**（`GITHUB_TOKEN` 长度 0），
+而同一时刻写进文件立刻可用。
+
+**所以：别去查"环境变量为什么是空的"** —— 那是本机环境的特性，不是操作错误。
+直接让使用者写进 `~/.omitone-release.ghtoken`。
+
+细节与"不要一上来就说令牌不完整"那条提醒见 HANDOVER §7.9。
+
+### 7.5 令牌要等整件事做完再删
 
 本仓库栽过一次：tag 推上去了、main 推上去了，**唯独 Release 和附件没发出去** ——
 因为清理时提前把 `.ghtoken` 删了。**顺序是"发版 → 核验远端 → 再删令牌"。**
