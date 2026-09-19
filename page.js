@@ -7174,9 +7174,13 @@
           if (!qid) { out.push({ qid: '', answer: '(无 qid)' }); continue; }
           var a = doc && doc.getElementById ? doc.getElementById('answer' + qid) : null;
           var t = doc && doc.getElementById ? doc.getElementById('answertype' + qid) : null;
-          out.push({ qid: qid, type: q && q.type,
+          // `mapped` 是我们**把 answertype 解读成了什么** —— 与 `type` 一列对比，
+          // 就能立刻看出「我们认的题型」和「平台声明的题型」是否一致。
+          // 不一致时服务端很可能拒收（比如我们当单选填、平台声明是多选）。
+          var rawType = t ? String(t.value || '') : '';
+          out.push({ qid: qid, type: q && q.type, mapped: this._mapQuizTypeValue(rawType),
             answer: a ? String(a.value || '') : '(无该字段)',
-            answertype: t ? String(t.value || '') : '(无该字段)' });
+            answertype: t ? rawType : '(无该字段)' });
         }
         console.log('[Omitone] submit payload', JSON.stringify(out));
       } catch (e) {}

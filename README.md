@@ -893,6 +893,19 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
 | **点了选项、日志也写了 `clicked option`，但隐藏域 `#answer{qid}` 是空的** | 见 §6 #37。控制台跑 `_xxtApp._getQuizQuestionFilledValue(null, _xxtApp._extractQuestions(null)[0])`：返回空串就是没写上。这类页面 qid 在容器上、且没有 `.num_option` 徽标 |
 | **提交后一直停在 `waiting quiz submit result`，然后整页重载、重扫重答重交** | 见 §6 #38。先看结果页长什么样：`document.body.innerText` 里有「我的答案 / 正确答案」且 `document.querySelectorAll('.Py_answer').length > 0`，说明是判分结果页 —— 旧判据对它是瞎的。日志里找 `quiz submit wait timeout` |
+
+> **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
+> 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
+> （`_describeQuizResultPage`）：`redoText` / `gradeSelector` / `gradeText` /
+> `containers` / `controls` / `controlsEnabled` / `keywords`。
+> 拿它跟**真实判分页**比一比，缺哪一块一目了然：
+>
+> - `gradeText: false` 且 `gradeSelector: ''` → 判分痕迹的判据没覆盖真实页面
+> - `controlsEnabled > 0` → 平台**没有**禁用控件，第三条判据太严
+> - `redoText: true` → 平台真的在说「请重做」，那是**答案错**，不是判据问题
+>
+> 另外两条日志用于分清「谁写的隐藏域」：`submit payload`（含 `mapped`，
+> 一眼看出我们认的题型与平台 `answertype` 是否一致）、`answer field written … ours=`。
 | 答题报「API 不可用」但弹窗测试是通的 | 区分网络失败与 `parseError`（后者**不该**写 `apiConnectionFailed`，否则会陷入"跳过 → 不再请求 → 标志无法自愈"的死循环） |
 | 验证码识别出来是空 | `captchaModel` 必须填视觉模型；留空会回退主模型，日志里会看到 `empty captcha result` |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
