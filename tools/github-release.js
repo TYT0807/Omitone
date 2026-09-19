@@ -38,6 +38,7 @@
 var fs = require('fs');
 var path = require('path');
 var execFileSync = require('child_process').execFileSync;
+var crypto = require('crypto');
 
 var ROOT = path.join(__dirname, '..');
 var OWNER = 'TYT0807';
@@ -372,6 +373,71 @@ async function cmdRelease(tag, notesFile) {
 }
 
 // ---------------------------------------------------------------------------
+// replace-asset：把某个 Release 的附件换成当前本地构建的**同名**附件
+//
+// 为什么需要它：tag 打完之后，如果 main 上又落了**会影响安装包**的改动
+// （page.js / content.js / 使用说明.pdf 之类），线上那个附件就是旧的了 ——
+// 用户点下载拿到的是修复前的版本，而版本号和徽章看起来都是新的。
+// `verify` 会把这个情况报出来，并提示「直接替换该附件即可（删旧 assets → 重传同名），
+// 不必重发整版」。这条命令就是把那句提示变成可执行的一步，免得每次手工调接口。
+//
+// ⚠️ 附件名必须与 ASSETS 声明**逐字一致**：README 那条永久下载链接按附件名取，
+// 改了名字链接立刻 404，而且受影响的是"只会点这一个链接"的那批用户（AGENTS.md §7.5）。
+//
+// 判重按**字节数**比 —— 与 verify 里对说明书那条用的是同一个判据。
+// ---------------------------------------------------------------------------
+async function cmdReplaceAsset(tag) {
+  if (!tag) throw new Error('replace-asset 需要 tag，例如 v1.1.6');
+
+  var version = manifestVersion();
+  var wanted = ASSETS.map(function (a) {
+    return { file: a.src || path.join('dist', 'omitone-' + version + '.zip'), name: a.name };
+  });
+  wanted.forEach(function (w) {
+    if (!fs.existsSync(path.join(ROOT, w.file))) {
+      throw new Error('缺附件源文件 ' + w.file + '（先跑 npm run build 或 npm run manual）');
+    }
+  });
+
+  var rel = await api('GET', base + '/releases/tags/' + tag);
+  console.log('release ' + tag + ' → ' + rel.html_url);
+
+  var current = await api('GET', base + '/releases/' + rel.id + '/assets');
+  var changed = 0;
+
+  for (var i = 0; i < wanted.length; i++) {
+    var w = wanted[i];
+    var localSize = fs.statSync(path.join(ROOT, w.file)).size;
+    var old = current.filter(function (a) { return a.name === w.name; })[0];
+
+    if (old && old.size === localSize) {
+      console.log('  ' + w.name + ' 已是最新（' + (localSize / 1024).toFixed(1) + ' KB）—— 跳过');
+      continue;
+    }
+    if (old) {
+      await api('DELETE', base + '/releases/assets/' + old.id);
+      console.log('  删除旧附件 ' + w.name + '（' + (old.size / 1024).toFixed(1) + ' KB）');
+    } else {
+      console.log('  线上没有 ' + w.name + '，新增');
+    }
+
+    var data = fs.readFileSync(path.join(ROOT, w.file));
+    var res = await fetch('https://uploads.github.com' + base + '/releases/' + rel.id +
+      '/assets?name=' + encodeURIComponent(w.name), {
+      method: 'POST',
+      headers: Object.assign({}, headers(), { 'Content-Type': 'application/octet-stream' }),
+      body: data
+    });
+    var text = await res.text();
+    if (!res.ok) throw new Error('附件上传失败 ' + res.status + ' ' + text.slice(0, 300));
+    console.log('  上传 ' + w.name + ' (' + (data.length / 1024).toFixed(1) + ' KB)');
+    changed++;
+  }
+
+  if (!changed) console.log('\n没有需要替换的附件。');
+  else console.log('\n下一步必须核验：node tools/github-release.js verify ' + tag);
+}
+// ---------------------------------------------------------------------------
 // verify：核验远端（**只看接口返 200 不算数**，要确认附件状态与 tag 指向）
 // ---------------------------------------------------------------------------
 async function cmdVerify(tag) {
@@ -481,37 +547,72 @@ async function cmdVerify(tag) {
       // 附件是可以在不重发版的情况下单独替换的（本项目就常这么做：
       // 只改了说明书就只换 Omitone-manual.pdf，扩展代码一行没动）。
       //
-      // 所以这里再补一刀**按内容核对**：把每个受影响的附件源文件
-      // 与它在 Release 上的实际大小比一遍。一致 = 已经换过了，绿灯。
+      // 所以这里再补一刀**按内容核对**。这里有两路，必须分开映射：
+      //   - 直接就是附件源文件的（如 使用说明.pdf）→ 拿**它自己**跟线上附件比
+      //   - 打进 zip 的（page.js / content.js / libs/…）→ 拿**本地重新构建出来的
+      //     dist/omitone-<版本>.zip** 跟线上的 omitone.zip 比
+      //
+      // ⚠️ 原先只按 `ASSETS[].src` 找对应附件，于是**打进 zip 的文件永远找不到附件**，
+      //    一律被判成「Release 上没有对应附件」→ 报红。而校验器自己又建议
+      //    「直接替换该附件即可」—— 自己给的建议自己认不出来。
+      //    （实测踩过：用 replace-asset 换完 zip，verify 仍然报旧包。）
+      //
+      // 比对优先用 **sha256 摘要**（GitHub 附件接口会给 digest），拿不到再退回比字节数。
+      // 字节数相等不等于内容相等 —— 能比摘要就别只比大小。
+      var ZIP_ASSET = 'omitone.zip';
+      var localZip = path.join(ROOT, 'dist', 'omitone-' + manifestVersion() + '.zip');
+      var sha256 = function (p) {
+        return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
+      };
       var stale = [];
+      var seenAsset = {};
       for (var i2 = 0; i2 < shipped.length; i2++) {
         var p2 = shipped[i2].replace(/\\/g, '/');
         var localPath = path.join(ROOT, p2);
-        var asset = (rel.assets || []).filter(function (a) {
-          // 附件名是 ASCII 的（中文名会被 GitHub 洗掉），所以按"源文件名 → 附件名"映射
-          return ASSETS.some(function (d) { return (d.src === p2) && d.name === a.name; });
-        })[0];
+        var direct = ASSETS.filter(function (d) { return d.src === p2; })[0];
+        var assetName = direct ? direct.name : ZIP_ASSET;
+        // zip 这一路：所有打进包的文件共用同一个附件，核对一次就够
+        if (seenAsset[assetName]) continue;
+        seenAsset[assetName] = true;
+
+        var asset = (rel.assets || []).filter(function (a) { return a.name === assetName; })[0];
         if (!asset) {
-          stale.push(p2 + '（Release 上没有对应附件）');
+          stale.push(assetName + '（Release 上没有这个附件）');
           continue;
         }
-        if (!fs.existsSync(localPath)) {
-          stale.push(p2 + '（本地文件不存在，无法核对）');
+        var comparePath = direct ? localPath : localZip;
+        if (!fs.existsSync(comparePath)) {
+          stale.push(assetName + '（本地没有可比对的文件 ' + path.relative(ROOT, comparePath) +
+            '，先跑 npm run build / npm run manual）');
           continue;
         }
-        var lk = fs.statSync(localPath).size;
-        if (lk !== asset.size) {
-          stale.push(p2 + '（本地 ' + (lk / 1024).toFixed(1) + ' KB ≠ 线上 ' +
-            (asset.size / 1024).toFixed(1) + ' KB）');
+        var localSha = sha256(comparePath);
+        var remoteSha = String(asset.digest || '').replace(/^sha256:/, '');
+        if (remoteSha) {
+          if (localSha !== remoteSha) {
+            stale.push(assetName + '（内容不一致：本地 ' + localSha.slice(0, 12) +
+              '… ≠ 线上 ' + remoteSha.slice(0, 12) + '…）');
+          } else {
+            console.log('    ' + assetName + ' 已与本地构建逐字节一致（sha256 ' +
+              localSha.slice(0, 12) + '…）—— 已换过，不算过期');
+          }
         } else {
-          console.log('    ' + p2 + ' 已与线上附件等大（' + (lk / 1024).toFixed(1) + ' KB）—— 已换过，不算过期');
+          var lk = fs.statSync(comparePath).size;
+          if (lk !== asset.size) {
+            stale.push(assetName + '（本地 ' + (lk / 1024).toFixed(1) + ' KB ≠ 线上 ' +
+              (asset.size / 1024).toFixed(1) + ' KB）');
+          } else {
+            console.log('    ' + assetName + ' 已与线上附件等大（' + (lk / 1024).toFixed(1) +
+              ' KB，接口未给摘要）—— 视为已换过');
+          }
         }
       }
       if (stale.length) {
         console.log('  ✗ tag 之后有会**影响用户下载**的改动，且线上附件还是旧的：');
         stale.forEach(function (s2) { console.log('      ' + s2); });
-        console.log('    → 改了 zip 里的代码就重出 omitone.zip；只改了说明书这类附件，');
-        console.log('       直接替换该附件即可（删旧 assets → 重传同名），不必重发整版。');
+        console.log('    → 先 npm run build（或 npm run manual）重出产物，再跑：');
+        console.log('        node tools/github-release.js replace-asset ' + tag);
+        console.log('        （按同名替换附件，不必重发整版；附件名绝不能改，见 AGENTS.md §7.5）');
         clean = false;
       } else {
         console.log('  ✓ 改动涉及的附件都已换成最新内容，用户下载到的东西是对的');
@@ -540,12 +641,14 @@ async function cmdVerify(tag) {
   }
   else if (cmd === 'release') await cmdRelease(rest.positional[0], rest.flags['notes-file']);
   else if (cmd === 'verify') await cmdVerify(rest.positional[0]);
+  else if (cmd === 'replace-asset') await cmdReplaceAsset(rest.positional[0]);
   else if (cmd === 'check-msg') cmdCheckMsg(rest.positional[0]);
   else {
     console.log('用法:');
     console.log('  node tools/github-release.js push --message-file <文件> [--delete a,b] <文件...>');
     console.log('  node tools/github-release.js release <tag> --notes-file <文件>');
     console.log('  node tools/github-release.js verify <tag>');
+    console.log('  node tools/github-release.js replace-asset <tag>   # 附件过期时按同名替换，不必重发整版');
     console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');
     process.exitCode = 1;
   }

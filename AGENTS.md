@@ -183,7 +183,10 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 262 项）
 - **这整条链路已经脚本化了**：`tools/github-release.js`（`npm run release -- <子命令>`）
   - `push --message-file <文件> <文件...>` —— 提交改动到 main，并自动 fetch + reset 对齐本地
   - `release <tag> --notes-file <文件>` —— 打 tag + 建 Release + 传两个附件
-  - `verify <tag>` —— **发完必须跑**，它会确认 tag 指向、附件 state、以及 README 那条下载直链是否可用
+  - `verify <tag>` —— **发完必须跑**，它会确认 tag 指向、附件 state、以及 README 那条下载直链是否可用。
+    它还会比 **sha256 摘要**：tag 之后若落了会影响安装包的改动，而附件没换，就报红并告诉你怎么办
+  - `replace-asset <tag>` —— **附件过期时按同名替换**（删旧 assets → 重传同名），不必重发整版。
+    ⚠️ 附件名绝不能改，改了 README 那条永久下载链接立刻 404（§7.5）
   - 令牌：**`~/.omitone-release.ghtoken`** —— 放在用户主目录下、仓库之外。
     ⚠️ 刻意放在**仓库之外**（原因与 ACL 做法见 HANDOVER §0.5），脚本里的 `tokenPath()` 已按此路径读。
     环境变量 `GITHUB_TOKEN` 仍优先，但**在本机不可靠** —— 见下面 §7.4
