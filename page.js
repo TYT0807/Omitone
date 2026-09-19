@@ -388,6 +388,7 @@
       this._clearTickLoop();
       this._bindStepNavigation();
       console.log('%c[Omitone] start', 'color:#4CAF50;font-weight:bold');
+      try { this._installSubmitSniffer(); } catch (eSniff) {}
       emitRuntimeLog('info', 'start');
       this._startTickLoop();
     },
@@ -7106,6 +7107,62 @@
      * 说明失败与答案对错无关，是**我们生成的提交状态**平台不认。
      * 把这份快照与手动提交时同名字段一比，就能看出差在哪（题型值？格式？空值？）。
      */
+    /**
+     * 只读抓包：把平台**提交作业**的请求体与响应打出来。
+     *
+     * 为什么需要：现场报「作业提交失败」，而用户**手动随便选**却能提交成功 ——
+     * 失败与答案对错无关，是提交状态平台不认。`btnBlueSubmit()` 本身没抛异常
+     *（抛了我们会打印 `btnBlueSubmit failed`，日志里没有），所以拒绝发生在**服务端**。
+     * 那唯一能说明原因的就是这次请求的**响应体** —— 平台自己的错误文案在里面。
+     *
+     * ⚠️ 铁律：**完全穿透**。钩子自身出任何问题都必须原样走原方法 ——
+     * 在这里抛一个错，整个页面的 AJAX 都会废掉，比原 bug 严重得多。
+     * 所以每一层都 try/catch，且只**读**不**改**（不碰参数、不碰返回值）。
+     *
+     * 只记跟作业/提交相关的 URL，避免把整页的请求都刷进日志。
+     */
+    _installSubmitSniffer: function () {
+      if (this._submitSnifferInstalled) return;
+      this._submitSnifferInstalled = true;
+      try {
+        var self = this;
+        var interesting = /work|submit|exam|homework|answer/i;
+        var XHR = window.XMLHttpRequest;
+        if (XHR && XHR.prototype && XHR.prototype.open && XHR.prototype.send) {
+          var origOpen = XHR.prototype.open;
+          var origSend = XHR.prototype.send;
+          XHR.prototype.open = function (method, url) {
+            try {
+              this.__omitoneUrl = String(url || '');
+              this.__omitoneMethod = String(method || '');
+              if (interesting.test(this.__omitoneUrl)) {
+                console.log('[Omitone] submit sniffer →', this.__omitoneMethod, this.__omitoneUrl);
+              }
+            } catch (e0) {}
+            return origOpen.apply(this, arguments);
+          };
+          XHR.prototype.send = function (body) {
+            try {
+              if (this.__omitoneUrl && interesting.test(this.__omitoneUrl)) {
+                var b = body;
+                if (b && typeof b !== 'string') {
+                  try { b = JSON.stringify(b); } catch (e1) { b = String(b); }
+                }
+                console.log('[Omitone] submit sniffer body', String(b || '').slice(0, 800));
+                this.addEventListener('loadend', function () {
+                  try {
+                    console.log('[Omitone] submit sniffer ←', this.status,
+                      String(this.responseText || '').slice(0, 800));
+                  } catch (e2) {}
+                });
+              }
+            } catch (e3) {}
+            return origSend.apply(this, arguments);
+          };
+          console.log('[Omitone] submit sniffer installed');
+        }
+      } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
+    },
     _logSubmitPayload: function (questions, doc) {
       try {
         var list = (questions && questions.length ? questions : this._quizCurrentQuestions) || [];
