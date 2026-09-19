@@ -243,7 +243,19 @@ npm run manual
 npm run release -- push --message-file <提交信息文件> <改动文件...>
 npm run release -- release <tag> --notes-file <Release说明文件>
 npm run release -- verify  <tag>
+npm run release -- replace-asset <tag>           # 附件过期时按同名替换，不必重发整版
 npm run release -- check-msg <提交信息文件>      # 只校验提交信息形状，不联网、不需要令牌
+```
+
+**为什么会有 `replace-asset`**：tag 打完之后，main 上仍可能落**会影响安装包**的改动
+（`page.js` / `content.js` / 说明书）。这时线上附件就是旧的 —— 用户点下载拿到的是修复前的版本，
+而版本号和徽章看起来都是新的。`verify` 会按 **sha256 摘要**把这种情况报出来，
+`replace-asset` 则按同名替换掉它（附件名不变 → 永久下载链接不受影响）。
+两步是配套的：**verify 报 → replace-asset 修 → 再 verify 确认**。
+
+⚠️ `verify` 曾经只按 `ASSETS[].src` 找对应附件，于是**打进 zip 的文件永远找不到附件**、
+一律被判成过期 —— 自己建议"直接替换该附件"，自己却认不出已经换过了。现已改为
+「直接附件源比它自己 / 打进包的文件比本地重新构建的 zip」，且优先比 sha256 而不是字节数。
 ```
 
 **为什么不用 `git push`**：这台机器上 `git push` 能连上却永远不返回
