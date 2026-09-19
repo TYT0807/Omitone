@@ -1523,6 +1523,23 @@ SCENARIOS.push({
     check('即便 min=1，重试也不会退回"只选一项"（靠的是目标规模下限 2）',
       r4b && r4b.join.length >= 2 && r4b.join !== 'C', JSON.stringify(r4b));
 
+    // ④c 补选必须避开**已判错的组合**。
+    // 现场真实故障（用户报「作业页反复重交」）：模型答 "A" —— "A" 本身没判错过，
+    // 本地把它补成 "AB"，而 "AB" **已经判错过**。补选原先不看禁选列表，
+    // 于是每轮都补出同一个错答案：补成 AB → 判错 → AB 进禁选 → 模型仍答 A → 又补成 AB …
+    // 无限循环。这里只把 "AB" 记成错的，"A" 保持干净，专门锁这一条。
+    var r4c = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=window.__mq;var el=q._element;' +
+      'var loaded=app._loadQuizCorrectAnswerCache(null);' +
+      'app._addWrongQuizAnswer(loaded.data,{qid:app._getQuestionIdFromElement(el),' +
+      'titleKey:app._getQuizTitleKeyFromElement(el,q.title),answer:"AB",type:"multiple",canonical:"AB"});' +
+      'app._saveQuizCorrectAnswerCache(null,loaded.data);' +
+      'var v=app._normalizeChoiceAnswerValues("A","multiple",el);' +
+      'return {join:Array.isArray(v)?v.join(""):String(v)};})()'
+    );
+    check('补选会避开已判错的组合（否则会反复补出同一个错答案 → 反复重交）',
+      r4c && r4c.join !== 'AB' && r4c.join.indexOf('A') !== -1, JSON.stringify(r4c));
+
     // ⑤ 不定项：允许单选，别被上面的规则误伤（题型名判定必须区分这两者）
     var r5 = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=document.createElement("div");' +
