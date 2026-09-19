@@ -1592,6 +1592,25 @@ SCENARIOS.push({
     );
     check('提交后被清空 → 结束等待（不再当成"还在等结果"）',
       r4f && r4f.held === false && r4f.pending === false, JSON.stringify(r4f));
+
+    // ④g 提交抓包必须**完全穿透**：钩子装上之后，普通 XHR 仍要能正常跑完。
+    // 钩子在这里抛一个错会废掉整页 AJAX —— 比原 bug 严重得多，所以这条必须守住。
+    var r4g = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var app=window._xxtApp;' +
+      'try{app._installSubmitSniffer();}catch(e){}' +
+      'var x=new XMLHttpRequest();' +
+      // ⚠️ URL 必须**命中钩子的关键词**（work/submit/exam/homework/answer）——
+      // 第一版用的是 /__sniffer_probe__，不含关键词，钩子那条分支压根没跑到，
+      // 等于没测到真正有风险的路（反向验证也抓不住：注入的抛错根本不会触发）。
+      'x.open("GET","/__work_probe__");' +   // mock 对未知路径回 404，重点是**能跑完**
+      'x.onloadend=function(){res({status:x.status,done:true});};' +
+      'x.onerror=function(){res({status:-1,done:false});};' +
+      'try{x.send();}catch(e2){res({threw:String(e2&&e2.message)});}' +
+      '});})()'
+    );
+    check('装了提交抓包之后普通 XHR 仍能跑完（钩子完全穿透，不废页面）',
+      r4g && r4g.done === true, JSON.stringify(r4g));
     // ⚠️ 这里**故意不**再断言「不把答案记错」。写过一条，反向验证发现它不可能失败：
     // 表单被清空时本来就**没有已填答案可记**，那次 `_rememberWrongQuizAnswers` 是空操作，
     // 加不加它 `wrongs` 都是 0 —— 断言分辨不了，留着就是假的检查。
