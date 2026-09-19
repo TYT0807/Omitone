@@ -1540,6 +1540,16 @@ SCENARIOS.push({
     check('补选会避开已判错的组合（否则会反复补出同一个错答案 → 反复重交）',
       r4c && r4c.join !== 'AB' && r4c.join.indexOf('A') !== -1, JSON.stringify(r4c));
 
+    // ④d 提交超时诊断：必须能**区分**「还没判分」和「已判分」两种页面。
+    // 否则超时日志只会说一句"等超时了"，到底缺哪道条件（重做文案 / 判分痕迹 / 控件已禁用）
+    // 还得靠猜 —— 现场「作业页反复重交」就是卡在这一段、而当时查不出原因。
+    var diag = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var d=app._describeQuizResultPage(null);' +
+      'return {controls:d.controls,enabled:d.controlsEnabled,grade:d.gradeSelector,gradeText:d.gradeText};})()'
+    );
+    check('提交超时诊断能报出「还有可交互控件」= 尚未判分',
+      diag && diag.controls > 0 && diag.enabled > 0, JSON.stringify(diag));
+
     // ⑤ 不定项：允许单选，别被上面的规则误伤（题型名判定必须区分这两者）
     var r5 = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=document.createElement("div");' +

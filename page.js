@@ -7037,6 +7037,45 @@
       emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts() });
     },
 
+    /**
+     * 诊断：**为什么没认出判分结果页**。
+     *
+     * `_isQuizResultPageFinished` 有三道条件 ——
+     *   ① 没有「请重做」类文案（一票否决）
+     *   ② 有判分痕迹（`.Py_answer` 那一族，或正文出现「我的答案/正确答案/本题得分/答案解析」）
+     *   ③ 题目区已不可交互（没有容器，或所有 radio/checkbox/input/textarea 都 disabled）
+     * 任何一道不满足都返回 false，但**不告诉你缺的是哪一道**。
+     * 于是 25 秒超时之后只能靠猜 —— 现场报过「作业页反复重交」，卡的就是这一段。
+     *
+     * 这条日志把三道条件各自的结果都打出来，下次复现就能直接看出缺哪一块，不用再猜。
+     */
+    _describeQuizResultPage: function (preferredDoc) {
+      var out = {};
+      try {
+        var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
+        if (!doc || !doc.body) { out.doc = 'none'; return out; }
+        var text = textOf(doc.body);
+        out.textLen = text.length;
+        // ① 一票否决
+        out.redoText = /未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text);
+        // ② 判分痕迹
+        var hit = null;
+        try { hit = doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer'); } catch (eH) {}
+        out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
+        out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
+        // ③ 可交互性
+        out.containers = doc.querySelectorAll('.TiMu, .Cy_TITle, .questionLi, .questionItem, .mark_item, .questionBox').length;
+        var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
+        out.controls = ctrls.length;
+        var enabled = 0;
+        for (var i = 0; i < ctrls.length; i++) { if (!ctrls[i].disabled) enabled++; }
+        out.controlsEnabled = enabled;
+        // 正文里跟判分有关的词，便于对照
+        var kw = text.match(/我的答案|正确答案|本题得分|答案解析|任务点已完成|已通过|请重做|未通过|不及格/g);
+        out.keywords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
+      } catch (e) { out.err = String(e.message || e).slice(0, 60); }
+      return out;
+    },
     _monitorQuizSubmit: function (preferredDoc) {
       if (this._prepareQuizRedoIfNeeded(preferredDoc || null)) return true;
       if (!this._quizSubmitPending) return false;
@@ -7053,7 +7092,11 @@
       var waitMs = Number(this.configs.quizSubmitWaitMs || 25000);
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
-        emitRuntimeLog('warn', 'quiz submit wait timeout', { waitMs: waitMs });
+        // 超时时把「为什么没认出结果页」一并记下来 ——
+        // 没有这段的话，日志里只剩一句「等超时了」，缺哪道条件完全靠猜。
+        var diag = this._describeQuizResultPage(preferredDoc || null);
+        diag.waitMs = waitMs;
+        emitRuntimeLog('warn', 'quiz submit wait timeout', diag);
         return false;
       }
 
