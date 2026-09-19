@@ -8464,7 +8464,18 @@
           try {
             bannedSet = this._getKnownWrongCanonicalSet({ _element: root }, 'multiple', root.ownerDocument) || [];
           } catch (eB) { bannedSet = []; }
-          var expanded = this._expandMultiChoiceLetters(letters, min, root, bannedSet);
+          // ⚠️ **只在模型给的组合已经试过且失败时**才补选。
+          //
+          // 1.1.5 加这个补选的目的，看它自己的记录是「让重试别总在"只选一项"里打转」——
+          // 是个**分散重试**的启发式，**不是**平台约束。
+          // 而用户实测推翻了那个隐含前提：**多选只选一个照样能提交成功**。
+          // 所以第一次就凭空补一项 = 造一个模型没给的答案 —— 那正是判错的一个来源。
+          // 现在只在"这个组合已经判错过"时才补（那种情况下不补就只会原地打转）。
+          var mineCanonical = letters.slice().sort().join('');
+          var alreadyFailed = bannedSet.indexOf(mineCanonical) !== -1;
+          var expanded = alreadyFailed
+            ? this._expandMultiChoiceLetters(letters, min, root, bannedSet)
+            : letters;
           if (expanded.length > letters.length) {
             emitRuntimeLog('warn', 'multiple choice answer expanded locally', {
               from: letters.join(''), to: expanded.join(''), minSelections: min,

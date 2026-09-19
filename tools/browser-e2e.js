@@ -1461,22 +1461,53 @@ SCENARIOS.push({
     );
     check('重复填同一答案不会把已选项切掉（幂等）', r2 && r2.hidden === 'AC', JSON.stringify(r2));
 
-    // ② 模型只给一个字母时：本地扩成两项，**不发额外请求**（token 一分不涨）
+    // ② 模型只给一个字母时：**先按原答案填，不凭空补一项**。
+    // 用户实测：多选**只选一个照样能提交成功** —— 说明补选不是平台约束。
+    // 1.1.5 加它是为了"分散重试"（见 CHANGELOG 1.1.5 成因 2），
+    // 但第一次就补 = 造一个模型没给的答案，那正是判错的一个来源。
     var beforeReq = ctx.mock.requests.length;
     var r3 = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var el=window.__mq._element;' +
       'var qid=app._getQuestionIdFromElement(el);' +
+      'app._clearMultiChoiceSelection(el);' +
       'var values=app._normalizeChoiceAnswerValues("B","multiple",el);' +
       'app._fillMultiChoice(el,"B");' +
       'var hidden=document.getElementById("answer"+qid);' +
       'return {values:values,hidden:hidden?hidden.value:null};})()'
     );
-    check('只给一个字母 → 本地扩成两项',
-      r3 && r3.values.length >= 2 && r3.values.indexOf('B') !== -1, JSON.stringify(r3));
-    check('扩展后的答案真的填进 DOM（不是只填一项）',
-      r3 && r3.hidden && r3.hidden.length >= 2, JSON.stringify(r3));
-    check('本地扩展不发任何模型请求（零 token）', ctx.mock.requests.length === beforeReq,
+    check('新鲜的单个字母答案 → **原样使用**（不凭空补第二项）',
+      r3 && r3.values.length === 1 && r3.values[0] === 'B', JSON.stringify(r3));
+    check('原样填进 DOM（只填一项，不造答案）',
+      r3 && r3.hidden === 'B', JSON.stringify(r3));
+    check('本地处理不发任何模型请求（零 token）', ctx.mock.requests.length === beforeReq,
       '多发了 ' + (ctx.mock.requests.length - beforeReq) + ' 次');
+
+    // ②b 只有**已经判错过**的单项组合才补选 —— 否则重试只会原地打转（1.1.5 要治的就是这个）
+    // ⚠️ 用**自己的合成题**（qid 99101），不要把错误缓存写进 window.__mq ——
+    // 上一版就是那么写的，结果污染了后面共用 __mq 的 ⑥「错够阈值」测试（实测撞坏过）。
+    var r3b = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var box=document.createElement("div");' +
+      'box.innerHTML="<div class=\'TiMu\'><span class=\'newZy_TItle\'>多选题</span>" +' +
+      '"<ul class=\'Zy_ulTop\'>" +' +
+      '["A","B","C","D"].map(function(L,i){var t=["甲","乙","丙","丁"][i];' +
+      'return "<li class=\'before-after\' qid=\'99101\' data=\'"+L+"\'><label>" +' +
+      '"<input type=\'checkbox\' value=\'"+L+"\'>" +' +
+      '"<span class=\'num_option num_option_dx choice99101\' data=\'"+L+"\'>"+L+"</span>" +' +
+      '"<span class=\'fl after\'>"+t+"</span></label></li>";}).join("") +' +
+      '"</ul><input type=\'hidden\' id=\'answer99101\' value=\'\'></div>";' +
+      'document.body.appendChild(box);' +
+      'var el=box.firstChild;' +
+      'var q={index:98,type:"multiple",title:"多选题",options:["甲","乙","丙","丁"],_element:el};' +
+      'var loaded=app._loadQuizCorrectAnswerCache(null);' +
+      'app._addWrongQuizAnswer(loaded.data,{qid:"99101",' +
+      'titleKey:app._getQuizTitleKeyFromElement(el,q.title),answer:"B",type:"multiple",canonical:"B"});' +
+      'app._saveQuizCorrectAnswerCache(null,loaded.data);' +
+      'var v=app._normalizeChoiceAnswerValues("B","multiple",el);' +
+      'return {min:app._getMultiChoiceMinSelections(el),join:Array.isArray(v)?v.join(""):String(v)};})()'
+    );
+    check('已判错的单项组合 → 才补成两项（让重试换组合）',
+      r3b && r3b.min === 2 && r3b.join.length >= 2 && r3b.join.indexOf('B') !== -1, JSON.stringify(r3b));
 
     // ④ 重试下限：已知 "C" 是错的，下一个候选不能又是"只选一项"
     var r4 = await ctx.client.evaluate(
