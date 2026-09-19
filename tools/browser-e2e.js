@@ -1566,6 +1566,36 @@ SCENARIOS.push({
     );
     check('多选答案按字母序返回（乱序输入 ["C","A"] → "AC"）',
       r4e && r4e.values === 'AC', JSON.stringify(r4e));
+
+    // ④f 静默拒绝：提交后表单被**清空**（不带「请重做」那类文案）也要认出来并把答案记错。
+    // 现场：用户看到"提交闪了一下框、回到题目、选项全没了、反复重交"。
+    // 四个 _rememberWrongQuizAnswers 调用点原先全都挂在文案条件上 —— 静默拒绝一个都不命中，
+    // 于是答案不进错误缓存，下一轮原样再填，死循环。
+    var r4f = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var el=document.querySelector(".TiMu");' +
+      'var qid=app._getQuestionIdFromElement(el);' +
+      'var h=document.getElementById("answer"+qid);' +
+      'if(!h) return {skip:"这道题没有隐藏域"};' +
+      'var q={index:0,type:"single",title:"",options:[],_element:el};' +
+      // 自带前置：先写上（模拟我们填过），再清空（模拟平台重置）——
+      // 不依赖前面测试留下的状态，否则前置一变这条就成了"假跳过"。
+      'h.value="A";' +
+      'app._quizCurrentQuestions=[q];' +
+      'h.value="";' +
+      'Array.from(el.querySelectorAll("input")).forEach(function(ip){ip.checked=false;});' +
+      'app._quizSubmitPending=true;' +
+      'app._quizSubmitStartedAt=Date.now()-5000;' +   // 已过 2 秒判定门槛
+      'var held=app._monitorQuizSubmit(null);' +
+      'return {held:held,pending:app._quizSubmitPending,' +
+      '  wrongs:app._getKnownWrongQuizAnswers(q,null).length};})()'
+    );
+    check('提交后被清空 → 结束等待（不再当成"还在等结果"）',
+      r4f && r4f.held === false && r4f.pending === false, JSON.stringify(r4f));
+    // ⚠️ 这里**故意不**再断言「不把答案记错」。写过一条，反向验证发现它不可能失败：
+    // 表单被清空时本来就**没有已填答案可记**，那次 `_rememberWrongQuizAnswers` 是空操作，
+    // 加不加它 `wrongs` 都是 0 —— 断言分辨不了，留着就是假的检查。
+    // （真要判「被拒绝」，得先证明失败与答案有关 —— 而用户实测恰恰证明无关。）
     // ⚠️ 这里**故意不**断言隐藏域的值。`_clickOptionItem` 写隐藏域时两条路都排过序
     //（有徽标按 .choice{qid} 的 DOM 顺序累加、无徽标显式 picked.sort()），
     // 所以「乱序输入 → 隐藏域是字母序」永远为真 —— 加了就是一条不可能失败的检查。

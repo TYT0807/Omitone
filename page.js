@@ -7076,6 +7076,55 @@
       } catch (e) { out.err = String(e.message || e).slice(0, 60); }
       return out;
     },
+    /**
+     * 提交之后，这一轮填的答案是不是**被清空了**。
+     *
+     * 判据：`_quizCurrentQuestions` 里**一道题都不再"已填写"**。
+     * 平台判错重置、或静默丢弃提交时就是这样 —— 选项全没了。
+     *
+     * 为什么需要它：`_isQuizRedoRequired` 只认「未达到及格线 / 请重做 / 很遗憾」
+     * 这类**文案**（或可见的重做弹窗）。而现场遇到过**不带这些文案的静默拒绝** ——
+     * 用户描述是「提交闪了一下框、回到题目、选项全没了」。
+     * 那种情况下四个 `_rememberWrongQuizAnswers` 调用点**一个都不会命中**，
+     * 于是填过的答案不被记成错的，下一轮**原样再填一遍**，形成死循环。
+     * 这里用"表单被清空"这个**不依赖文案**的信号兜住它。
+     */
+    _isQuizAnswersCleared: function (preferredDoc) {
+      try {
+        var qs = this._quizCurrentQuestions;
+        if (!qs || !qs.length) return false;
+        for (var i = 0; i < qs.length; i++) {
+          if (this._getQuizQuestionFilledValue(preferredDoc, qs[i])) return false;
+        }
+        return true;
+      } catch (e) { return false; }
+    },
+    /**
+     * 提交前把平台**真正会提交的字段**打出来（`#answer{qid}` + `#answertype{qid}`）。
+     *
+     * 为什么需要：现场报「作业提交失败」，但用户**手动随便选**（多选只选一个）却能提交成功 ——
+     * 说明失败与答案对错无关，是**我们生成的提交状态**平台不认。
+     * 把这份快照与手动提交时同名字段一比，就能看出差在哪（题型值？格式？空值？）。
+     */
+    _logSubmitPayload: function (questions, doc) {
+      try {
+        var list = (questions && questions.length ? questions : this._quizCurrentQuestions) || [];
+        var out = [];
+        for (var i = 0; i < list.length && i < 12; i++) {
+          var q = list[i];
+          var el = q && q._element;
+          var qid = el ? this._getQuestionIdFromElement(el) : '';
+          if (!qid) { out.push({ qid: '', answer: '(无 qid)' }); continue; }
+          var a = doc && doc.getElementById ? doc.getElementById('answer' + qid) : null;
+          var t = doc && doc.getElementById ? doc.getElementById('answertype' + qid) : null;
+          out.push({ qid: qid, type: q && q.type,
+            answer: a ? String(a.value || '') : '(无该字段)',
+            answertype: t ? String(t.value || '') : '(无该字段)' });
+        }
+        console.log('[Omitone] submit payload', JSON.stringify(out));
+      } catch (e) {}
+    },
+
     _monitorQuizSubmit: function (preferredDoc) {
       if (this._prepareQuizRedoIfNeeded(preferredDoc || null)) return true;
       if (!this._quizSubmitPending) return false;
@@ -7089,6 +7138,28 @@
       }
 
       var now = Date.now();
+
+      // 提交后**表单被清空** = 平台没接受这次提交（判错重置 / 静默丢弃）。
+      // 这种拒绝不带「请重做」那类文案，`_isQuizRedoRequired` 认不出来 ——
+      // 不补这一支，填过的答案就不会进错误缓存，下一轮原样再填，死循环。
+      // 给平台 2 秒渲染时间再判，避免"刚提交、DOM 还没更新"时误判。
+      // ⚠️ 这里**只记日志，绝不把答案记成错的**。
+      //
+      // 第一版写成了「静默清空 → 判为被拒绝 → 把答案记进错误缓存」，依据是「平台判错重置」。
+      // 但用户实测推翻了它：**显示的是「作业提交失败」，而他随便乱选（多选只选一个）
+      // 反而能提交成功** —— 说明失败与答案对错无关，是**我们生成的提交状态**平台不认。
+      // 这种前提下把答案记成错的，会**误禁正确答案**，下一轮只会更错。
+      //
+      // 所以只留一条日志作为信号。真要判「被拒绝」，得先证明失败与答案有关。
+      if (now - (this._quizSubmitStartedAt || 0) > 2000 && this._isQuizAnswersCleared(preferredDoc || null)) {
+        this._quizSubmitPending = false;
+        this._quizSubmitStartedAt = 0;
+        emitRuntimeLog('warn', 'quiz answers cleared after submit', {
+          note: '表单被清空了 —— 只是记录，不据此把答案判错（失败原因尚未查明）'
+        });
+        return false;
+      }
+
       var waitMs = Number(this.configs.quizSubmitWaitMs || 25000);
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
@@ -8698,6 +8769,8 @@
           var quizWindow = submitDoc.defaultView || submitDoc.parentWindow;
           if (quizWindow && typeof quizWindow.btnBlueSubmit === 'function') {
             console.log('[Omitone] call btnBlueSubmit()');
+            // 先把「平台会提交什么」打出来 —— 失败原因排查全靠它
+            this._logSubmitPayload(submitQuestions, effectiveDoc || submitDoc);
             this._markQuizSubmitPending(effectiveDoc || submitDoc, 'btnBlueSubmit');
             setTimeout(function () {
               try { quizWindow.btnBlueSubmit(); } catch (e) { console.error('[Omitone] btnBlueSubmit failed', e); }
