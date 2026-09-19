@@ -1550,6 +1550,28 @@ SCENARIOS.push({
     check('提交超时诊断能报出「还有可交互控件」= 尚未判分',
       diag && diag.controls > 0 && diag.enabled > 0, JSON.stringify(diag));
 
+    // ④e 多选必须按**字母序**点选。
+    // 点选顺序决定平台隐藏域 #answer{qid} 的内容，而本文件对多选答案的规范形式
+    //（`_canonicalQuizAnswer`）是排序过的。模型给乱序时若按原序点，
+    // 隐藏域会写成 "CA" 而不是 "AC" —— 平台按字符串比对就判错。
+    // 现场实测（用户日志）：`answer field 405907427 value= DBAC`（点选是 A→B→C→D），
+    // 表现是"顺序碰巧对时能过、不对就判错重交"，也就是用户说的"时灵时不灵"。
+    var r4e = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var q=window.__mq;var el=q._element;' +
+      'app._clearMultiChoiceSelection(el);' +
+      'var v=app._normalizeChoiceAnswerValues(["C","A"],"multiple",el);' +
+      'app._applyChoiceAnswer(el,["C","A"],"multiple","checkbox");' +
+      'var hidden=document.getElementById("answer"+app._getQuestionIdFromElement(el));' +
+      'return {values:Array.isArray(v)?v.join(""):String(v),hidden:hidden?hidden.value:null};})()'
+    );
+    check('多选答案按字母序返回（乱序输入 ["C","A"] → "AC"）',
+      r4e && r4e.values === 'AC', JSON.stringify(r4e));
+    // ⚠️ 这里**故意不**断言隐藏域的值。`_clickOptionItem` 写隐藏域时两条路都排过序
+    //（有徽标按 .choice{qid} 的 DOM 顺序累加、无徽标显式 picked.sort()），
+    // 所以「乱序输入 → 隐藏域是字母序」永远为真 —— 加了就是一条不可能失败的检查。
+    // 真实平台上那个 DBAC 既不是点击顺序也不是字母序，说明**有人在我们之后重写了它**，
+    // 那是平台自己的 handler，不是这条断言能覆盖的。要查它得看那条写入日志。
+
     // ⑤ 不定项：允许单选，别被上面的规则误伤（题型名判定必须区分这两者）
     var r5 = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=document.createElement("div");' +

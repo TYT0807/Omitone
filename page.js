@@ -8165,6 +8165,11 @@
           if (value) {
             hidden.value = value;
             this._dispatchQuizInputEvents(hidden);
+            // 记下**我们写进去的值**。站点自己的 handler 可能在这之后又改一遍 ——
+            // 现场实测：我们按 A→B→C→D 点，最终字段却是 DBAC（既非点击序也非字母序），
+            // 说明有人在我们之后重写了它。把 ours 与提交前那条 answer field 日志一比，
+            // 就能立刻分辨「我们的值生效了」还是「被平台覆盖了」。
+            console.log('[Omitone] answer field written qid=', qid, 'ours=', value);
           }
         }
       }
@@ -8315,6 +8320,12 @@
 
       if (type === 'multiple') {
         var letters = values.filter(function (v) { return /^[A-F]$/i.test(v); }).map(function (v) { return v.toUpperCase(); });
+        // ⚠️ 必须**排序**，不能沿用模型给的顺序。
+        // 本文件对多选答案的"规范形式"是排过序的（见 `_canonicalQuizAnswer` 末尾的 `.sort()`），
+        // 而**点选顺序决定平台隐藏域 `#answer{qid}` 的内容** ——
+        // 模型回 ["D","B","A","C"] 时我们按原序点，隐藏域就成了 "DBAC"，
+        // 而规范形式是 "ABCD"。现场实测：顺序碰巧对时能过、不对就判错重交（用户报"时灵时不灵"）。
+        if (letters.length > 1) letters = letters.slice().sort();
         var min = this._getMultiChoiceMinSelections(root);
         if (letters.length >= 1 && letters.length < min) {
           // ⚠️ 补选前**必须**先拿禁选集合。_expandMultiChoiceLetters 是确定性的
@@ -8338,6 +8349,11 @@
           }
           var texts = values.filter(function (v) { return !/^[A-F]$/i.test(v); });
           return expanded.concat(texts);
+        }
+        // 不需要补选时，也按**排序后**的字母返回 ——
+        // 与 `_canonicalQuizAnswer` 的规范形式保持一致，否则隐藏域又变成乱序。
+        if (letters.length) {
+          return letters.concat(values.filter(function (v) { return !/^[A-F]$/i.test(v); }));
         }
       }
       return values;
