@@ -8197,23 +8197,41 @@
      * 把一个字母扩成"含它的相邻组合"，用于模型只给了一个字母的多选题。
      *
      * 这是**纯本地**补救：不发新请求，因此不产生任何 token。
-     * 依据是"复选题两项答案远比一项常见"，且随后若仍被判错，
-     * `禁:` 机制会把这次的结果记下来换别的组合。
+     * 依据是"复选题两项答案远比一项常见"。
+     *
+     * ⚠️ `banned` 是**必须**传的：本函数是确定性的（答 "A" 永远补成 "AB"），
+     * 如果不避开已经判错的组合，"换别的组合"这句承诺就是空的 —— 实测会无限重交。
      */
-    _expandMultiChoiceLetters: function (letters, min, root) {
+    _expandMultiChoiceLetters: function (letters, min, root, banned) {
       var out = (letters || []).slice();
       var target = Math.max(2, min || 2);
       var total = this._getOptionItems(root).length;
       if (total < 2 || total > 8) total = 6;
       var pool = [];
       for (var i = 0; i < total; i++) pool.push(String.fromCharCode(65 + i));
+
+      // 已经判错的组合绝不再补出来 —— 否则会陷入
+      //「补成 AB → 判错 → AB 进禁选 → 又补成 AB」的死循环（现场表现是反复重交）。
+      var bannedSet = banned || [];
+      var isBanned = function (combo) {
+        if (!bannedSet.length) return false;
+        var sorted = combo.slice().sort();
+        var canonical = null;
+        try { canonical = this._canonicalQuizAnswerForQuestion(sorted, 'multiple', { _element: root }); } catch (e) {}
+        if (!canonical) canonical = sorted.join('');
+        return bannedSet.indexOf(canonical) !== -1;
+      }.bind(this);
+
       for (var j = 0; j < out.length && out.length < target; j++) {
         var idx = pool.indexOf(out[j]);
         if (idx < 0) continue;
         // 优先"紧邻的下一个"，其次上一个，最后再往后挑 —— 相邻组合最常见
         var candidates = [pool[idx + 1], pool[idx - 1], pool[idx + 2], pool[idx + 3]];
         for (var c = 0; c < candidates.length && out.length < target; c++) {
-          if (candidates[c] && out.indexOf(candidates[c]) === -1) out.push(candidates[c]);
+          var cand = candidates[c];
+          if (!cand || out.indexOf(cand) !== -1) continue;
+          if (isBanned(out.concat([cand]))) continue;   // ← 这个组合判错过，换下一个候选
+          out.push(cand);
         }
       }
       return out.sort();
@@ -8256,10 +8274,23 @@
         var letters = values.filter(function (v) { return /^[A-F]$/i.test(v); }).map(function (v) { return v.toUpperCase(); });
         var min = this._getMultiChoiceMinSelections(root);
         if (letters.length >= 1 && letters.length < min) {
-          var expanded = this._expandMultiChoiceLetters(letters, min, root);
+          // ⚠️ 补选前**必须**先拿禁选集合。_expandMultiChoiceLetters 是确定性的
+          //（答 "A" 永远补成 "AB"），而补选发生在 _avoidKnownWrongAnswer **之后** ——
+          // 于是「补成 AB → 判错 → AB 进禁选 → 模型仍答 A → 又补成 AB」无限循环。
+          // 现场表现：作业页反复重交（用户报「重复刷」）。
+          var bannedSet = [];
+          try {
+            bannedSet = this._getKnownWrongCanonicalSet({ _element: root }, 'multiple', root.ownerDocument) || [];
+          } catch (eB) { bannedSet = []; }
+          var expanded = this._expandMultiChoiceLetters(letters, min, root, bannedSet);
           if (expanded.length > letters.length) {
             emitRuntimeLog('warn', 'multiple choice answer expanded locally', {
-              from: letters.join(''), to: expanded.join(''), minSelections: min
+              from: letters.join(''), to: expanded.join(''), minSelections: min,
+              avoidedWrong: bannedSet.length ? bannedSet.join(',') : ''
+            });
+          } else if (bannedSet.length) {
+            emitRuntimeLog('warn', 'multiple choice expansion blocked by wrong-answer cache', {
+              letters: letters.join(''), minSelections: min, wrongs: bannedSet.join(',')
             });
           }
           var texts = values.filter(function (v) { return !/^[A-F]$/i.test(v); });
