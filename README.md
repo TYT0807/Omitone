@@ -516,7 +516,19 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（9500+ 行 / 320 多个方法）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**9899 行 / 330 个方法**）：
+
+> ### ⚠️ 已知技术债：`page.js` 是一个 9899 行的巨石
+>
+> 它是一个 IIFE 里的**一个大对象字面量**，330 个方法**没有按域排列**
+> （每个域都横跨全文，例如"答题"类方法分布在 586–9860 行），而且**没有任何分段注释**。
+>
+> **拆分方案已经写好**，见 [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) ——
+> 那份文档是**自包含的**，可以直接交给另一个 AI 执行。它规定了分两阶段做
+> （第一阶段**零行为风险**：按物理行切分 + 构建期拼接，验收标准是"拼接产物与拆分前逐字节相同"），
+> 并列出了所有硬性约束、验收清单、以及本仓库实测过的"假成功"陷阱。
+>
+> **拆分完成前**，下面的 §8 定位表仍然按"`page.js` + 方法名"查。
 
 | 你要做的事 | 直接跳到 |
 | --- | --- |
@@ -539,6 +551,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | --- | --- |
 | **本文件** | **完整交接文档**：功能与验证状态、运行机制、**易错点**、**代码纠缠点**、调试手册、改哪里 |
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
+| [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、两阶段方案、硬性约束、验收清单、已知陷阱 |
 | **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（20 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会"赌运气"渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
@@ -942,6 +955,24 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 讨论任务点 | `page.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
 | 任务点调度 | `page.js`：`_runTick` / `_runOcsStyleStudy` / `_ensureOcsStudyRunner` / `_searchChaoxingJobOcs` |
 | 设置界面 | `popup/popup.js` + `popup/popup.html`（**记得同步 `page.js` 的 `DEFAULT_CONFIG`**） |
+
+### 拆分完成后，本表会变成"域 → 文件"
+
+下面是拆分任务的**目标状态**（谁做拆分就照这个分）：
+
+| 域 | 目标文件 | 方法数 · 行数 |
+| --- | --- | --- |
+| 答题 / 题目 / 弹题 / 答案缓存 | `src/page/quiz.js` | 99 · 3243 |
+| 任务点识别、调度、放弃名单 | `src/page/tasks.js` | 56 · 2293 |
+| DOM 工具、iframe 安全访问、选择器 | `src/page/dom.js` | 52 · 1327 |
+| 媒体（视频/音频/倍速/seek） | `src/page/media.js` | 34 · 945 |
+| 配置读写、存储 | `src/page/config.js` | 20 · 275 |
+| 运行日志与诊断 | `src/page/log.js` | 11 · 368 |
+| 验证码、字体反爬 | `src/page/captcha.js` | 8 · 218 |
+| 外壳、常量、启动、`xxtAI` 控制台 API | `page.js`（拼接产物） | 其余 |
+
+> 上面的方法数/行数是按**方法体关键词**统计的近似值（各域有交叠），
+> 仅用于判断工作量与切分比例，不必逐一对齐。
 
 需要方法清单时：
 
