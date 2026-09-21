@@ -49,9 +49,14 @@
 | --- | --- |
 | 本地 / 远端 | **完全一致**（`efec8b5`）；tag `v1.2.0` 指向同一个 sha |
 | 工作区 | 干净 |
-| 线上 Release | **v1.2.0** · `omitone.zip` 360.0 KB · `Omitone-manual.pdf` 1360.1 KB，均 `state=uploaded` |
-| 下载直链 | `https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip` ✓ 可用 |
+| 线上 Release | **v1.2.0** · `omitone.zip` 360.0 KB（sha256 `cba9c1e291d16bbb…`）· `Omitone-manual.pdf` 1360.1 KB（sha256 `3344f7c8c51fc944…`），均 `state=uploaded` |
+| 下载直链 | `releases/latest/download/omitone.zip` 与 `…/Omitone-manual.pdf` **均 200，且与本地构建逐字节一致** |
+| 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.0**（Pages 构建已跟上） |
 | 测试 | 自检 15 项 · 集成 77 项 · e2e **26 场景 / 280 项**（落盘 `通过=true`） |
+
+> **四个用户入口都实测过**（不是只看接口返回码）：把两个附件从线上**下载回来**与本地构建
+> 比 sha256，**逐字节一致**；两条永久直链各下载一次、比对同一个摘要；在线说明书抓页面
+> 确认版本行与品牌名都是 1.2.0。
 
 > ⚠️ **令牌还没 revoke。** `~/.omitone-release.ghtoken`（93 字符细粒度 PAT）本次实测仍有效
 > （`GET /user` → 200，身份 `TYT0807`）。按 §0.5 的规矩**发版结束就该 revoke 并删掉它**。
