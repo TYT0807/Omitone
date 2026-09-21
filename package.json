@@ -6,6 +6,8 @@
   "license": "GPL-3.0",
   "scripts": {
     "check": "node tools/check.js",
+    "concat": "node tools/concat-page.js",
+    "concat:check": "node tools/concat-page.js --check",
     "bench": "node tools/prompt-bench.js",
     "itest": "node tools/integration-test.js",
     "e2e": "node tools/browser-e2e.js",

@@ -1,5 +1,24 @@
 # 任务：把 `page.js`（9899 行 / 330 个方法）拆成多个源文件
 
+> ⚠️ **两阶段都已完成（2026-09-21）—— 别再从头做一遍。**
+>
+> - 源码已在 `src/page/` 下拆成 **12 个按域片段**（`00-shell-constants` / `10-config-state` /
+>   `20-dom` / `30-log` / `40-media` / `50-captcha` / `60-tasks` / `65-discussion` /
+>   `70-quiz-flow` / `75-quiz-dom` / `80-popup-quiz` / `90-console-api-startup`），
+>   拼接脚本是 `tools/concat-page.js`（`npm run concat` / `npm run concat:check`），
+>   根目录的 `page.js` 已是**拼接产物**。`npm test` 里有守卫拦"改产物"的漂移。
+> - 阶段一（按行切分）的验收证据：产物与拆分前**逐字节相同**（sha256 `fd20baa1…`）。
+>   阶段二（按域重组）的验收证据：434 个属性名完全一致、app 体 8644 行有效行一行不多不少，
+>   外加 `npm test` + `npm run e2e` 全绿。
+> - **现在只剩"继续细分"这件事**：`60-tasks.js`（2567 行）与 `70-quiz-flow.js`（2248 行）
+>   仍偏大，各自还能再分（例如 tasks 里的「文档任务点」、quiz 里的「答案缓存」）。
+>   要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
+> - 动手前先看 [`../src/page/README.md`](../src/page/README.md) 的模块地图，
+>   以及 `CHANGELOG.md`「未发布」段里那次拆分的记录。
+>
+> 下面**两阶段的描述保留原样**，因为它们是理解现有布局的前提；
+> 但**不要重做** —— 尤其别再按"每段 800–1200 行的物理切片"重新切一遍。
+
 > 这份是**给执行拆分的 AI** 的完整提示词。它自包含 —— 但你手上有仓库，
 > 所以涉及细节时以仓库里的文档为准（README / AGENTS / ARCHITECTURE）。
 >

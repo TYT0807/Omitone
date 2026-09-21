@@ -7,18 +7,24 @@
 
 ## 0. 它会告诉你"别通读代码"
 
-`page.js` 9500+ 行 / 320 多个方法。通读一遍是巨大的浪费，而且读到的绝大多数内容与你的任务无关。
+`page.js` 是 **9899 行 / 330 个方法**的巨石。通读一遍是巨大的浪费，而且读到的绝大多数内容与你的任务无关。
+
+> ⚠️ **`page.js` 现在是构建产物**，源码在 `src/page/` 下的 12 个**按域**片段里（见
+> [`src/page/README.md`](src/page/README.md) 的模块地图）。**改代码改片段，然后跑
+> `npm run concat`** —— 直接改根目录的 `page.js` 会「改完立刻生效、下次拼接全丢」，
+> `npm test` 里有专门一条拦这个漂移。
 
 正确顺序：
 
 1. 读 [`README.md`](README.md) 的**第一屏**（「给接手的人 / AI：先看这里」）
 2. 按任务类型跳到 README 的对应章节 —— 尤其
    **§5 代码易纠缠点** 与 **§6 易错点清单**
-3. 用 README **§8 的定位表** 找到文件，再 `grep -n "关键字" 文件` 缩小范围
+3. 用 README **§8 的定位表** 找到**片段文件**（表里已经是 `src/page/xx.js` 了），
+   再 `grep -n "关键字" src/page/*.js` 缩小范围
 4. `Read` 时用 `offset` + `limit` **只读目标函数附近**（定义行号从 `grep` 拿）
 5. 先跑 `npm test` 建立基线，改完再跑一次 —— 比通读代码更能发现回归
 
-提示词相关改动**不要**读 `page.js` —— 提示词只在 `libs/prompt.js`。
+提示词相关改动**不要**读 `page.js` / `src/page/` —— 提示词只在 `libs/prompt.js`。
 
 ---
 
@@ -49,6 +55,7 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 280 项）
 3. **删方法前 grep 全部调用点** —— 本项目真的发生过"删了函数留着调用点"，
    4 处调用点里 3 处没有 try/catch，整条功能静默失灵。（README §6 #9）
 4. **提示词与 API 地址构造都不许内联** —— 唯一真源是 `libs/prompt.js` 与 `libs/api-url.js`。
+   **`page.js` 同理，不许直接编辑** —— 它是 `src/page/*.js` 的拼接产物（见 §0 的提醒）。
 5. **`_getAttachmentWorkType` 的判断顺序不能动** ——
    `isPassed` → `job:true` → `job:false` → 模块名推断。（README §5.7）
 6. **`_isJobCompleted` 拿不准时必须返回 `true`** —— 它喂给"放弃"计数，
@@ -60,7 +67,11 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 280 项）
 
 ## 3. 改完的固定动作
 
-1. `npm test` 全绿；动了答题链路 / 抠题 / 媒体 / 任务点调度再跑 `npm run e2e`
+1. **`npm test` 全绿** —— 自检 + 提示词基准 + 集成测试，必须全绿；
+   动了答题链路 / 抠题 / 媒体 / 任务点调度再跑 `npm run e2e`。
+   **改了 `src/page/` 里的片段，先跑 `npm run concat`** —— 根目录的 `page.js`
+   才是浏览器加载的那一份；只改片段不拼接，等于什么都没改。
+   （`npm run check` 里有一条 `page.js 与 src/page/ 一致` 专门拦这个漂移）
 2. **同步版本号五处** —— `manifest.json`、`popup/popup.html`、`content.js` 状态面板品牌位、
    `package.json`、`README.md` 顶部的「版本」徽章。
    漏一处 `npm run check` 直接报错；这是本项目历史上最常犯的错
@@ -104,6 +115,7 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 280 项）
 
 - [ ] `npm test` 全绿
 - [ ] 动了真实浏览器行为 → `npm run e2e` 全绿
+- [ ] 改了 `src/page/` 里的片段 → **跑过 `npm run concat`**，且 `npm run concat:check` 通过
 - [ ] 版本号五处已同步（`npm run check` 会替你确认）
 - [ ] 改动涉及的页面路径手动跑过（视频 / 答题 / 验证码 / 讨论）
 - [ ] **新增的断言做过反向验证**：临时制造一个已知错误，确认它能被抓住。
