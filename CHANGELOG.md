@@ -5,6 +5,36 @@
 
 ---
 
+## 未发布
+
+### 更正"状态字段都在一个文件里"这句过度承诺（纯文档 + 新增一个审计工具）
+
+拆分时在 `src/page/README.md` 里写了三条"好记的规则"，其中第一条是
+**"所有非方法属性都在 `10-config-state.js`"**。这一轮把全量字段数了一遍，发现**它不成立**：
+
+- `10-config-state.js` 的声明表里是 **119** 个属性
+- 另有 **32 个字段是"用到才建"** 的，三种写法：
+  `if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);`（建的时候才建）/
+  `if (this._onVideoEnded) el.removeEventListener(…)`（用前先确认）/
+  `if (now - (this._blockedReloadAt || 0) > 180000)`（读取处兜底）
+
+**这本身是刻意的写法，不是 bug** —— 惰性初始化不会被"某处忘了复位"弄坏，
+比依赖声明初值更抗错。全量核对过：每个读取点都有兜底，**没有一处会读到 undefined 而崩**。
+问题只在于**那句承诺把"能找到"说过头了**：照它去 `10-config-state.js` 找 `_rateEpoch`
+是找不到的，而它是音源探测的代际号，很关键。
+
+所以这一版**只改文档**（`src/page/README.md` 与 `README.md` §8 的措辞改成
+"声明式的非方法属性都在这里"，并把惰性初始化的约定写清楚），
+外加新增 `tools/audit-fields.js` —— 按需跑，一次列出全量字段与"不在声明表里"的那些。
+
+> ⚠️ 这个工具**只列不判**：它看不出 `this` 指谁，所以 `XHR.prototype.open` 里的
+> `this.__omitoneUrl` 也会被列出来（那是 XHR 实例的属性，不是 app 的）。
+> 全量核对时最后剩下的 3 个"没看到兜底"**全是这类误报**。
+
+**没有代码改动，所以不升版本。**（本次一并核过：17 个被置真的状态标志里，
+3 个"从不置假"的 —— `_stepNavigationBound` / `_submitSnifferInstalled` / `_visibilityBound` ——
+全是 `if (flag) return; flag = true;` 的**只绑一次**幂等守卫，属正常。）
+
 ## 1.2.1 — 修两处会让主循环卡住的 `await`，补上主循环的并发隐患
 
 **这一版是 1.2.0 之后的代码审计结果**：把 `page.js` 按域拆开之后，

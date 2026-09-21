@@ -37,9 +37,22 @@ npm run concat:check    # 只校验产物与片段是否一致（npm test 里已
 
 三条好记的规则：
 
-- **所有非方法属性都在 `10-config-state.js`**（状态字段、`configs`、`_cellData`、`_questionSelectors`）
+- **非方法属性基本都在 `10-config-state.js`**（`configs`、`_cellData`、`_questionSelectors`、
+  以及 115 个运行期状态字段）—— 但有约 30 个字段是**惰性初始化**的，不在那个声明表里，见下方说明
 - **所有 `_log*` / `_describe*` / `_diagnose*` 都在 `30-log.js`**
 - 抠题 / 填答 / 提交确认这一整块在 `75-quiz-dom.js`（`_questionSelectors` 起、`_handleSubmitConfirmDialog` 止）
+
+> ⚠️ **关于"状态字段都在一个文件里"这句 —— 别当成字面承诺。**
+> 实测（`node tools/audit-fields.js`）：`10-config-state.js` 声明了 **119** 个属性，
+> 另有约 **30** 个字段是**用到才建**的，两种写法：
+> - `if (!this._x) this._x = Object.create(null);`（`_seekTriedKeys` / `_taskGiveUpLogged` / `_mainFrameCrossOriginSince`）
+> - 读取处自带 `|| 0` 兜底（`if (now - (this._blockedReloadAt || 0) > 180000)`）
+>
+> 这是**刻意的**：惰性初始化不会被"某处忘了复位"弄坏，比依赖声明初值更抗错。
+> 代价是**找字段时不能只看 `10-config-state.js`** —— 用 `tools/audit-fields.js` 可以列出全量，
+> 或直接 `grep -rn "this\._字段名" src/page/`。
+> （本次审计已把主循环的 `_tickRunning` / `_tickStartedAt` / `_tickEpoch` 三个补进声明表 ——
+> 它们是主循环的控制状态，值得一眼可见。）
 
 任务点与答题各自有三个文件，按**「识别 → 执行 → 循环」**和**「流程 → 答案 → 读图」**分，
 顺序就是文件名前缀：**要改调度看 `60/62/64`，要改答题看 `70/72/74`。**
@@ -67,12 +80,13 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 > 加配置项的第一步（`DEFAULT_CONFIG`）在这里改，改完记得 `npm run concat`。
 
-### `10-config-state.js`（400 行 / 4 方法 + 112 状态字段）
+### `10-config-state.js`（400 行 / 4 方法 + 115 状态字段）
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
-**以及全部非方法属性** —— `configs`、所有 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
+**以及绝大部分非方法属性** —— `configs`、115 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
 
-这条规则是刻意设计的：**找状态字段就来这一个文件**，不用在十几个文件里猜。
+**但不是全部**：另有约 30 个字段是"用到才建"的（`if (!this._x) …` 或读取处 `|| 0` 兜底），
+详见文件顶部「三条好记的规则」下面那段说明。要列全量用 `node tools/audit-fields.js`。
 
 ### `20-dom.js`（380 行 / 21 方法）
 
@@ -160,7 +174,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 抠题与填答：从 DOM 里抠题干与选项、判定题型、单选 / 多选 / 判断 / 填空的填答实现、
 提交按钮与站点确认弹窗（`#workpop` / `#popok`）的处理。
 
-> `_questionSelectors`（选择器真源）在 `10-config-state.js` —— 因为所有非方法属性都在那儿。
+> `_questionSelectors`（选择器真源）在 `10-config-state.js` —— 它是"声明式"的非方法属性，都在那儿。
 
 ### `80-popup-quiz.js`（568 行 / 11 方法）
 
