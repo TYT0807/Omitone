@@ -321,8 +321,12 @@
       var abs = chapterSrc;
       try { abs = new URL(chapterSrc, location.href).href; } catch (e1) {}
       try {
-        var resp = await fetch(abs, { credentials: 'include' });
-        var html = await resp.text();
+        // ⚠️ 同样必须可超时：本函数在 _runTick 的讨论任务点链路上（`await _tryDiscussionTask()`），
+        //    服务端不回数据时 await 会永久挂起。外层的 try/catch **拦不住挂起** —— 只有超时能。
+        var resp = await this._withTimeout(fetch(abs, { credentials: 'include' }), 15000);
+        if (!resp) return '';
+        var html = await this._withTimeout(resp.text(), 15000);
+        if (typeof html !== 'string') return '';
         var m = html.match(/id=["']topicMainDiv["'][^>]*\bdata=["']([^"']+)["']/i) ||
           html.match(/\bdata=["'](https?:\/\/groupweb\.chaoxing\.com\/course\/topic[^"']+)["']/i);
         if (m) return String(m[1]).replace(/&amp;/g, '&');

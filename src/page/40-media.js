@@ -939,9 +939,14 @@
         if (this._mediaRepaired[src]) return false;
         this._mediaRepaired[src] = true; // 每个源只补救一次，避免死循环
 
-        var response = await fetch(src, { credentials: 'include' });
+        // ⚠️ fetch 与读响应体都**必须**可超时。服务器接了连接却不回数据时（CDN 卡住、
+        //    被门户/代理吞掉），await 会永久挂起 —— 而这条链在 _runTick 上，
+        //    一挂就是整个调度停摆（验证码检测、播放巡检、任务点推进全停）。
+        //    注意 try/catch 拦不住"挂起"，只有超时能。
+        //    _withTimeout 超时是 resolve(undefined)，下面两处 `!response` / `!buf` 判断正好接得住。
+        var response = await this._withTimeout(fetch(src, { credentials: 'include' }), 20000);
         if (!response || !response.ok) return false;
-        var buf = await response.arrayBuffer();
+        var buf = await this._withTimeout(response.arrayBuffer(), 60000);
         if (!buf || buf.byteLength < 1024) return false;
 
         var type = this._guessMediaMime(src);

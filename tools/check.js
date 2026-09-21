@@ -1096,6 +1096,49 @@ function checkPagePartHeaders() {
 }
 
 // ---------------------------------------------------------------------------
+// 16. await 必须可超时（`AGENTS.md` §2 第 2 条）
+//
+// 为什么单独立一条守卫：**"永久挂起"不是异常，try/catch 拦不住它，只有超时能。**
+// 而 `_runTick` 是一条 await 链 —— 其中任何一处永远不 resolve，整个调度就停摆
+// （验证码检测、播放巡检、任务点推进全停），且页面一条异常都不会有，极难定位。
+//
+// 只盯**已知会挂起的原生调用**（网络 / 读响应体 / 媒体 play），并要求同一行出现
+// `_withTimeout(`。不写"名字里带 play/load 就算"那种宽泛规则 —— 实测会把
+// `_probeMaxPlaybackRate()`（内部自带超时）误报，误报多了守卫就没人信了。
+// ---------------------------------------------------------------------------
+function checkAwaitTimeouts() {
+  var partsDir = path.join(ROOT, 'src', 'page');
+  var HANG_PRONE = [
+    { re: /\bfetch\s*\(/, what: 'fetch' },
+    { re: /\.\s*(?:text|json|arrayBuffer|blob|formData)\s*\(\s*\)/, what: '读响应体' },
+    { re: /\.\s*(?:play|pause)\s*\(\s*\)/, what: '媒体 play/pause' }
+  ];
+  var GUARD = /_withTimeout\s*\(/;
+  var issues = [];
+  var guarded = 0;
+
+  fs.readdirSync(partsDir).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (file) {
+      fs.readFileSync(path.join(partsDir, file), 'utf8').split(/\r?\n/).forEach(function (line, i) {
+        if (!/\bawait\b/.test(line)) return;
+        if (line.trim().indexOf('//') === 0) return;
+        var hit = HANG_PRONE.filter(function (h) { return h.re.test(line); });
+        if (!hit.length) return;
+        if (GUARD.test(line)) { guarded++; return; }
+        issues.push(file + ':' + (i + 1) + '  ' + hit.map(function (h) { return h.what; }).join('+') +
+          ' 没超时 → ' + line.trim().slice(0, 90));
+      });
+    });
+
+  if (issues.length) {
+    fail('有 await 没有超时护栏（永久挂起会让 _runTick 停摆，且不抛异常）:\n      ' +
+      issues.join('\n      ') + '\n      包一层 this._withTimeout(promise, ms) 即可');
+    return;
+  }
+  pass('await 都有超时护栏（' + guarded + ' 处已知会挂起的原生调用全部包了 _withTimeout）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -1115,6 +1158,7 @@ checkDeadMethods(jsFiles);
 checkDeadFiles(jsFiles, manifest);
 checkPageConcat();
 checkPagePartHeaders();
+checkAwaitTimeouts();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
