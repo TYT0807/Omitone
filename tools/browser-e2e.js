@@ -2394,6 +2394,40 @@ SCENARIOS.push({
     check('五选项多选题：模型回 ["A","C"] → 勾中的就是 A 和 C',
       JSON.stringify(multiFilled.checked) === JSON.stringify(['A', 'C']), JSON.stringify(multiFilled));
 
+    // ---- 乱选模式下的弹题：本地生成、**不发任何请求** ----
+    // 主流程的乱选已经端到端测过（逐题填 + 查隐藏域），但弹题是**独立的一份代码**
+    //（`_handlePopupQuiz` 里另有一个请求点），必须单独测 —— 否则那条路出问题没人知道。
+    var beforeRandom = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:true, apiKey:""});' +
+      // 清掉"已答放行"与静默期，让同一道弹题能被再处理一次
+      'app._popupQuizSolvedKey=""; app._popupQuizSolvedAt=0; app._popupQuizBlockedUntil=0;' +
+      'app._popupQuizQuietUntil=0; app._popupQuizAttempts=0;' +
+      'var ins=document.querySelectorAll(".ans-pop-quiz input");' +
+      'for(var i=0;i<ins.length;i++){ins[i].checked=false;}' +
+      'var n=app._checkPopupQuiz(); if(!n) return false;' +
+      'return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+    check('乱选模式下弹题**不发任何模型请求**',
+      ctx.mock.requests.length === beforeRandom,
+      '多发了 ' + (ctx.mock.requests.length - beforeRandom) + ' 次');
+
+    var rqFilled = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input");' +
+      'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
+      'return {checked:checked, count:ins.length};})()'
+    );
+    check('乱选模式下弹题真的被选上了（不是空转）',
+      rqFilled && rqFilled.checked.length >= 1, JSON.stringify(rqFilled));
+
+    // 恢复，避免影响后续断言
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {randomAnswer:false}); return true;})()'
+    );
+
     // ---- 答错之后必须能自己恢复（现场报的「视频里的题答完就卡住、等几秒没后续」）----
     // 根因：填完答案后设了**两个**窗口 —— 静默期 8 秒 + 「已答放行」30 秒。
     // `_activePopupBlock()` 在后者内一直返回 null，于是答错之后有 22 秒处于
