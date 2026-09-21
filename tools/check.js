@@ -632,15 +632,17 @@ function checkTestCounts() {
     problems.push('tools/browser-e2e.js 里没数到 SCENARIOS.push —— 守卫失效，请同步这段正则');
   }
 
-  // 取 CHANGELOG 的「未发布」段（到下一个二级标题为止）
-  var unreleased = '';
+  // 取 CHANGELOG 的**最新一段**（第一个二级标题到下一个二级标题之间）。
+  // 别写死找「## 未发布」—— 发版时那一段会被改名成 `## 1.2.0 — …`，
+  // 写死的话守卫会静默失去覆盖（找不到就当空字符串跳过了）。
+  var latest = '';
   try {
     var cl = read('CHANGELOG.md');
-    var start = cl.indexOf('## 未发布');
+    var start = cl.search(/^## /m);
     if (start >= 0) {
       var rest = cl.slice(start + 1);
       var next = rest.indexOf('\n## ');
-      unreleased = next >= 0 ? rest.slice(0, next) : rest;
+      latest = next >= 0 ? rest.slice(0, next) : rest;
     }
   } catch (e) {}
 
@@ -649,7 +651,7 @@ function checkTestCounts() {
     ['README.md', null],
     ['tools/README.md', null],
     ['HANDOVER.md', null],
-    ['CHANGELOG.md', unreleased]
+    ['CHANGELOG.md', latest]
   ];
 
   targets.forEach(function (t) {
@@ -703,7 +705,7 @@ function checkTestCounts() {
 
   var sceneNote = '场景数与代码一致: ' + actualScenes + ' 个' +
     (assertionsChecked ? '；断言总数与 e2e 实测一致' : '（断言总数未校验：还没跑过 e2e，跑一次即可）') +
-    '（CHANGELOG 只查「未发布」段，历史记录不查）';
+    '（CHANGELOG 只查最新一段，历史记录不查）';
 
   if (problems.length) fail('测试数字检查未通过:\n      ' + problems.join('\n      '));
   else pass(sceneNote);
@@ -1013,6 +1015,87 @@ function checkPageConcat() {
 }
 
 // ---------------------------------------------------------------------------
+// 15. 片段头部与实际内容一致（序号 + 方法清单）
+//
+// 拆分之后，"哪个域在哪个文件"完全靠每个片段头部那段注释传达 —— 它是模块地图的底稿。
+// 头部长了、短了、方法搬走了却没改头部，读的人就会照着错的地图找代码，
+// 那比没有地图更糟（没有地图时他会去 grep，有错地图时他会信）。
+// 所以把头部当断言守住。
+// ---------------------------------------------------------------------------
+function checkPagePartHeaders() {
+  var partsDir = path.join(ROOT, 'src', 'page');
+  var files = fs.readdirSync(partsDir).filter(function (f) { return /\.js$/.test(f); }).sort();
+  var issues = [];
+
+  files.forEach(function (file, index) {
+    var lines = fs.readFileSync(path.join(partsDir, file), 'utf8').split(/\r?\n/);
+    var markerAt = lines.indexOf('// @omitone-part-header-end');
+    if (markerAt === -1) { issues.push(file + ' 缺头部结束标记'); return; }
+    var header = lines.slice(0, markerAt);
+
+    // ① 序号行：NN 必须等于文件排序位置，MM 必须是最后一位
+    var seqLine = null;
+    header.forEach(function (l) { if (/片段\s+\d\d\/\d\d/.test(l)) seqLine = l; });
+    if (!seqLine) {
+      issues.push(file + ' 头部没有「片段 NN/MM」序号行');
+    } else {
+      var seq = seqLine.match(/片段\s+(\d\d)\/(\d\d)/);
+      var wantSelf = String(index).padStart(2, '0');
+      var wantTotal = String(files.length - 1).padStart(2, '0');
+      if (seq[1] !== wantSelf) issues.push(file + ' 头部序号是 ' + seq[1] + '，按文件名排序应是 ' + wantSelf);
+      if (seq[2] !== wantTotal) issues.push(file + ' 头部分母是 ' + seq[2] + '，片段总数应是 ' + wantTotal);
+    }
+
+    // ② 头部「本段的方法」清单
+    var declared = [];
+    var inList = false;
+    header.forEach(function (l) {
+      if (l.indexOf('本段的方法') !== -1) { inList = true; return; }
+      if (!inList) return;
+      if (/^\s\* =+/.test(l)) { inList = false; return; }
+      var m = l.match(/^\s\*\s+(.*)$/);
+      if (m) m[1].split('、').forEach(function (s) { s = s.trim(); if (s) declared.push(s); });
+    });
+
+    // ③ 文件里真实的 app 方法。
+    //    注意别把 window.xxtAI 上那 8 个也算进来 —— 它们在 app 对象闭合之后，
+    //    是给用户手动调的入口，不是 app 的方法。
+    var body = lines.slice(markerAt + 1);
+    var inApp = !/^\s*\};/.test(body[0] || '');   // 以 `};` 开头的那个片段，开头还在 app 内
+    var actual = [];
+    body.forEach(function (l) {
+      if (/^  var app = \{/.test(l)) { inApp = true; return; }
+      if (/^  \};/.test(l)) { inApp = false; return; }
+      if (!inApp) return;
+      var m = l.match(/^ {4}([A-Za-z_$][\w$]*)\s*:\s*(?:async\s+)?function/);
+      if (m) actual.push(m[1]);
+    });
+
+    if (new Set(declared).size !== declared.length) {
+      issues.push(file + ' 头部方法清单里有重复项');
+    }
+    var declaredSet = new Set(declared);
+    var actualSet = new Set(actual);
+    var missing = actual.filter(function (n) { return !declaredSet.has(n); });
+    var ghost = declared.filter(function (n) { return !actualSet.has(n); });
+    if (missing.length) {
+      issues.push(file + ' 头部漏了 ' + missing.length + ' 个方法：' + missing.slice(0, 6).join('、') +
+        (missing.length > 6 ? ' …' : ''));
+    }
+    if (ghost.length) {
+      issues.push(file + ' 头部写了 ' + ghost.length + ' 个本文件不存在的方法：' + ghost.slice(0, 6).join('、') +
+        (ghost.length > 6 ? ' …' : ''));
+    }
+  });
+
+  if (issues.length) {
+    fail('片段头部与实际内容不一致（改完片段记得同步头部）:\n      ' + issues.join('\n      '));
+    return;
+  }
+  pass('片段头部与实际一致（' + files.length + ' 个片段：序号 + 方法清单）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -1031,6 +1114,7 @@ checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);
 checkDeadFiles(jsFiles, manifest);
 checkPageConcat();
+checkPagePartHeaders();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
