@@ -2829,6 +2829,18 @@ SCENARIOS.push({
     );
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
 
+    // 开关**清单**守卫：上面那条 `>= 8` 是弱下限，抓不住"某个开关被误删"。
+    // 这里逐个点名 —— 少一个就红。**新增开关时要同步加进这个列表。**
+    var wantToggleIds = ['enableQuiz', 'randomAnswer', 'enableCaptcha', 'enableDiscussion',
+                         'autoNext', 'restudy', 'muted', 'enableSeek'];
+    var uiToggles = await ctx.client.evaluate(
+      '(function(){var ids=' + JSON.stringify(wantToggleIds) + ';var miss=[];' +
+      'for(var i=0;i<ids.length;i++){if(!document.getElementById(ids[i])) miss.push(ids[i]);}' +
+      'return {missing:miss};})()'
+    );
+    check('关键开关按 id 逐个都在（抓"误删某个开关"）',
+      uiToggles && uiToggles.missing.length === 0, JSON.stringify(uiToggles));
+
     // 无障碍：每个开关都必须能被键盘聚焦、且状态可被读屏播报。
     // Chrome 官方文档写得很明确：「只有 a / button / 表单控件能获得键盘焦点」，
     // 而这些开关是 div —— 所以 role="switch" + tabindex + aria-checked 缺一不可。
