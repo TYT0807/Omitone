@@ -5,6 +5,57 @@
 
 ---
 
+## 未发布
+
+### 修两处会让主循环永久卡死的 `await`（无超时护栏）
+
+**问题**：`page.js` 的 `_runTick` 是一条 `await` 链 —— 其中任何一处**永远不 resolve**，
+整个调度就停摆（验证码检测、播放巡检、任务点推进全停），而且**页面一条异常都不会有**，
+极难定位。这次审计发现两处裸 `fetch` 没有超时护栏：
+
+| 位置 | 调用链 | 危险点 |
+| --- | --- | --- |
+| `_maybeRepairMediaSource`（`40-media.js`） | `_runTick` → 播放失败 → 补救音源 | `await fetch(src)` + `await response.arrayBuffer()` |
+| `_resolveDiscussionUrlFromModule`（`65-discussion.js`） | `_runTick` → `_tryDiscussionTask` → 解析讨论地址 | `await fetch(abs)` + `await resp.text()` |
+
+服务器**接了连接却不回数据**时（CDN 卡住、被代理/门户吞掉），这两个 `await` 会一直挂着。
+注意第二处外面本来就包着 `try/catch` —— **但 `try/catch` 拦不住"挂起"，只有超时能。**
+
+**修法**：包一层已有的 `_withTimeout(promise, ms)`（fetch 头 15~20 秒、读 body 15~60 秒）。
+`_withTimeout` 超时的行为是 `resolve(undefined)` 而不是 reject，
+而这两处的既有判断 `if (!response || !response.ok)` / `if (!buf …)` / `typeof html !== 'string'`
+**正好接得住 `undefined`** —— 所以改动只是"多一个上限"，正常路径一个字节都没变。
+
+> 有意思的是：紧挨着这两处的 `video.play()` **本来就包了 `_withTimeout`** ——
+> 说明作者知道这条纪律，只是漏了网络这一支。
+
+### 新增自检第 16 项：`await` 必须可超时
+
+上面那个 bug 靠人眼找不可靠，所以把判据固化成守卫（`AGENTS.md` §2 第 2 条本来就有这条规矩，
+但一直没有机器检查）：扫描所有 `await`，只盯**已知会挂起的原生调用**
+（`fetch` / 读响应体 `.text() .json() .arrayBuffer() .blob()` / 媒体 `.play() .pause()`），
+要求同一行出现 `_withTimeout(`。
+
+**刻意不写"名字里带 play/load 就算"那种宽泛规则** —— 实测会把 `_probeMaxPlaybackRate()`
+（内部自带超时）误报成危险；误报多了守卫就没人信了，最后被人加白名单绕过去。
+
+反向验证：往片段里插一行 `await fetch("/x")`，守卫立刻报
+`30-log.js:103  fetch 没超时`；还原后全绿。当前 9 处已知会挂起的原生调用**全部**有护栏。
+
+### 新增工具 `tools/audit-safedoc.js`（按需跑，不进 `npm test`）
+
+`AGENTS.md` §2 第 1 条把"裸读跨域 `.document`"列为**最难查的一类 bug**，
+但"有没有裸读"不能只靠 grep —— 决定危不危险的是**它有没有被 `try` 包住**。
+这个工具做一次结构分析（按行算大括号深度、标记每行是否落在 `try/catch` 区间内）给出结论。
+
+**本次审计结果：16 处裸读，全部在 `try` 块内，没有保护的 0 处。** 不需要改代码。
+
+它没进 `npm test`，原因是它需要一个"判 `/` 是正则还是除号"的词法启发式 ——
+第一版就栽在这里：`60-tasks-detect.js` 里一个含引号的正则字面量让它以为进了字符串，
+从此整份文件后面的行全被剥空，那个文件里 4 处裸读**一处都没报出来**，而汇总行照样打印
+"没有保护 0 处"。现在脚本自带自校验（原文命中数 vs 剥注释后命中数），
+但一个启发式词法器不适合当"每次都跑"的硬门禁。改 iframe / 跨域相关代码时手动跑一次即可。
+
 ## 1.2.0 — 把 `page.js` 拆成 16 个按域片段，代码一行没改
 
 **这一版只做一件事：让"改哪个域"变成"打开哪个文件"。** 没有任何功能变化，
