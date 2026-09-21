@@ -34,16 +34,28 @@
 > **本次交接后已推进到**：`1.1.6` 已发布并核验，说明书已重写成「担架级」，
 > 并且 `page.js` 已**拆分成 16 个按域片段**（见 §0.2.2）—— 版本随之升到 **1.2.0**。
 
-#### ✅ 最新快照（2026-09-21 夜）—— 1.2.0 已就绪，待推送
+#### ✅ 最新快照（2026-09-21 夜）—— 1.2.0 已发布并核验
 
 **当前版本 1.2.0**，改动是 `page.js` 的拆分（行为不变，见 §0.2.2）+ 自检新增第 15 项
 （片段头部守卫）。发版前审查（`npm run audit:publish`）通过、`npm test` 与 `npm run e2e`
 （26 场景 / 280 项）全绿。
 
-**尚未推送**：本地领先远端 `bd7b166`（提交数以 `git log --oneline bd7b166..HEAD` 为准，
-本轮改动本身又叠了几个提交）。推上去用
-`tools/github-release.js` 的 `push` / `release` / `verify` 三个子命令（用法见 §0.5）。
-以 `git log --oneline -3` 与 `git status --short` 为准。
+**已推送并发布**：`git push` 一次推上去 11 个提交（`a070e24..efec8b5`，**历史完整**，
+走的是 AGENTS §7.3 那条"令牌放进 URL"的路，不是 REST API —— API 会把多个提交压成一个）。
+本地 HEAD 与远端 `main`、tag `v1.2.0` **三者同为 `efec8b5`**；Release 两个附件
+`state=uploaded`，永久下载直链可用。`verify v1.2.0` 已跑过并通过。
+
+| | |
+| --- | --- |
+| 本地 / 远端 | **完全一致**（`efec8b5`）；tag `v1.2.0` 指向同一个 sha |
+| 工作区 | 干净 |
+| 线上 Release | **v1.2.0** · `omitone.zip` 360.0 KB · `Omitone-manual.pdf` 1360.1 KB，均 `state=uploaded` |
+| 下载直链 | `https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip` ✓ 可用 |
+| 测试 | 自检 15 项 · 集成 77 项 · e2e **26 场景 / 280 项**（落盘 `通过=true`） |
+
+> ⚠️ **令牌还没 revoke。** `~/.omitone-release.ghtoken`（93 字符细粒度 PAT）本次实测仍有效
+> （`GET /user` → 200，身份 `TYT0807`）。按 §0.5 的规矩**发版结束就该 revoke 并删掉它**。
+> 下次发版前再要一枚即可，别在"为什么是 401"上排查。
 
 #### 上一版（1.1.6）的快照 —— 保留作对照，内容已过期
 
