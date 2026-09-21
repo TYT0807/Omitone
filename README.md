@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.1.6-blue)
+![版本](https://img.shields.io/badge/版本-1.2.0-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -1037,7 +1037,7 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 ```bash
 npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段之后必须跑）
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
-npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致
+npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（77 项）
 npm test         # 上面三个
@@ -1058,7 +1058,7 @@ npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 
 
 | 层 | 手段 | 能测出什么 | 成本 |
 | --- | --- | --- | --- |
-| 静态自检 | `tools/check.js` | 语法、版本一致性、**幽灵调用**、死方法、编码损坏、唯一真源 | 秒级 |
+| 静态自检 | `tools/check.js` | 语法、版本一致性、**幽灵调用**、死方法、编码损坏、唯一真源、**产物与片段一致**、**片段头部一致** | 秒级 |
 | 集成测试 | `vm` + 打桩 `chrome.*` | content.js 的协议、解析、分批 index、答案形态 | 秒级 |
 | 端到端 | CDP 驱动真实 Edge | 扩展加载、DOM 行为、注入顺序、脚本异常 | 分钟级 |
 
