@@ -33,22 +33,22 @@
 >
 > **本次交接后已推进到**：`1.1.6` 已发布并核验，**说明书已重写成「担架级」**（见下）。
 
-#### ⚠️ 最新快照（2026-09-21 傍晚）—— 先看这一段
+#### ✅ 最新快照（2026-09-21 傍晚）—— 已全部推送上远端
 
-**本地 `main` 领先远端 7 个提交，推不上去，因为令牌过期了。**
+**本地与远端已完全同步（`bd7b166`）。线上附件也已换成含「乱选」的新包。**
 
 | | |
 | --- | --- |
-| 本地 HEAD | `757c9f0 弹窗开关按 id 逐个点名，抓误删` |
-| 远端 main | `1dd22d8`（落后 7 个） |
-| 工作区 | 干净（已全部提交到本地） |
+| 本地 / 远端 | **`bd7b166` = `bd7b166`** ✓ 完全同步 |
+| 工作区 | 干净 |
 | 测试 | 自检 13 项 · 集成 77 项 · e2e **26 场景 / 280 项**（落盘 `通过=true`） |
-| 令牌 | `~/.omitone-release.ghtoken` **已失效**（`GET /user` 返回 401，文件是 9-18 写的、1 天有效期） |
+| 线上 Release | v1.1.6 · `omitone.zip` 360.9 KB（sha256 `7cab586768fd…`）· `Omitone-manual.pdf` 1360.6 KB（sha256 `a73ff8877e07…`），均与本地构建逐字节一致 |
 | 备份 | `D:/Omite-backup-20260921-160904`（41 个文件，基线 `1dd22d8`） |
 
-**待推送的 7 个提交**（内容都在本地，推上去即可）：
+**本次推上去的 8 个提交**：
 
 ```
+bd7b166  交接稿加快照：本地领先远端七个提交
 757c9f0  弹窗开关按 id 逐个点名，抓误删
 14fb358  守则补两条假信心陷阱：node -e 内联中文、&& 链静默断掉
 ed279ab  补弹题路径的乱选测试：不发请求且真选上
@@ -64,14 +64,14 @@ b7419dc  乱选模式补边界测试：随机性、与 key 无关、enableQuiz �
 视觉读题（跳过）、`enableQuiz`（仍要开着，关掉=完全不答题）。
 细节见 CHANGELOG 的「新增乱选模式」「乱选模式自审」两节。
 
-**恢复推送的步骤**：
+**下次要推送时**：
 
 ```bash
-# 1) 按 §0.5 重新要一枚细粒度 PAT，写进 ~/.omitone-release.ghtoken
-# 2) 推 7 个提交（走 REST API，不用 git push —— 见 AGENTS §7.3）
-npm run release -- push --message-file <消息文件> page.js content.js popup/popup.html popup/popup.js \
-  tools/browser-e2e.js README.md CHANGELOG.md AGENTS.md tools/README.md HANDOVER.md docs/manual.html 使用说明.pdf
-# 3) 线上附件换成含乱选的新包（tag 之后有影响安装包的改动，必须换）
+# 1) 要一枚细粒度 PAT，写进 ~/.omitone-release.ghtoken（见 §0.5）
+# 2) 直接推 —— **令牌放进 URL 即可，保留完整提交历史**（见 AGENTS §7.3）
+TOKEN=$(cat ~/.omitone-release.ghtoken | tr -d '\r\n')
+git -c credential.helper= push "https://x-access-token:${TOKEN}@github.com/TYT0807/Omitone.git" main
+# 3) 若 tag 之后有影响安装包的改动，换附件
 npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- verify v1.1.6
 ```
 

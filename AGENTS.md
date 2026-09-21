@@ -188,7 +188,25 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 280 项）
 
 **所以：看到 e2e 全线失败，先看这一行，再去怀疑代码。**
 
-### 7.3 **`git push` 会永久挂起 —— 发版请走 REST API**
+### 7.3 `git push` 用不了 —— 但**不是网络问题，是缺凭据**
+
+> ⚠️ **2026-09-21 更正**：这一节原先写「push 能连上却永远不返回」。
+> 实测真正的报错是 **`fatal: could not read Username for 'https://github.com':
+> terminal prompts disabled`** —— 远端 URL 是 HTTPS、而本机没有凭据助手，
+> 所以它**根本没能发起认证**。之前看到的「挂起」很可能是这个失败被网络抖动掩盖了。
+>
+> **所以：push 是能用的，把令牌放进 URL 即可** —— 而且**比走 REST API 好得多**，
+> 因为它保留完整的提交历史（REST API 那条路会把多个提交压成一个）：
+>
+> ```bash
+> TOKEN=$(cat ~/.omitone-release.ghtoken | tr -d '\r\n')
+> git -c credential.helper= push "https://x-access-token:${TOKEN}@github.com/TYT0807/Omitone.git" main
+> ```
+>
+> 实测 8 个本地提交一次性推上去、历史完整、本地远端 sha 一致。
+> 输出里可能带令牌，需要的话用 `| sed "s/${TOKEN}/***/g"` 打码。
+
+#### 以下为原记录（REST API 那条路仍然可用，作为备选）
 
 这台机器上 `git push origin main` **能连上却永远不返回**（实测挂满 5 分半仍在运行），
 而同一条网络下：
