@@ -7,7 +7,12 @@
  *    改这个域请改本文件，然后跑 npm run concat；直接改根目录 page.js 会被覆盖。
  *
  * **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 window.xxtAI 与启动逻辑
- * window.xxtAI 是给用户的手动调试入口（skipQuiz / diagnosePopup / taskGiveUpList 等）—— 必须保留
+ * window.xxtAI 是给用户的手动调试入口 —— **必须保留**（有些方法"看起来没人调用"，
+ * 其实是被用户手动调的，别当成死代码删掉）。目前共 8 个：
+ *   reload（重读配置）、next（下一节）、skipQuiz（跳过当前答题）、diagnose（题目扫描诊断）、
+ *   scanQuiz（只抽题不答题）、diagnosePopup（弹题诊断）、taskGiveUpList（看放弃名单）、
+ *   clearTaskGiveUp（清放弃名单，让用户能重试）
+ * 本段没有 app 方法 —— 这 8 个挂在 window.xxtAI 上，不在 app 对象里
  * ========================================================================== */
 // @omitone-part-header-end
   };
