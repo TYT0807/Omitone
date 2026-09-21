@@ -1691,6 +1691,44 @@ SCENARIOS.push({
     );
     check('关掉乱选后恢复 AI 路径（回归：不能把开关粘住）',
       r7c && r7c.isRandom === false, JSON.stringify(r7c));
+
+    // ⑦b 乱选必须**真的随机**，不能永远同一个答案。
+    // 这条不是洁癖：本项目现场就踩过「一直选 D」，用户报了好几轮。
+    // 一个叫"乱选"却永远选 A 的功能，等于把那个 bug 原样搬过来。
+    var r7d = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:true, apiKey:""});' +
+      'var qs=[{index:0,type:"single",title:"",options:["甲","乙","丙","丁"]}];' +
+      'var seen={}; for(var i=0;i<60;i++){seen[app._buildRandomQuizAnswers(qs)[0]]=1;}' +
+      'return {distinct:Object.keys(seen).length, keys:Object.keys(seen).sort().join("")};})()'
+    );
+    check('乱选真的随机（60 次至少出现 2 种不同答案）',
+      r7d && r7d.distinct >= 2, JSON.stringify(r7d));
+
+    // ⑦c 乱选**优先于 AI**：即使配了 key 也走本地生成、不发请求
+    var r7e = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:true, apiKey:"sk-假的"});' +
+      'return {reason:app._getQuizApiUnavailableReason(), isRandom:app._isRandomAnswerMode()};})()'
+    );
+    check('乱选优先于 AI：配了 key 也走本地生成',
+      r7e && r7e.reason === '' && r7e.isRandom === true, JSON.stringify(r7e));
+
+    // ⑦d enableQuiz 关掉时乱选也不生效 —— 语义上「关掉答题」= 完全不答题，
+    //     不能被乱选绕过（否则用户关了答题却发现还在交卷，会很困惑）。
+    var r7f = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:false, randomAnswer:true, apiKey:""});' +
+      'return {isRandom:app._isRandomAnswerMode(), reason:app._getQuizApiUnavailableReason()};})()'
+    );
+    check('enableQuiz 关掉时乱选也不生效（关掉答题 = 完全不答题）',
+      r7f && r7f.isRandom === false && r7f.reason === 'api-disabled', JSON.stringify(r7f));
+
+    // 收尾：把 configs 恢复成进来时的样子（enableQuiz 也要还原，别只还原 randomAnswer）
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:false}); return true;})()'
+    );
     // ⚠️ 这里**故意不**再断言「不把答案记错」。写过一条，反向验证发现它不可能失败：
     // 表单被清空时本来就**没有已填答案可记**，那次 `_rememberWrongQuizAnswers` 是空操作，
     // 加不加它 `wrongs` 都是 0 —— 断言分辨不了，留着就是假的检查。
