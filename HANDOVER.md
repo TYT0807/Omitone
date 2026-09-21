@@ -33,6 +33,48 @@
 >
 > **本次交接后已推进到**：`1.1.6` 已发布并核验，**说明书已重写成「担架级」**（见下）。
 
+#### ⚠️ 最新快照（2026-09-21 傍晚）—— 先看这一段
+
+**本地 `main` 领先远端 7 个提交，推不上去，因为令牌过期了。**
+
+| | |
+| --- | --- |
+| 本地 HEAD | `757c9f0 弹窗开关按 id 逐个点名，抓误删` |
+| 远端 main | `1dd22d8`（落后 7 个） |
+| 工作区 | 干净（已全部提交到本地） |
+| 测试 | 自检 13 项 · 集成 77 项 · e2e **26 场景 / 280 项**（落盘 `通过=true`） |
+| 令牌 | `~/.omitone-release.ghtoken` **已失效**（`GET /user` 返回 401，文件是 9-18 写的、1 天有效期） |
+| 备份 | `D:/Omite-backup-20260921-160904`（41 个文件，基线 `1dd22d8`） |
+
+**待推送的 7 个提交**（内容都在本地，推上去即可）：
+
+```
+757c9f0  弹窗开关按 id 逐个点名，抓误删
+14fb358  守则补两条假信心陷阱：node -e 内联中文、&& 链静默断掉
+ed279ab  补弹题路径的乱选测试：不发请求且真选上
+a1b70e7  乱选自审：补 submittedById 守卫与端到端填充断言
+0d82202  说明书补乱选：没 Key 也能把卷交出去
+b7419dc  乱选模式补边界测试：随机性、与 key 无关、enableQuiz 语义
+846c4f9  新增乱选模式：不接 AI 本地随机作答
+```
+
+**本次新增的功能：「乱选」模式** —— 不接 AI、本地随机作答，给不想配 API Key 的用户用。
+弹窗「答题」组里的开关 `randomAnswer`。与既有功能的冲突逐条查过并处理：
+`_getQuizApiUnavailableReason`（不乱跳题）、三个 `_remember*` 答案缓存（全部短路）、
+视觉读题（跳过）、`enableQuiz`（仍要开着，关掉=完全不答题）。
+细节见 CHANGELOG 的「新增乱选模式」「乱选模式自审」两节。
+
+**恢复推送的步骤**：
+
+```bash
+# 1) 按 §0.5 重新要一枚细粒度 PAT，写进 ~/.omitone-release.ghtoken
+# 2) 推 7 个提交（走 REST API，不用 git push —— 见 AGENTS §7.3）
+npm run release -- push --message-file <消息文件> page.js content.js popup/popup.html popup/popup.js \
+  tools/browser-e2e.js README.md CHANGELOG.md AGENTS.md tools/README.md HANDOVER.md docs/manual.html 使用说明.pdf
+# 3) 线上附件换成含乱选的新包（tag 之后有影响安装包的改动，必须换）
+npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- verify v1.1.6
+```
+
 - **最新一次提交是 `1742b9f 修作业页回填与提交后判定`**（远端 `main` 已跟上，9 个文件逐个比对字节一致）。
   这是给「题目一直扫描、不做事、AI 重复提交」那台真实现场修的最后一刀，细节全在下方
   §0.2 第 4 段与 CHANGELOG「发版后补的第四、五个修复」。**两个新洞都在 `page.js`，
