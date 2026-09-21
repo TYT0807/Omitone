@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（112 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_quizInProgress、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizApiSkipLogAt、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_questionSelectors
+ * 本段的状态字段（115 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_quizInProgress、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizApiSkipLogAt、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_questionSelectors
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -30,6 +30,17 @@
     _checkInterval: null,
 
     _tickLoopInterval: null,
+
+    // 主循环的重入锁与看门狗时间戳。
+    // ⚠️ 这两个原先**从未声明**，全靠 `this._tickRunning = true` 现建 —— 值上没坏
+    //    （undefined 是假值），但破坏了"状态字段全在这一个文件里"这条规矩：
+    //    想找主循环的状态，在 10-config-state.js 里 grep 不到。
+    _tickRunning: false,
+
+    _tickStartedAt: 0,
+
+    // 主循环的"代"号：看门狗强制释放锁时 +1，用来作废旧 tick 的复位权（见 _runTick 的 finally）
+    _tickEpoch: 0,
 
     _quizInProgress: false,
 
