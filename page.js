@@ -230,119 +230,224 @@
   var app = {
     configs: mergeConfig({ apiKey: '', autoNext: true, enableQuiz: false }),
 
+
     _videoEl: null,
+
     _videoCount: 0,
+
     _currentVideoIndex: 0,
+
     _isPlaying: false,
+
     _checkInterval: null,
+
     _tickLoopInterval: null,
+
     _quizInProgress: false,
+
     _quizAnswered: false,
+
     _quizSubmitPending: false,
+
     _quizSubmitStartedAt: 0,
+
     _quizSubmitLogAt: 0,
+
     _quizLastSubmitAttemptAt: 0,
+
     _quizHoldLogAt: 0,
+
     _quizCorrectAnswerCache: null,
+
     _quizCurrentAnsweredKeys: null,
+
     _quizCurrentAnswerValues: null,
+
     _quizCurrentQuestions: null,
+
     _quizReadyToSubmit: false,
+
     _quizReadyWorkKey: '',
+
     _quizForceSkipUntil: 0,
+
     _quizApiSkipLogAt: 0,
+
     _quizScanDiagAt: 0,
+
     // 视频内嵌弹题（弹窗题）的失败计数。
     // 弹题答不上来时弹窗不会消失，而 tick 每 250ms 一轮 —— 没有下面这三个字段，
     // 同一道题会被反复发给模型：用户看到的就是"AI 一直在扫描、但从不填空、课程空转"。
     _popupQuizKey: '',
+
     _popupQuizAttempts: 0,
+
     _popupQuizBlockedUntil: 0,
+
     _popupQuizLogAt: 0,
+
     _popupQuizSolvedKey: '',
+
     _popupQuizSolvedAt: 0,
+
     // 本题已经填过、但没能让弹窗消失的答案（=错的）。重试时带给模型，
     // 由 libs/prompt.js 渲染成「禁:1=D;」前缀 —— 否则模型每轮都回同一个答案。
     _popupQuizWrongAnswers: [],
+
     _popupQuizLastFilled: '',
+
     // 填完答案后的一段静默期：期间**完全不去碰弹题**，见 _activePopupBlock 的说明。
     _popupQuizQuietUntil: 0,
+
     _popupBlockCheckedAt: 0,
+
     _popupBlockCached: null,
+
     // 前缀缓存：记住"本卷最近一次发过请求"，用于决定重试时是否整批重发
     _quizBatchSentKey: '',
+
     _quizBatchSentAt: 0,
+
     // 「继续学习」提示：弹题答完 / 视频暂停后，播放器右下角会出现这个按钮，
     // 不点它进不去正常播放页 —— 不处理就又变成"AI 一直在跑但课程不动"。
     _continueStudyAt: 0,
+
     _continueStudyScanAt: 0,
+
     _continueStudyKey: '',
+
     _continueStudyClicks: 0,
+
     _continueStudyBlockedUntil: 0,
+
     _taskAttempts: null,
+
     _taskProgress: null,
+
     _detectedMaxRate: 0,
+
     _rateDetectVideo: null,
+
     _rateDetectBusy: false,
+
     _rateProbing: false,
+
     _bgWorker: null,
+
     _bgWorkerUrl: null,
+
     _workerDelayCallbacks: null,
+
     _workerDelaySeq: 0,
+
     _audioKeepalive: null,
+
     _mediaRepaired: null,
+
     _pauseResumePending: false,
+
     _visibilityBound: false,
+
     _captchaActive: false,
+
     _captchaBusy: false,
+
     _captchaAttempts: 0,
+
     _captchaFailCount: 0,
+
     _captchaLastCheckAt: 0,
+
     _captchaLastResult: null,
+
     _discussionWindow: null,
+
     _discussionOpenedAt: 0,
+
     _discussionScanAt: 0,
+
     _discussionBusy: false,
+
     _discussionPosted: false,
+
     _discussionExpanded: false,
+
     _discussionBefore: null,
+
     _discussionScrollAt: 0,
+
     _discussionCardOpened: false,
+
     _discussionPageUrl: '',
+
     _discussionPageAt: 0,
+
     _discussionPageResult: false,
+
     _quizApiFailUntil: 0,
+
     _quizApiLastError: '',
+
     _stepNavigationBound: false,
+
     _stepSwitchPending: false,
+
     _stepSwitchAt: 0,
+
     _skipChainCount: 0,
+
     _videoRetryCount: 0,
+
     _lastChapterKey: '',
+
     _delayedNextUnitTimer: null,
+
     _guardLastTime: 0,
+
     _guardLastWallTs: 0,
+
     _guardLastResumeTs: 0,
+
     _resumeWindowStart: 0,
+
     _resumeAttemptCount: 0,
+
     _activeMediaJobPending: false,
+
     _activeMediaJobManaged: false,
+
     _activeDocumentJobPending: false,
+
     _activeDocumentJobManaged: false,
+
     _activeDocumentJobDoc: null,
+
     _mediaWaitLogAt: 0,
+
     _documentWaitLogAt: 0,
+
     _lastLearningTabSwitchAt: 0,
+
     _lastLearningCardKey: '',
+
     _docTaskState: null,
+
     _treeContainerEl: null,
+
     _taskDiscoverStartedAt: 0,
+
     _taskWaitLogAt: 0,
+
     _pendingTaskKey: '',
+
     _pendingTaskStartedAt: 0,
+
     _pendingTaskLogAt: 0,
+
     _submitConfirmLastClickAt: 0,
+
     _activeJobId: '',
+
 
     _cellData: {
       cells: 0,
@@ -352,36 +457,11 @@
       currentVideoTitle: ''
     },
 
+
     _assertActive: function () {
       return isActiveInstance();
     },
 
-    _getMainFrame: function () {
-      return document.querySelector('#iframe');
-    },
-
-    _getMainDocument: function () {
-      var frame = this._getMainFrame();
-      if (!frame) return null;
-      try {
-        return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
-      } catch (e) {
-        return null;
-      }
-    },
-
-    _getCurrentTitle: function () {
-      var el = document.querySelector('.prev_title');
-      return el ? textOf(el).slice(0, 60) : '';
-    },
-
-    _getCurrentChapterId: function () {
-      if (this._lastChapterKey) return String(this._lastChapterKey);
-      var frame = this._getMainFrame();
-      var raw = frame ? (frame.src || '') : location.href;
-      var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
-      return match ? String(match[1]) : '';
-    },
 
     run: function () {
       if (!this._assertActive()) return;
@@ -396,10 +476,12 @@
       this._startTickLoop();
     },
 
+
     play: function () {
       if (!this._assertActive()) return;
       this._runTick();
     },
+
 
     _resetRuntimeState: function () {
       this._runtimeVersion = (this._runtimeVersion || 0) + 1;
@@ -454,6 +536,112 @@
       this._clearCheckInterval();
     },
 
+
+    /**
+     * 对"确认是任务点但不支持的类型"做去重告警（每种模块只记一条）。
+     *
+     * 静默丢弃任务点是最难排查的一类问题：用户只看到"这个任务点没做"，
+     * 完全无从判断是识别失败、还是压根不支持。留一条日志就能区分。
+     */
+    _unsupportedJobLogged: null,
+
+
+    // ===== 视觉理解：把题目配图转成文字 =====
+    //
+    // 为什么只转文字、不直接把图交给答题模型：
+    //   答题链的系统提示词 + 题目文本是一个**每次都一样的长前缀**，DeepSeek 会把它
+    //   当作缓存单元按约 1/10 价计费（见 content.js logCacheUsage 的说明）。
+    //   一旦把每次都不同的图片塞进这个前缀，缓存立刻全部失效 ——
+    //   省下的那点「模型看图」的钱，会乘以十倍从输入侧漏出去。
+    //   所以图片走独立请求，只把结果文字拼进题干。
+
+    // 每章视觉调用计数（进了新章就清零，见 _resetVisionBudget）。
+    _visionUsedInChapter: 0,
+
+    _visionBudgetChapterKey: '',
+
+
+    // ===================== 讨论任务点 =====================
+    // 讨论任务点不在课程 iframe 内：点击后会跳转到独立的讨论页（新标签页或当前标签页），
+    // 必须在该页面发布评论才算完成。原识别逻辑只认 video/quiz/read/document 等类型，
+    // 这类任务点会被判成 other 直接跳过，因此这里单独实现：
+    //   刷课页：检测讨论任务点 → 打开讨论页 → 暂停推进等待
+    //   讨论页：自动填内容 → 点发布 → 检测成功 → 关闭/返回
+    //   回到刷课页：刷新章节继续运行（全程有超时兜底，绝不会卡住）
+
+    _discussionStoreKey: 'omitone_discussion_done',
+
+
+    // ===================== 做不完的任务点 =====================
+    // 学习通允许老师把任务点配置成"锁住"的形态：视频开防拖拽（拖了会被弹回）、
+    // 文档/PPT 不给翻页、或者任务点本身就是不计分的摆设。
+    // 插件对这些只会一次次重试，白耗时间 —— 尤其是反复回到同一章时。
+    //
+    // 这里的策略是**只放弃"确实完成不了"的**：每派发一次任务点就检查它是否真的完成了，
+    // 没完成才计数；连续 N 次都没完成就记入 localStorage（24 小时）并跳过，同时留日志。
+    // 判定"是否完成"拿不准时一律当作完成（`_isJobCompleted` 返回 true），
+    // 宁可多跑一次也不要误跳过必做任务点。
+
+    _taskGiveUpStoreKey: 'omitone_task_giveup',
+
+
+    /**
+     * 按选择器优先级收集题目容器。
+     *
+     * 注意这里**不能**在第一个"有命中"的选择器上无条件 break：
+     * 用 `.TiMu` 之类的选择器命中一批节点后，还要过一遍可见性/文本过滤，
+     * 过滤后可能一个都不剩（占位容器、被隐藏的模板节点）。
+     * 1.0.11 之前是命中就 break，于是"某个宽泛选择器抢先命中但全是空壳"会让整次扫描
+     * 直接返回 0 题 —— 表现就是用户看到的"AI 扫描不到题目"。
+     * 现在改成：挨个选择器试，谁第一个给出**过滤后非空**的结果就用谁。
+     */
+    /**
+     * 题目容器选择器，按优先级尝试。
+     *
+     * 命名来源：对照开源实现 cxmooc-tools 的 src/mooc/chaoxing/question.ts 校正过。
+     * 学习通有**两套**题目标记，之前的清单只覆盖了课程页那一套：
+     *   课程页：  容器 .TiMu         标题 .Zy_TItle > .clearfix   选项 .Zy_ulTop/.Zy_ulBottom > li
+     *   作业/考试：容器 .Cy_TItle     标题 .Cy_TItle.clearfix      选项 .Cy_ulTop/.Cy_ulBottom li
+     * 缺了 .Cy_TItle 这一族，作业与考试页会整体扫不到题 —— 而这正是"AI 扫描不到题目"的常见场景。
+     */
+    _questionSelectors: [
+      '.TiMu', '.Cy_TItle', '.questionLi', '.questionItem', '.tiBank', '.topicItem',
+      '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox',
+      'li.quesLi', '.answerOption', 'div[class*="question"]', 'div[class*="topic"]',
+      'div[class*="TiMu"]', 'div[class*="Cy_TItle"]'
+    ],
+
+    _getMainFrame: function () {
+      return document.querySelector('#iframe');
+    },
+
+
+    _getMainDocument: function () {
+      var frame = this._getMainFrame();
+      if (!frame) return null;
+      try {
+        return frame.contentDocument || (frame.contentWindow && frame.contentWindow.document) || null;
+      } catch (e) {
+        return null;
+      }
+    },
+
+
+    _getCurrentTitle: function () {
+      var el = document.querySelector('.prev_title');
+      return el ? textOf(el).slice(0, 60) : '';
+    },
+
+
+    _getCurrentChapterId: function () {
+      if (this._lastChapterKey) return String(this._lastChapterKey);
+      var frame = this._getMainFrame();
+      var raw = frame ? (frame.src || '') : location.href;
+      var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
+      return match ? String(match[1]) : '';
+    },
+
+
     _dismissPopups: function () {
       var texts = ['继续', '下一节', '跳过', '取消', '关闭', '知道了', '确定'];
       try {
@@ -499,20 +687,535 @@
       return false;
     },
 
-    _detectPageChange: function () {
-      var frame = this._getMainFrame();
-      var raw = frame ? (frame.src || '') : location.href;
-      var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
-      var key = match ? match[1] : raw;
-      if (this._lastChapterKey && this._lastChapterKey !== key) {
-        this._resetRuntimeState();
-        this._lastLearningCardKey = '';
-        this._initCellData();
-        console.log('%c[Omitone] chapter changed', 'color:#2196F3');
-        emitRuntimeLog('info', 'chapter changed');
+
+    _walkFrames: function (doc, visitor, depth) {
+      if (!doc || depth > 4) return;
+      var frames = [];
+      try {
+        frames = doc.querySelectorAll("iframe");
+      } catch (e) {}
+
+      for (var i = 0; i < frames.length; i++) {
+        var frame = frames[i];
+        visitor(frame);
+        try {
+          var subDoc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
+          this._walkFrames(subDoc, visitor, depth + 1);
+        } catch (e2) {}
       }
-      this._lastChapterKey = key;
-      this._detectLearningCardChange();
+    },
+
+
+    _safeJsonParse: function (value, fallback) {
+      try {
+        return JSON.parse(value);
+      } catch (e) {
+        return fallback;
+      }
+    },
+
+
+    // 跨域窗口读 .document 会抛 SecurityError:
+    // "Blocked a frame with origin X from accessing a cross-origin frame"
+    // 该异常一旦冒泡到 _runTick，会打断整轮调度（验证码检测、播放巡检全部停摆）。
+    // 所有 iframe/window -> document 的访问必须统一走下面三个助手。
+    _safeDocOf: function (source) {
+      try {
+        if (!source) return null;
+        if (source.contentDocument) return source.contentDocument;
+        var win = source.contentWindow || source;
+        if (win && win.document) return win.document;
+      } catch (e) {}
+      return null;
+    },
+
+
+    _safeWinDoc: function (win) {
+      try { return (win && win.document) || null; } catch (e) { return null; }
+    },
+
+
+    // 帧是否同源可访问（跨域返回 false，绝不抛异常）
+    _isFrameSameOrigin: function (frame) {
+      try {
+        var win = frame && frame.contentWindow;
+        return !!(win && win.document);
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    _getMainWindow: function () {
+      var frame = this._getMainFrame();
+      if (!frame) return null;
+      try {
+        return frame.contentWindow || null;
+      } catch (e) {
+        return null;
+      }
+    },
+
+
+    // 给可能永久 pending 的 Promise（如 video.play() 在视频源停摆时）加超时护栏，
+    // 防止 _runTick 的 await 挂死导致整个循环停止
+    _withTimeout: function (promise, ms) {
+      return new Promise(function (resolve, reject) {
+        var settled = false;
+        var timer = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          resolve(undefined); // 超时按成功放行，实际播放状态由后续巡检兜底
+        }, ms || 10000);
+        Promise.resolve(promise).then(function (value) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        }, function (err) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+    },
+
+
+    // ---- 后台/最小化防节流 ----
+    // 浏览器对后台标签页的 setTimeout/setInterval 有强节流（最低 1 次/分钟），
+    // 且静音（不可听）媒体在后台会被暂停/降速播放。以下三层防御保证最小化后视频继续推进：
+    // 1. Worker 心跳：Web Worker 内的定时器不受标签页可见性节流，用它持续驱动视频守护
+    // 2. pause 事件立即恢复：事件派发不受定时器节流，视频被网站/浏览器暂停后第一时间恢复
+    // 3. 无声音频保活：让浏览器把标签页视为"正在播放音频"，豁免强节流与后台静音媒体限制
+    _ensureBackgroundWorker: function () {
+      if (this._bgWorker) return this._bgWorker;
+      try {
+        var code = [
+          'var interval=null;',
+          'onmessage=function(e){var d=e.data||{};',
+          "if(d.op==='interval'){",
+          '  if(interval)clearInterval(interval);',
+          '  interval=setInterval(function(){postMessage({op:"tick"})},d.ms||1500);',
+          '}else if(d.op==="delay"){',
+          '  setTimeout(function(){postMessage({op:"fire",id:d.id})},d.ms||0);',
+          '}else if(d.op==="stop"){',
+          '  if(interval)clearInterval(interval);interval=null;',
+          '}};'
+        ].join('');
+        var blob = new Blob([code], { type: 'application/javascript' });
+        var url = URL.createObjectURL(blob);
+        var worker = new Worker(url);
+        var self = this;
+        this._workerDelayCallbacks = {};
+        worker.onmessage = function (e) {
+          var d = e.data || {};
+          if (d.op === 'tick') {
+            if (document.hidden) {
+              self._checkVideoStatus();
+              if (typeof self._backgroundCaptchaTick === 'function') self._backgroundCaptchaTick();
+            }
+            return;
+          }
+          if (d.op === 'fire' && self._workerDelayCallbacks) {
+            var fn = self._workerDelayCallbacks[d.id];
+            delete self._workerDelayCallbacks[d.id];
+            if (typeof fn === 'function') fn();
+          }
+        };
+        worker.postMessage({ op: 'interval', ms: this.configs.videoCheckInterval || 1500 });
+        this._bgWorker = worker;
+        this._bgWorkerUrl = url;
+        emitRuntimeLog('info', 'background worker heartbeat started');
+      } catch (e) {
+        this._bgWorker = null;
+        emitRuntimeLog('warn', 'background worker unavailable, fallback to page timers', {
+          error: String(e && e.message ? e.message : e).slice(0, 120)
+        });
+      }
+      return this._bgWorker;
+    },
+
+
+    _workerDelay: function (fn, ms) {
+      if (this._bgWorker && this._workerDelayCallbacks) {
+        this._workerDelaySeq = (this._workerDelaySeq || 0) + 1;
+        var id = 'wd' + this._workerDelaySeq;
+        this._workerDelayCallbacks[id] = fn;
+        try {
+          this._bgWorker.postMessage({ op: 'delay', id: id, ms: ms || 0 });
+          return;
+        } catch (e) {}
+      }
+      setTimeout(fn, ms || 0);
+    },
+
+
+    _bindVisibilityHandlers: function () {
+      if (this._visibilityBound) return;
+      this._visibilityBound = true;
+      var self = this;
+      document.addEventListener('visibilitychange', function () {
+        self._syncAudioKeepalive();
+        if (!document.hidden) {
+          // 回到前台：立即校验一次视频状态与倍速
+          self._checkVideoStatus();
+          var video = self._getVideoEl();
+          if (video) self._ensurePlaybackRate(video, 'visibility-resume');
+        }
+      });
+    },
+
+
+    _resolveImageUrl: function (img) {
+      try {
+        var doc = img.ownerDocument || document;
+        var base = doc.baseURI || window.location.href;
+        return new URL(img.src || img.currentSrc || '', base).href;
+      } catch (e) {
+        return '';
+      }
+    },
+
+
+    // 主 iframe 被换成跨域页面（验证码/反作弊拦截）：JS 完全无法访问其内部，
+    // 既检测不到验证码也填不了，唯一恢复手段就是刷新页面（刷新后由自动续跑接管）
+    _markMainFrameCrossOrigin: function () {
+      if (!this._mainFrameCrossOriginSince) this._mainFrameCrossOriginSince = Date.now();
+    },
+
+
+    _checkBlockedByCrossOrigin: function () {
+      var frame = this._getMainFrame();
+      if (!frame) return false;
+      if (this._isFrameSameOrigin(frame)) {
+        this._mainFrameCrossOriginSince = 0;
+        return false;
+      }
+
+      this._markMainFrameCrossOrigin();
+      var held = Date.now() - (this._mainFrameCrossOriginSince || Date.now());
+      var now = Date.now();
+
+      // 页面还在加载时 iframe 归属可能未定，先不判定为被拦截，避免误刷新
+      if (document.readyState !== 'complete') {
+        this._mainFrameCrossOriginSince = 0;
+        return false;
+      }
+
+      if (now - (this._crossOriginLogAt || 0) > 15000) {
+        this._crossOriginLogAt = now;
+        emitRuntimeLog('warn', 'main frame is cross-origin, page likely blocked by captcha/anti-bot', {
+          heldSec: Math.round(held / 1000)
+        });
+      }
+
+      if (held > 20000 && this.configs.blockedReload !== false) {
+        if (now - (this._blockedReloadAt || 0) > 180000) {
+          this._blockedReloadAt = now;
+          emitRuntimeLog('warn', 'blocked page unreachable from JS, reload to recover', {
+            heldSec: Math.round(held / 1000)
+          });
+          try { window.location.reload(); } catch (e) {}
+        }
+      }
+
+      return true; // 主内容都拿不到，本轮没必要继续跑后面的逻辑
+    },
+
+
+    // 遍历文档树（含 iframe 递归，跨域自动跳过），对每个可访问文档执行 cb
+    _walkDocs: function (root, cb) {
+      var self = this;
+      var seen = [];
+      (function walk(doc, depth) {
+        if (!doc || depth > 4) return;
+        if (seen.indexOf(doc) >= 0) return;
+        seen.push(doc);
+        try { cb(doc); } catch (e0) {}
+        var frames = [];
+        try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e1) { return; }
+        for (var i = 0; i < frames.length && i < 12; i++) walk(self._safeDocOf(frames[i]), depth + 1);
+      })(root, 0);
+    },
+
+
+    _studyDocs: function () {
+      var docs = [];
+      var mainDoc = null;
+      try { mainDoc = this._getMainDocument(); } catch (e0) {}
+      if (mainDoc) docs.push(mainDoc);
+      if (document !== mainDoc) docs.push(document);
+      return docs;
+    },
+
+
+    _walkDocuments: function (visitor, startDoc, depth) {
+      var doc = startDoc || document;
+      var level = typeof depth === 'number' ? depth : 0;
+      if (!doc || level > 4) return false;
+      if (visitor(doc)) return true;
+
+      var iframes = [];
+      try {
+        iframes = doc.querySelectorAll('iframe');
+      } catch (e) {}
+
+      for (var i = 0; i < iframes.length; i++) {
+        try {
+          var subDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);
+          if (this._walkDocuments(visitor, subDoc, level + 1)) return true;
+        } catch (e2) {}
+      }
+      return false;
+    },
+
+    _logUnsupportedJobOnce: function (module, type) {
+      if (!this._unsupportedJobLogged) this._unsupportedJobLogged = Object.create(null);
+      var key = String(module || '') + '|' + String(type || '');
+      if (this._unsupportedJobLogged[key]) return;
+      this._unsupportedJobLogged[key] = true;
+      emitRuntimeLog('warn', 'unsupported task point type, skipped', {
+        module: String(module || '(空)'),
+        type: String(type || '(空)')
+      });
+    },
+
+
+    _logTaskWait: function (message, now) {
+      var ts = now || Date.now();
+      if (ts - this._taskWaitLogAt < 3000) return;
+      this._taskWaitLogAt = ts;
+      console.log('%c[Omitone] waiting task render: ' + message, 'color:#9C27B0');
+    },
+
+
+    /**
+     * 把图片 URL 转成 dataURL 并做体积闸门，然后一次性交给视觉模型。
+     *
+     * 返回值：描述文字（string），拿不到就返回空串。
+     * **永远不会抛异常** —— 视觉只是锦上添花，绝不能因为它把整条答题链打断。
+     */
+    _describeQuestionImages: async function (urls, chapterKey) {
+      if (!urls || !urls.length) return '';
+      if (!this.configs.visionEnabled) return '';
+
+      var maxBytes = Number(this.configs.visionMaxImageBytes);
+      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
+      var maxPerReq = Number(this.configs.visionImagesPerRequest);
+      if (!isFinite(maxPerReq) || maxPerReq < 1) maxPerReq = 2;
+
+      // 先抓图（这一步不花钱）
+      var dataUrls = [];
+      for (var i = 0; i < urls.length && dataUrls.length < maxPerReq; i++) {
+        var url = String(urls[i] || '');
+        if (!url) continue;
+        var dataUrl = '';
+        if (url.indexOf('data:image/') === 0) {
+          dataUrl = url;
+        } else {
+          try {
+            var fetched = await bridgeSend('fetch_image', { url: url });
+            if (fetched && fetched.success && fetched.dataUrl) dataUrl = String(fetched.dataUrl);
+          } catch (eF) {}
+        }
+        if (!dataUrl) continue;
+        // 体积闸门：base64 后约是原始字节的 4/3，这里用 dataURL 长度近似判断
+        if (dataUrl.length > maxBytes * 1.4) {
+          emitRuntimeLog('info', 'vision image too large, skipped', { bytes: Math.round(dataUrl.length * 0.75) });
+          continue;
+        }
+        dataUrls.push(dataUrl);
+      }
+      if (!dataUrls.length) return '';
+
+      // 抓完图才扣预算。反过来会出现「预算扣了但图没抓到」的冤枉账。
+      if (!this._takeVisionBudget(chapterKey)) return '';
+
+      try {
+        var result = await bridgeSend('llm_vision', { images: dataUrls });
+        if (!result || !result.success) {
+          emitRuntimeLog('warn', 'vision request failed, continue without image text', {
+            error: String((result && result.error) || 'no response').slice(0, 200)
+          });
+          return '';
+        }
+        var text = String(result.data || '').trim();
+        // 模型说「无」时不要往题干里塞噪音 —— 那会让答题模型分心
+        if (!text || text === '无' || text === '没有' || text === '无明显信息') return '';
+        emitRuntimeLog('info', 'vision described images', { images: dataUrls.length, chars: text.length });
+        return text;
+      } catch (e) {
+        emitRuntimeLog('warn', 'vision bridge failed', { message: e && e.message ? e.message : String(e) });
+        return '';
+      }
+    },
+
+
+    /** 乱选模式下的日志（每 3 秒最多一条，避免刷屏）。 */
+    _logRandomAnswers: function (questions) {
+      var now = Date.now();
+      if (now - (this._randomAnswerLogAt || 0) < 3000) return;
+      this._randomAnswerLogAt = now;
+      emitRuntimeLog('info', 'random answer mode: generated locally, no ai request', {
+        count: (questions || []).length
+      });
+    },
+
+
+    /**
+     * 诊断：**为什么没认出判分结果页**。
+     *
+     * `_isQuizResultPageFinished` 有三道条件 ——
+     *   ① 没有「请重做」类文案（一票否决）
+     *   ② 有判分痕迹（`.Py_answer` 那一族，或正文出现「我的答案/正确答案/本题得分/答案解析」）
+     *   ③ 题目区已不可交互（没有容器，或所有 radio/checkbox/input/textarea 都 disabled）
+     * 任何一道不满足都返回 false，但**不告诉你缺的是哪一道**。
+     * 于是 25 秒超时之后只能靠猜 —— 现场报过「作业页反复重交」，卡的就是这一段。
+     *
+     * 这条日志把三道条件各自的结果都打出来，下次复现就能直接看出缺哪一块，不用再猜。
+     */
+    _describeQuizResultPage: function (preferredDoc) {
+      var out = {};
+      try {
+        var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
+        if (!doc || !doc.body) { out.doc = 'none'; return out; }
+        var text = textOf(doc.body);
+        out.textLen = text.length;
+        // ① 一票否决
+        out.redoText = /未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text);
+        // ② 判分痕迹
+        var hit = null;
+        try { hit = doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer'); } catch (eH) {}
+        out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
+        out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
+        // ③ 可交互性
+        out.containers = doc.querySelectorAll('.TiMu, .Cy_TITle, .questionLi, .questionItem, .mark_item, .questionBox').length;
+        var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
+        out.controls = ctrls.length;
+        var enabled = 0;
+        for (var i = 0; i < ctrls.length; i++) { if (!ctrls[i].disabled) enabled++; }
+        out.controlsEnabled = enabled;
+        // 正文里跟判分有关的词，便于对照
+        var kw = text.match(/我的答案|正确答案|本题得分|答案解析|任务点已完成|已通过|请重做|未通过|不及格/g);
+        out.keywords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
+      } catch (e) { out.err = String(e.message || e).slice(0, 60); }
+      return out;
+    },
+
+    _logSubmitPayload: function (questions, doc) {
+      try {
+        var list = (questions && questions.length ? questions : this._quizCurrentQuestions) || [];
+        var out = [];
+        for (var i = 0; i < list.length && i < 12; i++) {
+          var q = list[i];
+          var el = q && q._element;
+          var qid = el ? this._getQuestionIdFromElement(el) : '';
+          if (!qid) { out.push({ qid: '', answer: '(无 qid)' }); continue; }
+          var a = doc && doc.getElementById ? doc.getElementById('answer' + qid) : null;
+          var t = doc && doc.getElementById ? doc.getElementById('answertype' + qid) : null;
+          // `mapped` 是我们**把 answertype 解读成了什么** —— 与 `type` 一列对比，
+          // 就能立刻看出「我们认的题型」和「平台声明的题型」是否一致。
+          // 不一致时服务端很可能拒收（比如我们当单选填、平台声明是多选）。
+          var rawType = t ? String(t.value || '') : '';
+          out.push({ qid: qid, type: q && q.type, mapped: this._mapQuizTypeValue(rawType),
+            answer: a ? String(a.value || '') : '(无该字段)',
+            answertype: t ? rawType : '(无该字段)' });
+        }
+        console.log('[Omitone] submit payload', JSON.stringify(out));
+      } catch (e) {}
+    },
+
+
+    /**
+     * 题目扫描诊断。
+     *
+     * 触发方式：
+     *   1) _handleQuiz 扫到 0 题时自动写进运行日志
+     *   2) 用户在页面控制台手动执行 `xxtAI.diagnose()`（同时 return，可直接看返回值）
+     *
+     * 目的：把"AI 扫不到题目"这种没法查的模糊反馈，变成能直接定位的具体信息 ——
+     * 每个同源文档里有哪些选择器命中、命中几个、拿到的容器为什么被判定成无效题。
+     */
+    _diagnoseQuestionScan: function (preferredDoc) {
+      var self = this;
+      var report = {
+        url: String((window.location && window.location.href) || '').slice(0, 180),
+        title: this._getCurrentTitle(),
+        quizByTitle: this._looksLikeQuizTitle(),
+        docs: [],
+        containers: 0,
+        samples: []
+      };
+
+      var inspectDoc = function (doc, path) {
+        if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
+        var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
+        try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
+
+        self._questionSelectors.forEach(function (sel) {
+          try {
+            var count = doc.querySelectorAll(sel).length;
+            if (count) entry.selectors[sel] = count;
+          } catch (e) {}
+        });
+        try {
+          entry.inputs = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea').length;
+          entry.answerFields = doc.querySelectorAll('[id^="answer"]').length;
+        } catch (e) {}
+
+        report.docs.push(entry);
+        return false;
+      };
+
+      if (preferredDoc) this._walkDocuments(function (d) { return inspectDoc(d, 'preferredDoc'); }, preferredDoc, 0);
+      this._walkDocuments(function (d) { return inspectDoc(d, 'top'); }, document, 0);
+
+      var containerHost = preferredDoc || this._getMainDocument() || document;
+      var containers = [];
+      try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
+      report.containers = containers.length;
+
+      containers.slice(0, 5).forEach(function (node) {
+        var parsed = self._parseQuestionElement(node, 0);
+        report.samples.push({
+          cls: String(node.className || '').slice(0, 50),
+          head: textOf(node).slice(0, 48),
+          title: parsed ? String(parsed.title || '').slice(0, 40) : '',
+          options: parsed ? parsed.options.length : 0,
+          parsed: !!parsed
+        });
+      });
+
+      var totalMatched = report.docs.reduce(function (sum, d) {
+        return sum + Object.keys(d.selectors).length;
+      }, 0);
+      if (!totalMatched) {
+        report.hint = '任何文档都没有命中题目选择器：可能不是测验页，或题目在跨域 iframe 里（插件无法访问），或学习通改版换了类名';
+      } else if (!report.containers) {
+        report.hint = '选择器有命中但容器全部被过滤（隐藏/无文本）：检查 _collectQuestionContainers 的过滤条件';
+      } else if (!report.samples.some(function (s) { return s.parsed; })) {
+        report.hint = '容器找到了但 _parseQuestionElement 全部返回 null：题干与选项都没抠出来，需要补 titleSelectors / _getOptionItems';
+      }
+
+      return report;
+    },
+
+
+    _describePopupQuiz: function (popup, optionItems) {
+      try {
+        if (!optionItems) optionItems = this._getOptionItems(popup);
+        return {
+          cls: String(popup.className || '').slice(0, 120),
+          text: textOf(popup).slice(0, 200),
+          optionCount: optionItems.length,
+          optionTexts: optionItems.slice(0, 6).map(this._extractOptionText.bind(this)),
+          optionLetters: optionItems.slice(0, 6).map(this._inferOptionLetter.bind(this)),
+          html: String(popup.outerHTML || '').replace(/\s+/g, ' ').slice(0, 900)
+        };
+      } catch (e) {
+        return { cls: String(popup && popup.className || ''), error: String(e && e.message || e) };
+      }
     },
 
     _clearMediaPendingState: function (reason) {
@@ -539,6 +1242,1524 @@
       }
     },
 
+
+    _isActiveMediaPending: function (reason) {
+      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending')) {
+        this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
+        return false;
+      }
+
+      var media = this._videoEl || this._getVideoEl();
+      if (!media) {
+        if (!this._activeMediaJobPending) return false;
+        var missingNow = Date.now();
+        if (!this._mediaWaitLogAt || missingNow - this._mediaWaitLogAt > 5000) {
+          this._mediaWaitLogAt = missingNow;
+          emitRuntimeLog('info', 'media pending, waiting for element', { reason: reason || '' });
+        }
+        return true;
+      }
+
+      if (media.ended) {
+        if (this._activeMediaJobManaged) {
+          this._activeMediaJobPending = false;
+          this._activeMediaJobManaged = false;
+          this._isPlaying = false;
+          this._videoEl = null;
+          this._videoCount = 0;
+          this._currentVideoIndex = 0;
+          this._mediaWaitLogAt = 0;
+          emitRuntimeLog('info', 'managed media job ended', { reason: reason || '', jobid: this._activeJobId || '' });
+          return false;
+        }
+        if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
+          this._currentVideoIndex++;
+          this._videoEl = null;
+          this._activeMediaJobPending = true;
+          this._mediaWaitLogAt = 0;
+          return true;
+        }
+        this._activeMediaJobPending = false;
+        this._isPlaying = false;
+        this._mediaWaitLogAt = 0;
+        return false;
+      }
+
+      this._activeMediaJobPending = true;
+      this._ensurePlaybackRate(media, reason || 'pending');
+      if (media.paused) {
+        this._isPlaying = true;
+        this._tryResumePlayback(reason || 'pending');
+      }
+
+      var now = Date.now();
+      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 5000) {
+        this._mediaWaitLogAt = now;
+        emitRuntimeLog('info', 'media pending, delay completion', {
+          reason: reason || '',
+          currentTime: Number(media.currentTime || 0),
+          duration: Number(media.duration || 0)
+        });
+      }
+      return true;
+    },
+
+
+    // 从候选媒体里挑一个：优先可见的（video 或 audio），其次隐藏的 audio。
+    // 音频常被自定义播放器隐藏（无可见控件/零尺寸）但照样能播；
+    // 隐藏的 video 不选，避免误选页面上无关的隐藏视频元素。
+    _pickMedia: function (list) {
+      var i;
+      for (i = 0; i < list.length; i++) {
+        var m = list[i];
+        if (visible(m) || (m.getClientRects && m.getClientRects().length > 0)) return m;
+      }
+      for (i = 0; i < list.length; i++) {
+        if (String(list[i].tagName || '').toLowerCase() === 'audio') return list[i];
+      }
+      return null;
+    },
+
+
+    _isVisibleMedia: function (media) {
+      return !!media && (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
+    },
+
+
+    _findMediaInDocument: function (doc, depth) {
+      if (!doc || !doc.querySelectorAll) return null;
+      var picked = this._pickMedia(Array.from(doc.querySelectorAll('video, audio')));
+      if (picked) return picked;
+
+      // 播放器可能被包在子 iframe 里（音频任务点常见），递归找一层
+      var level = typeof depth === 'number' ? depth : 0;
+      if (level >= 3) return null;
+      var frames = [];
+      try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e) { return null; }
+      for (var i = 0; i < frames.length && i < 8; i++) {
+        var subDoc = this._safeDocOf(frames[i]);
+        if (!subDoc) continue;
+        var sub = this._findMediaInDocument(subDoc, level + 1);
+        if (sub) return sub;
+      }
+      return null;
+    },
+
+
+    _waitForMediaInDocument: function (doc, timeoutMs) {
+      var self = this;
+      return new Promise(function (resolve) {
+        var deadline = Date.now() + (timeoutMs || 8000);
+        var timer = setInterval(function () {
+          var media = self._findMediaInDocument(doc);
+          if (media) {
+            clearInterval(timer);
+            resolve(media);
+            return;
+          }
+          if (Date.now() >= deadline) {
+            clearInterval(timer);
+            resolve(null);
+          }
+        }, 200);
+      });
+    },
+
+
+    _getMediaSeekKey: function (media) {
+      if (!media) return '';
+      var src = '';
+      try { src = media.currentSrc || media.src || ''; } catch (e) {}
+      if (src) return src;
+      if (this._activeJobId) return 'job:' + this._activeJobId;
+      return '';
+    },
+
+
+    // 可拖动视频：直接拖到结尾。每个视频只检查一次、最多只做一次拖动动作；
+    // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
+    _trySeekToEnd: function (video, reason) {
+      if (!video || video.tagName !== 'VIDEO') return false; // 只拖视频，音频任务保持正常播放
+      if (!this.configs.enableSeek) return false;
+      if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
+      if (this._captchaActive) return false;
+      if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);
+      if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
+      var key = this._getMediaSeekKey(video);
+      if (!key) return false;
+      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次
+      if (Object.keys(this._seekTriedKeys).length > 300) {
+        this._seekTriedKeys = Object.create(null);
+        this._seekRevertedKeys = Object.create(null);
+      }
+
+      var duration = Number(video.duration);
+      if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
+      this._seekTriedKeys[key] = true; // 检查完成：此后无论成败都不再动这个视频
+
+      var current = Number(video.currentTime || 0);
+      if (current >= duration - 8) return false; // 已在结尾附近，无需拖动
+
+      var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
+      try {
+        video.currentTime = target;
+      } catch (e) {
+        return false;
+      }
+      emitRuntimeLog('info', 'seekable video: seek to end', {
+        reason: reason || '',
+        from: Number(current.toFixed(1)),
+        to: Number(target.toFixed(1)),
+        duration: Number(duration.toFixed(1))
+      });
+      console.log('%c[Omitone] seekable video, seek to end: ' + current.toFixed(1) + 's -> ' + target.toFixed(1) + 's / ' + duration.toFixed(1) + 's', 'color:#4CAF50');
+
+      // 1.5 秒后验证进度是否被网站弹回（仅记录日志，不再重试）
+      //
+      // 这个结论会被「防拖拽 + 锁 1 倍速 → 看到 90% 就够」的逻辑复用：
+      // **被弹回 = 这个视频不可拖拽**（见 _isNinetyPercentVideo）。
+      var self = this;
+      this._workerDelay(function () {
+        try {
+          if (!video.isConnected) return;
+          var now = Number(video.currentTime || 0);
+          if (now >= duration - 12) {
+            self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
+            console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
+          } else {
+            self._seekRevertedKeys[key] = true;  // 被弹回 → 不可拖拽
+            console.log('[Omitone] seek reverted by site player, continue normal playback');
+            emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
+          }
+        } catch (e) {}
+      }, 1500);
+      return true;
+    },
+
+
+    _playChaoxingMediaJob: async function (job) {
+      if (!job || !job.doc) return false;
+      if (!this.configs.enableMedia) {
+        console.log('%c[Omitone] media learning disabled, skip: ' + job.name, 'color:#FF9800');
+        return true;
+      }
+
+      var video = this._findMediaInDocument(job.doc);
+      if (!video) {
+        video = await this._waitForMediaInDocument(job.doc, 8000);
+      }
+
+      if (video) {
+        this._videoEl = video;
+        this._videoCount = 1;
+        this._currentVideoIndex = 0;
+      }
+
+      if (!video) {
+        this._activeMediaJobPending = false;
+        console.warn('[Omitone] chaoxing media not ready:', job.name);
+        return false;
+      }
+
+      var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
+
+      this._activeJobId = job.jobid || '';
+      this._videoRetryCount = 0;
+      this._skipChainCount = 0;
+      this._activeMediaJobPending = !video.ended;
+      this._activeMediaJobManaged = true;
+      this._mediaWaitLogAt = 0;
+      this._isPlaying = true;
+      // 每个任务点重新探测最大倍速：避免上一个视频的探测结果串到当前音频上
+      this._resetRateDetection();
+      this._ensurePlaybackRate(video, 'job-media');
+      if (isAudioTask) {
+        // 音频诊断：把格式/MIME/浏览器支持情况与最终倍速记进日志，方便确认 m4a 到底能不能播
+        var audioSrc = String(video.currentSrc || video.src || '');
+        var audioMime = this._guessMediaMime(audioSrc);
+        var canPlay = 'unknown';
+        try {
+          var probe = document.createElement('audio');
+          canPlay = probe.canPlayType(audioMime || 'audio/mp4') || 'no';
+        } catch (eProbe) {}
+        emitRuntimeLog('info', 'audio task started', {
+          name: job.name,
+          src: audioSrc.slice(-70),
+          mime: audioMime || 'unknown',
+          canPlay: canPlay,
+          muted: !!video.muted,
+          rate: Number(video.playbackRate || 1)
+        });
+      }
+      this._trySeekToEnd(video, 'job-start');
+      this._videoEventHandle();
+      try {
+        await this._withTimeout(video.play(), 12000);
+        this._startVideoMonitoring();
+      } catch (e) {
+        try {
+          video.muted = true;
+          await this._withTimeout(video.play(), 12000);
+          this._isPlaying = true;
+          this._startVideoMonitoring();
+          emitRuntimeLog('warn', 'media autoplay blocked, muted retry ok', { name: job.name });
+        } catch (e2) {
+          // 静音重试仍失败：多半是音源格式/MIME 不支持（m4a 常见），尝试重新封装音源后播放
+          var errText = String((e2 && e2.name) || '') + ' ' + String((e2 && e2.message) || '');
+          if (/NotSupported/i.test(errText) || (video.error && video.error.code === 4)) {
+            var repaired = await this._maybeRepairMediaSource(video);
+            if (repaired) {
+              this._isPlaying = true;
+              this._startVideoMonitoring();
+              emitRuntimeLog('info', 'media play recovered after source repair', { name: job.name });
+              return true;
+            }
+          }
+          this._isPlaying = false;
+          emitRuntimeLog('error', 'media play failed', {
+            name: job.name,
+            error: String((e2 && e2.message) || e2 || '').slice(0, 160)
+          });
+          console.error('[Omitone] chaoxing media play failed:', e2 && e2.message ? e2.message : e2);
+        }
+      }
+      return true;
+    },
+
+
+    _startSlideMedia: function (doc) {
+      var medias = [];
+      try {
+        medias = Array.from(doc.querySelectorAll('audio, video'));
+      } catch (e) {}
+      var self = this;
+      medias.forEach(function (media) {
+        if (media.ended) return;
+        try {
+          media.muted = !!self.configs.muted;
+        } catch (e1) {}
+        if (media.paused) {
+          try {
+            var p = media.play();
+            if (p && typeof p.catch === 'function') {
+              p.catch(function () {
+                try {
+                  media.muted = true;
+                  media.play().catch(function () {});
+                } catch (e2) {}
+              });
+            }
+          } catch (e3) {}
+        }
+      });
+      return medias.length;
+    },
+
+
+    _waitSlideAudioDone: async function (doc) {
+      var waited = 0;
+      while (waited < 600000) {
+        var active = [];
+        try {
+          active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
+            return !media.ended && (Number(media.currentTime || 0) > 0 || !media.paused);
+          });
+        } catch (e) {}
+        if (!active.length) return true;
+
+        active.forEach(function (media) {
+          if (!media.paused) return;
+          try {
+            var p = media.play();
+            if (p && typeof p.catch === 'function') p.catch(function () {});
+          } catch (e2) {}
+        });
+
+        var remaining = 0;
+        for (var i = 0; i < active.length; i++) {
+          var left = Number(active[i].duration || 0) - Number(active[i].currentTime || 0);
+          if (!(left > 0)) left = 1;
+          if (left > remaining) remaining = left;
+        }
+        var waitMs = Math.min(Math.ceil(remaining * 1000) + 800, 30000);
+        await sleep(waitMs);
+        waited += waitMs;
+      }
+      return false;
+    },
+
+
+    _ensurePlaybackRate: function (video, reason) {
+      if (!video) return;
+      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
+      // 音频任务只要进度不需要出声：默认静音播放，避免多标签声音互相干扰
+      try {
+        video.muted = isAudio ? (this.configs.audioMuted !== false) : !!this.configs.muted;
+      } catch (e0) {}
+      if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
+        this._scheduleMaxRateDetection(video);
+      }
+      if (this._rateProbing) return;
+      var target = this._getTargetPlaybackRate();
+      try {
+        if (video.defaultPlaybackRate !== target) video.defaultPlaybackRate = target;
+      } catch (e) {}
+      try {
+        if (Math.abs(Number(video.playbackRate || 1) - target) > 0.01) {
+          video.playbackRate = target;
+          console.log('%c[Omitone] rate guard ' + reason + ': ' + target + 'x', 'color:#607D8B');
+        }
+      } catch (e2) {}
+    },
+
+
+    _getTargetPlaybackRate: function () {
+      if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
+        return this._clampAutoRate(this._detectedMaxRate);
+      }
+      var target = Number(this.configs.playbackRate || 1);
+      return isFinite(target) && target > 0 ? target : 1;
+    },
+
+
+    _clampAutoRate: function (rate) {
+      var value = Number(rate) || 1;
+      var cap = Number(this.configs.playbackRateCap || 4);
+      if (!isFinite(cap) || cap <= 0) cap = 4;
+      if (value > cap) value = cap;
+      if (value < 0.5) value = 0.5;
+      return value;
+    },
+
+
+    _resetRateDetection: function () {
+      this._detectedMaxRate = 0;
+      this._rateDetectVideo = null;
+    },
+
+
+    _scheduleMaxRateDetection: function (video) {
+      if (!video) return;
+      this._rateDetectVideo = video;
+      if (this._rateDetectBusy) return;
+      var self = this;
+      var epoch = this._rateEpoch || 0;
+      this._rateDetectBusy = true;
+
+      var runDetect = function () {
+        self._detectMaxPlaybackRate(video).then(function (rate) {
+          self._rateDetectBusy = false;
+          if ((self._rateEpoch || 0) !== epoch) return; // 任务已切换，探测结果作废
+          if (Number(rate) > 0) {
+            self._detectedMaxRate = rate;
+            emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
+            self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
+          } else {
+            self._rateDetectVideo = null;
+          }
+        }).catch(function () {
+          self._rateDetectBusy = false;
+          if ((self._rateEpoch || 0) !== epoch) return;
+          self._rateDetectVideo = null;
+        });
+      };
+
+      // 暂停状态下播放器可能不接管倍速，等播放开始后再探测
+      if (!video.paused) {
+        runDetect();
+        return;
+      }
+      var tries = 0;
+      var timer = setInterval(function () {
+        if ((self._rateEpoch || 0) !== epoch) { // 任务已切换，放弃这次探测
+          clearInterval(timer);
+          self._rateDetectBusy = false;
+          return;
+        }
+        tries++;
+        if (!video.paused) {
+          clearInterval(timer);
+          runDetect();
+          return;
+        }
+        if (tries >= 60) {
+          clearInterval(timer);
+          self._rateDetectBusy = false;
+          self._rateDetectVideo = null;
+        }
+      }, 500);
+    },
+
+
+    _detectMaxPlaybackRate: async function (video) {
+      if (!video) return 0;
+      // 首选：播放器倍速菜单里暴露的档位（老师设置的上限会体现在菜单中）
+      var menuMax = this._readRateMenuMax(video);
+      if (menuMax > 0) {
+        emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
+        return this._clampAutoRate(menuMax);
+      }
+      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
+      var probed = await this._probeMaxPlaybackRate(video);
+      return this._clampAutoRate(probed || 1);
+    },
+
+
+    _readRateMenuMax: function (video) {
+      var doc = video && (video.ownerDocument || document);
+      if (!doc) return 0;
+      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
+      // 优先在播放器容器内找倍速菜单；音频不做整文档扫描，避免读到页面上其他视频播放器的档位
+      var scopes = [];
+      try {
+        var container = video.closest
+          ? video.closest('.video-js, .vjs-player, [class*="player"], [class*="Player"]')
+          : null;
+        if (container) scopes.push(container);
+      } catch (e0) {}
+      if (!isAudio) scopes.push(doc);
+
+      var selector = '.vjs-menu-item, .vjs-menu-content li, [class*="speed"] li, [class*="Speed"] li, [class*="rate"] li';
+      var maxRate = 0;
+      for (var s = 0; s < scopes.length; s++) {
+        var nodes = [];
+        try {
+          nodes = Array.from(scopes[s].querySelectorAll(selector));
+        } catch (e) {
+          continue;
+        }
+        for (var i = 0; i < nodes.length; i++) {
+          var text = textOf(nodes[i]);
+          if (!text || text.length > 16) continue;
+          var match = text.match(/(\d+(?:\.\d+)?)\s*(?:x|X|倍)/);
+          if (!match) continue;
+          var rate = parseFloat(match[1]);
+          if (rate > 0 && rate < 32 && rate > maxRate) maxRate = rate;
+        }
+        if (maxRate > 0) break;
+      }
+      return maxRate;
+    },
+
+
+    _probeMaxPlaybackRate: async function (video) {
+      var self = this;
+      var cap = Number(this.configs.playbackRateCap || 4);
+      if (!isFinite(cap) || cap <= 0) cap = 4;
+      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
+      var best = 0;
+      this._rateProbing = true;
+      try {
+        for (var i = 0; i < candidates.length; i++) {
+          var candidate = candidates[i];
+          try { video.playbackRate = candidate; } catch (e) { continue; }
+          var settled = await self._waitRateSettle(video, 700);
+          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
+            best = candidate;
+            break;
+          }
+          if (settled > best) best = settled;
+        }
+      } finally {
+        this._rateProbing = false;
+      }
+      return best;
+    },
+
+
+    _waitRateSettle: async function (video, waitMs) {
+      var last = -1;
+      var stable = 0;
+      var elapsed = 0;
+      while (elapsed < (waitMs || 700)) {
+        await sleep(150);
+        elapsed += 150;
+        var current = Number(video.playbackRate || 0);
+        if (Math.abs(current - last) <= 0.001) {
+          stable += 150;
+          if (stable >= 300) return current;
+        } else {
+          stable = 0;
+        }
+        last = current;
+      }
+      return last > 0 ? last : 0;
+    },
+
+
+    _startVideoMonitoring: function () {
+      this._clearCheckInterval();
+      this._guardLastTime = 0;
+      this._guardLastWallTs = 0;
+      this._guardLastResumeTs = 0;
+      this._ensureBackgroundWorker();
+      this._bindVisibilityHandlers();
+      this._syncAudioKeepalive();
+      var self = this;
+      this._checkInterval = setInterval(function () {
+        self._checkVideoStatus();
+      }, this.configs.videoCheckInterval || 1500);
+    },
+
+
+    _clearCheckInterval: function () {
+      if (this._checkInterval) {
+        clearInterval(this._checkInterval);
+        this._checkInterval = null;
+      }
+      this._syncAudioKeepalive();
+    },
+
+
+    _startAudioKeepalive: function () {
+      if (this._audioKeepalive) return;
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        var ctx = new Ctx();
+        var oscillator = ctx.createOscillator();
+        var gain = ctx.createGain();
+        oscillator.frequency.value = 50;
+        gain.gain.value = 0.003; // 近乎无声：人耳不可辨，但足以让浏览器将标签页视为正在播放音频
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+        oscillator.start();
+        if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
+          ctx.resume().catch(function () {});
+        }
+        this._audioKeepalive = { ctx: ctx, oscillator: oscillator };
+        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)');
+      } catch (e) {}
+    },
+
+
+    _stopAudioKeepalive: function () {
+      if (!this._audioKeepalive) return;
+      try { this._audioKeepalive.oscillator.stop(); } catch (e0) {}
+      try { this._audioKeepalive.ctx.close(); } catch (e1) {}
+      this._audioKeepalive = null;
+    },
+
+
+    _syncAudioKeepalive: function () {
+      var hidden = !!(document.hidden || document.visibilityState === 'hidden');
+      if (this._isPlaying && hidden) this._startAudioKeepalive();
+      else this._stopAudioKeepalive();
+    },
+
+
+    _checkVideoStatus: function () {
+      try {
+        var video = this._getVideoEl();
+        if (!video) return;
+        this._ensurePlaybackRate(video, 'guard');
+        this._trySeekToEnd(video, 'guard');
+
+        if (video.paused && this._isPlaying && !this._captchaActive) {
+          this._tryResumePlayback('paused');
+        } else if (this._isPlaying && !video.ended) {
+          var now = Date.now();
+          var current = Number(video.currentTime || 0);
+          if (this._guardLastWallTs === 0) {
+            this._guardLastWallTs = now;
+            this._guardLastTime = current;
+          } else {
+            var stalled = Math.abs(current - this._guardLastTime) < 0.01;
+            var stalledMs = now - this._guardLastWallTs;
+            if (stalled && stalledMs >= this.configs.guardNoProgressMs) {
+              this._tryResumePlayback('no-progress');
+              this._guardLastWallTs = now;
+              this._guardLastTime = Number(video.currentTime || 0);
+            } else if (!stalled) {
+              this._guardLastWallTs = now;
+              this._guardLastTime = current;
+            }
+          }
+        }
+
+        // 防拖拽 + 倍速锁 1x 的视频：平台只要求 ≥90%，平台标记完成后就别再白等最后 10%
+        if (!video.ended && this._isPlaying && this._shouldAdvanceAtNinetyPercent(video)) {
+          this._finishCurrentMedia('ninety-percent');
+          return;
+        }
+
+        if (video.ended && this._isPlaying) {
+          this._finishCurrentMedia('guard');
+        }
+      } catch (e) {}
+    },
+
+
+    /**
+     * 当前视频"播完了"的统一收尾。
+     *
+     * 两条路径共用：正常的 `ended`，以及「防拖拽 + 锁 1 倍速」的视频到 90% 且平台已标记完成。
+     * 抽出来是为了不让两条路各写一份 —— 收尾漏掉一个字段（比如 `_activeMediaJobManaged`）
+     * 会让状态机卡住，而症状是"这个任务点过了但下一个不动"，很难查。
+     */
+    _finishCurrentMedia: function (reason) {
+      this._clearCheckInterval();
+      if (this._activeMediaJobManaged) {
+        this._isPlaying = false;
+        this._activeMediaJobPending = false;
+        this._activeMediaJobManaged = false;
+        this._videoEl = null;
+        this._videoCount = 0;
+        this._currentVideoIndex = 0;
+        this._mediaWaitLogAt = 0;
+        emitRuntimeLog('info', 'managed media job ended', { reason: reason || 'guard', jobid: this._activeJobId || '' });
+        return;
+      }
+      if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
+        this._currentVideoIndex++;
+        this._videoEl = null;
+        this._activeMediaJobPending = true;
+        this._mediaWaitLogAt = 0;
+        return;
+      }
+      this._isPlaying = false;
+      this._activeMediaJobPending = false;
+      this._mediaWaitLogAt = 0;
+      this.nextUnit();
+    },
+
+
+    // 倍速是否被平台锁在 1 倍速。探测没结果（0）时一律当作"没锁定" ——
+    // 宁可多播一会儿，也不要在没确认的情况下提前结束。
+    _isRateLockedAtOne: function () {
+      var rate = Number(this._detectedMaxRate);
+      return isFinite(rate) && rate > 0 && rate <= 1.001;
+    },
+
+
+    /**
+     * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
+     *
+     * 判据是两个"平台不让我们加速"的信号**同时**成立：
+     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
+     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
+     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
+     */
+    _isNinetyPercentVideo: function (video) {
+      if (!video) return false;
+      if (String(video.tagName || '').toLowerCase() !== 'video') return false; // 音频不适用
+      if (!this._isRateLockedAtOne()) return false;
+      var key = this._getMediaSeekKey(video);
+      if (!key) return false;
+      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
+    },
+
+
+    /**
+     * 该不该在播到 90% 时提前收尾。
+     *
+     * 最关键的一条：**必须由平台自己给出"任务点已完成"的标记**。
+     * 只按"播够 90% 就当作完成"会误跳过任务点，比多花十分钟严重得多 ——
+     * 这与本仓库对"拿不准"的一贯取舍一致（见 `_isJobCompleted` 的说明）。
+     */
+    _shouldAdvanceAtNinetyPercent: function (video) {
+      try {
+        if (this.configs.advanceAtNinetyPercent === false) return false;
+        if (!this._isNinetyPercentVideo(video)) return false;
+
+        var duration = Number(video.duration);
+        if (!isFinite(duration) || duration <= 0) return false;
+        var ratio = Number(video.currentTime || 0) / duration;
+        if (!(ratio >= 0.9)) return false;  // 还没到 90%
+        if (ratio >= 0.995) return false;   // 已到结尾，交给 ended 那条路，避免两条路抢
+
+        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false; // 平台没确认完成就不动
+
+        emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
+          ratio: Number(ratio.toFixed(3)),
+          duration: Number(duration.toFixed(1)),
+          jobid: this._activeJobId || ''
+        });
+        console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
+          '%，平台已标记完成，直接进下一个', 'color:#4CAF50');
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    _tryResumePlayback: function (reason) {
+      var now = Date.now();
+      if (now - this._guardLastResumeTs < this.configs.guardResumeCooldownMs) return;
+
+      if (!this._resumeWindowStart || now - this._resumeWindowStart > this.configs.guardMaxResumeWindow) {
+        this._resumeWindowStart = now;
+        this._resumeAttemptCount = 0;
+      }
+      if (this._resumeAttemptCount >= this.configs.guardMaxResumes) return;
+
+      this._resumeAttemptCount++;
+      this._guardLastResumeTs = now;
+
+      var video = this._getVideoEl();
+      if (!video || !this._isPlaying) return;
+      this._ensurePlaybackRate(video, reason || 'resume');
+      video.play().catch(function () {
+        video.muted = true;
+        video.play().catch(function () {});
+      });
+    },
+
+
+    _getVideoEl: function (index) {
+      var idx = typeof index === 'number' ? index : this._currentVideoIndex;
+      var self = this;
+      if (!this._videoEl) {
+        function findVideos(doc, depth) {
+          if (!doc || depth > 4) return { visible: [], hiddenAudio: [] };
+          var all = Array.from(doc.querySelectorAll('video, audio'));
+          var vis = all.filter(self._isVisibleMedia);
+          var hiddenAudio = all.filter(function (media) {
+            return String(media.tagName || '').toLowerCase() === 'audio' && !self._isVisibleMedia(media);
+          });
+          var frames = Array.from(doc.querySelectorAll('iframe'));
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              var subDoc = frames[i].contentDocument || (frames[i].contentWindow && frames[i].contentWindow.document);
+              var sub = findVideos(subDoc, depth + 1);
+              vis = vis.concat(sub.visible);
+              hiddenAudio = hiddenAudio.concat(sub.hiddenAudio);
+            } catch (e) {}
+          }
+          return { visible: vis, hiddenAudio: hiddenAudio };
+        }
+
+        try {
+          var doc = this._getMainDocument();
+          var found = doc ? findVideos(doc, 0) : findVideos(document, 0);
+          // 优先可见媒体，其次隐藏的音频（音频任务点常把 <audio> 藏起来）
+          var allVideos = found.visible.length ? found.visible : found.hiddenAudio;
+          if (allVideos.length === 0) return null;
+          this._videoCount = allVideos.length;
+          this._videoEl = allVideos[Math.min(idx, allVideos.length - 1)];
+        } catch (e2) {
+          return null;
+        }
+      }
+      return this._videoEl;
+    },
+
+
+    _videoEventHandle: function () {
+      var el = this._videoEl;
+      if (!el) return;
+
+      try {
+        if (this._onVideoEnded) el.removeEventListener('ended', this._onVideoEnded);
+        if (this._onVideoLoaded) el.removeEventListener('loadedmetadata', this._onVideoLoaded);
+        if (this._onVideoPlay) el.removeEventListener('play', this._onVideoPlay);
+        if (this._onVideoPause) el.removeEventListener('pause', this._onVideoPause);
+        if (this._onVideoRateChange) el.removeEventListener('ratechange', this._onVideoRateChange);
+        if (this._onVideoError) el.removeEventListener('error', this._onVideoError);
+      } catch (e) {}
+
+      this._onVideoEnded = this._handleVideoEnded.bind(this);
+      this._onVideoLoaded = this._handleVideoLoaded.bind(this);
+      this._onVideoPlay = this._handleVideoPlay.bind(this);
+      this._onVideoPause = this._handleVideoPause.bind(this);
+      this._onVideoRateChange = this._handleVideoRateChange.bind(this);
+      this._onVideoError = this._handleMediaError.bind(this);
+
+      el.addEventListener('ended', this._onVideoEnded);
+      el.addEventListener('loadedmetadata', this._onVideoLoaded);
+      el.addEventListener('play', this._onVideoPlay);
+      el.addEventListener('pause', this._onVideoPause);
+      el.addEventListener('ratechange', this._onVideoRateChange);
+      el.addEventListener('error', this._onVideoError);
+    },
+
+
+    // 媒体元素报错（1 中止 / 2 网络 / 3 解码失败 / 4 格式或 MIME 不支持）
+    // 之前完全没有这个监听，m4a 之类的格式问题永远不会被发现
+    _handleMediaError: function (event) {
+      var el = event && event.target ? event.target : this._getVideoEl();
+      if (!el) return;
+      var code = el.error ? el.error.code : 0;
+      var message = el.error ? String(el.error.message || '') : '';
+      var src = String(el.currentSrc || el.src || '');
+      emitRuntimeLog('error', 'media error', {
+        code: code,
+        message: message.slice(0, 120),
+        src: src.slice(-80),
+        tag: String(el.tagName || '').toLowerCase()
+      });
+
+      // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED（m4a、服务器 MIME 不对最常见），3 = 解码失败
+      if (code === 4 || code === 3) {
+        var self = this;
+        this._maybeRepairMediaSource(el).then(function (ok) {
+          emitRuntimeLog(ok ? 'info' : 'error', ok ? 'media source repaired (m4a/mime fallback), replaying' : 'media source repair failed', {
+            src: src.slice(-80)
+          });
+        }).catch(function () {});
+      }
+    },
+
+
+    _guessMediaMime: function (url) {
+      var u = String(url || '').toLowerCase().split('?')[0];
+      if (/\.m3u8$/.test(u)) return '';
+      if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
+      if (/\.mp3$/.test(u)) return 'audio/mpeg';
+      if (/\.ogg$|\.oga$/.test(u)) return 'audio/ogg';
+      if (/\.wav$/.test(u)) return 'audio/wav';
+      if (/\.webm$/.test(u)) return 'audio/webm';
+      if (/\.mp4$|\.m4v$/.test(u)) return 'video/mp4';
+      return 'audio/mp4'; // 学习通音频多为 m4a（AAC）
+    },
+
+
+    // 音源不受支持时的兜底：把音频文件取回来，用正确的 MIME 重新封装成 Blob 再播。
+    // 全程在页面内完成（不经过扩展消息），避免大文件传输。
+    _maybeRepairMediaSource: async function (media) {
+      try {
+        if (!media) return false;
+        var src = String(media.currentSrc || media.src || '');
+        if (!src || /^blob:/i.test(src)) return false;
+        if (/\.m3u8/i.test(src)) return false; // HLS 由播放器自己处理，不能这样补救
+
+        if (!this._mediaRepaired) this._mediaRepaired = Object.create(null);
+        if (this._mediaRepaired[src]) return false;
+        this._mediaRepaired[src] = true; // 每个源只补救一次，避免死循环
+
+        var response = await fetch(src, { credentials: 'include' });
+        if (!response || !response.ok) return false;
+        var buf = await response.arrayBuffer();
+        if (!buf || buf.byteLength < 1024) return false;
+
+        var type = this._guessMediaMime(src);
+        var blob = new Blob([buf], { type: type });
+        var objectUrl = URL.createObjectURL(blob);
+        var resumeAt = Number(media.currentTime || 0);
+
+        media.src = objectUrl;
+        media.load();
+        await new Promise(function (resolve) {
+          var done = false;
+          var finish = function () {
+            if (!done) { done = true; resolve(); }
+          };
+          media.addEventListener('canplay', finish, { once: true });
+          media.addEventListener('error', finish, { once: true });
+          setTimeout(finish, 8000);
+        });
+
+        if (resumeAt > 0) {
+          try { media.currentTime = resumeAt; } catch (e0) {}
+        }
+        this._ensurePlaybackRate(media, 'repair');
+        await this._withTimeout(media.play(), 12000);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
+     * `ended` 事件的处理。收尾逻辑与 `_checkVideoStatus` 那条路**完全一致**，
+     * 所以统一走 `_finishCurrentMedia`。
+     *
+     * 这里原本多清了三个字段（`_activeDocumentJobPending` / `_activeDocumentJobManaged` /
+     * `_activeDocumentJobDoc`），已经确认那是**过界的**，理由有三条：
+     *   1) `nextUnit()` 末尾会调 `_resetRuntimeState()`，那些字段本来就会被清掉 ——
+     *      正常路径下多清一次是纯冗余；
+     *   2) 只有在 `nextUnit()` **提前返回**时（典型是 `autoNext:false`）才有差别，
+     *      而那时清掉它们等于**放弃一个可能正在进行的文档任务点** —— 正是本仓库
+     *      最怕的"静默漏做"。不清才是对的；
+     *   3) 对称：文档任务点完成时（约 2607 行）只清文档自己的状态，不去动媒体状态。
+     *      媒体这边同理，只管媒体。
+     * 万一真的残留了过期的文档状态，文档那条路自己有 `document stuck timeout` 会兜住。
+     */
+    _handleVideoEnded: function () {
+      this._finishCurrentMedia('event');
+    },
+
+
+    _handleVideoLoaded: function (event) {
+      this._resetRateDetection();
+      var loadedVideo = event && event.target ? event.target : this._getVideoEl();
+      this._ensurePlaybackRate(loadedVideo, 'loadedmetadata');
+      this._trySeekToEnd(loadedVideo, 'loadedmetadata');
+    },
+
+
+    _handleVideoPlay: function () {
+      this._isPlaying = true;
+      this._stepSwitchPending = false;
+      this._resumeWindowStart = 0;
+      this._resumeAttemptCount = 0;
+      this._syncAudioKeepalive();
+      var video = this._getVideoEl();
+      this._ensurePlaybackRate(video, 'play');
+      this._guardLastTime = Number((video && video.currentTime) || 0);
+      this._guardLastWallTs = Date.now();
+      if (this._delayedNextUnitTimer) {
+        clearTimeout(this._delayedNextUnitTimer);
+        this._delayedNextUnitTimer = null;
+      }
+    },
+
+
+    _handleVideoPause: function (event) {
+      // pause 事件的派发不受后台定时器节流影响：视频被网站/浏览器在后台暂停时立即安排恢复
+      var video = event && event.target ? event.target : this._getVideoEl();
+      if (!video || video.ended || !this._isPlaying) return;
+      if (this._rateProbing) return;
+      if (this._pauseResumePending) return;
+
+      var self = this;
+      this._pauseResumePending = true;
+      this._workerDelay(function () {
+        self._pauseResumePending = false;
+        var current = self._getVideoEl() || video;
+        if (!current || current.ended || !self._isPlaying || !current.paused) return;
+        // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
+        try {
+          if (self._captchaActive || self._checkCaptchaDialog()) return;
+          // ⚠️ 这里必须用 _popupQuizBlocksPlayback 而不是 _activePopupBlock：
+          // 后者在"刚答完的静默期"里会返回 null（那是给"要不要再问模型"用的），
+          // 但弹窗其实还挂在页面上、视频正是被它有意暂停的。用错就会去抢恢复播放、
+          // 和站点对打 —— 现场表现是"答完弹题后视频不动，看着像卡死"。
+          if (self._popupQuizBlocksPlayback && self._popupQuizBlocksPlayback()) return;
+          if (self._checkSubmitConfirmDialog && self._checkSubmitConfirmDialog()) return;
+        } catch (e) {}
+        var duration = Number(current.duration || 0);
+        if (duration && Number(current.currentTime || 0) >= duration - 0.5) return;
+
+        emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
+          hidden: !!(document.hidden || document.visibilityState === 'hidden'),
+          time: Math.round(Number(current.currentTime || 0))
+        });
+        var resumed = current.play();
+        if (resumed && typeof resumed.then === 'function') {
+          resumed.then(function () {
+            self._ensurePlaybackRate(current, 'pause-resume');
+          }).catch(function () {
+            try {
+              current.muted = true;
+              current.play().catch(function () {});
+            } catch (e1) {}
+          });
+        }
+      }, 600);
+    },
+
+
+    _handleVideoRateChange: function (event) {
+      this._ensurePlaybackRate(event && event.target ? event.target : this._getVideoEl(), 'ratechange');
+    },
+
+
+    /**
+     * 找「继续学习」按钮。
+     *
+     * 学习通在几种情况下会在**播放器右下角**挂一个「继续学习」：弹题答完之后、
+     * 视频被判定为挂机之后、或者从插题回到正常播放之前。**不点它进不去正常播放页**，
+     * 于是一切照常跑、课程一动不动 —— 和弹题空转是同一类"看着在忙其实卡住"的故障。
+     *
+     * 这个按钮没有稳定的类名（不同课程模板不一样），只能靠文案 + 位置 + 形态打分：
+     * 文案命中「继续学习/继续观看/继续播放」→ 只接受"按钮样"的小节点（避免点到大容器）
+     * → 与视频同文档的加分、本身是 button/a 的加分。
+     */
+    /**
+     * 处理完一个覆盖层（弹题 / 「继续学习」）之后把视频拉起来。
+     *
+     * 两个分支原本各写一份，逻辑稍有出入就会出现"弹题这条能恢复、继续学习那条不能"
+     * 这种只在真机上才看得出的差别 —— 抽出来保证两条路走的是同一套动作。
+     * 注意只在 `_isPlaying` 时恢复：用户没开刷课时不该替他播。
+     */
+    _resumeVideoAfterOverlay: function (reason) {
+      if (!this._isPlaying) return;
+      var video = this._getVideoEl();
+      if (!video || !video.paused) return;
+      this._ensurePlaybackRate(video, reason || 'overlay');
+      try { video.play(); } catch (e) {}
+    },
+
+    // ---- 验证码自动检测与识别 ----
+    // 已知学习通结构（参考开源 cxmooc-tools）：#imgVerCode 图片 / #ucode 输入框 / #sub 提交按钮
+    // 同时做通用兜底：任意"验证码图片 + 附近文本输入框"的可见弹层都识别
+    _checkCaptchaDialog: function () {
+      // 独立于 AI 答题开关：只要配了 API Key + 视觉模型，验证码识别始终可用
+      if (!this.configs.enableCaptcha) {
+        if (this._captchaActive) this._captchaActive = false;
+        return null;
+      }
+      var now = Date.now();
+      if (now - (this._captchaLastCheckAt || 0) < 1500) return this._captchaLastResult || null;
+      this._captchaLastCheckAt = now;
+
+      var result = null;
+
+      function findInputNear(doc, img) {
+        // 1) 沿祖先向上找最近的文本输入框
+        var node = img;
+        for (var level = 0; level < 6 && node && node !== doc.body; level++) {
+          node = node.parentElement;
+          if (!node) break;
+          var inputs = node.querySelectorAll('input[type="text"], input:not([type])');
+          for (var i = 0; i < inputs.length; i++) {
+            var input = inputs[i];
+            if (!visible(input)) continue;
+            if (input.offsetWidth < 24) continue;
+            return input;
+          }
+        }
+        // 2) 兜底：在图片所在的弹窗容器内全量找
+        var box = null;
+        try { box = img.closest('div, form, table, layer, .layui-layer'); } catch (e) {}
+        if (box) {
+          var boxInputs = box.querySelectorAll('input[type="text"], input:not([type]), input[id*="code" i], input[name*="code" i]');
+          for (var j = 0; j < boxInputs.length; j++) {
+            if (!visible(boxInputs[j])) continue;
+            if (boxInputs[j].offsetWidth < 24) continue;
+            return boxInputs[j];
+          }
+        }
+        return null;
+      }
+
+      function hitImgSize(img) {
+        var w = img.naturalWidth || img.clientWidth || 0;
+        var h = img.naturalHeight || img.clientHeight || 0;
+        if (w && (w < 40 || w > 400)) return false;
+        if (h && (h < 16 || h > 200)) return false;
+        return true;
+      }
+
+      function scanDoc(doc, depth) {
+        if (!doc || depth > 3 || result) return;
+        var imgs = [];
+        try { imgs = Array.from(doc.querySelectorAll('img')); } catch (e0) { return; }
+        for (var i = 0; i < imgs.length && !result; i++) {
+          var img = imgs[i];
+          if (!visible(img)) continue;
+          var src = String(img.currentSrc || img.src || '');
+          var idName = String(
+            (img.id || '') + ' ' + (img.getAttribute('name') || '') + ' ' + (img.className || '')
+          ).toLowerCase();
+          // A. 已知学习通验证码元素（最高置信，不受尺寸/文案限制）
+          var specific = /imgvercode|chapternumvercode|vercode|verifycode|captcha|imgcode/.test(idName);
+          // B. 图片地址特征
+          var srcMatch = /\/img\/code|captcha|verif|vercode|rand=|getcode|checkcode|\/code\?/i.test(src);
+          if (!specific && !srcMatch) continue;
+          if (!hitImgSize(img)) continue;
+          var input = findInputNear(doc, img);
+          if (!input) continue;
+          var dialog = doc.body;
+          try {
+            dialog = input.closest('.layui-layer, [class*="dialog"], [class*="verif"], form, table') || input.parentElement || img.parentElement || doc.body;
+          } catch (e1) {}
+          result = { doc: doc, img: img, input: input, dialog: dialog, why: specific ? 'element-id' : 'img-src' };
+        }
+
+        // C. 弹窗文本兜底：可见弹窗含“验证码”字样 + 图片 + 输入框（应对学习通改版换 id）
+        if (!result) {
+          var layers = [];
+          try { layers = Array.from(doc.querySelectorAll('.layui-layer, [class*="dialog"], [class*="Dialog"], [class*="modal"], [class*="verif"]')); } catch (e2) {}
+          for (var m = 0; m < layers.length && !result; m++) {
+            var box = layers[m];
+            if (!visible(box)) continue;
+            var boxText = textOf(box).slice(0, 300);
+            if (!/验证码|请输入|校验码/.test(boxText)) continue;
+            var boxImgs = [];
+            try { boxImgs = Array.from(box.querySelectorAll('img')); } catch (e3) {}
+            for (var n = 0; n < boxImgs.length && !result; n++) {
+              var bimg = boxImgs[n];
+              if (!visible(bimg)) continue;
+              if (!hitImgSize(bimg)) continue;
+              // 弹窗文案里已含“验证码”，直接信任该图片
+              var binput = findInputNear(doc, bimg);
+              if (!binput) continue;
+              result = { doc: doc, img: bimg, input: binput, dialog: box, why: 'dialog-text' };
+            }
+          }
+        }
+
+        if (!result) {
+          var frames = [];
+          try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e4) {}
+          for (var k = 0; k < frames.length && !result; k++) {
+            try {
+              var subDoc = frames[k].contentDocument || (frames[k].contentWindow && frames[k].contentWindow.document);
+              scanDoc(subDoc, depth + 1);
+            } catch (e5) {}
+          }
+        }
+      }
+
+      try {
+        var startDoc = this._getMainDocument() || document;
+        scanDoc(startDoc, 0);
+        if (!result) scanDoc(document, 0);
+      } catch (e) {}
+
+      this._captchaLastResult = result;
+      this._captchaActive = !!result;
+      // ⚠️ 这里原本有一句 `if (!result) this._diagnoseBlockedPage();`。
+      // 那个函数在早前一轮「清理调试代码」时被删掉了，但调用点留了下来，
+      // 于是「没有验证码」这个最常见的情况下每次都会抛 TypeError ——
+      // _runTick 里那处有 try/catch 兜住所以看不出来，但另外 3 处调用点
+      // （_handleCaptchaDialog 复检、_backgroundCaptchaTick、_handleVideoPlay 守卫）
+      // 没有兜底，会把整条链路打断。删掉调用即可；诊断能力现在由
+      // _diagnoseQuestionScan / _checkBlockedByCrossOrigin 覆盖。
+      // 这类"幽灵调用"由 tools/check.js 的未定义方法检查兜底。
+      return result;
+    },
+
+
+    _captureCaptchaImage: function (img) {
+      try {
+        var doc = img.ownerDocument || document;
+        var canvas = doc.createElement('canvas');
+        var w = img.naturalWidth || img.clientWidth || 120;
+        var h = img.naturalHeight || img.clientHeight || 40;
+        canvas.width = w;
+        canvas.height = h;
+        var ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        return canvas.toDataURL('image/png');
+      } catch (e) {
+        // 跨域图片会污染画布，交由后台带 Cookie 抓取兜底
+        return '';
+      }
+    },
+
+
+    _cleanCaptchaCode: function (raw) {
+      var text = String(raw || '');
+      var quoted = text.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
+      if (quoted && quoted[1]) text = quoted[1];
+      var lines = text.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
+      if (lines.length) text = lines[lines.length - 1];
+      text = text.replace(/^.*?(?:答案|结果|验证码|code|result)\s*[:：]\s*/i, '');
+      text = text.replace(/[\s"'`~!@#$%^&*()（）\-_=+\[\]【】{}\\|;:;,.，。、：；！？·…<>《》/?？]+/g, '');
+      if (text.length > 12) text = text.slice(0, 12);
+      return text;
+    },
+
+
+    _fillCaptchaInput: function (captcha, code) {
+      var input = captcha.input;
+      try { input.focus(); } catch (e0) {}
+      var win = input.ownerDocument.defaultView || window;
+      try {
+        var descriptor = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
+        if (descriptor && descriptor.set) descriptor.set.call(input, code);
+        else input.value = code;
+      } catch (e1) {
+        input.value = code;
+      }
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new Event('blur', { bubbles: true }));
+    },
+
+
+    _clickCaptchaSubmit: function (captcha) {
+      var doc = captcha.input.ownerDocument || document;
+      var button = null;
+      try { button = doc.querySelector('#sub'); } catch (e0) {}
+      if (!button && captcha.dialog) {
+        var candidates = captcha.dialog.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
+        for (var i = 0; i < candidates.length; i++) {
+          var label = textOf(candidates[i]);
+          if (/^(确定|提交|验证|确认|OK)/.test(label)) { button = candidates[i]; break; }
+        }
+      }
+      if (button) {
+        try { button.click(); return; } catch (e1) {}
+      }
+      // 无按钮则模拟回车提交
+      try {
+        var win = doc.defaultView || window;
+        captcha.input.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        captcha.input.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      } catch (e2) {}
+    },
+
+
+    _captchaReload: function () {
+      emitRuntimeLog('warn', 'captcha unsolved, reload page', {});
+      try { window.location.reload(); } catch (e) {}
+    },
+
+
+    // ===== 独立验证码页：验证码不在学习通界面内，而是一个独立网址 / 弹出窗口 / 被跳转到的验证页 =====
+    // 这类页面是顶层页面（不是跨域 iframe），插件可以完整访问 DOM，因此完全可以自动识别并填写。
+    _recognizeCaptchaImage: async function (img) {
+      var dataUrl = this._captureCaptchaImage(img);
+      if (!dataUrl) {
+        var absUrl = this._resolveImageUrl(img);
+        if (absUrl) {
+          try {
+            var fetched = await bridgeSend('fetch_image', { url: absUrl });
+            if (fetched && fetched.success && fetched.dataUrl) dataUrl = fetched.dataUrl;
+          } catch (e0) {}
+        }
+      }
+      if (!dataUrl) return { ok: false, error: 'captcha image capture failed' };
+
+      var result = await bridgeSend('llm_captcha', { image: dataUrl });
+      if (!result || !result.success) {
+        return { ok: false, error: String((result && result.error) || 'no response').slice(0, 200) };
+      }
+      var code = this._cleanCaptchaCode(result.data);
+      if (!code) return { ok: false, error: 'empty code after clean', raw: String(result.data || '').slice(0, 60) };
+      return { ok: true, code: code };
+    },
+
+
+    // 独立验证页里定位「验证码图片 + 输入框」：整页就是一张验证表单，判定比弹窗场景宽
+    _detectStandaloneCaptcha: function () {
+      var doc = document;
+      var imgs = [];
+      try { imgs = Array.from(doc.querySelectorAll('img')); } catch (e) { return null; }
+      var best = null;
+      var bestArea = 0;
+      for (var i = 0; i < imgs.length; i++) {
+        var img = imgs[i];
+        if (!visible(img)) continue;
+        var w = img.naturalWidth || img.clientWidth || 0;
+        var h = img.naturalHeight || img.clientHeight || 0;
+        if (w && (w < 40 || w > 400)) continue;
+        if (h && (h < 16 || h > 200)) continue;
+        var area = (img.clientWidth || w) * (img.clientHeight || h);
+        if (area > bestArea) { bestArea = area; best = img; }
+      }
+      if (!best) return null;
+
+      var inputs = [];
+      try { inputs = Array.from(doc.querySelectorAll('input')); } catch (e2) {}
+      var input = null;
+      for (var j = 0; j < inputs.length; j++) {
+        var el = inputs[j];
+        if (!visible(el)) continue;
+        if (/^(hidden|checkbox|radio|button|submit|file|image)$/i.test(String(el.type || 'text'))) continue;
+        input = el;
+        break;
+      }
+      if (!input) return null;
+      return { doc: doc, img: best, input: input, dialog: document.body, why: 'standalone-page' };
+    },
+
+
+    _computeStandaloneCaptchaPage: function () {
+      try {
+        if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
+        if (document.querySelector('#video, #audio, .TiMu, .questionLi, .swiper-container, .ans-attach')) return false;
+        var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
+        var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
+        var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);
+        if (!urlHit && !textHit) return false;
+        return !!this._detectStandaloneCaptcha();
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    _isStandaloneCaptchaPage: function () {
+      var now = Date.now();
+      var href = String(location.href || '');
+      if (this._standaloneCaptchaUrl !== href) {
+        this._standaloneCaptchaUrl = href;
+        this._standaloneCaptchaAt = 0;
+        this._standaloneCaptchaResult = false;
+      }
+      if (now - (this._standaloneCaptchaAt || 0) < 1500) return this._standaloneCaptchaResult;
+      this._standaloneCaptchaAt = now;
+      this._standaloneCaptchaResult = this._computeStandaloneCaptchaPage();
+      return this._standaloneCaptchaResult;
+    },
+
+
+    _runStandaloneCaptchaMode: async function () {
+      if (this._captchaBusy) return;
+      this._captchaBusy = true;
+      emitRuntimeLog('warn', 'standalone captcha page detected, solving', { url: String(location.href || '').slice(0, 120) });
+      try {
+        if (this.configs.enableCaptcha === false) {
+          emitRuntimeLog('info', 'captcha handling disabled by switch', {});
+          return;
+        }
+        for (var attempt = 1; attempt <= 4; attempt++) {
+          var captcha = this._detectStandaloneCaptcha();
+          if (!captcha) {
+            emitRuntimeLog('info', 'standalone captcha elements gone, nothing to solve', {});
+            return;
+          }
+          var rec = await this._recognizeCaptchaImage(captcha.img);
+          if (rec.ok) {
+            this._fillCaptchaInput(captcha, rec.code);
+            await sleep(300);
+            this._clickCaptchaSubmit(captcha);
+            emitRuntimeLog('info', 'standalone captcha code submitted', { attempt: attempt, length: rec.code.length });
+          } else {
+            emitRuntimeLog('error', 'captcha recognize failed', {
+              attempt: attempt,
+              error: String(rec.error || '').slice(0, 160)
+            });
+          }
+
+          await sleep(2600);
+          this._standaloneCaptchaAt = 0; // 强制重新判定，不受节流影响
+          if (!this._isStandaloneCaptchaPage()) {
+            emitRuntimeLog('info', 'standalone captcha solved', {});
+            this._afterStandaloneCaptchaSolved();
+            return;
+          }
+          try { captcha.img.click(); } catch (e2) {} // 识别错/过期就换一张
+          await sleep(700);
+        }
+        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', {});
+        try { window.location.reload(); } catch (e3) {}
+      } finally {
+        this._captchaBusy = false;
+      }
+    },
+
+
+    // 验证通过后：弹出窗口自动关闭；主标签页则回退，把位置让回学习通继续刷课
+    _afterStandaloneCaptchaSolved: function () {
+      try {
+        if (window.opener && !window.opener.closed) {
+          emitRuntimeLog('info', 'captcha popup solved, closing window', {});
+          try { window.close(); return; } catch (e0) {}
+        }
+      } catch (e) {}
+      try {
+        if (history.length > 1) {
+          emitRuntimeLog('info', 'captcha solved, going back to previous page', {});
+          history.back();
+          return;
+        }
+      } catch (e2) {}
+      emitRuntimeLog('info', 'captcha solved, waiting for page redirect', {});
+    },
+
+
+    _handleCaptchaDialog: async function (captcha) {
+      if (this._captchaBusy) return;
+      this._captchaBusy = true;
+      var attempts = this._captchaAttempts || 0;
+      try {
+        emitRuntimeLog('warn', 'captcha detected, recognizing', { attempt: attempts + 1, match: captcha.why || '' });
+        console.log('%c[Omitone] captcha detected (' + (captcha.why || 'unknown') + '), recognizing...', 'color:#FF9800');
+
+        var dataUrl = this._captureCaptchaImage(captcha.img);
+        if (!dataUrl) {
+          var absUrl = this._resolveImageUrl(captcha.img);
+          if (absUrl) {
+            var fetched = await bridgeSend('fetch_image', { url: absUrl });
+            if (fetched && fetched.success && fetched.dataUrl) dataUrl = fetched.dataUrl;
+          }
+        }
+        if (!dataUrl) {
+          emitRuntimeLog('error', 'captcha image capture failed', {});
+          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
+          if (this._captchaFailCount >= 3) {
+            this._captchaFailCount = 0;
+            this._captchaReload();
+          }
+          return;
+        }
+
+        var result = await bridgeSend('llm_captcha', { image: dataUrl });
+        if (!result || !result.success) {
+          var errText = String((result && result.error) || '无响应').slice(0, 200);
+          var hint = /API Key/i.test(errText) ? '（未配置 API Key：验证码识别独立于 AI 答题开关，只需在 popup 填好 API Key 和视觉模型）'
+            : /image|multimodal|vision|not support|unsupported|400|415/i.test(errText) ? '（当前模型可能不支持图片输入：请在 popup 的"验证码识别模型"里填写视觉模型，如 gemini-2.5-flash / qwen-vl-max / gpt-4o-mini）'
+            : '';
+          emitRuntimeLog('error', 'captcha recognize failed', {
+            error: errText,
+            hint: hint
+          });
+          console.warn('[Omitone] captcha recognize failed:', errText, hint);
+          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
+          if (this._captchaFailCount >= 3) {
+            this._captchaFailCount = 0;
+            this._captchaReload();
+          }
+          return;
+        }
+
+        var code = this._cleanCaptchaCode(result.data);
+        if (!code) {
+          emitRuntimeLog('error', 'captcha code empty after clean', { raw: String(result.data || '').slice(0, 60) });
+          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
+          if (this._captchaFailCount >= 3) {
+            this._captchaFailCount = 0;
+            this._captchaReload();
+          }
+          return;
+        }
+
+        emitRuntimeLog('info', 'captcha code filled', { length: code.length });
+        this._fillCaptchaInput(captcha, code);
+        await sleep(400);
+        this._clickCaptchaSubmit(captcha);
+
+        await sleep(2500);
+        var stillThere = this._checkCaptchaDialog();
+        if (!stillThere) {
+          emitRuntimeLog('info', 'captcha solved, continue', {});
+          this._captchaAttempts = 0;
+          this._captchaFailCount = 0;
+          this._captchaActive = false;
+          return;
+        }
+        this._captchaAttempts = attempts + 1;
+        if (this._captchaAttempts >= 3) {
+          this._captchaAttempts = 0;
+          emitRuntimeLog('warn', 'captcha wrong too many times, reload page', {});
+          this._captchaReload();
+        } else {
+          emitRuntimeLog('warn', 'captcha seems wrong, will retry with new image', { attempt: this._captchaAttempts });
+          try { captcha.img.click(); } catch (e2) {}
+        }
+      } finally {
+        this._captchaBusy = false;
+      }
+    },
+
+
+    _backgroundCaptchaTick: function () {
+      if (this._captchaBusy) return;
+      var captcha = this._checkCaptchaDialog();
+      if (captcha) {
+        var self = this;
+        this._handleCaptchaDialog(captcha).catch(function () {
+          self._captchaBusy = false;
+        });
+      }
+    },
+
+    _detectPageChange: function () {
+      var frame = this._getMainFrame();
+      var raw = frame ? (frame.src || '') : location.href;
+      var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
+      var key = match ? match[1] : raw;
+      if (this._lastChapterKey && this._lastChapterKey !== key) {
+        this._resetRuntimeState();
+        this._lastLearningCardKey = '';
+        this._initCellData();
+        console.log('%c[Omitone] chapter changed', 'color:#2196F3');
+        emitRuntimeLog('info', 'chapter changed');
+      }
+      this._lastChapterKey = key;
+      this._detectLearningCardChange();
+    },
+
+
     _clearDocumentPendingState: function (reason) {
       var hadPending = !!(this._activeDocumentJobPending || this._activeDocumentJobManaged || this._activeDocumentJobDoc);
       this._activeDocumentJobPending = false;
@@ -550,6 +2771,7 @@
         emitRuntimeLog('info', 'clear document pending', { reason: reason || '' });
       }
     },
+
 
     _getExplicitActiveLearningCardKey: function () {
       var cards = this._getLearningCards();
@@ -573,6 +2795,7 @@
       return '';
     },
 
+
     _detectLearningCardChange: function () {
       var key = this._getExplicitActiveLearningCardKey();
       if (!key) return;
@@ -583,39 +2806,6 @@
       this._lastLearningCardKey = key;
     },
 
-    _isQuizResultCompletedPage: function () {
-      var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
-      if (!doc) return false;
-      try {
-        var text = doc.body ? textOf(doc.body) : '';
-        if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text)) return false;
-        if (doc.querySelector('.testTit_status_complete')) return true;
-        if (/任务点已完成|已完成|已通过|恭喜/.test(text) &&
-          doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, .answerCon, .answerScore')) {
-          return true;
-        }
-      } catch (e) {}
-      return false;
-    },
-
-    _shouldReleaseMediaPendingForCurrentCompletion: function (reason) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
-      var media = this._videoEl;
-      if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
-
-      var state = this._getVisibleTaskCompletionState();
-      if (state.hasTasks && state.allFinished) return true;
-
-      if (this._isQuizResultCompletedPage()) return true;
-
-      var mainDoc = this._getMainDocument();
-      try {
-        var bodyText = mainDoc && mainDoc.body ? textOf(mainDoc.body) : '';
-        if (bodyText && /任务点已完成/.test(bodyText) && !/未完成|待完成/.test(bodyText)) return true;
-      } catch (e) {}
-
-      return false;
-    },
 
     _isCurrentCompleted: function () {
       if (this._isActiveMediaPending('completion-check')) return false;
@@ -643,6 +2833,7 @@
       return !this._hasTaskPoint();
     },
 
+
     _skipIfCompleted: function () {
       if (this.configs.restudy) {
         var now = Date.now();
@@ -661,6 +2852,7 @@
       return true;
     },
 
+
     _hasTaskPoint: function () {
       var doc = this._getMainDocument();
       if (!doc) return true;
@@ -672,22 +2864,6 @@
       return false;
     },
 
-    _walkFrames: function (doc, visitor, depth) {
-      if (!doc || depth > 4) return;
-      var frames = [];
-      try {
-        frames = doc.querySelectorAll("iframe");
-      } catch (e) {}
-
-      for (var i = 0; i < frames.length; i++) {
-        var frame = frames[i];
-        visitor(frame);
-        try {
-          var subDoc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document);
-          this._walkFrames(subDoc, visitor, depth + 1);
-        } catch (e2) {}
-      }
-    },
 
     _classifyTaskFrame: function (frame) {
       if (!frame) return null;
@@ -746,6 +2922,7 @@
       };
     },
 
+
     _collectVisibleTaskFrames: function () {
       var tasks = [];
       var doc = this._getMainDocument();
@@ -768,51 +2945,6 @@
       return tasks;
     },
 
-    _safeJsonParse: function (value, fallback) {
-      try {
-        return JSON.parse(value);
-      } catch (e) {
-        return fallback;
-      }
-    },
-
-    // 跨域窗口读 .document 会抛 SecurityError:
-    // "Blocked a frame with origin X from accessing a cross-origin frame"
-    // 该异常一旦冒泡到 _runTick，会打断整轮调度（验证码检测、播放巡检全部停摆）。
-    // 所有 iframe/window -> document 的访问必须统一走下面三个助手。
-    _safeDocOf: function (source) {
-      try {
-        if (!source) return null;
-        if (source.contentDocument) return source.contentDocument;
-        var win = source.contentWindow || source;
-        if (win && win.document) return win.document;
-      } catch (e) {}
-      return null;
-    },
-
-    _safeWinDoc: function (win) {
-      try { return (win && win.document) || null; } catch (e) { return null; }
-    },
-
-    // 帧是否同源可访问（跨域返回 false，绝不抛异常）
-    _isFrameSameOrigin: function (frame) {
-      try {
-        var win = frame && frame.contentWindow;
-        return !!(win && win.document);
-      } catch (e) {
-        return false;
-      }
-    },
-
-    _getMainWindow: function () {
-      var frame = this._getMainFrame();
-      if (!frame) return null;
-      try {
-        return frame.contentWindow || null;
-      } catch (e) {
-        return null;
-      }
-    },
 
     _getChaoxingAttachments: function () {
       var chapterId = this._getCurrentChapterId();
@@ -845,6 +2977,7 @@
       return [];
     },
 
+
     _getChaoxingFrameData: function (frame, win) {
       var direct = '';
       try { direct = frame ? (frame.getAttribute('data') || '') : ''; } catch (e) {}
@@ -860,6 +2993,7 @@
 
       return {};
     },
+
 
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
@@ -884,6 +3018,7 @@
       };
     },
 
+
     _matchChaoxingAttachment: function (attachments, frameData) {
       if (!attachments || !attachments.length || !frameData) return null;
       var targetJobId = frameData.jobid || frameData._jobid;
@@ -905,11 +3040,13 @@
       return null;
     },
 
+
     _getChaoxingJobName: function (attachment) {
       if (!attachment) return '未知任务点';
       var property = attachment.property || {};
       return property.name || property.title || (property.bookname ? property.bookname + (property.author || '') : '') || '未知任务点';
     },
+
 
     _getAttachmentWorkType: function (attachment) {
       if (!attachment) return 'not-job';
@@ -951,24 +3088,6 @@
       return 'not-job';
     },
 
-    /**
-     * 对"确认是任务点但不支持的类型"做去重告警（每种模块只记一条）。
-     *
-     * 静默丢弃任务点是最难排查的一类问题：用户只看到"这个任务点没做"，
-     * 完全无从判断是识别失败、还是压根不支持。留一条日志就能区分。
-     */
-    _unsupportedJobLogged: null,
-
-    _logUnsupportedJobOnce: function (module, type) {
-      if (!this._unsupportedJobLogged) this._unsupportedJobLogged = Object.create(null);
-      var key = String(module || '') + '|' + String(type || '');
-      if (this._unsupportedJobLogged[key]) return;
-      this._unsupportedJobLogged[key] = true;
-      emitRuntimeLog('warn', 'unsupported task point type, skipped', {
-        module: String(module || '(空)'),
-        type: String(type || '(空)')
-      });
-    },
 
     _buildAttachmentOnlyJob: function (attachment) {
       if (!attachment) return null;
@@ -1015,6 +3134,7 @@
       };
     },
 
+
     _resolveJobFrame: function (job) {
       if (!job) return job;
       if (job.frame && job.win && job.doc) return job;
@@ -1052,6 +3172,7 @@
       return job;
     },
 
+
     _isJobAlreadySearched: function (job, searchedJobs) {
       if (!job || !searchedJobs || !searchedJobs.length) return false;
       var mid = (job.attachment && job.attachment.property && job.attachment.property.mid) || '';
@@ -1061,6 +3182,7 @@
         return String(item.mid || item.jobid || item.name || '') === fingerprint;
       });
     },
+
 
     _getAttachmentFingerprint: function (attachments) {
       if (!attachments || !attachments.length) return '';
@@ -1075,6 +3197,7 @@
         ].join(':');
       }).join('|');
     },
+
 
     _buildSyntheticChaoxingJob: function (frame, win, doc, elements) {
       if (!frame || !elements) return null;
@@ -1104,6 +3227,7 @@
         visible: true
       };
     },
+
 
     _buildFrameFallbackJob: function (frame) {
       if (!frame) return null;
@@ -1142,6 +3266,7 @@
       };
     },
 
+
     _searchIFramesOcs: function (rootDoc) {
       var list = [];
       try {
@@ -1162,6 +3287,7 @@
       }
       return result;
     },
+
 
     _searchChaoxingJobOcs: function (searchedJobs) {
       var knowCardWin = this._getMainWindow();
@@ -1342,6 +3468,7 @@
       return null;
     },
 
+
     _ensureOcsStudyRunner: function () {
       if (this._ocsStudyStarted) return true;
       var knowCardWin = this._getMainWindow();
@@ -1507,6 +3634,7 @@
       return true;
     },
 
+
     _searchChaoxingJob: function (searchedJobs) {
       var attachments = this._getChaoxingAttachments();
 
@@ -1648,6 +3776,7 @@
       return jobs[0] || null;
     },
 
+
     _getVisibleTaskCompletionState: function () {
       var tasks = this._collectVisibleTaskFrames();
       return {
@@ -1656,67 +3785,6 @@
       };
     },
 
-    _isActiveMediaPending: function (reason) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
-      if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending')) {
-        this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
-        return false;
-      }
-
-      var media = this._videoEl || this._getVideoEl();
-      if (!media) {
-        if (!this._activeMediaJobPending) return false;
-        var missingNow = Date.now();
-        if (!this._mediaWaitLogAt || missingNow - this._mediaWaitLogAt > 5000) {
-          this._mediaWaitLogAt = missingNow;
-          emitRuntimeLog('info', 'media pending, waiting for element', { reason: reason || '' });
-        }
-        return true;
-      }
-
-      if (media.ended) {
-        if (this._activeMediaJobManaged) {
-          this._activeMediaJobPending = false;
-          this._activeMediaJobManaged = false;
-          this._isPlaying = false;
-          this._videoEl = null;
-          this._videoCount = 0;
-          this._currentVideoIndex = 0;
-          this._mediaWaitLogAt = 0;
-          emitRuntimeLog('info', 'managed media job ended', { reason: reason || '', jobid: this._activeJobId || '' });
-          return false;
-        }
-        if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
-          this._currentVideoIndex++;
-          this._videoEl = null;
-          this._activeMediaJobPending = true;
-          this._mediaWaitLogAt = 0;
-          return true;
-        }
-        this._activeMediaJobPending = false;
-        this._isPlaying = false;
-        this._mediaWaitLogAt = 0;
-        return false;
-      }
-
-      this._activeMediaJobPending = true;
-      this._ensurePlaybackRate(media, reason || 'pending');
-      if (media.paused) {
-        this._isPlaying = true;
-        this._tryResumePlayback(reason || 'pending');
-      }
-
-      var now = Date.now();
-      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 5000) {
-        this._mediaWaitLogAt = now;
-        emitRuntimeLog('info', 'media pending, delay completion', {
-          reason: reason || '',
-          currentTime: Number(media.currentTime || 0),
-          duration: Number(media.duration || 0)
-        });
-      }
-      return true;
-    },
 
     _isActiveDocumentPending: function (reason) {
       if (!this._activeDocumentJobPending) return false;
@@ -1741,250 +3809,13 @@
       return true;
     },
 
+
     _isActiveStudyJobPending: function (reason) {
       if (this._isActiveMediaPending(reason || 'study-job')) return true;
       if (this._isActiveDocumentPending(reason || 'study-job')) return true;
       return false;
     },
 
-    // 从候选媒体里挑一个：优先可见的（video 或 audio），其次隐藏的 audio。
-    // 音频常被自定义播放器隐藏（无可见控件/零尺寸）但照样能播；
-    // 隐藏的 video 不选，避免误选页面上无关的隐藏视频元素。
-    _pickMedia: function (list) {
-      var i;
-      for (i = 0; i < list.length; i++) {
-        var m = list[i];
-        if (visible(m) || (m.getClientRects && m.getClientRects().length > 0)) return m;
-      }
-      for (i = 0; i < list.length; i++) {
-        if (String(list[i].tagName || '').toLowerCase() === 'audio') return list[i];
-      }
-      return null;
-    },
-
-    _isVisibleMedia: function (media) {
-      return !!media && (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
-    },
-
-    _findMediaInDocument: function (doc, depth) {
-      if (!doc || !doc.querySelectorAll) return null;
-      var picked = this._pickMedia(Array.from(doc.querySelectorAll('video, audio')));
-      if (picked) return picked;
-
-      // 播放器可能被包在子 iframe 里（音频任务点常见），递归找一层
-      var level = typeof depth === 'number' ? depth : 0;
-      if (level >= 3) return null;
-      var frames = [];
-      try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e) { return null; }
-      for (var i = 0; i < frames.length && i < 8; i++) {
-        var subDoc = this._safeDocOf(frames[i]);
-        if (!subDoc) continue;
-        var sub = this._findMediaInDocument(subDoc, level + 1);
-        if (sub) return sub;
-      }
-      return null;
-    },
-
-    _waitForMediaInDocument: function (doc, timeoutMs) {
-      var self = this;
-      return new Promise(function (resolve) {
-        var deadline = Date.now() + (timeoutMs || 8000);
-        var timer = setInterval(function () {
-          var media = self._findMediaInDocument(doc);
-          if (media) {
-            clearInterval(timer);
-            resolve(media);
-            return;
-          }
-          if (Date.now() >= deadline) {
-            clearInterval(timer);
-            resolve(null);
-          }
-        }, 200);
-      });
-    },
-
-    // 给可能永久 pending 的 Promise（如 video.play() 在视频源停摆时）加超时护栏，
-    // 防止 _runTick 的 await 挂死导致整个循环停止
-    _withTimeout: function (promise, ms) {
-      return new Promise(function (resolve, reject) {
-        var settled = false;
-        var timer = setTimeout(function () {
-          if (settled) return;
-          settled = true;
-          resolve(undefined); // 超时按成功放行，实际播放状态由后续巡检兜底
-        }, ms || 10000);
-        Promise.resolve(promise).then(function (value) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(value);
-        }, function (err) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        });
-      });
-    },
-
-    _getMediaSeekKey: function (media) {
-      if (!media) return '';
-      var src = '';
-      try { src = media.currentSrc || media.src || ''; } catch (e) {}
-      if (src) return src;
-      if (this._activeJobId) return 'job:' + this._activeJobId;
-      return '';
-    },
-
-    // 可拖动视频：直接拖到结尾。每个视频只检查一次、最多只做一次拖动动作；
-    // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
-    _trySeekToEnd: function (video, reason) {
-      if (!video || video.tagName !== 'VIDEO') return false; // 只拖视频，音频任务保持正常播放
-      if (!this.configs.enableSeek) return false;
-      if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
-      if (this._captchaActive) return false;
-      if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);
-      if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
-      var key = this._getMediaSeekKey(video);
-      if (!key) return false;
-      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次
-      if (Object.keys(this._seekTriedKeys).length > 300) {
-        this._seekTriedKeys = Object.create(null);
-        this._seekRevertedKeys = Object.create(null);
-      }
-
-      var duration = Number(video.duration);
-      if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
-      this._seekTriedKeys[key] = true; // 检查完成：此后无论成败都不再动这个视频
-
-      var current = Number(video.currentTime || 0);
-      if (current >= duration - 8) return false; // 已在结尾附近，无需拖动
-
-      var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
-      try {
-        video.currentTime = target;
-      } catch (e) {
-        return false;
-      }
-      emitRuntimeLog('info', 'seekable video: seek to end', {
-        reason: reason || '',
-        from: Number(current.toFixed(1)),
-        to: Number(target.toFixed(1)),
-        duration: Number(duration.toFixed(1))
-      });
-      console.log('%c[Omitone] seekable video, seek to end: ' + current.toFixed(1) + 's -> ' + target.toFixed(1) + 's / ' + duration.toFixed(1) + 's', 'color:#4CAF50');
-
-      // 1.5 秒后验证进度是否被网站弹回（仅记录日志，不再重试）
-      //
-      // 这个结论会被「防拖拽 + 锁 1 倍速 → 看到 90% 就够」的逻辑复用：
-      // **被弹回 = 这个视频不可拖拽**（见 _isNinetyPercentVideo）。
-      var self = this;
-      this._workerDelay(function () {
-        try {
-          if (!video.isConnected) return;
-          var now = Number(video.currentTime || 0);
-          if (now >= duration - 12) {
-            self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
-            console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
-          } else {
-            self._seekRevertedKeys[key] = true;  // 被弹回 → 不可拖拽
-            console.log('[Omitone] seek reverted by site player, continue normal playback');
-            emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
-          }
-        } catch (e) {}
-      }, 1500);
-      return true;
-    },
-
-    _playChaoxingMediaJob: async function (job) {
-      if (!job || !job.doc) return false;
-      if (!this.configs.enableMedia) {
-        console.log('%c[Omitone] media learning disabled, skip: ' + job.name, 'color:#FF9800');
-        return true;
-      }
-
-      var video = this._findMediaInDocument(job.doc);
-      if (!video) {
-        video = await this._waitForMediaInDocument(job.doc, 8000);
-      }
-
-      if (video) {
-        this._videoEl = video;
-        this._videoCount = 1;
-        this._currentVideoIndex = 0;
-      }
-
-      if (!video) {
-        this._activeMediaJobPending = false;
-        console.warn('[Omitone] chaoxing media not ready:', job.name);
-        return false;
-      }
-
-      var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
-
-      this._activeJobId = job.jobid || '';
-      this._videoRetryCount = 0;
-      this._skipChainCount = 0;
-      this._activeMediaJobPending = !video.ended;
-      this._activeMediaJobManaged = true;
-      this._mediaWaitLogAt = 0;
-      this._isPlaying = true;
-      // 每个任务点重新探测最大倍速：避免上一个视频的探测结果串到当前音频上
-      this._resetRateDetection();
-      this._ensurePlaybackRate(video, 'job-media');
-      if (isAudioTask) {
-        // 音频诊断：把格式/MIME/浏览器支持情况与最终倍速记进日志，方便确认 m4a 到底能不能播
-        var audioSrc = String(video.currentSrc || video.src || '');
-        var audioMime = this._guessMediaMime(audioSrc);
-        var canPlay = 'unknown';
-        try {
-          var probe = document.createElement('audio');
-          canPlay = probe.canPlayType(audioMime || 'audio/mp4') || 'no';
-        } catch (eProbe) {}
-        emitRuntimeLog('info', 'audio task started', {
-          name: job.name,
-          src: audioSrc.slice(-70),
-          mime: audioMime || 'unknown',
-          canPlay: canPlay,
-          muted: !!video.muted,
-          rate: Number(video.playbackRate || 1)
-        });
-      }
-      this._trySeekToEnd(video, 'job-start');
-      this._videoEventHandle();
-      try {
-        await this._withTimeout(video.play(), 12000);
-        this._startVideoMonitoring();
-      } catch (e) {
-        try {
-          video.muted = true;
-          await this._withTimeout(video.play(), 12000);
-          this._isPlaying = true;
-          this._startVideoMonitoring();
-          emitRuntimeLog('warn', 'media autoplay blocked, muted retry ok', { name: job.name });
-        } catch (e2) {
-          // 静音重试仍失败：多半是音源格式/MIME 不支持（m4a 常见），尝试重新封装音源后播放
-          var errText = String((e2 && e2.name) || '') + ' ' + String((e2 && e2.message) || '');
-          if (/NotSupported/i.test(errText) || (video.error && video.error.code === 4)) {
-            var repaired = await this._maybeRepairMediaSource(video);
-            if (repaired) {
-              this._isPlaying = true;
-              this._startVideoMonitoring();
-              emitRuntimeLog('info', 'media play recovered after source repair', { name: job.name });
-              return true;
-            }
-          }
-          this._isPlaying = false;
-          emitRuntimeLog('error', 'media play failed', {
-            name: job.name,
-            error: String((e2 && e2.message) || e2 || '').slice(0, 160)
-          });
-          console.error('[Omitone] chaoxing media play failed:', e2 && e2.message ? e2.message : e2);
-        }
-      }
-      return true;
-    },
 
     _runChaoxingJob: async function (job) {
       if (!job) return false;
@@ -2038,6 +3869,7 @@
 
       return false;
     },
+
 
     _runChaoxingReadJob: async function (job) {
       if (!job) return false;
@@ -2166,6 +3998,7 @@
       }
     },
 
+
     _runPptAudioJob: async function (job) {
       var win = job.win;
       var doc = job.doc || this._safeWinDoc(win) || null;
@@ -2241,65 +4074,6 @@
       return true;
     },
 
-    _startSlideMedia: function (doc) {
-      var medias = [];
-      try {
-        medias = Array.from(doc.querySelectorAll('audio, video'));
-      } catch (e) {}
-      var self = this;
-      medias.forEach(function (media) {
-        if (media.ended) return;
-        try {
-          media.muted = !!self.configs.muted;
-        } catch (e1) {}
-        if (media.paused) {
-          try {
-            var p = media.play();
-            if (p && typeof p.catch === 'function') {
-              p.catch(function () {
-                try {
-                  media.muted = true;
-                  media.play().catch(function () {});
-                } catch (e2) {}
-              });
-            }
-          } catch (e3) {}
-        }
-      });
-      return medias.length;
-    },
-
-    _waitSlideAudioDone: async function (doc) {
-      var waited = 0;
-      while (waited < 600000) {
-        var active = [];
-        try {
-          active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
-            return !media.ended && (Number(media.currentTime || 0) > 0 || !media.paused);
-          });
-        } catch (e) {}
-        if (!active.length) return true;
-
-        active.forEach(function (media) {
-          if (!media.paused) return;
-          try {
-            var p = media.play();
-            if (p && typeof p.catch === 'function') p.catch(function () {});
-          } catch (e2) {}
-        });
-
-        var remaining = 0;
-        for (var i = 0; i < active.length; i++) {
-          var left = Number(active[i].duration || 0) - Number(active[i].currentTime || 0);
-          if (!(left > 0)) left = 1;
-          if (left > remaining) remaining = left;
-        }
-        var waitMs = Math.min(Math.ceil(remaining * 1000) + 800, 30000);
-        await sleep(waitMs);
-        waited += waitMs;
-      }
-      return false;
-    },
 
     _runOcsStyleStudy: async function (expectedVersion) {
       if (expectedVersion != null && expectedVersion !== this._runtimeVersion) {
@@ -2446,12 +4220,6 @@
       return false;
     },
 
-    _logTaskWait: function (message, now) {
-      var ts = now || Date.now();
-      if (ts - this._taskWaitLogAt < 3000) return;
-      this._taskWaitLogAt = ts;
-      console.log('%c[Omitone] waiting task render: ' + message, 'color:#9C27B0');
-    },
 
     _shouldWaitForTaskDiscovery: function (reason) {
       var now = Date.now();
@@ -2478,12 +4246,14 @@
       return false;
     },
 
+
     _getTaskIdentity: function (task) {
       if (!task) return '';
       var frameId = '';
       try { frameId = task.frame ? (task.frame.id || task.frame.name || '') : ''; } catch (e) {}
       return [task.type, task.src, task.shadowSrc, task.dataText, frameId].join('|').slice(0, 400);
     },
+
 
     _isTaskStillLoading: function (task) {
       if (!task) return false;
@@ -2512,6 +4282,7 @@
       return false;
     },
 
+
     _handlePendingTask: function (task) {
       var now = Date.now();
       var key = this._getTaskIdentity(task);
@@ -2532,6 +4303,7 @@
       }
       return false;
     },
+
     // 文档帧自己身上有没有「任务点」证据。
     //
     // 为什么不能只看 _hasTaskPoint()：那个方法只扫主文档 + 左侧章节目录，
@@ -2559,6 +4331,7 @@
       } catch (e) {}
       return false;
     },
+
 
     _locateDocumentTask: function (preferredDoc) {
       var self = this;
@@ -2629,6 +4402,7 @@
       return walk(startDoc, 0);
     },
 
+
     _extractFrameKey: function (doc, fallback) {
       try {
         var frame = doc && doc.defaultView && doc.defaultView.frameElement;
@@ -2637,55 +4411,6 @@
       return fallback;
     },
 
-    /**
-     * 作业/考试提交之后，页面会翻成一张**判分结果页**：
-     * 每道题下面多出「我的答案 / 正确答案 / 本题得分」。
-     *
-     * 为什么单列一条判据（现场故障）：`_isDocumentFrameFinished` 认的是
-     * `.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete`
-     * 和父层 wrapper 的「任务点已完成」文本 —— 这套标记是**课程章节页**的。
-     * 作业结果页往往只有 `.Py_answer` 那一族，于是四条都不命中，
-     * `_isQuizPassedOrFinished` 恒为 false → `_monitorQuizSubmit` 一直 hold →
-     * 25 秒后超时、整页重载、重新扫描、重新答题、重新提交。
-     * 用户看到的就是"题目一直扫描，AI 重复提交"。
-     *
-     * 三条判据**同时**成立才算完成，宁可漏判也不要误判
-     * （误判 = 把没交的卷当已完成，直接跳过这个任务点）：
-     *   ① 出现判分痕迹（我的答案/正确答案/得分/解析）
-     *   ② 题目控件已不可交互（input 全 disabled）或题目容器已消失
-     *   ③ 不含重做文案
-     */
-    _isQuizResultPageFinished: function (doc) {
-      try {
-        if (!doc || !doc.body) return false;
-        var text = textOf(doc.body);
-        if (!text) return false;
-        // ③ 重做文案一票否决：这是"没通过、要重做"，绝不能算完成
-        if (/未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text)) return false;
-
-        // ① 判分痕迹：学习通结果页的标志性结构
-        var hasGradeMark = false;
-        if (doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer')) {
-          hasGradeMark = true;
-        } else if (/我的答案|正确答案|本题得分|答案解析/.test(text)) {
-          hasGradeMark = true;
-        }
-        if (!hasGradeMark) return false;
-
-        // ② 已不可交互：题目区被结果区替换，或所有控件都 disabled
-        var containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox');
-        if (!containers.length) return true;
-
-        var controls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
-        if (!controls.length) return true;
-        for (var i = 0; i < controls.length; i++) {
-          if (!controls[i].disabled) return false; // 还有能点的 → 结果页尚未落地
-        }
-        return true;
-      } catch (e) {
-        return false;
-      }
-    },
 
     _isDocumentFrameFinished: function (doc) {
       try {
@@ -2700,6 +4425,7 @@
       } catch (e) {}
       return false;
     },
+
 
     _buildPagedDocumentTask: function (doc) {
       var win = doc.defaultView;
@@ -2757,6 +4483,7 @@
       };
     },
 
+
     _buildScrollDocumentTask: function (doc) {
       var win = doc.defaultView;
       var scrollRoot = doc.scrollingElement || doc.documentElement || doc.body;
@@ -2785,6 +4512,7 @@
         }
       };
     },
+
 
     _handleDocumentTask: function (preferredDoc) {
       var now = Date.now();
@@ -2867,237 +4595,6 @@
       return true;
     },
 
-    // ===== 视觉理解：把题目配图转成文字 =====
-    //
-    // 为什么只转文字、不直接把图交给答题模型：
-    //   答题链的系统提示词 + 题目文本是一个**每次都一样的长前缀**，DeepSeek 会把它
-    //   当作缓存单元按约 1/10 价计费（见 content.js logCacheUsage 的说明）。
-    //   一旦把每次都不同的图片塞进这个前缀，缓存立刻全部失效 ——
-    //   省下的那点「模型看图」的钱，会乘以十倍从输入侧漏出去。
-    //   所以图片走独立请求，只把结果文字拼进题干。
-
-    // 每章视觉调用计数（进了新章就清零，见 _resetVisionBudget）。
-    _visionUsedInChapter: 0,
-    _visionBudgetChapterKey: '',
-
-    /**
-     * 视觉预算闸门 —— 这是整个视觉功能里**最重要的安全阀**。
-     *
-     * 用户能接受「刷不了课」，不能接受「花了钱还是不行」。所以要保证：
-     * 无论配置写错、页面版式异常、还是某道题反复触发，都不可能无限发请求。
-     *
-     * 返回 true = 允许再发一次；false = 预算耗尽，必须停。
-     * 耗尽时**必定写一条 warn 日志**，绝不静默 —— 静默烧钱是最糟的失败方式。
-     */
-    _takeVisionBudget: function (chapterKey) {
-      if (!this.configs.visionEnabled) return false;
-      var key = String(chapterKey || 'unknown');
-      if (this._visionBudgetChapterKey !== key) {
-        // 换章即重置。不清零的话，一学期下来后面所有章节都用不了视觉。
-        this._visionBudgetChapterKey = key;
-        this._visionUsedInChapter = 0;
-      }
-      var cap = Number(this.configs.visionBudgetPerChapter);
-      if (!isFinite(cap) || cap < 0) cap = 0;
-      if (this._visionUsedInChapter >= cap) {
-        // 同一章只提醒一次，否则每道题刷一条，日志会被淹掉
-        if (this._visionBudgetWarnedKey !== key) {
-          this._visionBudgetWarnedKey = key;
-          emitRuntimeLog('warn', 'vision budget exhausted for this chapter, images will be ignored', {
-            used: this._visionUsedInChapter,
-            cap: cap,
-            chapter: key
-          });
-        }
-        return false;
-      }
-      this._visionUsedInChapter++;
-      return true;
-    },
-
-    /**
-     * 从题目容器里挑出「值得发给视觉模型」的图。
-     *
-     * 全部判据都是为了让每一张发出的图都可能真的值一次钱：
-     *   - 忽略小图：图标 / 分隔线 / 表情（通常 < 64px，模型看了也说不出东西）
-     *   - 忽略透明/空白图：装饰性资源
-     *   - 超过体积上限的直接跳过（配置项 visionMaxImageBytes）
-     *   - 张数上限 visionMaxImagesPerQuestion
-     *   - 去重：同一张图在题干和选项里各出现一次时只发一次
-     *
-     * 返回 dataURL 数组（可能为空数组，调用方必须处理空的情况）。
-     */
-    _collectQuestionImages: function (el) {
-      var out = [];
-      if (!el || !this.configs.visionEnabled) return out;
-      var maxImages = Number(this.configs.visionMaxImagesPerQuestion);
-      if (!isFinite(maxImages) || maxImages < 1) return out;
-      var maxBytes = Number(this.configs.visionMaxImageBytes);
-      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
-
-      var imgs = [];
-      try { imgs = Array.from(el.querySelectorAll('img')) } catch (e) { return out; }
-
-      var seen = {};
-      for (var i = 0; i < imgs.length && out.length < maxImages; i++) {
-        var img = imgs[i];
-        try {
-          // 尺寸闸门：未加载完的图 naturalWidth 为 0，直接跳过（发出去也是浪费）
-          var w = Number(img.naturalWidth || 0);
-          var h = Number(img.naturalHeight || 0);
-          if (w < 64 || h < 64) continue;
-          if (w * h > 4000000) continue; // 超过 400 万像素的图多半是整页扫描件，不划算
-
-          var src = String(img.currentSrc || img.src || '');
-          if (!src || src.indexOf('data:') === 0) {
-            // 已经是 dataURL（平台用 base64 内联时常见）—— 直接量长度判断体积
-            if (src.indexOf('data:image/') === 0) {
-              if (src.length > maxBytes * 1.4) continue;
-              if (!seen[src]) { seen[src] = 1; out.push(src); }
-            }
-            continue;
-          }
-          var abs = this._resolveImageUrl(img);
-          if (!abs || seen[abs]) continue;
-          seen[abs] = 1;
-          out.push(abs);
-        } catch (e2) {}
-      }
-      return out;
-    },
-
-    /**
-     * 把图片 URL 转成 dataURL 并做体积闸门，然后一次性交给视觉模型。
-     *
-     * 返回值：描述文字（string），拿不到就返回空串。
-     * **永远不会抛异常** —— 视觉只是锦上添花，绝不能因为它把整条答题链打断。
-     */
-    _describeQuestionImages: async function (urls, chapterKey) {
-      if (!urls || !urls.length) return '';
-      if (!this.configs.visionEnabled) return '';
-
-      var maxBytes = Number(this.configs.visionMaxImageBytes);
-      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
-      var maxPerReq = Number(this.configs.visionImagesPerRequest);
-      if (!isFinite(maxPerReq) || maxPerReq < 1) maxPerReq = 2;
-
-      // 先抓图（这一步不花钱）
-      var dataUrls = [];
-      for (var i = 0; i < urls.length && dataUrls.length < maxPerReq; i++) {
-        var url = String(urls[i] || '');
-        if (!url) continue;
-        var dataUrl = '';
-        if (url.indexOf('data:image/') === 0) {
-          dataUrl = url;
-        } else {
-          try {
-            var fetched = await bridgeSend('fetch_image', { url: url });
-            if (fetched && fetched.success && fetched.dataUrl) dataUrl = String(fetched.dataUrl);
-          } catch (eF) {}
-        }
-        if (!dataUrl) continue;
-        // 体积闸门：base64 后约是原始字节的 4/3，这里用 dataURL 长度近似判断
-        if (dataUrl.length > maxBytes * 1.4) {
-          emitRuntimeLog('info', 'vision image too large, skipped', { bytes: Math.round(dataUrl.length * 0.75) });
-          continue;
-        }
-        dataUrls.push(dataUrl);
-      }
-      if (!dataUrls.length) return '';
-
-      // 抓完图才扣预算。反过来会出现「预算扣了但图没抓到」的冤枉账。
-      if (!this._takeVisionBudget(chapterKey)) return '';
-
-      try {
-        var result = await bridgeSend('llm_vision', { images: dataUrls });
-        if (!result || !result.success) {
-          emitRuntimeLog('warn', 'vision request failed, continue without image text', {
-            error: String((result && result.error) || 'no response').slice(0, 200)
-          });
-          return '';
-        }
-        var text = String(result.data || '').trim();
-        // 模型说「无」时不要往题干里塞噪音 —— 那会让答题模型分心
-        if (!text || text === '无' || text === '没有' || text === '无明显信息') return '';
-        emitRuntimeLog('info', 'vision described images', { images: dataUrls.length, chars: text.length });
-        return text;
-      } catch (e) {
-        emitRuntimeLog('warn', 'vision bridge failed', { message: e && e.message ? e.message : String(e) });
-        return '';
-      }
-    },
-
-    /**
-     * 给一批题目补上「配图转述」。
-     *
-     * 设计要点：
-     *   - **只处理真的有图、且过得了尺寸闸门的题**：没有图的题一次请求都不发。
-     *     这既省钱，也避免把「无图」退化成一次白花的调用。
-     *   - 逐题串行、限量处理。并发发图很容易瞬间打满预算，
-     *     而限额是这套功能里唯一的硬保险，不能被并发绕过。
-     *   - 单题失败不影响其他题，也绝不影响整卷作答。
-     *
-     * 全程受 visionEnabled / visionMaxImagesPerQuestion / visionBudgetPerChapter 三道闸门约束。
-     */
-    _applyVisionToQuestions: async function (questions, preferredDoc) {
-      if (!this.configs.visionEnabled) return;
-      if (!questions || !questions.length) return;
-
-      var chapterKey = this._getCurrentChapterId() || this._extractFrameKey('vision', 'chapter') || 'chapter';
-      var maxPerQuestion = Number(this.configs.visionMaxImagesPerQuestion);
-      if (!isFinite(maxPerQuestion) || maxPerQuestion < 1) return;
-
-      var touched = 0;
-      for (var i = 0; i < questions.length; i++) {
-        var q = questions[i];
-        if (!q || !q._element) continue;
-
-        var urls = this._collectQuestionImages(q._element);
-        if (!urls.length) continue;
-
-        // 扣预算前先确认这一章还有额度。额度用完时 _describeQuestionImages 会自己写日志，
-        // 这里就不再重复遍历后面的题 —— 直接整体退出，省掉剩下的抓图开销。
-        if (this._visionUsedInChapter >= Number(this.configs.visionBudgetPerChapter || 0) &&
-            this._visionBudgetChapterKey === chapterKey) {
-          this._takeVisionBudget(chapterKey); // 触发一次「预算耗尽」日志
-          emitRuntimeLog('info', 'vision skipped remaining questions', { from: i, total: questions.length });
-          break;
-        }
-
-        var described = await this._describeQuestionImages(urls, chapterKey);
-        if (described) {
-          q.title = this._mergeVisionIntoTitle(q.title, described);
-          touched++;
-        }
-      }
-
-      if (touched > 0) {
-        emitRuntimeLog('info', 'vision applied to quiz', {
-          questions: questions.length,
-          withImage: touched,
-          usedBudget: this._visionUsedInChapter
-        });
-      }
-    },
-
-    /** 把视觉描述拼进题干。格式固定，便于模型区分「题面」与「图的转述」。 */
-    _mergeVisionIntoTitle: function (title, visionText) {
-      var base = String(title || '');
-      var extra = String(visionText || '').trim();
-      if (!extra) return base;
-      return base + ' [配图: ' + extra + ']';
-    },
-
-    _isTextOnly: function () {
-      if (this._locateDocumentTask()) return false;
-      var doc = this._getMainDocument();
-      if (!doc || !doc.body) return true;
-      var bodyText = textOf(doc.body);
-      if (bodyText.length < 10 || bodyText === '暂无内容') return true;
-      if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
-      if (doc.querySelector('.questionLi, .mark_item, .questionItem, .tiBank, .exam_question, input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
-      return true;
-    },
 
     _startTickLoop: function () {
       if (this._tickLoopInterval) return;
@@ -3120,6 +4617,7 @@
       this._runTick();
     },
 
+
     _clearTickLoop: function () {
       if (this._tickLoopInterval) {
         clearInterval(this._tickLoopInterval);
@@ -3127,6 +4625,7 @@
       }
       this._clearCheckInterval();
     },
+
 
     _runTick: async function () {
       if (this._tickRunning) return;
@@ -3343,726 +4842,11 @@
         this._tickStartedAt = 0;
       }
     },
+
     _tick: async function () {
       return this._runTick();
     },
 
-    _ensurePlaybackRate: function (video, reason) {
-      if (!video) return;
-      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 音频任务只要进度不需要出声：默认静音播放，避免多标签声音互相干扰
-      try {
-        video.muted = isAudio ? (this.configs.audioMuted !== false) : !!this.configs.muted;
-      } catch (e0) {}
-      if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
-        this._scheduleMaxRateDetection(video);
-      }
-      if (this._rateProbing) return;
-      var target = this._getTargetPlaybackRate();
-      try {
-        if (video.defaultPlaybackRate !== target) video.defaultPlaybackRate = target;
-      } catch (e) {}
-      try {
-        if (Math.abs(Number(video.playbackRate || 1) - target) > 0.01) {
-          video.playbackRate = target;
-          console.log('%c[Omitone] rate guard ' + reason + ': ' + target + 'x', 'color:#607D8B');
-        }
-      } catch (e2) {}
-    },
-
-    _getTargetPlaybackRate: function () {
-      if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
-        return this._clampAutoRate(this._detectedMaxRate);
-      }
-      var target = Number(this.configs.playbackRate || 1);
-      return isFinite(target) && target > 0 ? target : 1;
-    },
-
-    _clampAutoRate: function (rate) {
-      var value = Number(rate) || 1;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      if (value > cap) value = cap;
-      if (value < 0.5) value = 0.5;
-      return value;
-    },
-
-    _resetRateDetection: function () {
-      this._detectedMaxRate = 0;
-      this._rateDetectVideo = null;
-    },
-
-    _scheduleMaxRateDetection: function (video) {
-      if (!video) return;
-      this._rateDetectVideo = video;
-      if (this._rateDetectBusy) return;
-      var self = this;
-      var epoch = this._rateEpoch || 0;
-      this._rateDetectBusy = true;
-
-      var runDetect = function () {
-        self._detectMaxPlaybackRate(video).then(function (rate) {
-          self._rateDetectBusy = false;
-          if ((self._rateEpoch || 0) !== epoch) return; // 任务已切换，探测结果作废
-          if (Number(rate) > 0) {
-            self._detectedMaxRate = rate;
-            emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
-            self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
-          } else {
-            self._rateDetectVideo = null;
-          }
-        }).catch(function () {
-          self._rateDetectBusy = false;
-          if ((self._rateEpoch || 0) !== epoch) return;
-          self._rateDetectVideo = null;
-        });
-      };
-
-      // 暂停状态下播放器可能不接管倍速，等播放开始后再探测
-      if (!video.paused) {
-        runDetect();
-        return;
-      }
-      var tries = 0;
-      var timer = setInterval(function () {
-        if ((self._rateEpoch || 0) !== epoch) { // 任务已切换，放弃这次探测
-          clearInterval(timer);
-          self._rateDetectBusy = false;
-          return;
-        }
-        tries++;
-        if (!video.paused) {
-          clearInterval(timer);
-          runDetect();
-          return;
-        }
-        if (tries >= 60) {
-          clearInterval(timer);
-          self._rateDetectBusy = false;
-          self._rateDetectVideo = null;
-        }
-      }, 500);
-    },
-
-    _detectMaxPlaybackRate: async function (video) {
-      if (!video) return 0;
-      // 首选：播放器倍速菜单里暴露的档位（老师设置的上限会体现在菜单中）
-      var menuMax = this._readRateMenuMax(video);
-      if (menuMax > 0) {
-        emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
-        return this._clampAutoRate(menuMax);
-      }
-      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
-      var probed = await this._probeMaxPlaybackRate(video);
-      return this._clampAutoRate(probed || 1);
-    },
-
-    _readRateMenuMax: function (video) {
-      var doc = video && (video.ownerDocument || document);
-      if (!doc) return 0;
-      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 优先在播放器容器内找倍速菜单；音频不做整文档扫描，避免读到页面上其他视频播放器的档位
-      var scopes = [];
-      try {
-        var container = video.closest
-          ? video.closest('.video-js, .vjs-player, [class*="player"], [class*="Player"]')
-          : null;
-        if (container) scopes.push(container);
-      } catch (e0) {}
-      if (!isAudio) scopes.push(doc);
-
-      var selector = '.vjs-menu-item, .vjs-menu-content li, [class*="speed"] li, [class*="Speed"] li, [class*="rate"] li';
-      var maxRate = 0;
-      for (var s = 0; s < scopes.length; s++) {
-        var nodes = [];
-        try {
-          nodes = Array.from(scopes[s].querySelectorAll(selector));
-        } catch (e) {
-          continue;
-        }
-        for (var i = 0; i < nodes.length; i++) {
-          var text = textOf(nodes[i]);
-          if (!text || text.length > 16) continue;
-          var match = text.match(/(\d+(?:\.\d+)?)\s*(?:x|X|倍)/);
-          if (!match) continue;
-          var rate = parseFloat(match[1]);
-          if (rate > 0 && rate < 32 && rate > maxRate) maxRate = rate;
-        }
-        if (maxRate > 0) break;
-      }
-      return maxRate;
-    },
-
-    _probeMaxPlaybackRate: async function (video) {
-      var self = this;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
-      var best = 0;
-      this._rateProbing = true;
-      try {
-        for (var i = 0; i < candidates.length; i++) {
-          var candidate = candidates[i];
-          try { video.playbackRate = candidate; } catch (e) { continue; }
-          var settled = await self._waitRateSettle(video, 700);
-          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
-            best = candidate;
-            break;
-          }
-          if (settled > best) best = settled;
-        }
-      } finally {
-        this._rateProbing = false;
-      }
-      return best;
-    },
-
-    _waitRateSettle: async function (video, waitMs) {
-      var last = -1;
-      var stable = 0;
-      var elapsed = 0;
-      while (elapsed < (waitMs || 700)) {
-        await sleep(150);
-        elapsed += 150;
-        var current = Number(video.playbackRate || 0);
-        if (Math.abs(current - last) <= 0.001) {
-          stable += 150;
-          if (stable >= 300) return current;
-        } else {
-          stable = 0;
-        }
-        last = current;
-      }
-      return last > 0 ? last : 0;
-    },
-
-    _startVideoMonitoring: function () {
-      this._clearCheckInterval();
-      this._guardLastTime = 0;
-      this._guardLastWallTs = 0;
-      this._guardLastResumeTs = 0;
-      this._ensureBackgroundWorker();
-      this._bindVisibilityHandlers();
-      this._syncAudioKeepalive();
-      var self = this;
-      this._checkInterval = setInterval(function () {
-        self._checkVideoStatus();
-      }, this.configs.videoCheckInterval || 1500);
-    },
-
-    _clearCheckInterval: function () {
-      if (this._checkInterval) {
-        clearInterval(this._checkInterval);
-        this._checkInterval = null;
-      }
-      this._syncAudioKeepalive();
-    },
-
-    // ---- 后台/最小化防节流 ----
-    // 浏览器对后台标签页的 setTimeout/setInterval 有强节流（最低 1 次/分钟），
-    // 且静音（不可听）媒体在后台会被暂停/降速播放。以下三层防御保证最小化后视频继续推进：
-    // 1. Worker 心跳：Web Worker 内的定时器不受标签页可见性节流，用它持续驱动视频守护
-    // 2. pause 事件立即恢复：事件派发不受定时器节流，视频被网站/浏览器暂停后第一时间恢复
-    // 3. 无声音频保活：让浏览器把标签页视为"正在播放音频"，豁免强节流与后台静音媒体限制
-    _ensureBackgroundWorker: function () {
-      if (this._bgWorker) return this._bgWorker;
-      try {
-        var code = [
-          'var interval=null;',
-          'onmessage=function(e){var d=e.data||{};',
-          "if(d.op==='interval'){",
-          '  if(interval)clearInterval(interval);',
-          '  interval=setInterval(function(){postMessage({op:"tick"})},d.ms||1500);',
-          '}else if(d.op==="delay"){',
-          '  setTimeout(function(){postMessage({op:"fire",id:d.id})},d.ms||0);',
-          '}else if(d.op==="stop"){',
-          '  if(interval)clearInterval(interval);interval=null;',
-          '}};'
-        ].join('');
-        var blob = new Blob([code], { type: 'application/javascript' });
-        var url = URL.createObjectURL(blob);
-        var worker = new Worker(url);
-        var self = this;
-        this._workerDelayCallbacks = {};
-        worker.onmessage = function (e) {
-          var d = e.data || {};
-          if (d.op === 'tick') {
-            if (document.hidden) {
-              self._checkVideoStatus();
-              if (typeof self._backgroundCaptchaTick === 'function') self._backgroundCaptchaTick();
-            }
-            return;
-          }
-          if (d.op === 'fire' && self._workerDelayCallbacks) {
-            var fn = self._workerDelayCallbacks[d.id];
-            delete self._workerDelayCallbacks[d.id];
-            if (typeof fn === 'function') fn();
-          }
-        };
-        worker.postMessage({ op: 'interval', ms: this.configs.videoCheckInterval || 1500 });
-        this._bgWorker = worker;
-        this._bgWorkerUrl = url;
-        emitRuntimeLog('info', 'background worker heartbeat started');
-      } catch (e) {
-        this._bgWorker = null;
-        emitRuntimeLog('warn', 'background worker unavailable, fallback to page timers', {
-          error: String(e && e.message ? e.message : e).slice(0, 120)
-        });
-      }
-      return this._bgWorker;
-    },
-
-    _workerDelay: function (fn, ms) {
-      if (this._bgWorker && this._workerDelayCallbacks) {
-        this._workerDelaySeq = (this._workerDelaySeq || 0) + 1;
-        var id = 'wd' + this._workerDelaySeq;
-        this._workerDelayCallbacks[id] = fn;
-        try {
-          this._bgWorker.postMessage({ op: 'delay', id: id, ms: ms || 0 });
-          return;
-        } catch (e) {}
-      }
-      setTimeout(fn, ms || 0);
-    },
-
-    _startAudioKeepalive: function () {
-      if (this._audioKeepalive) return;
-      try {
-        var Ctx = window.AudioContext || window.webkitAudioContext;
-        if (!Ctx) return;
-        var ctx = new Ctx();
-        var oscillator = ctx.createOscillator();
-        var gain = ctx.createGain();
-        oscillator.frequency.value = 50;
-        gain.gain.value = 0.003; // 近乎无声：人耳不可辨，但足以让浏览器将标签页视为正在播放音频
-        oscillator.connect(gain);
-        gain.connect(ctx.destination);
-        oscillator.start();
-        if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
-          ctx.resume().catch(function () {});
-        }
-        this._audioKeepalive = { ctx: ctx, oscillator: oscillator };
-        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)');
-      } catch (e) {}
-    },
-
-    _stopAudioKeepalive: function () {
-      if (!this._audioKeepalive) return;
-      try { this._audioKeepalive.oscillator.stop(); } catch (e0) {}
-      try { this._audioKeepalive.ctx.close(); } catch (e1) {}
-      this._audioKeepalive = null;
-    },
-
-    _syncAudioKeepalive: function () {
-      var hidden = !!(document.hidden || document.visibilityState === 'hidden');
-      if (this._isPlaying && hidden) this._startAudioKeepalive();
-      else this._stopAudioKeepalive();
-    },
-
-    _bindVisibilityHandlers: function () {
-      if (this._visibilityBound) return;
-      this._visibilityBound = true;
-      var self = this;
-      document.addEventListener('visibilitychange', function () {
-        self._syncAudioKeepalive();
-        if (!document.hidden) {
-          // 回到前台：立即校验一次视频状态与倍速
-          self._checkVideoStatus();
-          var video = self._getVideoEl();
-          if (video) self._ensurePlaybackRate(video, 'visibility-resume');
-        }
-      });
-    },
-
-    // ---- 验证码自动检测与识别 ----
-    // 已知学习通结构（参考开源 cxmooc-tools）：#imgVerCode 图片 / #ucode 输入框 / #sub 提交按钮
-    // 同时做通用兜底：任意"验证码图片 + 附近文本输入框"的可见弹层都识别
-    _checkCaptchaDialog: function () {
-      // 独立于 AI 答题开关：只要配了 API Key + 视觉模型，验证码识别始终可用
-      if (!this.configs.enableCaptcha) {
-        if (this._captchaActive) this._captchaActive = false;
-        return null;
-      }
-      var now = Date.now();
-      if (now - (this._captchaLastCheckAt || 0) < 1500) return this._captchaLastResult || null;
-      this._captchaLastCheckAt = now;
-
-      var result = null;
-
-      function findInputNear(doc, img) {
-        // 1) 沿祖先向上找最近的文本输入框
-        var node = img;
-        for (var level = 0; level < 6 && node && node !== doc.body; level++) {
-          node = node.parentElement;
-          if (!node) break;
-          var inputs = node.querySelectorAll('input[type="text"], input:not([type])');
-          for (var i = 0; i < inputs.length; i++) {
-            var input = inputs[i];
-            if (!visible(input)) continue;
-            if (input.offsetWidth < 24) continue;
-            return input;
-          }
-        }
-        // 2) 兜底：在图片所在的弹窗容器内全量找
-        var box = null;
-        try { box = img.closest('div, form, table, layer, .layui-layer'); } catch (e) {}
-        if (box) {
-          var boxInputs = box.querySelectorAll('input[type="text"], input:not([type]), input[id*="code" i], input[name*="code" i]');
-          for (var j = 0; j < boxInputs.length; j++) {
-            if (!visible(boxInputs[j])) continue;
-            if (boxInputs[j].offsetWidth < 24) continue;
-            return boxInputs[j];
-          }
-        }
-        return null;
-      }
-
-      function hitImgSize(img) {
-        var w = img.naturalWidth || img.clientWidth || 0;
-        var h = img.naturalHeight || img.clientHeight || 0;
-        if (w && (w < 40 || w > 400)) return false;
-        if (h && (h < 16 || h > 200)) return false;
-        return true;
-      }
-
-      function scanDoc(doc, depth) {
-        if (!doc || depth > 3 || result) return;
-        var imgs = [];
-        try { imgs = Array.from(doc.querySelectorAll('img')); } catch (e0) { return; }
-        for (var i = 0; i < imgs.length && !result; i++) {
-          var img = imgs[i];
-          if (!visible(img)) continue;
-          var src = String(img.currentSrc || img.src || '');
-          var idName = String(
-            (img.id || '') + ' ' + (img.getAttribute('name') || '') + ' ' + (img.className || '')
-          ).toLowerCase();
-          // A. 已知学习通验证码元素（最高置信，不受尺寸/文案限制）
-          var specific = /imgvercode|chapternumvercode|vercode|verifycode|captcha|imgcode/.test(idName);
-          // B. 图片地址特征
-          var srcMatch = /\/img\/code|captcha|verif|vercode|rand=|getcode|checkcode|\/code\?/i.test(src);
-          if (!specific && !srcMatch) continue;
-          if (!hitImgSize(img)) continue;
-          var input = findInputNear(doc, img);
-          if (!input) continue;
-          var dialog = doc.body;
-          try {
-            dialog = input.closest('.layui-layer, [class*="dialog"], [class*="verif"], form, table') || input.parentElement || img.parentElement || doc.body;
-          } catch (e1) {}
-          result = { doc: doc, img: img, input: input, dialog: dialog, why: specific ? 'element-id' : 'img-src' };
-        }
-
-        // C. 弹窗文本兜底：可见弹窗含“验证码”字样 + 图片 + 输入框（应对学习通改版换 id）
-        if (!result) {
-          var layers = [];
-          try { layers = Array.from(doc.querySelectorAll('.layui-layer, [class*="dialog"], [class*="Dialog"], [class*="modal"], [class*="verif"]')); } catch (e2) {}
-          for (var m = 0; m < layers.length && !result; m++) {
-            var box = layers[m];
-            if (!visible(box)) continue;
-            var boxText = textOf(box).slice(0, 300);
-            if (!/验证码|请输入|校验码/.test(boxText)) continue;
-            var boxImgs = [];
-            try { boxImgs = Array.from(box.querySelectorAll('img')); } catch (e3) {}
-            for (var n = 0; n < boxImgs.length && !result; n++) {
-              var bimg = boxImgs[n];
-              if (!visible(bimg)) continue;
-              if (!hitImgSize(bimg)) continue;
-              // 弹窗文案里已含“验证码”，直接信任该图片
-              var binput = findInputNear(doc, bimg);
-              if (!binput) continue;
-              result = { doc: doc, img: bimg, input: binput, dialog: box, why: 'dialog-text' };
-            }
-          }
-        }
-
-        if (!result) {
-          var frames = [];
-          try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e4) {}
-          for (var k = 0; k < frames.length && !result; k++) {
-            try {
-              var subDoc = frames[k].contentDocument || (frames[k].contentWindow && frames[k].contentWindow.document);
-              scanDoc(subDoc, depth + 1);
-            } catch (e5) {}
-          }
-        }
-      }
-
-      try {
-        var startDoc = this._getMainDocument() || document;
-        scanDoc(startDoc, 0);
-        if (!result) scanDoc(document, 0);
-      } catch (e) {}
-
-      this._captchaLastResult = result;
-      this._captchaActive = !!result;
-      // ⚠️ 这里原本有一句 `if (!result) this._diagnoseBlockedPage();`。
-      // 那个函数在早前一轮「清理调试代码」时被删掉了，但调用点留了下来，
-      // 于是「没有验证码」这个最常见的情况下每次都会抛 TypeError ——
-      // _runTick 里那处有 try/catch 兜住所以看不出来，但另外 3 处调用点
-      // （_handleCaptchaDialog 复检、_backgroundCaptchaTick、_handleVideoPlay 守卫）
-      // 没有兜底，会把整条链路打断。删掉调用即可；诊断能力现在由
-      // _diagnoseQuestionScan / _checkBlockedByCrossOrigin 覆盖。
-      // 这类"幽灵调用"由 tools/check.js 的未定义方法检查兜底。
-      return result;
-    },
-
-    _captureCaptchaImage: function (img) {
-      try {
-        var doc = img.ownerDocument || document;
-        var canvas = doc.createElement('canvas');
-        var w = img.naturalWidth || img.clientWidth || 120;
-        var h = img.naturalHeight || img.clientHeight || 40;
-        canvas.width = w;
-        canvas.height = h;
-        var ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, w, h);
-        return canvas.toDataURL('image/png');
-      } catch (e) {
-        // 跨域图片会污染画布，交由后台带 Cookie 抓取兜底
-        return '';
-      }
-    },
-
-    _resolveImageUrl: function (img) {
-      try {
-        var doc = img.ownerDocument || document;
-        var base = doc.baseURI || window.location.href;
-        return new URL(img.src || img.currentSrc || '', base).href;
-      } catch (e) {
-        return '';
-      }
-    },
-
-    _cleanCaptchaCode: function (raw) {
-      var text = String(raw || '');
-      var quoted = text.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
-      if (quoted && quoted[1]) text = quoted[1];
-      var lines = text.split(/\r?\n/).map(function (s) { return s.trim(); }).filter(Boolean);
-      if (lines.length) text = lines[lines.length - 1];
-      text = text.replace(/^.*?(?:答案|结果|验证码|code|result)\s*[:：]\s*/i, '');
-      text = text.replace(/[\s"'`~!@#$%^&*()（）\-_=+\[\]【】{}\\|;:;,.，。、：；！？·…<>《》/?？]+/g, '');
-      if (text.length > 12) text = text.slice(0, 12);
-      return text;
-    },
-
-    _fillCaptchaInput: function (captcha, code) {
-      var input = captcha.input;
-      try { input.focus(); } catch (e0) {}
-      var win = input.ownerDocument.defaultView || window;
-      try {
-        var descriptor = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, 'value');
-        if (descriptor && descriptor.set) descriptor.set.call(input, code);
-        else input.value = code;
-      } catch (e1) {
-        input.value = code;
-      }
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new Event('blur', { bubbles: true }));
-    },
-
-    _clickCaptchaSubmit: function (captcha) {
-      var doc = captcha.input.ownerDocument || document;
-      var button = null;
-      try { button = doc.querySelector('#sub'); } catch (e0) {}
-      if (!button && captcha.dialog) {
-        var candidates = captcha.dialog.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
-        for (var i = 0; i < candidates.length; i++) {
-          var label = textOf(candidates[i]);
-          if (/^(确定|提交|验证|确认|OK)/.test(label)) { button = candidates[i]; break; }
-        }
-      }
-      if (button) {
-        try { button.click(); return; } catch (e1) {}
-      }
-      // 无按钮则模拟回车提交
-      try {
-        var win = doc.defaultView || window;
-        captcha.input.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-        captcha.input.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-      } catch (e2) {}
-    },
-
-    _captchaReload: function () {
-      emitRuntimeLog('warn', 'captcha unsolved, reload page', {});
-      try { window.location.reload(); } catch (e) {}
-    },
-
-    // 主 iframe 被换成跨域页面（验证码/反作弊拦截）：JS 完全无法访问其内部，
-    // 既检测不到验证码也填不了，唯一恢复手段就是刷新页面（刷新后由自动续跑接管）
-    _markMainFrameCrossOrigin: function () {
-      if (!this._mainFrameCrossOriginSince) this._mainFrameCrossOriginSince = Date.now();
-    },
-
-    _checkBlockedByCrossOrigin: function () {
-      var frame = this._getMainFrame();
-      if (!frame) return false;
-      if (this._isFrameSameOrigin(frame)) {
-        this._mainFrameCrossOriginSince = 0;
-        return false;
-      }
-
-      this._markMainFrameCrossOrigin();
-      var held = Date.now() - (this._mainFrameCrossOriginSince || Date.now());
-      var now = Date.now();
-
-      // 页面还在加载时 iframe 归属可能未定，先不判定为被拦截，避免误刷新
-      if (document.readyState !== 'complete') {
-        this._mainFrameCrossOriginSince = 0;
-        return false;
-      }
-
-      if (now - (this._crossOriginLogAt || 0) > 15000) {
-        this._crossOriginLogAt = now;
-        emitRuntimeLog('warn', 'main frame is cross-origin, page likely blocked by captcha/anti-bot', {
-          heldSec: Math.round(held / 1000)
-        });
-      }
-
-      if (held > 20000 && this.configs.blockedReload !== false) {
-        if (now - (this._blockedReloadAt || 0) > 180000) {
-          this._blockedReloadAt = now;
-          emitRuntimeLog('warn', 'blocked page unreachable from JS, reload to recover', {
-            heldSec: Math.round(held / 1000)
-          });
-          try { window.location.reload(); } catch (e) {}
-        }
-      }
-
-      return true; // 主内容都拿不到，本轮没必要继续跑后面的逻辑
-    },
-
-    // ===== 独立验证码页：验证码不在学习通界面内，而是一个独立网址 / 弹出窗口 / 被跳转到的验证页 =====
-    // 这类页面是顶层页面（不是跨域 iframe），插件可以完整访问 DOM，因此完全可以自动识别并填写。
-    _recognizeCaptchaImage: async function (img) {
-      var dataUrl = this._captureCaptchaImage(img);
-      if (!dataUrl) {
-        var absUrl = this._resolveImageUrl(img);
-        if (absUrl) {
-          try {
-            var fetched = await bridgeSend('fetch_image', { url: absUrl });
-            if (fetched && fetched.success && fetched.dataUrl) dataUrl = fetched.dataUrl;
-          } catch (e0) {}
-        }
-      }
-      if (!dataUrl) return { ok: false, error: 'captcha image capture failed' };
-
-      var result = await bridgeSend('llm_captcha', { image: dataUrl });
-      if (!result || !result.success) {
-        return { ok: false, error: String((result && result.error) || 'no response').slice(0, 200) };
-      }
-      var code = this._cleanCaptchaCode(result.data);
-      if (!code) return { ok: false, error: 'empty code after clean', raw: String(result.data || '').slice(0, 60) };
-      return { ok: true, code: code };
-    },
-
-    // 独立验证页里定位「验证码图片 + 输入框」：整页就是一张验证表单，判定比弹窗场景宽
-    _detectStandaloneCaptcha: function () {
-      var doc = document;
-      var imgs = [];
-      try { imgs = Array.from(doc.querySelectorAll('img')); } catch (e) { return null; }
-      var best = null;
-      var bestArea = 0;
-      for (var i = 0; i < imgs.length; i++) {
-        var img = imgs[i];
-        if (!visible(img)) continue;
-        var w = img.naturalWidth || img.clientWidth || 0;
-        var h = img.naturalHeight || img.clientHeight || 0;
-        if (w && (w < 40 || w > 400)) continue;
-        if (h && (h < 16 || h > 200)) continue;
-        var area = (img.clientWidth || w) * (img.clientHeight || h);
-        if (area > bestArea) { bestArea = area; best = img; }
-      }
-      if (!best) return null;
-
-      var inputs = [];
-      try { inputs = Array.from(doc.querySelectorAll('input')); } catch (e2) {}
-      var input = null;
-      for (var j = 0; j < inputs.length; j++) {
-        var el = inputs[j];
-        if (!visible(el)) continue;
-        if (/^(hidden|checkbox|radio|button|submit|file|image)$/i.test(String(el.type || 'text'))) continue;
-        input = el;
-        break;
-      }
-      if (!input) return null;
-      return { doc: doc, img: best, input: input, dialog: document.body, why: 'standalone-page' };
-    },
-
-    _computeStandaloneCaptchaPage: function () {
-      try {
-        if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
-        if (document.querySelector('#video, #audio, .TiMu, .questionLi, .swiper-container, .ans-attach')) return false;
-        var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
-        var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
-        var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);
-        if (!urlHit && !textHit) return false;
-        return !!this._detectStandaloneCaptcha();
-      } catch (e) {
-        return false;
-      }
-    },
-
-    // ===================== 讨论任务点 =====================
-    // 讨论任务点不在课程 iframe 内：点击后会跳转到独立的讨论页（新标签页或当前标签页），
-    // 必须在该页面发布评论才算完成。原识别逻辑只认 video/quiz/read/document 等类型，
-    // 这类任务点会被判成 other 直接跳过，因此这里单独实现：
-    //   刷课页：检测讨论任务点 → 打开讨论页 → 暂停推进等待
-    //   讨论页：自动填内容 → 点发布 → 检测成功 → 关闭/返回
-    //   回到刷课页：刷新章节继续运行（全程有超时兜底，绝不会卡住）
-
-    _discussionStoreKey: 'omitone_discussion_done',
-
-    _discussionDoneMap: function () {
-      try {
-        var raw = localStorage.getItem(this._discussionStoreKey);
-        var parsed = raw ? this._safeJsonParse(raw, {}) : {};
-        return parsed && typeof parsed === 'object' ? parsed : {};
-      } catch (e) {
-        return {};
-      }
-    },
-
-    _markDiscussionDone: function (key) {
-      try {
-        var map = this._discussionDoneMap();
-        map[key] = Date.now();
-        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
-      } catch (e) {}
-    },
-
-    _isDiscussionDone: function (key) {
-      var at = Number(this._discussionDoneMap()[key] || 0);
-      return !!at && Date.now() - at < 24 * 3600 * 1000; // 24 小时内不重复处理
-    },
-
-    /**
-     * 撤回"已完成"标记。
-     *
-     * _markDiscussionDone 是先于打开动作写的（防止重复打开同一个讨论页），
-     * 所以一旦发现根本没能打开，必须把这条记录撤掉 ——
-     * 否则该任务点会被静默跳过 24 小时，用户只看到"没做"，日志里毫无线索。
-     */
-    _unmarkDiscussionDone: function (key) {
-      if (!key) return;
-      try {
-        var map = this._discussionDoneMap();
-        if (map[key] === undefined) return;
-        delete map[key];
-        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
-      } catch (e) {}
-    },
-
-    // ===================== 做不完的任务点 =====================
-    // 学习通允许老师把任务点配置成"锁住"的形态：视频开防拖拽（拖了会被弹回）、
-    // 文档/PPT 不给翻页、或者任务点本身就是不计分的摆设。
-    // 插件对这些只会一次次重试，白耗时间 —— 尤其是反复回到同一章时。
-    //
-    // 这里的策略是**只放弃"确实完成不了"的**：每派发一次任务点就检查它是否真的完成了，
-    // 没完成才计数；连续 N 次都没完成就记入 localStorage（24 小时）并跳过，同时留日志。
-    // 判定"是否完成"拿不准时一律当作完成（`_isJobCompleted` 返回 true），
-    // 宁可多跑一次也不要误跳过必做任务点。
-
-    _taskGiveUpStoreKey: 'omitone_task_giveup',
 
     _taskGiveUpMap: function () {
       try {
@@ -4073,6 +4857,7 @@
         return {};
       }
     },
+
 
     /** 任务点的稳定标识：优先 jobid/objectid，兜底用 module + 名称 */
     _taskPointKey: function (job) {
@@ -4088,12 +4873,14 @@
       return 'nm:' + module + '|' + name;
     },
 
+
     _isTaskGivenUp: function (key) {
       if (!key) return false;
       var record = this._taskGiveUpMap()[key];
       if (!record || !record.at) return false;
       return Date.now() - Number(record.at) < 24 * 3600 * 1000;
     },
+
 
     _markTaskGivenUp: function (key, info) {
       if (!key) return;
@@ -4109,12 +4896,14 @@
       } catch (e) {}
     },
 
+
     /** 用户在控制台里可以清掉放弃记录，让插件重新尝试这些任务点 */
     _clearTaskGiveUp: function () {
       try { localStorage.removeItem(this._taskGiveUpStoreKey); } catch (e) {}
       this._taskAttempts = {};
       this._taskProgress = null;
     },
+
 
     _taskGiveUpList: function () {
       var map = this._taskGiveUpMap();
@@ -4131,6 +4920,7 @@
         };
       });
     },
+
 
     /**
      * 任务点是否真的完成了。
@@ -4153,6 +4943,7 @@
       }
       return false;
     },
+
 
     /**
      * 任务点的"进度快照"。
@@ -4184,6 +4975,7 @@
       } catch (e) {}
       return '';
     },
+
 
     /**
      * 记录一次"派发了但没完成"。
@@ -4219,11 +5011,317 @@
       });
     },
 
+
+    _getLearningCards: function () {
+      var cards = [];
+      try {
+        cards = Array.from(document.querySelectorAll([
+          '#prev_tab .prev_ul li',
+          '#prev_tab li[cardid]',
+          '#prev_tab li[onclick*="changeDisplayContent"]',
+          '.prev_list .prev_ul li',
+          '.prev_list li[cardid]',
+          '.prev_list li[onclick*="changeDisplayContent"]',
+          '.prev_select_con li[cardid]',
+          '.prev_select_con li[onclick*="changeDisplayContent"]',
+          'li[id^="dct"][cardid]',
+          'li[id^="dct"][onclick*="changeDisplayContent"]'
+        ].join(',')));
+      } catch (e) {}
+
+      var seen = [];
+      var self = this;
+      return cards.filter(function (card) {
+        if (!card || card.tagName !== 'LI') return false;
+        if (seen.indexOf(card) !== -1) return false;
+        seen.push(card);
+        var marker = String((card.getAttribute && (card.getAttribute('cardid') || card.getAttribute('onclick') || card.id)) || '');
+        var text = self._getLearningCardText(card);
+        if (!marker && !/视频|测验|测试|作业|考试|答题|习题|讨论|资料|文档|阅读/.test(text)) return false;
+        return true;
+      });
+    },
+
+
+    _getLearningCardText: function (card) {
+      if (!card) return '';
+      return [
+        textOf(card),
+        card.getAttribute ? (card.getAttribute('title') || '') : '',
+        card.getAttribute ? (card.getAttribute('aria-label') || '') : ''
+      ].join(' ').replace(/\s+/g, '');
+    },
+
+
+    _getActiveLearningCardIndex: function (cards) {
+      for (var i = 0; i < cards.length; i++) {
+        var cls = String(cards[i].className || '');
+        if (/\bactive\b/.test(cls)) return i;
+        if (cards[i].getAttribute && String(cards[i].getAttribute('aria-selected') || '') === 'true') return i;
+        if (cards[i].querySelector && cards[i].querySelector('.active, .on, .current, [aria-selected="true"]')) return i;
+      }
+
+      var currentType = this._getCurrentVisibleLearningTaskType();
+      if (currentType) {
+        for (var j = 0; j < cards.length; j++) {
+          var text = this._getLearningCardText(cards[j]);
+          if (currentType === 'video' && /视频|学习视频/.test(text)) return j;
+          if (currentType === 'quiz' && this._isAssessmentLearningCard(cards[j])) return j;
+        }
+      }
+      return -1;
+    },
+
+
+    _getCurrentVisibleLearningTaskType: function () {
+      try {
+        var tasks = this._collectVisibleTaskFrames();
+        for (var i = 0; i < tasks.length; i++) {
+          if (tasks[i] && !tasks[i].finished && tasks[i].type) return tasks[i].type;
+        }
+        for (var j = 0; j < tasks.length; j++) {
+          if (tasks[j] && tasks[j].type) return tasks[j].type;
+        }
+      } catch (e) {}
+
+      var video = this._getVideoEl();
+      if (video) return 'video';
+      if (this._detectQuiz()) return 'quiz';
+      return '';
+    },
+
+
+    _isAssessmentLearningCard: function (card) {
+      var text = this._getLearningCardText(card);
+      return /测验|测试|作业|考试|答题|习题/.test(text);
+    },
+
+
+    _looksLikeVideoLearningCard: function (card) {
+      return /视频|学习视频/.test(this._getLearningCardText(card));
+    },
+
+
+    _findFallbackNextLearningCardIndex: function (cards) {
+      if (!cards || cards.length <= 1) return -1;
+
+      var videoIndex = -1;
+      for (var i = 0; i < cards.length; i++) {
+        if (videoIndex < 0 && this._looksLikeVideoLearningCard(cards[i])) videoIndex = i;
+        if (this._isAssessmentLearningCard(cards[i])) {
+          if (videoIndex >= 0 && i > videoIndex) return i;
+        }
+      }
+
+      var currentTitle = this._getCurrentTitle();
+      if (!/测验|测试|作业|考试|答题|习题/.test(currentTitle)) {
+        for (var j = 0; j < cards.length; j++) {
+          if (this._isAssessmentLearningCard(cards[j])) return j;
+        }
+      }
+      return -1;
+    },
+
+
+    _switchToNextLearningCard: function (reason) {
+      var cards = this._getLearningCards();
+      if (cards.length <= 1) return false;
+
+      var activeIndex = this._getActiveLearningCardIndex(cards);
+      var targetIndex = activeIndex >= 0 && activeIndex < cards.length - 1 ? activeIndex + 1 : this._findFallbackNextLearningCardIndex(cards);
+      if (targetIndex < 0 || targetIndex >= cards.length) return false;
+      if (activeIndex >= 0 && targetIndex === activeIndex) return false;
+
+      var now = Date.now();
+      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) {
+        return true;
+      }
+
+      var nextCard = cards[targetIndex];
+      if (!nextCard) return false;
+
+      this._lastLearningTabSwitchAt = now;
+      this._clearMediaPendingState('switch-learning-card');
+
+      try {
+        var clickTarget = nextCard.querySelector ? (nextCard.querySelector('.prev_white, a, [role="option"], [role="button"]') || nextCard) : nextCard;
+        try { clickTarget.click(); } catch (clickErr) { nextCard.click(); }
+        emitRuntimeLog('info', 'switch learning card before next unit', {
+          reason: reason || '',
+          from: activeIndex + 1,
+          to: targetIndex + 1,
+          text: this._getLearningCardText(nextCard)
+        });
+      } catch (e) {
+        return false;
+      }
+
+      this._resetRuntimeState();
+      this._lastLearningTabSwitchAt = now;
+      this._stepSwitchPending = true;
+      this._stepSwitchAt = now;
+
+      var self = this;
+      setTimeout(function () {
+        try {
+          self._initCellData();
+          self.play();
+        } catch (e2) {}
+      }, Number(this.configs.stepSwitchInitDelayMs || 2200));
+
+      return true;
+    },
+
+
+    nextUnit: function () {
+      if (!this._assertActive()) return;
+      if (!this.configs.autoNext) return;
+      if (this._isActiveMediaPending('next-unit')) return;
+      if (!this._isQuizForceSkipping() && this._shouldHoldQuizBeforeNext('next-unit')) return;
+      if (this._switchToNextLearningCard('next-unit')) return;
+      this._dismissPopups();
+      try {
+        var nextButton = document.querySelector('#prevNextFocusNext');
+        if (nextButton) nextButton.click();
+      } catch (e) {}
+      this._resetRuntimeState();
+    },
+
+
+    _advanceLearningStep: function () {
+      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) return true;
+      var title = this._getCurrentTitle();
+      if (title.indexOf('章节测验') !== -1 || title === '视频') return false;
+      var cards = this._getLearningCards();
+      var activeIndex = this._getActiveLearningCardIndex(cards);
+      if (activeIndex > 0) return false;
+      if (activeIndex >= 0 && this._isAssessmentLearningCard(cards[activeIndex])) return false;
+      var tabs = Array.from(document.querySelectorAll('.prev_white'));
+      for (var i = 0; i < tabs.length; i++) {
+        if (!visible(tabs[i])) continue;
+        var tabText = textOf(tabs[i]).replace(/\s+/g, '');
+        if (tabText === '2视频' || tabText === '视频') {
+          this._stepSwitchPending = true;
+          this._stepSwitchAt = Date.now();
+          tabs[i].click();
+          return true;
+        }
+      }
+      return false;
+    },
+
+
+    _bindStepNavigation: function () {
+      if (this._stepNavigationBound) return;
+      this._stepNavigationBound = true;
+
+      document.addEventListener('click', function (event) {
+        var target = event.target && event.target.closest ? event.target.closest([
+          '.prev_white',
+          '#prev_tab .prev_ul li',
+          '#prev_tab li[cardid]',
+          '.prev_list li[cardid]',
+          '.prev_select_con li[cardid]',
+          'li[id^="dct"][cardid]'
+        ].join(',')) : null;
+        if (!target) return;
+        var text = textOf(target).replace(/\s+/g, '');
+        if (!/视频|测验|测试|作业|考试|答题|习题|讨论|资料|文档|阅读/.test(text)) return;
+        app._resetRuntimeState();
+        app._stepSwitchPending = true;
+        app._stepSwitchAt = Date.now();
+        setTimeout(function () {
+          try {
+            app._initCellData();
+          } catch (e) {}
+          app.play();
+        }, Number(app.configs.stepSwitchInitDelayMs || 2200));
+      });
+    },
+
+
+    _initCellData: function () {
+      var tree = this._getTreeContainer();
+      var rootUl = tree ? (tree.querySelector(':scope > ul') || tree.querySelector('ul')) : null;
+      var cells = rootUl ? Array.from(rootUl.children).filter(function (node) { return node.tagName === 'LI'; }) : [];
+      this._cellData.cells = cells.length;
+      this._cellData.nCells = 0;
+      this._cellData.currentCellIndex = 0;
+      this._cellData.currentNCellIndex = 0;
+      this._cellData.currentVideoTitle = '';
+
+      for (var i = 0; i < cells.length; i++) {
+        var nCells = Array.from(cells[i].querySelectorAll('.posCatalog_select:not(.firstLayer)'));
+        this._cellData.nCells += nCells.length;
+        for (var j = 0; j < nCells.length; j++) {
+          if (nCells[j].classList.contains('posCatalog_active')) {
+            this._cellData.currentCellIndex = i;
+            this._cellData.currentNCellIndex = j;
+            var titleSpan = nCells[j].querySelector('.posCatalog_name');
+            this._cellData.currentVideoTitle = titleSpan ? (titleSpan.getAttribute('title') || textOf(titleSpan)) : '';
+          }
+        }
+      }
+    },
+
+
+    _getTreeContainer: function () {
+      if (!this._treeContainerEl) {
+        this._treeContainerEl = document.querySelector('#coursetree');
+      }
+      return this._treeContainerEl;
+    },
+
+    _discussionDoneMap: function () {
+      try {
+        var raw = localStorage.getItem(this._discussionStoreKey);
+        var parsed = raw ? this._safeJsonParse(raw, {}) : {};
+        return parsed && typeof parsed === 'object' ? parsed : {};
+      } catch (e) {
+        return {};
+      }
+    },
+
+
+    _markDiscussionDone: function (key) {
+      try {
+        var map = this._discussionDoneMap();
+        map[key] = Date.now();
+        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
+      } catch (e) {}
+    },
+
+
+    _isDiscussionDone: function (key) {
+      var at = Number(this._discussionDoneMap()[key] || 0);
+      return !!at && Date.now() - at < 24 * 3600 * 1000; // 24 小时内不重复处理
+    },
+
+
+    /**
+     * 撤回"已完成"标记。
+     *
+     * _markDiscussionDone 是先于打开动作写的（防止重复打开同一个讨论页），
+     * 所以一旦发现根本没能打开，必须把这条记录撤掉 ——
+     * 否则该任务点会被静默跳过 24 小时，用户只看到"没做"，日志里毫无线索。
+     */
+    _unmarkDiscussionDone: function (key) {
+      if (!key) return;
+      try {
+        var map = this._discussionDoneMap();
+        if (map[key] === undefined) return;
+        delete map[key];
+        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
+      } catch (e) {}
+    },
+
+
     _discussionNameOf: function (attachment) {
       if (!attachment) return '';
       var property = attachment.property || {};
       return String(property.name || property.title || attachment.name || attachment.title || '');
     },
+
 
     _isDiscussionAttachment: function (attachment) {
       if (!attachment) return false;
@@ -4233,6 +5331,7 @@
       if (/discuss|discus|bbs|topic|forum|thread|talk/i.test(meta)) return true;
       return /讨论|话题|回帖|发帖/.test(this._discussionNameOf(attachment));
     },
+
 
     // 在课程页/同源 iframe 中找讨论任务点的可点击入口（优先带真实链接的 <a>）
     _findDiscussionEntry: function (preferredName) {
@@ -4270,6 +5369,7 @@
       return null;
     },
 
+
     // 当前是不是"讨论上下文"（讨论区页面 / 讨论模块页）。用网址快判，启动即可用，不依赖 DOM 渲染。
     _isDiscussionContext: function () {
       if (this.configs.enableDiscussion === false) return false;
@@ -4279,29 +5379,6 @@
       return this._isDiscussionPage();
     },
 
-    // 遍历文档树（含 iframe 递归，跨域自动跳过），对每个可访问文档执行 cb
-    _walkDocs: function (root, cb) {
-      var self = this;
-      var seen = [];
-      (function walk(doc, depth) {
-        if (!doc || depth > 4) return;
-        if (seen.indexOf(doc) >= 0) return;
-        seen.push(doc);
-        try { cb(doc); } catch (e0) {}
-        var frames = [];
-        try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e1) { return; }
-        for (var i = 0; i < frames.length && i < 12; i++) walk(self._safeDocOf(frames[i]), depth + 1);
-      })(root, 0);
-    },
-
-    _studyDocs: function () {
-      var docs = [];
-      var mainDoc = null;
-      try { mainDoc = this._getMainDocument(); } catch (e0) {}
-      if (mainDoc) docs.push(mainDoc);
-      if (document !== mainDoc) docs.push(document);
-      return docs;
-    },
 
     // 讨论任务点在页面里是卡片 #topicMainDiv，其 data 属性就是讨论区地址（groupweb.chaoxing.com/course/topic/...）
     /**
@@ -4349,6 +5426,7 @@
       return null;
     },
 
+
     /**
      * 讨论任务点的稳定去重键。
      *
@@ -4367,6 +5445,7 @@
       for (var i = 0; i < raw.length; i++) hash = ((hash << 5) + hash + raw.charCodeAt(i)) >>> 0;
       return 'url:' + hash.toString(36);
     },
+
 
     _collectDiscussionTargets: function () {
       var self = this;
@@ -4421,6 +5500,7 @@
       return targets;
     },
 
+
     // 卡片还没渲染时的退路：找讨论模块 iframe（module=insertbbs），它带着 mid / jobid / 标题
     _findDiscussionModuleFrames: function () {
       var self = this;
@@ -4443,6 +5523,7 @@
       return out;
     },
 
+
     _currentStudyParams: function () {
       var raw = '';
       try {
@@ -4460,6 +5541,7 @@
         utenc: pick('utenc')
       };
     },
+
 
     // 从讨论模块 iframe → 内嵌 #frame_content → 取回页面 HTML → 解析出讨论区地址
     _resolveDiscussionUrlFromModule: async function (mod) {
@@ -4498,6 +5580,7 @@
       } catch (e2) {}
       return '';
     },
+
 
     _findDiscussionTask: async function () {
       // 1) 最可靠：页面里已有话题卡片，直接拿到讨论区地址
@@ -4554,6 +5637,7 @@
         url: '', el: entry.node, href: entry.href
       };
     },
+
 
     // 刷课页侧：发现讨论任务点就打开讨论页
     _tryDiscussionTask: async function () {
@@ -4625,6 +5709,7 @@
       }
     },
 
+
     // 刷课页侧：讨论页处理期间暂停推进（避免跳到下一节），关闭或超时后恢复
     _handleDiscussionWait: function () {
       var win = this._discussionWindow;
@@ -4651,6 +5736,7 @@
       return true; // 等待中：本轮不再做其它事
     },
 
+
     _refreshChapterAfterDiscussion: function () {
       var self = this;
       setTimeout(function () {
@@ -4664,6 +5750,7 @@
         try { location.reload(); } catch (e1) {}
       }, 2000);
     },
+
 
     // ---- 讨论页侧 ----
 
@@ -4705,6 +5792,7 @@
       return null;
     },
 
+
     // 回复框可能默认折叠，点"回复"把它展开（只点一次，避免反复触发）
     _expandDiscussionEditor: async function () {
       if (this._discussionExpanded) return;
@@ -4722,6 +5810,7 @@
         await sleep(700);
       }
     },
+
 
     _findDiscussionSubmitButton: function () {
       // 精确优先：学习通讨论区的提交按钮（页面上还有别的"回复"，点错就发不出去）
@@ -4750,6 +5839,7 @@
       return null;
     },
 
+
     _fillDiscussionEditor: function (editor, text) {
       var tag = String(editor.tagName || '').toLowerCase();
       if (tag === 'textarea' || tag === 'input') {
@@ -4766,6 +5856,7 @@
       editor.dispatchEvent(new Event('input', { bubbles: true }));
     },
 
+
     // 记录提交前的回复状态，用于判断本次是否真的发出去了
     _discussionBaseline: function () {
       var info = { count: 0, text: '' };
@@ -4778,6 +5869,7 @@
       } catch (e0) {}
       return info;
     },
+
 
     _discussionSuccessHint: function () {
       var content = String(this.configs.discussionReply || '1').trim();
@@ -4804,6 +5896,7 @@
       return false;
     },
 
+
     _computeDiscussionPage: function () {
       var href = String(location.href || '').toLowerCase();
       var title = '';
@@ -4822,6 +5915,7 @@
       return !!this._findDiscussionEditor() && !!this._findDiscussionSubmitButton();
     },
 
+
     _isDiscussionPage: function () {
       if (this.configs.enableDiscussion === false) return false;
       var now = Date.now();
@@ -4836,6 +5930,7 @@
       this._discussionPageResult = !!this._computeDiscussionPage();
       return this._discussionPageResult;
     },
+
 
     _runDiscussionMode: async function () {
       if (this._discussionBusy) return;
@@ -4921,838 +6016,255 @@
       }
     },
 
-    _isStandaloneCaptchaPage: function () {
-      var now = Date.now();
-      var href = String(location.href || '');
-      if (this._standaloneCaptchaUrl !== href) {
-        this._standaloneCaptchaUrl = href;
-        this._standaloneCaptchaAt = 0;
-        this._standaloneCaptchaResult = false;
-      }
-      if (now - (this._standaloneCaptchaAt || 0) < 1500) return this._standaloneCaptchaResult;
-      this._standaloneCaptchaAt = now;
-      this._standaloneCaptchaResult = this._computeStandaloneCaptchaPage();
-      return this._standaloneCaptchaResult;
-    },
-
-    _runStandaloneCaptchaMode: async function () {
-      if (this._captchaBusy) return;
-      this._captchaBusy = true;
-      emitRuntimeLog('warn', 'standalone captcha page detected, solving', { url: String(location.href || '').slice(0, 120) });
+    _isQuizResultCompletedPage: function () {
+      var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
+      if (!doc) return false;
       try {
-        if (this.configs.enableCaptcha === false) {
-          emitRuntimeLog('info', 'captcha handling disabled by switch', {});
-          return;
-        }
-        for (var attempt = 1; attempt <= 4; attempt++) {
-          var captcha = this._detectStandaloneCaptcha();
-          if (!captcha) {
-            emitRuntimeLog('info', 'standalone captcha elements gone, nothing to solve', {});
-            return;
-          }
-          var rec = await this._recognizeCaptchaImage(captcha.img);
-          if (rec.ok) {
-            this._fillCaptchaInput(captcha, rec.code);
-            await sleep(300);
-            this._clickCaptchaSubmit(captcha);
-            emitRuntimeLog('info', 'standalone captcha code submitted', { attempt: attempt, length: rec.code.length });
-          } else {
-            emitRuntimeLog('error', 'captcha recognize failed', {
-              attempt: attempt,
-              error: String(rec.error || '').slice(0, 160)
-            });
-          }
-
-          await sleep(2600);
-          this._standaloneCaptchaAt = 0; // 强制重新判定，不受节流影响
-          if (!this._isStandaloneCaptchaPage()) {
-            emitRuntimeLog('info', 'standalone captcha solved', {});
-            this._afterStandaloneCaptchaSolved();
-            return;
-          }
-          try { captcha.img.click(); } catch (e2) {} // 识别错/过期就换一张
-          await sleep(700);
-        }
-        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', {});
-        try { window.location.reload(); } catch (e3) {}
-      } finally {
-        this._captchaBusy = false;
-      }
-    },
-
-    // 验证通过后：弹出窗口自动关闭；主标签页则回退，把位置让回学习通继续刷课
-    _afterStandaloneCaptchaSolved: function () {
-      try {
-        if (window.opener && !window.opener.closed) {
-          emitRuntimeLog('info', 'captcha popup solved, closing window', {});
-          try { window.close(); return; } catch (e0) {}
+        var text = doc.body ? textOf(doc.body) : '';
+        if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text)) return false;
+        if (doc.querySelector('.testTit_status_complete')) return true;
+        if (/任务点已完成|已完成|已通过|恭喜/.test(text) &&
+          doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, .answerCon, .answerScore')) {
+          return true;
         }
       } catch (e) {}
-      try {
-        if (history.length > 1) {
-          emitRuntimeLog('info', 'captcha solved, going back to previous page', {});
-          history.back();
-          return;
-        }
-      } catch (e2) {}
-      emitRuntimeLog('info', 'captcha solved, waiting for page redirect', {});
+      return false;
     },
 
-    _handleCaptchaDialog: async function (captcha) {
-      if (this._captchaBusy) return;
-      this._captchaBusy = true;
-      var attempts = this._captchaAttempts || 0;
+
+    _shouldReleaseMediaPendingForCurrentCompletion: function (reason) {
+      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      var media = this._videoEl;
+      if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
+
+      var state = this._getVisibleTaskCompletionState();
+      if (state.hasTasks && state.allFinished) return true;
+
+      if (this._isQuizResultCompletedPage()) return true;
+
+      var mainDoc = this._getMainDocument();
       try {
-        emitRuntimeLog('warn', 'captcha detected, recognizing', { attempt: attempts + 1, match: captcha.why || '' });
-        console.log('%c[Omitone] captcha detected (' + (captcha.why || 'unknown') + '), recognizing...', 'color:#FF9800');
+        var bodyText = mainDoc && mainDoc.body ? textOf(mainDoc.body) : '';
+        if (bodyText && /任务点已完成/.test(bodyText) && !/未完成|待完成/.test(bodyText)) return true;
+      } catch (e) {}
 
-        var dataUrl = this._captureCaptchaImage(captcha.img);
-        if (!dataUrl) {
-          var absUrl = this._resolveImageUrl(captcha.img);
-          if (absUrl) {
-            var fetched = await bridgeSend('fetch_image', { url: absUrl });
-            if (fetched && fetched.success && fetched.dataUrl) dataUrl = fetched.dataUrl;
-          }
-        }
-        if (!dataUrl) {
-          emitRuntimeLog('error', 'captcha image capture failed', {});
-          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
-          if (this._captchaFailCount >= 3) {
-            this._captchaFailCount = 0;
-            this._captchaReload();
-          }
-          return;
-        }
+      return false;
+    },
 
-        var result = await bridgeSend('llm_captcha', { image: dataUrl });
-        if (!result || !result.success) {
-          var errText = String((result && result.error) || '无响应').slice(0, 200);
-          var hint = /API Key/i.test(errText) ? '（未配置 API Key：验证码识别独立于 AI 答题开关，只需在 popup 填好 API Key 和视觉模型）'
-            : /image|multimodal|vision|not support|unsupported|400|415/i.test(errText) ? '（当前模型可能不支持图片输入：请在 popup 的"验证码识别模型"里填写视觉模型，如 gemini-2.5-flash / qwen-vl-max / gpt-4o-mini）'
-            : '';
-          emitRuntimeLog('error', 'captcha recognize failed', {
-            error: errText,
-            hint: hint
+
+    /**
+     * 作业/考试提交之后，页面会翻成一张**判分结果页**：
+     * 每道题下面多出「我的答案 / 正确答案 / 本题得分」。
+     *
+     * 为什么单列一条判据（现场故障）：`_isDocumentFrameFinished` 认的是
+     * `.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete`
+     * 和父层 wrapper 的「任务点已完成」文本 —— 这套标记是**课程章节页**的。
+     * 作业结果页往往只有 `.Py_answer` 那一族，于是四条都不命中，
+     * `_isQuizPassedOrFinished` 恒为 false → `_monitorQuizSubmit` 一直 hold →
+     * 25 秒后超时、整页重载、重新扫描、重新答题、重新提交。
+     * 用户看到的就是"题目一直扫描，AI 重复提交"。
+     *
+     * 三条判据**同时**成立才算完成，宁可漏判也不要误判
+     * （误判 = 把没交的卷当已完成，直接跳过这个任务点）：
+     *   ① 出现判分痕迹（我的答案/正确答案/得分/解析）
+     *   ② 题目控件已不可交互（input 全 disabled）或题目容器已消失
+     *   ③ 不含重做文案
+     */
+    _isQuizResultPageFinished: function (doc) {
+      try {
+        if (!doc || !doc.body) return false;
+        var text = textOf(doc.body);
+        if (!text) return false;
+        // ③ 重做文案一票否决：这是"没通过、要重做"，绝不能算完成
+        if (/未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text)) return false;
+
+        // ① 判分痕迹：学习通结果页的标志性结构
+        var hasGradeMark = false;
+        if (doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer')) {
+          hasGradeMark = true;
+        } else if (/我的答案|正确答案|本题得分|答案解析/.test(text)) {
+          hasGradeMark = true;
+        }
+        if (!hasGradeMark) return false;
+
+        // ② 已不可交互：题目区被结果区替换，或所有控件都 disabled
+        var containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox');
+        if (!containers.length) return true;
+
+        var controls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
+        if (!controls.length) return true;
+        for (var i = 0; i < controls.length; i++) {
+          if (!controls[i].disabled) return false; // 还有能点的 → 结果页尚未落地
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
+     * 视觉预算闸门 —— 这是整个视觉功能里**最重要的安全阀**。
+     *
+     * 用户能接受「刷不了课」，不能接受「花了钱还是不行」。所以要保证：
+     * 无论配置写错、页面版式异常、还是某道题反复触发，都不可能无限发请求。
+     *
+     * 返回 true = 允许再发一次；false = 预算耗尽，必须停。
+     * 耗尽时**必定写一条 warn 日志**，绝不静默 —— 静默烧钱是最糟的失败方式。
+     */
+    _takeVisionBudget: function (chapterKey) {
+      if (!this.configs.visionEnabled) return false;
+      var key = String(chapterKey || 'unknown');
+      if (this._visionBudgetChapterKey !== key) {
+        // 换章即重置。不清零的话，一学期下来后面所有章节都用不了视觉。
+        this._visionBudgetChapterKey = key;
+        this._visionUsedInChapter = 0;
+      }
+      var cap = Number(this.configs.visionBudgetPerChapter);
+      if (!isFinite(cap) || cap < 0) cap = 0;
+      if (this._visionUsedInChapter >= cap) {
+        // 同一章只提醒一次，否则每道题刷一条，日志会被淹掉
+        if (this._visionBudgetWarnedKey !== key) {
+          this._visionBudgetWarnedKey = key;
+          emitRuntimeLog('warn', 'vision budget exhausted for this chapter, images will be ignored', {
+            used: this._visionUsedInChapter,
+            cap: cap,
+            chapter: key
           });
-          console.warn('[Omitone] captcha recognize failed:', errText, hint);
-          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
-          if (this._captchaFailCount >= 3) {
-            this._captchaFailCount = 0;
-            this._captchaReload();
-          }
-          return;
         }
-
-        var code = this._cleanCaptchaCode(result.data);
-        if (!code) {
-          emitRuntimeLog('error', 'captcha code empty after clean', { raw: String(result.data || '').slice(0, 60) });
-          this._captchaFailCount = (this._captchaFailCount || 0) + 1;
-          if (this._captchaFailCount >= 3) {
-            this._captchaFailCount = 0;
-            this._captchaReload();
-          }
-          return;
-        }
-
-        emitRuntimeLog('info', 'captcha code filled', { length: code.length });
-        this._fillCaptchaInput(captcha, code);
-        await sleep(400);
-        this._clickCaptchaSubmit(captcha);
-
-        await sleep(2500);
-        var stillThere = this._checkCaptchaDialog();
-        if (!stillThere) {
-          emitRuntimeLog('info', 'captcha solved, continue', {});
-          this._captchaAttempts = 0;
-          this._captchaFailCount = 0;
-          this._captchaActive = false;
-          return;
-        }
-        this._captchaAttempts = attempts + 1;
-        if (this._captchaAttempts >= 3) {
-          this._captchaAttempts = 0;
-          emitRuntimeLog('warn', 'captcha wrong too many times, reload page', {});
-          this._captchaReload();
-        } else {
-          emitRuntimeLog('warn', 'captcha seems wrong, will retry with new image', { attempt: this._captchaAttempts });
-          try { captcha.img.click(); } catch (e2) {}
-        }
-      } finally {
-        this._captchaBusy = false;
-      }
-    },
-
-    _backgroundCaptchaTick: function () {
-      if (this._captchaBusy) return;
-      var captcha = this._checkCaptchaDialog();
-      if (captcha) {
-        var self = this;
-        this._handleCaptchaDialog(captcha).catch(function () {
-          self._captchaBusy = false;
-        });
-      }
-    },
-
-    _checkVideoStatus: function () {
-      try {
-        var video = this._getVideoEl();
-        if (!video) return;
-        this._ensurePlaybackRate(video, 'guard');
-        this._trySeekToEnd(video, 'guard');
-
-        if (video.paused && this._isPlaying && !this._captchaActive) {
-          this._tryResumePlayback('paused');
-        } else if (this._isPlaying && !video.ended) {
-          var now = Date.now();
-          var current = Number(video.currentTime || 0);
-          if (this._guardLastWallTs === 0) {
-            this._guardLastWallTs = now;
-            this._guardLastTime = current;
-          } else {
-            var stalled = Math.abs(current - this._guardLastTime) < 0.01;
-            var stalledMs = now - this._guardLastWallTs;
-            if (stalled && stalledMs >= this.configs.guardNoProgressMs) {
-              this._tryResumePlayback('no-progress');
-              this._guardLastWallTs = now;
-              this._guardLastTime = Number(video.currentTime || 0);
-            } else if (!stalled) {
-              this._guardLastWallTs = now;
-              this._guardLastTime = current;
-            }
-          }
-        }
-
-        // 防拖拽 + 倍速锁 1x 的视频：平台只要求 ≥90%，平台标记完成后就别再白等最后 10%
-        if (!video.ended && this._isPlaying && this._shouldAdvanceAtNinetyPercent(video)) {
-          this._finishCurrentMedia('ninety-percent');
-          return;
-        }
-
-        if (video.ended && this._isPlaying) {
-          this._finishCurrentMedia('guard');
-        }
-      } catch (e) {}
-    },
-
-    /**
-     * 当前视频"播完了"的统一收尾。
-     *
-     * 两条路径共用：正常的 `ended`，以及「防拖拽 + 锁 1 倍速」的视频到 90% 且平台已标记完成。
-     * 抽出来是为了不让两条路各写一份 —— 收尾漏掉一个字段（比如 `_activeMediaJobManaged`）
-     * 会让状态机卡住，而症状是"这个任务点过了但下一个不动"，很难查。
-     */
-    _finishCurrentMedia: function (reason) {
-      this._clearCheckInterval();
-      if (this._activeMediaJobManaged) {
-        this._isPlaying = false;
-        this._activeMediaJobPending = false;
-        this._activeMediaJobManaged = false;
-        this._videoEl = null;
-        this._videoCount = 0;
-        this._currentVideoIndex = 0;
-        this._mediaWaitLogAt = 0;
-        emitRuntimeLog('info', 'managed media job ended', { reason: reason || 'guard', jobid: this._activeJobId || '' });
-        return;
-      }
-      if (this._videoCount > 1 && this._currentVideoIndex + 1 < this._videoCount) {
-        this._currentVideoIndex++;
-        this._videoEl = null;
-        this._activeMediaJobPending = true;
-        this._mediaWaitLogAt = 0;
-        return;
-      }
-      this._isPlaying = false;
-      this._activeMediaJobPending = false;
-      this._mediaWaitLogAt = 0;
-      this.nextUnit();
-    },
-
-    // 倍速是否被平台锁在 1 倍速。探测没结果（0）时一律当作"没锁定" ——
-    // 宁可多播一会儿，也不要在没确认的情况下提前结束。
-    _isRateLockedAtOne: function () {
-      var rate = Number(this._detectedMaxRate);
-      return isFinite(rate) && rate > 0 && rate <= 1.001;
-    },
-
-    /**
-     * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
-     *
-     * 判据是两个"平台不让我们加速"的信号**同时**成立：
-     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
-     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
-     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
-     */
-    _isNinetyPercentVideo: function (video) {
-      if (!video) return false;
-      if (String(video.tagName || '').toLowerCase() !== 'video') return false; // 音频不适用
-      if (!this._isRateLockedAtOne()) return false;
-      var key = this._getMediaSeekKey(video);
-      if (!key) return false;
-      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
-    },
-
-    /**
-     * 该不该在播到 90% 时提前收尾。
-     *
-     * 最关键的一条：**必须由平台自己给出"任务点已完成"的标记**。
-     * 只按"播够 90% 就当作完成"会误跳过任务点，比多花十分钟严重得多 ——
-     * 这与本仓库对"拿不准"的一贯取舍一致（见 `_isJobCompleted` 的说明）。
-     */
-    _shouldAdvanceAtNinetyPercent: function (video) {
-      try {
-        if (this.configs.advanceAtNinetyPercent === false) return false;
-        if (!this._isNinetyPercentVideo(video)) return false;
-
-        var duration = Number(video.duration);
-        if (!isFinite(duration) || duration <= 0) return false;
-        var ratio = Number(video.currentTime || 0) / duration;
-        if (!(ratio >= 0.9)) return false;  // 还没到 90%
-        if (ratio >= 0.995) return false;   // 已到结尾，交给 ended 那条路，避免两条路抢
-
-        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false; // 平台没确认完成就不动
-
-        emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
-          ratio: Number(ratio.toFixed(3)),
-          duration: Number(duration.toFixed(1)),
-          jobid: this._activeJobId || ''
-        });
-        console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
-          '%，平台已标记完成，直接进下一个', 'color:#4CAF50');
-        return true;
-      } catch (e) {
         return false;
       }
-    },
-
-    _tryResumePlayback: function (reason) {
-      var now = Date.now();
-      if (now - this._guardLastResumeTs < this.configs.guardResumeCooldownMs) return;
-
-      if (!this._resumeWindowStart || now - this._resumeWindowStart > this.configs.guardMaxResumeWindow) {
-        this._resumeWindowStart = now;
-        this._resumeAttemptCount = 0;
-      }
-      if (this._resumeAttemptCount >= this.configs.guardMaxResumes) return;
-
-      this._resumeAttemptCount++;
-      this._guardLastResumeTs = now;
-
-      var video = this._getVideoEl();
-      if (!video || !this._isPlaying) return;
-      this._ensurePlaybackRate(video, reason || 'resume');
-      video.play().catch(function () {
-        video.muted = true;
-        video.play().catch(function () {});
-      });
-    },
-
-    _getLearningCards: function () {
-      var cards = [];
-      try {
-        cards = Array.from(document.querySelectorAll([
-          '#prev_tab .prev_ul li',
-          '#prev_tab li[cardid]',
-          '#prev_tab li[onclick*="changeDisplayContent"]',
-          '.prev_list .prev_ul li',
-          '.prev_list li[cardid]',
-          '.prev_list li[onclick*="changeDisplayContent"]',
-          '.prev_select_con li[cardid]',
-          '.prev_select_con li[onclick*="changeDisplayContent"]',
-          'li[id^="dct"][cardid]',
-          'li[id^="dct"][onclick*="changeDisplayContent"]'
-        ].join(',')));
-      } catch (e) {}
-
-      var seen = [];
-      var self = this;
-      return cards.filter(function (card) {
-        if (!card || card.tagName !== 'LI') return false;
-        if (seen.indexOf(card) !== -1) return false;
-        seen.push(card);
-        var marker = String((card.getAttribute && (card.getAttribute('cardid') || card.getAttribute('onclick') || card.id)) || '');
-        var text = self._getLearningCardText(card);
-        if (!marker && !/视频|测验|测试|作业|考试|答题|习题|讨论|资料|文档|阅读/.test(text)) return false;
-        return true;
-      });
-    },
-
-    _getLearningCardText: function (card) {
-      if (!card) return '';
-      return [
-        textOf(card),
-        card.getAttribute ? (card.getAttribute('title') || '') : '',
-        card.getAttribute ? (card.getAttribute('aria-label') || '') : ''
-      ].join(' ').replace(/\s+/g, '');
-    },
-
-    _getActiveLearningCardIndex: function (cards) {
-      for (var i = 0; i < cards.length; i++) {
-        var cls = String(cards[i].className || '');
-        if (/\bactive\b/.test(cls)) return i;
-        if (cards[i].getAttribute && String(cards[i].getAttribute('aria-selected') || '') === 'true') return i;
-        if (cards[i].querySelector && cards[i].querySelector('.active, .on, .current, [aria-selected="true"]')) return i;
-      }
-
-      var currentType = this._getCurrentVisibleLearningTaskType();
-      if (currentType) {
-        for (var j = 0; j < cards.length; j++) {
-          var text = this._getLearningCardText(cards[j]);
-          if (currentType === 'video' && /视频|学习视频/.test(text)) return j;
-          if (currentType === 'quiz' && this._isAssessmentLearningCard(cards[j])) return j;
-        }
-      }
-      return -1;
-    },
-
-    _getCurrentVisibleLearningTaskType: function () {
-      try {
-        var tasks = this._collectVisibleTaskFrames();
-        for (var i = 0; i < tasks.length; i++) {
-          if (tasks[i] && !tasks[i].finished && tasks[i].type) return tasks[i].type;
-        }
-        for (var j = 0; j < tasks.length; j++) {
-          if (tasks[j] && tasks[j].type) return tasks[j].type;
-        }
-      } catch (e) {}
-
-      var video = this._getVideoEl();
-      if (video) return 'video';
-      if (this._detectQuiz()) return 'quiz';
-      return '';
-    },
-
-    _isAssessmentLearningCard: function (card) {
-      var text = this._getLearningCardText(card);
-      return /测验|测试|作业|考试|答题|习题/.test(text);
-    },
-
-    _looksLikeVideoLearningCard: function (card) {
-      return /视频|学习视频/.test(this._getLearningCardText(card));
-    },
-
-    _findFallbackNextLearningCardIndex: function (cards) {
-      if (!cards || cards.length <= 1) return -1;
-
-      var videoIndex = -1;
-      for (var i = 0; i < cards.length; i++) {
-        if (videoIndex < 0 && this._looksLikeVideoLearningCard(cards[i])) videoIndex = i;
-        if (this._isAssessmentLearningCard(cards[i])) {
-          if (videoIndex >= 0 && i > videoIndex) return i;
-        }
-      }
-
-      var currentTitle = this._getCurrentTitle();
-      if (!/测验|测试|作业|考试|答题|习题/.test(currentTitle)) {
-        for (var j = 0; j < cards.length; j++) {
-          if (this._isAssessmentLearningCard(cards[j])) return j;
-        }
-      }
-      return -1;
-    },
-
-    _switchToNextLearningCard: function (reason) {
-      var cards = this._getLearningCards();
-      if (cards.length <= 1) return false;
-
-      var activeIndex = this._getActiveLearningCardIndex(cards);
-      var targetIndex = activeIndex >= 0 && activeIndex < cards.length - 1 ? activeIndex + 1 : this._findFallbackNextLearningCardIndex(cards);
-      if (targetIndex < 0 || targetIndex >= cards.length) return false;
-      if (activeIndex >= 0 && targetIndex === activeIndex) return false;
-
-      var now = Date.now();
-      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) {
-        return true;
-      }
-
-      var nextCard = cards[targetIndex];
-      if (!nextCard) return false;
-
-      this._lastLearningTabSwitchAt = now;
-      this._clearMediaPendingState('switch-learning-card');
-
-      try {
-        var clickTarget = nextCard.querySelector ? (nextCard.querySelector('.prev_white, a, [role="option"], [role="button"]') || nextCard) : nextCard;
-        try { clickTarget.click(); } catch (clickErr) { nextCard.click(); }
-        emitRuntimeLog('info', 'switch learning card before next unit', {
-          reason: reason || '',
-          from: activeIndex + 1,
-          to: targetIndex + 1,
-          text: this._getLearningCardText(nextCard)
-        });
-      } catch (e) {
-        return false;
-      }
-
-      this._resetRuntimeState();
-      this._lastLearningTabSwitchAt = now;
-      this._stepSwitchPending = true;
-      this._stepSwitchAt = now;
-
-      var self = this;
-      setTimeout(function () {
-        try {
-          self._initCellData();
-          self.play();
-        } catch (e2) {}
-      }, Number(this.configs.stepSwitchInitDelayMs || 2200));
-
+      this._visionUsedInChapter++;
       return true;
     },
 
-    nextUnit: function () {
-      if (!this._assertActive()) return;
-      if (!this.configs.autoNext) return;
-      if (this._isActiveMediaPending('next-unit')) return;
-      if (!this._isQuizForceSkipping() && this._shouldHoldQuizBeforeNext('next-unit')) return;
-      if (this._switchToNextLearningCard('next-unit')) return;
-      this._dismissPopups();
-      try {
-        var nextButton = document.querySelector('#prevNextFocusNext');
-        if (nextButton) nextButton.click();
-      } catch (e) {}
-      this._resetRuntimeState();
-    },
-
-    _advanceLearningStep: function () {
-      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) return true;
-      var title = this._getCurrentTitle();
-      if (title.indexOf('章节测验') !== -1 || title === '视频') return false;
-      var cards = this._getLearningCards();
-      var activeIndex = this._getActiveLearningCardIndex(cards);
-      if (activeIndex > 0) return false;
-      if (activeIndex >= 0 && this._isAssessmentLearningCard(cards[activeIndex])) return false;
-      var tabs = Array.from(document.querySelectorAll('.prev_white'));
-      for (var i = 0; i < tabs.length; i++) {
-        if (!visible(tabs[i])) continue;
-        var tabText = textOf(tabs[i]).replace(/\s+/g, '');
-        if (tabText === '2视频' || tabText === '视频') {
-          this._stepSwitchPending = true;
-          this._stepSwitchAt = Date.now();
-          tabs[i].click();
-          return true;
-        }
-      }
-      return false;
-    },
-
-    _bindStepNavigation: function () {
-      if (this._stepNavigationBound) return;
-      this._stepNavigationBound = true;
-
-      document.addEventListener('click', function (event) {
-        var target = event.target && event.target.closest ? event.target.closest([
-          '.prev_white',
-          '#prev_tab .prev_ul li',
-          '#prev_tab li[cardid]',
-          '.prev_list li[cardid]',
-          '.prev_select_con li[cardid]',
-          'li[id^="dct"][cardid]'
-        ].join(',')) : null;
-        if (!target) return;
-        var text = textOf(target).replace(/\s+/g, '');
-        if (!/视频|测验|测试|作业|考试|答题|习题|讨论|资料|文档|阅读/.test(text)) return;
-        app._resetRuntimeState();
-        app._stepSwitchPending = true;
-        app._stepSwitchAt = Date.now();
-        setTimeout(function () {
-          try {
-            app._initCellData();
-          } catch (e) {}
-          app.play();
-        }, Number(app.configs.stepSwitchInitDelayMs || 2200));
-      });
-    },
-
-    _initCellData: function () {
-      var tree = this._getTreeContainer();
-      var rootUl = tree ? (tree.querySelector(':scope > ul') || tree.querySelector('ul')) : null;
-      var cells = rootUl ? Array.from(rootUl.children).filter(function (node) { return node.tagName === 'LI'; }) : [];
-      this._cellData.cells = cells.length;
-      this._cellData.nCells = 0;
-      this._cellData.currentCellIndex = 0;
-      this._cellData.currentNCellIndex = 0;
-      this._cellData.currentVideoTitle = '';
-
-      for (var i = 0; i < cells.length; i++) {
-        var nCells = Array.from(cells[i].querySelectorAll('.posCatalog_select:not(.firstLayer)'));
-        this._cellData.nCells += nCells.length;
-        for (var j = 0; j < nCells.length; j++) {
-          if (nCells[j].classList.contains('posCatalog_active')) {
-            this._cellData.currentCellIndex = i;
-            this._cellData.currentNCellIndex = j;
-            var titleSpan = nCells[j].querySelector('.posCatalog_name');
-            this._cellData.currentVideoTitle = titleSpan ? (titleSpan.getAttribute('title') || textOf(titleSpan)) : '';
-          }
-        }
-      }
-    },
-
-    _getTreeContainer: function () {
-      if (!this._treeContainerEl) {
-        this._treeContainerEl = document.querySelector('#coursetree');
-      }
-      return this._treeContainerEl;
-    },
-
-    _getVideoEl: function (index) {
-      var idx = typeof index === 'number' ? index : this._currentVideoIndex;
-      var self = this;
-      if (!this._videoEl) {
-        function findVideos(doc, depth) {
-          if (!doc || depth > 4) return { visible: [], hiddenAudio: [] };
-          var all = Array.from(doc.querySelectorAll('video, audio'));
-          var vis = all.filter(self._isVisibleMedia);
-          var hiddenAudio = all.filter(function (media) {
-            return String(media.tagName || '').toLowerCase() === 'audio' && !self._isVisibleMedia(media);
-          });
-          var frames = Array.from(doc.querySelectorAll('iframe'));
-          for (var i = 0; i < frames.length; i++) {
-            try {
-              var subDoc = frames[i].contentDocument || (frames[i].contentWindow && frames[i].contentWindow.document);
-              var sub = findVideos(subDoc, depth + 1);
-              vis = vis.concat(sub.visible);
-              hiddenAudio = hiddenAudio.concat(sub.hiddenAudio);
-            } catch (e) {}
-          }
-          return { visible: vis, hiddenAudio: hiddenAudio };
-        }
-
-        try {
-          var doc = this._getMainDocument();
-          var found = doc ? findVideos(doc, 0) : findVideos(document, 0);
-          // 优先可见媒体，其次隐藏的音频（音频任务点常把 <audio> 藏起来）
-          var allVideos = found.visible.length ? found.visible : found.hiddenAudio;
-          if (allVideos.length === 0) return null;
-          this._videoCount = allVideos.length;
-          this._videoEl = allVideos[Math.min(idx, allVideos.length - 1)];
-        } catch (e2) {
-          return null;
-        }
-      }
-      return this._videoEl;
-    },
-
-    _videoEventHandle: function () {
-      var el = this._videoEl;
-      if (!el) return;
-
-      try {
-        if (this._onVideoEnded) el.removeEventListener('ended', this._onVideoEnded);
-        if (this._onVideoLoaded) el.removeEventListener('loadedmetadata', this._onVideoLoaded);
-        if (this._onVideoPlay) el.removeEventListener('play', this._onVideoPlay);
-        if (this._onVideoPause) el.removeEventListener('pause', this._onVideoPause);
-        if (this._onVideoRateChange) el.removeEventListener('ratechange', this._onVideoRateChange);
-        if (this._onVideoError) el.removeEventListener('error', this._onVideoError);
-      } catch (e) {}
-
-      this._onVideoEnded = this._handleVideoEnded.bind(this);
-      this._onVideoLoaded = this._handleVideoLoaded.bind(this);
-      this._onVideoPlay = this._handleVideoPlay.bind(this);
-      this._onVideoPause = this._handleVideoPause.bind(this);
-      this._onVideoRateChange = this._handleVideoRateChange.bind(this);
-      this._onVideoError = this._handleMediaError.bind(this);
-
-      el.addEventListener('ended', this._onVideoEnded);
-      el.addEventListener('loadedmetadata', this._onVideoLoaded);
-      el.addEventListener('play', this._onVideoPlay);
-      el.addEventListener('pause', this._onVideoPause);
-      el.addEventListener('ratechange', this._onVideoRateChange);
-      el.addEventListener('error', this._onVideoError);
-    },
-
-    // 媒体元素报错（1 中止 / 2 网络 / 3 解码失败 / 4 格式或 MIME 不支持）
-    // 之前完全没有这个监听，m4a 之类的格式问题永远不会被发现
-    _handleMediaError: function (event) {
-      var el = event && event.target ? event.target : this._getVideoEl();
-      if (!el) return;
-      var code = el.error ? el.error.code : 0;
-      var message = el.error ? String(el.error.message || '') : '';
-      var src = String(el.currentSrc || el.src || '');
-      emitRuntimeLog('error', 'media error', {
-        code: code,
-        message: message.slice(0, 120),
-        src: src.slice(-80),
-        tag: String(el.tagName || '').toLowerCase()
-      });
-
-      // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED（m4a、服务器 MIME 不对最常见），3 = 解码失败
-      if (code === 4 || code === 3) {
-        var self = this;
-        this._maybeRepairMediaSource(el).then(function (ok) {
-          emitRuntimeLog(ok ? 'info' : 'error', ok ? 'media source repaired (m4a/mime fallback), replaying' : 'media source repair failed', {
-            src: src.slice(-80)
-          });
-        }).catch(function () {});
-      }
-    },
-
-    _guessMediaMime: function (url) {
-      var u = String(url || '').toLowerCase().split('?')[0];
-      if (/\.m3u8$/.test(u)) return '';
-      if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
-      if (/\.mp3$/.test(u)) return 'audio/mpeg';
-      if (/\.ogg$|\.oga$/.test(u)) return 'audio/ogg';
-      if (/\.wav$/.test(u)) return 'audio/wav';
-      if (/\.webm$/.test(u)) return 'audio/webm';
-      if (/\.mp4$|\.m4v$/.test(u)) return 'video/mp4';
-      return 'audio/mp4'; // 学习通音频多为 m4a（AAC）
-    },
-
-    // 音源不受支持时的兜底：把音频文件取回来，用正确的 MIME 重新封装成 Blob 再播。
-    // 全程在页面内完成（不经过扩展消息），避免大文件传输。
-    _maybeRepairMediaSource: async function (media) {
-      try {
-        if (!media) return false;
-        var src = String(media.currentSrc || media.src || '');
-        if (!src || /^blob:/i.test(src)) return false;
-        if (/\.m3u8/i.test(src)) return false; // HLS 由播放器自己处理，不能这样补救
-
-        if (!this._mediaRepaired) this._mediaRepaired = Object.create(null);
-        if (this._mediaRepaired[src]) return false;
-        this._mediaRepaired[src] = true; // 每个源只补救一次，避免死循环
-
-        var response = await fetch(src, { credentials: 'include' });
-        if (!response || !response.ok) return false;
-        var buf = await response.arrayBuffer();
-        if (!buf || buf.byteLength < 1024) return false;
-
-        var type = this._guessMediaMime(src);
-        var blob = new Blob([buf], { type: type });
-        var objectUrl = URL.createObjectURL(blob);
-        var resumeAt = Number(media.currentTime || 0);
-
-        media.src = objectUrl;
-        media.load();
-        await new Promise(function (resolve) {
-          var done = false;
-          var finish = function () {
-            if (!done) { done = true; resolve(); }
-          };
-          media.addEventListener('canplay', finish, { once: true });
-          media.addEventListener('error', finish, { once: true });
-          setTimeout(finish, 8000);
-        });
-
-        if (resumeAt > 0) {
-          try { media.currentTime = resumeAt; } catch (e0) {}
-        }
-        this._ensurePlaybackRate(media, 'repair');
-        await this._withTimeout(media.play(), 12000);
-        return true;
-      } catch (e) {
-        return false;
-      }
-    },
 
     /**
-     * `ended` 事件的处理。收尾逻辑与 `_checkVideoStatus` 那条路**完全一致**，
-     * 所以统一走 `_finishCurrentMedia`。
+     * 从题目容器里挑出「值得发给视觉模型」的图。
      *
-     * 这里原本多清了三个字段（`_activeDocumentJobPending` / `_activeDocumentJobManaged` /
-     * `_activeDocumentJobDoc`），已经确认那是**过界的**，理由有三条：
-     *   1) `nextUnit()` 末尾会调 `_resetRuntimeState()`，那些字段本来就会被清掉 ——
-     *      正常路径下多清一次是纯冗余；
-     *   2) 只有在 `nextUnit()` **提前返回**时（典型是 `autoNext:false`）才有差别，
-     *      而那时清掉它们等于**放弃一个可能正在进行的文档任务点** —— 正是本仓库
-     *      最怕的"静默漏做"。不清才是对的；
-     *   3) 对称：文档任务点完成时（约 2607 行）只清文档自己的状态，不去动媒体状态。
-     *      媒体这边同理，只管媒体。
-     * 万一真的残留了过期的文档状态，文档那条路自己有 `document stuck timeout` 会兜住。
+     * 全部判据都是为了让每一张发出的图都可能真的值一次钱：
+     *   - 忽略小图：图标 / 分隔线 / 表情（通常 < 64px，模型看了也说不出东西）
+     *   - 忽略透明/空白图：装饰性资源
+     *   - 超过体积上限的直接跳过（配置项 visionMaxImageBytes）
+     *   - 张数上限 visionMaxImagesPerQuestion
+     *   - 去重：同一张图在题干和选项里各出现一次时只发一次
+     *
+     * 返回 dataURL 数组（可能为空数组，调用方必须处理空的情况）。
      */
-    _handleVideoEnded: function () {
-      this._finishCurrentMedia('event');
-    },
+    _collectQuestionImages: function (el) {
+      var out = [];
+      if (!el || !this.configs.visionEnabled) return out;
+      var maxImages = Number(this.configs.visionMaxImagesPerQuestion);
+      if (!isFinite(maxImages) || maxImages < 1) return out;
+      var maxBytes = Number(this.configs.visionMaxImageBytes);
+      if (!isFinite(maxBytes) || maxBytes <= 0) maxBytes = 400000;
 
-    _handleVideoLoaded: function (event) {
-      this._resetRateDetection();
-      var loadedVideo = event && event.target ? event.target : this._getVideoEl();
-      this._ensurePlaybackRate(loadedVideo, 'loadedmetadata');
-      this._trySeekToEnd(loadedVideo, 'loadedmetadata');
-    },
+      var imgs = [];
+      try { imgs = Array.from(el.querySelectorAll('img')) } catch (e) { return out; }
 
-    _handleVideoPlay: function () {
-      this._isPlaying = true;
-      this._stepSwitchPending = false;
-      this._resumeWindowStart = 0;
-      this._resumeAttemptCount = 0;
-      this._syncAudioKeepalive();
-      var video = this._getVideoEl();
-      this._ensurePlaybackRate(video, 'play');
-      this._guardLastTime = Number((video && video.currentTime) || 0);
-      this._guardLastWallTs = Date.now();
-      if (this._delayedNextUnitTimer) {
-        clearTimeout(this._delayedNextUnitTimer);
-        this._delayedNextUnitTimer = null;
-      }
-    },
-
-    _handleVideoPause: function (event) {
-      // pause 事件的派发不受后台定时器节流影响：视频被网站/浏览器在后台暂停时立即安排恢复
-      var video = event && event.target ? event.target : this._getVideoEl();
-      if (!video || video.ended || !this._isPlaying) return;
-      if (this._rateProbing) return;
-      if (this._pauseResumePending) return;
-
-      var self = this;
-      this._pauseResumePending = true;
-      this._workerDelay(function () {
-        self._pauseResumePending = false;
-        var current = self._getVideoEl() || video;
-        if (!current || current.ended || !self._isPlaying || !current.paused) return;
-        // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
+      var seen = {};
+      for (var i = 0; i < imgs.length && out.length < maxImages; i++) {
+        var img = imgs[i];
         try {
-          if (self._captchaActive || self._checkCaptchaDialog()) return;
-          // ⚠️ 这里必须用 _popupQuizBlocksPlayback 而不是 _activePopupBlock：
-          // 后者在"刚答完的静默期"里会返回 null（那是给"要不要再问模型"用的），
-          // 但弹窗其实还挂在页面上、视频正是被它有意暂停的。用错就会去抢恢复播放、
-          // 和站点对打 —— 现场表现是"答完弹题后视频不动，看着像卡死"。
-          if (self._popupQuizBlocksPlayback && self._popupQuizBlocksPlayback()) return;
-          if (self._checkSubmitConfirmDialog && self._checkSubmitConfirmDialog()) return;
-        } catch (e) {}
-        var duration = Number(current.duration || 0);
-        if (duration && Number(current.currentTime || 0) >= duration - 0.5) return;
+          // 尺寸闸门：未加载完的图 naturalWidth 为 0，直接跳过（发出去也是浪费）
+          var w = Number(img.naturalWidth || 0);
+          var h = Number(img.naturalHeight || 0);
+          if (w < 64 || h < 64) continue;
+          if (w * h > 4000000) continue; // 超过 400 万像素的图多半是整页扫描件，不划算
 
-        emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
-          hidden: !!(document.hidden || document.visibilityState === 'hidden'),
-          time: Math.round(Number(current.currentTime || 0))
-        });
-        var resumed = current.play();
-        if (resumed && typeof resumed.then === 'function') {
-          resumed.then(function () {
-            self._ensurePlaybackRate(current, 'pause-resume');
-          }).catch(function () {
-            try {
-              current.muted = true;
-              current.play().catch(function () {});
-            } catch (e1) {}
-          });
-        }
-      }, 600);
-    },
-
-    _handleVideoRateChange: function (event) {
-      this._ensurePlaybackRate(event && event.target ? event.target : this._getVideoEl(), 'ratechange');
-    },
-
-    _walkDocuments: function (visitor, startDoc, depth) {
-      var doc = startDoc || document;
-      var level = typeof depth === 'number' ? depth : 0;
-      if (!doc || level > 4) return false;
-      if (visitor(doc)) return true;
-
-      var iframes = [];
-      try {
-        iframes = doc.querySelectorAll('iframe');
-      } catch (e) {}
-
-      for (var i = 0; i < iframes.length; i++) {
-        try {
-          var subDoc = iframes[i].contentDocument || (iframes[i].contentWindow && iframes[i].contentWindow.document);
-          if (this._walkDocuments(visitor, subDoc, level + 1)) return true;
+          var src = String(img.currentSrc || img.src || '');
+          if (!src || src.indexOf('data:') === 0) {
+            // 已经是 dataURL（平台用 base64 内联时常见）—— 直接量长度判断体积
+            if (src.indexOf('data:image/') === 0) {
+              if (src.length > maxBytes * 1.4) continue;
+              if (!seen[src]) { seen[src] = 1; out.push(src); }
+            }
+            continue;
+          }
+          var abs = this._resolveImageUrl(img);
+          if (!abs || seen[abs]) continue;
+          seen[abs] = 1;
+          out.push(abs);
         } catch (e2) {}
       }
-      return false;
+      return out;
     },
+
+
+    /**
+     * 给一批题目补上「配图转述」。
+     *
+     * 设计要点：
+     *   - **只处理真的有图、且过得了尺寸闸门的题**：没有图的题一次请求都不发。
+     *     这既省钱，也避免把「无图」退化成一次白花的调用。
+     *   - 逐题串行、限量处理。并发发图很容易瞬间打满预算，
+     *     而限额是这套功能里唯一的硬保险，不能被并发绕过。
+     *   - 单题失败不影响其他题，也绝不影响整卷作答。
+     *
+     * 全程受 visionEnabled / visionMaxImagesPerQuestion / visionBudgetPerChapter 三道闸门约束。
+     */
+    _applyVisionToQuestions: async function (questions, preferredDoc) {
+      if (!this.configs.visionEnabled) return;
+      if (!questions || !questions.length) return;
+
+      var chapterKey = this._getCurrentChapterId() || this._extractFrameKey('vision', 'chapter') || 'chapter';
+      var maxPerQuestion = Number(this.configs.visionMaxImagesPerQuestion);
+      if (!isFinite(maxPerQuestion) || maxPerQuestion < 1) return;
+
+      var touched = 0;
+      for (var i = 0; i < questions.length; i++) {
+        var q = questions[i];
+        if (!q || !q._element) continue;
+
+        var urls = this._collectQuestionImages(q._element);
+        if (!urls.length) continue;
+
+        // 扣预算前先确认这一章还有额度。额度用完时 _describeQuestionImages 会自己写日志，
+        // 这里就不再重复遍历后面的题 —— 直接整体退出，省掉剩下的抓图开销。
+        if (this._visionUsedInChapter >= Number(this.configs.visionBudgetPerChapter || 0) &&
+            this._visionBudgetChapterKey === chapterKey) {
+          this._takeVisionBudget(chapterKey); // 触发一次「预算耗尽」日志
+          emitRuntimeLog('info', 'vision skipped remaining questions', { from: i, total: questions.length });
+          break;
+        }
+
+        var described = await this._describeQuestionImages(urls, chapterKey);
+        if (described) {
+          q.title = this._mergeVisionIntoTitle(q.title, described);
+          touched++;
+        }
+      }
+
+      if (touched > 0) {
+        emitRuntimeLog('info', 'vision applied to quiz', {
+          questions: questions.length,
+          withImage: touched,
+          usedBudget: this._visionUsedInChapter
+        });
+      }
+    },
+
+
+    /** 把视觉描述拼进题干。格式固定，便于模型区分「题面」与「图的转述」。 */
+    _mergeVisionIntoTitle: function (title, visionText) {
+      var base = String(title || '');
+      var extra = String(visionText || '').trim();
+      if (!extra) return base;
+      return base + ' [配图: ' + extra + ']';
+    },
+
+
+    _isTextOnly: function () {
+      if (this._locateDocumentTask()) return false;
+      var doc = this._getMainDocument();
+      if (!doc || !doc.body) return true;
+      var bodyText = textOf(doc.body);
+      if (bodyText.length < 10 || bodyText === '暂无内容') return true;
+      if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
+      if (doc.querySelector('.questionLi, .mark_item, .questionItem, .tiBank, .exam_question, input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
+      return true;
+    },
+
 
     _detectQuiz: function () {
       var title = this._getCurrentTitle();
@@ -5792,6 +6304,7 @@
       });
     },
 
+
     _skipQuiz: function () {
       this._quizInProgress = false;
       this._quizAnswered = false;
@@ -5804,6 +6317,7 @@
       this.nextUnit();
     },
 
+
     _getQuizFieldValue: function (doc, id) {
       try {
         var el = doc && doc.getElementById ? doc.getElementById(id) : null;
@@ -5812,6 +6326,7 @@
         return '';
       }
     },
+
 
     _getQuizWorkKey: function (preferredDoc) {
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument() || document;
@@ -5826,14 +6341,17 @@
       return 'omitone.quiz.correct.' + encodeURIComponent(parts).slice(0, 180);
     },
 
+
     _getQuizSubmitAttemptKey: function (preferredDoc) {
       return this._getQuizWorkKey(preferredDoc) + '.submitAttempts';
     },
+
 
     _getQuizMaxSubmitAttempts: function () {
       var max = Number(this.configs.quizMaxSubmitAttempts || 20);
       return max > 0 ? max : 20;
     },
+
 
     _getQuizApiUnavailableReason: function () {
       if (!this.configs.enableQuiz) return 'api-disabled';
@@ -5846,10 +6364,12 @@
       return '';
     },
 
+
     /** 乱选模式是否生效。`enableQuiz` 仍要开 —— 关掉它是「完全不答题」的意思。 */
     _isRandomAnswerMode: function () {
       return !!(this.configs && this.configs.enableQuiz && this.configs.randomAnswer);
     },
+
 
     /**
      * 本地生成随机答案，**形状与 AI 返回的完全一致**（位置式数组）。
@@ -5892,19 +6412,11 @@
       return out;
     },
 
-    /** 乱选模式下的日志（每 3 秒最多一条，避免刷屏）。 */
-    _logRandomAnswers: function (questions) {
-      var now = Date.now();
-      if (now - (this._randomAnswerLogAt || 0) < 3000) return;
-      this._randomAnswerLogAt = now;
-      emitRuntimeLog('info', 'random answer mode: generated locally, no ai request', {
-        count: (questions || []).length
-      });
-    },
 
     _isQuizApiUnavailable: function () {
       return !!this._getQuizApiUnavailableReason();
     },
+
 
     _resetQuizStateForSkip: function () {
       this._quizInProgress = false;
@@ -5926,6 +6438,7 @@
       this._quizBatchSentAt = 0;
     },
 
+
     _markQuizApiConnectionFailed: function (error) {
       var message = error && error.message ? error.message : String(error || 'LLM 请求失败');
       // 不再永久写入 storage：改为 45 秒退避，期间跳过答题，之后自动重试并自愈
@@ -5933,6 +6446,7 @@
       this._quizApiLastError = String(message).slice(0, 300);
       emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000 });
     },
+
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
       var skipReason = reason || this._getQuizApiUnavailableReason() || 'api-unavailable';
@@ -5960,6 +6474,7 @@
       return true;
     },
 
+
     _getQuizSubmitAttemptCount: function (preferredDoc) {
       try {
         return Number(sessionStorage.getItem(this._getQuizSubmitAttemptKey(preferredDoc)) || 0) || 0;
@@ -5968,17 +6483,20 @@
       }
     },
 
+
     _setQuizSubmitAttemptCount: function (preferredDoc, count) {
       try {
         sessionStorage.setItem(this._getQuizSubmitAttemptKey(preferredDoc), String(Math.max(0, count || 0)));
       } catch (e) {}
     },
 
+
     _clearQuizSubmitAttemptCount: function (preferredDoc) {
       try {
         sessionStorage.removeItem(this._getQuizSubmitAttemptKey(preferredDoc));
       } catch (e) {}
     },
+
 
     _incrementQuizSubmitAttemptCount: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc) + 1;
@@ -5987,13 +6505,16 @@
       return count;
     },
 
+
     _shouldSkipQuizBySubmitAttempts: function (preferredDoc) {
       return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts();
     },
 
+
     _isQuizForceSkipping: function () {
       return this._quizForceSkipUntil && Date.now() < this._quizForceSkipUntil;
     },
+
 
     _forceSkipQuizAfterMaxAttempts: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc);
@@ -6023,6 +6544,7 @@
       return true;
     },
 
+
     _loadQuizCorrectAnswerCache: function (preferredDoc) {
       var key = this._getQuizWorkKey(preferredDoc);
       if (!this._quizCorrectAnswerCache) this._quizCorrectAnswerCache = {};
@@ -6043,6 +6565,7 @@
       return { key: key, data: this._quizCorrectAnswerCache[key] };
     },
 
+
     _saveQuizCorrectAnswerCache: function (preferredDoc, data) {
       var loaded = this._loadQuizCorrectAnswerCache(preferredDoc);
       var cache = data || loaded.data;
@@ -6051,6 +6574,7 @@
         sessionStorage.setItem(loaded.key, JSON.stringify(cache));
       } catch (e) {}
     },
+
 
     _findQuizAnswerInput: function (el, qid) {
       var doc = (el && el.ownerDocument) || document;
@@ -6066,6 +6590,7 @@
       }
       return null;
     },
+
 
     _getQuestionIdFromElement: function (el) {
       if (!el) return '';
@@ -6090,6 +6615,7 @@
       return '';
     },
 
+
     _mapQuizTypeValue: function (value) {
       var type = String(value || '').trim();
       if (type === '1') return 'multiple';
@@ -6098,6 +6624,7 @@
       if (type === '4' || type === '5' || type === '6' || type === '7' || type === '8' || type === '17' || type === '18' || type === '26') return 'short';
       return 'single';
     },
+
 
     _getQuestionTypeFromElement: function (el, qid) {
       var doc = (el && el.ownerDocument) || document;
@@ -6110,6 +6637,7 @@
       }
     },
 
+
     _normalizeQuizTitleKey: function (text) {
       return String(text || '')
         .replace(/【[^】]*题】/g, '')
@@ -6117,6 +6645,7 @@
         .replace(/\s+/g, '')
         .slice(0, 160);
     },
+
 
     _getQuizTitleKeyFromElement: function (el, fallbackTitle) {
       var title = fallbackTitle || '';
@@ -6130,10 +6659,12 @@
       return this._normalizeQuizTitleKey(title);
     },
 
+
     _getQuizAnswerValue: function (el, qid) {
       var input = this._findQuizAnswerInput(el, qid || this._getQuestionIdFromElement(el));
       return input ? String(input.value || input.getAttribute('value') || '').trim() : '';
     },
+
 
     _canonicalQuizAnswer: function (answer, type) {
       var value = this._normalizeAnswerValue(answer);
@@ -6165,12 +6696,14 @@
       return raw.toUpperCase();
     },
 
+
     _getOptionStoredAnswerValue: function (item) {
       if (!item || !item.querySelector) return '';
       var badge = item.querySelector('.num_option, .num_option_dx');
       if (!badge) return '';
       return String(badge.getAttribute('data') || textOf(badge) || '').trim();
     },
+
 
     _canonicalQuizAnswerForQuestion: function (answer, type, question) {
       var canonical = this._canonicalQuizAnswer(answer, type);
@@ -6183,6 +6716,7 @@
       if (normalized === 'true' || normalized === 'false') return normalized;
       return canonical;
     },
+
 
     _addWrongQuizAnswer: function (cache, item) {
       if (!cache || !item || !item.answer) return false;
@@ -6219,6 +6753,7 @@
       return changed;
     },
 
+
     _removeWrongQuizAnswer: function (cache, item) {
       if (!cache || !item) return false;
       var canonical = item.canonical || this._canonicalQuizAnswer(item.answer, item.type);
@@ -6239,6 +6774,7 @@
       removeFromBucket(cache.wrongByTitle, item.titleKey || '');
       return changed;
     },
+
 
     /**
      * 判断某题是否被批改为"正确"。
@@ -6279,6 +6815,7 @@
       return sawPositive;
     },
 
+
     /**
      * 从批改结果区抠出"正确答案"文本。
      *
@@ -6311,6 +6848,7 @@
       }
       return segment.slice(0, 200);
     },
+
 
     _rememberCorrectQuizAnswers: function (preferredDoc) {
       // ⚠️ 乱选模式**绝不**写答案缓存。随机答案不是"算出来的结论"，
@@ -6382,6 +6920,7 @@
       }
       return remembered;
     },
+
 
     _rememberWrongQuizAnswers: function (preferredDoc) {
       // 同上：乱选的"错"没有信息量，记进错误缓存只会让 AI 模式避错避到沟里。
@@ -6456,6 +6995,7 @@
       return remembered;
     },
 
+
     _getCachedQuizAnswer: function (question, preferredDoc) {
       if (!question || !question._element) return null;
       var loaded = this._loadQuizCorrectAnswerCache(preferredDoc || question._element.ownerDocument);
@@ -6465,6 +7005,7 @@
       if (titleKey && loaded.data.byTitle[titleKey]) return loaded.data.byTitle[titleKey];
       return null;
     },
+
 
     _getKnownWrongQuizAnswers: function (question, preferredDoc) {
       if (!question || !question._element) return [];
@@ -6482,6 +7023,7 @@
         return true;
       });
     },
+
 
     _getConfirmedCachedQuizAnswer: function (question, preferredDoc) {
       var cached = this._getCachedQuizAnswer(question, preferredDoc);
@@ -6508,6 +7050,7 @@
       return cached;
     },
 
+
     _getQuizQuestionRuntimeKey: function (question) {
       if (!question || !question._element) return '';
       var qid = this._getQuestionIdFromElement(question._element);
@@ -6516,6 +7059,7 @@
       if (titleKey) return 'title:' + titleKey;
       return 'index:' + String(question.index != null ? question.index : '');
     },
+
 
     _markQuizQuestionAnsweredThisRun: function (question, source, answer, type) {
       var key = this._getQuizQuestionRuntimeKey(question);
@@ -6535,10 +7079,12 @@
       }
     },
 
+
     _wasQuizQuestionAnsweredThisRun: function (question) {
       var key = this._getQuizQuestionRuntimeKey(question);
       return !!(key && this._quizCurrentAnsweredKeys && this._quizCurrentAnsweredKeys[key]);
     },
+
 
     _unmarkQuizQuestionAnsweredThisRun: function (question) {
       var key = this._getQuizQuestionRuntimeKey(question);
@@ -6547,10 +7093,12 @@
       if (this._quizCurrentAnswerValues) delete this._quizCurrentAnswerValues[key];
     },
 
+
     _getSubmittedQuizAnswerForQuestion: function (question) {
       var key = this._getQuizQuestionRuntimeKey(question);
       return key && this._quizCurrentAnswerValues ? this._quizCurrentAnswerValues[key] : null;
     },
+
 
     _getLastSubmittedQuizAnswerForQuestion: function (question, preferredDoc) {
       if (!question || !question._element) return null;
@@ -6561,6 +7109,7 @@
       if (titleKey && loaded.data.submittedByTitle && loaded.data.submittedByTitle[titleKey]) return loaded.data.submittedByTitle[titleKey];
       return null;
     },
+
 
     _rememberSubmittedQuizAnswers: function (questions, preferredDoc) {
       if (!questions || !questions.length) return 0;
@@ -6606,6 +7155,7 @@
       return saved;
     },
 
+
     _areAllQuizQuestionsConfirmedCached: function (questions, preferredDoc) {
       if (!questions || !questions.length) return false;
       for (var i = 0; i < questions.length; i++) {
@@ -6613,6 +7163,7 @@
       }
       return true;
     },
+
 
     _getKnownWrongCanonicalSet: function (question, type, preferredDoc) {
       var wrongs = this._getKnownWrongQuizAnswers(question, preferredDoc);
@@ -6632,6 +7183,7 @@
       }
       return seen;
     },
+
 
     _getChoiceCandidateAnswers: function (question, type) {
       var candidates = [];
@@ -6658,6 +7210,7 @@
       return candidates;
     },
 
+
     _clearKnownWrongQuizAnswersForQuestion: function (question, preferredDoc, reason) {
       if (!question || !question._element) return false;
       var loaded = this._loadQuizCorrectAnswerCache(preferredDoc || question._element.ownerDocument);
@@ -6680,6 +7233,7 @@
       return changed;
     },
 
+
     /**
      * 这道题是否该"放弃继续折腾"（best-effort）。
      *
@@ -6699,6 +7253,7 @@
       var known = this._getKnownWrongQuizAnswers(question, preferredDoc || null);
       return known.length >= max;
     },
+
 
     /**
      * 给"已放弃继续折腾"的题补上本地最优猜测。
@@ -6737,6 +7292,7 @@
       return filledCount;
     },
 
+
     /**
      * 多选 fallback 组合的排序：决定"上一个组合（被判错）之后，下一个先试哪个"。
      *
@@ -6765,6 +7321,7 @@
         return a < b ? -1 : (a > b ? 1 : 0);
       });
     },
+
 
     _chooseFallbackQuizAnswer: function (type, question, preferredDoc, avoidCanonical, preferredSize) {
       if (type !== 'single' && type !== 'judge' && type !== 'multiple') return '';
@@ -6813,6 +7370,7 @@
       return combos.length ? combos[0].split('') : [];
     },
 
+
     _getQuestionOptionLetters: function (question) {
       var count = question && Array.isArray(question.options) ? question.options.length : 0;
       if (!count && question && question._element) count = this._getOptionItems(question._element).length;
@@ -6821,6 +7379,7 @@
       for (var i = 0; i < count; i++) letters.push(String.fromCharCode(65 + i));
       return letters;
     },
+
 
     _generateChoiceCombinations: function (letters) {
       var combos = [];
@@ -6838,6 +7397,7 @@
       }
       return combos;
     },
+
 
     _avoidKnownWrongAnswer: function (answer, type, question, preferredDoc) {
       var wrongSet = this._getKnownWrongCanonicalSet(question, type, preferredDoc);
@@ -6912,6 +7472,7 @@
       return answer;
     },
 
+
     _fillCachedQuizAnswers: function (questions, preferredDoc) {
       if (!questions || !questions.length) return 0;
       var restored = 0;
@@ -6934,6 +7495,7 @@
       return restored;
     },
 
+
     _dispatchQuizInputEvents: function (node) {
       if (!node) return;
       try {
@@ -6942,6 +7504,7 @@
         node.dispatchEvent(new win.Event('change', { bubbles: true }));
       } catch (e) {}
     },
+
 
     _clearQuizQuestionAnswer: function (question) {
       var el = question && question._element;
@@ -6997,6 +7560,7 @@
       return cleared;
     },
 
+
     _clearUnconfirmedQuizAnswers: function (questions, preferredDoc) {
       if (!questions || !questions.length) return 0;
       var cleared = 0;
@@ -7007,6 +7571,7 @@
       if (cleared > 0) emitRuntimeLog('info', 'clear stale quiz answers', { count: cleared });
       return cleared;
     },
+
 
     _findVisibleQuizRedoDialog: function () {
       var found = null;
@@ -7026,6 +7591,7 @@
       });
       return found;
     },
+
 
     _isQuizRedoRequired: function (preferredDoc) {
       var matched = false;
@@ -7048,6 +7614,7 @@
       }
       return matched || !!this._findVisibleQuizRedoDialog();
     },
+
 
     _prepareQuizRedoIfNeeded: function (preferredDoc) {
       if (!this._isQuizRedoRequired(preferredDoc)) return false;
@@ -7073,6 +7640,7 @@
       return false;
     },
 
+
     _isQuizPassedOrFinished: function (preferredDoc) {
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
       try {
@@ -7085,6 +7653,7 @@
       } catch (e) {}
       return false;
     },
+
 
     _hasActiveQuizSubmitForm: function (preferredDoc) {
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
@@ -7103,6 +7672,7 @@
       }
     },
 
+
     _markQuizSubmitPending: function (preferredDoc, reason) {
       var now = Date.now();
       var wasPending = this._quizSubmitPending;
@@ -7114,45 +7684,6 @@
       emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts() });
     },
 
-    /**
-     * 诊断：**为什么没认出判分结果页**。
-     *
-     * `_isQuizResultPageFinished` 有三道条件 ——
-     *   ① 没有「请重做」类文案（一票否决）
-     *   ② 有判分痕迹（`.Py_answer` 那一族，或正文出现「我的答案/正确答案/本题得分/答案解析」）
-     *   ③ 题目区已不可交互（没有容器，或所有 radio/checkbox/input/textarea 都 disabled）
-     * 任何一道不满足都返回 false，但**不告诉你缺的是哪一道**。
-     * 于是 25 秒超时之后只能靠猜 —— 现场报过「作业页反复重交」，卡的就是这一段。
-     *
-     * 这条日志把三道条件各自的结果都打出来，下次复现就能直接看出缺哪一块，不用再猜。
-     */
-    _describeQuizResultPage: function (preferredDoc) {
-      var out = {};
-      try {
-        var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
-        if (!doc || !doc.body) { out.doc = 'none'; return out; }
-        var text = textOf(doc.body);
-        out.textLen = text.length;
-        // ① 一票否决
-        out.redoText = /未达到及格线|未达到通过标准|请重做|很遗憾|未通过/.test(text);
-        // ② 判分痕迹
-        var hit = null;
-        try { hit = doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer'); } catch (eH) {}
-        out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
-        out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
-        // ③ 可交互性
-        out.containers = doc.querySelectorAll('.TiMu, .Cy_TITle, .questionLi, .questionItem, .mark_item, .questionBox').length;
-        var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
-        out.controls = ctrls.length;
-        var enabled = 0;
-        for (var i = 0; i < ctrls.length; i++) { if (!ctrls[i].disabled) enabled++; }
-        out.controlsEnabled = enabled;
-        // 正文里跟判分有关的词，便于对照
-        var kw = text.match(/我的答案|正确答案|本题得分|答案解析|任务点已完成|已通过|请重做|未通过|不及格/g);
-        out.keywords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
-      } catch (e) { out.err = String(e.message || e).slice(0, 60); }
-      return out;
-    },
     /**
      * 提交之后，这一轮填的答案是不是**被清空了**。
      *
@@ -7176,6 +7707,7 @@
         return true;
       } catch (e) { return false; }
     },
+
     /**
      * 提交前把平台**真正会提交的字段**打出来（`#answer{qid}` + `#answertype{qid}`）。
      *
@@ -7239,28 +7771,7 @@
         }
       } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
     },
-    _logSubmitPayload: function (questions, doc) {
-      try {
-        var list = (questions && questions.length ? questions : this._quizCurrentQuestions) || [];
-        var out = [];
-        for (var i = 0; i < list.length && i < 12; i++) {
-          var q = list[i];
-          var el = q && q._element;
-          var qid = el ? this._getQuestionIdFromElement(el) : '';
-          if (!qid) { out.push({ qid: '', answer: '(无 qid)' }); continue; }
-          var a = doc && doc.getElementById ? doc.getElementById('answer' + qid) : null;
-          var t = doc && doc.getElementById ? doc.getElementById('answertype' + qid) : null;
-          // `mapped` 是我们**把 answertype 解读成了什么** —— 与 `type` 一列对比，
-          // 就能立刻看出「我们认的题型」和「平台声明的题型」是否一致。
-          // 不一致时服务端很可能拒收（比如我们当单选填、平台声明是多选）。
-          var rawType = t ? String(t.value || '') : '';
-          out.push({ qid: qid, type: q && q.type, mapped: this._mapQuizTypeValue(rawType),
-            answer: a ? String(a.value || '') : '(无该字段)',
-            answertype: t ? rawType : '(无该字段)' });
-        }
-        console.log('[Omitone] submit payload', JSON.stringify(out));
-      } catch (e) {}
-    },
+
 
     _monitorQuizSubmit: function (preferredDoc) {
       if (this._prepareQuizRedoIfNeeded(preferredDoc || null)) return true;
@@ -7315,6 +7826,7 @@
       return true;
     },
 
+
     _shouldHoldQuizBeforeNext: function (reason) {
       if (this._isQuizForceSkipping()) return false;
       if (this._isQuizApiUnavailable()) return false;
@@ -7353,6 +7865,7 @@
       return false;
     },
 
+
     _isQuizLearningPending: function (preferredDoc) {
       if (this._isQuizForceSkipping()) return false;
       if (this._isQuizApiUnavailable()) return false;
@@ -7381,6 +7894,7 @@
       if (this._detectQuiz() && !(doc && this._isQuizPassedOrFinished(doc))) return true;
       return false;
     },
+
 
     _handleQuiz: async function (preferredDoc) {
       if (this._quizAnswered || this._quizInProgress) return;
@@ -7610,6 +8124,7 @@
       }
     },
 
+
     _extractQuestions: function (preferredDoc) {
       var foundQuestions = [];
       if (preferredDoc) {
@@ -7664,6 +8179,7 @@
       return foundQuestions;
     },
 
+
     _getQuizDocumentFromQuestions: function (questions) {
       if (!questions || !questions.length) return null;
       for (var i = 0; i < questions.length; i++) {
@@ -7675,84 +8191,12 @@
       return null;
     },
 
-    /**
-     * 题目扫描诊断。
-     *
-     * 触发方式：
-     *   1) _handleQuiz 扫到 0 题时自动写进运行日志
-     *   2) 用户在页面控制台手动执行 `xxtAI.diagnose()`（同时 return，可直接看返回值）
-     *
-     * 目的：把"AI 扫不到题目"这种没法查的模糊反馈，变成能直接定位的具体信息 ——
-     * 每个同源文档里有哪些选择器命中、命中几个、拿到的容器为什么被判定成无效题。
-     */
-    _diagnoseQuestionScan: function (preferredDoc) {
-      var self = this;
-      var report = {
-        url: String((window.location && window.location.href) || '').slice(0, 180),
-        title: this._getCurrentTitle(),
-        quizByTitle: this._looksLikeQuizTitle(),
-        docs: [],
-        containers: 0,
-        samples: []
-      };
-
-      var inspectDoc = function (doc, path) {
-        if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
-        var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
-        try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
-
-        self._questionSelectors.forEach(function (sel) {
-          try {
-            var count = doc.querySelectorAll(sel).length;
-            if (count) entry.selectors[sel] = count;
-          } catch (e) {}
-        });
-        try {
-          entry.inputs = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea').length;
-          entry.answerFields = doc.querySelectorAll('[id^="answer"]').length;
-        } catch (e) {}
-
-        report.docs.push(entry);
-        return false;
-      };
-
-      if (preferredDoc) this._walkDocuments(function (d) { return inspectDoc(d, 'preferredDoc'); }, preferredDoc, 0);
-      this._walkDocuments(function (d) { return inspectDoc(d, 'top'); }, document, 0);
-
-      var containerHost = preferredDoc || this._getMainDocument() || document;
-      var containers = [];
-      try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
-      report.containers = containers.length;
-
-      containers.slice(0, 5).forEach(function (node) {
-        var parsed = self._parseQuestionElement(node, 0);
-        report.samples.push({
-          cls: String(node.className || '').slice(0, 50),
-          head: textOf(node).slice(0, 48),
-          title: parsed ? String(parsed.title || '').slice(0, 40) : '',
-          options: parsed ? parsed.options.length : 0,
-          parsed: !!parsed
-        });
-      });
-
-      var totalMatched = report.docs.reduce(function (sum, d) {
-        return sum + Object.keys(d.selectors).length;
-      }, 0);
-      if (!totalMatched) {
-        report.hint = '任何文档都没有命中题目选择器：可能不是测验页，或题目在跨域 iframe 里（插件无法访问），或学习通改版换了类名';
-      } else if (!report.containers) {
-        report.hint = '选择器有命中但容器全部被过滤（隐藏/无文本）：检查 _collectQuestionContainers 的过滤条件';
-      } else if (!report.samples.some(function (s) { return s.parsed; })) {
-        report.hint = '容器找到了但 _parseQuestionElement 全部返回 null：题干与选项都没抠出来，需要补 titleSelectors / _getOptionItems';
-      }
-
-      return report;
-    },
 
     _looksLikeQuizTitle: function () {
       var title = this._getCurrentTitle();
       return title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1;
     },
+
 
     _extractFromDocument: function (doc) {
       var questions = [];
@@ -7768,32 +8212,6 @@
       });
       return questions;
     },
-
-    /**
-     * 按选择器优先级收集题目容器。
-     *
-     * 注意这里**不能**在第一个"有命中"的选择器上无条件 break：
-     * 用 `.TiMu` 之类的选择器命中一批节点后，还要过一遍可见性/文本过滤，
-     * 过滤后可能一个都不剩（占位容器、被隐藏的模板节点）。
-     * 1.0.11 之前是命中就 break，于是"某个宽泛选择器抢先命中但全是空壳"会让整次扫描
-     * 直接返回 0 题 —— 表现就是用户看到的"AI 扫描不到题目"。
-     * 现在改成：挨个选择器试，谁第一个给出**过滤后非空**的结果就用谁。
-     */
-    /**
-     * 题目容器选择器，按优先级尝试。
-     *
-     * 命名来源：对照开源实现 cxmooc-tools 的 src/mooc/chaoxing/question.ts 校正过。
-     * 学习通有**两套**题目标记，之前的清单只覆盖了课程页那一套：
-     *   课程页：  容器 .TiMu         标题 .Zy_TItle > .clearfix   选项 .Zy_ulTop/.Zy_ulBottom > li
-     *   作业/考试：容器 .Cy_TItle     标题 .Cy_TItle.clearfix      选项 .Cy_ulTop/.Cy_ulBottom li
-     * 缺了 .Cy_TItle 这一族，作业与考试页会整体扫不到题 —— 而这正是"AI 扫描不到题目"的常见场景。
-     */
-    _questionSelectors: [
-      '.TiMu', '.Cy_TItle', '.questionLi', '.questionItem', '.tiBank', '.topicItem',
-      '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox',
-      'li.quesLi', '.answerOption', 'div[class*="question"]', 'div[class*="topic"]',
-      'div[class*="TiMu"]', 'div[class*="Cy_TItle"]'
-    ],
 
     _collectQuestionContainers: function (doc) {
       if (!doc || !doc.querySelectorAll) return [];
@@ -7832,6 +8250,7 @@
       return [];
     },
 
+
     /**
      * 清洗题干文本：去掉题号、题型前缀等噪声。
      *
@@ -7846,6 +8265,7 @@
         .replace(/^(单选题|多选题|多项选择题|不定项选择题|判断题|填空题|简答题|问答题|论述题)\s*[.、．:：]?\s*/, '')
         .trim();
     },
+
 
     _parseQuestionElement: function (el, index) {
       if (!el) return null;
@@ -7917,6 +8337,7 @@
       };
     },
 
+
     _detectQuestionType: function (el) {
       var text = textOf(el);
       var typeName = String(el.getAttribute('typename') || el.getAttribute('typeName') || '').trim();
@@ -7946,6 +8367,7 @@
       if (/简答|问答|论述|名词解释/.test(text)) return 'short';
       return 'single';
     },
+
 
     _getOptionItems: function (el) {
       if (!el || !el.querySelectorAll) return [];
@@ -7997,6 +8419,7 @@
       return [];
     },
 
+
     /**
      * 作业/考试页「文本与控件分离」的补偿。
      *
@@ -8036,6 +8459,7 @@
       return items;
     },
 
+
     _extractOptionText: function (node) {
       if (!node) return '';
       var text = '';
@@ -8063,11 +8487,13 @@
       return text.trim();
     },
 
+
     _normalizeAnswerValue: function (answer) {
       if (answer && typeof answer === 'object' && answer.answer !== undefined) return answer.answer;
       if (answer && typeof answer === 'object' && answer.text !== undefined) return answer.text;
       return answer;
     },
+
 
     _normalizeJudgeAnswerValue: function (answer) {
       var raw = String(this._normalizeAnswerValue(answer) || '').trim();
@@ -8079,6 +8505,7 @@
       if (/^b$/i.test(compact)) return 'b';
       return '';
     },
+
 
     _isJudgeOptionMatch: function (item, answer, optionText, dataValue, letterValue) {
       var normalized = this._normalizeJudgeAnswerValue(answer);
@@ -8097,6 +8524,7 @@
       if (/^(false|0|no|n)$/.test(data) || /^(错误|錯|错|否|不正确)$/.test(text)) optionBool = 'false';
       return optionBool === normalized;
     },
+
 
     _fillAnswers: function (answers, questions, preferredDoc) {
       var normalized = [];
@@ -8140,6 +8568,7 @@
       });
     },
 
+
     /**
      * 推断某个选项对应的字母（A/B/C…）。
      *
@@ -8182,6 +8611,7 @@
       return '';
     },
 
+
     _matchOptionItem: function (el, answer, forcedType) {
       var items = this._getOptionItems(el);
       if (!items.length) return null;
@@ -8222,6 +8652,7 @@
       }
       return null;
     },
+
 
     /**
      * 点选一个选项 —— 调用返回后，这个选项**一定**处于"已选中"状态（幂等）。
@@ -8399,6 +8830,7 @@
       console.log('[Omitone] clicked option qid=', qid, 'letter=', letter, 'type=', inputType);
     },
 
+
     /**
      * 某个答案（字母或选项文本）对应的选项**当前是否已选中**。
      *
@@ -8422,6 +8854,7 @@
       return true;
     },
 
+
     /**
      * 该用哪种控件去点：'radio' / 'checkbox'。
      *
@@ -8437,6 +8870,7 @@
       }
       return checkboxes ? 'checkbox' : 'radio';
     },
+
 
     /**
      * 多选题"最少该选几项"。
@@ -8459,6 +8893,7 @@
       if (/多选|多项|多重/.test(name)) return 2;
       return 1;
     },
+
 
     /**
      * 把一个字母扩成"含它的相邻组合"，用于模型只给了一个字母的多选题。
@@ -8503,6 +8938,7 @@
       }
       return out.sort();
     },
+
 
     /**
      * 把一个答案规整成"要点的选项列表"。
@@ -8589,6 +9025,7 @@
       return values;
     },
 
+
     /**
      * 选项答案填充的**唯一入口**（单选 / 判断 / 多选共用，章节小测与视频弹题共用）。
      *
@@ -8630,12 +9067,14 @@
       return clicked;
     },
 
+
     _fillChoice: function (el, answer, inputType) {
       // type 传空串：让 _matchOptionItem 自己判题型 —— 判断题的匹配分支靠它，
       // 硬编码成 'single' 会让"正确/错误"这类答案匹配不上（老实现就是这样绕开的）。
       var clicked = this._applyChoiceAnswer(el, answer, '', inputType);
       if (!clicked) console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
     },
+
 
     _clearMultiChoiceSelection: function (el) {
       if (!el) return;
@@ -8665,9 +9104,11 @@
       } catch (e) {}
     },
 
+
     _fillMultiChoice: function (el, answers) {
       this._applyChoiceAnswer(el, answers, 'multiple', 'checkbox');
     },
+
 
     _fillText: function (el, answer) {
       var value = this._normalizeAnswerValue(answer);
@@ -8717,6 +9158,7 @@
       } catch (e) {}
     },
 
+
     _fillTextarea: function (el, answer) {
       var value = String(this._normalizeAnswerValue(answer) || '');
       var textareas = Array.from(el.querySelectorAll('textarea'));
@@ -8752,6 +9194,7 @@
       } catch (e) {}
     },
 
+
     _resolveQuizAnswerDocument: function (preferredDoc) {
       // 最后一个兜底 `|| document` 不能省：题目可能就在顶层文档里（页面没有 #iframe，
       // 或者题目被 _walkDocuments 在更深的 iframe 中找到）。
@@ -8770,6 +9213,7 @@
       return doc;
     },
 
+
     _getQuizQuestionFilledValue: function (preferredDoc, question) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!doc || !question || !question._element) return '';
@@ -8784,9 +9228,11 @@
       return this._getQuizAnswerValue(question._element, qid);
     },
 
+
     _isQuizQuestionFilled: function (preferredDoc, question) {
       return !!this._getQuizQuestionFilledValue(preferredDoc, question);
     },
+
 
     _isQuizQuestionFilledWithKnownWrong: function (preferredDoc, question) {
       if (!question || !question._element) return false;
@@ -8797,6 +9243,7 @@
       var wrongSet = this._getKnownWrongCanonicalSet(question, type, preferredDoc);
       return !!(canonical && wrongSet.indexOf(canonical) !== -1);
     },
+
 
     _clearKnownWrongFilledQuizAnswers: function (questions, preferredDoc) {
       if (!questions || !questions.length) return 0;
@@ -8817,6 +9264,7 @@
       return cleared;
     },
 
+
     _areQuizAnswersFilled: function (preferredDoc, questions, options) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!doc) return false;
@@ -8835,6 +9283,7 @@
       }
       return true;
     },
+
 
     _findButtonByText: function (targets) {
       var texts = Array.isArray(targets) ? targets : [targets];
@@ -8858,6 +9307,7 @@
       return found;
     },
 
+
     /**
      * 与 _resolveQuizAnswerDocument 完全相同 —— 答题域和提交域本来就是同一个文档。
      * 保留这个名字是因为调用点很多、语义更清楚；实现上只做转发，
@@ -8866,6 +9316,7 @@
     _resolveQuizSubmitDocument: function (preferredDoc) {
       return this._resolveQuizAnswerDocument(preferredDoc);
     },
+
 
     _shouldAutoSubmitQuiz: function (preferredDoc) {
       var submitDoc = this._resolveQuizSubmitDocument(preferredDoc);
@@ -8882,6 +9333,7 @@
       if (title.indexOf('章节测验') !== -1) return true;
       return !!submitDoc.querySelector('.btnSubmit, .bluebtn, .workBtnIndex, #form1');
     },
+
 
     _maybeSubmitQuiz: function (preferredDoc, questions) {
       var submitQuestions = questions || this._quizCurrentQuestions;
@@ -8971,6 +9423,7 @@
       return true;
     },
 
+
     _isSubmitConfirmDialog: function (node) {
       if (!node || !visible(node)) return false;
       var dialogText = textOf(node);
@@ -8988,6 +9441,7 @@
       if (!dialogText) return false;
       return /确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(dialogText);
     },
+
 
     _findDialogButtonByText: function (root, targets) {
       if (!root) return null;
@@ -9010,6 +9464,7 @@
       }
       return null;
     },
+
 
     _checkSubmitConfirmDialog: function () {
       var selectors = [
@@ -9053,6 +9508,7 @@
       }
     },
 
+
     _handleSubmitConfirmDialog: function (dialog) {
       if (!dialog) return false;
       var now = Date.now();
@@ -9091,32 +9547,6 @@
       }
       try { submitBtn.click(); } catch (e) {}
       return true;
-    },
-
-    /**
-     * 找「继续学习」按钮。
-     *
-     * 学习通在几种情况下会在**播放器右下角**挂一个「继续学习」：弹题答完之后、
-     * 视频被判定为挂机之后、或者从插题回到正常播放之前。**不点它进不去正常播放页**，
-     * 于是一切照常跑、课程一动不动 —— 和弹题空转是同一类"看着在忙其实卡住"的故障。
-     *
-     * 这个按钮没有稳定的类名（不同课程模板不一样），只能靠文案 + 位置 + 形态打分：
-     * 文案命中「继续学习/继续观看/继续播放」→ 只接受"按钮样"的小节点（避免点到大容器）
-     * → 与视频同文档的加分、本身是 button/a 的加分。
-     */
-    /**
-     * 处理完一个覆盖层（弹题 / 「继续学习」）之后把视频拉起来。
-     *
-     * 两个分支原本各写一份，逻辑稍有出入就会出现"弹题这条能恢复、继续学习那条不能"
-     * 这种只在真机上才看得出的差别 —— 抽出来保证两条路走的是同一套动作。
-     * 注意只在 `_isPlaying` 时恢复：用户没开刷课时不该替他播。
-     */
-    _resumeVideoAfterOverlay: function (reason) {
-      if (!this._isPlaying) return;
-      var video = this._getVideoEl();
-      if (!video || !video.paused) return;
-      this._ensurePlaybackRate(video, reason || 'overlay');
-      try { video.play(); } catch (e) {}
     },
 
     _findContinueStudyButton: function (video) {
@@ -9174,6 +9604,7 @@
 
       return bestScore >= 0 ? best : null;
     },
+
 
     /**
      * 看到「继续学习」就点一下。返回是否点过。
@@ -9234,6 +9665,7 @@
       this._continueStudyAt = now;
       return true;
     },
+
 
     /**
      * 取"应该拦住刷课流程"的弹窗题。
@@ -9302,6 +9734,7 @@
       return node;
     },
 
+
     /**
      * 弹题是否正在**挡着播放**。
      *
@@ -9327,6 +9760,7 @@
         return false;
       }
     },
+
 
     /**
      * 弹题的**稳定指纹** —— 判断"还是不是同一道题"。
@@ -9356,26 +9790,12 @@
       return cls + "|t|" + raw.slice(0, 120);
     },
 
+
     _getPopupQuizMaxAttempts: function () {
       var max = Number(this.configs && this.configs.popupQuizMaxAttempts);
       return max > 0 ? max : 3;
     },
 
-    _describePopupQuiz: function (popup, optionItems) {
-      try {
-        if (!optionItems) optionItems = this._getOptionItems(popup);
-        return {
-          cls: String(popup.className || '').slice(0, 120),
-          text: textOf(popup).slice(0, 200),
-          optionCount: optionItems.length,
-          optionTexts: optionItems.slice(0, 6).map(this._extractOptionText.bind(this)),
-          optionLetters: optionItems.slice(0, 6).map(this._inferOptionLetter.bind(this)),
-          html: String(popup.outerHTML || '').replace(/\s+/g, ' ').slice(0, 900)
-        };
-      } catch (e) {
-        return { cls: String(popup && popup.className || ''), error: String(e && e.message || e) };
-      }
-    },
 
     _checkPopupQuiz: function () {
       var selectors = [
@@ -9445,6 +9865,7 @@
         return null;
       }
     },
+
 
     _handlePopupQuiz: async function (popup) {
       var popupText = textOf(popup);
@@ -9595,6 +10016,7 @@
       this._skipQuizForApiUnavailable(null, null);
     },
 
+
     /**
      * 放弃这道弹题。
      *
@@ -9622,6 +10044,7 @@
       this._popupQuizBlockedUntil = Date.now() + 60000;
     },
 
+
     /**
      * 弹窗题的题型判定。
      * 先按控件形态走 _detectQuestionType，再对"判断题"做一次选项校验：
@@ -9637,6 +10060,7 @@
       });
       return looksJudge ? 'judge' : 'single';
     },
+
 
     /**
      * 返回是否真的选中了至少一个选项（没选中就不该点提交）。
@@ -9673,7 +10097,7 @@
         try { submit.click(); } catch (e) {}
       }
       return true;
-    }
+    },
   };
 
   function removeStartPanel() {
@@ -9893,6 +10317,5 @@
     }
   };
 })();
-
 
 

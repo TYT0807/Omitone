@@ -54,7 +54,11 @@ function collectJsFiles() {
   var out = [];
       // .debug-profile 是 CDP 调试用的 Edge 独立用户目录（.gitignore 已排除），
       // 里面全是 Edge 内置 JS，扫进来只会产生死代码误报。
-      var EXCLUDED_DIRS = ['node_modules', '.git', 'dist', '.debug-profile', '.workbuddy'];
+      // src/ 也要排除：src/page/*.js 是 page.js 的**切片**，不是独立的 JS 文件
+      // （单独看必然语法错误）。它们由 tools/concat-page.js 拼成根目录的 page.js，
+      // 而 page.js 本身就在扫描范围内 —— 所以排掉 src/ 不会漏检任何东西，
+      // 只是避免把「片段语法错误」当成真错误刷屏。
+      var EXCLUDED_DIRS = ['node_modules', '.git', 'dist', '.debug-profile', '.workbuddy', 'src'];
       function walk(dir) {
         var base = path.join(ROOT, dir);
         if (!fs.existsSync(base)) return;
@@ -971,6 +975,44 @@ function checkDeadMethods(jsFiles) {
 }
 
 // ---------------------------------------------------------------------------
+// 14. page.js 与 src/page/ 片段一致
+//
+// 根目录的 `page.js` 现在是**构建产物** —— 由 tools/concat-page.js 从
+// src/page/*.js 拼出来，而扩展真正加载的正是根目录那一份（content.js 注入它、
+// manifest 的 web_accessible_resources 列它）。
+//
+// 于是多出一种静默失效：直接改了根目录的 page.js、却没改片段 ——
+// **跑起来是对的**（浏览器加载的就是改过的那份），但下一次拼接就把改动全丢掉，
+// 而且丢得毫无声响。所以这里把它守住。
+// ---------------------------------------------------------------------------
+function checkPageConcat() {
+  var concat = require('./concat-page.js');
+  var built;
+  try {
+    built = concat.buildPageText();
+  } catch (error) {
+    fail('page.js 拼接检查自身出错: ' + (error && error.message ? error.message : error));
+    return;
+  }
+
+  var expected = Buffer.from(built.text, 'utf8');
+  var actual = fs.existsSync(concat.OUT_FILE) ? fs.readFileSync(concat.OUT_FILE) : null;
+  if (!actual) {
+    fail('根目录没有 page.js —— 扩展加载的就是它，跑 `npm run concat` 生成');
+    return;
+  }
+  if (actual.equals(expected)) {
+    pass('page.js 与 src/page/ 一致（' + built.files.length + ' 个片段，' + expected.length + ' 字节）');
+    return;
+  }
+  fail(
+    'page.js 与 src/page/ 不一致（当前 ' + actual.length + ' 字节，按片段拼出来应是 ' + expected.length + ' 字节）\n' +
+    '      扩展加载的是根目录那份，所以现在跑的东西和源码对不上。\n' +
+    '      改的是片段 → 跑 `npm run concat`；改的是根目录 page.js → 那份会被下次拼接覆盖，请改到片段里。'
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -988,6 +1030,7 @@ checkEncodingDamage(jsFiles);
 checkUndefinedMethods(jsFiles);
 checkDeadMethods(jsFiles);
 checkDeadFiles(jsFiles, manifest);
+checkPageConcat();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

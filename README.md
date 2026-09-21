@@ -518,17 +518,22 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**9899 行 / 330 个方法**）：
 
-> ### ⚠️ 已知技术债：`page.js` 是一个 9899 行的巨石
+> ### ⚠️ `page.js` 已拆成 `src/page/` 下的 12 个**按域**片段
 >
-> 它是一个 IIFE 里的**一个大对象字面量**，330 个方法**没有按域排列**
-> （每个域都横跨全文，例如"答题"类方法分布在 586–9860 行），而且**没有任何分段注释**。
+> 根目录的 `page.js` 现在是**构建产物**：由 [`src/page/`](src/page/README.md) 里的片段
+> 按文件名排序拼成（`npm run concat`）。扩展加载的仍是根目录那一份，所以
+> **路径、文件名、`manifest.json` / `content.js` / `build.js` 全都没动**。
 >
-> **拆分方案已经写好**，见 [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) ——
-> 那份文档是**自包含的**，可以直接交给另一个 AI 执行。它规定了分两阶段做
-> （第一阶段**零行为风险**：按物理行切分 + 构建期拼接，验收标准是"拼接产物与拆分前逐字节相同"），
-> 并列出了所有硬性约束、验收清单、以及本仓库实测过的"假成功"陷阱。
+> ⚠️ **改代码要改 `src/page/` 里的片段，然后跑 `npm run concat`。**
+> 直接改根目录的 `page.js` 会「改完立刻生效、下次拼接全丢」——
+> `npm test` 里那条 `page.js 与 src/page/ 一致` 就是拦它的。
 >
-> **拆分完成前**，下面的 §8 定位表仍然按"`page.js` + 方法名"查。
+> 拆分分两步：**阶段一按物理行切分（只切不改，验收标准是产物与拆分前逐字节相同，
+> sha256 `fd20baa1…`）**，**阶段二再按域重组**（就是现在的布局：`40-media.js` / `70-quiz-flow.js` /
+> `75-quiz-dom.js` …）。阶段二改了字节，所以它靠另外两条证据：重组前后 **434 个属性名完全一致、
+> app 体里 8644 行有效行一行不多不少**，以及 `npm test` + `npm run e2e` 全绿。
+>
+> 一句话地图（"我要改倍速 → `40-media.js`"）见 [`src/page/README.md`](src/page/README.md)。
 
 | 你要做的事 | 直接跳到 |
 | --- | --- |
@@ -552,6 +557,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | **本文件** | **完整交接文档**：功能与验证状态、运行机制、**易错点**、**代码纠缠点**、调试手册、改哪里 |
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
 | [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、两阶段方案、硬性约束、验收清单、已知陷阱 |
+| [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：12 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
 | **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（20 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会"赌运气"渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
@@ -945,39 +951,52 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | API 地址构造、密钥清洗 | **只改 `libs/api-url.js`** |
 | LLM 协议适配 / 分批 / 解析容错 | `content.js`：`handleLLMRequestDirect`、`callXxxAPI`、`parseLLMResponse`、`coerceAnswerForType` |
 | 跨域代理、抓图 | `background.js` |
-| 任务点类型识别（视频/音频/文档/图片/测验/投票） | `page.js`：`_classifyTaskFrame` / `_getAttachmentWorkType` / `_buildAttachmentOnlyJob` |
-| 做不完的任务点跳过 | `page.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
-| 题目抠取 | `page.js`：`_questionSelectors` / `_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems` |
-| 答题与提交 | `page.js`：`_handleQuiz` / `_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz` |
-| 答案缓存（交卷后记答案） | `page.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
-| 视频、倍速、seek | `page.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
-| 验证码 | `page.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode` |
-| 讨论任务点 | `page.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
-| 任务点调度 | `page.js`：`_runTick` / `_runOcsStyleStudy` / `_ensureOcsStudyRunner` / `_searchChaoxingJobOcs` |
-| 设置界面 | `popup/popup.js` + `popup/popup.html`（**记得同步 `page.js` 的 `DEFAULT_CONFIG`**） |
+| 任务点类型识别（视频/音频/文档/图片/测验/投票） | `src/page/60-tasks.js`：`_classifyTaskFrame` / `_getAttachmentWorkType` / `_buildAttachmentOnlyJob` |
+| 做不完的任务点跳过 | `src/page/60-tasks.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
+| 任务点调度（主循环） | `src/page/60-tasks.js`：`_runTick` / `_tick`（⚠️ 判定顺序＝仲裁顺序） |
+| 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（选择器表 `_questionSelectors` 在 `10-config-state.js`） |
+| 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
+| 答案缓存（交卷后记答案） | `src/page/70-quiz-flow.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
+| 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
+| 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode` |
+| 讨论任务点 | `src/page/65-discussion.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
+| 弹题（视频内嵌题） | `src/page/80-popup-quiz.js`：`_checkPopupQuiz` / `_handlePopupQuiz` / `_fillPopupAnswer` |
+| 读图（视觉） | `src/page/70-quiz-flow.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
+| 日志与诊断文案 | `src/page/30-log.js`；日志出口 `emitRuntimeLog` 在 `src/page/00-shell-constants.js` |
+| 跨域 iframe 安全访问 | `src/page/20-dom.js`：`_safeDocOf` / `_safeWinDoc` |
+| 状态字段、配置默认值 | `src/page/10-config-state.js`（**所有非方法属性都在这里**） |
+| 设置界面 | `popup/popup.js` + `popup/popup.html`（**记得同步 `src/page/00-shell-constants.js` 的 `DEFAULT_CONFIG`**） |
 
-### 拆分完成后，本表会变成"域 → 文件"
+> **改完记得跑 `npm run concat`** —— 根目录的 `page.js` 是拼出来的产物，
+> 只改 `src/page/` 而不拼接，浏览器加载的还是旧的。
+> 更细的"哪个文件负责什么"见 [`src/page/README.md`](src/page/README.md) 的模块地图。
 
-下面是拆分任务的**目标状态**（谁做拆分就照这个分）：
+### 从"我要改倍速"到 `40-media.js`，一步到位
 
-| 域 | 目标文件 | 方法数 · 行数 |
-| --- | --- | --- |
-| 答题 / 题目 / 弹题 / 答案缓存 | `src/page/quiz.js` | 99 · 3243 |
-| 任务点识别、调度、放弃名单 | `src/page/tasks.js` | 56 · 2293 |
-| DOM 工具、iframe 安全访问、选择器 | `src/page/dom.js` | 52 · 1327 |
-| 媒体（视频/音频/倍速/seek） | `src/page/media.js` | 34 · 945 |
-| 配置读写、存储 | `src/page/config.js` | 20 · 275 |
-| 运行日志与诊断 | `src/page/log.js` | 11 · 368 |
-| 验证码、字体反爬 | `src/page/captcha.js` | 8 · 218 |
-| 外壳、常量、启动、`xxtAI` 控制台 API | `page.js`（拼接产物） | 其余 |
+这就是这次拆分要达到的效果 —— 上面那张表按**域**指，每个域一个文件：
 
-> 上面的方法数/行数是按**方法体关键词**统计的近似值（各域有交叠），
-> 仅用于判断工作量与切分比例，不必逐一对齐。
+| 文件 | 负责 |
+| --- | --- |
+| `00-shell-constants.js` | IIFE 外壳、常量、`DEFAULT_CONFIG`、日志出口、桥接与存储工具 |
+| `10-config-state.js` | app 入口（`run` / `play` / 重置）+ 配置 + **全部状态字段** |
+| `20-dom.js` | DOM / iframe 安全访问 / 通用工具 |
+| `30-log.js` | 日志与诊断文案（所有 `_log*` / `_describe*` / `_diagnose*`） |
+| `40-media.js` | 视频 / 音频 / 倍速 / seek |
+| `50-captcha.js` | 验证码（弹窗 + 整页） |
+| `60-tasks.js` | 任务点识别 / 执行 / 调度 / 放弃名单 / 学习卡片切换 |
+| `65-discussion.js` | 讨论任务点 |
+| `70-quiz-flow.js` | 答题流程 / 答案缓存 / 候选与避开错答 / 读图 |
+| `75-quiz-dom.js` | 抠题 / 填答 / 提交确认弹窗 |
+| `80-popup-quiz.js` | 视频内嵌弹题 / 「继续学习」提示 |
+| `90-console-api-startup.js` | app 收尾、`window.xxtAI` 控制台入口、启动 |
 
-需要方法清单时：
+> `60-tasks.js`（2567 行）与 `70-quiz-flow.js`（2248 行）仍然偏大，各自还能再分 ——
+> 要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
+
+需要方法清单时（不用通读）：
 
 ```bash
-grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
+grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 ```
 
 ---
@@ -986,8 +1005,8 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 
 缺任何一处都会出现"开关存了但读不到"。照抄 `enableDiscussion` 或 `enableCaptcha`：
 
-- [ ] `page.js` → `DEFAULT_CONFIG`
-- [ ] `page.js` → 消费点（**要加开关硬守卫**，如 `if (!this.configs.enableXxx) return;`）
+- [ ] `src/page/00-shell-constants.js` → `DEFAULT_CONFIG`（**然后跑 `npm run concat`**）
+- [ ] `src/page/` 里对应的片段 → 消费点（**要加开关硬守卫**，如 `if (!this.configs.enableXxx) return;`）
 - [ ] `content.js` → `configs`
 - [ ] `popup/popup.js` → `DEFAULTS`
 - [ ] `popup/popup.js` → `els` 映射
@@ -1003,7 +1022,9 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' page.js
 ## 10. 开发命令
 
 ```bash
-npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源
+npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段之后必须跑）
+npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
+npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（77 项）
 npm test         # 上面三个
@@ -1015,6 +1036,10 @@ npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 
 
 全部零依赖，只用 Node 内置模块。`npm run e2e` 需要本机装有 Edge
 （路径可用 `OMITONE_EDGE` 覆盖），细节与踩坑记录见 [`tools/README.md`](tools/README.md)。
+
+> ⚠️ **`page.js` 是产物，不是源文件。** 它由 `src/page/*.js` 拼成，
+> 而扩展加载的正是根目录那一份 —— 所以「直接改 `page.js`」会改完立刻生效、
+> 下次拼接又全丢。`npm run check` 的最后一条就是拦这个漂移的。
 
 ### 三层测试的分工
 

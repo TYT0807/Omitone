@@ -198,6 +198,45 @@ node tools/ext-id.js "D:\Omite" <edge://extensions 里看到的 ID>
 会打印各编码（utf8 / utf16le / 大小写 / 尾分隔符）算出的 ID，并标出命中的那个。
 排查扩展加载问题时用得上。
 
+## concat-page.js
+
+把 `src/page/*.js` 按文件名排序拼回根目录的 `page.js`。
+
+```bash
+npm run concat         # 生成 page.js
+npm run concat:check   # 只校验（不一致退出码 1）
+```
+
+`page.js` 原本是 9899 行 / 330 个方法的巨石，现在拆成 `src/page/` 下的 **12 个按域片段**
+（`00-shell-constants` / `10-config-state` / `20-dom` / `30-log` / `40-media` / `50-captcha` /
+`60-tasks` / `65-discussion` / `70-quiz-flow` / `75-quiz-dom` / `80-popup-quiz` /
+`90-console-api-startup`），**根目录的 `page.js` 变成构建产物** —— 而扩展真正加载的正是它
+（`content.js` 用 `chrome.runtime.getURL('page.js')` 注入、`manifest.json` 的
+`web_accessible_resources` 也列着它），所以产物位置和文件名都不能变。
+
+拆分的模块地图见 [`../src/page/README.md`](../src/page/README.md)。
+
+**拼接出来的结构**：`00-` 以 `var app = {` 结尾，中间各域文件是一个个属性块（**每项都必须以逗号结尾**，
+否则挪到别处就会拼出语法错误），`90-` 以 `};` 开头闭合对象字面量。
+
+**验证做到哪一步**：拆分分两阶段 —— 先按物理行切分（只切不改），验收标准是**产物与拆分前逐字节相同**
+（`cmp` 无输出，sha256 `fd20baa1…`）；再按域重组，此时字节必然变，改用
+**属性与行级的多重集比对**（434 个属性名完全一致、app 体 8644 行有效行一行不多不少）
+加 `npm test` / `npm run e2e` 全绿来兜。
+
+每段片段以 `// @omitone-part-header-end` 收尾头部注释，拼接时**该行及之前全部丢弃** ——
+头部写多少都不会漏进产物。缺这个标记会直接报错退出（否则整份头部会被当成代码写进 `page.js`）。
+
+`tools/check.js` 的最后一项会调本模块的 `buildPageText()` 比对产物与片段，
+拦住那种静默失效：**直接改根目录 `page.js`** —— 跑起来是对的（浏览器加载的就是改过那份），
+但下次拼接全丢，且毫无声响。
+
+> ⚠️ 改片段时的两个坑（都实测踩过）：
+> **① 块注释**（`/** … */`）如果紧跟在某个属性后面、属于**下一个**属性，重组时要把整块一起挪走 ——
+> 只认 `//` 的话会在 `*/` 后面补出逗号，写出 `*/,` 这种语法错误。
+> **② 重建必须拿原始 `page.js` 当输入**：重排过的产物再喂给拆分脚本一次，注释与属性的对应关系
+> 已经断了，会把上一次的错误固化下来。
+
 ## build.js
 
 产物：
