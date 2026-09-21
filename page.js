@@ -254,6 +254,17 @@
     // 主循环的"代"号：看门狗强制释放锁时 +1，用来作废旧 tick 的复位权（见 _runTick 的 finally）
     _tickEpoch: 0,
 
+    // 「进度心跳」时间戳：**由长任务的循环主动刷新**，用来把看门狗的判据从
+    // 「tick 活了多久」改成「多久没有进展」（见 _startTickLoop 的看门狗与 _tickProgress）。
+    // 为什么需要它：PPT 音频任务的单页等待上限是 600 秒（40-media.js 的 _waitSlideAudioDone），
+    // 远超看门狗的 150 秒 —— 没有心跳时，**正常干活的长任务会被误判成卡死并强制放锁**，
+    // 于是新一轮 tick 与仍在推进的旧 tick 同时操作同一个任务点。
+    _tickProgressAt: 0,
+
+    // 心跳日志节流：只在 note 变化或距上次日志超过 30 秒时才打，避免刷爆日志
+    _tickProgressNote: '',
+    _tickProgressLogAt: 0,
+
     _quizInProgress: false,
 
     _quizAnswered: false,
@@ -1571,6 +1582,9 @@
     _waitSlideAudioDone: async function (doc) {
       var waited = 0;
       while (waited < 600000) {
+        // ⚠️ 心跳：本循环上限 600 秒，远超看门狗的 150 秒 —— 不刷心跳会被误判成卡死，
+        //    导致新一轮 tick 与这次并行操作同一个任务点（见 64-tasks-loop.js 的看门狗）。
+        this._tickProgress('ppt-audio wait');
         var active = [];
         try {
           active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
@@ -3447,6 +3461,10 @@
           }, waitTimeout);
 
           while (version === self._runtimeVersion) {
+            // ⚠️ 心跳：这是个**开放条件**的循环（等页面版本号变化才退出），
+            //    里面还有 await job.func()（可能是一次完整的答题/文档任务）。
+            //    不刷心跳会让"正常在推进的一轮"被看门狗当成卡死。
+            self._tickProgress('ocs study loop');
             if (self._isActiveStudyJobPending('ocs-runner-active-job')) {
               await sleep(1000);
               continue;
@@ -3537,6 +3555,7 @@
           }
           if (self._isActiveStudyJobPending('ocs-finish-check')) {
             while (version === self._runtimeVersion && self._isActiveStudyJobPending('ocs-finish-check')) {
+              self._tickProgress('ocs wait finish-check');
               await sleep(1000);
             }
             if (version !== self._runtimeVersion) return;
@@ -3557,6 +3576,7 @@
             await sleep(5000);
             if (version !== self._runtimeVersion) return;
             while (version === self._runtimeVersion && self._isActiveStudyJobPending('ocs-next-check')) {
+              self._tickProgress('ocs wait next-check');
               await sleep(1000);
             }
             if (version !== self._runtimeVersion) return;
@@ -4003,6 +4023,10 @@
       var total = slides > 0 ? slides + 1 : 60;
       for (var i = 0; i < total; i++) {
         if (!this._assertActive()) return false;
+        // ⚠️ 心跳：整轮翻页可能远超看门狗的 150 秒（每页还要等音频放完）。
+        //    不刷心跳会被误判成"卡死的 tick"，从而放锁并起第二个 tick 并行翻页。
+        //    note 里带页号，日志节流后正好成了这个长任务耗时的观测点。
+        this._tickProgress('ppt-audio page ' + (i + 1) + '/' + (slides || '?'));
         this._startSlideMedia(doc);
         await this._waitSlideAudioDone(doc);
         emitRuntimeLog('info', 'document page', {
@@ -4538,6 +4562,35 @@
       return true;
     },
 
+    /**
+     * 进度心跳：**长任务的循环必须定期调它**。
+     *
+     * 看门狗原先判的是「tick 活了多久 > 150 秒」，那会误杀正常的长任务 ——
+     * PPT 音频任务单页等待上限 600 秒（`_waitSlideAudioDone`），远超 150 秒。
+     * 误杀的后果不是"少干点活"，而是**放锁后新一轮 tick 与仍在推进的旧 tick 并行**，
+     * 同时操作同一个任务点（重复翻页 / 重复提交）。
+     *
+     * 改成「多久没有进展」之后语义才对：
+     *   - 真挂起 → 循环不再推进 → 心跳不再刷新 → 150 秒后照旧放锁（防线没有放松）
+     *   - 正常长任务 → 一直在推进 → 心跳持续刷新 → 不会被误杀
+     *
+     * 日志做 30 秒去重：这个函数会被每秒调用多次，不加节流会刷爆控制台。
+     */
+    _tickProgress: function (note) {
+      try {
+        var now = Date.now();
+        this._tickProgressAt = now;
+        var label = String(note || '');
+        // 只在"换了阶段"或"距上次日志超过 30 秒"时打一条，兼作长任务耗时的观测点
+        if (label !== this._tickProgressNote || now - (this._tickProgressLogAt || 0) > 30000) {
+          this._tickProgressNote = label;
+          this._tickProgressLogAt = now;
+          var tickMs = this._tickStartedAt ? (now - this._tickStartedAt) : 0;
+          emitRuntimeLog('info', 'tick progress', { note: label, tickMs: tickMs });
+        }
+      } catch (e) {}
+    },
+
     _startTickLoop: function () {
       if (this._tickLoopInterval) return;
       var self = this;
@@ -4546,15 +4599,23 @@
           self._clearTickLoop();
           return;
         }
-        // 看门狗：_runTick 内部某处永久挂起时强制释放锁，恢复循环
-        // （历史 bug：bridgeSend 无超时 / video.play() 在视频源停摆时 pending，导致整个刷课停摆）
-        if (self._tickRunning && self._tickStartedAt && Date.now() - self._tickStartedAt > 150000) {
+        // 看门狗：判定「**多久没有进展**」而不是「tick 跑了多久」。
+        //
+        // 为什么是"无进展"：正常的长任务（PPT 音频逐页等待，上限 600 秒）会被
+        // "总时长"判据误杀 —— 强行放锁后，新旧两个 tick 同时操作同一个任务点。
+        // 心跳由长任务的循环主动刷新（见 _tickProgress），所以：
+        //   有进展 → 不触发（这是本次修正的行为）
+        //   真挂起 → 心跳停 → 150 秒后照旧触发（防线不变）
+        // 兜底用 _tickStartedAt：兼容心跳尚未打过一次（字段为 0）的边界。
+        var lastProgress = self._tickProgressAt || self._tickStartedAt;
+        if (self._tickRunning && lastProgress && Date.now() - lastProgress > 150000) {
           // ⚠️ 必须先"作废"这次 tick 的复位权：它可能过一会儿才醒过来，
           //    醒来后无条件复位会把**新 tick 的锁**清掉 —— 于是下一轮又起一个 tick，
           //    两个 tick 并行推进（可能重复提交、重复跳章）。
           self._tickEpoch = (self._tickEpoch || 0) + 1;
           self._tickRunning = false;
           self._tickStartedAt = 0;
+          self._tickProgressAt = 0;
           emitRuntimeLog('error', 'tick watchdog: stuck tick force-released, loop resumed', {});
           console.error('[Omitone] tick watchdog: stuck tick force-released');
         }
@@ -4576,6 +4637,10 @@
       this._tickRunning = true;
       var myEpoch = this._tickEpoch = (this._tickEpoch || 0) + 1;
       this._tickStartedAt = Date.now();
+      // 心跳与 tick 同起点：看门狗判"无进展"，所以开始那一刻必须先刷一次，
+      // 否则字段为 0 会走 _tickStartedAt 兜底（也能工作，但语义上应该显式初始化）
+      this._tickProgressAt = this._tickStartedAt;
+      this._tickProgressNote = '';
       try {
         // 讨论上下文（讨论区独立网址 / 讨论模块页）：发完评论自动返回，期间不做任何刷课动作。
         // 必须放在最前：讨论页不再被误判为课程页，否则会去"找任务点 → 跳章节"
@@ -4790,6 +4855,8 @@
         if (this._tickEpoch === myEpoch) {
           this._tickRunning = false;
           this._tickStartedAt = 0;
+          // 心跳也要一起清：留着旧值会让下一轮 tick 一开始就"看起来很久没进展"
+          this._tickProgressAt = 0;
         }
       }
     },
