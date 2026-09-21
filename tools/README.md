@@ -11,6 +11,7 @@
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
+| `audit-safedoc.js` | `node tools/audit-safedoc.js` | **按需跑**：审计"裸读跨域 `.document`"有没有被 `try` 包住（见下方专节） |
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 
@@ -53,8 +54,52 @@
     读的人就会照着错的地图找代码 —— **有错地图比没地图更糟**（没地图时他会 grep，有错地图时他会信）。
     `window.xxtAI` 上那 8 个入口不算 `app` 方法，判据里已排除。
     三种错法都做过**反向验证**：漏写一个方法、写一个不存在的方法、序号错位，各自都被抓住
+16. **`await` 必须可超时** —— 见下方「为什么单独守这一条」
 
 失败时退出码为 1，可直接用于 CI。
+
+## 为什么单独守"await 必须可超时"
+
+**"永久挂起"不是异常 —— `try/catch` 拦不住它，只有超时能。**
+而 `page.js` 的 `_runTick` 是一条 `await` 链：任何一处永远不 resolve，整个调度就停摆
+（验证码检测、播放巡检、任务点推进全停），并且**页面一条异常都不会有**，极难定位。
+
+这条守卫只盯**已知会挂起的原生调用**：
+
+| 盯什么 | 为什么 |
+| --- | --- |
+| `fetch(...)` | 服务器接了连接却不回数据时永远不 resolve（CDN 卡住、被代理吞掉） |
+| `.text()` / `.json()` / `.arrayBuffer()` / `.blob()` | 读响应体同样可能永远读不完 |
+| `.play()` / `.pause()` | 视频源停摆时 `play()` 的 Promise 会一直 pending（本仓库实测过） |
+
+判据是"同一行里必须出现 `_withTimeout(`"。
+
+> ⚠️ **刻意不写"名字里带 play/load 就算"那种宽泛规则。** 实测那样会把
+> `_probeMaxPlaybackRate()`（内部自带超时）误报成危险 —— 误报多了守卫就没人信了，
+> 最后会被人加白名单绕过去，等于没守。
+
+超时的语义要注意：`_withTimeout` 超时是 **`resolve(undefined)` 而不是 reject**
+（对媒体是"按成功放行，实际状态由后续巡检兜底"）。所以包在网络调用外面时，
+**下面必须有一个 `undefined` 分支** —— 例如 `if (!response || !response.ok) return false;`。
+
+## audit-safedoc.js
+
+审计"裸读跨域 `.document`"这件事。`AGENTS.md` §2 第 1 条把它列为**最难查的一类 bug**
+（抛出的 `SecurityError` 会静默打断整个 tick 循环），但"有没有裸读"不能只靠 grep ——
+决定危不危险的是**它有没有被 `try` 包住**。这个脚本按行算大括号深度、
+标记每行是否落在 `try/catch` 区间内，然后给出结论。
+
+```bash
+node tools/audit-safedoc.js     # 危险处 > 0 时退出码 1
+```
+
+**为什么不进 `npm test`**：它需要一个"判 `/` 是正则还是除号"的词法启发式。
+第一版就栽在这里 —— `60-tasks-detect.js` 里一个**含引号的正则字面量**让它以为进了字符串，
+从此整份文件后面的行全被剥成空，那个文件里 4 处裸读**一处都没报出来**，
+而汇总行照样打印"没有保护 0 处"。现在脚本自带自校验（原文命中数 vs 剥注释后命中数对不上就报警），
+但一个启发式词法器不适合当"每次都跑"的硬门禁。**改 iframe / 跨域相关代码后手动跑一次。**
+
+**最近一次审计结论（2026-09-21）：16 处裸读全部在 `try` 块内，没有保护的 0 处。**
 
 ## prompt-bench.js
 

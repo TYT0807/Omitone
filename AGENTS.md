@@ -53,6 +53,10 @@ npm run e2e       # 真实 Edge 功能交叉检验（26 个场景 / 280 项）
    裸读抛出的 `SecurityError` 会静默打断整个 tick 循环，是**最难查的一类 bug**。
    （README §6 #2）
 2. **新增 `await` 必须可超时** —— 任何永久悬挂都会让主循环死亡。
+   ⚠️ **`try/catch` 拦不住"挂起"，只有超时能。** `fetch` / 读响应体（`.text()` `.json()`
+   `.arrayBuffer()`）/ 媒体 `.play()` 都可能永远不 resolve，一律包 `this._withTimeout(p, ms)`。
+   `npm run check` 第 16 项会拦这个（注意 `_withTimeout` 超时是 `resolve(undefined)`，
+   包在网络调用外面时下面必须有一个 `undefined` 分支）。
 3. **删方法前 grep 全部调用点** —— 本项目真的发生过"删了函数留着调用点"，
    4 处调用点里 3 处没有 try/catch，整条功能静默失灵。（README §6 #9）
 4. **提示词与 API 地址构造都不许内联** —— 唯一真源是 `libs/prompt.js` 与 `libs/api-url.js`。
