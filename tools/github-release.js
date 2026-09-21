@@ -2,13 +2,22 @@
 /**
  * 发版工具：走 GitHub REST API 完成「提交 → 打 tag → 建 Release → 传附件 → 核验」。
  *
- * 为什么不用 `git push`：
- *   这台机器上 `git push` 能连上却永远不返回（实测挂满 5 分半），
- *   而同一条网络下 `git fetch` 几秒完成、api.github.com 与 uploads.github.com 都正常 ——
- *   push 通道单独不通。详见 AGENTS.md §7.3。
+ * ⚠️ **推送首选 `git push`，不是本工具的 `push` 子命令。**
+ *   这里原先写着"本机 `git push` 挂起不返回"，**2026-09-21 已更正**：真正的报错是
+ *   `fatal: could not read Username for 'https://github.com': terminal prompts disabled`
+ *   —— 远端是 HTTPS 而本机没有凭据助手，**根本没发起认证**，不是网络问题。
+ *   把令牌放进 URL 就能推，而且**比走 REST API 好**：API 那条路会把多个提交压成一个，
+ *   `git push` 保留完整历史（实测 8 个提交一次推上去、历史完整）。见 AGENTS.md §7.3：
+ *
+ *     TOKEN=$(cat ~/.omitone-release.ghtoken | tr -d '\r\n')
+ *     git -c credential.helper= push "https://x-access-token:${TOKEN}@github.com/TYT0807/Omitone.git" main
+ *
+ *   本工具的 `push` 子命令**保留作备选**（push 通道万一真不通时还能用），
+ *   但打完 tag 要知道 tag 该指向哪个 sha —— API 提交会被 GitHub 重新签名，
+ *   远端 sha 必然 ≠ 本地 sha，顺序反了会撞 `422 Object does not exist`。
  *
  * 三个子命令：
- *   push    --message-file <文件> <文件...>   把改动提交到 main（走 API）
+ *   push    --message-file <文件> <文件...>   把改动提交到 main（走 API；备选方案，见上）
  *   release <tag> --notes-file <文件>         打 tag + 建 Release + 传两个附件
  *   verify  <tag>                             核验远端状态（**发完必须跑一次**）
  *
