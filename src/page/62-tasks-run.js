@@ -10,6 +10,9 @@
  * 任务点等待与 pending 处理（等它加载完、等它出成绩）
  * 文档类任务点：翻页式 / 滚动式的推进与完成判定
  *
+ * ⚠️ `_runPptAudioJob` 的逐页循环可能远超看门狗的 150 秒（每页还要等音频放完），
+ *    所以每翻一页都调 `this._tickProgress(...)` 刷心跳。**别删这个心跳**（理由同上一条）。
+ *
  * 本段的方法（16 个）：
  *   _clearDocumentPendingState、_runChaoxingJob、_runChaoxingReadJob、
  *   _runPptAudioJob、_runOcsStyleStudy、_shouldWaitForTaskDiscovery、
@@ -261,6 +264,10 @@
       var total = slides > 0 ? slides + 1 : 60;
       for (var i = 0; i < total; i++) {
         if (!this._assertActive()) return false;
+        // ⚠️ 心跳：整轮翻页可能远超看门狗的 150 秒（每页还要等音频放完）。
+        //    不刷心跳会被误判成"卡死的 tick"，从而放锁并起第二个 tick 并行翻页。
+        //    note 里带页号，日志节流后正好成了这个长任务耗时的观测点。
+        this._tickProgress('ppt-audio page ' + (i + 1) + '/' + (slides || '?'));
         this._startSlideMedia(doc);
         await this._waitSlideAudioDone(doc);
         emitRuntimeLog('info', 'document page', {

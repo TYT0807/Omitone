@@ -10,6 +10,9 @@
  * 把识别结果拼成可执行的 job（附件型 / 合成型 / frame 兜底）
  * OCS 风格的任务点搜索与「已完成」状态识别
  * ⚠️ _getAttachmentWorkType 的判断顺序不能动：isPassed → job:true → job:false → 模块名推断
+ * ⚠️ `_ensureOcsStudyRunner` 里的几个 `while (version === _runtimeVersion)` 是**开放条件**循环
+ *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
+ *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
  * 本段的方法（25 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
@@ -712,6 +715,10 @@
           }, waitTimeout);
 
           while (version === self._runtimeVersion) {
+            // ⚠️ 心跳：这是个**开放条件**的循环（等页面版本号变化才退出），
+            //    里面还有 await job.func()（可能是一次完整的答题/文档任务）。
+            //    不刷心跳会让"正常在推进的一轮"被看门狗当成卡死。
+            self._tickProgress('ocs study loop');
             if (self._isActiveStudyJobPending('ocs-runner-active-job')) {
               await sleep(1000);
               continue;
@@ -802,6 +809,7 @@
           }
           if (self._isActiveStudyJobPending('ocs-finish-check')) {
             while (version === self._runtimeVersion && self._isActiveStudyJobPending('ocs-finish-check')) {
+              self._tickProgress('ocs wait finish-check');
               await sleep(1000);
             }
             if (version !== self._runtimeVersion) return;
@@ -822,6 +830,7 @@
             await sleep(5000);
             if (version !== self._runtimeVersion) return;
             while (version === self._runtimeVersion && self._isActiveStudyJobPending('ocs-next-check')) {
+              self._tickProgress('ocs wait next-check');
               await sleep(1000);
             }
             if (version !== self._runtimeVersion) return;

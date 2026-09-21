@@ -11,8 +11,8 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（28 个）：
- *   _startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
+ * 本段的方法（29 个）：
+ *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
  *   _getExplicitActiveLearningCardKey、_detectLearningCardChange、
@@ -24,6 +24,35 @@
  * ========================================================================== */
 // @omitone-part-header-end
 
+    /**
+     * 进度心跳：**长任务的循环必须定期调它**。
+     *
+     * 看门狗原先判的是「tick 活了多久 > 150 秒」，那会误杀正常的长任务 ——
+     * PPT 音频任务单页等待上限 600 秒（`_waitSlideAudioDone`），远超 150 秒。
+     * 误杀的后果不是"少干点活"，而是**放锁后新一轮 tick 与仍在推进的旧 tick 并行**，
+     * 同时操作同一个任务点（重复翻页 / 重复提交）。
+     *
+     * 改成「多久没有进展」之后语义才对：
+     *   - 真挂起 → 循环不再推进 → 心跳不再刷新 → 150 秒后照旧放锁（防线没有放松）
+     *   - 正常长任务 → 一直在推进 → 心跳持续刷新 → 不会被误杀
+     *
+     * 日志做 30 秒去重：这个函数会被每秒调用多次，不加节流会刷爆控制台。
+     */
+    _tickProgress: function (note) {
+      try {
+        var now = Date.now();
+        this._tickProgressAt = now;
+        var label = String(note || '');
+        // 只在"换了阶段"或"距上次日志超过 30 秒"时打一条，兼作长任务耗时的观测点
+        if (label !== this._tickProgressNote || now - (this._tickProgressLogAt || 0) > 30000) {
+          this._tickProgressNote = label;
+          this._tickProgressLogAt = now;
+          var tickMs = this._tickStartedAt ? (now - this._tickStartedAt) : 0;
+          emitRuntimeLog('info', 'tick progress', { note: label, tickMs: tickMs });
+        }
+      } catch (e) {}
+    },
+
     _startTickLoop: function () {
       if (this._tickLoopInterval) return;
       var self = this;
@@ -32,15 +61,23 @@
           self._clearTickLoop();
           return;
         }
-        // 看门狗：_runTick 内部某处永久挂起时强制释放锁，恢复循环
-        // （历史 bug：bridgeSend 无超时 / video.play() 在视频源停摆时 pending，导致整个刷课停摆）
-        if (self._tickRunning && self._tickStartedAt && Date.now() - self._tickStartedAt > 150000) {
+        // 看门狗：判定「**多久没有进展**」而不是「tick 跑了多久」。
+        //
+        // 为什么是"无进展"：正常的长任务（PPT 音频逐页等待，上限 600 秒）会被
+        // "总时长"判据误杀 —— 强行放锁后，新旧两个 tick 同时操作同一个任务点。
+        // 心跳由长任务的循环主动刷新（见 _tickProgress），所以：
+        //   有进展 → 不触发（这是本次修正的行为）
+        //   真挂起 → 心跳停 → 150 秒后照旧触发（防线不变）
+        // 兜底用 _tickStartedAt：兼容心跳尚未打过一次（字段为 0）的边界。
+        var lastProgress = self._tickProgressAt || self._tickStartedAt;
+        if (self._tickRunning && lastProgress && Date.now() - lastProgress > 150000) {
           // ⚠️ 必须先"作废"这次 tick 的复位权：它可能过一会儿才醒过来，
           //    醒来后无条件复位会把**新 tick 的锁**清掉 —— 于是下一轮又起一个 tick，
           //    两个 tick 并行推进（可能重复提交、重复跳章）。
           self._tickEpoch = (self._tickEpoch || 0) + 1;
           self._tickRunning = false;
           self._tickStartedAt = 0;
+          self._tickProgressAt = 0;
           emitRuntimeLog('error', 'tick watchdog: stuck tick force-released, loop resumed', {});
           console.error('[Omitone] tick watchdog: stuck tick force-released');
         }
@@ -62,6 +99,10 @@
       this._tickRunning = true;
       var myEpoch = this._tickEpoch = (this._tickEpoch || 0) + 1;
       this._tickStartedAt = Date.now();
+      // 心跳与 tick 同起点：看门狗判"无进展"，所以开始那一刻必须先刷一次，
+      // 否则字段为 0 会走 _tickStartedAt 兜底（也能工作，但语义上应该显式初始化）
+      this._tickProgressAt = this._tickStartedAt;
+      this._tickProgressNote = '';
       try {
         // 讨论上下文（讨论区独立网址 / 讨论模块页）：发完评论自动返回，期间不做任何刷课动作。
         // 必须放在最前：讨论页不再被误判为课程页，否则会去"找任务点 → 跳章节"
@@ -276,6 +317,8 @@
         if (this._tickEpoch === myEpoch) {
           this._tickRunning = false;
           this._tickStartedAt = 0;
+          // 心跳也要一起清：留着旧值会让下一轮 tick 一开始就"看起来很久没进展"
+          this._tickProgressAt = 0;
         }
       }
     },

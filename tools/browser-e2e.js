@@ -3346,6 +3346,133 @@ SCENARIOS.push({
 });
 
 // ===========================================================================
+// 看门狗的判据：要判「**多久没有进展**」，不能判「tick 活了多久」
+//
+// 为什么单独立一个场景：看门狗原先判 `now - _tickStartedAt > 150000`，而
+// PPT 音频任务的单页等待上限是 **600 秒**（40-media.js 的 _waitSlideAudioDone）——
+// 正常干活的长任务会被误判成卡死，强行放锁后**新旧两个 tick 并行操作同一个任务点**。
+//
+// 两条断言必须**成对**：少了「有进展 → 不放锁」那条，"永不触发"这种改法也能通过
+// 「无进展 → 放锁」；少了后者，把看门狗整个删掉也能通过前者。
+// ===========================================================================
+SCENARIOS.push({
+  name: '看门狗：按“无进展”而非“总时长”判卡死',
+  path: '/quiz',
+  run: async function (ctx) {
+    // ⚠️ 必须先停掉页面里**真实的** tick 循环再注入状态。
+    //    否则它每 250ms 跑一次 _runTick，而 _runTick 开头会把 _tickProgressAt 重置成
+    //    "现在" —— 我们拨回去的时间戳会被立刻覆盖，于是"真挂起"那条断言假失败。
+    //    （第一版就栽在这里：断言报 running:true / progress=当前时间，看起来像产品 bug，
+    //      其实是注入被真实循环冲掉了。）
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'if(a._tickLoopInterval){clearInterval(a._tickLoopInterval);a._tickLoopInterval=null;}' +
+      'if(a._checkInterval){clearInterval(a._checkInterval);a._checkInterval=null;}' +
+      'a._tickRunning=false;a._assertActive=function(){return true;};' +
+      'return true;})()'
+    );
+    await sleep(300);
+
+    // 把 tick 装成"已经跑了很久"的样子 —— 旧的判据只看这个就会立刻放锁
+    var setup = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'if(!a._startTickLoop) return {noMethod:true};' +
+      'a._tickRunning=true;' +
+      'a._tickStartedAt=Date.now()-200000;' +          // 已跑 200 秒（> 150 秒看门狗线）
+      'a._tickProgressAt=Date.now();' +                // 但刚刚才刷过心跳
+      'a._tickEpoch=100;' +
+      'return {epoch:a._tickEpoch,running:a._tickRunning};})()'
+    );
+    check('场景装配成功（造出“跑了 200 秒但刚有心跳”的 tick）',
+      setup && setup.epoch === 100 && setup.running === true, JSON.stringify(setup));
+
+    // 只重启**看门狗本身**（setInterval 那段），不让 _runTick 参与 ——
+    // 这样测的是纯判据，不受真实调度干扰。
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'a._runTick=function(){return Promise.resolve();};' +   // 空 tick：不重置心跳
+      'a._startTickLoop();' +
+      'return !!a._tickLoopInterval;})()'
+    );
+
+    // ---- ① 有进展 → 不该放锁 ----
+    // 心跳持续刷新（模拟长任务在正常推进）。等过看门狗的检查周期（250ms × 数轮）。
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var n=0;' +
+      'a.__hbTimer=setInterval(function(){a._tickProgressAt=Date.now();n++;},100);' +
+      'a.__hbCount=function(){return n;};return true;})()'
+    );
+    await sleep(1500);
+    var alive = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {running:a._tickRunning,epoch:a._tickEpoch,hb:a.__hbCount()};})()'
+    );
+    check('长任务持续有进展时，看门狗**不**放锁（否则正常任务被误杀）',
+      alive && alive.epoch === 100 && alive.hb > 0, JSON.stringify(alive));
+
+    // ---- ② 无进展 → 必须放锁 ----
+    // 停掉心跳，把「进度」和「开始时间」都拨回 200 秒前（模拟真挂起）。
+    // ⚠️ 两个都拨：判据是 `_tickProgressAt || _tickStartedAt`，只拨一个会被另一个兜住。
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;clearInterval(a.__hbTimer);' +
+      'a._tickProgressAt=Date.now()-200000;' +
+      'a._tickStartedAt=Date.now()-200000;' +
+      'a._tickRunning=true;' +
+      'return {progress:a._tickProgressAt,started:a._tickStartedAt};})()'
+    );
+    var tripped = await waitFor(ctx.client, 'window._xxtApp._tickEpoch > 100', 5000);
+    var after = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {running:a._tickRunning,epoch:a._tickEpoch,started:a._tickStartedAt,progress:a._tickProgressAt};})()'
+    );    check('真挂起（心跳停 > 150 秒）时看门狗仍然放锁（防线没有被放松）',
+      tripped === true && after.epoch > 100, JSON.stringify(after));
+    check('放锁时同时清掉 _tickRunning（循环才能恢复）',
+      after && after.running === false, JSON.stringify(after));
+
+    // ---- ③ 心跳被清空时，必须回落到 _tickStartedAt 兜底 ----
+    // 为什么需要这条：①② 只覆盖"心跳新鲜"与"心跳陈旧"，
+    // **判据里那个 `|| _tickStartedAt` 兜底没有任何断言守着** —— 把它删掉
+    // （写成 `self._tickProgressAt > ...`）会让"心跳字段还没初始化"的 tick
+    // 永久逃过看门狗。这条专门锁这个兜底。
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'a._tickProgressAt=0;' +                    // 心跳字段为空（未初始化 / 被清掉）
+      'a._tickStartedAt=Date.now()-400000;' +     // 开始时间也很久（远超 150 秒）
+      'a._tickRunning=true;a._tickEpoch=200;' +
+      'return true;})()'
+    );
+    var fallback = await waitFor(ctx.client, 'window._xxtApp._tickEpoch > 200', 5000);
+    check('心跳字段为空时仍按 _tickStartedAt 兜底放锁（兜底分支不能删）',
+      fallback === true, 'tickEpoch 未超过 200 → 兜底分支失效');
+
+    // ---- ④ 唯一的判据分界点：跑很久 + 心跳新 → 必须**不**放锁 ----
+    // 这条与 ② 组合起来，才能唯一确定"判的是心跳而不是总时长"：
+    //   旧判据（只看 _tickStartedAt）→ 这条会红
+    //   看门狗整个失效              → ② 会红
+    // 所以两条缺一不可。（实测：把判据改回 `_tickStartedAt` 时，只有这条会红。）
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'a._tickStartedAt=Date.now()-400000;' +     // 已经跑了 400 秒（远超 150 秒）
+      'a._tickProgressAt=Date.now();' +           // 但"刚刚"才有进展
+      'a._tickRunning=true;a._tickEpoch=300;' +
+      'return true;})()'
+    );
+    await sleep(1500);   // 熬过看门狗好几个检查周期
+    var notKilled = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {epoch:a._tickEpoch,running:a._tickRunning};})()'
+    );
+    check('“跑了很久但一直在推进”的 tick 不被误杀（判据确实是心跳，不是总时长）',
+      notKilled && notKilled.epoch === 300, JSON.stringify(notKilled));
+
+    // 收尾：恢复被改掉的 _runTick / 停掉看门狗，别影响后面的场景
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;clearInterval(a.__hbTimer);' +
+      'if(a._tickLoopInterval){clearInterval(a._tickLoopInterval);a._tickLoopInterval=null;}' +
+      'a._tickRunning=false;a._tickStartedAt=0;a._tickProgressAt=0;a._tickEpoch=0;' +
+      'return true;})()'
+    );
+  }
+});
+
+// ===========================================================================
 // 主流程
 // ===========================================================================
 async function main() {

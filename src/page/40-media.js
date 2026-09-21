@@ -10,6 +10,10 @@
  * 倍速探测、钳制与监控；seek 到结尾、90% 提前结束、防拖拽
  * 音频保活；PPT 内的音频等待
  *
+ * ⚠️ `_waitSlideAudioDone` 的等待上限是 **600 秒**，远超看门狗的 150 秒（64-tasks-loop.js）——
+ *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
+ *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
+ *
  * 本段的方法（42 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、
@@ -370,6 +374,9 @@
     _waitSlideAudioDone: async function (doc) {
       var waited = 0;
       while (waited < 600000) {
+        // ⚠️ 心跳：本循环上限 600 秒，远超看门狗的 150 秒 —— 不刷心跳会被误判成卡死，
+        //    导致新一轮 tick 与这次并行操作同一个任务点（见 64-tasks-loop.js 的看门狗）。
+        this._tickProgress('ppt-audio wait');
         var active = [];
         try {
           active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
