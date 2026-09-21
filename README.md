@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.2.0-blue)
+![版本](https://img.shields.io/badge/版本-1.2.1-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
