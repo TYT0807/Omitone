@@ -982,7 +982,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 读图（视觉） | `src/page/74-quiz-vision.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
 | 日志与诊断文案 | `src/page/30-log.js`；日志出口 `emitRuntimeLog` 在 `src/page/00-shell-constants.js` |
 | 跨域 iframe 安全访问 | `src/page/20-dom.js`：`_safeDocOf` / `_safeWinDoc` |
-| 状态字段、配置默认值 | `src/page/10-config-state.js`（**所有非方法属性都在这里**） |
+| 状态字段、配置默认值 | `src/page/10-config-state.js`（**声明式的非方法属性都在这里**；另有约 30 个字段是惰性初始化的，用 `node tools/audit-fields.js` 列全量） |
 | 设置界面 | `popup/popup.js` + `popup/popup.html`（**记得同步 `src/page/00-shell-constants.js` 的 `DEFAULT_CONFIG`**） |
 
 > **改完记得跑 `npm run concat`** —— 根目录的 `page.js` 是拼出来的产物，

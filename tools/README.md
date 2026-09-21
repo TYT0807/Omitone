@@ -12,6 +12,7 @@
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
 | `audit-safedoc.js` | `node tools/audit-safedoc.js` | **按需跑**：审计"裸读跨域 `.document`"有没有被 `try` 包住（见下方专节） |
+| `audit-fields.js` | `node tools/audit-fields.js` | **按需跑**：列出私有字段全量，标出哪些不在 `10-config-state.js` 的声明表里（见下方专节） |
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 
@@ -100,6 +101,34 @@ node tools/audit-safedoc.js     # 危险处 > 0 时退出码 1
 但一个启发式词法器不适合当"每次都跑"的硬门禁。**改 iframe / 跨域相关代码后手动跑一次。**
 
 **最近一次审计结论（2026-09-21）：16 处裸读全部在 `try` 块内，没有保护的 0 处。**
+
+## audit-fields.js
+
+列出 `page.js` 里用到的私有字段全量，标出哪些**不在 `10-config-state.js` 的声明表里**。
+
+为什么需要它：`src/page/README.md` 里那句"找状态字段就来 `10-config-state.js`"
+**不完全成立** —— 声明表里 119 个属性，另有 **32 个字段是"用到才建"** 的：
+
+```js
+if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);   // 建的时候才建
+if (this._onVideoEnded) el.removeEventListener('ended', this._onVideoEnded);  // 用前先确认
+if (now - (this._blockedReloadAt || 0) > 180000) { … }                 // 读取处兜底
+```
+
+这是**刻意的写法** —— 惰性初始化不会被"某处忘了复位"弄坏，比依赖声明初值更抗错。
+代价是**找字段时不能只看一个文件**。这个脚本把全量列出来，省得下一个人重新数一遍。
+
+```bash
+node tools/audit-fields.js      # 只列出来，不判失败
+```
+
+> ⚠️ **已知误报，别当成 bug**：脚本看不出 `this` 指谁。`XHR.prototype.open = function () {
+> this.__omitoneUrl = … }` 里的 `this` 是 **XHR 实例**，不是 app —— 那两个会被列出来。
+> 2026-09-21 全量核对时，最后剩下的 3 个"没看到兜底"**全是这类误报**，没有真 bug。
+
+> ⚠️ 写这类脚本时踩过的一个正则坑：判断"后面不是左括号"**不能用** `(?!\s*\()` ——
+> 回溯会把 `_withTimeout(` 截成 `_withTimeou` 再判"后面不是左括号"，于是报出一堆截断的假名字
+> （实测报了 360 个）。要**先完整匹配标识符、再在代码里看后面是不是左括号**。
 
 ## prompt-bench.js
 
