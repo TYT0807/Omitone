@@ -518,7 +518,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**9899 行 / 330 个方法**）：
 
-> ### ⚠️ `page.js` 已拆成 `src/page/` 下的 12 个**按域**片段
+> ### ⚠️ `page.js` 已拆成 `src/page/` 下的 16 个**按域**片段
 >
 > 根目录的 `page.js` 现在是**构建产物**：由 [`src/page/`](src/page/README.md) 里的片段
 > 按文件名排序拼成（`npm run concat`）。扩展加载的仍是根目录那一份，所以
@@ -528,10 +528,11 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 > 直接改根目录的 `page.js` 会「改完立刻生效、下次拼接全丢」——
 > `npm test` 里那条 `page.js 与 src/page/ 一致` 就是拦它的。
 >
-> 拆分分两步：**阶段一按物理行切分（只切不改，验收标准是产物与拆分前逐字节相同，
-> sha256 `fd20baa1…`）**，**阶段二再按域重组**（就是现在的布局：`40-media.js` / `70-quiz-flow.js` /
-> `75-quiz-dom.js` …）。阶段二改了字节，所以它靠另外两条证据：重组前后 **434 个属性名完全一致、
-> app 体里 8644 行有效行一行不多不少**，以及 `npm test` + `npm run e2e` 全绿。
+> 拆分分三步：**阶段一按物理行切分（只切不改，验收标准是产物与拆分前逐字节相同，
+> sha256 `fd20baa1…`）**；**阶段二按域重组**；**阶段三把两块最重的再细分**
+> （`60-tasks` → `60/62/64`，`70-quiz-flow` → `70/72/74`）。后两步改了字节，
+> 所以靠另外两条证据：**属性名完全一致（492 个）、app 体非空行一行不多不少（9055 行）**，
+> 以及 `npm test` + `npm run e2e` 全绿。
 >
 > 一句话地图（"我要改倍速 → `40-media.js`"）见 [`src/page/README.md`](src/page/README.md)。
 
@@ -556,8 +557,8 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | --- | --- |
 | **本文件** | **完整交接文档**：功能与验证状态、运行机制、**易错点**、**代码纠缠点**、调试手册、改哪里 |
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
-| [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、两阶段方案、硬性约束、验收清单、已知陷阱 |
-| [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：12 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
+| [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、分阶段方案、硬性约束、验收清单、已知陷阱。**三个阶段都已完成，别再重做** |
+| [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：16 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
 | **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（20 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会"赌运气"渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
@@ -951,17 +952,23 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | API 地址构造、密钥清洗 | **只改 `libs/api-url.js`** |
 | LLM 协议适配 / 分批 / 解析容错 | `content.js`：`handleLLMRequestDirect`、`callXxxAPI`、`parseLLMResponse`、`coerceAnswerForType` |
 | 跨域代理、抓图 | `background.js` |
-| 任务点类型识别（视频/音频/文档/图片/测验/投票） | `src/page/60-tasks.js`：`_classifyTaskFrame` / `_getAttachmentWorkType` / `_buildAttachmentOnlyJob` |
-| 做不完的任务点跳过 | `src/page/60-tasks.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
-| 任务点调度（主循环） | `src/page/60-tasks.js`：`_runTick` / `_tick`（⚠️ 判定顺序＝仲裁顺序） |
+| 任务点类型识别（视频/音频/文档/图片/测验/投票） | `src/page/60-tasks-detect.js`：`_classifyTaskFrame` / `_getAttachmentWorkType` / `_buildAttachmentOnlyJob` |
+| 任务点搜索（OCS / iframe / 附件列表） | `src/page/60-tasks-detect.js`：`_searchChaoxingJobOcs` / `_searchIFramesOcs` / `_getChaoxingAttachments` |
+| 任务点执行（跑视频/阅读/PPT音频） | `src/page/62-tasks-run.js`：`_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy` |
+| 文档类任务点（翻页 / 滚动） | `src/page/62-tasks-run.js`：`_locateDocumentTask` / `_buildPagedDocumentTask` / `_buildScrollDocumentTask` |
+| 做不完的任务点跳过 | `src/page/64-tasks-loop.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
+| 任务点调度（主循环） | `src/page/64-tasks-loop.js`：`_runTick` / `_tick`（⚠️ 判定顺序＝仲裁顺序） |
+| 学习卡片（小节）切换 / 下一节 | `src/page/64-tasks-loop.js`：`_getLearningCards` / `_switchToNextLearningCard` / `nextUnit` |
 | 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（选择器表 `_questionSelectors` 在 `10-config-state.js`） |
-| 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
-| 答案缓存（交卷后记答案） | `src/page/70-quiz-flow.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
+| 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
+| 提交监控 / 提交次数跳过 | `src/page/70-quiz-flow.js`：`_monitorQuizSubmit` / `_shouldHoldQuizBeforeNext` / `_shouldSkipQuizBySubmitAttempts` |
+| 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
+| 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
 | 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
 | 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode` |
 | 讨论任务点 | `src/page/65-discussion.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
 | 弹题（视频内嵌题） | `src/page/80-popup-quiz.js`：`_checkPopupQuiz` / `_handlePopupQuiz` / `_fillPopupAnswer` |
-| 读图（视觉） | `src/page/70-quiz-flow.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
+| 读图（视觉） | `src/page/74-quiz-vision.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
 | 日志与诊断文案 | `src/page/30-log.js`；日志出口 `emitRuntimeLog` 在 `src/page/00-shell-constants.js` |
 | 跨域 iframe 安全访问 | `src/page/20-dom.js`：`_safeDocOf` / `_safeWinDoc` |
 | 状态字段、配置默认值 | `src/page/10-config-state.js`（**所有非方法属性都在这里**） |
@@ -983,15 +990,21 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | `30-log.js` | 日志与诊断文案（所有 `_log*` / `_describe*` / `_diagnose*`） |
 | `40-media.js` | 视频 / 音频 / 倍速 / seek |
 | `50-captcha.js` | 验证码（弹窗 + 整页） |
-| `60-tasks.js` | 任务点识别 / 执行 / 调度 / 放弃名单 / 学习卡片切换 |
+| `60-tasks-detect.js` | 任务点**识别与搜索**（找这一章还有哪些没做） |
+| `62-tasks-run.js` | 任务点**执行与等待**（含文档任务点翻页 / 滚动） |
+| `64-tasks-loop.js` | **主循环** / 放弃名单 / 学习卡片切换 |
 | `65-discussion.js` | 讨论任务点 |
-| `70-quiz-flow.js` | 答题流程 / 答案缓存 / 候选与避开错答 / 读图 |
-| `75-quiz-dom.js` | 抠题 / 填答 / 提交确认弹窗 |
+| `70-quiz-flow.js` | 答题**整卷流程** / 抠题 / 提交监控 / 按次数跳过 |
+| `72-quiz-answers.js` | **答案缓存** / 规范化 / 候选与避开错答 |
+| `74-quiz-vision.js` | **读图（视觉）** / 预算闸门 |
+| `75-quiz-dom.js` | 填答 / 提交确认弹窗 |
 | `80-popup-quiz.js` | 视频内嵌弹题 / 「继续学习」提示 |
 | `90-console-api-startup.js` | app 收尾、`window.xxtAI` 控制台入口、启动 |
 
-> `60-tasks.js`（2567 行）与 `70-quiz-flow.js`（2248 行）仍然偏大，各自还能再分 ——
-> 要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
+> 任务点与答题各占三个文件，顺序就是 `识别 → 执行 → 循环` 与 `流程 → 答案 → 读图`。
+> 剩下最大的三个是 `75-quiz-dom.js`（1365 行）、`40-media.js`（1095 行）、
+> `70-quiz-flow.js`（1042 行）—— 还能再分，但收益已明显变小；
+> 真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 
 需要方法清单时（不用通读）：
 
