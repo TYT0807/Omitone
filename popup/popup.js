@@ -13,6 +13,7 @@ const DEFAULTS = {
   audioMuted: true,
   autoNext: true,
   enableQuiz: true,
+  randomAnswer: false,
   enableCaptcha: true,
   enableDiscussion: true,
   discussionReply: "1",
@@ -76,6 +77,7 @@ const els = {
   audioMuted: $("audioMuted"),
   autoNext: $("autoNext"),
   enableQuiz: $("enableQuiz"),
+  randomAnswer: $("randomAnswer"),
   enableCaptcha: $("enableCaptcha"),
   enableDiscussion: $("enableDiscussion"),
   discussionReply: $("discussionReply"),
@@ -117,6 +119,7 @@ let enableSeekVal = true;
 let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
 let enableQuizVal = true;
+let randomAnswerVal = false;
 let enableCaptchaVal = true;
 // 视觉（看图）默认关：图片计费远高于文本，不能替用户默认花钱
 let visionEnabledVal = false;
@@ -373,6 +376,7 @@ async function saveToggleConfig(showToast = true) {
     audioMuted: audioMutedVal,
     autoNext: autoNextVal,
     enableQuiz: enableQuizVal,
+    randomAnswer: randomAnswerVal,
     enableCaptcha: enableCaptchaVal,
     visionEnabled: visionEnabledVal,
     visionBudgetPerChapter: (function () {
@@ -447,6 +451,7 @@ const updateBlockedReload = bindToggle(els.blockedReload, () => blockedReloadVal
 const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; });
 const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
+const updateRandomAnswer = bindToggle(els.randomAnswer, () => randomAnswerVal, (value) => { randomAnswerVal = value; });
 const updateQuiz = bindToggle(els.enableQuiz, () => enableQuizVal, (value) => { enableQuizVal = value; });
 const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (value) => { enableCaptchaVal = value; });
 const updateVision = bindToggle(els.visionEnabled, () => visionEnabledVal, (value) => { visionEnabledVal = value; });
@@ -490,6 +495,7 @@ async function load() {
   advanceAtNinetyPercentVal = config.advanceAtNinetyPercent !== false;
   autoNextVal = config.autoNext !== false;
   enableQuizVal = config.enableQuiz !== false;
+  randomAnswerVal = config.randomAnswer === true;
   enableCaptchaVal = config.enableCaptcha !== false;
   visionEnabledVal = config.visionEnabled === true;
   enableDiscussionVal = config.enableDiscussion !== false;
@@ -505,6 +511,7 @@ async function load() {
   updateNinety(advanceAtNinetyPercentVal);
   updateAutoNext(autoNextVal);
   updateQuiz(enableQuizVal);
+  updateRandomAnswer(randomAnswerVal);
   updateCaptcha(enableCaptchaVal);
   updateVision(visionEnabledVal);
   updateDiscussion(enableDiscussionVal);

@@ -1642,6 +1642,55 @@ SCENARIOS.push({
     );
     check('装了提交抓包之后普通 XHR 仍能跑完（钩子完全穿透，不废页面）',
       r4g && r4g.done === true, JSON.stringify(r4g));
+
+    // ⑦ 乱选模式：不接 AI、本地随机作答。
+    // 这是给「不想配 API Key」的用户用的，所以三条性质必须守住：
+    //   ① 不再判定「API 不可用」—— 否则会走 _skipQuizForApiUnavailable 把整道题跳过，
+    //      变成「什么都不答」而不是「乱选」；
+    //   ② 生成的答案形状要能被下游直接使用（数量对齐、判断题是 true/false）；
+    //   ③ **绝不写答案记忆** —— 随机答案不是结论，写进去会污染将来的 AI 模式。
+    var r7 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:true, apiKey:""});' +
+      'var qs=app._extractQuestions(null);' +
+      'var ans=app._buildRandomQuizAnswers(qs);' +
+      'return {reason:app._getQuizApiUnavailableReason(), isRandom:app._isRandomAnswerMode(),' +
+      '  qCount:qs.length, count:ans.length, types:qs.map(function(q){return q.type;}),' +
+      '  ans:ans.map(function(a){return Array.isArray(a)?a.join(""):String(a);})};})()'
+    );
+    check('乱选模式下不再判定「API 不可用」（否则会跳过整道题而不是乱选）',
+      r7 && r7.reason === '' && r7.isRandom === true, JSON.stringify(r7));
+    check('乱选生成的答案数量与题数一致', r7 && r7.count === r7.qCount && r7.qCount > 0, JSON.stringify(r7));
+    check('乱选答案形状合法（判断题 true/false，其余非空）',
+      r7 && r7.ans.every(function (a) { return a === 'true' || a === 'false' || (a && a !== 'undefined'); }),
+      JSON.stringify(r7 && r7.ans));
+
+    // ⚠️ 这里断言的是**「连缓存都不读」**，不是「返回 0」。
+    // 第一版写的是 `_rememberWrongQuizAnswers(null) === 0` —— 反向验证发现它分辨不了：
+    // 测试环境里本来就没有"可记的错误答案"，加不加守卫都返回 0。
+    // 改成监听 `_loadQuizCorrectAnswerCache`：带守卫时函数**直接短路**、一次都不读。
+    var r7b = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var reads=0; var orig=app._loadQuizCorrectAnswerCache;' +
+      'app._loadQuizCorrectAnswerCache=function(){reads++;return orig.apply(app,arguments);};' +
+      'app._rememberWrongQuizAnswers(null);' +
+      'app._rememberCorrectQuizAnswers(null);' +
+      'app._loadQuizCorrectAnswerCache=orig;' +
+      'return {reads:reads};})()'
+    );
+    check('乱选模式完全不碰答案缓存（两个函数都短路，一次都不读）',
+      r7b && r7b.reads === 0, JSON.stringify(r7b));
+
+    // 恢复默认，避免影响后面的断言（测试之间共用 configs 这个可变状态）
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {randomAnswer:false}); return true;})()'
+    );
+    var r7c = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;return {isRandom:app._isRandomAnswerMode()};})()'
+    );
+    check('关掉乱选后恢复 AI 路径（回归：不能把开关粘住）',
+      r7c && r7c.isRandom === false, JSON.stringify(r7c));
     // ⚠️ 这里**故意不**再断言「不把答案记错」。写过一条，反向验证发现它不可能失败：
     // 表单被清空时本来就**没有已填答案可记**，那次 `_rememberWrongQuizAnswers` 是空操作，
     // 加不加它 `wrongs` 都是 0 —— 断言分辨不了，留着就是假的检查。

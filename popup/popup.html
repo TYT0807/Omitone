@@ -216,12 +216,19 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
   </details>
 
   <details class="group">
-    <summary><span>答题</span><i class="rule"></i><span class="tag">需要 API Key</span></summary>
+    <summary><span>答题</span><i class="rule"></i><span class="tag">需要 API Key / 也可乱选</span></summary>
     <div class="group-body">
       <div class="row">
         <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableQuiz"></div>
       </div>
+      <div class="row">
+        <label for="randomAnswer">乱选（不接 AI，随机作答）</label>
+        <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="randomAnswer"></div>
+      </div>
+      <p class="hint">打开「乱选」后**不再需要 API Key**，题由本地随机作答、不保证正确率 ——
+      只求把卷交出去。它和 AI 答题是**二选一**：乱选开着时不会调用 AI。
+      随机的答案**不会写进答案记忆**，将来换成 AI 答题不会被这些垃圾数据影响。</p>
       <div class="row">
         <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>

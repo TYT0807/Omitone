@@ -54,6 +54,9 @@
     discussionTimeoutMs: 90000,
     autoNext: true,
     enableQuiz: true,
+    // 「乱选」：不接 AI，本地随机生成答案。给不想配 API key 的用户用，
+    // 只求把卷交出去，不求对。默认关。
+    randomAnswer: false,
     enableCaptcha: true,
     // 主内容区被换成跨域页面（验证码/反作弊）且持续 20 秒无法访问时自动刷新恢复（3 分钟冷却）
     blockedReload: true,
@@ -5834,9 +5837,66 @@
 
     _getQuizApiUnavailableReason: function () {
       if (!this.configs.enableQuiz) return 'api-disabled';
+      // ⚠️ 乱选模式**不需要** API key，也不受连接失败影响 —— 答案在本地生成。
+      // 少了这一句，乱选会走 _skipQuizForApiUnavailable 把整道题跳过，
+      // 变成「什么都不答」而不是「乱选」。
+      if (this._isRandomAnswerMode()) return '';
       if (!String(this.configs.apiKey || '').trim()) return 'api-key-missing';
       if (Date.now() < (this._quizApiFailUntil || 0)) return 'api-connection-failed';
       return '';
+    },
+
+    /** 乱选模式是否生效。`enableQuiz` 仍要开 —— 关掉它是「完全不答题」的意思。 */
+    _isRandomAnswerMode: function () {
+      return !!(this.configs && this.configs.enableQuiz && this.configs.randomAnswer);
+    },
+
+    /**
+     * 本地生成随机答案，**形状与 AI 返回的完全一致**（位置式数组）。
+     *
+     * 之所以刻意对齐形状：下游的填充 / 提交 / 判分识别因此**一行都不用改**，
+     * 只换「答案从哪来」这一个源头 —— 改动面越小，越不容易碰坏别的功能。
+     *
+     * 各题型：单选 → 随机一个字母；判断 → 随机 true/false；
+     * 多选 → 随机 1~2 项（用户实测：平台**接受**只选一项）；
+     * 填空 / 简答 → 固定占位文本（乱选模式下不求对，只求把卷交出去）。
+     */
+    _buildRandomQuizAnswers: function (questions) {
+      var list = questions || [];
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var q = list[i] || {};
+        var type = q.type || 'single';
+        var count = (q.options || []).length;
+        if (count < 2 || count > 8) count = 4;
+        if (type === 'judge') {
+          out.push(Math.random() < 0.5);
+        } else if (type === 'multiple') {
+          var pool = [];
+          for (var k = 0; k < count; k++) pool.push(String.fromCharCode(65 + k));
+          var picked = [];
+          var want = Math.random() < 0.5 ? 1 : 2;
+          while (pool.length && picked.length < want) {
+            picked.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+          }
+          out.push(picked.sort());
+        } else if (type === 'fill' || type === 'short') {
+          out.push('不会');
+        } else {
+          out.push(String.fromCharCode(65 + Math.floor(Math.random() * count)));
+        }
+      }
+      return out;
+    },
+
+    /** 乱选模式下的日志（每 3 秒最多一条，避免刷屏）。 */
+    _logRandomAnswers: function (questions) {
+      var now = Date.now();
+      if (now - (this._randomAnswerLogAt || 0) < 3000) return;
+      this._randomAnswerLogAt = now;
+      emitRuntimeLog('info', 'random answer mode: generated locally, no ai request', {
+        count: (questions || []).length
+      });
     },
 
     _isQuizApiUnavailable: function () {
@@ -6250,6 +6310,9 @@
     },
 
     _rememberCorrectQuizAnswers: function (preferredDoc) {
+      // ⚠️ 乱选模式**绝不**写答案缓存。随机答案不是"算出来的结论"，
+      // 记进去会污染 AI 模式 —— 用户哪天打开 AI 答题，会被这批垃圾缓存误导。
+      if (this._isRandomAnswerMode()) return 0;
       var scanned = [];
       var remembered = 0;
       var self = this;
@@ -6318,6 +6381,8 @@
     },
 
     _rememberWrongQuizAnswers: function (preferredDoc) {
+      // 同上：乱选的"错"没有信息量，记进错误缓存只会让 AI 模式避错避到沟里。
+      if (this._isRandomAnswerMode()) return 0;
       var scanned = [];
       var remembered = 0;
       var self = this;
@@ -7358,7 +7423,10 @@
       //
       // 它是 async 的，会 await 一段时间。但预算与张数都有硬上限，
       // 最坏情况就是这一卷慢一点，不会失控。
-      await this._applyVisionToQuestions(questions, preferredDoc || null);
+      // 乱选模式跳过配图识别：既然答案是随机的，把图读成文字纯属白花 token。
+      if (!this._isRandomAnswerMode()) {
+        await this._applyVisionToQuestions(questions, preferredDoc || null);
+      }
 
       var quizDoc = preferredDoc || this._getQuizDocumentFromQuestions(questions) || null;
 
@@ -7457,7 +7525,15 @@
       }
 
       try {
-        var result = await bridgeSend('llm_request', { questions: payload });
+        // 乱选模式：**不发任何请求**，本地生成同形状的 result，直接走后面的填充。
+        // 下游（填充 / 提交 / 判分识别）因此一行都不用改 —— 只换「答案从哪来」。
+        var result;
+        if (this._isRandomAnswerMode()) {
+          this._logRandomAnswers(questions);
+          result = { success: true, data: this._buildRandomQuizAnswers(questions) };
+        } else {
+          result = await bridgeSend('llm_request', { questions: payload });
+        }
         if (!result || !result.success) {
           console.error('quiz llm request failed:', result && result.error ? result.error : 'unknown');
           this._quizInProgress = false;
@@ -9423,7 +9499,14 @@
         question.options = optionItems.map(this._extractOptionText.bind(this)).filter(Boolean);
 
         try {
-          var result = await bridgeSend('llm_request', { questions: [question] });
+          // 乱选模式：弹题同样本地生成，**不发请求**（与主流程同源）。
+          var result;
+          if (this._isRandomAnswerMode()) {
+            this._logRandomAnswers([question]);
+            result = { success: true, data: [this._buildRandomQuizAnswers([question])[0]] };
+          } else {
+            result = await bridgeSend('llm_request', { questions: [question] });
+          }
           if (result && result.success && result.data) {
             var answer = Array.isArray(result.data) ? result.data[0] : result.data;
             var filled = this._fillPopupAnswer(popup, answer, type);

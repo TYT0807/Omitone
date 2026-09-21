@@ -50,6 +50,7 @@
     muted: false,
     autoNext: true,
     enableQuiz: true,
+    randomAnswer: false,
     enableMedia: true,
     enablePPT: true,
     enableHyperlink: true,
