@@ -227,7 +227,8 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
         <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="randomAnswer"></div>
       </div>
       <p class="hint">打开「乱选」后**不再需要 API Key**，题由本地随机作答、不保证正确率 ——
-      只求把卷交出去。它和 AI 答题是**二选一**：乱选开着时不会调用 AI。
+      只求把卷交出去。乱选开着时**不会调用 AI**（哪怕你配了 Key）。
+      注意「AI 自动答题」那个开关**也要开着** —— 关掉它表示完全不答题，乱选同样不生效。
       随机的答案**不会写进答案记忆**，将来换成 AI 答题不会被这些垃圾数据影响。</p>
       <div class="row">
         <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>

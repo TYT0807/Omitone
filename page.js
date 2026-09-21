@@ -5868,7 +5868,10 @@
         var q = list[i] || {};
         var type = q.type || 'single';
         var count = (q.options || []).length;
-        if (count < 2 || count > 8) count = 4;
+        // 只有"读不到选项"（0 或 1 个）时才兜底成 4 —— 让字母至少有可能匹配上。
+        // 选项多的时候**按真实数量**取（原先 >8 会硬压成 4，没必要，而且浪费了正确匹配的机会）。
+        if (count < 2) count = 4;
+        if (count > 26) count = 26;
         if (type === 'judge') {
           out.push(Math.random() < 0.5);
         } else if (type === 'multiple') {
@@ -6561,6 +6564,14 @@
 
     _rememberSubmittedQuizAnswers: function (questions, preferredDoc) {
       if (!questions || !questions.length) return 0;
+      // ⚠️ 乱选模式同样不写。
+      //
+      // 一开始我以为这条不能守 —— 怕"不记已提交"会导致重复提交。**那是错的**：
+      // `submittedById` 全代码只有一个读取点（`_getLastSubmittedQuizAnswerForQuestion`），
+      // 用途是「题目被判错、而答案域为空时，回退用上次提交的答案来记录错误」——
+      // 它**不驱动提交流程**。乱选写的随机答案一旦被当成"错答案"记下来，
+      // 将来用户换成 AI 答题会被这些无信息量的记录误导。
+      if (this._isRandomAnswerMode()) return 0;
       var loaded = this._loadQuizCorrectAnswerCache(preferredDoc || (questions[0] && questions[0]._element && questions[0]._element.ownerDocument));
       var cache = loaded.data;
       if (!cache.submittedById) cache.submittedById = {};

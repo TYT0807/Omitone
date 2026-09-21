@@ -1668,17 +1668,23 @@ SCENARIOS.push({
     // ⚠️ 这里断言的是**「连缓存都不读」**，不是「返回 0」。
     // 第一版写的是 `_rememberWrongQuizAnswers(null) === 0` —— 反向验证发现它分辨不了：
     // 测试环境里本来就没有"可记的错误答案"，加不加守卫都返回 0。
-    // 改成监听 `_loadQuizCorrectAnswerCache`：带守卫时函数**直接短路**、一次都不读。
+    // 改成监听 `_loadQuizCorrectAnswerCache`：带守卫时三个函数**全部短路**、一次都不读。
+    //
+    // 第三个（`_rememberSubmittedQuizAnswers`）是**审计后补上的** ——
+    // 一开始我以为它不能守（怕"不记已提交"导致重复提交），那是错的：
+    // `submittedById` 全代码只有一个读取点，用途是"题目被判错、答案域为空时回退用上次提交的答案
+    // 来记录错误"，**不驱动提交流程**。所以乱选写的随机答案同样只会起污染作用。
     var r7b = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var reads=0; var orig=app._loadQuizCorrectAnswerCache;' +
       'app._loadQuizCorrectAnswerCache=function(){reads++;return orig.apply(app,arguments);};' +
       'app._rememberWrongQuizAnswers(null);' +
       'app._rememberCorrectQuizAnswers(null);' +
+      'app._rememberSubmittedQuizAnswers(app._extractQuestions(null));' +
       'app._loadQuizCorrectAnswerCache=orig;' +
       'return {reads:reads};})()'
     );
-    check('乱选模式完全不碰答案缓存（两个函数都短路，一次都不读）',
+    check('乱选模式完全不碰答案缓存（三个函数都短路，一次都不读）',
       r7b && r7b.reads === 0, JSON.stringify(r7b));
 
     // 恢复默认，避免影响后面的断言（测试之间共用 configs 这个可变状态）
@@ -1723,6 +1729,31 @@ SCENARIOS.push({
     );
     check('enableQuiz 关掉时乱选也不生效（关掉答题 = 完全不答题）',
       r7f && r7f.isRandom === false && r7f.reason === 'api-disabled', JSON.stringify(r7f));
+
+    // ⑦e 乱选的答案必须**真的填得进 DOM** —— 形状对不等于填得上。
+    // 这是"能不能交卷"的最后一道关：填不进去 → 章节小测的提交前置（每题都有值）永远不满足
+    // → 整卷永不提交 → 用户看到的是"什么都不发生"。
+    // 前面几条只验了形状（数量、类型、非空），**没验过端到端填得进去**，这里补上。
+    var r7g = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableQuiz:true, randomAnswer:true, apiKey:""});' +
+      'var qs=app._extractQuestions(null);' +
+      'var ans=app._buildRandomQuizAnswers(qs);' +
+      'var filled=0, err=[];' +
+      'for(var i=0;i<qs.length;i++){' +
+      '  var q=qs[i];' +
+      '  try{' +
+      '    if(q.type==="multiple") app._fillMultiChoice(q._element, ans[i]);' +
+      '    else if(q.type==="fill") app._fillText(q._element, ans[i]);' +
+      '    else if(q.type==="short") app._fillTextarea(q._element, ans[i]);' +
+      '    else app._fillChoice(q._element, ans[i], "radio");' +
+      '  }catch(e){ err.push(String(e && e.message).slice(0,40)); }' +
+      '  if(app._getQuizQuestionFilledValue(null, q)) filled++;' +
+      '}' +
+      'return {filled:filled, total:qs.length, types:qs.map(function(q){return q.type;}), err:err};})()'
+    );
+    check('乱选的答案真的填得进 DOM（能交卷的最后一道关）',
+      r7g && r7g.total > 0 && r7g.filled === r7g.total, JSON.stringify(r7g));
 
     // 收尾：把 configs 恢复成进来时的样子（enableQuiz 也要还原，别只还原 randomAnswer）
     await ctx.client.evaluate(
