@@ -35,6 +35,10 @@
         // 看门狗：_runTick 内部某处永久挂起时强制释放锁，恢复循环
         // （历史 bug：bridgeSend 无超时 / video.play() 在视频源停摆时 pending，导致整个刷课停摆）
         if (self._tickRunning && self._tickStartedAt && Date.now() - self._tickStartedAt > 150000) {
+          // ⚠️ 必须先"作废"这次 tick 的复位权：它可能过一会儿才醒过来，
+          //    醒来后无条件复位会把**新 tick 的锁**清掉 —— 于是下一轮又起一个 tick，
+          //    两个 tick 并行推进（可能重复提交、重复跳章）。
+          self._tickEpoch = (self._tickEpoch || 0) + 1;
           self._tickRunning = false;
           self._tickStartedAt = 0;
           emitRuntimeLog('error', 'tick watchdog: stuck tick force-released, loop resumed', {});
@@ -56,6 +60,7 @@
     _runTick: async function () {
       if (this._tickRunning) return;
       this._tickRunning = true;
+      var myEpoch = this._tickEpoch = (this._tickEpoch || 0) + 1;
       this._tickStartedAt = Date.now();
       try {
         // 讨论上下文（讨论区独立网址 / 讨论模块页）：发完评论自动返回，期间不做任何刷课动作。
@@ -264,8 +269,14 @@
         }
         console.error('tick error:', err);
       } finally {
-        this._tickRunning = false;
-        this._tickStartedAt = 0;
+        // ⚠️ 只有**仍然持有锁**的那一次才允许复位。
+        // 看门狗可能在 150 秒后把锁强制释放并交给新的 tick；若这次（旧的）此刻才醒来，
+        // 无条件复位会清掉新 tick 的锁 → 下一轮再起一个 tick → 两个 tick 并行。
+        // 正常路径下 epoch 必然相等，行为与改动前完全一致。
+        if (this._tickEpoch === myEpoch) {
+          this._tickRunning = false;
+          this._tickStartedAt = 0;
+        }
       }
     },
 
