@@ -36,9 +36,9 @@
 #### ✅ 最新快照（2026-09-21 傍晚）—— 已全部推送上远端
 
 **本地与远端已完全同步，线上附件也已换成含「乱选」的新包。**
-（快照写于 2026-09-21 傍晚；之后又加了 `a070e24`「备好 page.js 拆分说明」与
-`dcc44fe`「page.js 拆成 12 个按域片段，行为不变」等几个提交 —— 见 §0.2.2，
-**都还没推上远端**。**以 `git log --oneline -3` 和 `git status --short` 为准**。）
+（快照写于 2026-09-21 傍晚；之后又加了 `a070e24`「备好 page.js 拆分说明」、
+`dcc44fe`「page.js 拆成 12 个按域片段，行为不变」、以及把两块最重的再细分到 16 个片段等提交
+—— 见 §0.2.2，**都还没推上远端**。**以 `git log --oneline -3` 和 `git status --short` 为准**。）
 
 | | |
 | --- | --- |
@@ -222,7 +222,7 @@ npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- v
 把过期的模型名/参数改掉（改 `libs/thinking.js` 与 `popup/popup.js` 两处），并更新核对日期。
 这件事**不是可选项** —— 它是"用户照着预置填完却发现用不了"的唯一防线。
 
-### 0.2.2 `page.js` 拆分：**已完成**（按域切成 12 个片段）
+### 0.2.2 `page.js` 拆分：**已完成**（按域切成 16 个片段）
 
 **`page.js` 原本是一个 9899 行的巨石** —— 一个 IIFE 里的一个大对象字面量，330 个方法，
 **没有按域排列**（每个域都横跨全文，例如"答题"类方法分布在 586–9860 行），
@@ -230,31 +230,34 @@ npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- v
 
 **现状：拆完了，行为不变。**
 
-- 源码在 [`src/page/`](src/page/README.md) 下的 **12 个按域片段**里
+- 源码在 [`src/page/`](src/page/README.md) 下的 **16 个按域片段**里
   （`00-shell-constants` / `10-config-state` / `20-dom` / `30-log` / `40-media` / `50-captcha` /
-  `60-tasks` / `65-discussion` / `70-quiz-flow` / `75-quiz-dom` / `80-popup-quiz` /
+  `60-tasks-detect` / `62-tasks-run` / `64-tasks-loop` / `65-discussion` /
+  `70-quiz-flow` / `72-quiz-answers` / `74-quiz-vision` / `75-quiz-dom` / `80-popup-quiz` /
   `90-console-api-startup`，按文件名排序拼接）
 - **根目录的 `page.js` 现在是构建产物** —— 扩展加载的仍是它，
   所以 `manifest.json` / `content.js` / `web_accessible_resources` / `build.js` 的 `INCLUDE` 一个都没动
 - 新增 `npm run concat` / `npm run concat:check`；`npm run check` 会比对产物与片段，
   拦住"直接改根目录 page.js、下次拼接全丢"这种静默失效
 - 验收：阶段一（按行切分）产物与拆分前**逐字节相同**（sha256 `fd20baa1…`）；
-  阶段二（按域重组）**434 个属性名完全一致、app 体 8644 行有效行一行不多不少**，
-  外加 `npm test` 与 `npm run e2e` 全绿
+  阶段二（按域重组）**434 个属性名完全一致、app 体 8644 行有效行一行不多不少**；
+  阶段三（细分两块最重的）**492 个属性名完全一致、非空行 9055 行一行不多不少**。
+  每一步都另加 `npm test` 与 `npm run e2e` 全绿。
 
 > ⚠️ **接手后改 `page.js` 相关代码，请改 `src/page/` 里的片段，然后跑 `npm run concat`。**
 > 一句话地图（"我要改倍速 → `40-media.js`"）见 [`src/page/README.md`](src/page/README.md)。
 
-**还没做的：继续细分。** `60-tasks.js`（2567 行）与 `70-quiz-flow.js`（2248 行）仍偏大，
-各自还能再分（例如 tasks 里的「文档任务点」、quiz 里的「答案缓存」）。
-**一次只搬一个子域、搬完立刻跑 `npm run e2e`** —— 不要一次搬完再测。
+**还没做的：继续细分（可选，收益已变小）。** 剩下最大的三个是
+`75-quiz-dom.js`（1365 行）、`40-media.js`（1095 行）、`70-quiz-flow.js`（1042 行）。
+"一个域横跨上千行"的问题已经解决，再分下去是边际收益。
+真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`** —— 不要一次搬完再测。
 
 执行说明（自包含，可直接整份复制给另一个 AI）：
 
 > 📄 [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md)
 >
-> 里面写全了：现状勘明、两阶段方案、九条硬性约束、验收清单、
-> 以及本仓库实测过的"假成功"陷阱。
+> 里面写全了：现状勘明、分阶段方案、九条硬性约束、验收清单、
+> 以及本仓库实测过的"假成功"陷阱。**三个阶段都已完成，别再从头做一遍。**
 
 **⚠️ 三条最容易踩的**：
 
@@ -804,7 +807,7 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 
 1. **先读 `AGENTS.md`** —— 硬性约束在那里（跨域 iframe 不许裸读 `.document`、新增 `await`
    必须可超时、删方法前 grep 全部调用点），违反会**静默**打死主循环。
-2. **别通读 `page.js`** —— 9899 行里绝大多数与你的任务无关。它已经是 `src/page/` 下 12 个
+2. **别通读 `page.js`** —— 9899 行里绝大多数与你的任务无关。它已经是 `src/page/` 下 16 个
    按域片段的拼接产物（§0.2.2），先看 [`src/page/README.md`](src/page/README.md) 的模块地图
    直接跳到对应文件，再用本文 §3 的索引 + 搜索定位，读文件时只读目标函数附近。
 3. **先跑测试建立基线，改完再跑一遍，全绿才提交** —— 这比通读代码更能发现回归。

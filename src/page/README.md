@@ -21,10 +21,14 @@ npm run concat:check    # 只校验产物与片段是否一致（npm test 里已
 | --- | --- |
 | 视频、音频、倍速、seek、防拖拽 | [`40-media.js`](#40-mediajs) |
 | 验证码（弹窗 / 整页） | [`50-captcha.js`](#50-captchajs) |
-| 任务点识别、调度、主循环 `_runTick`、放弃名单、学习卡片切换 | [`60-tasks.js`](#60-tasksjs) |
+| **任务点识别**（找这一章还有哪些没做、附件/iframe/OCS 搜索） | [`60-tasks-detect.js`](#60-tasks-detectjs) |
+| **任务点执行**（跑视频/阅读/PPT音频、文档类任务点翻页/滚动） | [`62-tasks-run.js`](#62-tasks-runjs) |
+| **主循环 `_runTick`**、放弃名单、学习卡片切换 | [`64-tasks-loop.js`](#64-tasks-loopjs) |
 | 讨论任务点 | [`65-discussion.js`](#65-discussionjs) |
-| 答题流程、答案缓存、候选/避开错答、读图 | [`70-quiz-flow.js`](#70-quiz-flowjs) |
-| 抠题、填答、提交确认弹窗 | [`75-quiz-dom.js`](#75-quiz-domjs) |
+| **答题整卷流程**、抠题、提交监控、按提交次数跳过 | [`70-quiz-flow.js`](#70-quiz-flowjs) |
+| **答案缓存**、规范化、候选/避开错答 | [`72-quiz-answers.js`](#72-quiz-answersjs) |
+| **读图（视觉）**、`_takeVisionBudget` 预算闸门 | [`74-quiz-vision.js`](#74-quiz-visionjs) |
+| 填答（单选/多选/判断/填空）、提交确认弹窗 | [`75-quiz-dom.js`](#75-quiz-domjs) |
 | 视频内嵌弹题、「继续学习」提示 | [`80-popup-quiz.js`](#80-popup-quizjs) |
 | **状态字段**（`configs`、所有 `_xxx`） | [`10-config-state.js`](#10-config-statejs) |
 | 跨域 iframe 安全访问、DOM 工具 | [`20-dom.js`](#20-domjs) |
@@ -37,6 +41,9 @@ npm run concat:check    # 只校验产物与片段是否一致（npm test 里已
 - **所有 `_log*` / `_describe*` / `_diagnose*` 都在 `30-log.js`**
 - 抠题 / 填答 / 提交确认这一整块在 `75-quiz-dom.js`（`_questionSelectors` 起、`_handleSubmitConfirmDialog` 止）
 
+任务点与答题各自有三个文件，按**「识别 → 执行 → 循环」**和**「流程 → 答案 → 读图」**分，
+顺序就是文件名前缀：**要改调度看 `60/62/64`，要改答题看 `70/72/74`。**
+
 要找方法定义，别通读：
 
 ```bash
@@ -45,9 +52,10 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 
 ---
 
-## 这 12 个片段各自负责什么
+## 这 16 个片段各自负责什么
 
-行数是片段文件的实际行数（含头部注释），方法数是脚本从片段里数出来的。
+行数是片段文件的实际行数（含头部注释），属性/方法数是脚本从片段里数出来的
+（全仓合计 **492 个属性 = 330 个方法 + 162 个状态/配置字段**）。
 
 ### `00-shell-constants.js`（244 行）
 
@@ -88,26 +96,64 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 验证码弹窗的检测、取图与识别；整页验证码模式（`_runStandaloneCaptchaMode`）。
 
-### `60-tasks.js`（2567 行 / 69 方法）
+### `60-tasks-detect.js`（1027 行 / 25 方法）
 
-最重的一块：从页面里找出「这一章还有哪些任务点没做」（附件 / iframe / OCS 搜索）、
-任务点执行与等待、文档类任务点（翻页 / 滚动）、**主 tick 循环 `_runTick` / `_tick`**
-（⚠️ 判定顺序＝仲裁顺序，改它是高风险操作）、学习卡片（小节）切换、做不完的任务点放弃名单。
+任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
+任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
+（`_buildAttachmentOnlyJob` / `_buildSyntheticChaoxingJob` / `_buildFrameFallbackJob`）、
+OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`）、「已完成」状态识别。
 
-⚠️ `_getAttachmentWorkType` 的判断顺序不能动（`isPassed` → `job:true` → `job:false` → 模块名推断）；
-`_isJobCompleted` 拿不准时必须返回 `true`（它喂给"放弃"计数，误判会把必做任务点跳过）。
+⚠️ `_getAttachmentWorkType` 的判断顺序不能动：`isPassed` → `job:true` → `job:false` → 模块名推断。
+
+### `62-tasks-run.js`（797 行 / 16 方法）
+
+任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
+`_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
+任务点等待与 pending 处理（等它加载完 `_isTaskStillLoading`、等它出成绩 `_handlePendingTask`）、
+**文档类任务点**：翻页式 / 滚动式的定位与完成判定
+（`_locateDocumentTask` / `_buildPagedDocumentTask` / `_buildScrollDocumentTask` / `_handleDocumentTask`）。
+
+### `64-tasks-loop.js`（709 行 / 28 方法）
+
+**主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
+任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
+章节内学习卡片（小节）的定位与切换、下一步推进（`nextUnit` / `_advanceLearningStep`）。
+
+⚠️ `_isJobCompleted` 拿不准时必须返回 `true` —— 它喂给"放弃"计数，误判成"没完成"会把必做任务点跳过。
 
 ### `65-discussion.js`（766 行 / 27 方法）
 
 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重。
 讨论任务点不在课程 iframe 内，点开会跳到独立讨论页 —— 所以它有一整套自己的页面判定与流程。
 
-### `70-quiz-flow.js`（2248 行 / 87 方法）
+### `70-quiz-flow.js`（1042 行 / 43 方法）
 
-答题的流程与状态：`_handleQuiz`（整卷主流程）、提交前后监控、按提交次数跳过、
-**答案缓存**（正确 / 错误 / 已提交答案的读写与规范化）、候选答案与组合排序、
-避开已知错答、尽力而为的填充、乱选模式，以及**读图（视觉）**：取图、描述、并回题目、预算控制
-（`_takeVisionBudget` 是烧钱的安全阀）。
+答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
+`_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、
+提交前后：提交嗅探与提交监控（`_installSubmitSniffer` / `_monitorQuizSubmit`）、
+要不要在进入下一节前 hold 住（`_shouldHoldQuizBeforeNext`）、
+按提交次数跳过（`_shouldSkipQuizBySubmitAttempts` / `_forceSkipQuizAfterMaxAttempts`）、
+API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_buildRandomQuizAnswers`）、
+重做（redo）弹窗的处理（`_prepareQuizRedoIfNeeded`）。
+
+### `72-quiz-answers.js`（978 行 / 39 方法）
+
+**答案本身**的处理（与"流程"分开）：答案缓存的读写（正确答案 / 已知错答 / 已提交答案
+`_loadQuizCorrectAnswerCache` / `_rememberCorrectQuizAnswers` / `_addWrongQuizAnswer`）、
+答案的规范化与比对（`_canonicalQuizAnswer` / `_getQuizTitleKeyFromElement`）、
+候选答案与组合排序（`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_sortMultiFallbackCombos`）、
+避开已知错答（`_avoidKnownWrongAnswer`）、尽力而为的填充（`_fillBestEffortQuizAnswers`）、
+按缓存填充（`_fillCachedQuizAnswers`）。
+
+> 想知道"这题为什么选了这个答案"，从这里入手；想知道"这一卷为什么还没提交"，去 `70-quiz-flow.js`。
+
+### `74-quiz-vision.js`（175 行 / 5 方法）
+
+**读图（视觉）**：把题目里的图片取出来（`_collectQuestionImages`）、交给视觉模型描述、
+再把描述并回题干（`_applyVisionToQuestions` / `_mergeVisionIntoTitle`）。
+
+⚠️ `_takeVisionBudget` 是**烧钱的安全阀**：预算耗尽必须停并写 warn 日志，绝不静默。
+图片走独立请求 —— 塞进答题链的长前缀会让缓存全失效，反而更贵。
 
 ### `75-quiz-dom.js`（1365 行 / 39 方法）
 
@@ -160,24 +206,35 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 验收标准是**拼接产物与拆分前逐字节相同**（`cmp` 无输出，sha256 `fd20baa1…`）。
 这一步把"多文件 + 拼接"的机制建起来，而完全不触碰行为 —— 于是有了一条随时可回退的基线。
 
-**阶段二 —— 按域重组（就是现在这个布局）。**
-把 330 个方法按域重新分组。这一步**改不了字节相同那条基线**（方法换了位置，字节必然变），
-所以它靠的是另外两条证据：
+**阶段二 —— 按域重组。**
+把 330 个方法按域重新分组，得到 12 个域片段。这一步**改不了字节相同那条基线**
+（方法换了位置，字节必然变），所以它靠的是另外两条证据：
 
 1. **属性与行级的多重集比对**：重组前后 app 对象里 **434 个属性名完全一致**
    （无缺失、无重复），且 app 体里 **8644 行有效行一行不多一行不少** —— 证明只是换了位置。
 2. **测试兜底**：`npm test` 全绿 + `npm run e2e` **26 个场景 / 280 项全绿**（真实 Edge）。
 
-重组用的是一次性脚本，已经删掉；**拼接脚本 `tools/concat-page.js` 是长期保留的**。
+**阶段三 —— 把两块最重的再细分（就是现在这 16 个）。**
+`60-tasks.js`（2567 行）拆成 `60/62/64`，`70-quiz-flow.js`（2248 行）拆成 `70/72/74`，
+判据仍是同一套，只是比对对象换成"细分前的片段"：
+
+1. **属性名 492 个完全一致**，且 app 体**非空行 9055 行完全一致**（多重集比对）。
+2. **测试兜底**：`npm test` 全绿 + `npm run e2e` **26 个场景 / 280 项全绿**（真实 Edge）。
+
+重组与细分用的都是一次性脚本，已经删掉；**拼接脚本 `tools/concat-page.js` 是长期保留的**。
+
+> 细分顺带把 `60/62/64/70/72/74` 六个文件的块间空行从两个收敛成一个
+> （其余 10 个片段仍是两个）—— 纯排版差异，非空行一行没动。看着不一致是正常的。
 
 ---
 
 ## 还没做的
 
-- `60-tasks.js`（2567 行）和 `70-quiz-flow.js`（2248 行）仍然偏大 —— 它们各自还可以再分
-  （例如 tasks 里的「文档任务点」、quiz 里的「答案缓存」）。要分就**一次只搬一个子域、
-  搬完立刻跑 `npm run e2e`**。
-- 原始执行说明见 [`docs/pagejs-拆分提示词.md`](../../docs/pagejs-拆分提示词.md)（阶段一那节已完成，别再重做）。
+- 剩下最大的三个片段是 `75-quiz-dom.js`（1365 行）、`40-media.js`（1095 行）、
+  `70-quiz-flow.js`（1042 行）。还能再分，但收益已经明显变小 ——
+  真正"一个域横跨上千行"的问题已经解决了。
+  真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
+- 原始执行说明见 [`docs/pagejs-拆分提示词.md`](../../docs/pagejs-拆分提示词.md)（三个阶段都已完成，别再重做）。
 
 搬的时候记住 `AGENTS.md` §2 的硬性约束 —— 尤其：
 `_getAttachmentWorkType` 的判断顺序不能动、`_isJobCompleted` 拿不准必须返回 `true`、

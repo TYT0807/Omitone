@@ -1,22 +1,29 @@
 # 任务：把 `page.js`（9899 行 / 330 个方法）拆成多个源文件
 
-> ⚠️ **两阶段都已完成（2026-09-21）—— 别再从头做一遍。**
+> ⚠️ **三个阶段都已完成（2026-09-21）—— 别再从头做一遍。**
 >
-> - 源码已在 `src/page/` 下拆成 **12 个按域片段**（`00-shell-constants` / `10-config-state` /
->   `20-dom` / `30-log` / `40-media` / `50-captcha` / `60-tasks` / `65-discussion` /
->   `70-quiz-flow` / `75-quiz-dom` / `80-popup-quiz` / `90-console-api-startup`），
+> - 源码已在 `src/page/` 下拆成 **16 个按域片段**（`00-shell-constants` / `10-config-state` /
+>   `20-dom` / `30-log` / `40-media` / `50-captcha` / `60-tasks-detect` / `62-tasks-run` /
+>   `64-tasks-loop` / `65-discussion` / `70-quiz-flow` / `72-quiz-answers` / `74-quiz-vision` /
+>   `75-quiz-dom` / `80-popup-quiz` / `90-console-api-startup`），
 >   拼接脚本是 `tools/concat-page.js`（`npm run concat` / `npm run concat:check`），
 >   根目录的 `page.js` 已是**拼接产物**。`npm test` 里有守卫拦"改产物"的漂移。
 > - 阶段一（按行切分）的验收证据：产物与拆分前**逐字节相同**（sha256 `fd20baa1…`）。
->   阶段二（按域重组）的验收证据：434 个属性名完全一致、app 体 8644 行有效行一行不多不少，
->   外加 `npm test` + `npm run e2e` 全绿。
-> - **现在只剩"继续细分"这件事**：`60-tasks.js`（2567 行）与 `70-quiz-flow.js`（2248 行）
->   仍偏大，各自还能再分（例如 tasks 里的「文档任务点」、quiz 里的「答案缓存」）。
+>   阶段二（按域重组，12 个片段）的验收证据：434 个属性名完全一致、app 体 8644 行有效行
+>   一行不多不少，外加 `npm test` + `npm run e2e` 全绿。
+> - **阶段三（继续细分，就是现在的 16 个片段）**：`60-tasks.js`（2567 行）拆成
+>   `60-tasks-detect`（识别与搜索）/ `62-tasks-run`（执行与等待，含文档任务点）/
+>   `64-tasks-loop`（主循环、放弃名单、学习卡片）；`70-quiz-flow.js`（2248 行）拆成
+>   `70-quiz-flow`（整卷流程与提交监控）/ `72-quiz-answers`（答案缓存、候选与避开错答）/
+>   `74-quiz-vision`（读图与预算闸门）。验收证据：**492 个属性名完全一致、
+>   非空行 9055 行一行不多不少**，外加 `npm test` + `npm run e2e` **280/280** 全绿。
+> - **现在只剩"可选地继续细分"**：最大的三个是 `75-quiz-dom.js`（1365 行）、
+>   `40-media.js`（1095 行）、`70-quiz-flow.js`（1042 行）—— 收益已明显变小。
 >   要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 > - 动手前先看 [`../src/page/README.md`](../src/page/README.md) 的模块地图，
->   以及 `CHANGELOG.md`「未发布」段里那次拆分的记录。
+>   以及 `CHANGELOG.md`「未发布」段里那次拆分的记录（含两个实测踩到的坑）。
 >
-> 下面**两阶段的描述保留原样**，因为它们是理解现有布局的前提；
+> 下面**阶段一 / 阶段二的描述保留原样**，因为它们是理解现有布局的前提；
 > 但**不要重做** —— 尤其别再按"每段 800–1200 行的物理切片"重新切一遍。
 
 > 这份是**给执行拆分的 AI** 的完整提示词。它自包含 —— 但你手上有仓库，
