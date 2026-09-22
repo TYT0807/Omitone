@@ -14,10 +14,11 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（25 个）：
+ * 本段的方法（26 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
- *   _getChaoxingFrameData、_detectChaoxingJobElements、_matchChaoxingAttachment、
+ *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
+ *   _matchChaoxingAttachment、
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_searchIFramesOcs、
@@ -222,6 +223,69 @@
       } catch (e2) {}
 
       return {};
+    },
+
+    /**
+     * 沿**祖先帧链**找这个帧所属任务点的 jobid。
+     *
+     * 为什么必须有（现场故障，实测日志）：真实页面上「带 jobid 的帧」和
+     * 「带题目（`.TiMu`）的帧」**不是同一个帧**，而是分在三层：
+     *
+     *   /ananas/modules/work/index.html?…          ← 有 data（jobid / _jobid），没有 .TiMu
+     *     └─ /mooc-ans/api/work?api=1&workId=…     ← data 为【空】，也没有 .TiMu
+     *          └─ /mooc-ans/work/doHomeWorkNew?…   ← 有 .TiMu（整卷题目），data 也是空
+     *
+     * `_searchChaoxingJobOcs` 只认「本帧自己的 `data`」，
+     * 于是带 jobid 的那层被"没有 .TiMu"挡掉、有 .TiMu 的那层被"没有 jobid"挡掉 ——
+     * **每一层都被 continue，一个任务点都匹配不到**。
+     * 后果不是"报错"，而是它认为"本页没有任务点"→ `nextUnit()` 直接跳过整章，
+     * 用户看到的就是「两个单元测试只做了第一个，第二个连试都没试」。
+     *
+     * 所以取不到本层 jobid 时，往上找——jobid 挂在祖先帧的 `data` 上。
+     */
+    _findJobIdInAncestorFrames: function (win) {
+      try {
+        var cur = win;
+        for (var depth = 0; depth < 6 && cur; depth++) {
+          var el = null;
+          try { el = cur.frameElement; } catch (eFrame) { el = null; }
+          if (!el) break;
+
+          var id = '';
+          try {
+            id = String(el.getAttribute('jobid') || el.getAttribute('_jobid') || '');
+            if (!id) {
+              var parsed = this._safeJsonParse(el.getAttribute('data') || '', null);
+              id = String((parsed && (parsed.jobid || parsed._jobid)) || '');
+            }
+          } catch (eAttr) {}
+          if (id) return id;
+
+          // 同一层容器上还可能挂着 jobid（任务点外层 `.ans-attach-ct` 常把 jobid
+          // 写在 **div 上**而不是 iframe 的 data 里）。
+          //
+          // ⚠️ 这里必须**确认这个 jobid 属于我们这一帧**：只接受
+          //   「容器自己」或「包含本帧的元素」，否则会在一个容器里塞了两个任务点时
+          //   把**兄弟任务点的 jobid** 当成本帧的身份 —— 那会让插件去跑错的任务点，
+          //   比"匹配不到"严重得多（匹配不到只是漏做，绑错是**做错**）。
+          try {
+            var wrap = el.parentElement;
+            var holder = wrap && wrap.querySelector ? wrap.querySelector('[jobid], [data*="jobid"]') : null;
+            var belongsToThisFrame = !!holder && (holder === wrap || (holder.contains && holder.contains(el)));
+            if (holder && holder !== el && belongsToThisFrame) {
+              var hid = String(holder.getAttribute('jobid') || holder.getAttribute('_jobid') || '');
+              if (!hid) {
+                var hp = this._safeJsonParse(holder.getAttribute('data') || '', null);
+                hid = String((hp && (hp.jobid || hp._jobid)) || '');
+              }
+              if (hid) return hid;
+            }
+          } catch (eWrap) {}
+
+          try { cur = cur.parent; } catch (eUp) { break; }
+        }
+      } catch (e) {}
+      return '';
     },
 
     _detectChaoxingJobElements: function (doc) {
@@ -558,7 +622,7 @@
           }
           var frameDataStr = (win.frameElement && win.frameElement.getAttribute('data')) || (((win.frameElement && win.frameElement.contentWindow) && win.frameElement.contentWindow.parent && win.frameElement.contentWindow.parent.frameElement && win.frameElement.contentWindow.parent.frameElement.getAttribute('data'))) || '{}';
           var frameData = this._safeJsonParse(frameDataStr, {});
-          var targetJobId = frameData.jobid || frameData._jobid;
+          var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
           if (!targetJobId) continue;
 
           var attachment = attachments.find(function (attachmentItem) {
@@ -607,11 +671,15 @@
             if (!(workType === 'job' || (workType === 'finished' && this.configs.restudy))) {
               continue;
             }
-            func = function (self, jobDoc) {
+            func = function (self, jobDoc, jobKey) {
               return async function () {
+                // ⚠️ 必须先切"在答哪一份卷子"：同一张学习卡片里有两份试卷时，
+                //    第一份交完 `_quizAnswered` 会一直为 true，
+                //    而 `_handleQuiz` 第一行就会因此直接 return —— 第二份永远不答。
+                self._syncQuizPaperRunState(jobKey, jobDoc);
                 await self._handleQuiz(jobDoc);
               };
-            }(this, doc);
+            }(this, doc, targetJobId);
           } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
             if (!this.configs.enablePPT) {
               continue;

@@ -11,10 +11,12 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（43 个）：
+ * 本段的方法（46 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_detectQuiz、_skipQuiz、_getQuizFieldValue、
- *   _getQuizWorkKey、_getQuizSubmitAttemptKey、_getQuizMaxSubmitAttempts、
+ *   _getQuizWorkKey、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
+ *   _getQuizPaperKeyFromTask、_getQuizSubmitAttemptKey、
+ *   _getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
@@ -186,6 +188,117 @@
       ].join('|');
       if (!parts.replace(/\|/g, '')) parts = location.href + '|' + this._getCurrentChapterId();
       return 'omitone.quiz.correct.' + encodeURIComponent(parts).slice(0, 180);
+    },
+
+    /**
+     * 「当前在答的是哪一份卷子」——**换了一份就把那一组答题状态重置掉**。
+     *
+     * 为什么必须有（现场故障）：同一张学习卡片里可以挂**两份**测验任务点
+     * （实测：一张卡片里两个单元测试，URL 分别是
+     * `/mooc-ans/work/doHomeWorkNew?...&oldWorkId=…`）。
+     * 而 `_quizAnswered` / `_quizCurrentQuestions` 这一组是**页面级**的，
+     * 只在 `_resetRuntimeState()` 里清，调用点只有
+     * `run()` / 换章节 / `nextUnit()` / 换学习卡片 ——
+     * **同一张卡片里从一份卷子切到另一份，一次都不经过**。
+     * 于是交完第一份后 `_quizAnswered` 恒为 true，
+     * `_handleQuiz` 第一行（`if (this._quizAnswered || this._quizInProgress) return;`）
+     * 直接返回 —— 第二份**永远不答**。
+     *
+     * ⚠️ 三道保险，缺一不可：
+     *   ① **拿不到身份键（空串）就什么都不做** —— 宁可沿用旧状态，
+     *      也不要因为认不出身份而把已答状态清掉、去重答一遍
+     *   ② **键没变就什么都不做** —— 同一份卷子的重试/重做必须保留状态，
+     *      否则会绕过 `_quizReadyToSubmit` 等判定，造成重复提交
+     *   ③ **换过去那份本来就已完成时，重新置回"已答"** —— 不然后续路径
+     *      会把一份交过的卷子当新卷子处理
+     *
+     * @param {string} paperKey 任务点身份（jobid / workid 一类），由调用方给出
+     * @param {Document} [paperDoc] 即将处理的那份卷子的文档，用于保险 ③
+     * @returns {boolean} 是否真的发生了"换卷子"
+     */
+    _syncQuizPaperRunState: function (paperKey, paperDoc) {
+      var key = String(paperKey || '').trim();
+      if (!key) return false;                 // ① 认不出身份 → 不动
+      if (this._quizRunPaperKey === key) return false;   // ② 还是同一份 → 不动
+      var switched = !!this._quizRunPaperKey;
+      this._quizRunPaperKey = key;
+      if (!switched) return false;            // 第一次记录身份，谈不上"切换"
+
+      this._quizInProgress = false;
+      this._quizAnswered = false;
+      this._quizSubmitPending = false;
+      this._quizSubmitStartedAt = 0;
+      this._quizCurrentAnsweredKeys = {};
+      this._quizCurrentAnswerValues = {};
+      this._quizCurrentQuestions = null;
+      this._quizReadyToSubmit = false;
+      this._quizReadyWorkKey = '';
+      emitRuntimeLog('info', 'quiz paper switched, reset per-paper state', { paper: key.slice(0, 90) });
+
+      // ③ 换过去那份已经完成时，别把它当"没答过"
+      if (paperDoc && this._isQuizPassedOrFinished(paperDoc)) {
+        this._quizAnswered = true;
+      }
+      return true;
+    },
+
+    /**
+     * 从任务点对象里推出"这是哪一份卷子"的身份键。
+     *
+     * 取值的优先顺序是**稳定 → 不稳定**：jobid（任务点自己的 id）→ attachment 的
+     * jobid / mid → 名字兜底。拿不到就返回空串，`_syncQuizPaperRunState` 收到空串
+     * 会**什么都不做**（宁可沿用旧状态，也不要因为认不出身份而重答一遍）。
+     */
+    _getQuizPaperKeyFromJob: function (job) {
+      if (!job) return '';
+      var attachment = job.attachment || null;
+      var property = (attachment && attachment.property) || null;
+      var candidates = [
+        job.jobid,
+        attachment && attachment.jobid,
+        property && property._jobid,
+        property && property.jobid,
+        property && property.mid,
+        job.mid,
+        job.name
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var value = String(candidates[i] == null ? '' : candidates[i]).trim();
+        if (value) return value;
+      }
+      return '';
+    },
+
+    /**
+     * 从 `_classifyTaskFrame` 出来的任务点对象里推出卷子身份键。
+     *
+     * ⚠️ **不能用 `task.src` 当身份**：真实页面上两个任务点的外层帧 src
+     * **完全相同**（都是 `/ananas/modules/work/index.html?v=…&castscreen=0`），
+     * 身份只写在 `data` 属性里。用 src 会让两份卷子看起来是同一份，
+     * 于是"换卷子重置"永远不触发 —— bug 原样复发。
+     * 取不到就返回空串（调用方会什么都不做）。
+     */
+    _getQuizPaperKeyFromTask: function (task) {
+      if (!task) return '';
+      var data = null;
+      try { data = this._safeJsonParse(task.dataText || '', null); } catch (e) { data = null; }
+      var candidates = [
+        data && data._jobid,
+        data && data.jobid,
+        data && data.workid,
+        data && data.workId
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var value = String(candidates[i] == null ? '' : candidates[i]).trim();
+        if (value) return value;
+      }
+      try {
+        if (task.frame && task.frame.getAttribute) {
+          var attr = String(task.frame.getAttribute('jobid') || task.frame.getAttribute('_jobid') || '').trim();
+          if (attr) return attr;
+        }
+      } catch (e2) {}
+      return '';
     },
 
     _getQuizSubmitAttemptKey: function (preferredDoc) {

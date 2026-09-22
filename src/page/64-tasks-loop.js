@@ -102,7 +102,12 @@
       // 心跳与 tick 同起点：看门狗判"无进展"，所以开始那一刻必须先刷一次，
       // 否则字段为 0 会走 _tickStartedAt 兜底（也能工作，但语义上应该显式初始化）
       this._tickProgressAt = this._tickStartedAt;
-      this._tickProgressNote = '';
+      // ⚠️ 这里**不要**复位 `_tickProgressNote`。
+      // 它是日志节流用的"上次打了哪个阶段"；而 `_ensureOcsStudyRunner` 那个
+      // **脱离 tick 的异步循环**每 1 秒就调一次 `_tickProgress('ocs study loop')`，
+      // 而 `_runTick` 每 250ms 就复位一次 —— 于是"note 变了"这个条件永远成立，
+      // 心跳日志变成每秒一条，把日志缓冲刷爆、盖住真正有用的条目（实测踩过）。
+      // 只保留 30 秒时间窗节流，阶段真的变了（note 不同）时照样立刻打一条。
       try {
         // 讨论上下文（讨论区独立网址 / 讨论模块页）：发完评论自动返回，期间不做任何刷课动作。
         // 必须放在最前：讨论页不再被误判为课程页，否则会去"找任务点 → 跳章节"
@@ -211,6 +216,12 @@
           console.log('[Omitone] active task type:', activeTask.type, activeTask.src || 'inline');
 
           if (activeTask.type === 'quiz') {
+            // ⚠️ 同一张学习卡片里可能挂着**两份**测验任务点（实测：
+            //    「专题五…单元测试」+「7.4…单元测试」）。这是页面级 `_quizAnswered`
+            //    的已知盲区：交完第一份后它一直是 true，`_handleQuiz` 第一行就直接
+            //    return —— 第二份永远不答。这里先按"这份卷子的身份"切一次状态；
+            //    同一份卷子重复调用是空操作（键不变直接返回）。
+            this._syncQuizPaperRunState(this._getQuizPaperKeyFromTask(activeTask), activeTask.doc || null);
             if (this._handlePendingTask(activeTask)) return;
             this._pendingTaskKey = '';
             this._pendingTaskStartedAt = 0;

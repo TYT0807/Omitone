@@ -291,6 +291,18 @@
 
     _quizReadyWorkKey: '',
 
+    // 「当前在答的是哪一份卷子」的身份键（jobid / workid 一类）。
+    //
+    // 为什么必须有它：`_quizAnswered` / `_quizCurrentQuestions` 这一组字段是
+    // **页面级**的，只在 `_resetRuntimeState()` 里清 —— 而那个函数的调用点只有
+    // `run()` / 换章节 / `nextUnit()` / 换学习卡片。**同一张学习卡片里挂着两份试卷时，
+    // 交完第一份不会经过任何一个调用点**，于是 `_quizAnswered` 一直是 true，
+    // `_handleQuiz` 第一行就直接 return，第二份**永远不答**（实测症状：
+    // 两个单元测试任务点只做了第一个）。
+    // 有了这个键，换一份卷子就 `_syncQuizPaperRunState()` 把那一组状态重置，
+    // 同时不影响同一份卷子内部的重试/重做（键不变就不重置）。
+    _quizRunPaperKey: '',
+
     _quizForceSkipUntil: 0,
 
     _quizApiSkipLogAt: 0,
@@ -523,6 +535,9 @@
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      // 换章节/换卡片时连"在答哪一份卷子"的身份一起清掉：
+      // 回到同一份卷子时视为全新一轮（与 `_quizAnswered = false` 配套，语义一致）
+      this._quizRunPaperKey = '';
       this._quizApiSkipLogAt = 0;
       this._skipChainCount = 0;
       this._videoRetryCount = 0;
@@ -2970,6 +2985,69 @@
       return {};
     },
 
+    /**
+     * 沿**祖先帧链**找这个帧所属任务点的 jobid。
+     *
+     * 为什么必须有（现场故障，实测日志）：真实页面上「带 jobid 的帧」和
+     * 「带题目（`.TiMu`）的帧」**不是同一个帧**，而是分在三层：
+     *
+     *   /ananas/modules/work/index.html?…          ← 有 data（jobid / _jobid），没有 .TiMu
+     *     └─ /mooc-ans/api/work?api=1&workId=…     ← data 为【空】，也没有 .TiMu
+     *          └─ /mooc-ans/work/doHomeWorkNew?…   ← 有 .TiMu（整卷题目），data 也是空
+     *
+     * `_searchChaoxingJobOcs` 只认「本帧自己的 `data`」，
+     * 于是带 jobid 的那层被"没有 .TiMu"挡掉、有 .TiMu 的那层被"没有 jobid"挡掉 ——
+     * **每一层都被 continue，一个任务点都匹配不到**。
+     * 后果不是"报错"，而是它认为"本页没有任务点"→ `nextUnit()` 直接跳过整章，
+     * 用户看到的就是「两个单元测试只做了第一个，第二个连试都没试」。
+     *
+     * 所以取不到本层 jobid 时，往上找——jobid 挂在祖先帧的 `data` 上。
+     */
+    _findJobIdInAncestorFrames: function (win) {
+      try {
+        var cur = win;
+        for (var depth = 0; depth < 6 && cur; depth++) {
+          var el = null;
+          try { el = cur.frameElement; } catch (eFrame) { el = null; }
+          if (!el) break;
+
+          var id = '';
+          try {
+            id = String(el.getAttribute('jobid') || el.getAttribute('_jobid') || '');
+            if (!id) {
+              var parsed = this._safeJsonParse(el.getAttribute('data') || '', null);
+              id = String((parsed && (parsed.jobid || parsed._jobid)) || '');
+            }
+          } catch (eAttr) {}
+          if (id) return id;
+
+          // 同一层容器上还可能挂着 jobid（任务点外层 `.ans-attach-ct` 常把 jobid
+          // 写在 **div 上**而不是 iframe 的 data 里）。
+          //
+          // ⚠️ 这里必须**确认这个 jobid 属于我们这一帧**：只接受
+          //   「容器自己」或「包含本帧的元素」，否则会在一个容器里塞了两个任务点时
+          //   把**兄弟任务点的 jobid** 当成本帧的身份 —— 那会让插件去跑错的任务点，
+          //   比"匹配不到"严重得多（匹配不到只是漏做，绑错是**做错**）。
+          try {
+            var wrap = el.parentElement;
+            var holder = wrap && wrap.querySelector ? wrap.querySelector('[jobid], [data*="jobid"]') : null;
+            var belongsToThisFrame = !!holder && (holder === wrap || (holder.contains && holder.contains(el)));
+            if (holder && holder !== el && belongsToThisFrame) {
+              var hid = String(holder.getAttribute('jobid') || holder.getAttribute('_jobid') || '');
+              if (!hid) {
+                var hp = this._safeJsonParse(holder.getAttribute('data') || '', null);
+                hid = String((hp && (hp.jobid || hp._jobid)) || '');
+              }
+              if (hid) return hid;
+            }
+          } catch (eWrap) {}
+
+          try { cur = cur.parent; } catch (eUp) { break; }
+        }
+      } catch (e) {}
+      return '';
+    },
+
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
       var videojs = doc.querySelector('#video, #audio, .video-js, #video_html5_api');
@@ -3304,7 +3382,7 @@
           }
           var frameDataStr = (win.frameElement && win.frameElement.getAttribute('data')) || (((win.frameElement && win.frameElement.contentWindow) && win.frameElement.contentWindow.parent && win.frameElement.contentWindow.parent.frameElement && win.frameElement.contentWindow.parent.frameElement.getAttribute('data'))) || '{}';
           var frameData = this._safeJsonParse(frameDataStr, {});
-          var targetJobId = frameData.jobid || frameData._jobid;
+          var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
           if (!targetJobId) continue;
 
           var attachment = attachments.find(function (attachmentItem) {
@@ -3353,11 +3431,15 @@
             if (!(workType === 'job' || (workType === 'finished' && this.configs.restudy))) {
               continue;
             }
-            func = function (self, jobDoc) {
+            func = function (self, jobDoc, jobKey) {
               return async function () {
+                // ⚠️ 必须先切"在答哪一份卷子"：同一张学习卡片里有两份试卷时，
+                //    第一份交完 `_quizAnswered` 会一直为 true，
+                //    而 `_handleQuiz` 第一行就会因此直接 return —— 第二份永远不答。
+                self._syncQuizPaperRunState(jobKey, jobDoc);
                 await self._handleQuiz(jobDoc);
               };
-            }(this, doc);
+            }(this, doc, targetJobId);
           } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
             if (!this.configs.enablePPT) {
               continue;
@@ -3804,6 +3886,10 @@
       }
 
       if (job.kind === 'quiz') {
+        // ⚠️ 先把"在答哪一份卷子"切过去。同一张学习卡片里挂着两份试卷时，
+        //    交完第一份 `_quizAnswered` 会一直为 true，而下面几行都吃这个标志 ——
+        //    不切的话第二份会被当成"已经答过了"直接跳过（实测症状）。
+        this._syncQuizPaperRunState(this._getQuizPaperKeyFromJob(job), job.doc || null);
         if (this._isQuizApiUnavailable()) return this._skipQuizForApiUnavailable(null, job.doc || null);
         if (this._isQuizPassedOrFinished(job.doc || null)) {
           this._quizInProgress = false;
@@ -4640,7 +4726,12 @@
       // 心跳与 tick 同起点：看门狗判"无进展"，所以开始那一刻必须先刷一次，
       // 否则字段为 0 会走 _tickStartedAt 兜底（也能工作，但语义上应该显式初始化）
       this._tickProgressAt = this._tickStartedAt;
-      this._tickProgressNote = '';
+      // ⚠️ 这里**不要**复位 `_tickProgressNote`。
+      // 它是日志节流用的"上次打了哪个阶段"；而 `_ensureOcsStudyRunner` 那个
+      // **脱离 tick 的异步循环**每 1 秒就调一次 `_tickProgress('ocs study loop')`，
+      // 而 `_runTick` 每 250ms 就复位一次 —— 于是"note 变了"这个条件永远成立，
+      // 心跳日志变成每秒一条，把日志缓冲刷爆、盖住真正有用的条目（实测踩过）。
+      // 只保留 30 秒时间窗节流，阶段真的变了（note 不同）时照样立刻打一条。
       try {
         // 讨论上下文（讨论区独立网址 / 讨论模块页）：发完评论自动返回，期间不做任何刷课动作。
         // 必须放在最前：讨论页不再被误判为课程页，否则会去"找任务点 → 跳章节"
@@ -4749,6 +4840,12 @@
           console.log('[Omitone] active task type:', activeTask.type, activeTask.src || 'inline');
 
           if (activeTask.type === 'quiz') {
+            // ⚠️ 同一张学习卡片里可能挂着**两份**测验任务点（实测：
+            //    「专题五…单元测试」+「7.4…单元测试」）。这是页面级 `_quizAnswered`
+            //    的已知盲区：交完第一份后它一直是 true，`_handleQuiz` 第一行就直接
+            //    return —— 第二份永远不答。这里先按"这份卷子的身份"切一次状态；
+            //    同一份卷子重复调用是空操作（键不变直接返回）。
+            this._syncQuizPaperRunState(this._getQuizPaperKeyFromTask(activeTask), activeTask.doc || null);
             if (this._handlePendingTask(activeTask)) return;
             this._pendingTaskKey = '';
             this._pendingTaskStartedAt = 0;
@@ -6202,6 +6299,117 @@
       ].join('|');
       if (!parts.replace(/\|/g, '')) parts = location.href + '|' + this._getCurrentChapterId();
       return 'omitone.quiz.correct.' + encodeURIComponent(parts).slice(0, 180);
+    },
+
+    /**
+     * 「当前在答的是哪一份卷子」——**换了一份就把那一组答题状态重置掉**。
+     *
+     * 为什么必须有（现场故障）：同一张学习卡片里可以挂**两份**测验任务点
+     * （实测：一张卡片里两个单元测试，URL 分别是
+     * `/mooc-ans/work/doHomeWorkNew?...&oldWorkId=…`）。
+     * 而 `_quizAnswered` / `_quizCurrentQuestions` 这一组是**页面级**的，
+     * 只在 `_resetRuntimeState()` 里清，调用点只有
+     * `run()` / 换章节 / `nextUnit()` / 换学习卡片 ——
+     * **同一张卡片里从一份卷子切到另一份，一次都不经过**。
+     * 于是交完第一份后 `_quizAnswered` 恒为 true，
+     * `_handleQuiz` 第一行（`if (this._quizAnswered || this._quizInProgress) return;`）
+     * 直接返回 —— 第二份**永远不答**。
+     *
+     * ⚠️ 三道保险，缺一不可：
+     *   ① **拿不到身份键（空串）就什么都不做** —— 宁可沿用旧状态，
+     *      也不要因为认不出身份而把已答状态清掉、去重答一遍
+     *   ② **键没变就什么都不做** —— 同一份卷子的重试/重做必须保留状态，
+     *      否则会绕过 `_quizReadyToSubmit` 等判定，造成重复提交
+     *   ③ **换过去那份本来就已完成时，重新置回"已答"** —— 不然后续路径
+     *      会把一份交过的卷子当新卷子处理
+     *
+     * @param {string} paperKey 任务点身份（jobid / workid 一类），由调用方给出
+     * @param {Document} [paperDoc] 即将处理的那份卷子的文档，用于保险 ③
+     * @returns {boolean} 是否真的发生了"换卷子"
+     */
+    _syncQuizPaperRunState: function (paperKey, paperDoc) {
+      var key = String(paperKey || '').trim();
+      if (!key) return false;                 // ① 认不出身份 → 不动
+      if (this._quizRunPaperKey === key) return false;   // ② 还是同一份 → 不动
+      var switched = !!this._quizRunPaperKey;
+      this._quizRunPaperKey = key;
+      if (!switched) return false;            // 第一次记录身份，谈不上"切换"
+
+      this._quizInProgress = false;
+      this._quizAnswered = false;
+      this._quizSubmitPending = false;
+      this._quizSubmitStartedAt = 0;
+      this._quizCurrentAnsweredKeys = {};
+      this._quizCurrentAnswerValues = {};
+      this._quizCurrentQuestions = null;
+      this._quizReadyToSubmit = false;
+      this._quizReadyWorkKey = '';
+      emitRuntimeLog('info', 'quiz paper switched, reset per-paper state', { paper: key.slice(0, 90) });
+
+      // ③ 换过去那份已经完成时，别把它当"没答过"
+      if (paperDoc && this._isQuizPassedOrFinished(paperDoc)) {
+        this._quizAnswered = true;
+      }
+      return true;
+    },
+
+    /**
+     * 从任务点对象里推出"这是哪一份卷子"的身份键。
+     *
+     * 取值的优先顺序是**稳定 → 不稳定**：jobid（任务点自己的 id）→ attachment 的
+     * jobid / mid → 名字兜底。拿不到就返回空串，`_syncQuizPaperRunState` 收到空串
+     * 会**什么都不做**（宁可沿用旧状态，也不要因为认不出身份而重答一遍）。
+     */
+    _getQuizPaperKeyFromJob: function (job) {
+      if (!job) return '';
+      var attachment = job.attachment || null;
+      var property = (attachment && attachment.property) || null;
+      var candidates = [
+        job.jobid,
+        attachment && attachment.jobid,
+        property && property._jobid,
+        property && property.jobid,
+        property && property.mid,
+        job.mid,
+        job.name
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var value = String(candidates[i] == null ? '' : candidates[i]).trim();
+        if (value) return value;
+      }
+      return '';
+    },
+
+    /**
+     * 从 `_classifyTaskFrame` 出来的任务点对象里推出卷子身份键。
+     *
+     * ⚠️ **不能用 `task.src` 当身份**：真实页面上两个任务点的外层帧 src
+     * **完全相同**（都是 `/ananas/modules/work/index.html?v=…&castscreen=0`），
+     * 身份只写在 `data` 属性里。用 src 会让两份卷子看起来是同一份，
+     * 于是"换卷子重置"永远不触发 —— bug 原样复发。
+     * 取不到就返回空串（调用方会什么都不做）。
+     */
+    _getQuizPaperKeyFromTask: function (task) {
+      if (!task) return '';
+      var data = null;
+      try { data = this._safeJsonParse(task.dataText || '', null); } catch (e) { data = null; }
+      var candidates = [
+        data && data._jobid,
+        data && data.jobid,
+        data && data.workid,
+        data && data.workId
+      ];
+      for (var i = 0; i < candidates.length; i++) {
+        var value = String(candidates[i] == null ? '' : candidates[i]).trim();
+        if (value) return value;
+      }
+      try {
+        if (task.frame && task.frame.getAttribute) {
+          var attr = String(task.frame.getAttribute('jobid') || task.frame.getAttribute('_jobid') || '').trim();
+          if (attr) return attr;
+        }
+      } catch (e2) {}
+      return '';
     },
 
     _getQuizSubmitAttemptKey: function (preferredDoc) {

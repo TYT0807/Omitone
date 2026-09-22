@@ -79,6 +79,18 @@
 
     _quizReadyWorkKey: '',
 
+    // 「当前在答的是哪一份卷子」的身份键（jobid / workid 一类）。
+    //
+    // 为什么必须有它：`_quizAnswered` / `_quizCurrentQuestions` 这一组字段是
+    // **页面级**的，只在 `_resetRuntimeState()` 里清 —— 而那个函数的调用点只有
+    // `run()` / 换章节 / `nextUnit()` / 换学习卡片。**同一张学习卡片里挂着两份试卷时，
+    // 交完第一份不会经过任何一个调用点**，于是 `_quizAnswered` 一直是 true，
+    // `_handleQuiz` 第一行就直接 return，第二份**永远不答**（实测症状：
+    // 两个单元测试任务点只做了第一个）。
+    // 有了这个键，换一份卷子就 `_syncQuizPaperRunState()` 把那一组状态重置，
+    // 同时不影响同一份卷子内部的重试/重做（键不变就不重置）。
+    _quizRunPaperKey: '',
+
     _quizForceSkipUntil: 0,
 
     _quizApiSkipLogAt: 0,
@@ -311,6 +323,9 @@
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      // 换章节/换卡片时连"在答哪一份卷子"的身份一起清掉：
+      // 回到同一份卷子时视为全新一轮（与 `_quizAnswered = false` 配套，语义一致）
+      this._quizRunPaperKey = '';
       this._quizApiSkipLogAt = 0;
       this._skipChainCount = 0;
       this._videoRetryCount = 0;
