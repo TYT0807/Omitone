@@ -460,6 +460,91 @@ function buildChapterQuizShellHtml() {
     '</body></html>';
 }
 
+/**
+ * 「一张学习卡片里挂着两份测验任务点」——复现"第二个任务点永远不做"。
+ *
+ * 结构与**实测的真实页面**逐层对齐（三层）：
+ *
+ *   学习卡片（本场景的 #iframe 内容）
+ *     └ 任务点外层  /wq-outer-x   ← `data` 属性里有 jobid（**身份在这一层**）
+ *          └ /wq-mid-x            ← data 为空，也没有题目
+ *               └ /wq-inner-x     ← 有 .TiMu（整卷题目），data **也是空**
+ *
+ * 要害是：**带 jobid 的帧和带题目的帧不是同一个**。
+ * 旧实现只认"本帧自己的 data" → 三层里没有一层能同时满足
+ * 「有 jobid」和「有 .TiMu」→ 一个任务点都匹配不到 →
+ * 误判"本页没有任务点" → `nextUnit()` 把整个任务点**静默漏掉**。
+ *
+ * 另外 A 份是**已完成**（内层带 .ans-job-finished）、B 份未完成：
+ * 正确行为是"跳过 A、选中 B"，而不是"随便挑一个"。
+ */
+function buildTwoQuizTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/wq-card" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    // 任务点清单挂在顶层 window 上（page.js 也跑在顶层）
+    '<script>window.attachments=[' +
+    '{jobid:"work-A",property:{_jobid:"work-A",jobid:"work-A",mid:"mid-A",name:"第一份单元测试",module:"work",type:"work"}},' +
+    '{jobid:"work-B",property:{_jobid:"work-B",jobid:"work-B",mid:"mid-B",name:"第二份单元测试",module:"work",type:"work"}}' +
+    '];</script>' +
+    '</body></html>';
+}
+
+function buildTwoQuizCardHtml() {
+  function task(id, label) {
+    // data 属性里的 JSON 用 &quot; 转义后放进双引号属性里，浏览器取出来还是合法 JSON
+    var payload = { jobid: 'work-' + id, _jobid: 'work-' + id, workid: id, name: label };
+    var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+    return '<div class="ans-attach-ct" id="tp-' + id.toLowerCase() + '">' +
+      '<div class="ans-job-icon" aria-label="任务点"></div>' +
+      '<div class="ans-attach-title">' + label + '</div>' +
+      '<iframe jobid="work-' + id + '" data="' + dataAttr + '" ' +
+      'src="/wq-outer-' + id + '" style="width:100%;height:260px;border:0"></iframe>' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="card">' + task('A', '第一份单元测试') + task('B', '第二份单元测试') + '</div>' +
+    '</body></html>';
+}
+
+/** 任务点外层模块页：**jobid 在它的 iframe 属性上**，它自己一题都没有 */
+function buildTwoQuizOuterHtml(id) {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>' +
+    '<div class="work-module">' +
+    '<iframe id="frame_content" src="/wq-mid-' + id + '" style="width:100%;height:200px;border:0"></iframe>' +
+    '</div></body></html>';
+}
+
+/** 中间层：data 为空、也没有题目（真实页面里是 /mooc-ans/api/work?api=1） */
+function buildTwoQuizMidHtml(id) {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>' +
+    '<div class="x-body">' +
+    '<iframe id="inner" src="/wq-inner-' + id + '" style="width:100%;height:160px;border:0"></iframe>' +
+    '</div></body></html>';
+}
+
+/** 最内层：真正的试卷（有 .TiMu）；finished=true 的那份带"任务点已完成"标记 */
+function buildTwoQuizInnerHtml(id, finished) {
+  function timu(no, stem) {
+    return '<div class="TiMu">' +
+      '<div class="Zy_TItle clearfix"><span class="fontLabel">' + no + '.</span>【单选题】' + stem + '</div>' +
+      '<ul class="Zy_ulTop"><li><a href="javascript:void(0)">A. 甲</a></li><li><a href="javascript:void(0)">B. 乙</a></li></ul>' +
+      '<ul class="Zy_ulBottom"><li><input type="radio" name="ans' + no + '" value="A"></li>' +
+      '<li><input type="radio" name="ans' + no + '" value="B"></li></ul>' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>' + (finished ? '已完成的试卷' : '待作答的试卷') + '</title></head><body>' +
+    (finished ? '<div class="ans-job-finished">任务点已完成</div>' : '') +
+    timu(1, '第 ' + id + ' 份卷子的第一题') +
+    timu(2, '第 ' + id + ' 份卷子的第二题') +
+    '<div class="subBtn"><button id="submitBtn" type="button" class="btnSubmit">提交</button></div>' +
+    '</body></html>';
+}
+
 /** 插件完全不认识的 DOM 结构，用来验证"扫不到题"的诊断输出 */
 function buildWeirdHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -685,6 +770,16 @@ var MOCK_PAGES = {
   '/captcha-verify': buildStandaloneCaptchaHtml,
   '/discussion': buildDiscussionHtml,
   '/discussion-multi': buildDiscussionMultiHtml,
+  '/two-quizzes': buildTwoQuizTopHtml,
+  '/wq-card': buildTwoQuizCardHtml,
+  // ⚠️ 这几条的路径必须与 builder 里拼出来的 src **大小写完全一致**
+  //    （jobid 用 'work-A' / 'work-B'，URL 里就是 /wq-outer-A …）
+  '/wq-outer-A': function () { return buildTwoQuizOuterHtml('A'); },
+  '/wq-outer-B': function () { return buildTwoQuizOuterHtml('B'); },
+  '/wq-mid-A': function () { return buildTwoQuizMidHtml('A'); },
+  '/wq-mid-B': function () { return buildTwoQuizMidHtml('B'); },
+  '/wq-inner-A': function () { return buildTwoQuizInnerHtml('A', true); },
+  '/wq-inner-B': function () { return buildTwoQuizInnerHtml('B', false); },
   '/popup-quiz': buildPopupQuizHtml,
   '/popup-quiz-native': buildPopupQuizNativeHtml,
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
@@ -3467,6 +3562,206 @@ SCENARIOS.push({
       '(function(){var a=window._xxtApp;clearInterval(a.__hbTimer);' +
       'if(a._tickLoopInterval){clearInterval(a._tickLoopInterval);a._tickLoopInterval=null;}' +
       'a._tickRunning=false;a._tickStartedAt=0;a._tickProgressAt=0;a._tickEpoch=0;' +
+      'return true;})()'
+    );
+  }
+});
+
+/** ---- 28. 一张卡片两份测验：第二份也要被匹配到并答 ---- */
+SCENARIOS.push({
+  name: '一张卡片两份测验：第二份也要被匹配到并答',
+  path: '/two-quizzes',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      autoNext: false,
+      restudy: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(400);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    // ---- ① 装配 ----
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var card=app._getMainDocument();' +
+      'return {hasMainDoc:!!card,' +
+      'wraps:card?card.querySelectorAll(".ans-attach-ct").length:-1,' +
+      'attachments:app._getChaoxingAttachments().length};})()'
+    );
+    check('场景装配：卡片页 + 两个任务点外层容器就位',
+      setup && setup.hasMainDoc === true && setup.wraps === 2, JSON.stringify(setup));
+    check('两个任务点都在附件清单里（否则后面的匹配无从谈起）',
+      setup && setup.attachments === 2, JSON.stringify(setup.attachments));
+
+    // ---- ② 核心：跨层找 jobid ----
+    // 三层里**没有一层**同时具备「有 jobid」和「有 .TiMu」。
+    // 只认本层 data 的实现会把三层全部 continue 掉 → 返回 null → 整章被静默跳过。
+    //
+    // ⚠️ 配置与判定必须在**同一次 evaluate 里**做完：
+    //    前面场景留下的 `_quizApiFailUntil`（45 秒退避）或页面重新注入换掉的
+    //    app 实例，都会让"答题 API 可用"这个前置条件在两次调用之间翻转 ——
+    //    实测踩过：分开写时它返回 true，于是整个匹配分支被硬守卫跳过。
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
+      'app._quizApiFailUntil=0;' +
+      'var reason=app._getQuizApiUnavailableReason();' +
+      'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
+      'var frames=app._searchIFramesOcs(cardDoc).map(function(f){' +
+      '  var d=app._safeDocOf(f);' +
+      '  var aid="";try{aid=app._findJobIdInAncestorFrames(f.contentWindow);}catch(e){aid="(抛错)";}' +
+      '  return {src:String(f.getAttribute("src")||"").slice(0,26),' +
+      '    tiMu:d?d.querySelectorAll(".TiMu").length:-1,ancestorJobId:aid,' +
+      '    ownData:String(f.getAttribute("data")||"").slice(0,24)};' +
+      '});' +
+      'var j=app._searchChaoxingJobOcs([]);' +
+      'var out={apiReason:reason,apiUnavailable:!!reason,frames:frames,matched:null};' +
+      'if(j){' +
+      '  var ownData="";' +
+      '  try{ownData=String(j.win.frameElement.getAttribute("data")||"");}catch(e){ownData="(取不到)";}' +
+      '  out.matched={jobid:j.jobid,name:j.name,kind:j.kind,workType:j.workType,' +
+      '    hasFunc:typeof j.func==="function",ownDataEmpty:ownData==="",' +
+      '    timuCount:j.doc?j.doc.querySelectorAll(".TiMu").length:-1};' +
+      '}' +
+      'return out;})()'
+    );
+    check('前置条件：答题 API 可用（否则匹配分支会被硬守卫跳过）',
+      probe && probe.apiUnavailable === false, JSON.stringify(probe && probe.apiReason));
+
+    var matched = (probe && probe.matched) || null;
+    check('三层嵌套下仍能匹配到任务点（旧实现返回 null → 整个任务点被静默漏掉）',
+      !!matched, JSON.stringify(probe));
+    if (!matched) return;
+
+    check('跳过已完成的第一份、挑中未完成的第二份',
+      matched.jobid === 'work-B', JSON.stringify(matched));
+    check('命中的是**有题目的那一层**（.TiMu 在它这里）',
+      matched.timuCount === 2, JSON.stringify(matched.timuCount));
+    check('这一层自己的 data 是空的 —— jobid 确实取自祖先帧而不是本层',
+      matched.ownDataEmpty === true, JSON.stringify(matched));
+    check('匹配结果带可执行的 func（能被调度真正跑起来）',
+      matched.hasFunc === true, JSON.stringify(matched.hasFunc));
+
+    // 对照：一条祖先链上都没有 jobid 时必须返回空串，不能瞎猜一个
+    var noId = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var w=app._getMainDocument().defaultView;' +
+      'return String(app._findJobIdInAncestorFrames(w));})()'
+    );
+    check('找不到 jobid 时返回空串（不能瞎猜一个身份）',
+      noId === '', JSON.stringify(noId));
+
+    // ---- ③ 按份数状态：同一张卡片里换卷子必须把"已答"清掉 ----
+    var switched = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
+      'app._quizApiFailUntil=0;' +
+      'app._quizAnswered=true; app._quizRunPaperKey="work-A";' +
+      'app._quizCurrentQuestions=[{title:"上一份卷子的题"}];' +
+      'var jobB=app._searchChaoxingJobOcs([]);' +
+      'var docB=jobB?jobB.doc:null;' +
+      'var ret=app._syncQuizPaperRunState("work-B", docB);' +
+      'return {ret:ret, answered:app._quizAnswered, key:app._quizRunPaperKey,' +
+      'questions:app._quizCurrentQuestions, hasDocB:!!docB};})()'
+    );
+    check('换到第二份卷子时"已答"被清掉（否则 _handleQuiz 第一行就 return）',
+      switched && switched.hasDocB === true && switched.ret === true &&
+      switched.answered === false && switched.key === 'work-B',
+      JSON.stringify(switched));
+    check('换卷子时同时清掉上一份"手里的题"（防止拿 A 卷的题去填 B 卷）',
+      switched && switched.questions === null, JSON.stringify(switched && switched.questions));
+
+    // ---- ④ 同一份卷子重复调用 = 空操作（防重复提交）----
+    var again = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizAnswered=true; app._quizRunPaperKey="work-B";' +
+      'var ret=app._syncQuizPaperRunState("work-B", null);' +
+      'return {ret:ret, answered:app._quizAnswered};})()'
+    );
+    check('同一份卷子内部重复调用不重置（否则会绕过"已答"判定、重复提交）',
+      again && again.ret === false && again.answered === true, JSON.stringify(again));
+
+    // ---- ⑤ 认不出身份时什么都不做 ----
+    var unknown = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizAnswered=true; app._quizRunPaperKey="work-B";' +
+      'var ret=app._syncQuizPaperRunState("", null);' +
+      'return {ret:ret, answered:app._quizAnswered, key:app._quizRunPaperKey};})()'
+    );
+    check('拿不到身份键时什么都不做（宁可沿用，也不能因此把已答状态清掉重答一遍）',
+      unknown && unknown.ret === false && unknown.answered === true && unknown.key === 'work-B',
+      JSON.stringify(unknown));
+
+    // ---- ⑥ 保险：换过去那份本来就已完成时，重新置回"已答" ----
+    var toFinished = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizAnswered=false; app._quizRunPaperKey="work-B";' +
+      'var docA=null;' +
+      'try{var fr=app._getMainDocument().querySelector("#tp-a iframe");' +
+      'var midDoc=fr.contentDocument.querySelector("iframe").contentDocument;' +
+      'docA=midDoc.querySelector("iframe").contentDocument;}catch(e){docA=null;}' +
+      'var ret=app._syncQuizPaperRunState("work-A", docA);' +
+      'return {ret:ret, answered:app._quizAnswered, hasDoc:!!docA};})()'
+    );
+    check('换到一份"本来就已完成"的卷子时重新置回已答（不把交过的卷子当新卷子重答）',
+      toFinished && toFinished.hasDoc === true && toFinished.ret === true && toFinished.answered === true,
+      JSON.stringify(toFinished));
+
+    // ---- ⑦ 身份键不能来自 src ----
+    // 真实页面上两个任务点的外层帧 src **完全相同**（身份只在 data 里），
+    // 用 src 当键会让两份卷子看起来是同一份 → "换卷子重置"永远不触发 → bug 复发。
+    var keys = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var sameSrc="/ananas/modules/work/index.html?v=2025-1028-1629&castscreen=0";' +
+      'var a=app._getQuizPaperKeyFromTask({src:sameSrc,dataText:JSON.stringify({_jobid:"work-A"})});' +
+      'var b=app._getQuizPaperKeyFromTask({src:sameSrc,dataText:JSON.stringify({_jobid:"work-B"})});' +
+      'var c=app._getQuizPaperKeyFromTask({src:sameSrc,dataText:""});' +
+      'return {a:a,b:b,c:c};})()'
+    );
+    check('身份键取自 data 而不是 src（两个任务点 src 相同 → 用 src 会认成同一份）',
+      keys && keys.a === 'work-A' && keys.b === 'work-B' && keys.a !== keys.b, JSON.stringify(keys));
+    check('取不到身份时返回空串（交给 _syncQuizPaperRunState 做"什么都不做"）',
+      keys && keys.c === '', JSON.stringify(keys && keys.c));
+
+    // ---- ⑧ 容器里的 jobid 必须**属于本帧**，不能拿走兄弟任务点的 ----
+    // 为什么单列这条：`_findJobIdInAncestorFrames` 在"本层没有 jobid"时会去看外层容器，
+    // 而容器里可能有**两个**帧。把兄弟帧的 jobid 当成本帧身份 = 去跑**错的任务点**，
+    // 比"匹配不到"严重得多（匹配不到只是漏做，绑错是做错）。
+    // 这里动态造一个"一个容器里两个帧"的结构：兄弟帧带 jobid，本帧没有 → 必须返回空串。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var card=app._getMainDocument();' +
+      'var wrap=card.createElement("div");wrap.className="ans-attach-ct";wrap.id="tp-decoy";' +
+      'var sib=card.createElement("iframe");sib.setAttribute("jobid","work-DECOY");sib.src="/wq-mid-B";' +
+      'var mine=card.createElement("iframe");mine.id="decoy-inner";mine.src="/wq-inner-B";' +
+      'wrap.appendChild(sib);wrap.appendChild(mine);card.body.appendChild(wrap);' +
+      'return true;})()'
+    );
+    await waitFor(ctx.client, '!!(document.querySelector("#decoy-inner") && document.querySelector("#decoy-inner").contentDocument && document.querySelector("#decoy-inner").contentDocument.querySelector(".TiMu"))', 8000);
+    var decoy = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var mine=app._getMainDocument().querySelector("#decoy-inner");' +
+      'var loaded=!!(mine&&mine.contentDocument&&mine.contentDocument.querySelector(".TiMu"));' +
+      'var got="";try{got=String(app._findJobIdInAncestorFrames(mine.contentWindow));}catch(e){got="(抛错)";}' +
+      'var sib=app._getMainDocument().querySelector("#tp-decoy iframe[jobid]");' +
+      'return {loaded:loaded, got:got, siblingJobId:sib?sib.getAttribute("jobid"):""};})()'
+    );
+    check('容器里的 jobid 属于兄弟帧时**不能**当成本帧身份（否则会去跑错的任务点）',
+      decoy && decoy.loaded === true && decoy.siblingJobId === 'work-DECOY' && decoy.got === '',
+      JSON.stringify(decoy));
+
+    // 收尾：把这份卷子的状态还原，并拆掉上面临时造的结构，别影响后面的场景
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizAnswered=false; app._quizRunPaperKey=""; app._quizCurrentQuestions=null;' +
+      'var d=app._getMainDocument().querySelector("#tp-decoy"); if(d&&d.parentNode) d.parentNode.removeChild(d);' +
       'return true;})()'
     );
   }

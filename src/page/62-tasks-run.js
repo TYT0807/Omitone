@@ -45,6 +45,10 @@
       }
 
       if (job.kind === 'quiz') {
+        // ⚠️ 先把"在答哪一份卷子"切过去。同一张学习卡片里挂着两份试卷时，
+        //    交完第一份 `_quizAnswered` 会一直为 true，而下面几行都吃这个标志 ——
+        //    不切的话第二份会被当成"已经答过了"直接跳过（实测症状）。
+        this._syncQuizPaperRunState(this._getQuizPaperKeyFromJob(job), job.doc || null);
         if (this._isQuizApiUnavailable()) return this._skipQuizForApiUnavailable(null, job.doc || null);
         if (this._isQuizPassedOrFinished(job.doc || null)) {
           this._quizInProgress = false;
