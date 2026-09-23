@@ -1143,9 +1143,15 @@ function checkAwaitTimeouts() {
 //
 // **CSS 类名大小写敏感**，所以 `.Cy_TITle` 和 `.Cy_TItle` 是两个完全不同的类 ——
 // 写错一个字母的那个 selector **匹配不到任何元素，而且不报错、不留日志**。
-// 实测踩过：`30-log.js` 的容器计数写成 `.Cy_TITle`（正确的真源是 `.Cy_TItle`），
-// 于是 `xxtAI.diagnose()` 的 `containers` 永远报 0 —— 而诊断工具正是排查
-// "AI 扫描不到题目"时唯一能看的窗口，它自己在骗人，排查就彻底走偏。
+//
+// 实测踩过：`_describeQuizResultPage`（`30-log.js`）里手抄的一份容器选择器写成 `.Cy_TITle`
+// （真源 `_questionSelectors` 里是 `.Cy_TItle`）。后果是那条「quiz submit wait timeout」
+// 日志里的 `containers` 少算、在只用 `.Cy_TITle` 的作业/考试页上直接报 0 ——
+// 而那条日志**唯一的作用**就是告诉人"没认出结果页时缺的是哪一道条件"。
+// **诊断工具骗人比没有诊断更糟**：看日志的人会以为页面上没有题目容器，往错的方向查。
+//
+// （注：同一个文件里 `xxtAI.diagnose()` 的 `containers` 走的是 `_collectQuestionContainers()`
+//  → `_questionSelectors` 真源，**没被这个笔误影响**。两个诊断各算各的，手抄的那份漂移了。）
 //
 // 判据：把代码里出现过的类名按小写分组，同组出现**多种拼写**即报错。
 //

@@ -1253,6 +1253,24 @@ SCENARIOS.push({
     );
     check('多选点 A、C：确实有 2 个 checkbox 被选中',
       multi.clicked === 2 && multi.checked === 2, JSON.stringify(multi));
+
+    // 诊断里的容器计数必须能数到 `.Cy_TItle`。
+    // 这一处曾经写成 `.Cy_TITle`（大小写错），而 **CSS 类名大小写敏感** ——
+    // 于是 containers 在这类页面上恒为 0，且不报错、不留日志。
+    // 后果不轻：`_describeQuizResultPage` 的输出就是「提交后认不出结果页 → 25 秒超时」
+    // 那条日志的全部内容，而它唯一的用途是告诉人**缺的是哪一道条件**
+    //（这个函数的注释原话："于是 25 秒超时之后只能靠猜"）。
+    // 数成 0 会让人以为"页面上没有题目容器"，直接往错的方向查。
+    //
+    // 断言落在 `containers > 0`：只要选择器写错大小写，这里必然是 0。
+    // （对照：`/quiz` 那套 mock 用的是 `.TiMu`，所以那条路径察觉不到这个笔误 ——
+    //  必须在**只用 `.Cy_TItle` 的作业/考试页**上断言才有意义。）
+    var diagCy = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var d=app._describeQuizResultPage(null);' +
+      'return {containers:d.containers,controls:d.controls,doc:d.doc||null,err:d.err||null};})()'
+    );
+    check('作业页诊断能数到 .Cy_TItle 容器（大小写写错会数成 0）',
+      diagCy && diagCy.containers > 0, JSON.stringify(diagCy));
   }
 });
 
