@@ -24,6 +24,25 @@ var crypto = require('crypto');
 var { spawn } = require('child_process');
 
 var ROOT = path.join(__dirname, '..');
+
+/**
+ * 要加载哪个目录当扩展。
+ *
+ * 默认是**仓库根目录**（开发态）。给 `OMITONE_EXT_DIR` 可以改成加载**打包产物**：
+ *
+ *   OMITONE_EXT_DIR=dist/omitone-1.2.6 npm run e2e
+ *
+ * 为什么需要这个开关：默认这条路测的是仓库根目录，**不是用户下载到的那个包**。
+ * 而 `tools/build.js` 用的是**白名单 `INCLUDE`** —— 万一漏登记一个文件，
+ * 包在用户机器上跑不起来，可 e2e 照样全绿（因为它读的是根目录那份）。
+ * 发版前拿这个开关跑一遍，才算真的验过"用户下载到的东西能跑"。
+ *
+ * ⚠️ 扩展 ID 是**按绝对路径哈希**算出来的，所以换目录会换 ID ——
+ * 场景里用 `{EXT}` 的地方会跟着变，`discoverExtensionId` 负责在运行时找到真实 ID。
+ */
+var EXT_DIR = process.env.OMITONE_EXT_DIR
+  ? path.resolve(process.cwd(), process.env.OMITONE_EXT_DIR)
+  : ROOT;
 var PORT = Number(process.env.OMITONE_E2E_PORT || 8899);
 var CDP_PORT = Number(process.env.OMITONE_CDP_PORT || 9222);
 var DEBUG = !!process.env.OMITONE_E2E_DEBUG;
@@ -3883,8 +3902,8 @@ async function main() {
       '--remote-debugging-port=' + CDP_PORT,
       // 必须成对出现：新版 Chromium 单独给 --load-extension 时常被忽略，
       // 加上 --disable-extensions-except 才会真正只加载这一个扩展。
-      '--disable-extensions-except=' + ROOT,
-      '--load-extension=' + ROOT,
+      '--disable-extensions-except=' + EXT_DIR,
+      '--load-extension=' + EXT_DIR,
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-sync',
@@ -3894,7 +3913,9 @@ async function main() {
 
     await waitForCdp(30000);
 
-    var computedId = computeExtensionId(ROOT);
+    console.log('  加载的扩展目录: ' + EXT_DIR + (EXT_DIR === ROOT ? '（仓库根目录）' : '（打包产物）'));
+
+    var computedId = computeExtensionId(EXT_DIR);
     // 真实 ID 以运行时发现为准（路径哈希会因盘符大小写算错，见 discoverExtensionId 的说明）
     var extensionId = await discoverExtensionId(computedId);
     console.log('  扩展 ID: ' + extensionId);
