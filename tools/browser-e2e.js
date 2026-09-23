@@ -3117,6 +3117,34 @@ SCENARIOS.push({
       kept.url === 'https://api.minimaxi.com' && kept.model === 'MiniMax-M3',
       JSON.stringify(kept));
 
+    // 「复制日志」：把日志拼成**纯文本**给用户粘贴。
+    // ⚠️ 测的是 `buildLogsText` 这个**纯函数**，不是"点按钮看剪贴板" ——
+    //    无头环境里 `navigator.clipboard.writeText` 可能因缺少用户手势而被拒，
+    //    拿它当断言会得到一条时好时坏的测试。
+    var copied = await ctx.client.evaluate(
+      '(function(){' +
+      'if(typeof buildLogsText!=="function")return {missing:true};' +
+      'var logs=[' +
+      '{level:"info",time:1700000000000,message:"study begin",meta:{attachments:2}},' +
+      '{level:"warn",time:1700000001000,message:"search job: every candidate frame was rejected",' +
+      'meta:{frames:6,rejects:[{src:"/wq-outer-A",reason:"取不到 jobid"}]}}' +
+      '];' +
+      'return {text:buildLogsText(logs,"9.9.9")};})()'
+    );
+    check('「复制日志」把日志拼成纯文本（带版本与条数）',
+      !!copied && !copied.missing &&
+      copied.text.indexOf('Omitone 诊断日志（版本 9.9.9）') !== -1 &&
+      copied.text.indexOf('共 2 条') !== -1 &&
+      copied.text.indexOf('study begin') !== -1 &&
+      copied.text.indexOf('[warn]') !== -1,
+      JSON.stringify(copied).slice(0, 200));
+    check('「复制日志」把 meta 也带上（诊断信息就在 meta 里）',
+      !!copied && copied.text.indexOf('every candidate frame was rejected') !== -1 &&
+      copied.text.indexOf('/wq-outer-A') !== -1,
+      JSON.stringify(copied && copied.text).slice(0, 200));
+    check('「复制日志」按钮真的在界面上（不是只有函数）',
+      (await ctx.client.evaluate('!!document.getElementById("copyLogs")')) === true);
+
     var errs = ctx.client.errors();
     check('弹窗无未捕获异常', errs.length === 0, errs.slice(0, 2).join(' | '));
   }
