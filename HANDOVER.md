@@ -62,6 +62,7 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。327 项里**�
 | 线上 Release | **v1.2.11** · `omitone.zip` 372.1 KB（sha256 `10497b3d4996ede1…`）· `Omitone-manual.pdf` 1363.1 KB（sha256 `3284192b75825f23…`） |
 | 下载直链 | 版本直链与永久直链**各下载一次**，两个附件都与本地构建**逐字节一致** |
 | 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.11** |
+| 说明已合并 | 1.2.8~1.2.11 **合并成一条说明**（README 顶部一段 + Release 页一页）—— 用户嫌版本发太碎，见 `AGENTS.md` §3 第 7 条 |
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **31 场景 / 327 项**（落盘 `通过=true`） |
 | 新增覆盖 | divjob 场景补 2 条断言（前置条件：job 一开始没帧 + 反查回帧成功） |
 | 顺带核过 | 另外三处 jobid 读取写法同样是老样子，但都**直接自带 frame + win + doc** → `_resolveJobFrame` 开头就早返回，走不到反查那步 ✓（`_buildSyntheticChaoxingJob` / `_buildFrameFallbackJob` / `_detectChaoxingJobElements`）。⚠️ `_buildFrameFallbackJob` 的 `doc` 在跨域时可能是 null（那时不会早返回），但它的 jobid 兜底成 `src`，本来也反查不回帧 —— **不会更差** |
