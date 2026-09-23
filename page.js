@@ -656,6 +656,22 @@
       'div[class*="TiMu"]', 'div[class*="Cy_TItle"]'
     ],
 
+    /**
+     * "这一页有没有题目容器"用的**并集选择器**（一串，不是数组）。
+     *
+     * ⚠️ 它和上面的 `_questionSelectors` **不是一回事，别合并**：
+     *   - `_questionSelectors` 是**有序的备选列表**，`_collectQuestionContainers` 逐个试、
+     *     命中一个就用它（还带嵌套去重），目的是"尽量抠到题"；
+     *   - 这一串是**一次性并集**，只回答"页面上有没有题目容器 / 有几个"，
+     *     用于判分结果页的可交互性判断与诊断计数。
+     *
+     * ⚠️ **这个字符串曾经被手抄在三处**（`30-log.js` 的诊断、`70-quiz-flow.js` 的结果页判断、
+     * `72-quiz-answers.js` 的正确答案收集），其中一处抄成了 `.Cy_TITle`（大小写错），
+     * 于是那个诊断在作业/考试页上把容器数报成 0 —— 而且**不报错、不留日志**。
+     * 现在三处统一读这里：**改选择器只改这一行** —— 手抄的那份必然漂移，别再抄第四份。
+     */
+    _quizContainerSelector: '.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox',
+
     _getMainFrame: function () {
       return document.querySelector('#iframe');
     },
@@ -1134,8 +1150,10 @@
         try { hit = doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer'); } catch (eH) {}
         out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
         out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
-        // ③ 可交互性
-        out.containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox').length;
+        // ③ 可交互性。选择器读真源 `_quizContainerSelector` —— 这里原先手抄了一份，
+        //    抄成 `.Cy_TITle`（大小写错），于是作业/考试页上 containers 恒为 0，
+        //    而这条诊断唯一的作用就是告诉人"缺的是哪一道条件"。别再手抄。
+        out.containers = doc.querySelectorAll(this._quizContainerSelector).length;
         var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
         out.controls = ctrls.length;
         var enabled = 0;
@@ -6228,7 +6246,8 @@
         if (!hasGradeMark) return false;
 
         // ② 已不可交互：题目区被结果区替换，或所有控件都 disabled
-        var containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox');
+        // 选择器读真源 `_quizContainerSelector`，别手抄（手抄的那份必然漂移）
+        var containers = doc.querySelectorAll(this._quizContainerSelector);
         if (!containers.length) return true;
 
         var controls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
@@ -7583,8 +7602,9 @@
         var changed = false;
         var nodes = [];
         try {
-          // 加上 .Cy_TItle：作业与考试页用这套类名，缺了它就永远收集不到正确答案
-          nodes = Array.from(doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox'));
+          // 选择器读真源 `_quizContainerSelector`（含 `.Cy_TItle`：作业与考试页用这套类名，
+          // 缺了它就永远收集不到正确答案）。别手抄 —— 手抄的那份必然漂移。
+          nodes = Array.from(doc.querySelectorAll(self._quizContainerSelector));
         } catch (e) {}
 
         for (var i = 0; i < nodes.length; i++) {

@@ -104,7 +104,8 @@
         if (!hasGradeMark) return false;
 
         // ② 已不可交互：题目区被结果区替换，或所有控件都 disabled
-        var containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox');
+        // 选择器读真源 `_quizContainerSelector`，别手抄（手抄的那份必然漂移）
+        var containers = doc.querySelectorAll(this._quizContainerSelector);
         if (!containers.length) return true;
 
         var controls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');

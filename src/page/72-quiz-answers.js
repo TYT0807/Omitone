@@ -336,8 +336,9 @@
         var changed = false;
         var nodes = [];
         try {
-          // 加上 .Cy_TItle：作业与考试页用这套类名，缺了它就永远收集不到正确答案
-          nodes = Array.from(doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox'));
+          // 选择器读真源 `_quizContainerSelector`（含 `.Cy_TItle`：作业与考试页用这套类名，
+          // 缺了它就永远收集不到正确答案）。别手抄 —— 手抄的那份必然漂移。
+          nodes = Array.from(doc.querySelectorAll(self._quizContainerSelector));
         } catch (e) {}
 
         for (var i = 0; i < nodes.length; i++) {
