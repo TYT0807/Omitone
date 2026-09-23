@@ -1139,6 +1139,77 @@ function checkAwaitTimeouts() {
 }
 
 // ---------------------------------------------------------------------------
+// 17. 选择器类名大小写一致
+//
+// **CSS 类名大小写敏感**，所以 `.Cy_TITle` 和 `.Cy_TItle` 是两个完全不同的类 ——
+// 写错一个字母的那个 selector **匹配不到任何元素，而且不报错、不留日志**。
+// 实测踩过：`30-log.js` 的容器计数写成 `.Cy_TITle`（正确的真源是 `.Cy_TItle`），
+// 于是 `xxtAI.diagnose()` 的 `containers` 永远报 0 —— 而诊断工具正是排查
+// "AI 扫描不到题目"时唯一能看的窗口，它自己在骗人，排查就彻底走偏。
+//
+// 判据：把代码里出现过的类名按小写分组，同组出现**多种拼写**即报错。
+//
+// ⚠️ 两条必须的收窄，否则全是误报（都实测过）：
+//   1. **只看普通的 `.Foo` 选择器**，不看 `[class*="Foo"]` 这种子串匹配 ——
+//      第三方 UI 库类名大小写不确定时，本仓库的既定写法是 `[class*="player"], [class*="Player"]`
+//      两套都列上（`40-media.js` 的 player / speed、`50-captcha.js` 的 dialog 都是）。
+//      那些是**故意的**，不是笔误。
+//   2. 同组拼写若**出现在同一行**（即同一个选择器列表里两套都列了，是并集），也不算冲突 ——
+//      `60-tasks-detect.js` 的 `.icon_Completed, .icon_completed` 就是这种。
+//
+// 这样收窄之后，只有"两个地方各写了一个大小写不同的普通类名"才会报 ——
+// 而那正是 `.Cy_TITle` 那个真 bug 的形态。
+// ---------------------------------------------------------------------------
+function checkSelectorCase() {
+  var partsDir = path.join(ROOT, 'src', 'page');
+
+  var groups = Object.create(null);        // 小写键 -> { 拼写 -> { 位置, 行内容 } }
+  var linesBySpelling = Object.create(null);
+
+  fs.readdirSync(partsDir).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (file) {
+      fs.readFileSync(path.join(partsDir, file), 'utf8').split(/\r?\n/).forEach(function (line, i) {
+        if (!/querySelector|querySelectorAll|\bclosest\b|\bmatches\b|classList/.test(line)) return;
+        var m;
+        var reDot = /\.([A-Za-z_][\w-]*)/g;
+        while ((m = reDot.exec(line))) {
+          var name = m[1];
+          if (name.length < 4) continue;                 // 太短的（.on / .li）噪声太大
+          var key = name.toLowerCase();
+          if (!groups[key]) groups[key] = Object.create(null);
+          if (!groups[key][name]) groups[key][name] = file + ':' + (i + 1);
+          if (!linesBySpelling[name]) linesBySpelling[name] = [];
+          linesBySpelling[name].push(line);
+        }
+      });
+    });
+
+  var issues = [];
+  Object.keys(groups).sort().forEach(function (key) {
+    var variants = Object.keys(groups[key]);
+    if (variants.length < 2) return;
+    // 收窄 2：若存在某一行同时含全部拼写 → 是"两套都列上"的并集写法，放行
+    var unionHedge = variants.some(function (v) {
+      return linesBySpelling[v].some(function (line) {
+        return variants.every(function (w) { return line.indexOf('.' + w) !== -1; });
+      });
+    });
+    if (unionHedge) return;
+    issues.push(key + ' 出现了 ' + variants.length + ' 种拼写：' +
+      variants.map(function (v) { return v + '（' + groups[key][v] + '）'; }).join('  /  '));
+  });
+
+  if (issues.length) {
+    fail('选择器类名只差大小写（CSS 大小写敏感，错的那个匹配不到任何元素且不报错）:\n      ' +
+      issues.join('\n      ') +
+      '\n      对着真实页面确认哪个对，然后统一；确实是"两套都存在"就写成 ' +
+      '`.A, .B` 并排（那样会被判为并集写法而放行）');
+    return;
+  }
+  pass('选择器类名大小写一致（' + Object.keys(groups).length + ' 个类名，无同小写多拼写）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -1159,6 +1230,7 @@ checkDeadFiles(jsFiles, manifest);
 checkPageConcat();
 checkPagePartHeaders();
 checkAwaitTimeouts();
+checkSelectorCase();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

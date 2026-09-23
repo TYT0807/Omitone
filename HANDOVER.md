@@ -111,7 +111,7 @@
 | 线上 Release | **v1.2.1** · `omitone.zip` 361.1 KB（sha256 `6223c1a9e2d05813…`）· `Omitone-manual.pdf` 1359.6 KB（sha256 `5a684bead7b5738b…`），均 `state=uploaded` |
 | 下载直链 | 版本直链与永久直链**各下载一次**，都与本地构建**逐字节一致** |
 | 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.1**（Pages 构建已跟上） |
-| 测试 | 自检 16 项 · 集成 77 项 · e2e **29 场景 / 311 项**（落盘 `通过=true`） |
+| 测试 | 自检 17 项 · 集成 77 项 · e2e **29 场景 / 311 项**（落盘 `通过=true`） |
 
 > ⚠️ **令牌还没 revoke。** `~/.omitone-release.ghtoken`（93 字符细粒度 PAT）本次实测仍有效
 > （`GET /user` → 200，身份 `TYT0807`）。按 §0.5 的规矩**发版结束就该 revoke 并删掉它**。
@@ -150,7 +150,7 @@
 | --- | --- |
 | 本地 / 远端 | 远端 main 是 **`bd7b166`**；本地领先 **7 个提交**，**尚未推送** |
 | 工作区 | 干净 |
-| 测试 | 自检 16 项 · 集成 77 项 · e2e **29 场景 / 311 项**（落盘 `通过=true`） |
+| 测试 | 自检 17 项 · 集成 77 项 · e2e **29 场景 / 311 项**（落盘 `通过=true`） |
 | 线上 Release | v1.1.6 · `omitone.zip` 360.9 KB（sha256 `7cab586768fd…`）· `Omitone-manual.pdf` 1360.6 KB（sha256 `a73ff8877e07…`），均与本地构建逐字节一致 |
 | 备份 | `D:/Omite-backup-20260921-160904`（41 个文件，基线 `1dd22d8`） |
 
@@ -191,7 +191,7 @@ npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- v
   与提交后完成判定（新增 `_isQuizResultPageFinished`）。**
   端到端现在是 **29 个场景 / 311 项**，新增「作业页选项写入隐藏答案域」（8 项）
   与「作业页提交后认出已完成」（9 项）。
-- **测试基线：自检 16 项 · 集成 77 项 · 真实 Edge e2e 311 项（29 个场景）· 提示词基准通过**。
+- **测试基线：自检 17 项 · 集成 77 项 · 真实 Edge e2e 311 项（29 个场景）· 提示词基准通过**。
   `npm run check` 的数字守卫已对上 `.workbuddy/e2e-counts.json`。
 - **`dist/` 已按新代码重新打包**：`dist/omitone-1.1.6.zip` 353.4 KB（18 个文件），
   `dist/omitone-1.1.6/content.js` 含 4xx 代码、`page.js` 含本轮修复。
@@ -260,7 +260,7 @@ npm run build && npm run release -- replace-asset v1.1.6 && npm run release -- v
   新增 `_isQuizResultPageFinished`（三条判据同时成立才算完成，宁可漏判不误判）。
   端到端新增「作业页选项写入隐藏答案域」与「作业页提交后认出已完成」两个场景，
   后者特意把 mock 结果页做成真实判分页，并断言**旧判据对它确实认不出来**。
-  测试基线：自检 16 项 · 集成 **77** 项 · 真实 Edge e2e **311 项**（29 个场景）。
+  测试基线：自检 17 项 · 集成 **77** 项 · 真实 Edge e2e **311 项**（29 个场景）。
 - 工作区现在应当是**干净的**；若你看到脏工作区，先跑 `git status` 对一下再动手。
 - 工作区**应当干净**（发布与说明书重写都已提交）。若你看到脏工作区，
   先跑 `git status --short` 与 `git log --oneline -3` 对一下再动手 ——
@@ -513,7 +513,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 16 项 + 提示词基准 + 集成 77 项） |
+| 任何东西 | `npm test` | **全绿**（自检 17 项 + 提示词基准 + 集成 77 项） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -544,7 +544,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | 当前版本 | **1.2.1**（`page.js` 已拆成 16 个按域片段，见 §0.2.2；1.2.1 是按域审计后的修复版） |
 | 代码规模 | `page.js` 10.2k 行（**构建产物**）/ 330 个方法；源码在 `src/page/` 的 16 个片段里，合计 10.5k 行（含头部注释）；`content.js` 约 1.7k 行；`libs/` 合计约 3.8k 行 |
 | 扩展体积 | 解压后约 **882 KB**（其中 `page.js` 440KB、`resources/table.bin` 122KB） |
-| 测试基线 | 自检 16 项 · 集成 77 项 · 真实 Edge 端到端 **全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
+| 测试基线 | 自检 17 项 · 集成 77 项 · 真实 Edge 端到端 **全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
