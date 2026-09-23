@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.2.11-blue)
+![版本](https://img.shields.io/badge/版本-1.2.8-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -34,7 +34,7 @@
 >
 > ⚠️ **用途限定见下面第 4 条**：拿它去考试、代刷计入考核的作业，那就是作弊，后果自负。
 
-> **1.2.8–1.2.11（同一轮修复，合起来看）**：页面把身份号挂在**外层容器**上时，插件只能单向对上「任务点」和「页面上那块内容」，于是两种症状 ——
+> **1.2.8（同一轮修复，已含 1.2.8~1.2.11 全部修复）**：页面把身份号挂在**外层容器**上时，插件只能单向对上「任务点」和「页面上那块内容」，于是两种症状 ——
 > **认不出来**（整章被跳过；一张卡片挂两份测验时第二份不做）和**认出来了却不动手**（视频不动、测验不答，**还不报错**）。
 > 这一轮把两半都补齐，并顺带把排查手段配齐：**日志逐帧说明卡在哪一步**，弹窗底部加**「复制日志」**一键复制整段日志。
 > [这一轮的完整说明 →](https://github.com/TYT0807/Omitone/releases/latest)
