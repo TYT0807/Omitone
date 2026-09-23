@@ -135,8 +135,10 @@
         try { hit = doc.querySelector('.Py_answer, .Py_tk, .answerScore, .answerCon, .mark_answer'); } catch (eH) {}
         out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
         out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
-        // ③ 可交互性
-        out.containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox').length;
+        // ③ 可交互性。选择器读真源 `_quizContainerSelector` —— 这里原先手抄了一份，
+        //    抄成 `.Cy_TITle`（大小写错），于是作业/考试页上 containers 恒为 0，
+        //    而这条诊断唯一的作用就是告诉人"缺的是哪一道条件"。别再手抄。
+        out.containers = doc.querySelectorAll(this._quizContainerSelector).length;
         var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
         out.controls = ctrls.length;
         var enabled = 0;
