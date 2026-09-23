@@ -465,6 +465,13 @@
         } catch (e) {}
         var frameData = this._getChaoxingFrameData(frame, win);
         var frameJobId = String(frameData.jobid || frameData._jobid || frame.getAttribute('jobid') || frame.getAttribute('_jobid') || '');
+        // ⚠️ 和 `_findJobIdInAncestorFrames` **保持一致**：jobid 可能挂在任务点外层容器
+        //    （`.ans-attach-ct`）上，只在本帧的 `data` / 属性里找会漏。
+        //    漏的后果不是"匹配不到"，而是**匹配上了却反查不回帧** ——
+        //    `_runChaoxingJob` 靠这里拿 `job.doc`，拿不到就"跑不起来"（e2e 变体场景实测）。
+        if (!frameJobId && win) {
+          try { frameJobId = String(this._findJobIdInAncestorFrames(win) || ''); } catch (eAnc) {}
+        }
         var frameObjectId = String(frameData.objectid || frameData.objectId || frame.getAttribute('objectid') || '');
 
         if (targetJobId && frameJobId && targetJobId === frameJobId) {
