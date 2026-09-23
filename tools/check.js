@@ -625,6 +625,11 @@ function collectHtmlScriptRefs() {
 // ---------------------------------------------------------------------------
 function checkTestCounts() {
   var problems = [];
+  // ⚠️ 这两个标志必须声明在**所有**用到它们的代码块之前。
+  // 踩过：itestChecked 原先声明在集成校验块后面，块里刚置的真被后面的 var 重置回 false ——
+  // 症状是明明跑过 itest、守卫却说「集成条数未校验」。
+  var assertionsChecked = false;
+  var itestChecked = false;
 
   var src = read('tools/browser-e2e.js');
   var actualScenes = (src.match(/SCENARIOS\.push\(/g) || []).length;
@@ -668,11 +673,46 @@ function checkTestCounts() {
     }
   });
 
-  // ---- 断言总数：e2e 跑完会落盘，有就拿来校验文档 ----
+  // ---- 集成测试条数：同样由测试自己落盘（`.workbuddy/itest-counts.json`）----
+  // 与上面 e2e 那段同款。**为什么也要守**：改了集成测试条数就得手工同步十几处文档，
+  // 漏一处不会有任何提示（1.2.7 那次 77 → 106 就是手工改了 14 处）。
+  //
+  // ⚠️ 关键词用 `集成`，取它**之后**的第一个 `N 项`。
+  // 同一行常同时含「自检 17 项 · 集成 106 项 · e2e 312 项」，
+  // 所以不能整行扫数字（那会把自检、e2e 的数字一起误伤 —— 上面那段注释记着这个坑）。
+  var itestFile = path.join(ROOT, '.workbuddy', 'itest-counts.json');
+  if (fs.existsSync(itestFile)) {
+    try {
+      var itestCounts = JSON.parse(fs.readFileSync(itestFile, 'utf8'));
+      var actualItest = Number(itestCounts.assertions);
+      if (actualItest > 0) {
+        itestChecked = true;
+        targets.forEach(function (t) {
+          var file = t[0], text = t[1];
+          if (text === null) { try { text = read(file); } catch (e) { return; } }
+          if (!text) return;
+          text.split(/\r?\n/).forEach(function (line) {
+            var km = line.search(/集成/);
+            if (km === -1) return;
+            // ⚠️ `\**` 是必需的：文档里数字常常是**加粗**的（`集成 **106** 项`），
+            // 若写成 `(\d+)\s*项`，"106" 后面跟着的是 `**` 而不是空白，
+            // 正则就会**跳到行里下一个数字**去（实测把 e2e 的 312 当成了集成条数）。
+            var m2 = line.slice(km).match(/(\d+)\**\s*项/);
+            if (!m2) return;
+            var n2 = Number(m2[1]);
+            if (n2 !== actualItest) {
+              problems.push(file + ' 写的是「集成 ' + n2 + ' 项」，实测是 ' + actualItest + ' 项');
+            }
+          });
+        });
+      }
+    } catch (e) {}
+  }
+
+
   // 静态数不出来（含每场景动态断言），所以只能由 e2e 自己交出来。
   // 没跑过 e2e 就跳过 —— 不能因为「文件不存在」就判失败。
   var countsFile = path.join(ROOT, '.workbuddy', 'e2e-counts.json');
-  var assertionsChecked = false;
   if (fs.existsSync(countsFile)) {
     try {
       var counts = JSON.parse(fs.readFileSync(countsFile, 'utf8'));
@@ -691,7 +731,9 @@ function checkTestCounts() {
             // 整行扫会把 13 和 52 也当成 e2e 项数报错（实测踩过）。
             var km = line.search(/e2e|交叉检验|端到端/i);
             if (km === -1) return;
-            var m2 = line.slice(km).match(/(\d+)\s*项/);
+            // `\**` 同下面那段：数字常被加粗（`e2e **312** 项`），
+            // 不写会把正则跳到行里下一个数字去。
+            var m2 = line.slice(km).match(/(\d+)\**\s*项/);
             if (!m2) return;
             var n2 = Number(m2[1]);
             if (n2 !== actualAssertions && n2 !== Number(counts.scenarios)) {
@@ -705,6 +747,7 @@ function checkTestCounts() {
 
   var sceneNote = '场景数与代码一致: ' + actualScenes + ' 个' +
     (assertionsChecked ? '；断言总数与 e2e 实测一致' : '（断言总数未校验：还没跑过 e2e，跑一次即可）') +
+    (itestChecked ? '；集成条数与实测一致' : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
     '（CHANGELOG 只查最新一段，历史记录不查）';
 
   if (problems.length) fail('测试数字检查未通过:\n      ' + problems.join('\n      '));

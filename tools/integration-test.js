@@ -953,6 +953,22 @@ await testPermanentHttpError();
   await testApiKeyNormalize();
   await testNormalizeItemIndex();
 
+  // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
+  // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
+  // 与 e2e 的 `.workbuddy/e2e-counts.json` 同款。
+  //
+  // 为什么需要它：改了测试条数就得手工同步十几处文档（AGENTS / README /
+  // tools/README / HANDOVER / CHANGELOG 最新段），**漏一处不会有任何提示**。
+  // 1.2.7 那次 77 → 106 就是手工改了 14 处，全靠人眼。
+  try {
+    fs.writeFileSync(path.join(ROOT, '.workbuddy', 'itest-counts.json'), JSON.stringify({
+      assertions: checks,
+      failed: failures.length,
+      passed: failures.length === 0,
+      at: new Date().toISOString()
+    }, null, 2));
+  } catch (e) {}
+
   console.log('');
   if (failures.length) {
     console.log('集成测试未通过：' + failures.length + ' / ' + checks + ' 项失败');
