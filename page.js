@@ -3055,13 +3055,37 @@
           // 同一层容器上还可能挂着 jobid（任务点外层 `.ans-attach-ct` 常把 jobid
           // 写在 **div 上**而不是 iframe 的 data 里）。
           //
+          // ⚠️ **必须先看容器自己。** 原先这里只写 `wrap.querySelector('[jobid]')` ——
+          // 而 **`querySelector` 只找后代、永远返回不了 `wrap` 自己**，
+          // 于是下面那个 `holder === wrap` 条件**不可达**：「jobid 在容器 div 上」
+          // 这条路径**完全没生效**。
+          // 实测（e2e 的 `/two-quizzes-divjob` 变体场景）：`ancestorJobId` 恒为空串 →
+          // `_searchChaoxingJobOcs` 返回 null → **整章被静默跳过** ——
+          // 与用户报过的「两个大题目只做第一个」症状一模一样。
+          //
           // ⚠️ 这里必须**确认这个 jobid 属于我们这一帧**：只接受
           //   「容器自己」或「包含本帧的元素」，否则会在一个容器里塞了两个任务点时
           //   把**兄弟任务点的 jobid** 当成本帧的身份 —— 那会让插件去跑错的任务点，
           //   比"匹配不到"严重得多（匹配不到只是漏做，绑错是**做错**）。
           try {
             var wrap = el.parentElement;
-            var holder = wrap && wrap.querySelector ? wrap.querySelector('[jobid], [data*="jobid"]') : null;
+            var holder = null;
+
+            // ① 容器**自己**身上的 jobid / _jobid / data.jobid
+            if (wrap && wrap.getAttribute) {
+              var ownId = String(wrap.getAttribute('jobid') || wrap.getAttribute('_jobid') || '');
+              if (!ownId) {
+                var wrapData = this._safeJsonParse(wrap.getAttribute('data') || '', null);
+                ownId = String((wrapData && (wrapData.jobid || wrapData._jobid)) || '');
+              }
+              if (ownId) holder = wrap;
+            }
+
+            // ② 容器**后代**里的 jobid 承载元素（要它包着本帧才算数）
+            if (!holder && wrap && wrap.querySelector) {
+              holder = wrap.querySelector('[jobid], [data*="jobid"]');
+            }
+
             var belongsToThisFrame = !!holder && (holder === wrap || (holder.contains && holder.contains(el)));
             if (holder && holder !== el && belongsToThisFrame) {
               var hid = String(holder.getAttribute('jobid') || holder.getAttribute('_jobid') || '');
