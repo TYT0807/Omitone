@@ -1,6 +1,6 @@
 {
   "name": "omitone",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "private": true,
   "description": "学习通（chaoxing）课程自动化浏览器扩展：视频/音频播放、PPT 翻页、AI 答题、验证码识别、讨论任务点",
   "license": "GPL-3.0",
