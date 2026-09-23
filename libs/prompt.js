@@ -273,7 +273,14 @@
     if (!hasAnswer(answer)) return null;
 
     var rawIndex = item.i !== undefined ? item.i : item.index;
-    var index = Number(rawIndex);
+    // ⚠️ **别直接 `Number(rawIndex)`**：`Number(null)` 是 0、`Number('')` 也是 0，
+    // 于是模型显式回了 `"i": null`（表示"没给序号、按位置对齐"）时会被当成 **index = 0** ——
+    // 那条答案被硬塞给第 0 题，真正该拿它的那一题落空，
+    // 然后白跑一轮"空答案补问"（多花一次请求的 token）。
+    // 这里先把"空值"挡掉，让它按本函数开头声明的语义落到 `index: null`（按位置对齐）。
+    var index = (rawIndex === null || rawIndex === undefined || rawIndex === '')
+      ? NaN
+      : Number(rawIndex);
     return {
       index: Number.isFinite(index) && index >= 0 ? index : null,
       answer: answer
