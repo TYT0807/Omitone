@@ -1022,6 +1022,67 @@ function checkPageConcat() {
 // 那比没有地图更糟（没有地图时他会去 grep，有错地图时他会信）。
 // 所以把头部当断言守住。
 // ---------------------------------------------------------------------------
+/**
+ * 从片段头部读出某一份清单（方法 / 状态字段）。
+ *
+ * 两种排布都要认：
+ *   `本段的方法（4 个）：`      → 清单在**下面几行**（` * 名字、名字、…`）
+ *   `本段的状态字段（120 个）：a、b、c` → 清单在**同一行**
+ *
+ * 返回 `{ names, count }`；`count` 为 null 表示头部没有这份清单。
+ */
+function readHeaderList(header, label) {
+  var names = [];
+  var count = null;
+  var collecting = false;
+  var re = new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '（(\\d+) 个）：(.*)$');
+
+  header.forEach(function (l) {
+    if (l.indexOf(label) !== -1) {
+      var m = l.match(re);
+      if (m) {
+        count = Number(m[1]);
+        if (m[2].trim()) {
+          // 同一行就带清单（状态字段是这种）
+          m[2].split('、').forEach(function (s) { s = s.trim(); if (s) names.push(s); });
+          collecting = false;
+        } else {
+          collecting = true;   // 清单在下面几行（方法是这种）
+        }
+        return;
+      }
+      collecting = true;
+      return;
+    }
+    if (!collecting) return;
+    if (/^\s\* =+/.test(l)) { collecting = false; return; }
+    var mm = l.match(/^\s\*\s+(.*)$/);
+    if (mm) mm[1].split('、').forEach(function (s) { s = s.trim(); if (s) names.push(s); });
+  });
+
+  return { names: names, count: count };
+}
+
+/** 比对一份头部清单与文件里的实际情况，把差异写进 issues */
+function compareList(issues, file, kind, declared, actual) {
+  if (!declared.length && !actual.length) return;
+  if (new Set(declared).size !== declared.length) {
+    issues.push(file + ' 头部' + kind + '清单里有重复项');
+  }
+  var declaredSet = new Set(declared);
+  var actualSet = new Set(actual);
+  var missing = actual.filter(function (n) { return !declaredSet.has(n); });
+  var ghost = declared.filter(function (n) { return !actualSet.has(n); });
+  if (missing.length) {
+    issues.push(file + ' 头部漏了 ' + missing.length + ' 个' + kind + '：' +
+      missing.slice(0, 6).join('、') + (missing.length > 6 ? ' …' : ''));
+  }
+  if (ghost.length) {
+    issues.push(file + ' 头部写了 ' + ghost.length + ' 个本文件不存在的' + kind + '：' +
+      ghost.slice(0, 6).join('、') + (ghost.length > 6 ? ' …' : ''));
+  }
+}
+
 function checkPagePartHeaders() {
   var partsDir = path.join(ROOT, 'src', 'page');
   var files = fs.readdirSync(partsDir).filter(function (f) { return /\.js$/.test(f); }).sort();
@@ -1046,45 +1107,45 @@ function checkPagePartHeaders() {
       if (seq[2] !== wantTotal) issues.push(file + ' 头部分母是 ' + seq[2] + '，片段总数应是 ' + wantTotal);
     }
 
-    // ② 头部「本段的方法」清单
-    var declared = [];
-    var inList = false;
-    header.forEach(function (l) {
-      if (l.indexOf('本段的方法') !== -1) { inList = true; return; }
-      if (!inList) return;
-      if (/^\s\* =+/.test(l)) { inList = false; return; }
-      var m = l.match(/^\s\*\s+(.*)$/);
-      if (m) m[1].split('、').forEach(function (s) { s = s.trim(); if (s) declared.push(s); });
-    });
+    // ② 头部清单。头部有两种清单，都要核：
+    //    `本段的方法（N 个）：`  —— 方法名，清单在**下面几行**
+    //    `本段的状态字段（N 个）：` —— 字段名，清单在**同一行**
+    //    （第二种原先没人核，于是 1.2.3 加了 `_quizRunPaperKey` 却没同步头部，
+    //      头部数字静静地从 119 停在 118 —— 又一次"错地图"。）
+    var methods = readHeaderList(header, '本段的方法');
+    var fields = readHeaderList(header, '本段的状态字段');
 
-    // ③ 文件里真实的 app 方法。
+    // ③ 文件里真实的 app 成员。
     //    注意别把 window.xxtAI 上那 8 个也算进来 —— 它们在 app 对象闭合之后，
-    //    是给用户手动调的入口，不是 app 的方法。
+    //    是给用户手动调的入口，不是 app 的成员。
     var body = lines.slice(markerAt + 1);
     var inApp = !/^\s*\};/.test(body[0] || '');   // 以 `};` 开头的那个片段，开头还在 app 内
-    var actual = [];
+    var actualMethods = [];
+    var actualFields = [];
     body.forEach(function (l) {
       if (/^  var app = \{/.test(l)) { inApp = true; return; }
       if (/^  \};/.test(l)) { inApp = false; return; }
       if (!inApp) return;
-      var m = l.match(/^ {4}([A-Za-z_$][\w$]*)\s*:\s*(?:async\s+)?function/);
-      if (m) actual.push(m[1]);
+      var m = l.match(/^ {4}([A-Za-z_$][\w$]*)\s*:\s*(.*)$/);
+      if (!m) return;
+      if (/^(?:async\s+)?function\b/.test(m[2].trim())) actualMethods.push(m[1]);
+      else actualFields.push(m[1]);
     });
 
-    if (new Set(declared).size !== declared.length) {
-      issues.push(file + ' 头部方法清单里有重复项');
+    // ⚠️ 只有头部**真的列了**这份清单才去核。
+    //    否则 `00-shell-constants.js` 会误报：它的 `DEFAULT_CONFIG` 里有一堆 4 空格缩进的
+    //    `playbackRate: 1,` 之类的配置项，会被当成 app 的状态字段（实测误报 50 个）。
+    if (methods.count !== null) {
+      if (methods.count !== actualMethods.length) {
+        issues.push(file + ' 头部说方法有 ' + methods.count + ' 个，实际 ' + actualMethods.length + ' 个');
+      }
+      compareList(issues, file, '方法', methods.names, actualMethods);
     }
-    var declaredSet = new Set(declared);
-    var actualSet = new Set(actual);
-    var missing = actual.filter(function (n) { return !declaredSet.has(n); });
-    var ghost = declared.filter(function (n) { return !actualSet.has(n); });
-    if (missing.length) {
-      issues.push(file + ' 头部漏了 ' + missing.length + ' 个方法：' + missing.slice(0, 6).join('、') +
-        (missing.length > 6 ? ' …' : ''));
-    }
-    if (ghost.length) {
-      issues.push(file + ' 头部写了 ' + ghost.length + ' 个本文件不存在的方法：' + ghost.slice(0, 6).join('、') +
-        (ghost.length > 6 ? ' …' : ''));
+    if (fields.count !== null) {
+      if (fields.count !== actualFields.length) {
+        issues.push(file + ' 头部说状态字段有 ' + fields.count + ' 个，实际 ' + actualFields.length + ' 个');
+      }
+      compareList(issues, file, '状态字段', fields.names, actualFields);
     }
   });
 
@@ -1092,7 +1153,7 @@ function checkPagePartHeaders() {
     fail('片段头部与实际内容不一致（改完片段记得同步头部）:\n      ' + issues.join('\n      '));
     return;
   }
-  pass('片段头部与实际一致（' + files.length + ' 个片段：序号 + 方法清单）');
+  pass('片段头部与实际一致（' + files.length + ' 个片段：序号 + 方法清单 + 状态字段清单）');
 }
 
 // ---------------------------------------------------------------------------
