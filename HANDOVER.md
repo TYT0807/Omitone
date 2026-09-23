@@ -57,17 +57,17 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。327 项里**�
 
 | | |
 | --- | --- |
-| 本地 / 远端 | **完全一致**（`f99d45c`）；tag `v1.2.11` 指向同一个 sha |
-| 工作区 | 干净 |
-| 线上 Release | **v1.2.11** · `omitone.zip` 372.1 KB（sha256 `10497b3d4996ede1…`）· `Omitone-manual.pdf` 1363.1 KB（sha256 `3284192b75825f23…`） |
-| 下载直链 | 版本直链与永久直链**各下载一次**，两个附件都与本地构建**逐字节一致** |
-| 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.11** |
-| 说明已合并 | 1.2.8~1.2.11 已**回退合并成 1.2.8 一条**（源码版本号 + README + CHANGELOG 都已改 1.2.8）；GitHub 侧重发（回收 1.2.9~1.2.11、把 zip 挂回 v1.2.8）**待你确认**，见 `AGENTS.md` §3 第 7 条 |
+| 本地 / 远端 | **完全一致**（main = `cad1fa5`）；v1.2.8 tag 指向同一个 sha |
+| 工作区 | 干净（dist/ 为构建产物，已 gitignore） |
+| 线上 Release | **v1.2.8** · `omitone.zip` 372.1 KB（sha256 `7c8efbc134f3…`）· `Omitone-manual.pdf` 1364.1 KB（sha256 `eef70e884503…`），均 `state=uploaded` |
+| 下载直链 | `/releases/latest/download/omitone.zip` 与永久直链各探一次，两个附件都与本地 1.2.8 构建**逐字节一致**（verify 通过） |
+| 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.8** |
+| 说明已合并 | 1.2.8~1.2.11 已**回退合并成 1.2.8 一条**；GitHub 侧已重发：v1.2.8 挂上修复版 zip，v1.2.9 / v1.2.10 / v1.2.11 的 Release 与 tag **已回收**，`/releases/latest` 现已指向 v1.2.8，见 `AGENTS.md` §3 第 7 条 |
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **31 场景 / 327 项**（落盘 `通过=true`） |
 | 新增覆盖 | divjob 场景补 2 条断言（前置条件：job 一开始没帧 + 反查回帧成功） |
 | 顺带核过 | 另外三处 jobid 读取写法同样是老样子，但都**直接自带 frame + win + doc** → `_resolveJobFrame` 开头就早返回，走不到反查那步 ✓（`_buildSyntheticChaoxingJob` / `_buildFrameFallbackJob` / `_detectChaoxingJobElements`）。⚠️ `_buildFrameFallbackJob` 的 `doc` 在跨域时可能是 null（那时不会早返回），但它的 jobid 兜底成 `src`，本来也反查不回帧 —— **不会更差** |
 
-#### 上一版（1.2.10）的快照 —— 保留作对照
+#### 上一版（1.2.10，Release 已回收）的快照 —— 保留作对照
 
 **1.2.10**：弹窗加**「复制日志」** —— 把日志整段复制成纯文本，粘贴就能发出来。
 
@@ -79,16 +79,16 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。327 项里**�
 
 | | |
 | --- | --- |
-| 本地 / 远端 | **完全一致**（`4fff754`）；tag `v1.2.10` 指向同一个 sha |
+| 本地 / 远端 | **完全一致**（`4fff754`，commit 仍在历史中）；tag `v1.2.10` **已回收** |
 | 工作区 | 干净 |
-| 线上 Release | **v1.2.10** · `omitone.zip` 371.9 KB（sha256 `48459058c94528f4…`）· `Omitone-manual.pdf` 1363.7 KB（sha256 `6c686be0445f1dbd…`），均 `state=uploaded` |
+| 线上 Release | **v1.2.10（已回收）** · 原 `omitone.zip` 371.9 KB（sha256 `48459058c94528f4…`）· `Omitone-manual.pdf` 1363.7 KB（sha256 `6c686be0445f1dbd…`） |
 | 下载直链 | 版本直链与永久直链**各下载一次**，两个附件都与本地构建**逐字节一致** |
 | 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.10** |
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **31 场景 / 327 项**（落盘 `通过=true`） |
 | 新增覆盖 | 弹窗场景 3 条断言（纯文本格式 / meta 带上 / 按钮存在） |
 | 反向验证 | ⚠️ 断言测的是 `buildLogsText` **纯函数**，不是"点按钮看剪贴板" —— 无头环境里 `navigator.clipboard.writeText` 可能因缺用户手势被拒，拿它当断言会得到**时好时坏**的测试 |
 
-#### 上一版（1.2.9）的快照 —— 保留作对照
+#### 上一版（1.2.9，Release 已回收）的快照 —— 保留作对照
 
 **1.2.9**：**只改日志，不改行为** ——
 `_searchChaoxingJobOcs` 一个任务点都匹配不到时，**逐帧说明被哪一条拒了**。
@@ -105,9 +105,9 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。327 项里**�
 
 | | |
 | --- | --- |
-| 本地 / 远端 | **完全一致**（`3b72103`）；tag `v1.2.9` 指向同一个 sha |
+| 本地 / 远端 | **完全一致**（`3b72103`，commit 仍在历史中）；tag `v1.2.9` **已回收** |
 | 工作区 | 干净 |
-| 线上 Release | **v1.2.9** · `omitone.zip` 371.0 KB（sha256 `d10732e31e7f94a3…`）· `Omitone-manual.pdf` 1361.2 KB（sha256 `02cf42ca87b09153…`），均 `state=uploaded` |
+| 线上 Release | **v1.2.9（已回收）** · 原 `omitone.zip` 371.0 KB（sha256 `d10732e31e7f94a3…`）· `Omitone-manual.pdf` 1361.2 KB（sha256 `02cf42ca87b09153…`） |
 | 下载直链 | 版本直链与永久直链**各下载一次**，两个附件都与本地构建**逐字节一致** |
 | 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` 已显示 **1.2.9** |
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **31 场景 / 327 项**（落盘 `通过=true`） |
