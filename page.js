@@ -1135,7 +1135,7 @@
         out.gradeSelector = hit ? String(hit.className || '').slice(0, 40) : '';
         out.gradeText = /我的答案|正确答案|本题得分|答案解析/.test(text);
         // ③ 可交互性
-        out.containers = doc.querySelectorAll('.TiMu, .Cy_TITle, .questionLi, .questionItem, .mark_item, .questionBox').length;
+        out.containers = doc.querySelectorAll('.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox').length;
         var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
         out.controls = ctrls.length;
         var enabled = 0;
