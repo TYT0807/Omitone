@@ -630,6 +630,7 @@ function checkTestCounts() {
   // 症状是明明跑过 itest、守卫却说「集成条数未校验」。
   var assertionsChecked = false;
   var itestChecked = false;
+  var selfCheckChecked = false;
 
   var src = read('tools/browser-e2e.js');
   var actualScenes = (src.match(/SCENARIOS\.push\(/g) || []).length;
@@ -692,12 +693,15 @@ function checkTestCounts() {
           if (text === null) { try { text = read(file); } catch (e) { return; } }
           if (!text) return;
           text.split(/\r?\n/).forEach(function (line) {
-            var km = line.search(/集成/);
-            if (km === -1) return;
-            // ⚠️ `\**` 是必需的：文档里数字常常是**加粗**的（`集成 **106** 项`），
-            // 若写成 `(\d+)\s*项`，"106" 后面跟着的是 `**` 而不是空白，
-            // 正则就会**跳到行里下一个数字**去（实测把 e2e 的 312 当成了集成条数）。
-            var m2 = line.slice(km).match(/(\d+)\**\s*项/);
+            // ⚠️ 判据是「`集成` 之后**很短一段内**出现数字 + 项」——
+            // 不能写成"关键词之后的第一个数字 + 项"：正文里凡是提到"集成"的行
+            // （比如「把集成条数 77 → 106 改了一遍…加第 18 项自检」）
+            // 都会把那个无关数字当成集成条数（实测被自己的说明文字误报过 3 次）。
+            // 6 个字符够覆盖「集成测试（106 项）」这种写法，又够不着下一句的数字。
+            // 也不能跨句（`[^。\n]`）—— 计数声明不会跨句。
+            // ⚠️ 间隔里**不许出现数字**（`[^。\n\d]`）：否则 `集成 106 项` 会被
+            // 拆成"间隔吃掉了 10、数字只匹配到 6"（实测报出「集成 6 项」）。
+            var m2 = line.match(/集成[^。\n\d]{0,6}(\d+)\**\s*项/);
             if (!m2) return;
             var n2 = Number(m2[1]);
             if (n2 !== actualItest) {
@@ -709,6 +713,39 @@ function checkTestCounts() {
     } catch (e) {}
   }
 
+
+  // ---- 自检项数：直接数 check.js **执行段**里的 checkXxx() 调用 ----
+  //
+  // ⚠️ 判据与上面两条**不同**，这里用「`自检` 紧跟着 `数字 + 项`」的**正向匹配**，
+  // 而不是"关键词之后的第一个数字"。因为文档里有
+  // 「`npm test  # 自检 + 提示词基准 + 集成测试（106 项）`」这种**没有给自检报数**的行 ——
+  // "取第一个数字"会把集成条数误当成自检项数。
+  //
+  // 为什么只数**执行段**：函数定义（`function checkXxx(`）也长得一样，
+  // 而执行段里只有调用、没有定义。
+  var selfSrc = read('tools/check.js');
+  var execAt = selfSrc.indexOf("console.log('\\nOmitone 工程自检");
+  var actualChecks = execAt < 0
+    ? 0
+    : new Set(selfSrc.slice(execAt).match(/\bcheck[A-Z][A-Za-z]*\(/g) || []).size;
+  if (actualChecks > 0) {
+    selfCheckChecked = true;
+    targets.forEach(function (t) {
+      var file = t[0], text = t[1];
+      if (text === null) { try { text = read(file); } catch (e) { return; } }
+      if (!text) return;
+      text.split(/\r?\n/).forEach(function (line) {
+        var m = line.match(/自检\s*\**\s*(\d+)\s*\**\s*项/);
+        if (!m) return;
+        if (Number(m[1]) !== actualChecks) {
+          problems.push(file + ' 写的是「自检 ' + m[1] + ' 项」，实际 ' + actualChecks + ' 项');
+        }
+      });
+    });
+  } else {
+    problems.push('自检项数守卫失效：在 tools/check.js 的执行段里没数到 checkXxx() 调用 —— ' +
+      '守卫失效比没有守卫更糟，请同步这段正则');
+  }
 
   // 静态数不出来（含每场景动态断言），所以只能由 e2e 自己交出来。
   // 没跑过 e2e 就跳过 —— 不能因为「文件不存在」就判失败。
@@ -748,6 +785,7 @@ function checkTestCounts() {
   var sceneNote = '场景数与代码一致: ' + actualScenes + ' 个' +
     (assertionsChecked ? '；断言总数与 e2e 实测一致' : '（断言总数未校验：还没跑过 e2e，跑一次即可）') +
     (itestChecked ? '；集成条数与实测一致' : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
+    (selfCheckChecked ? '；自检项数与实际一致' : '（自检项数未校验：守卫失效）') +
     '（CHANGELOG 只查最新一段，历史记录不查）';
 
   if (problems.length) fail('测试数字检查未通过:\n      ' + problems.join('\n      '));
@@ -1320,6 +1358,119 @@ function checkSelectorCase() {
 }
 
 // ---------------------------------------------------------------------------
+// 18. 桥接消息类型两端一致
+//
+// page.js 与 content.js 靠 `window.postMessage` 通信，**按字符串类型分发**。
+// 任何一端把类型名拼错，另一端就**收不到、也不报错** ——
+// 唯一的表现是 `bridgeSend` 那条 promise **一直等到 90 秒超时才 resolve**，
+// 日志里写的是 **「bridge timeout: xxx no response」**。
+//
+// ⚠️ 这就是为什么必须守它：那个报错**把人指向"网络/桥接坏了"**，
+// 而真正的原因是**一个拼错的字符串**。本项目最讨厌的就是这种"症状指错方向"的坑
+// （同族：`.Cy_TITle` 那个大小写笔误让诊断自己骗人）。
+//
+// 判据：两个方向都比对 ——
+//   ① page 用 `bridgeSend('X')` 发出的，content.js 必须有 `msg.type === 'X'` 分支
+//   ② content.js 用 `source: 'xxt_bridge'` 发出的，page 侧必须有对应分支
+// ---------------------------------------------------------------------------
+function checkBridgeMessageTypes() {
+  var partsDir = path.join(ROOT, 'src', 'page');
+  var pageLines = [];
+  fs.readdirSync(partsDir).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (file) {
+      fs.readFileSync(path.join(partsDir, file), 'utf8').split(/\r?\n/).forEach(function (line, i) {
+        pageLines.push({ file: file, no: i + 1, text: line });
+      });
+    });
+
+  function collect(list, re, pick) {
+    var out = Object.create(null);
+    list.forEach(function (l) {
+      var m;
+      var r = new RegExp(re.source, 'g');
+      while ((m = r.exec(l.text))) {
+        var v = pick(m);
+        if (v && !out[v]) out[v] = l.file + ':' + l.no;
+      }
+    });
+    return out;
+  }
+
+  // 行式扫描：`source: '<src>'` 之后（含同行）最多 3 行内的第一个 `type: '...'`。
+  // ⚠️ 用行式而不是跨行正则：`source:` 与 `type:` 常常隔着一两行（中间还有 id:），
+  // 跨行正则容易把远处无关的 `type:` 配进来。
+  // 也**不认** `type: type`（变量形式）—— 那是 bridgeSend 内部转发，由上面那条覆盖。
+  function collectEmitted(lines, sourceLiteral) {
+    var out = Object.create(null);
+    lines.forEach(function (l, i) {
+      if (l.text.indexOf(sourceLiteral) === -1) return;
+      for (var j = i; j <= Math.min(i + 3, lines.length - 1); j++) {
+        var m = lines[j].text.match(/type:\s*['"]([A-Za-z_][\w]*)['"]/);
+        if (m) {
+          if (!out[m[1]]) out[m[1]] = l.file + ':' + lines[j].no;
+          return;
+        }
+      }
+    });
+    return out;
+  }
+
+  // ① page 发出的类型。**两条路都要收**：
+  //    - `bridgeSend('X')`（要等回执的）
+  //    - 直接 `window.postMessage({ source: 'xxt_app', type: 'X' })`（不等回执的，
+  //      例如 `emitRuntimeLog` 的 runtime_log、10-config-state.js 的 storage_set）
+  //    只收前者会漏掉后面这两种（实测漏了 2 种）。
+  var sent = collect(pageLines, /bridgeSend\(\s*['"]([A-Za-z_][\w]*)['"]/, function (m) { return m[1]; });
+  var sentDirect = collectEmitted(pageLines, "source: 'xxt_app'");
+  Object.keys(sentDirect).forEach(function (t) { if (!sent[t]) sent[t] = sentDirect[t]; });
+
+  // page 侧能处理的类型（收 xxt_bridge 那一段）
+  var pageHandled = collect(pageLines, /msg\.type\s*===\s*['"]([A-Za-z_][\w]*)['"]/, function (m) { return m[1]; });
+
+  // content.js 侧
+  var contentLines = read('content.js').split(/\r?\n/).map(function (t, i) {
+    return { file: 'content.js', no: i + 1, text: t };
+  });
+  var contentHandled = collect(contentLines, /msg\.type\s*===\s*['"]([A-Za-z_][\w]*)['"]/, function (m) { return m[1]; });
+
+  // ② content.js 用 source: 'xxt_bridge' 发出的类型
+  var emitted = collectEmitted(contentLines, "source: 'xxt_bridge'");
+
+  var issues = [];
+
+  // 方向 ①：page 发的，content 必须认
+  Object.keys(sent).forEach(function (t) {
+    if (!contentHandled[t]) {
+      issues.push('page 发出 bridgeSend(\'' + t + '\')（' + sent[t] + '），' +
+        '但 content.js 里没有 `msg.type === \'' + t + '\'` 分支 —— 消息会被静默丢弃，' +
+        '表现是 90 秒后报 bridge timeout（看起来像网络问题）');
+    }
+  });
+
+  // 方向 ②：content 回的，page 必须认
+  Object.keys(emitted).forEach(function (t) {
+    if (!pageHandled[t]) {
+      issues.push('content.js 发出 xxt_bridge 消息 type: \'' + t + '\'（' + emitted[t] + '），' +
+        '但 page.js 里没有对应分支 —— 回调永远不触发，同样是等到 bridge timeout');
+    }
+  });
+
+  if (Object.keys(sent).length === 0 || Object.keys(emitted).length === 0) {
+    fail('桥接消息类型守卫失效：page 发出 ' + Object.keys(sent).length + ' 种、' +
+      'content 发出 ' + Object.keys(emitted).length + ' 种 —— 至少一侧是 0，说明提取正则没匹配上，' +
+      '请同步这段正则（守卫失效比没有守卫更糟）');
+    return;
+  }
+
+  if (issues.length) {
+    fail('桥接消息类型两端不一致:\n      ' + issues.join('\n      '));
+    return;
+  }
+  pass('桥接消息类型两端一致（page 发出 ' + Object.keys(sent).length + ' 种、' +
+    'content 回 ' + Object.keys(emitted).length + ' 种，都有对应分支）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -1341,6 +1492,7 @@ checkPageConcat();
 checkPagePartHeaders();
 checkAwaitTimeouts();
 checkSelectorCase();
+checkBridgeMessageTypes();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
