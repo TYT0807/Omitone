@@ -287,6 +287,14 @@
 
     run: function () {
       if (!this._assertActive()) return;
+      // 「已开启」持久化到 chrome.storage（经 content 桥接）。run() 是所有启动入口的汇合点
+      //（页面中间面板【开始】/ 弹窗【开始】/ 刷新后自动续跑都会走到这里），在这里落一次标记，
+      // 才能保证页面跳转、以及讨论任务 window.open 新开的标签页里，content.js 的
+      // maybeMarkAutoResume 读到 xxtRunning → shouldAutoStart() 为真 → 自动续跑。
+      // 否则从页面面板点【开始】时 xxtRunning 恒为 false，新开的讨论窗口 shouldAutoStart() 为假、
+      // 命中「是讨论页且没开启 → 静默 return」→ 插件在新窗口里一动不动（用户报的「讨论新窗口失灵」）。
+      // storage_set 桥接不回消息，直接投递、不 await，避免 bridgeSend 的 promise 空挂到超时。
+      try { window.postMessage({ source: 'xxt_app', type: 'storage_set', payload: { xxtRunning: true } }, '*'); } catch (ePersist) {}
       this.configs = mergeConfig(this.configs);
       this._initCellData();
       this._resetRuntimeState();

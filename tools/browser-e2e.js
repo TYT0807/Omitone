@@ -3767,6 +3767,37 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
+ * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
+ * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
+ * 讨论任务 window.open 出来的窗口里插件静默不跑（用户报的「讨论新窗口默认关闭、插件失灵」）。
+ * 修法是让 run()（所有启动入口的汇合点）落一次 storage_set{xxtRunning:true}。 */
+SCENARIOS.push({
+  name: 'run() 落续跑标记（讨论新窗口才会自动跑）',
+  path: '/blank',
+  run: async function (ctx) {
+    var res = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'var seen=[];' +
+      'var onMsg=function(e){if(e.source===window&&e.data&&e.data.source==="xxt_app"&&e.data.type==="storage_set"&&e.data.payload)seen.push(e.data.payload);};' +
+      'window.addEventListener("message",onMsg);' +
+      'var before=(app._runtimeVersion||0);' +
+      'app.run();' +
+      'await new Promise(function(r){setTimeout(r,40);});' +
+      'window.removeEventListener("message",onMsg);' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'return {ran:(app._runtimeVersion||0)>before,' +
+      ' persisted:seen.some(function(p){return p.xxtRunning===true;}),' +
+      ' cleanKey:seen.some(function(p){return Object.keys(p).length===1 && p.xxtRunning===true;})};' +
+      '})()'
+    );
+    check('run() 确实启动了（_runtimeVersion 前进，前置条件）', res.ran === true, JSON.stringify(res));
+    check('run() 落一次 xxtRunning=true（否则讨论新窗口静默不跑）', res.persisted === true, JSON.stringify(res));
+    check('续跑标记只写 xxtRunning 一个键（不顺手污染别的存储）', res.cleanKey === true, JSON.stringify(res));
+  }
+});
+
 // ===========================================================================
 // 主流程
 // ===========================================================================
