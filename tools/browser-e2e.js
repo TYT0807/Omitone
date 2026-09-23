@@ -2089,6 +2089,33 @@ SCENARIOS.push({
     );
     check('seek 到 duration-3s（100 → 97）', seek.ct === 97, JSON.stringify(seek));
 
+    // ---- 1.2.5：可拖动的**音频**也拖到结尾（与视频一视同仁）----
+    // 原先 _trySeekToEnd 第一行硬门槛 tagName!=='VIDEO' 把音频挡掉；用户反馈有些音频任务
+    // 同样可拖到底、平台照常计完成。这里断言音频也被 seek 到 duration-3。
+    var audioSeek = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
+      'app._seekTriedKeys=null; app._seekRevertedKeys=null; app._activeJobId="e2e-audio";' +
+      'var a=document.getElementById("omitone-audio");' +
+      'a.__ct=0;' +
+      'var ok=app._trySeekToEnd(a,"e2e-audio");' +
+      'return {ok:ok, ct:a.__ct||0, tag:String(a.tagName)};})()'
+    );
+    check('音频也能拖到结尾（AUDIO，100 → 97）', audioSeek.ok === true && audioSeek.ct === 97, JSON.stringify(audioSeek));
+
+    // ---- 1.2.5：拖不动 + 锁 1x 的音频也纳入「90% 提前收尾」（_isNinetyPercentVideo 放开音频）----
+    var audioNinety = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var a=document.getElementById("omitone-audio");' +
+      'app._detectedMaxRate=1;' +               // 锁 1x
+      'app._activeJobId="e2e-audio";' +
+      'var key=app._getMediaSeekKey(a);' +
+      'app._seekRevertedKeys={}; app._seekRevertedKeys[key]=true;' +  // 拖不动（被弹回）
+      'return {eligible:app._isNinetyPercentVideo(a), key:String(key||"")};})()'
+    );
+    check('拖不动+锁1x 的音频也纳入 90% 提前收尾（与视频一致）', audioNinety.eligible === true, JSON.stringify(audioNinety));
+
     var seekOff = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableSeek:false});' +
