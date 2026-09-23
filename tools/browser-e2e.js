@@ -529,9 +529,49 @@ function buildTwoQuizCardHtml() {
     '</body></html>';
 }
 
+/**
+ * 同一个卡片，但 **jobid 只在容器 div 上、iframe 上什么都不写**。
+ *
+ * 为什么要单独搭这一版：`_findJobIdInAncestorFrames` 里有一段专门处理
+ * 「jobid 挂在任务点外层容器上」（注释说这在真实页面上**很常见**），
+ * 但它的判据写成 `wrap.querySelector('[jobid]')` —— 而 **`querySelector` 只找后代、
+ * 永远返回不了 `wrap` 自己**，于是 `holder === wrap` 这个条件**不可达**：
+ * jobid 写在容器 div 上时**一个都找不到**。
+ *
+ * 症状与用户报过的那个一模一样：任务点匹配不到 → 整章被静默跳过。
+ */
+function buildTwoQuizCardDivJobIdHtml() {
+  function task(id, label) {
+    var payload = { jobid: 'work-' + id, _jobid: 'work-' + id, workid: id, name: label };
+    var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+    // ⚠️ 与 buildTwoQuizCardHtml 的**唯一区别**：jobid / data 写在 div 上，iframe 上一个都不写
+    return '<div class="ans-attach-ct" id="tp-' + id.toLowerCase() + '" jobid="work-' + id + '" data="' + dataAttr + '">' +
+      '<div class="ans-job-icon" aria-label="任务点"></div>' +
+      '<div class="ans-attach-title">' + label + '</div>' +
+      '<iframe src="/wq-outer-' + id + '" style="width:100%;height:260px;border:0"></iframe>' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="card">' + task('A', '第一份单元测试') + task('B', '第二份单元测试') + '</div>' +
+    '</body></html>';
+}
+
+function buildTwoQuizzesDivJobIdTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/wq-card-divjob" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    '<script>window.attachments=[' +
+    '{jobid:"work-A",property:{_jobid:"work-A",jobid:"work-A",mid:"mid-A",name:"第一份单元测试",module:"work",type:"work"}},' +
+    '{jobid:"work-B",property:{_jobid:"work-B",jobid:"work-B",mid:"mid-B",name:"第二份单元测试",module:"work",type:"work"}}' +
+    '];</script>' +
+    '</body></html>';
+}
+
 /** 任务点外层模块页：**jobid 在它的 iframe 属性上**，它自己一题都没有 */
-function buildTwoQuizOuterHtml(id) {
-  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>' +
+function buildTwoQuizOuterHtml(id) {  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>' +
     '<div class="work-module">' +
     '<iframe id="frame_content" src="/wq-mid-' + id + '" style="width:100%;height:200px;border:0"></iframe>' +
     '</div></body></html>';
@@ -790,6 +830,8 @@ var MOCK_PAGES = {
   '/discussion': buildDiscussionHtml,
   '/discussion-multi': buildDiscussionMultiHtml,
   '/two-quizzes': buildTwoQuizTopHtml,
+  '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
+  '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
   '/wq-card': buildTwoQuizCardHtml,
   // ⚠️ 这几条的路径必须与 builder 里拼出来的 src **大小写完全一致**
   //    （jobid 用 'work-A' / 'work-B'，URL 里就是 /wq-outer-A …）
@@ -3828,6 +3870,77 @@ SCENARIOS.push({
       'var d=app._getMainDocument().querySelector("#tp-decoy"); if(d&&d.parentNode) d.parentNode.removeChild(d);' +
       'return true;})()'
     );
+  }
+});
+
+/**
+ * ---- 一张卡片两份测验（**变体**）：jobid 挂在容器 div 上、iframe 上什么都不写 ----
+ *
+ * 这条盯的是 `_findJobIdInAncestorFrames` 里那段"jobid 在任务点外层容器上"的处理。
+ * 注释说这在真实页面上**很常见**，但判据写成 `wrap.querySelector('[jobid]')` ——
+ * 而 **`querySelector` 只找后代、永远返回不了 `wrap` 自己**，
+ * 于是 `holder === wrap` 这个条件**不可达**：jobid 写在容器 div 上时一个都找不到。
+ *
+ * 症状与用户报过的那个**一模一样**：匹配不到任务点 → 整章被静默跳过。
+ */
+SCENARIOS.push({
+  name: 'jobid 挂在容器 div 上也要能找到',
+  path: '/two-quizzes-divjob',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      autoNext: false,
+      restudy: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(400);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    // 配置与判定必须在**同一次 evaluate 里**做完（理由见上一条场景的注释：
+    // 分开写时 `_quizApiFailUntil` 会在两次调用之间翻转，匹配分支被硬守卫跳过）
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
+      'app._quizApiFailUntil=0;' +
+      'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
+      'var frames=app._searchIFramesOcs(cardDoc).map(function(f){' +
+      '  var aid="";try{aid=app._findJobIdInAncestorFrames(f.contentWindow);}catch(e){aid="(抛错)";}' +
+      '  return {src:String(f.getAttribute("src")||"").slice(0,22),' +
+      '    iframeJobId:String(f.getAttribute("jobid")||""),' +
+      '    wrapJobId:String((f.parentElement&&f.parentElement.getAttribute("jobid"))||""),' +
+      '    ancestorJobId:aid};' +
+      '});' +
+      'var j=app._searchChaoxingJobOcs([]);' +
+      'var out={frames:frames,matched:null};' +
+      'if(j){out.matched={jobid:j.jobid,name:j.name,kind:j.kind};}' +
+      'return out;})()'
+    );
+
+    // 前置条件：这一版 mock 必须**真的是**"jobid 只在 div 上、iframe 干净" ——
+    // 否则这条场景就退化成和上一条一样的结构，测不到想测的东西
+    var outer = ((probe && probe.frames) || []).filter(function (f) { return f.wrapJobId; });
+    check('前置条件：jobid 只在容器 div 上、iframe 上没有（本变体的全部意义所在）',
+      outer.length === 2 && outer.every(function (f) { return !f.iframeJobId; }),
+      JSON.stringify(probe && probe.frames));
+
+    check('容器 div 上的 jobid 能被 _findJobIdInAncestorFrames 认出来',
+      outer.length === 2 && outer.every(function (f) { return f.ancestorJobId === f.wrapJobId; }),
+      JSON.stringify(outer));
+
+    var matched = (probe && probe.matched) || null;
+    check('整条链路仍能匹配到任务点（认不出 → 返回 null → 整章被静默跳过）',
+      !!matched, JSON.stringify(probe));
+    if (!matched) return;
+    check('跳过已完成的第一份、挑中未完成的第二份（work-B）',
+      matched.jobid === 'work-B', JSON.stringify(matched));
   }
 });
 
