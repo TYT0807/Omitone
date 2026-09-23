@@ -466,8 +466,20 @@ async function cmdVerify(tag) {
   console.log('release        ' + rel.html_url);
   console.log('draft          ' + rel.draft + ' / prerelease ' + rel.prerelease + ' / 说明 ' + rel.body.length + ' 字');
 
+  // ⚠️ 附件列表必须走 `/releases/{id}/assets` 这个**子端点**，
+  //    不能读 release 响应里内嵌的 `assets` 字段 —— **那个字段可能是空的**。
+  //
+  //    实测（2026-09-23，v1.2.8）：内嵌 `assets` 是 `[]`，
+  //    而同一时刻子端点正常返回 2 个附件（`state=uploaded`，大小也对），
+  //    下载直链拿回来的字节与本地构建**逐字节一致**。
+  //    读内嵌字段的后果是：把一个**完好的 Release 判成"附件缺失、下载入口是死链"**，
+  //    还退出码 1 —— 让人以为发版坏了，实际什么都没坏。
+  //    （`replace-asset` 那两条路早就用的是子端点，只有 verify 读错了地方。）
+  var relAssets = await api('GET', base + '/releases/' + rel.id + '/assets');
+  if (!Array.isArray(relAssets)) relAssets = [];
+
   var bad = [];
-  rel.assets.forEach(function (a) {
+  relAssets.forEach(function (a) {
     var ok = a.state === 'uploaded';
     if (!ok) bad.push(a.name);
     console.log('  附件 ' + a.name + '  ' + (a.size / 1024).toFixed(1) + ' KB  state=' + a.state);
@@ -477,11 +489,11 @@ async function cmdVerify(tag) {
   // GitHub 会把非 ASCII 名字洗成 `default.pdf` 并照常返回 201 ——
   // 只看 state=uploaded 会放过这种"名字错了、其余全正常"的情况（v1.1.2 真踩过）。
   var wantNames = ASSETS.map(function (a) { return a.name; });
-  var gotNames = rel.assets.map(function (a) { return a.name; });
+  var gotNames = relAssets.map(function (a) { return a.name; });
   var wrongNames = wantNames.filter(function (n) { return gotNames.indexOf(n) === -1; });
 
   // README 依赖的永久直链必须真的能用（用 HEAD 探一下最终地址，不下载全文）
-  var linkOk = rel.assets.some(function (a) { return a.name === 'omitone.zip'; });
+  var linkOk = relAssets.some(function (a) { return a.name === 'omitone.zip'; });
   console.log('\n下载直链      https://github.com/' + OWNER + '/' + REPO + '/releases/latest/download/omitone.zip');
   console.log('               ' + (linkOk ? '✓ 该 Release 里有同名附件，链接可用' : '✗ 缺 omitone.zip，README 的下载入口是死链！'));
 
@@ -584,7 +596,8 @@ async function cmdVerify(tag) {
         if (seenAsset[assetName]) continue;
         seenAsset[assetName] = true;
 
-        var asset = (rel.assets || []).filter(function (a) { return a.name === assetName; })[0];
+        // ⚠️ 同样走子端点拿到的 `relAssets`，别读内嵌的 `rel.assets`（可能是空的）
+        var asset = relAssets.filter(function (a) { return a.name === assetName; })[0];
         if (!asset) {
           stale.push(assetName + '（Release 上没有这个附件）');
           continue;
