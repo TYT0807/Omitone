@@ -100,6 +100,7 @@ const els = {
   start: $("start"),
   stop: $("stop"),
   toggleLogs: $("toggleLogs"),
+  copyLogs: $("copyLogs"),
   clearLogs: $("clearLogs"),
   logPanel: $("logPanel"),
   toast: $("toast"),
@@ -761,6 +762,66 @@ els.clearLogs.addEventListener("click", async () => {
   await chrome.storage.local.set({ [RUNTIME_LOGS_KEY]: [] });
   await refreshLogs();
   toast("日志已清空");
+});
+
+/**
+ * 把运行日志拼成**纯文本**，供「复制日志」用。
+ *
+ * 单独抽成函数是为了**能被测**：剪贴板写入在无头环境里可能被拒（需要用户手势），
+ * 拿它当断言会得到一条时好时坏的测试。格式化逻辑本身是纯函数，直接测它 ✓。
+ */
+function buildLogsText(logs, version) {
+  const list = Array.isArray(logs) ? logs : [];
+  const lines = list.map((item) => {
+    const level = item.level || "info";
+    const meta = item.meta ? ` ${JSON.stringify(item.meta)}` : "";
+    return `[${level}] ${formatTime(item.time)} ${item.message || ""}${meta}`;
+  });
+  return [
+    `Omitone 诊断日志${version ? "（版本 " + version + "）" : ""}`,
+    `导出时间：${formatTime(Date.now())}`,
+    `共 ${list.length} 条（新的在后）`,
+    "---",
+    ...lines
+  ].join("\n");
+}
+
+/**
+ * 「复制日志」——把日志整段复制成**纯文本**，用户直接粘贴就能发出来。
+ *
+ * 为什么要有这个按钮：日志本身早就能看（「查看日志」），但**没法送出来** ——
+ * 用户要么截 200 行长图，要么在弹窗里手工选中复制（弹窗一失焦还可能被关掉）。
+ * 而"整章被跳过""某个任务点不做"这类问题**只能靠日志定位**，
+ * 送不出来就等于查不了。所以这一步不是锦上添花，是**诊断链路的最后一环**。
+ */
+els.copyLogs.addEventListener("click", async () => {
+  let logs = [];
+  try {
+    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
+    logs = (result && Array.isArray(result[RUNTIME_LOGS_KEY])) ? result[RUNTIME_LOGS_KEY] : [];
+  } catch (error) {
+    toast("日志读取失败");
+    return;
+  }
+  if (!logs.length) {
+    toast("暂无日志");
+    return;
+  }
+
+  let version = "";
+  try { version = chrome.runtime.getManifest().version; } catch (eVer) {}
+
+  try {
+    await navigator.clipboard.writeText(buildLogsText(logs, version));
+    toast(`已复制 ${logs.length} 条日志`);
+  } catch (error) {
+    // 剪贴板被拒时别静默失败 —— 把日志铺到面板里，让用户能手工选中
+    logPanelOpen = true;
+    els.logPanel.classList.add("show");
+    els.toggleLogs.textContent = "隐藏日志";
+    await refreshLogs();
+    toast("复制失败，请在上方日志里手动选中");
+  }
 });
 
 document.addEventListener("DOMContentLoaded", load);
