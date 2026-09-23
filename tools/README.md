@@ -217,7 +217,7 @@ OMITONE_TOKENIZER_DIR=/path/to/node_modules npm run bench
 
 把 **真实的 `content.js` 与 `libs/*.js`** 加载进一个 `vm` 隔离环境
 （打桩 `chrome.*` / `document` / `window.postMessage`），然后通过它自己注册的
-message 监听器驱动完整答题往返。当前 77 项断言：
+message 监听器驱动完整答题往返。当前 106 项断言：
 
 1. **稀疏 index 透传** —— 20 题的卷子只发 12 道（模拟已有正确缓存的题被跳过），
    12 题刚好跨 2 批（CHUNK_SIZE=10），验证跨批次回填的 index 与原始下标完全一致。
