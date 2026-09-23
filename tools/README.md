@@ -7,7 +7,7 @@
 | `check.js` | `npm run check` | 工程自检 |
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型 |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型。加 `OMITONE_EXT_DIR=dist/omitone-1.2.6` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -253,6 +253,26 @@ message 监听器驱动完整答题往返。当前 77 项断言：
 
 前置：本机装有 Edge。路径用 `OMITONE_EDGE` 覆盖；端口用 `OMITONE_E2E_PORT` /
 `OMITONE_CDP_PORT` 覆盖；`OMITONE_E2E_DEBUG=1` 打印 target 列表与扩展 ID。
+
+### `OMITONE_EXT_DIR` —— 验"用户下载到的那个包"
+
+默认加载的是**仓库根目录**（开发态）。加上这个变量可以改成加载**打包产物**：
+
+```bash
+OMITONE_EXT_DIR=dist/omitone-1.2.6 npm run e2e
+```
+
+**为什么需要它**：默认这条路测的是仓库根目录，**不是用户下载到的那个包**。
+而 `tools/build.js` 用的是**白名单 `INCLUDE`** —— 万一漏登记一个文件，
+包在用户机器上跑不起来，**可 e2e 照样全绿**（因为它读的是根目录那份）。
+发版前只靠"比文件哈希"间接确认包没缺东西，**从没验过"那个包真的能跑起来"**。
+
+**发版前建议两条都跑**：先 `npm run e2e`（根目录），再
+`OMITONE_EXT_DIR=dist/omitone-<版本> npm run e2e`（产物）。
+
+> ⚠️ 扩展 ID 是按**绝对路径**哈希算的，所以换目录会换 ID ——
+> 场景里用 `{EXT}` 的地方会跟着变，`discoverExtensionId` 负责在运行时找到真实 ID。
+> 输出里会打印 `加载的扩展目录: …（打包产物）`，先看这一行确认没走错。
 
 > **扩展 ID 不再靠"算"**。过去用 `SHA256(目录路径)` 猜 ID，而它对路径大小写敏感
 > （`D:\Omite` 与 `d:\Omite` 会算出完全不同的 ID），一算错就是
