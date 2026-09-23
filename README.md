@@ -56,7 +56,7 @@
 
 点上面那个 [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)。
 
-浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 350 KB）。
+浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 370 KB）。
 它通常会出现在你的「下载」文件夹里。
 
 > 点下去如果只是打开了一个网页、没有开始下载，就在那个页面里再找一下
@@ -1168,7 +1168,7 @@ DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求**请�
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 9600 行 / 320 多个方法）
+page.js                 页面上下文运行时（主体，约 10500 行 / 335 个方法）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
