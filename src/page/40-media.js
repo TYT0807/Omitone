@@ -191,10 +191,14 @@
     },
 
 
-    // 可拖动视频：直接拖到结尾。每个视频只检查一次、最多只做一次拖动动作；
+    // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
+    // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
+    //（用户反馈）；拖不动的音频会在下面的「弹回检测」里被标记为不可拖，自动回落到正常播放。
+    // 注意：PPT 逐页音频走的是 _runPptAudioJob，不设 _videoEl、不经这条路，所以不受影响。
     _trySeekToEnd: function (video, reason) {
-      if (!video || video.tagName !== 'VIDEO') return false; // 只拖视频，音频任务保持正常播放
+      var mediaTag = video && String(video.tagName || '').toUpperCase();
+      if (mediaTag !== 'VIDEO' && mediaTag !== 'AUDIO') return false; // 只拖视频/音频，其它元素不碰
       if (!this.configs.enableSeek) return false;
       if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
       if (this._captchaActive) return false;
@@ -760,7 +764,8 @@
      */
     _isNinetyPercentVideo: function (video) {
       if (!video) return false;
-      if (String(video.tagName || '').toLowerCase() !== 'video') return false; // 音频不适用
+      var mediaTag = String(video.tagName || '').toLowerCase();
+      if (mediaTag !== 'video' && mediaTag !== 'audio') return false; // 视频/音频都适用（拖不动+锁1x 时到 90% 提前收尾）
       if (!this._isRateLockedAtOne()) return false;
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
