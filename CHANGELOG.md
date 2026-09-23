@@ -110,6 +110,40 @@ CSS 类名**大小写敏感**，所以那个选择器**匹配不到任何元素�
 而 `containers` 是 0，正是"诊断骗人"的现场。其余 311 条全绿，
 说明这条断言**只对应它该抓的那一个错**（`AGENTS.md` §5 要求的"一处注入只对应一条断言"）。
 
+### 补上 background 里漏掉的一处超时（验证码图片抓取）
+
+审计 `background.js`（115 行，此前从没单独审过）时发现：**两个紧挨着的网络函数，
+一个加固了一个没加。**
+
+| 函数 | 超时 |
+| --- | --- |
+| `apiFetch` | 有（`AbortController` + 30 秒） |
+| `fetchImageAsDataUrl` | **没有** |
+
+`fetchImageAsDataUrl` 是验证码图片的抓取路径
+（`page.js` 的 `bridgeSend('fetch_image')` → `content.js` → 这个函数）。
+图片服务器接了连接却不回数据时，这个 Promise 永远不 settle、`sendResponse` 永远不触发。
+
+**影响说准**：调用侧的 `bridgeSend` 有 `BRIDGE_TIMEOUT_MS` = 90 秒兜底，
+所以**用户不会真的永久卡住** —— 但那条桥接链路会一直挂着，
+而且网络连接不会被释放（**abort 才能真正取消请求**，不是丢给系统回收）。
+
+**修法**：照 `apiFetch` 的写法加 `AbortController`，超时取 **60 秒** ——
+比调用侧的 90 秒早一步放弃（不让自己比调用方活得久），
+又不至于把"慢但下得完"的小图（验证码图通常几十 KB）切断。
+
+> ⚠️ **诚实说明：这个改动没有直接的自动化测试。** e2e 会走 `api_fetch` 那条路，
+> 但**没有场景触发 `fetch_image_dataurl`**（要触发它得先有一个验证码图片的真实 URL）。
+> 所以这一处只做了语法校验 + 全量回归，**行为本身没被断言覆盖**。
+
+> 顺带记一个**结论是"不改"**的审计结果：`content.js` 与 `popup/popup.js` 里的
+> `await fetch(...)` / `await response.text()` 看起来像"没超时"，**其实都有** ——
+> 它们用的是 `AbortController` + `setTimeout(abort, timeout)`，
+> 而且 abort 计时器到 `finally` 才清，**连读 body 都覆盖到了**。
+> 自检第 16 项认不出这种写法（它只认同一行的 `_withTimeout(`），
+> 所以这一条**只扫 `src/page/`**，不扩到全仓库 —— 扩了会一次报 13 个假阳性，
+> 而**误报多了守卫就没人信了**。
+
 全量：自检 **17** 项 · 集成 77 项 · 真实 Edge e2e **29 个场景 / 312 项**，全绿。
 
 ## 1.2.5 — 音频也能拖到结尾（与视频一视同仁）
