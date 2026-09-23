@@ -832,6 +832,107 @@ async function testThinkingLevels() {
     JSON.stringify(secondBody).slice(0, 160));
 }
 
+/**
+ * ---- [11] API Key 清洗：引号与 Bearer 的剥离顺序 ----
+ *
+ * 这条盯的是一个**静默**的坑：`normalizeApiKey` 原先先剥 `Bearer`、**后**剥引号。
+ * 于是从 JSON 配置里整段复制出来的 `"Bearer sk-xxx"`（引号把 Bearer 一起包住）：
+ *   - 先剥 Bearer：它以引号开头，`^Bearer` 匹配不上 → 原样留着
+ *   - 再剥引号：变成 `Bearer sk-xxx` —— **前缀还在**
+ *
+ * 调用方是这么用的（`content.js`）：`'Authorization': 'Bearer ' + normalizeApiKey(key)`
+ * → 真正发出去的是 **`Bearer Bearer sk-xxx`** → 服务端一律 **401**。
+ *
+ * **为什么值得单独立一条**：症状是"Key 明明是对的却报 401"，
+ * 而项目里现成的排查路径（`_markQuizApiConnectionFailed`、模型 401 那个场景）
+ * 会把人引向"Key 填错了 / 额度没了"，**方向完全错**。
+ */
+async function testApiKeyNormalize() {
+  console.log('\n[11] API Key 清洗（引号与 Bearer 的剥离顺序）');
+
+  var API = require('../libs/api-url.js');
+
+  var CASES = [
+    ['sk-abc', 'sk-abc'],
+    ['  sk-abc  ', 'sk-abc'],
+    ['Bearer sk-abc', 'sk-abc'],
+    ['bearer sk-abc', 'sk-abc'],
+    ['Bearer   sk-abc', 'sk-abc'],
+    ['"sk-abc"', 'sk-abc'],
+    ["'sk-abc'", 'sk-abc'],
+    ['Bearer "sk-abc"', 'sk-abc'],
+    ['"Bearer sk-abc"', 'sk-abc'],            // ← 这条就是那个 bug 的形态
+    ["'Bearer sk-abc'", 'sk-abc'],
+    ['"  Bearer sk-abc  "', 'sk-abc'],
+    ['', ''],
+    [null, ''],
+    ['Bearer', '']
+  ];
+
+  CASES.forEach(function (c, i) {
+    var got = API.normalizeApiKey(c[0]);
+    check('清洗 #' + (i + 1) + ' ' + JSON.stringify(c[0]) + ' → ' + JSON.stringify(c[1]),
+      got === c[1], '实际 ' + JSON.stringify(got));
+  });
+
+  // 反向对照：**键名里本来就带 Bearer** 的不能被误剥。
+  // 没有这两条，把规则写成"见到 Bearer 就删"也能全绿 —— 而那会破坏合法的 key。
+  ['Bearersk-abc', 'sk-Bearer-x'].forEach(function (raw) {
+    check('不能误剥：' + JSON.stringify(raw) + ' 原样返回',
+      API.normalizeApiKey(raw) === raw, '实际 ' + JSON.stringify(API.normalizeApiKey(raw)));
+  });
+
+  // 真正用户看得见的那一步：拼进 Authorization 头之后不能出现两个 Bearer
+  var header = 'Bearer ' + API.normalizeApiKey('"Bearer sk-abc"');
+  check('拼成 Authorization 头后只有一个 Bearer（否则服务端 401）',
+    header === 'Bearer sk-abc', JSON.stringify(header));
+}
+
+/**
+ * ---- [12] index 归一化的边界：`Number(null)` 是 0 ----
+ *
+ * `normalizeItem` 开头就写明：**`index` 为 null 表示"按位置对齐"**。
+ * 但原先是直接 `Number(rawIndex)` —— 而 `Number(null)` 和 `Number('')` **都是 0**，
+ * 于是模型显式回了 `"i": null`（意思是"我没给序号"）时会被当成 **index = 0**：
+ * 那条答案被硬塞给第 0 题，真正该拿它的那一题落空，
+ * 然后白跑一轮"空答案补问" —— **多花一次请求的 token**（这个项目最在意的成本项）。
+ *
+ * ⚠️ 反向对照必须有：`i: 0` 就是**货真价实的第 0 题**，不能和"没给"混为一谈。
+ * 没有那几条，把规则写成"见到 0 就当没给"也能全绿。
+ */
+async function testNormalizeItemIndex() {
+  console.log('\n[12] index 归一化（显式 null / 空串不能被当成 index 0）');
+
+  var PROMPT = require('../libs/prompt.js');
+
+  var CASES = [
+    [{ a: 'A' }, null, '没给 index → 按位置对齐'],
+    [{ a: 'A', i: null }, null, '显式 i:null → 按位置对齐（这就是被修掉的那条）'],
+    [{ a: 'A', i: '' }, null, '空串 i:"" → 按位置对齐'],
+    [{ a: 'A', index: null }, null, '旧键名 index:null 同理'],
+    [{ a: 'A', i: 0 }, 0, 'i=0 是**货真价实的第 0 题**，不能当成"没给"'],
+    [{ a: 'A', i: 2 }, 2, '正常序号'],
+    [{ a: 'A', i: '1' }, 1, '数字串也认'],
+    [{ a: 'A', index: 3 }, 3, '旧键名 index 也认'],
+    [{ a: 'A', i: -1 }, null, '负数序号无效 → 按位置'],
+    [{ a: 'A', i: 'abc' }, null, '非数字 → 按位置'],
+    [['A', 'C'], null, '数组（多选）是位置式，不能被当成包装对象']
+  ];
+
+  CASES.forEach(function (c, i) {
+    var got = PROMPT.normalizeItem(c[0]);
+    var index = got ? got.index : undefined;
+    check('#' + (i + 1) + ' ' + JSON.stringify(c[0]) + ' → index ' + JSON.stringify(c[1]) +
+      '（' + c[2] + '）', index === c[1], '实际 index ' + JSON.stringify(index));
+  });
+
+  // 多选答案不能被丢掉 —— 数组必须原样归到"位置式"
+  var multi = PROMPT.normalizeItem(['A', 'C']);
+  check('多选数组答案完整保留（不是被当成 {a:…} 包装对象后丢掉）',
+    !!multi && Array.isArray(multi.answer) && multi.answer.join('') === 'AC',
+    JSON.stringify(multi));
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
@@ -849,6 +950,8 @@ await testPermanentHttpError();
   await testEmptyAnswerRefill();
   await testFontTable();
   await testThinkingLevels();
+  await testApiKeyNormalize();
+  await testNormalizeItemIndex();
 
   console.log('');
   if (failures.length) {
