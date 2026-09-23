@@ -3969,6 +3969,26 @@ SCENARIOS.push({
     if (!matched) return;
     check('跳过已完成的第一份、挑中未完成的第二份（work-B）',
       matched.jobid === 'work-B', JSON.stringify(matched));
+
+    // ⚠️ 光"匹配上"还不够：任务真正开跑时还要**从 job 反查回它的帧**
+    //    （`_runChaoxingJob` → `_resolveJobFrame`）。这条路径读 jobid 的方式
+    //    如果和上面那个查找函数不一致，就会出现"匹配得上、却跑不起来"。
+    var resolved = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var atts=app._getChaoxingAttachments();' +
+      'var att=null;' +
+      'atts.forEach(function(a){if(!att&&String(a.jobid||"")==="work-B")att=a;});' +
+      'if(!att)return {noAttachment:true};' +
+      'var job=app._buildAttachmentOnlyJob(att);' +
+      'var before=!!(job.frame&&job.doc);' +
+      'app._resolveJobFrame(job);' +
+      'return {jobid:String(job.jobid||""),before:before,hasFrame:!!job.frame,hasDoc:!!job.doc};})()'
+    );
+    check('前置条件：这个 job 一开始确实没有帧（否则测不到反查那一步）',
+      !!resolved && resolved.before === false, JSON.stringify(resolved));
+    check('jobid 挂在容器 div 上时，_resolveJobFrame 也能把任务反查回帧（否则匹配上了却跑不起来）',
+      !!resolved && resolved.hasFrame === true && resolved.hasDoc === true,
+      JSON.stringify(resolved));
   }
 });
 
