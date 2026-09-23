@@ -630,6 +630,22 @@
       };
 
       var iframes = this._searchIFramesOcs(knowCardDoc);
+      // 每个被跳过的帧**为什么**被跳过 —— 一个都没匹配上时打出来。
+      //
+      // 为什么值得记：这个函数的失败**没有任何报错**，只是返回 null，
+      // 然后整章被 `nextUnit()` 推过去。现场日志里只有一句
+      // `search finished on page {"searchedCount":0}` —— 知道"没匹配上"，
+      // 但**不知道卡在哪一条**（帧认不出？取不到 jobid？jobid 不在附件清单里？），
+      // 只能靠人猜。用户报过的「两个大题目只做第一个」当初就是这么查的。
+      //
+      // 只记前 8 条，避免日志洪水。
+      var rejects = [];
+      var noteReject = function (frame, reason) {
+        if (rejects.length >= 8) return;
+        var src = '';
+        try { src = String(frame && frame.getAttribute && frame.getAttribute('src') || '').slice(0, 40); } catch (eSrc) {}
+        rejects.push({ src: src, reason: reason });
+      };
       for (var i = 0; i < iframes.length; i++) {
         var frame = iframes[i];
         try {
@@ -637,27 +653,38 @@
           var doc = appRef._safeWinDoc(win);
           var found = searchJobElement(frame);
           if (!win || !found || !(found.videojs || found.read || found.chapterTest || found.hyperlink || found.pptWithAudio || found.timereader || found.pagedDoc)) {
+            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）');
             continue;
           }
           // 纯文档帧还有一道闸：外层容器必须真的带任务点。
           // 否则它只是页面上的说明性/预览性文档，接管它会白白占住调度。
           if (!found.videojs && !found.read && !found.chapterTest && !found.hyperlink && !found.pptWithAudio && !found.timereader) {
-            if (!appRef._frameHasTaskPoint(doc)) continue;
+            if (!appRef._frameHasTaskPoint(doc)) {
+              noteReject(frame, '纯文档帧，但外层容器没有任务点标记');
+              continue;
+            }
           }
           var frameDataStr = (win.frameElement && win.frameElement.getAttribute('data')) || (((win.frameElement && win.frameElement.contentWindow) && win.frameElement.contentWindow.parent && win.frameElement.contentWindow.parent.frameElement && win.frameElement.contentWindow.parent.frameElement.getAttribute('data'))) || '{}';
           var frameData = this._safeJsonParse(frameDataStr, {});
           var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
-          if (!targetJobId) continue;
+          if (!targetJobId) {
+            noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）');
+            continue;
+          }
 
           var attachment = attachments.find(function (attachmentItem) {
             var attachmentJobId = attachmentItem && (attachmentItem.jobid || (attachmentItem.property && attachmentItem.property._jobid));
             if (!attachmentJobId) return false;
             return String(attachmentJobId) === String(targetJobId);
           });
-          if (!attachment) continue;
+          if (!attachment) {
+            noteReject(frame, 'jobid=' + String(targetJobId).slice(0, 20) + ' 在附件清单里找不到');
+            continue;
+          }
           if (searchedJobs && searchedJobs.find(function (job2) {
             return job2 && String(job2.mid || job2.jobid || '') === String((attachment.property && attachment.property.mid) || attachment.jobid || '');
           })) {
+            noteReject(frame, '这个任务点本轮已经搜过');
             continue;
           }
 
@@ -670,6 +697,7 @@
           var func = null;
           if (found.videojs) {
             if (!this.configs.enableMedia) {
+              noteReject(frame, '是视频任务，但「媒体」开关是关的');
               continue;
             }
             if (workType === 'job' || (workType === 'finished' && this.configs.restudy)) {
@@ -758,6 +786,7 @@
                   hint: '24 小时内不再尝试；xxtAI.clearTaskGiveUp() 可清除'
                 });
               }
+              noteReject(frame, '这个任务点在"放弃名单"里（24 小时内不再尝试）');
               continue;
             }
             return {
@@ -774,6 +803,16 @@
             };
           }
         } catch (e4) {}
+      }
+      // 一个都没匹配上 —— 把每个帧**被哪一条挡下来**打出来。
+      // 这条日志是"整章被跳过"这类问题唯一能自证的线索：没有它，
+      // 现场只剩一句 `searchedCount: 0`，得靠人猜是哪一层出的问题。
+      if (rejects.length) {
+        emitRuntimeLog('warn', 'search job: every candidate frame was rejected', {
+          frames: iframes.length,
+          attachments: attachments.length,
+          rejects: rejects
+        });
       }
       return null;
     },

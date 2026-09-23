@@ -3944,6 +3944,58 @@ SCENARIOS.push({
   }
 });
 
+/**
+ * ---- 任务点全被拒时，日志必须说明"卡在哪一条" ----
+ *
+ * 这个查找函数的失败**没有任何报错**：返回 null，然后整章被 `nextUnit()` 推过去。
+ * 现场日志原先只有一句 `searchedCount: 0` —— 知道"没匹配上"，
+ * 但**不知道卡在哪一条**（帧认不出？取不到 jobid？jobid 不在附件清单里？），只能靠人猜。
+ * 用户报过的「两个大题目只做第一个」当初就是这么查的。
+ *
+ * 做法：把 `window.attachments` 换成**对不上的 jobid**，
+ * 于是每一帧都会在"jobid 不在附件清单里"那一条被拒 —— 然后检查日志有没有说清楚。
+ */
+SCENARIOS.push({
+  name: '任务点全被拒时日志要说明原因',
+  path: '/two-quizzes-divjob',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var got=[];' +
+      'window.addEventListener("message",function(e){' +
+      '  var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log") got.push(m);});' +
+      // 换成对不上的 jobid → 每一帧都会在"jobid 不在附件清单里"被拒
+      'window.attachments=[{jobid:"other-1",property:{_jobid:"other-1",jobid:"other-1",mid:"m1",name:"无关任务点",module:"work",type:"work"}}];' +
+      'var app=window._xxtApp;' +
+      'var r="(未调用)";try{r=app._searchChaoxingJobOcs([]);}catch(e){r="(抛错)";}' +
+      'setTimeout(function(){' +
+      '  var hit=null;' +
+      '  got.forEach(function(m){if(m.message==="search job: every candidate frame was rejected")hit=m;});' +
+      '  res({result:r,hit:hit,logCount:got.length});' +
+      '},300);});})()'
+    );
+
+    check('前置条件：一个任务点都匹配不到（返回 null）',
+      probe && probe.result === null, JSON.stringify(probe && probe.result));
+
+    var hit = probe && probe.hit;
+    check('日志里出现了「每一帧都被拒」并带上逐帧原因（否则现场只能靠猜）',
+      !!hit && Array.isArray(hit.meta && hit.meta.rejects) && hit.meta.rejects.length > 0,
+      JSON.stringify(hit && hit.meta).slice(0, 300));
+
+    var reasons = ((hit && hit.meta && hit.meta.rejects) || [])
+      .map(function (x) { return String(x.reason || ''); }).join(' | ');
+    check('原因具体到「jobid 在附件清单里找不到」，而不是一句笼统的"没匹配到"',
+      reasons.indexOf('在附件清单里找不到') !== -1, reasons.slice(0, 200));
+
+    var srcs = ((hit && hit.meta && hit.meta.rejects) || [])
+      .map(function (x) { return String(x.src || ''); }).join(' | ');
+    check('原因里带上了是哪一帧（src），便于对着页面定位',
+      srcs.indexOf('/wq-outer-') !== -1, srcs.slice(0, 200));
+  }
+});
+
 /** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
