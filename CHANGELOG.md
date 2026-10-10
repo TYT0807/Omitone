@@ -476,6 +476,42 @@ mock 里造一道"**没有文本框、只有富文本编辑器**"的填空题，
 **总量**：集成 **106/106** · e2e **349/349（36 条场景）** 全绿。
 
 
+### ⑩ 填答与判定不对称：「东西全做完了，就是不提交」（合并进 1.2.8）
+
+**症状**：用户原话「现在的问题是东西全做完了，但是不提交作业，一直卡着」。
+
+**定位过程**：⑨ 的贪心分段上线后，日志立刻变成：
+
+```
+llm flat answers resegmented {"expected":5,"received":13}          ← 多选恢复，未填 5 → 2
+fill fallback: rich editor {"emptyAnswer":false,"qid":"405877649"}  ← 富文本兜底跑到了、答案非空
+study hold quiz before finish {"unfilledCount":2}                   ← 但那 2 题仍判"未填"
+```
+
+**填答写进去了，判定却读不出来** —— 填答与判定**不对称**：
+
+- 写：`_fillTextarea` 写 iframe 正文（+ 有隐藏域时也写隐藏域）
+- 读：`_getQuizQuestionFilledValue` 只看**隐藏域**与**可见控件**（input / textarea），
+  **从不看富文本正文**；现场那两题恰好**既没有 input、也没有能读到的 `#answer{qid}`**
+
+于是"填了却判成未填" → `_areQuizAnswersFilled` 永远为假 → **永不提交**。
+
+**修法**（`75-quiz-dom.js`）：
+
+1. 新增 `_readRichEditorValue(el)`：读该题下 iframe 正文的文本；
+   `_getQuizQuestionFilledValue` 在"隐藏域为空 + 可见控件为空"之后**回落到它** ——
+   判定覆盖面必须等于填答覆盖面。
+2. 顺手把隐藏域的查找从"只用调用方给的 doc"改成**`question._element.ownerDocument` 与传入 doc 都查**：
+   填答写的是 `el.ownerDocument`，只查传球文档时跨文档题目同样会"写进去、读不到"。
+
+**测试**：把场景「填空题的答题框是富文本编辑器时也要能填」的 mock 改成**与现场一致**
+（有富文本 iframe、没有 input、**也没有隐藏域**）—— 只有这种形状下"判定要不要读富文本正文"才有区分力；
+新增断言「判定也认这份答案」。反向验证：让 `_readRichEditorValue` 直接 `return ''` →
+**恰好这 1 条变红**，报出 `{"editorText":"标准答案","judged":""}`（正是现场的症状），其余 35 条场景零失败。
+
+**总量**：集成 **106/106** · e2e **349/349（36 条场景）** 全绿。
+
+
 ## 1.2.7 — 修两处 `libs/` 里的静默错：API Key 清洗顺序、index 归一化
 
 **这一版是 1.2.6 之后接着审 `libs/` 的结果**（前几轮审的是 `src/page/` 与 `content.js`）。
