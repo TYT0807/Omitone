@@ -920,8 +920,18 @@ function startMockServer() {
         var content = JSON.stringify(answers);
         var finishReason = 'stop';
 
-        if (responseMode === 'line-format') {
-          // 现场实测的退化形状：**一行一个 JSON 值**，每行正好是一题的答案。
+        if (responseMode === 'flat-multi') {
+          // 现场实测的形状：模型答多选时**把选项字母摊平**成一项一个字母。
+          // 5 题（3 多选 + 2 填空）会回成 13 项：
+          //   ["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]
+          // 答案其实全在，只是长度对不上 → 旧实现会整批丢弃 → 补问 → 又摊平 → 每轮空转。
+          var flat = [];
+          answers.forEach(function (a) {
+            if (Array.isArray(a)) a.forEach(function (part) { flat.push(part); });
+            else flat.push(a);
+          });
+          content = JSON.stringify(flat);
+        } else if (responseMode === 'line-format') {          // 现场实测的退化形状：**一行一个 JSON 值**，每行正好是一题的答案。
           // 升级前解析器用贪婪的 `/\[[\s\S]*\]/` 去抓，跨行拼出来不是合法 JSON →
           // 一律判失败，于是"模型明明答了"却一道题都没落地。
           content = answers.map(function (a) { return JSON.stringify(a); }).join('\n');
@@ -4328,6 +4338,61 @@ SCENARIOS.push({
       filled && filled.editorText.indexOf('标准答案') !== -1, JSON.stringify(filled));
     check('隐藏答案域也写入了（插件就是靠它判定"已填写/可提交"）',
       filled && filled.hidden === '标准答案', JSON.stringify(filled));
+  }
+});
+
+/** ---- 36. 多选答案被"摊平"时也要能重新分段 ---- */
+SCENARIOS.push({
+  name: '多选答案被摊平时要能重新分段',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
+      'var qs=app._extractQuestions(null);' +
+      'return {total:qs.length, multiple:qs.filter(function(q){return q.type==="multiple";}).length};})()'
+    );
+    check('装配：本卷题数 ≥ 2', setup && setup.total >= 2, JSON.stringify(setup));
+
+    // 假模型把多选的答案**摊平**（现场实测形状）。这一批的长度会大于题数。
+    ctx.mock.setResponseMode('flat-multi');
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
+
+    var allFilled = await waitFor(ctx.client,
+      '(function(){var app=window._xxtApp;var qs=app._quizCurrentQuestions||[];' +
+      'if(!qs.length) return false;' +
+      'var d=app._resolveQuizAnswerDocument(null);' +
+      'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
+      'return true;})()', 25000);
+    var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
+      var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
+      return m ? m.length : 0;
+    });
+
+    check('摊平的应答被重新分段后，题目全部答上（旧实现整批丢弃、这卷永远填不满）',
+      allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
+    check('整批只问了一次（没有因为长度不符而重问/补问）',
+      sentCounts.filter(function (n) { return n === Number(setup.total); }).length === 1,
+      'counts=' + JSON.stringify(sentCounts));
+
+    ctx.mock.setResponseMode('');
   }
 });
 
