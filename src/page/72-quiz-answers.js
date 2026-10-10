@@ -725,20 +725,59 @@
      * 整卷只有一条硬约束：**每题都有值**才允许提交（见 `_areQuizAnswersFilled`），
      * 所以多选不求对，答出来就行。
      *
+     * ⚠️⚠️ **只在这份卷子的"第一次尝试"里生效**（第二版，2026-10-10 当天就改了）。
+     *
+     * 第一版没有这道闸，上线后用户立刻报「只做多选题、其他的不做、**疯狂提交**」。
+     * 机制是确定的、也是必然的：
+     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线；
+     *   2. 平台"没过"之后的流程是 `_isQuizRedoRequired`（页面上出现
+     *      「未达到及格线 / 请重做」）→ `_prepareQuizRedoIfNeeded` 重置状态 → **重答 → 重交**；
+     *   3. 这一圈的上限是"最多尝试交卷 20 次" —— 于是本地作答把原来的
+     *      「填不满、卡着不动」换成了「填满 → 交 → 没过 → 再填 → 再交…」，
+     *      而**每一次提交都是真的交上去**（手册专门警告过这件事）。
+     * 所以：交过一次还没过，就说明"只求填上"这个前提**不成立**了 ——
+     * 这时必须把多选交回模型（模型至少**可能**答对，卷子才有机会过），
+     * 重做循环也就回到了改动前那条**有上限、能收敛**的老路。
+     *
+     * 代价说清楚：重做的那一轮会为多选花 token。
+     * 这是"省 token"与"卷子能过"之间必须做的取舍，宁可多花这一轮。
+     *
      * 答案来源复用 `_chooseFallbackQuizAnswer`（全仓库唯一的"本地兜底答案"实现）：
-     * 它天然**避开已知错答**，所以平台判错一次，下一轮自动换下一组组合，
-     * 而且每轮都不花 token —— 几轮下来照样能收敛到正确选项，比纯随机更划算。
+     * 它天然**避开已知错答**，所以判错一次下一轮就换一组组合，且不花 token。
      *
      * ⚠️ 兜底纪律：本地**算不出**答案的题（读不到选项字母、或者填不进 DOM）
      * **绝不占用"已本地处理"名额**，会原样留在请求里交给模型 ——
      * 否则就变成"本地没填上、模型又没问"的空题，表单永远不满，
      * 那比省下的那点 token 贵得多（这正是本仓库最怕的"静默卡住"）。
      *
+     * @param {Object} [options] `{ refill: true }` = 本轮模型答完之后的**补填**那一趟。
+     *   只有在补填这一趟才允许在"本卷已交过卷"之后仍然本地作答 —— 因为那一趟的职责是
+     *   **把被清空的题填上、让整卷交得出去**（缺一道题就永远不提交，比猜错严重得多）。
      * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地作答，**不必**再问模型
      */
-    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc) {
+    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc, options) {
       var handled = {};
       if (!questions || !questions.length) return handled;
+      var refill = !!(options && options.refill);
+
+      // ===== 闸门：这份卷子还值得用"乱答"吗 =====
+      // 两个独立判据，任一成立就把多选交回模型（都写清楚，是为了任一个失灵时不至于裸奔）：
+      //   ① 本卷**已经交过卷**（`_getQuizSubmitAttemptCount > 0`）→ 平台大概已经判分，
+      //      再过不了就只能靠答对，猜没有意义；
+      //   ② 本卷**这一轮之前已经本地答过**（`_quizLocalMultiplePapers`）→ 覆盖
+      //      "同一轮内计数还没 +1"的那个窄缝（比如首次提交没被平台接受、原地打回）。
+      var paperKey = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      var submitAttempts = this._getQuizSubmitAttemptCount(preferredDoc || null);
+      var localUsedBefore = !!paperKey && !!(this._quizLocalMultiplePapers || {})[paperKey];
+      if (!refill && (submitAttempts > 0 || localUsedBefore)) {
+        emitRuntimeLog('info', 'local multiple choice only counts for the first attempt, hand back to llm', {
+          attempts: submitAttempts,
+          localUsedBefore: localUsedBefore,
+          hint: '本卷已经交过卷（或本地答过一轮）还没过 —— 猜答案没有意义，多选交回模型认真答'
+        });
+        return handled;
+      }
+
       var self = this;
       var doc = preferredDoc || null;
       var filledCount = 0;
@@ -784,10 +823,15 @@
       });
 
       if (filledCount) {
+        if (paperKey) {
+          if (!this._quizLocalMultiplePapers) this._quizLocalMultiplePapers = {};
+          this._quizLocalMultiplePapers[paperKey] = true;
+        }
         emitRuntimeLog('info', 'multiple choice answered locally, not sent to llm', {
           count: filledCount,
           deferred: deferred,
-          hint: '非视频整卷的多选只求"填上"，本地作答省 token；答错下一轮自动换组合，仍不花 token'
+          paperKey: paperKey ? 'set' : 'missing',
+          hint: '非视频整卷的多选只求"填上"，本地作答省 token；若平台要求重做，下一轮会把多选交回模型'
         });
       }
       return handled;

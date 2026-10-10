@@ -4496,6 +4496,10 @@ SCENARIOS.push({
  *   ① 提示词里**没有**多选题 —— 这才是"少烧 token/上下文"的直接证据
  *   ② 提示词里**有**其他题 —— 证明不是把整卷一起漏掉了
  *   ③ 多选题在 DOM 里**真的被填上并勾选** —— 表单少一处就永远不提交（本仓库最怕的静默失败）
+ *
+ * ⚠️ 还要守住第二版才加的那道闸：**本地作答只在这份卷子的第一次尝试里生效**。
+ *    没有它，本地猜的多选让卷子永远过不了 → 平台「请重做」→ 重答重交 → 最多 20 次
+ *    （用户报的「只做多选题、其他的不做、疯狂提交」）。所以后半段专门验"第二轮交回模型"。
  */
 SCENARIOS.push({
   name: '非视频整卷的多选本地作答（不问模型）',
@@ -4530,6 +4534,25 @@ SCENARIOS.push({
     check('前提：本卷有多选题（否则这条测的是别的路）',
       setup && setup.multipleIndex >= 0, JSON.stringify(setup));
     if (!setup || setup.multipleIndex < 0) return;
+
+    // 反向守卫（**放在最前面做**）：本地**读不到选项**的多选不能被算作"已处理"。
+    // 漏了它就等于"本地没填上、模型又没问" → 空题 → 永不提交（比省下的 token 贵得多）。
+    // 顺序很重要：上面还没跑过任何本地作答，闸门不会替它"背锅"把这条断言变成空测。
+    var noOptions = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var box=document.createElement("div");' +
+      'box.innerHTML="<div class=\'TiMu\' qid=\'99201\'><span>这道题读不到选项</span></div>";' +
+      'document.body.appendChild(box);' +
+      'var q={index:97,type:"multiple",title:"这道题读不到选项",options:[],_element:box.firstChild};' +
+      'var handled=app._answerLocalMultiChoiceQuestions([q],null);' +
+      'var r={handled:Object.keys(handled).length,answered:app._wasQuizQuestionAnsweredThisRun(q),' +
+      'papers:Object.keys(app._quizLocalMultiplePapers||{}).length};' +
+      'document.body.removeChild(box);' +
+      'return r;})()'
+    );
+    check('读不到选项的多选**不占用**"已本地处理"名额（照旧留给模型），也不给卷子留记录',
+      noOptions && noOptions.handled === 0 && noOptions.answered === false && noOptions.papers === 0,
+      JSON.stringify(noOptions));
 
     var before = ctx.mock.requests.length;
     await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
@@ -4581,42 +4604,83 @@ SCENARIOS.push({
     check('整卷判定"每题都有值"→ 可以提交（本地作答的题没有破坏提交前置）',
       ready === true, String(ready));
 
-    // 幂等：模型回来后流程还会再走一遍同一个入口（补被误清的题）。
+    // 幂等：模型回来后流程还会再走一遍**同一个入口**（那一趟的职责是补被误清的题）。
     // 它必须**不重填、不重问** —— 否则刚填好的答案会被自己覆盖掉。
+    // ⚠️ 必须带 `{refill:true}`：不带就等于"新一轮"的第一趟，
+    //    会撞上下面那道"只在这份卷子的第一次尝试里本地作答"的闸 —— 那是另一条断言要测的。
     var beforeAgain = ctx.mock.requests.length;
     var again = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var e=document.getElementById("answer1002");' +
       'var was=e?e.value:null;' +
       'var qs=app._extractQuestions(null);' +
-      'var handled=app._answerLocalMultiChoiceQuestions(qs,null);' +
+      'var handled=app._answerLocalMultiChoiceQuestions(qs,null,{refill:true});' +
       'var now=document.getElementById("answer1002");' +
       'return {was:was,now:now?now.value:null,keys:Object.keys(handled).join(",")};})()'
     );
-    check('再走一遍是幂等的：答案不变（第二轮只会补被清掉的题）',
+    check('补填那一趟是幂等的：答案不变（只会补被清掉的那几题）',
       again && again.was === again.now && !!again.was, JSON.stringify(again));
-    check('幂等的那一遍没有多花任何模型请求',
+    check('补填那一趟没有多花任何模型请求',
       ctx.mock.requests.length === beforeAgain,
       '多发了 ' + (ctx.mock.requests.length - beforeAgain) + ' 次');
     check('"已本地处理"的下标表里正好有多选题那一位',
       !!again && again.keys.split(',').indexOf(String(setup.multipleIndex)) !== -1,
       JSON.stringify(again));
 
-    // 反向守卫：本地**读不到选项**的多选不能被算作"已处理"。
-    // 漏了它就等于"本地没填上、模型又没问" → 空题 → 永不提交（比省下的 token 贵得多）。
-    var noOptions = await ctx.client.evaluate(
+    // ================= 这一份卷子的"第二次尝试" =================
+    //
+    // 现场实测（2026-10-10）：第一版**没有**这道闸，多选永远本地乱答 →
+    //   卷子永远过不了及格线 → 平台「请重做」→ 重答重交 → 最多 20 次，
+    //   而每一次提交都是**真的交上去**。用户看到的就是
+    //   「只做多选题、其他的不做、**疯狂提交**」。
+    // 所以本卷交过手之后必须把多选交回模型 —— 猜答案过不了的卷子，重做多少遍都过不了。
+    var paper = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'var box=document.createElement("div");' +
-      'box.innerHTML="<div class=\'TiMu\' qid=\'99201\'><span>这道题读不到选项</span></div>";' +
-      'document.body.appendChild(box);' +
-      'var q={index:97,type:"multiple",title:"这道题读不到选项",options:[],_element:box.firstChild};' +
-      'var handled=app._answerLocalMultiChoiceQuestions([q],null);' +
-      'var r={handled:Object.keys(handled).length,answered:app._wasQuizQuestionAnsweredThisRun(q)};' +
-      'document.body.removeChild(box);' +
-      'return r;})()'
+      'return {key:String(app._getQuizWorkKey(null)).slice(0,24),' +
+      'max:app._getQuizMaxSubmitAttempts(null),' +
+      'localPapers:Object.keys(app._quizLocalMultiplePapers||{}).length};})()'
     );
-    check('读不到选项的多选**不占用**"已本地处理"名额（照旧留给模型）',
-      noOptions && noOptions.handled === 0 && noOptions.answered === false,
-      JSON.stringify(noOptions));
+    check('本卷被记上"已本地作答过"（第二轮才认得出这份卷子交过手）',
+      paper && paper.localPapers === 1 && paper.key.indexOf('omitone.quiz.correct.') === 0,
+      JSON.stringify(paper));
+    check('本地作答过的卷子，交卷上限从 20 收到 2（不拿用户的提交次数去赌）',
+      paper && paper.max === 2, JSON.stringify(paper));
+
+    // 模拟平台"请重做"：真机上这一步由 `_prepareQuizRedoIfNeeded` 完成 ——
+    // 它把这一组状态清零，下一轮 tick 才会重新答题。
+    // 「没进展」的闸也要一起放掉：真机上重做会换一茬页面，填答数不会再和上轮相同。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizReadyToSubmit=false;' +
+      'app._quizReadyWorkKey=""; app._quizCurrentAnsweredKeys={}; app._quizCurrentAnswerValues={};' +
+      'app._quizCurrentQuestions=null; app._quizRoundNoProgressAt=0; app._quizRoundFilledCount=-1;' +
+      'return true;})()'
+    );
+    var beforeRedo = ctx.mock.requests.length;
+    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
+    var redoSent = false;
+    var redoDeadline = Date.now() + 20000;
+    while (Date.now() < redoDeadline) {
+      if (ctx.mock.requests.length > beforeRedo) { redoSent = true; break; }
+      await sleep(300);
+    }
+    var redoPrompts = ctx.mock.requests.slice(beforeRedo).map(function (r) { return r.prompt; });
+    check('第二轮（重做）多选交回模型：提示词里重新出现多选题',
+      redoSent && redoPrompts.some(function (p) { return /\d+\|m\|/.test(p); }),
+      '请求数 +' + (ctx.mock.requests.length - beforeRedo) + ' · ' +
+      String(redoPrompts[0] || '').slice(0, 120));
+
+    var redoMulti = await waitFor(ctx.client,
+      '(function(){var e=document.getElementById("answer1002");return !!e && e.value === "AC";})()', 15000);
+    check('第二轮多选填的是**模型给的那份**（A,C），不再是本地猜的',
+      redoMulti === true,
+      await ctx.client.evaluate('String(document.getElementById("answer1002").value)'));
+
+    var redoReady = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var qs=app._extractQuestions(null);' +
+      'return app._areQuizAnswersFilled(null,qs,{requireThisRun:true});})()'
+    );
+    check('第二轮的整卷仍然"每题都有值"（交回模型没有把提交前置弄丢）',
+      redoReady === true, String(redoReady));
   }
 });
 
