@@ -3,6 +3,13 @@
 这里的文件**不会被扩展加载**，留档仅为了在需要时能找回实现思路。
 打包发布（`npm run build`）会排除整个 `legacy/` 目录。
 
+**想确认它真的没被接回去**（两条都应该**没有输出** / 报不存在）：
+
+```bash
+grep -rn "legacy" manifest.json content.js background.js   # 应无输出
+ls dist/omitone-*/legacy                                    # 应提示"没有那个文件或目录"
+```
+
 ---
 
 ## background-core.js
