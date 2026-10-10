@@ -51,6 +51,17 @@
 
 ---
 
+<div align="center">
+
+**📖 目录** &nbsp;·&nbsp; [三步装好](#三步装好不懂-github-也能做) &nbsp;·&nbsp;
+[已知缺陷](#已知缺陷与重要限制) &nbsp;·&nbsp; [它能做什么](#它能做什么) &nbsp;·&nbsp;
+[密钥安全](#密钥安全为什么说它偷不走) &nbsp;·&nbsp;
+[🛠 开发者区](#给接手的人--ai先看这里)
+
+</div>
+
+---
+
 ## 三步装好（不懂 GitHub 也能做）
 
 > 这一段假设你**从没用过 GitHub、也没写过代码**。照着做就行，一共三步。
@@ -517,6 +528,14 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ---
 
+---
+
+> **普通用户看到这里就够了。** 从这里往下是给改代码的人（和接手的 AI）准备的，
+> 默认折叠着 —— 点下面那一行才会展开，不影响上面怎么用。
+
+<details>
+<summary><b>🛠 点开：开发者 / AI 接手区</b> —— 功能与验证状态 · 运行机制 · 易错点清单 · 调试手册 · 改哪里</summary>
+
 ## 给接手的人 / AI：先看这里
 
 这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**9899 行 / 330 个方法**）：
@@ -569,6 +588,11 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`CHANGELOG.md`](CHANGELOG.md) | 每个版本改了什么、为什么这么改 |
 | [`tools/README.md`](tools/README.md) | 开发脚本说明 + **测试脚手架的全部踩坑记录** |
 | [`legacy/README.md`](legacy/README.md) | 为什么那些代码被停用、为什么不能接回去 |
+
+> **源码目录里还有一份"就地说明"**：`src/` · `docs/` · `libs/` · `popup/` ·
+> `resources/` · `icons/` · `tools/` · `legacy/` 各有一份 README，
+> 在 GitHub 上点进目录就能看到。它们只写「这个目录是干什么的、改这里要注意什么」，
+> **细节一律指回上面这张表里的文档** —— 同一件事不写第二遍。
 
 ---
 
@@ -1230,3 +1254,5 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 ## 许可
 
 见 [LICENSE](LICENSE)。
+
+</details>
