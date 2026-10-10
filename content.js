@@ -244,7 +244,22 @@
     return answer;
   }
 
-  function parseLLMResponse(text) {
+  /**
+   * 这个 finish reason 是不是「输出被 max_tokens 截断」。
+   *
+   * 三个渠道字段名与取值都不一样，必须都认：
+   *   OpenAI 兼容：`choices[0].finish_reason === 'length'`
+   *   Claude：      `stop_reason === 'max_tokens'`
+   *   Gemini：      `candidates[0].finishReason === 'MAX_TOKENS'`
+   * 少认一家，那家就会退回"普通解析失败"那条路 —— 也就是**拿同一批题重问两次、
+   * 再补问两次**，一轮六次顶满输出上限（实测现场就是这么烧的）。
+   */
+  function isTruncatedFinishReason(reason) {
+    const value = String(reason || '').trim().toLowerCase().replace(/[\s_-]/g, '');
+    return value === 'length' || value === 'maxtokens';
+  }
+
+  function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     try {
       return { success: true, data: JSON.parse(cleaned) };
@@ -274,6 +289,36 @@
         const arr = objects.map((s) => JSON.parse(s)).filter((o) => o && (o.answer != null || o.a != null));
         if (arr.length) return { success: true, data: arr };
       } catch (e5) {}
+    }
+    // 兜底：模型有时按「一行一个 JSON 值」输出 —— 每行正好是一题的答案，例如
+    //   ["A","B","C","D"]
+    //   ["A","C"]
+    //   "人工智能通识"
+    // 上面那条 `/\[[\s\S]*\]/` 是**贪婪**匹配，会把多行从第一个 `[` 一路抓到最后一个 `]`，
+    // 跨行拼出来不是合法 JSON，于是这种形状**一律**判失败。
+    // 可它其实是**有答案的**：实测现场 25 题的卷子模型答了 11 行，
+    // 解析器全判失败 → 10 道题白问 → 还触发了"每 90 秒重问一遍"的循环。
+    //
+    // ⚠️ 必须**严格等长**才启用：行数 ≠ 题数时按行对齐会**错位答错题**，
+    // 那比"这几题没答上"严重得多（本仓库对"拿不准"的一贯取舍）。
+    // 所以要求调用方传入期望题数；没传就保持原样判失败。
+    if (Number.isFinite(expectedCount) && expectedCount > 0) {
+      const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
+      if (lines.length === expectedCount) {
+        const perLine = [];
+        let allParsed = true;
+        for (const line of lines) {
+          try {
+            perLine.push(JSON.parse(line));
+          } catch (e6) {
+            allParsed = false;
+            break;
+          }
+        }
+        if (allParsed && perLine.length === expectedCount) {
+          return { success: true, data: perLine };
+        }
+      }
     }
     return { success: false, error: `Unable to parse AI response: ${cleaned.slice(0, 200)}` };
   }
@@ -443,14 +488,30 @@
       }, 120000);
 
       if (response.success) {
-        const choice = (((response.data || {}).choices || [])[0] || {}).message || {};
+        const firstChoice = (((response.data || {}).choices || [])[0] || {});
+        const choice = firstChoice.message || {};
         // 把前缀缓存的命中情况记进日志。
         // 不记的话，"省 token 的改动是不是把缓存打没了"只能靠猜 ——
         // 我们真的这样翻过车：提示词压得太短，公共前缀无法被识别成缓存单元，
         // 命中率长期恒为 0，而界面上看不出任何异常。
         logCacheUsage((response.data || {}).usage);
         logTokenUsage((response.data || {}).usage, 'text');
-        return parseLLMResponse(choice.content || '');
+
+        // 输出被 max_tokens 截断 —— 这**不是解析问题，而是答案根本没写完**。
+        // 不单独识别它的代价（实测）：截断的文本解析必然失败 →
+        // `requestAnswersWithRetry` 拿**同一批题**重问两次（同样的输入 → 同样的退化，
+        // 一次吐出 8192 token 的重复数组）→ 再走"空答案补问"又两次 →
+        // 一轮白烧六次输出上限，而题目一道都没答上。
+        // 所以这里给它一个**独立的失败标记**：上层据此把批拆小再问，
+        // 而不是拿原样的输入去撞同一面墙。
+        if (isTruncatedFinishReason(firstChoice.finish_reason)) {
+          appendRuntimeLog('warn', 'llm response truncated by max_tokens', {
+            finishReason: String(firstChoice.finish_reason || ''),
+            questions: questions.length
+          });
+          return { success: false, truncated: true, error: 'AI response truncated by max_tokens' };
+        }
+        return parseLLMResponse(choice.content || '', questions.length);
       }
 
       const errText = String(response.text || response.error || '').slice(0, 300);
@@ -503,7 +564,18 @@
     }, 120000);
     if (!response.success) throw makeHttpError('Claude', response);
     const content = (((response.data || {}).content || [])[0] || {}).text || '';
-    return parseLLMResponse(content);
+    // Claude 的截断标记是顶层 `stop_reason: "max_tokens"`（与 OpenAI 的
+    // `choices[0].finish_reason` 不同名同义）。一律归一成 truncated 标记，
+    // 上层的"拆批重问"才能对三个渠道一视同仁。
+    if (isTruncatedFinishReason((response.data || {}).stop_reason)) {
+      appendRuntimeLog('warn', 'llm response truncated by max_tokens', {
+        provider: 'claude',
+        finishReason: String((response.data || {}).stop_reason || ''),
+        questions: questions.length
+      });
+      return { success: false, truncated: true, error: 'AI response truncated by max_tokens' };
+    }
+    return parseLLMResponse(content, questions.length);
   }
 
   async function callGeminiAPI(config, questions) {
@@ -519,8 +591,18 @@
       })
     }, 120000);
     if (!response.success) throw makeHttpError('Gemini', response);
-    const parts = ((((response.data || {}).candidates || [])[0] || {}).content || {}).parts || [];
-    return parseLLMResponse(parts.map((part) => part && part.text ? part.text : '').join('\n').trim());
+    const firstCandidate = (((response.data || {}).candidates || [])[0] || {});
+    const parts = (firstCandidate.content || {}).parts || [];
+    // Gemini 的截断标记是 `candidates[0].finishReason === "MAX_TOKENS"`
+    if (isTruncatedFinishReason(firstCandidate.finishReason)) {
+      appendRuntimeLog('warn', 'llm response truncated by max_tokens', {
+        provider: 'gemini',
+        finishReason: String(firstCandidate.finishReason || ''),
+        questions: questions.length
+      });
+      return { success: false, truncated: true, error: 'AI response truncated by max_tokens' };
+    }
+    return parseLLMResponse(parts.map((part) => part && part.text ? part.text : '').join('\n').trim(), questions.length);
   }
 
   async function callLLMProvider(config, questions) {
@@ -536,6 +618,10 @@
       try {
         const result = await callLLMProvider(config, questions);
         if (result && result.success) return result;
+        // 被 max_tokens 截断：**换一批输入才有意义，重问同一批只会再撞一次天花板**
+        // （模型退化成重复输出时，同样的提示词必然产生同样的退化）。
+        // 直接交回给上层，由它把批拆小再问；这里多问一次就是白烧一次输出上限。
+        if (result && result.truncated) return result;
         lastError = (result && result.error) || 'AI response parse failed';
         lastWasNetwork = false;
         appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200) });
@@ -652,20 +738,39 @@
       });
     };
 
+    // 一批 → 答案，带**截断时对半拆**的兜底（最多拆两层）。
+    //
+    // 为什么拆真能救回来：截断的根因是"模型在这一批题上退化成长篇重复输出"，
+    // 批越小越不容易退化；而拿原样的批重问是**必然重现**（实测六次顶满输出上限）。
+    // ⚠️ 只对 `truncated` 拆 —— 普通解析失败/网络失败拆了也是白拆，还多花钱。
+    const requestChunkWithSplit = async (entries, depth) => {
+      const result = await requestAnswersWithRetry(config, entries.map((entry) => entry.question));
+      if (result && result.success && Array.isArray(result.data)) {
+        mergeAnswers(entries, result, depth > 0 ? 'split' : '');
+        return true;
+      }
+      if (result && result.truncated && entries.length > 1 && depth < 2) {
+        appendRuntimeLog('warn', 'llm chunk truncated, splitting in half', {
+          questions: entries.length,
+          depth: depth,
+          error: String(result.error || '').slice(0, 120)
+        });
+        const half = Math.ceil(entries.length / 2);
+        const leftOk = await requestChunkWithSplit(entries.slice(0, half), depth + 1);
+        const rightOk = await requestChunkWithSplit(entries.slice(half), depth + 1);
+        return leftOk || rightOk;
+      }
+      lastFailure = result;
+      return false;
+    };
+
     for (let ci = 0; ci < chunks.length; ci++) {
       const chunk = chunks[ci];
       if (chunks.length > 1) {
         appendRuntimeLog('info', 'llm request chunk', { chunk: ci + 1, total: chunks.length, questions: chunk.length });
       }
 
-      const result = await requestAnswersWithRetry(config, chunk.map((entry) => entry.question));
-
-      if (!(result && result.success && Array.isArray(result.data))) {
-        lastFailure = result;
-        continue;
-      }
-
-      mergeAnswers(chunk, result);
+      await requestChunkWithSplit(chunk, 0);
     }
 
     // 空答案补问（token 优化的关键一环）：
@@ -698,6 +803,9 @@
         } else {
           appendRuntimeLog('warn', 'llm refill failed, leave for next tick', {
             count: unfilled.length,
+            // 把"是不是被截断"单列出来：这两种失败的处理完全不同
+            // （截断要拆批，解析失败要改格式），日志混在一起就分不清该修哪边。
+            truncated: !!(refill && refill.truncated),
             error: String((refill && refill.error) || '').slice(0, 160)
           });
         }

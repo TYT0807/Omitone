@@ -858,6 +858,9 @@ function startMockServer() {
   // 场景用它让接口返回指定状态码（401 / 403 / 500 …）。
   // 不改它时一律 200 —— 否则所有"正常答题"场景会一起挂掉。
   var forcedStatus = 0;
+  // 场景用它切换**应答形状**（见下面 truncate-big / line-format 两处）。
+  // 不改它时就是"标准的一整个 JSON 数组"，与升级前完全一致。
+  var responseMode = '';
 
   var server = http.createServer(function (req, res) {
     if (req.method === 'OPTIONS') {
@@ -912,10 +915,31 @@ function startMockServer() {
           else if (code === 't') answers.push('简答文本');
           else answers.push('A');
         }
+        var questionCount = answers.length;
+
+        var content = JSON.stringify(answers);
+        var finishReason = 'stop';
+
+        if (responseMode === 'line-format') {
+          // 现场实测的退化形状：**一行一个 JSON 值**，每行正好是一题的答案。
+          // 升级前解析器用贪婪的 `/\[[\s\S]*\]/` 去抓，跨行拼出来不是合法 JSON →
+          // 一律判失败，于是"模型明明答了"却一道题都没落地。
+          content = answers.map(function (a) { return JSON.stringify(a); }).join('\n');
+        } else if (responseMode === 'truncate-big') {
+          // 现场实测的另一种退化：一批题一多，模型就输出长篇重复内容、
+          // 顶到 max_tokens 被截断。**只有"批 ≥ 4 题"时才这样** ——
+          // 拆成两半（≤3 题）就能正常作答，正好验证"拆批能救回来"。
+          if (questionCount >= 4) {
+            var junk = [];
+            for (var j = 0; j < 400; j++) junk.push('"A","B","C","D"');
+            content = '[' + junk.join(',') + ',';
+            finishReason = 'length';
+          }
+        }
 
         var payload = {
           id: 'mock', object: 'chat.completion',
-          choices: [{ index: 0, message: { role: 'assistant', content: JSON.stringify(answers) }, finish_reason: 'stop' }]
+          choices: [{ index: 0, message: { role: 'assistant', content: content }, finish_reason: finishReason }]
         };
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
         res.end(JSON.stringify(payload));
@@ -932,7 +956,8 @@ function startMockServer() {
       resolve({
         server: server,
         requests: requests,
-        setStatus: function (code) { forcedStatus = code || 0; }
+        setStatus: function (code) { forcedStatus = code || 0; },
+        setResponseMode: function (mode) { responseMode = mode || ''; }
       });
     });
   });
@@ -4072,6 +4097,127 @@ SCENARIOS.push({
     check('run() 确实启动了（_runtimeVersion 前进，前置条件）', res.ran === true, JSON.stringify(res));
     check('run() 落一次 xxtRunning=true（否则讨论新窗口静默不跑）', res.persisted === true, JSON.stringify(res));
     check('续跑标记只写 xxtRunning 一个键（不顺手污染别的存储）', res.cleanKey === true, JSON.stringify(res));
+  }
+});
+
+/** ---- 32. 模型输出被截断：拆批重问，且不重问同一批 ---- */
+SCENARIOS.push({
+  name: '模型输出被截断时拆批重问（不重问同一批）',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
+      'return {total:app._extractQuestions(null).length};})()'
+    );
+    check('装配：本卷题数 ≥ 4（这样"整批"才会触发退化）',
+      setup && setup.total >= 4, JSON.stringify(setup));
+    if (!setup || setup.total < 4) return;
+
+    // 让假模型"一批 ≥ 4 题就吐长篇重复内容、顶到 max_tokens 被截断"。
+    // 拆成两半（≤3 题）后它才正常作答 —— 正好验证"拆批能救回来"。
+    ctx.mock.setResponseMode('truncate-big');
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
+
+    var allFilled = await waitFor(ctx.client,
+      '(function(){var app=window._xxtApp;var qs=app._quizCurrentQuestions||[];' +
+      'if(!qs.length) return false;' +
+      'var d=app._resolveQuizAnswerDocument(null);' +
+      'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
+      'return true;})()', 25000);
+
+    var sent = ctx.mock.requests.slice(before).map(function (r) {
+      var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
+      return m ? m.length : 0;
+    });
+
+    check('被截断的那一批**只发一次**（旧实现要拿同一批重问两次、再补问两次）',
+      sent.filter(function (n) { return n === setup.total; }).length === 1, JSON.stringify(sent));
+    check('确实按"对半拆"重问了（能看到比整批更小的批）',
+      sent.some(function (n) { return n > 0 && n < setup.total; }), JSON.stringify(sent));
+    check('拆批之后所有题都答上了（旧实现这一批一道都落不了地）',
+      allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sent));
+    check('整卷只用了 3 次请求（1 次整批 + 2 次拆半），没有补问式的浪费',
+      sent.length === 3, JSON.stringify(sent));
+
+    ctx.mock.setResponseMode('');
+  }
+});
+
+/** ---- 33. 一行一个 JSON 值（实测的另一种退化形状）也要能解析 ---- */
+SCENARIOS.push({
+  name: '一行一个答案也要能解析',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+
+    var total = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
+      'return app._extractQuestions(null).length;})()'
+    );
+    check('装配：本卷题数 ≥ 1', Number(total) >= 1, String(total));
+
+    // 假模型改成"一行一个 JSON 值"（每行正好一题的答案）——
+    // 升级前解析器的贪婪匹配会把多行从第一个 `[` 抓到最后一个 `]`，
+    // 跨行拼出来不是合法 JSON → 一律判失败 → 模型答了也白答。
+    ctx.mock.setResponseMode('line-format');
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
+
+    var allFilled = await waitFor(ctx.client,
+      '(function(){var app=window._xxtApp;var qs=app._quizCurrentQuestions||[];' +
+      'if(!qs.length) return false;' +
+      'var d=app._resolveQuizAnswerDocument(null);' +
+      'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
+      'return true;})()', 25000);
+    var sentCount = ctx.mock.requests.length - before;
+    var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
+      var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
+      return m ? m.length : 0;
+    });
+
+    check('一行一个 JSON 值的应答能被解析，题目全部答上（旧实现一道都答不上）',
+      allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts));
+    // 守的是"整批不许被重复问"：升级前解析失败 → `requestAnswersWithRetry`
+    // 会**拿同一整批再问一次**，所以 counts 里会出现两次 total。
+    // （补问是另一套机制、本来就该发生，所以这里只数"整批"的次数。）
+    check('整批只问了一次（旧实现解析失败会把整批重问一次）',
+      sentCounts.filter(function (n) { return n === Number(total); }).length === 1,
+      'counts=' + JSON.stringify(sentCounts));
+
+    ctx.mock.setResponseMode('');
   }
 });
 

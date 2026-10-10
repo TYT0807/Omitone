@@ -3606,11 +3606,24 @@
       // 这条日志是"整章被跳过"这类问题唯一能自证的线索：没有它，
       // 现场只剩一句 `searchedCount: 0`，得靠人猜是哪一层出的问题。
       if (rejects.length) {
-        emitRuntimeLog('warn', 'search job: every candidate frame was rejected', {
-          frames: iframes.length,
-          attachments: attachments.length,
-          rejects: rejects
-        });
+        // ⚠️ 必须节流：本方法被 OCS 循环**每秒**调一次，而"一个任务点都没匹配上"
+        // 这个状态**可能持续好几分钟**（典型：整页的题都在一个认不出的帧里）。
+        // 不节流的话日志缓冲会被这一条刷爆、把真正有用的条目全挤掉 ——
+        // 实测用户导出的 200 条里，大半就是同一句的重复。
+        // 判据：拒绝原因的组合变了（页面结构变了）或距上次已超过 30 秒，才再记一条。
+        var rejectSignature = rejects.map(function (item) {
+          return String(item.reason || '');
+        }).join('|');
+        var nowReject = Date.now();
+        if (rejectSignature !== this._jobRejectSignature || nowReject - (this._jobRejectLogAt || 0) > 30000) {
+          this._jobRejectSignature = rejectSignature;
+          this._jobRejectLogAt = nowReject;
+          emitRuntimeLog('warn', 'search job: every candidate frame was rejected', {
+            frames: iframes.length,
+            attachments: attachments.length,
+            rejects: rejects
+          });
+        }
       }
       return null;
     },
