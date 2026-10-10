@@ -66,7 +66,7 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。374 项里**�
 
 | | |
 | --- | --- |
-| 本地 / 远端 | **完全一致**（main = `8d01da9`）。⚠️ 远端历史被重写过一次：`1465f37`/`2bdc734` 那两条文档提交在远端是**同样内容、不同 sha**（`d8a86ec`/`5363f3e`），所以 `git push` 会先报 **non-fast-forward** —— 正确做法是 `git rebase` 到远端之上（内容零差异，已实测 `tree` sha 不变），**绝不要 `--force`** |
+| 本地 / 远端 | **完全一致**（main = `5bab163`）。⚠️ 远端历史被重写过一次：`1465f37`/`2bdc734` 那两条文档提交在远端是**同样内容、不同 sha**（`d8a86ec`/`5363f3e`），所以 `git push` 会先报 **non-fast-forward** —— 正确做法是 `git rebase` 到远端之上（内容零差异，已实测 `tree` sha 不变），**绝不要 `--force`** |
 | 工作区 | 干净（dist/ 为构建产物，已 gitignore） |
 | 线上 Release | **v1.2.8** · `omitone.zip` 385.3 KB（sha256 `25984a58e936…`）· `Omitone-manual.pdf` 1370.0 KB（sha256 `98418e5092c8…`），均 `state=uploaded` |
 | 下载直链 | `/releases/latest/download/omitone.zip` 探过一次、链接可用；两个附件都与本地构建**逐字节一致**（`verify` 通过并明确报"不算过期"） |
@@ -76,6 +76,7 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。374 项里**�
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **37 场景 / 374 项**（落盘 `通过=true`） |
 | 新增覆盖 | ① divjob 场景补 2 条断言（job 一开始没帧 + 反查回帧成功）；② 新增场景「非视频整卷的多选本地作答」（**22 项**：提示词里没有多选 / 有其他题 / DOM 真填上并勾选 / **重做那一轮交回模型** / 该卷交卷上限 = 2 / 读不到选项不占名额）；③ 「多选被摊平」那条**搬到弹题页**（整卷已不可能产生那种形状，留在原地就成了空测） |
 | 顺带核过 | 另外三处 jobid 读取写法同样是老样子，但都**直接自带 frame + win + doc** → `_resolveJobFrame` 开头就早返回，走不到反查那步 ✓（`_buildSyntheticChaoxingJob` / `_buildFrameFallbackJob` / `_detectChaoxingJobElements`）。⚠️ `_buildFrameFallbackJob` 的 `doc` 在跨域时可能是 null（那时不会早返回），但它的 jobid 兜底成 `src`，本来也反查不回帧 —— **不会更差** |
+| 文档整理（同一晚） | 全仓 Markdown 复查：**外链 12 个全部可达**（B 站那条 412 是它自己的反爬，页面在）；**目录锚点 34 个 → 修完 0 坏**（`src/page/README.md` 那 16 条是**真断** —— 标题里塞了「行数 / 方法数」，GitHub 生成的 id 是 `#40-mediajs1108-行--42-方法`，而目录写的是 `#40-mediajs`；`README.md` §5.7 那条是 `isPassed` 大小写，真实 id 全小写 `ispassed`）。教训已写进 `src/page/README.md`：**标题里别塞会变的数字**。顺带把漂掉的数字刷成实测值、`tools/README.md` 里 `dist/omitone-1.2.6` 的示例改成 1.2.8 |
 
 > ✅ **附件已于 2026-10-10 替换并核验**（`replace-asset v1.2.8` → `verify v1.2.8`）：
 > `omitone.zip` 385.3 KB、`Omitone-manual.pdf` 1370.0 KB，两个都与本地构建**逐字节一致**。
