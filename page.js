@@ -514,7 +514,14 @@
       this._bindStepNavigation();
       console.log('%c[Omitone] start', 'color:#4CAF50;font-weight:bold');
       try { this._installSubmitSniffer(); } catch (eSniff) {}
-      emitRuntimeLog('info', 'start');
+      // ⚠️ 把**当前这份运行代码带哪些修复**写进日志。
+      // 为什么必须有：这一整轮排查里最贵的开销就是"修复到底装上了没有"——
+      // 实测两次被它坑：用户 reload 的时间点早于改动落盘、以及浏览器缓存了
+      // 旧的 content.js/page.js，于是**日志里看不到效果**，两边都以为修好了。
+      // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
+      emitRuntimeLog('info', 'start', {
+        build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill']
+      });
       this._startTickLoop();
     },
 
