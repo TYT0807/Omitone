@@ -307,9 +307,24 @@
       return this._getQuizWorkKey(preferredDoc) + '.submitAttempts';
     },
 
-    _getQuizMaxSubmitAttempts: function () {
+    /**
+     * 这一份卷子允许多少次交卷。
+     *
+     * 默认取配置的 `quizMaxSubmitAttempts`（20）—— 卷子没过时重答重交，是既有设计。
+     *
+     * ⚠️ 但**本地作答过多选的卷子只给 2 次**（首发 + 一次认真重做）。
+     * 为什么：本地多选答案是猜的，一份卷子只要有一道多选基本就过不了；
+     * 若照旧允许 20 次，就会变成"交一次→没过→再交一次…"的**疯狂提交**，
+     * 而每一次提交都是**真的交上去**（平台可能记次数，用户明确报过这个症状）。
+     * 给一次重做的机会足够：那一轮多选已经交回模型（见 `_answerLocalMultiChoiceQuestions`），
+     * 真能过就在这一次过；过不了就是这张卷子过不了，继续交只是拿用户的提交次数去赌。
+     */
+    _getQuizMaxSubmitAttempts: function (preferredDoc) {
       var max = Number(this.configs.quizMaxSubmitAttempts || 20);
-      return max > 0 ? max : 20;
+      if (!(max > 0)) max = 20;
+      var key = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      if (key && (this._quizLocalMultiplePapers || {})[key]) return Math.min(max, 2);
+      return max;
     },
 
     _getQuizApiUnavailableReason: function () {
@@ -450,12 +465,12 @@
     _incrementQuizSubmitAttemptCount: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc) + 1;
       this._setQuizSubmitAttemptCount(preferredDoc, count);
-      emitRuntimeLog('info', 'quiz submit attempt count', { count: count, max: this._getQuizMaxSubmitAttempts() });
+      emitRuntimeLog('info', 'quiz submit attempt count', { count: count, max: this._getQuizMaxSubmitAttempts(preferredDoc) });
       return count;
     },
 
     _shouldSkipQuizBySubmitAttempts: function (preferredDoc) {
-      return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts();
+      return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
     _isQuizForceSkipping: function () {
@@ -464,7 +479,7 @@
 
     _forceSkipQuizAfterMaxAttempts: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc);
-      var max = this._getQuizMaxSubmitAttempts();
+      var max = this._getQuizMaxSubmitAttempts(preferredDoc);
       this._quizForceSkipUntil = Date.now() + 15000;
       this._quizInProgress = false;
       this._quizAnswered = false;
@@ -567,7 +582,7 @@
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
-      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts() });
+      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc) });
     },
 
     /**
@@ -1096,7 +1111,9 @@
         //   只有被上面那步 `_clearKnownWrongFilledQuizAnswers` 抹掉的题才会被重新填上。
         // 少了这一步就有个窄缝：本地答案恰好落在"已知错答"里（组合试完那一种），
         // 会被抹掉、又没有模型答案可补 → 表单缺一题 → 整卷永不提交。
-        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
+        // ⚠️ `refill: true` 是必须的：正常那趟在"本卷已交过卷"时会把多选交回模型，
+        //    而这一趟的职责恰恰是**补上被清空的题**（见该方法的说明）。
+        this._answerLocalMultiChoiceQuestions(questions, quizDoc, { refill: true });
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;

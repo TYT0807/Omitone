@@ -307,6 +307,16 @@
 
     _quizApiSkipLogAt: 0,
 
+    // 「这份卷子已经用本地答案答过多选了」的卷子键集合。
+    //
+    // 为什么需要它（现场实测 2026-10-10，多选本地作答刚上线就炸出来的）：
+    //   多选的本地答案是**猜的** —— 一份卷子只要有一道多选，基本就过不了及格线；
+    //   而平台"没过"之后的流程是 **重做 → 重答 → 重交**（上限 20 次）。
+    //   于是线上表现从"填不满、卡着不动"变成了「只做多选题、其他的不做、**疯狂提交**」，
+    //   而每一次提交都是**真的交上去**。
+    //   判据放在这里而不是只用提交计数：提交计数在**同一轮内**还没 +1 时可以漏判。
+    _quizLocalMultiplePapers: {},
+
     _quizScanDiagAt: 0,
 
     // 视频内嵌弹题（弹窗题）的失败计数。
@@ -521,7 +531,7 @@
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
         build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
-          'chunk-5', 'quiz-no-progress-skip', 'local-multi']
+          'chunk-5', 'quiz-no-progress-skip', 'local-multi', 'local-multi-once']
       });
       this._startTickLoop();
     },
@@ -555,6 +565,9 @@
       // 回到同一份卷子时视为全新一轮（与 `_quizAnswered = false` 配套，语义一致）
       this._quizRunPaperKey = '';
       this._quizApiSkipLogAt = 0;
+      // 「本地答过多选」的卷子集合跟着卷子身份一起清：
+      // 换章节 / 换卡片之后回到同一份卷子，应当重新享有"第一次尝试"的待遇。
+      this._quizLocalMultiplePapers = {};
       this._skipChainCount = 0;
       this._videoRetryCount = 0;
       this._activeMediaJobPending = false;
@@ -6545,9 +6558,24 @@
       return this._getQuizWorkKey(preferredDoc) + '.submitAttempts';
     },
 
-    _getQuizMaxSubmitAttempts: function () {
+    /**
+     * 这一份卷子允许多少次交卷。
+     *
+     * 默认取配置的 `quizMaxSubmitAttempts`（20）—— 卷子没过时重答重交，是既有设计。
+     *
+     * ⚠️ 但**本地作答过多选的卷子只给 2 次**（首发 + 一次认真重做）。
+     * 为什么：本地多选答案是猜的，一份卷子只要有一道多选基本就过不了；
+     * 若照旧允许 20 次，就会变成"交一次→没过→再交一次…"的**疯狂提交**，
+     * 而每一次提交都是**真的交上去**（平台可能记次数，用户明确报过这个症状）。
+     * 给一次重做的机会足够：那一轮多选已经交回模型（见 `_answerLocalMultiChoiceQuestions`），
+     * 真能过就在这一次过；过不了就是这张卷子过不了，继续交只是拿用户的提交次数去赌。
+     */
+    _getQuizMaxSubmitAttempts: function (preferredDoc) {
       var max = Number(this.configs.quizMaxSubmitAttempts || 20);
-      return max > 0 ? max : 20;
+      if (!(max > 0)) max = 20;
+      var key = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      if (key && (this._quizLocalMultiplePapers || {})[key]) return Math.min(max, 2);
+      return max;
     },
 
     _getQuizApiUnavailableReason: function () {
@@ -6688,12 +6716,12 @@
     _incrementQuizSubmitAttemptCount: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc) + 1;
       this._setQuizSubmitAttemptCount(preferredDoc, count);
-      emitRuntimeLog('info', 'quiz submit attempt count', { count: count, max: this._getQuizMaxSubmitAttempts() });
+      emitRuntimeLog('info', 'quiz submit attempt count', { count: count, max: this._getQuizMaxSubmitAttempts(preferredDoc) });
       return count;
     },
 
     _shouldSkipQuizBySubmitAttempts: function (preferredDoc) {
-      return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts();
+      return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
     _isQuizForceSkipping: function () {
@@ -6702,7 +6730,7 @@
 
     _forceSkipQuizAfterMaxAttempts: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc);
-      var max = this._getQuizMaxSubmitAttempts();
+      var max = this._getQuizMaxSubmitAttempts(preferredDoc);
       this._quizForceSkipUntil = Date.now() + 15000;
       this._quizInProgress = false;
       this._quizAnswered = false;
@@ -6805,7 +6833,7 @@
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
-      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts() });
+      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc) });
     },
 
     /**
@@ -7334,7 +7362,9 @@
         //   只有被上面那步 `_clearKnownWrongFilledQuizAnswers` 抹掉的题才会被重新填上。
         // 少了这一步就有个窄缝：本地答案恰好落在"已知错答"里（组合试完那一种），
         // 会被抹掉、又没有模型答案可补 → 表单缺一题 → 整卷永不提交。
-        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
+        // ⚠️ `refill: true` 是必须的：正常那趟在"本卷已交过卷"时会把多选交回模型，
+        //    而这一趟的职责恰恰是**补上被清空的题**（见该方法的说明）。
+        this._answerLocalMultiChoiceQuestions(questions, quizDoc, { refill: true });
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
@@ -8197,20 +8227,59 @@
      * 整卷只有一条硬约束：**每题都有值**才允许提交（见 `_areQuizAnswersFilled`），
      * 所以多选不求对，答出来就行。
      *
+     * ⚠️⚠️ **只在这份卷子的"第一次尝试"里生效**（第二版，2026-10-10 当天就改了）。
+     *
+     * 第一版没有这道闸，上线后用户立刻报「只做多选题、其他的不做、**疯狂提交**」。
+     * 机制是确定的、也是必然的：
+     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线；
+     *   2. 平台"没过"之后的流程是 `_isQuizRedoRequired`（页面上出现
+     *      「未达到及格线 / 请重做」）→ `_prepareQuizRedoIfNeeded` 重置状态 → **重答 → 重交**；
+     *   3. 这一圈的上限是"最多尝试交卷 20 次" —— 于是本地作答把原来的
+     *      「填不满、卡着不动」换成了「填满 → 交 → 没过 → 再填 → 再交…」，
+     *      而**每一次提交都是真的交上去**（手册专门警告过这件事）。
+     * 所以：交过一次还没过，就说明"只求填上"这个前提**不成立**了 ——
+     * 这时必须把多选交回模型（模型至少**可能**答对，卷子才有机会过），
+     * 重做循环也就回到了改动前那条**有上限、能收敛**的老路。
+     *
+     * 代价说清楚：重做的那一轮会为多选花 token。
+     * 这是"省 token"与"卷子能过"之间必须做的取舍，宁可多花这一轮。
+     *
      * 答案来源复用 `_chooseFallbackQuizAnswer`（全仓库唯一的"本地兜底答案"实现）：
-     * 它天然**避开已知错答**，所以平台判错一次，下一轮自动换下一组组合，
-     * 而且每轮都不花 token —— 几轮下来照样能收敛到正确选项，比纯随机更划算。
+     * 它天然**避开已知错答**，所以判错一次下一轮就换一组组合，且不花 token。
      *
      * ⚠️ 兜底纪律：本地**算不出**答案的题（读不到选项字母、或者填不进 DOM）
      * **绝不占用"已本地处理"名额**，会原样留在请求里交给模型 ——
      * 否则就变成"本地没填上、模型又没问"的空题，表单永远不满，
      * 那比省下的那点 token 贵得多（这正是本仓库最怕的"静默卡住"）。
      *
+     * @param {Object} [options] `{ refill: true }` = 本轮模型答完之后的**补填**那一趟。
+     *   只有在补填这一趟才允许在"本卷已交过卷"之后仍然本地作答 —— 因为那一趟的职责是
+     *   **把被清空的题填上、让整卷交得出去**（缺一道题就永远不提交，比猜错严重得多）。
      * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地作答，**不必**再问模型
      */
-    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc) {
+    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc, options) {
       var handled = {};
       if (!questions || !questions.length) return handled;
+      var refill = !!(options && options.refill);
+
+      // ===== 闸门：这份卷子还值得用"乱答"吗 =====
+      // 两个独立判据，任一成立就把多选交回模型（都写清楚，是为了任一个失灵时不至于裸奔）：
+      //   ① 本卷**已经交过卷**（`_getQuizSubmitAttemptCount > 0`）→ 平台大概已经判分，
+      //      再过不了就只能靠答对，猜没有意义；
+      //   ② 本卷**这一轮之前已经本地答过**（`_quizLocalMultiplePapers`）→ 覆盖
+      //      "同一轮内计数还没 +1"的那个窄缝（比如首次提交没被平台接受、原地打回）。
+      var paperKey = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      var submitAttempts = this._getQuizSubmitAttemptCount(preferredDoc || null);
+      var localUsedBefore = !!paperKey && !!(this._quizLocalMultiplePapers || {})[paperKey];
+      if (!refill && (submitAttempts > 0 || localUsedBefore)) {
+        emitRuntimeLog('info', 'local multiple choice only counts for the first attempt, hand back to llm', {
+          attempts: submitAttempts,
+          localUsedBefore: localUsedBefore,
+          hint: '本卷已经交过卷（或本地答过一轮）还没过 —— 猜答案没有意义，多选交回模型认真答'
+        });
+        return handled;
+      }
+
       var self = this;
       var doc = preferredDoc || null;
       var filledCount = 0;
@@ -8256,10 +8325,15 @@
       });
 
       if (filledCount) {
+        if (paperKey) {
+          if (!this._quizLocalMultiplePapers) this._quizLocalMultiplePapers = {};
+          this._quizLocalMultiplePapers[paperKey] = true;
+        }
         emitRuntimeLog('info', 'multiple choice answered locally, not sent to llm', {
           count: filledCount,
           deferred: deferred,
-          hint: '非视频整卷的多选只求"填上"，本地作答省 token；答错下一轮自动换组合，仍不花 token'
+          paperKey: paperKey ? 'set' : 'missing',
+          hint: '非视频整卷的多选只求"填上"，本地作答省 token；若平台要求重做，下一轮会把多选交回模型'
         });
       }
       return handled;
