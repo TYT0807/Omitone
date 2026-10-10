@@ -326,7 +326,19 @@
     const separators = ['\n', '|||'];
     for (let si = 0; si < separators.length; si++) {
       const separated = parseSeparatedAnswers(cleaned, separators[si], expectedCount);
-      if (separated) return { success: true, data: separated };
+      if (separated) {
+        // 成功时**必须留一条日志**。这不是啰嗦：
+        // 没有它，"这条兜底到底装上没有"只能靠猜 —— 实测就踩过，
+        // 用户 reload 扩展的时间点早于改动落盘，日志里当然看不到效果，
+        // 而两边都以为修好了（白跑一轮排查）。这条日志同时能告诉我们
+        // 这种非标准形状出现的频率与样子。
+        appendRuntimeLog('warn', 'llm answers parsed by separator', {
+          separator: separators[si] === '\n' ? 'newline' : separators[si],
+          count: separated.length,
+          excerpt: cleaned.slice(0, 140)
+        });
+        return { success: true, data: separated };
+      }
     }
     return { success: false, error: `Unable to parse AI response: ${cleaned.slice(0, 200)}` };
   }
