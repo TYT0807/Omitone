@@ -4312,8 +4312,11 @@ SCENARIOS.push({
       '(function(){' +
       'var box=document.createElement("div");' +
       'box.className="TiMu"; box.setAttribute("qid","9001");' +
+      // ⚠️ 刻意**不给隐藏答案域**：现场那两道填空题就是这样（有富文本 iframe、没有 input、
+      //    也没有能读到的 `#answer{qid}`）—— 只有在这种形状下，
+      //    "判定要不要读富文本正文"这条断言才有区分力。
       'box.innerHTML=\'<div class="Zy_TItle"><span class="fontLabel">26.</span>【填空题】测试用富文本填空</div>' +
-      '<div id="richHolder"></div><input type="hidden" id="answer9001" value="">\';' +
+      '<div id="richHolder"></div>\';' +
       'var holder=document.getElementById("Zyapl")||document.body; holder.appendChild(box);' +
       'var f=document.createElement("iframe"); document.getElementById("richHolder").appendChild(f);' +
       'f.contentDocument.body.innerHTML="<p></p>";' +
@@ -4321,23 +4324,29 @@ SCENARIOS.push({
       'var el=box;' +
       'return {textInputs: el.querySelectorAll("input[type=\\"text\\"], input:not([type])").length,' +
       '  richEditors: el.querySelectorAll("iframe").length,' +
+      '  hiddenFields: document.querySelectorAll("#answer9001").length,' +
       '  qid: (function(){try{return app._getQuestionIdFromElement(el)||"";}catch(e){return "(抛错)";}})()};})()'
     );
-    check('装配：这道填空题没有文本框、只有一个富文本编辑器（与现场一致）',
-      setup && setup.textInputs === 0 && setup.richEditors === 1, JSON.stringify(setup));
+    check('装配：这道填空题没有文本框、没有隐藏域、只有一个富文本编辑器（与现场一致）',
+      setup && setup.textInputs === 0 && setup.richEditors === 1 && setup.hiddenFields === 0,
+      JSON.stringify(setup));
 
     var filled = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var el=document.querySelector(".TiMu[qid=\\"9001\\"]");' +
       'app._fillText(el, "标准答案");' +   // 题型派发到 fill 时走的就是这个入口
       'var f=el.querySelector("iframe");' +
+      'var q={_element:el,type:"fill"};' +
+      'var judged="";try{judged=String(app._getQuizQuestionFilledValue(null,q)||"").trim();}catch(e){judged="(抛错)";}' +
       'return {editorText:String((f.contentDocument&&f.contentDocument.body)?f.contentDocument.body.textContent:"").trim(),' +
-      '  hidden:(document.getElementById("answer9001")||{}).value};})()'
+      '  judged:judged};})()'
     );
     check('富文本正文被写入了答案（旧实现直接 return，一个字符都不写）',
       filled && filled.editorText.indexOf('标准答案') !== -1, JSON.stringify(filled));
-    check('隐藏答案域也写入了（插件就是靠它判定"已填写/可提交"）',
-      filled && filled.hidden === '标准答案', JSON.stringify(filled));
+    // ★ 填答与判定必须**对称**：写进去了，判定也得读得出来 —— 否则表单永远不满、永不提交
+    //   （现场实测：`fill fallback: rich editor {"emptyAnswer":false}` 已跑到，可 `unfilledCount` 仍是 2）。
+    check('判定也认这份答案（这里是唯一能证明"填答与判定对称"的断言）',
+      filled && filled.judged.indexOf('标准答案') !== -1, JSON.stringify(filled));
   }
 });
 

@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（39 个）：
+ * 本段的方法（40 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -19,7 +19,8 @@
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
  *   _expandMultiChoiceLetters、_normalizeChoiceAnswerValues、_applyChoiceAnswer、
  *   _fillChoice、_clearMultiChoiceSelection、_fillMultiChoice、_fillText、
- *   _fillTextarea、_resolveQuizAnswerDocument、_getQuizQuestionFilledValue、
+ *   _fillTextarea、_resolveQuizAnswerDocument、_readRichEditorValue、
+ *   _getQuizQuestionFilledValue、
  *   _isQuizQuestionFilled、_isQuizQuestionFilledWithKnownWrong、
  *   _clearKnownWrongFilledQuizAnswers、_areQuizAnswersFilled、_findButtonByText、
  *   _resolveQuizSubmitDocument、_shouldAutoSubmitQuiz、_maybeSubmitQuiz、
@@ -1052,18 +1053,52 @@
     },
 
 
+    /**
+     * 富文本答题框（UEditor 的 iframe）里的答案文本。
+     *
+     * ⚠️ 判定必须与填答**对称**：`_fillTextarea` 会写 textarea / iframe 正文 + 隐藏域，
+     * 而这里如果不读 iframe 正文，就会出现"**填了却判成未填**"——
+     * 现场实测（2026-10-10）：两道填空题的答题框就是一个 iframe，
+     * 日志里 `fill fallback: rich editor {"emptyAnswer":false}` 说明填答已跑到、答案非空，
+     * 可 `unfilledCount` 仍是 2 → 表单永远不满 → 永不提交（用户看到的"东西全做完了就是不交"）。
+     */
+    _readRichEditorValue: function (el) {
+      if (!el || !el.querySelectorAll) return '';
+      var frames = [];
+      try { frames = Array.from(el.querySelectorAll('iframe')); } catch (e) { return ''; }
+      for (var i = 0; i < frames.length; i++) {
+        try {
+          var body = frames[i].contentDocument && frames[i].contentDocument.body;
+          if (!body) continue;
+          var text = textOf(body);
+          if (text) return text;
+        } catch (e2) {}
+      }
+      return '';
+    },
+
     _getQuizQuestionFilledValue: function (preferredDoc, question) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
-      if (!doc || !question || !question._element) return '';
+      if (!question || !question._element) return '';
       var qid = this._getQuestionIdFromElement(question._element);
       if (!qid) return '';
-      var hidden = doc.getElementById ? doc.getElementById('answer' + qid) : null;
+      // 隐藏域优先（平台提交时读的就是它）。**两个文档都查一遍**：
+      // 填答（`_fillTextarea` / `_fillText`）写的是 `el.ownerDocument`，
+      // 而这里过去只用调用方给的 doc —— 题目与 preferredDoc 不同文档时
+      // 就会"写进去、读不到"，判定与填答不对称。
+      var hidden = null;
+      var ownerDoc = question._element.ownerDocument || null;
+      try { if (ownerDoc && ownerDoc.getElementById) hidden = ownerDoc.getElementById('answer' + qid); } catch (e0) {}
+      try { if (!hidden && doc && doc.getElementById) hidden = doc.getElementById('answer' + qid); } catch (e1) {}
       var hiddenValue = hidden ? String(hidden.value || '').trim() : '';
-      // 隐藏域优先（平台提交时读的就是它），但它为空时必须回退到可见控件：
+      // 隐藏域优先，但它为空时必须回退到可见控件：
       // 简答题走的是富文本编辑器，页面自身的 JS 未必把内容同步进隐藏域；
       // 只认隐藏域会导致"明明填了却判定未填写"，从而永远卡住不提交。
       if (hiddenValue) return hiddenValue;
-      return this._getQuizAnswerValue(question._element, qid);
+      var visible = this._getQuizAnswerValue(question._element, qid);
+      if (visible) return visible;
+      // 最后是富文本正文：判定必须覆盖"填答能写到的每一处"。
+      return this._readRichEditorValue(question._element);
     },
 
 
