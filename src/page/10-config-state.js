@@ -308,7 +308,8 @@
       // 旧的 content.js/page.js，于是**日志里看不到效果**，两边都以为修好了。
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
-        build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill']
+        build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
+          'chunk-5', 'quiz-no-progress-skip']
       });
       this._startTickLoop();
     },
