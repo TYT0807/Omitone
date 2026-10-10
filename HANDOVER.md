@@ -57,7 +57,7 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。369 项里**�
 
 | | |
 | --- | --- |
-| 本地 / 远端 | **完全一致**（main = `cad1fa5`）；v1.2.8 tag 指向同一个 sha |
+| 本地 / 远端 | ⚠️ **本轮已有新提交尚未推送**，且**本地构建比线上附件新** —— 见下面那条「附件待替换」 |
 | 工作区 | 干净（dist/ 为构建产物，已 gitignore） |
 | 线上 Release | **v1.2.8** · `omitone.zip` 372.1 KB（sha256 `7c8efbc134f3…`）· `Omitone-manual.pdf` 1364.1 KB（sha256 `eef70e884503…`），均 `state=uploaded` |
 | 下载直链 | `/releases/latest/download/omitone.zip` 与永久直链各探一次，两个附件都与本地 1.2.8 构建**逐字节一致**（verify 通过） |
@@ -66,6 +66,18 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。369 项里**�
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **37 场景 / 369 项**（落盘 `通过=true`） |
 | 新增覆盖 | divjob 场景补 2 条断言（前置条件：job 一开始没帧 + 反查回帧成功） |
 | 顺带核过 | 另外三处 jobid 读取写法同样是老样子，但都**直接自带 frame + win + doc** → `_resolveJobFrame` 开头就早返回，走不到反查那步 ✓（`_buildSyntheticChaoxingJob` / `_buildFrameFallbackJob` / `_detectChaoxingJobElements`）。⚠️ `_buildFrameFallbackJob` 的 `doc` 在跨域时可能是 null（那时不会早返回），但它的 jobid 兜底成 `src`，本来也反查不回帧 —— **不会更差** |
+
+> ⏳ **附件待替换（2026-10-10 记）**：本轮把「章节测验 / 作业里的多选题」改成**本地作答、不进请求**
+> （见 `CHANGELOG.md` 1.2.8 ⑪），它动了 `page.js` / `content.js` / `使用说明.pdf` ——
+> 按 `replace-asset` 的说明，**这三样都会让线上附件变成旧的**，所以推送之后紧接着要跑：
+>
+> ```
+> node tools/github-release.js replace-asset v1.2.8
+> node tools/github-release.js verify v1.2.8
+> ```
+>
+> 本地新构建：`dist/omitone-1.2.8.zip` 383.0 KB（sha256 `65396515ac35…`）·
+> `使用说明.pdf` 1366.4 KB（21 页）。**替换完成后这一节要按新的实测值重写。**
 
 #### 上一版（1.2.10，Release 已回收）的快照 —— 保留作对照
 
