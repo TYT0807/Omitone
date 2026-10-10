@@ -521,7 +521,7 @@
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
         build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
-          'chunk-5', 'quiz-no-progress-skip']
+          'chunk-5', 'quiz-no-progress-skip', 'local-multi']
       });
       this._startTickLoop();
     },
@@ -7173,6 +7173,18 @@
       var payload = [];
       var skippedConfirmed = 0;
       var skippedBestEffort = 0;
+      var skippedLocalMultiple = 0;
+      // ===== 多选本地作答（不问模型）=====
+      //
+      // 位置是刻意的：上面刚做完"缓存回填 + 清掉已知错答"，
+      // 所以本地答案不会刚填上就被那两步抹掉；而 payload 还没开始拼，
+      // 正好拿返回值把这些题**排除在模型请求之外** —— 这才是省 token 的落点。
+      //
+      // 现场症状（用户 2026-10-10）：多选答案最长，模型最容易把它**摊平**成一串字母，
+      // 一摊平整批长度就对不上 → 整批丢弃 → 补问 → 又摊平。用户看到的是
+      //"5 个多选只做了 4 个、最后一个空着、然后不断重复"。
+      // 详见 _answerLocalMultiChoiceQuestions 的说明（含"为什么这条路可以乱答"）。
+      var localMultiple = this._answerLocalMultiChoiceQuestions(questions, quizDoc);
       var batchWorkKey = this._getQuizWorkKey(quizDoc);
       // 这一轮是否**整批重发**（含已知正确答案的题）。
       //
@@ -7196,6 +7208,13 @@
           skippedBestEffort++;
           return;
         }
+        // 多选已经在本地作答（见 _answerLocalMultiChoiceQuestions）：**不发模型**。
+        // 这些题本来就要占提示词里最大的一块（选项 + 字母数组），
+        // 而且它们的答案最容易让模型输出退化成长串重复 —— 不发给模型，这一整条路都没了。
+        if (localMultiple[i]) {
+          skippedLocalMultiple++;
+          return;
+        }
         // 已经"确认正确 + 本轮已填 + DOM 里确实有值"的题不再问模型：
         // _fillCachedQuizAnswers 已经把答案填回去了，重复提问纯属白花 token。
         // 三个条件必须同时成立 —— 只看缓存会让"缓存存在但填不进去"的题永远没人作答，
@@ -7215,9 +7234,9 @@
         payload.push({ index: i, type: q.type, title: q.title, options: q.options, previousWrongAnswers: wrongAnswers });
       });
 
-      if (skippedConfirmed > 0 || skippedBestEffort > 0) {
+      if (skippedConfirmed > 0 || skippedBestEffort > 0 || skippedLocalMultiple > 0) {
         emitRuntimeLog('info', batchRecent ? 'resend full batch for prefix cache' : 'skip llm for cached-correct questions',
-          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, asked: payload.length });
+          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, localMultiple: skippedLocalMultiple, asked: payload.length });
       }
       if (payload.length) {
         // 记在"发出去"这一侧而不是"收到成功响应"那一侧：缓存单元是在请求到达时建立的，
@@ -7226,16 +7245,21 @@
         this._quizBatchSentAt = Date.now();
       }
       if (payload.length === 0) {
-        // 两种情况：
+        // 三种情况：
         //   ① 全部题目都靠缓存填好了，却没能走上面的提前提交分支 —— 状态自相矛盾，
         //      此时发一次空请求只会白白消耗配额；
         //   ② **全部题目都进了"放弃折腾"**。这种必须自己收尾：本地填猜测、能交就交，
         //      否则这一卷会永远停在"不发请求、也不提交"的状态 —— 又是一种卡住。
+        //   ③ **全部题目都是多选、已由本地作答**（整卷只有多选题的小测并不罕见）。
+        //      这一支是本次改动新增的：多选不再进 payload，所以"payload 空了"
+        //      第一次成为一个**正常**结局 —— 漏掉它就等于给"全是多选的卷子"
+        //      新开了一个"永远不提交"的洞。
         emitRuntimeLog('warn', 'quiz payload empty after cache filter', {
           total: questions.length,
-          bestEffort: skippedBestEffort
+          bestEffort: skippedBestEffort,
+          localMultiple: skippedLocalMultiple
         });
-        if (skippedBestEffort > 0) {
+        if (skippedBestEffort > 0 || skippedLocalMultiple > 0) {
           this._fillBestEffortQuizAnswers(questions, quizDoc);
           var rescueReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
           this._quizAnswered = rescueReady;
@@ -7305,6 +7329,12 @@
         // 放在清理之后是有意的：先让 `_clearKnownWrongFilledQuizAnswers` 处理其他题，
         // 再补上这些题的本地猜测，本轮就不会被它误清。
         this._fillBestEffortQuizAnswers(questions, quizDoc);
+        // 多选再走一遍同一个入口 —— 它是**幂等**的：
+        //   已填好的题在入口第一道判断上就返回了（不发请求、不重填），
+        //   只有被上面那步 `_clearKnownWrongFilledQuizAnswers` 抹掉的题才会被重新填上。
+        // 少了这一步就有个窄缝：本地答案恰好落在"已知错答"里（组合试完那一种），
+        // 会被抹掉、又没有模型答案可补 → 表单缺一题 → 整卷永不提交。
+        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
@@ -8148,6 +8178,91 @@
         emitRuntimeLog('warn', 'quiz filled best-effort guesses for repeatedly-wrong questions', { count: filledCount });
       }
       return filledCount;
+    },
+
+    /**
+     * 非视频整卷里的**多选题**：本地出答案，不问模型。
+     *
+     * 为什么要这么做（用户 2026-10-10 的现场反馈）：
+     *   「多选题只要填了就行的情况下，就不要倾斜太多的 token 和上下文等等的东西过去」
+     * 现场日志正好印证了这一点 —— 一批 5 题（3 多选 + 2 填空）时，模型答多选会把选项字母
+     * **摊平**成一串：`["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]`
+     * （13 项对 5 题）→ 整批长度不符被丢弃 → 补问 → 又摊平，一轮一轮空转；
+     * 更糟的是这道题一被摊平，**整批**都落不了地，用户看到的"5 个多选只做了 4 个、
+     * 剩下一个空着、然后不断重复"就是这么来的。
+     *
+     * 为什么这条路可以"乱答"：它的入口是 `_handleQuiz` —— 章节测验 / 作业 / 考试**整卷**。
+     * 视频里那种"答错就不让继续播"的内嵌弹题走的是 `_handlePopupQuiz`（另一条路，
+     * 那份多选仍然交给模型，不受这里影响）。
+     * 整卷只有一条硬约束：**每题都有值**才允许提交（见 `_areQuizAnswersFilled`），
+     * 所以多选不求对，答出来就行。
+     *
+     * 答案来源复用 `_chooseFallbackQuizAnswer`（全仓库唯一的"本地兜底答案"实现）：
+     * 它天然**避开已知错答**，所以平台判错一次，下一轮自动换下一组组合，
+     * 而且每轮都不花 token —— 几轮下来照样能收敛到正确选项，比纯随机更划算。
+     *
+     * ⚠️ 兜底纪律：本地**算不出**答案的题（读不到选项字母、或者填不进 DOM）
+     * **绝不占用"已本地处理"名额**，会原样留在请求里交给模型 ——
+     * 否则就变成"本地没填上、模型又没问"的空题，表单永远不满，
+     * 那比省下的那点 token 贵得多（这正是本仓库最怕的"静默卡住"）。
+     *
+     * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地作答，**不必**再问模型
+     */
+    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc) {
+      var handled = {};
+      if (!questions || !questions.length) return handled;
+      var self = this;
+      var doc = preferredDoc || null;
+      var filledCount = 0;
+      var deferred = 0;
+
+      questions.forEach(function (question, index) {
+        if (!question || !question._element) return;
+        if (String(question.type || '') !== 'multiple') return;
+
+        // 本轮已经填好了（缓存回填 / 上一轮成功过）：直接采信，同样不必再问模型。
+        if (self._wasQuizQuestionAnsweredThisRun(question) && self._isQuizQuestionFilled(doc, question)) {
+          handled[index] = true;
+          return;
+        }
+
+        var qid = self._getQuestionIdFromElement(question._element);
+        var guess = self._chooseFallbackQuizAnswer('multiple', question, doc, '', 2);
+        if (!guess || !guess.length) {
+          deferred++;
+          emitRuntimeLog('warn', 'local multiple choice skipped, keep for llm', {
+            index: index,
+            qid: qid || '',
+            hint: '读不到选项字母，本地无法作答 —— 这一题照旧交给模型，不会留空'
+          });
+          return;
+        }
+
+        self._fillMultiChoice(question._element, guess);
+        var value = self._getQuizQuestionFilledValue(doc, question);
+        if (!value) {
+          deferred++;
+          emitRuntimeLog('warn', 'local multiple choice fill failed, keep for llm', {
+            index: index,
+            qid: qid || '',
+            answer: guess.join('')
+          });
+          return;
+        }
+
+        self._markQuizQuestionAnsweredThisRun(question, 'local-multiple', value, 'multiple');
+        handled[index] = true;
+        filledCount++;
+      });
+
+      if (filledCount) {
+        emitRuntimeLog('info', 'multiple choice answered locally, not sent to llm', {
+          count: filledCount,
+          deferred: deferred,
+          hint: '非视频整卷的多选只求"填上"，本地作答省 token；答错下一轮自动换组合，仍不花 token'
+        });
+      }
+      return handled;
     },
 
     /**

@@ -935,6 +935,18 @@
       var payload = [];
       var skippedConfirmed = 0;
       var skippedBestEffort = 0;
+      var skippedLocalMultiple = 0;
+      // ===== 多选本地作答（不问模型）=====
+      //
+      // 位置是刻意的：上面刚做完"缓存回填 + 清掉已知错答"，
+      // 所以本地答案不会刚填上就被那两步抹掉；而 payload 还没开始拼，
+      // 正好拿返回值把这些题**排除在模型请求之外** —— 这才是省 token 的落点。
+      //
+      // 现场症状（用户 2026-10-10）：多选答案最长，模型最容易把它**摊平**成一串字母，
+      // 一摊平整批长度就对不上 → 整批丢弃 → 补问 → 又摊平。用户看到的是
+      //"5 个多选只做了 4 个、最后一个空着、然后不断重复"。
+      // 详见 _answerLocalMultiChoiceQuestions 的说明（含"为什么这条路可以乱答"）。
+      var localMultiple = this._answerLocalMultiChoiceQuestions(questions, quizDoc);
       var batchWorkKey = this._getQuizWorkKey(quizDoc);
       // 这一轮是否**整批重发**（含已知正确答案的题）。
       //
@@ -958,6 +970,13 @@
           skippedBestEffort++;
           return;
         }
+        // 多选已经在本地作答（见 _answerLocalMultiChoiceQuestions）：**不发模型**。
+        // 这些题本来就要占提示词里最大的一块（选项 + 字母数组），
+        // 而且它们的答案最容易让模型输出退化成长串重复 —— 不发给模型，这一整条路都没了。
+        if (localMultiple[i]) {
+          skippedLocalMultiple++;
+          return;
+        }
         // 已经"确认正确 + 本轮已填 + DOM 里确实有值"的题不再问模型：
         // _fillCachedQuizAnswers 已经把答案填回去了，重复提问纯属白花 token。
         // 三个条件必须同时成立 —— 只看缓存会让"缓存存在但填不进去"的题永远没人作答，
@@ -977,9 +996,9 @@
         payload.push({ index: i, type: q.type, title: q.title, options: q.options, previousWrongAnswers: wrongAnswers });
       });
 
-      if (skippedConfirmed > 0 || skippedBestEffort > 0) {
+      if (skippedConfirmed > 0 || skippedBestEffort > 0 || skippedLocalMultiple > 0) {
         emitRuntimeLog('info', batchRecent ? 'resend full batch for prefix cache' : 'skip llm for cached-correct questions',
-          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, asked: payload.length });
+          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, localMultiple: skippedLocalMultiple, asked: payload.length });
       }
       if (payload.length) {
         // 记在"发出去"这一侧而不是"收到成功响应"那一侧：缓存单元是在请求到达时建立的，
@@ -988,16 +1007,21 @@
         this._quizBatchSentAt = Date.now();
       }
       if (payload.length === 0) {
-        // 两种情况：
+        // 三种情况：
         //   ① 全部题目都靠缓存填好了，却没能走上面的提前提交分支 —— 状态自相矛盾，
         //      此时发一次空请求只会白白消耗配额；
         //   ② **全部题目都进了"放弃折腾"**。这种必须自己收尾：本地填猜测、能交就交，
         //      否则这一卷会永远停在"不发请求、也不提交"的状态 —— 又是一种卡住。
+        //   ③ **全部题目都是多选、已由本地作答**（整卷只有多选题的小测并不罕见）。
+        //      这一支是本次改动新增的：多选不再进 payload，所以"payload 空了"
+        //      第一次成为一个**正常**结局 —— 漏掉它就等于给"全是多选的卷子"
+        //      新开了一个"永远不提交"的洞。
         emitRuntimeLog('warn', 'quiz payload empty after cache filter', {
           total: questions.length,
-          bestEffort: skippedBestEffort
+          bestEffort: skippedBestEffort,
+          localMultiple: skippedLocalMultiple
         });
-        if (skippedBestEffort > 0) {
+        if (skippedBestEffort > 0 || skippedLocalMultiple > 0) {
           this._fillBestEffortQuizAnswers(questions, quizDoc);
           var rescueReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
           this._quizAnswered = rescueReady;
@@ -1067,6 +1091,12 @@
         // 放在清理之后是有意的：先让 `_clearKnownWrongFilledQuizAnswers` 处理其他题，
         // 再补上这些题的本地猜测，本轮就不会被它误清。
         this._fillBestEffortQuizAnswers(questions, quizDoc);
+        // 多选再走一遍同一个入口 —— 它是**幂等**的：
+        //   已填好的题在入口第一道判断上就返回了（不发请求、不重填），
+        //   只有被上面那步 `_clearKnownWrongFilledQuizAnswers` 抹掉的题才会被重新填上。
+        // 少了这一步就有个窄缝：本地答案恰好落在"已知错答"里（组合试完那一种），
+        // 会被抹掉、又没有模型答案可补 → 表单缺一题 → 整卷永不提交。
+        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
