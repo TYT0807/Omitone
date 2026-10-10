@@ -298,8 +298,16 @@ function checkFontTable() {
   var result = spawnSync(process.execPath, [path.join(__dirname, 'table-pack.js'), '--verify'],
     { encoding: 'utf8' });
   if (result.status !== 0) {
+    // ⚠️ 必须把 `result.error` 一起打出来。否则**spawn 本身失败**（实测本机
+    // `spawnSync node.exe → EBUSY`）时，stdout/stderr 都是空的，
+    // 报出来就是一句"字形映射表 bin/json 不同步:"后面**什么都没有** ——
+    // 看起来像两个文件不一致，实际是两个文件根本没被比较过。
+    // 这类"诊断信息把真实原因吞掉"的坑，本项目已经栽过好几次。
+    var detail = String((result.stderr || '') + (result.stdout || '')).trim();
+    if (!detail && result.error) detail = String(result.error);
+    if (!detail) detail = '子进程没有输出（status=' + result.status + ' signal=' + result.signal + '）';
     fail('字形映射表 bin/json 不同步:\n      ' +
-      String(result.stderr || result.stdout || '').trim().split('\n').join('\n      '));
+      detail.split('\n').join('\n      '));
     return;
   }
   var jsonSize = Math.round(fs.statSync(path.join(ROOT, jsonRel)).size / 1024);

@@ -198,7 +198,7 @@ var frameJobId = String(frameData.jobid || frameData._jobid
 ```
 
 jobid 是对的（`work-B`）、job 确实一开始没有帧（前置条件过了），
-**但反查之后仍然没有帧**。327 项里**只有这 1 项**失败。
+**但反查之后仍然没有帧**。337 项里**只有这 1 项**失败。
 
 > ⚠️ **教训：验证一条修复时，要验到"这条链路真的走通了"，而不是"第一步对了"。**
 > 1.2.8 的断言停在"匹配到任务点"，可用户要的是"任务被做掉" ——
@@ -220,7 +220,7 @@ jobid 是对的（`work-B`）、job 确实一开始没有帧（前置条件过�
 
 
 
-全量：自检 18 项 · 集成 106 项 · 真实 Edge e2e 31 个场景 / 327 项，全绿。
+全量：自检 18 项 · 集成 106 项 · 真实 Edge e2e 33 个场景 / 337 项，全绿。
 
 
 ### 附带（纯开发期改动，不进包）：修 `verify` 误判「附件缺失、下载入口是死链」
@@ -287,6 +287,75 @@ jobid 是对的（`work-B`）、job 确实一开始没有帧（前置条件过�
 > 同理，写说明时我把「与 e2e 同款」和「当前…项断言」放进了同一行，
 > 于是 **e2e 守卫把那个集成条数当成了自己的** —— 两个守卫都只认"关键词之后的第一个数字 + 项"，
 > **一行里只放一个数字**。
+
+
+### ⑤ 截断的批次要拆开重问 + 「一行一个答案」也要能解析（合并进 1.2.8）
+
+> 这一条是发版后从用户贴回的现场日志里发现的，属于**同一版的范围**（AGENTS §3.7：
+> 一次只修不到五条 bug 就不升版本号），所以并进 1.2.8，不另发版本。
+
+### 症状：每约 90 秒烧一次 token，卷子永远答不完
+
+用户导出的 200 条日志里，同一个形状重复了五轮（18:05 → 18:12）：
+
+```
+llm request chunk {chunk:1, questions:10} → llm usage {out:34}      ← 这一批正常
+llm request chunk {chunk:2, questions:10} → llm usage {out:8192}    ← 顶满输出上限
+                                           → 解析失败，重试 → out:8192 → 又失败
+llm refill unanswered {count:10}           → out:8192 ×2 → 又失败
+llm partial chunk failure {answered:15}
+study hold quiz before finish {"searchedCount":0}
+── 下一轮 ── clear stale quiz answers {"count":23} → 再问全部 25 题 → 同样的批又失败
+```
+
+### 三个根因
+
+1. **`out: 8192` 是顶到输出上限，但没人看 `finish_reason`。**
+   `content.js` 里 `maxTokens` 默认 8192，而全库**没有任何地方**读
+   `finish_reason` / `stop_reason` / `finishReason` —— 于是"被截断"被当成普通解析失败，
+   `requestAnswersWithRetry` 拿**同一批题**重问两次，失败后再"空答案补问"两次，
+   **一轮六次顶满输出上限**，而题目一道都没答上。
+2. **每轮都把上一轮答对的题抹掉重问**（`_clearUnconfirmedQuizAnswers` →
+   `clear stale quiz answers`），而失败点固定是同一批 → **永远不收敛**。
+3. **模型其实答了，是解析器读不了。** 它返回的形状是「一行一个 JSON 值」
+   （`["A","B","C","D"]` / `["A","C"]` / `"人工智能通识"`），
+   而 `parseLLMResponse` 的兜底正则 `/\[[\s\S]*\]/` 是**贪婪**的：
+   从第一个 `[` 一路抓到最后一个 `]`，跨行拼出来不是合法 JSON → 一律判失败。
+
+### 修法
+
+- **截断单独识别**：`isTruncatedFinishReason()` 认三家的写法
+  （OpenAI `finish_reason: "length"` / Claude `stop_reason: "max_tokens"` /
+  Gemini `finishReason: "MAX_TOKENS"`），命中就返回 `{truncated:true}`；
+  `requestAnswersWithRetry` 见到它就**不再重问同一批**。
+- **截断即拆批**：`handleLLMRequestDirect` 里那批被截断时**对半拆**再各问一次
+  （最多拆两层）。批越小越不容易退化，而拿原样的批重问是**必然重现**。
+- **按行解析兜底**：`parseLLMResponse(text, expectedCount)` 在
+  **非空行数 === 期望题数** 时按行 `JSON.parse`。
+  ⚠️ **严格等长才启用** —— 行数对不上时按行对齐会**错位答错题**，
+  比"这几题没答上"严重得多（所以要求调用方把题数传进来，没传就维持原判失败）。
+- **逐帧拒绝日志节流**：`search job: every candidate frame was rejected`
+  原先被 OCS 循环**每秒**打一条（用户那 200 条里大半是它），
+  改成"拒绝原因组合变了 或 距上次 > 30 秒"才记。
+
+### 测试
+
+新增 2 条场景（10 条断言）：假模型加了两种应答形状 —— `truncate-big`（一批 ≥4 题就吐
+长篇重复内容、`finish_reason: length`）与 `line-format`（一行一个 JSON 值）。
+
+- 截断场景断言：**被截断的那批只发一次** · 确实按对半拆 · 拆完所有题都答上 ·
+  整卷只用 3 次请求
+- 一行一答案场景断言：题目全部答上 · 整批只问一次
+
+**反向验证（两处注入一起上，各自只该让自己那条场景变红）**：关掉截断检测 →
+截断场景 4 条红；关掉按行解析 → 一行一答案场景 2 条红；**其余 31 条场景零失败**。
+而且注入后的形状**精确复现了现场日志**：截断那处发出 `[5,5,5,5,5,5]`（六次顶满）、
+按行那处 `[5,3,3]` 重复十几轮 —— 都是"一道题都没答上"。
+
+**顺带修掉一个会掩盖真实原因的缺陷**：`tools/check.js` 的字形表检查只打
+`stderr/stdout`，于是 **spawn 本身失败**时报出来是"bin/json 不同步:"后面**什么都没有** ——
+看起来像两个文件不一致，实际是两个文件根本没被比较过。现在把 `result.error` 一起打出来
+（本机实测就是 `spawnSync node.exe EBUSY`）。
 
 
 ## 1.2.7 — 修两处 `libs/` 里的静默错：API Key 清洗顺序、index 归一化
