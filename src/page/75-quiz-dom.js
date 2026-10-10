@@ -928,7 +928,17 @@
     _fillText: function (el, answer) {
       var value = this._normalizeAnswerValue(answer);
       var inputs = Array.from(el.querySelectorAll('input[type="text"], input:not([type])'));
-      if (!inputs.length) return;
+      if (!inputs.length) {
+        // ⚠️ 有的「填空题」答题框**根本不是 input，而是一个富文本编辑器**（UEditor 的 iframe）。
+        // 现场实测（诊断日志，2026-10-10）：25 题里恰好有 2 道填空题是
+        // `textInputs: 0, richEditors: 1` —— 于是这里 `return` 掉、**那两题永远填不上**，
+        // 表单永远不满 → 永不提交 → 整卷每 30 秒重来一轮（用户看到的"一直卡住"）。
+        // 题型判定按 `typename`（"填空题"）给了 'fill'，可填答路径却只认 input，
+        // 两边对"填空题"的理解不一致 —— 这是这条 bug 的根。
+        // 交给简答那条路：它会写 textarea / iframe 正文，**并且同步隐藏答案域**。
+        this._fillTextarea(el, answer);
+        return;
+      }
 
       var values = [];
       if (Array.isArray(value)) {
