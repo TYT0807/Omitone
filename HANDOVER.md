@@ -71,7 +71,7 @@ jobid 是对的、job 确实没帧，但反查之后仍然没帧。374 项里**�
 | 线上 Release | **v1.2.8** · `omitone.zip` 385.3 KB（sha256 `25984a58e936…`）· `Omitone-manual.pdf` 1370.0 KB（sha256 `98418e5092c8…`），均 `state=uploaded` |
 | 下载直链 | `/releases/latest/download/omitone.zip` 探过一次、链接可用；两个附件都与本地构建**逐字节一致**（`verify` 通过并明确报"不算过期"） |
 | 在线说明书 | `tyt0807.github.io/Omitone/docs/manual.html` HTTP 200、显示 **1.2.8**，且含本轮新增的两条说明（"多选由插件本地作答" "最多 2 次"） |
-| ⚠️ tag 位置 | `v1.2.8` 这个 tag 指向 `5e43541`（**早于**今天这 16 个提交）；附件是对的，但点 release 页的"source code"拿到的是旧代码。要不要把 tag 挪到 `8d01da9` 属于**改线上 tag**，动之前先问用户 |
+| tag 位置 | `v1.2.8` 已按用户要求**挪到当前 main**（此前落后 17 个提交，release 页的「Source code」是旧代码）。改法照 `tools/github-release.js` 原本那一套：**先 `POST /git/tags` 建 tag 对象、再 `PATCH /git/refs/tags/<tag> {force:true}`** —— 中间不出现"tag 不存在"的窗口。⚠️ main 之后再往前走，tag 自然会落后，**那只影响 release 页的源码包；用户真正下载的是附件** |
 | 说明已合并 | 1.2.8~1.2.11 已**回退合并成 1.2.8 一条**；GitHub 侧已重发：v1.2.8 挂上修复版 zip，v1.2.9 / v1.2.10 / v1.2.11 的 Release 与 tag **已回收**，`/releases/latest` 现已指向 v1.2.8，见 `AGENTS.md` §3 第 7 条 |
 | 测试 | 自检 **18** 项 · 集成 **106** 项 · e2e **37 场景 / 374 项**（落盘 `通过=true`） |
 | 新增覆盖 | ① divjob 场景补 2 条断言（job 一开始没帧 + 反查回帧成功）；② 新增场景「非视频整卷的多选本地作答」（**22 项**：提示词里没有多选 / 有其他题 / DOM 真填上并勾选 / **重做那一轮交回模型** / 该卷交卷上限 = 2 / 读不到选项不占名额）；③ 「多选被摊平」那条**搬到弹题页**（整卷已不可能产生那种形状，留在原地就成了空测） |
