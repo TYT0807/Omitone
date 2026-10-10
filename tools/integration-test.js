@@ -354,7 +354,22 @@ async function testIndexPlumbing() {
     JSON.stringify(gotIndices) === JSON.stringify(sparseIndices),
     '实际 [' + gotIndices.join(',') + ']');
 
-  check('按 CHUNK_SIZE=10 分两批发出（10 + 2）', harness.sandbox.__sentRequests.length === 2,
+  // 批数**不写死**：CHUNK_SIZE 会变（实测 2026-10-10 从 10 调到 5，
+  // 因为 10 题的批次会退化成长篇输出、顶满 max_tokens），
+  // 而这条断言真正要保的是"**跨批次**的 index 映射不串味" —— 只要 ≥ 2 批就成立。
+  // 直接从 content.js 里读常量，避免下次改批大小又忘了同步这里（这次就漂了一次）。
+  var chunkSize = (function () {
+    try {
+      var src = require('fs').readFileSync(require('path').join(__dirname, '..', 'content.js'), 'utf8');
+      var m = src.match(/const CHUNK_SIZE\s*=\s*(\d+)/);
+      return m ? Number(m[1]) : 0;
+    } catch (e) {
+      return 0;
+    }
+  })();
+  var expectedBatches = chunkSize > 0 ? Math.ceil(questions.length / chunkSize) : 0;
+  check('按 CHUNK_SIZE=' + chunkSize + ' 分 ' + expectedBatches + ' 批发出（跨批次不串味）',
+    expectedBatches >= 2 && harness.sandbox.__sentRequests.length === expectedBatches,
     '实际 ' + harness.sandbox.__sentRequests.length + ' 批');
 
   var typesOk = data.data.every(function (a) {

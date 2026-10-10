@@ -870,6 +870,37 @@
         return;
       }
       this._quizCurrentQuestions = questions;
+      // 先解析本文档：「有没有进展」的判断要用它（后面填答用的是同一个表达式，
+      // 这份先算好，避免同一个表达式出现两份）。
+      var quizDocForProgress = preferredDoc || this._getQuizDocumentFromQuestions(questions) || null;
+      if (quizDocForProgress) {
+        // 「没进展就别每 30 秒把整卷重问一遍」的闸。
+        //
+        // 现场实测（2026-10-10）：25 题只填上 23，之后每轮都是
+        // `clear stale quiz answers {"count":23}` → 把 23 条抹掉 → 把 25 题**原样重问一遍**，
+        // 日志一轮一轮一模一样（用户看到的"一直卡住、填的还是重复的答案"），
+        // 既没有进展又白烧 token。
+        // 判据：**页面上已填题数与上轮相同**（=这一轮不会有新进展）且距上轮不足 60 秒 → 跳过本轮。
+        // 窗口只有 60 秒，之后照常重试 —— 不会把它永久卡死（本仓库对"拿不准"的一贯取舍）。
+        var filledNow = 0;
+        for (var fi = 0; fi < questions.length; fi++) {
+          if (this._getQuizQuestionFilledValue(quizDocForProgress, questions[fi])) filledNow++;
+        }
+        var nowProgress = Date.now();
+        var sinceLast = nowProgress - (this._quizRoundNoProgressAt || 0);
+        if (this._quizRoundFilledCount === filledNow && sinceLast < 60000) {
+          emitRuntimeLog('warn', 'quiz round skipped: no progress', {
+            filled: filledNow,
+            total: questions.length,
+            retryInMs: 60000 - sinceLast,
+            hint: '同一份卷子这一轮不会拿到新答案，先不重问（省 token）；60 秒后照常重试'
+          });
+          this._quizInProgress = false;
+          return;
+        }
+        this._quizRoundFilledCount = filledNow;
+        this._quizRoundNoProgressAt = nowProgress;
+      }
       // ===== 题目配图 → 文字（可选，默认关闭）=====
       //
       // 放在这里的原因：题目已经解析完、还没发请求。此时：
