@@ -936,6 +936,19 @@
         // 题型判定按 `typename`（"填空题"）给了 'fill'，可填答路径却只认 input，
         // 两边对"填空题"的理解不一致 —— 这是这条 bug 的根。
         // 交给简答那条路：它会写 textarea / iframe 正文，**并且同步隐藏答案域**。
+        //
+        // ⚠️ 顺手留一条日志：这条兜底**跑没跑**、以及**上游给的答案是不是空的**，
+        // 必须能从日志分辨 —— 上一版兜底是静默的，结果"修复到底装上了没有"
+        // 只能靠猜（现场日志里那两题一模一样地未填，分不清是"没跑到"还是"答案是空的"）。
+        try {
+          // ⚠️ page.js 跑在**页面上下文**，这里只有 `emitRuntimeLog`；
+          //    `appendRuntimeLog` 是 content.js 的，写了就是 ReferenceError
+          //    （被下面的 catch 吞掉 = 这条日志等于没打）。上一版就栽在这。
+          emitRuntimeLog('warn', 'fill fallback: rich editor', {
+            qid: String(this._getQuestionIdFromElement(el) || '').slice(0, 24),
+            emptyAnswer: !String(value == null ? '' : value).trim()
+          });
+        } catch (eLog) {}
         this._fillTextarea(el, answer);
         return;
       }

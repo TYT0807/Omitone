@@ -296,6 +296,29 @@
         return { success: true, data: JSON.parse(code[1].trim()) };
       } catch (e2) {}
     }
+    // ⚠️ 顺序很关键：**按段解析必须排在贪婪 `[...]` 匹配之前**。
+    // 因为像"一行一个 JSON 值"这种应答里通常**也**含一个合法的小数组
+    // （多选那行的 `["A","C"]`），贪婪分支会先把它整段抓走并 JSON.parse 成功 ——
+    // 于是返回一个**长度不对**的数组（实测：5 题的应答被解析成 2 项），
+    // 下游只能靠"长度不符"来兜，白白丢掉正确答案。
+    // 按段解析带**严格等长**判据，能用就用它；用不上才退回贪婪分支。
+    const separators = ['\n', '|||'];
+    for (let si = 0; si < separators.length; si++) {
+      const separated = parseSeparatedAnswers(cleaned, separators[si], expectedCount);
+      if (separated) {
+        // 成功时**必须留一条日志**。这不是啰嗦：
+        // 没有它，"这条兜底到底装上没有"只能靠猜 —— 实测就踩过，
+        // 用户 reload 扩展的时间点早于改动落盘，日志里当然看不到效果，
+        // 而两边都以为修好了（白跑一轮排查）。这条日志同时能告诉我们
+        // 这种非标准形状出现的频率与样子。
+        appendRuntimeLog('warn', 'llm answers parsed by separator', {
+          separator: separators[si] === '\n' ? 'newline' : separators[si],
+          count: separated.length,
+          excerpt: cleaned.slice(0, 140)
+        });
+        return { success: true, data: separated };
+      }
+    }
     const array = cleaned.match(/\[[\s\S]*\]/);
     if (array) {
       try {
@@ -315,30 +338,6 @@
         const arr = objects.map((s) => JSON.parse(s)).filter((o) => o && (o.answer != null || o.a != null));
         if (arr.length) return { success: true, data: arr };
       } catch (e5) {}
-    }
-    // 兜底：模型不按"一个 JSON 数组"回，而是**一题一段**地回。实测见过两种段分隔符：
-    //   ① 换行 `\n` —— 一行一个 JSON 值
-    //   ② `|||`    —— 提示词里"填空题多个空用 ||| 分隔"那条约定被当成了
-    //      "答案之间的分隔符"（现场原样：
-    //      `["A","B","C"]|||["A","B","C"]|||["A","B","C","D"]|||…`）
-    // 两种都**只在段数严格等于题数时**才认（判据在 parseSeparatedAnswers 里）。
-    // 少认一种，现场就是"模型明明答了，插件一道题都落不了地"。
-    const separators = ['\n', '|||'];
-    for (let si = 0; si < separators.length; si++) {
-      const separated = parseSeparatedAnswers(cleaned, separators[si], expectedCount);
-      if (separated) {
-        // 成功时**必须留一条日志**。这不是啰嗦：
-        // 没有它，"这条兜底到底装上没有"只能靠猜 —— 实测就踩过，
-        // 用户 reload 扩展的时间点早于改动落盘，日志里当然看不到效果，
-        // 而两边都以为修好了（白跑一轮排查）。这条日志同时能告诉我们
-        // 这种非标准形状出现的频率与样子。
-        appendRuntimeLog('warn', 'llm answers parsed by separator', {
-          separator: separators[si] === '\n' ? 'newline' : separators[si],
-          count: separated.length,
-          excerpt: cleaned.slice(0, 140)
-        });
-        return { success: true, data: separated };
-      }
     }
     return { success: false, error: `Unable to parse AI response: ${cleaned.slice(0, 200)}` };
   }
@@ -717,20 +716,35 @@
     const merged = [];
     const filled = new Set();
     let lastFailure = null;
+    // 模型**到底有没有回过话**（哪怕内容不可用）。决定"要不要补问"时要用它：
+    // `merged.length` 为空既可能是"API/网络坏了"（补问纯烧钱），
+    // 也可能是"整批因长度不符被丢弃"（**这时补问是唯一的出路**：
+    // 补问的批更小、条数更干净，实测正是这情形把整卷卡在最后 2 题上）。
+    let sawResponse = false;
 
     // 把一次成功请求的返回按位置对齐合并进 merged。
     // 主批与"空答案补问"共用这一段，两处的对齐规则必须完全一致，
     // 所以抽成局部函数而不是复制粘贴。
     const mergeAnswers = (entries, result, label) => {
-      // 位置式输出的前提是"数组长度 = 题目数"。长度不符时必须留下线索 ——
-      // 否则表现是"有一部分题没被作答"，而日志里什么都看不到。
-      // 处理上仍按位置尽力对齐：对不上的题保持未填，page.js 会因为"未填写"而不提交，
-      // 下一轮 tick 会重新问一次，属于可自愈的降级。
+      // 位置式输出的前提是"数组长度 === 题目数"。**长度不符时一律整批不采用。**
+      //
+      // ⚠️ 原来这里是"尽力按位置对齐 + 只打一条 warning"。实测（2026-10-10）证明
+      // 那个"可自愈的降级"根本不自愈，而是**现场卡死的直接原因**：
+      //   5 题收到 13 项 → 前 5 项被硬塞给这 5 题，其中两道**填空题**拿到的是用不上的值
+      //   → 插件以为"这批答完了"（content 侧的 filled 已满足）→ **不再补问** →
+      //   可 DOM 里那两题是空的 → 表单永远不满 → 永不提交 → 整卷每 30 秒重来一轮。
+      // 现在改成整批丢弃：这些题保持未答 → **由"空答案补问"重新问一次**
+      // （补问的批更小、条数更干净，配上按段解析的"严格等长"判据，命中率高得多）。
+      // 取舍与本仓库一贯一致：**宁可留空重问，也不要错位把答案填错题**。
       if (result.data.length !== entries.length) {
-        appendRuntimeLog('warn', 'llm answer count mismatch' + (label ? ' (' + label + ')' : ''), {
+        appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
           expected: entries.length,
-          received: result.data.length
+          received: result.data.length,
+          // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
+          // 还是"回的是别的批次"，而这两种要修的完全不是一处。
+          excerpt: JSON.stringify(result.data).slice(0, 220)
         });
+        return;
       }
 
       result.data.forEach((item, position) => {
@@ -766,9 +780,13 @@
     const requestChunkWithSplit = async (entries, depth) => {
       const result = await requestAnswersWithRetry(config, entries.map((entry) => entry.question));
       if (result && result.success && Array.isArray(result.data)) {
+        sawResponse = true;   // 有应答（即使随后因长度不符被整批丢弃）
         mergeAnswers(entries, result, depth > 0 ? 'split' : '');
         return true;
       }
+      // 模型**有回应**、只是内容不可用（解析不了 / 被截断）——
+      // 这也要记下来：后面决定"要不要补问"时，"API 坏了"和"内容不对"必须区别对待。
+      if (result && (result.parseError || result.truncated)) sawResponse = true;
       if (result && result.truncated && entries.length > 1 && depth < 2) {
         appendRuntimeLog('warn', 'llm chunk truncated, splitting in half', {
           questions: entries.length,
@@ -803,9 +821,13 @@
     // 还多一轮"填→提交→判错"的页面往返；而这里补问通常只有一两百 token，
     // 把"猜"换成"问"，正确率和成本同时改善。
     //
-    // 只在**部分成功**时补问：全部失败说明 API/解析出了问题，
-    // requestAnswersWithRetry 已经重试过两次，再问也是白烧，走原失败分支。
-    if (merged.length && filled.size < questions.length) {
+    // 补问条件：**还有题没拿到答案**，而且**模型确实回过话**。
+    // ⚠️ 这里从"只在部分成功时补问"（`merged.length`）改成"有回应就补问"：
+    // 整批因长度不符被丢弃时 `merged` 是空的，旧条件会**连补问都不做** ——
+    // 那是一条死路（现场就是整卷卡在最后 2 题上、每 30 秒重来一轮）。
+    // 判据用 `sawResponse` 而不是 `merged.length`：它区分的是
+    // "API/网络坏了"（补问纯烧钱，走原失败分支）与"内容不对"（补问是唯一出路）。
+    if (filled.size < questions.length && sawResponse) {
       const unfilled = [];
       chunks.forEach((chunk) => {
         chunk.forEach((entry) => {
