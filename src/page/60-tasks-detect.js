@@ -953,7 +953,13 @@
             if (!self._isQuizLearningPending(null)) {
               emitRuntimeLog('info', 'study quiz fallback completed', { searchedCount: searchedJobs.length });
             } else {
-            emitRuntimeLog('info', 'study hold quiz before finish', { searchedCount: searchedJobs.length });
+            // 把"卡在哪几题"一起带上：只有 searchedCount 的话，看不出是
+            // "模型没答上"还是"答上了但填不进 DOM"（实测 25 题只填 23 题，
+            // 两种日志一模一样，只能靠人肉数题）。
+            emitRuntimeLog('info', 'study hold quiz before finish', {
+              searchedCount: searchedJobs.length,
+              pending: self._describePendingQuizQuestions(null)
+            });
             self._ocsStudyStarted = false;
             return;
             }

@@ -3744,7 +3744,13 @@
             if (!self._isQuizLearningPending(null)) {
               emitRuntimeLog('info', 'study quiz fallback completed', { searchedCount: searchedJobs.length });
             } else {
-            emitRuntimeLog('info', 'study hold quiz before finish', { searchedCount: searchedJobs.length });
+            // 把"卡在哪几题"一起带上：只有 searchedCount 的话，看不出是
+            // "模型没答上"还是"答上了但填不进 DOM"（实测 25 题只填 23 题，
+            // 两种日志一模一样，只能靠人肉数题）。
+            emitRuntimeLog('info', 'study hold quiz before finish', {
+              searchedCount: searchedJobs.length,
+              pending: self._describePendingQuizQuestions(null)
+            });
             self._ocsStudyStarted = false;
             return;
             }
@@ -6973,8 +6979,57 @@
       return false;
     },
 
-    _isQuizLearningPending: function (preferredDoc) {
-      if (this._isQuizForceSkipping()) return false;
+    /**
+     * 「卷子卡住」时到底卡在哪几题 —— 给 hold 类日志用的诊断切片。
+     *
+     * 为什么必须有：现场只有一句 `study hold quiz before finish`，**看不出是
+     * "没答上"还是"答上了但填不进去"**。实测踩过：25 题只填上 23 题，
+     * 每一轮的日志一模一样，只能靠人肉在页面上逐题数 —— 而这本来是日志一句话能说清的。
+     * 它把未填的那几题的**题型、题干前缀、文本框数、富文本编辑器数、qid** 一起带上，
+     * 一眼就能判断该去查哪条填答路径（`_fillText` / `_fillTextarea` / `_applyChoiceAnswer`）。
+     */
+    _describePendingQuizQuestions: function (preferredDoc) {
+      try {
+        var questions = this._quizCurrentQuestions || [];
+        if (!questions.length) {
+          var fallbackDoc = this._resolveQuizAnswerDocument(preferredDoc || null) || null;
+          questions = fallbackDoc ? this._extractQuestions(fallbackDoc) : [];
+        }
+        if (!questions.length) return { total: 0 };
+        var doc = this._resolveQuizAnswerDocument(preferredDoc || null) || this._getMainDocument() || document;
+        var byType = {};
+        var unfilled = [];
+        var self = this;
+        questions.forEach(function (question, index) {
+          var type = String((question && question.type) || '?');
+          byType[type] = (byType[type] || 0) + 1;
+          var value = '';
+          try { value = self._getQuizQuestionFilledValue(doc, question); } catch (e) { value = ''; }
+          if (value) return;
+          var el = question && question._element;
+          var qid = '';
+          try { qid = self._getQuestionIdFromElement(el) || ''; } catch (e2) { qid = ''; }
+          unfilled.push({
+            no: index + 1,
+            type: type,
+            title: String((question && question.title) || '').slice(0, 18),
+            textInputs: el ? el.querySelectorAll('input[type="text"], input:not([type])').length : -1,
+            richEditors: el ? el.querySelectorAll('iframe').length : -1,
+            qid: String(qid).slice(0, 24)
+          });
+        });
+        return {
+          total: questions.length,
+          unfilledCount: unfilled.length,
+          byType: byType,
+          unfilled: unfilled.slice(0, 6)
+        };
+      } catch (e) {
+        return { error: String((e && e.message) || e).slice(0, 120) };
+      }
+    },
+
+    _isQuizLearningPending: function (preferredDoc) {      if (this._isQuizForceSkipping()) return false;
       if (this._isQuizApiUnavailable()) return false;
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
