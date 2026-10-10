@@ -39,6 +39,30 @@ MV3 的 service worker 会被随时回收（大约 30 秒空闲即终止），�
 经 `background.js` 只做一层 `fetch` 代理转发 —— 一旦 `api_fetch` 失败，
 `content.js` 还会退回直连（`apiFetch` 里的 fallback 分支）。
 
+## 源码布局与构建产物
+
+上面那张图说的是**运行时**；仓库里这些文件是这么组织的：
+
+| 位置 | 是什么 | 能不能直接改 |
+| --- | --- | --- |
+| `src/page/*.js` | `page.js` 的**源文件**，按域切成 16 个片段（`00-shell-constants` … `90-console-api-startup`） | ✅ **要改就改这里** |
+| `page.js`（根目录） | 由上面 16 个片段**拼接**出来的产物 —— 扩展实际加载的是它 | ❌ 直接改会在下次拼接时被覆盖 |
+| `content.js` / `background.js` / `libs/` / `popup/` | 各自独立，不参与拼接 | ✅ |
+| `resources/table.bin` | 由 `resources/table.json` 打包出的运行时字体表（json 是源、bin 是产物） | ❌ 走 `node tools/table-pack.js --pack` |
+| `dist/` | `npm run build` 的产物（解压目录 + `omitone.zip`），已 gitignore | — |
+
+```bash
+npm run concat        # 改完 src/page/ 必须跑：重新拼出根目录 page.js
+npm run concat:check  # 校验两者一致（npm test 里会自动跑一次）
+```
+
+`page.js` 曾经是一个 9899 行的单文件，拆分的来龙去脉见
+[`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md)（**三个阶段都已完成，别再重做**）。
+
+**几道守卫拦的都是同一件事：改了一半就以为改完了。** 片段与产物不一致、片段头部的方法/状态字段
+清单与实际不符、幽灵调用与死方法、`await` 缺超时护栏 —— 都由 `npm test` 报出来。
+它们失败时的正确反应是**补齐同步**，不是改守卫。
+
 ## 消息协议
 
 ### page.js → content.js
@@ -129,15 +153,29 @@ chrome.runtime 消息：`api_fetch`、`fetch_image_dataurl`、`ping`、
 ```
 page.js _extractQuestions()      从 DOM 抠题（题干 / 选项 / 题型）
    ↓ 过滤掉「确认正确 + 本轮已填 + DOM 有值」的题
+   ↓ 多选：本卷第一次尝试时**本地作答、不进请求**（见下）
 page.js _handleQuiz()
    ↓ bridgeSend('llm_request')
 content.js handleLLMRequestDirect()
    ↓ 每 5 题分批（CHUNK_SIZE），逐批调用并合并
    ↓ 保留调用方给的原始 index（不按数组位置反推）
+   ↓ 长度不符：先按段解析 / 贪心重分段，分不出来才整批丢弃
+   ↓ 被截断（finish_reason=length）→ 该批对半拆开重问
+   ↓ 还有题没答上 → 只把漏掉的那几题补问一次
 background.js api_fetch          跨域代理
    ↓
 模型接口
 ```
+
+两条与"题型/提交"有关的硬规矩（都是踩过坑才有的）：
+
+- **多选在整卷里只享受一次"乱答"**：章节测验 / 作业的多选首次不进请求（省 token 与上下文），
+  但这份卷子**一旦交过卷、平台又要求重做**，多选就交回模型 —— 猜的答案过不了的卷子，
+  重做多少遍都过不了，只会把用户的提交次数烧光
+  （`_answerLocalMultiChoiceQuestions`；视频内弹题不受影响，始终交给模型）。
+- **提交前置是"每题都有值"，不是"答对"**（`_areQuizAnswersFilled`）：
+  所以整卷最后剩一道空题比答错严重得多 —— 本地兜底填充（`_fillBestEffortQuizAnswers`）
+  就是不让一道题把整卷钉死在原地。
 
 ### 提示词与 token
 
