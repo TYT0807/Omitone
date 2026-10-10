@@ -600,7 +600,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ### 支持的学习通任务类型
 
-任务点靠 `module` 字段区分。判定顺序**不能改**（见 [§5.7](#57-jobfalse--isPassed--字段缺失--必须保留的判断顺序)）：
+任务点靠 `module` 字段区分。判定顺序**不能改**（见 [§5.7](#57-jobfalse--ispassed--字段缺失--必须保留的判断顺序)）：
 
 | 任务点类型 | module | 处理方式 |
 | --- | --- | --- |
