@@ -259,6 +259,32 @@
     return value === 'length' || value === 'maxtokens';
   }
 
+  /**
+   * 按分隔符切分后逐个 JSON.parse —— **只在段数恰好等于题数时才返回结果**。
+   *
+   * ⚠️ 那条"严格等长"是必须的：段数对不上时按段对齐会**错位答错题**，
+   * 比"这几题没答上"严重得多（本项目对"拿不准"的一贯取舍）。
+   * 尤其 `|||` 是**填空题自带的多空分隔符**：一段答案里出现它就会多切出一段，
+   * 于是段数 ≠ 题数 → 这里直接返回 null，退回"判失败"，不会错位。
+   */
+  function parseSeparatedAnswers(cleaned, separator, expectedCount) {
+    if (!Number.isFinite(expectedCount) || expectedCount <= 0) return null;
+    if (!separator || cleaned.indexOf(separator) === -1) return null;
+    const parts = cleaned.split(separator)
+      .map(function (part) { return part.trim(); })
+      .filter(function (part) { return part !== ''; });
+    if (parts.length !== expectedCount) return null;
+    const parsed = [];
+    for (let i = 0; i < parts.length; i++) {
+      try {
+        parsed.push(JSON.parse(parts[i]));
+      } catch (e) {
+        return null;
+      }
+    }
+    return parsed.length === expectedCount ? parsed : null;
+  }
+
   function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     try {
@@ -290,35 +316,17 @@
         if (arr.length) return { success: true, data: arr };
       } catch (e5) {}
     }
-    // 兜底：模型有时按「一行一个 JSON 值」输出 —— 每行正好是一题的答案，例如
-    //   ["A","B","C","D"]
-    //   ["A","C"]
-    //   "人工智能通识"
-    // 上面那条 `/\[[\s\S]*\]/` 是**贪婪**匹配，会把多行从第一个 `[` 一路抓到最后一个 `]`，
-    // 跨行拼出来不是合法 JSON，于是这种形状**一律**判失败。
-    // 可它其实是**有答案的**：实测现场 25 题的卷子模型答了 11 行，
-    // 解析器全判失败 → 10 道题白问 → 还触发了"每 90 秒重问一遍"的循环。
-    //
-    // ⚠️ 必须**严格等长**才启用：行数 ≠ 题数时按行对齐会**错位答错题**，
-    // 那比"这几题没答上"严重得多（本仓库对"拿不准"的一贯取舍）。
-    // 所以要求调用方传入期望题数；没传就保持原样判失败。
-    if (Number.isFinite(expectedCount) && expectedCount > 0) {
-      const lines = cleaned.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== '');
-      if (lines.length === expectedCount) {
-        const perLine = [];
-        let allParsed = true;
-        for (const line of lines) {
-          try {
-            perLine.push(JSON.parse(line));
-          } catch (e6) {
-            allParsed = false;
-            break;
-          }
-        }
-        if (allParsed && perLine.length === expectedCount) {
-          return { success: true, data: perLine };
-        }
-      }
+    // 兜底：模型不按"一个 JSON 数组"回，而是**一题一段**地回。实测见过两种段分隔符：
+    //   ① 换行 `\n` —— 一行一个 JSON 值
+    //   ② `|||`    —— 提示词里"填空题多个空用 ||| 分隔"那条约定被当成了
+    //      "答案之间的分隔符"（现场原样：
+    //      `["A","B","C"]|||["A","B","C"]|||["A","B","C","D"]|||…`）
+    // 两种都**只在段数严格等于题数时**才认（判据在 parseSeparatedAnswers 里）。
+    // 少认一种，现场就是"模型明明答了，插件一道题都落不了地"。
+    const separators = ['\n', '|||'];
+    for (let si = 0; si < separators.length; si++) {
+      const separated = parseSeparatedAnswers(cleaned, separators[si], expectedCount);
+      if (separated) return { success: true, data: separated };
     }
     return { success: false, error: `Unable to parse AI response: ${cleaned.slice(0, 200)}` };
   }

@@ -925,6 +925,19 @@ function startMockServer() {
           // 升级前解析器用贪婪的 `/\[[\s\S]*\]/` 去抓，跨行拼出来不是合法 JSON →
           // 一律判失败，于是"模型明明答了"却一道题都没落地。
           content = answers.map(function (a) { return JSON.stringify(a); }).join('\n');
+        } else if (responseMode === 'pipe-format') {
+          // 现场实测的**第二种**形状：模型把答案用 `|||` 串起来
+          // —— 它把提示词里"填空题多个空用 ||| 分隔"那条约定当成了答案之间的分隔符。
+          // 原样长这样：`["A","B","C"]|||["A","B","C"]|||["A","B","C","D"]|||…`
+          //
+          // ⚠️ 这一档刻意**不含内部分隔符**：多空填空题的答案本身自带 `|||`，
+          // 那与"段分隔符"是**本质歧义**（段数会多出来），解析器会安全地拒绝。
+          // 这里把多空填空换成单空（`甲|||乙` → `甲`），只测"段分隔符"这一件事。
+          var safeAnswers = answers.map(function (a) {
+            if (typeof a === 'string' && a.indexOf('|||') !== -1) return a.split('|||')[0];
+            return a;
+          });
+          content = safeAnswers.map(function (a) { return JSON.stringify(a); }).join('|||');
         } else if (responseMode === 'truncate-big') {
           // 现场实测的另一种退化：一批题一多，模型就输出长篇重复内容、
           // 顶到 max_tokens 被截断。**只有"批 ≥ 4 题"时才这样** ——
@@ -4213,6 +4226,61 @@ SCENARIOS.push({
     // 守的是"整批不许被重复问"：升级前解析失败 → `requestAnswersWithRetry`
     // 会**拿同一整批再问一次**，所以 counts 里会出现两次 total。
     // （补问是另一套机制、本来就该发生，所以这里只数"整批"的次数。）
+    check('整批只问了一次（旧实现解析失败会把整批重问一次）',
+      sentCounts.filter(function (n) { return n === Number(total); }).length === 1,
+      'counts=' + JSON.stringify(sentCounts));
+
+    ctx.mock.setResponseMode('');
+  }
+});
+
+/** ---- 34. 用 `|||` 串起来的答案也要能解析（实测的第二种退化形状） ---- */
+SCENARIOS.push({
+  name: '用 ||| 串起来的答案也要能解析',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
+
+    var total = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
+      'return app._extractQuestions(null).length;})()'
+    );
+    check('装配：本卷题数 ≥ 1', Number(total) >= 1, String(total));
+
+    // 假模型用 `|||` 把每题的答案串成一条（现场原样）：
+    // 升级前：贪婪 `[...]` 匹配跨段拼出来不是合法 JSON → 判失败 → 一道题都答不上。
+    ctx.mock.setResponseMode('pipe-format');
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
+
+    var allFilled = await waitFor(ctx.client,
+      '(function(){var app=window._xxtApp;var qs=app._quizCurrentQuestions||[];' +
+      'if(!qs.length) return false;' +
+      'var d=app._resolveQuizAnswerDocument(null);' +
+      'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
+      'return true;})()', 25000);
+    var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
+      var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
+      return m ? m.length : 0;
+    });
+
+    check('`|||` 串起来的应答能被解析，题目全部答上（旧实现一道都答不上）',
+      allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
     check('整批只问了一次（旧实现解析失败会把整批重问一次）',
       sentCounts.filter(function (n) { return n === Number(total); }).length === 1,
       'counts=' + JSON.stringify(sentCounts));
