@@ -285,6 +285,55 @@
     return parsed.length === expectedCount ? parsed : null;
   }
 
+  /**
+   * 把**被压平**的位置式数组贪心重新分段回"每题一项"。
+   *
+   * 现场证据（2026-10-10，用户那份 25 题的卷子）：模型答多选时会**把选项字母摊平**，
+   * 5 道题（3 多选 + 2 填空）回成 **13 项**：
+   *   `["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]`
+   * —— 4+4+3（三道多选的字母） + 1+1（两道填空），**答案其实全在**，
+   * 只是长度对不上；而"长度对不上"会连锁触发丢弃 → 补问 → 又摊平 → 每轮空转。
+   *
+   * 分段依据（都来自真实 DOM，不猜）：
+   *   - 每个条目的题型已知（`entry.type`）与选项数已知（`entry.question.options.length`）
+   *   - 字母项只可能属于选择题；非字母项（填空文本）只可能是非选择题
+   *   - 多选至少 2 项（本仓库既有规则），且不得超过该题的选项数
+   *   - 给后面的题各留 ≥1 项
+   *
+   * @returns {Array|null} 分好段的数组（长度 === entries.length）；分不出来返回 null
+   */
+  function resegmentFlatAnswers(entries, data) {
+    if (!Array.isArray(entries) || !Array.isArray(data)) return null;
+    if (data.length <= entries.length) return null;
+    const out = [];
+    let cursor = 0;
+    for (let k = 0; k < entries.length; k++) {
+      const entry = entries[k];
+      const remainingEntries = entries.length - 1 - k;
+      const maxTake = data.length - cursor - remainingEntries; // 给后面的题各留 1 项
+      if (maxTake < 1) return null;
+      const type = String((entry && entry.type) || '');
+      if (type === 'multiple') {
+        const options = (entry && entry.question && entry.question.options) || [];
+        const optionCap = Math.max(1, Number(options.length) || maxTake);
+        let take = 1;
+        while (take < Math.min(optionCap, maxTake) && isSingleLetterItem(data[cursor + take])) take++;
+        // 多选至少要 2 项（除非这一批只够 1 项）
+        if (take < 2 && maxTake >= 2 && isSingleLetterItem(data[cursor + 1])) take = 2;
+        out.push(data.slice(cursor, cursor + take));
+        cursor += take;
+      } else {
+        out.push(data[cursor]);
+        cursor += 1;
+      }
+    }
+    return cursor === data.length ? out : null;
+  }
+
+  function isSingleLetterItem(item) {
+    return typeof item === 'string' && /^[A-Za-z]$/.test(item.trim());
+  }
+
   function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     try {
@@ -744,18 +793,32 @@
       // 现在改成整批丢弃：这些题保持未答 → **由"空答案补问"重新问一次**
       // （补问的批更小、条数更干净，配上按段解析的"严格等长"判据，命中率高得多）。
       // 取舍与本仓库一贯一致：**宁可留空重问，也不要错位把答案填错题**。
+      // ⚠️ 长度不符时**先试着贪心重分段**（见 `resegmentFlatAnswers` 的说明）：
+      // 现场最常见的形状是"多选的字母被摊平"，答案其实全在，
+      // 只是被摊成了一串。分不出来才整批丢弃（宁可留空重问，也不要错位填错题）。
+      let items = result.data;
       if (result.data.length !== entries.length) {
-        appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
-          expected: entries.length,
-          received: result.data.length,
-          // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
-          // 还是"回的是别的批次"，而这两种要修的完全不是一处。
-          excerpt: JSON.stringify(result.data).slice(0, 220)
-        });
-        return;
+        const resegmented = resegmentFlatAnswers(entries, result.data);
+        if (resegmented) {
+          appendRuntimeLog('warn', 'llm flat answers resegmented' + (label ? ' (' + label + ')' : ''), {
+            expected: entries.length,
+            received: result.data.length,
+            excerpt: JSON.stringify(result.data).slice(0, 180)
+          });
+          items = resegmented;
+        } else {
+          appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
+            expected: entries.length,
+            received: result.data.length,
+            // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
+            // 还是"回的是别的批次"，而这两种要修的完全不是一处。
+            excerpt: JSON.stringify(result.data).slice(0, 220)
+          });
+          return;
+        }
       }
 
-      result.data.forEach((item, position) => {
+      items.forEach((item, position) => {
         const normalized = PROMPT.normalizeItem(item);
         if (!normalized) return;
 
