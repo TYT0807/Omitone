@@ -334,7 +334,7 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| **AI 自动答题** | 单选 / 多选 / 判断 / 填空 / 简答五种题型；可整体关闭（关闭后只刷课不答题） |
+| **AI 自动答题** | 单选 / 多选 / 判断 / 填空 / 简答五种题型；可整体关闭（关闭后只刷课不答题）。**章节测验 / 作业里的多选题由本地作答、不占 AI 额度**（只求答上，不保证正确） |
 | **视频内嵌弹题** | 播放中途弹出的题：认选项 → 作答 → 提交；认不出的最多问 3 次后放手并冷却 60 秒 |
 | **空答案补问** | 模型漏答时**只重问漏掉的那几题**，不整卷重发 |
 | **交卷重试** | 判错后自动重答重交，最多 20 次 |
@@ -562,7 +562,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
 | [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、分阶段方案、硬性约束、验收清单、已知陷阱。**三个阶段都已完成，别再重做** |
 | [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：16 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
-| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（20 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会"赌运气"渲染，见下方说明） |
+| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（21 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会"赌运气"渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
@@ -574,7 +574,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 36 个场景，349 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 37 个场景，369 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -585,7 +585,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | **防拖拽 90% 提前结束** | 拖不动 **且** 倍速锁 1x 的视频，平台标记完成后播到 90% 即进下一个 | 四个判据缺一不可、收尾状态清理 | ✅ 19 项（含 2 条反向验证） |
 | **静音播放** | 视频静音；音频默认静音 + 最高倍速 | 配置 → 元素属性 | ✅ |
 | **PPT / 文档 / 图片** | 翻页、上报 `finishJob`、等页内音频播完 | — | ⚠️ 需真实任务点 |
-| **AI 答题** | 单选 / 多选 / 判断 / 填空 / 简答 / 弹窗题 | 抠题 → 提示词 → 模型 → 回填 DOM | ✅ 5 种题型全链路 |
+| **AI 答题** | 单选 / 多选 / 判断 / 填空 / 简答 / 弹窗题（章节测验里的**多选走本地**，零 token） | 抠题 → 提示词 → 模型 → 回填 DOM | ✅ 5 种题型全链路（含"多选不进请求"的守卫） |
 | **作业 / 考试页提交** | `.Cy_*` 结构：抠题 → 回填（含隐藏域 `#answer{qid}`）→ 调 `btnBlueSubmit` → 认判分结果页收尾 | 隐藏域真的被写上、提交后认得出已完成（不再重扫重答） | ✅ 含"旧判据对它认不出来"的守卫 |
 | **答案缓存** | 交卷后记住正确答案，下次不再问模型 | 对错判定、写入与读回 | ✅ |
 | **验证码（弹窗）** | 课程页弹窗验证码：抓图 → 视觉模型 → 填入提交 | 命中检测、结果清洗 | ✅ |
@@ -911,6 +911,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 36 | **Key 填错了，表现却是「插件每隔 45 秒卡一下」** | `content.js` 认得 401/403（不重试、不写 `apiConnectionFailed`），但 `page.js` 拿回 `{permanentError:true}` 后**根本没读这个字段**，一律走 `_markQuizApiConnectionFailed` → 45 秒退避，把"配置填错了"伪装成"网络连不上"，而服务商明明把 `Invalid API key` 原话返回来了 | 4xx 单独一支：跳过本轮（60 秒）、把服务商原话留在 `_quizApiLastError`，**不进退避窗口**；视频弹题改走 `_giveUpPopupQuiz`（关弹窗 + 60 秒冷却，不拿坏 Key 反复撞接口）。**500 仍然退避**由对照场景守着 —— 否则"凡是失败都不退避"也能蒙混过关 |
 | 37 | **作业 / 考试页点了选项，但 `#answer{qid}` 一直是空**（点了却等于没填，整卷永不提交） | `_clickOptionItem` 写隐藏域的条件是 `qid && badge` **同时**成立：`qid` 只从选项 `<li>` 自身取（真实作业页把 qid 挂在容器 `.Cy_TItle[qid]` 上），`badge` 要求 `.num_option` 徽标（真实作业页**没有**这个徽标）。两个都不满足 → 点击照做、日志照打 `clicked option`、隐藏域却始终是空串 | qid 改**三级回退**（自身 → 最近的 `[qid]` 祖先 → `_getQuestionIdFromElement`）；把"写隐藏域"从"徽标那组操作"里**拆出来**，只要有 qid 就写；字母改用 `_inferOptionLetter`，并**以控件自身的 `value` 为权威**（判断题的 `true`/`false` 就是这么来的 —— 写 `A` 进去平台不认）。端到端断言隐藏域的值，**不是看日志** |
 | 38 | **提交后认不出「已完成」，题目一直扫描、AI 重复提交**（整页重载 → 重扫 → 重答 → 重交，无限循环） | `_isQuizPassedOrFinished` 只认 `_isDocumentFrameFinished` 那一套标记（`.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete` + 父层「任务点已完成」）—— 那是**课程章节页**的标记。作业/考试提交后翻出的是**判分结果页**（每题多出「我的答案 / 正确答案 / 解析」，控件全部 `disabled`），这套标记一个都不命中 → `_monitorQuizSubmit` 一直 hold → 25 秒超时 → 整页重载 → 重扫重答重交 | 新增 `_isQuizResultPageFinished`：三条判据**同时**成立才算完成（出现判分痕迹 + 控件已不可交互或题目容器已消失 + 不含重做文案），宁可漏判也不误判（误判 = 把没交的卷当已完成，直接跳过该任务点）。端到端把 mock 结果页做成**真实判分页**，并断言**旧判据对它确实认不出来** |
+| 39 | **一份测验里好几道多选，总有一道空着、整卷一遍遍重来**（日志里 `llm flat answers resegmented` / `llm answer count mismatch, batch discarded` 反复出现） | 多选答案最长，模型答它时容易把选项字母**摊平**、甚至混进嵌套数组：实测 5 题回成 8～13 项 → 那**一整批**长度对不上 → 整批作废 → 补问 → 再退化，于是"四个填上了、最后一个空着、然后不断重复"。而整卷的提交前置只有一条「每题都有值」，多选**本来不需要答对** | 非视频整卷（章节测验 / 作业 / 考试）的多选改为**本地作答、不进请求**：复用避开已知错答的本地兜底（判错一次下一轮换一组组合，**始终零 token**），并把"这一卷全是多选"也一并收尾提交；本地算不出的题（读不到选项字母/填不进 DOM）照旧交回模型，**绝不制造空题**；视频里的**多选弹题不受影响**（答错就不让继续播，仍然交给 AI） |
 
 ---
 
@@ -923,6 +924,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | **多选题只选一个就卡住 / 一直选不对** | 见 §6 #33。日志里找 `multiple choice answer expanded locally`（本地把单字母扩成两项）、`multiple choice combos exhausted, keep wrong history`、`quiz filled best-effort guesses for repeatedly-wrong questions`（已放弃折腾这道题、改填本地猜测让整卷交出去） |
+| **一份测验里多选总有一道空着、整卷反复重来** | 见 §6 #39。日志里找 `multiple choice answered locally, not sent to llm`（正常 —— 说明多选没进请求、省了 token）；若是 `local multiple choice skipped, keep for llm`，说明这道题**读不到选项字母**，已照旧交回模型。想确认"多选真的没发出去"，看提示词里有没有 `｜m｜` 这一档题型代号 |
 | 换了模型就一直 400 | 见 §6 #34。日志里找 `llm rejected thinking params, retry without them`；把「思考强度」切回"关闭"即可（关闭档对认不出的渠道不发任何参数） |
 | **Key 填错 / 模型名写错，却表现成「每隔 45 秒卡一下」** | 见 §6 #36。日志里找 `quiz llm rejected permanently, no retry`，后面跟着服务商原话（如 `Invalid API key`）。它**不会**再进 45 秒退避，改好配置后下一轮自动恢复 |
 | **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
@@ -1055,7 +1057,7 @@ npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码�
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（106 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（36 个场景 / 349 项）
+npm run e2e      # 真实 Edge 功能交叉检验（37 个场景 / 369 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库

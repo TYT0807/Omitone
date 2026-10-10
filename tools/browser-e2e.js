@@ -784,6 +784,31 @@ function buildPopupQuizNativeHtml() {
     '</body></html>';
 }
 
+/**
+ * 视频内嵌**多选题**弹窗。
+ *
+ * 为什么必须单独有一个：非视频整卷里的多选已经改成**本地作答、不进请求**
+ * （见第 21 条场景），于是"模型把多选答案摊平成一串字母"这种退化形状
+ * **在整卷那条路上不会再出现**了。但视频弹题那条路仍然把多选交给模型
+ * （答错就不让继续播，不能乱答），所以 `resegmentFlatAnswers` 依旧要守，
+ * 只是必须换到**还活着的那条路**上来测 —— 否则测试还是绿的，它守的东西没了。
+ */
+function buildPopupQuizMultiHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div class="ans-pop-quiz" style="position:fixed;left:60px;top:60px;width:460px;height:240px;background:#fff;border:2px solid #333;z-index:9999;padding:16px">' +
+    '  <div class="pop-quiz-title">1. 下列说法正确的有哪几项？（多选）</div>' +
+    '  <ul class="pop-quiz-options">' +
+    '    <li class="pop-quiz-option"><input type="checkbox" name="pqm" value="A"><span>A. 说法甲</span></li>' +
+    '    <li class="pop-quiz-option"><input type="checkbox" name="pqm" value="B"><span>B. 说法乙</span></li>' +
+    '    <li class="pop-quiz-option"><input type="checkbox" name="pqm" value="C"><span>C. 说法丙</span></li>' +
+    '  </ul>' +
+    '  <div class="pop-quiz-footer"><span class="pop-quiz-submit">提交</span></div>' +
+    '</div>' +
+    '</body></html>';
+}
+
 /** 视频内嵌填空题弹窗（无选项，只有输入框） */
 function buildPopupQuizBlankHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -843,6 +868,7 @@ var MOCK_PAGES = {
   '/wq-inner-B': function () { return buildTwoQuizInnerHtml('B', false); },
   '/popup-quiz': buildPopupQuizHtml,
   '/popup-quiz-native': buildPopupQuizNativeHtml,
+  '/popup-quiz-multi': buildPopupQuizMultiHtml,
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
   '/video-continue': buildVideoContinueHtml
 };
@@ -1532,7 +1558,23 @@ SCENARIOS.push({
     );
 
     check('单选题回填 A → #answer1001', result.a1001 === 'A', JSON.stringify(result.a1001));
-    check('多选题回填 A,C → #answer1002 = "AC"', result.a1002 === 'AC', JSON.stringify(result.a1002));
+    // ⚠️ 多选不再是"模型给的 A,C"了：1.2.9 起非视频整卷的多选由**本地作答**、
+    //    压根不进请求（见第 21 条场景）。这里只守"它有值"——
+    //    "模型给多选答案时要能填成 AC" 由下面那段直接调 _fillAnswers 来锁。
+    check('多选题已填上（本地作答，不再是模型给的 A,C）',
+      /^[A-D]+$/.test(result.a1002 || ''), JSON.stringify(result.a1002));
+    var multiFromLlm = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var qs=app._extractQuestions(null);var idx=-1;' +
+      'for(var i=0;i<qs.length;i++){ if(qs[i].type==="multiple") idx=i; }' +
+      'if(idx<0) return {missing:true};' +
+      'app._fillAnswers([{index:idx,type:"multiple",answer:["A","C"]}],qs,null);' +
+      'var h=document.getElementById("answer1002");' +
+      'return {hidden:h?h.value:null};})()'
+    );
+    check('模型给出多选答案时，回填仍然是 A,C → #answer1002 = "AC"' +
+      '（弹题那条路与"本地算不出、交回模型"的题都走这里）',
+      multiFromLlm && multiFromLlm.hidden === 'AC', JSON.stringify(multiFromLlm));
     check('判断题回填 true → #answer1003', result.a1003 === 'true', JSON.stringify(result.a1003));
     check('填空题多空拆分并拼接 → #answer1004 = "甲乙"', result.a1004 === '甲乙', JSON.stringify(result.a1004));
     check('填空两个输入框分别填 甲 / 乙',
@@ -4147,11 +4189,16 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
-      'return {total:app._extractQuestions(null).length};})()'
+      'var qs=app._extractQuestions(null);' +
+      // ⚠️ "整批"的大小**不是全卷题数**：多选题从 1.2.9 起由本地作答、不进请求
+      //    （见「非视频整卷的多选本地作答」那条场景），所以这里必须按
+      //    "实际会发给模型的题数"来算，否则断言会跟着实现一起漂。
+      'var asked=qs.filter(function(q){return q.type!=="multiple";}).length;' +
+      'return {total:qs.length,asked:asked};})()'
     );
-    check('装配：本卷题数 ≥ 4（这样"整批"才会触发退化）',
-      setup && setup.total >= 4, JSON.stringify(setup));
-    if (!setup || setup.total < 4) return;
+    check('装配：本卷实际要问模型的题数 ≥ 4（这样"整批"才会触发退化）',
+      setup && setup.asked >= 4, JSON.stringify(setup));
+    if (!setup || setup.asked < 4) return;
 
     // 让假模型"一批 ≥ 4 题就吐长篇重复内容、顶到 max_tokens 被截断"。
     // 拆成两半（≤3 题）后它才正常作答 —— 正好验证"拆批能救回来"。
@@ -4172,9 +4219,9 @@ SCENARIOS.push({
     });
 
     check('被截断的那一批**只发一次**（旧实现要拿同一批重问两次、再补问两次）',
-      sent.filter(function (n) { return n === setup.total; }).length === 1, JSON.stringify(sent));
+      sent.filter(function (n) { return n === setup.asked; }).length === 1, JSON.stringify(sent));
     check('确实按"对半拆"重问了（能看到比整批更小的批）',
-      sent.some(function (n) { return n > 0 && n < setup.total; }), JSON.stringify(sent));
+      sent.some(function (n) { return n > 0 && n < setup.asked; }), JSON.stringify(sent));
     check('拆批之后所有题都答上了（旧实现这一批一道都落不了地）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sent));
     check('整卷只用了 3 次请求（1 次整批 + 2 次拆半），没有补问式的浪费',
@@ -4204,13 +4251,16 @@ SCENARIOS.push({
     );
     await sleep(600);
 
-    var total = await ctx.client.evaluate(
+    // ⚠️ "整批"的大小不是全卷题数：多选题由本地作答、不进请求（见第 21 条场景），
+    //    所以按"实际会发给模型的题数"来数，否则断言会跟着实现一起漂。
+    var setup = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
-      'return app._extractQuestions(null).length;})()'
+      'var qs=app._extractQuestions(null);' +
+      'return {total:qs.length,asked:qs.filter(function(q){return q.type!=="multiple";}).length};})()'
     );
-    check('装配：本卷题数 ≥ 1', Number(total) >= 1, String(total));
+    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.asked >= 1, JSON.stringify(setup));
 
     // 假模型改成"一行一个 JSON 值"（每行正好一题的答案）——
     // 升级前解析器的贪婪匹配会把多行从第一个 `[` 抓到最后一个 `]`，
@@ -4234,10 +4284,10 @@ SCENARIOS.push({
     check('一行一个 JSON 值的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts));
     // 守的是"整批不许被重复问"：升级前解析失败 → `requestAnswersWithRetry`
-    // 会**拿同一整批再问一次**，所以 counts 里会出现两次 total。
+    // 会**拿同一整批再问一次**，所以 counts 里会出现两次整批。
     // （补问是另一套机制、本来就该发生，所以这里只数"整批"的次数。）
     check('整批只问了一次（旧实现解析失败会把整批重问一次）',
-      sentCounts.filter(function (n) { return n === Number(total); }).length === 1,
+      sentCounts.filter(function (n) { return n === setup.asked; }).length === 1,
       'counts=' + JSON.stringify(sentCounts));
 
     ctx.mock.setResponseMode('');
@@ -4264,13 +4314,15 @@ SCENARIOS.push({
     );
     await sleep(600);
 
-    var total = await ctx.client.evaluate(
+    // ⚠️ 同第 33 条：整批大小按"实际会发给模型的题数"算（多选不进请求）
+    var setup = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
-      'return app._extractQuestions(null).length;})()'
+      'var qs=app._extractQuestions(null);' +
+      'return {total:qs.length,asked:qs.filter(function(q){return q.type!=="multiple";}).length};})()'
     );
-    check('装配：本卷题数 ≥ 1', Number(total) >= 1, String(total));
+    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.asked >= 1, JSON.stringify(setup));
 
     // 假模型用 `|||` 把每题的答案串成一条（现场原样）：
     // 升级前：贪婪 `[...]` 匹配跨段拼出来不是合法 JSON → 判失败 → 一道题都答不上。
@@ -4292,7 +4344,7 @@ SCENARIOS.push({
     check('`|||` 串起来的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
     check('整批只问了一次（旧实现解析失败会把整批重问一次）',
-      sentCounts.filter(function (n) { return n === Number(total); }).length === 1,
+      sentCounts.filter(function (n) { return n === setup.asked; }).length === 1,
       'counts=' + JSON.stringify(sentCounts));
 
     ctx.mock.setResponseMode('');
@@ -4350,10 +4402,22 @@ SCENARIOS.push({
   }
 });
 
-/** ---- 36. 多选答案被"摊平"时也要能重新分段 ---- */
+/**
+ * ---- 36. 多选答案被"摊平"时也要能重新分段（视频弹题那条路） ----
+ *
+ * ⚠️ 这一条**原来挂在章节测验页（/quiz）上**，1.2.9 起必须换到弹题页：
+ *    非视频整卷的多选已经改成"本地作答、不进请求"（见第 21 条场景），
+ *    那条路上**再也不可能**出现"模型把多选答案摊平成一串"的形状了。
+ *    留在原地的话，测的会是一条永远不会发生的退化 —— 绿的，但守的东西没了。
+ *
+ * 还活着的场景：视频里的多选弹题（答错就不让继续播，不能乱答）仍然交给模型。
+ * 现场实测形状：一道多选回成 `["A","C"]`（**2 项对 1 题**）。
+ * 升级前这一批长度不符 → 整批丢弃 → 弹题一个选项都点不上 → 反复重试直到放弃，
+ * 视频也就卡在这里播不下去。
+ */
 SCENARIOS.push({
-  name: '多选答案被摊平时要能重新分段',
-  path: '/quiz',
+  name: '弹题的多选答案被摊平时要能重新分段',
+  path: '/popup-quiz-multi',
   run: async function (ctx) {
     var cfg = {
       apiType: 'openai',
@@ -4369,39 +4433,190 @@ SCENARIOS.push({
       'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
     );
     await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    // 前提：这确实是一道"复选控件"的多选弹题（题型判错就测不到这条路）
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var p=document.querySelector(".ans-pop-quiz");' +
+      'var n=app._checkPopupQuiz();' +
+      'return {node:!!n,type:app._detectPopupQuizType(p,app._getOptionItems(p)),' +
+      'boxes:p.querySelectorAll("input[type=checkbox]").length};})()'
+    );
+    check('前提：弹窗被判成"多选"（复选控件）',
+      shape && shape.node === true && shape.type === 'multiple' && shape.boxes === 3,
+      JSON.stringify(shape));
+
+    // 假模型把多选的答案摊平成两项（现场实测形状）
+    ctx.mock.setResponseMode('flat-multi');
+    var before = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var n=app._checkPopupQuiz();return app._handlePopupQuiz(n);})()'
+    );
+    await sleep(2500);
+
+    check('弹题已发到模型接口', ctx.mock.requests.length > before,
+      '请求数 +' + (ctx.mock.requests.length - before));
+
+    var prompt = ctx.mock.requests.length > before
+      ? ctx.mock.requests[ctx.mock.requests.length - 1].prompt : '';
+    check('弹题这条路的提示词里**有**多选题（本地化没波及到它）',
+      /\d+\|m\|/.test(prompt), prompt.slice(0, 140));
+
+    var filled = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input[type=checkbox]");' +
+      'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
+      'return {checked:checked.sort().join("")};})()'
+    );
+    check('摊平的 `["A","C"]` 被重新分段成一道多选，两项都点上了（旧实现整批丢弃、一个都点不上）',
+      filled && filled.checked === 'AC', JSON.stringify(filled));
+
+    check('同一道弹题没有被重复问（整批只问了一次）',
+      ctx.mock.requests.length - before === 1,
+      '发了 ' + (ctx.mock.requests.length - before) + ' 次');
+
+    ctx.mock.setResponseMode('');
+  }
+});
+
+/**
+ * ---- 21. 非视频整卷的多选：本地作答，压根不发给模型 ----
+ *
+ * 用户 2026-10-10 的反馈：
+ *   「多选题只要填了就行的情况下，就不要倾斜太多的 token 和上下文等等的东西过去，
+ *     刚好我们有一套成熟的识别多选题的系统，不如识别到这种答题用非视频里的直接乱答就行」
+ *
+ * 它要治的现场症状：一批 5 题（3 多选 + 2 填空）时模型答多选会把选项字母**摊平**成一串
+ * （`["A","B","C","D","A","B","C","D","A","B","C","填空","填空"]`，13 项对 5 题）
+ * → 整批长度不符被丢弃 → 补问 → 又摊平，用户看到的"5 个多选只做了 4 个、
+ * 最后一个空着、然后不断重复"。
+ *
+ * 三条主线断言，全都不是实现细节：
+ *   ① 提示词里**没有**多选题 —— 这才是"少烧 token/上下文"的直接证据
+ *   ② 提示词里**有**其他题 —— 证明不是把整卷一起漏掉了
+ *   ③ 多选题在 DOM 里**真的被填上并勾选** —— 表单少一处就永远不提交（本仓库最怕的静默失败）
+ */
+SCENARIOS.push({
+  name: '非视频整卷的多选本地作答（不问模型）',
+  path: '/quiz',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+
+    // 两处配置都要喂（原因见「答题往返 + 回填 DOM」那一段的注释）
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(600);
 
     var setup = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
       'var qs=app._extractQuestions(null);' +
-      'return {total:qs.length, multiple:qs.filter(function(q){return q.type==="multiple";}).length};})()'
+      'var mq=-1;' +
+      'for(var i=0;i<qs.length;i++){ if(qs[i].type==="multiple") mq=i; }' +
+      'return {total:qs.length,multipleIndex:mq};})()'
     );
-    check('装配：本卷题数 ≥ 2', setup && setup.total >= 2, JSON.stringify(setup));
+    check('前提：本卷有多选题（否则这条测的是别的路）',
+      setup && setup.multipleIndex >= 0, JSON.stringify(setup));
+    if (!setup || setup.multipleIndex < 0) return;
 
-    // 假模型把多选的答案**摊平**（现场实测形状）。这一批的长度会大于题数。
-    ctx.mock.setResponseMode('flat-multi');
     var before = ctx.mock.requests.length;
     await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
 
-    var allFilled = await waitFor(ctx.client,
-      '(function(){var app=window._xxtApp;var qs=app._quizCurrentQuestions||[];' +
-      'if(!qs.length) return false;' +
-      'var d=app._resolveQuizAnswerDocument(null);' +
-      'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
-      'return true;})()', 25000);
-    var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
-      var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
-      return m ? m.length : 0;
-    });
+    var sent = false;
+    var deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if (ctx.mock.requests.length > before) { sent = true; break; }
+      await sleep(300);
+    }
+    check('其余题目仍然发到模型接口', sent, '请求数 +' + (ctx.mock.requests.length - before));
+    if (!sent) return;
 
-    check('摊平的应答被重新分段后，题目全部答上（旧实现整批丢弃、这卷永远填不满）',
-      allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
-    check('整批只问了一次（没有因为长度不符而重问/补问）',
-      sentCounts.filter(function (n) { return n === Number(setup.total); }).length === 1,
-      'counts=' + JSON.stringify(sentCounts));
+    var prompt = ctx.mock.requests[ctx.mock.requests.length - 1].prompt;
+    check('提示词里**没有**多选题（省下的就是这一块 token / 上下文）',
+      prompt.indexOf('以下属于操作系统核心功能的有') === -1, prompt.slice(0, 160));
+    check('提示词里不含多选题的选项原文',
+      prompt.indexOf('进程管理') === -1 && prompt.indexOf('编译源代码') === -1);
+    check('提示词里**有**单选题题干（没有把整卷一起漏掉）',
+      prompt.indexOf('中国特色社会主义最本质的特征') !== -1);
+    check('提示词里**有**填空题与简答题题干（只有多选走本地）',
+      prompt.indexOf('一个完整的 IP 地址由') !== -1 && prompt.indexOf('简述数据库事务') !== -1);
+    check('多选题型代号 "|m|" 一次都没出现',
+      !/\d+\|m\|/.test(prompt), prompt.slice(0, 160));
 
-    ctx.mock.setResponseMode('');
+    var filled = await waitFor(ctx.client,
+      '(function(){var e=document.getElementById("answer1002");return !!e && e.value !== "";})()', 15000);
+    check('多选在 DOM 里被本地填上了（空着就永远不会提交）', filled === true);
+
+    var multi = await ctx.client.evaluate(
+      '(function(){var e=document.getElementById("answer1002");' +
+      'var checked=[];var ins=document.querySelectorAll("input[name=\'answer1002\']");' +
+      'for(var i=0;i<ins.length;i++){if(ins[i].checked)checked.push(ins[i].value);}' +
+      'return {value:e?e.value:null,checked:checked.sort().join("")};})()'
+    );
+    check('多选答案形状合法（≥1 项、字母不越界）',
+      !!multi && /^[A-D]+$/.test(multi.value || ''), JSON.stringify(multi));
+    check('答案确实被勾到了选项上（隐藏域与勾选态一致，不是只写了个字段）',
+      !!multi && multi.checked === multi.value, JSON.stringify(multi));
+
+    // 模型那条路没被影响：单选还是"问出来的"A
+    var a1001 = await ctx.client.evaluate('document.getElementById("answer1001").value');
+    check('单选仍然由模型作答（本地化只针对多选）', a1001 === 'A', String(a1001));
+
+    var ready = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var qs=app._extractQuestions(null);' +
+      'return app._areQuizAnswersFilled(null,qs,{requireThisRun:true});})()'
+    );
+    check('整卷判定"每题都有值"→ 可以提交（本地作答的题没有破坏提交前置）',
+      ready === true, String(ready));
+
+    // 幂等：模型回来后流程还会再走一遍同一个入口（补被误清的题）。
+    // 它必须**不重填、不重问** —— 否则刚填好的答案会被自己覆盖掉。
+    var beforeAgain = ctx.mock.requests.length;
+    var again = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var e=document.getElementById("answer1002");' +
+      'var was=e?e.value:null;' +
+      'var qs=app._extractQuestions(null);' +
+      'var handled=app._answerLocalMultiChoiceQuestions(qs,null);' +
+      'var now=document.getElementById("answer1002");' +
+      'return {was:was,now:now?now.value:null,keys:Object.keys(handled).join(",")};})()'
+    );
+    check('再走一遍是幂等的：答案不变（第二轮只会补被清掉的题）',
+      again && again.was === again.now && !!again.was, JSON.stringify(again));
+    check('幂等的那一遍没有多花任何模型请求',
+      ctx.mock.requests.length === beforeAgain,
+      '多发了 ' + (ctx.mock.requests.length - beforeAgain) + ' 次');
+    check('"已本地处理"的下标表里正好有多选题那一位',
+      !!again && again.keys.split(',').indexOf(String(setup.multipleIndex)) !== -1,
+      JSON.stringify(again));
+
+    // 反向守卫：本地**读不到选项**的多选不能被算作"已处理"。
+    // 漏了它就等于"本地没填上、模型又没问" → 空题 → 永不提交（比省下的 token 贵得多）。
+    var noOptions = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var box=document.createElement("div");' +
+      'box.innerHTML="<div class=\'TiMu\' qid=\'99201\'><span>这道题读不到选项</span></div>";' +
+      'document.body.appendChild(box);' +
+      'var q={index:97,type:"multiple",title:"这道题读不到选项",options:[],_element:box.firstChild};' +
+      'var handled=app._answerLocalMultiChoiceQuestions([q],null);' +
+      'var r={handled:Object.keys(handled).length,answered:app._wasQuizQuestionAnsweredThisRun(q)};' +
+      'document.body.removeChild(box);' +
+      'return r;})()'
+    );
+    check('读不到选项的多选**不占用**"已本地处理"名额（照旧留给模型）',
+      noOptions && noOptions.handled === 0 && noOptions.answered === false,
+      JSON.stringify(noOptions));
   }
 });
 
