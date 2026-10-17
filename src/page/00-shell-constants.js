@@ -171,8 +171,43 @@
     return !!(rect && rect.width > 0 && rect.height > 0);
   }
 
+  /**
+   * 取「页面上的文字」。
+   *
+   * ⚠️ **回落分支必须跳过 `<script>` / `<style>` 的源码。**
+   * 原先写的是 `el.innerText || el.textContent` —— 看上去等价，实则有毒：
+   * `innerText` 在**元素不可见 / 未渲染**时返回空串，而**空串是假值**，
+   * 于是 `||` 会回落到 `textContent`，**而 `textContent` 会把脚本源码一起算成文字**。
+   * 后果是「平台自己脚本里的一句话」会被当成页面文案。
+   *
+   * 实测（2026-10-17，用户现场）：`work` 模块页的 `<script>` 里有一行无障碍支持代码
+   * `jobIconDiv.set({'aria-label': '任务点已完成'});` —— 于是整份 **19 道题的卷子**
+   * 被判成「已完成」→ 静默跳过 → 页面推不动 → 空转死循环。
+   *
+   * 同类隐患（都靠关键词判断，都会中同一招）：`_isCurrentCompleted` 判整章完成、
+   * 重做判定、验证码判定、提交确认弹窗判定。所以修在这里、而不是修某一个调用点。
+   */
+  var TEXT_OF_SKIP_TAGS = { SCRIPT: true, STYLE: true, NOSCRIPT: true, TEMPLATE: true };
+
   function textOf(el) {
-    return String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+    if (!el) return '';
+    var visibleText = '';
+    try { visibleText = el.innerText || ''; } catch (eVisible) {}
+    if (visibleText) return String(visibleText).replace(/\s+/g, ' ').trim();
+
+    // 兜底：自己走一遍 DOM，跳过脚本类节点。
+    // 只有「可见文本为空」时才走这里（不可见或真的没字），所以不在热路径上。
+    // 拼接用空串、不补分隔符 —— 与 `textContent` 的语义逐字一致，只少了脚本源码。
+    var parts = [];
+    (function collect(node) {
+      if (!node) return;
+      if (node.nodeType === 3) { parts.push(node.nodeValue); return; }
+      if (node.nodeType !== 1) return;
+      if (TEXT_OF_SKIP_TAGS[String(node.tagName || '').toUpperCase()]) return;
+      var kids = node.childNodes;
+      for (var i = 0; kids && i < kids.length; i++) collect(kids[i]);
+    })(el);
+    return parts.join('').replace(/\s+/g, ' ').trim();
   }
 
   function sleep(ms) {

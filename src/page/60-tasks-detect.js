@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（26 个）：
+ * 本段的方法（27 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
@@ -22,7 +22,7 @@
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_searchIFramesOcs、
- *   _searchChaoxingJobOcs、_ensureOcsStudyRunner、_searchChaoxingJob、
+ *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
  * ========================================================================== */
@@ -725,9 +725,14 @@
             }
           } else if (found.chapterTest) {
             if (this._isQuizApiUnavailable()) {
+              // ⚠️ 这两条以前都是**静默** continue —— 现场日志里一个字都没有，
+              // 用户只看到「本页没有可做的任务点」，然后整章被推过去，还反复空转。
+              // 与 AGENTS §2.7「跳过用户的任务点必须留日志 + 可恢复」冲突，补上原因。
+              noteReject(frame, '是测验任务，但答题链路当前不可用（' + (this._getQuizApiUnavailableReason() || '原因未知') + '）');
               continue;
             }
             if (!(workType === 'job' || (workType === 'finished' && this.configs.restudy))) {
+              noteReject(frame, '是测验任务，但被判定为「' + workType + '」——重学模式没开时不再重做');
               continue;
             }
             func = function (self, jobDoc, jobKey) {
@@ -741,6 +746,7 @@
             }(this, doc, targetJobId);
           } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
             if (!this.configs.enablePPT) {
+              noteReject(frame, '是阅读/文档任务，但「文档」开关是关的');
               continue;
             }
             if (workType === 'job' || (workType === 'finished' && this.configs.restudy)) {
@@ -764,6 +770,7 @@
             }
           } else if (found.hyperlink) {
             if (!this.configs.enableHyperlink) {
+              noteReject(frame, '是超链接任务，但「超链接」开关是关的');
               continue;
             }
             if (workType === 'job' || (workType === 'finished' && this.configs.restudy)) {
@@ -809,6 +816,13 @@
               func: func
             };
           }
+
+          // 走到这里：帧认得出类型、jobid 也对上了，但**这一轮轮不到它做** ——
+          // workType 不是 job（已判完成 / 不是任务点），或对应的开关是关的。
+          // 以前这里一句话都不说，于是「任务点被跳过」在日志里完全不可见（本次排查
+          // 就卡在这上面：日志只有 frames:8 和 7 条「认不出类型」，看不出第 8 个帧去哪了）。
+          noteReject(frame, '帧认出来了但本轮不需要执行（workType=' + workType + '）');
+          continue;
         } catch (e4) {}
       }
       // 一个都没匹配上 —— 把每个帧**被哪一条挡下来**打出来。
@@ -835,6 +849,23 @@
         }
       }
       return null;
+    },
+
+    /**
+     * 「学习进度键」= 章节 id + 当前学习卡片 + 附件指纹。
+     *
+     * 用来判断 `nextUnit()` 到底有没有让页面往前走：三者都没变，就是**点了等于没点**。
+     * 全空时返回空串（调用方据此关闭这道闸，避免在识别不出章节的页面上误判）。
+     */
+    _studyProgressKey: function () {
+      var chapterId = '';
+      try { chapterId = String(this._getCurrentChapterId() || ''); } catch (e) {}
+      var cardKey = '';
+      try { cardKey = String(this._getExplicitActiveLearningCardKey() || ''); } catch (e2) {}
+      var fingerprint = '';
+      try { fingerprint = String(this._getAttachmentFingerprint(this._getChaoxingAttachments()) || ''); } catch (e3) {}
+      if (!chapterId && !cardKey && !fingerprint) return '';
+      return chapterId + '|' + cardKey + '|' + fingerprint;
     },
 
     _ensureOcsStudyRunner: function () {
@@ -885,6 +916,9 @@
                 });
               }
               emitRuntimeLog('info', 'study matched job', { kind: job.kind, name: job.name, workType: job.workType });
+              // 有活干 = 有进展，把"点下一节没反应"的计数清零
+              self._nextUnitNoopCount = 0;
+              self._nextUnitBlockedKey = '';
               await job.func();
               if (version !== self._runtimeVersion) return;
 
@@ -999,6 +1033,37 @@
             }
             if (self._isQuizLearningPending(null)) {
               emitRuntimeLog('info', 'study hold quiz before delayed next', { searchedCount: searchedJobs.length });
+              self._ocsStudyStarted = false;
+              return;
+            }
+            // ⚠️ 防「点了下一节、页面却根本没动」的空转。
+            //
+            // 现场（2026-10-17 实测）：本卡片还压着一个没做完的任务点（题目），
+            // 平台就不让往下走 —— `nextUnit()` 点了等于没点，于是 15 秒一轮无限循环，
+            // 而日志里只有反复的 `study begin` / `study finished on page`，
+            // 完全看不出"其实一步都没走"。用户看到的就是「跳过题目卡住」。
+            //
+            // 判据：连续 3 轮准备点下一节时，「学习进度键」**完全相同**
+            //（章节 + 学习卡片 + 附件指纹三者都没变 = 前一次点击没起作用）。
+            // 真的往前走了，键必然变，所以不会误伤。
+            var progressKey = self._studyProgressKey();
+            if (progressKey && progressKey === self._nextUnitNoopKey) {
+              self._nextUnitNoopCount = (self._nextUnitNoopCount || 0) + 1;
+            } else {
+              self._nextUnitNoopCount = 0;
+              self._nextUnitBlockedKey = '';
+            }
+            self._nextUnitNoopKey = progressKey;
+            if (self._nextUnitNoopCount >= 3) {
+              if (self._nextUnitBlockedKey !== progressKey) {
+                self._nextUnitBlockedKey = progressKey;
+                emitRuntimeLog('error', 'study stuck: 下一节点了没反应，已停止空转', {
+                  rounds: self._nextUnitNoopCount,
+                  attachmentCount: attachmentCount,
+                  hint: '本学习卡片上还有没做完的任务点，平台因此不让往下走。请手动处理它（例如把这道题做完交卷）；' +
+                        '处理完会自动继续，也可在控制台执行 xxtAI.next() 手动推进'
+                });
+              }
               self._ocsStudyStarted = false;
               return;
             }

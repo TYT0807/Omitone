@@ -383,6 +383,10 @@
       this._ocsLastNoJobLogAt = 0;
       this._jobTransitionUntil = 0;
       this._studyCompleteAt = 0;
+      // 「点了下一节但页面没动」的防空转计数（判据见 _studyProgressKey）
+      this._nextUnitNoopCount = 0;
+      this._nextUnitNoopKey = '';
+      this._nextUnitBlockedKey = '';
       this._chapterChangedAt = Date.now();
       this._attachmentFingerprint = '';
       this._ocsStudyStarted = false;

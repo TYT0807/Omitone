@@ -220,7 +220,7 @@ jobid 是对的（`work-B`）、job 确实一开始没有帧（前置条件过�
 
 
 
-全量：自检 18 项 · 集成 106 项 · 真实 Edge e2e 37 个场景 / 374 项，全绿。
+全量：自检 18 项 · 集成 106 项 · 真实 Edge e2e 38 个场景 / 379 项，全绿。
 
 
 ### 附带（纯开发期改动，不进包）：修 `verify` 误判「附件缺失、下载入口是死链」
@@ -610,6 +610,66 @@ llm flat answers resegmented {"excerpt":"[\"A\",\"B\",\"C\",\"D\",[\"A\",\"B\",\
 **反向验证**：把闸门条件改成恒假（注入前 grep + `node --check` 确认落盘）→
 **374 项里恰好 2 条变红**，正是"第二轮重新出现多选"与"第二轮填的是模型那份"，
 其余 372 条零失败。
+
+### ⑬ 平台脚本里的一句「任务点已完成」，把整份卷子骗成了"已完成"（合并进 1.2.8）
+
+**症状（用户报的）**：一章里「上面是题目、下面是讨论」，插件**跳过题目**、只把讨论做了，
+然后**卡住不动**。日志里是一条闭合的循环：
+
+```
+study begin {attachments:5}
+[warn] search job: every candidate frame was rejected {frames:8, 7 条拒绝理由}
+study finished on page {searchedCount:0}
+study next unit → 点「下一节」
+study begin {attachments:5}        ← 同样的 5 个附件，15 秒一轮，永远不前进
+```
+
+**根因**：`textOf()` 写的是 `el.innerText || el.textContent`。
+`innerText` 在**元素不可见 / 未渲染**时返回空串，**而空串是假值** → 回落到 `textContent` ——
+**`textContent` 会把 `<script>` 的源码一起算成页面文字**。
+
+平台自己的无障碍支持代码里恰好有这一行：
+
+```js
+jobIconDiv.set({'aria-label': '任务点已完成'});
+```
+
+于是 `_isDocumentFrameFinished(卷子文档)` 在**一段脚本注释**里读到了「任务点已完成」，
+把整份 19 道题的卷子判成已完成 → `workType` 被从 `job` 改写成 `finished` →
+走进 `_searchChaoxingJobOcs` 里的**静默 continue** → 搜不到任何任务点 →
+`_ensureOcsStudyRunner` 判「本页做完」→ 点「下一节」→ **卷子没做，平台不让走** → 下一轮原样重来。
+
+**怎么定位的（这块最值得记）**：日志本身**分不出来** —— 那个 `continue` 一句都不写，
+日志里只有 `frames:8` 和 7 条"认不出任务类型"，**看不出第 8 个帧去了哪里**。
+最后是在页面控制台**直接调用扩展自己的函数**（`window._xxtApp` 上的
+`_searchIFramesOcs` / `_isDocumentFrameFinished` / `_isQuizPassedOrFinished`），
+逐条打印判定结果，才看到 `_isDocumentFrameFinished` 对着一份 19 道题的卷子返回了 `true`。
+
+> ⚠️ **教训：能调真函数的，不要再手写复刻。** 中途用外部脚本复刻过这条判定，复刻错了
+>（只测了 `innerText`，没测 `textContent`），白绕两轮。
+
+**改了三处**：
+
+| # | 改动 | 落点 |
+| --- | --- | --- |
+| ① | `textOf()` 回落时**跳过 `<script>/<style>/<noscript>/<template>` 的源码** —— 自己走一遍 DOM，不再直接吃 `textContent` | `00-shell-constants.js` |
+| ② | 任务点被静默跳过时**必须留日志**：测验遇答题链路不可用 / 被判成 finished、文档与超链接开关关着、以及"帧认出来了但本轮不需要执行" | `60-tasks-detect.js` |
+| ③ | 防空转：连续 3 轮「准备点下一节」时**学习进度键完全相同**（章节 + 学习卡片 + 附件指纹都没变）→ 判为点了没反应，**停止重复点击**并打一条 error 日志 | `60-tasks-detect.js` |
+
+①修的不止这一处：同一个 `textOf` 全仓 **68 处**在用，其中 `_isCurrentCompleted`（判**整章**完成）、
+重做判定、验证码判定、提交确认弹窗判定都在做关键词匹配 —— **同一个陷阱会一起中招**，
+所以修在工具函数上，而不是修某一个调用点。
+
+**反向验证**：新增场景「模块页脚本里的「任务点已完成」不能把卷子判成已完成」——
+mock 的模块页 `body` 里放一段和平台原文一样的脚本、可见文本为空。
+把 ① 改回 `innerText || textContent`（注入前先 grep 确认落盘）→ **379 项里恰好 2 条变红**
+（"卷子没被判成已完成"、"任务点仍能搜出来"），其余 377 条零失败；还原后 379 / 379 全绿。
+
+> ⚠️ 这个场景**搭错过两次**，都是被自带的「前置条件」断言抓出来的：
+> 第一次把题目帧搭成三层（真实是「模块页 → 题目帧」两层），
+> 第二次在题目帧外面多套了一个 `<div>` —— 两种情况下 `_isDocumentFrameFinished`
+> 看的都不是带脚本的那个 `<body>`，场景会**因为错误的原因通过**。
+> 记牢：**结构化场景必须断言"我的 mock 真的复刻了那个形状"**，否则等于没测。
 
 
 ## 1.2.7 — 修两处 `libs/` 里的静默错：API Key 清洗顺序、index 归一化

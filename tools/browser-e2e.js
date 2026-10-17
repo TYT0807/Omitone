@@ -604,6 +604,58 @@ function buildTwoQuizInnerHtml(id, finished) {
     '</body></html>';
 }
 
+/**
+ * ★ 2026-10-17 真实故障复刻：模块页的 `<script>` 里含**「任务点已完成」**这句字符串。
+ *
+ * 平台自己有一段无障碍支持代码，原文就是：
+ *     jobIconDiv.set({'aria-label': '任务点已完成'});
+ * 而 `textOf()` 原先写的是 `innerText || textContent` —— 可见文本为空时回落
+ * `textContent`，**把脚本源码也算成页面文字**，于是整份卷子被判成「已完成」：
+ * 静默跳过 → 搜不到任务点 → 判「本页做完」→ 点下一节（页面推不动）→ 空转死循环。
+ *
+ * 这一页只要还能"认得出卷子"，就说明修好了。
+ */
+function buildDecoyScriptOuterHtml() {
+  // ⚠️ 卷子必须挂成它的**直接子帧** —— 真实页面就是这样
+  //（`work/index.html` 的下一层就是带 `.TiMu` 的 `/mooc-ans/api/work`）。
+  // 一开始照抄了"三层"的写法，结果 `_isDocumentFrameFinished` 看的是**中间层**的 body、
+  // 根本碰不到脚本 —— 场景会因为错误的原因通过（幸好那条前置条件断言抓住了）。
+  // ⚠️ iframe 必须**直接挂在 `<body>` 下**，脚本也在 body 里 —— 真实页面就是这样：
+  // 题目帧的 `frameElement.parentElement` 就是那个**带脚本的 body**。
+  // 中间套一层 `<div>` 会让脚本落到 wrap 之外，场景就又测不到东西了（这里来回踩了两次）。
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"></head><body>' +
+    '<iframe id="frame_content" src="/wq-inner-B" style="width:100%;height:400px;border:0"></iframe>' +
+    "<script>var jobIconDiv={set:function(o){}};jobIconDiv.set({'aria-label': '任务点已完成'});</script>" +
+    '</body></html>';
+}
+
+/** 卡片层：一份卷子，jobid 在容器的 div 上，iframe 指向"脚本被污染"的模块页 */
+function buildDecoyCardHtml() {
+  var payload = { jobid: 'work-D', _jobid: 'work-D', workid: 'D', name: '被脚本污染的卷子' };
+  var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="card">' +
+    '<div class="ans-attach-ct" id="tp-d" jobid="work-D" data="' + dataAttr + '">' +
+    '<div class="ans-job-icon" aria-label="任务点"></div>' +
+    '<div class="ans-attach-title">被脚本污染的卷子</div>' +
+    '<iframe src="/decoy-outer" style="width:100%;height:260px;border:0"></iframe>' +
+    '</div>' +
+    '</div></body></html>';
+}
+
+function buildDecoyTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/decoy-card" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    '<script>window.attachments=[' +
+    '{jobid:"work-D",property:{_jobid:"work-D",jobid:"work-D",mid:"mid-D",name:"被脚本污染的卷子",module:"work",type:"work"}}' +
+    '];</script>' +
+    '</body></html>';
+}
+
 /** 插件完全不认识的 DOM 结构，用来验证"扫不到题"的诊断输出 */
 function buildWeirdHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -857,6 +909,9 @@ var MOCK_PAGES = {
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
   '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
+  '/decoy-top': buildDecoyTopHtml,
+  '/decoy-card': buildDecoyCardHtml,
+  '/decoy-outer': buildDecoyScriptOuterHtml,
   '/wq-card': buildTwoQuizCardHtml,
   // ⚠️ 这几条的路径必须与 builder 里拼出来的 src **大小写完全一致**
   //    （jobid 用 'work-A' / 'work-B'，URL 里就是 /wq-outer-A …）
@@ -4079,6 +4134,78 @@ SCENARIOS.push({
     check('jobid 挂在容器 div 上时，_resolveJobFrame 也能把任务反查回帧（否则匹配上了却跑不起来）',
       !!resolved && resolved.hasFrame === true && resolved.hasDoc === true,
       JSON.stringify(resolved));
+  }
+});
+
+/**
+ * ---- 模块页 <script> 里含「任务点已完成」时，卷子不能被误判成已完成 ----
+ *
+ * 复刻 2026-10-17 用户现场：`work` 模块页的平台无障碍代码里写着
+ *     jobIconDiv.set({'aria-label': '任务点已完成'});
+ * 而 `textOf()` 原先写的是 `innerText || textContent` —— **可见文本为空**时回落
+ * `textContent`，**把脚本源码也算成页面文字**。于是整份卷子被判成「已完成」：
+ *   静默跳过 → 搜不到任务点 → 判「本页做完」→ 点下一节（页面推不动）→ 空转死循环。
+ *
+ * 报告的症状就是用户的「跳过题目卡住」。反向验证：把 `textOf` 的回落改回
+ * `textContent`，本场景必须变红。
+ */
+SCENARIOS.push({
+  name: '模块页脚本里的「任务点已完成」不能把卷子判成已完成',
+  path: '/decoy-top',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      autoNext: false,
+      restudy: false
+    };
+    await ctx.client.evaluate(
+      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
+    );
+    await sleep(400);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+    );
+
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
+      'app._quizApiFailUntil=0;' +
+      'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
+      'var frames=app._searchIFramesOcs(cardDoc);' +
+      'var paper=null;' +
+      'frames.forEach(function(f){try{if(!paper&&f.contentWindow.document.querySelectorAll(".TiMu").length)paper=f.contentWindow.document;}catch(e){}});' +
+      'var out={frameCount:frames.length,hasPaper:!!paper};' +
+      'if(paper){' +
+      '  out.isDocumentFrameFinished=app._isDocumentFrameFinished(paper);' +
+      '  out.isQuizPassedOrFinished=app._isQuizPassedOrFinished(paper);' +
+      '  var wrap=paper.defaultView.frameElement.parentElement;' +
+      '  out.wrapInnerTextLen=String(wrap.innerText||"").length;' +
+      '  out.wrapTextContentHasKeyword=(String(wrap.textContent||"")).indexOf("任务点已完成")!==-1;' +
+      '}' +
+      'var j=app._searchChaoxingJobOcs([]);' +
+      'out.matched=j?{jobid:j.jobid,kind:j.kind,name:String(j.name||"").slice(0,20)}:null;' +
+      'return out;})()'
+    );
+
+    check('前置条件：mock 里确实有卷子（否则这条测的不是这件事）',
+      !!probe && probe.hasPaper === true, JSON.stringify(probe));
+
+    // 这两个是"复刻是否忠实"的自证：可见文本为空 → 一定会走回落分支 → 而脚本里确实有那句
+    check('前置条件：模块页可见文本为空、但 textContent 里含「任务点已完成」（正是踩坑的形状）',
+      !!probe && probe.wrapInnerTextLen === 0 && probe.wrapTextContentHasKeyword === true,
+      JSON.stringify(probe));
+
+    check('卷子没有被判成「已完成」（脚本源码不算页面文字）',
+      !!probe && probe.isDocumentFrameFinished === false && probe.isQuizPassedOrFinished === false,
+      JSON.stringify(probe));
+
+    check('任务点仍能被搜出来并指向 work-D（而不是静默跳过 → 整章被推过去）',
+      !!probe && !!probe.matched && probe.matched.jobid === 'work-D' && probe.matched.kind === 'quiz',
+      JSON.stringify(probe && probe.matched));
   }
 });
 
