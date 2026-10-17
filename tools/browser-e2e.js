@@ -744,6 +744,23 @@ function buildDiscussionMultiHtml() {
     '</body></html>';
 }
 
+/**
+ * 两个讨论任务点挂在同一页（两张卡片都**不带** isFinished）——
+ * 用于验证「第一个做完之后，第二个还能不能被找到」。
+ */
+function buildDiscussionTwoHtml() {
+  function card(id, title) {
+    return '<div id="topicMainDiv" data="https://groupweb.chaoxing.com/course/topic' +
+      '?clazzid=1&courseid=2&mtopicid=' + id + '&ut=s">' + title + '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body>' +
+    '<div id="iframe">' +
+    card(777, '讨论一：联系实际谈坚持党的全面领导') +
+    card(888, '讨论二：说说你身边的变化') +
+    '</div></body></html>';
+}
+
 /** 空白页：只用来跑纯逻辑断言，不需要任何特定 DOM */
 function buildBlankHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -906,6 +923,7 @@ var MOCK_PAGES = {
   '/captcha-verify': buildStandaloneCaptchaHtml,
   '/discussion': buildDiscussionHtml,
   '/discussion-multi': buildDiscussionMultiHtml,
+  '/discussion-two': buildDiscussionTwoHtml,
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
   '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
@@ -4206,6 +4224,47 @@ SCENARIOS.push({
     check('任务点仍能被搜出来并指向 work-D（而不是静默跳过 → 整章被推过去）',
       !!probe && !!probe.matched && probe.matched.jobid === 'work-D' && probe.matched.kind === 'quiz',
       JSON.stringify(probe && probe.matched));
+  }
+});
+
+/**
+ * ---- 同一页挂两个讨论时，不能因为"第一个已经做过"就把第二个也放弃 ----
+ *
+ * 现场（2026-10-17）：一页 1 个题目 + 2 个讨论。做完第一个讨论和题目之后，
+ * **第二个讨论被晾着**，直接点下一节走了。
+ *
+ * 根因：`_findDiscussionTask` 三条路径都只返回"第一个"候选，而调用方写的是
+ *     if (this._isDiscussionDone(task.key)) return false;
+ * —— 一看"这个做过了"就**整体放弃**，第二个永远轮不到。
+ * 修法：在**查找阶段**就跳过已经发过的（三条路径各补一处），
+ * 调用方那句保留当兜底。
+ */
+SCENARIOS.push({
+  name: '第一个讨论做过之后，第二个讨论还能被找到',
+  path: '/discussion-two',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'var targets=app._collectDiscussionTargets();' +
+      'if(!targets.length) return {targets:0};' +
+      // 把"第一个"标成已发过 —— 等价于上一次真的把评论发出去了
+      'app._markDiscussionDone(targets[0].key);' +
+      'var task=await app._findDiscussionTask();' +
+      'return {' +
+      '  targets:targets.length,' +
+      '  firstDone:app._isDiscussionDone(targets[0].key),' +
+      '  gotKey:task?String(task.key).slice(0,28):null,' +
+      '  sameAsFirst:!!task&&String(task.key)===String(targets[0].key)' +
+      '};})()'
+    );
+
+    check('前置条件：这一页有多个讨论候选（否则这条测的不是这件事）',
+      !!probe && probe.targets >= 2, JSON.stringify(probe));
+    check('第一个讨论确实被标成"已发过"',
+      !!probe && probe.firstDone === true, JSON.stringify(probe));
+    check('第二个讨论仍能被找到（旧实现返回同一个 → 调用方直接放弃 → 整页只剩它没做）',
+      !!probe && !!probe.gotKey && probe.sameAsFirst === false, JSON.stringify(probe));
   }
 });
 

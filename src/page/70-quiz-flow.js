@@ -897,6 +897,19 @@
         // 既没有进展又白烧 token。
         // 判据：**页面上已填题数与上轮相同**（=这一轮不会有新进展）且距上轮不足 60 秒 → 跳过本轮。
         // 窗口只有 60 秒，之后照常重试 —— 不会把它永久卡死（本仓库对"拿不准"的一贯取舍）。
+        // ⚠️ 这两个状态必须**按卷子隔离**。
+        // 实测（2026-10-17）：上一份卷子最后一轮 filled=0，紧跟着换到新卷子，
+        // 新卷子第一轮当然也是 filled=0 → 被误判成"没有进展" → **新卷子白等 60 秒才开答**。
+        // 用户看到的就是"做完上一题之后卡顿一下才开始做这道"。
+        var quizPaperKey = '';
+        try { quizPaperKey = String(this._getQuizWorkKey(quizDocForProgress) || ''); } catch (ePaperKey) {}
+        if (quizPaperKey !== this._quizRoundPaperKey) {
+          this._quizRoundPaperKey = quizPaperKey;
+          this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
+          this._quizRoundNoProgressAt = 0;
+          this._quizNoProgressLogAt = 0;
+        }
+
         var filledNow = 0;
         for (var fi = 0; fi < questions.length; fi++) {
           if (this._getQuizQuestionFilledValue(quizDocForProgress, questions[fi])) filledNow++;
@@ -904,12 +917,18 @@
         var nowProgress = Date.now();
         var sinceLast = nowProgress - (this._quizRoundNoProgressAt || 0);
         if (this._quizRoundFilledCount === filledNow && sinceLast < 60000) {
-          emitRuntimeLog('warn', 'quiz round skipped: no progress', {
-            filled: filledNow,
-            total: questions.length,
-            retryInMs: 60000 - sinceLast,
-            hint: '同一份卷子这一轮不会拿到新答案，先不重问（省 token）；60 秒后照常重试'
-          });
+          // ⚠️ 这条必须节流：本函数被 OCS 循环**每秒**调一次，60 秒窗口内会打出
+          // 60 条一模一样的 warn —— 实测把 200 条的日志缓冲整段刷满，
+          // 真正有用的记录全被挤掉，排查时连"发生过什么"都看不到。
+          if (!this._quizNoProgressLogAt || nowProgress - this._quizNoProgressLogAt > 10000) {
+            this._quizNoProgressLogAt = nowProgress;
+            emitRuntimeLog('warn', 'quiz round skipped: no progress', {
+              filled: filledNow,
+              total: questions.length,
+              retryInMs: 60000 - sinceLast,
+              hint: '同一份卷子这一轮不会拿到新答案，先不重问（省 token）；60 秒后照常重试（本条日志每 10 秒最多一条）'
+            });
+          }
           this._quizInProgress = false;
           return;
         }

@@ -915,10 +915,19 @@
                   name: job.name || ''
                 });
               }
-              emitRuntimeLog('info', 'study matched job', { kind: job.kind, name: job.name, workType: job.workType });
               // 有活干 = 有进展，把"点下一节没反应"的计数清零
               self._nextUnitNoopCount = 0;
               self._nextUnitBlockedKey = '';
+              // 同一份任务点被**每秒**重复匹配时不再刷屏。
+              // 实测（2026-10-17）：答题链路的"无进展"窗口是 60 秒，期间每秒都会重新匹配一次，
+              // 于是「study matched job」也每秒一条，把 200 条的日志缓冲刷满。
+              var matchedLogKey = String(job.jobid || job.name || '');
+              var matchedLogNow = Date.now();
+              if (matchedLogKey !== self._matchedJobLogKey || matchedLogNow - (self._matchedJobLogAt || 0) > 10000) {
+                self._matchedJobLogKey = matchedLogKey;
+                self._matchedJobLogAt = matchedLogNow;
+                emitRuntimeLog('info', 'study matched job', { kind: job.kind, name: job.name, workType: job.workType });
+              }
               await job.func();
               if (version !== self._runtimeVersion) return;
 

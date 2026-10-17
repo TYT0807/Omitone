@@ -3766,10 +3766,19 @@
                   name: job.name || ''
                 });
               }
-              emitRuntimeLog('info', 'study matched job', { kind: job.kind, name: job.name, workType: job.workType });
               // 有活干 = 有进展，把"点下一节没反应"的计数清零
               self._nextUnitNoopCount = 0;
               self._nextUnitBlockedKey = '';
+              // 同一份任务点被**每秒**重复匹配时不再刷屏。
+              // 实测（2026-10-17）：答题链路的"无进展"窗口是 60 秒，期间每秒都会重新匹配一次，
+              // 于是「study matched job」也每秒一条，把 200 条的日志缓冲刷满。
+              var matchedLogKey = String(job.jobid || job.name || '');
+              var matchedLogNow = Date.now();
+              if (matchedLogKey !== self._matchedJobLogKey || matchedLogNow - (self._matchedJobLogAt || 0) > 10000) {
+                self._matchedJobLogKey = matchedLogKey;
+                self._matchedJobLogAt = matchedLogNow;
+                emitRuntimeLog('info', 'study matched job', { kind: job.kind, name: job.name, workType: job.workType });
+              }
               await job.func();
               if (version !== self._runtimeVersion) return;
 
@@ -5961,7 +5970,13 @@
       var targets = [];
       try { targets = this._collectDiscussionTargets(); } catch (e0) { targets = []; }
       if (targets.length) {
-        var pending = targets.filter(function (t) { return !t.finished; });
+        // ⚠️ 除了服务端的 finished 标志，还必须排除**我们本地已经发过**的。
+        // 否则"服务端还没刷新成已完成"的那个会被一直选中，而调用方一看
+        // `_isDiscussionDone` 就直接 return false —— **同一页上的第二个讨论永远轮不到**。
+        var self1 = this;
+        var pending = targets.filter(function (t) {
+          return !t.finished && !self1._isDiscussionDone(t.key);
+        });
         if (!pending.length) return null; // 本节讨论任务点已完成（服务端已记录回复）
         var t0 = pending[0];
         return { key: t0.key, name: t0.title || '讨论', url: t0.url, el: null, href: t0.url };
@@ -5972,14 +5987,19 @@
       try { modules = this._findDiscussionModuleFrames(); } catch (e1) { modules = []; }
       for (var i = 0; i < modules.length; i++) {
         var url = await this._resolveDiscussionUrlFromModule(modules[i]);
-        if (url) {
-          return {
-            // 同样必须用稳定键：多讨论任务点下 url.slice(-70) 会碰撞，导致漏做
-            key: this._discussionKeyOf(url),
-            name: String((modules[i].data && modules[i].data.title) || '讨论').slice(0, 60),
-            url: url, el: null, href: url
-          };
-        }
+        if (!url) continue;
+        // 同样必须用稳定键：多讨论任务点下 url.slice(-70) 会碰撞，导致漏做
+        var moduleKey = this._discussionKeyOf(url);
+        // ⚠️ 必须跳过"已经发过"的那个。原先这里是无条件 `return`：
+        // 第一个讨论做完之后，本函数每次都返回同一个，而调用方
+        // `if (this._isDiscussionDone(task.key)) return false;` 于是直接放弃 ——
+        // **同一页挂两个讨论时，第二个永远没机会**（2026-10-17 现场）。
+        if (this._isDiscussionDone(moduleKey)) continue;
+        return {
+          key: moduleKey,
+          name: String((modules[i].data && modules[i].data.title) || '讨论').slice(0, 60),
+          url: url, el: null, href: url
+        };
       }
       // 让模块 iframe 进入视口，促使懒加载下一次渲染出卡片（10 秒内不重复滚动）
       if (modules.length) {
@@ -5991,25 +6011,31 @@
       }
 
       // 3) 兜底：老办法（页面有"讨论/话题"字样的可点击入口）
-      var name = '';
+      // 同样要能把同一页的**多个**讨论都过一遍：按名称逐个试，跳过已发过的。
+      var names = [];
       try {
         var attachments = this._getChaoxingAttachments() || [];
         for (var k = 0; k < attachments.length; k++) {
-          if (this._isDiscussionAttachment(attachments[k])) {
-            name = this._discussionNameOf(attachments[k]);
-            break;
-          }
+          if (!this._isDiscussionAttachment(attachments[k])) continue;
+          var nm = this._discussionNameOf(attachments[k]);
+          if (nm && names.indexOf(nm) === -1) names.push(nm);
         }
       } catch (e3) {}
-      var entry = this._findDiscussionEntry(name);
-      if (!entry) return null;
-      return {
+      if (!names.length) names.push('');
+      for (var n = 0; n < names.length; n++) {
+        var entry = this._findDiscussionEntry(names[n]);
+        if (!entry) continue;
         // 兜底路径没有讨论区地址，只能用"名称 + 链接"拼键；
         // 链接部分同样走哈希，避免 slice 截断造成的碰撞
-        key: String(name || entry.text || '讨论').slice(0, 40) + '|' + this._discussionKeyOf(entry.href || ''),
-        name: name || entry.text || '讨论',
-        url: '', el: entry.node, href: entry.href
-      };
+        var fallbackKey = String(names[n] || entry.text || '讨论').slice(0, 40) + '|' + this._discussionKeyOf(entry.href || '');
+        if (this._isDiscussionDone(fallbackKey)) continue;
+        return {
+          key: fallbackKey,
+          name: names[n] || entry.text || '讨论',
+          url: '', el: entry.node, href: entry.href
+        };
+      }
+      return null;
     },
 
 
@@ -7252,6 +7278,19 @@
         // 既没有进展又白烧 token。
         // 判据：**页面上已填题数与上轮相同**（=这一轮不会有新进展）且距上轮不足 60 秒 → 跳过本轮。
         // 窗口只有 60 秒，之后照常重试 —— 不会把它永久卡死（本仓库对"拿不准"的一贯取舍）。
+        // ⚠️ 这两个状态必须**按卷子隔离**。
+        // 实测（2026-10-17）：上一份卷子最后一轮 filled=0，紧跟着换到新卷子，
+        // 新卷子第一轮当然也是 filled=0 → 被误判成"没有进展" → **新卷子白等 60 秒才开答**。
+        // 用户看到的就是"做完上一题之后卡顿一下才开始做这道"。
+        var quizPaperKey = '';
+        try { quizPaperKey = String(this._getQuizWorkKey(quizDocForProgress) || ''); } catch (ePaperKey) {}
+        if (quizPaperKey !== this._quizRoundPaperKey) {
+          this._quizRoundPaperKey = quizPaperKey;
+          this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
+          this._quizRoundNoProgressAt = 0;
+          this._quizNoProgressLogAt = 0;
+        }
+
         var filledNow = 0;
         for (var fi = 0; fi < questions.length; fi++) {
           if (this._getQuizQuestionFilledValue(quizDocForProgress, questions[fi])) filledNow++;
@@ -7259,12 +7298,18 @@
         var nowProgress = Date.now();
         var sinceLast = nowProgress - (this._quizRoundNoProgressAt || 0);
         if (this._quizRoundFilledCount === filledNow && sinceLast < 60000) {
-          emitRuntimeLog('warn', 'quiz round skipped: no progress', {
-            filled: filledNow,
-            total: questions.length,
-            retryInMs: 60000 - sinceLast,
-            hint: '同一份卷子这一轮不会拿到新答案，先不重问（省 token）；60 秒后照常重试'
-          });
+          // ⚠️ 这条必须节流：本函数被 OCS 循环**每秒**调一次，60 秒窗口内会打出
+          // 60 条一模一样的 warn —— 实测把 200 条的日志缓冲整段刷满，
+          // 真正有用的记录全被挤掉，排查时连"发生过什么"都看不到。
+          if (!this._quizNoProgressLogAt || nowProgress - this._quizNoProgressLogAt > 10000) {
+            this._quizNoProgressLogAt = nowProgress;
+            emitRuntimeLog('warn', 'quiz round skipped: no progress', {
+              filled: filledNow,
+              total: questions.length,
+              retryInMs: 60000 - sinceLast,
+              hint: '同一份卷子这一轮不会拿到新答案，先不重问（省 token）；60 秒后照常重试（本条日志每 10 秒最多一条）'
+            });
+          }
           this._quizInProgress = false;
           return;
         }
