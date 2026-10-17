@@ -4269,6 +4269,41 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 讨论页报"发失败"时，刷课页必须把"已做"标记撤掉 ----
+ *
+ * 现场（2026-10-17）：讨论页在 `groupweb.chaoxing.com`、刷课页在 `mooc1.chaoxing.com` ——
+ * **两个不同的 localStorage**。所以"在讨论页里撤销标记"撤的是它自己那份空存储，
+ * 对刷课页毫无作用：发失败一次，这个讨论就被静默跳过 24 小时。
+ * 修法：讨论页用 `postMessage` 告诉刷课页，由刷课页撤标记（最多重试 3 次）。
+ */
+SCENARIOS.push({
+  name: '讨论发失败时刷课页要撤销"已做"标记',
+  path: '/discussion-two',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'var targets=app._collectDiscussionTargets();' +
+      'if(!targets.length) return {targets:0};' +
+      'var key=String(targets[0].key);' +
+      'app._markDiscussionDone(key);' +
+      'app._discussionLastOpenedKey=key;' +
+      'app._bindDiscussionOutcome();' +
+      'var before=app._isDiscussionDone(key);' +
+      // 模拟讨论页跨域发来的"没发成"消息
+      'window.postMessage({omitoneDiscussion:"failed"}, "*");' +
+      'await new Promise(function(r){setTimeout(r,80);});' +
+      'return {targets:targets.length, before:before, after:app._isDiscussionDone(key)};' +
+      '})()'
+    );
+    check('前置条件：这一页有讨论候选', !!probe && probe.targets >= 1, JSON.stringify(probe));
+    check('前置条件：标记确实写进去了', !!probe && probe.before === true, JSON.stringify(probe));
+    check('收到"发失败"消息后标记被撤销（否则这个讨论会被静默跳过 24 小时）',
+      !!probe && probe.after === false, JSON.stringify(probe));
+  }
+});
+
+/**
  * ---- 编辑区"没填进去"时，不能把空编辑区当成"提交成功" ----
  *
  * 现场（2026-10-17）：一页 3 个讨论，**第一个的回复从没发出去**却记成已做，

@@ -8,10 +8,10 @@
  *
  * **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 window.xxtAI 与启动逻辑
  * window.xxtAI 是给用户的手动调试入口 —— **必须保留**（有些方法"看起来没人调用"，
- * 其实是被用户手动调的，别当成死代码删掉）。目前共 8 个：
+ * 其实是被用户手动调的，别当成死代码删掉）。目前共 9 个：
  *   reload（重读配置）、next（下一节）、skipQuiz（跳过当前答题）、diagnose（题目扫描诊断）、
  *   scanQuiz（只抽题不答题）、diagnosePopup（弹题诊断）、taskGiveUpList（看放弃名单）、
- *   clearTaskGiveUp（清放弃名单，让用户能重试）
+ *   clearTaskGiveUp（清放弃名单，让用户能重试）、clearDiscussionDone（清"讨论已发"名单）
  * 本段没有 app 方法 —— 这 8 个挂在 window.xxtAI 上，不在 app 对象里
  * ========================================================================== */
 // @omitone-part-header-end
@@ -182,6 +182,24 @@
       console.log('[Omitone] quiz scan diagnosis:', report);
       console.log(JSON.stringify(report, null, 2));
       return report;
+    },
+    /**
+     * 清空"已经发过的讨论"名单。
+     *
+     * 什么时候用：某个讨论明明没发出去（或没发成功），但插件把它记成了已做 ——
+     * 这时这一页的讨论就不会再被尝试。清掉之后刷新页面，它会重新扫一遍。
+     * （名单存在 localStorage 的 `omitone_discussion_done`，24 小时自动过期。）
+     */
+    clearDiscussionDone: function () {
+      if (!app) return false;
+      try {
+        localStorage.removeItem(app._discussionStoreKey);
+        emitRuntimeLog('info', 'discussion done list cleared (manual)', {});
+        console.log('[Omitone] 已清空"讨论已发"名单，刷新页面会重新扫一遍');
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
     /** 手动跑一次题目抽取，返回抽到的题目数组（不答题、不提交）。 */
     scanQuiz: function () {

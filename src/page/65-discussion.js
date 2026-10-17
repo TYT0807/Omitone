@@ -8,9 +8,10 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（28 个）：
+ * 本段的方法（31 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
- *   _unmarkDiscussionDone、_discussionPendingKey、_discussionNameOf、_isDiscussionAttachment、
+ *   _unmarkDiscussionDone、_discussionPendingKey、_getDiscussionTries、
+ *   _bumpDiscussionTry、_bindDiscussionOutcome、_discussionNameOf、_isDiscussionAttachment、
  *   _findDiscussionEntry、_isDiscussionContext、_scopedDiscussionFinishedFlag、
  *   _discussionKeyOf、_collectDiscussionTargets、_findDiscussionModuleFrames、
  *   _currentStudyParams、_resolveDiscussionUrlFromModule、_findDiscussionTask、
@@ -73,6 +74,70 @@
       try { return String(localStorage.getItem('omitone_discussion_key') || ''); } catch (e) {
         return '';
       }
+    },
+
+
+    /**
+     * 某个讨论"已经重试过几次"。
+     *
+     * ⚠️ 为什么要计数：发失败时要把"已做"标记撤掉让它重试，但**不能无限重试** ——
+     * 平台的讨论可能压根发不出去（禁言、字数下限、频率限制），无限重开只会空转。
+     * 用独立的 `try|` 前缀键，不去动 `_isDiscussionDone` 读的那套格式。
+     */
+    _getDiscussionTries: function (key) {
+      if (!key) return 0;
+      try { return Number(this._discussionDoneMap()['try|' + key] || 0); } catch (e) { return 0; }
+    },
+
+
+    _bumpDiscussionTry: function (key) {
+      if (!key) return 0;
+      try {
+        var map = this._discussionDoneMap();
+        var k = 'try|' + key;
+        map[k] = Number(map[k] || 0) + 1;
+        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
+        return Number(map[k]);
+      } catch (e) { return 0; }
+    },
+
+
+    /**
+     * 听讨论页那边的**真实结果**。
+     *
+     * 为什么必须走 `postMessage` 而不是 localStorage：
+     * 刷课页在 `mooc1.chaoxing.com`、讨论页在 `groupweb.chaoxing.com` ——
+     * **两个不同的 localStorage**。讨论页里"撤销标记"撤的是它自己那份空存储，
+     * 对刷课页毫无影响（2026-10-17 实测踩到：撤标记那段代码等于没写）。
+     */
+    _bindDiscussionOutcome: function () {
+      if (this._discussionOutcomeBound) return;
+      this._discussionOutcomeBound = true;
+      var self = this;
+      try {
+        window.addEventListener('message', function (ev) {
+          var data = ev && ev.data;
+          if (!data || typeof data !== 'object' || data.omitoneDiscussion !== 'failed') return;
+          var key = String(self._discussionLastOpenedKey || '');
+          if (!key) return;
+          var tries = self._bumpDiscussionTry(key);
+          var limit = 3;   // 最多重试 3 次：平台若压根发不出去，无限重开只会空转
+          if (tries > limit) {
+            emitRuntimeLog('warn', 'discussion reply keeps failing, give up for now', {
+              key: key.slice(0, 40),
+              tries: tries,
+              hint: '已连续失败 ' + tries + ' 次，24 小时内不再尝试（可手动处理，或清掉 localStorage 里的 omitone_discussion_done）'
+            });
+            return;
+          }
+          self._unmarkDiscussionDone(key);
+          emitRuntimeLog('warn', 'discussion reply failed, will retry', {
+            key: key.slice(0, 40),
+            tries: tries,
+            limit: limit
+          });
+        });
+      } catch (e) {}
     },
 
 
@@ -423,6 +488,8 @@
     // 刷课页侧：发现讨论任务点就打开讨论页
     _tryDiscussionTask: async function () {
       if (this.configs.enableDiscussion === false) return false;
+      // 首次调用时挂上"讨论页回首掏"的监听（跨域，只能靠 postMessage）
+      this._bindDiscussionOutcome();
       if (this._discussionBusy) return true;
       if (this._discussionWindow && !this._discussionWindow.closed) return true;
       if (Date.now() - (this._discussionOpenedAt || 0) < 15000) return false;
@@ -441,7 +508,9 @@
         try { localStorage.setItem('omitone_return_url', String(location.href || '')); } catch (e1) {}
         // 先标记再打开：即使后面刷新/超时，也不会重复打开同一个讨论页
         this._markDiscussionDone(task.key);
-        // 把"正在做哪个讨论"带过去：讨论页那边发现没填进去时要靠它撤回标记重试
+        // 记下"当前在打开哪一个"：讨论页发不出去时会 postMessage 让本页撤回标记
+        this._discussionLastOpenedKey = String(task.key || '');
+        // 同源时还能顺手存一份（跨域时这个 localStorage 是另一份，仅作兜底）
         try { localStorage.setItem('omitone_discussion_key', String(task.key || '')); } catch (eKey) {}
         this._discussionOpenedAt = Date.now();
 
@@ -814,6 +883,17 @@
               : null;
           } catch (eDiag) {}
           emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', diagHint);
+
+          // ⚠️ 必须告诉刷课页"这次没成"，让它撤掉"已做"标记并重试。
+          // **只能走 postMessage**：讨论页在 groupweb.chaoxing.com、刷课页在
+          // mooc1.chaoxing.com，两边的 localStorage 根本不是同一份 ——
+          // 在这里调 `_unmarkDiscussionDone` 撤的是本地空存储，等于没撤
+          //（2026-10-17 实测踩到，所以上一版"失败可重试"完全没生效）。
+          try {
+            if (window.opener && !window.opener.closed) {
+              window.opener.postMessage({ omitoneDiscussion: 'failed' }, '*');
+            }
+          } catch (eNotify) {}
         }
 
         await sleep(600);

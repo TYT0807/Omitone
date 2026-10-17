@@ -18,6 +18,7 @@
  */
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
@@ -69,7 +70,18 @@ function buildPageText() {
   const first = fs.readFileSync(files[0], 'utf8');
   const eol = first.indexOf('\r\n') !== -1 ? '\r\n' : '\n';
   const chunks = files.map(function (file) { return partBody(file).join(eol); });
-  return { text: chunks.join(eol), files: files, eol: eol };
+  const body = chunks.join(eol);
+
+  // 给代码本身算一个**内容指纹**，拼在文件最前面。
+  //
+  // 为什么需要：`version_name` 只在 dist 产物里有 —— 而"直接加载源码目录"的人
+  // 拿到的是 `(源码目录，未经 build)`，等于还是没有版本信息。2026-10-17 就因为
+  // 四个包全叫 1.2.8、日志里分不清跑的是哪一版，白排查了一轮。
+  //
+  // ⚠️ 指纹**只由片段内容决定**（不掺时间戳）：这样拼接可复现，
+  // `npm run concat:check` 不会因为每次跑都不同而永远报"不一致"。
+  const rev = crypto.createHash('sha1').update(body, 'utf8').digest('hex').slice(0, 10);
+  return { text: "var OMITONE_CODE_REV = '" + rev + "';" + eol + body, files: files, eol: eol, rev: rev };
 }
 
 /** 正文里是否残留头部结束标记（说明片段被人改坏了） */

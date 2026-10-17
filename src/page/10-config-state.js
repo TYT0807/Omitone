@@ -319,7 +319,13 @@
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
         build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
-          'chunk-5', 'quiz-no-progress-skip', 'local-multi', 'local-multi-once']
+          'chunk-5', 'quiz-no-progress-skip', 'local-multi', 'local-multi-once',
+          // 2026-10-17 这一轮加的：缺哪个标记，就说明那份改动没被加载
+          'text-skip-script', 'noop-guard', 'discussion-outcome', 'quiz-hold-guard'],
+        // 代码内容指纹（由 `tools/concat-page.js` 按片段内容算出，拼在 page.js 第一行）。
+        // 装 dist 的人看 `content bridge ready` 里的 build；**直接加载源码目录**的人看这个 ——
+        // 它一变就说明代码换了，改完没重新加载一眼就能看出来。
+        code: (typeof OMITONE_CODE_REV === 'string' ? OMITONE_CODE_REV : '')
       });
       this._startTickLoop();
     },
