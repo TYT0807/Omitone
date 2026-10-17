@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '162d743ee0';
+var OMITONE_CODE_REV = '45f3eebe76';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -5747,6 +5747,31 @@ var OMITONE_CODE_REV = '162d743ee0';
 
 
     /**
+     * 一次性作废旧版本留下的"已发过"记录（schema 迁移）。
+     *
+     * 为什么需要：在 ⑯/⑲ 修好之前，**发失败也会被记成"已发"**，而标记 24 小时才过期 ——
+     * 用户那边已经有一批页面被误标成已做，靠"等 24 小时"或"让用户手敲命令"都不合适。
+     * 所以升到 schema 2 时**清空一次**，让这些页面重新扫一遍；
+     * 之后写标记的都是新逻辑（失败会撤），不再需要这种清理。
+     */
+    _migrateDiscussionDoneOnce: function () {
+      var SCHEMA = '2';
+      try {
+        if (String(localStorage.getItem(this._discussionStoreKey + '_schema') || '') === SCHEMA) return;
+        var dropped = Object.keys(this._discussionDoneMap()).length;
+        localStorage.removeItem(this._discussionStoreKey);
+        localStorage.setItem(this._discussionStoreKey + '_schema', SCHEMA);
+        if (dropped) {
+          emitRuntimeLog('warn', 'discussion done list reset after upgrade', {
+            dropped: dropped,
+            hint: '旧版本会把"发失败"也记成已发，升级后统一作废一次，让这些页面重新扫'
+          });
+        }
+      } catch (e) {}
+    },
+
+
+    /**
      * 听讨论页那边的**真实结果**。
      *
      * 为什么必须走 `postMessage` 而不是 localStorage：
@@ -6065,7 +6090,16 @@ var OMITONE_CODE_REV = '162d743ee0';
         // `_isDiscussionDone` 就直接 return false —— **同一页上的第二个讨论永远轮不到**。
         var self1 = this;
         var pending = targets.filter(function (t) {
-          return !t.finished && !self1._isDiscussionDone(t.key);
+          if (t.finished) return false;
+          if (!self1._isDiscussionDone(t.key)) return true;
+          // ── 自愈：本地记过"已发"，但**平台说这个讨论还没完成** ──
+          // 那多半是当时发失败了（跨域那会儿撤不掉标记，见 ⑲）。
+          // 超过 90 秒平台仍是"未完成"，就允许重来一次（最多 3 次，靠 `try|` 计数兜底）。
+          var markedAt = Number(self1._discussionDoneMap()[t.key] || 0);
+          if (!markedAt || Date.now() - markedAt < 90000) return false;   // 刚发过，先给平台时间刷新
+          if (self1._getDiscussionTries(t.key) >= 3) return false;        // 已经试够次数了，别再折腾
+          self1._bumpDiscussionTry(t.key);
+          return true;
         });
         if (!pending.length) return null; // 本节讨论任务点已完成（服务端已记录回复）
         var t0 = pending[0];
@@ -6134,6 +6168,8 @@ var OMITONE_CODE_REV = '162d743ee0';
       if (this.configs.enableDiscussion === false) return false;
       // 首次调用时挂上"讨论页回首掏"的监听（跨域，只能靠 postMessage）
       this._bindDiscussionOutcome();
+      // 旧版本留下的"已发过"记录不可信，升级后自动作废一次（不需要用户敲命令）
+      this._migrateDiscussionDoneOnce();
       if (this._discussionBusy) return true;
       if (this._discussionWindow && !this._discussionWindow.closed) return true;
       if (Date.now() - (this._discussionOpenedAt || 0) < 15000) return false;

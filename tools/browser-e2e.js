@@ -4304,6 +4304,46 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 旧版本留下的"已发过"标记，不能把讨论永久挡住 ----
+ *
+ * 现场（2026-10-17）：旧逻辑发失败也记"已发"，标记 24 小时才过期，
+ * 用户那几页讨论就再也扫不到了。不能指望用户去敲 `xxtAI.clearDiscussionDone()`，
+ * 所以加了两层自愈：
+ *   ① 平台仍说"这个讨论没完成"、且标记超过 90 秒 → 允许重试（最多 3 次）；
+ *   ② 升级到 schema 2 时把旧名单**整体作废一次**。
+ */
+SCENARIOS.push({
+  name: '讨论"已发过"标记作废后能重扫（升级自愈）',
+  path: '/discussion-two',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'var targets=app._collectDiscussionTargets();' +
+      'if(!targets.length) return {targets:0};' +
+      'var key=String(targets[0].key);' +
+      // 模拟"旧版本留下的标记"：2 分钟前记成已发，而平台（mock）仍说未完成
+      'var map=app._discussionDoneMap(); map[key]=Date.now()-120000;' +
+      'localStorage.setItem(app._discussionStoreKey, JSON.stringify(map));' +
+      'var before=app._isDiscussionDone(key);' +
+      'var task=await app._findDiscussionTask();' +
+      'var healed=!!task && String(task.key)===key;' +
+      // 升级迁移：schema 没记录过 → 旧名单整体作废
+      'app._migrateDiscussionDoneOnce();' +
+      'var afterMigrate=Object.keys(app._discussionDoneMap()).length;' +
+      'return {targets:targets.length, before:before, healed:healed, afterMigrate:afterMigrate};' +
+      '})()'
+    );
+    check('前置条件：这一页有讨论候选', !!probe && probe.targets >= 1, JSON.stringify(probe));
+    check('前置条件：那条"已发过"标记确实还在', !!probe && probe.before === true, JSON.stringify(probe));
+    check('平台说没完成 + 标记已过期 → 仍能重新排进待做（旧实现会被它永久挡住）',
+      !!probe && probe.healed === true, JSON.stringify(probe));
+    check('升级后旧名单被整体作废一次（不需要用户手敲命令）',
+      !!probe && probe.afterMigrate === 0, JSON.stringify(probe));
+  }
+});
+
+/**
  * ---- 编辑区"没填进去"时，不能把空编辑区当成"提交成功" ----
  *
  * 现场（2026-10-17）：一页 3 个讨论，**第一个的回复从没发出去**却记成已做，
