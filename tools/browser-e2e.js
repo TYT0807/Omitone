@@ -4269,6 +4269,42 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 编辑区"没填进去"时，不能把空编辑区当成"提交成功" ----
+ *
+ * 现场（2026-10-17）：一页 3 个讨论，**第一个的回复从没发出去**却记成已做，
+ * 后面两个正常。根因：`_discussionSuccessHint` 的第 3 条判据是"编辑区被清空" ——
+ * 而内容**压根没填进去**时编辑区本来就是空的，一点提交就"确认成功"。
+ * 修法：这条判据必须以"确认填进去过"（`_discussionFilledOk`）为前提。
+ *
+ * 本场景直接钉住这个误报：
+ *   ① 编辑区为空 + 没确认填充 → 必须**不**算成功（旧实现算成功）
+ *   ② 编辑区为空 + 确认填充过 → 仍算成功（这条判据本身不能被废掉）
+ */
+SCENARIOS.push({
+  name: '编辑区没填进去时不能误判成提交成功',
+  path: '/discussion',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var ed=app._findDiscussionEditor();' +
+      'if(!ed) return {noEditor:true};' +
+      'ed.value="";' +
+      'app._discussionBefore=app._discussionBaseline();' +
+      'app._discussionFilledOk=false;' +          // 模拟"填不进去"
+      'var withoutFill=app._discussionSuccessHint();' +
+      'app._discussionFilledOk=true;' +           // 正常路径：确认填过
+      'var withFill=app._discussionSuccessHint();' +
+      'return {noEditor:false, withoutFill:withoutFill, withFill:withFill};})()'
+    );
+    check('前置条件：讨论页找得到回复编辑器', !!probe && probe.noEditor !== true, JSON.stringify(probe));
+    check('内容没填进去过 → 空编辑区**不能**算成功（旧实现会误判 → 这条讨论被记成已做却从没发出）',
+      !!probe && probe.withoutFill === false, JSON.stringify(probe));
+    check('确认填进去过 → 提交后编辑区为空仍算成功（这条判据没被废掉）',
+      !!probe && probe.withFill === true, JSON.stringify(probe));
+  }
+});
+
+/**
  * ---- 任务点全被拒时，日志必须说明"卡在哪一条" ----
  *
  * 这个查找函数的失败**没有任何报错**：返回 null，然后整章被 `nextUnit()` 推过去。

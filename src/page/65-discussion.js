@@ -8,9 +8,9 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（27 个）：
+ * 本段的方法（28 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
- *   _unmarkDiscussionDone、_discussionNameOf、_isDiscussionAttachment、
+ *   _unmarkDiscussionDone、_discussionPendingKey、_discussionNameOf、_isDiscussionAttachment、
  *   _findDiscussionEntry、_isDiscussionContext、_scopedDiscussionFinishedFlag、
  *   _discussionKeyOf、_collectDiscussionTargets、_findDiscussionModuleFrames、
  *   _currentStudyParams、_resolveDiscussionUrlFromModule、_findDiscussionTask、
@@ -62,6 +62,17 @@
         delete map[key];
         localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
       } catch (e) {}
+    },
+
+
+    /**
+     * 讨论页里取回"当前正在做哪个讨论"的键 —— 打开讨论页之前由主页写进 localStorage。
+     * 有了它，讨论页发现"内容没填进去 / 没确认成功"时才能**撤回标记**，让主页面重开重试。
+     */
+    _discussionPendingKey: function () {
+      try { return String(localStorage.getItem('omitone_discussion_key') || ''); } catch (e) {
+        return '';
+      }
     },
 
 
@@ -430,6 +441,8 @@
         try { localStorage.setItem('omitone_return_url', String(location.href || '')); } catch (e1) {}
         // 先标记再打开：即使后面刷新/超时，也不会重复打开同一个讨论页
         this._markDiscussionDone(task.key);
+        // 把"正在做哪个讨论"带过去：讨论页那边发现没填进去时要靠它撤回标记重试
+        try { localStorage.setItem('omitone_discussion_key', String(task.key || '')); } catch (eKey) {}
         this._discussionOpenedAt = Date.now();
 
         var navigated = false;
@@ -612,6 +625,11 @@
 
     _fillDiscussionEditor: function (editor, text) {
       var tag = String(editor.tagName || '').toLowerCase();
+      // ⚠️ 必须**回读确认**：受控组件（React/Vue）可能把值吞回去，
+      // 只写不查等于没写。而"编辑区为空"又会被 `_discussionSuccessHint`
+      // 当成"提交后被清空"= 成功 —— 于是这条讨论被标成已做，却一条都没发出去
+      //（2026-10-17 现场：三个讨论里第一个就是这么丢的）。
+      var probe = String(text || '').slice(0, 20);
       if (tag === 'textarea' || tag === 'input') {
         var proto = tag === 'textarea' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
         var setter = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -619,11 +637,12 @@
         else editor.value = text;
         editor.dispatchEvent(new Event('input', { bubbles: true }));
         editor.dispatchEvent(new Event('change', { bubbles: true }));
-        return;
+        return String(editor.value || '').indexOf(probe) !== -1;
       }
       try { editor.focus(); } catch (e0) {}
       editor.textContent = text;
       editor.dispatchEvent(new Event('input', { bubbles: true }));
+      return String(editor.textContent || '').indexOf(probe) !== -1;
     },
 
 
@@ -657,7 +676,10 @@
       try {
         if (/发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/.test(String(document.body.innerText || ''))) return true;
       } catch (e2) {}
-      // 3) 编辑区被清空
+      // 3) 编辑区被清空 —— **只有"确认填进去过"才算数**。
+      // ⚠️ 否则会误报：内容压根没填进去时编辑区本来就是空的，一点提交就"确认成功"，
+      // 任务点被标成已做却从没发出（2026-10-17 现场：三个讨论里第一个丢了）。
+      if (!this._discussionFilledOk) return false;
       var editor = this._findDiscussionEditor();
       if (editor) {
         var value = String(editor.value !== undefined ? editor.value : editor.textContent || '').trim();
@@ -735,8 +757,24 @@
         this._discussionPosted = true; // 找到控件后才锁定，确保每页只发一次
         this._discussionBefore = this._discussionBaseline();
         var content = String(this.configs.discussionReply || '1');
-        this._fillDiscussionEditor(editor, content);
+        var filledOk = this._fillDiscussionEditor(editor, content) === true;
+        if (!filledOk) {
+          // 页面可能还没就绪（脚本刚注入），等一拍再试一次
+          await sleep(1200);
+          filledOk = this._fillDiscussionEditor(editor, content) === true;
+        }
+        this._discussionFilledOk = filledOk;
         await sleep(500);
+        if (!filledOk) {
+          // 填不进去：照样点一下（空提交无害，不点页面可能一直停在"未提交"），
+          // 但要把"已做"标记撤掉 —— 否则这个讨论会静默跳过 24 小时，
+          // 用户只看到"没做"，日志里也看不出所以然。
+          emitRuntimeLog('warn', 'discussion editor did not take the text, will retry', {
+            content: content.slice(0, 40),
+            editor: String(editor.tagName || '') + (editor.id ? '#' + editor.id : '')
+          });
+          this._unmarkDiscussionDone(this._discussionPendingKey());
+        }
         button.click();
         emitRuntimeLog('info', 'discussion reply submitted', {
           content: content.slice(0, 40),
@@ -755,7 +793,14 @@
             break;
           }
         }
-        if (!confirmed) emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', {});
+        if (!confirmed) {
+          // 没看到成功提示有两种情况：
+          //   ① 内容压根没填进去（fill 已报过 warn 并撤了标记）→ 会重试
+          //   ② 填进去了但页面没给提示 → 大概率已经发出去，**不再重发**（避免两条一样的回复）
+          emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', {
+            filled: this._discussionFilledOk === true
+          });
+        }
 
         await sleep(600);
         var returnUrl = '';

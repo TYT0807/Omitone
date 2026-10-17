@@ -598,7 +598,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 39 个场景，383 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 40 个场景，387 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -940,6 +940,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 41 | **「上面是题目、下面是讨论」时只做讨论、跳过题目，然后卡住不动**（日志反复 `study begin` → 每帧都被拒 → `study finished on page {searchedCount:0}` → 点「下一节」→ 又 `study begin`，附件数一模一样） | ⚠️ 平台**自己的脚本**里有一句 `jobIconDiv.set({'aria-label': '任务点已完成'})`，而 `textOf()` 写的是 `innerText \|\| textContent` —— **可见文本为空时回落 `textContent`，连 `<script>` 源码都算成页面文字**。于是 `_isDocumentFrameFinished` 在脚本注释里读到「任务点已完成」，把整份卷子判成完成 → `workType` 由 `job` 改写成 `finished` → 静默跳过 → 搜不到任务点 → 判本页做完 → 点下一节（平台不让走）→ 空转。防线：① `textOf` 回落时跳过 `script/style/noscript/template` 源码；② 静默跳过必须写日志；③ 连续 3 轮「学习进度键」不变就停止点下一节并告警。⚠️ **判"完成"只能看真实可见文本，别吃 `textContent`** |
 | 42 | **一页两个讨论，只发第一个、第二个被跳过**（发完第一个和题目就直接点下一节） | `_findDiscussionTask` 三条路径都只返回**第一个**候选，而调用方 `if (this._isDiscussionDone(task.key)) return false;` 一看"这个发过了"就**整体放弃** —— 排在后面的永远轮不到。防线：**在查找阶段就跳过已发过的**（三条路径各补一处），调用方那句只当兜底。⚠️ **"取一个候选"的函数遇到"这个不要"时，应该继续找下一个，而不是让调用方放弃整件事** |
 | 43 | **换到下一份卷子时干等几十秒才开始答题**，且日志被同一对记录刷满 | `_quizRoundFilledCount` / `_quizRoundNoProgressAt` 是**全局**状态：上一份卷子最后一轮 `filled=0`，新卷子第一轮当然也是 0 → 被判成"没有进展"，这一轮一次都不答；那 60 秒里 OCS 每秒重匹配一次，`study matched job` + `quiz round skipped` 各一条，200 条日志缓冲被刷满。防线：状态按**卷子 key** 隔离 + 两条日志 10 秒节流。⚠️ **"没进展"这类跨轮比较的状态必须按"哪一份活"隔离**，否则上一份的结尾会污染下一份的开头 |
+| 44 | **讨论帖下一条回复都没有，日志却写着"已提交、已确认"**（一页挂多个讨论时格外容易发生在第一个） | `_discussionSuccessHint` 第 3 条判据是「编辑区被清空」—— 而**内容压根没填进去**时编辑区本来就是空的（页面刚注入、受控组件把值吞了），一点提交就"确认成功"；同时 `_markDiscussionDone` 是**打开前**写的、失败路径**没有撤销** → 一次失败就静默跳过 24 小时。防线：填充**回读确认** + 失败撤标记重试 + 「编辑区被清空」必须以"确实填进去过"为前提。⚠️ 与第 42 条同一类：**判据只看"看起来完成了"，没确认"事情真的发生了"。写"成功/完成"判定时先问：这个信号，失败的时候会不会也成立？** |
 
 ---
 
@@ -1086,7 +1087,7 @@ npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码�
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（106 项）
 npm test         # 上面三个
-npm run e2e      # 真实 Edge 功能交叉检验（39 个场景 / 383 项）
+npm run e2e      # 真实 Edge 功能交叉检验（40 个场景 / 387 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库
