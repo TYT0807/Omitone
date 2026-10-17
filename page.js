@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '45f3eebe76';
+var OMITONE_CODE_REV = '2cfa94147e';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -6409,31 +6409,65 @@ var OMITONE_CODE_REV = '45f3eebe76';
     },
 
 
-    _discussionSuccessHint: function () {
+    /**
+     * 收集"这次到底发出去没有"的**证据**（只陈述事实，不做判断）。
+     *
+     * 为什么单独拆出来：判据只回一个真假值时，日志就没法解释"它凭什么是成功"。
+     * 2026-10-17 三个讨论丢了一个，日志明明写着 `confirmed`，却完全看不出是靠哪条过的。
+     */
+    _discussionEvidence: function () {
       var content = String(this.configs.discussionReply || '1').trim();
       var before = this._discussionBefore || { count: 0, text: '' };
-      // 1) 回复列表里出现了新内容 / 新增了条目
+      var ev = {
+        contentLen: content.length,
+        filled: this._discussionFilledOk === true,
+        listPresent: false,
+        items: -1,
+        beforeItems: Number(before.count || 0),
+        grew: false,
+        hasContent: false,
+        successText: false,
+        editorEmpty: null
+      };
       try {
         var list = document.querySelector('.topicDetail_replyList');
         if (list) {
-          var now = String(list.innerText || '');
-          if (content && now.indexOf(content) >= 0 && String(before.text || '').indexOf(content) < 0) return true;
-          if (list.querySelectorAll('.topicDetail_replyItem').length > Number(before.count || 0)) return true;
+          ev.listPresent = true;
+          ev.items = list.querySelectorAll('.topicDetail_replyItem').length;
+          ev.grew = ev.items > ev.beforeItems;
+          // ⚠️ 只有回复内容**够长**时才做文本匹配。
+          // 默认回复就是 "1"，而 "1" 在页面上到处都是（日期 / 楼层 / 题号 / 计数）——
+          // 拿它去 `indexOf` 近乎恒真，于是"发失败"也能被判成成功（本次的真因）。
+          ev.hasContent = content.length >= 6 &&
+            String(list.innerText || '').indexOf(content) !== -1 &&
+            String(before.text || '').indexOf(content) < 0;
         }
       } catch (e1) {}
-      // 2) 页面出现成功提示
       try {
-        if (/发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/.test(String(document.body.innerText || ''))) return true;
+        ev.successText = /发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/
+          .test(String(document.body.innerText || ''));
       } catch (e2) {}
-      // 3) 编辑区被清空 —— **只有"确认填进去过"才算数**。
-      // ⚠️ 否则会误报：内容压根没填进去时编辑区本来就是空的，一点提交就"确认成功"，
-      // 任务点被标成已做却从没发出（2026-10-17 现场：三个讨论里第一个丢了）。
-      if (!this._discussionFilledOk) return false;
       var editor = this._findDiscussionEditor();
       if (editor) {
-        var value = String(editor.value !== undefined ? editor.value : editor.textContent || '').trim();
-        if (value === '') return true;
+        ev.editorEmpty = String(editor.value !== undefined ? editor.value : editor.textContent || '').trim() === '';
       }
+      return ev;
+    },
+
+
+    /**
+     * 这次提交算不算成功。**只认正向证据**，按强弱排序：
+     *   ① 回复条目真的多了一条（最强，与内容长短无关）
+     *   ② 回复列表里出现了我们那段文字（要求内容够长，避免 "1" 恒真）
+     *   ③ 页面弹了「发布成功」之类的提示
+     *   ④ 仅当页面上**根本没有回复列表**可对账时，才退而相信"填进去过 + 编辑区已清空"
+     *
+     * ⚠️ ④ 绝对不能提前：编辑区为空是"发成功"和"发失败"**共有**的现象。
+     */
+    _discussionSuccessHint: function () {
+      var ev = this._discussionEvidence();
+      if (ev.grew || ev.hasContent || ev.successText) return true;
+      if (!ev.listPresent && ev.filled && ev.editorEmpty === true) return true;
       return false;
     },
 
@@ -6538,7 +6572,8 @@ var OMITONE_CODE_REV = '45f3eebe76';
           await sleep(1000);
           if (this._discussionSuccessHint()) {
             confirmed = true;
-            emitRuntimeLog('info', 'discussion reply confirmed', {});
+            // 把"凭什么算成功"一起记下来 —— 只写 confirmed 的话，下次还是查不出来
+            emitRuntimeLog('info', 'discussion reply confirmed', { evidence: this._discussionEvidence() });
             break;
           }
         }
@@ -6549,19 +6584,8 @@ var OMITONE_CODE_REV = '45f3eebe76';
           //
           // ⚠️ 把三条判据各自的实况一起记下来 —— 只说"未确认"的话，
           // 下次还是得靠猜（这一轮就因为看不到细节多绕了一趟）。
-          var diagHint = { filled: this._discussionFilledOk === true, content: String(content || '').slice(0, 20) };
-          try {
-            var hitList = document.querySelector('.topicDetail_replyList');
-            diagHint.hasList = !!hitList;
-            diagHint.listItems = hitList ? hitList.querySelectorAll('.topicDetail_replyItem').length : -1;
-            diagHint.beforeItems = Number((this._discussionBefore || {}).count || 0);
-            diagHint.listHasContent = hitList ? String(hitList.innerText || '').indexOf(String(content || '')) !== -1 : false;
-            diagHint.successText = /发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/.test(String(document.body.innerText || ''));
-            var edAfter = this._findDiscussionEditor();
-            diagHint.editorEmpty = edAfter
-              ? String(edAfter.value !== undefined ? edAfter.value : edAfter.textContent || '').trim() === ''
-              : null;
-          } catch (eDiag) {}
+          var diagHint = this._discussionEvidence();
+          diagHint.content = String(content || '').slice(0, 20);
           emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', diagHint);
 
           // ⚠️ 必须告诉刷课页"这次没成"，让它撤掉"已做"标记并重试。

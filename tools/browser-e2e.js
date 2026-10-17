@@ -4374,8 +4374,10 @@ SCENARIOS.push({
     check('前置条件：讨论页找得到回复编辑器', !!probe && probe.noEditor !== true, JSON.stringify(probe));
     check('内容没填进去过 → 空编辑区**不能**算成功（旧实现会误判 → 这条讨论被记成已做却从没发出）',
       !!probe && probe.withoutFill === false, JSON.stringify(probe));
-    check('确认填进去过 → 提交后编辑区为空仍算成功（这条判据没被废掉）',
-      !!probe && probe.withFill === true, JSON.stringify(probe));
+    // 这条是本次的真因：页面有回复列表、条目却没多出来，而只是"编辑区空了" ——
+    // 旧实现会判成功（默认回复是 "1"，文本匹配也近乎恒真），于是发失败也被记成已做。
+    check('有回复列表但条目没多 → 即使填过、编辑区也空了，仍**不能**算成功（旧实现会误判）',
+      !!probe && probe.withFill === false, JSON.stringify(probe));
   }
 });
 
