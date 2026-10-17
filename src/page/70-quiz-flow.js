@@ -822,6 +822,15 @@
       var doc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
       if (doc && this._isQuizPassedOrFinished(doc)) return false;
 
+      // ⚠️ **自己刚答过这份卷子 → 这一轮不需要再答。**
+      // 不加这一条会死锁（实测 2026-10-17，卡了整整 6 分钟）：
+      //   刚交完卷 → `_quizAnswered` 仍为真 → `_handleQuiz` 第一行就直接 return（不干活）；
+      //   而平台还没渲染出结果页、提交按钮还在 → `_hasActiveQuizSubmitForm` 又说"还有题" →
+      //   调度器每秒把同一份卷子交给它、它每秒空转，永远不前进，日志里只有一行行的
+      //   `study matched job`。
+      // 只有"平台明确要求重做"时才继续算 pending —— 那条在下面有自己的分支。
+      if (this._quizAnswered && !this._isQuizRedoRequired(doc || null)) return false;
+
       if (this._isQuizRedoRequired(doc || null)) {
         if (this._shouldSkipQuizBySubmitAttempts(doc || null)) {
           return this._forceSkipQuizAfterMaxAttempts(doc || null);

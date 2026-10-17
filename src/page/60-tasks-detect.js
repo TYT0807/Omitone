@@ -701,6 +701,14 @@
           if (this._isDocumentFrameFinished(doc) || (jobKind === 'quiz' && this._isQuizPassedOrFinished(doc))) {
             workType = 'finished';
           }
+          // 同一份卷子我们**自己刚答过**，这一轮也不必再做。
+          // 平台有时交完卷不马上渲染结果页（提交按钮还挂着），于是"页面看着没做完"，
+          // 而 `_handleQuiz` 因为有 `_quizAnswered` 又直接返回 —— 两边一夹就是死循环
+          //（实测 2026-10-17：同一份卷子被反复匹配 6 分钟，一次都没真做）。
+          if (jobKind === 'quiz' && workType === 'job' && this._quizAnswered &&
+              this._quizRunPaperKey && String(targetJobId) === String(this._quizRunPaperKey)) {
+            workType = 'finished';
+          }
           var func = null;
           if (found.videojs) {
             if (!this.configs.enableMedia) {

@@ -4305,6 +4305,41 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 交完卷之后不能一直卡在"还有题要做" ----
+ *
+ * 现场（2026-10-17）：某章的卷子交完（日志有 `quiz submit finished`）之后，
+ * 调度器在**整整 6 分钟**里反复打印 `study matched job {kind:"quiz"}`，
+ * 一次都没再答题、也不往下走 —— 用户看到的就是"答题一直卡住"。
+ *
+ * 根因：`_handleQuiz` 第一行 `if (_quizAnswered || _quizInProgress) return;` 直接不干活，
+ * 而 `_isQuizLearningPending` 因为"提交按钮还挂在页面上"仍说"还有题要做"。
+ * 两个判据互相矛盾 → 调度器每秒把同一份卷子交给它、它每秒空转，永远不前进。
+ *
+ * 修法：`_isQuizLearningPending` 里**自己刚答过就直接说"没有了"**（除非平台明确要求重做）。
+ */
+SCENARIOS.push({
+  name: '交完卷之后不能一直卡在"还有题要做"',
+  path: '/quiz',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
+      'app._quizApiFailUntil=0;' +
+      'var doc=app._resolveQuizSubmitDocument(null)||app._getMainDocument();' +
+      'app._quizAnswered=false; app._quizInProgress=false; app._quizSubmitPending=false;' +
+      'var before=app._isQuizLearningPending(doc);' +
+      'app._quizAnswered=true;' +                 // 模拟"刚交完卷"
+      'var after=app._isQuizLearningPending(doc);' +
+      'return {before:before, after:after};})()'
+    );
+    check('前置条件：这一页确实"还有题要做"（否则测的不是这件事）',
+      !!probe && probe.before === true, JSON.stringify(probe));
+    check('刚交完卷（_quizAnswered=true）→ 不能再算"还有题要做"（否则调度器会一直空转，实测卡过 6 分钟）',
+      !!probe && probe.after === false, JSON.stringify(probe));
+  }
+});
+
+/**
  * ---- 任务点全被拒时，日志必须说明"卡在哪一条" ----
  *
  * 这个查找函数的失败**没有任何报错**：返回 null，然后整章被 `nextUnit()` 推过去。
