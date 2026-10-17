@@ -1925,5 +1925,14 @@
   window.addEventListener('load', scheduleDecryptSweep);
 
   console.log('%c[Omitone] content bridge ready', 'color:#2196F3');
-  appendRuntimeLog('info', 'content bridge ready');
+  // ⚠️ 必须带上**构建戳**。本轮排查连着踩了同一个坑：四个包都叫 1.2.8，
+  // 用户发来的日志里看不出跑的是哪一版 —— 时间戳一对才发现"这份日志比修复还早"，
+  // 白排查了一轮（2026-10-17）。`version_name` 由 `tools/build.js` 在**产物**里写入
+  //（源码的 manifest 不动），所以从 dist 装出去的包都能自报家门。
+  var manifestInfo = null;
+  try { manifestInfo = chrome.runtime.getManifest(); } catch (eManifest) { manifestInfo = null; }
+  appendRuntimeLog('info', 'content bridge ready', {
+    version: String((manifestInfo && manifestInfo.version) || ''),
+    build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)')
+  });
 })();

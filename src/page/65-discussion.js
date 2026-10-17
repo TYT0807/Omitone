@@ -797,9 +797,23 @@
           // 没看到成功提示有两种情况：
           //   ① 内容压根没填进去（fill 已报过 warn 并撤了标记）→ 会重试
           //   ② 填进去了但页面没给提示 → 大概率已经发出去，**不再重发**（避免两条一样的回复）
-          emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', {
-            filled: this._discussionFilledOk === true
-          });
+          //
+          // ⚠️ 把三条判据各自的实况一起记下来 —— 只说"未确认"的话，
+          // 下次还是得靠猜（这一轮就因为看不到细节多绕了一趟）。
+          var diagHint = { filled: this._discussionFilledOk === true, content: String(content || '').slice(0, 20) };
+          try {
+            var hitList = document.querySelector('.topicDetail_replyList');
+            diagHint.hasList = !!hitList;
+            diagHint.listItems = hitList ? hitList.querySelectorAll('.topicDetail_replyItem').length : -1;
+            diagHint.beforeItems = Number((this._discussionBefore || {}).count || 0);
+            diagHint.listHasContent = hitList ? String(hitList.innerText || '').indexOf(String(content || '')) !== -1 : false;
+            diagHint.successText = /发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/.test(String(document.body.innerText || ''));
+            var edAfter = this._findDiscussionEditor();
+            diagHint.editorEmpty = edAfter
+              ? String(edAfter.value !== undefined ? edAfter.value : edAfter.textContent || '').trim() === ''
+              : null;
+          } catch (eDiag) {}
+          emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', diagHint);
         }
 
         await sleep(600);

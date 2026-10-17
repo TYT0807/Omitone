@@ -232,6 +232,30 @@ function main() {
     fs.rmSync(path.join(stageDir, rel), { force: true });
   });
 
+  // 2.5) 给本次构建盖一个**可追溯的戳**（只写进产物，源码的 manifest 一个字不动）
+  //
+  // 为什么：几个包都叫 1.2.8，用户发来的日志里**看不出跑的是哪一版**。
+  // 本轮排查就因为分不清版本，白走了一轮（用户日志的时间戳比修复还早）。
+  // 写进 `version_name`（Chrome/Edge 认这个字段，只用于显示、不参与版本比较），
+  // 再由 `content.js` 在启动日志里打出来 —— 以后任何一份日志都能自报家门。
+  var builtAt = new Date();
+  var pad2 = function (n) { return (n < 10 ? '0' : '') + n; };
+  var buildStamp = 'b' + builtAt.getFullYear() + pad2(builtAt.getMonth() + 1) + pad2(builtAt.getDate()) +
+    '-' + pad2(builtAt.getHours()) + pad2(builtAt.getMinutes());
+  var stagedManifestPath = path.join(stageDir, 'manifest.json');
+  var stagedManifestText = '';
+  try {
+    var stagedManifest = JSON.parse(fs.readFileSync(stagedManifestPath, 'utf8').replace(/^\uFEFF/, ''));
+    stagedManifest.version_name = version + ' ' + buildStamp;
+    stagedManifestText = JSON.stringify(stagedManifest, null, 2);
+    fs.writeFileSync(stagedManifestPath, stagedManifestText);
+    console.log('  构建戳     ' + stagedManifest.version_name);
+  } catch (eStamp) {
+    console.error('写构建戳失败：' + (eStamp && eStamp.message ? eStamp.message : eStamp));
+    process.exitCode = 1;
+    return;
+  }
+
   // 3) 打包 zip
   var zipEntries = [];
   var seenDirs = Object.create(null);
@@ -244,7 +268,12 @@ function main() {
         zipEntries.push({ name: dir, data: null });
       }
     }
-    zipEntries.push({ name: file.name, data: fs.readFileSync(file.abs) });
+    // manifest.json 必须用**盖过戳的那一份**（dist 里的），否则 zip 与展开目录不一致：
+    // 用户装 zip 与直接加载 dist 目录会拿到两个行为不同的包。
+    var entryData = file.name === 'manifest.json'
+      ? Buffer.from(stagedManifestText, 'utf8')
+      : fs.readFileSync(file.abs);
+    zipEntries.push({ name: file.name, data: entryData });
   });
 
   var zipBuffer = createZip(zipEntries);
