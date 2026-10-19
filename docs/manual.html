@@ -1149,6 +1149,32 @@
       <td><code>llm rejected thinking params, retry without them</code></td>
       <td>这家服务商不认识"思考强度"那个参数，扩展自动摘掉后重试。<b>已自愈。</b></td>
     </tr>
+    <tr>
+      <td><code>content bridge ready</code></td>
+      <td>页面已经接上扩展了，是「接上了」的证据。后面括号里是你装的<b>版本号和构建时间</b> ——
+          发日志求助时连这一行一起发，就不用再问"你装的哪一版"。</td>
+    </tr>
+    <tr>
+      <td><code>study matched job</code></td>
+      <td>匹配到一个任务点，正在做它。括号里的 <code>kind</code> 是类型
+          （<code>quiz</code> 测验 / <code>read</code> 阅读 / 讨论 等）。</td>
+    </tr>
+    <tr>
+      <td><code>search job: every candidate frame was rejected</code></td>
+      <td>这一页的任务点<b>一个都没法做</b>，所以直接进下一节。
+          括号里的 <code>rejects</code> 会<b>逐条说明每一帧为什么被拒</b>（认不出类型 / 已经做过 / 本轮搜过）——
+          遇到"某节被跳过"时，先看这一行。</td>
+    </tr>
+    <tr>
+      <td><code>discussion reply confirmed</code><br><code>discussion reply not confirmed</code></td>
+      <td>讨论回帖<b>发出去了</b> / <b>没确认成功</b>。后者会自动重试（最多 3 次），
+          并把"回复列表多没多一条、有没有成功提示"等证据一起记下来，不用你猜。</td>
+    </tr>
+    <tr>
+      <td><code>quiz round skipped: no progress</code></td>
+      <td>同一份卷子这一轮拿不到新答案，先不重复问模型（省额度），几十秒后照常重试。
+          <b>不是故障。</b></td>
+    </tr>
   </tbody>
 </table>
 
