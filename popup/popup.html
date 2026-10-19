@@ -240,10 +240,10 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
         <label for="randomAnswer">乱选（不接 AI，随机作答）</label>
         <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="randomAnswer"></div>
       </div>
-      <p class="hint">打开「乱选」后**不再需要 API Key**，题由本地随机作答、不保证正确率 ——
-      只求把卷交出去。乱选开着时**不会调用 AI**（哪怕你配了 Key）。
-      注意「AI 自动答题」那个开关**也要开着** —— 关掉它表示完全不答题，乱选同样不生效。
-      随机的答案**不会写进答案记忆**，将来换成 AI 答题不会被这些垃圾数据影响。</p>
+      <p class="hint">打开「乱选」后<b>不再需要 API Key</b>，题由本地随机作答、不保证正确率 ——
+      只求把卷交出去。乱选开着时<b>不会调用 AI</b>（哪怕你配了 Key）。
+      注意「AI 自动答题」那个开关<b>也要开着</b> —— 关掉它表示完全不答题，乱选同样不生效。
+      随机的答案<b>不会写进答案记忆</b>，将来换成 AI 答题不会被这些垃圾数据影响。</p>
       <div class="row">
         <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
@@ -256,9 +256,9 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
         <label for="visionModel">看图模型</label>
         <input type="text" id="visionModel" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
         <p class="hint"><b>默认关闭，因为图片很贵。</b>开启后会先把题目里的图转成文字再答题，
-        能救「看图选择 / 图形题 / 表格题」，但每一张图都是一次额外计费，
-        费用通常是纯文本的十几到几十倍。<b>请务必单独填一个能看图的模型</b>（留空会退回主模型，
-        多半看不懂图，钱白花）。下面两项是花费上限，用完就停并写日志。</p>
+        能救「看图选择 / 图形题 / 表格题」，但每张图都是一次额外计费，通常是纯文本的十几到几十倍。
+        <b>这一格可以留空 —— 默认模型本身就带看图</b>；只有你把主模型换成纯文本模型时，
+        才需要在这里单独填一个能看图的型号。下面两项是花费上限，用完就停并写日志。</p>
       </div>
       <div class="field">
         <label for="visionBudgetPerChapter">每章看图次数上限</label>
@@ -268,8 +268,9 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
         <input type="text" id="captchaModel" placeholder="如 deepseek-flash / qwen-vl-max" />
-        <p class="hint"><b>必须填一个能看图的模型。</b>留空会退回主模型，而主模型通常不支持图片输入，
-        验证码基本识别不出来 —— 识别失败会重试，也可能识别错，错了就白跑一轮。</p>
+        <p class="hint"><b>默认留空即可 —— 主模型本身就带看图。</b>只有你把主模型换成纯文本模型时，
+        才必须在这里单独填一个能看图的型号，否则验证码基本识别不出来。
+        识别失败会重试，也可能识别错，错了就白跑一轮。</p>
       </div>
     </div>
   </details>
