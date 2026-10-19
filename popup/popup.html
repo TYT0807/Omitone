@@ -111,6 +111,17 @@ textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent
 input[type="text"], input[type="password"], select { width: 100%; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--fg); outline: none; padding: 8px 10px; font-size: 12px; font-family: inherit; transition: border-color .15s, box-shadow .15s; }
 input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .hint { margin: 6px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.65; }
+
+/* 检查更新：一行小字 + 两个文字按钮，不占地方 */
+.update-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.update-msg { color: var(--muted); font-size: 12.5px; }
+.update-row.hot .update-msg { color: var(--fg); font-weight: 600; }
+.link-btn {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: #2f6fed; font-size: 12.5px; text-decoration: underline; text-underline-offset: 2px;
+}
+.link-btn:hover { opacity: .75; }
+.link-btn:disabled { color: var(--muted); cursor: default; text-decoration: none; }
 .hint b { color: #4a5058; font-weight: 600; }
 
 /* ---------- 提示条 / 日志 ---------- */
@@ -146,6 +157,11 @@ input[type="text"]:focus, input[type="password"]:focus, select:focus { border-co
     <p class="hint" style="margin-top:8px;">
       刷课不需要 API Key。要用 <b>AI 答题</b> 或 <b>验证码识别</b> 才需要，在下面「AI 接入」里填。
     </p>
+    <div class="update-row" id="updateRow">
+      <span class="update-msg" id="updateMsg">当前版本 1.2.8</span>
+      <button class="link-btn" id="checkUpdate">检查更新</button>
+      <button class="link-btn" id="doUpdate" style="display:none">去下载</button>
+    </div>
   </div>
 
   <details class="group" open>

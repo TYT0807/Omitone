@@ -4304,6 +4304,50 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 弹窗的「检查更新」----
+ *
+ * 判断"要不要更新"靠两条：版本号更高，或**同一版本号里换过包**
+ * （后者依赖 `version_name` 里的构建戳，形如 `1.2.8 b20261019-1400`）。
+ * 这里把 `fetch` 换掉，把两条路都走一遍：
+ *   ① 线上版本更高 → 提示「有新版本」并亮出「去下载」
+ *   ② 网络失败 → 不下结论（不瞎说"已是最新"），但也要把下载入口亮出来
+ */
+SCENARIOS.push({
+  name: '弹窗检查更新：有新版本要提示，网络失败也要给下载入口',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var out={hasBtn:!!document.getElementById("checkUpdate"),hasMsg:!!document.getElementById("updateMsg")};' +
+      'if(!out.hasBtn) return out;' +
+      // ① 线上版本更高
+      'window.fetch=function(){return Promise.resolve({ok:true,json:function(){' +
+      'return Promise.resolve({tag_name:"v9.9.9",assets:[{name:"omitone.zip",updated_at:new Date().toISOString()}]});}});};' +
+      'document.getElementById("checkUpdate").click();' +
+      'await new Promise(function(r){setTimeout(r,150);});' +
+      'out.higherMsg=String(document.getElementById("updateMsg").textContent||"");' +
+      'out.higherBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
+      // ② 网络失败
+      'window.fetch=function(){return Promise.reject(new Error("offline"));};' +
+      'document.getElementById("checkUpdate").click();' +
+      'await new Promise(function(r){setTimeout(r,150);});' +
+      'out.failMsg=String(document.getElementById("updateMsg").textContent||"");' +
+      'out.failBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
+      'return out;})()'
+    );
+    check('前置条件：弹窗里有「检查更新」和结果文字',
+      !!probe && probe.hasBtn === true && probe.hasMsg === true, JSON.stringify(probe));
+    check('线上版本更高 → 提示「有新版本」并亮出「去下载」',
+      !!probe && /有新版本/.test(String(probe.higherMsg)) && probe.higherBtn === true,
+      JSON.stringify(probe));
+    check('网络失败 → 不瞎下结论，但也要给下载入口（否则用户只能干瞪眼）',
+      !!probe && /检查失败/.test(String(probe.failMsg)) && probe.failBtn === true,
+      JSON.stringify(probe));
+  }
+});
+
+/**
  * ---- 旧版本留下的"已发过"标记，不能把讨论永久挡住 ----
  *
  * 现场（2026-10-17）：旧逻辑发失败也记"已发"，标记 24 小时才过期，

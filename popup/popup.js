@@ -97,6 +97,10 @@ const els = {
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
+  updateRow: $("updateRow"),
+  updateMsg: $("updateMsg"),
+  checkUpdate: $("checkUpdate"),
+  doUpdate: $("doUpdate"),
   start: $("start"),
   stop: $("stop"),
   toggleLogs: $("toggleLogs"),
@@ -822,6 +826,127 @@ els.copyLogs.addEventListener("click", async () => {
     await refreshLogs();
     toast("复制失败，请在上方日志里手动选中");
   }
+});
+
+// ── 检查更新 ────────────────────────────────────────────────────────────────
+//
+// 判据两条，按可靠性排序：
+//   ① 线上 tag_name 的版本号更高 → 一定有新版本；
+//   ② 版本号相同、但线上 zip 的更新时间比**本机这份代码的构建时间**还新
+//      → 同一个版本号里换过包（本项目「合并不升版本」的做法就会这样）。
+// ② 靠的是 `version_name` 里的构建戳（形如 `1.2.8 b20261019-1400`，由 tools/build.js 写进产物）。
+// **直接加载源码目录**的安装没有这个戳 —— 那就只比版本号，绝不瞎猜"要不要更新"。
+const UPDATE_REPO = "TYT0807/Omitone";
+const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
+const UPDATE_PAGE = `https://github.com/${UPDATE_REPO}/releases/latest`;
+const UPDATE_ZIP = `${UPDATE_PAGE}/download/omitone.zip`;
+const UPDATE_SEEN_KEY = "omitone.update.checkedAt";
+const UPDATE_GAP = 6 * 3600 * 1000;   // 自动检查最多 6 小时一次，别把 GitHub 的匿名额度刷爆
+
+function localBuildInfo() {
+  let manifest = null;
+  try { manifest = chrome.runtime.getManifest(); } catch (e) { manifest = null; }
+  const version = String((manifest && manifest.version) || "");
+  const name = String((manifest && manifest.version_name) || "");
+  const m = name.match(/\bb(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\b/);
+  const builtAt = m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]).getTime() : 0;
+  return { version, name, builtAt };
+}
+
+/** 只比较数字段，`1.3` 与 `1.3.0` 视为相同；返回 1 / 0 / -1 */
+function cmpVersion(a, b) {
+  const pa = String(a || "").split(".").map((x) => parseInt(x, 10) || 0);
+  const pb = String(b || "").split(".").map((x) => parseInt(x, 10) || 0);
+  const n = Math.max(pa.length, pb.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x > y ? 1 : -1;
+  }
+  return 0;
+}
+
+function fmtTime(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function checkUpdate(opts) {
+  const manual = !!(opts && opts.manual);
+  const local = localBuildInfo();
+  if (manual) {
+    els.updateMsg.textContent = "正在检查…";
+    els.checkUpdate.disabled = true;
+  }
+  els.doUpdate.style.display = "none";
+  els.updateRow.classList.remove("hot");
+
+  try {
+    const res = await fetch(UPDATE_API, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" }
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const rel = await res.json();
+    try { localStorage.setItem(UPDATE_SEEN_KEY, String(Date.now())); } catch (e) {}
+
+    const remoteVersion = String(rel.tag_name || "").replace(/^v/i, "");
+    const asset = (rel.assets || []).find((a) => a && a.name === "omitone.zip");
+    const remoteAt = asset && asset.updated_at ? new Date(asset.updated_at).getTime() : 0;
+
+    const newerVersion = cmpVersion(remoteVersion, local.version) > 0;
+    // 同一版本号换了包：给 1 分钟容差，避免本机时钟略快就误报"有更新"
+    const newerBuild = !newerVersion && local.builtAt > 0 && remoteAt > 0 &&
+      remoteAt - local.builtAt > 60000;
+
+    if (newerVersion) {
+      els.updateMsg.textContent = `有新版本：${remoteVersion}`;
+      els.doUpdate.style.display = "";
+      els.updateRow.classList.add("hot");
+    } else if (newerBuild) {
+      els.updateMsg.textContent = `这个版本有更新的包（${fmtTime(remoteAt)}），建议重新下载`;
+      els.doUpdate.style.display = "";
+      els.updateRow.classList.add("hot");
+    } else if (!local.builtAt) {
+      // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
+      els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号）`;
+    } else {
+      els.updateMsg.textContent = "已是最新版本";
+    }
+  } catch (error) {
+    // 打不开 GitHub 很常见（网络原因），别只丢一个红字 —— 顺手把下载入口亮出来
+    els.updateMsg.textContent = "检查失败（可能连不上 GitHub）";
+    els.doUpdate.style.display = "";
+  } finally {
+    els.checkUpdate.disabled = false;
+  }
+}
+
+if (els.checkUpdate) {
+  els.checkUpdate.addEventListener("click", () => checkUpdate({ manual: true }));
+}
+if (els.doUpdate) {
+  els.doUpdate.addEventListener("click", () => {
+    // 直接指向附件本身：点下去就是下载，不用在 Release 页里找
+    chrome.tabs.create({ url: UPDATE_ZIP });
+  });
+}
+
+// 打开弹窗时静默检查一次（6 小时内不重复）——不打扰，发现问题才亮"去下载"
+document.addEventListener("DOMContentLoaded", () => {
+  // 先把"我现在是哪一版"写清楚（含构建戳）——用户截图/报问题时能直接看到
+  try {
+    const local = localBuildInfo();
+    if (els.updateMsg && local.version) {
+      els.updateMsg.textContent = "当前版本 " + (local.name || local.version);
+    }
+  } catch (e) {}
+
+  try {
+    const last = Number(localStorage.getItem(UPDATE_SEEN_KEY) || 0);
+    if (Date.now() - last > UPDATE_GAP) checkUpdate({ manual: false });
+  } catch (e) {}
 });
 
 document.addEventListener("DOMContentLoaded", load);
