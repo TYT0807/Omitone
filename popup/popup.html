@@ -353,6 +353,142 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 [data-motion="eco"] .toggle.on::before{ animation:none; }
 [data-motion="eco"] .toggle.on{ box-shadow:none; }
 
+/* ==========================================================================
+   四季主题 + 交互特效 + 彩蛋小人
+   --------------------------------------------------------------------------
+   【动效清单：场景 / 触发 / 节奏 / 反馈】
+   ┌──────────────┬────────────────────┬──────────────────────┬──────────────────────────┐
+   │ 场景         │ 触发               │ 节奏                 │ 视觉反馈                 │
+   ├──────────────┼────────────────────┼──────────────────────┼──────────────────────────┤
+   │ 按钮点击     │ click（任意按钮）  │ 涟漪 520ms ease-out  │ 从落点扩散的水纹 + 8 颗   │
+   │              │                    │ 粒子 700ms           │ 季节粒子向外炸开          │
+   │ 开关切换     │ click 开关         │ 圆钮 360ms spring    │ 越界 12% 回弹 + 光晕涟漪  │
+   │ 分组展开     │ 点标题             │ 高度 360ms + 逐行    │ 每行错开 26ms 浮起        │
+   │              │                    │ 26ms 交错            │                          │
+   │ 悬停         │ hover 行           │ 240ms ease-out       │ 高光从左向右铺开          │
+   │ 四季粒子     │ 打开弹窗即开始     │ 6–11s 线性循环       │ 花瓣 / 光斑 / 落叶 / 雪   │
+   │ 彩蛋小人     │ 打开后 1.4s 起     │ 见下方时间线         │ 挂在边缘 → 攀爬 → 坐下    │
+   └──────────────┴────────────────────┴──────────────────────┴──────────────────────────┘
+
+   【性能与可用性】
+     · 所有动画只碰 transform / opacity（合成层）—— 不触发重排。
+     · 粒子数量固定 10 个，纯 CSS 循环，不用 rAF 常驻。
+     · 小人 **pointer-events:none** —— 永远挡不住任何点击。
+     · data-motion="eco" 时：粒子减半、去掉点击炸开与小人攀爬动画，只留静态姿态。
+     · 这段样式与脚本**不读写任何配置**，与刷课逻辑零耦合；出错一律静默放弃。
+   ========================================================================== */
+
+/* ---------- 四季调色 ----------
+   只替换强调色与光晕；中性色不动，保证文字对比度在各季都合格。 */
+html[data-season="spring"]{ --accent:#e0559b; --accent-2:#c73f83; --accent-soft:rgba(224,85,155,.14); --fx:#f2a7c3; --fx-2:#8fd6a8; }
+html[data-season="summer"]{ --accent:#0a84ff; --accent-2:#0a6fe0; --accent-soft:rgba(10,132,255,.14); --fx:#ffd45e; --fx-2:#5fd3f3; }
+html[data-season="autumn"]{ --accent:#d2691e; --accent-2:#b4551a; --accent-soft:rgba(210,105,30,.15); --fx:#e08a3c; --fx-2:#c9a227; }
+html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:rgba(74,127,181,.15); --fx:#cfe3f5; --fx-2:#ffffff; }
+
+/* ---------- 特效层：永远不接收点击 ---------- */
+.fx-layer{ position:fixed; inset:0; pointer-events:none; z-index:9; overflow:hidden; }
+.fx-layer > i{
+  position:absolute; top:-12px; display:block; border-radius:50%;
+  background:var(--fx); opacity:.75;
+  animation-name:fx-fall; animation-timing-function:linear; animation-iteration-count:infinite;
+}
+@keyframes fx-fall{
+  0%{ transform:translate3d(0,-10px,0) rotate(0deg); opacity:0; }
+  12%{ opacity:.8; }
+  100%{ transform:translate3d(14px, 900px, 0) rotate(220deg); opacity:0; }
+}
+
+/* 点击涟漪：由 JS 用 Web Animations 创建，这里只定形状 */
+.fx-ripple{
+  position:fixed; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%;
+  border:2px solid var(--accent); pointer-events:none; z-index:10;
+}
+.fx-spark{
+  position:fixed; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%;
+  background:var(--fx); pointer-events:none; z-index:10;
+}
+
+/* ---------- 彩蛋小人（纯 CSS 画的，不用 SVG） ----------
+   ⚠️ 一开始用的是内联 SVG，DOM 状态全对但就是画不出来（headless 里也复现）。
+   改成 div + border-radius 之后一次就正常 —— 装饰件不该依赖我不确定的东西。 */
+.mascot{
+  position:relative; flex:none; width:36px; height:48px; margin-left:2px;
+  pointer-events:none; opacity:0; transform:translateY(-44px);
+  transition:transform .7s var(--ease-out), opacity .3s linear;
+  will-change:transform, opacity;
+}
+.mascot.show{ opacity:1; transform:none; }
+.m-body{
+  position:absolute; left:50%; bottom:8px; width:18px; height:20px; margin-left:-9px;
+  border-radius:9px; background:var(--accent);
+  transition:transform .5s var(--ease-spring); transform-origin:50% 100%;
+}
+.m-head{
+  position:absolute; left:50%; top:-15px; width:22px; height:22px; margin-left:-11px;
+  border-radius:50%; background:#f7dcc2;
+}
+.m-head b{ position:absolute; top:8px; width:2.8px; height:2.8px; border-radius:50%; background:#2b2f36; }
+.m-head b:first-child{ left:5.5px; }
+.m-head b:last-of-type{ left:12.5px; }
+.m-head u{
+  position:absolute; left:7px; top:13px; width:8px; height:4px;
+  border-bottom:1.5px solid #2b2f36; border-radius:0 0 8px 8px;
+}
+.m-arm{
+  position:absolute; top:2px; width:3px; height:11px; border-radius:2px;
+  background:var(--accent-2); transform-origin:top center;
+  transition:transform .45s var(--ease-spring);
+}
+.m-arm-l{ left:-2.5px; }
+.m-arm-r{ right:-2.5px; }
+.m-leg{
+  position:absolute; bottom:-8px; width:3.6px; height:9px; border-radius:2px;
+  background:var(--accent-2); transform-origin:top center;
+  transition:transform .45s var(--ease-spring);
+}
+.m-leg-l{ left:2.6px; }
+.m-leg-r{ right:2.6px; }
+
+/* 五种姿态 */
+.mascot[data-pose="hang"] .m-body{ transform:translateY(-3px) }
+.mascot[data-pose="hang"] .m-arm-l{ transform:rotate(158deg) }
+.mascot[data-pose="hang"] .m-arm-r{ transform:rotate(-158deg) }
+.mascot[data-pose="climb"] .m-body{ transform:translateY(-1px) rotate(-4deg) }
+.mascot[data-pose="climb"] .m-arm-l{ transform:rotate(150deg) }
+.mascot[data-pose="climb"] .m-arm-r{ transform:rotate(-40deg) }
+.mascot[data-pose="sit"] .m-body{ transform:translateY(2px) }
+.mascot[data-pose="sit"] .m-leg-l{ transform:rotate(56deg) }
+.mascot[data-pose="sit"] .m-leg-r{ transform:rotate(-56deg) }
+.mascot[data-pose="happy"] .m-arm-l{ transform:rotate(140deg) }
+.mascot[data-pose="happy"] .m-arm-r{ transform:rotate(-140deg) }
+.mascot[data-pose="happy"] .m-body{ animation:m-hop .55s var(--ease-spring) infinite alternate }
+.mascot[data-pose="point"] .m-arm-r{ transform:rotate(-115deg) }
+@keyframes m-hop{ from{ transform:translateY(1px) } to{ transform:translateY(-4px) } }
+
+/* 季节道具：只显示当季那一件 */
+.m-prop{ position:absolute; display:none; }
+html[data-season="winter"] .m-prop-winter{ display:block; right:-9px; bottom:0; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
+html[data-season="summer"] .m-prop-summer{ display:block; right:-8px; top:2px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
+html[data-season="summer"] .m-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
+html[data-season="autumn"] .m-prop-autumn{ display:block; left:-3px; top:-3px; width:24px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="spring"] .m-prop-spring{ display:block; right:-7px; top:-4px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+
+/* 冬天：按钮被点后"雪塌下来"——雪花从按钮下沿往下掉 */
+@keyframes fx-snow-slip{
+  0%{ transform:translate3d(0,0,0); opacity:1 }
+  100%{ transform:translate3d(4px,26px,0); opacity:0 }
+}
+.btn.snow-hit{ animation:btn-press .24s var(--ease-spring) }
+@keyframes btn-press{ 0%{transform:scale(1)} 45%{transform:scale(.965)} 100%{transform:scale(1)} }
+
+/* 夏天：点过的按钮会被"晒"成暖色 */
+.btn.sunbaked{ filter:saturate(1.15) brightness(1.06); }
+
+/* eco 档：粒子减半、去掉会动的东西 */
+[data-motion="eco"] .mascot{ transition:opacity .3s linear; }
+[data-motion="eco"] .mascot .m-body{ animation:none !important; transition:none; }
+[data-motion="eco"] .fx-layer > i:nth-child(n+6){ display:none; }
+
 /* ---------- 尊重"减少动态效果" ---------- */
 @media (prefers-reduced-motion:reduce){
   *{ transition:none !important; animation:none !important; }
@@ -361,7 +497,12 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 </style>
 </head>
 <body>
-<div class="container">
+
+<!-- 四季粒子层：纯装饰，pointer-events:none，永远不挡点击 -->
+<div class="fx-layer" id="fxLayer" aria-hidden="true"></div>
+
+<!-- 彩蛋小人：初始在视口外，1.4s 后滑下来挂在顶边 -->
+
 
   <div class="top">
     <div class="brand">
@@ -383,7 +524,18 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
       <button class="link-btn" id="doUpdate" style="display:none">是，覆盖更新</button>
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
       <button class="link-btn" id="doUntil" style="display:none">打开扩展页</button>
-    </div>
+    
+<div class="mascot" id="mascot" data-pose="idle" aria-hidden="true">
+  <div class="m-body">
+    <i class="m-head"><b></b><b></b><u></u></i>
+    <i class="m-arm m-arm-l"></i><i class="m-arm m-arm-r"></i>
+    <i class="m-leg m-leg-l"></i><i class="m-leg m-leg-r"></i>
+    <i class="m-prop m-prop-winter"></i><i class="m-prop m-prop-summer"></i>
+    <i class="m-prop m-prop-autumn"></i><i class="m-prop m-prop-spring"></i>
+  </div>
+  <span class="mascot-bubble" id="mascotBubble">要检查更新吗？</span>
+</div>
+</div>
   </div>
 
   <details class="group" open>

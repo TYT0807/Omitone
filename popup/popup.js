@@ -1072,6 +1072,123 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreGroupState();
 });
 
+// ── 四季主题 / 点击水纹 / 彩蛋小人 ──────────────────────────────────────────
+//
+// 纯取乐，与刷课逻辑**零耦合**：不读配置、不写存储、不碰 page.js。
+// 外层包 try/catch —— 任何一步出错都静默放弃，绝不能让装饰拖垮弹窗。
+// 四季是**每次打开重掷**，刻意不做持久化（用户要的就是"每次都不同"）。
+(function omFancy() {
+  try {
+    var SEASONS = ["spring", "summer", "autumn", "winter"];
+    var season = SEASONS[Math.floor(Math.random() * SEASONS.length)];
+    document.documentElement.setAttribute("data-season", season);
+
+    var eco = document.documentElement.getAttribute("data-motion") === "eco";
+    window.__omitoneSeason = season;
+
+    function kick(el, frames, opts) {
+      try {
+        var a = el.animate(frames, opts);
+        a.onfinish = function () { try { el.remove(); } catch (e) {} };
+      } catch (e) { try { el.remove(); } catch (e2) {} }
+    }
+
+    // ---- 常驻粒子：纯 CSS 循环，数量固定，不进 rAF ----
+    var layer = document.getElementById("fxLayer");
+    if (layer) {
+      var count = eco ? 5 : 10;
+      for (var i = 0; i < count; i++) {
+        var p = document.createElement("i");
+        var size = 3 + Math.random() * 4;
+        p.style.width = size + "px";
+        p.style.height = size + "px";
+        p.style.left = (Math.random() * 96) + "%";
+        p.style.animationDuration = (6 + Math.random() * 5) + "s";
+        p.style.animationDelay = (-Math.random() * 8) + "s";
+        p.style.opacity = (0.32 + Math.random() * 0.38).toFixed(2);
+        if (season === "autumn") p.style.borderRadius = "40% 60% 55% 45%";
+        if (season === "winter") p.style.background = "rgba(255,255,255,.88)";
+        layer.appendChild(p);
+      }
+    }
+
+    // ---- 点击：水纹扩散 + 季节粒子炸开 ----
+    function burst(x, y, small) {
+      if (eco) return;
+      var ring = document.createElement("span");
+      ring.className = "fx-ripple";
+      ring.style.left = x + "px";
+      ring.style.top = y + "px";
+      document.body.appendChild(ring);
+      kick(ring, [{ transform: "scale(.4)", opacity: .85 }, { transform: "scale(6.5)", opacity: 0 }],
+        { duration: 520, easing: "cubic-bezier(.22,1,.36,1)" });
+
+      var n = small ? 5 : 8;
+      for (var k = 0; k < n; k++) {
+        var s = document.createElement("span");
+        s.className = "fx-spark";
+        s.style.left = x + "px";
+        s.style.top = y + "px";
+        document.body.appendChild(s);
+        var angle = (Math.PI * 2 * k) / n + Math.random() * 0.5;
+        var dist = 18 + Math.random() * 16;
+        kick(s, [
+          { transform: "translate(0,0) scale(1)", opacity: .9 },
+          { transform: "translate(" + Math.cos(angle) * dist + "px," + (Math.sin(angle) * dist + 10) + "px) scale(.3)", opacity: 0 }
+        ], { duration: 700, easing: "cubic-bezier(.22,1,.36,1)" });
+      }
+    }
+
+    var snowClicks = 0;
+    document.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var hit = t.closest(".btn, .minor button, .toggle, .link-btn");
+      if (!hit) return;
+      var box = hit.getBoundingClientRect();
+      burst(ev.clientX || (box.left + box.width / 2), ev.clientY || (box.top + box.height / 2),
+        !!t.closest(".toggle, .link-btn"));
+
+      // 冬天：按钮上"塌雪"；夏天：按钮被晒暖
+      if (season === "winter" && hit.classList.contains("btn")) {
+        hit.classList.add("snow-hit");
+        snowClicks += 1;
+        var m0 = document.getElementById("mascot");
+        var b0 = document.getElementById("mascotBubble");
+        if (snowClicks >= 3 && m0) {
+          m0.setAttribute("data-pose", "happy");
+          if (b0) { b0.textContent = "雪够厚啦！"; b0.classList.add("show"); }
+        }
+      }
+      if (season === "summer" && hit.classList.contains("btn")) hit.classList.add("sunbaked");
+    }, true);
+
+    // ---- 彩蛋小人：滑下来挂边 → 挣扎攀爬 → 坐到更新栏旁 ----
+    var mascot = document.getElementById("mascot");
+    var bubble = document.getElementById("mascotBubble");
+    if (!mascot) return;
+
+    function pose(name) { mascot.setAttribute("data-pose", name); }
+
+    setTimeout(function () {                       // 1.4s：被发现挂在边缘
+      mascot.classList.add("show");
+      pose("hang");   // 从上方滑下来，挂在更新栏上沿
+    }, 1400);
+    setTimeout(function () { pose("climb"); }, 3000);   // 挣扎着往上爬
+    setTimeout(function () {                            // 挪到更新栏旁坐下
+      pose("sit");   // 落座：它本来就在更新栏里（流式），不用再算坐标
+    }, 4200);
+    setTimeout(function () {                            // 提醒检查更新
+      pose("point");
+      if (bubble) { bubble.textContent = "要检查更新吗？"; bubble.classList.add("show"); }
+    }, 5200);
+    setTimeout(function () {                            // 收尾：开心晃腿
+      if (bubble) bubble.classList.remove("show");
+      pose("happy");
+    }, 9500);
+  } catch (e) {}
+})();
+
 // ── 帧率守则：实测决定动画档位 ─────────────────────────────────────────────
 //
 // 目标 60fps；掉到 45fps 以下就把 <html> 打成 data-motion="eco"，
