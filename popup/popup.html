@@ -304,6 +304,12 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 }
 .link-btn:hover{ opacity:.6; }
 .link-btn:disabled{ color:var(--muted); cursor:default; }
+/* 更新静默期：一行小字 + 极简下拉，不抢注意力 */
+.mute-pick{ display:inline-flex; align-items:center; gap:5px; color:var(--muted); font-size:11.5px; margin-left:auto; }
+.mute-pick select{
+  width:auto; padding:2px 6px; font-size:11.5px; border-radius:8px;
+  background:var(--field); border:1px solid var(--hairline);
+}
 
 /* ---------- 提示条 / 日志 ---------- */
 .toast{
@@ -408,106 +414,52 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
   background:var(--fx); pointer-events:none; z-index:10;
 }
 
-/* ---------- 角色（重做：关节锚点正确，不再"手脚乱飞"） ----------
-   ⚠️ 上一版的毛病与修法：
-     ① **身体断层**：头和躯干各画各的，中间有空隙 → 现在头往下压 3px 与躯干**重叠**，
-        再加一段 neck 补上视觉连接，任何缩放下都不露缝。
-     ② **关节脱节 / 手脚乱飞**：四肢用 `left:50%` + 负 margin 定位，旋转原点落在元素中心，
-        一转就绕着空气转，肢体末端甩得离谱。
-        → 现在每条肢体是一个**绝对定位的"关节容器"**，关节在容器顶端（肩 / 胯），
-          `transform-origin: 50% 0` —— 旋转时永远绕关节，端点不会飞出去。
-     ③ 姿势全部只改 `rotate`，不改 `top/left`，所以切换姿势时关节位置始终一致。
-   ========================================================================== */
+/* ---------- 角色：原创 2D 立绘（不拆件，所以不会有"手脚乱飞"） ----------
+   旧版是把头/身/四肢分别用 div 摆出来再各自旋转 —— 关节靠手调，一换姿势就脱节。
+   现在换成一张**完整立绘**：姿势通过整体倾斜/压缩/弹跳表达，
+   肢体天然连在一起，**结构上不可能脱节**。 */
 .pet{
-  --skin:#f7dcc2; --skin-shade:#eccbae; --hair:#4a3f3a;
-  position:absolute; right:-2px; bottom:-46px; width:40px; height:56px; flex:none;
+  position:absolute; right:-2px; bottom:-46px; width:40px; height:56px;
   pointer-events:none; opacity:0; transform:translateY(-18px);
   transition:transform .7s var(--ease-out), opacity .35s linear;
   will-change:transform, opacity;
 }
 .pet.show{ opacity:1; transform:none; }
-
-/* 躯干：包含头、四肢的定位基准 */
-.pet-body{
-  position:absolute; left:50%; bottom:8px; width:18px; height:20px; margin-left:-9px;
-  border-radius:9px 9px 8px 8px; background:var(--accent);
-  transition:transform .5s var(--ease-spring);
+.pet-art{
+  width:100%; height:100%; object-fit:contain; display:block;
   transform-origin:50% 100%;
-}
-/* 脖子：故意比头宽 1px、压在两者之间，消除"断层" */
-.pet-neck{ position:absolute; left:50%; top:-4px; width:6px; height:6px; margin-left:-3px; border-radius:3px; background:var(--skin-shade); }
-
-.pet-head{
-  position:absolute; left:50%; top:-19px; width:24px; height:24px; margin-left:-12px;
-  border-radius:50%; background:var(--skin);
-  transition:transform .45s var(--ease-spring); transform-origin:50% 100%;
-}
-.pet-hair{
-  position:absolute; left:-1px; top:-1px; width:26px; height:13px;
-  border-radius:13px 13px 40% 40%; background:var(--hair);
-}
-.pet-hair::after{                       /* 呆毛 */
-  content:""; position:absolute; left:15px; top:-5px; width:5px; height:7px;
-  border-radius:3px 3px 0 0; background:var(--hair); transform:rotate(18deg);
-}
-.pet-eye{ position:absolute; top:13px; width:2.8px; height:3px; border-radius:50%; background:#2b2f36; }
-.pet-eye-l{ left:7px; } .pet-eye-r{ left:14px; }
-.pet-mouth{
-  position:absolute; left:50%; top:18px; width:7px; height:3px; margin-left:-3.5px;
-  border-bottom:1.4px solid #2b2f36; border-radius:0 0 6px 6px;
+  transition:transform .42s var(--ease-spring);
+  filter:drop-shadow(0 2px 3px rgba(16,24,40,.16));
+  -webkit-user-drag:none; user-select:none;
 }
 
-/* 四肢：容器 = 关节。关节在顶端，肢体是容器里往下伸的条 */
-.pet-arm{
-  position:absolute; top:3px; width:4.4px; height:13px;
-  transform-origin:50% 0;                       /* ← 肩关节 */
-  transition:transform .45s var(--ease-spring);
+/* 五种姿态：整体姿态语言 —— 倾斜 / 压缩 / 弹跳 / 前倾 */
+.pet[data-pose="hang"] .pet-art{ transform:translateY(-3px) rotate(3deg); }
+.pet[data-pose="climb"] .pet-art{ transform:rotate(-9deg) scale(1.02, .98); }
+.pet[data-pose="sit"] .pet-art{ transform:translateY(3px) scale(1.06, .92); }
+.pet[data-pose="happy"] .pet-art{ animation:pet-hop .55s var(--ease-spring) infinite alternate; }
+.pet[data-pose="point"] .pet-art{ transform:rotate(7deg) translateY(-1px); }
+@keyframes pet-hop{
+  from{ transform:translateY(1px) scale(1, .97) }
+  to{ transform:translateY(-4px) scale(.98, 1.03) }
 }
-.pet-arm-l{ left:-1.5px; } .pet-arm-r{ right:-1.5px; }
-.pet-arm::after{ content:""; position:absolute; left:0; top:0; width:100%; height:100%; border-radius:2.4px; background:var(--accent-2); }
+/* 夏天吃冰激凌：整个小人开心地晃两下 */
+@keyframes pet-lick{ 0%,100%{ transform:none } 45%{ transform:rotate(-5deg) translateY(-2px) } }
+.pet[data-eat="1"] .pet-art{ animation:pet-lick .55s var(--ease-spring) 2; }
 
-.pet-leg{
-  position:absolute; bottom:-8px; width:4.6px; height:10px;
-  transform-origin:50% 0;                       /* ← 胯关节 */
-  transition:transform .45s var(--ease-spring);
-}
-.pet-leg-l{ left:2.4px; } .pet-leg-r{ right:2.4px; }
-.pet-leg::after{ content:""; position:absolute; left:0; top:0; width:100%; height:100%; border-radius:2.4px; background:var(--accent-2); }
-
-/* 五种姿态：只改 rotate，关节位置不动 */
-.pet[data-pose="hang"] .pet-body{ transform:translateY(-2px) }
-.pet[data-pose="hang"] .pet-arm-l{ transform:rotate(152deg) }
-.pet[data-pose="hang"] .pet-arm-r{ transform:rotate(-152deg) }
-.pet[data-pose="hang"] .pet-leg-l{ transform:rotate(9deg) }
-.pet[data-pose="hang"] .pet-leg-r{ transform:rotate(-9deg) }
-
-.pet[data-pose="climb"] .pet-body{ transform:rotate(-4deg) }
-.pet[data-pose="climb"] .pet-arm-l{ transform:rotate(140deg) }
-.pet[data-pose="climb"] .pet-arm-r{ transform:rotate(-34deg) }
-.pet[data-pose="climb"] .pet-leg-l{ transform:rotate(14deg) }
-.pet[data-pose="climb"] .pet-leg-r{ transform:rotate(-6deg) }
-
-.pet[data-pose="sit"] .pet-body{ transform:translateY(2px) }
-.pet[data-pose="sit"] .pet-leg-l{ transform:rotate(62deg) }
-.pet[data-pose="sit"] .pet-leg-r{ transform:rotate(-62deg) }
-.pet[data-pose="sit"] .pet-arm-l{ transform:rotate(12deg) }
-.pet[data-pose="sit"] .pet-arm-r{ transform:rotate(-12deg) }
-
-.pet[data-pose="happy"] .pet-arm-l{ transform:rotate(138deg) }
-.pet[data-pose="happy"] .pet-arm-r{ transform:rotate(-138deg) }
-.pet[data-pose="happy"] .pet-body{ animation:pet-hop .55s var(--ease-spring) infinite alternate }
-
-.pet[data-pose="point"] .pet-arm-r{ transform:rotate(-118deg) }
-.pet[data-pose="point"] .pet-leg-l{ transform:rotate(6deg) }
-@keyframes pet-hop{ from{ transform:translateY(1px) } to{ transform:translateY(-3px) } }
-
-/* 季节道具 */
+/* 季节道具（挂在立绘旁边） */
 .pet-prop{ position:absolute; display:none; }
-html[data-season="winter"] .pet-prop-winter{ display:block; right:-10px; bottom:0; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
-html[data-season="summer"] .pet-prop-summer{ display:block; right:-9px; top:4px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
+html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
+html[data-season="summer"] .pet-prop-summer{ display:block; right:-10px; top:16px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
 html[data-season="summer"] .pet-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
-html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-2px; top:-1px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
-html[data-season="spring"] .pet-prop-spring{ display:block; right:-8px; top:-3px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-3px; top:8px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+
+/* 冬天雪人随点击变大 */
+.pet-prop-winter{ transform:scale(.55); transform-origin:50% 100%; transition:transform .45s var(--ease-spring); }
+.pet[data-snow="1"] .pet-prop-winter{ transform:scale(.78); }
+.pet[data-snow="2"] .pet-prop-winter{ transform:scale(1); }
+.pet[data-snow="3"] .pet-prop-winter{ transform:scale(1.18); }
 
 /* ---------- 气泡：单例 + 不压身体 ----------
    旧版的问题：气泡绝对定位在身体旁边，长句会盖住脑袋；而且多条消息会叠在一起。
@@ -530,6 +482,33 @@ html[data-season="spring"] .pet-prop-spring{ display:block; right:-8px; top:-3px
   transform:rotate(-45deg);
 }
 .pet-bubble.show{ opacity:1; transform:none; }
+
+/* ---------- 四季差异化互动 ---------- */
+
+/* 冬天：按钮上的雪塌落（JS 生成，雪花从按钮下沿往下掉） */
+.fx-snow{ position:fixed; width:5px; height:5px; margin:-2.5px 0 0 -2.5px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 2px rgba(120,150,190,.35); pointer-events:none; z-index:10; }
+
+/* 冬天：雪人随点击变大（0/1/2/3 级） */
+.pet-prop-winter{ transform:scale(.55); transform-origin:50% 100%; transition:transform .45s var(--ease-spring); }
+.pet[data-snow="1"] .pet-prop-winter{ transform:scale(.78); }
+.pet[data-snow="2"] .pet-prop-winter{ transform:scale(1); }
+.pet[data-snow="3"] .pet-prop-winter{ transform:scale(1.18); }
+
+/* 夏天：吃冰激凌（点一下舔两口） */
+@keyframes pet-lick{ 0%,100%{ transform:none } 45%{ transform:translateY(-4px) rotate(-14deg) } }
+.pet[data-eat="1"] .pet-prop-summer{ animation:pet-lick .55s var(--ease-spring) 2; }
+
+/* 秋天：脚下踩出的叶子（JS 生成） */
+.fx-leaf{ position:fixed; width:7px; height:5px; margin:-2.5px 0 0 -3.5px; border-radius:40% 60% 55% 45%;
+  background:var(--fx); pointer-events:none; z-index:10; }
+
+/* 四季按钮的"第二层反馈"：按下时按钮本身形变，不只是变色 */
+.btn:active{ transform:scale(.972) translateY(1px); }
+.btn:hover{ box-shadow:0 2px 6px rgba(10,110,220,.28), inset 0 1px 0 rgba(255,255,255,.3); }
+html[data-season="winter"] .btn{ background:linear-gradient(180deg,#6f9fca 0%,#4a7fb5 55%,#3a6a9c 100%); }
+html[data-season="autumn"] .btn{ background:linear-gradient(180deg,#e08a45 0%,#d2691e 55%,#b4551a 100%); }
+html[data-season="spring"] .btn{ background:linear-gradient(180deg,#ef7fb4 0%,#e0559b 55%,#c73f83 100%); }
 
 /* eco 档：去掉弹跳与滑动，只留淡入 */
 [data-motion="eco"] .pet-body{ animation:none !important; }
@@ -604,21 +583,24 @@ body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; po
       <button class="link-btn" id="doUpdate" style="display:none">是，覆盖更新</button>
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
       <button class="link-btn" id="doUntil" style="display:none">打开扩展页</button>
+      <label class="mute-pick" title="在一段时间内不再提醒更新（不影响手动检查）">
+        <span>更新提醒</span>
+        <select id="updateMute">
+          <option value="0">正常</option>
+          <option value="1">静默 1 天</option>
+          <option value="3">静默 3 天</option>
+          <option value="7">静默 7 天</option>
+          <option value="30">静默 30 天</option>
+          <option value="-1">不再提醒</option>
+        </select>
+      </label>
     
 <div class="pet" id="mascot" data-pose="idle" aria-hidden="true">
-  <div class="pet-body">
-    <div class="pet-leg pet-leg-l"></div><div class="pet-leg pet-leg-r"></div>
-    <div class="pet-neck"></div>
-    <div class="pet-arm pet-arm-l"></div><div class="pet-arm pet-arm-r"></div>
-    <div class="pet-head">
-      <div class="pet-hair"></div>
-      <span class="pet-eye pet-eye-l"></span><span class="pet-eye pet-eye-r"></span>
-      <span class="pet-mouth"></span>
-    </div>
-    <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
-    <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
-  </div>
+  <img class="pet-art" src="pet.png" alt="" draggable="false">
+  <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
+  <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
   <div class="pet-bubble" id="mascotBubble"></div>
+</div>
 </div>
 </div>
   </div>

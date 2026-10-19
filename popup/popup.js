@@ -100,6 +100,7 @@ const els = {
   checkUpdate: $("checkUpdate"),
   doUpdate: $("doUpdate"),
   doLater: $("doLater"),
+  updateMute: $("updateMute"),
   doUntil: $("doUntil"),
   start: $("start"),
   stop: $("stop"),
@@ -840,6 +841,12 @@ const UPDATE_ZIP = `https://github.com/${UPDATE_REPO}/releases/latest/download/o
 // 那时**所有人都查不了** —— "你查得勤"和"别人查不到"其实是同一件事的两面。
 // 所以：手动 6 小时一次，自动 24 小时一次。
 const UPDATE_AT = { manual: "omitone.update.manualAt", auto: "omitone.update.autoAt" };
+// 静默期：用户嫌烦就让他选"多久之内别再提醒"。存天数，0 = 正常，-1 = 永久
+const UPDATE_MUTE_KEY = "omitone.update.muteDays";
+function getMuteDays() {
+  try { return Number(localStorage.getItem(UPDATE_MUTE_KEY) || 0); } catch (e) { return 0; }
+}
+function isUpdateMuted() { return getMuteDays() !== 0; }
 const UPDATE_GAP = { manual: 6 * 3600 * 1000, auto: 24 * 3600 * 1000 };
 
 function updateSeenAt(kind) {
@@ -887,6 +894,9 @@ async function checkUpdate(opts) {
   const kind = manual ? "manual" : "auto";
 
   // 限流：手动 6 小时一次、自动 24 小时一次（理由见上面的注释）
+  // 静默期内不做**自动**检测（手动点还是要让他查）
+  if (!manual && isUpdateMuted()) return;
+
   const last = updateSeenAt(kind);
   if (last && Date.now() - last < UPDATE_GAP[kind]) {
     if (manual) {
@@ -958,6 +968,18 @@ function showUpdateChoices() {
 
 if (els.checkUpdate) {
   els.checkUpdate.addEventListener("click", () => checkUpdate({ manual: true }));
+}
+
+// 静默期下拉：选完立刻生效（下次打开也记得）
+if (els.updateMute) {
+  els.updateMute.value = String(getMuteDays());
+  els.updateMute.addEventListener("change", () => {
+    try { localStorage.setItem(UPDATE_MUTE_KEY, String(Number(els.updateMute.value) || 0)); } catch (e) {}
+    const d = getMuteDays();
+    els.updateMsg.textContent = d === 0 ? "已恢复更新提醒"
+      : d === -1 ? "已设为不再提醒更新（随时可手动检测）"
+      : `已静默 ${d} 天，期间不自动提醒（仍可手动检测）`;
+  });
 }
 
 if (els.doUpdate) {
@@ -1140,6 +1162,41 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     var snowClicks = 0;
+
+    /** 冬天的"塌雪"：从按钮下沿掉一串雪，边掉边化 */
+    function spillSnow(btn) {
+      var r = btn.getBoundingClientRect();
+      for (var i = 0; i < 7; i++) {
+        var f = document.createElement("span");
+        f.className = "fx-snow";
+        f.style.left = (r.left + 10 + Math.random() * (r.width - 20)) + "px";
+        f.style.top = (r.bottom - 2) + "px";
+        document.body.appendChild(f);
+        kick(f, [
+          { transform: "translate(0,0) scale(1)", opacity: 1 },
+          { transform: "translate(" + ((Math.random() - 0.5) * 26).toFixed(0) + "px," + (18 + Math.random() * 22).toFixed(0) + "px) scale(.45)", opacity: 0 }
+        ], { duration: 700 + Math.random() * 500, easing: "cubic-bezier(.4,0,.7,1)" });
+      }
+    }
+
+    /** 秋天：脚下踩出三片叶子 */
+    function stepLeaves() {
+      var m = document.getElementById("mascot");
+      if (!m) return;
+      var r = m.getBoundingClientRect();
+      for (var i = 0; i < 3; i++) {
+        var l = document.createElement("span");
+        l.className = "fx-leaf";
+        l.style.left = (r.left + 6 + Math.random() * 22) + "px";
+        l.style.top = (r.bottom - 6) + "px";
+        document.body.appendChild(l);
+        kick(l, [
+          { transform: "translate(0,-14px) rotate(0deg)", opacity: 0 },
+          { transform: "translate(0,0) rotate(40deg)", opacity: .9, offset: .4 },
+          { transform: "translate(6px,10px) rotate(90deg)", opacity: 0 }
+        ], { duration: 900, easing: "ease-out" });
+      }
+    }
     document.addEventListener("click", function (ev) {
       var t = ev.target;
       if (!t || !t.closest) return;
@@ -1149,18 +1206,32 @@ document.addEventListener("DOMContentLoaded", () => {
       burst(ev.clientX || (box.left + box.width / 2), ev.clientY || (box.top + box.height / 2),
         !!t.closest(".toggle, .link-btn"));
 
-      // 冬天：按钮上"塌雪"；夏天：按钮被晒暖
-      if (season === "winter" && hit.classList.contains("btn")) {
-        hit.classList.add("snow-hit");
+      // 四个季节，四种"点下去之后发生什么"
+      if (!hit.classList.contains("btn")) return;
+
+      if (season === "winter") {
         snowClicks += 1;
+        hit.classList.add("snow-hit");
+        spillSnow(hit);
         var m0 = document.getElementById("mascot");
         var b0 = document.getElementById("mascotBubble");
-        if (snowClicks >= 3 && m0) {
-          m0.setAttribute("data-pose", "happy");
-          if (b0) { b0.textContent = "雪够厚啦！"; b0.classList.add("show"); }
+        if (m0) {
+          m0.setAttribute("data-snow", String(Math.min(3, snowClicks)));
+          if (snowClicks >= 3) {
+            m0.setAttribute("data-pose", "happy");
+            if (b0) { b0.textContent = "雪人堆好啦！"; b0.classList.add("show"); }
+          }
         }
+      } else if (season === "summer") {
+        hit.classList.add("sunbaked");
+        var m1 = document.getElementById("mascot");
+        if (m1) {
+          m1.setAttribute("data-eat", "1");
+          setTimeout(function () { m1.removeAttribute("data-eat"); }, 1300);
+        }
+      } else if (season === "autumn") {
+        stepLeaves();
       }
-      if (season === "summer" && hit.classList.contains("btn")) hit.classList.add("sunbaked");
     }, true);
 
     // ---- 彩蛋小人：滑下来挂边 → 挣扎攀爬 → 坐到更新栏旁 ----
@@ -1172,15 +1243,20 @@ document.addEventListener("DOMContentLoaded", () => {
 
     setTimeout(function () {                       // 1.4s：被发现挂在边缘
       mascot.classList.add("show");
-      pose("hang");   // 从上方滑下来，挂在更新栏上沿
+      mascot.style.transform = "translateY(-96px)";   // 吊在页面顶边，只露上半身
+      pose("hang");
     }, 1400);
-    setTimeout(function () { pose("climb"); }, 3000);   // 挣扎着往上爬
+    setTimeout(function () {
+      mascot.style.transform = "translateY(-58px)";   // 挣扎着往下爬
+      pose("climb");
+    }, 3000);
     setTimeout(function () {                            // 挪到更新栏旁坐下
-      pose("sit");   // 落座：它本来就在更新栏里（流式），不用再算坐标
+      mascot.style.transform = "";   // 落座：transform 归零（合成层）
+      pose("sit");
     }, 4200);
     setTimeout(function () {                            // 提醒检查更新
       pose("point");
-      if (bubble) { bubble.textContent = "要检查更新吗？"; bubble.classList.add("show"); }
+      if (bubble) { bubble.textContent = isUpdateMuted() ? "今天也要好好学习" : "要检查更新吗？"; bubble.classList.add("show"); }
     }, 5200);
     setTimeout(function () {                            // 收尾：开心晃腿
       if (bubble) bubble.classList.remove("show");
