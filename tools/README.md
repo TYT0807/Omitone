@@ -332,7 +332,7 @@ OMITONE_EXT_DIR=dist/omitone-1.2.6 npm run e2e
 | 答题往返 + 回填 DOM | `/quiz` | 提示词新格式、模型往返、5 种题型答案真正写进 DOM 与隐藏域、`_areQuizAnswersFilled` |
 | 记住正确答案 | `/quiz-result` | `.fr.dui` / `.fr.cuo` 对错判定（保守不误记）、从 `.Py_answer` 解析答案、写入缓存 |
 | 任务类型识别 | `/blank` | 视频/音频/文档/图片/测验/投票的 module→处理方式映射、扩展名识别、不支持类型留日志 |
-| 视频倍速 / 静音 / seek | `/media` | 配置 → 元素属性、seek 到 `duration-3s`、隐藏 audio 兜底、音频静音与倍速 |
+| 视频倍速 / 静音 / seek | `/media` | 配置 → 元素属性、seek 到 `duration-3s`、隐藏 audio 兜底、**音频不静音**但照样按配置倍速 |
 | 验证码弹窗识别 | `/captcha-dialog` | `#imgVerCode` 命中、验证码结果清洗规则 |
 | 独立验证码页识别 | `/captcha-verify` | 页面判定、抓图与输入框定位 |
 | 弹窗题识别 | `/popup-quiz` | `.ans-pop-quiz` 命中与题目文本 |
