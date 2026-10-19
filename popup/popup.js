@@ -876,7 +876,7 @@ async function checkUpdate(opts) {
   const manual = !!(opts && opts.manual);
   const local = localBuildInfo();
   if (manual) {
-    els.updateMsg.textContent = "正在检查…";
+    els.updateMsg.textContent = "正在检测…";
     els.checkUpdate.disabled = true;
   }
   els.doUpdate.style.display = "none";
@@ -900,23 +900,28 @@ async function checkUpdate(opts) {
     const newerBuild = !newerVersion && local.builtAt > 0 && remoteAt > 0 &&
       remoteAt - local.builtAt > 60000;
 
+    // 措辞原则（用户明确要求）：
+    //   ① 更新是**覆盖安装** —— 下载后解压覆盖原目录，不是装一个"新的"
+    //   ② 检测不出来的时候**只说检测失败**，不推断"已是最新"、也不推断"有新版"
     if (newerVersion) {
-      els.updateMsg.textContent = `有新版本：${remoteVersion}`;
+      els.updateMsg.textContent = `线上是 ${remoteVersion}（本地 ${local.version}）—— 下载后解压覆盖原目录即可`;
       els.doUpdate.style.display = "";
       els.updateRow.classList.add("hot");
     } else if (newerBuild) {
-      els.updateMsg.textContent = `这个版本有更新的包（${fmtTime(remoteAt)}），建议重新下载`;
+      els.updateMsg.textContent = `线上的包比本地新（${fmtTime(remoteAt)}）—— 下载后解压覆盖原目录即可`;
       els.doUpdate.style.display = "";
       els.updateRow.classList.add("hot");
     } else if (!local.builtAt) {
       // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
-      els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号）`;
+      els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号，与线上一致）`;
     } else {
-      els.updateMsg.textContent = "已是最新版本";
+      els.updateMsg.textContent = "已是最新（与线上一致）";
     }
   } catch (error) {
-    // 打不开 GitHub 很常见（网络原因），别只丢一个红字 —— 顺手把下载入口亮出来
-    els.updateMsg.textContent = "检查失败（可能连不上 GitHub）";
+    // ⚠️ 只陈述"没检测出来"，**不猜原因、也不给结论**：
+    // 连不上、GitHub 限流、代理干扰、本机时间偏差…都可能；此时既不能说是最新，
+    // 也不能说不是最新。下载入口仍然留着，让人自己决定。
+    els.updateMsg.textContent = "检测失败 —— 无法确认是否为最新（网络或其他原因都可能）";
     els.doUpdate.style.display = "";
   } finally {
     els.checkUpdate.disabled = false;

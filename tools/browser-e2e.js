@@ -4326,6 +4326,7 @@ SCENARIOS.push({
       'return Promise.resolve({tag_name:"v9.9.9",assets:[{name:"omitone.zip",updated_at:new Date().toISOString()}]});}});};' +
       'document.getElementById("checkUpdate").click();' +
       'await new Promise(function(r){setTimeout(r,150);});' +
+      'out.btnLabel=String((document.getElementById("doUpdate")||{}).textContent||"");' +
       'out.higherMsg=String(document.getElementById("updateMsg").textContent||"");' +
       'out.higherBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
       // ② 网络失败
@@ -4336,13 +4337,17 @@ SCENARIOS.push({
       'out.failBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
       'return out;})()'
     );
-    check('前置条件：弹窗里有「检查更新」和结果文字',
+    check('前置条件：弹窗里有「检测更新」和结果文字',
       !!probe && probe.hasBtn === true && probe.hasMsg === true, JSON.stringify(probe));
-    check('线上版本更高 → 提示「有新版本」并亮出「去下载」',
-      !!probe && /有新版本/.test(String(probe.higherMsg)) && probe.higherBtn === true,
+    check('线上版本更高 → 说明线上是哪一版，并提示「解压覆盖原目录」（更新是覆盖，不是装个新的）',
+      !!probe && /线上是\s*9\.9\.9/.test(String(probe.higherMsg)) &&
+      /覆盖原目录/.test(String(probe.higherMsg)) && probe.higherBtn === true,
       JSON.stringify(probe));
-    check('网络失败 → 不瞎下结论，但也要给下载入口（否则用户只能干瞪眼）',
-      !!probe && /检查失败/.test(String(probe.failMsg)) && probe.failBtn === true,
+    check('按钮写的是「下载覆盖包」（不是「下载新版本」）',
+      !!probe && /覆盖包/.test(String(probe.btnLabel)), JSON.stringify(probe));
+    check('检测失败 → 只说检测失败，**绝不能**冒出「已是最新」这种结论；下载入口仍保留',
+      !!probe && /检测失败/.test(String(probe.failMsg)) &&
+      String(probe.failMsg).indexOf('已是最新') === -1 && probe.failBtn === true,
       JSON.stringify(probe));
   }
 });
