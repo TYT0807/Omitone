@@ -28,6 +28,10 @@
 <sub>里面每个要动手的地方都拆成了四问 —— **看到什么 → 点哪里 → 怎样才算对 → 不对怎么办**。
 其中「怎样才算对」是专门给你这种"不知道屏幕上这算不算正常"的情况写的。</sub>
 
+<img src="docs/images/popup.png" alt="设置弹窗（真实截图）" width="380">
+
+<sub>设置弹窗长这样 —— 顶部一行就是<strong>版本 + 检查更新</strong>，装完可以点它看看手里的旧不旧。</sub>
+
 > 装不会？往下看 [**三步装好**](#三步装好不懂-github-也能做) —— 按"从没用过 GitHub"写的。
 > 说明书就在本仓库里：在线版看 [**在线说明书**](https://tyt0807.github.io/Omitone/docs/manual.html)，
 > 想离线或转发给同学就下载 [**PDF 版**](https://github.com/TYT0807/Omitone/releases/latest/download/Omitone-manual.pdf)。
@@ -544,7 +548,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**9899 行 / 330 个方法**）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 11300 行 / 322 个方法**）：
 
 > ### ⚠️ `page.js` 已拆成 `src/page/` 下的 16 个**按域**片段
 >
