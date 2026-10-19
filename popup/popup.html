@@ -503,9 +503,36 @@ html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px;
 .fx-leaf{ position:fixed; width:7px; height:5px; margin:-2.5px 0 0 -3.5px; border-radius:40% 60% 55% 45%;
   background:var(--fx); pointer-events:none; z-index:10; }
 
-/* 四季按钮的"第二层反馈"：按下时按钮本身形变，不只是变色 */
+/* ---------- 四季按钮：四套不同的"按下去" ---------- */
+.btn{ position:relative; overflow:hidden; }
 .btn:active{ transform:scale(.972) translateY(1px); }
-.btn:hover{ box-shadow:0 2px 6px rgba(10,110,220,.28), inset 0 1px 0 rgba(255,255,255,.3); }
+
+/* 冬：按钮顶面积一层雪。点下去时这层雪**整体塌落**（JS 生成一块往下掉的雪块） */
+html[data-season="winter"] .btn::before{
+  content:""; position:absolute; left:0; right:0; top:0; height:3px; pointer-events:none;
+  background:linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,.55));
+  border-radius:12px 12px 0 0;
+}
+html[data-season="winter"] .btn.snow-hit::before{ opacity:0; transition:opacity .18s linear; }
+
+/* 夏：一道光扫过按钮（光照感），配合颜色变暖 */
+html[data-season="summer"] .btn::after{
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
+  background:linear-gradient(105deg, transparent 30%, rgba(255,255,255,.55) 48%, transparent 62%);
+  transform:translateX(-120%);
+}
+html[data-season="summer"] .btn:hover::after{ opacity:1; animation:btn-sheen .75s var(--ease-out); }
+@keyframes btn-sheen{ from{ transform:translateX(-120%) } to{ transform:translateX(120%) } }
+
+/* 秋：按下时按钮边缘泛起一点暖光，像踩进落叶堆 */
+html[data-season="autumn"] .btn:active{ box-shadow:0 0 0 3px rgba(210,105,30,.22), inset 0 1px 0 rgba(255,255,255,.28); }
+
+/* 春：按下时轻微上浮再落下（花开的那种"弹") */
+html[data-season="spring"] .btn:active{ transform:scale(.98) translateY(-1px); }
+
+/* 秋天：小人身上带一点暖调（"穿秋衣"的观感），围巾也加宽 */
+html[data-season="autumn"] .pet-art{ filter:drop-shadow(0 2px 3px rgba(16,24,40,.16)) sepia(.14) saturate(1.12); }
+html[data-season="autumn"] .pet-prop-autumn{ width:26px; height:6px; border-radius:4px; }
 html[data-season="winter"] .btn{ background:linear-gradient(180deg,#6f9fca 0%,#4a7fb5 55%,#3a6a9c 100%); }
 html[data-season="autumn"] .btn{ background:linear-gradient(180deg,#e08a45 0%,#d2691e 55%,#b4551a 100%); }
 html[data-season="spring"] .btn{ background:linear-gradient(180deg,#ef7fb4 0%,#e0559b 55%,#c73f83 100%); }

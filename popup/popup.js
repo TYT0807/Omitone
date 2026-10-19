@@ -1162,6 +1162,24 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     var snowClicks = 0;
+    var petReact = function () {};   // 由小人那段接管：点完按钮让它开心一下
+
+    /** 冬天的"积雪整体塌落"：一整块雪从按钮顶面掉下去（不是碎末） */
+    function snowSlab(btn) {
+      var r = btn.getBoundingClientRect();
+      var slab = document.createElement("span");
+      slab.className = "fx-snow";
+      slab.style.left = (r.left + r.width / 2 - 15) + "px";
+      slab.style.top = (r.top + 1) + "px";
+      slab.style.width = "30px";
+      slab.style.height = "6px";
+      slab.style.borderRadius = "3px";
+      document.body.appendChild(slab);
+      kick(slab, [
+        { transform: "translateY(0) rotate(0deg)", opacity: 1 },
+        { transform: "translateY(26px) rotate(9deg)", opacity: 0 }
+      ], { duration: 520, easing: "cubic-bezier(.5,0,.75,1)" });
+    }
 
     /** 冬天的"塌雪"：从按钮下沿掉一串雪，边掉边化 */
     function spillSnow(btn) {
@@ -1212,7 +1230,8 @@ document.addEventListener("DOMContentLoaded", () => {
       if (season === "winter") {
         snowClicks += 1;
         hit.classList.add("snow-hit");
-        spillSnow(hit);
+        snowSlab(hit);      // 整块积雪骤然塌落
+        spillSnow(hit);     // 再溅一把碎雪
         var m0 = document.getElementById("mascot");
         var b0 = document.getElementById("mascotBubble");
         if (m0) {
@@ -1232,6 +1251,7 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (season === "autumn") {
         stepLeaves();
       }
+      try { petReact(); } catch (e) {}
     }, true);
 
     // ---- 彩蛋小人：滑下来挂边 → 挣扎攀爬 → 坐到更新栏旁 ----
@@ -1241,27 +1261,53 @@ document.addEventListener("DOMContentLoaded", () => {
 
     function pose(name) { mascot.setAttribute("data-pose", name); }
 
-    setTimeout(function () {                       // 1.4s：被发现挂在边缘
-      mascot.classList.add("show");
-      mascot.style.transform = "translateY(-96px)";   // 吊在页面顶边，只露上半身
-      pose("hang");
-    }, 1400);
-    setTimeout(function () {
-      mascot.style.transform = "translateY(-58px)";   // 挣扎着往下爬
-      pose("climb");
-    }, 3000);
-    setTimeout(function () {                            // 挪到更新栏旁坐下
-      mascot.style.transform = "";   // 落座：transform 归零（合成层）
-      pose("sit");
-    }, 4200);
-    setTimeout(function () {                            // 提醒检查更新
-      pose("point");
-      if (bubble) { bubble.textContent = isUpdateMuted() ? "今天也要好好学习" : "要检查更新吗？"; bubble.classList.add("show"); }
-    }, 5200);
-    setTimeout(function () {                            // 收尾：开心晃腿
-      if (bubble) bubble.classList.remove("show");
-      pose("happy");
-    }, 9500);
+    // ── 出场：常规"淡入落座"；**1% 概率**才走"吊边 → 攀爬 → 落座"的彩蛋 ──
+    // 每次打开独立重掷、不记忆 —— "再开一次"就是重新抽一次。
+    var EASTER_RATE = 0.01;
+    // ?egg=1 可以手动看一次彩蛋（调试/预览用），不影响 1% 的随机
+    var isEgg = new URLSearchParams(location.search).get("egg") === "1" || Math.random() < EASTER_RATE;
+    window.__omitoneEgg = isEgg;
+
+    var poseTimer = null;
+    function setPose(name, holdMs) {
+      pose(name);
+      clearTimeout(poseTimer);
+      if (holdMs) poseTimer = setTimeout(function () { pose("sit"); }, holdMs);
+    }
+    petReact = function () { setPose("happy", 1200); };   // 点按钮 → 开心 1.2 秒 → 回坐姿
+
+    if (isEgg) {
+      setTimeout(function () {                        // 1.4s：被发现挂在边缘
+        mascot.classList.add("show");
+        mascot.style.transform = "translateY(-96px)";
+        pose("hang");
+      }, 1400);
+      setTimeout(function () {                        // 3.0s：挣扎着往下爬
+        mascot.style.transform = "translateY(-58px)";
+        pose("climb");
+      }, 3000);
+      setTimeout(function () {                        // 4.2s：落座
+        mascot.style.transform = "";
+        pose("sit");
+      }, 4200);
+      setTimeout(function () {                        // 5.2s：指着更新栏
+        pose("point");
+        if (bubble) {
+          bubble.textContent = isUpdateMuted() ? "今天也要好好学习" : "要检查更新吗？";
+          bubble.classList.add("show");
+        }
+      }, 5200);
+      setTimeout(function () {                        // 9.5s：收尾
+        if (bubble) bubble.classList.remove("show");
+        pose("happy");
+      }, 9500);
+    } else {
+      setTimeout(function () { mascot.classList.add("show"); pose("sit"); }, 900);
+    }
+
+    // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
+    var updLink = document.getElementById("checkUpdate");
+    if (updLink) updLink.addEventListener("mouseenter", function () { setPose("point", 1800); });
   } catch (e) {}
 })();
 
