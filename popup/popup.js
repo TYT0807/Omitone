@@ -1394,7 +1394,8 @@ document.addEventListener("DOMContentLoaded", () => {
     var petBubble = document.getElementById("mascotBubble");
     var pokeIdx = 0;
     var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
-    if (petEl && document.body.classList.contains("im")) {
+    if (petEl) {   // 弹窗和沉浸式都能戳：只占角色自己那 40px，不挡别处
+
       petEl.addEventListener("click", function (ev) {
         ev.stopPropagation();
         pokeIdx = (pokeIdx + 1) % POKES.length;
@@ -1406,6 +1407,35 @@ document.addEventListener("DOMContentLoaded", () => {
           petEl._pokeTimer = setTimeout(function () { petBubble.classList.remove("show"); }, 2200);
         }
       });
+    }
+
+    // 视线跟随（带死区 + 120ms 节流）：只有角度明显变了才动，
+    // 否则手抖一下它就疯狂转头 —— 那是"传感器"，不是"活的"。
+    if (petEl) {
+      var lastAngle = 0;
+      var gazeTick = null;
+      document.addEventListener("mousemove", function (ev) {
+        if (gazeTick) return;
+        gazeTick = setTimeout(function () { gazeTick = null; }, 120);
+        var r = petEl.getBoundingClientRect();
+        var ang = Math.atan2(ev.clientY - (r.top + r.height / 2), ev.clientX - (r.left + r.width / 2));
+        if (Math.abs(ang - lastAngle) < 0.35) return;      // 死区约 20°
+        lastAngle = ang;
+        var inner = petEl.querySelector(".pet-inner");
+        if (inner) inner.style.translate = (Math.cos(ang) * 1.6).toFixed(1) + "px " + (Math.sin(ang) * 1.2).toFixed(1) + "px";
+      }, { passive: true });
+
+      // 25 秒没搭理它 → 伸个懒腰（一次性，然后继续呼吸）
+      var idleTimer = null;
+      var resetIdle = function () {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(function () {
+          petEl.classList.add("yawn");
+          setTimeout(function () { petEl.classList.remove("yawn"); }, 1000);
+        }, 25000);
+      };
+      resetIdle();
+      petEl.addEventListener("click", resetIdle);
     }
 
     if (btnClear) {
