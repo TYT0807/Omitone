@@ -1054,11 +1054,65 @@ async function restoreGroupState() {
     groups.forEach((node, i) => { map[groupKeyOf(node, i)] = node.open; });
     try { chrome.storage.session.set({ [GROUP_STATE_KEY]: map }); } catch (e) {}
   };
-  groups.forEach((node) => node.addEventListener("toggle", persist));
+  groups.forEach((node) => {
+    node.addEventListener("toggle", () => {
+      persist();
+      if (!node.open) return;
+      // 每次展开都重放"逐行浮起"：先摘类 → 强制一次布局 → 再挂上（否则第二次不触发）
+      node.classList.remove("is-opening");
+      void node.offsetWidth;
+      node.classList.add("is-opening");
+      clearTimeout(node._openTimer);
+      node._openTimer = setTimeout(() => node.classList.remove("is-opening"), 700);
+    });
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   restoreGroupState();
 });
+
+// ── 帧率守则：实测决定动画档位 ─────────────────────────────────────────────
+//
+// 目标 60fps；掉到 45fps 以下就把 <html> 打成 data-motion="eco"，
+// 由 CSS 把时长压到 ~200ms、去掉逐行交错与涟漪（视觉上变成约 24fps 的步进 ——
+// 帧数少但均匀，比"60fps 名义上、实际掉帧"要顺）。
+//
+// 三条取舍：
+//   ① 只在打开后测 700ms 一次，不常驻跑 rAF（那本身就是耗电大户）；
+//   ② **单向降级**：本次会话不回升，避免在临界机器上反复横跳；
+//   ③ 系统开了「减少动态效果」直接进 eco，连测都不测。
+(function initMotionGovernor() {
+  var root = document.documentElement;
+  try {
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.setAttribute("data-motion", "eco");
+      return;
+    }
+  } catch (e) {}
+
+  var frames = 0;
+  var startAt = 0;
+  var lastAt = 0;
+  var worst = 0;
+
+  function tick(now) {
+    if (!startAt) { startAt = now; lastAt = now; }
+    frames += 1;
+    var delta = now - lastAt;
+    lastAt = now;
+    if (delta > worst) worst = delta;
+
+    if (now - startAt < 700) { requestAnimationFrame(tick); return; }
+
+    var fps = frames / ((now - startAt) / 1000);
+    window.__omitoneMotion = { fps: Math.round(fps), worstFrameMs: Math.round(worst) };
+    if (fps < 45) {
+      root.setAttribute("data-motion", "eco");
+      console.log("[Omitone] motion -> eco (" + Math.round(fps) + "fps)");
+    }
+  }
+  requestAnimationFrame(tick);
+})();
 
 document.addEventListener("DOMContentLoaded", load);

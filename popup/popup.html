@@ -127,56 +127,147 @@ body::before{
 }
 .minor button:hover{ background:var(--hover); color:var(--fg); }
 
-/* ---------- 分组：半透明卡片（不做 blur） ---------- */
+/* ==========================================================================
+   动效系统（第二版：让"展开/选择"看得见）
+   --------------------------------------------------------------------------
+   【帧率策略】
+     目标 60fps。弹窗打开后测 700ms 的 rAF 间隔：
+       平均 ≥ 45fps  → 保持 high（默认，带弹性与交错）
+       平均 < 45fps  → 自动打 data-motion="eco"：时长压到约 200ms、去掉交错与涟漪，
+                       视觉上变成"约 24fps 的步进式动画"——帧数少了，但不会卡顿掉帧。
+     降级是**单向**的（本次会话不回升），避免低端机上反复横跳。
+     系统开了「减少动态效果」直接进 eco，不测。
+
+   【动画只碰 transform / opacity / background-color / border-color】
+     height / width / top / left 一律不参与过渡 —— 那是逐帧重排，是最快的掉帧来源。
+     展开用的是 Chromium 129+ 的 interpolate-size（block-size:auto），由浏览器内部处理。
+
+   【参与动画的元素与曲线】
+     元素                     属性                       时长      曲线
+     ────────────────────────────────────────────────────────────────────────
+     弹窗整体 .container      opacity + translateY/scale  260ms    ease-out
+     分组卡片 details.group   border/shadow              240ms    ease-out
+     分组标题 summary         background/color           240ms    ease-out
+     分组箭头 summary::after  rotate                     360ms    ease-spring（带回弹）
+     展开后的每一行 .group-body>*  opacity + translateY   360ms    ease-out，逐行 +26ms 交错
+     开关轨道 .toggle         background + 外发光          240ms    ease-out
+     开关圆钮 .toggle::after  translateX                 360ms    ease-spring（越界 12% 回弹）
+     开关涟漪 .toggle::before opacity + scale            520ms    ease-out
+     设置行 .row::before      opacity + scaleX           240ms    ease-out
+     按钮 .btn                scale（按下）                140ms    ease-out
+   ========================================================================== */
+:root{
+  --dur-1:140ms;   /* 微反馈：按下 / 悬停 */
+  --dur-2:240ms;   /* 常规：颜色、位移 */
+  --dur-3:360ms;   /* 结构：展开、收起、开关 */
+  --ease-out:cubic-bezier(.22,1,.36,1);        /* 快起慢收 —— 苹果最常用的一条 */
+  --ease-spring:cubic-bezier(.34,1.56,.64,1);  /* 轻微越界的回弹 */
+}
+
+/* ---------- 分组：卡片的开合 ---------- */
 details.group{
-  margin:0 0 8px; border:1px solid var(--hairline); border-radius:var(--radius-card);
-  background:var(--card); overflow:hidden;
-  contain:paint;                       /* 重绘范围锁在这一块里 */
-  box-shadow:0 1px 2px rgba(16,24,40,.035);
+  margin:0 0 10px; border:1px solid var(--hairline); border-radius:var(--radius-card);
+  background:var(--card); overflow:hidden; contain:paint;
+  box-shadow:0 1px 2px rgba(16,24,40,.04);
+  transition:border-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
+}
+details.group[open]{
+  border-color:rgba(10,132,255,.24);
+  box-shadow:0 1px 2px rgba(16,24,40,.05), 0 10px 26px -16px rgba(10,90,200,.42);
 }
 details.group > summary{
-  display:flex; align-items:center; gap:8px; padding:12px 14px;
+  display:flex; align-items:center; gap:8px; padding:13px 14px;
   cursor:pointer; list-style:none; color:var(--muted);
   font-size:11.5px; font-weight:650; letter-spacing:.055em;
   -webkit-tap-highlight-color:transparent;
+  transition:background-color var(--dur-2) var(--ease-out), color var(--dur-2) var(--ease-out);
 }
 details.group > summary::-webkit-details-marker{ display:none; }
-details.group > summary:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; border-radius:4px; }
+details.group > summary:hover{ background:var(--hover); color:var(--fg-2); }
+details.group > summary:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; border-radius:6px; }
 details.group > summary .rule{ flex:1; height:1px; background:var(--hairline); }
 details.group > summary::after{
   content:""; flex:none; width:5px; height:5px; margin:0 3px 2px 2px;
   border-right:1.6px solid var(--muted); border-bottom:1.6px solid var(--muted);
-  transform:rotate(45deg); transition:transform .22s var(--ease);
+  transform:rotate(45deg);
+  transition:transform var(--dur-3) var(--ease-spring);
 }
-details.group[open] > summary::after{ transform:rotate(-135deg); margin-bottom:-2px; }
-details.group > summary:hover{ color:var(--fg-2); }
+details.group[open] > summary::after{ transform:rotate(-135deg) scale(1.08); margin-bottom:-2px; }
+
 .group-head{ font-size:12px; letter-spacing:0; }
-.group-body{ padding:0 9px 8px; }
+.group-body{ padding:0 9px 10px; }
+
+/* 展开时每一行"依次浮上来"—— 这就是肉眼能看见的那道波浪。
+   is-opening 由 JS 在 <details> 打开时挂 600ms，保证每次展开都会重放。 */
+details.group.is-opening .group-body > *{
+  animation:om-row-in var(--dur-3) var(--ease-out) both;
+}
+details.group.is-opening .group-body > *:nth-child(1){ animation-delay:0ms; }
+details.group.is-opening .group-body > *:nth-child(2){ animation-delay:26ms; }
+details.group.is-opening .group-body > *:nth-child(3){ animation-delay:52ms; }
+details.group.is-opening .group-body > *:nth-child(4){ animation-delay:78ms; }
+details.group.is-opening .group-body > *:nth-child(5){ animation-delay:104ms; }
+details.group.is-opening .group-body > *:nth-child(6){ animation-delay:130ms; }
+details.group.is-opening .group-body > *:nth-child(7){ animation-delay:156ms; }
+details.group.is-opening .group-body > *:nth-child(8){ animation-delay:182ms; }
+details.group.is-opening .group-body > *:nth-child(9){ animation-delay:208ms; }
+details.group.is-opening .group-body > *:nth-child(n+10){ animation-delay:230ms; }
+@keyframes om-row-in{
+  from{ opacity:0; transform:translateY(9px); }
+  to{ opacity:1; transform:none; }
+}
 
 .tag{ flex:none; padding:2px 7px; border-radius:999px; background:var(--accent-soft); color:var(--accent-2); font-size:11px; font-weight:600; letter-spacing:.01em; }
 .tag.plain{ background:var(--hover); color:var(--muted); }
 
 /* ---------- 设置行 ---------- */
-.row{ display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 6px; border-radius:9px; }
-.row:hover{ background:var(--hover); }
+.row{
+  position:relative; display:flex; align-items:center; justify-content:space-between;
+  gap:12px; padding:10px 8px; border-radius:10px;
+}
+.row > *{ position:relative; z-index:1; }
+.row::before{
+  content:""; position:absolute; inset:0; border-radius:inherit;
+  background:var(--hover); opacity:0; transform:scaleX(.94); transform-origin:left center;
+  transition:opacity var(--dur-2) var(--ease-out), transform var(--dur-2) var(--ease-out);
+  pointer-events:none;
+}
+.row:hover::before{ opacity:1; transform:scaleX(1); }
 .row label{ color:var(--fg-2); font-size:13px; cursor:pointer; flex:1; }
-.row.sub{ padding-left:6px; }
+/* 行与行之间一条发丝线（最后一行没有）：一列开关看起来像"清单"，而不是一堆散块。
+   用 inset 阴影而不是 border —— 不改变盒模型尺寸，开关不会因为加了线而跳动。 */
+.group-body > .row + .row{ box-shadow:inset 0 1px 0 var(--hairline); }
+.row.sub{ padding-left:8px; }
 
-/* ---------- 开关：iOS 圆滑胶囊 ---------- */
+/* ---------- 开关：回弹 + 涟漪 ---------- */
 .toggle{
-  position:relative; width:42px; height:25px; border-radius:999px;
-  background:rgba(120,128,140,.30); cursor:pointer; flex-shrink:0;
-  transition:background .22s var(--ease);
+  position:relative; width:44px; height:26px; border-radius:999px;
+  background:rgba(120,128,140,.28); cursor:pointer; flex:none;
+  transition:background-color var(--dur-2) var(--ease-out), box-shadow var(--dur-2) var(--ease-out);
 }
-.toggle.on{ background:var(--accent); }
+.toggle.on{ background:var(--accent); box-shadow:0 0 0 4px rgba(10,132,255,.14); }
 .toggle:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; }
-.toggle::after{
-  content:""; position:absolute; top:2px; left:2px; width:21px; height:21px; border-radius:50%;
-  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.05);
-  transition:transform .24s var(--ease);
-  will-change:transform;               /* 只有这个小圆钮常驻合成层 */
+
+/* 涟漪层（在圆钮下面）：只动 opacity / scale */
+.toggle::before{
+  content:""; position:absolute; inset:0; border-radius:999px; pointer-events:none;
+  background:radial-gradient(circle at 50% 50%, rgba(255,255,255,.85), rgba(255,255,255,0) 66%);
+  opacity:0; transform:scale(.55);
 }
-.toggle.on::after{ transform:translateX(17px); }
+.toggle.on::before{ animation:om-ripple 520ms var(--ease-out); }
+@keyframes om-ripple{
+  0%{ opacity:.6; transform:scale(.55); }
+  100%{ opacity:0; transform:scale(1.9); }
+}
+
+/* 圆钮（在涟漪上面）：越界 12% 再回弹 */
+.toggle::after{
+  content:""; position:absolute; top:2.5px; left:2.5px; width:21px; height:21px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.20), 0 3px 8px -3px rgba(0,0,0,.22);
+  transition:transform var(--dur-3) var(--ease-spring);
+  will-change:transform;
+}
+.toggle.on::after{ transform:translateX(18px); }
 
 /* ---------- 倍速滑杆 ---------- */
 .range-head{ display:flex; justify-content:space-between; align-items:baseline; margin:2px 0 8px; }
@@ -252,6 +343,15 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
   .log-panel{ background:rgba(255,255,255,.04); }
   .toggle::after{ box-shadow:0 1px 3px rgba(0,0,0,.5); }
 }
+
+/* ---------- 降级：data-motion="eco" ----------
+   由 JS 按实测帧率自动挂上（< 45fps）或系统要求减少动态时直接挂。
+   时长压到 ~200ms、去掉逐行交错与涟漪、圆钮改线性回弹 ——
+   视觉上从"连拍"变成"约 24fps 的步进"，帧数少了，但不会出现掉帧的顿挫。 */
+[data-motion="eco"]{ --dur-1:90ms; --dur-2:150ms; --dur-3:200ms; --ease-spring:cubic-bezier(.4,0,.2,1); }
+[data-motion="eco"] details.group.is-opening .group-body > *{ animation:none; }
+[data-motion="eco"] .toggle.on::before{ animation:none; }
+[data-motion="eco"] .toggle.on{ box-shadow:none; }
 
 /* ---------- 尊重"减少动态效果" ---------- */
 @media (prefers-reduced-motion:reduce){

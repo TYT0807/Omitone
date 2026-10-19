@@ -918,6 +918,43 @@ if (this._isDiscussionDone(task.key)) return false;
 
 ## 1.2.9 — 验证码"填对了却不确认" + 磨砂玻璃
 
+### ㉖ 动效升级：让"展开 / 选择"看得见（1.2.9）
+
+**帧率策略（写在 `popup/popup.html` 的样式头部，共 20 行注释）**
+
+目标 **60fps**；弹窗打开后测 700ms 的 rAF 间隔：
+
+| 实测 | 档位 | 表现 |
+| --- | --- | --- |
+| ≥ 45fps | `high`（默认） | 回弹 + 逐行交错 + 涟漪，全套 |
+| < 45fps | `eco` | 时长压到 ~200ms、去掉交错与涟漪 → **约 24fps 的步进式动画**（帧少但均匀，不掉帧） |
+
+三条取舍：① 只在打开时测一次，不常驻 rAF；② **单向降级**，避免临界机器反复横跳；
+③ 系统开了「减少动态效果」直接 eco，不测。
+
+**参与动画的元素与曲线**
+
+| 元素 | 属性 | 时长 | 曲线 |
+| --- | --- | --- | --- |
+| 弹窗整体 | opacity + translateY/scale | 260ms | ease-out |
+| 分组卡片 | border / shadow | 240ms | ease-out |
+| 分组标题 | background / color | 240ms | ease-out |
+| 分组箭头 | rotate | 360ms | **spring**（回弹） |
+| 展开后的每一行 | opacity + translateY | 360ms | ease-out，**逐行 +26ms 交错** |
+| 开关轨道 | background + 外发光 | 240ms | ease-out |
+| 开关圆钮 | translateX | 360ms | **spring**（越界 12% 回弹） |
+| 开关涟漪 | opacity + scale | 520ms | ease-out |
+| 设置行 | opacity + scaleX | 240ms | ease-out |
+| 按钮按下 | scale | 140ms | ease-out |
+
+缓动只有两条：`cubic-bezier(.22,1,.36,1)`（苹果常用的"快起慢收"）与
+`cubic-bezier(.34,1.56,.64,1)`（轻微越界的回弹）。**不碰 height/top/left** —— 那是逐帧重排。
+
+**"逐行浮起"怎么做到每次都重放**：CSS 动画不会因为再次匹配选择器而重启，
+所以在 `toggle` 事件里加 `.is-opening` 类 → 强制一次布局 → 再挂上，600ms 后摘掉。
+
+**排版**：行与行之间加发丝分隔线（`inset` 阴影，不改变盒模型），一列开关看起来像清单。
+
 ### ㉕ 验证码填对了却不确认：改成多策略提交 + 现场取证
 
 **症状**：验证码认出来、填进去了，码是对的，但页面停在验证码/确认界面不动 → 刷课停止；
