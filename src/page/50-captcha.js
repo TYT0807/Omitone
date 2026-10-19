@@ -8,9 +8,11 @@
  *
  * 验证码弹窗的检测、取图与识别；整页验证码模式的处理
  *
- * 本段的方法（14 个）：
+ * 本段的方法（19 个）：
  *   _checkCaptchaDialog、_captureCaptchaImage、_cleanCaptchaCode、
- *   _fillCaptchaInput、_clickCaptchaSubmit、_captchaReload、
+ *   _fillCaptchaInput、_clickCaptchaSubmit、_captchaSubmitStrategies、
+ *   _captchaStillOpen、_captchaSuccessShown、_submitCaptchaWithStrategies、
+ *   _clickCaptchaConfirm、_captchaReload、
  *   _recognizeCaptchaImage、_detectStandaloneCaptcha、
  *   _computeStandaloneCaptchaPage、_isStandaloneCaptchaPage、
  *   _runStandaloneCaptchaMode、_afterStandaloneCaptchaSolved、
@@ -220,6 +222,230 @@
       } catch (e2) {}
     },
 
+
+    /**
+     * 验证码「填对了却不确认」的多策略提交。
+     *
+     * 现场症状：码填进去了、肉眼看着就是对的，但页面停在验证码/确认界面不动，
+     * 于是整条刷课链停在这里。用户的日志里看不出任何报错 —— 因为**提交那一下没生效**，
+     * 而我们旧实现只试了一种办法（点 `#sub`，找不到就发一个回车）。
+     *
+     * 所以这里改成**逐个策略试 + 每个策略都回读结果**：
+     *   ① #sub（课程页弹窗的老按钮）
+     *   ② input[type=submit] / input[type=button]
+     *   ③ 可见的小按钮/链接/div/span，文本以 确定|提交|验证|确认 开头
+     *   ④ 常见类名（.verify-btn / .sub-btn / .btn-submit …）
+     *   ⑤ 最近的 <form> 直接提交
+     *   ⑥ 输入框上派发 Enter（keydown + keypress + keyup，少了 keypress 有些老页面不认）
+     * 每个策略之后等一会再看一次；**弹窗没了 / 出现成功字样**才算这一步过了。
+     * 全都不行时，还会再找一次「二次确认框」（页面上新冒出来的"确定"）点掉。
+     */
+    _captchaSubmitStrategies: function (captcha) {
+      var self = this;
+      var list = [];
+      var input = captcha.input;
+      var doc = (input && input.ownerDocument) || document;
+
+      function visible(el) {
+        try {
+          if (!el || !el.getBoundingClientRect) return false;
+          var r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        } catch (e) { return false; }
+      }
+
+      function clickIfVisible(el, name) {
+        if (!el || !visible(el)) return false;
+        try { el.click(); return true; } catch (e) { return false; }
+      }
+
+      // ① 课程页老按钮
+      list.push({ name: 'sub-id', run: function () { return clickIfVisible(doc.querySelector('#sub')); } });
+
+      // ② 表单型提交按钮
+      list.push({
+        name: 'submit-input',
+        run: function () {
+          var els = doc.querySelectorAll('input[type="submit"], input[type="button"], button[type="submit"]');
+          for (var i = 0; i < els.length; i++) {
+            if (visible(els[i]) && !/取消|关闭|重填|换一张|刷新/.test(textOf(els[i]))) {
+              try { els[i].click(); return true; } catch (e) {}
+            }
+          }
+          return false;
+        }
+      });
+
+      // ③ 文本按钮：注意**不止 button/a** —— 学习通有些确认键是 div/span
+      list.push({
+        name: 'text-button',
+        run: function () {
+          var scope = (captcha.dialog && captcha.dialog.querySelectorAll) ? captcha.dialog : doc;
+          var els = scope.querySelectorAll('button, a, [role="button"], .btn, .button, div, span');
+          for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            if (!visible(el)) continue;
+            var t = String(textOf(el) || '').trim();
+            if (!t || t.length > 6) continue;                       // 太长的一定不是按钮
+            if (/取消|关闭|重填|换一张|刷新|看不清/.test(t)) continue;
+            if (/^(确定|提交|确认|验证|立即验证|OK|ok)/.test(t)) {
+              // 选最内层的那个，避免点到包着整块的容器
+              if (el.querySelector && el.querySelector('button, a, [role="button"], .btn')) continue;
+              try { el.click(); return true; } catch (e) {}
+            }
+          }
+          return false;
+        }
+      });
+
+      // ④ 常见类名兜底
+      list.push({
+        name: 'known-class',
+        run: function () {
+          var sel = ['.verify-btn', '.sub-btn', '.btn-submit', '.captcha-submit', '.submit-btn', '.confirm-btn', '#submit', '#btnSubmit'];
+          for (var i = 0; i < sel.length; i++) {
+            if (clickIfVisible(doc.querySelector(sel[i]))) return true;
+          }
+          return false;
+        }
+      });
+
+      // ⑤ 最近的 form 直接提交
+      list.push({
+        name: 'form-submit',
+        run: function () {
+          var form = input && input.closest ? input.closest('form') : null;
+          if (!form) return false;
+          try {
+            if (typeof form.requestSubmit === 'function') { form.requestSubmit(); return true; }
+            form.submit(); return true;
+          } catch (e) { return false; }
+        }
+      });
+
+      // ⑥ 回车：keydown + keypress + keyup 三个都发
+      list.push({
+        name: 'enter-key',
+        run: function () {
+          if (!input) return false;
+          var win = input.ownerDocument.defaultView || window;
+          try {
+            ['keydown', 'keypress', 'keyup'].forEach(function (type) {
+              input.dispatchEvent(new win.KeyboardEvent(type, { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+            });
+            return true;
+          } catch (e) { return false; }
+        }
+      });
+
+      return list;
+    },
+
+    /** 验证码界面还在不在（跳过 1.5s 的结果缓存，按"现在"判断） */
+    _captchaStillOpen: function () {
+      this._captchaLastCheckAt = 0;
+      var c = this._checkCaptchaDialog();
+      this._captchaLastCheckAt = 0;
+      return !!c;
+    },
+
+    /** 页面里有没有"成功"字样（有些站点不关弹窗，只把文字改成验证成功） */
+    _captchaSuccessShown: function (captcha) {
+      try {
+        var doc = (captcha.input && captcha.input.ownerDocument) || document;
+        var text = String(textOf(doc.body) || '');
+        return /验证成功|验证通过|校验通过|验证码正确/.test(text);
+      } catch (e) { return false; }
+    },
+
+    /**
+     * 逐个策略试，每个都回读结果。返回命中的策略名（失败返回空串）。
+     * ⚠️ 每步之间要**真的等一下**：有些站点的提交是异步的，点完立刻查必定"还在"。
+     */
+    _submitCaptchaWithStrategies: async function (captcha, code) {
+      var doc = (captcha.input && captcha.input.ownerDocument) || document;
+      var strategies = this._captchaSubmitStrategies(captcha);
+      var tried = [];
+      for (var i = 0; i < strategies.length; i++) {
+        var st = strategies[i];
+        var fired = false;
+        try { fired = !!st.run(); } catch (e) { fired = false; }
+        tried.push(st.name + (fired ? '' : '(no-target)'));
+        if (!fired) continue;
+
+        await sleep(600);
+        if (!this._captchaStillOpen() || this._captchaSuccessShown(captcha)) {
+          emitRuntimeLog('info', 'captcha submit ok', { strategy: st.name, tried: tried.join(',') });
+          return st.name;
+        }
+
+        // 有些站点点完会弹「二次确认」——顺手点掉，再判断一次
+        var confirmClicked = this._clickCaptchaConfirm();
+        if (confirmClicked) {
+          tried.push('confirm');
+          await sleep(600);
+          if (!this._captchaStillOpen() || this._captchaSuccessShown(captcha)) {
+            emitRuntimeLog('info', 'captcha submit ok', { strategy: st.name + '+confirm', tried: tried.join(',') });
+            return st.name + '+confirm';
+          }
+        }
+      }
+      // 全都失败：把现场"能点的东西"打进日志。
+      // 下次再有人报"填对了却不确认"，一眼就能看出那个页面到底长什么样 ——
+      // 这比"回来猜"有用得多。
+      var inventory = [];
+      try {
+        var scope0 = (captcha.dialog && captcha.dialog.querySelectorAll) ? captcha.dialog : doc;
+        var els0 = scope0.querySelectorAll('button, a, [role="button"], .btn, input[type="button"], input[type="submit"], div, span');
+        for (var k = 0; k < els0.length && inventory.length < 8; k++) {
+          var el0 = els0[k];
+          var r0 = el0.getBoundingClientRect ? el0.getBoundingClientRect() : null;
+          if (!r0 || r0.width < 8 || r0.height < 8) continue;
+          var t0 = String(textOf(el0) || '').trim();
+          if (!t0 || t0.length > 10) continue;
+          if (el0.querySelector && el0.querySelector('button, a, [role="button"]')) continue;
+          inventory.push(t0 + '<' + (el0.tagName || '') + (el0.id ? '#' + el0.id : '') + '>');
+        }
+      } catch (e2) {}
+      var landedNow = '';
+      try { landedNow = String((captcha.input && captcha.input.value) || ''); } catch (e3) {}
+      emitRuntimeLog('warn', 'captcha submit: no strategy worked', {
+        tried: tried.join(','),
+        codeLength: code.length,
+        landed: landedNow,
+        inIframe: !!(captcha.input && captcha.input.ownerDocument && captcha.input.ownerDocument !== document),
+        candidates: inventory.join(' | ') || '(none)'
+      });
+      return '';
+    },
+
+    /** 点掉"二次确认"框（新冒出来的那个"确定"） */
+    _clickCaptchaConfirm: function () {
+      try {
+        var docs = [document];
+        // 也看看同源的兄弟 iframe —— 确认框常常挂在外层页面
+        try {
+          var frames = document.querySelectorAll('iframe');
+          for (var f = 0; f < frames.length; f++) {
+            var d = this._safeDocOf && this._safeDocOf(frames[f]);
+            if (d) docs.push(d);
+          }
+        } catch (e0) {}
+        for (var i = 0; i < docs.length; i++) {
+          var els = docs[i].querySelectorAll('button, a, [role="button"], .btn, .dialog-btn, div, span');
+          for (var j = 0; j < els.length; j++) {
+            var el = els[j];
+            var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            if (!r || r.width < 8 || r.height < 8) continue;
+            var t = String(textOf(el) || '').trim();
+            if (t !== '确定' && t !== '确认' && t !== '是' && t !== 'OK') continue;
+            if (el.querySelector && el.querySelector('button, a, [role="button"]')) continue;
+            try { el.click(); return true; } catch (e) {}
+          }
+        }
+      } catch (e) {}
+      return false;
+    },
 
     _captchaReload: function () {
       emitRuntimeLog('warn', 'captcha unsolved, reload page', {});
@@ -439,11 +665,31 @@
 
         emitRuntimeLog('info', 'captcha code filled', { length: code.length });
         this._fillCaptchaInput(captcha, code);
-        await sleep(400);
-        this._clickCaptchaSubmit(captcha);
+        await sleep(350);
 
-        await sleep(2500);
-        var stillThere = this._checkCaptchaDialog();
+        // 回读：值真的进去了吗？进不去说明是受控组件把我们写的值吞了 —— 那后面怎么点都没用
+        var landed = '';
+        try { landed = String((captcha.input && captcha.input.value) || ''); } catch (e0) {}
+        if (landed.replace(/\s/g, '') !== String(code).replace(/\s/g, '')) {
+          emitRuntimeLog('warn', 'captcha value not landed', { want: String(code).length, got: landed.length });
+        }
+
+        // 逐个策略试提交（含二次确认），每种都回读结果
+        var okStrategy = await this._submitCaptchaWithStrategies(captcha, code);
+
+        // 兜底：再等一轮。有的站点提交后要 5 秒以上才收起弹窗
+        for (var waitIdx = 0; waitIdx < 3; waitIdx++) {
+          await sleep(1200);
+          if (!this._captchaStillOpen() || this._captchaSuccessShown(captcha)) {
+            emitRuntimeLog('info', 'captcha solved, continue', { strategy: okStrategy || 'late', waited: (waitIdx + 1) * 1200 });
+            this._captchaAttempts = 0;
+            this._captchaFailCount = 0;
+            this._captchaActive = false;
+            return;
+          }
+        }
+
+        var stillThere = this._captchaStillOpen();
         if (!stillThere) {
           emitRuntimeLog('info', 'captcha solved, continue', {});
           this._captchaAttempts = 0;

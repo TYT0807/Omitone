@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.2.8-blue)
+![版本](https://img.shields.io/badge/版本-1.2.9-blue)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 ![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
@@ -39,20 +39,15 @@
 >
 > ⚠️ **用途限定见下面第 4 条**：拿它去考试、代刷计入考核的作业，那就是作弊，后果自负。
 
-> **1.2.8**：这一轮全在修同一件事 —— **「明明还有任务点，插件却没做」**：
-> 跳过题目卡住不动 · 交完卷一直停在那一页 · 一页两三个讨论只发了一部分 ·
-> 换到下一份卷子先干等几十秒 · 一张卡片两份测验只做第一份。
-> 根子都在「判断某个任务点做完了没有」：有的判据只看页面文字（连页面脚本里的注释都算），
-> 有的只看"看起来提交成功了"。现在只认**真实证据** —— 看得见的文字、真实的提交结果、
-> 平台自己的完成标记。
-> 顺带配齐排查手段：日志会**逐帧说明卡在哪一步**，弹窗底部有**「复制日志」**一键复制；
-> 真做不完时插件会**停下来并说明原因**，不再无声空转。
-> 弹窗顶部还加了**「检测更新」**：有新版会问一句「是否更新？」，点「是」**自动下载**，
-> 下完还会在资源管理器里直接帮你选中那个文件；版本号没变但换过包也能认出来。
-> 弹窗还会**记住你折叠了哪些分组**（浏览器大退后恢复默认）。
-> 默认模型换成了 **DeepSeek V4.1 Flash**（`deepseek-flash`）—— 它原生多模态，
-> **看图题不用再单独配一家模型**；顺手删掉了容易出毛病的「音频静音播放」开关。
-> [这一轮的完整说明 →](https://github.com/TYT0807/Omitone/releases/latest)
+> **1.2.9**：修掉一个会让刷课**直接停住**的问题 —— 验证码认出来了、码也填对了，
+> 但页面停在验证码窗口上不下去，而且日志里什么错都不报（"提交"那一下没生效）。
+> 现在会**逐个试六种提交方式**（按钮 / 表单 / 回车 / 二次确认…），每种都回读结果，
+> 哪种管用写进日志；万一全都不行，会把当时页面上所有能点的东西打出来，方便定位。
+> 外观也整块换成**磨砂玻璃**：半透明顶栏、卡片分组、iOS 风格开关，
+> 外加打开与展开的动效（都只动透明度/位移，不为好看换来卡顿）。
+> **上一轮（1.2.8）**：修「明明还有任务点、插件却没做」那一整类（跳过题目卡住、交完卷停住、
+> 一页多讨论只发一部分…），加了检测更新与折叠记忆，默认模型换成 DeepSeek V4.1 Flash。
+> [完整说明 →](https://github.com/TYT0807/Omitone/releases/latest)
 > **1.2.7 修复**：API Key 从配置文件里**整段复制**（带引号 / 带 `Bearer `）时一直报 401 ·
 > 偶尔一题拿不到答案、白花一次请求。
 > **1.2.5 新增**：**音频**也能拖到结尾（与视频同一套逻辑）。
@@ -607,7 +602,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`CHANGELOG.md`](CHANGELOG.md) | 每个版本改了什么、为什么这么改 |
 | [`tools/README.md`](tools/README.md) | 开发脚本说明 + **测试脚手架的全部踩坑记录** |
 | [`legacy/README.md`](legacy/README.md) | 为什么那些代码被停用、为什么不能接回去 |
-| [`release-notes-1.2.8.md`](release-notes-1.2.8.md) | **当前这版 Release 说明的源文件**（GitHub 上那一页就是它）。改完用 `PATCH /releases/{id}` 同步过去，不必重发版本 |
+| [`release-notes-1.2.9.md`](release-notes-1.2.9.md) | **当前这版 Release 说明的源文件**（GitHub 上那一页就是它）。改完用 `PATCH /releases/{id}` 同步过去，不必重发版本 |
 
 > **源码目录里还有一份"就地说明"**：`src/` · `docs/` · `libs/` · `popup/` ·
 > `resources/` · `icons/` · `tools/` · `legacy/` 各有一份 README，

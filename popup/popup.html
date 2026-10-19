@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.2.8</title>
+<title>Omitone-1.2.9</title>
 <style>
 /* ==========================================================================
    材质与动效系统
@@ -59,6 +59,27 @@ body::before{
 }
 
 .container{ position:relative; z-index:1; padding:0 14px 16px; }
+
+/* ---------- 打开动效：只动 opacity / transform（合成层，不重排） ---------- */
+@keyframes om-pop-in{
+  from{ opacity:0; transform:translateY(-6px) scale(.986); }
+  to{ opacity:1; transform:none; }
+}
+.container{ animation:om-pop-in .26s var(--ease) both; }
+
+/* ---------- 分组展开/收起：高度真的会过渡 ----------
+   用的是 Chromium 129+ 的 interpolate-size —— 只有它能让 block-size:auto 参与过渡，
+   而且不用 JS 算高度（JS 量一次高度就是一次强制重排，展开时会掉帧）。
+   老浏览器不支持 @supports 就自动退回"瞬间展开"，功能不受影响。 */
+@supports (interpolate-size: allow-keywords){
+  :root{ interpolate-size: allow-keywords; }
+  details.group::details-content{
+    block-size:0; overflow:hidden;
+    transition:block-size .26s var(--ease), content-visibility .26s allow-discrete;
+  }
+  details.group[open]::details-content{ block-size:auto; }
+  details.group > summary{ transition:color .15s linear; }
+}
 
 /* ---------- 顶部：唯一一层真玻璃 ---------- */
 .top{
@@ -246,7 +267,7 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
     <div class="brand">
       <div class="dot" id="runDot"></div>
       <div class="title">Omitone</div>
-      <span class="ver">1.2.8</span>
+      <span class="ver">1.2.9</span>
       <span class="run-state" id="runState">未开启</span>
     </div>
     <div class="run-row">
@@ -257,7 +278,7 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
       刷课不需要 API Key。要用 <b>AI 答题</b> 或 <b>验证码识别</b> 才需要，在下面「AI 接入」里填。
     </p>
     <div class="update-row" id="updateRow">
-      <span class="update-msg" id="updateMsg">当前版本 1.2.8</span>
+      <span class="update-msg" id="updateMsg">当前版本 1.2.9</span>
       <button class="link-btn" id="checkUpdate">检测更新</button>
       <button class="link-btn" id="doUpdate" style="display:none">是，覆盖更新</button>
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
