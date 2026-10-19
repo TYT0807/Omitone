@@ -1189,6 +1189,113 @@ document.addEventListener("DOMContentLoaded", () => {
   } catch (e) {}
 })();
 
+// ── 沉浸式窗口 / 自定义背景 ────────────────────────────────────────────────
+//
+// 两个约束值得写下来：
+//   ① 浏览器**不允许弹窗自己改尺寸**（resizeTo 对 extension popup 无效），
+//      所以「展开」只能新开一个更大的窗口 —— 用 ?play=1 区分模式，不复用第二套页面。
+//   ② 自定义背景要落盘，但 storage.local 只有 10MB。
+//      所以上传时先缩到最长边 1600px、JPEG 质量 0.72 —— 通常 150~350KB，够用且不撑爆。
+(function omScene() {
+  try {
+    if (new URLSearchParams(location.search).get("play") === "1") document.body.classList.add("im");
+
+    var btnExpand = document.getElementById("btnExpand");
+    if (btnExpand) {
+      btnExpand.addEventListener("click", function () {
+        chrome.windows.create({
+          url: chrome.runtime.getURL("popup/popup.html") + "?play=1",
+          type: "popup", width: 760, height: 680
+        });
+        try { window.close(); } catch (e) {}
+      });
+    }
+
+    var fileInput = document.getElementById("bgFile");
+    var btnBg = document.getElementById("btnBg");
+    var btnClear = document.getElementById("btnBgClear");
+
+    function applyBg(dataUrl) {
+      if (dataUrl) {
+        document.documentElement.style.setProperty("--bg-image", "url(" + dataUrl + ")");
+        document.body.classList.add("has-bg");
+      } else {
+        document.body.classList.remove("has-bg");
+        document.documentElement.style.removeProperty("--bg-image");
+      }
+    }
+
+    function compress(fileObj) {
+      return new Promise(function (resolve, reject) {
+        var img = new Image();
+        var url = URL.createObjectURL(fileObj);
+        img.onload = function () {
+          try {
+            URL.revokeObjectURL(url);
+            var scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+            var cv = document.createElement("canvas");
+            cv.width = Math.round(img.width * scale);
+            cv.height = Math.round(img.height * scale);
+            cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+            resolve(cv.toDataURL("image/jpeg", 0.72));
+          } catch (e) { reject(e); }
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("decode")); };
+        img.src = url;
+      });
+    }
+
+    chrome.storage.local.get("omitone.bg", function (res) {
+      try { if (res && res["omitone.bg"]) applyBg(res["omitone.bg"]); } catch (e) {}
+    });
+
+    if (btnBg && fileInput) btnBg.addEventListener("click", function () { fileInput.click(); });
+
+    if (fileInput) {
+      fileInput.addEventListener("change", async function (ev) {
+        var f = ev.target.files && ev.target.files[0];
+        if (!f) return;
+        try {
+          var dataUrl = await compress(f);
+          applyBg(dataUrl);
+          chrome.storage.local.set({ "omitone.bg": dataUrl });
+          toast("背景已保存（已压缩到 " + Math.round(dataUrl.length / 1365) + " KB 左右）");
+        } catch (e) {
+          toast("这张图读不出来，换一张试试");
+        }
+        ev.target.value = "";
+      });
+    }
+
+    // 戳一戳：只在沉浸式窗口里可点（弹窗里保持 pointer-events:none，绝不挡操作）
+    var petEl = document.getElementById("mascot");
+    var petBubble = document.getElementById("mascotBubble");
+    var pokeIdx = 0;
+    var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
+    if (petEl && document.body.classList.contains("im")) {
+      petEl.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        pokeIdx = (pokeIdx + 1) % POKES.length;
+        petEl.setAttribute("data-pose", pokeIdx % 2 === 0 ? "happy" : "sit");
+        if (petBubble) {
+          petBubble.textContent = POKES[pokeIdx];
+          petBubble.classList.add("show");
+          clearTimeout(petEl._pokeTimer);
+          petEl._pokeTimer = setTimeout(function () { petBubble.classList.remove("show"); }, 2200);
+        }
+      });
+    }
+
+    if (btnClear) {
+      btnClear.addEventListener("click", function () {
+        chrome.storage.local.remove("omitone.bg");
+        applyBg(null);
+        toast("已恢复默认背景");
+      });
+    }
+  } catch (e) {}
+})();
+
 // ── 帧率守则：实测决定动画档位 ─────────────────────────────────────────────
 //
 // 目标 60fps；掉到 45fps 以下就把 <html> 打成 data-motion="eco"，

@@ -408,70 +408,132 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
   background:var(--fx); pointer-events:none; z-index:10;
 }
 
-/* ---------- 彩蛋小人（纯 CSS 画的，不用 SVG） ----------
-   ⚠️ 一开始用的是内联 SVG，DOM 状态全对但就是画不出来（headless 里也复现）。
-   改成 div + border-radius 之后一次就正常 —— 装饰件不该依赖我不确定的东西。 */
-.mascot{
-  position:relative; flex:none; width:36px; height:48px; margin-left:2px;
-  pointer-events:none; opacity:0; transform:translateY(-44px);
-  transition:transform .7s var(--ease-out), opacity .3s linear;
+/* ---------- 角色（重做：关节锚点正确，不再"手脚乱飞"） ----------
+   ⚠️ 上一版的毛病与修法：
+     ① **身体断层**：头和躯干各画各的，中间有空隙 → 现在头往下压 3px 与躯干**重叠**，
+        再加一段 neck 补上视觉连接，任何缩放下都不露缝。
+     ② **关节脱节 / 手脚乱飞**：四肢用 `left:50%` + 负 margin 定位，旋转原点落在元素中心，
+        一转就绕着空气转，肢体末端甩得离谱。
+        → 现在每条肢体是一个**绝对定位的"关节容器"**，关节在容器顶端（肩 / 胯），
+          `transform-origin: 50% 0` —— 旋转时永远绕关节，端点不会飞出去。
+     ③ 姿势全部只改 `rotate`，不改 `top/left`，所以切换姿势时关节位置始终一致。
+   ========================================================================== */
+.pet{
+  --skin:#f7dcc2; --skin-shade:#eccbae; --hair:#4a3f3a;
+  position:absolute; right:-2px; bottom:-46px; width:40px; height:56px; flex:none;
+  pointer-events:none; opacity:0; transform:translateY(-18px);
+  transition:transform .7s var(--ease-out), opacity .35s linear;
   will-change:transform, opacity;
 }
-.mascot.show{ opacity:1; transform:none; }
-.m-body{
+.pet.show{ opacity:1; transform:none; }
+
+/* 躯干：包含头、四肢的定位基准 */
+.pet-body{
   position:absolute; left:50%; bottom:8px; width:18px; height:20px; margin-left:-9px;
-  border-radius:9px; background:var(--accent);
-  transition:transform .5s var(--ease-spring); transform-origin:50% 100%;
+  border-radius:9px 9px 8px 8px; background:var(--accent);
+  transition:transform .5s var(--ease-spring);
+  transform-origin:50% 100%;
 }
-.m-head{
-  position:absolute; left:50%; top:-15px; width:22px; height:22px; margin-left:-11px;
-  border-radius:50%; background:#f7dcc2;
+/* 脖子：故意比头宽 1px、压在两者之间，消除"断层" */
+.pet-neck{ position:absolute; left:50%; top:-4px; width:6px; height:6px; margin-left:-3px; border-radius:3px; background:var(--skin-shade); }
+
+.pet-head{
+  position:absolute; left:50%; top:-19px; width:24px; height:24px; margin-left:-12px;
+  border-radius:50%; background:var(--skin);
+  transition:transform .45s var(--ease-spring); transform-origin:50% 100%;
 }
-.m-head b{ position:absolute; top:8px; width:2.8px; height:2.8px; border-radius:50%; background:#2b2f36; }
-.m-head b:first-child{ left:5.5px; }
-.m-head b:last-of-type{ left:12.5px; }
-.m-head u{
-  position:absolute; left:7px; top:13px; width:8px; height:4px;
-  border-bottom:1.5px solid #2b2f36; border-radius:0 0 8px 8px;
+.pet-hair{
+  position:absolute; left:-1px; top:-1px; width:26px; height:13px;
+  border-radius:13px 13px 40% 40%; background:var(--hair);
 }
-.m-arm{
-  position:absolute; top:2px; width:3px; height:11px; border-radius:2px;
-  background:var(--accent-2); transform-origin:top center;
+.pet-hair::after{                       /* 呆毛 */
+  content:""; position:absolute; left:15px; top:-5px; width:5px; height:7px;
+  border-radius:3px 3px 0 0; background:var(--hair); transform:rotate(18deg);
+}
+.pet-eye{ position:absolute; top:13px; width:2.8px; height:3px; border-radius:50%; background:#2b2f36; }
+.pet-eye-l{ left:7px; } .pet-eye-r{ left:14px; }
+.pet-mouth{
+  position:absolute; left:50%; top:18px; width:7px; height:3px; margin-left:-3.5px;
+  border-bottom:1.4px solid #2b2f36; border-radius:0 0 6px 6px;
+}
+
+/* 四肢：容器 = 关节。关节在顶端，肢体是容器里往下伸的条 */
+.pet-arm{
+  position:absolute; top:3px; width:4.4px; height:13px;
+  transform-origin:50% 0;                       /* ← 肩关节 */
   transition:transform .45s var(--ease-spring);
 }
-.m-arm-l{ left:-2.5px; }
-.m-arm-r{ right:-2.5px; }
-.m-leg{
-  position:absolute; bottom:-8px; width:3.6px; height:9px; border-radius:2px;
-  background:var(--accent-2); transform-origin:top center;
+.pet-arm-l{ left:-1.5px; } .pet-arm-r{ right:-1.5px; }
+.pet-arm::after{ content:""; position:absolute; left:0; top:0; width:100%; height:100%; border-radius:2.4px; background:var(--accent-2); }
+
+.pet-leg{
+  position:absolute; bottom:-8px; width:4.6px; height:10px;
+  transform-origin:50% 0;                       /* ← 胯关节 */
   transition:transform .45s var(--ease-spring);
 }
-.m-leg-l{ left:2.6px; }
-.m-leg-r{ right:2.6px; }
+.pet-leg-l{ left:2.4px; } .pet-leg-r{ right:2.4px; }
+.pet-leg::after{ content:""; position:absolute; left:0; top:0; width:100%; height:100%; border-radius:2.4px; background:var(--accent-2); }
 
-/* 五种姿态 */
-.mascot[data-pose="hang"] .m-body{ transform:translateY(-3px) }
-.mascot[data-pose="hang"] .m-arm-l{ transform:rotate(158deg) }
-.mascot[data-pose="hang"] .m-arm-r{ transform:rotate(-158deg) }
-.mascot[data-pose="climb"] .m-body{ transform:translateY(-1px) rotate(-4deg) }
-.mascot[data-pose="climb"] .m-arm-l{ transform:rotate(150deg) }
-.mascot[data-pose="climb"] .m-arm-r{ transform:rotate(-40deg) }
-.mascot[data-pose="sit"] .m-body{ transform:translateY(2px) }
-.mascot[data-pose="sit"] .m-leg-l{ transform:rotate(56deg) }
-.mascot[data-pose="sit"] .m-leg-r{ transform:rotate(-56deg) }
-.mascot[data-pose="happy"] .m-arm-l{ transform:rotate(140deg) }
-.mascot[data-pose="happy"] .m-arm-r{ transform:rotate(-140deg) }
-.mascot[data-pose="happy"] .m-body{ animation:m-hop .55s var(--ease-spring) infinite alternate }
-.mascot[data-pose="point"] .m-arm-r{ transform:rotate(-115deg) }
-@keyframes m-hop{ from{ transform:translateY(1px) } to{ transform:translateY(-4px) } }
+/* 五种姿态：只改 rotate，关节位置不动 */
+.pet[data-pose="hang"] .pet-body{ transform:translateY(-2px) }
+.pet[data-pose="hang"] .pet-arm-l{ transform:rotate(152deg) }
+.pet[data-pose="hang"] .pet-arm-r{ transform:rotate(-152deg) }
+.pet[data-pose="hang"] .pet-leg-l{ transform:rotate(9deg) }
+.pet[data-pose="hang"] .pet-leg-r{ transform:rotate(-9deg) }
 
-/* 季节道具：只显示当季那一件 */
-.m-prop{ position:absolute; display:none; }
-html[data-season="winter"] .m-prop-winter{ display:block; right:-9px; bottom:0; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
-html[data-season="summer"] .m-prop-summer{ display:block; right:-8px; top:2px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
-html[data-season="summer"] .m-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
-html[data-season="autumn"] .m-prop-autumn{ display:block; left:-3px; top:-3px; width:24px; height:5px; border-radius:3px; background:#c9a227; }
-html[data-season="spring"] .m-prop-spring{ display:block; right:-7px; top:-4px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+.pet[data-pose="climb"] .pet-body{ transform:rotate(-4deg) }
+.pet[data-pose="climb"] .pet-arm-l{ transform:rotate(140deg) }
+.pet[data-pose="climb"] .pet-arm-r{ transform:rotate(-34deg) }
+.pet[data-pose="climb"] .pet-leg-l{ transform:rotate(14deg) }
+.pet[data-pose="climb"] .pet-leg-r{ transform:rotate(-6deg) }
+
+.pet[data-pose="sit"] .pet-body{ transform:translateY(2px) }
+.pet[data-pose="sit"] .pet-leg-l{ transform:rotate(62deg) }
+.pet[data-pose="sit"] .pet-leg-r{ transform:rotate(-62deg) }
+.pet[data-pose="sit"] .pet-arm-l{ transform:rotate(12deg) }
+.pet[data-pose="sit"] .pet-arm-r{ transform:rotate(-12deg) }
+
+.pet[data-pose="happy"] .pet-arm-l{ transform:rotate(138deg) }
+.pet[data-pose="happy"] .pet-arm-r{ transform:rotate(-138deg) }
+.pet[data-pose="happy"] .pet-body{ animation:pet-hop .55s var(--ease-spring) infinite alternate }
+
+.pet[data-pose="point"] .pet-arm-r{ transform:rotate(-118deg) }
+.pet[data-pose="point"] .pet-leg-l{ transform:rotate(6deg) }
+@keyframes pet-hop{ from{ transform:translateY(1px) } to{ transform:translateY(-3px) } }
+
+/* 季节道具 */
+.pet-prop{ position:absolute; display:none; }
+html[data-season="winter"] .pet-prop-winter{ display:block; right:-10px; bottom:0; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
+html[data-season="summer"] .pet-prop-summer{ display:block; right:-9px; top:4px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
+html[data-season="summer"] .pet-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
+html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-2px; top:-1px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="spring"] .pet-prop-spring{ display:block; right:-8px; top:-3px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+
+/* ---------- 气泡：单例 + 不压身体 ----------
+   旧版的问题：气泡绝对定位在身体旁边，长句会盖住脑袋；而且多条消息会叠在一起。
+   现在：气泡在角色**正上方**、有最大宽度、超出自动换行；同时只保留一个节点，
+   新消息直接替换旧消息（配合一个轻微上浮的入场）。 */
+.pet-bubble{
+  position:absolute; right:calc(100% + 8px); bottom:12px; transform:translateX(6px) scale(.94);
+  transform-origin:100% 50%;
+  max-width:150px; width:max-content;
+  padding:5px 9px; border-radius:10px;
+  background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
+  font-size:11px; line-height:1.45; text-align:center; white-space:normal;
+  box-shadow:0 6px 18px -10px rgba(16,24,40,.45);
+  opacity:0; pointer-events:none;
+  transition:opacity .26s var(--ease-out), transform .26s var(--ease-spring);
+}
+.pet-bubble::after{                                  /* 小尖角指向角色 */
+  content:""; position:absolute; right:-4px; bottom:9px; width:8px; height:8px;
+  background:inherit; border-right:1px solid var(--hairline); border-bottom:1px solid var(--hairline);
+  transform:rotate(-45deg);
+}
+.pet-bubble.show{ opacity:1; transform:none; }
+
+/* eco 档：去掉弹跳与滑动，只留淡入 */
+[data-motion="eco"] .pet-body{ animation:none !important; }
+[data-motion="eco"] .pet{ transition:opacity .3s linear; transform:none; }
 
 /* 冬天：按钮被点后"雪塌下来"——雪花从按钮下沿往下掉 */
 @keyframes fx-snow-slip{
@@ -488,6 +550,24 @@ html[data-season="spring"] .m-prop-spring{ display:block; right:-7px; top:-4px; 
 [data-motion="eco"] .mascot{ transition:opacity .3s linear; }
 [data-motion="eco"] .mascot .m-body{ animation:none !important; transition:none; }
 [data-motion="eco"] .fx-layer > i:nth-child(n+6){ display:none; }
+
+/* ---------- 自定义背景（用户上传照片，已压缩） ---------- */
+body.has-bg::before{ background-image:var(--bg-image); background-size:cover; background-position:center; opacity:.55; }
+/* 照片上压一层纱 —— 否则深色照片上文字会糊成一片 */
+body.has-bg::after{
+  content:""; position:fixed; inset:0; z-index:0; pointer-events:none;
+  background:linear-gradient(180deg, rgba(255,255,255,.52), rgba(255,255,255,.72));
+}
+@media (prefers-color-scheme:dark){
+  body.has-bg::after{ background:linear-gradient(180deg, rgba(12,14,18,.60), rgba(12,14,18,.78)); }
+}
+
+/* ---------- 沉浸式：?play=1 开的新窗口 ---------- */
+body.im{ width:auto; }
+body.im .container{ max-width:720px; margin:0 auto; padding:0 20px 24px; }
+body.im .top{ margin:0 -20px 12px; padding:16px 20px 12px; }
+/* 角色整体放大：transform 缩放，不用改一堆子元素尺寸 */
+body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; pointer-events:auto; cursor:pointer; }
 
 /* ---------- 尊重"减少动态效果" ---------- */
 @media (prefers-reduced-motion:reduce){
@@ -525,15 +605,20 @@ html[data-season="spring"] .m-prop-spring{ display:block; right:-7px; top:-4px; 
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
       <button class="link-btn" id="doUntil" style="display:none">打开扩展页</button>
     
-<div class="mascot" id="mascot" data-pose="idle" aria-hidden="true">
-  <div class="m-body">
-    <i class="m-head"><b></b><b></b><u></u></i>
-    <i class="m-arm m-arm-l"></i><i class="m-arm m-arm-r"></i>
-    <i class="m-leg m-leg-l"></i><i class="m-leg m-leg-r"></i>
-    <i class="m-prop m-prop-winter"></i><i class="m-prop m-prop-summer"></i>
-    <i class="m-prop m-prop-autumn"></i><i class="m-prop m-prop-spring"></i>
+<div class="pet" id="mascot" data-pose="idle" aria-hidden="true">
+  <div class="pet-body">
+    <div class="pet-leg pet-leg-l"></div><div class="pet-leg pet-leg-r"></div>
+    <div class="pet-neck"></div>
+    <div class="pet-arm pet-arm-l"></div><div class="pet-arm pet-arm-r"></div>
+    <div class="pet-head">
+      <div class="pet-hair"></div>
+      <span class="pet-eye pet-eye-l"></span><span class="pet-eye pet-eye-r"></span>
+      <span class="pet-mouth"></span>
+    </div>
+    <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
+    <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
   </div>
-  <span class="mascot-bubble" id="mascotBubble">要检查更新吗？</span>
+  <div class="pet-bubble" id="mascotBubble"></div>
 </div>
 </div>
   </div>
@@ -730,6 +815,12 @@ html[data-season="spring"] .m-prop-spring{ display:block; right:-7px; top:-4px; 
     <button id="copyLogs">复制日志</button>
     <button id="clearLogs">清空日志</button>
     <button id="reset">恢复默认</button>
+  </div>
+  <div class="minor">
+    <button id="btnExpand">展开逗玩</button>
+    <button id="btnBg">换背景</button>
+    <button id="btnBgClear">恢复默认背景</button>
+    <input type="file" id="bgFile" accept="image/*" hidden>
   </div>
 
   <div class="log-panel" id="logPanel"></div>
