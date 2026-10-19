@@ -606,6 +606,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`CHANGELOG.md`](CHANGELOG.md) | 每个版本改了什么、为什么这么改 |
 | [`tools/README.md`](tools/README.md) | 开发脚本说明 + **测试脚手架的全部踩坑记录** |
 | [`legacy/README.md`](legacy/README.md) | 为什么那些代码被停用、为什么不能接回去 |
+| [`release-notes-1.2.8.md`](release-notes-1.2.8.md) | **当前这版 Release 说明的源文件**（GitHub 上那一页就是它）。改完用 `PATCH /releases/{id}` 同步过去，不必重发版本 |
 
 > **源码目录里还有一份"就地说明"**：`src/` · `docs/` · `libs/` · `popup/` ·
 > `resources/` · `icons/` · `tools/` · `legacy/` 各有一份 README，
