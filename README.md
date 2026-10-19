@@ -30,7 +30,8 @@
 
 <img src="docs/images/popup.png" alt="设置弹窗（真实截图）" width="380">
 
-<sub>设置弹窗长这样 —— 顶部一行就是<strong>版本 + 检测更新</strong>，装完可以点它看看手里的旧不旧。</sub>
+<sub>设置弹窗长这样 —— 顶部是<strong>版本号与运行状态</strong>，下面按「播放 / 任务点 / 答题 …」分组，
+用不到的直接折叠，它还会记住你折了哪些。</sub>
 
 > 装不会？往下看 [**三步装好**](#三步装好不懂-github-也能做) —— 按"从没用过 GitHub"写的。
 > 说明书就在本仓库里：在线版看 [**在线说明书**](https://tyt0807.github.io/Omitone/docs/manual.html)，
