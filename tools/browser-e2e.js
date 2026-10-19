@@ -2391,16 +2391,17 @@ SCENARIOS.push({
     check('_findMediaInDocument 能在文档里找到媒体元素（返回单个元素）',
       audio.foundInDoc === 'omitone-video', JSON.stringify(audio));
 
-    // 音频任务点应走静音 + 配置倍速（不看自动最大倍速菜单）
+    // 音频任务点应走配置倍速（不看自动最大倍速菜单）；
+    // 静音开关已删：插件不再替用户静音音频，要静音直接静音标签页
     var audioRate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{audioMuted:true,playbackRate:2,autoMaxPlaybackRate:false,muted:false});' +
+      'app.configs=Object.assign({},app.configs,{playbackRate:2,autoMaxPlaybackRate:false,muted:false});' +
       'var a=document.getElementById("omitone-audio");' +
       'app._ensurePlaybackRate(a,"e2e-audio");' +
       'return {rate:a.playbackRate, muted:a.muted};})()'
     );
     check('音频应用配置倍速（2x）', audioRate.rate === 2, JSON.stringify(audioRate));
-    check('音频按 audioMuted 静音播放', audioRate.muted === true, JSON.stringify(audioRate));
+    check('音频不再被插件静音（交给标签页静音，旧开关已删）', audioRate.muted === false, JSON.stringify(audioRate));
 
     // ---- 进度快照：整个"做不完就放弃"机制的安全阀
     // 静止的媒体 → 快照恒定 → 才允许判"卡住"；推进中的媒体 → 快照变化 → 绝不判卡住
@@ -3135,7 +3136,7 @@ SCENARIOS.push({
     var deepseekHint = await ctx.client.evaluate(
       '(function(){' +
       'document.getElementById("apiUrl").value="https://api.deepseek.com";' +
-      'document.getElementById("model").value="deepseek-v4-flash";' +
+      'document.getElementById("model").value="deepseek-flash";' +
       'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
       'updateThinkingHint();' +
       'var h=document.getElementById("thinkingHint").textContent;' +
@@ -4339,15 +4340,14 @@ SCENARIOS.push({
     );
     check('前置条件：弹窗里有「检测更新」和结果文字',
       !!probe && probe.hasBtn === true && probe.hasMsg === true, JSON.stringify(probe));
-    check('线上版本更高 → 说明线上是哪一版，并提示「解压覆盖原目录」（更新是覆盖，不是装个新的）',
-      !!probe && /线上是\s*9\.9\.9/.test(String(probe.higherMsg)) &&
-      /覆盖原目录/.test(String(probe.higherMsg)) && probe.higherBtn === true,
+    check('线上版本更高 → 说清有最新版并问「是否更新」（不是直接替人下结论）',
+      !!probe && /有最新版\s*9\.9\.9/.test(String(probe.higherMsg)) &&
+      /是否更新/.test(String(probe.higherMsg)) && probe.higherBtn === true,
       JSON.stringify(probe));
-    check('按钮写的是「下载覆盖包」（不是「下载新版本」）',
-      !!probe && /覆盖包/.test(String(probe.btnLabel)), JSON.stringify(probe));
-    check('检测失败 → 只说检测失败，**绝不能**冒出「已是最新」这种结论；下载入口仍保留',
-      !!probe && /检测失败/.test(String(probe.failMsg)) &&
-      String(probe.failMsg).indexOf('已是最新') === -1 && probe.failBtn === true,
+    check('按钮是「是，覆盖更新」（更新是覆盖，不是装个新的）',
+      !!probe && /覆盖/.test(String(probe.btnLabel)), JSON.stringify(probe));
+    check('查不出来 → 文案里**不能**出现「最新版」这类结论；下载入口仍保留',
+      !!probe && String(probe.failMsg).indexOf('最新') === -1 && probe.failBtn === true,
       JSON.stringify(probe));
   }
 });

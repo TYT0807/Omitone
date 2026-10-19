@@ -414,9 +414,10 @@
     _ensurePlaybackRate: function (video, reason) {
       if (!video) return;
       var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 音频任务只要进度不需要出声：默认静音播放，避免多标签声音互相干扰
+      // 音频不再由插件静音（旧的 audioMuted 开关已删）。
+      // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
       try {
-        video.muted = isAudio ? (this.configs.audioMuted !== false) : !!this.configs.muted;
+        video.muted = !isAudio && !!this.configs.muted;
       } catch (e0) {}
       if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
         this._scheduleMaxRateDetection(video);

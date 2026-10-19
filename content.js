@@ -60,7 +60,7 @@
     apiUrl: 'https://api.deepseek.com',
     apiKey: '',
     apiConnectionFailed: false,
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     systemPrompt: '',
     // 思考强度：'off'（默认）/ 'low' / 'high'。详见 libs/thinking.js。
     // 必须在这里也放一份：content.js 在配置还没加载完时靠它兜底，

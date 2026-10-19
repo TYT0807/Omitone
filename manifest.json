@@ -33,7 +33,8 @@
   ],
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "downloads"
   ],
   "web_accessible_resources": [
     {

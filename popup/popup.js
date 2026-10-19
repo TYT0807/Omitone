@@ -10,7 +10,6 @@ const DEFAULTS = {
   enableSeek: true,
   advanceAtNinetyPercent: true,
   muted: false,
-  audioMuted: true,
   autoNext: true,
   enableQuiz: true,
   randomAnswer: false,
@@ -24,7 +23,7 @@ const DEFAULTS = {
   apiUrl: "https://api.deepseek.com",
   apiKey: "",
   apiConnectionFailed: false,
-  model: "deepseek-v4-flash",
+  model: "deepseek-flash",
   captchaModel: "",
   // 视觉（题目配图）：默认全关。图片计费远高于文本，不能替用户默认花钱。
   visionEnabled: false,
@@ -51,7 +50,7 @@ const MAX_LOGS = 200;
 // 找不到的服务商请选「自定义 OpenAI 兼容」自己填，那两格填什么都能用。
 // 渠道的核对方法与最后核对日期见 docs/channels.md。
 const PROVIDER_PRESETS = {
-  deepseek: { apiType: "openai", apiUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" },
+  deepseek: { apiType: "openai", apiUrl: "https://api.deepseek.com", model: "deepseek-flash" },
   // Kimi / Moonshot：国际站 .ai、国内站 .cn，两者协议相同
   kimi: { apiType: "openai", apiUrl: "https://api.moonshot.ai/v1", model: "kimi-k3" },
   // 通义千问 DashScope 的 OpenAI 兼容入口。⭐ 注意地址里带 /compatible-mode/v1，
@@ -74,7 +73,6 @@ const els = {
   enableSeek: $("enableSeek"),
   advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
   muted: $("muted"),
-  audioMuted: $("audioMuted"),
   autoNext: $("autoNext"),
   enableQuiz: $("enableQuiz"),
   randomAnswer: $("randomAnswer"),
@@ -101,6 +99,8 @@ const els = {
   updateMsg: $("updateMsg"),
   checkUpdate: $("checkUpdate"),
   doUpdate: $("doUpdate"),
+  doLater: $("doLater"),
+  doUntil: $("doUntil"),
   start: $("start"),
   stop: $("stop"),
   toggleLogs: $("toggleLogs"),
@@ -114,7 +114,6 @@ const els = {
 
 let config = { ...DEFAULTS };
 let mutedVal = false;
-let audioMutedVal = true;
 let autoMaxRateVal = true;
 let enableMediaVal = true;
 let enablePPTVal = true;
@@ -378,7 +377,6 @@ async function saveToggleConfig(showToast = true) {
     enableSeek: enableSeekVal,
     advanceAtNinetyPercent: advanceAtNinetyPercentVal,
     muted: mutedVal,
-    audioMuted: audioMutedVal,
     autoNext: autoNextVal,
     enableQuiz: enableQuizVal,
     randomAnswer: randomAnswerVal,
@@ -447,7 +445,6 @@ function bindToggle(el, getter, setter) {
 }
 
 const updateMuted = bindToggle(els.muted, () => mutedVal, (value) => { mutedVal = value; });
-const updateAudioMuted = bindToggle(els.audioMuted, () => audioMutedVal, (value) => { audioMutedVal = value; });
 const updateAutoMaxRate = bindToggle(els.autoMaxRate, () => autoMaxRateVal, (value) => { autoMaxRateVal = value; });
 const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) => { enableMediaVal = value; });
 const updatePpt = bindToggle(els.enablePPT, () => enablePPTVal, (value) => { enablePPTVal = value; });
@@ -490,7 +487,6 @@ async function load() {
   els.rate.value = config.playbackRate;
   els.rateVal.textContent = config.playbackRate + "x";
   mutedVal = !!config.muted;
-  audioMutedVal = config.audioMuted !== false;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
   enableMediaVal = config.enableMedia !== false;
   enablePPTVal = config.enablePPT !== false;
@@ -506,7 +502,6 @@ async function load() {
   enableDiscussionVal = config.enableDiscussion !== false;
   restudyVal = !!config.restudy;
   updateMuted(mutedVal);
-  updateAudioMuted(audioMutedVal);
   updateAutoMaxRate(autoMaxRateVal);
   updateMedia(enableMediaVal);
   updatePpt(enablePPTVal);
@@ -838,10 +833,25 @@ els.copyLogs.addEventListener("click", async () => {
 // **直接加载源码目录**的安装没有这个戳 —— 那就只比版本号，绝不瞎猜"要不要更新"。
 const UPDATE_REPO = "TYT0807/Omitone";
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
-const UPDATE_PAGE = `https://github.com/${UPDATE_REPO}/releases/latest`;
-const UPDATE_ZIP = `${UPDATE_PAGE}/download/omitone.zip`;
-const UPDATE_SEEN_KEY = "omitone.update.checkedAt";
-const UPDATE_GAP = 6 * 3600 * 1000;   // 自动检查最多 6 小时一次，别把 GitHub 的匿名额度刷爆
+const UPDATE_ZIP = `https://github.com/${UPDATE_REPO}/releases/latest/download/omitone.zip`;
+
+// ⚠️ 限流是**功能**，不是防抖。
+// 查询用的是 GitHub 的**匿名额度**（作者不放令牌，也不能放）。有人狂点就会把额度用光，
+// 那时**所有人都查不了** —— "你查得勤"和"别人查不到"其实是同一件事的两面。
+// 所以：手动 6 小时一次，自动 24 小时一次。
+const UPDATE_AT = { manual: "omitone.update.manualAt", auto: "omitone.update.autoAt" };
+const UPDATE_GAP = { manual: 6 * 3600 * 1000, auto: 24 * 3600 * 1000 };
+
+function updateSeenAt(kind) {
+  try { return Number(localStorage.getItem(UPDATE_AT[kind]) || 0); } catch (e) { return 0; }
+}
+function markUpdateSeen(kind) {
+  try { localStorage.setItem(UPDATE_AT[kind], String(Date.now())); } catch (e) {}
+}
+function fmtWait(ms) {
+  const m = Math.max(1, Math.round(ms / 60000));
+  return m < 60 ? `${m} 分钟` : `${Math.round((m / 60) * 10) / 10} 小时`;
+}
 
 function localBuildInfo() {
   let manifest = null;
@@ -874,13 +884,27 @@ function fmtTime(ms) {
 
 async function checkUpdate(opts) {
   const manual = !!(opts && opts.manual);
+  const kind = manual ? "manual" : "auto";
+
+  // 限流：手动 6 小时一次、自动 24 小时一次（理由见上面的注释）
+  const last = updateSeenAt(kind);
+  if (last && Date.now() - last < UPDATE_GAP[kind]) {
+    if (manual) {
+      els.updateMsg.textContent =
+        `刚查过，${fmtWait(UPDATE_GAP[kind] - (Date.now() - last))}后再来 —— 查太勤会把匿名名额用光，大家都用不了`;
+    }
+    return;
+  }
+
   const local = localBuildInfo();
+  els.doUpdate.style.display = "none";
+  els.doLater.style.display = "none";
+  els.doUntil.style.display = "none";
+  els.updateRow.classList.remove("hot");
   if (manual) {
     els.updateMsg.textContent = "正在检测…";
     els.checkUpdate.disabled = true;
   }
-  els.doUpdate.style.display = "none";
-  els.updateRow.classList.remove("hot");
 
   try {
     const res = await fetch(UPDATE_API, {
@@ -900,41 +924,84 @@ async function checkUpdate(opts) {
     const newerBuild = !newerVersion && local.builtAt > 0 && remoteAt > 0 &&
       remoteAt - local.builtAt > 60000;
 
-    // 措辞原则（用户明确要求）：
-    //   ① 更新是**覆盖安装** —— 下载后解压覆盖原目录，不是装一个"新的"
-    //   ② 检测不出来的时候**只说检测失败**，不推断"已是最新"、也不推断"有新版"
+    // 文案原则：一句话说清"是什么 / 要不要动"。三种结果，三种说法，不多解释。
     if (newerVersion) {
-      els.updateMsg.textContent = `线上是 ${remoteVersion}（本地 ${local.version}）—— 下载后解压覆盖原目录即可`;
-      els.doUpdate.style.display = "";
-      els.updateRow.classList.add("hot");
+      els.updateMsg.textContent =
+        `有最新版 ${remoteVersion}（本地 ${local.version}）—— 可能相对现版本不够稳定，是否更新？`;
+      showUpdateChoices();
     } else if (newerBuild) {
-      els.updateMsg.textContent = `线上的包比本地新（${fmtTime(remoteAt)}）—— 下载后解压覆盖原目录即可`;
-      els.doUpdate.style.display = "";
-      els.updateRow.classList.add("hot");
+      els.updateMsg.textContent =
+        `线上的包比本地新（${fmtTime(remoteAt)}）—— 可能相对现版本不够稳定，是否更新？`;
+      showUpdateChoices();
     } else if (!local.builtAt) {
       // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
       els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号，与线上一致）`;
     } else {
-      els.updateMsg.textContent = "已是最新（与线上一致）";
+      els.updateMsg.textContent = "你已经是最新版了";
     }
   } catch (error) {
-    // ⚠️ 只陈述"没检测出来"，**不猜原因、也不给结论**：
-    // 连不上、GitHub 限流、代理干扰、本机时间偏差…都可能；此时既不能说是最新，
-    // 也不能说不是最新。下载入口仍然留着，让人自己决定。
-    els.updateMsg.textContent = "检测失败 —— 无法确认是否为最新（网络或其他原因都可能）";
-    els.doUpdate.style.display = "";
+    // 查不到就只说查不到：不猜原因、也不给"是不是最新"的结论。
+    // 网络、代理、GitHub 匿名额度用光、本机时间偏差……都可能。
+    els.updateMsg.textContent = "歪比八布，你的网络或者作者的匿名名额正在睡大觉（别连点，过一会儿再看）";
+    showUpdateChoices();
   } finally {
     els.checkUpdate.disabled = false;
   }
 }
 
+/** 有更新（或查不出来）时，把"是/否"两个选项亮出来 */
+function showUpdateChoices() {
+  els.doUpdate.style.display = "";
+  els.doLater.style.display = "";
+  els.updateRow.classList.add("hot");
+}
+
 if (els.checkUpdate) {
   els.checkUpdate.addEventListener("click", () => checkUpdate({ manual: true }));
 }
+
 if (els.doUpdate) {
   els.doUpdate.addEventListener("click", () => {
-    // 直接指向附件本身：点下去就是下载，不用在 Release 页里找
-    chrome.tabs.create({ url: UPDATE_ZIP });
+    els.doUpdate.style.display = "none";
+    els.doLater.style.display = "none";
+    els.updateMsg.textContent = "正在下载…";
+
+    // 下载完自动在资源管理器里**定位到那个 zip** —— 省掉"去下载文件夹里翻"这一步。
+    // 再往下（解压覆盖、重新加载）浏览器不允许扩展代劳，只能给出动作。
+    const fallback = () => {
+      els.updateMsg.textContent = "下载没成功 —— 点这里手动下：omitone.zip";
+      chrome.tabs.create({ url: UPDATE_ZIP });
+    };
+    try {
+      chrome.downloads.download({ url: UPDATE_ZIP, saveAs: false, conflictAction: "overwrite" }, (id) => {
+        if (chrome.runtime.lastError || !id) { fallback(); return; }
+        const onChanged = (delta) => {
+          if (!delta || delta.id !== id || !delta.state) return;
+          if (delta.state.current !== "complete") return;
+          chrome.downloads.onChanged.removeListener(onChanged);
+          try { chrome.downloads.show(id); } catch (e) {}
+          els.updateMsg.textContent = "已下载 —— 解压覆盖到扩展目录，再点「重新加载」，最后 F5";
+          els.doUntil.style.display = "";
+        };
+        chrome.downloads.onChanged.addListener(onChanged);
+      });
+    } catch (e) {
+      fallback();
+    }
+  });
+}
+
+if (els.doLater) {
+  els.doLater.addEventListener("click", () => {
+    els.doUpdate.style.display = "none";
+    els.doLater.style.display = "none";
+    els.updateMsg.textContent = "好，先不更新";
+  });
+}
+
+if (els.doUntil) {
+  els.doUntil.addEventListener("click", () => {
+    chrome.tabs.create({ url: "edge://extensions" });
   });
 }
 
@@ -949,9 +1016,49 @@ document.addEventListener("DOMContentLoaded", () => {
   } catch (e) {}
 
   try {
-    const last = Number(localStorage.getItem(UPDATE_SEEN_KEY) || 0);
-    if (Date.now() - last > UPDATE_GAP) checkUpdate({ manual: false });
+    const last = updateSeenAt("auto");
+    if (!last || Date.now() - last > UPDATE_GAP.auto) checkUpdate({ manual: false });
   } catch (e) {}
+});
+
+// ── 分组折叠状态记忆 ────────────────────────────────────────────────────────
+//
+// 想要的行为：把「播放」折叠起来、弹窗挂在旁边，下次打开**还是折叠着**；
+// 但**浏览器大退**（或扩展重新加载）之后回到默认（播放展开、其余收起）。
+// 正好是 `chrome.storage.session` 的语义：随浏览器会话存在，浏览器一关就清空。
+const GROUP_STATE_KEY = "omitone.popup.groups";
+
+function groupKeyOf(node, index) {
+  const span = node.querySelector("summary span");
+  const text = String((span && span.textContent) || "").trim();
+  return text || ("#" + index);
+}
+
+async function restoreGroupState() {
+  const groups = Array.from(document.querySelectorAll("details.group"));
+  if (!groups.length) return;
+
+  try {
+    const saved = (await chrome.storage.session.get(GROUP_STATE_KEY))[GROUP_STATE_KEY];
+    if (saved && typeof saved === "object") {
+      groups.forEach((node, i) => {
+        const want = saved[groupKeyOf(node, i)];
+        if (typeof want === "boolean") node.open = want;
+      });
+    }
+  } catch (e) {}
+
+  // 任何一次手动开合都存一份完整快照 —— 比逐项记录更不容易出错
+  const persist = () => {
+    const map = {};
+    groups.forEach((node, i) => { map[groupKeyOf(node, i)] = node.open; });
+    try { chrome.storage.session.set({ [GROUP_STATE_KEY]: map }); } catch (e) {}
+  };
+  groups.forEach((node) => node.addEventListener("toggle", persist));
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  restoreGroupState();
 });
 
 document.addEventListener("DOMContentLoaded", load);

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '2cfa94147e';
+var OMITONE_CODE_REV = '363e17290c';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -47,8 +47,6 @@ var OMITONE_CODE_REV = '2cfa94147e';
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,
-    // 音频任务点只需进度不需要出声，默认静音播放（不干扰用户、也不受自动播放限制）
-    audioMuted: true,
     // 讨论任务点：自动打开讨论页并发布评论（内容见 discussionReply），完成后自动返回继续刷课
     enableDiscussion: true,
     discussionReply: '1',
@@ -77,7 +75,7 @@ var OMITONE_CODE_REV = '2cfa94147e';
     apiConnectionFailed: false,
     // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
     apiConnectionError: '',
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     captchaModel: '',
     // ===== 视觉模型（图片理解）=====
     //
@@ -1730,9 +1728,10 @@ var OMITONE_CODE_REV = '2cfa94147e';
     _ensurePlaybackRate: function (video, reason) {
       if (!video) return;
       var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 音频任务只要进度不需要出声：默认静音播放，避免多标签声音互相干扰
+      // 音频不再由插件静音（旧的 audioMuted 开关已删）。
+      // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
       try {
-        video.muted = isAudio ? (this.configs.audioMuted !== false) : !!this.configs.muted;
+        video.muted = !isAudio && !!this.configs.muted;
       } catch (e0) {}
       if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
         this._scheduleMaxRateDetection(video);

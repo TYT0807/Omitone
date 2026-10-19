@@ -60,8 +60,6 @@
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,
-    // 音频任务点只需进度不需要出声，默认静音播放（不干扰用户、也不受自动播放限制）
-    audioMuted: true,
     // 讨论任务点：自动打开讨论页并发布评论（内容见 discussionReply），完成后自动返回继续刷课
     enableDiscussion: true,
     discussionReply: '1',
@@ -90,7 +88,7 @@
     apiConnectionFailed: false,
     // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
     apiConnectionError: '',
-    model: 'deepseek-v4-flash',
+    model: 'deepseek-flash',
     captchaModel: '',
     // ===== 视觉模型（图片理解）=====
     //

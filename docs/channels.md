@@ -3,7 +3,22 @@
 这份文件是**给以后的人（包括 AI）看的**：AI 服务商的地址、模型名、思考参数变化很快，
 写死在代码里的快照**一定会过期**。过期本身不致命，致命的是"过期了没人知道"。
 
-**最后核对日期：2026-09-18**（上一次核对人：接手 1.1.5 的那位）
+**最后核对日期：2026-10-19**（上一次核对人：1.2.8 这一轮）
+
+---
+
+## 0. 2026-10-19 核对结论（只记"和以前不一样"的地方）
+
+- **当前 DeepSeek 的 API 模型名是 `deepseek-flash`（= V4.1 Flash，2026-09-10 发布）。**
+  552B MoE、**原生多模态**（文字和图片同一个模型）、1M 上下文。
+  ⇒ 默认模型已改成 `deepseek-flash`；**看图题不再需要单独配一家**，留空即用主模型。
+- **`deepseek-v4-flash` / `deepseek-v4-flash-vision-exp` 已下线** —— 旧名只是兼容路由
+  （还能用、按 Flash 计费），但**新配置别再写它们**。
+- `deepseek-chat` / `deepseek-reasoner` 早在 2026-07-24 就停了；`deepseek-v4-pro`
+  仍是独立可用的 Pro 档（官方一度宣布下线，后来又保留了）。
+- 思考模式：V4 系列**默认开**，要关必须显式发 `thinking:{type:"disabled"}`（本项目一直这么发）。
+- `kimi-k3` 仍是 Kimi 旗舰（1M 上下文、恒思考，`reasoning_effort` 三档）；
+  通义 `qwen3.8-flash` 仍是当前快照型号。两者**都没实测过**，结论不变。
 
 ---
 
@@ -15,7 +30,7 @@
 
 | 渠道 | 协议 | base_url | 模型名（快照） | 思考参数 | 实测 |
 | --- | --- | --- | --- | --- | --- |
-| **DeepSeek** | OpenAI 兼容 | `https://api.deepseek.com` | `deepseek-v4-flash` | `thinking:{type:enabled\|disabled}`（默认 enabled）+ `reasoning_effort: low\|high\|max` | ✅ **关闭档实测通过** |
+| **DeepSeek** | OpenAI 兼容 | `https://api.deepseek.com` | `deepseek-flash`（= V4.1 Flash，**含看图**）/ `deepseek-v4-pro` | `thinking:{type:enabled\|disabled}`（默认 enabled）+ `reasoning_effort: low\|high\|max` | ✅ **关闭档实测通过** |
 | Kimi / Moonshot | OpenAI 兼容 | `https://api.moonshot.ai/v1`（国内站 `.cn`） | `kimi-k3` | `reasoning_effort: low\|high\|max`；**K3 恒思考，关不掉** | ❌ 未实测 |
 | 通义千问 / DashScope | OpenAI 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | `enable_thinking: true\|false` + `reasoning_effort: low\|medium\|xhigh` | ❌ 未实测 |
 | Claude | Anthropic | `https://api.anthropic.com` | 自己填 | 本项目的三档思考开关**不作用于它** | ❌ 未实测 |
@@ -40,7 +55,7 @@
 curl -s https://api.deepseek.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $KEY" \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
+  -d '{"model":"deepseek-flash","messages":[{"role":"user","content":"hi"}],"max_tokens":8}'
 
 # Kimi
 curl -s https://api.moonshot.ai/v1/chat/completions \
@@ -99,7 +114,8 @@ npm run e2e     # 真实 Edge，含多选题等场景
 3. **通义商业版默认关思考、开源版默认开**。所以"关闭"档要**显式**发
    `enable_thinking: false` 才稳；不发明细的话，同一份配置在两种模型上行为不同。
 4. **DeepSeek 的 `deepseek-chat` / `deepseek-reasoner` 已在 2026-07-24 退役**。
-   老配置里如果还写着这两个名字，会直接 404 —— 换成 `deepseek-v4-flash` 即可。
+   老配置里如果还写着这两个名字，会直接 404 —— 换成 `deepseek-flash` 即可。
+   （2026-09-10 起 V4 Flash 也下线了，`deepseek-v4-flash` 现在只是兼容路由。）
 5. **别给不认识的渠道发思考参数**。各家对未知字段的反应不一致：有的忽略、
    有的直接 400。所以 `unknown` 那一家在"关闭"档是**一个参数都不发**的 ——
    这也正是 1.1.5 之前的行为，保持它就不会把任何现有用户搞挂。
