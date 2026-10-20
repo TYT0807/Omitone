@@ -1331,7 +1331,8 @@ document.addEventListener("DOMContentLoaded", () => {
         pose("happy");
       }, 9500);
     } else {
-      setTimeout(function () { mascot.classList.add("show"); pose("sit"); }, 900);
+      // 常规：**不主动现身**。用户会以为她没开 —— 这正是要的效果。
+      // 只有点底部「显示小人」才亮出来（见下面 btnPetShow）。
     }
 
     // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
@@ -1403,6 +1404,7 @@ document.addEventListener("DOMContentLoaded", () => {
         mascot.classList.add("show");
         mascot.classList.remove("collapsed");
         setPose("happy", 1400);
+        try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
       });
     }
 

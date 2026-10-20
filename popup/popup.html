@@ -44,7 +44,7 @@ html,body{ height:100%; }
 body{
   width:356px; max-width:100%; background:var(--bg); color:var(--fg);
   font-family:-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
-  font-size:13px; line-height:1.6; letter-spacing:-.004em;
+  font-size:13px; line-height:1.52; letter-spacing:-.004em;
   -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
   overflow-x:hidden; position:relative;
 }
@@ -59,7 +59,7 @@ body::before{
   pointer-events:none; z-index:0;
 }
 
-.container{ position:relative; z-index:1; padding:0 20px 24px; }
+.container{ position:relative; z-index:1; padding:0 16px 18px; }
 
 /* ---------- 打开动效：只动 opacity / transform（合成层，不重排） ---------- */
 @keyframes om-pop-in{
@@ -85,7 +85,7 @@ body::before{
 /* ---------- 顶部：唯一一层真玻璃 ---------- */
 .top{
   position:sticky; top:0; z-index:3;
-  margin:0 0 10px; padding:16px 0 14px;
+  margin:0 0 8px; padding:12px 0 10px;
   background:linear-gradient(180deg, rgba(255,255,255,.38), rgba(255,255,255,.12));
   -webkit-backdrop-filter:saturate(210%) blur(22px);
   backdrop-filter:saturate(210%) blur(22px);
@@ -119,7 +119,7 @@ body::before{
 }
 .btn.secondary:hover{ filter:none; background:var(--hover); color:var(--fg); }
 
-.minor{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+.minor{ display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .minor button{
   flex:1 1 auto; padding:7px 10px; border:1px solid var(--hairline-strong); border-radius:10px;
   background:var(--field); color:var(--fg-2); cursor:pointer; font-size:12px; font-weight:500;
@@ -169,7 +169,7 @@ body::before{
 /* 透光玻璃：表面→内部有明暗（光穿过）、上沿有高光唇边（边缘会亮）、
    底色半透（背后颜色渗上来）。只动颜色与阴影，不动定位和尺寸。 */
 details.group{
-  margin:0 0 14px; border:1px solid rgba(255,255,255,.55); border-radius:var(--radius-card);
+  margin:0 0 10px; border:1px solid rgba(255,255,255,.55); border-radius:var(--radius-card);
   background:linear-gradient(180deg, rgba(255,255,255,.30) 0%, rgba(255,255,255,.08) 100%);
   -webkit-backdrop-filter:blur(20px) saturate(190%);
   backdrop-filter:blur(20px) saturate(190%);
@@ -185,7 +185,7 @@ details.group[open]{
   box-shadow:0 1px 2px rgba(16,24,40,.05), 0 10px 26px -16px rgba(10,90,200,.42);
 }
 details.group > summary{
-  display:flex; align-items:center; gap:10px; padding:15px 16px;
+  display:flex; align-items:center; gap:8px; padding:13px 14px;
   cursor:pointer; list-style:none; color:var(--muted);
   font-size:11.5px; font-weight:650; letter-spacing:.055em;
   -webkit-tap-highlight-color:transparent;
@@ -232,7 +232,7 @@ details.group.is-opening .group-body > *:nth-child(n+10){ animation-delay:230ms;
 /* ---------- 设置行 ---------- */
 .row{
   position:relative; display:flex; align-items:center; justify-content:space-between;
-  gap:16px; padding:13px 10px; border-radius:10px;
+  gap:14px; padding:11px 8px; border-radius:10px;
 }
 .row > *{ position:relative; z-index:1; }
 .row::before{
@@ -288,7 +288,7 @@ input[type="range"]::-webkit-slider-thumb{ width:17px; height:17px; border-radiu
 input[type="range"]::-webkit-slider-thumb:hover{ transform:scale(1.1); }
 
 /* ---------- 表单 ---------- */
-.field{ margin-top:14px; }
+.field{ margin-top:10px; }
 .field label{ display:block; margin-bottom:5px; color:var(--fg-2); font-size:12.5px; font-weight:600; }
 textarea,input[type="text"],input[type="password"],input[type="number"],select{
   width:100%; border:1px solid var(--hairline-strong); border-radius:10px;
@@ -299,7 +299,7 @@ textarea,input[type="text"],input[type="password"],input[type="number"],select{
 textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type="number"]:focus,select:focus{
   border-color:var(--accent); box-shadow:0 0 0 4px var(--accent-soft);
 }
-.hint{ margin:8px 0 0; color:var(--muted); font-size:12px; line-height:1.75; }
+.hint{ margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
 .hint b{ color:var(--fg-2); font-weight:600; }
 
 /* ---------- 检测更新 ---------- */
@@ -700,7 +700,8 @@ body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; po
 <!-- 彩蛋小人：初始在视口外，1.4s 后滑下来挂在顶边 -->
 
 
-  <div class="top">
+  <div class="container">
+<div class="top">
     <div class="brand">
       <div class="dot" id="runDot"></div>
       <div class="title">Omitone</div>
