@@ -39,9 +39,10 @@
 }
 *{ box-sizing:border-box; margin:0; padding:0; }
 
+html{ width:356px; }   /* 扩展弹窗按 html 宽度定尺寸，必须写在这里 */
 html,body{ height:100%; }
 body{
-  width:372px; background:var(--bg); color:var(--fg);
+  width:356px; max-width:100%; background:var(--bg); color:var(--fg);
   font-family:-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size:13px; line-height:1.52; letter-spacing:-.004em;
   -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
