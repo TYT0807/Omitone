@@ -42,7 +42,7 @@
 html{ width:356px; }   /* 扩展弹窗按 html 宽度定尺寸，必须写在这里 */
 html,body{ height:100%; }
 body{
-  width:356px; max-width:100%; background:var(--bg); color:var(--fg);
+  width:356px; min-width:340px; max-width:100%; background:var(--bg); color:var(--fg);
   font-family:-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size:13px; line-height:1.52; letter-spacing:-.004em;
   -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility;
@@ -53,9 +53,12 @@ body{
 body::before{
   content:""; position:fixed; left:-15%; right:-15%; top:-25%; height:150%;
   background:
-    radial-gradient(60% 46% at 14% 4%, rgba(10,132,255,.85), transparent 66%),
-    radial-gradient(56% 42% at 86% -2%, rgba(178,90,226,.70), transparent 68%),
-    radial-gradient(70% 50% at 50% 106%, rgba(48,206,188,.62), transparent 68%);
+    radial-gradient(60% 46% at 14% 4%, rgba(10,132,255,.75), transparent 66%),
+    radial-gradient(56% 42% at 86% -2%, rgba(178,90,226,.62), transparent 68%),
+    radial-gradient(70% 50% at 50% 106%, rgba(48,206,188,.55), transparent 68%),
+    /* 下面两块是"伪内容"：让玻璃压上去能看到被糊开的形状，而不是一片平色 */
+    radial-gradient(28% 18% at 24% 42%, rgba(255,255,255,.85), transparent 70%),
+    radial-gradient(34% 22% at 78% 66%, rgba(255,255,255,.55), transparent 72%);
   pointer-events:none; z-index:0;
 }
 
@@ -170,9 +173,9 @@ body::before{
    底色半透（背后颜色渗上来）。只动颜色与阴影，不动定位和尺寸。 */
 details.group{
   margin:0 0 10px; border:1px solid rgba(255,255,255,.55); border-radius:var(--radius-card);
-  background:linear-gradient(180deg, rgba(255,255,255,.30) 0%, rgba(255,255,255,.08) 100%);
-  -webkit-backdrop-filter:blur(20px) saturate(190%);
-  backdrop-filter:blur(20px) saturate(190%);
+  background:linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.04) 100%);
+  -webkit-backdrop-filter:blur(28px) saturate(210%);
+  backdrop-filter:blur(28px) saturate(210%);
   overflow:hidden; contain:paint;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,.95),

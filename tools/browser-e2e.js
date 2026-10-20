@@ -1332,6 +1332,35 @@ async function waitFor(client, expression, timeoutMs) {
 // ===========================================================================
 var SCENARIOS = [];
 
+// 拖动专项：光标要"咬住"抓手点，且不能把人拖出视口（撑破界面）
+SCENARIOS.push({
+  name: '弹窗前端：小人拖动跟随光标且不飞出视口',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'await new Promise(function(r){setTimeout(r,1500);});' +
+      'var pet=document.getElementById("mascot");' +
+      'if(!pet) return {ok:false};' +
+      'pet.classList.add("show");' +
+      'var b=pet.getBoundingClientRect();' +
+      'function ev(t,x,y){return new PointerEvent(t,{bubbles:true,pointerId:1,button:0,isPrimary:true,clientX:x,clientY:y});}' +
+      'var sx=b.left+12, sy=b.top+12;' +
+      'pet.dispatchEvent(ev("pointerdown",sx,sy));' +
+      'pet.dispatchEvent(ev("pointermove",sx-90,sy+50));' +
+      'pet.dispatchEvent(ev("pointerup",sx-90,sy+50));' +
+      'await new Promise(function(r){setTimeout(r,400);});' +
+      'var a=pet.getBoundingClientRect();' +
+      'return {ok:true,dx:Math.round(a.left-b.left),dy:Math.round(a.top-b.top),' +
+      'inside:a.left>=-1&&a.right<=innerWidth+1&&a.top>=-1};})()'
+    );
+    check('小人可被拖动（位移 > 30px）', !!r && r.ok && Math.abs(r.dx) > 30, JSON.stringify(r));
+    check('拖动后仍在视口内，不会撑破界面', !!r && r.ok && r.inside === true, JSON.stringify(r));
+  }
+});
+
+
 // ── 前端专项：角色控件"点了要有反应" ──────────────────────────────────────
 // 这类 bug（点了没反应、装扮没换）**不会抛异常**，只能靠"点完之后状态变了没有"来抓。
 // 以后新增任何角色控件，都在这里补一条断言。

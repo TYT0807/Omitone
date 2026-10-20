@@ -1412,12 +1412,12 @@ document.addEventListener("DOMContentLoaded", () => {
       var pr = mascot.getBoundingClientRect();
       var dx = (lr.right + 4) - pr.left;
       var dy = (lr.top - 4) - pr.top;
-      mascot.style.transition = "translate 1.5s cubic-bezier(.4,0,.2,1)";
+      mascot.style.transition = "translate 3.2s cubic-bezier(.4,0,.2,1)";
       mascot.style.translate = Math.max(-260, Math.min(6, dx)).toFixed(0) + "px " +
                                Math.max(0, Math.min(340, dy)).toFixed(0) + "px";
       setTimeout(function () {
         mascot.style.transition = "";
-        setPose("point", 2600);
+        setPose("point", 6000);
         var pats = 0;
         var timer = setInterval(function () {
           try {
@@ -1425,8 +1425,8 @@ document.addEventListener("DOMContentLoaded", () => {
               { duration: 340, easing: "ease-out" });
           } catch (e) {}
           if (++pats >= 3) clearInterval(timer);
-        }, 880);
-      }, 1550);
+        }, 1250);
+      }, 3300);
     }
 
     // 底部「显示小人」：把藏起来的叫回来
@@ -1448,7 +1448,7 @@ document.addEventListener("DOMContentLoaded", () => {
             setTimeout(crawlToUpdate, 1600);
           }
         } catch (e) {}
-        try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
+        try { toast("恭喜触发彩蛋<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
       });
     }
 
