@@ -1343,6 +1343,15 @@ document.addEventListener("DOMContentLoaded", () => {
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
     var OUTFITS = 5;
+    var POS_KEY = "omitone.pet.pos";
+    // 上次把她拖到哪儿了？就放回哪儿
+    try {
+      var savedPos = localStorage.getItem(POS_KEY);
+      if (savedPos) {
+        var xy = savedPos.split(",");
+        if (xy.length === 2) mascot.style.translate = xy[0] + "px " + xy[1] + "px";
+      }
+    } catch (e) {}
     var outfitIdx = 0;
     function applyOutfit(i) {
       outfitIdx = ((i % OUTFITS) + OUTFITS) % OUTFITS;
@@ -1508,11 +1517,11 @@ document.addEventListener("DOMContentLoaded", () => {
         dragging = false;
         mascot.classList.remove("dragging");
         var dist = Math.sqrt(moveX * moveX + moveY * moveY);
-        // 弹回去：用带一点回弹的曲线，像被放回原位的小玩偶
-        mascot.style.transition = "translate .55s cubic-bezier(.34,1.56,.64,1)";
-        mascot.style.translate = "0px 0px";
-        setTimeout(function () { mascot.style.transition = ""; }, 620);
-        if (dist > 14) { setPose("happy", 900); addMood(3); }
+        if (dist > 8) {
+          // 松手就停在这儿并记住 —— 用户要能把她挪到不挡事的地方
+          try { localStorage.setItem(POS_KEY, Math.round(moveX) + "," + Math.round(moveY)); } catch (e) {}
+          setPose("happy", 900); addMood(3);
+        }
       });
       mascot.addEventListener("pointercancel", function () {
         dragging = false;

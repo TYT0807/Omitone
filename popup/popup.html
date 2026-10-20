@@ -653,6 +653,12 @@ html[data-season="spring"] .btn{ background:linear-gradient(180deg,#ef7fb4 0%,#e
 .mode-switch[data-on="1"] span:nth-of-type(2){ color:#fff; }
 .mode-switch[data-on="0"] span:nth-of-type(1){ color:#fff; }
 
+/* 精简模式下这些按钮本身没意义，直接收掉（别让用户点了没反应） */
+html[data-ui="lite"] #btnExpand,
+html[data-ui="lite"] #btnBg,
+html[data-ui="lite"] #btnBgClear,
+html[data-ui="lite"] #btnPetShow{ display:none !important; }
+
 /* ---------- 精简模式：回到 1.2.8 那种素净样子（无角色、无粒子、无玻璃） ---------- */
 html[data-ui="lite"] .fx-layer,
 html[data-ui="lite"] .pet,
