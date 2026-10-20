@@ -1332,6 +1332,100 @@ async function waitFor(client, expression, timeoutMs) {
 // ===========================================================================
 var SCENARIOS = [];
 
+// ══════════════════════════════════════════════════════════════════════
+// 前端专项（一）：弹窗全功能自检
+// 上一版只"点了按钮"，没验证"按钮点不点得到" —— 所以"被遮住/看不见"
+// 这类问题全漏了。这里用 elementFromPoint 做**命中测试**：命中点必须是
+// 按钮自己，才算真的可点。
+// ══════════════════════════════════════════════════════════════════════
+SCENARIOS.push({
+  name: '弹窗前端：全功能自检（含命中测试）',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'var out={errs:[]};window.addEventListener("error",function(e){out.errs.push(String(e.message));});' +
+      'await new Promise(function(r){setTimeout(r,1500);});' +
+      'var pet=document.getElementById("mascot");' +
+      'out.petShown=!!(pet&&pet.classList.contains("show"));' +
+      'out.ui=document.documentElement.getAttribute("data-ui");' +
+      // —— 命中测试：三个按钮的中心点，elementFromPoint 必须命中按钮自己 ——
+      'var hits={};["pose","outfit","hide"].forEach(function(a){' +
+      '  var b=document.querySelector("#petTools button[data-act=\\""+a+"\\"]");' +
+      '  if(!b){hits[a]="missing";return;}' +
+      '  var rc=b.getBoundingClientRect();' +
+      '  var el=document.elementFromPoint(rc.left+rc.width/2, rc.top+rc.height/2);' +
+      '  hits[a]=(el===b||(el&&b.contains(el)));' +
+      '});' +
+      'out.hits=hits;' +
+      // —— 换装 ——
+      'var img=pet.querySelector(".pet-art");out.src0=img?img.getAttribute("src"):"";' +
+      'var bo=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
+      'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
+      'out.src1=img?img.getAttribute("src"):"";' +
+      // —— 换姿势 ——
+      'out.pose0=pet?pet.getAttribute("data-pose"):"";' +
+      'var bp=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
+      'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
+      'out.pose1=pet?pet.getAttribute("data-pose"):"";' +
+      // —— 拖拽 ——
+      'function ev(t,x,y){return new PointerEvent(t,{bubbles:true,pointerId:1,button:0,isPrimary:true,clientX:x,clientY:y});}' +
+      'var b0=pet.getBoundingClientRect();' +
+      'pet.dispatchEvent(ev("pointerdown",b0.left+12,b0.top+12));' +
+      'pet.dispatchEvent(ev("pointermove",b0.left-70,b0.top+40));' +
+      'pet.dispatchEvent(ev("pointerup",b0.left-70,b0.top+40));' +
+      'await new Promise(function(r){setTimeout(r,350);});' +
+      'var b1=pet.getBoundingClientRect();' +
+      'out.dragDx=Math.round(b1.left-b0.left);' +
+      'out.inView=b1.left>=-1&&b1.right<=innerWidth+1&&b1.top>=-1;' +
+      // —— 隐藏（放最后）——
+      'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
+      'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
+      'out.hidden=pet?pet.style.display==="none":null;' +
+      'out.errCount=out.errs.length;out.errText=out.errs.join(" | ");' +
+      'return out;})()'
+    );
+    check('角色在精美模式下自动出现', !!r && r.petShown === true, JSON.stringify({shown: r && r.petShown, ui: r && r.ui}));
+    check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, JSON.stringify(r && r.hits));
+    check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, JSON.stringify(r && r.hits));
+    check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, JSON.stringify(r && r.hits));
+    check('点「装」换立绘', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
+    check('点「姿」换姿态', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('拖动位移 > 30px', !!r && Math.abs(r.dragDx) > 30, r ? String(r.dragDx) : '');
+    check('拖完仍在视口内', !!r && r.inView === true, '');
+    check('点「藏」收起', !!r && r.hidden === true, '');
+    check('全程无未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 前端专项（二）：沉浸式窗口应当只剩吉祥物
+// 之前 ?play=1 只改了窗口尺寸、从没加 .im 类，打开就是放大版设置面板。
+// ══════════════════════════════════════════════════════════════════════
+SCENARIOS.push({
+  name: '沉浸式窗口：只剩吉祥物',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'await new Promise(function(r){setTimeout(r,1200);});' +
+      'var out={};' +
+      'out.imClass=document.body.classList.contains("im");' +
+      'var top=document.querySelector(".top");' +
+      'out.topHidden=top?getComputedStyle(top).display==="none":null;' +
+      'var pet=document.getElementById("mascot");' +
+      'out.petVisible=pet?getComputedStyle(pet).display!=="none":null;' +
+      'return out;})()'
+    );
+    check('body 带上了 .im 类', !!r && r.imClass === true, JSON.stringify(r));
+    check('设置面板被隐藏', !!r && r.topHidden === true, JSON.stringify(r));
+    check('吉祥物仍然显示', !!r && r.petVisible === true, JSON.stringify(r));
+  }
+});
+
+
 // 拖动专项：光标要"咬住"抓手点，且不能把人拖出视口（撑破界面）
 SCENARIOS.push({
   name: '弹窗前端：小人拖动跟随光标且不飞出视口',
