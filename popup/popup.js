@@ -1347,10 +1347,8 @@ document.addEventListener("DOMContentLoaded", () => {
     // 上次把她拖到哪儿了？就放回哪儿
     try {
       var savedPos = localStorage.getItem(POS_KEY);
-      if (savedPos) {
-        var xy = savedPos.split(",");
-        if (xy.length === 2) mascot.style.translate = xy[0] + "px " + xy[1] + "px";
-      }
+      var xy = savedPos ? savedPos.split(",") : [String(window.innerWidth - 56), "2"];
+      if (xy.length === 2) mascot.style.translate = xy[0] + "px " + xy[1] + "px";
     } catch (e) {}
     var outfitIdx = 0;
     function applyOutfit(i) {
@@ -1410,11 +1408,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!link || !mascot) return;
       var lr = link.getBoundingClientRect();
       var pr = mascot.getBoundingClientRect();
-      var dx = (lr.right + 4) - pr.left;
-      var dy = (lr.top - 4) - pr.top;
+      var dx = Math.min(window.innerWidth - 44, lr.right + 4);
+      var dy = Math.max(0, lr.top - 4);
       mascot.style.transition = "translate 3.2s cubic-bezier(.4,0,.2,1)";
-      mascot.style.translate = Math.max(-260, Math.min(6, dx)).toFixed(0) + "px " +
-                               Math.max(0, Math.min(340, dy)).toFixed(0) + "px";
+      mascot.style.translate = Math.round(dx) + "px " + Math.round(dy) + "px";
       setTimeout(function () {
         mascot.style.transition = "";
         setPose("point", 6000);
@@ -1549,13 +1546,9 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       mascot.addEventListener("pointermove", function (ev) {
         if (!dragging) return;
-        // 目标位置 = 光标 - 抓手偏移；再换算成相对基准的 translate
-        var wantLeft = ev.clientX - grabDX;
-        var wantTop = ev.clientY - grabDY;
-        var tx = wantLeft - (baseLeft - moveX);   // 基准左缘
-        var ty = wantTop - (baseBottomY - moveY);
-        moveX = Math.max(-260, Math.min(6, tx));
-        moveY = Math.max(0, Math.min(340, ty));
+        // 绝对坐标：人物左上角 = 光标 - 抓手偏移。不需要任何基准换算。
+        moveX = Math.max(0, Math.min(window.innerWidth - 44, ev.clientX - grabDX));
+        moveY = Math.max(0, Math.min(window.innerHeight - 60, ev.clientY - grabDY));
         mascot.style.translate = moveX.toFixed(0) + "px " + moveY.toFixed(0) + "px";
       });
       mascot.addEventListener("pointerup", function () {
