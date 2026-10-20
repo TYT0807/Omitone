@@ -503,12 +503,10 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 
 /* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
 .pet-tools{
-  position:absolute; right:100%; bottom:6px; margin-right:6px;
-  display:flex; gap:3px; opacity:0; transform:translateX(4px);
-  transition:opacity .18s linear, transform .18s var(--ease-out);
-  pointer-events:none;
+  position:absolute; right:0; top:100%; margin-top:2px;
+  display:flex; gap:3px; opacity:1;
+  pointer-events:auto;
 }
-.pet:hover .pet-tools{ opacity:1; transform:none; pointer-events:auto; }
 .pet-tools button{
   width:18px; height:18px; padding:0; border:0; border-radius:50%;
   background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);

@@ -1346,8 +1346,9 @@ document.addEventListener("DOMContentLoaded", () => {
     var SKINS = ["pet.png",
       "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
-      "pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png"];
-    var OUTFITS = SKINS.length;
+      "pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
+      "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];
+    var OUTFITS = SKINS.length;   // 17 张：9 套服装 + 4 表情 + 4 互动
     var POS_KEY = "omitone.pet.pos";
     // 上次把她拖到哪儿了？就放回哪儿
     try {
@@ -1442,7 +1443,10 @@ document.addEventListener("DOMContentLoaded", () => {
         mascot.classList.remove("collapsed");
         setPose("happy", 1400);
         try {
+          var once = localStorage.getItem("omitone.pet.egged") !== "1";
+          localStorage.setItem("omitone.pet.egged", "1");
           var t = document.getElementById("toast");
+          if (!once) throw new Error("seen");
           if (t) {
             t.textContent = "恭喜触发彩蛋<(￣︶￣)↗ 请到最上面看看她";
             t.classList.add("prominent", "show");
