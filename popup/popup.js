@@ -1342,7 +1342,12 @@ document.addEventListener("DOMContentLoaded", () => {
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
-    var OUTFITS = 5;
+    // 立绘清单：顺序就是「装」按钮的轮换顺序（服装 9 套 + 表情 4 张，共 13 张）
+    var SKINS = ["pet.png",
+      "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
+      "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
+      "pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png"];
+    var OUTFITS = SKINS.length;
     var POS_KEY = "omitone.pet.pos";
     // 上次把她拖到哪儿了？就放回哪儿
     try {
@@ -1358,12 +1363,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // 真的换图 —— 之前只加了 hue-rotate，而情绪也会写 filter，两家抢同一个属性，
       // 谁后写谁生效 → 看着就是"点了没反应"。改用换 src，彻底不碰 filter。
       var art = mascot.querySelector(".pet-art");
-      if (art) art.setAttribute("src", outfitIdx ? "pet-" + outfitIdx + ".png" : "pet.png");
+      if (art) art.setAttribute("src", SKINS[outfitIdx] || SKINS[0]);
       try { localStorage.setItem(OUT_KEY, String(outfitIdx)); } catch (e) {}
       return outfitIdx;
     }
     // 预载另外两套，换的时候不闪
-    [1, 2, 3, 4].forEach(function (i) { try { var im = new Image(); im.src = "pet-" + i + ".png"; } catch (e) {} });
+    // 预载全部立绘，切换时不闪
+    SKINS.forEach(function (f) { try { var im = new Image(); im.src = f; } catch (e) {} });
     try { outfitIdx = applyOutfit(Number(localStorage.getItem(OUT_KEY) || 0)); } catch (e) {}
 
     // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
