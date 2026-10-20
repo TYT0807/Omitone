@@ -518,9 +518,7 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 .pet.collapsed .pet-art{ object-position:top center; border-radius:50%; background:var(--card); }
 .pet.collapsed .pet-tools{ display:none; }
 
-/* 三种装束：不改图，只用色相/明度把"换衣"的观感做出来 */
-.pet[data-outfit="1"] .pet-art{ filter:hue-rotate(-12deg) saturate(1.15) brightness(1.03) drop-shadow(0 2px 3px rgba(16,24,40,.18)); }
-.pet[data-outfit="2"] .pet-art{ filter:hue-rotate(18deg) saturate(.9) brightness(.98) drop-shadow(0 2px 3px rgba(16,24,40,.18)); }
+/* 换装靠换图（pet-1.png / pet-2.png），不再用 filter —— 否则会和情绪滤镜打架 */
 
 /* 季节道具（挂在立绘旁边） */
 .pet-prop{ position:absolute; display:none; }

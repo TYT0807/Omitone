@@ -1332,6 +1332,50 @@ async function waitFor(client, expression, timeoutMs) {
 // ===========================================================================
 var SCENARIOS = [];
 
+// ── 前端专项：角色控件"点了要有反应" ──────────────────────────────────────
+// 这类 bug（点了没反应、装扮没换）**不会抛异常**，只能靠"点完之后状态变了没有"来抓。
+// 以后新增任何角色控件，都在这里补一条断言。
+SCENARIOS.push({
+  name: '弹窗前端：角色控件点一遍都要有反应',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'var out={errs:[]};' +
+      'window.addEventListener("error",function(e){out.errs.push(String(e.message));});' +
+      'await new Promise(function(r){setTimeout(r,1200);});' +
+      'var pet=document.getElementById("mascot");' +
+      'var img=pet&&pet.querySelector(".pet-art");' +
+      'out.hasPet=!!pet;out.src0=img?img.getAttribute("src"):"";' +
+      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
+      'if(b){b.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      'out.src1=img?img.getAttribute("src"):"";' +
+      'out.pose0=pet?pet.getAttribute("data-pose"):"";' +
+      'var pb=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
+      'if(pb){pb.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      'out.pose1=pet?pet.getAttribute("data-pose"):"";' +
+      'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
+      'if(h){h.click();await new Promise(function(r){setTimeout(r,140);});}' +
+      'out.hidden=pet?pet.style.display==="none":null;' +
+      'var sp=document.getElementById("btnPetShow");' +
+      'if(sp){sp.click();await new Promise(function(r){setTimeout(r,140);});}' +
+      'out.shown=pet?pet.style.display!=="none":null;' +
+      'document.querySelectorAll(".toggle").forEach(function(t){t.click();t.click();});' +
+      'await new Promise(function(r){setTimeout(r,220);});' +
+      'out.errCount=out.errs.length;out.errText=out.errs.join(" | ");' +
+      'return out;})()'
+    );
+    check('前置：弹窗里有角色元件', !!r && r.hasPet === true, JSON.stringify(r));
+    check('点「装」真的换图（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
+    check('点「姿」会换姿态', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('点「藏」会收起来', !!r && r.hidden === true, '');
+    check('「显示小人」能叫回来', !!r && r.shown === true, '');
+    check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
+  }
+});
+
+
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
   name: '抠题（5 种题型）',
