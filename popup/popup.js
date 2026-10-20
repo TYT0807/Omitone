@@ -1347,8 +1347,9 @@ document.addEventListener("DOMContentLoaded", () => {
       "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
       "pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
-      "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];
-    var OUTFITS = SKINS.length;   // 17 张：9 套服装 + 4 表情 + 4 互动
+      "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
+      "pet-9.png", "pet-10.png", "pet-e5.png", "pet-e6.png"];
+    var OUTFITS = SKINS.length;   // 21 张：11 套服装 + 6 表情 + 4 互动
     var POS_KEY = "omitone.pet.pos";
     // 上次把她拖到哪儿了？就放回哪儿
     try {
@@ -1432,6 +1433,24 @@ document.addEventListener("DOMContentLoaded", () => {
         }, 1250);
       }, 3300);
     }
+
+    // ── 闲置自动轮换：没人理她时，自己换姿态、偶尔换身衣服 ──────────────
+    // 12~25 秒一次，运行中（data-busy）不打扰。
+    // 只用 sit/happy/point：climb/hang 是彩蛋专用姿态，日常出现会很怪。
+    (function idleLoop() {
+      var wait = 12000 + Math.random() * 13000;
+      setTimeout(function () {
+        try {
+          var hidden = !mascot || mascot.style.display === "none" || !mascot.classList.contains("show");
+          if (!hidden && !mascot.getAttribute("data-busy")) {
+            if (Math.random() < 0.45) applyOutfit(Math.floor(Math.random() * OUTFITS));
+            var poses = ["sit", "happy", "point"];
+            setPose(poses[Math.floor(Math.random() * poses.length)], 2800);
+          }
+        } catch (e) {}
+        idleLoop();
+      }, wait);
+    })();
 
     // 底部「显示小人」：把藏起来的叫回来
     var btnPetShow = document.getElementById("btnPetShow");
