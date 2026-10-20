@@ -1405,6 +1405,7 @@ document.addEventListener("DOMContentLoaded", () => {
         mascot.classList.remove("collapsed");
         setPose("happy", 1400);
         try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
+        try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
       });
     }
 
