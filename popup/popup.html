@@ -464,6 +464,16 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 @keyframes pet-lick{ 0%,100%{ transform:none } 45%{ transform:rotate(-5deg) translateY(-2px) } }
 .pet[data-eat="1"] .pet-art{ animation:pet-lick .55s var(--ease-spring) 2; }
 
+/* ---------- 情绪 / 拖拽 / 运行中 ---------- */
+.pet.dragging{ cursor:grabbing; z-index:12; }
+.pet.dragging .pet-inner{ animation-play-state:paused; }
+/* 开心（≥80）：暖光。不开心（≤15）：发灰、呼吸变慢 —— 像蔫了 */
+.pet[data-mood="high"] .pet-art{ filter:saturate(1.12) drop-shadow(0 0 7px rgba(255,208,120,.6)); }
+.pet[data-mood="low"] .pet-art{ filter:grayscale(.4) brightness(.97) drop-shadow(0 2px 3px rgba(16,24,40,.16)); }
+.pet[data-mood="low"] .pet-inner{ animation-duration:6.5s; }
+/* 运行中：呼吸比平时快一倍多点 */
+.pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
+
 /* 季节道具（挂在立绘旁边） */
 .pet-prop{ position:absolute; display:none; }
 html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }

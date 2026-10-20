@@ -471,6 +471,9 @@ function updateRunState(running) {
   // 用户开启后切到别的网站，扩展并没有在跑，但这个标记仍然是 true ——
   // 写成「运行中」就是骗人。
   els.runState.textContent = running ? "已开启" : "未开启";
+  // 广播给角色：它要知道"现在在不在跑"，但这条链路是**单向只读**的 ——
+  // 角色只接收状态，绝不反过来影响运行逻辑。
+  try { document.dispatchEvent(new CustomEvent("omitone:run", { detail: !!running })); } catch (e) {}
 }
 
 async function load() {
@@ -1308,6 +1311,81 @@ document.addEventListener("DOMContentLoaded", () => {
     // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
     var updLink = document.getElementById("checkUpdate");
     if (updLink) updLink.addEventListener("mouseenter", function () { setPose("point", 1800); });
+
+    // ── 情绪 / 拖拽 / 运行状态联动 ──────────────────────────────────────
+    //
+    // 三条都是**只读或纯本地**的：
+    //   · 情绪存在 localStorage，不参与任何答题/调度逻辑；
+    //   · 拖拽只改自己的 translate；
+    //   · 运行状态是"单向只读"——角色接收 `omitone:run` 事件，绝不反向影响运行。
+    // 任何一步出错都被外层 try/catch 吞掉，不会波及刷课。
+    var MOOD_KEY = "omitone.pet.mood";
+    function getMood() { try { return Number(localStorage.getItem(MOOD_KEY) || 50); } catch (e) { return 50; } }
+    function applyMood(v) {
+      if (!mascot) return;
+      var m = Math.max(0, Math.min(100, v));
+      try { localStorage.setItem(MOOD_KEY, String(m)); } catch (e) {}
+      if (m >= 80) mascot.setAttribute("data-mood", "high");
+      else if (m <= 15) mascot.setAttribute("data-mood", "low");
+      else mascot.removeAttribute("data-mood");
+    }
+    applyMood(getMood());
+
+    function addMood(d) {
+      var m = Math.max(0, Math.min(100, getMood() + d));
+      applyMood(m);
+      return m;
+    }
+
+    // 拖拽：按住就能拖着走，松手弹回去（不永久改变布局，免得下次打开位置乱了）
+    var dragging = false, startX = 0, startY = 0, moveX = 0, moveY = 0;
+    if (mascot) {
+      mascot.addEventListener("pointerdown", function (ev) {
+        if (ev.button !== 0) return;
+        dragging = true;
+        startX = ev.clientX; startY = ev.clientY; moveX = 0; moveY = 0;
+        mascot.classList.add("dragging");
+        try { mascot.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+      mascot.addEventListener("pointermove", function (ev) {
+        if (!dragging) return;
+        moveX = ev.clientX - startX;
+        moveY = ev.clientY - startY;
+        mascot.style.translate = moveX.toFixed(0) + "px " + moveY.toFixed(0) + "px";
+      });
+      mascot.addEventListener("pointerup", function () {
+        if (!dragging) return;
+        dragging = false;
+        mascot.classList.remove("dragging");
+        var dist = Math.sqrt(moveX * moveX + moveY * moveY);
+        // 弹回去：用带一点回弹的曲线，像被放回原位的小玩偶
+        mascot.style.transition = "translate .55s cubic-bezier(.34,1.56,.64,1)";
+        mascot.style.translate = "0px 0px";
+        setTimeout(function () { mascot.style.transition = ""; }, 620);
+        if (dist > 14) { setPose("happy", 900); addMood(3); }
+      });
+      mascot.addEventListener("pointercancel", function () {
+        dragging = false;
+        mascot.classList.remove("dragging");
+        mascot.style.translate = "0px 0px";
+      });
+    }
+
+    // 运行状态：跑起来时呼吸变快 + 说一句；停下来回到常态
+    document.addEventListener("omitone:run", function (ev) {
+      if (!mascot) return;
+      if (ev.detail) {
+        mascot.setAttribute("data-busy", "1");
+        setPose("happy", 1600);
+        if (bubble) { bubble.textContent = "开工啦，你忙你的"; bubble.classList.add("show");
+          setTimeout(function () { bubble.classList.remove("show"); }, 2600); }
+      } else {
+        mascot.removeAttribute("data-busy");
+        if (bubble) { bubble.textContent = "收工，歇会儿吧"; bubble.classList.add("show");
+          setTimeout(function () { bubble.classList.remove("show"); }, 2600); }
+      }
+    });
+
   } catch (e) {}
 })();
 
