@@ -696,6 +696,21 @@ body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; po
   *{ transition:none !important; animation:none !important; }
 }
 
+
+/* 拖动中必须关掉过渡 —— 否则每次 pointermove 都慢半拍，看起来就是"漂" */
+.pet.dragging{ transition:none !important; }
+.pet.dragging .pet-inner{ animation:none; }
+/* 醒目提示：彩蛋触发时贴在顶部、带强调色，不再是底下一行小字 */
+.toast.prominent{
+  position:fixed; left:50%; top:10px; transform:translateX(-50%) translateY(-8px);
+  z-index:20; max-width:calc(100vw - 32px); white-space:normal; text-align:center;
+  padding:9px 16px; border-radius:12px; line-height:1.5; font-size:12.5px; font-weight:600;
+  background:var(--accent); color:#fff; border:none;
+  box-shadow:0 10px 26px -10px rgba(10,110,220,.75);
+  opacity:0; pointer-events:none;
+  transition:opacity .26s var(--ease-out), transform .26s var(--ease-spring);
+}
+.toast.prominent.show{ opacity:1; transform:translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>

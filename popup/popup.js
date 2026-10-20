@@ -1413,7 +1413,14 @@ document.addEventListener("DOMContentLoaded", () => {
         mascot.classList.add("show");
         mascot.classList.remove("collapsed");
         setPose("happy", 1400);
-        try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
+        try {
+          var t = document.getElementById("toast");
+          if (t) {
+            t.textContent = "恭喜触发彩蛋<(￣︶￣)↗ 请到最上面看看她";
+            t.classList.add("prominent", "show");
+            setTimeout(function () { t.classList.remove("prominent", "show"); }, 5200);
+          }
+        } catch (e) {}
         try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
       });
     }
@@ -1508,8 +1515,9 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       mascot.addEventListener("pointermove", function (ev) {
         if (!dragging) return;
-        moveX = ev.clientX - startX;
-        moveY = ev.clientY - startY;
+        // 夹在可视范围内：超出视口会把整个页面撑出滚动条（"拉伸界面"就是这么来的）
+        moveX = Math.max(-260, Math.min(6, ev.clientX - startX));
+        moveY = Math.max(0, Math.min(340, ev.clientY - startY));
         mascot.style.translate = moveX.toFixed(0) + "px " + moveY.toFixed(0) + "px";
       });
       mascot.addEventListener("pointerup", function () {
