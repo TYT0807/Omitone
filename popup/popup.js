@@ -1404,6 +1404,31 @@ document.addEventListener("DOMContentLoaded", () => {
       });
     }
 
+    /** 彩蛋：从当前位置爬到「检测更新」旁边，拍拍它 —— 让她真的"指给你看" */
+    function crawlToUpdate() {
+      var link = document.getElementById("checkUpdate");
+      if (!link || !mascot) return;
+      var lr = link.getBoundingClientRect();
+      var pr = mascot.getBoundingClientRect();
+      var dx = (lr.right + 4) - pr.left;
+      var dy = (lr.top - 4) - pr.top;
+      mascot.style.transition = "translate 1.5s cubic-bezier(.4,0,.2,1)";
+      mascot.style.translate = Math.max(-260, Math.min(6, dx)).toFixed(0) + "px " +
+                               Math.max(0, Math.min(340, dy)).toFixed(0) + "px";
+      setTimeout(function () {
+        mascot.style.transition = "";
+        setPose("point", 2600);
+        var pats = 0;
+        var timer = setInterval(function () {
+          try {
+            link.animate([{ transform: "scale(1)" }, { transform: "scale(1.15)" }, { transform: "scale(1)" }],
+              { duration: 340, easing: "ease-out" });
+          } catch (e) {}
+          if (++pats >= 3) clearInterval(timer);
+        }, 880);
+      }, 1550);
+    }
+
     // 底部「显示小人」：把藏起来的叫回来
     var btnPetShow = document.getElementById("btnPetShow");
     if (btnPetShow) {
@@ -1419,6 +1444,8 @@ document.addEventListener("DOMContentLoaded", () => {
             t.textContent = "恭喜触发彩蛋<(￣︶￣)↗ 请到最上面看看她";
             t.classList.add("prominent", "show");
             setTimeout(function () { t.classList.remove("prominent", "show"); }, 5200);
+            setTimeout(function () { try { say("我在这儿～看上面", 2200); } catch (e) {} }, 600);
+            setTimeout(crawlToUpdate, 1600);
           }
         } catch (e) {}
         try { toast("恭喜触发菜单<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
@@ -1505,19 +1532,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // 拖拽：按住就能拖着走，松手弹回去（不永久改变布局，免得下次打开位置乱了）
     var dragging = false, startX = 0, startY = 0, moveX = 0, moveY = 0;
+    // 记住"按在人物的哪个点"：拖动时光标始终咬着这个点，人物不会跑到光标旁边
+    var grabDX = 0, grabDY = 0, baseLeft = 0, baseBottomY = 0;
     if (mascot) {
       mascot.addEventListener("pointerdown", function (ev) {
         if (ev.button !== 0) return;
         dragging = true;
         startX = ev.clientX; startY = ev.clientY; moveX = 0; moveY = 0;
+        var rc = mascot.getBoundingClientRect();
+        grabDX = ev.clientX - rc.left;      // 按在人物身上的哪个位置
+        grabDY = ev.clientY - rc.top;
+        baseLeft = rc.left;                  // 人物此刻的屏幕位置（含已有位移）
+        baseBottomY = rc.top;
         mascot.classList.add("dragging");
         try { mascot.setPointerCapture(ev.pointerId); } catch (e) {}
       });
       mascot.addEventListener("pointermove", function (ev) {
         if (!dragging) return;
-        // 夹在可视范围内：超出视口会把整个页面撑出滚动条（"拉伸界面"就是这么来的）
-        moveX = Math.max(-260, Math.min(6, ev.clientX - startX));
-        moveY = Math.max(0, Math.min(340, ev.clientY - startY));
+        // 目标位置 = 光标 - 抓手偏移；再换算成相对基准的 translate
+        var wantLeft = ev.clientX - grabDX;
+        var wantTop = ev.clientY - grabDY;
+        var tx = wantLeft - (baseLeft - moveX);   // 基准左缘
+        var ty = wantTop - (baseBottomY - moveY);
+        moveX = Math.max(-260, Math.min(6, tx));
+        moveY = Math.max(0, Math.min(340, ty));
         mascot.style.translate = moveX.toFixed(0) + "px " + moveY.toFixed(0) + "px";
       });
       mascot.addEventListener("pointerup", function () {
