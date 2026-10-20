@@ -474,6 +474,9 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 /* 运行中：呼吸比平时快一倍多点 */
 .pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
 
+/* 被连戳：往旁边躲一下 */
+.pet.dodge{ translate:-16px 0; transition:translate .32s var(--ease-spring); }
+
 /* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
 .pet-tools{
   position:absolute; right:100%; bottom:6px; margin-right:6px;

@@ -1312,6 +1312,57 @@ document.addEventListener("DOMContentLoaded", () => {
     var updLink = document.getElementById("checkUpdate");
     if (updLink) updLink.addEventListener("mouseenter", function () { setPose("point", 1800); });
 
+    // ── 会说话：连戳躲避 / 自己嘟囔 / 按季节打招呼 ─────────────────────
+    var SEASON_LINES = {
+      spring: ["花开的时候，最适合刷课了", "今天也要一点点进步"],
+      summer: ["记得喝水，别中暑", "冰激凌化了就不好吃了"],
+      autumn: ["落叶踩起来咯吱响", "天凉了，记得加件外套"],
+      winter: ["手好冷，但还想陪你", "雪停了再走也不迟"]
+    };
+    var sayTimer = null;
+    function say(text, ms) {
+      if (!bubble) return;
+      bubble.textContent = text;
+      bubble.classList.add("show");
+      clearTimeout(sayTimer);
+      sayTimer = setTimeout(function () { bubble.classList.remove("show"); }, ms || 2600);
+    }
+
+    // 连戳三次（2 秒内）→ 躲到旁边，并说一句
+    var pokeStamps = [];
+    if (mascot) {
+      mascot.addEventListener("click", function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        var now = Date.now();
+        pokeStamps.push(now);
+        pokeStamps = pokeStamps.filter(function (t) { return now - t < 2000; });
+        if (pokeStamps.length >= 3) {
+          pokeStamps = [];
+          mascot.style.translate = "";
+          mascot.classList.add("dodge");
+          setTimeout(function () { mascot.classList.remove("dodge"); }, 1000);
+          say("别戳啦，我去旁边站会儿", 2200);
+          addMood(-2);
+        }
+      });
+    }
+
+    // 自己嘟囔：45~90 秒一次，正在忙（运行中）就不打扰
+    var lines = SEASON_LINES[season] || SEASON_LINES.spring;
+    (function chatLoop() {
+      var wait = 45000 + Math.random() * 45000;
+      setTimeout(function () {
+        try {
+          if (mascot && mascot.style.display !== "none" && !mascot.getAttribute("data-busy")) {
+            say(lines[Math.floor(Math.random() * lines.length)], 3000);
+          }
+        } catch (e) {}
+        chatLoop();
+      }, wait);
+    })();
+
+
+
     // ── 情绪 / 拖拽 / 运行状态联动 ──────────────────────────────────────
     //
     // 三条都是**只读或纯本地**的：
