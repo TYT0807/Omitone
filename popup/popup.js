@@ -1097,6 +1097,30 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreGroupState();
 });
 
+// ── 界面模式：精简（默认，1.2.8 那种素净样子）/ 精美（角色 + 粒子 + 玻璃） ──
+// 切换会**重新加载**页面 —— 两套模式差别太大，热切换容易留下半截状态。
+(function uiMode() {
+  try {
+    var UI_KEY = "omitone.ui.mode";
+    var forced = new URLSearchParams(location.search).get("ui");
+    var mode = forced || localStorage.getItem(UI_KEY) || "lite";
+    var isFancy = mode === "fancy";
+    document.documentElement.setAttribute("data-ui", isFancy ? "fancy" : "lite");
+    var sw = document.getElementById("modeSwitch");
+    if (!sw) return;
+    sw.setAttribute("data-on", isFancy ? "1" : "0");
+    sw.setAttribute("aria-checked", isFancy ? "true" : "false");
+    sw.addEventListener("click", function () {
+      var next = isFancy ? "lite" : "fancy";
+      try { localStorage.setItem(UI_KEY, next); } catch (e) {}
+      sw.setAttribute("data-on", next === "fancy" ? "1" : "0");
+      sw.setAttribute("aria-checked", next === "fancy" ? "true" : "false");
+      // 等滑块滑到位再重启，否则看不到那一下动画
+      setTimeout(function () { location.reload(); }, 280);
+    });
+  } catch (e) {}
+})();
+
 // ── 四季主题 / 点击水纹 / 彩蛋小人 ──────────────────────────────────────────
 //
 // 纯取乐，与刷课逻辑**零耦合**：不读配置、不写存储、不碰 page.js。
@@ -1104,6 +1128,8 @@ document.addEventListener("DOMContentLoaded", () => {
 // 四季是**每次打开重掷**，刻意不做持久化（用户要的就是"每次都不同"）。
 (function omFancy() {
   try {
+    // 精简模式下整套角色逻辑不启动 —— 不是"藏起来"，是**真不跑**
+    if (document.documentElement.getAttribute("data-ui") !== "fancy") return;
     var SEASONS = ["spring", "summer", "autumn", "winter"];
     var season = SEASONS[Math.floor(Math.random() * SEASONS.length)];
     document.documentElement.setAttribute("data-season", season);
@@ -1315,7 +1341,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
-    var OUTFITS = 3;
+    var OUTFITS = 5;
     var outfitIdx = 0;
     function applyOutfit(i) {
       outfitIdx = ((i % OUTFITS) + OUTFITS) % OUTFITS;
@@ -1329,7 +1355,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return outfitIdx;
     }
     // 预载另外两套，换的时候不闪
-    [1, 2].forEach(function (i) { try { var im = new Image(); im.src = "pet-" + i + ".png"; } catch (e) {} });
+    [1, 2, 3, 4].forEach(function (i) { try { var im = new Image(); im.src = "pet-" + i + ".png"; } catch (e) {} });
     try { outfitIdx = applyOutfit(Number(localStorage.getItem(OUT_KEY) || 0)); } catch (e) {}
 
     // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」

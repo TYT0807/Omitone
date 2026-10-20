@@ -1337,7 +1337,7 @@ var SCENARIOS = [];
 // 以后新增任何角色控件，都在这里补一条断言。
 SCENARIOS.push({
   name: '弹窗前端：角色控件点一遍都要有反应',
-  url: 'chrome-extension://{EXT}/popup/popup.html',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
