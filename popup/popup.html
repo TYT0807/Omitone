@@ -474,6 +474,31 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 /* 运行中：呼吸比平时快一倍多点 */
 .pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
 
+/* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
+.pet-tools{
+  position:absolute; right:100%; bottom:6px; margin-right:6px;
+  display:flex; gap:3px; opacity:0; transform:translateX(4px);
+  transition:opacity .18s linear, transform .18s var(--ease-out);
+  pointer-events:none;
+}
+.pet:hover .pet-tools{ opacity:1; transform:none; pointer-events:auto; }
+.pet-tools button{
+  width:18px; height:18px; padding:0; border:0; border-radius:50%;
+  background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
+  font-size:9.5px; line-height:16px; cursor:pointer; font-family:inherit;
+  backdrop-filter:blur(6px);
+}
+.pet-tools button:hover{ background:var(--accent-soft); color:var(--accent-2); }
+
+/* 双击收起：只显示头部（用 object-position 把画面顶到脸） */
+.pet.collapsed{ width:26px; height:26px; bottom:-30px; right:2px; }
+.pet.collapsed .pet-art{ object-position:top center; border-radius:50%; background:var(--card); }
+.pet.collapsed .pet-tools{ display:none; }
+
+/* 三种装束：不改图，只用色相/明度把"换衣"的观感做出来 */
+.pet[data-outfit="1"] .pet-art{ filter:hue-rotate(-12deg) saturate(1.15) brightness(1.03) drop-shadow(0 2px 3px rgba(16,24,40,.18)); }
+.pet[data-outfit="2"] .pet-art{ filter:hue-rotate(18deg) saturate(.9) brightness(.98) drop-shadow(0 2px 3px rgba(16,24,40,.18)); }
+
 /* 季节道具（挂在立绘旁边） */
 .pet-prop{ position:absolute; display:none; }
 html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
@@ -653,6 +678,11 @@ body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; po
   <div class="pet-inner"><img class="pet-art" src="pet.png" alt="" draggable="false"></div>
   <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
   <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
+  <div class="pet-tools" id="petTools">
+    <button type="button" data-act="pose" title="换个姿势">姿</button>
+    <button type="button" data-act="outfit" title="换装">装</button>
+    <button type="button" data-act="hide" title="把它收起来">藏</button>
+  </div>
   <div class="pet-bubble" id="mascotBubble"></div>
 </div>
 </div>
@@ -856,6 +886,7 @@ body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; po
     <button id="btnExpand">展开逗玩</button>
     <button id="btnBg">换背景</button>
     <button id="btnBgClear">恢复默认背景</button>
+    <button id="btnPetShow">显示小人</button>
     <input type="file" id="bgFile" accept="image/*" hidden>
   </div>
 

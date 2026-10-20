@@ -4322,6 +4322,9 @@ SCENARIOS.push({
       '(async function(){' +
       'var out={hasBtn:!!document.getElementById("checkUpdate"),hasMsg:!!document.getElementById("updateMsg")};' +
       'if(!out.hasBtn) return out;' +
+      // ⚠️ 先等弹窗打开时那次**自动检测**落地：它自己会真实请求一次，
+      // 如果不等，它会在下面 mock 出结果之后再写一遍「与线上一致」，把断言要的结果盖掉。
+      'await new Promise(function(r){setTimeout(r,900);});' +
       // ① 线上版本更高
       'window.fetch=function(){return Promise.resolve({ok:true,json:function(){' +
       'return Promise.resolve({tag_name:"v9.9.9",assets:[{name:"omitone.zip",updated_at:new Date().toISOString()}]});}});};' +

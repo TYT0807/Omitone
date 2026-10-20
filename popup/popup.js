@@ -1516,6 +1516,68 @@ document.addEventListener("DOMContentLoaded", () => {
       petEl.addEventListener("click", resetIdle);
     }
 
+    // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
+    var OUT_KEY = "omitone.pet.outfit";
+    var HIDE_KEY = "omitone.pet.hidden";
+    var OUTFITS = 3;
+    var outfitIdx = 0;
+    function applyOutfit(i) {
+      outfitIdx = ((i % OUTFITS) + OUTFITS) % OUTFITS;
+      if (outfitIdx) mascot.setAttribute("data-outfit", String(outfitIdx));
+      else mascot.removeAttribute("data-outfit");
+      try { localStorage.setItem(OUT_KEY, String(outfitIdx)); } catch (e) {}
+      return outfitIdx;
+    }
+    try { outfitIdx = applyOutfit(Number(localStorage.getItem(OUT_KEY) || 0)); } catch (e) {}
+
+    // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
+    try {
+      if (localStorage.getItem(HIDE_KEY) === "1") mascot.style.display = "none";
+    } catch (e) {}
+
+    var tools = document.getElementById("petTools");
+    if (tools) {
+      tools.addEventListener("click", function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest("button[data-act]") : null;
+        if (!b) return;
+        ev.stopPropagation();
+        var act = b.getAttribute("data-act");
+        if (act === "pose") {
+          var seq = ["sit", "happy", "point", "climb", "hang"];
+          var cur = seq.indexOf(mascot.getAttribute("data-pose"));
+          setPose(seq[(cur + 1) % seq.length], 1500);
+        } else if (act === "outfit") {
+          applyOutfit(outfitIdx + 1);
+          addMood(2);
+        } else if (act === "hide") {
+          try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
+          mascot.style.display = "none";
+        }
+      });
+    }
+
+    // 双击：收成小头像 / 展开
+    if (mascot) {
+      mascot.addEventListener("dblclick", function (ev) {
+        if (ev.target && ev.target.closest && ev.target.closest("button")) return;
+        ev.stopPropagation();
+        ev.preventDefault();
+        mascot.classList.toggle("collapsed");
+      });
+    }
+
+    // 底部「显示小人」：把藏起来的叫回来
+    var btnPetShow = document.getElementById("btnPetShow");
+    if (btnPetShow) {
+      btnPetShow.addEventListener("click", function () {
+        try { localStorage.removeItem(HIDE_KEY); } catch (e) {}
+        mascot.style.display = "";
+        mascot.classList.add("show");
+        mascot.classList.remove("collapsed");
+        setPose("happy", 1400);
+      });
+    }
+
     if (btnClear) {
       btnClear.addEventListener("click", function () {
         chrome.storage.local.remove("omitone.bg");
