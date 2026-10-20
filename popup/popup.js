@@ -1097,6 +1097,13 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreGroupState();
 });
 
+// ── 沉浸式窗口（?play=1）：只留吉祥物 ──────────────────────────────
+// 之前这个参数**只改了窗口尺寸**，从来没给 body 加 .im —— 于是打开后
+// 就是一张放大的普通弹窗，右边一大片空白（用户说的"虚无"）。
+try {
+  if (new URLSearchParams(location.search).get("play") === "1") document.body.classList.add("im");
+} catch (e) {}
+
 // ── 界面模式：精简（默认，1.2.8 那种素净样子）/ 精美（角色 + 粒子 + 玻璃） ──
 // 切换会**重新加载**页面 —— 两套模式差别太大，热切换容易留下半截状态。
 (function uiMode() {
@@ -1331,8 +1338,9 @@ document.addEventListener("DOMContentLoaded", () => {
         pose("happy");
       }, 9500);
     } else {
-      // 常规：**不主动现身**。用户会以为她没开 —— 这正是要的效果。
-      // 只有点底部「显示小人」才亮出来（见下面 btnPetShow）。
+      // 精美模式下 0.8 秒淡入。之前"默认不出现"是为了彩蛋的意外感，
+      // 但结果是工具条和彩蛋都够不着 —— 可用性优先，改成默认现身。
+      setTimeout(function () { mascot.classList.add("show"); pose("sit"); }, 800);
     }
 
     // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
