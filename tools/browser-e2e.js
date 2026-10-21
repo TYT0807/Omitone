@@ -1349,6 +1349,8 @@ SCENARIOS.push({
       'if(b){b.click();b.click();b.click();}' +
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.dodged=pet.classList.contains("dodge");' +
+      'if(b){b.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:2,button:0,isPrimary:true,clientX:b.getBoundingClientRect().left+5,clientY:b.getBoundingClientRect().top+5}));}' +
+      'out.dragFromTools=pet.classList.contains("dragging");' +
       'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(h)h.click();' +
       'await new Promise(function(r){setTimeout(r,150);});' +
@@ -1364,6 +1366,7 @@ SCENARIOS.push({
     check('「藏」能把人收起来', !!r && r.hidAfterHide === true || (!!r && r.hidden === true), JSON.stringify(r));
     check('「显示小人」按钮存在', !!r && r.hasShowBtn === true, JSON.stringify(r));
     check('点「显示小人」能重新出现', !!r && r.shown === true, JSON.stringify(r));
+    check('按在工具条上不会启动拖动（否则 click 被重定向成"戳"）', !!r && r.dragFromTools === false, JSON.stringify(r));
   }
 });
 

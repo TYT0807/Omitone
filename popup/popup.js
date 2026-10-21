@@ -1575,6 +1575,9 @@ try {
     if (mascot) {
       mascot.addEventListener("pointerdown", function (ev) {
         if (ev.button !== 0) return;
+        // ⚠️ 按在工具条上不算拖：pointer capture 会把后续 click 的目标改成 .pet，
+        // 于是 closest(".pet-tools") 变 null，连点换装就被误判成"戳她"。
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
         dragging = true;
         startX = ev.clientX; startY = ev.clientY; moveX = 0; moveY = 0;
         var rc = mascot.getBoundingClientRect();
