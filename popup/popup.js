@@ -1197,6 +1197,27 @@ try {
       }
     }
 
+    /**
+     * 摸头：冒三颗小心心。
+     * 用字符画而不是素材 —— 39 张立绘里没有"爱心"，临时加一张图反而破坏风格统一。
+     */
+    function heartBurst(x, y) {
+      for (var i = 0; i < 3; i++) {
+        var h = document.createElement("span");
+        h.className = "fx-heart";
+        h.textContent = "♥";
+        h.style.left = (x + (Math.random() - 0.5) * 14) + "px";
+        h.style.top = (y - 3) + "px";
+        document.body.appendChild(h);
+        var dx = (Math.random() - 0.5) * 22;
+        kick(h, [
+          { transform: "translate(0,0) scale(.5)", opacity: 0 },
+          { transform: "translate(" + dx.toFixed(0) + "px,-9px) scale(1)", opacity: 1, offset: .28 },
+          { transform: "translate(" + (dx * 1.7).toFixed(0) + "px,-28px) scale(.75)", opacity: 0 }
+        ], { duration: 880 + i * 130, easing: "cubic-bezier(.3,1.2,.6,1)" });
+      }
+    }
+
     var snowClicks = 0;
     var petReact = function () {};   // 由小人那段接管：点完按钮让它开心一下
 
@@ -1364,6 +1385,24 @@ try {
         pose("sit");
       }, 800);
     }
+
+    // 深夜彩蛋：23:00–05:00 打开才说一句，且 6 小时内只打一次招呼。
+    // 白天永远不触发 —— 不制造"她怎么老在说话"的噪音。
+    try {
+      var hr = new Date().getHours();
+      var NIGHT_KEY = "omitone.pet.night";
+      var lastNight = Number(localStorage.getItem(NIGHT_KEY) || 0);
+      if ((hr >= 23 || hr < 5) && Date.now() - lastNight > 6 * 3600 * 1000) {
+        setTimeout(function () {
+          try {
+            if (!mascot.classList.contains("show")) return;
+            localStorage.setItem(NIGHT_KEY, String(Date.now()));
+            setPose("sad", 2600);
+            say("这么晚还没睡…别熬太久", 2800);
+          } catch (e) {}
+        }, isEgg ? 10000 : 1400);   // 彩蛋在演的时候晚点说，别抢台词
+      }
+    } catch (e) {}
 
     // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
     var updLink = document.getElementById("checkUpdate");
@@ -1643,8 +1682,9 @@ try {
       sayTimer = setTimeout(function () { bubble.classList.remove("show"); }, ms || 2600);
     }
 
-    // 连戳三次（2 秒内）→ 躲到旁边，并说一句
-    var pokeStamps = [];
+    // 连戳三次（2 秒内）→ 躲到旁边，并说一句；普通一下 = 摸头
+    var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
+    var pokeStamps = [], lastPat = 0, patCount = 0;
     if (mascot) {
       mascot.addEventListener("click", function (ev) {
         // 工具条上的操作不算"戳她"：任何祖先里带 pet-tools 的直接忽略
@@ -1668,6 +1708,17 @@ try {
           }, 900);
           say("别戳啦，我去旁边站会儿", 2200);
           addMood(-2);
+        } else {
+          // 摸头：冒心心 + 开心一下。心情 +1 有 4 秒冷却，免得连点直接刷满
+          var rr = mascot.getBoundingClientRect();
+          heartBurst(ev.clientX || (rr.left + rr.width / 2), ev.clientY || (rr.top + 8));
+          setPose("happy", 800);
+          if (now - lastPat > 4000) { lastPat = now; addMood(1); }
+          // 每三次摸头说一句。原来这套台词在 omScene 里另有一个点击处理器，
+          // 两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
+          if (++patCount % 3 === 0) {
+            say(POKES[Math.floor(patCount / 3 - 1) % POKES.length], 2000);
+          }
         }
       });
     }
@@ -1883,7 +1934,10 @@ try {
     var petBubble = document.getElementById("mascotBubble");
     var pokeIdx = 0;
     var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
-    if (petEl) {   // 弹窗和沉浸式都能戳：只占角色自己那 40px，不挡别处
+    // ⚠️ 精美模式下点击统一由 omFancy 接管（摸头心心 / 连戳躲闪 / 三句一聊）。
+    // 两边都挂 click 的后果是互相抢姿态：一个要 happy，另一个在 happy/sit 之间翻，
+    // 看起来就是"点了表情不对"。这里只给**精简模式**兜底 —— 那套 omFancy 整段不启动。
+    if (petEl && document.documentElement.getAttribute("data-ui") !== "fancy") {
 
       petEl.addEventListener("click", function (ev) {
         ev.stopPropagation();

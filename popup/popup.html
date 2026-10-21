@@ -437,6 +437,13 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
   position:fixed; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%;
   background:var(--fx); pointer-events:none; z-index:10;
 }
+/* 摸头冒的小心心：用字符画，不额外占一张素材 */
+.fx-heart{
+  position:fixed; margin:-5px 0 0 -5px; z-index:10; pointer-events:none;
+  font-size:11px; line-height:1; color:#ff7fae;
+  text-shadow:0 1px 2px rgba(255,255,255,.65);
+  will-change:transform, opacity;
+}
 
 /* ---------- 角色：原创 2D 立绘（不拆件，所以不会有"手脚乱飞"） ----------
    旧版是把头/身/四肢分别用 div 摆出来再各自旋转 —— 关节靠手调，一换姿势就脱节。
@@ -512,8 +519,6 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 /* 运行中：呼吸比平时快一倍多点 */
 .pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
 
-/* 被连戳：往旁边躲一下 */
-.pet.dodge{ translate:-16px 0; transition:translate .32s var(--ease-spring); }
 
 /* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
 .pet-tools{
@@ -585,8 +590,8 @@ html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px;
 .pet[data-snow="3"] .pet-prop-winter{ transform:scale(1.18); }
 
 /* 夏天：吃冰激凌（点一下舔两口） */
-@keyframes pet-lick{ 0%,100%{ transform:none } 45%{ transform:translateY(-4px) rotate(-14deg) } }
-.pet[data-eat="1"] .pet-prop-summer{ animation:pet-lick .55s var(--ease-spring) 2; }
+@keyframes pet-lick-prop{ 0%,100%{ transform:none } 45%{ transform:translateY(-4px) rotate(-14deg) } }
+.pet[data-eat="1"] .pet-prop-summer{ animation:pet-lick-prop .55s var(--ease-spring) 2; }
 
 /* 秋天：脚下踩出的叶子（JS 生成） */
 .fx-leaf{ position:fixed; width:7px; height:5px; margin:-2.5px 0 0 -3.5px; border-radius:40% 60% 55% 45%;
