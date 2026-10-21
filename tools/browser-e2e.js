@@ -1414,10 +1414,10 @@ SCENARIOS.push({
       'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
       'out.src1=img?img.getAttribute("src"):"";' +
       // —— 换姿势 ——
-      'out.pose0=pet?pet.getAttribute("data-pose"):"";' +
+      'out.pose0=img?img.getAttribute("src"):"";' +
       'var bp=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
       'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
-      'out.pose1=pet?pet.getAttribute("data-pose"):"";' +
+      'out.pose1=img?img.getAttribute("src"):"";' +
       // —— 隐藏（放最后）——
       'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
@@ -1503,7 +1503,7 @@ SCENARIOS.push({
     );
     check('前置：弹窗里有角色元件', !!r && r.hasPet === true, JSON.stringify(r));
     check('点「装」真的换图（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
-    check('点「姿」会换姿态', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('点「姿」会换姿势立绘', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
     check('点「藏」会收起来', !!r && r.hidden === true, '');
     check('「显示小人」能叫回来', !!r && r.shown === true, '');
     check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');

@@ -1359,12 +1359,13 @@ try {
       "pet-9.png", "pet-10.png"];                 // 11 套服装
     // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
     var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
-                 "pet-e5.png", "pet-e6.png",
-                 "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];
+                 "pet-e5.png", "pet-e6.png"];              // 6 张表情
+    var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];  // 5 个姿势
     var OUTFITS = SKINS.length;
     var POS_KEY = "omitone.pet.pos";
     var FACE_KEY = "omitone.pet.face";
     var faceIdx = -1;
+    var poseIdx = 0;
     // 上次把她拖到哪儿了？就放回哪儿
     try {
       var savedPos = localStorage.getItem(POS_KEY);
@@ -1402,9 +1403,12 @@ try {
         ev.stopImmediatePropagation && ev.stopImmediatePropagation();
         var act = b.getAttribute("data-act");
         if (act === "pose") {
-          var seq = ["sit", "happy", "point", "climb", "hang"];
-          var cur = seq.indexOf(mascot.getAttribute("data-pose"));
-          setPose(seq[(cur + 1) % seq.length], 1500);
+          // 姿势 = 换一张"动作立绘"，和表情分开
+          poseIdx = (poseIdx + 1) % POSES.length;
+          var pa = mascot.querySelector(".pet-art");
+          if (pa) pa.setAttribute("src", POSES[poseIdx]);
+          setPose("sit", 1200);
+          addMood(2);
         } else if (act === "outfit") {
           applyOutfit(outfitIdx + 1);
           addMood(2);
