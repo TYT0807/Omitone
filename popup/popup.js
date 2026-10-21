@@ -1533,17 +1533,18 @@ try {
         try {
           var once = localStorage.getItem("omitone.pet.egged") !== "1";
           localStorage.setItem("omitone.pet.egged", "1");
-          var t = document.getElementById("toast");
-          if (!once) throw new Error("seen");
+          var t = once ? document.getElementById("toast") : null;
+          if (!t) throw new Error("seen");
           if (t) {
             t.textContent = "恭喜触发彩蛋<(￣︶￣)↗ 请到最上面看看她";
             t.classList.add("prominent", "show");
             setTimeout(function () { t.classList.remove("prominent", "show"); }, 5200);
-            setTimeout(function () { try { say("我在这儿～看上面", 2200); } catch (e) {} }, 600);
-            setTimeout(crawlToUpdate, 2200);
           }
         } catch (e) {}
-        try { toast("恭喜触发彩蛋<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
+        // ⚠️ 动作序列放在 try 外面：提示只弹一次，但**每次都要动**。
+        // 之前它被包在 if(t) 里，第二次起 t 为 null → 永远不爬 → "人物出现了但不会动"。
+        try { say("我在这儿～看上面", 2000); } catch (e) {}
+        setTimeout(crawlToUpdate, 900);
       });
     }
 
