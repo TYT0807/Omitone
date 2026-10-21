@@ -523,13 +523,15 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 /* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
 .pet-tools{
   position:absolute; right:0; top:100%; margin-top:2px;
-  display:flex; gap:3px; opacity:1;
+  display:flex; gap:2px; opacity:1;
   pointer-events:auto;
 }
+/* 16px 而不是 18px：多了「册」之后一排 5 个，
+   18px 会横向长到 102px，正好压住标题右边的状态徽标。 */
 .pet-tools button{
-  width:18px; height:18px; padding:0; border:0; border-radius:50%;
+  width:16px; height:16px; padding:0; border:0; border-radius:50%;
   background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
-  font-size:9.5px; line-height:16px; cursor:pointer; font-family:inherit;
+  font-size:9px; line-height:14px; cursor:pointer; font-family:inherit;
   backdrop-filter:blur(6px);
 }
 .pet-tools button:hover{ background:var(--accent-soft); color:var(--accent-2); }
@@ -768,6 +770,49 @@ body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
 .pet-mood i{ display:block; height:100%; width:50%; border-radius:2px;
   background:linear-gradient(90deg,#7fd0a8,#2f95ff); transition:width .45s var(--ease-out); }
 html[data-ui="lite"] .pet-mood{ display:none; }
+
+/* ── 立绘册：一次挑完 17 套衣服 / 12 表情 / 11 姿势 ────────────────────
+   放在 .pet 外面 —— .pet 上有 transform / will-change，会把 position:fixed
+   的定位基准变成它自己，面板就会挤在那 40px 里。 */
+.pet-book{
+  position:fixed; left:50%; top:50%; z-index:10001;
+  width:240px; max-height:340px;
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--card); border:1px solid var(--hairline); border-radius:12px;
+  box-shadow:0 14px 34px rgba(16,24,40,.22);
+  opacity:0; pointer-events:none; transform:translate(-50%,-48%) scale(.97);
+  transition:opacity .18s linear, transform .22s var(--ease-spring);
+}
+.pet-book.show{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
+.pet-book-head{
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+  padding:7px 10px; border-bottom:1px solid var(--hairline);
+  font-size:11px; color:var(--fg-2);
+}
+.pet-book-head b{ color:var(--fg); font-weight:600; }
+.pet-book-head button{
+  width:18px; height:18px; padding:0; border:0; border-radius:50%;
+  background:transparent; color:var(--fg-2); font-size:12px; line-height:18px;
+  cursor:pointer; font-family:inherit;
+}
+.pet-book-head button:hover{ background:var(--accent-soft); color:var(--accent-2); }
+.pet-book-body{
+  padding:8px; overflow:auto;
+  display:grid; grid-template-columns:repeat(6, 1fr); gap:4px;
+}
+.pet-book-sep{
+  grid-column:1 / -1; margin:4px 0 1px;
+  font-size:10px; color:var(--fg-3, var(--fg-2)); letter-spacing:.02em;
+}
+.pet-book-sep:first-child{ margin-top:0; }
+.pet-book-cell{
+  padding:0; border:1px solid transparent; border-radius:6px;
+  background:rgba(120,140,170,.07); cursor:pointer; overflow:hidden;
+  aspect-ratio:1 / 1; display:block;
+}
+.pet-book-cell img{ width:100%; height:100%; object-fit:contain; display:block; -webkit-user-drag:none; }
+.pet-book-cell:hover{ border-color:var(--accent); }
+.pet-book-cell.on{ border-color:var(--accent); background:var(--accent-soft); box-shadow:0 0 0 1px var(--accent) inset; }
 </style>
 </head>
 <body>
@@ -780,6 +825,7 @@ html[data-ui="lite"] .pet-mood{ display:none; }
   <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
   <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
   <div class="pet-tools" id="petTools">
+    <button type="button" data-act="book" title="立绘册：一次挑完所有服装/表情/姿势">册</button>
     <button type="button" data-act="pose" title="换个姿势">姿</button>
     <button type="button" data-act="outfit" title="换装">装</button>
     <button type="button" data-act="face" title="换表情 / 动作">表</button>
@@ -787,6 +833,16 @@ html[data-ui="lite"] .pet-mood{ display:none; }
   </div>
   <div class="pet-mood" id="petMood"><i></i></div>
   <div class="pet-bubble" id="mascotBubble"></div>
+</div>
+
+<!-- 立绘册：点工具条的「册」或右键角色打开 -->
+<div class="pet-book" id="petBook" aria-hidden="true">
+  <div class="pet-book-head">
+    <b>立绘册</b>
+    <span id="petBookMeta"></span>
+    <button type="button" id="petBookClose" title="关上">×</button>
+  </div>
+  <div class="pet-book-body" id="petBookBody"></div>
 </div>
 
   <div class="container">

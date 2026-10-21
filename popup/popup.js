@@ -1449,6 +1449,7 @@ try {
       if (xy.length === 2) mascot.style.translate = xy[0] + "px " + xy[1] + "px";
     } catch (e) {}
     var outfitIdx = 0;
+    var outfitLockUntil = 0;   // 手动换过之后，闲置轮换暂停一阵子，别把用户挑的样子改掉
     function applyOutfit(i) {
       outfitIdx = ((i % OUTFITS) + OUTFITS) % OUTFITS;
       if (outfitIdx) mascot.setAttribute("data-outfit", String(outfitIdx));
@@ -1457,13 +1458,93 @@ try {
       // 谁后写谁生效 → 看着就是"点了没反应"。改用换 src，彻底不碰 filter。
       var art = mascot.querySelector(".pet-art");
       if (art) art.setAttribute("src", SKINS[outfitIdx] || SKINS[0]); playMotion(art);
-      try { localStorage.setItem(OUT_KEY, String(outfitIdx)); } catch (e) {}
+      try {
+        localStorage.setItem(OUT_KEY, String(outfitIdx));
+        localStorage.setItem("omitone.pet.src", SKINS[outfitIdx] || SKINS[0]);
+      } catch (e) {}
       return outfitIdx;
     }
-    // 预载另外两套，换的时候不闪
     // 预载全部立绘，切换时不闪
     SKINS.forEach(function (f) { try { var im = new Image(); im.src = f; } catch (e) {} });
+
+    // 立绘册里选的是**某一张图**，它不一定是"第几套衣服"。
+    // 所以单独存一份 src，下次打开原样恢复 —— 否则选了表情、重开又变回服装。
+    // ⚠️ 必须在 applyOutfit 之前读：它内部会把当前服装写进 SRC_KEY，
+    //    读晚了拿到的是 pet.png，选过的样子等于白选。
+    var SRC_KEY = "omitone.pet.src";
+    var savedSrc = null;
+    try { savedSrc = localStorage.getItem(SRC_KEY); } catch (e) {}
+
     try { outfitIdx = applyOutfit(Number(localStorage.getItem(OUT_KEY) || 0)); } catch (e) {}
+    if (savedSrc) {
+      try {
+        var art0 = mascot.querySelector(".pet-art");
+        if (art0) art0.setAttribute("src", savedSrc);
+        localStorage.setItem(SRC_KEY, savedSrc);   // applyOutfit 刚刚覆盖过，写回来
+      } catch (e) {}
+    }
+
+    // ── 立绘册 ──────────────────────────────────────────────────────────
+    // 17 套衣服 / 12 表情 / 11 姿势，一共 39 张。按顺序点「装」找一套要按十几次，
+    // 所以给一个能直接挑的网格；顺便当作已收集多少张的"图鉴"。
+    var book = document.getElementById("petBook");
+    var bookBody = document.getElementById("petBookBody");
+    var bookMeta = document.getElementById("petBookMeta");
+    var bookOpen = false;
+
+    function markBook() {
+      if (!bookBody) return;
+      var a = mascot.querySelector(".pet-art");
+      var cur = a ? a.getAttribute("src") : "";
+      var cells = bookBody.querySelectorAll(".pet-book-cell");
+      for (var i = 0; i < cells.length; i++) {
+        cells[i].classList.toggle("on", cells[i].getAttribute("data-src") === cur);
+      }
+    }
+    function buildBook() {
+      if (!bookBody || bookBody.firstChild) return;
+      var groups = [["服装", SKINS], ["表情", FACES], ["姿势", POSES]];
+      var html = "", seen = {};
+      groups.forEach(function (g) {
+        // pet.png 既是"默认服装"也是"默认姿势"，同一张图只摆一次，免得张数对不上
+        var list = g[1].filter(function (f) { if (seen[f]) return false; seen[f] = 1; return true; });
+        if (!list.length) return;
+        html += '<div class="pet-book-sep">' + g[0] + " · " + list.length + " 张</div>";
+        list.forEach(function (f) {
+          html += '<button type="button" class="pet-book-cell" data-src="' + f +
+                  '" title="' + f.replace(/\.png$/, "") + '"><img src="' + f + '" alt="" draggable="false"></button>';
+        });
+      });
+      bookBody.innerHTML = html;
+      if (bookMeta) {
+        // pet.png 同时算服装和姿势，按去重后的张数报，别把同一张图标成两张
+        var uniq = {};
+        SKINS.concat(FACES, POSES).forEach(function (f) { uniq[f] = 1; });
+        bookMeta.textContent = Object.keys(uniq).length + " 张立绘";
+      }
+    }
+    function openBook() {
+      if (!book) return;
+      buildBook();
+      book.classList.add("show");
+      book.setAttribute("aria-hidden", "false");
+      bookOpen = true;
+      markBook();
+    }
+    function closeBook() {
+      if (!book || !bookOpen) return;
+      book.classList.remove("show");
+      book.setAttribute("aria-hidden", "true");
+      bookOpen = false;
+    }
+    /** 选了某张图之后，把三个"顺序切换"的索引也拨到对应位置，
+     *  否则下次按「装」会从旧索引继续，看起来像跳回去了。 */
+    function syncIndexFromSrc(src) {
+      var i;
+      if ((i = SKINS.indexOf(src)) >= 0) { outfitIdx = i; try { localStorage.setItem(OUT_KEY, String(i)); } catch (e) {} }
+      else if ((i = FACES.indexOf(src)) >= 0) { faceIdx = i; try { localStorage.setItem(FACE_KEY, String(i)); } catch (e) {} }
+      else if ((i = POSES.indexOf(src)) >= 0) { poseIdx = i; }
+    }
 
     // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
     try {
@@ -1478,26 +1559,35 @@ try {
         ev.stopPropagation();
         ev.stopImmediatePropagation && ev.stopImmediatePropagation();
         var act = b.getAttribute("data-act");
-        if (act === "pose") {
+        if (act === "book") {
+          if (bookOpen) closeBook(); else openBook();
+        } else if (act === "pose") {
           // 姿势 = 换一张"动作立绘"，和表情分开
           poseIdx = (poseIdx + 1) % POSES.length;
           var pa = mascot.querySelector(".pet-art");
           if (pa) { pa.setAttribute("src", POSES[poseIdx]); playMotion(pa); }
+          try { localStorage.setItem(SRC_KEY, POSES[poseIdx]); } catch (e) {}
           setPose("sit", 1200);
           addMood(2);
         } else if (act === "outfit") {
           applyOutfit(outfitIdx + 1);
+          outfitLockUntil = Date.now() + 10 * 60 * 1000;
           addMood(2);
         } else if (act === "face") {
           faceIdx = (faceIdx + 1) % FACES.length;
           var fa = mascot.querySelector(".pet-art");
           if (fa) { fa.setAttribute("src", FACES[faceIdx]); playMotion(fa); }
-          try { localStorage.setItem("omitone.pet.face", String(faceIdx)); } catch (e) {}
+          try {
+            localStorage.setItem("omitone.pet.face", String(faceIdx));
+            localStorage.setItem(SRC_KEY, FACES[faceIdx]);
+          } catch (e) {}
           addMood(2);
         } else if (act === "hide") {
+          closeBook();
           try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
           mascot.style.display = "none";
         }
+        if (bookOpen) markBook();   // 册开着的时候按「装/表/姿」，高亮跟着走
       });
     }
 
@@ -1510,6 +1600,48 @@ try {
         mascot.classList.toggle("collapsed");
       });
     }
+
+    // ── 立绘册：点图直接换，点外面 / 按 Esc / 点 × 关上 ────────────────
+    if (book) {
+      book.addEventListener("click", function (ev) {
+        var cell = ev.target && ev.target.closest ? ev.target.closest(".pet-book-cell") : null;
+        if (!cell) return;
+        ev.stopPropagation();
+        var src = cell.getAttribute("data-src");
+        var art = mascot.querySelector(".pet-art");
+        if (art) { art.setAttribute("src", src); playMotion(art); }
+        syncIndexFromSrc(src);
+        try { localStorage.setItem(SRC_KEY, src); } catch (e) {}
+        outfitLockUntil = Date.now() + 10 * 60 * 1000;   // 挑好的样子别被闲置轮换改掉
+        markBook();
+        setPose("happy", 700);
+        addMood(1);
+      });
+      var bookClose = document.getElementById("petBookClose");
+      if (bookClose) {
+        bookClose.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          closeBook();
+        });
+      }
+      // 点面板外面关掉。工具条上的「册」要排除，否则会被判成"点外面"先关再开。
+      document.addEventListener("mousedown", function (ev) {
+        if (!bookOpen) return;
+        if (book.contains(ev.target)) return;
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        closeBook();
+      });
+      document.addEventListener("keydown", function (ev) {
+        if (bookOpen && (ev.key === "Escape" || ev.keyCode === 27)) closeBook();
+      });
+    }
+
+    // 右键角色 = 打开立绘册（不占工具条位置，也不用记按钮在哪）
+    mascot.addEventListener("contextmenu", function (ev) {
+      if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+      ev.preventDefault();
+      openBook();
+    });
 
     // ── 彩蛋动作：先定位 → 站到链接旁边 → 在**固定落脚点**做动作 ────────
     //
@@ -1621,12 +1753,13 @@ try {
           var hidden = !mascot || mascot.style.display === "none" || !mascot.classList.contains("show");
           // 有序列在演（彩蛋爬行等）就让位，别去抢姿势
           if (!hidden && !mascot.getAttribute("data-busy") && Date.now() > petBusyUntil) {
-            if (Math.random() < 0.45) applyOutfit(Math.floor(Math.random() * OUTFITS));
+            if (Math.random() < 0.45 && Date.now() > outfitLockUntil) applyOutfit(Math.floor(Math.random() * OUTFITS));
             var band = moodBand(getMood());
             var poses = band === "high" ? ["happy", "happy", "point"]
                       : band === "low" ? ["sad", "sit", "sad"]
                       : ["sit", "happy", "point"];
             setPose(poses[Math.floor(Math.random() * poses.length)], 2800);
+            if (bookOpen) markBook();
           }
         } catch (e) {}
         idleLoop();
