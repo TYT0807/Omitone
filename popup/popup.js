@@ -1342,7 +1342,12 @@ try {
     } else {
       // 精美模式下 0.8 秒淡入。之前"默认不出现"是为了彩蛋的意外感，
       // 但结果是工具条和彩蛋都够不着 —— 可用性优先，改成默认现身。
-      setTimeout(function () { mascot.classList.add("show"); pose("sit"); }, 800);
+      setTimeout(function () {
+        // 现身时把位置归位：上次若被拖到视口外，这里会让她回到右上角
+        mascot.style.translate = (window.innerWidth - 56) + "px 2px";
+        mascot.classList.add("show");
+        pose("sit");
+      }, 800);
     }
 
     // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
