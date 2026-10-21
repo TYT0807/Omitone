@@ -1297,6 +1297,14 @@ try {
 
     function pose(name) { mascot.setAttribute("data-pose", name); }
 
+    // ── 动作序列令牌 ──────────────────────────────────────────────────
+    // 同一时刻只能有一个"导演"：出场彩蛋、点击彩蛋、闲置轮换会互相抢姿势。
+    // 没有令牌时，出场彩蛋的 9.5 秒定时器会把正在爬行的人一把按成"坐"，
+    // 看起来就是"乱动"或"不动"。新序列一开，旧序列的定时器全部作废。
+    var petSeq = 0, petBusyUntil = 0;
+    function newSeq() { return ++petSeq; }
+    function alive(t) { return t === petSeq; }
+
     // ── 出场：常规"淡入落座"；**1% 概率**才走"吊边 → 攀爬 → 落座"的彩蛋 ──
     // 每次打开独立重掷、不记忆 —— "再开一次"就是重新抽一次。
     var EASTER_RATE = 0.01;
@@ -1313,20 +1321,26 @@ try {
     petReact = function () { setPose("happy", 1200); };   // 点按钮 → 开心 1.2 秒 → 回坐姿
 
     if (isEgg) {
+      var eggSeq = newSeq();
+      petBusyUntil = Date.now() + 11000;
       setTimeout(function () {                        // 1.4s：被发现挂在边缘
+        if (!alive(eggSeq)) return;
         mascot.classList.add("show");
         mascot.style.transform = "translateY(-96px)";
         pose("hang");
       }, 1400);
       setTimeout(function () {                        // 3.0s：挣扎着往下爬
+        if (!alive(eggSeq)) return;
         mascot.style.transform = "translateY(-58px)";
         pose("climb");
       }, 3000);
       setTimeout(function () {                        // 4.2s：落座
+        if (!alive(eggSeq)) return;
         mascot.style.transform = "";
         pose("sit");
       }, 4200);
       setTimeout(function () {                        // 5.2s：指着更新栏
+        if (!alive(eggSeq)) return;
         pose("point");
         if (bubble) {
           bubble.textContent = isUpdateMuted() ? "今天也要好好学习" : "要检查更新吗？";
@@ -1334,6 +1348,7 @@ try {
         }
       }, 5200);
       setTimeout(function () {                        // 9.5s：收尾
+        if (!alive(eggSeq)) return;
         if (bubble) bubble.classList.remove("show");
         pose("happy");
         mascot.classList.add("show");            // 彩蛋收尾必须回到可见状态
@@ -1376,17 +1391,6 @@ try {
     var POS_KEY = "omitone.pet.pos";
     var FACE_KEY = "omitone.pet.face";
     var faceIdx = -1;
-    /** 换动作时的过渡：先缩一下、再弹回、带一点侧倾 —— 让"换图"看起来像"动了一下" */
-    function playMotion(el) {
-      try {
-        el.animate([
-          { transform: "scale(1) rotate(0deg)" },
-          { transform: "scale(.92) rotate(-4deg)", offset: .35 },
-          { transform: "scale(1.06) rotate(3deg)", offset: .72 },
-          { transform: "scale(1) rotate(0deg)" }
-        ], { duration: 460, easing: "cubic-bezier(.34,1.5,.64,1)" });
-      } catch (e) {}
-    }
     /** 换动作时的过渡：先缩一下、再弹回、带一点侧倾 —— 让"换图"看起来像"动了一下" */
     function playMotion(el) {
       try {
@@ -1468,48 +1472,121 @@ try {
       });
     }
 
-    /** 彩蛋：从当前位置爬到「检测更新」旁边，拍拍它 —— 让她真的"指给你看" */
+    // ── 彩蛋动作：先定位 → 站到链接旁边 → 在**固定落脚点**做动作 ────────
+    //
+    // 坐标只有一套：`.pet` 是 position:fixed / left:0 / top:0，位移全写在
+    // translate 上 —— 所以 translate 的数值就是**视口绝对坐标**，和
+    // getBoundingClientRect() 完全同源，中间不需要任何换算。
+    //
+    // ⚠️ 这里原来有个真 bug：变量叫 lr0，下面却写 lr.right → ReferenceError，
+    //    整段当场抛错，人停在原地一动不动（"出现了但不会动"就是它）。
+    //    node --check 查不出这种错，只能靠真实浏览器跑一遍。
     function crawlToUpdate() {
       var link = document.getElementById("checkUpdate");
       if (!link || !mascot) return;
-      // ① 蹲下（pet-i10）→ ② 挥手（pet-e7）→ ③ 爬过去 → ④ 指 + 拍链接
-      var art = mascot.querySelector(".pet-art");
-      if (art) { art.setAttribute("src", "pet-i10.png"); playMotion(art); }
-      setTimeout(function () {
-        if (art) { art.setAttribute("src", "pet-e7.png"); playMotion(art); }
-      }, 700);
-      var lr0 = link.getBoundingClientRect();
+      var home = mascot.style.translate || ((window.innerWidth - 56) + "px 2px");
+      var my = newSeq();                              // 这一套动作独占舞台
+      petBusyUntil = Date.now() + 16000;              // 期间闲置轮换不插嘴
 
-      var pr = mascot.getBoundingClientRect();
-      var dx = Math.min(window.innerWidth - 44, lr.right + 4);
-      var dy = Math.max(0, lr.top - 4);
-      mascot.style.transition = "translate 3.2s cubic-bezier(.4,0,.2,1)";
-      mascot.style.translate = Math.round(dx) + "px " + Math.round(dy) + "px";
+      /** 每次现量：窗口大小/滚动变了，也还是贴在链接旁边，不会站错地方 */
+      function target() {
+        var r = link.getBoundingClientRect();
+        var pw = mascot.offsetWidth || 40;
+        var ph = mascot.offsetHeight || 56;
+        var pad = 6;
+        var x, y;
+        if (r.left - pw - pad >= 2) {             // 优先站左边（她从右边过来，不挡字）
+          x = r.left - pw - pad;
+          y = r.top + (r.height - ph) / 2;
+        } else if (r.top - ph - pad >= 2) {       // 左边没地方就站上方
+          x = r.left;
+          y = r.top - ph - pad;
+        } else {                                   // 再不行就压到右下角
+          x = r.left + 2;
+          y = r.bottom + 2;
+        }
+        return {
+          x: Math.round(Math.max(2, Math.min(Math.max(2, window.innerWidth - pw - 2), x))),
+          y: Math.round(Math.max(2, Math.min(Math.max(2, window.innerHeight - ph - 2), y)))
+        };
+      }
+
+      // ① 蹲下 → ② 挥手：都只改姿态、**不换图**，所以人物不会"变个人"
+      setPose("crouch");
       setTimeout(function () {
-        mascot.style.transition = "";
-        setPose("point", 6000);
-        var pats = 0;
-        var timer = setInterval(function () {
-          try {
-            link.animate([{ transform: "scale(1)" }, { transform: "scale(1.15)" }, { transform: "scale(1)" }],
-              { duration: 340, easing: "ease-out" });
-          } catch (e) {}
-          if (++pats >= 3) clearInterval(timer);
-        }, 1250);
-      }, 3300);
+        if (!alive(my)) return;
+        setPose("wave");
+      }, 780);
+
+      // ③ 爬过去：3.2 秒补间，落到刚才量好的固定点
+      setTimeout(function () {
+        if (!alive(my)) return;
+        var p = target();                          // 出发前再量一次，防中途布局变动
+        setPose("crawl");
+        mascot.style.transition = "translate 3.2s cubic-bezier(.4,0,.2,1)";
+        mascot.style.translate = p.x + "px " + p.y + "px";
+
+        // ④ 到位：指着它、连拍三下
+        setTimeout(function () {
+          if (!alive(my)) return;
+          mascot.style.transition = "";
+          setPose("point", 6000);
+          patLink(link, 3);
+
+          // ⑤ 收尾：没被人拖走的话，自己爬回原来的位置
+          setTimeout(function () {
+            if (!alive(my)) return;
+            if (mascot.style.translate !== p.x + "px " + p.y + "px") return;  // 用户拖走了就别抢
+            setPose("crawl");
+            mascot.style.transition = "translate 1.6s cubic-bezier(.4,0,.2,1)";
+            mascot.style.translate = home;
+            setTimeout(function () {
+              if (!alive(my)) return;
+              mascot.style.transition = "";
+              setPose("sit");
+            }, 1700);
+          }, 9000);
+        }, 3300);
+      }, 1500);
+    }
+
+    /**
+     * 拍链接：拍的是**元素本身**，而且每一下都重新量一次它的位置 ——
+     * 所以永远落在"检测更新"那几个字上，不会拍到旁边的空白。
+     */
+    function patLink(link, times) {
+      var n = 0;
+      var timer = setInterval(function () {
+        var r = link.getBoundingClientRect();
+        var cx = r.left + r.width * 0.62;          // 手落在文字上（小人站在左边）
+        var cy = r.top + r.height * 0.55;
+        try { burst(cx, cy, true); } catch (e) {}
+        try {
+          link.animate([
+            { transform: "scale(1)" },
+            { transform: "scale(1.12)", offset: .45 },
+            { transform: "scale(1)" }
+          ], { duration: 320, easing: "ease-out" });
+        } catch (e) {}
+        if (++n >= times) clearInterval(timer);
+      }, 900);
     }
 
     // ── 闲置自动轮换：没人理她时，自己换姿态、偶尔换身衣服 ──────────────
     // 12~25 秒一次，运行中（data-busy）不打扰。
-    // 只用 sit/happy/point：climb/hang 是彩蛋专用姿态，日常出现会很怪。
+    // 姿态**跟着心情走**：高兴就多蹦、低落就多蔫 —— 这是"情绪驱动立绘"的第一步。
     (function idleLoop() {
       var wait = 12000 + Math.random() * 13000;
       setTimeout(function () {
         try {
           var hidden = !mascot || mascot.style.display === "none" || !mascot.classList.contains("show");
-          if (!hidden && !mascot.getAttribute("data-busy")) {
+          // 有序列在演（彩蛋爬行等）就让位，别去抢姿势
+          if (!hidden && !mascot.getAttribute("data-busy") && Date.now() > petBusyUntil) {
             if (Math.random() < 0.45) applyOutfit(Math.floor(Math.random() * OUTFITS));
-            var poses = ["sit", "happy", "point"];
+            var band = moodBand(getMood());
+            var poses = band === "high" ? ["happy", "happy", "point"]
+                      : band === "low" ? ["sad", "sit", "sad"]
+                      : ["sit", "happy", "point"];
             setPose(poses[Math.floor(Math.random() * poses.length)], 2800);
           }
         } catch (e) {}
@@ -1529,7 +1606,7 @@ try {
         try { localStorage.removeItem(POS_KEY); } catch (e) {}
         mascot.classList.add("show");
         mascot.classList.remove("collapsed");
-        setPose("happy", 1400);
+        setPose("happy", 900);   // 0.9 秒后正好接上彩蛋第一拍（蹲下），不会被"回坐姿"打断
         try {
           var once = localStorage.getItem("omitone.pet.egged") !== "1";
           localStorage.setItem("omitone.pet.egged", "1");
@@ -1577,9 +1654,18 @@ try {
         pokeStamps = pokeStamps.filter(function (t) { return now - t < 2000; });
         if (pokeStamps.length >= 3) {
           pokeStamps = [];
-          mascot.style.translate = "";
-          mascot.classList.add("dodge");
-          setTimeout(function () { mascot.classList.remove("dodge"); }, 1000);
+          // 躲一下：在**当前位置**上挪开 16px，0.9 秒后回来。
+          // 以前这里写的是 translate=""，等于把人瞬移到左上角 —— 拖过之后特别明显。
+          newSeq();                                   // 正在爬的话就地取消
+          var rc0 = mascot.getBoundingClientRect();
+          var bx = Math.round(rc0.left), by = Math.round(rc0.top);
+          mascot.classList.remove("dodge");
+          mascot.style.transition = "translate .28s cubic-bezier(.34,1.4,.64,1)";
+          mascot.style.translate = Math.max(2, bx - 16) + "px " + by + "px";
+          setTimeout(function () {
+            mascot.style.translate = bx + "px " + by + "px";
+            setTimeout(function () { mascot.style.transition = ""; }, 320);
+          }, 900);
           say("别戳啦，我去旁边站会儿", 2200);
           addMood(-2);
         }
@@ -1611,6 +1697,17 @@ try {
     // 任何一步出错都被外层 try/catch 吞掉，不会波及刷课。
     var MOOD_KEY = "omitone.pet.mood";
     function getMood() { try { return Number(localStorage.getItem(MOOD_KEY) || 50); } catch (e) { return 50; } }
+    /** 三个档位。用档位而不是具体数值，是为了让"变脸"只在跨档时发生一次 */
+    function moodBand(m) { return m >= 80 ? "high" : (m <= 15 ? "low" : "mid"); }
+    var moodWas = "";
+    /** 跨档演出：高→蹦一下，低→蔫下去，回中→坐正 */
+    function moodReact(band) {
+      try {
+        if (band === "high") { setPose("happy", 1800); say("心情不错，想转个圈", 2400); }
+        else if (band === "low") { setPose("sad", 4200); say("有点低落…陪我刷会儿课吧", 3000); }
+        else { setPose("sit"); }
+      } catch (e) {}
+    }
     function applyMood(v) {
       if (!mascot) return;
       var m = Math.max(0, Math.min(100, v));
@@ -1618,6 +1715,19 @@ try {
       if (m >= 80) mascot.setAttribute("data-mood", "high");
       else if (m <= 15) mascot.setAttribute("data-mood", "low");
       else mascot.removeAttribute("data-mood");
+      // 情绪条：宽度直接等于心情值，是后面"解锁成长"唯一要读的数字
+      var bar = document.getElementById("petMood");
+      if (bar) {
+        if (bar.firstElementChild) bar.firstElementChild.style.width = m + "%";
+        bar.setAttribute("title", "心情 " + Math.round(m) + " / 100");
+      }
+      // 只有**跨档**才演出；首次（moodWas 为空）只记档位 —— 刚打开不该被搭话
+      var band = moodBand(m);
+      if (band !== moodWas) {
+        var had = moodWas;
+        moodWas = band;
+        if (had) moodReact(band);
+      }
     }
     applyMood(getMood());
 

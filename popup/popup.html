@@ -480,6 +480,20 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 .pet[data-pose="sit"] .pet-art{ transform:translateY(3px) scale(1.06, .92); }
 .pet[data-pose="happy"] .pet-art{ animation:pet-hop .55s var(--ease-spring) infinite alternate; }
 .pet[data-pose="point"] .pet-art{ transform:rotate(7deg) translateY(-1px); }
+/* 情绪低落：整个人往下沉一点、缩一缩 */
+.pet[data-pose="sad"] .pet-art{ transform:translateY(5px) scale(1.03, .94); }
+/* 彩蛋用的三个过渡姿态：**只改整体形变，不换图** —— 换了图人物就"变个人"了 */
+.pet[data-pose="crouch"] .pet-art{ transform:translateY(7px) scale(1.09, .84); }
+.pet[data-pose="wave"] .pet-art{ animation:pet-wave .42s ease-in-out 3; }
+.pet[data-pose="crawl"] .pet-art{ animation:pet-crawl .48s ease-in-out infinite alternate; }
+@keyframes pet-crawl{
+  from{ transform:rotate(-13deg) translateY(2px) scale(1.04, .94) }
+  to{ transform:rotate(-9deg) translateY(-1px) scale(1.02, .97) }
+}
+@keyframes pet-wave{
+  0%,100%{ transform:rotate(-7deg) translateY(-1px) }
+  50%{ transform:rotate(6deg) translateY(-2px) }
+}
 @keyframes pet-hop{
   from{ transform:translateY(1px) scale(1, .97) }
   to{ transform:translateY(-4px) scale(.98, 1.03) }
