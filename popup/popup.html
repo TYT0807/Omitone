@@ -443,7 +443,7 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
    现在换成一张**完整立绘**：姿势通过整体倾斜/压缩/弹跳表达，
    肢体天然连在一起，**结构上不可能脱节**。 */
 .pet{
-  position:fixed; left:0; top:0; width:40px; height:56px;
+  position:fixed; left:0; top:0; width:40px; height:56px; z-index:9999;
   pointer-events:auto; cursor:pointer; opacity:0; transform:translateY(-18px);
   transition:transform .7s var(--ease-out), opacity .35s linear;
   will-change:transform, opacity;
@@ -731,6 +731,14 @@ body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
 
 body.im .pet, body.im #mascot{ display:block !important; opacity:1 !important; visibility:visible !important; }
 html[data-ui] body.im .pet{ display:block !important; }
+
+/* 沉浸式：按季节给一层场景底色（渐变 + 柔光，不用等生图） */
+html[data-season="spring"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #ffe9f1, #f6f2ff 60%, #eef2f8); }
+html[data-season="summer"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e2f4ff, #eefbff 60%, #eef6f8); }
+html[data-season="autumn"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #ffeede, #fff6e8 60%, #f6f1ea); }
+html[data-season="winter"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e8f1ff, #f4f8ff 60%, #eef2f8); }
+body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
+  background:linear-gradient(180deg, transparent, rgba(150,175,215,.16)); pointer-events:none; }
 </style>
 </head>
 <body>

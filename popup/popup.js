@@ -1509,6 +1509,7 @@ try {
     if (mascot) {
       mascot.addEventListener("click", function (ev) {
         if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
         var now = Date.now();
         pokeStamps.push(now);
         pokeStamps = pokeStamps.filter(function (t) { return now - t < 2000; });
