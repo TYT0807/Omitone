@@ -1472,7 +1472,14 @@ try {
     function crawlToUpdate() {
       var link = document.getElementById("checkUpdate");
       if (!link || !mascot) return;
-      var lr = link.getBoundingClientRect();
+      // ① 蹲下（pet-i10）→ ② 挥手（pet-e7）→ ③ 爬过去 → ④ 指 + 拍链接
+      var art = mascot.querySelector(".pet-art");
+      if (art) { art.setAttribute("src", "pet-i10.png"); playMotion(art); }
+      setTimeout(function () {
+        if (art) { art.setAttribute("src", "pet-e7.png"); playMotion(art); }
+      }, 700);
+      var lr0 = link.getBoundingClientRect();
+
       var pr = mascot.getBoundingClientRect();
       var dx = Math.min(window.innerWidth - 44, lr.right + 4);
       var dy = Math.max(0, lr.top - 4);
@@ -1533,7 +1540,7 @@ try {
             t.classList.add("prominent", "show");
             setTimeout(function () { t.classList.remove("prominent", "show"); }, 5200);
             setTimeout(function () { try { say("我在这儿～看上面", 2200); } catch (e) {} }, 600);
-            setTimeout(crawlToUpdate, 1600);
+            setTimeout(crawlToUpdate, 2200);
           }
         } catch (e) {}
         try { toast("恭喜触发彩蛋<(￣︶￣)↗，请到最上面看看她"); } catch (e) {}
