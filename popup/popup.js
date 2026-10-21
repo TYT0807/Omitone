@@ -1336,6 +1336,8 @@ try {
       setTimeout(function () {                        // 9.5s：收尾
         if (bubble) bubble.classList.remove("show");
         pose("happy");
+        mascot.classList.add("show");            // 彩蛋收尾必须回到可见状态
+        mascot.style.transform = "";
       }, 9500);
     } else {
       // 精美模式下 0.8 秒淡入。之前"默认不出现"是为了彩蛋的意外感，
@@ -1393,6 +1395,7 @@ try {
         var b = ev.target && ev.target.closest ? ev.target.closest("button[data-act]") : null;
         if (!b) return;
         ev.stopPropagation();
+        ev.stopImmediatePropagation && ev.stopImmediatePropagation();
         var act = b.getAttribute("data-act");
         if (act === "pose") {
           var seq = ["sit", "happy", "point", "climb", "hang"];
@@ -1508,8 +1511,8 @@ try {
     var pokeStamps = [];
     if (mascot) {
       mascot.addEventListener("click", function (ev) {
-        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
-        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        // 工具条上的操作不算"戳她"：任何祖先里带 pet-tools 的直接忽略
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) { ev.stopPropagation(); return; }
         var now = Date.now();
         pokeStamps.push(now);
         pokeStamps = pokeStamps.filter(function (t) { return now - t < 2000; });

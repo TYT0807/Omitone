@@ -1332,6 +1332,42 @@ async function waitFor(client, expression, timeoutMs) {
 // ===========================================================================
 var SCENARIOS = [];
 
+// 交互回归：连点换装不能误判为"戳她"；「藏」与「显示小人」必须闭环。
+SCENARIOS.push({
+  name: '弹窗前端：连点换装不误判 / 显示小人闭环',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'await new Promise(function(r){setTimeout(r,1600);});' +
+      'var pet=document.getElementById("mascot");' +
+      'if(!pet) return {ok:false};' +
+      'pet.classList.add("show");' +
+      'var out={ok:true};' +
+      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
+      'if(b){b.click();b.click();b.click();}' +
+      'await new Promise(function(r){setTimeout(r,200);});' +
+      'out.dodged=pet.classList.contains("dodge");' +
+      'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
+      'if(h)h.click();' +
+      'await new Promise(function(r){setTimeout(r,150);});' +
+      'out.hidden=pet.style.display==="none";' +
+      'var sp=document.getElementById("btnPetShow");' +
+      'out.hasShowBtn=!!sp;' +
+      'if(sp)sp.click();' +
+      'await new Promise(function(r){setTimeout(r,200);});' +
+      'out.shown=pet.style.display!=="none"&&pet.classList.contains("show");' +
+      'return out;})()'
+    );
+    check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false, JSON.stringify(r));
+    check('「藏」能把人收起来', !!r && r.hidAfterHide === true || (!!r && r.hidden === true), JSON.stringify(r));
+    check('「显示小人」按钮存在', !!r && r.hasShowBtn === true, JSON.stringify(r));
+    check('点「显示小人」能重新出现', !!r && r.shown === true, JSON.stringify(r));
+  }
+});
+
+
 // ══════════════════════════════════════════════════════════════════════
 // 前端专项（一）：弹窗全功能自检
 // 上一版只"点了按钮"，没验证"按钮点不点得到" —— 所以"被遮住/看不见"
