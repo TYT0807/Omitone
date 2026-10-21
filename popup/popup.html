@@ -739,6 +739,16 @@ html[data-season="autumn"] body.im{ background:radial-gradient(70% 60% at 50% 20
 html[data-season="winter"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e8f1ff, #f4f8ff 60%, #eef2f8); }
 body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
   background:linear-gradient(180deg, transparent, rgba(150,175,215,.16)); pointer-events:none; }
+
+/* 情绪条：26×3 的细条，宽度 = 心情值 */
+.pet-mood{
+  position:absolute; left:50%; top:100%; transform:translateX(-50%);
+  width:26px; height:3px; margin-top:2px; border-radius:2px;
+  background:rgba(120,140,170,.22); overflow:hidden; pointer-events:none;
+}
+.pet-mood i{ display:block; height:100%; width:50%; border-radius:2px;
+  background:linear-gradient(90deg,#7fd0a8,#2f95ff); transition:width .45s var(--ease-out); }
+html[data-ui="lite"] .pet-mood{ display:none; }
 </style>
 </head>
 <body>
@@ -756,6 +766,7 @@ body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
     <button type="button" data-act="face" title="换表情 / 动作">表</button>
     <button type="button" data-act="hide" title="把它收起来">藏</button>
   </div>
+  <div class="pet-mood" id="petMood"><i></i></div>
   <div class="pet-bubble" id="mascotBubble"></div>
 </div>
 
