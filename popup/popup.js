@@ -1356,11 +1356,14 @@ try {
     var SKINS = ["pet.png",
       "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
-      "pet-9.png", "pet-10.png"];                 // 11 套服装
+      "pet-9.png", "pet-10.png",
+      "pet-11.png", "pet-12.png", "pet-13.png", "pet-14.png"];   // 15 套服装
     // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
     var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
-                 "pet-e5.png", "pet-e6.png"];              // 6 张表情
-    var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];  // 5 个姿势
+                 "pet-e5.png", "pet-e6.png",
+                 "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png"];   // 10 张表情
+    var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
+                 "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png"];   // 9 个姿势
     var OUTFITS = SKINS.length;
     var POS_KEY = "omitone.pet.pos";
     var FACE_KEY = "omitone.pet.face";
