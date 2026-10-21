@@ -1361,13 +1361,35 @@ try {
     // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
     var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
                  "pet-e5.png", "pet-e6.png",
-                 "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png"];   // 10 张表情
+                 "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png"];   // 10 张表情
     var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
-                 "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png"];   // 9 个姿势
+                 "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png"];  // 9 个姿势
     var OUTFITS = SKINS.length;
     var POS_KEY = "omitone.pet.pos";
     var FACE_KEY = "omitone.pet.face";
     var faceIdx = -1;
+    /** 换动作时的过渡：先缩一下、再弹回、带一点侧倾 —— 让"换图"看起来像"动了一下" */
+    function playMotion(el) {
+      try {
+        el.animate([
+          { transform: "scale(1) rotate(0deg)" },
+          { transform: "scale(.92) rotate(-4deg)", offset: .35 },
+          { transform: "scale(1.06) rotate(3deg)", offset: .72 },
+          { transform: "scale(1) rotate(0deg)" }
+        ], { duration: 460, easing: "cubic-bezier(.34,1.5,.64,1)" });
+      } catch (e) {}
+    }
+    /** 换动作时的过渡：先缩一下、再弹回、带一点侧倾 —— 让"换图"看起来像"动了一下" */
+    function playMotion(el) {
+      try {
+        el.animate([
+          { transform: "scale(1) rotate(0deg)" },
+          { transform: "scale(.92) rotate(-4deg)", offset: .35 },
+          { transform: "scale(1.06) rotate(3deg)", offset: .72 },
+          { transform: "scale(1) rotate(0deg)" }
+        ], { duration: 460, easing: "cubic-bezier(.34,1.5,.64,1)" });
+      } catch (e) {}
+    }
     var poseIdx = 0;
     // 上次把她拖到哪儿了？就放回哪儿
     try {
@@ -1383,7 +1405,7 @@ try {
       // 真的换图 —— 之前只加了 hue-rotate，而情绪也会写 filter，两家抢同一个属性，
       // 谁后写谁生效 → 看着就是"点了没反应"。改用换 src，彻底不碰 filter。
       var art = mascot.querySelector(".pet-art");
-      if (art) art.setAttribute("src", SKINS[outfitIdx] || SKINS[0]);
+      if (art) art.setAttribute("src", SKINS[outfitIdx] || SKINS[0]); playMotion(art);
       try { localStorage.setItem(OUT_KEY, String(outfitIdx)); } catch (e) {}
       return outfitIdx;
     }
@@ -1409,7 +1431,7 @@ try {
           // 姿势 = 换一张"动作立绘"，和表情分开
           poseIdx = (poseIdx + 1) % POSES.length;
           var pa = mascot.querySelector(".pet-art");
-          if (pa) pa.setAttribute("src", POSES[poseIdx]);
+          if (pa) { pa.setAttribute("src", POSES[poseIdx]); playMotion(pa); }
           setPose("sit", 1200);
           addMood(2);
         } else if (act === "outfit") {
@@ -1418,7 +1440,7 @@ try {
         } else if (act === "face") {
           faceIdx = (faceIdx + 1) % FACES.length;
           var fa = mascot.querySelector(".pet-art");
-          if (fa) fa.setAttribute("src", FACES[faceIdx]);
+          if (fa) { fa.setAttribute("src", FACES[faceIdx]); playMotion(fa); }
           try { localStorage.setItem("omitone.pet.face", String(faceIdx)); } catch (e) {}
           addMood(2);
         } else if (act === "hide") {
