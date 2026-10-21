@@ -1352,15 +1352,19 @@ try {
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
-    // 立绘清单：顺序就是「装」按钮的轮换顺序（服装 9 套 + 表情 4 张，共 13 张）
+    // 「装」只走服装 —— 表情和动作是另一回事，混在一起用户会看不出规律
     var SKINS = ["pet.png",
       "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
-      "pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
-      "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
-      "pet-9.png", "pet-10.png", "pet-e5.png", "pet-e6.png"];
-    var OUTFITS = SKINS.length;   // 21 张：11 套服装 + 6 表情 + 4 互动
+      "pet-9.png", "pet-10.png"];                 // 11 套服装
+    // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
+    var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
+                 "pet-e5.png", "pet-e6.png",
+                 "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png"];
+    var OUTFITS = SKINS.length;
     var POS_KEY = "omitone.pet.pos";
+    var FACE_KEY = "omitone.pet.face";
+    var faceIdx = -1;
     // 上次把她拖到哪儿了？就放回哪儿
     try {
       var savedPos = localStorage.getItem(POS_KEY);
@@ -1403,6 +1407,12 @@ try {
           setPose(seq[(cur + 1) % seq.length], 1500);
         } else if (act === "outfit") {
           applyOutfit(outfitIdx + 1);
+          addMood(2);
+        } else if (act === "face") {
+          faceIdx = (faceIdx + 1) % FACES.length;
+          var fa = mascot.querySelector(".pet-art");
+          if (fa) fa.setAttribute("src", FACES[faceIdx]);
+          try { localStorage.setItem("omitone.pet.face", String(faceIdx)); } catch (e) {}
           addMood(2);
         } else if (act === "hide") {
           try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
@@ -1468,7 +1478,11 @@ try {
     if (btnPetShow) {
       btnPetShow.addEventListener("click", function () {
         try { localStorage.removeItem(HIDE_KEY); } catch (e) {}
-        mascot.style.display = "";
+        mascot.style.display = "block";
+        mascot.style.visibility = "visible";
+        mascot.style.opacity = "1";
+        mascot.style.translate = (window.innerWidth - 56) + "px 2px";
+        try { localStorage.removeItem(POS_KEY); } catch (e) {}
         mascot.classList.add("show");
         mascot.classList.remove("collapsed");
         setPose("happy", 1400);
