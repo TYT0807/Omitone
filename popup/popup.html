@@ -728,6 +728,9 @@ body.im .container > .pet{
 body.im{ background:#eef2f8; }
 body.im .pet-art{ filter:drop-shadow(0 18px 30px rgba(16,40,80,.18)); }
 body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
+
+body.im .pet, body.im #mascot{ display:block !important; opacity:1 !important; visibility:visible !important; }
+html[data-ui] body.im .pet{ display:block !important; }
 </style>
 </head>
 <body>
@@ -735,8 +738,17 @@ body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
 <!-- 四季粒子层：纯装饰，pointer-events:none，永远不挡点击 -->
 <div class="fx-layer" id="fxLayer" aria-hidden="true"></div>
 
-<!-- 彩蛋小人：初始在视口外，1.4s 后滑下来挂在顶边 -->
-
+<div class="pet" id="mascot" data-pose="idle" aria-hidden="true">
+  <div class="pet-inner"><img class="pet-art" src="pet.png" alt="" draggable="false"></div>
+  <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
+  <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
+  <div class="pet-tools" id="petTools">
+    <button type="button" data-act="pose" title="换个姿势">姿</button>
+    <button type="button" data-act="outfit" title="换装">装</button>
+    <button type="button" data-act="hide" title="把它收起来">藏</button>
+  </div>
+  <div class="pet-bubble" id="mascotBubble"></div>
+</div>
 
   <div class="container">
 
@@ -779,16 +791,7 @@ body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
         </select>
       </label>
     
-<div class="pet" id="mascot" data-pose="idle" aria-hidden="true">
-  <div class="pet-inner"><img class="pet-art" src="pet.png" alt="" draggable="false"></div>
-  <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
-  <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
-  <div class="pet-tools" id="petTools">
-    <button type="button" data-act="pose" title="换个姿势">姿</button>
-    <button type="button" data-act="outfit" title="换装">装</button>
-    <button type="button" data-act="hide" title="把它收起来">藏</button>
-  </div>
-  <div class="pet-bubble" id="mascotBubble"></div>
+
 </div>
 </div>
 </div>
