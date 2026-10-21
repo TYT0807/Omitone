@@ -1486,7 +1486,7 @@ SCENARIOS.push({
       'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
       'if(b){b.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.src1=img?img.getAttribute("src"):"";' +
-      'out.pose0=pet?pet.getAttribute("data-pose"):"";' +
+      'out.pose0=img?img.getAttribute("src"):"";' +
       'var pb=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
       'if(pb){pb.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.pose1=pet?pet.getAttribute("data-pose"):"";' +
