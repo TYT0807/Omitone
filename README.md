@@ -1248,7 +1248,7 @@ libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
 libs/md5.min.js, Typr*.js   字体解析与哈希
-resources/table.json    字形哈希 → 真实字符 映射表的**可读源文件**（347KB，不进扩展包）
+resources/table.json    字形哈希 → 真实字符 映射表的可读源文件（347KB，不进扩展包）
 resources/table.bin     由 json 生成的紧凑二进制表（122KB，运行时装的是它）
 popup/                  设置界面
 tools/                  开发脚本（自检 / 基准 / 测试 / 打包）
