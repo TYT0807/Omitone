@@ -28,3 +28,7 @@ tmp/
 # ⚠️ 一次性 GitHub 令牌（用完即焚，绝不允许入库）
 .gh-token
 .gh-token.*
+
+# 开发期一次性探针 / 浏览器临时 profile（跑完就删；万一忘了，别让 git add -A 带进来）
+tools/_*.js
+.tmp-*/
