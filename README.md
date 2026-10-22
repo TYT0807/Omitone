@@ -87,7 +87,7 @@
 
 点上面那个 [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)。
 
-浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 400 KB）。
+浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 2 MB，大部分是 39 张立绘）。
 它通常会出现在你的「下载」文件夹里。
 
 > 点下去如果只是打开了一个网页、没有开始下载，就在那个页面里再找一下
@@ -571,7 +571,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 11300 行 / 322 个方法**）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 1.16 万行**）：
 
 > ### ⚠️ `page.js` 已拆成 `src/page/` 下的 16 个**按域**片段
 >
@@ -1238,7 +1238,7 @@ DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求**请�
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 11300 行 / 322 个方法）
+page.js                 页面上下文运行时（主体，约 1.16 万行，全项目最值得小心对待的文件）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
@@ -1252,18 +1252,23 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么"软件这么大"——体积账本
 
-扩展**解压后约 980 KB**，`dist/*.zip` 约 400 KB。构成如下（`node tools/build.js` 会把
-`resources/table.json` 排除掉，改由 122KB 的 `table.bin` 顶上）：
+扩展**解压后约 2.73 MB**，`dist/*.zip` 约 2.07 MB。构成如下（`node tools/build.js` 会把
+`resources/table.json` 排除掉，改由 123 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `page.js` | 510 KB (52%) | 全部页面侧逻辑。它是唯一的大文件，也是**最值得小心对待**的文件 |
-| `resources/table.bin` | 122 KB (14%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
-| `libs/Typr.js` + `Typr.U.js` | 95 KB (11%) | 第三方字体解析库（读字体的字形轮廓），不可省 |
-| `content.js` | 72 KB (8%) | 桥接层 |
-| `LICENSE` | 34 KB (4%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
-| `icons/` | 28 KB (3%) | 三个尺寸的图标 |
-| 其余（popup / background / libs） | ~90 KB | |
+| `popup/`（39 张立绘 + 界面） | 1.80 MB (66%) | 立绘是主体：17 套服装 / 12 表情 / 10 姿势，每张 40~70 KB |
+| `page.js` | 521 KB (19%) | 全部页面侧逻辑。**最值得小心对待**的文件 |
+| `libs/` | 143 KB (5%) | 字体解析 Typr 95 KB + 提示词 / 地址构造 / 字形表 |
+| `resources/table.bin` | 123 KB (4%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `content.js` | 83 KB (3%) | 桥接层 |
+| `LICENSE` | 35 KB (1%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `icons/` | 28 KB (1%) | 三个尺寸的图标 |
+| `background.js` | 17 KB (<1%) | service worker：跨域 fetch 代理 |
+
+> **为什么涨到 2 MB**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
+> 其余 34 张在 10-20 之后才进仓库 —— 也就是说旧包的小人本来就是残的。现在 39 张全带，
+> 体积从约 660 KB 涨到 2.1 MB。**这是补齐，不是膨胀。**
 
 曾经的 `table.json` 是 347 KB 明文（全是十六进制与十进制数字），占整个扩展的 36% ——
 **这就是"软件怎么突然这么大"的答案**。1.1.1 起改成紧凑二进制：

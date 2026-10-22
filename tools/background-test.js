@@ -15,7 +15,7 @@ function harness(transformWorker) {
   const session = {};
   const tabs = new Map([[1, { id: 1, active: true, url: 'https://mooc1.chaoxing.com/course' }],
     [2, { id: 2, active: true, url: 'https://captcha.test/check?token=1' }]]);
-  let listener, updated, removed, fetchImpl = () => { throw new Error('unexpected fetch'); };
+  let listener, updated, removed, created, fetchImpl = () => { throw new Error('unexpected fetch'); };
   const calls = [];
   function area(store) {
     return {
@@ -29,6 +29,7 @@ function harness(transformWorker) {
       onMessage: { addListener: fn => { listener = fn; } } },
     storage: { local: area(local), session: area(session) },
     tabs: { get(id, cb) { queueMicrotask(() => cb(copy(tabs.get(id)))); },
+      onCreated: { addListener: fn => { created = fn; } },
       onUpdated: { addListener: fn => { updated = fn; } }, onRemoved: { addListener: fn => { removed = fn; } } }
   };
   const context = vm.createContext({ chrome, console, URL, Promise, AbortController, Uint8Array, TextDecoder,
@@ -44,7 +45,7 @@ function harness(transformWorker) {
     remove(id) { tabs.delete(id); removed(id); },
     send(type, sender, payload) { return new Promise(resolve => listener({ type, payload }, sender, value => resolve(copy(value)))); } };
 }
-const popup = { id: 'test-extension', url: 'chrome-extension://test-extension/popup/popup.html' };
+const popup = { id: 'test-extension', url: 'chrome-extension://test-extension/popup/popup.html', frameId: 0 };
 const sender = (id, url, frameId = 0) => ({ id: 'test-extension', tab: { id, url: 'https://forged-tab-cache.test' }, frameId, url });
 const study = sender(1, 'https://mooc1.chaoxing.com/course');
 const captcha = sender(2, 'https://captcha.test/check?token=1');
@@ -75,7 +76,10 @@ async function main() {
   check('no forbidden sender reached network', h.calls.length === 0);
   check('ping reveals no config', !JSON.stringify(await h.send('ping', {})).includes('secret'));
   check('content cannot grant captcha', !(await h.send('grant_captcha', study, { tabId: 2, url: captcha.url })).success);
-  check('other extension page cannot grant captcha', !(await h.send('grant_captcha', { ...popup, url: popup.url + '?fake' }, { tabId: 2, url: captcha.url })).success);
+  // `popup.html?xxx` 仍是我们自己的页面（沉浸式窗口就是 ?play=1），受信任；
+  // 但**别的扩展页面**不行。
+  check('other extension page cannot grant captcha', !(await h.send('grant_captcha',
+    { ...popup, url: 'chrome-extension://test-extension/other.html' }, { tabId: 2, url: captcha.url })).success);
   h.tabs.get(2).active = false;
   check('inactive tab cannot be granted', !(await h.send('grant_captcha', popup, { tabId: 2, url: captcha.url })).success);
   h.tabs.get(2).active = true;
@@ -169,7 +173,9 @@ async function main() {
     assert.ok(source.includes(anchor), 'mutation anchor must actually exist');
     return source.replace(anchor, replacement);
   }
-  const badFrame = harness(source => mutation(source, 'sender.frameId !== 0', 'false'));
+  // 锚点要唯一：background.js 里 isPopup() 也有一处 frameId 判断，
+  // 只写 'sender.frameId !== 0' 会改到那一处，真正的入口守卫没被动过，负控就假绿。
+  const badFrame = harness(source => mutation(source, 'sender.frameId !== 0 || !sender.tab', 'false'));
   badFrame.fetch(() => Promise.resolve(response({ mime: 'application/json', data: Buffer.from('{}') })));
   const frameProbe = await badFrame.send('api_fetch', { ...study, frameId: 7 }, { url: 'https://api.test' });
   assert.throws(() => assert.equal(frameProbe.success, false), assert.AssertionError);

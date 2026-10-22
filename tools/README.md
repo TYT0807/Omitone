@@ -7,7 +7,8 @@
 | `check.js` | `npm run check` | 工程自检 |
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型。加 `OMITONE_EXT_DIR=dist/omitone-1.2.8` 可改成验**打包产物**（见下方专节） |
+| `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -16,7 +17,7 @@
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 
-`npm test` = `check` + `bench` + `itest`；`npm run test:all` 再加上 `e2e`。
+`npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
 
 ---
 

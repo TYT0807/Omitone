@@ -30,7 +30,7 @@ var ROOT = path.join(__dirname, '..');
  *
  * 默认是**仓库根目录**（开发态）。给 `OMITONE_EXT_DIR` 可以改成加载**打包产物**：
  *
- *   OMITONE_EXT_DIR=dist/omitone-1.2.6 npm run e2e
+ *   OMITONE_EXT_DIR=dist/omitone-1.2.9 npm run e2e
  *
  * 为什么需要这个开关：默认这条路测的是仓库根目录，**不是用户下载到的那个包**。
  * 而 `tools/build.js` 用的是**白名单 `INCLUDE`** —— 万一漏登记一个文件，
