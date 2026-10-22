@@ -801,6 +801,11 @@ function checkTestCounts() {
 }
 
 function checkConfigDefaults() {
+  // 运行时注入、不写进默认值对象的键。
+  //   pageScope 是 content.js 每次下发的「当前页面属于哪一类场景」
+  //   （study / captcha / none），不是用户配置 —— 写进 DEFAULT_CONFIG
+  //   反而会被存盘、出现在配置列表里。
+  var RUNTIME_INJECTED = { 'page.js': ['pageScope'] };
   var specs = [
     ['page.js', /var DEFAULT_CONFIG = \{/, /\bthis\.configs\.([A-Za-z_][A-Za-z0-9_]*)/g],
     ['content.js', /let configs = \{/, /\bconfigs\.([A-Za-z_][A-Za-z0-9_]*)/g],
@@ -832,7 +837,9 @@ function checkConfigDefaults() {
     var used = Object.create(null), mm;
     useRe.lastIndex = 0;
     while ((mm = useRe.exec(src))) used[mm[1]] = true;
-    var missing = Object.keys(used).filter(function (k) { return !keys[k]; }).sort();
+    var missing = Object.keys(used).filter(function (k) {
+      return !keys[k] && (RUNTIME_INJECTED[file] || []).indexOf(k) === -1;
+    }).sort();
     if (missing.length) {
       problems.push(file + ' 读了但没有默认值的配置项: ' + missing.join(', ') +
         '（读到的永远是 undefined，开关会表现成「打开了也没用」）');

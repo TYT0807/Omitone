@@ -16,7 +16,7 @@
  *   _assertActive、run、play、_resetRuntimeState
  * ========================================================================== */
 // @omitone-part-header-end
-    configs: mergeConfig({ apiKey: '', autoNext: true, enableQuiz: false }),
+    configs: mergeConfig({ hasApiKey: false, autoNext: true, enableQuiz: false }),
 
 
     _videoEl: null,
@@ -297,6 +297,20 @@
 
     run: function () {
       if (!this._assertActive()) return;
+      // Authorized external captcha pages run only the OCR loop, never study scheduling.
+      if (this.configs.pageScope === 'captcha') {
+        this._clearTickLoop();
+        var captchaApp = this;
+        var captchaTick = function () {
+          if (!captchaApp._assertActive() || captchaApp.configs.pageScope !== 'captcha') return;
+          captchaApp._runStandaloneCaptchaMode().catch(function (error) {
+            emitRuntimeLog('error', 'captcha loop failed', { error: String(error && error.message || error).slice(0, 200) });
+          });
+        };
+        this._tickLoopInterval = setInterval(captchaTick, 1500);
+        captchaTick();
+        return;
+      }
       // 「已开启」持久化到 chrome.storage（经 content 桥接）。run() 是所有启动入口的汇合点
       //（页面中间面板【开始】/ 弹窗【开始】/ 刷新后自动续跑都会走到这里），在这里落一次标记，
       // 才能保证页面跳转、以及讨论任务 window.open 新开的标签页里，content.js 的

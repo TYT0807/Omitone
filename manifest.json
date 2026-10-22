@@ -27,7 +27,7 @@
         "*://mooc1.chaoxing.com/*",
         "*://*/*"
       ],
-      "js": ["libs/md5.min.js", "libs/Typr.js", "libs/Typr.U.js", "libs/font-table.js", "libs/api-url.js", "libs/prompt.js", "libs/thinking.js", "content.js"],
+      "js": ["libs/md5.min.js", "libs/Typr.js", "libs/Typr.U.js", "libs/font-table.js", "libs/api-url.js", "libs/prompt.js", "libs/thinking.js", "libs/runtime-policy.js", "libs/captcha.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

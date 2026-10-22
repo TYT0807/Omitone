@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '7138db9373';
+var OMITONE_CODE_REV = '85b276b8c9';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -71,7 +71,7 @@ var OMITONE_CODE_REV = '7138db9373';
     restudy: false,
     apiType: 'openai',
     apiUrl: 'https://api.deepseek.com',
-    apiKey: '',
+    hasApiKey: false,
     apiConnectionFailed: false,
     // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
     apiConnectionError: '',
@@ -262,7 +262,7 @@ var OMITONE_CODE_REV = '7138db9373';
   });
 
   var app = {
-    configs: mergeConfig({ apiKey: '', autoNext: true, enableQuiz: false }),
+    configs: mergeConfig({ hasApiKey: false, autoNext: true, enableQuiz: false }),
 
 
     _videoEl: null,
@@ -543,6 +543,20 @@ var OMITONE_CODE_REV = '7138db9373';
 
     run: function () {
       if (!this._assertActive()) return;
+      // Authorized external captcha pages run only the OCR loop, never study scheduling.
+      if (this.configs.pageScope === 'captcha') {
+        this._clearTickLoop();
+        var captchaApp = this;
+        var captchaTick = function () {
+          if (!captchaApp._assertActive() || captchaApp.configs.pageScope !== 'captcha') return;
+          captchaApp._runStandaloneCaptchaMode().catch(function (error) {
+            emitRuntimeLog('error', 'captcha loop failed', { error: String(error && error.message || error).slice(0, 200) });
+          });
+        };
+        this._tickLoopInterval = setInterval(captchaTick, 1500);
+        captchaTick();
+        return;
+      }
       // 「已开启」持久化到 chrome.storage（经 content 桥接）。run() 是所有启动入口的汇合点
       //（页面中间面板【开始】/ 弹窗【开始】/ 刷新后自动续跑都会走到这里），在这里落一次标记，
       // 才能保证页面跳转、以及讨论任务 window.open 新开的标签页里，content.js 的
@@ -7170,7 +7184,7 @@ var OMITONE_CODE_REV = '7138db9373';
       // 少了这一句，乱选会走 _skipQuizForApiUnavailable 把整道题跳过，
       // 变成「什么都不答」而不是「乱选」。
       if (this._isRandomAnswerMode()) return '';
-      if (!String(this.configs.apiKey || '').trim()) return 'api-key-missing';
+      if (!this.configs.hasApiKey) return 'api-key-missing';
       if (Date.now() < (this._quizApiFailUntil || 0)) return 'api-connection-failed';
       return '';
     },
@@ -11335,7 +11349,7 @@ var OMITONE_CODE_REV = '7138db9373';
     removeStartPanel();
 
     var currentConfig = mergeConfig(config);
-    var hasApiKey = !!String(currentConfig.apiKey || '').trim();
+    var hasApiKey = !!(currentConfig.hasApiKey || currentConfig.randomAnswer);
     var playOn = currentConfig.autoNext !== false;
     var quizOn = !!(currentConfig.enableQuiz && hasApiKey);
 
@@ -11424,7 +11438,7 @@ var OMITONE_CODE_REV = '7138db9373';
     return flag;
   }
 
-  var defaultConfig = mergeConfig({ apiKey: '', autoNext: true, enableQuiz: false });
+  var defaultConfig = mergeConfig({ hasApiKey: false, autoNext: true, enableQuiz: false });
   app.configs = defaultConfig;
   window._xxtApp = app;
 

@@ -288,6 +288,7 @@
   }
 
   return {
+    CAPTCHA_PROMPT: '识别图中的验证码,按原顺序原样输出。可能含汉字/字母/数字,有扭曲与干扰线。只输出字符本身,不要解释、空格、标点。',
     SYSTEM: SYSTEM,
     FORMAT_HINT: FORMAT_HINT,
     BANNED_PREFIX: BANNED_PREFIX,

@@ -1,0 +1,446 @@
+/* ---------- 四季调色 ----------
+   只替换强调色与光晕；中性色不动，保证文字对比度在各季都合格。 */
+html[data-season="spring"]{ --accent:#e0559b; --accent-2:#c73f83; --accent-soft:rgba(224,85,155,.14); --fx:#f2a7c3; --fx-2:#8fd6a8; }
+html[data-season="summer"]{ --accent:#0a84ff; --accent-2:#0a6fe0; --accent-soft:rgba(10,132,255,.14); --fx:#ffd45e; --fx-2:#5fd3f3; }
+html[data-season="autumn"]{ --accent:#d2691e; --accent-2:#b4551a; --accent-soft:rgba(210,105,30,.15); --fx:#e08a3c; --fx-2:#c9a227; }
+html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:rgba(74,127,181,.15); --fx:#cfe3f5; --fx-2:#ffffff; }
+
+/* ---------- 特效层：永远不接收点击 ---------- */
+.fx-layer{ position:fixed; inset:0; pointer-events:none; z-index:9; overflow:hidden; }
+.fx-layer > i{
+  position:absolute; top:-12px; display:block; border-radius:50%;
+  background:var(--fx); opacity:.75;
+  animation-name:fx-fall; animation-timing-function:linear; animation-iteration-count:infinite;
+}
+@keyframes fx-fall{
+  0%{ transform:translate3d(0,-10px,0) rotate(0deg); opacity:0; }
+  12%{ opacity:.8; }
+  100%{ transform:translate3d(14px, 900px, 0) rotate(220deg); opacity:0; }
+}
+
+/* 点击涟漪：由 JS 用 Web Animations 创建，这里只定形状 */
+.fx-ripple{
+  position:fixed; width:14px; height:14px; margin:-7px 0 0 -7px; border-radius:50%;
+  border:2px solid var(--accent); pointer-events:none; z-index:10;
+}
+.fx-spark{
+  position:fixed; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%;
+  background:var(--fx); pointer-events:none; z-index:10;
+}
+/* 摸头冒的小心心：用字符画，不额外占一张素材 */
+.fx-heart{
+  position:fixed; margin:-5px 0 0 -5px; z-index:10; pointer-events:none;
+  font-size:11px; line-height:1; color:#ff7fae;
+  text-shadow:0 1px 2px rgba(255,255,255,.65);
+  will-change:transform, opacity;
+}
+
+/* ---------- 角色：原创 2D 立绘（不拆件，所以不会有"手脚乱飞"） ----------
+   旧版是把头/身/四肢分别用 div 摆出来再各自旋转 —— 关节靠手调，一换姿势就脱节。
+   现在换成一张**完整立绘**：姿势通过整体倾斜/压缩/弹跳表达，
+   肢体天然连在一起，**结构上不可能脱节**。 */
+.pet{
+  position:fixed; left:0; top:0; width:40px; height:56px; z-index:9999;
+  pointer-events:auto; cursor:pointer; opacity:0; transform:translateY(-18px);
+  transition:transform .7s var(--ease-out), opacity .35s linear;
+  will-change:transform, opacity;
+}
+.pet.show{ opacity:1; transform:none; }
+/* inner 只管"活着"：呼吸 + 视线偏移（用 translate 独立属性，不和姿态的 transform 打架） */
+.pet-inner{
+  width:100%; height:100%; transform-origin:50% 100%;
+  animation:pet-breathe 4.2s ease-in-out infinite;
+  transition:translate .55s var(--ease-out);
+  will-change:transform, translate;
+}
+/* 呼吸幅度只有 1.5% —— 再多就像在发抖 */
+@keyframes pet-breathe{
+  0%,100%{ transform:scale(1, 1) }
+  50%{ transform:scale(1.012, .988) }
+}
+/* 久未互动：伸个懒腰（一次性） */
+.pet.yawn .pet-inner{ animation:pet-yawn .9s var(--ease-spring) 1; }
+@keyframes pet-yawn{
+  0%{ transform:scale(1,1) } 40%{ transform:scale(.97,1.05) } 100%{ transform:scale(1,1) }
+}
+.pet-art{
+  width:100%; height:100%; object-fit:contain; display:block;
+  transform-origin:50% 100%;
+  transition:transform .42s var(--ease-spring);
+  filter:drop-shadow(0 2px 3px rgba(16,24,40,.16));
+  -webkit-user-drag:none; user-select:none;
+}
+
+/* 五种姿态：整体姿态语言 —— 倾斜 / 压缩 / 弹跳 / 前倾 */
+.pet[data-pose="hang"] .pet-art{ transform:translateY(-3px) rotate(3deg); }
+.pet[data-pose="climb"] .pet-art{ transform:rotate(-9deg) scale(1.02, .98); }
+.pet[data-pose="sit"] .pet-art{ transform:translateY(3px) scale(1.06, .92); }
+.pet[data-pose="happy"] .pet-art{ animation:pet-hop .55s var(--ease-spring) infinite alternate; }
+.pet[data-pose="point"] .pet-art{ transform:rotate(7deg) translateY(-1px); }
+/* 情绪低落：整个人往下沉一点、缩一缩 */
+.pet[data-pose="sad"] .pet-art{ transform:translateY(5px) scale(1.03, .94); }
+/* 彩蛋用的三个过渡姿态：**只改整体形变，不换图** —— 换了图人物就"变个人"了 */
+.pet[data-pose="crouch"] .pet-art{ transform:translateY(7px) scale(1.09, .84); }
+.pet[data-pose="wave"] .pet-art{ animation:pet-wave .42s ease-in-out 3; }
+.pet[data-pose="crawl"] .pet-art{ animation:pet-crawl .48s ease-in-out infinite alternate; }
+@keyframes pet-crawl{
+  from{ transform:rotate(-13deg) translateY(2px) scale(1.04, .94) }
+  to{ transform:rotate(-9deg) translateY(-1px) scale(1.02, .97) }
+}
+@keyframes pet-wave{
+  0%,100%{ transform:rotate(-7deg) translateY(-1px) }
+  50%{ transform:rotate(6deg) translateY(-2px) }
+}
+
+/* ── 动作库 ──────────────────────────────────────────────────────────────
+   不新增任何素材：全部靠整体形变 + 一个字符特效。
+   每个 data-pose 都是**一次性**动作，setPose(name, ms) 到点自动回坐姿；
+   动作之间不会叠加，因为同一时刻 data-pose 只有一个值。 */
+.pet[data-pose="spin"] .pet-art{ animation:pet-spin .9s cubic-bezier(.45,.05,.35,1) 1; }
+@keyframes pet-spin{
+  0%{ transform:rotate(0) scale(1) }
+  55%{ transform:rotate(200deg) scale(.94) }
+  100%{ transform:rotate(360deg) scale(1) }
+}
+.pet[data-pose="jump"] .pet-art{ animation:pet-jump .72s cubic-bezier(.3,1.4,.5,1) 1; }
+@keyframes pet-jump{
+  0%,100%{ transform:translateY(0) scale(1,1) }
+  22%{ transform:translateY(3px) scale(1.08,.9) }
+  55%{ transform:translateY(-11px) scale(.95,1.06) }
+  80%{ transform:translateY(1px) scale(1.04,.95) }
+}
+.pet[data-pose="shake"] .pet-art{ animation:pet-shake .46s ease-in-out 2; }
+@keyframes pet-shake{
+  0%,100%{ transform:rotate(0) }
+  25%{ transform:rotate(-9deg) }
+  75%{ transform:rotate(9deg) }
+}
+.pet[data-pose="bow"] .pet-art{ animation:pet-bow .95s cubic-bezier(.4,0,.2,1) 1; }
+@keyframes pet-bow{
+  0%,100%{ transform:rotate(0) }
+  45%{ transform:rotate(-24deg) translateY(2px) }
+}
+.pet[data-pose="peek"] .pet-art{ animation:pet-peek 1.1s cubic-bezier(.34,1.4,.64,1) 1; }
+@keyframes pet-peek{
+  0%,100%{ transform:translateX(0) rotate(0) }
+  40%{ transform:translateX(-9px) rotate(-10deg) }
+}
+.pet[data-pose="dizzy"] .pet-art{ animation:pet-dizzy 1.3s ease-in-out 1; }
+@keyframes pet-dizzy{
+  0%,100%{ transform:rotate(0) }
+  20%{ transform:rotate(-12deg) }
+  40%{ transform:rotate(10deg) }
+  60%{ transform:rotate(-7deg) }
+  80%{ transform:rotate(4deg) }
+}
+.pet[data-pose="sleep"] .pet-art{ animation:pet-sleep 2.2s ease-in-out 1; }
+@keyframes pet-sleep{
+  0%,100%{ transform:translateY(0) scale(1,1) }
+  50%{ transform:translateY(4px) scale(1.05,.93) }
+}
+.pet[data-pose="cheer"] .pet-art{ animation:pet-cheer 1.15s cubic-bezier(.3,1.4,.5,1) 1; }
+@keyframes pet-cheer{
+  0%,100%{ transform:translateY(0) rotate(0) }
+  25%{ transform:translateY(-9px) rotate(-6deg) }
+  50%{ transform:translateY(0) rotate(0) }
+  75%{ transform:translateY(-6px) rotate(6deg) }
+}
+.pet[data-pose="surprise"] .pet-art{ animation:pet-jump .6s cubic-bezier(.3,1.4,.5,1) 1; }
+.pet[data-pose="think"] .pet-art{ transform:rotate(-5deg) translateY(1px); }
+.pet[data-pose="sing"] .pet-art{ animation:pet-sing 1.8s ease-in-out 1; }
+@keyframes pet-sing{
+  0%,100%{ transform:rotate(-3deg) }
+  50%{ transform:rotate(4deg) translateY(-2px) }
+}
+
+/* 头顶符号：只有三种"需要一句话外音"的状态才冒，别到处都是 */
+.pet-inner{ position:relative; }
+.pet[data-pose="surprise"] .pet-inner::after,
+.pet[data-pose="think"] .pet-inner::after,
+.pet[data-pose="sing"] .pet-inner::after{
+  position:absolute; left:50%; top:-13px; transform:translateX(-50%);
+  font-size:13px; font-weight:700; line-height:1; color:var(--accent);
+  text-shadow:0 1px 2px rgba(255,255,255,.7); pointer-events:none;
+  animation:pet-glyph .5s var(--ease-spring) 1 both;
+}
+.pet[data-pose="surprise"] .pet-inner::after{ content:"!"; }
+.pet[data-pose="think"] .pet-inner::after{ content:"?"; color:var(--accent-2); }
+.pet[data-pose="sing"] .pet-inner::after{ content:"♪"; }
+.pet[data-glyph-side="1"] .pet-inner::after{ top:14px; left:12%; }
+@keyframes pet-glyph{
+  0%{ opacity:0; transform:translateX(-50%) translateY(4px) scale(.4) }
+  70%{ opacity:1; transform:translateX(-50%) translateY(-3px) scale(1.15) }
+  100%{ opacity:1; transform:translateX(-50%) translateY(0) scale(1) }
+}
+@keyframes pet-hop{
+  from{ transform:translateY(1px) scale(1, .97) }
+  to{ transform:translateY(-4px) scale(.98, 1.03) }
+}
+/* 夏天吃冰激凌：整个小人开心地晃两下 */
+@keyframes pet-lick{ 0%,100%{ transform:none } 45%{ transform:rotate(-5deg) translateY(-2px) } }
+.pet[data-eat="1"] .pet-art{ animation:pet-lick .55s var(--ease-spring) 2; }
+
+/* ---------- 情绪 / 拖拽 / 运行中 ---------- */
+.pet.dragging{ cursor:grabbing; z-index:12; }
+.pet.dragging .pet-inner{ animation-play-state:paused; }
+/* 开心（≥80）：暖光。不开心（≤15）：发灰、呼吸变慢 —— 像蔫了 */
+.pet[data-mood="high"] .pet-art{ filter:saturate(1.12) drop-shadow(0 0 7px rgba(255,208,120,.6)); }
+.pet[data-mood="low"] .pet-art{ filter:grayscale(.4) brightness(.97) drop-shadow(0 2px 3px rgba(16,24,40,.16)); }
+.pet[data-mood="low"] .pet-inner{ animation-duration:6.5s; }
+/* 运行中：呼吸比平时快一倍多点 */
+.pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
+
+
+/* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
+.pet-tools{
+  position:absolute; right:0; top:100%; margin-top:2px;
+  display:flex; gap:2px; opacity:1;
+  pointer-events:auto;
+}
+/* 16px 而不是 18px：多了「册」之后一排 5 个，
+   18px 会横向长到 102px，正好压住标题右边的状态徽标。 */
+.pet-tools button{
+  width:16px; height:16px; padding:0; border:0; border-radius:50%;
+  background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
+  font-size:9px; line-height:14px; cursor:pointer; font-family:inherit;
+  backdrop-filter:blur(6px);
+}
+.pet-tools button:hover{ background:var(--accent-soft); color:var(--accent-2); }
+
+/* 双击收起：只显示头部（用 object-position 把画面顶到脸） */
+.pet.collapsed{ width:26px; height:26px; bottom:-30px; right:2px; }
+.pet.collapsed .pet-art{ object-position:top center; border-radius:50%; background:var(--card); }
+.pet.collapsed .pet-tools{ display:none; }
+
+/* 换装靠换图（pet-1.png / pet-2.png），不再用 filter —— 否则会和情绪滤镜打架 */
+
+/* 季节道具（挂在立绘旁边） */
+.pet-prop{ position:absolute; display:none; }
+html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
+html[data-season="summer"] .pet-prop-summer{ display:block; right:-10px; top:16px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
+html[data-season="summer"] .pet-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
+html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-3px; top:8px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
+
+/* 冬天雪人随点击变大 */
+.pet-prop-winter{ transform:scale(.55); transform-origin:50% 100%; transition:transform .45s var(--ease-spring); }
+.pet[data-snow="1"] .pet-prop-winter{ transform:scale(.78); }
+.pet[data-snow="2"] .pet-prop-winter{ transform:scale(1); }
+.pet[data-snow="3"] .pet-prop-winter{ transform:scale(1.18); }
+
+/* ---------- 气泡：单例 + 不压身体 ----------
+   旧版的问题：气泡绝对定位在身体旁边，长句会盖住脑袋；而且多条消息会叠在一起。
+   现在：气泡在角色**正上方**、有最大宽度、超出自动换行；同时只保留一个节点，
+   新消息直接替换旧消息（配合一个轻微上浮的入场）。 */
+.pet-bubble{
+  position:absolute; right:calc(100% + 8px); bottom:12px; transform:translateX(6px) scale(.94);
+  transform-origin:100% 50%;
+  max-width:150px; width:max-content;
+  padding:5px 9px; border-radius:10px;
+  background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
+  font-size:11px; line-height:1.45; text-align:center; white-space:normal;
+  box-shadow:0 6px 18px -10px rgba(16,24,40,.45);
+  opacity:0; pointer-events:none;
+  transition:opacity .26s var(--ease-out), transform .26s var(--ease-spring);
+}
+.pet-bubble::after{                                  /* 小尖角指向角色 */
+  content:""; position:absolute; right:-4px; bottom:9px; width:8px; height:8px;
+  background:inherit; border-right:1px solid var(--hairline); border-bottom:1px solid var(--hairline);
+  transform:rotate(-45deg);
+}
+.pet-bubble.show{ opacity:1; transform:none; }
+
+/* ---------- 四季差异化互动 ---------- */
+
+/* 冬天：按钮上的雪塌落（JS 生成，雪花从按钮下沿往下掉） */
+.fx-snow{ position:fixed; width:5px; height:5px; margin:-2.5px 0 0 -2.5px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 2px rgba(120,150,190,.35); pointer-events:none; z-index:10; }
+
+/* 冬天：雪人随点击变大（0/1/2/3 级） */
+.pet-prop-winter{ transform:scale(.55); transform-origin:50% 100%; transition:transform .45s var(--ease-spring); }
+.pet[data-snow="1"] .pet-prop-winter{ transform:scale(.78); }
+.pet[data-snow="2"] .pet-prop-winter{ transform:scale(1); }
+.pet[data-snow="3"] .pet-prop-winter{ transform:scale(1.18); }
+
+/* 夏天：吃冰激凌（点一下舔两口） */
+@keyframes pet-lick-prop{ 0%,100%{ transform:none } 45%{ transform:translateY(-4px) rotate(-14deg) } }
+.pet[data-eat="1"] .pet-prop-summer{ animation:pet-lick-prop .55s var(--ease-spring) 2; }
+
+/* 秋天：脚下踩出的叶子（JS 生成） */
+.fx-leaf{ position:fixed; width:7px; height:5px; margin:-2.5px 0 0 -3.5px; border-radius:40% 60% 55% 45%;
+  background:var(--fx); pointer-events:none; z-index:10; }
+
+/* ---------- 四季按钮：四套不同的"按下去" ---------- */
+.btn{ position:relative; overflow:hidden; }
+.btn:active{ transform:scale(.972) translateY(1px); }
+
+/* 冬：按钮顶面积一层雪。点下去时这层雪**整体塌落**（JS 生成一块往下掉的雪块） */
+html[data-season="winter"] .btn::before{
+  content:""; position:absolute; left:0; right:0; top:0; height:3px; pointer-events:none;
+  background:linear-gradient(180deg, rgba(255,255,255,.95), rgba(255,255,255,.55));
+  border-radius:12px 12px 0 0;
+}
+html[data-season="winter"] .btn.snow-hit::before{ opacity:0; transition:opacity .18s linear; }
+
+/* 夏：一道光扫过按钮（光照感），配合颜色变暖 */
+html[data-season="summer"] .btn::after{
+  content:""; position:absolute; inset:0; pointer-events:none; opacity:0;
+  background:linear-gradient(105deg, transparent 30%, rgba(255,255,255,.55) 48%, transparent 62%);
+  transform:translateX(-120%);
+}
+html[data-season="summer"] .btn:hover::after{ opacity:1; animation:btn-sheen .75s var(--ease-out); }
+@keyframes btn-sheen{ from{ transform:translateX(-120%) } to{ transform:translateX(120%) } }
+
+/* 秋：按下时按钮边缘泛起一点暖光，像踩进落叶堆 */
+html[data-season="autumn"] .btn:active{ box-shadow:0 0 0 3px rgba(210,105,30,.22), inset 0 1px 0 rgba(255,255,255,.28); }
+
+/* 春：按下时轻微上浮再落下（花开的那种"弹") */
+html[data-season="spring"] .btn:active{ transform:scale(.98) translateY(-1px); }
+
+/* 秋天：小人身上带一点暖调（"穿秋衣"的观感），围巾也加宽 */
+html[data-season="autumn"] .pet-art{ filter:drop-shadow(0 2px 3px rgba(16,24,40,.16)) sepia(.14) saturate(1.12); }
+html[data-season="autumn"] .pet-prop-autumn{ width:26px; height:6px; border-radius:4px; }
+html[data-season="winter"] .btn{ background:linear-gradient(180deg,#6f9fca 0%,#4a7fb5 55%,#3a6a9c 100%); }
+html[data-season="autumn"] .btn{ background:linear-gradient(180deg,#e08a45 0%,#d2691e 55%,#b4551a 100%); }
+html[data-season="spring"] .btn{ background:linear-gradient(180deg,#ef7fb4 0%,#e0559b 55%,#c73f83 100%); }
+
+/* eco 档：去掉弹跳与滑动，只留淡入 */
+[data-motion="eco"] .pet-inner,
+[data-motion="eco"] .pet-art,
+[data-motion="eco"] .pet-inner::after,
+[data-motion="eco"] .pet-prop,
+[data-motion="eco"] .pet-bubble,
+[data-motion="eco"] .pet-mood i{ animation:none !important; transition:none !important; }
+[data-motion="eco"] .pet{ transition:opacity .3s linear !important; transform:none; }
+
+/* 冬天：按钮被点后"雪塌下来"——雪花从按钮下沿往下掉 */
+@keyframes fx-snow-slip{
+  0%{ transform:translate3d(0,0,0); opacity:1 }
+  100%{ transform:translate3d(4px,26px,0); opacity:0 }
+}
+.btn.snow-hit{ animation:btn-press .24s var(--ease-spring) }
+@keyframes btn-press{ 0%{transform:scale(1)} 45%{transform:scale(.965)} 100%{transform:scale(1)} }
+
+/* 夏天：点过的按钮会被"晒"成暖色 */
+.btn.sunbaked{ filter:saturate(1.15) brightness(1.06); }
+
+/* eco 档：粒子减半、去掉会动的东西 */
+[data-motion="eco"] .fx-layer > i{ animation:none; }
+[data-motion="eco"] .fx-layer > i:nth-child(n+6){ display:none; }
+
+
+/* ---------- 沉浸式：?play=1 开的新窗口 ---------- */
+body.im{ width:auto; }
+body.im .container{ max-width:720px; margin:0 auto; padding:0 20px 24px; }
+body.im .top{ margin:0 0 12px; padding:16px 0 12px; }
+/* 角色整体放大：transform 缩放，不用改一堆子元素尺寸 */
+body.im .pet{ transform:scale(1.3); transform-origin:100% 100%; bottom:-52px; pointer-events:auto; cursor:pointer; }
+
+
+/* 拖动中必须关掉过渡 —— 否则每次 pointermove 都慢半拍，看起来就是"漂" */
+.pet.dragging{ transition:none !important; }
+.pet.dragging .pet-inner{ animation:none; }
+/* 醒目提示：彩蛋触发时贴在顶部、带强调色，不再是底下一行小字 */
+.toast.prominent{
+  position:fixed; left:50%; top:10px; transform:translateX(-50%) translateY(-8px);
+  z-index:20; max-width:calc(100vw - 32px); white-space:normal; text-align:center;
+  padding:9px 16px; border-radius:12px; line-height:1.5; font-size:12.5px; font-weight:600;
+  background:var(--accent); color:#fff; border:none;
+  box-shadow:0 10px 26px -10px rgba(10,110,220,.75);
+  opacity:0; pointer-events:none;
+  transition:opacity .26s var(--ease-out), transform .26s var(--ease-spring);
+}
+.toast.prominent.show{ opacity:1; transform:translateX(-50%) translateY(0); }
+
+/* 模式栏就在 .top 里面 —— 同一块玻璃，不存在接缝 */
+.mode-bar{ padding:0 0 8px; margin:0; background:none; border:0; }
+
+/* ---------- 沉浸式（?play=1）：只留吉祥物 ---------- */
+body.im .container > *{ display:none !important; }
+body.im > #mascot{
+  left:0; top:0; bottom:auto; width:150px; height:210px;
+  transform:none; transform-origin:50% 100%;
+  pointer-events:auto;
+}
+body.im > #mascot.collapsed{ width:60px; height:60px; }
+.pet{ touch-action:none; }
+.pet.is-paused *, .pet.is-paused *::after{ animation-play-state:paused !important; }
+body.im{ background:#eef2f8; }
+body.im .pet-art{ filter:drop-shadow(0 18px 30px rgba(16,40,80,.18)); }
+body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
+
+body.im .pet, body.im #mascot{ opacity:1; visibility:visible; }
+.im-controls{ display:none; position:fixed; left:50%; bottom:18px; z-index:10002; gap:8px; transform:translateX(-50%); }
+body.im .im-controls{ display:flex; }
+.im-controls button{ border:1px solid var(--hairline); border-radius:999px; padding:7px 12px; background:var(--card); color:var(--fg-2); font:inherit; font-size:12px; cursor:pointer; box-shadow:0 4px 14px rgba(16,24,40,.12); }
+.im-controls button:hover{ color:var(--accent-2); background:var(--accent-soft); }
+
+/* 沉浸式：按季节给一层场景底色（渐变 + 柔光，不用等生图） */
+html[data-season="spring"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #ffe9f1, #f6f2ff 60%, #eef2f8); }
+html[data-season="summer"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e2f4ff, #eefbff 60%, #eef6f8); }
+html[data-season="autumn"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #ffeede, #fff6e8 60%, #f6f1ea); }
+html[data-season="winter"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e8f1ff, #f4f8ff 60%, #eef2f8); }
+body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
+  background:linear-gradient(180deg, transparent, rgba(150,175,215,.16)); pointer-events:none; }
+
+/* 情绪条：26×3 的细条，宽度 = 心情值 */
+.pet-mood{
+  position:absolute; left:50%; top:100%; transform:translateX(-50%);
+  width:26px; height:3px; margin-top:2px; border-radius:2px;
+  background:rgba(120,140,170,.22); overflow:hidden; pointer-events:none;
+}
+.pet-mood i{ display:block; height:100%; width:50%; border-radius:2px;
+  background:linear-gradient(90deg,#7fd0a8,#2f95ff); transition:width .45s var(--ease-out); }
+html[data-ui="lite"] .pet-mood{ display:none; }
+
+/* ── 立绘册：一次挑完 17 套衣服 / 12 表情 / 11 姿势 ────────────────────
+   放在 .pet 外面 —— .pet 上有 transform / will-change，会把 position:fixed
+   的定位基准变成它自己，面板就会挤在那 40px 里。 */
+.pet-book{
+  position:fixed; left:50%; top:50%; z-index:10001;
+  width:min(240px, calc(100vw - 24px)); max-height:min(340px, calc(100vh - 24px));
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--card); border:1px solid var(--hairline); border-radius:12px;
+  box-shadow:0 14px 34px rgba(16,24,40,.22);
+  opacity:0; pointer-events:none; transform:translate(-50%,-48%) scale(.97);
+  transition:opacity .18s linear, transform .22s var(--ease-spring);
+}
+.pet-book.show{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
+.pet-book-head{
+  display:flex; flex-shrink:0; align-items:center; justify-content:space-between; gap:8px;
+  padding:7px 10px; border-bottom:1px solid var(--hairline);
+  font-size:11px; color:var(--fg-2);
+}
+.pet-book-head b{ color:var(--fg); font-weight:600; }
+.pet-book-head button{
+  width:18px; height:18px; padding:0; border:0; border-radius:50%;
+  background:transparent; color:var(--fg-2); font-size:12px; line-height:18px;
+  cursor:pointer; font-family:inherit;
+}
+.pet-book-head button:hover{ background:var(--accent-soft); color:var(--accent-2); }
+.pet-book-body{
+  min-height:0; padding:8px; overflow:auto; overscroll-behavior:contain;
+  display:grid; grid-template-columns:repeat(6, minmax(0, 1fr)); grid-auto-rows:max-content; gap:4px;
+}
+.pet-book-sep{
+  grid-column:1 / -1; margin:4px 0 1px;
+  font-size:10px; color:var(--fg-3, var(--fg-2)); letter-spacing:.02em;
+}
+.pet-book-sep:first-child{ margin-top:0; }
+.pet-book-cell{
+  padding:0; border:1px solid transparent; border-radius:6px;
+  background:rgba(120,140,170,.07); cursor:pointer; overflow:hidden;
+  aspect-ratio:1 / 1; display:block;
+}
+.pet-book-cell img{ width:100%; height:100%; object-fit:contain; display:block; -webkit-user-drag:none; }
+.pet-book-cell:hover{ border-color:var(--accent); }
+.pet-book-cell.on{ border-color:var(--accent); background:var(--accent-soft); box-shadow:0 0 0 1px var(--accent) inset; }
+/* 动作是文字按钮，不是缩略图：占两列 → 一行三个 */
+.pet-book-anim{
+  grid-column:span 2; padding:5px 0;
+  border:1px solid var(--hairline); border-radius:6px;
+  background:var(--card); color:var(--fg-2);
+  font-size:10.5px; font-family:inherit; line-height:1.2; cursor:pointer;
+}
+.pet-book-anim:hover{ border-color:var(--accent); color:var(--accent-2); background:var(--accent-soft); }
+.pet-book-anim:active{ transform:scale(.96); }

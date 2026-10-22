@@ -46,6 +46,8 @@ var EXT_DIR = process.env.OMITONE_EXT_DIR
 var PORT = Number(process.env.OMITONE_E2E_PORT || 8899);
 var CDP_PORT = Number(process.env.OMITONE_CDP_PORT || 9222);
 var DEBUG = !!process.env.OMITONE_E2E_DEBUG;
+// 名称子串筛选；定向反向验证不能覆盖全套断言计数文件。
+var E2E_FILTER = String(process.env.OMITONE_E2E_FILTER || '').trim();
 
 var DEFAULT_EDGE = [
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -1099,10 +1101,17 @@ function CdpClient(wsUrl) {
 CdpClient.prototype.connect = function () {
   var self = this;
   return new Promise(function (resolve, reject) {
+    var timer = setTimeout(function () {
+      try { self.ws.close(); } catch (e) {}
+      reject(new Error('CDP 连接超时'));
+    }, 10000);
     var ws = new WebSocket(self.wsUrl);
     self.ws = ws;
-    ws.addEventListener('open', function () { resolve(); });
-    ws.addEventListener('error', function (e) { reject(new Error('CDP 连接失败: ' + (e.message || ''))); });
+    ws.addEventListener('open', function () { clearTimeout(timer); resolve(); });
+    ws.addEventListener('error', function (e) {
+      clearTimeout(timer);
+      reject(new Error('CDP 连接失败: ' + (e.message || '')));
+    });
     ws.addEventListener('message', function (ev) {
       var msg;
       try { msg = JSON.parse(ev.data); } catch (e) { return; }
@@ -1179,6 +1188,7 @@ function requestJson(url, method) {
         try { resolve(JSON.parse(buf)); } catch (e) { reject(new Error('非 JSON 响应: ' + buf.slice(0, 200))); }
       });
     });
+    req.setTimeout(10000, function () { req.destroy(new Error('HTTP 请求超时: ' + url)); });
     req.on('error', reject);
     req.end();
   });
@@ -1277,9 +1287,39 @@ async function discoverExtensionId(fallbackId) {
   return fallbackId;
 }
 
+// ── 配置写入器 ──────────────────────────────────────────────────────────
+// 新版权限模型里页面**不能**写配置（content.js 的 storage_set 只接受 xxtRunning），
+// 所以测试必须从扩展上下文写 chrome.storage。这里开一个隐藏的扩展页面当写入器，
+// 整轮只开一次，之后场景页照常抢焦点，不影响可见性相关的断言。
+var cfgClient = null;
+async function initConfigWriter(extensionId) {
+  if (cfgClient) return cfgClient;
+  var tab = await openTab('chrome-extension://' + extensionId + '/popup/popup.html?ui=lite');
+  await sleep(700);
+  var c = new CdpClient(tab.webSocketDebuggerUrl);
+  await c.connect();
+  cfgClient = c;
+  return c;
+}
+// 扩展页面的 localStorage 是同一个源：清掉它，场景之间才不会互相污染
+// （典型：前一个场景点了「藏」，后一个场景的角色就一直是 display:none）。
+async function clearExtLocalStorage() {
+  if (!cfgClient) return;
+  try { await cfgClient.evaluate('try { localStorage.clear(); true; } catch (e) { false; }'); } catch (e) {}
+}
+
+async function writeConfig(extensionId, cfg) {
+  var c = await initConfigWriter(extensionId);
+  await c.evaluate('new Promise(function (res) { chrome.storage.local.set({ config: ' +
+    JSON.stringify(cfg) + ' }, function () { res(true); }); })');
+  await sleep(150);
+}
+
 async function openScenarioPage(extensionId, scenario) {
   var target = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
-  var url = /^[a-z-]+:\/\//i.test(target) ? target : 'http://127.0.0.1:' + PORT + target;
+  // 场景页必须挂在 chaoxing.com 域下：新版 content.js 只认「后台按标签页 URL 判定为学习通」
+  // 的作用域，127.0.0.1 属于外站，拿不到 study 作用域，配置读不下来、请求全被拒。
+  var url = /^[a-z-]+:\/\//i.test(target) ? target : 'http://mooc1.chaoxing.com:' + PORT + target;
 
   var tab = await openTab(url);
   var client = new CdpClient(tab.webSocketDebuggerUrl);
@@ -1299,19 +1339,23 @@ async function openScenarioPage(extensionId, scenario) {
 
   if (scenario.inject === false) return ctx;
 
-  // mock 页不是 chaoxing.com，content.js 的静默守卫不会自动注入 page.js；
-  // 但桥接层 content.js 本身已经在页面上跑着，所以 page.js 一注入就能拿到 chrome.* 能力。
-  await client.evaluate(
-    '(function(){var s=document.createElement("script");' +
-    's.src="chrome-extension://' + extensionId + '/page.js";' +
-    'document.documentElement.appendChild(s);return true;})()'
-  );
+  // 新版 content.js 在 chaoxing 域下会**自己**注入 page.js，而且要先等配置加载完 ——
+  // 夹具里 1.2 秒就手动注入，会跑起**两个** page.js，配置与请求互相踩，
+  // 表现就是"一条请求都没发出去"。所以先让它自己来，超时了才兜底。
+  async function appReady() {
+    return !!(await client.evaluate('!!(window._xxtApp && window._xxtApp._extractQuestions)'));
+  }
+  var deadline = Date.now() + 10000;
+  while (Date.now() < deadline && !(await appReady())) await sleep(300);
 
-  var deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    var ready = await client.evaluate('!!(window._xxtApp && window._xxtApp._extractQuestions)');
-    if (ready) break;
-    await sleep(400);
+  if (!(await appReady())) {
+    await client.evaluate(
+      '(function(){var s=document.createElement("script");' +
+      's.src="chrome-extension://' + extensionId + '/page.js";' +
+      'document.documentElement.appendChild(s);return true;})()'
+    );
+    deadline = Date.now() + 10000;
+    while (Date.now() < deadline && !(await appReady())) await sleep(300);
   }
 
   return ctx;
@@ -1328,9 +1372,582 @@ async function waitFor(client, expression, timeoutMs) {
 }
 
 // ===========================================================================
+// 角色专项脚手架：只在 CDP 新文档里改浏览器原语，不给产品暴露任何测试 API。
+// JS timer/Date.now 可推进；CSS/WAAPI 仍用真实浏览器时钟，不能用假时间猜动画帧。
+// ===========================================================================
+function installPetClock(tag, options) {
+  options = options || {};
+  var now = Date.now(), serial = 0, runs = 0, scheduled = 0, randomReads = 0;
+  var timers = new Map(), randomValue = options.random === undefined ? 0.5 : options.random;
+  Date.now = function () { return now; };
+  Math.random = function () { randomReads++; return randomValue; };
+  function add(fn, delay, args, interval) {
+    if (typeof fn !== 'function') throw new Error('E2E 时钟只接受函数 timer');
+    var id = ++serial, ms = Math.max(0, Number(delay) || 0);
+    timers.set(id, { fn: fn, at: now + ms, args: args, every: interval ? Math.max(1, ms) : 0 });
+    scheduled++;
+    return id;
+  }
+  window.setTimeout = function (fn, ms) { return add(fn, ms, Array.prototype.slice.call(arguments, 2), false); };
+  window.setInterval = function (fn, ms) { return add(fn, ms, Array.prototype.slice.call(arguments, 2), true); };
+  window.clearTimeout = window.clearInterval = function (id) { timers.delete(id); };
+  // 隔离其它 popup 场景留下的隐藏/拖动/心情；不伪造角色的 DOM 状态。
+  ['hidden', 'pos', 'outfit', 'face', 'src'].forEach(function (key) { localStorage.removeItem('omitone.pet.' + key); });
+  localStorage.setItem('omitone.pet.mood', String(options.mood === undefined ? 50 : options.mood));
+  localStorage.setItem('omitone.pet.night', String(now));
+  window.__omE2EClock = {
+    tag: tag,
+    random: function (value) {
+      if (!(value >= 0 && value < 1)) throw new Error('random 必须在 [0,1) 内');
+      randomValue = value;
+    },
+    stats: function () { return { now: now, runs: runs, scheduled: scheduled, pending: timers.size, randomReads: randomReads }; },
+    advance: function (ms) {
+      if (!(ms >= 0 && ms <= 120000)) throw new Error('E2E 单次推进最多 120 秒');
+      var end = now + ms, steps = 0;
+      for (;;) {
+        var nextId = 0, next = null;
+        timers.forEach(function (timer, id) {
+          if (timer.at <= end && (!next || timer.at < next.at || (timer.at === next.at && id < nextId))) {
+            nextId = id; next = timer;
+          }
+        });
+        if (!next) break;
+        if (++steps > 20000) throw new Error('E2E timer 超过执行上限');
+        now = next.at;
+        if (next.every) next.at += next.every;
+        else timers.delete(nextId);
+        runs++;
+        next.fn.apply(window, next.args);
+      }
+      now = end;
+      return this.stats();
+    }
+  };
+}
+
+function petEval(client, fn) {
+  var args = Array.prototype.slice.call(arguments, 2);
+  return client.evaluate('(' + fn.toString() + ').apply(null,' + JSON.stringify(args) + ')');
+}
+
+var petReloadSerial = 0;
+async function reloadPet(ctx, options) {
+  options = options || {};
+  var client = ctx.client, tag = 'pet-' + (++petReloadSerial);
+  // 新建标签有时留在后台，rAF 会被节流到 1fps，必须先让独立测试页可见。
+  await client.send('Page.bringToFront');
+  await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await client.send('Emulation.setDeviceMetricsOverride', {
+    width: options.width || 900, height: options.height || 760, deviceScaleFactor: 1, mobile: false
+  });
+  await client.send('Emulation.setEmulatedMedia', {
+    features: [{ name: 'prefers-reduced-motion', value: options.reduce ? 'reduce' : 'no-preference' }]
+  });
+  var script = await client.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: '(' + installPetClock.toString() + ')(' + JSON.stringify(tag) + ',' + JSON.stringify(options) + ');'
+  });
+  try {
+    if (options.egg !== undefined) {
+      var url = new URL(ctx.url);
+      if (options.egg) url.searchParams.set('egg', '1');
+      else url.searchParams.delete('egg');
+      await client.send('Page.navigate', { url: url.href });
+    } else await client.send('Page.reload', { ignoreCache: true });
+    var ready = await waitFor(client,
+      'document.readyState === "complete" && !!window.__omE2EClock && window.__omE2EClock.tag === ' + JSON.stringify(tag), 10000);
+    if (!ready) throw new Error('角色专项 reload / 新文档时钟未就绪');
+    if (options.entryOnly) {
+      check('前置：egg=1 新文档真实进入彩蛋入场路径',
+        await client.evaluate('window.__omitoneEgg === true && window.__omE2EClock.stats().scheduled > 0') === true);
+      return;
+    }
+    if (!options.reduce) {
+      // 等真实 rAF 帧率探测结束，再显式选择正常档，避免低速 CI 把正向动画基线自动降级。
+      var governed = await waitFor(client, '!!window.__omitoneMotion', 5000);
+      if (!governed) throw new Error('真实帧率探测未运行，不能开始动画断言: ' +
+        JSON.stringify(await client.evaluate('({visibility:document.visibilityState,reduce:matchMedia("(prefers-reduced-motion: reduce)").matches,mode:document.documentElement.getAttribute("data-motion"),clock:window.__omE2EClock.stats()})')));
+      await client.evaluate('document.documentElement.removeAttribute("data-motion")');
+    }
+    var initial = await petEval(client, function () {
+      var c = window.__omE2EClock, before = c.stats();
+      c.advance(1600);
+      var pet = document.getElementById('mascot');
+      return { before: before, after: c.stats(), shown: !!pet && pet.classList.contains('show'),
+        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, egg: window.__omitoneEgg };
+    });
+    check('前置：新文档 timer / 随机确已接管，正常出场回调实际执行',
+      initial.before.scheduled > 0 && initial.after.runs > initial.before.runs &&
+      initial.after.randomReads > 0 && initial.shown && initial.egg === false && initial.reduce === !!options.reduce,
+      JSON.stringify(initial));
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
+  }
+}
+
+async function advancePet(client, ms) {
+  return petEval(client, function (delta) { return window.__omE2EClock.advance(delta); }, ms);
+}
+
+async function openPetBook(client) {
+  var opened = await petEval(client, function () {
+    var button = document.querySelector('#petTools [data-act="book"]');
+    if (!button) return false;
+    button.click();
+    return document.getElementById('petBook').getAttribute('aria-hidden') === 'false';
+  });
+  check('前置：通过「册」按钮打开面板（非直接改 DOM）', opened === true);
+}
+
+async function petAction(client, key) {
+  return petEval(client, function (name) {
+    var button = document.querySelector('#petBookBody [data-anim="' + name + '"]');
+    if (!button) throw new Error('动作按钮不存在: ' + name);
+    button.click();
+    var pet = document.getElementById('mascot'), art = pet.querySelector('.pet-art');
+    var style = getComputedStyle(art), pseudo = getComputedStyle(pet.querySelector('.pet-inner'), '::after');
+    return { pose: pet.getAttribute('data-pose'), animation: style.animationName, transform: style.transform,
+      active: art.getAnimations().filter(function (a) { return a.playState === 'running' || a.playState === 'pending'; })
+        .map(function (a) { return a.animationName || 'WAAPI'; }), symbol: pseudo.content };
+  }, key);
+}
+
+function petMotionSnapshot() {
+  var pet = document.getElementById('mascot');
+  function active(a) { return a.playState === 'running' || a.playState === 'pending'; }
+  var role = pet.getAnimations({ subtree: true }).filter(active);
+  // 淡入淡出 / 心情条宽度不属于角色动作；位置、transform 过渡仍然禁止。
+  var forbidden = role.filter(function (a) {
+    if (!(a instanceof CSSTransition)) return true;
+    var target = a.effect && a.effect.target;
+    return a.transitionProperty !== 'opacity' &&
+      !(a.transitionProperty === 'width' && target && target.closest('#petMood'));
+  });
+  var ambient = document.getElementById('fxLayer');
+  return { mode: document.documentElement.getAttribute('data-motion'),
+    reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    pose: pet.getAttribute('data-pose'), transition: pet.style.transition,
+    role: forbidden.map(function (a) { return a.animationName || a.transitionProperty || 'WAAPI'; }),
+    waapi: role.filter(function (a) { return !(a instanceof CSSAnimation) && !(a instanceof CSSTransition); }).length,
+    ambient: ambient ? ambient.getAnimations({ subtree: true }).filter(active).length : 0,
+    particles: document.querySelectorAll('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf').length };
+}
+
+// ===========================================================================
 // 场景
 // ===========================================================================
 var SCENARIOS = [];
+
+// 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
+SCENARIOS.push({
+  name: '角色动作专项：39 张立绘与 11 动作完整覆盖',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    await reloadPet(ctx);
+    await openPetBook(client);
+    var book = await petEval(client, function () {
+      var body = document.getElementById('petBookBody'), groups = {}, group = '';
+      Array.from(body.children).forEach(function (el) {
+        if (el.classList.contains('pet-book-sep')) { group = el.textContent.split(' · ')[0]; groups[group] = []; }
+        else if (el.hasAttribute('data-src')) groups[group].push(el.getAttribute('data-src'));
+      });
+      var sources = Array.from(body.querySelectorAll('[data-src]')).map(function (el) { return el.getAttribute('data-src'); });
+      return { groups: groups, sources: sources, meta: document.getElementById('petBookMeta').textContent,
+        keys: Array.from(body.querySelectorAll('[data-anim]')).map(function (el) { return el.getAttribute('data-anim'); }) };
+    });
+    check('立绘去重后 39 张，默认 pet.png 只出现一次', book.sources.length === 39 &&
+      new Set(book.sources).size === 39 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
+      JSON.stringify(book));
+    check('分组为 17 服装 / 12 表情 / 10 去重姿势，汇总显示 39',
+      book.groups['服装'].length === 17 && book.groups['表情'].length === 12 &&
+      book.groups['姿势'].length === 10 && /39\s*张/.test(book.meta), JSON.stringify(book.groups));
+    var actions = [ ['spin', 950], ['jump', 760], ['shake', 1000], ['bow', 1000], ['peek', 1150],
+      ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900] ];
+    // 第 12 个按钮是「随机动作」，它不是动作本身，单独断言
+    var animKeys = book.keys.filter(function (k) { return k !== 'random'; });
+    check('11 动作 key 完整且无重复', animKeys.length === 11 &&
+      actions.every(function (a) { return animKeys.indexOf(a[0]) !== -1; }) && new Set(animKeys).size === 11,
+      JSON.stringify(book.keys));
+    check('「随机动作」入口存在', book.keys.indexOf('random') !== -1, JSON.stringify(book.keys));
+    for (var i = 0; i < actions.length; i++) {
+      var key = actions[i][0], duration = actions[i][1];
+      var state = await petAction(client, key);
+      check(key + '：按钮触发对应 data-pose', state.pose === key, JSON.stringify(state));
+      if (key === 'think') {
+        check('think：保留静态思考姿态（不冒充 CSS 动画）', state.transform !== 'none' && state.animation === 'none', JSON.stringify(state));
+      } else {
+        check(key + '：真实 CSSAnimation 正在运行', state.animation !== 'none' &&
+          state.active.indexOf(state.animation) !== -1, JSON.stringify(state));
+      }
+      if (key === 'surprise' || key === 'think' || key === 'sing') {
+        var symbol = { surprise: '!', think: '?', sing: '♪' }[key];
+        check(key + '：头顶显示 ' + symbol, state.symbol === '"' + symbol + '"', JSON.stringify(state));
+      }
+      // 最后 1ms 前不能提前坐下；到期后确实回坐，不能只断言 timer 存在。
+      await advancePet(client, duration - 1);
+      check(key + '：停留结束前不提前回坐',
+        await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === key);
+      await advancePet(client, 2);
+      check(key + '：到期回 sit',
+        await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
+    }
+    // 默认落点 y=2 不应靠整个人下移来躲裁切；检查符号最终绘制盒，而非只看 content。
+    for (var glyphKey of ['surprise', 'think', 'sing']) {
+      await petAction(client, glyphKey);
+      var glyph = await petEval(client, function () {
+        var pet = document.getElementById('mascot'), inner = pet.querySelector('.pet-inner');
+        inner.getAnimations().forEach(function (a) {
+          if (a.animationName === 'pet-glyph') a.finish();
+        });
+        var p = getComputedStyle(inner, '::after'), r = inner.getBoundingClientRect();
+        var matrix = new DOMMatrix(p.transform === 'none' ? undefined : p.transform);
+        var x = r.left + parseFloat(p.left) + matrix.e, y = r.top + parseFloat(p.top) + matrix.f;
+        return { translateY: parseFloat(getComputedStyle(pet).translate.split(' ')[1]),
+          top: y, bottom: y + parseFloat(p.height), left: x, right: x + parseFloat(p.width),
+          pseudoTop: p.top, pseudoLeft: p.left, content: p.content, viewport: [innerWidth, innerHeight] };
+      });
+      check(glyphKey + '：默认顶边落点不变，符号绘制盒仍完整在视口内',
+        glyph.translateY === 2 && glyph.top >= -1 && glyph.left >= -1 &&
+        glyph.bottom <= glyph.viewport[1] + 1 && glyph.right <= glyph.viewport[0] + 1,
+        JSON.stringify(glyph));
+    }
+    check('动作执行全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
+  }
+});
+
+SCENARIOS.push({
+  name: '角色动作专项：连续动作令牌 / 同动作重播',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    await reloadPet(ctx);
+    await openPetBook(client);
+    await petAction(client, 'spin');
+    await advancePet(client, 600);
+    var second = await petAction(client, 'sleep');
+    check('前置：短动作未结束时已切换成长动作', second.pose === 'sleep' && second.active.length > 0, JSON.stringify(second));
+    await advancePet(client, 351);
+    check('旧 spin timer 到期不会盖掉新 sleep',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sleep');
+    await advancePet(client, 1948);
+    check('新 sleep 自己的期限未到仍保留',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sleep');
+    await advancePet(client, 2);
+    check('新 sleep 自己到期才回 sit',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
+    await petAction(client, 'spin');
+    var replay = await petEval(client, function () {
+      var art = document.querySelector('#mascot .pet-art');
+      var old = art.getAnimations().find(function (a) { return a.animationName === 'pet-spin'; });
+      if (!old) return { old: false };
+      // CSS 时钟不随 JS 假时钟推进：直接推进真实 Animation 对象，证明第二次从头播。
+      old.currentTime = 450;
+      var before = old.currentTime;
+      document.querySelector('#petBookBody [data-anim="spin"]').click();
+      var next = art.getAnimations().find(function (a) { return a.animationName === 'pet-spin'; });
+      return { old: true, before: before, distinct: !!next && next !== old,
+        restarted: !!next && Number(next.currentTime) < 100, state: next && next.playState };
+    });
+    check('同动作再次点击创建新的 CSS 动画并从头播放', replay.old && replay.before >= 400 &&
+      replay.distinct && replay.restarted && replay.state === 'running', JSON.stringify(replay));
+    await advancePet(client, 600);
+    await petAction(client, 'spin');
+    await advancePet(client, 351);
+    check('同动作重播后旧回坐 timer 也不抢戏',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'spin');
+    await advancePet(client, 600);
+    check('重播后的新期限仍能回坐',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
+    await petAction(client, 'jump');
+    var sharedName = await petEval(client, function () {
+      var art = document.querySelector('#mascot .pet-art');
+      var old = art.getAnimations().find(function (a) { return a.animationName === 'pet-jump'; });
+      if (!old) return { old: false };
+      old.currentTime = 400;
+      var before = old.currentTime;
+      document.querySelector('#petBookBody [data-anim="surprise"]').click();
+      var next = art.getAnimations().find(function (a) { return a.animationName === 'pet-jump'; });
+      return { old: true, before: before, pose: document.getElementById('mascot').getAttribute('data-pose'),
+        distinct: !!next && next !== old, time: next && next.currentTime, state: next && next.playState };
+    });
+    check('jump 切 surprise 共用 animationName 也会创建新动画从头播放',
+      sharedName.old && sharedName.before >= 350 && sharedName.pose === 'surprise' && sharedName.distinct &&
+      Number(sharedName.time) < 100 && sharedName.state === 'running', JSON.stringify(sharedName));
+  }
+});
+
+SCENARIOS.push({
+  name: '角色动作专项：显示小人 crawl 取消 / 图册让闲置让位',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    await reloadPet(ctx);
+    await client.evaluate('document.getElementById("btnPetShow").click()');
+    await advancePet(client, 901);
+    check('前置：显示小人的延迟 crawl 真实进入 crouch',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crouch');
+    await advancePet(client, 1501);
+    var crawl = await petEval(client, function () {
+      var pet = document.getElementById('mascot');
+      return { pose: pet.getAttribute('data-pose'), transition: pet.style.transition, translate: pet.style.translate };
+    });
+    check('前置：已进入 crawl 且真实启动 translate 移动', crawl.pose === 'crawl' &&
+      /translate/.test(crawl.transition) && !!crawl.translate, JSON.stringify(crawl));
+    // 打开册本身会取消，因此先开册再点击「显示小人」重开 crawl，测试动作按钮的取消能力。
+    await openPetBook(client);
+    await client.evaluate('document.getElementById("btnPetShow").click()');
+    await advancePet(client, 2401);
+    check('前置：图册已打开时第二次显示仍能真正开始 crawl',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crawl');
+    await petAction(client, 'sleep');
+    var frozen = await client.evaluate('document.getElementById("mascot").style.translate');
+    check('手动动作取消已开始 crawl 的空间过渡',
+      await client.evaluate('document.getElementById("mascot").style.transition') === '');
+    await advancePet(client, 2301);
+    await advancePet(client, 15000);
+    var cancelled = await petEval(client, function () {
+      var pet = document.getElementById('mascot');
+      return { pose: pet.getAttribute('data-pose'), translate: pet.style.translate, transition: pet.style.transition };
+    });
+    check('旧 crawl 后续 point / 回家 timer 均失效', cancelled.pose === 'sit' &&
+      cancelled.translate === frozen && cancelled.transition === '', JSON.stringify(cancelled));
+    await client.evaluate('document.getElementById("btnPetShow").click()');
+    await advancePet(client, 300);
+    var pending = await petAction(client, 'sleep');
+    check('前置：显示后的 900ms 延迟内已手动切 sleep', pending.pose === 'sleep');
+    await advancePet(client, 601);
+    check('手动动作取消尚未开始的延迟 crawl',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sleep');
+    await advancePet(client, 1700);
+    await advancePet(client, 17000);
+    check('被取消的延迟 crawl 不会在后续阶段复活',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
+
+    // 先证明 idle 分支实际能驱动角色，再 reload 验证开册让位；不能靠「没变化」猜前置。
+    await reloadPet(ctx);
+    await advancePet(client, 16901);
+    var idle = await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")');
+    check('前置：可控随机与时钟确实触发正常 idle 动作', idle === 'happy', String(idle));
+    await advancePet(client, 6500);
+    check('前置：不开册时 25 秒打哈欠回调确实会运行',
+      await client.evaluate('document.getElementById("mascot").classList.contains("yawn")') === true);
+    await reloadPet(ctx);
+    await openPetBook(client);
+    await petEval(client, function () { window.__omE2EClock.random(0.99); });
+    await advancePet(client, 23401);
+    check('图册打开时 25 秒打哈欠也让位',
+      await client.evaluate('!document.getElementById("mascot").classList.contains("yawn")') === true);
+    await advancePet(client, 40000);
+    var idleBlocked = await petEval(client, function () {
+      return { pose: document.getElementById('mascot').getAttribute('data-pose'),
+        open: document.getElementById('petBook').getAttribute('aria-hidden'), stats: window.__omE2EClock.stats() };
+    });
+    check('开册持续超过两轮 idle 仍不抢姿态', idleBlocked.pose === 'sit' && idleBlocked.open === 'false', JSON.stringify(idleBlocked));
+
+    // 抢占发生在挂边 callback 之前也必须把人显出来，不能只取消原入场序列。
+    await reloadPet(ctx, { egg: true, entryOnly: true });
+    var eggBefore = await client.evaluate('!document.getElementById("mascot").classList.contains("show")');
+    check('前置：egg 入场首拍前角色确实尚未显示', eggBefore === true);
+    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
+    await advancePet(client, 11001);
+    var eggRun = await petEval(client, function () {
+      var pet = document.getElementById('mascot');
+      return { show: pet.classList.contains('show'), transform: pet.style.transform,
+        busy: pet.getAttribute('data-busy'), display: getComputedStyle(pet).display };
+    });
+    check('run 抢占 egg 入场后角色可见，过期入场回调不把它移出视口', eggRun.show &&
+      eggRun.transform === '' && eggRun.busy === '1' && eggRun.display !== 'none', JSON.stringify(eggRun));
+    await reloadPet(ctx, { egg: true, entryOnly: true });
+    await advancePet(client, 1401);
+    var hanging = await client.evaluate('({pose:document.getElementById("mascot").getAttribute("data-pose"),transform:document.getElementById("mascot").style.transform})');
+    check('前置：第二次 egg 真实进入带负向位移的挂边首拍', hanging.pose === 'hang' &&
+      /-96px/.test(hanging.transform), JSON.stringify(hanging));
+    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
+    check('run 抢占已挂边的 egg 会清除旧入场 transform 并保持 show',
+      await client.evaluate('document.getElementById("mascot").classList.contains("show") && document.getElementById("mascot").style.transform === ""') === true);
+
+    await reloadPet(ctx, { egg: false, random: 0.3 });
+    var eating = await petEval(client, function () {
+      // 停止按钮仍走完整真实 click 冒泡链，但不启动刷课，避免和后续场景串存储。
+      document.getElementById('stop').click();
+      var pet = document.getElementById('mascot'), art = pet.querySelector('.pet-art');
+      return { season: document.documentElement.getAttribute('data-season'), eat: pet.getAttribute('data-eat'),
+        animation: getComputedStyle(art).animationName,
+        active: art.getAnimations().some(function (a) { return a.animationName === 'pet-lick' && a.playState === 'running'; }) };
+    });
+    check('前置：可控随机真实抽到夏季', eating.season === 'summer', JSON.stringify(eating));
+    check('夏季按钮点击不会被 petReact 立即抹掉吃冰激凌动作',
+      eating.eat === '1' && eating.animation === 'pet-lick' && eating.active, JSON.stringify(eating));
+    await advancePet(client, 1301);
+    check('夏季吃动作期限结束后清掉 data-eat',
+      await client.evaluate('!document.getElementById("mascot").hasAttribute("data-eat")') === true);
+
+    await reloadPet(ctx, { egg: false, mood: 79 });
+    var moodBefore = await client.evaluate('localStorage.getItem("omitone.pet.mood")');
+    check('前置：79 分心情确实在高档阈值下', moodBefore === '79', String(moodBefore));
+    await client.evaluate('document.getElementById("mascot").click()');
+    var moodTouched = await petEval(client, function () {
+      var pet = document.getElementById('mascot');
+      return { mood: localStorage.getItem('omitone.pet.mood'), band: pet.getAttribute('data-mood'),
+        pose: pet.getAttribute('data-pose'), busy: Number(pet._busyUntil) - Date.now() };
+    });
+    check('摸头 79→80 先完成当前 happy，跨档演出不抢占手动动作', moodTouched.mood === '80' &&
+      moodTouched.band === 'high' && moodTouched.pose === 'happy' && moodTouched.busy > 800,
+      JSON.stringify(moodTouched));
+    await advancePet(client, 799);
+    check('摸头 happy 在 800ms 前仍保留',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'happy');
+    await advancePet(client, 253);
+    var moodPlayed = await petEval(client, function () {
+      var pet = document.getElementById('mascot'), bubble = document.getElementById('mascotBubble');
+      return { pose: pet.getAttribute('data-pose'), line: bubble.textContent, speaking: bubble.classList.contains('show'),
+        animation: getComputedStyle(pet.querySelector('.pet-art')).animationName };
+    });
+    check('手动 busy 结束后补播高心情 cheer 及台词', moodPlayed.pose === 'cheer' &&
+      moodPlayed.animation === 'pet-cheer' && moodPlayed.speaking && /心情不错/.test(moodPlayed.line), JSON.stringify(moodPlayed));
+    await advancePet(client, 1201);
+    check('补播 cheer 到期正常回坐',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
+  }
+});
+
+SCENARIOS.push({
+  name: '角色动作专项：380x240 立绘册面板内滚动命中',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    await reloadPet(ctx, { width: 380, height: 240 });
+    await openPetBook(client);
+    // 只等面板真实 CSS 打开过渡，不用 JS 假时钟猜几何位置。
+    await sleep(300);
+    var geometry = await petEval(client, function () {
+      var panel = document.getElementById('petBook'), body = document.getElementById('petBookBody');
+      var rect = panel.getBoundingClientRect();
+      var out = { width: innerWidth, height: innerHeight, top: rect.top, bottom: rect.bottom,
+        left: rect.left, right: rect.right, overflow: getComputedStyle(body).overflowY,
+        scrollable: body.scrollHeight > body.clientHeight, pageY: scrollY };
+      body.scrollTop = body.scrollHeight;
+      return out;
+    });
+    check('前置：CDP 确实模拟 380x240 视口', geometry.width === 380 && geometry.height === 240, JSON.stringify(geometry));
+    check('短视口整块图册仍在视口内', geometry.top >= -1 && geometry.bottom <= 241 &&
+      geometry.left >= -1 && geometry.right <= 381, JSON.stringify(geometry));
+    check('内容在面板内部滚动，不靠整页撑高', geometry.scrollable && /auto|scroll/.test(geometry.overflow), JSON.stringify(geometry));
+    var hit = await petEval(client, function () {
+      var body = document.getElementById('petBookBody');
+      var last = body.querySelector('[data-anim="sing"]'), r = last.getBoundingClientRect();
+      var br = body.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+      var target = document.elementFromPoint(x, y);
+      return { key: last.getAttribute('data-anim'), x: x, y: y, scrollTop: body.scrollTop,
+        pageY: scrollY, within: r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
+        hit: !!target && (target === last || last.contains(target)) };
+    });
+    check('最后一个哼歌按钮滚入面板后中心点真实命中', hit.key === 'sing' && hit.scrollTop > 0 &&
+      hit.within && hit.hit && hit.y >= 0 && hit.y < 240 && hit.pageY === geometry.pageY, JSON.stringify(hit));
+    // 不用 DOM click 掩盖遮挡：由 CDP 在真实命中点发鼠标事件。
+    await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
+    await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
+    check('短视口最后按钮真实鼠标点击触发 sing',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sing');
+  }
+});
+
+SCENARIOS.push({
+  name: '角色动作专项：动态 eco / 系统减少动态效果',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    await reloadPet(ctx);
+    await client.evaluate('document.querySelector("#petTools [data-act=outfit]").click()');
+    var outfitBaseline = await petEval(client, petMotionSnapshot);
+    check('前置：正常换装确实启动 WAAPI', outfitBaseline.mode !== 'eco' && outfitBaseline.waapi > 0,
+      JSON.stringify(outfitBaseline));
+    // 新序列会取消旧 WAAPI，先摸头再换装，令降档时 CSS / WAAPI / 粒子同时在场。
+    await petEval(client, function () {
+      document.getElementById('mascot').click();
+      document.querySelector('#petTools [data-act="outfit"]').click();
+    });
+    var baseline = await petEval(client, petMotionSnapshot);
+    check('前置：正常模式确有角色 CSS 动画、换装 WAAPI 和摸头粒子', baseline.mode !== 'eco' &&
+      baseline.role.some(function (name) { return name !== 'WAAPI'; }) && baseline.waapi > 0 && baseline.particles >= 3,
+      JSON.stringify(baseline));
+    // 不只在 eco 下创建新动作：先启动真实动画，再动态降档，必须清掉旧 WAAPI。
+    await client.evaluate('document.documentElement.setAttribute("data-motion","eco")');
+    var downgraded = await petEval(client, petMotionSnapshot);
+    check('动态降到 eco 会取消已有角色 CSS / WAAPI 动画', downgraded.mode === 'eco' &&
+      downgraded.role.length === 0 && downgraded.waapi === 0, JSON.stringify(downgraded));
+    check('动态降到 eco 会收掉已有瞬时粒子', downgraded.particles === 0, JSON.stringify(downgraded));
+
+    for (var pass = 0; pass < 2; pass++) {
+      if (pass) await reloadPet(ctx, { reduce: true });
+      var label = pass ? '系统 reduce' : '动态 eco';
+      await openPetBook(client);
+      var reduced = await petEval(client, function () {
+        var pet = document.getElementById('mascot'), body = document.getElementById('petBookBody');
+        var seen = [], violations = [], additions = [];
+        var observer = new MutationObserver(function () {});
+        observer.observe(document.body, { subtree: true, childList: true });
+        function record(name) {
+          var bad = pet.getAnimations({ subtree: true }).filter(function (a) {
+            if (a.playState !== 'running' && a.playState !== 'pending') return false;
+            if (!(a instanceof CSSTransition)) return true;
+            var target = a.effect && a.effect.target;
+            return a.transitionProperty !== 'opacity' &&
+              !(a.transitionProperty === 'width' && target && target.closest('#petMood'));
+          });
+          if (bad.length) violations.push(name + ':' + bad.map(function (a) {
+            var target = a.effect && a.effect.target;
+            return (a.animationName || a.transitionProperty || 'WAAPI') + '@' +
+              (target && (target.id || target.className) || '?');
+          }).join(','));
+        }
+        // 「随机动作」抽到哪个不确定，放进逐项等值断言里必然误报，单独跳过
+        Array.from(body.querySelectorAll('[data-anim]')).filter(function (button) {
+          return button.getAttribute('data-anim') !== 'random';
+        }).forEach(function (button) {
+          button.click();
+          seen.push([button.getAttribute('data-anim'), pet.getAttribute('data-pose')]);
+          record(button.getAttribute('data-anim'));
+        });
+        ['outfit', 'face', 'pose'].forEach(function (act) {
+          document.querySelector('#petTools [data-act="' + act + '"]').click(); record(act);
+        });
+        pet.click(); record('pet');
+        // 底部显示按钮还会走 crawl；低动态模式下只允许静态提示，不允许空间移动。
+        document.getElementById('btnPetShow').click();
+        window.__omE2EClock.advance(2401);
+        record('show');
+        observer.takeRecords().forEach(function (mutation) {
+          Array.from(mutation.addedNodes).forEach(function (node) {
+            if (node.nodeType === 1 && (node.matches('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf') ||
+              node.querySelector('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf'))) additions.push(node.className);
+          });
+        });
+        observer.disconnect();
+        return { seen: seen, violations: violations, additions: additions,
+          reduce: matchMedia('(prefers-reduced-motion: reduce)').matches,
+          mode: document.documentElement.getAttribute('data-motion'), transition: pet.style.transition,
+          particles: document.querySelectorAll('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf').length };
+      });
+      check(label + '：设置真实生效且 11 动作按钮仍然能切换静态姿态', reduced.mode === 'eco' &&
+        reduced.reduce === !!pass && reduced.seen.length === 11 &&
+        reduced.seen.every(function (pair) { return pair[0] === pair[1]; }), JSON.stringify(reduced));
+      check(label + '：动作 / 换装 / 摸头 / 显示均无角色 CSS 或 WAAPI 动画',
+        reduced.violations.length === 0 && !/translate|transform/.test(reduced.transition), JSON.stringify(reduced));
+      check(label + '：同套点击不生成瞬时粒子（包含创建后立即移除）',
+        reduced.additions.length === 0 && reduced.particles === 0, JSON.stringify(reduced));
+      var quiet = await petEval(client, petMotionSnapshot);
+      check(label + '：常驻季节粒子也没有运行中的动画', quiet.ambient === 0, JSON.stringify(quiet));
+    }
+    check('低动态专项全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
+  }
+});
 
 // 交互回归：连点换装不能误判为"戳她"；「藏」与「显示小人」必须闭环。
 SCENARIOS.push({
@@ -1771,9 +2388,7 @@ SCENARIOS.push({
     //   - page.js 的 configs 决定"要不要发请求"
     //   - chrome.storage 的 config 才是 content.js 真正拿去发请求的凭据
     // 只改前者的话，content.js 会因为 storage 里没有 apiKey 而直接拒绝，一个 HTTP 请求都不会发。
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -1877,9 +2492,7 @@ SCENARIOS.push({
       autoNext: false
     };
     // 两处配置都要喂：storage 是 content.js 发请求用的凭据，configs 是 page.js 的开关
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -2754,9 +3367,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -3029,9 +3640,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -3795,9 +4404,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       app + '.configs = Object.assign({}, ' + app + '.configs, ' + JSON.stringify(cfg) + '); true'
@@ -3889,9 +4496,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -4058,9 +4663,7 @@ SCENARIOS.push({
       autoNext: false,
       restudy: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(400);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -4267,9 +4870,7 @@ SCENARIOS.push({
       autoNext: false,
       restudy: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(400);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -4360,9 +4961,7 @@ SCENARIOS.push({
       autoNext: false,
       restudy: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(400);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -4745,9 +5344,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
     var setup = await ctx.client.evaluate(
@@ -4811,9 +5408,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
     // ⚠️ "整批"的大小不是全卷题数：多选题由本地作答、不进请求（见第 21 条场景），
@@ -4874,9 +5469,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
     // ⚠️ 同第 33 条：整批大小按"实际会发给模型的题数"算（多选不进请求）
@@ -4994,9 +5587,7 @@ SCENARIOS.push({
       enableDiscussion: false,
       autoNext: false
     };
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
       'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
@@ -5082,9 +5673,7 @@ SCENARIOS.push({
     };
 
     // 两处配置都要喂（原因见「答题往返 + 回填 DOM」那一段的注释）
-    await ctx.client.evaluate(
-      'window.postMessage({source:"xxt_app",type:"storage_set",payload:{config:' + JSON.stringify(cfg) + '}}, "*"); true'
-    );
+    await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
     var setup = await ctx.client.evaluate(
@@ -5253,6 +5842,11 @@ SCENARIOS.push({
 // 主流程
 // ===========================================================================
 async function main() {
+  var selected = E2E_FILTER ? SCENARIOS.filter(function (scenario) {
+    return scenario.name.toLowerCase().indexOf(E2E_FILTER.toLowerCase()) !== -1;
+  }) : SCENARIOS;
+  if (!selected.length) throw new Error('OMITONE_E2E_FILTER 未匹配任何场景: ' + E2E_FILTER);
+  if (E2E_FILTER) console.log('  定向筛选: ' + E2E_FILTER + '（' + selected.length + ' 场景；不写全套计数）');
   var edge = findEdge();
   if (!edge) {
     console.log('\n未找到 Edge，已跳过浏览器端到端测试。');
@@ -5294,6 +5888,8 @@ async function main() {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-sync',
+      // 让场景页的 chaoxing.com 落到本地 mock 服务上（只在本机调试用）
+      '--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1',
       '--disable-background-networking',
       'about:blank'
     ], { stdio: 'ignore', detached: process.platform !== 'win32' });
@@ -5310,15 +5906,19 @@ async function main() {
       console.log('  ⚠️ 路径哈希给出的是 ' + computedId + '（盘符大小写不一致所致），已改用运行时发现的 ID。');
     }
 
-    for (var i = 0; i < SCENARIOS.length; i++) {
-      var scenario = SCENARIOS[i];
+    await initConfigWriter(extensionId);
+
+    for (var i = 0; i < selected.length; i++) {
+      var scenario = selected[i];
       var targetLabel = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
       section(scenario.name + '  (' + targetLabel + ')');
 
       var ctx = null;
       try {
+        if (scenario.inject === false) await clearExtLocalStorage();
         ctx = await openScenarioPage(extensionId, scenario);
         ctx.mock = mock;
+        ctx.extensionId = extensionId;
 
         if (scenario.beforeInject) {
           await ctx.client.evaluate(scenario.beforeInject());
@@ -5360,7 +5960,7 @@ async function main() {
   // 所以只能由 e2e 自己交出来，否则文档里的数字永远靠人肉同步（已经漏过两次）。
   // 落在 .workbuddy/ 下（已在 .gitignore），不入版本库。
   try {
-    fs.writeFileSync(path.join(ROOT, '.workbuddy', 'e2e-counts.json'), JSON.stringify({
+    if (!E2E_FILTER) fs.writeFileSync(path.join(ROOT, '.workbuddy', 'e2e-counts.json'), JSON.stringify({
       scenarios: SCENARIOS.length,
       assertions: checks,
       passed: failures.length === 0,

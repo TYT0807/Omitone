@@ -26,7 +26,7 @@
     removeStartPanel();
 
     var currentConfig = mergeConfig(config);
-    var hasApiKey = !!String(currentConfig.apiKey || '').trim();
+    var hasApiKey = !!(currentConfig.hasApiKey || currentConfig.randomAnswer);
     var playOn = currentConfig.autoNext !== false;
     var quizOn = !!(currentConfig.enableQuiz && hasApiKey);
 
@@ -115,7 +115,7 @@
     return flag;
   }
 
-  var defaultConfig = mergeConfig({ apiKey: '', autoNext: true, enableQuiz: false });
+  var defaultConfig = mergeConfig({ hasApiKey: false, autoNext: true, enableQuiz: false });
   app.configs = defaultConfig;
   window._xxtApp = app;
 

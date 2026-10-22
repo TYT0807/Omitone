@@ -84,7 +84,7 @@
     restudy: false,
     apiType: 'openai',
     apiUrl: 'https://api.deepseek.com',
-    apiKey: '',
+    hasApiKey: false,
     apiConnectionFailed: false,
     // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
     apiConnectionError: '',

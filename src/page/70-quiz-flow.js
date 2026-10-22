@@ -333,7 +333,7 @@
       // 少了这一句，乱选会走 _skipQuizForApiUnavailable 把整道题跳过，
       // 变成「什么都不答」而不是「乱选」。
       if (this._isRandomAnswerMode()) return '';
-      if (!String(this.configs.apiKey || '').trim()) return 'api-key-missing';
+      if (!this.configs.hasApiKey) return 'api-key-missing';
       if (Date.now() < (this._quizApiFailUntil || 0)) return 'api-connection-failed';
       return '';
     },

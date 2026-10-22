@@ -26,8 +26,24 @@ var ROOT = path.join(__dirname, '..');
 var failures = [];
 var checks = 0;
 
-function check(name, condition, detail) {
-  checks++;
+/**
+ * 等一个条件成立（最多 timeoutMs）。
+ * 固定 sleep 20ms 在慢机器上会假失败 —— 注入是异步的（scope 查询 → 读配置 → 插 script），
+ * 断言"注入了几次"必须等它真的发生，而不是赌 20ms 够用。
+ */
+function waitFor(cond, timeoutMs) {
+  var started = Date.now();
+  return new Promise(function (resolve) {
+    (function tick() {
+      var ok = false;
+      try { ok = !!cond(); } catch (e) {}
+      if (ok || Date.now() - started > (timeoutMs || 1000)) return resolve(ok);
+      setTimeout(tick, 10);
+    })();
+  });
+}
+
+function check(name, condition, detail) {  checks++;
   if (condition) {
     console.log('  [ok]   ' + name);
   } else {
@@ -112,6 +128,7 @@ function createHarness(options) {
   sandbox.parent = sandbox;
   sandbox.frames = sandbox;
   sandbox.console = { log: function () {}, error: function () {}, warn: function () {}, info: function () {} };
+  sandbox.URL = URL;
   sandbox.setTimeout = setTimeout;
   sandbox.clearTimeout = clearTimeout;
   sandbox.setInterval = setInterval;
@@ -122,9 +139,13 @@ function createHarness(options) {
   var store = { config: Object.assign({ apiKey: 'test-key', apiType: options.apiType || 'openai', model: 'test-model', apiUrl: 'https://api.test' }, options.config || {}) };
   sandbox.__store = store;
 
-  // ---- location：非学习通、非验证码页 —— content.js 的 start() 会立即静默返回，
-  //      从而跳过字体解密 sweep 与 page.js 注入，让测试聚焦在 LLM 链路上
-  sandbox.location = { href: 'https://example.com/blank' };
+  // Trusted study URL; DOMContentLoaded is deliberately held by the harness.
+  // This tests actual scope enforcement without starting injection/font work as a side effect.
+  sandbox.location = { href: options.url || 'https://mooc1.chaoxing.com/mycourse/studentstudy' };
+  sandbox.__storageReads = [];
+  sandbox.__runtimeMessages = [];
+  sandbox.__injected = [];
+  sandbox.__configPatches = [];
 
   // ---- document 桩
   var documentElement = {
@@ -134,9 +155,9 @@ function createHarness(options) {
   };
   var body = { innerText: '', appendChild: function () {} };
   sandbox.document = {
-    readyState: 'complete',              // 让 start() 立即执行而不是等 DOMContentLoaded
+    readyState: 'loading',               // Test controls startup via startContent().
     documentElement: documentElement,
-    head: { appendChild: function () {} },
+    head: { appendChild: function (node) { sandbox.__injected.push(node); } },
     body: body,
     _listeners: {},
     addEventListener: function (type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
@@ -179,6 +200,7 @@ function createHarness(options) {
   sandbox.__sentRequests = sentRequests;
 
   function storageGet(keys, cb) {
+    sandbox.__storageReads.push(keys);
     var result = {};
     if (typeof keys === 'string') {
       if (keys in store) result[keys] = store[keys];
@@ -198,6 +220,27 @@ function createHarness(options) {
       getURL: function (p) { return 'chrome-extension://test/' + p; },
       onMessage: { addListener: function (fn) { runtimeListener = fn; } },
       sendMessage: function (message, cb) {
+        sandbox.__runtimeMessages.push(message);
+        var policy = sandbox.OmitonePolicy;
+        var scope = policy && policy.isChaoxingUrl(sandbox.location.href) ? 'study' : (options.captchaAuthorized ? 'captcha' : 'none');
+        function respond(value) { if (cb) setTimeout(function () { cb(value); }, 0); }
+        if (message.type === 'get_page_scope') return respond({ success: true, scope: scope, expiresAt: options.expiresAt });
+        if (message.type === 'get_config') {
+          if (scope === 'none') return respond({ success: false, error: 'scope_denied' });
+          return respond({ success: true, config: scope === 'study' ? store.config : policy.publicConfig(store.config, 'captcha') });
+        }
+        if (message.type === 'config_patch') {
+          sandbox.__configPatches.push(message.payload);
+          if (message.payload.expectedFingerprint !== policy.configFingerprint(store.config)) return respond({ success: false, error: 'stale_config' });
+          store.config = Object.assign({}, store.config, message.payload.patch);
+          return respond({ success: true, config: store.config });
+        }
+        if (message.type === 'storage_set') {
+          if (scope !== 'study') return respond({ success: false, error: 'scope_denied' });
+          store.xxtRunning = message.payload.xxtRunning;
+          return respond({ success: true });
+        }
+        if (message.type === 'captcha_fetch') return respond({ success: true, data: 'ABC1' });
         if (message && message.type === 'api_fetch') {
           sentRequests.push(message.payload);
 
@@ -236,7 +279,7 @@ function createHarness(options) {
           if (cb) setTimeout(cb, 0);
         }
       },
-      onChanged: { addListener: function () {} }
+      onChanged: { addListener: function (fn) { sandbox.__storageChanged = fn; } }
     }
   };
 
@@ -246,7 +289,7 @@ function createHarness(options) {
   // 忘了加到这里，content.js 在测试里读到 null 模块 —— 于是集成测试报的错
   // 看起来像"答题功能坏了"，其实是测试环境自己缺文件。
   // 下面这条守卫就是为了让这种漏项当场报错、而不是伪装成业务 bug。
-  var INJECTED_FILES = ['libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
+  var INJECTED_FILES = ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
   (function guardInjectionList() {
     var manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
     var injectedLibs = [];
@@ -254,7 +297,7 @@ function createHarness(options) {
       if (f.indexOf('libs/') === 0) injectedLibs.push(f);
     });
     // 只盯"content.js 会读的模块"：md5 / Typr 这类纯浏览器库不进测试沙箱是有意的
-    ['libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
+    ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
       if (injectedLibs.indexOf(file) === -1) {
         throw new Error('manifest 未注入 ' + file + '，但测试清单里有它 —— 两者已分叉');
       }
@@ -279,6 +322,9 @@ function createHarness(options) {
   return {
     sandbox: sandbox,
     innerWindow: innerWindow,
+    startContent: function () { (sandbox.document._listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); }); },
+    startFromPopup: function () { return new Promise(function (resolve) { runtimeListener({ type: 'xxt_start' }, {}, resolve); }); },
+    configChanged: function (config) { store.config = config; sandbox.__storageChanged({ config: { newValue: config } }, 'local'); },
     /** 模拟 page.js 发来的消息 */
     sendFromPage: function (msg) {
       if (typeof messageListener !== 'function') {
@@ -292,7 +338,7 @@ function createHarness(options) {
       var started = Date.now();
       return new Promise(function (resolve) {
         (function poll() {
-          var hit = posted.filter(function (m) { return m && m.id === id && m.type === 'llm_response'; })[0];
+          var hit = posted.filter(function (m) { return m && m.id === id && (m.type === 'llm_response' || m.type === 'config_response'); })[0];
           if (hit) return resolve(hit.data);
           if (Date.now() - started > timeoutMs) return resolve(null);
           setTimeout(poll, 10);
@@ -318,6 +364,58 @@ function extractPromptText(requestBody) {
 // ---------------------------------------------------------------------------
 // 测试用例
 // ---------------------------------------------------------------------------
+async function testScopeAndSecretBoundaries() {
+  console.log('\n[0] scope gate / public config / restricted storage');
+  var ordinary = createHarness({ url: 'https://example.com/blank' });
+  ordinary.startContent();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  check('普通域不注入 page.js', ordinary.sandbox.__injected.length === 0);
+  check('普通域不读取 storage.config', ordinary.sandbox.__storageReads.indexOf('config') === -1);
+
+  var evil = createHarness({ url: 'https://evilchaoxing.com/course' });
+  evil.startContent();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  check('evilchaoxing 不被识别为学习通', evil.sandbox.__injected.length === 0);
+
+  var deniedCaptcha = createHarness({ url: 'https://verify.example/captcha' });
+  deniedCaptcha.startContent();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  check('未授权外站验证码不注入', deniedCaptcha.sandbox.__injected.length === 0);
+
+  var captcha = createHarness({ url: 'https://verify.example/captcha', captchaAuthorized: true });
+  captcha.startContent();
+  await waitFor(function () { return captcha.sandbox.__injected.length > 0; }, 1000);
+  check('授权外站验证码可注入专用路径', captcha.sandbox.__injected.length === 1,
+    '实际注入 ' + captcha.sandbox.__injected.length + ' 次');
+  captcha.sendFromPage({ source: 'xxt_app', id: 900, type: 'get_config' });
+  var captchaConfig = await captcha.waitForResponse(900);
+  check('验证码 config 不含 API key', captchaConfig && !Object.prototype.hasOwnProperty.call(captchaConfig, 'apiKey'));
+  captcha.sendFromPage({ source: 'xxt_app', id: 901, type: 'llm_captcha', payload: { image: 'data:image/png;base64,AA==' } });
+  var captchaResult = await captcha.waitForResponse(901);
+  check('验证码请求只转发窄 captcha_fetch', captchaResult && captchaResult.success === true && captchaResult.data === 'ABC1', JSON.stringify(captcha.sandbox.__runtimeMessages));
+  check('验证码未发普通 api_fetch', captcha.sandbox.__runtimeMessages.every(function (m) { return m.type !== 'api_fetch'; }));
+
+  captcha.sendFromPage({ source: 'xxt_app', id: 904, type: 'llm_request', payload: { questions: [] } });
+  var captchaDenied = await captcha.waitForResponse(904);
+  check('授权验证码仍拒绝整卷答题', captchaDenied && captchaDenied.success === false && captchaDenied.error === 'scope_denied');
+  captcha.sendFromPage({ source: 'xxt_app', id: 905, type: 'llm_vision', payload: { images: [] } });
+  var visionDenied = await captcha.waitForResponse(905);
+  check('授权验证码仍拒绝普通视觉请求', visionDenied && visionDenied.error === 'scope_denied');
+  check('授权验证码从不读取秘密 storage.config', captcha.sandbox.__storageReads.indexOf('config') === -1);
+
+  var study = createHarness({});
+  study.startContent();
+  await new Promise(function (resolve) { setTimeout(resolve, 20); });
+  study.sendFromPage({ source: 'xxt_app', id: 902, type: 'get_config' });
+  var studyConfig = await study.waitForResponse(902);
+  check('学习通页面 config 公开投影不含 API key', studyConfig && !Object.prototype.hasOwnProperty.call(studyConfig, 'apiKey') && studyConfig.hasApiKey === true);
+  study.sendFromPage({ source: 'xxt_app', id: 903, type: 'storage_set', payload: { config: { apiKey: 'evil' } } });
+  var storageResult = await study.waitForResponse(903);
+  check('不可信 storage_set 被拒绝', storageResult && storageResult.success === false);
+  var ordinaryStart = await ordinary.startFromPopup();
+  check('普通域 xxt_start 结构化拒绝', ordinaryStart && ordinaryStart.success === false && ordinaryStart.error === 'scope_denied');
+}
+
 async function testIndexPlumbing() {
   console.log('\n[1] 稀疏 index 透传（page.js 只发部分题）');
 
@@ -554,6 +652,64 @@ async function testPermanentHttpError() {
   await h429.waitForResponse(34);
   check('429 不被当成永久错误（仍需重试）', h429.sandbox.__sentRequests.length === 2,
     '实际发了 ' + h429.sandbox.__sentRequests.length + ' 次');
+}
+
+async function testPermanentRoundStopAndConfigRace() {
+  console.log('\n[3c] permanent failures stop the whole round; config state is request-scoped');
+  var questions = Array.from({ length: 12 }, function (_, index) {
+    return { index: index, type: 'single', title: 'Question ' + index, options: ['A', 'B'] };
+  });
+  function unauthorized() { return { success: false, status: 401, text: 'Invalid API key' }; }
+  var first = createHarness({ apiResponder: unauthorized });
+  first.sendFromPage({ source: 'xxt_app', id: 910, type: 'llm_request', payload: { questions: questions } });
+  var firstResult = await first.waitForResponse(910);
+  check('401 跨三批仅发一次请求', first.sandbox.__sentRequests.length === 1 && firstResult && firstResult.permanentError === true);
+
+  for (var retryStatus of [500, 429]) {
+    var retry = createHarness({ apiResponder: function () { return { success: false, status: retryStatus, text: 'temporary failure' }; } });
+    retry.sendFromPage({ source: 'xxt_app', id: 916 + retryStatus, type: 'llm_request', payload: { questions: questions.slice(0, 6) } });
+    var retryResult = await retry.waitForResponse(916 + retryStatus);
+    check(retryStatus + ' 跨批仍重试，不被扩大为永久错误', retry.sandbox.__sentRequests.length === 4 && retryResult && !retryResult.permanentError);
+  }
+
+  var partial = createHarness({ apiResponder: function (_, count) { return count === 1 ? null : unauthorized(); } });
+  partial.sendFromPage({ source: 'xxt_app', id: 911, type: 'llm_request', payload: { questions: questions } });
+  var partialResult = await partial.waitForResponse(911);
+  check('后续批 401 保留部分数据但整轮失败且不补问', partial.sandbox.__sentRequests.length === 2 && partialResult && partialResult.success === false && partialResult.permanentError && partialResult.partial && partialResult.data.length === 5);
+
+  var split = createHarness({ apiResponder: function (_, count) {
+    if (count === 1) {
+      var data = { choices: [{ finish_reason: 'length', message: { content: '[]' } }] };
+      return { success: true, status: 200, text: JSON.stringify(data), data: data };
+    }
+    return unauthorized();
+  } });
+  split.sendFromPage({ source: 'xxt_app', id: 912, type: 'llm_request', payload: { questions: questions } });
+  var splitResult = await split.waitForResponse(912);
+  check('拆批左侧 401 后不请求右侧/下一批/补问', split.sandbox.__sentRequests.length === 2 && splitResult && splitResult.permanentError);
+
+  var refill = createHarness({ modelResponder: function () { return '["A",null]'; }, apiResponder: function (_, count) { return count > 1 ? unauthorized() : null; } });
+  refill.sendFromPage({ source: 'xxt_app', id: 913, type: 'llm_request', payload: { questions: questions.slice(0, 2) } });
+  var refillResult = await refill.waitForResponse(913);
+  check('补问 401 不把先前部分数据伪装成功', refill.sandbox.__sentRequests.length === 2 && refillResult && refillResult.success === false && refillResult.permanentError && refillResult.data.length === 1);
+
+  var failedRace;
+  failedRace = createHarness({ apiResponder: function () {
+    failedRace.sandbox.__store.config = Object.assign({}, failedRace.sandbox.__store.config, { apiKey: 'new-key', apiConnectionFailed: false });
+    return { success: false, status: 500, text: 'temporary failure' };
+  } });
+  failedRace.sendFromPage({ source: 'xxt_app', id: 914, type: 'llm_request', payload: { questions: questions.slice(0, 1) } });
+  await failedRace.waitForResponse(914);
+  check('旧请求失败不回写新 API 配置连接状态', failedRace.sandbox.__store.config.apiConnectionFailed === false && failedRace.sandbox.__configPatches.length === 1 && failedRace.sandbox.__configPatches[0].expectedFingerprint !== failedRace.sandbox.OmitonePolicy.configFingerprint(failedRace.sandbox.__store.config));
+
+  var successRace;
+  successRace = createHarness({ apiResponder: function () {
+    successRace.sandbox.__store.config = Object.assign({}, successRace.sandbox.__store.config, { apiKey: 'new-key', apiConnectionFailed: true });
+    return null;
+  } });
+  successRace.sendFromPage({ source: 'xxt_app', id: 915, type: 'llm_request', payload: { questions: questions.slice(0, 1) } });
+  await successRace.waitForResponse(915);
+  check('旧请求成功不清除新 API 配置失败状态', successRace.sandbox.__store.config.apiConnectionFailed === true && successRace.sandbox.__configPatches.length === 1);
 }
 
 async function testMissingApiKey() {
@@ -952,12 +1108,14 @@ async function testNormalizeItemIndex() {
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
+  await testScopeAndSecretBoundaries();
   await testIndexPlumbing();
   await testLegacySchemaCompat();
   await testV1ObjectCompat();
   await testAnswerCoercion();
   await testParseErrorClassification();
-await testPermanentHttpError();
+  await testPermanentHttpError();
+  await testPermanentRoundStopAndConfigRace();
   await testMissingApiKey();
   await testClaudeProtocol();
   await testGeminiProtocol();

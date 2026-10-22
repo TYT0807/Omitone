@@ -16,33 +16,35 @@
     return;
   }
 
-  // 注入范围已扩展到所有网址（验证码可能是一个独立网址/弹出窗口），但只在两种情况下真正工作：
-  // 1) 学习通页面；2) 正在刷课 + 疑似验证码页。其余网站立即静默退出，不做任何事、不注入脚本。
-  const HREF = location.href || '';
-  const IS_CHAOXING_PAGE = /^https?:\/\/[\w.-]*chaoxing\.com(:\d+)?\//i.test(HREF);
-  const CAPTCHA_URL_RE = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i;
+  // Host text and captcha-looking DOM are not authority. The worker checks the current tab URL
+  // and the explicitly granted, expiring captcha session on every privileged entry point.
+  const POLICY = (typeof self !== 'undefined' && self.OmitonePolicy) || null;
+  let pageScope = 'none';
+  let scopeUrl = '';
+  let scopeExpiresAt = 0;
+  let requestFingerprints = new WeakMap();
 
-  function isCaptchaLikePage() {
-    if (CAPTCHA_URL_RE.test(location.href || '')) return true;
-    try {
-      const text = (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 800);
-      if (text && /验证码|校验码|captcha|verify|robot|人机|安全验证/i.test(text)) {
-        return !!document.querySelector('img') && !!document.querySelector('input:not([type="hidden"])');
-      }
-    } catch (e) {}
-    return false;
+  function scopeIsCurrent(required) {
+    return !!POLICY && scopeUrl === location.href &&
+      (!scopeExpiresAt || Date.now() < scopeExpiresAt) &&
+      (required ? pageScope === required : pageScope !== 'none');
   }
 
-  function readRunningFlag() {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.get('xxtRunning', (result) => {
-          resolve(!chrome.runtime.lastError && !!(result && result.xxtRunning));
-        });
-      } catch (e) {
-        resolve(false);
-      }
-    });
+  async function refreshPageScope() {
+    const url = location.href;
+    const response = await sendRuntimeMessageWithTimeout({ type: 'get_page_scope' }, 5000, 'scope check timeout');
+    if (location.href !== url) return 'none';
+    const scope = response && response.success ? response.scope : 'none';
+    pageScope = POLICY && ((scope === 'study' && POLICY.isChaoxingUrl(url)) ||
+      (scope === 'captcha' && !POLICY.isChaoxingUrl(url))) ? scope : 'none';
+    scopeUrl = url;
+    scopeExpiresAt = Number(response && response.expiresAt) || 0;
+    return scopeIsCurrent() ? pageScope : 'none';
+  }
+
+  function publicConfig(config) {
+    const scope = scopeIsCurrent() ? pageScope : 'none';
+    return POLICY ? { ...POLICY.publicConfig(config, scope), pageScope: scope } : {};
   }
 
   let configs = {
@@ -78,6 +80,7 @@
     guardMaxResumes: 5
   };
 
+  const CONFIG_DEFAULTS = { ...configs };
   let decryptTablePromise = null;
   const decryptMapCache = new Map();
   let decryptSweepTimer = null;
@@ -90,6 +93,7 @@
   let runtimeLogQueue = Promise.resolve();
 
   function appendRuntimeLog(level, message, meta) {
+    if (!scopeIsCurrent()) return;
     const item = {
       time: Date.now(),
       level: level || 'info',
@@ -97,6 +101,7 @@
       meta: meta || null
     };
     runtimeLogQueue = runtimeLogQueue.then(() => new Promise((resolve) => {
+      if (!scopeIsCurrent()) { resolve(); return; }
       chrome.storage.local.get(RUNTIME_LOGS_KEY, (result) => {
         if (chrome.runtime.lastError) {
           resolve();
@@ -392,6 +397,7 @@
   }
 
   async function apiFetch(url, options, timeoutMs) {
+    if (await refreshPageScope() !== 'study') return { success: false, error: 'scope_denied' };
     const timeout = timeoutMs || 60000;
     const proxy = await sendRuntimeMessageWithTimeout({
       type: 'api_fetch',
@@ -411,26 +417,19 @@
       return proxy;
     }
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeout);
-    try {
-      const response = await fetch(url, { ...(options || {}), signal: controller.signal });
-      const text = await response.text();
-      let data = null;
-      try { data = text ? JSON.parse(text) : null; } catch (e) {}
-      return { success: response.ok, status: response.status, statusText: response.statusText, text, data };
-    } finally {
-      clearTimeout(timer);
-    }
+    // No direct fetch fallback: a worker rejection must not be bypassed in the isolated world.
+    return proxy || { success: false, error: 'background api fetch failed' };
   }
 
-  async function updateApiConnectionState(failed, reason) {
-    const current = await loadConfig();
-    const next = { ...current, apiConnectionFailed: !!failed };
-    if (failed && reason) next.apiConnectionError = String(reason).slice(0, 300);
-    if (!failed) delete next.apiConnectionError;
-    configs = { ...configs, ...next };
-    chrome.storage.local.set({ config: next });
+  async function updateApiConnectionState(failed, reason, requestedConfig) {
+    const expectedFingerprint = requestedConfig && requestFingerprints.get(requestedConfig);
+    if (!expectedFingerprint || !scopeIsCurrent('study')) return;
+    const response = await sendRuntimeMessageWithTimeout({
+      type: 'config_patch',
+      payload: { patch: { apiConnectionFailed: !!failed, apiConnectionError: failed ? String(reason || '').slice(0, 300) : '' }, expectedFingerprint }
+    }, 5000, 'config patch timeout');
+    // Never reload the latest config and attach the result of an older provider request to it.
+    if (response && response.success && response.config && scopeIsCurrent('study')) configs = { ...response.config };
   }
 
   /**
@@ -714,7 +713,7 @@
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     if (lastWasNetwork) {
-      await updateApiConnectionState(true, lastError);
+      await updateApiConnectionState(true, lastError, config);
       appendRuntimeLog('error', 'llm_request direct failed', { error: lastError.slice(0, 300) });
       return { success: false, error: lastError };
     }
@@ -773,6 +772,7 @@
     const merged = [];
     const filled = new Set();
     let lastFailure = null;
+    let permanentFailure = null;
     // 模型**到底有没有回过话**（哪怕内容不可用）。决定"要不要补问"时要用它：
     // `merged.length` 为空既可能是"API/网络坏了"（补问纯烧钱），
     // 也可能是"整批因长度不符被丢弃"（**这时补问是唯一的出路**：
@@ -849,7 +849,9 @@
     // 批越小越不容易退化；而拿原样的批重问是**必然重现**（实测六次顶满输出上限）。
     // ⚠️ 只对 `truncated` 拆 —— 普通解析失败/网络失败拆了也是白拆，还多花钱。
     const requestChunkWithSplit = async (entries, depth) => {
+      if (permanentFailure) return false;
       const result = await requestAnswersWithRetry(config, entries.map((entry) => entry.question));
+      if (result && result.permanentError) permanentFailure = result;
       if (result && result.success && Array.isArray(result.data)) {
         sawResponse = true;   // 有应答（即使随后因长度不符被整批丢弃）
         mergeAnswers(entries, result, depth > 0 ? 'split' : '');
@@ -880,6 +882,7 @@
       }
 
       await requestChunkWithSplit(chunk, 0);
+      if (permanentFailure) break;
     }
 
     // 空答案补问（token 优化的关键一环）：
@@ -898,7 +901,7 @@
     // 那是一条死路（现场就是整卷卡在最后 2 题上、每 30 秒重来一轮）。
     // 判据用 `sawResponse` 而不是 `merged.length`：它区分的是
     // "API/网络坏了"（补问纯烧钱，走原失败分支）与"内容不对"（补问是唯一出路）。
-    if (filled.size < questions.length && sawResponse) {
+    if (!permanentFailure && filled.size < questions.length && sawResponse) {
       const unfilled = [];
       chunks.forEach((chunk) => {
         chunk.forEach((entry) => {
@@ -911,6 +914,7 @@
           total: questions.length
         });
         const refill = await requestAnswersWithRetry(config, unfilled.map((entry) => entry.question));
+        if (refill && refill.permanentError) permanentFailure = refill;
         if (refill && refill.success && Array.isArray(refill.data)) {
           mergeAnswers(unfilled, refill, 'refill');
         } else {
@@ -925,6 +929,7 @@
       }
     }
 
+    if (permanentFailure) return { ...permanentFailure, data: merged, partial: merged.length > 0 };
     if (merged.length) {
       if (lastFailure) {
         appendRuntimeLog('warn', 'llm partial chunk failure', {
@@ -932,134 +937,18 @@
           error: String(lastFailure.error || '').slice(0, 160)
         });
       }
-      await updateApiConnectionState(false);
+      await updateApiConnectionState(false, null, config);
       return { success: true, data: merged };
     }
     return lastFailure || { success: false, error: 'LLM request failed' };
   }
 
-  // 验证码提示词：随图片一起发送，图片本身才是 token 大头，所以这段只要够明确即可。
-  // 去掉"仔细识别""这是网页校验用的图片"这类不改变行为的铺垫（每次验证码都重发一遍）。
-  const CAPTCHA_PROMPT = '识别图中的验证码,按原顺序原样输出。可能含汉字/字母/数字,有扭曲与干扰线。只输出字符本身,不要解释、空格、标点。';
-
   async function handleCaptchaRequestDirect(payload) {
-    const imageDataUrl = payload && payload.image ? String(payload.image) : '';
-    if (!imageDataUrl || !/^data:image\//i.test(imageDataUrl)) {
-      return { success: false, error: 'invalid captcha image' };
-    }
-    const config = await loadConfig();
-    const missing = missingModuleError();
-    if (missing) {
-      appendRuntimeLog('error', 'llm_captcha aborted', { error: missing });
-      return { success: false, error: missing };
-    }
-    if (!config.apiKey) return { success: false, error: 'Please configure API Key first' };
-
-    const match = imageDataUrl.match(/^data:(image\/(?:png|jpeg|jpg|webp|gif));base64,(.*)$/);
-    if (!match) return { success: false, error: 'unsupported image format' };
-    const mediaType = match[1] === 'image/jpg' ? 'image/jpeg' : match[1];
-    const base64 = match[2];
-    const model = String(config.captchaModel || '').trim() || config.model;
-
-    appendRuntimeLog('info', 'captcha llm request', { model });
-    let captchaUsage = null;
-    try {
-      let text = '';
-
-      if (config.apiType === 'claude') {
-        const url = buildClaudeApiUrl(config.apiUrl);
-        const response = await apiFetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': normalizeApiKey(config.apiKey),
-            'anthropic-version': '2023-06-01'
-          },
-          body: JSON.stringify({
-            model: model,
-            max_tokens: 1024,
-            temperature: 0,
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
-                { type: 'text', text: CAPTCHA_PROMPT }
-              ]
-            }]
-          })
-        }, 90000);
-        if (!response.success) {
-          throw new Error(`Claude captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
-        }
-        captchaUsage = (response.data || {}).usage || null;
-        text = (((response.data || {}).content || [])[0] || {}).text || '';
-      } else if (config.apiType === 'gemini') {
-        const url = buildGeminiApiUrl(config.apiUrl, model, normalizeApiKey(config.apiKey));
-        const response = await apiFetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              role: 'user',
-              parts: [
-                { text: CAPTCHA_PROMPT },
-                { inline_data: { mime_type: mediaType, data: base64 } }
-              ]
-            }],
-            generationConfig: { temperature: 0, maxOutputTokens: 1024 }
-          })
-        }, 90000);
-        if (!response.success) {
-          throw new Error(`Gemini captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
-        }
-        captchaUsage = (response.data || {}).usageMetadata || null;
-        const parts = ((((response.data || {}).candidates || [])[0] || {}).content || {}).parts || [];
-        text = parts.map((part) => part && part.text ? part.text : '').join('\n').trim();
-      } else {
-        const url = buildOpenAICompatibleUrl(config.apiUrl);
-        const response = await apiFetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${normalizeApiKey(config.apiKey)}`
-          },
-          body: JSON.stringify({
-            model: model,
-            temperature: 0,
-            max_tokens: 1024,
-            messages: [{
-              role: 'user',
-              content: [
-                { type: 'text', text: CAPTCHA_PROMPT },
-                { type: 'image_url', image_url: { url: imageDataUrl } }
-              ]
-            }]
-          })
-        }, 90000);
-        if (!response.success) {
-          throw new Error(`API captcha request failed (${response.status || 'network'}): ${String(response.text || response.error || '').slice(0, 200)}`);
-        }
-        captchaUsage = (response.data || {}).usage || null;
-        text = ((((response.data || {}).choices || [])[0] || {}).message || {}).content || '';
-      }
-
-      // 视觉请求的用量必须记账。图占大头，不记的话用户在花钱却什么都看不到。
-      if (captchaUsage) {
-        logTokenUsage({
-          prompt_tokens: captchaUsage.prompt_tokens !== undefined ? captchaUsage.prompt_tokens : captchaUsage.input_tokens,
-          completion_tokens: captchaUsage.completion_tokens !== undefined ? captchaUsage.completion_tokens : captchaUsage.output_tokens
-        }, 'captcha');
-      }
-
-      text = String(text || '').trim();
-      if (!text) return { success: false, error: 'empty captcha result (check model vision support)' };
-      appendRuntimeLog('info', 'captcha recognized', { length: text.length });
-      return { success: true, data: text };
-    } catch (error) {
-      const message = error && error.message ? error.message : String(error);
-      appendRuntimeLog('error', 'captcha request failed', { error: message.slice(0, 300) });
-      return { success: false, error: message };
-    }
+    if (await refreshPageScope() === 'none') return { success: false, error: 'scope_denied' };
+    // The worker owns saved provider credentials, request construction, and the sole OCR prompt.
+    const response = await sendRuntimeMessageWithTimeout({ type: 'captcha_fetch', payload: { image: payload && payload.image } }, 105000, 'captcha request timeout');
+    if (response && response.usage) logTokenUsage(response.usage, 'captcha');
+    return response;
   }
 
   // 视觉理解提示词：题目带图时用。
@@ -1620,6 +1509,7 @@
   }
 
   async function runFontDecryptSweep() {
+    if (await refreshPageScope() !== 'study') return;
     const jobs = [];
     walkSameOriginDocuments(document, (doc) => {
       if (!observedDocs.has(doc)) {
@@ -1634,49 +1524,56 @@
     await Promise.all(jobs);
   }
 
-  function loadConfig() {
-    return new Promise((resolve) => {
-      try {
-        chrome.storage.local.get('config', (result) => {
-          const lastError = chrome.runtime.lastError;
-          if (lastError) {
-            appendRuntimeLog('warn', 'load config fallback to defaults', { error: lastError.message || String(lastError) });
-            resolve(configs);
-            return;
-          }
-          const nextConfig = { ...((result && result.config) || {}) };
-          delete nextConfig.forceLearn;
-          configs = { ...configs, ...nextConfig };
-          resolve(configs);
-        });
-      } catch (e) {
-        appendRuntimeLog('warn', 'load config failed, use defaults', { error: e && e.message ? e.message : String(e) });
-        resolve(configs);
-      }
-    });
+  async function loadConfig() {
+    const scope = await refreshPageScope();
+    if (scope === 'none') return {};
+    const response = await sendRuntimeMessageWithTimeout({ type: 'get_config' }, 5000, 'config read timeout');
+    if (!response || !response.success || !response.config || !scopeIsCurrent(scope)) return {};
+    if (scope === 'study') {
+      // Raw provider config stays in the isolated world; fingerprint the saved snapshot,
+      // not defaults or a newly reloaded config obtained after the request finishes.
+      const loaded = { ...response.config };
+      const fingerprint = POLICY.configFingerprint(loaded);
+      delete loaded.forceLearn;
+      configs = { ...CONFIG_DEFAULTS, ...loaded };
+      const snapshot = { ...configs };
+      requestFingerprints.set(snapshot, fingerprint);
+      return snapshot;
+    }
+    // External captcha tabs ask the worker for an already-redacted projection.
+    configs = POLICY.publicConfig(response.config, 'captcha');
+    return { ...configs };
   }
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local' || !changes.config) return;
-    const nextConfig = { ...(changes.config.newValue || {}) };
-    delete nextConfig.forceLearn;
-    configs = { ...configs, ...nextConfig };
-    // 必须带 source: 'xxt_bridge'，否则 page.js 的消息过滤器会丢弃这条更新，
-    // 运行中的页面永远收不到新配置（表现为“开关改了不生效、AI 答题关不掉”）
-    window.postMessage({ source: 'xxt_bridge', type: 'XXT_CONFIG_UPDATED', data: configs }, '*');
+    // Do not copy raw changes.config into an external page's retained configuration.
+    loadConfig().then((config) => {
+      if (!scopeIsCurrent()) return;
+      window.postMessage({ source: 'xxt_bridge', type: 'XXT_CONFIG_UPDATED', data: publicConfig(config) }, '*');
+    }).catch(() => {});
   });
 
-  window.addEventListener('message', (event) => {
+  window.addEventListener('message', async (event) => {
     if (event.source !== window) return;
     const msg = event.data;
     if (!msg || msg.source !== 'xxt_app') return;
+    const scope = await refreshPageScope();
+    const captchaTypes = ['get_config', 'llm_captcha', 'fetch_image', 'runtime_log'];
+    if (scope === 'none' || (scope === 'captcha' && !captchaTypes.includes(msg.type))) {
+      window.postMessage({ source: 'xxt_bridge', id: msg.id,
+        type: msg.type === 'get_config' ? 'config_response' : 'llm_response',
+        data: { success: false, error: 'scope_denied', scope } }, '*');
+      return;
+    }
 
     if (msg.type === 'get_config') {
+      const config = await loadConfig();
       window.postMessage({
         source: 'xxt_bridge',
         id: msg.id,
         type: 'config_response',
-        data: configs
+        data: publicConfig(config)
       }, '*');
       return;
     }
@@ -1769,7 +1666,15 @@
     }
 
     if (msg.type === 'storage_set') {
-      chrome.storage.local.set(msg.payload);
+      const payload = msg.payload;
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+          Object.keys(payload).length !== 1 || !Object.prototype.hasOwnProperty.call(payload, 'xxtRunning') ||
+          typeof payload.xxtRunning !== 'boolean') {
+        window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: { success: false, error: 'invalid_storage_patch' } }, '*');
+        return;
+      }
+      const response = await sendRuntimeMessageWithTimeout({ type: 'storage_set', payload: { xxtRunning: payload.xxtRunning } }, 5000);
+      window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: response }, '*');
       return;
     }
 
@@ -1807,6 +1712,7 @@
   }
 
   function injectPageScript(reason = 'default') {
+    if (!scopeIsCurrent()) return;
     removeInjectedScript();
     pageRuntimeActivityAt = 0;
     const seq = ++pageInjectSeq;
@@ -1828,6 +1734,7 @@
   }
 
   function scheduleDecryptSweep() {
+    if (!scopeIsCurrent('study')) return;
     if (decryptSweepTimer) clearTimeout(decryptSweepTimer);
     decryptSweepTimer = setTimeout(() => {
       runFontDecryptSweep().catch((err) => {
@@ -1853,43 +1760,53 @@
   }
 
   async function start() {
+    const scope = await refreshPageScope();
+    if (scope === 'none') return;
     await loadConfig();
-    await maybeMarkAutoResume();
-
-    if (!IS_CHAOXING_PAGE) {
-      // 非学习通页面：只有"正在刷课 + 疑似验证码页"才注入运行脚本，避免在无关网站上空跑
-      const running = await readRunningFlag();
-      if (!running || !isCaptchaLikePage()) return;
-      appendRuntimeLog('warn', 'standalone captcha page detected, auto solving', { url: (location.href || '').slice(0, 120) });
-      injectPageScript('standalone-captcha');
+    if (!scopeIsCurrent(scope)) return;
+    if (scope === 'captcha') {
+      document.documentElement.setAttribute(AUTO_START_ATTR, '1');
+      injectPageScript('authorized-captcha');
       return;
     }
-
+    await maybeMarkAutoResume();
     scheduleDecryptSweep();
     injectPageScript('startup');
   }
 
+  function startSafely() {
+    start().catch((error) => appendRuntimeLog('error', 'content startup failed', { error: String(error && error.message || error) }));
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', start);
+    document.addEventListener('DOMContentLoaded', startSafely);
   } else {
-    start();
+    startSafely();
   }
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'xxt_start') {
-      document.documentElement.setAttribute(AUTO_START_ATTR, '1');
-      try { chrome.storage.local.set({ xxtRunning: true }); } catch (e0) {}
-      const oldPanel = document.getElementById('xxt-panel');
-      if (oldPanel) oldPanel.remove();
-      showStatusPanel('wait', '启动中', '正在注入运行脚本');
-      loadConfig().then(() => {
-        scheduleDecryptSweep();
-        injectPageScript('manual-start');
-      });
-      sendResponse({ success: true });
+    if (message && message.type === 'xxt_start') {
+      refreshPageScope().then((scope) => {
+        if (scope === 'none') {
+          sendResponse({ success: false, error: 'scope_denied', scope: 'none' });
+          return;
+        }
+        // Ack means accepted, not page-runtime ready. Startup runs separately with a catch.
+        sendResponse({ success: true, accepted: true, scope });
+        document.documentElement.setAttribute(AUTO_START_ATTR, '1');
+        if (scope === 'study') {
+          sendRuntimeMessageWithTimeout({ type: 'storage_set', payload: { xxtRunning: true } }, 5000);
+          showStatusPanel('wait', '启动中', '正在注入运行脚本');
+        }
+        loadConfig().then(() => {
+          if (!scopeIsCurrent(scope)) return;
+          scheduleDecryptSweep();
+          injectPageScript('manual-start');
+        }).catch((error) => appendRuntimeLog('error', 'manual start failed', { error: String(error && error.message || error) }));
+      }).catch(() => sendResponse({ success: false, error: 'scope_denied', scope: 'none' }));
       return true;
     }
-    return true;
+    return false;
   });
 
   let lastPageUrl = location.href;
@@ -1897,14 +1814,12 @@
   function onPageChanged() {
     if (location.href === lastPageUrl) return;
     lastPageUrl = location.href;
-    const oldPanel = document.getElementById('xxt-panel');
-    if (oldPanel) oldPanel.remove();
-    if (statusPanelActive) setStatusPanel('wait', '页面切换中', '正在重新注入运行脚本');
+    pageScope = 'none';
+    scopeUrl = '';
+    configs = {};
+    if (decryptSweepTimer) clearTimeout(decryptSweepTimer);
     removeInjectedScript();
-    loadConfig().then(() => {
-      scheduleDecryptSweep();
-      injectPageScript('page-change');
-    });
+    startSafely();
   }
 
   const rawPushState = history.pushState;
