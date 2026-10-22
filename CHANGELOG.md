@@ -48,6 +48,15 @@
 - 说明书补两段（「精简 / 精美」开关、验证码按页授权），PDF 重出 **23 页**；
   `ARCHITECTURE.md` 的消息协议表、`libs/README.md` 的库清单同步更新。
 
+### 发布后复核（2026-10-22）
+
+- 按官方文档复核三家渠道：`deepseek-flash` / `kimi-k3` / `qwen3.8-flash` 都还在，
+  Kimi 的 `reasoning_effort: low|high|max`（默认 max）与代码一致。
+- **改了一处**：通义**主模型**的思考强度用 `thinking_budget`（1–32768），
+  原先发的 `reasoning_effort` 只属于 Qwen3.8 **Omni** 系列。默认档（关闭）发的是
+  `enable_thinking:false`，行为不变。
+- 扩展描述从「支持学习通视频播放、API 自动答题」补全为现在的完整描述。
+
 ---
 
 ## 1.2.8 — 任务点识别与执行修复，新增日志逐帧说明与「复制日志」（合并原 1.2.8~1.2.11）

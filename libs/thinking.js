@@ -90,12 +90,15 @@
       label: '通义千问（DashScope）',
       verifiedLevels: [],
       canDisable: true,
-      // 官方文档：enable_thinking: true|false；强度 reasoning_effort: low|medium|xhigh。
-      // 注意**商业版默认关闭思考**（开源版默认开启），所以 off 档要显式发 false 才稳。
+      // 官方文档（2026-10-22 核对）：开关 enable_thinking: true|false；
+      // 思考长度用 **thinking_budget**（1–32768，控制台默认 4000）。
+      // ⚠️ `reasoning_effort` 只出现在 Qwen3.8 **Omni** 系列，主模型文档里没有这个字段 ——
+      // 往主模型发它属于未知参数，部分网关直接 400，所以这里按文档改用 thinking_budget。
+      // 商业版默认关闭思考（开源版默认开启），所以 off 档要显式发 false 才稳。
       params: {
         off: { enable_thinking: false },
-        low: { enable_thinking: true, reasoning_effort: 'low' },
-        high: { enable_thinking: true, reasoning_effort: 'xhigh' }
+        low: { enable_thinking: true, thinking_budget: 1024 },
+        high: { enable_thinking: true, thinking_budget: 16384 }
       },
       note: '参数照官方文档填写，未在真实题库验证。'
     },

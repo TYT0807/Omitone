@@ -3,11 +3,21 @@
 这份文件是**给以后的人（包括 AI）看的**：AI 服务商的地址、模型名、思考参数变化很快，
 写死在代码里的快照**一定会过期**。过期本身不致命，致命的是"过期了没人知道"。
 
-**最后核对日期：2026-10-19**（上一次核对人：1.2.8 这一轮）
+**最后核对日期：2026-10-22**（发布后按官方文档复核了一遍）
 
 ---
 
-## 0. 2026-10-19 核对结论（只记"和以前不一样"的地方）
+## 0. 2026-10-22 复核（只记"和上次不一样"的地方）
+
+- 三家官方文档都还能打开：DeepSeek `/quick_start/pricing`、Kimi 快速开始、阿里云百炼「文本生成」。
+- **型号未变**：`deepseek-flash`（V4.1 Flash，V4-Pro 仍在）、`kimi-k3`（旗舰，1M、视觉、`reasoning_effort` low/high/max，默认 max）、`qwen3.8-flash`（1M，支持思考）。
+- **改了一处参数**：通义**主模型**的思考强度用 `thinking_budget`（1–32768，默认 4000），
+  **不是** `reasoning_effort`（那个只在 Qwen3.8 **Omni** 系列出现）。
+  `libs/thinking.js` 已从 `reasoning_effort: low|xhigh` 改成 `thinking_budget: 1024 | 16384`。
+
+---
+
+## 0.1 2026-10-19 核对结论（历史）
 
 - **当前 DeepSeek 的 API 模型名是 `deepseek-flash`（= V4.1 Flash，2026-09-10 发布）。**
   552B MoE、**原生多模态**（文字和图片同一个模型）、1M 上下文。
@@ -32,7 +42,7 @@
 | --- | --- | --- | --- | --- | --- |
 | **DeepSeek** | OpenAI 兼容 | `https://api.deepseek.com` | `deepseek-flash`（= V4.1 Flash，**含看图**）/ `deepseek-v4-pro` | `thinking:{type:enabled\|disabled}`（默认 enabled）+ `reasoning_effort: low\|high\|max` | ✅ **关闭档实测通过** |
 | Kimi / Moonshot | OpenAI 兼容 | `https://api.moonshot.ai/v1`（国内站 `.cn`） | `kimi-k3` | `reasoning_effort: low\|high\|max`；**K3 恒思考，关不掉** | ❌ 未实测 |
-| 通义千问 / DashScope | OpenAI 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | `enable_thinking: true\|false` + `reasoning_effort: low\|medium\|xhigh` | ❌ 未实测 |
+| 通义千问 / DashScope | OpenAI 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen3.8-flash` | `enable_thinking: true\|false` + `thinking_budget: 1..32768`（本项目低=1024 / 高=16384） | ❌ 未实测 |
 | Claude | Anthropic | `https://api.anthropic.com` | 自己填 | 本项目的三档思考开关**不作用于它** | ❌ 未实测 |
 | Gemini | Google | `https://generativelanguage.googleapis.com` | 自己填 | 同上 | ❌ 未实测 |
 | 其他 / 自定义 | OpenAI 兼容 | 自己填 | 自己填 | 认不出的渠道：**关闭档一个参数都不发**；低/高才发通用 `reasoning_effort` | — |

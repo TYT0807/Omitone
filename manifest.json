@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Omitone-1.2.9",
   "version": "1.2.9",
-  "description": "支持学习通视频播放、API 自动答题",
+  "description": "学习通（超星）学习辅助：视频音频自动播放、任务点自动推进、AI 答题、验证码识别；密钥只存本地，免费公益不盈利",
   "icons": {
     "16": "icons/icon-16.png",
     "48": "icons/icon-48.png",
