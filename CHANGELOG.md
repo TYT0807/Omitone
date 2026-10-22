@@ -45,6 +45,8 @@
 - `npm run e2e`：真实 Edge **53 个场景 / 561 项**全绿，`.workbuddy/e2e-counts.json` 落盘 `passed: true`。
 - e2e 夹具同步新模型：场景页挂 `mooc1.chaoxing.com`（host-resolver 指到本地），
   配置改由隐藏的扩展页面写入，并在每个弹窗场景前清 `localStorage`，避免「藏起来」串场。
+- 说明书补两段（「精简 / 精美」开关、验证码按页授权），PDF 重出 **23 页**；
+  `ARCHITECTURE.md` 的消息协议表、`libs/README.md` 的库清单同步更新。
 
 ---
 
