@@ -1120,8 +1120,9 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（106 项）
-npm test         # 上面三个
+npm run itest    # 集成测试：真实 content.js 的答题往返（128 项）
+npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
+npm test         # 上面四步
 npm run e2e      # 真实 Edge 功能交叉检验（53 个场景 / 561 项）
 npm run test:all # npm test + e2e
 npm run build    # 打包到 dist/

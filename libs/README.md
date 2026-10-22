@@ -1,4 +1,4 @@
-# libs/ —— 注入页面的库，以及三处「唯一真源」
+# libs/ —— 注入页面的库，以及四处「唯一真源」
 
 | 文件 | 作用 |
 | --- | --- |
@@ -6,6 +6,8 @@
 | **`api-url.js`** | API 地址构造与**密钥清洗**的唯一真源（剥掉粘贴时带上的引号 / `Bearer `） |
 | `font-table.js` | 字形哈希表（font-cxsecret 反爬映射）**紧凑二进制格式**的唯一真源；表本体在 [`resources/`](../resources/README.md) |
 | `thinking.js` | 三档思考强度的参数拼装 —— 各渠道写法不同，差异全收在这里 |
+| **`runtime-policy.js`** | **配置权限的唯一真源**：字段白名单 / 数值区间 / 按作用域投影（验证码页只给 `enableCaptcha`）/ patch 校验 / API 指纹 |
+| `captcha.js` | 验证码 OCR 请求的构造与解析（提示词仍然只在 `prompt.js`，这里不复制一份） |
 | `Typr.js` / `Typr.U.js` | 字体解析（OpenType / TrueType）：题库字体反爬要靠它把字形读出来 |
 | `md5.min.js` | MD5，`content.js` 算字形指纹时用 |
 

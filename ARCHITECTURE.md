@@ -78,7 +78,7 @@ content 侧任何一次不回消息都会让 `_runTick` 的 `await` 永久挂起
 | `llm_request` | `{questions: [...]}` | 批量答题 |
 | `llm_captcha` | `{image: dataURL}` | 验证码 OCR |
 | `fetch_image` | `{url}` | 跨域验证码图，交给 SW 带 Cookie 抓 |
-| `storage_set` | `{...}` | 直写 `chrome.storage.local` |
+| `storage_set` | `{xxtRunning: boolean}` | **只允许写运行标记**。页面不再能改配置（旧实现可以塞整份 config，已移除） |
 | `runtime_log` | `{level, message, meta}` | 日志上报（不等待回包） |
 
 ### content.js → page.js
@@ -97,9 +97,30 @@ content 侧任何一次不回消息都会让 `_runTick` 的 `await` 永久挂起
 
 ### content.js ↔ background.js
 
-chrome.runtime 消息：`api_fetch`、`fetch_image_dataurl`、`ping`、
-`check_update`（占位实现）。注意 `background.js` 只认这几个 type ——
-`legacy/background-core.js` 里那套更丰富的 handler 从未被加载过。
+chrome.runtime 消息（**每一条都先判作用域**）：
+
+| type | 谁能用 | 说明 |
+| --- | --- | --- |
+| `get_page_scope` | 所有 content | 页面问「我属于哪类场景」，返回 study / captcha / none |
+| `get_config` | study / captcha | 按作用域投影后的配置（**永远不含 apiKey**） |
+| `config_patch` | popup / study | 带指纹的增量写；字段与区间走白名单 |
+| `api_fetch` | popup / study | 跨域 POST 代理（AI 请求） |
+| `fetch_image_dataurl` | study / captcha | 抓图转 dataURL；captcha 只能抓同源 |
+| `captcha_fetch` | study / captcha | 验证码 OCR 专用窄通道，密钥不出后台 |
+| `storage_set` | study | 只接受 `{xxtRunning:boolean}` |
+| `grant_captcha` / `revoke_captcha` | 仅 popup | 手动授权外站验证码页 |
+| `ping` | 所有 | 连通性检查，不回配置 |
+| `check_update` | 仅 popup | 占位实现 |
+
+**作用域判定**：`background.js` 按**标签页真实 URL** 判，不信页面自报（`sender.url`）。
+
+- `study`：学习通域。`api_fetch`、抓图、运行标记都放行。
+- `captcha`：外站验证码页，**必须授权** —— popup 按钮，或「从学习通页面打开且网址像验证码页」自动授权；
+  授权绑定该 URL、10 分钟过期、换页即撤销。
+- `popup`：扩展自己的页面（含 `?play=1` / 带查询串），可改配置。
+- `none`：其余一律拒绝。
+
+`legacy/background-core.js` 从未被加载，别再接回去。
 
 ### popup → 标签页
 
