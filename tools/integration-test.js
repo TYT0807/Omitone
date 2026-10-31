@@ -746,6 +746,94 @@ async function testApiErrorClassification() {
     /连接不上/.test(cNet.human), cNet.human.slice(0, 60));
 }
 
+/**
+ * [3b++] 错误契约模糊测试：把随机化的服务商响应轰进真实 content.js，
+ * 验证「错误信息落实」端到端成立 —— 无论送来什么，出口必须**恒定**：
+ *   success=false、error 是【类别】开头的人话、permanentError 与分类规则一致、
+ *   永久类不重试且不写 apiConnectionFailed、可重试类恰好重试一次。
+ * 与 omitone-fuzz-test.cjs 的分工：那边在纯函数层扫全空间（1000 状态码），
+ * 这边在 vm 层抽代表样本走完整请求链 —— 两层各守各的。
+ */
+async function testErrorContractFuzz() {
+  console.log('\n[3b++] 错误契约模糊：随机响应轰进真实请求链');
+
+  var API_ERROR = require('../libs/api-error.js');
+  var questions = [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }];
+
+  // 固定代表样本（覆盖每个类别）+ 种子化随机样本（4xx 为主，避开重试等待拖慢套件）
+  var GARBAGE = ['<html>502</html>', '', '{"error":{"message":42}}', '{"error":{"message":"insufficient_quota"}}',
+    '{"error":{"message":"raw ok"}}', 'null', 'Internal Server Error'];
+  var fixed = [
+    [402, '{"error":{"message":"Insufficient Balance"}}'],
+    [401, '{"error":{"message":"Invalid API key"}}'],
+    [403, '{"error":{"message":"Forbidden"}}'],
+    [404, '{"error":{"message":"model not found"}}'],
+    [429, '{"error":{"message":"You exceeded your current quota"}}'],
+    [429, '{"error":{"message":"slow down"}}']
+  ];
+  var rng = mulberry32Fixed(20261031);
+  var randoms = [];
+  var pool = [400, 401, 402, 403, 404, 406, 409, 410, 418, 422, 428, 431, 451];
+  for (var i = 0; i < 6; i++) {
+    randoms.push([pool[Math.floor(rng() * pool.length)], GARBAGE[Math.floor(rng() * GARBAGE.length)]]);
+  }
+
+  var cases = fixed.concat(randoms);
+  var bad = [];
+  for (var c = 0; c < cases.length; c++) {
+    var st = cases[c][0];
+    var body = cases[c][1];
+    var h = createHarness({
+      apiResponder: function () {
+        return { success: false, status: st, text: body, error: 'HTTP ' + st, data: null };
+      }
+    });
+    h.sendFromPage({ source: 'xxt_app', id: 700 + c, type: 'llm_request', payload: { questions: questions } });
+    var d = await h.waitForResponse(700 + c);
+    var described = API_ERROR.describe(st, body);
+    var expectedPermanent = (st >= 400 && st < 500 && st !== 429) || described.category === 'balance';
+    if (!d || d.success !== false) { bad.push('@' + st + ' 未失败返回'); continue; }
+    if (typeof d.error !== 'string' || d.error.indexOf('【') !== 0) { bad.push('@' + st + ' 文案缺【类别】: ' + String(d.error).slice(0, 40)); continue; }
+    if (d.error.indexOf('HTTP ' + st) === -1 && described.category !== 'network') { bad.push('@' + st + ' HTTP 码丢失'); continue; }
+    if (!!d.permanentError !== expectedPermanent) { bad.push('@' + st + ' permanentError=' + !!d.permanentError + ' 期望 ' + expectedPermanent); continue; }
+    if (expectedPermanent) {
+      if (d.errorCategory !== described.category) { bad.push('@' + st + ' 标签不一致: ' + d.errorCategory); continue; }
+      if (h.sandbox.__sentRequests.length !== 1) { bad.push('@' + st + ' 永久类却重试了'); continue; }
+      if ((h.sandbox.__store.config || {}).apiConnectionFailed === true) { bad.push('@' + st + ' 污染了连接状态'); continue; }
+    } else {
+      if (h.sandbox.__sentRequests.length !== 2) { bad.push('@' + st + ' 可重试类没重试'); continue; }
+      if ((h.sandbox.__store.config || {}).apiConnectionFailed !== true) { bad.push('@' + st + ' 可重试类应写退避'); continue; }
+    }
+  }
+  check('错误契约模糊 ' + cases.length + ' 例：出口恒定（人话 / 标签 / 永久判定 / 重试与退避互恰）',
+    bad.length === 0, bad.slice(0, 3).join(' | '));
+
+  // 断网形态：响应体里连 status 都没有 —— 必须走网络分支并写退避
+  var hNet = createHarness({
+    apiResponder: function () {
+      return { success: false, error: '后台请求失败 —— 无法把请求转发给服务商（网络不通或扩展刚被重载）' };
+    }
+  });
+  hNet.sendFromPage({ source: 'xxt_app', id: 790, type: 'llm_request', payload: { questions: questions } });
+  var dNet = await hNet.waitForResponse(790);
+  check('无状态码的失败如实报「连接不上服务商」并写退避（这才是真网络问题）',
+    !!dNet && dNet.success === false && dNet.permanentError !== true &&
+    /连接不上/.test(String(dNet.error)) &&
+    (hNet.sandbox.__store.config || {}).apiConnectionFailed === true,
+    JSON.stringify({ error: dNet && String(dNet.error).slice(0, 60) }));
+}
+
+/** 与 omitone-fuzz-test.cjs 同款的种子随机（两处各留一份，避免为测试建共享模块） */
+function mulberry32Fixed(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 async function testPermanentRoundStopAndConfigRace() {
   console.log('\n[3c] permanent failures stop the whole round; config state is request-scoped');
   var questions = Array.from({ length: 12 }, function (_, index) {
@@ -1208,6 +1296,7 @@ async function main() {
   await testParseErrorClassification();
   await testPermanentHttpError();
   await testApiErrorClassification();
+  await testErrorContractFuzz();
   await testPermanentRoundStopAndConfigRace();
   await testMissingApiKey();
   await testClaudeProtocol();

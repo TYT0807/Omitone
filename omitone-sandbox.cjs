@@ -30,7 +30,8 @@ const owned = new Set();
 const EVIDENCE_FILE = /^omitone-acceptance-\d{8}T\d{6}Z-[a-f0-9-]{36}\.jsonl?$/;
 const BASELINE_FILES = ['tools/check.js', 'tools/prompt-bench.js', 'tools/integration-test.js',
   'tools/background-test.js', 'omitone-regression.cjs', 'omitone-log-store-test.cjs',
-  'omitone-popup-log-test.cjs', 'omitone-acceptance-test.cjs'];
+  'omitone-popup-log-test.cjs', 'omitone-pet-game-test.cjs', 'omitone-fuzz-test.cjs',
+  'omitone-acceptance-test.cjs'];
 const REQUIRED_PROBES = [
   'network interception precedes document script',
   'page egress denied at browser network boundary',

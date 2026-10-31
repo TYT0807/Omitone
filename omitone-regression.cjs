@@ -330,8 +330,10 @@ test('F05', 'font', '不同字体的相同编码字符互不串映射', async w 
 test('F06', 'font', '映射表暂时不可用不能永久缓存空映射', async w => {
   const t = w.tab(), root = t.document.add(ENCODED[0]);
   const key = Buffer.from([1]).toString('base64');
+  // buildDecryptMapForDoc 现返回 { map, missed, computed }（未命中统计给表过期自诊断用）
   const failed = t.hooks.buildDecryptMapForDoc(t.document, key, null, [root]);
-  assert.equal(failed.size, 0, 'Fixture must reach missing-table branch');
+  assert.equal(failed.map.size, 0, 'Fixture must reach missing-table branch');
+  assert.equal(failed.computed, 0, '缺表时不应统计到任何已计算字形');
   await t.decrypt(); assert.equal(root.textContent, '甲', 'Valid table must recover the same font after temporary failure');
 });
 test('F07', 'font', '字体解析暂时失败后同一字体可以恢复', async w => {

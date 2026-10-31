@@ -26,7 +26,8 @@
     "manual": "node tools/manual-pdf.js",
     "release": "node tools/github-release.js",
     "audit:publish": "node tools/publish-audit.js",
-    "pet-game:test": "node omitone-pet-game-test.cjs"
+    "pet-game:test": "node omitone-pet-game-test.cjs",
+    "fuzz:test": "node omitone-fuzz-test.cjs"
   },
   "engines": {
     "node": ">=18"

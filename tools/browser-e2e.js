@@ -2351,6 +2351,80 @@ SCENARIOS.push({
   }
 });
 
+// ── 前端混沌猴：暴力点击找崩点 ──────────────────────────────────────────────
+// 单测喂的是"想得到"的操作；真实用户是乱点的。种子化 LCG 保证失败可复现。
+// ⚠️ 目标集刻意排除 #modeSwitch（会重载页面杀掉 CDP 会话）与 #start/#stop（会启动刷课流）。
+SCENARIOS.push({
+  name: '前端混沌猴：随机点击 400 次零未捕获异常、角色仍响应',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var chaos = await ctx.client.evaluate(
+      '(function(){' +
+      'var errs = [];' +
+      'window.addEventListener("error", function (e) { errs.push(String(e.message || e)); });' +
+      'var seed = 20261031;' +
+      'function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }' +
+      'var targets = [document.getElementById("mascot")];' +
+      'Array.prototype.forEach.call(document.querySelectorAll("#petTools button"), function (b) { targets.push(b); });' +
+      'Array.prototype.forEach.call(document.querySelectorAll(".toggle"), function (b) { targets.push(b); });' +
+      'targets.push(document.getElementById("petBookClose"));' +
+      'targets.push(document.getElementById("btnPetShow"));' +
+      'var clicks = 0;' +
+      'for (var i = 0; i < 400; i++) {' +
+      '  var t = targets[Math.floor(rand() * targets.length)];' +
+      '  if (t && t.click) { try { t.click(); clicks++; } catch (e) { errs.push("click: " + e.message); } }' +
+      '}' +
+      'return {clicks: clicks, errs: errs, mascotAlive: !!document.getElementById("mascot")};})()'
+    );
+    check('混沌猴 400 次随机点击（角色/工具条/立绘册/折叠）：零未捕获异常、角色仍在',
+      !!chaos && chaos.clicks >= 380 && chaos.errs.length === 0 && chaos.mascotAlive === true,
+      JSON.stringify(chaos).slice(0, 200));
+    // 收尾：混沌之后角色还能正常响应摸头
+    var still = await ctx.client.evaluate(
+      '(function(){var errs=[];var onerr=function(e){errs.push(String(e.message||e));};' +
+      'window.addEventListener("error",onerr);' +
+      'var m=document.getElementById("mascot");if(m)m.click();' +
+      'window.removeEventListener("error",onerr);' +
+      'return {errs:errs,alive:!!m};})()'
+    );
+    check('混沌之后摸头仍无异常', !!still && still.alive === true && still.errs.length === 0, JSON.stringify(still));
+  }
+});
+
+SCENARIOS.push({
+  name: '上课页伴侣暴力：连点 30 次不崩、收起唤回仍正常',
+  path: '/quiz',
+  run: async function (ctx) {
+    var mounted = null;
+    for (var i = 0; i < 24; i++) {
+      await sleep(250);
+      mounted = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'return !!(h&&h.shadowRoot&&h.shadowRoot.getElementById("petImg"));})()'
+      );
+      if (mounted) break;
+    }
+    check('前提：伴侣已挂载', mounted === true, String(mounted));
+    var brute = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var img=h.shadowRoot.getElementById("petImg");' +
+      'var errs=[];window.addEventListener("error",function(e){errs.push(String(e.message||e));});' +
+      'for(var i=0;i<30;i++) img.click();' +
+      'var bar=h.shadowRoot.getElementById("bondBar").style.width;' +
+      'var wrap=h.shadowRoot.getElementById("wrap");' +
+      'h.shadowRoot.getElementById("hideBtn").click();' +
+      'var hid=/mode-hidden/.test(wrap.className);' +
+      'h.shadowRoot.getElementById("pillBtn").click();' +
+      'var back=!/mode-hidden/.test(wrap.className);' +
+      'return {bar:String(bar||""),hid:hid,back:back,errs:errs,alive:!!h.shadowRoot.getElementById("petImg")};})()'
+    );
+    check('伴侣连点 30 次：好感条有值、零异常、收起唤回正常',
+      !!brute && brute.alive === true && brute.bar !== '' && brute.hid === true && brute.back === true && brute.errs.length === 0,
+      JSON.stringify(brute));
+  }
+});
+
 
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
