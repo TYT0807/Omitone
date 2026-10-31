@@ -945,8 +945,67 @@ var MOCK_PAGES = {
   '/popup-quiz-native': buildPopupQuizNativeHtml,
   '/popup-quiz-multi': buildPopupQuizMultiHtml,
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
-  '/video-continue': buildVideoContinueHtml
+  '/video-continue': buildVideoContinueHtml,
+  '/mooc2-work': buildMooc2WorkHtml,
+  '/font-residue': buildFontResidueHtml
 };
+
+/**
+ * mooc2 新版作业页（真实结构，2026-10-31 从同类开源实现的真实页面知识交叉补入）：
+ * 容器 `.questionLi.singleQuesId`（带 id="questionN" / data="N" / typename 属性）、
+ * 题干 `.question-stem`、选项 `.stem_answer > li.answerBg`。
+ * 此前夹具只覆盖 .TiMu 与 .Cy_TItle 两族 —— mooc2 这一族此前零覆盖。
+ */
+function buildMooc2WorkHtml() {
+  function q(id, no, typename, stem, opts, multi) {
+    var lis = opts.map(function (t, i) {
+      var letter = String.fromCharCode(65 + i);
+      return '<li class="answerBg" qid="' + id + '" data="' + letter + '">' +
+        '<span class="num_option' + (multi ? '_dx' : '') + ' choice' + id + '" data="' + letter + '">' + letter + '</span>' +
+        '<span class="fl after">' + t + '</span>' +
+        '<input type="' + (multi ? 'checkbox' : 'radio') + '" name="answer' + id + '" value="' + letter + '"></li>';
+    }).join('');
+    return '<div class="questionLi singleQuesId" id="question' + id + '" data="' + id + '" typename="' + typename + '">' +
+      '<div class="Zy_TItle clearfix"><div class="question-stem"><span class="fontLabel">' + no +
+      '.</span>【' + typename + '】' + stem + '</div></div>' +
+      '<ul class="stem_answer">' + lis + '</ul>' +
+      '<input type="hidden" id="answer' + id + '" value="">' +
+      '<input type="hidden" id="answertype' + id + '" value="' + (multi ? '1' : '0') + '">' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业 - 学习通</title></head><body>' +
+    '<input type="hidden" id="courseId" value="777">' +
+    '<input type="hidden" id="classId" value="888">' +
+    '<input type="hidden" id="workId" value="999">' +
+    q(6001, 1, '单选题', 'mooc2 结构的题干识别测试', ['选项一', '选项二', '选项三', '选项四'], false) + '\n' +
+    q(6002, 2, '多选题', 'mooc2 结构的多选识别测试', ['红', '绿', '蓝', '黄'], true) + '\n' +
+    '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>' +
+    '</body></html>';
+}
+
+/**
+ * 字体残留类名（真实平台行为）：已批改结果页给**明文**题干挂着 font-cxsecret 类、
+ * 却不再提供字体声明。旧逻辑会把它当"未解密"每轮白等 8 秒；
+ * 现在解密扫描发现无字体可用且无 PUA 密文 → 摘掉残留类名放行。
+ */
+function buildFontResidueHtml() {
+  function opt(letter, text) {
+    return '<li class="before-after" qid="7001" data="' + letter + '">' +
+      '<label><input type="radio" name="answer7001" value="' + letter + '">' +
+      '<span class="num_option choice7001" data="' + letter + '">' + letter + '</span>' +
+      '<span class="fl after">' + text + '</span></label></li>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>章节测验 - 学习通</title></head><body>' +
+    '<div class="TiMu" qid="7001" typename="判断题">' +
+    '<div class="Zy_TItle clearfix"><div class="fontLabel">1.</div>' +
+    '<span class="font-cxsecret">对称加密算法的加密密钥与解密密钥相同。</span></div>' +
+    '<ul class="Zy_ulTop">' + opt('A', '正确') + opt('B', '错误') + '</ul>' +
+    '<input type="hidden" id="answer7001" value="">' +
+    '<input type="hidden" id="answertype7001" value="3">' +
+    '</div></body></html>';
+}
 
 // ===========================================================================
 // Mock 模型接口（OpenAI 兼容）
@@ -2422,6 +2481,61 @@ SCENARIOS.push({
     check('伴侣连点 30 次：好感条有值、零异常、收起唤回正常',
       !!brute && brute.alive === true && brute.bar !== '' && brute.hid === true && brute.back === true && brute.errs.length === 0,
       JSON.stringify(brute));
+  }
+});
+
+/** ---- 1.9 真实平台结构（从同类开源实现的真实页面知识交叉补入）---- */
+/**
+ * mooc2 新版作业页：容器 .questionLi.singleQuesId（id/data/typename 属性）、
+ * 题干 .question-stem、选项 .stem_answer > li.answerBg —— 这一族此前零覆盖。
+ */
+SCENARIOS.push({
+  name: 'mooc2 作业页（真实结构）：抠题 / 题型 / 填答',
+  path: '/mooc2-work',
+  run: async function (ctx) {
+    var scan = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var qs=a._extractQuestions(null);' +
+      'return {n:qs.length,titles:qs.map(function(q){return String(q.title).slice(0,30);}),' +
+      'types:qs.map(function(q){return q.type;})};})()'
+    );
+    check('mooc2 容器抠到 2 道题（singleQuesId 此前零覆盖）',
+      !!scan && scan.n === 2, JSON.stringify(scan));
+    check('题干干净（question-stem + 题号/题型前缀清洗）',
+      !!scan && scan.titles[0] === 'mooc2 结构的题干识别测试' && scan.titles[1] === 'mooc2 结构的多选识别测试',
+      JSON.stringify(scan && scan.titles));
+    check('typename 属性 → 单选/多选',
+      !!scan && scan.types[0] === 'single' && scan.types[1] === 'multiple', JSON.stringify(scan && scan.types));
+    var fill = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var qs=a._extractQuestions(null);' +
+      'a._applyChoiceAnswer(qs[0]._element,"B","single");' +
+      'var h=document.getElementById("answer6001");' +
+      'return {hidden:h?h.value:null,filled:a._getQuizQuestionFilledValue(null,qs[0])};})()'
+    );
+    check('mooc2 结构下点 B → 隐藏域写入 B（qid 在 li 上、徽标在）',
+      !!fill && fill.hidden === 'B' && fill.filled === 'B', JSON.stringify(fill));
+  }
+});
+
+SCENARIOS.push({
+  name: '字体残留类名（已批改页明文）：不等待、正常抠题',
+  path: '/font-residue',
+  run: async function (ctx) {
+    // content.js 解密扫描（MutationObserver + 300ms 防抖）发现：无字体声明且无 PUA 密文
+    // → 明文残留 → 摘掉类名。断言等它完成（至多几秒），且题干正常抠出。
+    var cleared = null;
+    for (var i = 0; i < 20; i++) {
+      await sleep(300);
+      cleared = await ctx.client.evaluate(
+        '(function(){var a=window._xxtApp;var qs=a._extractQuestions(null);' +
+        'return {secret:a._hasUndecryptedFontSecret(),n:qs.length,' +
+        'title:qs.length?String(qs[0].title).slice(0,20):""};})()'
+      );
+      if (cleared && cleared.secret === false && cleared.n >= 1) break;
+    }
+    check('明文残留类名被解密扫描摘除（不再每轮白等 8 秒）',
+      !!cleared && cleared.secret === false, JSON.stringify(cleared));
+    check('明文题干正常抠出（可读中文，非密文）',
+      !!cleared && cleared.n >= 1 && /对称加密/.test(cleared.title), JSON.stringify(cleared));
   }
 });
 

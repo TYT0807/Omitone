@@ -344,6 +344,18 @@ test('F07', 'font', '字体解析暂时失败后同一字体可以恢复', async
   t.fontState.available = true; await w.clock.advance(RECOVERY_BUDGET); await t.decrypt();
   assert.equal(root.textContent, '甲', 'Parser recovery must not be blocked by cached failure');
 });
+test('F08', 'font', '表缺字形时统计出 missed（data-om-font-miss 乱码信号的数据源）', async w => {
+  const t = w.tab(), root = t.document.add(ENCODED[0]);
+  const key = Buffer.from([1]).toString('base64');
+  // 空表 = 每个字形哈希都查不到 —— 真实场景的「table.json 落后于平台字符集」。
+  // font-cxsecret 的真实机制是正常中文字符 + 自定义字形（不是 PUA）：缺字形时
+  // 文本通顺但内容错误，只有解密层知道没查到 —— 这个统计就是页面乱码守卫的信号源。
+  const emptyTable = new Map();
+  const result = t.hooks.buildDecryptMapForDoc(t.document, key, emptyTable, [root]);
+  assert.equal(result.computed, 1, '字形已计算（桩对已知编码返回字形）');
+  assert.equal(result.missed, 1, '全部未命中 → missed=1');
+  assert.equal(result.map.size, 0, '映射为空');
+});
 
 test('L01', 'load', '二进制映射表成功加载且后续复用', async w => {
   const t = w.tab(), table = await t.table();

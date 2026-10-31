@@ -11,7 +11,7 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（49 个）：
+ * 本段的方法（50 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -32,7 +32,7 @@
  *   _extractQuestions、_getQuizDocumentFromQuestions、_looksLikeQuizTitle、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
  *   _prepareQuizRedoIfNeeded、
- *   _hasUndecryptedFontSecret、_quizTextGarbledRatio
+ *   _hasUndecryptedFontSecret、_hasFontDecryptMiss、_quizTextGarbledRatio
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -954,6 +954,13 @@
         for (var gi = 0; gi < questions.length; gi++) {
           if (questions[gi].garbled) garbledCount++;
         }
+        // 主信号（文档级）：content.js 解密时统计「出现了自定义字形但查表未命中」——
+        // font-cxsecret 的真实机制是**正常中文字符 + 自定义字形**，不是 PUA 私有区！
+        // 表缺字形时题干是通顺但错误的中文，下面按字符占比的 PUA 检测（兜底层）根本
+        // 看不出来 —— 解密层的 miss 标记才是可靠信号（真实机制由同类开源实现交叉证实）。
+        if (!garbledCount && this._hasFontDecryptMiss()) {
+          garbledCount = questions.length;
+        }
         if (garbledCount) {
           if (quizPaperKey !== (this._quizGarbledPaperKey || '')) {
             this._quizGarbledPaperKey = quizPaperKey;
@@ -1336,12 +1343,34 @@
 
 
     /**
-     * 一段文字里 PUA 密文字符（U+E000~U+F8FF）的占比。
+     * 任一可达文档是否带着「解密未命中」标记（content.js 解密后写在 documentElement 上）。
      *
-     * 解密「部分命中」时，类名已被摘掉、第一层等待不会触发，但没映射到的字符
-     * 会以密文留在题干里 —— 这是从文本本身判断乱码的唯一手段（第二层保护）。
-     * 占比阈值 0.3：个别未知字形不应拦下整卷（模型通常仍可作答），
-     * 成片密文才判定为乱码。
+     * 这是乱码守卫的**主信号**：font-cxsecret 的真实机制是正常中文字符 + 自定义字形
+     * （不是 PUA），表缺字形时文本通顺但内容错误 —— 只有解密层自己知道哪些字形没查到。
+     * 缺表是全局的（同一张 table.json），所以任一文档带标记即整卷按乱码处理。
+     */
+    _hasFontDecryptMiss: function () {
+      var found = false;
+      this._walkDocuments(function (doc) {
+        if (!doc || !doc.documentElement || !doc.documentElement.getAttribute) return false;
+        try {
+          if (doc.documentElement.getAttribute('data-om-font-miss')) { found = true; return true; }
+        } catch (e) {}
+        return false;
+      });
+      return found;
+    },
+
+
+    /**
+     * 一段文字里 PUA 密文字符（U+E000~U+F8FF）的占比 —— **兜底层**。
+     *
+     * ⚠️ 认知修正（2026-10-31，同类开源实现交叉证实）：font-cxsecret 的真实机制是
+     * 「正常中文字符 + 自定义字形」——文本里放的是普通中文，字形却画成别的字。
+     * 所以表缺字形时题干是**通顺但错误**的中文，这个 PUA 检测实际上抓不到它；
+     * 抓它靠上面的 `_hasFontDecryptMiss`（解密层标记）。本检测保留作兜底：
+     * 防其他平台/未来改版真的把密文放进私有区。
+     * 占比阈值 0.3：个别未知字形不应拦下整卷，成片密文才判定为乱码。
      */
     _quizTextGarbledRatio: function (text) {
       var meaningful = String(text || '').replace(/\s/g, '');

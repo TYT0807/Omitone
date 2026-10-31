@@ -1805,7 +1805,20 @@
     if (!roots.length) return;
 
     const base64 = extractSecretFontBase64(doc);
-    if (!base64) return;
+    if (!base64) {
+      // 真实平台行为（其他开源实现同样处理）：已批改的**结果页**会给明文题干挂着
+      // font-cxsecret 类，却不再提供字体声明 —— 类名是残留，不是加密。
+      // 此时若等它解密，page.js 的第一层守卫会每轮白等 8 秒。
+      // 判据保守：文本里连一个 PUA 密文字符都没有，才视为明文并摘掉类名。
+      let hasCipherText = false;
+      roots.forEach(function (root) {
+        if (/[\uE000-\uF8FF]/.test(root.textContent || '')) hasCipherText = true;
+      });
+      if (!hasCipherText) {
+        roots.forEach(function (root) { if (root.classList) root.classList.remove('font-cxsecret'); });
+      }
+      return;
+    }
 
     const table = await getDecryptTable();
     const built = buildDecryptMapForDoc(doc, base64, table, roots);
@@ -1829,15 +1842,23 @@
     }
 
     roots.forEach((root) => decryptRootElement(root, decodeMap));
-    if (built.missed > 0 && mayLogMiss) {
-      // 部分命中：没映射到的字符会以 PUA 密文留在文本里（page.js 的乱码守卫会拦住它们），
-      // 根因同样是表需要更新
-      lastFontMissLogAt = nowMs;
-      appendRuntimeLog('warn', 'font decrypt incomplete', {
-        missed: built.missed, mapped: decodeMap.size,
-        hint: '部分字形哈希未命中映射表，对应文字保持密文 —— resources/table.json 需要更新'
-      });
-    }
+    try {
+      // ⚠️ font-cxsecret 的真实机制是「正常中文字符 + 自定义字形」，不是 PUA 私有区：
+      //    表缺字形时文本是**通顺但错误**的中文，人眼和 PUA 检测都发现不了。
+      //    所以文档级的 miss 标记才是 page.js 乱码守卫的可靠信号源。
+      if (built.missed > 0) {
+        doc.documentElement.setAttribute('data-om-font-miss', String(built.missed));
+        if (mayLogMiss) {
+          lastFontMissLogAt = nowMs;
+          appendRuntimeLog('warn', 'font decrypt incomplete', {
+            missed: built.missed, mapped: decodeMap.size,
+            hint: '部分字形哈希未命中映射表，对应文字解出来是错字 —— resources/table.json 需要更新'
+          });
+        }
+      } else if (doc.documentElement.getAttribute('data-om-font-miss')) {
+        doc.documentElement.removeAttribute('data-om-font-miss');
+      }
+    } catch (e) { /* 标记失败不影响解密本身 */ }
     console.log('[Omitone] font decrypted roots:', roots.length, 'mapped chars:', decodeMap.size);
   }
 

@@ -484,7 +484,7 @@
      * 缺了 .Cy_TItle 这一族，作业与考试页会整体扫不到题 —— 而这正是"AI 扫描不到题目"的常见场景。
      */
     _questionSelectors: [
-      '.TiMu', '.Cy_TItle', '.questionLi', '.questionItem', '.tiBank', '.topicItem',
+      '.TiMu', '.Cy_TItle', '.questionLi', '.singleQuesId', '.questionItem', '.tiBank', '.topicItem',
       '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox',
       'li.quesLi', '.answerOption', 'div[class*="question"]', 'div[class*="topic"]',
       'div[class*="TiMu"]', 'div[class*="Cy_TItle"]'
@@ -499,7 +499,7 @@
      * 是同一类事故，且不报错、不留日志）。现在**只准改这里**；
      * `tools/check.js` 的「选择器真源守卫」会把真源之外的手抄直接报红。
      */
-    _quizDetectorSelector: '.TiMu, .Cy_TItle, .questionLi, .questionItem, .tiBank, .topicItem, .exam_question, .question-content, .singleQues, .mark_item, .questionBox, .answerOption',
+    _quizDetectorSelector: '.TiMu, .Cy_TItle, .questionLi, .singleQuesId, .questionItem, .tiBank, .topicItem, .exam_question, .question-content, .singleQues, .mark_item, .questionBox, .answerOption',
 
     /**
      * 题干候选选择器，按优先级逐个试；候选清洗后长度 ≥ 4 才算数（`_parseQuestionElement`）。
@@ -508,7 +508,9 @@
     _questionTitleSelectors: [
       '.fontLabel', '.mark_name',
       // 学习通真实结构：题号在 .fontLabel，题干与题号同处 .Pt1 / .Zy_TItle。
-      '.Pt1', '.Zy_TItle',
+      // .question-stem / [data-question-text] 是 mooc2 新版前端的题干标记
+      // （2026-10-31 从同类开源实现的真实页面知识补入）。
+      '.Pt1', '.Zy_TItle', '.question-stem', '[data-question-text]',
       '.question-title', '.topicTitle', '.question_content', '.qContent', '.mark_title',
       '.question-name', '.title', 'h3', 'h4', '.stem', '[class*="question"]', '[class*="title"]'
     ],
@@ -540,4 +542,4 @@
      * 于是那个诊断在作业/考试页上把容器数报成 0 —— 而且**不报错、不留日志**。
      * 现在三处统一读这里：**改选择器只改这一行** —— 手抄的那份必然漂移，别再抄第四份。
      */
-    _quizContainerSelector: '.TiMu, .Cy_TItle, .questionLi, .questionItem, .mark_item, .questionBox',
+    _quizContainerSelector: '.TiMu, .Cy_TItle, .questionLi, .singleQuesId, .questionItem, .mark_item, .questionBox',

@@ -1476,11 +1476,11 @@ function checkSelectorCase() {
 // ---------------------------------------------------------------------------
 function checkSelectorTruthSource() {
   var guarded = [
-    'TiMu', 'Cy_TItle', 'Zy_TItle', 'questionLi', 'questionItem', 'tiBank', 'topicItem',
+    'TiMu', 'Cy_TItle', 'Zy_TItle', 'questionLi', 'singleQuesId', 'questionItem', 'tiBank', 'topicItem',
     'exam_question', 'singleQues', 'mark_item', 'questionBox', 'answerOption',
     'Zy_ulTop', 'Zy_ulBottom', 'Zy_ulTk', 'Cy_ulTop', 'Cy_ulBottom', 'Cy_ulTk',
     'fontLabel', 'mark_name', 'Pt1',
-    'question-title', 'topicTitle', 'question_content', 'qContent', 'mark_title', 'question-name'
+    'question-title', 'question-stem', 'topicTitle', 'question_content', 'qContent', 'mark_title', 'question-name'
   ];
   var sources = ['content.js'];
   fs.readdirSync(path.join(ROOT, 'src', 'page')).filter(function (f) { return /\.js$/.test(f); }).sort()

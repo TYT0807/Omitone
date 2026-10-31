@@ -272,6 +272,9 @@
         '.video-quiz',
         '.ans-job-pop',
         '.ans-topic',
+        // .tkTopic / .tkItem：真实视频弹题容器（2026-10-31 从同类开源实现的真实页面知识补入）
+        '.tkTopic',
+        '.tkItem',
         '.vjs-overlay',
         '.ans-attach',
         '.popDiv',

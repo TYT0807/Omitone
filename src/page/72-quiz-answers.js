@@ -82,7 +82,10 @@
         var qid = String((el.getAttribute && (el.getAttribute('qid') || el.getAttribute('data-qid'))) || '').trim();
         if (qid) return qid;
 
-        var wrapper = el.closest ? el.closest('.singleQuesId') : null;
+        // mooc2 新版作业页把 qid 放在容器的 data 属性上（容器类名 .singleQuesId）。
+        // 真源 `_quizDetectorSelector`：closest 按并集找最近的题目容器 ——
+        // 真实 TiMu/Cy 容器带的是 qid 属性、没有 data，会正常落到下面的回退，语义不变
+        var wrapper = el.closest ? el.closest(this._quizDetectorSelector) : null;
         qid = wrapper && wrapper.getAttribute ? String(wrapper.getAttribute('data') || '').trim() : '';
         if (qid) return qid;
 
