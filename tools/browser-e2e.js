@@ -993,9 +993,11 @@ function startMockServer() {
         requests.push({ prompt: prompt });
 
         if (forcedStatus) {
-          // 模拟服务商拒绝：401 = Key 无效（永久错误），500 = 服务端抽风（可重试）。
+          // 模拟服务商拒绝：401 = Key 无效（永久错误），402 = 账户欠费（"没钱"的真实报法），
+          // 500 = 服务端抽风（可重试）。
           // body 必须是 OpenAI 的报错形状 —— content.js 靠它取出 httpStatus 之外的原话。
           var errText = forcedStatus === 401 ? 'Invalid API key'
+            : forcedStatus === 402 ? 'Insufficient Balance'
             : forcedStatus === 403 ? 'Forbidden'
             : 'internal server error';
           res.writeHead(forcedStatus, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
@@ -2127,6 +2129,55 @@ SCENARIOS.push({
     check('点「藏」会收起来', !!r && r.hidden === true, '');
     check('「显示小人」能叫回来', !!r && r.shown === true, '');
     check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
+  }
+});
+
+// ── 前端专项：弹窗「检测 API 连接」的报错要能一眼定位 ────────────────────────
+// 现场故障：用户 API 没钱（服务商 402 Insufficient Balance），旧实现显示
+// 「连接失败 (402): {JSON}」—— 用户去查网络、重装插件，唯独没想到充值。
+// 现在报错经 libs/api-error.js 分类：人看到「【账户余额不足】…去充值」。
+// 注意这条场景**必须把 forcedStatus 还原**，否则后面所有答题场景一起挂。
+SCENARIOS.push({
+  name: '弹窗测试连接：没钱（402）显示「余额不足」而不是「连接失败」',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    ctx.mock.setStatus(402);
+    try {
+      // ⚠️ 「检测 API」读的是**表单**（getApiFormConfig），不是 storage ——
+      // 表单也不随 storage.onChanged 刷新（那个监听只管运行状态）。
+      // 所以必须直接填表单字段；写 storage 不仅没用，还会让请求打到真实服务商。
+      await ctx.client.evaluate(
+        '(function(){' +
+        'document.getElementById("apiUrl").value = "http://127.0.0.1:' + PORT + '";' +
+        'document.getElementById("apiKey").value = "sk-e2e-classification";' +
+        'document.getElementById("model").value = "mock-model";' +
+        'return true;})()'
+      );
+      await sleep(150);
+      await ctx.client.evaluate('document.getElementById("testApi").click()');
+      // 处理链：ping（≤1.5s）→ 请求 mock → patch 配置 → toast；轮询等 toast 落定
+      var toast = '';
+      for (var i = 0; i < 40; i++) {
+        await sleep(150);
+        toast = await ctx.client.evaluate('String(document.getElementById("toast").textContent || "")');
+        if (/余额不足|连接失败/.test(toast)) break;
+      }
+      check('402 的 toast 说出「余额不足」并给出下一步（不再叫连接失败）',
+        /余额不足/.test(toast) && /充值/.test(toast) && !/连接失败/.test(toast),
+        toast.slice(0, 140));
+
+      var stored = await ctx.client.evaluate(
+        'new Promise(function (res) { chrome.storage.local.get("config", function (r) {' +
+        'res({ failed: !!(r.config || {}).apiConnectionFailed,' +
+        'err: String((r.config || {}).apiConnectionError || "") }); }); })'
+      );
+      check('写进配置的 apiConnectionError 也是分类后的人话（弹窗横幅同源）',
+        /余额不足/.test(stored.err) && !/^\s*连接失败 \(\d+\)/.test(stored.err),
+        JSON.stringify(stored).slice(0, 160));
+    } finally {
+      ctx.mock.setStatus(0);
+    }
   }
 });
 

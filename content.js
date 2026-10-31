@@ -181,6 +181,7 @@
   // 不认识的渠道在"关闭"档一个参数都不发 —— 与升级前的行为完全一致，
   // 所以不会把任何现有用户搞成 400。详见那个文件顶部的说明。
   const THINKING = (typeof self !== 'undefined' && self.OmitoneThinking) || null;
+  const API_ERROR = (typeof self !== 'undefined' && self.OmitoneApiError) || null;
 
   /**
    * 扩展自带资源缺失时的统一报错。
@@ -409,7 +410,7 @@
         body: (options && options.body) || '',
         timeoutMs: timeout
       }
-    }, timeout + 15000, 'background api fetch timeout');
+    }, timeout + 15000, 'AI 请求超时 —— 网络不通，或服务商长时间无响应（不是配置错误）');
 
     if (proxy && proxy.success && typeof proxy.text === 'string') {
       return proxy;
@@ -419,7 +420,7 @@
     }
 
     // No direct fetch fallback: a worker rejection must not be bypassed in the isolated world.
-    return proxy || { success: false, error: 'background api fetch failed' };
+    return proxy || { success: false, error: '后台请求失败 —— 无法把请求转发给服务商（网络不通或扩展刚被重载）' };
   }
 
   async function updateApiConnectionState(failed, reason, requestedConfig) {
@@ -497,11 +498,17 @@
    */
   function makeHttpError(prefix, response) {
     const status = response ? response.status : undefined;
-    const err = new Error(
-      prefix + ' request failed (' + (status || 'network') + '): ' +
-      String((response && (response.text || response.error)) || '').slice(0, 300)
-    );
+    // 分类文案由 libs/api-error.js 统一给出（弹窗测试与页面日志同一套口径）：
+    // 人看到「【类别】中文说明 —— 下一步」，AI/日志拿到 category 标签 + 服务商原话 + 状态码。
+    // 分类只是翻译，不篡改证据 —— 原话永远原样保留在 human 文案里。
+    const described = API_ERROR
+      ? API_ERROR.describe(status, (response && response.text) || '')
+      : { category: 'unknown', human: prefix + ' request failed (' + (status || 'network') + '): ' +
+          String((response && (response.text || response.error)) || '').slice(0, 300) };
+    const err = new Error(described.human);
     err.httpStatus = status;
+    err.apiCategory = described.category;
+    err.apiProvider = prefix;
     return err;
   }
 
@@ -699,13 +706,19 @@
         // 永久错误（401 Key 无效 / 403 无权限 / 404 模型名错）：**重试没有意义**，
         // 更不能写 apiConnectionFailed —— 那会让 page.js 进入 45 秒退避循环，
         // 把"配置填错了"伪装成"网络连不上、插件卡死"。
-        // 这里直接跳出重试，原样把服务商的报错返回给用户去看。
-        if (httpErrorIsPermanent(error && error.httpStatus)) {
+        // 这里直接跳出重试，把带分类的人话报错返回给用户去看。
+        //
+        // 「没钱」有两种报法：402 显式欠费（天然是 permanent），OpenAI 系报
+        // 429 + insufficient_quota —— 按状态码属于可重试的 429，但给欠费做退避
+        // 只会重复撞墙，还会把 apiConnectionFailed 写成 true（用户看到"连接失败"，
+        // 去查网络而不是去充值）。所以余额类错误一律按永久处理。
+        if (httpErrorIsPermanent(error && error.httpStatus) || error.apiCategory === 'balance') {
           appendRuntimeLog('error', 'llm_request rejected (permanent)', {
             status: error.httpStatus,
+            category: error.apiCategory || '',
             error: lastError.slice(0, 300)
           });
-          return { success: false, error: lastError, permanentError: true };
+          return { success: false, error: lastError, permanentError: true, errorCategory: error.apiCategory || '' };
         }
 
         lastWasNetwork = true;
@@ -1276,10 +1289,15 @@
       state = 'warn';
       task = '验证码多次未通过';
       detail = '正在刷新页面并自动继续';
+    } else if (/llm_request rejected \(permanent\)|rejected permanently, no retry/.test(msg)) {
+      state = 'warn';
+      task = 'AI 服务商拒绝请求';
+      // data.error 现在自带分类（【账户余额不足】/【API Key 无效】…），直接展示
+      detail = (data.error || '检查 API Key、账户余额与模型名');
     } else if (/api connection failed|api unavailable|skip quiz because api unavailable|skip popup quiz because api unavailable/.test(msg)) {
       state = 'warn';
       task = 'API 不可用，跳过答题';
-      detail = (data.error || data.reason || '未填写 API 或连接失败');
+      detail = (data.error || data.reason || '未填写 API，或网络连不上服务商');
     } else if (/llm request error|llm_request direct failed/.test(msg)) {
       state = 'warn';
       task = 'AI 请求出错';

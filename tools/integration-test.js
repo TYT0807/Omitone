@@ -297,7 +297,7 @@ function createHarness(options) {
   // 忘了加到这里，content.js 在测试里读到 null 模块 —— 于是集成测试报的错
   // 看起来像"答题功能坏了"，其实是测试环境自己缺文件。
   // 下面这条守卫就是为了让这种漏项当场报错、而不是伪装成业务 bug。
-  var INJECTED_FILES = ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
+  var INJECTED_FILES = ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
   (function guardInjectionList() {
     var manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
     var injectedLibs = [];
@@ -305,7 +305,7 @@ function createHarness(options) {
       if (f.indexOf('libs/') === 0) injectedLibs.push(f);
     });
     // 只盯"content.js 会读的模块"：md5 / Typr 这类纯浏览器库不进测试沙箱是有意的
-    ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
+    ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
       if (injectedLibs.indexOf(file) === -1) {
         throw new Error('manifest 未注入 ' + file + '，但测试清单里有它 —— 两者已分叉');
       }
@@ -660,6 +660,90 @@ async function testPermanentHttpError() {
   await h429.waitForResponse(34);
   check('429 不被当成永久错误（仍需重试）', h429.sandbox.__sentRequests.length === 2,
     '实际发了 ' + h429.sandbox.__sentRequests.length + ' 次');
+}
+
+/**
+ * [3b+] 错误分类：报错要让人和 AI 一眼定位根因。
+ *
+ * 现场故障：用户 API 没钱（DeepSeek 报 402 Insufficient Balance；OpenAI 系报
+ * 429 + insufficient_quota），旧文案显示「连接失败 (402): {JSON}」—— 用户去查
+ * 网络、重装插件，唯独没想到充值。现在错误经 libs/api-error.js 分类：
+ *   - 人看到「【账户余额不足】… 去充值」；
+ *   - 返回值/日志带 errorCategory 标签 + 服务商原话（分类是翻译，不篡改证据）；
+ *   - 余额类一律按永久错误处理（不重试、不写 apiConnectionFailed）。
+ * 同时验证真·限流（429 无额度字样）行为不变 —— 防止修 A 把 B 改坏。
+ */
+async function testApiErrorClassification() {
+  console.log('\n[3b+] 错误分类：没钱不再显示成连接失败');
+
+  var questions = [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }];
+
+  // ---- 1) 402：显式欠费 → 永久 + 人话
+  var h402 = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 402, text: '{"error":{"message":"Insufficient Balance","type":"insufficient_balance"}}', error: 'HTTP 402', data: null };
+    }
+  });
+  h402.sendFromPage({ source: 'xxt_app', id: 41, type: 'llm_request', payload: { questions: questions } });
+  var d402 = await h402.waitForResponse(41);
+  check('402 收到应答', d402 !== null);
+  if (d402) {
+    check('402 按永久错误处理（不重试）', d402.permanentError === true && h402.sandbox.__sentRequests.length === 1,
+      'requests=' + h402.sandbox.__sentRequests.length);
+    check('402 文案说出「余额不足」并带上服务商原话（人/AI 都能定位）',
+      /余额不足/.test(String(d402.error)) && /Insufficient Balance/.test(String(d402.error)),
+      String(d402.error).slice(0, 160));
+    check('402 带 errorCategory 标签', d402.errorCategory === 'balance', String(d402.errorCategory));
+  }
+  check('402 未写入 apiConnectionFailed（它不是网络问题）',
+    (h402.sandbox.__store.config || {}).apiConnectionFailed !== true);
+
+  // ---- 2) 429 + insufficient_quota：OpenAI 系的"没钱"报法，同样按余额处理
+  var hQuota = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 429, text: '{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota"}}', error: 'HTTP 429', data: null };
+    }
+  });
+  hQuota.sendFromPage({ source: 'xxt_app', id: 42, type: 'llm_request', payload: { questions: questions } });
+  var dQuota = await hQuota.waitForResponse(42);
+  check('429+insufficient_quota 按余额类永久处理（不重试）',
+    !!dQuota && dQuota.permanentError === true && hQuota.sandbox.__sentRequests.length === 1,
+    'requests=' + (hQuota ? hQuota.sandbox.__sentRequests.length : 'n/a'));
+  check('429+insufficient_quota 文案说出「余额不足」',
+    !!dQuota && /余额不足/.test(String(dQuota.error)), String(dQuota && dQuota.error).slice(0, 160));
+  check('429+insufficient_quota 未写入 apiConnectionFailed',
+    (hQuota.sandbox.__store.config || {}).apiConnectionFailed !== true);
+
+  // ---- 3) 真·限流（429 + 无额度字样）：行为必须不变，文案是【触发限流】
+  var hRate = createHarness({
+    apiResponder: function () {
+      return { success: false, status: 429, text: '{"error":{"message":"rate limit exceeded, try again later"}}', error: 'HTTP 429', data: null };
+    }
+  });
+  hRate.sendFromPage({ source: 'xxt_app', id: 43, type: 'llm_request', payload: { questions: questions } });
+  var dRate = await hRate.waitForResponse(43);
+  check('普通 429 仍重试（限流等一会儿真能恢复）', hRate.sandbox.__sentRequests.length === 2,
+    '实际发了 ' + hRate.sandbox.__sentRequests.length + ' 次');
+  check('普通 429 文案是【触发限流】（不是余额）',
+    !!dRate && /触发限流/.test(String(dRate.error)) && !/余额不足/.test(String(dRate.error)),
+    String(dRate && dRate.error).slice(0, 120));
+
+  // ---- 4) 分类器本体：一张表把各状态码钉死
+  var API_ERROR = require('../libs/api-error.js');
+  var c401 = API_ERROR.describe(401, '{"error":{"message":"Invalid API key"}}');
+  var c402 = API_ERROR.describe(402, '{"error":{"message":"Insufficient Balance"}}');
+  var c404 = API_ERROR.describe(404, '{"error":{"message":"model not found"}}');
+  var c500 = API_ERROR.describe(500, '{"error":{"message":"internal error"}}');
+  var cNet = API_ERROR.describe(undefined, '');
+  check('分类表 401→auth / 402→balance / 404→model / 500→server / 断网→network',
+    c401.category === 'auth' && c402.category === 'balance' && c404.category === 'model' &&
+    c500.category === 'server' && cNet.category === 'network',
+    [c401.category, c402.category, c404.category, c500.category, cNet.category].join(','));
+  check('人话格式：以【类别】开头，余额文案含「充值」且保留原话',
+    /^【/.test(c402.human) && /充值/.test(c402.human) && /Insufficient Balance/.test(c402.human),
+    c402.human.slice(0, 80));
+  check('断网文案如实说「连接不上」，不伪装成业务拒绝',
+    /连接不上/.test(cNet.human), cNet.human.slice(0, 60));
 }
 
 async function testPermanentRoundStopAndConfigRace() {
@@ -1123,6 +1207,7 @@ async function main() {
   await testAnswerCoercion();
   await testParseErrorClassification();
   await testPermanentHttpError();
+  await testApiErrorClassification();
   await testPermanentRoundStopAndConfigRace();
   await testMissingApiKey();
   await testClaudeProtocol();

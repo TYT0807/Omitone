@@ -241,7 +241,14 @@ async function testApiConnectionDirect(cfg) {
         messages: [{ role: "user", content: "Reply with OK" }]
       })
     }, 25000);
-    if (!response.ok) return { success: false, error: `连接失败 (${response.status}): ${await response.text()}` };
+    if (!response.ok) {
+      // 分类文案：余额不足 / Key 无效 / 限流 / 模型名不对 —— 不再把业务拒绝叫「连接失败」
+      const bodyText = await response.text();
+      const described = (typeof self !== "undefined" && self.OmitoneApiError)
+        ? self.OmitoneApiError.describe(response.status, bodyText)
+        : { category: "unknown", human: `连接失败 (${response.status}): ${String(bodyText || "").slice(0, 300)}` };
+      return { success: false, error: described.human, category: described.category };
+    }
     const data = await response.json();
     const message = (data.content?.[0]?.text || "OK").trim().replace(/\s+/g, " ");
     return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
@@ -257,7 +264,14 @@ async function testApiConnectionDirect(cfg) {
         generationConfig: { temperature: 0, maxOutputTokens: 12 }
       })
     }, 25000);
-    if (!response.ok) return { success: false, error: `连接失败 (${response.status}): ${await response.text()}` };
+    if (!response.ok) {
+      // 分类文案：余额不足 / Key 无效 / 限流 / 模型名不对 —— 不再把业务拒绝叫「连接失败」
+      const bodyText = await response.text();
+      const described = (typeof self !== "undefined" && self.OmitoneApiError)
+        ? self.OmitoneApiError.describe(response.status, bodyText)
+        : { category: "unknown", human: `连接失败 (${response.status}): ${String(bodyText || "").slice(0, 300)}` };
+      return { success: false, error: described.human, category: described.category };
+    }
     const data = await response.json();
     const parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
     const message = parts.map((part) => part && part.text ? part.text : "").join(" ").trim().replace(/\s+/g, " ");
@@ -281,7 +295,15 @@ async function testApiConnectionDirect(cfg) {
       temperature: 0
     })
   }, 25000);
-  if (!response.ok) return { success: false, error: `连接失败 (${response.status}): ${await response.text()}` };
+  if (!response.ok) {
+    // 分类文案：余额不足 / Key 无效 / 限流 / 模型名不对 —— 不再把业务拒绝叫「连接失败」
+    // （⚠️ 这份与上面 Claude / Gemini 两份是三胞胎，改一处必须三处一起改）
+    const bodyText = await response.text();
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(response.status, bodyText)
+      : { category: "unknown", human: `连接失败 (${response.status}): ${String(bodyText || "").slice(0, 300)}` };
+    return { success: false, error: described.human, category: described.category };
+  }
   const data = await response.json();
   const message = (data.choices?.[0]?.message?.content || "OK").trim().replace(/\s+/g, " ");
   return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
@@ -643,15 +665,21 @@ async function testApiConnectionNoBackground() {
       apiConnectionError: result && result.success ? "" : String((result && result.error) || "connection failed").slice(0, 300)
     }, fingerprint);
     if (!isCurrent()) { toast("配置已变化，请重新检测"); return; }
+    // result.error 已是分类后的人话（libs/api-error.js）—— 不再加「连接失败：」前缀，
+    // 否则「连接失败：【账户余额不足】…」会让用户继续往网络方向查
     toast(result && result.success ? "连接正常" + (result.message ? "：" + result.message : "") :
-      "连接失败：" + ((result && result.error) || "未知错误"));
+      ((result && result.error) || "未知错误"));
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
     if (!isCurrent() || error.code === "stale_config") { toast("配置已变化，请重新检测"); return; }
-    try { await patchConfig({ apiConnectionFailed: true, apiConnectionError: message.slice(0, 300) }, fingerprint); } catch (e) {}
-    await appendPopupLog("error", "api test direct failed", { error: message.slice(0, 300) });
-    // 不把英文报错原文塞进提示条（多半是 Failed to fetch 之类），细节看日志
-    toast("检测失败，原因见日志");
+    // 走到这里说明请求根本没发出去（fetch 抛异常）—— 这才是真正的「连接失败」。
+    // 也要翻译成人话：Failed to fetch / Timeout 对用户没有信息量
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(0, message)
+      : { category: "network", human: message };
+    try { await patchConfig({ apiConnectionFailed: true, apiConnectionError: described.human.slice(0, 300) }, fingerprint); } catch (e) {}
+    await appendPopupLog("error", "api test direct failed", { error: described.human.slice(0, 300), category: described.category });
+    toast(described.human);
   } finally {
     els.testApi.disabled = false;
     els.testApi.textContent = "检测 API 连接";

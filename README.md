@@ -655,7 +655,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 54 个场景，567 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 55 个场景，570 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1008,6 +1008,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
 | **题干出现乱码方块 / 漏字** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时整卷被拦（`quiz text garbled` → 3 轮后 `quiz skipped: text stays garbled`），根因与解法见已知缺陷 #6 |
+| **报错看不懂、不知道该查什么** | 报错已按根因分类（`libs/api-error.js` 统一出口）：【账户余额不足】→ 去充值、【API Key 无效或无权限】→ 重新生成整段复制、【触发限流】→ 等自动退避、【服务商服务端故障】→ 等恢复、【连接不上服务商】→ 才是真网络问题。每条都带服务商原话与 HTTP 状态码 —— 弹窗测试、页面日志、状态面板同一套口径 |
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
@@ -1145,10 +1146,10 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（128 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（141 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（54 个场景 / 567 项）
+npm run e2e      # 真实 Edge 功能交叉检验（55 个场景 / 570 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
