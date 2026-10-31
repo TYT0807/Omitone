@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 62 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -18,6 +18,15 @@
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 
 `npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
+
+根目录还有一批**独立测试入口**（不依赖 tools/，已被 `npm run sandbox` 纳入临时副本基线）：
+
+| 入口 | 命令 | 是什么 |
+| --- | --- | --- |
+| `omitone-regression.cjs` | `npm run regression`（`--self-test` 自检） | 行为回归 + 内存故障注入：字体/恢复/日志正确性闸门 |
+| `omitone-pet-game-test.cjs` | `npm run pet-game:test` | 小游戏纯规则：活跃计秒 / 好感度 / 等级与水位 |
+| `omitone-fuzz-test.cjs` | `npm run fuzz:test` | 暴力测试：错误分类状态码 0~999 全扫 + 垃圾响应体 + 随机时钟/存档（固定种子可复现） |
+| `omitone-log-store-test.cjs` / `omitone-popup-log-test.cjs` / `omitone-acceptance-test.cjs` / `omitone-sandbox.cjs` | 见 `package.json` | 日志模块 / 日志视图 / 产物验收（唯一编号 JSONL 证据）/ 沙盒 |
 
 ---
 
@@ -299,7 +308,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 62 个场景 / 598 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 62 个场景 / 599 项断言。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
 省资源模式动态降级、短视口布局，以及连播、入场抢占、造型样式与心情补演回归。

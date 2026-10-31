@@ -15,6 +15,8 @@ const DEFAULTS = {
   randomAnswer: false,
   enableCaptcha: true,
   enableDiscussion: true,
+  // API 连接状态行展示用：失败原因（分类后人话，libs/api-error.js 写入）
+  apiConnectionError: "",
   discussionReply: "1",
   systemPrompt: "",
   restudy: false,
@@ -320,6 +322,21 @@ async function appendPopupLog(level, message, meta) {
   } catch (e) {}
 }
 
+/**
+ * API 连接状态行：apiConnectionError 是「检测 API 连接」与页面答题链路共写的
+ * 分类后人话（libs/api-error.js）—— 此前只在 toast 与日志里出现，弹窗没有常驻展示位。
+ * 失败时显示该文案（照着做即可），成功/清空后隐藏。
+ */
+function renderApiConnState(config) {
+  const el = document.getElementById("apiConnState");
+  if (!el) return;
+  const failed = !!(config && config.apiConnectionFailed);
+  const message = failed ? String(config.apiConnectionError || "").trim() : "";
+  if (!failed || !message) { el.hidden = true; el.textContent = ""; return; }
+  el.textContent = message;
+  el.hidden = false;
+}
+
 function apiConfigSummary(cfg) {
   const key = normalizeApiKey(cfg && cfg.apiKey);
   return {
@@ -554,6 +571,7 @@ async function load() {
   updateVision(visionEnabledVal);
   updateDiscussion(enableDiscussionVal);
   updateRestudy(restudyVal);
+  renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
   // 把一个不存在的 value 赋给 <select> 只会得到空字符串，接着落盘就把无效值写进 storage，
@@ -804,7 +822,12 @@ const revokeCaptchaButton = $("revokeCaptcha");
 if (grantCaptchaButton) grantCaptchaButton.addEventListener("click", () => authorizeCurrentCaptcha(false));
 if (revokeCaptchaButton) revokeCaptchaButton.addEventListener("click", () => authorizeCurrentCaptcha(true));
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.xxtRunning) updateRunState(!!changes.xxtRunning.newValue);
+  if (area !== "local") return;
+  if (changes.xxtRunning) updateRunState(!!changes.xxtRunning.newValue);
+  // 存到局部变量再取 newValue：配置接线守卫按 `config.键名` 字面量扫描读取点，
+  // 这里的 changes.config 是 storage 变更包不是用户配置，不能让守卫误读
+  const cfgChange = changes.config;
+  if (cfgChange) renderApiConnState(cfgChange.newValue);
 });
 els.testApi.addEventListener("click", testApiConnectionNoBackground);
 els.start.addEventListener("click", startRun);

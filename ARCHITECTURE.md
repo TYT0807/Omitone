@@ -45,8 +45,15 @@ MV3 Worker 可能被浏览器终止；日志队列仅在当前 Worker 实例内�
 | --- | --- | --- |
 | `src/page/*.js` | `page.js` 的**源文件**，按域切成 16 个片段（`00-shell-constants` … `90-console-api-startup`） | ✅ **要改就改这里** |
 | `page.js`（根目录） | 由上面 16 个片段**拼接**出来的产物 —— 扩展实际加载的是它 | ❌ 直接改会在下次拼接时被覆盖 |
-| `content.js` / `background.js` / `libs/` / `popup/` | 各自独立，不参与拼接 | ✅ |
+| `content.js` / `background.js` / `popup/` | 各自独立，不参与拼接 | ✅ |
+| `libs/api-url.js` / `libs/prompt.js` / `libs/thinking.js` / `libs/captcha.js` | API 地址构造 / 提示词唯一真源 / 思考参数白名单 / 验证码请求构建 | ✅（改协议相关只改这里） |
+| `libs/api-error.js` | 服务商报错**分类器**（错误文案唯一真源）：402 与 429+quota → 余额、401/403 → 密钥、429 → 限流、404 → 模型名、5xx → 服务端、无状态码 → 网络 | ✅ |
+| `libs/study-stats.js` | 刷课活跃时长统计（纯函数）：`runtime_log` 消息流为信号源，连续计秒 / 跨天清零 / 落盘节流 | ✅ |
+| `libs/runtime-policy.js` | 隔离世界 / Worker 共用的策略：配置字段白名单与校验、页面作用域 | ✅ |
+| `libs/font-table.js` | 字形哈希表的紧凑二进制编解码（唯一真源，`tools/table-pack.js` 与运行时共用） | ✅ |
+| `popup/pet-game.js` | 角色成长小游戏的**纯规则**（等级表 / 摸头台词 / 好感折算），Node 可直接 require；存取与演出在 `popup/pet.js` | ✅ |
 | `runtime-log-store.js`（根目录） | Worker 通过 `importScripts` 加载的独立日志工厂，Node 可直接 require；不注入网页 | ✅ |
+| `omitone-*.cjs`（根目录） | 独立测试入口：行为回归（含故障注入）/ 日志模块 / 日志视图 / 小游戏规则 / 暴力测试 / 沙盒与产物验收；`npm run sandbox` 在临时副本里逐个执行 | ✅ |
 | `resources/table.bin` | 由 `resources/table.json` 打包出的运行时字体表（json 是源、bin 是产物） | ❌ 走 `node tools/table-pack.js --pack` |
 | `dist/` | `npm run build` 的产物（解压目录 + `omitone.zip`），已 gitignore | — |
 
@@ -188,6 +195,9 @@ chrome.runtime 消息（**每一条都先判作用域**）：
 | `config` | 配置项；`config_patch` 按 `libs/runtime-policy.js` 白名单与数值区间校验 |
 | `xxtRunning` | 布尔。为 true 时页面刷新后自动续跑（验证码刷新场景依赖它） |
 | `runtimeLogs` | 最近 200 条日志；由 Worker 的唯一日志模块实例追加/清空，前端只读展示 |
+| `omitoneStudyStats` | 当日刷课活跃秒数（content.js 从 runtime_log 流统计，20 秒节流落盘）—— 角色小游戏的数据源 |
+| `omitonePetBond` | 角色好感度存档（弹窗与上课页伴侣**共享真源**；旧版弹窗 localStorage 档首次加载自动迁移） |
+| `omitonePagePetHidden` | 上课页角色伴侣的收起状态（收起后留「宠」字小入口） |
 
 ## 自动续跑机制
 
@@ -302,11 +312,18 @@ background.js api_fetch          跨域代理
 
 ### 失败分类（决定是否标记"API 不可用"）
 
-- **网络/HTTP 错误** → 写 `apiConnectionFailed`，触发 45 秒退避
+三支，分类文案的唯一真源是 `libs/api-error.js`（`errorCategory` 标签随响应带给 page.js）：
+
+- **永久拒绝**（4xx 且 ≠429，以及**余额类**：402 与 429+`insufficient_quota`）→
+  **不重试、不写 `apiConnectionFailed`**，错误原文以【类别】人话交给用户
+  （`quiz llm rejected permanently`）；改好配置自动恢复。
+  「没钱」按永久处理：给它做退避只会重复撞墙，还把欠费伪装成网络故障。
+- **可重试**（网络失败、超时、5xx、429 限流）→ 写 `apiConnectionFailed`，触发 45 秒退避
 - **解析失败**（`parseError: true`）→ **不**标记连接失败，保留题目 8 秒后重试
 
-这个区分是踩出来的：1.0.4 之前把解析失败也当成连接失败写进 storage，
-形成"跳过 → 不再发请求 → 标志无法自愈"的死循环。
+前两支的区分是踩出来的：1.0.4 之前把解析失败也当成连接失败写进 storage，
+形成"跳过 → 不再发请求 → 标志无法自愈"的死循环；1.2.8 又把 4xx 从网络故障里
+拆出来（填错 Key 的表现是"卡死"而不是"Key 错了"）。
 
 ## 验证码链路
 
@@ -349,12 +366,29 @@ background.js api_fetch          跨域代理
 
 ## 字体反爬
 
-学习通把题目文本用自定义字体 `font-cxsecret` 渲染成乱码字符。
-`content.js` 用 Typr 解析字体文件，对每个字符算字形轮廓哈希
-（`md5(JSON.stringify(glyphPath)).slice(24)`），在 `resources/table.json` 里
-查真实字符，然后就地替换 DOM 文本节点与 `aria-label`/`title`/`value`/`placeholder` 属性。
+⚠️ **真实机制（2026-10-31 与同类开源实现交叉证实）**：`font-cxsecret` 文本里放的是
+**正常中文字符**，字体却把它们画成别的字 —— **不是 PUA 私有区**。表缺字形时
+题干是**通顺但内容错误**的中文，肉眼难察觉。
 
-映射按字体 base64 缓存（`decryptMapCache`），并用 `MutationObserver` 在新文档出现时重新 sweep。
+`content.js` 的解密层：Typr 解析页面注入的字体，对每个出现的非 ASCII 字符算
+字形轮廓哈希（`md5(JSON.stringify(glyphPath)).slice(24)`），在 `resources/table.json`
+查真实字符，就地替换 DOM 文本节点与 `aria-label`/`title`/`value`/`placeholder` 属性。
+映射按字体 base64 缓存（`decryptMapCache`），`MutationObserver` 在新文档出现时重新 sweep。
+
+三道防线（对应 page.js 的两层 + 解密层自诊断）：
+
+1. **等待**：page.js `_hasUndecryptedFontSecret()` 看到 `.font-cxsecret` 残留就不抽题
+   （类名被解密后摘除，"类名还在" = "还没解完"）；上限 8 秒，绝不死等。
+2. **miss 标记（主信号）**：解密统计「字形已计算但查表未命中」的字符数 —— >0 时在
+   该文档 `documentElement` 落 `data-om-font-miss` 标记并写 warn 日志；
+   page.js `_hasFontDecryptMiss()` 感知后整卷按乱码处理（连续 3 轮 → 跳过该卷）。
+   **为什么必须由解密层报**：缺字形时文本是正常中文，文本侧检测抓不到。
+3. **PUA 兜底**：`_quizTextGarbledRatio` 检测私有区字符占比 —— 真实超星不走这条路，
+   保留防其他平台 / 未来改版。
+
+另有两处边界处理：**无字体声明的残留类名**（已批改结果页给明文挂 `font-cxsecret`
+却不提供字体 → 无 PUA 即视为明文、摘除类名放行，避免每轮白等）；
+表请求失败有 10 秒期限与冷却重试，**不永久缓存空映射**（回归 F06-F08 钉住）。
 
 ## 后台节流对抗
 

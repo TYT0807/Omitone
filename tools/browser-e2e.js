@@ -2265,6 +2265,13 @@ SCENARIOS.push({
       check('写进配置的 apiConnectionError 也是分类后的人话（弹窗横幅同源）',
         /余额不足/.test(stored.err) && !/^\s*连接失败 \(\d+\)/.test(stored.err),
         JSON.stringify(stored).slice(0, 160));
+      var shown = await ctx.client.evaluate(
+        '(function(){var el=document.getElementById("apiConnState");' +
+        'return {hidden:!!(el&&el.hidden),text:String((el||{}).textContent||"")};})()'
+      );
+      check('弹窗状态行常驻显示分类后的人话（storage.onChanged 同步）',
+        !!shown && shown.hidden === false && /余额不足/.test(shown.text),
+        JSON.stringify(shown));
     } finally {
       ctx.mock.setStatus(0);
     }
