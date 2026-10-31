@@ -195,9 +195,39 @@ function checkManifestFiles(manifest) {
   Object.keys(actionIcons).forEach(function (size) { referenced.push(actionIcons[size]); });
 
   referenced = Array.from(new Set(referenced));
-  var missing = referenced.filter(function (f) { return !exists(f); });
+  // web_accessible_resources 的资源条目支持通配（如 popup/pet*.png）——
+  // 逐字 exists() 会把合法的 glob 当成"不存在的文件"。展开成真实文件再验，
+  // 顺带保证 glob 至少能匹配到一个文件（写错模式名照样报红）。
+  function expandGlob(pattern) {
+    if (pattern.indexOf('*') === -1) return exists(pattern) ? [pattern] : [];
+    var starAt = pattern.indexOf('*');
+    var dir = path.dirname(pattern.slice(0, starAt));
+    var prefix = pattern.slice(0, starAt).slice(dir.length + 1);
+    var suffix = pattern.slice(starAt + 1);
+    var matched = [];
+    try {
+      fs.readdirSync(path.join(ROOT, dir)).forEach(function (f) {
+        if (f.indexOf(prefix) !== 0) return;
+        if (suffix && !f.slice(prefix.length).endsWith(suffix)) return;
+        matched.push(dir ? dir + '/' + f : f);
+      });
+    } catch (e) {}
+    return matched;
+  }
+  var missing = [];
+  var globTotal = 0;
+  referenced.forEach(function (f) {
+    if (f.indexOf('*') !== -1) {
+      var expanded = expandGlob(f);
+      globTotal += expanded.length;
+      if (!expanded.length) missing.push(f + '（通配没匹配到任何文件）');
+    } else if (!exists(f)) {
+      missing.push(f);
+    }
+  });
   if (missing.length) fail('manifest 引用了不存在的文件: ' + missing.join(', '));
-  else pass(referenced.length + ' 个 manifest / Worker 依赖文件全部存在');
+  else pass(referenced.length + ' 个 manifest / Worker 依赖文件全部存在' +
+    (globTotal ? '（含通配展开 ' + globTotal + ' 个资源）' : ''));
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,7 +1516,70 @@ function checkSelectorTruthSource() {
 }
 
 // ---------------------------------------------------------------------------
-// 19. 桥接消息类型两端一致
+// 20. 立绘池守卫
+//
+// 角色的三个池子（服装 SKINS / 表情 FACES / 姿势 POSES）定义在 `popup/pet.js`。
+// 历史事故：**文件名前缀与画面内容错位**（pet-e2~e6 画的是服装却被放进表情池、
+// pet-i5~i8 是表情却被放进表情池前的姿势族……），用户看到的就是
+// 「按了表情怎么换衣服了 / 表情里混着姿势」。2026-10-31 已逐张看图重建。
+//
+// 这条守卫钉住四件事，防止未来加立绘时再漂：
+//   ① 池子里引用的每个文件都真实存在（防手滑写错文件名 —— 不报错、图片裂图）；
+//   ② popup/ 下所有 pet*.png 都被某个池子引用（防孤儿 —— 加了图忘了归类，
+//      立绘册里永远看不到它，还以为丢了）；
+//   ③ 除 pet.png（默认立绘，兼作服装与姿势的基座）外，**禁止跨池重复** ——
+//      一张图两个身份，正是"切换搞混"的根源；
+//   ④ 池子并集去重后必须等于磁盘上的实际张数（以上三条的合并断言）。
+// ---------------------------------------------------------------------------
+function checkPetSpritePools() {
+  var src;
+  try { src = read('popup/pet.js'); } catch (e) { fail('读取 popup/pet.js 失败: ' + e.message); return; }
+
+  function pool(name) {
+    var m = src.match(new RegExp('var ' + name + ' = \\[([\\s\\S]*?)\\];'));
+    if (!m) { fail('popup/pet.js 里找不到 ' + name + ' 池子（被改名/移动了？同步本守卫）'); return []; }
+    var out = [];
+    // ⚠️ 必须是 [^"]*（零个或多个）：用 [^"]+ 会恰好匹配不到 "pet.png" 本身
+    //    （pet 和 .png 之间没有字符）—— 基座立绘就这样从所有池子里消失了
+    var re = /"(pet[^"]*\.png)"/g, mm;
+    while ((mm = re.exec(m[1]))) out.push(mm[1]);
+    return out;
+  }
+
+  var pools = { SKINS: pool('SKINS'), FACES: pool('FACES'), POSES: pool('POSES') };
+  if (problems.length && (!pools.SKINS.length && !pools.FACES.length && !pools.POSES.length)) return;
+
+  var onDisk = [];
+  try {
+    onDisk = fs.readdirSync(path.join(ROOT, 'popup')).filter(function (f) { return /^pet.*\.png$/.test(f); }).sort();
+  } catch (e) { fail('读取 popup/ 立绘目录失败: ' + e.message); return; }
+
+  var issues = [];
+  var union = {};
+  Object.keys(pools).forEach(function (name) {
+    if (!pools[name].length) { issues.push(name + ' 池子是空的'); return; }
+    pools[name].forEach(function (f) {
+      if (onDisk.indexOf(f) === -1) issues.push(name + ' 引用了不存在的文件 ' + f);
+      if (union[f] && f !== 'pet.png') issues.push(f + ' 同时出现在 ' + union[f] + ' 与 ' + name + '（跨池重复 = 切换搞混的根源；只有 pet.png 允许双身份）');
+      union[f] = union[f] || name;
+    });
+  });
+  onDisk.forEach(function (f) {
+    if (!union[f]) issues.push('孤儿立绘 ' + f + ' —— 在 popup/ 里但没有任何池子引用（立绘册里看不到它）');
+  });
+
+  if (issues.length) {
+    fail('立绘池与磁盘不一致（分类漂移 / 文件名写错 / 漏归类）:\n      ' +
+      issues.join('\n      '));
+    return;
+  }
+  pass('立绘池守卫（服装 ' + pools.SKINS.length + ' / 表情 ' + pools.FACES.length +
+    ' / 姿势 ' + pools.POSES.length + '，去重 ' + Object.keys(union).length +
+    ' 张 = 磁盘 ' + onDisk.length + ' 张，无跨池无孤儿）');
+}
+
+// ---------------------------------------------------------------------------
+// 21. 桥接消息类型两端一致
 //
 // page.js 与 content.js 靠 `window.postMessage` 通信，**按字符串类型分发**。
 // 任何一端把类型名拼错，另一端就**收不到、也不报错** ——
@@ -1621,6 +1714,7 @@ checkPagePartHeaders();
 checkAwaitTimeouts();
 checkSelectorCase();
 checkSelectorTruthSource();
+checkPetSpritePools();
 checkBridgeMessageTypes();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });

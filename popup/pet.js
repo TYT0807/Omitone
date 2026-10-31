@@ -348,7 +348,14 @@
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
-    // 「装」只走服装 —— 表情和动作是另一回事，混在一起用户会看不出规律
+    // 「装」只走服装 —— 表情和动作是另一回事，混在一起用户会看不出规律。
+    //
+    // ⚠️ **文件前缀不可信**（2026-10-31 逐张看图核实的结论）：
+    //   pet-e2~e6 画的是围巾大衣/浴衣/睡衣/雨衣/制服外套 —— 是**服装**不是表情；
+    //   pet-i5~i8 画的是生气/哭/鼓脸/满足 —— 是**表情**不是姿势；
+    //   pet-e7~e10 画的是坐姿/挥手/趴姿/伸懒腰 —— 是**姿势**不是表情。
+    //   美术的命名和内容是错位的，分类只能以像素为准 —— 别"看着前缀顺手纠正"回去，
+    //   `tools/check.js` 的「立绘池守卫」会拦住池子之间的交叉与漏项。
     var SKINS = ["pet.png",
       "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
@@ -361,17 +368,18 @@
       "pet-27.png", "pet-28.png",
       "pet-29.png", "pet-30.png", "pet-31.png", "pet-32.png",
       "pet-33.png", "pet-34.png",
-      "pet-35.png", "pet-36.png", "pet-37.png", "pet-38.png"];   // 39 套服装
-    // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
-    var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
-                 "pet-e5.png", "pet-e6.png",
+      "pet-35.png", "pet-36.png", "pet-37.png", "pet-38.png",
+      // e2~e6：像素核实是服装（大衣/浴衣/睡衣/雨衣/制服外套），从原「表情」池移过来
+      "pet-e2.png", "pet-e3.png", "pet-e4.png", "pet-e5.png", "pet-e6.png"];   // 44 套服装
+    // 「表」走表情：同一身默认制服下的另一张脸。e1 = 默认制服的平和脸（基座）。
+    var FACES = ["pet-e1.png",
                  "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png",
                  "pet-e11.png", "pet-e12.png",
                  "pet-e13.png", "pet-e14.png", "pet-e15.png",
                  "pet-e16.png", "pet-e17.png",
                  "pet-e18.png", "pet-e19.png", "pet-e20.png",
                  "pet-e21.png", "pet-e22.png", "pet-e23.png",
-                 "pet-e24.png", "pet-e25.png", "pet-e26.png"];   // 26 张表情
+                 "pet-e24.png", "pet-e25.png", "pet-e26.png"];   // 21 张表情
     var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
                  "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png",
                  "pet-i9.png", "pet-i10.png",
@@ -379,7 +387,8 @@
                  "pet-i13.png", "pet-i14.png",
                  "pet-i15.png", "pet-i16.png", "pet-i17.png",
                  "pet-i18.png", "pet-i19.png", "pet-i20.png",
-                 "pet-i21.png", "pet-i22.png", "pet-i23.png"];  // 24 个姿势（全部是**默认装束**画的）
+                 "pet-i21.png", "pet-i22.png", "pet-i23.png"];  // 24 个姿势（全部是**默认装束**画的；
+                                                                // i1 虽像卫衣装，但它没有换装语义，归姿势）
     // 穿着别的衣服时，「姿」只在这几种身体姿态之间切，不换图 ——
     // 换姿势图会把衣服一起换回默认装束（用户报的「点姿势怎么换衣服了」）。
     var POSE_STATES = ["sit", "happy", "point", "sad"];
@@ -592,8 +601,17 @@
           addMood(2);
         } else if (act === "face") {
           setPose("sit", 450);
-          faceIdx = (faceIdx + 1) % FACES.length;
           var fa = mascot.querySelector(".pet-art");
+          var faceCur = fa ? fa.getAttribute("src") : "";
+          // 表情立绘也是**默认制服**画的（与姿势同一类问题）：穿着别的衣服时
+          // 直接换表情图 = 把用户刚挑好的衣服一起换掉（用户报的「点表情怎么换衣服了」）。
+          // 与「姿」同一策略：非默认装束下不换图，说一句提示，绝不静默偷换。
+          if (SKINS.indexOf(faceCur) > 0) {
+            say("换个表情要回默认装束哦 —— 先按「装」回到 pet.png", 2600);
+            lockManualOutfit();
+            return;
+          }
+          faceIdx = (faceIdx + 1) % FACES.length;
           if (fa) { fa.setAttribute("src", FACES[faceIdx]); playMotion(fa); }
           try {
             localStorage.setItem("omitone.pet.face", String(faceIdx));
@@ -1041,23 +1059,6 @@
     }
     applyMood(getMood());
 
-    // 开屏：结一次刷课好感 + 打招呼。全部 try/catch —— 游戏坏了角色照常出场
-    try {
-      var bootBond = loadBond();
-      renderBond(bootBond);
-      syncStudyIntoGame();
-      chrome.storage.local.get(STUDY_STATS_KEY, function (r) {
-        try {
-          if (chrome.runtime.lastError) return;
-          var stats = (r && r[STUDY_STATS_KEY]) || {};
-          var mins = Math.floor((Number(stats.activeSeconds) || 0) / 60);
-          if (mins >= 5 && mascot && !mascot.getAttribute("data-busy")) {
-            say("今天已经一起刷了 " + mins + " 分钟啦" + (bootBond && bootBond.affection >= 30 ? "，有你真好。" : "～"), 3200);
-          }
-        } catch (e) {}
-      });
-    } catch (e) {}
-
     function addMood(d) {
       var m = Math.max(0, Math.min(100, getMood() + d));
       applyMood(m);
@@ -1065,24 +1066,23 @@
     }
 
     // ── 成长小游戏（好感度 / 等级 / 刷课时长）────────────────────────────
-    // 数据全部本地：好感度在这个弹窗页的 localStorage（与心情同一套做法）；
-    // 刷课时长来自 content.js 写进 chrome.storage 的 omitoneStudyStats（只读消费）。
-    // 规则与等级表在 popup/pet-game.js（可独立测试），这里只做存取与表现 ——
+    // 存档真源是 chrome.storage.local 的 omitonePetBond —— **上课页的角色伴侣**
+    // （content.js 注入）与弹窗共用同一份好感：在哪摸头都一样涨。
+    // 旧版把存档放在弹窗自己的 localStorage 里，首次加载时自动迁移一次。
+    // 规则在 popup/pet-game.js（纯函数、可测试）；这里只做存取与表现 ——
     // 与情绪同样的三条纪律：不读配置、不碰调度、出错只表现为"她没反应"。
-    var BOND_KEY = "omitone.pet.bond";
+    var BOND_KEY = "omitonePetBond";                 // 共享存档（chrome.storage）
+    var LEGACY_BOND_KEY = "omitone.pet.bond";        // 旧版存档（弹窗 localStorage，只迁不走）
     var STUDY_STATS_KEY = "omitoneStudyStats";
+    var bondState = null;
     function getGame() { return self.OmitonePetGame || null; }
-    function loadBond() {
-      var game = getGame();
-      if (!game) return null;
+    function todayKey() { var g = getGame(); return g ? g.dayKeyOf(Date.now()) : ""; }
+    function persistBond() {
       try {
-        return game.rollDay(JSON.parse(localStorage.getItem(BOND_KEY) || "null"), game.dayKeyOf(Date.now()));
-      } catch (e) {
-        return game.rollDay(null, game.dayKeyOf(Date.now()));
-      }
-    }
-    function saveBond(state) {
-      try { localStorage.setItem(BOND_KEY, JSON.stringify(state)); } catch (e) {}
+        var patch = {};
+        patch[BOND_KEY] = bondState;
+        chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+      } catch (e) {}
     }
     function renderBond(state) {
       try {
@@ -1108,10 +1108,11 @@
     }
     function petGamePat() {
       var game = getGame();
-      if (!game) return null;
-      var result = game.onPat(loadBond(), game.dayKeyOf(Date.now()));
-      saveBond(result.state);
-      renderBond(result.state);
+      if (!game || !bondState) return null;
+      var result = game.onPat(bondState, todayKey());
+      bondState = result.state;
+      persistBond();
+      renderBond(bondState);
       syncStudyIntoGame();   // 摸头时顺手把攒下的刷课时长结一次（多数时候是空操作）
       return result;
     }
@@ -1129,20 +1130,64 @@
     }
     function syncStudyIntoGame() {
       var game = getGame();
-      if (!game) return;
+      if (!game || !bondState) return;
       try {
         chrome.storage.local.get(STUDY_STATS_KEY, function (r) {
           try {
             if (chrome.runtime.lastError) return;
             var stats = (r && r[STUDY_STATS_KEY]) || {};
-            var result = game.applyStudySeconds(loadBond(), Number(stats.activeSeconds) || 0, game.dayKeyOf(Date.now()));
-            saveBond(result.state);
-            renderBond(result.state);
+            var result = game.applyStudySeconds(bondState, Number(stats.activeSeconds) || 0, todayKey());
+            if (result.gained > 0) { bondState = result.state; persistBond(); }
+            renderBond(bondState);
             if (result.leveledUp) celebrateBond(result.level);
           } catch (e) {}
         });
       } catch (e) {}
     }
+    // 上课页伴侣写存的档也要实时反映到弹窗（反向同理）—— storage 是唯一真源
+    try {
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== "local" || !changes[BOND_KEY] || !changes[BOND_KEY].newValue) return;
+        var game = getGame();
+        if (!game) return;
+        try {
+          bondState = game.rollDay(changes[BOND_KEY].newValue, todayKey());
+          renderBond(bondState);
+        } catch (e) {}
+      });
+    } catch (e) {}
+
+    // 开屏：读共享存档（没有就从旧 localStorage 迁移）→ 结刷课好感 → 打招呼。
+    // ⚠️ 必须放在 BOND_KEY 等声明**之后**：var 只提升声明不提升赋值，
+    //    放在前面时键名是 undefined —— 存档被写进字面量 "undefined" 键里（实测踩过）。
+    try {
+      if (getGame()) {
+        chrome.storage.local.get([BOND_KEY, STUDY_STATS_KEY], function (r) {
+          try {
+            if (chrome.runtime.lastError) return;
+            var game = getGame();
+            var stored = r && r[BOND_KEY];
+            if (stored) {
+              bondState = game.rollDay(stored, todayKey());
+            } else {
+              var legacy = null;
+              try { legacy = JSON.parse(localStorage.getItem(LEGACY_BOND_KEY) || "null"); } catch (e2) {}
+              bondState = game.rollDay(legacy, todayKey());
+              persistBond();   // 迁到共享位建档（旧档从此只读）
+            }
+            var stats = (r && r[STUDY_STATS_KEY]) || {};
+            var settle = game.applyStudySeconds(bondState, Number(stats.activeSeconds) || 0, todayKey());
+            if (settle.gained > 0) { bondState = settle.state; persistBond(); }
+            renderBond(bondState);
+            if (settle.leveledUp) celebrateBond(settle.level);
+            var mins = Math.floor((Number(stats.activeSeconds) || 0) / 60);
+            if (mins >= 5 && mascot && !mascot.getAttribute("data-busy")) {
+              say("今天已经一起刷了 " + mins + " 分钟啦" + (bondState.affection >= 30 ? "，有你真好。" : "～"), 3200);
+            }
+          } catch (e) {}
+        });
+      }
+    } catch (e) {}
 
     // 拖拽：按住就能拖着走，松手弹回去（不永久改变布局，免得下次打开位置乱了）
     var dragging = false, dragMoved = false, suppressClick = false;

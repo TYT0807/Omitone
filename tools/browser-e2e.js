@@ -1562,8 +1562,10 @@ SCENARIOS.push({
     check('立绘去重后 88 张，默认 pet.png 只出现一次', book.sources.length === 88 &&
       new Set(book.sources).size === 88 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
       JSON.stringify(book));
-    check('分组为 39 服装 / 26 表情 / 23 去重姿势，汇总显示 88',
-      book.groups['服装'].length === 39 && book.groups['表情'].length === 26 &&
+    // 2026-10-31 逐张看图重分类：e2~e6 是服装（原误归表情）→ 服装 44 / 表情 21；
+    // pet.png 双身份（服装+姿势基座）在册内去重 → 去重姿势 23
+    check('分组为 44 服装 / 21 表情 / 23 去重姿势，汇总显示 88',
+      book.groups['服装'].length === 44 && book.groups['表情'].length === 21 &&
       book.groups['姿势（默认装束）'].length === 23 && /88\s*张/.test(book.meta), JSON.stringify(book.groups));
     var actions = [ ['spin', 950], ['jump', 760], ['shake', 1000], ['bow', 1000], ['peek', 1150],
       ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900] ];
@@ -2182,9 +2184,11 @@ SCENARIOS.push({
 });
 
 // ── 前端专项：成长小游戏（好感度 / 等级 / 刷课时长）─────────────────────────
-// 断言的是**行为**：摸头之后存档里的好感真的涨了、徽章真的换了字、
-// 刷课时长真的按水位折算 —— 不是查内部函数是否存在。
+// 断言的是**行为**：摸头之后共享存档（chrome.storage 的 omitonePetBond）里好感真的涨了、
+// 徽章真的换了字、刷课时长真的按水位折算 —— 不是查内部函数是否存在。
 // ⚠️ 摸头三连（2 秒内 3 次）会触发"躲开"，不涨好感 —— 每次点击之间要拉开间隔。
+// ⚠️ 存档真源是 chrome.storage（与上课页伴侣共享）：改完要等 onChanged 传回弹窗内存
+//    再点（直接改完立刻点，摸的还是旧内存态）。
 SCENARIOS.push({
   name: '小游戏：摸头涨好感、跨级换徽章、刷课时长折算',
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
@@ -2197,52 +2201,153 @@ SCENARIOS.push({
     check('前提：pet-game 已加载，好感条与等级徽章都在',
       !!ui && ui.game === true && ui.bond === true && ui.badge === true, JSON.stringify(ui));
 
-    // 从零开始：清掉本地存档
-    await ctx.client.evaluate('try { localStorage.removeItem("omitone.pet.bond"); } catch (e) {} true');
+    // 从零开始：把共享存档**拨零**（必须用 set 不能用 remove ——
+    // remove 的 changes.newValue 为空、弹窗内存里的旧档会存活下来，
+    // 后续摸头全从旧值续；set 会触发 onChanged 把内存一起归零。实测踩过）
+    await ctx.client.evaluate(
+      'new Promise(function (res) {' +
+      'try { localStorage.removeItem("omitone.pet.bond"); } catch (e) {}' +
+      'var game = self.OmitonePetGame;' +
+      'var fresh = {affection: 0, day: game.dayKeyOf(Date.now()), patsToday: 0, studyPointsToday: 0, countedSeconds: 0};' +
+      'chrome.storage.local.set({ omitonePetBond: fresh }, function () { res(true); }); })'
+    );
+    await sleep(400);   // onChanged → 弹窗内存归零
 
-    // 摸头一下 → 好感 +1 入账
+    // 摸头一下 → 好感 +1 入共享存档
     await ctx.client.evaluate('document.getElementById("mascot").click()');
     await sleep(300);
     var afterPat = await ctx.client.evaluate(
-      '(function(){try { return JSON.parse(localStorage.getItem("omitone.pet.bond")||"null"); } catch (e) { return null; }})()'
+      'new Promise(function (res) { chrome.storage.local.get("omitonePetBond", function (r) {' +
+      'res(r && r.omitonePetBond ? r.omitonePetBond : null); }); })'
     );
-    check('摸头一次 → 好感 +1 入账', !!afterPat && afterPat.affection === 1, JSON.stringify(afterPat));
+    check('摸头一次 → 好感 +1 入共享存档', !!afterPat && afterPat.affection === 1, JSON.stringify(afterPat));
 
-    // 刷课时长折算：写入 1 小时统计、清零水位 → 触发一次结算 → +2（且水位停在 3600 秒）
-    var wrote = await ctx.client.evaluate(
+    // 刷课时长折算：写 1 小时统计、清零水位 → 等 onChanged 传回 → 摸头触发结算 → +2
+    await ctx.client.evaluate(
       'new Promise(function (res) {' +
       'var game = self.OmitonePetGame;' +
       'var st = {date: game.dayKeyOf(Date.now()), activeSeconds: 3600, lastActiveAt: Date.now(), lastFlushAt: Date.now()};' +
       'chrome.storage.local.set({ omitoneStudyStats: st }, function () {' +
-      'try { var bond = JSON.parse(localStorage.getItem("omitone.pet.bond")||"null");' +
-      'bond.countedSeconds = 0; localStorage.setItem("omitone.pet.bond", JSON.stringify(bond)); } catch (e) {}' +
-      'res(true); }); })'
+      'chrome.storage.local.get("omitonePetBond", function (r) {' +
+      'var bond = r.omitonePetBond; bond.countedSeconds = 0;' +
+      'chrome.storage.local.set({ omitonePetBond: bond }, function () { res(true); }); }); }); })'
     );
-    check('前提：1 小时刷课统计已写入', wrote === true);
-    await sleep(2200);   // 与上一次摸头拉开 2 秒，避免触发"三连戳躲开"
-    await ctx.client.evaluate('document.getElementById("mascot").click()');   // 内含一次结算
+    await sleep(400);   // onChanged → 弹窗内存
+    await sleep(2200);  // 与上一次摸头拉开 2 秒，避免触发"三连戳躲开"
+    await ctx.client.evaluate('document.getElementById("mascot").click()');
     await sleep(300);
     var afterStudy = await ctx.client.evaluate(
-      '(function(){try { return JSON.parse(localStorage.getItem("omitone.pet.bond")||"null"); } catch (e) { return null; }})()'
+      'new Promise(function (res) { chrome.storage.local.get("omitonePetBond", function (r) {' +
+      'res(r && r.omitonePetBond ? r.omitonePetBond : null); }); })'
     );
     check('1 小时刷课折 2 点好感（触发结算的那次摸头本身也 +1 → 1+2+1=4；水位停在 3600 秒）',
       !!afterStudy && afterStudy.affection === 4 && afterStudy.countedSeconds === 3600 && afterStudy.patsToday === 2,
       JSON.stringify(afterStudy));
 
-    // 跨级：把好感拨到 14、拉开间隔后再摸一下 → 15 → 徽章从「初识」换成「打过招呼」
-    await sleep(2200);
-    var leveled = await ctx.client.evaluate(
-      '(function(){try {' +
-      'var bond = JSON.parse(localStorage.getItem("omitone.pet.bond")||"null");' +
-      'bond.affection = 14; bond.patsToday = 0;' +
-      'localStorage.setItem("omitone.pet.bond", JSON.stringify(bond));' +
-      'document.getElementById("mascot").click();' +
-      'return {text:String(document.getElementById("petLevel").textContent||""),' +
-      'aff:(JSON.parse(localStorage.getItem("omitone.pet.bond")||"null")).affection};' +
-      '} catch (e) { return {err:String(e)}; }})()'
+    // 跨级：把好感拨到 14 → 等 onChanged → 再摸一下 → 15 → 徽章换「打过招呼」
+    await ctx.client.evaluate(
+      'new Promise(function (res) { chrome.storage.local.get("omitonePetBond", function (r) {' +
+      'var bond = r.omitonePetBond; bond.affection = 14; bond.patsToday = 0;' +
+      'chrome.storage.local.set({ omitonePetBond: bond }, function () { res(true); }); }); })'
     );
-    check('好感到 15 → 徽章换成「打过招呼」',
-      !!leveled && leveled.text === '打过招呼' && leveled.aff === 15, JSON.stringify(leveled));
+    await sleep(400);
+    // 拨 14 → 等 onChanged 传回弹窗内存 → 摸头 → 跨级。时序经过实测：
+    // set 之后 400ms 点击（探针验证过的路径）；更长的等待反而会撞上闲置演出，不划算
+    var leveled = await ctx.client.evaluate(
+      'new Promise(function (res) {' +
+      'var errs = [];' +
+      'window.addEventListener("error", function (e) { errs.push(String(e.message || e)); });' +
+      'function readBond(done) {' +
+      '  chrome.storage.local.get("omitonePetBond", function (r) { done(r && r.omitonePetBond || null); });' +
+      '}' +
+      'readBond(function (bond) {' +
+      '  bond.affection = 14; bond.patsToday = 0;' +
+      '  chrome.storage.local.set({ omitonePetBond: bond }, function () {' +
+      '    setTimeout(function () {' +
+      '      document.getElementById("mascot").click();' +
+      '      setTimeout(function () {' +
+      '        readBond(function (bond2) {' +
+      '          res({badge: String(document.getElementById("petLevel").textContent || ""),' +
+      '              aff: bond2 ? bond2.affection : null,' +
+      '              errs: errs});' +
+      '        });' +
+      '      }, 400);' +
+      '    });' +
+      '  });' +
+      '});' +
+      '});'
+    );
+    check('好感到 15 → 徽章换成「打过招呼」（无页面异常）',
+      !!leveled && leveled.badge === '打过招呼' && leveled.aff === 15 && leveled.errs.length === 0,
+      JSON.stringify(leveled));
+  }
+});
+
+// ── 前端专项：上课页角色伴侣 ────────────────────────────────────────────────
+// 弹窗合上角色就没了 —— 现在她跟到学习页（Shadow DOM 注入）。
+// 主世界读不到 chrome.storage，所以断言全落在 Shadow DOM 的 UI 表现上：
+// 立绘真的加载了（web_accessible 生效）、摸头后好感条真的动了、收起/唤回真的切状态。
+SCENARIOS.push({
+  name: '上课页角色伴侣：出现在学习页、摸头涨好感、收起与唤回',
+  path: '/quiz',
+  run: async function (ctx) {
+    var mounted = null;
+    for (var i = 0; i < 24; i++) {
+      await sleep(250);
+      mounted = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot)return null;' +
+        'var img=h.shadowRoot.getElementById("petImg");' +
+        'return {img:!!img,loaded:!!img&&img.naturalWidth>0,' +
+        'level:String(h.shadowRoot.getElementById("level").textContent||"")};})()'
+      );
+      if (mounted && mounted.img) break;
+    }
+    check('伴侣出现在学习页，且立绘真的加载了（web_accessible_resources 生效）',
+      !!mounted && mounted.img === true && mounted.loaded === true, JSON.stringify(mounted));
+    check('等级徽章有字（好感度存档读到了）',
+      !!mounted && mounted.level.length > 0, JSON.stringify(mounted));
+
+    // 摸头：好感条宽度发生变化（存档在 storage，主世界读不到 —— 断 UI 表现）
+    var before = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return h.shadowRoot.getElementById("bondBar").style.width||"";})()'
+    );
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.shadowRoot.getElementById("petImg").click();return true;})()'
+    );
+    await sleep(350);
+    var after = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return {w:h.shadowRoot.getElementById("bondBar").style.width||"",' +
+      'bubbleCls:String(h.shadowRoot.getElementById("bubble").className||"")};})()'
+    );
+    check('摸头后好感条动了、气泡给了反馈',
+      !!after && after.w !== before && /show/.test(after.bubbleCls),
+      JSON.stringify({ before: before, after: after }));
+
+    // 收起 → 只剩小入口；点入口 → 唤回
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.shadowRoot.getElementById("hideBtn").click();return true;})()'
+    );
+    await sleep(250);
+    var hidden = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return String(h.shadowRoot.getElementById("wrap").className||"");})()'
+    );
+    check('「收」后进入隐藏模式（角色藏起、留小入口）', /mode-hidden/.test(hidden), hidden);
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.shadowRoot.getElementById("pillBtn").click();return true;})()'
+    );
+    await sleep(250);
+    var restored = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return String(h.shadowRoot.getElementById("wrap").className||"");})()'
+    );
+    check('点「宠」唤回（隐藏模式解除）', !/mode-hidden/.test(restored), restored);
   }
 });
 

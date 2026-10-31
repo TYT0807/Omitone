@@ -1349,6 +1349,7 @@
   function recordStudyActivity() {
     try {
       if (!STUDY_STATS) return;
+      ensurePagePet();   // 懒挂载：角色伴侣随第一条运行日志出现（页面被站点脚本清掉也会自动补）
       const nowMs = Date.now();
       const result = STUDY_STATS.recordActivity(studyStatsState, nowMs);
       studyStatsState = result.state;
@@ -1367,6 +1368,234 @@
       if (!chrome.runtime.lastError && r && r.omitoneStudyStats) studyStatsState = r.omitoneStudyStats;
     });
   } catch (e) { /* storage 不可用就当没有历史 */ }
+
+  // ── 上课页角色伴侣（小游戏的页面端）────────────────────────────────────
+  // 刷课时人盯着的是学习页，弹窗一合角色就没了 —— 把她带到页面上来。
+  // 与状态面板同一套纪律：
+  //   · 样式进 Shadow DOM（与状态面板一致）：学习通的 CSS 进不来、我们的样式漏不出
+  //     —— 不会错位、不会被站点样式冲掉；@keyframes 也定义在 shadow 里防同名互踩；
+  //     继承属性（字体/颜色/行高）会穿过 shadow 边界，在 wrap 上显式重置；
+  //   · 任何一步失败都只表现为"她没出现"，绝不影响刷课；
+  //   · 只读刷课统计、只写好感度存档（omitonePetBond，与弹窗共享），与调度零耦合。
+  const PAGE_PET_ID = 'omitone-page-pet-host';
+  const PAGE_PET_HIDDEN_KEY = 'omitonePagePetHidden';
+  const BOND_STORAGE_KEY = 'omitonePetBond';
+  let pagePet = null;
+  let pagePetBond = null;
+  let pagePetSayTimer = null;
+
+  function petGameModule() {
+    return (typeof self !== 'undefined' && self.OmitonePetGame) || null;
+  }
+
+  function persistPagePetBond() {
+    try {
+      const patch = {};
+      patch[BOND_STORAGE_KEY] = pagePetBond;
+      chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+    } catch (e) {}
+  }
+
+  function renderPagePet() {
+    if (!pagePet || !pagePetBond) return;
+    const game = petGameModule();
+    if (!game) return;
+    try {
+      const lv = game.levelOf(pagePetBond.affection);
+      const levelDef = game.LEVELS[lv] || game.LEVELS[0];
+      const nextDef = game.LEVELS[lv + 1];
+      const pct = nextDef
+        ? Math.round((pagePetBond.affection - levelDef.min) / Math.max(1, nextDef.min - levelDef.min) * 100)
+        : 100;
+      pagePet.els.bondBar.style.width = Math.max(0, Math.min(100, pct)) + '%';
+      pagePet.els.level.textContent = levelDef.name;
+      pagePet.els.level.title = '好感度 ' + pagePetBond.affection + ' / ' + game.RULES.max +
+        (nextDef ? '（下一级「' + nextDef.name + '」还差 ' + (nextDef.min - pagePetBond.affection) + ' 点）' : '（已满）');
+    } catch (e) {}
+  }
+
+  function pagePetSay(text, ms) {
+    if (!pagePet) return;
+    try {
+      pagePet.els.bubble.textContent = String(text || '');
+      pagePet.els.bubble.classList.add('show');
+      clearTimeout(pagePetSayTimer);
+      pagePetSayTimer = setTimeout(function () {
+        try { pagePet.els.bubble.classList.remove('show'); } catch (e) {}
+      }, ms || 2600);
+    } catch (e) {}
+  }
+
+  function pagePetHearts(x, y) {
+    if (!pagePet) return;
+    try {
+      for (let i = 0; i < 4; i++) {
+        const h = document.createElement('span');
+        h.className = 'heart';
+        h.textContent = '❤';
+        h.style.left = Math.round(x + (Math.random() * 26 - 13)) + 'px';
+        h.style.top = Math.round(y + (Math.random() * 10 - 5)) + 'px';
+        pagePet.els.wrap.appendChild(h);
+        setTimeout(function () { try { h.remove(); } catch (e) {} }, 1100);
+      }
+    } catch (e) {}
+  }
+
+  function pagePetLevelUp(level) {
+    const game = petGameModule();
+    if (!game || !pagePet) return;
+    try {
+      const def = game.LEVELS[level] || game.LEVELS[0];
+      pagePet.els.img.classList.add('cheer');
+      setTimeout(function () { try { pagePet.els.img.classList.remove('cheer'); } catch (e) {} }, 950);
+      pagePetSay('好感度达到「' + def.name + '」！' + (def.line || ''), 3600);
+    } catch (e) {}
+  }
+
+  function settleStudyIntoBond() {
+    const game = petGameModule();
+    if (!game || !pagePetBond) return;
+    try {
+      chrome.storage.local.get('omitoneStudyStats', function (r) {
+        try {
+          if (chrome.runtime.lastError) return;
+          const stats = (r && r.omitoneStudyStats) || {};
+          const result = game.applyStudySeconds(pagePetBond, Number(stats.activeSeconds) || 0, game.dayKeyOf(Date.now()));
+          if (result.gained > 0) { pagePetBond = result.state; persistPagePetBond(); }
+          renderPagePet();
+          if (result.leveledUp) pagePetLevelUp(result.level);
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  function ensurePagePet() {
+    const game = petGameModule();
+    if (pagePet && pagePet.host && pagePet.host.isConnected) return pagePet;
+    if (!game || !document.body) return null;
+    try {
+      const stale = document.getElementById(PAGE_PET_ID);
+      if (stale) stale.remove();
+
+      const host = document.createElement('div');
+      host.id = PAGE_PET_ID;
+      host.style.cssText = ['all:initial', 'position:fixed', 'right:14px', 'bottom:120px',
+        'z-index:2147483646', 'pointer-events:none'].join(';');
+      const shadow = host.attachShadow({ mode: 'open' });
+      if (!shadow) return null;
+
+      shadow.innerHTML = [
+        '<style>',
+        ':host{all:initial}',
+        '*{box-sizing:border-box;margin:0;padding:0}',
+        '.wrap{position:relative;width:92px;pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.4;color:#334155;-webkit-user-select:none;user-select:none}',
+        '.pet{display:block;width:60px;height:auto;margin:0 auto;cursor:pointer;filter:drop-shadow(0 4px 10px rgba(15,23,42,.28));transform-origin:50% 90%;animation:om-pet-bob 3.4s ease-in-out infinite}',
+        '@keyframes om-pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}',
+        '.pet.cheer{animation:om-pet-cheer .9s ease}',
+        '@keyframes om-pet-cheer{0%{transform:scale(1)}30%{transform:scale(1.12) rotate(-4deg)}60%{transform:scale(1.06) rotate(3deg)}100%{transform:scale(1)}}',
+        '.level{display:inline-block;margin-top:2px;padding:1px 6px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700;white-space:nowrap}',
+        '.bond{width:60px;height:4px;margin:3px auto 0;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
+        '.bond i{display:block;height:100%;width:0;border-radius:2px;background:linear-gradient(90deg,#ffb6c1,#ff7d9c);transition:width .4s}',
+        '.bubble{position:absolute;left:66px;bottom:52px;max-width:200px;background:#fff;border:1px solid rgba(15,23,42,.12);border-radius:10px;padding:6px 9px;font-size:12px;color:#0f172a;box-shadow:0 8px 24px rgba(15,23,42,.16);opacity:0;transition:opacity .25s;pointer-events:none;word-break:break-word}',
+        '.bubble.show{opacity:1}',
+        '.heart{position:absolute;width:14px;height:14px;color:#f43f5e;font-size:13px;line-height:14px;pointer-events:none;animation:om-heart-up 1s ease-out forwards}',
+        '@keyframes om-heart-up{0%{transform:translateY(0);opacity:1}100%{transform:translateY(-36px);opacity:0}}',
+        '.hide{margin-top:3px;border:0;background:rgba(241,245,249,.92);border-radius:6px;font-size:10px;padding:2px 7px;cursor:pointer;color:#64748b;font-family:inherit}',
+        '.pill{display:none;margin:0 auto;pointer-events:auto;cursor:pointer;border:1px solid rgba(15,23,42,.12);background:rgba(255,255,255,.95);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:700;color:#64748b;box-shadow:0 6px 18px rgba(15,23,42,.14);font-family:inherit}',
+        '.mode-hidden .pet,.mode-hidden .level,.mode-hidden .bond,.mode-hidden .hide{display:none}',
+        '.mode-hidden .pill{display:inline-block}',
+        '</style>',
+        '<div class="wrap" id="wrap">',
+        '<img class="pet" id="petImg" src="' + chrome.runtime.getURL('popup/pet.png') + '" alt="Omitone" draggable="false">',
+        '<div class="bubble" id="bubble"></div>',
+        '<div class="level" id="level">初识</div>',
+        '<div class="bond"><i id="bondBar"></i></div>',
+        '<button class="hide" id="hideBtn" title="收起来（会留一个小入口，随时点回来）">收</button>',
+        '<button class="pill" id="pillBtn" title="叫她出来">宠</button>',
+        '</div>'
+      ].join('');
+      document.body.appendChild(host);
+
+      pagePet = {
+        host: host,
+        els: {
+          wrap: shadow.getElementById('wrap'),
+          img: shadow.getElementById('petImg'),
+          bubble: shadow.getElementById('bubble'),
+          level: shadow.getElementById('level'),
+          bondBar: shadow.getElementById('bondBar'),
+          hideBtn: shadow.getElementById('hideBtn'),
+          pillBtn: shadow.getElementById('pillBtn')
+        }
+      };
+    } catch (e) {
+      pagePet = null;
+      return null;
+    }
+    if (!pagePet || !pagePet.els.img) { pagePet = null; return null; }
+
+    pagePet.els.img.addEventListener('click', function (ev) {
+      try {
+        const rect = pagePet.els.img.getBoundingClientRect();
+        pagePetHearts(ev.clientX || rect.left + rect.width / 2, ev.clientY || rect.top + 8);
+        const game = petGameModule();
+        if (!game || !pagePetBond) return;
+        const result = game.onPat(pagePetBond, game.dayKeyOf(Date.now()));
+        pagePetBond = result.state;
+        persistPagePetBond();
+        renderPagePet();
+        if (result.leveledUp) pagePetLevelUp(result.level);
+        else if (result.line) pagePetSay(result.line, 2400);
+        settleStudyIntoBond();
+      } catch (e) {}
+    });
+    pagePet.els.hideBtn.addEventListener('click', function () {
+      try {
+        pagePet.els.wrap.classList.add('mode-hidden');
+        const patch = {};
+        patch[PAGE_PET_HIDDEN_KEY] = 1;
+        chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+      } catch (e) {}
+    });
+    pagePet.els.pillBtn.addEventListener('click', function () {
+      try {
+        pagePet.els.wrap.classList.remove('mode-hidden');
+        const patch = {};
+        patch[PAGE_PET_HIDDEN_KEY] = 0;
+        chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+      } catch (e) {}
+    });
+
+    try {
+      chrome.storage.local.get([BOND_STORAGE_KEY, PAGE_PET_HIDDEN_KEY], function (r) {
+        try {
+          if (chrome.runtime.lastError) return;
+          const g = petGameModule();
+          if (!g) return;
+          pagePetBond = g.rollDay(r && r[BOND_STORAGE_KEY], g.dayKeyOf(Date.now()));
+          if (r && r[PAGE_PET_HIDDEN_KEY]) pagePet.els.wrap.classList.add('mode-hidden');
+          renderPagePet();
+          settleStudyIntoBond();
+          pagePetSay('一起来刷课吧～点我摸摸头', 3000);
+        } catch (e) {}
+      });
+    } catch (e) {}
+    try {
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== 'local') return;
+        const g = petGameModule();
+        if (changes[BOND_STORAGE_KEY] && changes[BOND_STORAGE_KEY].newValue && g) {
+          pagePetBond = g.rollDay(changes[BOND_STORAGE_KEY].newValue, g.dayKeyOf(Date.now()));
+          renderPagePet();
+        }
+        if (changes[PAGE_PET_HIDDEN_KEY] && pagePet && pagePet.els.wrap) {
+          if (changes[PAGE_PET_HIDDEN_KEY].newValue) pagePet.els.wrap.classList.add('mode-hidden');
+          else pagePet.els.wrap.classList.remove('mode-hidden');
+        }
+      });
+    } catch (e) {}
+    return pagePet;
+  }
 
   function handleRuntimeStatus(level, message, meta) {
     if (String(message || '') === 'start') statusPanelActive = true;
@@ -1892,6 +2121,7 @@
     await maybeMarkAutoResume();
     scheduleDecryptSweep();
     injectPageScript('startup');
+    ensurePagePet();
   }
 
   function startSafely() {

@@ -194,7 +194,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     var deadline = new Promise(function (resolve) {
       timer = setTimeout(function () {
         controller.abort();
-        var result = failure('timeout', 'request timeout');
+        var result = failure('timeout', '请求超时 —— 网络不通或服务商长时间无响应');
         if (status !== undefined) result.status = status;
         resolve(result);
       }, timeoutMs);
@@ -203,7 +203,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
       status = response.status;
       return consume(response);
     }).catch(function () {
-      var result = failure('fetch_failed', 'network or response failure');
+      var result = failure('fetch_failed', '网络不通或响应异常');
       if (status !== undefined) result.status = status;
       return result;
     });
