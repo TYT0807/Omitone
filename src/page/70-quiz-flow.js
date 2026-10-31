@@ -11,7 +11,7 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（47 个）：
+ * 本段的方法（49 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -31,7 +31,8 @@
  *   _handleQuiz、
  *   _extractQuestions、_getQuizDocumentFromQuestions、_looksLikeQuizTitle、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
- *   _prepareQuizRedoIfNeeded
+ *   _prepareQuizRedoIfNeeded、
+ *   _hasUndecryptedFontSecret、_quizTextGarbledRatio
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -43,7 +44,7 @@
         if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text)) return false;
         if (doc.querySelector('.testTit_status_complete')) return true;
         if (/任务点已完成|已完成|已通过|恭喜/.test(text) &&
-          doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, .answerCon, .answerScore')) {
+          doc.querySelector(this._quizContainerSelector + ', .answerCon, .answerScore')) {
           return true;
         }
       } catch (e) {}
@@ -143,7 +144,9 @@
         });
         if (onWorkPage) return true;
       }
-      var selectors = ['.TiMu', '.questionLi', '.questionItem', '.tiBank', '.topicItem', '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox', '.answerOption'];
+      // 真源 `_quizDetectorSelector` —— 这份清单曾手抄在此且漏了 .Cy_TItle，
+      // 作业/考试页的 DOM 兜底整体失效（真源处有完整教训记录），别再抄回来
+      var selectors = [this._quizDetectorSelector];
       var tasks = this._collectVisibleTaskFrames();
       if (tasks.some(function (task) { return task.type === 'quiz' && !task.finished; })) return true;
 
@@ -561,7 +564,7 @@
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
       if (!doc) return false;
       try {
-        var hasQuiz = !!doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, input[id^="answertype"]');
+        var hasQuiz = !!doc.querySelector(this._quizContainerSelector + ', input[id^="answertype"]');
         if (!hasQuiz) return false;
         var buttons = Array.from(doc.querySelectorAll('.btnSubmit, .workBtnIndex, .bluebtn, button, a, input[type="submit"], input[type="button"]'));
         return buttons.some(function (button) {
@@ -865,6 +868,25 @@
         this._forceSkipQuizAfterMaxAttempts(preferredDoc || null);
         return;
       }
+      // 字体反爬解密在 content.js 里异步进行（MutationObserver + 300ms 防抖），抽题原本不等它 ——
+      // 竞态窗口里抽到的是 PUA 密文题干，直接发给模型必错还烧 token（README 已知缺陷 #6 的竞态面）。
+      // 看到 .font-cxsecret 残留就等下一轮 tick（解密扫描通常 300ms~1s 内完成）；
+      // 上限 8 秒：真解不出来就按现状继续，交给下面的题干乱码守卫接手，绝不死等成新的卡死点。
+      if (this._hasUndecryptedFontSecret()) {
+        var secretWaitSince = this._fontSecretWaitSince || 0;
+        if (!secretWaitSince) {
+          this._fontSecretWaitSince = Date.now();
+          emitRuntimeLog('info', 'quiz waiting font decrypt', {
+            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）'
+          });
+          return;
+        }
+        if (Date.now() - secretWaitSince < 8000) return;
+        this._fontSecretWaitSince = 0;
+        emitRuntimeLog('warn', 'font decrypt pending over 8s, answer anyway', {});
+      } else {
+        this._fontSecretWaitSince = 0;
+      }
       this._quizInProgress = true;
       this._quizCurrentAnsweredKeys = {};
       this._quizCurrentAnswerValues = {};
@@ -917,6 +939,48 @@
           this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
           this._quizRoundNoProgressAt = 0;
           this._quizNoProgressLogAt = 0;
+        }
+
+        // ===== 题干乱码守卫（第二层保护）=====
+        //
+        // 第一层是上面那道「等解密」：.font-cxsecret 类名还在时不抽题。
+        // 但解密扫描完成后、映射表里却没有那个字形哈希时（表快照落后于平台字符集），
+        // 残留的 PUA 字符（U+E000~U+F8FF）会混进题干 —— 发给模型必错，还白烧 token 与提交次数。
+        // README 的口径是「看到乱码请立刻停下」：这里把它变成机器判据 ——
+        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就放弃这一卷。
+        // ⚠️ 必须放在「无进展闸」**之前**：乱码卷 filled 计数不变，会被 60 秒闸先拦下，
+        // 轮次就永远数不满、乱码卷永远跳不出。
+        var garbledCount = 0;
+        for (var gi = 0; gi < questions.length; gi++) {
+          if (questions[gi].garbled) garbledCount++;
+        }
+        if (garbledCount) {
+          if (quizPaperKey !== (this._quizGarbledPaperKey || '')) {
+            this._quizGarbledPaperKey = quizPaperKey;
+            this._quizGarbledRounds = 0;
+          }
+          this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
+          emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
+            garbled: garbledCount,
+            total: questions.length,
+            rounds: this._quizGarbledRounds
+          });
+          this._quizInProgress = false;
+          if (this._quizGarbledRounds >= 3) {
+            this._quizGarbledPaperKey = '';
+            this._quizGarbledRounds = 0;
+            emitRuntimeLog('error', 'quiz skipped: text stays garbled', {
+              garbled: garbledCount,
+              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复'
+            });
+            this._skipQuiz();
+            return;
+          }
+          return;
+        }
+        if (quizPaperKey && quizPaperKey === (this._quizGarbledPaperKey || '')) {
+          this._quizGarbledPaperKey = '';
+          this._quizGarbledRounds = 0;
         }
 
         var filledNow = 0;
@@ -1244,6 +1308,46 @@
         if (question) questions.push(question);
       });
       return questions;
+    },
+
+
+    /**
+     * 还有没有处于密文态的题目文字（.font-cxsecret 且带非空文本）。
+     *
+     * 学习通的反爬是把文字换成自定义字形的 PUA 字符、再靠 CSS 类挂上真字体；
+     * content.js 的解密扫描完成后会把类名摘掉。所以「类名还在」就是「还没解完」的
+     * 可靠信号 —— `_handleQuiz` 用它决定要不要等一轮。带文本过滤是避免被
+     * 空壳占位节点骗成永久等待。
+     */
+    _hasUndecryptedFontSecret: function () {
+      var found = false;
+      this._walkDocuments(function (doc) {
+        if (!doc || !doc.querySelector) return false;
+        try {
+          var nodes = doc.querySelectorAll('.font-cxsecret');
+          for (var i = 0; i < nodes.length; i++) {
+            if (textOf(nodes[i]).length > 0) { found = true; return true; }
+          }
+        } catch (e) {}
+        return false;
+      });
+      return found;
+    },
+
+
+    /**
+     * 一段文字里 PUA 密文字符（U+E000~U+F8FF）的占比。
+     *
+     * 解密「部分命中」时，类名已被摘掉、第一层等待不会触发，但没映射到的字符
+     * 会以密文留在题干里 —— 这是从文本本身判断乱码的唯一手段（第二层保护）。
+     * 占比阈值 0.3：个别未知字形不应拦下整卷（模型通常仍可作答），
+     * 成片密文才判定为乱码。
+     */
+    _quizTextGarbledRatio: function (text) {
+      var meaningful = String(text || '').replace(/\s/g, '');
+      if (!meaningful.length) return 0;
+      var hits = meaningful.match(/[\uE000-\uF8FF]/g);
+      return (hits ? hits.length : 0) / meaningful.length;
     },
 
     _findVisibleQuizRedoDialog: function () {

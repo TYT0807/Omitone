@@ -201,7 +201,14 @@
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
         try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
 
-        self._questionSelectors.forEach(function (sel) {
+        // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
+        // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
+        var diagSelectors = self._questionSelectors;
+        var diagOverrides = self.configs && self.configs.questionSelectorOverrides;
+        if (Array.isArray(diagOverrides) && diagOverrides.length) {
+          diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
+        }
+        diagSelectors.forEach(function (sel) {
           try {
             var count = doc.querySelectorAll(sel).length;
             if (count) entry.selectors[sel] = count;

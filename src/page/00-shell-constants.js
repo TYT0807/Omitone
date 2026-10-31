@@ -66,6 +66,12 @@
     discussionTimeoutMs: 90000,
     autoNext: true,
     enableQuiz: true,
+    // 内部调参（不上弹窗）：追加的题目容器选择器。学习通改版换了题目标记时，
+    // 在 chrome.storage.local 的 config 里加一条就能顶上，不必等发版 ——
+    // 会追加到真源 `_questionSelectors` 的**末尾**逐个尝试（内置清单优先命中）。
+    // 校验在 libs/runtime-policy.js 的 validField（字符串数组，≤12 条、单条 ≤200 字符）。
+    // 例：{"questionSelectorOverrides": [".newQuizBox"]}
+    questionSelectorOverrides: [],
     // 「乱选」：不接 AI，本地随机生成答案。给不想配 API key 的用户用，
     // 只求把卷交出去，不求对。默认关。
     randomAnswer: false,

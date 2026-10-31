@@ -23,6 +23,8 @@
 > 日志拆分已通过源码全量与打包完整性检查；此前中止造成的产物验收缺口现已补齐，**产物全量通过并有独立退出回执**。见 [可靠产物验收记录](1.3.0-产物验收记录-20261023.md)；[拆分阶段记录](1.3.0-日志模块拆分验收-20261023.md) 保留历史事实。
 > 可靠产物验收入口：`npm run acceptance:built`，逐阶段保留唯一编号 JSONL 证据与独立进程退出回执；`npm run acceptance:test` 检查记录器。缺结束记录或退出回执一律不通过。
 > 本地报告保留各阶段真实结果；未通过完整回归前不应把实验源码替换为日常使用版本。
+> 本线后续加固了答题链路的平台适应性：题目选择器收敛为单一真源 + 自检防漂移守卫、
+> 字体解密与抽题的时序协同、映射表过期自诊断与乱码卷自动拦停，明细见 CHANGELOG 的 1.3.0 段。
 
 ## ⬇️ 想直接用？点这里
 
@@ -334,6 +336,12 @@
 题干会变成乱码 —— 此时 AI 收到的也是乱码，**结果必错**。
 
 **看到题干乱码请立刻停下**：继续跑下去既答不对，还白耗 token。
+
+**（1.3.0 起）插件自己会报，也会拦**：日志出现 `font decrypt miss` /
+`font decrypt incomplete` 就是表过期的实锤（提示更新 `resources/table.json`）；
+混进密文的卷子会被乱码守卫自动拦下 —— `quiz text garbled` 连续 3 轮后
+`quiz skipped: text stays garbled`，不会拿乱码去白烧 token。解密没完成时抽题
+会先等一轮（`quiz waiting font decrypt`），竞态窗口里的密文题干不会再发出去。
 
 ### 7. 其它已知限制
 
@@ -647,7 +655,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 53 个场景，562 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 54 个场景，567 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -999,6 +1007,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 症状 | 先查 |
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
+| **题干出现乱码方块 / 漏字** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时整卷被拦（`quiz text garbled` → 3 轮后 `quiz skipped: text stays garbled`），根因与解法见已知缺陷 #6 |
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
@@ -1056,7 +1065,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 做不完的任务点跳过 | `src/page/64-tasks-loop.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
 | 任务点调度（主循环） | `src/page/64-tasks-loop.js`：`_runTick` / `_tick`（⚠️ 判定顺序＝仲裁顺序） |
 | 学习卡片（小节）切换 / 下一节 | `src/page/64-tasks-loop.js`：`_getLearningCards` / `_switchToNextLearningCard` / `nextUnit` |
-| 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（选择器表 `_questionSelectors` 在 `10-config-state.js`） |
+| 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（**选择器真源都在 `10-config-state.js`**：`_questionSelectors` / `_quizDetectorSelector` / `_questionTitleSelectors` / `_optionListSelectors` / `_quizContainerSelector` —— 真源之外手抄会被 `npm run check` 报红；改版应急走 storage 的 `questionSelectorOverrides`） |
 | 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
 | 提交监控 / 提交次数跳过 | `src/page/70-quiz-flow.js`：`_monitorQuizSubmit` / `_shouldHoldQuizBeforeNext` / `_shouldSkipQuizBySubmitAttempts` |
 | 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
@@ -1139,7 +1148,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（128 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（53 个场景 / 562 项）
+npm run e2e      # 真实 Edge 功能交叉检验（54 个场景 / 567 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

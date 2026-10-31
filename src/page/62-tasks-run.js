@@ -491,7 +491,7 @@
 
       if (task.type === 'other') {
         try {
-          if (!task.doc.querySelector('video, audio, .ans-insertvideo-online, .fileBox, .pageNum, .TiMu, .questionLi, [qid], [role="radio"], [role="checkbox"]')) {
+          if (!task.doc.querySelector('video, audio, .ans-insertvideo-online, .fileBox, .pageNum, ' + this._quizContainerSelector + ', [qid], [role="radio"], [role="checkbox"]')) {
             return true;
           }
         } catch (e3) {

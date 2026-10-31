@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '0d97bd54a5';
+var OMITONE_CODE_REV = '10e52cc35f';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -53,6 +53,12 @@ var OMITONE_CODE_REV = '0d97bd54a5';
     discussionTimeoutMs: 90000,
     autoNext: true,
     enableQuiz: true,
+    // 内部调参（不上弹窗）：追加的题目容器选择器。学习通改版换了题目标记时，
+    // 在 chrome.storage.local 的 config 里加一条就能顶上，不必等发版 ——
+    // 会追加到真源 `_questionSelectors` 的**末尾**逐个尝试（内置清单优先命中）。
+    // 校验在 libs/runtime-policy.js 的 validField（字符串数组，≤12 条、单条 ≤200 字符）。
+    // 例：{"questionSelectorOverrides": [".newQuizBox"]}
+    questionSelectorOverrides: [],
     // 「乱选」：不接 AI，本地随机生成答案。给不想配 API key 的用户用，
     // 只求把卷交出去，不求对。默认关。
     randomAnswer: false,
@@ -737,6 +743,42 @@ var OMITONE_CODE_REV = '0d97bd54a5';
     ],
 
     /**
+     * 「这份文档有没有题目容器」的并集选择器 —— `_detectQuiz` 的 DOM 兜底、
+     * 视觉闸门（_isTextOnly）、独立验证码页判定共用。
+     *
+     * ⚠️ 这份清单曾经手抄在 `_detectQuiz` 里，抄的时候漏了 `.Cy_TItle` ——
+     * 作业/考试页的 DOM 兜底整体失效（与下面 `_quizContainerSelector` 注释里那次
+     * 是同一类事故，且不报错、不留日志）。现在**只准改这里**；
+     * `tools/check.js` 的「选择器真源守卫」会把真源之外的手抄直接报红。
+     */
+    _quizDetectorSelector: '.TiMu, .Cy_TItle, .questionLi, .questionItem, .tiBank, .topicItem, .exam_question, .question-content, .singleQues, .mark_item, .questionBox, .answerOption',
+
+    /**
+     * 题干候选选择器，按优先级逐个试；候选清洗后长度 ≥ 4 才算数（`_parseQuestionElement`）。
+     * ⚠️ 属性选择器区分大小写，[class*="title"] 匹配不到 "Zy_TItle" / "Cy_TItle" —— 必须显式列出。
+     */
+    _questionTitleSelectors: [
+      '.fontLabel', '.mark_name',
+      // 学习通真实结构：题号在 .fontLabel，题干与题号同处 .Pt1 / .Zy_TItle。
+      '.Pt1', '.Zy_TItle',
+      '.question-title', '.topicTitle', '.question_content', '.qContent', '.mark_title',
+      '.question-name', '.title', 'h3', 'h4', '.stem', '[class*="question"]', '[class*="title"]'
+    ],
+
+    /**
+     * 选项 <li> 的候选容器，按优先级逐个试（`_getOptionItems`）。
+     * 课程页 Zy_ 族在前、作业/考试页 Cy_ 族紧随 —— 顺序有含义：
+     * ⚠️ `<li>` 必须排在 `<label>` 之前（qid 挂在 li 上；返回 label 会让
+     * 隐藏答案域永远写不上 → 答案填了也永不提交，见 _getOptionItems 处的说明）。
+     */
+    _optionListSelectors: [
+      '.Zy_ulTop > li', '.Zy_ulBottom > li', '.Zy_ulTk > li',
+      '.Cy_ulTop li', '.Cy_ulBottom li', '.Cy_ulTk li',
+      '[class*="before-after"]', '.answerBg',
+      'li.clearfix'
+    ],
+
+    /**
      * "这一页有没有题目容器"用的**并集选择器**（一串，不是数组）。
      *
      * ⚠️ 它和上面的 `_questionSelectors` **不是一回事，别合并**：
@@ -1296,7 +1338,14 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
         try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
 
-        self._questionSelectors.forEach(function (sel) {
+        // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
+        // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
+        var diagSelectors = self._questionSelectors;
+        var diagOverrides = self.configs && self.configs.questionSelectorOverrides;
+        if (Array.isArray(diagOverrides) && diagOverrides.length) {
+          diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
+        }
+        diagSelectors.forEach(function (sel) {
           try {
             var count = doc.querySelectorAll(sel).length;
             if (count) entry.selectors[sel] = count;
@@ -2965,7 +3014,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
     _computeStandaloneCaptchaPage: function () {
       try {
         if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
-        if (document.querySelector('#video, #audio, .TiMu, .questionLi, .swiper-container, .ans-attach')) return false;
+        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach, ' + this._quizDetectorSelector)) return false;
         var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
         var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
         var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);
@@ -3460,7 +3509,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
       var videojs = doc.querySelector('#video, #audio, .video-js, #video_html5_api');
-      var chapterTest = doc.querySelector('.TiMu, .questionLi, .mark_item, .questionItem, .answerOption');
+      var chapterTest = doc.querySelector(this._quizDetectorSelector);
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
@@ -3765,7 +3814,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         if (!doc) return null;
         return {
           videojs: doc.querySelector('#video,#audio'),
-          chapterTest: doc.querySelector('.TiMu'),
+          chapterTest: doc.querySelector(appRef._quizDetectorSelector),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
@@ -4894,7 +4943,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
 
       if (task.type === 'other') {
         try {
-          if (!task.doc.querySelector('video, audio, .ans-insertvideo-online, .fileBox, .pageNum, .TiMu, .questionLi, [qid], [role="radio"], [role="checkbox"]')) {
+          if (!task.doc.querySelector('video, audio, .ans-insertvideo-online, .fileBox, .pageNum, ' + this._quizContainerSelector + ', [qid], [role="radio"], [role="checkbox"]')) {
             return true;
           }
         } catch (e3) {
@@ -6930,7 +6979,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text)) return false;
         if (doc.querySelector('.testTit_status_complete')) return true;
         if (/任务点已完成|已完成|已通过|恭喜/.test(text) &&
-          doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, .answerCon, .answerScore')) {
+          doc.querySelector(this._quizContainerSelector + ', .answerCon, .answerScore')) {
           return true;
         }
       } catch (e) {}
@@ -7030,7 +7079,9 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         });
         if (onWorkPage) return true;
       }
-      var selectors = ['.TiMu', '.questionLi', '.questionItem', '.tiBank', '.topicItem', '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox', '.answerOption'];
+      // 真源 `_quizDetectorSelector` —— 这份清单曾手抄在此且漏了 .Cy_TItle，
+      // 作业/考试页的 DOM 兜底整体失效（真源处有完整教训记录），别再抄回来
+      var selectors = [this._quizDetectorSelector];
       var tasks = this._collectVisibleTaskFrames();
       if (tasks.some(function (task) { return task.type === 'quiz' && !task.finished; })) return true;
 
@@ -7448,7 +7499,7 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
       if (!doc) return false;
       try {
-        var hasQuiz = !!doc.querySelector('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox, input[id^="answertype"]');
+        var hasQuiz = !!doc.querySelector(this._quizContainerSelector + ', input[id^="answertype"]');
         if (!hasQuiz) return false;
         var buttons = Array.from(doc.querySelectorAll('.btnSubmit, .workBtnIndex, .bluebtn, button, a, input[type="submit"], input[type="button"]'));
         return buttons.some(function (button) {
@@ -7752,6 +7803,25 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         this._forceSkipQuizAfterMaxAttempts(preferredDoc || null);
         return;
       }
+      // 字体反爬解密在 content.js 里异步进行（MutationObserver + 300ms 防抖），抽题原本不等它 ——
+      // 竞态窗口里抽到的是 PUA 密文题干，直接发给模型必错还烧 token（README 已知缺陷 #6 的竞态面）。
+      // 看到 .font-cxsecret 残留就等下一轮 tick（解密扫描通常 300ms~1s 内完成）；
+      // 上限 8 秒：真解不出来就按现状继续，交给下面的题干乱码守卫接手，绝不死等成新的卡死点。
+      if (this._hasUndecryptedFontSecret()) {
+        var secretWaitSince = this._fontSecretWaitSince || 0;
+        if (!secretWaitSince) {
+          this._fontSecretWaitSince = Date.now();
+          emitRuntimeLog('info', 'quiz waiting font decrypt', {
+            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）'
+          });
+          return;
+        }
+        if (Date.now() - secretWaitSince < 8000) return;
+        this._fontSecretWaitSince = 0;
+        emitRuntimeLog('warn', 'font decrypt pending over 8s, answer anyway', {});
+      } else {
+        this._fontSecretWaitSince = 0;
+      }
       this._quizInProgress = true;
       this._quizCurrentAnsweredKeys = {};
       this._quizCurrentAnswerValues = {};
@@ -7804,6 +7874,48 @@ var OMITONE_CODE_REV = '0d97bd54a5';
           this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
           this._quizRoundNoProgressAt = 0;
           this._quizNoProgressLogAt = 0;
+        }
+
+        // ===== 题干乱码守卫（第二层保护）=====
+        //
+        // 第一层是上面那道「等解密」：.font-cxsecret 类名还在时不抽题。
+        // 但解密扫描完成后、映射表里却没有那个字形哈希时（表快照落后于平台字符集），
+        // 残留的 PUA 字符（U+E000~U+F8FF）会混进题干 —— 发给模型必错，还白烧 token 与提交次数。
+        // README 的口径是「看到乱码请立刻停下」：这里把它变成机器判据 ——
+        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就放弃这一卷。
+        // ⚠️ 必须放在「无进展闸」**之前**：乱码卷 filled 计数不变，会被 60 秒闸先拦下，
+        // 轮次就永远数不满、乱码卷永远跳不出。
+        var garbledCount = 0;
+        for (var gi = 0; gi < questions.length; gi++) {
+          if (questions[gi].garbled) garbledCount++;
+        }
+        if (garbledCount) {
+          if (quizPaperKey !== (this._quizGarbledPaperKey || '')) {
+            this._quizGarbledPaperKey = quizPaperKey;
+            this._quizGarbledRounds = 0;
+          }
+          this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
+          emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
+            garbled: garbledCount,
+            total: questions.length,
+            rounds: this._quizGarbledRounds
+          });
+          this._quizInProgress = false;
+          if (this._quizGarbledRounds >= 3) {
+            this._quizGarbledPaperKey = '';
+            this._quizGarbledRounds = 0;
+            emitRuntimeLog('error', 'quiz skipped: text stays garbled', {
+              garbled: garbledCount,
+              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复'
+            });
+            this._skipQuiz();
+            return;
+          }
+          return;
+        }
+        if (quizPaperKey && quizPaperKey === (this._quizGarbledPaperKey || '')) {
+          this._quizGarbledPaperKey = '';
+          this._quizGarbledRounds = 0;
         }
 
         var filledNow = 0;
@@ -8133,6 +8245,46 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       return questions;
     },
 
+
+    /**
+     * 还有没有处于密文态的题目文字（.font-cxsecret 且带非空文本）。
+     *
+     * 学习通的反爬是把文字换成自定义字形的 PUA 字符、再靠 CSS 类挂上真字体；
+     * content.js 的解密扫描完成后会把类名摘掉。所以「类名还在」就是「还没解完」的
+     * 可靠信号 —— `_handleQuiz` 用它决定要不要等一轮。带文本过滤是避免被
+     * 空壳占位节点骗成永久等待。
+     */
+    _hasUndecryptedFontSecret: function () {
+      var found = false;
+      this._walkDocuments(function (doc) {
+        if (!doc || !doc.querySelector) return false;
+        try {
+          var nodes = doc.querySelectorAll('.font-cxsecret');
+          for (var i = 0; i < nodes.length; i++) {
+            if (textOf(nodes[i]).length > 0) { found = true; return true; }
+          }
+        } catch (e) {}
+        return false;
+      });
+      return found;
+    },
+
+
+    /**
+     * 一段文字里 PUA 密文字符（U+E000~U+F8FF）的占比。
+     *
+     * 解密「部分命中」时，类名已被摘掉、第一层等待不会触发，但没映射到的字符
+     * 会以密文留在题干里 —— 这是从文本本身判断乱码的唯一手段（第二层保护）。
+     * 占比阈值 0.3：个别未知字形不应拦下整卷（模型通常仍可作答），
+     * 成片密文才判定为乱码。
+     */
+    _quizTextGarbledRatio: function (text) {
+      var meaningful = String(text || '').replace(/\s/g, '');
+      if (!meaningful.length) return 0;
+      var hits = meaningful.match(/[\uE000-\uF8FF]/g);
+      return (hits ? hits.length : 0) / meaningful.length;
+    },
+
     _findVisibleQuizRedoDialog: function () {
       var found = null;
       this._walkDocuments(function (doc) {
@@ -8296,7 +8448,8 @@ var OMITONE_CODE_REV = '0d97bd54a5';
     _getQuizTitleKeyFromElement: function (el, fallbackTitle) {
       var title = fallbackTitle || '';
       if (!title && el && el.querySelector) {
-        var titleEl = el.querySelector('.fontLabel, .mark_name, .question-title, .topicTitle, .question_content, .qContent, .mark_title, .question-name, .title, h3, h4, .stem');
+        // 真源 `_questionTitleSelectors`：缓存键的取材必须与抠题同源，手抄的那份曾漏了 .Pt1 / .Zy_TItle
+        var titleEl = el.querySelector(this._questionTitleSelectors.join(', '));
         title = this._cleanQuestionTitle(titleEl ? textOf(titleEl) : '');
       }
       // 与 _parseQuestionElement 同源：只装题号的标题元素会清洗成空串，
@@ -8574,7 +8727,9 @@ var OMITONE_CODE_REV = '0d97bd54a5';
         var changed = false;
         var nodes = [];
         try {
-          nodes = Array.from(doc.querySelectorAll('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox'));
+          // 真源 `_quizContainerSelector`（含 .Cy_TItle）：作业/考试页的错答也必须收集，
+          // 否则「避开错答」在那两类页面上静默失效（正确答案记忆一直读的是真源，两边曾不对称）
+          nodes = Array.from(doc.querySelectorAll(self._quizContainerSelector));
         } catch (e) {}
 
         for (var i = 0; i < nodes.length; i++) {
@@ -9428,13 +9583,22 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       var bodyText = textOf(doc.body);
       if (bodyText.length < 10 || bodyText === '暂无内容') return true;
       if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
-      if (doc.querySelector('.questionLi, .mark_item, .questionItem, .tiBank, .exam_question, input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
+      if (doc.querySelector(this._quizDetectorSelector + ', input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
       return true;
     },
 
     _collectQuestionContainers: function (doc) {
       if (!doc || !doc.querySelectorAll) return [];
       var selectors = this._questionSelectors;
+      // 学习通改版应急通道：storage config 里的 questionSelectorOverrides 追加在真源
+      // **末尾**逐个尝试 —— 内置清单优先命中，改版新类名兜底。只影响抠题收集与诊断，
+      // 不影响检测并集（检测还有 URL/任务点佐证那条路）。校验已在 runtime-policy 做过，这里再防一层。
+      var overrides = this.configs && this.configs.questionSelectorOverrides;
+      if (Array.isArray(overrides) && overrides.length) {
+        for (var ov = 0; ov < overrides.length; ov++) {
+          if (typeof overrides[ov] === 'string' && overrides[ov]) selectors = selectors.concat([overrides[ov]]);
+        }
+      }
 
       for (var i = 0; i < selectors.length; i++) {
         var found;
@@ -9490,14 +9654,9 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       if (!el) return null;
 
       var title = '';
-      var titleSelectors = [
-        '.fontLabel', '.mark_name',
-        // 学习通真实结构：题号在 .fontLabel，题干与题号同处 .Pt1 / .Zy_TItle。
-        // 注意属性选择器区分大小写，[class*="title"] 匹配不到 "Zy_TItle"，所以要显式列出。
-        '.Pt1', '.Zy_TItle',
-        '.question-title', '.topicTitle', '.question_content', '.qContent', '.mark_title',
-        '.question-name', '.title', 'h3', 'h4', '.stem', '[class*="question"]', '[class*="title"]'
-      ];
+      // 真源 `_questionTitleSelectors`（在 10-config-state.js）：按优先级试，
+      // 候选清洗后长度 ≥ 4 才算数 —— 属性选择器大小写敏感的教训记录在真源处
+      var titleSelectors = this._questionTitleSelectors;
       for (var i = 0; i < titleSelectors.length; i++) {
         var titleEl = el.querySelector(titleSelectors[i]);
         if (!titleEl) continue;
@@ -9547,11 +9706,20 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       }
 
       if (!title && !options.length) return null;
+      // 乱码标记：题干或任一选项的 PUA 密文字符占比过高（映射表缺字形时会出现，
+      // 解密扫描完成后类名已被摘掉、只能从文本本身判断）。_handleQuiz 据此拦下整卷。
+      var garbled = this._quizTextGarbledRatio(title) >= 0.3;
+      if (!garbled) {
+        for (var g = 0; g < options.length; g++) {
+          if (this._quizTextGarbledRatio(options[g]) >= 0.3) { garbled = true; break; }
+        }
+      }
       return {
         index: index,
         type: this._detectQuestionType(el),
         title: title,
         options: options,
+        garbled: garbled,
         _element: el
       };
     },
@@ -9600,12 +9768,8 @@ var OMITONE_CODE_REV = '0d97bd54a5';
       // 才能写隐藏答案域 #answer{qid}。学习通把 qid 挂在 <li> 上而不是内层 <label> 上，
       // 一旦返回 label，qid 取不到 → 隐藏域永远为空 →
       // _areQuizAnswersFilled 判定"未填写" → 答案填了也永远不提交。
-      var listSelectors = [
-        '.Zy_ulTop > li', '.Zy_ulBottom > li', '.Zy_ulTk > li',
-        '.Cy_ulTop li', '.Cy_ulBottom li', '.Cy_ulTk li',
-        '[class*="before-after"]', '.answerBg',
-        'li.clearfix'
-      ];
+      // 真源 `_optionListSelectors`（在 10-config-state.js）：Zy_/Cy_ 两族 + 兜底，顺序有含义
+      var listSelectors = this._optionListSelectors;
       for (var i = 0; i < listSelectors.length; i++) {
         var found;
         try { found = Array.from(el.querySelectorAll(listSelectors[i])); } catch (e) { continue; }

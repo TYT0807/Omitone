@@ -1425,7 +1425,68 @@ function checkSelectorCase() {
 }
 
 // ---------------------------------------------------------------------------
-// 18. 桥接消息类型两端一致
+// 18. 题目选择器真源守卫
+//
+// 学习通的题目结构知识（容器/题干/选项的类名）只准写在 `10-config-state.js` 的
+// 真源字段里（_questionSelectors / _quizContainerSelector / _quizDetectorSelector /
+// _questionTitleSelectors / _optionListSelectors）。
+//
+// 为什么必须机械地拦：这批类名已经**手抄漂移过三次** ——
+//   ① `_quizContainerSelector` 曾被手抄三处，其中一处抄成 `.Cy_TITle`（大小写错）；
+//   ② `_detectQuiz` 手抄的清单漏了 `.Cy_TItle`，作业/考试页的 DOM 兜底整体失效；
+//   ③ `_rememberWrongQuizAnswers` 手抄的清单同样漏了 `.Cy_TItle`，作业/考试页的
+//      错答永远进不了「避开错答」缓存 —— 不报错、不留日志，只表现成"反复错同一题"。
+// 三次的共同点：**平台改版时没人记得还有第 N 份手抄**。
+// 判据：剥掉注释后，真源文件之外出现这些类名的字面量就报错 ——
+// 学习通改版时只改真源一处，其余全部自动跟随。
+//
+// ⚠️ 名单只收**题目结构族**（历史上被手抄过、或多处共用的类名）；
+// 单处使用的站点类名（.answerCon / .answerScore / input[id^=answertype] 等）
+// 只有唯一一份、无从漂移，不在列。新增平台类名进真源时，把这个名单同步加一行。
+// ---------------------------------------------------------------------------
+function checkSelectorTruthSource() {
+  var guarded = [
+    'TiMu', 'Cy_TItle', 'Zy_TItle', 'questionLi', 'questionItem', 'tiBank', 'topicItem',
+    'exam_question', 'singleQues', 'mark_item', 'questionBox', 'answerOption',
+    'Zy_ulTop', 'Zy_ulBottom', 'Zy_ulTk', 'Cy_ulTop', 'Cy_ulBottom', 'Cy_ulTk',
+    'fontLabel', 'mark_name', 'Pt1',
+    'question-title', 'topicTitle', 'question_content', 'qContent', 'mark_title', 'question-name'
+  ];
+  var sources = ['content.js'];
+  fs.readdirSync(path.join(ROOT, 'src', 'page')).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (f) { if (f !== '10-config-state.js') sources.push('src/page/' + f); });
+
+  var issues = [];
+  sources.forEach(function (file) {
+    var lines = stripComments(read(file)).split(/\r?\n/);
+    lines.forEach(function (line, i) {
+      guarded.forEach(function (name) {
+        var at = line.indexOf(name);
+        while (at !== -1) {
+          var before = at > 0 ? line.charAt(at - 1) : '';
+          var after = line.charAt(at + name.length) || '';
+          if (!/[A-Za-z0-9_-]/.test(before) && !/[A-Za-z0-9_-]/.test(after)) {
+            issues.push(file + ':' + (i + 1) + '  .' + name + '  →  ' + line.trim().slice(0, 90));
+            break;
+          }
+          at = line.indexOf(name, at + 1);
+        }
+      });
+    });
+  });
+
+  if (issues.length) {
+    fail('题目选择器手抄出真源（平台改版只准改 10-config-state.js 的真源字段）:\n      ' +
+      issues.join('\n      ') +
+      '\n      改成引用 this._quizContainerSelector / this._quizDetectorSelector / ' +
+      'this._questionTitleSelectors / this._optionListSelectors（按用途选，见真源处注释）');
+    return;
+  }
+  pass('题目选择器真源守卫（' + guarded.length + ' 个平台类名，真源外零手抄）');
+}
+
+// ---------------------------------------------------------------------------
+// 19. 桥接消息类型两端一致
 //
 // page.js 与 content.js 靠 `window.postMessage` 通信，**按字符串类型分发**。
 // 任何一端把类型名拼错，另一端就**收不到、也不报错** ——
@@ -1559,6 +1620,7 @@ checkPageConcat();
 checkPagePartHeaders();
 checkAwaitTimeouts();
 checkSelectorCase();
+checkSelectorTruthSource();
 checkBridgeMessageTypes();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });

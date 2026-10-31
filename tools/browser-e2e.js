@@ -2369,6 +2369,85 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 1.5 字体密文两层守卫：未解密时等、解不开时判乱码 ---- */
+/**
+ * 学习通的反爬（font-cxsecret）：文字被换成自定义字形的 PUA 密文字符。
+ * content.js 的解密扫描是异步的，与 page.js 的抽题之间存在竞态；而映射表
+ * （resources/table.json）落后于平台字符集时，部分字符会**永久**保持密文。
+ *
+ * 两层守卫（都断言**行为**，不查内部状态）：
+ *   第一层 `_hasUndecryptedFontSecret` —— 类名还在 → `_handleQuiz` 等一轮，不发请求；
+ *   第二层 `_quizTextGarbledRatio` / `garbled` 标记 —— 密文已混进题干（类名被摘掉
+ *   也检测得到）→ 连续 3 轮后放弃该卷，绝不把乱码发给模型白烧 token。
+ *
+ * 这里测的是两个守卫的判据本身；完整 tick 流程（等 8 秒、三轮放弃）在真实
+ * 课程页上代价太高，由判据正确性 + `_handleQuiz` 的插入位置共同保证。
+ */
+SCENARIOS.push({
+  name: '字体密文两层守卫：未解密时等、解不开时判乱码',
+  path: '/exam-work',
+  run: async function (ctx) {
+    var app = 'window._xxtApp';
+
+    // ① 比率函数：正常文字 0、纯密文接近 1、空串 0
+    var ratio = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';' +
+      'var pua="";for(var i=0;i<10;i++)pua+=String.fromCharCode(0xE000+i);' +
+      'return {clean:a._quizTextGarbledRatio("数据库的主键是唯一标识abc123"),' +
+      'allPua:a._quizTextGarbledRatio(pua+"x"),' +
+      'empty:a._quizTextGarbledRatio("")};})()'
+    );
+    check('乱码比率：正常文字为 0、密文 >0.9、空串为 0',
+      !!ratio && ratio.clean === 0 && ratio.allPua > 0.9 && ratio.empty === 0,
+      JSON.stringify(ratio));
+
+    // ② 第一层：.font-cxsecret 在场 → 判「未解密」；摘掉 → 判「已解密」
+    var secret = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';' +
+      'var d=document.createElement("div");d.className="font-cxsecret";d.textContent="密文";' +
+      'document.body.appendChild(d);' +
+      'var withSecret=a._hasUndecryptedFontSecret();' +
+      'd.parentNode.removeChild(d);' +
+      'var without=a._hasUndecryptedFontSecret();' +
+      'return {withSecret:withSecret,without:without};})()'
+    );
+    check('第一层：.font-cxsecret 在场判「未解密」，摘掉后判「已解密」',
+      !!secret && secret.withSecret === true && secret.without === false,
+      JSON.stringify(secret));
+
+    // ③ 第二层：题干几乎全密文（类名已摘掉 —— 模拟"解密扫描完成但表缺字形"）→ garbled=true
+    var garbledFlag = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';' +
+      'var w=document.createElement("div");w.className="TiMu";' +
+      'var t=document.createElement("div");t.className="Zy_TItle";' +
+      'var p=document.createElement("div");p.className="Pt1";' +
+      'var s=document.createElement("span");s.className="fontLabel";s.textContent="1.";' +
+      'var pua="";for(var i=0;i<12;i++)pua+=String.fromCharCode(0xE100+i);' +
+      'p.appendChild(s);p.appendChild(document.createTextNode(pua));' +
+      't.appendChild(p);w.appendChild(t);' +
+      'var ul=document.createElement("ul");ul.className="Zy_ulTop";' +
+      '["甲","乙"].forEach(function(txt){' +
+      '  var li=document.createElement("li");li.textContent=txt;ul.appendChild(li);});' +
+      'w.appendChild(ul);document.body.appendChild(w);' +
+      'var q=a._parseQuestionElement(w,0);' +
+      'var r={garbled:q?q.garbled:null,titleLen:q?q.title.length:0};' +
+      'w.parentNode.removeChild(w);return r;})()'
+    );
+    check('第二层：题干全密文 → _parseQuestionElement 标 garbled=true',
+      !!garbledFlag && garbledFlag.garbled === true && garbledFlag.titleLen > 0,
+      JSON.stringify(garbledFlag));
+
+    // ④ 反向守卫：作业页自带四道正常题，绝不能被误判乱码（误判 = 好卷被白白拦下）
+    var clean = await ctx.client.evaluate(
+      '(function(){var a=' + app + ';var qs=a._extractQuestions(null);' +
+      'return {n:qs.length,garbledAny:qs.some(function(q){return q.garbled;})};})()'
+    );
+    check('作业页四道正常题 garbled 全为 false（好卷不误拦）',
+      !!clean && clean.n >= 4 && clean.garbledAny === false,
+      JSON.stringify(clean));
+  }
+});
+
 /** ---- 2. 完整答题往返：抠题 → 提示词 → 模型 → 回填 DOM ---- */
 SCENARIOS.push({
   name: '答题往返 + 回填 DOM',

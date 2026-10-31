@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（121 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizApiSkipLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizRunPaperKey
+ * 本段的状态字段（124 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizApiSkipLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -488,6 +488,42 @@
       '.exam_question', '.question-content', '.singleQues', '.mark_item', '.questionBox',
       'li.quesLi', '.answerOption', 'div[class*="question"]', 'div[class*="topic"]',
       'div[class*="TiMu"]', 'div[class*="Cy_TItle"]'
+    ],
+
+    /**
+     * 「这份文档有没有题目容器」的并集选择器 —— `_detectQuiz` 的 DOM 兜底、
+     * 视觉闸门（_isTextOnly）、独立验证码页判定共用。
+     *
+     * ⚠️ 这份清单曾经手抄在 `_detectQuiz` 里，抄的时候漏了 `.Cy_TItle` ——
+     * 作业/考试页的 DOM 兜底整体失效（与下面 `_quizContainerSelector` 注释里那次
+     * 是同一类事故，且不报错、不留日志）。现在**只准改这里**；
+     * `tools/check.js` 的「选择器真源守卫」会把真源之外的手抄直接报红。
+     */
+    _quizDetectorSelector: '.TiMu, .Cy_TItle, .questionLi, .questionItem, .tiBank, .topicItem, .exam_question, .question-content, .singleQues, .mark_item, .questionBox, .answerOption',
+
+    /**
+     * 题干候选选择器，按优先级逐个试；候选清洗后长度 ≥ 4 才算数（`_parseQuestionElement`）。
+     * ⚠️ 属性选择器区分大小写，[class*="title"] 匹配不到 "Zy_TItle" / "Cy_TItle" —— 必须显式列出。
+     */
+    _questionTitleSelectors: [
+      '.fontLabel', '.mark_name',
+      // 学习通真实结构：题号在 .fontLabel，题干与题号同处 .Pt1 / .Zy_TItle。
+      '.Pt1', '.Zy_TItle',
+      '.question-title', '.topicTitle', '.question_content', '.qContent', '.mark_title',
+      '.question-name', '.title', 'h3', 'h4', '.stem', '[class*="question"]', '[class*="title"]'
+    ],
+
+    /**
+     * 选项 <li> 的候选容器，按优先级逐个试（`_getOptionItems`）。
+     * 课程页 Zy_ 族在前、作业/考试页 Cy_ 族紧随 —— 顺序有含义：
+     * ⚠️ `<li>` 必须排在 `<label>` 之前（qid 挂在 li 上；返回 label 会让
+     * 隐藏答案域永远写不上 → 答案填了也永不提交，见 _getOptionItems 处的说明）。
+     */
+    _optionListSelectors: [
+      '.Zy_ulTop > li', '.Zy_ulBottom > li', '.Zy_ulTk > li',
+      '.Cy_ulTop li', '.Cy_ulBottom li', '.Cy_ulTk li',
+      '[class*="before-after"]', '.answerBg',
+      'li.clearfix'
     ],
 
     /**

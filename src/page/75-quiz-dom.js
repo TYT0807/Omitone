@@ -32,6 +32,15 @@
     _collectQuestionContainers: function (doc) {
       if (!doc || !doc.querySelectorAll) return [];
       var selectors = this._questionSelectors;
+      // 学习通改版应急通道：storage config 里的 questionSelectorOverrides 追加在真源
+      // **末尾**逐个尝试 —— 内置清单优先命中，改版新类名兜底。只影响抠题收集与诊断，
+      // 不影响检测并集（检测还有 URL/任务点佐证那条路）。校验已在 runtime-policy 做过，这里再防一层。
+      var overrides = this.configs && this.configs.questionSelectorOverrides;
+      if (Array.isArray(overrides) && overrides.length) {
+        for (var ov = 0; ov < overrides.length; ov++) {
+          if (typeof overrides[ov] === 'string' && overrides[ov]) selectors = selectors.concat([overrides[ov]]);
+        }
+      }
 
       for (var i = 0; i < selectors.length; i++) {
         var found;
@@ -87,14 +96,9 @@
       if (!el) return null;
 
       var title = '';
-      var titleSelectors = [
-        '.fontLabel', '.mark_name',
-        // 学习通真实结构：题号在 .fontLabel，题干与题号同处 .Pt1 / .Zy_TItle。
-        // 注意属性选择器区分大小写，[class*="title"] 匹配不到 "Zy_TItle"，所以要显式列出。
-        '.Pt1', '.Zy_TItle',
-        '.question-title', '.topicTitle', '.question_content', '.qContent', '.mark_title',
-        '.question-name', '.title', 'h3', 'h4', '.stem', '[class*="question"]', '[class*="title"]'
-      ];
+      // 真源 `_questionTitleSelectors`（在 10-config-state.js）：按优先级试，
+      // 候选清洗后长度 ≥ 4 才算数 —— 属性选择器大小写敏感的教训记录在真源处
+      var titleSelectors = this._questionTitleSelectors;
       for (var i = 0; i < titleSelectors.length; i++) {
         var titleEl = el.querySelector(titleSelectors[i]);
         if (!titleEl) continue;
@@ -144,11 +148,20 @@
       }
 
       if (!title && !options.length) return null;
+      // 乱码标记：题干或任一选项的 PUA 密文字符占比过高（映射表缺字形时会出现，
+      // 解密扫描完成后类名已被摘掉、只能从文本本身判断）。_handleQuiz 据此拦下整卷。
+      var garbled = this._quizTextGarbledRatio(title) >= 0.3;
+      if (!garbled) {
+        for (var g = 0; g < options.length; g++) {
+          if (this._quizTextGarbledRatio(options[g]) >= 0.3) { garbled = true; break; }
+        }
+      }
       return {
         index: index,
         type: this._detectQuestionType(el),
         title: title,
         options: options,
+        garbled: garbled,
         _element: el
       };
     },
@@ -197,12 +210,8 @@
       // 才能写隐藏答案域 #answer{qid}。学习通把 qid 挂在 <li> 上而不是内层 <label> 上，
       // 一旦返回 label，qid 取不到 → 隐藏域永远为空 →
       // _areQuizAnswersFilled 判定"未填写" → 答案填了也永远不提交。
-      var listSelectors = [
-        '.Zy_ulTop > li', '.Zy_ulBottom > li', '.Zy_ulTk > li',
-        '.Cy_ulTop li', '.Cy_ulBottom li', '.Cy_ulTk li',
-        '[class*="before-after"]', '.answerBg',
-        'li.clearfix'
-      ];
+      // 真源 `_optionListSelectors`（在 10-config-state.js）：Zy_/Cy_ 两族 + 兜底，顺序有含义
+      var listSelectors = this._optionListSelectors;
       for (var i = 0; i < listSelectors.length; i++) {
         var found;
         try { found = Array.from(el.querySelectorAll(listSelectors[i])); } catch (e) { continue; }

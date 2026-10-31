@@ -130,7 +130,8 @@
     _getQuizTitleKeyFromElement: function (el, fallbackTitle) {
       var title = fallbackTitle || '';
       if (!title && el && el.querySelector) {
-        var titleEl = el.querySelector('.fontLabel, .mark_name, .question-title, .topicTitle, .question_content, .qContent, .mark_title, .question-name, .title, h3, h4, .stem');
+        // 真源 `_questionTitleSelectors`：缓存键的取材必须与抠题同源，手抄的那份曾漏了 .Pt1 / .Zy_TItle
+        var titleEl = el.querySelector(this._questionTitleSelectors.join(', '));
         title = this._cleanQuestionTitle(titleEl ? textOf(titleEl) : '');
       }
       // 与 _parseQuestionElement 同源：只装题号的标题元素会清洗成空串，
@@ -408,7 +409,9 @@
         var changed = false;
         var nodes = [];
         try {
-          nodes = Array.from(doc.querySelectorAll('.TiMu, .questionLi, .questionItem, .mark_item, .questionBox'));
+          // 真源 `_quizContainerSelector`（含 .Cy_TItle）：作业/考试页的错答也必须收集，
+          // 否则「避开错答」在那两类页面上静默失效（正确答案记忆一直读的是真源，两边曾不对称）
+          nodes = Array.from(doc.querySelectorAll(self._quizContainerSelector));
         } catch (e) {}
 
         for (var i = 0; i < nodes.length; i++) {

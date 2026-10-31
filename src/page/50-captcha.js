@@ -515,7 +515,7 @@
     _computeStandaloneCaptchaPage: function () {
       try {
         if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
-        if (document.querySelector('#video, #audio, .TiMu, .questionLi, .swiper-container, .ans-attach')) return false;
+        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach, ' + this._quizDetectorSelector)) return false;
         var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
         var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
         var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);

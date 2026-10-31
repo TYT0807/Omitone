@@ -315,7 +315,7 @@
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
       var videojs = doc.querySelector('#video, #audio, .video-js, #video_html5_api');
-      var chapterTest = doc.querySelector('.TiMu, .questionLi, .mark_item, .questionItem, .answerOption');
+      var chapterTest = doc.querySelector(this._quizDetectorSelector);
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
@@ -620,7 +620,7 @@
         if (!doc) return null;
         return {
           videojs: doc.querySelector('#video,#audio'),
-          chapterTest: doc.querySelector('.TiMu'),
+          chapterTest: doc.querySelector(appRef._quizDetectorSelector),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),

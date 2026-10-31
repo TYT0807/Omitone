@@ -52,6 +52,32 @@
   实测 5 秒 8 条，能把 200 条环形缓冲冲掉一截；改为同一原因 5 秒最多一条。
 - **角色素材**：新增 49 张立绘（22 套服装 / 14 表情 / 13 姿势），去重后 39 → 88 张；
   「姿」在非默认装束下只切身体姿态、不再把衣服换回默认装束；立绘册的姿势组标注「默认装束」。
+- **答题链路平台适应性加固**（目标：学习通改版时的标准应对是「改一处真源、看一条日志」，
+  不是全链路排查）：
+  - **选择器真源收敛**：题目容器/题干/选项的 27 个平台类名只准写在 `10-config-state.js`
+    （新增 `_quizDetectorSelector` / `_questionTitleSelectors` / `_optionListSelectors`），
+    散落在 6 个片段里的 12 处手抄清单全部改为读真源。修复两处实锤漂移：
+    `_detectQuiz` 与 `_rememberWrongQuizAnswers` 的手抄清单漏了 `.Cy_TItle` ——
+    前者让作业/考试页的 DOM 兜底检测失效，后者让那两类页面的错答永远进不了
+    「避开错答」缓存（AI 反复错在同一题上、且无任何日志）。守卫随后自己又抓出两处
+    同类手抄（`60-tasks-detect.js` 的孤立 `.TiMu`、`72-quiz-answers.js` 的题干键清单）。
+  - **防漂移守卫**：`npm run check` 新增「题目选择器真源守卫」，真源之外（含 content.js）
+    出现这些类名的字面量直接报红。已做反向验证（注入已知错误能被抓住）。
+  - **解密协同（第一层）**：字体反爬解密在 content.js 里异步进行，抽题原本不等它 ——
+    竞态窗口里发出去的是密文题干。现在 `_handleQuiz` 看到 `.font-cxsecret` 残留就等
+    下一轮 tick（日志 `quiz waiting font decrypt`；上限 8 秒，绝不死等）。
+  - **乱码守卫（第二层）**：映射表缺字形时（表快照落后于平台字符集），残留密文以 PUA
+    字符混进题干 —— `_parseQuestionElement` 按占比标记 garbled，同一卷连续 3 轮仍有
+    乱码就放弃该卷（`quiz skipped: text stays garbled`），绝不把乱码发给模型白烧 token。
+    轮次按卷子隔离，且刻意放在「无进展闸」之前（乱码卷的 filled 计数不变，
+    否则会被 60 秒闸吞掉轮次、永远跳不出）。
+  - **表过期自诊断**：content.js 统计字形哈希未命中数，`font decrypt miss` /
+    `font decrypt incomplete` 两条 warn（60 秒节流）直接指出 `resources/table.json`
+    需要更新 —— 把已知缺陷 #6 的「看到乱码请立刻停下」从人工判断变成机器信号。
+  - **改版应急通道**：内部配置 `questionSelectorOverrides`（字符串数组，不上弹窗；
+    校验在 `libs/runtime-policy.js`），追加到 `_questionSelectors` 末尾逐个尝试 ——
+    平台改版换题目标记时改 storage 配置即可顶上，不必等发版；诊断报告同步纳入。
+  - e2e 新增场景「字体密文两层守卫」；`npm test` 与真实 Edge e2e 全绿。
 
 ---
 

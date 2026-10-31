@@ -85,6 +85,9 @@
   const DECRYPT_FETCH_TIMEOUT_MS = 10000;
   const decryptMapCache = new Map();
   const MAX_DECRYPT_FONTS = 16;
+  // 字形未命中日志的节流戳：表过期时 .font-cxsecret 类名不会被移除、扫描会反复进入
+  // 未命中分支，没有节流会把日志缓冲刷满（本仓库对重复 warn 的一贯处理）
+  let lastFontMissLogAt = 0;
   let decryptSweepTimer = null;
   const observedDocs = new WeakSet();
   let statusPanel = null;
@@ -1450,11 +1453,13 @@
 
   function buildDecryptMapForDoc(doc, base64, table, elements) {
     // 缺表/依赖/解析失败都是可恢复状态，不能把空结果当成成功缓存。
-    if (!table || typeof md5 !== 'function') return new Map();
+    // 返回 { map, missed, computed }：missed/computed 给上层判断「映射表是否落后于平台字形」
+    // —— 那是唯一会表现成"题干全是乱码"的失败，不报错就必须在这里留痕。
+    if (!table || typeof md5 !== 'function') return { map: new Map(), missed: 0, computed: 0 };
     let cached = decryptMapCache.get(base64);
     if (!cached || cached.table !== table) {
       const font = buildTyprFont(decodeBase64ToUint8Array(base64));
-      if (!font) return new Map();
+      if (!font) return { map: new Map(), missed: 0, computed: 0 };
       cached = { font, table, map: new Map(), checked: new Set() };
     }
     // 同字体可能在后续题目/文档中出现新字符，命中字体不等于字符映射齐全。
@@ -1463,21 +1468,25 @@
     decryptMapCache.set(base64, cached);
     while (decryptMapCache.size > MAX_DECRYPT_FONTS) decryptMapCache.delete(decryptMapCache.keys().next().value);
 
+    let computed = 0;
+    let missed = 0;
     const chars = collectUniqueSecretChars(elements);
     chars.forEach((char) => {
       if (checked.has(char)) return;
       try {
         const glyph = Typr.U.codeToGlyph(font, char.codePointAt(0));
         if (!glyph) { checked.add(char); return; }
+        computed++;
         const path = Typr.U.glyphToPath(font, glyph);
         const hash = md5(JSON.stringify(path)).slice(24);
         const decoded = table.get(hash);
         if (decoded) map.set(char, decoded);
+        else missed++;
         checked.add(char);
       } catch (e) {}
     });
 
-    return map;
+    return { map, missed, computed };
   }
 
   function decodeStringByMap(value, map) {
@@ -1523,10 +1532,36 @@
     if (!base64) return;
 
     const table = await getDecryptTable();
-    const decodeMap = buildDecryptMapForDoc(doc, base64, table, roots);
-    if (!decodeMap.size) return;
+    const built = buildDecryptMapForDoc(doc, base64, table, roots);
+    const decodeMap = built.map;
+
+    const nowMs = Date.now();
+    const mayLogMiss = nowMs - lastFontMissLogAt > 60000;
+
+    if (!decodeMap.size) {
+      // 一个字形都没命中：多半是映射表快照落后于平台的字符集。这个状态的表现是
+      // "题干全是乱码"（README 已知缺陷 #6），页面照常渲染、不抛异常 —— 不在这里留痕，
+      // 用户和维护者都不可能知道根因是表过期。
+      if (built.computed > 0 && built.missed > 0 && mayLogMiss) {
+        lastFontMissLogAt = nowMs;
+        appendRuntimeLog('warn', 'font decrypt miss', {
+          missed: built.missed, computed: built.computed,
+          hint: '字形哈希在映射表里全部未命中 —— resources/table.json 需要更新'
+        });
+      }
+      return;
+    }
 
     roots.forEach((root) => decryptRootElement(root, decodeMap));
+    if (built.missed > 0 && mayLogMiss) {
+      // 部分命中：没映射到的字符会以 PUA 密文留在文本里（page.js 的乱码守卫会拦住它们），
+      // 根因同样是表需要更新
+      lastFontMissLogAt = nowMs;
+      appendRuntimeLog('warn', 'font decrypt incomplete', {
+        missed: built.missed, mapped: decodeMap.size,
+        hint: '部分字形哈希未命中映射表，对应文字保持密文 —— resources/table.json 需要更新'
+      });
+    }
     console.log('[Omitone] font decrypted roots:', roots.length, 'mapped chars:', decodeMap.size);
   }
 

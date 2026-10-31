@@ -24,7 +24,7 @@
   };
   var strings = { discussionReply: 10000, systemPrompt: 50000, apiConnectionError: 300,
     providerPreset: 100, apiUrl: 4096, apiKey: 8192, model: 256, captchaModel: 256, visionModel: 256 };
-  var runtimeFields = booleans.concat(Object.keys(numbers), ['discussionReply']);
+  var runtimeFields = booleans.concat(Object.keys(numbers), ['discussionReply', 'questionSelectorOverrides']);
   function httpUrl(value) {
     if (typeof value !== 'string') return null;
     try {
@@ -49,6 +49,15 @@
     }
     if (key === 'apiType') return ['openai', 'claude', 'gemini'].indexOf(value) !== -1;
     if (key === 'thinkingLevel') return ['off', 'low', 'high'].indexOf(value) !== -1;
+    if (key === 'questionSelectorOverrides') {
+      // 追加的题目容器选择器（学习通改版应急）：字符串数组，条数与单条长度都有上界 ——
+      // 选择器最终会进 querySelectorAll，无界输入既慢又可能抛异常
+      if (!Array.isArray(value) || value.length > 12) return false;
+      for (var i = 0; i < value.length; i++) {
+        if (typeof value[i] !== 'string' || !value[i] || value[i].length > 200) return false;
+      }
+      return true;
+    }
     return false;
   }
   function publicConfig(config, scope) {

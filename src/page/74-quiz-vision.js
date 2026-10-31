@@ -170,6 +170,6 @@
       var bodyText = textOf(doc.body);
       if (bodyText.length < 10 || bodyText === '暂无内容') return true;
       if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
-      if (doc.querySelector('.questionLi, .mark_item, .questionItem, .tiBank, .exam_question, input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
+      if (doc.querySelector(this._quizDetectorSelector + ', input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
       return true;
     },
