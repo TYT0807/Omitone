@@ -947,8 +947,37 @@ var MOCK_PAGES = {
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
-  '/font-residue': buildFontResidueHtml
+  '/font-residue': buildFontResidueHtml,
+  '/doc-pdfjs': buildPdfJsDocHtml
 };
+
+/**
+ * 原生 PDF.js 风格文档（真实平台结构，2026-10-31 从同类开源实现补入）：
+ * 页码计数器 + aria 标签翻页按钮。翻到末页时平台标记完成（finishFlag）、按钮禁用。
+ * 此前文档任务只认 #panView（超星私有查看器）与 .pageNum 两族。
+ */
+function buildPdfJsDocHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>文档 - 学习通</title></head><body>' +
+    '<div class="ans-job-icon" style="display:none"></div>' +
+    '<div id="viewer"><div class="page">第 1 页内容</div></div>' +
+    '<input id="pageNumber" value="1" aria-label="页码">' +
+    '<span id="numPages">5</span>' +
+    '<button id="prev" aria-label="上一页">上一页</button>' +
+    '<button id="next" aria-label="下一页">下一页</button>' +
+    '<button id="lastPage" aria-label="末页">末页</button>' +
+    '<script>' +
+    'var cur = 1, total = 5;' +
+    'function syncDoc() { document.getElementById("pageNumber").value = cur;' +
+    '  document.getElementById("next").disabled = cur >= total;' +
+    '  document.getElementById("lastPage").disabled = cur >= total; }' +
+    'document.getElementById("next").addEventListener("click", function () {' +
+    '  if (cur < total) { cur++; syncDoc(); if (cur >= total) { try { window.finishFlag = true; } catch (e) {} } } });' +
+    'document.getElementById("lastPage").addEventListener("click", function () {' +
+    '  cur = total; syncDoc(); try { window.finishFlag = true; } catch (e) {} });' +
+    'syncDoc();' +
+    '</script></body></html>';
+}
 
 /**
  * mooc2 新版作业页（真实结构，2026-10-31 从同类开源实现的真实页面知识交叉补入）：
@@ -2536,6 +2565,30 @@ SCENARIOS.push({
       !!cleared && cleared.secret === false, JSON.stringify(cleared));
     check('明文题干正常抠出（可读中文，非密文）',
       !!cleared && cleared.n >= 1 && /对称加密/.test(cleared.title), JSON.stringify(cleared));
+  }
+});
+
+/** ---- 1.10 PDF.js 文档（aria 页码，真实结构）：翻页推进与完成 ---- */
+SCENARIOS.push({
+  name: 'PDF.js 文档（aria 页码）：翻页推进到末页并完成',
+  path: '/doc-pdfjs',
+  run: async function (ctx) {
+    // 驱动 _handleDocumentTask（与真实 tick 同一入口），断言任务对象与推进行为
+    var progress = null;
+    for (var i = 0; i < 80; i++) {
+      await sleep(250);
+      progress = await ctx.client.evaluate(
+        '(function(){var a=window._xxtApp;' +
+        'try { a._handleDocumentTask(null); } catch (e) {}' +
+        'var t=a._locateDocumentTask(null);' +
+        'return t?{page:t.currentPage,total:t.totalPages,atEnd:!!t.atEnd,done:!!t.finished}:null;})()'
+      );
+      if (progress && progress.done) break;
+    }
+    check('PDF.js 文档被识别为翻页任务（aria 页码族此前零覆盖，总页数读自 #numPages）',
+      !!progress && progress.total === 5, JSON.stringify(progress));
+    check('翻页推进到末页（页码 5）且平台完成标记生效',
+      !!progress && progress.done === true && progress.page === 5, JSON.stringify(progress));
   }
 });
 

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '101bf15f37';
+var OMITONE_CODE_REV = '5fa2a53ef2';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -5035,6 +5035,14 @@ var OMITONE_CODE_REV = '101bf15f37';
           if ((doc.getElementById && doc.getElementById('markDataStr')) || doc.querySelector('.pageNum')) {
             return worthHandling(doc) ? self._buildScrollDocumentTask(doc) : null;
           }
+          // 原生 PDF.js / aria 页码文档（真实平台结构，2026-10-31 从同类开源实现补入）：
+          // 计数器 #pageNumber / input[aria-label="页码"]，下一页 #next / button[aria-label="下一页"]。
+          // 与 #panView（超星私有查看器）是两族 —— 此前这一族零覆盖，
+          // 文档只能靠滚动兜底慢慢磨、翻页完成判定也接不上。
+          if (doc.querySelector('#pageNumber, input[aria-label="页码"], input[aria-label="Page"]') &&
+              doc.querySelector('#next, button[aria-label="下一页"], [data-slide-next], button[title="下一页"]')) {
+            return worthHandling(doc) ? self._buildAriaPagedDocumentTask(doc) : null;
+          }
         } catch (e) {}
         return null;
       }
@@ -5176,6 +5184,64 @@ var OMITONE_CODE_REV = '101bf15f37';
             }
           } catch (e) {}
           return false;
+        }
+      };
+    },
+
+    /**
+     * 原生 PDF.js / aria 页码文档任务（真实平台结构，2026-10-31 从同类开源实现补入）。
+     *
+     * 结构：页码计数器 `#pageNumber` / `input[aria-label="页码"]`（PDF.js 标准，
+     * 总页数在 `#numPages`），翻页按钮 `#next` / `button[aria-label="下一页"]`、
+     * `#lastPage` / `button[aria-label="末页"]`。
+     *
+     * 完成语义与滚动任务一致：翻到末页（atEnd）≠ 完成，等平台自己的完成标记
+     * （finishFlag / 帧完成标记）；迟迟不来由 documentSkipTimeoutMs 兜底跳过。
+     */
+    _buildAriaPagedDocumentTask: function (doc) {
+      var counter = doc.querySelector('#pageNumber, input[aria-label="页码"], input[aria-label="Page"]');
+      var nextBtn = doc.querySelector('#next, button[aria-label="下一页"], [data-slide-next], button[title="下一页"]');
+      if (!counter && !nextBtn) return null;
+
+      var numPagesEl = doc.querySelector('#numPages');
+      var total = 0;
+      try {
+        total = parseInt(numPagesEl && numPagesEl.textContent, 10) ||
+          parseInt(counter && counter.getAttribute && (counter.getAttribute('max') || counter.getAttribute('aria-valuemax')), 10) || 0;
+      } catch (e) {}
+      if (!(total > 0)) total = 0; // 未知总页数：靠「下一页禁用」判定到尾
+
+      var self = this;
+      function readPage() {
+        try {
+          var v = parseInt(counter && counter.value, 10);
+          if (v > 0) return v;
+          var cur = doc.querySelector('[data-slide-current]');
+          v = parseInt(cur && (cur.getAttribute('data-slide-current') || cur.textContent), 10);
+          return v > 0 ? v : 1;
+        } catch (e) { return 1; }
+      }
+      function nextDisabled() {
+        try {
+          var btn = doc.querySelector('#next, button[aria-label="下一页"], [data-slide-next], button[title="下一页"]');
+          if (!btn) return true;
+          return btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('aria-disabled') === 'true';
+        } catch (e) { return false; }
+      }
+
+      return {
+        key: self._extractFrameKey(doc, 'aria-paged-doc'),
+        finished: !!(doc.defaultView && doc.defaultView.finishFlag) || self._isDocumentFrameFinished(doc),
+        currentPage: readPage(),
+        totalPages: total,
+        atEnd: nextDisabled() || (total > 0 && readPage() >= total),
+        scrollStep: function () {
+          try {
+            var btn = doc.querySelector('#next, button[aria-label="下一页"], [data-slide-next], button[title="下一页"]');
+            if (!btn || btn.disabled || btn.classList.contains('disabled') || btn.getAttribute('aria-disabled') === 'true') return false;
+            btn.click();
+            return true;
+          } catch (e) { return false; }
         }
       };
     },

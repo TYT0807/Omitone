@@ -163,6 +163,13 @@
     全部进真源与检测清单；e2e 新增 mooc2 作业页场景（抠题/题型/填答全链路）与
     字体残留页场景。真源守卫的新名单还揪出一份既有的 `.singleQuesId` 手抄
     （72 的 qid 回退），已归真源。
+- **PDF.js / aria 页码文档实测**（第二轮交叉验证，文档任务此前只认
+  `#panView` 与 `.pageNum` 两族）：新增 `_buildAriaPagedDocumentTask` ——
+  页码计数器（`#pageNumber` / `input[aria-label="页码"]`，总页数读 `#numPages`）、
+  翻页按钮（`#next` / `button[aria-label="下一页"]`）、末页判定（禁用态 / `#lastPage`）。
+  完成语义与滚动任务一致：翻到末页 ≠ 完成，等平台完成标记，超时兜底跳过。
+  e2e 新增 PDF.js 文档场景（翻页推进 1→5、finishFlag 生效）。回归 F08 与
+  暴力测试随行全绿。
 
 ---
 
