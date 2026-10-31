@@ -270,14 +270,14 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     if (scope.scope === 'captcha' && url.origin !== origin) return Promise.resolve(failure('forbidden_origin'));
     return timedFetch(url.href, { credentials: 'include', redirect: scope.scope === 'captcha' ? 'error' : 'follow' },
     timeoutOf(payload.timeoutMs, 60000, 60000), function (response) {
-      if (!response.ok) return { success: false, status: response.status, error: 'image fetch failed: ' + response.status };
+      if (!response.ok) return { success: false, status: response.status, error: '验证码图片拉取失败（HTTP ' + response.status + '）—— 将自动换图重试' };
       var finalUrl = policy.httpUrl(response.url);
       if (!finalUrl || (scope.scope === 'captcha' && finalUrl.origin !== origin)) return failure('forbidden_origin');
       var mime = String(response.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
       if (IMAGE_TYPES.indexOf(mime) === -1) return failure('invalid_image_type');
       return readLimited(response, IMAGE_LIMIT).then(function (bytes) {
         return { success: true, dataUrl: 'data:' + mime + ';base64,' + bytesBase64(bytes) };
-      }).catch(function () { return { success: false, status: response.status, error: 'image body unavailable or too large' }; });
+      }).catch(function () { return { success: false, status: response.status, error: '验证码图片内容不可用或体积超限 —— 将自动换图重试' }; });
     });
   }
   function captchaRequest(payload, sender) {
@@ -292,7 +292,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
         if (current.scope !== 'study' && current.scope !== 'captcha') return failure('forbidden_sender');
         return apiFetch(request).then(function (response) {
           if (!response.success) return { success: false, status: response.status,
-            error: 'captcha request failed (' + (response.status || response.code || 'network') + ')' };
+            error: '验证码识别请求失败（' + (response.status || response.code || '网络不通') + '）—— 将自动重试' };
           return self.OmitoneCaptcha.parseResponse(config, response.data);
         });
       });

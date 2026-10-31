@@ -182,6 +182,7 @@
   // 所以不会把任何现有用户搞成 400。详见那个文件顶部的说明。
   const THINKING = (typeof self !== 'undefined' && self.OmitoneThinking) || null;
   const API_ERROR = (typeof self !== 'undefined' && self.OmitoneApiError) || null;
+  const STUDY_STATS = (typeof self !== 'undefined' && self.OmitoneStudyStats) || null;
 
   /**
    * 扩展自带资源缺失时的统一报错。
@@ -1339,6 +1340,34 @@
     return { state, task, detail };
   }
 
+  // ── 刷课活跃时长（角色小游戏「好感度」的数据源）──────────────────────
+  // 信号源就是 runtime_log 消息流本身：插件在跑、页面是学习页，才有消息进来。
+  // 纯读侧 + 20 秒节流落盘（libs/study-stats.js），任何失败都静默吞掉 ——
+  // 它喂的是角色好感度，绝不能反过来影响刷课（与 pet 的零耦合原则同向：只读、可坏、无害）。
+  let studyStatsState = null;
+  let studyStatsWriting = false;
+  function recordStudyActivity() {
+    try {
+      if (!STUDY_STATS) return;
+      const nowMs = Date.now();
+      const result = STUDY_STATS.recordActivity(studyStatsState, nowMs);
+      studyStatsState = result.state;
+      if (STUDY_STATS.shouldFlush(studyStatsState) && !studyStatsWriting) {
+        studyStatsWriting = true;
+        const toWrite = STUDY_STATS.markFlushed(studyStatsState, nowMs);
+        chrome.storage.local.set({ omitoneStudyStats: toWrite }, function () {
+          studyStatsWriting = false;
+          if (!chrome.runtime.lastError) studyStatsState = toWrite;
+        });
+      }
+    } catch (e) { /* 游戏统计失败不影响任何功能 */ }
+  }
+  try {
+    chrome.storage.local.get('omitoneStudyStats', function (r) {
+      if (!chrome.runtime.lastError && r && r.omitoneStudyStats) studyStatsState = r.omitoneStudyStats;
+    });
+  } catch (e) { /* storage 不可用就当没有历史 */ }
+
   function handleRuntimeStatus(level, message, meta) {
     if (String(message || '') === 'start') statusPanelActive = true;
     if (!statusPanelActive) return;
@@ -1772,6 +1801,7 @@
       pageRuntimeActivityAt = Date.now();
       appendRuntimeLog(msg.level || 'info', msg.message || '', msg.meta || null);
       handleRuntimeStatus(msg.level || 'info', msg.message || '', msg.meta || null);
+      recordStudyActivity();
     }
   });
 

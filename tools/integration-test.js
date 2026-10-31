@@ -297,7 +297,7 @@ function createHarness(options) {
   // 忘了加到这里，content.js 在测试里读到 null 模块 —— 于是集成测试报的错
   // 看起来像"答题功能坏了"，其实是测试环境自己缺文件。
   // 下面这条守卫就是为了让这种漏项当场报错、而不是伪装成业务 bug。
-  var INJECTED_FILES = ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
+  var INJECTED_FILES = ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/study-stats.js', 'libs/prompt.js', 'libs/thinking.js', 'content.js'];
   (function guardInjectionList() {
     var manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
     var injectedLibs = [];
@@ -305,7 +305,7 @@ function createHarness(options) {
       if (f.indexOf('libs/') === 0) injectedLibs.push(f);
     });
     // 只盯"content.js 会读的模块"：md5 / Typr 这类纯浏览器库不进测试沙箱是有意的
-    ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
+    ['libs/runtime-policy.js', 'libs/api-url.js', 'libs/api-error.js', 'libs/study-stats.js', 'libs/prompt.js', 'libs/thinking.js'].forEach(function (file) {
       if (injectedLibs.indexOf(file) === -1) {
         throw new Error('manifest 未注入 ' + file + '，但测试清单里有它 —— 两者已分叉');
       }

@@ -181,7 +181,7 @@ async function main() {
   assert.throws(() => assert.equal(frameProbe.success, false), assert.AssertionError);
   check('negative control detects removed top-frame authorization', frameProbe.success === true);
   const bad404 = harness(source => mutation(source,
-    "if (!response.ok) return { success: false, status: response.status, error: 'image fetch failed: ' + response.status };",
+    "if (!response.ok) return { success: false, status: response.status, error: '验证码图片拉取失败（HTTP ' + response.status + '）—— 将自动换图重试' };",
     "if (!response.ok) return { success: true, status: response.status, dataUrl: 'bad' };"));
   bad404.fetch(() => Promise.resolve(response({ status: 404 })));
   const statusProbe = await bad404.send('fetch_image_dataurl', study, { url: 'https://images.test/a.png' });

@@ -950,6 +950,13 @@
           heartBurst(ev.clientX || (rr.left + rr.width / 2), ev.clientY || (rr.top + 8));
           setPose("happy", 800);
           if (now - lastPat > 4000) { lastPat = now; addMood(1); }
+          // 好感度入账（每日有上限，规则在 pet-game.js）：出台词 / 升级庆祝。
+          // 游戏层的任何失败都吞掉 —— 摸头本身的演出不能因为它坏掉
+          try {
+            var patResult = petGamePat();
+            if (patResult && patResult.line) say(patResult.line, 2400);
+            if (patResult && patResult.leveledUp) celebrateBond(patResult.level);
+          } catch (eGame) {}
           // 每三次摸头说一句。原来这套台词在 omScene 里另有一个点击处理器，
           // 两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
           if (++patCount % 3 === 0) {
@@ -1034,10 +1041,107 @@
     }
     applyMood(getMood());
 
+    // 开屏：结一次刷课好感 + 打招呼。全部 try/catch —— 游戏坏了角色照常出场
+    try {
+      var bootBond = loadBond();
+      renderBond(bootBond);
+      syncStudyIntoGame();
+      chrome.storage.local.get(STUDY_STATS_KEY, function (r) {
+        try {
+          if (chrome.runtime.lastError) return;
+          var stats = (r && r[STUDY_STATS_KEY]) || {};
+          var mins = Math.floor((Number(stats.activeSeconds) || 0) / 60);
+          if (mins >= 5 && mascot && !mascot.getAttribute("data-busy")) {
+            say("今天已经一起刷了 " + mins + " 分钟啦" + (bootBond && bootBond.affection >= 30 ? "，有你真好。" : "～"), 3200);
+          }
+        } catch (e) {}
+      });
+    } catch (e) {}
+
     function addMood(d) {
       var m = Math.max(0, Math.min(100, getMood() + d));
       applyMood(m);
       return m;
+    }
+
+    // ── 成长小游戏（好感度 / 等级 / 刷课时长）────────────────────────────
+    // 数据全部本地：好感度在这个弹窗页的 localStorage（与心情同一套做法）；
+    // 刷课时长来自 content.js 写进 chrome.storage 的 omitoneStudyStats（只读消费）。
+    // 规则与等级表在 popup/pet-game.js（可独立测试），这里只做存取与表现 ——
+    // 与情绪同样的三条纪律：不读配置、不碰调度、出错只表现为"她没反应"。
+    var BOND_KEY = "omitone.pet.bond";
+    var STUDY_STATS_KEY = "omitoneStudyStats";
+    function getGame() { return self.OmitonePetGame || null; }
+    function loadBond() {
+      var game = getGame();
+      if (!game) return null;
+      try {
+        return game.rollDay(JSON.parse(localStorage.getItem(BOND_KEY) || "null"), game.dayKeyOf(Date.now()));
+      } catch (e) {
+        return game.rollDay(null, game.dayKeyOf(Date.now()));
+      }
+    }
+    function saveBond(state) {
+      try { localStorage.setItem(BOND_KEY, JSON.stringify(state)); } catch (e) {}
+    }
+    function renderBond(state) {
+      try {
+        var game = getGame();
+        if (!game || !state) return;
+        var bar = document.getElementById("petBond");
+        var badge = document.getElementById("petLevel");
+        var lv = game.levelOf(state.affection);
+        var levelDef = game.LEVELS[lv] || game.LEVELS[0];
+        var nextDef = game.LEVELS[lv + 1];
+        // 进度条指向**下一级**：本级门槛到下一级门槛之间的位置
+        var pct = nextDef
+          ? Math.round((state.affection - levelDef.min) / Math.max(1, nextDef.min - levelDef.min) * 100)
+          : 100;
+        pct = Math.max(0, Math.min(100, pct));
+        if (bar) {
+          if (bar.firstElementChild) bar.firstElementChild.style.width = pct + "%";
+          bar.setAttribute("title", "好感度 " + state.affection + " / " + game.RULES.max + " · " + levelDef.name +
+            (nextDef ? "（下一级「" + nextDef.name + "」还差 " + (nextDef.min - state.affection) + " 点）" : "（已满）"));
+        }
+        if (badge) badge.textContent = levelDef.name;
+      } catch (e) {}
+    }
+    function petGamePat() {
+      var game = getGame();
+      if (!game) return null;
+      var result = game.onPat(loadBond(), game.dayKeyOf(Date.now()));
+      saveBond(result.state);
+      renderBond(result.state);
+      syncStudyIntoGame();   // 摸头时顺手把攒下的刷课时长结一次（多数时候是空操作）
+      return result;
+    }
+    function celebrateBond(level) {
+      try {
+        var game = getGame();
+        if (!game || !mascot) return;
+        var rect = mascot.getBoundingClientRect();
+        heartBurst(rect.left + rect.width / 2, rect.top + 8);
+        heartBurst(rect.left + rect.width / 3, rect.top + 20);
+        setPose("cheer", 1600);
+        var def = game.LEVELS[level] || game.LEVELS[0];
+        say("好感度达到「" + def.name + "」！" + (def.line || ""), 3600);
+      } catch (e) {}
+    }
+    function syncStudyIntoGame() {
+      var game = getGame();
+      if (!game) return;
+      try {
+        chrome.storage.local.get(STUDY_STATS_KEY, function (r) {
+          try {
+            if (chrome.runtime.lastError) return;
+            var stats = (r && r[STUDY_STATS_KEY]) || {};
+            var result = game.applyStudySeconds(loadBond(), Number(stats.activeSeconds) || 0, game.dayKeyOf(Date.now()));
+            saveBond(result.state);
+            renderBond(result.state);
+            if (result.leveledUp) celebrateBond(result.level);
+          } catch (e) {}
+        });
+      } catch (e) {}
     }
 
     // 拖拽：按住就能拖着走，松手弹回去（不永久改变布局，免得下次打开位置乱了）

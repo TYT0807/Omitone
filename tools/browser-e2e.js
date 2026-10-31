@@ -2181,6 +2181,71 @@ SCENARIOS.push({
   }
 });
 
+// ── 前端专项：成长小游戏（好感度 / 等级 / 刷课时长）─────────────────────────
+// 断言的是**行为**：摸头之后存档里的好感真的涨了、徽章真的换了字、
+// 刷课时长真的按水位折算 —— 不是查内部函数是否存在。
+// ⚠️ 摸头三连（2 秒内 3 次）会触发"躲开"，不涨好感 —— 每次点击之间要拉开间隔。
+SCENARIOS.push({
+  name: '小游戏：摸头涨好感、跨级换徽章、刷课时长折算',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var ui = await ctx.client.evaluate(
+      '(function(){return {game:!!self.OmitonePetGame,' +
+      'bond:!!document.getElementById("petBond"),badge:!!document.getElementById("petLevel")};})()'
+    );
+    check('前提：pet-game 已加载，好感条与等级徽章都在',
+      !!ui && ui.game === true && ui.bond === true && ui.badge === true, JSON.stringify(ui));
+
+    // 从零开始：清掉本地存档
+    await ctx.client.evaluate('try { localStorage.removeItem("omitone.pet.bond"); } catch (e) {} true');
+
+    // 摸头一下 → 好感 +1 入账
+    await ctx.client.evaluate('document.getElementById("mascot").click()');
+    await sleep(300);
+    var afterPat = await ctx.client.evaluate(
+      '(function(){try { return JSON.parse(localStorage.getItem("omitone.pet.bond")||"null"); } catch (e) { return null; }})()'
+    );
+    check('摸头一次 → 好感 +1 入账', !!afterPat && afterPat.affection === 1, JSON.stringify(afterPat));
+
+    // 刷课时长折算：写入 1 小时统计、清零水位 → 触发一次结算 → +2（且水位停在 3600 秒）
+    var wrote = await ctx.client.evaluate(
+      'new Promise(function (res) {' +
+      'var game = self.OmitonePetGame;' +
+      'var st = {date: game.dayKeyOf(Date.now()), activeSeconds: 3600, lastActiveAt: Date.now(), lastFlushAt: Date.now()};' +
+      'chrome.storage.local.set({ omitoneStudyStats: st }, function () {' +
+      'try { var bond = JSON.parse(localStorage.getItem("omitone.pet.bond")||"null");' +
+      'bond.countedSeconds = 0; localStorage.setItem("omitone.pet.bond", JSON.stringify(bond)); } catch (e) {}' +
+      'res(true); }); })'
+    );
+    check('前提：1 小时刷课统计已写入', wrote === true);
+    await sleep(2200);   // 与上一次摸头拉开 2 秒，避免触发"三连戳躲开"
+    await ctx.client.evaluate('document.getElementById("mascot").click()');   // 内含一次结算
+    await sleep(300);
+    var afterStudy = await ctx.client.evaluate(
+      '(function(){try { return JSON.parse(localStorage.getItem("omitone.pet.bond")||"null"); } catch (e) { return null; }})()'
+    );
+    check('1 小时刷课折 2 点好感（触发结算的那次摸头本身也 +1 → 1+2+1=4；水位停在 3600 秒）',
+      !!afterStudy && afterStudy.affection === 4 && afterStudy.countedSeconds === 3600 && afterStudy.patsToday === 2,
+      JSON.stringify(afterStudy));
+
+    // 跨级：把好感拨到 14、拉开间隔后再摸一下 → 15 → 徽章从「初识」换成「打过招呼」
+    await sleep(2200);
+    var leveled = await ctx.client.evaluate(
+      '(function(){try {' +
+      'var bond = JSON.parse(localStorage.getItem("omitone.pet.bond")||"null");' +
+      'bond.affection = 14; bond.patsToday = 0;' +
+      'localStorage.setItem("omitone.pet.bond", JSON.stringify(bond));' +
+      'document.getElementById("mascot").click();' +
+      'return {text:String(document.getElementById("petLevel").textContent||""),' +
+      'aff:(JSON.parse(localStorage.getItem("omitone.pet.bond")||"null")).affection};' +
+      '} catch (e) { return {err:String(e)}; }})()'
+    );
+    check('好感到 15 → 徽章换成「打过招呼」',
+      !!leveled && leveled.text === '打过招呼' && leveled.aff === 15, JSON.stringify(leveled));
+  }
+});
+
 
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
