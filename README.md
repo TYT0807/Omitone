@@ -328,19 +328,19 @@
 
 ### 6. 题库字体反爬可能失效
 
-学习通用自定义字体（`font-cxsecret`）把部分题目文字加密成不可选的字形，
+学习通用自定义字体（`font-cxsecret`）做反爬：**文本里放的是正常中文字符，
+字形却画成别的字**（不是乱码方块，人眼很难察觉），
 项目靠 `resources/table.json` 的**字形哈希 → 真实字符**映射还原。
 
 这份表是一个**快照**。一旦学习通更新了字符集，映射表里没有的字形就还原不出来，
-题干会变成乱码 —— 此时 AI 收到的也是乱码，**结果必错**。
-
-**看到题干乱码请立刻停下**：继续跑下去既答不对，还白耗 token。
+题干会变成**通顺但内容错误**的中文 —— AI 收到的就是错题面，**结果必错**，
+而且人眼都未必看得出来。
 
 **（1.3.0 起）插件自己会报，也会拦**：日志出现 `font decrypt miss` /
 `font decrypt incomplete` 就是表过期的实锤（提示更新 `resources/table.json`）；
-混进密文的卷子会被乱码守卫自动拦下 —— `quiz text garbled` 连续 3 轮后
-`quiz skipped: text stays garbled`，不会拿乱码去白烧 token。解密没完成时抽题
-会先等一轮（`quiz waiting font decrypt`），竞态窗口里的密文题干不会再发出去。
+带着未命中字形的卷子会被乱码守卫自动拦下 —— `quiz text garbled` 连续 3 轮后
+`quiz skipped: text stays garbled`，不会拿错字题面去白烧 token。解密没完成时抽题
+会先等一轮（`quiz waiting font decrypt`），竞态窗口里解到一半的题干也不会发出去。
 
 ### 7. 其它已知限制
 
@@ -1008,7 +1008,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 症状 | 先查 |
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
-| **题干出现乱码方块 / 漏字** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时整卷被拦（`quiz text garbled` → 3 轮后 `quiz skipped: text stays garbled`），根因与解法见已知缺陷 #6 |
+| **日志报 `font decrypt miss` / 卷子被自动跳过** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时整卷被拦（`quiz text garbled` → 3 轮后 `quiz skipped: text stays garbled`）。⚠️ 缺字形的题面是**通顺但错误的中文**（肉眼难察觉），自动拦截是止损，根因与解法见已知缺陷 #6 |
 | **报错看不懂、不知道该查什么** | 报错已按根因分类（`libs/api-error.js` 统一出口）：【账户余额不足】→ 去充值、【API Key 无效或无权限】→ 重新生成整段复制、【触发限流】→ 等自动退避、【服务商服务端故障】→ 等恢复、【连接不上服务商】→ 才是真网络问题。每条都带服务商原话与 HTTP 状态码 —— 弹窗测试、页面日志、状态面板同一套口径 |
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
