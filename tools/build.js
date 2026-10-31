@@ -23,6 +23,8 @@ var DIST = path.join(ROOT, 'dist');
 var INCLUDE = [
   'manifest.json',
   'background.js',
+  'runtime-log-store.js',
+  'popup-log-view.js',
   'content.js',
   'page.js',
   'libs',
@@ -246,7 +248,7 @@ function main() {
   var stagedManifestText = '';
   try {
     var stagedManifest = JSON.parse(fs.readFileSync(stagedManifestPath, 'utf8').replace(/^\uFEFF/, ''));
-    stagedManifest.version_name = version + ' ' + buildStamp;
+    stagedManifest.version_name = version + (/\bexperimental\b/.test(stagedManifest.version_name || '') ? ' experimental' : '') + ' ' + buildStamp;
     stagedManifestText = JSON.stringify(stagedManifest, null, 2);
     fs.writeFileSync(stagedManifestPath, stagedManifestText);
     console.log('  构建戳     ' + stagedManifest.version_name);

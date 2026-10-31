@@ -1208,7 +1208,13 @@
       }
 
       if (!jobs.length) {
-        emitRuntimeLog('warn', attachments.length ? 'search job: attachments exist but no runnable job' : 'search job: no attachments and no synthetic job');
+        // 空章节时这个方法一次 tick 会被调好几次，原来每条都写日志 ——
+        // 实测 5 秒能刷 8 条 warn，把 200 条环形缓冲冲掉一大截。
+        var nowEmpty = Date.now();
+        if (!this._lastSearchEmptyLogAt || nowEmpty - this._lastSearchEmptyLogAt > 5000) {
+          this._lastSearchEmptyLogAt = nowEmpty;
+          emitRuntimeLog('warn', attachments.length ? 'search job: attachments exist but no runnable job' : 'search job: no attachments and no synthetic job');
+        }
         return null;
       }
 

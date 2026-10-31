@@ -401,6 +401,7 @@
       this._ocsSearchedJobs = [];
       this._ocsSearchDeadline = 0;
       this._ocsLastNoJobLogAt = 0;
+      this._lastSearchEmptyLogAt = 0;
       this._jobTransitionUntil = 0;
       this._studyCompleteAt = 0;
       // 「点了下一节但页面没动」的防空转计数（判据见 _studyProgressKey）

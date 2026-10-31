@@ -225,6 +225,14 @@ function createHarness(options) {
         var scope = policy && policy.isChaoxingUrl(sandbox.location.href) ? 'study' : (options.captchaAuthorized ? 'captcha' : 'none');
         function respond(value) { if (cb) setTimeout(function () { cb(value); }, 0); }
         if (message.type === 'get_page_scope') return respond({ success: true, scope: scope, expiresAt: options.expiresAt });
+        if (message.type === 'runtime_log_append') {
+          if (scope === 'none') return respond({ success: false, error: 'scope_denied' });
+          // 本层只模拟日志回执；真正 Worker 并发/超时行为由 omitone-regression.cjs 验证。
+          var logs = Array.isArray(store.runtimeLogs) ? store.runtimeLogs : [];
+          logs.push(JSON.parse(JSON.stringify(message.payload)));
+          store.runtimeLogs = logs.slice(-200);
+          return respond({ success: true });
+        }
         if (message.type === 'get_config') {
           if (scope === 'none') return respond({ success: false, error: 'scope_denied' });
           return respond({ success: true, config: scope === 'study' ? store.config : policy.publicConfig(store.config, 'captcha') });

@@ -34,7 +34,6 @@ const DEFAULTS = {
 };
 
 const RUNTIME_LOGS_KEY = "runtimeLogs";
-const MAX_LOGS = 200;
 
 // 服务商预设。
 //
@@ -130,8 +129,6 @@ let enableCaptchaVal = true;
 let visionEnabledVal = false;
 let enableDiscussionVal = true;
 let restudyVal = false;
-let logPanelOpen = false;
-let logRefreshTimer = null;
 let apiTestGeneration = 0;
 let runOperation = 0;
 let shownRunState = null;
@@ -292,15 +289,12 @@ async function testApiConnectionDirect(cfg) {
 
 async function appendPopupLog(level, message, meta) {
   try {
-    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
-    const logs = (result && Array.isArray(result[RUNTIME_LOGS_KEY])) ? result[RUNTIME_LOGS_KEY] : [];
-    logs.push({
+    await sendRuntimeMessageWithTimeout({ type: "runtime_log_append", payload: {
       time: Date.now(),
       level: level || "info",
-      message: String(message || ""),
+      message: String(message || "").slice(0, 2000),
       meta: meta || null
-    });
-    await chrome.storage.local.set({ [RUNTIME_LOGS_KEY]: logs.slice(-MAX_LOGS) });
+    } }, 20000, "日志写入超时");
   } catch (e) {}
 }
 
@@ -310,8 +304,7 @@ function apiConfigSummary(cfg) {
     apiType: cfg && cfg.apiType,
     apiUrl: cfg && cfg.apiUrl,
     model: cfg && cfg.model,
-    keyLength: key.length,
-    keyTail: key ? key.slice(-4) : ""
+    keyLength: key.length
   };
 }
 
@@ -711,31 +704,22 @@ async function authorizeCurrentCaptcha(revoke) {
   } catch (error) { reportSaveError(error); }
 }
 
-function formatTime(ts) {
-  const d = new Date(ts);
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-  const ss = String(d.getSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
-
-async function refreshLogs() {
-  try {
-    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
-    const logs = (result && Array.isArray(result[RUNTIME_LOGS_KEY])) ? result[RUNTIME_LOGS_KEY] : [];
-    if (!logs.length) {
-      els.logPanel.innerHTML = '<div class="log-item">暂无日志</div>';
-      return;
-    }
-    els.logPanel.innerHTML = logs.slice().reverse().map((item) => {
-      const level = item.level || "info";
-      const meta = item.meta ? ` ${JSON.stringify(item.meta)}` : "";
-      return `<div class="log-item"><span class="log-time">${formatTime(item.time)}</span><span class="log-level ${level}">[${level}]</span> ${item.message}${meta}</div>`;
-    }).join("");
-  } catch (error) {
-    els.logPanel.innerHTML = `<div class="log-item">日志读取失败：${error && error.message ? error.message : error}</div>`;
-  }
-}
+// 日志视图只接收所需能力，Chrome/剪贴板留在宿主；不与设置表单或运行状态共享生命周期。
+const popupLogView = self.OmitonePopupLogView.create({
+  document,
+  panel: els.logPanel,
+  toggleButton: els.toggleLogs,
+  readLogs: () => chrome.storage.local.get(RUNTIME_LOGS_KEY).then((result) =>
+    result && Array.isArray(result[RUNTIME_LOGS_KEY]) ? result[RUNTIME_LOGS_KEY] : []),
+  clearLogs: () => sendRuntimeMessageWithTimeout({ type: "runtime_log_clear" }, 20000, "日志清空超时"),
+  writeClipboard: (text) => navigator.clipboard.writeText(text),
+  notify: toast,
+  version: () => chrome.runtime.getManifest().version,
+  now: Date.now,
+  setTimeout,
+  clearTimeout
+});
+window.addEventListener("pagehide", () => popupLogView.dispose());
 
 [els.systemPrompt, els.discussionReply, els.visionBudgetPerChapter].forEach((el) => {
   el.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
@@ -812,24 +796,8 @@ els.stop.addEventListener("click", async () => {
     toast("停止失败，请手动刷新页面");
   }
 });
-els.toggleLogs.addEventListener("click", async () => {
-  logPanelOpen = !logPanelOpen;
-  els.logPanel.classList.toggle("show", logPanelOpen);
-  els.toggleLogs.textContent = logPanelOpen ? "隐藏日志" : "查看日志";
-  if (logPanelOpen) {
-    await refreshLogs();
-    clearInterval(logRefreshTimer);
-    logRefreshTimer = setInterval(refreshLogs, 1500);
-  } else {
-    clearInterval(logRefreshTimer);
-    logRefreshTimer = null;
-  }
-});
-els.clearLogs.addEventListener("click", async () => {
-  await chrome.storage.local.set({ [RUNTIME_LOGS_KEY]: [] });
-  await refreshLogs();
-  toast("日志已清空");
-});
+els.toggleLogs.addEventListener("click", () => { popupLogView.toggle().catch(() => toast("日志读取失败")); });
+els.clearLogs.addEventListener("click", () => { popupLogView.clear().catch(() => toast("日志清空失败，请稍后重试")); });
 
 /**
  * 把运行日志拼成**纯文本**，供「复制日志」用。
@@ -838,19 +806,7 @@ els.clearLogs.addEventListener("click", async () => {
  * 拿它当断言会得到一条时好时坏的测试。格式化逻辑本身是纯函数，直接测它 ✓。
  */
 function buildLogsText(logs, version) {
-  const list = Array.isArray(logs) ? logs : [];
-  const lines = list.map((item) => {
-    const level = item.level || "info";
-    const meta = item.meta ? ` ${JSON.stringify(item.meta)}` : "";
-    return `[${level}] ${formatTime(item.time)} ${item.message || ""}${meta}`;
-  });
-  return [
-    `Omitone 诊断日志${version ? "（版本 " + version + "）" : ""}`,
-    `导出时间：${formatTime(Date.now())}`,
-    `共 ${list.length} 条（新的在后）`,
-    "---",
-    ...lines
-  ].join("\n");
+  return self.OmitonePopupLogView.buildLogsText(logs, version);
 }
 
 /**
@@ -861,35 +817,7 @@ function buildLogsText(logs, version) {
  * 而"整章被跳过""某个任务点不做"这类问题**只能靠日志定位**，
  * 送不出来就等于查不了。所以这一步不是锦上添花，是**诊断链路的最后一环**。
  */
-els.copyLogs.addEventListener("click", async () => {
-  let logs = [];
-  try {
-    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
-    logs = (result && Array.isArray(result[RUNTIME_LOGS_KEY])) ? result[RUNTIME_LOGS_KEY] : [];
-  } catch (error) {
-    toast("日志读取失败");
-    return;
-  }
-  if (!logs.length) {
-    toast("暂无日志");
-    return;
-  }
-
-  let version = "";
-  try { version = chrome.runtime.getManifest().version; } catch (eVer) {}
-
-  try {
-    await navigator.clipboard.writeText(buildLogsText(logs, version));
-    toast(`已复制 ${logs.length} 条日志`);
-  } catch (error) {
-    // 剪贴板被拒时别静默失败 —— 把日志铺到面板里，让用户能手工选中
-    logPanelOpen = true;
-    els.logPanel.classList.add("show");
-    els.toggleLogs.textContent = "隐藏日志";
-    await refreshLogs();
-    toast("复制失败，请在上方日志里手动选中");
-  }
-});
+els.copyLogs.addEventListener("click", () => { popupLogView.copy().catch(() => toast("复制日志失败")); });
 
 // ── 检测更新 ────────────────────────────────────────────────────────────────
 //
@@ -996,9 +924,10 @@ async function checkUpdate(opts) {
     const asset = (rel.assets || []).find((a) => a && a.name === "omitone.zip");
     const remoteAt = asset && asset.updated_at ? new Date(asset.updated_at).getTime() : 0;
 
-    const newerVersion = cmpVersion(remoteVersion, local.version) > 0;
+    const versionOrder = cmpVersion(remoteVersion, local.version);
+    const newerVersion = versionOrder > 0;
     // 同一版本号换了包：给 1 分钟容差，避免本机时钟略快就误报"有更新"
-    const newerBuild = !newerVersion && local.builtAt > 0 && remoteAt > 0 &&
+    const newerBuild = versionOrder === 0 && local.builtAt > 0 && remoteAt > 0 &&
       remoteAt - local.builtAt > 60000;
 
     // 文案原则：一句话说清"是什么 / 要不要动"。三种结果，三种说法，不多解释。
@@ -1010,6 +939,8 @@ async function checkUpdate(opts) {
       els.updateMsg.textContent =
         `线上的包比本地新（${fmtTime(remoteAt)}）—— 可能相对现版本不够稳定，是否更新？`;
       showUpdateChoices();
+    } else if (versionOrder < 0) {
+      els.updateMsg.textContent = `本地 ${local.version} 高于线上 ${remoteVersion}，可能是实验版；普通用户请继续使用稳定版。`;
     } else if (!local.builtAt) {
       // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
       els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号，与线上一致）`;

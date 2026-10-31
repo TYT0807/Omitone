@@ -1,11 +1,12 @@
 /** Classic MV3 worker. Privileged operations are authorized from browser-owned sender/tab state. */
-importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/runtime-policy.js', 'libs/captcha.js');
+importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/runtime-policy.js', 'libs/captcha.js', 'runtime-log-store.js');
 (function () {
   'use strict';
   var policy = self.OmitonePolicy;
   var startedAt = Date.now();
   var configQueue = Promise.resolve();
   var grantQueue = Promise.resolve();
+  var RUNTIME_LOGS_KEY = 'runtimeLogs';
   var tabEpochs = Object.create(null);
   var GRANT_MS = 10 * 60 * 1000;
   var IMAGE_LIMIT = 2 * 1024 * 1024;
@@ -33,6 +34,25 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   }
   function storageGet(area, key) { return chromeCall(chrome.storage[area], 'get', [key]); }
   function storageSet(area, value) { return chromeCall(chrome.storage[area], 'set', [value]); }
+
+  // 单实例日志服务。浏览器身份与带超时的存储能力留在宿主，不传整个 chrome 对象。
+  var runtimeLogs = self.OmitoneRuntimeLogStore.create({
+    read: function () {
+      return storageGet('local', RUNTIME_LOGS_KEY).then(function (stored) { return stored && stored[RUNTIME_LOGS_KEY]; });
+    },
+    write: function (logs) {
+      var patch = {}; patch[RUNTIME_LOGS_KEY] = logs;
+      return storageSet('local', patch);
+    },
+    authorize: function (sender, clear) {
+      var popup = isPopup(sender);
+      if (clear && !popup) return false;
+      return (popup ? Promise.resolve({ scope: 'popup' }) : pageScope(sender)).then(function (scope) {
+        return ['popup', 'study', 'captcha'].indexOf(scope.scope) !== -1;
+      });
+    },
+    now: Date.now
+  });
   function serialGrant(work) {
     var task = grantQueue.then(work);
     grantQueue = task.catch(function () {});
@@ -281,6 +301,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   function route(message, sender) {
     message = message || {};
     if (message.type === 'ping') return Promise.resolve({ success: true, time: Date.now(), startedAt: startedAt });
+    if (message.type === 'runtime_log_append' || message.type === 'runtime_log_clear') return runtimeLogs.handle(message, sender);
     var popup = isPopup(sender);
     if (message.type === 'grant_captcha' || message.type === 'revoke_captcha') {
       return popup ? manageGrant(message.payload, message.type === 'grant_captcha') : Promise.resolve(failure('forbidden_sender'));

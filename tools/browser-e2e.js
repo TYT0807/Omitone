@@ -1540,7 +1540,7 @@ var SCENARIOS = [];
 
 // 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
 SCENARIOS.push({
-  name: '角色动作专项：39 张立绘与 11 动作完整覆盖',
+  name: '角色动作专项：88 张立绘与 11 动作完整覆盖',
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
@@ -1557,12 +1557,12 @@ SCENARIOS.push({
       return { groups: groups, sources: sources, meta: document.getElementById('petBookMeta').textContent,
         keys: Array.from(body.querySelectorAll('[data-anim]')).map(function (el) { return el.getAttribute('data-anim'); }) };
     });
-    check('立绘去重后 39 张，默认 pet.png 只出现一次', book.sources.length === 39 &&
-      new Set(book.sources).size === 39 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
+    check('立绘去重后 88 张，默认 pet.png 只出现一次', book.sources.length === 88 &&
+      new Set(book.sources).size === 88 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
       JSON.stringify(book));
-    check('分组为 17 服装 / 12 表情 / 10 去重姿势，汇总显示 39',
-      book.groups['服装'].length === 17 && book.groups['表情'].length === 12 &&
-      book.groups['姿势'].length === 10 && /39\s*张/.test(book.meta), JSON.stringify(book.groups));
+    check('分组为 39 服装 / 26 表情 / 23 去重姿势，汇总显示 88',
+      book.groups['服装'].length === 39 && book.groups['表情'].length === 26 &&
+      book.groups['姿势（默认装束）'].length === 23 && /88\s*张/.test(book.meta), JSON.stringify(book.groups));
     var actions = [ ['spin', 950], ['jump', 760], ['shake', 1000], ['bow', 1000], ['peek', 1150],
       ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900] ];
     // 第 12 个按钮是「随机动作」，它不是动作本身，单独断言
@@ -2030,11 +2030,13 @@ SCENARIOS.push({
       'var bo=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
       'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
       'out.src1=img?img.getAttribute("src"):"";' +
-      // —— 换姿势 ——
+      // —— 换姿势：当前穿着非默认衣服，只能换身体姿态，不能把衣服换掉 ——
       'out.pose0=img?img.getAttribute("src"):"";' +
+      'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
       'var bp=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
       'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
       'out.pose1=img?img.getAttribute("src"):"";' +
+      'out.poseAttr1=pet?pet.getAttribute("data-pose"):"";' +
       // —— 隐藏（放最后）——
       'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
@@ -2047,7 +2049,8 @@ SCENARIOS.push({
     check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, JSON.stringify(r && r.hits));
     check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, JSON.stringify(r && r.hits));
     check('点「装」换立绘', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
-    check('点「姿」换姿态', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('穿着别的衣服时点「姿」不会把衣服换掉', !!r && r.pose0 === r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('「姿」仍然换了身体姿态', !!r && r.poseAttr0 !== r.poseAttr1, r ? r.poseAttr0 + ' → ' + r.poseAttr1 : '');
     check('拖动位移 > 30px', !!r && Math.abs(r.dragDx) > 30, r ? String(r.dragDx) : '');
     check('拖完仍在视口内', !!r && r.inView === true, '');
     check('点「藏」收起', !!r && r.hidden === true, '');

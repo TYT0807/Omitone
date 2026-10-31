@@ -87,7 +87,7 @@
 
     /**
      * 摸头：冒三颗小心心。
-     * 用字符画而不是素材 —— 39 张立绘里没有"爱心"，临时加一张图反而破坏风格统一。
+     * 用字符画而不是素材 —— 立绘里没有"爱心"，临时加一张图反而破坏风格统一。
      */
     function heartBurst(x, y) {
       if (isEcoMotion()) return;
@@ -354,15 +354,35 @@
       "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
       "pet-9.png", "pet-10.png",
       "pet-11.png", "pet-12.png", "pet-13.png", "pet-14.png",
-      "pet-15.png", "pet-16.png"];   // 17 套服装
+      "pet-15.png", "pet-16.png",
+      "pet-17.png", "pet-18.png", "pet-19.png", "pet-20.png",
+      "pet-21.png", "pet-22.png",
+      "pet-23.png", "pet-24.png", "pet-25.png", "pet-26.png",
+      "pet-27.png", "pet-28.png",
+      "pet-29.png", "pet-30.png", "pet-31.png", "pet-32.png",
+      "pet-33.png", "pet-34.png",
+      "pet-35.png", "pet-36.png", "pet-37.png", "pet-38.png"];   // 39 套服装
     // 「表」走表情 + 动作（都是默认装束下的另一张脸/另一个动作）
     var FACES = ["pet-e1.png", "pet-e2.png", "pet-e3.png", "pet-e4.png",
                  "pet-e5.png", "pet-e6.png",
                  "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png",
-                 "pet-e11.png", "pet-e12.png"];   // 12 张表情
+                 "pet-e11.png", "pet-e12.png",
+                 "pet-e13.png", "pet-e14.png", "pet-e15.png",
+                 "pet-e16.png", "pet-e17.png",
+                 "pet-e18.png", "pet-e19.png", "pet-e20.png",
+                 "pet-e21.png", "pet-e22.png", "pet-e23.png",
+                 "pet-e24.png", "pet-e25.png", "pet-e26.png"];   // 26 张表情
     var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
                  "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png",
-                 "pet-i9.png", "pet-i10.png"];  // 11 个姿势
+                 "pet-i9.png", "pet-i10.png",
+                 "pet-i11.png", "pet-i12.png",
+                 "pet-i13.png", "pet-i14.png",
+                 "pet-i15.png", "pet-i16.png", "pet-i17.png",
+                 "pet-i18.png", "pet-i19.png", "pet-i20.png",
+                 "pet-i21.png", "pet-i22.png", "pet-i23.png"];  // 24 个姿势（全部是**默认装束**画的）
+    // 穿着别的衣服时，「姿」只在这几种身体姿态之间切，不换图 ——
+    // 换姿势图会把衣服一起换回默认装束（用户报的「点姿势怎么换衣服了」）。
+    var POSE_STATES = ["sit", "happy", "point", "sad"];
     // 动作库：不占素材，全是 CSS 形变（+ 一个头顶字符）。第三个值 = 停留时长。
     var ANIMS = [
       ["spin", "转圈", 950], ["jump", "蹦一下", 760], ["shake", "摇头", 1000],
@@ -463,7 +483,7 @@
     }
 
     // ── 立绘册 ──────────────────────────────────────────────────────────
-    // 17 套衣服 / 12 表情 / 11 姿势，一共 39 张。按顺序点「装」找一套要按十几次，
+    // 39 套衣服 / 26 表情 / 24 姿势（去重后 88 张）。按顺序点「装」找一套要按十几次，
     // 所以给一个能直接挑的网格；顺便当作已收集多少张的"图鉴"。
     var book = document.getElementById("petBook");
     var bookBody = document.getElementById("petBookBody");
@@ -481,7 +501,7 @@
     }
     function buildBook() {
       if (!bookBody || bookBody.firstChild) return;
-      var groups = [["服装", SKINS], ["表情", FACES], ["姿势", POSES]];
+      var groups = [["服装", SKINS], ["表情", FACES], ["姿势（默认装束）", POSES]];
       var html = "", seen = {};
       groups.forEach(function (g) {
         // pet.png 既是"默认服装"也是"默认姿势"，同一张图只摆一次，免得张数对不上
@@ -550,13 +570,20 @@
           if (bookOpen) closeBook(); else openBook();
         } else if (act === "pose") {
           var poseSeq = newSeq(1450, true);
-          // 姿势 = 换一张"动作立绘"，和表情分开
-          poseIdx = (poseIdx + 1) % POSES.length;
           var pa = mascot.querySelector(".pet-art");
-          if (pa) { pa.setAttribute("src", POSES[poseIdx]); playMotion(pa); }
-          try { localStorage.setItem(SRC_KEY, POSES[poseIdx]); } catch (e) {}
+          var curSrc = pa ? pa.getAttribute("src") : "";
+          // 姿势立绘都是**默认装束**画的：穿着别的衣服时换姿势图，
+          // 等于把用户刚挑好的衣服一起换掉。非默认装束下只切 CSS 姿态，不换图。
+          if (SKINS.indexOf(curSrc) > 0) {
+            poseIdx = (poseIdx + 1) % POSE_STATES.length;
+            setPose(POSE_STATES[poseIdx], 1200, poseSeq);
+          } else {
+            poseIdx = (poseIdx + 1) % POSES.length;
+            if (pa) { pa.setAttribute("src", POSES[poseIdx]); playMotion(pa); }
+            try { localStorage.setItem(SRC_KEY, POSES[poseIdx]); } catch (e) {}
+            setPose("sit", 1200, poseSeq);
+          }
           lockManualOutfit();
-          setPose("sit", 1200, poseSeq);
           addMood(2);
         } else if (act === "outfit") {
           setPose("sit", 450);

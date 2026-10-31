@@ -121,13 +121,64 @@ function checkManifest() {
 // ---------------------------------------------------------------------------
 // 3. manifest 引用的文件都必须真实存在
 // ---------------------------------------------------------------------------
+/** Classic-worker dependencies resolve against the worker entry URL, not each imported file. */
+function collectWorkerScripts(entry) {
+  var files = [], issues = [], visited = Object.create(null);
+  var base = path.posix.dirname(String(entry || '').replace(/\\/g, '/'));
+  function visit(file) {
+    if (visited[file]) return;
+    visited[file] = true;
+    files.push(file);
+    if (!exists(file)) { issues.push('Worker 依赖不存在: ' + file); return; }
+    if (files.length > 100) { issues.push('Worker 依赖图超过 100 个文件'); return; }
+    var source = stripComments(read(file));
+    var re = /\b(?:self\.)?importScripts\s*\(([^)]*)\)/g, match;
+    while ((match = re.exec(source))) {
+      var args = match[1].trim();
+      if (!args) continue;
+      // Literal-only imports are deliberate: dynamic paths cannot be statically packaged.
+      if (!/^(['"])[^'"\\]*\1(?:\s*,\s*(['"])[^'"\\]*\2)*\s*,?$/.test(args)) {
+        issues.push(file + ': importScripts 只支持可核对的本地字面量路径');
+        continue;
+      }
+      var literal = /['"]([^'"]*)['"]/g, item;
+      while ((item = literal.exec(args))) {
+        var name = item[1];
+        if (!name || /[:?#%\\]/.test(name) || name.charAt(0) === '/') {
+          issues.push(file + ': 非本地 Worker 依赖: ' + name); continue;
+        }
+        var resolved = path.posix.normalize(path.posix.join(base, name));
+        if (resolved === '..' || resolved.indexOf('../') === 0 || !/\.js$/.test(resolved)) {
+          issues.push(file + ': Worker 依赖越界或非 JS: ' + name); continue;
+        }
+        visit(resolved);
+      }
+    }
+  }
+  if (entry) visit(entry);
+  return { files: files, issues: issues };
+}
+
 function checkManifestFiles(manifest) {
   if (!manifest) return;
 
   var referenced = [];
 
   var background = manifest.background || {};
-  if (background.service_worker) referenced.push(background.service_worker);
+  var worker = collectWorkerScripts(background.service_worker);
+  referenced = referenced.concat(worker.files);
+  worker.issues.forEach(fail);
+  // Build whitelist must include worker-only modules too; don't add them to page permissions.
+  var buildList = read('tools/build.js').match(/var INCLUDE\s*=\s*\[([\s\S]*?)\];/);
+  if (!buildList) fail('打包 INCLUDE 清单不可解析');
+  else {
+    var includes = (buildList[1].match(/['"][^'"]+['"]/g) || []).map(function (value) { return value.slice(1, -1); });
+    worker.files.forEach(function (file) {
+      if (!includes.some(function (include) { return file === include || file.indexOf(include + '/') === 0; })) {
+        fail('Worker 依赖未纳入打包白名单: ' + file);
+      }
+    });
+  }
 
   (manifest.content_scripts || []).forEach(function (entry) {
     (entry.js || []).forEach(function (f) { referenced.push(f); });
@@ -143,9 +194,10 @@ function checkManifestFiles(manifest) {
   var actionIcons = (manifest.action && manifest.action.default_icon) || {};
   Object.keys(actionIcons).forEach(function (size) { referenced.push(actionIcons[size]); });
 
+  referenced = Array.from(new Set(referenced));
   var missing = referenced.filter(function (f) { return !exists(f); });
   if (missing.length) fail('manifest 引用了不存在的文件: ' + missing.join(', '));
-  else pass(referenced.length + ' 个 manifest 引用文件全部存在');
+  else pass(referenced.length + ' 个 manifest / Worker 依赖文件全部存在');
 }
 
 // ---------------------------------------------------------------------------
@@ -891,7 +943,7 @@ function checkDeadFiles(jsFiles, manifest) {
       (e.js || []).forEach(function (f) { loaded.push(f); });
     });
     if (manifest.background && manifest.background.service_worker) {
-      loaded.push(manifest.background.service_worker);
+      loaded = loaded.concat(collectWorkerScripts(manifest.background.service_worker).files);
     }
     (manifest.web_accessible_resources || []).forEach(function (entry) {
       (entry.resources || []).forEach(function (f) {

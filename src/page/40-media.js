@@ -58,7 +58,13 @@
 
 
     _isActiveMediaPending: function (reason) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      // 有些播放器在切换清晰度/广告后会悄悄重置内部状态，把 _isPlaying 清掉，
+      // 于是 tick 以为「没有任务」→ 每 5 秒搜一次 → `study no runnable job` 刷屏
+      // （2026-10-26 日志：一个视频播放的 6 分钟里刷了 70 多条）。
+      // 只要手里那个 video 元素还在播，就应当按「任务进行中」处理。
+      var liveVideo = this._videoEl;
+      var stillPlaying = !!(liveVideo && liveVideo.isConnected && !liveVideo.paused && !liveVideo.ended);
+      if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending')) {
         this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
         return false;
@@ -233,25 +239,39 @@
       });
       console.log('%c[Omitone] seekable video, seek to end: ' + current.toFixed(1) + 's -> ' + target.toFixed(1) + 's / ' + duration.toFixed(1) + 's', 'color:#4CAF50');
 
-      // 1.5 秒后验证进度是否被网站弹回（仅记录日志，不再重试）
+      // 1.5 秒后验证进度是否被网站弹回。
       //
-      // 这个结论会被「防拖拽 + 锁 1 倍速 → 看到 90% 就够」的逻辑复用：
-      // **被弹回 = 这个视频不可拖拽**（见 _isNinetyPercentVideo）。
+      // ⚠️ 原来这里是「只记日志、不再重试」，实测量出一笔很贵的账：
+      //    2026-10-26 的日志里，385 秒的视频 seek 到 382 秒后被播放器**静默吞掉**
+      //    （currentTime 从 3 秒继续涨），插件以为拖过了，于是按 1 倍速完整看了 6 分半。
+      //    播放器在 metadata 刚就绪时吞掉第一次 seek 很常见，所以这里允许再补两次；
+      //    两次都弹回才认定「这个视频不可拖拽」，结论仍然给 _isNinetyPercentVideo 复用。
       var self = this;
-      this._workerDelay(function () {
+      var verifySeek = function (attempt) {
         try {
           if (!video.isConnected) return;
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
             self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
-          } else {
-            self._seekRevertedKeys[key] = true;  // 被弹回 → 不可拖拽
-            console.log('[Omitone] seek reverted by site player, continue normal playback');
-            emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
+            return;
           }
+          if (attempt < 2) {
+            try { video.currentTime = target; } catch (eRetry) { return; }
+            emitRuntimeLog('info', 'seek reverted by site, retry', {
+              attempt: attempt + 1,
+              from: Number(now.toFixed(1)),
+              to: Number(target.toFixed(1))
+            });
+            self._workerDelay(function () { verifySeek(attempt + 1); }, 1500);
+            return;
+          }
+          self._seekRevertedKeys[key] = true;  // 两次都弹回 → 不可拖拽
+          console.log('[Omitone] seek reverted by site player, continue normal playback');
+          emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
         } catch (e) {}
-      }, 1500);
+      };
+      this._workerDelay(function () { verifySeek(0); }, 1500);
       return true;
     },
 
@@ -321,6 +341,10 @@
           await this._withTimeout(video.play(), 12000);
           this._isPlaying = true;
           this._startVideoMonitoring();
+          // play() 被拒后浏览器会把 currentTime 打回 0，站点也可能顺手把倍速重置成 1。
+          // 不补这两下，日志里就是「seek 到 102/105 → 静音重试 → 从 0.8s 用 1x 重看一遍」。
+          try { this._trySeekToEnd(video, 'after-muted-retry'); } catch (eSeek) {}
+          try { this._ensurePlaybackRate(video, 'after-muted-retry'); } catch (eRate) {}
           emitRuntimeLog('warn', 'media autoplay blocked, muted retry ok', { name: job.name });
         } catch (e2) {
           // 静音重试仍失败：多半是音源格式/MIME 不支持（m4a 常见），尝试重新封装音源后播放
@@ -524,7 +548,12 @@
       }
       // 备选：从高到低试设倍速，观察播放器是否把倍速压回
       var probed = await this._probeMaxPlaybackRate(video);
-      return this._clampAutoRate(probed || 1);
+      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
+      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
+      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
+      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
+      if (!probed) return 0;
+      return this._clampAutoRate(probed);
     },
 
 

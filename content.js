@@ -8,8 +8,6 @@
   const AUTO_START_ATTR = 'data-xxt-auto-start';
   const PAGE_SCRIPT_ID = 'xxt-page-script';
   const STATUS_PANEL_ID = 'omitone-status-panel-host';
-  const RUNTIME_LOGS_KEY = 'runtimeLogs';
-  const MAX_LOGS = 200;
 
   if (window.top !== window) {
     console.log('%c[Omitone] skip nested frame bridge', 'color:#999');
@@ -82,7 +80,11 @@
 
   const CONFIG_DEFAULTS = { ...configs };
   let decryptTablePromise = null;
+  let decryptTableRetryAt = 0;
+  let decryptTableFailures = 0;
+  const DECRYPT_FETCH_TIMEOUT_MS = 10000;
   const decryptMapCache = new Map();
+  const MAX_DECRYPT_FONTS = 16;
   let decryptSweepTimer = null;
   const observedDocs = new WeakSet();
   let statusPanel = null;
@@ -90,29 +92,25 @@
   let statusLastSignature = '';
   let pageRuntimeActivityAt = 0;
   let pageInjectSeq = 0;
-  let runtimeLogQueue = Promise.resolve();
+  let runtimeLogWarningAt = 0;
 
   function appendRuntimeLog(level, message, meta) {
     if (!scopeIsCurrent()) return;
     const item = {
       time: Date.now(),
       level: level || 'info',
-      message: String(message || ''),
+      message: String(message || '').slice(0, 2000),
       meta: meta || null
     };
-    runtimeLogQueue = runtimeLogQueue.then(() => new Promise((resolve) => {
-      if (!scopeIsCurrent()) { resolve(); return; }
-      chrome.storage.local.get(RUNTIME_LOGS_KEY, (result) => {
-        if (chrome.runtime.lastError) {
-          resolve();
-          return;
+    // 不等待日志完成，不阻塞学习；Worker 负责跨标签页串行写入及权限核验。
+    sendRuntimeMessageWithTimeout({ type: 'runtime_log_append', payload: item }, 20000, 'log request timeout')
+      .then((result) => {
+        if (result && result.success) return;
+        if (Date.now() - runtimeLogWarningAt > 30000) {
+          runtimeLogWarningAt = Date.now();
+          console.warn('[Omitone] runtime log unavailable; study continues');
         }
-        const logs = result && Array.isArray(result[RUNTIME_LOGS_KEY]) ? result[RUNTIME_LOGS_KEY] : [];
-        logs.push(item);
-        const nextLogs = logs.slice(-MAX_LOGS);
-        chrome.storage.local.set({ [RUNTIME_LOGS_KEY]: nextLogs }, resolve);
-      });
-    })).catch(() => {});
+      }).catch(() => {});
   }
 
   function sendRuntimeMessageWithTimeout(message, timeoutMs, timeoutError) {
@@ -1126,7 +1124,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.2.9</span>',
+      '    <span class="brand">Omitone 1.3.0</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
@@ -1328,8 +1326,43 @@
   }
 
   function getDecryptTable() {
-    if (!decryptTablePromise) decryptTablePromise = loadDecryptTable();
+    if (!decryptTablePromise) {
+      if (Date.now() < decryptTableRetryAt) return Promise.resolve(null);
+      decryptTablePromise = loadDecryptTable().catch(() => null).then((table) => {
+        if (table) {
+          decryptTableFailures = 0;
+          decryptTableRetryAt = 0;
+        } else {
+          // 失败只在短暂冷却期内复用；新一轮扫描可以重试，不缓存 null 到页面关闭。
+          decryptTableFailures = Math.min(decryptTableFailures + 1, 5);
+          decryptTableRetryAt = Date.now() + Math.min(5000 * Math.pow(2, decryptTableFailures - 1), 60000);
+          decryptTablePromise = null;
+        }
+        return table;
+      });
+    }
     return decryptTablePromise;
+  }
+
+  function fetchDecryptResource(resource, binary) {
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('font table resource timeout'));
+      }, DECRYPT_FETCH_TIMEOUT_MS);
+    });
+    // 一个期限覆盖响应头和响应体；即使底层忽略 AbortSignal，外层也会结束。
+    const work = Promise.resolve().then(() => fetch(chrome.runtime.getURL(resource), { signal: controller.signal }))
+      .then((response) => {
+        if (!response.ok) throw new Error('font table resource unavailable');
+        return binary ? response.arrayBuffer() : response.json();
+      });
+    return Promise.race([work, timeout]).finally(() => {
+      clearTimeout(timer);
+      controller.abort();
+    });
   }
 
   /**
@@ -1345,19 +1378,16 @@
       return null;
     }
     try {
-      const resp = await fetch(chrome.runtime.getURL('resources/table.bin'));
-      if (resp.ok) {
-        const table = FONT_TABLE.decode(await resp.arrayBuffer());
-        if (table) return table;
-        console.warn('[Omitone] table.bin 格式非法，回退到 table.json');
-      }
+      const bytes = await fetchDecryptResource('resources/table.bin', true);
+      const table = FONT_TABLE.decode(bytes);
+      if (table) return table;
+      console.warn('[Omitone] table.bin 格式非法，回退到 table.json');
     } catch (e) {}
 
     try {
-      const resp = await fetch(chrome.runtime.getURL('resources/table.json'));
-      if (!resp.ok) return null;
-      const table = FONT_TABLE.fromObject(await resp.json());
-      if (!table) return null;
+      const data = await fetchDecryptResource('resources/table.json', false);
+      const table = FONT_TABLE.fromObject(data);
+      if (!table || !table.size) return null;
       console.warn('[Omitone] 正在使用明文 table.json（347KB）—— 跑一次 npm run build 可生成 122KB 的 table.bin');
       return table;
     } catch (e2) {
@@ -1419,27 +1449,34 @@
   }
 
   function buildDecryptMapForDoc(doc, base64, table, elements) {
-    if (decryptMapCache.has(base64)) return decryptMapCache.get(base64);
-    const font = buildTyprFont(decodeBase64ToUint8Array(base64));
-    const map = new Map();
-    if (!font || !table || typeof md5 !== 'function') {
-      decryptMapCache.set(base64, map);
-      return map;
+    // 缺表/依赖/解析失败都是可恢复状态，不能把空结果当成成功缓存。
+    if (!table || typeof md5 !== 'function') return new Map();
+    let cached = decryptMapCache.get(base64);
+    if (!cached || cached.table !== table) {
+      const font = buildTyprFont(decodeBase64ToUint8Array(base64));
+      if (!font) return new Map();
+      cached = { font, table, map: new Map(), checked: new Set() };
     }
+    // 同字体可能在后续题目/文档中出现新字符，命中字体不等于字符映射齐全。
+    const { font, map, checked } = cached;
+    decryptMapCache.delete(base64);
+    decryptMapCache.set(base64, cached);
+    while (decryptMapCache.size > MAX_DECRYPT_FONTS) decryptMapCache.delete(decryptMapCache.keys().next().value);
 
     const chars = collectUniqueSecretChars(elements);
     chars.forEach((char) => {
+      if (checked.has(char)) return;
       try {
         const glyph = Typr.U.codeToGlyph(font, char.codePointAt(0));
-        if (!glyph) return;
+        if (!glyph) { checked.add(char); return; }
         const path = Typr.U.glyphToPath(font, glyph);
         const hash = md5(JSON.stringify(path)).slice(24);
         const decoded = table.get(hash);
         if (decoded) map.set(char, decoded);
+        checked.add(char);
       } catch (e) {}
     });
 
-    decryptMapCache.set(base64, map);
     return map;
   }
 

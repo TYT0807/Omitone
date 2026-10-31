@@ -24,20 +24,18 @@
                             │  chrome.runtime.sendMessage
 ┌───────────────────────────▼─────────────────────────────────────────┐
 │ Service Worker                                                       │
-│   background.js —— 极简，只有两个职责                                 │
-│   ① api_fetch：跨域 POST 代理（content script 直连会被 CORS 拦）      │
-│   ② fetch_image_dataurl：带 Cookie 抓验证码图并转 base64             │
+│   background.js —— 消息路由、真实身份/授权、配置与网络代理            │
+│   runtime-log-store.js —— 日志校验、脱敏、串行追加与清空             │
+│   日志模块不直接访问 chrome；只接收宿主注入的四项能力                 │
 └─────────────────────────────────────────────────────────────────────┘
                             ▲
                             │  chrome.runtime.sendMessage
-                    popup/popup.js —— 设置界面，只读写下 storage + 发 xxt_start
+                    popup/popup.js —— 设置界面、配置/日志请求与 xxt_start
 ```
 
-**为什么 LLM 请求不放在 service worker 里？**
-MV3 的 service worker 会被随时回收（大约 30 秒空闲即终止），长连接的大模型请求
-（推理模型可能跑 1~2 分钟）非常容易被腰斩。所以请求由 `content.js` 发起、
-经 `background.js` 只做一层 `fetch` 代理转发 —— 一旦 `api_fetch` 失败，
-`content.js` 还会退回直连（`apiFetch` 里的 fallback 分支）。
+**LLM 业务编排与网络权限分开。** 分批/解析/重试在 `content.js`，网络请求由 Worker 代理，
+请求及响应体受期限约束。当前 content 不会在 Worker 拒绝后退回直连，避免绕过权限门禁。
+MV3 Worker 可能被浏览器终止；日志队列仅在当前 Worker 实例内串行，不承诺跨重启恰好一次。
 
 ## 源码布局与构建产物
 
@@ -48,6 +46,7 @@ MV3 的 service worker 会被随时回收（大约 30 秒空闲即终止），�
 | `src/page/*.js` | `page.js` 的**源文件**，按域切成 16 个片段（`00-shell-constants` … `90-console-api-startup`） | ✅ **要改就改这里** |
 | `page.js`（根目录） | 由上面 16 个片段**拼接**出来的产物 —— 扩展实际加载的是它 | ❌ 直接改会在下次拼接时被覆盖 |
 | `content.js` / `background.js` / `libs/` / `popup/` | 各自独立，不参与拼接 | ✅ |
+| `runtime-log-store.js`（根目录） | Worker 通过 `importScripts` 加载的独立日志工厂，Node 可直接 require；不注入网页 | ✅ |
 | `resources/table.bin` | 由 `resources/table.json` 打包出的运行时字体表（json 是源、bin 是产物） | ❌ 走 `node tools/table-pack.js --pack` |
 | `dist/` | `npm run build` 的产物（解压目录 + `omitone.zip`），已 gitignore | — |
 
@@ -62,6 +61,60 @@ npm run concat:check  # 校验两者一致（npm test 里会自动跑一次）
 **几道守卫拦的都是同一件事：改了一半就以为改完了。** 片段与产物不一致、片段头部的方法/状态字段
 清单与实际不符、幽灵调用与死方法、`await` 缺超时护栏 —— 都由 `npm test` 报出来。
 它们失败时的正确反应是**补齐同步**，不是改守卫。
+
+### Worker 日志模块的能力边界
+
+`runtime-log-store.js` 导出 `create({ read, write, authorize, now })`，每个实例只暴露
+`handle(message, sender)`。`background.js` 在启动时创建唯一实例，向它注入：
+
+| 能力 | 宿主职责 |
+| --- | --- |
+| `read()` | 从 `runtimeLogs` 读取数组，Chrome 操作由现有超时包装执行 |
+| `write(logs)` | 写回同一键；模块不持有完整 storage/Chrome 对象 |
+| `authorize(sender, clear)` | 按真实标签/扩展页面状态判断；必须明确返回 true 才能执行 |
+| `now()` | 提供时间，便于确定性验证时间戳和排队过期 |
+
+模块负责负载校验、元数据规整、200 条截断、队列容量与 15 秒排队期限；宿主保证注入的异步能力
+有界结束。模块不新建另一个超时体系，不读 DOM、不联网。多实例只用于隔离测试/独立存储域，
+生产不能为同一存储键创建多个实例，否则会破坏单写入保证。
+
+加载关系：`manifest.background.service_worker` → `background.js` → `runtime-log-store.js`。
+不增加 manifest 的 content_scripts 或 web_accessible_resources 权限。`tools/check.js` 递归验证
+本地字面量 `importScripts` 依赖和 build 白名单；动态路径不在支持范围内，必须改成显式引用。
+
+验证入口：`npm run log-store:test`；`npm run sandbox` 在临时源码副本验证；
+`npm run sandbox:built` 额外在临时副本构建，核对 ZIP/展开目录逐文件一致后加载产物。
+两种沙盒都不会覆盖原工作区 `dist`，正常或可捕获失败时自动清理临时产物；外部强制中止可能留下本次临时目录，须核对进程及精确路径再清理。
+
+### Popup 日志视图边界
+
+`popup-log-view.js` 是根目录下的扩展页面模块，由 `popup/popup.html` 在宿主脚本之前加载。
+工厂 `create` 接收日志面板 DOM、readLogs / clearLogs / writeClipboard / notify / version / now
+及显式计时器，返回 open / close / refresh / clear / copy / dispose / toggle 操作。
+`popup.js` 只接真实浏览器能力与按钮，不再维护第二份日志面板状态。
+
+显示使用文本节点和 `textContent`；导出纯文本格式保持兼容。读取代号与生命周期代号共同
+拒绝迟到结果；关闭面板不会等待旧读取结束后再启动定时刷新；销毁取消模块创建的全部等待。
+读与写剪贴板的期限为 5 秒，清空为 20 秒。取消本地等待不意味着能撤销已开始的底层写操作。
+
+测试入口 `npm run popup-log:test` 已纳入统一基线。完整产物验收额外验证真实 DOM 中的
+无 HTML 解释、关闭后定时器不复活、刷新/清空拒绝旧结果、复制失败回退和 pagehide 清理。
+受控读取与剪贴板故障仅在测试页注入；清空仍走真实 Worker，原消息协议与权限不变。
+
+### 产物验收证据
+
+`npm run acceptance:built` 使用前台监督进程运行 `omitone-sandbox.cjs` 的完整 built 模式，
+并在工作区根目录新建 `omitone-acceptance-<UTC时间-UUID>.jsonl`。基线、构建、浏览器身份、
+每个场景开始/完成与收尾同步追加并 fsync；内容只包含验证状态、数量、路径和摘要，
+不收集课程内容、模型请求体或真实凭据。终端输出不作为通过证据。
+
+测试进程正常结束后，监督进程记录真实退出码、复核临时目录不存在和调试端口可用，再新建
+同名 `.json` 回执，绑定 JSONL 的 SHA-256。`node omitone-acceptance.cjs --verify <绝对证据路径>`
+同时复核证据链、场景计划、计数和回执。源码模式不能冒充产物模式；缺阶段、失败、
+截断或中止均不通过。证据文件为本地交付记录保留，按精确命名排除于源码指纹和临时副本。
+
+哈希链只用于检测意外损坏和记录错配，不是抗恶意篡改的签名；双进程也无法抵抗操作系统
+同时强杀或断电。此时已落盘阶段可供定位，但不补造成功回执、不接着未完成运行拼出通过结论。
 
 ## 消息协议
 
@@ -102,7 +155,7 @@ chrome.runtime 消息（**每一条都先判作用域**）：
 | type | 谁能用 | 说明 |
 | --- | --- | --- |
 | `get_page_scope` | 所有 content | 页面问「我属于哪类场景」，返回 study / captcha / none |
-| `get_config` | study / captcha | 按作用域投影后的配置（**永远不含 apiKey**） |
+| `get_config` | popup / study / captcha | popup 与 study 隔离世界可读原配置；captcha 只取公开投影；content 发给 page 的配置另做去密钥投影 |
 | `config_patch` | popup / study | 带指纹的增量写；字段与区间走白名单 |
 | `api_fetch` | popup / study | 跨域 POST 代理（AI 请求） |
 | `fetch_image_dataurl` | study / captcha | 抓图转 dataURL；captcha 只能抓同源 |
@@ -111,6 +164,8 @@ chrome.runtime 消息（**每一条都先判作用域**）：
 | `grant_captcha` / `revoke_captcha` | 仅 popup | 手动授权外站验证码页 |
 | `ping` | 所有 | 连通性检查，不回配置 |
 | `check_update` | 仅 popup | 占位实现 |
+| `runtime_log_append` | popup / study / captcha | `{time, level, message, meta}`；执行前核验权限后进入唯一日志队列 |
+| `runtime_log_clear` | 仅 popup | 不带 payload；与追加走同一队列 |
 
 **作用域判定**：`background.js` 按**标签页真实 URL** 判，不信页面自报（`sender.url`）。
 
@@ -130,9 +185,9 @@ chrome.runtime 消息（**每一条都先判作用域**）：
 
 | 键 | 内容 |
 | --- | --- |
-| `config` | 全部配置项（扁平对象，多处以 spread 合并，**没有 schema 校验**） |
+| `config` | 配置项；`config_patch` 按 `libs/runtime-policy.js` 白名单与数值区间校验 |
 | `xxtRunning` | 布尔。为 true 时页面刷新后自动续跑（验证码刷新场景依赖它） |
-| `runtimeLogs` | 最近 200 条日志，环形截断 |
+| `runtimeLogs` | 最近 200 条日志；由 Worker 的唯一日志模块实例追加/清空，前端只读展示 |
 
 ## 自动续跑机制
 

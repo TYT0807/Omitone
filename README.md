@@ -6,12 +6,23 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.2.9-blue)
+![版本](https://img.shields.io/badge/版本-1.3.0-orange)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
-![状态](https://img.shields.io/badge/状态-功能收官%20·%20维护期-lightgrey)
+![状态](https://img.shields.io/badge/状态-实验性优化%20·%20未发布-orange)
 
 **免费 · 公益 · 本地运行 · AI 由你自己接入**
+
+> **当前源码是 1.3.0 实验线，尚未发布。普通用户继续使用 1.2.9 稳定版即可。**
+> **前端日志优化正在完成验收**：LF/CRLF 负控已修正并通过，已接入统一基线与浏览器专项，仍须以本轮新产物回执为准；下方旧回执不能放行后续改动。见 [前端日志阶段记录](1.3.0-前端日志优化验收-20261023.md)。
+> 本轮先修复动态文字漏解码、字形表加载失败后不能恢复、多页面日志互相覆盖，再将日志存储拆为 Worker 专用模块，
+> 不增加学习任务能力，不改变页面调度。下载入口与历史安装包不因本地源码版本而更新。
+> 实验验证：`npm run regression`、`npm run regression:self-test`、`npm run sandbox`。
+> 本轮修复已通过持久化回归和独立 Edge 全量验证，范围与限制见 [1.3.0 修复验收](1.3.0-修复验收-20261023.md)。
+> 日志模块通过注入读写、权限和时钟能力独立测试；`npm run log-store:test` 验证模块，`npm run sandbox:built` 在临时副本构建并验证产物。
+> 日志拆分已通过源码全量与打包完整性检查；此前中止造成的产物验收缺口现已补齐，**产物全量通过并有独立退出回执**。见 [可靠产物验收记录](1.3.0-产物验收记录-20261023.md)；[拆分阶段记录](1.3.0-日志模块拆分验收-20261023.md) 保留历史事实。
+> 可靠产物验收入口：`npm run acceptance:built`，逐阶段保留唯一编号 JSONL 证据与独立进程退出回执；`npm run acceptance:test` 检查记录器。缺结束记录或退出回执一律不通过。
+> 本地报告保留各阶段真实结果；未通过完整回归前不应把实验源码替换为日常使用版本。
 
 ## ⬇️ 想直接用？点这里
 
@@ -46,8 +57,8 @@
 > 外观也整块换成**磨砂玻璃**：半透明顶栏、卡片分组、iOS 风格开关，
 > 外加打开与展开的动效（都只动透明度/位移，不为好看换来卡顿）。
 > **本轮补充（仍是 1.2.9，下载包已重新打包）**：小角色新增转圈、蹦一下、摇头、鞠躬、探头、晕乎、
-> 打盹、欢呼、吓一跳、思考、哼歌 **11 种动作**，立绘册里点着看；**39 张立绘不变**，
-> 右键角色或点工具条「册」可以一次挑完（17 套服装 / 12 表情 / 10 姿势）。
+> 打盹、欢呼、吓一跳、思考、哼歌 **11 种动作**，立绘册里点着看；**88 张立绘**（1.2.9 之后新增 49 张），
+> 右键角色或点工具条「册」可以一次挑完（39 套服装 / 26 表情 / 24 姿势）。
 > 手动点动作不用等它闲逛结束，省资源模式会及时收敛动效，小屏窗口也更好操作。
 > 另外收紧了**验证码页的权限**：只有当前这一页确实是验证码页、并且是**从学习通页面打开**的窗口，
 > 才会自动注入；授权绑定该网址、**10 分钟自动失效**，换到别的网站一律不注入、也拿不到 API Key。
@@ -61,7 +72,7 @@
 > **1.2.4 修复**：讨论任务**新开的窗口**里插件不自动跑。
 > [完整变更记录 →](CHANGELOG.md)
 
-> **当前状态：功能已收官，进入维护期。**
+> **稳定线状态：1.2.9 功能收官、进入维护期；1.3.0 为单独的实验性优化线。**
 > 刷课与答题该有的能力都齐了，后续主要是修 bug、跟随平台改版做适配；
 > 界面和装饰（比如小角色的动作）还会有小更新，但不再加会影响刷课流程的新能力。
 
@@ -88,7 +99,7 @@
 
 点上面那个 [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)。
 
-浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 2 MB，大部分是 39 张立绘）。
+浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 1.8 MB，大部分是 88 张立绘）。
 它通常会出现在你的「下载」文件夹里。
 
 > 点下去如果只是打开了一个网页、没有开始下载，就在那个页面里再找一下
@@ -395,7 +406,7 @@
 
 | 功能 | 说明 |
 | --- | --- |
-| **39 张立绘** | 17 套服装 / 12 个表情 / 10 个姿势；右键角色或点工具条「册」一次挑完，选过的下次打开还在 |
+| **88 张立绘** | 39 套服装 / 26 个表情 / 24 个姿势；右键角色或点工具条「册」一次挑完，选过的下次打开还在 |
 | **11 种动作** | 转圈、蹦一下、摇头、鞠躬、探头、晕乎、打盹、欢呼、吓一跳、思考、哼歌，外加「随机动作」 |
 | **状态联动（只读）** | 开始运行会开心一下、呼吸加快；跑起来之后不换装不搭话；心情跨档会换姿态 |
 | **不挡操作** | 可拖动、双击收起、一键隐藏；摸着会冒心心；精简模式下整套不加载 |
@@ -636,7 +647,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 53 个场景，561 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 53 个场景，562 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1037,6 +1048,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | API 地址构造、密钥清洗 | **只改 `libs/api-url.js`** |
 | LLM 协议适配 / 分批 / 解析容错 | `content.js`：`handleLLMRequestDirect`、`callXxxAPI`、`parseLLMResponse`、`coerceAnswerForType` |
 | 跨域代理、抓图 | `background.js` |
+| 日志写入/清空、队列、元数据规整 | 根目录 `runtime-log-store.js`；`background.js` 保留真实身份判定和带超时的存储能力 |
 | 任务点类型识别（视频/音频/文档/图片/测验/投票） | `src/page/60-tasks-detect.js`：`_classifyTaskFrame` / `_getAttachmentWorkType` / `_buildAttachmentOnlyJob` |
 | 任务点搜索（OCS / iframe / 附件列表） | `src/page/60-tasks-detect.js`：`_searchChaoxingJobOcs` / `_searchIFramesOcs` / `_getChaoxingAttachments` |
 | 任务点执行（跑视频/阅读/PPT音频） | `src/page/62-tasks-run.js`：`_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy` |
@@ -1127,8 +1139,16 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（128 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（53 个场景 / 561 项）
+npm run e2e      # 真实 Edge 功能交叉检验（53 个场景 / 562 项）
 npm run test:all # npm test + e2e
+npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
+npm run regression:self-test  # 检查闸门与内存故障注入
+npm run log-store:test  # 独立日志模块、Worker 依赖及构建校验测试
+npm run popup-log:test  # 前端日志视图、异步状态与 LF/CRLF 负控
+npm run sandbox  # 临时源码副本：原基线 + 回归 + 模块测试 + 真实 Edge
+npm run sandbox:built  # 临时构建：核验 ZIP/展开目录一致后，用真实 Edge 加载产物
+npm run acceptance:test  # 记录器与验收规则自测（含真实子进程中止夹具）
+npm run acceptance:built  # 完整产物验收：逐阶段落盘证据 + 独立退出/清理回执
 npm run build    # 打包到 dist/
 npm run audit:publish  # 发布前审查：扫描密钥 / 本机路径 / 邮箱 / 大文件是否误入公开仓库
 ```
@@ -1257,23 +1277,27 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么"软件这么大"——体积账本
 
-扩展**解压后约 2.73 MB**，`dist/*.zip` 约 2.07 MB。构成如下（`node tools/build.js` 会把
+扩展**解压后约 2.50 MB**，`dist/*.zip` 约 1.83 MB。构成如下（`node tools/build.js` 会把
 `resources/table.json` 排除掉，改由 123 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `popup/`（39 张立绘 + 界面） | 1.80 MB (66%) | 立绘是主体：17 套服装 / 12 表情 / 10 姿势，每张 40~70 KB |
-| `page.js` | 521 KB (19%) | 全部页面侧逻辑。**最值得小心对待**的文件 |
-| `libs/` | 143 KB (5%) | 字体解析 Typr 95 KB + 提示词 / 地址构造 / 字形表 |
-| `resources/table.bin` | 123 KB (4%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
-| `content.js` | 83 KB (3%) | 桥接层 |
-| `LICENSE` | 35 KB (1%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
-| `icons/` | 28 KB (1%) | 三个尺寸的图标 |
-| `background.js` | 17 KB (<1%) | service worker：跨域 fetch 代理 |
+| `popup/`（88 张立绘 + 界面） | 约 1.56 MB (62%) | 立绘是主体：39 套服装 / 26 表情 / 24 姿势，每张 12~25 KB |
+| `page.js` | 521 KB (20%) | 全部页面侧逻辑。**最值得小心对待**的文件 |
+| `libs/` | 143 KB (5.6%) | 字体解析 Typr 95 KB + 提示词 / 地址构造 / 字形表 |
+| `resources/table.bin` | 123 KB (4.8%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `content.js` | 85 KB (3.3%) | 桥接层 |
+| `LICENSE` | 35 KB (1.4%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `icons/` | 28 KB (1.1%) | 三个尺寸的图标 |
+| `background.js` | 17 KB (0.4%) | service worker：跨域 fetch 代理 |
 
-> **为什么涨到 2 MB**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
-> 其余 34 张在 10-20 之后才进仓库 —— 也就是说旧包的小人本来就是残的。现在 39 张全带，
-> 体积从约 660 KB 涨到 2.1 MB。**这是补齐，不是膨胀。**
+> **为什么这么大**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
+> 其余 34 张是 10-20 之后才补的 —— 旧包的小人本来就是残的。1.3.0 又把立绘扩到 **88 张**，
+> 单张 12~25 KB，光素材就 ~1.38 MB。体积从约 660 KB 涨到 1.8 MB，**是素材补齐，不是代码膨胀**：
+> 去掉 `popup/*.png` 后，整个扩展仍只有 ~1.1 MB。
+>
+> 立绘统一用 **pngquant 256 色量化**（`--quality=80-95`）压过：88 张从 3.77 MB 降到 1.38 MB（−63%），
+> 扁平矢量 + 粗描边的画风用 256 色几乎无损，放大 4 倍才看得出极轻微的色阶。
 
 曾经的 `table.json` 是 347 KB 明文（全是十六进制与十进制数字），占整个扩展的 36% ——
 **这就是"软件怎么突然这么大"的答案**。1.1.1 起改成紧凑二进制：

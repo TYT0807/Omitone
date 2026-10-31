@@ -9,11 +9,11 @@
  * 弹题（弹窗题）的检测、填答、失败计数与放弃
  * 「继续学习」提示按钮的处理（不点它进不去正常播放页）
  *
- * 本段的方法（11 个）：
+ * 本段的方法（12 个）：
  *   _findContinueStudyButton、_tryContinueStudyPrompt、_activePopupBlock、
  *   _popupQuizBlocksPlayback、_popupQuizFingerprint、_getPopupQuizMaxAttempts、
  *   _checkPopupQuiz、_handlePopupQuiz、_giveUpPopupQuiz、_detectPopupQuizType、
- *   _fillPopupAnswer
+ *   _looksLikeMatchingQuiz、_fillPopupAnswer
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -385,6 +385,16 @@
         // 可靠依据只有两个：控件类型（复选=多选、文本框=填空）和选项文本。
         var type = this._detectPopupQuizType(popup, optionItems);
 
+        // 连线/匹配题：左右两列被一起抓成了「6 个选项」，文本成对重复
+        // （日志实测：Color / Transparency / Color / Transparency / …）。
+        // 这种题选择题的作答方式永远对不上，旧逻辑会连着问 6 次模型、每次都被判错 ——
+        // 用户看到的就是「弹题卡住，刷新后重来还是它」。这里直接判定不可答并跳过。
+        var optionTexts = optionItems.map(this._extractOptionText.bind(this));
+        if (this._looksLikeMatchingQuiz(optionTexts)) {
+          this._giveUpPopupQuiz(popup, 'matching-or-duplicate-options');
+          return;
+        }
+
         var question = {
           index: 0,
           type: type,
@@ -396,7 +406,7 @@
           previousWrongAnswers: (this._popupQuizWrongAnswers || []).slice()
         };
 
-        question.options = optionItems.map(this._extractOptionText.bind(this)).filter(Boolean);
+        question.options = optionTexts.filter(Boolean);
 
         try {
           // 乱选模式：弹题同样本地生成，**不发请求**（与主流程同源）。
@@ -509,7 +519,29 @@
       this._popupQuizWrongAnswers = [];
       this._popupQuizLastFilled = '';
       this._popupQuizQuietUntil = 0;
-      this._popupQuizBlockedUntil = Date.now() + 60000;
+      // 连线/匹配题不是「这轮运气不好」，下次遇到还是同一套，静默久一点（30 分钟），
+      // 别让它在同一个视频里每 60 秒重问一遍模型。其余原因维持 1 分钟。
+      this._popupQuizBlockedUntil = Date.now() +
+        (reason === 'matching-or-duplicate-options' ? 30 * 60000 : 60000);
+    },
+
+
+    /**
+     * 判断是不是「连线/匹配题被拆成了普通选项」。
+     * 依据：选项文本成对重复（至少两组）。单选题不会给出两个一模一样的选项，
+     * 出现重复基本只有一种可能 —— 左右两列被同一个选择器一起抓了。
+     */
+    _looksLikeMatchingQuiz: function (texts) {
+      if (!texts || texts.length < 4) return false;
+      var seen = Object.create(null);
+      var dup = 0;
+      for (var i = 0; i < texts.length; i++) {
+        var key = String(texts[i] == null ? '' : texts[i]).trim().toLowerCase();
+        if (!key) continue;
+        if (seen[key]) dup++;
+        else seen[key] = 1;
+      }
+      return dup >= 2;
     },
 
 

@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "evidence": "D:\\Omite\\omitone-acceptance-20261023T132135Z-c93c6748-bcf8-46ef-9e7d-64428d9437d5.jsonl",
+  "evidenceSha256": "4943c935c2b2a65b1f4f0a247f12ea6c42dfc88da80bdfc519afb6187b8bb452",
+  "observedExit": {
+    "code": 0,
+    "signal": null
+  },
+  "timedOut": false,
+  "cleanupVerified": true,
+  "portReleased": true,
+  "passed": true,
+  "status": "passed",
+  "errors": [],
+  "runId": "20261023T132135Z-c93c6748-bcf8-46ef-9e7d-64428d9437d5",
+  "scenarios": 53,
+  "assertions": 669,
+  "buildHash": "13f5253e0ce2609d4fe97c9fc2589aa5717e80e2e840dde4c81a8345a60727bf",
+  "recordedAt": "2026-10-23T13:23:37.930Z"
+}

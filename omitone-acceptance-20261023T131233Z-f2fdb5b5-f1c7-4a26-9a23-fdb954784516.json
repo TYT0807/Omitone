@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "evidence": "D:\\Omite\\omitone-acceptance-20261023T131233Z-f2fdb5b5-f1c7-4a26-9a23-fdb954784516.jsonl",
+  "evidenceSha256": "55e223e4d7f293935705052706e44c756680931b6976455c33fda07ae3aa0faa",
+  "observedExit": {
+    "code": 1,
+    "signal": null
+  },
+  "timedOut": false,
+  "cleanupVerified": true,
+  "portReleased": true,
+  "passed": false,
+  "status": "failed",
+  "errors": [
+    "Expected exactly one scenario_plan",
+    "Expected exactly one probes_complete",
+    "Run reported sandbox_error",
+    "Scenario starts differ from plan",
+    "Scenario completions differ from plan",
+    "Scenario source differs from plan",
+    "Required browser probes missing",
+    "Run/cleanup/source check failed",
+    "Final counts mismatch",
+    "Network guard failed",
+    "No clean independent exit/cleanup witness"
+  ],
+  "runId": "20261023T131233Z-f2fdb5b5-f1c7-4a26-9a23-fdb954784516",
+  "scenarios": 0,
+  "assertions": 0,
+  "buildHash": "13bec7d4eb550e928bf87786ee8bdfe170fc527aef00c2de3aadf087510d3001",
+  "recordedAt": "2026-10-23T13:13:07.963Z"
+}

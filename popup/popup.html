@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Omitone-1.2.9</title>
+<title>Omitone-1.3.0 实验版</title>
 <style>
 /* ==========================================================================
    材质与动效系统
@@ -519,7 +519,7 @@ body.has-bg::after{
     <div class="brand">
       <div class="dot" id="runDot"></div>
       <div class="title">Omitone</div>
-      <span class="ver">1.2.9</span>
+      <span class="ver">1.3.0</span>
       <span class="run-state" id="runState">未开启</span>
     </div>
     <div class="run-row">
@@ -531,10 +531,11 @@ body.has-bg::after{
       <button type="button" id="revokeCaptcha">撤销当前页授权</button>
     </div>
     <p class="hint" style="margin-top:8px;">
+      <b>1.3.0 实验版：</b>仅供优化验证，普通用户请继续使用 1.2.9。<br>
       刷课不需要 API Key。要用 <b>AI 答题</b> 或 <b>验证码识别</b> 才需要，在下面「AI 接入」里填。
     </p>
     <div class="update-row" id="updateRow">
-      <span class="update-msg" id="updateMsg">当前版本 1.2.9</span>
+      <span class="update-msg" id="updateMsg">当前版本 1.3.0（实验版）</span>
       <button class="link-btn" id="checkUpdate">检测更新</button>
       <button class="link-btn" id="doUpdate" style="display:none">是，覆盖更新</button>
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
@@ -745,7 +746,7 @@ body.has-bg::after{
 
   <div class="minor">
     <button id="testApi">检测 API 连接</button>
-    <button id="toggleLogs">查看日志</button>
+    <button id="toggleLogs" aria-controls="logPanel" aria-expanded="false">查看日志</button>
     <button id="copyLogs">复制日志</button>
     <button id="clearLogs">清空日志</button>
     <button id="reset">恢复默认</button>
@@ -765,6 +766,7 @@ body.has-bg::after{
 <script src="../libs/api-url.js"></script>
 <script src="../libs/thinking.js"></script>
 <script src="../libs/runtime-policy.js"></script>
+<script src="../popup-log-view.js"></script>
 <script src="popup.js"></script>
 <script src="pet.js"></script>
 </body>

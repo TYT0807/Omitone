@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '85b276b8c9';
+var OMITONE_CODE_REV = '0d97bd54a5';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -647,6 +647,7 @@ var OMITONE_CODE_REV = '85b276b8c9';
       this._ocsSearchedJobs = [];
       this._ocsSearchDeadline = 0;
       this._ocsLastNoJobLogAt = 0;
+      this._lastSearchEmptyLogAt = 0;
       this._jobTransitionUntil = 0;
       this._studyCompleteAt = 0;
       // 「点了下一节但页面没动」的防空转计数（判据见 _studyProgressKey）
@@ -1386,7 +1387,13 @@ var OMITONE_CODE_REV = '85b276b8c9';
 
 
     _isActiveMediaPending: function (reason) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      // 有些播放器在切换清晰度/广告后会悄悄重置内部状态，把 _isPlaying 清掉，
+      // 于是 tick 以为「没有任务」→ 每 5 秒搜一次 → `study no runnable job` 刷屏
+      // （2026-10-26 日志：一个视频播放的 6 分钟里刷了 70 多条）。
+      // 只要手里那个 video 元素还在播，就应当按「任务进行中」处理。
+      var liveVideo = this._videoEl;
+      var stillPlaying = !!(liveVideo && liveVideo.isConnected && !liveVideo.paused && !liveVideo.ended);
+      if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending')) {
         this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
         return false;
@@ -1561,25 +1568,39 @@ var OMITONE_CODE_REV = '85b276b8c9';
       });
       console.log('%c[Omitone] seekable video, seek to end: ' + current.toFixed(1) + 's -> ' + target.toFixed(1) + 's / ' + duration.toFixed(1) + 's', 'color:#4CAF50');
 
-      // 1.5 秒后验证进度是否被网站弹回（仅记录日志，不再重试）
+      // 1.5 秒后验证进度是否被网站弹回。
       //
-      // 这个结论会被「防拖拽 + 锁 1 倍速 → 看到 90% 就够」的逻辑复用：
-      // **被弹回 = 这个视频不可拖拽**（见 _isNinetyPercentVideo）。
+      // ⚠️ 原来这里是「只记日志、不再重试」，实测量出一笔很贵的账：
+      //    2026-10-26 的日志里，385 秒的视频 seek 到 382 秒后被播放器**静默吞掉**
+      //    （currentTime 从 3 秒继续涨），插件以为拖过了，于是按 1 倍速完整看了 6 分半。
+      //    播放器在 metadata 刚就绪时吞掉第一次 seek 很常见，所以这里允许再补两次；
+      //    两次都弹回才认定「这个视频不可拖拽」，结论仍然给 _isNinetyPercentVideo 复用。
       var self = this;
-      this._workerDelay(function () {
+      var verifySeek = function (attempt) {
         try {
           if (!video.isConnected) return;
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
             self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
-          } else {
-            self._seekRevertedKeys[key] = true;  // 被弹回 → 不可拖拽
-            console.log('[Omitone] seek reverted by site player, continue normal playback');
-            emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
+            return;
           }
+          if (attempt < 2) {
+            try { video.currentTime = target; } catch (eRetry) { return; }
+            emitRuntimeLog('info', 'seek reverted by site, retry', {
+              attempt: attempt + 1,
+              from: Number(now.toFixed(1)),
+              to: Number(target.toFixed(1))
+            });
+            self._workerDelay(function () { verifySeek(attempt + 1); }, 1500);
+            return;
+          }
+          self._seekRevertedKeys[key] = true;  // 两次都弹回 → 不可拖拽
+          console.log('[Omitone] seek reverted by site player, continue normal playback');
+          emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
         } catch (e) {}
-      }, 1500);
+      };
+      this._workerDelay(function () { verifySeek(0); }, 1500);
       return true;
     },
 
@@ -1649,6 +1670,10 @@ var OMITONE_CODE_REV = '85b276b8c9';
           await this._withTimeout(video.play(), 12000);
           this._isPlaying = true;
           this._startVideoMonitoring();
+          // play() 被拒后浏览器会把 currentTime 打回 0，站点也可能顺手把倍速重置成 1。
+          // 不补这两下，日志里就是「seek 到 102/105 → 静音重试 → 从 0.8s 用 1x 重看一遍」。
+          try { this._trySeekToEnd(video, 'after-muted-retry'); } catch (eSeek) {}
+          try { this._ensurePlaybackRate(video, 'after-muted-retry'); } catch (eRate) {}
           emitRuntimeLog('warn', 'media autoplay blocked, muted retry ok', { name: job.name });
         } catch (e2) {
           // 静音重试仍失败：多半是音源格式/MIME 不支持（m4a 常见），尝试重新封装音源后播放
@@ -1852,7 +1877,12 @@ var OMITONE_CODE_REV = '85b276b8c9';
       }
       // 备选：从高到低试设倍速，观察播放器是否把倍速压回
       var probed = await this._probeMaxPlaybackRate(video);
-      return this._clampAutoRate(probed || 1);
+      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
+      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
+      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
+      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
+      if (!probed) return 0;
+      return this._clampAutoRate(probed);
     },
 
 
@@ -4323,7 +4353,13 @@ var OMITONE_CODE_REV = '85b276b8c9';
       }
 
       if (!jobs.length) {
-        emitRuntimeLog('warn', attachments.length ? 'search job: attachments exist but no runnable job' : 'search job: no attachments and no synthetic job');
+        // 空章节时这个方法一次 tick 会被调好几次，原来每条都写日志 ——
+        // 实测 5 秒能刷 8 条 warn，把 200 条环形缓冲冲掉一大截。
+        var nowEmpty = Date.now();
+        if (!this._lastSearchEmptyLogAt || nowEmpty - this._lastSearchEmptyLogAt > 5000) {
+          this._lastSearchEmptyLogAt = nowEmpty;
+          emitRuntimeLog('warn', attachments.length ? 'search job: attachments exist but no runnable job' : 'search job: no attachments and no synthetic job');
+        }
         return null;
       }
 
@@ -11157,6 +11193,16 @@ var OMITONE_CODE_REV = '85b276b8c9';
         // 可靠依据只有两个：控件类型（复选=多选、文本框=填空）和选项文本。
         var type = this._detectPopupQuizType(popup, optionItems);
 
+        // 连线/匹配题：左右两列被一起抓成了「6 个选项」，文本成对重复
+        // （日志实测：Color / Transparency / Color / Transparency / …）。
+        // 这种题选择题的作答方式永远对不上，旧逻辑会连着问 6 次模型、每次都被判错 ——
+        // 用户看到的就是「弹题卡住，刷新后重来还是它」。这里直接判定不可答并跳过。
+        var optionTexts = optionItems.map(this._extractOptionText.bind(this));
+        if (this._looksLikeMatchingQuiz(optionTexts)) {
+          this._giveUpPopupQuiz(popup, 'matching-or-duplicate-options');
+          return;
+        }
+
         var question = {
           index: 0,
           type: type,
@@ -11168,7 +11214,7 @@ var OMITONE_CODE_REV = '85b276b8c9';
           previousWrongAnswers: (this._popupQuizWrongAnswers || []).slice()
         };
 
-        question.options = optionItems.map(this._extractOptionText.bind(this)).filter(Boolean);
+        question.options = optionTexts.filter(Boolean);
 
         try {
           // 乱选模式：弹题同样本地生成，**不发请求**（与主流程同源）。
@@ -11281,7 +11327,29 @@ var OMITONE_CODE_REV = '85b276b8c9';
       this._popupQuizWrongAnswers = [];
       this._popupQuizLastFilled = '';
       this._popupQuizQuietUntil = 0;
-      this._popupQuizBlockedUntil = Date.now() + 60000;
+      // 连线/匹配题不是「这轮运气不好」，下次遇到还是同一套，静默久一点（30 分钟），
+      // 别让它在同一个视频里每 60 秒重问一遍模型。其余原因维持 1 分钟。
+      this._popupQuizBlockedUntil = Date.now() +
+        (reason === 'matching-or-duplicate-options' ? 30 * 60000 : 60000);
+    },
+
+
+    /**
+     * 判断是不是「连线/匹配题被拆成了普通选项」。
+     * 依据：选项文本成对重复（至少两组）。单选题不会给出两个一模一样的选项，
+     * 出现重复基本只有一种可能 —— 左右两列被同一个选择器一起抓了。
+     */
+    _looksLikeMatchingQuiz: function (texts) {
+      if (!texts || texts.length < 4) return false;
+      var seen = Object.create(null);
+      var dup = 0;
+      for (var i = 0; i < texts.length; i++) {
+        var key = String(texts[i] == null ? '' : texts[i]).trim().toLowerCase();
+        if (!key) continue;
+        if (seen[key]) dup++;
+        else seen[key] = 1;
+      }
+      return dup >= 2;
     },
 
 
