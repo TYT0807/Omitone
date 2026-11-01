@@ -344,13 +344,27 @@
 
   function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    // ⚠️ 前两个分支必须 **Array.isArray 才算成功**：JSON.parse 对裸 JSON 标量
+    // （字符串/数字）也会成功 —— 批次定版 3 后，单题批的"一行一个 JSON 值"应答
+    // 恰好就是一行裸字符串，这里若当成功返回，data 是字符串而非位置式数组，
+    // 该题答案会被静默丢掉、补问两次同样失败（实测：简答题整题消失）。
+    // 标量应答交给下面的分段分支按 expectedCount 解析成数组。
     try {
-      return { success: true, data: JSON.parse(cleaned) };
+      const parsed = JSON.parse(cleaned);
+      if (Array.isArray(parsed)) return { success: true, data: parsed };
+      // 裸标量：只有"单题批"（expectedCount === 1）时才可能是该题的答案 ——
+      // 包成单元素数组交给下游（分段分支要求分隔符存在，单行应答到不了那里）。
+      // 多题卷收到标量 = 模型答非所问，保持失败走重试。
+      if (expectedCount === 1 &&
+          (typeof parsed === 'string' || typeof parsed === 'number' || typeof parsed === 'boolean')) {
+        return { success: true, data: [parsed] };
+      }
     } catch (e) {}
     const code = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (code) {
       try {
-        return { success: true, data: JSON.parse(code[1].trim()) };
+        const parsed = JSON.parse(code[1].trim());
+        if (Array.isArray(parsed)) return { success: true, data: parsed };
       } catch (e2) {}
     }
     // ⚠️ 顺序很关键：**按段解析必须排在贪婪 `[...]` 匹配之前**。

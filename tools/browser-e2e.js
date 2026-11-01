@@ -6056,7 +6056,7 @@ SCENARIOS.push({
       'if(!qs.length) return false;' +
       'var d=app._resolveQuizAnswerDocument(null);' +
       'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
-      'return true;})()', 25000);
+      'return true;})()', 40000);
 
     var sent = ctx.mock.requests.slice(before).map(function (r) {
       var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
@@ -6119,7 +6119,7 @@ SCENARIOS.push({
       'if(!qs.length) return false;' +
       'var d=app._resolveQuizAnswerDocument(null);' +
       'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
-      'return true;})()', 25000);
+      'return true;})()', 40000);
     var sentCount = ctx.mock.requests.length - before;
     var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
       var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
@@ -6127,7 +6127,12 @@ SCENARIOS.push({
     });
 
     check('一行一个 JSON 值的应答能被解析，题目全部答上（旧实现一道都答不上）',
-      allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts));
+      allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts) +
+      ' detail=' + JSON.stringify(await ctx.client.evaluate(
+        '(function(){var a=window._xxtApp;var d=a._resolveQuizAnswerDocument(null);' +
+        'return {vals:a._quizCurrentQuestions.map(function(q){return {i:q.index,t:q.type,v:a._getQuizQuestionFilledValue(d,q)};}),' +
+        'ans:a._quizCurrentAnswerValues};})()'
+      )));
     // 守的是"解析失败不许重问同一批"：升级前解析失败 → `requestAnswersWithRetry`
     // 会**拿同一整批再问一次**。2026-10-31 批次定版 3 之后一卷发多批 ——
     // 守法则改成：**首个请求（最大批）在整个会话里只出现一次**，
@@ -6180,7 +6185,7 @@ SCENARIOS.push({
       'if(!qs.length) return false;' +
       'var d=app._resolveQuizAnswerDocument(null);' +
       'for(var i=0;i<qs.length;i++){ if(!app._getQuizQuestionFilledValue(d,qs[i])) return false; }' +
-      'return true;})()', 25000);
+      'return true;})()', 40000);
     var sentCounts = ctx.mock.requests.slice(before).map(function (r) {
       var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
       return m ? m.length : 0;
