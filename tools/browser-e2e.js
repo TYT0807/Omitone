@@ -948,8 +948,35 @@ var MOCK_PAGES = {
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
   '/font-residue': buildFontResidueHtml,
-  '/doc-pdfjs': buildPdfJsDocHtml
+  '/doc-pdfjs': buildPdfJsDocHtml,
+  '/doc-ppt': buildPptAudioHtml
 };
+
+/**
+ * PPT 带音频任务（真实结构）：swiper 幻灯片 + 官方翻页按钮，翻到末页后按钮禁用。
+ * 音频由场景内接管（真实页面上等的是音频播完），翻页器契约是本场景的验证对象。
+ */
+function buildPptAudioHtml() {
+  var slides = ['第 1 页', '第 2 页', '第 3 页', '第 4 页'].map(function (t, i) {
+    return '<div class="swiper-slide"' + (i ? ' style="display:none"' : '') + '>' + t + '</div>';
+  }).join('');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>PPT - 学习通</title></head><body>' +
+    '<div class="ans-job-icon" style="display:none"></div>' +
+    '<div class="swiper-container"><div class="swiper-wrapper">' + slides + '</div></div>' +
+    '<div class="swiper-button-next"></div>' +
+    '<script>' +
+    'var idx = 1, total = 4;' +
+    'function syncPpt() { var s = document.querySelectorAll(".swiper-slide");' +
+    '  s.forEach(function (el, i) { el.style.display = i < idx ? "" : "none"; });' +
+    '  var b = document.querySelector(".swiper-button-next");' +
+    '  if (idx >= total) b.classList.add("swiper-button-disabled"); }' +
+    'document.querySelector(".swiper-button-next").addEventListener("click", function () {' +
+    '  if (idx < total) { idx++; syncPpt(); } });' +
+    'window.finishJob = function () { window.__pptFinished = true; };' +
+    'syncPpt();' +
+    '</script></body></html>';
+}
 
 /**
  * 原生 PDF.js 风格文档（真实平台结构，2026-10-31 从同类开源实现补入）：
@@ -1141,9 +1168,9 @@ function startMockServer() {
           content = safeAnswers.map(function (a) { return JSON.stringify(a); }).join('|||');
         } else if (responseMode === 'truncate-big') {
           // 现场实测的另一种退化：一批题一多，模型就输出长篇重复内容、
-          // 顶到 max_tokens 被截断。**只有"批 ≥ 4 题"时才这样** ——
-          // 拆成两半（≤3 题）就能正常作答，正好验证"拆批能救回来"。
-          if (questionCount >= 4) {
+          // 顶到 max_tokens 被截断。2026-10-31 批次上限定版 3 之后，
+          // 阈值同步降到 **≥3 题**（能触发的最大批）—— 拆成两半后正常作答。
+          if (questionCount >= 3) {
             var junk = [];
             for (var j = 0; j < 400; j++) junk.push('"A","B","C","D"');
             content = '[' + junk.join(',') + ',';
@@ -2600,6 +2627,108 @@ SCENARIOS.push({
 });
 
 
+// ── 实战轮盘：三族卷子走完整真实流（请求 → 回填 → 可提交）─────────────────
+// 单特性场景各自验证"能不能"；轮盘验证"连起来跑" —— 与真实刷课同构：
+// writeConfig 双侧注入 → 真实 _handleQuiz → mock 模型 → 回填 → 提交判定。
+SCENARIOS.push({
+  name: '实战轮盘 A：Cy 作业页完整真实流',
+  path: '/exam-work',
+  run: async function (ctx) {
+    var before = ctx.mock.requests.length;
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    await ctx.client.evaluate('window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true');
+    await ctx.client.evaluate('window._xxtApp._handleQuiz(null); true');
+    var got = false;
+    var deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if (ctx.mock.requests.length > before) { got = true; break; }
+      await sleep(300);
+    }
+    check('轮盘 A：真实流发出模型请求', got, '+' + (ctx.mock.requests.length - before));
+    if (!got) return;
+    var filled = await waitFor(ctx.client, 'document.getElementById("answer5001").value !== ""', 15000);
+    check('轮盘 A：答案已回填（等待隐藏域被写入）', filled);
+    var state = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var g=function(id){var e=document.getElementById(id);return e?String(e.value):null;};' +
+      'var qs=a._extractQuestions(null);' +
+      'return {a1:g("answer5001"),a2:g("answer5002"),a3:g("answer5003"),a4:g("answer5004"),' +
+      'ready:!!a._quizReadyToSubmit,filledAll:!!a._areQuizAnswersFilled(null,qs,{requireThisRun:false})};})()'
+    );
+    check('轮盘 A：四题全部有值（文本/控件分离结构没有吞题），整卷判定可提交',
+      !!state && state.a1 && state.a2 && state.a3 && state.a4 && state.filledAll === true && state.ready === true,
+      JSON.stringify(state));
+  }
+});
+
+SCENARIOS.push({
+  name: '实战轮盘 B：mooc2 作业页完整真实流',
+  path: '/mooc2-work',
+  run: async function (ctx) {
+    var before = ctx.mock.requests.length;
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    await ctx.client.evaluate('window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true');
+    await ctx.client.evaluate('window._xxtApp._handleQuiz(null); true');
+    var got = false;
+    var deadline = Date.now() + 20000;
+    while (Date.now() < deadline) {
+      if (ctx.mock.requests.length > before) { got = true; break; }
+      await sleep(300);
+    }
+    check('轮盘 B：mooc2 结构真实流发出模型请求', got, '+' + (ctx.mock.requests.length - before));
+    if (!got) return;
+    var filled = await waitFor(ctx.client, 'document.getElementById("answer6001").value !== ""', 15000);
+    check('轮盘 B：答案已回填', filled);
+    var state = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var g=function(id){var e=document.getElementById(id);return e?String(e.value):null;};' +
+      'var qs=a._extractQuestions(null);' +
+      'return {a1:g("answer6001"),a2:g("answer6002"),' +
+      'ready:!!a._quizReadyToSubmit,filledAll:!!a._areQuizAnswersFilled(null,qs,{requireThisRun:false})};})()'
+    );
+    check('轮盘 B：两题全部有值、整卷判定可提交',
+      !!state && state.a1 && state.a2 && state.filledAll === true && state.ready === true,
+      JSON.stringify(state));
+  }
+});
+
+SCENARIOS.push({
+  name: '实战轮盘 C：PPT 带音频任务翻页器完整真实流',
+  path: '/doc-ppt',
+  run: async function (ctx) {
+    // 音频等待与媒体启动在测试里接管（真实页面上等的是音频播完）；
+    // 翻页器契约（swiper 官方按钮 → 禁用态收尾 → finishJob）是本场景的验证对象
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'a._waitSlideAudioDone = async function () { return true; };' +
+      'a._startSlideMedia = function () {};' +
+      'a._assertActive = function () { return true; };' +
+      'return true;})()'
+    );
+    var result = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'var job = { win: window, doc: document, name: "轮盘PPT" };' +
+      'return a._runPptAudioJob(job).then(function (ok) {' +
+      '  return {ok: !!ok,' +
+      '    visible: Array.prototype.map.call(document.querySelectorAll(".swiper-slide"),' +
+      '      function (el) { return el.style.display !== "none"; }).filter(Boolean).length,' +
+      '    finished: !!window.__pptFinished};});})()'
+    );
+    check('轮盘 C：翻页器逐页推进（4 页全部走过）',
+      !!result && result.ok === true && result.visible === 4, JSON.stringify(result));
+    check('轮盘 C：翻到末页后 finishJob 被调用（平台完成上报路径）',
+      !!result && result.finished === true, JSON.stringify(result));
+  }
+});
+
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
   name: '抠题（5 种题型）',
@@ -2955,7 +3084,9 @@ SCENARIOS.push({
     check('提示词已发到模型接口', gotRequest, '请求数 +' + (ctx.mock.requests.length - before));
     if (!gotRequest) return;
 
-    var prompt = ctx.mock.requests[ctx.mock.requests.length - 1].prompt;
+    // 2026-10-31 批次定版 3 之后一卷发多个请求 —— 断言扫描全部请求的并集，
+    // 别只看最后一条（末批可能只有填空/简答，没有单选题干）
+    var prompt = ctx.mock.requests.slice(before).map(function (r) { return r.prompt; }).join('\n');
     check('提示词含紧凑题型代号（形如 1|s|）', /\d+\|s\|/.test(prompt), prompt.slice(0, 140));
     check('提示词含题干原文', prompt.indexOf('中国特色社会主义最本质的特征') !== -1);
     check('提示词不含旧版 "Question 1 [" 样板', prompt.indexOf('Question 1 [') === -1);
@@ -5909,12 +6040,13 @@ SCENARIOS.push({
       'var asked=qs.filter(function(q){return q.type!=="multiple";}).length;' +
       'return {total:qs.length,asked:asked};})()'
     );
-    check('装配：本卷实际要问模型的题数 ≥ 4（这样"整批"才会触发退化）',
-      setup && setup.asked >= 4, JSON.stringify(setup));
-    if (!setup || setup.asked < 4) return;
+    check('装配：本卷实际要问模型的题数 ≥ 3（这样"整批"才会触发退化）',
+      setup && setup.asked >= 3, JSON.stringify(setup));
+    if (!setup || setup.asked < 3) return;
 
-    // 让假模型"一批 ≥ 4 题就吐长篇重复内容、顶到 max_tokens 被截断"。
-    // 拆成两半（≤3 题）后它才正常作答 —— 正好验证"拆批能救回来"。
+    // 让假模型"一批 ≥ 3 题就吐长篇重复内容、顶到 max_tokens 被截断"。
+    // 拆成两半后它才正常作答 —— 正好验证"拆批能救回来"。
+    // （2026-10-31 批次上限定版 3：首发批本身就是 3 题，截断后对半拆）
     ctx.mock.setResponseMode('truncate-big');
     var before = ctx.mock.requests.length;
     await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
@@ -5931,14 +6063,16 @@ SCENARIOS.push({
       return m ? m.length : 0;
     });
 
-    check('被截断的那一批**只发一次**（旧实现要拿同一批重问两次、再补问两次）',
-      sent.filter(function (n) { return n === setup.asked; }).length === 1, JSON.stringify(sent));
-    check('确实按"对半拆"重问了（能看到比整批更小的批）',
-      sent.some(function (n) { return n > 0 && n < setup.asked; }), JSON.stringify(sent));
+    // 2026-10-31 批次定版 3 之后：asked=4 的卷拆成 [3][1]，截断发生在 3 题的首批，
+    // 对半拆成 [1][2] 重问，1 题的第二批正常作答 → 请求形状 [3,1,2,1]
+    check('被截断的那一批**只发一次**（3 题的首批只出现一次）',
+      sent.filter(function (n) { return n === 3; }).length === 1, JSON.stringify(sent));
+    check('确实按"对半拆"重问了（能看到比首批更小的批）',
+      sent.some(function (n) { return n > 0 && n < 3; }), JSON.stringify(sent));
     check('拆批之后所有题都答上了（旧实现这一批一道都落不了地）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sent));
-    check('整卷只用了 3 次请求（1 次整批 + 2 次拆半），没有补问式的浪费',
-      sent.length === 3, JSON.stringify(sent));
+    check('整卷只用了 4 次请求（3 题批截断 + 对半 1/2 + 末批 1），没有补问式的浪费',
+      sent.length === 4 && sent[0] === 3, JSON.stringify(sent));
 
     ctx.mock.setResponseMode('');
   }
@@ -5994,11 +6128,13 @@ SCENARIOS.push({
 
     check('一行一个 JSON 值的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts));
-    // 守的是"整批不许被重复问"：升级前解析失败 → `requestAnswersWithRetry`
-    // 会**拿同一整批再问一次**，所以 counts 里会出现两次整批。
-    // （补问是另一套机制、本来就该发生，所以这里只数"整批"的次数。）
-    check('整批只问了一次（旧实现解析失败会把整批重问一次）',
-      sentCounts.filter(function (n) { return n === setup.asked; }).length === 1,
+    // 守的是"解析失败不许重问同一批"：升级前解析失败 → `requestAnswersWithRetry`
+    // 会**拿同一整批再问一次**。2026-10-31 批次定版 3 之后一卷发多批 ——
+    // 守法则改成：**首个请求（最大批）在整个会话里只出现一次**，
+    // 重问只允许走补问的小批（同批同形重复 = 还在旧路上）。
+    check('首批（最大批）只发一次，重问只走补问小批（旧实现解析失败会原样重问）',
+      sentCounts.length > 0 && sentCounts[0] === 3 &&
+      sentCounts.filter(function (n) { return n === sentCounts[0]; }).length === 1,
       'counts=' + JSON.stringify(sentCounts));
 
     ctx.mock.setResponseMode('');
@@ -6052,8 +6188,10 @@ SCENARIOS.push({
 
     check('`|||` 串起来的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
-    check('整批只问了一次（旧实现解析失败会把整批重问一次）',
-      sentCounts.filter(function (n) { return n === setup.asked; }).length === 1,
+    // 同第 33 条：批次定版 3 之后守"首批只发一次，重问走补问小批"
+    check('首批（最大批）只发一次，重问只走补问小批（旧实现解析失败会原样重问）',
+      sentCounts.length > 0 && sentCounts[0] === 3 &&
+      sentCounts.filter(function (n) { return n === sentCounts[0]; }).length === 1,
       'counts=' + JSON.stringify(sentCounts));
 
     ctx.mock.setResponseMode('');
@@ -6271,7 +6409,8 @@ SCENARIOS.push({
     check('其余题目仍然发到模型接口', sent, '请求数 +' + (ctx.mock.requests.length - before));
     if (!sent) return;
 
-    var prompt = ctx.mock.requests[ctx.mock.requests.length - 1].prompt;
+    // 2026-10-31 批次定版 3：一卷发多个请求，断言扫描全部请求的并集
+    var prompt = ctx.mock.requests.slice(before).map(function (r) { return r.prompt; }).join('\n');
     check('提示词里**没有**多选题（省下的就是这一块 token / 上下文）',
       prompt.indexOf('以下属于操作系统核心功能的有') === -1, prompt.slice(0, 160));
     check('提示词里不含多选题的选项原文',

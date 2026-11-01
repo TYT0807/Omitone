@@ -757,7 +757,6 @@
     //
     // 批越大越省 token：system 提示词与输出格式示例是**每批都要重发**的固定开销
     // （约 85 token/批），而题目正文无论分成几批都只发一次。
-    // 40 题的卷子：每批 5 题 → 8 批 680 token 固定开销；每批 10 题 → 4 批 340。
     //
     // ⚠️ **2026-10-10 实测把"省固定开销"这条推翻了一半**：同一份 25 题的卷子
     // （10 多选 / 8 单选 / 5 判断 / 2 填空），每批 10 题时**第 2 批稳定退化**：
@@ -765,23 +764,34 @@
     //   批1（10 题）out:34  ✅    批2（10 题）**out:8192** ❌ 顶满上限被截断
     //   批3（ 5 题）out:11  ✅    拆半后（5 题）out:49     ✅
     //
-    // 也就是说"10 题只有约 50 token、截断风险基本消失"这个当初的判断**不成立** ——
-    // 退化一旦发生，代价是**一次 8192 输出**（比省下的 340 token 固定开销贵十几倍），
-    // 而且它还会连带触发"拆批/补问/下一轮重来"的连锁开销。
-    // 所以改成**每批 5 题**：多花一点固定开销，换掉整条退化路径。
-    // 分几批是**先读完整卷题数**再算出来的（`questions.length` 在下面直接用），
-    // 也就是"分阶段解答"——每阶段一小批、失败了只影响这一小批。
-    const CHUNK_SIZE = 5;
+    // 退化一旦发生，代价是**一次 8192 输出**（比省下的固定开销贵十几倍），
+    // 还会连带触发"拆批/补问/下一轮重来"的连锁开销 —— 于是从 10 降到 5。
+    //
+    // ⚠️ **2026-10-31 用户定版降到 3**：上下文压力下，难题多的批会整批退化
+    // （截断/摊平/答非所问甚至整体拒答），一批废 = 这一整批的钱白花。
+    // 用户原话："能接受慢，但不能接受快而没用还吃钱"。每批越小，
+    // 一次退化的损失越小、补问越便宜 —— 慢一点换稳。
+    const CHUNK_SIZE = 3;
     const chunks = [];
+    const toChunkEntry = (question, origin) => {
+      const raw = Number(question && question.index);
+      return {
+        origin: Number.isFinite(raw) && raw >= 0 ? raw : origin,
+        type: (question && question.type) || 'single',
+        question: question
+      };
+    };
     for (let i = 0; i < questions.length; i += CHUNK_SIZE) {
-      chunks.push(questions.slice(i, i + CHUNK_SIZE).map((question, offset) => {
-        const raw = Number(question && question.index);
-        return {
-          origin: Number.isFinite(raw) && raw >= 0 ? raw : i + offset,
-          type: (question && question.type) || 'single',
-          question: question
-        };
-      }));
+      const slice = questions.slice(i, i + CHUNK_SIZE);
+      const hasMultiple = slice.some((q) => q && q.type === 'multiple');
+      if (hasMultiple && slice.length > 1) {
+        // 多选题**一题一批**：多选答案最长、是整批退化的最大来源（摊平/截断实测元凶）。
+        // 单独成批后它废了只废它自己，也天然满足"交回模型时一题一请求"的定版策略 ——
+        // 本地乱猜的多选在重试轮交回模型时，就是一题一题地问。
+        slice.forEach((q, offset) => chunks.push([toChunkEntry(q, i + offset)]));
+      } else {
+        chunks.push(slice.map((q, offset) => toChunkEntry(q, i + offset)));
+      }
     }
 
     const merged = [];

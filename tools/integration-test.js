@@ -473,10 +473,39 @@ async function testIndexPlumbing() {
       return 0;
     }
   })();
-  var expectedBatches = chunkSize > 0 ? Math.ceil(questions.length / chunkSize) : 0;
-  check('按 CHUNK_SIZE=' + chunkSize + ' 分 ' + expectedBatches + ' 批发出（跨批次不串味）',
+  // 期望批数按 2026-10-31 定版规则建模：每批 ≤3 题，且**含多选的切片逐题拆批**
+  // （多选一题一请求，废了只废它自己）。与 content.js 的分批循环保持同一套算术。
+  var expectedBatches = (function () {
+    if (!(chunkSize > 0)) return 0;
+    var count = 0;
+    for (var bi = 0; bi < questions.length; bi += chunkSize) {
+      var slice = questions.slice(bi, bi + chunkSize);
+      var hasMultiple = slice.some(function (q) { return q && q.type === 'multiple'; });
+      count += hasMultiple && slice.length > 1 ? slice.length : 1;
+    }
+    return count;
+  })();
+  check('按 CHUNK_SIZE=' + chunkSize + ' 与多选拆批规则分 ' + expectedBatches + ' 批发出（跨批次不串味）',
     expectedBatches >= 2 && harness.sandbox.__sentRequests.length === expectedBatches,
     '实际 ' + harness.sandbox.__sentRequests.length + ' 批');
+
+  // 定版策略的**硬断言**（不随 content.js 实现漂移）：任何一批 ≤3 题；
+  // 含多选的批只有那一题 —— 用户 2026-10-31 定版「宁慢勿废」的上下文保护。
+  var batchShapes = harness.sandbox.__sentRequests
+    .filter(function (r) { return r && typeof r.body === 'string'; })
+    .map(function (r) {
+      try {
+        var body = JSON.parse(r.body);
+        var userText = (body.messages || []).filter(function (m) { return m.role === 'user'; })
+          .map(function (m) { return m.content || ''; }).join('\n');
+        var heads = userText.match(/^\d+\|[a-z]\|/gm) || [];
+        var multi = userText.match(/^\d+\|m\|/gm) || [];
+        return { n: heads.length, multi: multi.length };
+      } catch (e) { return { n: -1, multi: -1, err: String(e.message).slice(0, 40) }; }
+    });
+  check('定版策略硬断言：每批 ≤3 题、多选独占一批（宁慢勿废的上下文保护）',
+    batchShapes.length > 0 && batchShapes.every(function (b) { return b.n > 0 && b.n <= 3 && (b.multi === 0 || b.n === 1); }),
+    JSON.stringify(batchShapes));
 
   var typesOk = data.data.every(function (a) {
     var expected = types[sparseIndices.indexOf(a.index)];
@@ -855,7 +884,7 @@ async function testPermanentRoundStopAndConfigRace() {
   var partial = createHarness({ apiResponder: function (_, count) { return count === 1 ? null : unauthorized(); } });
   partial.sendFromPage({ source: 'xxt_app', id: 911, type: 'llm_request', payload: { questions: questions } });
   var partialResult = await partial.waitForResponse(911);
-  check('后续批 401 保留部分数据但整轮失败且不补问', partial.sandbox.__sentRequests.length === 2 && partialResult && partialResult.success === false && partialResult.permanentError && partialResult.partial && partialResult.data.length === 5);
+  check('后续批 401 保留部分数据但整轮失败且不补问', partial.sandbox.__sentRequests.length === 2 && partialResult && partialResult.success === false && partialResult.permanentError && partialResult.partial && partialResult.data.length === 3);
 
   var split = createHarness({ apiResponder: function (_, count) {
     if (count === 1) {
