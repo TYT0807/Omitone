@@ -447,17 +447,20 @@ html[data-ui="lite"] .pet-mood{ display:none; }
 
 /* ── 好感度（成长小游戏）：等级徽章 + 好感度条 ─────────────────────────
    与情绪条同位不同色：情绪是「现在的心情」（会掉），好感度是「累计的羁绊」（只涨）。
+   ⚠️ 位置在**工具条下方**一列竖排（心情条 2px → 工具条 2px → 徽章 22px → 好感条 36px）：
+   曾经把等级徽章压在工具条按钮上（用户报「熟悉度挡住了人物选项」）；
+   也试过头顶铭牌 —— 但弹窗小人的家在窗口顶部（y=2），铭牌会整个出视口（实测截图）。
    纯表现层，lite 模式与 eco 档的行为和情绪条保持一致。 */
 .pet-level{
   position:absolute; left:50%; top:100%; transform:translateX(-50%);
-  margin-top:7px; padding:0 5px; height:12px; line-height:12px;
+  margin-top:22px; padding:0 5px; height:12px; line-height:12px;
   font-size:9px; border-radius:6px; white-space:nowrap;
   background:rgba(255,182,193,.88); color:#7a3b47;
   pointer-events:none; opacity:.94;
 }
 .pet-bond{
   position:absolute; left:50%; top:100%; transform:translateX(-50%);
-  width:26px; height:3px; margin-top:21px; border-radius:2px;
+  width:26px; height:3px; margin-top:36px; border-radius:2px;
   background:rgba(120,140,170,.22); overflow:hidden; pointer-events:none;
 }
 .pet-bond i{ display:block; height:100%; width:0%; border-radius:2px;
