@@ -96,6 +96,9 @@ body::before{
   border-bottom:0;
 }
 .brand{ display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+/* 精美模式：右上角让给小角色（她 y2-58 站家、脚下 60-76 是工具条），
+   状态 pill 左移，否则「册」会压进「未开启」—— 380 窄窗下更明显 */
+html[data-ui="fancy"] .brand{ padding-right:110px; }
 .dot{ width:9px; height:9px; border-radius:50%; background:var(--hairline-strong); box-shadow:0 0 0 3px rgba(120,130,150,.12); transition:background .2s var(--ease), box-shadow .2s var(--ease); flex:none; }
 .dot.on{ background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft); }
 .title{ font-size:15px; font-weight:650; letter-spacing:-.015em; }

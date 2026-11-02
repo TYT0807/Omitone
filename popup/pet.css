@@ -193,12 +193,15 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 
 /* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
 .pet-tools{
-  position:absolute; right:0; top:100%; margin-top:2px;
+  position:absolute; right:0; top:100%; margin-top:7px;
   display:flex; gap:2px; opacity:1;
   pointer-events:auto;
 }
-/* 16px 而不是 18px：多了「册」之后一排 5 个，
-   18px 会横向长到 102px，正好压住标题右边的状态徽标。 */
+/* margin-top 7（原 2）：心情条也挂在 top:100%+2，同层会互相叠 ——
+   竖排次序是 心情条(60-63) → 工具条(65-81) → 等级徽章 → 好感条，各占一行。
+   16px 而不是 18px：多了「册」之后一排 5 个，
+   18px 会横向长到 102px；横向撞「未开启」由弹窗侧 .brand 的
+   padding-right:110px 让角解决（pet.css 管不到弹窗布局）。 */
 .pet-tools button{
   width:16px; height:16px; padding:0; border:0; border-radius:50%;
   background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
@@ -219,7 +222,7 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
 html[data-season="summer"] .pet-prop-summer{ display:block; right:-10px; top:16px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
 html[data-season="summer"] .pet-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
-html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-3px; top:8px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-3px; top:11px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
 html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
 
 /* 冬天雪人随点击变大 */
@@ -453,14 +456,14 @@ html[data-ui="lite"] .pet-mood{ display:none; }
    纯表现层，lite 模式与 eco 档的行为和情绪条保持一致。 */
 .pet-level{
   position:absolute; left:50%; top:100%; transform:translateX(-50%);
-  margin-top:22px; padding:0 5px; height:12px; line-height:12px;
+  margin-top:27px; padding:0 5px; height:12px; line-height:12px;
   font-size:9px; border-radius:6px; white-space:nowrap;
   background:rgba(255,182,193,.88); color:#7a3b47;
   pointer-events:none; opacity:.94;
 }
 .pet-bond{
   position:absolute; left:50%; top:100%; transform:translateX(-50%);
-  width:26px; height:3px; margin-top:36px; border-radius:2px;
+  width:26px; height:3px; margin-top:41px; border-radius:2px;
   background:rgba(120,140,170,.22); overflow:hidden; pointer-events:none;
 }
 .pet-bond i{ display:block; height:100%; width:0%; border-radius:2px;
