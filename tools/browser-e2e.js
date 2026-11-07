@@ -1950,7 +1950,13 @@ SCENARIOS.push({
       var out = { width: innerWidth, height: innerHeight, top: rect.top, bottom: rect.bottom,
         left: rect.left, right: rect.right, overflow: getComputedStyle(body).overflowY,
         scrollable: body.scrollHeight > body.clientHeight, pageY: scrollY };
-      body.scrollTop = body.scrollHeight;
+      // 滚到「最后一个动作按钮」而不是滚动容器的最底 —— 面板末尾现在是成就区
+      // （1.3.0 起立绘册末尾挂成就列表），滚到底看到的是成就，不再是动作按钮。
+      var last = body.querySelector('[data-anim="sing"]');
+      var r0 = last.getBoundingClientRect(), b0 = body.getBoundingClientRect();
+      // 用 rect.height（DOMRect 没有 clientHeight —— 实测踩过：undefined 混进 delta
+      // 变 NaN，scrollTop += NaN 按规范静默跳过，滚动纹丝不动）
+      body.scrollTop += (r0.top + r0.height / 2) - (b0.top + b0.height / 2);
       return out;
     });
     check('前置：CDP 确实模拟 380x240 视口', geometry.width === 380 && geometry.height === 240, JSON.stringify(geometry));

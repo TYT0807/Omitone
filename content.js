@@ -1568,8 +1568,21 @@
         pagePetBond = result.state;
         persistPagePetBond();
         renderPagePet();
-        if (result.leveledUp) pagePetLevelUp(result.level);
-        else if (result.line) pagePetSay(result.line, 2400);
+        if (result.leveledUp) {
+          pagePetLevelUp(result.level);
+        } else {
+          // 摸头也可能正好点亮成就 —— 与弹窗同一套判定（popup/pet.js checkAchievements）
+          const fresh = game.evaluateAchievements(pagePetBond, game.dayKeyOf(Date.now()));
+          if (fresh.length) {
+            const ids = [];
+            for (const a of fresh) ids.push(a.id);
+            game.markAchievements(pagePetBond, ids, game.dayKeyOf(Date.now()));
+            persistPagePetBond();
+            pagePetSay('成就点亮「' + fresh[0].name + '」—— ' + (fresh[0].line || ''), 3600);
+          } else if (result.line) {
+            pagePetSay(result.line, 2400);
+          }
+        }
         settleStudyIntoBond();
       } catch (e) {}
     });

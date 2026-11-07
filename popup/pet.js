@@ -492,7 +492,7 @@
     }
 
     // ── 立绘册 ──────────────────────────────────────────────────────────
-    // 39 套衣服 / 26 表情 / 24 姿势（去重后 88 张）。按顺序点「装」找一套要按十几次，
+    // 服装 44 / 表情 21 / 姿势 24（去重后 88 张）。按顺序点「装」找一套要按十几次，
     // 所以给一个能直接挑的网格；顺便当作已收集多少张的"图鉴"。
     var book = document.getElementById("petBook");
     var bookBody = document.getElementById("petBookBody");
@@ -528,6 +528,7 @@
         html += '<button type="button" class="pet-book-anim" data-anim="' + a[0] + '">' + a[1] + "</button>";
       });
       html += '<button type="button" class="pet-book-anim" data-anim="random">随机动作</button>';
+      html += '<div id="petBookAch"></div>';   // 成就区块由 renderBookAch() 每次打开/解锁时刷新（进度是活的，不进静态 html）
       bookBody.innerHTML = html;
       if (bookMeta) {
         // pet.png 同时算服装和姿势，按去重后的张数报，别把同一张图标成两张
@@ -536,11 +537,35 @@
         bookMeta.textContent = Object.keys(uniq).length + " 张立绘";
       }
     }
+    /** 成就区块：每次打开面板/解锁成就都重算 —— 进度提示是活的 */
+    function renderBookAch() {
+      var game = getGame();
+      if (!game || !bookBody || !bookBody.firstChild) return;
+      var box = document.getElementById("petBookAch");
+      if (!box || !bondState) return;
+      var list = game.ACHIEVEMENTS || [];
+      var on = 0, html = "";
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i], got = !!(bondState.ach && bondState.ach[a.id]);
+        if (got) on++;
+        var hint = "";
+        if (!got) {
+          if (a.need.pats != null) hint = "（" + Math.min(bondState.totalPats || 0, a.need.pats) + "/" + a.need.pats + "）";
+          else if (a.need.studyMinutes != null) hint = "（" + (Math.floor((bondState.totalStudyMinutes || 0) / 6) / 10) + " / " + Math.round(a.need.studyMinutes / 60) + " 小时）";
+          else if (a.need.streakDays != null) hint = "（" + Math.min(bondState.streakDays || 0, a.need.streakDays) + "/" + a.need.streakDays + " 天）";
+          else if (a.need.nightPats != null) hint = "（" + Math.min(bondState.nightPats || 0, a.need.nightPats) + "/" + a.need.nightPats + "）";
+          else hint = "（等冬天）";
+        }
+        html += '<div class="pet-book-ach' + (got ? " on" : "") + '"><b>' + (got ? "✦ " : "") + a.name + "</b><span>" + a.desc + hint + "</span></div>";
+      }
+      box.innerHTML = '<div class="pet-book-sep">成就 · ' + on + " / " + list.length + "</div>" + html;
+    }
     function openBook() {
       if (!book) return;
       setPose("sit");   // 打开面板也是明确的用户操作，旧彩蛋/闲置动作立即让位
       mascot._bookOpen = true;
       buildBook();
+      renderBookAch();
       book.classList.add("show");
       book.setAttribute("aria-hidden", "false");
       bookOpen = true;
@@ -972,8 +997,9 @@
           // 游戏层的任何失败都吞掉 —— 摸头本身的演出不能因为它坏掉
           try {
             var patResult = petGamePat();
-            if (patResult && patResult.line) say(patResult.line, 2400);
-            if (patResult && patResult.leveledUp) celebrateBond(patResult.level);
+            if (patResult && patResult.leveledUp) celebrateBond(patResult.level);          // 升级台词压过一切
+            else if (patResult && patResult.achievement) celebrateAchievement(patResult.achievement);
+            else if (patResult && patResult.line) say(patResult.line, 2400);
           } catch (eGame) {}
           // 每三次摸头说一句。原来这套台词在 omScene 里另有一个点击处理器，
           // 两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
@@ -1106,6 +1132,30 @@
         if (badge) badge.textContent = levelDef.name;
       } catch (e) {}
     }
+    /** 成就解锁演出：比升级庆祝轻 —— 心心 + 一句话（升级台词优先，见调用处的 else if） */
+    function celebrateAchievement(a) {
+      try {
+        if (!mascot || !a) return;
+        var rect = mascot.getBoundingClientRect();
+        heartBurst(rect.left + rect.width / 2, rect.top + 8);
+        setPose("happy", 1400);
+        say("成就点亮「" + a.name + "」—— " + (a.line || ""), 3600);
+      } catch (e) {}
+    }
+    /** 摸头/结刷课时长之后各跑一次：把新达标的成就写入存档并回报第一条 */
+    function checkAchievements() {
+      var game = getGame();
+      if (!game || !bondState) return null;
+      var fresh = game.evaluateAchievements(bondState, todayKey());
+      if (!fresh.length) return null;
+      var ids = [];
+      for (var i = 0; i < fresh.length; i++) ids.push(fresh[i].id);
+      game.markAchievements(bondState, ids, todayKey());
+      persistBond();
+      renderBond(bondState);
+      renderBookAch();
+      return fresh[0];
+    }
     function petGamePat() {
       var game = getGame();
       if (!game || !bondState) return null;
@@ -1114,6 +1164,7 @@
       persistBond();
       renderBond(bondState);
       syncStudyIntoGame();   // 摸头时顺手把攒下的刷课时长结一次（多数时候是空操作）
+      if (!result.leveledUp) result.achievement = checkAchievements();
       return result;
     }
     function celebrateBond(level) {
@@ -1139,7 +1190,11 @@
             var result = game.applyStudySeconds(bondState, Number(stats.activeSeconds) || 0, todayKey());
             if (result.gained > 0) { bondState = result.state; persistBond(); }
             renderBond(bondState);
-            if (result.leveledUp) celebrateBond(result.level);
+            if (result.leveledUp) { celebrateBond(result.level); }
+            else {
+              var freshAch = checkAchievements();   // 只结了时长没升级，也可能正好点亮成就
+              if (freshAch) celebrateAchievement(freshAch);
+            }
           } catch (e) {}
         });
       } catch (e) {}

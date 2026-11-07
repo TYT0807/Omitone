@@ -69,6 +69,11 @@ check('跨天重置每日配额（好感不重置）', pNext.state.patsToday ===
 check('等级表判定（0/14 初识 · 15 打过招呼 · 30 熟络）',
   GAME.levelOf(0) === 0 && GAME.levelOf(14) === 0 && GAME.levelOf(15) === 1 && GAME.levelOf(30) === 2);
 
+check('追加等级判定（139 形影不离 · 140 心有灵犀 · 200 岁月同行）',
+  GAME.levelOf(139) === 5 && GAME.levelOf(140) === 6 && GAME.levelOf(200) === 7 && GAME.levelOf(240) === 7);
+
+check('老档不降级（上限 100 时代的满档用户仍是形影不离）', GAME.levelOf(100) === 5);
+
 var st1 = GAME.applyStudySeconds(GAME.rollDay(null, DAY), 3600, DAY);
 check('刷课 60 分钟折 2 点好感（水位推进到 3600 秒）',
   st1.gained === 2 && st1.state.affection === 2 && st1.state.countedSeconds === 3600);
@@ -92,8 +97,51 @@ var up = GAME.onPat(
 );
 check('跨级时 leveledUp=true 且说等级台词', up.leveledUp === true && up.state.affection === 15 && up.line === GAME.LEVELS[1].line, up.line);
 
-var capped = GAME.onPat(GAME.rollDay({ affection: 100, day: DAY, patsToday: 0, studyPointsToday: 0, countedSeconds: 0 }, DAY), DAY);
-check('好感满值不再上涨', capped.state.affection === 100 && capped.gained === 1 && capped.state.affection === 100);
+var capped = GAME.onPat(GAME.rollDay({ affection: 240, day: DAY, patsToday: 0, studyPointsToday: 0, countedSeconds: 0 }, DAY), DAY);
+check('好感满值（240）不再上涨', capped.state.affection === 240 && capped.gained === 1, 'affection=' + capped.state.affection + ' gained=' + capped.gained);
+
+// ══ 成就（1.3.0 追加）══════════════════════════════════════
+var carried = GAME.rollDay(
+  { totalPats: 7, streakDays: 3, lastMetDay: '2026-10-31', ach: { pat100: '2026-10-01' }, day: DAY },
+  DAY
+);
+check('rollDay 携带成就与统计字段（丢了就是丢进度）',
+  carried.totalPats === 7 && carried.streakDays === 3 && carried.lastMetDay === '2026-10-31'
+  && carried.ach && carried.ach.pat100 === '2026-10-01');
+
+var t1 = GAME.rollDay(null, DAY);
+t1 = GAME.touchDay(t1, DAY);
+var yKey = GAME.prevDayKeyOf(DAY);
+t1 = GAME.rollDay(t1, yKey);
+t1 = GAME.touchDay(t1, yKey);
+t1 = GAME.rollDay(t1, DAY);
+t1 = GAME.touchDay(t1, DAY);
+check('连续两天见面 streak=2，touchDay 同日幂等', t1.streakDays === 2 && t1.lastMetDay === DAY);
+
+var broken = GAME.rollDay(t1, GAME.prevDayKeyOf(yKey));
+broken = GAME.touchDay(broken, GAME.prevDayKeyOf(yKey));
+check('断一天后重见 streak 归 1', broken.streakDays === 1);
+
+var night = GAME.onPat(GAME.rollDay(null, DAY), DAY, new Date('2026-11-01T03:00:00').getTime());
+var day2 = GAME.onPat(night.state, DAY, new Date('2026-11-01T14:00:00').getTime());
+check('凌晨摸头计入夜猫子（白天不计）', night.state.nightPats === 1 && day2.state.nightPats === 1);
+
+var achState = GAME.rollDay({ totalPats: 100, totalStudyMinutes: 600, nightPats: 20, affection: 55, day: DAY }, DAY);
+var got = GAME.evaluateAchievements(achState, DAY);
+var gotIds = got.map(function (a) { return a.id; }).sort().join(',');
+check('统计达标一次点亮（pat100/study600/night20；亲近非冬不点）',
+  gotIds === 'night20,pat100,study600', gotIds);
+
+var marked = GAME.markAchievements(achState, ['pat100', 'study600'], DAY);
+var again = GAME.evaluateAchievements(marked, DAY).map(function (a) { return a.id; }).join(',');
+check('点亮后不重复解锁', again.indexOf('pat100') < 0 && again.indexOf('study600') < 0, again);
+
+var winter = GAME.evaluateAchievements(GAME.rollDay(null, '2026-12-20'), '2026-12-20');
+check('初雪之约在冬季点亮（12 月）', winter.map(function (a) { return a.id; }).indexOf('firstSnow') >= 0);
+
+var patLine = GAME.onPat(GAME.rollDay(null, DAY), DAY);
+check('onPat 返回体仍含 line/level（伴侣与弹窗共用）',
+  typeof patLine.line === 'string' && patLine.level === 0 && patLine.state.totalPats === 1);
 
 console.log('');
 if (failures.length) {

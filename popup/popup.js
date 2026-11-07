@@ -994,7 +994,7 @@ async function checkUpdate(opts) {
       els.updateMsg.textContent = `本地 ${local.version} 高于线上 ${remoteVersion}，可能是实验版；普通用户请继续使用稳定版。`;
     } else if (!local.builtAt) {
       // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
-      els.updateMsg.textContent = `当前 ${local.version}（源码目录安装，只比版本号，与线上一致）`;
+      els.updateMsg.textContent = `当前 ${local.version}（本地安装 · 版本号与线上最新一致）`;
     } else {
       els.updateMsg.textContent = "你已经是最新版了";
     }

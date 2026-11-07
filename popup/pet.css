@@ -403,10 +403,16 @@ html[data-ui="lite"] .pet-mood{ display:none; }
   position:fixed; left:50%; top:50%; z-index:10001;
   width:min(240px, calc(100vw - 24px)); max-height:min(340px, calc(100vh - 24px));
   display:flex; flex-direction:column; overflow:hidden;
-  background:var(--card); border:1px solid var(--hairline); border-radius:12px;
+  /* 不用 var(--card)：那是 46% 透明度的磨砂变量，88 张立绘衬在弹窗控件上会发糊。
+     这里要的是实底 —— 明暗各给一份，media 查询与 popup.html 的深色块同源。 */
+  background:rgba(255,255,255,.96);
+  border:1px solid var(--hairline); border-radius:12px;
   box-shadow:0 14px 34px rgba(16,24,40,.22);
   opacity:0; pointer-events:none; transform:translate(-50%,-48%) scale(.97);
   transition:opacity .18s linear, transform .22s var(--ease-spring);
+}
+@media (prefers-color-scheme:dark){
+  .pet-book{ background:rgba(26,30,38,.97); }
 }
 .pet-book.show{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
 .pet-book-head{
@@ -447,6 +453,18 @@ html[data-ui="lite"] .pet-mood{ display:none; }
 }
 .pet-book-anim:hover{ border-color:var(--accent); color:var(--accent-2); background:var(--accent-soft); }
 .pet-book-anim:active{ transform:scale(.96); }
+/* 成就区块：容器自己跨满整行 —— 它才是网格项；内层的行是普通块，
+   grid-column 写在行上是无效的（实测踩过：整块被塞进 34px 的单列里一字一行） */
+#petBookAch{ grid-column:1 / -1; display:block; }
+.pet-book-ach{
+  margin-bottom:3px; padding:5px 8px; border-radius:8px;
+  background:rgba(120,140,170,.07); border:1px solid transparent;
+  font-size:10.5px; line-height:1.45; color:var(--fg-2);
+}
+.pet-book-ach b{ display:block; font-size:11px; font-weight:600; color:var(--fg); }
+.pet-book-ach span{ opacity:.85; }
+.pet-book-ach.on{ background:var(--accent-soft); border-color:var(--accent); }
+.pet-book-ach.on b{ color:var(--accent-2); }
 
 /* ── 好感度（成长小游戏）：等级徽章 + 好感度条 ─────────────────────────
    与情绪条同位不同色：情绪是「现在的心情」（会掉），好感度是「累计的羁绊」（只涨）。
