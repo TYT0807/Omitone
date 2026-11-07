@@ -429,7 +429,8 @@
 <p>
   弹窗从上到下分三块：<b>顶部</b>是运行状态和开始/停止；
   <b>中间</b>是六个可以折叠的分组（播放、任务点、任务点类型、答题、讨论任务点、AI 接入）；
-  <b>底部</b>是查看日志、恢复默认这类次要操作。
+  <b>底部</b>是查看日志这类次要操作（「检测 API 连接」在「AI 接入」分组里，
+  「恢复默认设置」单独压在最底下）。
 </p>
 
 <h3>3.2 怎么知道手里的要不要更新</h3>
@@ -472,12 +473,12 @@
 </p>
 
 <figure class="figure">
-  <svg viewBox="0 0 700 430" xmlns="http://www.w3.org/2000/svg" role="img"
+  <svg viewBox="0 0 700 450" xmlns="http://www.w3.org/2000/svg" role="img"
        aria-label="设置弹窗界面示意图">
-    <rect x="0" y="0" width="700" height="430" fill="#fbfcfd" stroke="#e3e6ec"/>
+    <rect x="0" y="0" width="700" height="450" fill="#fbfcfd" stroke="#e3e6ec"/>
 
     <!-- 弹窗本体 -->
-    <rect x="110" y="10" width="400" height="410" rx="10" fill="#fff" stroke="#e3e6ec"/>
+    <rect x="110" y="10" width="400" height="430" rx="10" fill="#fff" stroke="#e3e6ec"/>
 
     <!-- 顶部：品牌行 -->
     <circle cx="132" cy="34" r="5" fill="#c3c8d1"/>
@@ -546,11 +547,13 @@
     <text x="184" y="394" font-size="8.5" fill="#b45309" font-family="sans-serif">需要 API Key</text>
     <text x="494" y="394" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▸</text>
 
-    <!-- 底部按钮 -->
+    <!-- 底部按钮：日志三件套一组，「恢复默认设置」单独压底（2026-11 归组后的真实布局） -->
     <line x1="110" y1="406" x2="510" y2="406" stroke="#e3e6ec"/>
     <text x="128" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">查看日志</text>
-    <text x="186" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">清空日志</text>
-    <text x="488" y="418" font-size="9.5" fill="#767d8a" text-anchor="end" font-family="sans-serif">恢复默认</text>
+    <text x="186" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">复制日志</text>
+    <text x="244" y="418" font-size="9.5" fill="#767d8a" font-family="sans-serif">清空日志</text>
+    <line x1="110" y1="424" x2="510" y2="424" stroke="#e3e6ec"/>
+    <text x="488" y="436" font-size="9.5" fill="#d0342c" text-anchor="end" font-family="sans-serif">恢复默认设置</text>
 
     <!-- 侧注 -->
     <text x="16" y="72" font-size="10" fill="#1f6feb" font-family="sans-serif">① 认状态</text>
