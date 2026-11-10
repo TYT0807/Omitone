@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '1291694078';
+var OMITONE_CODE_REV = '597ce78ee2';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -404,6 +404,14 @@ var OMITONE_CODE_REV = '1291694078';
     _quizLastSubmitAttemptAt: 0,
 
     _quizHoldLogAt: 0,
+
+    // 批次 10-C：「有作答框 + 命中题形容器、却一题没抠出来」的帧 —— 完成判定的**有界**延时。
+    // `_quizParseRetryUntil` 是窗口终点，`_quizParseRetryScope` 记住这个窗口已经给过哪张卡片
+    // （同一张卡片只给一次，用完就放行，避免把「跳过」换成另一种「磨蹭」），
+    // `_quizParseRetryWarnAt` 只给「窗口已用掉」那条 warn 去重。声明在此见本段头注。
+    _quizParseRetryUntil: 0,
+    _quizParseRetryScope: '',
+    _quizParseRetryWarnAt: 0,
 
     _quizCorrectAnswerCache: null,
 
@@ -3426,6 +3434,11 @@ var OMITONE_CODE_REV = '1291694078';
     _isCurrentCompleted: function () {
       this._completionEvidence = '';
       if (this._isActiveMediaPending('completion-check')) return false;
+      // ⚠️ 批次 10-C：上一轮扫描里若有一帧「有作答框、命中题形容器、却一题没抠出来」，
+      //   **这一刻不许宣称整节完成** —— 那一族形状就是真实日志里 00:46:04 的第二份卷子，
+      //   重载之后它当场答成 3 题。窗口是有界的（每张卡片一个，见 `_maybeHoldSkipForUnparsedQuiz`），
+      //   过期后照旧推进，所以这里买的不是"永久停摆"，是"别把还没长出来的卷子读成已经做完"。
+      if (this._quizParseRetryUntil > Date.now()) return false;
 
       var mainDoc = this._getMainDocument();
       // ⚠️ 判据顺序：**先问「页面上还有没有没做完的可见任务点」，再认「任务点已完成」那句文案**。
@@ -4101,23 +4114,56 @@ var OMITONE_CODE_REV = '1291694078';
      * 只在帧被拒时调用；整条 reject 日志本身有 30 秒 + 组合变化节流，允许多跑几次查询。
      * 每项都包异常 —— 跨域帧与 `document.open()` 写到一半的帧都可能直接抛。
      */
+    // ⚠️ **这个对象要落进运行日志，所以里面只许出现字符串和数字。**
+    // 真源：`runtime-log-store.js` 的 `cleanLogMeta` 从**第 4 层**起一律写成 `'[truncated]'`
+    //   meta(0) → rejects(1) → 单条帧(2) → sig(3) → **sig 里的数组或对象 = 第 4 层** → 没了。
+    // 批次 9 第一版把 `qHit` 写成「选择器 → 命中数」的**对象**，于是用户 2026-11-11 导出的
+    // 真实日志里那条取证长这样：`"sig":{"answer":0,"frames":1,"qHit":"[truncated]","text":""}`
+    // —— 取证字段自己不可读，等于白取证。**字符串只受 2000 字截断，数字原样保留**，
+    // 所以前 5 个选择器的命中数按**位置**压成 `"1/0/0/3/0"`（`qHits`，用来定位是哪个类名命中的），
+    // 总和 `qTotal` 则按**整份**清单的并集数（用来判"有没有题形"，见下面那段警告）。
     _frameRejectSignature: function (doc, found) {
       if (!doc) return { reach: 'no-doc' };
       var sig = {};
       var count = function (sel) {
         try { return doc.querySelectorAll(sel).length; } catch (e) { return -1; }
       };
+      var fullText = '';
       try {
-        sig.text = String((doc.body && doc.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 60);
-      } catch (eText) { sig.text = ''; }
+        fullText = String((doc.body && doc.body.innerText) || '').replace(/\s+/g, ' ').trim();
+      } catch (eText) { fullText = ''; }
+      // `text` 与 `textLen` 必须**两个都给**：只给片段时，「文本本来就空」和
+      // 「片段被切没了」在日志里长得一模一样（`textLen` 才是判据，`text` 只是给人看的引子）。
+      sig.textLen = fullText.length;
+      sig.text = fullText.slice(0, 40);
       // 题形命中数**按真源清单逐个报**（批次 9-D）：这里手抄 `.TiMu` / `.questionLi`
       // 就等于给诊断开第二份选择器，改版时它比排查更容易骗人。
-      sig.qHit = {};
+      // 前 5 条单独给位置串，是为了「哪个类名命中的」一眼能定位；
+      // 它**不是**总数 —— 总数见下面 `qTotal`。
+      var hits = [];
       try {
-        (this._questionSelectors || []).slice(0, 5).forEach(function (sel) { sig.qHit[sel] = count(sel); });
+        (this._questionSelectors || []).slice(0, 5).forEach(function (sel) {
+          hits.push(count(sel));
+        });
       } catch (eSel) {}
+      sig.qHits = hits.join('/');
+      // ⚠️ `qTotal` 必须按**整份** `_questionSelectors` 的并集数，不能只数前 5 条。
+      //   这条清单是**有序备选**，`_collectQuestionContainers`（抠题真源）是逐条试到底的，
+      //   而真实日志里唯一命中的那条排在第 15：
+      //     00:46:04 `quiz scan found 0 questions {docs:8,inputs:9,matchedSelectors:{"div[class*=\"question\"]":1}}`
+      //   只数前 5 条 → `qTotal` 恒为 0 → 批次 10-C 的延时窗口**永远不会武装**，
+      //   判据修对了、喂它的数取错了，等于没修（e2e 场景 45 的夹具就是照这个改的）。
+      //   一次并集查询，不是 18 次：这一族帧每秒都可能重扫，取证也要算成本。
+      sig.qTotal = 0;
+      try {
+        var allSelectors = this._questionSelectors || [];
+        if (allSelectors.length) sig.qTotal = Math.max(0, count(allSelectors.join(',')));
+      } catch (eUnion) {}
       sig.video = count('video');
-      sig.answer = count('[id^="answer"]');
+      // 作答控件读**真源** `_quizAnswerControlSelector`（`li[qid]` / `#answer…` / `[role=radio|checkbox]`），
+      // 不是只数 `[id^="answer"]`：新版前端有的卷子只有 `qid` 或 role，光看 id 会把真卷子读成"没有作答框"，
+      // 于是 10-C 的延时窗口武装不上。准入闸问的就是这一串，取证必须和它同一个口径。
+      sig.answer = count(this._quizAnswerControlSelector);
       sig.frames = count('iframe');
       try { sig.pan = doc.getElementById && doc.getElementById('panView') ? 1 : 0; } catch (ePan) { sig.pan = -1; }
       if (found) {
@@ -4126,6 +4172,57 @@ var OMITONE_CODE_REV = '1291694078';
         } catch (eSig) {}
       }
       return sig;
+    },
+
+    /**
+     * 「这一帧**有作答框、也命中了题形容器**，却一题都没抠出来」—— 批次 10-C。
+     *
+     * 为什么这一族不能当成「整节已完成」：真实日志 00:46:04
+     *   `quiz scan found 0 questions {docs:8, inputs:9, matchedSelectors:{"div[class*=\"question\"]":1}}`
+     *   → 1 秒后 `skip completed {by:"all-tasks-finished"}` → 点「下一节」；
+     * 而 00:46:16 重新加载之后，**同一份卷子当场答成 3 题**。也就是说那一帧里坐着的就是一份
+     * 还没渲染完的真卷子（有题形容器、有作答控件），只是抠题暂时为空 —— 平台把内容
+     * `document.write` 进子帧需要时间，我们扫得太早，就把"还没长出来"读成了"已经做完"。
+     * 这正是用户报的「第一个做了、第二个又不做了」和「判定为已完成了」。
+     *
+     * ⚠️ **代价必须封顶**：用户的另一条抱怨是「在已经完成的界面磨蹭很久」。所以这里不是
+     * 「一直等」，而是**每个作用域（章节+卡片）只给一个窗口**，用完就照旧推进 ——
+     * 与「判不准时停在原地、代价可见、会自愈」那条规矩一致，但不许把磨蹭换成另一种磨蹭。
+     */
+    _maybeHoldSkipForUnparsedQuiz: function (sig, src) {
+      if (!sig) return false;
+      if (!(Number(sig.qTotal) >= 1) || !(Number(sig.answer) >= 1)) return false;
+      var now = Date.now();
+      if (this._quizParseRetryUntil > now) return true;               // 同一窗口内不续期，否则永不超时
+      var scope = '';
+      try { scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || ''))); } catch (eScope) {}
+      if (scope && scope === this._quizParseRetryScope) {
+        // 本张卡片已经用过窗口，且**这一轮没再给出新证据**：不再续期，让它推进。
+        this._noteQuizParseRetryExhausted(now, sig, src);
+        return false;
+      }
+      this._quizParseRetryScope = scope;
+      this._quizParseRetryUntil = now + Math.min(12000, scaledMs(8000));
+      emitRuntimeLog('warn', 'quiz frame has answer controls but no parsable questions, delay skip', {
+        src: String(src || '').slice(0, 40),
+        qHits: String(sig.qHits || ''), qTotal: sig.qTotal, answer: sig.answer,
+        textLen: sig.textLen,
+        hint: '题形容器命中≥1 且作答框≥1、却一题都没抠出来 —— 多半是平台还没把卷子渲染进这一帧。' +
+          '本卡片只给一个延时窗口，过期后照旧推进（不再空等）',
+        holdMs: this._quizParseRetryUntil - now
+      });
+      return true;
+    },
+
+    _noteQuizParseRetryExhausted: function (now, sig, src) {
+      if (this._quizParseRetryWarnAt && now - this._quizParseRetryWarnAt < 60000) return;
+      this._quizParseRetryWarnAt = now;
+      emitRuntimeLog('warn', 'quiz parse retry spent, allow skip', {
+        src: String(src || '').slice(0, 40),
+        qTotal: sig.qTotal, answer: sig.answer,
+        hint: '延时窗口已经用掉：这一帧仍然抠不出题，放行完成判定 —— 下一份日志里这条与上一条' +
+          ' `delay skip` 相隔多久，就是这一族卷子渲染实际需要的时间'
+      });
     },
 
 
@@ -4210,7 +4307,12 @@ var OMITONE_CODE_REV = '1291694078';
         // 和 3 个 `javascript:` 帧全落在这一条 —— 这正是用户报的「第一个做了、第二个又不做了」
         // 唯一的可疑现场，但旧日志只报 src 前 40 字，**判不了那是空帧还是第二份卷子**。
         // 没有证据就动类型判定，代价是别的帧跟着一起被误收（用户明确警告过的"修一半报废一堆"）。
-        if (sig) item.sig = sig;
+        if (sig) {
+          item.sig = sig;
+          // 批次 10-C：**这一条不改准入判据**（那是 9-D 刻意留着的），只在
+          // 「有作答框 + 命中题形容器 + 一题没抠出」时给完成判定加一个有界延时。
+          if (appRef._maybeHoldSkipForUnparsedQuiz(sig, src)) item.delay = 'quiz-parse';
+        }
         rejects.push(item);
       };
       for (var i = 0; i < iframes.length; i++) {

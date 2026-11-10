@@ -1322,6 +1322,194 @@ async function testNormalizeItemIndex() {
     JSON.stringify(multi));
 }
 
+/**
+ * 跨层契约：页面里写出的取证字段，必须能在 worker 落盘清洗**之后**还读得出东西。
+ *
+ * 为什么要有这一条（批次 10-A；现场是用户 2026-11-11 导出的真实日志）：
+ *   批次 9-D 给被拒的帧加了 `rejects[].sig`，e2e 里断言「字段都在」—— 全绿。
+ *   可用户那份日志里这条长这样：
+ *     `"sig":{"answer":0,"frames":1,"qHit":"[truncated]","text":""}`
+ *   原因在 `runtime-log-store.js` 的 `cleanLogMeta`：深度 ≥4 的值一律压成 `'[truncated]'`，
+ *   而这条路径是 meta(0) → rejects(1) → 单条帧(2) → sig(3) → **sig 里的对象/数组 = 第 4 层**。
+ *   批次 9 那版 `qHit` 正好是「选择器 → 命中数」的对象。**两层各自都没错，拼起来才是 bug** ——
+ *   单独测页面（字段齐全）或单独测存储（截断规则）都测不出来，只能两层一起跑。
+ *
+ * ⚠️ 两处都不打桩：sig 由 `_frameRejectSignature` 的**函数源码本体**算出来，
+ *   日志由 `create().handle()` 真写一遍。以后谁再往 sig 里塞嵌套对象，这里当场变红，
+ *   而不是等用户再导一次日志才发现取证字段自己是空的。
+ *   反向对照（对象**必须**被压掉）也在 —— 不会失败的检查等于没有检查。
+ */
+async function testRejectSignatureSurvivesLogStore() {
+  console.log('\n[13] 被拒帧取证必须活过日志落盘深度闸（page.js → runtime-log-store.js）');
+
+  var STORE = require('../runtime-log-store.js');
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+
+  // 抠真源，不手抄：手抄一份等于给诊断开出第二份选择器清单，改版时它比排查更容易骗人。
+  var slice = read('src/page/60-tasks-detect.js');
+  var anchor = '_frameRejectSignature: function (doc, found) {';
+  var at = slice.indexOf(anchor);
+  check('能从 60-tasks-detect.js 定位 _frameRejectSignature', at >= 0, '锚点没命中：函数改名或签名参数变了');
+  var stateSrc = read('src/page/10-config-state.js');
+  var selMatch = stateSrc.match(/\n    _questionSelectors: (\[[\s\S]*?\n    \]),/);
+  check('能从 10-config-state.js 抠出 _questionSelectors 真源', !!selMatch, '锚点没命中：清单改名或缩进变了');
+  var ctlMatch = stateSrc.match(/\n    _quizAnswerControlSelector: '([^']+)'/);
+  check('能从 10-config-state.js 抠出 _quizAnswerControlSelector 真源', !!ctlMatch, '锚点没命中：签名改成读真源后这里要跟得上');
+  if (at < 0 || !selMatch || !ctlMatch) return;
+
+  var selectors = new Function('return ' + selMatch[1])();
+  var bodyStart = slice.indexOf('function', at);
+  var bodyEnd = slice.indexOf('\n    },', bodyStart);
+  check('_frameRejectSignature 函数体能按缩进闭合', bodyEnd > bodyStart, '没找到方法结束的那一行');
+  if (bodyEnd <= bodyStart) return;
+  var fn = new Function('return (' + slice.slice(bodyStart, bodyEnd) + '\n    })')();
+
+  function fakeDoc(text, hits) {
+    return {
+      body: { innerText: text },
+      // 单条选择器：直接查表；并集（`a,b,c`）：把命中的各条**当不同元素**相加 ——
+      // 生产里 `qTotal` 走的就是 `_questionSelectors.join(',')` 这一条路。
+      querySelectorAll: function (sel) {
+        var parts = String(sel).split(',');
+        if (parts.length === 1) {
+          return { length: Object.prototype.hasOwnProperty.call(hits, sel) ? hits[sel] : 0 };
+        }
+        var total = 0;
+        parts.forEach(function (p) {
+          var k = p.trim();
+          if (Object.prototype.hasOwnProperty.call(hits, k)) total += hits[k];
+        });
+        return { length: total };
+      },
+      getElementById: function () { return null; }
+    };
+  }
+
+  var stored = [];
+  var store = STORE.create({
+    read: function () { return stored; },
+    write: function (logs) { stored = logs; },
+    authorize: function () { return true; },
+    now: function () { return Date.now(); }
+  });
+
+  function appendSig(sig) {
+    return store.handle({
+      type: 'runtime_log_append',
+      payload: {
+        level: 'warn',
+        message: 'search job: every candidate frame was rejected',
+        meta: {
+          frames: 8, attachments: 0,
+          rejects: [{ src: 'javascript:void(function(){document.open', reason: 'unknown task type', sig: sig }]
+        }
+      }
+    }, { url: 'https://mooc1.chaoxing.com/knowledge/cards' });
+  }
+
+  var hitMap = {};
+  hitMap[selectors[0]] = 0;
+  // 夹具故意命中**第 15 条**（真实日志 00:46:04 唯一命中的就是 `div[class*="question"]`）：
+  // 前 5 条的位置串因此全是 0，只有按整份清单并集数出来的 `qTotal` 才是 3。
+  // 这条同时把"qTotal 只数了前 5 条"这类取数错误钉住 —— 它会让批次 10-C 的延时永不武装。
+  hitMap[selectors[14]] = 3;
+  // 作答控件按真源那串的**第一个**口径计数（`[qid]`）—— 批次 10-C 的门要用它。
+  var ctlFirst = ctlMatch[1].split(',')[0].trim();
+  hitMap[ctlFirst] = 2;
+  check('真源清单第 15 条存在（夹具要它来暴露"只数前 5 条"的取数错误）',
+    typeof selectors[14] === 'string', '清单只有 ' + selectors.length + ' 条');
+  var appStub = { _questionSelectors: selectors, _quizAnswerControlSelector: ctlMatch[1] };
+  var sig = fn.call(appStub, fakeDoc('一、单选题 1. 下列说法正确的是（）', hitMap), { quizLike: true, video: false });
+
+  var res = await appendSig(sig);
+  check('日志真的写进存储（store 返回 success）', res && res.success === true, JSON.stringify(res));
+  var meta = stored.length ? stored[0].meta : null;
+  var outSig = meta && meta.rejects && meta.rejects[0] ? meta.rejects[0].sig : null;
+  check('落盘后 sig 仍在（第 3 层没被整个压掉）', !!outSig && typeof outSig === 'object', JSON.stringify(meta));
+  if (!outSig) return;
+  var dumped = JSON.stringify(outSig);
+  check('sig 里没有一个字段被压成 [truncated]（批次 9 的那条就是这里红的）',
+    dumped.indexOf('[truncated]') < 0, dumped);
+  check('qHits 是「按选择器位置」的字符串命中数',
+    typeof outSig.qHits === 'string' && /^[\d\/]+$/.test(outSig.qHits) &&
+    outSig.qHits.split('/').length === Math.min(5, selectors.length),
+    JSON.stringify(outSig.qHits) + ' / 清单 ' + selectors.length + ' 项');
+  check('qTotal 是数字，且按**整份**清单并集数出来（夹具命中第 15 条 → 3）',
+    outSig.qTotal === 3, JSON.stringify(outSig.qTotal));
+  check('qHits 只覆盖前 5 条，因此这里必须全是 0（两个字段各管一件事，别混）',
+    outSig.qHits === '0/0/0/0/0', JSON.stringify(outSig.qHits));
+  check('textLen 与 text 同时在场（「本来就空」与「片段切没了」要分得开）',
+    typeof outSig.textLen === 'number' && outSig.textLen > 0 && typeof outSig.text === 'string', dumped);
+  check('answer / frames / video 是数字（判据要用它们，不能是字符串）',
+    typeof outSig.answer === 'number' && typeof outSig.frames === 'number' && typeof outSig.video === 'number', dumped);
+  check('作答控件计数读的是真源 _quizAnswerControlSelector（只数 [id^="answer"] 会把只有 qid/role 的卷子读成没框）',
+    outSig.answer === 2, JSON.stringify(outSig.answer));
+
+  // ⚠️ 反向对照：批次 9 第一版那种**嵌套对象**必须被第 4 层闸压掉。
+  //   没有这几条，上面那串断言在"存储层规则被改掉"之后会一起变绿 —— 假绿。
+  var nested = {};
+  nested[selectors[0]] = 3;
+  var revRes = await appendSig({ qHit: nested, text: '', answer: 0, frames: 1 });
+  var revSig = stored.length ? stored[stored.length - 1].meta.rejects[0].sig : null;
+  check('反向对照：嵌套的 qHit 对象确实被压成 [truncated]',
+    revRes && revRes.success === true && !!revSig && revSig.qHit === '[truncated]',
+    JSON.stringify(revSig));
+  check('反向对照：同层的标量没被牵连（截断只吃第 4 层）',
+    !!revSig && revSig.answer === 0 && revSig.frames === 1, JSON.stringify(revSig));
+}
+
+/**
+ * 看门狗不许在"已经不握着这一页"的时候说话（批次 10-B）。
+ *
+ * 现场：真实日志 00:45:35 page.js 已经打出 `start`（它活着、还在答题），00:45:45 却冒出一条红色
+ * `page script no response after tag injection {waitedMs:10000}` —— 用户看到的就是「插件坏了，去刷新」，
+ * 而刷新正好把这一轮进度全丢掉。两处毛病：① 换文档/重复注入之后，**旧那份实例的定时器照样会说话**；
+ * ② `waitedMs` 是**两个常数相加**写出来的 10000，一次都没量过 —— 看着像证据，其实什么都不是。
+ *
+ * ⚠️ 这一节是**结构性**守卫，不是行为断言：看门狗是一条 6s + 4s 的真实定时链，
+ *   照行为验要把整个集成测试拖慢 20 秒以上，而且定时链在 CI 上必然偶发红。
+ *   守卫的是"这三道条件与这两个字段还在"，改坏能立刻红 —— 与 check.js 的
+ *   「选择器真源守卫」「桥接消息类型两端一致」是同一类机检。
+ */
+async function testInjectionWatchdogOwnershipGuard() {
+  console.log('\n[14] 注入看门狗：只在自己还握着那份文档时说话，waitedMs 必须是测量值');
+
+  var src = fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8').replace(/\r\n/g, '\n');
+
+  function bodyOf(anchor) {
+    var at = src.indexOf(anchor);
+    if (at < 0) return '';
+    var end = src.indexOf('\n  }', at);
+    return end < 0 ? '' : src.slice(at, end);
+  }
+
+  var owns = bodyOf('function watchdogStillOwnsPage(seq) {');
+  check('存在 watchdogStillOwnsPage（没有它 = 旧实例的定时器也会报错）', owns.length > 0);
+  check('它问"本次注入是否仍是最新一次"（seq vs pageInjectSeq）',
+    /seq\s*!==\s*pageInjectSeq/.test(owns), owns.replace(/\s+/g, ' ').slice(0, 160));
+  check('它问"这份文档还挂在浏览器上"（导航后的旧文档必须闭嘴）',
+    /document\.isConnected/.test(owns), owns.replace(/\s+/g, ' ').slice(0, 160));
+  check('它问"自己那块 <script> 还在不在"（被移走 = 本次注入已作废）',
+    owns.indexOf('getElementById(PAGE_SCRIPT_ID)') >= 0, owns.replace(/\s+/g, ' ').slice(0, 160));
+
+  var dog = bodyOf('function scheduleInjectionWatchdog(');
+  check('存在 scheduleInjectionWatchdog', dog.length > 0);
+  var timers = (dog.match(/setTimeout\(/g) || []).length;
+  check('两级定时都装了所有权守卫（守卫数量必须等于 setTimeout 数量）',
+    timers > 0 && (dog.match(/watchdogStillOwnsPage\(seq\)/g) || []).length === timers,
+    'setTimeout=' + timers + ' 守卫=' + (dog.match(/watchdogStillOwnsPage\(seq\)/g) || []).length);
+  check('waitedMs 是测量值 Date.now() - pageRuntimeArmedAt（写死的 10000 就是把猜测伪装成证据）',
+    /waitedMs:\s*Math\.max\(0,\s*Date\.now\(\)\s*-\s*pageRuntimeArmedAt\)/.test(dog) &&
+    !/waitedMs:\s*\d/.test(dog), dog.replace(/\s+/g, ' ').slice(0, 200));
+  check('报错那条带得上判据的输入（everSawLog / docConnected / href），下一份日志能自证',
+    dog.indexOf('everSawLog') >= 0 && dog.indexOf('docConnected') >= 0 && dog.indexOf('href') >= 0);
+  // ⚠️ 这里**故意没有**"日志流最近有新条目就算活着"那种判据 —— 运行日志是**跨文档共享**的
+  //   200 条环形缓冲，别的框架、别的标签页、刷新前那份旧实例都在往里写。
+  //   上面三条守卫锁住的就是这一点：说话的前提是"这一份实例还握着这一页"，不是"流里有没有动静"。
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
@@ -1345,6 +1533,8 @@ async function main() {
   await testThinkingLevels();
   await testApiKeyNormalize();
   await testNormalizeItemIndex();
+  await testRejectSignatureSurvivesLogStore();
+  await testInjectionWatchdogOwnershipGuard();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

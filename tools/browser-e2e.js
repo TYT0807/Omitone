@@ -1060,6 +1060,12 @@ function buildRealDiscussionHtml() {
  * 真实日志 00:46:55 的 `frames:8` 里有 4 个 `javascript:void(function(){document.open`
  * 和 3 个 `javascript:` 全被拒成「认不出任务类型」—— 旧日志看不出那是空帧还是第二份卷子。
  * 结构照真实页面：外层只有 `#iframe`，任务点数据与那些帧都在主帧文档里。
+ *
+ * ⚠️ 第二份卷子的容器故意用 `question_item`：它只被 `_questionSelectors` 里
+ *    **第 15 条** `div[class*="question"]` 命中，不在准入闸用的 `_quizDetectorSelector`
+ *    （精确类名）里 —— 这正是真实日志 00:46:04 的形状（`matchedSelectors:{"div[class*=\"question\"]":1}`
+ *    却 `found 0 questions`、整帧被拒）。夹具若只用 `.TiMu`，`qTotal` 数前 5 条也能过，
+ *    就再也抓不到"总数只数了前几条"这类取数错误（批次 10-A 实测就是这样暴露的）。
  */
 function buildFrameSigHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -1087,7 +1093,7 @@ function buildFrameSigInnerHtml() {
     'var inp=d.createElement("input");inp.type="radio";inp.name="q2";inp.value="A";d.body.appendChild(inp);' +
     'var hd=d.createElement("input");hd.type="hidden";hd.id="answer2";d.body.appendChild(hd);' +
     'return d.body.children.length>0;}' +
-    'window.__paperReady=seed("fPaper",[["QType","[单选题]"],' +
+    'window.__paperReady=seed("fPaper",[["question_item"," "],["QType","[单选题]"],' +
     '["qt","第二份卷子：下列哪一项是社会主义改造的对象？"],["ot","A 资本主义工商业"],["ot","B 个体农业"]]);' +
     'window.__emptyReady=seed("fEmpty",[]);' +
     '</script></body></html>';
@@ -8705,7 +8711,7 @@ SCENARIOS.push({
   }
 });
 
-/** ---- 45. javascript: 那族帧必须自证"里面有没有第二份卷子"（批次 9-D 取证） ---- */
+/** ---- 45. javascript: 那族帧必须自证「里面有没有第二份卷子」（批次 9-D 取证 + 批次 10-A 可读性） ---- */
 SCENARIOS.push({
   name: '被拒的帧带内容签名取证',
   path: '/frame-sig',
@@ -8734,15 +8740,34 @@ SCENARIOS.push({
       'var rej=null;got.forEach(function(m){if(m.message==="search job: every candidate frame was rejected")rej=m;});' +
       'var list=rej&&rej.meta?rej.meta.rejects:[];' +
       'function hasPaper(r){return r&&r.sig&&r.sig.text&&r.sig.text.indexOf("第二份卷子")>=0;}' +
-      'function zero(r){return r&&r.sig&&!r.sig.text&&Object.keys(r.sig.qHit||{}).every(function(k){return !r.sig.qHit[k];});}' +
+      // 批次 10-A：签名里**不许再有对象**。`qHit` 是对象时它会落在日志存储的第 4 层，
+      // 被 `cleanLogMeta` 写成 "[truncated]" —— 取证字段自己不可读（真实日志 01:49:17）。
+      'function zero(r){return r&&r.sig&&!r.sig.text&&r.sig.qTotal===0&&typeof r.sig.qHits==="string";}' +
+      'function flat(r){return r&&r.sig&&typeof r.sig.qHits==="string"&&typeof r.sig.qTotal==="number"' +
+      '  &&typeof r.sig.textLen==="number"&&typeof r.sig.qHits!=="object"&&typeof r.sig.answer==="number";}' +
       'var paper=(list||[]).filter(hasPaper)[0]||null;' +
       'var empty=(list||[]).filter(function(r){return r&&r.sig&&!hasPaper(r)&&zero(r);})[0]||null;' +
       'res({job:!!job,entries:(list||[]).length,paper:paper,empty:empty,seen:got.length,' +
-      '  msgs:got.map(function(m){return m.message;}).slice(0,6),' +
-      '  withSig:(list||[]).filter(function(r){return !!(r&&r.sig);}).length});},400);});})()'
+      '  flat:(list||[]).filter(flat).length,withSig:(list||[]).filter(function(r){return !!(r&&r.sig);}).length,' +
+      '  msgs:got.map(function(m){return m.message;}).slice(0,6)});},400);});})()'
     );
     check('拒绝清单里**带签名的条目**至少有一条（旧写法只有 src + 原因，取证无从谈起）',
       out && out.withSig > 0, JSON.stringify(out && { withSig: out.withSig, entries: out.entries }));
+    check('批次 10-A：每一条签名都是**扁平的**（字符串/数字）—— 对象会被日志存储第 4 层截成 [truncated]',
+      out && out.withSig > 0 && out.flat === out.withSig,
+      JSON.stringify(out && { flat: out.flat, withSig: out.withSig }));
+    check('批次 10-A：命中数用位置串 qHits 表达（顺序是 _questionSelectors 的前 5 条，用来定位类名）',
+      out && !!out.paper && /^[\d/]+$/.test(String(out.paper.sig.qHits)),
+      JSON.stringify(out && out.paper && out.paper.sig));
+    check('批次 10-A：qTotal 按**整份**清单的并集数，不是前 5 条之和 —— 夹具命中的是第 15 条 ' +
+      '（真实日志 00:46:04 就是这一条：只数前 5 会让批次 10-C 的延时窗口永远不武装）',
+      out && !!out.paper && out.paper.sig.qHits === '0/0/0/0/0' && out.paper.sig.qTotal >= 1,
+      JSON.stringify(out && out.paper && out.paper.sig));
+    check('批次 10-A：textLen 与 text 同时给 —— 「本来就没有文本」和「片段被切掉」分得开',
+      out && !!out.paper && typeof out.paper.sig.textLen === 'number' &&
+      out.paper.sig.textLen >= out.paper.sig.text.length &&
+      !!out.empty && out.empty.sig.textLen === 0,
+      JSON.stringify(out && { paper: out.paper && out.paper.sig, empty: out.empty && out.empty.sig }));
     check('第二份卷子所在的那一帧：签名把题干文字与题形命中数带了出来 ——「在不在这个帧里」从此可判',
       out && !!out.paper && out.paper.sig.text.indexOf('第二份卷子') >= 0,
       JSON.stringify(out && out.paper));
@@ -8750,6 +8775,78 @@ SCENARIOS.push({
       out && !!out.empty, JSON.stringify(out && out.empty));
     check('取证不改变调度结果：这一轮仍然没有任务点被误收（放宽判据留到有签名证据的下一批）',
       out && out.job === false, 'job=' + JSON.stringify(out && out.job));
+  }
+});
+
+/** ---- 46. 有作答框却抠不出题的帧，不许被当成「整节已完成」（批次 10-C） ---- */
+SCENARIOS.push({
+  name: '抠不出题的卷子帧延时放行完成判定',
+  path: '/frame-sig',
+  run: async function (ctx) {
+    // 现场（用户 2026-11-11 日志 00:46:04）：`quiz scan found 0 questions {inputs:9,
+    // matchedSelectors:{"div[class*=\"question\"]":1}}` → **1 秒后**就
+    // `skip completed {by:"all-tasks-finished"}` 点了「下一节」；重新加载之后同一份卷子
+    // 当场答成 3 题。也就是"平台还没把卷子渲染进这一帧"被读成了"这一节已经做完"，
+    // 用户看到的就是「第一个做了、第二个又不做」+「判定为已完成了」。
+    // 本场景钉三件事：① 这一族形状会把完成判定按下来；② 空帧/没有作答框的帧**不许**按；
+    // ③ 停留是**有预算的** —— 一张卡片只给一个窗口，用完照旧推进（否则就成了另一种磨蹭）。
+    var out = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      // 完成判定的其它输入全部让路：只留「可见任务点全已完成」这一条真判据在跑，
+      // 于是"延时有没有把 skip 按住"是**这条钩子自己**决定的，不是别的分支碰巧挡的。
+      'var origState=app._getVisibleTaskCompletionState, origKey=app._studyProgressKey;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true};};' +
+      'app._studyProgressKey=function(){return window.__retryScopeKey||"card-1";};' +
+      'app._isActiveMediaPending=function(){return false;};' +
+      'function reset(){app._quizParseRetryUntil=0;app._quizParseRetryScope="";app._quizParseRetryWarnAt=0;}' +
+      'var paper={qTotal:1,qHits:"1/0/0/0/0",answer:9,textLen:210,text:"第二份卷子"};' +
+      'var empty={qTotal:0,qHits:"0/0/0/0/0",answer:0,textLen:0,text:""};' +
+      'var noBox={qTotal:2,qHits:"2/0/0/0/0",answer:0,textLen:80,text:"课件"};' +
+      'reset();var rEmpty=app._maybeHoldSkipForUnparsedQuiz(empty,"javascript:");' +
+      'var cEmpty=app._isCurrentCompleted();' +
+      'reset();var rNoBox=app._maybeHoldSkipForUnparsedQuiz(noBox,"/ananas/modules/work");' +
+      'reset();var rPaper=app._maybeHoldSkipForUnparsedQuiz(paper,"javascript:");' +
+      'var heldWhile=app._isCurrentCompleted();var until=app._quizParseRetryUntil;' +
+      // 同一张卡片：窗口用掉之后**不再续期**，让推进发生（预算封顶，不是无限停留）
+      'app._quizParseRetryUntil=Date.now()-1;window.__retryScopeKey="card-1";' +
+      'var rSpent=app._maybeHoldSkipForUnparsedQuiz(paper,"javascript:");' +
+      'var doneAfter=app._isCurrentCompleted();' +
+      // 换一张卡片：预算重新给一次（下一节的真卷子不该被上一节用掉的窗口冤枉）
+      'window.__retryScopeKey="card-2";' +
+      'var rNextCard=app._maybeHoldSkipForUnparsedQuiz(paper,"javascript:");' +
+      'app._getVisibleTaskCompletionState=origState;app._studyProgressKey=origKey;' +
+      'setTimeout(function(){' +
+      'function metaOf(name){for(var i=0;i<got.length;i++){if(got[i].message===name)return got[i].meta||{};}' +
+      '  return null;}' +
+      'res({rEmpty:rEmpty,cEmpty:cEmpty,rNoBox:rNoBox,rPaper:rPaper,heldWhile:heldWhile,' +
+      '  untilDelta:until-Date.now(),rSpent:rSpent,doneAfter:doneAfter,rNextCard:rNextCard,' +
+      '  delay:metaOf("quiz frame has answer controls but no parsable questions, delay skip"),' +
+      '  spent:metaOf("quiz parse retry spent, allow skip"),seen:got.length});},400);});})()'
+    );
+    check('空帧（题形命中 0、作答框 0）不按完成判定 —— 否则每个空壳帧都能把整节拖住',
+      out && out.rEmpty === false && out.cEmpty === true,
+      JSON.stringify(out && { rEmpty: out.rEmpty, cEmpty: out.cEmpty }));
+    check('命中题形但**没有作答框**（课件那一族）不按判定 —— 只认真卷子的形状',
+      out && out.rNoBox === false, JSON.stringify(out && { rNoBox: out.rNoBox }));
+    check('有作答框 + 命中题形 + 一题没抠出 → 延时武装，且**当刻 _isCurrentCompleted() 为假**',
+      out && out.rPaper === true && out.heldWhile === false && out.untilDelta > 0,
+      JSON.stringify(out && { rPaper: out.rPaper, heldWhile: out.heldWhile, untilDelta: out.untilDelta }));
+    check('延时是**有界**的：窗口落在 12 秒以内（不是"等它长出来为止"）',
+      out && out.untilDelta > 0 && out.untilDelta <= 12000, 'untilDelta=' + JSON.stringify(out && out.untilDelta));
+    check('预算封顶：同一张卡片的窗口用掉后放行完成判定（把「跳过」换成另一种「磨蹭」是这次要避免的）',
+      out && out.rSpent === false && out.doneAfter === true,
+      JSON.stringify(out && { rSpent: out.rSpent, doneAfter: out.doneAfter }));
+    check('换一张卡片预算重新给一次（上一节用掉的窗口不该冤枉下一节的真卷子）',
+      out && out.rNextCard === true, JSON.stringify(out && { rNextCard: out.rNextCard }));
+    check('delay skip 那条 warn 带取证字段（qHits/qTotal/answer/textLen/holdMs），不只是"我按住了"',
+      out && !!out.delay && out.delay.qTotal === 1 && out.delay.answer === 9 &&
+      out.delay.textLen === 210 && out.delay.qHits === '1/0/0/0/0' && out.delay.holdMs > 0,
+      JSON.stringify(out && out.delay));
+    check('窗口用掉也要留话（quiz parse retry spent），否则日志里只剩"它为什么不跳"没人答',
+      out && !!out.spent && out.spent.answer === 9, JSON.stringify(out && { spent: out.spent, seen: out.seen }));
   }
 });
 

@@ -293,7 +293,7 @@
   带上题目标签/类名/qid/li/label/radio/checkbox 个数与 220 字符 HTML —— 下次照着这条就能补结构。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
 
-### 2026-11-10 追加（发布后修复，未升号 · 批次 1~9）
+### 2026-11-10 追加（发布后修复，未升号 · 批次 1~10）
 
 用户连着报的两件事是**同一个病**：答题的判据外溢到了别的任务上。1.3.0 线上包先出现
 「所有题目都被跳过」，把答题修回来之后又发现「刷 PPT 报废」，两个功能一起接近瘫痪。
@@ -775,10 +775,70 @@
     扩展存储是**整轮共用**的，前一个场景写的 `enableDiscussion:false`、或压根没写过可用模型配置，
     会让后一个场景在**闸门之前**就短路（`skip quiz because api unavailable`），现场只表现为
     "日志一条都没有"。夹具必须自己把依赖的开关与配置钉住。
-  - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 —— 当前基线 **79 个场景 / 771 项**。
+  - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 —— 批次 9 当时基线 **79 个场景 / 771 项**。 <!-- 历史计数:start --><!-- 历史计数:end -->
     ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
     1.3.0 发布那一版（改了 `page.js`，**需要重传附件**）。
     下一批候选：真实日志开头那条 `page script no response after tag injection {waitedMs:10000}`。
+
+- **⑪批次 10：同一份日志读第二遍点出来的三件事（用户原话「还是一样的，判定为已完成了，无语了」）**。
+  立案依据是用户 01:50:44 导出的 203 行真实日志。批次 9 的取证**确实上了岗**（5 条讨论诱饵全被拦、
+  两键不再分叉、没有再为 0 道题空转 hold），但那份日志同时暴露：取证字段自己是**读不出来**的，
+  而"第二个不做"的现场终于能对上一句判据错误了。
+  - **10-A 修的是批次 9 自己的洞**：真实日志里那条签名长这样
+    `"sig":{"answer":0,"frames":1,"qHit":"[truncated]","text":""}`。
+    根因是**两层各自都对**：`runtime-log-store.js` 的 `cleanLogMeta` 从第 4 层起一律压成
+    `'[truncated]'`（防日志洪水，是对的），而取证签名的深度正好落在
+    meta(0) → rejects(1) → 单条帧(2) → sig(3)，**sig 里的对象/数组就是第 4 层**；
+    批次 9 把 `qHit` 写成了「选择器 → 命中数」的对象。现在签名只出标量：
+    `qHits:"0/0/0/0/0"`（前 5 条按位置，用来定位是哪个类名命中）+ `qTotal`（数字）。
+    ⚠️ **`qTotal` 按整份 `_questionSelectors` 的并集数，不是前 5 条之和** —— 这一条是改到第二版才对的：
+    第一版仍按前 5 条累加，而真实日志唯一命中的那条 `div[class*="question"]` 排**第 15**，
+    于是 10-C 的延时**永远武装不上**。判据修对了、喂它的数取错了，等于没修。
+    `answer` 同步改读真源 `_quizAnswerControlSelector`（原来只数 `[id^="answer"]`，
+    只有 `li[qid]` / `[role=radio]` 的卷子会被读成"连作答框都没有"）。
+  - **10-B 收掉批次 9 记下的那条候选**：00:45:35 page.js 已经打出 `start` + `performance profile`
+    （活着、而且在答题），00:45:45 却报红色 `no response {waitedMs:10000}`。两处毛病：
+    ① 看门狗按注入序号定时，但**换文档 / 重复注入之后旧那份照样会说话**；
+    ② `waitedMs` 是**两个常数相加**写出来的 10000，一次都没量过 —— 看着像证据，其实是猜测。
+    现在两道定时先问 `watchdogStillOwnsPage(seq)`（本次注入仍是最新 + `document.isConnected` +
+    自己那块 `<script id="xxt-page-script">` 还在），`waitedMs` 换成实测
+    `Date.now() - pageRuntimeArmedAt`，并带上 `slowFactor / everSawLog / lastLogAgoMs / docConnected / href`。
+    ⚠️ **没有**改成"日志流最近有新条目就算活着" —— 运行日志是**跨文档共享**的 200 条环形缓冲，
+    别的标签页、刷新前那份旧实例都在往里写，"流里有动静"推不出"这一页活着"。
+  - **10-C 把「还没长出来」和「已经做完」分开**（用户这一轮的原话就是它）：
+    00:46:04 `quiz scan found 0 questions {docs:8, inputs:9, matchedSelectors:{"div[class*="question"]":1}}`
+    → **1 秒后** `skip completed {by:"all-tasks-finished"}` 点了下一节；
+    00:46:16 重新加载，**同一份卷子当场答成 3 题**。形状 = 题形容器在、作答控件在、题还没渲染完。
+    只碰完成判定：`_isCurrentCompleted()` 在媒体那行之后加一道**有界**闸门
+    `if (this._quizParseRetryUntil > Date.now()) return false;`；窗口由
+    `_maybeHoldSkipForUnparsedQuiz()` 在拒绝清单里武装（门：`qTotal>=1 && answer>=1`），
+    **每张卡片（`_studyProgressKey()`）只给一个 ≤12 秒窗口、同键不续期**，用完放行并记
+    `quiz parse retry spent, allow skip`（60 秒去重）。
+    ⚠️ 取舍写死在这：**没有**改成"等它抠出题为止" —— 那正是用户另一条抱怨
+    「在已经完成的界面磨蹭很久」；这一批买的是"慢一拍"，不是"停下来"。
+    也**没有**放宽类型准入（9-D 那道闸原样）：签名刚刚才可读，还没有第二份真实日志支撑放宽。
+  - 验证：新场景 **46「抠不出题的卷子帧延时放行完成判定」**（9 项）—— 空帧不按、只有题形没有作答控件
+    不按（课件那一族）、真卷子形状武装且**当刻 `_isCurrentCompleted()` 为假**、窗口 ≤12 秒、
+    同卡预算用掉照旧放行、换卡重新给一次、`delay skip` 带全取证字段、用完也留话。
+    场景 **45** 加了三条 10-A 断言（签名全扁平 / `qHits` 是位置串 / `textLen` 与 `text` 同时在场），
+    并把夹具里第二份卷子的容器改成 `question_item`（**只被第 15 条选择器命中**）——
+    夹具不这样改，就抓不到"总数只数了前几条"这类取数错误。
+    新增 `npm run itest` 两节：**[13]**（16 项，从片段里抠出 `_frameRejectSignature` 的**函数源码本体**、
+    用**真的** `runtime-log-store.js` 落盘，断言没有一个字段被压成 `[truncated]`，
+    带"嵌套对象确实会被压掉"的反向对照 —— **跨层的 bug 只能由同时跑两层的测试守住**）
+    与 **[14]**（8 项，锁 10-B 的三道所有权守卫与 `waitedMs` 必须是测量值；
+    看门狗是 6s+4s 的真实定时链，行为断言会把集成测试拖慢 20 秒且必然偶发，所以这两条是**结构性**守卫）。
+  - **批次 10 的反向验证**（七处注入，每处改完先 grep 确认落盘、还原后再 `npm run concat`）：
+    `qHits` 退回数组 → itest[13] **3 红** + e2e 场景 45 **5 红**；`qTotal` 退回"只数前 5 条" →
+    itest[13] **1 红** + e2e 45 **1 红**；`_maybeHoldSkipForUnparsedQuiz` 永不开门 → e2e 46 **5 红**；
+    同卡预算判据关掉 → e2e 46 **2 红**（封顶 + 用完留话）；完成判定那道 `if` 作废 → e2e 46 **1 红**
+    （只有"当刻为假"那条 —— 正是它对应的那一条）；看门狗第二级守卫删掉 → itest[14] **1 红**；
+    `waitedMs` 写回常数 → itest[14] **1 红**。
+  - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 —— 当前基线 **80 个场景 / 784 项**、
+    集成 **168 项**。⚠️ 仍然只在 mock 页面验过，**真实课程页待用户实测**；未升号、线上附件仍是
+    1.3.0 发布那一版（改了 `page.js` 与 `content.js`，**需要重传附件**）。
+    下一批候选：等用户这份新日志 —— `delay skip` 与紧随的 `spent` 若总是紧挨着出现，说明窗口太短；
+    若签名显示那几个 `javascript:` 帧 `qTotal=0 且 textLen=0`，那"第二个不做"根本不在这条链上。
 
 
 ---

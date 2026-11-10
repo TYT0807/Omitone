@@ -2302,23 +2302,51 @@
     return Date.now() - pageRuntimeActivityAt < 120000;
   }
 
+  /**
+   * 这条看门狗**只在自己还握着这一页时**才有权报错（批次 10-B）。
+   *
+   * 为什么要这一道：真实日志 00:45:35 page.js 已经打出 `start` + `performance profile`
+   * （= 它活着、而且在答题），00:45:38 却冒出一条红色 `page script no response after tag
+   * injection {reason:"startup", waitedMs:10000}` —— 用户看到的就是「插件坏了，去刷新」，
+   * 而刷新恰恰把那 10 秒的真实进度全丢掉。日志流是**跨文档共享**的（刷新/软导航后新旧两份
+   * content.js 都往同一个 200 条缓冲里写），所以"这一份实例没见过日志"根本推不出
+   * "这一页没有 page.js 在跑"。
+   *
+   * 三个条件都必须成立才继续判：本次注入仍是最新一次（`seq`）、**这份文档还挂在浏览器上**
+   * （导航后的旧文档 `isConnected` 为 false）、注入用的 `<script>` 还在原地
+   * （被移走 = 这一份注入已经作废，`removeInjectedScript` 只在新注入时调用）。
+   */
+  function watchdogStillOwnsPage(seq) {
+    if (seq !== pageInjectSeq) return false;
+    if (!document.isConnected) return false;
+    const tag = document.getElementById(PAGE_SCRIPT_ID);
+    return !!(tag && tag.isConnected);
+  }
+
   function scheduleInjectionWatchdog(seq, reason) {
     // ⚠️ 原来只等 1.8 秒就报「运行脚本未响应」，在弱 CPU 上会误报：
     // page.js 有 558KB，解析 + 初始化在轻薄本上跑 2~3 秒很常见。
     // 现在改成两段：6 秒先看一眼，仍无任何运行痕迹再等 4~6 秒才报错。
     // 真的挂起只是晚几秒提示，误报却会让用户以为插件坏了去反复刷新。
     setTimeout(() => {
-      if (seq !== pageInjectSeq) return;
+      if (!watchdogStillOwnsPage(seq)) return;
       if (hasPageRuntimeEvidence()) return;
 
       setTimeout(() => {
-        if (seq !== pageInjectSeq) return;
+        if (!watchdogStillOwnsPage(seq)) return;
         if (hasPageRuntimeEvidence()) return;
 
         appendRuntimeLog('error', 'page script no response after tag injection', {
           reason: reason || '',
-          waitedMs: Math.max(6000, contentScaledMs(1800)) + Math.max(4000, contentScaledMs(2000)),
-          slowFactor: contentSlowFactor()
+          // ⚠️ `waitedMs` 以前是**两个常数相加**写出来的 10000 —— 日志里看着像测量值，
+          // 实际一次都没量过。现在报真实等待，并给出判据的三个输入，
+          // 下一份日志能直接分辨「真没起来」与「这一份实例不该说话」。
+          waitedMs: Math.max(0, Date.now() - pageRuntimeArmedAt),
+          slowFactor: contentSlowFactor(),
+          everSawLog: pageRuntimeActivityAt > 0,
+          lastLogAgoMs: pageRuntimeActivityAt ? Date.now() - pageRuntimeActivityAt : -1,
+          docConnected: document.isConnected === true,
+          href: String(location.href || '').slice(0, 90)
         });
         if (statusPanelActive) {
           setStatusPanel('error', '运行脚本未响应', '未检测到初始弹窗或启动日志，请刷新学习通页面后重试');
