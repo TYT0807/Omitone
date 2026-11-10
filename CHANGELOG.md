@@ -281,6 +281,16 @@
   `check_answer_dx` —— 按完整类名匹配不到 `_dx`，于是「多选已选中」被判成「没选中」；
   填空/简答本来就没有选中态，也被算进了 `withValue`。现在只审选择题、选择器认 `_dx`，
   并把出问题的题号一并打出来（`missing`），下次不用人肉数。
+- **一题都填不上时整门课卡死**（2026-11-10 14:00 实测）：一道单选题的选项认不出来，
+  `single choice matched nothing, fallback picked {"clicked":0}` → 一轮 0 填充 →
+  `quiz round skipped: no progress` 每 10 秒一条、页面一步不动；而"任务点卡住就放弃"
+  的计数对卷子恒为空（`_taskProgressSnapshot` 只认媒体/滚动进度），接不住它。
+  两道修：① `_getOptionItems` 在题目容器内找不到选项时，向**上一层**捞一次
+  （`_getOptionsFromAncestor`，带「那一层只有这一道题」+「2~8 个」+「不含填空控件」三条守卫，
+  避免把别的题的选项捞进来）；② 连续 **3 轮零填充**就明确跳过这一卷、10 分钟冷却不再重问，
+  让后面的任务先走 —— 只跳过、不删记录，下次进课程还能重新答。
+  同时在完全点不上时打一条 `quiz fill: no clickable option in question`，
+  带上题目标签/类名/qid/li/label/radio/checkbox 个数与 220 字符 HTML —— 下次照着这条就能补结构。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
 
 ---

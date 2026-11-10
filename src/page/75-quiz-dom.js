@@ -11,9 +11,9 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（40 个）：
+ * 本段的方法（41 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
- *   _detectQuestionType、_getOptionItems、_pairOptionControls、_extractOptionText、
+ *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
  *   _fillAnswers、_inferOptionLetter、_matchOptionItem、_clickOptionItem、
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
@@ -241,7 +241,53 @@
       var roles = Array.from(el.querySelectorAll('[role="radio"], [role="checkbox"]'));
       if (roles.length) return roles;
 
+      // 容器认错时的补偿：只抓到题干那块、选项在兄弟节点里（见 _getOptionsFromAncestor）
+      var widened = this._getOptionsFromAncestor(el);
+      if (widened.length) return widened;
+
       return [];
+    },
+
+
+    /**
+     * 「题干抠对了、选项却在兄弟节点里」的补偿。
+     *
+     * 现场（2026-11-10 14:00 日志）：一道单选题反复重问，
+     * 每次都是 `single choice matched nothing, fallback picked {"clicked":0}`，
+     * 接着 `quiz round skipped: no progress` 把整卷钉死（一题都填不上，永不提交）。
+     * 成因是题目容器被认成了**只装题干的那一块**，选项在它的同级 ——
+     * 在 `el` 内部当然一个都找不到。
+     *
+     * 只向上找**一层**，且必须同时满足三条，否则宁可返回空：
+     *   ① 那一层里只有这一道题 —— 多了就会把别的题的选项捞进来，点错题比不答更糟
+     *   ② 捞出来 2~8 个 —— 少于 2 不成题；多于 8 基本是把整页都算进来了
+     *   ③ 每个候选都有文本、且不再包含更内层的候选项（只取最内层）
+     */
+    _getOptionsFromAncestor: function (el) {
+      var parent = el && el.parentElement;
+      if (!parent || !parent.querySelectorAll || !this._questionSelectors) return [];
+      // 填空/简答本来就没有选项 —— 向上捞只会捞到页面上的列表，把题干喂脏。
+      try {
+        if (el.querySelector && el.querySelector('input[type="text"], input:not([type]), textarea')) return [];
+      } catch (eIn) { return []; }
+      try {
+        var containers = parent.querySelectorAll(this._questionSelectors.join(','));
+        // el 自己也会被数进去，所以"只有一道题"的阈值是 1
+        if (containers.length > 1) return [];
+      } catch (eQ) { return []; }
+
+      var out = [];
+      try {
+        var loose = Array.from(parent.querySelectorAll('li, label, [class*="option"], [class*="choice"]'));
+        out = loose.filter(function (node) {
+          if (node === el) return false;
+          if (el.contains && el.contains(node)) return false;
+          if (textOf(node).length === 0) return false;
+          return !node.querySelector('li, [class*="option"], [class*="choice"]');
+        });
+      } catch (eL) { return []; }
+      if (out.length < 2 || out.length > 8) return [];
+      return out;
     },
 
 
@@ -941,6 +987,28 @@
         clicked: retried,
         type: type
       });
+
+      // 连兜底都一个点不上 —— 这一题的结构我们没认出来。把它的形状抄一份进日志
+      // （每题只记一次），下一次就能直接照着改，不用再靠猜。
+      if (!retried && !el._omFillDiagAt) {
+        el._omFillDiagAt = Date.now();
+        var countIn = function (sel) {
+          try { return el.querySelectorAll(sel).length; } catch (e) { return -1; }
+        };
+        emitRuntimeLog('warn', 'quiz fill: no clickable option in question', {
+          title: textOf(el).replace(/\s+/g, ' ').slice(0, 30),
+          tag: String(el.tagName || '').toLowerCase(),
+          cls: String(el.className || '').slice(0, 60),
+          qid: this._getQuestionIdFromElement(el) || '',
+          li: countIn('li'),
+          label: countIn('label'),
+          radio: countIn('input[type="radio"]'),
+          checkbox: countIn('input[type="checkbox"]'),
+          optionCls: countIn('[class*="option"]'),
+          choiceCls: countIn('[class*="choice"]'),
+          html: String(el.outerHTML || '').replace(/\s+/g, ' ').slice(0, 220)
+        });
+      }
     },
 
 

@@ -855,7 +855,9 @@
     },
 
     _handleQuiz: async function (preferredDoc) {
-      if (this._quizAnswered || this._quizInProgress) return;
+      // "放弃这一卷"的冷却窗口内直接退出：否则跳过去之后任务点还在页面上，
+      // 下一秒又被匹配回来、再问一次模型（白烧 token），看起来像"跳过根本没生效"。
+      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping()) return;
       if (!this.configs.enableQuiz) { // 硬守卫：AI 答题开关关闭时只刷课，任何情况下都不取题、不调 API
         this._skipQuizForApiUnavailable(null, preferredDoc || null);
         return;
@@ -949,6 +951,8 @@
           this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
           this._quizRoundNoProgressAt = 0;
           this._quizNoProgressLogAt = 0;
+          this._quizZeroFillRounds = 0;
+          this._quizZeroFillAt = 0;
         }
 
         // ===== 题干乱码守卫（第二层保护）=====
@@ -1007,6 +1011,47 @@
         var nowProgress = Date.now();
         var sinceLast = nowProgress - (this._quizRoundNoProgressAt || 0);
         if (this._quizRoundFilledCount === filledNow && sinceLast < 60000) {
+          // ===== 零填充死循环的出口 =====
+          //
+          // `filledNow === 0` 不是"这轮没进展"，而是**这卷一道题都落不到页面上**
+          //（选项认不出 / 点不上）。原来的闸只管"别重问"，于是变成：
+          //   ？秒后放行 → 重问 → 还是 0 → 再闸 60 秒 → …
+          // 现场（2026-11-10 14:00）：整整 5 轮 `quiz round skipped: no progress`，
+          // 页面一步没动，后面的任务全部做不了 —— 用户看到的就是"卡死了"。
+          // 任务点的"卡住就放弃"计数也接不住它：`_taskProgressSnapshot` 对卷子恒为空，
+          // 按那条规则"测不到进度一律不计"。
+          //
+          // 所以这里按**分钟**计数（本函数每秒都会被调一次，不能按调用次数算），
+          // 连续 3 轮零填充就明确跳过这一卷、10 分钟内不再重试 —— 让后面的任务先走。
+          // 只是跳过，不删任何记录：下一轮课程还能重新答。
+          if (filledNow === 0) {
+            var zeroNow = Date.now();
+            if (!this._quizZeroFillAt || zeroNow - this._quizZeroFillAt >= 55000) {
+              this._quizZeroFillAt = zeroNow;
+              this._quizZeroFillRounds = (this._quizZeroFillRounds || 0) + 1;
+            }
+            if (this._quizZeroFillRounds >= 3) {
+              this._quizZeroFillRounds = 0;
+              this._quizZeroFillAt = 0;
+              this._quizInProgress = false;
+              this._quizAnswered = false;
+              this._quizCurrentQuestions = null;
+              this._quizReadyToSubmit = false;
+              this._quizReadyWorkKey = '';
+              this._quizForceSkipUntil = zeroNow + 600000;
+              emitRuntimeLog('error', 'quiz skipped: no question could be filled', {
+                total: questions.length,
+                rounds: 3,
+                hint: '这一卷的题一个都落不到页面上（选项认不出或点不上），先跳过去做后面的任务；10 分钟内不再重试'
+              });
+              this.nextUnit();
+              return;
+            }
+          } else {
+            this._quizZeroFillRounds = 0;
+            this._quizZeroFillAt = 0;
+          }
+
           // ⚠️ 这条必须节流：本函数被 OCS 循环**每秒**调一次，60 秒窗口内会打出
           // 60 条一模一样的 warn —— 实测把 200 条的日志缓冲整段刷满，
           // 真正有用的记录全被挤掉，排查时连"发生过什么"都看不到。
