@@ -45,17 +45,32 @@
     },
 
     _isCurrentCompleted: function () {
+      this._completionEvidence = '';
       if (this._isActiveMediaPending('completion-check')) return false;
 
       var mainDoc = this._getMainDocument();
+      // ⚠️ 判据顺序：**先问「页面上还有没有没做完的可见任务点」，再认「任务点已完成」那句文案**。
+      // 原先文案那条排在最前面，而它是**页面级**的：一张卡片里挂两份测验时，
+      // 刚交完的那一份就会把这句话渲染出来，另一份还挂在页面上一个字没答。
+      // 于是第一份交完 1 秒就 `skip completed` + 点「下一节」，第二份被整节翻过去
+      //（2026-11-10 真实日志：19:12:17 `quiz submit finished` → 19:12:18 `skip completed`，
+      //  此后整段再没有任何答题记录 = 用户报的「第一次遇到题目过了，第二次不答题」）。
+      // 反过来「跳过」是不可逆的、而「多等一轮」只是慢一点，所以这里必须让
+      // **未完成任务点的证据压过一句文案**。
+      var state = this._getVisibleTaskCompletionState();
+      if (state.hasTasks && !state.allFinished) return false;
+
       try {
         if (mainDoc && /任务点已完成/.test(textOf(mainDoc.body))) {
+          this._completionEvidence = 'text-marker';
           return true;
         }
       } catch (e0) {}
 
-      var state = this._getVisibleTaskCompletionState();
-      if (state.hasTasks) return state.allFinished;
+      if (state.hasTasks) {
+        this._completionEvidence = 'all-tasks-finished';
+        return true;
+      }
 
       var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
       if (!active) return false;
@@ -67,7 +82,11 @@
       var currentVideo = this._getVideoEl();
       if (currentVideo && !currentVideo.ended) return false;
 
-      return !this._hasTaskPoint();
+      if (!this._hasTaskPoint()) {
+        this._completionEvidence = 'catalog-marker';
+        return true;
+      }
+      return false;
     },
 
     _skipIfCompleted: function () {
@@ -87,7 +106,7 @@
       if (this._quizSubmitPending) return false;
       if (this._switchToNextLearningCard('skip-completed')) return true;
       console.log('%c[Omitone] skip completed: ' + this._getCurrentTitle(), 'color:#FF9800');
-      emitRuntimeLog('info', 'skip completed', { title: this._getCurrentTitle() });
+      emitRuntimeLog('info', 'skip completed', { title: this._getCurrentTitle(), by: this._completionEvidence || 'unknown' });
       this._dismissPopups();
       this.nextUnit();
       return true;

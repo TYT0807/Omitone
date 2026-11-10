@@ -11,11 +11,11 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（55 个）：
+ * 本段的方法（56 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
- *   _getQuizPaperKeyFromTask、_getQuizSubmitAttemptKey、
+ *   _getQuizPaperKeyFromTask、_isQuizPaperChangedInDom、_getQuizSubmitAttemptKey、
  *   _getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
@@ -403,6 +403,56 @@
         }
       } catch (e2) {}
       return '';
+    },
+
+    /**
+     * 「页面上现在的题目」和「我们记着已经答过的那一份」是不是**两份不同的卷子**。
+     *
+     * 为什么需要它：换卷子本来由 `_syncQuizPaperRunState()` 负责，但它要的是
+     * **任务点身份**（jobid / attachment.jobid / mid / name）。真实页面里同一份文档
+     * 接着显示第二份卷子时，这几个 id 常常一个都拿不到（或两份给的是同一个），
+     * 于是 `_quizAnswered` 一直是 true、`_handleQuiz` 第一行静默 return，
+     * 第二份**永远不答**（2026-11-10 用户报的「第一次遇到题目过了，第二次不答题」）。
+     *
+     * 判据刻意做得很窄，只在**完全对不上**时才认换卷：
+     *   - 两边都取得到题目身份（qid）才比；任何一边取不到 → false（认不出就当没换）
+     *   - 有**任何一道**重叠 → false —— 同一份卷子的补填/重做必须保留状态，
+     *     否则会把一份已交过的卷子当新卷子再交一次（那正是「疯狂提交」的形状）
+     *   - 只有「出现若干道完全没见过的题，且旧题一道都不在」→ true
+     *
+     * @param {Document} doc 现在页面上这份卷子的文档
+     * @returns {boolean} true = 页面上已经是另一份卷子的题目
+     */
+    _isQuizPaperChangedInDom: function (doc) {
+      try {
+        var remembered = this._quizCurrentQuestions;
+        if (!doc || !remembered || !remembered.length) return false;
+        var oldIds = {};
+        var oldCount = 0;
+        for (var i = 0; i < remembered.length; i++) {
+          var q = remembered[i];
+          var oldId = q && q._element ? String(this._getQuestionIdFromElement(q._element) || '').trim() : '';
+          if (!oldId) continue;
+          oldIds[oldId] = 1;
+          oldCount++;
+        }
+        if (!oldCount) return false;
+
+        var nodes = this._collectQuestionContainers(doc);
+        var fresh = 0;
+        var overlap = 0;
+        var seenFresh = {};
+        for (var j = 0; j < nodes.length; j++) {
+          var newId = String(this._getQuestionIdFromElement(nodes[j]) || '').trim();
+          if (!newId) continue;
+          if (oldIds[newId]) { overlap++; break; }
+          if (!seenFresh[newId]) { seenFresh[newId] = 1; fresh++; }
+        }
+        if (overlap) return false;
+        return fresh > 0;
+      } catch (e) {
+        return false;
+      }
     },
 
     _getQuizSubmitAttemptKey: function (preferredDoc) {
@@ -1025,7 +1075,46 @@
       }
       // ⚠️ 这里必须把 `preferredDoc` 传下去：冷却是按卷子键生效的，而键按文档算 ——
       //   不传 = 读侧算的是另一个文档的键 = 本 bug（见 `_isQuizForceSkipping` 上方注释）。
-      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping(preferredDoc || null)) return;
+      var holdForceSkip = this._isQuizForceSkipping(preferredDoc || null);
+      var holdBusy = !!this._quizInProgress;
+      var holdAnswered = !!this._quizAnswered;
+      if (holdForceSkip || holdBusy || holdAnswered) {
+        if (holdAnswered && !holdForceSkip && !holdBusy) {
+          var holdDoc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
+          // 结果页/重做提示在的时候「已答」是有意义的中间态，后面自有分支处理；
+          // 两者都没有、页面上却是一批完全没见过的题 = 同一份文档里的**第二份卷子**。
+          if (!this._isQuizPassedOrFinished(holdDoc) && !this._isQuizRedoRequired(holdDoc) &&
+              this._isQuizPaperChangedInDom(holdDoc)) {
+            emitRuntimeLog('info', 'quiz paper switched by question identity', {
+              hint: '页面上出现一批完全不认识的题目，按「换了一份卷子」重置答题状态后照常作答'
+            });
+            // 「换一份卷子要清的那一组状态」与「放弃这一卷」是同一组，复用同一份实现，
+            // 不在这里手抄第二遍（手抄过少一个字段就会留下上一份卷子的答案状态）。
+            this._resetQuizStateForSkip();
+            holdAnswered = false;
+          }
+        }
+        var holdReason = holdForceSkip ? 'force-skip' : (holdBusy ? 'in-progress' : (holdAnswered ? 'answered' : ''));
+        // 「题目明明在页面上，却一个字都不答」是这一族最难查的现场：三个原因过去共用
+        // 一个**静默**出口，日志里连一个字都没有。现在把命中的那一个写清楚（10 秒节流，
+        // 与既有 warn 同频，不会冲掉环形缓冲）。
+        if (holdReason) {
+          var nowHold = Date.now();
+          if (!this._quizHoldReasonLogAt || nowHold - this._quizHoldReasonLogAt > 10000) {
+            this._quizHoldReasonLogAt = nowHold;
+            emitRuntimeLog('warn', 'quiz held: nothing answered this round', {
+              reason: holdReason,
+              paper: String(this._quizRunPaperKey || '').slice(0, 60),
+              hint: holdReason === 'force-skip'
+                ? '这一卷在「暂停」冷却窗口内，窗口过了自己会重来（看上一条 quiz paused / skip quiz）'
+                : (holdReason === 'in-progress'
+                  ? '上一轮答题还没结束；超过 5 分钟会按状态泄漏自愈'
+                  : '自认这份卷子已答完，但页面上既没有结果页也没有重做提示，题目身份也认不出变化')
+            });
+          }
+          return;
+        }
+      }
       if (!this.configs.enableQuiz) { // 硬守卫：AI 答题开关关闭时只刷课，任何情况下都不取题、不调 API
         this._skipQuizForApiUnavailable(null, preferredDoc || null);
         return;

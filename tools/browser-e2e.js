@@ -3114,6 +3114,150 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 批次 4：一份卷子交完 ≠ 整节交完；同页第二份卷子要接得上 ----
+ * 现场（2026-11-10 真实日志，导出时用户的话是「第一次遇到题目过了，第二次遇到题目不答题了」）：
+ *   19:12:16 第一份卷子 5 题全填上 → 19:12:17 `quiz submit finished`
+ *   → **1 秒后** `skip completed` + 点「下一节」→ 此后再没有任何答题记录。
+ * `_isCurrentCompleted()` 当时把**页面级**的文案「任务点已完成」排在逐任务帧的完成状态
+ * 之前，而一张卡片里挂两份测验时，刚交完的那一份就会把这句话渲染出来。
+ * 另一半：`_handleQuiz` 开头三个「这一轮不答题」的原因共用一个**静默**出口，
+ * 日志里一个字都没有 —— 现场只能靠猜。
+ */
+SCENARIOS.push({
+  name: '一份卷子交完不判整节完成，同页第二份卷子按题目身份接手',
+  path: '/two-quizzes-divjob',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var a=window._xxtApp;' +
+      'var out={};' +
+      // ---- ① 整节完成判定 ----
+      'var tasks=a._collectVisibleTaskFrames();' +
+      'out.frames=tasks.length;' +
+      // 现场形状由本场景自己搭：刚交完的那一份任务点被平台标成完成，另一份没有
+      'if(tasks[0]&&tasks[0].wrap)tasks[0].wrap.classList.add("ans-job-finished");' +
+      'out.finished=a._collectVisibleTaskFrames().map(function(t){return !!t.finished;});' +
+      'var mainDoc=a._getMainDocument();' +
+      'out.baseline=a._isCurrentCompleted();' +
+      // 模拟平台：刚交完的那一份把「任务点已完成」渲染进主文档
+      'var marker=document.createElement("div");marker.id="om-marker";marker.textContent="任务点已完成";' +
+      'mainDoc.body.appendChild(marker);' +
+      'out.hasMarkerText=/任务点已完成/.test(String(mainDoc.body.innerText||""));' +
+      'out.stateWithMarker=a._getVisibleTaskCompletionState();' +
+      'out.withMarker=a._isCurrentCompleted();out.evWithMarker=a._completionEvidence;' +
+      // 对照一：两份都标完成 + 文案在场 → 文案那条出口必须仍然能用（不许把门堵死）
+      'tasks.forEach(function(t){if(t.wrap)t.wrap.classList.add("ans-job-finished");});' +
+      'out.bothFinished=a._isCurrentCompleted();out.evBoth=a._completionEvidence;' +
+      // 对照二：文案删掉、两份都完成 → 由逐任务帧证据判完成
+      'mainDoc.body.removeChild(marker);' +
+      'out.noTextBoth=a._isCurrentCompleted();out.evNoTextBoth=a._completionEvidence;' +
+      'tasks.forEach(function(t){if(t.wrap)t.wrap.classList.remove("ans-job-finished");});' +
+      // ---- ② 题目身份：换没换卷子 ----
+      'function mkDoc(ids){var f=document.createElement("iframe");f.style.display="none";' +
+      'document.body.appendChild(f);var d=f.contentDocument;' +
+      'd.body.innerHTML="";' +
+      'ids.forEach(function(id){var w=d.createElement("div");w.className="TiMu";' +
+      'if(id!=null)w.setAttribute("qid",String(id));' +
+      'var t=d.createElement("div");t.className="Zy_TItle clearfix";' +
+      't.textContent="【单选题】题目"+id;w.appendChild(t);' +
+      'var u=d.createElement("ul");u.className="Zy_ulTop";var li=d.createElement("li");' +
+      'var l=d.createElement("a");l.textContent="A. 甲";li.appendChild(l);u.appendChild(li);w.appendChild(u);' +
+      'var r=d.createElement("input");r.type="radio";r.name="answer"+id;r.value="A";w.appendChild(r);' +
+      'd.body.appendChild(w);});' +
+      'return {f:f,d:d};}' +
+      'var A=mkDoc([9001,9002]),B=mkDoc([9101,9102]),C=mkDoc([null,null]),D=mkDoc([9001,9101]);' +
+      'var qa=a._extractQuestions(A.d);' +
+      'out.qCountA=qa.length;' +
+      'out.idsA=qa.map(function(q){return String(a._getQuestionIdFromElement(q._element)||"");});' +
+      'a._quizCurrentQuestions=qa;a._quizAnswered=true;' +
+      'out.changedB=a._isQuizPaperChangedInDom(B.d);' +
+      'out.sameA=a._isQuizPaperChangedInDom(A.d);' +
+      'out.overlapD=a._isQuizPaperChangedInDom(D.d);' +
+      'out.noIdC=a._isQuizPaperChangedInDom(C.d);' +
+      // ---- ③ 三个「这一轮不答题」的出口都要留日志 ----
+      'var logs=[];' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")logs.push(m);});' +
+      'function pick(name){var hit=null;logs.forEach(function(m){if(m.message===name)hit=m;});return hit;}' +
+      'var cfg=a.configs;var savedKey=cfg.hasApiKey;var savedNext=cfg.autoNext;' +
+      'a._quizAnswered=false;a._quizInProgress=false;a._quizSubmitPending=false;' +
+      // ③-1 冷却窗口内
+      'a._setQuizForceSkip(15000,String(a._getQuizWorkKey(D.d)||""));' +
+      'a._quizHoldReasonLogAt=0;' +
+      'Promise.resolve(a._handleQuiz(D.d)).then(function(){' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      // ③-2 自认已答完、页面上题目与记着的那份有交集
+      'a._quizAnswered=true;a._quizCurrentQuestions=qa;a._quizHoldReasonLogAt=0;' +
+      'return Promise.resolve(a._handleQuiz(D.d));' +
+      '}).then(function(){' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      // ③-3 自认已答完、页面上是一批完全不认识的题 → 认成换卷并留日志
+      //   （下游用 hasApiKey=false 掐住，绝不真调模型；autoNext=false 防翻页）
+      'a._quizAnswered=true;a._quizCurrentQuestions=qa;a._quizHoldReasonLogAt=0;' +
+      'cfg.hasApiKey=false;cfg.autoNext=false;' +
+      'return Promise.resolve(a._handleQuiz(B.d)).then(function(){' +
+      'cfg.hasApiKey=savedKey;cfg.autoNext=savedNext;' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'a._quizAnswered=false;a._quizCurrentQuestions=null;a._quizSubmitPending=false;' +
+      'a._quizInProgress=false;' +
+      '[A,B,C,D].forEach(function(x){if(x.f.parentNode)x.f.parentNode.removeChild(x.f);});' +
+      'setTimeout(function(){out.hold=pick("quiz held: nothing answered this round");' +
+      'out.switched=pick("quiz paper switched by question identity");res(out);},150);' +
+      '});' +
+      '}).catch(function(err){cfg.hasApiKey=savedKey;cfg.autoNext=savedNext;res({error:String(err&&err.message||err)});});' +
+      '});})()'
+    );
+
+    check('夹具自证：这一页真的有两个可见任务帧，一个判完成、一个没判（否则测的不是两份卷子的形状）',
+      !!probe && probe.frames === 2 && JSON.stringify(probe.finished) === JSON.stringify([true, false]),
+      JSON.stringify(probe && { frames: probe.frames, finished: probe.finished }));
+
+    check('夹具自证：「任务点已完成」这句文案确实出现在主文档里（否则测的是别的分支）',
+      !!probe && probe.hasMarkerText === true && !!probe.stateWithMarker &&
+      probe.stateWithMarker.hasTasks === true && probe.stateWithMarker.allFinished === false,
+      JSON.stringify(probe && { hasMarkerText: probe.hasMarkerText, state: probe.stateWithMarker }));
+
+    check('交完一份不能判整节完成：还有未完成任务帧时，那句文案不再说了算',
+      !!probe && probe.withMarker === false && probe.evWithMarker === '',
+      JSON.stringify(probe && { withMarker: probe.withMarker, ev: probe.evWithMarker }));
+
+    check('对照：两份任务点都完成 + 文案在场 → 仍判完成，且证据是文案那条出口（门没被堵死）',
+      !!probe && probe.bothFinished === true && probe.evBoth === 'text-marker',
+      JSON.stringify(probe && { bothFinished: probe.bothFinished, evBoth: probe.evBoth }));
+
+    check('对照：没有文案、两份任务点都完成 → 仍判完成，证据换成逐任务帧',
+      !!probe && probe.noTextBoth === true && probe.evNoTextBoth === 'all-tasks-finished',
+      JSON.stringify(probe && { noTextBoth: probe.noTextBoth, evNoTextBoth: probe.evNoTextBoth }));
+
+    check('夹具自证：A 那份的 2 道题都取得到题目身份 qid（身份取不到时下面几条全是假绿）',
+      !!probe && probe.qCountA === 2 && JSON.stringify(probe.idsA) === JSON.stringify(['9001', '9002']),
+      JSON.stringify(probe && { qCountA: probe.qCountA, idsA: probe.idsA }));
+
+    check('换卷识别：页面上是一批完全不重叠的题 → 认成「换了一份卷子」',
+      !!probe && probe.changedB === true, JSON.stringify(probe && probe.changedB));
+
+    check('不换卷：还是刚才那批题 → 绝不重置（重置=同一份卷子再交一次）',
+      !!probe && probe.sameA === false, JSON.stringify(probe && probe.sameA));
+
+    check('不换卷：新旧题混着（有任何交集）→ 保守判不换卷',
+      !!probe && probe.overlapD === false, JSON.stringify(probe && probe.overlapD));
+
+    check('不换卷：页面根本认不出题目身份 → 不动状态（宁可沿用旧状态，也不重答一遍）',
+      !!probe && probe.noIdC === false, JSON.stringify(probe && probe.noIdC));
+
+    var held = probe && probe.hold;
+    check('「这一轮没答题」不再是静默出口：能说出是哪个原因（冷却 / 已答 / 上一轮未完）',
+      !!held && held.level === 'warn' &&
+      (held.meta && held.meta.reason === 'answered' || held.meta && held.meta.reason === 'force-skip'),
+      JSON.stringify(held && held.meta).slice(0, 200));
+
+    var switched = probe && probe.switched;
+    check('按题目身份换了卷子要留日志（这是第二份卷子唯一能被认出来的时刻）',
+      !!switched && !!switched.meta && !!switched.meta.hint,
+      JSON.stringify(switched && switched.meta).slice(0, 200));
+  }
+});
+
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
   name: '抠题（5 种题型）',

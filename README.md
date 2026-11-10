@@ -41,11 +41,20 @@
 > 题也永远补不回来；卡住至少看得见，也能自己手动做完。
 > 某一节长时间不动时，日志里的 `quiz paused` / `quiz fill: no clickable option in question`
 > 会告诉你是哪一份卷子、哪一道题。
+> **③ 一份卷子做完，不等于这一节做完**（同日再补，就是「第一次遇到题目过了，第二次不答题」那条）
+> —— 一节课里挂两份测验时，刚交完的那一份会在页面上留下「任务点已完成」这句话，
+> 而插件把它当成了**整节**都完成了：第一份正常答完，**第二份一个字没答就直接翻到下一节**，
+> 回头看时那一节已经过去了、里面还有一份空卷子。现在只要这一页还挂着没做完的任务点，
+> 这句话就不算数；插件会接着把第二份做完。
+> 同时补了两句日志，以后不用再猜：整节被判完成时会写清**凭什么判的**
+> （`skip completed {by:…}`），某一轮没答题时会写清**为什么不答**
+> （`quiz held: nothing answered this round {reason:…}`）。
+> 没遇到过多份卷子挂一节课的你，感觉不到变化。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 68 场景 / 663 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 69 场景 / 676 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -674,7 +683,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 68 个场景，663 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 69 个场景，676 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1022,6 +1031,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 43 | **换到下一份卷子时干等几十秒才开始答题**，且日志被同一对记录刷满 | `_quizRoundFilledCount` / `_quizRoundNoProgressAt` 是**全局**状态：上一份卷子最后一轮 `filled=0`，新卷子第一轮当然也是 0 → 被判成"没有进展"，这一轮一次都不答；那 60 秒里 OCS 每秒重匹配一次，`study matched job` + `quiz round skipped` 各一条，200 条日志缓冲被刷满 | 防线：状态按**卷子 key** 隔离 + 两条日志 10 秒节流。⚠️ **"没进展"这类跨轮比较的状态必须按"哪一份活"隔离**，否则上一份的结尾会污染下一份的开头 |
 | 44 | **讨论帖下一条回复都没有，日志却写着"已提交、已确认"**（一页挂多个讨论时格外容易发生在第一个） | `_discussionSuccessHint` 第 3 条判据是「编辑区被清空」—— 而**内容压根没填进去**时编辑区本来就是空的（页面刚注入、受控组件把值吞了），一点提交就"确认成功"；同时 `_markDiscussionDone` 是**打开前**写的、失败路径**没有撤销** → 一次失败就静默跳过 24 小时 | 防线：填充**回读确认** + 失败撤标记重试 + 「编辑区被清空」必须以"确实填进去过"为前提。⚠️ 与第 42 条同一类：**判据只看"看起来完成了"，没确认"事情真的发生了"。写"成功/完成"判定时先问：这个信号，失败的时候会不会也成立？** |
 | 45 | **交完卷之后一直卡着不动**（日志反复 `study matched job {"kind":"quiz"}`，既不答题也不往下走，能卡好几分钟） | 两条判据打架：`_handleQuiz` 因 `_quizAnswered` 为真**一字不做**，`_isQuizLearningPending` 又因"提交按钮还挂在页面上"说**还有题** → 调度器每秒把同一份卷子交给它一次，永远不前进 | 防线：`_isQuizLearningPending` 里**自己刚答过就不算 pending**（平台明确要求重做除外）。⚠️ **第三次同类**：两处各自维护"做完了没有"，定义却不同 —— **动这类判定前先找出另一个也在判断同一件事的地方** |
+| 46 | **第一次遇到题目过了，第二次遇到题目不答题**（真实日志：`19:12:17 quiz submit finished` → **1 秒后** `skip completed` + 点「下一节」→ 此后整段没有任何答题记录） | `_isCurrentCompleted()` 把**页面级**文案「任务点已完成」排在**逐任务帧**完成状态之前，而一张卡片挂两份测验时，刚交完那一份就会把这句话渲染出来 —— 另一份一个字没答，整节却被判"做完了"。而 `_handleQuiz` 开头三个「这一轮不答」的原因（冷却 / 上一轮未完 / 已答完）共用一个**静默** return，日志一个字不写，现场只能靠猜 | 防线：① 判据顺序反过来 —— **未完成任务点的证据压过一句文案**，并把依据写进 `_completionEvidence`（`skip completed {by:…}`）；② `quiz held: nothing answered this round {reason:…}`（10 秒节流）；③ `_isQuizPaperChangedInDom()` 兜住 `_quizAnswered` 是页面级、换卷又要靠任务点 id 的那一族形状（新旧 qid **完全不重叠**才判换卷，有交集就保守不动）。⚠️ **第 41 条的亲戚**：「任务点已完成」这类**页面级文字**永远不能单独判"这一节做完了"；**跳过不可逆、多等一轮只是慢一点** |
 
 ---
 
@@ -1043,6 +1053,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
 | **点了选项、日志也写了 `clicked option`，但隐藏域 `#answer{qid}` 是空的** | 见 §6 #37。控制台跑 `_xxtApp._getQuizQuestionFilledValue(null, _xxtApp._extractQuestions(null)[0])`：返回空串就是没写上。这类页面 qid 在容器上、且没有 `.num_option` 徽标 |
 | **提交后一直停在 `waiting quiz submit result`，然后整页重载、重扫重答重交** | 见 §6 #38。先看结果页长什么样：`document.body.innerText` 里有「我的答案 / 正确答案」且 `document.querySelectorAll('.Py_answer').length > 0`，说明是判分结果页 —— 旧判据对它是瞎的。日志里找 `quiz submit wait timeout` |
+| **刚交完一份卷子就 `skip completed` + 点「下一节」，同一页另一份卷子一个字没答** | 见 §6 #46。`skip completed` 现在带 `by:` —— `by:"text-marker"` 就是那句页面级文案赢过了未完成任务点的证据（本条已修，修前它什么都不会说）；`by:"all-tasks-finished"` / `"catalog-marker"` 才是真有依据。日志里同时找 `quiz held: nothing answered this round`，它的 `reason:` 说明这一轮凭什么没答：`force-skip`（这份卷子正在按卷冷却）/ `in-progress`（上一轮还没结束）/ `answered`（自认已答完 —— 若页面上是一批完全不认识的 qid，会紧跟一条 `quiz paper switched by question identity` 把它重置） |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1089,9 +1100,11 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 做不完的任务点跳过 | `src/page/64-tasks-loop.js`：`_taskProgressSnapshot` / `_countTaskIncomplete` / `_isJobCompleted` |
 | 任务点调度（主循环） | `src/page/64-tasks-loop.js`：`_runTick` / `_tick`（⚠️ 判定顺序＝仲裁顺序） |
 | 学习卡片（小节）切换 / 下一节 | `src/page/64-tasks-loop.js`：`_getLearningCards` / `_switchToNextLearningCard` / `nextUnit` |
+| **「这一节做完了没有」** | `src/page/60-tasks-detect.js`：`_isCurrentCompleted` / `_getVisibleTaskCompletionState` / `_completionEvidence`（⚠️ **判据顺序**：未完成任务点的证据 > 「任务点已完成」那句页面级文案；判完必须留下 `by:`，见 §6 #46） |
 | 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（**选择器真源都在 `10-config-state.js`**：`_questionSelectors` / `_quizDetectorSelector` / `_questionTitleSelectors` / `_optionListSelectors` / `_quizContainerSelector` —— 真源之外手抄会被 `npm run check` 报红；改版应急走 storage 的 `questionSelectorOverrides`） |
 | 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
 | 提交监控 / 提交次数跳过 | `src/page/70-quiz-flow.js`：`_monitorQuizSubmit` / `_shouldHoldQuizBeforeNext` / `_shouldSkipQuizBySubmitAttempts` |
+| 「页面上已经换了一份卷子」 | `src/page/70-quiz-flow.js`：`_syncQuizPaperRunState`（任务点 id 那条路）+ `_isQuizPaperChangedInDom`（**题目 qid 那条兜底**，新旧完全不重叠才 true）+ `_resetQuizStateForSkip` |
 | 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
 | 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
 | 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
@@ -1169,10 +1182,10 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（141 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（68 个场景 / 663 项）
+npm run e2e      # 真实 Edge 功能交叉检验（69 个场景 / 676 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
