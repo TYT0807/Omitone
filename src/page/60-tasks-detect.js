@@ -80,6 +80,11 @@
         return false;
       }
       if (!this._isCurrentCompleted()) return false;
+      // ⚠️ 交卷结果还没回来时绝不跳章。实测（2026-11-10 日志）：
+      // `skip completed` 与点「下一节」发生在同一秒，20 毫秒后才出现 `quiz submit finished`
+      // —— 平台还没处理完提交，页面就被推走了，用户看到的就是「题没答/没交上」。
+      // 等提交结束（或 quizSubmitWaitMs 超时）再走正常完成判定。
+      if (this._quizSubmitPending) return false;
       if (this._switchToNextLearningCard('skip-completed')) return true;
       console.log('%c[Omitone] skip completed: ' + this._getCurrentTitle(), 'color:#FF9800');
       emitRuntimeLog('info', 'skip completed', { title: this._getCurrentTitle() });

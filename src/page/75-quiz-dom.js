@@ -1266,6 +1266,7 @@
         this._quizReadyToSubmit = false;
         this._quizReadyWorkKey = '';
         return false;
+      }
 
       // 提交前审计：**「有值」不等于「页面上真的选中了」**。
       // 实测（2026-11-10）：用户报「单选题不答」，可提交照常放行、没有
@@ -1293,7 +1294,7 @@
             checkedInDom: auditChecked
           });
       }
-      }
+
       if (!this._quizReadyToSubmit || (this._quizReadyWorkKey && this._quizReadyWorkKey !== currentKey)) {
         emitRuntimeLog('warn', 'block quiz submit without ready state', { key: currentKey });
         this._quizAnswered = false;
