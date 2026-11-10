@@ -230,6 +230,18 @@
   `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
   避免轻薄本上误报 `page script no response after tag injection`。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+- **qid 缺失时也写选中态**：`_clickOptionItem` 原来是 `if (qid && badge)` 才加
+  `.check_answer` —— qid 抓不到时页面看起来完全没选中，可 input.checked 已为 true、
+  内部判定"填了"，提交照常放行。这就是「单选题不答」的最后一块拼图。
+  现在只要有徽标就写选中态（跨组清理有 qid 用 qid，没有就清同组兄弟），
+  并在 qid 为空时记一条 `option clicked without qid`（平台读的是 #answer{qid}，
+  没有 qid 等于提交空答案，这是截图看不出来的失败）。
+- **qid 缺失时也写选中态**：`_clickOptionItem` 原来是 `if (qid && badge)` 才加
+  `.check_answer` —— qid 抓不到时页面看起来完全没选中，可 input.checked 已为 true、
+  内部判定"填了"，提交照常放行。这就是「单选题不答」的最后一块拼图。
+  现在只要有徽标就写选中态（跨组清理有 qid 用 qid，没有就清同组兄弟），
+  并在 qid 为空时记一条 `option clicked without qid`（平台读的是 #answer{qid}，
+  没有 qid 等于提交空答案，这是截图看不出来的失败）。
 - **审计日志位置修正**：上一版把审计块插在了 `return false;` 之后、if 块内部，
   永远执行不到（真机日志里没有 `quiz fill audit` 就是它）。现在移到 if 闭合之后。
 - **交卷结果没回来时不跳章**：实测日志里 `skip completed` 与点「下一节」发生在同一秒，

@@ -585,12 +585,23 @@
       //   - 写隐藏域 #answer{qid} **只要有 qid 就必须做** —— 那是平台提交时读的字段，
       //     也是插件自己判"填没填"的依据。作业/考试页没有徽标，
       //     焊在一起就等于"点了选项但隐藏域永远空着"，整卷永不提交。
-      if (qid && badge) {
-        var group = '.choice' + qid;
+      // ⚠️ 选中态**不能**跟 qid 绑在一起。原来写的是 `if (qid && badge)`：
+      // qid 抓不到时连 `.check_answer` 都不加 —— 页面看起来完全没选中，
+      // 可 input.checked 已经是 true，_getQuizQuestionFilledValue 又说"填了"，
+      // 于是提交照常放行。用户看到的就是「单选题不答」。
+      // 现在：只要有徽标就写选中态；跨组清理有 qid 用 qid，没有就清同组兄弟。
+      if (badge) {
         if (inputType === 'radio') {
-          Array.from(doc.querySelectorAll(group)).forEach(function (node) {
-            node.classList.remove('check_answer');
-          });
+          if (qid) {
+            Array.from(doc.querySelectorAll('.choice' + qid)).forEach(function (node) {
+              node.classList.remove('check_answer');
+            });
+          } else if (item.parentElement) {
+            Array.from(item.parentElement.children).forEach(function (sib) {
+              var sibBadge = sib.querySelector && sib.querySelector('.num_option, .num_option_dx');
+              if (sibBadge && sibBadge !== badge) sibBadge.classList.remove('check_answer');
+            });
+          }
           badge.classList.add('check_answer');
           Array.from(item.parentElement ? item.parentElement.children : []).forEach(function (sibling) {
             if (sibling !== item) {
@@ -602,6 +613,15 @@
           // 复选**只加不减**：取消是 _clearMultiChoiceSelection 的职责。
           badge.classList.add('check_answer_dx');
         }
+      }
+
+      // qid 抓不到时留一条 warn：平台读的是 #answer{qid}，没有 qid 就等于
+      // 「点了、也选中了，但提交上去的是空」——这是最难从截图看出来的失败。
+      if (!qid) {
+        emitRuntimeLog('warn', 'option clicked without qid', {
+          text: textOf(item).slice(0, 30),
+          letter: String(letter || '').slice(0, 4)
+        });
       }
       if (qid) {
         item.setAttribute('aria-checked', 'true');
