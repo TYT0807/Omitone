@@ -1295,23 +1295,40 @@
       //   total 题数 / withValue 读得到值的题数 / checkedInDom 页面真的显示选中的题数
       if (submitQuestions && submitQuestions.length) {
         var auditValue = 0;
+        var auditChoice = 0;
         var auditChecked = 0;
+        var auditMissing = [];
         for (var ai = 0; ai < submitQuestions.length; ai++) {
           var aq = submitQuestions[ai];
           var aEl = aq && aq._element;
           if (!aEl) continue;
+          var aHasValue = false;
+          try { aHasValue = !!this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq); } catch (eV) {}
+          if (!aHasValue) continue;
+          auditValue++;
+          // ⚠️ 只有选择题才有「选中态」这回事。填空/简答填了字就是填了，
+          // 把它们算进 checkedInDom 只会让这条审计每次小卷都喊一次假警。
+          var aType = String((aq && aq.type) || '');
+          if (aType !== 'single' && aType !== 'multiple' && aType !== 'judge') continue;
+          auditChoice++;
+          var aChecked = false;
           try {
-            if (this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq)) auditValue++;
-          } catch (eV) {}
-          try {
-            if (aEl.querySelector('input:checked, .check_answer, [aria-checked="true"], .cur, .selected')) auditChecked++;
+            // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
+            // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
+            // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
+            aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
           } catch (eC) {}
+          if (aChecked) auditChecked++;
+          else auditMissing.push(aq.index != null ? aq.index : ai);
         }
-        emitRuntimeLog(auditChecked < auditValue ? 'warn' : 'info',
-          auditChecked < auditValue ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
+        emitRuntimeLog(auditChecked < auditChoice ? 'warn' : 'info',
+          auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
             total: submitQuestions.length,
             withValue: auditValue,
-            checkedInDom: auditChecked
+            choice: auditChoice,
+            checkedInDom: auditChecked,
+            // 只报"4/5"没法定位是哪一题，下一次照样要人肉数 —— 把题号带上
+            missing: auditMissing.slice(0, 8)
           });
       }
 

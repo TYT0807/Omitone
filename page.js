@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '3b294f9eca';
+var OMITONE_CODE_REV = 'df3be9c5a7';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -4832,6 +4832,99 @@ var OMITONE_CODE_REV = '3b294f9eca';
       return true;
     },
 
+    /**
+     * 空转逃生：这一节确实没有可做的任务时，把页面往前推一步，而不是原地刷日志。
+     *
+     * 现场（2026-11-10 日志，整整 14 分钟）：交完卷、点掉平台弹的「下一节」之后，
+     * 日志每 6 秒一条 `study no runnable job {attachments:0,searchedCount:0}`，
+     * 页面一直停在原来那张卡片上，直到重启页面才继续 —— 而重启后第一件事就是
+     * `switch learning card before next unit`，说明**本该走的就是这一步**。
+     *
+     * 为什么原来的兜底接不住：`_skipIfCompleted()` 要能判出"这一节完成了"
+     * （附件 0、任务帧 0、目录里也没有已完成标记时它判不出），而下面
+     * `_ocsSearchedJobs.length > 0` 那一段只覆盖"搜到过任务点"的页面。
+     * 两边都不管"空页面"，于是页面永远停在那里。
+     *
+     * 判据（全部成立才动，宁可多等也不误跳）：
+     *   - 平台附件数为 0，且**一个可见任务帧都没有**（真没活干）
+     *   - 主文档加载完成、正文不是空壳（刚切章节时平台还在渲染，不能算数）
+     *   - 没有在答的卷子、没有在等结果的任务点
+     *   - 已经连续空了 30 秒
+     *   - 同一个「学习进度键」只推一次：点了页面没动就停手，不连点（连点是刷课插件的经典事故）
+     *
+     * @returns {boolean} true = 已经处理（调用方直接 return），false = 继续正常流程
+     */
+    _tryAdvanceIdleSection: function (attachments) {
+      if (attachments && attachments.length) {
+        this._idleEmptySince = 0;
+        return false;
+      }
+      var frames = [];
+      try { frames = this._collectVisibleTaskFrames() || []; } catch (eFrames) { return false; }
+      if (frames.length) {
+        this._idleEmptySince = 0;
+        return false;
+      }
+      if (this._isQuizLearningPending(null) || this._isActiveStudyJobPending('idle-section')) {
+        this._idleEmptySince = 0;
+        return false;
+      }
+      // 页面里还在放的视频，绝不算"空" —— 平台偶尔会先渲染内容、后出附件列表。
+      // ⚠️ 这里**故意不用 `_detectQuiz()`**：交完卷之后标题还是「章节测验」、地址还带着
+      //    `api/work`，它会一直返回 true —— 那正是本节要修的那个场景，用它当护栏
+      //    等于把逃生门从里面锁上。题目这一侧由 `_collectVisibleTaskFrames()`（任务帧）
+      //    与 `_isQuizLearningPending()`（待答/待交）两道判据守着。
+      try {
+        var idleVideo = this._getVideoEl();
+        if (idleVideo && idleVideo.isConnected !== false && !idleVideo.ended) {
+          this._idleEmptySince = 0;
+          return false;
+        }
+      } catch (eVideo) { return false; }
+
+      var doc = this._getMainDocument();
+      if (!doc || !doc.body || String(doc.readyState || '') !== 'complete') return false;
+      if (textOf(doc.body).length < 20) return false;
+
+      var now = Date.now();
+      if (!this._idleEmptySince) {
+        this._idleEmptySince = now;
+        return false;
+      }
+      var idleMs = scaledMs(30000);
+      if (now - this._idleEmptySince < idleMs) return false;
+
+      // 进度键：章节 + 当前卡片 + 附件指纹。拿不到时退回地址 + 标题，
+      // 保证"每次都会有一个键"，否则空串会让下面的去重失效、变成每 30 秒点一次。
+      var key = '';
+      try { key = String(this._studyProgressKey() || ''); } catch (eKey) {}
+      if (!key) key = String(location.href || '') + '|' + String(this._getCurrentTitle() || '');
+
+      if (key === this._idleAdvanceKey) {
+        // 上一次已经推过了、页面还是原样：不再点，只留一条清晰的错误。
+        // 静默空转是最糟的结局 —— 用户以为在跑，其实一步都没动。
+        if (this._idleStuckLoggedKey !== key) {
+          this._idleStuckLoggedKey = key;
+          emitRuntimeLog('error', 'study stuck: 本节没有可识别的任务，点了前进也没反应', {
+            title: String(this._getCurrentTitle() || '').slice(0, 40),
+            key: key.slice(0, 80)
+          });
+        }
+        return true;
+      }
+      this._idleAdvanceKey = key;
+      this._idleEmptySince = 0;
+
+      emitRuntimeLog('warn', 'study idle: no task in this section, advance', {
+        idleMs: idleMs,
+        title: String(this._getCurrentTitle() || '').slice(0, 40)
+      });
+      if (!this.configs.autoNext) return true;
+      if (this._switchToNextLearningCard('idle-section')) return true;
+      this.nextUnit();
+      return true;
+    },
+
     _runOcsStyleStudy: async function (expectedVersion) {
       if (expectedVersion != null && expectedVersion !== this._runtimeVersion) {
         return true;
@@ -4970,7 +5063,13 @@ var OMITONE_CODE_REV = '3b294f9eca';
         return true;
       }
 
-      if (!this._ocsLastNoJobLogAt || now - this._ocsLastNoJobLogAt > 5000) {
+      // 空页面逃生：真的没活干就往前走一步。没有这一条，日志里就是
+      // 「study no runnable job」每 5 秒一条、连刷 14 分钟（见 _tryAdvanceIdleSection 的说明）。
+      if (this._tryAdvanceIdleSection(attachments)) return true;
+
+      // 节流从 5 秒放宽到 20 秒：200 条环形缓冲经不起一条 warn 每 5 秒刷一次，
+      // 真错误会被冲走（这次日志里 40 条是同一句话）。
+      if (!this._ocsLastNoJobLogAt || now - this._ocsLastNoJobLogAt > 20000) {
         this._ocsLastNoJobLogAt = now;
         emitRuntimeLog('warn', 'study no runnable job', { attachments: attachments.length, searchedCount: this._ocsSearchedJobs.length });
       }
@@ -11060,23 +11159,40 @@ var OMITONE_CODE_REV = '3b294f9eca';
       //   total 题数 / withValue 读得到值的题数 / checkedInDom 页面真的显示选中的题数
       if (submitQuestions && submitQuestions.length) {
         var auditValue = 0;
+        var auditChoice = 0;
         var auditChecked = 0;
+        var auditMissing = [];
         for (var ai = 0; ai < submitQuestions.length; ai++) {
           var aq = submitQuestions[ai];
           var aEl = aq && aq._element;
           if (!aEl) continue;
+          var aHasValue = false;
+          try { aHasValue = !!this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq); } catch (eV) {}
+          if (!aHasValue) continue;
+          auditValue++;
+          // ⚠️ 只有选择题才有「选中态」这回事。填空/简答填了字就是填了，
+          // 把它们算进 checkedInDom 只会让这条审计每次小卷都喊一次假警。
+          var aType = String((aq && aq.type) || '');
+          if (aType !== 'single' && aType !== 'multiple' && aType !== 'judge') continue;
+          auditChoice++;
+          var aChecked = false;
           try {
-            if (this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq)) auditValue++;
-          } catch (eV) {}
-          try {
-            if (aEl.querySelector('input:checked, .check_answer, [aria-checked="true"], .cur, .selected')) auditChecked++;
+            // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
+            // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
+            // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
+            aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
           } catch (eC) {}
+          if (aChecked) auditChecked++;
+          else auditMissing.push(aq.index != null ? aq.index : ai);
         }
-        emitRuntimeLog(auditChecked < auditValue ? 'warn' : 'info',
-          auditChecked < auditValue ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
+        emitRuntimeLog(auditChecked < auditChoice ? 'warn' : 'info',
+          auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
             total: submitQuestions.length,
             withValue: auditValue,
-            checkedInDom: auditChecked
+            choice: auditChoice,
+            checkedInDom: auditChecked,
+            // 只报"4/5"没法定位是哪一题，下一次照样要人肉数 —— 把题号带上
+            missing: auditMissing.slice(0, 8)
           });
       }
 

@@ -236,27 +236,11 @@
   现在只要有徽标就写选中态（跨组清理有 qid 用 qid，没有就清同组兄弟），
   并在 qid 为空时记一条 `option clicked without qid`（平台读的是 #answer{qid}，
   没有 qid 等于提交空答案，这是截图看不出来的失败）。
-- **qid 缺失时也写选中态**：`_clickOptionItem` 原来是 `if (qid && badge)` 才加
-  `.check_answer` —— qid 抓不到时页面看起来完全没选中，可 input.checked 已为 true、
-  内部判定"填了"，提交照常放行。这就是「单选题不答」的最后一块拼图。
-  现在只要有徽标就写选中态（跨组清理有 qid 用 qid，没有就清同组兄弟），
-  并在 qid 为空时记一条 `option clicked without qid`（平台读的是 #answer{qid}，
-  没有 qid 等于提交空答案，这是截图看不出来的失败）。
 - **审计日志位置修正**：上一版把审计块插在了 `return false;` 之后、if 块内部，
   永远执行不到（真机日志里没有 `quiz fill audit` 就是它）。现在移到 if 闭合之后。
 - **交卷结果没回来时不跳章**：实测日志里 `skip completed` 与点「下一节」发生在同一秒，
   20 毫秒后才出现 `quiz submit finished` —— 平台还没处理完提交、页面就被推走。
   `_skipIfCompleted` 增加 `_quizSubmitPending` 守卫，等提交结束或超时再走完成判定。
-- **审计日志位置修正**：上一版把审计块插在了 `return false;` 之后、if 块内部，
-  永远执行不到（真机日志里没有 `quiz fill audit` 就是它）。现在移到 if 闭合之后。
-- **交卷结果没回来时不跳章**：实测日志里 `skip completed` 与点「下一节」发生在同一秒，
-  20 毫秒后才出现 `quiz submit finished` —— 平台还没处理完提交、页面就被推走。
-  `_skipIfCompleted` 增加 `_quizSubmitPending` 守卫，等提交结束或超时再走完成判定。
-- **提交前填充审计**：`_maybeSubmitQuiz` 在放行前打一条
-  `quiz fill audit {total, withValue, checkedInDom}`。原因是「单选题不答」时提交照样放行、
-  没有 `answers are not ready` —— 说明隐藏域有值但控件没进入选中态；这条日志把
-  「没填 / 填了但点击没生效」直接分开。真机冒烟：`_fillChoice(el,'Z')` 兜底选中 A，
-  正常 `'B'` 仍选 B，多选 `'AC'`、判断 `'yes'` 均正确。
 - **提交前填充审计**：`_maybeSubmitQuiz` 在放行前打一条
   `quiz fill audit {total, withValue, checkedInDom}`。原因是「单选题不答」时提交照样放行、
   没有 `answers are not ready` —— 说明隐藏域有值但控件没进入选中态；这条日志把
@@ -276,12 +260,28 @@
   表现就是「连三五道题也不答了」。`content.js` 新增 `trimTrailingOptionLetters`：
   仅当「尾部全是单字母 + 前 N 项都可解析 + 本批无多选」时截掉多余字母采用前 N 项，
   其余形状仍整批丢弃（错位填空比留空重问更糟）。
-- **小卷整批丢答案**：模型偶尔在位置式输出末尾多吐一个选项字母
-  （实测 `expected:1 / received:2`，形如 `["实事求是…","A"]`）。`resegmentFlatAnswers`
-  要求「所有项都被消费」，判失败 → 整批丢弃 → 1~5 题的小卷整卷空着，补问一次仍是同样形状，
-  表现就是「连三五道题也不答了」。`content.js` 新增 `trimTrailingOptionLetters`：
-  仅当「尾部全是单字母 + 前 N 项都可解析 + 本批无多选」时截掉多余字母采用前 N 项，
-  其余形状仍整批丢弃（错位填空比留空重问更糟）。
+- **本节没活干时卡死 14 分钟**：交完卷、点掉平台弹的「下一节」之后，日志里只剩
+  `study no runnable job {attachments:0,searchedCount:0}`，页面停在原卡片上一步不动 ——
+  `_skipIfCompleted()` 判不出「完成」（附件 0、任务帧 0、目录里也没有已完成标记），
+  而它的兜底只覆盖「搜到过任务点」的页面，两边都漏掉「空页面」。
+  新增 `_tryAdvanceIdleSection`：附件 0 + 可见任务帧 0 + 文档加载完成 + 没有待答卷子
+  或在等结果的任务点，**连续 30 秒**才推一次前进（先切学习卡片、再点下一节）；
+  同一个「学习进度键」只推一次，推不动就停手并记一条
+  `study stuck: 本节没有可识别的任务，点了前进也没反应` —— 静默空转是最糟的结局。
+  `study no runnable job` 的节流同时从 5 秒放宽到 20 秒（这次日志 200 条里有 40 条是它）。
+- **注入探针误报「运行脚本未响应」**：判据原来是「最近 4 秒内有运行日志」，
+  而空闲时 ocs 循环 60 秒才写一条 —— 实测 11:58:41 刚写过日志、11:58:47 就报错。
+  改成「本次注入之后有过任意一条日志」；重复注入时再用「最近两分钟说过话」兜底，
+  首次注入仍要求注入后确实有日志（否则「脚本根本没跑起来」会被旧时间戳盖住）。
+- **前缀缓存未命中的日志刷屏**：`llm prefix cache all missed` 每请求一条，
+  一张 17 题的卷子 6 个批次就是 6 条，把 200 条环形缓冲冲掉一大截。
+  命中恒为 0 是已知常态（见 `libs/prompt.js` 的 v3.1 实测记录），改为 5 分钟最多一条，
+  并带上期间被压掉的条数。
+- **填充审计的假警**：提交前审计的选择器写的是 `.check_answer`，而多选写的是
+  `check_answer_dx` —— 按完整类名匹配不到 `_dx`，于是「多选已选中」被判成「没选中」；
+  填空/简答本来就没有选中态，也被算进了 `withValue`。现在只审选择题、选择器认 `_dx`，
+  并把出问题的题号一并打出来（`missing`），下次不用人肉数。
+- 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
 
 ---
 

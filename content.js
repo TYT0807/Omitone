@@ -117,7 +117,15 @@
   let statusPanelActive = false;
   let statusLastSignature = '';
   let pageRuntimeActivityAt = 0;
+  // 本次注入的「出发时刻」。判"运行脚本有没有响应"要用它，不能用"最近几秒有没有日志"——
+  // 空闲时 ocs 循环 60 秒才写一条（实测 11:58:41 刚写过日志，11:58:47 就报未响应）。
+  let pageRuntimeArmedAt = 0;
   let pageInjectSeq = 0;
+  // 「前缀缓存全未命中」的日志节流。命中恒为 0 是**已知常态**（见 libs/prompt.js
+  // 的 v3.1 实测记录：64 token 阈值不可信，公共前缀落不了盘）—— 每请求一条 warn
+  // 会把 200 条环形缓冲冲掉十几条、盖住真错误。5 分钟最多一条，并报被压掉的条数。
+  let prefixMissLogAt = 0;
+  let prefixMissSuppressed = 0;
   let runtimeLogWarningAt = 0;
 
   function appendRuntimeLog(level, message, meta) {
@@ -525,8 +533,19 @@
       hitRate: total ? Math.round(hitTokens / total * 100) + '%' : 'n/a'
     };
     if (total && hitTokens === 0) {
-      appendRuntimeLog('warn', 'llm prefix cache all missed', meta);
+      const now = Date.now();
+      if (!prefixMissLogAt || now - prefixMissLogAt > 300000) {
+        prefixMissLogAt = now;
+        appendRuntimeLog('warn', 'llm prefix cache all missed', {
+          ...meta,
+          suppressed: prefixMissSuppressed
+        });
+        prefixMissSuppressed = 0;
+      } else {
+        prefixMissSuppressed++;
+      }
     } else {
+      prefixMissSuppressed = 0;
       appendRuntimeLog('info', 'llm prefix cache', meta);
     }
   }
@@ -2164,7 +2183,17 @@
 
   function hasPageRuntimeEvidence() {
     if (document.getElementById('xxt-panel')) return true;
-    return pageRuntimeActivityAt > 0 && Date.now() - pageRuntimeActivityAt < 4000;
+    if (!pageRuntimeActivityAt) return false;
+    // ① 这次注入之后**有过任意一条运行日志** —— 就说明 page.js 活着。
+    // ⚠️ 不能要求「最近 4 秒内」：空闲时 `_ensureOcsStudyRunner` 的循环
+    // 每 60 秒才写一条日志，4 秒窗口必然过期 → 误报「运行脚本未响应」，
+    // 用户看到红色错误就把插件当坏了、反复刷新（实测 11:58:41 有日志，
+    // 11:58:47 报错，中间什么都没发生）。
+    if (pageRuntimeActivityAt >= pageRuntimeArmedAt) return true;
+    // ② 本次是**重复注入**（页面里本来就跑着一份 page.js）：它最近两分钟说过话
+    // 就算活着。只给重复注入这个宽限，首次注入仍要求"注入后确实有日志"，
+    // 否则"脚本根本没跑起来"会被上一份的旧时间戳一直盖住。
+    return Date.now() - pageRuntimeActivityAt < 120000;
   }
 
   function scheduleInjectionWatchdog(seq, reason) {
@@ -2195,7 +2224,9 @@
   function injectPageScript(reason = 'default') {
     if (!scopeIsCurrent()) return;
     removeInjectedScript();
-    pageRuntimeActivityAt = 0;
+    // 不清 `pageRuntimeActivityAt`：重复注入时页面里那份还在跑，清掉等于假装它没说过话
+    // （见 hasPageRuntimeEvidence 的第 ② 条）。改为记下"本次从哪一刻开始算证据"。
+    pageRuntimeArmedAt = Date.now();
     const seq = ++pageInjectSeq;
 
     const scriptUrl = getPageScriptUrl();
