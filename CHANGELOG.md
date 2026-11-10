@@ -548,12 +548,113 @@
     安全侧也钉了一条：把 `<img src=x onerror=alert(1)>` 当答案灌进去，
     页面里**不许出现任何 img 元素**、`omBoxA` 的 innerHTML 里不许有 `<img`。
   - 验证：`npm run check` 与 `npm test` 全绿；`npm run e2e` 真实 Edge 全绿 ——
-    当前基线 **71 个场景 / 702 项**。
+    当前基线 **71 个场景 / 702 项**。 <!-- 历史计数:start --><!-- 历史计数:end -->
     ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
     1.3.0 发布那一版（改了 `page.js`，**需要重传附件**）。
   - **还挂着一条没动**：`libs/prompt.js` 的紧凑协议里 3 题一批对应 `out:7`，
     简答题要占的字数远超这个预算，**有可能被压成空答案** —— 那正是本批 `quiz answer empty`
     要暴露的形状。下一次导出日志若大量出现这条，方向就是提示词而不是 DOM。
+
+- **⑦批次 7：「只答了多选、单选空着、还自己翻到下一页卡死」—— 三件同时被现场推翻**
+  （用户 2026-11-10 22:23 导出的 203 行真实平台日志 + 一句「这个沙盒问题很大，很多东西根本没跑对」）：
+  - **A 多选那一趟「本地乱答」整个前提废了。** 它当初是为了省 token：多选答案最长、
+    模型最容易摊平，于是本地先猜一个、不发请求。代价在真实日志里现形：
+    `quiz submit attempt count {count:1,max:2}` —— **课后检测只给两次机会**，
+    第一趟拿猜的答案去交等于白烧一次真提交；而「一次只选一项」平台照收
+    （那份卷子因此只拿到多选的第一项）。用户看到的就是「只回答的多选题，估计是乱选的」。
+    - 改法（`src/page/70-quiz-flow.js` + `src/page/72-quiz-answers.js`）：删掉首发那一趟，
+      多选与单选同等进 payload；本地猜测**只剩一个身份** —— 模型那一份落地后
+      **仍然空着**的题才补填（`_answerLocalMultiChoiceQuestions` 从"首发作答"改写成"补填"，
+      顺带删掉它内部"只在第一轮生效"那道闸门：闸门依据是"重试才交回模型"，
+      而默认路径本来就交回模型了，留着只会把**没落地**的题也一并交给模型，
+      于是永远不补填 → 空题 → 永不提交）。
+    - 记账语义跟着变：只有**真的补填过**的卷子才进 `_quizLocalMultiplePapers`、
+      交卷上限才从 20 收到 2；模型答上的卷子不再被记成"本地乱答过"（上限照旧）。
+      日志从 `multiple choice answered locally, not sent to llm` 换成
+      `multiple choice filled locally as refill`（warn，带 `count`/`deferred`/`paperKey`/hint）。
+  - **B 单选「值写进去了、屏幕上什么都没有」。** 与批次 6 同族，只是这次是选择题那一侧：
+    审计写着 `checkedInDom:5 / choice:5 / missing:[]`，用户看到的却是「单选题一题也是空着的」。
+    - 写侧（`src/page/75-quiz-dom.js` `_clickOptionItem`）：作业/考试页是
+      **「选项文本一列、radio 另一列」**的形状，旧代码只点配到的那个隐藏 radio，
+      站点挂在自己 `<a>`/`label` 上的选中态样式从没被触发 → `input.checked` 是 true、
+      `#answer{qid}` 也有值，页面一片空白。现在 radio 这一支补点文本项本身，
+      并且**只挑没有真 href 的元素**（带真链接的绝不点 —— 这层是在整页选项里扫的，
+      点错一下就是导航）。⚠️ **复选明确排除**：复选点第二次就是取消，
+      那正是「多选随机少选一项」的老 bug（新增的场景 38 专门钉了这条不被牵连）。
+    - 读侧（新增 `_hasVisibleChoiceSelection`）：三档证据 —— 我们/站点打的
+      `check_answer` 类、勾选中的**可见**原生控件、站点自己的 `.cur/.selected/.active`，
+      每一档都要求**那个元素真的可见**。
+      ⚠️ **`aria-checked` 被刻意排除**：它是我们自己在 `_clickOptionItem` 里
+      只要有 qid 就给文本项写上的，页面不会因为它画出任何东西 ——
+      拿它当"看得见"就是自己给自己开证明，正是这一轮要拆掉的东西。
+      第一版把它算进了证据，场景 38 的 B 题当场给出 `visibleB:true` 才暴露。
+    - 审计 `_auditQuizFillBeforeSubmit` 的 `checkedInDom` 改用上面那个判据；
+      对不上就发 `quiz fill audit: value without visible selection`，
+      并给那道题抄一份选项结构快照 `_logMissingChoiceSelection`
+      （`qid`/`value`/`li`/`label`/`radio`/`badge`/`markCls`/`html`，元素上打戳只记一次）。
+      取舍与批次 6 一致：**只 warn，不拦交卷**。
+  - **C「检测题目 → 之后不检测 → 直接下一页 → 卡住」的凶手是 `_dismissPopups` 自己。**
+    日志顺序：`skip completed` → `dismiss popups: click {"cls":"…prev_next next fr","matched":"下一节"}`
+    → 页面被带去 `i.chaoxing.com/base`（那里没有课程结构可认）→ 只剩
+    `search job: no attachments and no synthetic job` 每分钟一条。
+    章节页**常驻**的「下一节」导航和弹窗里那个「下一节」文案一模一样，光看文字分不出来。
+    - 改法（`src/page/20-dom.js`）：文案命中也算数，但按钮**必须落在弹窗容器里**
+      （`.layui-layer/.el-message-box/.ant-modal/[role=dialog]/#workpop/#confirmSubWin/…`），
+      带 `prev_next` 的再兜一道；`closeBtn` 那一支同样要求容器命中。
+      翻页不归它管 —— 那是 `_switchToNextLearningCard()` 与 `nextUnit()` 的 `#prevNextFocusNext`。
+      顺带补上批次 2 漏掉的那一条：**交卷确认框**（「确认提交/是否交卷」）里谁都不点，
+      点「确定」= 替用户交卷，点「关闭」= 丢掉那道提示。
+  - **D 分批策略跟着批次 7 一起改（`content.js`）**：旧的"切片里只要有多选就整片拆成一题一批"
+    是为"只有重试轮才把多选交回模型"设计的；多选默认进请求之后，
+    每 3 题里混进一道多选会把另外两道无辜的题也拖成一题一批 ——
+    固定开销（system 提示词 + 输出示例，约 85 token）是**按批**计的，
+    一份 25 题、5 道多选的卷子要多花十几批的钱、多等十几轮往返。
+    现在：多选随时单独成批，其余题继续凑满 3 再发（多选不打断正在攒的那一批）。
+  - **E 空转卡死不再只报一次**（`src/page/62-tasks-run.js`）：`study stuck` 原先每个键只报一条，
+    报完就彻底静默 —— 用户分不清"还在等"和"跑了"。现在每 2 分钟重复一条，
+    并在 meta 里写 `everyMs` 与一句人话 hint。
+  - 验证场景：新场景 **38「单选看不见选中时要报出来」**（4 个夹具：分离控件带站点 handler /
+    分离控件无 handler / 徽标形状 / 多选分离控件；含一条**形状闸门**，
+    保证 A/B 的 radio 真的不可见，否则后面几条就在测一个不存在的形状）、
+    新场景 **39「关弹窗不点常驻的下一节」**（5 种容器形状），
+    场景 **21 整条重写**为「多选交回模型，本地只在没落地时补填」（24 项，含补填幂等、
+    不额外花请求、模型答上时不记成乱答、没落地时才补填并把上限 20→2、
+    以及一条**「真实流程确实调到了补填那一趟」**的接线断言）。
+  - ⚠️ **三条老断言被证实"绑在实现细节上"**（场景 32/33/34 写死了 `[3,1,2,1]` 这种批形状），
+    多选一进请求就一起红。改成按**题集合**判「同一组题不许原样重问」——
+    那才是这几个场景真正守的事。
+    过程中还踩到一个**假红**：断言起初拿 prompt 行首的数字当题号，
+    而 `libs/prompt.js` 那行前缀是 `(i + 1)` = **这一批内的序号**，
+    任何一批的第一题都是 `1|s|`，于是多选那一批的 `1` 和末尾简答题的 `1` 撞在一起。
+    改用题干做身份。
+  - ⚠️ 另一条与代码无关、但代价一样高的坑：场景「交完卷之后不能一直卡在"还有题要做"」
+    **单独定向跑就红**（`apiDown:true`）—— 它只在页面里塞了 `apiKey`，
+    而 `_getQuizApiUnavailableReason()` 看的是 `configs.hasApiKey`，
+    那个字段只有走 `writeConfig` 才会置上。也就是说它一直**靠前面某个场景留在存储里的配置**
+    才通过。已补自己的 `writeConfig`：**场景不许共享存储状态**，否则顺序一动就满屏假警。
+  - **批次 7 的反向验证**（五处注入，各改对应文件后 `npm run concat`，
+    每处只让对应的红、其余保持绿，还原后 722 项重新全绿）：
+    - `content.js` 分批规则还原成"切片里有多选就整片拆成一题一批" → itest **2 红**（批数与批形状）。
+    - `_hasVisibleChoiceSelection` 里把 `aria-checked` 那一档加回来 → 场景 38 **4 红**。
+    - `_clickOptionItem` 的补点文本项分支去掉 → 场景 38 **3 红**（看不见选中的两条 + 审计一条）。
+    - `_dismissPopups` 的容器限定去掉（回退成整页 `querySelectorAll('button')`）→ 场景 39 **5 红**。
+    - **⚠️ 唯一一处"改坏了却全绿"**：把 70-quiz-flow 里那趟补填调用删掉，
+      场景 21 仍 **24/24 全绿** —— 那条场景从头到尾只在**直接调方法**，
+      从没验证过**真实答题链路会不会走到它**。补了 spy（包一层
+      `_answerLocalMultiChoiceQuestions` 计数）之后，同一处注入才给出 `调用次数=0` 的红。
+      与 AGENTS §5「不会失败的检查等于没有检查」同族，但这次不是断言写错，
+      是**断言测的对象根本不是产品代码走的那条路** —— 方法级断言再多，也不等于接上过。
+    - `aria-checked` 那一档是本批自己造出来的坑：`_clickOptionItem` **只要有 qid** 就给文本项
+      加上它，于是"审计有没有看得见选中"若把它算作证据，就成了**自己给自己开的证明**
+      —— 写进去的那一份永远"看得见"。它既不是站点 CSS 会着色的类、也不代表 radio 真的 checked，
+      所以判据里**故意不含它**（注释里钉着这条理由）。
+  - 新增构建标记 5 个：`multi-llm-first`、`popup-scope`、`radio-clickthrough`、
+    `choice-visible`、`idle-stuck-repeat`（`src/page/10-config-state.js` 的 `start` 日志，
+    缺哪个就说明那份改动没被加载）；同时删掉已失效的 `local-multi`、`local-multi-once`。
+  - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 ——
+    当前基线 **73 个场景 / 722 项**。
+    ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
+    1.3.0 发布那一版（改了 `page.js` 与 `content.js`，**需要重传附件**）。
 
 
 ---

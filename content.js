@@ -881,18 +881,30 @@
         question: question
       };
     };
-    for (let i = 0; i < questions.length; i += CHUNK_SIZE) {
-      const slice = questions.slice(i, i + CHUNK_SIZE);
-      const hasMultiple = slice.some((q) => q && q.type === 'multiple');
-      if (hasMultiple && slice.length > 1) {
-        // 多选题**一题一批**：多选答案最长、是整批退化的最大来源（摊平/截断实测元凶）。
-        // 单独成批后它废了只废它自己，也天然满足"交回模型时一题一请求"的定版策略 ——
-        // 本地乱猜的多选在重试轮交回模型时，就是一题一题地问。
-        slice.forEach((q, offset) => chunks.push([toChunkEntry(q, i + offset)]));
-      } else {
-        chunks.push(slice.map((q, offset) => toChunkEntry(q, i + offset)));
+    // 多选题**自己一批**，但**不连累同一批里的邻居**。
+    //
+    // 它答案最长、是整批退化的最大来源（摊平/截断实测元凶），单独成批后废了只废它自己。
+    // ⚠️ 旧写法是"切片里只要有多选，整片拆成一题一批" —— 那在多选由 page 本地作答的年代
+    //   成立：那时只有**重试轮**才把多选交回模型，"一题一请求"正是想要的。
+    //   2026-11-10 批次 7 把多选改回**照常问模型**（本地乱猜的代价见 page.js 那段说明），
+    //   于是"每 3 题里混进一道多选"会把另外两道无辜的题也拖成一题一批：
+    //   固定开销（system 提示词 + 输出示例，约 85 token）是按**批**计的，
+    //   一份 25 题、5 道多选的卷子要多花十几批的钱、多等十几轮往返。
+    //   现在：多选随时单独成批，其余题继续凑满 CHUNK_SIZE 再发（多选不打断正在攒的那一批）。
+    let pendingChunk = [];
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      if (q && q.type === 'multiple') {
+        chunks.push([toChunkEntry(q, i)]);
+        continue;
+      }
+      pendingChunk.push(toChunkEntry(q, i));
+      if (pendingChunk.length === CHUNK_SIZE) {
+        chunks.push(pendingChunk);
+        pendingChunk = [];
       }
     }
+    if (pendingChunk.length) chunks.push(pendingChunk);
 
     const merged = [];
     const filled = new Set();

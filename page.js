@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '30bdbc5ae8';
+var OMITONE_CODE_REV = '843b9bbbff';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -697,9 +697,13 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
         build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
-          'chunk-5', 'quiz-no-progress-skip', 'local-multi', 'local-multi-once',
+          'chunk-5', 'quiz-no-progress-skip', 'multi-llm-first',
           // 2026-10-17 这一轮加的：缺哪个标记，就说明那份改动没被加载
-          'text-skip-script', 'noop-guard', 'discussion-outcome', 'quiz-hold-guard'],
+          'text-skip-script', 'noop-guard', 'discussion-outcome', 'quiz-hold-guard',
+          // 2026-11-10 批次 7 加的（缺哪个就说明那一半还没进浏览器）：
+          // popup-scope=只在弹窗容器里点按钮 / radio-clickthrough=分离控件补点文本项 /
+          // choice-visible=审计按"看得见的选中"计数 / idle-stuck-repeat=空转每 2 分钟重播
+          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat'],
         // 代码内容指纹（由 `tools/concat-page.js` 按片段内容算出，拼在 page.js 第一行）。
         // 装 dist 的人看 `content bridge ready` 里的 build；**直接加载源码目录**的人看这个 ——
         // 它一变就说明代码换了，改完没重新加载一眼就能看出来。
@@ -963,21 +967,29 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
 
     _dismissPopups: function () {
       var texts = ['继续', '下一节', '跳过', '取消', '关闭', '知道了', '确定'];
+      // ⚠️ **只在弹窗容器之内**按文案点按钮（2026-11-10 真实日志逼出来的）。
+      // 整页扫会抓到章节页**常驻**的「下一节」导航（class 带 `prev_next`）：
+      // 19:12:18 `skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}`
+      // → 页面被带去 `https://i.chaoxing.com/base?…`，那里没有课程结构可认，
+      // 之后只剩 `search job: no attachments and no synthetic job` 每分钟一条，
+      // 19:13:23 `study stuck` 之后彻底静默 —— 用户看到的"直接下一页、然后卡住"就是这条链。
+      // 翻页有它自己的路：`_switchToNextLearningCard()` 与 `nextUnit()` 的 `#prevNextFocusNext`。
+      var dialogBox = '.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, ' +
+        '[role="dialog"], [role="alertdialog"], #workpop, #confirmSubWin, .AlertCon02';
       try {
         var buttons = document.querySelectorAll('button, a, .btn, [class*="btn"], .layui-layer-btn a, .layui-layer-btn0, .layui-layer-btn1');
         for (var i = 0; i < buttons.length; i++) {
           if (!visible(buttons[i])) continue;
-          var t = textOf(buttons[i]);
-          var parentText = '';
+          var container = null;
           try {
-            var container = buttons[i].closest ? buttons[i].closest('.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, [role="dialog"]') : null;
-            parentText = container ? textOf(container) : '';
+            container = buttons[i].closest ? buttons[i].closest(dialogBox) : null;
           } catch (e0) {}
-          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(parentText)) {
+          // 容器外 = 页面自己的常驻控件，不归这个函数管。
+          // 双保险：就算它被裹进了某个"dialog"壳，带 `prev_next` 的导航也不许点。
+          if (!container || /prev_next/.test(String(buttons[i].className || ''))) continue;
+          var t = textOf(buttons[i]);
+          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(container))) {
             return false;
-          }
-          if (/确认提交|确定提交|确认交卷|是否提交|交卷确认/.test(parentText) && t.indexOf('取消') !== -1) {
-            continue;
           }
           for (var j = 0; j < texts.length; j++) {
             if (t.indexOf(texts[j]) !== -1) {
@@ -995,8 +1007,12 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         }
         var closeBtn = document.querySelector('.layui-layer-close, .pop-close, .dialog-close, .modal-close, [class*="close"]');
         if (closeBtn && visible(closeBtn)) {
-          var closeContainer = closeBtn.closest ? closeBtn.closest('.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, [role="dialog"]') : null;
-          if (closeContainer && /确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(closeContainer))) {
+          var closeContainer = null;
+          try { closeContainer = closeBtn.closest ? closeBtn.closest(dialogBox) : null; } catch (e1) {}
+          // 关不掉就别乱关：`[class*="close"]` 在课程页上能抓到整页右上角的关闭、
+          // 退出按钮，那和"关掉一个弹窗"完全是两件事。
+          if (!closeContainer) return false;
+          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(closeContainer))) {
             return false;
           }
           closeBtn.click();
@@ -5110,13 +5126,22 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
       if (!key) key = String(location.href || '') + '|' + String(this._getCurrentTitle() || '');
 
       if (key === this._idleAdvanceKey) {
-        // 上一次已经推过了、页面还是原样：不再点，只留一条清晰的错误。
-        // 静默空转是最糟的结局 —— 用户以为在跑，其实一步都没动。
-        if (this._idleStuckLoggedKey !== key) {
+        // 上一次已经推过了、页面还是原样：不再点，但**不能只说一次**。
+        // 现场（2026-11-10 19:13:23）这里打了一条就永久静默，而后面只剩
+        // `search job: no attachments and no synthetic job` 每分钟一条 —— 用户分不清
+        // "还在慢慢跑"和"一步都没动"。静默空转是最糟的结局。
+        // 现在每 2 分钟重播一次，并把**当前地址**带上：那条键尾巴上的 `||` 加上
+        // `https://i.chaoxing.com/base?…` 直接说明"页面被推到没有课程结构的地方了"。
+        var stuckNow = Date.now();
+        if (this._idleStuckLoggedKey !== key || stuckNow - (this._idleStuckLoggedAt || 0) >= 120000) {
           this._idleStuckLoggedKey = key;
+          this._idleStuckLoggedAt = stuckNow;
           emitRuntimeLog('error', 'study stuck: 本节没有可识别的任务，点了前进也没反应', {
             title: String(this._getCurrentTitle() || '').slice(0, 40),
-            key: key.slice(0, 80)
+            key: key.slice(0, 80),
+            href: String(location.href || '').slice(0, 120),
+            everyMs: 120000,
+            hint: '这一页已经推过前进、仍认不出任务点，插件停在这里不再乱点 —— 每 2 分钟重复一次，这条日志还在动说明还在等，不是跑了'
           });
         }
         return true;
@@ -7874,11 +7899,13 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
      *
      * 默认取配置的 `quizMaxSubmitAttempts`（20）—— 卷子没过时重答重交，是既有设计。
      *
-     * ⚠️ 但**本地作答过多选的卷子只给 2 次**（首发 + 一次认真重做）。
-     * 为什么：本地多选答案是猜的，一份卷子只要有一道多选基本就过不了；
+     * ⚠️ 但**本地兜底过多选的卷子只给 2 次**（首发 + 一次认真重做）。
+     * 为什么：那一轮的多选答案是猜的，一份卷子只要有一道多选基本就过不了；
      * 若照旧允许 20 次，就会变成"交一次→没过→再交一次…"的**疯狂提交**，
      * 而每一次提交都是**真的交上去**（平台可能记次数，用户明确报过这个症状）。
-     * 给一次重做的机会足够：那一轮多选已经交回模型（见 `_answerLocalMultiChoiceQuestions`），
+     * 给一次重做的机会足够：批次 7 之后多选**默认就交给模型**，
+     * 只有"模型那一份填不进 DOM、靠本地猜测补上的卷子"才会被记进 `_quizLocalMultiplePapers`
+     * 并收到 2 次（见 `_answerLocalMultiChoiceQuestions` 的 refill 那一趟）。
      * 真能过就在这一次过；过不了就是这张卷子过不了，继续交只是拿用户的提交次数去赌。
      */
     _getQuizMaxSubmitAttempts: function (preferredDoc) {
@@ -8854,18 +8881,17 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
       var payload = [];
       var skippedConfirmed = 0;
       var skippedBestEffort = 0;
-      var skippedLocalMultiple = 0;
-      // ===== 多选本地作答（不问模型）=====
+      // ===== 多选**照旧问模型**（批次 7 改回来的）=====
       //
-      // 位置是刻意的：上面刚做完"缓存回填 + 清掉已知错答"，
-      // 所以本地答案不会刚填上就被那两步抹掉；而 payload 还没开始拼，
-      // 正好拿返回值把这些题**排除在模型请求之外** —— 这才是省 token 的落点。
-      //
-      // 现场症状（用户 2026-10-10）：多选答案最长，模型最容易把它**摊平**成一串字母，
-      // 一摊平整批长度就对不上 → 整批丢弃 → 补问 → 又摊平。用户看到的是
-      //"5 个多选只做了 4 个、最后一个空着、然后不断重复"。
-      // 详见 _answerLocalMultiChoiceQuestions 的说明（含"为什么这条路可以乱答"）。
-      var localMultiple = this._answerLocalMultiChoiceQuestions(questions, quizDoc);
+      // 这里原本有一趟"多选本地作答"，用来省 token。它的前提被现场推翻了：
+      //   · 本地答案是猜的 —— 一份卷子里只要有多选，基本就过不了及格线（该方法自己的注释就这么写）；
+      //   · 而 2026-11-10 真实日志里 `quiz submit attempt count {count:1,max:2}` ——
+      //     **课后检测只给两次机会**。第一趟拿猜的答案去交，等于白白烧掉一次真提交；
+      //     第二趟交回模型时，已经用过的那次提交并不能把正确率换回来。
+      // 用户 2026-11-10 的原话：「只回答的多选题，估计是乱选的」——看到的就是这一趟。
+      // 现在多选与其他题一样进 payload；本地猜测只剩一个身份：
+      // 模型那一份**填不进 DOM** 之后的补填（见本文件稍后那一趟 `_answerLocalMultiChoiceQuestions(questions, quizDoc)`，
+      // 它只在"模型答案落地后仍然空着"时才动手，并把这份卷子记进 `_quizLocalMultiplePapers`）。
       var batchWorkKey = this._getQuizWorkKey(quizDoc);
       // 这一轮是否**整批重发**（含已知正确答案的题）。
       //
@@ -8889,13 +8915,6 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
           skippedBestEffort++;
           return;
         }
-        // 多选已经在本地作答（见 _answerLocalMultiChoiceQuestions）：**不发模型**。
-        // 这些题本来就要占提示词里最大的一块（选项 + 字母数组），
-        // 而且它们的答案最容易让模型输出退化成长串重复 —— 不发给模型，这一整条路都没了。
-        if (localMultiple[i]) {
-          skippedLocalMultiple++;
-          return;
-        }
         // 已经"确认正确 + 本轮已填 + DOM 里确实有值"的题不再问模型：
         // _fillCachedQuizAnswers 已经把答案填回去了，重复提问纯属白花 token。
         // 三个条件必须同时成立 —— 只看缓存会让"缓存存在但填不进去"的题永远没人作答，
@@ -8915,9 +8934,9 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         payload.push({ index: i, type: q.type, title: q.title, options: q.options, previousWrongAnswers: wrongAnswers });
       });
 
-      if (skippedConfirmed > 0 || skippedBestEffort > 0 || skippedLocalMultiple > 0) {
+      if (skippedConfirmed > 0 || skippedBestEffort > 0) {
         emitRuntimeLog('info', batchRecent ? 'resend full batch for prefix cache' : 'skip llm for cached-correct questions',
-          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, localMultiple: skippedLocalMultiple, asked: payload.length });
+          { skipped: skippedConfirmed, bestEffort: skippedBestEffort, asked: payload.length });
       }
       if (payload.length) {
         // 记在"发出去"这一侧而不是"收到成功响应"那一侧：缓存单元是在请求到达时建立的，
@@ -8926,21 +8945,17 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         this._quizBatchSentAt = Date.now();
       }
       if (payload.length === 0) {
-        // 三种情况：
+        // 两种情况：
         //   ① 全部题目都靠缓存填好了，却没能走上面的提前提交分支 —— 状态自相矛盾，
         //      此时发一次空请求只会白白消耗配额；
         //   ② **全部题目都进了"放弃折腾"**。这种必须自己收尾：本地填猜测、能交就交，
         //      否则这一卷会永远停在"不发请求、也不提交"的状态 —— 又是一种卡住。
-        //   ③ **全部题目都是多选、已由本地作答**（整卷只有多选题的小测并不罕见）。
-        //      这一支是本次改动新增的：多选不再进 payload，所以"payload 空了"
-        //      第一次成为一个**正常**结局 —— 漏掉它就等于给"全是多选的卷子"
-        //      新开了一个"永远不提交"的洞。
+        // （批次 7 之前还有第三种"整卷都是多选、已本地作答"—— 多选现在照旧问模型，那一支没了。）
         emitRuntimeLog('warn', 'quiz payload empty after cache filter', {
           total: questions.length,
-          bestEffort: skippedBestEffort,
-          localMultiple: skippedLocalMultiple
+          bestEffort: skippedBestEffort
         });
-        if (skippedBestEffort > 0 || skippedLocalMultiple > 0) {
+        if (skippedBestEffort > 0) {
           this._fillBestEffortQuizAnswers(questions, quizDoc);
           var rescueReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
           this._quizAnswered = rescueReady;
@@ -9010,14 +9025,12 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         // 放在清理之后是有意的：先让 `_clearKnownWrongFilledQuizAnswers` 处理其他题，
         // 再补上这些题的本地猜测，本轮就不会被它误清。
         this._fillBestEffortQuizAnswers(questions, quizDoc);
-        // 多选再走一遍同一个入口 —— 它是**幂等**的：
-        //   已填好的题在入口第一道判断上就返回了（不发请求、不重填），
-        //   只有被上面那步 `_clearKnownWrongFilledQuizAnswers` 抹掉的题才会被重新填上。
-        // 少了这一步就有个窄缝：本地答案恰好落在"已知错答"里（组合试完那一种），
-        // 会被抹掉、又没有模型答案可补 → 表单缺一题 → 整卷永不提交。
-        // ⚠️ `refill: true` 是必须的：正常那趟在"本卷已交过卷"时会把多选交回模型，
-        //    而这一趟的职责恰恰是**补上被清空的题**（见该方法的说明）。
-        this._answerLocalMultiChoiceQuestions(questions, quizDoc, { refill: true });
+        // 多选**补填**（批次 7 之后本地答案只剩这一个身份）：它是**幂等**的 ——
+        //   上面 `_fillAnswers` 已经填好的题在入口第一道判断上就返回了（不重填，
+        //   复选重填会把自己切掉），只有仍然空着的才被补上。
+        // 少了这一步就有个窄缝：模型给的多选组合恰好落在"已知错答"里（组合试完那一种），
+        // 会被上面那步抹掉、又没有别的答案可补 → 表单缺一题 → 整卷永不提交。
+        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
@@ -10008,75 +10021,36 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
     },
 
     /**
-     * 非视频整卷里的**多选题**：本地出答案，不问模型。
+     * 多选**补填**：模型那一份落地之后，仍然空着的多选用本地答案填上。
      *
-     * 为什么要这么做（用户 2026-10-10 的现场反馈）：
-     *   「多选题只要填了就行的情况下，就不要倾斜太多的 token 和上下文等等的东西过去」
-     * 现场日志正好印证了这一点 —— 一批 5 题（3 多选 + 2 填空）时，模型答多选会把选项字母
-     * **摊平**成一串：`["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]`
-     * （13 项对 5 题）→ 整批长度不符被丢弃 → 补问 → 又摊平，一轮一轮空转；
-     * 更糟的是这道题一被摊平，**整批**都落不了地，用户看到的"5 个多选只做了 4 个、
-     * 剩下一个空着、然后不断重复"就是这么来的。
+     * ⚠️ 批次 7（2026-11-10）之前，这个方法还兼任「多选根本不问模型」的省 token 路径 ——
+     * 在 `_handleQuiz` 拼 payload 之前先本地作答，并把这批题从请求里剔掉。
+     * 那个前提被现场推翻了，两条独立证据：
+     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线（这条它自己也承认）；
+     *   2. 真实日志里课后检测的上限是 `quiz submit attempt count {count:1,max:2}` ——
+     *      **只给两次机会**。第一趟拿猜的答案去交，等于白烧一次真提交。
+     * 用户 2026-11-10 的原话就是这一趟的症状：「只回答的多选题，估计是乱选的」。
+     * 现在多选**照旧进 payload**（与单选/判断同等对待），这里只剩"补填"这一个身份。
      *
-     * 为什么这条路可以"乱答"：它的入口是 `_handleQuiz` —— 章节测验 / 作业 / 考试**整卷**。
-     * 视频里那种"答错就不让继续播"的内嵌弹题走的是 `_handlePopupQuiz`（另一条路，
-     * 那份多选仍然交给模型，不受这里影响）。
-     * 整卷只有一条硬约束：**每题都有值**才允许提交（见 `_areQuizAnswersFilled`），
-     * 所以多选不求对，答出来就行。
-     *
-     * ⚠️⚠️ **只在这份卷子的"第一次尝试"里生效**（第二版，2026-10-10 当天就改了）。
-     *
-     * 第一版没有这道闸，上线后用户立刻报「只做多选题、其他的不做、**疯狂提交**」。
-     * 机制是确定的、也是必然的：
-     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线；
-     *   2. 平台"没过"之后的流程是 `_isQuizRedoRequired`（页面上出现
-     *      「未达到及格线 / 请重做」）→ `_prepareQuizRedoIfNeeded` 重置状态 → **重答 → 重交**；
-     *   3. 这一圈的上限是"最多尝试交卷 20 次" —— 于是本地作答把原来的
-     *      「填不满、卡着不动」换成了「填满 → 交 → 没过 → 再填 → 再交…」，
-     *      而**每一次提交都是真的交上去**（手册专门警告过这件事）。
-     * 所以：交过一次还没过，就说明"只求填上"这个前提**不成立**了 ——
-     * 这时必须把多选交回模型（模型至少**可能**答对，卷子才有机会过），
-     * 重做循环也就回到了改动前那条**有上限、能收敛**的老路。
-     *
-     * 代价说清楚：重做的那一轮会为多选花 token。
-     * 这是"省 token"与"卷子能过"之间必须做的取舍，宁可多花这一轮。
+     * 为什么"补填"这一趟非留不可：整卷的提交前置是**每题都有值**
+     * （见 `_areQuizAnswersFilled`），少一道题就永远不提交 —— 那是本仓库最怕的静默卡住，
+     * 比这一题猜错贵得多。典型缺口：模型给的多选组合恰好落在"已知错答"里，
+     * 被 `_clearKnownWrongFilledQuizAnswers` 抹掉后，这一轮没有别的答案能补上它。
      *
      * 答案来源复用 `_chooseFallbackQuizAnswer`（全仓库唯一的"本地兜底答案"实现）：
      * 它天然**避开已知错答**，所以判错一次下一轮就换一组组合，且不花 token。
      *
      * ⚠️ 兜底纪律：本地**算不出**答案的题（读不到选项字母、或者填不进 DOM）
-     * **绝不占用"已本地处理"名额**，会原样留在请求里交给模型 ——
-     * 否则就变成"本地没填上、模型又没问"的空题，表单永远不满，
-     * 那比省下的那点 token 贵得多（这正是本仓库最怕的"静默卡住"）。
+     * **绝不占用"已处理"名额**，也不给卷子记 `_quizLocalMultiplePapers` ——
+     * 它们保持"没答上"，下一轮照旧问模型。
      *
-     * @param {Object} [options] `{ refill: true }` = 本轮模型答完之后的**补填**那一趟。
-     *   只有在补填这一趟才允许在"本卷已交过卷"之后仍然本地作答 —— 因为那一趟的职责是
-     *   **把被清空的题填上、让整卷交得出去**（缺一道题就永远不提交，比猜错严重得多）。
-     * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地作答，**不必**再问模型
+     * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地补填
      */
-    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc, options) {
+    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc) {
       var handled = {};
       if (!questions || !questions.length) return handled;
-      var refill = !!(options && options.refill);
 
-      // ===== 闸门：这份卷子还值得用"乱答"吗 =====
-      // 两个独立判据，任一成立就把多选交回模型（都写清楚，是为了任一个失灵时不至于裸奔）：
-      //   ① 本卷**已经交过卷**（`_getQuizSubmitAttemptCount > 0`）→ 平台大概已经判分，
-      //      再过不了就只能靠答对，猜没有意义；
-      //   ② 本卷**这一轮之前已经本地答过**（`_quizLocalMultiplePapers`）→ 覆盖
-      //      "同一轮内计数还没 +1"的那个窄缝（比如首次提交没被平台接受、原地打回）。
       var paperKey = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
-      var submitAttempts = this._getQuizSubmitAttemptCount(preferredDoc || null);
-      var localUsedBefore = !!paperKey && !!(this._quizLocalMultiplePapers || {})[paperKey];
-      if (!refill && (submitAttempts > 0 || localUsedBefore)) {
-        emitRuntimeLog('info', 'local multiple choice only counts for the first attempt, hand back to llm', {
-          attempts: submitAttempts,
-          localUsedBefore: localUsedBefore,
-          hint: '本卷已经交过卷（或本地答过一轮）还没过 —— 猜答案没有意义，多选交回模型认真答'
-        });
-        return handled;
-      }
-
       var self = this;
       var doc = preferredDoc || null;
       var filledCount = 0;
@@ -10086,7 +10060,8 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         if (!question || !question._element) return;
         if (String(question.type || '') !== 'multiple') return;
 
-        // 本轮已经填好了（缓存回填 / 上一轮成功过）：直接采信，同样不必再问模型。
+        // 本轮已经填好了（模型的答案 / 缓存回填）：直接采信，**不重填** ——
+        // 复选是开关，重填等于把刚点上的切掉。
         if (self._wasQuizQuestionAnsweredThisRun(question) && self._isQuizQuestionFilled(doc, question)) {
           handled[index] = true;
           return;
@@ -10126,11 +10101,11 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
           if (!this._quizLocalMultiplePapers) this._quizLocalMultiplePapers = {};
           this._quizLocalMultiplePapers[paperKey] = true;
         }
-        emitRuntimeLog('info', 'multiple choice answered locally, not sent to llm', {
+        emitRuntimeLog('warn', 'multiple choice filled locally as refill', {
           count: filledCount,
           deferred: deferred,
           paperKey: paperKey ? 'set' : 'missing',
-          hint: '非视频整卷的多选只求"填上"，本地作答省 token；若平台要求重做，下一轮会把多选交回模型'
+          hint: '模型那一份没能把这些多选填进页面，本地先补上让卷子交得出去；这份卷子的交卷上限因此收到 2 次，不拿提交次数去赌'
         });
       }
       return handled;
@@ -11004,6 +10979,14 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
         if (filledValue) {
           self._markQuizQuestionAnsweredThisRun(question, 'llm', filledValue, type);
         }
+        // 选择题那一侧的对称检查：**值写进去了 ≠ 页面上看得出选中**（与上面 `visibleWrites` 同一族）。
+        // 现场（2026-11-10）就是这一格漏了 —— 单选一道都看不见选中，交卷前的审计却自证 ok。
+        // 只报不改判定：把它升级成"没答上"会让整卷永远交不出去（批次 6 同一取舍）。
+        if (filledValue && (type === 'single' || type === 'multiple' || type === 'judge')) {
+          if (!self._hasVisibleChoiceSelection(question._element)) {
+            self._logMissingChoiceSelection(question._element, filledValue);
+          }
+        }
       });
     },
 
@@ -11188,6 +11171,30 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
           if (clickTarget && clickTarget !== item) {
             try { clickTarget.click(); } catch (e2) {}
           }
+        }
+      } else if (inputType === 'radio') {
+        // 「文本与控件分离」的作业/考试页（选项文本一列、radio 另一列）：
+        // 上面只点了配到的那个 radio，**站点挂在自己 <a>/li 上的选中态样式没被触发** ——
+        // 于是 input.checked 是 true、`#answer{qid}` 也写了值，可页面上那道单选
+        // **看起来完全没答**。用户 2026-11-10 的原话：「单选题一题也是空着的」，
+        // 而同一条卷子的审计写着 `checkedInDom:5 / choice:5`（自证 ok，见 `_auditQuizFillBeforeSubmit`）。
+        // 复选**不能**走这一支：复选点第二次就是取消（那正是"多选随机少选一项"的老 bug）。
+        // 单选点两次仍是选中（radio 只认"选中"这一态），所以补点文本项是安全的。
+        try { item.click(); } catch (eSep) {}
+        var sepTarget = null;
+        try {
+          // 站点把选中态挂在哪一层不固定：`<a>`（作业页常态）、`.fl`、`label`。
+          // ⚠️ 带真 href 的链接**绝不点** —— 这段是在整页扫选项里跑的，点错一下就是导航。
+          var cands = item.querySelectorAll('a, .fl, .fl.after, label, span');
+          for (var c = 0; c < cands.length; c++) {
+            var href = String(cands[c].getAttribute && cands[c].getAttribute('href') || '').trim();
+            if (href && !/^javascript:/i.test(href)) continue;
+            sepTarget = cands[c];
+            break;
+          }
+        } catch (eSep2) {}
+        if (sepTarget && sepTarget !== item) {
+          try { sepTarget.click(); } catch (eSep3) {}
         }
       }
 
@@ -11957,6 +11964,85 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
     },
 
 
+    /**
+     * 这道选择题**在页面上看得出选中吗** —— 用户眼睛能看到的证据才算。
+     *
+     * 存在的理由（2026-11-10 真实日志）：一份卷子审计写着
+     * `quiz fill audit ok {"checkedInDom":5,"choice":5,"missing":[]}`，
+     * 可用户看到的是**单选题一题也是空着的**。审计与用户看到的是两件事：
+     * 旧审计写的是 `querySelector('input:checked, .cur, .selected, …')` ——
+     * `input:checked` 命中一个 `display:none` 的原生控件、`.cur` 命中页面自己的
+     * 当前章节高亮，都算"选中"。把"看不见"当"已答"，就会拿着白卷交卷。
+     *
+     * 三档证据，任一命中且**那个元素真的可见**才算数：
+     *   ① 我们或站点打的选中 class（`check_answer` / `check_answer_dx` —— 站点的 CSS 真的会画出来）
+     *   ② 勾选中的原生控件本身是可见的（`display:none` 的原生 radio 不算）
+     *   ③ 站点自己的选中类（`.cur` / `.selected` / `.active`）
+     *
+     * ⚠️ **`aria-checked` 故意不算证据**。它是我们自己在 `_clickOptionItem` 里
+     * 只要有 qid 就给文本项加上的（`item.setAttribute('aria-checked','true')`），
+     * 页面没有任何 CSS 因为它而变样。拿它当"看得见"就是**自己给自己开的证明**：
+     * 现场那道「隐藏域有值、input 已勾上、屏幕上什么都没有」的单选会被判成已答
+     * —— 正是这个函数要抓出来的东西。
+     *
+     * ⚠️ 返回 false **不会**拦住交卷 —— 与批次 6 那条"只提醒不拦"的取舍一致：
+     * 拦住就会回到「整卷永远不交」那个老 bug。它只负责让日志不再自证清白。
+     */
+    _hasVisibleChoiceSelection: function (el) {
+      if (!el || !el.querySelectorAll) return false;
+      var nodes = [];
+      try {
+        nodes = Array.from(el.querySelectorAll('[class*="check_answer"], .cur, .selected, .active'));
+      } catch (e) { return false; }
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i] === el) continue;
+        if (visible(nodes[i])) return true;
+      }
+      try {
+        var inputs = Array.from(el.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+        for (var k = 0; k < inputs.length; k++) {
+          if (inputs[k].checked && visible(inputs[k])) return true;
+        }
+      } catch (e2) {}
+      return false;
+    },
+
+
+    /**
+     * 选择题「有值却看不见选中」的现场快照（同一个元素只记一次）。
+     *
+     * 与 `_logMissingAnswerBox` 同族，只是这次要抓的是**选项那一侧**的形状：
+     * 徽标有没有、radio 藏在哪一列、文本与控件是不是分家 —— 有了这些计数
+     * 和一小段 HTML，下一次直接照着补选择器，不用再靠猜。
+     */
+    _logMissingChoiceSelection: function (el, value) {
+      if (!el || el._omNoCheckDiagAt) return;
+      try {
+        el._omNoCheckDiagAt = Date.now();
+        var countIn = function (sel) {
+          try { return el.querySelectorAll(sel).length; } catch (e) { return -1; }
+        };
+        var qid = '';
+        try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+        emitRuntimeLog('warn', 'quiz fill: no visible selection in question', {
+          qid: qid,
+          value: String(value == null ? '' : value).slice(0, 8),
+          title: textOf(el).replace(/\s+/g, ' ').slice(0, 30),
+          tag: String(el.tagName || '').toLowerCase(),
+          cls: String(el.className || '').slice(0, 60),
+          li: countIn('li'),
+          label: countIn('label'),
+          radio: countIn('input[type="radio"]'),
+          checkbox: countIn('input[type="checkbox"]'),
+          visibleRadio: countIn('input[type="radio"]:not([style*="none"])'),
+          badge: countIn('.num_option, .num_option_dx'),
+          markCls: countIn('[class*="check_answer"]'),
+          html: String(el.outerHTML || '').replace(/\s+/g, ' ').slice(0, 220)
+        });
+      } catch (e) {}
+    },
+
+
     _getQuizQuestionFilledValue: function (preferredDoc, question) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!question || !question._element) return '';
@@ -12132,10 +12218,15 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
      *
      * 实测（2026-11-10）两类，各自的数不一样：
      *   · 单选题：隐藏域/控件值写进去了，自定义控件的选中态没生效
-     *     → 看 checkedInDom 与 choice 的差；
+     *     → 看 checkedInDom 与 choice 的差（选中态的判据是 `_hasVisibleChoiceSelection`，
+     *       **不可见的** `input:checked` 与页面自带的 `.cur` 高亮都不算，批次 7 换的）；
      *   · 填空/简答（长题）：**只有隐藏域有值，答题框完全空着** ——
      *     旧审计对文字题直接 continue，于是日志写着 ok、卷子却交了白框
      *     → 看 textVisible 与 text 的差（textHidden 里是题号）。
+     *
+     * ⚠️ 这两条各自都有一段"现场快照"日志配套：`quiz fill: no visible selection in question`
+     * 与 `quiz fill: no visible answer box in question` —— 光知道"5 题里 3 题没看得见"
+     * 定位不了形状，得把那一题的 DOM 计数与一小段 HTML 抄出来才能接着修。
      *
      * 单独成一个方法（而不是inline在 `_maybeSubmitQuiz` 里）是为了能被 e2e 直接驱动：
      * 那一串闸（自动提交开关、提交次数上限、ready 状态）任一不过就轮不到审计，
@@ -12177,15 +12268,20 @@ var OMITONE_CODE_REV = '30bdbc5ae8';
           continue;
         }
         auditChoice++;
+        // ⚠️ 这里**不能**再用一个宽松选择器自证清白（批次 6 那一轮的教训在选择题侧重演）：
+        // 旧写法在整个文档里找 `input:checked, .cur, .selected` —— 前者能命中一个
+        // `display:none` 的原生控件，后三者能命中页面自己的当前章节高亮，
+        // 都不等于"用户看得见这道题答了"。判据换成 `_hasVisibleChoiceSelection`：
+        // **只在这道题的容器里**找，且三档证据都要那个元素**真的可见**才算
+        // （`aria-checked` 是我们自己写上去的，页面不会因此画出任何东西，故不算）。
         var aChecked = false;
-        try {
-          // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
-          // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
-          // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
-          aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
-        } catch (eC) {}
+        try { aChecked = this._hasVisibleChoiceSelection(aEl); } catch (eC) {}
         if (aChecked) auditChecked++;
-        else auditMissing.push(aq.index != null ? aq.index : ai);
+        else {
+          auditMissing.push(aq.index != null ? aq.index : ai);
+          // 光报"5 题里 3 题看不见选中"没法定位形状 —— 把这一题的选项结构抄一份进日志
+          this._logMissingChoiceSelection(aEl, aHasValue);
+        }
       }
       var auditBad = auditChecked < auditChoice || auditTextVisible < auditText;
       var auditLabel = auditTextVisible < auditText

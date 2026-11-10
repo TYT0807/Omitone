@@ -428,7 +428,7 @@ async function testIndexPlumbing() {
   console.log('\n[1] 稀疏 index 透传（page.js 只发部分题）');
 
   // 模拟：20 题的卷子里，page.js 因为已有正确缓存，只发了这 12 道。
-  // 12 题刚好跨 2 批（CHUNK_SIZE=10），能真正验证跨批次的 index 映射。
+  // 12 道**远大于一个 CHUNK_SIZE**，能真正验证跨批次的 index 映射（批数见下面的建模）。
   var sparseIndices = [0, 1, 2, 5, 6, 7, 9, 11, 12, 15, 16, 19];
   var types = ['single', 'multiple', 'judge', 'fill', 'short', 'single', 'multiple',
     'judge', 'fill', 'single', 'multiple', 'judge'];
@@ -473,16 +473,20 @@ async function testIndexPlumbing() {
       return 0;
     }
   })();
-  // 期望批数按 2026-10-31 定版规则建模：每批 ≤3 题，且**含多选的切片逐题拆批**
-  // （多选一题一请求，废了只废它自己）。与 content.js 的分批循环保持同一套算术。
+  // 期望批数按 content.js 的分批规则建模（2026-11-10 批次 7 改过这一条）：
+  // **多选随时单独成批，其余题继续凑满 chunkSize** —— 多选不连累同批的邻居。
+  // 旧模型是"切片里只要有多选就整片逐题拆批"：那是"只有重试轮才把多选交回模型"时代的写法，
+  // 多选默认进请求之后，它会把两道无辜的题也降成一题一批（固定开销按**批**计）。
   var expectedBatches = (function () {
     if (!(chunkSize > 0)) return 0;
     var count = 0;
-    for (var bi = 0; bi < questions.length; bi += chunkSize) {
-      var slice = questions.slice(bi, bi + chunkSize);
-      var hasMultiple = slice.some(function (q) { return q && q.type === 'multiple'; });
-      count += hasMultiple && slice.length > 1 ? slice.length : 1;
-    }
+    var pending = 0;
+    questions.forEach(function (q) {
+      if (q && q.type === 'multiple') { count++; return; }
+      pending++;
+      if (pending === chunkSize) { count++; pending = 0; }
+    });
+    if (pending) count++;
     return count;
   })();
   check('按 CHUNK_SIZE=' + chunkSize + ' 与多选拆批规则分 ' + expectedBatches + ' 批发出（跨批次不串味）',
@@ -566,10 +570,15 @@ async function testV1ObjectCompat() {
 async function testAnswerCoercion() {
   console.log('\n[2c] 按题型规整答案形态（位置式输出的常见偏差）');
 
-  // 模型返回：单选给了单元素数组、判断给了中文、多选给了数组
-  var replied = JSON.stringify([['A'], '正确', ['A', 'C']]);
-
-  var harness = createHarness({ modelResponder: function () { return replied; } });
+  // 模型返回的三种"偏差形状"：单选给单元素数组、判断给中文、多选给数组。
+  // ⚠️ 必须**按这一批里实际有哪几题**来回，不能整卷写死一个三元素数组：
+  //   批次 7 之后多选单独成批，写死的那一份会漂到别的题上（实测单选拿到的是判断的答案）。
+  var SHAPE_BY_CODE = { s: ['A'], j: '正确', m: ['A', 'C'] };
+  var harness = createHarness({ modelResponder: function (promptText) {
+    return JSON.stringify(parsePromptQuestions(promptText).map(function (q) {
+      return SHAPE_BY_CODE[q.code] !== undefined ? SHAPE_BY_CODE[q.code] : 'A';
+    }));
+  } });
   harness.sendFromPage({
     source: 'xxt_app', id: 21, type: 'llm_request',
     payload: {

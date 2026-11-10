@@ -53,21 +53,29 @@
 
     _dismissPopups: function () {
       var texts = ['继续', '下一节', '跳过', '取消', '关闭', '知道了', '确定'];
+      // ⚠️ **只在弹窗容器之内**按文案点按钮（2026-11-10 真实日志逼出来的）。
+      // 整页扫会抓到章节页**常驻**的「下一节」导航（class 带 `prev_next`）：
+      // 19:12:18 `skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}`
+      // → 页面被带去 `https://i.chaoxing.com/base?…`，那里没有课程结构可认，
+      // 之后只剩 `search job: no attachments and no synthetic job` 每分钟一条，
+      // 19:13:23 `study stuck` 之后彻底静默 —— 用户看到的"直接下一页、然后卡住"就是这条链。
+      // 翻页有它自己的路：`_switchToNextLearningCard()` 与 `nextUnit()` 的 `#prevNextFocusNext`。
+      var dialogBox = '.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, ' +
+        '[role="dialog"], [role="alertdialog"], #workpop, #confirmSubWin, .AlertCon02';
       try {
         var buttons = document.querySelectorAll('button, a, .btn, [class*="btn"], .layui-layer-btn a, .layui-layer-btn0, .layui-layer-btn1');
         for (var i = 0; i < buttons.length; i++) {
           if (!visible(buttons[i])) continue;
-          var t = textOf(buttons[i]);
-          var parentText = '';
+          var container = null;
           try {
-            var container = buttons[i].closest ? buttons[i].closest('.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, [role="dialog"]') : null;
-            parentText = container ? textOf(container) : '';
+            container = buttons[i].closest ? buttons[i].closest(dialogBox) : null;
           } catch (e0) {}
-          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(parentText)) {
+          // 容器外 = 页面自己的常驻控件，不归这个函数管。
+          // 双保险：就算它被裹进了某个"dialog"壳，带 `prev_next` 的导航也不许点。
+          if (!container || /prev_next/.test(String(buttons[i].className || ''))) continue;
+          var t = textOf(buttons[i]);
+          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(container))) {
             return false;
-          }
-          if (/确认提交|确定提交|确认交卷|是否提交|交卷确认/.test(parentText) && t.indexOf('取消') !== -1) {
-            continue;
           }
           for (var j = 0; j < texts.length; j++) {
             if (t.indexOf(texts[j]) !== -1) {
@@ -85,8 +93,12 @@
         }
         var closeBtn = document.querySelector('.layui-layer-close, .pop-close, .dialog-close, .modal-close, [class*="close"]');
         if (closeBtn && visible(closeBtn)) {
-          var closeContainer = closeBtn.closest ? closeBtn.closest('.layui-layer, .el-message-box, .ant-modal, .dialog, .modal, [role="dialog"]') : null;
-          if (closeContainer && /确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(closeContainer))) {
+          var closeContainer = null;
+          try { closeContainer = closeBtn.closest ? closeBtn.closest(dialogBox) : null; } catch (e1) {}
+          // 关不掉就别乱关：`[class*="close"]` 在课程页上能抓到整页右上角的关闭、
+          // 退出按钮，那和"关掉一个弹窗"完全是两件事。
+          if (!closeContainer) return false;
+          if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(closeContainer))) {
             return false;
           }
           closeBtn.click();

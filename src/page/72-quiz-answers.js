@@ -715,75 +715,36 @@
     },
 
     /**
-     * 非视频整卷里的**多选题**：本地出答案，不问模型。
+     * 多选**补填**：模型那一份落地之后，仍然空着的多选用本地答案填上。
      *
-     * 为什么要这么做（用户 2026-10-10 的现场反馈）：
-     *   「多选题只要填了就行的情况下，就不要倾斜太多的 token 和上下文等等的东西过去」
-     * 现场日志正好印证了这一点 —— 一批 5 题（3 多选 + 2 填空）时，模型答多选会把选项字母
-     * **摊平**成一串：`["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]`
-     * （13 项对 5 题）→ 整批长度不符被丢弃 → 补问 → 又摊平，一轮一轮空转；
-     * 更糟的是这道题一被摊平，**整批**都落不了地，用户看到的"5 个多选只做了 4 个、
-     * 剩下一个空着、然后不断重复"就是这么来的。
+     * ⚠️ 批次 7（2026-11-10）之前，这个方法还兼任「多选根本不问模型」的省 token 路径 ——
+     * 在 `_handleQuiz` 拼 payload 之前先本地作答，并把这批题从请求里剔掉。
+     * 那个前提被现场推翻了，两条独立证据：
+     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线（这条它自己也承认）；
+     *   2. 真实日志里课后检测的上限是 `quiz submit attempt count {count:1,max:2}` ——
+     *      **只给两次机会**。第一趟拿猜的答案去交，等于白烧一次真提交。
+     * 用户 2026-11-10 的原话就是这一趟的症状：「只回答的多选题，估计是乱选的」。
+     * 现在多选**照旧进 payload**（与单选/判断同等对待），这里只剩"补填"这一个身份。
      *
-     * 为什么这条路可以"乱答"：它的入口是 `_handleQuiz` —— 章节测验 / 作业 / 考试**整卷**。
-     * 视频里那种"答错就不让继续播"的内嵌弹题走的是 `_handlePopupQuiz`（另一条路，
-     * 那份多选仍然交给模型，不受这里影响）。
-     * 整卷只有一条硬约束：**每题都有值**才允许提交（见 `_areQuizAnswersFilled`），
-     * 所以多选不求对，答出来就行。
-     *
-     * ⚠️⚠️ **只在这份卷子的"第一次尝试"里生效**（第二版，2026-10-10 当天就改了）。
-     *
-     * 第一版没有这道闸，上线后用户立刻报「只做多选题、其他的不做、**疯狂提交**」。
-     * 机制是确定的、也是必然的：
-     *   1. 本地答案是**猜的** → 一份卷子只要有一道多选，基本就过不了及格线；
-     *   2. 平台"没过"之后的流程是 `_isQuizRedoRequired`（页面上出现
-     *      「未达到及格线 / 请重做」）→ `_prepareQuizRedoIfNeeded` 重置状态 → **重答 → 重交**；
-     *   3. 这一圈的上限是"最多尝试交卷 20 次" —— 于是本地作答把原来的
-     *      「填不满、卡着不动」换成了「填满 → 交 → 没过 → 再填 → 再交…」，
-     *      而**每一次提交都是真的交上去**（手册专门警告过这件事）。
-     * 所以：交过一次还没过，就说明"只求填上"这个前提**不成立**了 ——
-     * 这时必须把多选交回模型（模型至少**可能**答对，卷子才有机会过），
-     * 重做循环也就回到了改动前那条**有上限、能收敛**的老路。
-     *
-     * 代价说清楚：重做的那一轮会为多选花 token。
-     * 这是"省 token"与"卷子能过"之间必须做的取舍，宁可多花这一轮。
+     * 为什么"补填"这一趟非留不可：整卷的提交前置是**每题都有值**
+     * （见 `_areQuizAnswersFilled`），少一道题就永远不提交 —— 那是本仓库最怕的静默卡住，
+     * 比这一题猜错贵得多。典型缺口：模型给的多选组合恰好落在"已知错答"里，
+     * 被 `_clearKnownWrongFilledQuizAnswers` 抹掉后，这一轮没有别的答案能补上它。
      *
      * 答案来源复用 `_chooseFallbackQuizAnswer`（全仓库唯一的"本地兜底答案"实现）：
      * 它天然**避开已知错答**，所以判错一次下一轮就换一组组合，且不花 token。
      *
      * ⚠️ 兜底纪律：本地**算不出**答案的题（读不到选项字母、或者填不进 DOM）
-     * **绝不占用"已本地处理"名额**，会原样留在请求里交给模型 ——
-     * 否则就变成"本地没填上、模型又没问"的空题，表单永远不满，
-     * 那比省下的那点 token 贵得多（这正是本仓库最怕的"静默卡住"）。
+     * **绝不占用"已处理"名额**，也不给卷子记 `_quizLocalMultiplePapers` ——
+     * 它们保持"没答上"，下一轮照旧问模型。
      *
-     * @param {Object} [options] `{ refill: true }` = 本轮模型答完之后的**补填**那一趟。
-     *   只有在补填这一趟才允许在"本卷已交过卷"之后仍然本地作答 —— 因为那一趟的职责是
-     *   **把被清空的题填上、让整卷交得出去**（缺一道题就永远不提交，比猜错严重得多）。
-     * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地作答，**不必**再问模型
+     * @returns {Object} 形如 `{1: true, 3: true}` 的下标表：这些题已由本地补填
      */
-    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc, options) {
+    _answerLocalMultiChoiceQuestions: function (questions, preferredDoc) {
       var handled = {};
       if (!questions || !questions.length) return handled;
-      var refill = !!(options && options.refill);
 
-      // ===== 闸门：这份卷子还值得用"乱答"吗 =====
-      // 两个独立判据，任一成立就把多选交回模型（都写清楚，是为了任一个失灵时不至于裸奔）：
-      //   ① 本卷**已经交过卷**（`_getQuizSubmitAttemptCount > 0`）→ 平台大概已经判分，
-      //      再过不了就只能靠答对，猜没有意义；
-      //   ② 本卷**这一轮之前已经本地答过**（`_quizLocalMultiplePapers`）→ 覆盖
-      //      "同一轮内计数还没 +1"的那个窄缝（比如首次提交没被平台接受、原地打回）。
       var paperKey = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
-      var submitAttempts = this._getQuizSubmitAttemptCount(preferredDoc || null);
-      var localUsedBefore = !!paperKey && !!(this._quizLocalMultiplePapers || {})[paperKey];
-      if (!refill && (submitAttempts > 0 || localUsedBefore)) {
-        emitRuntimeLog('info', 'local multiple choice only counts for the first attempt, hand back to llm', {
-          attempts: submitAttempts,
-          localUsedBefore: localUsedBefore,
-          hint: '本卷已经交过卷（或本地答过一轮）还没过 —— 猜答案没有意义，多选交回模型认真答'
-        });
-        return handled;
-      }
-
       var self = this;
       var doc = preferredDoc || null;
       var filledCount = 0;
@@ -793,7 +754,8 @@
         if (!question || !question._element) return;
         if (String(question.type || '') !== 'multiple') return;
 
-        // 本轮已经填好了（缓存回填 / 上一轮成功过）：直接采信，同样不必再问模型。
+        // 本轮已经填好了（模型的答案 / 缓存回填）：直接采信，**不重填** ——
+        // 复选是开关，重填等于把刚点上的切掉。
         if (self._wasQuizQuestionAnsweredThisRun(question) && self._isQuizQuestionFilled(doc, question)) {
           handled[index] = true;
           return;
@@ -833,11 +795,11 @@
           if (!this._quizLocalMultiplePapers) this._quizLocalMultiplePapers = {};
           this._quizLocalMultiplePapers[paperKey] = true;
         }
-        emitRuntimeLog('info', 'multiple choice answered locally, not sent to llm', {
+        emitRuntimeLog('warn', 'multiple choice filled locally as refill', {
           count: filledCount,
           deferred: deferred,
           paperKey: paperKey ? 'set' : 'missing',
-          hint: '非视频整卷的多选只求"填上"，本地作答省 token；若平台要求重做，下一轮会把多选交回模型'
+          hint: '模型那一份没能把这些多选填进页面，本地先补上让卷子交得出去；这份卷子的交卷上限因此收到 2 次，不拿提交次数去赌'
         });
       }
       return handled;

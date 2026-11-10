@@ -1574,6 +1574,44 @@ async function waitFor(client, expression, timeoutMs) {
   }
 }
 
+/**
+ * 每个请求实际问了**哪几道题**，按请求顺序返回（每题一个字符串，集合内已排序）。
+ *
+ * ⚠️ 题号不能当身份：`libs/prompt.js` 那行的前缀数字是**这一批内的序号**
+ * （`(i + 1)`，从 1 开始），任何一批的第一题都是 `1|s|`。
+ * 拿它判"同一批有没有重发"会把两个完全不同的批看成同一个（实测：多选单独成批后
+ * 它的 `1` 和末尾那道简答题的 `1` 撞在一起，断言直接假红）。
+ * 所以这里取的是**题干** —— 它才是那道题本身的身份。
+ *
+ * 为什么按"题集合"而不是"第几条是最大批"来断言：批的形状本来就会随实现变
+ * （多选单独成批、截断后对半拆、缓存过滤掉几道）。写死形状的几条断言
+ * 在批次 7 之后一起红了 —— 红的不是行为坏了，是断言把实现细节当成了事实。
+ * 而这几个场景真正要守的只有一句话：**同一组题不许原样再问一遍**
+ * （旧实现解析/截断失败会拿同一整批重发，白花一整批的钱）。
+ *
+ * @param {Array} requests  mock 收到的请求
+ */
+function requestQuestionSets(requests) {
+  return (requests || []).map(function (r) {
+    var lines = String(r && r.prompt || '').match(/^\d+\|[a-z]\|.*$/gm) || [];
+    return lines.map(function (line) {
+      return line.replace(/^\d+\|[a-z]\|/, '').trim();
+    }).filter(Boolean).sort().join('\n');
+  });
+}
+
+/** 题集合有没有重复：返回**第一组重复**的集合，没有重复返回 null。 */
+function duplicateQuestionSet(sets) {
+  var seen = {};
+  for (var i = 0; i < (sets || []).length; i++) {
+    var key = String(sets[i] || '');
+    if (!key) continue;
+    if (seen[key]) return key;
+    seen[key] = 1;
+  }
+  return null;
+}
+
 // ===========================================================================
 // 角色专项脚手架：只在 CDP 新文档里改浏览器原语，不给产品暴露任何测试 API。
 // JS timer/Date.now 可推进；CSS/WAAPI 仍用真实浏览器时钟，不能用假时间猜动画帧。
@@ -6862,6 +6900,19 @@ SCENARIOS.push({
   name: '交完卷之后不能一直卡在"还有题要做"',
   path: '/quiz',
   run: async function (ctx) {
+    // ⚠️ 必须**真的写一次配置**，不能只在页面里改 `app.configs.apiKey`：
+    //   `_getQuizApiUnavailableReason()` 看的是 `configs.hasApiKey`，那个字段只有走
+    //   `writeConfig` 这条路才会被置上。原先这条场景靠**别的场景留在存储里的配置**才通过 ——
+    //   单独定向跑它就变成 apiDown:true → 前置条件红（2026-11-10 批次 7 就踩到了）。
+    //   场景之间不许共享存储状态，否则顺序一动就满屏假警。
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key',
+      model: 'e2e-model', enableQuiz: true, enableCaptcha: false,
+      enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
     var probe = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
@@ -6869,9 +6920,13 @@ SCENARIOS.push({
       'var doc=app._resolveQuizSubmitDocument(null)||app._getMainDocument();' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizSubmitPending=false;' +
       'var before=app._isQuizLearningPending(doc);' +
+      'var dbg={forceSkip:app._isQuizForceSkipping(doc),apiDown:app._isQuizApiUnavailable(),' +
+      'monitor:app._monitorQuizSubmit(doc),passed:app._isQuizPassedOrFinished(doc),' +
+      'redo:app._isQuizRedoRequired(doc),form:app._hasActiveQuizSubmitForm(doc),' +
+      'detect:app._detectQuiz(),docTag:doc?String(doc.title||""):"(null)"};' +
       'app._quizAnswered=true;' +                 // 模拟"刚交完卷"
       'var after=app._isQuizLearningPending(doc);' +
-      'return {before:before, after:after};})()'
+      'return {before:before, after:after, dbg:dbg};})()'
     );
     check('前置条件：这一页确实"还有题要做"（否则测的不是这件事）',
       !!probe && probe.before === true, JSON.stringify(probe));
@@ -7014,17 +7069,39 @@ SCENARIOS.push({
       var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
       return m ? m.length : 0;
     });
+    var sets = requestQuestionSets(ctx.mock.requests.slice(before));
+    // 失败信息按"题数:题干前 8 字"展开（题干之间用 + 分隔）—— 集合本身按换行拼，
+    // 直接 JSON 出来是一堆 \n，看不出到底哪两批撞了。
+    var readable = sets.map(function (s) {
+      var parts = s.split('\n');
+      return parts.length + ':[' + parts.map(function (t) { return t.slice(0, 8); }).join('+') + ']';
+    }).join(' ');
 
-    // 2026-10-31 批次定版 3 之后：asked=4 的卷拆成 [3][1]，截断发生在 3 题的首批，
-    // 对半拆成 [1][2] 重问，1 题的第二批正常作答 → 请求形状 [3,1,2,1]
-    check('被截断的那一批**只发一次**（3 题的首批只出现一次）',
-      sent.filter(function (n) { return n === 3; }).length === 1, JSON.stringify(sent));
-    check('确实按"对半拆"重问了（能看到比首批更小的批）',
-      sent.some(function (n) { return n > 0 && n < 3; }), JSON.stringify(sent));
+    // 批次 7 之后多选**也进请求**，批的形状跟着变了（多选单独成批、其余题照样凑满 3）。
+    // 所以这里不再写死"[3,1,2,1]"，改守三条与形状无关的事实：
+    //   ① 没有任何一组题被原样重问（旧实现截断后拿同一整批再发一次）；
+    //   ② 截断的那一批确实被拆成了**更小的真子集**重问；
+    //   ③ 请求总数不超过"每题各问一次"的上界 —— 超出就说明有浪费。
+    check('没有任何一组题被原样重问（旧实现截断后会把同一整批再发一次）',
+      duplicateQuestionSet(sets) === null, readable);
+    check('确实按"对半拆"重问了（能看到比被截断那批更小、且是它真子集的批）',
+      (function () {
+        var bigIdx = -1;
+        for (var i = 0; i < sent.length; i++) { if (sent[i] >= 3) { bigIdx = i; break; } }
+        if (bigIdx < 0) return false;
+        var big = String(sets[bigIdx] || '').split('\n');
+        return sets.some(function (s, j) {
+          if (j === bigIdx || !s) return false;
+          var part = s.split('\n');
+          if (part.length >= big.length) return false;
+          return part.every(function (title) { return big.indexOf(title) !== -1; });
+        });
+      })(), readable);
     check('拆批之后所有题都答上了（旧实现这一批一道都落不了地）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sent));
-    check('整卷只用了 4 次请求（3 题批截断 + 对半 1/2 + 末批 1），没有补问式的浪费',
-      sent.length === 4 && sent[0] === 3, JSON.stringify(sent));
+    check('请求数没有超出"每题最多各问一次"的上界（没有补问式的浪费）',
+      sent.length > 0 && sent.length <= setup.total + 1,
+      'requests=' + sent.length + ' total=' + setup.total + ' ' + readable);
 
     ctx.mock.setResponseMode('');
   }
@@ -7077,6 +7154,7 @@ SCENARIOS.push({
       var m = r.prompt.match(/^\d+\|[a-z]\|/gm);
       return m ? m.length : 0;
     });
+    var sets33 = requestQuestionSets(ctx.mock.requests.slice(before));
 
     check('一行一个 JSON 值的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' sent=' + JSON.stringify(sentCounts) +
@@ -7086,13 +7164,11 @@ SCENARIOS.push({
         'ans:a._quizCurrentAnswerValues};})()'
       )));
     // 守的是"解析失败不许重问同一批"：升级前解析失败 → `requestAnswersWithRetry`
-    // 会**拿同一整批再问一次**。2026-10-31 批次定版 3 之后一卷发多批 ——
-    // 守法则改成：**首个请求（最大批）在整个会话里只出现一次**，
-    // 重问只允许走补问的小批（同批同形重复 = 还在旧路上）。
-    check('首批（最大批）只发一次，重问只走补问小批（旧实现解析失败会原样重问）',
-      sentCounts.length > 0 && sentCounts[0] === 3 &&
-      sentCounts.filter(function (n) { return n === sentCounts[0]; }).length === 1,
-      'counts=' + JSON.stringify(sentCounts));
+    // 会**拿同一整批再问一次**。断言按**题号集合**判，不按批的大小判 ——
+    // 批的形状会随实现变（批次 7 之后多选也进请求、单独成批），
+    // "同一组题有没有被问两遍"才是这件事真正的事实。
+    check('没有任何一组题被原样重问（旧实现解析失败会把同一批再发一次）',
+      sets33.length > 0 && duplicateQuestionSet(sets33) === null, JSON.stringify(sets33));
 
     ctx.mock.setResponseMode('');
   }
@@ -7145,11 +7221,10 @@ SCENARIOS.push({
 
     check('`|||` 串起来的应答能被解析，题目全部答上（旧实现一道都答不上）',
       allFilled === true, 'filled=' + allFilled + ' counts=' + JSON.stringify(sentCounts));
-    // 同第 33 条：批次定版 3 之后守"首批只发一次，重问走补问小批"
-    check('首批（最大批）只发一次，重问只走补问小批（旧实现解析失败会原样重问）',
-      sentCounts.length > 0 && sentCounts[0] === 3 &&
-      sentCounts.filter(function (n) { return n === sentCounts[0]; }).length === 1,
-      'counts=' + JSON.stringify(sentCounts));
+    // 同第 33 条：按**题号集合**判"有没有把同一批原样重问"，不按批的形状判。
+    var sets34 = requestQuestionSets(ctx.mock.requests.slice(before));
+    check('没有任何一组题被原样重问（旧实现解析失败会把同一批再发一次）',
+      sets34.length > 0 && duplicateQuestionSet(sets34) === null, JSON.stringify(sets34));
 
     ctx.mock.setResponseMode('');
   }
@@ -7283,28 +7358,26 @@ SCENARIOS.push({
 });
 
 /**
- * ---- 21. 非视频整卷的多选：本地作答，压根不发给模型 ----
+ * ---- 21. 非视频整卷的多选：**问模型**，本地只在它没落地时补填 ----
  *
- * 用户 2026-10-10 的反馈：
- *   「多选题只要填了就行的情况下，就不要倾斜太多的 token 和上下文等等的东西过去，
- *     刚好我们有一套成熟的识别多选题的系统，不如识别到这种答题用非视频里的直接乱答就行」
+ * 这一条在 2026-10-10 是反着测的（那时多选**不进 payload**，本地乱答省 token）。
+ * 现场把那个前提推翻了，两条独立证据都写在 `_answerLocalMultiChoiceQuestions` 的说明里：
+ *   ① 本地答案是猜的 —— 一份卷子只要有一道多选，基本就过不了及格线；
+ *   ② 2026-11-10 真实日志：`quiz submit attempt count {count:1,max:2}` ——
+ *      课后检测只给两次机会，第一趟拿猜的交等于白烧一次真提交。
+ * 用户当时的原话：「只回答的多选题，估计是乱选的，单选题一题也是空着的」。
  *
- * 它要治的现场症状：一批 5 题（3 多选 + 2 填空）时模型答多选会把选项字母**摊平**成一串
- * （`["A","B","C","D","A","B","C","D","A","B","C","填空","填空"]`，13 项对 5 题）
- * → 整批长度不符被丢弃 → 补问 → 又摊平，用户看到的"5 个多选只做了 4 个、
- * 最后一个空着、然后不断重复"。
+ * 所以现在三条主线换了两个方向：
+ *   ① 提示词里**有**多选题（与单选同等对待）—— 这才是"卷子有机会答对"的证据
+ *   ② 多选填的是**模型给的那一份**，不是本地猜的组合
+ *   ③ 只有模型那一份**没落地**时，本地补填才出手 —— 并且只有那时才收紧交卷上限
+ *      （上限从 20 收到 2：拿猜的答案交，交一次就该停，不能拿用户的提交次数去赌）
  *
- * 三条主线断言，全都不是实现细节：
- *   ① 提示词里**没有**多选题 —— 这才是"少烧 token/上下文"的直接证据
- *   ② 提示词里**有**其他题 —— 证明不是把整卷一起漏掉了
- *   ③ 多选题在 DOM 里**真的被填上并勾选** —— 表单少一处就永远不提交（本仓库最怕的静默失败）
- *
- * ⚠️ 还要守住第二版才加的那道闸：**本地作答只在这份卷子的第一次尝试里生效**。
- *    没有它，本地猜的多选让卷子永远过不了 → 平台「请重做」→ 重答重交 → 最多 20 次
- *    （用户报的「只做多选题、其他的不做、疯狂提交」）。所以后半段专门验"第二轮交回模型"。
+ * ⚠️ 兜底纪律仍然要守：本地**算不出**答案的多选（读不到选项字母）
+ * 不许占用"已处理"名额、也不许给卷子记账 —— 否则表单缺一题、永不提交。
  */
 SCENARIOS.push({
-  name: '非视频整卷的多选本地作答（不问模型）',
+  name: '多选交回模型，本地只在没落地时补填',
   path: '/quiz',
   run: async function (ctx) {
     var cfg = {
@@ -7335,9 +7408,10 @@ SCENARIOS.push({
       setup && setup.multipleIndex >= 0, JSON.stringify(setup));
     if (!setup || setup.multipleIndex < 0) return;
 
-    // 反向守卫（**放在最前面做**）：本地**读不到选项**的多选不能被算作"已处理"。
-    // 漏了它就等于"本地没填上、模型又没问" → 空题 → 永不提交（比省下的 token 贵得多）。
-    // 顺序很重要：上面还没跑过任何本地作答，闸门不会替它"背锅"把这条断言变成空测。
+    // 反向守卫：**读不到选项**的多选不能被算作"已处理"，也不能给卷子记账。
+    // 漏了它就等于"本地没填上、又被当成已经答过" → 表单缺一题 → 永不提交，
+    // 而那一份记录还会把上限收到 2 —— 一道我们根本没答上的题，凭什么只交两次。
+    // 顺序很重要：上面还没跑过任何本地补填，`papers===0` 才是有意义的对照。
     var noOptions = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var box=document.createElement("div");' +
@@ -7354,6 +7428,19 @@ SCENARIOS.push({
       noOptions && noOptions.handled === 0 && noOptions.answered === false && noOptions.papers === 0,
       JSON.stringify(noOptions));
 
+    // 补填那一趟**接在真实流程里**的探针：包一层计数再原样转给实现。
+    // ⚠️ 这条补的是一个真实的覆盖缺口 —— 反向验证时把调用点整个 `if (false)` 掉，
+    //   本场景其余 23 条**照样全绿**（它们都直接调那个方法，测的是方法、不是接线）。
+    //   「模型给的多选被清理步骤抹掉、只能靠补填补回来」这条窄缝只有真流程才走得到。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window._omRefillCalls=0;' +
+      'var orig=app._answerLocalMultiChoiceQuestions;' +
+      'app._answerLocalMultiChoiceQuestions=function(qs,doc){' +
+      '  window._omRefillCalls++; return orig.call(app,qs,doc);' +
+      '}; return true;})()'
+    );
+
     var before = ctx.mock.requests.length;
     await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
 
@@ -7363,25 +7450,28 @@ SCENARIOS.push({
       if (ctx.mock.requests.length > before) { sent = true; break; }
       await sleep(300);
     }
-    check('其余题目仍然发到模型接口', sent, '请求数 +' + (ctx.mock.requests.length - before));
+    check('整卷（含多选）发到模型接口', sent, '请求数 +' + (ctx.mock.requests.length - before));
     if (!sent) return;
 
     // 2026-10-31 批次定版 3：一卷发多个请求，断言扫描全部请求的并集
     var prompt = ctx.mock.requests.slice(before).map(function (r) { return r.prompt; }).join('\n');
-    check('提示词里**没有**多选题（省下的就是这一块 token / 上下文）',
-      prompt.indexOf('以下属于操作系统核心功能的有') === -1, prompt.slice(0, 160));
-    check('提示词里不含多选题的选项原文',
-      prompt.indexOf('进程管理') === -1 && prompt.indexOf('编译源代码') === -1);
-    check('提示词里**有**单选题题干（没有把整卷一起漏掉）',
+    check('提示词里**有**多选题题干（批次 7 之后它与单选同等对待，不再本地乱答）',
+      prompt.indexOf('以下属于操作系统核心功能的有') !== -1, prompt.slice(0, 160));
+    check('提示词里带多选题的选项原文（模型要看到选项才可能答对）',
+      prompt.indexOf('进程管理') !== -1 && prompt.indexOf('编译源代码') !== -1);
+    check('提示词里**有**单选题题干（没有把别的题漏掉）',
       prompt.indexOf('中国特色社会主义最本质的特征') !== -1);
-    check('提示词里**有**填空题与简答题题干（只有多选走本地）',
+    check('提示词里**有**填空题与简答题题干（整题清单齐全）',
       prompt.indexOf('一个完整的 IP 地址由') !== -1 && prompt.indexOf('简述数据库事务') !== -1);
-    check('多选题型代号 "|m|" 一次都没出现',
-      !/\d+\|m\|/.test(prompt), prompt.slice(0, 160));
+    check('多选题型代号 "|m|" 出现了（没被从清单里剔掉）',
+      /\d+\|m\|/.test(prompt), prompt.slice(0, 160));
 
     var filled = await waitFor(ctx.client,
       '(function(){var e=document.getElementById("answer1002");return !!e && e.value !== "";})()', 15000);
-    check('多选在 DOM 里被本地填上了（空着就永远不会提交）', filled === true);
+    check('多选在 DOM 里被填上了（空着就永远不会提交）', filled === true);
+    var refillWired = await ctx.client.evaluate('(function(){return window._omRefillCalls||0;})()');
+    check('真实答题流程里确实调到了「多选补填」那一趟（不是只有测试在直接调方法）',
+      refillWired >= 1, '调用次数=' + refillWired);
 
     var multi = await ctx.client.evaluate(
       '(function(){var e=document.getElementById("answer1002");' +
@@ -7396,92 +7486,96 @@ SCENARIOS.push({
 
     // 模型那条路没被影响：单选还是"问出来的"A
     var a1001 = await ctx.client.evaluate('document.getElementById("answer1001").value');
-    check('单选仍然由模型作答（本地化只针对多选）', a1001 === 'A', String(a1001));
+    check('单选仍然由模型作答（这一路一直如此）', a1001 === 'A', String(a1001));
 
     var ready = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var qs=app._extractQuestions(null);' +
       'return app._areQuizAnswersFilled(null,qs,{requireThisRun:true});})()'
     );
-    check('整卷判定"每题都有值"→ 可以提交（本地作答的题没有破坏提交前置）',
+    check('整卷判定"每题都有值"→ 可以提交（多选没有破坏提交前置）',
       ready === true, String(ready));
 
-    // 幂等：模型回来后流程还会再走一遍**同一个入口**（那一趟的职责是补被误清的题）。
-    // 它必须**不重填、不重问** —— 否则刚填好的答案会被自己覆盖掉。
-    // ⚠️ 必须带 `{refill:true}`：不带就等于"新一轮"的第一趟，
-    //    会撞上下面那道"只在这份卷子的第一次尝试里本地作答"的闸 —— 那是另一条断言要测的。
+    // ===== 补填那一趟：模型已经答上的题，一个字母都不许改 =====
+    // 幂等是这条路的硬要求：`_fillAnswers` 之后流程还会再走一遍同一个入口
+    // （那一趟只负责补"仍然空着"的题）。重填 = 把刚点上的复选**再点一次 = 取消**。
     var beforeAgain = ctx.mock.requests.length;
     var again = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var e=document.getElementById("answer1002");' +
       'var was=e?e.value:null;' +
       'var qs=app._extractQuestions(null);' +
-      'var handled=app._answerLocalMultiChoiceQuestions(qs,null,{refill:true});' +
+      'var handled=app._answerLocalMultiChoiceQuestions(qs,null);' +
       'var now=document.getElementById("answer1002");' +
-      'return {was:was,now:now?now.value:null,keys:Object.keys(handled).join(",")};})()'
+      'return {was:was,now:now?now.value:null,keys:Object.keys(handled).join(","),' +
+      'papers:Object.keys(app._quizLocalMultiplePapers||{}).length};})()'
     );
-    check('补填那一趟是幂等的：答案不变（只会补被清掉的那几题）',
-      again && again.was === again.now && !!again.was, JSON.stringify(again));
+    check('补填那一趟是幂等的：模型填好的答案一个字母都没被改（复选重填会把自己切掉）',
+      again && again.was === again.now && again.was === 'AC', JSON.stringify(again));
     check('补填那一趟没有多花任何模型请求',
       ctx.mock.requests.length === beforeAgain,
       '多发了 ' + (ctx.mock.requests.length - beforeAgain) + ' 次');
-    check('"已本地处理"的下标表里正好有多选题那一位',
+    check('"已处理"的下标表里正好有多选题那一位（已填好的直接采信，不再问模型）',
       !!again && again.keys.split(',').indexOf(String(setup.multipleIndex)) !== -1,
       JSON.stringify(again));
 
-    // ================= 这一份卷子的"第二次尝试" =================
-    //
-    // 现场实测（2026-10-10）：第一版**没有**这道闸，多选永远本地乱答 →
-    //   卷子永远过不了及格线 → 平台「请重做」→ 重答重交 → 最多 20 次，
-    //   而每一次提交都是**真的交上去**。用户看到的就是
-    //   「只做多选题、其他的不做、**疯狂提交**」。
-    // 所以本卷交过手之后必须把多选交回模型 —— 猜答案过不了的卷子，重做多少遍都过不了。
+    // ===== 认真答过的卷子：不记本地账、不收紧上限 =====
+    // 旧版在这里会记 `localPapers===1 / max===2` —— 因为多选**本来就是**本地答的。
+    // 现在只有"本地真的补填过"才记账，模型答对的卷子照旧拿满配置的尝试次数。
     var paper = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'return {key:String(app._getQuizWorkKey(null)).slice(0,24),' +
       'max:app._getQuizMaxSubmitAttempts(null),' +
       'localPapers:Object.keys(app._quizLocalMultiplePapers||{}).length};})()'
     );
-    check('本卷被记上"已本地作答过"（第二轮才认得出这份卷子交过手）',
-      paper && paper.localPapers === 1 && paper.key.indexOf('omitone.quiz.correct.') === 0,
-      JSON.stringify(paper));
-    check('本地作答过的卷子，交卷上限从 20 收到 2（不拿用户的提交次数去赌）',
-      paper && paper.max === 2, JSON.stringify(paper));
+    check('模型答上的多选不会被记成「本地乱答过」（交卷上限仍是配置的那个）',
+      paper && paper.localPapers === 0 && paper.max === 20 &&
+      paper.key.indexOf('omitone.quiz.correct.') === 0, JSON.stringify(paper));
 
-    // 模拟平台"请重做"：真机上这一步由 `_prepareQuizRedoIfNeeded` 完成 ——
-    // 它把这一组状态清零，下一轮 tick 才会重新答题。
-    // 「没进展」的闸也要一起放掉：真机上重做会换一茬页面，填答数不会再和上轮相同。
-    await ctx.client.evaluate(
-      '(function(){var app=window._xxtApp;' +
-      'app._quizAnswered=false; app._quizInProgress=false; app._quizReadyToSubmit=false;' +
-      'app._quizReadyWorkKey=""; app._quizCurrentAnsweredKeys={}; app._quizCurrentAnswerValues={};' +
-      'app._quizCurrentQuestions=null; app._quizRoundNoProgressAt=0; app._quizRoundFilledCount=-1;' +
-      'return true;})()'
+    // ===== 反过来：模型那一份**没落地**时，补填必须出手 =====
+    // 现场窄缝（见方法说明）：模型给的多选组合正好落在"已知错答"里，
+    // 被 `_clearKnownWrongFilledQuizAnswers` 抹掉 → 表单缺一题 → 整卷永不提交。
+    // 这里直接把那一位清空 + 取消勾选 + 撤掉本轮已答标记，造出那个状态。
+    var rescue = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var got=[];' +
+      'window.addEventListener("message",function(e){' +
+      '  var m=e.data; if(m&&m.source==="xxt_app"&&m.type==="runtime_log") got.push(m);});' +
+      'var app=window._xxtApp;' +
+      'var hidden=document.getElementById("answer1002"); hidden.value="";' +
+      'var ins=document.querySelectorAll("input[name=\\"answer1002\\"]");' +
+      'for(var i=0;i<ins.length;i++){ ins[i].checked=false; }' +
+      'var qs=app._extractQuestions(null);' +
+      'var mq=-1; for(var k=0;k<qs.length;k++){ if(qs[k].type==="multiple") mq=k; }' +
+      'app._unmarkQuizQuestionAnsweredThisRun(qs[mq]);' +
+      'var beforeReady=app._areQuizAnswersFilled(null,qs,{requireThisRun:true});' +
+      'var handled=app._answerLocalMultiChoiceQuestions(qs,null);' +
+      'setTimeout(function(){' +
+      '  var log=null;' +
+      '  got.forEach(function(m){ if(m.message==="multiple choice filled locally as refill") log=m; });' +
+      '  var checked=[];var list=document.querySelectorAll("input[name=\\"answer1002\\"]");' +
+      '  for(var j=0;j<list.length;j++){ if(list[j].checked) checked.push(list[j].value); }' +
+      '  res({beforeReady:beforeReady,' +
+      '    keys:Object.keys(handled).join(","),' +
+      '    value:hidden.value, checked:checked.sort().join(""),' +
+      '    ready:app._areQuizAnswersFilled(null,qs,{requireThisRun:true}),' +
+      '    papers:Object.keys(app._quizLocalMultiplePapers||{}).length,' +
+      '    max:app._getQuizMaxSubmitAttempts(null),' +
+      '    logLevel:log?log.level:"", logMeta:log?log.meta:null});' +
+      '},300);});})()'
     );
-    var beforeRedo = ctx.mock.requests.length;
-    await ctx.client.evaluate('(function(){window._xxtApp._handleQuiz(null); return true;})()');
-    var redoSent = false;
-    var redoDeadline = Date.now() + 20000;
-    while (Date.now() < redoDeadline) {
-      if (ctx.mock.requests.length > beforeRedo) { redoSent = true; break; }
-      await sleep(300);
-    }
-    var redoPrompts = ctx.mock.requests.slice(beforeRedo).map(function (r) { return r.prompt; });
-    check('第二轮（重做）多选交回模型：提示词里重新出现多选题',
-      redoSent && redoPrompts.some(function (p) { return /\d+\|m\|/.test(p); }),
-      '请求数 +' + (ctx.mock.requests.length - beforeRedo) + ' · ' +
-      String(redoPrompts[0] || '').slice(0, 120));
-
-    var redoMulti = await waitFor(ctx.client,
-      '(function(){var e=document.getElementById("answer1002");return !!e && e.value === "AC";})()', 15000);
-    check('第二轮多选填的是**模型给的那份**（A,C），不再是本地猜的',
-      redoMulti === true,
-      await ctx.client.evaluate('String(document.getElementById("answer1002").value)'));
-
-    var redoReady = await ctx.client.evaluate(
-      '(function(){var app=window._xxtApp;var qs=app._extractQuestions(null);' +
-      'return app._areQuizAnswersFilled(null,qs,{requireThisRun:true});})()'
-    );
-    check('第二轮的整卷仍然"每题都有值"（交回模型没有把提交前置弄丢）',
-      redoReady === true, String(redoReady));
+    check('没落地时整卷判定为「还没答完」（这就是旧版最怕的永不提交）',
+      rescue && rescue.beforeReady === false, JSON.stringify(rescue && rescue.beforeReady));
+    check('补填把这一题真的勾上了选项（不是只写一个字段）',
+      rescue && rescue.value !== '' && rescue.checked === rescue.value,
+      JSON.stringify(rescue && { value: rescue.value, checked: rescue.checked }));
+    check('补填之后整卷"每题都有值"，提交前置恢复',
+      rescue && rescue.ready === true, String(rescue && rescue.ready));
+    check('本地真的补填过才记账，并把交卷上限从 20 收到 2（拿猜的答案不许多交）',
+      rescue && rescue.papers === 1 && rescue.max === 2,
+      JSON.stringify(rescue && { papers: rescue.papers, max: rescue.max }));
+    check('补填那条日志是 warn 级、说的是「补填」而不是旧那句「not sent to llm」',
+      rescue && rescue.logLevel === 'warn' && !!rescue.logMeta &&
+      rescue.logMeta.count >= 1 && String(rescue.logMeta.paperKey) === 'set',
+      JSON.stringify(rescue && { level: rescue.logLevel, meta: rescue.logMeta }));
   }
 });
 
@@ -7689,6 +7783,318 @@ SCENARIOS.push({
     check('隐藏提交域照旧拼成一串，可见读回来是分段的那三格（两边各有各的形状）',
       safety && safety.hiddenD === '甲乙丙' && safety.visibleD === '甲|||乙|||丙',
       JSON.stringify(safety));
+  }
+});
+
+/** ---- 38. 单选「看得见」：分离控件那一族必须点穿文本层 ---- */
+SCENARIOS.push({
+  name: '单选看不见选中时要报出来',
+  path: '/quiz',
+  run: async function (ctx) {
+    // 现场（2026-11-10 22:22 那份课后检测，用户原话）：
+    //   「第二次到达，只回答的多选题，估计是乱选的，单选题一题也是空着的」
+    // 而同一条卷子的日志是 `quiz fill audit ok {"checkedInDom":5,"choice":5,"missing":[]}`
+    // —— 审计自证清白，用户眼睛看到的是白卷。差的正是这一层：
+    //   ① 填答侧：作业/考试页「选项文本一列、radio 另一列」，代码只点了配到的那个 radio，
+    //      站点挂在 `<a>` 上的选中态样式从没被触发 → 值有、页面空白；
+    //   ② 审计侧：`input:checked` 命中一个 `display:none` 的原生控件也算"选中"。
+    // 三个形状分开钉：A 有站点 handler（补点之后必须真的看得见）· B 没有 handler
+    // （必须报出来，但仍然放行交卷 —— 与批次 6 同一取舍）· C 徽标形状（旧的那条路不能改坏）·
+    // D 多选分离控件（**不许**走补点那一支：复选点第二次就是取消）。
+    var setup = await ctx.client.evaluate(
+      '(function(){' +
+      'var host=document.getElementById("Zyapl")||document.body;' +
+      'function box(html){var d=document.createElement("div"); d.innerHTML=html; return d.firstChild;}' +
+      // A：文本列的 <a> 上有站点自己的选中态（模拟真机：点 <a> 才加 cur 类）
+      'var a=box(\'<div class="Cy_TItle" qid="9201" typename="单选题">' +
+        '<div class="Cy_TItle clearfix"><span class="fontLabel">31.</span>【单选题】分离控件带站点选中态</div>' +
+        '<ul class="Cy_ulTop w-top">' +
+          '<li><div class="clearfix"><a id="omLinkA" href="javascript:void(0)" ' +
+            'onclick="document.getElementById(\\\'omLinkA\\\').classList.add(\\\'cur\\\')">B. 选项乙</a></div></li>' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">A. 选项甲</a></div></li>' +
+        '</ul>' +
+        '<ul class="Cy_ulBottom clearfix w-buttom">' +
+          '<li><input type="radio" name="answer9201" value="B" style="display:none"></li>' +
+          '<li><input type="radio" name="answer9201" value="A" style="display:none"></li>' +
+        '</ul>' +
+        '<input type="hidden" id="answer9201" value=""></div>\');' +
+      // B：同样的形状，但 <a> 上没有 handler —— 值写得进、页面永远空白
+      'var b=box(\'<div class="Cy_TItle" qid="9202" typename="单选题">' +
+        '<div class="Cy_TItle clearfix"><span class="fontLabel">32.</span>【单选题】分离控件没有选中态</div>' +
+        '<ul class="Cy_ulTop w-top">' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">A. 选项甲</a></div></li>' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">B. 选项乙</a></div></li>' +
+        '</ul>' +
+        '<ul class="Cy_ulBottom clearfix w-buttom">' +
+          '<li><input type="radio" name="answer9202" value="A" style="display:none"></li>' +
+          '<li><input type="radio" name="answer9202" value="B" style="display:none"></li>' +
+        '</ul>' +
+        '<input type="hidden" id="answer9202" value=""></div>\');' +
+      // C：章节测验的徽标形状（.num_option + 可见 radio）—— 我们自己加 check_answer 的那一族
+      'var c=box(\'<div class="TiMu" qid="9203" typename="单选题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">33.</span>【单选题】徽标形状</div></div>' +
+        '<ul class="Zy_ulTop">' +
+          '<li class="before-after" qid="9203" data="A"><label>' +
+            '<input type="radio" name="answer9203" value="A">' +
+            '<span class="num_option choice9203" data="A">A</span>' +
+            '<span class="fl after">选项甲</span></label></li>' +
+          '<li class="before-after" qid="9203" data="B"><label>' +
+            '<input type="radio" name="answer9203" value="B">' +
+            '<span class="num_option choice9203" data="B">B</span>' +
+            '<span class="fl after">选项乙</span></label></li>' +
+        '</ul>' +
+        '<input type="hidden" id="answer9203" value=""></div>\');' +
+      // D：多选分离控件 —— 补点会让"点两次=取消"重现，必须验证这条路**没**被牵连
+      'var d=box(\'<div class="Cy_TItle" qid="9204" typename="多选题">' +
+        '<div class="Cy_TItle clearfix"><span class="fontLabel">34.</span>【多选题】分离控件多选</div>' +
+        '<ul class="Cy_ulTop w-top">' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">A. 甲</a></div></li>' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">B. 乙</a></div></li>' +
+          '<li><div class="clearfix"><a href="javascript:void(0)">C. 丙</a></div></li>' +
+        '</ul>' +
+        '<ul class="Cy_ulBottom clearfix w-buttom">' +
+          '<li><input type="checkbox" name="answer9204" value="A" style="display:none"></li>' +
+          '<li><input type="checkbox" name="answer9204" value="B" style="display:none"></li>' +
+          '<li><input type="checkbox" name="answer9204" value="C" style="display:none"></li>' +
+        '</ul>' +
+        '<input type="hidden" id="answer9204" value=""></div>\');' +
+      'host.appendChild(a); host.appendChild(b); host.appendChild(c); host.appendChild(d);' +
+      'var app=window._xxtApp;' +
+      'var g=function(q){return document.querySelector(\'[qid="\'+q+\'"].Cy_TItle\')||document.querySelector(\'.TiMu[qid="\'+q+\'"]\');};' +
+      'var elA=g("9201"), elB=g("9202"), elC=g("9203"), elD=g("9204");' +
+      'var hid=function(q){return document.getElementById("answer"+q);};' +
+      // 形状闸门：radio 必须**真的不可见**，否则 A/B 两条断言测的不是现场那一族
+      'var vis=function(el){return !!el && ( !!el.offsetParent || (function(r){return !!r&&r.width>0&&r.height>0;})(el.getBoundingClientRect?el.getBoundingClientRect():null) );};' +
+      'var radioA=elA.querySelectorAll("input[type=radio]");' +
+      'var radioC=elC.querySelectorAll("input[type=radio]");' +
+      'return {' +
+      '  aFound:!!elA, bFound:!!elB, cFound:!!elC, dFound:!!elD,' +
+      '  aRadioHidden:radioA.length===2 && !vis(radioA[0]),' +
+      '  aTextItems:elA.querySelectorAll(".Cy_ulTop li").length,' +
+      '  cRadioVisible:radioC.length===2 && vis(radioC[0]),' +
+      '  pairingWorks:!!(function(){' +
+      '    var items=app._getOptionItems(elA);' +
+      '    return items.length===2 && !!(items[0]._optionInput||items[1]._optionInput);' +
+      '  })(),' +
+      '  detectedMultiple:(function(){var t=app._detectQuestionType(elD); return String(t);})(),' +
+      '  hiddenIds:[hid(9201)?1:0,hid(9202)?1:0,hid(9203)?1:0,hid(9204)?1:0].join("")' +
+      '};})()'
+    );
+    // ⚠️ 这条是"形状与现场一致"的闸门：红了说明 fixture 被改过，
+    //    后面几条就变成在测一个不存在的形状（绿的，但守的东西没了）。
+    check('装配：A/B 的 radio 确实不可见、C 的 radio 可见、文本列与控件列按索引配对成功',
+      setup && setup.aFound && setup.bFound && setup.cFound && setup.dFound &&
+      setup.aRadioHidden === true && setup.cRadioVisible === true &&
+      setup.pairingWorks === true && setup.aTextItems === 2 && setup.hiddenIds === '1111',
+      JSON.stringify(setup));
+
+    var filled = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var g=function(q){return document.querySelector(\'[qid="\'+q+\'"].Cy_TItle\')||document.querySelector(\'.TiMu[qid="\'+q+\'"]\');};' +
+      'var elA=g("9201"), elB=g("9202"), elC=g("9203"), elD=g("9204");' +
+      // 走真实派发入口：_fillChoice / _fillMultiChoice（与 _fillAnswers 同一层）
+      'app._fillChoice(elA,"B","radio");' +
+      'app._fillChoice(elB,"A","radio");' +
+      'app._fillChoice(elC,"A","radio");' +
+      'app._fillMultiChoice(elD,["A","C"]);' +
+      'var ck=function(el){return app._hasVisibleChoiceSelection(el);};' +
+      'var dChecked=[];var di=elD.querySelectorAll("input[type=checkbox]");' +
+      'for(var i=0;i<di.length;i++){ if(di[i].checked) dChecked.push(di[i].value); }' +
+      'var bHidden=[];var bi=elB.querySelectorAll("input[type=radio]");' +
+      'for(var j=0;j<bi.length;j++){ if(bi[j].checked) bHidden.push(bi[j].value); }' +
+      'return {' +
+      '  hiddenA:document.getElementById("answer9201").value,' +
+      '  curA:document.getElementById("omLinkA").className.indexOf("cur")!==-1,' +
+      '  visibleA:ck(elA),' +
+      '  hiddenB:document.getElementById("answer9202").value,' +
+      '  checkedB:bHidden.join(""),' +
+      '  visibleB:ck(elB),' +
+      '  visibleC:ck(elC),' +
+      '  badgeC:(function(){var n=elC.querySelectorAll(".check_answer");return n.length;})(),' +
+      '  hiddenD:document.getElementById("answer9204").value,' +
+      '  checkedD:dChecked.sort().join("")' +
+      '};})()'
+    );
+    check('A：点穿文本层把站点自己的选中态带起来了（旧实现只点隐藏 radio，页面一片空白）',
+      filled && filled.curA === true && filled.hiddenA === 'B' && filled.visibleA === true,
+      JSON.stringify(filled && { hiddenA: filled.hiddenA, curA: filled.curA, visibleA: filled.visibleA }));
+    check('B：值写进去了但看不见选中 —— 判定必须说"看不见"（这就是用户眼里那道空着的单选）',
+      filled && filled.hiddenB === 'A' && filled.checkedB === 'A' && filled.visibleB === false,
+      JSON.stringify(filled && { hiddenB: filled.hiddenB, checkedB: filled.checkedB, visibleB: filled.visibleB }));
+    check('C：徽标形状仍然算看得见（旧那条路不能被这次改动改坏）',
+      filled && filled.visibleC === true && filled.badgeC === 1,
+      JSON.stringify(filled && { visibleC: filled.visibleC, badgeC: filled.badgeC }));
+    check('D：多选分离控件**没有**被补点牵连 —— 该选两项就选两项（点两次会切成一项）',
+      filled && filled.hiddenD === 'AC' && filled.checkedD === 'AC',
+      JSON.stringify(filled && { hiddenD: filled.hiddenD, checkedD: filled.checkedD }));
+
+    // 审计 + 结构快照走真路：`_fillAnswers` 派发层记账 + `_auditQuizFillBeforeSubmit` 计数。
+    var viaAudit = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var got=[];' +
+      'window.addEventListener("message",function(e){' +
+      '  var m=e.data; if(m&&m.source==="xxt_app"&&m.type==="runtime_log") got.push(m);});' +
+      'var app=window._xxtApp;' +
+      'var g=function(q){return document.querySelector(\'[qid="\'+q+\'"].Cy_TItle\')||document.querySelector(\'.TiMu[qid="\'+q+\'"]\');};' +
+      'var elA=g("9201"), elB=g("9202");' +
+      // 把两道题重走一遍派发层（派发层才会记结构快照，直接调 _fillChoice 不会）
+      'var qs=[{_element:elA,type:"single",index:0},{_element:elB,type:"single",index:1}];' +
+      'app._fillAnswers([{index:0,type:"single",answer:"B"},{index:1,type:"single",answer:"A"}], qs, null);' +
+      // 快照每个元素只记一次：拿哨兵值比，不能比两次 Date.now()（同批同步块里会撞成同一个数）
+      'var keptBefore=(elB._omNoCheckDiagAt||0)>0;' +
+      'elB._omNoCheckDiagAt=23456;' +
+      'app._fillAnswers([{index:1,type:"single",answer:"A"}], qs, null);' +
+      'var kept=elB._omNoCheckDiagAt;' +
+      'var auditRet=null;' +
+      'try{auditRet=app._auditQuizFillBeforeSubmit(qs,null);}catch(err){auditRet={label:"(抛错)"+err.message};}' +
+      'setTimeout(function(){' +
+      '  var snap=null, audit=null;' +
+      '  got.forEach(function(m){' +
+      '    if(m.message==="quiz fill: no visible selection in question"&&!snap) snap=m;' +
+      '    if(String(m.message||"").indexOf("quiz fill audit")===0) audit=m;});' +
+      '  res({keptBefore:keptBefore, kept:kept, auditRet:auditRet,' +
+      '    snapLevel:snap?snap.level:"", snapMeta:snap?snap.meta:null,' +
+      '    auditLevel:audit?audit.level:"", auditMsg:audit?audit.message:"", auditMeta:audit?audit.meta:null,' +
+      '    ready:app._areQuizAnswersFilled(null,qs,{})});' +
+      '},300);});})()'
+    );
+    check('派发层为「有值却看不见选中」的题记下选项结构快照（看得见的那题不记）',
+      viaAudit && viaAudit.snapLevel === 'warn' && !!viaAudit.snapMeta &&
+      String(viaAudit.snapMeta.qid) === '9202' && viaAudit.snapMeta.badge === 0 &&
+      viaAudit.snapMeta.radio === 2, JSON.stringify(viaAudit && viaAudit.snapMeta));
+    check('快照每个元素只记一次，不会每轮填答都刷屏',
+      viaAudit && viaAudit.keptBefore === true && viaAudit.kept === 23456,
+      JSON.stringify(viaAudit && { keptBefore: viaAudit.keptBefore, kept: viaAudit.kept }));
+    check('审计不再自证清白：choice=2 而 checkedInDom=1，发的是 warn',
+      viaAudit && viaAudit.auditLevel === 'warn' &&
+      viaAudit.auditMsg === 'quiz fill audit: value without visible selection' &&
+      !!viaAudit.auditMeta && viaAudit.auditMeta.choice === 2 &&
+      viaAudit.auditMeta.checkedInDom === 1 && String(viaAudit.auditMeta.missing) === '1',
+      JSON.stringify(viaAudit && { msg: viaAudit.auditMsg, meta: viaAudit.auditMeta }));
+    check('审计方法返回的就是日志里那一条（两处同源）',
+      viaAudit && !!viaAudit.auditRet && viaAudit.auditRet.label === viaAudit.auditMsg &&
+      viaAudit.auditRet.level === viaAudit.auditLevel,
+      JSON.stringify(viaAudit && { ret: viaAudit.auditRet && viaAudit.auditRet.label, msg: viaAudit.auditMsg }));
+    // ⚠️ 这条钉住那个**取舍**：看得见与否只提醒，不拦交卷。
+    // 升级成拦住就会回到「整卷永远不交」那个老 bug（批次 6 同一件事）。
+    check('提交前置没被这次改动收紧（看不见选中仍然可以交，只是日志会喊）',
+      viaAudit && viaAudit.ready === true, String(viaAudit && viaAudit.ready));
+  }
+});
+
+/** ---- 39. 「直接下一页、然后卡住」：_dismissPopups 不许点页面常驻的导航 ---- */
+SCENARIOS.push({
+  name: '关弹窗不点常驻的下一节',
+  path: '/quiz',
+  run: async function (ctx) {
+    // 现场（2026-11-10 19:12~19:13 日志，用户描述「检测题目→之后不检测→直接下一页→卡住」）：
+    //   `skip completed` → `dismiss popups: click {"cls":"jb_btn jb_btn_92 fs14 prev_next next fr …","matched":"下一节"}`
+    //   → 页面被带去 `https://i.chaoxing.com/base?…`（那里没有课程结构可认）
+    //   → 只剩 `search job: no attachments and no synthetic job` 每分钟一条
+    //   → `study stuck` 打一条之后彻底静默。
+    // 根因是 `_dismissPopups` **整页**按文案扫按钮：章节页**常驻**的「下一节」导航
+    // 和弹窗里那个「下一节」文案一模一样，光看文字分不出来。翻页有它自己的路
+    // （`_switchToNextLearningCard()` 与 `nextUnit()` 的 `#prevNextFocusNext`），不归这个函数管。
+    var setup = await ctx.client.evaluate(
+      '(function(){' +
+      'var host=document.body;' +
+      'function box(html){var d=document.createElement("div"); d.innerHTML=html; return d.firstChild;}' +
+      // ① 章节页常驻的上一节/下一节（就是日志里那两个 class）
+      'var nav=box(\'<div id="omNavZone"><div class="prevNext_wrapper clearfix">' +
+        '<a id="omNavNext" href="javascript:void(0)" class="jb_btn jb_btn_92 fs14 prev_next next fr btnWidAuto">下一节</a>' +
+        '</div></div>\');' +
+      'host.appendChild(nav);' +
+      'var clicks={};' +
+      '["omNavNext"].forEach(function(id){' +
+      '  var el=document.getElementById(id);' +
+      '  el.addEventListener("click",function(){ clicks[id]=(clicks[id]||0)+1; },false);});' +
+      'return {navFound:!!document.getElementById("omNavNext"),' +
+      '  navVisible:!!(function(){var e=document.getElementById("omNavNext");return !!e.offsetParent;})()};})()'
+    );
+    check('装配：常驻的「下一节」导航在页面上可见（它才是旧实现抓走的那个）',
+      setup && setup.navFound === true && setup.navVisible === true, JSON.stringify(setup));
+
+    // ① 只有常驻导航时：什么都不许点
+    var navOnly = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var el=document.getElementById("omNavNext");' +
+      // 计数器先落在属性上，**没点**才能读出 "0"；否则读回 null，
+      // 断言会把"一次都没点"误报成失败（实测踩过：返回 false 是对的，n 却是 null）。
+      'el.setAttribute("data-n","0");' +
+      'el.onclick=function(){' +
+      '  el.setAttribute("data-n", String((parseInt(el.getAttribute("data-n"),10)||0)+1));' +
+      '};' +
+      'var ret=app._dismissPopups();' +
+      'return {ret:ret, n:el.getAttribute("data-n")};})()'
+    );
+    check('只有常驻「下一节」时 _dismissPopups 返回 false 且一次都不点（旧实现在这里就翻页了）',
+      navOnly && navOnly.ret === false && navOnly.n === '0', JSON.stringify(navOnly));
+
+    // ② 弹窗里确实有按钮：仍然要点（旧行为不能改坏 —— 关掉弹窗是它的本职）
+    var withDialog = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var d=document.createElement("div");' +
+      'd.innerHTML=\'<div id="omLayer" class="layui-layer" style="position:fixed;left:0;top:0;width:300px;height:200px">' +
+        '<div class="layui-layer-content">检测到有新的微课，是否继续学习？</div>' +
+        '<a id="omLayerGo" class="layui-layer-btn0">继续</a></div>\';' +
+      'document.body.appendChild(d);' +
+      'var hit=0; var btn=document.getElementById("omLayerGo");' +
+      'btn.onclick=function(){ hit++; btn.parentNode.style.display="none"; };' +
+      'var ret=app._dismissPopups();' +
+      'var nav=document.getElementById("omNavNext");' +
+      'var r={ret:ret, hit:hit, navN:nav.getAttribute("data-n"), layerClosed:btn.parentNode.style.display==="none"};' +
+      'd.remove(); if(window._omDialogs) window._omDialogs={}; return r;})()'
+    );
+    check('弹窗里的「继续」照旧点得掉（收紧范围不能把本职改成失灵）',
+      withDialog && withDialog.ret === true && withDialog.hit === 1,
+      JSON.stringify(withDialog));
+
+    // ③ 交卷确认框：不许代答（点了"确定"就是替用户交卷）
+    var submitDialog = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var d=document.createElement("div");' +
+      'd.innerHTML=\'<div id="omWorkpop" class="layui-layer" style="position:fixed;left:0;top:0;width:300px;height:200px">' +
+        '<div class="layui-layer-content">请完成所有题目，确认提交？</div>' +
+        '<a id="omOkSubmit" class="layui-layer-btn0">确定</a>' +
+        '<a id="omCloseSubmit" class="layui-layer-close2">×</a></div>\';' +
+      'document.body.appendChild(d);' +
+      'var ok=0, cl=0;' +
+      'document.getElementById("omOkSubmit").onclick=function(){ok++;};' +
+      'document.getElementById("omCloseSubmit").onclick=function(){cl++;};' +
+      'var r=app._dismissPopups();' +
+      'var r2={ret:r, ok:ok, cl:cl};' +
+      'd.remove(); return r2;})()'
+    );
+    check('交卷确认框谁都不点（确定=替用户交卷，关闭也会丢掉那道提示）',
+      submitDialog && submitDialog.ret === false && submitDialog.ok === 0 && submitDialog.cl === 0,
+      JSON.stringify(submitDialog));
+
+    // ④ 双保险：导航就算被裹进一个"看起来像弹窗"的壳里，带 prev_next 的仍然不许点
+    var wrapped = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var d=document.createElement("div");' +
+      'd.innerHTML=\'<div id="omModalShell" class="layui-layer" style="position:fixed;left:0;top:0;width:300px;height:200px">' +
+        '<a id="omNavInShell" class="jb_btn prev_next next fr">下一节</a></div>\';' +
+      'document.body.appendChild(d);' +
+      'var n=0; document.getElementById("omNavInShell").onclick=function(){n++;};' +
+      'var r=app._dismissPopups();' +
+      'var out={ret:r, n:n}; d.remove(); return out;})()'
+    );
+    check('带 prev_next 的导航即使被裹进弹窗壳里也不点（第二道保险）',
+      wrapped && wrapped.ret === false && wrapped.n === 0, JSON.stringify(wrapped));
+
+    // ⑤ `[class*="close"]` 这一族最宽，页面上常驻的关闭/退出按钮都会被它抓到
+    var closeOnly = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var d=document.createElement("div");' +
+      'd.innerHTML=\'<div id="omPageTop"><a id="omPageClose" class="closeBtn">退出课程</a></div>\';' +
+      'document.body.appendChild(d);' +
+      'var n=0; document.getElementById("omPageClose").onclick=function(){n++;};' +
+      'var r=app._dismissPopups();' +
+      'var out={ret:r, n:n}; d.remove(); return out;})()'
+    );
+    check('页面常驻的「关闭/退出」不被当成弹窗关闭按钮（容器外就不归它管）',
+      closeOnly && closeOnly.ret === false && closeOnly.n === 0, JSON.stringify(closeOnly));
   }
 });
 

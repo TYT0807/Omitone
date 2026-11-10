@@ -70,11 +70,29 @@
 > 模型这一题只回了个空答案，也不再一声不吭，会写 `quiz answer empty, question left blank`。
 > 体检**只提醒、不拦交卷** —— 宁可告诉你哪道题可疑，也不会为了自保把整卷憋在手里。
 > 长题的框本来就老老实实待在题目里的那些页面，你感觉不到变化。
+> **⑥ 多选题不再乱选、单选题不再"看着是空的"、以及"翻到下一节然后卡住"**
+> （2026-11-10 同日再补）—— 三个症状一起修：
+> **多选题现在和单选题一样交给模型作答**。以前它先本地"凑"一个答案、不去问模型，
+> 你看到的就是**整卷只答了多选、还像是乱选的**，而单选反而空着。
+> 只有模型确实没答上这一题时，才用兜底填一个，并把这份卷子的交卷次数上限收到 2
+> （拿猜的答案不许反复交卷）。
+> **交卷前的体检也跟着改读"看得见的选中"** —— 以前只要那个提交字段里有值就算答上了，
+> 于是屏幕上明明一题没勾、日志却写「答案齐了」。这种题现在会写成
+> `quiz fill: no visible selection in question` 并把那道题的结构带出来。
+> **另一条修的是「一开始还会检测题目，之后直接下一页、然后就卡住」** ——
+> 关弹窗那一步以前会点页面上**所有**按钮，包括课程页一直挂在那儿的「下一节」，
+> 所以它把"关掉一个提示"做成了"翻走这一节"。现在只在真正的弹窗容器里点，
+> 交卷确认框照旧不碰（替你点「确定」等于替你交卷）。
+> 顺带两处：**多选题不再拖累别的题** —— 以前一批里混进一道多选，那一批其他题也被拆成
+> 一题一问，一份卷子白白多花十几趟请求（每次请求都要重复带一遍固定说明）；
+> 现在只有多选自己单独一问。以及**页面长时间不动时那句提示每 2 分钟会重播一次**，
+> 不会再"报过一次就彻底安静"、让你分不清它还在等还是已经跑了。
+> 没见过多选乱选、也没遇到"翻页卡住"的你，感觉不到变化。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 71 场景 / 702 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 73 场景 / 722 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -346,8 +364,8 @@
 - 提示词硬性要求"不确定也要给最可能的答案"，所以**它宁可猜也不会留空**
 - 答错后会带着「禁:」前缀重试（告诉模型"这几个答案已经被证明是错的"）
 - **默认最多尝试交卷 `quizMaxSubmitAttempts` = 20 次**
-- **但多选题被插件本地作答的卷子，只交 2 次**（首发 + 一次认真重做）——
-  本地多选是猜的，一份卷子有一道多选基本就过不了；留一次重做机会就够了，
+- **但模型那份没填进页面、靠本地兜底补上过多选的卷子，只交 2 次**（首发 + 一次认真重做）——
+  兜底答案是猜的，一份卷子只要有一道靠猜，基本就过不了；留一次重做机会就够了，
   再多交只是拿你的提交次数去赌
 - 即使这样仍然填不满/答不对时，它会放弃并跳过
 
@@ -708,7 +726,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 71 个场景，702 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 73 个场景，722 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1049,8 +1067,8 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 36 | **Key 填错了，表现却是「插件每隔 45 秒卡一下」** | `content.js` 认得 401/403（不重试、不写 `apiConnectionFailed`），但 `page.js` 拿回 `{permanentError:true}` 后**根本没读这个字段**，一律走 `_markQuizApiConnectionFailed` → 45 秒退避，把"配置填错了"伪装成"网络连不上"，而服务商明明把 `Invalid API key` 原话返回来了 | 4xx 单独一支：跳过本轮（60 秒）、把服务商原话留在 `_quizApiLastError`，**不进退避窗口**；视频弹题改走 `_giveUpPopupQuiz`（关弹窗 + 60 秒冷却，不拿坏 Key 反复撞接口）。**500 仍然退避**由对照场景守着 —— 否则"凡是失败都不退避"也能蒙混过关 |
 | 37 | **作业 / 考试页点了选项，但 `#answer{qid}` 一直是空**（点了却等于没填，整卷永不提交） | `_clickOptionItem` 写隐藏域的条件是 `qid && badge` **同时**成立：`qid` 只从选项 `<li>` 自身取（真实作业页把 qid 挂在容器 `.Cy_TItle[qid]` 上），`badge` 要求 `.num_option` 徽标（真实作业页**没有**这个徽标）。两个都不满足 → 点击照做、日志照打 `clicked option`、隐藏域却始终是空串 | qid 改**三级回退**（自身 → 最近的 `[qid]` 祖先 → `_getQuestionIdFromElement`）；把"写隐藏域"从"徽标那组操作"里**拆出来**，只要有 qid 就写；字母改用 `_inferOptionLetter`，并**以控件自身的 `value` 为权威**（判断题的 `true`/`false` 就是这么来的 —— 写 `A` 进去平台不认）。端到端断言隐藏域的值，**不是看日志** |
 | 38 | **提交后认不出「已完成」，题目一直扫描、AI 重复提交**（整页重载 → 重扫 → 重答 → 重交，无限循环） | `_isQuizPassedOrFinished` 只认 `_isDocumentFrameFinished` 那一套标记（`.ans-job-finished / .job-color / .icon_Completed / .testTit_status_complete` + 父层「任务点已完成」）—— 那是**课程章节页**的标记。作业/考试提交后翻出的是**判分结果页**（每题多出「我的答案 / 正确答案 / 解析」，控件全部 `disabled`），这套标记一个都不命中 → `_monitorQuizSubmit` 一直 hold → 25 秒超时 → 整页重载 → 重扫重答重交 | 新增 `_isQuizResultPageFinished`：三条判据**同时**成立才算完成（出现判分痕迹 + 控件已不可交互或题目容器已消失 + 不含重做文案），宁可漏判也不误判（误判 = 把没交的卷当已完成，直接跳过该任务点）。端到端把 mock 结果页做成**真实判分页**，并断言**旧判据对它确实认不出来** |
-| 39 | **一份测验里好几道多选，总有一道空着、整卷一遍遍重来**（日志里 `llm flat answers resegmented` / `llm answer count mismatch, batch discarded` 反复出现） | 多选答案最长，模型答它时容易把选项字母**摊平**、甚至混进嵌套数组：实测 5 题回成 8～13 项 → 那**一整批**长度对不上 → 整批作废 → 补问 → 再退化，于是"四个填上了、最后一个空着、然后不断重复"。而整卷的提交前置只有一条「每题都有值」，多选**本来不需要答对** | 非视频整卷（章节测验 / 作业 / 考试）的多选改为**本地作答、不进请求**：复用避开已知错答的本地兜底（判错一次下一轮换一组组合），并把"这一卷全是多选"也一并收尾提交；本地算不出的题（读不到选项字母/填不进 DOM）照旧交回模型，**绝不制造空题**；视频里的**多选弹题不受影响**（答错就不让继续播，仍然交给 AI） |
-| 40 | **「只做多选题，其他的不做，疯狂提交」**（一份卷子交一次、没过、再交一次，反复刷提交） | ⚠️ 这是上一条第一版的**次生故障**，也是本项目最典型的一类：**取舍本身没错，错在没把"本地答案是猜的"当成环路前提推一遍**。链条是闭合的：本地答案是猜的 → 卷子基本过不了及格线 → 平台出现「未达到及格线 / 请重做」→ `_prepareQuizRedoIfNeeded` 清零状态重答重交 → 上限 20 次，而**每一次提交都是真的交上去**。用户看到"只做多选题"是因为每轮只有多选在变（其余题每轮从模型拿回同一批答案） | ① **本地作答只在这份卷子的第一次尝试里生效**：一旦本卷交过卷（提交计数 > 0，sessionStorage 里、换页也在）或这一轮之前已本地答过（`_quizLocalMultiplePapers`），就把多选**交回模型** —— 交过一次还没过，说明"只求填上"这个前提不成立；② **本地作答过的卷子交卷上限从 20 收到 2**（首发 + 一次认真重做），不拿平台的提交次数去赌一个猜出来的答案。代价：重做那一轮会为多选花 token（只求填上的常见情形依旧零 token） |
+| 39 | **一份测验里好几道多选，总有一道空着、整卷一遍遍重来**（日志里 `llm flat answers resegmented` / `llm answer count mismatch, batch discarded` 反复出现） | 多选答案最长，模型答它时容易把选项字母**摊平**、甚至混进嵌套数组：实测 5 题回成 8～13 项 → 那**一整批**长度对不上 → 整批作废 → 补问 → 再退化，于是"四个填上了、最后一个空着、然后不断重复"。而整卷的提交前置只有一条「每题都有值」，多选**本来不需要答对** | 非视频整卷（章节测验 / 作业 / 考试）的多选改为**本地作答、不进请求**：复用避开已知错答的本地兜底（判错一次下一轮换一组组合），并把"这一卷全是多选"也一并收尾提交；本地算不出的题（读不到选项字母/填不进 DOM）照旧交回模型，**绝不制造空题**；视频里的**多选弹题不受影响**（答错就不让继续播，仍然交给 AI）。⚠️ **2026-11-10 批次 7 已把这条反转** —— 多选现在照旧问模型，本地只剩没落地时的补填，见 #49 |
+| 40 | **「只做多选题，其他的不做，疯狂提交」**（一份卷子交一次、没过、再交一次，反复刷提交） | ⚠️ 这是上一条第一版的**次生故障**，也是本项目最典型的一类：**取舍本身没错，错在没把"本地答案是猜的"当成环路前提推一遍**。链条是闭合的：本地答案是猜的 → 卷子基本过不了及格线 → 平台出现「未达到及格线 / 请重做」→ `_prepareQuizRedoIfNeeded` 清零状态重答重交 → 上限 20 次，而**每一次提交都是真的交上去**。用户看到"只做多选题"是因为每轮只有多选在变（其余题每轮从模型拿回同一批答案） | ① **本地作答只在这份卷子的第一次尝试里生效**：一旦本卷交过卷（提交计数 > 0，sessionStorage 里、换页也在）或这一轮之前已本地答过（`_quizLocalMultiplePapers`），就把多选**交回模型** —— 交过一次还没过，说明"只求填上"这个前提不成立；② **本地作答过的卷子交卷上限从 20 收到 2**（首发 + 一次认真重做），不拿平台的提交次数去赌一个猜出来的答案。代价：重做那一轮会为多选花 token（只求填上的常见情形依旧零 token）。⚠️ **批次 7 之后闸门整条删掉了**：多选默认就问模型，"第一次本地、第二次模型"这个分层不复存在，只剩"模型没落地才补填"；上限 2 现在按**是否真的补填过**计，见 #49 |
 | 41 | **「上面是题目、下面是讨论」时只做讨论、跳过题目，然后卡住不动**（日志反复 `study begin` → 每帧都被拒 → `study finished on page {searchedCount:0}` → 点「下一节」→ 又 `study begin`，附件数一模一样） | ⚠️ 平台**自己的脚本**里有一句 `jobIconDiv.set({'aria-label': '任务点已完成'})`，而 `textOf()` 写的是 `innerText \|\| textContent` —— **可见文本为空时回落 `textContent`，连 `<script>` 源码都算成页面文字**。于是 `_isDocumentFrameFinished` 在脚本注释里读到「任务点已完成」，把整份卷子判成完成 → `workType` 由 `job` 改写成 `finished` → 静默跳过 → 搜不到任务点 → 判本页做完 → 点下一节（平台不让走）→ 空转 | 防线：① `textOf` 回落时跳过 `script/style/noscript/template` 源码；② 静默跳过必须写日志；③ 连续 3 轮「学习进度键」不变就停止点下一节并告警。⚠️ **判"完成"只能看真实可见文本，别吃 `textContent`** |
 | 42 | **一页两个讨论，只发第一个、第二个被跳过**（发完第一个和题目就直接点下一节） | `_findDiscussionTask` 三条路径都只返回**第一个**候选，而调用方 `if (this._isDiscussionDone(task.key)) return false;` 一看"这个发过了"就**整体放弃** —— 排在后面的永远轮不到 | 防线：**在查找阶段就跳过已发过的**（三条路径各补一处），调用方那句只当兜底。⚠️ **"取一个候选"的函数遇到"这个不要"时，应该继续找下一个，而不是让调用方放弃整件事** |
 | 43 | **换到下一份卷子时干等几十秒才开始答题**，且日志被同一对记录刷满 | `_quizRoundFilledCount` / `_quizRoundNoProgressAt` 是**全局**状态：上一份卷子最后一轮 `filled=0`，新卷子第一轮当然也是 0 → 被判成"没有进展"，这一轮一次都不答；那 60 秒里 OCS 每秒重匹配一次，`study matched job` + `quiz round skipped` 各一条，200 条日志缓冲被刷满 | 防线：状态按**卷子 key** 隔离 + 两条日志 10 秒节流。⚠️ **"没进展"这类跨轮比较的状态必须按"哪一份活"隔离**，否则上一份的结尾会污染下一份的开头 |
@@ -1059,6 +1077,9 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 46 | **第一次遇到题目过了，第二次遇到题目不答题**（真实日志：`19:12:17 quiz submit finished` → **1 秒后** `skip completed` + 点「下一节」→ 此后整段没有任何答题记录） | `_isCurrentCompleted()` 把**页面级**文案「任务点已完成」排在**逐任务帧**完成状态之前，而一张卡片挂两份测验时，刚交完那一份就会把这句话渲染出来 —— 另一份一个字没答，整节却被判"做完了"。而 `_handleQuiz` 开头三个「这一轮不答」的原因（冷却 / 上一轮未完 / 已答完）共用一个**静默** return，日志一个字不写，现场只能靠猜 | 防线：① 判据顺序反过来 —— **未完成任务点的证据压过一句文案**，并把依据写进 `_completionEvidence`（`skip completed {by:…}`）；② `quiz held: nothing answered this round {reason:…}`（10 秒节流）；③ `_isQuizPaperChangedInDom()` 兜住 `_quizAnswered` 是页面级、换卷又要靠任务点 id 的那一族形状（新旧 qid **完全不重叠**才判换卷，有交集就保守不动）。⚠️ **第 41 条的亲戚**：「任务点已完成」这类**页面级文字**永远不能单独判"这一节做完了"；**跳过不可逆、多等一轮只是慢一点** |
 | 47 | **进卷子先白等 8~12 秒「等解码」，而日志里解码层一条记录都没有**（用户原话「它连解码那个都没有」；真实日志：`quiz waiting font decrypt {fontMiss:false}` → 8.1s / 12.2s 后 `font decrypt pending over limit, answer anyway`，而那两份卷子的题面其实是好的） | 三处叠在一起：① 等不等的判据走的是**整页**扫描 —— 不相干装饰帧里**永远解不掉**的残留也算"还没解码"；② content.js 的扫描只有 300ms **尾部**防抖，而 page.js 自己每秒都在写 DOM —— 变动间隔长期小于 300ms 时扫描**永远排不到**；③ 解密层有三条「什么都不做也不吭声」的分支（无字体声明却带密文 / 映射表建不起来 / `computed===0`），跑没跑、为什么解不出，日志里看不出来 | 防线：① 新增 `_probeFontDecrypt(题目文档)` —— 只从题目那份文档往下走（含子帧），一次遍历把密文残留、`data-om-font-miss`、终局判据与扫描戳一起收；② `scheduleDecryptSweep()` 改成**有界**防抖（300ms 防抖 + 最长 2 秒必跑 + 两次至少隔 400ms），加 `decryptSweepRunning` 防并发全页重扫；③ 每份被扫描的文档落 `data-om-font-state` + `data-om-font-sweep`，非 clean 结论写 `font decrypt verdict`（每份文档每个状态 60 秒一条，带 `suppressed`）；④ `nodecl` / `nomap` 属终局判据 → **不等**（30 秒一条 `font decrypt verdict: answer as-is`）。⚠️ `_hasUndecryptedFontSecret` 已删（并进 `_probeFontDecrypt`）；判"要不要等"必须问**题目那份文档** —— 问整页就等于让最不相干的帧决定所有人的节奏 |
 | 48 | **长题（填空/简答）的答题框完全空着，日志却写着"答案齐了"**（用户原话「长题不答，只答了部分题」；真实日志：`quiz fill audit ok {withValue:3,total:3}` → 交卷 → 回头一看只答对了一半，错的那一半全是长题） | **写和读看的不是同一个东西**：① 写侧 `_fillTextarea` 只往**题目容器之内**的 textarea / input / contenteditable 里塞，而学习通有些长题的可见框是容器**外面的兄弟节点**，或容器里干脆只剩一个隐藏域；② 读侧 `_getQuizQuestionFilledValue` **先看隐藏域**，有值就直接返回，从不看可见框；③ `_fillText` / `_fillTextarea` 又**无条件**写 `#answer{qid}` 隐藏域（平台真正收的那一份）—— 于是审计永远看得见值、看不见空框，一句"没答"都报不出来；④ 模型某一题只回了空答案时，`_fillAnswers` 那一支直接 return，日志一个字不写 | 防线：① 写侧加宽 —— 新增 `_collectAnswerEditableNodes`（容器内文本控件 → `#answer{qid}` 本体就是文本控件时 → 至多 3 层祖先；该层命中多于一题就停，避免写进隔壁题），`_writeAnswerText` 走原型 setter + `input`/`change` 事件，富文本 iframe 用 `_answerToHtml`（**转义后**再进 body，答案里的标签不会当成 HTML 注入）；② 读侧对称 —— 文本类题先 `_readVisibleAnswerText`，**且只对 `fill`/`short` 开**（给选择题开就会误报"已答"）；③ `_fillText` / `_fillTextarea` 现在返回**可见**写入个数，为 0 时 `_logMissingAnswerBox` 把那道题的结构写进日志（每元素只报一次，靠 `_omNoBoxDiagAt` 戳）；④ 交卷前体检从 `_maybeSubmitQuiz` 抽成 `_auditQuizFillBeforeSubmit`，文本题按 `text` / `textVisible` / `textHidden` 三档报，**只提醒、不拦交卷**；⑤ 空答案新增 `quiz answer empty, question left blank`。⚠️ 隐藏域照旧无条件写（不能省，它是平台收的那一份），但它**再也不能单独当作"这题答过了"的证据** —— 判"填上了"必须问眼睛看得见的那个框 |
+| 49 | **一份卷子只答了多选题、看着像乱选的，单选反而一题没答**（用户原话「只回答的多选题，估计是乱选的，单选题一题也是空着的」） | #39 那条"多选本地作答、不进请求"省的是 token，**代价是答案必错**：整卷只要有一道多选就基本过不了及格线。而课后检测的提交上限实测只有 2 次（日志 `quiz submit attempt count {count:1,max:2}`），拿猜的答案去交等于**白烧一次真提交**。当时的 `max:2` 之所以没爆成"疯狂提交"，是因为第二趟把多选交回了模型 —— 可用户看到的就是"第一趟全是乱选的多选" | 多选**与单选同等交给模型**（`_answerLocalMultiChoiceQuestions` 只剩"补填"一个身份，且**幂等**：模型已填好的绝不重填，复选重填会把自己切掉）。只有补填真的动过手，才把这份卷子记进 `_quizLocalMultiplePapers` 并把上限收到 2。`content.js` 的分批同步改：多选自己成批、**不打断正在攒的那一批**（旧写法会让一道多选拖着另外两题成一题一批，固定开销按批计，一份卷子多花十几批的钱）|
+| 50 | **屏幕上单选题一题没勾，日志却写 `quiz fill audit ok`** | 与 #48 同族，只是这次栽在选择题上：审计读的是 `#answer{qid}` 与 **`aria-checked`** —— 而 `aria-checked` 是 `_clickOptionItem` **只要有 qid 就顺手给文本项加上的**，没有任何 CSS 认它。等于**自己给自己开的证明**：只要写过，就永远"看得见" | `_hasVisibleChoiceSelection(el)` 是三档证据的唯一入口（站点 CSS 真会着色的 `check_answer*` / `cur` / `selected` / `active` + 可见的已勾选 radio/checkbox）；看不见时写 `quiz fill: no visible selection in question`（带 `radio`/`visibleRadio`/`markCls`），审计侧写 `quiz fill audit: value without visible selection`。选项控件与文本层分离的那套形状（`.Cy_*`）另有一步**补点文本项**（`radio-clickthrough`）。⚠️ **`aria-checked` 不许再算进证据** |
+| 51 | **刚开始还会检测题目，之后直接翻到下一节、然后整页卡住**（用户原话如此；真实日志：`skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}` → 地址变成 `i.chaoxing.com/base` → 只剩 `search job: no attachments…` 与一条 `study stuck` 后彻底静默） | `_dismissPopups()` 整页 `querySelectorAll('button, a, .btn …')` 按文案点，把课程页**常驻**的「下一节」导航当成了弹窗按钮。翻过去的那一页没有课程结构可认，任务点扫不到，而 `study stuck` 每个键只报一次 → 报完永久安静 | 弹窗容器（`.layui-layer` / `[role="dialog"]` / `#workpop` …）之外**一律不点**，带 `prev_next` 的双保险也不点；关不掉就 return，不许拿 `[class*="close"]` 抓整页右上角的关闭按钮。翻页只走自己的路（`_switchToNextLearningCard()` / `#prevNextFocusNext`）。`study stuck` 改为**每 2 分钟重播**并带上当前 `href`。交卷确认框仍**谁都不点** |
 
 ---
 
@@ -1074,7 +1095,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 答案填了不提交 | `_areQuizAnswersFilled` 的判定；隐藏域 `#answer{qid}` 是否被写入 |
 | **多选题只选一个就卡住 / 一直选不对** | 见 §6 #33。日志里找 `multiple choice answer expanded locally`（本地把单字母扩成两项）、`multiple choice combos exhausted, keep wrong history`、`quiz filled best-effort guesses for repeatedly-wrong questions`（已放弃折腾这道题、改填本地猜测让整卷交出去） |
 | **一份测验里多选总有一道空着、整卷反复重来** | 见 §6 #39。日志里找 `multiple choice answered locally, not sent to llm`（正常 —— 说明多选没进请求、省了 token）；若是 `local multiple choice skipped, keep for llm`，说明这道题**读不到选项字母**，已照旧交回模型。想确认"多选真的没发出去"，看提示词里有没有 `｜m｜` 这一档题型代号 |
-| **一份卷子交个没完（没过 → 重做 → 又交）** | 见 §6 #40。日志里找 `local multiple choice only counts for the first attempt, hand back to llm`（本卷已经交过卷，多选交回模型了 —— 说明闸门在工作）；再找 `quiz submit attempt count` 的 `max`：本地作答过的卷子是 **2**，其余仍是 20。若看到「未达到及格线 / 请重做」反复出现，就是这一条 |
+| **一份卷子交个没完（没过 → 重做 → 又交）** | 见 §6 #40 / #49。日志里找 `multiple choice filled locally as refill`（这一卷有靠猜补上的多选 —— 上限才会收到 2）；再找 `quiz submit attempt count` 的 `max`：补填过的卷子是 **2**，其余仍是配置值。若看到「未达到及格线 / 请重做」反复出现，就是这一条。⚠️ 旧那句 `local multiple choice only counts for the first attempt, hand back to llm` 已随批次 7 删除，日志里不会再有 |
 | 换了模型就一直 400 | 见 §6 #34。日志里找 `llm rejected thinking params, retry without them`；把「思考强度」切回"关闭"即可（关闭档对认不出的渠道不发任何参数） |
 | **Key 填错 / 模型名写错，却表现成「每隔 45 秒卡一下」** | 见 §6 #36。日志里找 `quiz llm rejected permanently, no retry`，后面跟着服务商原话（如 `Invalid API key`）。它**不会**再进 45 秒退避，改好配置后下一轮自动恢复 |
 | **作业 / 考试页点了选项却一个都没选中** | 见 §6 #35。这类页面用的是 `.Cy_*` 结构（选项文本与可点控件在两个分开的 `ul` 里），日志会写 `clicked option` 但 DOM 里没有选中项 |
@@ -1083,6 +1104,9 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **刚交完一份卷子就 `skip completed` + 点「下一节」，同一页另一份卷子一个字没答** | 见 §6 #46。`skip completed` 现在带 `by:` —— `by:"text-marker"` 就是那句页面级文案赢过了未完成任务点的证据（本条已修，修前它什么都不会说）；`by:"all-tasks-finished"` / `"catalog-marker"` 才是真有依据。日志里同时找 `quiz held: nothing answered this round`，它的 `reason:` 说明这一轮凭什么没答：`force-skip`（这份卷子正在按卷冷却）/ `in-progress`（上一轮还没结束）/ `answered`（自认已答完 —— 若页面上是一批完全不认识的 qid，会紧跟一条 `quiz paper switched by question identity` 把它重置） |
 | **每份卷子进来都先卡 8 秒左右才动**（日志 `font decrypt pending over limit, answer anyway`），或反过来反馈「它连解码都没有」 | 见 §6 #47。现在这条 warn 带着 `state:` 与 `sweepAgoMs:`，两种根因分得开：`state:"(none)"` / `sweepAgoMs:-1` = 解密扫描**没跑到**这一份文档；`state:"nodecl"` = 这份文档里没有字体声明（本来就没有可解的东西）；`state:"nomap"` = 表没加载或字形全部未命中。后两种是**终局判据**，1.3.0 批次 5 起不再白等（改写成 `font decrypt verdict: answer as-is`，30 秒一条）。范围也已收成题目那份文档，边上装饰帧的残留不再拖慢所有人 |
 | **长题（填空/简答）页面框里一个字没有，日志却说"答案齐了"**（`quiz fill audit ok` 里 `withValue` 等于 `total`） | 见 §6 #48。三条日志分开看：`quiz fill: no visible answer box in question` = 插件**找不到看得见的那个框**（带 `tag`/`cls`/`textarea`/`editable`/`iframe`/`answerFieldIsVisibleBox`/`html`，`answerFieldIsVisibleBox:true` 说明 `#answer{qid}` 本身就是个文本框）；`quiz fill audit: text answer not in a visible box` = 隐藏域有值、可见框空着（审计那侧的同一件事）；`quiz answer empty, question left blank` = 模型这一题**只回了个空**，不是插件没写。控制台可直接跑 `_xxtApp._readVisibleAnswerText(_xxtApp._extractQuestions(null)[0]._element)` 看插件读到了什么 |
+| **整卷只答了多选、像乱选的，单选反而空着** | 见 §6 #49。批次 7 之后多选与单选同等交给模型；日志里若还有 `multiple choice filled locally as refill`，说明这一卷确实靠猜补过题（`quiz submit attempt count` 的 `max` 会收到 2）。要确认那份改动进了浏览器，看 `start` 那行的 `build` 里有没有 `multi-llm-first` |
+| **屏幕上单选没勾、日志写 `quiz fill audit ok`** | 见 §6 #50。日志找 `quiz fill: no visible selection in question`（带 `radio` / `visibleRadio` / `markCls`）与 `quiz fill audit: value without visible selection`；`visibleRadio:0` 而 `radio:>0` 就是"控件与文本层分离、补点没生效" |
+| **一开始还检测题目，之后直接翻到下一节、然后卡住** | 见 §6 #51。日志里找 `dismiss popups: click` —— 它的 `cls` 若带 `prev_next`，说明点的是常驻导航（批次 7 已禁止）；再看 `study stuck`（每 2 分钟重播，带 `href`）与 `search job: no attachments and no synthetic job` |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1216,7 +1240,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（71 个场景 / 702 项）
+npm run e2e      # 真实 Edge 功能交叉检验（73 个场景 / 722 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

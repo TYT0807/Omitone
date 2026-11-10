@@ -375,13 +375,22 @@
       if (!key) key = String(location.href || '') + '|' + String(this._getCurrentTitle() || '');
 
       if (key === this._idleAdvanceKey) {
-        // 上一次已经推过了、页面还是原样：不再点，只留一条清晰的错误。
-        // 静默空转是最糟的结局 —— 用户以为在跑，其实一步都没动。
-        if (this._idleStuckLoggedKey !== key) {
+        // 上一次已经推过了、页面还是原样：不再点，但**不能只说一次**。
+        // 现场（2026-11-10 19:13:23）这里打了一条就永久静默，而后面只剩
+        // `search job: no attachments and no synthetic job` 每分钟一条 —— 用户分不清
+        // "还在慢慢跑"和"一步都没动"。静默空转是最糟的结局。
+        // 现在每 2 分钟重播一次，并把**当前地址**带上：那条键尾巴上的 `||` 加上
+        // `https://i.chaoxing.com/base?…` 直接说明"页面被推到没有课程结构的地方了"。
+        var stuckNow = Date.now();
+        if (this._idleStuckLoggedKey !== key || stuckNow - (this._idleStuckLoggedAt || 0) >= 120000) {
           this._idleStuckLoggedKey = key;
+          this._idleStuckLoggedAt = stuckNow;
           emitRuntimeLog('error', 'study stuck: 本节没有可识别的任务，点了前进也没反应', {
             title: String(this._getCurrentTitle() || '').slice(0, 40),
-            key: key.slice(0, 80)
+            key: key.slice(0, 80),
+            href: String(location.href || '').slice(0, 120),
+            everyMs: 120000,
+            hint: '这一页已经推过前进、仍认不出任务点，插件停在这里不再乱点 —— 每 2 分钟重复一次，这条日志还在动说明还在等，不是跑了'
           });
         }
         return true;

@@ -365,9 +365,13 @@
       // 有了这行，一眼就能对照：日志里缺哪个标记 = 那份改动还没被加载。
       emitRuntimeLog('info', 'start', {
         build: ['truncate-split', 'sep-parse', 'quiz-pending', 'mismatch-discard', 'rich-fill',
-          'chunk-5', 'quiz-no-progress-skip', 'local-multi', 'local-multi-once',
+          'chunk-5', 'quiz-no-progress-skip', 'multi-llm-first',
           // 2026-10-17 这一轮加的：缺哪个标记，就说明那份改动没被加载
-          'text-skip-script', 'noop-guard', 'discussion-outcome', 'quiz-hold-guard'],
+          'text-skip-script', 'noop-guard', 'discussion-outcome', 'quiz-hold-guard',
+          // 2026-11-10 批次 7 加的（缺哪个就说明那一半还没进浏览器）：
+          // popup-scope=只在弹窗容器里点按钮 / radio-clickthrough=分离控件补点文本项 /
+          // choice-visible=审计按"看得见的选中"计数 / idle-stuck-repeat=空转每 2 分钟重播
+          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat'],
         // 代码内容指纹（由 `tools/concat-page.js` 按片段内容算出，拼在 page.js 第一行）。
         // 装 dist 的人看 `content bridge ready` 里的 build；**直接加载源码目录**的人看这个 ——
         // 它一变就说明代码换了，改完没重新加载一眼就能看出来。

@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（48 个）：
+ * 本段的方法（50 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -21,7 +21,8 @@
  *   _fillChoice、_clearMultiChoiceSelection、_fillMultiChoice、_fillText、
  *   _fillTextarea、_resolveQuizAnswerDocument、_readRichEditorValue、
  *   _isAnswerTextControl、_answerToHtml、_writeAnswerText、_collectAnswerEditableNodes、
- *   _readVisibleAnswerText、_logMissingAnswerBox、
+ *   _readVisibleAnswerText、_logMissingAnswerBox、_hasVisibleChoiceSelection、
+ *   _logMissingChoiceSelection、
  *   _getQuizQuestionFilledValue、
  *   _isQuizQuestionFilled、_isQuizQuestionFilledWithKnownWrong、
  *   _clearKnownWrongFilledQuizAnswers、_areQuizAnswersFilled、_findButtonByText、
@@ -466,6 +467,14 @@
         if (filledValue) {
           self._markQuizQuestionAnsweredThisRun(question, 'llm', filledValue, type);
         }
+        // 选择题那一侧的对称检查：**值写进去了 ≠ 页面上看得出选中**（与上面 `visibleWrites` 同一族）。
+        // 现场（2026-11-10）就是这一格漏了 —— 单选一道都看不见选中，交卷前的审计却自证 ok。
+        // 只报不改判定：把它升级成"没答上"会让整卷永远交不出去（批次 6 同一取舍）。
+        if (filledValue && (type === 'single' || type === 'multiple' || type === 'judge')) {
+          if (!self._hasVisibleChoiceSelection(question._element)) {
+            self._logMissingChoiceSelection(question._element, filledValue);
+          }
+        }
       });
     },
 
@@ -650,6 +659,30 @@
           if (clickTarget && clickTarget !== item) {
             try { clickTarget.click(); } catch (e2) {}
           }
+        }
+      } else if (inputType === 'radio') {
+        // 「文本与控件分离」的作业/考试页（选项文本一列、radio 另一列）：
+        // 上面只点了配到的那个 radio，**站点挂在自己 <a>/li 上的选中态样式没被触发** ——
+        // 于是 input.checked 是 true、`#answer{qid}` 也写了值，可页面上那道单选
+        // **看起来完全没答**。用户 2026-11-10 的原话：「单选题一题也是空着的」，
+        // 而同一条卷子的审计写着 `checkedInDom:5 / choice:5`（自证 ok，见 `_auditQuizFillBeforeSubmit`）。
+        // 复选**不能**走这一支：复选点第二次就是取消（那正是"多选随机少选一项"的老 bug）。
+        // 单选点两次仍是选中（radio 只认"选中"这一态），所以补点文本项是安全的。
+        try { item.click(); } catch (eSep) {}
+        var sepTarget = null;
+        try {
+          // 站点把选中态挂在哪一层不固定：`<a>`（作业页常态）、`.fl`、`label`。
+          // ⚠️ 带真 href 的链接**绝不点** —— 这段是在整页扫选项里跑的，点错一下就是导航。
+          var cands = item.querySelectorAll('a, .fl, .fl.after, label, span');
+          for (var c = 0; c < cands.length; c++) {
+            var href = String(cands[c].getAttribute && cands[c].getAttribute('href') || '').trim();
+            if (href && !/^javascript:/i.test(href)) continue;
+            sepTarget = cands[c];
+            break;
+          }
+        } catch (eSep2) {}
+        if (sepTarget && sepTarget !== item) {
+          try { sepTarget.click(); } catch (eSep3) {}
         }
       }
 
@@ -1419,6 +1452,85 @@
     },
 
 
+    /**
+     * 这道选择题**在页面上看得出选中吗** —— 用户眼睛能看到的证据才算。
+     *
+     * 存在的理由（2026-11-10 真实日志）：一份卷子审计写着
+     * `quiz fill audit ok {"checkedInDom":5,"choice":5,"missing":[]}`，
+     * 可用户看到的是**单选题一题也是空着的**。审计与用户看到的是两件事：
+     * 旧审计写的是 `querySelector('input:checked, .cur, .selected, …')` ——
+     * `input:checked` 命中一个 `display:none` 的原生控件、`.cur` 命中页面自己的
+     * 当前章节高亮，都算"选中"。把"看不见"当"已答"，就会拿着白卷交卷。
+     *
+     * 三档证据，任一命中且**那个元素真的可见**才算数：
+     *   ① 我们或站点打的选中 class（`check_answer` / `check_answer_dx` —— 站点的 CSS 真的会画出来）
+     *   ② 勾选中的原生控件本身是可见的（`display:none` 的原生 radio 不算）
+     *   ③ 站点自己的选中类（`.cur` / `.selected` / `.active`）
+     *
+     * ⚠️ **`aria-checked` 故意不算证据**。它是我们自己在 `_clickOptionItem` 里
+     * 只要有 qid 就给文本项加上的（`item.setAttribute('aria-checked','true')`），
+     * 页面没有任何 CSS 因为它而变样。拿它当"看得见"就是**自己给自己开的证明**：
+     * 现场那道「隐藏域有值、input 已勾上、屏幕上什么都没有」的单选会被判成已答
+     * —— 正是这个函数要抓出来的东西。
+     *
+     * ⚠️ 返回 false **不会**拦住交卷 —— 与批次 6 那条"只提醒不拦"的取舍一致：
+     * 拦住就会回到「整卷永远不交」那个老 bug。它只负责让日志不再自证清白。
+     */
+    _hasVisibleChoiceSelection: function (el) {
+      if (!el || !el.querySelectorAll) return false;
+      var nodes = [];
+      try {
+        nodes = Array.from(el.querySelectorAll('[class*="check_answer"], .cur, .selected, .active'));
+      } catch (e) { return false; }
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i] === el) continue;
+        if (visible(nodes[i])) return true;
+      }
+      try {
+        var inputs = Array.from(el.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+        for (var k = 0; k < inputs.length; k++) {
+          if (inputs[k].checked && visible(inputs[k])) return true;
+        }
+      } catch (e2) {}
+      return false;
+    },
+
+
+    /**
+     * 选择题「有值却看不见选中」的现场快照（同一个元素只记一次）。
+     *
+     * 与 `_logMissingAnswerBox` 同族，只是这次要抓的是**选项那一侧**的形状：
+     * 徽标有没有、radio 藏在哪一列、文本与控件是不是分家 —— 有了这些计数
+     * 和一小段 HTML，下一次直接照着补选择器，不用再靠猜。
+     */
+    _logMissingChoiceSelection: function (el, value) {
+      if (!el || el._omNoCheckDiagAt) return;
+      try {
+        el._omNoCheckDiagAt = Date.now();
+        var countIn = function (sel) {
+          try { return el.querySelectorAll(sel).length; } catch (e) { return -1; }
+        };
+        var qid = '';
+        try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+        emitRuntimeLog('warn', 'quiz fill: no visible selection in question', {
+          qid: qid,
+          value: String(value == null ? '' : value).slice(0, 8),
+          title: textOf(el).replace(/\s+/g, ' ').slice(0, 30),
+          tag: String(el.tagName || '').toLowerCase(),
+          cls: String(el.className || '').slice(0, 60),
+          li: countIn('li'),
+          label: countIn('label'),
+          radio: countIn('input[type="radio"]'),
+          checkbox: countIn('input[type="checkbox"]'),
+          visibleRadio: countIn('input[type="radio"]:not([style*="none"])'),
+          badge: countIn('.num_option, .num_option_dx'),
+          markCls: countIn('[class*="check_answer"]'),
+          html: String(el.outerHTML || '').replace(/\s+/g, ' ').slice(0, 220)
+        });
+      } catch (e) {}
+    },
+
+
     _getQuizQuestionFilledValue: function (preferredDoc, question) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!question || !question._element) return '';
@@ -1594,10 +1706,15 @@
      *
      * 实测（2026-11-10）两类，各自的数不一样：
      *   · 单选题：隐藏域/控件值写进去了，自定义控件的选中态没生效
-     *     → 看 checkedInDom 与 choice 的差；
+     *     → 看 checkedInDom 与 choice 的差（选中态的判据是 `_hasVisibleChoiceSelection`，
+     *       **不可见的** `input:checked` 与页面自带的 `.cur` 高亮都不算，批次 7 换的）；
      *   · 填空/简答（长题）：**只有隐藏域有值，答题框完全空着** ——
      *     旧审计对文字题直接 continue，于是日志写着 ok、卷子却交了白框
      *     → 看 textVisible 与 text 的差（textHidden 里是题号）。
+     *
+     * ⚠️ 这两条各自都有一段"现场快照"日志配套：`quiz fill: no visible selection in question`
+     * 与 `quiz fill: no visible answer box in question` —— 光知道"5 题里 3 题没看得见"
+     * 定位不了形状，得把那一题的 DOM 计数与一小段 HTML 抄出来才能接着修。
      *
      * 单独成一个方法（而不是inline在 `_maybeSubmitQuiz` 里）是为了能被 e2e 直接驱动：
      * 那一串闸（自动提交开关、提交次数上限、ready 状态）任一不过就轮不到审计，
@@ -1639,15 +1756,20 @@
           continue;
         }
         auditChoice++;
+        // ⚠️ 这里**不能**再用一个宽松选择器自证清白（批次 6 那一轮的教训在选择题侧重演）：
+        // 旧写法在整个文档里找 `input:checked, .cur, .selected` —— 前者能命中一个
+        // `display:none` 的原生控件，后三者能命中页面自己的当前章节高亮，
+        // 都不等于"用户看得见这道题答了"。判据换成 `_hasVisibleChoiceSelection`：
+        // **只在这道题的容器里**找，且三档证据都要那个元素**真的可见**才算
+        // （`aria-checked` 是我们自己写上去的，页面不会因此画出任何东西，故不算）。
         var aChecked = false;
-        try {
-          // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
-          // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
-          // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
-          aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
-        } catch (eC) {}
+        try { aChecked = this._hasVisibleChoiceSelection(aEl); } catch (eC) {}
         if (aChecked) auditChecked++;
-        else auditMissing.push(aq.index != null ? aq.index : ai);
+        else {
+          auditMissing.push(aq.index != null ? aq.index : ai);
+          // 光报"5 题里 3 题看不见选中"没法定位形状 —— 把这一题的选项结构抄一份进日志
+          this._logMissingChoiceSelection(aEl, aHasValue);
+        }
       }
       var auditBad = auditChecked < auditChoice || auditTextVisible < auditText;
       var auditLabel = auditTextVisible < auditText
