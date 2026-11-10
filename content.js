@@ -362,6 +362,34 @@
     return typeof item === 'string' && /^[A-Za-z]$/.test(item.trim());
   }
 
+  /**
+   * 模型在位置式输出末尾多吐一个选项字母时，保守地截掉它。
+   *
+   * 实测（2026-11-10 日志）：单题批 expected:1 / received:2，
+   * 形如 ["实事求是、群众路线…","A"]。`resegmentFlatAnswers` 要求「所有项都被消费」，
+   * 会把这种形状判成失败 → 整批丢弃 → 1~5 题的小卷整卷空着；补问一次仍是同样形状，
+   * 用户看到的就是「连三五道题也不答了」。
+   *
+   * 只在三条同时成立时才采用：
+   *   ① 多出来的尾部全是单字母选项；
+   *   ② 前 N 项都能被 normalizeItem 识别（不是空值/错位）；
+   *   ③ 本批没有多选题（多选被摊平由 resegmentFlatAnswers 负责）。
+   * 其余任何形状仍整批丢弃 —— 历史教训：错位填空比留空重问更糟。
+   */
+  function trimTrailingOptionLetters(entries, data) {
+    if (!Array.isArray(entries) || !Array.isArray(data)) return null;
+    const n = entries.length;
+    if (n < 1 || data.length <= n) return null;
+    if (entries.some((e) => String((e && e.type) || '') === 'multiple')) return null;
+    const tail = data.slice(n);
+    if (!tail.every(isSingleLetterItem)) return null;
+    const head = data.slice(0, n);
+    try {
+      if (!head.every((item) => !!PROMPT.normalizeItem(item))) return null;
+    } catch (eNorm) { return null; }
+    return head;
+  }
+
   function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     // ⚠️ 前两个分支必须 **Array.isArray 才算成功**：JSON.parse 对裸 JSON 标量
@@ -866,14 +894,24 @@
           });
           items = resegmented;
         } else {
-          appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
-            expected: entries.length,
-            received: result.data.length,
-            // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
-            // 还是"回的是别的批次"，而这两种要修的完全不是一处。
-            excerpt: JSON.stringify(result.data).slice(0, 220)
-          });
-          return;
+          const trimmed = trimTrailingOptionLetters(entries, result.data);
+          if (trimmed) {
+            appendRuntimeLog('warn', 'llm trailing option letters trimmed' + (label ? ' (' + label + ')' : ''), {
+              expected: entries.length,
+              received: result.data.length,
+              excerpt: JSON.stringify(result.data).slice(0, 180)
+            });
+            items = trimmed;
+          } else {
+            appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
+              expected: entries.length,
+              received: result.data.length,
+              // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
+              // 还是"回的是别的批次"，而这两种要修的完全不是一处。
+              excerpt: JSON.stringify(result.data).slice(0, 220)
+            });
+            return;
+          }
         }
       }
 

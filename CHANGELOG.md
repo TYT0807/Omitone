@@ -230,6 +230,18 @@
   `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
   避免轻薄本上误报 `page script no response after tag injection`。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+- **小卷整批丢答案**：模型偶尔在位置式输出末尾多吐一个选项字母
+  （实测 `expected:1 / received:2`，形如 `["实事求是…","A"]`）。`resegmentFlatAnswers`
+  要求「所有项都被消费」，判失败 → 整批丢弃 → 1~5 题的小卷整卷空着，补问一次仍是同样形状，
+  表现就是「连三五道题也不答了」。`content.js` 新增 `trimTrailingOptionLetters`：
+  仅当「尾部全是单字母 + 前 N 项都可解析 + 本批无多选」时截掉多余字母采用前 N 项，
+  其余形状仍整批丢弃（错位填空比留空重问更糟）。
+- **小卷整批丢答案**：模型偶尔在位置式输出末尾多吐一个选项字母
+  （实测 `expected:1 / received:2`，形如 `["实事求是…","A"]`）。`resegmentFlatAnswers`
+  要求「所有项都被消费」，判失败 → 整批丢弃 → 1~5 题的小卷整卷空着，补问一次仍是同样形状，
+  表现就是「连三五道题也不答了」。`content.js` 新增 `trimTrailingOptionLetters`：
+  仅当「尾部全是单字母 + 前 N 项都可解析 + 本批无多选」时截掉多余字母采用前 N 项，
+  其余形状仍整批丢弃（错位填空比留空重问更糟）。
 
 ---
 
