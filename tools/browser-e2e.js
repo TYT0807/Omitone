@@ -8850,6 +8850,126 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 47. 0 题诊断接进延时窗口 + skip completed 自带依据（批次 11-A / 11-B） ---- */
+SCENARIOS.push({
+  name: '0题诊断接线延时窗口与完成依据取证',
+  path: '/frame-sig',
+  run: async function (ctx) {
+    // 批次 10-C 的窗口在真实页面**一次都没武装过**：它挂在「帧被拒」那条路上，而真实日志
+    // 01:49:17 那一帧的签名是 `answer:0`、`text:""`（卷子还没被写进子帧），闸门当场不成立。
+    // 真正量到正确形状的是 `_handleQuiz` 的 0 题诊断（00:46:04：inputs:9 + 题形命中 1）。
+    // 本场景钉四件事：① 这个形状现在能武装窗口（用**真实夹具**的 `_diagnoseQuestionScan`，不是编的数字）；
+    // ② 武装后/预算用完后**不再重复扫**（一次诊断要遍历 ≤8 文档 × 18 选择器，成本必须封顶）；
+    // ③ 没有作答框或没有题形命中时**不许**武装；④ `skip completed` 自己把依据落盘。
+    var out = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'var origDiag=app._diagnoseQuestionScan, origState=app._getVisibleTaskCompletionState,' +
+      '  origKey=app._studyProgressKey, origMedia=app._isActiveMediaPending;' +
+      'var calls=0;' +
+      'app._diagnoseQuestionScan=function(d){calls++;return origDiag.call(this,d);};' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true};};' +
+      'app._studyProgressKey=function(){return window.__scanScopeKey||"card-A";};' +
+      'app._isActiveMediaPending=function(){return false;};' +
+      'app.configs.restudy=false;app._quizSubmitPending=false;' +
+      'var origNext=app.nextUnit, origSwitch=app._switchToNextLearningCard, origPopups=app._dismissPopups;' +
+      'app._switchToNextLearningCard=function(){return false;};' +
+      'app.nextUnit=function(){window.__nextCalls=(window.__nextCalls||0)+1;};' +
+      'app._dismissPopups=function(){};' +
+      'function reset(){app._quizParseRetryUntil=0;app._quizParseRetryScope="";app._quizParseRetryWarnAt=0;}' +
+      // ① 真实夹具（fFirst 有 .TiMu + radio，fPaper 只有 div[class*="question"] + radio）
+      'reset();window.__scanScopeKey="card-A";calls=0;' +
+      'var sig=app._quizScanRetrySignal(null);' +
+      'var armed=sig?app._maybeHoldSkipForUnparsedQuiz(sig,"quiz-scan"):false;' +
+      'var until=app._quizParseRetryUntil;var doneWhileHeld=app._isCurrentCompleted();' +
+      // ② 窗口已武装 → 不再扫（calls 不许涨）
+      'var callsAfterArm=calls;var sigHeld=app._quizScanRetrySignal(null);var cHeld=calls;' +
+      // ③ 预算用掉 → 也不再扫（否则每张空转的卡片每秒一次全页遍历）
+      'app._quizParseRetryUntil=Date.now()-1;' +
+      'var callsAfterSpent=calls;var sigSpent=app._quizScanRetrySignal(null);var cSpent=calls;' +
+      'var doneAfterSpent=app._isCurrentCompleted();' +
+      // ⚠️ 两条成本闸**互不替代**（批次 11 实测：删掉「窗口未过期」那条，「预算用掉」那条
+      //   照样返回 null，整组断言全绿）。这里造只有第一条起作用的那一态：窗口还开着、
+      //   作用域已换到另一张卡片（卡片推进快过窗口过期时会真的发生）。
+      'app._quizParseRetryUntil=Date.now()+9000;window.__scanScopeKey="card-Z";' +
+      'var cBeforeOverlap=calls;var sigOverlap=app._quizScanRetrySignal(null);var cOverlap=calls;' +
+      'app._quizParseRetryUntil=Date.now()-1;' +
+      // 换一张卡片：重新量一次（上一节用掉的窗口不冤枉下一节）
+      'window.__scanScopeKey="card-B";var sigNextCard=app._quizScanRetrySignal(null);' +
+      'var callsForCardB=calls;' +
+      // ③ 反例：只 stub 诊断的返回值，验闸门条件本身
+      'reset();app._diagnoseQuestionScan=function(){return {docs:[{inputs:5,selectors:{}}],containers:0};};' +
+      'var sigNoShape=app._quizScanRetrySignal(null);' +
+      'app._diagnoseQuestionScan=function(){return {docs:[{inputs:0,selectors:{".TiMu":2}}],containers:0};};' +
+      'var sigNoControls=app._quizScanRetrySignal(null);' +
+      'reset();app._diagnoseQuestionScan=function(){return {docs:[{inputs:9,' +
+      '  selectors:{"div[class*=\\"question\\"]":1}}],containers:0,dropStages:{filtered:1}};};' +
+      'var sigReal=app._quizScanRetrySignal(null);' +
+      // ④ skip completed 的依据：用真实夹具（此时诊断已被 stub，先恢复）
+      'app._diagnoseQuestionScan=function(d){calls++;return origDiag.call(this,d);};' +
+      'reset();var skipped=app._skipIfCompleted();' +
+      'app._diagnoseQuestionScan=origDiag;app._getVisibleTaskCompletionState=origState;' +
+      'app._studyProgressKey=origKey;app._isActiveMediaPending=origMedia;' +
+      'app.nextUnit=origNext;app._switchToNextLearningCard=origSwitch;app._dismissPopups=origPopups;' +
+      'setTimeout(function(){' +
+      'function metaOf(name){for(var i=got.length-1;i>=0;i--){if(got[i].message===name)return got[i].meta||{};}' +
+      '  return null;}' +
+      'var delay=metaOf("quiz frame has answer controls but no parsable questions, delay skip");' +
+      'var skipMeta=metaOf("skip completed");' +
+      'var flat=skipMeta?Object.keys(skipMeta).every(function(k){var v=skipMeta[k];' +
+      '  return v===null||typeof v!=="object";}):false;' +
+      'reset();res({sig:!!sig,qTotal:sig&&sig.qTotal,answer:sig&&sig.answer,' +
+      '  containers:sig&&sig.containers,drop:sig&&sig.drop,armed:armed,delay:delay,' +
+      '  untilDelta:until-Date.now(),doneWhileHeld:doneWhileHeld,sigHeld:sigHeld,' +
+      '  callsAfterArm:callsAfterArm,cHeld:cHeld,cSpent:cSpent,calls:calls,' +
+      '  sigOverlap:sigOverlap,cOverlap:cOverlap,cBeforeOverlap:cBeforeOverlap,' +
+      '  sigSpent:sigSpent,doneAfterSpent:doneAfterSpent,' +
+      '  sigNextCard:!!sigNextCard,callsForCardB:callsForCardB,' +
+      '  sigNoShape:sigNoShape,sigNoControls:sigNoControls,sigReal:!!sigReal,' +
+      '  skipped:skipped,nextCalls:window.__nextCalls||0,skipMeta:skipMeta,flat:flat,' +
+      '  seen:got.length});},400);});})()'
+    );
+    check('11-A：真实夹具的页面级诊断给出 sig（qTotal 含第 15 条那族、answer 含 radio），不再是只有日志',
+      out && out.sig === true && out.qTotal >= 1 && out.answer >= 1 &&
+      typeof out.containers === 'number' && typeof out.drop === 'string',
+      JSON.stringify(out && { qTotal: out.qTotal, answer: out.answer, containers: out.containers, drop: out.drop }));
+    check('11-A：这个形状把延时窗口武装（armed=true、窗口 ≤12 秒）且**当刻不再宣称整节完成**',
+      out && out.armed === true && out.doneWhileHeld === false &&
+      out.untilDelta > 0 && out.untilDelta <= 12000,
+      JSON.stringify(out && { armed: out.armed, doneWhileHeld: out.doneWhileHeld, untilDelta: out.untilDelta }));
+    check('11-A：delay skip 那条带 `src:"quiz-scan"` 与 containers —— 与「帧被拒」那条分得开',
+      out && !!out.delay && out.delay.src === 'quiz-scan' && out.delay.qTotal >= 1 &&
+      out.delay.answer >= 1 && typeof out.delay.containers === 'number',
+      JSON.stringify(out && out.delay));
+    check('成本封顶：窗口已武装时**不再重复全页诊断**（calls 不涨，返回 null）',
+      out && out.sigHeld === null && out.cHeld === out.callsAfterArm,
+      JSON.stringify(out && { sigHeld: out.sigHeld, cHeld: out.cHeld, callsAfterArm: out.callsAfterArm }));
+    check('成本封顶：本卡片预算用掉后也不再诊断，且完成判定照常放行（不磨蹭）',
+      out && out.sigSpent === null && out.doneAfterSpent === true && out.cSpent === out.callsAfterArm,
+      JSON.stringify(out && { sigSpent: out.sigSpent, doneAfterSpent: out.doneAfterSpent, cSpent: out.cSpent, callsAfterArm: out.callsAfterArm }));
+    check('两条成本闸各自独立：窗口未过期 + 作用域已换卡片时**仍然不扫**（删掉第一条闸，上面两条断言照样绿）',
+      out && out.sigOverlap === null && out.cOverlap === out.cBeforeOverlap,
+      JSON.stringify(out && { sigOverlap: out.sigOverlap, cBeforeOverlap: out.cBeforeOverlap, cOverlap: out.cOverlap }));
+    check('换一张卡片重新量一次、且**只量一次**（下一节的真卷子不该被上一节用掉的窗口冤枉）',
+      out && !!out.sigNextCard && out.callsForCardB === out.cSpent + 1,
+      JSON.stringify(out && { sigNextCard: out.sigNextCard, callsForCardB: out.callsForCardB, cSpent: out.cSpent }));
+    check('反例：有作答框但**没命中题形** → 不武装（否则每个纯输入页都能拖住整节）',
+      out && out.sigNoShape === null, JSON.stringify(out && { sigNoShape: out.sigNoShape }));
+    check('反例：命中题形但**没有作答框** → 不武装（课件那一族照旧推进）',
+      out && out.sigNoControls === null, JSON.stringify(out && { sigNoControls: out.sigNoControls }));
+    check('00:46:04 那一行的形状（inputs:9 + div[class*="question"]:1 + 容器 0）确实被接住',
+      out && out.sigReal === true, JSON.stringify(out && { sigReal: out.sigReal }));
+    check('11-B：`skip completed` 自带依据（by/tasks/taskTypes/inputs/qTotal/containers/retrySpent）且全扁平',
+      out && out.skipped === true && out.nextCalls === 1 && !!out.skipMeta && out.flat === true &&
+      out.skipMeta.by === 'all-tasks-finished' && typeof out.skipMeta.tasks === 'number' &&
+      typeof out.skipMeta.taskTypes === 'string' && typeof out.skipMeta.inputs === 'number' &&
+      out.skipMeta.qTotal >= 1 && out.skipMeta.retrySpent === false,
+      JSON.stringify(out && { skipped: out.skipped, nextCalls: out.nextCalls, skipMeta: out.skipMeta, flat: out.flat }));
+  }
+});
+
 // ===========================================================================
 // 主流程
 // ===========================================================================

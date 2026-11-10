@@ -1282,6 +1282,15 @@
           });
         }
         this._quizInProgress = false;
+        // ⚠️ 批次 11-A：这一族的「0 题」必须喂给完成判定，不能只写一句诊断就扔掉。
+        // 真实日志 00:46:04 已经量到了正确形状（`inputs:9` + 题形命中 1 + 容器 0），
+        // 那是平台还没把卷子写进子帧 —— 00:46:16 重新加载后同一份当场答成 3 题。
+        // 当时没有任何判据读这份数字，1 秒后就是 `skip completed {by:"all-tasks-finished"}`，
+        // 用户看到的正是「第二个不答」+「判定为已完成了」。
+        // 窗口有界：每张卡片一次、≤12 秒，用完照旧推进（`_quizScanRetrySignal` 在预算已用掉
+        // 或窗口已武装时直接返回 null，所以这里每节课最多多扫一次诊断）。
+        var scanSig = this._quizScanRetrySignal(preferredDoc);
+        if (scanSig) this._maybeHoldSkipForUnparsedQuiz(scanSig, 'quiz-scan');
         return;
       }
       this._quizCurrentQuestions = questions;

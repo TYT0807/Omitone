@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（32 个）：
+ * 本段的方法（34 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
@@ -22,7 +22,8 @@
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_frameRejectSignature、
- *   _maybeHoldSkipForUnparsedQuiz、_noteQuizParseRetryExhausted、_searchIFramesOcs、
+ *   _maybeHoldSkipForUnparsedQuiz、_noteQuizParseRetryExhausted、_quizScanRetrySignal、
+ *   _skipCompletedEvidence、_searchIFramesOcs、
  *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
@@ -112,7 +113,12 @@
       if (this._quizSubmitPending) return false;
       if (this._switchToNextLearningCard('skip-completed')) return true;
       console.log('%c[Omitone] skip completed: ' + this._getCurrentTitle(), 'color:#FF9800');
-      emitRuntimeLog('info', 'skip completed', { title: this._getCurrentTitle(), by: this._completionEvidence || 'unknown' });
+      // 批次 11-B：这一句以前只有 `{title, by}` —— 用户问「怎么说已完成了？」时，
+      // 日志本身答不上来。现在把**判成完成的当场依据**一起落盘（全部只读取证，判据没动）。
+      emitRuntimeLog('info', 'skip completed', Object.assign(
+        { title: this._getCurrentTitle(), by: this._completionEvidence || 'unknown' },
+        this._skipCompletedEvidence()
+      ));
       this._dismissPopups();
       this.nextUnit();
       return true;
@@ -820,7 +826,10 @@
       emitRuntimeLog('warn', 'quiz frame has answer controls but no parsable questions, delay skip', {
         src: String(src || '').slice(0, 40),
         qHits: String(sig.qHits || ''), qTotal: sig.qTotal, answer: sig.answer,
-        textLen: sig.textLen,
+        // 批次 11-A：`src:"quiz-scan"` 这一路给的是**页面级**数字，没有单帧文本可报，
+        // 于是 `containers`（收着的题容器数）就是"命中了却被过滤掉 / 压根没容器"的分界。
+        textLen: Number(sig.textLen) || 0, containers: Number(sig.containers) || 0,
+        drop: String(sig.drop || ''),
         hint: '题形容器命中≥1 且作答框≥1、却一题都没抠出来 —— 多半是平台还没把卷子渲染进这一帧。' +
           '本卡片只给一个延时窗口，过期后照旧推进（不再空等）',
         holdMs: this._quizParseRetryUntil - now
@@ -834,9 +843,121 @@
       emitRuntimeLog('warn', 'quiz parse retry spent, allow skip', {
         src: String(src || '').slice(0, 40),
         qTotal: sig.qTotal, answer: sig.answer,
+        containers: Number(sig.containers) || 0,
         hint: '延时窗口已经用掉：这一帧仍然抠不出题，放行完成判定 —— 下一份日志里这条与上一条' +
           ' `delay skip` 相隔多久，就是这一族卷子渲染实际需要的时间'
       });
+    },
+
+    /**
+     * 页面级「有作答框 + 命中题形、却一题没抠出来」信号 —— 批次 11-A。
+     *
+     * ⚠️ 这一条补的是 10-C 接错的那根线。10-C 的窗口只挂在**「帧被拒」**那条路上，
+     * 而真实日志 01:49:17 那一帧的签名是 `answer:0`、`text:""`（卷子压根还没被
+     * `document.write` 进那一帧），闸门条件 `qTotal>=1 && answer>=1` 当场不成立 ——
+     * 于是"修好了"的延时窗口在真实页面**一次都没武装过**，用户看到的还是同一句
+     * `skip completed {by:"all-tasks-finished"}`。
+     * 同一时刻真正量到正确形状的，是 `_handleQuiz` 那句 0 题诊断（00:46:04：
+     * `inputs:9` + `matchedSelectors:{"div[class*=\"question\"]":1}` + 容器 0 个），
+     * 但它说完就扔，没有任何判据读它。这里把**同一份数字**接进**同一个有界窗口**。
+     *
+     * 一次诊断要遍历 ≤8 个文档 × 18 条选择器，所以只在「这张卡片还可能拿到窗口」时才算：
+     * 窗口已经武装（`_isCurrentCompleted` 正在拦）或本卡片预算已用掉 → 直接 null。
+     * 落盘字段全部标量（批次 10-A 的规矩：`dropStages` 是对象，进 meta 会被第 4 层截成
+     * `[truncated]`，所以压成 `matched:1/filtered:1` 这种串）。
+     */
+    _quizScanRetrySignal: function (preferredDoc) {
+      var now = Date.now();
+      if (this._quizParseRetryUntil > now) return null;
+      var scope = '';
+      try {
+        scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || '')));
+      } catch (eScope) {}
+      if (scope && scope === this._quizParseRetryScope) return null;
+
+      var diag = null;
+      try { diag = this._diagnoseQuestionScan(preferredDoc || null); } catch (eDiag) { return null; }
+      if (!diag || !Array.isArray(diag.docs)) return null;
+
+      var answer = 0;
+      var qTotal = 0;
+      diag.docs.forEach(function (d) {
+        if (!d) return;
+        answer += Number(d.inputs) || 0;
+        var hitMap = d.selectors || {};
+        Object.keys(hitMap).forEach(function (k) { qTotal += Number(hitMap[k]) || 0; });
+      });
+      if (!(qTotal >= 1) || !(answer >= 1)) return null;
+
+      var drop = '';
+      try {
+        drop = Object.keys(diag.dropStages || {}).map(function (k) {
+          return k + ':' + Number(diag.dropStages[k]);
+        }).join('/');
+      } catch (eDrop) {}
+
+      return {
+        qTotal: qTotal, qHits: '', answer: answer,
+        containers: Number(diag.containers) || 0,
+        docs: diag.docs.length, drop: drop, textLen: 0, text: ''
+      };
+    },
+
+    /**
+     * 「凭什么说这一节做完了」—— 批次 11-B，**只取证、不改判据**。
+     *
+     * 用户四轮反馈里最要命的一句是「怎么说已完成了？」，而 `skip completed` 整条日志只有
+     * `{title, by}` 两个字段：既看不出那一刻任务点清单长什么样，也看不出页面上还剩几个
+     * 作答框、延时窗口是用掉了还是根本没武装。下一份导出必须能自己回答这个问题。
+     *
+     * 全部走只读判据：`_isQuizLearningPending` 会重置答题状态（有副作用），**不许**调。
+     */
+    _skipCompletedEvidence: function () {
+      var ev = {
+        by: this._completionEvidence || 'unknown',
+        tasks: 0, unfinished: 0, taskTypes: '', unfinishedTypes: '',
+        inputs: 0, qTotal: 0, containers: 0, drop: '',
+        retryLeftMs: 0, retrySpent: false
+      };
+      try {
+        var tasks = this._collectVisibleTaskFrames();
+        ev.tasks = tasks.length;
+        // `_classifyTaskFrame` 给的是 `type`（work/video/read/…），不是 `kind` ——
+        // 「看见了哪几个任务点、各自完成没有」必须按这一族名字落盘，否则又是一句自证的空话。
+        var allTypes = {};
+        var openTypes = {};
+        tasks.forEach(function (t) {
+          var k = String((t && t.type) || 'other');
+          allTypes[k] = (allTypes[k] || 0) + 1;
+          if (!t || !t.finished) openTypes[k] = (openTypes[k] || 0) + 1;
+        });
+        var joinTypes = function (map) {
+          return Object.keys(map).map(function (k) { return k + ':' + map[k]; }).join('/');
+        };
+        ev.unfinished = tasks.filter(function (t) { return !t || !t.finished; }).length;
+        ev.taskTypes = joinTypes(allTypes).slice(0, 90);
+        ev.unfinishedTypes = joinTypes(openTypes).slice(0, 90);
+      } catch (eTasks) {}
+      try {
+        var diag = this._diagnoseQuestionScan(null);
+        if (diag && Array.isArray(diag.docs)) {
+          ev.inputs = diag.docs.reduce(function (sum, d) { return sum + (Number(d && d.inputs) || 0); }, 0);
+          ev.qTotal = diag.docs.reduce(function (sum, d) {
+            var hitMap = (d && d.selectors) || {};
+            return sum + Object.keys(hitMap).reduce(function (s, k) { return s + (Number(hitMap[k]) || 0); }, 0);
+          }, 0);
+          ev.containers = Number(diag.containers) || 0;
+          ev.drop = Object.keys(diag.dropStages || {}).map(function (k) {
+            return k + ':' + Number(diag.dropStages[k]);
+          }).join('/');
+        }
+      } catch (eDiag) {}
+      try {
+        ev.retryLeftMs = Math.max(0, (Number(this._quizParseRetryUntil) || 0) - Date.now());
+        var scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || '')));
+        ev.retrySpent = !!(scope && scope === this._quizParseRetryScope);
+      } catch (eRetry) {}
+      return ev;
     },
 
 

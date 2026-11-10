@@ -100,7 +100,7 @@
 >   走 `_isQuizSkipWindowLive()`。
 > - ⚠️ **不再自动替用户翻页**：乱码卷、认不出选项的卷都改成「停在原地 + 留日志 + 会自愈」。
 >   静默跳走的代价用户看不见，这是本轮删掉 `_skipQuiz()` 那条调用的全部理由。
-> - 验证：`npm run check`、`npm test`、`npm run e2e` 全绿（80 场景 / 784 项）。
+> - 验证：`npm run check`、`npm test`、`npm run e2e` 全绿（81 场景 / 796 项）。
 >   **真实课程页尚未实测**，见 §9 第一行。
 > - ⚠️ **「跳过」与「这一轮不答」都必须留日志**（批次 4 立的规矩）：`skip completed` 带 `by:`、
 >   `quiz held: nothing answered this round` 带 `reason:`。判不准时一律选**停在原地**（代价可见、会自愈），
@@ -174,6 +174,20 @@
 >   `quiz parse retry spent, allow skip`。别把它改成"一直等到抠出题为止"—— 用户的另一条抱怨正是
 >   「在已经完成的界面磨蹭很久」，两侧都是代价，这里的取舍得留痕。
 >   它**没有**放宽类型准入（9-D 那道仍然只取证），改的只是"完成判定慢一拍"。
+> - ⚠️ **0 题诊断必须喂给完成判定**（批次 11-A）：上面那条闸门在真实页面**一次都没开过** ——
+>   用户的第二句"没变化"就是它。原因是两族形状各说各话：`_handleQuiz` 的
+>   `quiz scan found 0 questions` 看得见 `inputs:9` + `div[class*="question"]:1`，却**只写日志就扔掉**；
+>   真正武装窗口的 `_maybeHoldSkipForUnparsedQuiz` 只在**任务点拒帧**那条链上被调，而那一帧的签名是空的
+>   （`answer:0`、`text:""`）。现在 `70-quiz-flow.js` 的 `questions.length === 0` 分支里
+>   `_quizScanRetrySignal(preferredDoc)` → 交给同一个 `_maybeHoldSkipForUnparsedQuiz(sig, 'quiz-scan')`。
+>   ⚠️ **别把它改成"每次 0 题都跑一次全页诊断"**：`_quizScanRetrySignal` 自带两道成本闸
+>   （窗口还开着 → null；`scope === _quizParseRetryScope` → null），**这两条互不替代**，
+>   删掉任意一条另一条仍能过测（批次 11 的反向验证就是这样被骗的：只有"窗口开着但换了一张卡片"
+>   这个重叠状态才让第一道闸成为唯一保护）。诊断抛异常一律返回 null —— 取证不许把答题链路带崩。
+> - ⚠️ **完成判定只能只读取证**（批次 11-B）：`skip completed` 现在带 `_skipCompletedEvidence()`
+>   的当场依据，回答用户那句「怎么说已完成了？」。⚠️ **里面绝对不许调 `_isQuizLearningPending`**
+>   —— 它有副作用（会复位答题状态），在完成判定的日志里调它等于"看一眼就把这节重做一遍"。
+>   落盘字段全部是标量（同 10-A 的深度闸）；`_collectVisibleTaskFrames()` 用的字段名是 **`type` 不是 `kind`**。
 > - ⚠️ **注入看门狗只在自己还持有那份文档时说话**（批次 10-B）：content.js 的
 >   `page script no response after tag injection` 原先无条件在 10 秒后报错，而 `waitedMs` 是**写死的常量**
 >   —— 真实日志 00:45:35 注入 `start`、00:45:38 页面就在动，那条假警报把排查整个带偏。
@@ -196,7 +210,7 @@
 >
 > - 版本 **1.3.0** 转正发布：tag `v1.3.0`，Release 附件 `omitone.zip` + `Omitone-manual.pdf`；README 下载直链自此指向 1.3.0。实验版标识已清理（manifest 名称恢复 `Omitone`、弹窗口径改正式版）。
 > - 本线内容 = 字体/日志 + 七轮加固（明细见 CHANGELOG 1.3.0 段）：**选择器单一真源 + 防漂移守卫**、**报错按根因分类**（`libs/api-error.js`）、**答题分批定版每批 ≤3 题 + 多选一题一请求**（用户定版"宁慢勿废"，集成测试有硬断言）、**小角色好感度养成 + 上课页伴侣**、**立绘看图重分类**（服装 44/表情 21/姿势 24）、**PDF.js/aria 页码文档任务**、**mooc2 结构适配**、**暴力测试进沙盒**。
-> - 验证基线：`npm test` 全绿（自检 20 + 基准 + 集成 **168** + worker 100）、e2e **80 场景 / 784 项**、回归 28、暴力 7、沙盒全绿。
+> - 验证基线：`npm test` 全绿（自检 20 + 基准 + 集成 **187** + worker 100）、e2e **81 场景 / 796 项**、回归 28、暴力 7、沙盒全绿。
 > - ⚠️ 字体反爬认知：font-cxsecret = **正常中文字符 + 自定义字形**（不是 PUA）——乱码主信号是解密层 `data-om-font-miss` 标记，PUA 检测只是兜底。
 > - 待办：字形表 `resources/table.json` 与 wyn665817 源头的覆盖度对比 / 表刷新流程（miss 标记已能自动发现过期并拦卷止损）。
 
@@ -995,7 +1009,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 20 项 + 提示词基准 + 集成 168 项） |
+| 任何东西 | `npm test` | **全绿**（自检 20 项 + 提示词基准 + 集成 187 项） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1027,7 +1041,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | 当前版本 | **1.3.0 正式版**（2026-11-01 发布；`page.js` 已拆成 16 个按域片段，见 §0.2.2） |
 | 代码规模 | `page.js` 13.0k 行 / 367 个方法（**构建产物**，608 KB）；源码在 `src/page/` 的 16 个片段里，合计 13.4k 行（含头部注释）；`content.js` 2476 行；`libs/` 合计 4.2k 行 |
 | 扩展体积 | 解压后约 **2.66 MB**（立绘 1.59 MB 是主体；`page.js` 608 KB、`resources/table.bin` 122 KB；明细见 README §12.1 体积账本） |
-| 测试基线 | 自检 20 项 · 集成 168 项 + worker 单测 100 项 · 真实 Edge 端到端 **80 场景 / 784 项全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
+| 测试基线 | 自检 20 项 · 集成 187 项 + worker 单测 100 项 · 真实 Edge 端到端 **81 场景 / 796 项全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
@@ -1414,7 +1428,7 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 
 | 项 | 说明 | 建议 |
 | --- | --- | --- |
-| **最近几版的修复都没在真实平台验证过** | 按时间排：「作业页回填隐藏域」「提交后认判分结果页」（1.2.3）→ jobid 挂在容器 div 上（1.2.8）→ 任务点反查回帧（1.2.11）→ 一份卷子交完不再判整节完成（1.3.0 批次 4）→ 等解密只问题目那份文档 + 解密层落结论（1.3.0 批次 5）→ 长题写进可见框、审计改读可见框（1.3.0 批次 6）→ 多选交回模型、选中改按看得见判定、关弹窗不再点「下一节」（1.3.0 批次 7）→ 交卷记账与 ready 键并回同一本账（1.3.0 批次 8）→ 讨论链路四道闸 + 不等没扫到的解密 + 不为 0 道题按住整节 + 被拒帧带签名（1.3.0 批次 9）。**全部只过了 mock e2e**（784 项全绿 + 反向验证），真实学习通页面**用户尚未回归实测** | 等用户跑一次真实页面。若仍有异常，**先看日志再改代码**：① 整章被跳过 → 看 1.2.9 加的**逐帧被拒原因**（`searchedCount: 0` 下面那几行，带帧地址）+ 批次 4 新加的 `skip completed {by:…}`；② 匹配上了却跑不动 → 看 `job.doc` 是否为 null；③ 作业/考试页异常 → 按 README §7 调试手册的两行（`#answer{qid}` 空串 / 停在 `waiting quiz submit result`）定位；④ **这一轮没答题** → 批次 4 起会写明 `quiz held: nothing answered this round {reason: force-skip / answered / in-progress}`；⑤ **像是"卡在等解密"** → 批次 5 起会写明 `quiz waiting font decrypt {state, sweepAgoMs, scope}` 或 `font decrypt verdict: answer as-is {state}` —— `state:"(none)"` 且 `sweepAgoMs:-1` 就是「content.js 的扫描没跑到这一份文档」，不是「解得慢」；⑥ **答题框空着却已交卷** → 批次 6 起会写明是哪一个环节：`quiz fill: no visible answer box in question`（找不到可见框，带 `answerFieldIsVisibleBox`）/ `quiz fill audit: text answer not in a visible box`（隐藏域有值、可见框空）/ `quiz answer empty, question left blank`（模型那一题只回了个空）；⑦ **单选看着一题没勾、却写着 `quiz fill audit ok`** → 批次 7 起会写明 `quiz fill: no visible selection in question`（选项控件与文本层分离、补点之后仍看不见选中，带 `radio` / `visibleRadio` / `markCls`）与审计侧 `quiz fill audit: value without visible selection`；⑧ **"直接下一页然后卡住"** → 批次 7 起先看那条 `study stuck`（每 2 分钟重播，带 `everyMs`）与有没有 `dismiss popups: click` 把常驻「下一节」点掉的记录 —— 现在弹窗容器之外的按钮一律不许点；⑨ **卷子没过就一直重交** → 批次 8 起看 `quiz submit pending` 的 `key` 与 `readyKey`：相等才是同一本账，不等会紧跟一条 `submit confirm key mismatch`，而键里出现 `%7C%7C%7C%7C`（中间三段全空）说明算键用的是外层文档、不是题目那份；⑩ **在已完成的界面磨蹭很久、整节不推进** → 批次 9 起分得开三种：`quiz waiting font decrypt {waitLimitMs}`（还在等解密，收窄后的上限就写在旁边）、`study hold quiz before finish {pending:{total:N}}` 且 `N>0`（真有题没答完，正常等待）、`study quiz hold skipped: nothing pending to wait for`（一道都没数出来且没在飞 —— 放行，但**为什么数不出来**要看前一条 `quiz scan found 0 questions` 的 `dropStages`）；⑪ **讨论区里凭空多出一条回帖** → 批次 9-A 之后这条链要先过四道闸，`discussion page declined {reason: study-page / return-jump-expired / no-discussion-text / no-editor / no-co-located-submit}` 会写明是哪道闸关的，一条 `declined` 都没有却发了帖 = 又有代码绕开了判据；⑫ **同一页第二份卷子不做** → 批次 9-D 起 `search job: every candidate frame was rejected` 的每条 `rejects` 带 `sig`：`sig.text` 里有题干文字且 `sig.qTotal>0` = 那份卷子**真的藏在这一帧里**，方向是准入判据；`sig.textLen=0` 且 `qTotal=0` = 空帧，方向在别处（`qHits` 是前 5 条选择器的位置串，只用来定位类名，**别拿它当总数**）；⑬ **明明没做完却写「已完成」、直接跳下一节** → 批次 10-C 起看这两条：`quiz frame has answer controls but no parsable questions, delay skip`（有作答控件 + 命中题形 + 一题没抠出 → 已把完成判定按下，带 `qTotal/answer/textLen/holdMs`）与 `quiz parse retry spent, allow skip`（本卡片预算用掉、照旧推进）。两条都没有 = 这一帧连"像卷子"的形状都没有，得回到 ⑫ 的签名继续查；`delay skip` 与紧随的 `spent` 相隔多久 ≈ 这一族卷子渲染实际需要的时间，是下一批调窗口的依据；⑭ **怀疑"page.js 根本没起来"** → 批次 10-B 起 `page script no response after tag injection` 只在**看门狗还持有那份活文档**时才报，且 `waitedMs` 是实测值；同一 `href` 上若另有别的文档在刷日志，那条 error 不会替它们说话（运行日志是跨文档共享的 200 条环形缓冲） |
+| **最近几版的修复都没在真实平台验证过** | 按时间排：「作业页回填隐藏域」「提交后认判分结果页」（1.2.3）→ jobid 挂在容器 div 上（1.2.8）→ 任务点反查回帧（1.2.11）→ 一份卷子交完不再判整节完成（1.3.0 批次 4）→ 等解密只问题目那份文档 + 解密层落结论（1.3.0 批次 5）→ 长题写进可见框、审计改读可见框（1.3.0 批次 6）→ 多选交回模型、选中改按看得见判定、关弹窗不再点「下一节」（1.3.0 批次 7）→ 交卷记账与 ready 键并回同一本账（1.3.0 批次 8）→ 讨论链路四道闸 + 不等没扫到的解密 + 不为 0 道题按住整节 + 被拒帧带签名（1.3.0 批次 9）。**全部只过了 mock e2e**（796 项全绿 + 反向验证），真实学习通页面**用户尚未回归实测** | 等用户跑一次真实页面。若仍有异常，**先看日志再改代码**：① 整章被跳过 → 看 1.2.9 加的**逐帧被拒原因**（`searchedCount: 0` 下面那几行，带帧地址）+ 批次 4 新加的 `skip completed {by:…}`；② 匹配上了却跑不动 → 看 `job.doc` 是否为 null；③ 作业/考试页异常 → 按 README §7 调试手册的两行（`#answer{qid}` 空串 / 停在 `waiting quiz submit result`）定位；④ **这一轮没答题** → 批次 4 起会写明 `quiz held: nothing answered this round {reason: force-skip / answered / in-progress}`；⑤ **像是"卡在等解密"** → 批次 5 起会写明 `quiz waiting font decrypt {state, sweepAgoMs, scope}` 或 `font decrypt verdict: answer as-is {state}` —— `state:"(none)"` 且 `sweepAgoMs:-1` 就是「content.js 的扫描没跑到这一份文档」，不是「解得慢」；⑥ **答题框空着却已交卷** → 批次 6 起会写明是哪一个环节：`quiz fill: no visible answer box in question`（找不到可见框，带 `answerFieldIsVisibleBox`）/ `quiz fill audit: text answer not in a visible box`（隐藏域有值、可见框空）/ `quiz answer empty, question left blank`（模型那一题只回了个空）；⑦ **单选看着一题没勾、却写着 `quiz fill audit ok`** → 批次 7 起会写明 `quiz fill: no visible selection in question`（选项控件与文本层分离、补点之后仍看不见选中，带 `radio` / `visibleRadio` / `markCls`）与审计侧 `quiz fill audit: value without visible selection`；⑧ **"直接下一页然后卡住"** → 批次 7 起先看那条 `study stuck`（每 2 分钟重播，带 `everyMs`）与有没有 `dismiss popups: click` 把常驻「下一节」点掉的记录 —— 现在弹窗容器之外的按钮一律不许点；⑨ **卷子没过就一直重交** → 批次 8 起看 `quiz submit pending` 的 `key` 与 `readyKey`：相等才是同一本账，不等会紧跟一条 `submit confirm key mismatch`，而键里出现 `%7C%7C%7C%7C`（中间三段全空）说明算键用的是外层文档、不是题目那份；⑩ **在已完成的界面磨蹭很久、整节不推进** → 批次 9 起分得开三种：`quiz waiting font decrypt {waitLimitMs}`（还在等解密，收窄后的上限就写在旁边）、`study hold quiz before finish {pending:{total:N}}` 且 `N>0`（真有题没答完，正常等待）、`study quiz hold skipped: nothing pending to wait for`（一道都没数出来且没在飞 —— 放行，但**为什么数不出来**要看前一条 `quiz scan found 0 questions` 的 `dropStages`）；⑪ **讨论区里凭空多出一条回帖** → 批次 9-A 之后这条链要先过四道闸，`discussion page declined {reason: study-page / return-jump-expired / no-discussion-text / no-editor / no-co-located-submit}` 会写明是哪道闸关的，一条 `declined` 都没有却发了帖 = 又有代码绕开了判据；⑫ **同一页第二份卷子不做** → 批次 9-D 起 `search job: every candidate frame was rejected` 的每条 `rejects` 带 `sig`：`sig.text` 里有题干文字且 `sig.qTotal>0` = 那份卷子**真的藏在这一帧里**，方向是准入判据；`sig.textLen=0` 且 `qTotal=0` = 空帧，方向在别处（`qHits` 是前 5 条选择器的位置串，只用来定位类名，**别拿它当总数**）；⑬ **明明没做完却写「已完成」、直接跳下一节** → 批次 10-C 起看这两条：`quiz frame has answer controls but no parsable questions, delay skip`（有作答控件 + 命中题形 + 一题没抠出 → 已把完成判定按下，带 `qTotal/answer/textLen/containers/drop/holdMs/src`）与 `quiz parse retry spent, allow skip`（本卡片预算用掉、照旧推进）。**`src` 分两条来源**：`frame-reject` = 任务点搜索拒帧那一族（批次 10），`quiz-scan` = `_handleQuiz` 当场扫出 0 题（**批次 11-A 接上的** —— 10-C 那批真实页面一次都没武装过，就是因为这一族的形状只写日志、没喂给完成判定）。两条都没有 = 这一帧连"像卷子"的形状都没有，得回到 ⑫ 的签名继续查；`delay skip` 与紧随的 `spent` 相隔多久 ≈ 这一族卷子渲染实际需要的时间，是下一批调窗口的依据；⑭ **怀疑"page.js 根本没起来"** → 批次 10-B 起 `page script no response after tag injection` 只在**看门狗还持有那份活文档**时才报，且 `waitedMs` 是实测值；同一 `href` 上若另有别的文档在刷日志，那条 error 不会替它们说话（运行日志是跨文档共享的 200 条环形缓冲）；⑮ **想知道「凭什么说这一节做完了」** → 批次 11-B 起 `skip completed` 自己带依据：`{by, tasks, unfinished, taskTypes, unfinishedTypes, inputs, qTotal, containers, drop, retryLeftMs, retrySpent}`（全部**只读取证**，判据一个字没动）。读法：`tasks=0` 却 `by:"all-tasks-finished"` = `hasTasks` 的来源有洞（任务点一个都没认出来也算"全做完"）；`unfinished>0` 仍跳节 = 走的不是这条判据，去看 `_completionEvidence` 是哪个值；`qTotal>0 && containers>0` = 题形容器和题都在，方向在完成判定的**准入**那一侧；`retrySpent:true` = 这一张卡片的 12 秒窗口已经用掉，同一张卡片不会再等第二次 |
 | **`configs` 没有 schema 校验** | 三份默认值服务的目的不同（page 全部开关 / popup 界面上的 / content 兜底），**本就不该一样**。真正会出事的「读了却没默认值」已由自检第 12 项守住，一上线就抓出 2 个 | 剩下只是「没有类型/范围校验」，收益不高，**暂不做** |
 | **继续细分大片段（可选）** | `page.js` 已从 9899 行拆成 `src/page/` 下 **16 个按域片段**（§0.2.2），最大的片段 1916 行。剩下 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1887 行）、`60-tasks-detect.js`（1424 行）还能再分 | **收益已明显变小，建议就停在这里。** 真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**，并照 `tools/README.md` 里记的四个坑走（尤其"新旧片段重名时清理必须在生成之前"） |
 | **`docs/channels.md` 的渠道快照可能过期** | 那份表标着「最后核对日期：**2026-09-18**」，记着各家 AI 的 base_url / 模型名 / 思考参数。服务商改地址、改模型名很快，而过期是**静默**的（插件照发请求，只是 400 或答非所问） | 用户 2026-10-10 明确**另开一轮**做这件事（要联网逐家实测，算内容更新而不是整理）。要动手时照该文件第 3 节走：改 `libs/thinking.js`（思考参数）+ `popup/popup.js` 的 `PROVIDER_PRESETS`（地址与模型名），核对完**记得改表头的核对日期** |

@@ -1510,6 +1510,156 @@ async function testInjectionWatchdogOwnershipGuard() {
   //   上面三条守卫锁住的就是这一点：说话的前提是"这一份实例还握着这一页"，不是"流里有没有动静"。
 }
 
+/**
+ * 批次 11-A / 11-B：0 题诊断 → 完成判定延时窗口 的**接线**，以及完成依据取证。
+ *
+ * 为什么集成层要管这件事：批次 10-C 的窗口在真实页面一次都没武装过 —— 它只挂在
+ * 「帧被拒」那条路上，而真实日志 01:49:17 那一帧的签名是 `answer:0`、`text:""`
+ * （卷子还没被 `document.write` 进子帧），闸门 `qTotal>=1 && answer>=1` 当场不成立。
+ * 真正量到正确形状的一直是 `_handleQuiz` 的 0 题诊断（00:46:04：inputs:9 + 题形命中 1）。
+ * **判据对、数字也量到了，只是两者之间没有线** —— 这条线必须在集成层钉住，
+ * 因为浏览器场景调的是 `_quizScanRetrySignal` 本身，看不见调用点有没有被挪到 `return` 后面。
+ */
+async function testQuizScanHoldWiring() {
+  console.log('\n[15] 0 题诊断必须接进完成判定的延时窗口（接线 + 闸门 + 成本封顶）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var detect = read('src/page/60-tasks-detect.js');
+  var quiz = read('src/page/70-quiz-flow.js');
+
+  // ---- ① 接线：调用点存在，而且在 0 题分支的那个 `return` 之前 ----
+  var anchor = "console.warn('[Omitone] no questions extracted');";
+  var at = quiz.indexOf(anchor);
+  check('能在 70-quiz-flow.js 定位「扫到 0 题」那条分支', at >= 0, '锚点没命中：那句 warn 改名或挪走了');
+  var branch = at < 0 ? '' : quiz.slice(at, at + 1600);
+  var iSig = branch.indexOf('this._quizScanRetrySignal(preferredDoc)');
+  var iHold = branch.indexOf("_maybeHoldSkipForUnparsedQuiz(scanSig, 'quiz-scan')");
+  var iRet = branch.indexOf('return;');
+  check('0 题分支真的调了页面级信号 `_quizScanRetrySignal`', iSig > 0,
+    branch.replace(/\s+/g, ' ').slice(0, 180));
+  check('量到的形状交给同一个有界窗口，且 `src` 写成 quiz-scan（与「帧被拒」那条分得开）',
+    iHold > 0, '找不到 _maybeHoldSkipForUnparsedQuiz(scanSig, \'quiz-scan\')');
+  check('接线在分支返回之前（写在 `return;` 后面等于没接线）',
+    iRet > 0 && iRet > iHold, 'firstReturn=' + iRet + ' hold=' + iHold);
+
+  // ---- ② 闸门 + 成本封顶：把方法从源码里取出来真跑 ----
+  var mAnchor = '_quizScanRetrySignal: function (preferredDoc) {';
+  var mAt = detect.indexOf(mAnchor);
+  check('能从 60-tasks-detect.js 定位 _quizScanRetrySignal', mAt >= 0, '锚点没命中：方法改名或签名变了');
+  var hAnchor = '_maybeHoldSkipForUnparsedQuiz: function (sig, src) {';
+  var hAt = detect.indexOf(hAnchor);
+  check('能从 60-tasks-detect.js 定位 _maybeHoldSkipForUnparsedQuiz', hAt >= 0);
+  if (mAt < 0 || hAt < 0) return;
+
+  var build = function (name) {
+    var start = detect.indexOf('function', detect.indexOf(name + ': function'));
+    var end = detect.indexOf('\n    },', start);
+    return new Function('return (' + detect.slice(start, end) + '\n    })')();
+  };
+  var scanRetrySignal = build('_quizScanRetrySignal');
+  var maybeHold = build('_maybeHoldSkipForUnparsedQuiz');
+
+  var logs = [];
+  var oldEmit = global.emitRuntimeLog;
+  var oldScaled = global.scaledMs;
+  global.emitRuntimeLog = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  global.scaledMs = function (ms) { return ms; };
+
+  function makeApp(diagReport) {
+    var calls = 0;
+    return {
+      calls: function () { return calls; },
+      scope: 'card-7',
+      _quizParseRetryUntil: 0,
+      _quizParseRetryScope: '',
+      _quizParseRetryWarnAt: 0,
+      _studyProgressKey: function () { return this.scope; },
+      _getCurrentTitle: function () { return '课后检测'; },
+      _diagnoseQuestionScan: function () { calls++; return diagReport; }
+    };
+  }
+  // 真实日志 00:46:04 那一行的形状
+  var realShape = {
+    docs: [{ inputs: 9, selectors: { 'div[class*="question"]': 1 } }],
+    containers: 0,
+    dropStages: { filtered: 1 }
+  };
+
+  try {
+    var app = makeApp(realShape);
+    var sig = scanRetrySignal.call(app, null);
+    check('00:46:04 的形状现在给出 sig：qTotal=1（第 15 条那族）/ answer=9 / containers=0',
+      !!sig && sig.qTotal === 1 && sig.answer === 9 && sig.containers === 0 && sig.docs === 1,
+      JSON.stringify(sig));
+    check('dropStages 那个对象被压成字符串再落盘（批次 10-A：对象进 meta 会被第 4 层截成 [truncated]）',
+      !!sig && sig.drop === 'filtered:1', JSON.stringify(sig && sig.drop));
+
+    app.scope = 'card-8';
+    var before = app.calls();
+    var armed = maybeHold.call(app, sig, 'quiz-scan');
+    check('sig 喂给窗口 → 武装成功并留下 delay skip（src=quiz-scan、带 containers/drop）',
+      armed === true && app._quizParseRetryUntil > Date.now() && logs.length === 1 &&
+      logs[0].meta.src === 'quiz-scan' && logs[0].meta.containers === 0 && logs[0].meta.drop === 'filtered:1',
+      JSON.stringify(logs.map(function (l) { return l.meta; })));
+
+    var callsAfterArm = app.calls();
+    var held = scanRetrySignal.call(app, null);
+    check('窗口已武装时**不再做全页诊断**（一次诊断 = ≤8 文档 × 18 选择器，成本必须封顶）',
+      held === null && app.calls() === callsAfterArm,
+      'calls ' + callsAfterArm + ' → ' + app.calls());
+
+    app._quizParseRetryUntil = Date.now() - 1;
+    var spent = scanRetrySignal.call(app, null);
+    check('同一张卡片预算用掉后也不再诊断（把「跳过」换成另一种「磨蹭」是这次要避免的）',
+      spent === null && app.calls() === callsAfterArm, 'calls=' + app.calls());
+
+    app.scope = 'card-9';
+    var nextCard = scanRetrySignal.call(app, null);
+    check('换一张卡片重新量一次（上一节用掉的窗口不该冤枉下一节的真卷子）',
+      !!nextCard && app.calls() === callsAfterArm + 1, 'calls=' + app.calls());
+
+    // ⚠️ 上面两条成本闸**互不替代**，必须各钉各的：实测把「窗口未过期」那条删掉，
+    //   紧接着的「预算用掉」那条照样返回 null（作用域相同），整组断言全绿 ——
+    //   典型的"改坏了却没人报警"。这里造出只有第一条闸起作用的那一态：
+    //   窗口还开着，但作用域已经换到别的卡片（卡片推进比窗口过期快时会真的发生）。
+    app._quizParseRetryUntil = Date.now() + 9000;
+    app.scope = 'card-11';
+    var callsBeforeOverlap = app.calls();
+    var overlap = scanRetrySignal.call(app, null);
+    check('两条成本闸各自独立：窗口未过期 + 作用域已换卡片时**仍然不扫**（删掉第一条闸，上一条断言照样绿）',
+      overlap === null && app.calls() === callsBeforeOverlap,
+      'overlap=' + JSON.stringify(overlap) + ' calls ' + callsBeforeOverlap + ' → ' + app.calls());
+    app._quizParseRetryUntil = Date.now() - 1;
+
+    var noShape = makeApp({ docs: [{ inputs: 5, selectors: {} }], containers: 0 });
+    check('有作答框但没命中任何题形 → 不武装（否则每个纯输入页都能拖住整节）',
+      scanRetrySignal.call(noShape, null) === null);
+    var noControls = makeApp({ docs: [{ inputs: 0, selectors: { '.TiMu': 2 } }], containers: 0 });
+    check('命中题形但没有作答框 → 不武装（课件那一族照旧推进）',
+      scanRetrySignal.call(noControls, null) === null);
+    var brokenDiag = makeApp(null);
+    brokenDiag._diagnoseQuestionScan = function () { throw new Error('boom'); };
+    check('诊断抛错时返回 null 而不是把整轮 tick 打断（这一条在 _handleQuiz 的收尾路径上）',
+      scanRetrySignal.call(brokenDiag, null) === null);
+  } finally {
+    global.emitRuntimeLog = oldEmit;
+    global.scaledMs = oldScaled;
+  }
+
+  // ---- ③ 完成依据取证只许用只读判据 ----
+  var evAt = detect.indexOf('_skipCompletedEvidence: function () {');
+  check('存在 _skipCompletedEvidence（skip completed 必须自证凭什么）', evAt >= 0);
+  var evBody = evAt < 0 ? '' : detect.slice(evAt, detect.indexOf('\n    },', evAt));
+  check('取证里不许调 `_isQuizLearningPending`（它会重置答题状态，是有副作用的判据）',
+    evBody.length > 0 && evBody.indexOf('_isQuizLearningPending') < 0,
+    evBody.replace(/\s+/g, ' ').slice(0, 160));
+  check('skip completed 那条日志把依据并进 meta（Object.assign）',
+    /emitRuntimeLog\('info',\s*'skip completed',\s*Object\.assign\(/.test(detect),
+    '找不到 Object.assign 合并依据的写法');
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
@@ -1535,6 +1685,7 @@ async function main() {
   await testNormalizeItemIndex();
   await testRejectSignatureSurvivesLogStore();
   await testInjectionWatchdogOwnershipGuard();
+  await testQuizScanHoldWiring();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
