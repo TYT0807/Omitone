@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '8818e91b7f';
+var OMITONE_CODE_REV = 'd3deb0c9a4';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -1501,6 +1501,7 @@ var OMITONE_CODE_REV = '8818e91b7f';
         diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
       }
 
+      var hitDocs = [];
       var inspectDoc = function (doc, path) {
         if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
@@ -1517,6 +1518,16 @@ var OMITONE_CODE_REV = '8818e91b7f';
           entry.answerFields = doc.querySelectorAll('[id^="answer"]').length;
         } catch (e) {}
 
+        // 批次 12-A：记下这份文档的最大单条命中数，并把文档本身留到旁路数组里 ——
+        // 下面「容器从哪几份文档数」要用它。旁路（不进 report）是因为 report 会整个进日志。
+        var maxHit = 0;
+        Object.keys(entry.selectors).forEach(function (k) {
+          var n = Number(entry.selectors[k]) || 0;
+          if (n > maxHit) maxHit = n;
+        });
+        entry.maxHit = maxHit;
+        if (maxHit > 0) hitDocs.push({ doc: doc, score: maxHit, href: entry.href });
+
         report.docs.push(entry);
         return false;
       };
@@ -1524,10 +1535,33 @@ var OMITONE_CODE_REV = '8818e91b7f';
       if (preferredDoc) this._walkDocuments(function (d) { return inspectDoc(d, 'preferredDoc'); }, preferredDoc, 0);
       this._walkDocuments(function (d) { return inspectDoc(d, 'top'); }, document, 0);
 
-      var containerHost = preferredDoc || this._getMainDocument() || document;
+      // ⚠️ 批次 12-A：容器必须从**真正命中题目的那几份文档**里数，不能固定问 `_getMainDocument()`。
+      // 真页面实测（`node tools/debug-live.js` + `node tools/debug-probe.js`，页面里调 `xxtAI.probe()`）：
+      // 这一节的卷子挂在
+      //   顶层 → #iframe(卡片页) → ananas/modules/work → #frame_content(doHomeWorkNew)
+      // 里（顶层下面第三份文档），而 `_getMainDocument()` 给的是**卡片页** —— 那里只有 1 个无关的
+      // `div[class*="question"]`。于是真卷子上 `containers` **永远是 0**（同一时刻 `.TiMu=24`、
+      // `_extractQuestions` 正常返回 24 题），`hint` 就常年指着「容器全部被过滤」撒谎 ——
+      // 而那一行正是用户日志里被当成结论读的唯一一句，也是批次 10-C 当初判断形状的出处。
+      // 顺带：一份卡片里挂两份卷子时，这里按**每一份命中文档**分别数，两份都看得见。
+      var containerHosts = [];
+      if (preferredDoc) containerHosts = [preferredDoc];
+      else if (hitDocs.length) containerHosts = hitDocs.map(function (h) { return h.doc; });
+      else containerHosts = [this._getMainDocument() || document];
+
       var containers = [];
-      try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
+      containerHosts.forEach(function (host) {
+        if (!host) return;
+        try { containers = containers.concat(self._collectQuestionContainers(host) || []); } catch (e) {}
+      });
       report.containers = containers.length;
+      report.containerDocs = containerHosts.length;
+      report.containerPaths = containerHosts.map(function (host) {
+        try {
+          return String((host && host.location && host.location.href) || '')
+            .replace('https://mooc1.chaoxing.com', '').slice(0, 44);
+        } catch (eP) { return ''; }
+      }).join('|').slice(0, 150);
 
       // ⚠️ 「命中了却被吃掉」要说清死在哪一道（批次 9-C）。
       // 真实日志 00:46:04 只给了 `matchedSelectors:{"div[class*=\"question\"]":1}` 和 `inputs:9`，
@@ -1535,23 +1569,32 @@ var OMITONE_CODE_REV = '8818e91b7f';
       // 现场判不了 —— 而这三条各自对应完全不同的修法。
       if (!report.containers) {
         report.dropStages = diagSelectors.reduce(function (acc, sel) {
-          try {
-            var found = Array.prototype.slice.call(containerHost.querySelectorAll(sel));
-            if (!found.length) return acc;
-            var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
-            var set = new Set(usable);
-            var unique = usable.filter(function (item) {
-              if (!item || !item.closest) return true;
-              var parent = item.parentElement;
-              while (parent) {
-                if (set.has(parent)) return false;
-                parent = parent.parentElement;
-              }
-              return true;
-            });
-            var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
-            acc[sel] = { matched: found.length, filtered: found.length - usable.length, deduped: usable.length - unique.length, unparsable: unique.length - parsable };
-          } catch (e) {}
+          containerHosts.forEach(function (host) {
+            if (!host) return;
+            try {
+              var found = Array.prototype.slice.call(host.querySelectorAll(sel));
+              if (!found.length) return;
+              var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
+              var set = new Set(usable);
+              var unique = usable.filter(function (item) {
+                if (!item || !item.closest) return true;
+                var parent = item.parentElement;
+                while (parent) {
+                  if (set.has(parent)) return false;
+                  parent = parent.parentElement;
+                }
+                return true;
+              });
+              var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
+              var prev = acc[sel] || { matched: 0, filtered: 0, deduped: 0, unparsable: 0 };
+              acc[sel] = {
+                matched: prev.matched + found.length,
+                filtered: prev.filtered + (found.length - usable.length),
+                deduped: prev.deduped + (usable.length - unique.length),
+                unparsable: prev.unparsable + (unique.length - parsable)
+              };
+            } catch (e) {}
+          });
           return acc;
         }, {});
       }
@@ -1579,6 +1622,37 @@ var OMITONE_CODE_REV = '8818e91b7f';
       }
 
       return report;
+    },
+
+
+    /**
+     * `dropStages` 压平成一句人话 —— 批次 12，**只读取证**。
+     *
+     * 真页面实测（`xxtAI.probe()`）给的是
+     * `{ "div[class*=\"question\"]": {matched:1, filtered:1, deduped:0, unparsable:0} }`
+     * —— **每条选择器对应一个对象**。而三处取证都按 `{选择器: 数字}` 读它：
+     *   ① `_quizScanRetrySignal` / ② `_skipCompletedEvidence` 里 `Number(对象)` = **NaN**，
+     *      落盘就成了 `div[class*="question"]:NaN`（探针当场抓到的就是这个）；
+     *   ③ 这一族的日志本来就有「落盘字段一律标量」的规矩（批次 10-A），三处口径也该是同一句。
+     *      ⚠️ 顺带更正一处**我自己写错的诊断**：批次 12 初版说"原样塞进 meta 会被第 4 层截成
+     *      [truncated]"—— 实测不成立，`meta.dropStages` 只落在第 2、3 层，截不到它
+     *      （`cleanLogMeta` 从第 4 层起才动手，10-A 那条 `rejects[].sig.qHit` 才是真的在第 4 层）。
+     *      压平的理由是 NaN 与口径，不是截断 —— 集成测试 [15] 里那条反向对照把这个边界钉住了。
+     *
+     * 这一格本身很值钱：`filtered`（不可见且无文本）/ `deduped`（嵌套去重吃掉）/
+     * `unparsable`（解析返回 null）三条各自对应完全不同的修法，只剩一个总数就回答不了"死在哪一道"。
+     * 所以四格一起写死、顺序固定，且保证是**标量字符串**。
+     */
+    _flattenDropStages: function (stages) {
+      var keys = [];
+      try { keys = Object.keys(stages || {}); } catch (e) { return ''; }
+      return keys.slice(0, 4).map(function (k) {
+        var v = (stages && stages[k]) || {};
+        return String(k).slice(0, 28) + ':matched' + (Number(v.matched) || 0) +
+          '/filtered' + (Number(v.filtered) || 0) +
+          '/deduped' + (Number(v.deduped) || 0) +
+          '/unparsable' + (Number(v.unparsable) || 0);
+      }).join(';').slice(0, 220);
     },
 
 
@@ -4248,8 +4322,10 @@ var OMITONE_CODE_REV = '8818e91b7f';
      *
      * 一次诊断要遍历 ≤8 个文档 × 18 条选择器，所以只在「这张卡片还可能拿到窗口」时才算：
      * 窗口已经武装（`_isCurrentCompleted` 正在拦）或本卡片预算已用掉 → 直接 null。
-     * 落盘字段全部标量（批次 10-A 的规矩：`dropStages` 是对象，进 meta 会被第 4 层截成
-     * `[truncated]`，所以压成 `matched:1/filtered:1` 这种串）。
+     * 落盘字段全部标量（批次 10-A 的规矩）。批次 12：`dropStages` 真实形状是
+     * 「选择器 → {matched,filtered,deduped,unparsable}」，旧写法按数字读它 → `:NaN`，
+     * 现在统一走 `_flattenDropStages`；`qTotal` 改成**逐文档取最大值再相加**，
+     * 因为真页面同一批 24 道题被三族选择器各数一遍，相加给出页面里根本没有的 73。
      */
     _quizScanRetrySignal: function (preferredDoc) {
       var now = Date.now();
@@ -4270,21 +4346,25 @@ var OMITONE_CODE_REV = '8818e91b7f';
         if (!d) return;
         answer += Number(d.inputs) || 0;
         var hitMap = d.selectors || {};
-        Object.keys(hitMap).forEach(function (k) { qTotal += Number(hitMap[k]) || 0; });
+        // ⚠️ 批次 12：这里取**每条选择器命中的最大值**，不是全部相加。
+        // 真页面实测：同一批 24 道题被 `.TiMu` / `.singleQuesId` / `div[class*="TiMu"]`
+        // 各数了一遍，相加给出 `qTotal:73` —— 一个页面里根本没有的数字。
+        // 三条选择器的各自数量本来就在 `matchedSelectors` 里，这里只要"大概有几道题"，
+        // 而判据是 `>=1`：取最大值一样能开门（真页面那条 `div[class*="question"]:1` 仍然算 1）。
+        var docMax = 0;
+        Object.keys(hitMap).forEach(function (k) {
+          var n = Number(hitMap[k]) || 0;
+          if (n > docMax) docMax = n;
+        });
+        qTotal += docMax;
       });
       if (!(qTotal >= 1) || !(answer >= 1)) return null;
-
-      var drop = '';
-      try {
-        drop = Object.keys(diag.dropStages || {}).map(function (k) {
-          return k + ':' + Number(diag.dropStages[k]);
-        }).join('/');
-      } catch (eDrop) {}
 
       return {
         qTotal: qTotal, qHits: '', answer: answer,
         containers: Number(diag.containers) || 0,
-        docs: diag.docs.length, drop: drop, textLen: 0, text: ''
+        docs: diag.docs.length, drop: this._flattenDropStages(diag.dropStages),
+        textLen: 0, text: ''
       };
     },
 
@@ -4327,14 +4407,19 @@ var OMITONE_CODE_REV = '8818e91b7f';
         var diag = this._diagnoseQuestionScan(null);
         if (diag && Array.isArray(diag.docs)) {
           ev.inputs = diag.docs.reduce(function (sum, d) { return sum + (Number(d && d.inputs) || 0); }, 0);
+          // 与 `_quizScanRetrySignal` 同一个口径（批次 12）：每份文档取最大命中数再相加，
+          // 求和会把同一批题按族名数三遍（真页面 24 题报成 73）。
           ev.qTotal = diag.docs.reduce(function (sum, d) {
             var hitMap = (d && d.selectors) || {};
-            return sum + Object.keys(hitMap).reduce(function (s, k) { return s + (Number(hitMap[k]) || 0); }, 0);
+            var docMax = 0;
+            Object.keys(hitMap).forEach(function (k) {
+              var n = Number(hitMap[k]) || 0;
+              if (n > docMax) docMax = n;
+            });
+            return sum + docMax;
           }, 0);
           ev.containers = Number(diag.containers) || 0;
-          ev.drop = Object.keys(diag.dropStages || {}).map(function (k) {
-            return k + ':' + Number(diag.dropStages[k]);
-          }).join('/');
+          ev.drop = this._flattenDropStages(diag.dropStages);
         }
       } catch (eDiag) {}
       try {
@@ -9134,7 +9219,15 @@ var OMITONE_CODE_REV = '8818e91b7f';
               return Object.assign(sum, d.selectors);
             }, {}),
             inputs: diag.docs.reduce(function (sum, d) { return sum + d.inputs; }, 0),
-            dropStages: diag.dropStages || {},
+            // ⚠️ 批次 12：`dropStages` 是「选择器 → {matched,filtered,deduped,unparsable}」。
+            // 旧写法把每条的值当**数字**读，落盘就成了 `div[class*="question"]:NaN`；
+            // 这里统一压成标量串（口径与 `_quizScanRetrySignal`、`_skipCompletedEvidence` 同一份）。
+            // 并把容器是从**哪几份文档**数的也一起落盘 ——
+            // 真页面实测：`containers` 以前固定在卡片页上数，卷子那份文档永远数不到（恒为 0）。
+            containers: Number(diag.containers) || 0,
+            containerDocs: Number(diag.containerDocs) || 0,
+            containerPaths: String(diag.containerPaths || '').slice(0, 150),
+            dropStages: this._flattenDropStages(diag.dropStages),
             samples: diag.samples.slice(0, 3)
           });
         }
@@ -13837,6 +13930,67 @@ var OMITONE_CODE_REV = '8818e91b7f';
       emitRuntimeLog('info', 'task give-up list cleared (manual)', {});
       console.log('[Omitone] task give-up list cleared');
       return true;
+    },
+    /**
+     * 只读探针 —— 排查「明明没做完却说已完成」「这一节的第二个不做」时，
+     * 一次把插件**眼里**的这一节打出来：任务点分类、平台附件账本、完成判定、
+     * 抠题结果、延时窗口状态。
+     *
+     * ⚠️ 这里调的每个方法都必须只读：不许点下一节、不许交卷、不许发 AI 请求、
+     * 不许复位任何答题状态（尤其别调 `_isQuizLearningPending`，它会复位答题状态）。
+     * 判据本身一个字不改 —— 探针只是把同一套判据的输入输出摊开给人看。
+     */
+    probe: function () {
+      if (!app) return null;
+      var out = { at: new Date().toISOString(), href: String(location.href || '').slice(0, 110) };
+      function safe(name, fn) {
+        try { out[name] = fn(); } catch (e) {
+          out[name] = 'ERR:' + (e && e.name ? e.name : '?') + ' ' + String((e && e.message) || e || '').slice(0, 50);
+        }
+      }
+      safe('completion', function () {
+        var s = app._getVisibleTaskCompletionState();
+        return { hasTasks: !!s.hasTasks, allFinished: !!s.allFinished };
+      });
+      safe('tasks', function () {
+        return app._collectVisibleTaskFrames().map(function (t) {
+          return {
+            type: t.type, finished: !!t.finished, marker: !!t.hasTaskMarker,
+            src: String(t.src || '').slice(0, 56),
+            wrap: String((t.wrap && t.wrap.className) || '').slice(0, 40),
+            doc: t.doc ? 'ok' : 'null'
+          };
+        });
+      });
+      safe('attachments', function () {
+        return app._getChaoxingAttachments().map(function (a) {
+          var p = (a && a.property) || {};
+          return {
+            jobid: String(a.jobid || '').slice(0, 24), module: String(p.module || ''),
+            job: String(a.job), isPassed: String(p.isPassed),
+            title: String(p.title || p.name || '').slice(0, 22)
+          };
+        });
+      });
+      safe('progressKey', function () { return String(app._studyProgressKey() || ''); });
+      safe('retryWindow', function () {
+        return {
+          leftMs: Math.max(0, (Number(app._quizParseRetryUntil) || 0) - Date.now()),
+          scope: String(app._quizParseRetryScope || '')
+        };
+      });
+      safe('sig', function () {
+        var s = app._quizScanRetrySignal(null);
+        return s ? { qTotal: s.qTotal, answer: s.answer, containers: s.containers, docs: s.docs, drop: s.drop } : null;
+      });
+      safe('questions', function () {
+        var qs = app._extractQuestions(null) || [];
+        var types = {};
+        qs.forEach(function (q) { types[q.type] = (types[q.type] || 0) + 1; });
+        return { n: qs.length, types: types, first: qs.length ? String(qs[0].title || '').slice(0, 28) : '' };
+      });
+      console.log('[Omitone] probe:', out);
+      return out;
     }
   };
 })();

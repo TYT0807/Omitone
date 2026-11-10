@@ -8972,6 +8972,81 @@ SCENARIOS.push({
 
 // ===========================================================================
 // 主流程
+/** ---- 48. 取证要在「卷子那份文档」上数，不是在外层卡片页（批次 12） ---- */
+SCENARIOS.push({
+  name: '诊断的容器与压平取证跨文档',
+  path: '/frame-sig',
+  run: async function (ctx) {
+    // 真实页面实测（rig + `xxtAI.probe()`）抓到四处取证毛病，其中最坑的一条是：
+    // `_diagnoseQuestionScan` 的 containers / samples / dropStages 全部在
+    // `_getMainDocument()`（外层卡片页）上算，而卷子在第 3 层文档里 ——
+    // 于是 `containers` **恒为 0**，`hint` 那句「选择器有命中但容器一个都没留下」当着用户的面说谎。
+    // 这一族页面的结构（top → /frame-sig-inner → fFirst / fPaper / fEmpty）就是照真页面搭的。
+    var out = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var rep=app._diagnoseQuestionScan(null);' +
+      'var flat=app._flattenDropStages(rep.dropStages);' +
+      // 外层那份文档单独数一次：批次 12 之前的 containers 就是这个数
+      'var topOnly=app._collectQuestionContainers(document).length;' +
+      'var ev=app._skipCompletedEvidence();' +
+      'return {containers:rep.containers,containerDocs:rep.containerDocs,' +
+      '  containerPaths:String(rep.containerPaths||""),topOnly:topOnly,flat:flat,' +
+      '  docs:rep.docs.length,samples:(rep.samples||[]).length,' +
+      '  parsedTitle:(rep.samples||[]).some(function(s){return String(s.title||"").length>0;}),' +
+      '  evDrop:String(ev.drop||""),evQTotal:ev.qTotal,evContainers:ev.containers,' +
+      '  nan:(String(rep.containers)+flat+ev.drop).indexOf("NaN")>=0};})()'
+    );
+    check('12：容器是在**有题的那几份文档**上数的（外层文档自己数必然是 0，否则这条是空测）',
+      out && out.topOnly === 0 && out.containers >= 2,
+      JSON.stringify(out && { containers: out.containers, topOnly: out.topOnly }));
+    check('12：containerDocs / containerPaths 说出「是在哪几份文档上数的」，日志才能自证',
+      out && typeof out.containerDocs === 'number' && out.containerDocs >= 1 &&
+      /frame-sig/.test(out.containerPaths),
+      JSON.stringify(out && { containerDocs: out.containerDocs, containerPaths: out.containerPaths }));
+    check('12：samples 取自卷子那份文档（题干解得开才有 title，外层数出来永远是空数组）',
+      out && out.samples >= 1 && out.parsedTitle === true,
+      JSON.stringify(out && { samples: out.samples, parsedTitle: out.parsedTitle }));
+    check('12：skip completed 的依据同一口径（qTotal 是数字、drop 是串、containers 跨文档）',
+      out && typeof out.evQTotal === 'number' && out.evContainers >= 2 &&
+      (out.evDrop === '' || /matched\d+\/filtered\d+/.test(out.evDrop)),
+      JSON.stringify(out && { evQTotal: out.evQTotal, evContainers: out.evContainers, evDrop: out.evDrop }));
+
+    // 第二步：把两份卷子的容器全部遮成「不可见且无文本」—— 此时 `containers` 归零，
+    // `_diagnoseQuestionScan` 才会算 dropStages。这一步是为了拿到**真实的两层结构**，
+    // 而不是自己造一个漂亮形状：批次 12 的 NaN 正是在真结构上读出来的。
+    var ghost = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var inner=document.getElementById("iframe").contentDocument;' +
+      'var docs=[document,inner];' +
+      '["fFirst","fPaper","fEmpty"].forEach(function(id){' +
+      '  var f=inner.getElementById(id);if(f&&f.contentDocument)docs.push(f.contentDocument);});' +
+      // 遮没的对象**由插件自己报**：清空文本 + display:none，让它同时满足「不可见」与「无文本」。
+      // 只改显示不够 —— `usable` 的判据是「可见**或**有文本」，光藏起来题还在。
+      'var hid=0;' +
+      'docs.forEach(function(d){var cs=[];try{cs=app._collectQuestionContainers(d)||[];}catch(e){}' +
+      '  cs.forEach(function(n){n.textContent="";n.style.display="none";hid++;});});' +
+      'var rep=app._diagnoseQuestionScan(null);' +
+      'var flat=app._flattenDropStages(rep.dropStages);' +
+      // 旧写法（把每条选择器的值当数字读）在**同一份真实结构**上会写成什么样
+      'var old=Object.keys(rep.dropStages||{}).map(function(k){' +
+      '  return k + ":" + Number((rep.dropStages||{})[k]);}).join("/");' +
+      'return {hid:hid,containers:rep.containers,flat:flat,old:old,' +
+      '  keys:Object.keys(rep.dropStages||{}).length,' +
+      '  hint:String(rep.hint||"").slice(0,20)};})()'
+    );
+    check('12：容器全被遮没时 containers 归零、dropStages 才出场（先确认夹具真的走到了那条分支）',
+      ghost && ghost.hid >= 2 && ghost.containers === 0 && ghost.keys >= 1,
+      JSON.stringify(ghost && { hid: ghost.hid, containers: ghost.containers, keys: ghost.keys }));
+    check('12：真结构压成四格定序串，且 filtered 报出「遮没」这一道（这就是那格取证的用处）',
+      ghost && /matched\d+\/filtered\d+\/deduped\d+\/unparsable\d+/.test(ghost.flat) &&
+      /filtered[1-9]/.test(ghost.flat),
+      JSON.stringify(ghost && { flat: ghost.flat }));
+    check('12：反向对照 —— 旧写法在同一份结构上确实写出 NaN（证明上面那条不是空测）',
+      ghost && ghost.old.indexOf('NaN') >= 0 && ghost.flat.indexOf('NaN') < 0,
+      JSON.stringify(ghost && { old: ghost.old, flat: ghost.flat }));
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

@@ -9,10 +9,10 @@
  * 把状态转成「给人看的一行字」的辅助方法 —— 规则：所有 `_log*` / `_describe*` / `_diagnose*` 都在这里
  * 真正的日志出口 emitRuntimeLog 在外壳 00-shell-constants.js
  *
- * 本段的方法（8 个）：
+ * 本段的方法（9 个）：
  *   _logUnsupportedJobOnce、_logTaskWait、_describeQuestionImages、
  *   _logRandomAnswers、_describeQuizResultPage、_logSubmitPayload、
- *   _diagnoseQuestionScan、_describePopupQuiz
+ *   _diagnoseQuestionScan、_flattenDropStages、_describePopupQuiz
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -204,6 +204,7 @@
         diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
       }
 
+      var hitDocs = [];
       var inspectDoc = function (doc, path) {
         if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
@@ -220,6 +221,16 @@
           entry.answerFields = doc.querySelectorAll('[id^="answer"]').length;
         } catch (e) {}
 
+        // 批次 12-A：记下这份文档的最大单条命中数，并把文档本身留到旁路数组里 ——
+        // 下面「容器从哪几份文档数」要用它。旁路（不进 report）是因为 report 会整个进日志。
+        var maxHit = 0;
+        Object.keys(entry.selectors).forEach(function (k) {
+          var n = Number(entry.selectors[k]) || 0;
+          if (n > maxHit) maxHit = n;
+        });
+        entry.maxHit = maxHit;
+        if (maxHit > 0) hitDocs.push({ doc: doc, score: maxHit, href: entry.href });
+
         report.docs.push(entry);
         return false;
       };
@@ -227,10 +238,33 @@
       if (preferredDoc) this._walkDocuments(function (d) { return inspectDoc(d, 'preferredDoc'); }, preferredDoc, 0);
       this._walkDocuments(function (d) { return inspectDoc(d, 'top'); }, document, 0);
 
-      var containerHost = preferredDoc || this._getMainDocument() || document;
+      // ⚠️ 批次 12-A：容器必须从**真正命中题目的那几份文档**里数，不能固定问 `_getMainDocument()`。
+      // 真页面实测（`node tools/debug-live.js` + `node tools/debug-probe.js`，页面里调 `xxtAI.probe()`）：
+      // 这一节的卷子挂在
+      //   顶层 → #iframe(卡片页) → ananas/modules/work → #frame_content(doHomeWorkNew)
+      // 里（顶层下面第三份文档），而 `_getMainDocument()` 给的是**卡片页** —— 那里只有 1 个无关的
+      // `div[class*="question"]`。于是真卷子上 `containers` **永远是 0**（同一时刻 `.TiMu=24`、
+      // `_extractQuestions` 正常返回 24 题），`hint` 就常年指着「容器全部被过滤」撒谎 ——
+      // 而那一行正是用户日志里被当成结论读的唯一一句，也是批次 10-C 当初判断形状的出处。
+      // 顺带：一份卡片里挂两份卷子时，这里按**每一份命中文档**分别数，两份都看得见。
+      var containerHosts = [];
+      if (preferredDoc) containerHosts = [preferredDoc];
+      else if (hitDocs.length) containerHosts = hitDocs.map(function (h) { return h.doc; });
+      else containerHosts = [this._getMainDocument() || document];
+
       var containers = [];
-      try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
+      containerHosts.forEach(function (host) {
+        if (!host) return;
+        try { containers = containers.concat(self._collectQuestionContainers(host) || []); } catch (e) {}
+      });
       report.containers = containers.length;
+      report.containerDocs = containerHosts.length;
+      report.containerPaths = containerHosts.map(function (host) {
+        try {
+          return String((host && host.location && host.location.href) || '')
+            .replace('https://mooc1.chaoxing.com', '').slice(0, 44);
+        } catch (eP) { return ''; }
+      }).join('|').slice(0, 150);
 
       // ⚠️ 「命中了却被吃掉」要说清死在哪一道（批次 9-C）。
       // 真实日志 00:46:04 只给了 `matchedSelectors:{"div[class*=\"question\"]":1}` 和 `inputs:9`，
@@ -238,23 +272,32 @@
       // 现场判不了 —— 而这三条各自对应完全不同的修法。
       if (!report.containers) {
         report.dropStages = diagSelectors.reduce(function (acc, sel) {
-          try {
-            var found = Array.prototype.slice.call(containerHost.querySelectorAll(sel));
-            if (!found.length) return acc;
-            var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
-            var set = new Set(usable);
-            var unique = usable.filter(function (item) {
-              if (!item || !item.closest) return true;
-              var parent = item.parentElement;
-              while (parent) {
-                if (set.has(parent)) return false;
-                parent = parent.parentElement;
-              }
-              return true;
-            });
-            var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
-            acc[sel] = { matched: found.length, filtered: found.length - usable.length, deduped: usable.length - unique.length, unparsable: unique.length - parsable };
-          } catch (e) {}
+          containerHosts.forEach(function (host) {
+            if (!host) return;
+            try {
+              var found = Array.prototype.slice.call(host.querySelectorAll(sel));
+              if (!found.length) return;
+              var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
+              var set = new Set(usable);
+              var unique = usable.filter(function (item) {
+                if (!item || !item.closest) return true;
+                var parent = item.parentElement;
+                while (parent) {
+                  if (set.has(parent)) return false;
+                  parent = parent.parentElement;
+                }
+                return true;
+              });
+              var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
+              var prev = acc[sel] || { matched: 0, filtered: 0, deduped: 0, unparsable: 0 };
+              acc[sel] = {
+                matched: prev.matched + found.length,
+                filtered: prev.filtered + (found.length - usable.length),
+                deduped: prev.deduped + (usable.length - unique.length),
+                unparsable: prev.unparsable + (unique.length - parsable)
+              };
+            } catch (e) {}
+          });
           return acc;
         }, {});
       }
@@ -282,6 +325,37 @@
       }
 
       return report;
+    },
+
+
+    /**
+     * `dropStages` 压平成一句人话 —— 批次 12，**只读取证**。
+     *
+     * 真页面实测（`xxtAI.probe()`）给的是
+     * `{ "div[class*=\"question\"]": {matched:1, filtered:1, deduped:0, unparsable:0} }`
+     * —— **每条选择器对应一个对象**。而三处取证都按 `{选择器: 数字}` 读它：
+     *   ① `_quizScanRetrySignal` / ② `_skipCompletedEvidence` 里 `Number(对象)` = **NaN**，
+     *      落盘就成了 `div[class*="question"]:NaN`（探针当场抓到的就是这个）；
+     *   ③ 这一族的日志本来就有「落盘字段一律标量」的规矩（批次 10-A），三处口径也该是同一句。
+     *      ⚠️ 顺带更正一处**我自己写错的诊断**：批次 12 初版说"原样塞进 meta 会被第 4 层截成
+     *      [truncated]"—— 实测不成立，`meta.dropStages` 只落在第 2、3 层，截不到它
+     *      （`cleanLogMeta` 从第 4 层起才动手，10-A 那条 `rejects[].sig.qHit` 才是真的在第 4 层）。
+     *      压平的理由是 NaN 与口径，不是截断 —— 集成测试 [15] 里那条反向对照把这个边界钉住了。
+     *
+     * 这一格本身很值钱：`filtered`（不可见且无文本）/ `deduped`（嵌套去重吃掉）/
+     * `unparsable`（解析返回 null）三条各自对应完全不同的修法，只剩一个总数就回答不了"死在哪一道"。
+     * 所以四格一起写死、顺序固定，且保证是**标量字符串**。
+     */
+    _flattenDropStages: function (stages) {
+      var keys = [];
+      try { keys = Object.keys(stages || {}); } catch (e) { return ''; }
+      return keys.slice(0, 4).map(function (k) {
+        var v = (stages && stages[k]) || {};
+        return String(k).slice(0, 28) + ':matched' + (Number(v.matched) || 0) +
+          '/filtered' + (Number(v.filtered) || 0) +
+          '/deduped' + (Number(v.deduped) || 0) +
+          '/unparsable' + (Number(v.unparsable) || 0);
+      }).join(';').slice(0, 220);
     },
 
 

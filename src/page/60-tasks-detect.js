@@ -863,8 +863,10 @@
      *
      * 一次诊断要遍历 ≤8 个文档 × 18 条选择器，所以只在「这张卡片还可能拿到窗口」时才算：
      * 窗口已经武装（`_isCurrentCompleted` 正在拦）或本卡片预算已用掉 → 直接 null。
-     * 落盘字段全部标量（批次 10-A 的规矩：`dropStages` 是对象，进 meta 会被第 4 层截成
-     * `[truncated]`，所以压成 `matched:1/filtered:1` 这种串）。
+     * 落盘字段全部标量（批次 10-A 的规矩）。批次 12：`dropStages` 真实形状是
+     * 「选择器 → {matched,filtered,deduped,unparsable}」，旧写法按数字读它 → `:NaN`，
+     * 现在统一走 `_flattenDropStages`；`qTotal` 改成**逐文档取最大值再相加**，
+     * 因为真页面同一批 24 道题被三族选择器各数一遍，相加给出页面里根本没有的 73。
      */
     _quizScanRetrySignal: function (preferredDoc) {
       var now = Date.now();
@@ -885,21 +887,25 @@
         if (!d) return;
         answer += Number(d.inputs) || 0;
         var hitMap = d.selectors || {};
-        Object.keys(hitMap).forEach(function (k) { qTotal += Number(hitMap[k]) || 0; });
+        // ⚠️ 批次 12：这里取**每条选择器命中的最大值**，不是全部相加。
+        // 真页面实测：同一批 24 道题被 `.TiMu` / `.singleQuesId` / `div[class*="TiMu"]`
+        // 各数了一遍，相加给出 `qTotal:73` —— 一个页面里根本没有的数字。
+        // 三条选择器的各自数量本来就在 `matchedSelectors` 里，这里只要"大概有几道题"，
+        // 而判据是 `>=1`：取最大值一样能开门（真页面那条 `div[class*="question"]:1` 仍然算 1）。
+        var docMax = 0;
+        Object.keys(hitMap).forEach(function (k) {
+          var n = Number(hitMap[k]) || 0;
+          if (n > docMax) docMax = n;
+        });
+        qTotal += docMax;
       });
       if (!(qTotal >= 1) || !(answer >= 1)) return null;
-
-      var drop = '';
-      try {
-        drop = Object.keys(diag.dropStages || {}).map(function (k) {
-          return k + ':' + Number(diag.dropStages[k]);
-        }).join('/');
-      } catch (eDrop) {}
 
       return {
         qTotal: qTotal, qHits: '', answer: answer,
         containers: Number(diag.containers) || 0,
-        docs: diag.docs.length, drop: drop, textLen: 0, text: ''
+        docs: diag.docs.length, drop: this._flattenDropStages(diag.dropStages),
+        textLen: 0, text: ''
       };
     },
 
@@ -942,14 +948,19 @@
         var diag = this._diagnoseQuestionScan(null);
         if (diag && Array.isArray(diag.docs)) {
           ev.inputs = diag.docs.reduce(function (sum, d) { return sum + (Number(d && d.inputs) || 0); }, 0);
+          // 与 `_quizScanRetrySignal` 同一个口径（批次 12）：每份文档取最大命中数再相加，
+          // 求和会把同一批题按族名数三遍（真页面 24 题报成 73）。
           ev.qTotal = diag.docs.reduce(function (sum, d) {
             var hitMap = (d && d.selectors) || {};
-            return sum + Object.keys(hitMap).reduce(function (s, k) { return s + (Number(hitMap[k]) || 0); }, 0);
+            var docMax = 0;
+            Object.keys(hitMap).forEach(function (k) {
+              var n = Number(hitMap[k]) || 0;
+              if (n > docMax) docMax = n;
+            });
+            return sum + docMax;
           }, 0);
           ev.containers = Number(diag.containers) || 0;
-          ev.drop = Object.keys(diag.dropStages || {}).map(function (k) {
-            return k + ':' + Number(diag.dropStages[k]);
-          }).join('/');
+          ev.drop = this._flattenDropStages(diag.dropStages);
         }
       } catch (eDiag) {}
       try {

@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 81 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 82 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -16,6 +16,8 @@
 | `audit-fields.js` | `node tools/audit-fields.js` | **按需跑**：列出私有字段全量，标出哪些不在 `10-config-state.js` 的声明表里（见下方专节） |
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
+| `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
+| `debug-probe.js` | `node tools/debug-probe.js` | 连上面那个浏览器，在**真学习通页面**上跑插件的只读探针 `xxtAI.probe()`（`--expr=` 可换成任意表达式）。**排查真实问题的唯一入口** —— 见下方专节 |
 
 `npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
 
@@ -77,8 +79,8 @@
     > 用后者的话，正文里凡是提到"集成"的行都会把无关数字当成集成条数 ——
     > 实测**被自己的说明文字误报过 3 次**（比如「把集成条数 77 → 106 改了一遍…
     > 加第 18 项自检」）。现在写成 `集成[^。\n\d]{0,6}(\d+)\**\s*项`：
-    > 6 个字符够覆盖「集成测试（187 项）」，够不着下一句；间隔里也不许出现数字
-    > （否则 `集成 187 项` 会被拆成"间隔吃掉 10、数字只剩 6"）。
+    > 6 个字符够覆盖「集成测试（200 项）」，够不着下一句；间隔里也不许出现数字
+    > （否则 `集成 200 项` 会被拆成"间隔吃掉 10、数字只剩 6"）。
     >
     > ⚠️ **自检项数用的是"正向匹配"**（`自检` 紧跟数字 + 项），又与前两条**不同** ——
     > 因为文档里有「`npm test  # 自检 + 提示词基准 + 集成测试（…项）`」这种
@@ -308,7 +310,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 81 个场景 / 796 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 82 个场景 / 804 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -395,6 +397,35 @@ OMITONE_EXT_DIR=dist/omitone-1.2.6 npm run e2e
   探测期间 `_trySeekToEnd` 会主动让路，紧接着测 seek 必然失败。
 - 媒体元素的 `duration` / `currentTime` / `playbackRate` 用原型打桩伪造，
   这样测的是插件逻辑，不依赖真实编解码器。
+
+## debug-live.js + debug-probe.js —— 到真实页面去看
+
+**这两个是配套的，用来回答「日志看不出答案的问题」**。1.3.0 前 11 轮修复全部只在 mock 页面上验，
+用户一句「没变化」就把三轮全打回来了 —— 更糟的是，我据此写下的"现场结论"其实是从一份
+**不含那批改动**的旧日志里推出来的（判据见 [`../HANDOVER.md`](../HANDOVER.md) §4 那段「这条不是提醒，是量出来的」）。
+
+```bash
+node tools/debug-live.js "https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=…"   # 起浏览器 + 扫码，不自动关
+node tools/debug-probe.js                                                                  # 读插件在真页面上的当场判断
+node tools/debug-probe.js --expr="xxtAI.diagnose()"                                        # 任意表达式
+node tools/debug-probe.js --port=9334 --match=studentstudy                                 # 端口 / 标签匹配词
+```
+
+`debug-probe.js` 默认调的是 page.js 里的 **`xxtAI.probe()`（只读）**，一次给出：
+完成判定（`hasTasks` / `allFinished`）、任务点清单（`type` / `finished` / `wrap` / `src`）、
+`attachments`（`jobid` / `module` / `job` / `isPassed`）、当前 `progressKey`、延时窗口还剩多少、
+页面级签名（`qTotal` / `answer` / `containers` / `drop`）、以及**真实题数与题型分布**。
+
+⚠️ 三条边界：
+- **只读**。探针刻意不调 `_isQuizLearningPending` 那类有副作用的判据，也不点交卷、不发模型请求。
+  要验证答题链路得在那个 profile 的弹窗里填自己的 API key —— 全新 profile 会直接短路成「模型不可用」。
+- **看到的是磁盘上那一份 `page.js`**。改完片段要先 `npm run concat`，然后**重载扩展 + F5 页面**；
+  本机实测解压缩扩展只 F5 就能读到新 `page.js`，但这条不能对用户打包票。
+- 页面被冻（标签页在后台／隐藏）时所有 CDP 调用都会**超时**而不是报错 ——
+  表现为 `1+1` 都算不出来。把那个标签页切到前台再看。
+
+批次 12 的四个取证缺陷（容器数在外层文档、`qTotal` 把同一批题数三遍、`drop` 落盘成 `NaN`、
+`containers` 恒为 0 却让 `hint` 说谎）**只有这条路能发现**，mock 页面给不出这个文档拓扑。
 
 ## ext-id.js
 

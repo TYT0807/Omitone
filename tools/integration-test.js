@@ -1533,7 +1533,10 @@ async function testQuizScanHoldWiring() {
   var anchor = "console.warn('[Omitone] no questions extracted');";
   var at = quiz.indexOf(anchor);
   check('能在 70-quiz-flow.js 定位「扫到 0 题」那条分支', at >= 0, '锚点没命中：那句 warn 改名或挪走了');
-  var branch = at < 0 ? '' : quiz.slice(at, at + 1600);
+  var branch = at < 0 ? '' : quiz.slice(at, at + 6000);
+  // ⚠️ 窗口只能宽不能窄：批次 12 给 0 题诊断那几行多补了三个取证字段，
+  //   把下面两条调用点从 1600 字里推了出去 —— 断言当场变红，而不是"接线被改坏"。
+  //   留 6000 字，靠 `firstReturn` 的顺序判定来管"写在 return 后面等于没接线"。
   var iSig = branch.indexOf('this._quizScanRetrySignal(preferredDoc)');
   var iHold = branch.indexOf("_maybeHoldSkipForUnparsedQuiz(scanSig, 'quiz-scan')");
   var iRet = branch.indexOf('return;');
@@ -1561,6 +1564,20 @@ async function testQuizScanHoldWiring() {
   var scanRetrySignal = build('_quizScanRetrySignal');
   var maybeHold = build('_maybeHoldSkipForUnparsedQuiz');
 
+  // 压平函数在 30-log.js，这里**取真实那一份**而不是桩：三处取证共用它，
+  // 用桩就等于把"两处口径不一致"这个 bug 类别放过去了。
+  var buildFrom = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return null;
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    if (end <= start) return null;
+    return new Function('return (' + src.slice(start, end) + '\n    })')();
+  };
+  var flatten = buildFrom(read('src/page/30-log.js'), '_flattenDropStages');
+  check('存在 _flattenDropStages（三处取证共用同一个口径，别再各写一遍各错一遍）',
+    typeof flatten === 'function', '锚点没命中：签名或缩进变了');
+
   var logs = [];
   var oldEmit = global.emitRuntimeLog;
   var oldScaled = global.scaledMs;
@@ -1577,15 +1594,19 @@ async function testQuizScanHoldWiring() {
       _quizParseRetryWarnAt: 0,
       _studyProgressKey: function () { return this.scope; },
       _getCurrentTitle: function () { return '课后检测'; },
+      _flattenDropStages: flatten,
       _diagnoseQuestionScan: function () { calls++; return diagReport; }
     };
   }
-  // 真实日志 00:46:04 那一行的形状
+  // 真实页面（rig 里的 `xxtAI.probe()`）实测到的形状：**每条选择器对应一个四格对象**。
+  // 批次 12 之前，三处取证都按 `{选择器: 数字}` 读它 —— `Number(对象)` 当场变成 NaN。
+  var QSEL = 'div[class*="question"]';
   var realShape = {
-    docs: [{ inputs: 9, selectors: { 'div[class*="question"]': 1 } }],
+    docs: [{ inputs: 9, selectors: { [QSEL]: 1 } }],
     containers: 0,
-    dropStages: { filtered: 1 }
+    dropStages: { [QSEL]: { matched: 1, filtered: 1, deduped: 0, unparsable: 0 } }
   };
+  var flatDrop = QSEL + ':matched1/filtered1/deduped0/unparsable0';
 
   try {
     var app = makeApp(realShape);
@@ -1593,15 +1614,16 @@ async function testQuizScanHoldWiring() {
     check('00:46:04 的形状现在给出 sig：qTotal=1（第 15 条那族）/ answer=9 / containers=0',
       !!sig && sig.qTotal === 1 && sig.answer === 9 && sig.containers === 0 && sig.docs === 1,
       JSON.stringify(sig));
-    check('dropStages 那个对象被压成字符串再落盘（批次 10-A：对象进 meta 会被第 4 层截成 [truncated]）',
-      !!sig && sig.drop === 'filtered:1', JSON.stringify(sig && sig.drop));
+    check('dropStages 压成**四格定序**的串再落盘（批次 12：真实形状是「每条选择器一个对象」，' +
+      '按数字读它就是 div[class*="question"]:NaN）',
+      !!sig && sig.drop === flatDrop, JSON.stringify(sig && sig.drop));
 
     app.scope = 'card-8';
     var before = app.calls();
     var armed = maybeHold.call(app, sig, 'quiz-scan');
     check('sig 喂给窗口 → 武装成功并留下 delay skip（src=quiz-scan、带 containers/drop）',
       armed === true && app._quizParseRetryUntil > Date.now() && logs.length === 1 &&
-      logs[0].meta.src === 'quiz-scan' && logs[0].meta.containers === 0 && logs[0].meta.drop === 'filtered:1',
+      logs[0].meta.src === 'quiz-scan' && logs[0].meta.containers === 0 && logs[0].meta.drop === flatDrop,
       JSON.stringify(logs.map(function (l) { return l.meta; })));
 
     var callsAfterArm = app.calls();
@@ -1647,6 +1669,91 @@ async function testQuizScanHoldWiring() {
     global.emitRuntimeLog = oldEmit;
     global.scaledMs = oldScaled;
   }
+
+  // ---- ②-B 批次 12：压平口径、深度闸、以及 qTotal 不许把同一批题数三遍 ----
+  if (typeof flatten !== 'function') return;
+  try {
+    check('四格按固定顺序全写出来（少写一格就回答不了「死在哪一道」）',
+      flatten({ a: { matched: 3, filtered: 2, deduped: 1, unparsable: 0 } }) ===
+        'a:matched3/filtered2/deduped1/unparsable0',
+      flatten({ a: { matched: 3, filtered: 2, deduped: 1, unparsable: 0 } }));
+
+    // ⚠️ 这一条钉的是批次 12 **那个 bug 本身**：旧代码把每条选择器当数字读。
+    check('没有一格被写成 NaN（旧写法 Number(对象) 的现场就是 div[class*="question"]:NaN）',
+      flatten({ a: { matched: 1 } }).indexOf('NaN') < 0 &&
+      flatten({ a: 1 }).indexOf('NaN') < 0 &&
+      flatten({ a: null }).indexOf('NaN') < 0,
+      flatten({ a: { matched: 1 } }) + ' | ' + flatten({ a: 1 }) + ' | ' + flatten({ a: null }));
+
+    check('缺格按 0 补、旧误读的「值是数字」也不会炸（判据不能因取证形状而抛异常）',
+      flatten({ a: 1 }) === 'a:matched0/filtered0/deduped0/unparsable0', flatten({ a: 1 }));
+    check('没有 dropStages 时给出空串而不是 "undefined" 之类的脏值',
+      flatten(null) === '' && flatten(undefined) === '' && flatten({}) === '',
+      JSON.stringify([flatten(null), flatten({})]));
+    check('最多 4 条选择器（其余留在 matchedSelectors 里，串太长会把一行日志挤爆）',
+      flatten({ a: {}, b: {}, c: {}, d: {}, e: {}, f: {} }).split(';').length === 4,
+      flatten({ a: {}, b: {}, c: {}, d: {}, e: {}, f: {} }));
+
+    // 落盘：压平后的串必须活过 runtime-log-store 的深度闸（批次 10-A 是同一坑的另一处落点）
+    var STORE12 = require('../runtime-log-store.js');
+    var stored12 = [];
+    var store12 = STORE12.create({
+      read: function () { return stored12; },
+      write: function (logs2) { stored12 = logs2; },
+      authorize: function () { return true; },
+      now: function () { return Date.now(); }
+    });
+    var r12 = await store12.handle({
+      type: 'runtime_log_append',
+      payload: {
+        level: 'warn', message: 'quiz scan found 0 questions',
+        meta: { hint: 'x', docs: 8, inputs: 82, containers: 0, containerDocs: 2,
+          containerPaths: '/mooc-ans/knowledge/cards|/mooc-ans/work/doHomeWorkNew',
+          dropStages: flatten(realShape.dropStages), samples: [] }
+      }
+    }, { url: 'https://mooc1.chaoxing.com/mycourse/studentstudy' });
+    var m12 = stored12.length ? stored12[stored12.length - 1].meta : null;
+    check('压平后的 dropStages 真的落盘（store 返回 success 且 meta 在场）',
+      r12 && r12.success === true && !!m12, JSON.stringify(r12));
+    check('落盘后 dropStages 还是那句四格串（它是唯一能回答「为什么一题没抠出来」的字段，不许在路上变形）',
+      !!m12 && m12.dropStages === flatDrop, JSON.stringify(m12 && m12.dropStages));
+    check('containers / containerDocs / containerPaths 都是标量并且原样留着',
+      !!m12 && m12.containers === 0 && m12.containerDocs === 2 &&
+      /doHomeWorkNew/.test(String(m12.containerPaths)), JSON.stringify(m12));
+
+    // ⚠️ 反向对照钉的是**深度闸本身还活着**（`cleanLogMeta`：第 4 层起换成 [truncated]）。
+    //   批次 12 原先把"压平"的理由写成"否则会被截"—— 实测**站不住**：
+    //   `meta.dropStages` 只有两层，落在第 2、3 层，根本截不到。
+    //   压平真正的理由是①旧代码按数字读它当场 NaN ②三处取证要同一个口径 ③落盘字段一律标量最稳。
+    await store12.handle({
+      type: 'runtime_log_append',
+      payload: { level: 'warn', message: 'quiz scan found 0 questions',
+        meta: { l1: { l2: { l3: { deep: { matched: 1 } } } }, dropStages: flatDrop } }
+    }, { url: 'https://mooc1.chaoxing.com/mycourse/studentstudy' });
+    var rev12 = stored12.length ? stored12[stored12.length - 1].meta : null;
+    check('反向对照：第 4 层的对象确实被压成 [truncated]（「落盘字段全标量」这条规矩不是迷信）',
+      !!rev12 && rev12.l1 && rev12.l1.l2 && rev12.l1.l2.l3 && rev12.l1.l2.l3.deep === '[truncated]',
+      JSON.stringify(rev12));
+    check('反向对照：同层的标量串没被牵连（截断只吃第 4 层）',
+      !!rev12 && rev12.dropStages === flatDrop, JSON.stringify(rev12 && rev12.dropStages));
+
+    // qTotal：真页面 24 道题被三族选择器各数一遍，旧写法相加给出 73
+    var overlapApp = makeApp({
+      docs: [{ inputs: 82, selectors: { '.TiMu': 24, '.singleQuesId': 24, 'div[class*="TiMu"]': 24 } }],
+      containers: 24, dropStages: {}
+    });
+    var o12 = scanRetrySignal.call(overlapApp, null);
+    check('同一文档里重叠的几族选择器只数一次（qTotal=24，不是 72 —— 页面里没有这个数字）',
+      !!o12 && o12.qTotal === 24, JSON.stringify(o12 && o12.qTotal));
+
+    var twoDocApp = makeApp({
+      docs: [{ inputs: 82, selectors: { '.TiMu': 24 } }, { inputs: 0, selectors: { '.TiMu': 1 } }],
+      containers: 25, dropStages: {}
+    });
+    var t12 = scanRetrySignal.call(twoDocApp, null);
+    check('跨文档才相加（两份卷子各 24/1 → 25，与真页面 probe 的 sig.qTotal 对得上）',
+      !!t12 && t12.qTotal === 25, JSON.stringify(t12 && t12.qTotal));
+  } finally {}
 
   // ---- ③ 完成依据取证只许用只读判据 ----
   var evAt = detect.indexOf('_skipCompletedEvidence: function () {');

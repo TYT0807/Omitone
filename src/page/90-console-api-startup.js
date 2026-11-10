@@ -8,11 +8,12 @@
  *
  * **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 window.xxtAI 与启动逻辑
  * window.xxtAI 是给用户的手动调试入口 —— **必须保留**（有些方法"看起来没人调用"，
- * 其实是被用户手动调的，别当成死代码删掉）。目前共 9 个：
+ * 其实是被用户手动调的，别当成死代码删掉）。目前共 10 个：
  *   reload（重读配置）、next（下一节）、skipQuiz（跳过当前答题）、diagnose（题目扫描诊断）、
  *   scanQuiz（只抽题不答题）、diagnosePopup（弹题诊断）、taskGiveUpList（看放弃名单）、
- *   clearTaskGiveUp（清放弃名单，让用户能重试）、clearDiscussionDone（清"讨论已发"名单）
- * 本段没有 app 方法 —— 这 8 个挂在 window.xxtAI 上，不在 app 对象里
+ *   clearTaskGiveUp（清放弃名单，让用户能重试）、clearDiscussionDone（清"讨论已发"名单）、
+ *   probe（只读探针：这一节插件眼里还剩什么，一次打全）
+ * 本段没有 app 方法 —— 这 10 个挂在 window.xxtAI 上，不在 app 对象里
  * ========================================================================== */
 // @omitone-part-header-end
   };
@@ -249,6 +250,67 @@
       emitRuntimeLog('info', 'task give-up list cleared (manual)', {});
       console.log('[Omitone] task give-up list cleared');
       return true;
+    },
+    /**
+     * 只读探针 —— 排查「明明没做完却说已完成」「这一节的第二个不做」时，
+     * 一次把插件**眼里**的这一节打出来：任务点分类、平台附件账本、完成判定、
+     * 抠题结果、延时窗口状态。
+     *
+     * ⚠️ 这里调的每个方法都必须只读：不许点下一节、不许交卷、不许发 AI 请求、
+     * 不许复位任何答题状态（尤其别调 `_isQuizLearningPending`，它会复位答题状态）。
+     * 判据本身一个字不改 —— 探针只是把同一套判据的输入输出摊开给人看。
+     */
+    probe: function () {
+      if (!app) return null;
+      var out = { at: new Date().toISOString(), href: String(location.href || '').slice(0, 110) };
+      function safe(name, fn) {
+        try { out[name] = fn(); } catch (e) {
+          out[name] = 'ERR:' + (e && e.name ? e.name : '?') + ' ' + String((e && e.message) || e || '').slice(0, 50);
+        }
+      }
+      safe('completion', function () {
+        var s = app._getVisibleTaskCompletionState();
+        return { hasTasks: !!s.hasTasks, allFinished: !!s.allFinished };
+      });
+      safe('tasks', function () {
+        return app._collectVisibleTaskFrames().map(function (t) {
+          return {
+            type: t.type, finished: !!t.finished, marker: !!t.hasTaskMarker,
+            src: String(t.src || '').slice(0, 56),
+            wrap: String((t.wrap && t.wrap.className) || '').slice(0, 40),
+            doc: t.doc ? 'ok' : 'null'
+          };
+        });
+      });
+      safe('attachments', function () {
+        return app._getChaoxingAttachments().map(function (a) {
+          var p = (a && a.property) || {};
+          return {
+            jobid: String(a.jobid || '').slice(0, 24), module: String(p.module || ''),
+            job: String(a.job), isPassed: String(p.isPassed),
+            title: String(p.title || p.name || '').slice(0, 22)
+          };
+        });
+      });
+      safe('progressKey', function () { return String(app._studyProgressKey() || ''); });
+      safe('retryWindow', function () {
+        return {
+          leftMs: Math.max(0, (Number(app._quizParseRetryUntil) || 0) - Date.now()),
+          scope: String(app._quizParseRetryScope || '')
+        };
+      });
+      safe('sig', function () {
+        var s = app._quizScanRetrySignal(null);
+        return s ? { qTotal: s.qTotal, answer: s.answer, containers: s.containers, docs: s.docs, drop: s.drop } : null;
+      });
+      safe('questions', function () {
+        var qs = app._extractQuestions(null) || [];
+        var types = {};
+        qs.forEach(function (q) { types[q.type] = (types[q.type] || 0) + 1; });
+        return { n: qs.length, types: types, first: qs.length ? String(qs[0].title || '').slice(0, 28) : '' };
+      });
+      console.log('[Omitone] probe:', out);
+      return out;
     }
   };
 })();

@@ -1277,7 +1277,15 @@
               return Object.assign(sum, d.selectors);
             }, {}),
             inputs: diag.docs.reduce(function (sum, d) { return sum + d.inputs; }, 0),
-            dropStages: diag.dropStages || {},
+            // ⚠️ 批次 12：`dropStages` 是「选择器 → {matched,filtered,deduped,unparsable}」。
+            // 旧写法把每条的值当**数字**读，落盘就成了 `div[class*="question"]:NaN`；
+            // 这里统一压成标量串（口径与 `_quizScanRetrySignal`、`_skipCompletedEvidence` 同一份）。
+            // 并把容器是从**哪几份文档**数的也一起落盘 ——
+            // 真页面实测：`containers` 以前固定在卡片页上数，卷子那份文档永远数不到（恒为 0）。
+            containers: Number(diag.containers) || 0,
+            containerDocs: Number(diag.containerDocs) || 0,
+            containerPaths: String(diag.containerPaths || '').slice(0, 150),
+            dropStages: this._flattenDropStages(diag.dropStages),
             samples: diag.samples.slice(0, 3)
           });
         }
