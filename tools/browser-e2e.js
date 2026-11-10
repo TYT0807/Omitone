@@ -2682,7 +2682,7 @@ SCENARIOS.push({
       await sleep(300);
       cleared = await ctx.client.evaluate(
         '(function(){var a=window._xxtApp;var qs=a._extractQuestions(null);' +
-        'return {secret:a._hasUndecryptedFontSecret(),n:qs.length,' +
+        'return {secret:a._probeFontDecrypt().secret,n:qs.length,' +
         'title:qs.length?String(qs[0].title).slice(0,20):""};})()'
       );
       if (cleared && cleared.secret === false && cleared.n >= 1) break;
@@ -3591,7 +3591,7 @@ SCENARIOS.push({
  * （resources/table.json）落后于平台字符集时，部分字符会**永久**保持密文。
  *
  * 两层守卫（都断言**行为**，不查内部状态）：
- *   第一层 `_hasUndecryptedFontSecret` —— 类名还在 → `_handleQuiz` 等一轮，不发请求；
+ *   第一层 `_probeFontDecrypt().secret` —— 类名还在 → `_handleQuiz` 等一轮，不发请求；
  *   第二层 `_quizTextGarbledRatio` / `garbled` 标记 —— 密文已混进题干（类名被摘掉
  *   也检测得到）→ 连续 3 轮后放弃该卷，绝不把乱码发给模型白烧 token。
  *
@@ -3621,9 +3621,9 @@ SCENARIOS.push({
       '(function(){var a=' + app + ';' +
       'var d=document.createElement("div");d.className="font-cxsecret";d.textContent="密文";' +
       'document.body.appendChild(d);' +
-      'var withSecret=a._hasUndecryptedFontSecret();' +
+      'var withSecret=a._probeFontDecrypt().secret;' +
       'd.parentNode.removeChild(d);' +
-      'var without=a._hasUndecryptedFontSecret();' +
+      'var without=a._probeFontDecrypt().secret;' +
       'return {withSecret:withSecret,without:without};})()'
     );
     check('第一层：.font-cxsecret 在场判「未解密」，摘掉后判「已解密」',
@@ -3748,6 +3748,134 @@ SCENARIOS.push({
     check('R2c 数满 3 轮**不跳卷**：_skipQuiz 与 nextUnit 全程零调用、没岔住 _quizInProgress',
       !!r2 && r2.skipCallsFinal === 0 && r2.unitCallsFinal === 0 && r2.inProgress === false,
       JSON.stringify(r2));
+  }
+});
+
+/** ---- 1.5b 解密层结论闸门（2026-11-10 批次 5：用户那句「连解码那个都没有」）---- */
+/**
+ * 用户看到的「第二次遇到题目不答题」有两半：
+ *   · 闸门整页扫描 —— 不相干帧里常年挂着解不掉的 .font-cxsecret 残留，
+ *     于是每份卷子先白等满 8 秒（实测日志 8.1s / 12.2s 各一次，而那两份题面其实是好的）；
+ *   · 解密层是黑盒 —— 「解不出来」和「根本没去解」在日志里长得一模一样（三条静默分支）。
+ * 现在 content.js 给每份文档写结论（data-om-font-state / data-om-font-sweep），
+ * page.js 的闸门只问题目那份文档及其子帧，认出终局判据（nodecl / nomap）时**不白等**。
+ *
+ * 用 /blank 而不是 /exam-work：这里一份题都抠不到，闸门放行后 `_handleQuiz`
+ * 走到「0 道题」就同步返回 —— 加上把 `_extractQuestions` 换成计数桩，
+ * 回归测试绝不会真的去打服务商（花钱且不可复现）。
+ * ⚠️ 整段 evaluate 是**同步**的：content.js 的扫描插不进来，
+ *    所以中途手工写的结论属性不会被解密层悄悄改回去。
+ */
+SCENARIOS.push({
+  name: '解密结论闸门：终局判据不白等、没结论才等、范围只问题目那份文档',
+  path: '/blank',
+  run: async function (ctx) {
+    var g = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var out={};' +
+      'a.configs=Object.assign({},a.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
+      'a._quizApiFailUntil=0;a._quizAnswered=false;a._quizInProgress=false;' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";a._fontSecretWaitSince=0;' +
+      // 抠题换成计数桩：闸门放没放行看它被调几次，比读内部状态直接
+      'var exCalls=0,oldEx=a._extractQuestions;' +
+      'a._extractQuestions=function(){exCalls++;return [];};' +
+      'var de=document.createElement("div");de.className="font-cxsecret";de.textContent="密文题干";' +
+      'document.body.appendChild(de);' +
+      // content.js 可能已经先跑过一轮、在这份文档上留下 clean 结论与扫描戳。
+      // ① 断言的是「什么都没有」那一种，所以先把两个属性擦掉，判据才确定。
+      'var el=document.documentElement;' +
+      'el.removeAttribute("data-om-font-state");el.removeAttribute("data-om-font-sweep");' +
+      // 每步都自带基准：抠题计数用**增量**、等待戳每步先清 0。
+      // 这样某一步坏了不会把后面的步骤一起拖红（一处注入只该对应一条断言）。
+      // ===== ① 只有残留、解密层还没结论 → 判「还在解」，本轮真的等住 =====
+      'var ex1=exCalls;' +
+      'var p1=a._probeFontDecrypt();' +
+      'out.secret1=p1.secret;out.state1=p1.state;out.sweep1=p1.sweepAgoMs;out.terminal1=p1.terminal;' +
+      'a._handleQuiz(document);' +
+      'out.waited={since:a._fontSecretWaitSince>0,ex:exCalls-ex1};' +
+      // ===== ② 同一份残留，解密层说「这一份解不了」(nodecl) → 不白等，直接往下走 =====
+      'el.setAttribute("data-om-font-state","nodecl");' +
+      'el.setAttribute("data-om-font-sweep",String(Date.now()-50));' +
+      'var p2=a._probeFontDecrypt();' +
+      'out.terminal2=p2.terminal;out.state2=p2.state;out.sweepFresh=p2.sweepAgoMs>=0&&p2.sweepAgoMs<5000;' +
+      'var ex2=exCalls;a._fontSecretWaitSince=0;a._quizInProgress=false;' +
+      'a._handleQuiz(document);' +
+      'out.noWait={since:a._fontSecretWaitSince,ex:exCalls-ex2};' +
+      // ===== ③ 范围：残留只挂在外层，题目在内层帧 → 从内层探不到外层 =====
+      'el.removeAttribute("data-om-font-state");el.removeAttribute("data-om-font-sweep");' +
+      'var fr=document.createElement("iframe");document.body.appendChild(fr);' +
+      'var fd=fr.contentDocument;' +
+      'out.innerSecret=a._probeFontDecrypt(fd).secret;' +
+      'out.outerSecret=a._probeFontDecrypt().secret;' +
+      'var ex3=exCalls;a._fontSecretWaitSince=0;a._quizInProgress=false;' +
+      'a._handleQuiz(fd);' +
+      'out.scoped={since:a._fontSecretWaitSince,ex:exCalls-ex3};' +
+      // ===== ④ 内层自己的残留仍然算数：范围收成子帧不等于把闸门关掉 =====
+      'var din=fd.createElement("div");din.className="font-cxsecret";din.textContent="内层密文";' +
+      'fd.body.appendChild(din);' +
+      'out.innerOwnSecret=a._probeFontDecrypt(fd).secret;' +
+      'fr.parentNode.removeChild(fr);de.parentNode.removeChild(de);' +
+      'out.afterClean=a._probeFontDecrypt().secret;' +
+      'a._extractQuestions=oldEx;' +
+      'a._fontSecretWaitSince=0;a._quizInProgress=false;a._quizAnswered=false;' +
+      'a._quizCurrentQuestions=null;' +
+      'return out;})()'
+    );
+    check('① 只有残留、没有结论：判「还在解」，state=(none)、sweepAgo=-1，本轮等住（没抠题）',
+      !!g && g.secret1 === true && g.state1 === '(none)' && g.sweep1 === -1 &&
+      g.terminal1 === false && g.waited.since === true && g.waited.ex === 0, JSON.stringify(g));
+    check('② 解密层的终局判据 nodecl：闸门认出 terminal 且扫描戳是新的，不白等、直接抠题',
+      !!g && g.terminal2 === true && g.state2 === 'nodecl' && g.sweepFresh === true &&
+      g.noWait.since === 0 && g.noWait.ex === 1, JSON.stringify(g));
+    check('③ 残留只在外层时不算这份卷子的账：从题目文档探不到、整页仍探得到（旧语义没被改坏），' +
+      '所以 _handleQuiz(内层) 不等',
+      !!g && g.innerSecret === false && g.outerSecret === true &&
+      g.scoped.since === 0 && g.scoped.ex === 1, JSON.stringify(g));
+    check('④ 内层文档自己的残留仍然看得见（收窄范围没有顺带把守卫关掉）',
+      !!g && g.innerOwnSecret === true, JSON.stringify(g));
+    check('⑤ 收尾：残留摘干净后整页不再判「有密文」，页面没被这个场景污染',
+      !!g && g.afterClean === false, JSON.stringify(g));
+
+    // ===== ⑥ 另外一半：content.js 确实给每份文档写了结论与扫描戳 =====
+    // 这条断言的是**解密层自己**留下的证据，不是 page.js 怎么读它 ——
+    // 没有它，「连解码都没有」和「解开了」在这里看起来一样。
+    var cv = null;
+    for (var i = 0; i < 20; i++) {
+      await sleep(300);
+      cv = await ctx.client.evaluate(
+        '(function(){var el=document.documentElement;' +
+        'return {state:el.getAttribute("data-om-font-state"),' +
+        'sweep:Number(el.getAttribute("data-om-font-sweep")||0)};})()'
+      );
+      if (cv && cv.state === 'clean' && cv.sweep > 0) break;
+    }
+    check('⑥ content.js 给每份文档写了结论与扫描戳（data-om-font-state=clean + 时间戳）',
+      !!cv && cv.state === 'clean' && cv.sweep > 0 && Date.now() - cv.sweep < 60000,
+      JSON.stringify(cv));
+
+    // ===== ⑦ 扫描真的排得到（有界防抖）=====
+    // 只有 300ms 尾部防抖时，**每一次** DOM 变动都重新计时：页面每 50ms 动一次就永远
+    // 排不到扫描 —— 这正是"连解码都没有"里最难发现的那一半（跑没跑，日志里看不出来）。
+    // 判据用扫描戳：它每轮必然换新值，所以"戳前进了"= 这 2.6 秒里确实扫过。
+    var churn = await ctx.client.evaluate(
+      '(function(){var el=document.documentElement;' +
+      'window.__b5start=function(){' +
+      '  var n=document.createElement("div");document.body.appendChild(n);window.__b5n=n;' +
+      '  window.__b5t=setInterval(function(){n.textContent=String(Math.random());},50);};' +
+      'window.__b5stop=function(){if(window.__b5t){clearInterval(window.__b5t);window.__b5t=0;}' +
+      '  if(window.__b5n&&window.__b5n.parentNode)window.__b5n.parentNode.removeChild(window.__b5n);};' +
+      'window.__b5stop();window.__b5start();' +
+      'return {before:Number(el.getAttribute("data-om-font-sweep")||0)};})()'
+    );
+    await sleep(2600);
+    var churnAfter = await ctx.client.evaluate(
+      '(function(){return {after:Number(document.documentElement.getAttribute(' +
+      '"data-om-font-sweep")||0), stillChurning: !!window.__b5t};})()'
+    );
+    await ctx.client.evaluate('(function(){window.__b5stop();return true;})()');
+    check('⑦ 每 50ms 动一次 DOM（比 300ms 防抖还密）时扫描仍排得到：2.6 秒内扫描戳前进了',
+      !!churn && churn.before > 0 && !!churnAfter && churnAfter.stillChurning === true &&
+      churnAfter.after > churn.before,
+      JSON.stringify(churn) + ' → ' + JSON.stringify(churnAfter));
   }
 });
 

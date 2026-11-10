@@ -33,7 +33,7 @@
  *   _looksLikeQuizTitle、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
  *   _prepareQuizRedoIfNeeded、
- *   _hasUndecryptedFontSecret、_hasFontDecryptMiss、_quizTextGarbledRatio
+ *   _probeFontDecrypt、_hasFontDecryptMiss、_quizTextGarbledRatio
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -1127,32 +1127,70 @@
         this._forceSkipQuizAfterMaxAttempts(preferredDoc || null);
         return;
       }
-      // 字体反爬解密在 content.js 里异步进行（MutationObserver + 300ms 防抖），抽题原本不等它 ——
-      // 竞态窗口里抽到的是 PUA 密文题干，直接发给模型必错还烧 token（README 已知缺陷 #6 的竞态面）。
+      // 字体反爬解密在 content.js 里异步进行（MutationObserver + 有界防抖），抽题原本不等它 ——
+      // 竞态窗口里抽到的是密文题干，直接发给模型必错还烧 token（README 已知缺陷 #6 的竞态面）。
       // 看到 .font-cxsecret 残留就等下一轮 tick（解密扫描通常 300ms~1s 内完成）；
       // 上限 8 秒：真解不出来就按现状继续，交给下面的题干乱码守卫接手，绝不死等成新的卡死点。
-      if (this._hasUndecryptedFontSecret()) {
-        // 解密层已经明确标记「字形表缺字」（data-om-font-miss）时，再等也不会成功：
-        // 表里没有这个字形，扫描多少次都移不掉 .font-cxsecret。实测（2026-11-10）
-        // 一台 16 核 / 152fps 的机器上仍然每次白等 8 秒，说明这不是 CPU 慢。
-        // 这种情况直接按现状答，交给乱码守卫；「等解密」只用于真的还在扫的情况。
-        var fontMiss = this._hasFontDecryptMiss();
-        var secretWaitSince = this._fontSecretWaitSince || 0;
-        if (!secretWaitSince) {
-          this._fontSecretWaitSince = Date.now();
-          emitRuntimeLog('info', 'quiz waiting font decrypt', {
-            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
-            fontMiss: fontMiss
+      //
+      // ⚠️ 两条从日志里长出来的修正（2026-11-10 批次 5）：
+      //   ① 探测范围收成**题目那一份文档及其子帧**。不相干的装饰帧里常年挂着解不掉的残留，
+      //      整页扫描会把它们算成"这一卷还没解密"，于是每份卷子先白等满 8 秒再照答 ——
+      //      实测两份题面本来就正常的卷子各白等 8.1s / 12.2s，用户看到的就是"卡住不答题"。
+      //   ② 除了 data-om-font-miss，还认解密层的**终局判据**（nodecl / nomap，见 _probeFontDecrypt）：
+      //      它已经明确说过"这一份解不了"，再等 8 秒也不会多出一个字形。
+      var fontProbe = this._probeFontDecrypt(preferredDoc || null);
+      if (fontProbe.secret) {
+        var fontNoWait = fontProbe.miss || fontProbe.terminal;
+        var fontWaitLimitMs = scaledMs(Number(this.configs.fontDecryptWaitMs || 8000));
+        if (fontNoWait) {
+          // 本轮不等：把等待窗口清掉，别留一个"等到一半"的戳给下一轮误读
+          this._fontSecretWaitSince = 0;
+          // 这条会被 OCS 循环每秒撞到，必须节流（30 秒一条，并报压掉了多少条）
+          if (!this._fontNoWaitLogAt || Date.now() - this._fontNoWaitLogAt > 30000) {
+            var noWaitSuppressed = this._fontNoWaitSuppressed || 0;
+            this._fontNoWaitLogAt = Date.now();
+            this._fontNoWaitSuppressed = 0;
+            emitRuntimeLog('info', 'font decrypt verdict: answer as-is', {
+              state: fontProbe.state,
+              fontMiss: fontProbe.miss,
+              terminal: fontProbe.terminal,
+              scope: preferredDoc ? 'quiz-doc' : 'whole-page',
+              suppressed: noWaitSuppressed,
+              hint: fontProbe.miss
+                ? '字形哈希在映射表里查不到（data-om-font-miss）—— 等也不会变好，按现状作答并交给乱码守卫'
+                : '解密层已对这一份文档给出终局判据：nodecl=文档里没有字体声明，nomap=映射表建不起来'
+            });
+          } else {
+            this._fontNoWaitSuppressed = (this._fontNoWaitSuppressed || 0) + 1;
+          }
+        } else {
+          var secretWaitSince = this._fontSecretWaitSince || 0;
+          if (!secretWaitSince) {
+            this._fontSecretWaitSince = Date.now();
+            // state='(none)' / sweepAgoMs=-1 就说明 content.js 那一次扫描**没跑到这一份文档**
+            // —— 这是"连解码都没有"这句话唯一能被证实的形式，也是下一轮排查的落点。
+            emitRuntimeLog('info', 'quiz waiting font decrypt', {
+              hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
+              state: fontProbe.state,
+              sweepAgoMs: fontProbe.sweepAgoMs,
+              scope: preferredDoc ? 'quiz-doc' : 'whole-page'
+            });
+            return;
+          }
+          if (Date.now() - secretWaitSince < fontWaitLimitMs) return;
+          this._fontSecretWaitSince = 0;
+          emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
+            waitedMs: Date.now() - secretWaitSince,
+            limitMs: fontWaitLimitMs,
+            slowFactor: perfFactor(),
+            state: fontProbe.state,
+            sweepAgoMs: fontProbe.sweepAgoMs,
+            scope: preferredDoc ? 'quiz-doc' : 'whole-page',
+            hint: (fontProbe.state === '(none)' || fontProbe.sweepAgoMs < 0)
+              ? '等满上限、而这一份文档上连扫描戳都没有 —— 是 content.js 的解密扫描没覆盖到它，不是解得慢'
+              : '等满上限仍未解出，按现状作答'
           });
-          if (!fontMiss) return;
         }
-        if (!fontMiss && Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
-        this._fontSecretWaitSince = 0;
-        emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
-          waitedMs: Date.now() - secretWaitSince,
-          limitMs: scaledMs(Number(this.configs.fontDecryptWaitMs || 8000)),
-          slowFactor: perfFactor()
-        });
       } else {
         this._fontSecretWaitSince = 0;
       }
@@ -1701,26 +1739,63 @@
 
 
     /**
-     * 还有没有处于密文态的题目文字（.font-cxsecret 且带非空文本）。
+     * 「这一份文档（含它的子帧）里到底还有没有没解开的密文」+「解密层给出的结论」。
      *
-     * 学习通的反爬是把文字换成自定义字形的 PUA 字符、再靠 CSS 类挂上真字体；
-     * content.js 的解密扫描完成后会把类名摘掉。所以「类名还在」就是「还没解完」的
-     * 可靠信号 —— `_handleQuiz` 用它决定要不要等一轮。带文本过滤是避免被
-     * 空壳占位节点骗成永久等待。
+     * 一次遍历同时收四件事，省掉 `_handleQuiz` 里三回重复的全页扫描：
+     *   secret   —— 还有带文字的 .font-cxsecret（=「还没解开」）
+     *   miss     —— 这些文档里有 data-om-font-miss（表缺字形的实锤）
+     *   terminal —— 这些文档里有 content.js 的**终局判据**（nodecl / nomap）：
+     *               扫描确实跑到过这一份、并且明确说了"再等也不会好"。
+     *               以前闸门只认 miss，于是「文档里根本没有字体声明」这一族
+     *               每份卷子都要白等满 8 秒才继续（实测 2026-11-10：8.1s / 12.2s 各一次，
+     *               而这两份卷子的题面其实是好的）—— 这就是用户看到的"卡住"。
+     *   state    —— 各文档的结论拼起来，写进日志。`state:'(none)'` 直接说明
+     *               content.js 那一次扫描**没跑到这一份文档**（不是"跑过但解不开"），
+     *               这是"连解码都没有"这句话唯一能被证实的形式。
+     *   sweepAgoMs —— 最近一次扫描距今多久；-1 = 这些文档上从来没有过扫描戳。
+     *
+     * @param {Document} [startDoc] 传了就只从这一份文档往下走（含它的子帧）；
+     *   不传 = 全书扫描（没有 preferredDoc 时的旧语义）。
      */
-    _hasUndecryptedFontSecret: function () {
-      var found = false;
-      this._walkDocuments(function (doc) {
+    _probeFontDecrypt: function (startDoc) {
+      var out = { secret: false, miss: false, terminal: false, state: '', sweepAgoMs: -1 };
+      var freshest = -1;
+      var addState = function (st) {
+        if (!st || out.state.indexOf(st) !== -1) return;
+        out.state = out.state ? out.state + ',' + st : st;
+      };
+      var probe = function (doc) {
         if (!doc || !doc.querySelector) return false;
+        var hit = false;
         try {
           var nodes = doc.querySelectorAll('.font-cxsecret');
           for (var i = 0; i < nodes.length; i++) {
-            if (textOf(nodes[i]).length > 0) { found = true; return true; }
+            if (textOf(nodes[i]).length > 0) { hit = true; break; }
           }
-        } catch (e) {}
-        return false;
-      });
-      return found;
+        } catch (e) { return false; }
+        if (!hit) return false;      // 没有残留的文档，它的结论对这道闸门没有意义
+        out.secret = true;
+        var st = '';
+        var sw = 0;
+        try {
+          var el = doc.documentElement;
+          if (el && el.getAttribute) {
+            st = el.getAttribute('data-om-font-state') || '';
+            sw = Number(el.getAttribute('data-om-font-sweep') || 0) || 0;
+            if (el.getAttribute('data-om-font-miss')) out.miss = true;
+          }
+        } catch (e2) {}
+        if (st === 'nodecl' || st === 'nomap') out.terminal = true;
+        addState(st || '(none)');
+        if (sw > 0) {
+          var ago = Date.now() - sw;
+          if (freshest < 0 || ago < freshest) freshest = ago;
+        }
+        return false;                // 不提前退出：要把每一份出题文档的结论收齐
+      };
+      if (startDoc) this._walkDocuments(probe, startDoc); else this._walkDocuments(probe);
+      out.sweepAgoMs = freshest;
+      return out;
     },
 
 
@@ -1735,8 +1810,9 @@
      *   就会把**这一页每一份卷子**都判成乱码 —— 而缺标记的那个帧可能只是课程首页的
      *   一个装饰性子帧。一道坏字形能把整门课的卷子全数暂停，就是"所有题目都被跳过"
      *   的另一条路径（2026-11-10）。题目所在文档自己没带标记，就不算它乱码。
-     *   不传 = 维持旧的全书扫描语义（「等解密」那一处要用：还没定位到题目文档时，
-     *   问的是"这一页到底有没有解密问题"，全局信号才对）。
+     *   不传 = 全书扫描（排查用的宽口径：「这一页上到底有没有出现过缺字形标记」）。
+     *   ⚠️ 「等不等解密」已经不看这里了 —— 那一处走 `_probeFontDecrypt`，
+     *   它把密文残留、缺字形标记和解密层的终局判据（nodecl / nomap）一次收齐。
      */
     _hasFontDecryptMiss: function (targetDoc) {
       var probe = function (doc) {

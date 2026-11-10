@@ -112,6 +112,22 @@
   // 未命中分支，没有节流会把日志缓冲刷满（本仓库对重复 warn 的一贯处理）
   let lastFontMissLogAt = 0;
   let decryptSweepTimer = null;
+  // 「有界防抖」（2026-11-10 批次 5）。原来只有 300ms 的**尾部**防抖：每次 DOM 变动都
+  // clearTimeout 重新计时。而 page.js 自己就在不停地写 DOM（填答、审计、状态标记），
+  // OCS 循环每秒一轮 —— 变动间隔只要长期小于 300ms，扫描就**永远排不到**。
+  // 表现正是用户报的「连解码都没有」，而且因为三条静默分支都够不着（根本没跑），
+  // 解密层一条日志都不出 —— 黑盒。现在：最长等 2 秒必跑一次，两次扫描至少隔 400ms。
+  const DECRYPT_SWEEP_DEBOUNCE_MS = 300;
+  const DECRYPT_SWEEP_MAX_WAIT_MS = 2000;
+  const DECRYPT_SWEEP_MIN_GAP_MS = 400;
+  let decryptSweepPendingSince = 0;
+  let decryptSweepLastAt = 0;
+  let decryptSweepRunning = false;
+  // 每份文档的解密结论写在它的 documentElement 上，page.js 的「等解密」闸门与排查日志读它。
+  // ⚠️ 结论必须可见：否则「解不出来」和「根本没去解」在日志里长得一模一样。
+  const FONT_STATE_ATTR = 'data-om-font-state';
+  const FONT_SWEEP_ATTR = 'data-om-font-sweep';
+  const fontVerdictLog = new WeakMap();
   const observedDocs = new WeakSet();
   let statusPanel = null;
   let statusPanelActive = false;
@@ -1916,10 +1932,57 @@
     });
   }
 
+  // 结论的说明直接落进日志：用户只会说"题干是乱码"，这一句 hint 才是根因。
+  // nodecl / nomap 是**终局**判据（再扫一百次也不会变），page.js 据此不再白等 8 秒。
+  const FONT_STATE_HINT = {
+    clean: '这份文档没有 font-cxsecret 残留，不需要解密',
+    plain: '类名是残留、文字其实是明文（已批改的结果页常见）—— 已摘掉类名',
+    nodecl: '有密文但文档里找不到字体声明（@font-face 的 base64）—— 这一份解不了，再等也不会成',
+    nomap: '拿到了字体但映射表建不起来（表没加载 / 字体解析失败 / 字形全部未命中）—— 再等也不会成，需要更新 resources/table',
+    partial: '已解密，但部分字形在映射表里查不到 —— 那几个字会解成错字，需要更新 resources/table',
+    done: '字形全部命中，已解密完成'
+  };
+
+  function setFontDocAttr(doc, name, value) {
+    try {
+      const el = doc.documentElement || doc.body;
+      if (!el || !el.setAttribute) return;
+      // 值没变就不写：扫描每秒都在跑，制造无意义的 DOM 变动会把防抖拖回饿死的老路
+      if (el.getAttribute(name) === value) return;
+      el.setAttribute(name, value);
+    } catch (e) {}
+  }
+
+  function reportFontVerdict(doc, state, detail) {
+    setFontDocAttr(doc, FONT_STATE_ATTR, state);
+    setFontDocAttr(doc, FONT_SWEEP_ATTR, String(Date.now()));
+    if (state === 'clean' || state === 'done') return;
+    const nowMs = Date.now();
+    const last = fontVerdictLog.get(doc);
+    if (last && last.state === state && nowMs - last.at < 60000) {
+      last.suppressed = (last.suppressed || 0) + 1;
+      return;
+    }
+    const suppressed = last && last.state === state ? (last.suppressed || 0) : 0;
+    fontVerdictLog.set(doc, { state, at: nowMs, suppressed: 0 });
+    appendRuntimeLog('warn', 'font decrypt verdict', Object.assign({
+      state: state,
+      suppressed: suppressed,
+      hint: FONT_STATE_HINT[state] || ''
+    }, detail || {}));
+  }
+
   async function decryptSecretFontsInDocument(doc) {
     if (!doc || !doc.querySelectorAll) return;
-    const roots = getOutermostSecretRoots(doc);
-    if (!roots.length) return;
+    let roots = [];
+    try { roots = getOutermostSecretRoots(doc); } catch (e) { return; }
+    if (!roots.length) {
+      // 没有残留 = 没有待办。这里**不**打日志（每份文档每一轮都会走到，是纯噪音），
+      // 但仍然盖扫描时间戳：page.js 靠"时间戳新不新"区分「扫过了，确实没有」和
+      // 「扫描根本没跑到这一份文档」—— 后者才是"连解码都没有"的那一种。
+      reportFontVerdict(doc, 'clean', null);
+      return;
+    }
 
     const base64 = extractSecretFontBase64(doc);
     if (!base64) {
@@ -1933,7 +1996,13 @@
       });
       if (!hasCipherText) {
         roots.forEach(function (root) { if (root.classList) root.classList.remove('font-cxsecret'); });
+        reportFontVerdict(doc, 'plain', { roots: roots.length });
+        return;
       }
+      // 到这里就是以前那条「什么都不做也不吭声」的分支：文档里根本没有字体声明，
+      // 解不了，而且**永远不会**变好。它让 page.js 每份卷子白等 8 秒（实测 2026-11-10
+      // 两份卷子各等 8.1s / 12.2s，日志里解密层一条记录都没有）。
+      reportFontVerdict(doc, 'nodecl', { roots: roots.length, cipher: true });
       return;
     }
 
@@ -1955,15 +2024,25 @@
           hint: '字形哈希在映射表里全部未命中 —— resources/table.json 需要更新'
         });
       }
+      // ⚠️ 这里以前是**整块静默**：table 没加载（computed=0）时连上面那条 warn 都不发。
+      // reason 分开报：no-table 是"表没到手"，no-glyph 是"字全是空缺"，all-miss 是"表落后"。
+      reportFontVerdict(doc, 'nomap', {
+        roots: roots.length,
+        reason: !table ? (FONT_TABLE ? 'table-load-failed' : 'table-module-missing')
+          : (built.computed > 0 ? 'all-glyph-miss' : 'no-glyph-in-font'),
+        missed: built.missed,
+        computed: built.computed
+      });
       return;
     }
 
     roots.forEach((root) => decryptRootElement(root, decodeMap));
+    let partial = built.missed > 0;
     try {
       // ⚠️ font-cxsecret 的真实机制是「正常中文字符 + 自定义字形」，不是 PUA 私有区：
       //    表缺字形时文本是**通顺但错误**的中文，人眼和 PUA 检测都发现不了。
       //    所以文档级的 miss 标记才是 page.js 乱码守卫的可靠信号源。
-      if (built.missed > 0) {
+      if (partial) {
         doc.documentElement.setAttribute('data-om-font-miss', String(built.missed));
         if (mayLogMiss) {
           lastFontMissLogAt = nowMs;
@@ -1976,6 +2055,10 @@
         doc.documentElement.removeAttribute('data-om-font-miss');
       }
     } catch (e) { /* 标记失败不影响解密本身 */ }
+    // 结论落在 try 外面：标记写失败是小事，page.js 读不到「这一份已经解过」才是大事
+    reportFontVerdict(doc, partial ? 'partial' : 'done', {
+      roots: roots.length, missed: built.missed, mapped: decodeMap.size
+    });
     console.log('[Omitone] font decrypted roots:', roots.length, 'mapped chars:', decodeMap.size);
   }
 
@@ -1995,19 +2078,30 @@
   }
 
   async function runFontDecryptSweep() {
-    if (await refreshPageScope() !== 'study') return;
-    const jobs = [];
-    walkSameOriginDocuments(document, (doc) => {
-      if (!observedDocs.has(doc)) {
-        observedDocs.add(doc);
-        try {
-          const observer = new MutationObserver(() => scheduleDecryptSweep());
-          observer.observe(doc.documentElement || doc.body || doc, { childList: true, subtree: true, characterData: true });
-        } catch (e) {}
-      }
-      jobs.push(decryptSecretFontsInDocument(doc));
-    });
-    await Promise.all(jobs);
+    if (decryptSweepRunning) {
+      // 上一轮还没结束（refreshPageScope 要问后台，最长 5 秒；解密本身也要等表）。
+      // 不并发全页重扫，排到下一轮即可 —— 有界防抖保证这一轮等不出"8 秒黑洞"。
+      scheduleDecryptSweep();
+      return;
+    }
+    decryptSweepRunning = true;
+    try {
+      if (await refreshPageScope() !== 'study') return;
+      const jobs = [];
+      walkSameOriginDocuments(document, (doc) => {
+        if (!observedDocs.has(doc)) {
+          observedDocs.add(doc);
+          try {
+            const observer = new MutationObserver(() => scheduleDecryptSweep());
+            observer.observe(doc.documentElement || doc.body || doc, { childList: true, subtree: true, characterData: true });
+          } catch (e) {}
+        }
+        jobs.push(decryptSecretFontsInDocument(doc));
+      });
+      await Promise.all(jobs);
+    } finally {
+      decryptSweepRunning = false;
+    }
   }
 
   async function loadConfig() {
@@ -2247,12 +2341,26 @@
 
   function scheduleDecryptSweep() {
     if (!scopeIsCurrent('study')) return;
+    const nowMs = Date.now();
+    if (!decryptSweepPendingSince) decryptSweepPendingSince = nowMs;
     if (decryptSweepTimer) clearTimeout(decryptSweepTimer);
+    // 尾部防抖 + 两个上限，缺一不可（2026-11-10 批次 5）：
+    //   · 等满 2 秒必跑 —— 纯 300ms 尾部防抖会被**页面自己的 DOM 写入**无限续期
+    //     （填答、审计、状态标记，OCS 循环每秒一轮），扫描永远排不到，
+    //     用户看到的「连解码都没有」就是这么来的。
+    //   · 两次扫描至少隔 400ms —— 只有前一条会把扫描变成每 0ms 一次全页重扫，白烧 CPU。
+    const waited = nowMs - decryptSweepPendingSince;
+    let delay = Math.max(DECRYPT_SWEEP_DEBOUNCE_MS - waited, 0);
+    const gapLeft = DECRYPT_SWEEP_MIN_GAP_MS - (nowMs - decryptSweepLastAt);
+    if (gapLeft > delay) delay = gapLeft;
     decryptSweepTimer = setTimeout(() => {
+      decryptSweepTimer = null;
+      decryptSweepPendingSince = 0;
+      decryptSweepLastAt = Date.now();
       runFontDecryptSweep().catch((err) => {
         console.error('[Omitone] decrypt sweep failed', err);
       });
-    }, 300);
+    }, delay);
   }
 
   async function maybeMarkAutoResume() {
@@ -2331,6 +2439,8 @@
     scopeUrl = '';
     configs = {};
     if (decryptSweepTimer) clearTimeout(decryptSweepTimer);
+    decryptSweepTimer = null;
+    decryptSweepPendingSince = 0;
     removeInjectedScript();
     startSafely();
   }

@@ -375,14 +375,21 @@ background.js api_fetch          跨域代理
 查真实字符，就地替换 DOM 文本节点与 `aria-label`/`title`/`value`/`placeholder` 属性。
 映射按字体 base64 缓存（`decryptMapCache`），`MutationObserver` 在新文档出现时重新 sweep。
 
-三道防线（对应 page.js 的两层 + 解密层自诊断）：
+四道防线（对应 page.js 的两层 + 解密层自诊断 + 结论可见）：
 
-1. **等待**：page.js `_hasUndecryptedFontSecret()` 看到 `.font-cxsecret` 残留就不抽题
+1. **等待**：page.js `_probeFontDecrypt(题目文档)` 看到 `.font-cxsecret` 残留就不抽题
    （类名被解密后摘除，"类名还在" = "还没解完"）；上限 8 秒，绝不死等。
+   ⚠️ 范围是**题目那一份文档及其子帧**，不是整页 —— 不相干帧里解不掉的残留会把
+   每份卷子都拖成"先白等 8 秒"（实测 2026-11-10）。同一次遍历还收 `data-om-font-miss`
+   与解密层的**终局判据**（`nodecl` / `nomap`），有结论就直接按现状答，不等。
 2. **miss 标记（主信号）**：解密统计「字形已计算但查表未命中」的字符数 —— >0 时在
    该文档 `documentElement` 落 `data-om-font-miss` 标记并写 warn 日志；
-   page.js `_hasFontDecryptMiss()` 感知后整卷按乱码处理（连续 3 轮 → 跳过该卷）。
+   page.js `_hasFontDecryptMiss()` 感知后整卷按乱码处理（连续 3 轮 → 这一卷暂停 90 秒）。
    **为什么必须由解密层报**：缺字形时文本是正常中文，文本侧检测抓不到。
+2b. **结论可见（批次 5）**：每份被扫描的文档都带 `data-om-font-state`
+   （clean / plain / nodecl / nomap / partial / done）与 `data-om-font-sweep` 时间戳，
+   非 clean 的结论另写一条 `font decrypt verdict` 日志。
+   没有它，「表里没这个字形」和「扫描根本没跑到这一份文档」在日志里长得一模一样。
 3. **PUA 兜底**：`_quizTextGarbledRatio` 检测私有区字符占比 —— 真实超星不走这条路，
    保留防其他平台 / 未来改版。
 

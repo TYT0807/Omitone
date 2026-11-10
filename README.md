@@ -50,11 +50,20 @@
 > （`skip completed {by:…}`），某一轮没答题时会写清**为什么不答**
 > （`quiz held: nothing answered this round {reason:…}`）。
 > 没遇到过多份卷子挂一节课的你，感觉不到变化。
+> **④ 进卷子前先白等 8 秒「等解码」**（同日再补，就是「它连解码那个都没有」那条）
+> —— 学习通把题干换成自定义字形，插件要先解码才读得懂。以前只要这一页上还留着
+> 没解码的痕迹，答题就先等它，最多 8 秒；可「还有没有」问的是**整页**，
+> 页面边上那些**永远解不掉**的装饰框也算数 —— 于是每份卷子都先卡满 8 秒才动。
+> 现在只问题目自己那一份文档；解码层如果已经明说「这一份解不了」，也不再白等。
+> 顺带把解码这一层从黑盒变成有交代：每份文档都留下结论（有没有字体声明、
+> 映射表查没查到字形），日志里 `font decrypt verdict` 直接写根因，
+> `quiz waiting font decrypt {state:…}` 也带着它 —— 以后再报「没解码」，
+> 一眼能分清是**根本没去解**还是**去解了解不开**，这两种的修法完全不同。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 69 场景 / 676 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 70 场景 / 684 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -364,10 +373,15 @@
 而且人眼都未必看得出来。
 
 **（1.3.0 起）插件自己会报，也会拦**：日志出现 `font decrypt miss` /
-`font decrypt incomplete` 就是表过期的实锤（提示更新 `resources/table.json`）；
-带着未命中字形的卷子会被乱码守卫自动拦下 —— `quiz text garbled` 连续 3 轮后
-`quiz skipped: text stays garbled`，不会拿错字题面去白烧 token。解密没完成时抽题
-会先等一轮（`quiz waiting font decrypt`），竞态窗口里解到一半的题干也不会发出去。
+`font decrypt incomplete` / `font decrypt verdict {state:"nomap"|"partial"}` 就是表过期的实锤
+（提示更新 `resources/table.json`）；带着未命中字形的卷子会被乱码守卫自动拦下 ——
+`quiz text garbled` 连续 3 轮（每轮至少隔 10 秒）后**这一卷暂停 90 秒**
+（`quiz paused: text stays garbled`），不会拿错字题面去白烧 token，也不会替你把整节翻过去。
+解密没完成时抽题会先等一轮（`quiz waiting font decrypt`，最多 8 秒），竞态窗口里解到一半的
+题干也不会发出去。⚠️ 这一族还有第二种样子：**解码层压根没去解** —— 现在每份文档都带一条
+结论（`data-om-font-state` = clean / plain / nodecl / nomap / partial / done）与扫描时间戳，
+`quiz waiting font decrypt {state:"(none)", sweepAgoMs:-1}` 就是"扫描没跑到这一份文档"，
+和 `state:"nodecl"`（文档里没有字体声明）是两种完全不同的修法。
 
 ### 7. 其它已知限制
 
@@ -622,7 +636,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 1.19 万行**）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 1.30 万行**）：
 
 > ### ⚠️ `page.js` 已拆成 `src/page/` 下的 16 个**按域**片段
 >
@@ -683,7 +697,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 69 个场景，676 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 70 个场景，684 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1032,6 +1046,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 44 | **讨论帖下一条回复都没有，日志却写着"已提交、已确认"**（一页挂多个讨论时格外容易发生在第一个） | `_discussionSuccessHint` 第 3 条判据是「编辑区被清空」—— 而**内容压根没填进去**时编辑区本来就是空的（页面刚注入、受控组件把值吞了），一点提交就"确认成功"；同时 `_markDiscussionDone` 是**打开前**写的、失败路径**没有撤销** → 一次失败就静默跳过 24 小时 | 防线：填充**回读确认** + 失败撤标记重试 + 「编辑区被清空」必须以"确实填进去过"为前提。⚠️ 与第 42 条同一类：**判据只看"看起来完成了"，没确认"事情真的发生了"。写"成功/完成"判定时先问：这个信号，失败的时候会不会也成立？** |
 | 45 | **交完卷之后一直卡着不动**（日志反复 `study matched job {"kind":"quiz"}`，既不答题也不往下走，能卡好几分钟） | 两条判据打架：`_handleQuiz` 因 `_quizAnswered` 为真**一字不做**，`_isQuizLearningPending` 又因"提交按钮还挂在页面上"说**还有题** → 调度器每秒把同一份卷子交给它一次，永远不前进 | 防线：`_isQuizLearningPending` 里**自己刚答过就不算 pending**（平台明确要求重做除外）。⚠️ **第三次同类**：两处各自维护"做完了没有"，定义却不同 —— **动这类判定前先找出另一个也在判断同一件事的地方** |
 | 46 | **第一次遇到题目过了，第二次遇到题目不答题**（真实日志：`19:12:17 quiz submit finished` → **1 秒后** `skip completed` + 点「下一节」→ 此后整段没有任何答题记录） | `_isCurrentCompleted()` 把**页面级**文案「任务点已完成」排在**逐任务帧**完成状态之前，而一张卡片挂两份测验时，刚交完那一份就会把这句话渲染出来 —— 另一份一个字没答，整节却被判"做完了"。而 `_handleQuiz` 开头三个「这一轮不答」的原因（冷却 / 上一轮未完 / 已答完）共用一个**静默** return，日志一个字不写，现场只能靠猜 | 防线：① 判据顺序反过来 —— **未完成任务点的证据压过一句文案**，并把依据写进 `_completionEvidence`（`skip completed {by:…}`）；② `quiz held: nothing answered this round {reason:…}`（10 秒节流）；③ `_isQuizPaperChangedInDom()` 兜住 `_quizAnswered` 是页面级、换卷又要靠任务点 id 的那一族形状（新旧 qid **完全不重叠**才判换卷，有交集就保守不动）。⚠️ **第 41 条的亲戚**：「任务点已完成」这类**页面级文字**永远不能单独判"这一节做完了"；**跳过不可逆、多等一轮只是慢一点** |
+| 47 | **进卷子先白等 8~12 秒「等解码」，而日志里解码层一条记录都没有**（用户原话「它连解码那个都没有」；真实日志：`quiz waiting font decrypt {fontMiss:false}` → 8.1s / 12.2s 后 `font decrypt pending over limit, answer anyway`，而那两份卷子的题面其实是好的） | 三处叠在一起：① 等不等的判据走的是**整页**扫描 —— 不相干装饰帧里**永远解不掉**的残留也算"还没解码"；② content.js 的扫描只有 300ms **尾部**防抖，而 page.js 自己每秒都在写 DOM —— 变动间隔长期小于 300ms 时扫描**永远排不到**；③ 解密层有三条「什么都不做也不吭声」的分支（无字体声明却带密文 / 映射表建不起来 / `computed===0`），跑没跑、为什么解不出，日志里看不出来 | 防线：① 新增 `_probeFontDecrypt(题目文档)` —— 只从题目那份文档往下走（含子帧），一次遍历把密文残留、`data-om-font-miss`、终局判据与扫描戳一起收；② `scheduleDecryptSweep()` 改成**有界**防抖（300ms 防抖 + 最长 2 秒必跑 + 两次至少隔 400ms），加 `decryptSweepRunning` 防并发全页重扫；③ 每份被扫描的文档落 `data-om-font-state` + `data-om-font-sweep`，非 clean 结论写 `font decrypt verdict`（每份文档每个状态 60 秒一条，带 `suppressed`）；④ `nodecl` / `nomap` 属终局判据 → **不等**（30 秒一条 `font decrypt verdict: answer as-is`）。⚠️ `_hasUndecryptedFontSecret` 已删（并进 `_probeFontDecrypt`）；判"要不要等"必须问**题目那份文档** —— 问整页就等于让最不相干的帧决定所有人的节奏 |
 
 ---
 
@@ -1054,6 +1069,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **点了选项、日志也写了 `clicked option`，但隐藏域 `#answer{qid}` 是空的** | 见 §6 #37。控制台跑 `_xxtApp._getQuizQuestionFilledValue(null, _xxtApp._extractQuestions(null)[0])`：返回空串就是没写上。这类页面 qid 在容器上、且没有 `.num_option` 徽标 |
 | **提交后一直停在 `waiting quiz submit result`，然后整页重载、重扫重答重交** | 见 §6 #38。先看结果页长什么样：`document.body.innerText` 里有「我的答案 / 正确答案」且 `document.querySelectorAll('.Py_answer').length > 0`，说明是判分结果页 —— 旧判据对它是瞎的。日志里找 `quiz submit wait timeout` |
 | **刚交完一份卷子就 `skip completed` + 点「下一节」，同一页另一份卷子一个字没答** | 见 §6 #46。`skip completed` 现在带 `by:` —— `by:"text-marker"` 就是那句页面级文案赢过了未完成任务点的证据（本条已修，修前它什么都不会说）；`by:"all-tasks-finished"` / `"catalog-marker"` 才是真有依据。日志里同时找 `quiz held: nothing answered this round`，它的 `reason:` 说明这一轮凭什么没答：`force-skip`（这份卷子正在按卷冷却）/ `in-progress`（上一轮还没结束）/ `answered`（自认已答完 —— 若页面上是一批完全不认识的 qid，会紧跟一条 `quiz paper switched by question identity` 把它重置） |
+| **每份卷子进来都先卡 8 秒左右才动**（日志 `font decrypt pending over limit, answer anyway`），或反过来反馈「它连解码都没有」 | 见 §6 #47。现在这条 warn 带着 `state:` 与 `sweepAgoMs:`，两种根因分得开：`state:"(none)"` / `sweepAgoMs:-1` = 解密扫描**没跑到**这一份文档；`state:"nodecl"` = 这份文档里没有字体声明（本来就没有可解的东西）；`state:"nomap"` = 表没加载或字形全部未命中。后两种是**终局判据**，1.3.0 批次 5 起不再白等（改写成 `font decrypt verdict: answer as-is`，30 秒一条）。范围也已收成题目那份文档，边上装饰帧的残留不再拖慢所有人 |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1105,6 +1121,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
 | 提交监控 / 提交次数跳过 | `src/page/70-quiz-flow.js`：`_monitorQuizSubmit` / `_shouldHoldQuizBeforeNext` / `_shouldSkipQuizBySubmitAttempts` |
 | 「页面上已经换了一份卷子」 | `src/page/70-quiz-flow.js`：`_syncQuizPaperRunState`（任务点 id 那条路）+ `_isQuizPaperChangedInDom`（**题目 qid 那条兜底**，新旧完全不重叠才 true）+ `_resetQuizStateForSkip` |
+| 「等不等解码 / 解码为什么没成」 | 判据在 `src/page/70-quiz-flow.js`：`_probeFontDecrypt(题目文档)`（一次遍历收 `secret` / `miss` / `terminal` / `state` / `sweepAgoMs`）；**证据由解密层写**：`content.js` 的 `decryptSecretFontsInDocument` → 每份文档的 `data-om-font-state`（clean / plain / nodecl / nomap / partial / done）+ `data-om-font-sweep` 时间戳 + `font decrypt verdict` 日志。扫描节奏在 `content.js` 的 `scheduleDecryptSweep`（有界防抖：300ms 防抖 / 最长 2 秒必跑 / 至少隔 400ms）与 `runFontDecryptSweep`（`decryptSweepRunning` 防并发）。⚠️ 见 §6 #47 |
 | 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
 | 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
 | 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
@@ -1185,7 +1202,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（69 个场景 / 676 项）
+npm run e2e      # 真实 Edge 功能交叉检验（70 个场景 / 684 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
@@ -1311,7 +1328,7 @@ DeepSeek 的上下文缓存不是按"固定长度"命中的，而是要求**请�
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 1.19 万行，全项目最值得小心对待的文件）
+page.js                 页面上下文运行时（主体，约 1.30 万行，全项目最值得小心对待的文件）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）
@@ -1325,21 +1342,21 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么"软件这么大"——体积账本
 
-扩展**解压后约 2.69 MB**（按 zip 清单逐文件合计），`dist/*.zip` 约 1.90 MB。构成如下
-（`node tools/build.js` 会把 `resources/table.json` 排除掉，改由 125 KB 的 `table.bin` 顶上）：
+扩展**解压后约 2.66 MB**（按打包目录逐文件合计，2026-11-10 重算），`dist/*.zip` 约 1.89 MB。构成如下
+（`node tools/build.js` 会把 `resources/table.json` 排除掉，改由 122 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `popup/`（88 张立绘 + 界面） | 约 1.65 MB (61%) | 立绘是主体：44 套服装 / 21 表情 / 24 姿势，每张 12~25 KB |
-| `page.js` | 554 KB (21%) | 全部页面侧逻辑。**最值得小心对待**的文件 |
-| `libs/` | 157 KB (5.8%) | 字体解析 Typr 95 KB + 报错分类 / 提示词 / 地址构造 / 字形表 |
-| `resources/table.bin` | 125 KB (4.6%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
-| `content.js` | 106 KB (3.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
-| `LICENSE` | 36 KB (1.3%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
-| `icons/` | 29 KB (1.1%) | 三个尺寸的图标 |
-| `background.js` | 19 KB (0.7%) | service worker：跨域 fetch 代理 |
+| `popup/`（88 张立绘 + 界面） | 约 1.59 MB (59.7%) | 立绘是主体：44 套服装 / 21 表情 / 24 姿势，每张 12~25 KB |
+| `page.js` | 608 KB (22.4%) | 全部页面侧逻辑。**最值得小心对待**的文件 |
+| `libs/` | 153 KB (5.6%) | 字体解析 Typr 95 KB + 报错分类 / 提示词 / 地址构造 / 字形表 |
+| `resources/table.bin` | 122 KB (4.5%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `content.js` | 117 KB (4.3%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
+| `LICENSE` | 35 KB (1.3%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `icons/` | 28 KB (1.0%) | 三个尺寸的图标 |
+| `background.js` | 18 KB (0.7%) | service worker：跨域 fetch 代理 |
 | `runtime-log-store.js` + `popup-log-view.js` | 13 KB (0.5%) | 日志 Worker 工厂 + 前端日志视图 |
-| `manifest.json` | 1.7 KB | 扩展清单 |
+| `manifest.json` | 2 KB | 扩展清单 |
 
 > **为什么这么大**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
 > 其余 34 张是 10-20 之后才补的 —— 旧包的小人本来就是残的。1.3.0 又把立绘扩到 **88 张**，
