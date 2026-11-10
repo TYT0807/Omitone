@@ -1266,6 +1266,33 @@
         this._quizReadyToSubmit = false;
         this._quizReadyWorkKey = '';
         return false;
+
+      // 提交前审计：**「有值」不等于「页面上真的选中了」**。
+      // 实测（2026-11-10）：用户报「单选题不答」，可提交照常放行、没有
+      // `answers are not ready` —— 说明隐藏域/控件值已经写进去，但自定义控件的
+      // 选中态没生效。把三个数并排打进日志，下一次一眼看出卡在哪一层：
+      //   total 题数 / withValue 读得到值的题数 / checkedInDom 页面真的显示选中的题数
+      if (submitQuestions && submitQuestions.length) {
+        var auditValue = 0;
+        var auditChecked = 0;
+        for (var ai = 0; ai < submitQuestions.length; ai++) {
+          var aq = submitQuestions[ai];
+          var aEl = aq && aq._element;
+          if (!aEl) continue;
+          try {
+            if (this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq)) auditValue++;
+          } catch (eV) {}
+          try {
+            if (aEl.querySelector('input:checked, .check_answer, [aria-checked="true"], .cur, .selected')) auditChecked++;
+          } catch (eC) {}
+        }
+        emitRuntimeLog(auditChecked < auditValue ? 'warn' : 'info',
+          auditChecked < auditValue ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
+            total: submitQuestions.length,
+            withValue: auditValue,
+            checkedInDom: auditChecked
+          });
+      }
       }
       if (!this._quizReadyToSubmit || (this._quizReadyWorkKey && this._quizReadyWorkKey !== currentKey)) {
         emitRuntimeLog('warn', 'block quiz submit without ready state', { key: currentKey });

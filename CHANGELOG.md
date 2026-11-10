@@ -230,6 +230,16 @@
   `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
   避免轻薄本上误报 `page script no response after tag injection`。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+- **提交前填充审计**：`_maybeSubmitQuiz` 在放行前打一条
+  `quiz fill audit {total, withValue, checkedInDom}`。原因是「单选题不答」时提交照样放行、
+  没有 `answers are not ready` —— 说明隐藏域有值但控件没进入选中态；这条日志把
+  「没填 / 填了但点击没生效」直接分开。真机冒烟：`_fillChoice(el,'Z')` 兜底选中 A，
+  正常 `'B'` 仍选 B，多选 `'AC'`、判断 `'yes'` 均正确。
+- **提交前填充审计**：`_maybeSubmitQuiz` 在放行前打一条
+  `quiz fill audit {total, withValue, checkedInDom}`。原因是「单选题不答」时提交照样放行、
+  没有 `answers are not ready` —— 说明隐藏域有值但控件没进入选中态；这条日志把
+  「没填 / 填了但点击没生效」直接分开。真机冒烟：`_fillChoice(el,'Z')` 兜底选中 A，
+  正常 `'B'` 仍选 B，多选 `'AC'`、判断 `'yes'` 均正确。
 - **单选题不再留空**：模型给的字母对不上任何选项时（题干/选项还在密文态），
   原来 `_fillChoice` 只打一条 console.warn 就放弃 → 单选静默空着、整卷交不出去。
   现在单选/判断补一次兜底：按候选顺序选一个（避开已判错的），日志
