@@ -873,15 +873,21 @@
       // 看到 .font-cxsecret 残留就等下一轮 tick（解密扫描通常 300ms~1s 内完成）；
       // 上限 8 秒：真解不出来就按现状继续，交给下面的题干乱码守卫接手，绝不死等成新的卡死点。
       if (this._hasUndecryptedFontSecret()) {
+        // 解密层已经明确标记「字形表缺字」（data-om-font-miss）时，再等也不会成功：
+        // 表里没有这个字形，扫描多少次都移不掉 .font-cxsecret。实测（2026-11-10）
+        // 一台 16 核 / 152fps 的机器上仍然每次白等 8 秒，说明这不是 CPU 慢。
+        // 这种情况直接按现状答，交给乱码守卫；「等解密」只用于真的还在扫的情况。
+        var fontMiss = this._hasFontDecryptMiss();
         var secretWaitSince = this._fontSecretWaitSince || 0;
         if (!secretWaitSince) {
           this._fontSecretWaitSince = Date.now();
           emitRuntimeLog('info', 'quiz waiting font decrypt', {
-            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）'
+            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
+            fontMiss: fontMiss
           });
-          return;
+          if (!fontMiss) return;
         }
-        if (Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
+        if (!fontMiss && Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
         this._fontSecretWaitSince = 0;
         emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
           waitedMs: Date.now() - secretWaitSince,

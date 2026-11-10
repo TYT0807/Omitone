@@ -230,6 +230,14 @@
   `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
   避免轻薄本上误报 `page script no response after tag injection`。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+- **单选题不再留空**：模型给的字母对不上任何选项时（题干/选项还在密文态），
+  原来 `_fillChoice` 只打一条 console.warn 就放弃 → 单选静默空着、整卷交不出去。
+  现在单选/判断补一次兜底：按候选顺序选一个（避开已判错的），日志
+  `single choice matched nothing, fallback picked`。策略与多选本地作答一致：
+  宁可填一个可能错的，也不要交白卷。
+- **字形表缺字不再白等**：`data-om-font-miss` 已经标记「表里没有这个字形」时，
+  再等一个 `fontDecryptWaitMs` 也不会成功（实测 16 核 /152fps 的机器仍每次等满 8 秒）。
+  现在检测到 miss 直接按现状答题，交给乱码守卫。
 - **小卷整批丢答案**：模型偶尔在位置式输出末尾多吐一个选项字母
   （实测 `expected:1 / received:2`，形如 `["实事求是…","A"]`）。`resegmentFlatAnswers`
   要求「所有项都被消费」，判失败 → 整批丢弃 → 1~5 题的小卷整卷空着，补问一次仍是同样形状，

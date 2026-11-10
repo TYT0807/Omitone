@@ -897,7 +897,30 @@
       // type 传空串：让 _matchOptionItem 自己判题型 —— 判断题的匹配分支靠它，
       // 硬编码成 'single' 会让"正确/错误"这类答案匹配不上（老实现就是这样绕开的）。
       var clicked = this._applyChoiceAnswer(el, answer, '', inputType);
-      if (!clicked) console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
+      if (clicked) return;
+
+      // ⚠️ 匹配不上就空着 = 整卷永远交不出去。实测（2026-11-10）：
+      // 题干/选项还在 font-cxsecret 密文态时，模型给的字母对不上任何选项，
+      // 单选就静默留空；用户看到的是「单选题不答，多选乱选反而没问题」。
+      // 单选/判断这里补一次兜底：按候选顺序选一个（避开已判错的），
+      // 宁可填一个可能错的，也不要交白卷 —— 与多选本地作答同一策略。
+      var type = this._detectQuestionType(el);
+      if (type !== 'single' && type !== 'judge') {
+        console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
+        return;
+      }
+      var fallback = this._chooseFallbackQuizAnswer(type, { _element: el }, null, '', 1);
+      if (!fallback) {
+        console.warn('[Omitone] no matching option and no fallback', answer, textOf(el).slice(0, 120));
+        return;
+      }
+      var retried = this._applyChoiceAnswer(el, fallback, type, inputType);
+      emitRuntimeLog('warn', 'single choice matched nothing, fallback picked', {
+        answer: String(answer == null ? '' : answer).slice(0, 20),
+        fallback: String(fallback).slice(0, 4),
+        clicked: retried,
+        type: type
+      });
     },
 
 

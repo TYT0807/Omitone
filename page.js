@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '414595d5ea';
+var OMITONE_CODE_REV = 'd30623352a';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -7968,15 +7968,21 @@ var OMITONE_CODE_REV = '414595d5ea';
       // 看到 .font-cxsecret 残留就等下一轮 tick（解密扫描通常 300ms~1s 内完成）；
       // 上限 8 秒：真解不出来就按现状继续，交给下面的题干乱码守卫接手，绝不死等成新的卡死点。
       if (this._hasUndecryptedFontSecret()) {
+        // 解密层已经明确标记「字形表缺字」（data-om-font-miss）时，再等也不会成功：
+        // 表里没有这个字形，扫描多少次都移不掉 .font-cxsecret。实测（2026-11-10）
+        // 一台 16 核 / 152fps 的机器上仍然每次白等 8 秒，说明这不是 CPU 慢。
+        // 这种情况直接按现状答，交给乱码守卫；「等解密」只用于真的还在扫的情况。
+        var fontMiss = this._hasFontDecryptMiss();
         var secretWaitSince = this._fontSecretWaitSince || 0;
         if (!secretWaitSince) {
           this._fontSecretWaitSince = Date.now();
           emitRuntimeLog('info', 'quiz waiting font decrypt', {
-            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）'
+            hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
+            fontMiss: fontMiss
           });
-          return;
+          if (!fontMiss) return;
         }
-        if (Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
+        if (!fontMiss && Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
         this._fontSecretWaitSince = 0;
         emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
           waitedMs: Date.now() - secretWaitSince,
@@ -10651,7 +10657,30 @@ var OMITONE_CODE_REV = '414595d5ea';
       // type 传空串：让 _matchOptionItem 自己判题型 —— 判断题的匹配分支靠它，
       // 硬编码成 'single' 会让"正确/错误"这类答案匹配不上（老实现就是这样绕开的）。
       var clicked = this._applyChoiceAnswer(el, answer, '', inputType);
-      if (!clicked) console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
+      if (clicked) return;
+
+      // ⚠️ 匹配不上就空着 = 整卷永远交不出去。实测（2026-11-10）：
+      // 题干/选项还在 font-cxsecret 密文态时，模型给的字母对不上任何选项，
+      // 单选就静默留空；用户看到的是「单选题不答，多选乱选反而没问题」。
+      // 单选/判断这里补一次兜底：按候选顺序选一个（避开已判错的），
+      // 宁可填一个可能错的，也不要交白卷 —— 与多选本地作答同一策略。
+      var type = this._detectQuestionType(el);
+      if (type !== 'single' && type !== 'judge') {
+        console.warn('[Omitone] no matching option for answer', answer, textOf(el).slice(0, 120));
+        return;
+      }
+      var fallback = this._chooseFallbackQuizAnswer(type, { _element: el }, null, '', 1);
+      if (!fallback) {
+        console.warn('[Omitone] no matching option and no fallback', answer, textOf(el).slice(0, 120));
+        return;
+      }
+      var retried = this._applyChoiceAnswer(el, fallback, type, inputType);
+      emitRuntimeLog('warn', 'single choice matched nothing, fallback picked', {
+        answer: String(answer == null ? '' : answer).slice(0, 20),
+        fallback: String(fallback).slice(0, 4),
+        clicked: retried,
+        type: type
+      });
     },
 
 
