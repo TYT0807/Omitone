@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 70 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 71 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -308,7 +308,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 70 个场景 / 684 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 71 个场景 / 702 项断言。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
 省资源模式动态降级、短视口布局，以及连播、入场抢占、造型样式与心情补演回归。

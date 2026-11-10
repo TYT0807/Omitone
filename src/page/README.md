@@ -215,10 +215,12 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `75-quiz-dom.js`
 
-*1423 行 / 40 方法*
+*1887 行 / 48 方法*
 
 抠题与填答：从 DOM 里抠题干与选项、判定题型、单选 / 多选 / 判断 / 填空的填答实现、
 提交按钮与站点确认弹窗（`#workpop` / `#popok`）的处理。
+1.3.0 批次 6 起，**「这道题看得见的那个框在哪」也只在这一处**：`_collectAnswerEditableNodes`
+（找框）+ `_isAnswerTextControl`（判据）+ `_readVisibleAnswerText`（读回）—— 写与读都只能经它。
 
 > `_questionSelectors`（选择器真源）在 `10-config-state.js` —— 它是"声明式"的非方法属性，都在那儿。
 
@@ -297,8 +299,8 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ## 还没做的
 
-- 剩下最大的三个片段（2026-11 快照）是 `70-quiz-flow.js`（1445 行）、`75-quiz-dom.js`（1432 行）、
-  `60-tasks-detect.js`（1281 行）。还能再分，但收益已经明显变小 ——
+- 剩下最大的三个片段（2026-11-10 实测）是 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1887 行）、
+  `60-tasks-detect.js`（1424 行）。还能再分，但收益已经明显变小 ——
   真正"一个域横跨上千行"的问题已经解决了。
   真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 - 原始执行说明见 [`docs/pagejs-拆分提示词.md`](../../docs/pagejs-拆分提示词.md)（三个阶段都已完成，别再重做）。

@@ -2,7 +2,7 @@
 
 写给**下一个接手的人，尤其是接手这份代码的 AI**。
 
-> **本轮开发状态（2026-11-10，批次 1~5 已落地；未升号，附件见下面「发版动作」）**
+> **本轮开发状态（2026-11-10，批次 1~6 已落地；未升号，附件见下面「发版动作」）**
 >
 > - 批次 1~4 修的是**同一族病**：答题的判据外溢到别的任务上。批次 1 =「所有题目都被跳过」四条路径；
 >   批次 2 =「刷 PPT 报废 / 接近瘫痪」的**任务类型仲裁**；
@@ -12,6 +12,9 @@
 >   批次 5 换的是**另一头**：用户说「连解码那个都没有」—— 等解密的闸门整页扫残留（不相干帧里
 >   解不掉的残留把每份卷子拖成白等 8 秒）、content.js 的扫描被自己的**纯尾部防抖**饿死、
 >   三条解密分支**一个字都不写**。现在每份被扫的文档都落结论，闸门按结论分流。
+>   批次 6 又是另一头：**「长题不答、只答了部分题」**，用户补的那句才是关键 ——「答题框完全空着」。
+>   填空/简答的答案只写进**看不见**的隐藏域 `#answer{qid}`，页面上真正给人打字的那个框一个字没进，
+>   而审计读的**恰恰是隐藏域** —— 于是 `quiz fill audit ok` 与空框同时成立，然后照常交卷。
 >   逐条"为什么"在 CHANGELOG 1.3.0 段末「2026-11-10 追加」。
 > - 判据只有这几处，改判据就改这里，**别在调用点手抄**：`_documentHasQuiz()`（70-quiz-flow.js，
 >   「这是不是答题页」唯一判据）、`_kindFromAttachment()` + `_kindFromChaoxingElements()`
@@ -25,6 +28,16 @@
 >   `_probeFontDecrypt(题目文档)`（70-quiz-flow.js，「这一份文档到底解没解开」**唯一**判据：一次遍历同时收
 >   `secret` / `miss` / `terminal` / `state` / `sweepAgoMs`。等不等解密只按它 —— 别在调用点再手扫一遍 `.font-cxsecret`，
 >   那是批次 5 删掉的 `_hasUndecryptedFontSecret` 的老路）。
+> - ⚠️ **「这道题看得见的那个框在哪」只有一处答案**（批次 6）：`_collectAnswerEditableNodes(el)`
+>   与它的单点判据 `_isAnswerTextControl(node)`（75-quiz-dom.js）—— 容器内文本控件 →
+>   `#answer{qid}` **本体是文本控件时** → 至多上走 3 层祖先，**该层命中多于一题就停**。
+>   写（`_fillText` / `_fillTextarea` / `_writeAnswerText`）与读（`_readVisibleAnswerText` /
+>   `_getQuizQuestionFilledValue`）**都只能经它**。两边各扫一套选择器，就是批次 6 那个病：
+>   写的框和读的框不是同一个框，审计永远自证清白。
+>   ⚠️ **隐藏域 `#answer{qid}` 照旧无条件写**（平台收的就是它，也是 `_writeAnswerText` 抛错时唯一兜底），
+>   但它**再也不能单独当作"这题答过了"的证据** —— 判"填上了"必须问眼睛看得见的那个框。
+>   ⚠️ 文本类可见回退**只对 `fill` / `short` 开**：给选择题开，任何带可见文字的题面都会被读成"答案"，
+>   "还没答"被误判成"已答"，比盲区更糟。
 > - ⚠️ **`_quizDetectorSelector` 不许再拿来判任务类型** —— 它那些类名是通用的，课件帧与文档帧同样出现。
 >   它仍供 `closest` / 包装查找与**准入闸**弱信号 `quizLike` 使用；但「准入」与「判类型」是两个问题，
 >   合并成一个会把**认不出作答控件的真卷子**整帧拒掉（三层嵌套那份 2026-10-17 故障夹具全线红过）。
@@ -33,7 +46,7 @@
 >   走 `_isQuizSkipWindowLive()`。
 > - ⚠️ **不再自动替用户翻页**：乱码卷、认不出选项的卷都改成「停在原地 + 留日志 + 会自愈」。
 >   静默跳走的代价用户看不见，这是本轮删掉 `_skipQuiz()` 那条调用的全部理由。
-> - 验证：`npm run check`、`npm test`、`npm run e2e` 全绿（70 场景 / 684 项）。
+> - 验证：`npm run check`、`npm test`、`npm run e2e` 全绿（71 场景 / 702 项）。
 >   **真实课程页尚未实测**，见 §9 第一行。
 > - ⚠️ **「跳过」与「这一轮不答」都必须留日志**（批次 4 立的规矩）：`skip completed` 带 `by:`、
 >   `quiz held: nothing answered this round` 带 `reason:`。判不准时一律选**停在原地**（代价可见、会自愈），
@@ -48,12 +61,24 @@
 >   而 `nomap` 的题面往往是正常中文 —— 暂停救不回来还白扣一份卷子。终局判据只用来**缩短等待**。
 >   防抖三件套（尾部 300ms / 最长 2s 必发 / 相邻两轮至少隔 400ms）**缺一件都会被自己饿死**：
 >   page.js 每秒都往页面上写东西，纯尾部防抖永远等不到安静窗口，别退回去。
+> - ⚠️ **交卷前的体检只 warn，不拦交卷**（批次 6 的取舍）：`_auditQuizFillBeforeSubmit()` 发现
+>   「隐藏域有值、可见框空着」时写 `quiz fill audit: text answer not in a visible box`，
+>   但**照样交**。拦下来的代价是整卷交不出去（考生那边时间还在走），而"可见框没写上"完全可能
+>   只是页面形状怪、平台其实认隐藏域。同理 `_logMissingAnswerBox` 用元素戳 `_omNoBoxDiagAt`
+>   **每个元素只报一次** —— 每秒一条会把 200 条缓冲刷空，那是批次 1 记过的老毛病。
+>   三个新出口不许再静默：`quiz answer empty, question left blank`（模型只回了个空）、
+>   `quiz fill: no visible answer box in question`（找不到可见框）、
+>   `quiz fill audit: text answer not in a visible box`（审计侧同一件事）。
 > - 待办（批次 4 只坐实、没动）：**提交那一路的卷子键比 ready 那一路粗**。
 >   `75-quiz-dom.js` 里 `_getQuizWorkKey(null)` / `_markQuizSubmitPending(null, …)` 传的是 `null`，
 >   于是主路径算出 `courseId||||knowledgeid` 这种缺两段的键，与按文档算的 ready 键**不同源** ——
 >   同一份卷子会拿到两个键，提交次数被记在两份账上（按卷上限 2 因此可能绕开）。
 >   用户那份日志里「一份卷子两个键」就是它。修法是把这两处的文档传对（或统一走 `_resolveQuizSubmitDocument`），
 >   **动之前先跑 `npm run itest`** —— 提交计数只在"只发部分题"的场景暴露。
+> - 待办（批次 6 只坐实、没动）：**紧凑协议会不会把简答答案挤掉**。`libs/prompt.js` 里
+>   3 题一批对应 `out:7`，而一道简答题要占的字数远超这个预算 —— 那正好是
+>   `quiz answer empty, question left blank` 要暴露的形状。判据：真实日志里这条 warn 若**成片出现**
+>   （而不是零星），方向就在提示词而不是 DOM；先跑 `npm run bench` 看 token，再动 `SYSTEM` / `FORMAT_HINT`。
 > - 已知残留（**不是待办，是判据本身的极限**）：两份卷子挂在**同一个文档**里、且那个文档
 >   五个 id 字段全空时，仍然分不开 —— 那种形状下没有任何可区分的信息，硬造区分（题号、容器序号）
 >   会随页面重排漂移，比合并更糟。批次 3 把「按页」拆成「按帧」，覆盖的是真实那一族形状
@@ -66,7 +91,7 @@
 >
 > - 版本 **1.3.0** 转正发布：tag `v1.3.0`，Release 附件 `omitone.zip` + `Omitone-manual.pdf`；README 下载直链自此指向 1.3.0。实验版标识已清理（manifest 名称恢复 `Omitone`、弹窗口径改正式版）。
 > - 本线内容 = 字体/日志 + 七轮加固（明细见 CHANGELOG 1.3.0 段）：**选择器单一真源 + 防漂移守卫**、**报错按根因分类**（`libs/api-error.js`）、**答题分批定版每批 ≤3 题 + 多选一题一请求**（用户定版"宁慢勿废"，集成测试有硬断言）、**小角色好感度养成 + 上课页伴侣**、**立绘看图重分类**（服装 44/表情 21/姿势 24）、**PDF.js/aria 页码文档任务**、**mooc2 结构适配**、**暴力测试进沙盒**。
-> - 验证基线：`npm test` 全绿（自检 20 + 基准 + 集成 **144** + worker 100）、e2e **70 场景 / 684 项**、回归 28、暴力 7、沙盒全绿。
+> - 验证基线：`npm test` 全绿（自检 20 + 基准 + 集成 **144** + worker 100）、e2e **71 场景 / 702 项**、回归 28、暴力 7、沙盒全绿。
 > - ⚠️ 字体反爬认知：font-cxsecret = **正常中文字符 + 自定义字形**（不是 PUA）——乱码主信号是解密层 `data-om-font-miss` 标记，PUA 检测只是兜底。
 > - 待办：字形表 `resources/table.json` 与 wyn665817 源头的覆盖度对比 / 表刷新流程（miss 标记已能自动发现过期并拦卷止损）。
 
@@ -897,7 +922,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | 当前版本 | **1.3.0 正式版**（2026-11-01 发布；`page.js` 已拆成 16 个按域片段，见 §0.2.2） |
 | 代码规模 | `page.js` 13.0k 行 / 367 个方法（**构建产物**，608 KB）；源码在 `src/page/` 的 16 个片段里，合计 13.4k 行（含头部注释）；`content.js` 2476 行；`libs/` 合计 4.2k 行 |
 | 扩展体积 | 解压后约 **2.66 MB**（立绘 1.59 MB 是主体；`page.js` 608 KB、`resources/table.bin` 122 KB；明细见 README §12.1 体积账本） |
-| 测试基线 | 自检 20 项 · 集成 144 项 + worker 单测 100 项 · 真实 Edge 端到端 **70 场景 / 684 项全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
+| 测试基线 | 自检 20 项 · 集成 144 项 + worker 单测 100 项 · 真实 Edge 端到端 **71 场景 / 702 项全绿**（项数见 `.workbuddy/e2e-counts.json`，由 `npm run check` 核） · 提示词基准 1 份报告 |
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
@@ -929,7 +954,7 @@ robocopy "D:\Omite" $dest /E /R:1 /W:1
 | 视频播放、倍速、静音、拖到结尾 | `page.js` | `_ensurePlaybackRate` / `_trySeekToEnd` / `_getVideoEl` |
 | 防拖拽+锁1x 的视频「看到 90% 就进下一个」 | `page.js` | `_shouldAdvanceAtNinetyPercent` / `_isNinetyPercentVideo` / `_finishCurrentMedia`（**改前先读 §9 那条分叉**） |
 | 抠题（题干 / 选项 / 题型） | `page.js` | `_extractQuestions` / `_collectQuestionContainers` / `_getOptionItems` |
-| 答题回填与交卷 | `page.js` | `_handleQuiz` / `_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz` |
+| 答题回填与交卷 | `page.js` | `_handleQuiz` / `_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz` / `_auditQuizFillBeforeSubmit`（**长题写进哪个框 = `_collectAnswerEditableNodes`，见 README §6 #48**） |
 | 视频内弹题、播放器右下角「继续学习」 | `page.js` | `_activePopupBlock` / `_handlePopupQuiz` / `_tryContinueStudyPrompt` |
 | 提示词（**唯一真源**） | `libs/prompt.js` | `buildUserPrompt` / `normalizeItem` |
 | API 地址与密钥清洗（**唯一真源**） | `libs/api-url.js` | `buildOpenAICompatibleUrl` 等 |
@@ -1276,6 +1301,7 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 | 调用 LLM 返回 **401/403 后，插件仍每 45 秒卡一下**（Key 填错了看起来像网络抽风） | **发版后已修**（`8ce8dae` 认状态码 + `0f345a2` 页面侧分流）：4xx 标 `permanentError`，跳过本轮 60 秒（`PERMANENT_LLM_ERROR_SKIP_MS`）、把服务商原话留在 `_quizApiLastError`、**不进 45 秒退避**；视频弹题同源走 `_giveUpPopupQuiz`。⚠️ **别把 4xx 分支并回普通失败处理** —— e2e 有「401 不退避」与「500 仍退避」的**对照**场景，少了对照，"凡是失败都不退避"也能蒙混过关 |
 | 作业/考试页（`.Cy_*` 结构）**点了选项却不生效**、日志照样 `clicked option` | **发版后已修**（`c9cfb7b`）：那套结构里选项**文本**在 `.Cy_ulTop`、**可点 input** 在 `.Cy_ulBottom`，是两个分开的 ul；`_getOptionItems` 抢先命中文本列 → `querySelector('input')` 恒 null → 空点。改法是 `_pairOptionControls` 按索引把控件挂到文本节点上。⚠️ 别改回"拿文本节点找 input"，e2e 有场景锁着 |
 | 作业/考试页**隐藏域 `#answer{qid}` 一直是空串**、提交后**无限重扫重答重交** | **发版后已修**（`1742b9f`，两个洞）：① `_clickOptionItem` 写隐藏域原来要 `qid && badge` **同时**成立，而真实作业页 li 上**两样都没有**（qid 在容器 `.Cy_TItle[qid]`、无 `.num_option` 徽标）—— 现为 qid 三级回退（li → `closest('[qid]')` → `_getQuestionIdFromElement`）+ 写隐藏域与徽标操作拆开 + **判断题以控件 `value`（true/false）为权威**，不是字母；② 完成判定只认章节页标记，对**判分结果页**（`.Py_answer` 一族 + 控件全 disabled）是瞎的 —— 新增 `_isQuizResultPageFinished`（三判据同立才算完成，**宁漏判不误判**）。⚠️ 别把写隐藏域的条件改回 `qid && badge` 同立。e2e 两个场景（8+9 条断言）锁着，含「旧判据对判分页确实认不出来」的守卫 |
+| **长题（填空/简答）答题框完全空着，日志却写 `quiz fill audit ok`、照样交卷**（用户："长题不答，只答了部分题"） | **1.3.0 批次 6 已修**，根因是**写的框和读的框不是同一个框**：写侧只往题目**容器之内**塞，读侧第一眼看**隐藏域** `#answer{qid}`（而隐藏域是无条件写的，所以审计必然绿）。现在找框统一走 `_collectAnswerEditableNodes`，读写都经它，`_fillText` / `_fillTextarea` 还返回**可见写入个数**。⚠️ **三件事别改回去**：① 隐藏域照旧无条件写（平台收的就是它），但它**不许再单独当作"答过了"的证据**；② 文本类可见回退**只对 `fill` / `short` 开**，给选择题开会把题干读成答案、把"没答"误判成"已答"；③ 审计**只 warn 不拦交卷**，拦下来的代价是整卷交不出去。e2e 场景 37（18 条断言）锁着，含「答案里的 `<img onerror>` 不许被当 HTML 注进页面」 |
 
 ---
 
@@ -1283,9 +1309,9 @@ main 也推上去了，**唯独 Release 和附件没发出去**，只能再向�
 
 | 项 | 说明 | 建议 |
 | --- | --- | --- |
-| **最近几版的修复都没在真实平台验证过** | 按时间排：「作业页回填隐藏域」「提交后认判分结果页」（1.2.3）→ jobid 挂在容器 div 上（1.2.8）→ 任务点反查回帧（1.2.11）→ 一份卷子交完不再判整节完成（1.3.0 批次 4）→ 等解密只问题目那份文档 + 解密层落结论（1.3.0 批次 5）。**全部只过了 mock e2e**（684 项全绿 + 反向验证），真实学习通页面**用户尚未回归实测** | 等用户跑一次真实页面。若仍有异常，**先看日志再改代码**：① 整章被跳过 → 看 1.2.9 加的**逐帧被拒原因**（`searchedCount: 0` 下面那几行，带帧地址）+ 批次 4 新加的 `skip completed {by:…}`；② 匹配上了却跑不动 → 看 `job.doc` 是否为 null；③ 作业/考试页异常 → 按 README §7 调试手册的两行（`#answer{qid}` 空串 / 停在 `waiting quiz submit result`）定位；④ **这一轮没答题** → 批次 4 起会写明 `quiz held: nothing answered this round {reason: force-skip / answered / in-progress}`；⑤ **像是"卡在等解密"** → 批次 5 起会写明 `quiz waiting font decrypt {state, sweepAgoMs, scope}` 或 `font decrypt verdict: answer as-is {state}` —— `state:"(none)"` 且 `sweepAgoMs:-1` 就是「content.js 的扫描没跑到这一份文档」，不是「解得慢」 |
+| **最近几版的修复都没在真实平台验证过** | 按时间排：「作业页回填隐藏域」「提交后认判分结果页」（1.2.3）→ jobid 挂在容器 div 上（1.2.8）→ 任务点反查回帧（1.2.11）→ 一份卷子交完不再判整节完成（1.3.0 批次 4）→ 等解密只问题目那份文档 + 解密层落结论（1.3.0 批次 5）→ 长题写进可见框、审计改读可见框（1.3.0 批次 6）。**全部只过了 mock e2e**（702 项全绿 + 反向验证），真实学习通页面**用户尚未回归实测** | 等用户跑一次真实页面。若仍有异常，**先看日志再改代码**：① 整章被跳过 → 看 1.2.9 加的**逐帧被拒原因**（`searchedCount: 0` 下面那几行，带帧地址）+ 批次 4 新加的 `skip completed {by:…}`；② 匹配上了却跑不动 → 看 `job.doc` 是否为 null；③ 作业/考试页异常 → 按 README §7 调试手册的两行（`#answer{qid}` 空串 / 停在 `waiting quiz submit result`）定位；④ **这一轮没答题** → 批次 4 起会写明 `quiz held: nothing answered this round {reason: force-skip / answered / in-progress}`；⑤ **像是"卡在等解密"** → 批次 5 起会写明 `quiz waiting font decrypt {state, sweepAgoMs, scope}` 或 `font decrypt verdict: answer as-is {state}` —— `state:"(none)"` 且 `sweepAgoMs:-1` 就是「content.js 的扫描没跑到这一份文档」，不是「解得慢」；⑥ **答题框空着却已交卷** → 批次 6 起会写明是哪一个环节：`quiz fill: no visible answer box in question`（找不到可见框，带 `answerFieldIsVisibleBox`）/ `quiz fill audit: text answer not in a visible box`（隐藏域有值、可见框空）/ `quiz answer empty, question left blank`（模型那一题只回了个空） |
 | **`configs` 没有 schema 校验** | 三份默认值服务的目的不同（page 全部开关 / popup 界面上的 / content 兜底），**本就不该一样**。真正会出事的「读了却没默认值」已由自检第 12 项守住，一上线就抓出 2 个 | 剩下只是「没有类型/范围校验」，收益不高，**暂不做** |
-| **继续细分大片段（可选）** | `page.js` 已从 9899 行拆成 `src/page/` 下 **16 个按域片段**（§0.2.2），最大的片段 1916 行。剩下 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1634 行）、`60-tasks-detect.js`（1424 行）还能再分 | **收益已明显变小，建议就停在这里。** 真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**，并照 `tools/README.md` 里记的四个坑走（尤其"新旧片段重名时清理必须在生成之前"） |
+| **继续细分大片段（可选）** | `page.js` 已从 9899 行拆成 `src/page/` 下 **16 个按域片段**（§0.2.2），最大的片段 1916 行。剩下 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1887 行）、`60-tasks-detect.js`（1424 行）还能再分 | **收益已明显变小，建议就停在这里。** 真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**，并照 `tools/README.md` 里记的四个坑走（尤其"新旧片段重名时清理必须在生成之前"） |
 | **`docs/channels.md` 的渠道快照可能过期** | 那份表标着「最后核对日期：**2026-09-18**」，记着各家 AI 的 base_url / 模型名 / 思考参数。服务商改地址、改模型名很快，而过期是**静默**的（插件照发请求，只是 400 或答非所问） | 用户 2026-10-10 明确**另开一轮**做这件事（要联网逐家实测，算内容更新而不是整理）。要动手时照该文件第 3 节走：改 `libs/thinking.js`（思考参数）+ `popup/popup.js` 的 `PROVIDER_PRESETS`（地址与模型名），核对完**记得改表头的核对日期** |
 | **密钥只在 `chrome.storage.local`** | 已经足够安全（无自有服务器），但没有加密 | 不必改；文档里已给出可自验方法 |
 

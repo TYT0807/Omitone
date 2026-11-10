@@ -59,11 +59,22 @@
 > 映射表查没查到字形），日志里 `font decrypt verdict` 直接写根因，
 > `quiz waiting font decrypt {state:…}` 也带着它 —— 以后再报「没解码」，
 > 一眼能分清是**根本没去解**还是**去解了解不开**，这两种的修法完全不同。
+> **⑤ 填空题和简答题「答案进了系统、答题框却空着」**（同日再补，就是「长题不答、
+> 只答了部分题」那条）—— 这两类长题的答案，插件以前只写进题目里**看不见**的那个隐藏域，
+> 页面上真正给你打字的那个框（文本域、可编辑区）一个字都没进。于是你看到的是
+> **答题框完全空着**，日志里却写着「答案齐了」（`quiz fill audit ok`），然后照常交卷 ——
+> 一卷子只对了一半，错的那一半正好全是长题。
+> 现在写答案会**连可见的框一起写**，交卷前的体检也**改读可见的框**：
+> 两边终于看同一样东西了。某个框插件就是找不到的时候，日志会写
+> `quiz fill: no visible answer box in question` 并把那道题的结构带出来；
+> 模型这一题只回了个空答案，也不再一声不吭，会写 `quiz answer empty, question left blank`。
+> 体检**只提醒、不拦交卷** —— 宁可告诉你哪道题可疑，也不会为了自保把整卷憋在手里。
+> 长题的框本来就老老实实待在题目里的那些页面，你感觉不到变化。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 70 场景 / 684 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 71 场景 / 702 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -697,7 +708,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 70 个场景，684 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 71 个场景，702 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1047,6 +1058,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 45 | **交完卷之后一直卡着不动**（日志反复 `study matched job {"kind":"quiz"}`，既不答题也不往下走，能卡好几分钟） | 两条判据打架：`_handleQuiz` 因 `_quizAnswered` 为真**一字不做**，`_isQuizLearningPending` 又因"提交按钮还挂在页面上"说**还有题** → 调度器每秒把同一份卷子交给它一次，永远不前进 | 防线：`_isQuizLearningPending` 里**自己刚答过就不算 pending**（平台明确要求重做除外）。⚠️ **第三次同类**：两处各自维护"做完了没有"，定义却不同 —— **动这类判定前先找出另一个也在判断同一件事的地方** |
 | 46 | **第一次遇到题目过了，第二次遇到题目不答题**（真实日志：`19:12:17 quiz submit finished` → **1 秒后** `skip completed` + 点「下一节」→ 此后整段没有任何答题记录） | `_isCurrentCompleted()` 把**页面级**文案「任务点已完成」排在**逐任务帧**完成状态之前，而一张卡片挂两份测验时，刚交完那一份就会把这句话渲染出来 —— 另一份一个字没答，整节却被判"做完了"。而 `_handleQuiz` 开头三个「这一轮不答」的原因（冷却 / 上一轮未完 / 已答完）共用一个**静默** return，日志一个字不写，现场只能靠猜 | 防线：① 判据顺序反过来 —— **未完成任务点的证据压过一句文案**，并把依据写进 `_completionEvidence`（`skip completed {by:…}`）；② `quiz held: nothing answered this round {reason:…}`（10 秒节流）；③ `_isQuizPaperChangedInDom()` 兜住 `_quizAnswered` 是页面级、换卷又要靠任务点 id 的那一族形状（新旧 qid **完全不重叠**才判换卷，有交集就保守不动）。⚠️ **第 41 条的亲戚**：「任务点已完成」这类**页面级文字**永远不能单独判"这一节做完了"；**跳过不可逆、多等一轮只是慢一点** |
 | 47 | **进卷子先白等 8~12 秒「等解码」，而日志里解码层一条记录都没有**（用户原话「它连解码那个都没有」；真实日志：`quiz waiting font decrypt {fontMiss:false}` → 8.1s / 12.2s 后 `font decrypt pending over limit, answer anyway`，而那两份卷子的题面其实是好的） | 三处叠在一起：① 等不等的判据走的是**整页**扫描 —— 不相干装饰帧里**永远解不掉**的残留也算"还没解码"；② content.js 的扫描只有 300ms **尾部**防抖，而 page.js 自己每秒都在写 DOM —— 变动间隔长期小于 300ms 时扫描**永远排不到**；③ 解密层有三条「什么都不做也不吭声」的分支（无字体声明却带密文 / 映射表建不起来 / `computed===0`），跑没跑、为什么解不出，日志里看不出来 | 防线：① 新增 `_probeFontDecrypt(题目文档)` —— 只从题目那份文档往下走（含子帧），一次遍历把密文残留、`data-om-font-miss`、终局判据与扫描戳一起收；② `scheduleDecryptSweep()` 改成**有界**防抖（300ms 防抖 + 最长 2 秒必跑 + 两次至少隔 400ms），加 `decryptSweepRunning` 防并发全页重扫；③ 每份被扫描的文档落 `data-om-font-state` + `data-om-font-sweep`，非 clean 结论写 `font decrypt verdict`（每份文档每个状态 60 秒一条，带 `suppressed`）；④ `nodecl` / `nomap` 属终局判据 → **不等**（30 秒一条 `font decrypt verdict: answer as-is`）。⚠️ `_hasUndecryptedFontSecret` 已删（并进 `_probeFontDecrypt`）；判"要不要等"必须问**题目那份文档** —— 问整页就等于让最不相干的帧决定所有人的节奏 |
+| 48 | **长题（填空/简答）的答题框完全空着，日志却写着"答案齐了"**（用户原话「长题不答，只答了部分题」；真实日志：`quiz fill audit ok {withValue:3,total:3}` → 交卷 → 回头一看只答对了一半，错的那一半全是长题） | **写和读看的不是同一个东西**：① 写侧 `_fillTextarea` 只往**题目容器之内**的 textarea / input / contenteditable 里塞，而学习通有些长题的可见框是容器**外面的兄弟节点**，或容器里干脆只剩一个隐藏域；② 读侧 `_getQuizQuestionFilledValue` **先看隐藏域**，有值就直接返回，从不看可见框；③ `_fillText` / `_fillTextarea` 又**无条件**写 `#answer{qid}` 隐藏域（平台真正收的那一份）—— 于是审计永远看得见值、看不见空框，一句"没答"都报不出来；④ 模型某一题只回了空答案时，`_fillAnswers` 那一支直接 return，日志一个字不写 | 防线：① 写侧加宽 —— 新增 `_collectAnswerEditableNodes`（容器内文本控件 → `#answer{qid}` 本体就是文本控件时 → 至多 3 层祖先；该层命中多于一题就停，避免写进隔壁题），`_writeAnswerText` 走原型 setter + `input`/`change` 事件，富文本 iframe 用 `_answerToHtml`（**转义后**再进 body，答案里的标签不会当成 HTML 注入）；② 读侧对称 —— 文本类题先 `_readVisibleAnswerText`，**且只对 `fill`/`short` 开**（给选择题开就会误报"已答"）；③ `_fillText` / `_fillTextarea` 现在返回**可见**写入个数，为 0 时 `_logMissingAnswerBox` 把那道题的结构写进日志（每元素只报一次，靠 `_omNoBoxDiagAt` 戳）；④ 交卷前体检从 `_maybeSubmitQuiz` 抽成 `_auditQuizFillBeforeSubmit`，文本题按 `text` / `textVisible` / `textHidden` 三档报，**只提醒、不拦交卷**；⑤ 空答案新增 `quiz answer empty, question left blank`。⚠️ 隐藏域照旧无条件写（不能省，它是平台收的那一份），但它**再也不能单独当作"这题答过了"的证据** —— 判"填上了"必须问眼睛看得见的那个框 |
 
 ---
 
@@ -1070,6 +1082,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **提交后一直停在 `waiting quiz submit result`，然后整页重载、重扫重答重交** | 见 §6 #38。先看结果页长什么样：`document.body.innerText` 里有「我的答案 / 正确答案」且 `document.querySelectorAll('.Py_answer').length > 0`，说明是判分结果页 —— 旧判据对它是瞎的。日志里找 `quiz submit wait timeout` |
 | **刚交完一份卷子就 `skip completed` + 点「下一节」，同一页另一份卷子一个字没答** | 见 §6 #46。`skip completed` 现在带 `by:` —— `by:"text-marker"` 就是那句页面级文案赢过了未完成任务点的证据（本条已修，修前它什么都不会说）；`by:"all-tasks-finished"` / `"catalog-marker"` 才是真有依据。日志里同时找 `quiz held: nothing answered this round`，它的 `reason:` 说明这一轮凭什么没答：`force-skip`（这份卷子正在按卷冷却）/ `in-progress`（上一轮还没结束）/ `answered`（自认已答完 —— 若页面上是一批完全不认识的 qid，会紧跟一条 `quiz paper switched by question identity` 把它重置） |
 | **每份卷子进来都先卡 8 秒左右才动**（日志 `font decrypt pending over limit, answer anyway`），或反过来反馈「它连解码都没有」 | 见 §6 #47。现在这条 warn 带着 `state:` 与 `sweepAgoMs:`，两种根因分得开：`state:"(none)"` / `sweepAgoMs:-1` = 解密扫描**没跑到**这一份文档；`state:"nodecl"` = 这份文档里没有字体声明（本来就没有可解的东西）；`state:"nomap"` = 表没加载或字形全部未命中。后两种是**终局判据**，1.3.0 批次 5 起不再白等（改写成 `font decrypt verdict: answer as-is`，30 秒一条）。范围也已收成题目那份文档，边上装饰帧的残留不再拖慢所有人 |
+| **长题（填空/简答）页面框里一个字没有，日志却说"答案齐了"**（`quiz fill audit ok` 里 `withValue` 等于 `total`） | 见 §6 #48。三条日志分开看：`quiz fill: no visible answer box in question` = 插件**找不到看得见的那个框**（带 `tag`/`cls`/`textarea`/`editable`/`iframe`/`answerFieldIsVisibleBox`/`html`，`answerFieldIsVisibleBox:true` 说明 `#answer{qid}` 本身就是个文本框）；`quiz fill audit: text answer not in a visible box` = 隐藏域有值、可见框空着（审计那侧的同一件事）；`quiz answer empty, question left blank` = 模型这一题**只回了个空**，不是插件没写。控制台可直接跑 `_xxtApp._readVisibleAnswerText(_xxtApp._extractQuestions(null)[0]._element)` 看插件读到了什么 |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1118,7 +1131,8 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 学习卡片（小节）切换 / 下一节 | `src/page/64-tasks-loop.js`：`_getLearningCards` / `_switchToNextLearningCard` / `nextUnit` |
 | **「这一节做完了没有」** | `src/page/60-tasks-detect.js`：`_isCurrentCompleted` / `_getVisibleTaskCompletionState` / `_completionEvidence`（⚠️ **判据顺序**：未完成任务点的证据 > 「任务点已完成」那句页面级文案；判完必须留下 `by:`，见 §6 #46） |
 | 题目抠取 | `src/page/75-quiz-dom.js`：`_collectQuestionContainers` / `_parseQuestionElement` / `_getOptionItems`（**选择器真源都在 `10-config-state.js`**：`_questionSelectors` / `_quizDetectorSelector` / `_questionTitleSelectors` / `_optionListSelectors` / `_quizContainerSelector` —— 真源之外手抄会被 `npm run check` 报红；改版应急走 storage 的 `questionSelectorOverrides`） |
-| 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz`） |
+| 答题与提交 | `src/page/70-quiz-flow.js`（`_handleQuiz` / `_extractQuestions`）+ `src/page/75-quiz-dom.js`（`_fillAnswers` / `_areQuizAnswersFilled` / `_maybeSubmitQuiz` / `_auditQuizFillBeforeSubmit`） |
+| **往答题框里写字 / 读回写了没有** | `src/page/75-quiz-dom.js`：`_fillText` `_fillTextarea`（写，返回**可见**写入个数）→ `_collectAnswerEditableNodes`（找框：容器内文本控件 → `#answer{qid}` 本体 → 至多 3 层祖先）→ `_writeAnswerText` `_answerToHtml` `_isAnswerTextControl`；读回用 `_readVisibleAnswerText`，审计用 `_getQuizQuestionFilledValue` / `_auditQuizFillBeforeSubmit`，找不到框用 `_logMissingAnswerBox`。⚠️ 见 §6 #48（写和读必须看同一个东西，隐藏域不能单独当证据） |
 | 提交监控 / 提交次数跳过 | `src/page/70-quiz-flow.js`：`_monitorQuizSubmit` / `_shouldHoldQuizBeforeNext` / `_shouldSkipQuizBySubmitAttempts` |
 | 「页面上已经换了一份卷子」 | `src/page/70-quiz-flow.js`：`_syncQuizPaperRunState`（任务点 id 那条路）+ `_isQuizPaperChangedInDom`（**题目 qid 那条兜底**，新旧完全不重叠才 true）+ `_resetQuizStateForSkip` |
 | 「等不等解码 / 解码为什么没成」 | 判据在 `src/page/70-quiz-flow.js`：`_probeFontDecrypt(题目文档)`（一次遍历收 `secret` / `miss` / `terminal` / `state` / `sweepAgoMs`）；**证据由解密层写**：`content.js` 的 `decryptSecretFontsInDocument` → 每份文档的 `data-om-font-state`（clean / plain / nodecl / nomap / partial / done）+ `data-om-font-sweep` 时间戳 + `font decrypt verdict` 日志。扫描节奏在 `content.js` 的 `scheduleDecryptSweep`（有界防抖：300ms 防抖 / 最长 2 秒必跑 / 至少隔 400ms）与 `runFontDecryptSweep`（`decryptSweepRunning` 防并发）。⚠️ 见 §6 #47 |
@@ -1202,7 +1216,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（70 个场景 / 684 项）
+npm run e2e      # 真实 Edge 功能交叉检验（71 个场景 / 702 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

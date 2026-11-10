@@ -293,7 +293,7 @@
   带上题目标签/类名/qid/li/label/radio/checkbox 个数与 220 字符 HTML —— 下次照着这条就能补结构。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
 
-### 2026-11-10 追加（发布后修复，未升号 · 批次 1~4）
+### 2026-11-10 追加（发布后修复，未升号 · 批次 1~6）
 
 用户连着报的两件事是**同一个病**：答题的判据外溢到了别的任务上。1.3.0 线上包先出现
 「所有题目都被跳过」，把答题修回来之后又发现「刷 PPT 报废」，两个功能一起接近瘫痪。
@@ -480,11 +480,80 @@
   - 新场景 `/blank`（一份题都抠不到 → 闸门放行后同步走到"0 道题"就返回，绝不打服务商；
     `_extractQuestions` 换成计数桩）7 条断言 + 加载共 8 项。
 - 验证：`npm run check` 与 `npm test` 全绿；`npm run e2e` 真实 Edge 全绿 ——
-  当前基线 **70 个场景 / 684 项**。
+  当前基线 **70 个场景 / 684 项**（批次 6 之后的 702 项是后一轮的事实，不回填）。 <!-- 历史计数:start --><!-- 历史计数:end -->
   ⚠️ 批次 5 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、
   线上附件仍是 1.3.0 发布那一版（改了 `page.js` / `content.js`，**需要重传附件**）。
   下一次导出日志，"这一轮没答"该看到的是 `quiz waiting font decrypt {state,sweepAgoMs,scope}`
   或 `font decrypt verdict: answer as-is {state}`；两者都没有而题面是密文，才说明闸门没生效。
+- **⑥批次 6：「长题不答、只答了部分题」—— 写的框和读的框根本不是同一个框**
+  （用户这次导出的日志 + 一句「答题框完全空着」）：
+  - 现场很矛盾：日志写 `quiz fill audit ok {withValue:3,total:3}`，随后正常交卷，
+    可屏幕上填空/简答那一道**一个字都没有**。审计说的既是真话也是假话 ——
+    隐藏域 `#answer{qid}` 确实有值（平台收的就是它），而用户看得见的那个框是空的。
+    用户口中的"无视""只答了部分题"，就是这一半长题。
+  - 三条根因叠在一起，缺一条都不会长成这样：
+    1. **写侧太窄**：`_fillTextarea` 只往**题目容器之内**的 textarea / input / contenteditable
+       里塞。学习通不少长题的可见框是容器**外面的兄弟节点**（`div[contenteditable]`），
+       有的容器里干脆只剩一个隐藏域 —— 写不进去，也**没人知道没写进去**。
+    2. **读侧太宽**：`_getQuizQuestionFilledValue` 第一眼看的就是隐藏域，有值直接返回，
+       可见框一次都没看过。
+    3. **两边合起来把盲区焊死了**：`_fillText` / `_fillTextarea` **无条件**写隐藏域，
+       于是"隐藏域有值"这件事**必然成立**，审计**必然**说 ok。
+       再加一条：模型对某题只回空答案时，`_fillAnswers` 那一支直接 return，日志一个字不写。
+  - 修法（写读对称 + 数得见的返回值）：
+    1. 新增 `_collectAnswerEditableNodes(el)` 统一找框 —— 容器内的文本控件
+       （判据 `_isAnswerTextControl`：textarea / 非 hidden 的文本类 input / contenteditable，
+       **排除 iframe 与 body/html**）→ 找不到时看 `#answer{qid}` **本体是不是文本控件**
+       → 再找不到才**至多上走 3 层**祖先，且**该层命中多于一题就停**（写进隔壁题比不写更糟），
+       同层候选还要求 qid 匹配、且只剩一个才采纳。
+    2. `_writeAnswerText` 用 **原型 setter** 写 value（受控组件才认），再补 `input` / `change`；
+       富文本 iframe 走 `_answerToHtml` —— **先转义 `& < >`、换行转 `<br>`** 再进 body，
+       答案里带 `<img onerror>` 也只是文字，不会被当 HTML 注进页面。
+    3. 隐藏域**照旧无条件写**（那是平台真正收的那一份，也不能省 ——
+       `_writeAnswerText` 万一抛错，它是唯一兜底），但它**不再单独构成"这题答过了"的证据**。
+    4. `_fillText` / `_fillTextarea` 现在返回**可见**写入个数；`_fillAnswers` 拿到 0
+       就调 `_logMissingAnswerBox`，把 `tag` / `cls` / `textarea` / `textInput` / `editable` /
+       `iframe` / `answerFieldIsVisibleBox` / `answerLen` / `html` 一起写进日志。
+       去重用**元素上的戳** `_omNoBoxDiagAt`，每个元素只报一次（否则每秒一条把缓冲刷空，
+       那正是批次 1 记过的老毛病）。
+    5. 读侧补对称的一档：`_getQuizQuestionFilledValue` 里文本类题先 `_readVisibleAnswerText`。
+       ⚠️ **只对 `fill` / `short` 开** —— 给选择题开这一档，任何带可见文字的题面都会被读成"答案"，
+       于是"还没答"被误判成"已答"，那是比盲区更糟的方向。
+    6. 空答案不再静默：`quiz answer empty, question left blank {index,type,raw}`。
+  - 交卷前的体检从 `_maybeSubmitQuiz` 里抽成 `_auditQuizFillBeforeSubmit(submitQuestions, doc)`
+    —— 文本题不再一律 `continue`，而是分 `text` / `textVisible` / `textHidden` 三档：
+    隐藏域有值而可见框空着 → `quiz fill audit: text answer not in a visible box`。
+    题型缺失时用 `_detectQuestionType(aEl)` 兜。抽成方法还有个副作用要好：`/quiz` 夹具既没有
+    提交按钮、标题也不是「章节测验」，`_shouldAutoSubmitQuiz()` 直接 false，
+    `_maybeSubmitQuiz` 根本走不到审计 —— 不抽出来就没法单测这一段。
+  - **取舍记一条：审计只 warn，不拦交卷。** 拦下来的代价是**整卷交不出去**（考生那边
+    时间还在走），而"可见框没写上"完全可能是页面形状怪、平台其实认隐藏域；
+    宁可交一份可疑的卷子，也不要为了自保把已答对的部分一起憋死。
+  - **批次 6 的反向验证**（六处注入，各改 `src/page/` 后 `npm run concat`，
+    每处只让对应那条变红、其余保持绿，还原后 702 项重新全绿）：
+    - ⚠️ **第一轮"每元素只报一次"那条给出的是假绿** —— 去掉 `_omNoBoxDiagAt` 守卫，
+      断言**照样 17/17 全过**。不是守卫没用，是**夹具错了**：
+      两次调用在同一个同步块里，`Date.now()` 返回值相同，节流判据本身就挡住了第二条，
+      于是删掉守卫也看不出区别。改成**哨兵值 12345**（预先在元素上戳一个假时间戳）之后，
+      干净时全绿、注入时**恰好 1 条红**。这与 AGENTS §5「注入没生效会给出假绿」是同族，
+      只是这次注入**生效了**、错在**断言测的是时钟而不是守卫** ——
+      **"断言通过了"本身不会告诉你它测的是不是那件事。**
+    - 另两处值得记：`_logMissingAnswerBox` 挂在**分发层**（`_fillAnswers`）而不是 `_fillTextarea`，
+      第一版断言直接调 `_fillTextarea` 期望看到 warn，抓的是不存在的因果关系；
+      可见个数计数在多空填空上应是 `=== 3`（每空一个），`typeof === 'number'` 那种断言等于没断言。
+  - 新场景 **37 `/quiz`「长题只写进隐藏域要报成没答」**：四个夹具（qid 9101 容器外
+    contenteditable 兄弟框 / 9102 只有一截 `<span>` 幽灵框 / 9103 容器内只有隐藏域 /
+    9104 三个文本空 + 隐藏域），共 18 项断言。日志用页面里 `message` 监听
+    `source:"xxt_app"` 的 `runtime_log` 抓，抓完 300ms 收口。
+    安全侧也钉了一条：把 `<img src=x onerror=alert(1)>` 当答案灌进去，
+    页面里**不许出现任何 img 元素**、`omBoxA` 的 innerHTML 里不许有 `<img`。
+  - 验证：`npm run check` 与 `npm test` 全绿；`npm run e2e` 真实 Edge 全绿 ——
+    当前基线 **71 个场景 / 702 项**。
+    ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
+    1.3.0 发布那一版（改了 `page.js`，**需要重传附件**）。
+  - **还挂着一条没动**：`libs/prompt.js` 的紧凑协议里 3 题一批对应 `out:7`，
+    简答题要占的字数远超这个预算，**有可能被压成空答案** —— 那正是本批 `quiz answer empty`
+    要暴露的形状。下一次导出日志若大量出现这条，方向就是提示词而不是 DOM。
 
 
 ---

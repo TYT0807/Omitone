@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（41 个）：
+ * 本段的方法（48 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -20,10 +20,13 @@
  *   _expandMultiChoiceLetters、_normalizeChoiceAnswerValues、_applyChoiceAnswer、
  *   _fillChoice、_clearMultiChoiceSelection、_fillMultiChoice、_fillText、
  *   _fillTextarea、_resolveQuizAnswerDocument、_readRichEditorValue、
+ *   _isAnswerTextControl、_answerToHtml、_writeAnswerText、_collectAnswerEditableNodes、
+ *   _readVisibleAnswerText、_logMissingAnswerBox、
  *   _getQuizQuestionFilledValue、
  *   _isQuizQuestionFilled、_isQuizQuestionFilledWithKnownWrong、
  *   _clearKnownWrongFilledQuizAnswers、_areQuizAnswersFilled、_findButtonByText、
- *   _resolveQuizSubmitDocument、_shouldAutoSubmitQuiz、_maybeSubmitQuiz、
+ *   _resolveQuizSubmitDocument、_shouldAutoSubmitQuiz、_auditQuizFillBeforeSubmit、
+ *   _maybeSubmitQuiz、
  *   _isSubmitConfirmDialog、_findDialogButtonByText、_checkSubmitConfirmDialog、
  *   _handleSubmitConfirmDialog
  * ========================================================================== */
@@ -439,14 +442,25 @@
         var finalAnswer = self._avoidKnownWrongAnswer(answerItem.answer, type, question, preferredDoc || null);
         console.log('[Omitone] fill question', answerItem.index, 'type', type, 'answer', finalAnswer);
         if (finalAnswer === null || finalAnswer === undefined || String(finalAnswer).trim() === '') {
+          // 「这一题模型给的是空答案」必须落进日志。它和「填上了但页面没写上」
+          // 在用户眼里是同一个症状（答题框空着、卷子却交上去了），
+          // 在日志里却是完全两回事 —— 原先这里静默 return，只能靠猜。
+          emitRuntimeLog('warn', 'quiz answer empty, question left blank', {
+            index: answerItem.index,
+            type: type,
+            raw: String(answerItem.answer == null ? '' : answerItem.answer).slice(0, 20)
+          });
           self._clearQuizQuestionAnswer(question);
           self._unmarkQuizQuestionAnsweredThisRun(question);
           return;
         }
+        // 文字题要知道**到底写进可见答题框了没有**：-1 = 选择题，不归这个计数管
+        var visibleWrites = -1;
         if (type === 'single' || type === 'judge') self._fillChoice(question._element, finalAnswer, 'radio');
         else if (type === 'multiple') self._fillMultiChoice(question._element, finalAnswer);
-        else if (type === 'fill') self._fillText(question._element, finalAnswer);
-        else if (type === 'short') self._fillTextarea(question._element, finalAnswer);
+        else if (type === 'fill') visibleWrites = self._fillText(question._element, finalAnswer);
+        else if (type === 'short') visibleWrites = self._fillTextarea(question._element, finalAnswer);
+        if (visibleWrites === 0) self._logMissingAnswerBox(question._element, type, finalAnswer);
         var questionDoc = question._element && question._element.ownerDocument ? question._element.ownerDocument : null;
         var filledValue = self._getQuizQuestionFilledValue(preferredDoc || questionDoc || null, question);
         if (filledValue) {
@@ -1062,6 +1076,13 @@
     },
 
 
+    /**
+     * 填空题：把答案按 `|||` 分段写进题目容器里的**每一个文本框**，并同步隐藏答案域。
+     *
+     * 返回真正写到的可见答题控件数（0 = 这道题在我们眼里一个答题框都没有）。
+     * 这个返回值是给 `_fillAnswers` 的：只写进隐藏域、可见框却空着，
+     * 就是用户报的「长题不答、卷子照交」—— 光看审计里的 withValue 是看不出来的。
+     */
     _fillText: function (el, answer) {
       var value = this._normalizeAnswerValue(answer);
       var inputs = Array.from(el.querySelectorAll('input[type="text"], input:not([type])'));
@@ -1086,8 +1107,7 @@
             emptyAnswer: !String(value == null ? '' : value).trim()
           });
         } catch (eLog) {}
-        this._fillTextarea(el, answer);
-        return;
+        return this._fillTextarea(el, answer);
       }
 
       var values = [];
@@ -1131,42 +1151,53 @@
           hidden.dispatchEvent(new Event('change', { bubbles: true }));
         }
       } catch (e) {}
+      return inputs.length;
     },
 
 
+    /**
+     * 文字题（简答，以及答题框不是 input 的填空）的填答。
+     *
+     * 返回**真正写到的可见答题控件数**（富文本 iframe 正文也算）。这条计数是为
+     * 「长题不答」准备的：原先下面三档都找不到时，只有末尾那个隐藏域会写上值，
+     * 于是页面上答题框完全空着、判定却读得到值、审计报 withValue=total、卷子直接交出去。
+     */
     _fillTextarea: function (el, answer) {
       var value = String(this._normalizeAnswerValue(answer) || '');
-      var textareas = Array.from(el.querySelectorAll('textarea'));
-      var textareaSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-      textareas.forEach(function (textarea) {
-        if (textareaSetter && textareaSetter.set) textareaSetter.set.call(textarea, value);
-        else textarea.value = value;
-        textarea.dispatchEvent(new Event('input', { bubbles: true }));
-        textarea.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      var targets = this._collectAnswerEditableNodes(el);
+      var written = 0;
+      for (var t = 0; t < targets.length; t++) {
+        if (this._writeAnswerText(targets[t], value)) written++;
+      }
 
       var iframes = Array.from(el.querySelectorAll('iframe'));
-      iframes.forEach(function (frame) {
+      for (var i = 0; i < iframes.length; i++) {
         try {
-          var body = frame.contentDocument && frame.contentDocument.body;
+          var body = iframes[i].contentDocument && iframes[i].contentDocument.body;
           if (body) {
-            body.innerHTML = '<p>' + value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>') + '</p>';
+            body.innerHTML = this._answerToHtml(value);
+            written++;
           }
         } catch (e) {}
-      });
+      }
 
       // 简答题同样要同步隐藏答案域：平台提交时读的是 #answer{qid}，
       // 只写 textarea/富文本编辑器的话，页面自身 JS 不一定会把内容回填进去。
+      // ⚠️ 这一档**不算进 written** —— 它就是「只有隐藏域有值、答题框却空着」的来源。
       try {
         var doc = el.ownerDocument || document;
         var qid = this._getQuestionIdFromElement(el);
         var hidden = (qid && doc.getElementById) ? doc.getElementById('answer' + qid) : this._findQuizAnswerInput(el, qid);
         if (hidden && value) {
+          // 可见控件可能就是这一个 `#answer{qid}`（简答的常见形状）—— 上面已经用
+          // 原型 setter 写过同一串文本，这里再直接赋值一次是幂等的，
+          // 但**不能省**：万一 `_writeAnswerText` 那一路抛错了，隐藏域就是唯一的兜底。
           hidden.value = value;
           hidden.dispatchEvent(new Event('input', { bubbles: true }));
           hidden.dispatchEvent(new Event('change', { bubbles: true }));
         }
       } catch (e) {}
+      return written;
     },
 
 
@@ -1213,6 +1244,181 @@
       return '';
     },
 
+    /**
+     * 「文字答题控件」= 用户能打字的那种框：textarea、非隐藏的 input、contenteditable 区块。
+     *
+     * 刻意**不包含** `input[type="hidden"]` —— 那是平台的提交字段，不是答题框。
+     * 把隐藏域当「已填写」，正是「答题框完全空着、审计却报有值、卷子直接交出去」的根。
+     */
+    _isAnswerTextControl: function (node) {
+      if (!node || !node.tagName) return false;
+      var tag = String(node.tagName).toLowerCase();
+      if (tag === 'textarea') return true;
+      if (tag === 'input') {
+        var type = '';
+        try { type = String(node.getAttribute('type') || node.type || 'text').toLowerCase(); } catch (e) { return false; }
+        return type === '' || type === 'text' || type === 'search' || type === 'number' || type === 'email' || type === 'tel';
+      }
+      if (tag === 'iframe' || tag === 'body' || tag === 'html') return false;
+      var ce = '';
+      try { ce = String(node.getAttribute && node.getAttribute('contenteditable') || '').toLowerCase(); } catch (e2) { return false; }
+      return ce === 'true' || ce === '';
+    },
+
+    /** 答案文本 → 富文本里的 HTML。转义是必需的：答案里的 `<` 不许被当成标签注进页面。 */
+    _answerToHtml: function (value) {
+      return '<p>' + String(value == null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\n/g, '<br>') + '</p>';
+    },
+
+    /**
+     * 往一个文字答题控件里写文本。走原型 setter —— React/Vue 受控组件不认裸赋值，
+     * 只写 `.value` 时框里看着有字、组件状态里却是空的。
+     */
+    _writeAnswerText: function (node, value) {
+      try {
+        var tag = String(node.tagName || '').toLowerCase();
+        if (tag === 'input' || tag === 'textarea') {
+          var proto = tag === 'input' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
+          var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+          if (setter && setter.set) setter.set.call(node, value);
+          else node.value = value;
+        } else {
+          node.innerHTML = this._answerToHtml(value);
+        }
+        node.dispatchEvent(new Event('input', { bubbles: true }));
+        node.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
+     * 这道题**看得见**的文字答题控件，按可靠度依次找：
+     *   ① 题目容器内；
+     *   ② 容器里一个都没有 → 按平台约定取 `#answer{qid}`（前提是它是能打字的框，不是隐藏域）；
+     *   ③ 还没有 → 向上最多 3 层再找，**只在那一层恰好只有一个候选时**才认。
+     *
+     * ③ 还没有 → 向上最多 3 层再找，**只在那一层恰好只有一个候选时**才认。
+     *
+     * ③ 的存在是因为抠题容器有时只圈到题干、答题框渲染在它外面 ——
+     * 那种形状下旧实现一个控件都找不到，于是只写进隐藏域。
+     * ③ 的两条限制都不能省：向上找到的框可能是**别的一道题**的，
+     * 写错框比不写更糟（会把隔壁题的答案覆盖掉）。所以
+     *   · 某一层里能数出 ≥2 个题目容器 → 这一层已经在装"隔壁题"，立刻停；
+     *   · 只在那一层恰好只有一个候选时才收，且候选的 qid 必须对得上（它自己没有 qid 才算中性）。
+     */
+    _collectAnswerEditableNodes: function (el) {
+      var found = [];
+      if (!el || !el.querySelectorAll) return found;
+      var self = this;
+      var collect = function (scope) {
+        var out = [];
+        var nodes;
+        try { nodes = Array.prototype.slice.call(scope.querySelectorAll('input, textarea, [contenteditable]')); } catch (e) { return out; }
+        for (var i = 0; i < nodes.length; i++) {
+          if (self._isAnswerTextControl(nodes[i])) out.push(nodes[i]);
+        }
+        return out;
+      };
+
+      found = collect(el);
+      if (found.length) return found;
+
+      var qid = '';
+      try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+      var doc = el.ownerDocument || document;
+      try {
+        var byId = qid && doc && doc.getElementById ? doc.getElementById('answer' + qid) : null;
+        if (this._isAnswerTextControl(byId)) return [byId];
+      } catch (eId) {}
+
+      var depth = 0;
+      var parent = el.parentElement;
+      while (parent && depth++ < 3) {
+        try {
+          // 这一层已经装着好几道题 → 再往上的框归属说不清，停
+          if (parent.querySelectorAll(this._quizDetectorSelector).length > 1) break;
+        } catch (eScope) { break; }
+        var candidates = collect(parent);
+        if (qid) {
+          candidates = candidates.filter(function (node) {
+            var nodeQid = '';
+            try { nodeQid = String(self._getQuestionIdFromElement(node) || ''); } catch (eN) {}
+            return !nodeQid || nodeQid === qid;
+          });
+        }
+        if (candidates.length === 1) return candidates;
+        parent = parent.parentElement;
+      }
+      return found;
+    },
+
+    /**
+     * 只读**文字答题控件**里的内容（多空用 `|||` 连，与填答侧的约定一致），
+     * 外加富文本 iframe 正文。
+     *
+     * 与 `_getQuizQuestionFilledValue` 的分工：那边**隐藏域优先**（平台提交读的是它），
+     * 这里刻意不看隐藏域 —— 「只有隐藏域有值」正是用户看到「答题框空着」的那种形状，
+     * 提交前的审计拿它和 withValue 对比就能把这一条钉死在日志里。
+     */
+    _readVisibleAnswerText: function (el) {
+      if (!el) return '';
+      var parts = [];
+      var nodes = this._collectAnswerEditableNodes(el);
+      for (var i = 0; i < nodes.length; i++) {
+        var tag = String(nodes[i].tagName || '').toLowerCase();
+        var one = '';
+        try {
+          one = (tag === 'input' || tag === 'textarea') ? String(nodes[i].value || '') : textOf(nodes[i]);
+        } catch (e) { one = ''; }
+        one = String(one || '').trim();
+        if (one) parts.push(one);
+      }
+      if (!parts.length) {
+        var rich = this._readRichEditorValue(el);
+        if (rich) parts.push(String(rich).trim());
+      }
+      return parts.join('|||');
+    },
+
+    /**
+     * 文字题一个可见答题框都没写到的现场快照（同一个元素只记一次）。
+     *
+     * 形状抄 `_applyChoiceAnswer` 里那条同族日志：有了 tag/cls/各类控件的计数，
+     * 下一次直接照着补选择器，不用再靠猜。`answerLen` 用来区分
+     * 「模型给的答案是空的」和「答案非空但我们找不到框」。
+     */
+    _logMissingAnswerBox: function (el, type, answer) {
+      if (!el || el._omNoBoxDiagAt) return;
+      try {
+        el._omNoBoxDiagAt = Date.now();
+        var countIn = function (sel) {
+          try { return el.querySelectorAll(sel).length; } catch (e) { return -1; }
+        };
+        var qid = '';
+        try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+        var doc = el.ownerDocument || document;
+        emitRuntimeLog('warn', 'quiz fill: no visible answer box in question', {
+          type: type,
+          qid: qid,
+          title: textOf(el).replace(/\s+/g, ' ').slice(0, 30),
+          tag: String(el.tagName || '').toLowerCase(),
+          cls: String(el.className || '').slice(0, 60),
+          textarea: countIn('textarea'),
+          textInput: countIn('input[type="text"], input:not([type])'),
+          editable: countIn('[contenteditable]'),
+          iframe: countIn('iframe'),
+          answerFieldIsVisibleBox: this._isAnswerTextControl(qid && doc && doc.getElementById ? doc.getElementById('answer' + qid) : null),
+          answerLen: String(answer == null ? '' : answer).length,
+          html: String(el.outerHTML || '').replace(/\s+/g, ' ').slice(0, 220)
+        });
+      } catch (e) {}
+    },
+
+
     _getQuizQuestionFilledValue: function (preferredDoc, question) {
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!question || !question._element) return '';
@@ -1239,6 +1445,15 @@
       // 最后是富文本正文：判定必须覆盖"填答能写到的每一处"。
       var richValue = this._readRichEditorValue(question._element);
       if (richValue) return richValue;
+      // 再补一档「文字答题控件」：答题框渲染在题目容器之外、或是 contenteditable 编辑器时，
+      // 上面几档全都读不到 —— 于是填了却判成未填，整卷永远不提交。
+      // ⚠️ 只给文字题用：这一档比 `_getQuizAnswerValue` 松（按形状找框，不按 answer\d+ 的
+      //    id 找），让选择题走它会把"容器里恰好有个带字的框"误判成已答、直接交白卷。
+      var textishType = String(question.type || '');
+      if (textishType === 'fill' || textishType === 'short') {
+        var editText = this._readVisibleAnswerText(question._element);
+        if (editText) return editText;
+      }
       // 最后一档：可见控件自己的勾选态。**三条同时成立才算已填**，否则宁可判未填：
       //   ① 本题作用域内有 name/id 形如 answer\d+ 的控件 —— 说明平台按表单字段收答案；
       //   ② 勾选数符合题型：single/judge 恰好 1，multiple ≥1（单选出现两个勾选必须判未填）；
@@ -1374,6 +1589,86 @@
     },
 
 
+    /**
+     * 提交前审计：**「读得到值」不等于「页面上真的答了」**。
+     *
+     * 实测（2026-11-10）两类，各自的数不一样：
+     *   · 单选题：隐藏域/控件值写进去了，自定义控件的选中态没生效
+     *     → 看 checkedInDom 与 choice 的差；
+     *   · 填空/简答（长题）：**只有隐藏域有值，答题框完全空着** ——
+     *     旧审计对文字题直接 continue，于是日志写着 ok、卷子却交了白框
+     *     → 看 textVisible 与 text 的差（textHidden 里是题号）。
+     *
+     * 单独成一个方法（而不是inline在 `_maybeSubmitQuiz` 里）是为了能被 e2e 直接驱动：
+     * 那一串闸（自动提交开关、提交次数上限、ready 状态）任一不过就轮不到审计，
+     * 而这两个数会不会分开，恰恰是只能在闸里看到的。
+     *
+     * ⚠️ 它**只报不拦**：把"框里没字"升级成拦住提交，就会回到「整卷永远不交」那个老 bug。
+     */
+    _auditQuizFillBeforeSubmit: function (submitQuestions, preferredDoc) {
+      if (!submitQuestions || !submitQuestions.length) return null;
+      var auditValue = 0;
+      var auditChoice = 0;
+      var auditChecked = 0;
+      var auditText = 0;
+      var auditTextVisible = 0;
+      var auditMissing = [];
+      var auditTextHidden = [];
+      for (var ai = 0; ai < submitQuestions.length; ai++) {
+        var aq = submitQuestions[ai];
+        var aEl = aq && aq._element;
+        if (!aEl) continue;
+        var aHasValue = false;
+        try { aHasValue = !!this._getQuizQuestionFilledValue(preferredDoc, aq); } catch (eV) {}
+        if (!aHasValue) continue;
+        auditValue++;
+        var aType = String((aq && aq.type) || '');
+        if (!aType) {
+          // 题号没带 type 时按 DOM 再判一次 —— 判不准就宁可当文字题，
+          // 那样只会多问一句「框里真有字吗」，不会漏报。
+          try { aType = String(this._detectQuestionType(aEl) || ''); } catch (eD) {}
+        }
+        if (aType !== 'single' && aType !== 'multiple' && aType !== 'judge') {
+          // 文字题不看选中态，看的是**答题框里到底有没有字**（隐藏域不算）。
+          // ⚠️ 只有这一条能抓住「长题不答却交了」—— withValue 对它是恒真的。
+          auditText++;
+          var aTextVisible = false;
+          try { aTextVisible = !!String(this._readVisibleAnswerText(aEl) || '').trim(); } catch (eT) {}
+          if (aTextVisible) auditTextVisible++;
+          else auditTextHidden.push(aq.index != null ? aq.index : ai);
+          continue;
+        }
+        auditChoice++;
+        var aChecked = false;
+        try {
+          // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
+          // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
+          // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
+          aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
+        } catch (eC) {}
+        if (aChecked) auditChecked++;
+        else auditMissing.push(aq.index != null ? aq.index : ai);
+      }
+      var auditBad = auditChecked < auditChoice || auditTextVisible < auditText;
+      var auditLabel = auditTextVisible < auditText
+        ? 'quiz fill audit: text answer not in a visible box'
+        : (auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok');
+      var meta = {
+        total: submitQuestions.length,
+        withValue: auditValue,
+        choice: auditChoice,
+        checkedInDom: auditChecked,
+        text: auditText,
+        textVisible: auditTextVisible,
+        // 只报"4/5"没法定位是哪一题，下一次照样要人肉数 —— 把题号带上
+        missing: auditMissing.slice(0, 8),
+        textHidden: auditTextHidden.slice(0, 8)
+      };
+      emitRuntimeLog(auditBad ? 'warn' : 'info', auditLabel, meta);
+      return { label: auditLabel, level: auditBad ? 'warn' : 'info', meta: meta };
+    },
+
+
     _maybeSubmitQuiz: function (preferredDoc, questions) {
       var submitQuestions = questions || this._quizCurrentQuestions;
       var questionDoc = this._getQuizDocumentFromQuestions(submitQuestions);
@@ -1402,49 +1697,7 @@
         return false;
       }
 
-      // 提交前审计：**「有值」不等于「页面上真的选中了」**。
-      // 实测（2026-11-10）：用户报「单选题不答」，可提交照常放行、没有
-      // `answers are not ready` —— 说明隐藏域/控件值已经写进去，但自定义控件的
-      // 选中态没生效。把三个数并排打进日志，下一次一眼看出卡在哪一层：
-      //   total 题数 / withValue 读得到值的题数 / checkedInDom 页面真的显示选中的题数
-      if (submitQuestions && submitQuestions.length) {
-        var auditValue = 0;
-        var auditChoice = 0;
-        var auditChecked = 0;
-        var auditMissing = [];
-        for (var ai = 0; ai < submitQuestions.length; ai++) {
-          var aq = submitQuestions[ai];
-          var aEl = aq && aq._element;
-          if (!aEl) continue;
-          var aHasValue = false;
-          try { aHasValue = !!this._getQuizQuestionFilledValue(effectiveDoc || submitDoc, aq); } catch (eV) {}
-          if (!aHasValue) continue;
-          auditValue++;
-          // ⚠️ 只有选择题才有「选中态」这回事。填空/简答填了字就是填了，
-          // 把它们算进 checkedInDom 只会让这条审计每次小卷都喊一次假警。
-          var aType = String((aq && aq.type) || '');
-          if (aType !== 'single' && aType !== 'multiple' && aType !== 'judge') continue;
-          auditChoice++;
-          var aChecked = false;
-          try {
-            // ⚠️ 选择器必须含 `[class*="check_answer"]`：多选写的是 `check_answer_dx`，
-            // 而 `.check_answer` 是按**完整类名**匹配的，匹配不到 `_dx` ——
-            // 于是"多选已选中"会被判成"没选中"，每张带多选的卷子都喊一次假警。
-            aChecked = !!aEl.querySelector('input:checked, [class*="check_answer"], [aria-checked="true"], .cur, .selected');
-          } catch (eC) {}
-          if (aChecked) auditChecked++;
-          else auditMissing.push(aq.index != null ? aq.index : ai);
-        }
-        emitRuntimeLog(auditChecked < auditChoice ? 'warn' : 'info',
-          auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok', {
-            total: submitQuestions.length,
-            withValue: auditValue,
-            choice: auditChoice,
-            checkedInDom: auditChecked,
-            // 只报"4/5"没法定位是哪一题，下一次照样要人肉数 —— 把题号带上
-            missing: auditMissing.slice(0, 8)
-          });
-      }
+      this._auditQuizFillBeforeSubmit(submitQuestions, effectiveDoc || submitDoc);
 
       if (!this._quizReadyToSubmit || (this._quizReadyWorkKey && this._quizReadyWorkKey !== currentKey)) {
         emitRuntimeLog('warn', 'block quiz submit without ready state', { key: currentKey });

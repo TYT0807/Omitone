@@ -7485,6 +7485,213 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 37. 长题（简答/填空）只写进隐藏域 = 用户看到的「答题框空着却交了卷」 ---- */
+SCENARIOS.push({
+  name: '长题只写进隐藏域要报成没答',
+  path: '/quiz',
+  run: async function (ctx) {
+    // 现场（2026-11-10，用户一次性复制的 200 条日志）：一份 3 题卷子 ——
+    //   quiz fill audit ok {total:3, withValue:3, choice:2, checkedInDom:2, missing:[]}
+    // 审计写着 ok、卷子直接交出去，可用户眼睛看到的是**那道长题的答题框完全空着**。
+    // 差的就是这一层：判定读的是隐藏域，填答也只写到了隐藏域，两边都"对"，页面却是空的。
+    // 三种"框不在容器里"的形状分开测：A 框在容器外（要能写进去）· B 形状完全不认（要报出来）·
+    // C 只有隐藏域（提交前置照旧满足，但审计必须说"框里没字"）；
+    // 再加 D 作对照：多空填空的正常形状（三个可见空）本来就一直能填，用它钉住计数语义。
+    var setup = await ctx.client.evaluate(
+      '(function(){' +
+      'var host=document.getElementById("Zyapl")||document.body;' +
+      'function box(html){var d=document.createElement("div"); d.innerHTML=html; return d.firstChild;}' +
+      // A：容器只圈到题干，答题框是**它后面**的 contenteditable
+      'var a=box(\'<div id="omWrapA"><div class="TiMu" qid="9101">' +
+        '<div class="Zy_TItle"><span class="fontLabel">21.</span>【简答题】容器外的答题框</div></div>' +
+        '<div class="answerArea"><div id="omBoxA" contenteditable="true"></div></div></div>\');' +
+      // B：完全不认的形状 —— 容器里没有任何能打字的东西，也没有 #answer{qid}
+      'var b=box(\'<div id="omWrapB"><div class="TiMu" qid="9102">' +
+        '<div class="Zy_TItle"><span class="fontLabel">22.</span>【简答题】认不出的形状</div></div>' +
+        '<div class="answerArea"><span id="omGhostB">（这里是个我们没认出来的编辑器壳）</span></div></div>\');' +
+      // C：只有隐藏答案域（就是现场那份卷子的形状）
+      'var c=box(\'<div id="omWrapC"><div class="TiMu" qid="9103">' +
+        '<div class="Zy_TItle"><span class="fontLabel">23.</span>【简答题】只有隐藏域</div>' +
+        '<input type="hidden" id="answer9103" value=""></div></div>\');' +
+      'host.appendChild(a); host.appendChild(b); host.appendChild(c);' +
+      'var app=window._xxtApp;' +
+      'var elA=document.querySelector(".TiMu[qid=\\"9101\\"]");' +
+      'var elB=document.querySelector(".TiMu[qid=\\"9102\\"]");' +
+      'var elC=document.querySelector(".TiMu[qid=\\"9103\\"]");' +
+      'var countIn=function(el,sel){try{return el.querySelectorAll(sel).length;}catch(e){return -1;}};' +
+      // 现场形状的关键是「容器里**能打字的**控件为 0」—— C 里面那个 input 是隐藏提交域，
+      // 按形状数它存在，但它不是答题框（`_isAnswerTextControl` 必须把它排除掉）。
+      'var textIn=function(el){' +
+      '  var list=countIn(el,"input, textarea, [contenteditable]");' +
+      '  if(list<0) return -1;' +
+      '  var n=0;var nodes=el.querySelectorAll("input, textarea, [contenteditable]");' +
+      '  for(var i=0;i<nodes.length;i++){ if(app._isAnswerTextControl(nodes[i])) n++; }' +
+      '  return n;' +
+      '};' +
+      'return {' +
+      '  aInnerControls:textIn(elA),' +
+      '  bInnerControls:textIn(elB),' +
+      '  cInnerControls:textIn(elC),' +
+      '  aOutsideBox:!!document.getElementById("omBoxA"),' +
+      '  cHiddenField:!!document.getElementById("answer9103"),' +
+      '  detectedAsText:!!(app._isAnswerTextControl(document.getElementById("omBoxA"))' +
+      '    && !app._isAnswerTextControl(document.getElementById("answer9103")))' +
+      '};})()'
+    );
+    // ⚠️ 这条是"形状与现场一致"的闸门：它红了说明 fixture 被改过，
+    //    后面几条就变成在测一个不存在的形状（绿的，但守的东西没了）。
+    check('装配：三道长题的容器内部都没有可打字控件（与现场一致）',
+      setup && setup.aInnerControls === 0 && setup.bInnerControls === 0 && setup.cInnerControls === 0 &&
+      setup.aOutsideBox === true && setup.cHiddenField === true && setup.detectedAsText === true,
+      JSON.stringify(setup));
+
+    var wrote = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var elA=document.querySelector(".TiMu[qid=\\"9101\\"]");' +
+      'var elB=document.querySelector(".TiMu[qid=\\"9102\\"]");' +
+      'var elC=document.querySelector(".TiMu[qid=\\"9103\\"]");' +
+      'var rA=app._fillTextarea(elA,"容器外答案");' +
+      'var rB=app._fillTextarea(elB,"认不出的形状也要记账");' +
+      'var rC=app._fillTextarea(elC,"只有隐藏域");' +
+      'var box=document.getElementById("omBoxA");' +
+      'var qA={_element:elA,type:"short"}; var qC={_element:elC,type:"short"};' +
+      'return {writtenA:rA, writtenB:rB, writtenC:rC,' +
+      '  boxText:(box?box.textContent:"").trim(),' +
+      '  judgedA:String(app._getQuizQuestionFilledValue(null,qA)||"").trim(),' +
+      '  visibleC:String(app._readVisibleAnswerText(elC)||""),' +
+      '  judgedC:String(app._getQuizQuestionFilledValue(null,qC)||"").trim(),' +
+      '  hiddenValueC:document.getElementById("answer9103").value};})()'
+    );
+    check('答题框在容器外也写进去了（旧实现在这里一个字符都不写）',
+      wrote && wrote.writtenA >= 1 && wrote.boxText === '容器外答案', JSON.stringify(wrote));
+    check('判定也认这份答案（填答与判定必须对称，否则表单永远不满、永不提交）',
+      wrote && wrote.judgedA.indexOf('容器外答案') !== -1, String(wrote && wrote.judgedA));
+    check('只有隐藏域的形状：可见写入计数为 0 ——「答题框空着」从此有数可看',
+      wrote && wrote.writtenC === 0 && wrote.hiddenValueC === '只有隐藏域' &&
+      wrote.judgedC === '只有隐藏域' && wrote.visibleC === '', JSON.stringify(wrote));
+    check('形状完全不认时同样是 0 个可见写入',
+      wrote && wrote.writtenB === 0, JSON.stringify(wrote));
+
+    // `_fillAnswers` 才是真实派发入口：0 个可见写入时它必须把结构快照那条日志记下去
+    // （上面直接调 `_fillTextarea` 不该记 —— 记账归派发层，不是归填答层）。
+    // 顺带把提交前审计一起跑真路：日志是 window message，在页面里挂个监听就能收到，
+    // 不用猜"审计那五个数到底算出来没有"。
+    var viaFlow = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var got=[];' +
+      'window.addEventListener("message",function(e){' +
+      '  var m=e.data; if(m&&m.source==="xxt_app"&&m.type==="runtime_log") got.push(m);});' +
+      'var app=window._xxtApp;' +
+      'var qs=[' +
+      '  {_element:document.querySelector(".TiMu[qid=\\"9101\\"]"),type:"short",index:0},' +
+      '  {_element:document.querySelector(".TiMu[qid=\\"9102\\"]"),type:"short",index:1},' +
+      '  {_element:document.querySelector(".TiMu[qid=\\"9103\\"]"),type:"short",index:2}];' +
+      'var before=[qs[0]._element,qs[1]._element,qs[2]._element].map(function(e){return e._omNoBoxDiagAt||0;});' +
+      'app._fillAnswers([' +
+      '  {index:0,type:"short",answer:"走派发层"},' +
+      '  {index:1,type:"short",answer:"形状认不出"},' +
+      '  {index:2,type:"short",answer:"隐藏域"}], qs, null);' +
+      'var after=[qs[0]._element,qs[1]._element,qs[2]._element].map(function(e){return e._omNoBoxDiagAt||0;});' +
+      // 同一个元素再来一次：闸必须还在（记一次就够，重复只会被自己刷成刷屏）。
+      // ⚠️ 拿**哨兵值**比，不能比两次 Date.now() —— 这两次调用在同一个同步块里，
+      //    毫秒级常常撞成同一个数，去掉闸也不会红（实测假绿过一次）。
+      'qs[1]._element._omNoBoxDiagAt=12345;' +
+      'app._fillAnswers([{index:1,type:"short",answer:"形状认不出第二次"}], qs, null);' +
+      'var kept=qs[1]._element._omNoBoxDiagAt;' +
+      // 提交前审计直接驱动（它在 `_maybeSubmitQuiz` 的一串闸后面，闸不开就轮不到它）
+      'var auditRet=null;' +
+      'try{auditRet=app._auditQuizFillBeforeSubmit([qs[0],qs[2]],null);}catch(err){auditRet={label:"(抛错)"+err.message};}' +
+      'setTimeout(function(){' +
+      '  var noBox=null, audit=null;' +
+      '  got.forEach(function(m){' +
+      '    if(m.message==="quiz fill: no visible answer box in question"&&!noBox) noBox=m;' +
+      '    if(String(m.message||"").indexOf("quiz fill audit")===0) audit=m;});' +
+      '  res({before:before, after:after, kept:kept, auditRet:auditRet,' +
+      '    noBoxLevel:noBox?noBox.level:"", noBoxMeta:noBox?noBox.meta:null,' +
+      '    auditLevel:audit?audit.level:"", auditMsg:audit?audit.message:"", auditMeta:audit?audit.meta:null,' +
+      '    boxText:document.getElementById("omBoxA").textContent.trim()});' +
+      '},300);});})()'
+    );
+    check('走 `_fillAnswers` 时长题的答案真的落到可见框里',
+      viaFlow && viaFlow.boxText === '走派发层', JSON.stringify(viaFlow));
+    check('派发层为「一个可见框都没写到」的题记下结构快照（写到了框的那题不受影响）',
+      viaFlow && viaFlow.before[1] === 0 && viaFlow.after[1] > 0 &&
+      viaFlow.after[2] > 0 && viaFlow.after[0] === 0, JSON.stringify(viaFlow));
+    check('快照每个元素只记一次，不会每轮填答都刷屏',
+      viaFlow && viaFlow.after[1] > 0 && viaFlow.kept === 12345, JSON.stringify(viaFlow));
+    check('快照日志是 warn 级、带 qid 与各形状计数、且答案非空（answerLen>0 才说明是"找不到框"而不是"没答案"）',
+      viaFlow && viaFlow.noBoxLevel === 'warn' && !!viaFlow.noBoxMeta &&
+      String(viaFlow.noBoxMeta.qid) === '9102' && viaFlow.noBoxMeta.answerLen > 0 &&
+      viaFlow.noBoxMeta.textInput === 0, JSON.stringify(viaFlow.noBoxMeta));
+    check('审计方法返回的就是日志里那一条（拆成独立方法后两处仍然同源）',
+      viaFlow && !!viaFlow.auditRet && viaFlow.auditRet.label === viaFlow.auditMsg &&
+      viaFlow.auditRet.level === viaFlow.auditLevel,
+      JSON.stringify(viaFlow && { ret: viaFlow.auditRet && viaFlow.auditRet.label, msg: viaFlow.auditMsg }));
+    check('提交前审计发的是 warn：「有值」的题里有字的少了一题',
+      viaFlow && viaFlow.auditLevel === 'warn' &&
+      viaFlow.auditMsg === 'quiz fill audit: text answer not in a visible box',
+      JSON.stringify(viaFlow && { level: viaFlow.auditLevel, msg: viaFlow.auditMsg }));
+    check('审计把题号也交出来（textHidden 里就是那道"框里没字"的题）',
+      viaFlow && !!viaFlow.auditMeta && viaFlow.auditMeta.text === 2 &&
+      viaFlow.auditMeta.textVisible === 1 && String(viaFlow.auditMeta.textHidden) === '2',
+      JSON.stringify(viaFlow && viaFlow.auditMeta));
+
+    // 审计那条链：只看 A（可见框有字）与 C（只有隐藏域）这两题。
+    // 这里刻意不真的交卷 —— 要证的只是「text 与 textVisible 这两个数会分开」，
+    // 而分开之后仍然**不拦提交**（拦下来就回到"整卷卡死"那个老 bug 了）。
+    var audit = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var qs=[{_element:document.querySelector(".TiMu[qid=\\"9101\\"]"),type:"short",index:0},' +
+      '        {_element:document.querySelector(".TiMu[qid=\\"9103\\"]"),type:"short",index:2}];' +
+      'var withValue=0, text=0, visible=0;' +
+      'for(var i=0;i<qs.length;i++){' +
+      '  if(!app._getQuizQuestionFilledValue(null,qs[i])) continue;' +
+      '  withValue++; text++;' +
+      '  if(String(app._readVisibleAnswerText(qs[i]._element)||"").trim()) visible++;' +
+      '}' +
+      'return {withValue:withValue, text:text, visible:visible,' +
+      '  filledAll:app._areQuizAnswersFilled(null,qs,{})};})()'
+    );
+    check('审计会报「有值 2 题、框里真有字 1 题」（旧审计对这个差完全瞎）',
+      audit && audit.withValue === 2 && audit.text === 2 && audit.visible === 1, JSON.stringify(audit));
+    check('提交前置没被这次改动收紧（文字题仍按"读得到值"放行，不会因为框空着就卡死整卷）',
+      audit && audit.filledAll === true, JSON.stringify(audit));
+
+    var safety = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var elA=document.querySelector(".TiMu[qid=\\"9101\\"]");' +
+      'app._fillTextarea(elA,"<img src=x onerror=alert(1)>");' +
+      'var box=document.getElementById("omBoxA");' +
+      // D：多空填空题 —— 三个可见空 + 一个隐藏提交域
+      'var host=document.getElementById("Zyapl")||document.body;' +
+      'var shell=document.createElement("div");' +
+      'shell.innerHTML=\'<div id="omWrapD"><div class="TiMu" qid="9104">' +
+        '<div class="Zy_TItle"><span class="fontLabel">24.</span>【填空题】三个空的填空题</div>' +
+        '<input type="text" id="omBlankD1"><input type="text" id="omBlankD2"><input type="text" id="omBlankD3">' +
+        '<input type="hidden" id="answer9104" value=""></div></div>\';' +
+      'host.appendChild(shell);' +
+      'var elD=document.querySelector(".TiMu[qid=\\"9104\\"]");' +
+      'var n=app._fillText(elD,"甲|||乙|||丙");' +
+      'return {html:box?box.innerHTML:"", tags:box?box.querySelectorAll("img").length:-1,' +
+      '  fillCount:n,' +
+      '  b1:document.getElementById("omBlankD1").value,' +
+      '  b2:document.getElementById("omBlankD2").value,' +
+      '  b3:document.getElementById("omBlankD3").value,' +
+      '  hiddenD:document.getElementById("answer9104").value,' +
+      '  visibleD:String(app._readVisibleAnswerText(elD)||"")};})()'
+    );
+    check('答案里的标签不会被当成 HTML 注进页面',
+      safety && safety.tags === 0 && safety.html.indexOf('<img') === -1,
+      String(safety && safety.html).slice(0, 120));
+    check('_fillText 返回可见文本框的个数，多空按序各填一格（计数不能是"有没有"）',
+      safety && safety.fillCount === 3 && safety.b1 === '甲' && safety.b2 === '乙' && safety.b3 === '丙',
+      JSON.stringify(safety));
+    check('隐藏提交域照旧拼成一串，可见读回来是分段的那三格（两边各有各的形状）',
+      safety && safety.hiddenD === '甲乙丙' && safety.visibleD === '甲|||乙|||丙',
+      JSON.stringify(safety));
+  }
+});
+
 // ===========================================================================
 // 主流程
 // ===========================================================================
