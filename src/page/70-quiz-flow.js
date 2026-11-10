@@ -1030,7 +1030,10 @@
               this._quizZeroFillAt = zeroNow;
               this._quizZeroFillRounds = (this._quizZeroFillRounds || 0) + 1;
             }
-            if (this._quizZeroFillRounds >= 3) {
+            // ⚠️ 只有显式打开 `quizZeroFillSkip` 才允许跳过。
+            // 默认关：跳过是**不可见**的（用户只会看到"所有答题都废了"），
+            // 而卡住至少看得见、能手动做。这条教训是 2026-11-10 用真实课程换来的。
+            if (this._quizZeroFillRounds >= 3 && this.configs.quizZeroFillSkip === true) {
               this._quizZeroFillRounds = 0;
               this._quizZeroFillAt = 0;
               this._quizInProgress = false;

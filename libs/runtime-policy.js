@@ -8,7 +8,8 @@
   var own = Object.prototype.hasOwnProperty;
   var booleans = ['autoMaxPlaybackRate', 'muted', 'enableDiscussion', 'autoNext', 'enableQuiz',
     'randomAnswer', 'enableCaptcha', 'blockedReload', 'enableMedia', 'enableSeek',
-    'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled'];
+    'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled',
+    'quizZeroFillSkip'];
   var numbers = {
     playbackRate: [0.25, 16], playbackRateCap: [1, 16], discussionTimeoutMs: [1000, 600000],
     visionMaxImagesPerQuestion: [1, 10], visionMaxImageBytes: [1024, 2097152],

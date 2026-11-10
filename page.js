@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '73ce958c07';
+var OMITONE_CODE_REV = 'dc8692e1a3';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -135,6 +135,13 @@ var OMITONE_CODE_REV = '73ce958c07';
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 一题都填不上时，是否**自动跳过这一卷**（内部调参，不上弹窗）。
+    //
+    // ⚠️ 默认**关**。原因（2026-11-10 事故）：有卷子的题一题都落不到页面上，
+    // 旧行为是卡住（用户看得见、可以手动做），而"自动跳过"会让整卷悄无声息地被跳过 ——
+    // 用户看到的是「所有答题都废了」，比卡住更糟。只有在确认"填不上"是结构性问题、
+    // 且后面的任务更值得先做时，才由用户显式打开。
+    quizZeroFillSkip: false,
     // 同一道选择题连续这么多次没被平台接受后，就"放弃继续折腾"：
     // 不再为它扩错答列表、不再进 LLM 请求，直接填本地最优猜测，让整卷交得出去。
     // 不设这条的后果是"一道多选把整卷钉在原地"——用户报的"章节小测一直卡住"。
@@ -8229,7 +8236,10 @@ var OMITONE_CODE_REV = '73ce958c07';
               this._quizZeroFillAt = zeroNow;
               this._quizZeroFillRounds = (this._quizZeroFillRounds || 0) + 1;
             }
-            if (this._quizZeroFillRounds >= 3) {
+            // ⚠️ 只有显式打开 `quizZeroFillSkip` 才允许跳过。
+            // 默认关：跳过是**不可见**的（用户只会看到"所有答题都废了"），
+            // 而卡住至少看得见、能手动做。这条教训是 2026-11-10 用真实课程换来的。
+            if (this._quizZeroFillRounds >= 3 && this.configs.quizZeroFillSkip === true) {
               this._quizZeroFillRounds = 0;
               this._quizZeroFillAt = 0;
               this._quizInProgress = false;
