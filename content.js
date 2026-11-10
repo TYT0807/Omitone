@@ -93,6 +93,9 @@
       const cores = Number(navigator.hardwareConcurrency || 0);
       if (cores > 0 && cores <= 2) return 2;
       if (cores > 0 && cores <= 4) return 1.5;
+      // 轻薄本常见「8 核但单核很弱」：核心数看不出慢，再按内存兜一层。
+      const mem = Number(navigator.deviceMemory || 0);
+      if (mem > 0 && mem <= 4) return 1.5;
     } catch (eCores) {}
     return 1;
   }
@@ -2165,15 +2168,28 @@
   }
 
   function scheduleInjectionWatchdog(seq, reason) {
+    // ⚠️ 原来只等 1.8 秒就报「运行脚本未响应」，在弱 CPU 上会误报：
+    // page.js 有 558KB，解析 + 初始化在轻薄本上跑 2~3 秒很常见。
+    // 现在改成两段：6 秒先看一眼，仍无任何运行痕迹再等 4~6 秒才报错。
+    // 真的挂起只是晚几秒提示，误报却会让用户以为插件坏了去反复刷新。
     setTimeout(() => {
       if (seq !== pageInjectSeq) return;
       if (hasPageRuntimeEvidence()) return;
 
-      appendRuntimeLog('error', 'page script no response after tag injection', { reason: reason || '' });
-      if (statusPanelActive) {
-        setStatusPanel('error', '运行脚本未响应', '未检测到初始弹窗或启动日志，请刷新学习通页面后重试');
-      }
-    }, contentScaledMs(1800));
+      setTimeout(() => {
+        if (seq !== pageInjectSeq) return;
+        if (hasPageRuntimeEvidence()) return;
+
+        appendRuntimeLog('error', 'page script no response after tag injection', {
+          reason: reason || '',
+          waitedMs: Math.max(6000, contentScaledMs(1800)) + Math.max(4000, contentScaledMs(2000)),
+          slowFactor: contentSlowFactor()
+        });
+        if (statusPanelActive) {
+          setStatusPanel('error', '运行脚本未响应', '未检测到初始弹窗或启动日志，请刷新学习通页面后重试');
+        }
+      }, Math.max(4000, contentScaledMs(2000)));
+    }, Math.max(6000, contentScaledMs(1800)));
   }
 
   function injectPageScript(reason = 'default') {
