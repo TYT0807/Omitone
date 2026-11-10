@@ -921,6 +921,52 @@ function buildVideoContinueHtml() {
     '</body></html>';
 }
 
+/**
+ * 「确认交卷弹窗把提交次数记到另一个键上」（2026-11-10 批次 8）。
+ *
+ * 形状照着真实 mooc2 卡片搭：**外层文档的 id 是残缺的**（只有 courseId + knowledgeid），
+ * 题目挂在另一个 iframe 里、那份文档五个 id 齐全。于是
+ * `_getQuizWorkKey(null)`（经 `_resolveQuizSubmitDocument` 退回外层）算出的键
+ * 与 `_getQuizWorkKey(题目文档)` 的键**不是同一个** ——
+ * 提交次数记在 A 本账、交卷上限读 B 本账，「按卷最多 2 次」形同不存在。
+ * 用户日志里那个 `courseId||||knowledgeid`（中间三段全空）就是 A 本账的样子。
+ */
+function buildSubmitKeyShellHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>章节测验 - 学习通</title></head><body>' +
+    '<input type="hidden" id="courseId" value="123456">' +
+    '<input type="hidden" id="knowledgeid" value="K777">' +
+    '<iframe id="quizFrame" src="/submit-key-inner" style="width:100%;height:640px;border:0"></iframe>' +
+    // 交卷确认框：**外层**文档里（真实页面就长这样 —— 弹窗在外、题目在帧里）
+    '<div id="omConfirmLayer" class="layui-layer" ' +
+    '  style="position:fixed;left:24px;top:24px;width:320px;height:170px;background:#fff;border:2px solid #333;z-index:9999">' +
+    '  <div class="layui-layer-content" id="popcontent">请完成所有题目，确认提交？</div>' +
+    '  <a id="omConfirmOk" class="layui-layer-btn0">确定</a>' +
+    '  <a id="omConfirmClose" class="layui-layer-close2">×</a>' +
+    // 真实平台的「很遗憾，未达到及格线，请重做」也是这一族弹窗：它**没有**「确认提交」字样，
+    // 靠的是 `#popcontent` + `#popok` 这组结构才被 `_isSubmitConfirmDialog` 收下。
+    // 少了它，下面 redo 那一节连"弹窗被找到"这一步都进不去，等于测了个空。
+    // 藏在视口外：它是结构凭证，不该抢走「确定」那一次真实点击。
+    '  <a id="popok" style="position:absolute;left:-9999px;top:0">确定</a>' +
+    '</div>' +
+    '<script>' +
+    'window.__omOkClicks = 0; window.__omCloseClicks = 0;' +
+    'document.getElementById("omConfirmOk").addEventListener("click", function () { window.__omOkClicks++; }, false);' +
+    'document.getElementById("omConfirmClose").addEventListener("click", function () { window.__omCloseClicks++; }, false);' +
+    '</script>' +
+    '</body></html>';
+}
+
+/** 确认框夹具的内层：题目 + 五个 id 齐全（与外层那份残缺文档**故意**不是同一个键） */
+function buildSubmitKeyInnerHtml() {
+  return buildQuizHtml().replace(
+    '<h1 class="mark_title">',
+    '<input type="hidden" id="jobid" value="J4242">' +
+    '<input type="hidden" id="knowledgeid" value="K777">' +
+    '<h1 class="mark_title">'
+  );
+}
+
 var MOCK_PAGES = {
   '/quiz': buildQuizHtml,
   '/chapter-quiz': buildChapterQuizShellHtml,
@@ -962,7 +1008,9 @@ var MOCK_PAGES = {
   '/doc-ppt': buildPptAudioHtml,
   '/ppt-decoy': buildPptDecoyTopHtml,
   '/ppt-decoy-card': buildPptDecoyCardHtml,
-  '/ppt-decoy-inner': buildPptDecoyInnerHtml
+  '/ppt-decoy-inner': buildPptDecoyInnerHtml,
+  '/submit-key': buildSubmitKeyShellHtml,
+  '/submit-key-inner': buildSubmitKeyInnerHtml
 };
 
 /**
@@ -6775,19 +6823,27 @@ SCENARIOS.push({
       // ⚠️ 先等弹窗打开时那次**自动检测**落地：它自己会真实请求一次，
       // 如果不等，它会在下面 mock 出结果之后再写一遍「与线上一致」，把断言要的结果盖掉。
       'await new Promise(function(r){setTimeout(r,900);});' +
+      // ⚠️ 900ms 是**固定赌注**，全量跑里机器正忙时会不够：上面那次自动检测的真实请求
+      // 还没回来，mock 就已经点下去了，于是它的回调把「与线上一致」盖在断言要的结果后面
+      // —— 表现成「单独跑永远绿、只有全套里闪一下红」。改成等文案自己稳定下来。
+      'var readMsg=function(){return String((document.getElementById("updateMsg")||{}).textContent||"");};' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'for(var s=0;s<16;s++){var last=readMsg();await nap(500);if(readMsg()===last)break;}' +
+      // 每一步都「记下点之前的文案 → 点 → 等文案变（最多 6 秒）→ 再取快照」，
+      // 不再赌 150ms：上一请求的回调什么时候插进来是不可预期的。
+      'var clickAndWait=async function(){var before=readMsg();' +
+      '  document.getElementById("checkUpdate").click();' +
+      '  for(var i=0;i<60;i++){await nap(100);if(readMsg()!==before)break;}' +
+      '  await nap(150);return readMsg();};' +
       // ① 线上版本更高
       'window.fetch=function(){return Promise.resolve({ok:true,json:function(){' +
       'return Promise.resolve({tag_name:"v9.9.9",assets:[{name:"omitone.zip",updated_at:new Date().toISOString()}]});}});};' +
-      'document.getElementById("checkUpdate").click();' +
-      'await new Promise(function(r){setTimeout(r,150);});' +
+      'out.higherMsg=await clickAndWait();' +
       'out.btnLabel=String((document.getElementById("doUpdate")||{}).textContent||"");' +
-      'out.higherMsg=String(document.getElementById("updateMsg").textContent||"");' +
       'out.higherBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
       // ② 网络失败
       'window.fetch=function(){return Promise.reject(new Error("offline"));};' +
-      'document.getElementById("checkUpdate").click();' +
-      'await new Promise(function(r){setTimeout(r,150);});' +
-      'out.failMsg=String(document.getElementById("updateMsg").textContent||"");' +
+      'out.failMsg=await clickAndWait();' +
       'out.failBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
       'return out;})()'
     );
@@ -8095,6 +8151,167 @@ SCENARIOS.push({
     );
     check('页面常驻的「关闭/退出」不被当成弹窗关闭按钮（容器外就不归它管）',
       closeOnly && closeOnly.ret === false && closeOnly.n === 0, JSON.stringify(closeOnly));
+  }
+});
+
+/** ---- 40. 确认交卷弹窗不许把提交次数记到另一本账上 ---- */
+SCENARIOS.push({
+  name: '确认框交卷要记在同一份卷子的账上',
+  path: '/submit-key',
+  run: async function (ctx) {
+    // 现场（用户日志里那句「一份卷子两个键」，批次 8 立案）：
+    //   交卷确认弹窗那一路调的是 `_getQuizWorkKey(null)` / `_markQuizSubmitPending(null, …)`，
+    //   `null` 经 `_resolveQuizSubmitDocument` 退回**外层文档**；可题目挂在另一个 iframe 里，
+    //   ready 键、交卷上限、按卷冷却用的全是**题目那份文档**的键。
+    //   于是提交次数记在 A 本账、`_shouldSkipQuizBySubmitAttempts` 读 B 本账永远读到 0 ——
+    //   「靠猜补过题的卷子只许交 2 次」这条上限形同不存在，表现成用户报过的**疯狂提交**。
+    var innerReady = await waitFor(ctx.client,
+      '(function(){var f=document.getElementById("quizFrame");' +
+      'if(!f||!f.contentDocument)return false;' +
+      'return f.contentDocument.querySelectorAll(".TiMu").length===5;})()', 15000);
+    check('装配：题目确实在子 iframe 里（外层那份文档一道题都没有）', innerReady === true);
+    if (!innerReady) return;
+
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      // 主循环每秒也会走到确认框那一路，先停掉 —— 下面的计数才只属于这一次驱动
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var qs=app._extractQuestions(document);' +
+      'var owner=app._getQuizDocumentFromQuestions(qs);' +
+      'var keyOf=function(d){return String(app._getQuizWorkKey(d)||"");};' +
+      'var ids=function(d){var out=[];' +
+      '  ["courseId","classId","workId","jobid","knowledgeid"].forEach(function(k){' +
+      '    if(d.getElementById(k))out.push(k);});return out.join(",");};' +
+      'return {n:qs.length, ownerIsInner:!!owner&&owner!==document,' +
+      '  outerIds:ids(document), innerIds:owner?ids(owner):"", ' +
+      '  splitKeys:keyOf(null)!==keyOf(owner), outerKey:keyOf(null), ownerKey:keyOf(owner)};})()'
+    );
+    check('装配：外层只有 courseId + knowledgeid，题目那份文档五个 id 齐全（与残缺现场一致）',
+      shape && shape.outerIds === 'courseId,knowledgeid' &&
+      shape.innerIds === 'courseId,classId,workId,jobid,knowledgeid',
+      JSON.stringify(shape && { outerIds: shape.outerIds, innerIds: shape.innerIds }));
+    check('形状闸门：null 解析出的键与题目文档的键**确实不同**（同键就把后面几条变成空测）',
+      shape && shape.n === 5 && shape.ownerIsInner === true && shape.splitKeys === true,
+      JSON.stringify(shape && { n: shape.n, ownerIsInner: shape.ownerIsInner, outerKey: shape.outerKey, ownerKey: shape.ownerKey }));
+
+    // 真跑一遍答题：ready 键要由生产代码自己写下，手抄一个键等于测自己的夹具。
+    // ⚠️ 必须走 writeConfig 把配置写进扩展存储：`hasApiKey` 只留在页面里，
+    // 真实模型那一趟不会跑，`_quizReadyToSubmit` 永远不成立，
+    // `_handleSubmitConfirmDialog` 会在 readyForConfirm 闸门上短路 —— 于是整场空测。
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false,
+      randomAnswer: false, quizMaxSubmitAttempts: 2
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app.configs.hasApiKey=true;' +
+      'app._quizApiFailUntil=0;app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
+      'app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'app._quizCurrentQuestions=null;app._quizReadyWorkKey="";app._quizReadyToSubmit=false;' +
+      'app._handleQuiz(null);return true;})()'
+    );
+    var ready = await waitFor(ctx.client,
+      '(function(){return window._xxtApp._quizReadyToSubmit===true;})()', 25000);
+    var readyKey = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var owner=app._getQuizDocumentFromQuestions(app._quizCurrentQuestions);' +
+      'return {readyKey:String(app._quizReadyWorkKey||""),ownerKey:String(app._getQuizWorkKey(owner)||""),' +
+      '  nullKey:String(app._getQuizWorkKey(null)||"")};})()'
+    );
+    check('整卷答完后 ready 键按**题目那份文档**写下（生产代码自己算的，不是夹具喂的）',
+      ready === true && !!readyKey && readyKey.readyKey !== '' &&
+      readyKey.readyKey === readyKey.ownerKey && readyKey.ownerKey !== readyKey.nullKey,
+      JSON.stringify(readyKey));
+
+    var drive1 = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var owner=app._getQuizDocumentFromQuestions(app._quizCurrentQuestions);' +
+      // 旧写法**唯一写过**的那本粗账（`null` → 主文档算出的键）：现在归一之后它不该再被写，' +
+      // 清它只能直接动 sessionStorage —— `_clearQuizSubmitAttemptCount(null)` 已经会归到细账上了。' +
+      'var coarseSlot=String(app._getQuizWorkKey(null)||"")+".submitAttempts";' +
+      'try{sessionStorage.removeItem(coarseSlot);}catch(e){}' +
+      'app._clearQuizSubmitAttemptCount(owner);' +
+      'app._quizSubmitPending=false;app._submitConfirmLastClickAt=0;' +
+      'var got=[];window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'var dlg=app._checkSubmitConfirmDialog();' +
+      'var before=window.__omOkClicks;' +
+      'var ret=app._handleSubmitConfirmDialog(dlg);' +
+      'setTimeout(function(){' +
+      '  var pend=null;got.forEach(function(m){if(m.message==="quiz submit pending")pend=m;});' +
+      '  res({dlgFound:!!dlg,ret:ret,okClicks:window.__omOkClicks-before,' +
+      '    countOwner:app._getQuizSubmitAttemptCount(owner),countNull:app._getQuizSubmitAttemptCount(null),' +
+      '    sameSlot:String(app._getQuizSubmitAttemptKey(null))===String(app._getQuizSubmitAttemptKey(owner)),' +
+      '    coarseRaw:(function(){try{return Number(sessionStorage.getItem(coarseSlot)||0);}catch(e){return -1;}})(),' +
+      '    pendHasLog:!!pend,pendKey:pend?String(pend.meta&&pend.meta.key||""):"", ' +
+      '    pendFrom:pend?String(pend.meta&&pend.meta.accountFrom||""):"", ' +
+      '    pendReady:pend?String(pend.meta&&pend.meta.readyKey||""):""});' +
+      '},300);});})()'
+    );
+    check('确认框找得到、也真的点了「确定」（收紧键的口径不能把交卷这一步做没）',
+      drive1 && drive1.dlgFound === true && drive1.ret === true && drive1.okClicks === 1,
+      JSON.stringify(drive1));
+    check('提交次数记在**题目那份文档**的账上（旧写法记到另一个键，这一条就是 0）',
+      drive1 && drive1.countOwner === 1, 'countOwner=' + (drive1 && drive1.countOwner));
+    check('读账端**拿不到文档**时问的也是同一本账：槽位归一，旧那本粗账一个字节都没落下',
+      drive1 && drive1.sameSlot === true && drive1.countNull === 1 && drive1.coarseRaw === 0,
+      JSON.stringify(drive1 && { sameSlot: drive1.sameSlot, countNull: drive1.countNull, coarseRaw: drive1.coarseRaw }));
+    check('日志里 key 与 readyKey 相等、且写明键出自哪里 ——「一份卷子两个键」从此能自证（本批新加的两格）',
+      drive1 && drive1.pendHasLog === true && drive1.pendKey !== '' &&
+      drive1.pendKey === drive1.pendReady && drive1.pendFrom === 'caller',
+      JSON.stringify(drive1 && { key: drive1.pendKey, readyKey: drive1.pendReady, accountFrom: drive1.pendFrom }));
+
+    var drive2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var owner=app._getQuizDocumentFromQuestions(app._quizCurrentQuestions);' +
+      'app._quizSubmitPending=false;app._submitConfirmLastClickAt=0;' +
+      'app._handleSubmitConfirmDialog(app._checkSubmitConfirmDialog());' +
+      'return {countOwner:app._getQuizSubmitAttemptCount(owner),' +
+      '  countNull:app._getQuizSubmitAttemptCount(null),' +
+      '  skipOwner:app._shouldSkipQuizBySubmitAttempts(owner),' +
+      '  skipNull:app._shouldSkipQuizBySubmitAttempts(null)};})()'
+    );
+    check('连交两次就到顶：上限读到的是**同一本账**（旧写法这里永远 false）',
+      drive2 && drive2.countOwner === 2 && drive2.skipOwner === true, JSON.stringify(drive2));
+    check('调用点没有文档时上限**照样生效** —— 疯狂提交真被拦住（旧写法这里是 false，等于没上限）',
+      drive2 && drive2.countNull === 2 && drive2.skipNull === true, JSON.stringify(drive2));
+
+    var redo = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var owner=app._getQuizDocumentFromQuestions(app._quizCurrentQuestions);' +
+      'document.querySelector("#omConfirmLayer .layui-layer-content").textContent="很遗憾，未达到及格线，请重做";' +
+      'app._quizAnswered=true;app._quizReadyToSubmit=true;app._quizSubmitPending=false;' +
+      'app._submitConfirmLastClickAt=0;' +
+      'var before=app._getQuizSubmitAttemptCount(owner);' +
+      'app._handleSubmitConfirmDialog(app._checkSubmitConfirmDialog());' +
+      'return {answered:app._quizAnswered,ready:app._quizReadyToSubmit,readyKey:app._quizReadyWorkKey,' +
+      '  before:before,countOwner:app._getQuizSubmitAttemptCount(owner)};})()'
+    );
+    check('「没过请重做」那一路照旧清空答题状态、且**不记**提交次数（重做不该消耗交卷次数）',
+      redo && redo.answered === false && redo.ready === false &&
+      redo.countOwner === redo.before, JSON.stringify(redo));
+
+    var fallback = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'document.querySelector("#omConfirmLayer .layui-layer-content").textContent="请完成所有题目，确认提交？";' +
+      'app._quizCurrentQuestions=null;' +
+      'app._quizAnswered=true;app._quizReadyToSubmit=true;app._quizSubmitPending=false;' +
+      'app._submitConfirmLastClickAt=0;' +
+      'var coarseSlot=String(app._getQuizWorkKey(null)||"")+".submitAttempts";' +
+      'try{sessionStorage.removeItem(coarseSlot);}catch(e){}' +
+      'var before=app._getQuizSubmitAttemptCount(null);' +
+      'var ret=app._handleSubmitConfirmDialog(app._checkSubmitConfirmDialog());' +
+      'var raw=(function(){try{return Number(sessionStorage.getItem(coarseSlot)||0);}catch(e){return -1;}})();' +
+      'return {ret:ret,before:before,delta:app._getQuizSubmitAttemptCount(null)-before,coarseRaw:raw};})()'
+    );
+    check('认不出题目文档时退回旧行为：仍能交卷、仍记一次（不能因为拿不到文档就吞掉提交）',
+      fallback && fallback.ret === true && fallback.delta === 1, JSON.stringify(fallback));
+    check('这一趟记的是**那本粗账**（归一只在手里有题目文档时才改道，退化路径没被改坏）',
+      fallback && fallback.before === 0 && fallback.coarseRaw === 1, JSON.stringify(fallback));
   }
 });
 

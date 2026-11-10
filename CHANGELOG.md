@@ -293,7 +293,7 @@
   带上题目标签/类名/qid/li/label/radio/checkbox 个数与 220 字符 HTML —— 下次照着这条就能补结构。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
 
-### 2026-11-10 追加（发布后修复，未升号 · 批次 1~6）
+### 2026-11-10 追加（发布后修复，未升号 · 批次 1~8）
 
 用户连着报的两件事是**同一个病**：答题的判据外溢到了别的任务上。1.3.0 线上包先出现
 「所有题目都被跳过」，把答题修回来之后又发现「刷 PPT 报废」，两个功能一起接近瘫痪。
@@ -633,7 +633,7 @@
     那个字段只有走 `writeConfig` 才会置上。也就是说它一直**靠前面某个场景留在存储里的配置**
     才通过。已补自己的 `writeConfig`：**场景不许共享存储状态**，否则顺序一动就满屏假警。
   - **批次 7 的反向验证**（五处注入，各改对应文件后 `npm run concat`，
-    每处只让对应的红、其余保持绿，还原后 722 项重新全绿）：
+    每处只让对应的红、其余保持绿，还原后 722 项重新全绿）： <!-- 历史计数:start --><!-- 历史计数:end -->
     - `content.js` 分批规则还原成"切片里有多选就整片拆成一题一批" → itest **2 红**（批数与批形状）。
     - `_hasVisibleChoiceSelection` 里把 `aria-checked` 那一档加回来 → 场景 38 **4 红**。
     - `_clickOptionItem` 的补点文本项分支去掉 → 场景 38 **3 红**（看不见选中的两条 + 审计一条）。
@@ -652,9 +652,64 @@
     `choice-visible`、`idle-stuck-repeat`（`src/page/10-config-state.js` 的 `start` 日志，
     缺哪个就说明那份改动没被加载）；同时删掉已失效的 `local-multi`、`local-multi-once`。
   - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 ——
-    当前基线 **73 个场景 / 722 项**。
+    当前基线 **73 个场景 / 722 项**。 <!-- 历史计数:start --><!-- 历史计数:end -->
     ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
     1.3.0 发布那一版（改了 `page.js` 与 `content.js`，**需要重传附件**）。
+
+- **⑧批次 8：「一份卷子两个键」—— 交卷次数记在另一本账上，「最多 2 次」形同不存在**
+  立案依据是 HANDOVER 里批次 4 留下的那条待办，真实日志里那个
+  `omitone.quiz.correct.123456%7C%7C%7C%7CK777` 形状的键（中间三段全空）就是现场。
+  题目挂在 iframe 里、那份文档五个 id 齐全；交卷确认弹窗那一路传的却是 `null`，
+  `_resolveQuizSubmitDocument(null)` 退回**外层文档**，而外层只有 `courseId` + `knowledgeid`。
+  于是同一份卷子算出**两个键**：ready 键、交卷上限、按卷冷却读的是**题目那份文档**的账，
+  提交次数却记在**外层**那本账 ——
+  `_shouldSkipQuizBySubmitAttempts` 永远读到 0，「靠本地兜底补过题的卷子只许交 2 次」被绕开，
+  表现成用户报过的**疯狂提交**（每一次提交都是真的交上去，平台可能记次数）。
+  - 改法（`src/page/70-quiz-flow.js`）：加**唯一判据** `_getQuizAccountDocument(preferredDoc)`
+    = `preferredDoc || _getQuizDocumentFromQuestions(_quizCurrentQuestions) || null`，
+    表达式与 ready 那一路**同形**。写账（`_markQuizSubmitPending`）和读账
+    （`_getQuizSubmitAttemptCount` / `_shouldSkipQuizBySubmitAttempts` / `_getQuizMaxSubmitAttempts`
+    经由 `_getQuizSubmitAttemptKey`）**全部从它出发**，任何调用点都没机会自己再算一遍。
+    ⚠️ 只收口**提交账**：答案缓存与按卷冷却仍按调用点自己那份文档算键，
+    动 `_resolveQuizAnswerDocument` 的 `null → 主文档` 兜底会把十几条读路径一起卷进来，
+    爆炸半径太大。**先只改写账端是一次半成品**（本轮实际走过）：读账那三路仍是
+    `preferredDoc || null`，同一份卷子照样两个键、上限照样读不到次数 —— 症状一模一样。
+  - 写账那一路（`src/page/75-quiz-dom.js`）显式取 `confDoc = this._getQuizAccountDocument(null)`，
+    不是为了纠正键（判据自己会归一），而是让本函数下面两条 warn 里的 `currentKey`
+    **就是账本键**；那里不许手抄第二份表达式 —— 分叉正是从"各算各的"开始的。
+    认不出题目文档时仍退回 `null`（旧行为：仍能交卷、仍记一次，**不能因为拿不到文档就吞掉提交**）。
+  - 「很遗憾，未达到及格线，请重做」那一支**故意仍传 `null`** 给 `_remember*QuizAnswers`：
+    那两个方法自己会遍历所有文档、按各自找到的那份文档写缓存键，跟这本账无关；
+    重做也不该消耗交卷次数。
+  - 排查抓手三条（`src/page/70-quiz-flow.js`）：`quiz submit pending` 现在同时带
+    `key`、`readyKey` 与 `accountFrom`（`caller` / `questions` / `fallback-document`）——
+    **两个键不相等就是这一族故障唯一的现场证据**，批次 8 之前只能靠人肉复现才知道；
+    `accountFrom` 则回答"这次记账的文档到底是谁给的"，`fallback-document` 一出现就说明
+    题目那份文档没认出来（键会退化，但不影响交卷）；另有 warn
+    `submit confirm key mismatch, continue because quiz is ready`（原先是 info，
+    既然是异常就该看得见），真分叉了照样提交（不拦用户交卷），但把分叉留在日志里。
+  - 验证场景：新场景 **40「确认框交卷要记在同一份卷子的账上」**（夹具 `/submit-key`：
+    外层只有 courseId + knowledgeid、题目在子 iframe 里五个 id 齐全、确认框常驻外层），14 项 ——
+    装配闸门先证明**两个键确实不同**（同键就等于把后面几条变成空测），再让生产代码自己
+    `_handleQuiz` 写 ready 键（手抄一个键等于测自己的夹具），然后验：记在同一本账、
+    手里没文档的**读账端问的也是同一本账**（旧那本粗账一个字节都没落下）、
+    日志两键自证相等且写明键出自哪里、连交两次到顶、
+    **调用点没有文档时上限照样生效**（这一条正是"只改写账端"会漏掉的半成品）、
+    重做不记次、认不出题目文档时退回旧行为且记的就是那本粗账。
+  - **批次 8 的反向验证**（三处注入，各改对应文件后 `npm run concat`，改完立刻 grep 确认落盘）：
+    - 把判据退回成 `preferredDoc || null`（删掉归一）→ 场景 40 **4 红**：记错账、
+      另一本账被写、日志两键不等、上限判不出到顶。**这一处才是承重的改动**。
+    - 只把 `confDoc` 手抄成 `null`（绕开判据）→ **1 红**，且只红在 `accountFrom` 那格 ——
+      说明写账端已被判据本身兜住，抄错只是让日志少了信息，不会再分叉。
+    - 删掉 `readyKey` 这一格日志字段 → 场景 40 **1 红**，正好是那条自证断言。
+  - ⚠️ 顺带修掉一个**只在全量跑里闪红**的竞态：场景「弹窗检查更新」原先固定等 900ms
+    就让 mock 接管 `fetch`。机器忙时弹窗打开那次自动检测的真实请求还没回来，
+    它的回调把「与线上一致」盖在断言要的结果后面 —— 单独定向跑永远绿，全套里偶发一条红。
+    改成「等文案连续 500ms 不变」再点、点完「等文案变（最多 6 秒）」再取快照。
+    与 AGENTS §5 同族：**"只有全套里才红"不是flake，是测试在赌时序**。
+  - 验证：`npm run check` / `npm test` / `npm run e2e` 全绿 —— 当前基线 **74 个场景 / 736 项**。
+    ⚠️ 同样只在 mock 页面验过，**真实课程页仍待用户实测**；未升号、线上附件仍是
+    1.3.0 发布那一版（改了 `page.js`，**需要重传附件**）。
 
 
 ---

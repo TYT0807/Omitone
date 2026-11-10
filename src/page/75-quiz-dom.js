@@ -1979,6 +1979,14 @@
       this._submitConfirmLastClickAt = now;
       console.log('[Omitone] confirm final submit');
       var dialogText = textOf(dialog);
+      // ⚠️ **提交账的键只有一处判据**：`_getQuizAccountDocument`（2026-11-10 批次 8）。
+      // 这里原先直接传 `null`：`_resolveQuizSubmitDocument(null)` 退回主文档，
+      // 于是同一份卷子算出**两个键**（真实日志里那个 `courseId||||knowledgeid` 就是它）——
+      // 提交次数记在 A 账、上限读在 B 账，`_shouldSkipQuizBySubmitAttempts` 永远读到 0，
+      // 「按卷最多 2 次」形同不存在，表现成用户报过的**疯狂提交**。
+      // 现在记账那一路自己会归一，这里显式取**同一份判据**，是为了让本函数下面那两条
+      // warn 里的 `currentKey` 就是账本键 —— 别改回手抄第二份表达式（那是分叉的起点）。
+      var confDoc = this._getQuizAccountDocument(null);
       if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(dialogText)) {
         this._rememberCorrectQuizAnswers(null);
         this._rememberWrongQuizAnswers(null);
@@ -1990,7 +1998,7 @@
         this._quizReadyToSubmit = false;
         this._quizReadyWorkKey = '';
       } else if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(dialogText) || this._hasActiveQuizSubmitForm(null)) {
-        var currentKey = this._getQuizWorkKey(null);
+        var currentKey = this._getQuizWorkKey(confDoc);
         var readyForConfirm = this._quizReadyToSubmit || this._quizSubmitPending || this._quizAnswered;
         if (!readyForConfirm) {
           emitRuntimeLog('warn', 'wait submit confirm until quiz ready', { key: currentKey });
@@ -1998,11 +2006,12 @@
           return true;
         }
         if (this._quizReadyWorkKey && currentKey && this._quizReadyWorkKey !== currentKey) {
-          // 良性：提交确认弹窗出现时 URL 可能已变化（如加了时间戳参数），
-          // 但测验本身已就绪，按设计继续提交。降为 info 避免被当成故障线索。
-          emitRuntimeLog('info', 'submit confirm key mismatch, continue because quiz is ready', { readyKey: this._quizReadyWorkKey, key: currentKey });
+          // 批次 8 之后这一条**不该再出现**：两侧都按"题目所在文档"算键。
+          // 真出现了就是键的算法又分叉了（比如题目文档在弹窗出现后换了），
+          // 仍按设计继续提交，但把它留成 warn —— 这正是"上限绕得开"那族故障的探针。
+          emitRuntimeLog('warn', 'submit confirm key mismatch, continue because quiz is ready', { readyKey: this._quizReadyWorkKey, key: currentKey });
         }
-        this._markQuizSubmitPending(null, 'confirm-dialog');
+        this._markQuizSubmitPending(confDoc, 'confirm-dialog');
       }
       try { submitBtn.click(); } catch (e) {}
       return true;

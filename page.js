@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '843b9bbbff';
+var OMITONE_CODE_REV = '47e3cd52a4';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -7890,8 +7890,24 @@ var OMITONE_CODE_REV = '843b9bbbff';
       }
     },
 
+    /**
+     * 「这份卷子的**提交账**记在哪个文档上」—— 只有一处答案（2026-11-10 批次 8）。
+     *
+     * 表达式与 ready 那一路**同形**（`preferredDoc || 题目所在文档`）：
+     * 写账端与读账端错开时，症状不是报错，而是**上限永远读不到次数** ——
+     * 「一次没过就再交一次、一直交」的疯狂提交就是这么来的
+     * （`_handleSubmitConfirmDialog` 原先传 `null`，`null → 主文档` 那本粗账被写，
+     * ready 键与 `_shouldSkipQuizBySubmitAttempts` 读的是**题目文档**那本细账）。
+     *
+     * ⚠️ 只管提交账：答案缓存与按卷冷却仍按调用点自己那份文档算键，
+     * 动 `_resolveQuizAnswerDocument` 的 `null` 兜底会把十几条读路径一起卷进来。
+     */
+    _getQuizAccountDocument: function (preferredDoc) {
+      return preferredDoc || this._getQuizDocumentFromQuestions(this._quizCurrentQuestions) || null;
+    },
+
     _getQuizSubmitAttemptKey: function (preferredDoc) {
-      return this._getQuizWorkKey(preferredDoc) + '.submitAttempts';
+      return this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)) + '.submitAttempts';
     },
 
     /**
@@ -7911,7 +7927,7 @@ var OMITONE_CODE_REV = '843b9bbbff';
     _getQuizMaxSubmitAttempts: function (preferredDoc) {
       var max = Number(this.configs.quizMaxSubmitAttempts || 20);
       if (!(max > 0)) max = 20;
-      var key = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      var key = this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)) || this._quizRunPaperKey || '';
       if (key && (this._quizLocalMultiplePapers || {})[key]) return Math.min(max, 2);
       return max;
     },
@@ -8229,7 +8245,18 @@ var OMITONE_CODE_REV = '843b9bbbff';
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
-      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc) });
+      var questionsDoc = this._getQuizDocumentFromQuestions(this._quizCurrentQuestions);
+      // ⚠️ 三个键**必须同源**（批次 8）：`key` 是这次真正记账的槽位、`accountFrom` 是它的出处、
+      // `readyKey` 是 ready 那一路的键。三者对不上就是"上限绕得开"那一族故障的现场证据，
+      // 而它只能在这条日志里同时看到（批次 8 之前只能靠人肉复现）。
+      emitRuntimeLog('info', 'quiz submit pending', {
+        reason: reason || '',
+        key: this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)),
+        accountFrom: preferredDoc ? 'caller' : (questionsDoc ? 'questions' : 'fallback-document'),
+        readyKey: this._quizReadyWorkKey || '',
+        attemptCount: attemptCount,
+        maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc)
+      });
     },
 
     /**
@@ -12491,6 +12518,14 @@ var OMITONE_CODE_REV = '843b9bbbff';
       this._submitConfirmLastClickAt = now;
       console.log('[Omitone] confirm final submit');
       var dialogText = textOf(dialog);
+      // ⚠️ **提交账的键只有一处判据**：`_getQuizAccountDocument`（2026-11-10 批次 8）。
+      // 这里原先直接传 `null`：`_resolveQuizSubmitDocument(null)` 退回主文档，
+      // 于是同一份卷子算出**两个键**（真实日志里那个 `courseId||||knowledgeid` 就是它）——
+      // 提交次数记在 A 账、上限读在 B 账，`_shouldSkipQuizBySubmitAttempts` 永远读到 0，
+      // 「按卷最多 2 次」形同不存在，表现成用户报过的**疯狂提交**。
+      // 现在记账那一路自己会归一，这里显式取**同一份判据**，是为了让本函数下面那两条
+      // warn 里的 `currentKey` 就是账本键 —— 别改回手抄第二份表达式（那是分叉的起点）。
+      var confDoc = this._getQuizAccountDocument(null);
       if (/未达到及格线|未达到通过标准|请重做|很遗憾/.test(dialogText)) {
         this._rememberCorrectQuizAnswers(null);
         this._rememberWrongQuizAnswers(null);
@@ -12502,7 +12537,7 @@ var OMITONE_CODE_REV = '843b9bbbff';
         this._quizReadyToSubmit = false;
         this._quizReadyWorkKey = '';
       } else if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(dialogText) || this._hasActiveQuizSubmitForm(null)) {
-        var currentKey = this._getQuizWorkKey(null);
+        var currentKey = this._getQuizWorkKey(confDoc);
         var readyForConfirm = this._quizReadyToSubmit || this._quizSubmitPending || this._quizAnswered;
         if (!readyForConfirm) {
           emitRuntimeLog('warn', 'wait submit confirm until quiz ready', { key: currentKey });
@@ -12510,11 +12545,12 @@ var OMITONE_CODE_REV = '843b9bbbff';
           return true;
         }
         if (this._quizReadyWorkKey && currentKey && this._quizReadyWorkKey !== currentKey) {
-          // 良性：提交确认弹窗出现时 URL 可能已变化（如加了时间戳参数），
-          // 但测验本身已就绪，按设计继续提交。降为 info 避免被当成故障线索。
-          emitRuntimeLog('info', 'submit confirm key mismatch, continue because quiz is ready', { readyKey: this._quizReadyWorkKey, key: currentKey });
+          // 批次 8 之后这一条**不该再出现**：两侧都按"题目所在文档"算键。
+          // 真出现了就是键的算法又分叉了（比如题目文档在弹窗出现后换了），
+          // 仍按设计继续提交，但把它留成 warn —— 这正是"上限绕得开"那族故障的探针。
+          emitRuntimeLog('warn', 'submit confirm key mismatch, continue because quiz is ready', { readyKey: this._quizReadyWorkKey, key: currentKey });
         }
-        this._markQuizSubmitPending(null, 'confirm-dialog');
+        this._markQuizSubmitPending(confDoc, 'confirm-dialog');
       }
       try { submitBtn.click(); } catch (e) {}
       return true;

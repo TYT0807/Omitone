@@ -88,11 +88,17 @@
 > 现在只有多选自己单独一问。以及**页面长时间不动时那句提示每 2 分钟会重播一次**，
 > 不会再"报过一次就彻底安静"、让你分不清它还在等还是已经跑了。
 > 没见过多选乱选、也没遇到"翻页卡住"的你，感觉不到变化。
+> **⑦ 卷子没过时不再一遍遍重交**（2026-11-11 补）—— 上一条刚立起「靠兜底填过的卷子只许交 2 次」，
+> 但那份"已经交了几次"记错了地方：交卷那一步认的是**页面外层**那一份，题目却挂在外层里面的帧里，
+> 于是**同一份卷子算出两个身份** —— 次数写在一本账上，上限读另一本账，读到的永远是 0，
+> 上限形同不存在，表现就是「交一次、没过、再交一次」一直刷。现在两处并回同一个身份，
+> 真过了就过，过不了最多两次就收手，不再拿你的提交次数去赌。
+> 没见过反复交卷的你，感觉不到变化。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 73 场景 / 722 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 74 场景 / 736 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -726,7 +732,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 73 个场景，722 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 74 个场景，736 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1080,6 +1086,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 49 | **一份卷子只答了多选题、看着像乱选的，单选反而一题没答**（用户原话「只回答的多选题，估计是乱选的，单选题一题也是空着的」） | #39 那条"多选本地作答、不进请求"省的是 token，**代价是答案必错**：整卷只要有一道多选就基本过不了及格线。而课后检测的提交上限实测只有 2 次（日志 `quiz submit attempt count {count:1,max:2}`），拿猜的答案去交等于**白烧一次真提交**。当时的 `max:2` 之所以没爆成"疯狂提交"，是因为第二趟把多选交回了模型 —— 可用户看到的就是"第一趟全是乱选的多选" | 多选**与单选同等交给模型**（`_answerLocalMultiChoiceQuestions` 只剩"补填"一个身份，且**幂等**：模型已填好的绝不重填，复选重填会把自己切掉）。只有补填真的动过手，才把这份卷子记进 `_quizLocalMultiplePapers` 并把上限收到 2。`content.js` 的分批同步改：多选自己成批、**不打断正在攒的那一批**（旧写法会让一道多选拖着另外两题成一题一批，固定开销按批计，一份卷子多花十几批的钱）|
 | 50 | **屏幕上单选题一题没勾，日志却写 `quiz fill audit ok`** | 与 #48 同族，只是这次栽在选择题上：审计读的是 `#answer{qid}` 与 **`aria-checked`** —— 而 `aria-checked` 是 `_clickOptionItem` **只要有 qid 就顺手给文本项加上的**，没有任何 CSS 认它。等于**自己给自己开的证明**：只要写过，就永远"看得见" | `_hasVisibleChoiceSelection(el)` 是三档证据的唯一入口（站点 CSS 真会着色的 `check_answer*` / `cur` / `selected` / `active` + 可见的已勾选 radio/checkbox）；看不见时写 `quiz fill: no visible selection in question`（带 `radio`/`visibleRadio`/`markCls`），审计侧写 `quiz fill audit: value without visible selection`。选项控件与文本层分离的那套形状（`.Cy_*`）另有一步**补点文本项**（`radio-clickthrough`）。⚠️ **`aria-checked` 不许再算进证据** |
 | 51 | **刚开始还会检测题目，之后直接翻到下一节、然后整页卡住**（用户原话如此；真实日志：`skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}` → 地址变成 `i.chaoxing.com/base` → 只剩 `search job: no attachments…` 与一条 `study stuck` 后彻底静默） | `_dismissPopups()` 整页 `querySelectorAll('button, a, .btn …')` 按文案点，把课程页**常驻**的「下一节」导航当成了弹窗按钮。翻过去的那一页没有课程结构可认，任务点扫不到，而 `study stuck` 每个键只报一次 → 报完永久安静 | 弹窗容器（`.layui-layer` / `[role="dialog"]` / `#workpop` …）之外**一律不点**，带 `prev_next` 的双保险也不点；关不掉就 return，不许拿 `[class*="close"]` 抓整页右上角的关闭按钮。翻页只走自己的路（`_switchToNextLearningCard()` / `#prevNextFocusNext`）。`study stuck` 改为**每 2 分钟重播**并带上当前 `href`。交卷确认框仍**谁都不点** |
+| 52 | **一份卷子两个键 → 「只许交 2 次」被绕开、疯狂提交**（真实日志：`quiz submit pending` 里那个键长成 `…123456%7C%7C%7C%7CK777`，中间三段全空；而 ready 那条按题目文档算的键五段齐全） | 交卷确认弹窗那一路传的是 `null`：`_resolveQuizSubmitDocument(null)` 退回**外层文档**，可题目挂在 iframe 里、五个 id 只在**题目那份文档**上。于是同一份卷子有两个键 —— 提交次数记在**外层那本账**，而 `_quizReadyWorkKey`、`_getQuizMaxSubmitAttempts`、`_shouldSkipQuizBySubmitAttempts`、按卷冷却全读**题目那份文档**那本账。上限那条永远读到 0，批次 7 定的「本地兜底过的卷子只交 2 次」形同不存在 | `_getQuizAccountDocument(preferredDoc)` = `preferredDoc || 题目那份文档`（与 ready 那一路**同形**）成为**唯一判据**，写账（`_markQuizSubmitPending`）与读账（`_getQuizSubmitAttemptCount` / `_shouldSkipQuizBySubmitAttempts` / `_getQuizMaxSubmitAttempts` 经由 `_getQuizSubmitAttemptKey`）全部从它出发，调用点没机会各算各的。`_handleSubmitConfirmDialog` 仍显式取一次 `confDoc`（只为让本函数那两条 warn 里的 `currentKey` 就是账本键，**不许手抄第二份表达式**）。日志另加 `readyKey` 与 `accountFrom`，两键不等还会单独 warn `submit confirm key mismatch, continue because quiz is ready`。**只收口提交账**，没动 `_resolveQuizAnswerDocument` 的 `null` 兜底（它喂着十几条读路径）。⚠️ **只改写账端是一次半成品** —— 读账那三路仍是旧口径，症状一模一样。回归＝场景 40 `/submit-key`（14 项）。⚠️ **按文档算键的函数，写账端与读账端必须是同一个文档表达式** —— 与 #43、批次 8 之前那条按卷冷却的 HIGH-1 同族 |
 
 ---
 
@@ -1107,6 +1114,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **整卷只答了多选、像乱选的，单选反而空着** | 见 §6 #49。批次 7 之后多选与单选同等交给模型；日志里若还有 `multiple choice filled locally as refill`，说明这一卷确实靠猜补过题（`quiz submit attempt count` 的 `max` 会收到 2）。要确认那份改动进了浏览器，看 `start` 那行的 `build` 里有没有 `multi-llm-first` |
 | **屏幕上单选没勾、日志写 `quiz fill audit ok`** | 见 §6 #50。日志找 `quiz fill: no visible selection in question`（带 `radio` / `visibleRadio` / `markCls`）与 `quiz fill audit: value without visible selection`；`visibleRadio:0` 而 `radio:>0` 就是"控件与文本层分离、补点没生效" |
 | **一开始还检测题目，之后直接翻到下一节、然后卡住** | 见 §6 #51。日志里找 `dismiss popups: click` —— 它的 `cls` 若带 `prev_next`，说明点的是常驻导航（批次 7 已禁止）；再看 `study stuck`（每 2 分钟重播，带 `href`）与 `search job: no attachments and no synthetic job` |
+| **一份卷子没过就一遍遍重交，`max` 明明写着 2 却交不完** | 见 §6 #52。批次 8 之后 `quiz submit pending` 同时带 `key`、`readyKey` 与 `accountFrom` —— 两键**相等**就是记账与读账同一本账（正常），`accountFrom` 说明这次记账的文档是谁给的（`caller` / `questions` / `fallback-document`）；**不等**会另发一条 `submit confirm key mismatch, continue because quiz is ready`，那说明又有地方绕开了 `_getQuizAccountDocument`（比如弹窗出现后题目换了文档）。日志里那个形如 `…%7C%7C%7C%7C…`（中间三段全空）的键是**外层文档**算的，它不是卷子身份，只是旧写法留下的证据 |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1240,7 +1248,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（73 个场景 / 722 项）
+npm run e2e      # 真实 Edge 功能交叉检验（74 个场景 / 736 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

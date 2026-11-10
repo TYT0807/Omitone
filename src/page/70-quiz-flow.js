@@ -11,12 +11,12 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（56 个）：
+ * 本段的方法（57 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
  *   _getQuizPaperKeyFromTask、_isQuizPaperChangedInDom、_getQuizSubmitAttemptKey、
- *   _getQuizMaxSubmitAttempts、
+ *   _getQuizAccountDocument、_getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
@@ -455,8 +455,24 @@
       }
     },
 
+    /**
+     * 「这份卷子的**提交账**记在哪个文档上」—— 只有一处答案（2026-11-10 批次 8）。
+     *
+     * 表达式与 ready 那一路**同形**（`preferredDoc || 题目所在文档`）：
+     * 写账端与读账端错开时，症状不是报错，而是**上限永远读不到次数** ——
+     * 「一次没过就再交一次、一直交」的疯狂提交就是这么来的
+     * （`_handleSubmitConfirmDialog` 原先传 `null`，`null → 主文档` 那本粗账被写，
+     * ready 键与 `_shouldSkipQuizBySubmitAttempts` 读的是**题目文档**那本细账）。
+     *
+     * ⚠️ 只管提交账：答案缓存与按卷冷却仍按调用点自己那份文档算键，
+     * 动 `_resolveQuizAnswerDocument` 的 `null` 兜底会把十几条读路径一起卷进来。
+     */
+    _getQuizAccountDocument: function (preferredDoc) {
+      return preferredDoc || this._getQuizDocumentFromQuestions(this._quizCurrentQuestions) || null;
+    },
+
     _getQuizSubmitAttemptKey: function (preferredDoc) {
-      return this._getQuizWorkKey(preferredDoc) + '.submitAttempts';
+      return this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)) + '.submitAttempts';
     },
 
     /**
@@ -476,7 +492,7 @@
     _getQuizMaxSubmitAttempts: function (preferredDoc) {
       var max = Number(this.configs.quizMaxSubmitAttempts || 20);
       if (!(max > 0)) max = 20;
-      var key = this._getQuizWorkKey(preferredDoc || null) || this._quizRunPaperKey || '';
+      var key = this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)) || this._quizRunPaperKey || '';
       if (key && (this._quizLocalMultiplePapers || {})[key]) return Math.min(max, 2);
       return max;
     },
@@ -794,7 +810,18 @@
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
-      emitRuntimeLog('info', 'quiz submit pending', { reason: reason || '', key: this._getQuizWorkKey(preferredDoc), attemptCount: attemptCount, maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc) });
+      var questionsDoc = this._getQuizDocumentFromQuestions(this._quizCurrentQuestions);
+      // ⚠️ 三个键**必须同源**（批次 8）：`key` 是这次真正记账的槽位、`accountFrom` 是它的出处、
+      // `readyKey` 是 ready 那一路的键。三者对不上就是"上限绕得开"那一族故障的现场证据，
+      // 而它只能在这条日志里同时看到（批次 8 之前只能靠人肉复现）。
+      emitRuntimeLog('info', 'quiz submit pending', {
+        reason: reason || '',
+        key: this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc)),
+        accountFrom: preferredDoc ? 'caller' : (questionsDoc ? 'questions' : 'fallback-document'),
+        readyKey: this._quizReadyWorkKey || '',
+        attemptCount: attemptCount,
+        maxAttempts: this._getQuizMaxSubmitAttempts(preferredDoc)
+      });
     },
 
     /**
