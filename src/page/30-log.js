@@ -196,18 +196,19 @@
         samples: []
       };
 
+      // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
+      // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
+      var diagSelectors = this._questionSelectors;
+      var diagOverrides = this.configs && this.configs.questionSelectorOverrides;
+      if (Array.isArray(diagOverrides) && diagOverrides.length) {
+        diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
+      }
+
       var inspectDoc = function (doc, path) {
         if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
         try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
 
-        // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
-        // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
-        var diagSelectors = self._questionSelectors;
-        var diagOverrides = self.configs && self.configs.questionSelectorOverrides;
-        if (Array.isArray(diagOverrides) && diagOverrides.length) {
-          diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
-        }
         diagSelectors.forEach(function (sel) {
           try {
             var count = doc.querySelectorAll(sel).length;
@@ -231,6 +232,33 @@
       try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
       report.containers = containers.length;
 
+      // ⚠️ 「命中了却被吃掉」要说清死在哪一道（批次 9-C）。
+      // 真实日志 00:46:04 只给了 `matchedSelectors:{"div[class*=\"question\"]":1}` 和 `inputs:9`，
+      // 于是那句"容器全部被过滤"到底指**不可见且无文本**、**嵌套去重**还是**解析返回 null**，
+      // 现场判不了 —— 而这三条各自对应完全不同的修法。
+      if (!report.containers) {
+        report.dropStages = diagSelectors.reduce(function (acc, sel) {
+          try {
+            var found = Array.prototype.slice.call(containerHost.querySelectorAll(sel));
+            if (!found.length) return acc;
+            var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
+            var set = new Set(usable);
+            var unique = usable.filter(function (item) {
+              if (!item || !item.closest) return true;
+              var parent = item.parentElement;
+              while (parent) {
+                if (set.has(parent)) return false;
+                parent = parent.parentElement;
+              }
+              return true;
+            });
+            var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
+            acc[sel] = { matched: found.length, filtered: found.length - usable.length, deduped: usable.length - unique.length, unparsable: unique.length - parsable };
+          } catch (e) {}
+          return acc;
+        }, {});
+      }
+
       containers.slice(0, 5).forEach(function (node) {
         var parsed = self._parseQuestionElement(node, 0);
         report.samples.push({
@@ -248,7 +276,7 @@
       if (!totalMatched) {
         report.hint = '任何文档都没有命中题目选择器：可能不是测验页，或题目在跨域 iframe 里（插件无法访问），或学习通改版换了类名';
       } else if (!report.containers) {
-        report.hint = '选择器有命中但容器全部被过滤（隐藏/无文本）：检查 _collectQuestionContainers 的过滤条件';
+        report.hint = '选择器有命中但容器一个都没留下：看 dropStages 里哪一格非零 —— filtered=不可见且无文本、deduped=嵌套去重吃掉、unparsable=解析返回 null（批次 9-C 起这一格随日志一起出）';
       } else if (!report.samples.some(function (s) { return s.parsed; })) {
         report.hint = '容器找到了但 _parseQuestionElement 全部返回 null：题干与选项都没抠出来，需要补 titleSelectors / _getOptionItems';
       }

@@ -11,12 +11,12 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（57 个）：
+ * 本段的方法（58 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
  *   _getQuizPaperKeyFromTask、_isQuizPaperChangedInDom、_getQuizSubmitAttemptKey、
- *   _getQuizAccountDocument、_getQuizMaxSubmitAttempts、
+ *   _getQuizAccountDocument、_shouldHoldQuizBeforeFinish、_getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
@@ -1055,6 +1055,28 @@
       }
     },
 
+    /**
+     * 「为了这份卷子，这一节要不要按住不放手」—— 只有一处答案（2026-11-11 批次 9-C）。
+     *
+     * 现场：真实日志 00:45:59 → 00:46:16 连磨两轮 `study hold quiz before finish
+     * {pending:{total:0}}`，最后是页面自己刷新才走通。用户报的"在已经做完的界面磨蹭很久"
+     * 就是这两轮 —— hold 的是**0 道题**。
+     *
+     * 根因是两把判据不同源：`_isQuizLearningPending` 走的是「页面上有题的形状」那类宽判据
+     * （`_hasActiveQuizSubmitForm` / `_detectQuiz`），而 `_describePendingQuizQuestions`
+     * 要**数得出具体容器**。宽判据说有、具体数出来是 0 时，继续等不会等出任何东西。
+     *
+     * ⚠️ 三个保守分支不许放宽：数不出题但**答题动作正在飞**（`_quizInProgress` / `_quizSubmitPending`）
+     * 时要 hold（正在填不该放手）；`pendingDesc` 是 `{error}` 这种**没数成**的形状时也 hold ——
+     * 宁可慢，不能因为自己数漏了就整节放行。
+     */
+    _shouldHoldQuizBeforeFinish: function (pendingDesc) {
+      if (!pendingDesc) return true;
+      if (pendingDesc.total !== 0) return true;
+      if (this._quizInProgress || this._quizSubmitPending) return true;
+      return false;
+    },
+
     _isQuizLearningPending: function (preferredDoc) {
       if (this._isQuizForceSkipping(preferredDoc || null)) return false;
       if (this._isQuizApiUnavailable()) return false;
@@ -1193,6 +1215,13 @@
             this._fontNoWaitSuppressed = (this._fontNoWaitSuppressed || 0) + 1;
           }
         } else {
+          // ⚠️ 「解密扫描**没覆盖到这一份文档**」时等满 8 秒是纯白等（批次 9-B）。
+          // 真实日志 00:46:41 → 00:46:49：`state:"(none)"`、`sweepAgoMs:-1` 等满上限，
+          // 一个字也没多解出来 —— 而 content.js 那一次扫描若真会跑到这一份文档，
+          // 两秒多的防抖窗口就足够落戳。**已经在扫的文档（有戳）仍等满原窗口**，
+          // 别把这条宽限当成"整体不等"。
+          var sweepNotCovered = fontProbe.sweepAgoMs < 0 || fontProbe.state === '(none)';
+          var fontEffectiveLimitMs = sweepNotCovered ? Math.min(fontWaitLimitMs, scaledMs(2500)) : fontWaitLimitMs;
           var secretWaitSince = this._fontSecretWaitSince || 0;
           if (!secretWaitSince) {
             this._fontSecretWaitSince = Date.now();
@@ -1202,21 +1231,23 @@
               hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
               state: fontProbe.state,
               sweepAgoMs: fontProbe.sweepAgoMs,
+              waitLimitMs: fontEffectiveLimitMs,
               scope: preferredDoc ? 'quiz-doc' : 'whole-page'
             });
             return;
           }
-          if (Date.now() - secretWaitSince < fontWaitLimitMs) return;
+          if (Date.now() - secretWaitSince < fontEffectiveLimitMs) return;
           this._fontSecretWaitSince = 0;
           emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
             waitedMs: Date.now() - secretWaitSince,
-            limitMs: fontWaitLimitMs,
+            limitMs: fontEffectiveLimitMs,
+            configuredLimitMs: fontWaitLimitMs,
             slowFactor: perfFactor(),
             state: fontProbe.state,
             sweepAgoMs: fontProbe.sweepAgoMs,
             scope: preferredDoc ? 'quiz-doc' : 'whole-page',
-            hint: (fontProbe.state === '(none)' || fontProbe.sweepAgoMs < 0)
-              ? '等满上限、而这一份文档上连扫描戳都没有 —— 是 content.js 的解密扫描没覆盖到它，不是解得慢'
+            hint: sweepNotCovered
+              ? '这一份文档上连扫描戳都没有 —— 是 content.js 的解密扫描没覆盖到它，不是解得慢；批次 9-B 之后不再为此白等满配置窗口'
               : '等满上限仍未解出，按现状作答'
           });
         }
@@ -1246,6 +1277,7 @@
               return Object.assign(sum, d.selectors);
             }, {}),
             inputs: diag.docs.reduce(function (sum, d) { return sum + d.inputs; }, 0),
+            dropStages: diag.dropStages || {},
             samples: diag.samples.slice(0, 3)
           });
         }

@@ -94,11 +94,19 @@
 > 上限形同不存在，表现就是「交一次、没过、再交一次」一直刷。现在两处并回同一个身份，
 > 真过了就过，过不了最多两次就收手，不再拿你的提交次数去赌。
 > 没见过反复交卷的你，感觉不到变化。
+> **⑧ 不再往你的课程讨论区乱发回帖，也不再在已经做完的页面上干等**（2026-11-11 补）——
+> 有过这一幕的：**讨论区凭空多出一条内容只有一个「1」的回帖**，而那份卷子当时正要交卷。
+> 插件把刷课页误认成了回帖页，还把页面上文字含「提交」的按钮当成发帖按钮点了下去。
+> 现在这条路要连过四道关（刷课页一律不算讨论页、只认我们自己两分钟内的跳转、
+> 按钮必须和输入框在同一块讨论区里、答题过程中根本不进讨论），每一关拒了都会留一句话。
+> 同时修掉两件"慢"：**页面明明没有待答的题，却把整节按住不动**（现在会写明"没有可等的题"并继续推进），
+> **解密扫描压根没跑到的那份文档还要干等 8 秒**（现在只宽限 2.5 秒，一份卷子省 5 秒以上）。
+> 没发过垃圾回帖、也没觉得慢的你，感觉不到变化。
 
 > <details><summary>技术细节与验证基线（点开）</summary>
 > 题目选择器单一真源 + 防漂移守卫 · 暴力测试与前端混沌猴进沙盒 ·
 > `npm test` 全绿（自检 20 + 基准 + 集成 144 + worker 100）·
-> e2e 真实 Edge 74 场景 / 736 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
+> e2e 真实 Edge 79 场景 / 771 项 · 回归 28 · 暴力 7 · 沙盒全绿 ·
 > 明细见 CHANGELOG 1.3.0 段与 [修复验收](1.3.0-修复验收-20261023.md)、[产物验收记录](1.3.0-产物验收记录-20261023.md)
 > （后两份是**发布前的过程记录**，里面的「实验版/未发布」是当时口径，非现状）
 > </details>
@@ -732,7 +740,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 74 个场景，736 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 79 个场景，771 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1088,6 +1096,11 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 51 | **刚开始还会检测题目，之后直接翻到下一节、然后整页卡住**（用户原话如此；真实日志：`skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}` → 地址变成 `i.chaoxing.com/base` → 只剩 `search job: no attachments…` 与一条 `study stuck` 后彻底静默） | `_dismissPopups()` 整页 `querySelectorAll('button, a, .btn …')` 按文案点，把课程页**常驻**的「下一节」导航当成了弹窗按钮。翻过去的那一页没有课程结构可认，任务点扫不到，而 `study stuck` 每个键只报一次 → 报完永久安静 | 弹窗容器（`.layui-layer` / `[role="dialog"]` / `#workpop` …）之外**一律不点**，带 `prev_next` 的双保险也不点；关不掉就 return，不许拿 `[class*="close"]` 抓整页右上角的关闭按钮。翻页只走自己的路（`_switchToNextLearningCard()` / `#prevNextFocusNext`）。`study stuck` 改为**每 2 分钟重播**并带上当前 `href`。交卷确认框仍**谁都不点** |
 | 52 | **一份卷子两个键 → 「只许交 2 次」被绕开、疯狂提交**（真实日志：`quiz submit pending` 里那个键长成 `…123456%7C%7C%7C%7CK777`，中间三段全空；而 ready 那条按题目文档算的键五段齐全） | 交卷确认弹窗那一路传的是 `null`：`_resolveQuizSubmitDocument(null)` 退回**外层文档**，可题目挂在 iframe 里、五个 id 只在**题目那份文档**上。于是同一份卷子有两个键 —— 提交次数记在**外层那本账**，而 `_quizReadyWorkKey`、`_getQuizMaxSubmitAttempts`、`_shouldSkipQuizBySubmitAttempts`、按卷冷却全读**题目那份文档**那本账。上限那条永远读到 0，批次 7 定的「本地兜底过的卷子只交 2 次」形同不存在 | `_getQuizAccountDocument(preferredDoc)` = `preferredDoc || 题目那份文档`（与 ready 那一路**同形**）成为**唯一判据**，写账（`_markQuizSubmitPending`）与读账（`_getQuizSubmitAttemptCount` / `_shouldSkipQuizBySubmitAttempts` / `_getQuizMaxSubmitAttempts` 经由 `_getQuizSubmitAttemptKey`）全部从它出发，调用点没机会各算各的。`_handleSubmitConfirmDialog` 仍显式取一次 `confDoc`（只为让本函数那两条 warn 里的 `currentKey` 就是账本键，**不许手抄第二份表达式**）。日志另加 `readyKey` 与 `accountFrom`，两键不等还会单独 warn `submit confirm key mismatch, continue because quiz is ready`。**只收口提交账**，没动 `_resolveQuizAnswerDocument` 的 `null` 兜底（它喂着十几条读路径）。⚠️ **只改写账端是一次半成品** —— 读账那三路仍是旧口径，症状一模一样。回归＝场景 40 `/submit-key`（14 项）。⚠️ **按文档算键的函数，写账端与读账端必须是同一个文档表达式** —— 与 #43、批次 8 之前那条按卷冷却的 HIGH-1 同族 |
 
+| 53 | **插件在刷课页往课程讨论区真发了一条垃圾回帖**（真实日志 00:46:24 `quiz submit pending` → 00:46:26 `discussion page detected` + 内容「1」；用户看不到自己班群里多了什么） | 三处放宽**叠**起来才成立：① `omitone_return_url` 写完**永不清除** —— "是我们自己刚从刷课页跳过来的"这条放宽一旦触发就**永久生效**；② 放宽只问正文里有没有「讨论」二字 —— 课程页导航常年挂着这个标签；③ 发帖按钮按文字满页找（含「提交」就行），编辑区取"页面上最大的可见输入区"，**两者互不相干也能凑成"是讨论页"**，而那个「提交」正是卷子刚要点的按钮。根因不是哪一条写错了，是**三条各自"通常没事"的放宽没有一条问"会不会伤到别人"** | 四道闸，缺一都可能复发：`_isStudyCourseHref()` 让刷课/章节/`ananas` 那族网址**永不**走正文放宽；`_discussionReturnFresh()` 把放宽收成**一次跳转的 120 秒**窗口、过期就把两个键一起删；`_findDiscussionSubmitButton(nearEditor)` 要求按钮与编辑区**共用一块不是 body 的容器**（编辑区往上最多 4 层 —— ⚠️ 反向走"谁 contains 谁"是空的，body 永远包含一切）；`_quizInFlightForDiscussion()` 让答题在飞时**根本不进讨论判据**（讨论判据挂在 `_runTick` 最前，OCS 是**另一条并行循环**，两条循环抢同一个按钮）。每一次拒绝都留话：`discussion page declined {reason: study-page / return-jump-expired / no-discussion-text / no-editor / no-co-located-submit}`（30 秒节流）。⚠️ **收紧判据必须配一条"正常页仍能认出"的对照断言**（场景 42），否则"不发帖"和"发不出去"在日志里长得一样 |
+| 54 | **已经完成的界面要磨蹭很久才去下一个**（真实日志 00:46:41 `quiz waiting font decrypt {state:"(none)",sweepAgoMs:-1}` → 00:46:49 才发请求，每份卷子白等 8 秒） | `state:"(none)"` + `sweepAgoMs:-1` 不是"解得慢"，是 content.js 那次解密扫描**根本没跑到这一份文档** —— 等满窗口一个字也不会多解出来。批次 5 把"要不要等"收成问题目那份文档，但**没区分"在扫但没扫完"和"压根没扫"** | `sweepNotCovered` 时上限从配置值收窄到 `scaledMs(2500)`，超了就照答并 warn `font decrypt pending over limit, answer anyway`，那条日志同时带 `limitMs` 与 `configuredLimitMs`（本轮实际用了什么上限、用户配的是什么，一眼对得上）。⚠️ **有扫描戳的文档仍等满原窗口** —— 这道宽限只关"未覆盖"，不许改成"整体不等"（场景 43 有对照组钉住） |
+| 55 | **整节被按住不动，日志里一直刷 `study hold quiz before finish`**（真实日志连着十几条，`pending:{total:0}`） | OCS 收尾循环问的是"还有没有题要做"，答话的却是另一句"判据说有"；而**具体数题**那一路一道容器都没收着（`total:0`）。于是"我自己没数出来"被当成"还有题要做"，为 0 道题按住整节 | 判据抽成 `_shouldHoldQuizBeforeFinish(pendingDesc)` 并**只留一份**：`pendingDesc` 拿不到、`total≠0`、`_quizInProgress`/`_quizSubmitPending` 在飞 —— **三条一律照旧 hold**（宁可慢，不能因为自己数漏就跳必做的题）；只有"`total:0` 且确实没有在飞的答题动作"才放行，并 warn `study quiz hold skipped: nothing pending to wait for`。为什么数不出来不再靠猜：`_diagnoseQuestionScan()` 在容器为 0 时给 `dropStages`（每个选择器 `matched/filtered/deduped/unparsable`） |
+| 56 | **一份卷子做了、同一页的第二份不做**（真实日志 00:46:55 `frames:8`：4 个 `javascript:void(function(){document.open` + 3 个 `javascript:` 全被拒成「认不出任务类型」） | 旧日志只给帧的 `src` 前 40 字 —— **判不了那是空帧还是第二份卷子**，而这两件事的处理方向完全相反。没有证据就放宽类型准入，代价是别的帧跟着被误收 | `_frameRejectSignature()` 给「认不出类型」与「取不到 jobid」两条拒绝各带一份内容签名 `{text, qHit, video, answer, frames, pan, signals}`；题形命中数**走 `_questionSelectors` 真源**（手抄类名会被 check 的「题目选择器真源守卫」拦）。⚠️ **这一批只取证、不改判据** —— 等真实日志里的签名说话，下一批再决定放不放宽准入 |
+
 ---
 
 ## 7. 调试手册：症状 → 病因 → 查哪里
@@ -1115,6 +1128,10 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **屏幕上单选没勾、日志写 `quiz fill audit ok`** | 见 §6 #50。日志找 `quiz fill: no visible selection in question`（带 `radio` / `visibleRadio` / `markCls`）与 `quiz fill audit: value without visible selection`；`visibleRadio:0` 而 `radio:>0` 就是"控件与文本层分离、补点没生效" |
 | **一开始还检测题目，之后直接翻到下一节、然后卡住** | 见 §6 #51。日志里找 `dismiss popups: click` —— 它的 `cls` 若带 `prev_next`，说明点的是常驻导航（批次 7 已禁止）；再看 `study stuck`（每 2 分钟重播，带 `href`）与 `search job: no attachments and no synthetic job` |
 | **一份卷子没过就一遍遍重交，`max` 明明写着 2 却交不完** | 见 §6 #52。批次 8 之后 `quiz submit pending` 同时带 `key`、`readyKey` 与 `accountFrom` —— 两键**相等**就是记账与读账同一本账（正常），`accountFrom` 说明这次记账的文档是谁给的（`caller` / `questions` / `fallback-document`）；**不等**会另发一条 `submit confirm key mismatch, continue because quiz is ready`，那说明又有地方绕开了 `_getQuizAccountDocument`（比如弹窗出现后题目换了文档）。日志里那个形如 `…%7C%7C%7C%7C…`（中间三段全空）的键是**外层文档**算的，它不是卷子身份，只是旧写法留下的证据 |
+| **班群里冒出内容「1」的垃圾回帖 / 卷子的「提交」被讨论链路点掉** | 见 §6 #53。批次 9-A 之后日志会写明是**哪一道闸**拒的：`discussion page declined {reason: study-page}`（刷课页网址，永不放宽）/ `return-jump-expired`（不是我们自己两分钟内的跳转）/ `no-discussion-text` / `no-editor` / `no-co-located-submit`（按钮与编辑区不同容器）。一条 `declined` 都没有、却在刷课页看到 `discussion page detected, posting reply` = 又有代码绕开了这四道闸 |
+| **在已经完成的界面磨蹭很久才去下一个**（每份卷子进来先卡好几秒） | 见 §6 #54。日志里 `quiz waiting font decrypt` 现在带 `waitLimitMs`，`font decrypt pending over limit, answer anyway` 带 `limitMs` + `configuredLimitMs`：两个数**不一样**说明走了"扫描未覆盖"的短宽限（2.5 秒，批次 9-B）；两个数**一样**且仍等满，说明那份文档有扫描戳但确实解不出来 —— 那是字形表覆盖问题，不是等待窗口问题（另见 §6 #47） |
+| **整节被按住不推进，日志反复刷 `study hold quiz before finish`** | 见 §6 #55。看它带的 `pending:{total:N}`：`N>0` 是真有题没答完（正常等待）；`N:0` 且没有在飞动作时批次 9-C 起会改写成 warn `study quiz hold skipped: nothing pending to wait for` 并继续收尾 —— 这一条还在刷，说明 `_quizInProgress` / `_quizSubmitPending` 卡住了（超 5 分钟会自愈并 warn `quiz in-progress state leaked, reset`）。为什么一道都数不出来，看上一条 `quiz scan found 0 questions` 的 `dropStages` |
+| **一份卷子做了、同一页第二份不做**（`search job: every candidate frame was rejected`） | 批次 9-D 起，`rejects` 里每条带 `sig`：`sig.text` 是帧内正文前 60 字、`sig.qHit` 是各题形选择器命中数、另有 `video` / `answer` / `frames` / `pan`。**空帧**的签名 text 为空且命中全 0；**藏着第二份卷子**的帧会直接把题干文字打出来。判据本身这批没放宽 —— 拿着真实签名再决定下一步（见 §6 #56） |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1248,7 +1265,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（144 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（100 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（74 个场景 / 736 项）
+npm run e2e      # 真实 Edge 功能交叉检验（79 个场景 / 771 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

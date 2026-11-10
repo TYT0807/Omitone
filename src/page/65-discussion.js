@@ -8,7 +8,7 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（33 个）：
+ * 本段的方法（37 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
  *   _unmarkDiscussionDone、_discussionPendingKey、_getDiscussionTries、
  *   _bumpDiscussionTry、_migrateDiscussionDoneOnce、_bindDiscussionOutcome、
@@ -19,7 +19,8 @@
  *   _tryDiscussionTask、_handleDiscussionWait、_refreshChapterAfterDiscussion、
  *   _findDiscussionEditor、_expandDiscussionEditor、_findDiscussionSubmitButton、
  *   _fillDiscussionEditor、_discussionBaseline、_discussionEvidence、_discussionSuccessHint、
- *   _computeDiscussionPage、_isDiscussionPage、_runDiscussionMode
+ *   _computeDiscussionPage、_isStudyCourseHref、_discussionReturnFresh、
+ *   _declineDiscussionPage、_quizInFlightForDiscussion、_isDiscussionPage、_runDiscussionMode
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -542,7 +543,12 @@
       this._discussionBusy = true;
       try {
         // 记录返回地址：讨论页发完评论后靠它回到刷课页（当前标签页打开时尤其必要）
-        try { localStorage.setItem('omitone_return_url', String(location.href || '')); } catch (e1) {}
+        // ⚠️ 同时写下**时间戳**（批次 9-A）：这条放宽原先永不过期，于是刷课页上
+        // 只要正文里有「讨论」二字就能被认成回帖页 —— 代价是往班群里发垃圾帖。
+        try {
+          localStorage.setItem('omitone_return_url', String(location.href || ''));
+          localStorage.setItem('omitone_return_url_at', String(Date.now()));
+        } catch (e1) {}
         // 先标记再打开：即使后面刷新/超时，也不会重复打开同一个讨论页
         this._markDiscussionDone(task.key);
         // 记下"当前在打开哪一个"：讨论页发不出去时会 postMessage 让本页撤回标记
@@ -701,11 +707,32 @@
     },
 
 
-    _findDiscussionSubmitButton: function () {
+    /**
+     * 讨论区的「发布」按钮。
+     *
+     * ⚠️ 传入 `nearEditor` 时，按钮**必须和这块编辑区共用一块不是 body 的容器**
+     * （从编辑区往上最多 4 层）——
+     * 批次 9-A 的现场就是"页面上随便一个文字含「提交」的按钮"被当成了发帖按钮，
+     * 而那个按钮是**卷子刚要点的提交按钮**。兜底按文字认没问题，
+     * 但必须限定在同一块讨论区内部，否则等于在整页里找按钮去点。
+     */
+    _findDiscussionSubmitButton: function (nearEditor) {
+      // 从**编辑区**往上找一块「装着按钮的容器」，最多 4 层，**且不许是 body/html** ——
+      // 整页任何两个节点都在 body 之下，把 body 当共同容器等于没这条判据。
+      var sharesContainer = function (node) {
+        if (!nearEditor || !node) return !nearEditor;
+        var box = nearEditor;
+        for (var depth = 0; depth <= 4 && box; depth++) {
+          if (box === document.body || box === document.documentElement) return false;
+          if (box.contains && box.contains(node)) return true;
+          box = box.parentElement || box.parentNode || null;
+        }
+        return false;
+      };
       // 精确优先：学习通讨论区的提交按钮（页面上还有别的"回复"，点错就发不出去）
       try {
         var exact = document.querySelector('.addReply, [class*="addReply"], .replyEditBtnGroup .jb_btn');
-        if (exact && visible(exact)) return exact;
+        if (exact && visible(exact) && sharesContainer(exact)) return exact;
       } catch (eExact) {}
 
       var nodes = [];
@@ -723,8 +750,10 @@
         if (!text || text.length > 12) continue;
         if (NEG.test(text)) continue;
         if (!KEY.test(text) && !KEY.test(String(node.getAttribute('value') || ''))) continue;
+        if (!sharesContainer(node)) continue;
         return node;
       }
+      // 给了编辑区却找不到同容器的按钮：**不许**退回到"整页第一个含「提交」的按钮"
       return null;
     },
 
@@ -829,6 +858,20 @@
     },
 
 
+    /**
+     * 「这是不是讨论页」的唯一判据（2026-11-11 批次 9-A 收紧）。
+     *
+     * 真实日志里的现场（00:46:26）：插件在**刷课页**上报 `discussion page detected`，
+     * 往平台真发了一条内容为「1」的回帖，而它点的按钮文字含「提交」—— 很可能就是
+     * 那份卷子自己的提交按钮（那一刻 `quiz submit pending` 才刚打过两秒）。
+     * 三处放宽叠在一起才会成这样：
+     *   ① `omitone_return_url` **写完永不清除**，于是"从刷课页跳过去"这条放宽**永久生效**；
+     *   ② 放宽只看正文有没有「讨论」二字 —— 课程页导航里常年有「讨论」标签；
+     *   ③ 提交按钮兜底按文字认（含「提交」），编辑区兜底取页面上最大的可见输入区，
+     *      两者**互不相干**也能凑成"是讨论页"。
+     * 现在：放宽只在我们自己跳转后的两分钟内有效、刷课页网址一律不放宽、
+     * 按钮必须与编辑区同容器，且答题在飞时时根本不进讨论判据。
+     */
     _computeDiscussionPage: function () {
       var href = String(location.href || '').toLowerCase();
       var title = '';
@@ -839,17 +882,80 @@
       try {
         bodyHit = /讨论|话题|回帖|发帖|发表回复|我的回复|发布话题/.test(String(document.body.innerText || '').slice(0, 3000));
       } catch (e1) {}
-      // 从刷课页跳转过来的（留有返回地址）时放宽：页面文案命中即可，避免陌生网址结构认不出来
-      var fromStudy = false;
-      try { fromStudy = !!localStorage.getItem('omitone_return_url'); } catch (e2) {}
-      if (!urlHit && !titleHit && !(fromStudy && bodyHit)) return false;
-      // 必须是"有输入框 + 有发布按钮"的界面，避免在纯浏览的帖子列表页乱填
-      return !!this._findDiscussionEditor() && !!this._findDiscussionSubmitButton();
+      var relaxed = false;
+      if (!urlHit && !titleHit) {
+        // 只有"是我们自己刚跳过去的讨论页"才允许靠正文文案认 —— 且**刷课页网址永远不算**：
+        // 真讨论页有自己的网址形状（groupweb / course/topic / bbscircle），
+        // 靠一句导航里的「讨论」就把课程页当成回帖页，代价是往用户班群里发垃圾帖。
+        if (this._isStudyCourseHref(href)) return this._declineDiscussionPage('study-page', { href: href.slice(0, 90) });
+        if (!this._discussionReturnFresh()) return this._declineDiscussionPage('return-jump-expired', { href: href.slice(0, 90) });
+        if (!bodyHit) return this._declineDiscussionPage('no-discussion-text', { href: href.slice(0, 90) });
+        relaxed = true;
+      }
+      // 必须是"同一块讨论区里既有输入框又有发布按钮"，避免在纯浏览的帖子列表页乱填
+      var editor = this._findDiscussionEditor();
+      if (!editor) return this._declineDiscussionPage('no-editor', { href: href.slice(0, 90), relaxed: relaxed });
+      var button = this._findDiscussionSubmitButton(editor);
+      if (!button) return this._declineDiscussionPage('no-co-located-submit', { href: href.slice(0, 90), relaxed: relaxed });
+      this._discussionDeclineSignature = '';
+      return true;
+    },
+
+
+    // 刷课页网址形状（批次 9-A）：这些页面上**永不**靠正文文案认讨论页
+    _isStudyCourseHref: function (href) {
+      return /\/mycourse\/studentstudy|\/mycourse\/student|\/course\/study|\/ananas\/|mooc-ans|\/knowledge\/|\/chapter|studentcourse/i.test(String(href || ''));
+    },
+
+
+    // 「从刷课页跳过去」的放宽只在**一次跳转的窗口**内成立（批次 9-A）
+    _discussionReturnFresh: function () {
+      var at = 0;
+      try { at = Number(localStorage.getItem('omitone_return_url_at') || 0); } catch (e0) {}
+      if (!(at > 0)) return false;
+      if (Date.now() - at > 120000) {
+        // 过期就顺手清掉：留着它，下一轮又会把别的页面认成讨论页
+        try { localStorage.removeItem('omitone_return_url'); localStorage.removeItem('omitone_return_url_at'); } catch (e1) {}
+        return false;
+      }
+      return true;
+    },
+
+
+    // 判据拒了也要留话（30 秒节流）—— 否则"为什么这条讨论没发"和"页面不是讨论页"在日志里长得一样
+    _declineDiscussionPage: function (reason, info) {
+      var now = Date.now();
+      var signature = String(reason || '');
+      if (!this._discussionDeclineLogAt || now - this._discussionDeclineLogAt > 30000 || signature !== this._discussionDeclineSignature) {
+        this._discussionDeclineLogAt = now;
+        this._discussionDeclineSignature = signature;
+        var payload = { reason: reason };
+        Object.keys(info || {}).forEach(function (k) { payload[k] = info[k]; });
+        payload.hint = '讨论页判据拒了这一步 —— 批次 9-A 之后，刷课页/放宽过期/按钮与编辑区不同容器都不再进讨论链路（防止往课程讨论区发垃圾回帖）';
+        emitRuntimeLog('info', 'discussion page declined', payload);
+      }
+      return false;
+    },
+
+
+    // 「这一页此刻正在答题」的判据（批次 9-A，只给讨论链路用）。
+    // `_quizInProgress` 带 5 分钟时限：它若因异常没被复位，不能让讨论永远进不去。
+    _quizInFlightForDiscussion: function () {
+      if (this._quizSubmitPending || this._quizReadyToSubmit) return true;
+      if (this._quizInProgress && Date.now() - (this._quizInProgressAt || 0) < 300000) return true;
+      return false;
     },
 
 
     _isDiscussionPage: function () {
       if (this.configs.enableDiscussion === false) return false;
+      // ⚠️ 答题在飞时**根本不进讨论判据**（批次 9-A）：讨论判据挂在 `_runTick` 最前面，
+      // 而 OCS 学习循环是**另一个异步循环** —— 两者并行时，讨论链路会去点页面里含「提交」
+      // 的按钮，而那正是卷子刚要点的按钮（真实日志 00:46:24 提交中、00:46:26 发帖）。
+      if (this._quizInFlightForDiscussion()) {
+        this._discussionPageResult = false;
+        return false;
+      }
       var now = Date.now();
       var href = String(location.href || '');
       if (this._discussionPageUrl !== href) {
@@ -875,7 +981,9 @@
           await this._expandDiscussionEditor();
           editor = this._findDiscussionEditor();
         }
-        var button = this._findDiscussionSubmitButton();
+        // 按钮要在**编辑区展开之后**、且**与编辑区同容器**才找（批次 9-A）：
+        // 原先在编辑区还没拿到时就找，取到的是整页第一个文字含「提交」的按钮
+        var button = editor ? this._findDiscussionSubmitButton(editor) : null;
         if (!editor || !button) {
           // 退路：本页只是"话题卡片"（需点卡片才进讨论区）→ 点开它
           if (!this._discussionCardOpened) {

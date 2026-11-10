@@ -1010,8 +1010,101 @@ var MOCK_PAGES = {
   '/ppt-decoy-card': buildPptDecoyCardHtml,
   '/ppt-decoy-inner': buildPptDecoyInnerHtml,
   '/submit-key': buildSubmitKeyShellHtml,
-  '/submit-key-inner': buildSubmitKeyInnerHtml
+  '/submit-key-inner': buildSubmitKeyInnerHtml,
+  '/mycourse/studentstudy': buildStudyDiscussionDecoyHtml,
+  '/course/topic/discuss': buildRealDiscussionHtml,
+  '/frame-sig': buildFrameSigHtml,
+  '/frame-sig-inner': buildFrameSigInnerHtml,
+  '/frame-sig-first': buildFrameSigFirstHtml
 };
+
+/**
+ * 批次 9-A 的现场夹具：**刷课页**长得像讨论页。
+ * 真实日志 00:46:26 —— 卷子刚 `quiz submit pending`，插件却报 `discussion page detected`，
+ * 往平台真发了一条内容「1」的回帖，点的还是文字含「提交」的按钮（很可能就是那份卷子的提交按钮）。
+ * 三个放宽叠起来才会成这样，所以夹具把三个都摆上：
+ *   ① `omitone_return_url` 刚写过（连"新鲜度"这道闸都要靠批次 9-A 的刷课页网址硬拦）；
+ *   ② 正文导航里有「讨论」二字（bodyHit）；
+ *   ③ 页面有一个可见 contenteditable 大块 + 一个**不同容器里**的「提交」按钮。
+ */
+function buildStudyDiscussionDecoyHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>第三章 社会主义建设道路初步探索 - 学习通</title></head><body>' +
+    '<div id="courseTabs"><a>章节</a><a>讨论</a><a>作业</a><a>考试</a></div>' +
+    '<div id="knowledgeColumn"><div>本节目录：课后检测、讨论、视频资料</div>' +
+    // 编辑区：课程页右侧常年挂着的一块可见可输入区域（真实页面上它是笔记/留言小工具）
+    '<div id="notePad" contenteditable="true" style="width:420px;height:120px;border:1px solid #ccc"></div>' +
+    '</div>' +
+    // 「提交」按钮在**另一个容器**里 —— 它就是那份卷子要点的按钮
+    '<div id="quizBar"><button id="quizSubmit" style="width:90px;height:32px">提交</button></div>' +
+    '<script>window.__submitClicks=0;' +
+    'document.getElementById("quizSubmit").addEventListener("click",function(){window.__submitClicks++;});' +
+    // 故意把放宽的两条都写成"刚刚发生"，证明刷课页这一关是**硬拦**
+    'try{localStorage.setItem("omitone_return_url",location.href);' +
+    'localStorage.setItem("omitone_return_url_at",String(Date.now()));}catch(e){}' +
+    '</script></body></html>';
+}
+
+/** 批次 9-A 的对照组：真讨论页（编辑区与发布按钮同容器），收紧判据后**仍要**认得出来 */
+function buildRealDiscussionHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程讨论</title></head><body>' +
+    '<div id="subPageMain"><div class="replyEdit">' +
+    '<textarea placeholder="回复" style="width:520px;height:120px"></textarea>' +
+    '<div class="replyEditBtnGroup"><a class="jb_btn" id="doReply" style="width:80px;height:30px">回复</a></div>' +
+    '</div></div></body></html>';
+}
+
+/**
+ * 批次 9-D 的取证夹具：两份卷子，第二份藏在 `javascript:` 那族帧里。
+ * 真实日志 00:46:55 的 `frames:8` 里有 4 个 `javascript:void(function(){document.open`
+ * 和 3 个 `javascript:` 全被拒成「认不出任务类型」—— 旧日志看不出那是空帧还是第二份卷子。
+ * 结构照真实页面：外层只有 `#iframe`，任务点数据与那些帧都在主帧文档里。
+ */
+function buildFrameSigHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>学习通</title></head><body>' +
+    '<iframe id="iframe" src="/frame-sig-inner" style="width:100%;height:720px;border:0"></iframe>' +
+    '</body></html>';
+}
+
+function buildFrameSigInnerHtml() {
+  // 写内容一律用 DOM API（createElement / className / textContent），
+  // 避免 document.write 里再套一层引号 —— 那种转义在本仓库已静默吃过好几次亏。
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试</title></head><body>' +
+    '<div id="curKpointId" style="display:none">1218202549</div>' +
+    '<iframe id="fFirst" src="/frame-sig-first" data="{&quot;jobid&quot;:&quot;job-first&quot;}" style="width:100%;height:420px;border:0"></iframe>' +
+    // 第二份卷子：藏在 javascript: 帧里，这一层没有 jobid
+    '<iframe id="fPaper" src="javascript:;" style="width:620px;height:400px;border:0"></iframe>' +
+    // 真·空帧，作对照：签名应当全是 0
+    '<iframe id="fEmpty" src="javascript:void(function(){document.open" style="width:620px;height:400px;border:0"></iframe>' +
+    '<script>' +
+    'window.attachments=[{jobid:"job-first",name:"单元测试",property:{job:"true"},otherInfo:"nodeId_1218202549"}];' +
+    'function seed(id,blocks){var f=document.getElementById(id);var d=f&&f.contentDocument;' +
+    'if(!d)return false;d.open();d.write("<div></div>");d.close();' +
+    'blocks.forEach(function(b){var e=d.createElement("div");e.className=b[0];e.textContent=b[1];d.body.appendChild(e);});' +
+    'var inp=d.createElement("input");inp.type="radio";inp.name="q2";inp.value="A";d.body.appendChild(inp);' +
+    'var hd=d.createElement("input");hd.type="hidden";hd.id="answer2";d.body.appendChild(hd);' +
+    'return d.body.children.length>0;}' +
+    'window.__paperReady=seed("fPaper",[["QType","[单选题]"],' +
+    '["qt","第二份卷子：下列哪一项是社会主义改造的对象？"],["ot","A 资本主义工商业"],["ot","B 个体农业"]]);' +
+    'window.__emptyReady=seed("fEmpty",[]);' +
+    '</script></body></html>';
+}
+
+/** 第一份卷子（带 jobid 的那一帧）：让"第一个做了"在现场里是真做得成的 */
+function buildFrameSigFirstHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>单元测试</title></head><body>' +
+    '<div class="TiMu"><div class="questionLi">' +
+    '<div class="QType">[单选题]</div>' +
+    '<div class="qt">第一份卷子：社会主义改造的对象包括哪一项？</div>' +
+    '<div class="ot"><label>A 资本主义工商业</label><input type="radio" name="q1" value="A"></div>' +
+    '<div class="ot"><label>B 官僚资本</label><input type="radio" name="q1" value="B"></div>' +
+    '<div class="answer"><input type="hidden" id="answer1" value=""></div>' +
+    '</div></div></body></html>';
+}
 
 /**
  * PPT 带音频任务（真实结构）：swiper 幻灯片 + 官方翻页按钮，翻到末页后按钮禁用。
@@ -8315,12 +8408,363 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 41. 刷课页不许被当成讨论页发帖（批次 9-A，真实日志 00:46:26） ---- */
+SCENARIOS.push({
+  name: '刷课页不许被当成讨论页发帖',
+  path: '/mycourse/studentstudy',
+  run: async function (ctx) {
+    // 现场：卷子刚 `quiz submit pending` 两秒，插件就报 `discussion page detected`，
+    // 往平台真发了一条内容「1」的回帖，而它点的按钮文字含「提交」（很可能正是那份卷子的）。
+    // 三条放宽叠起来才会成立：return_url 永不过期 + 正文有「讨论」二字 + 按钮按文字满页找。
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;try{app._clearTickLoop();}catch(e){}' +
+      'var ed=app._findDiscussionEditor();' +
+      'var btn=document.getElementById("quizSubmit");' +
+      'var bodyHit=/讨论|话题|回帖|发帖|发表回复|我的回复|发布话题/.test(String(document.body.innerText||"").slice(0,3000));' +
+      'var at=0;try{at=Number(localStorage.getItem("omitone_return_url_at")||0);}catch(e){}' +
+      'return {editor:!!ed,btn:!!btn&&btn.offsetHeight>0,bodyHit:bodyHit,' +
+      '  relaxFresh:at>0&&Date.now()-at<120000,studyUrl:/\\/mycourse\\/studentstudy/.test(location.href)};})()'
+    );
+    check('装配闸门：这一页真的长得像出事那天（可见编辑区 + 含「提交」的按钮 + 正文有「讨论」+ 放宽是新鲜的）',
+      shape && shape.editor === true && shape.btn === true && shape.bodyHit === true &&
+      shape.relaxFresh === true && shape.studyUrl === true, JSON.stringify(shape));
+    if (!shape || !shape.editor || !shape.btn) return;
+
+    var judge = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      // 页面加载时 tick 已经自己判过一轮，那条拒绝日志可能早发过了（30 秒节流）——
+      // 先清节流，才能断言"**这一声**是生产判据自己喊出来的"
+      'app._discussionDeclineLogAt=0;app._discussionDeclineSignature="";' +
+      'var page=app._computeDiscussionPage();' +
+      'var context=app._isDiscussionContext();' +
+      'app._discussionPageAt=0;' +
+      'var gate=app._isDiscussionPage();' +
+      // 日志是 postMessage 异步送达的：不等一拍就去读 got，读到的是空（假阴性）
+      'setTimeout(function(){' +
+      'var decl=null;got.forEach(function(m){if(m.message==="discussion page declined")decl=m;});' +
+      'res({page:page,context:context,gate:gate,seen:got.length,' +
+      '  reason:decl?String(decl.meta&&decl.meta.reason||""):"(无)"});},300);});})()'
+    );
+    check('生产判据自己说这不是讨论页（`_computeDiscussionPage()` 为 false）',
+      judge && judge.page === false, JSON.stringify(judge));
+    check('整条讨论链路都不进（`_isDiscussionContext` 与 `_isDiscussionPage` 双 false）',
+      judge && judge.context === false && judge.gate === false, JSON.stringify(judge));
+    check('拒绝必须留话且指认到闸：reason=study-page（静默拒绝等于下次还得靠猜）',
+      judge && judge.reason === 'study-page', 'reason=' + (judge && judge.reason));
+
+    var live = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'app._discussionPosted=false;app._discussionBusy=false;app._discussionExpanded=false;' +
+      'var before=window.__submitClicks;' +
+      'Promise.resolve(app._runTick()).then(function(){' +
+      '  setTimeout(function(){' +
+      '    var talk=0;got.forEach(function(m){' +
+      '      if(m.message==="discussion reply submitted"||m.message==="discussion page detected, posting reply")talk++;});' +
+      '    res({clicks:window.__submitClicks-before,talkLogs:talk});' +
+      '  },600);' +
+      '}).catch(function(err){res({error:String(err&&err.message||err)});});});})()'
+    );
+    check('真跑一轮 tick：卷子的「提交」按钮一次都没被点（旧写法会把它当发帖按钮点掉）',
+      live && live.clicks === 0, JSON.stringify(live));
+    check('真跑一轮 tick：也没有任何"检测到讨论页 / 已发回帖"的动作',
+      live && live.talkLogs === 0, JSON.stringify(live));
+  }
+});
+
+/** ---- 42. 真讨论页仍要认得出，且三道闸各自都关得上（批次 9-A 对照组） ---- */
+SCENARIOS.push({
+  name: '真讨论页仍认得出且按钮必须同容器',
+  path: '/course/topic/discuss',
+  run: async function (ctx) {
+    var ok = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;try{app._clearTickLoop();}catch(e){}' +
+      // 讨论链路的总开关必须由夹具钉住：扩展存储是**整轮共用**的，前一个场景写的
+      // `enableDiscussion:false` 会让"仍能认出讨论页"这几条永远读到 false（定向跑才看不出来）
+      'app.configs.enableDiscussion=true;' +
+      'var ed=app._findDiscussionEditor();' +
+      'var btn=ed?app._findDiscussionSubmitButton(ed):null;' +
+      // 「同一块容器」按生产判据的口径量：从编辑区往上最多 4 层，第一块装着按钮的祖先；
+      // 一路走到 body 就是"整页随便找个按钮"，那正是要拦的形状
+      'var nca="(none)";var box=ed;' +
+      'for(var i=0;i<=4&&box;i++){' +
+      '  if(box===document.body||box===document.documentElement){nca="(body)";break;}' +
+      '  if(btn&&box.contains&&box.contains(btn)){nca=String(box.id||box.className||"box");break;}' +
+      '  box=box.parentElement||null;}' +
+      'return {editor:!!ed,btnId:btn?String(btn.id||""):"(无)",nca:nca,' +
+      '  sameBox:nca!=="(none)"&&nca!=="(body)",page:app._computeDiscussionPage()};})()'
+    );
+    check('装配闸门：真讨论页的编辑区与「回复」按钮在同一块容器里',
+      ok && ok.editor === true && ok.sameBox === true, JSON.stringify(ok));
+    // ⚠️ 这一条是"收紧判据没把功能做没"的唯一证明：批次 9-A 只准关掉误判，不准关掉发帖
+    check('真讨论页**仍然**被认出可发帖（收紧后没把正常链路做没）',
+      ok && ok.page === true, JSON.stringify(ok));
+    check('按钮取到的是编辑区里那个「回复」（id=doReply），不是满页找到的别的按钮',
+      ok && ok.btnId === 'doReply', 'btnId=' + (ok && ok.btnId));
+
+    var moved = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'var btn=document.getElementById("doReply");' +
+      'document.body.appendChild(btn);' +   // 把发布按钮搬出编辑区容器
+      'app._discussionDeclineLogAt=0;app._discussionDeclineSignature="";' +
+      'var page=app._computeDiscussionPage();' +
+      'setTimeout(function(){' +
+      'var decl=null;got.forEach(function(m){if(m.message==="discussion page declined")decl=m;});' +
+      'res({page:page,seen:got.length,reason:decl?String(decl.meta&&decl.meta.reason||""):"(无)"});},300);});})()'
+    );
+    check('按钮与编辑区**不同容器**时判据关得上门（这一路不再满页找「提交」去点）',
+      moved && moved.page === false && moved.reason === 'no-co-located-submit', JSON.stringify(moved));
+
+    var flight = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'document.querySelector(".replyEditBtnGroup").appendChild(document.getElementById("doReply"));' +
+      'app.configs.enableDiscussion=true;' +
+      // 页面加载期跑过的 tick 可能留下答题状态（那本身就是"在飞"的一种），先归零再逐条造
+      'var leak={inProgress:!!app._quizInProgress,submitPending:!!app._quizSubmitPending,readyToSubmit:!!app._quizReadyToSubmit};' +
+      'app._quizInProgress=false;app._quizInProgressAt=0;app._quizSubmitPending=false;app._quizReadyToSubmit=false;' +
+      'app._discussionPageAt=0;app._quizSubmitPending=true;' +
+      'var duringGate=app._isDiscussionPage();' +
+      'app._quizSubmitPending=false;app._quizReadyToSubmit=true;app._discussionPageAt=0;' +
+      'var duringReady=app._isDiscussionPage();' +
+      'app._quizReadyToSubmit=false;app._discussionPageAt=0;' +
+      'var after=app._isDiscussionPage();' +
+      'return {duringGate:duringGate,duringReady:duringReady,after:after,leak:leak,' +
+      '  btnOk:!!app._findDiscussionSubmitButton(app._findDiscussionEditor()),' +
+      '  pageJudge:app._computeDiscussionPage()};})()'
+    );
+    check('答题在飞时（提交中 / 已就绪待提交）讨论链路一律不进 —— 讨论与交卷不再同时抢页面',
+      flight && flight.duringGate === false && flight.duringReady === false, JSON.stringify(flight));
+    check('答题状态一清，同一页立刻又认得出是讨论页（守卫不是永久关掉功能）',
+      flight && flight.after === true && flight.pageJudge === true, JSON.stringify(flight));
+
+    var stale = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'try{localStorage.setItem("omitone_return_url","http://x/mycourse/studentstudy");' +
+      'localStorage.setItem("omitone_return_url_at",String(Date.now()-200000));}catch(e){}' +
+      'var before=app._discussionReturnFresh();' +
+      'var cleared="";try{cleared=String(localStorage.getItem("omitone_return_url"))+"/"+' +
+      '  String(localStorage.getItem("omitone_return_url_at"));}catch(e){}' +
+      'var fresh=app._discussionReturnFresh();' +
+      'return {before:before,after:fresh,cleared:cleared};})()'
+    );
+    check('「从刷课页跳过去」的放宽**两分钟就作废**（旧写法永不过期，是误判的第一道来源）',
+      stale && stale.before === false && stale.after === false, JSON.stringify(stale));
+    check('过期时把两个键一起清掉（留着它们，下一轮还会去放宽别的页面）',
+      stale && stale.cleared === 'null/null', JSON.stringify(stale));
+  }
+});
+
+/** ---- 43. 解密扫描没覆盖这一份文档时不白等 8 秒（批次 9-B） ---- */
+SCENARIOS.push({
+  name: '扫描未覆盖时不白等解密窗口',
+  path: '/submit-key',
+  run: async function (ctx) {
+    // 现场：00:46:41 `quiz waiting font decrypt {state:"(none)",sweepAgoMs:-1}` → 00:46:49 才发请求。
+    // 扫描戳都没有 = content.js 那一次扫描**没跑到这一份文档**，等满 8 秒一个字也不会多解出来。
+    // ⚠️ 夹具必须自带可用模型配置：`hasApiKey` 只由配置写入流程点亮，
+    //   没配到位 `_handleQuiz` 第一句就 `skip quiz because api unavailable`，
+    //   压根走不到解密闸门 —— 定向单跑这个场景时最先炸的就是这里（实测踩过）。
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false,
+      randomAnswer: false, fontDecryptWaitMs: 8000
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    var first = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app.configs.hasApiKey=true;' +
+      'app._quizApiFailUntil=0;app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
+      // 同一台 mock 服务器上，前面场景写下的按卷计数会让 `_shouldSkipQuizBySubmitAttempts`
+      // 在解密闸门**之前**就把这一卷跳掉 —— 夹具先把这些账清干净
+      'var drop=[];for(var qi=0;qi<sessionStorage.length;qi++){var qk=sessionStorage.key(qi);' +
+      '  if(qk&&qk.indexOf("omitone.")===0)drop.push(qk);}' +
+      'drop.forEach(function(k){sessionStorage.removeItem(k);});' +
+      'app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;app._quizReadyToSubmit=false;' +
+      'app._realProbe=app._probeFontDecrypt;app._realExtract=app._extractQuestions;' +
+      'app._extractQuestions=function(){return [];};' +
+      'app._probeFontDecrypt=function(){return {secret:true,miss:false,terminal:false,state:"(none)",sweepAgoMs:-1};};' +
+      'app.configs.fontDecryptWaitMs=8000;app._fontSecretWaitSince=0;app._quizScanDiagAt=Date.now();' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'Promise.resolve(app._handleQuiz(null)).then(function(){' +
+      '  setTimeout(function(){' +   // 日志异步送达，不等一拍读到的是空
+      '  var w=null;got.forEach(function(m){if(m.message==="quiz waiting font decrypt")w=m;});' +
+      '  res({waited:!!w,limit:w?Number(w.meta&&w.meta.waitLimitMs):-1,' +
+      '    sweep:w?Number(w.meta&&w.meta.sweepAgoMs):-99,inFlight:app._quizInProgress,' +
+      '    msgs:got.map(function(m){return m.message;}).slice(0,8),started:Date.now()});},300);' +
+      '});});})()'
+    );
+    check('装配闸门：这一轮**确实进了等待**（有 waiting 日志、且没往下答题）',
+      first && first.waited === true && first.inFlight === false, JSON.stringify(first));
+    check('等待窗口按"扫描未覆盖"收窄（日志里就带着本轮实际上限，可自证）',
+      first && first.limit > 0 && first.limit < 8000, 'waitLimitMs=' + (first && first.limit));
+
+    var over = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'app._fontSecretWaitSince=Date.now()-3000;app._quizScanDiagAt=Date.now();' +
+      'var t0=Date.now();' +
+      'Promise.resolve(app._handleQuiz(null)).then(function(){' +
+      '  setTimeout(function(){' +
+      '  var o=null;got.forEach(function(m){if(m.message==="font decrypt pending over limit, answer anyway")o=m;});' +
+      '  res({hit:!!o,limit:o?Number(o.meta&&o.meta.limitMs):-1,' +
+      '    configured:o?Number(o.meta&&o.meta.configuredLimitMs):-1,' +
+      '    waited:o?Number(o.meta&&o.meta.waitedMs):-1,wall:Date.now()-t0});},300);' +
+      '});});})()'
+    );
+    check('戳都没有的文档：过了短宽限就放行，不再烧完整配置窗口（真实页面每份卷子省 5 秒以上）',
+      over && over.hit === true && over.limit > 0 && over.limit < over.configured &&
+      over.waited >= 0 && over.waited < over.configured, JSON.stringify(over));
+    check('放行是立刻发生的（不是又等了 8 秒）—— 墙钟时间做上界校验',
+      over && over.wall < 4000, 'wall=' + (over && over.wall) + 'ms');
+
+    var kept = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'app._probeFontDecrypt=function(){return {secret:true,miss:false,terminal:false,state:"decrypting",sweepAgoMs:1500};};' +
+      'var stamp=Date.now()-3000;app._fontSecretWaitSince=stamp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'var n0=got.length;' +
+      'Promise.resolve(app._handleQuiz(null)).then(function(){' +
+      // 对照组要断言"**没有**新日志"，那更得等足送达窗口 —— 立刻读 got 永远读到空，
+      // 这条断言就会假绿（不会失败的检查等于没有检查）
+      '  setTimeout(function(){' +
+      '  res({sameStamp:app._fontSecretWaitSince===stamp,noNewLog:got.length===n0,' +
+      '    notStarted:app._quizInProgress===false});},300);' +
+      '});});})()'
+    );
+    check('对照组：**真有扫描戳**的密文档仍等满原窗口（批次 9-B 只关"未覆盖"，没把等待做没）',
+      kept && kept.sameStamp === true && kept.noNewLog === true && kept.notStarted === true,
+      JSON.stringify(kept));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'if(app._realProbe)app._probeFontDecrypt=app._realProbe;' +
+      'if(app._realExtract)app._extractQuestions=app._realExtract;' +
+      'app._fontSecretWaitSince=0;return true;})()');
+  }
+});
+
+/** ---- 44. 数不出待答容器时不许按住整节（批次 9-C） ---- */
+SCENARIOS.push({
+  name: '没有待答题时空转 hold 不再按住整节',
+  path: '/submit-key',
+  run: async function (ctx) {
+    // 现场：00:45:59 → 00:46:16 连磨两轮 `study hold quiz before finish {pending:{total:0}}`，
+    // 最后是页面自己刷新才走通 —— hold 的是 **0 道题**，用户看到的"在已完成的界面磨蹭很久"。
+    var judge = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'var empty=app._shouldHoldQuizBeforeFinish({total:0});' +
+      'var some=app._shouldHoldQuizBeforeFinish({total:3,unfilledCount:1});' +
+      'app._quizInProgress=true;' +
+      'var busy=app._shouldHoldQuizBeforeFinish({total:0});' +
+      'app._quizInProgress=false;app._quizSubmitPending=true;' +
+      'var pendingSubmit=app._shouldHoldQuizBeforeFinish({total:0});' +
+      'app._quizSubmitPending=false;' +
+      'var err=app._shouldHoldQuizBeforeFinish({error:"boom"});' +
+      'var nul=app._shouldHoldQuizBeforeFinish(null);' +
+      'return {empty:empty,some:some,busy:busy,pendingSubmit:pendingSubmit,err:err,nul:nul};})()'
+    );
+    check('数不出**任何**待答容器、且没有在飞动作 → 不 hold（旧写法为 0 道题按住整节）',
+      judge && judge.empty === false, JSON.stringify(judge));
+    check('数得出待答题 → 照旧 hold（守卫没被做没，这是配对的一条）',
+      judge && judge.some === true, JSON.stringify(judge));
+    check('正在答题 / 正在提交时即使数出来是 0 也照旧 hold（别把填答中间态放行）',
+      judge && judge.busy === true && judge.pendingSubmit === true, JSON.stringify(judge));
+    check('数失败了（error 形状）或压根没数到 → 一律 hold：宁可慢，不能因为自己数漏就整节放行',
+      judge && judge.err === true && judge.nul === true, JSON.stringify(judge));
+
+    // 「命中了却被吃掉」要说清死在哪一道：旧日志只有 matchedSelectors + inputs，
+    // 于是"容器全部被过滤"到底指不可见、嵌套去重还是解析返回 null，现场判不了。
+    var drop = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var ghost=document.createElement("div");ghost.className="questionGhostBoard";' +
+      'ghost.style.display="none";document.body.appendChild(ghost);' +
+      'var rep=app._diagnoseQuestionScan(document);' +
+      'var stages=rep.dropStages||{};' +
+      'var keys=Object.keys(stages);var best=null;' +
+      'keys.forEach(function(k){var s=stages[k];if(s&&s.matched>0&&(!best||s.filtered>best.filtered))best=s;});' +
+      'ghost.remove();' +
+      'return {keys:keys.length,best:best,containers:rep.containers,hint:String(rep.hint||"").slice(0,24)};})()'
+    );
+    check('0 题诊断现在带 dropStages：能指出题形节点死在哪一道过滤（filtered/deduped/unparsable）',
+      drop && drop.keys > 0 && drop.best && drop.best.matched > 0 && drop.best.filtered === drop.best.matched,
+      JSON.stringify(drop));
+    check('容器确实一个都没留下（否则这条取证是空测）',
+      drop && drop.containers === 0, JSON.stringify(drop));
+  }
+});
+
+/** ---- 45. javascript: 那族帧必须自证"里面有没有第二份卷子"（批次 9-D 取证） ---- */
+SCENARIOS.push({
+  name: '被拒的帧带内容签名取证',
+  path: '/frame-sig',
+  run: async function (ctx) {
+    // 现场：00:46:55 `frames:8` 里 4 个 `javascript:void(function(){document.open` + 3 个 `javascript:`
+    // 全被拒成「认不出任务类型」。旧日志只有 src + 原因 —— 判不了那是空帧还是**第二份卷子**，
+    // 而这正是用户报的「第一个做了、第二个又不做了」唯一可疑的现场。本场景只锁取证，不改判据。
+    var ready = await waitFor(ctx.client,
+      '(function(){var f=document.getElementById("iframe");' +
+      'var d=f&&f.contentDocument;var p=d&&d.getElementById("fPaper");' +
+      'return !!(p&&p.contentDocument&&p.contentDocument.body&&' +
+      '  p.contentDocument.body.textContent.indexOf("第二份卷子")>=0);})()', 15000);
+    check('装配闸门：第二份卷子真的写进了 javascript: 那一族帧（外层写不进去就等于空测）',
+      ready === true);
+    if (!ready) return;
+
+    var out = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;try{app._clearTickLoop();}catch(e){}' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'app._jobRejectSignature="";app._jobRejectLogAt=0;' +
+      // 第一份卷子按"本轮已经搜过"让路 —— 这正是用户现场「第一个做了、第二个又不做了」的那一轮：
+      // 第一份已收，剩下的帧全落在拒绝清单里，签名才有机会被看到
+      'var job=app._searchChaoxingJobOcs([{jobid:"job-first"}]);' +
+      'setTimeout(function(){' +   // 拒绝清单是随日志送达的，不等一拍读到的是空
+      'var rej=null;got.forEach(function(m){if(m.message==="search job: every candidate frame was rejected")rej=m;});' +
+      'var list=rej&&rej.meta?rej.meta.rejects:[];' +
+      'function hasPaper(r){return r&&r.sig&&r.sig.text&&r.sig.text.indexOf("第二份卷子")>=0;}' +
+      'function zero(r){return r&&r.sig&&!r.sig.text&&Object.keys(r.sig.qHit||{}).every(function(k){return !r.sig.qHit[k];});}' +
+      'var paper=(list||[]).filter(hasPaper)[0]||null;' +
+      'var empty=(list||[]).filter(function(r){return r&&r.sig&&!hasPaper(r)&&zero(r);})[0]||null;' +
+      'res({job:!!job,entries:(list||[]).length,paper:paper,empty:empty,seen:got.length,' +
+      '  msgs:got.map(function(m){return m.message;}).slice(0,6),' +
+      '  withSig:(list||[]).filter(function(r){return !!(r&&r.sig);}).length});},400);});})()'
+    );
+    check('拒绝清单里**带签名的条目**至少有一条（旧写法只有 src + 原因，取证无从谈起）',
+      out && out.withSig > 0, JSON.stringify(out && { withSig: out.withSig, entries: out.entries }));
+    check('第二份卷子所在的那一帧：签名把题干文字与题形命中数带了出来 ——「在不在这个帧里」从此可判',
+      out && !!out.paper && out.paper.sig.text.indexOf('第二份卷子') >= 0,
+      JSON.stringify(out && out.paper));
+    check('空帧与有题帧分得开：另一条签名 text 为空且题形命中全 0',
+      out && !!out.empty, JSON.stringify(out && out.empty));
+    check('取证不改变调度结果：这一轮仍然没有任务点被误收（放宽判据留到有签名证据的下一批）',
+      out && out.job === false, 'job=' + JSON.stringify(out && out.job));
+  }
+});
+
 // ===========================================================================
 // 主流程
 // ===========================================================================
 async function main() {
-  var selected = E2E_FILTER ? SCENARIOS.filter(function (scenario) {
-    return scenario.name.toLowerCase().indexOf(E2E_FILTER.toLowerCase()) !== -1;
+  // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，
+  // 一次定向跑比来回跑整套快得多；写全套计数的规则不变（带筛选就不写）。
+  var filters = E2E_FILTER ? E2E_FILTER.split(/[,;|]/).map(function (s) {
+    return s.trim().toLowerCase();
+  }).filter(Boolean) : [];
+  var selected = filters.length ? SCENARIOS.filter(function (scenario) {
+    var name = scenario.name.toLowerCase();
+    return filters.some(function (needle) { return name.indexOf(needle) !== -1; });
   }) : SCENARIOS;
   if (!selected.length) throw new Error('OMITONE_E2E_FILTER 未匹配任何场景: ' + E2E_FILTER);
   if (E2E_FILTER) console.log('  定向筛选: ' + E2E_FILTER + '（' + selected.length + ' 场景；不写全套计数）');

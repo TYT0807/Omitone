@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '47e3cd52a4';
+var OMITONE_CODE_REV = '1291694078';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -1485,18 +1485,19 @@ var OMITONE_CODE_REV = '47e3cd52a4';
         samples: []
       };
 
+      // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
+      // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
+      var diagSelectors = this._questionSelectors;
+      var diagOverrides = this.configs && this.configs.questionSelectorOverrides;
+      if (Array.isArray(diagOverrides) && diagOverrides.length) {
+        diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
+      }
+
       var inspectDoc = function (doc, path) {
         if (!doc || !doc.querySelectorAll || report.docs.length >= 8) return false;
         var entry = { path: path, href: '', selectors: {}, inputs: 0, answerFields: 0 };
         try { entry.href = String((doc.location && doc.location.href) || '').slice(0, 120); } catch (e) {}
 
-        // 诊断与收集用同一份清单（含 storage 里的改版应急 overrides）——
-        // 诊断若只报内置选择器，用户配了 overrides 时会看到「命中 0」的假象
-        var diagSelectors = self._questionSelectors;
-        var diagOverrides = self.configs && self.configs.questionSelectorOverrides;
-        if (Array.isArray(diagOverrides) && diagOverrides.length) {
-          diagSelectors = diagSelectors.concat(diagOverrides.filter(function (s) { return typeof s === 'string' && s; }));
-        }
         diagSelectors.forEach(function (sel) {
           try {
             var count = doc.querySelectorAll(sel).length;
@@ -1520,6 +1521,33 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       try { containers = this._collectQuestionContainers(containerHost); } catch (e) {}
       report.containers = containers.length;
 
+      // ⚠️ 「命中了却被吃掉」要说清死在哪一道（批次 9-C）。
+      // 真实日志 00:46:04 只给了 `matchedSelectors:{"div[class*=\"question\"]":1}` 和 `inputs:9`，
+      // 于是那句"容器全部被过滤"到底指**不可见且无文本**、**嵌套去重**还是**解析返回 null**，
+      // 现场判不了 —— 而这三条各自对应完全不同的修法。
+      if (!report.containers) {
+        report.dropStages = diagSelectors.reduce(function (acc, sel) {
+          try {
+            var found = Array.prototype.slice.call(containerHost.querySelectorAll(sel));
+            if (!found.length) return acc;
+            var usable = found.filter(function (node) { return visible(node) || textOf(node).length > 0; });
+            var set = new Set(usable);
+            var unique = usable.filter(function (item) {
+              if (!item || !item.closest) return true;
+              var parent = item.parentElement;
+              while (parent) {
+                if (set.has(parent)) return false;
+                parent = parent.parentElement;
+              }
+              return true;
+            });
+            var parsable = unique.filter(function (node) { return !!self._parseQuestionElement(node, 0); }).length;
+            acc[sel] = { matched: found.length, filtered: found.length - usable.length, deduped: usable.length - unique.length, unparsable: unique.length - parsable };
+          } catch (e) {}
+          return acc;
+        }, {});
+      }
+
       containers.slice(0, 5).forEach(function (node) {
         var parsed = self._parseQuestionElement(node, 0);
         report.samples.push({
@@ -1537,7 +1565,7 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       if (!totalMatched) {
         report.hint = '任何文档都没有命中题目选择器：可能不是测验页，或题目在跨域 iframe 里（插件无法访问），或学习通改版换了类名';
       } else if (!report.containers) {
-        report.hint = '选择器有命中但容器全部被过滤（隐藏/无文本）：检查 _collectQuestionContainers 的过滤条件';
+        report.hint = '选择器有命中但容器一个都没留下：看 dropStages 里哪一格非零 —— filtered=不可见且无文本、deduped=嵌套去重吃掉、unparsable=解析返回 null（批次 9-C 起这一格随日志一起出）';
       } else if (!report.samples.some(function (s) { return s.parsed; })) {
         report.hint = '容器找到了但 _parseQuestionElement 全部返回 null：题干与选项都没抠出来，需要补 titleSelectors / _getOptionItems';
       }
@@ -4062,6 +4090,45 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       };
     },
 
+    /**
+     * 「这一帧为什么认不出类型」的紧凑签名 —— **批次 9-D 只取证，不改判据**。
+     *
+     * 为什么值得记：`javascript:` / `javascript:void(function(){document.open` 那一族帧
+     * 在真实日志里每秒都被拒成同一句「认不出任务类型」，而它是「第一个做了、
+     * 第二个又不做了」唯一可疑的现场。旧签名只有 src + 原因，**判不了那是空帧还是第二份卷子**，
+     * 而凭这个去放宽类型判定，会连带把别的帧一起误收（正是用户警告过的"修一半、别的报废"）。
+     *
+     * 只在帧被拒时调用；整条 reject 日志本身有 30 秒 + 组合变化节流，允许多跑几次查询。
+     * 每项都包异常 —— 跨域帧与 `document.open()` 写到一半的帧都可能直接抛。
+     */
+    _frameRejectSignature: function (doc, found) {
+      if (!doc) return { reach: 'no-doc' };
+      var sig = {};
+      var count = function (sel) {
+        try { return doc.querySelectorAll(sel).length; } catch (e) { return -1; }
+      };
+      try {
+        sig.text = String((doc.body && doc.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 60);
+      } catch (eText) { sig.text = ''; }
+      // 题形命中数**按真源清单逐个报**（批次 9-D）：这里手抄 `.TiMu` / `.questionLi`
+      // 就等于给诊断开第二份选择器，改版时它比排查更容易骗人。
+      sig.qHit = {};
+      try {
+        (this._questionSelectors || []).slice(0, 5).forEach(function (sel) { sig.qHit[sel] = count(sel); });
+      } catch (eSel) {}
+      sig.video = count('video');
+      sig.answer = count('[id^="answer"]');
+      sig.frames = count('iframe');
+      try { sig.pan = doc.getElementById && doc.getElementById('panView') ? 1 : 0; } catch (ePan) { sig.pan = -1; }
+      if (found) {
+        try {
+          sig.signals = Object.keys(found).filter(function (k) { return !!found[k]; }).join(',');
+        } catch (eSig) {}
+      }
+      return sig;
+    },
+
+
     _searchIFramesOcs: function (rootDoc) {
       var list = [];
       try {
@@ -4133,11 +4200,18 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       //
       // 只记前 8 条，避免日志洪水。
       var rejects = [];
-      var noteReject = function (frame, reason) {
+      var noteReject = function (frame, reason, sig) {
         if (rejects.length >= 8) return;
         var src = '';
         try { src = String(frame && frame.getAttribute && frame.getAttribute('src') || '').slice(0, 40); } catch (eSrc) {}
-        rejects.push({ src: src, reason: reason });
+        var item = { src: src, reason: reason };
+        // ⚠️ 「认不出类型」这一族必须带**帧里到底有什么**（批次 9-D，只取证不改判据）。
+        // 真实日志 00:46:55 的 `frames:8` 里有 4 个 `javascript:void(function(){document.open`
+        // 和 3 个 `javascript:` 帧全落在这一条 —— 这正是用户报的「第一个做了、第二个又不做了」
+        // 唯一的可疑现场，但旧日志只报 src 前 40 字，**判不了那是空帧还是第二份卷子**。
+        // 没有证据就动类型判定，代价是别的帧跟着一起被误收（用户明确警告过的"修一半报废一堆"）。
+        if (sig) item.sig = sig;
+        rejects.push(item);
       };
       for (var i = 0; i < iframes.length; i++) {
         var frame = iframes[i];
@@ -4158,7 +4232,8 @@ var OMITONE_CODE_REV = '47e3cd52a4';
           //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
           //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
           if (!win || !found || (!domKind && !found.quizLike)) {
-            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）');
+            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
+              this._frameRejectSignature(doc, found));
             continue;
           }
           // 纯文档帧还有一道闸：外层容器必须真的带任务点。
@@ -4173,7 +4248,9 @@ var OMITONE_CODE_REV = '47e3cd52a4';
           var frameData = this._safeJsonParse(frameDataStr, {});
           var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
           if (!targetJobId) {
-            noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）');
+            // 签名在这一支同样要带：「第二份卷子在哪一层」的取证不区分它死在准入闸还是死在 jobid
+            noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）',
+              this._frameRejectSignature(doc, found));
             continue;
           }
 
@@ -4506,12 +4583,28 @@ var OMITONE_CODE_REV = '47e3cd52a4';
             // 把"卡在哪几题"一起带上：只有 searchedCount 的话，看不出是
             // "模型没答上"还是"答上了但填不进 DOM"（实测 25 题只填 23 题，
             // 两种日志一模一样，只能靠人肉数题）。
-            emitRuntimeLog('info', 'study hold quiz before finish', {
+            var pendingDesc = self._describePendingQuizQuestions(null);
+            // ⚠️ **数不出具体待答题时不许 hold**（批次 9-C）。
+            // 现场：真实日志 00:45:59 → 00:46:16 连磨两轮 `study hold quiz before finish
+            // {pending:{total:0}}`，最后是页面自己刷新才走通 —— 用户看到的"在已经做完的
+            // 界面磨蹭很久"就是这两轮。`_isQuizLearningPending` 走的是「页面上有题的形状」
+            // 那类宽判据（`_hasActiveQuizSubmitForm` / `_detectQuiz`），而 `_extractQuestions`
+            // 一道容器都没收着，于是**为 0 道题按住整节**。
+            // 「该不该 hold」抽成判据 `_shouldHoldQuizBeforeFinish`（批次 9-C）——
+            // 留在这一大坨循环里它没法直接测，而它恰好是"卡住整节"与"照常推进"的分岔口。
+            if (self._shouldHoldQuizBeforeFinish(pendingDesc)) {
+              emitRuntimeLog('info', 'study hold quiz before finish', {
+                searchedCount: searchedJobs.length,
+                pending: pendingDesc
+              });
+              self._ocsStudyStarted = false;
+              return;
+            }
+            emitRuntimeLog('warn', 'study quiz hold skipped: nothing pending to wait for', {
               searchedCount: searchedJobs.length,
-              pending: self._describePendingQuizQuestions(null)
+              pending: pendingDesc,
+              hint: '判据说还有题要做、但一道具体的待答容器都数不出来 —— 继续 hold 只会按住这一节；为什么数不出来见上一条 quiz scan 诊断的 dropStages'
             });
-            self._ocsStudyStarted = false;
-            return;
             }
           }
           if (self._isActiveStudyJobPending('ocs-finish-check')) {
@@ -7028,7 +7121,12 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       this._discussionBusy = true;
       try {
         // 记录返回地址：讨论页发完评论后靠它回到刷课页（当前标签页打开时尤其必要）
-        try { localStorage.setItem('omitone_return_url', String(location.href || '')); } catch (e1) {}
+        // ⚠️ 同时写下**时间戳**（批次 9-A）：这条放宽原先永不过期，于是刷课页上
+        // 只要正文里有「讨论」二字就能被认成回帖页 —— 代价是往班群里发垃圾帖。
+        try {
+          localStorage.setItem('omitone_return_url', String(location.href || ''));
+          localStorage.setItem('omitone_return_url_at', String(Date.now()));
+        } catch (e1) {}
         // 先标记再打开：即使后面刷新/超时，也不会重复打开同一个讨论页
         this._markDiscussionDone(task.key);
         // 记下"当前在打开哪一个"：讨论页发不出去时会 postMessage 让本页撤回标记
@@ -7187,11 +7285,32 @@ var OMITONE_CODE_REV = '47e3cd52a4';
     },
 
 
-    _findDiscussionSubmitButton: function () {
+    /**
+     * 讨论区的「发布」按钮。
+     *
+     * ⚠️ 传入 `nearEditor` 时，按钮**必须和这块编辑区共用一块不是 body 的容器**
+     * （从编辑区往上最多 4 层）——
+     * 批次 9-A 的现场就是"页面上随便一个文字含「提交」的按钮"被当成了发帖按钮，
+     * 而那个按钮是**卷子刚要点的提交按钮**。兜底按文字认没问题，
+     * 但必须限定在同一块讨论区内部，否则等于在整页里找按钮去点。
+     */
+    _findDiscussionSubmitButton: function (nearEditor) {
+      // 从**编辑区**往上找一块「装着按钮的容器」，最多 4 层，**且不许是 body/html** ——
+      // 整页任何两个节点都在 body 之下，把 body 当共同容器等于没这条判据。
+      var sharesContainer = function (node) {
+        if (!nearEditor || !node) return !nearEditor;
+        var box = nearEditor;
+        for (var depth = 0; depth <= 4 && box; depth++) {
+          if (box === document.body || box === document.documentElement) return false;
+          if (box.contains && box.contains(node)) return true;
+          box = box.parentElement || box.parentNode || null;
+        }
+        return false;
+      };
       // 精确优先：学习通讨论区的提交按钮（页面上还有别的"回复"，点错就发不出去）
       try {
         var exact = document.querySelector('.addReply, [class*="addReply"], .replyEditBtnGroup .jb_btn');
-        if (exact && visible(exact)) return exact;
+        if (exact && visible(exact) && sharesContainer(exact)) return exact;
       } catch (eExact) {}
 
       var nodes = [];
@@ -7209,8 +7328,10 @@ var OMITONE_CODE_REV = '47e3cd52a4';
         if (!text || text.length > 12) continue;
         if (NEG.test(text)) continue;
         if (!KEY.test(text) && !KEY.test(String(node.getAttribute('value') || ''))) continue;
+        if (!sharesContainer(node)) continue;
         return node;
       }
+      // 给了编辑区却找不到同容器的按钮：**不许**退回到"整页第一个含「提交」的按钮"
       return null;
     },
 
@@ -7315,6 +7436,20 @@ var OMITONE_CODE_REV = '47e3cd52a4';
     },
 
 
+    /**
+     * 「这是不是讨论页」的唯一判据（2026-11-11 批次 9-A 收紧）。
+     *
+     * 真实日志里的现场（00:46:26）：插件在**刷课页**上报 `discussion page detected`，
+     * 往平台真发了一条内容为「1」的回帖，而它点的按钮文字含「提交」—— 很可能就是
+     * 那份卷子自己的提交按钮（那一刻 `quiz submit pending` 才刚打过两秒）。
+     * 三处放宽叠在一起才会成这样：
+     *   ① `omitone_return_url` **写完永不清除**，于是"从刷课页跳过去"这条放宽**永久生效**；
+     *   ② 放宽只看正文有没有「讨论」二字 —— 课程页导航里常年有「讨论」标签；
+     *   ③ 提交按钮兜底按文字认（含「提交」），编辑区兜底取页面上最大的可见输入区，
+     *      两者**互不相干**也能凑成"是讨论页"。
+     * 现在：放宽只在我们自己跳转后的两分钟内有效、刷课页网址一律不放宽、
+     * 按钮必须与编辑区同容器，且答题在飞时时根本不进讨论判据。
+     */
     _computeDiscussionPage: function () {
       var href = String(location.href || '').toLowerCase();
       var title = '';
@@ -7325,17 +7460,80 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       try {
         bodyHit = /讨论|话题|回帖|发帖|发表回复|我的回复|发布话题/.test(String(document.body.innerText || '').slice(0, 3000));
       } catch (e1) {}
-      // 从刷课页跳转过来的（留有返回地址）时放宽：页面文案命中即可，避免陌生网址结构认不出来
-      var fromStudy = false;
-      try { fromStudy = !!localStorage.getItem('omitone_return_url'); } catch (e2) {}
-      if (!urlHit && !titleHit && !(fromStudy && bodyHit)) return false;
-      // 必须是"有输入框 + 有发布按钮"的界面，避免在纯浏览的帖子列表页乱填
-      return !!this._findDiscussionEditor() && !!this._findDiscussionSubmitButton();
+      var relaxed = false;
+      if (!urlHit && !titleHit) {
+        // 只有"是我们自己刚跳过去的讨论页"才允许靠正文文案认 —— 且**刷课页网址永远不算**：
+        // 真讨论页有自己的网址形状（groupweb / course/topic / bbscircle），
+        // 靠一句导航里的「讨论」就把课程页当成回帖页，代价是往用户班群里发垃圾帖。
+        if (this._isStudyCourseHref(href)) return this._declineDiscussionPage('study-page', { href: href.slice(0, 90) });
+        if (!this._discussionReturnFresh()) return this._declineDiscussionPage('return-jump-expired', { href: href.slice(0, 90) });
+        if (!bodyHit) return this._declineDiscussionPage('no-discussion-text', { href: href.slice(0, 90) });
+        relaxed = true;
+      }
+      // 必须是"同一块讨论区里既有输入框又有发布按钮"，避免在纯浏览的帖子列表页乱填
+      var editor = this._findDiscussionEditor();
+      if (!editor) return this._declineDiscussionPage('no-editor', { href: href.slice(0, 90), relaxed: relaxed });
+      var button = this._findDiscussionSubmitButton(editor);
+      if (!button) return this._declineDiscussionPage('no-co-located-submit', { href: href.slice(0, 90), relaxed: relaxed });
+      this._discussionDeclineSignature = '';
+      return true;
+    },
+
+
+    // 刷课页网址形状（批次 9-A）：这些页面上**永不**靠正文文案认讨论页
+    _isStudyCourseHref: function (href) {
+      return /\/mycourse\/studentstudy|\/mycourse\/student|\/course\/study|\/ananas\/|mooc-ans|\/knowledge\/|\/chapter|studentcourse/i.test(String(href || ''));
+    },
+
+
+    // 「从刷课页跳过去」的放宽只在**一次跳转的窗口**内成立（批次 9-A）
+    _discussionReturnFresh: function () {
+      var at = 0;
+      try { at = Number(localStorage.getItem('omitone_return_url_at') || 0); } catch (e0) {}
+      if (!(at > 0)) return false;
+      if (Date.now() - at > 120000) {
+        // 过期就顺手清掉：留着它，下一轮又会把别的页面认成讨论页
+        try { localStorage.removeItem('omitone_return_url'); localStorage.removeItem('omitone_return_url_at'); } catch (e1) {}
+        return false;
+      }
+      return true;
+    },
+
+
+    // 判据拒了也要留话（30 秒节流）—— 否则"为什么这条讨论没发"和"页面不是讨论页"在日志里长得一样
+    _declineDiscussionPage: function (reason, info) {
+      var now = Date.now();
+      var signature = String(reason || '');
+      if (!this._discussionDeclineLogAt || now - this._discussionDeclineLogAt > 30000 || signature !== this._discussionDeclineSignature) {
+        this._discussionDeclineLogAt = now;
+        this._discussionDeclineSignature = signature;
+        var payload = { reason: reason };
+        Object.keys(info || {}).forEach(function (k) { payload[k] = info[k]; });
+        payload.hint = '讨论页判据拒了这一步 —— 批次 9-A 之后，刷课页/放宽过期/按钮与编辑区不同容器都不再进讨论链路（防止往课程讨论区发垃圾回帖）';
+        emitRuntimeLog('info', 'discussion page declined', payload);
+      }
+      return false;
+    },
+
+
+    // 「这一页此刻正在答题」的判据（批次 9-A，只给讨论链路用）。
+    // `_quizInProgress` 带 5 分钟时限：它若因异常没被复位，不能让讨论永远进不去。
+    _quizInFlightForDiscussion: function () {
+      if (this._quizSubmitPending || this._quizReadyToSubmit) return true;
+      if (this._quizInProgress && Date.now() - (this._quizInProgressAt || 0) < 300000) return true;
+      return false;
     },
 
 
     _isDiscussionPage: function () {
       if (this.configs.enableDiscussion === false) return false;
+      // ⚠️ 答题在飞时**根本不进讨论判据**（批次 9-A）：讨论判据挂在 `_runTick` 最前面，
+      // 而 OCS 学习循环是**另一个异步循环** —— 两者并行时，讨论链路会去点页面里含「提交」
+      // 的按钮，而那正是卷子刚要点的按钮（真实日志 00:46:24 提交中、00:46:26 发帖）。
+      if (this._quizInFlightForDiscussion()) {
+        this._discussionPageResult = false;
+        return false;
+      }
       var now = Date.now();
       var href = String(location.href || '');
       if (this._discussionPageUrl !== href) {
@@ -7361,7 +7559,9 @@ var OMITONE_CODE_REV = '47e3cd52a4';
           await this._expandDiscussionEditor();
           editor = this._findDiscussionEditor();
         }
-        var button = this._findDiscussionSubmitButton();
+        // 按钮要在**编辑区展开之后**、且**与编辑区同容器**才找（批次 9-A）：
+        // 原先在编辑区还没拿到时就找，取到的是整页第一个文字含「提交」的按钮
+        var button = editor ? this._findDiscussionSubmitButton(editor) : null;
         if (!editor || !button) {
           // 退路：本页只是"话题卡片"（需点卡片才进讨论区）→ 点开它
           if (!this._discussionCardOpened) {
@@ -8490,6 +8690,28 @@ var OMITONE_CODE_REV = '47e3cd52a4';
       }
     },
 
+    /**
+     * 「为了这份卷子，这一节要不要按住不放手」—— 只有一处答案（2026-11-11 批次 9-C）。
+     *
+     * 现场：真实日志 00:45:59 → 00:46:16 连磨两轮 `study hold quiz before finish
+     * {pending:{total:0}}`，最后是页面自己刷新才走通。用户报的"在已经做完的界面磨蹭很久"
+     * 就是这两轮 —— hold 的是**0 道题**。
+     *
+     * 根因是两把判据不同源：`_isQuizLearningPending` 走的是「页面上有题的形状」那类宽判据
+     * （`_hasActiveQuizSubmitForm` / `_detectQuiz`），而 `_describePendingQuizQuestions`
+     * 要**数得出具体容器**。宽判据说有、具体数出来是 0 时，继续等不会等出任何东西。
+     *
+     * ⚠️ 三个保守分支不许放宽：数不出题但**答题动作正在飞**（`_quizInProgress` / `_quizSubmitPending`）
+     * 时要 hold（正在填不该放手）；`pendingDesc` 是 `{error}` 这种**没数成**的形状时也 hold ——
+     * 宁可慢，不能因为自己数漏了就整节放行。
+     */
+    _shouldHoldQuizBeforeFinish: function (pendingDesc) {
+      if (!pendingDesc) return true;
+      if (pendingDesc.total !== 0) return true;
+      if (this._quizInProgress || this._quizSubmitPending) return true;
+      return false;
+    },
+
     _isQuizLearningPending: function (preferredDoc) {
       if (this._isQuizForceSkipping(preferredDoc || null)) return false;
       if (this._isQuizApiUnavailable()) return false;
@@ -8628,6 +8850,13 @@ var OMITONE_CODE_REV = '47e3cd52a4';
             this._fontNoWaitSuppressed = (this._fontNoWaitSuppressed || 0) + 1;
           }
         } else {
+          // ⚠️ 「解密扫描**没覆盖到这一份文档**」时等满 8 秒是纯白等（批次 9-B）。
+          // 真实日志 00:46:41 → 00:46:49：`state:"(none)"`、`sweepAgoMs:-1` 等满上限，
+          // 一个字也没多解出来 —— 而 content.js 那一次扫描若真会跑到这一份文档，
+          // 两秒多的防抖窗口就足够落戳。**已经在扫的文档（有戳）仍等满原窗口**，
+          // 别把这条宽限当成"整体不等"。
+          var sweepNotCovered = fontProbe.sweepAgoMs < 0 || fontProbe.state === '(none)';
+          var fontEffectiveLimitMs = sweepNotCovered ? Math.min(fontWaitLimitMs, scaledMs(2500)) : fontWaitLimitMs;
           var secretWaitSince = this._fontSecretWaitSince || 0;
           if (!secretWaitSince) {
             this._fontSecretWaitSince = Date.now();
@@ -8637,21 +8866,23 @@ var OMITONE_CODE_REV = '47e3cd52a4';
               hint: '题目文字还在 font-cxsecret 密文态，等解密扫描完成（本条每轮等待窗口只打一次）',
               state: fontProbe.state,
               sweepAgoMs: fontProbe.sweepAgoMs,
+              waitLimitMs: fontEffectiveLimitMs,
               scope: preferredDoc ? 'quiz-doc' : 'whole-page'
             });
             return;
           }
-          if (Date.now() - secretWaitSince < fontWaitLimitMs) return;
+          if (Date.now() - secretWaitSince < fontEffectiveLimitMs) return;
           this._fontSecretWaitSince = 0;
           emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
             waitedMs: Date.now() - secretWaitSince,
-            limitMs: fontWaitLimitMs,
+            limitMs: fontEffectiveLimitMs,
+            configuredLimitMs: fontWaitLimitMs,
             slowFactor: perfFactor(),
             state: fontProbe.state,
             sweepAgoMs: fontProbe.sweepAgoMs,
             scope: preferredDoc ? 'quiz-doc' : 'whole-page',
-            hint: (fontProbe.state === '(none)' || fontProbe.sweepAgoMs < 0)
-              ? '等满上限、而这一份文档上连扫描戳都没有 —— 是 content.js 的解密扫描没覆盖到它，不是解得慢'
+            hint: sweepNotCovered
+              ? '这一份文档上连扫描戳都没有 —— 是 content.js 的解密扫描没覆盖到它，不是解得慢；批次 9-B 之后不再为此白等满配置窗口'
               : '等满上限仍未解出，按现状作答'
           });
         }
@@ -8681,6 +8912,7 @@ var OMITONE_CODE_REV = '47e3cd52a4';
               return Object.assign(sum, d.selectors);
             }, {}),
             inputs: diag.docs.reduce(function (sum, d) { return sum + d.inputs; }, 0),
+            dropStages: diag.dropStages || {},
             samples: diag.samples.slice(0, 3)
           });
         }

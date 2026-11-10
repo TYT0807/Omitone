@@ -14,14 +14,14 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（29 个）：
+ * 本段的方法（30 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
  *   _matchChaoxingAttachment、_kindFromAttachment、_kindFromChaoxingElements、
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
- *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_searchIFramesOcs、
+ *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_frameRejectSignature、_searchIFramesOcs、
  *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
@@ -711,6 +711,45 @@
       };
     },
 
+    /**
+     * 「这一帧为什么认不出类型」的紧凑签名 —— **批次 9-D 只取证，不改判据**。
+     *
+     * 为什么值得记：`javascript:` / `javascript:void(function(){document.open` 那一族帧
+     * 在真实日志里每秒都被拒成同一句「认不出任务类型」，而它是「第一个做了、
+     * 第二个又不做了」唯一可疑的现场。旧签名只有 src + 原因，**判不了那是空帧还是第二份卷子**，
+     * 而凭这个去放宽类型判定，会连带把别的帧一起误收（正是用户警告过的"修一半、别的报废"）。
+     *
+     * 只在帧被拒时调用；整条 reject 日志本身有 30 秒 + 组合变化节流，允许多跑几次查询。
+     * 每项都包异常 —— 跨域帧与 `document.open()` 写到一半的帧都可能直接抛。
+     */
+    _frameRejectSignature: function (doc, found) {
+      if (!doc) return { reach: 'no-doc' };
+      var sig = {};
+      var count = function (sel) {
+        try { return doc.querySelectorAll(sel).length; } catch (e) { return -1; }
+      };
+      try {
+        sig.text = String((doc.body && doc.body.innerText) || '').replace(/\s+/g, ' ').slice(0, 60);
+      } catch (eText) { sig.text = ''; }
+      // 题形命中数**按真源清单逐个报**（批次 9-D）：这里手抄 `.TiMu` / `.questionLi`
+      // 就等于给诊断开第二份选择器，改版时它比排查更容易骗人。
+      sig.qHit = {};
+      try {
+        (this._questionSelectors || []).slice(0, 5).forEach(function (sel) { sig.qHit[sel] = count(sel); });
+      } catch (eSel) {}
+      sig.video = count('video');
+      sig.answer = count('[id^="answer"]');
+      sig.frames = count('iframe');
+      try { sig.pan = doc.getElementById && doc.getElementById('panView') ? 1 : 0; } catch (ePan) { sig.pan = -1; }
+      if (found) {
+        try {
+          sig.signals = Object.keys(found).filter(function (k) { return !!found[k]; }).join(',');
+        } catch (eSig) {}
+      }
+      return sig;
+    },
+
+
     _searchIFramesOcs: function (rootDoc) {
       var list = [];
       try {
@@ -782,11 +821,18 @@
       //
       // 只记前 8 条，避免日志洪水。
       var rejects = [];
-      var noteReject = function (frame, reason) {
+      var noteReject = function (frame, reason, sig) {
         if (rejects.length >= 8) return;
         var src = '';
         try { src = String(frame && frame.getAttribute && frame.getAttribute('src') || '').slice(0, 40); } catch (eSrc) {}
-        rejects.push({ src: src, reason: reason });
+        var item = { src: src, reason: reason };
+        // ⚠️ 「认不出类型」这一族必须带**帧里到底有什么**（批次 9-D，只取证不改判据）。
+        // 真实日志 00:46:55 的 `frames:8` 里有 4 个 `javascript:void(function(){document.open`
+        // 和 3 个 `javascript:` 帧全落在这一条 —— 这正是用户报的「第一个做了、第二个又不做了」
+        // 唯一的可疑现场，但旧日志只报 src 前 40 字，**判不了那是空帧还是第二份卷子**。
+        // 没有证据就动类型判定，代价是别的帧跟着一起被误收（用户明确警告过的"修一半报废一堆"）。
+        if (sig) item.sig = sig;
+        rejects.push(item);
       };
       for (var i = 0; i < iframes.length; i++) {
         var frame = iframes[i];
@@ -807,7 +853,8 @@
           //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
           //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
           if (!win || !found || (!domKind && !found.quizLike)) {
-            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）');
+            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
+              this._frameRejectSignature(doc, found));
             continue;
           }
           // 纯文档帧还有一道闸：外层容器必须真的带任务点。
@@ -822,7 +869,9 @@
           var frameData = this._safeJsonParse(frameDataStr, {});
           var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
           if (!targetJobId) {
-            noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）');
+            // 签名在这一支同样要带：「第二份卷子在哪一层」的取证不区分它死在准入闸还是死在 jobid
+            noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）',
+              this._frameRejectSignature(doc, found));
             continue;
           }
 
@@ -1155,12 +1204,28 @@
             // 把"卡在哪几题"一起带上：只有 searchedCount 的话，看不出是
             // "模型没答上"还是"答上了但填不进 DOM"（实测 25 题只填 23 题，
             // 两种日志一模一样，只能靠人肉数题）。
-            emitRuntimeLog('info', 'study hold quiz before finish', {
+            var pendingDesc = self._describePendingQuizQuestions(null);
+            // ⚠️ **数不出具体待答题时不许 hold**（批次 9-C）。
+            // 现场：真实日志 00:45:59 → 00:46:16 连磨两轮 `study hold quiz before finish
+            // {pending:{total:0}}`，最后是页面自己刷新才走通 —— 用户看到的"在已经做完的
+            // 界面磨蹭很久"就是这两轮。`_isQuizLearningPending` 走的是「页面上有题的形状」
+            // 那类宽判据（`_hasActiveQuizSubmitForm` / `_detectQuiz`），而 `_extractQuestions`
+            // 一道容器都没收着，于是**为 0 道题按住整节**。
+            // 「该不该 hold」抽成判据 `_shouldHoldQuizBeforeFinish`（批次 9-C）——
+            // 留在这一大坨循环里它没法直接测，而它恰好是"卡住整节"与"照常推进"的分岔口。
+            if (self._shouldHoldQuizBeforeFinish(pendingDesc)) {
+              emitRuntimeLog('info', 'study hold quiz before finish', {
+                searchedCount: searchedJobs.length,
+                pending: pendingDesc
+              });
+              self._ocsStudyStarted = false;
+              return;
+            }
+            emitRuntimeLog('warn', 'study quiz hold skipped: nothing pending to wait for', {
               searchedCount: searchedJobs.length,
-              pending: self._describePendingQuizQuestions(null)
+              pending: pendingDesc,
+              hint: '判据说还有题要做、但一道具体的待答容器都数不出来 —— 继续 hold 只会按住这一节；为什么数不出来见上一条 quiz scan 诊断的 dropStages'
             });
-            self._ocsStudyStarted = false;
-            return;
             }
           }
           if (self._isActiveStudyJobPending('ocs-finish-check')) {
