@@ -66,6 +66,10 @@
     // 必须在这里也放一份：content.js 在配置还没加载完时靠它兜底，
     // 缺了会读成 undefined（`tools/check.js` 的「读了就必须有自己的默认值」守卫会报错）。
     thinkingLevel: 'off',
+    // 慢机自适应开关：auto / on / off。content 侧用它放宽注入探针与字形表加载的超时，
+    // page 侧还会结合实测帧率再算一次系数（见 00-shell-constants.js 的 perfFactor）。
+    // 必须在这里放一份：配置未加载完时靠它兜底，check 的「读了就要有默认值」守卫会核对。
+    slowMachineMode: 'auto',
     retryInterval: 2000,
     maxRetries: 10,
     videoCheckInterval: 1500,
@@ -79,6 +83,22 @@
   };
 
   const CONFIG_DEFAULTS = { ...configs };
+  // content 侧拿不到 page 的 rAF 测速结果，用逻辑核心数做即时判据（不需要等采样完成）。
+  // 只在「慢机」时放宽注入探针与字形表加载的超时，避免轻薄本上误报「运行脚本未响应」。
+  function contentSlowFactor() {
+    const mode = String((configs && configs.slowMachineMode) || 'auto');
+    if (mode === 'off') return 1;
+    if (mode === 'on') return 2;
+    try {
+      const cores = Number(navigator.hardwareConcurrency || 0);
+      if (cores > 0 && cores <= 2) return 2;
+      if (cores > 0 && cores <= 4) return 1.5;
+    } catch (eCores) {}
+    return 1;
+  }
+  function contentScaledMs(base) {
+    return Math.round(Number(base || 0) * contentSlowFactor());
+  }
   let decryptTablePromise = null;
   let decryptTableRetryAt = 0;
   let decryptTableFailures = 0;
@@ -1667,7 +1687,7 @@
       timer = setTimeout(() => {
         controller.abort();
         reject(new Error('font table resource timeout'));
-      }, DECRYPT_FETCH_TIMEOUT_MS);
+      }, contentScaledMs(DECRYPT_FETCH_TIMEOUT_MS));
     });
     // 一个期限覆盖响应头和响应体；即使底层忽略 AbortSignal，外层也会结束。
     const work = Promise.resolve().then(() => fetch(chrome.runtime.getURL(resource), { signal: controller.signal }))
@@ -2115,7 +2135,7 @@
       if (statusPanelActive) {
         setStatusPanel('error', '运行脚本未响应', '未检测到初始弹窗或启动日志，请刷新学习通页面后重试');
       }
-    }, 1800);
+    }, contentScaledMs(1800));
   }
 
   function injectPageScript(reason = 'default') {

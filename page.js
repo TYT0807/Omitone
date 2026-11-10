@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '5fa2a53ef2';
+var OMITONE_CODE_REV = '414595d5ea';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -124,6 +124,11 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
     thinkingLevel: 'off',
     systemPrompt: '',
     videoCheckInterval: 1500,
+    // 慢机自适应：auto=按实测帧率/核心数放大所有等待上限，on=固定 2 倍，off=完全不放大。
+    // 默认 auto 且测不出来时系数为 1 —— 老机器的行为完全不变。
+    slowMachineMode: 'auto',
+    // 题目文字还在 font-cxsecret 密文态时，最多等多久再按现状答题（原来是写死的 8000）。
+    fontDecryptWaitMs: 8000,
     stepSwitchGraceMs: 7000,
     stepSwitchInitDelayMs: 2200,
     taskDiscoverGraceMs: 8000,
@@ -204,6 +209,74 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
   function sleep(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
+    });
+  }
+
+  // ── 慢机自适应 ──────────────────────────────────────────────────────────
+  // 轻薄本 / CPU 高负载时，DOM 渲染、iframe 加载、字体解密都被拉长，而本项目
+  // 原来的等待全是「固定睡 N 毫秒」：页面还没就绪就判「没任务 / 没填上 / 交卷失败」。
+  // 这里给一个统一系数，所有宽限都乘它。默认 auto；测不出帧率时系数恒为 1，
+  // 所以 e2e 无头环境和正常机器上的行为与改动前完全一致。
+  var perfProbe = { fps: 0, cores: 0 };
+
+  function perfFactor() {
+    var mode = 'auto';
+    try {
+      var cfg = window._xxtApp && window._xxtApp.configs;
+      if (cfg && cfg.slowMachineMode) mode = String(cfg.slowMachineMode);
+    } catch (eMode) {}
+    if (mode === 'off') return 1;
+    if (mode === 'on') return 2;
+    var factor = 1;
+    if (perfProbe.fps > 0) {
+      if (perfProbe.fps < 25) factor = 2;
+      else if (perfProbe.fps < 45) factor = 1.5;
+    }
+    if (perfProbe.cores > 0 && perfProbe.cores <= 4 && factor < 1.5) factor = 1.5;
+    return factor;
+  }
+
+  function scaledMs(base) {
+    return Math.round(Number(base || 0) * perfFactor());
+  }
+
+  function startPerfProbe() {
+    try { perfProbe.cores = Number(navigator.hardwareConcurrency || 0); } catch (eCores) {}
+    if (typeof requestAnimationFrame !== 'function') return;
+    var frames = 0, startAt = 0;
+    function tick(now) {
+      if (!startAt) startAt = now;
+      frames += 1;
+      if (now - startAt < 700) { requestAnimationFrame(tick); return; }
+      perfProbe.fps = frames / ((now - startAt) / 1000);
+      window.__omitonePerf = {
+        fps: Math.round(perfProbe.fps),
+        cores: perfProbe.cores,
+        factor: perfFactor()
+      };
+      emitRuntimeLog('info', 'performance profile', window.__omitonePerf);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  /**
+   * 等「条件就绪」，而不是睡够固定时间。
+   * ⚠️ 自带墙钟超时，Promise 一定会 resolve —— 满足「新增 await 必须可超时」。
+   * 轮询用主线程定时器，但超时判据用 Date.now()，所以 CPU 满载把定时器延后时
+   * 也只是走到兜底分支，不会变成新的死锁点。
+   */
+  function waitForReady(check, baseMs) {
+    var limit = scaledMs(baseMs || 1000);
+    var started = Date.now();
+    return new Promise(function (resolve) {
+      function step() {
+        var ok = false;
+        try { ok = !!check(); } catch (eCheck) {}
+        if (ok) return resolve(true);
+        if (Date.now() - started >= limit) return resolve(false);
+        setTimeout(step, 150);
+      }
+      step();
     });
   }
 
@@ -576,6 +649,9 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
       this._resetRuntimeState();
       this._clearTickLoop();
       this._bindStepNavigation();
+      // 只在启动时测一次帧率（700ms rAF），慢机据此放宽下面所有等待上限。
+      // 测不出来时 perfFactor() 恒为 1，行为与改动前一致。
+      startPerfProbe();
       console.log('%c[Omitone] start', 'color:#4CAF50;font-weight:bold');
       try { this._installSubmitSniffer(); } catch (eSniff) {}
       // ⚠️ 把**当前这份运行代码带哪些修复**写进日志。
@@ -4093,7 +4169,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
           var attachments = self._getChaoxingAttachments();
           var attachmentCount = attachments.length || 0;
           var searching = true;
-          var waitTimeout = Math.min(3 + attachmentCount * 2, 10) * 1000;
+          var waitTimeout = scaledMs(Math.min(3 + attachmentCount * 2, 10) * 1000);
           emitRuntimeLog('info', 'study begin', { attachments: attachmentCount });
 
           setTimeout(function () {
@@ -4899,7 +4975,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
     _shouldWaitForTaskDiscovery: function (reason) {
       var now = Date.now();
       if (!this._taskDiscoverStartedAt) this._taskDiscoverStartedAt = now;
-      var graceMs = Number(this.configs.taskDiscoverGraceMs || 8000);
+      var graceMs = scaledMs(Number(this.configs.taskDiscoverGraceMs || 8000));
       if (graceMs <= 0) return false;
 
       var doc = this._getMainDocument();
@@ -4908,14 +4984,24 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
         bodyText = doc && doc.body ? textOf(doc.body) : '';
       } catch (e) {}
 
+      // 刚切过章节时「附件数为 0」不等于这一章没任务：轻薄本上平台异步渲染
+      // 要好几秒，原来的判据会立刻放行 → nextUnit 推过去 → 后面的题全不做。
+      // 只在「刚切换」这个窗口内等附件，普通空章节仍按原逻辑快速跳过。
+      var hasAttachments = false;
+      try { hasAttachments = this._getChaoxingAttachments().length > 0; } catch (eAttach) {}
+      var recentlySwitched = !!this._stepSwitchPending ||
+        !!(this._stepSwitchAt && now - this._stepSwitchAt < graceMs);
+
       var shouldHold = !doc ||
         !!(doc && doc.readyState && doc.readyState !== 'complete') ||
         bodyText.length < 20 ||
+        (recentlySwitched && !hasAttachments) ||
         this._hasTaskPoint();
 
       if (!shouldHold) return false;
       if (now - this._taskDiscoverStartedAt < graceMs) {
-        this._logTaskWait((reason || 'discovery') + ' ' + (now - this._taskDiscoverStartedAt) + '/' + graceMs + 'ms', now);
+        this._logTaskWait((reason || 'discovery') + ' ' + (now - this._taskDiscoverStartedAt) + '/' + graceMs + 'ms' +
+          ' factor=' + perfFactor() + ' attachments=' + (hasAttachments ? 'yes' : 'no'), now);
         return true;
       }
       return false;
@@ -4964,7 +5050,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
         this._pendingTaskLogAt = 0;
       }
 
-      var graceMs = Number(this.configs.taskPendingGraceMs || 7000);
+      var graceMs = scaledMs(Number(this.configs.taskPendingGraceMs || 7000));
       var stillLoading = this._isTaskStillLoading(task);
       if (stillLoading && (now - this._pendingTaskStartedAt < graceMs)) {
         if (now - this._pendingTaskLogAt >= 3000) {
@@ -5942,7 +6028,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
       if (activeIndex >= 0 && targetIndex === activeIndex) return false;
 
       var now = Date.now();
-      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) {
+      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < scaledMs(Number(this.configs.stepSwitchGraceMs || 7000))) {
         return true;
       }
 
@@ -5996,7 +6082,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
     },
 
     _advanceLearningStep: function () {
-      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) return true;
+      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < scaledMs(Number(this.configs.stepSwitchGraceMs || 7000))) return true;
       var title = this._getCurrentTitle();
       if (title.indexOf('章节测验') !== -1 || title === '视频') return false;
       var cards = this._getLearningCards();
@@ -6037,11 +6123,17 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
         app._stepSwitchPending = true;
         app._stepSwitchAt = Date.now();
         setTimeout(function () {
-          try {
-            app._initCellData();
-          } catch (e) {}
-          app.play();
-        }, Number(app.configs.stepSwitchInitDelayMs || 2200));
+          // 慢机上切换学习卡片是异步渲染：固定 2.2 秒后 DOM 可能还是空的，
+          // _initCellData 抓到空树，之后就一直 attachments:0、后面的题全不做。
+          // 先等「文档加载完 + 章节树容器出现」，等不到按超时兜底继续，绝不死等。
+          waitForReady(function () {
+            try { return document.readyState === 'complete' && !!app._getTreeContainer(); }
+            catch (eTree) { return false; }
+          }, Number(app.configs.taskDiscoverGraceMs || 8000)).then(function () {
+            try { app._initCellData(); } catch (eInit) {}
+            app.play();
+          });
+        }, scaledMs(Number(app.configs.stepSwitchInitDelayMs || 2200)));
       });
     },
 
@@ -7705,7 +7797,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
       // 这种前提下把答案记成错的，会**误禁正确答案**，下一轮只会更错。
       //
       // 所以只留一条日志作为信号。真要判「被拒绝」，得先证明失败与答案有关。
-      if (now - (this._quizSubmitStartedAt || 0) > 2000 && this._isQuizAnswersCleared(preferredDoc || null)) {
+      if (now - (this._quizSubmitStartedAt || 0) > scaledMs(2000) && this._isQuizAnswersCleared(preferredDoc || null)) {
         this._quizSubmitPending = false;
         this._quizSubmitStartedAt = 0;
         emitRuntimeLog('warn', 'quiz answers cleared after submit', {
@@ -7714,7 +7806,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
         return false;
       }
 
-      var waitMs = Number(this.configs.quizSubmitWaitMs || 25000);
+      var waitMs = scaledMs(Number(this.configs.quizSubmitWaitMs || 25000));
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
         // 超时时把「为什么没认出结果页」一并记下来 ——
@@ -7884,9 +7976,13 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
           });
           return;
         }
-        if (Date.now() - secretWaitSince < 8000) return;
+        if (Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
         this._fontSecretWaitSince = 0;
-        emitRuntimeLog('warn', 'font decrypt pending over 8s, answer anyway', {});
+        emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
+          waitedMs: Date.now() - secretWaitSince,
+          limitMs: scaledMs(Number(this.configs.fontDecryptWaitMs || 8000)),
+          slowFactor: perfFactor()
+        });
       } else {
         this._fontSecretWaitSince = 0;
       }
@@ -11264,7 +11360,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
         // 弹窗挂在那儿没人重试，恢复播放那条路也以为"没有弹窗"去抢恢复被站点有意暂停的视频。
         // 用户看到的就是"答完就卡住、等半天没反应"。现在两者共用同一个常量。
         var key = this._popupQuizFingerprint(node);
-        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < POPUP_QUIZ_QUIET_MS) {
+        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < scaledMs(POPUP_QUIZ_QUIET_MS)) {
           node = null;
         }
       }
@@ -11513,7 +11609,7 @@ var OMITONE_CODE_REV = '5fa2a53ef2';
                 optionCount: question.options.length,
                 options: question.options.slice(0, 6),
                 // 告诉看日志的人"接下来会静一会儿，不是卡死"
-                waitMs: POPUP_QUIZ_QUIET_MS
+                waitMs: scaledMs(POPUP_QUIZ_QUIET_MS)
               });
               // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
               this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');

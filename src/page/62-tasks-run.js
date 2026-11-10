@@ -446,7 +446,7 @@
     _shouldWaitForTaskDiscovery: function (reason) {
       var now = Date.now();
       if (!this._taskDiscoverStartedAt) this._taskDiscoverStartedAt = now;
-      var graceMs = Number(this.configs.taskDiscoverGraceMs || 8000);
+      var graceMs = scaledMs(Number(this.configs.taskDiscoverGraceMs || 8000));
       if (graceMs <= 0) return false;
 
       var doc = this._getMainDocument();
@@ -455,14 +455,24 @@
         bodyText = doc && doc.body ? textOf(doc.body) : '';
       } catch (e) {}
 
+      // 刚切过章节时「附件数为 0」不等于这一章没任务：轻薄本上平台异步渲染
+      // 要好几秒，原来的判据会立刻放行 → nextUnit 推过去 → 后面的题全不做。
+      // 只在「刚切换」这个窗口内等附件，普通空章节仍按原逻辑快速跳过。
+      var hasAttachments = false;
+      try { hasAttachments = this._getChaoxingAttachments().length > 0; } catch (eAttach) {}
+      var recentlySwitched = !!this._stepSwitchPending ||
+        !!(this._stepSwitchAt && now - this._stepSwitchAt < graceMs);
+
       var shouldHold = !doc ||
         !!(doc && doc.readyState && doc.readyState !== 'complete') ||
         bodyText.length < 20 ||
+        (recentlySwitched && !hasAttachments) ||
         this._hasTaskPoint();
 
       if (!shouldHold) return false;
       if (now - this._taskDiscoverStartedAt < graceMs) {
-        this._logTaskWait((reason || 'discovery') + ' ' + (now - this._taskDiscoverStartedAt) + '/' + graceMs + 'ms', now);
+        this._logTaskWait((reason || 'discovery') + ' ' + (now - this._taskDiscoverStartedAt) + '/' + graceMs + 'ms' +
+          ' factor=' + perfFactor() + ' attachments=' + (hasAttachments ? 'yes' : 'no'), now);
         return true;
       }
       return false;
@@ -511,7 +521,7 @@
         this._pendingTaskLogAt = 0;
       }
 
-      var graceMs = Number(this.configs.taskPendingGraceMs || 7000);
+      var graceMs = scaledMs(Number(this.configs.taskPendingGraceMs || 7000));
       var stillLoading = this._isTaskStillLoading(task);
       if (stillLoading && (now - this._pendingTaskStartedAt < graceMs)) {
         if (now - this._pendingTaskLogAt >= 3000) {

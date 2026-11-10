@@ -1,6 +1,8 @@
 const DEFAULTS = {
   playbackRate: 1.0,
   autoMaxPlaybackRate: true,
+  // auto=按实测帧率自适应；on=强制 2 倍（弹窗开关打开时写入）
+  slowMachineMode: "auto",
   playbackRateCap: 4,
   taskGiveUpAttempts: 4,
   enableMedia: true,
@@ -67,6 +69,7 @@ const els = {
   rate: $("rate"),
   rateVal: $("rateVal"),
   autoMaxRate: $("autoMaxRate"),
+  slowMachineMode: $("slowMachineMode"),
   enableMedia: $("enableMedia"),
   enablePPT: $("enablePPT"),
   enableHyperlink: $("enableHyperlink"),
@@ -117,6 +120,7 @@ const els = {
 let config = { ...DEFAULTS };
 let mutedVal = false;
 let autoMaxRateVal = true;
+let slowMachineVal = false;
 let enableMediaVal = true;
 let enablePPTVal = true;
 let enableHyperlinkVal = true;
@@ -427,6 +431,7 @@ async function saveToggleConfig(showToast = true) {
   const patch = withoutRemovedConfigFields({
     playbackRate: parseFloat(els.rate.value),
     autoMaxPlaybackRate: autoMaxRateVal,
+    slowMachineMode: slowMachineVal ? "on" : "auto",
     enableMedia: enableMediaVal,
     enablePPT: enablePPTVal,
     enableHyperlink: enableHyperlinkVal,
@@ -496,6 +501,7 @@ function bindToggle(el, getter, setter) {
 
 const updateMuted = bindToggle(els.muted, () => mutedVal, (value) => { mutedVal = value; });
 const updateAutoMaxRate = bindToggle(els.autoMaxRate, () => autoMaxRateVal, (value) => { autoMaxRateVal = value; });
+const updateSlowMachine = bindToggle(els.slowMachineMode, () => slowMachineVal, (value) => { slowMachineVal = value; });
 const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) => { enableMediaVal = value; });
 const updatePpt = bindToggle(els.enablePPT, () => enablePPTVal, (value) => { enablePPTVal = value; });
 const updateHyperlink = bindToggle(els.enableHyperlink, () => enableHyperlinkVal, (value) => { enableHyperlinkVal = value; });
@@ -543,6 +549,7 @@ async function load() {
   els.rateVal.textContent = config.playbackRate + "x";
   mutedVal = !!config.muted;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
+  slowMachineVal = config.slowMachineMode === "on";
   enableMediaVal = config.enableMedia !== false;
   enablePPTVal = config.enablePPT !== false;
   enableHyperlinkVal = config.enableHyperlink !== false;
@@ -558,6 +565,7 @@ async function load() {
   restudyVal = !!config.restudy;
   updateMuted(mutedVal);
   updateAutoMaxRate(autoMaxRateVal);
+  updateSlowMachine(slowMachineVal);
   updateMedia(enableMediaVal);
   updatePpt(enablePPTVal);
   updateHyperlink(enableHyperlinkVal);

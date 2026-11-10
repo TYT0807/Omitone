@@ -897,7 +897,7 @@
           var attachments = self._getChaoxingAttachments();
           var attachmentCount = attachments.length || 0;
           var searching = true;
-          var waitTimeout = Math.min(3 + attachmentCount * 2, 10) * 1000;
+          var waitTimeout = scaledMs(Math.min(3 + attachmentCount * 2, 10) * 1000);
           emitRuntimeLog('info', 'study begin', { attachments: attachmentCount });
 
           setTimeout(function () {

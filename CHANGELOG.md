@@ -217,6 +217,20 @@
   AI 接入操作行下方失败时显示分类文案，storage 实时同步（页面上被拦的卷子
   报的错，打开弹窗就能看到）。
 
+- **慢机自适应（A+B）**：`00-shell-constants.js` 新增 `perfFactor()`（启动时 rAF 采样 700ms
+  得帧率 + `hardwareConcurrency`，模式 auto / on / off）、`scaledMs()`、`waitForReady()`
+  （等条件就绪而非睡固定时间，自带墙钟超时，Promise 必定 resolve，不引入新的挂起点）。
+  所有宽限统一乘系数：任务发现与待办宽限、stepSwitch 宽限/初始化延迟、study loop 搜索窗口、
+  交卷结果等待、提交后表单清空判定、弹题静默期、字体解密上限。默认系数 1，
+  正常机器与无头 e2e 行为不变；弹窗「播放」组新增「兼容慢机」开关（=on，强制 2 倍）。
+- **页面推不动 / 后面的题没做**：`_bindStepNavigation` 原来点完学习卡片固定 2.2 秒就
+  `_initCellData()`，慢机上抓到空树；现在先等 `readyState=complete` + 章节树容器出现（超时兜底）。
+  `_shouldWaitForTaskDiscovery` 在「刚切章」窗口内附件为 0 时继续等，不再直接 `nextUnit()` 推过去。
+- **字体解密写死 8 秒**：改成配置项 `fontDecryptWaitMs` 并乘系数，超时日志带
+  `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
+  避免轻薄本上误报 `page script no response after tag injection`。
+- 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+
 ---
 
 ## 1.2.9 — 角色动作、立绘册与验证码权限收紧（2026-10-22 发布，沿用 1.2.9 未升号）

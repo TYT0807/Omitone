@@ -192,7 +192,7 @@
         // 弹窗挂在那儿没人重试，恢复播放那条路也以为"没有弹窗"去抢恢复被站点有意暂停的视频。
         // 用户看到的就是"答完就卡住、等半天没反应"。现在两者共用同一个常量。
         var key = this._popupQuizFingerprint(node);
-        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < POPUP_QUIZ_QUIET_MS) {
+        if (key === this._popupQuizSolvedKey && now - (this._popupQuizSolvedAt || 0) < scaledMs(POPUP_QUIZ_QUIET_MS)) {
           node = null;
         }
       }
@@ -441,7 +441,7 @@
                 optionCount: question.options.length,
                 options: question.options.slice(0, 6),
                 // 告诉看日志的人"接下来会静一会儿，不是卡死"
-                waitMs: POPUP_QUIZ_QUIET_MS
+                waitMs: scaledMs(POPUP_QUIZ_QUIET_MS)
               });
               // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
               this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');

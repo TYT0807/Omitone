@@ -639,7 +639,7 @@
       if (activeIndex >= 0 && targetIndex === activeIndex) return false;
 
       var now = Date.now();
-      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) {
+      if (this._lastLearningTabSwitchAt && now - this._lastLearningTabSwitchAt < scaledMs(Number(this.configs.stepSwitchGraceMs || 7000))) {
         return true;
       }
 
@@ -693,7 +693,7 @@
     },
 
     _advanceLearningStep: function () {
-      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < Number(this.configs.stepSwitchGraceMs || 7000)) return true;
+      if (this._stepSwitchPending && Date.now() - this._stepSwitchAt < scaledMs(Number(this.configs.stepSwitchGraceMs || 7000))) return true;
       var title = this._getCurrentTitle();
       if (title.indexOf('章节测验') !== -1 || title === '视频') return false;
       var cards = this._getLearningCards();
@@ -734,11 +734,17 @@
         app._stepSwitchPending = true;
         app._stepSwitchAt = Date.now();
         setTimeout(function () {
-          try {
-            app._initCellData();
-          } catch (e) {}
-          app.play();
-        }, Number(app.configs.stepSwitchInitDelayMs || 2200));
+          // 慢机上切换学习卡片是异步渲染：固定 2.2 秒后 DOM 可能还是空的，
+          // _initCellData 抓到空树，之后就一直 attachments:0、后面的题全不做。
+          // 先等「文档加载完 + 章节树容器出现」，等不到按超时兜底继续，绝不死等。
+          waitForReady(function () {
+            try { return document.readyState === 'complete' && !!app._getTreeContainer(); }
+            catch (eTree) { return false; }
+          }, Number(app.configs.taskDiscoverGraceMs || 8000)).then(function () {
+            try { app._initCellData(); } catch (eInit) {}
+            app.play();
+          });
+        }, scaledMs(Number(app.configs.stepSwitchInitDelayMs || 2200)));
       });
     },
 

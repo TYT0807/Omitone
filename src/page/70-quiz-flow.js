@@ -702,7 +702,7 @@
       // 这种前提下把答案记成错的，会**误禁正确答案**，下一轮只会更错。
       //
       // 所以只留一条日志作为信号。真要判「被拒绝」，得先证明失败与答案有关。
-      if (now - (this._quizSubmitStartedAt || 0) > 2000 && this._isQuizAnswersCleared(preferredDoc || null)) {
+      if (now - (this._quizSubmitStartedAt || 0) > scaledMs(2000) && this._isQuizAnswersCleared(preferredDoc || null)) {
         this._quizSubmitPending = false;
         this._quizSubmitStartedAt = 0;
         emitRuntimeLog('warn', 'quiz answers cleared after submit', {
@@ -711,7 +711,7 @@
         return false;
       }
 
-      var waitMs = Number(this.configs.quizSubmitWaitMs || 25000);
+      var waitMs = scaledMs(Number(this.configs.quizSubmitWaitMs || 25000));
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
         // 超时时把「为什么没认出结果页」一并记下来 ——
@@ -881,9 +881,13 @@
           });
           return;
         }
-        if (Date.now() - secretWaitSince < 8000) return;
+        if (Date.now() - secretWaitSince < scaledMs(Number(this.configs.fontDecryptWaitMs || 8000))) return;
         this._fontSecretWaitSince = 0;
-        emitRuntimeLog('warn', 'font decrypt pending over 8s, answer anyway', {});
+        emitRuntimeLog('warn', 'font decrypt pending over limit, answer anyway', {
+          waitedMs: Date.now() - secretWaitSince,
+          limitMs: scaledMs(Number(this.configs.fontDecryptWaitMs || 8000)),
+          slowFactor: perfFactor()
+        });
       } else {
         this._fontSecretWaitSince = 0;
       }

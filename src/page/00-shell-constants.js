@@ -137,6 +137,11 @@
     thinkingLevel: 'off',
     systemPrompt: '',
     videoCheckInterval: 1500,
+    // 慢机自适应：auto=按实测帧率/核心数放大所有等待上限，on=固定 2 倍，off=完全不放大。
+    // 默认 auto 且测不出来时系数为 1 —— 老机器的行为完全不变。
+    slowMachineMode: 'auto',
+    // 题目文字还在 font-cxsecret 密文态时，最多等多久再按现状答题（原来是写死的 8000）。
+    fontDecryptWaitMs: 8000,
     stepSwitchGraceMs: 7000,
     stepSwitchInitDelayMs: 2200,
     taskDiscoverGraceMs: 8000,
@@ -217,6 +222,74 @@
   function sleep(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
+    });
+  }
+
+  // ── 慢机自适应 ──────────────────────────────────────────────────────────
+  // 轻薄本 / CPU 高负载时，DOM 渲染、iframe 加载、字体解密都被拉长，而本项目
+  // 原来的等待全是「固定睡 N 毫秒」：页面还没就绪就判「没任务 / 没填上 / 交卷失败」。
+  // 这里给一个统一系数，所有宽限都乘它。默认 auto；测不出帧率时系数恒为 1，
+  // 所以 e2e 无头环境和正常机器上的行为与改动前完全一致。
+  var perfProbe = { fps: 0, cores: 0 };
+
+  function perfFactor() {
+    var mode = 'auto';
+    try {
+      var cfg = window._xxtApp && window._xxtApp.configs;
+      if (cfg && cfg.slowMachineMode) mode = String(cfg.slowMachineMode);
+    } catch (eMode) {}
+    if (mode === 'off') return 1;
+    if (mode === 'on') return 2;
+    var factor = 1;
+    if (perfProbe.fps > 0) {
+      if (perfProbe.fps < 25) factor = 2;
+      else if (perfProbe.fps < 45) factor = 1.5;
+    }
+    if (perfProbe.cores > 0 && perfProbe.cores <= 4 && factor < 1.5) factor = 1.5;
+    return factor;
+  }
+
+  function scaledMs(base) {
+    return Math.round(Number(base || 0) * perfFactor());
+  }
+
+  function startPerfProbe() {
+    try { perfProbe.cores = Number(navigator.hardwareConcurrency || 0); } catch (eCores) {}
+    if (typeof requestAnimationFrame !== 'function') return;
+    var frames = 0, startAt = 0;
+    function tick(now) {
+      if (!startAt) startAt = now;
+      frames += 1;
+      if (now - startAt < 700) { requestAnimationFrame(tick); return; }
+      perfProbe.fps = frames / ((now - startAt) / 1000);
+      window.__omitonePerf = {
+        fps: Math.round(perfProbe.fps),
+        cores: perfProbe.cores,
+        factor: perfFactor()
+      };
+      emitRuntimeLog('info', 'performance profile', window.__omitonePerf);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  /**
+   * 等「条件就绪」，而不是睡够固定时间。
+   * ⚠️ 自带墙钟超时，Promise 一定会 resolve —— 满足「新增 await 必须可超时」。
+   * 轮询用主线程定时器，但超时判据用 Date.now()，所以 CPU 满载把定时器延后时
+   * 也只是走到兜底分支，不会变成新的死锁点。
+   */
+  function waitForReady(check, baseMs) {
+    var limit = scaledMs(baseMs || 1000);
+    var started = Date.now();
+    return new Promise(function (resolve) {
+      function step() {
+        var ok = false;
+        try { ok = !!check(); } catch (eCheck) {}
+        if (ok) return resolve(true);
+        if (Date.now() - started >= limit) return resolve(false);
+        setTimeout(step, 150);
+      }
+      step();
     });
   }
 

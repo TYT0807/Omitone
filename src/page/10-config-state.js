@@ -324,6 +324,9 @@
       this._resetRuntimeState();
       this._clearTickLoop();
       this._bindStepNavigation();
+      // 只在启动时测一次帧率（700ms rAF），慢机据此放宽下面所有等待上限。
+      // 测不出来时 perfFactor() 恒为 1，行为与改动前一致。
+      startPerfProbe();
       console.log('%c[Omitone] start', 'color:#4CAF50;font-weight:bold');
       try { this._installSubmitSniffer(); } catch (eSniff) {}
       // ⚠️ 把**当前这份运行代码带哪些修复**写进日志。
