@@ -3052,6 +3052,68 @@ SCENARIOS.push({
   }
 });
 
+/**
+ * ---- 批次 3：卷子身份键的**粒度**（2026-11-10）----
+ *
+ * `_getQuizWorkKey` 主路径读五个 id 字段；全空时过去写的是
+ * `location.href + '|' + 章节 id` —— 顶层地址对同一张卡片里的两份卷子**是同一个值**，
+ * 于是批次 1 拆掉的「按页冷却」在兜底分支里悄悄活着：一份坏卷子的 90 秒暂停
+ * 会连累它的邻居，两份卷子的提交次数与答案缓存也互相顶掉。
+ *
+ * 夹具形状：两个 `about:blank` 帧（URL 完全相同，故意把「按 URL 分开」这一半排除掉），
+ * 各自带一个 jobid 属性 —— 只有「宿主帧的身份」那一半能把它们分开。
+ * 另外再造两个**连 jobid 都没有**的帧，验最后一层序号兜底。
+ *
+ * ⚠️ 键的**稳定性**和粒度同等重要：同一个文档两次算出不同的键，
+ *   表现不是"多暂停一份"而是冷却形同不存在、交卷上限每轮被重置
+ *   （比合并更烧用户的提交次数），所以这里也钉一条。
+ */
+SCENARIOS.push({
+  name: '卷子身份键的粒度：认不出 id 字段的页面也按帧分开，且键稳定',
+  path: '/quiz',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(function(){' +
+      'var a=window._xxtApp;' +
+      'function mk(jobid){var f=document.createElement("iframe");f.style.display="none";' +
+      'if(jobid){f.setAttribute("jobid",jobid);}f.src="about:blank";' +
+      'document.body.appendChild(f);return f;}' +
+      'var fa=mk("k-probe-A"),fb=mk("k-probe-B"),fc=mk(""),fd=mk("");' +
+      'var da=fa.contentDocument,db=fb.contentDocument,dc=fc.contentDocument,dd=fd.contentDocument;' +
+      // 夹具自证：这一批帧的五个 id 字段真的全空、URL 真的相同 ——
+      // 否则测的是主路径，兜底分支根本没被走到
+      'var out={urlA:String(da.URL),urlB:String(db.URL),' +
+      '  fields:[da.getElementById("courseId"),da.getElementById("classId"),' +
+      '    da.getElementById("workRelationId"),da.getElementById("jobid"),' +
+      '    da.getElementById("knowledgeid")].filter(Boolean).length};' +
+      'out.kA=a._getQuizWorkKey(da);out.kB=a._getQuizWorkKey(db);' +
+      'out.stable=(a._getQuizWorkKey(da)===out.kA)&&a._getQuizWorkKey(da)===a._getQuizWorkKey(da);' +
+      'out.kC=a._getQuizWorkKey(dc);out.kD=a._getQuizWorkKey(dd);' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'a._setQuizForceSkip(90000,out.kA);' +
+      'out.pauseA=a._isQuizForceSkipping(da);out.pauseB=a._isQuizForceSkipping(db);' +
+      'out.windowLive=a._isQuizSkipWindowLive();' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      '[fa,fb,fc,fd].forEach(function(f){f.parentNode.removeChild(f);});' +
+      'return out;})()'
+    );
+    check('夹具自证：两个帧的 URL 同为 about:blank，且五个 id 字段一个都读不到（真走兜底分支）',
+      !!probe && probe.urlA === 'about:blank' && probe.urlB === 'about:blank' && probe.fields === 0,
+      JSON.stringify(probe));
+    check('兜底键按帧分开：同一页两份卷子不再被记成同一份（否则坏一份冻住邻居）',
+      !!probe && !!probe.kA && !!probe.kB && probe.kA !== probe.kB,
+      JSON.stringify(probe && { kA: probe.kA, kB: probe.kB }));
+    check('键稳定：同一个文档两次算出的键必须一致（键漂移 = 冷却失效 + 交卷上限被重置）',
+      !!probe && probe.stable === true, JSON.stringify(probe && probe.stable));
+    check('按 A 写冷却 ⇒ 判 A 为暂停、判 B 为不暂停，但「能不能离开这一节」仍看窗口（不比键）',
+      !!probe && probe.pauseA === true && probe.pauseB === false && probe.windowLive === true,
+      JSON.stringify(probe && { pauseA: probe.pauseA, pauseB: probe.pauseB, windowLive: probe.windowLive }));
+    check('最后一层兜底：帧上连 jobid 都没有时，序号也能把两份卷子分开',
+      !!probe && !!probe.kC && !!probe.kD && probe.kC !== probe.kD,
+      JSON.stringify(probe && { kC: probe.kC, kD: probe.kD }));
+  }
+});
+
 /** ---- 1. 抠题：5 种题型 + 题干/选项清洗 ---- */
 SCENARIOS.push({
   name: '抠题（5 种题型）',

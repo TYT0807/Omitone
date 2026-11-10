@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'b516fc5f51';
+var OMITONE_CODE_REV = '2803653694';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -7628,8 +7628,52 @@ var OMITONE_CODE_REV = 'b516fc5f51';
         this._getQuizFieldValue(doc, 'jobid'),
         this._getQuizFieldValue(doc, 'knowledgeid') || this._getCurrentChapterId()
       ].join('|');
-      if (!parts.replace(/\|/g, '')) parts = location.href + '|' + this._getCurrentChapterId();
+      // 五个 id 字段全空时，键必须**至少细到「一帧一份卷子」**，否则同一张卡片里的
+      // 两份卷子会被记成同一份：坏掉那一份的 90 秒暂停会连累另一份，两份卷子的
+      // 提交次数与答案缓存也会互相顶掉（2026-11-10 批次 3）。
+      if (!parts.replace(/\|/g, '')) parts = this._getQuizDocumentIdentity(doc);
       return 'omitone.quiz.correct.' + encodeURIComponent(parts).slice(0, 180);
+    },
+
+    /**
+     * `_getQuizWorkKey` 在「五个 id 字段全空」时的兜底身份。
+     *
+     * 为什么不能再只写 `location.href`：顶层地址对同一张卡片里的两份卷子**是同一个值**，
+     * 于是批次 1 拆掉的「按页冷却」在兜底分支里悄悄又回来了 —— 一份坏卷子照样能
+     * 冻住它的邻居，而且这条路径只在认不出 id 的页面上走，日常测试碰不到。
+     *
+     * 分两级把它拆开：① **这份文档自己的 URL**（每个 iframe 各不相同）；
+     * ② 宿主帧的身份（`jobid` / `id` / `name` / `data`）。`about:blank` / `about:srcdoc`
+     * 这类帧的 URL 全都一样，分不开任何东西，所以那种 URL 直接当「没有信号」处理。
+     *
+     * ⚠️ 这个键同时被提交次数、答案缓存、`_quizReadyWorkKey` 复用，所以**稳定压倒一切**：
+     *   同一个文档两次算出不同的键，等于冷却形同不存在、交卷上限每轮被重置
+     *   （比按页合并更烧用户的提交次数）。因此帧在这一页里的序号只当**最后一层**兜底 ——
+     *   页面重排时它会变，能不用就不用。
+     */
+    _getQuizDocumentIdentity: function (doc) {
+      var url = '';
+      try { url = String((doc && (doc.URL || (doc.location && doc.location.href))) || ''); } catch (eUrl) {}
+      if (/^about:(?:blank|srcdoc)$/i.test(url)) url = '';
+      var frame = null;
+      try { frame = doc && doc.defaultView ? doc.defaultView.frameElement : null; } catch (eFrame) {}
+      var frameId = '';
+      if (frame) {
+        try {
+          frameId = String(frame.getAttribute('jobid') || frame.getAttribute('id') ||
+            frame.getAttribute('name') || frame.getAttribute('data') || '');
+        } catch (eAttr) {}
+        if (!url && !frameId) {
+          try {
+            var host = frame.ownerDocument || document;
+            frameId = 'idx' + Array.prototype.indexOf.call(host.querySelectorAll('iframe'), frame);
+          } catch (eIdx) {}
+        }
+      }
+      var bits = [url, frameId];
+      if (!bits[0] && !bits[1]) bits[0] = String(location.href || '');
+      bits.push(this._getCurrentChapterId());
+      return bits.join('|');
     },
 
     /**
