@@ -11,9 +11,9 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（50 个）：
+ * 本段的方法（54 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
- *   _isQuizResultPageFinished、_detectQuiz、_skipQuiz、_getQuizFieldValue、
+ *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
  *   _getQuizPaperKeyFromTask、_getQuizSubmitAttemptKey、
  *   _getQuizMaxSubmitAttempts、
@@ -22,14 +22,15 @@
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
  *   _setQuizSubmitAttemptCount、_clearQuizSubmitAttemptCount、
  *   _incrementQuizSubmitAttemptCount、_shouldSkipQuizBySubmitAttempts、
- *   _isQuizForceSkipping、_forceSkipQuizAfterMaxAttempts、
+ *   _isQuizForceSkipping、_isQuizSkipWindowLive、_setQuizForceSkip、_forceSkipQuizAfterMaxAttempts、
  *   _getQuizQuestionRuntimeKey、_markQuizQuestionAnsweredThisRun、
  *   _wasQuizQuestionAnsweredThisRun、_unmarkQuizQuestionAnsweredThisRun、
  *   _isQuizPassedOrFinished、_hasActiveQuizSubmitForm、_markQuizSubmitPending、
  *   _isQuizAnswersCleared、_installSubmitSniffer、_monitorQuizSubmit、
  *   _shouldHoldQuizBeforeNext、_isQuizLearningPending、_describePendingQuizQuestions、
  *   _handleQuiz、
- *   _extractQuestions、_getQuizDocumentFromQuestions、_looksLikeQuizTitle、
+ *   _extractQuestions、_getQuizDocumentFromQuestions、_getQuizDocumentsFromQuestions、
+ *   _looksLikeQuizTitle、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
  *   _prepareQuizRedoIfNeeded、
  *   _hasUndecryptedFontSecret、_hasFontDecryptMiss、_quizTextGarbledRatio
@@ -121,6 +122,50 @@
       }
     },
 
+    /**
+     * 「这份文档到底是不是答题页」—— 任务类型仲裁的**唯一**判据（2026-11-10）。
+     *
+     * 为什么不能再拿 `_quizDetectorSelector` 命中当「这是测验任务」：那串并集里
+     * 有 `.question-content`、`.answerOption`、`.tiBank`、`.topicItem` 这类**通用名字**，
+     * 课件（轮盘 PPT）帧和文档帧里同样会出现。一个挂着 `.question-content` 的 PPT 帧
+     * 因此被判成 quiz，`_runChaoxingReadJob` 再也轮不到 —— 用户看到的「刷 PPT 功能报废」
+     * 正是这一条；同一份误判还让 `_isQuizLearningPending` 恒为真、
+     * 把 `_tryAdvanceIdleSection` 的逃生门也锁死（两条腿一起接近瘫痪）。
+     *
+     * 判据换成「真的抠得出题，而且题里有能填的控件」，两条同时成立：
+     *   1) `_collectQuestionContainers(doc)` 非空 —— 走有序真源 `_questionSelectors`，
+     *      带可见性/文本过滤与嵌套去重，比一次性并集严格得多；
+     *   2) 容器内存在答题控件（真源 `_quizAnswerControlSelector`）——
+     *      课件里那些装饰性的 `.question-content` 一个都没有。
+     *
+     * ⚠️ 整文档的控件预筛必须放在收集容器**之前**，这是性能闸不是省事：
+     *    OCS 调度每秒对每个帧调一次本方法，而 `_collectQuestionContainers` 要跑
+     *    十几条选择器 + 逐个可见性判断。一道控件都答不了的页面必然不是答题页，
+     *    先用一次 `querySelector` 挡掉，非答题页的开销与改前持平。
+     */
+    _documentHasQuiz: function (doc) {
+      if (!doc || !doc.querySelectorAll) return false;
+      var controlSelector = this._quizAnswerControlSelector;
+      try {
+        if (!doc.querySelector(controlSelector)) return false;
+      } catch (ePre) {
+        return false;
+      }
+
+      var containers = [];
+      try {
+        containers = this._collectQuestionContainers(doc);
+      } catch (eCol) {
+        return false;
+      }
+      for (var i = 0; i < containers.length; i++) {
+        try {
+          if (containers[i] && containers[i].querySelector(controlSelector)) return true;
+        } catch (eCtl) {}
+      }
+      return false;
+    },
+
     _detectQuiz: function () {
       var title = this._getCurrentTitle();
       if (title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1) {
@@ -144,19 +189,29 @@
         });
         if (onWorkPage) return true;
       }
-      // 真源 `_quizDetectorSelector` —— 这份清单曾手抄在此且漏了 .Cy_TItle，
-      // 作业/考试页的 DOM 兜底整体失效（真源处有完整教训记录），别再抄回来
-      var selectors = [this._quizDetectorSelector];
       var tasks = this._collectVisibleTaskFrames();
       if (tasks.some(function (task) { return task.type === 'quiz' && !task.finished; })) return true;
 
+      // DOM 兜底的判据与任务类型仲裁**同一个**：「题目容器里真的有能作答的控件」。
+      // 原来这里整页扫 `_quizDetectorSelector` 的通用类名，于是挂着一个
+      // `.question-content` 的课件页/文档页也返回 true —— 那就是「接近瘫痪」的第二条腿：
+      // `_isQuizLearningPending` 恒为真 → `_tryAdvanceIdleSection` 的逃生门被冻住，
+      // 而 `_handleQuiz` 又抠不出题，什么都不做（2026-11-10）。
+      // ⚠️ 容器清单读真源 `_quizContainerSelector`（这份清单曾被手抄在此且漏了 .Cy_TItle，
+      //    作业/考试页的 DOM 兜底整体失效 —— 真源处有完整教训记录，别再抄回来），
+      //    也不要换成 `_questionSelectors` 那份有序备选：两处用途不同，见 10-config-state.js 各自的注释。
+      var containerSelector = this._quizContainerSelector;
+      var controlSelector = this._quizAnswerControlSelector;
       return this._walkDocuments(function (doc2) {
-        for (var i = 0; i < selectors.length; i++) {
-          var nodes = Array.from(doc2.querySelectorAll(selectors[i]));
+        try {
+          // 便宜的整页预筛：本方法在每轮 tick 里都会跑，绝不能每次都去遍历全部容器
+          if (!doc2.querySelector(controlSelector)) return false;
+          var nodes = Array.from(doc2.querySelectorAll(containerSelector));
           for (var j = 0; j < nodes.length; j++) {
-            if (visible(nodes[j]) && textOf(nodes[j]).length > 0) return true;
+            if (!visible(nodes[j]) || textOf(nodes[j]).length === 0) continue;
+            if (nodes[j].querySelector(controlSelector)) return true;
           }
-        }
+        } catch (eWalk) {}
         return false;
       });
     },
@@ -421,7 +476,7 @@
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
       var skipReason = reason || this._getQuizApiUnavailableReason() || 'api-unavailable';
-      this._quizForceSkipUntil = Date.now() + 15000;
+      this._setQuizForceSkip(15000);
       this._resetQuizStateForSkip();
       var now = Date.now();
       if (!this._quizApiSkipLogAt || now - this._quizApiSkipLogAt > 3000) {
@@ -437,7 +492,7 @@
         if (nextButton) {
           nextButton.click();
           this._resetRuntimeState();
-          this._quizForceSkipUntil = Date.now() + 15000;
+          this._setQuizForceSkip(15000);
           return true;
         }
       } catch (e) {}
@@ -476,14 +531,72 @@
       return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
-    _isQuizForceSkipping: function () {
-      return this._quizForceSkipUntil && Date.now() < this._quizForceSkipUntil;
+    /**
+     * 写入「暂停这一卷」的冷却。**时间戳与卷子身份键必须成对写**，
+     * 所以所有写入点一律走这里，不许再直接赋 `_quizForceSkipUntil`。
+     *
+     * @param {number} durationMs 冷却时长
+     * @param {string} [paperKey] 卷子身份键；**不传 = 全局冷却**（老语义）——
+     *   用于「Key/接口不可用」「真的交过卷之后」这类与具体卷子无关的场景。
+     */
+    _setQuizForceSkip: function (durationMs, paperKey) {
+      this._quizForceSkipUntil = Date.now() + durationMs;
+      this._quizForceSkipPaperKey = paperKey ? String(paperKey) : '';
+      return this._quizForceSkipUntil;
+    },
+
+    /**
+     * 「现在是不是在暂停这一卷」。
+     *
+     * ⚠️ **调用点必须把当前文档传进来**（`_handleQuiz` / `_isQuizLearningPending`）。
+     * 卷子键是**按文档算**的：`_getQuizWorkKey(doc)` 里先 `_resolveQuizSubmitDocument(doc)`，
+     * 传题目所在的内层 `#frame_content` 与不传（退到主文档 / document）
+     * 读到的 `workRelationId` 可能不是同一个 —— 于是写入端记 A 键、判定端问 B 键，
+     * 「暂停 90 秒」永远对不上：R1 已关掉跳过出口、R2 已删掉 `_skipQuiz()`，
+     * 结果不是「没暂停」而是**该节点永久停摆**，日志却写着已暂停（错地图比没地图更糟）。
+     * 判定端与写入端共用同一个文档表达式，是这条不复发的前提。
+     *
+     * @param {Document} [doc] 当前这份卷子的文档；不传时用「正在答的题」所在文档兜底。
+     */
+    _isQuizForceSkipping: function (doc) {
+      if (!this._quizForceSkipUntil || Date.now() >= this._quizForceSkipUntil) return false;
+      // 冷却还没过，但**只对写入时那一份卷子**生效（R3：一张坏卷子不该冻结整门课）。
+      var paperKey = this._quizForceSkipPaperKey || '';
+      if (!paperKey) return true;                 // 写入时没带卷子键 → 全局冷却，与今天一致
+      // 与写入侧**同一个**文档表达式，别在这里另起一份。
+      var keyDoc = doc || this._getQuizDocumentFromQuestions(this._quizCurrentQuestions) || null;
+      var currentKey = '';
+      try { currentKey = String(this._getQuizWorkKey(keyDoc) || ''); } catch (eKey) { currentKey = ''; }
+      // ⚠️ 认不出当前卷子时**让冷却继续生效**（保守 = true），别写反成「认不出就放行」：
+      //   那样 401 / 接口不可用这些既有退避会在取键失败的瞬间失效，插件立刻又开始白烧请求。
+      if (!currentKey) return true;
+      return currentKey === paperKey;
+    },
+
+    /**
+     * 「现在是不是落在**任意一个**『暂停』窗口里」—— 不比卷子键。
+     *
+     * 只给两处拿不到卷子文档的调用点用：`nextUnit`（64-tasks-loop.js）与
+     * `_shouldHoldQuizBeforeNext` 的第一行。它们问的不是「这一卷要不要暂停」，
+     * 而是「我能不能离开这一节」：窗口还在 = 刚刚放弃过一份卷子 = 正该往前走，
+     * 此时 `_shouldHoldQuizBeforeNext` 那道「交卷前别急着走」的闸门只会帮倒忙。
+     *
+     * ⚠️ 为什么这里不能沿用无参的 `_isQuizForceSkipping()`（HIGH-1 的同一家族、
+     *   方向倒过来）：卷子键是**按文档**算的。无参时它读 `_quizCurrentQuestions`
+     *   所在的文档，而那组状态在放弃时会被清掉 —— 清掉之后它退到主文档重算，
+     *   算出来的是**另一个键**（两边都非空、就是不相等），于是返回 false，
+     *   `nextUnit` 被 hold 拦住、`_handleQuiz` 又在冷却里不干活 = **该走的走不了**。
+     *   认不出卷子时宁可放行离开：代价只是同一张卡片里另一份卷子这 90 秒内
+     *   不被补做（下一轮 OCS 仍会按卷判它），远小于「该节点停摆」的后果。
+     */
+    _isQuizSkipWindowLive: function () {
+      return !!(this._quizForceSkipUntil && Date.now() < this._quizForceSkipUntil);
     },
 
     _forceSkipQuizAfterMaxAttempts: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc);
       var max = this._getQuizMaxSubmitAttempts(preferredDoc);
-      this._quizForceSkipUntil = Date.now() + 15000;
+      this._setQuizForceSkip(15000);
       this._quizInProgress = false;
       this._quizAnswered = false;
       this._quizSubmitPending = false;
@@ -500,7 +613,7 @@
         if (nextButton) {
           nextButton.click();
           this._resetRuntimeState();
-          this._quizForceSkipUntil = Date.now() + 15000;
+          this._setQuizForceSkip(15000);
           return true;
         }
       } catch (e) {}
@@ -730,7 +843,9 @@
     },
 
     _shouldHoldQuizBeforeNext: function (reason) {
-      if (this._isQuizForceSkipping()) return false;
+      // 这里不比卷子键，理由见 `_isQuizSkipWindowLive`（这一处无参调
+      // `_isQuizForceSkipping()` 是 HIGH-1 倒过来的那个形态）。
+      if (this._isQuizSkipWindowLive()) return false;
       if (this._isQuizApiUnavailable()) return false;
       if (this._monitorQuizSubmit()) return true;
       var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
@@ -817,7 +932,8 @@
       }
     },
 
-    _isQuizLearningPending: function (preferredDoc) {      if (this._isQuizForceSkipping()) return false;
+    _isQuizLearningPending: function (preferredDoc) {
+      if (this._isQuizForceSkipping(preferredDoc || null)) return false;
       if (this._isQuizApiUnavailable()) return false;
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
@@ -857,7 +973,15 @@
     _handleQuiz: async function (preferredDoc) {
       // "放弃这一卷"的冷却窗口内直接退出：否则跳过去之后任务点还在页面上，
       // 下一秒又被匹配回来、再问一次模型（白烧 token），看起来像"跳过根本没生效"。
-      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping()) return;
+      // _quizInProgress 一旦因为异常岔在 true 上，第一行就会挡住一切 —— 整页永久停摆，
+      // 日志里只留一条 30 秒去重的 tick error。5 分钟没换过就当成泄漏，清掉并留 warn。
+      if (this._quizInProgress && this._quizInProgressAt && Date.now() - this._quizInProgressAt > 300000) {
+        emitRuntimeLog('warn', 'quiz in-progress state leaked, reset', { ageMs: Date.now() - this._quizInProgressAt });
+        this._quizInProgress = false;
+      }
+      // ⚠️ 这里必须把 `preferredDoc` 传下去：冷却是按卷子键生效的，而键按文档算 ——
+      //   不传 = 读侧算的是另一个文档的键 = 本 bug（见 `_isQuizForceSkipping` 上方注释）。
+      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping(preferredDoc || null)) return;
       if (!this.configs.enableQuiz) { // 硬守卫：AI 答题开关关闭时只刷课，任何情况下都不取题、不调 API
         this._skipQuizForApiUnavailable(null, preferredDoc || null);
         return;
@@ -900,6 +1024,7 @@
         this._fontSecretWaitSince = 0;
       }
       this._quizInProgress = true;
+      this._quizInProgressAt = Date.now();
       this._quizCurrentAnsweredKeys = {};
       this._quizCurrentAnswerValues = {};
       this._quizCurrentQuestions = null;
@@ -946,6 +1071,12 @@
         // 用户看到的就是"做完上一题之后卡顿一下才开始做这道"。
         var quizPaperKey = '';
         try { quizPaperKey = String(this._getQuizWorkKey(quizDocForProgress) || ''); } catch (ePaperKey) {}
+        // ⚠️ 按卷冷却写入时必须用**这一个**键（`quizPaperKey`）。
+        // 判定端 `_isQuizForceSkipping(doc)` 用的文档表达式是
+        // `doc || _getQuizDocumentFromQuestions(_quizCurrentQuestions) || null`，
+        // 而调用点传的 `doc` 就是这里的 `preferredDoc`，且 `_quizCurrentQuestions` 已被
+        // 赋成这里的 `questions` —— 两侧算出的文档**同一个**，键才可能对得上。
+        // 别在这里再算一份「兜底用无参 `_getQuizWorkKey(null)`」的键：那正是读写侧错开的方式。
         if (quizPaperKey !== this._quizRoundPaperKey) {
           this._quizRoundPaperKey = quizPaperKey;
           this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
@@ -961,7 +1092,7 @@
         // 但解密扫描完成后、映射表里却没有那个字形哈希时（表快照落后于平台字符集），
         // 残留的 PUA 字符（U+E000~U+F8FF）会混进题干 —— 发给模型必错，还白烧 token 与提交次数。
         // README 的口径是「看到乱码请立刻停下」：这里把它变成机器判据 ——
-        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就放弃这一卷。
+        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就**暂停这一卷** 90 秒。
         // ⚠️ 必须放在「无进展闸」**之前**：乱码卷 filled 计数不变，会被 60 秒闸先拦下，
         // 轮次就永远数不满、乱码卷永远跳不出。
         var garbledCount = 0;
@@ -972,29 +1103,64 @@
         // font-cxsecret 的真实机制是**正常中文字符 + 自定义字形**，不是 PUA 私有区！
         // 表缺字形时题干是通顺但错误的中文，下面按字符占比的 PUA 检测（兜底层）根本
         // 看不出来 —— 解密层的 miss 标记才是可靠信号（真实机制由同类开源实现交叉证实）。
-        if (!garbledCount && this._hasFontDecryptMiss()) {
+        // ⚠️ 探测文档**以题目所属文档为准**，不以调用方传进来的 `quizDocForProgress` 为准。
+        // `quizDocForProgress` 优先取 preferredDoc，而 `_extractQuestions(preferredDoc)`
+        // 会自己钻 `#frame_content` 到**内层文档**抠题 —— 于是出现「preferredDoc 是外层、
+        // 题在内层」。content.js 的 `data-om-font-miss` 写在它**解密的那一个文档**上
+        // （=有题的那一个），只查外层就等于把守卫**静默关掉**（失败方向还不保守：
+        // 乱码题照样发给模型），真实嵌套页就是这样漏的。
+        // 一份页面上的题还可能分属**多个**文档，所以这里去重后**逐个探**
+        // （宁可多探，不可漏探）；只探出题文档，不探既不出题的装饰帧 ——
+        // 后者会把守卫变成"页面上随便哪个帧残留个标记就整卷暂停"的误报源。
+        // 一个出题文档都拿不到时才退回 quizDocForProgress（旧语义），**不走全书扫描**。
+        var garbledProbeDocs = [];
+        try { garbledProbeDocs = this._getQuizDocumentsFromQuestions(questions); } catch (eProbeDocs) { garbledProbeDocs = []; }
+        if (!garbledProbeDocs.length && quizDocForProgress) garbledProbeDocs = [quizDocForProgress];
+        var probeMiss = false;
+        for (var gpi = 0; gpi < garbledProbeDocs.length; gpi++) {
+          if (this._hasFontDecryptMiss(garbledProbeDocs[gpi])) { probeMiss = true; break; }
+        }
+        if (!garbledCount && probeMiss) {
           garbledCount = questions.length;
         }
         if (garbledCount) {
           if (quizPaperKey !== (this._quizGarbledPaperKey || '')) {
             this._quizGarbledPaperKey = quizPaperKey;
             this._quizGarbledRounds = 0;
+            this._quizGarbledRoundAt = 0;   // 换了一份卷子 → 新一轮立刻可计
           }
-          this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
-          emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
-            garbled: garbledCount,
-            total: questions.length,
-            rounds: this._quizGarbledRounds
-          });
+          // ⚠️ 轮次按**时间窗**累加，绝不能按调用次数（真实现场 2026-11-10）：
+          // 本函数被 OCS 循环**每秒**调一次，按次数累加时 3 秒就数满 3 轮，
+          // "跳过"比"乱码"发生得还快；而且每一秒一条 warn，200 条的日志缓冲
+          // 两个半分钟就被刷空，排查时连"发生过什么"都看不到。
+          // 现在只有距上次计数 ≥10 秒才 +1，warn 也跟着只在计数时打（每 10 秒最多一条）。
+          var garbledNow = Date.now();
+          var garbledCounted = !this._quizGarbledRoundAt || garbledNow - this._quizGarbledRoundAt >= 10000;
+          if (garbledCounted) {
+            this._quizGarbledRoundAt = garbledNow;
+            this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
+            emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
+              garbled: garbledCount,
+              total: questions.length,
+              rounds: this._quizGarbledRounds
+            });
+          }
           this._quizInProgress = false;
           if (this._quizGarbledRounds >= 3) {
             this._quizGarbledPaperKey = '';
             this._quizGarbledRounds = 0;
-            emitRuntimeLog('error', 'quiz skipped: text stays garbled', {
+            this._quizGarbledRoundAt = 0;
+            // 数满 3 轮**不再跳卷**。原来的 `_skipQuiz()` 会走 `nextUnit()` 把整节翻过去，
+            // 可"乱码"只说明这份卷子的题面读不得，不表示这一节该放弃 ——
+            // 而跳走的代价是**不可见**的（用户只会看到"所有题目都被跳过"）。
+            // 改成给这一卷 90 秒按卷冷却：代价可见（这一节还停在这里）、且会自愈
+            // （90 秒后同一份卷子再试一次，换了别的卷子完全不受影响）。
+            // 本仓库的一贯取舍：拿不准就停住、留日志，别替用户翻页。
+            this._setQuizForceSkip(90000, quizPaperKey);
+            emitRuntimeLog('error', 'quiz paused: text stays garbled', {
               garbled: garbledCount,
-              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复'
+              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复；这一卷暂停 90 秒，不跳走'
             });
-            this._skipQuiz();
             return;
           }
           return;
@@ -1022,7 +1188,7 @@
           // 按那条规则"测不到进度一律不计"。
           //
           // 所以这里按**分钟**计数（本函数每秒都会被调一次，不能按调用次数算），
-          // 连续 3 轮零填充就明确跳过这一卷、10 分钟内不再重试 —— 让后面的任务先走。
+          // 连续 3 轮零填充就明确跳过这一卷、**只让这一卷**暂停 90 秒 —— 让后面的任务先走。
           // 只是跳过，不删任何记录：下一轮课程还能重新答。
           if (filledNow === 0) {
             var zeroNow = Date.now();
@@ -1041,11 +1207,11 @@
               this._quizCurrentQuestions = null;
               this._quizReadyToSubmit = false;
               this._quizReadyWorkKey = '';
-              this._quizForceSkipUntil = zeroNow + 600000;
+              this._setQuizForceSkip(90000, quizPaperKey);
               emitRuntimeLog('error', 'quiz skipped: no question could be filled', {
                 total: questions.length,
                 rounds: 3,
-                hint: '这一卷的题一个都落不到页面上（选项认不出或点不上），先跳过去做后面的任务；10 分钟内不再重试'
+                hint: '这一卷的题一个都落不到页面上（选项认不出或点不上），先跳过去做后面的任务；只有这一卷暂停 90 秒，别的卷子照常'
               });
               this.nextUnit();
               return;
@@ -1225,7 +1391,7 @@
             emitRuntimeLog('warn', 'quiz llm parse failed, keep quiz for retry', {
               error: String(result.error || '').slice(0, 160)
             });
-            this._quizForceSkipUntil = Date.now() + 8000;
+            this._setQuizForceSkip(8000);
             return;
           }
           if (result && result.permanentError) {
@@ -1241,7 +1407,7 @@
               skipMs: PERMANENT_LLM_ERROR_SKIP_MS
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
-            this._quizForceSkipUntil = Date.now() + PERMANENT_LLM_ERROR_SKIP_MS;
+            this._setQuizForceSkip(PERMANENT_LLM_ERROR_SKIP_MS);
             return;
           }
           this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
@@ -1355,6 +1521,31 @@
       return null;
     },
 
+    /**
+     * 「这些题分别落在**哪几个**文档里」—— 上面那个单数版的复数版，按文档去重。
+     *
+     * 为什么要单独有它（HIGH-2）：一份页面上的题**可能分属多个文档**
+     * （外层 + 内层 `#frame_content`，甚至两个平级 iframe）。
+     * 只探「第一个出题文档」会漏掉后面的那些 —— 而漏探的失败方向是
+     * **把乱码题放行给模型**（不保守），正是乱码守卫要防的事。
+     * 判"这份卷子读不读得"这类守卫一律用它逐个探：**宁可多探，不可漏探**。
+     *
+     * @param {Array} questions 抠出来的题（带 `_element`）
+     * @returns {Array} 去重后的出题文档，按首次出现顺序
+     */
+    _getQuizDocumentsFromQuestions: function (questions) {
+      var docs = [];
+      if (!questions || !questions.length) return docs;
+      for (var i = 0; i < questions.length; i++) {
+        try {
+          var el = questions[i] && questions[i]._element;
+          var doc = el && el.ownerDocument;
+          if (doc && docs.indexOf(doc) === -1) docs.push(doc);
+        } catch (e) {}
+      }
+      return docs;
+    },
+
     _looksLikeQuizTitle: function () {
       var title = this._getCurrentTitle();
       return title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1;
@@ -1401,20 +1592,33 @@
 
 
     /**
-     * 任一可达文档是否带着「解密未命中」标记（content.js 解密后写在 documentElement 上）。
+     * 「解密未命中」标记（content.js 解密后写在 documentElement 上）探测。
      *
      * 这是乱码守卫的**主信号**：font-cxsecret 的真实机制是正常中文字符 + 自定义字形
      * （不是 PUA），表缺字形时文本通顺但内容错误 —— 只有解密层自己知道哪些字形没查到。
-     * 缺表是全局的（同一张 table.json），所以任一文档带标记即整卷按乱码处理。
+     *
+     * @param {Document} [targetDoc] 传了就**只查这一个文档**。
+     *   乱码计数必须走这条：`_walkDocuments` 扫全书时，任何一个不相干的帧带标记
+     *   就会把**这一页每一份卷子**都判成乱码 —— 而缺标记的那个帧可能只是课程首页的
+     *   一个装饰性子帧。一道坏字形能把整门课的卷子全数暂停，就是"所有题目都被跳过"
+     *   的另一条路径（2026-11-10）。题目所在文档自己没带标记，就不算它乱码。
+     *   不传 = 维持旧的全书扫描语义（「等解密」那一处要用：还没定位到题目文档时，
+     *   问的是"这一页到底有没有解密问题"，全局信号才对）。
      */
-    _hasFontDecryptMiss: function () {
-      var found = false;
-      this._walkDocuments(function (doc) {
+    _hasFontDecryptMiss: function (targetDoc) {
+      var probe = function (doc) {
         if (!doc || !doc.documentElement || !doc.documentElement.getAttribute) return false;
         try {
-          if (doc.documentElement.getAttribute('data-om-font-miss')) { found = true; return true; }
+          if (doc.documentElement.getAttribute('data-om-font-miss')) return true;
         } catch (e) {}
         return false;
+      };
+      if (targetDoc) return probe(targetDoc);
+      var found = false;
+      this._walkDocuments(function (doc) {
+        if (!probe(doc)) return false;
+        found = true;
+        return true;
       });
       return found;
     },

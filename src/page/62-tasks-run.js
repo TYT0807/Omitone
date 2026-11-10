@@ -313,7 +313,9 @@
      *
      * 判据（全部成立才动，宁可多等也不误跳）：
      *   - 平台附件数为 0，且**一个可见任务帧都没有**（真没活干）
-     *   - 主文档加载完成、正文不是空壳（刚切章节时平台还在渲染，不能算数）
+     *   - 主文档加载完成（判据只有 `readyState === 'complete'` 一条：这里用的是**外层页**，
+     *     它永远带着导航与目录，正文长度判不出「还在渲染」，原先那条「正文不是空壳」
+     *     的长度守卫已经把整道逃生门锁死过，删得对；渲染没完成由 readyState 兜住）
      *   - 没有在答的卷子、没有在等结果的任务点
      *   - 已经连续空了 30 秒
      *   - 同一个「学习进度键」只推一次：点了页面没动就停手，不连点（连点是刷课插件的经典事故）
@@ -348,9 +350,15 @@
         }
       } catch (eVideo) { return false; }
 
-      var doc = this._getMainDocument();
+      // ⚠️ 这里必须退到**外层页**，不能只看主帧。
+      //   `_tryAdvanceIdleSection` 唯一的调用点（本文件 `_runOcsStyleStudy`）只在
+      //   `_ensureOcsStudyRunner()` 返回 false 时才会被走到，而那只发生在
+      //   「没有 #iframe」或「主帧跨域读不到」两种情况下 —— 这两种情况下
+      //   `_getMainDocument()` **必然是 null**，写成 `var doc = this._getMainDocument()`
+      //   就等于 `return false`，整道逃生门是死的（2026-11-10 那个 14 分钟卡死会原样复现）。
+      // 空转判定本来就该问"外层页渲染完了没有"。
+      var doc = this._getMainDocument() || document;
       if (!doc || !doc.body || String(doc.readyState || '') !== 'complete') return false;
-      if (textOf(doc.body).length < 20) return false;
 
       var now = Date.now();
       if (!this._idleEmptySince) {

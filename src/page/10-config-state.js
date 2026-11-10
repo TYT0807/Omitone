@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（124 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizApiSkipLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey
+ * 本段的状态字段（128 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -55,6 +55,12 @@
 
     _quizInProgress: false,
 
+    // `_quizInProgress` 置真的时刻 —— 专给「泄漏自愈」用（70-quiz-flow.js `_handleQuiz`）。
+    // 没有它，异常岔路留下的 true 就是永久的：第一行挡住一切、整页停摆，
+    // 日志里只有一条 30 秒去重的 tick error。声明在这儿而不是就地赋值，
+    // 是为了让它进片段头清单（`npm run check` 第 15 项核对状态字段与计数）。
+    _quizInProgressAt: 0,
+
     _quizAnswered: false,
 
     _quizSubmitPending: false,
@@ -92,6 +98,24 @@
     _quizRunPaperKey: '',
 
     _quizForceSkipUntil: 0,
+
+    // 「这一份卷子」的暂停键 —— 与 `_quizForceSkipUntil` 成对写入（走 `_setQuizForceSkip`）。
+    //
+    // 为什么必须有它：`_quizForceSkipUntil` 单独一个时间戳是**页面级**的，
+    // 而 `_isQuizLearningPending()` 第一行就 `if (this._isQuizForceSkipping(preferredDoc || null)) return false;`
+    // —— 于是「A 卷子坏了」会被调度理解成「这一页所有答题任务点都不用做」，
+    // 一张坏卷子能把整门课冻结到冷却结束。写入时带上卷子身份键，
+    // 判定时只对同一份卷子生效（键为空 = 老的全局语义，见 `_isQuizForceSkipping`）。
+    // ⚠️ 键是**按文档**算的（`_getQuizWorkKey(doc)` 会先解析提交文档），
+    //   所以写入端与读取端必须用同一个文档表达式 —— 判定端要拿到当前文档，
+    //   两侧错开时表现不是「没暂停」而是「这一节永久停摆」（日志却写着已暂停）。
+    _quizForceSkipPaperKey: '',
+
+    // 上一次给「题干乱码」计轮的时刻。
+    //
+    // `_handleQuiz` 被 OCS 循环**每秒**调一次，所以乱码轮次绝不能按调用次数累加
+    // —— 那样 3 秒就数满 3 轮。只有间隔够久（≥10 秒）才 +1，见 `_handleQuiz` 的乱码守卫。
+    _quizGarbledRoundAt: 0,
 
     _quizApiSkipLogAt: 0,
 
@@ -546,3 +570,21 @@
      * 现在三处统一读这里：**改选择器只改这一行** —— 手抄的那份必然漂移，别再抄第四份。
      */
     _quizContainerSelector: '.TiMu, .Cy_TItle, .questionLi, .singleQuesId, .questionItem, .mark_item, .questionBox',
+
+    /**
+     * 「题目容器里有没有能作答的控件」—— 判「这是不是答题页」的**必要条件**真源。
+     *
+     * 为什么必须有这一条：`_quizDetectorSelector` 那串类名里有 `.question-content`
+     * `.answerOption` `.tiBank` `.topicItem` 这类**通用名字**，课件（轮盘 PPT）帧和
+     * 文档帧里同样会出现。拿「选择器命中」当「这是测验任务」，一个带 `.question-content`
+     * 的 PPT 帧就被判成 quiz，于是 `_runChaoxingReadJob` 永远轮不到 ——
+     * 用户报的「刷 PPT 报废」正是这条（2026-11-10）。
+     *
+     * 真实题面必带下面之一：选项 `li[qid]`（填答案全靠它）、隐藏答案域 `#answer…`、
+     * 填空/简答的 `textarea[id^="answer"]`、新版前端的 `[role="radio"/"checkbox"]`。
+     * 课件里的装饰性 `.question-content` 一个都没有。
+     *
+     * ⚠️ 只准用在「判类型」这一处；不收窄 `_quizDetectorSelector` 本身
+     *    （72-quiz-answers / 74-quiz-vision / 30-log 还靠它做 closest 与包装查找）。
+     */
+    _quizAnswerControlSelector: '[qid], input[id^="answer"], textarea[id^="answer"], [role="radio"], [role="checkbox"]',

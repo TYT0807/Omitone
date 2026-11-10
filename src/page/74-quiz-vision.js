@@ -170,6 +170,11 @@
       var bodyText = textOf(doc.body);
       if (bodyText.length < 10 || bodyText === '暂无内容') return true;
       if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
-      if (doc.querySelector(this._quizDetectorSelector + ', input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
+      // ⚠️ 原来这里并着 `_quizDetectorSelector` 一整串通用类名 —— 课件页里挂一个
+      //    `.question-content` 就被判成「不是纯文本页」，视觉预算与跳过分支跟着一起失真。
+      //    收窄成「真抠得出题」（`_documentHasQuiz`）；答题控件那半保留原样，
+      //    因为「页面上有能点的答案框」本身就是「不是纯文本」的充分证据。
+      if (this._documentHasQuiz(doc)) return false;
+      if (doc.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
       return true;
     },

@@ -14,11 +14,11 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（27 个）：
+ * 本段的方法（29 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
- *   _matchChaoxingAttachment、
+ *   _matchChaoxingAttachment、_kindFromAttachment、_kindFromChaoxingElements、
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_searchIFramesOcs、
@@ -94,8 +94,47 @@
     },
 
     _hasTaskPoint: function () {
+      var frame = this._getMainFrame();
+      if (!frame) {
+        // 没有主帧（OCS / 移动端布局）：这一族的课程内容是直接挂在**顶层页**上的，
+        // 所以把同一套判据改挂到 `document` 上探测，而不是"无脑 true / 无脑 false"。
+        var bareHit = null;
+        try {
+          bareHit = document.querySelector(
+            '.ans-job-icon, .ans-task-icon, .taskPoint, .ans-job-num, ' +
+            '#panView, .fileBox, .pageNum, #pageNumber'
+          );
+        } catch (eBare) { bareHit = null; }
+        if (bareHit) return true;
+
+        var bareActive = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
+        if (bareActive && bareActive.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+
+        var bareText = '';
+        try { bareText = textOf(document.body); } catch (eBareText) { bareText = ''; }
+        if (bareText.indexOf('任务点') !== -1) return true;
+        // 三种探测都没命中时**保守返回 true**（=「认不出就当有任务点」）。
+        //
+        // 为什么必须保守：这个返回值同时喂三条跳过出口 ——
+        //   ① `_isCurrentCompleted()` 末行的 `return !this._hasTaskPoint()`
+        //      → `_skipIfCompleted()` → `nextUnit()`，整节直接翻过去；
+        //   ② `_runTick` 尾部的 `_isTextOnly() && !_hasTaskPoint()` 跳过分支；
+        //   ③ 62-tasks-run.js `_locateDocumentTask` 的 `worthHandling(doc)`
+        //      —— 判 false 就不接管文档任务，PDF.js / 翻页文档整族没人管。
+        // 返回 false 的含义是**肯定的**「这一页没有任务点」，可我们其实什么都没认出来
+        // （`_getMainFrame()` 为空时，任务点 markup 常在读不到的子帧 / 延迟渲染的容器里）。
+        // 把"判不出"写成"没有"，就是静默跳过 —— 用户看到的「所有题目都被跳过」（2026-11-10）。
+        //
+        // 那空节谁来推进？不能靠这里 —— **空节的前进只允许走 `_tryAdvanceIdleSection`**，
+        // 那条自带时间窗（`_idleEmptySince` 要连续空够时长）和日志（`study no runnable job`
+        // 有节流），是"能解释、可恢复"的出口；本方法没有"观察了几秒"的概念，
+        // 每一帧都是当场判断，一旦判错就是立刻跳走、无窗、无声。
+        // 宁可慢一点、空转几秒有日志，也不能听见什么都没说就翻页。
+        return true;
+      }
+
       var doc = this._getMainDocument();
-      if (!doc) return true;
+      if (!doc) return true;   // 主帧在、但跨域读不到 —— 必须保守
 
       var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
       if (active && active.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
@@ -320,18 +359,31 @@
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
       var videojs = doc.querySelector('#video, #audio, .video-js, #video_html5_api');
-      var chapterTest = doc.querySelector(this._quizDetectorSelector);
+      // ⚠️ 「像题即题」的老判据（`doc.querySelector(_quizDetectorSelector)`）已换掉：
+      //    那串类名里的 `.question-content` / `.answerOption` 在课件帧与文档帧里同样出现，
+      //    于是一个轮盘 PPT 帧被判成 quiz、阅读链路永远轮不到（2026-11-10「刷 PPT 报废」）。
+      //    现在问的是「这页真抠得出题、且题里有能填的控件」吗 —— 见 `_documentHasQuiz`。
+      var quiz = this._documentHasQuiz(doc);
+      // ⚠️ `quiz` 与 `quizLike` 是**两个不同的问题**，别合并：
+      //   `quiz` = 「这帧是什么任务」（判类型，走 `_kindFromChaoxingElements` 那一份顺序）；
+      //   `quizLike` = 「这帧值不值得进 jobid 匹配」（准入闸的弱信号，整页扫通用类名）。
+      //   只留 `quiz` 那一个信号当闸会把**认不出作答控件的真卷子整帧拒掉** ——
+      //   三层嵌套的卷子（jobid 在外层、`.TiMu` 在内层）就是这么被静默漏掉的形状，
+      //   实测把 2026-10-17 那份故障夹具全线改红过（2026-11-10 批次 2）。
+      //   准入闸宁可宽：判错类型的代价是"多看一眼"，判不进门的代价是"整章跳过"。
+      var quizLike = !!doc.querySelector(this._quizDetectorSelector);
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
       var timereader = doc.querySelector('iframe[name="bookifame"][src*="timing"]');
       var documentJob = doc.querySelector('#panView, .fileBox, .pageNum, #docContainer, .docBox');
 
-      if (!(videojs || chapterTest || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
+      if (!(videojs || quiz || quizLike || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
 
       return {
         videojs: videojs,
-        chapterTest: chapterTest,
+        quiz: quiz,
+        quizLike: quizLike,
         read: read,
         pptWithAudio: pptWithAudio,
         hyperlink: hyperlink,
@@ -407,29 +459,88 @@
       return 'not-job';
     },
 
+    /**
+     * 附件元数据 → 任务类型。这份映射现在**只此一份**（`_buildAttachmentOnlyJob` 与
+     * 任务类型仲裁 `_kindFromChaoxingElements` 共用）—— 以前它在附件构造里手写一遍、
+     * 在 OCS 路由旁又各写一遍，改顺序时必然只改到其中一份。
+     *
+     * 返回空串 = 附件说不出这是什么任务，调用方据此回落到 DOM 判据。
+     *
+     * ⚠️ 这一族的粒度只到 `read`：`insertdoc` / ppt / pdf / doc / 图片在附件里都是
+     *    「一个文档」，究竟是图片阅读、轮盘 PPT 还是翻页文档只有 DOM 知道 ——
+     *    `_runChaoxingReadJob` 对这三种走**不同翻页器**，所以 read 家族的具体 flavour
+     *    要留给 DOM 定（见 `_kindFromChaoxingElements` 的注释）。
+     */
+    _kindFromAttachment: function (attachment) {
+      if (!attachment) return '';
+      var property = attachment.property || {};
+      var module = String(property.module || attachment.module || '').toLowerCase();
+      var type = String(property.type || attachment.type || '').toLowerCase();
+
+      if (/insertdoc/.test(module) || /(?:^|\.)(?:ppt|pptx|pdf|doc|docx)$/.test(type)) return 'read';
+      // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
+      // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
+      if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
+      if (/work|exam|quiz/.test(module)) return 'quiz';
+      // 图片任务点：打开看一眼即可，按「阅读」处理
+      if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) return 'read';
+      return '';
+    },
+
+    /**
+     * 任务类型仲裁的**唯一一处顺序**（2026-11-10）。调用方拿到 kind 之后按 kind 分派，
+     * 不许再各自按 `found.xxx` / `elements.xxx` 布尔位重排一遍 ——
+     * 仲裁与路由留两份顺序，下一次改顺序必然只改到其中一份。
+     *
+     * 顺序（固定）：
+     *   ① 附件元数据 —— 「这个任务点是什么」的权威来源。卷子常常渲染在
+     *      本帧抠不到题的那一层（三层嵌套的 jobid 场景），只有附件说得出 quiz；
+     *   ②..⑧ DOM，从最具体到最兜底：
+     *      videojs → quiz → read → ppt-audio → timereader → hyperlink → document。
+     *      （`document` 是兜底，绝不能排在 ppt/timereader 之前 —— 它那些类名太通用。）
+     *
+     * 唯一的例外是 read 家族：附件那份映射只说得出 `read`，分不清图片阅读 /
+     * 轮盘 PPT / 翻页文档，而这三种在 `_runChaoxingReadJob` 里走不同翻页器，
+     * 所以 read 家族让 DOM 的具体 flavour 赢；跨家族（video / quiz）仍以附件为准。
+     */
+    _kindFromChaoxingElements: function (elements, attachment, doc) {
+      var fromAttachment = this._kindFromAttachment(attachment);
+      var fromDom = '';
+      if (elements) {
+        if (elements.videojs) fromDom = 'video';
+        else if (elements.quiz) fromDom = 'quiz';
+        else if (elements.read) fromDom = 'read';
+        else if (elements.pptWithAudio) fromDom = 'ppt-audio';
+        else if (elements.timereader) fromDom = 'timereader';
+        else if (elements.hyperlink) fromDom = 'hyperlink';
+        else if (elements.documentJob || elements.pagedDoc) fromDom = 'document';
+      } else if (doc) {
+        // 调用方只给了文档、没有探测包：用**同一个**判据现算一次。
+        // 顺序只留一份、判据也只留一份，别在调用方再手抄一遍 DOM 探测。
+        if (this._documentHasQuiz(doc)) fromDom = 'quiz';
+      }
+
+      if (fromAttachment && fromAttachment !== 'read') return fromAttachment;
+      return fromDom || fromAttachment || '';
+    },
+
     _buildAttachmentOnlyJob: function (attachment) {
       if (!attachment) return null;
       var property = attachment.property || {};
       var module = String(property.module || attachment.module || '').toLowerCase();
       var type = String(property.type || attachment.type || '').toLowerCase();
-      var kind = 'other';
 
       // 与 _getAttachmentWorkType 同一条判据：显式 job:false 表示老师没把它设为任务点。
       // 这里也必须挡一道 —— 否则调用方若没先过滤，仍然会造出一个"要去做"的任务。
+      // ⚠️ 这道闸门留在本方法里，不进 `_kindFromAttachment`：映射只管「是什么」，
+      //    「要不要做」不是它的职责（仲裁时 job:false 的附件同样要说得出类型）。
       var jobFlag = attachment.job !== undefined ? attachment.job : property.job;
       if (jobFlag === false || jobFlag === 0 || String(jobFlag).toLowerCase() === 'false') {
         return null;
       }
 
-      if (/insertdoc/.test(module) || /(?:^|\.)(?:ppt|pptx|pdf|doc|docx)$/.test(type)) kind = 'read';
-      // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
-      // 早期只认 insertvideo，insertaudio 会掉到 other 然后被整条丢弃
-      else if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) kind = 'video';
-      else if (/work|exam|quiz/.test(module)) kind = 'quiz';
-      // 图片任务点：打开看一眼即可，按"阅读"处理
-      else if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) kind = 'read';
-
-      if (kind === 'other') {
+      var kind = this._kindFromAttachment(attachment);
+      if (!kind) {
         // 不要静默丢弃：任务点被无声跳过时，用户只能看到"这个任务点没做"，
         // 完全无从判断是识别失败还是不支持的题型。这里留一条去重日志。
         this._logUnsupportedJobOnce(module, type);
@@ -523,14 +634,9 @@
     _buildSyntheticChaoxingJob: function (frame, win, doc, elements) {
       if (!frame || !elements) return null;
       var frameData = this._getChaoxingFrameData(frame, win);
-      var kind = 'other';
-      if (elements.videojs) kind = 'video';
-      else if (elements.chapterTest) kind = 'quiz';
-      else if (elements.read) kind = 'read';
-      else if (elements.documentJob) kind = 'document';
-      else if (elements.timereader) kind = 'timereader';
-      else if (elements.pptWithAudio) kind = 'ppt-audio';
-      else if (elements.hyperlink) kind = 'hyperlink';
+      // 仲裁只走 `_kindFromChaoxingElements` 这一份顺序。这里没有附件可问 ——
+      // 会落到「合成型任务」这条构造路径，正是因为附件清单里没匹配上它。
+      var kind = this._kindFromChaoxingElements(elements, null, doc) || 'other';
 
       var wrap = frame.parentElement;
       var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
@@ -625,7 +731,12 @@
         if (!doc) return null;
         return {
           videojs: doc.querySelector('#video,#audio'),
-          chapterTest: doc.querySelector(appRef._quizDetectorSelector),
+          // 与 `_detectChaoxingJobElements` 同一个判据：问「抠不抠得出题」，
+          // 不再问「像不像题」（`.question-content` 一类通用类名在课件帧里也有）。
+          quiz: appRef._documentHasQuiz(doc),
+          // 准入闸专用的弱信号，见 `_detectChaoxingJobElements` 里同名字段的注释。
+          // 判类型**不许**读它 —— 那正是「像题即题」把课件判成测验的那条路。
+          quizLike: !!doc.querySelector(appRef._quizDetectorSelector),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
@@ -664,13 +775,25 @@
           var win = frame.contentWindow;
           var doc = appRef._safeWinDoc(win);
           var found = searchJobElement(frame);
-          if (!win || !found || !(found.videojs || found.read || found.chapterTest || found.hyperlink || found.pptWithAudio || found.timereader || found.pagedDoc)) {
+          // 类型仲裁只有一份顺序 —— `_kindFromChaoxingElements`。
+          // 这一关先只问 DOM（附件要到下面匹配 jobid 时才拿到），因为
+          // 「帧里什么信号都没有」必须在匹配 jobid 之前就被拒掉并留下原因。
+          var domKind = this._kindFromChaoxingElements(found, null, doc);
+          // ⚠️ 准入闸问的是「这帧有没有**任何**任务信号」，不是「这帧是什么任务」——
+          //   后者只许由 `_kindFromChaoxingElements` 一处回答。两个问题合并成一个
+          //  （只用 `!domKind` 当闸）会把「认不出作答控件的真卷子」整帧拒掉：
+          //   三层嵌套里 `.TiMu` 只挂在内层、且那份卷子的选项没有 `qid` 时，
+          //   `domKind` 为空 → 连 jobid 匹配都不做 → 整章静默跳过。
+          //   实测这样改把 3 条 2026-10-17 真实故障夹具全线改红（2026-11-10 批次 2）。
+          //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
+          //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
+          if (!win || !found || (!domKind && !found.quizLike)) {
             noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）');
             continue;
           }
           // 纯文档帧还有一道闸：外层容器必须真的带任务点。
           // 否则它只是页面上的说明性/预览性文档，接管它会白白占住调度。
-          if (!found.videojs && !found.read && !found.chapterTest && !found.hyperlink && !found.pptWithAudio && !found.timereader) {
+          if (domKind === 'document') {
             if (!appRef._frameHasTaskPoint(doc)) {
               noteReject(frame, '纯文档帧，但外层容器没有任务点标记');
               continue;
@@ -701,7 +824,7 @@
           }
 
           var jobName = this._getChaoxingJobName(attachment);
-          var jobKind = found.videojs ? 'video' : (found.chapterTest ? 'quiz' : (found.read ? 'read' : (found.timereader ? 'timereader' : (found.pptWithAudio ? 'ppt-audio' : (found.hyperlink ? 'hyperlink' : 'document')))));
+          var jobKind = this._kindFromChaoxingElements(found, attachment, doc);
           var workType = this._getAttachmentWorkType(attachment);
           if (this._isDocumentFrameFinished(doc) || (jobKind === 'quiz' && this._isQuizPassedOrFinished(doc))) {
             workType = 'finished';
@@ -715,7 +838,11 @@
             workType = 'finished';
           }
           var func = null;
-          if (found.videojs) {
+          // ⚠️ 路由**只按上面仲裁出来的 jobKind 分派**，不许再看 `found.xxx` 布尔位：
+          //   仲裁与路由各留一份顺序的话，下一次改顺序必然只改到其中一份
+          //   （原来这两份已经不一致：这里 `timereader` 排在 `ppt-audio` 前，
+          //   `_buildSyntheticChaoxingJob` 那份却把 `documentJob` 排在两者之前）。
+          if (jobKind === 'video') {
             if (!this.configs.enableMedia) {
               noteReject(frame, '是视频任务，但「媒体」开关是关的');
               continue;
@@ -736,7 +863,7 @@
                 };
               }(this, frame, win, doc, jobName, attachment);
             }
-          } else if (found.chapterTest) {
+          } else if (jobKind === 'quiz') {
             if (this._isQuizApiUnavailable()) {
               // ⚠️ 这两条以前都是**静默** continue —— 现场日志里一个字都没有，
               // 用户只看到「本页没有可做的任务点」，然后整章被推过去，还反复空转。
@@ -757,7 +884,7 @@
                 await self._handleQuiz(jobDoc);
               };
             }(this, doc, targetJobId);
-          } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
+          } else if (jobKind === 'read' || jobKind === 'ppt-audio' || jobKind === 'timereader' || jobKind === 'document') {
             if (!this.configs.enablePPT) {
               noteReject(frame, '是阅读/文档任务，但「文档」开关是关的');
               continue;
@@ -776,12 +903,9 @@
                     jobid: targetJobId
                   });
                 };
-              }(this, frame, win, doc, jobName, attachment,
-                found.read ? 'read'
-                  : (found.timereader ? 'timereader'
-                    : (found.pptWithAudio ? 'ppt-audio' : 'document')));
+              }(this, frame, win, doc, jobName, attachment, jobKind);
             }
-          } else if (found.hyperlink) {
+          } else if (jobKind === 'hyperlink') {
             if (!this.configs.enableHyperlink) {
               noteReject(frame, '是超链接任务，但「超链接」开关是关的');
               continue;
@@ -1155,14 +1279,9 @@
             return;
           }
 
-          var kind = 'other';
-          if (elements.videojs) kind = 'video';
-          else if (elements.chapterTest) kind = 'quiz';
-          else if (elements.read) kind = 'read';
-          else if (elements.documentJob) kind = 'document';
-          else if (elements.timereader) kind = 'timereader';
-          else if (elements.pptWithAudio) kind = 'ppt-audio';
-          else if (elements.hyperlink) kind = 'hyperlink';
+          // 仲裁走唯一那一份顺序（原来这里手抄的链把 documentJob 排在 timereader /
+          // pptWithAudio **之前** —— 与 OCS 路由那份顺序已经不一致，正是"两份顺序必漂移"的现场）
+          var kind = this._kindFromChaoxingElements(elements, attachment, doc) || 'other';
 
           var workType = this._getAttachmentWorkType(attachment);
           if (this._isDocumentFrameFinished(doc) || (kind === 'quiz' && this._isQuizPassedOrFinished(doc))) {

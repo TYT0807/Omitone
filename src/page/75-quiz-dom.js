@@ -258,8 +258,10 @@
      * 成因是题目容器被认成了**只装题干的那一块**，选项在它的同级 ——
      * 在 `el` 内部当然一个都找不到。
      *
-     * 只向上找**一层**，且必须同时满足三条，否则宁可返回空：
+     * 最多向上找**两层**（先 parentElement，不行再它的 parentElement），
+     * 且必须同时满足三条，否则宁可返回空：
      *   ① 那一层里只有这一道题 —— 多了就会把别的题的选项捞进来，点错题比不答更糟
+     *      （按"不被其它命中节点包含"去重后再数，嵌套命中不算多题）
      *   ② 捞出来 2~8 个 —— 少于 2 不成题；多于 8 基本是把整页都算进来了
      *   ③ 每个候选都有文本、且不再包含更内层的候选项（只取最内层）
      */
@@ -270,24 +272,38 @@
       try {
         if (el.querySelector && el.querySelector('input[type="text"], input:not([type]), textarea')) return [];
       } catch (eIn) { return []; }
-      try {
-        var containers = parent.querySelectorAll(this._questionSelectors.join(','));
-        // el 自己也会被数进去，所以"只有一道题"的阈值是 1
-        if (containers.length > 1) return [];
-      } catch (eQ) { return []; }
 
-      var out = [];
-      try {
-        var loose = Array.from(parent.querySelectorAll('li, label, [class*="option"], [class*="choice"]'));
-        out = loose.filter(function (node) {
-          if (node === el) return false;
-          if (el.contains && el.contains(node)) return false;
-          if (textOf(node).length === 0) return false;
-          return !node.querySelector('li, [class*="option"], [class*="choice"]');
+      // 先试最近一层，不行再往上一层：题干与选项常被同一层包裹，
+      // 单看 parentElement 有时会漏掉整个容器。
+      var scopes = [parent, parent.parentElement];
+      for (var s = 0; s < scopes.length; s++) {
+        var scope = scopes[s];
+        if (!scope || !scope.querySelectorAll) continue;
+
+        // 只统计"不被其它命中节点包含"的那些 —— 选择器本身会在一道题内部嵌套命中
+        // （.TiMu 里还有 .question-content / div[class*="question"]），
+        // 直接 count 会把单题页数成 2+，于是这条补偿在真实页面从来没生效过。
+        var raw = [];
+        try { raw = Array.from(scope.querySelectorAll(this._questionSelectors.join(','))); } catch (eQ) { continue; }
+        var outer = raw.filter(function (node) {
+          return !raw.some(function (other) { return other !== node && other.contains && other.contains(node); });
         });
-      } catch (eL) { return []; }
-      if (out.length < 2 || out.length > 8) return [];
-      return out;
+        if (outer.length > 1) continue;
+
+        var out = [];
+        try {
+          var loose = Array.from(scope.querySelectorAll('li, label, [class*="option"], [class*="choice"]'));
+          out = loose.filter(function (node) {
+            if (node === el) return false;
+            if (el.contains && el.contains(node)) return false;
+            if (textOf(node).length === 0) return false;
+            return !node.querySelector('li, [class*="option"], [class*="choice"]');
+          });
+        } catch (eL) { return []; }
+        if (out.length < 2 || out.length > 8) continue;
+        return out;
+      }
+      return [];
     },
 
 
@@ -1201,15 +1217,18 @@
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!question || !question._element) return '';
       var qid = this._getQuestionIdFromElement(question._element);
-      if (!qid) return '';
+      // qid 缺失不能直接判"没填"：新版结构卷子根本不带 #answer{qid}，
+      // 平台读的就是可见控件本身。原来这里一 return '' 就整卷永远不提交。
       // 隐藏域优先（平台提交时读的就是它）。**两个文档都查一遍**：
       // 填答（`_fillTextarea` / `_fillText`）写的是 `el.ownerDocument`，
       // 而这里过去只用调用方给的 doc —— 题目与 preferredDoc 不同文档时
       // 就会"写进去、读不到"，判定与填答不对称。
       var hidden = null;
       var ownerDoc = question._element.ownerDocument || null;
-      try { if (ownerDoc && ownerDoc.getElementById) hidden = ownerDoc.getElementById('answer' + qid); } catch (e0) {}
-      try { if (!hidden && doc && doc.getElementById) hidden = doc.getElementById('answer' + qid); } catch (e1) {}
+      if (qid) {
+        try { if (ownerDoc && ownerDoc.getElementById) hidden = ownerDoc.getElementById('answer' + qid); } catch (e0) {}
+        try { if (!hidden && doc && doc.getElementById) hidden = doc.getElementById('answer' + qid); } catch (e1) {}
+      }
       var hiddenValue = hidden ? String(hidden.value || '').trim() : '';
       // 隐藏域优先，但它为空时必须回退到可见控件：
       // 简答题走的是富文本编辑器，页面自身的 JS 未必把内容同步进隐藏域；
@@ -1218,7 +1237,34 @@
       var visible = this._getQuizAnswerValue(question._element, qid);
       if (visible) return visible;
       // 最后是富文本正文：判定必须覆盖"填答能写到的每一处"。
-      return this._readRichEditorValue(question._element);
+      var richValue = this._readRichEditorValue(question._element);
+      if (richValue) return richValue;
+      // 最后一档：可见控件自己的勾选态。**三条同时成立才算已填**，否则宁可判未填：
+      //   ① 本题作用域内有 name/id 形如 answer\d+ 的控件 —— 说明平台按表单字段收答案；
+      //   ② 勾选数符合题型：single/judge 恰好 1，multiple ≥1（单选出现两个勾选必须判未填）；
+      //   ③ 取控件 value；空则按它在同组里的位置推字母 A/B/C…，绝不返回占位串。
+      try {
+        var boxes = Array.from(question._element.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+        var identified = boxes.filter(function (box) {
+          var key = String(box.getAttribute('name') || box.id || '');
+          return /^answer\d+/i.test(key);
+        });
+        if (identified.length) {
+          var pickedBoxes = identified.filter(function (box) { return !!box.checked; });
+          var boxType = this._detectQuestionType(question._element);
+          var expectOne = (boxType === 'single' || boxType === 'judge');
+          if (pickedBoxes.length && (!expectOne || pickedBoxes.length === 1)) {
+            var pickedBox = pickedBoxes[0];
+            var pickedValue = String(pickedBox.value || pickedBox.getAttribute('value') || '').trim();
+            if (!pickedValue) {
+              var boxOrder = identified.indexOf(pickedBox);
+              pickedValue = boxOrder >= 0 ? String.fromCharCode(65 + boxOrder) : '';
+            }
+            if (pickedValue) return pickedValue;
+          }
+        }
+      } catch (ePick) {}
+      return '';
     },
 
 
@@ -1265,7 +1311,7 @@
       for (var i = 0; i < questions.length; i++) {
         var question = questions[i];
         var qid = question && question._element ? this._getQuestionIdFromElement(question._element) : '';
-        if (!qid) return false;
+        // qid 只用于日志：新版结构卷子没有 #answer{qid}，不能拿它当"没填"的判据。
         var value = this._getQuizQuestionFilledValue(preferredDoc, question);
         console.log('[Omitone] answer field', qid, 'value=', value);
         if (!value) return false;

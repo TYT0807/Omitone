@@ -515,7 +515,12 @@
     _computeStandaloneCaptchaPage: function () {
       try {
         if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
-        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach, ' + this._quizDetectorSelector)) return false;
+        // 「这一页是课程页、不是独立验证码页」的凭据。⚠️ 这里原来还并着
+        // `_quizDetectorSelector` —— 那串通用类名（`.question-content` 等）在课件与
+        // 文档页里也会出现，于是普通课件页被误认成课程页、验证码永远轮不到处理。
+        // 判据换成「这页真抠得出题」，见 `_documentHasQuiz`。
+        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach')) return false;
+        if (this._documentHasQuiz(document)) return false;
         var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
         var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
         var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);

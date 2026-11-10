@@ -682,7 +682,10 @@
       if (!this._assertActive()) return;
       if (!this.configs.autoNext) return;
       if (this._isActiveMediaPending('next-unit')) return;
-      if (!this._isQuizForceSkipping() && this._shouldHoldQuizBeforeNext('next-unit')) return;
+      // 冷却窗口内**放行离开**：这里问的是「能不能走」，不是「这一卷要不要暂停」，
+      // 所以不比卷子键（`_isQuizForceSkipping()` 无参调用算出来的是另一个文档的键，
+      // 会把 nextUnit 拦在 hold 上 —— 见 `_isQuizSkipWindowLive` 的注释）。
+      if (!this._isQuizSkipWindowLive() && this._shouldHoldQuizBeforeNext('next-unit')) return;
       if (this._switchToNextLearningCard('next-unit')) return;
       this._dismissPopups();
       try {

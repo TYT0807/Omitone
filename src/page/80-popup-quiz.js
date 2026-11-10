@@ -467,7 +467,7 @@
             emitRuntimeLog('warn', 'popup quiz llm parse failed, keep popup for retry', {
               error: String(result.error || '').slice(0, 160)
             });
-            this._quizForceSkipUntil = Date.now() + 8000;
+            this._setQuizForceSkip(8000);
             return;
           }
           if (result && result.permanentError) {

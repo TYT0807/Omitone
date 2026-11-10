@@ -117,7 +117,7 @@
   挤了四层东西 —— 心情条 / 工具条 / 等级徽章 / 好感条，「初识」徽章端端正正压在
   「表 / 藏」两个按钮上。改成竖排各占一行；上课页伴侣布局本就无遮挡，顺带把
   等级徽章与好感条居中对齐（原来偏左）。方案一「头顶铭牌」被截图否决 ——
-  弹窗角色的家在窗口顶部（y=2），铭牌会整个出视口。e2e 65 场景 / 610 项全绿后
+  弹窗角色的家在窗口顶部（y=2），铭牌会整个出视口。e2e 全场景全绿后
   已随 1.3.0 附件同步替换。
   次日 3 倍特写复查又揪出一层：**工具条整排压在品牌行「未开启」状态徽标上**
   （角色家在 y=2、工具条挂脚下 y≈60，正好是品牌行的高度带；380 窄窗最明显），
@@ -144,7 +144,7 @@
   一个动作按钮，成就区挂到末尾后该定位失效，改为定向滚到按钮本身 —— 顺带踩实
   一坑：DOMRect 没有 `clientHeight`，undefined 混进 delta 变 NaN，
   `scrollTop += NaN` 按规范静默跳过。规则测试 28 项（新增 10 项成就/连击/
-  字段携带断言）；e2e 610 项全绿后重建附件。
+  字段携带断言）；e2e 全绿后重建附件。
 - **立绘分类重建与「上课页角色伴侣」**（用户报「动作/姿势/衣服切换搞混了」的根治）：
   - **逐张看图重分类**：88 张立绘的文件名前缀与画面内容错位 —— pet-e2~e6 画的是
     围巾大衣/浴衣/睡衣/雨衣/制服外套（是**服装**）、pet-i5~i8 是**表情**、
@@ -292,6 +292,96 @@
   同时在完全点不上时打一条 `quiz fill: no clickable option in question`，
   带上题目标签/类名/qid/li/label/radio/checkbox 个数与 220 字符 HTML —— 下次照着这条就能补结构。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 全绿、`npm run e2e` 610/610。
+
+### 2026-11-10 追加（发布后修复，未升号 · 批次 1 + 批次 2）
+
+用户连着报的两件事是**同一个病**：答题的判据外溢到了别的任务上。1.3.0 线上包先出现
+「所有题目都被跳过」，把答题修回来之后又发现「刷 PPT 报废」，两个功能一起接近瘫痪。
+下面按两轮各自的根因记，取舍都写在里面。
+
+- **①「所有题目都被跳过」四条路径**（批次 1）：
+  - `_hasTaskPoint()` 在「没有主帧」那一支返回 `false`。这个返回值同时喂三条跳过出口
+    （`_isCurrentCompleted` → `_skipIfCompleted` → `nextUnit`、`_runTick` 的纯文本跳过分支、
+    `_locateDocumentTask` 的 `worthHandling(doc)`），而「没有主帧」只是**读不到**，
+    不是**没有**。判据改成「三种探测都没命中时保守返回 `true`」；空节推进只允许走
+    自带时间窗与日志的 `_tryAdvanceIdleSection`。**把"判不出"写成"没有"，就是静默跳过**。
+  - 乱码守卫的轮次**按调用次数**累加：`_handleQuiz` 被 OCS 循环每秒调一次，3 秒就数满 3 轮，
+    「跳过」比「乱码」发生得还快；而且每秒一条 warn，两个半分钟就把 200 条日志缓冲刷空，
+    排查时连"发生过什么"都看不到。改成距上次 ≥10 秒才 +1，warn 跟着只在计数时打。
+  - 数满 3 轮原先调 `_skipQuiz()` → `nextUnit()` 把整节翻过去 —— **已删除**。乱码只说明
+    这份卷子的题面读不得，不表示这一节该放弃；而跳走的代价是**不可见**的。改成给这一卷
+    90 秒按卷冷却：代价可见（这一节还停在原地）且会自愈。
+  - `_quizForceSkipUntil` 单一个时间戳是**页面级**的：A 卷坏了 → `_isQuizLearningPending()`
+    第一行就为整页返回 false → **一张坏卷子冻结整门课**。新增 `_quizForceSkipPaperKey`
+    与它成对写入（所有写入点统一走 `_setQuizForceSkip`，不许再直接赋时间戳），
+    判定只对同一份卷子生效；键为空 = 老的全局语义（接口不可用、真的交过卷那类）。
+  - ⚠️ 键是**按文档**算的（`_getQuizWorkKey(doc)` 内部先解析提交文档）：写入端与判定端必须用
+    **同一个文档表达式**。错开时两边都拿到非空但不相等的键，表现不是「没暂停」而是
+    **该节点永久停摆**，日志却写着已暂停（错地图比没地图更糟）。
+    因此 `_isQuizForceSkipping(doc)` 要求调用点传文档；拿不到文档的两处
+    （`nextUnit`、`_shouldHoldQuizBeforeNext`）问的其实是「我能不能离开这一节」，
+    改用不比键的 `_isQuizSkipWindowLive()`。认不出卷子时冷却**继续生效**（保守），
+    别写反成「认不出就放行」—— 那样 401 / 接口不可用的退避会在取键失败的瞬间失效。
+  - `_hasFontDecryptMiss()` 原先 `_walkDocuments` 全书扫描：任何一个不相干的装饰帧带着
+    `data-om-font-miss`，就把这一页**每一份卷子**判成乱码 —— 这是"所有题目都被跳过"的
+    另一条路径。改成以**题目所属文档**为准（新增 `_getQuizDocumentsFromQuestions`，
+    去重后逐个探：一份页面上的题可能分属外层 + 内层 `#frame_content`，只探第一个会漏，
+    而漏探的失败方向不保守 —— 乱码题照样发给模型）。「还没定位到题目文档」那一处
+    （等解密）仍保留全书语义。
+  - 上面那条「10 分钟冷却不再重问」现在改成**只让这一卷暂停 90 秒**，且受
+    `quizZeroFillSkip` 开关约束（默认关，见 7739d1d）。
+- **②「刷 PPT 报废 / 接近瘫痪」根因**（批次 2）：
+  - **判类型问错了问题**：`_quizDetectorSelector` 那串并集里有 `.question-content`
+    `.answerOption` `.tiBank` `.topicItem` 这类**通用名字**，课件帧与文档帧同样出现。
+    拿「选择器命中」当「这是测验任务」，轮盘 PPT 帧就被仲裁成 quiz，
+    `_runChaoxingReadJob` 一次都轮不到。新增 `_documentHasQuiz()`：判据换成
+    「**真的抠得出题，而且题目容器里真的有能作答的控件**」（新真源 `_quizAnswerControlSelector`），
+    两条同时成立才算测验。`_quizDetectorSelector` 本体一个字没改 —— `closest` 与包装查找
+    还要它，只是不许再拿它判类型。⚠️ 整文档的控件预筛必须放在收集容器**之前**：
+    OCS 调度每秒对每个帧调一次，而 `_collectQuestionContainers` 要跑十几条选择器 + 逐个可见性判断。
+  - **顺序散在三处手抄**：OCS 路由、`_searchChaoxingJob`、`_buildSyntheticChaoxingJob`
+    各有一份 `||` 链，三份彼此已经不一致（其中一份把 `documentJob` 排在 `timereader` / `ppt` 之前）。
+    收成 `_kindFromAttachment()` + `_kindFromChaoxingElements()` 两份唯一真源，
+    **路由只按仲裁出来的 `jobKind` 分派**，不许再看 `found.xxx` 布尔位 ——
+    仲裁与路由各留一份顺序，下一次改顺序必然只改到其中一份。
+    唯一例外是 read 家族：附件只说得出「一个文档」，图片阅读 / 轮盘 PPT / 翻页文档
+    在 `_runChaoxingReadJob` 里走不同翻页器，具体 flavour 归 DOM 定；跨家族（video / quiz）仍以附件为准。
+  - **瘫痪的第二条腿**：`_detectQuiz()` 的 DOM 兜底整页扫通用类名 → 恒为真 →
+    `_isQuizLearningPending()` 恒真 → `_tryAdvanceIdleSection` 的逃生门被冻住，
+    而 `_handleQuiz` 又抠不出题，于是整页既不刷课件也不翻页。换成同一个 `_documentHasQuiz`；
+    残留的「像题即题」两处一并换掉（`_computeStandaloneCaptchaPage` 的"这是课程页不是验证码页"、
+    `_isTextOnly` 的"这页没题"）。
+  - **准入闸 ≠ 判类型**（这条差点改出反向事故）：闸只问「这帧有没有**任何**任务信号」，
+    判类型才问「是什么任务」。合并成一个（只用 `!domKind` 当闸）会把**认不出作答控件的真卷子**
+    整帧拒掉 —— jobid 挂在外层、`.TiMu` 只在内层、选项不带 `qid` 的那种三层嵌套形状，
+    实测把 2026-10-17 那份故障夹具全线改红。所以保留弱信号 `quizLike` 只放它进门：
+    判错类型的代价是"多看一眼"，判不进门的代价是"整章跳过"。
+  - `_quizInProgress` 泄漏自愈：异常岔路留下的 `true` 会挡住 `_handleQuiz` 第一行、整页停摆，
+    日志里只有一条 30 秒去重的 tick error。新增 `_quizInProgressAt`，超过 5 分钟没换过就清掉并留 warn。
+- **反向验证（本轮亲自跑，不采信回执）**：注入必须**先确认落盘**再解读结果（CRLF 文件里
+  `\n` 锚点会静默空操作，见 AGENTS §5）。两处注入都改 `src/page/` 后 `npm run concat`，
+  还原后以 `page.js 与 src/page/ 一致（16 个片段，608155 字节）` 的**字节数**证明还原干净。
+  - 注入 A：在 `_documentHasQuiz` 开头退回旧判据
+  - `if (doc.querySelector(this._quizDetectorSelector)) return true;` ⇒ **8 条红**：
+    `/ppt-decoy` 的 5 条路由断言（kind 变回 quiz、进了 `_handleQuiz`、阅读链路零调用、
+    两条搜索入口各一条）、`_isTextOnly` 那条、以及独立验证码页那 2 条（夹具自证
+    `oldLike:true / hasQuiz:true`）。**这批断言真的在抓「像题即题」，不是装饰。**
+  - 注入 B：把 OCS 准入闸从 `(!domKind && !found.quizLike)` 改成 `!domKind`（= 团队待决项
+    「能不能只留一个判据」的实测答案）⇒ **4 条红**，且全是**真实故障夹具**：
+    `/two-quizzes`（三层嵌套）与 `/two-quizzes-divjob`（jobid 挂在容器 div 上）整条链路
+    `matched:null`、`/decoy-top`（模块页「任务点已完成」诱饵）判不成 work-D、
+    还有「任务点全被拒时日志要说明原因」那条退化成笼统一句。
+    ⇒ **结论：`quizLike` 保留。**「准入」与「判类型」是两个问题，合并的代价是整章静默跳过，
+    正是 2026-10-17 那次的形状；这一条同时否掉了「改夹具去迁就单一判据」那条路
+    （该改的是判据的分层，不是把夹具改成恰好配合某一种实现）。
+- 验证：`npm run check` 与 `npm test` 全绿；`npm run e2e` 真实 Edge 全绿 —— 场景数与断言总数
+  见本页顶部基线（本轮新增两条）。`/ppt-decoy` 是三层结构夹具，**从 `_searchChaoxingJobOcs` /
+  `_searchChaoxingJob` 的产出**断言路由（上面 `/doc-ppt` 那个场景直接调 `_runPptAudioJob`，
+  绕过仲裁，抓不到这一类回归）；另一个新场景把 12 对相邻优先级逐条钉住，谁再手抄一份 `||` 链就会红。
+  夹具里刻意放了两个**近失样本**：课件帧的装饰类名一定命中旧判据（断言 `oldProbe >= 2`，
+  证明旧形状真会被误判）、`#answerTotal` 在文档里但不在任何题目容器里（证明「控件必须在容器内」
+  这半边条件真在起作用，而不是整页一个控件都没有才返回 false）。
+- ⚠️ 两轮都只在 mock 页面验过，**真实课程页待用户实测**；未升号、线上附件仍是 1.3.0 发布那一版。
 
 ---
 

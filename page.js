@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'dc8692e1a3';
+var OMITONE_CODE_REV = 'b516fc5f51';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -387,6 +387,12 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
 
     _quizInProgress: false,
 
+    // `_quizInProgress` 置真的时刻 —— 专给「泄漏自愈」用（70-quiz-flow.js `_handleQuiz`）。
+    // 没有它，异常岔路留下的 true 就是永久的：第一行挡住一切、整页停摆，
+    // 日志里只有一条 30 秒去重的 tick error。声明在这儿而不是就地赋值，
+    // 是为了让它进片段头清单（`npm run check` 第 15 项核对状态字段与计数）。
+    _quizInProgressAt: 0,
+
     _quizAnswered: false,
 
     _quizSubmitPending: false,
@@ -424,6 +430,24 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     _quizRunPaperKey: '',
 
     _quizForceSkipUntil: 0,
+
+    // 「这一份卷子」的暂停键 —— 与 `_quizForceSkipUntil` 成对写入（走 `_setQuizForceSkip`）。
+    //
+    // 为什么必须有它：`_quizForceSkipUntil` 单独一个时间戳是**页面级**的，
+    // 而 `_isQuizLearningPending()` 第一行就 `if (this._isQuizForceSkipping(preferredDoc || null)) return false;`
+    // —— 于是「A 卷子坏了」会被调度理解成「这一页所有答题任务点都不用做」，
+    // 一张坏卷子能把整门课冻结到冷却结束。写入时带上卷子身份键，
+    // 判定时只对同一份卷子生效（键为空 = 老的全局语义，见 `_isQuizForceSkipping`）。
+    // ⚠️ 键是**按文档**算的（`_getQuizWorkKey(doc)` 会先解析提交文档），
+    //   所以写入端与读取端必须用同一个文档表达式 —— 判定端要拿到当前文档，
+    //   两侧错开时表现不是「没暂停」而是「这一节永久停摆」（日志却写着已暂停）。
+    _quizForceSkipPaperKey: '',
+
+    // 上一次给「题干乱码」计轮的时刻。
+    //
+    // `_handleQuiz` 被 OCS 循环**每秒**调一次，所以乱码轮次绝不能按调用次数累加
+    // —— 那样 3 秒就数满 3 轮。只有间隔够久（≥10 秒）才 +1，见 `_handleQuiz` 的乱码守卫。
+    _quizGarbledRoundAt: 0,
 
     _quizApiSkipLogAt: 0,
 
@@ -878,6 +902,24 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
      * 现在三处统一读这里：**改选择器只改这一行** —— 手抄的那份必然漂移，别再抄第四份。
      */
     _quizContainerSelector: '.TiMu, .Cy_TItle, .questionLi, .singleQuesId, .questionItem, .mark_item, .questionBox',
+
+    /**
+     * 「题目容器里有没有能作答的控件」—— 判「这是不是答题页」的**必要条件**真源。
+     *
+     * 为什么必须有这一条：`_quizDetectorSelector` 那串类名里有 `.question-content`
+     * `.answerOption` `.tiBank` `.topicItem` 这类**通用名字**，课件（轮盘 PPT）帧和
+     * 文档帧里同样会出现。拿「选择器命中」当「这是测验任务」，一个带 `.question-content`
+     * 的 PPT 帧就被判成 quiz，于是 `_runChaoxingReadJob` 永远轮不到 ——
+     * 用户报的「刷 PPT 报废」正是这条（2026-11-10）。
+     *
+     * 真实题面必带下面之一：选项 `li[qid]`（填答案全靠它）、隐藏答案域 `#answer…`、
+     * 填空/简答的 `textarea[id^="answer"]`、新版前端的 `[role="radio"/"checkbox"]`。
+     * 课件里的装饰性 `.question-content` 一个都没有。
+     *
+     * ⚠️ 只准用在「判类型」这一处；不收窄 `_quizDetectorSelector` 本身
+     *    （72-quiz-answers / 74-quiz-vision / 30-log 还靠它做 closest 与包装查找）。
+     */
+    _quizAnswerControlSelector: '[qid], input[id^="answer"], textarea[id^="answer"], [role="radio"], [role="checkbox"]',
 
     _getMainFrame: function () {
       return document.querySelector('#iframe');
@@ -3099,7 +3141,12 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     _computeStandaloneCaptchaPage: function () {
       try {
         if (this._getMainFrame()) return false; // 学习通课程页一定有 #iframe
-        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach, ' + this._quizDetectorSelector)) return false;
+        // 「这一页是课程页、不是独立验证码页」的凭据。⚠️ 这里原来还并着
+        // `_quizDetectorSelector` —— 那串通用类名（`.question-content` 等）在课件与
+        // 文档页里也会出现，于是普通课件页被误认成课程页、验证码永远轮不到处理。
+        // 判据换成「这页真抠得出题」，见 `_documentHasQuiz`。
+        if (document.querySelector('#video, #audio, .swiper-container, .ans-attach')) return false;
+        if (this._documentHasQuiz(document)) return false;
         var bodyText = textOf(document.body || document.documentElement).slice(0, 800);
         var urlHit = /(verif|captcha|checkcode|validate|seccode|yzm|\/code|captchaImage)/i.test(String(location.href || ''));
         var textHit = /验证码|校验码|请输入|captcha|verify|robot|人机|安全验证/i.test(bodyText);
@@ -3373,8 +3420,47 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     },
 
     _hasTaskPoint: function () {
+      var frame = this._getMainFrame();
+      if (!frame) {
+        // 没有主帧（OCS / 移动端布局）：这一族的课程内容是直接挂在**顶层页**上的，
+        // 所以把同一套判据改挂到 `document` 上探测，而不是"无脑 true / 无脑 false"。
+        var bareHit = null;
+        try {
+          bareHit = document.querySelector(
+            '.ans-job-icon, .ans-task-icon, .taskPoint, .ans-job-num, ' +
+            '#panView, .fileBox, .pageNum, #pageNumber'
+          );
+        } catch (eBare) { bareHit = null; }
+        if (bareHit) return true;
+
+        var bareActive = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
+        if (bareActive && bareActive.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+
+        var bareText = '';
+        try { bareText = textOf(document.body); } catch (eBareText) { bareText = ''; }
+        if (bareText.indexOf('任务点') !== -1) return true;
+        // 三种探测都没命中时**保守返回 true**（=「认不出就当有任务点」）。
+        //
+        // 为什么必须保守：这个返回值同时喂三条跳过出口 ——
+        //   ① `_isCurrentCompleted()` 末行的 `return !this._hasTaskPoint()`
+        //      → `_skipIfCompleted()` → `nextUnit()`，整节直接翻过去；
+        //   ② `_runTick` 尾部的 `_isTextOnly() && !_hasTaskPoint()` 跳过分支；
+        //   ③ 62-tasks-run.js `_locateDocumentTask` 的 `worthHandling(doc)`
+        //      —— 判 false 就不接管文档任务，PDF.js / 翻页文档整族没人管。
+        // 返回 false 的含义是**肯定的**「这一页没有任务点」，可我们其实什么都没认出来
+        // （`_getMainFrame()` 为空时，任务点 markup 常在读不到的子帧 / 延迟渲染的容器里）。
+        // 把"判不出"写成"没有"，就是静默跳过 —— 用户看到的「所有题目都被跳过」（2026-11-10）。
+        //
+        // 那空节谁来推进？不能靠这里 —— **空节的前进只允许走 `_tryAdvanceIdleSection`**，
+        // 那条自带时间窗（`_idleEmptySince` 要连续空够时长）和日志（`study no runnable job`
+        // 有节流），是"能解释、可恢复"的出口；本方法没有"观察了几秒"的概念，
+        // 每一帧都是当场判断，一旦判错就是立刻跳走、无窗、无声。
+        // 宁可慢一点、空转几秒有日志，也不能听见什么都没说就翻页。
+        return true;
+      }
+
       var doc = this._getMainDocument();
-      if (!doc) return true;
+      if (!doc) return true;   // 主帧在、但跨域读不到 —— 必须保守
 
       var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
       if (active && active.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
@@ -3599,18 +3685,31 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     _detectChaoxingJobElements: function (doc) {
       if (!doc || !doc.querySelector) return null;
       var videojs = doc.querySelector('#video, #audio, .video-js, #video_html5_api');
-      var chapterTest = doc.querySelector(this._quizDetectorSelector);
+      // ⚠️ 「像题即题」的老判据（`doc.querySelector(_quizDetectorSelector)`）已换掉：
+      //    那串类名里的 `.question-content` / `.answerOption` 在课件帧与文档帧里同样出现，
+      //    于是一个轮盘 PPT 帧被判成 quiz、阅读链路永远轮不到（2026-11-10「刷 PPT 报废」）。
+      //    现在问的是「这页真抠得出题、且题里有能填的控件」吗 —— 见 `_documentHasQuiz`。
+      var quiz = this._documentHasQuiz(doc);
+      // ⚠️ `quiz` 与 `quizLike` 是**两个不同的问题**，别合并：
+      //   `quiz` = 「这帧是什么任务」（判类型，走 `_kindFromChaoxingElements` 那一份顺序）；
+      //   `quizLike` = 「这帧值不值得进 jobid 匹配」（准入闸的弱信号，整页扫通用类名）。
+      //   只留 `quiz` 那一个信号当闸会把**认不出作答控件的真卷子整帧拒掉** ——
+      //   三层嵌套的卷子（jobid 在外层、`.TiMu` 在内层）就是这么被静默漏掉的形状，
+      //   实测把 2026-10-17 那份故障夹具全线改红过（2026-11-10 批次 2）。
+      //   准入闸宁可宽：判错类型的代价是"多看一眼"，判不进门的代价是"整章跳过"。
+      var quizLike = !!doc.querySelector(this._quizDetectorSelector);
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
       var timereader = doc.querySelector('iframe[name="bookifame"][src*="timing"]');
       var documentJob = doc.querySelector('#panView, .fileBox, .pageNum, #docContainer, .docBox');
 
-      if (!(videojs || chapterTest || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
+      if (!(videojs || quiz || quizLike || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
 
       return {
         videojs: videojs,
-        chapterTest: chapterTest,
+        quiz: quiz,
+        quizLike: quizLike,
         read: read,
         pptWithAudio: pptWithAudio,
         hyperlink: hyperlink,
@@ -3686,29 +3785,88 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       return 'not-job';
     },
 
+    /**
+     * 附件元数据 → 任务类型。这份映射现在**只此一份**（`_buildAttachmentOnlyJob` 与
+     * 任务类型仲裁 `_kindFromChaoxingElements` 共用）—— 以前它在附件构造里手写一遍、
+     * 在 OCS 路由旁又各写一遍，改顺序时必然只改到其中一份。
+     *
+     * 返回空串 = 附件说不出这是什么任务，调用方据此回落到 DOM 判据。
+     *
+     * ⚠️ 这一族的粒度只到 `read`：`insertdoc` / ppt / pdf / doc / 图片在附件里都是
+     *    「一个文档」，究竟是图片阅读、轮盘 PPT 还是翻页文档只有 DOM 知道 ——
+     *    `_runChaoxingReadJob` 对这三种走**不同翻页器**，所以 read 家族的具体 flavour
+     *    要留给 DOM 定（见 `_kindFromChaoxingElements` 的注释）。
+     */
+    _kindFromAttachment: function (attachment) {
+      if (!attachment) return '';
+      var property = attachment.property || {};
+      var module = String(property.module || attachment.module || '').toLowerCase();
+      var type = String(property.type || attachment.type || '').toLowerCase();
+
+      if (/insertdoc/.test(module) || /(?:^|\.)(?:ppt|pptx|pdf|doc|docx)$/.test(type)) return 'read';
+      // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
+      // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
+      if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
+      if (/work|exam|quiz/.test(module)) return 'quiz';
+      // 图片任务点：打开看一眼即可，按「阅读」处理
+      if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) return 'read';
+      return '';
+    },
+
+    /**
+     * 任务类型仲裁的**唯一一处顺序**（2026-11-10）。调用方拿到 kind 之后按 kind 分派，
+     * 不许再各自按 `found.xxx` / `elements.xxx` 布尔位重排一遍 ——
+     * 仲裁与路由留两份顺序，下一次改顺序必然只改到其中一份。
+     *
+     * 顺序（固定）：
+     *   ① 附件元数据 —— 「这个任务点是什么」的权威来源。卷子常常渲染在
+     *      本帧抠不到题的那一层（三层嵌套的 jobid 场景），只有附件说得出 quiz；
+     *   ②..⑧ DOM，从最具体到最兜底：
+     *      videojs → quiz → read → ppt-audio → timereader → hyperlink → document。
+     *      （`document` 是兜底，绝不能排在 ppt/timereader 之前 —— 它那些类名太通用。）
+     *
+     * 唯一的例外是 read 家族：附件那份映射只说得出 `read`，分不清图片阅读 /
+     * 轮盘 PPT / 翻页文档，而这三种在 `_runChaoxingReadJob` 里走不同翻页器，
+     * 所以 read 家族让 DOM 的具体 flavour 赢；跨家族（video / quiz）仍以附件为准。
+     */
+    _kindFromChaoxingElements: function (elements, attachment, doc) {
+      var fromAttachment = this._kindFromAttachment(attachment);
+      var fromDom = '';
+      if (elements) {
+        if (elements.videojs) fromDom = 'video';
+        else if (elements.quiz) fromDom = 'quiz';
+        else if (elements.read) fromDom = 'read';
+        else if (elements.pptWithAudio) fromDom = 'ppt-audio';
+        else if (elements.timereader) fromDom = 'timereader';
+        else if (elements.hyperlink) fromDom = 'hyperlink';
+        else if (elements.documentJob || elements.pagedDoc) fromDom = 'document';
+      } else if (doc) {
+        // 调用方只给了文档、没有探测包：用**同一个**判据现算一次。
+        // 顺序只留一份、判据也只留一份，别在调用方再手抄一遍 DOM 探测。
+        if (this._documentHasQuiz(doc)) fromDom = 'quiz';
+      }
+
+      if (fromAttachment && fromAttachment !== 'read') return fromAttachment;
+      return fromDom || fromAttachment || '';
+    },
+
     _buildAttachmentOnlyJob: function (attachment) {
       if (!attachment) return null;
       var property = attachment.property || {};
       var module = String(property.module || attachment.module || '').toLowerCase();
       var type = String(property.type || attachment.type || '').toLowerCase();
-      var kind = 'other';
 
       // 与 _getAttachmentWorkType 同一条判据：显式 job:false 表示老师没把它设为任务点。
       // 这里也必须挡一道 —— 否则调用方若没先过滤，仍然会造出一个"要去做"的任务。
+      // ⚠️ 这道闸门留在本方法里，不进 `_kindFromAttachment`：映射只管「是什么」，
+      //    「要不要做」不是它的职责（仲裁时 job:false 的附件同样要说得出类型）。
       var jobFlag = attachment.job !== undefined ? attachment.job : property.job;
       if (jobFlag === false || jobFlag === 0 || String(jobFlag).toLowerCase() === 'false') {
         return null;
       }
 
-      if (/insertdoc/.test(module) || /(?:^|\.)(?:ppt|pptx|pdf|doc|docx)$/.test(type)) kind = 'read';
-      // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
-      // 早期只认 insertvideo，insertaudio 会掉到 other 然后被整条丢弃
-      else if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) kind = 'video';
-      else if (/work|exam|quiz/.test(module)) kind = 'quiz';
-      // 图片任务点：打开看一眼即可，按"阅读"处理
-      else if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) kind = 'read';
-
-      if (kind === 'other') {
+      var kind = this._kindFromAttachment(attachment);
+      if (!kind) {
         // 不要静默丢弃：任务点被无声跳过时，用户只能看到"这个任务点没做"，
         // 完全无从判断是识别失败还是不支持的题型。这里留一条去重日志。
         this._logUnsupportedJobOnce(module, type);
@@ -3802,14 +3960,9 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     _buildSyntheticChaoxingJob: function (frame, win, doc, elements) {
       if (!frame || !elements) return null;
       var frameData = this._getChaoxingFrameData(frame, win);
-      var kind = 'other';
-      if (elements.videojs) kind = 'video';
-      else if (elements.chapterTest) kind = 'quiz';
-      else if (elements.read) kind = 'read';
-      else if (elements.documentJob) kind = 'document';
-      else if (elements.timereader) kind = 'timereader';
-      else if (elements.pptWithAudio) kind = 'ppt-audio';
-      else if (elements.hyperlink) kind = 'hyperlink';
+      // 仲裁只走 `_kindFromChaoxingElements` 这一份顺序。这里没有附件可问 ——
+      // 会落到「合成型任务」这条构造路径，正是因为附件清单里没匹配上它。
+      var kind = this._kindFromChaoxingElements(elements, null, doc) || 'other';
 
       var wrap = frame.parentElement;
       var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
@@ -3904,7 +4057,12 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         if (!doc) return null;
         return {
           videojs: doc.querySelector('#video,#audio'),
-          chapterTest: doc.querySelector(appRef._quizDetectorSelector),
+          // 与 `_detectChaoxingJobElements` 同一个判据：问「抠不抠得出题」，
+          // 不再问「像不像题」（`.question-content` 一类通用类名在课件帧里也有）。
+          quiz: appRef._documentHasQuiz(doc),
+          // 准入闸专用的弱信号，见 `_detectChaoxingJobElements` 里同名字段的注释。
+          // 判类型**不许**读它 —— 那正是「像题即题」把课件判成测验的那条路。
+          quizLike: !!doc.querySelector(appRef._quizDetectorSelector),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
@@ -3943,13 +4101,25 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
           var win = frame.contentWindow;
           var doc = appRef._safeWinDoc(win);
           var found = searchJobElement(frame);
-          if (!win || !found || !(found.videojs || found.read || found.chapterTest || found.hyperlink || found.pptWithAudio || found.timereader || found.pagedDoc)) {
+          // 类型仲裁只有一份顺序 —— `_kindFromChaoxingElements`。
+          // 这一关先只问 DOM（附件要到下面匹配 jobid 时才拿到），因为
+          // 「帧里什么信号都没有」必须在匹配 jobid 之前就被拒掉并留下原因。
+          var domKind = this._kindFromChaoxingElements(found, null, doc);
+          // ⚠️ 准入闸问的是「这帧有没有**任何**任务信号」，不是「这帧是什么任务」——
+          //   后者只许由 `_kindFromChaoxingElements` 一处回答。两个问题合并成一个
+          //  （只用 `!domKind` 当闸）会把「认不出作答控件的真卷子」整帧拒掉：
+          //   三层嵌套里 `.TiMu` 只挂在内层、且那份卷子的选项没有 `qid` 时，
+          //   `domKind` 为空 → 连 jobid 匹配都不做 → 整章静默跳过。
+          //   实测这样改把 3 条 2026-10-17 真实故障夹具全线改红（2026-11-10 批次 2）。
+          //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
+          //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
+          if (!win || !found || (!domKind && !found.quizLike)) {
             noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）');
             continue;
           }
           // 纯文档帧还有一道闸：外层容器必须真的带任务点。
           // 否则它只是页面上的说明性/预览性文档，接管它会白白占住调度。
-          if (!found.videojs && !found.read && !found.chapterTest && !found.hyperlink && !found.pptWithAudio && !found.timereader) {
+          if (domKind === 'document') {
             if (!appRef._frameHasTaskPoint(doc)) {
               noteReject(frame, '纯文档帧，但外层容器没有任务点标记');
               continue;
@@ -3980,7 +4150,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
           }
 
           var jobName = this._getChaoxingJobName(attachment);
-          var jobKind = found.videojs ? 'video' : (found.chapterTest ? 'quiz' : (found.read ? 'read' : (found.timereader ? 'timereader' : (found.pptWithAudio ? 'ppt-audio' : (found.hyperlink ? 'hyperlink' : 'document')))));
+          var jobKind = this._kindFromChaoxingElements(found, attachment, doc);
           var workType = this._getAttachmentWorkType(attachment);
           if (this._isDocumentFrameFinished(doc) || (jobKind === 'quiz' && this._isQuizPassedOrFinished(doc))) {
             workType = 'finished';
@@ -3994,7 +4164,11 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
             workType = 'finished';
           }
           var func = null;
-          if (found.videojs) {
+          // ⚠️ 路由**只按上面仲裁出来的 jobKind 分派**，不许再看 `found.xxx` 布尔位：
+          //   仲裁与路由各留一份顺序的话，下一次改顺序必然只改到其中一份
+          //   （原来这两份已经不一致：这里 `timereader` 排在 `ppt-audio` 前，
+          //   `_buildSyntheticChaoxingJob` 那份却把 `documentJob` 排在两者之前）。
+          if (jobKind === 'video') {
             if (!this.configs.enableMedia) {
               noteReject(frame, '是视频任务，但「媒体」开关是关的');
               continue;
@@ -4015,7 +4189,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
                 };
               }(this, frame, win, doc, jobName, attachment);
             }
-          } else if (found.chapterTest) {
+          } else if (jobKind === 'quiz') {
             if (this._isQuizApiUnavailable()) {
               // ⚠️ 这两条以前都是**静默** continue —— 现场日志里一个字都没有，
               // 用户只看到「本页没有可做的任务点」，然后整章被推过去，还反复空转。
@@ -4036,7 +4210,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
                 await self._handleQuiz(jobDoc);
               };
             }(this, doc, targetJobId);
-          } else if (found.read || found.pptWithAudio || found.timereader || found.pagedDoc) {
+          } else if (jobKind === 'read' || jobKind === 'ppt-audio' || jobKind === 'timereader' || jobKind === 'document') {
             if (!this.configs.enablePPT) {
               noteReject(frame, '是阅读/文档任务，但「文档」开关是关的');
               continue;
@@ -4055,12 +4229,9 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
                     jobid: targetJobId
                   });
                 };
-              }(this, frame, win, doc, jobName, attachment,
-                found.read ? 'read'
-                  : (found.timereader ? 'timereader'
-                    : (found.pptWithAudio ? 'ppt-audio' : 'document')));
+              }(this, frame, win, doc, jobName, attachment, jobKind);
             }
-          } else if (found.hyperlink) {
+          } else if (jobKind === 'hyperlink') {
             if (!this.configs.enableHyperlink) {
               noteReject(frame, '是超链接任务，但「超链接」开关是关的');
               continue;
@@ -4434,14 +4605,9 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
             return;
           }
 
-          var kind = 'other';
-          if (elements.videojs) kind = 'video';
-          else if (elements.chapterTest) kind = 'quiz';
-          else if (elements.read) kind = 'read';
-          else if (elements.documentJob) kind = 'document';
-          else if (elements.timereader) kind = 'timereader';
-          else if (elements.pptWithAudio) kind = 'ppt-audio';
-          else if (elements.hyperlink) kind = 'hyperlink';
+          // 仲裁走唯一那一份顺序（原来这里手抄的链把 documentJob 排在 timereader /
+          // pptWithAudio **之前** —— 与 OCS 路由那份顺序已经不一致，正是"两份顺序必漂移"的现场）
+          var kind = this._kindFromChaoxingElements(elements, attachment, doc) || 'other';
 
           var workType = this._getAttachmentWorkType(attachment);
           if (this._isDocumentFrameFinished(doc) || (kind === 'quiz' && this._isQuizPassedOrFinished(doc))) {
@@ -4854,7 +5020,9 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
      *
      * 判据（全部成立才动，宁可多等也不误跳）：
      *   - 平台附件数为 0，且**一个可见任务帧都没有**（真没活干）
-     *   - 主文档加载完成、正文不是空壳（刚切章节时平台还在渲染，不能算数）
+     *   - 主文档加载完成（判据只有 `readyState === 'complete'` 一条：这里用的是**外层页**，
+     *     它永远带着导航与目录，正文长度判不出「还在渲染」，原先那条「正文不是空壳」
+     *     的长度守卫已经把整道逃生门锁死过，删得对；渲染没完成由 readyState 兜住）
      *   - 没有在答的卷子、没有在等结果的任务点
      *   - 已经连续空了 30 秒
      *   - 同一个「学习进度键」只推一次：点了页面没动就停手，不连点（连点是刷课插件的经典事故）
@@ -4889,9 +5057,15 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         }
       } catch (eVideo) { return false; }
 
-      var doc = this._getMainDocument();
+      // ⚠️ 这里必须退到**外层页**，不能只看主帧。
+      //   `_tryAdvanceIdleSection` 唯一的调用点（本文件 `_runOcsStyleStudy`）只在
+      //   `_ensureOcsStudyRunner()` 返回 false 时才会被走到，而那只发生在
+      //   「没有 #iframe」或「主帧跨域读不到」两种情况下 —— 这两种情况下
+      //   `_getMainDocument()` **必然是 null**，写成 `var doc = this._getMainDocument()`
+      //   就等于 `return false`，整道逃生门是死的（2026-11-10 那个 14 分钟卡死会原样复现）。
+      // 空转判定本来就该问"外层页渲染完了没有"。
+      var doc = this._getMainDocument() || document;
       if (!doc || !doc.body || String(doc.readyState || '') !== 'complete') return false;
-      if (textOf(doc.body).length < 20) return false;
 
       var now = Date.now();
       if (!this._idleEmptySince) {
@@ -6182,7 +6356,10 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       if (!this._assertActive()) return;
       if (!this.configs.autoNext) return;
       if (this._isActiveMediaPending('next-unit')) return;
-      if (!this._isQuizForceSkipping() && this._shouldHoldQuizBeforeNext('next-unit')) return;
+      // 冷却窗口内**放行离开**：这里问的是「能不能走」，不是「这一卷要不要暂停」，
+      // 所以不比卷子键（`_isQuizForceSkipping()` 无参调用算出来的是另一个文档的键，
+      // 会把 nextUnit 拦在 hold 上 —— 见 `_isQuizSkipWindowLive` 的注释）。
+      if (!this._isQuizSkipWindowLive() && this._shouldHoldQuizBeforeNext('next-unit')) return;
       if (this._switchToNextLearningCard('next-unit')) return;
       this._dismissPopups();
       try {
@@ -7327,6 +7504,50 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       }
     },
 
+    /**
+     * 「这份文档到底是不是答题页」—— 任务类型仲裁的**唯一**判据（2026-11-10）。
+     *
+     * 为什么不能再拿 `_quizDetectorSelector` 命中当「这是测验任务」：那串并集里
+     * 有 `.question-content`、`.answerOption`、`.tiBank`、`.topicItem` 这类**通用名字**，
+     * 课件（轮盘 PPT）帧和文档帧里同样会出现。一个挂着 `.question-content` 的 PPT 帧
+     * 因此被判成 quiz，`_runChaoxingReadJob` 再也轮不到 —— 用户看到的「刷 PPT 功能报废」
+     * 正是这一条；同一份误判还让 `_isQuizLearningPending` 恒为真、
+     * 把 `_tryAdvanceIdleSection` 的逃生门也锁死（两条腿一起接近瘫痪）。
+     *
+     * 判据换成「真的抠得出题，而且题里有能填的控件」，两条同时成立：
+     *   1) `_collectQuestionContainers(doc)` 非空 —— 走有序真源 `_questionSelectors`，
+     *      带可见性/文本过滤与嵌套去重，比一次性并集严格得多；
+     *   2) 容器内存在答题控件（真源 `_quizAnswerControlSelector`）——
+     *      课件里那些装饰性的 `.question-content` 一个都没有。
+     *
+     * ⚠️ 整文档的控件预筛必须放在收集容器**之前**，这是性能闸不是省事：
+     *    OCS 调度每秒对每个帧调一次本方法，而 `_collectQuestionContainers` 要跑
+     *    十几条选择器 + 逐个可见性判断。一道控件都答不了的页面必然不是答题页，
+     *    先用一次 `querySelector` 挡掉，非答题页的开销与改前持平。
+     */
+    _documentHasQuiz: function (doc) {
+      if (!doc || !doc.querySelectorAll) return false;
+      var controlSelector = this._quizAnswerControlSelector;
+      try {
+        if (!doc.querySelector(controlSelector)) return false;
+      } catch (ePre) {
+        return false;
+      }
+
+      var containers = [];
+      try {
+        containers = this._collectQuestionContainers(doc);
+      } catch (eCol) {
+        return false;
+      }
+      for (var i = 0; i < containers.length; i++) {
+        try {
+          if (containers[i] && containers[i].querySelector(controlSelector)) return true;
+        } catch (eCtl) {}
+      }
+      return false;
+    },
+
     _detectQuiz: function () {
       var title = this._getCurrentTitle();
       if (title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1) {
@@ -7350,19 +7571,29 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         });
         if (onWorkPage) return true;
       }
-      // 真源 `_quizDetectorSelector` —— 这份清单曾手抄在此且漏了 .Cy_TItle，
-      // 作业/考试页的 DOM 兜底整体失效（真源处有完整教训记录），别再抄回来
-      var selectors = [this._quizDetectorSelector];
       var tasks = this._collectVisibleTaskFrames();
       if (tasks.some(function (task) { return task.type === 'quiz' && !task.finished; })) return true;
 
+      // DOM 兜底的判据与任务类型仲裁**同一个**：「题目容器里真的有能作答的控件」。
+      // 原来这里整页扫 `_quizDetectorSelector` 的通用类名，于是挂着一个
+      // `.question-content` 的课件页/文档页也返回 true —— 那就是「接近瘫痪」的第二条腿：
+      // `_isQuizLearningPending` 恒为真 → `_tryAdvanceIdleSection` 的逃生门被冻住，
+      // 而 `_handleQuiz` 又抠不出题，什么都不做（2026-11-10）。
+      // ⚠️ 容器清单读真源 `_quizContainerSelector`（这份清单曾被手抄在此且漏了 .Cy_TItle，
+      //    作业/考试页的 DOM 兜底整体失效 —— 真源处有完整教训记录，别再抄回来），
+      //    也不要换成 `_questionSelectors` 那份有序备选：两处用途不同，见 10-config-state.js 各自的注释。
+      var containerSelector = this._quizContainerSelector;
+      var controlSelector = this._quizAnswerControlSelector;
       return this._walkDocuments(function (doc2) {
-        for (var i = 0; i < selectors.length; i++) {
-          var nodes = Array.from(doc2.querySelectorAll(selectors[i]));
+        try {
+          // 便宜的整页预筛：本方法在每轮 tick 里都会跑，绝不能每次都去遍历全部容器
+          if (!doc2.querySelector(controlSelector)) return false;
+          var nodes = Array.from(doc2.querySelectorAll(containerSelector));
           for (var j = 0; j < nodes.length; j++) {
-            if (visible(nodes[j]) && textOf(nodes[j]).length > 0) return true;
+            if (!visible(nodes[j]) || textOf(nodes[j]).length === 0) continue;
+            if (nodes[j].querySelector(controlSelector)) return true;
           }
-        }
+        } catch (eWalk) {}
         return false;
       });
     },
@@ -7627,7 +7858,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
       var skipReason = reason || this._getQuizApiUnavailableReason() || 'api-unavailable';
-      this._quizForceSkipUntil = Date.now() + 15000;
+      this._setQuizForceSkip(15000);
       this._resetQuizStateForSkip();
       var now = Date.now();
       if (!this._quizApiSkipLogAt || now - this._quizApiSkipLogAt > 3000) {
@@ -7643,7 +7874,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         if (nextButton) {
           nextButton.click();
           this._resetRuntimeState();
-          this._quizForceSkipUntil = Date.now() + 15000;
+          this._setQuizForceSkip(15000);
           return true;
         }
       } catch (e) {}
@@ -7682,14 +7913,72 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
-    _isQuizForceSkipping: function () {
-      return this._quizForceSkipUntil && Date.now() < this._quizForceSkipUntil;
+    /**
+     * 写入「暂停这一卷」的冷却。**时间戳与卷子身份键必须成对写**，
+     * 所以所有写入点一律走这里，不许再直接赋 `_quizForceSkipUntil`。
+     *
+     * @param {number} durationMs 冷却时长
+     * @param {string} [paperKey] 卷子身份键；**不传 = 全局冷却**（老语义）——
+     *   用于「Key/接口不可用」「真的交过卷之后」这类与具体卷子无关的场景。
+     */
+    _setQuizForceSkip: function (durationMs, paperKey) {
+      this._quizForceSkipUntil = Date.now() + durationMs;
+      this._quizForceSkipPaperKey = paperKey ? String(paperKey) : '';
+      return this._quizForceSkipUntil;
+    },
+
+    /**
+     * 「现在是不是在暂停这一卷」。
+     *
+     * ⚠️ **调用点必须把当前文档传进来**（`_handleQuiz` / `_isQuizLearningPending`）。
+     * 卷子键是**按文档算**的：`_getQuizWorkKey(doc)` 里先 `_resolveQuizSubmitDocument(doc)`，
+     * 传题目所在的内层 `#frame_content` 与不传（退到主文档 / document）
+     * 读到的 `workRelationId` 可能不是同一个 —— 于是写入端记 A 键、判定端问 B 键，
+     * 「暂停 90 秒」永远对不上：R1 已关掉跳过出口、R2 已删掉 `_skipQuiz()`，
+     * 结果不是「没暂停」而是**该节点永久停摆**，日志却写着已暂停（错地图比没地图更糟）。
+     * 判定端与写入端共用同一个文档表达式，是这条不复发的前提。
+     *
+     * @param {Document} [doc] 当前这份卷子的文档；不传时用「正在答的题」所在文档兜底。
+     */
+    _isQuizForceSkipping: function (doc) {
+      if (!this._quizForceSkipUntil || Date.now() >= this._quizForceSkipUntil) return false;
+      // 冷却还没过，但**只对写入时那一份卷子**生效（R3：一张坏卷子不该冻结整门课）。
+      var paperKey = this._quizForceSkipPaperKey || '';
+      if (!paperKey) return true;                 // 写入时没带卷子键 → 全局冷却，与今天一致
+      // 与写入侧**同一个**文档表达式，别在这里另起一份。
+      var keyDoc = doc || this._getQuizDocumentFromQuestions(this._quizCurrentQuestions) || null;
+      var currentKey = '';
+      try { currentKey = String(this._getQuizWorkKey(keyDoc) || ''); } catch (eKey) { currentKey = ''; }
+      // ⚠️ 认不出当前卷子时**让冷却继续生效**（保守 = true），别写反成「认不出就放行」：
+      //   那样 401 / 接口不可用这些既有退避会在取键失败的瞬间失效，插件立刻又开始白烧请求。
+      if (!currentKey) return true;
+      return currentKey === paperKey;
+    },
+
+    /**
+     * 「现在是不是落在**任意一个**『暂停』窗口里」—— 不比卷子键。
+     *
+     * 只给两处拿不到卷子文档的调用点用：`nextUnit`（64-tasks-loop.js）与
+     * `_shouldHoldQuizBeforeNext` 的第一行。它们问的不是「这一卷要不要暂停」，
+     * 而是「我能不能离开这一节」：窗口还在 = 刚刚放弃过一份卷子 = 正该往前走，
+     * 此时 `_shouldHoldQuizBeforeNext` 那道「交卷前别急着走」的闸门只会帮倒忙。
+     *
+     * ⚠️ 为什么这里不能沿用无参的 `_isQuizForceSkipping()`（HIGH-1 的同一家族、
+     *   方向倒过来）：卷子键是**按文档**算的。无参时它读 `_quizCurrentQuestions`
+     *   所在的文档，而那组状态在放弃时会被清掉 —— 清掉之后它退到主文档重算，
+     *   算出来的是**另一个键**（两边都非空、就是不相等），于是返回 false，
+     *   `nextUnit` 被 hold 拦住、`_handleQuiz` 又在冷却里不干活 = **该走的走不了**。
+     *   认不出卷子时宁可放行离开：代价只是同一张卡片里另一份卷子这 90 秒内
+     *   不被补做（下一轮 OCS 仍会按卷判它），远小于「该节点停摆」的后果。
+     */
+    _isQuizSkipWindowLive: function () {
+      return !!(this._quizForceSkipUntil && Date.now() < this._quizForceSkipUntil);
     },
 
     _forceSkipQuizAfterMaxAttempts: function (preferredDoc) {
       var count = this._getQuizSubmitAttemptCount(preferredDoc);
       var max = this._getQuizMaxSubmitAttempts(preferredDoc);
-      this._quizForceSkipUntil = Date.now() + 15000;
+      this._setQuizForceSkip(15000);
       this._quizInProgress = false;
       this._quizAnswered = false;
       this._quizSubmitPending = false;
@@ -7706,7 +7995,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         if (nextButton) {
           nextButton.click();
           this._resetRuntimeState();
-          this._quizForceSkipUntil = Date.now() + 15000;
+          this._setQuizForceSkip(15000);
           return true;
         }
       } catch (e) {}
@@ -7936,7 +8225,9 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     },
 
     _shouldHoldQuizBeforeNext: function (reason) {
-      if (this._isQuizForceSkipping()) return false;
+      // 这里不比卷子键，理由见 `_isQuizSkipWindowLive`（这一处无参调
+      // `_isQuizForceSkipping()` 是 HIGH-1 倒过来的那个形态）。
+      if (this._isQuizSkipWindowLive()) return false;
       if (this._isQuizApiUnavailable()) return false;
       if (this._monitorQuizSubmit()) return true;
       var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
@@ -8023,7 +8314,8 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       }
     },
 
-    _isQuizLearningPending: function (preferredDoc) {      if (this._isQuizForceSkipping()) return false;
+    _isQuizLearningPending: function (preferredDoc) {
+      if (this._isQuizForceSkipping(preferredDoc || null)) return false;
       if (this._isQuizApiUnavailable()) return false;
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
@@ -8063,7 +8355,15 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
     _handleQuiz: async function (preferredDoc) {
       // "放弃这一卷"的冷却窗口内直接退出：否则跳过去之后任务点还在页面上，
       // 下一秒又被匹配回来、再问一次模型（白烧 token），看起来像"跳过根本没生效"。
-      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping()) return;
+      // _quizInProgress 一旦因为异常岔在 true 上，第一行就会挡住一切 —— 整页永久停摆，
+      // 日志里只留一条 30 秒去重的 tick error。5 分钟没换过就当成泄漏，清掉并留 warn。
+      if (this._quizInProgress && this._quizInProgressAt && Date.now() - this._quizInProgressAt > 300000) {
+        emitRuntimeLog('warn', 'quiz in-progress state leaked, reset', { ageMs: Date.now() - this._quizInProgressAt });
+        this._quizInProgress = false;
+      }
+      // ⚠️ 这里必须把 `preferredDoc` 传下去：冷却是按卷子键生效的，而键按文档算 ——
+      //   不传 = 读侧算的是另一个文档的键 = 本 bug（见 `_isQuizForceSkipping` 上方注释）。
+      if (this._quizAnswered || this._quizInProgress || this._isQuizForceSkipping(preferredDoc || null)) return;
       if (!this.configs.enableQuiz) { // 硬守卫：AI 答题开关关闭时只刷课，任何情况下都不取题、不调 API
         this._skipQuizForApiUnavailable(null, preferredDoc || null);
         return;
@@ -8106,6 +8406,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         this._fontSecretWaitSince = 0;
       }
       this._quizInProgress = true;
+      this._quizInProgressAt = Date.now();
       this._quizCurrentAnsweredKeys = {};
       this._quizCurrentAnswerValues = {};
       this._quizCurrentQuestions = null;
@@ -8152,6 +8453,12 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         // 用户看到的就是"做完上一题之后卡顿一下才开始做这道"。
         var quizPaperKey = '';
         try { quizPaperKey = String(this._getQuizWorkKey(quizDocForProgress) || ''); } catch (ePaperKey) {}
+        // ⚠️ 按卷冷却写入时必须用**这一个**键（`quizPaperKey`）。
+        // 判定端 `_isQuizForceSkipping(doc)` 用的文档表达式是
+        // `doc || _getQuizDocumentFromQuestions(_quizCurrentQuestions) || null`，
+        // 而调用点传的 `doc` 就是这里的 `preferredDoc`，且 `_quizCurrentQuestions` 已被
+        // 赋成这里的 `questions` —— 两侧算出的文档**同一个**，键才可能对得上。
+        // 别在这里再算一份「兜底用无参 `_getQuizWorkKey(null)`」的键：那正是读写侧错开的方式。
         if (quizPaperKey !== this._quizRoundPaperKey) {
           this._quizRoundPaperKey = quizPaperKey;
           this._quizRoundFilledCount = -1;   // -1 与任何真实题数都不相等 → 新卷子必定放行
@@ -8167,7 +8474,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         // 但解密扫描完成后、映射表里却没有那个字形哈希时（表快照落后于平台字符集），
         // 残留的 PUA 字符（U+E000~U+F8FF）会混进题干 —— 发给模型必错，还白烧 token 与提交次数。
         // README 的口径是「看到乱码请立刻停下」：这里把它变成机器判据 ——
-        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就放弃这一卷。
+        // 按卷子记轮数（⚠️ 必须按卷子隔离，同 #43 的教训），连续 3 轮仍有乱码就**暂停这一卷** 90 秒。
         // ⚠️ 必须放在「无进展闸」**之前**：乱码卷 filled 计数不变，会被 60 秒闸先拦下，
         // 轮次就永远数不满、乱码卷永远跳不出。
         var garbledCount = 0;
@@ -8178,29 +8485,64 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
         // font-cxsecret 的真实机制是**正常中文字符 + 自定义字形**，不是 PUA 私有区！
         // 表缺字形时题干是通顺但错误的中文，下面按字符占比的 PUA 检测（兜底层）根本
         // 看不出来 —— 解密层的 miss 标记才是可靠信号（真实机制由同类开源实现交叉证实）。
-        if (!garbledCount && this._hasFontDecryptMiss()) {
+        // ⚠️ 探测文档**以题目所属文档为准**，不以调用方传进来的 `quizDocForProgress` 为准。
+        // `quizDocForProgress` 优先取 preferredDoc，而 `_extractQuestions(preferredDoc)`
+        // 会自己钻 `#frame_content` 到**内层文档**抠题 —— 于是出现「preferredDoc 是外层、
+        // 题在内层」。content.js 的 `data-om-font-miss` 写在它**解密的那一个文档**上
+        // （=有题的那一个），只查外层就等于把守卫**静默关掉**（失败方向还不保守：
+        // 乱码题照样发给模型），真实嵌套页就是这样漏的。
+        // 一份页面上的题还可能分属**多个**文档，所以这里去重后**逐个探**
+        // （宁可多探，不可漏探）；只探出题文档，不探既不出题的装饰帧 ——
+        // 后者会把守卫变成"页面上随便哪个帧残留个标记就整卷暂停"的误报源。
+        // 一个出题文档都拿不到时才退回 quizDocForProgress（旧语义），**不走全书扫描**。
+        var garbledProbeDocs = [];
+        try { garbledProbeDocs = this._getQuizDocumentsFromQuestions(questions); } catch (eProbeDocs) { garbledProbeDocs = []; }
+        if (!garbledProbeDocs.length && quizDocForProgress) garbledProbeDocs = [quizDocForProgress];
+        var probeMiss = false;
+        for (var gpi = 0; gpi < garbledProbeDocs.length; gpi++) {
+          if (this._hasFontDecryptMiss(garbledProbeDocs[gpi])) { probeMiss = true; break; }
+        }
+        if (!garbledCount && probeMiss) {
           garbledCount = questions.length;
         }
         if (garbledCount) {
           if (quizPaperKey !== (this._quizGarbledPaperKey || '')) {
             this._quizGarbledPaperKey = quizPaperKey;
             this._quizGarbledRounds = 0;
+            this._quizGarbledRoundAt = 0;   // 换了一份卷子 → 新一轮立刻可计
           }
-          this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
-          emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
-            garbled: garbledCount,
-            total: questions.length,
-            rounds: this._quizGarbledRounds
-          });
+          // ⚠️ 轮次按**时间窗**累加，绝不能按调用次数（真实现场 2026-11-10）：
+          // 本函数被 OCS 循环**每秒**调一次，按次数累加时 3 秒就数满 3 轮，
+          // "跳过"比"乱码"发生得还快；而且每一秒一条 warn，200 条的日志缓冲
+          // 两个半分钟就被刷空，排查时连"发生过什么"都看不到。
+          // 现在只有距上次计数 ≥10 秒才 +1，warn 也跟着只在计数时打（每 10 秒最多一条）。
+          var garbledNow = Date.now();
+          var garbledCounted = !this._quizGarbledRoundAt || garbledNow - this._quizGarbledRoundAt >= 10000;
+          if (garbledCounted) {
+            this._quizGarbledRoundAt = garbledNow;
+            this._quizGarbledRounds = (this._quizGarbledRounds || 0) + 1;
+            emitRuntimeLog('warn', 'quiz text garbled by font decrypt', {
+              garbled: garbledCount,
+              total: questions.length,
+              rounds: this._quizGarbledRounds
+            });
+          }
           this._quizInProgress = false;
           if (this._quizGarbledRounds >= 3) {
             this._quizGarbledPaperKey = '';
             this._quizGarbledRounds = 0;
-            emitRuntimeLog('error', 'quiz skipped: text stays garbled', {
+            this._quizGarbledRoundAt = 0;
+            // 数满 3 轮**不再跳卷**。原来的 `_skipQuiz()` 会走 `nextUnit()` 把整节翻过去，
+            // 可"乱码"只说明这份卷子的题面读不得，不表示这一节该放弃 ——
+            // 而跳走的代价是**不可见**的（用户只会看到"所有题目都被跳过"）。
+            // 改成给这一卷 90 秒按卷冷却：代价可见（这一节还停在这里）、且会自愈
+            // （90 秒后同一份卷子再试一次，换了别的卷子完全不受影响）。
+            // 本仓库的一贯取舍：拿不准就停住、留日志，别替用户翻页。
+            this._setQuizForceSkip(90000, quizPaperKey);
+            emitRuntimeLog('error', 'quiz paused: text stays garbled', {
               garbled: garbledCount,
-              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复'
+              hint: '连续 3 轮题干仍含密文字符 —— 字体映射表（resources/table.json）可能缺少新字形，更新后重新构建即可恢复；这一卷暂停 90 秒，不跳走'
             });
-            this._skipQuiz();
             return;
           }
           return;
@@ -8228,7 +8570,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
           // 按那条规则"测不到进度一律不计"。
           //
           // 所以这里按**分钟**计数（本函数每秒都会被调一次，不能按调用次数算），
-          // 连续 3 轮零填充就明确跳过这一卷、10 分钟内不再重试 —— 让后面的任务先走。
+          // 连续 3 轮零填充就明确跳过这一卷、**只让这一卷**暂停 90 秒 —— 让后面的任务先走。
           // 只是跳过，不删任何记录：下一轮课程还能重新答。
           if (filledNow === 0) {
             var zeroNow = Date.now();
@@ -8247,11 +8589,11 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
               this._quizCurrentQuestions = null;
               this._quizReadyToSubmit = false;
               this._quizReadyWorkKey = '';
-              this._quizForceSkipUntil = zeroNow + 600000;
+              this._setQuizForceSkip(90000, quizPaperKey);
               emitRuntimeLog('error', 'quiz skipped: no question could be filled', {
                 total: questions.length,
                 rounds: 3,
-                hint: '这一卷的题一个都落不到页面上（选项认不出或点不上），先跳过去做后面的任务；10 分钟内不再重试'
+                hint: '这一卷的题一个都落不到页面上（选项认不出或点不上），先跳过去做后面的任务；只有这一卷暂停 90 秒，别的卷子照常'
               });
               this.nextUnit();
               return;
@@ -8431,7 +8773,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
             emitRuntimeLog('warn', 'quiz llm parse failed, keep quiz for retry', {
               error: String(result.error || '').slice(0, 160)
             });
-            this._quizForceSkipUntil = Date.now() + 8000;
+            this._setQuizForceSkip(8000);
             return;
           }
           if (result && result.permanentError) {
@@ -8447,7 +8789,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
               skipMs: PERMANENT_LLM_ERROR_SKIP_MS
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
-            this._quizForceSkipUntil = Date.now() + PERMANENT_LLM_ERROR_SKIP_MS;
+            this._setQuizForceSkip(PERMANENT_LLM_ERROR_SKIP_MS);
             return;
           }
           this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
@@ -8561,6 +8903,31 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       return null;
     },
 
+    /**
+     * 「这些题分别落在**哪几个**文档里」—— 上面那个单数版的复数版，按文档去重。
+     *
+     * 为什么要单独有它（HIGH-2）：一份页面上的题**可能分属多个文档**
+     * （外层 + 内层 `#frame_content`，甚至两个平级 iframe）。
+     * 只探「第一个出题文档」会漏掉后面的那些 —— 而漏探的失败方向是
+     * **把乱码题放行给模型**（不保守），正是乱码守卫要防的事。
+     * 判"这份卷子读不读得"这类守卫一律用它逐个探：**宁可多探，不可漏探**。
+     *
+     * @param {Array} questions 抠出来的题（带 `_element`）
+     * @returns {Array} 去重后的出题文档，按首次出现顺序
+     */
+    _getQuizDocumentsFromQuestions: function (questions) {
+      var docs = [];
+      if (!questions || !questions.length) return docs;
+      for (var i = 0; i < questions.length; i++) {
+        try {
+          var el = questions[i] && questions[i]._element;
+          var doc = el && el.ownerDocument;
+          if (doc && docs.indexOf(doc) === -1) docs.push(doc);
+        } catch (e) {}
+      }
+      return docs;
+    },
+
     _looksLikeQuizTitle: function () {
       var title = this._getCurrentTitle();
       return title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1;
@@ -8607,20 +8974,33 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
 
 
     /**
-     * 任一可达文档是否带着「解密未命中」标记（content.js 解密后写在 documentElement 上）。
+     * 「解密未命中」标记（content.js 解密后写在 documentElement 上）探测。
      *
      * 这是乱码守卫的**主信号**：font-cxsecret 的真实机制是正常中文字符 + 自定义字形
      * （不是 PUA），表缺字形时文本通顺但内容错误 —— 只有解密层自己知道哪些字形没查到。
-     * 缺表是全局的（同一张 table.json），所以任一文档带标记即整卷按乱码处理。
+     *
+     * @param {Document} [targetDoc] 传了就**只查这一个文档**。
+     *   乱码计数必须走这条：`_walkDocuments` 扫全书时，任何一个不相干的帧带标记
+     *   就会把**这一页每一份卷子**都判成乱码 —— 而缺标记的那个帧可能只是课程首页的
+     *   一个装饰性子帧。一道坏字形能把整门课的卷子全数暂停，就是"所有题目都被跳过"
+     *   的另一条路径（2026-11-10）。题目所在文档自己没带标记，就不算它乱码。
+     *   不传 = 维持旧的全书扫描语义（「等解密」那一处要用：还没定位到题目文档时，
+     *   问的是"这一页到底有没有解密问题"，全局信号才对）。
      */
-    _hasFontDecryptMiss: function () {
-      var found = false;
-      this._walkDocuments(function (doc) {
+    _hasFontDecryptMiss: function (targetDoc) {
+      var probe = function (doc) {
         if (!doc || !doc.documentElement || !doc.documentElement.getAttribute) return false;
         try {
-          if (doc.documentElement.getAttribute('data-om-font-miss')) { found = true; return true; }
+          if (doc.documentElement.getAttribute('data-om-font-miss')) return true;
         } catch (e) {}
         return false;
+      };
+      if (targetDoc) return probe(targetDoc);
+      var found = false;
+      this._walkDocuments(function (doc) {
+        if (!probe(doc)) return false;
+        found = true;
+        return true;
       });
       return found;
     },
@@ -9944,7 +10324,12 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       var bodyText = textOf(doc.body);
       if (bodyText.length < 10 || bodyText === '暂无内容') return true;
       if (doc.querySelector('video, iframe[src*="video"], iframe[src*="ananas"], .ans-insertvideo-online')) return false;
-      if (doc.querySelector(this._quizDetectorSelector + ', input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
+      // ⚠️ 原来这里并着 `_quizDetectorSelector` 一整串通用类名 —— 课件页里挂一个
+      //    `.question-content` 就被判成「不是纯文本页」，视觉预算与跳过分支跟着一起失真。
+      //    收窄成「真抠得出题」（`_documentHasQuiz`）；答题控件那半保留原样，
+      //    因为「页面上有能点的答案框」本身就是「不是纯文本」的充分证据。
+      if (this._documentHasQuiz(doc)) return false;
+      if (doc.querySelector('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) return false;
       return true;
     },
 
@@ -10177,8 +10562,10 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
      * 成因是题目容器被认成了**只装题干的那一块**，选项在它的同级 ——
      * 在 `el` 内部当然一个都找不到。
      *
-     * 只向上找**一层**，且必须同时满足三条，否则宁可返回空：
+     * 最多向上找**两层**（先 parentElement，不行再它的 parentElement），
+     * 且必须同时满足三条，否则宁可返回空：
      *   ① 那一层里只有这一道题 —— 多了就会把别的题的选项捞进来，点错题比不答更糟
+     *      （按"不被其它命中节点包含"去重后再数，嵌套命中不算多题）
      *   ② 捞出来 2~8 个 —— 少于 2 不成题；多于 8 基本是把整页都算进来了
      *   ③ 每个候选都有文本、且不再包含更内层的候选项（只取最内层）
      */
@@ -10189,24 +10576,38 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       try {
         if (el.querySelector && el.querySelector('input[type="text"], input:not([type]), textarea')) return [];
       } catch (eIn) { return []; }
-      try {
-        var containers = parent.querySelectorAll(this._questionSelectors.join(','));
-        // el 自己也会被数进去，所以"只有一道题"的阈值是 1
-        if (containers.length > 1) return [];
-      } catch (eQ) { return []; }
 
-      var out = [];
-      try {
-        var loose = Array.from(parent.querySelectorAll('li, label, [class*="option"], [class*="choice"]'));
-        out = loose.filter(function (node) {
-          if (node === el) return false;
-          if (el.contains && el.contains(node)) return false;
-          if (textOf(node).length === 0) return false;
-          return !node.querySelector('li, [class*="option"], [class*="choice"]');
+      // 先试最近一层，不行再往上一层：题干与选项常被同一层包裹，
+      // 单看 parentElement 有时会漏掉整个容器。
+      var scopes = [parent, parent.parentElement];
+      for (var s = 0; s < scopes.length; s++) {
+        var scope = scopes[s];
+        if (!scope || !scope.querySelectorAll) continue;
+
+        // 只统计"不被其它命中节点包含"的那些 —— 选择器本身会在一道题内部嵌套命中
+        // （.TiMu 里还有 .question-content / div[class*="question"]），
+        // 直接 count 会把单题页数成 2+，于是这条补偿在真实页面从来没生效过。
+        var raw = [];
+        try { raw = Array.from(scope.querySelectorAll(this._questionSelectors.join(','))); } catch (eQ) { continue; }
+        var outer = raw.filter(function (node) {
+          return !raw.some(function (other) { return other !== node && other.contains && other.contains(node); });
         });
-      } catch (eL) { return []; }
-      if (out.length < 2 || out.length > 8) return [];
-      return out;
+        if (outer.length > 1) continue;
+
+        var out = [];
+        try {
+          var loose = Array.from(scope.querySelectorAll('li, label, [class*="option"], [class*="choice"]'));
+          out = loose.filter(function (node) {
+            if (node === el) return false;
+            if (el.contains && el.contains(node)) return false;
+            if (textOf(node).length === 0) return false;
+            return !node.querySelector('li, [class*="option"], [class*="choice"]');
+          });
+        } catch (eL) { return []; }
+        if (out.length < 2 || out.length > 8) continue;
+        return out;
+      }
+      return [];
     },
 
 
@@ -11120,15 +11521,18 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       var doc = this._resolveQuizAnswerDocument(preferredDoc);
       if (!question || !question._element) return '';
       var qid = this._getQuestionIdFromElement(question._element);
-      if (!qid) return '';
+      // qid 缺失不能直接判"没填"：新版结构卷子根本不带 #answer{qid}，
+      // 平台读的就是可见控件本身。原来这里一 return '' 就整卷永远不提交。
       // 隐藏域优先（平台提交时读的就是它）。**两个文档都查一遍**：
       // 填答（`_fillTextarea` / `_fillText`）写的是 `el.ownerDocument`，
       // 而这里过去只用调用方给的 doc —— 题目与 preferredDoc 不同文档时
       // 就会"写进去、读不到"，判定与填答不对称。
       var hidden = null;
       var ownerDoc = question._element.ownerDocument || null;
-      try { if (ownerDoc && ownerDoc.getElementById) hidden = ownerDoc.getElementById('answer' + qid); } catch (e0) {}
-      try { if (!hidden && doc && doc.getElementById) hidden = doc.getElementById('answer' + qid); } catch (e1) {}
+      if (qid) {
+        try { if (ownerDoc && ownerDoc.getElementById) hidden = ownerDoc.getElementById('answer' + qid); } catch (e0) {}
+        try { if (!hidden && doc && doc.getElementById) hidden = doc.getElementById('answer' + qid); } catch (e1) {}
+      }
       var hiddenValue = hidden ? String(hidden.value || '').trim() : '';
       // 隐藏域优先，但它为空时必须回退到可见控件：
       // 简答题走的是富文本编辑器，页面自身的 JS 未必把内容同步进隐藏域；
@@ -11137,7 +11541,34 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       var visible = this._getQuizAnswerValue(question._element, qid);
       if (visible) return visible;
       // 最后是富文本正文：判定必须覆盖"填答能写到的每一处"。
-      return this._readRichEditorValue(question._element);
+      var richValue = this._readRichEditorValue(question._element);
+      if (richValue) return richValue;
+      // 最后一档：可见控件自己的勾选态。**三条同时成立才算已填**，否则宁可判未填：
+      //   ① 本题作用域内有 name/id 形如 answer\d+ 的控件 —— 说明平台按表单字段收答案；
+      //   ② 勾选数符合题型：single/judge 恰好 1，multiple ≥1（单选出现两个勾选必须判未填）；
+      //   ③ 取控件 value；空则按它在同组里的位置推字母 A/B/C…，绝不返回占位串。
+      try {
+        var boxes = Array.from(question._element.querySelectorAll('input[type="radio"], input[type="checkbox"]'));
+        var identified = boxes.filter(function (box) {
+          var key = String(box.getAttribute('name') || box.id || '');
+          return /^answer\d+/i.test(key);
+        });
+        if (identified.length) {
+          var pickedBoxes = identified.filter(function (box) { return !!box.checked; });
+          var boxType = this._detectQuestionType(question._element);
+          var expectOne = (boxType === 'single' || boxType === 'judge');
+          if (pickedBoxes.length && (!expectOne || pickedBoxes.length === 1)) {
+            var pickedBox = pickedBoxes[0];
+            var pickedValue = String(pickedBox.value || pickedBox.getAttribute('value') || '').trim();
+            if (!pickedValue) {
+              var boxOrder = identified.indexOf(pickedBox);
+              pickedValue = boxOrder >= 0 ? String.fromCharCode(65 + boxOrder) : '';
+            }
+            if (pickedValue) return pickedValue;
+          }
+        }
+      } catch (ePick) {}
+      return '';
     },
 
 
@@ -11184,7 +11615,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
       for (var i = 0; i < questions.length; i++) {
         var question = questions[i];
         var qid = question && question._element ? this._getQuestionIdFromElement(question._element) : '';
-        if (!qid) return false;
+        // qid 只用于日志：新版结构卷子没有 #answer{qid}，不能拿它当"没填"的判据。
         var value = this._getQuizQuestionFilledValue(preferredDoc, question);
         console.log('[Omitone] answer field', qid, 'value=', value);
         if (!value) return false;
@@ -11956,7 +12387,7 @@ var OMITONE_CODE_REV = 'dc8692e1a3';
             emitRuntimeLog('warn', 'popup quiz llm parse failed, keep popup for retry', {
               error: String(result.error || '').slice(0, 160)
             });
-            this._quizForceSkipUntil = Date.now() + 8000;
+            this._setQuizForceSkip(8000);
             return;
           }
           if (result && result.permanentError) {

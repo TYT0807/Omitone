@@ -787,12 +787,22 @@ function buildCaptchaDialogHtml() {
     '</body></html>';
 }
 
-/** 独立验证码网址：顶层页面、没有课程结构、URL 与文案都命中验证码特征 */
+/**
+ * 独立验证码网址：顶层页面、没有课程结构、URL 与文案都命中验证码特征
+ *
+ * ⚠️ 那两样「像题」的装饰不是随手加的：`_computeStandaloneCaptchaPage` 以前把
+ * `_quizDetectorSelector` 命中当作「这不是验证码页」的凭据之一 —— 于是页面上挂一个
+ * `.question-content` 就永远轮不到验证码处理（批次 2 的 D 项换成 `_documentHasQuiz`）。
+ * 留在这里，上面那条断言才真的钉住这次替换：谁退回旧判据，它就红。
+ */
 function buildStandaloneCaptchaHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
     '<title>安全验证</title></head><body>' +
     '<h2>安全验证</h2>' +
     '<p>请输入验证码以继续访问</p>' +
+    // 像题、但题里没有能填的控件（`#inputCode` 不匹配 `_quizAnswerControlSelector`）
+    '<div class="question-content">为继续学习请完成下方安全验证</div>' +
+    '<div class="answerOption"><span>我是人类</span></div>' +
     '<img id="verifyImg" src="' + CAPTCHA_SVG + '" width="120" height="40" style="width:120px;height:40px">' +
     '<input id="inputCode" type="text" style="width:140px;height:26px">' +
     '<button type="button">提交</button>' +
@@ -949,7 +959,10 @@ var MOCK_PAGES = {
   '/mooc2-work': buildMooc2WorkHtml,
   '/font-residue': buildFontResidueHtml,
   '/doc-pdfjs': buildPdfJsDocHtml,
-  '/doc-ppt': buildPptAudioHtml
+  '/doc-ppt': buildPptAudioHtml,
+  '/ppt-decoy': buildPptDecoyTopHtml,
+  '/ppt-decoy-card': buildPptDecoyCardHtml,
+  '/ppt-decoy-inner': buildPptDecoyInnerHtml
 };
 
 /**
@@ -976,6 +989,79 @@ function buildPptAudioHtml() {
     'window.finishJob = function () { window.__pptFinished = true; };' +
     'syncPpt();' +
     '</script></body></html>';
+}
+
+/**
+ * ---- 「课件帧挂着题面样式类名」三件套（2026-11-10 批次 2「刷 PPT 报废」）----
+ *
+ * 现场形状：轮盘 PPT 的帧里带 `.question-content` / `.answerOption` 这类
+ * **通用装饰类名**，而旧判据是「`_quizDetectorSelector` 命中 = 这是测验」，
+ * 于是这一帧被仲裁成 quiz —— 阅读链路（`_runChaoxingReadJob`）永远轮不到，
+ * 同时 `_detectQuiz()` 恒为真把 `_tryAdvanceIdleSection` 的逃生门也冻住：两条腿一起瘫。
+ *
+ * 三层结构与真实页面一致：顶层 `#iframe` → 学习卡片 → 任务点帧（jobid 在 data 上）。
+ */
+function buildPptDecoyTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课件学习 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/ppt-decoy-card" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    // 附件只说得出「read 家族」这一个粒度，具体是图片阅读 / 轮盘 PPT / 翻页文档由 DOM 定
+    '<script>window.attachments=[' +
+    '{jobid:"ppt-9002",property:{_jobid:"ppt-9002",jobid:"ppt-9002",mid:"mid-ppt-9002",' +
+    'name:"轮盘课件",module:"ppt",type:"ppt",job:true}}' +
+    '];</script>' +
+    '</body></html>';
+}
+
+/**
+ * 卡片层：一个任务点容器，jobid 同时挂在 iframe 的 jobid 属性与 data 上
+ *
+ * ⚠️ 卡片层也挂一样「像题」的装饰，和课件层那两样是**不同**的用途：
+ * `_isTextOnly()`（视觉预算与「本页没任务就跳过」分支的开关）读的是**主文档**，
+ * 也就是这一层；它以前同样拿 `_quizDetectorSelector` 判「这页有没有题」
+ * （批次 2 的 D 项换成 `_documentHasQuiz`）。这一行既让它走到那道判断
+ * （没有它，body 文字不足 10 字会在上一行就返回 true），也让 `_isTextOnly()`
+ * **必须**返回 true —— 谁退回旧判据，那条断言就红。
+ */
+function buildPptDecoyCardHtml() {
+  var payload = { jobid: 'ppt-9002', _jobid: 'ppt-9002', mid: 'mid-ppt-9002', name: '轮盘课件' };
+  var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课件学习 - 学习通</title></head><body>' +
+    '<div class="card">' +
+    '<div class="ans-attach-ct" id="tp-ppt">' +
+    '<div class="ans-job-icon" aria-label="任务点"></div>' +
+    '<div class="ans-attach-title">轮盘课件</div>' +
+    '<div class="question-content">本卡片只有一份任务类型顺序</div>' +
+    '<iframe jobid="ppt-9002" data="' + dataAttr + '" src="/ppt-decoy-inner" ' +
+    'style="width:100%;height:420px;border:0"></iframe>' +
+    '</div>' +
+    '</div></body></html>';
+}
+
+/**
+ * 课件层：真 swiper 结构 + 两样「像题」的装饰。
+ *
+ * ⚠️ 装饰里**没有**作答控件（`[qid]` / `#answer…` / `[role=radio]`…）——
+ *    新判据要区分的正是这个形状：容器命中、控件缺失 ⇒ 不是测验。
+ *    末尾那行 `#answerTotal` 是刻意造的**近失样本**（文档级有答案域，但不在任何题目容器里），
+ *    用来证明「控件必须在容器**里面**」这半边条件真在起作用，
+ *    而不是因为整页一个控件都没有才返回 false。
+ */
+function buildPptDecoyInnerHtml() {
+  var slides = ['第 1 页', '第 2 页', '第 3 页'].map(function (t, i) {
+    return '<div class="swiper-slide"' + (i ? ' style="display:none"' : '') + '>' + t + '</div>';
+  }).join('');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>轮盘课件 - 学习通</title></head><body>' +
+    '<div class="swiper-container"><div class="swiper-wrapper">' + slides + '</div></div>' +
+    '<div class="swiper-button-next"></div>' +
+    '<div class="question-content">本讲要点：任务类型只有一份顺序</div>' +
+    '<div class="answerOption"><span>A. 仲裁</span><span>B. 路由</span></div>' +
+    '<input type="hidden" id="answerTotal" value="3">' +
+    '</body></html>';
 }
 
 /**
@@ -2629,6 +2715,26 @@ SCENARIOS.push({
       !!progress && progress.total === 5, JSON.stringify(progress));
     check('翻页推进到末页（页码 5）且平台完成标记生效',
       !!progress && progress.done === true && progress.page === 5, JSON.stringify(progress));
+
+    // 文档页同样不许被算成「还有测验没做」—— 与后面轮盘 C 那两条是同一个不变量。
+    // 这一页刻意**不带**题面样式类名：它是「原本就没坏」的那一半，
+    // 万一哪天 `_detectQuiz` 又改回整页扫通用类名，这一页也会一起变红。
+    var idle = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
+      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
+      'var doc=app._resolveQuizSubmitDocument(null);' +
+      'return {detect:app._detectQuiz(),pending:app._isQuizLearningPending(),' +
+      '  apiReason:app._getQuizApiUnavailableReason(),skipping:app._isQuizForceSkipping(null),' +
+      '  monitor:!!app._monitorQuizSubmit(null),passed:!!app._isQuizPassedOrFinished(doc),' +
+      '  redo:!!app._isQuizRedoRequired(doc),submitForm:!!app._hasActiveQuizSubmitForm(doc)};})()'
+    );
+    check('文档页 `_detectQuiz()` 为 false', !!idle && idle.detect === false, JSON.stringify(idle));
+    check('文档页 `_isQuizLearningPending()` 为 false，且不是靠早退分支蒙出来的',
+      !!idle && idle.pending === false && idle.apiReason === '' && idle.skipping === false &&
+      idle.monitor === false && idle.passed === false && idle.redo === false && idle.submitForm === false,
+      JSON.stringify(idle));
   }
 });
 
@@ -2732,6 +2838,217 @@ SCENARIOS.push({
       !!result && result.ok === true && result.visible === 4, JSON.stringify(result));
     check('轮盘 C：翻到末页后 finishJob 被调用（平台完成上报路径）',
       !!result && result.finished === true, JSON.stringify(result));
+
+    // ---- 课件页的**类型**不变量 ----
+    // 翻页器能跑，不代表这一页没被顺手判成测验：`_detectQuiz()` 一旦为真，
+    // `_isQuizLearningPending()` 恒真 → `_tryAdvanceIdleSection` 的逃生门被冻住，
+    // 而 `_handleQuiz` 又抠不出题 —— 整页既不刷课件也不翻页（2026-11-10「接近瘫痪」）。
+    // ⚠️ pending=false 有两种来源：真的没测验 / 被别的早退分支挡住的。
+    //    所以下面把每一条早退原因都取出来，**必须全是「没触发」**，这个 false 才算数。
+    var idle = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
+      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
+      'var doc=app._resolveQuizSubmitDocument(null);' +
+      'return {detect:app._detectQuiz(),pending:app._isQuizLearningPending(),' +
+      '  apiReason:app._getQuizApiUnavailableReason(),skipping:app._isQuizForceSkipping(null),' +
+      '  monitor:!!app._monitorQuizSubmit(null),passed:!!app._isQuizPassedOrFinished(doc),' +
+      '  redo:!!app._isQuizRedoRequired(doc),submitForm:!!app._hasActiveQuizSubmitForm(doc)};})()'
+    );
+    check('课件页（真 swiper，无题面样式）`_detectQuiz()` 为 false',
+      !!idle && idle.detect === false, JSON.stringify(idle));
+    check('课件页 `_isQuizLearningPending()` 为 false，且不是靠其它早退分支蒙出来的',
+      !!idle && idle.pending === false && idle.apiReason === '' && idle.skipping === false &&
+      idle.monitor === false && idle.passed === false && idle.redo === false && idle.submitForm === false,
+      JSON.stringify(idle));
+  }
+});
+
+/**
+ * ---- 任务类型仲裁：课件帧挂着题面样式类名，也必须走阅读链路 ----
+ *
+ * 用户报「刷 PPT 的功能也报废了」（2026-11-10）。根因不在翻页器，在**判类型**：
+ * `.question-content` / `.answerOption` 这些通用类名在课件帧里同样出现，
+ * 旧判据「`_quizDetectorSelector` 命中 = 测验」于是把 PPT 帧仲裁成 quiz，
+ * `_runChaoxingReadJob` 一次都轮不到。
+ *
+ * ⚠️ 上面那个 `/doc-ppt` 场景直接调 `_runPptAudioJob`，**绕过了仲裁**抓不到这类回归；
+ *    所以这里必须从 `_searchChaoxingJobOcs` / `_searchChaoxingJob` 的**产出**断言。
+ */
+SCENARIOS.push({
+  name: '任务类型仲裁：课件帧带题面样式类名仍走阅读链路',
+  path: '/ppt-decoy',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      hasApiKey: true, enableQuiz: true, enablePPT: true,
+      randomAnswer: false, autoNext: false, restudy: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(500);
+
+    var first = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._quizInProgress=false; app._quizInProgressAt=0; app._quizSubmitPending=false;' +
+      'app._quizAnswered=false; app._quizRunPaperKey=""; app._quizCurrentQuestions=null;' +
+      'app._isTaskGivenUp=function(){return false;};' +
+      // 两条链路各挂一个探针：谁被调用了、带的是什么 kind，一目了然
+      //（真实翻页/答题流程由各自的场景覆盖，这里只验**路由**）
+      'window.__spy={read:[],quiz:0};' +
+      'app._runChaoxingReadJob=function(job){window.__spy.read.push(String(job.kind)+"#"+String(job.jobid));return Promise.resolve(true);};' +
+      'app._handleQuiz=function(){window.__spy.quiz++;return Promise.resolve(true);};' +
+      'var inner=null;' +
+      'try{inner=app._getMainDocument().querySelector("#tp-ppt iframe").contentDocument;}catch(e){inner=null;}' +
+      'var out={apiReason:app._getQuizApiUnavailableReason(),hasInner:!!inner};' +
+      'if(inner){' +
+      '  out.oldProbe=inner.querySelectorAll(app._quizDetectorSelector).length;' +
+      '  out.containers=app._collectQuestionContainers(inner).length;' +
+      '  out.controlAnywhere=!!inner.querySelector(app._quizAnswerControlSelector);' +
+      '  out.hasQuizNow=app._documentHasQuiz(inner);' +
+      '}' +
+      'var j=app._searchChaoxingJobOcs([]);' +
+      'out.matched=j?{kind:String(j.kind),jobid:String(j.jobid),workType:String(j.workType),hasFunc:typeof j.func==="function"}:null;' +
+      'if(j&&typeof j.func==="function"){await j.func();}' +
+      'out.spyRead=window.__spy.read.slice(); out.spyQuiz=window.__spy.quiz;' +
+      'var j2=app._searchChaoxingJob([]);' +
+      'out.matched2=j2?{kind:String(j2.kind),jobid:String(j2.jobid)}:null;' +
+      'return out;})()'
+    );
+
+    check('仲裁夹具：答题 API 可用（否则测验分支会被退避守卫跳过，反证测不到）',
+      !!first && first.apiReason === '', JSON.stringify(first && first.apiReason));
+    check('仲裁夹具自证：这一帧在**旧判据**下一定像题（两样题面样式类名都在）',
+      !!first && first.hasInner === true && first.oldProbe >= 2 && first.containers >= 1,
+      JSON.stringify(first));
+    check('新判据认不出题：文档级有作答控件，但它不在题目容器里',
+      !!first && first.controlAnywhere === true && first.hasQuizNow === false,
+      JSON.stringify(first));
+
+    var matched = first && first.matched;
+    check('OCS 搜出来的任务是 ppt-audio 而不是 quiz',
+      !!matched && matched.kind === 'ppt-audio' && matched.jobid === 'ppt-9002' && matched.hasFunc === true,
+      JSON.stringify(matched));
+    check('执行它走的是阅读链路，kind 一路带到 `_runChaoxingReadJob`',
+      !!first && first.spyRead.length === 1 && first.spyRead[0] === 'ppt-audio#ppt-9002',
+      JSON.stringify(first && first.spyRead));
+    check('整条链路一次都没进 `_handleQuiz`（答题不再压过课件）',
+      !!first && first.spyQuiz === 0, JSON.stringify(first && first.spyQuiz));
+    check('另一条搜索入口 `_searchChaoxingJob` 也仲裁成 ppt-audio（两份顺序已经并成一份）',
+      !!first && !!first.matched2 && first.matched2.kind === 'ppt-audio' && first.matched2.jobid === 'ppt-9002',
+      JSON.stringify(first && first.matched2));
+
+    // ---- 反证优先级 ①：跨家族时附件说了算 ----
+    // 附件改口说「这是一份卷子」，DOM 依旧只有 swiper。
+    // 卷子常常渲染在本帧抠不到题的那一层（三层嵌套的 jobid 场景就是这么修的），
+    // 所以这种时候**必须**听附件的 —— 否则测验会被课件样式类名挤掉，是反向的事故。
+    var cross = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'window.__spy.read.length=0; window.__spy.quiz=0;' +
+      'window.attachments=[{jobid:"ppt-9002",property:{_jobid:"ppt-9002",jobid:"ppt-9002",' +
+      'mid:"mid-ppt-9002",name:"轮盘课件",module:"work",type:"work",job:true}}];' +
+      'var j=app._searchChaoxingJobOcs([]);' +
+      'var out={kind:j?String(j.kind):null,hasFunc:!!j&&typeof j.func==="function"};' +
+      'if(j&&typeof j.func==="function"){await j.func();}' +
+      'out.quiz=window.__spy.quiz; out.read=window.__spy.read.slice();' +
+      'return out;})()'
+    );
+    check('反证优先级：附件声明 work、DOM 只有 swiper ⇒ kind 必须是 quiz',
+      !!cross && cross.kind === 'quiz' && cross.hasFunc === true, JSON.stringify(cross));
+    check('反证优先级：路由也跟着走 `_handleQuiz`，阅读链路零调用',
+      !!cross && cross.quiz === 1 && cross.read.length === 0, JSON.stringify(cross));
+
+    // ---- 夹具页（带题面样式类名的课件）也必须不被判成测验 ----
+    var idle = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.attachments=[{jobid:"ppt-9002",property:{_jobid:"ppt-9002",jobid:"ppt-9002",' +
+      'mid:"mid-ppt-9002",name:"轮盘课件",module:"ppt",type:"ppt",job:true}}];' +
+      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
+      'var doc=app._resolveQuizSubmitDocument(null);' +
+      'var mainDoc=app._getMainDocument();' +
+      'return {detect:app._detectQuiz(),pending:app._isQuizLearningPending(),' +
+      '  apiReason:app._getQuizApiUnavailableReason(),skipping:app._isQuizForceSkipping(null),' +
+      '  monitor:!!app._monitorQuizSubmit(null),passed:!!app._isQuizPassedOrFinished(doc),' +
+      '  redo:!!app._isQuizRedoRequired(doc),submitForm:!!app._hasActiveQuizSubmitForm(doc),' +
+      '  cardOld:!!(mainDoc&&mainDoc.querySelector(app._quizDetectorSelector)),' +
+      '  cardQuiz:app._documentHasQuiz(mainDoc),docTask:!!app._locateDocumentTask(),' +
+      '  textOnly:app._isTextOnly()};})()'
+    );
+    check('挂着题面样式类名的课件页 `_detectQuiz()` 必须为 false（旧实现恒为 true）',
+      !!idle && idle.detect === false, JSON.stringify(idle));
+    check('挂着题面样式类名的课件页 `_isQuizLearningPending()` 为 false，且不是靠早退分支蒙出来的',
+      !!idle && idle.pending === false && idle.apiReason === '' && idle.skipping === false &&
+      idle.monitor === false && idle.passed === false && idle.redo === false && idle.submitForm === false,
+      JSON.stringify(idle));
+
+    // `_isTextOnly()`（视觉预算 + 「本页没任务就跳过」的开关）读的是**主文档 = 卡片层**，
+    // 那里同样挂着 `.question-content` 装饰：旧判据会在这里判成「页面上有题」→ 不是纯文本页
+    // → 既白烧视觉预算，也让跳过分支永远不成立。前置条件一并断言，防止"因为早退而蒙对"。
+    check('挂着题面样式类名的课件页 `_isTextOnly()` 仍为 true（卡片层像题、抠不出题）',
+      !!idle && idle.cardOld === true && idle.cardQuiz === false && idle.docTask === false &&
+      idle.textOnly === true, JSON.stringify(idle));
+  }
+});
+
+/**
+ * ---- 任务类型仲裁：判定顺序逐条钉住 ----
+ *
+ * 为什么要单独钉这一条：仲裁顺序以前散在**三处**手抄的 || 链里（OCS 路由、
+ * `_searchChaoxingJob`、`_buildSyntheticChaoxingJob`），三份彼此已经不一致 ——
+ * 光测端到端会"碰巧绿"，改一处坏一处却看不出来。现在顺序只剩
+ * `_kindFromChaoxingElements` 一份，这里把每一对相邻优先级钉死，
+ * 谁再在调用点抄一份，这条就会红。
+ */
+SCENARIOS.push({
+  name: '任务类型仲裁：kind 判定顺序逐条钉住',
+  path: '/quiz',
+  run: async function (ctx) {
+    var pins = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      // 探测包里只填「这一族在不在」，值本身没有含义 —— 仲裁看形状，不看元素
+      'var rows=[' +
+      '  {n:"视频压过一切",e:{videojs:{},quiz:{},read:{},pptWithAudio:{},documentJob:{}},w:"video"},' +
+      '  {n:"测验压过阅读",e:{quiz:{},read:{},pptWithAudio:{}},w:"quiz"},' +
+      '  {n:"图片阅读压过轮盘",e:{read:{},pptWithAudio:{},timereader:{}},w:"read"},' +
+      '  {n:"轮盘压过计时阅读",e:{pptWithAudio:{},timereader:{},pagedDoc:{}},w:"ppt-audio"},' +
+      '  {n:"计时阅读压过超链接",e:{timereader:{},hyperlink:{},documentJob:{}},w:"timereader"},' +
+      '  {n:"超链接压过兜底文档",e:{hyperlink:{},documentJob:{},pagedDoc:{}},w:"hyperlink"},' +
+      '  {n:"文档是兜底",e:{documentJob:{}},w:"document"},' +
+      '  {n:"什么信号都没有时必须返回空串",e:{},w:""},' +
+      // read 家族：附件只说得出「一个文档」，具体 flavour 归 DOM；跨家族仍以附件为准
+      '  {n:"附件说 read 家族 + DOM 是轮盘 ⇒ 轮盘",e:{pptWithAudio:{}},a:{property:{module:"ppt",type:"ppt"}},w:"ppt-audio"},' +
+      '  {n:"附件说 work + DOM 是轮盘 ⇒ 测验",e:{pptWithAudio:{}},a:{property:{module:"work",type:"work"}},w:"quiz"},' +
+      '  {n:"附件说视频 + DOM 是图片阅读 ⇒ 视频",e:{read:{}},a:{property:{module:"insertvideo"}},w:"video"},' +
+      '  {n:"附件说文档 + DOM 抠得出题 ⇒ 测验",e:{quiz:{}},a:{property:{module:"insertdoc"}},w:"quiz"}' +
+      '];' +
+      'var bad=[];' +
+      'rows.forEach(function(r){' +
+      '  var got=app._kindFromChaoxingElements(r.e||null,r.a||null,null);' +
+      '  if(got!==r.w) bad.push(r.n+"：期望「"+r.w+"」实得「"+got+"」");' +
+      '});' +
+      'var attBad=[];' +
+      '[[{module:"insertdoc"},"read"],[{module:"insertvideo"},"video"],[{module:"work"},"quiz"],' +
+      ' [{module:"insertimage"},"read"],[{module:"unknown",type:"xyz"},""],' +
+      ' [{module:"book",type:".pdf"},"read"]].forEach(function(p){' +
+      '  var got=app._kindFromAttachment({property:p[0]});' +
+      '  if(got!==p[1]) attBad.push(p[0].module+"→「"+got+"」期望「"+p[1]+"」");' +
+      '});' +
+      'return {rows:rows.length,bad:bad,attBad:attBad,' +
+      '  byDoc:app._kindFromChaoxingElements(null,null,document),' +
+      '  hasQuiz:app._documentHasQuiz(document)};})()'
+    );
+    check('12 条相邻优先级全部按唯一那份顺序走（有人再手抄 || 链就会在这里红）',
+      !!pins && pins.rows === 12 && pins.bad.length === 0, JSON.stringify(pins && pins.bad));
+    check('附件映射也只此一份（_kindFromAttachment 的六个口径）',
+      !!pins && pins.attBad.length === 0, JSON.stringify(pins && pins.attBad));
+    check('没有探测包时按文档现算，用的是同一个判据（真题页 ⇒ quiz）',
+      !!pins && pins.hasQuiz === true && pins.byDoc === 'quiz', JSON.stringify(pins));
   }
 });
 
@@ -2808,6 +3125,94 @@ SCENARIOS.push({
     check('判断题选项为 正确/错误',
       JSON.stringify(scanned[3].options) === JSON.stringify(['正确', '错误']),
       JSON.stringify(scanned[3].options));
+
+    // ---- R2a/R3 嵌套帧回归（2026-11-10「所有题目都被跳过」）----
+    // 这一族的题在 `#frame_content` **内层文档**里，而调用方传进来的 preferredDoc 是外层。
+    //   · content.js 的 `data-om-font-miss` 写在它解密的那一个文档上（=内层）——
+    //     乱码探测若跟着 preferredDoc 走，就永远看不见它，整条守卫静默失效；
+    //   · 按卷冷却的键若写入端与判定端各算各的（`_getQuizWorkKey(题目文档)` vs
+    //     `_getQuizWorkKey(null)` 解析出的可能不是同一个 doc），90 秒暂停形同不存在。
+    var nested = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;' +
+      'var qs=a._extractQuestions(document);' +
+      'var owner=a._getQuizDocumentFromQuestions(qs);' +
+      'var out={n:qs.length,ownerIsInner:!!owner&&owner!==document};' +
+      'if(!out.ownerIsInner)return out;' +
+      'owner.documentElement.setAttribute("data-om-font-miss","1");' +
+      'out.globalMiss=a._hasFontDecryptMiss();' +
+      'out.outerMiss=a._hasFontDecryptMiss(document);' +
+      'out.ownerMiss=a._hasFontDecryptMiss(owner);' +
+      'a.configs=Object.assign({},a.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
+      'a._quizApiFailUntil=0;a._quizAnswered=false;a._quizInProgress=false;' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'a._quizGarbledRounds=0;a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";' +
+      'a._quizCurrentQuestions=null;a._fontSecretWaitSince=0;' +
+      'a._handleQuiz(document);' +
+      'out.rounds=a._quizGarbledRounds;out.inProgress=a._quizInProgress;' +
+      // 顶到第 3 轮，让**生产代码**自己写按卷冷却，再验判定端认不认这个键。
+      // HIGH-1：判定端必须拿**同一个文档**去算键（`_isQuizForceSkipping(doc)`）。
+      // 原来它无参调用 `_getQuizWorkKey(null)`，解析出来的是另一个文档的身份，
+      // 于是「暂停 90 秒」写在 A 键、问的是 B 键 —— 表现为**永久停摆**而不是"没暂停"：
+      // R1 关掉了跳过出口、R2 删了 `_skipQuiz()`，`_tryAdvanceIdleSection` 又被
+      // `_isQuizLearningPending` 挡住，日志却写着已经暂停。
+      'a._quizGarbledRounds=2;a._quizGarbledRoundAt=Date.now()-11000;a._handleQuiz(document);' +
+      'out.cooldown=a._quizForceSkipUntil>Date.now();' +
+      'out.pauseKey=String(a._quizForceSkipPaperKey||"");' +
+      'out.readerKey=String(a._getQuizWorkKey(document));' +
+      'out.pauseApplies=a._isQuizForceSkipping(document);' +
+      'return out;})()'
+    );
+    check('R2a 嵌套帧前置：题在 #frame_content 内层，与外层 preferredDoc 不是同一个文档',
+      !!nested && nested.n === 4 && nested.ownerIsInner === true, JSON.stringify(nested));
+    check('R2a 内层才有解密标记时，外层单独探测必然看不见（守卫必须跟着题目走）',
+      !!nested && nested.outerMiss === false && nested.ownerMiss === true && nested.globalMiss === true,
+      JSON.stringify(nested));
+    check('R2a 标记在内层时 _handleQuiz(外层) 仍数进乱码轮次、且不岔住 _quizInProgress',
+      !!nested && nested.rounds === 1 && nested.inProgress === false, JSON.stringify(nested));
+    check('R3+HIGH-1 嵌套帧页面：第 3 轮写的是按卷冷却，且写入端的键就是判定端在同一文档上算出的那一个',
+      !!nested && nested.cooldown === true && nested.pauseKey === nested.readerKey &&
+      nested.pauseApplies === true, JSON.stringify(nested));
+
+    // ---- HIGH-1 的行为层证据 + HIGH-2 的反向用例（都必须是真调用，不许探内部状态）----
+    // 冷却还在窗口内时再调 `_handleQuiz(外层)`：必须**停在第一行** ——
+    // 乱码轮次不再累加（说明压根没重新走守卫），也不会把 `_quizInProgress` 岔住。
+    // 读写两侧的键一旦错开，这里会看到 rounds=1（"日志说暂停了、其实一秒都没停"）。
+    var paused = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var out={};' +
+      'out.stillHot=a._quizForceSkipUntil>Date.now();' +
+      'a._handleQuiz(document);a._handleQuiz(document);' +
+      'out.rounds=a._quizGarbledRounds;out.inProgress=a._quizInProgress;' +
+      // 反向（HIGH-2）：标记只挂在一个**既不出题也不包题**的装饰帧上 → 不得判乱码。
+      // 同时留证据：标记确实挂在页面上（decorMiss/globalMiss 都为真），
+      // 所以"不算乱码"是因为探测范围对了，不是因为标记没写上去。
+      'var owner=a._getQuizDocumentFromQuestions(a._quizCurrentQuestions);' +
+      'if(owner)owner.documentElement.removeAttribute("data-om-font-miss");' +
+      'var fr=document.createElement("iframe");fr.style.display="none";document.body.appendChild(fr);' +
+      'var fd=fr.contentDocument;fd.documentElement.setAttribute("data-om-font-miss","1");' +
+      'out.decorMiss=a._hasFontDecryptMiss(fd);out.globalMiss=a._hasFontDecryptMiss();' +
+      'a._quizGarbledRounds=0;a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";a._quizInProgress=false;' +
+      // 反向这一步的题是干净的 → 守卫放行后流程会继续走向问模型。
+      // 地址必须钉在本地 mock 上：回归测试不许去打真实服务商接口（花钱且不可复现）。
+      'a.configs=Object.assign({},a.configs,{apiUrl:"http://127.0.0.1:' + PORT + '",apiKey:"e2e-key"});' +
+      'a._handleQuiz(document);' +
+      'out.roundsDecor=a._quizGarbledRounds;out.skipDecor=a._quizForceSkipUntil>Date.now();' +
+      'var docs=a._getQuizDocumentsFromQuestions(a._extractQuestions(document));' +
+      'out.probeCount=docs.length;' +
+      'out.probeMissAny=docs.some(function(d){return a._hasFontDecryptMiss(d);});' +
+      'fr.parentNode.removeChild(fr);' +
+      'a._quizGarbledRounds=0;a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'a._quizInProgress=false;a._quizCurrentQuestions=null;a._fontSecretWaitSince=0;' +
+      'return out;})()'
+    );
+    check('HIGH-1 嵌套帧：暂停窗口内再调 _handleQuiz 停在第一行（乱码轮次不累加、没岔住 inProgress）',
+      !!paused && paused.stillHot === true && paused.rounds === 0 && paused.inProgress === false,
+      JSON.stringify(paused));
+    check('HIGH-2 反向：标记只挂装饰帧（既不出题也不包题）时不得判乱码，且标记确实还在页面上',
+      !!paused && paused.decorMiss === true && paused.globalMiss === true &&
+      paused.roundsDecor === 0 && paused.skipDecor === false &&
+      paused.probeCount >= 1 && paused.probeMissAny === false, JSON.stringify(paused));
   }
 });
 
@@ -3049,6 +3454,94 @@ SCENARIOS.push({
     check('作业页四道正常题 garbled 全为 false（好卷不误拦）',
       !!clean && clean.n >= 4 && clean.garbledAny === false,
       JSON.stringify(clean));
+
+    // ---- R2（2026-11-10「所有题目都被跳过」第二条路径）----
+    //   a) 解密漏字标记原来用 `_walkDocuments` 扫全书 —— 任何一个不相干的帧带标记，
+    //      就会把这一页**每一份**卷子判成乱码。现在乱码计数只认题目所在文档。
+    //   b) 轮次原来按 `_handleQuiz` 的调用次数累加，而它每秒被调一次 → 3 秒数满 3 轮。
+    //      现在只有距上次计数 ≥10 秒才 +1。
+    //   c) 数满 3 轮原来 `_skipQuiz()` → `nextUnit()` 跳整卷；现在只给这一卷 90 秒冷却。
+    var r2 = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var out={};' +
+      // ===== a) 只认题目所在文档 =====
+      'var fr=document.createElement("iframe");document.body.appendChild(fr);' +
+      'var fd=fr.contentDocument;' +
+      'fd.documentElement.setAttribute("data-om-font-miss","1");' +
+      'out.globalMiss=a._hasFontDecryptMiss();' +
+      'out.paperDocMiss=a._hasFontDecryptMiss(document);' +
+      'out.decorMiss=a._hasFontDecryptMiss(fd);' +
+      // HIGH-2：探测集合只认「出题文档」（去重后的全部出题文档）。
+      // 装饰帧既不出题也不包题，不许进集合 —— 否则守卫退化成
+      // 「页面上随便哪个帧残留一个标记，就整卷暂停 90 秒」的误报源。
+      // 这里同时留下证据：标记**确实挂在页面上**（globalMiss/decorMiss 都为真），
+      // 所以「不算乱码」是因为探测范围对了，不是因为标记没写上去。
+      'var pdocs=a._getQuizDocumentsFromQuestions(a._extractQuestions(null));' +
+      'out.probeCount=pdocs.length;' +
+      'out.probeHasDecor=pdocs.some(function(d){return d===fd;});' +
+      'out.probeMissAny=pdocs.some(function(d){return a._hasFontDecryptMiss(d);});' +
+      'fr.parentNode.removeChild(fr);' +
+      // ===== b)/c) 题目所在文档真的带标记时，整段乱码守卫的行为 =====
+      'document.documentElement.setAttribute("data-om-font-miss","1");' +
+      'a.configs=Object.assign({},a.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
+      'a._quizApiFailUntil=0;a._quizAnswered=false;a._quizInProgress=false;' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'a._quizGarbledRounds=0;a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";' +
+      'a._quizCurrentQuestions=null;' +
+      'var skipCalls=0,unitCalls=0;' +
+      'var oldSkip=a._skipQuiz,oldUnit=a.nextUnit;' +
+      'a._skipQuiz=function(){skipCalls++;};a.nextUnit=function(){unitCalls++;};' +
+      // 模拟 OCS 循环每秒调一次，连调 6 次（= 6 秒）
+      'for(var i=0;i<6;i++){a._handleQuiz(null);}' +
+      'out.roundsAfter6=a._quizGarbledRounds;' +
+      'out.skipUntilAfter6=a._quizForceSkipUntil;' +
+      'out.skipCallsAfter6=skipCalls;out.unitCallsAfter6=unitCalls;' +
+      // 把时间窗倒回 11 秒，模拟真的过了第 2、第 3 轮（e2e 不真等 20 秒）
+      'a._quizGarbledRoundAt=Date.now()-11000;a._handleQuiz(null);' +
+      'out.roundsAfterWindow2=a._quizGarbledRounds;' +
+      'out.skipUntilAfterWindow2=a._quizForceSkipUntil;' +
+      'a._quizGarbledRoundAt=Date.now()-11000;a._handleQuiz(null);' +
+      'out.cooldown=a._quizForceSkipUntil;' +
+      'out.hasPaperKey=String(a._quizForceSkipPaperKey||"").length>0;' +
+      'out.isSkipping=a._isQuizForceSkipping();' +
+      // HIGH-1 的核心断言：**写入端记的键 == 读取端在同一文档上算出的键**。
+      // 读取端原来用无参 `_getQuizWorkKey(null)`（解析到主帧/document），嵌套帧页面上
+      // 与写入端的题目文档不是同一个 → 键不等 → 「暂停 90 秒」形同不存在，
+      // 而 R1 已关掉跳过出口、R2 已删掉 `_skipQuiz()` → 该节点永久停摆。
+      'out.writerKey=String(a._quizForceSkipPaperKey||"");' +
+      'out.readerSameDocKey=String(a._getQuizWorkKey(document));' +
+      'out.isSkippingDoc=a._isQuizForceSkipping(document);' +
+      'out.skipCallsFinal=skipCalls;out.unitCallsFinal=unitCalls;' +
+      'out.inProgress=a._quizInProgress;' +
+      // ===== 还原：别的断言不能看见一个被污染的页面 =====
+      'a._skipQuiz=oldSkip;a.nextUnit=oldUnit;' +
+      'document.documentElement.removeAttribute("data-om-font-miss");' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";a._quizGarbledRounds=0;' +
+      'a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";a._quizInProgress=false;' +
+      'a._quizCurrentQuestions=null;a._fontSecretWaitSince=0;' +
+      'return out;})()'
+    );
+    check('R2a 不相干帧的解密标记：全书扫描仍然看得见（等解密那处的语义没被改坏）',
+      !!r2 && r2.globalMiss === true, JSON.stringify(r2));
+    check('R2a 乱码计数只认题目所在文档：别的帧带标记不算这份卷子乱码',
+      !!r2 && r2.paperDocMiss === false, JSON.stringify(r2));
+    check('HIGH-2 探测集合=去重后的出题文档，不含装饰帧（标记确实在页面上，只是不算这份卷子）',
+      !!r2 && r2.decorMiss === true && r2.globalMiss === true && r2.probeHasDecor === false &&
+      r2.probeMissAny === false && r2.probeCount >= 1, JSON.stringify(r2));
+    check('R2b 每秒调一次 _handleQuiz，6 次只数进 1 轮（守卫确实开火了，不再 3 秒数满 3 轮）',
+      !!r2 && r2.roundsAfter6 === 1, JSON.stringify(r2));
+    check('R2c 头 6 秒内既不跳卷也不进冷却（skipQuiz/nextUnit 零调用）',
+      !!r2 && r2.skipUntilAfter6 === 0 && r2.skipCallsAfter6 === 0 && r2.unitCallsAfter6 === 0,
+      JSON.stringify(r2));
+    check('R2b 过了 10 秒时间窗才数第 2 轮',
+      !!r2 && r2.roundsAfterWindow2 === 2 && r2.skipUntilAfterWindow2 === 0, JSON.stringify(r2));
+    var r2Cool = !!r2 && r2.cooldown > Date.now();
+    check('R2c 数满 3 轮改为「这一卷暂停 90 秒」：按卷冷却已写入且带卷子身份键',
+      r2Cool && !!r2 && r2.hasPaperKey === true && r2.isSkipping === true, JSON.stringify(r2));
+    check('HIGH-1 写入端的键就是读取端在同一文档上算出的键（同一文档 → 冷却真的生效）',
+      !!r2 && r2.writerKey === r2.readerSameDocKey && r2.isSkippingDoc === true, JSON.stringify(r2));
+    check('R2c 数满 3 轮**不跳卷**：_skipQuiz 与 nextUnit 全程零调用、没岔住 _quizInProgress',
+      !!r2 && r2.skipCallsFinal === 0 && r2.unitCallsFinal === 0 && r2.inProgress === false,
+      JSON.stringify(r2));
   }
 });
 
@@ -3223,6 +3716,68 @@ SCENARIOS.push({
       st.inProgress === false && st.skipUntil > Date.now(), JSON.stringify(st));
 
     ctx.mock.setStatus(0);
+
+    // ---- R3 + HIGH-1（2026-11-10「所有题目都被跳过」第三条路径）----
+    // 冷却要按卷子、不能按页面：`_isQuizForceSkipping()` 一为真，
+    // `_isQuizLearningPending()` 第一行就 return false —— 调度据此认为
+    // 「这一页所有答题任务点都不用做」，一张坏卷子能把整门课冻结到冷却结束。
+    // ⚠️ 这里**不许桩掉 `_getQuizWorkKey`**：桩掉之后验证的只是"键能对上"，
+    //   而本批要修的正是「读写两侧算的是不同文档的键」。
+    //   所以造两份**真实**卷子文档（两个隐藏 iframe，各自 `workRelationId` 不同），
+    //   让生产函数自己算键、自己对键 —— 真函数往返。
+    var r3 = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var out={};' +
+      'function paper(relId){' +
+      '  var f=document.createElement("iframe");f.style.display="none";' +
+      '  document.body.appendChild(f);' +
+      '  var d=f.contentDocument;var form=d.createElement("form");' +
+      '  [["courseId","c-e2e"],["classId","k-e2e"],["workRelationId",String(relId)],["jobid","j"+relId]].forEach(function(kv){' +
+      '    var i=d.createElement("input");i.type="hidden";i.id=kv[0];i.value=kv[1];form.appendChild(i);});' +
+      '  d.body.appendChild(form);return {frame:f,doc:d};}' +
+      'var A=paper(111),B=paper(222);' +
+      'out.keyA=String(a._getQuizWorkKey(A.doc));' +
+      'out.keyB=String(a._getQuizWorkKey(B.doc));' +
+      'out.keysDiffer=out.keyA!==out.keyB;' +
+      // 401 这一支写的是**全局**冷却（不带卷子键）：语义与本批修复前保持一致
+      'out.globalWriteKey=String(a._quizForceSkipPaperKey||"");' +
+      'a._setQuizForceSkip(60000,"");' +
+      'out.globalAppliesToA=a._isQuizForceSkipping(A.doc);' +
+      'out.globalAppliesToB=a._isQuizForceSkipping(B.doc);' +
+      // A 卷写按卷冷却 → 拿两份真实文档分别问：A 该被冻住，B 不该
+      'a._setQuizForceSkip(60000,out.keyA);' +
+      'out.aSkips=a._isQuizForceSkipping(A.doc);' +
+      'out.bSkips=a._isQuizForceSkipping(B.doc);' +
+      // 写入侧与读取侧在**同一个文档**上必须算出同一个键
+      'out.sameDocEqual=String(a._quizForceSkipPaperKey)===String(a._getQuizWorkKey(A.doc))&&a._isQuizForceSkipping(A.doc)===true;' +
+      // 认不出当前卷子时**保守**：冷却继续生效。
+      // 这条要的是「抛异常」那种认不出 —— `_getQuizWorkKey` 永远带
+      // `omitone.quiz.correct.` 前缀且有 location 兜底，**不可能返回空串**，
+      // 桩成空串是在测一个生产里不存在的世界。
+      'var oldKey=a._getQuizWorkKey;' +
+      'a._getQuizWorkKey=function(){throw new Error("e2e unknown paper");};' +
+      'out.unknownPaperSkips=a._isQuizForceSkipping(A.doc);' +
+      'a._getQuizWorkKey=oldKey;' +
+      // 窗口过去之后，任何卷子都不该再被挡
+      'a._quizForceSkipUntil=Date.now()-1;' +
+      'out.expiredSkipsA=a._isQuizForceSkipping(A.doc);' +
+      'out.expiredSkipsB=a._isQuizForceSkipping(B.doc);' +
+      'A.frame.parentNode.removeChild(A.frame);B.frame.parentNode.removeChild(B.frame);' +
+      'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
+      'return out;})()'
+    );
+    check('R3 两份 workRelationId 不同的真实卷子文档算出的键确实不同（真函数往返，不是桩）',
+      !!r3 && !!r3.keyA && !!r3.keyB && r3.keysDiffer === true, JSON.stringify(r3));
+    check('R3 401 仍是全局冷却（写入不带卷子键，本批没改它的语义）',
+      !!r3 && r3.globalWriteKey === '' && r3.globalAppliesToA === true && r3.globalAppliesToB === true,
+      JSON.stringify(r3));
+    check('R3 A 卷的冷却不再冻结 B 卷（同一时刻 A 仍被拦住）',
+      !!r3 && r3.bSkips === false && r3.aSkips === true, JSON.stringify(r3));
+    check('R3 写入侧与读取侧在同一个文档上算出同一个键',
+      !!r3 && r3.sameDocEqual === true, JSON.stringify(r3));
+    check('R3 认不出当前卷子时保守：冷却继续生效',
+      !!r3 && r3.unknownPaperSkips === true, JSON.stringify(r3));
+    check('R3 冷却过期后不再拦住任何卷子',
+      !!r3 && r3.expiredSkipsA === false && r3.expiredSkipsB === false, JSON.stringify(r3));
   }
 });
 
@@ -3744,6 +4299,49 @@ SCENARIOS.push({
     ).catch(function () { return null; });
     check('不支持的 task point 会被记录（便于排查"任务点没做"）',
       !!(logged && logged['insertvote|']), JSON.stringify(logged));
+
+    // ---- R1（2026-11-10「所有题目都被跳过」）：无主帧 + 顶层页认不出任何标记 ----
+    // `_hasTaskPoint()` 的返回值同时喂三条跳过出口（`_isCurrentCompleted` →
+    // `_skipIfCompleted` → nextUnit、`_runTick` 尾部跳过分支、`_locateDocumentTask`
+    // 的 worthHandling）。判不出却返回 false = 肯定地告诉调用方「这一页没有任务点」，
+    // 于是**静默跳题**。保守返回 true 之后，空节只能靠 `_tryAdvanceIdleSection`
+    //（自带时间窗与日志）推进，不许从这条出口翻页。
+    // 下面这几条断言是**行为**断言：先自证前置条件成立，再验跳过出口没动。
+    var noFrame = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var f=document.getElementById("iframe");if(f)f.parentNode.removeChild(f);' +
+      'var markerSel=".ans-job-icon, .ans-task-icon, .taskPoint, .ans-job-num, #panView, .fileBox, .pageNum, #pageNumber";' +
+      'var out={noMainFrame:!document.getElementById("iframe"),' +
+      'noMarker:!document.querySelector(markerSel),' +
+      'noTaskText:(document.body.textContent||"").indexOf("任务点")===-1};' +
+      'out.hasTaskPoint=app._hasTaskPoint();' +
+      // 只带 .icon_Completed（不带 catalog_points_*）：让 _isCurrentCompleted 一路走到
+      // 最后一行 `return !this._hasTaskPoint()`，同时 _hasTaskPoint 三个探测仍全落空
+      'var cat=document.createElement("div");cat.className="posCatalog_select posCatalog_active";' +
+      'var ok=document.createElement("i");ok.className="icon_Completed";cat.appendChild(ok);' +
+      'document.body.appendChild(cat);' +
+      'out.isCurrentCompleted=app._isCurrentCompleted();' +
+      'var unitCalls=0,cardCalls=0;' +
+      'var oldUnit=app.nextUnit,oldCard=app._switchToNextLearningCard;' +
+      'app.nextUnit=function(){unitCalls++;};' +
+      'app._switchToNextLearningCard=function(){cardCalls++;return false;};' +
+      'app.configs.restudy=false;app._quizSubmitPending=false;' +
+      'out.skipped=app._skipIfCompleted();' +
+      'out.unitCalls=unitCalls;out.cardCalls=cardCalls;' +
+      'app.nextUnit=oldUnit;app._switchToNextLearningCard=oldCard;' +
+      'cat.parentNode.removeChild(cat);' +
+      'return out;})()'
+    );
+    check('R1 前置条件成立：无主帧、顶层页没有任何任务点标记与文字',
+      !!noFrame && noFrame.noMainFrame === true && noFrame.noMarker === true && noFrame.noTaskText === true,
+      JSON.stringify(noFrame));
+    check('R1 认不出标记时 _hasTaskPoint() 保守返回 true（不许判成「没有任务点」）',
+      !!noFrame && noFrame.hasTaskPoint === true, JSON.stringify(noFrame));
+    check('R1 有任务点 → _isCurrentCompleted() 为 false（跳过判据不成立）',
+      !!noFrame && noFrame.isCurrentCompleted === false, JSON.stringify(noFrame));
+    check('R1 跳过出口不推进：_skipIfCompleted() 不调 nextUnit、不换学习卡片',
+      !!noFrame && noFrame.skipped === false && noFrame.unitCalls === 0 && noFrame.cardCalls === 0,
+      JSON.stringify(noFrame));
   }
 });
 
@@ -3991,6 +4589,20 @@ SCENARIOS.push({
   run: async function (ctx) {
     var isCaptcha = await ctx.client.evaluate('!!window._xxtApp._isStandaloneCaptchaPage()');
     check('_isStandaloneCaptchaPage 判定为验证码页', isCaptcha === true, String(isCaptcha));
+
+    // 上面那条为什么不会"因为别的原因"通过：这一页确实**像题**（旧判据会把它
+    // 当成测验页而直接放过验证码），但抠不出一道有作答控件的题。
+    var decoy = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return {oldLike:!!document.querySelector(app._quizDetectorSelector),' +
+      '  containers:app._collectQuestionContainers(document).length,' +
+      '  hasQuiz:app._documentHasQuiz(document),' +
+      '  mainFrame:!!app._getMainFrame()};})()'
+    );
+    check('验证码页夹具自证：旧判据「像题即题」会把它判成测验页（像题、抠不出题）',
+      !!decoy && decoy.oldLike === true && decoy.containers >= 1 &&
+      decoy.hasQuiz === false && decoy.mainFrame === false,
+      JSON.stringify(decoy));
 
     var detected = await ctx.client.evaluate(
       '(function(){var c=window._xxtApp._detectStandaloneCaptcha();' +

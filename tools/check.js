@@ -742,13 +742,64 @@ function checkTestCounts() {
     }
   } catch (e) {}
 
+  // ⚠️ **历史记录豁免**（2026-11-10 加，代价极高的一次教训）：
+  // 这条守卫原先把文档**整文件逐行**核数，于是「新一轮实测项数变多」会逼着
+  // 把历轮台账里的旧实测值一起刷新 —— 上一轮就为了绿灯，把 20 多处历史行
+  // 整片 610→635，1.2.9 那一行现在写着「集成 106 项 / e2e 635 项」这种
+  // **从来没同时存在过的组合**。假记录比旧记录更糟：它会误导下一个接手的人，
+  // 而他自己没法分辨。
+  //
+  // 写法**只有一种**：把 `<!-- 历史计数:start --><!-- 历史计数:end -->` 成对写在
+  // **那一行的行尾**，它只豁免**自己这一行**。
+  // 为什么不提供"区间式"豁免（start 一行、end 一行）：两个实测踩到的理由 ——
+  //   ① 这些历史行是 **markdown 表格行 / 引用块 / 列表续行**，中间插一整行注释会
+  //      **打断表格与引用块的结构**（渲染出来就不是那张表了）；
+  //   ② 区间式一旦漏写 end，它**下面的所有内容静默脱检**，守卫照样绿灯。
+  //      （本轮反向验证就是这么发现我自己的 bug 的：把单行标记误判成区间起点后，
+  //       从第一条历史行起整篇 HANDOVER 全部免检，而抹掉标记的注入**照样不报红**。）
+  // 半截标记（只有 start 或只有 end）直接报错；把整篇计数全豁免掉也直接报错。
+  //
+  // 覆盖率没有下降：现行声明（HANDOVER 页首基线、§1 三十秒速览、§9 当前已知未解决、
+  // README「本版新增」、AGENTS §1、CHANGELOG 最新段）全在标记之外，照旧逐行硬核。
+  var HIST_START = /<!--\s*历史计数:start\s*-->/;
+  var HIST_END = /<!--\s*历史计数:end\s*-->/;
+  var HIST_COUNT = /(?:e2e|交叉检验|端到端)[^。\n]{0,40}?\d+\**\s*项/;
+  function liveOnly(file, text) {
+    if (!text) return '';
+    var lines = String(text).split(/\r?\n/);
+    var out = [];
+    lines.forEach(function (line) {
+      var s = HIST_START.test(line), e = HIST_END.test(line);
+      if (!s && !e) { out.push(line); return; }
+      if (s !== e) {
+        problems.push(file + ' 有一处「历史计数」标记只写了半截（start=' + s + ' end=' + e + '）：' +
+          line.slice(0, 60) + ' —— 只支持**同一行成对**的写法，半截等于没说清豁免哪一行');
+        out.push(line);   // 半截时**不豁免**，宁可多报也不静默脱检
+        return;
+      }
+      // 同行成对 = 只豁免这一行
+    });
+    // **豁免面自证**：原文有计数声明、豁免后一条不剩 → 这条守卫对该文件已等于不存在，必须响。
+    var before = lines.filter(function (l) { return HIST_COUNT.test(l); }).length;
+    var after = out.filter(function (l) { return HIST_COUNT.test(l); }).length;
+    if (before > 0 && after === 0) {
+      problems.push(file + ' 的「历史计数」标记把全部 ' + before + ' 条计数声明都豁免了 —— ' +
+        '这条守卫对它已经等于不存在；只该给**当时的事实**那一行加标记，现行的基线声明必须留检');
+    }
+    return out.join('\n');
+  }
+
   var targets = [
     ['AGENTS.md', null],
     ['README.md', null],
     ['tools/README.md', null],
     ['HANDOVER.md', null],
     ['CHANGELOG.md', latest]
-  ];
+  ].map(function (t) {
+    var text = t[1];
+    if (text === null) { try { text = read(t[0]); } catch (e) { text = ''; } }
+    return [t[0], liveOnly(t[0], text)];
+  });
 
   targets.forEach(function (t) {
     var file = t[0], text = t[1];
