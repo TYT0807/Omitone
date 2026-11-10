@@ -230,6 +230,16 @@
   `waitedMs / limitMs / slowFactor`；content 侧字形表加载超时与注入探针（原 1800ms）同样放宽，
   避免轻薄本上误报 `page script no response after tag injection`。
 - 验证：`npm run concat` + `npm run check` 全绿、`npm test` 144/144、`npm run e2e` 610/610。
+- **审计日志位置修正**：上一版把审计块插在了 `return false;` 之后、if 块内部，
+  永远执行不到（真机日志里没有 `quiz fill audit` 就是它）。现在移到 if 闭合之后。
+- **交卷结果没回来时不跳章**：实测日志里 `skip completed` 与点「下一节」发生在同一秒，
+  20 毫秒后才出现 `quiz submit finished` —— 平台还没处理完提交、页面就被推走。
+  `_skipIfCompleted` 增加 `_quizSubmitPending` 守卫，等提交结束或超时再走完成判定。
+- **审计日志位置修正**：上一版把审计块插在了 `return false;` 之后、if 块内部，
+  永远执行不到（真机日志里没有 `quiz fill audit` 就是它）。现在移到 if 闭合之后。
+- **交卷结果没回来时不跳章**：实测日志里 `skip completed` 与点「下一节」发生在同一秒，
+  20 毫秒后才出现 `quiz submit finished` —— 平台还没处理完提交、页面就被推走。
+  `_skipIfCompleted` 增加 `_quizSubmitPending` 守卫，等提交结束或超时再走完成判定。
 - **提交前填充审计**：`_maybeSubmitQuiz` 在放行前打一条
   `quiz fill audit {total, withValue, checkedInDom}`。原因是「单选题不答」时提交照样放行、
   没有 `answers are not ready` —— 说明隐藏域有值但控件没进入选中态；这条日志把
