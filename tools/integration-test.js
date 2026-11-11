@@ -2422,6 +2422,206 @@ async function testScopeReconnectAfterPageChange() {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * 批次 19-B：附件清单是**异步渲染**的，读到的 0 不等于"这一节没任务点"。
+ *
+ * 现场（2026-11-11 用户原话「7.3的就直接跳过了，不知道为什么」「单元测试也没写」）：
+ *   13:15:33 `study begin {attachments:0}`
+ *   13:15:36 `search job: every candidate frame was rejected {attachments:6,…}`  ← 同一个 getter 三秒后读到 6
+ *   13:15:36 `study finished on page {searchedCount:0}`
+ *   13:15:41 `study next unit {searchedCount:0}`                                 ← 整节 8 秒被翻过去
+ * 旧公式 `min(3 + n*2, 10)` 在 n=0 时只给 3 秒：越是什么都没看见，越快要断定没活干。
+ *
+ * 同一天第二笔（13:41:33）证明"光把窗口拉长不够"：那一轮**已经等满 10 秒**，
+ * 帧里却还写着平台自己的占位文案「正在为您加载文件...」→ `searchedCount:0` → 照样翻过去。
+ * 于是 ⑤ 验第二半：认这个**正面证据**，给这一张卡片一个有界的额外窗口。
+ */
+async function testOcsDiscoveryWindow() {
+  console.log('\n[18] 附件清单要重新问、帧自己说在加载要认：读 0 不许当成「这一节做完了」（3.1 / 7.3 被整节翻过去）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var detect = read('src/page/60-tasks-detect.js');
+  var style = read('src/page/62-tasks-run.js');
+
+  var buildFrom = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return null;
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    if (end <= start) return null;
+    return new Function('return (' + src.slice(start, end) + '\n    })')();
+  };
+  var windowMs = buildFrom(detect, '_taskDiscoveryWindowMs');
+  var tick = buildFrom(detect, '_noteOcsDiscoveryTick');
+  check('①能取出窗口算术两个方法（取不到是签名/缩进变了，不等于没有回归）',
+    typeof windowMs === 'function' && typeof tick === 'function',
+    JSON.stringify({ windowMs: typeof windowMs, tick: typeof tick }));
+  if (typeof windowMs !== 'function' || typeof tick !== 'function') return;
+
+  var oldScaled = global.scaledMs;
+  global.scaledMs = function (ms) { return ms; };
+  var fake = { _taskDiscoveryWindowMs: windowMs };
+  try {
+    check('②空清单给**满窗 10 秒**（旧公式在这里只给 3 秒，正是 3.1 被翻过去的那 3 秒）',
+      windowMs(0) === 10000, 'windowMs(0)=' + windowMs(0));
+    check('②有附件时沿用原口径：1 个 5 秒 / 2 个 7 秒 / 4 个以上封顶 10 秒',
+      windowMs(1) === 5000 && windowMs(2) === 7000 && windowMs(4) === 10000 && windowMs(30) === 10000,
+      JSON.stringify([windowMs(1), windowMs(2), windowMs(4), windowMs(30)]));
+    check('②读数坏掉（undefined / NaN / 负数 / 字符串）按空清单处理，**不许给 0**（0 = 立刻放弃）',
+      windowMs(undefined) === 10000 && windowMs(NaN) === 10000 &&
+      windowMs(-5) === 10000 && windowMs('x') === 10000,
+      JSON.stringify([windowMs(undefined), windowMs(NaN), windowMs(-5), windowMs('x')]));
+    check('②窗口随附件数单调不减，且空清单不短于任何有附件的情况',
+      [1, 2, 3, 4, 5].every(function (n) { return windowMs(n) <= windowMs(n + 1); }) &&
+      windowMs(0) >= windowMs(1),
+      JSON.stringify([0, 1, 2, 3, 4, 5, 6].map(windowMs)));
+
+    var T0 = 1794402933000;
+    var st = { startedAt: T0, until: T0 + windowMs(0), seen: 0, budget: 0 };
+    check('③现场起点（13:15:33 读 0）窗口开到 T0+10s，而不是旧代码的 T0+3s',
+      st.until === T0 + 10000, JSON.stringify(st));
+
+    var grew = tick.call(fake, st, 6, T0 + 3000);
+    check('③三秒后清单里冒出 6 个（13:15:36 的真实读数）→ 续窗，而不是当场宣布这一节做完了',
+      grew === true && st.seen === 6 && st.budget === 6 && st.until === T0 + 3000 + windowMs(6),
+      JSON.stringify(st));
+
+    var again = tick.call(fake, st, 6, T0 + 4000);
+    check('③数量不变就不续期（每轮都续等于这条循环永不超时，一个悬挂会杀死主循环）',
+      again === false && st.until === T0 + 13000, JSON.stringify(st));
+
+    var shrunk = tick.call(fake, st, 2, T0 + 5000);
+    check('③清单往回抖（章节过滤回落）既不认账也不缩窗（缩窗会把刚认出来的任务点当场丢回去）',
+      shrunk === false && st.seen === 6 && st.until === T0 + 13000, JSON.stringify(st));
+
+    var late = tick.call(fake, st, 9, T0 + 46000);
+    check('③续窗有硬顶：45 秒后的新增只能顶到 `startedAt+45s`，不许越过去',
+      late === true && st.seen === 9 && st.budget === 9 && st.until === T0 + 45000, JSON.stringify(st));
+
+    var past = tick.call(fake, st, 20, T0 + 60000);
+    check('③窗口已经过期时，光靠"清单又变多了"不能复活它（45 秒是硬顶，不是每次都能加钱）',
+      past === false && st.until === T0 + 45000, JSON.stringify(st));
+
+    var untilBefore = st.until;
+    var junk = tick.call(fake, st, undefined, T0 + 47000);
+    check('③读数坏了不许把 until 写成 NaN（`now < NaN` 永远 false，又变回 3 秒跳过整节）',
+      junk === false && st.until === untilBefore && Number.isFinite(st.until), JSON.stringify(st));
+  } finally {
+    global.scaledMs = oldScaled;
+  }
+
+  // ---- ④ 接线：算术对了但循环没重新问 = 白修 ----
+  var rAt = detect.indexOf('_ensureOcsStudyRunner: function');
+  var runnerBody = rAt < 0 ? '' : detect.slice(rAt, detect.indexOf('\n    },', rAt));
+  check('④定位得到 `_ensureOcsStudyRunner`', runnerBody.length > 500, 'len=' + runnerBody.length);
+  var asks = (runnerBody.match(/_getChaoxingAttachments\(\)/g) || []).length;
+  check('④循环体里**又问了一次**附件清单（只在开跑那一刻读一次就是这次事故的形状）',
+    asks >= 2, 'reads=' + asks);
+  check('④旧的"一次性 setTimeout 关窗"没有回来（`searching = false` 那种写法）',
+    !/searching\s*=\s*false/.test(runnerBody));
+  check('④关窗判据读的是**会被续期的那个终点**（`Date.now() < discovery.until`）',
+    runnerBody.indexOf('Date.now() < discovery.until') >= 0);
+  // ⚠️ 认**调用形状**，不认光秃秃的方法名：方法名还会出现在注释里，
+  //   反向验证 Y1（把调用换成 `if (false)`）第一次就是这么溜过去的 —— 断言绿得毫无意义。
+  var tickCall = runnerBody.search(/_noteOcsDiscoveryTick\(\s*discovery\s*,/);
+  var untilAt = runnerBody.indexOf('Date.now() < discovery.until');
+  check('④续窗真的发生在关窗判定之前（写在后面等于这一轮白续）',
+    tickCall >= 0 && tickCall < untilAt,
+    JSON.stringify({ tickCall: tickCall, untilAt: untilAt }));
+  check('④`study finished on page` 带着「凭什么说做完了」：附件数 + 实际等了多久',
+    /'study finished on page'[\s\S]{0,200}attachments:\s*discovery\.seen[\s\S]{0,80}waitedMs:/.test(runnerBody),
+    runnerBody.slice(runnerBody.indexOf('study finished on page'), runnerBody.indexOf('study finished on page') + 220).replace(/\s+/g, ' '));
+
+  check('④窗口口径只有一份：style runner 也走 `_taskDiscoveryWindowMs`，不再自带公式',
+    style.indexOf('this._taskDiscoveryWindowMs(') >= 0 && !/Math\.min\(3 \+/.test(style),
+    JSON.stringify({ shared: style.indexOf('_taskDiscoveryWindowMs'), inline: /Math\.min\(3 \+/.test(style) }));
+  var formulaFiles = fs.readdirSync(path.join(ROOT, 'src', 'page'))
+    .filter(function (f) { return f.slice(-3) === '.js'; })
+    .map(function (f) { return [f, (read('src/page/' + f).match(/Math\.min\(3 \+/g) || []).length]; })
+    .filter(function (x) { return x[1] > 0; });
+  check('④`min(3 + n*2, 10)` 全书只许出现一次（两份公式早晚漂回"读 0 就 3 秒放弃"）',
+    formulaFiles.length === 1 && formulaFiles[0][0] === '60-tasks-detect.js',
+    JSON.stringify(formulaFiles));
+
+  // ---- ⑤ 帧自己说「正在加载」：10 秒窗也等不到的那一族（13:41:33 现场） ----
+  var stillLoading = buildFrom(detect, '_noteTaskFrameStillLoading');
+  check('⑤能取出 `_noteTaskFrameStillLoading`', typeof stillLoading === 'function',
+    typeof stillLoading);
+  check('⑤拒绝帧的取证里接上了这道闸（只记日志不接判据 = 白取证）',
+    /_noteTaskFrameStillLoading\(\s*sig\s*,/.test(detect.slice(0, rAt)), 'caller missing');
+  check('⑤runner 把加载窗当第 4 个实参交给续窗算术（不传 = 认了证据却不续期）',
+    /_noteOcsDiscoveryTick\(\s*discovery\s*,\s*liveInventory\s*,\s*Date\.now\(\)\s*,\s*self\._taskFrameLoadingUntil\s*\)/.test(runnerBody),
+    runnerBody.slice(runnerBody.indexOf('_noteOcsDiscoveryTick('), runnerBody.indexOf('_noteOcsDiscoveryTick(') + 120).replace(/\s+/g, ' '));
+  check('⑤`study inventory grew` 只在清单**真的**变多时才发（被加载窗推后不是"清单变多"）',
+    /if \(discovery\.seen > grewFrom\)/.test(runnerBody));
+
+  if (typeof stillLoading === 'function') {
+    var oldLog = global.emitRuntimeLog;
+    var logs = [];
+    global.emitRuntimeLog = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+    global.scaledMs = function (ms) { return ms; };
+    var card = 'chapter-7|card-3|fp-6';
+    var mk = function () {
+      return {
+        _taskFrameLoadingUntil: 0, _taskFrameLoadingScope: '', _studyProgressKey: function () { return card; },
+        _taskDiscoveryWindowMs: windowMs,
+      };
+    };
+    try {
+      var a = mk();
+      var armedAt = Date.now();
+      var ret = stillLoading.call(a, { text: '正在为您加载文件...', textLen: 10, qTotal: 0, video: 0, answer: 0, pan: 0 }, 'readcache', true);
+      check('⑤帧里写着「正在为您加载文件」→ 认成还没加载好，给出一个**未来**的窗口终点',
+        ret > armedAt && a._taskFrameLoadingUntil === ret && logs.length === 1 &&
+        logs[0].meta.why === 'loading-text', JSON.stringify({ ret: ret - armedAt, logs: logs }));
+
+      var b = mk();
+      var blankRet = stillLoading.call(b, { text: '', textLen: 0, qTotal: 0, video: 0, answer: 0, pan: 0 }, 'readcache', true);
+      check('⑤整张白纸 + 清单上有任务点 = 同一个后果（13:15:36 `{attachments:6,textLen:0}` 那一笔）',
+        blankRet > Date.now() && logs[logs.length - 1].meta.why === 'blank-frame-with-attachments',
+        JSON.stringify({ ret: blankRet, why: logs[logs.length - 1].meta.why }));
+
+      var c = mk();
+      var noInv = stillLoading.call(c, { text: '', textLen: 0, qTotal: 0, video: 0, answer: 0, pan: 0 }, 'readcache', false);
+      check('⑤白纸**且清单也空**不认（真空章节不许被磨蹭拖住，那是另一种翻过去）',
+        noInv === 0 && c._taskFrameLoadingUntil === 0 && logs.length === 2, JSON.stringify({ ret: noInv, logs: logs.length }));
+
+      var d = mk();
+      var busy = stillLoading.call(d, { text: '下列哪个选项是正确的', textLen: 10, qTotal: 5, video: 0, answer: 4, pan: 0 }, 'readcache', true);
+      check('⑤帧里有题有作答框时不认（这道闸只管"没加载好"，不许变成万能延时）',
+        busy === 0 && d._taskFrameLoadingUntil === 0, JSON.stringify({ ret: busy }));
+
+      logs.length = 0;
+      var held = stillLoading.call(a, { text: '正在为您加载文件...' }, 'readcache', true);
+      check('⑤窗口没到期时同样的证据**不续期**（每轮都续 = 这条循环永不超时）',
+        held === a._taskFrameLoadingUntil && logs.length === 0, JSON.stringify({ held: held, logs: logs.length }));
+
+      a._taskFrameLoadingUntil = Date.now() - 1;
+      var spent = stillLoading.call(a, { text: '正在为您加载文件...' }, 'readcache', true);
+      check('⑤同一张卡片的窗口用掉后放行（把「跳过」换成「磨蹭」是另一种事故）',
+        spent === 0 && a._taskFrameLoadingScope === card, JSON.stringify({ spent: spent, scope: a._taskFrameLoadingScope }));
+
+      var e = mk();
+      var cap = stillLoading.call(e, { text: 'loading' }, 'readcache', true);
+      check('⑤延时有界：单张卡片最多 20 秒',
+        cap - Date.now() <= 20000 && cap - Date.now() > 0, 'holdMs=' + (cap - Date.now()));
+
+      var g = mk();
+      var lg = stillLoading.call(g, { text: '正在为您加载文件...' }, 'readcache', true);
+      var st2 = { startedAt: Date.now(), until: Date.now() + 1000, seen: 6, budget: 0 };
+      var merged = tick.call({ _taskDiscoveryWindowMs: windowMs }, st2, 6, Date.now(), g._taskFrameLoadingUntil);
+      check('⑤加载窗接进续窗算术后，**数量没变**也能把窗口推后（③那条"不续期"只约束清单抖动）',
+        lg > 0 && merged === true && st2.until === g._taskFrameLoadingUntil && st2.seen === 6,
+        JSON.stringify({ until: st2.until - Date.now(), seen: st2.seen }));
+    } finally {
+      global.emitRuntimeLog = oldLog;
+      global.scaledMs = oldScaled;
+    }
+  }
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -2451,6 +2651,7 @@ async function main() {
   await testQuizScanHoldWiring();
   await testQuizPaperDepthAndApiBlock();
   await testScopeReconnectAfterPageChange();
+  await testOcsDiscoveryWindow();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

@@ -434,9 +434,11 @@
         emitRuntimeLog('info', 'attachment fingerprint changed', { count: attachments.length });
       }
       if (!this._ocsSearchDeadline) {
-        var waitTimeout = Math.min(3 + (attachments.length || 0) * 2, 10) * 1000;
+        // 窗口口径与 `_ensureOcsStudyRunner` 共用 `_taskDiscoveryWindowMs`（0 个附件给满窗，
+        // 不是给最短）—— 两份公式各写一处，早晚会漂回「读 0 就 3 秒断定没活干」。
+        var waitTimeout = this._taskDiscoveryWindowMs(attachments.length || 0);
         this._ocsSearchDeadline = now + waitTimeout;
-        emitRuntimeLog('info', 'study begin', { attachments: attachments.length });
+        emitRuntimeLog('info', 'study begin', { attachments: attachments.length, runner: 'style' });
       }
 
       if (this._isActiveStudyJobPending('ocs-style-active-job')) {

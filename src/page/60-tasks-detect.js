@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（34 个）：
+ * 本段的方法（37 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
@@ -23,7 +23,8 @@
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_frameRejectSignature、
  *   _maybeHoldSkipForUnparsedQuiz、_noteQuizParseRetryExhausted、_quizScanRetrySignal、
- *   _skipCompletedEvidence、_searchIFramesOcs、
+ *   _noteTaskFrameStillLoading、_skipCompletedEvidence、_searchIFramesOcs、
+ *   _taskDiscoveryWindowMs、_noteOcsDiscoveryTick、
  *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
@@ -1058,6 +1059,9 @@
           // 批次 10-C：**这一条不改准入判据**（那是 9-D 刻意留着的），只在
           // 「有作答框 + 命中题形容器 + 一题没抠出」时给完成判定加一个有界延时。
           if (appRef._maybeHoldSkipForUnparsedQuiz(sig, src)) item.delay = 'quiz-parse';
+          // 批次 19-B：帧**自己说还没加载好**（「正在为您加载文件…」或整张白纸）时，
+          // 给发现窗口加一个有界延时。同样不改准入判据，只把"这一节做完了"往后推。
+          if (appRef._noteTaskFrameStillLoading(sig, src, (attachments || []).length > 0)) item.loading = 'frame-loading';
         }
         rejects.push(item);
       };
@@ -1303,6 +1307,94 @@
       return chapterId + '|' + cardKey + '|' + fingerprint;
     },
 
+    /**
+     * 「这一节的附件清单可能还没渲染完」给多长的发现窗口 —— 两条 runner 共用一份口径。
+     *
+     * ⚠️ 0 个附件**反而要等最久**。真实日志（2026-11-11，3.1 那一节 8 秒被翻过去）：
+     *   13:15:33 `study begin {attachments:0}`
+     *   13:15:36 `search job: every candidate frame was rejected {attachments:6,frames:1,…}`
+     * 同一个 getter 三秒后读到 6 个 —— 也就是说"0"几乎从来不是"这一节没任务点"，
+     * 而是"平台还没把卡片列表画出来"。旧公式 `min(3 + n*2, 10)` 在 n=0 时只给 **3 秒**：
+     * 越是什么都没看见，就越快断定没活干，判据和事实正好相反。
+     * 空窗的代价是多等 7 秒，翻过去的代价是整节的视频/测验一个字没动 —— 用户看到的
+     * 就是「7.3的就直接跳过了」。
+     */
+    _taskDiscoveryWindowMs: function (attachmentCount) {
+      // ⚠️ 必须夹住下界：负数会让 `3 + n*2` 变成负的，窗口终点落在过去 ——
+      //   等于"立刻放弃"，比原来的 3 秒还糟（这条是集成测试 [18] ② 抓出来的）。
+      var n = Math.max(0, Number(attachmentCount) || 0);
+      return scaledMs((n === 0 ? 10 : Math.min(3 + n * 2, 10)) * 1000);
+    },
+
+    /**
+     * 「这一帧自己说还没加载好」—— 批次 19-B。
+     *
+     * 同一天真页面两笔账，两种形状、同一个后果（整节被 `nextUnit` 翻过去）：
+     *   13:15:36 `{attachments:6, sig.textLen:0}` —— 帧还是一张白纸
+     *   13:41:33 `{attachments:6, sig.text:"正在为您加载文件..."}` —— 平台自己写着在加载
+     * 13:41:33 那一轮**已经等满了 10 秒**（本批次前半段刚修的发现窗口）还是没等到，
+     * 所以固定的秒数不够，必须认这个**正面证据**：帧里写着"正在加载"就不等于"这一节没任务点"。
+     *
+     * 成本封顶与 `_maybeHoldSkipForUnparsedQuiz` 同一套纪律：每张卡片只给一个窗口、
+     * 同一窗口内不续期、用完放行 —— 不许把「跳过」换成另一种「磨蹭」。
+     * 返回窗口终点（0 = 这一族不算还在加载，或本卡片的窗口已经用掉）。
+     */
+    _noteTaskFrameStillLoading: function (sig, src, hasInventory) {
+      if (!sig) return 0;
+      var text = String(sig.text || '');
+      var saysLoading = /正在[^。\n]{0,8}加载|加载中|loading/i.test(text);
+      var blank = !text.replace(/\s+/g, '') && !(Number(sig.qTotal) || 0) &&
+        !(Number(sig.video) || 0) && !(Number(sig.answer) || 0) && !(Number(sig.pan) || 0);
+      if (!saysLoading && !(blank && hasInventory)) return 0;
+      var now = Date.now();
+      if (this._taskFrameLoadingUntil > now) return this._taskFrameLoadingUntil;
+      var scope = '';
+      try { scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || ''))); } catch (eScope) {}
+      if (scope && scope === this._taskFrameLoadingScope) return 0;
+      this._taskFrameLoadingScope = scope;
+      this._taskFrameLoadingUntil = now + Math.min(20000, scaledMs(15000));
+      emitRuntimeLog('warn', 'task frame still loading, search window extended', {
+        src: String(src || '').slice(0, 40),
+        why: saysLoading ? 'loading-text' : 'blank-frame-with-attachments',
+        text: text.slice(0, 24),
+        holdMs: this._taskFrameLoadingUntil - now,
+        hint: '帧里还写着「正在加载」（或整张白纸、可清单上明明有任务点）—— 这不叫"这一节做完了"。' +
+          '本张卡片只给这一个窗口，过期后照旧推进'
+      });
+      return this._taskFrameLoadingUntil;
+    },
+
+    /**
+     * 发现窗口的一轮续期判定 —— **就地**改 `state`（`{startedAt, until, seen, budget}`），
+     * 返回这一轮窗口终点**有没有被推后**（不是"有没有看到新附件"）。
+     *
+     * 抽出来只因为它必须能被测：「开跑读一次、三秒后断定这节没活」就是 3.1 整节
+     * 被 `nextUnit` 翻过去的直接原因，而这段算术埋在 200 行的循环里没法断言。
+     * 规矩：数量**只增不减**（少了不许缩窗，否则一个抖动就把窗口清零）、
+     * 每多认一个任务点补一秒搜索预算（沿用原来的 `attachmentCount--` 语义）、
+     * 窗口取「按数量续的窗」与「帧还在加载窗 `loadingUntil`」的**较大者**，
+     * 再被 `startedAt + scaledMs(45000)` 硬顶夹住 —— 没有顶，清单抖动就等于这条
+     * 循环永不超时，而一个永不超时的悬挂会杀死整个 tick 主循环。
+     */
+    _noteOcsDiscoveryTick: function (state, liveCount, now, loadingUntil) {
+      var seen = Number(state.seen) || 0;
+      var grew = (Number(liveCount) || 0) - seen;
+      var want = Number(state.until) || 0;
+      if (grew > 0) {
+        state.seen = Number(liveCount) || 0;
+        state.budget = (Number(state.budget) || 0) + grew;
+        want = Math.max(want, now + this._taskDiscoveryWindowMs(state.seen));
+      }
+      var lu = Number(loadingUntil) || 0;
+      if (lu > want) want = lu;
+      if (want > (Number(state.startedAt) || 0) + scaledMs(45000)) {
+        want = (Number(state.startedAt) || 0) + scaledMs(45000);
+      }
+      if (!(want > (Number(state.until) || 0))) return false;
+      state.until = want;
+      return true;
+    },
+
     _ensureOcsStudyRunner: function () {
       if (this._ocsStudyStarted) return true;
       var knowCardWin = this._getMainWindow();
@@ -1321,15 +1413,19 @@
           if (version !== self._runtimeVersion) return;
 
           var searchedJobs = [];
-          var attachments = self._getChaoxingAttachments();
-          var attachmentCount = attachments.length || 0;
-          var searching = true;
-          var waitTimeout = scaledMs(Math.min(3 + attachmentCount * 2, 10) * 1000);
-          emitRuntimeLog('info', 'study begin', { attachments: attachmentCount });
-
-          setTimeout(function () {
-            if (version === self._runtimeVersion) searching = false;
-          }, waitTimeout);
+          var seenInventory = (self._getChaoxingAttachments() || []).length;
+          // 发现窗口的状态收在一个对象里，续期算术交给 `_noteOcsDiscoveryTick`（能断言）。
+          var discovery = {
+            startedAt: Date.now(),
+            until: 0,
+            seen: seenInventory,
+            budget: seenInventory
+          };
+          discovery.until = discovery.startedAt + self._taskDiscoveryWindowMs(seenInventory);
+          emitRuntimeLog('info', 'study begin', {
+            attachments: seenInventory,
+            windowMs: discovery.until - discovery.startedAt
+          });
 
           while (version === self._runtimeVersion) {
             // ⚠️ 心跳：这是个**开放条件**的循环（等页面版本号变化才退出），
@@ -1402,12 +1498,30 @@
               await sleep(1000);
               continue;
             }
-            if (attachmentCount > 0) {
-              attachmentCount--;
+            if (discovery.budget > 0) {
+              discovery.budget--;
               await sleep(1000);
               continue;
             }
-            if (searching) {
+            // ⚠️ 每一轮重新问一次附件清单：**看到新的就续窗**。
+            //   只在开跑那一刻读一次，就是 13:15:33 那次「读 0 → 3 秒后断定这节没活 →
+            //   整节被 nextUnit 翻过去」的直接原因（同一刻 `_searchChaoxingJobOcs`
+            //   自己读到的是 6 个 —— 一个函数两个口径，慢的那一个说了算）。
+            var liveInventory = 0;
+            try { liveInventory = (self._getChaoxingAttachments() || []).length; } catch (eInv) {}
+            var grewFrom = discovery.seen;
+            if (self._noteOcsDiscoveryTick(discovery, liveInventory, Date.now(), self._taskFrameLoadingUntil)) {
+              if (discovery.seen > grewFrom) {
+                emitRuntimeLog('info', 'study inventory grew', {
+                  from: grewFrom, to: discovery.seen,
+                  waitedMs: Date.now() - discovery.startedAt,
+                  windowMs: discovery.until - Date.now(),
+                  hint: '开跑时清单还是空的，中途才渲染出来 —— 发现窗口按新数量续期，' +
+                    '别把「还没画出来」读成「没任务点」。这一轮真正多等了多久，看 windowMs'
+                });
+              }
+            }
+            if (Date.now() < discovery.until) {
               await sleep(1000);
               continue;
             }
@@ -1476,7 +1590,14 @@
             self._ocsStudyStarted = false;
             return;
           }
-          emitRuntimeLog('info', 'study finished on page', { searchedCount: searchedJobs.length });
+          // `searchedCount:0` 单独一句没法回答「凭什么说这一节做完了」——
+          // 把窗口读数一起落下：这一轮到底等过几个附件、等了多久，一眼分得开
+          // "真的空章节"与"清单压根没渲染出来"（2026-11-11 的 3.1 是后者）。
+          emitRuntimeLog('info', 'study finished on page', {
+            searchedCount: searchedJobs.length,
+            attachments: discovery.seen,
+            waitedMs: Date.now() - discovery.startedAt
+          });
           if (self.configs.autoNext) {
             await sleep(5000);
             if (version !== self._runtimeVersion) return;
@@ -1519,7 +1640,7 @@
                 self._nextUnitBlockedKey = progressKey;
                 emitRuntimeLog('error', 'study stuck: 下一节点了没反应，已停止空转', {
                   rounds: self._nextUnitNoopCount,
-                  attachmentCount: attachmentCount,
+                  attachments: discovery.seen,
                   hint: '本学习卡片上还有没做完的任务点，平台因此不让往下走。请手动处理它（例如把这道题做完交卷）；' +
                         '处理完会自动继续，也可在控制台执行 xxtAI.next() 手动推进'
                 });
