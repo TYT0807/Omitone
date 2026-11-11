@@ -11,14 +11,14 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（58 个）：
+ * 本段的方法（60 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
  *   _getQuizPaperKeyFromTask、_isQuizPaperChangedInDom、_getQuizSubmitAttemptKey、
  *   _getQuizAccountDocument、_shouldHoldQuizBeforeFinish、_getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
- *   _isQuizApiUnavailable、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
+ *   _isQuizApiUnavailable、_isQuizBlockedByApi、_noteQuizBlockedByApi、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
  *   _setQuizSubmitAttemptCount、_clearQuizSubmitAttemptCount、
  *   _incrementQuizSubmitAttemptCount、_shouldSkipQuizBySubmitAttempts、
@@ -498,7 +498,9 @@
     },
 
     _getQuizApiUnavailableReason: function () {
-      if (!this.configs.enableQuiz) return 'api-disabled';
+      // 这条不是「API 不可用」，是「用户自己把答题关了」—— 两者后面走的路完全不同
+      // （前者要按住等恢复，后者直接翻页），所以理由必须分开命名（批次 13-B）。
+      if (!this.configs.enableQuiz) return 'quiz-toggle-off';
       // ⚠️ 乱选模式**不需要** API key，也不受连接失败影响 —— 答案在本地生成。
       // 少了这一句，乱选会走 _skipQuizForApiUnavailable 把整道题跳过，
       // 变成「什么都不答」而不是「乱选」。
@@ -558,6 +560,42 @@
       return !!this._getQuizApiUnavailableReason();
     },
 
+    /**
+     * 「这一节压着一张**因为链路不可用而做不了**的卷子」—— 批次 13-B 的核心判据。
+     *
+     * 为什么不能直接拿 `_isQuizApiUnavailable()` 当答案：那条判据里还混着
+     * 「用户自己关掉答题」（`quiz-toggle-off`），那种情况翻页是对的（他就不想做题）；
+     * 而 key 没填 / 网络退避 时翻页 = 把必做题扔掉。以前 `_isQuizLearningPending`
+     * 对两者一视同仁返回 false，上层于是宣布「这一节已完成」并翻节 ——
+     * 这正是用户那句「还没做就判已完成、无语了」。
+     *
+     * 三个条件缺一不可：
+     *   1. 原因是**可恢复**的那两类；
+     *   2. 本轮确实因为该原因拒过测验任务点（`_noteQuizBlockedByApi` 的标记还新）——
+     *      没有这条证据就不许凭空按住整节；
+     *   3. 按住的时间还没超过预算 —— 超了就退回「跳过并大声记日志」，
+     *      否则一个永远不填 key 的用户会把整轮刷课冻在这一节上。
+     */
+    _isQuizBlockedByApi: function () {
+      var reason = this._getQuizApiUnavailableReason();
+      if (!reason || reason === 'quiz-toggle-off') return false;
+      var now = Date.now();
+      if (!this._quizBlockedByApiAt || now - this._quizBlockedByApiAt > 30000) return false;
+      return now - (this._quizBlockedSinceAt || now) < 180000;
+    },
+
+    /** 记下「因为链路不可用而拒掉了一个测验任务点」—— 上面那条判据的唯一证据来源。 */
+    _noteQuizBlockedByApi: function (reason) {
+      if (!reason || reason === 'quiz-toggle-off') return;
+      var now = Date.now();
+      // 上一轮阻塞已经断了（超过 60 秒没再拒过），当成**新的一次**重新起算，
+      // 否则「填过 key 又掉线」会继承第一次的时长、直接跳过而不按住。
+      if (!this._quizBlockedSinceAt || now - (this._quizBlockedByApiAt || 0) > 60000) {
+        this._quizBlockedSinceAt = now;
+      }
+      this._quizBlockedByApiAt = now;
+    },
+
     _resetQuizStateForSkip: function () {
       this._quizInProgress = false;
       this._quizAnswered = false;
@@ -588,6 +626,38 @@
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
       var skipReason = reason || this._getQuizApiUnavailableReason() || 'api-unavailable';
+      // ⚠️「答不了」不等于「没题做」（批次 13-B）。被可恢复的原因挡住、且这一轮确实
+      // 因此拒过测验任务点时，这里**不许翻页**：翻过去就等于把必做题宣布成已完成。
+      // 返回 false 让调用方回落到它自己的 hold 分支；超过按住预算后自动放行，
+      // 所以一个永远不填 key 的用户也不会被冻在这一节。
+      if (this._isQuizBlockedByApi()) {
+        var heldMs = Date.now() - (this._quizBlockedSinceAt || Date.now());
+        if (!this._quizBlockedHoldLogAt || Date.now() - this._quizBlockedHoldLogAt > 10000) {
+          this._quizBlockedHoldLogAt = Date.now();
+          emitRuntimeLog('warn', 'quiz blocked by api, holding unit', {
+            reason: skipReason,
+            heldMs: heldMs,
+            hint: '这一节压着没做的题，但答题链路现在用不了 —— 已**停在本节不翻页**（不是已完成）。' +
+              '填好 API Key 或等网络恢复就会自动继续；按住超过 3 分钟才会跳过这一节'
+          });
+        }
+        return false;
+      }
+      // 按住预算用完（3 分钟）仍未恢复 → 放行跳过，但要把「这些题并没做过」说清楚。
+      // ⚠️ 这里**不改** `_quizBlockedSinceAt`：清零会让 `_isQuizBlockedByApi()` 下一秒
+      // 又算成新的一次阻塞、重新按住，于是永远翻不了页（自锁）。它由
+      // `_resetRuntimeState()`（换节）与 `_noteQuizBlockedByApi()`（间隔 60 秒以上
+      // 视为新事故）负责起算，所以每一节都拿到自己那份预算。
+      var blockedSince = this._quizBlockedSinceAt || 0;
+      if (blockedSince && skipReason !== 'quiz-toggle-off' && Date.now() - blockedSince >= 180000 &&
+          (!this._quizBlockedGiveUpLogAt || Date.now() - this._quizBlockedGiveUpLogAt > 10000)) {
+        this._quizBlockedGiveUpLogAt = Date.now();
+        emitRuntimeLog('warn', 'quiz blocked too long, giving up unit', {
+          reason: skipReason,
+          heldMs: Date.now() - blockedSince,
+          hint: '按住整节超过 3 分钟仍未恢复，改判跳过 —— 这些题**没做过**，配好链路后请开重学把这节补回来'
+        });
+      }
       this._setQuizForceSkip(15000);
       this._resetQuizStateForSkip();
       var now = Date.now();
@@ -778,6 +848,14 @@
         // 判分结果页优先于 frame 标记判断：作业/考试结果页两套标记都没有，
         // 只有 .Py_answer 那一族（见 _isQuizResultPageFinished 的说明）。
         if (doc && this._isQuizResultPageFinished(doc)) return true;
+        // ⚠️「这份文档的卷子已完成」只能对**真是一张卷子的文档**说（批次 13-A）。
+        // 现场：`_resolveQuizSubmitDocument(null)` 落在知识卡片那份文档上，
+        // 而卡片页每条任务点后面都写着「已完成」—— `_isDocumentFrameFinished` 当场为真，
+        // 于是「还没做的题」被读成「这一节已完成」，直接翻下一节
+        //（用户的原话：「这到底是在用什么东西看？怎么说已完成了？」）。
+        // 「看不见题」不等于「题做完了」：卷子帧跨域、还没加载、或压根没找着时，
+        // 宁可返回 false 让上层走 hold/告警，也不许在这里替平台宣布完成。
+        if (doc && !this._docHasQuizPaperShape(doc)) return false;
         if (doc && this._isDocumentFrameFinished(doc)) return true;
         var text = doc && doc.body ? textOf(doc.body) : '';
         if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|通过标准|恭喜/.test(text)) return true;
@@ -969,7 +1047,8 @@
       // 这里不比卷子键，理由见 `_isQuizSkipWindowLive`（这一处无参调
       // `_isQuizForceSkipping()` 是 HIGH-1 倒过来的那个形态）。
       if (this._isQuizSkipWindowLive()) return false;
-      if (this._isQuizApiUnavailable()) return false;
+      // 被可恢复的原因挡住时**要**按住（批次 13-B）；用户自己关掉答题则照旧不 hold。
+      if (this._isQuizApiUnavailable() && !this._isQuizBlockedByApi()) return false;
       if (this._monitorQuizSubmit()) return true;
       var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
       if (!doc) return false;
@@ -1079,7 +1158,11 @@
 
     _isQuizLearningPending: function (preferredDoc) {
       if (this._isQuizForceSkipping(preferredDoc || null)) return false;
-      if (this._isQuizApiUnavailable()) return false;
+      // ⚠️ 批次 13-B：以前这里无条件 `return false`，把「答题链路现在用不了」
+      // 当成「这一页没有题要做」—— 上层随即宣布本节完成并翻节，
+      // 用户看到的是「题一道没做就说已完成了」。
+      // 现在可恢复的阻塞（key 没填 / 网络退避）继续算 pending，让调度器按住这一节。
+      if (this._isQuizApiUnavailable()) return this._isQuizBlockedByApi();
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
 

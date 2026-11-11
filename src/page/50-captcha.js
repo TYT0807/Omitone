@@ -8,14 +8,16 @@
  *
  * 验证码弹窗的检测、取图与识别；整页验证码模式的处理
  *
- * 本段的方法（19 个）：
- *   _checkCaptchaDialog、_captureCaptchaImage、_cleanCaptchaCode、
+ * 本段的方法（23 个）：
+ *   _checkCaptchaDialog、_captureCaptchaImage、_waitForCaptchaImage、_cleanCaptchaCode、
  *   _fillCaptchaInput、_clickCaptchaSubmit、_captchaSubmitStrategies、
  *   _captchaStillOpen、_captchaSuccessShown、_submitCaptchaWithStrategies、
  *   _clickCaptchaConfirm、_captchaReload、
  *   _recognizeCaptchaImage、_detectStandaloneCaptcha、
  *   _computeStandaloneCaptchaPage、_isStandaloneCaptchaPage、
- *   _runStandaloneCaptchaMode、_afterStandaloneCaptchaSolved、
+ *   _runStandaloneCaptchaMode、_reloadForStandaloneCaptcha、
+ *   _readStandaloneCaptchaBudget、_writeStandaloneCaptchaBudget、
+ *   _afterStandaloneCaptchaSolved、
  *   _handleCaptchaDialog、_backgroundCaptchaTick
  * ========================================================================== */
 // @omitone-part-header-end
@@ -170,6 +172,31 @@
     },
 
 
+    // 等一张图解码完：load / error / 超时三条路都要能出来（超时是 resolve(false)，不抛）。
+    // 单独成一个方法是因为 `_recognizeCaptchaImage` 里那次 await 必须可超时 —— 永久悬挂
+    // 会把整个 tick 循环钉死（实测真墙上就是这一族：150 秒后被看门狗强行放锁）。
+    _waitForCaptchaImage: function (img, ms) {
+      return new Promise(function (resolve) {
+        var settled = false;
+        function fin(ok) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try { img.removeEventListener('load', onLoad); img.removeEventListener('error', onErr); } catch (e) {}
+          resolve(!!ok);
+        }
+        function onLoad() { fin((img.naturalWidth || 0) > 0); }
+        function onErr() { fin(false); }
+        var timer = setTimeout(function () { fin(false); }, ms || 2500);
+        try {
+          if (img.complete && (img.naturalWidth || 0) > 0) { fin(true); return; }
+          img.addEventListener('load', onLoad);
+          img.addEventListener('error', onErr);
+        } catch (e3) { fin(false); }
+      });
+    },
+
+
     _cleanCaptchaCode: function (raw) {
       var text = String(raw || '');
       var quoted = text.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
@@ -178,7 +205,14 @@
       if (lines.length) text = lines[lines.length - 1];
       text = text.replace(/^.*?(?:答案|结果|验证码|code|result)\s*[:：]\s*/i, '');
       text = text.replace(/[\s"'`~!@#$%^&*()（）\-_=+\[\]【】{}\\|;:;,.，。、：；！？·…<>《》/?？]+/g, '');
-      if (text.length > 12) text = text.slice(0, 12);
+      // 超过 8 个字符就不是验证码的形状（超星是 4 位，见过的站点最多 6 位），别当答案交上去。
+      // 这条是实测逼出来的：deepseek-flash 没看清图时回「图中没有可识别的验证码字符。」，
+      // 旧写法剥掉句号后正好剩 12 个汉字、卡在旧的「截断到 12」以内，于是那句人话被填进输入框
+      // 并按了提交 —— 一次尝试白废，还把汉字塞进了站方的校验接口。
+      // 旧的截断到 12 一并删掉：超过 8 一律不收，那一行永远走不到（留着就是死代码）。
+      // 为什么不用「只认字母数字」：libs/prompt.js 的 CAPTCHA_PROMPT 明写「可能含汉字」，
+      // 那样会把汉字验证码这一族整个判死。形状（长度）才是两者都不得罪的判据。
+      if (text.length > 8) return '';
       return text;
     },
 
@@ -200,26 +234,59 @@
     },
 
 
+    // 返回「这一下到底是怎么提交的」，调用方要把它写进日志。
+    // 以前这个函数什么都不返回、日志只写一句 code submitted —— 于是「一次都没提交成功」
+    // 和「提交成功了但码不对」在日志里长得一模一样（实测真墙就是被这个盲区埋了整整几轮）。
     _clickCaptchaSubmit: function (captcha) {
       var doc = captcha.input.ownerDocument || document;
       var button = null;
       try { button = doc.querySelector('#sub'); } catch (e0) {}
-      if (!button && captcha.dialog) {
-        var candidates = captcha.dialog.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
-        for (var i = 0; i < candidates.length; i++) {
-          var label = textOf(candidates[i]);
-          if (/^(确定|提交|验证|确认|OK)/.test(label)) { button = candidates[i]; break; }
-        }
-      }
       if (button) {
-        try { button.click(); return; } catch (e1) {}
+        try { button.click(); return 'sub-id'; } catch (e1) {}
       }
-      // 无按钮则模拟回车提交
+      // 实测真墙（【9010】那面）的因果链是这样的：`_detectStandaloneCaptcha` 把 dialog 写成
+      // `document.body`，所以这道扫描**确实跑了**、也**确实扫到了**那个
+      // `input[type=submit][value=提交]` —— 但按钮的文本是用 `textOf()` 读的，
+      // 而 `textOf` 只认 innerText 和子节点，对 `<input>` 永远返回空串（input 没有子节点）。
+      // 于是 `/^提交/` 判不上、button 留空，最后只剩那条「派发一个合成 Enter」——
+      // 而合成 KeyboardEvent 不激活原生表单提交。结果：码认对了、也填进 #ucode 了、
+      // 日志写着 code submitted，页面却一次都没被提交过
+      // —— 墙不过、任务点一直 captcha-not-cleared、整节被按住。
+      // 修法就是读标签时把 `el.value` 算进去；范围也一并放宽：独立页没有真正的弹层容器，
+      // 但只认**显式声明的提交控件**（input/button[type=submit]），
+      // 这样够得着墙上的「提交」，又不会在课程页里误点到别的「提交」。
+      var sel = captcha.dialog ? 'button, input[type="submit"], input[type="button"], a, [role="button"]'
+                               : 'input[type="submit"], button[type="submit"]';
+      var root = captcha.dialog || doc;
+      try {
+        var candidates = root.querySelectorAll(sel);
+        for (var i = 0; i < candidates.length; i++) {
+          var el = candidates[i];
+          if (!el.offsetWidth && !el.offsetHeight) continue;   // 看不见的按钮不算
+          var label = String(textOf(el) || el.value || '').trim();
+          if (/^(确定|提交|验证|确认|立即验证|OK)/.test(label)) { button = el; break; }
+        }
+      } catch (e6) {}
+      if (button) {
+        try { button.click(); return captcha.dialog ? 'dialog-button' : 'submit-input'; } catch (e7) {}
+      }
+      // 再退一步：能走原生表单提交就走它（requestSubmit 会真提交，dispatchEvent 不会）
+      try {
+        var form = captcha.input.form ||
+          (captcha.img && captcha.img.closest && captcha.img.closest('form'));
+        if (form && typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+          return 'form-requestSubmit';
+        }
+      } catch (e8) {}
+      // 最后才是模拟回车：它对绑了 keydown 的老页面仍然有用，但不能当成「已经提交了」
       try {
         var win = doc.defaultView || window;
         captcha.input.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
         captcha.input.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        return 'enter-key';
       } catch (e2) {}
+      return 'nothing';
     },
 
 
@@ -456,7 +523,12 @@
     // ===== 独立验证码页：验证码不在学习通界面内，而是一个独立网址 / 弹出窗口 / 被跳转到的验证页 =====
     // 这类页面是顶层页面（不是跨域 iframe），插件可以完整访问 DOM，因此完全可以自动识别并填写。
     _recognizeCaptchaImage: async function (img) {
+      // 图还没解码完就截图，截到的是一张**空白**，而这一发是真金白银：
+      // 实测真墙第一次尝试模型只能回「图中没有可识别的验证码字符」，第二次起才是真码。
+      // 先等解码（带超时，不许白等），等不出来就不拿空白去问模型 —— 改走按地址取图。
+      if (!(img.naturalWidth > 0)) await this._waitForCaptchaImage(img, 2500);
       var dataUrl = this._captureCaptchaImage(img);
+      if (!(img.naturalWidth > 0)) dataUrl = '';
       if (!dataUrl) {
         var absUrl = this._resolveImageUrl(img);
         if (absUrl) {
@@ -466,14 +538,17 @@
           } catch (e0) {}
         }
       }
-      if (!dataUrl) return { ok: false, error: 'captcha image capture failed' };
+      // 自己这一侧的失败串一律说中文：下面那道「结构性失败」判据认的是厂商的英文说法，
+      // 而旧串 'captcha image capture failed' 里的 image 会把它误判成「模型没有看图能力」，
+      // 于是停手 15 分钟并让用户去做一件完全无关的事（去设置里换看图模型）。
+      if (!dataUrl) return { ok: false, error: '验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）' };
 
       var result = await bridgeSend('llm_captcha', { image: dataUrl });
       if (!result || !result.success) {
-        return { ok: false, error: String((result && result.error) || 'no response').slice(0, 200) };
+        return { ok: false, error: String((result && result.error) || '桥接没回话（扩展可能刚重新加载过，刷新页面即可）').slice(0, 200) };
       }
       var code = this._cleanCaptchaCode(result.data);
-      if (!code) return { ok: false, error: 'empty code after clean', raw: String(result.data || '').slice(0, 60) };
+      if (!code) return { ok: false, error: '模型回的不是一个验证码形状', raw: String(result.data || '').slice(0, 60) };
       return { ok: true, code: code };
     },
 
@@ -549,16 +624,41 @@
 
     _runStandaloneCaptchaMode: async function () {
       if (this._captchaBusy) return;
+      var budget = this._readStandaloneCaptchaBudget();
+      var nowMs = Date.now();
+      if (budget.pauseUntil > nowMs) {
+        // 停手期间连识别都不发 —— 识别要请求、刷新也要请求，
+        // 而每一次请求都是让站方把这面墙坐实的理由
+        if (!this._standaloneCaptchaPauseLogged) {
+          this._standaloneCaptchaPauseLogged = true;
+          emitRuntimeLog('warn', 'standalone captcha paused, waiting for a human', {
+            resumeInMs: budget.pauseUntil - nowMs,
+            hint: '这一步请你在页面上亲手输入一次验证码。想让它自己过：在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+          });
+        }
+        return;
+      }
+      if (budget.pauseUntil) {
+        this._writeStandaloneCaptchaBudget(0, 0, '');
+        this._standaloneCaptchaPauseLogged = false;
+        budget = { cycles: 0, pauseUntil: 0 };
+        emitRuntimeLog('info', 'standalone captcha resume retry', { hint: '冷却到点，再给一轮机会' });
+      }
       this._captchaBusy = true;
-      emitRuntimeLog('warn', 'standalone captcha page detected, solving', { url: String(location.href || '').slice(0, 120) });
+      emitRuntimeLog('warn', 'standalone captcha page detected, solving', {
+        url: String(location.href || '').slice(0, 120),
+        cycle: budget.cycles + 1
+      });
       try {
         if (this.configs.enableCaptcha === false) {
           emitRuntimeLog('info', 'captcha handling disabled by switch', {});
           return;
         }
+        var noVision = '';
         for (var attempt = 1; attempt <= 4; attempt++) {
           var captcha = this._detectStandaloneCaptcha();
           if (!captcha) {
+            this._writeStandaloneCaptchaBudget(0, 0, '');
             emitRuntimeLog('info', 'standalone captcha elements gone, nothing to solve', {});
             return;
           }
@@ -566,18 +666,33 @@
           if (rec.ok) {
             this._fillCaptchaInput(captcha, rec.code);
             await sleep(300);
-            this._clickCaptchaSubmit(captcha);
-            emitRuntimeLog('info', 'standalone captcha code submitted', { attempt: attempt, length: rec.code.length });
+            // via 是这里唯一的凭据：没有它，「点了提交」与「压根没按钮可点」在日志里同形
+            var via = String(this._clickCaptchaSubmit(captcha) || 'nothing');
+            emitRuntimeLog('info', 'standalone captcha code submitted', {
+              attempt: attempt, length: rec.code.length, via: via
+            });
           } else {
             emitRuntimeLog('error', 'captcha recognize failed', {
               attempt: attempt,
               error: String(rec.error || '').slice(0, 160)
             });
+            // 「看不懂图」是结构性失败：模型没有视觉输入这条路，
+            // 后面 3 次只是把同样的钱再花 3 遍 —— 当场收手。
+            // ⚠️ 判据只认**厂商侧**的说法。以前里面混着 `image` 和 `empty`，
+            // 而我们自己那一侧的失败串正好叫 'captcha image capture failed'、
+            // 'empty code after clean' —— 于是图没加载完、模型回了一句人话，全被误判成
+            // 「这个模型没有看图能力」：实测真墙因此停手 15 分钟，还让用户去设置里
+            // 换「看图模型」（那是完全无关的一条路）。自己这边的失败串从此说中文。
+            if (/not support|unsupported|multimodal|vision|不支持|空回复|看图/i.test(String(rec.error || ''))) {
+              noVision = String(rec.error || '').slice(0, 120);
+              break;
+            }
           }
 
           await sleep(2600);
           this._standaloneCaptchaAt = 0; // 强制重新判定，不受节流影响
           if (!this._isStandaloneCaptchaPage()) {
+            this._writeStandaloneCaptchaBudget(0, 0, '');
             emitRuntimeLog('info', 'standalone captcha solved', {});
             this._afterStandaloneCaptchaSolved();
             return;
@@ -585,11 +700,58 @@
           try { captcha.img.click(); } catch (e2) {} // 识别错/过期就换一张
           await sleep(700);
         }
-        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', {});
-        try { window.location.reload(); } catch (e3) {}
+        var cycles = budget.cycles + 1;
+        if (noVision || cycles >= 2) {
+          var pauseMs = noVision ? 15 * 60000 : 10 * 60000;
+          var pauseUntil = Date.now() + pauseMs;
+          this._writeStandaloneCaptchaBudget(cycles, pauseUntil, String(location.href || ''));
+          emitRuntimeLog('error', 'standalone captcha stopped, needs a human', {
+            cycles: cycles,
+            reason: noVision ? 'noVisionModel' : 'twoCyclesUnsolved',
+            error: noVision,
+            resumeInMs: pauseMs,
+            hint: '不再刷新这一页（每刷新一次就是再向站方要一张新验证码，账号会被扣得更紧）。' +
+              '请亲手在页面上输入一次验证码；想让插件自己过，请在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+          });
+          return;
+        }
+        this._writeStandaloneCaptchaBudget(cycles, 0, String(location.href || ''));
+        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', { cycle: cycles });
+        this._reloadForStandaloneCaptcha();
       } finally {
         this._captchaBusy = false;
       }
+    },
+
+
+    // 刷新单独抽出来，是为了让测试能盯住这个动作本身 —— 它是这一面墙上最贵的一步
+    _reloadForStandaloneCaptcha: function () {
+      try { window.location.reload(); } catch (e) {}
+    },
+
+
+    // 14-A：验证码墙的预算记在 sessionStorage 而不是内存里。
+    // 旧写法每轮末尾无条件 `location.reload()`，页面一刷内存计数全清零 ——
+    // 于是「4 次识别 → 刷新 → 再来 4 次」是**真的无限**（实测在真页面上整夜跑）。
+    // sessionStorage 活得比刷新久、又比标签页短，正好是这里要的粒度。
+    _readStandaloneCaptchaBudget: function () {
+      try {
+        var raw = sessionStorage.getItem('omitone:standalone-captcha-budget');
+        if (!raw) return { cycles: 0, pauseUntil: 0 };
+        var obj = JSON.parse(raw) || {};
+        if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
+        return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
+      } catch (e) {
+        return { cycles: 0, pauseUntil: 0 };
+      }
+    },
+
+
+    _writeStandaloneCaptchaBudget: function (cycles, pauseUntil, href) {
+      try {
+        sessionStorage.setItem('omitone:standalone-captcha-budget',
+          JSON.stringify({ cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' }));
+      } catch (e) {}
     },
 
 

@@ -1163,6 +1163,9 @@
               // ⚠️ 这两条以前都是**静默** continue —— 现场日志里一个字都没有，
               // 用户只看到「本页没有可做的任务点」，然后整章被推过去，还反复空转。
               // 与 AGENTS §2.7「跳过用户的任务点必须留日志 + 可恢复」冲突，补上原因。
+              // 只在 `workType === 'job'`（平台说这份卷子**还必做**）时记 13-B 的按住标记：
+              // 已经做完的卷子不该因为没填 key 就把整节按住。
+              if (workType === 'job') this._noteQuizBlockedByApi(this._getQuizApiUnavailableReason());
               noteReject(frame, '是测验任务，但答题链路当前不可用（' + (this._getQuizApiUnavailableReason() || '原因未知') + '）');
               continue;
             }

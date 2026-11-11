@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（132 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt
+ * 本段的状态字段（136 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizBlockedByApiAt、_quizBlockedSinceAt、_quizBlockedHoldLogAt、_quizBlockedGiveUpLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -126,6 +126,15 @@
     _quizGarbledRoundAt: 0,
 
     _quizApiSkipLogAt: 0,
+
+    // 「这一节被答题链路挡住了」的三个时刻（判据见 `_isQuizBlockedByApi`，批次 13-B）。
+    //   _quizBlockedByApiAt   最近一次「因链路不可用拒掉必做测验帧」——30 秒内不算新鲜
+    //   _quizBlockedSinceAt   本轮阻塞的起点，用来算已按住多久（预算 3 分钟）
+    //   两个日志节流位各自独立：按住与放弃是两条不同含义的日志，共用会互相顶掉。
+    _quizBlockedByApiAt: 0,
+    _quizBlockedSinceAt: 0,
+    _quizBlockedHoldLogAt: 0,
+    _quizBlockedGiveUpLogAt: 0,
 
     // 「这一轮没答题、原因是哪个」那条 warn 的节流时刻（判据见 `_handleQuiz` 开头的三道闸门）。
     // 与 `_quizHoldLogAt`（`_shouldHoldQuizBeforeNext` 用）**分开**：共用一个时间戳会让两条
@@ -418,6 +427,13 @@
       // 回到同一份卷子时视为全新一轮（与 `_quizAnswered = false` 配套，语义一致）
       this._quizRunPaperKey = '';
       this._quizApiSkipLogAt = 0;
+      // 换节 / 换卡片 = 新的一节：按住阻塞的预算重新起算（判据见 `_isQuizBlockedByApi`）。
+      // ⚠️ 这四个必须在同一个地方清 —— 少清 `_quizBlockedSinceAt` 的话，
+      // 上一节按住满 3 分钟的记录会让下一节**一被挡住就直接翻页**。
+      this._quizBlockedByApiAt = 0;
+      this._quizBlockedSinceAt = 0;
+      this._quizBlockedHoldLogAt = 0;
+      this._quizBlockedGiveUpLogAt = 0;
       // 「本地答过多选」的卷子集合跟着卷子身份一起清：
       // 换章节 / 换卡片之后回到同一份卷子，应当重新享有"第一次尝试"的待遇。
       this._quizLocalMultiplePapers = {};

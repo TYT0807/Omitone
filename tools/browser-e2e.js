@@ -1015,7 +1015,11 @@ var MOCK_PAGES = {
   '/course/topic/discuss': buildRealDiscussionHtml,
   '/frame-sig': buildFrameSigHtml,
   '/frame-sig-inner': buildFrameSigInnerHtml,
-  '/frame-sig-first': buildFrameSigFirstHtml
+  '/frame-sig-first': buildFrameSigFirstHtml,
+  '/nested-paper': buildNestedPaperTopHtml,
+  '/nested-paper-cards': buildNestedPaperCardsHtml,
+  '/nested-paper-work': buildNestedPaperWorkHtml,
+  '/nested-paper-quiz': buildNestedPaperQuizHtml
 };
 
 /**
@@ -1110,6 +1114,59 @@ function buildFrameSigFirstHtml() {
     '<div class="ot"><label>B 官僚资本</label><input type="radio" name="q1" value="B"></div>' +
     '<div class="answer"><input type="hidden" id="answer1" value=""></div>' +
     '</div></div></body></html>';
+}
+
+/**
+ * 批次 13-A 的现场夹具：卷子埋在**第三层**文档里。
+ * 这是 2026-11-11 用真实页面量出来的形状，不是编的：
+ *   top(/mycourse/studentstudy) → #iframe(/mooc-ans/knowledge/cards)
+ *     → iframe.ans-attach-…(/ananas/modules/work/index.html)
+ *       → #frame_content(/mooc2-ans/work/doHomeWorkNew)   ← 题目在这一份里
+ * 旧 `_resolveQuizAnswerDocument` 只会从当前文档找**一层** id=`frame_content`：
+ * 卡片文档里没有这个 id，于是原样返回卡片文档。而卡片页每条任务点后面都写着
+ * 「任务点已完成」/带 `.ans-job-finished` —— `_isDocumentFrameFinished` 当场为真，
+ * `_extractQuestions(null)` 又数出 0 道题，于是「题还没做」被宣布成「这一节已完成」。
+ * 夹具因此故意把「已完成」放在**卡片页**、把题放在**第三层**。
+ */
+function buildNestedPaperTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>刷课</title></head><body>' +
+    '<iframe id="iframe" src="/nested-paper-cards" style="width:100%;height:720px;border:0"></iframe>' +
+    '</body></html>';
+}
+
+function buildNestedPaperCardsHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>知识卡片</title></head><body>' +
+    '<div id="curKpointId" style="display:none">1300000001</div>' +
+    // 已完成的那条任务点（PPT）：卡片页满屏都是这种字，正是旧判据上当的地方
+    '<div class="ans-line-height"><span class="ans-job-finished">任务点已完成</span><span>PPT课件</span></div>' +
+    '<div class="ans-job-insert-online"><iframe class="ans-attach-online ans-attach-oc" ' +
+    'src="/nested-paper-work" data="{&quot;jobid&quot;:&quot;job-nested&quot;}" ' +
+    'style="width:100%;height:520px;border:0"></iframe></div>' +
+    '<script>window.attachments=[{jobid:"job-nested",name:"单元测试",property:{job:"true"},' +
+    'otherInfo:"nodeId_1300000001"}];</script></body></html>';
+}
+
+function buildNestedPaperWorkHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业</title></head><body>' +
+    '<iframe id="frame_content" src="/nested-paper-quiz" style="width:100%;height:500px;border:0"></iframe>' +
+    '</body></html>';
+}
+
+function buildNestedPaperQuizHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>做题</title></head><body>' +
+    '<div class="TiMu"><div class="questionLi">' +
+    '<div class="QType">[单选题]</div>' +
+    '<div class="qt">（埋了三层的那份卷子）下列哪一项是社会主义改造的对象？</div>' +
+    '<div class="ot"><label>A 资本主义工商业</label><input type="radio" name="qN" value="A"></div>' +
+    '<div class="ot"><label>B 官僚资本</label><input type="radio" name="qN" value="B"></div>' +
+    '<div class="answer"><input type="hidden" id="answerN" value=""></div>' +
+    '</div></div>' +
+    '<button class="btnSubmit" id="btnBlueSubmit">提交</button>' +
+    '</body></html>';
 }
 
 /**
@@ -4619,7 +4676,7 @@ SCENARIOS.push({
       'return {isRandom:app._isRandomAnswerMode(), reason:app._getQuizApiUnavailableReason()};})()'
     );
     check('enableQuiz 关掉时乱选也不生效（关掉答题 = 完全不答题）',
-      r7f && r7f.isRandom === false && r7f.reason === 'api-disabled', JSON.stringify(r7f));
+      r7f && r7f.isRandom === false && r7f.reason === 'quiz-toggle-off', JSON.stringify(r7f));
 
     // ⑦e 乱选的答案必须**真的填得进 DOM** —— 形状对不等于填得上。
     // 这是"能不能交卷"的最后一道关：填不进去 → 章节小测的提交前置（每题都有值）永远不满足
@@ -5092,12 +5149,130 @@ SCENARIOS.push({
       'quoted:app._cleanCaptchaCode(\'"aB3d"\'),' +
       'multiLine:app._cleanCaptchaCode("识别结果：\\n  X7k2  \\n"),' +
       'punct:app._cleanCaptchaCode("A,B.C-D"),' +
-      'long:app._cleanCaptchaCode("abcdefghijklmnopqrstuvwxyz")};})()'
+      'long:app._cleanCaptchaCode("abcdefghijklmnopqrstuvwxyz"),' +
+      'prose:app._cleanCaptchaCode("图中没有可识别的验证码字符。"),' +
+      'han:app._cleanCaptchaCode("德玛西亚"),' +
+      'four:app._cleanCaptchaCode("QXKS")};})()'
     );
     check('验证码清洗：去掉引号', cleaned.quoted === 'aB3d', JSON.stringify(cleaned.quoted));
     check('验证码清洗：取最后一行并去空白', cleaned.multiLine === 'X7k2', JSON.stringify(cleaned.multiLine));
     check('验证码清洗：去标点', cleaned.punct === 'ABCD', JSON.stringify(cleaned.punct));
-    check('验证码清洗：截断到 12 字符', cleaned.long.length <= 12, JSON.stringify(cleaned.long));
+    check('验证码清洗：超长串一律不收（旧写法截断到 12 再交上去，交的是半句人话）',
+      cleaned.long === '', JSON.stringify(cleaned.long));
+    // 实测真墙：deepseek-flash 没看清图时回「图中没有可识别的验证码字符。」，
+    // 旧清洗剥掉句号后正好剩 12 个汉字、卡在「截断到 12」以内 —— 那句人话被填进输入框
+    // 并按了提交。判据用**形状**（超过 8 位就不是验证码），不用「只认字母数字」：
+    // libs/prompt.js 的 CAPTCHA_PROMPT 明写「可能含汉字」，后者会把汉字验证码一整族判死。
+    check('14-B：模型回一句人话时不许当成答案（真墙实测「图中没有可识别的验证码字符。」被填进输入框）',
+      cleaned.prose === '', JSON.stringify(cleaned.prose));
+    check('14-B 反向对照：汉字验证码仍然认（清洗不许改成「只认字母数字」，那是另一族的答案）',
+      cleaned.han === '德玛西亚' && cleaned.four === 'QXKS', JSON.stringify({ han: cleaned.han, four: cleaned.four }));
+  }
+});
+
+/** ---- 4.5 验证码：独立墙上那一下「提交」真的按下去了吗 ----
+ *
+ * 真墙实测（2026-11-11，【9010】那面）：码认对了、也填进 #ucode 了、日志写着
+ * `standalone captcha code submitted`，可墙就是不过、任务点一直 captcha-not-cleared。
+ * 抓回来的现场是：页面上只有一个 `input[type=submit][value=提交]`，
+ * 而读按钮文本用的 `textOf()` 对 `<input>` 永远返回空串（input 没有子节点），
+ * 于是 `/^提交/` 判不上、退成「派发一个合成 Enter」—— 合成 KeyboardEvent 不激活原生提交。
+ * 旧夹具为什么看不见这件事：`buildStandaloneCaptchaHtml` 放的是 `<button type="button">提交</button>`，
+ * 那种形状 textOf 读得到。**夹具长得像实现，不像现场，就等于没测。**
+ */
+SCENARIOS.push({
+  name: '独立验证码墙真的按下提交',
+  path: '/captcha-verify',
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;var out={};' +
+      // 先把插件自己的验证码循环关掉：本场景要数的是「我这一下调用点没点中」，
+      // 而不是插件后台顺手又点了一次（那会让计数对不上），更不能让它拿真配置去花真钱。
+      'app._checkCaptchaDialog=function(){return null;};' +
+      'app._isStandaloneCaptchaPage=function(){return false;};' +
+      'app._backgroundCaptchaTick=function(){return false;};' +
+      // 把夹具自带的 <button>提交</button> 藏掉：本场景要测的是真墙那个形状，
+      // 两者同时在页面上就分不清点的是哪一个
+      'Array.prototype.forEach.call(document.querySelectorAll("button"),function(b){b.style.display="none";});' +
+      'function mk(html){var d=document.createElement("div");d.innerHTML=html;' +
+      '  d.style.cssText="position:fixed;left:10px;top:10px;z-index:99999";document.body.appendChild(d);return d;}' +
+      // ① 真墙形状：只有 input[type=submit]，外加一个会把人带沟里去的「换一张」
+      'var box=mk("<img id=\\"wImg\\" src=\\""+(document.getElementById("verifyImg").src)+"\\" width=120 height=40 style=\\"width:120px;height:40px\\">"' +
+      '  +"<input id=\\"wIn\\" type=\\"text\\" style=\\"width:140px;height:26px\\">"' +
+      '  +"<input id=\\"wSub\\" type=\\"submit\\" value=\\"提交\\" style=\\"width:120px;height:32px\\">"' +
+      '  +"<button id=\\"wRe\\" type=\\"button\\" style=\\"width:60px;height:24px\\">换一张</button>");' +
+      'var img=box.querySelector("#wImg"),inp=box.querySelector("#wIn"),sub=box.querySelector("#wSub"),re=box.querySelector("#wRe");' +
+      'var nSub=0,nRe=0;nEnter=0;' +
+      'sub.addEventListener("click",function(){nSub++});re.addEventListener("click",function(){nRe++});' +
+      // 夹具自证：这枚控件的标签**只活在 value 里**（input 没有子节点、innerText 恒空）。
+      // 旧代码只用 textOf 读标签，所以它对着真墙永远读不出「提交」两个字 ——
+      // 先把这件事钉成 DOM 事实，下面几条才不会是空测。
+      'out.labelOnlyInValue=sub.value==="提交" && String(sub.innerText||"")==="" && String(sub.textContent||"")==="";' +
+      // ① 真墙检测出来的形状：dialog 就是 document.body（见 _detectStandaloneCaptcha）
+      'out.viaWall=String(app._clickCaptchaSubmit({doc:document,img:img,input:inp,dialog:document.body}));' +
+      'out.nSub=nSub;out.nRe=nRe;' +
+      // ② 同一枚控件，走「独立页没有弹层容器」那条更窄的扫描（只认显式声明的提交控件）
+      'out.viaNoDialog=String(app._clickCaptchaSubmit({doc:document,img:img,input:inp,dialog:null}));' +
+      'out.nSub2=nSub;' +
+      // ③ 一枚提交控件都没有：必须承认「只发了回车」，不许报成功
+      'sub.parentNode.removeChild(sub);' +
+      'inp.addEventListener("keydown",function(){nEnter++});' +
+      'out.viaNone=String(app._clickCaptchaSubmit({doc:document,img:img,input:inp,dialog:document.body}));' +
+      'out.nEnter=nEnter;' +
+      'try{box.parentNode.removeChild(box);}catch(e){}' +
+      // ③ 识别链路的钱闸：图没解码完不许问模型
+      'var sent={llm:0,fetch:0};' +
+      'window.__reply="QX4K";' +
+      'var on=function(e){var m=e.data;if(!m||m.source!=="xxt_app")return;' +
+      '  if(m.type==="llm_captcha"){sent.llm++;window.postMessage({source:"xxt_bridge",type:"llm_response",id:m.id,' +
+      '    data:{success:true,data:window.__reply}},"*");}' +
+      '  else if(m.type==="fetch_image"){sent.fetch++;window.postMessage({source:"xxt_bridge",type:"llm_response",id:m.id,' +
+      '    data:{success:false,error:"测试里不放行取图"}},"*");}};' +
+      'window.addEventListener("message",on,true);' +
+      'var fresh=document.createElement("img");' +
+      'fresh.style.cssText="position:fixed;left:10px;top:60px;width:120px;height:40px";document.body.appendChild(fresh);' +
+      'Object.defineProperty(fresh,"naturalWidth",{value:0,configurable:true});' +
+      'Object.defineProperty(fresh,"naturalHeight",{value:0,configurable:true});' +
+      'var t0=Date.now();var notReady=await app._recognizeCaptchaImage(fresh);' +
+      'out.notReady={ok:!!notReady.ok,err:String(notReady.error||"").slice(0,40),ms:Date.now()-t0,sent:JSON.parse(JSON.stringify(sent))};' +
+      // ④ 图解码完了：恰好花一次，且拿到码
+      'var good=document.getElementById("verifyImg");' +
+      'sent.llm=0;sent.fetch=0;' +
+      'var okRec=await app._recognizeCaptchaImage(good);' +
+      'out.okRec={ok:!!okRec.ok,code:okRec.code||""};' +
+      'out.okRecLlm=sent.llm;out.okRecFetch=sent.fetch;' +
+      // ⑤ 模型回一句人话：不许当成答案，也不许被误判成「这个模型没有看图能力」
+      'window.__reply="图中没有可识别的验证码字符。";' +
+      'var prose=await app._recognizeCaptchaImage(good);' +
+      'out.prose={ok:!!prose.ok,err:String(prose.error||"").slice(0,40),llm:sent.llm};' +
+      'window.removeEventListener("message",on,true);' +
+      'return JSON.stringify(out);})()'
+    );
+    var o;
+    try { o = JSON.parse(String(r)); } catch (e) { o = null; }
+    check('夹具自证：墙上那枚控件的标签只在 value 里、innerText/textContent 都是空（旧代码就是瞎在这一处）',
+      !!o && o.labelOnlyInValue === true, JSON.stringify(o && o.labelOnlyInValue));
+    check('14-B：真墙形态（dialog=body）下那枚 input[type=submit] 会被真点下去' +
+          '（旧写法读不到标签，退成合成回车，一次都没提交过）',
+      !!o && o.viaWall === 'dialog-button' && o.nSub === 1,
+      JSON.stringify(o && { via: o.viaWall, nSub: o.nSub }));
+    check('14-B：没有弹层容器那条更窄的扫描也认得它（改成只认 input/button[type=submit] 后不许把它漏掉）',
+      !!o && o.viaNoDialog === 'submit-input' && o.nSub2 === 2,
+      JSON.stringify(o && { viaNoDialog: o.viaNoDialog, nSub2: o.nSub2 }));
+    check('14-B：「换一张」这种刷新键不许被当成提交（点它会白白换一张图、再花一次钱）',
+      !!o && o.nRe === 0, JSON.stringify(o && o.nRe));
+    check('14-B：没有提交控件时如实说「只发了回车」，不报成功',
+      !!o && o.viaNone === 'enter-key' && o.nEnter >= 1, JSON.stringify(o && { viaNone: o.viaNone, nEnter: o.nEnter }));
+    check('14-B：图还没解码完就不问模型（一条 llm_captcha 都不发 —— 空白图那一发是白花钱）',
+      !!o && o.notReady && o.notReady.sent && o.notReady.ok === false && o.notReady.sent.llm === 0 &&
+      /还没加载完|取不到/.test(o.notReady.err), JSON.stringify(o && o.notReady));
+    check('14-B 反向对照：图解码完了照样只花一次、并且拿得到码（上面那条不是把链路一起关掉）',
+      !!o && o.okRec && o.okRec.ok === true && o.okRec.code === 'QX4K' && o.okRecLlm === 1,
+      JSON.stringify(o && { okRec: o.okRec, llm: o.okRecLlm, fetch: o.okRecFetch }));
+    check('14-B：模型回一句人话时不当答案，且失败原因不落在「没有看图模型」那一类',
+      !!o && o.prose && o.prose.ok === false && /形状/.test(o.prose.err) &&
+      !/vision|not support|unsupported|multimodal|不支持|空回复|看图/i.test(o.prose.err),
+      JSON.stringify(o && o.prose));
   }
 });
 
@@ -5129,6 +5304,149 @@ SCENARIOS.push({
     );
     check('能抓到验证码图片与输入框', !!(detected && detected.hasImg && detected.hasInput),
       JSON.stringify(detected));
+
+    // ---- 14-A：这一面墙不许无限刷新重试 ----
+    // 现场（2026-11-11 在用户浏览器里当场量的）：账号被站方挂到 `antispiderShowVerify.ac`
+    // （【9010】操作异常，请输入图片中的验证码）之后，旧实现每轮都是
+    // 「识别 4 次 → 无条件 `location.reload()`」，而"已经失败几次"这个数字记在**页面内存**里，
+    // 页面一刷新它就归零 —— 于是这是真的无限：实测约每半分钟整页刷新一次、每次连发 4 次识别，
+    // 模型看不懂图时一路这样跑下去。刷新本身又是一次请求，正是把这面墙越坐越实的原因。
+    //
+    // ⚠️ 这一段**不能**写成"一次 evaluate 等它跑完"：真实等待是 2.6s + 0.7s 一档，
+    //   两轮无进展就是 26 秒，而 harness 的 `Runtime.evaluate` 有 30 秒硬超时 ——
+    //   基线贴着线过，反向验证一注入（去掉当场收手）就超时，报的是「场景执行未抛异常」，
+    //   看起来像"断言抓不住"，其实是**验证根本没跑完**。
+    //   所以每步只"点火"，回读交给后面的短 evaluate。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var KEY="omitone:standalone-captcha-budget";' +
+      'var w={rec:0,reloads:0,clicks:0,got:[],fail:"",running:false,finished:false};' +
+      'window.__wall=w;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});' +
+      'w.seed=function(cycles,pauseUntil){try{sessionStorage.setItem(KEY,JSON.stringify(' +
+      '  {cycles:cycles,pauseUntil:pauseUntil,href:String(location.href||"")}));}catch(e){}};' +
+      'w.read=function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}")||{};}catch(e){return {};}};' +
+      'w.metas=function(name){return w.got.filter(function(m){return m.message===name;})' +
+      '  .map(function(m){return m.meta||{};});};' +
+      // 刷新与识别全部换成计数器：真刷一次整页会打断后面四步，而这个动作本身就是被测的东西
+      'w.orig={reload:app._reloadForStandaloneCaptcha,rec:app._recognizeCaptchaImage,' +
+      '  fill:app._fillCaptchaInput,click:app._clickCaptchaSubmit,page:app._isStandaloneCaptchaPage};' +
+      'app._reloadForStandaloneCaptcha=function(){w.reloads++;};' +
+      'app._recognizeCaptchaImage=function(){w.rec++;var f=w.fail;' +
+      '  return Promise.resolve({ok:f==="ok",code:"ab12",' +
+      '    error:f==="ok"?"":(f==="vision"?"验证码识别返回空回复（结束原因 无）"' +
+      '      :(f==="notReady"?"验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）":"提交被拒，识别不对"))});};' +
+      // click 的桩必须**返回一个 via**：真实实现现在就是这么回话的，桩返回 undefined
+      // 就等于把「日志里到底有没有凭据」这件事测成了空值
+      'app._fillCaptchaInput=function(){};' +
+      'app._clickCaptchaSubmit=function(){w.clicks++;return "submit-input";};' +
+      'w.start=function(fail,pageGone){w.fail=fail;w.finished=false;w.running=true;' +
+      // 每一步都把「这一页还是不是验证码页」拨回它该是的样子：
+      // st5 为了让「过了」这条走通，把它改成了恒 false；不拨回来，下一步的循环会在
+      // 第一次识别后就当成功收场，第 6 步要量的「跑满 4 次」根本不会出现。
+      '  app._isStandaloneCaptchaPage=pageGone?function(){return false;}:w.orig.page;' +
+      // ⚠️ 共享状态要自己钉：整轮共用同一个 app，前一个场景（如「模型 401」）写过
+      //   enableCaptcha:false，这一关就会在循环之前被开关短路 —— rec 恒 0，看着像夹具坏了
+      '  app.configs=Object.assign({},app.configs,{enableCaptcha:true});' +
+      '  app._captchaBusy=false;app._standaloneCaptchaPauseLogged=false;' +
+      '  app._runStandaloneCaptchaMode().then(function(){w.running=false;w.finished=true;});' +
+      '  return "started";};' +
+      'w.tick=function(){return JSON.stringify({running:w.running,finished:w.finished,' +
+      '  rec:w.rec,reloads:w.reloads,budget:w.read()});};' +
+      'w.counts=function(){var app=window._xxtApp;return JSON.stringify({' +
+      '  seen:w.got.length, rec:w.rec, reloads:w.reloads, clicks:w.clicks,' +
+      '  stillDetectable:!!app._detectStandaloneCaptcha(),' +
+      '  stop:w.metas("standalone captcha stopped, needs a human"),' +
+      '  pause:w.metas("standalone captcha paused, waiting for a human"),' +
+      '  resume:w.metas("standalone captcha resume retry"),' +
+      '  solved:w.metas("standalone captcha solved"),' +
+      '  failed:w.metas("captcha recognize failed"),' +
+      '  reloadLog:w.metas("standalone captcha unsolved after retries, reload page"),' +
+      '  submitted:w.metas("standalone captcha code submitted")});};' +
+      'w.finish=function(){var k;for(k in w.orig){app[k]=w.orig[k];}' +
+      '  w.seed(0,0);return w.counts();};' +
+      'return JSON.stringify({ready:!!app._runStandaloneCaptchaMode&&!!app._readStandaloneCaptchaBudget,' +
+      '  detect:!!app._detectStandaloneCaptcha()});})()'
+    );
+    var setupObj = JSON.parse(setup);
+
+    async function wallStep(seedExpr, fail, maxMs, pageGone) {
+      await ctx.client.evaluate('(function(){var w=window.__wall;' +
+        (seedExpr ? 'w.seed(' + seedExpr + ');' : '') +
+        'return w.start("' + fail + '",' + (pageGone ? 'true' : 'false') + ');})()');
+      var startedAt = Date.now();
+      for (;;) {
+        var t = JSON.parse(await ctx.client.evaluate('window.__wall.tick()'));
+        if (!t.running && t.finished) return t;
+        if (Date.now() - startedAt > (maxMs || 20000)) return t;
+        await new Promise(function (r) { setTimeout(r, 400); });
+      }
+    }
+
+    var st1 = await wallStep('0,0', 'vision', 20000);
+    var st2 = await wallStep(null, 'vision', 20000);
+    var st3 = await wallStep('1,Date.now()-1', 'wrong', 25000);
+    var st4 = await wallStep('1,0', 'wrong', 25000);
+    var st5 = await wallStep('3,0', 'ok', 22000, true);
+    await new Promise(function (r) { setTimeout(r, 700); });
+    // 前五步的账先钉死：第 6 步还会往同一批日志里追加，end 若留到最后才读，
+    // 「恰好 1 条」那几条会被它顶歪。
+    var end = JSON.parse(await ctx.client.evaluate('window.__wall.counts()'));
+    var st6 = await wallStep('0,0', 'notReady', 25000);
+    await new Promise(function (r) { setTimeout(r, 700); });
+    var c6 = JSON.parse(await ctx.client.evaluate('window.__wall.counts()'));
+    await ctx.client.evaluate('window.__wall.finish()');
+
+    check('14-A 夹具自证：这一页真的挂得上验证码墙的桩、跑完六步后仍是抓得到图片与输入框的验证码页' +
+      '（否则后面那几条是空测）',
+      setupObj.ready === true && setupObj.detect === true && end.stillDetectable === true && end.seen > 0,
+      JSON.stringify({ setup: setupObj, stillDetectable: end.stillDetectable, seen: end.seen }));
+    check('14-A：模型看不懂图时一轮**只发 1 次**识别（旧写法每次烧满 4 次，钱花完也永远不可能对）',
+      st1.rec === 1, JSON.stringify({ rec: st1.rec, reloads: st1.reloads }));
+    check('14-A：看不懂图这一轮当场停手 —— 一次都不刷新，且预算里写下暂停时间',
+      st1.reloads === 0 && Number(st1.budget.pauseUntil) > Date.now() - 60000,
+      JSON.stringify({ reloads: st1.reloads, budget: st1.budget }));
+    check('14-A：停手期间一个请求都不发（识别次数与刷新次数都不许再涨）',
+      st2.rec === st1.rec && st2.reloads === 0 &&
+      !!(end.pause[0] && Number(end.pause[0].resumeInMs) > 0),
+      JSON.stringify({ st2: st2, pause: end.pause[0] }));
+    check('14-A：停手那条要说清怎么办（亲手输一次 + 换会看图的模型），不是又一句"失败"',
+      !!(end.stop[0] && /亲手/.test(String(end.stop[0].hint || '')) &&
+      /看图模型|验证码识别模型/.test(String(end.stop[0].hint || '')) &&
+      end.stop[0].reason === 'noVisionModel'), JSON.stringify(end.stop[0]));
+    check('14-A 反向对照：冷却到点确实再给一轮（停手不是永久放弃），且第一轮无进展仍刷一次',
+      end.resume.length === 1 && st3.rec === st2.rec + 4 && st3.reloads === 1 &&
+      end.reloadLog.length === 1,
+      JSON.stringify({ resume: end.resume.length, st3: st3, reloadLog: end.reloadLog.length }));
+    check('14-A：连吃两轮无进展就彻底停手、**不再刷新**（刷新的次数停在第一轮那一次）',
+      st4.reloads === st3.reloads && end.reloadLog.length === 1 &&
+      !!(end.stop[1] && end.stop[1].reason === 'twoCyclesUnsolved'),
+      JSON.stringify({ st4: st4, reasons: end.stop.map(function (m) { return m.reason; }) }));
+    check('14-A：真过了就把预算清零（停手这笔账不许带进下一面墙）',
+      st5.budget.cycles === 0 && !st5.budget.pauseUntil && end.solved.length === 1,
+      JSON.stringify({ budget: st5.budget, solved: end.solved.length }));
+    // ---- 14-B：日志要带「这一下到底是怎么提交的」 ----
+    // 真墙被埋的那几轮就埋在这里：日志写着 code submitted，可 `_clickCaptchaSubmit`
+    // 什么都没点着（它退成了合成 Enter）。没有 via，「点了提交」与「压根没按钮可点」
+    // 在日志里长得一模一样，用户报上来、我们从日志里看不出任何异常。
+    check('14-B：提交那条日志自带 via（是哪个控件按下去的），不是只写一句「已提交」',
+      end.submitted.length === 1 && end.submitted[0].via === 'submit-input' &&
+      end.submitted[0].attempt === 1 && end.submitted[0].length === 4 && c6.clicks === end.clicks,
+      JSON.stringify({ submitted: end.submitted, clicks: c6.clicks }));
+    // ---- 14-B：自己那一侧的失败串不许撞「结构性失败」判据 ----
+    // 实测：判据里混着 `image`、`empty`，而我们自己的报错就叫
+    // 'captcha image capture failed' / 'empty code after clean' —— 于是「图还没加载完」
+    // 被读成「这个模型没有看图能力」，当场停手 15 分钟，还让用户去设置里换看图模型
+    // （那是完全无关的一条路）。判据现在只认厂商侧的英文说法，自己的串说中文。
+    check('14-B：「图没加载完」不算「模型没有看图能力」—— 仍跑满 4 次、走刷新那一条，而不是当场停手',
+      st6.rec === end.rec + 4 && st6.reloads === end.reloads + 1 &&
+      c6.stop.length === end.stop.length && c6.failed.length === end.failed.length + 4 &&
+      c6.reloadLog.length === end.reloadLog.length + 1,
+      JSON.stringify({ dRec: st6.rec - end.rec, dReloads: st6.reloads - end.reloads,
+        dStop: c6.stop.length - end.stop.length, dFailed: c6.failed.length - end.failed.length,
+        lastError: c6.failed[c6.failed.length - 1] }));
   }
 });
 
@@ -6915,39 +7233,74 @@ SCENARIOS.push({
   url: 'chrome-extension://{EXT}/popup/popup.html',
   inject: false,
   run: async function (ctx) {
+    // 弹窗一打开自己就会真实请求一次 api.github.com（24 小时一次的自动检测）。
+    // 这条真实请求什么时候落地不可控 —— 挂了梯子、或全套跑里机器正忙，它拖到几秒后，
+    // 回调就会把 mock 点出来的「有最新版 9.9.9」盖成「与线上一致」：
+    // 表现成「单独跑永远绿、只有全套里闪一下红」（实测 2026-11-11，开梯子后必现）。
+    // 上一版改成「等文案自己稳定下来」，赌的还是那个不可控的时间。
+    // 现在直接掐掉源头：限流时间戳是唯一的开关 —— 把 autoAt 写成「刚刚查过」再重载弹窗，
+    // 自动检测这一轮整跳过，断言不再和真实网络抢时间（也不再白烧匿名额度）。
+    await ctx.client.evaluate(
+      'try{localStorage.setItem("omitone.update.autoAt",String(Date.now()));' +
+      'localStorage.setItem("omitone.update.manualAt","0");}catch(e){};1');
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    // 等**脚本执行完**，不是等元素出现：popup.html 的 #checkUpdate 在第 558 行、
+    // popup.js 挂在第 804 行（body 末尾）。按解析顺序，元素先有、监听器后挂 ——
+    // 只轮询 `getElementById` 就正好落在这个缝里：点击送到按钮（自己挂的监听数得到），
+    // 但应用那个 handler 还没挂上，第①步 6 秒毫无变化、第②步却又好了。
+    // readyState==="complete" 一定在所有同步脚本执行完之后，这条判据把缝关掉。
+    var readyBy = Date.now() + 8000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!document.getElementById("checkUpdate")'))) await sleep(200);
     var probe = await ctx.client.evaluate(
       '(async function(){' +
       'var out={hasBtn:!!document.getElementById("checkUpdate"),hasMsg:!!document.getElementById("updateMsg")};' +
       'if(!out.hasBtn) return out;' +
-      // ⚠️ 先等弹窗打开时那次**自动检测**落地：它自己会真实请求一次，
-      // 如果不等，它会在下面 mock 出结果之后再写一遍「与线上一致」，把断言要的结果盖掉。
-      'await new Promise(function(r){setTimeout(r,900);});' +
-      // ⚠️ 900ms 是**固定赌注**，全量跑里机器正忙时会不够：上面那次自动检测的真实请求
-      // 还没回来，mock 就已经点下去了，于是它的回调把「与线上一致」盖在断言要的结果后面
-      // —— 表现成「单独跑永远绿、只有全套里闪一下红」。改成等文案自己稳定下来。
       'var readMsg=function(){return String((document.getElementById("updateMsg")||{}).textContent||"");};' +
       'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
-      'for(var s=0;s<16;s++){var last=readMsg();await nap(500);if(readMsg()===last)break;}' +
+      'var setAt=function(k,v){try{localStorage.setItem(k,String(v));}catch(e){}};' +
       // 每一步都「记下点之前的文案 → 点 → 等文案变（最多 6 秒）→ 再取快照」，
-      // 不再赌 150ms：上一请求的回调什么时候插进来是不可预期的。
+      // 不赌固定时长：上一请求的回调什么时候插进来是不可预期的。
       'var clickAndWait=async function(){var before=readMsg();' +
       '  document.getElementById("checkUpdate").click();' +
       '  for(var i=0;i<60;i++){await nap(100);if(readMsg()!==before)break;}' +
       '  await nap(150);return readMsg();};' +
       // ① 线上版本更高
-      'window.fetch=function(){return Promise.resolve({ok:true,json:function(){' +
+      'var calls=0;' +
+      // 现场自证：这一步红的时候，光看 higherMsg 分不开「按钮被禁用、点击没进函数」
+      // 与「进了函数但被限流闸挡住」与「mock 压根没接上」—— 先把三样都记下来。
+      'out.before={msg:readMsg(),disabled:!!document.getElementById("checkUpdate").disabled,' +
+      '  manualAt:String(localStorage.getItem("omitone.update.manualAt")||""),' +
+      '  autoAt:String(localStorage.getItem("omitone.update.autoAt")||"")};' +
+      // 点击到底有没有送到那个按钮？自己挂一个监听，让下面第①步的那一次真实点击来触发它：
+      // 若自己也数到了、而应用毫无反应，说明应用那个 handler 根本没挂上（或挂在别的节点上）
+      'var btn=document.getElementById("checkUpdate");var mine=0;' +
+      'btn.addEventListener("click",function(){mine++});' +
+      'window.fetch=function(){calls++;return Promise.resolve({ok:true,json:function(){' +
       'return Promise.resolve({tag_name:"v9.9.9",assets:[{name:"omitone.zip",updated_at:new Date().toISOString()}]});}});};' +
       'out.higherMsg=await clickAndWait();' +
+      'out.probe={mine:mine,calls1:calls,disabledAfter:btn.disabled};' +
       'out.btnLabel=String((document.getElementById("doUpdate")||{}).textContent||"");' +
       'out.higherBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
-      // ② 网络失败
-      'window.fetch=function(){return Promise.reject(new Error("offline"));};' +
+      // ② 网络失败 —— 刚才那次成功已经把限流计时了，先手动放行，否则测的是闸、不是失败文案
+      'setAt("omitone.update.manualAt",0);' +
+      'window.fetch=function(){calls++;return Promise.reject(new Error("offline"));};' +
       'out.failMsg=await clickAndWait();' +
       'out.failBtn=getComputedStyle(document.getElementById("doUpdate")).display!=="none";' +
+      // ③ 限流真的在挡：刚查过的 6 小时里再点，一个请求都不发，只说什么时候再来
+      'out.callsBefore=calls;' +
+      'out.gatedMsg=await clickAndWait();' +
+      'await nap(200);out.callsAfter=calls;' +
       'return out;})()'
     );
     check('前置条件：弹窗里有「检测更新」和结果文字',
       !!probe && probe.hasBtn === true && probe.hasMsg === true, JSON.stringify(probe));
+    // 夹具自证：第①步那次点击要真的走进应用（自己的监听数到、且 mock 的 fetch 被调用）。
+    // 没有这条，「按钮点了没反应」和「限流挡住」和「响应文案不对」三种红长得一模一样 ——
+    // 上一轮红就红在这儿：readyState 还没到 complete 就开点，handler 根本没挂上。
+    check('夹具自证：那一次点击真的走进了应用（不是点了个还没挂监听的空按钮）',
+      !!probe && probe.probe && probe.probe.mine >= 1 && probe.probe.calls1 >= 1,
+      JSON.stringify(probe && probe.probe));
     check('线上版本更高 → 说清有最新版并问「是否更新」（不是直接替人下结论）',
       !!probe && /有最新版\s*9\.9\.9/.test(String(probe.higherMsg)) &&
       /是否更新/.test(String(probe.higherMsg)) && probe.higherBtn === true,
@@ -6957,6 +7310,9 @@ SCENARIOS.push({
     check('查不出来 → 文案里**不能**出现「最新版」这类结论；下载入口仍保留',
       !!probe && String(probe.failMsg).indexOf('最新') === -1 && probe.failBtn === true,
       JSON.stringify(probe));
+    check('限流是功能不是摆设：刚查过再点，一个请求都不发，且说清什么时候再来',
+      !!probe && /刚查过/.test(String(probe.gatedMsg)) && /后再来/.test(String(probe.gatedMsg)) &&
+      probe.callsBefore === probe.callsAfter, JSON.stringify(probe));
   }
 });
 
@@ -8275,23 +8631,39 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       // 主循环每秒也会走到确认框那一路，先停掉 —— 下面的计数才只属于这一次驱动
       'try{app._clearTickLoop();}catch(e){}' +
+      // ⚠️ 批次 13-A 之后，「null 退回外层算出另一本粗账」这条前提被**两层**保护同时兜住了：
+      //   ① 深走 `_findQuizPaperDocumentBelow` 让 null 直接落到题目那份文档（键从根上就归一了）
+      //   ② 批次 8 的槽位归一 `_getQuizSubmitAttemptKey`（手里有题目文档时改道到 ready 键）
+      // 把①留着，下面这批"归一"断言就永远绿 —— ②坏了也不会响（AGENTS §5 说的就是这种）。
+      // 所以这一段**先把①关掉**（深走返回 null = 回到 13-A 之前的一层跳转行为），
+      // 让夹具重新造出"两本账"，后面测的就只剩②；再用一条对照断言证明①本身也在归一。
+      'app._realFindPaperBelow=app._findQuizPaperDocumentBelow;' +
+      'app._findQuizPaperDocumentBelow=function(){return null;};' +
       'var qs=app._extractQuestions(document);' +
       'var owner=app._getQuizDocumentFromQuestions(qs);' +
       'var keyOf=function(d){return String(app._getQuizWorkKey(d)||"");};' +
       'var ids=function(d){var out=[];' +
       '  ["courseId","classId","workId","jobid","knowledgeid"].forEach(function(k){' +
       '    if(d.getElementById(k))out.push(k);});return out.join(",");};' +
+      'var splitOff=keyOf(null)!==keyOf(owner), coarseOff=keyOf(null);' +
+      'app._findQuizPaperDocumentBelow=app._realFindPaperBelow;' +
+      'var splitOn=keyOf(null)!==keyOf(owner);' +
+      'app._findQuizPaperDocumentBelow=function(){return null;};' +
       'return {n:qs.length, ownerIsInner:!!owner&&owner!==document,' +
       '  outerIds:ids(document), innerIds:owner?ids(owner):"", ' +
-      '  splitKeys:keyOf(null)!==keyOf(owner), outerKey:keyOf(null), ownerKey:keyOf(owner)};})()'
+      '  splitOff:splitOff, splitOn:splitOn, coarseOff:coarseOff, ' +
+      '  outerKey:keyOf(null), ownerKey:keyOf(owner)};})()'
     );
     check('装配：外层只有 courseId + knowledgeid，题目那份文档五个 id 齐全（与残缺现场一致）',
       shape && shape.outerIds === 'courseId,knowledgeid' &&
       shape.innerIds === 'courseId,classId,workId,jobid,knowledgeid',
       JSON.stringify(shape && { outerIds: shape.outerIds, innerIds: shape.innerIds }));
-    check('形状闸门：null 解析出的键与题目文档的键**确实不同**（同键就把后面几条变成空测）',
-      shape && shape.n === 5 && shape.ownerIsInner === true && shape.splitKeys === true,
+    check('闸门分两层：关掉 13-A 的深走后 null 仍算出**另一本粗账**（后面几条测的是批次 8 的归一，不是空测）',
+      shape && shape.n === 5 && shape.ownerIsInner === true && shape.splitOff === true,
       JSON.stringify(shape && { n: shape.n, ownerIsInner: shape.ownerIsInner, outerKey: shape.outerKey, ownerKey: shape.ownerKey }));
+    check('13-A 的深走自己也把粗账归一了：开着它时 null 与题目文档同键（两层都在兜，缺一不可）',
+      shape && shape.splitOn === false,
+      JSON.stringify(shape && { splitOff: shape.splitOff, splitOn: shape.splitOn }));
 
     // 真跑一遍答题：ready 键要由生产代码自己写下，手抄一个键等于测自己的夹具。
     // ⚠️ 必须走 writeConfig 把配置写进扩展存储：`hasApiKey` 只留在页面里，
@@ -8411,6 +8783,13 @@ SCENARIOS.push({
       fallback && fallback.ret === true && fallback.delta === 1, JSON.stringify(fallback));
     check('这一趟记的是**那本粗账**（归一只在手里有题目文档时才改道，退化路径没被改坏）',
       fallback && fallback.before === 0 && fallback.coarseRaw === 1, JSON.stringify(fallback));
+
+    // 关掉深走是给上面这一批用的；场景结束必须还原（下一个场景会重新导航，
+    // 但夹具与生产判据的差集不该靠"反正会刷新"来收尾）。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'if(app._realFindPaperBelow)app._findQuizPaperDocumentBelow=app._realFindPaperBelow;' +
+      'return !!app._realFindPaperBelow;})()');
   }
 });
 
@@ -9044,6 +9423,147 @@ SCENARIOS.push({
     check('12：反向对照 —— 旧写法在同一份结构上确实写出 NaN（证明上面那条不是空测）',
       ghost && ghost.old.indexOf('NaN') >= 0 && ghost.flat.indexOf('NaN') < 0,
       JSON.stringify(ghost && { old: ghost.old, flat: ghost.flat }));
+  }
+});
+
+/** ---- 49. 卷子埋三层：取题文档要走到那份，「答不了」不许读成「没题做」（批次 13-A / 13-B） ---- */
+SCENARIOS.push({
+  name: '三层卷子文档与被API挡住的答题链路',
+  path: '/nested-paper',
+  run: async function (ctx) {
+    // 现场（2026-11-11 直接进用户浏览器量的）：两张 24 题的卷子**一道没做**，
+    // 日志却打 `skip completed` / `study finished on page` 然后翻节。三件事叠出来的：
+    //   ① 卷子在第 3 层文档里，而 `_resolveQuizAnswerDocument` 只会找一层 `#frame_content`，
+    //      于是所有 null 参数的判据落在**知识卡片页**上；
+    //   ② 卡片页每条任务点后面都写着「任务点已完成」，`_isDocumentFrameFinished` 当场为真，
+    //      `_isQuizPassedOrFinished` 就据此宣布「这一节做完」；
+    //   ③ 没填 API Key 时 `_isQuizLearningPending` 直接返回 false —— 把「答不了」读成「没题做」。
+    // 本场景把三条分别钉住，并留**夹具自证**（外层确实写着已完成、确实没有题形），
+    // 免得断言靠一个空夹具假绿。
+    var out = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      // 翻页动作全部换成计数器：这一场景要证明的是**不许翻页**，真翻了会打断整轮 e2e
+      'var nav={card:0,unit:0,btn:0};' +
+      'var origCard=app._switchToNextLearningCard, origUnit=app.nextUnit;' +
+      'app._switchToNextLearningCard=function(){nav.card++;return true;};' +
+      'app.nextUnit=function(){nav.unit++;};' +
+      'var cards=document.getElementById("iframe").contentDocument;' +
+      // ---- 夹具自证 ----
+      'var fixture={topShape:app._docHasQuizPaperShape(document),cardsShape:app._docHasQuizPaperShape(cards),' +
+      '  cardsLie:app._isDocumentFrameFinished(cards)};' +
+      // ---- 13-A：解析到的必须是**真有题那一份** ----
+      'var resolved=app._resolveQuizAnswerDocument(null);' +
+      'var resolvedUrl=resolved&&resolved.location?String(resolved.location.href||""):"";' +
+      'var resolvedContainers=resolved?app._collectQuestionContainers(resolved).length:-1;' +
+      'var qExtracted=app._extractQuestions(null).length;' +
+      'var passedNow=app._isQuizPassedOrFinished(null);' +
+      // ---- 13-A 的闸：一份写着「已完成」但全书没题的文档，不许被说成做完 ----
+      'var ghost=document.createElement("iframe");document.body.appendChild(ghost);' +
+      'var gd=ghost.contentDocument;' +
+      'var gDiv=gd.createElement("div");gDiv.className="ans-job-finished";' +
+      'gDiv.textContent="任务点已完成";gd.body.appendChild(gDiv);' +
+      'var ghostLie=app._isDocumentFrameFinished(gd);' +
+      'var ghostPassed=app._isQuizPassedOrFinished(gd);' +
+      'var ghostShape=app._docHasQuizPaperShape(gd);' +
+      // ---- 13-B：没配 key 时「答不了」必须继续算「有题要做」 ----
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:false,apiKey:"",hasApiKey:false});' +
+      'app._resetRuntimeState();' +
+      'var reasonNoKey=app._getQuizApiUnavailableReason();' +
+      'var blockedBefore=app._isQuizBlockedByApi();' +
+      'var pendingBefore=app._isQuizLearningPending(null);' +
+      // 真走一遍**OCS 那条**扫帧：拒帧那一支（`_searchChaoxingJobOcs` 里
+      // `jobKind==='quiz' && _isQuizApiUnavailable()`）必须自己把「本节被链路挡住」记下来。
+      // ⚠️ 不是 `_searchChaoxingJob` —— 那条链路根本没有这个分支，调它等于测了个空。
+      //   （实测踩过：写错函数名时 notedFresh 恒为 false，而"接线断了"与"调错了门"长得一模一样。）
+      // 把拒帧取证的两把闸也一起清掉，否则 30 秒节流会让 rejects 是空的、读不到原因。
+      'app._quizBlockedByApiAt=0;app._jobRejectLogAt=0;app._jobRejectSignature="";' +
+      'var jobOcs=null;try{jobOcs=app._searchChaoxingJobOcs([]);}catch(e){jobOcs="throw:"+e.message;}' +
+      'var notedAt=app._quizBlockedByApiAt||0;' +
+      'var ocsKind=jobOcs?(jobOcs==="throw"||typeof jobOcs==="string"?String(jobOcs):String(jobOcs.kind||"?")):"(null)";' +
+      'app._noteQuizBlockedByApi("api-key-missing");' +
+      'var blockedNow=app._isQuizBlockedByApi();' +
+      'var pendingNow=app._isQuizLearningPending(null);' +
+      'var skipRet=app._skipQuizForApiUnavailable(null,null);' +
+      'var navWhileBlocked=nav.card+nav.unit+nav.btn;' +
+      // ---- 预算用完：必须放行翻页，否则不填 key 的用户会被永久冻在这一节 ----
+      'app._quizBlockedSinceAt=Date.now()-181000;' +
+      'var blockedExpired=app._isQuizBlockedByApi();' +
+      'var skipExpired=app._skipQuizForApiUnavailable(null,null);' +
+      'var navAfterBudget=nav.card+nav.unit+nav.btn;' +
+      // ---- 用户自己关掉答题：照旧翻页，且**不**按住（那是他的选择，不是故障） ----
+      'app._resetRuntimeState();' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:false});' +
+      'var reasonToggle=app._getQuizApiUnavailableReason();' +
+      'app._noteQuizBlockedByApi(reasonToggle);' +
+      'var blockedToggle=app._isQuizBlockedByApi();' +
+      'app._switchToNextLearningCard=function(){nav.card++;return true;};' +
+      'var skipToggle=app._skipQuizForApiUnavailable(null,null);' +
+      'var navToggle=nav.card;' +
+      'app._switchToNextLearningCard=origCard;app.nextUnit=origUnit;' +
+      'function metaOf(name){for(var i=0;i<got.length;i++){if(got[i].message===name)return got[i].meta||{};}' +
+      '  return null;}' +
+      'setTimeout(function(){var rej=metaOf("search job: every candidate frame was rejected");' +
+      'res({fixture:fixture,resolvedUrl:resolvedUrl,' +
+      '  resolvedContainers:resolvedContainers,qExtracted:qExtracted,passedNow:passedNow,' +
+      '  ghostLie:ghostLie,ghostPassed:ghostPassed,ghostShape:ghostShape,' +
+      '  reasonNoKey:reasonNoKey,blockedBefore:blockedBefore,pendingBefore:pendingBefore,' +
+      '  ocsKind:ocsKind,' +
+      '  rejects:rej?String((rej.rejects||[]).map(function(r){return r.reason;}).join(" ||| ")):"(无拒帧日志)",' +
+      '  notedFresh:(Date.now()-notedAt)<60000,' +
+      '  blockedNow:blockedNow,pendingNow:pendingNow,skipRet:skipRet,navWhileBlocked:navWhileBlocked,' +
+      '  blockedExpired:blockedExpired,skipExpired:skipExpired,navAfterBudget:navAfterBudget,' +
+      '  reasonToggle:reasonToggle,blockedToggle:blockedToggle,skipToggle:skipToggle,navToggle:navToggle,' +
+      '  hold:metaOf("quiz blocked by api, holding unit"),' +
+      '  giveup:metaOf("quiz blocked too long, giving up unit"),seen:got.length});},400);});})()'
+    );
+    check('13-A 夹具自证：外层与卡片页都没有题形，而卡片页确实写着「已完成」（否则下面几条是空测）',
+      out && out.fixture && out.fixture.topShape === false && out.fixture.cardsShape === false &&
+      out.fixture.cardsLie === true, JSON.stringify(out && out.fixture));
+    check('13-A：`_resolveQuizAnswerDocument(null)` 走到**真有题那一份**（旧实现停在卡片页，容器数必然是 0）',
+      out && out.resolvedContainers >= 1 && /nested-paper-quiz/.test(out.resolvedUrl),
+      JSON.stringify(out && { resolvedContainers: out.resolvedContainers, resolvedUrl: out.resolvedUrl }));
+    // ⚠️ 这条**不是 13-A 的隔离**：`_extractQuestions` 自己带一套帧遍历，
+    //   把上面 resolver 的深走退回一层，它照样能自己摸到卷子（实测反向验证 E1 就是这么露出来的）。
+    //   所以它钉的是用户看得见的那个行为「空手回来时当场抠得出题」；
+    //   要单独证明 13-A 那半改动，看上面 `_resolveQuizAnswerDocument` 那条。
+    check('13-A：`_extractQuestions(null)` 当场抠得出一道题 —— 这才是「答不了」的第一现场',
+      out && out.qExtracted >= 1, JSON.stringify(out && out.qExtracted));
+    check('13-A：卷子没做时 `_isQuizPassedOrFinished(null)` 为假（旧实现在这里被卡片页的「已完成」骗了）',
+      out && out.passedNow === false, JSON.stringify(out && out.passedNow));
+    check('13-A 的闸：一份只有「已完成」、全书没题形的文档**不许**被说成做完（帧标记确实为真，闸才不是空转）',
+      out && out.ghostShape === false && out.ghostLie === true && out.ghostPassed === false,
+      JSON.stringify(out && { ghostShape: out.ghostShape, ghostLie: out.ghostLie, ghostPassed: out.ghostPassed }));
+    check('13-B：没填 key 的理由改名成 api-key-missing（关掉答题另有 quiz-toggle-off）',
+      out && out.reasonNoKey === 'api-key-missing', JSON.stringify(out && out.reasonNoKey));
+    check('13-B：还没记过「被挡住」时不凭空按住整节（既不算 blocked 也不算 pending）',
+      out && out.blockedBefore === false && out.pendingBefore === false,
+      JSON.stringify(out && { blockedBefore: out.blockedBefore, pendingBefore: out.pendingBefore }));
+    check('13-B：OCS 扫帧拒掉必做测验帧时**自己**把按住标记记上（接线真通，不是测试替它调的）',
+      out && out.notedFresh === true && out.ocsKind !== 'quiz',
+      JSON.stringify(out && { ocsKind: out.ocsKind, notedFresh: out.notedFresh, rejects: out.rejects }));
+    check('13-B：被链路挡住时 `_isQuizLearningPending` 仍然为真 —— 「答不了」不再等于「没题做」',
+      out && out.blockedNow === true && out.pendingNow === true,
+      JSON.stringify(out && { blockedNow: out.blockedNow, pendingNow: out.pendingNow }));
+    check('13-B：这时 `_skipQuizForApiUnavailable` 返回 false 且**一次页都不翻**（旧实现直接翻下一节）',
+      out && out.skipRet === false && out.navWhileBlocked === 0,
+      JSON.stringify(out && { skipRet: out.skipRet, navWhileBlocked: out.navWhileBlocked }));
+    check('13-B 的日志说清「停在本节、不是已完成」',
+      out && !!out.hold && out.hold.reason === 'api-key-missing' && out.hold.heldMs >= 0,
+      JSON.stringify(out && { hold: out.hold, seen: out.seen }));
+    check('13-B：按住超过预算后**放行翻页**（不填 key 的用户不能被永久冻在这一节）',
+      out && out.blockedExpired === false && out.skipExpired === true && out.navAfterBudget >= 1,
+      JSON.stringify(out && { blockedExpired: out.blockedExpired, skipExpired: out.skipExpired, navAfterBudget: out.navAfterBudget }));
+    check('13-B：放弃这一节时日志明说「题没做过、请重学补回来」',
+      out && !!out.giveup && out.giveup.heldMs >= 180000,
+      JSON.stringify(out && { giveup: out.giveup, seen: out.seen }));
+    check('13-B：用户自己关掉答题 = 照旧翻页、但不算「被挡住」（那是选择，不是故障）',
+      out && out.reasonToggle === 'quiz-toggle-off' && out.blockedToggle === false &&
+      out.skipToggle === true && out.navToggle >= 1,
+      JSON.stringify(out && { reasonToggle: out.reasonToggle, blockedToggle: out.blockedToggle,
+        skipToggle: out.skipToggle, navToggle: out.navToggle }));
   }
 });
 

@@ -680,9 +680,10 @@ body.has-bg::after{
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
         <input type="text" id="captchaModel" placeholder="如 deepseek-flash / qwen-vl-max" />
-        <p class="hint"><b>默认留空即可 —— 主模型本身就带看图。</b>只有你把主模型换成纯文本模型时，
-        才必须在这里单独填一个能看图的型号，否则验证码基本识别不出来。
-        识别失败会重试，也可能识别错，错了就白跑一轮。</p>
+        <p class="hint"><b>留空 = 用上面那个主模型识别。</b>DeepSeek 这类主模型自带看图，留空就能用。
+        若你把主模型换成了纯文本模型，这里<b>必须</b>单独填一个会看图的型号 ——
+        否则验证码墙只试一次就会停手（不再反复烧钱重试），日志会明说「这个模型看不懂图」，
+        请在那个页面上亲手输一次。</p>
       </div>
     </div>
   </details>

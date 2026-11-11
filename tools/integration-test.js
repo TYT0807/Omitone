@@ -1767,6 +1767,243 @@ async function testQuizScanHoldWiring() {
     '找不到 Object.assign 合并依据的写法');
 }
 
+/** ---- [16] 批次 13-A / 13-B：取题文档的有界深走 +「答不了」不等于「没题做」 ---- */
+async function testQuizPaperDepthAndApiBlock() {
+  console.log('\n[16] 卷子埋三层时的取题文档 + 被链路挡住时的按住判据（批次 13-A / 13-B）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var dom = read('src/page/75-quiz-dom.js');
+  var quiz = read('src/page/70-quiz-flow.js');
+  var state = read('src/page/10-config-state.js');
+  var detect = read('src/page/60-tasks-detect.js');
+
+  var buildFrom = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return null;
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    if (end <= start) return null;
+    return new Function('return (' + src.slice(start, end) + '\n    })')();
+  };
+  // 方法体：从签名到下一个「四空格 + `},`」—— 片段里所有方法都是这个缩进。
+  // ⚠️ 别拿「下一个方法的签名」当终点：同文件里 `_isQuizPassedOrFinished` 排在
+  //   `_isQuizLearningPending` **前面**，那样切出来是空串，断言会假绿。
+  var bodyOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return '';
+    var end = src.indexOf('\n    },', at);
+    return end < 0 ? src.slice(at) : src.slice(at, end);
+  };
+
+  var hasShape = buildFrom(dom, '_docHasQuizPaperShape');
+  var findBelow = buildFrom(dom, '_findQuizPaperDocumentBelow');
+  var resolveDoc = buildFrom(dom, '_resolveQuizAnswerDocument');
+  check('三个方法都能从 75-quiz-dom.js 取到真实那一份（用桩等于把"两处口径不一致"放过去）',
+    typeof hasShape === 'function' && typeof findBelow === 'function' && typeof resolveDoc === 'function',
+    JSON.stringify({ shape: typeof hasShape, below: typeof findBelow, resolve: typeof resolveDoc }));
+  if (!resolveDoc) return;
+
+  // ---- ① 13-A：造出实测拓扑（卡片页 → work 帧 → #frame_content 里的卷子）----
+  // 文档用最小替身：只有解析器真的会碰的那三个入口，别的一律不认。
+  var frameScans = 0;
+  function mkDoc(name, opt) {
+    opt = opt || {};
+    return {
+      __name: name,
+      querySelector: function () { return opt.shape ? { node: name } : null; },
+      querySelectorAll: function (sel) {
+        if (sel !== 'iframe') return [];
+        frameScans++;
+        return opt.frames || [];
+      },
+      getElementById: function () { return null; }
+    };
+  }
+  function mkFrame(id, doc) { return { id: id, __doc: doc }; }
+
+  function mkApp(mainDoc) {
+    return {
+      _quizContainerSelector: '.TiMu, .questionLi',
+      _getMainDocument: function () { return mainDoc; },
+      _safeDocOf: function (f) { return (f && f.__doc) || null; },
+      _docHasQuizPaperShape: hasShape,
+      _findQuizPaperDocumentBelow: findBelow,
+      _resolveQuizAnswerDocument: resolveDoc
+    };
+  }
+  // ⚠️ 替身必须挡在**解析器**前面，而不是挡在断言前面：这一族文档一旦被裸读 `.document`
+  //   就会抛 SecurityError 打断整轮 tick（AGENTS §2 #1），所以深走的每一帧都必须走 _safeDocOf。
+  var quizDoc = mkDoc('quiz', { shape: true });
+  var workDoc = mkDoc('work', { frames: [mkFrame('frame_content', quizDoc)] });
+  var cardsDoc = mkDoc('cards', { frames: [mkFrame('ans-attach-work', workDoc)] });
+  var topDoc = mkDoc('top', { frames: [mkFrame('iframe', cardsDoc)] });
+
+  frameScans = 0;
+  var landed = mkApp(topDoc)._resolveQuizAnswerDocument(null);
+  check('13-A：三层外的卷子**当场被走到**（旧实现停在卡片页，"题还没做"就被读成"这节做完了"）',
+    landed && landed.__name === 'quiz', '落在 ' + (landed && landed.__name));
+  check('深走的成本有界：只按 iframe 一类选择器逐层看，一次解析不超过 3 层帧',
+    frameScans > 0 && frameScans <= 6, 'frameScans=' + frameScans);
+
+  frameScans = 0;
+  var selfShape = mkApp(quizDoc)._resolveQuizAnswerDocument(quizDoc);
+  check('手里那份文档自己就有题形 → **一帧都不下探**（十几条已经传对文档的读路径成本不变）',
+    selfShape === quizDoc && frameScans === 0, 'frameScans=' + frameScans);
+
+  // 深度封顶：卷子挂在第 4 层帧之后 —— 必须放弃深走、原样返回起点文档
+  var deepQuiz = mkDoc('deep-quiz', { shape: true });
+  var d3 = mkDoc('d3', { frames: [mkFrame('f3', deepQuiz)] });
+  var d2 = mkDoc('d2', { frames: [mkFrame('f2', d3)] });
+  var d1 = mkDoc('d1', { frames: [mkFrame('f1', d2)] });
+  var d0 = mkDoc('d0', { frames: [mkFrame('f0', d1)] });
+  var tooDeep = mkApp(d0)._resolveQuizAnswerDocument(null);
+  check('超过深度上限（4 层以外）时**不认**：宁可回到起点文档，也不把整轮 tick 拖进无界帧遍历',
+    tooDeep === d0, '落在 ' + (tooDeep && tooDeep.__name));
+
+  // 每层帧数封顶：13 帧，卷子在最后一帧里 —— 上限之外的不该被看见
+  var many = [];
+  for (var mi = 0; mi < 13; mi++) {
+    many.push(mkFrame('f' + mi, mi === 12 ? mkDoc('late-quiz', { shape: true }) : mkDoc('late-' + mi)));
+  }
+  var capped = mkApp(mkDoc('many', { frames: many }))._resolveQuizAnswerDocument(null);
+  check('每层最多 12 帧：第 13 帧里的卷子**不去认**（成本封顶是真的封顶，不是写在注释里）',
+    capped && capped.__name === 'many', '落在 ' + (capped && capped.__name));
+
+  // 学习通把卷子放在 #frame_content，DOM 顺序却常排在别的任务点帧之后
+  var otherQuiz = mkDoc('other-quiz', { shape: true });
+  var fcQuiz = mkDoc('fc-quiz', { shape: true });
+  var ordered = mkApp(mkDoc('outer', { frames: [mkFrame('other', otherQuiz), mkFrame('frame_content', fcQuiz)] }))
+    ._resolveQuizAnswerDocument(null);
+  check('同一层里 `#frame_content` 优先（真实页面它常排在后面，按 DOM 顺序取会拿错那份）',
+    ordered && ordered.__name === 'fc-quiz', '落在 ' + (ordered && ordered.__name));
+
+  // 跨域帧：_safeDocOf 给 null 时必须跳过而不是抛错打断整轮
+  var crossQuiz = mkDoc('cross-quiz', { shape: true });
+  var withCross = mkApp(mkDoc('mix', { frames: [mkFrame('x', null), mkFrame('ok', crossQuiz)] }))
+    ._resolveQuizAnswerDocument(null);
+  check('跨域帧（取不到文档）只跳过、不抛错 —— 裸读 .document 会静默打断整轮 tick',
+    withCross && withCross.__name === 'cross-quiz', '落在 ' + (withCross && withCross.__name));
+
+  var belowBody = bodyOf(dom, '_findQuizPaperDocumentBelow');
+  check('深走里不许出现裸读（`.contentDocument` / `.document`），只准走 _safeDocOf',
+    belowBody.length > 0 && belowBody.indexOf('.contentDocument') < 0 &&
+    belowBody.indexOf('.document') < 0 && belowBody.indexOf('_safeDocOf') >= 0,
+    belowBody.replace(/\s+/g, ' ').slice(0, 160));
+
+  // ---- ② 13-B：按住判据（新鲜度 30 秒 / 预算 3 分钟 / 用户关掉答题不算故障）----
+  var isBlocked = buildFrom(quiz, '_isQuizBlockedByApi');
+  var noteBlocked = buildFrom(quiz, '_noteQuizBlockedByApi');
+  check('两个方法都能从 70-quiz-flow.js 取到真实那一份',
+    typeof isBlocked === 'function' && typeof noteBlocked === 'function',
+    JSON.stringify({ judge: typeof isBlocked, note: typeof noteBlocked }));
+  if (!isBlocked || !noteBlocked) return;
+
+  var realNow = Date.now;
+  var fakeNow = 1000000000000;
+  Date.now = function () { return fakeNow; };
+  try {
+    function mkBlock(reason) {
+      return {
+        _getQuizApiUnavailableReason: function () { return reason; },
+        _quizBlockedByApiAt: 0, _quizBlockedSinceAt: 0,
+        _isQuizBlockedByApi: isBlocked, _noteQuizBlockedByApi: noteBlocked
+      };
+    }
+    var a1 = mkBlock('api-key-missing');
+    check('13-B：从没记过「被挡住」时**不凭空按住**（没有证据就不许把整节冻住）',
+      isBlocked.call(a1) === false);
+    noteBlocked.call(a1, 'api-key-missing');
+    check('13-B：记过一次之后，同一轮里算「被挡住」（这就是「答不了」不再等于「没题做」的那条证据）',
+      isBlocked.call(a1) === true && a1._quizBlockedSinceAt === fakeNow);
+    fakeNow += 10000;
+    noteBlocked.call(a1, 'api-key-missing');
+    check('连续拒帧**不续期**本轮起点（否则每秒拒一次就永远不会到预算、永远翻不了页）',
+      a1._quizBlockedSinceAt === 1000000000000);
+    fakeNow += 70000;
+    noteBlocked.call(a1, 'api-key-missing');
+    check('隔了 60 秒以上再拒 = **新一轮**（填过 key 又掉线的，不该继承第一次的时长直接跳过）',
+      a1._quizBlockedSinceAt === fakeNow);
+    var a2 = mkBlock('api-key-missing');
+    noteBlocked.call(a2, 'api-key-missing');
+    a2._quizBlockedByApiAt = fakeNow - 31000;
+    check('新鲜度闸：30 秒内没有再拒过 → 不算按住（页面早就换了，凭旧证据按住整节是磨蹭）',
+      isBlocked.call(a2) === false);
+    var a3 = mkBlock('api-key-missing');
+    noteBlocked.call(a3, 'api-key-missing');
+    a3._quizBlockedSinceAt = fakeNow - 181000;
+    check('预算闸：按住满 3 分钟就放手（永远不填 key 的用户不能被冻在这一节）',
+      isBlocked.call(a3) === false);
+    var a4 = mkBlock('quiz-toggle-off');
+    noteBlocked.call(a4, 'quiz-toggle-off');
+    check('用户自己关掉答题**不算故障**：不记、也不按住（那是选择，照旧该翻页）',
+      a4._quizBlockedByApiAt === 0 && isBlocked.call(a4) === false);
+    // ⚠️ 上面那条**只证明了"记不上"这一层**：`_quizBlockedByApiAt` 一直是 0，
+    //   判据第一行（没有标记就返回 false）先把它拦掉，判据里那道**同样的过滤**换根本没被走到。
+    //   真会走到那一层的是这个形状 —— **先因为没填 key 被按住，中途用户把答题关掉**：
+    //   旧标记还在，此时只有判据那道过滤会立刻放手。（反向验证 B10 / B10b 一手一条。）
+    var a4b = mkBlock('api-key-missing');
+    noteBlocked.call(a4b, 'api-key-missing');
+    var heldBefore = a4b._quizBlockedByApiAt;
+    a4b._getQuizApiUnavailableReason = function () { return 'quiz-toggle-off'; };
+    check('按住途中用户把答题关掉 → **立刻放手**（判据里那道过滤的独立职责，旧标记还在时只有它管用）',
+      heldBefore !== 0 && isBlocked.call(a4b) === false,
+      JSON.stringify({ heldBefore: heldBefore, blocked: isBlocked.call(a4b) }));
+    var a5 = mkBlock('');
+    noteBlocked.call(a5, 'api-key-missing');
+    check('链路其实可用（理由为空）时拒帧也记不上：判据不吃「先记了再恢复」的残留',
+      isBlocked.call(a5) === false);
+  } finally {
+    Date.now = realNow;
+  }
+
+  // ---- ③ 接线：这三处一旦被人"顺手简化"回去，症状就是用户报的那句「怎么说已完成了」----
+  var learnBody = bodyOf(quiz, '_isQuizLearningPending');
+  check('_isQuizLearningPending 里链路不可用那一支必须**交给按住判据**，不许退回无条件 false',
+    /_isQuizApiUnavailable\(\)\)\s*return\s+this\._isQuizBlockedByApi\(\);/.test(learnBody),
+    learnBody.replace(/\s+/g, ' ').slice(0, 160));
+
+  var holdBody = bodyOf(quiz, '_shouldHoldQuizBeforeNext');
+  check('_shouldHoldQuizBeforeNext 只在「没被按住」时才放手（两道判据口径一致，别一处按住一处翻节）',
+    /_isQuizApiUnavailable\(\)\s*&&\s*!\s*this\._isQuizBlockedByApi\(\)\)\s*return\s+false;/.test(holdBody),
+    holdBody.replace(/\s+/g, ' ').slice(0, 200));
+
+  var passedBody = quiz.slice(quiz.indexOf('_isQuizPassedOrFinished: function'),
+    quiz.indexOf('\n    },', quiz.indexOf('_isQuizPassedOrFinished: function')));
+  check('_isQuizPassedOrFinished 带**题形闸**：只有「已完成」、全书没题形的文档不许被说成做完',
+    passedBody.indexOf('!this._docHasQuizPaperShape(doc)') >= 0,
+    passedBody.replace(/\s+/g, ' ').slice(0, 200));
+
+  var skipBody = quiz.slice(quiz.indexOf('_skipQuizForApiUnavailable: function'),
+    quiz.indexOf('\n    },', quiz.indexOf('_skipQuizForApiUnavailable: function')));
+  check('_skipQuizForApiUnavailable 里**不许**清 `_quizBlockedSinceAt`（清了就等于自己把自己锁死在这一节）',
+    skipBody.length > 0 && skipBody.indexOf('_quizBlockedSinceAt = 0') < 0,
+    skipBody.replace(/\s+/g, ' ').slice(0, 200));
+
+  var rejectAt = detect.indexOf("if (this._isQuizApiUnavailable()) {");
+  var rejectBranch = rejectAt < 0 ? '' : detect.slice(rejectAt, rejectAt + 900);
+  check('扫帧拒掉必做测验帧时**自己**把按住标记记上（接线断了就等于「答不了」又被读成「没题做」）',
+    rejectBranch.indexOf('this._noteQuizBlockedByApi(') >= 0,
+    rejectBranch.replace(/\s+/g, ' ').slice(0, 200));
+  check('只在平台说这份卷子**还必做**（workType===job）时才记（已做完的卷子不该因为没填 key 按住整节）',
+    /if\s*\(workType\s*===\s*'job'\)\s*this\._noteQuizBlockedByApi\(/.test(rejectBranch),
+    rejectBranch.replace(/\s+/g, ' ').slice(0, 200));
+
+  var resetBody = state.slice(state.indexOf('_resetRuntimeState: function'),
+    state.indexOf('\n    },', state.indexOf('_resetRuntimeState: function')));
+  check('换节 / 换卡片时四个按住时刻一起清（少清 `_quizBlockedSinceAt` 会让下一节秒判超时）',
+    ['_quizBlockedByApiAt', '_quizBlockedSinceAt', '_quizBlockedHoldLogAt', '_quizBlockedGiveUpLogAt']
+      .every(function (k) { return resetBody.indexOf('this.' + k + ' = 0;') >= 0; }),
+    resetBody.replace(/\s+/g, ' ').slice(0, 200));
+
+  var stateBody = state.slice(0, state.indexOf('_resetRuntimeState: function'));
+  check('四个按住时刻都在状态段声明过（没声明的字段 = 每轮 undefined，判据第一秒就误判）',
+    ['_quizBlockedByApiAt', '_quizBlockedSinceAt', '_quizBlockedHoldLogAt', '_quizBlockedGiveUpLogAt']
+      .every(function (k) { return stateBody.indexOf(k + ': 0,') >= 0; }),
+    stateBody.replace(/\s+/g, ' ').slice(0, 120));
+}
+
 // ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
@@ -1793,6 +2030,7 @@ async function main() {
   await testRejectSignatureSurvivesLogStore();
   await testInjectionWatchdogOwnershipGuard();
   await testQuizScanHoldWiring();
+  await testQuizPaperDepthAndApiBlock();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

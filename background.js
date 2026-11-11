@@ -291,8 +291,15 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
       return pageScope(sender).then(function (current) {
         if (current.scope !== 'study' && current.scope !== 'captcha') return failure('forbidden_sender');
         return apiFetch(request).then(function (response) {
-          if (!response.success) return { success: false, status: response.status,
-            error: '验证码识别请求失败（' + (response.status || response.code || '网络不通') + '）—— 将自动重试' };
+          if (!response.success) {
+            // 带上目标主机：401/404 到底是哪家厂商收的请求，以前日志里一个字都没有，
+            // 用户只会看到「请求失败（401）」而去反复核对密钥抄没抄错。
+            var host = '';
+            try { host = new URL(request.url).host; } catch (eHost) {}
+            return { success: false, status: response.status,
+              error: '验证码识别请求失败（' + (response.status || response.code || '网络不通') +
+                '，目标 ' + (host || '未知主机') + '）—— 将自动重试' };
+          }
           return self.OmitoneCaptcha.parseResponse(config, response.data);
         });
       });

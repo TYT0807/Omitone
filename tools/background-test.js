@@ -162,6 +162,32 @@ async function main() {
   }
   h.local.config.enableCaptcha = false;
   check('disabled captcha never spends request', !(await h.send('captcha_request', captcha, { image: 'data:image/png;base64,AQID' })).success);
+  // ---- 批次 13-C：验证码不得把密钥发给用户没选过的厂商，空回复要说出为什么 ----
+  // 现场（2026-11-11 真实页面）：storage 里的 config 没有 apiUrl（背景读的是**原始**配置，
+  // 不合并 content.js 那套默认值），旧代码于是兜底发到 DEFAULT_OPENAI_BASE=api.minimaxi.com，
+  // 拿 DeepSeek 的密钥去敲 MiniMax 的门 → 永远 401，而日志只写「请求失败（401）」，
+  // 既不说是谁拒的，也不说为什么 —— 用户只能反复核对密钥抄没抄错。
+  h.local.config.enableCaptcha = true;
+  Object.assign(h.local.config, { apiType: 'openai', apiUrl: '', apiKey: 'saved-key', model: 'text-model', captchaModel: 'vision-model' });
+  count = h.calls.length;
+  const blankUrl = await h.send('captcha_request', captcha, { image: 'data:image/png;base64,AQID' });
+  check('apiUrl 留空时验证码一个请求都不发（不再兜底发给别的厂商）', !blankUrl.success && h.calls.length === count, JSON.stringify(blankUrl));
+  check('留空被拒时理由点名「地址没填」', /地址没填/.test(String(blankUrl.error || '')), JSON.stringify(blankUrl));
+  Object.assign(h.local.config, { apiUrl: 'https://api.deepseek.com', thinkingLevel: 'off' });
+  h.fetch(() => Promise.resolve(response({ mime: 'application/json', data: Buffer.from(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'a3F9' } }] })) })));
+  const thinkCall = await h.send('captcha_request', captcha, { image: 'data:image/png;base64,AQID' });
+  const thinkBody = JSON.parse(h.calls.at(-1).options.body);
+  check('验证码请求带思考参数（走 libs/thinking.js 单一真源，off 档真的关掉 DeepSeek 思考）',
+    thinkCall.success && thinkBody.thinking && thinkBody.thinking.type === 'disabled', JSON.stringify(thinkBody));
+  check('验证码输出预算不再写死 1024（思考型模型会被截成空正文）', Number(thinkBody.max_tokens) >= 2048, String(thinkBody.max_tokens));
+  h.fetch(() => Promise.resolve(response({ mime: 'application/json', data: Buffer.from(JSON.stringify({ choices: [{ finish_reason: 'length', message: { content: '' } }] })) })));
+  const truncated = await h.send('captcha_request', captcha, { image: 'data:image/png;base64,AQID' });
+  check('空回复把结束原因带上：length 说成「思考占满预算」',
+    !truncated.success && /length/.test(String(truncated.error || '')), JSON.stringify(truncated));
+  h.fetch(() => Promise.resolve(response({ status: 401, mime: 'application/json', data: Buffer.from('{}') })));
+  const denied = await h.send('captcha_request', captcha, { image: 'data:image/png;base64,AQID' });
+  check('识别失败的日志点名目标主机（401 要看得出是哪家拒的）',
+    !denied.success && /api\.deepseek\.com/.test(String(denied.error || '')), JSON.stringify(denied));
   h.fetch(() => Promise.resolve(response({ mime: 'application/json', data: Buffer.from('{"ok":true}') })));
   check('popup API fetch supported', (await h.send('api_fetch', popup, { url: 'https://api.test', body: '{}' })).data.ok);
   h.fetch(() => Promise.resolve(response({ status: 404, mime: 'application/json', data: Buffer.from('{"error":"missing"}') })));

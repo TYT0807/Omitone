@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd3deb0c9a4';
+var OMITONE_CODE_REV = '30df9b04dc';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -459,6 +459,15 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
 
     _quizApiSkipLogAt: 0,
 
+    // 「这一节被答题链路挡住了」的三个时刻（判据见 `_isQuizBlockedByApi`，批次 13-B）。
+    //   _quizBlockedByApiAt   最近一次「因链路不可用拒掉必做测验帧」——30 秒内不算新鲜
+    //   _quizBlockedSinceAt   本轮阻塞的起点，用来算已按住多久（预算 3 分钟）
+    //   两个日志节流位各自独立：按住与放弃是两条不同含义的日志，共用会互相顶掉。
+    _quizBlockedByApiAt: 0,
+    _quizBlockedSinceAt: 0,
+    _quizBlockedHoldLogAt: 0,
+    _quizBlockedGiveUpLogAt: 0,
+
     // 「这一轮没答题、原因是哪个」那条 warn 的节流时刻（判据见 `_handleQuiz` 开头的三道闸门）。
     // 与 `_quizHoldLogAt`（`_shouldHoldQuizBeforeNext` 用）**分开**：共用一个时间戳会让两条
     // 不同含义的日志互相顶掉，谁先打谁后打全看运气。
@@ -750,6 +759,13 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
       // 回到同一份卷子时视为全新一轮（与 `_quizAnswered = false` 配套，语义一致）
       this._quizRunPaperKey = '';
       this._quizApiSkipLogAt = 0;
+      // 换节 / 换卡片 = 新的一节：按住阻塞的预算重新起算（判据见 `_isQuizBlockedByApi`）。
+      // ⚠️ 这四个必须在同一个地方清 —— 少清 `_quizBlockedSinceAt` 的话，
+      // 上一节按住满 3 分钟的记录会让下一节**一被挡住就直接翻页**。
+      this._quizBlockedByApiAt = 0;
+      this._quizBlockedSinceAt = 0;
+      this._quizBlockedHoldLogAt = 0;
+      this._quizBlockedGiveUpLogAt = 0;
       // 「本地答过多选」的卷子集合跟着卷子身份一起清：
       // 换章节 / 换卡片之后回到同一份卷子，应当重新享有"第一次尝试"的待遇。
       this._quizLocalMultiplePapers = {};
@@ -2931,6 +2947,31 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
     },
 
 
+    // 等一张图解码完：load / error / 超时三条路都要能出来（超时是 resolve(false)，不抛）。
+    // 单独成一个方法是因为 `_recognizeCaptchaImage` 里那次 await 必须可超时 —— 永久悬挂
+    // 会把整个 tick 循环钉死（实测真墙上就是这一族：150 秒后被看门狗强行放锁）。
+    _waitForCaptchaImage: function (img, ms) {
+      return new Promise(function (resolve) {
+        var settled = false;
+        function fin(ok) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          try { img.removeEventListener('load', onLoad); img.removeEventListener('error', onErr); } catch (e) {}
+          resolve(!!ok);
+        }
+        function onLoad() { fin((img.naturalWidth || 0) > 0); }
+        function onErr() { fin(false); }
+        var timer = setTimeout(function () { fin(false); }, ms || 2500);
+        try {
+          if (img.complete && (img.naturalWidth || 0) > 0) { fin(true); return; }
+          img.addEventListener('load', onLoad);
+          img.addEventListener('error', onErr);
+        } catch (e3) { fin(false); }
+      });
+    },
+
+
     _cleanCaptchaCode: function (raw) {
       var text = String(raw || '');
       var quoted = text.match(/[「『“"]([^」』”"]{1,24})[」』”"]/);
@@ -2939,7 +2980,14 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
       if (lines.length) text = lines[lines.length - 1];
       text = text.replace(/^.*?(?:答案|结果|验证码|code|result)\s*[:：]\s*/i, '');
       text = text.replace(/[\s"'`~!@#$%^&*()（）\-_=+\[\]【】{}\\|;:;,.，。、：；！？·…<>《》/?？]+/g, '');
-      if (text.length > 12) text = text.slice(0, 12);
+      // 超过 8 个字符就不是验证码的形状（超星是 4 位，见过的站点最多 6 位），别当答案交上去。
+      // 这条是实测逼出来的：deepseek-flash 没看清图时回「图中没有可识别的验证码字符。」，
+      // 旧写法剥掉句号后正好剩 12 个汉字、卡在旧的「截断到 12」以内，于是那句人话被填进输入框
+      // 并按了提交 —— 一次尝试白废，还把汉字塞进了站方的校验接口。
+      // 旧的截断到 12 一并删掉：超过 8 一律不收，那一行永远走不到（留着就是死代码）。
+      // 为什么不用「只认字母数字」：libs/prompt.js 的 CAPTCHA_PROMPT 明写「可能含汉字」，
+      // 那样会把汉字验证码这一族整个判死。形状（长度）才是两者都不得罪的判据。
+      if (text.length > 8) return '';
       return text;
     },
 
@@ -2961,26 +3009,59 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
     },
 
 
+    // 返回「这一下到底是怎么提交的」，调用方要把它写进日志。
+    // 以前这个函数什么都不返回、日志只写一句 code submitted —— 于是「一次都没提交成功」
+    // 和「提交成功了但码不对」在日志里长得一模一样（实测真墙就是被这个盲区埋了整整几轮）。
     _clickCaptchaSubmit: function (captcha) {
       var doc = captcha.input.ownerDocument || document;
       var button = null;
       try { button = doc.querySelector('#sub'); } catch (e0) {}
-      if (!button && captcha.dialog) {
-        var candidates = captcha.dialog.querySelectorAll('button, input[type="submit"], input[type="button"], a, [role="button"]');
-        for (var i = 0; i < candidates.length; i++) {
-          var label = textOf(candidates[i]);
-          if (/^(确定|提交|验证|确认|OK)/.test(label)) { button = candidates[i]; break; }
-        }
-      }
       if (button) {
-        try { button.click(); return; } catch (e1) {}
+        try { button.click(); return 'sub-id'; } catch (e1) {}
       }
-      // 无按钮则模拟回车提交
+      // 实测真墙（【9010】那面）的因果链是这样的：`_detectStandaloneCaptcha` 把 dialog 写成
+      // `document.body`，所以这道扫描**确实跑了**、也**确实扫到了**那个
+      // `input[type=submit][value=提交]` —— 但按钮的文本是用 `textOf()` 读的，
+      // 而 `textOf` 只认 innerText 和子节点，对 `<input>` 永远返回空串（input 没有子节点）。
+      // 于是 `/^提交/` 判不上、button 留空，最后只剩那条「派发一个合成 Enter」——
+      // 而合成 KeyboardEvent 不激活原生表单提交。结果：码认对了、也填进 #ucode 了、
+      // 日志写着 code submitted，页面却一次都没被提交过
+      // —— 墙不过、任务点一直 captcha-not-cleared、整节被按住。
+      // 修法就是读标签时把 `el.value` 算进去；范围也一并放宽：独立页没有真正的弹层容器，
+      // 但只认**显式声明的提交控件**（input/button[type=submit]），
+      // 这样够得着墙上的「提交」，又不会在课程页里误点到别的「提交」。
+      var sel = captcha.dialog ? 'button, input[type="submit"], input[type="button"], a, [role="button"]'
+                               : 'input[type="submit"], button[type="submit"]';
+      var root = captcha.dialog || doc;
+      try {
+        var candidates = root.querySelectorAll(sel);
+        for (var i = 0; i < candidates.length; i++) {
+          var el = candidates[i];
+          if (!el.offsetWidth && !el.offsetHeight) continue;   // 看不见的按钮不算
+          var label = String(textOf(el) || el.value || '').trim();
+          if (/^(确定|提交|验证|确认|立即验证|OK)/.test(label)) { button = el; break; }
+        }
+      } catch (e6) {}
+      if (button) {
+        try { button.click(); return captcha.dialog ? 'dialog-button' : 'submit-input'; } catch (e7) {}
+      }
+      // 再退一步：能走原生表单提交就走它（requestSubmit 会真提交，dispatchEvent 不会）
+      try {
+        var form = captcha.input.form ||
+          (captcha.img && captcha.img.closest && captcha.img.closest('form'));
+        if (form && typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+          return 'form-requestSubmit';
+        }
+      } catch (e8) {}
+      // 最后才是模拟回车：它对绑了 keydown 的老页面仍然有用，但不能当成「已经提交了」
       try {
         var win = doc.defaultView || window;
         captcha.input.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
         captcha.input.dispatchEvent(new win.KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+        return 'enter-key';
       } catch (e2) {}
+      return 'nothing';
     },
 
 
@@ -3217,7 +3298,12 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
     // ===== 独立验证码页：验证码不在学习通界面内，而是一个独立网址 / 弹出窗口 / 被跳转到的验证页 =====
     // 这类页面是顶层页面（不是跨域 iframe），插件可以完整访问 DOM，因此完全可以自动识别并填写。
     _recognizeCaptchaImage: async function (img) {
+      // 图还没解码完就截图，截到的是一张**空白**，而这一发是真金白银：
+      // 实测真墙第一次尝试模型只能回「图中没有可识别的验证码字符」，第二次起才是真码。
+      // 先等解码（带超时，不许白等），等不出来就不拿空白去问模型 —— 改走按地址取图。
+      if (!(img.naturalWidth > 0)) await this._waitForCaptchaImage(img, 2500);
       var dataUrl = this._captureCaptchaImage(img);
+      if (!(img.naturalWidth > 0)) dataUrl = '';
       if (!dataUrl) {
         var absUrl = this._resolveImageUrl(img);
         if (absUrl) {
@@ -3227,14 +3313,17 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
           } catch (e0) {}
         }
       }
-      if (!dataUrl) return { ok: false, error: 'captcha image capture failed' };
+      // 自己这一侧的失败串一律说中文：下面那道「结构性失败」判据认的是厂商的英文说法，
+      // 而旧串 'captcha image capture failed' 里的 image 会把它误判成「模型没有看图能力」，
+      // 于是停手 15 分钟并让用户去做一件完全无关的事（去设置里换看图模型）。
+      if (!dataUrl) return { ok: false, error: '验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）' };
 
       var result = await bridgeSend('llm_captcha', { image: dataUrl });
       if (!result || !result.success) {
-        return { ok: false, error: String((result && result.error) || 'no response').slice(0, 200) };
+        return { ok: false, error: String((result && result.error) || '桥接没回话（扩展可能刚重新加载过，刷新页面即可）').slice(0, 200) };
       }
       var code = this._cleanCaptchaCode(result.data);
-      if (!code) return { ok: false, error: 'empty code after clean', raw: String(result.data || '').slice(0, 60) };
+      if (!code) return { ok: false, error: '模型回的不是一个验证码形状', raw: String(result.data || '').slice(0, 60) };
       return { ok: true, code: code };
     },
 
@@ -3310,16 +3399,41 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
 
     _runStandaloneCaptchaMode: async function () {
       if (this._captchaBusy) return;
+      var budget = this._readStandaloneCaptchaBudget();
+      var nowMs = Date.now();
+      if (budget.pauseUntil > nowMs) {
+        // 停手期间连识别都不发 —— 识别要请求、刷新也要请求，
+        // 而每一次请求都是让站方把这面墙坐实的理由
+        if (!this._standaloneCaptchaPauseLogged) {
+          this._standaloneCaptchaPauseLogged = true;
+          emitRuntimeLog('warn', 'standalone captcha paused, waiting for a human', {
+            resumeInMs: budget.pauseUntil - nowMs,
+            hint: '这一步请你在页面上亲手输入一次验证码。想让它自己过：在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+          });
+        }
+        return;
+      }
+      if (budget.pauseUntil) {
+        this._writeStandaloneCaptchaBudget(0, 0, '');
+        this._standaloneCaptchaPauseLogged = false;
+        budget = { cycles: 0, pauseUntil: 0 };
+        emitRuntimeLog('info', 'standalone captcha resume retry', { hint: '冷却到点，再给一轮机会' });
+      }
       this._captchaBusy = true;
-      emitRuntimeLog('warn', 'standalone captcha page detected, solving', { url: String(location.href || '').slice(0, 120) });
+      emitRuntimeLog('warn', 'standalone captcha page detected, solving', {
+        url: String(location.href || '').slice(0, 120),
+        cycle: budget.cycles + 1
+      });
       try {
         if (this.configs.enableCaptcha === false) {
           emitRuntimeLog('info', 'captcha handling disabled by switch', {});
           return;
         }
+        var noVision = '';
         for (var attempt = 1; attempt <= 4; attempt++) {
           var captcha = this._detectStandaloneCaptcha();
           if (!captcha) {
+            this._writeStandaloneCaptchaBudget(0, 0, '');
             emitRuntimeLog('info', 'standalone captcha elements gone, nothing to solve', {});
             return;
           }
@@ -3327,18 +3441,33 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
           if (rec.ok) {
             this._fillCaptchaInput(captcha, rec.code);
             await sleep(300);
-            this._clickCaptchaSubmit(captcha);
-            emitRuntimeLog('info', 'standalone captcha code submitted', { attempt: attempt, length: rec.code.length });
+            // via 是这里唯一的凭据：没有它，「点了提交」与「压根没按钮可点」在日志里同形
+            var via = String(this._clickCaptchaSubmit(captcha) || 'nothing');
+            emitRuntimeLog('info', 'standalone captcha code submitted', {
+              attempt: attempt, length: rec.code.length, via: via
+            });
           } else {
             emitRuntimeLog('error', 'captcha recognize failed', {
               attempt: attempt,
               error: String(rec.error || '').slice(0, 160)
             });
+            // 「看不懂图」是结构性失败：模型没有视觉输入这条路，
+            // 后面 3 次只是把同样的钱再花 3 遍 —— 当场收手。
+            // ⚠️ 判据只认**厂商侧**的说法。以前里面混着 `image` 和 `empty`，
+            // 而我们自己那一侧的失败串正好叫 'captcha image capture failed'、
+            // 'empty code after clean' —— 于是图没加载完、模型回了一句人话，全被误判成
+            // 「这个模型没有看图能力」：实测真墙因此停手 15 分钟，还让用户去设置里
+            // 换「看图模型」（那是完全无关的一条路）。自己这边的失败串从此说中文。
+            if (/not support|unsupported|multimodal|vision|不支持|空回复|看图/i.test(String(rec.error || ''))) {
+              noVision = String(rec.error || '').slice(0, 120);
+              break;
+            }
           }
 
           await sleep(2600);
           this._standaloneCaptchaAt = 0; // 强制重新判定，不受节流影响
           if (!this._isStandaloneCaptchaPage()) {
+            this._writeStandaloneCaptchaBudget(0, 0, '');
             emitRuntimeLog('info', 'standalone captcha solved', {});
             this._afterStandaloneCaptchaSolved();
             return;
@@ -3346,11 +3475,58 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
           try { captcha.img.click(); } catch (e2) {} // 识别错/过期就换一张
           await sleep(700);
         }
-        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', {});
-        try { window.location.reload(); } catch (e3) {}
+        var cycles = budget.cycles + 1;
+        if (noVision || cycles >= 2) {
+          var pauseMs = noVision ? 15 * 60000 : 10 * 60000;
+          var pauseUntil = Date.now() + pauseMs;
+          this._writeStandaloneCaptchaBudget(cycles, pauseUntil, String(location.href || ''));
+          emitRuntimeLog('error', 'standalone captcha stopped, needs a human', {
+            cycles: cycles,
+            reason: noVision ? 'noVisionModel' : 'twoCyclesUnsolved',
+            error: noVision,
+            resumeInMs: pauseMs,
+            hint: '不再刷新这一页（每刷新一次就是再向站方要一张新验证码，账号会被扣得更紧）。' +
+              '请亲手在页面上输入一次验证码；想让插件自己过，请在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+          });
+          return;
+        }
+        this._writeStandaloneCaptchaBudget(cycles, 0, String(location.href || ''));
+        emitRuntimeLog('warn', 'standalone captcha unsolved after retries, reload page', { cycle: cycles });
+        this._reloadForStandaloneCaptcha();
       } finally {
         this._captchaBusy = false;
       }
+    },
+
+
+    // 刷新单独抽出来，是为了让测试能盯住这个动作本身 —— 它是这一面墙上最贵的一步
+    _reloadForStandaloneCaptcha: function () {
+      try { window.location.reload(); } catch (e) {}
+    },
+
+
+    // 14-A：验证码墙的预算记在 sessionStorage 而不是内存里。
+    // 旧写法每轮末尾无条件 `location.reload()`，页面一刷内存计数全清零 ——
+    // 于是「4 次识别 → 刷新 → 再来 4 次」是**真的无限**（实测在真页面上整夜跑）。
+    // sessionStorage 活得比刷新久、又比标签页短，正好是这里要的粒度。
+    _readStandaloneCaptchaBudget: function () {
+      try {
+        var raw = sessionStorage.getItem('omitone:standalone-captcha-budget');
+        if (!raw) return { cycles: 0, pauseUntil: 0 };
+        var obj = JSON.parse(raw) || {};
+        if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
+        return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
+      } catch (e) {
+        return { cycles: 0, pauseUntil: 0 };
+      }
+    },
+
+
+    _writeStandaloneCaptchaBudget: function (cycles, pauseUntil, href) {
+      try {
+        sessionStorage.setItem('omitone:standalone-captcha-budget',
+          JSON.stringify({ cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' }));
+      } catch (e) {}
     },
 
 
@@ -4622,6 +4798,9 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
               // ⚠️ 这两条以前都是**静默** continue —— 现场日志里一个字都没有，
               // 用户只看到「本页没有可做的任务点」，然后整章被推过去，还反复空转。
               // 与 AGENTS §2.7「跳过用户的任务点必须留日志 + 可恢复」冲突，补上原因。
+              // 只在 `workType === 'job'`（平台说这份卷子**还必做**）时记 13-B 的按住标记：
+              // 已经做完的卷子不该因为没填 key 就把整节按住。
+              if (workType === 'job') this._noteQuizBlockedByApi(this._getQuizApiUnavailableReason());
               noteReject(frame, '是测验任务，但答题链路当前不可用（' + (this._getQuizApiUnavailableReason() || '原因未知') + '）');
               continue;
             }
@@ -8440,7 +8619,9 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
     },
 
     _getQuizApiUnavailableReason: function () {
-      if (!this.configs.enableQuiz) return 'api-disabled';
+      // 这条不是「API 不可用」，是「用户自己把答题关了」—— 两者后面走的路完全不同
+      // （前者要按住等恢复，后者直接翻页），所以理由必须分开命名（批次 13-B）。
+      if (!this.configs.enableQuiz) return 'quiz-toggle-off';
       // ⚠️ 乱选模式**不需要** API key，也不受连接失败影响 —— 答案在本地生成。
       // 少了这一句，乱选会走 _skipQuizForApiUnavailable 把整道题跳过，
       // 变成「什么都不答」而不是「乱选」。
@@ -8500,6 +8681,42 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
       return !!this._getQuizApiUnavailableReason();
     },
 
+    /**
+     * 「这一节压着一张**因为链路不可用而做不了**的卷子」—— 批次 13-B 的核心判据。
+     *
+     * 为什么不能直接拿 `_isQuizApiUnavailable()` 当答案：那条判据里还混着
+     * 「用户自己关掉答题」（`quiz-toggle-off`），那种情况翻页是对的（他就不想做题）；
+     * 而 key 没填 / 网络退避 时翻页 = 把必做题扔掉。以前 `_isQuizLearningPending`
+     * 对两者一视同仁返回 false，上层于是宣布「这一节已完成」并翻节 ——
+     * 这正是用户那句「还没做就判已完成、无语了」。
+     *
+     * 三个条件缺一不可：
+     *   1. 原因是**可恢复**的那两类；
+     *   2. 本轮确实因为该原因拒过测验任务点（`_noteQuizBlockedByApi` 的标记还新）——
+     *      没有这条证据就不许凭空按住整节；
+     *   3. 按住的时间还没超过预算 —— 超了就退回「跳过并大声记日志」，
+     *      否则一个永远不填 key 的用户会把整轮刷课冻在这一节上。
+     */
+    _isQuizBlockedByApi: function () {
+      var reason = this._getQuizApiUnavailableReason();
+      if (!reason || reason === 'quiz-toggle-off') return false;
+      var now = Date.now();
+      if (!this._quizBlockedByApiAt || now - this._quizBlockedByApiAt > 30000) return false;
+      return now - (this._quizBlockedSinceAt || now) < 180000;
+    },
+
+    /** 记下「因为链路不可用而拒掉了一个测验任务点」—— 上面那条判据的唯一证据来源。 */
+    _noteQuizBlockedByApi: function (reason) {
+      if (!reason || reason === 'quiz-toggle-off') return;
+      var now = Date.now();
+      // 上一轮阻塞已经断了（超过 60 秒没再拒过），当成**新的一次**重新起算，
+      // 否则「填过 key 又掉线」会继承第一次的时长、直接跳过而不按住。
+      if (!this._quizBlockedSinceAt || now - (this._quizBlockedByApiAt || 0) > 60000) {
+        this._quizBlockedSinceAt = now;
+      }
+      this._quizBlockedByApiAt = now;
+    },
+
     _resetQuizStateForSkip: function () {
       this._quizInProgress = false;
       this._quizAnswered = false;
@@ -8530,6 +8747,38 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
       var skipReason = reason || this._getQuizApiUnavailableReason() || 'api-unavailable';
+      // ⚠️「答不了」不等于「没题做」（批次 13-B）。被可恢复的原因挡住、且这一轮确实
+      // 因此拒过测验任务点时，这里**不许翻页**：翻过去就等于把必做题宣布成已完成。
+      // 返回 false 让调用方回落到它自己的 hold 分支；超过按住预算后自动放行，
+      // 所以一个永远不填 key 的用户也不会被冻在这一节。
+      if (this._isQuizBlockedByApi()) {
+        var heldMs = Date.now() - (this._quizBlockedSinceAt || Date.now());
+        if (!this._quizBlockedHoldLogAt || Date.now() - this._quizBlockedHoldLogAt > 10000) {
+          this._quizBlockedHoldLogAt = Date.now();
+          emitRuntimeLog('warn', 'quiz blocked by api, holding unit', {
+            reason: skipReason,
+            heldMs: heldMs,
+            hint: '这一节压着没做的题，但答题链路现在用不了 —— 已**停在本节不翻页**（不是已完成）。' +
+              '填好 API Key 或等网络恢复就会自动继续；按住超过 3 分钟才会跳过这一节'
+          });
+        }
+        return false;
+      }
+      // 按住预算用完（3 分钟）仍未恢复 → 放行跳过，但要把「这些题并没做过」说清楚。
+      // ⚠️ 这里**不改** `_quizBlockedSinceAt`：清零会让 `_isQuizBlockedByApi()` 下一秒
+      // 又算成新的一次阻塞、重新按住，于是永远翻不了页（自锁）。它由
+      // `_resetRuntimeState()`（换节）与 `_noteQuizBlockedByApi()`（间隔 60 秒以上
+      // 视为新事故）负责起算，所以每一节都拿到自己那份预算。
+      var blockedSince = this._quizBlockedSinceAt || 0;
+      if (blockedSince && skipReason !== 'quiz-toggle-off' && Date.now() - blockedSince >= 180000 &&
+          (!this._quizBlockedGiveUpLogAt || Date.now() - this._quizBlockedGiveUpLogAt > 10000)) {
+        this._quizBlockedGiveUpLogAt = Date.now();
+        emitRuntimeLog('warn', 'quiz blocked too long, giving up unit', {
+          reason: skipReason,
+          heldMs: Date.now() - blockedSince,
+          hint: '按住整节超过 3 分钟仍未恢复，改判跳过 —— 这些题**没做过**，配好链路后请开重学把这节补回来'
+        });
+      }
       this._setQuizForceSkip(15000);
       this._resetQuizStateForSkip();
       var now = Date.now();
@@ -8720,6 +8969,14 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
         // 判分结果页优先于 frame 标记判断：作业/考试结果页两套标记都没有，
         // 只有 .Py_answer 那一族（见 _isQuizResultPageFinished 的说明）。
         if (doc && this._isQuizResultPageFinished(doc)) return true;
+        // ⚠️「这份文档的卷子已完成」只能对**真是一张卷子的文档**说（批次 13-A）。
+        // 现场：`_resolveQuizSubmitDocument(null)` 落在知识卡片那份文档上，
+        // 而卡片页每条任务点后面都写着「已完成」—— `_isDocumentFrameFinished` 当场为真，
+        // 于是「还没做的题」被读成「这一节已完成」，直接翻下一节
+        //（用户的原话：「这到底是在用什么东西看？怎么说已完成了？」）。
+        // 「看不见题」不等于「题做完了」：卷子帧跨域、还没加载、或压根没找着时，
+        // 宁可返回 false 让上层走 hold/告警，也不许在这里替平台宣布完成。
+        if (doc && !this._docHasQuizPaperShape(doc)) return false;
         if (doc && this._isDocumentFrameFinished(doc)) return true;
         var text = doc && doc.body ? textOf(doc.body) : '';
         if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|通过标准|恭喜/.test(text)) return true;
@@ -8911,7 +9168,8 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
       // 这里不比卷子键，理由见 `_isQuizSkipWindowLive`（这一处无参调
       // `_isQuizForceSkipping()` 是 HIGH-1 倒过来的那个形态）。
       if (this._isQuizSkipWindowLive()) return false;
-      if (this._isQuizApiUnavailable()) return false;
+      // 被可恢复的原因挡住时**要**按住（批次 13-B）；用户自己关掉答题则照旧不 hold。
+      if (this._isQuizApiUnavailable() && !this._isQuizBlockedByApi()) return false;
       if (this._monitorQuizSubmit()) return true;
       var doc = this._resolveQuizSubmitDocument(null) || this._getMainDocument();
       if (!doc) return false;
@@ -9021,7 +9279,11 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
 
     _isQuizLearningPending: function (preferredDoc) {
       if (this._isQuizForceSkipping(preferredDoc || null)) return false;
-      if (this._isQuizApiUnavailable()) return false;
+      // ⚠️ 批次 13-B：以前这里无条件 `return false`，把「答题链路现在用不了」
+      // 当成「这一页没有题要做」—— 上层随即宣布本节完成并翻节，
+      // 用户看到的是「题一道没做就说已完成了」。
+      // 现在可恢复的阻塞（key 没填 / 网络退避）继续算 pending，让调度器按住这一节。
+      if (this._isQuizApiUnavailable()) return this._isQuizBlockedByApi();
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
 
@@ -12329,6 +12591,51 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
     },
 
 
+    /**
+     * 「这份文档本身像不像一张卷子」的最便宜探针：一个并集选择器，不做容器去重。
+     *
+     * 只用来决定「要不要继续往下找文档」，所以必须便宜 —— `_collectQuestionContainers`
+     * 要把整串选择器逐个试到底并去重，放在帧循环里会拖慢每一次 tick。
+     */
+    _docHasQuizPaperShape: function (doc) {
+      if (!doc || !doc.querySelector) return false;
+      try {
+        return !!doc.querySelector(this._quizContainerSelector + ', input[id^="answertype"]');
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
+     * 往下找「真正装着题目那份文档」：广度优先、深度有界（≤3 层帧、每层最多 12 帧）。
+     *
+     * 只在外层文档一道题都收不着时才被调用，所以它改的是「文档挑错了」这一类，
+     * 本来就传对文档的十几条读路径一步都不走这条路。
+     * 跨域帧一律走 `_safeDocOf` —— 裸读 `.document` 抛的 SecurityError
+     * 会静默打断整轮 tick（AGENTS §2 #1）。
+     */
+    _findQuizPaperDocumentBelow: function (rootDoc, depth) {
+      if (!rootDoc || (depth || 0) >= 3) return null;
+      var frames = [];
+      try { frames = Array.prototype.slice.call(rootDoc.querySelectorAll('iframe'), 0, 12); } catch (e) { return null; }
+      // 学习通把卷子放在 `#frame_content` 里，DOM 顺序却常排在其它任务点帧之后 —— 先看它
+      frames.sort(function (a, b) { return (b.id === 'frame_content' ? 1 : 0) - (a.id === 'frame_content' ? 1 : 0); });
+      var subDocs = [];
+      for (var i = 0; i < frames.length; i++) {
+        var direct = this._safeDocOf(frames[i]);
+        if (!direct) continue;
+        if (this._docHasQuizPaperShape(direct)) return direct;
+        subDocs.push(direct);
+      }
+      for (var s = 0; s < subDocs.length; s++) {
+        var deeper = this._findQuizPaperDocumentBelow(subDocs[s], (depth || 0) + 1);
+        if (deeper) return deeper;
+      }
+      return null;
+    },
+
+
     _resolveQuizAnswerDocument: function (preferredDoc) {
       // 最后一个兜底 `|| document` 不能省：题目可能就在顶层文档里（页面没有 #iframe，
       // 或者题目被 _walkDocuments 在更深的 iframe 中找到）。
@@ -12337,14 +12644,15 @@ var OMITONE_CODE_REV = 'd3deb0c9a4';
       // 提交被永久阻塞 —— 表现为答题跑完但从不交卷。
       var doc = preferredDoc || this._getMainDocument() || document;
       if (!doc) return null;
-      try {
-        var innerFrame = doc.getElementById && doc.getElementById('frame_content');
-        if (innerFrame) {
-          var innerDoc = innerFrame.contentDocument || (innerFrame.contentWindow && innerFrame.contentWindow.document);
-          if (innerDoc) return innerDoc;
-        }
-      } catch (e) {}
-      return doc;
+      // ⚠️ 一层 `#frame_content` 跳转改成了有界深走。真实拓扑比想象深（2026-11-11 实测）：
+      //   top(/mycourse/studentstudy) → #iframe(/knowledge/cards)
+      //     → iframe.ans-attach-(work 模块) → #frame_content(/work/doHomeWorkNew)  ← 卷子在这里
+      // 旧实现只在卡片文档里找一个 id=`frame_content` 的节点，卡片文档没有这个 id，
+      // 于是原样返回卡片文档：这份文档上抠题抠出 0 道，而 `_isDocumentFrameFinished`
+      // 却当场为真（每张任务点后面都写着「已完成」）——「题还没做」被读成
+      // 「这一节已完成」，直接翻下一节（用户：「怎么说已完成了？」）。
+      if (this._docHasQuizPaperShape(doc)) return doc;
+      return this._findQuizPaperDocumentBelow(doc, 0) || doc;
     },
 
 

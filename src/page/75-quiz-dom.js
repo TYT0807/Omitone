@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（50 个）：
+ * 本段的方法（52 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -19,7 +19,7 @@
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
  *   _expandMultiChoiceLetters、_normalizeChoiceAnswerValues、_applyChoiceAnswer、
  *   _fillChoice、_clearMultiChoiceSelection、_fillMultiChoice、_fillText、
- *   _fillTextarea、_resolveQuizAnswerDocument、_readRichEditorValue、
+ *   _fillTextarea、_resolveQuizAnswerDocument、_docHasQuizPaperShape、_findQuizPaperDocumentBelow、_readRichEditorValue、
  *   _isAnswerTextControl、_answerToHtml、_writeAnswerText、_collectAnswerEditableNodes、
  *   _readVisibleAnswerText、_logMissingAnswerBox、_hasVisibleChoiceSelection、
  *   _logMissingChoiceSelection、
@@ -1234,6 +1234,51 @@
     },
 
 
+    /**
+     * 「这份文档本身像不像一张卷子」的最便宜探针：一个并集选择器，不做容器去重。
+     *
+     * 只用来决定「要不要继续往下找文档」，所以必须便宜 —— `_collectQuestionContainers`
+     * 要把整串选择器逐个试到底并去重，放在帧循环里会拖慢每一次 tick。
+     */
+    _docHasQuizPaperShape: function (doc) {
+      if (!doc || !doc.querySelector) return false;
+      try {
+        return !!doc.querySelector(this._quizContainerSelector + ', input[id^="answertype"]');
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
+     * 往下找「真正装着题目那份文档」：广度优先、深度有界（≤3 层帧、每层最多 12 帧）。
+     *
+     * 只在外层文档一道题都收不着时才被调用，所以它改的是「文档挑错了」这一类，
+     * 本来就传对文档的十几条读路径一步都不走这条路。
+     * 跨域帧一律走 `_safeDocOf` —— 裸读 `.document` 抛的 SecurityError
+     * 会静默打断整轮 tick（AGENTS §2 #1）。
+     */
+    _findQuizPaperDocumentBelow: function (rootDoc, depth) {
+      if (!rootDoc || (depth || 0) >= 3) return null;
+      var frames = [];
+      try { frames = Array.prototype.slice.call(rootDoc.querySelectorAll('iframe'), 0, 12); } catch (e) { return null; }
+      // 学习通把卷子放在 `#frame_content` 里，DOM 顺序却常排在其它任务点帧之后 —— 先看它
+      frames.sort(function (a, b) { return (b.id === 'frame_content' ? 1 : 0) - (a.id === 'frame_content' ? 1 : 0); });
+      var subDocs = [];
+      for (var i = 0; i < frames.length; i++) {
+        var direct = this._safeDocOf(frames[i]);
+        if (!direct) continue;
+        if (this._docHasQuizPaperShape(direct)) return direct;
+        subDocs.push(direct);
+      }
+      for (var s = 0; s < subDocs.length; s++) {
+        var deeper = this._findQuizPaperDocumentBelow(subDocs[s], (depth || 0) + 1);
+        if (deeper) return deeper;
+      }
+      return null;
+    },
+
+
     _resolveQuizAnswerDocument: function (preferredDoc) {
       // 最后一个兜底 `|| document` 不能省：题目可能就在顶层文档里（页面没有 #iframe，
       // 或者题目被 _walkDocuments 在更深的 iframe 中找到）。
@@ -1242,14 +1287,15 @@
       // 提交被永久阻塞 —— 表现为答题跑完但从不交卷。
       var doc = preferredDoc || this._getMainDocument() || document;
       if (!doc) return null;
-      try {
-        var innerFrame = doc.getElementById && doc.getElementById('frame_content');
-        if (innerFrame) {
-          var innerDoc = innerFrame.contentDocument || (innerFrame.contentWindow && innerFrame.contentWindow.document);
-          if (innerDoc) return innerDoc;
-        }
-      } catch (e) {}
-      return doc;
+      // ⚠️ 一层 `#frame_content` 跳转改成了有界深走。真实拓扑比想象深（2026-11-11 实测）：
+      //   top(/mycourse/studentstudy) → #iframe(/knowledge/cards)
+      //     → iframe.ans-attach-(work 模块) → #frame_content(/work/doHomeWorkNew)  ← 卷子在这里
+      // 旧实现只在卡片文档里找一个 id=`frame_content` 的节点，卡片文档没有这个 id，
+      // 于是原样返回卡片文档：这份文档上抠题抠出 0 道，而 `_isDocumentFrameFinished`
+      // 却当场为真（每张任务点后面都写着「已完成」）——「题还没做」被读成
+      // 「这一节已完成」，直接翻下一节（用户：「怎么说已完成了？」）。
+      if (this._docHasQuizPaperShape(doc)) return doc;
+      return this._findQuizPaperDocumentBelow(doc, 0) || doc;
     },
 
 

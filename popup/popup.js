@@ -970,6 +970,14 @@ async function checkUpdate(opts) {
     els.checkUpdate.disabled = true;
   }
 
+  // 限流要在这里落地：上面那道闸读的就是这个时间戳，而**以前从来没人写过它** ——
+  // `markUpdateSeen` 全仓库只有定义、没有调用点，于是「手动 6 小时 / 自动 24 小时」
+  // 一直是空的：每次开弹窗都真实打一次 api.github.com，用的是作者的匿名额度
+  // （查得勤 = 大家都查不到）。
+  // 写在**发请求之前**而不是成功之后：查失败同样把额度用掉了，
+  // 而且「失败了就再点几下」正是最常见的那种刷法。
+  markUpdateSeen(kind);
+
   try {
     const res = await fetch(UPDATE_API, {
       cache: "no-store",
