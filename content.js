@@ -40,6 +40,29 @@
     return scopeIsCurrent() ? pageScope : 'none';
   }
 
+  // ⚠️ 有界重试，别只问一次。
+  // 为什么必须有（2026-11-11 真页面实测）：学习通切章节走的是 `pushState`（同一个 JS 上下文，
+  // 不换文档），那一刻 SW 侧 `tabs.onUpdated` 会把标签页纪元跳一格（`revokeTab`），
+  // 正好落进 `pageScope()` 那次异步 `chrome.tabs.get` 的窗口里 → 回 `'none'`。
+  // 旧代码问一次拿到 'none' 就放弃，于是**整页与扩展永久失联**：
+  // `_xxtApp` 还在每秒 tick，桥却全部 `scope_denied`，日志一条不进，
+  // 用户看到的只有一句话 ——「卡住了 / 又不答题了」，而唯一的解法是手动 F5。
+  // 按 0/500/1500/3500ms 问四次；问不到才认输。
+  async function refreshPageScopeWithRetry() {
+    const waits = [0, 500, 1500, 3500];
+    const askedUrl = location.href;
+    for (let i = 0; i < waits.length; i++) {
+      if (waits[i]) await new Promise((r) => setTimeout(r, waits[i]));
+      // 期间又换页了：这一轮作废，交给新网址自己的那次调用
+      if (location.href !== askedUrl) return 'none';
+      const scope = await refreshPageScope();
+      if (scope !== 'none') return scope;
+      // 非学习通网址（也没拿到验证码授权）的 'none' 是**确定答案**，不是竞态，不用重问
+      if (!(POLICY && POLICY.isChaoxingUrl(location.href))) return 'none';
+    }
+    return 'none';
+  }
+
   function publicConfig(config) {
     const scope = scopeIsCurrent() ? pageScope : 'none';
     return POLICY ? { ...POLICY.publicConfig(config, scope), pageScope: scope } : {};
@@ -145,7 +168,12 @@
   let runtimeLogWarningAt = 0;
 
   function appendRuntimeLog(level, message, meta) {
-    if (!scopeIsCurrent()) return;
+    // 本地权限过期时**学习通页面**的日志照样发出去 —— 真正的裁决在 SW（`runtimeLogs.authorize`
+    // 每次都重新核对标签页网址），本地这道闸只是省一次 IPC，可它顺带把唯一的自证据
+    // （`content bridge ready` 那条 build 标记）也一起咽了：桥失联的时候，
+    // 排查的人看到的正是「一条日志都没有」，而这条本该是最先看见的。
+    // 非学习通网址（靠验证码临时授权）仍走原路，别把那张墙的日志放宽。
+    if (!scopeIsCurrent() && !(POLICY && POLICY.isChaoxingUrl(location.href))) return;
     const item = {
       time: Date.now(),
       level: level || 'info',
@@ -2539,7 +2567,11 @@
   }
 
   async function start() {
-    const scope = await refreshPageScope();
+    // ⚠️ 这里必须是带重试的那一问（原因见 `refreshPageScopeWithRetry` 头上）。
+    // 页面**刚加载**那一刻也是竞态窗口：SW 可能才醒、标签页纪元还没落定，
+    // 旧代码问一次拿到 'none' 就 `return`，之后没有任何人会再问 ——
+    // 表现和"扩展没装"一模一样，而重载扩展 + F5 才好，正是这个原因。
+    const scope = await refreshPageScopeWithRetry();
     if (scope === 'none') return;
     await loadConfig();
     if (!scopeIsCurrent(scope)) return;
@@ -2566,7 +2598,8 @@
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message && message.type === 'xxt_start') {
-      refreshPageScope().then((scope) => {
+      // 手动启动走有界重试：弹窗侧的超时是 10 秒，四次问完最多 5.5 秒，仍在之内。
+      refreshPageScopeWithRetry().then((scope) => {
         if (scope === 'none') {
           sendResponse({ success: false, error: 'scope_denied', scope: 'none' });
           return;
@@ -2590,18 +2623,98 @@
   });
 
   let lastPageUrl = location.href;
+  let urlRetryTimer = null;
+  let urlRetryRound = 0;
+  const URL_RETRY_MAX_ROUNDS = 3;
+  const URL_RETRY_STEP_MS = 5000;
 
-  function onPageChanged() {
-    if (location.href === lastPageUrl) return;
-    lastPageUrl = location.href;
+  /**
+   * 只清**扩展侧**的旧状态，不动 `page.js` 的 script 标签。
+   * 标签由下一次 `injectPageScript` 自己换走；在这里提前摘掉等于把还在跑的那份判死
+   * （page.js 靠"自己的标签还在不在"自认作废 —— 批次 18 的病根就是这个）。
+   */
+  function resetBridgeState() {
     pageScope = 'none';
     scopeUrl = '';
     configs = {};
     if (decryptSweepTimer) clearTimeout(decryptSweepTimer);
     decryptSweepTimer = null;
     decryptSweepPendingSince = 0;
+  }
+
+  /** 彻底下线：扩展侧清空 **并且** 摘掉标签（只有确定这一页不该再跑学习时才用） */
+  function dropPageRuntime() {
+    resetBridgeState();
     removeInjectedScript();
-    startSafely();
+  }
+
+  /**
+   * ⚠️ 顺序是「先问权威，再拆台」，旧代码正好反了。
+   *
+   * 为什么必须反过来（2026-11-11 真页面实测）：学习通切章节走 `pushState`，同一个文档、
+   * 不换 JS 上下文。旧 `onPageChanged` 一进来就抹掉 `pageScope` + `removeInjectedScript()`，
+   * 然后**只问一次**权限；那一次恰好撞上 SW 侧 `tabs.onUpdated` → `revokeTab` 的纪元跳格，
+   * 回 `'none'` → `start()` 直接 return。于是台拆了、重建又失败：
+   * 页面里那份 page.js 被自己的缺失标签判死，桥从此每条消息 `scope_denied`（1~2ms 拒绝，
+   * 一条日志都进不了存储），用户看到的只有「又不答题了」「卡住了」，唯一解法是手动 F5。
+   *
+   * 现在：问到才拆旧的重建新的；问不到而这一页**是学习通**，就保持现状继续跑、
+   * 亮一句"正在重连扩展"，并有界重试几轮；问不到且不是学习通才真下线。
+   */
+  async function restartForCurrentUrl(reason) {
+    const askedUrl = location.href;
+    const scope = await refreshPageScopeWithRetry();
+    // 问的过程中又换页了：这一轮作废，最新那次 `onPageChanged` 会自己接管
+    if (location.href !== askedUrl) return;
+    if (scope !== 'none') {
+      urlRetryRound = 0;
+      if (urlRetryTimer) {
+        clearTimeout(urlRetryTimer);
+        urlRetryTimer = null;
+      }
+      resetBridgeState();
+      startSafely();
+      return;
+    }
+    if (POLICY && POLICY.isChaoxingUrl(location.href)) {
+      appendRuntimeLog('warn', 'scope not granted after page change', {
+        reason: reason || '',
+        round: urlRetryRound + 1,
+        href: String(location.href || '').slice(0, 90)
+      });
+      if (urlRetryRound < URL_RETRY_MAX_ROUNDS) {
+        urlRetryRound++;
+        showStatusPanel('wait', '正在重连扩展', '切换章节后没问到权限，稍后自动重试；一直不动请按 F5');
+        if (urlRetryTimer) clearTimeout(urlRetryTimer);
+        urlRetryTimer = setTimeout(() => {
+          urlRetryTimer = null;
+          restartForCurrentUrl((reason || 'page-change') + '-retry').catch(() => {});
+        }, URL_RETRY_STEP_MS);
+        return;
+      }
+      // 四整轮都没问到：别再挂着一个已经不可信的运行时，但**先把话说明白**再下线，
+      // 否则日志里就只剩"什么都没有"，下一次排查还是只能靠猜。
+      appendRuntimeLog('error', 'scope lost, bridge stopped', {
+        reason: reason || '',
+        rounds: URL_RETRY_MAX_ROUNDS,
+        href: String(location.href || '').slice(0, 90)
+      });
+      showStatusPanel('error', '扩展通道断开', '多次询问权限都没通过，请按 F5 刷新学习通页面');
+    }
+    dropPageRuntime();
+  }
+
+  function onPageChanged() {
+    if (location.href === lastPageUrl) return;
+    lastPageUrl = location.href;
+    if (urlRetryTimer) {
+      clearTimeout(urlRetryTimer);
+      urlRetryTimer = null;
+    }
+    urlRetryRound = 0;
+    restartForCurrentUrl('page-change').catch((error) => {
+      appendRuntimeLog('error', 'page change restart failed', { error: String(error && error.message || error) });
+    });
   }
 
   const rawPushState = history.pushState;
@@ -2636,6 +2749,6 @@
     // 页面跑的还是旧 content.js，两边都以为生效了，用户看到的是「还是卡住的」。
     // page.js 有 `code` 内容指纹兜底，而 content.js 不在 concat 的范围里、没有指纹，
     // 所以这一栏是 content.js 侧唯一的自证 —— 加改动就加标记，别让它空着。
-    marks: ['refill-per-question']
+    marks: ['refill-per-question', 'scope-retry']
   });
 })();

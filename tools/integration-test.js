@@ -154,18 +154,52 @@ function createHarness(options) {
     removeAttribute: function (k) { if (documentElement._attrs) delete documentElement._attrs[k]; }
   };
   var body = { innerText: '', appendChild: function () {} };
+  // ⚠️ 页面运行时那枚 `<script>` 必须**查得到、也摘得掉**（批次 18）。
+  // 原先 `getElementById` 恒返回 null、`remove()` 是空操作，于是
+  // `removeInjectedScript()` 在夹具里根本改不了任何东西 —— 「teardown 有没有把还在跑的
+  // 运行时判死」这类断言压根观察不到，断言只能在夹具的盲点上"通过"。
+  // 只登记 PAGE_SCRIPT_ID 一个 id：状态面板、宠物那些保持原样，免得把别的用例带下水。
+  var pageScriptTag = null;
+  var PAGE_SCRIPT_ID = 'xxt-page-script';
   sandbox.document = {
     readyState: 'loading',               // Test controls startup via startContent().
+    isConnected: true,
     documentElement: documentElement,
-    head: { appendChild: function (node) { sandbox.__injected.push(node); } },
+    head: { appendChild: function (node) {
+      sandbox.__injected.push(node);
+      if (node && node.id === PAGE_SCRIPT_ID) { node.isConnected = true; pageScriptTag = node; }
+    } },
     body: body,
     _listeners: {},
     addEventListener: function (type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
     removeEventListener: function () {},
     querySelector: function () { return null; },
     querySelectorAll: function () { return []; },
-    getElementById: function () { return null; },
-    createElement: function () { return { style: {}, setAttribute: function () {}, remove: function () {}, addEventListener: function () {} }; },
+    getElementById: function (id) {
+      if (id === PAGE_SCRIPT_ID) return pageScriptTag && pageScriptTag.isConnected ? pageScriptTag : null;
+      return null;
+    },
+    createElement: function () {
+      var el = { style: {}, setAttribute: function () {}, addEventListener: function () {}, _id: '', isConnected: true };
+      Object.defineProperty(el, 'id', {
+        get: function () { return el._id; },
+        set: function (v) { el._id = String(v); }
+      });
+      el.remove = function () {
+        el.isConnected = false;
+        if (el._id === PAGE_SCRIPT_ID && pageScriptTag === el) pageScriptTag = null;
+      };
+      // 状态面板要 attachShadow 才建得起来；没这道桩，`showStatusPanel()` 会在测试里
+      // 抛 TypeError，把"重连提示"这条真正要验的路径炸成一条 reject 日志。
+      el.attachShadow = function () {
+        var shadow = { innerHTML: '' };
+        shadow.querySelector = function () {
+          return { setAttribute: function () {}, addEventListener: function () {}, textContent: '', isConnected: true, remove: function () {} };
+        };
+        return shadow;
+      };
+      return el;
+    },
     createTreeWalker: function () { return { nextNode: function () { return null; } }; }
   };
 
@@ -198,6 +232,16 @@ function createHarness(options) {
   var apiResponder = options.apiResponder || null;
   var sentRequests = [];
   sandbox.__sentRequests = sentRequests;
+  // 批次 18 的两道权限桩（都只作用于发往 SW 的 scope 判定）：
+  // - `denyWindow`：**一段时间内**所有 `get_page_scope` 回 'none'，过点自动恢复 ——
+  //   真实的纪元跳格拒的就是"那一小段时间"，不是"第 N 条消息"。
+  //   ⚠️ 原先写成"前 N 次"，而 content.js 里还有三条后台判据（配置回执 / 解密扫描 /
+  //   状态面板）也在问 `get_page_scope`：它们会先把那 N 次吃掉，于是注入"只问一次"时
+  //   重试链根本没被拒，断言照样绿 —— 反向验证 X2 第一次就是这么漏的。
+  // - `forceScopeNone`：这一页**一直**被判无权限（纪元没恢复 / SW 没醒），
+  //   连日志一起拒 —— 用来钉「本地闸不许把唯一的自证据吞掉」。
+  var denyWindow = null;
+  var forceScopeNone = false;
 
   function storageGet(keys, cb) {
     sandbox.__storageReads.push(keys);
@@ -223,8 +267,14 @@ function createHarness(options) {
         sandbox.__runtimeMessages.push(message);
         var policy = sandbox.OmitonePolicy;
         var scope = policy && policy.isChaoxingUrl(sandbox.location.href) ? 'study' : (options.captchaAuthorized ? 'captcha' : 'none');
+        if (forceScopeNone) scope = 'none';
         function respond(value) { if (cb) setTimeout(function () { cb(value); }, 0); }
-        if (message.type === 'get_page_scope') return respond({ success: true, scope: scope, expiresAt: options.expiresAt });
+        if (message.type === 'get_page_scope') {
+          if (scope !== 'none' && denyWindow && Date.now() >= denyWindow.from && Date.now() < denyWindow.to) {
+            return respond({ success: true, scope: 'none', expiresAt: options.expiresAt });
+          }
+          return respond({ success: true, scope: scope, expiresAt: options.expiresAt });
+        }
         if (message.type === 'runtime_log_append') {
           if (scope === 'none') return respond({ success: false, error: 'scope_denied' });
           // 本层只模拟日志回执；真正 Worker 并发/超时行为由 omitone-regression.cjs 验证。
@@ -353,7 +403,23 @@ function createHarness(options) {
         })();
       });
     },
-    runtimeListener: function () { return runtimeListener; }
+    runtimeListener: function () { return runtimeListener; },
+    // 批次 18 用这三道控制模拟「SW 侧权限抖动 + 页面换章节」。`navigateTo` 走的是
+    // content.js 自己包装过的 `history.pushState`（真正的学习通切章节就是这条路），
+    // 所以它带 500ms 的 `onPageChanged` 延迟 —— 断言等待时间要按这个算。
+    navigateTo: function (url) {
+      sandbox.location.href = url;
+      sandbox.history.pushState({}, '', url);
+    },
+    denyScopeWindow: function (startMs, endMs) {
+      var now = Date.now();
+      denyWindow = { from: now + startMs, to: now + endMs };
+    },
+    forceScopeNone: function (on) { forceScopeNone = !!on; },
+    /** 页面运行时那枚 `<script>` 此刻还挂在文档上吗（被摘 = 那份 page.js 已判死） */
+    pageScriptAlive: function () {
+      return !!(pageScriptTag && pageScriptTag.isConnected);
+    }
   };
 }
 
@@ -2185,6 +2251,177 @@ async function testQuizPaperDepthAndApiBlock() {
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * 批次 18：章节切换后扩展通道不再空窗。
+ *
+ * 现场（2026-11-11 用户自己的调试浏览器实测）：学习通切章节走 `pushState`，同一个文档、
+ * 不换 JS 上下文。旧 `onPageChanged` **先拆台再问一次权限**，而那一次恰好撞上 SW 侧
+ * `tabs.onUpdated` → `revokeTab` 的纪元跳格 → 回 'none' → `start()` return。
+ * 台已拆、重建失败，于是页面里那份 page.js 被自己缺失的标签判死，桥从此每条消息
+ * `scope_denied`，而本地那道日志闸把唯一的自证据（`content bridge ready`）也一起吞了 ——
+ * 用户看到的只有「又不答题了」「卡住了」，日志里一条都不动，唯一解法是手动 F5。
+ */
+async function testScopeReconnectAfterPageChange() {
+  console.log('\n[17] 章节切换不再把通道弄死（先问权威再拆台 / 有界重试 / 日志不被本地闸吞）');
+
+  var src = fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8').replace(/\r\n/g, '\n');
+  function bodyOf(anchor) {
+    var at = src.indexOf(anchor);
+    if (at < 0) return '';
+    var end = src.indexOf('\n  }', at);
+    return end < 0 ? '' : src.slice(at, end);
+  }
+
+  var CH1 = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=701';
+  var CH2 = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=702';
+  var CH3 = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=703';
+
+  // ---- ① 一次竞态就必须自己爬起来（真实形状：pushState 那一刻 SW 纪元跳格）
+  var h = createHarness({ url: CH1 });
+  h.startContent();
+  await waitFor(function () { return h.sandbox.__injected.length > 0; }, 3000);
+  check('①起点：学习通页面注入了一份 page.js，标签挂在文档上',
+    h.sandbox.__injected.length === 1 && h.pageScriptAlive() === true);
+
+  // 竞态窗口设在 pushState 之后 200~900ms：那正是 `onPageChanged`（500ms 延迟）
+  // 第一问落下的地方，而后台判据在窗口之前问的都不受影响。
+  // ⚠️ 这里不能用"前 N 次被拒"：content.js 里还有三条后台判据也在问 `get_page_scope`，
+  //   它们会先把那 N 次吃掉 —— 反向验证 X2 第一次就是这么漏掉的。
+  h.denyScopeWindow(200, 900);
+  h.navigateTo(CH2);
+  // ⚠️ 窗口只有 3 秒，故意比"兜底那一轮"（5 秒）短。
+  // 反向验证 X2 就是从这里抓出来的：把重试链换成"只问一次"之后，5 秒兜底轮照样能救回来
+  // （只是慢 5 秒），断言于是继续绿 —— 它测的是"最后会不会好"，不是"靠什么好的"。
+  // 只问一次的真代价是**每次换章都白挂 5 秒**（视频/答题全停在那一格），
+  // 所以这条必须卡在 3 秒之内认。
+  await waitFor(function () { return h.sandbox.__injected.length > 1; }, 3000);
+  var asks = h.sandbox.__runtimeMessages.filter(function (m) { return m.type === 'get_page_scope'; }).length;
+  check('①换章节后第一问被拒**没有就此放弃**：不到 3 秒就重问并重建（不是等 5 秒那一轮兜底）',
+    h.sandbox.__injected.length === 2 && h.pageScriptAlive() === true && asks >= 3,
+    JSON.stringify({ injected: h.sandbox.__injected.length, scopeAsks: asks }));
+
+  // ---- ② 一直问不到：不许拆掉正在跑的运行时，而且必须说话
+  var g = createHarness({ url: CH1 });
+  g.startContent();
+  await waitFor(function () { return g.sandbox.__injected.length > 0; }, 3000);
+  g.forceScopeNone(true);
+  g.navigateTo(CH2);
+  await new Promise(function (r) { setTimeout(r, 1200); });
+  check('②权限还没问到手时**绝不先摘标签**（摘了 = 把还在跑的 page.js 判死，用户只剩 F5）',
+    g.pageScriptAlive() === true && g.sandbox.__injected.length === 1,
+    JSON.stringify({ alive: g.pageScriptAlive(), injected: g.sandbox.__injected.length }));
+
+  // 四问全空（0/500/1500/3500ms）+ pushState 自己的 500ms 包装延迟
+  await waitFor(function () {
+    return g.sandbox.__runtimeMessages.some(function (m) {
+      return m.type === 'runtime_log_append' && m.payload && m.payload.message === 'scope not granted after page change';
+    });
+  }, 9000);
+  var heldAsks = g.sandbox.__runtimeMessages.filter(function (m) { return m.type === 'get_page_scope'; }).length;
+  var heldLogSent = g.sandbox.__runtimeMessages.filter(function (m) {
+    return m.type === 'runtime_log_append' && m.payload && m.payload.message === 'scope not granted after page change';
+  }).length;
+  check('②问满一轮仍无权限时**保持现状 + 说出为什么**：这条 warn 必须发到 SW（本地闸不再吞）',
+    heldLogSent >= 1 && g.pageScriptAlive() === true,
+    JSON.stringify({ warnSent: heldLogSent, alive: g.pageScriptAlive(), scopeAsks: heldAsks }));
+  check('②但发出去 ≠ 存进去：**权威还是 SW**，被拒的页面日志进不了存储',
+    (g.sandbox.__store.runtimeLogs || []).every(function (l) {
+      return String(l.message || '') !== 'scope not granted after page change';
+    }),
+    '存储里 ' + JSON.stringify((g.sandbox.__store.runtimeLogs || []).map(function (l) { return l.message; })));
+  // ⚠️ 这里**没有**"一轮问了几次"那种行为断言。量过之后发现问数根本测不出重试链：
+  //   content.js 里还有三条后台判据（配置回执、解密扫描、状态面板）也在问 `get_page_scope`，
+  //   6 秒里它们自己就贡献了 2~3 次，于是"只问一次"那种退化照样过 ——
+  //   反向验证 X2 就是这么暴露的（红 1 条，且红的是不相干那条）。
+  //   问数的上界交给下面 ⑤ 那张等待表（静态、可判真假），"重问了没有"交给上面 ① 的 2.5 秒窗口。
+
+  // ---- ③ 权威回来后必须自己接上，不用人刷新
+  g.forceScopeNone(false);
+  g.navigateTo(CH3);
+  await waitFor(function () { return g.sandbox.__injected.length > 1; }, 6000);
+  check('③SW 重新放行后自动重连成功：重建了运行时尚且标签一直在',
+    g.sandbox.__injected.length === 2 && g.pageScriptAlive() === true,
+    JSON.stringify({ injected: g.sandbox.__injected.length, alive: g.pageScriptAlive() }));
+
+  // ---- ④ 日志闸放宽只针对学习通，非学习通页面一条都不许多发
+  var k = createHarness({ url: CH1 });
+  k.forceScopeNone(true);
+  k.startContent();
+  await new Promise(function (r) { setTimeout(r, 80); });
+  var readyOnChaoxing = k.sandbox.__runtimeMessages.filter(function (m) {
+    return m.type === 'runtime_log_append' && m.payload && m.payload.message === 'content bridge ready';
+  });
+  check('④被拒的学习通页面照样把「content bridge ready」发出去（旧本地闸把它吞了 = 排查时一条日志都没有）',
+    readyOnChaoxing.length === 1,
+    JSON.stringify(k.sandbox.__runtimeMessages.map(function (m) { return m.type; })));
+  check('④这条自证据带着 content.js 侧的修复标记（缺标记 = 磁盘改了页面没加载，批次 17 的坑）',
+    !!(readyOnChaoxing[0] && readyOnChaoxing[0].payload.meta &&
+      Array.isArray(readyOnChaoxing[0].payload.meta.marks) &&
+      readyOnChaoxing[0].payload.meta.marks.indexOf('scope-retry') >= 0),
+    JSON.stringify(readyOnChaoxing[0] && readyOnChaoxing[0].payload.meta || null));
+
+  var outside = createHarness({ url: 'https://example.com/blank' });
+  outside.startContent();
+  await new Promise(function (r) { setTimeout(r, 80); });
+  check('④普通域**一条日志都不许多发**：放宽只给学习通网址，别把闸彻底拆掉',
+    outside.sandbox.__runtimeMessages.every(function (m) { return m.type !== 'runtime_log_append'; }),
+    JSON.stringify(outside.sandbox.__runtimeMessages.map(function (m) { return m.type; })));
+
+  var evil2 = createHarness({ url: 'https://evilchaoxing.com/course' });
+  evil2.startContent();
+  await new Promise(function (r) { setTimeout(r, 80); });
+  check('④仿冒域名同样不发（`isChaoxingUrl` 是那道闸的唯一口径，两边不能各写一份）',
+    evil2.sandbox.__runtimeMessages.every(function (m) { return m.type !== 'runtime_log_append'; }));
+
+  // ---- ⑤ 接线守卫：行为测的是"这一次"，顺序测的是"别被人顺手改回去"
+  var retry = bodyOf('async function refreshPageScopeWithRetry() {');
+  check('⑤存在有界重试，且**网址一变这一轮就作废**（否则旧章节的答复会盖到新章节上）',
+    retry.length > 0 && /location\.href\s*!==\s*askedUrl/.test(retry),
+    retry.replace(/\s+/g, ' ').slice(0, 180));
+  var waitCount = ((retry.match(/waits\s*=\s*\[([^\]]*)\]/) || [ '', '' ])[1].match(/\d+/g) || []).length;
+  check('⑤重试链的问数由那张等待表写死：2~4 拍（拍数就是问数，改成无界循环会把 SW 打成筛子）',
+    waitCount >= 2 && waitCount <= 4, 'waits 表 ' + waitCount + ' 拍');
+  var startBody = bodyOf('async function start() {');
+  check('⑤`start()` 走的是有界重试，不是一问就 return',
+    startBody.indexOf('refreshPageScopeWithRetry') >= 0 && startBody.indexOf('await refreshPageScope();') < 0,
+    startBody.replace(/\s+/g, ' ').slice(0, 160));
+  var onChangedBody = bodyOf('function onPageChanged() {');
+  // ⚠️ 这里**必须按"动作名"禁**，不能只禁 `removeInjectedScript`。
+  //   反向验证 X1 一开始没被抓到：注入的是 `dropPageRuntime()`（一个包好的拆台动作），
+  //   而断言只查 `removeInjectedScript` / `pageScope` 两个裸关键字 —— 换了个名字就绕过去了。
+  //   拆台动作只准出现在 `restartForCurrentUrl` 里，判据要认的是"这一页该不该拆"，不是拼写。
+  check('⑤`onPageChanged` 里不许有任何拆台动作（摘标签 / 抹权限 / `dropPageRuntime` / `resetBridgeState` 都不行）',
+    onChangedBody.length > 0 &&
+    ['removeInjectedScript', 'pageScope', 'dropPageRuntime', 'resetBridgeState'].every(function (k) {
+      return onChangedBody.indexOf(k) < 0;
+    }) && onChangedBody.indexOf('restartForCurrentUrl') >= 0,
+    onChangedBody.replace(/\s+/g, ' ').slice(0, 200));
+  var restartBody = bodyOf('async function restartForCurrentUrl(reason) {');
+  check('⑤顺序是「先问权威，再拆台」：重试问排在重建之前',
+    restartBody.length > 0 && restartBody.indexOf('refreshPageScopeWithRetry') >= 0 &&
+    restartBody.indexOf('refreshPageScopeWithRetry') < restartBody.indexOf('startSafely'),
+    restartBody.replace(/\s+/g, ' ').slice(0, 180));
+  var resetBody2 = bodyOf('function resetBridgeState() {');
+  var dropBody = bodyOf('function dropPageRuntime() {');
+  check('⑤拆旧的重建时只清扩展侧状态，**不摘标签**（摘标签只在确定这一页该下线时用）',
+    resetBody2.length > 0 && resetBody2.indexOf('removeInjectedScript') < 0 &&
+    dropBody.indexOf('removeInjectedScript') >= 0 &&
+    restartBody.indexOf('removeInjectedScript') < 0,
+    JSON.stringify({ resetHasRemove: resetBody2.indexOf('removeInjectedScript') >= 0, dropHasRemove: dropBody.indexOf('removeInjectedScript') >= 0 }));
+  check('⑤问不到又确实该下线时先把话说清（`scope lost` + 面板提示），别留一条空日志流',
+    restartBody.indexOf("'scope lost, bridge stopped'") >= 0 && restartBody.indexOf('showStatusPanel') >= 0);
+  check('⑤重连轮次有上限（无上限就是永远挂着一个不可信的运行时）',
+    /urlRetryRound\s*<\s*URL_RETRY_MAX_ROUNDS/.test(restartBody) && /URL_RETRY_MAX_ROUNDS\s*=\s*3/.test(src));
+  var logGate = bodyOf('function appendRuntimeLog(level, message, meta) {');
+  check('⑤日志闸的放宽口径只有 `POLICY.isChaoxingUrl(location.href)` 一种写法',
+    /if\s*\(!scopeIsCurrent\(\)\s*&&\s*!\(POLICY\s*&&\s*POLICY\.isChaoxingUrl\(location\.href\)\)\)\s*return;/.test(logGate),
+    logGate.replace(/\s+/g, ' ').slice(0, 180));
+  var marksLine = (src.match(/marks:\s*\[[^\]]*\]/) || [''])[0];
+  check('⑤content.js 的自证标记栏非空，且批次 17 / 18 两个标记都在',
+    marksLine.indexOf('refill-per-question') >= 0 && marksLine.indexOf('scope-retry') >= 0, marksLine);
+}
+
+// ---------------------------------------------------------------------------
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -2213,6 +2450,7 @@ async function main() {
   await testInjectionWatchdogOwnershipGuard();
   await testQuizScanHoldWiring();
   await testQuizPaperDepthAndApiBlock();
+  await testScopeReconnectAfterPageChange();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

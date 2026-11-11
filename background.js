@@ -111,12 +111,30 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     var base = chrome.runtime.getURL('popup/popup.html');
     return sender.url === base || sender.url.indexOf(base + '?') === 0;
   }
+  // 学习通换章节走的是 pushState：**同一个文档、同一份已注入的脚本**，
+  // 而 `sender.url` 冻结在脚本注入那一刻（旧章节），`tab.url` 与 `sender.tab.url` 已是新章节。
+  // 实测（2026-11-11 毛概 1218202540→1218202541）：原来那条 `sender.url !== tab.url` 一失配，
+  // 这一页从此永久 scope:'none' —— 不答题、不写日志、状态面板不动，
+  // 用户看到的「论述题直接卡住」「毛概这一节一直不行」就是它，不是题型的问题。
+  // 放宽只放这一种形状，三条同时成立才算：
+  //   ① 浏览器实时给出的 sender.tab.url 与 tabs.get 逐字相等（标签页记录自洽，页面伪造不了）；
+  //   ② 两边同源；③ 两边都是学习通页面。
+  // 验证码那一支不需要另加闸：它只在 `!isChaoxingUrl(tab.url)` 时走到，
+  // 而条件 ③ 要求两边都是学习通 —— URL 一对不上这里就返回 null，grant 仍是按 URL 逐字授权。
+  function sameDocumentSwitch(sender, tab) {
+    if (!sender.tab || sender.tab.url !== tab.url) return false;
+    var from = policy.httpUrl(sender.url);
+    var to = policy.httpUrl(tab.url);
+    if (!from || !to || from.origin !== to.origin) return false;
+    return policy.isChaoxingUrl(sender.url) && policy.isChaoxingUrl(tab.url);
+  }
   function liveSenderTab(sender) {
     if (!sender || sender.id !== chrome.runtime.id || sender.frameId !== 0 || !sender.tab
       || !Number.isInteger(sender.tab.id) || !policy.httpUrl(sender.url)) return Promise.resolve(null);
     return chromeCall(chrome.tabs, 'get', [sender.tab.id]).then(function (tab) {
-      if (!tab || tab.pendingUrl || !policy.httpUrl(tab.url) || sender.url !== tab.url) return null;
-      return tab;
+      if (!tab || tab.pendingUrl || !policy.httpUrl(tab.url)) return null;
+      if (sender.url === tab.url || sameDocumentSwitch(sender, tab)) return tab;
+      return null;
     }).catch(function () { return null; });
   }
   function pageScope(sender) {

@@ -1205,11 +1205,61 @@
     `if (!Array.isArray(data.data)) return;` —— 注入后 `data.data` 正好缺失，
     后面 4 条**一条都没执行**。已改成不早退（`list = Array.isArray(...) ? ... : []`）。
     这与上一轮 Z5 是同一家族：**断言"绿"有两种 —— 走到了、和根本没走到那一层**。
-  - **验证**：`npm test` 全绿（集成 **247 项** / worker **106 项**）、
+  - **验证**：`npm test` 全绿（集成 **247 项** / worker **106 项**）、 <!-- 历史计数:start --><!-- 历史计数:end -->
     `npm run e2e` 全绿 **85 个场景 / 861 项**、真页面 reload 后守完整轮。
     未升号（这轮只有一条行为改动 + 一栏取证）。改了 `content.js` →
     **线上那个 zip 仍是旧的**，要 `npm run build` + `npm run release -- replace-asset v1.3.0`
     才换得掉（等用户点头）。验证码链路这轮没碰，9010 那面墙也就没重跑。
+
+- **⑲批次 18：换章节不再需要手动刷新 —— 上一轮修的是顺序，真因在扩展那一侧**（2026-11-11）
+  - **用户报的两条是同一个东西**：「又不答题了，快看看」和「论述题直接卡住，这个不能跟填空题那些一样嘛？」。
+    第二条先按题型查：`_detectQuestionType` 把那一节判得清清楚楚
+    （【论述题】`answertype=6`、【简答题】`answertype=4` → 都是 `short`），
+    占位路径 `_fillBlankQuizQuestions` 里 `type === 'short'` 也确实在（写「不会」）。
+    **题型没问题。** 那为什么"卡住"？同一次探针里读运行时状态：
+    `running:false`、`jobs:0`、`_lastChapterKey` 已经换新章节 —— 整页一条日志都没有。
+    不是论述题卡住，是**这一页的扩展通道断了**，论述题只是恰好落在断掉的那一节上。
+  - **断在哪儿，是问出来的不是猜出来的**（`.workbuddy/scope-why.js`：在 SW 上挂一个录制监听，
+    再从页面里发一次 `get_config`，把 `sender` 与 `tabs.get` 两边并排打出来）：
+    `senderUrl` 带着**上一章**的 chapterId，`tabUrl` 与 `senderTabUrl` 都是**这一章**，
+    `sameUrl:false`、`status:"complete"`、无 `pendingUrl`、`frameId:0`。
+    也就是说 `liveSenderTab()` 那句 `sender.url !== tab.url` 是**永久**失配 ——
+    学习通换章节走 pushState（同一个文档、同一份已注入的脚本），
+    而 `sender.url` 冻结在脚本注入那一刻，之后再也不更新。
+  - **所以上一轮那套"先问再拆 + 有界重试"救不了它**：重试每一次都带着同一个冻结地址去问，
+    问 4 拍和问 400 拍是同一个结果。上一轮买到的只是"不再自己拆台"，
+    真正的门在 SW 侧 —— 这一点必须写清楚，否则下一轮又会照着连接层再找一遍。
+  - **放宽只放这一种形状**（`background.js`，三条同时成立才算）：
+    ① 浏览器实时给出的 `sender.tab.url` 与 `tabs.get` **逐字相等**（标签页记录自洽，页面伪造不了）；
+    ② 两边同源；③ 两边都是学习通页面。
+    验证码那一支**没有**跟着放宽，而且不用另加闸：它只在 `!isChaoxingUrl(tab.url)` 时才走到，
+    而条件 ③ 要求两边都是学习通 —— URL 一失配 `liveSenderTab` 就返回 null，
+    `grant.url === tab.url` 那道逐字比对原样还在。**这条推理写进了注释**，
+    免得以后有人把 ③ 改宽，顺手把验证码授权也放虚了。
+  - **真页面复验（用户的刷课页，不是夹具）**：修完后同一份探针在**连过两章**之后仍给出
+    `scope:"study"`（`sameUrl:false` 照旧，但不再判死）。
+    reload 之后那一节自己跑完了：`content bridge ready {marks:["refill-per-question","scope-retry"]}` →
+    `llm_request direct {questionCount:3}` → `quiz fill audit ok {text:3,textVisible:3,total:3,withValue:3}` →
+    `quiz submit finished` —— **那 3 道论述/简答全部填上并交卷成功**。
+    ⚠️ 别把这条读成"论述题解决了"：`llm usage {out:7}`，三道文本题一共回了 7 个 token，
+    内容值不值分这轮没量；这轮买到的只是"不再整页断线"。
+  - **测试**：`[17]`（`tools/integration-test.js`）**20 项**，集成 **247 → 267**；
+    worker **106 → 115**（`tools/background-test.js` 新增 8 条换章节授权断言 + 1 条内建负控：
+    把 `|| sameDocumentSwitch(...)` 整条撤掉，那一问必须重新变回 `none`）。
+  - **反向验证** `node .workbuddy/reverse18.js` **五处注入**，还原后逐字节一致：
+    X1 拆台回到问权限之前 → 红 3；X2 换章节回到只问一次 → 红 2；
+    X3 日志闸回到只认本地权限 → 红 4；X4 把闸整个拆掉 → 红 3；X5 标记栏留空 → 红 2。
+    ⚠️ **X2 上一次是漏的**，两个原因都不在断言里：
+    ① 拒答用"前 N 次"实现 —— content.js 里还有三条后台判据也在问 `get_page_scope`，
+      它们先把那 N 次吃掉，于是重试链根本没被破；改成**时间窗**（pushState 后 200~900ms 拒）。
+    ② 等待窗口写成 6 秒 —— 而"兜底那一轮"是 5 秒，只问一次照样能救回来（只是慢 5 秒），
+      断言继续绿。窗口压到 **3 秒**之后 X2 才真的红。
+    这两条与批次 17 的 Z5、`[8c]` 是同一家族：**测"最后会不会好"的断言，抓不住"靠什么好的"**。
+  - **验证**：`npm test` 全绿（集成 **267 项** / worker **115 项**）、真页面 reload 后守完整轮。
+    未升号（连接层 + 授权判据各一条）。改了 `content.js` **和** `background.js` →
+    **线上那个 zip 仍是旧的**，要 `npm run build` + `npm run release -- replace-asset v1.3.0`
+    才换得掉（等用户点头）。`npm run e2e` 这轮没重跑：动的两处都由集成层/worker 层覆盖，
+    下一轮动到页面脚本时一起补。
 
 
 ---

@@ -194,6 +194,47 @@ async function main() {
   check('API non-2xx retains status and JSON', (await h.send('api_fetch', study, { url: 'https://api.test', body: '{}' })).status === 404);
   h.fetch(() => Promise.resolve(response({ hang: true })));
   check('API body timeout aborts after headers', (await h.send('api_fetch', study, { url: 'https://api.test', timeoutMs: 15 })).code === 'timeout');
+
+  // ── 章节切换（pushState）后的发送方身份 ───────────────────────────────
+  // 学习通换章节是**同一个文档**里改 URL，而 sender.url 冻结在脚本注入那一刻。
+  // 真页面实测（2026-11-11 毛概 1218202540→1218202541）：这条失配一旦判死，
+  // 整节的通道永久 scope:'none' —— 不答题、不写日志、状态面板不动。
+  // 放宽只认「浏览器实时 sender.tab.url 逐字等于 tabs.get + 同源 + 两边都是学习通」。
+  const CH_A = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=1218202540';
+  const CH_B = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=1218202541';
+  const liveSender = (id, injectedUrl, liveUrl) =>
+    ({ id: 'test-extension', tab: { id, url: liveUrl }, frameId: 0, url: injectedUrl });
+  {
+    const hs = harness();
+    hs.update(1, CH_B);
+    check('pushState chapter change keeps study scope',
+      (await hs.send('get_page_scope', liveSender(1, CH_A, CH_B))).scope === 'study');
+    hs.fetch(() => Promise.resolve(response({ mime: 'application/json', data: Buffer.from('{"ok":true}') })));
+    const throughSwitch = await hs.send('api_fetch', liveSender(1, CH_A, CH_B), { url: 'https://api.test', body: '{}' });
+    check('relaxed study scope really reaches the API', throughSwitch.success === true && hs.calls.length === 1);
+    check('forged sender.tab cache still denied after chapter change',
+      (await hs.send('get_page_scope', sender(1, CH_A))).scope === 'none');
+    check('stale sender across origins denied',
+      (await hs.send('get_page_scope', liveSender(1, 'https://evil.test/chapterA', CH_B))).scope === 'none');
+    hs.update(1, 'https://evil.test/chapterB');
+    check('chapter change never grants a non-chaoxing tab',
+      (await hs.send('get_page_scope', liveSender(1, CH_A, 'https://evil.test/chapterB'))).scope === 'none');
+    check('config is not readable through a denied stale sender',
+      !(await hs.send('get_config', liveSender(1, CH_A, 'https://evil.test/chapterB'))).success);
+    await hs.send('grant_captcha', popup, { tabId: 2, url: captcha.url });
+    check('captcha grant stays URL-exact for a stale sender',
+      (await hs.send('get_page_scope', liveSender(2, 'https://captcha.test/check?token=0', captcha.url))).scope === 'none');
+    check('captcha grant still honored on exact URL',
+      (await hs.send('get_page_scope', captcha)).scope === 'captcha');
+  }
+  // 负控：把放宽整条撤掉，换章节那一问必须重新变回 'none'（否则上面几条是假绿）。
+  const noSwitch = harness(source => mutation(source,
+    'if (sender.url === tab.url || sameDocumentSwitch(sender, tab)) return tab;',
+    'if (sender.url === tab.url) return tab;'));
+  noSwitch.update(1, CH_B);
+  const switchProbe = await noSwitch.send('get_page_scope', liveSender(1, CH_A, CH_B));
+  assert.throws(() => assert.equal(switchProbe.scope, 'study'), assert.AssertionError);
+  check('negative control detects removed chapter-change tolerance', switchProbe.scope === 'none');
   // Negative controls mutate only the VM source, never the shared working tree.
   function mutation(source, anchor, replacement) {
     assert.ok(source.includes(anchor), 'mutation anchor must actually exist');
