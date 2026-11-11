@@ -966,6 +966,10 @@
 
     const merged = [];
     const filled = new Set();
+    // 因「长度不符」被整批丢弃的那些条目（按 origin 去重）。
+    // 补问阶段要用它决定「还按原来的大小重问」还是「拆成一题一批重问」，见稍后那段说明。
+    const discardedEntries = [];
+    const discardedOrigins = new Set();
     let lastFailure = null;
     let permanentFailure = null;
     // 模型**到底有没有回过话**（哪怕内容不可用）。决定"要不要补问"时要用它：
@@ -1022,12 +1026,24 @@
               });
               items = absorbed;
             } else {
+              entries.forEach((entry) => {
+                const origin = entry && entry.origin;
+                if (origin == null || discardedOrigins.has(origin)) return;
+                discardedOrigins.add(origin);
+                discardedEntries.push(entry);
+              });
               appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
                 expected: entries.length,
                 received: result.data.length,
                 // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
                 // 还是"回的是别的批次"，而这两种要修的完全不是一处。
-                excerpt: JSON.stringify(result.data).slice(0, 220)
+                excerpt: JSON.stringify(result.data).slice(0, 220),
+                // ⚠️ 题型也必须抄下来。现场那份 20 题的卷子连续两轮丢弃，收到的都是
+                // `["A","D",true,"历史|||人民"]` —— 只看答案形状没法判"为什么三种救法
+                // 都够不着"：同样一串答案，配 [单选,判断,填空] 能被 absorb 救回（itest [8b] 就是这么定的），
+                // 配 [单选,单选,填空] 或 [单选,填空,判断] 则三种切法都错、必须丢弃。
+                // 没有这一栏，下一轮修复只能靠猜题型。
+                types: entries.map((entry) => String((entry && entry.type) || '?')).join(',')
               });
               return;
             }
@@ -1065,13 +1081,13 @@
     // 为什么拆真能救回来：截断的根因是"模型在这一批题上退化成长篇重复输出"，
     // 批越小越不容易退化；而拿原样的批重问是**必然重现**（实测六次顶满输出上限）。
     // ⚠️ 只对 `truncated` 拆 —— 普通解析失败/网络失败拆了也是白拆，还多花钱。
-    const requestChunkWithSplit = async (entries, depth) => {
+    const requestChunkWithSplit = async (entries, depth, labelOverride) => {
       if (permanentFailure) return false;
       const result = await requestAnswersWithRetry(config, entries.map((entry) => entry.question));
       if (result && result.permanentError) permanentFailure = result;
       if (result && result.success && Array.isArray(result.data)) {
         sawResponse = true;   // 有应答（即使随后因长度不符被整批丢弃）
-        mergeAnswers(entries, result, depth > 0 ? 'split' : '');
+        mergeAnswers(entries, result, labelOverride !== undefined ? labelOverride : (depth > 0 ? 'split' : ''));
         return true;
       }
       // 模型**有回应**、只是内容不可用（解析不了 / 被截断）——
@@ -1126,22 +1142,55 @@
         });
       });
       if (unfilled.length) {
-        appendRuntimeLog('info', 'llm refill unanswered', {
-          count: unfilled.length,
-          total: questions.length
-        });
-        const refill = await requestAnswersWithRetry(config, unfilled.map((entry) => entry.question));
-        if (refill && refill.permanentError) permanentFailure = refill;
-        if (refill && refill.success && Array.isArray(refill.data)) {
-          mergeAnswers(unfilled, refill, 'refill');
-        } else {
-          appendRuntimeLog('warn', 'llm refill failed, leave for next tick', {
+        // ===== 丢弃过的那一批，补问时改成**一题一问** =====
+        //
+        // 现场（2026-11-11 真页面，20 题卷子）：第 7 批 3 题回 4 项 `["A","D",true,"历史|||人民"]`
+        // 被整批丢弃，补问按同样的 3 题再问一次 —— **回了一模一样的 4 项**，又丢弃一次。
+        // 三种对齐救法（resegment / trim / absorb）都够不着这种形状（多出来的不是尾部字母，
+        // 而是夹着一个本题型接不住的值），最后只能由页面侧的占位兜底"猜"上，
+        // 用户看到的"单选题欠了几个"就是这么欠的。
+        //
+        // 判据不靠猜对齐，靠**把批缩小到没有歧义**：一题一批时模型只会回这一题的答案，
+        // 长度对不上就只剩"多吐了一个字母"一种形状 —— 而那正是 trim 能救的。
+        // 同一份卷子里那 5 道多选（本来就单独成批）回话被摊平成 4~6 项，
+        // **5 次全被 resegment 救回、零丢弃**，就是这条取舍的实测依据。
+        //
+        // 代价与上界：固定开销按批计（约 85 token/批），所以只在
+        //   ① 这些题确实**来自被丢弃的批次**（不是"网络坏了""答了空串"那些），
+        //   ② 题数 ≤ 6
+        // 时才拆；再多就退回原来的"一次打包重问"，不让一份大题的补问变成请求洪水。
+        const allFromDiscard = discardedEntries.length > 0 &&
+          unfilled.every((entry) => discardedOrigins.has(entry.origin));
+        if (allFromDiscard && unfilled.length > 1 && unfilled.length <= 6) {
+          appendRuntimeLog('info', 'llm refill split per question', {
             count: unfilled.length,
-            // 把"是不是被截断"单列出来：这两种失败的处理完全不同
-            // （截断要拆批，解析失败要改格式），日志混在一起就分不清该修哪边。
-            truncated: !!(refill && refill.truncated),
-            error: String((refill && refill.error) || '').slice(0, 160)
+            total: questions.length,
+            types: unfilled.map((entry) => String((entry && entry.type) || '?')).join(','),
+            hint: '这些题上一轮因长度不符被整批丢弃，同样的批重问会回同样的形状（实测两轮一模一样），' +
+              '所以改成一题一问：单题批没有"错位给隔壁题"的歧义，救得回来的概率高得多'
           });
+          for (const entry of unfilled) {
+            if (permanentFailure) break;
+            await requestChunkWithSplit([entry], 0, 'refill-one');
+          }
+        } else {
+          appendRuntimeLog('info', 'llm refill unanswered', {
+            count: unfilled.length,
+            total: questions.length
+          });
+          const refill = await requestAnswersWithRetry(config, unfilled.map((entry) => entry.question));
+          if (refill && refill.permanentError) permanentFailure = refill;
+          if (refill && refill.success && Array.isArray(refill.data)) {
+            mergeAnswers(unfilled, refill, 'refill');
+          } else {
+            appendRuntimeLog('warn', 'llm refill failed, leave for next tick', {
+              count: unfilled.length,
+              // 把"是不是被截断"单列出来：这两种失败的处理完全不同
+              // （截断要拆批，解析失败要改格式），日志混在一起就分不清该修哪边。
+              truncated: !!(refill && refill.truncated),
+              error: String((refill && refill.error) || '').slice(0, 160)
+            });
+          }
         }
       }
     }
@@ -2581,6 +2630,12 @@
   try { manifestInfo = chrome.runtime.getManifest(); } catch (eManifest) { manifestInfo = null; }
   appendRuntimeLog('info', 'content bridge ready', {
     version: String((manifestInfo && manifestInfo.version) || ''),
-    build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)')
+    build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)'),
+    // ⚠️ content.js 这一侧的"带哪些修复"标记，与 page.js 那个 `start` 里的 build 同一用途：
+    // **日志里缺哪个 = 那份改动还没被加载**。批次 17 就是被这一格坑的：磁盘上已经修好，
+    // 页面跑的还是旧 content.js，两边都以为生效了，用户看到的是「还是卡住的」。
+    // page.js 有 `code` 内容指纹兜底，而 content.js 不在 concat 的范围里、没有指纹，
+    // 所以这一栏是 content.js 侧唯一的自证 —— 加改动就加标记，别让它空着。
+    marks: ['refill-per-question']
   });
 })();

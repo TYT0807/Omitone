@@ -1148,10 +1148,68 @@
     （itest 里 `if (!Array.isArray(data.data)) return;` 是**故意早退**，后面几条在这种形状下走不到 ——
     第一版驱动把它们列进 expectRed，报的"漏 5 条"是**驱动的期望写错**；Z6 才是走得到那几条的形状）；
     Z6 拆掉唯一解那道闸 → 红 **1** 条（歧义那一批仍不许被 absorbed 采用）。
-  - 验证：`npm test` 全绿（集成 **237 项** / worker **106 项**）、`npm run e2e` 全绿 **85 个场景 / 861 项**。
+  - 验证：`npm test` 全绿（集成 **237 项** / worker **106 项**）、`npm run e2e` 全绿 **85 个场景 / 861 项**。 <!-- 历史计数:start --><!-- 历史计数:end -->
     ⚠️ **本轮没有把 9010 那一面墙重跑**（墙不是想有就有的），改动也不碰验证码链路。
     未升号；改了 `page.js` 与 `content.js` → **线上那个 zip 仍是旧的**，
     要 `npm run build` + `npm run release -- replace-asset v1.3.0` 才换得掉（等用户点头）。
+
+- **⑱批次 17：卡住的这一格在真页面上闭合 —— 顺带把「丢弃的那一批」从猜改成问**（2026-11-11）
+  - **用户一句话把上一轮的验收口径挑明了**：「现在的界面就是卡住的啊？你看看」。
+    先去量，别先解释。量到的第一条不是逻辑 bug，是**代码没跑起来**：
+    真页面上 `typeof app._blankFillPlaceholder === 'undefined'`，
+    而磁盘上 `page.js` 有它（`concat-page.js --check` 也是绿的）—— 上一轮交付时说的
+    「去扩展页重新加载 + F5」没人做，用户看到的当然还是旧行为。
+    这一轮不再把这一步留给人：**`.workbuddy/reload-ext.js`** 直接在调试实例里
+    `chrome.runtime.reload()` + 对命中页面 `Page.reload`，自己把"生效"这一步做完。
+  - **reload 之后守完整轮，症状当场消失**（全是真页面读数，不是夹具）：
+    `blank questions filled with placeholder before submit {count: 3, unfillable: 0}` →
+    `quiz fill audit ok {withValue: 20, total: 20, missing: []}` →
+    `quiz submit attempt count` → `quiz submit finished` →
+    探针里那份卷子的 task 从 `finished:false` 变 `finished:true`，`allFinished` 变 `true`，
+    页面自己翻到了下一节（chapterId 1209049223 → 1209049238）。
+    ⚠️ 上一轮留下的那句「判据一跑完就读日志会假阴性」这轮又用上了：每条都等一拍再读。
+  - **顺手量到用户一直挂心的那件**：「有些学习通视频翻墙之后可能不会给你播放」。
+    这一节正好是视频，`media pending, delay completion` 的 `currentTime` 从 7.5 一路涨到 148.5
+    （`duration` 176.2）—— **这一节的视频在梯子下是能播、也在走完的**。
+    这是"某一个节"的实测，不是"所有视频都没问题"的结论；再遇到不播的那一节要单独量。
+  - **剩下的真问题：那 3 题是占位猜的，可模型其实答过。** 被丢弃那一批的 `excerpt`
+    是 `["A","D",true,"历史|||人民"]` —— 和 itest [8b] 的 case A **逐字相同**，
+    而 case A 在集成层是被 `absorbExtraOptionLetters` 救回来的。现场却没救回来，
+    只能说明一件事：**那一批的题型不是 [单选, 判断, 填空]**（配 [单选, 单选, 判断]
+    或 [单选, 填空, 判断] 时三种切法全错，按"宁缺勿猜"必须丢弃）。
+    两条附带量出来的事实，决定了这轮怎么修：
+    ① `content.js:955` 多选**永远单独成批**，所以 absorb 里"批里含多选一律不进"那道闸
+      在生产里**一次都不会命中**（死闸，读代码时容易把它当成在保护什么）；
+    ② 同一份卷子被丢弃后，补问按**同样的 3 题**再问一次 → 回了**逐字相同的 4 项**、又丢弃。
+      「重问同样的批」对这种形状是必然重现，page 侧那 13 次 `no progress` 空转就是这么来的。
+  - **修的是补问的形状，不是对齐的猜测**（`content.js`）：补问阶段先认来源 ——
+    未答上的题**全部来自被丢弃的批次**、且题数 ≤ 6 时，改成**一题一批**重问
+    （复用 `requestChunkWithSplit`，日志 `llm refill split per question`）。
+    判据不是"看着像能救"，是同一份卷子里那 **5 道多选本来就单独成批**：
+    它们的回答被摊平成 4~6 项，**5 次全被 `resegmentFlatAnswers` 救回、零丢弃**。
+    批缩到 1 题就没有"把 A 题的答案错位填到 B 题"的歧义，多出来的一个字母也正好是
+    `trimTrailingOptionLetters` 设计要削的那种形状。
+    **上界照旧钉住**：>6 题仍走原来的一次打包补问 —— 不拿"请求洪水"换救回率
+    （固定开销约 85 token/批，一份大题拆成几十次请求比多错两题贵得多）。
+  - **取证补一栏**：`llm answer count mismatch, batch discarded` 现在带 `types`
+    （这一批的题型串）。只报"几个对几个"加上答案形状，判不出该修哪一层 ——
+    这一轮就是靠它把"题型不是 case A 那种"从推测变成可核对的事实。
+  - **测试**：集成层 `[8c]`（`tools/integration-test.js`）10 项：三题各归各题、
+    多出来的布尔不许塞进判断题、请求数 1+3、拆开后每批只含一题、
+    日志是 `refill split per question` 而不是打包补问、`types` 字段真的带上，
+    外加**上界那半边**（9 题全丢弃时仍走打包补问）。
+  - **反向验证** `node .workbuddy/reverse17.js` **三处注入**，还原后逐字节一致：
+    X1 关掉拆批那一支 → 红 **6** 条；X2 把上界从 6 抬到 60 → 红 **1** 条（只该红上界那条）；
+    X3 不抄题型 → 红 **1** 条。
+    ⚠️ X1 第一版只报 1 条红，不是断言抓不住，是测试自己写了
+    `if (!Array.isArray(data.data)) return;` —— 注入后 `data.data` 正好缺失，
+    后面 4 条**一条都没执行**。已改成不早退（`list = Array.isArray(...) ? ... : []`）。
+    这与上一轮 Z5 是同一家族：**断言"绿"有两种 —— 走到了、和根本没走到那一层**。
+  - **验证**：`npm test` 全绿（集成 **247 项** / worker **106 项**）、
+    `npm run e2e` 全绿 **85 个场景 / 861 项**、真页面 reload 后守完整轮。
+    未升号（这轮只有一条行为改动 + 一栏取证）。改了 `content.js` →
+    **线上那个 zip 仍是旧的**，要 `npm run build` + `npm run release -- replace-asset v1.3.0`
+    才换得掉（等用户点头）。验证码链路这轮没碰，9010 那面墙也就没重跑。
 
 
 ---

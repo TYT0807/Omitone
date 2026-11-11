@@ -1151,6 +1151,101 @@ async function testMiddleOptionLetterAbsorb() {
 }
 
 // ---------------------------------------------------------------------------
+// [8c] 长度不符被丢弃的那一批：补问改成「一题一问」，别再拿同样的批回同样的形状
+//
+// 现场（2026-11-11 真页面，20 题卷子）：主批 3 题回 4 项被丢弃，补问还是这 3 题
+// 一起问 → **回了逐字相同的 4 项**、又丢弃一次（日志里两条 mismatch 的 excerpt 一模一样）。
+// 那三种对齐救法对这种形状全都够不着（多出来的是一个判断题接不住/不属于本题型的值），
+// 于是页面侧只能按占位猜 —— 用户看到的「单选题欠了几个」就是这么欠的。
+// 而同一份卷子里 5 道多选（本来就单独成批）被摊平成 4~6 项，**5 次全被救回、零丢弃**：
+// 批缩小到 1 题就没有「错位给隔壁题」的歧义，这才是可靠的救法。
+//
+// ⚠️ 同时钉住上界：题多时不许退化成请求洪水（>6 题仍走原来的一次打包补问）。
+// ---------------------------------------------------------------------------
+async function testDiscardedBatchRefillPerQuestion() {
+  console.log('\n[8c] 丢弃批次补问拆成一题一批（含 >6 题仍打包的上界）');
+
+  // 形状 [单选, 单选, 判断] 收到 ["A","D",true,"历史|||人民"]：
+  // 并给第 0 题 → 第 1 题拿到 true（单选接不住）；并给第 1 题 → "D" 后面跟的是 true（不是字母）。
+  // 三种切法全错，主批必然丢弃 —— 这正是真页面那一格。
+  var calls = 0;
+  var harness = createHarness({
+    modelResponder: function (promptText) {
+      calls++;
+      if (calls === 1) return JSON.stringify(['A', 'D', true, '历史|||人民']);
+      if (String(promptText).indexOf('单选题甲') >= 0) return JSON.stringify(['A']);
+      if (String(promptText).indexOf('单选题乙') >= 0) return JSON.stringify(['D']);
+      return JSON.stringify([true]);
+    }
+  });
+  harness.sendFromPage({
+    source: 'xxt_app', id: 84, type: 'llm_request',
+    payload: {
+      questions: [
+        { index: 0, type: 'single', title: '单选题甲', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 1, type: 'single', title: '单选题乙', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 2, type: 'judge', title: '判断题丙', options: ['正确', '错误'], previousWrongAnswers: [] }
+      ]
+    }
+  });
+  var data = await harness.waitForResponse(84);
+
+  check('丢弃批次拆分后收到应答', data !== null);
+  if (!data) return;
+  check('success = true（三道题不再靠页面占位猜）', data.success === true, JSON.stringify(data).slice(0, 240));
+  // ⚠️ 这里**不许**再写 `if (!Array.isArray(data.data)) return;`：
+  //   反向验证 X1（把拆批那一支关掉）时 `data.data` 正是缺失的，早退会让下面 4 条
+  //   一条都不执行 —— 于是"抓得住"被测试自己的执行模型挡住了（AGENTS §5，批次 16 的 Z5 同款）。
+  var list = Array.isArray(data.data) ? data.data : [];
+  var byIndex = {};
+  list.forEach(function (a) { byIndex[a.index] = a.answer; });
+  check('三道题全有答案，且各归各题（0=A / 1=D / 2=true）',
+    byIndex[0] === 'A' && byIndex[1] === 'D' && byIndex[2] === true, JSON.stringify(byIndex));
+  check('填空那种"不属于本题型的多出来一项"没被硬塞进判断题',
+    byIndex[2] === true, JSON.stringify(byIndex[2]));
+
+  check('共 4 次请求（主批 1 + 拆开补问 3）',
+    harness.sandbox.__sentRequests.length === 4, '实际 ' + harness.sandbox.__sentRequests.length + ' 次');
+  var onePrompt = extractPromptText(JSON.parse(harness.sandbox.__sentRequests[1].body));
+  check('拆开后的每一批只含一道题（第 2 次请求里没有别的题面）',
+    onePrompt.indexOf('单选题乙') < 0 && onePrompt.indexOf('判断题丙') < 0, onePrompt.slice(0, 160));
+
+  var logs = (harness.sandbox.__store && harness.sandbox.__store.runtimeLogs) || [];
+  var msgs = logs.map(function (e) { return String(e.message || ''); });
+  check('日志写的是 refill split per question，不再是一次打包补问',
+    msgs.some(function (m) { return m.indexOf('refill split per question') >= 0; }) &&
+    !msgs.some(function (m) { return m === 'llm refill unanswered'; }),
+    JSON.stringify(msgs).slice(0, 240));
+  var discardedLog = null;
+  logs.forEach(function (e) { if (String(e.message || '').indexOf('batch discarded') >= 0) discardedLog = e; });
+  check('丢弃日志带上这一批的题型（下一轮排查靠它判该修哪一层）',
+    !!discardedLog && String((discardedLog.meta || {}).types || '') === 'single,single,judge',
+    JSON.stringify(discardedLog && discardedLog.meta));
+
+  // ===== 上界：丢弃的题一多，仍走原来的一次打包补问 =====
+  // 形状要挑对：['A','B','C','D'] 那种会被 trimTrailing 直接切掉尾巴救回来（9 题全答上、
+  // 压根到不了补问）。这里多出来的是一段布尔值，三种救法全都够不着 → 每批必丢弃。
+  var flood = createHarness({
+    modelResponder: function () { return JSON.stringify(['A', 'B', 'C', 'D', true]); }
+  });
+  var floodQuestions = [];
+  for (var i = 0; i < 9; i++) {
+    floodQuestions.push({ index: i, type: 'single', title: '单选题' + i, options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] });
+  }
+  flood.sendFromPage({
+    source: 'xxt_app', id: 85, type: 'llm_request', payload: { questions: floodQuestions }
+  });
+  var floodData = await flood.waitForResponse(85);
+  check('9 题全被丢弃时也有应答', floodData !== null);
+  var floodLogs = (flood.sandbox && flood.sandbox.__store && flood.sandbox.__store.runtimeLogs) || [];
+  var floodMsgs = floodLogs.map(function (e) { return String(e.message || ''); });
+  check('题数超上界就不再拆成一题一问（不拿提交次数换请求洪水）',
+    !floodMsgs.some(function (m) { return m.indexOf('refill split per question') >= 0; }) &&
+    floodMsgs.some(function (m) { return m === 'llm refill unanswered'; }),
+    JSON.stringify(floodMsgs).slice(0, 260));
+}
+
+// ---------------------------------------------------------------------------
 // [9] 字形映射表：运行时解码器必须与明文表给出同样的结果
 //
 // 二进制表（122KB）替代了明文 JSON（347KB），这里验的就是 content.js 实际调用的
@@ -2109,6 +2204,7 @@ async function main() {
   await testPromptContainsBannedAnswers();
   await testEmptyAnswerRefill();
   await testMiddleOptionLetterAbsorb();
+  await testDiscardedBatchRefillPerQuestion();
   await testFontTable();
   await testThinkingLevels();
   await testApiKeyNormalize();
