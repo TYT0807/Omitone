@@ -1681,6 +1681,9 @@
         });
         if (skippedBestEffort > 0) {
           this._fillBestEffortQuizAnswers(questions, quizDoc);
+          // 这条分支**不会再发请求**（payload 为空），所以它是这一卷最后一次机会：
+          // 还空着的题若不补占位，`rescueReady` 永远 false → 不发不交 → 整节原地转圈。
+          this._fillBlankQuizQuestions(questions, quizDoc);
           var rescueReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
           this._quizAnswered = rescueReady;
           this._quizReadyToSubmit = rescueReady;
@@ -1755,6 +1758,9 @@
         // 少了这一步就有个窄缝：模型给的多选组合恰好落在"已知错答"里（组合试完那一种），
         // 会被上面那步抹掉、又没有别的答案可补 → 表单缺一题 → 整卷永不提交。
         this._answerLocalMultiChoiceQuestions(questions, quizDoc);
+        // 交卷前的最后一道占位（批次 16）：模型那一份被整批丢弃、多选也补不上的题，
+        // 不再留白 —— 留白就是稳丢的分，而且表单不满这一卷永远交不出去。
+        this._fillBlankQuizQuestions(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;

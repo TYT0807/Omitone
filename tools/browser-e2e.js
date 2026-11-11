@@ -9588,6 +9588,185 @@ SCENARIOS.push({
 });
 
 // ===========================================================================
+/** ---- 48. 空答案不再留白（批次 16：交卷前把还空着的题补上占位） ---- */
+SCENARIOS.push({
+  name: '空答案不再留白：交卷前补占位且不牵连多选',
+  path: '/quiz',
+  run: async function (ctx) {
+    // 现场（2026-11-11 用户那份 20 题的卷子：单选 5 / 多选 5 / 填空 5 / 判断 5）：
+    //   `llm answer count mismatch, batch discarded` 主批 5 次 + 补问 5 次，
+    //   `quiz round skipped: no progress` 13 次，正确答案缓存 byId/byTitle 全空。
+    //   用户原话：「页面停留那边填空题空的，单选题欠了几个」，
+    //   裁定：「填空题我觉得不用动脑子，随便填个 1 也行，大部分情况下这个错误没人管的」。
+    // 七个形状分开钉：单选（要避开已知错答）· 判断 · 填空（多空各给一格）·
+    // 多选（**不许**被牵连：复选点第二次就是取消）· 只剩隐藏域（值进的是平台提交那一栏）·
+    // 已经填好的题（幂等，不重填、不占"本轮补了几题"的名额）·
+    // 连隐藏域都没有的题（真填不进去，必须留痕、不许冒充已答）。
+    var out = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      'var logs=window.__b16=(window.__b16||[]);' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")logs.push(m);});' +
+      'var f=document.createElement("iframe");f.style.width="900px";f.style.height="700px";' +
+      'document.body.appendChild(f);' +
+      'var d=f.contentDocument;' +
+      'd.body.innerHTML=' + JSON.stringify(
+        '<div class="TiMu" qid="9301" typename="单选题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">31.</span>【单选题】模型没答上的单选</div></div>' +
+        '<ul class="Zy_ulTop">' +
+        '<li class="before-after" qid="9301" data="A"><label><input type="radio" name="answer9301" value="A">' +
+        '<span class="num_option choice9301" data="A">A</span><span class="fl after">选项甲</span></label></li>' +
+        '<li class="before-after" qid="9301" data="B"><label><input type="radio" name="answer9301" value="B">' +
+        '<span class="num_option choice9301" data="B">B</span><span class="fl after">选项乙</span></label></li>' +
+        '</ul><input type="hidden" id="answer9301" value=""></div>' +
+        '<div class="TiMu" qid="9302" typename="判断题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">32.</span>【判断题】模型没答上的判断</div></div>' +
+        '<ul class="Zy_ulTop">' +
+        '<li class="before-after" qid="9302" data="A"><label><input type="radio" name="answer9302" value="A">' +
+        '<span class="num_option choice9302" data="A">A</span><span class="fl after">正确</span></label></li>' +
+        '<li class="before-after" qid="9302" data="B"><label><input type="radio" name="answer9302" value="B">' +
+        '<span class="num_option choice9302" data="B">B</span><span class="fl after">错误</span></label></li>' +
+        '</ul><input type="hidden" id="answer9302" value=""></div>' +
+        '<div class="TiMu" qid="9303" typename="填空题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">33.</span>【填空题】两格的填空</div></div>' +
+        '<div class="Ty_sort_text">第一格<input type="text" class="answerText" id="blank1">，' +
+        '第二格<input type="text" class="answerText" id="blank2">。</div>' +
+        '<input type="hidden" id="answer9303" value=""></div>' +
+        '<div class="TiMu" qid="9304" typename="多选题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">34.</span>【多选题】不许被牵连的多选</div></div>' +
+        '<ul class="Zy_ulTop">' +
+        '<li class="before-after" qid="9304" data="A"><label><input type="checkbox" name="answer9304" value="A">' +
+        '<span class="num_option choice9304" data="A">A</span><span class="fl after">选项甲</span></label></li>' +
+        '<li class="before-after" qid="9304" data="B"><label><input type="checkbox" name="answer9304" value="B">' +
+        '<span class="num_option choice9304" data="B">B</span><span class="fl after">选项乙</span></label></li>' +
+        '</ul><input type="hidden" id="answer9304" value=""></div>' +
+        '<div class="TiMu" id="q9305" qid="9305" typename="填空题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">35.</span>【填空题】压根没有答题框</div></div>' +
+        '<div class="Ty_sort_text"><span>这里一个可写的控件都没有</span></div>' +
+        '<input type="hidden" id="answer9305" value=""></div>' +
+        '<div class="TiMu" qid="9306" typename="单选题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">36.</span>【单选题】模型已经答上的单选</div></div>' +
+        '<ul class="Zy_ulTop">' +
+        '<li class="before-after" qid="9306" data="A"><label><input type="radio" name="answer9306" value="A" checked="checked">' +
+        '<span class="num_option choice9306" data="A">A</span><span class="fl after">选项甲</span></label></li>' +
+        '<li class="before-after" qid="9306" data="B"><label><input type="radio" name="answer9306" value="B">' +
+        '<span class="num_option choice9306" data="B">B</span><span class="fl after">选项乙</span></label></li>' +
+        '</ul><input type="hidden" id="answer9306" value="A"></div>' +
+        '<div class="TiMu" id="q9307" qid="9307" typename="填空题">' +
+        '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">37.</span>【填空题】连隐藏答案域都没有</div></div>' +
+        '<div class="Ty_sort_text"><span>这一题可写的控件一个都没有，也没有 #answer9307</span></div></div>') + ';' +
+      'var qs=app._extractFromDocument(d);' +
+      // 夹具自证：七个形状必须都被真实解析器认成预期题型 —— 红了说明夹具被改过，
+      // 后面的断言就变成在测一个不存在的形状。
+      'var types=qs.map(function(q){return String(q.type);});' +
+      'var k=app._getQuizWorkKey(d);' +
+      'if(!app._quizCorrectAnswerCache)app._quizCorrectAnswerCache={};' +
+      'if(!app._quizCorrectAnswerCache[k])app._quizCorrectAnswerCache[k]={byId:{},byTitle:{},wrongById:{},wrongByTitle:{},submittedById:{},submittedByTitle:{}};' +
+      // 单选那一题**上一次被判错过 A** —— 占位不许再压回同一个错答
+      'app._addWrongQuizAnswer(app._quizCorrectAnswerCache[k],{qid:"9301",answer:"A",type:"single"});' +
+      'app._quizCurrentAnsweredKeys={};app._quizCurrentAnswerValues={};' +
+      // 36 题模型**已经答上了**（现场就是这种混合卷）：占位不许重填、也不许盖掉它的来源
+      'app._markQuizQuestionAnsweredThisRun(qs[5],"llm","A","single");' +
+      'var hid=function(q){var el=d.getElementById("answer"+q);return el?String(el.value):"<无>";};' +
+      'var picked=function(q){var els=d.getElementsByName("answer"+q);' +
+      '  for(var i=0;i<els.length;i++){if(els[i].checked)return String(els[i].value);}' +
+      '  return "";};' +
+      'var checkedCount=function(q){var els=d.getElementsByName("answer"+q),n=0;' +
+      '  for(var i=0;i<els.length;i++){if(els[i].checked)n++;}return n;};' +
+      'var src=function(q){var v=app._quizCurrentAnswerValues["id:"+q];return v?v.source:"(没有)";};' +
+      'var readyBefore=app._areQuizAnswersFilled(d,qs,{requireThisRun:true});' +
+      // ↓↓ 交卷闸门前的那两步，顺序照抄 70-quiz-flow.js：先本地补多选，再补占位
+      'app._answerLocalMultiChoiceQuestions(qs,d);' +
+      'var multiBefore=checkedCount("9304");' +
+      'var filled=app._fillBlankQuizQuestions(qs,d);' +
+      'var multiAfter=checkedCount("9304");' +
+      'var b1=String(d.getElementById("blank1").value),b2=String(d.getElementById("blank2").value);' +
+      'var blankLeft=[];' +
+      'qs.forEach(function(q){' +
+      '  if(!app._getQuizQuestionFilledValue(d,q))blankLeft.push(app._getQuestionIdFromElement(q._element));});' +
+      'var normalPaper=qs.filter(function(q){return app._getQuestionIdFromElement(q._element)!=="9307";});' +
+      'var readyAll=app._areQuizAnswersFilled(d,qs,{requireThisRun:true});' +
+      'var readyPaper=app._areQuizAnswersFilled(d,normalPaper,{requireThisRun:true});' +
+      'var res={n:qs.length,types:types.join(","),readyBefore:readyBefore,readyAll:readyAll,readyPaper:readyPaper,' +
+      '  blankLeft:blankLeft.join(","),' +
+      '  filledKeys:Object.keys(filled).sort(function(a,b){return a-b;}).join(","),' +
+      '  singlePicked:picked("9301"),singleHidden:hid("9301"),' +
+      '  judgePicked:picked("9302"),judgeHidden:hid("9302"),' +
+      '  fillB1:b1,fillB2:b2,fillHidden:hid("9303"),' +
+      '  multiBefore:multiBefore,multiAfter:multiAfter,multiSrc:src("9304"),multiHidden:hid("9304"),' +
+      '  noBoxHidden:hid("9305"),noBoxSrc:src("9305"),' +
+      '  noBoxVisible:d.getElementById("q9305").querySelectorAll("input[type=text]").length,' +
+      '  keptPicked:picked("9306"),keptHidden:hid("9306"),' +
+      '  noBox9307:(d.getElementById("answer9307")?"<有>":"<无>"),' +
+      '  src9301:src("9301"),src9306:src("9306"),seen:logs.length,' +
+      '  cacheHas9301:!!(app._quizCorrectAnswerCache[k].byId&&app._quizCorrectAnswerCache[k].byId["9301"])};' +
+      'window.__b16Frame=f;' +
+      'return res;})()'
+    );
+    check('夹具自证：七道题全被真解析器认出（单选/判断/填空/多选/填空/单选/填空）',
+      out && out.n === 7 && out.types === 'single,judge,fill,multiple,fill,single,fill',
+      JSON.stringify(out && { n: out.n, types: out.types }));
+    check('补占位之前 `_areQuizAnswersFilled` 必须是 false（这就是那份卷子交不出去的那道闸）',
+      out && out.readyBefore === false, JSON.stringify(out && out.readyBefore));
+    check('单选补上了一个真选项字母，且**不是**上次被判错的 A',
+      out && out.singlePicked === 'B' && out.singleHidden === 'B',
+      JSON.stringify(out && { singlePicked: out.singlePicked, singleHidden: out.singleHidden }));
+    check('判断题也补上了（值与选中态两处都要有）',
+      out && !!out.judgePicked && out.judgeHidden === out.judgePicked,
+      JSON.stringify(out && { judgePicked: out.judgePicked, judgeHidden: out.judgeHidden }));
+    check('填空两格各写一个「1」、隐藏域拼成「11」（只给一串 1 时第二格等于没填）',
+      out && out.fillB1 === '1' && out.fillB2 === '1' && out.fillHidden === '11',
+      JSON.stringify(out && { fillB1: out.fillB1, fillB2: out.fillB2, fillHidden: out.fillHidden }));
+    check('多选由前一步本地补上 2 项，占位这一步**一个复选框都没再点**（复选点第二次就是取消）',
+      out && out.multiBefore === 2 && out.multiAfter === 2 && out.multiSrc === 'local-multiple',
+      JSON.stringify(out && { multiBefore: out.multiBefore, multiAfter: out.multiAfter, multiSrc: out.multiSrc }));
+    check('只剩隐藏域的那题：占位写进平台真正提交的 #answer9305（页面上仍没框，这条要如实记着）',
+      out && out.noBoxVisible === 0 && out.noBoxHidden === '1' && out.noBoxSrc === 'blank-fallback',
+      JSON.stringify(out && { noBoxVisible: out.noBoxVisible, noBoxHidden: out.noBoxHidden, noBoxSrc: out.noBoxSrc }));
+    check('模型已经答上的那题没被重填、来源仍是 llm，也不占"本轮补了几题"的名额（幂等）',
+      out && out.keptPicked === 'A' && out.keptHidden === 'A' && out.src9306 === 'llm' &&
+      out.filledKeys.indexOf('5') < 0,
+      JSON.stringify(out && { keptPicked: out.keptPicked, keptHidden: out.keptHidden, src9306: out.src9306, filledKeys: out.filledKeys }));
+    check('连隐藏答案域都没有的那题**保持未答**、不许冒充填上（夹具自证：确实没有 #answer9307）',
+      out && out.noBox9307 === '<无>' && out.blankLeft === '9307',
+      JSON.stringify(out && { noBox9307: out.noBox9307, blankLeft: out.blankLeft }));
+    check('除它之外整卷都满了 —— 去掉这一题的卷子 ready 为 true（本批修复的目的）',
+      out && out.readyPaper === true && out.readyAll === false,
+      JSON.stringify(out && { readyPaper: out.readyPaper, readyAll: out.readyAll, blankLeft: out.blankLeft }));
+    check('占位记的 source 是 blank-fallback，不冒充 llm / confirmed-cache',
+      out && out.src9301 === 'blank-fallback', JSON.stringify(out && { src9301: out.src9301 }));
+    check('占位不进"已确认正确"的答案缓存（否则下一轮会把猜的当对的跳过模型）',
+      out && out.cacheHas9301 === false, JSON.stringify(out && out.cacheHas9301));
+    check('补上占位的下标正好是 0,1,2,4（单选/判断/填空/只剩隐藏域那题）',
+      out && out.filledKeys === '0,1,2,4', JSON.stringify(out && out.filledKeys));
+
+    // 日志要等一拍再读（emitRuntimeLog 走 postMessage，异步送达；
+    // 判据一跑完就读必然读到空，于是"没发"和"没等到"同形 —— 本仓库踩过 3 次）
+    var late = await new Promise(function (resolve) { setTimeout(resolve, 400); });
+    void late;
+    var logged = await ctx.client.evaluate(
+      '(function(){var logs=window.__b16||[];' +
+      'var names=logs.map(function(m){return String(m.message||"");});' +
+      'function hit(n){var out=null;logs.forEach(function(m){if(m.message===n)out=m;});return out;}' +
+      'var ph=hit("blank questions filled with placeholder before submit");' +
+      'var nf=hit("blank questions could not be filled even with placeholder");' +
+      'var f=window.__b16Frame;if(f&&f.parentNode)f.parentNode.removeChild(f);' +
+      'window.__b16=[];' +
+      'return {seen:logs.length,ph:ph,nf:nf};})()'
+    );
+    check('两条都落了日志：补了几题的计数、以及连占位也填不进去的那一题（中间量带 seen）',
+      logged && logged.seen > 0 && !!logged.ph && !!logged.nf,
+      JSON.stringify(logged && { seen: logged.seen, ph: !!logged.ph, nf: !!logged.nf }));
+    check('那条计数与实际补上的题数一致（4 题：单选/判断/填空/只剩隐藏域），且点名 1 题填不进去',
+      logged && logged.ph && logged.ph.meta && logged.ph.meta.count === 4 &&
+      logged.ph.meta.unfillable === 1 && logged.nf && logged.nf.meta &&
+      logged.nf.meta.indices.join(',') === '6',
+      JSON.stringify(logged && { ph: logged.ph && logged.ph.meta, nf: logged.nf && logged.nf.meta }));
+  }
+});
+
+// ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，
   // 一次定向跑比来回跑整套快得多；写全套计数的规则不变（带筛选就不写）。

@@ -417,6 +417,64 @@
     return head;
   }
 
+  /**
+   * 模型把**单选题**的选项字母多吐了一个时，把那一段连续字母并回同一题。
+   *
+   * 现场证据（2026-11-11，用户那份 20 题的卷子，日志里当场抄下来的原文）：
+   *   `llm answer count mismatch, batch discarded (refill) {expected:3, received:4,
+   *    excerpt:["A","D",true,"历史|||人民"]}`
+   * —— 3 道题（单选 / 判断 / 填空）回了 4 项：真实答案**全在里面**，
+   * 只是那道单选题被模型顺手写成了两个字母（它拿不定主意，把两个候选都吐了出来）。
+   * 上面两个救法都够不着这种形状：
+   *   - `resegmentFlatAnswers` 只把连续字母归给**多选**，而多选本来就独占一批；
+   *   - `trimTrailingOptionLetters` 只切**尾部**，多余的字母在中间。
+   * 于是整批丢弃 → 补问 → 同样形状 → 又丢弃。这份卷子最终 10 个批次被整批丢掉，
+   * 用户看到的就是「填空题空的，单选题欠了几个」。
+   *
+   * 判据是**唯一解**，不是"看着像"：
+   *   ① 本批没有多选（多选的摊平归 resegment 管）；
+   *   ② 多出来的项数 ≤3，且被吸收的那一段**全是单字母**；
+   *   ③ 把 surplus 个字母并给第 k 题后，**每一项都和该题的题型对得上**
+   *      （单选=字母、判断=布尔或两字以内、填空/简答=非字母的非空文本）；
+   *   ④ 满足①~③的 k **只有一个**。有两个就可能是在猜（例如相邻两题都是单选，
+   *      并给谁都成立）—— 那种仍按原规则整批丢弃，宁可留空重问也不错位填答案。
+   *
+   * @returns {Array|null} 长度 === entries.length 的数组；分不出来返回 null
+   */
+  function absorbExtraOptionLetters(entries, data) {
+    if (!Array.isArray(entries) || !Array.isArray(data)) return null;
+    const n = entries.length;
+    const surplus = data.length - n;
+    if (n < 2 || surplus < 1 || surplus > 3) return null;
+    if (entries.some((e) => String((e && e.type) || '') === 'multiple')) return null;
+
+    function typeFits(entry, item) {
+      const type = String((entry && entry.type) || '');
+      if (item === null || item === undefined) return false;
+      try { if (!PROMPT.normalizeItem(item)) return false; } catch (eNorm) { return false; }
+      if (type === 'single') return isSingleLetterItem(item);
+      if (type === 'judge') {
+        return typeof item === 'boolean' || (typeof item === 'string' && item.trim().length > 0 && item.trim().length <= 2);
+      }
+      // 填空 / 简答：不能是光一个选项字母（那是选择题的形状）
+      return !isSingleLetterItem(item) && String(item).trim().length > 0;
+    }
+
+    const solutions = [];
+    for (let k = 0; k < n; k++) {
+      if (String((entries[k] && entries[k].type) || '') !== 'single') continue;
+      const run = data.slice(k, k + 1 + surplus);
+      if (run.length !== 1 + surplus) continue;
+      if (!run.every(isSingleLetterItem)) continue;
+      const cand = data.slice(0, k).concat([run[0]], data.slice(k + 1 + surplus));
+      if (cand.length !== n) continue;
+      if (!cand.every((item, i) => typeFits(entries[i], item))) continue;
+      solutions.push(cand);
+      if (solutions.length > 1) return null;   // 第二种成立 = 在猜，不采用
+    }
+    return solutions.length === 1 ? solutions[0] : null;
+  }
+
   function parseLLMResponse(text, expectedCount) {
     const cleaned = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     // ⚠️ 前两个分支必须 **Array.isArray 才算成功**：JSON.parse 对裸 JSON 标量
@@ -953,14 +1011,26 @@
             });
             items = trimmed;
           } else {
-            appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
-              expected: entries.length,
-              received: result.data.length,
-              // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
-              // 还是"回的是别的批次"，而这两种要修的完全不是一处。
-              excerpt: JSON.stringify(result.data).slice(0, 220)
-            });
-            return;
+            // 第三种形状：多出来的字母**夹在中间**，前两个救法都够不着（见 `absorbExtraOptionLetters`）。
+            // 现场那份 20 题的卷子有 10 个批次栽在这一格 —— 答案其实在，只是被丢弃。
+            const absorbed = absorbExtraOptionLetters(entries, result.data);
+            if (absorbed) {
+              appendRuntimeLog('warn', 'llm extra option letters absorbed' + (label ? ' (' + label + ')' : ''), {
+                expected: entries.length,
+                received: result.data.length,
+                excerpt: JSON.stringify(result.data).slice(0, 180)
+              });
+              items = absorbed;
+            } else {
+              appendRuntimeLog('warn', 'llm answer count mismatch, batch discarded' + (label ? ' (' + label + ')' : ''), {
+                expected: entries.length,
+                received: result.data.length,
+                // 把收到的内容抄一小段：只报"几个对几个"没法判断是"被压平了"
+                // 还是"回的是别的批次"，而这两种要修的完全不是一处。
+                excerpt: JSON.stringify(result.data).slice(0, 220)
+              });
+              return;
+            }
           }
         }
       }

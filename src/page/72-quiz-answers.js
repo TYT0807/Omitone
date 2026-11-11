@@ -10,7 +10,7 @@
  * 答案的规范化与比对（按题型把答案规整成可比形态）
  * 候选答案与组合排序、避开已知错答、尽力而为的填充
  *
- * 本段的方法（40 个）：
+ * 本段的方法（42 个）：
  *   _loadQuizCorrectAnswerCache、_saveQuizCorrectAnswerCache、
  *   _findQuizAnswerInput、_getQuestionIdFromElement、_mapQuizTypeValue、
  *   _getQuestionTypeFromElement、_normalizeQuizTitleKey、
@@ -24,7 +24,7 @@
  *   _areAllQuizQuestionsConfirmedCached、_getKnownWrongCanonicalSet、
  *   _getChoiceCandidateAnswers、_clearKnownWrongQuizAnswersForQuestion、
  *   _isQuizQuestionBestEffort、_fillBestEffortQuizAnswers、
- *   _answerLocalMultiChoiceQuestions、
+ *   _answerLocalMultiChoiceQuestions、_blankFillPlaceholder、_fillBlankQuizQuestions、
  *   _sortMultiFallbackCombos、_chooseFallbackQuizAnswer、
  *   _getQuestionOptionLetters、_generateChoiceCombinations、
  *   _avoidKnownWrongAnswer、_fillCachedQuizAnswers、_dispatchQuizInputEvents、
@@ -803,6 +803,106 @@
         });
       }
       return handled;
+    },
+
+    /**
+     * 填空题的占位答案：**每个空格各给一个「1」**，用 `|||` 连起来。
+     *
+     * 为什么不能整题只给一个「1」：`_fillText` 按 `|||` 把答案分给每一格，
+     * 分不到的格子重复**最后一格**，而平台真正提交的隐藏域 `#answer{qid}`
+     * 写的是 `values.join('')`。于是两格的题只给一串「1」时，隐藏域里就只有
+     * 一个字符 —— 用户看到的正是「填空题空的、后面那格没填」。
+     *
+     * 格子数按 `_fillText` 同一个选择器数，保证「数的」和「填的」是同一批控件。
+     * 一格都数不出来（答题框是富文本编辑器）时返回单个「1」，走 `_fillTextarea` 那条路。
+     */
+    _blankFillPlaceholder: function (el) {
+      var boxes = 0;
+      try {
+        boxes = Array.from(el.querySelectorAll('input[type="text"], input:not([type])')).length;
+      } catch (e) {
+        boxes = 0;
+      }
+      var parts = [];
+      for (var i = 0; i < (boxes || 1); i++) parts.push('1');
+      return parts.join('|||');
+    },
+
+
+    /**
+     * 交卷前最后一道：**任何还空着的题都不许带着空白交出去**。
+     *
+     * 现场证据（2026-11-11，用户那份 20 题的卷子，单选 5 / 多选 5 / 填空 5 / 判断 5）：
+     *   `llm answer count mismatch, batch discarded` 主批 5 次 + 补问批 5 次，
+     *   `quiz round skipped: no progress` 13 次 —— 模型其实**答了**（收到的数组里
+     *   连着 `["A","D",true,"历史|||人民"]` 这种真实答案），只因为长度对不上被**整批丢掉**，
+     *   于是这些题从头到尾没人填 → 表单永远不满 → 整卷既交不出去也不跳过。
+     *   用户看到的正是那一句「填空题空的，单选题欠了几个」。
+     *
+     * 取舍按用户 2026-11-11 的裁定：「填空题我觉得不用动脑子，随便填个 1 也行，
+     * 大部分情况下这个错误没人管的」—— 留白是**稳丢的分**，占位是**有可能对**的分，
+     * 而卡死连交卷机会都烧掉。所以这里只在"确实空着"时补，且：
+     *   - 只补选择/文字题，**不碰多选**（复选重填会把自己切掉，那条路归
+     *     `_answerLocalMultiChoiceQuestions` 管，它已经跑过了）；
+     *   - 单选/判断的占位**走 `_chooseFallbackQuizAnswer`**，天然避开已知错答，
+     *     不是硬写 A；
+     *   - 记的 source 是 `blank-fallback` —— 与 `confirmed-cache` / `llm` 分开，
+     *     提交审计与"下次别再问模型"那几处判据都不会把它当成正确答案。
+     *
+     * @returns {Object} 形如 `{2: true, 7: true}` 的下标表：这些题由占位补上
+     */
+    _fillBlankQuizQuestions: function (questions, preferredDoc) {
+      var filled = {};
+      if (!questions || !questions.length) return filled;
+      var self = this;
+      var doc = preferredDoc || null;
+      var filledCount = 0;
+      var unfillable = [];
+
+      questions.forEach(function (question, index) {
+        if (!question || !question._element) return;
+        var type = String(question.type || '');
+        if (type !== 'single' && type !== 'judge' && type !== 'fill' && type !== 'short') return;
+        if (self._isQuizQuestionFilled(doc, question)) return;
+
+        var guess = '';
+        if (type === 'fill') guess = self._blankFillPlaceholder(question._element);
+        else if (type === 'short') guess = '不会';
+        else guess = self._chooseFallbackQuizAnswer(type, question, doc, '', 1);
+        if (guess === null || guess === undefined || String(guess).trim() === '') {
+          unfillable.push(index);
+          return;
+        }
+
+        if (type === 'fill') self._fillText(question._element, guess);
+        else if (type === 'short') self._fillTextarea(question._element, guess);
+        else self._fillChoice(question._element, guess, 'radio');
+
+        var value = self._getQuizQuestionFilledValue(doc, question);
+        if (!value) {
+          unfillable.push(index);
+          return;
+        }
+        self._markQuizQuestionAnsweredThisRun(question, 'blank-fallback', value, type);
+        filled[index] = true;
+        filledCount++;
+      });
+
+      if (filledCount) {
+        emitRuntimeLog('warn', 'blank questions filled with placeholder before submit', {
+          count: filledCount,
+          unfillable: unfillable.length,
+          hint: '这些题模型那一份没能落到页面上（多为整批长度不符被丢弃），先按占位补上让卷子交得出去；' +
+            '填空补 1、简答补「不会」、单选与判断在选项里挑一个没被判过错的'
+        });
+      }
+      if (unfillable.length) {
+        emitRuntimeLog('warn', 'blank questions could not be filled even with placeholder', {
+          indices: unfillable.slice(0, 20),
+          hint: '这些题连答题框都找不到（或读不到选项字母）—— 保持未答，下一轮照旧问模型'
+        });
+      }
+      return filled;
     },
 
     /**

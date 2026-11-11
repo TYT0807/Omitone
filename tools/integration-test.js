@@ -1066,6 +1066,91 @@ async function testEmptyAnswerRefill() {
 }
 
 // ---------------------------------------------------------------------------
+// [8b] 单选题多吐一个字母（2026-11-11 真实卷子的当场形状）：并回同一题，别整批丢弃
+//
+// 为什么单独立一条：那天的日志里 `llm answer count mismatch, batch discarded`
+// 主批 + 补问一共响了 10 次，`excerpt` 是 `["A","D",true,"历史|||人民"]` ——
+// **答案其实全在**，只因为 3 道题回了 4 项就被整批扔掉，
+// 于是那份 20 题的卷子「填空题空的，单选题欠了几个」（用户原话）。
+// 上面两个救法够不着这种形状：resegment 只归多选（多选独占一批），
+// trimTrailing 只切尾部，而多出来的字母夹在中间。
+//
+// ⚠️ 同时钉住**反向**的那半：形状有歧义时（相邻两题都是单选，并给谁都成立）
+// 必须仍然丢弃 —— 错位把答案填到别的题上，比留空重问糟得多。
+// ---------------------------------------------------------------------------
+async function testMiddleOptionLetterAbsorb() {
+  console.log('\n[8b] 单选多吐一个字母（夹在中间）并回该题，有歧义时仍不猜');
+
+  var harness = createHarness({
+    modelResponder: function () { return JSON.stringify(['A', 'D', true, '历史|||人民']); }
+  });
+  harness.sendFromPage({
+    source: 'xxt_app', id: 82, type: 'llm_request',
+    payload: {
+      questions: [
+        { index: 0, type: 'single', title: '单选题甲', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 1, type: 'judge', title: '判断题乙', options: ['正确', '错误'], previousWrongAnswers: [] },
+        { index: 2, type: 'fill', title: '填空题丙', options: [], previousWrongAnswers: [] }
+      ]
+    }
+  });
+  var data = await harness.waitForResponse(82);
+
+  check('收到应答', data !== null);
+  if (!data) return;
+  check('success = true（这一批不再整批丢弃）', data.success === true, JSON.stringify(data).slice(0, 240));
+  if (!Array.isArray(data.data)) return;
+
+  var byIndex = {};
+  data.data.forEach(function (a) { byIndex[a.index] = a.answer; });
+  check('三道题一个不少（0/1/2 全有答案）',
+    Object.keys(byIndex).length === 3, JSON.stringify(byIndex));
+  check('单选拿到 A（吸收多余字母，不是丢掉整批）', byIndex[0] === 'A', JSON.stringify(byIndex[0]));
+  check('判断仍是 true —— 没被多出来的那个字母顶下去', byIndex[1] === true, JSON.stringify(byIndex[1]));
+  check('填空仍是「历史|||人民」（用户看到"填空全空"的正是这一格）',
+    byIndex[2] === '历史|||人民', JSON.stringify(byIndex[2]));
+
+  var logs = (harness.sandbox.__store && harness.sandbox.__store.runtimeLogs) || [];
+  var absorbed = logs.filter(function (e) { return String(e.message || '').indexOf('absorbed') >= 0; });
+  var discarded = logs.filter(function (e) { return String(e.message || '').indexOf('batch discarded') >= 0; });
+  check('日志写的是 absorbed，不是 discarded（现场靠这一条分辨救没救上）',
+    absorbed.length >= 1 && discarded.length === 0,
+    'absorbed=' + absorbed.length + ' discarded=' + discarded.length +
+    ' | ' + JSON.stringify(logs.map(function (e) { return e.message; })).slice(0, 200));
+
+  // ===== 歧义形状必须仍然不采用 =====
+  // [single, single, fill] 收到 4 项：把 'D' 并给第 0 题、或把 'E' 并给第 1 题，
+  // 两种切法都说得通 —— 这时任何"看起来对"的猜测都可能把答案填到隔壁题上。
+  var amb = createHarness({
+    modelResponder: function () { return JSON.stringify(['A', 'D', 'E', '填空答案']); }
+  });
+  amb.sendFromPage({
+    source: 'xxt_app', id: 83, type: 'llm_request',
+    payload: {
+      questions: [
+        { index: 0, type: 'single', title: '单选题甲', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 1, type: 'single', title: '单选题乙', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 2, type: 'fill', title: '填空题丙', options: [], previousWrongAnswers: [] }
+      ]
+    }
+  });
+  var ambData = await amb.waitForResponse(83);
+  check('歧义形状收到应答', ambData !== null);
+  if (ambData && Array.isArray(ambData.data)) {
+    var ambBy = {};
+    ambData.data.forEach(function (a) { ambBy[a.index] = a.answer; });
+    var fillGotLetter = typeof ambBy[2] === 'string' && /^[A-Za-z]$/.test(ambBy[2].trim());
+    check('有歧义时不猜：填空题绝不拿到光一个选项字母', !fillGotLetter, JSON.stringify(ambBy[2]));
+  } else {
+    check('有歧义时不猜：整批仍按丢弃处理', true);
+  }
+  var ambLogs = (amb.sandbox.__store && amb.sandbox.__store.runtimeLogs) || [];
+  check('歧义那一批没有被 absorbed 采用（日志里不许出现 absorbed）',
+    ambLogs.every(function (e) { return String(e.message || '').indexOf('absorbed') < 0; }),
+    JSON.stringify(ambLogs.map(function (e) { return e.message; })).slice(0, 200));
+}
+
+// ---------------------------------------------------------------------------
 // [9] 字形映射表：运行时解码器必须与明文表给出同样的结果
 //
 // 二进制表（122KB）替代了明文 JSON（347KB），这里验的就是 content.js 实际调用的
@@ -2023,6 +2108,7 @@ async function main() {
   await testGeminiProtocol();
   await testPromptContainsBannedAnswers();
   await testEmptyAnswerRefill();
+  await testMiddleOptionLetterAbsorb();
   await testFontTable();
   await testThinkingLevels();
   await testApiKeyNormalize();
