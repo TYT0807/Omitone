@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '30df9b04dc';
+var OMITONE_CODE_REV = 'b905d433dc';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -3429,7 +3429,7 @@ var OMITONE_CODE_REV = '30df9b04dc';
           emitRuntimeLog('info', 'captcha handling disabled by switch', {});
           return;
         }
-        var noVision = '';
+        var structural = '', structReason = '';
         for (var attempt = 1; attempt <= 4; attempt++) {
           var captcha = this._detectStandaloneCaptcha();
           if (!captcha) {
@@ -3451,15 +3451,20 @@ var OMITONE_CODE_REV = '30df9b04dc';
               attempt: attempt,
               error: String(rec.error || '').slice(0, 160)
             });
-            // 「看不懂图」是结构性失败：模型没有视觉输入这条路，
-            // 后面 3 次只是把同样的钱再花 3 遍 —— 当场收手。
+            // 「看不懂图」与「思考把输出预算占满」都是结构性失败：同一份配置再跑 3 次
+            // 只是把同样的钱再花 3 遍 —— 当场收手。但**两者的出路完全不同**，
+            // 混成一个 reason 就等于把用户支到另一条不相干的路上（见 14-B④ 的同一个坑）。
             // ⚠️ 判据只认**厂商侧**的说法。以前里面混着 `image` 和 `empty`，
             // 而我们自己那一侧的失败串正好叫 'captcha image capture failed'、
             // 'empty code after clean' —— 于是图没加载完、模型回了一句人话，全被误判成
             // 「这个模型没有看图能力」：实测真墙因此停手 15 分钟，还让用户去设置里
             // 换「看图模型」（那是完全无关的一条路）。自己这边的失败串从此说中文。
-            if (/not support|unsupported|multimodal|vision|不支持|空回复|看图/i.test(String(rec.error || ''))) {
-              noVision = String(rec.error || '').slice(0, 120);
+            var errText = String(rec.error || '');
+            if (/not support|unsupported|multimodal|vision|不支持|空回复|看图/i.test(errText)) {
+              structural = errText.slice(0, 120);
+              // 结束原因 length = 思考 token 把 max_tokens 吃光（厂商确实看见图了），
+              // 该调的是「思考强度」，不是模型
+              structReason = /结束原因 length|思考把输出的预算占满/.test(errText) ? 'thinkingBudgetFull' : 'noVisionModel';
               break;
             }
           }
@@ -3476,17 +3481,20 @@ var OMITONE_CODE_REV = '30df9b04dc';
           await sleep(700);
         }
         var cycles = budget.cycles + 1;
-        if (noVision || cycles >= 2) {
-          var pauseMs = noVision ? 15 * 60000 : 10 * 60000;
+        if (structural || cycles >= 2) {
+          var pauseMs = structural ? 15 * 60000 : 10 * 60000;
           var pauseUntil = Date.now() + pauseMs;
           this._writeStandaloneCaptchaBudget(cycles, pauseUntil, String(location.href || ''));
           emitRuntimeLog('error', 'standalone captcha stopped, needs a human', {
             cycles: cycles,
-            reason: noVision ? 'noVisionModel' : 'twoCyclesUnsolved',
-            error: noVision,
+            reason: structural ? structReason : 'twoCyclesUnsolved',
+            error: structural,
             resumeInMs: pauseMs,
             hint: '不再刷新这一页（每刷新一次就是再向站方要一张新验证码，账号会被扣得更紧）。' +
-              '请亲手在页面上输入一次验证码；想让插件自己过，请在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+              '请亲手在页面上输入一次验证码；' +
+              (structReason === 'thinkingBudgetFull'
+                ? '这一条不是模型看不懂图 —— 是思考把输出的预算占满了。把设置里的「思考强度」调到关闭（或换不带思考的模型），再回来点一次即可。'
+                : '想让插件自己过，请在设置里把「验证码识别模型」或「看图模型」填成会看图的模型（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）')
           });
           return;
         }

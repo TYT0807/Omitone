@@ -5337,7 +5337,8 @@ SCENARIOS.push({
       'app._recognizeCaptchaImage=function(){w.rec++;var f=w.fail;' +
       '  return Promise.resolve({ok:f==="ok",code:"ab12",' +
       '    error:f==="ok"?"":(f==="vision"?"验证码识别返回空回复（结束原因 无）"' +
-      '      :(f==="notReady"?"验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）":"提交被拒，识别不对"))});};' +
+      '      :(f==="thinking"?"验证码识别返回空回复（结束原因 length） —— 思考把输出的预算占满了，把「思考强度」调到关闭即可"' +
+      '      :(f==="notReady"?"验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）":"提交被拒，识别不对")))});};' +
       // click 的桩必须**返回一个 via**：真实实现现在就是这么回话的，桩返回 undefined
       // 就等于把「日志里到底有没有凭据」这件事测成了空值
       'app._fillCaptchaInput=function(){};' +
@@ -5397,9 +5398,13 @@ SCENARIOS.push({
     var st6 = await wallStep('0,0', 'notReady', 25000);
     await new Promise(function (r) { setTimeout(r, 700); });
     var c6 = JSON.parse(await ctx.client.evaluate('window.__wall.counts()'));
+    // 第 7 步：另一种结构性失败 —— 「空回复，但结束原因是 length」
+    var st7 = await wallStep('0,0', 'thinking', 22000);
+    await new Promise(function (r) { setTimeout(r, 700); });
+    var c7 = JSON.parse(await ctx.client.evaluate('window.__wall.counts()'));
     await ctx.client.evaluate('window.__wall.finish()');
 
-    check('14-A 夹具自证：这一页真的挂得上验证码墙的桩、跑完六步后仍是抓得到图片与输入框的验证码页' +
+    check('14-A 夹具自证：这一页真的挂得上验证码墙的桩、跑完七步后仍是抓得到图片与输入框的验证码页' +
       '（否则后面那几条是空测）',
       setupObj.ready === true && setupObj.detect === true && end.stillDetectable === true && end.seen > 0,
       JSON.stringify({ setup: setupObj, stillDetectable: end.stillDetectable, seen: end.seen }));
@@ -5447,6 +5452,21 @@ SCENARIOS.push({
       JSON.stringify({ dRec: st6.rec - end.rec, dReloads: st6.reloads - end.reloads,
         dStop: c6.stop.length - end.stop.length, dFailed: c6.failed.length - end.failed.length,
         lastError: c6.failed[c6.failed.length - 1] }));
+    // ---- 批次 15：同为「空回复」，出路是两件不同的事 ----
+    // 「结束原因 length」= 厂商确实看见了图，是思考 token 把 max_tokens 吃光。
+    // 这时候仍叫用户去换「看图模型」，就是 14-B④ 那个坑换了个方向再犯一次：
+    // 把人支到一条不相干的路上（而真正要调的开关就在同一页设置里）。
+    check('批次 15：思考占满预算也算结构性失败（一轮只发 1 次、不刷新），但 reason 不许冒充 noVisionModel',
+      st7.rec === c6.rec + 1 && st7.reloads === c6.reloads &&
+      c7.stop.length === c6.stop.length + 1 &&
+      c7.stop[c7.stop.length - 1].reason === 'thinkingBudgetFull',
+      JSON.stringify({ dRec: st7.rec - c6.rec, dReloads: st7.reloads - c6.reloads,
+        reasons: c7.stop.map(function (m) { return m.reason; }) }));
+    check('批次 15：那条给的出路是「把思考强度调到关闭」，不是又叫人换看图模型',
+      /思考强度/.test(String(c7.stop[c7.stop.length - 1].hint || '')) &&
+      !/看图模型|验证码识别模型/.test(String(c7.stop[c7.stop.length - 1].hint || '')) &&
+      /亲手/.test(String(c7.stop[c7.stop.length - 1].hint || '')),
+      JSON.stringify(c7.stop[c7.stop.length - 1]));
   }
 });
 
