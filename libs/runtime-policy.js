@@ -28,7 +28,14 @@
   };
   var strings = { discussionReply: 10000, systemPrompt: 50000, apiConnectionError: 300,
     providerPreset: 100, apiUrl: 4096, apiKey: 8192, model: 256, captchaModel: 256, visionModel: 256 };
-  var runtimeFields = booleans.concat(Object.keys(numbers), ['discussionReply', 'questionSelectorOverrides']);
+  // 枚举型配置：值只许是列出来的那几串。
+  // ⚠️ **必须和界面真正发出去的形状对上** —— 2026-11-12 同学机器现场：
+  // 弹窗每次都带上 `slowMachineMode:"auto"`，而这个真源里压根没有这一项，
+  // `validatePatch` 于是拒掉**整张补丁**，症状是「任何一个开关都存不住」
+  // （不是某一个开关坏了 —— 一个没登记的键会把同一次保存里的其它改动一起吞掉）。
+  var enums = { slowMachineMode: ['auto', 'on', 'off'] };
+  var runtimeFields = booleans.concat(Object.keys(numbers), Object.keys(enums),
+    ['discussionReply', 'questionSelectorOverrides']);
   function httpUrl(value) {
     if (typeof value !== 'string') return null;
     try {
@@ -51,6 +58,7 @@
         && (key !== 'apiUrl' || value === '' || !!httpUrl(value))
         && (key !== 'apiKey' || !/[\r\n\0]/.test(value));
     }
+    if (own.call(enums, key)) return enums[key].indexOf(value) !== -1;
     if (key === 'apiType') return ['openai', 'claude', 'gemini'].indexOf(value) !== -1;
     if (key === 'thinkingLevel') return ['off', 'low', 'high'].indexOf(value) !== -1;
     if (key === 'questionSelectorOverrides') {

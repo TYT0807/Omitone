@@ -670,7 +670,7 @@
         this._quizApiSkipLogAt = now;
         emitRuntimeLog('warn', 'skip quiz because api unavailable', {
           reason: skipReason,
-          error: String(this._quizApiLastError || this.configs.apiConnectionError || '').slice(0, 160)
+          error: String(this._quizApiLastError || '').slice(0, 160)
         });
       }
       if (this._switchToNextLearningCard(skipReason)) return true;

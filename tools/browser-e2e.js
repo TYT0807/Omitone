@@ -11334,6 +11334,124 @@ SCENARIOS.push({
   }
 });
 
+// ── 前端专项：弹窗点开关，整张补丁要存得下去（同学机器的第二道墙）────────────
+// 现场（2026-11-12）：同学那边**点任何一个开关都保存失败**，报错是
+// 「保存被拒：slowMachineMode 的值不合法」。锅不在那个开关 ——
+// 弹窗一次保存发的是**一整张补丁**（saveToggleConfig 把所有开关一起发），
+// 而后台策略 libs/runtime-policy.js 里压根没登记 `slowMachineMode`，
+// `validatePatch` 遇到没登记的键就整张拒 → 同批次的其它改动一起被吞，
+// 用户看到的就是"设置全存不住"。
+// ⚠️ 这里必须用**真鼠标**（Input.dispatchMouseEvent）：DOM 合成 click 不走命中测试，
+//    「沙盒全绿、现场点不动」就是这么漏过去的（AGENTS §5 夹具自证）。
+SCENARIOS.push({
+  name: '弹窗点开关整张补丁要存进去（慢机开关不再连坐）',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var PROBE = '(function(){var el=document.getElementById("slowMachineMode");' +
+      'if(!el) return {err:"no-el"};' +
+      'var r=el.getBoundingClientRect();var x=r.left+r.width/2,y=r.top+r.height/2;' +
+      'var hit=document.elementFromPoint(x,y);' +
+      'return {x:x,y:y,w:r.width,on:el.classList.contains("on"),' +
+      'aria:el.getAttribute("aria-checked"),hitSelf:hit===el,hitChild:!!hit&&el.contains(hit)};})()';
+    await sleep(500);   // 等 load() 把存储里的状态读回界面，否则基线读的是出厂 HTML
+    var s0 = await ctx.client.evaluate(PROBE);
+    check('前提：兼容慢机开关可见、且中心点真实命中它自己（不是被别的元素挡住）',
+      !!s0 && !s0.err && s0.w > 0 && (s0.hitSelf === true || s0.hitChild === true) &&
+      (s0.aria === 'true' || s0.aria === 'false'), JSON.stringify(s0));
+
+    var wasOn = s0.on === true;
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: s0.x, y: s0.y, button: 'left', buttons: 1, clickCount: 1 });
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: s0.x, y: s0.y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(900);   // 保存是 await 的：失败会 rollback 界面并弹「保存被拒」
+
+    var s1 = await ctx.client.evaluate(PROBE);
+    var toast = await ctx.client.evaluate(
+      'String((document.getElementById("toast")||{}).textContent||"")');
+    var stored = await ctx.client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{};res({slow:String(c.slowMachineMode),' +
+      'reviewSec:c.randomAnswerReviewSec,rate:c.playbackRate,muted:c.muted});});})');
+    check('点一下开关：界面翻过去且**没被回滚**（回滚就等于保存被拒）',
+      !!s1 && s1.on === !wasOn && s1.aria === String(!wasOn),
+      JSON.stringify({ wasOn: wasOn, now: s1 && s1.on, toast: toast.slice(0, 80) }));
+    check('toast 说的是「已自动保存」，不是「保存被拒 / 值不合法」',
+      /已自动保存/.test(toast) && !/被拒|无法保存|不合法/.test(toast), toast.slice(0, 120));
+    check('存储里落的是那一族真值（on / auto，不是布尔）',
+      !!stored && stored.slow === String(wasOn ? 'auto' : 'on'), JSON.stringify(stored));
+    check('同一次保存里的其它开关一起落盘（整张补丁没被连坐）',
+      !!stored && typeof stored.reviewSec === 'number' && typeof stored.rate === 'number' &&
+      typeof stored.muted === 'boolean', JSON.stringify(stored));
+
+    var logHit = await ctx.client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("runtimeLogs",function(r){' +
+      'var a=(r&&r.runtimeLogs)||[],out=[];' +
+      'for(var i=Math.max(0,a.length-40);i<a.length;i++){var m=String(a[i].message||"");' +
+      'if(/slowMachineMode|值不合法|invalid_patch|保存被拒/.test(m))out.push(String(a[i].level)+"|"+m.slice(0,80));}' +
+      'res(out.slice(0,4));});})');
+    check('最近 40 条日志里没有「保存被拒 / 值不合法」那一条',
+      Array.isArray(logHit) && logHit.length === 0, JSON.stringify(logHit));
+
+    // 再点回去：OFF 方向写的是 'auto'（不是 'off'），两个方向都得存得住
+    var s2 = await ctx.client.evaluate(PROBE);
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: s2.x, y: s2.y, button: 'left', buttons: 1, clickCount: 1 });
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: s2.x, y: s2.y, button: 'left', buttons: 0, clickCount: 1 });
+    await sleep(900);
+    var back = await ctx.client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'res(String(((r&&r.config)||{}).slowMachineMode));});})');
+    var s3 = await ctx.client.evaluate(PROBE);
+    check('关掉开关存回 "auto"（关掉=自适应，不是 "off"），且界面停在关的位置',
+      back === 'auto' && !!s3 && s3.on === false, JSON.stringify({ stored: back, on: s3 && s3.on }));
+  }
+});
+
+// ── 配置 handoff：存得住 ≠ 生效，值要真送到刷课页 ────────────────────────────
+// check.js 的 C 只证明后台认这张补丁；页面那份 configs 装得下的**只是投影结果**，
+// 没进 runtimeFields 的键页面读到的永远是它自己的默认值 —— 表现还是"打开了也没用"。
+// 实测过两层都要挂：slowMachineMode 先是不被登记（全存不住），
+// 修完登记又发现没投影（存得住也不生效），所以这条单独钉 handoff。
+SCENARIOS.push({
+  name: '慢机开关存进去要真投影到刷课页（存得住不等于生效）',
+  path: '/blank',
+  run: async function (ctx) {
+    var readSlow = '(function(){var a=window._xxtApp;' +
+      'return {slow:String(a.configs.slowMachineMode),' +
+      'has:Object.prototype.hasOwnProperty.call(a.configs,"slowMachineMode")};})()';
+
+    await writeConfig(ctx.extensionId, {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      slowMachineMode: 'auto', enableQuiz: false, autoNext: false
+    });
+    await sleep(800);   // storage.onChanged → content.js 重新投影 → 页面 mergeConfig
+    var first = await ctx.client.evaluate(readSlow);
+    await writeConfig(ctx.extensionId, {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      slowMachineMode: 'on', enableQuiz: false, autoNext: false
+    });
+    await sleep(800);
+    var second = await ctx.client.evaluate(readSlow);
+    check('开关值两次 handoff 都到页面（auto → on，不是只存在扩展里）',
+      !!first && !!second && first.has === true && first.slow === 'auto' && second.slow === 'on',
+      JSON.stringify({ first: first, second: second }));
+
+    // 反面对照：带服务商原话的失败原因**故意不投影**（postMessage 页面脚本看得见），
+    // 页面侧也不许再去读它 —— 以前那处 `|| this.configs.apiConnectionError` 是死的。
+    // ⚠️ 写存储必须走扩展页（writeConfig 用的那个隐藏 popup）——
+    //    刷课页的主世界里压根没有 `chrome`，直接 evaluate 会炸在 `chrome.storage` 上。
+    await writeConfig(ctx.extensionId, {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      slowMachineMode: 'on', enableQuiz: false, autoNext: false,
+      apiConnectionError: 'e2e-should-not-reach-page'
+    });
+    await sleep(800);
+    var inPage = await ctx.client.evaluate(
+      'Object.prototype.hasOwnProperty.call(window._xxtApp.configs,"apiConnectionError")');
+    check('apiConnectionError 留在扩展侧，不投影给页面（页面读不到才不会被页面脚本读到）',
+      inPage === false, JSON.stringify({ inPage: inPage }));
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

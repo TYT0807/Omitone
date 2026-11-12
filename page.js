@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '595e1e2d76';
+var OMITONE_CODE_REV = '487e91384b';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -102,8 +102,8 @@ var OMITONE_CODE_REV = '595e1e2d76';
     apiUrl: 'https://api.deepseek.com',
     hasApiKey: false,
     apiConnectionFailed: false,
-    // 连通性检测失败时由 content.js / popup.js 写入的最近一次原因（只用于诊断展示）
-    apiConnectionError: '',
+    // 失败原因字符串（apiConnectionError）**故意不投影到页面**：它可能带服务商原话，
+    // 而 publicConfig 走 window.postMessage，页面脚本看得见。真源只在弹窗与后台之间。
     model: 'deepseek-flash',
     captchaModel: '',
     // ===== 视觉模型（图片理解）=====
@@ -10318,7 +10318,7 @@ var OMITONE_CODE_REV = '595e1e2d76';
         this._quizApiSkipLogAt = now;
         emitRuntimeLog('warn', 'skip quiz because api unavailable', {
           reason: skipReason,
-          error: String(this._quizApiLastError || this.configs.apiConnectionError || '').slice(0, 160)
+          error: String(this._quizApiLastError || '').slice(0, 160)
         });
       }
       if (this._switchToNextLearningCard(skipReason)) return true;

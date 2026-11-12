@@ -2028,7 +2028,7 @@
   - **测试**：worker 单测 115 → **122**（新增形状：挂活动标签页的弹窗 sender、只有 `tab.id`
     没有 `tab.url`、完全不带 `frameId`、带 `#` 与带 `?` 的 URL；仍拒的三条：别的扩展的同名页面、
     `frameId:3`、路径后挂 `.evil`；另加一条断言 deny detail 不泄配置）；
-    e2e **92 场景 / 956 项全绿**（新场景「同版本号换包：构建到上传的几分钟不算更新，隔两天才算」
+    e2e **92 场景 / 956 项全绿**（新场景「同版本号换包：构建到上传的几分钟不算更新，隔两天才算」 <!-- 历史计数:start --><!-- 历史计数:end -->
     覆盖 30 分钟容差两侧；批次 31 的文案探针加 `senderWhy`，钉「括号里真带形状」与
     「后台没给细节时不弹一对空括号」）。
   - **反向验证**：一个注入只破一个行为 —— ① 退回 `sender.frameId !== 0` →
@@ -2049,6 +2049,69 @@
     `study begin {attachments:10}` 之后是 `study finished on page {searchedCount:0, waitedMs:10019}`，
     紧跟 `main frame is cross-origin, page likely blocked by captcha/anti-bot`。
     清单认到了 10 个任务点、一个帧都没配上，方向在**准入判据**那侧（HANDOVER §9 ㉒ 的第一格）。
+
+- **㊴批次 34：一个没登记的配置键，把整张设置表一起锁死了**（2026-11-12）
+  - **触发**：用户把批次 33 的包发给同学，报错从「没认出这是设置弹窗」变成了
+    「**保存被拒：slowMachineMode 的值不合法**」，同时「好像可以正常使用了」（刷课是好的）。
+    用户的要求是**杜绝**这一类：「这种上手就出问题的 BUG，极度影响使用体验」。
+  - **第一层：键压根没登记。** `slowMachineMode`（「兼容慢机」开关）是 2026-11-10 `8a26a7a` 加的，
+    页面 `DEFAULT_CONFIG`、`content.js` 兜底、`popup.js DEFAULTS` 三处都写了默认值 `'auto'`，
+    唯独**策略真源** `libs/runtime-policy.js` 的三个名单（`booleans` / `numbers` / `strings`）里没有它。
+    `validatePatch()` 是**逐键判、整张拒**的，而 `saveToggleConfig()` 每次发的是**一整张补丁** ——
+    于是症状不是"这一个开关坏了"，是**点任何一个开关都存不住**（同批次的其它改动一起被吞）。
+    ⚠️ 作者这台机器"正常"不是因为判据不同，是因为作者从 11-10 起**没在界面上点过开关**
+    （一直在改代码），这条路径一次都没走。上一批的「我正常、他全废」也是同一个形状。
+  - **第二层：登记了也没投影。** `runtimeFields` 同样没有这一项，
+    `publicConfig(config,'study')` 不往下带 → 页面 `perfFactor()` 读到的永远是它自己
+    `DEFAULT_CONFIG` 里的 `'auto'` → 表现成"打开了也没用"。两层要分开修、分开测。
+  - **改法。** 策略里新增**枚举**名单（`enums = { slowMachineMode: ['auto','on','off'] }`）：
+    `validField` 加枚举分支、`runtimeFields` 并入 `Object.keys(enums)`。做成枚举而不是布尔是有原因的 ——
+    界面 ON 写的是 `'on'`（强制 2 倍）、OFF 写的是 `'auto'`（按实测帧率自适应），
+    页面还留了 `'off'`→系数 1 的分支，三态都得认，**其它形状必须单独拒**（不许把 `true` 当"开"存进去）。
+  - **顺手清掉两处读不到值的死代码**：`70-quiz-flow.js` 那句
+    `|| this.configs.apiConnectionError`、以及 `00-shell-constants.js` 里那个恒为 `''` 的默认值。
+    `apiConnectionError` **故意不投影**：`publicConfig` 是 `window.postMessage` 到页面主世界的，
+    页面脚本看得见，而这里面可能带服务商原话 —— `tools/background-test.js` 早就断言过它不许下去
+    （「no secrets leak」那一条），所以正确的处置是**删掉页面上的死回退**，而不是给它开投影。
+  - **两道新守卫（`npm run check` 第 12 节，用真的 runtime-policy 跑，不复制名单）**：
+    - **C｜界面能存的键，策略必须认**：拿 `popup/popup.js` 的 `DEFAULTS` 当"界面可存词汇表"逐键喂
+      `validatePatch(…, 'popup')`；再把该键在界面上**实际会发出去的字面量**（三元分支，
+      比如 `slowMachineVal ? "on" : "auto"`）也逐个喂一遍。红的时候把"连坐"这件事写在话里。
+      ⚠️ 分支值收集第一版把 `els` 表里的 `apiUrl: document.getElementById("apiUrl")` 也当成
+      "要保存的值"，一屏假红（报"界面会发出的值 \"apiUrl\""）。改成**只从含 `?` 的表达式里取引号串**。
+    - **D｜存得住还要到得了页面**：界面能存、且页面会读的配置项，必须出现在
+      `publicConfig(…, 'study')` 里。⚠️ 这条**第一轮反向验证没红**，原因是页面读它不写
+      `this.configs.slowMachineMode`，而是 `var cfg = window._xxtApp && window._xxtApp.configs`
+      再 `cfg.slowMachineMode` —— 只按 `this.configs.` 找就漏了这一族。改成**从源码现推别名**
+      （只认 `var X = ….configs;` 这种以 `.configs` 收尾的赋值，不把
+      `var max = configs.visionMax…` 这类**取值**的变量名误当别名）。
+      这正是 AGENTS §5「**断言通过了本身就是线索**」又一次兑现：注入没红先怀疑没走到那一层。
+  - **测试**：worker 单测 122 → **126**（三个界面值都收 / 没登记的形状单独拒 /
+    整张被拒时**点名是哪个键**（弹窗那句「值不合法」的真源）/ 会投影到 study 页）；
+    e2e 92 → **94 场景**，新增两条：
+    ① 「弹窗点开关整张补丁要存进去（慢机开关不再连坐）」—— **真鼠标** `Input.dispatchMouseEvent`
+      点「兼容慢机」，8 项：中心点命中自证、界面翻页后**没被回滚**（回滚就等于被拒）、
+      toast 是「已自动保存」、存储里落的是 `on`/`auto` 而不是布尔、**同一次保存里其它开关一起落盘**
+      （这就是"没连坐"的证据）、最近 40 条日志里没有「保存被拒 / 值不合法」、再点回去存回 `auto`；
+    ② 「慢机开关存进去要真投影到刷课页」—— `writeConfig` 走真 handoff（storage →
+      `content.js` 的 `storage.onChanged` → `publicConfig` → 页面 `mergeConfig`）两次都读到，
+      外加一条反面对照：`apiConnectionError` 到不了页面。
+      ⚠️ 这条最初直接在刷课页里 `chrome.storage.local.get` —— 页面主世界压根没有 `chrome`，
+      报 `Cannot read properties of undefined (reading 'local')`；写存储要走那个隐藏扩展页。
+  - **反向验证**：`tools/check.js` 三道注入全被抓（清空 `enums` → 红在「策略不认这个键」；
+    移出 `runtimeFields` → 红在「不投影」；枚举少写 `'on'` → 红在「界面会发出的值」）；
+    e2e 两道注入分别红在「没被回滚」与「handoff 都到页面」。
+    注入脚本落盘判定沿用批次 33 的更正：**纯删除式**注入（`to` 是 `from` 的子串）改判
+    "旧文本已消失"，否则会被 from/to 互斥守卫直接跳过、跳过又长得像"验证过了"。
+  - **现场只读核对**（用户正挂着刷课的调试浏览器，CDP 9334，不点开关、不写配置）：
+    刷课页 `app.configs.slowMachineMode === 'auto'`、`configs` 共 57 个键 —— handoff 通道本身是通的。
+  - **验证**：`npm run check` / `npm test` / `npm run e2e` 全绿 —— 当前基线 **94 个场景 / 967 项**、
+    worker **126 项**、集成 **299 项**、自检 21 项。文档计数同步（AGENTS / README ×2 / tools/README ×2 /
+    HANDOVER ×3），顺带发现 README 里 `npm run itest` 那行还写着**226 项**（实测 299）——
+    它落在守卫那段"集成之后 6 个字符内"的窗口之外，是守卫的盲区，本轮把数字改对、但没动判据
+    （窗口一放宽就会误伤正文里那种**给集成报历史数字**的行，那是上一轮踩过三次的坑）。
+  - **同学那边还剩什么**：他这次报的「**看不到下面那个录音，然后卡死了**」不属于本轮，
+    与批次 33 结尾那条 `searchedCount:0` 是同一族（任务点**准入判据**），另开批次 35 跟进。
 
 
 ---

@@ -722,6 +722,19 @@ function collectHtmlScriptRefs() {
 //    ⚠️ 不能用"UI 的 id 就是配置键"来推断 —— 实测 autoMaxRate 的配置键叫
 //    autoMaxPlaybackRate，按 id 猜会误报。这里用**变量名**做纽带：
 //    bindToggle(els.<id>, () => <VAR> …) 拿到 VAR，再看 VAR 与哪个 config.<KEY> 对应。
+//
+// C) 界面能存的键，后台策略（libs/runtime-policy.js）必须认
+//    A/B 全绿也照样能废掉整张配置表：弹窗保存发的是**一整张补丁**，
+//    策略里 `validatePatch` 遇到任何没登记（或值不合法）的键就拒**整张**，
+//    于是"一个键没登记"表现成"所有开关都存不住"。
+//    （2026-11-12 同学机器实测：slowMachineMode 自 2026-11-10 起没登记，
+//    弹窗每次保存都带上它 → 用户点任何一个开关都失败。）
+//    这一条拿 DEFAULTS 当"界面可存词汇表"逐键喂给真的 validatePatch，
+//    并顺带核对该键在界面上**实际会发出的字面量**（三元分支，如 "on"/"auto"）。
+//
+// D) 存得住 ≠ 生效：页面会读的键必须真的被 publicConfig(study) 投影出去
+//    页面那份 configs 只装得下投影结果，没投影的键页面读到的永远是自己的默认值，
+//    症状同样是"打开了也没用"。这一条把 C 的词汇表接着往下游查一层。
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // 13. 测试数字守卫：文档里写的场景数必须等于代码里真实的场景数
@@ -1036,8 +1049,149 @@ function checkConfigDefaults() {
     problems.push('开关接线检查自身出错: ' + e.message);
   }
 
+  // ---- C) 界面能存的键，后台策略必须认 ----
+  // 同学机器现场（2026-11-12）：弹窗每次都带上 `slowMachineMode:"auto"`，
+  // 而 libs/runtime-policy.js 没登记这个键 → `validatePatch` 拒掉**整张补丁** →
+  // 症状不是"这一个开关坏了"，而是**任何设置都存不住**（一次保存里的其它改动一起被吞）。
+  // B) 管的是"界面 ↔ popup.js 接线"，接得上却登记漏了照样全废 —— 所以这一条独立存在。
+  try {
+    var POLICY = require(path.join(ROOT, 'libs', 'runtime-policy.js'));
+    var popupSrc = read('popup/popup.js');
+    var popupDefaults = literalMap(popupSrc, /const DEFAULTS = \{/);
+    if (!Object.keys(popupDefaults).length) {
+      problems.push('popup/popup.js 里没读到 DEFAULTS —— 守卫失效，请同步这段正则');
+    }
+    var rejected = [];
+    Object.keys(popupDefaults).forEach(function (key) {
+      // 默认值本身必须能存（DEFAULTS 是"恢复默认"整张写回去的内容）
+      var v = sampleLiteral(popupDefaults[key]);
+      var bad = null;
+      if (v === undefined) {
+        bad = '取不到样本值「' + popupDefaults[key] + '」，守卫无法判定 —— 请把它写成字面量';
+      } else if (!POLICY.validatePatch(mkPatch(key, v), 'popup').success) {
+        bad = '策略不认这个键/值（存下去会被整张补丁拒绝）';
+      }
+      // 再看这个键在界面上**实际会发出去**的其它字面量（三元分支等）——
+      // 只认引号串和纯数字，长表达式一律跳过，避免把 .slice(0, 300) 里的 300 当成值。
+      if (!bad) {
+        var reLine = new RegExp('^[ \\t]*' + key + '[ \\t]*:[ \\t]*(.*)$', 'gm');
+        var lm3, seen = Object.create(null);
+        while ((lm3 = reLine.exec(popupSrc))) {
+          var expr = lm3[1];
+          if (expr.length > 120) continue;
+          var cands = [];
+          var pure = expr.replace(/,$/, '').trim();
+          if (/^-?[\d.]+$/.test(pure)) cands.push(Number(pure));
+          // 只在"界面自己会在几个字面量里挑一个"（三元）时收集分支值 ——
+          // 否则 els 表里 `apiUrl: document.getElementById("apiUrl")` 这种行，
+          // 会把**元素 id**当成要保存的值来验，报出一屏假红。
+          else if (expr.indexOf('?') !== -1 && expr.indexOf('getElementById') === -1) {
+            var qm, reQ = /"([^"]*)"|'([^']*)'/g;
+            while ((qm = reQ.exec(expr))) cands.push(qm[1] !== undefined ? qm[1] : qm[2]);
+          }
+          cands.forEach(function (c) {
+            var sig = typeof c + ':' + c;
+            if (seen[sig]) return;
+            seen[sig] = true;
+            if (!POLICY.validatePatch(mkPatch(key, c), 'popup').success) {
+              bad = '界面会发出的值 ' + JSON.stringify(c) + ' 被策略拒掉（存下去会连带整张补丁一起失败）';
+            }
+          });
+          if (bad) break;
+        }
+      }
+      if (bad) rejected.push(key + '（' + bad + '）');
+    });
+    if (rejected.length) {
+      problems.push('界面存得出去、但策略不认的配置项: ' + rejected.join(', ') +
+        '\n      —— 一个没登记在 libs/runtime-policy.js 里的键，会让**所有**设置一起存不住' +
+        '（用户看到的是"点哪个开关都保存失败"），不是只有它自己坏');
+    }
+
+    // ---- D) 界面存得下、页面却要读的键，必须真的投影给页面 ----
+    // C 通过只说明"存得住"。存住之后还要能被 `publicConfig(config,'study')` 带到页面，
+    // 否则页面读到的永远是它自己那份默认值 —— 开关一样"打开了也没用"。
+    // （实测：slowMachineMode 存得住之后仍然不生效，就是因为没进 runtimeFields。）
+    // ⚠️ 页面读配置不全走 `this.configs.X`：慢机开关是在 perfFactor() 里
+    // `var cfg = window._xxtApp && window._xxtApp.configs; cfg.slowMachineMode` 读的。
+    // 只按 `this.configs.` 找会漏掉这一族（反向验证实测：注入"没进 runtimeFields"照样绿）。
+    // 所以别名从源码现推：`var <名字> = ….configs;` 这种收尾才算数，
+    // 免得把 `var max = configs.visionMax…` 这类**取值**的变量名误当成别名。
+    var pageSrc = read('page.js');
+    var readNames = ['configs'];
+    var am, aliasRe = /\b(?:var|let|const)\s+([\w$]+)\s*=\s*[^;]*?\.configs\s*;/g;
+    while ((am = aliasRe.exec(pageSrc))) {
+      if (readNames.indexOf(am[1]) === -1) readNames.push(am[1]);
+    }
+    var notProjected = Object.keys(popupDefaults).filter(function (key) {
+      return new RegExp('\\b(?:' + readNames.map(function (n) {
+        return n.replace(/[$]/g, '\\$&');
+      }).join('|') + ')\\.' + key + '\\b').test(pageSrc) &&
+        !Object.prototype.hasOwnProperty.call(
+          POLICY.publicConfig(mkConfigSample(popupDefaults), 'study'), key);
+    }).sort();
+    if (notProjected.length) {
+      problems.push('页面会读、但 publicConfig(study) 不投影的配置项: ' + notProjected.join(', ') +
+        '\n      —— 存进去了却送不到页面，开关表现成「打开了也没用」；' +
+        '要它生效就加进 runtime-policy.js 的 runtimeFields（能到页面 = 页面脚本看得见，' +
+        '带密钥或服务商原话的字段绝对不要投影）');
+    }
+  } catch (e) {
+    problems.push('配置策略守卫自身出错: ' + e.message);
+  }
+
   if (problems.length) fail('配置接线检查未通过:\n      ' + problems.join('\n      '));
-  else pass('配置接线完整（默认值齐全 · 界面开关的绑定/读取/保存三件齐全）');
+  else pass('配置接线完整（默认值齐全 · 界面开关的绑定/读取/保存三件齐全 · 策略认键且投影到页面）');
+}
+
+// 取出源码里某个对象字面量的「键 → 冒号后面那段原文（第一行）」，只认顶层键。
+// 用于 C/D：这里要的是"界面会存出去什么"，不是运行时求值。
+function literalMap(src, anchorRe) {
+  var m = src.match(anchorRe);
+  var result = Object.create(null);
+  if (!m) return result;
+  var i = src.indexOf('{', m.index), depth = 0, end = -1;
+  for (var j = i; j < src.length; j++) {
+    if (src.charAt(j) === '{') depth++;
+    else if (src.charAt(j) === '}') { depth--; if (depth === 0) { end = j; break; } }
+  }
+  if (end < 0) return result;
+  src.slice(i + 1, end).split(/\r?\n/).forEach(function (line) {
+    var t = line.trim();
+    if (!t || t.indexOf('//') === 0) return;
+    var km = t.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.+)$/);
+    if (km) result[km[1]] = km[2];
+  });
+  return result;
+}
+
+// 把字面量文本转成 JS 值。认不出的一律返回 undefined（守卫会点名"取不到样本"，
+// 不会静默放过 —— 静默跳过的守卫等于没有守卫）。
+function sampleLiteral(text) {
+  var t = String(text || '').replace(/,$/, '').trim();
+  if (t === 'true') return true;
+  if (t === 'false') return false;
+  if (/^-?[\d.]+$/.test(t)) return Number(t);
+  var q = t.match(/^"([^"]*)"$/) || t.match(/^'([^']*)'$/);
+  if (q) return q[1];
+  return undefined;
+}
+
+function mkPatch(key, value) {
+  var patch = {};
+  patch[key] = value;
+  return patch;
+}
+
+// publicConfig 的输入：整份界面默认值 + 一个非空 apiKey（hasApiKey 需要它才为 true）。
+function mkConfigSample(defaults) {
+  var cfg = {};
+  Object.keys(defaults).forEach(function (key) {
+    var v = sampleLiteral(defaults[key]);
+    if (v !== undefined) cfg[key] = v;
+  });
+  cfg.apiKey = 'sample-key';
+  return cfg;
 }
 
 function checkDeadFiles(jsFiles, manifest) {

@@ -64,6 +64,20 @@ async function main() {
   check('public projection has runtime and key-presence only', publicConfig.muted === true && publicConfig.hasApiKey === true && !JSON.stringify(publicConfig).includes('secret') && publicConfig.apiType === undefined && publicConfig.model === undefined && publicConfig.systemPrompt === undefined);
   check('captcha projection is minimal', JSON.stringify(Object.keys(p.publicConfig(h.local.config, 'captcha')).sort()) === '["enableCaptcha","hasApiKey"]');
   check('projection remains safe and idempotent', p.publicConfig(p.publicConfig(h.local.config, 'captcha'), 'captcha').hasApiKey === true);
+  // 2026-11-12 同学机器：弹窗每次保存都带上 `slowMachineMode`，而策略里没登记这个键。
+  // `validatePatch` 是**整张补丁**一起判的，于是症状不是"这一个开关坏了"，
+  // 而是"点任何一个开关都存不住"。下面四条把这一族钉死：
+  //   ① 界面真会发的三个值都要收；② 发别的形状必须单独拒（不许悄悄存进非法值）；
+  //   ③ 拒的时候要报出**是哪个键**（弹窗那句人话靠它）；④ 存住之后要真能投影到页面。
+  check('慢机开关的三个界面值都收（auto / on / off）',
+    ['auto', 'on', 'off'].every(value => p.validatePatch({ slowMachineMode: value }, 'popup').success === true));
+  check('慢机开关收到没登记的形状单独拒绝',
+    p.validatePatch({ slowMachineMode: 'yes' }, 'popup').success === false &&
+    p.validatePatch({ slowMachineMode: true }, 'popup').success === false);
+  check('整张补丁被拒时点名是哪个键（弹窗「值不合法」那句话的真源）',
+    (() => { const r = p.validatePatch({ muted: true, slowMachineMode: 'yes' }, 'popup'); return r.success === false && r.code === 'invalid_patch' && r.field === 'slowMachineMode'; })());
+  check('慢机开关会投影到学习页（存得住 ≠ 生效，页面读得到才叫生效）',
+    p.publicConfig({ slowMachineMode: 'on' }, 'study').slowMachineMode === 'on');
   check('stable fingerprint disregards object ordering', p.configFingerprint({ apiType: 'openai', model: 'm' }) === p.configFingerprint({ model: 'm', apiType: 'openai' }));
   check('fingerprint normalizes absent fields to empty strings', p.configFingerprint({}) === p.configFingerprint({ captchaModel: '', visionModel: '', systemPrompt: '' }));
   check('runtime status and toggles do not stale API fingerprint', p.configFingerprint(h.local.config) === p.configFingerprint({ ...h.local.config, muted: true, apiConnectionFailed: true, apiConnectionError: 'offline' }));
