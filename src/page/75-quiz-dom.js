@@ -1872,6 +1872,54 @@
         this._quizAnswered = false;
         return false;
       }
+      // ===== 乱选交卷前的「可设置检查窗口」（2026-11-12，用户直接提出）=====
+      //
+      // 原话：「关于乱答最好留一个可设置的窗口，别直接默认『不会』然后就提交还不能修改啊，
+      // 这太诡异了」。乱选的答案是**猜的**，而交卷不可逆 —— 填完立刻交，
+      // 用户看到的第一个事实永远是「想改也改不了了」。所以这里按配置停一下手：
+      //   · `randomAnswerReviewSec > 0`：arm 一个窗口，窗口内每次被调到都只等不点，
+      //     到点那一次才真的交（这期间 `_quizAnswered` 已经是 true，
+      //     `_handleQuiz` 开头会直接 return，不会把用户刚改的答案又随机冲掉）；
+      //   · `randomAnswerReviewSec === 0`：完全不自动交卷，停在「等你检查后自己交」，
+      //     每 10 秒一条日志说清怎么恢复（静默按住用户的卷子是本仓库最不能接受的一类）。
+      // ⚠️ 窗口必须记住「是为哪一份卷子 arm 的」：这里被 OCS 循环**每秒**调到，
+      //   没有卷子键就会每一秒重数一遍，窗口永远走不完（同族坑见 `_quizGarbledRoundAt`）。
+      //   `_quizReviewUntil === 0` 是「这份卷子正停在等用户」的记号 ——
+      //   所以用户把设置从 0 调回大于 0 时，这里会**重新 arm**，不会一升设置就立刻交卷。
+      // ⚠️ 两种状态**各按卷子键只打一条日志**：这条每秒被调到，只按时间节流仍会把日志刷满，
+      //   而完全静默又让人不知道插件在等什么。
+      if (this._isRandomAnswerMode()) {
+        var reviewSec = Number(this.configs && this.configs.randomAnswerReviewSec);
+        if (!isFinite(reviewSec)) reviewSec = 30;
+        var reviewKey = String(this._getQuizWorkKey(effectiveDoc || submitDoc) || '');
+        var reviewNow = Date.now();
+        if (reviewSec <= 0) {
+          if (this._quizReviewPaperKey !== reviewKey || this._quizReviewUntil !== 0) {
+            this._quizReviewPaperKey = reviewKey;
+            this._quizReviewUntil = 0;
+            emitRuntimeLog('info', 'quiz held for manual review', {
+              key: reviewKey.slice(0, 60),
+              hint: '乱选已把整卷填满，按设置停在「不自动交卷」：检查完自己点提交即可；' +
+                '想让它自己交，把设置「乱选交卷前留几秒检查」改成大于 0'
+            });
+          }
+          return false;
+        }
+        if (this._quizReviewPaperKey !== reviewKey || this._quizReviewUntil === 0) {
+          this._quizReviewPaperKey = reviewKey;
+          this._quizReviewUntil = reviewNow + reviewSec * 1000;
+          emitRuntimeLog('info', 'quiz review window armed before submit', {
+            seconds: reviewSec,
+            key: reviewKey.slice(0, 60),
+            hint: '乱选填完了整卷，' + reviewSec + ' 秒内可以自己改，到点自动交卷（交卷不可逆）'
+          });
+          return false;
+        }
+        if (reviewNow < this._quizReviewUntil) return false;
+        this._quizReviewPaperKey = '';
+        this._quizReviewUntil = 0;
+      }
+
       if (submitQuestions) {
         this._rememberSubmittedQuizAnswers(submitQuestions, effectiveDoc || submitDoc);
       }

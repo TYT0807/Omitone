@@ -15,8 +15,11 @@ const DEFAULTS = {
   autoNext: true,
   enableQuiz: true,
   randomAnswer: false,
+  // 乱选填满整卷后、自动交卷前留给用户检查的秒数（0 = 不自动交卷）
+  randomAnswerReviewSec: 30,
   enableCaptcha: true,
   enableDiscussion: true,
+  enableVote: true,
   // API 连接状态行展示用：失败原因（分类后人话，libs/api-error.js 写入）
   apiConnectionError: "",
   discussionReply: "1",
@@ -80,8 +83,10 @@ const els = {
   autoNext: $("autoNext"),
   enableQuiz: $("enableQuiz"),
   randomAnswer: $("randomAnswer"),
+  randomAnswerReviewSec: $("randomAnswerReviewSec"),
   enableCaptcha: $("enableCaptcha"),
   enableDiscussion: $("enableDiscussion"),
+  enableVote: $("enableVote"),
   discussionReply: $("discussionReply"),
   systemPrompt: $("systemPrompt"),
   restudy: $("restudy"),
@@ -134,6 +139,7 @@ let enableCaptchaVal = true;
 // 视觉（看图）默认关：图片计费远高于文本，不能替用户默认花钱
 let visionEnabledVal = false;
 let enableDiscussionVal = true;
+let enableVoteVal = true;
 let restudyVal = false;
 let apiTestGeneration = 0;
 let runOperation = 0;
@@ -414,9 +420,9 @@ function updateThinkingHint() {
         thinkingLevel: els.thinkingLevel.value
       })
     : "（缺少 libs/thinking.js，无法解析渠道）";
-  const base = "「关闭」是唯一实测过的档位，也是本项目一直以来的行为 —— 答题是模式化任务，"
-    + "实测关掉后一次请求从 361 token 降到 133。另外两档照厂商文档填写，未在真实题库验证；"
-    + "个别服务商会直接拒绝，程序会自动摘掉参数重试一次并把原因写进日志，不会把整次答题判死。";
+  const base = "用默认的「关闭」就好，这是唯一实测过的档位。"
+    + "另外两档更贵也更慢，个别服务商会直接拒绝 —— 真被拒绝时程序会自动去掉这个参数重试一次，"
+    + "并把原因写进日志，不会把整次答题判死。";
   els.thinkingHint.innerHTML = base + "<br><br><b>当前实际发送：</b>" + escapeHtml(desc);
 }
 
@@ -442,6 +448,14 @@ async function saveToggleConfig(showToast = true) {
     autoNext: autoNextVal,
     enableQuiz: enableQuizVal,
     randomAnswer: randomAnswerVal,
+    randomAnswerReviewSec: (function () {
+      // 空输入回落默认 30；非法值同样回落，绝不把 NaN 写进存储。0 是合法值（= 不自动交卷）。
+      var raw = els.randomAnswerReviewSec.value.trim();
+      if (!raw) return 30;
+      var num = Number(raw);
+      if (!isFinite(num) || num < 0) return 30;
+      return Math.min(600, Math.floor(num));
+    })(),
     enableCaptcha: enableCaptchaVal,
     visionEnabled: visionEnabledVal,
     visionBudgetPerChapter: (function () {
@@ -453,6 +467,7 @@ async function saveToggleConfig(showToast = true) {
       return Math.min(500, Math.floor(num));
     })(),
     enableDiscussion: enableDiscussionVal,
+    enableVote: enableVoteVal,
     discussionReply: els.discussionReply.value.trim() || "1",
     systemPrompt: els.systemPrompt.value.trim(),
     restudy: restudyVal
@@ -514,6 +529,7 @@ const updateQuiz = bindToggle(els.enableQuiz, () => enableQuizVal, (value) => { 
 const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (value) => { enableCaptchaVal = value; });
 const updateVision = bindToggle(els.visionEnabled, () => visionEnabledVal, (value) => { visionEnabledVal = value; });
 const updateDiscussion = bindToggle(els.enableDiscussion, () => enableDiscussionVal, (value) => { enableDiscussionVal = value; });
+const updateVote = bindToggle(els.enableVote, () => enableVoteVal, (value) => { enableVoteVal = value; });
 const updateRestudy = bindToggle(els.restudy, () => restudyVal, (value) => { restudyVal = value; });
 
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。 */
@@ -562,6 +578,7 @@ async function load() {
   enableCaptchaVal = config.enableCaptcha !== false;
   visionEnabledVal = config.visionEnabled === true;
   enableDiscussionVal = config.enableDiscussion !== false;
+  enableVoteVal = config.enableVote !== false;
   restudyVal = !!config.restudy;
   updateMuted(mutedVal);
   updateAutoMaxRate(autoMaxRateVal);
@@ -578,6 +595,7 @@ async function load() {
   updateCaptcha(enableCaptchaVal);
   updateVision(visionEnabledVal);
   updateDiscussion(enableDiscussionVal);
+  updateVote(enableVoteVal);
   updateRestudy(restudyVal);
   renderApiConnState(config);
 
@@ -597,6 +615,8 @@ async function load() {
   els.captchaModel.value = config.captchaModel || "";
   els.visionModel.value = config.visionModel || "";
   els.visionBudgetPerChapter.value = config.visionBudgetPerChapter !== undefined ? String(config.visionBudgetPerChapter) : "30";
+  // 乱选交卷前的检查秒数：老配置里没这个键时回落 30；**0 要原样显示**（0 = 不自动交卷，是用户的选择）。
+  els.randomAnswerReviewSec.value = config.randomAnswerReviewSec !== undefined ? String(config.randomAnswerReviewSec) : "30";
   // 思考强度：老配置里没有这个键，回落 'off' —— 也就是升级前的行为，不会突变。
   els.thinkingLevel.value = typeof OmitoneThinking !== "undefined"
     ? OmitoneThinking.normalizeLevel(config.thinkingLevel)
@@ -775,7 +795,7 @@ const popupLogView = self.OmitonePopupLogView.create({
 });
 window.addEventListener("pagehide", () => popupLogView.dispose());
 
-[els.systemPrompt, els.discussionReply, els.visionBudgetPerChapter].forEach((el) => {
+[els.systemPrompt, els.discussionReply, els.visionBudgetPerChapter, els.randomAnswerReviewSec].forEach((el) => {
   el.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
 });
 

@@ -7,6 +7,7 @@
   'use strict';
   var own = Object.prototype.hasOwnProperty;
   var booleans = ['autoMaxPlaybackRate', 'muted', 'enableDiscussion', 'autoNext', 'enableQuiz',
+    'enableVote',
     'randomAnswer', 'enableCaptcha', 'blockedReload', 'enableMedia', 'enableSeek',
     'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled',
     'quizZeroFillSkip'];
@@ -18,6 +19,8 @@
     stepSwitchGraceMs: [100, 600000], stepSwitchInitDelayMs: [100, 600000],
     taskDiscoverGraceMs: [100, 600000], taskPendingGraceMs: [100, 600000],
     quizSubmitWaitMs: [100, 600000], quizMaxSubmitAttempts: [1, 100],
+    // 乱选填满整卷后、点提交**之前**留给用户检查的秒数；0 = 不自动交卷（见 75-quiz-dom.js 的交卷闸）。
+    randomAnswerReviewSec: [0, 600],
     quizQuestionMaxMisses: [1, 100], popupQuizMaxAttempts: [1, 100],
     documentSkipTimeoutMs: [1000, 3600000], taskGiveUpAttempts: [1, 100],
     pptFlipIntervalMs: [100, 600000], guardNoProgressMs: [100, 600000],

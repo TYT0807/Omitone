@@ -222,7 +222,7 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 html[data-season="winter"] .pet-prop-winter{ display:block; right:-11px; bottom:-2px; width:9px; height:9px; border-radius:50%; background:#fff; box-shadow:0 -7px 0 -2px #fff; }
 html[data-season="summer"] .pet-prop-summer{ display:block; right:-10px; top:16px; width:7px; height:11px; border-radius:3px 3px 4px 4px; background:#f0b46a; }
 html[data-season="summer"] .pet-prop-summer::after{ content:""; position:absolute; left:0; top:-5px; width:7px; height:7px; border-radius:50%; background:#f6a5c0; }
-html[data-season="autumn"] .pet-prop-autumn{ display:block; left:-3px; top:11px; width:22px; height:5px; border-radius:3px; background:#c9a227; }
+html[data-season="autumn"] .pet-prop-autumn{ display:block; right:-9px; top:22px; width:11px; height:8px; border-radius:0 60% 0 60%; background:#d2691e; transform:rotate(-24deg); }
 html[data-season="spring"] .pet-prop-spring{ display:block; right:-9px; top:2px; width:7px; height:7px; border-radius:50%; background:#e0559b; box-shadow:6px 5px 0 -1px #8fd6a8; }
 
 /* 冬天雪人随点击变大 */
@@ -300,9 +300,9 @@ html[data-season="autumn"] .btn:active{ box-shadow:0 0 0 3px rgba(210,105,30,.22
 /* 春：按下时轻微上浮再落下（花开的那种"弹") */
 html[data-season="spring"] .btn:active{ transform:scale(.98) translateY(-1px); }
 
-/* 秋天：小人身上带一点暖调（"穿秋衣"的观感），围巾也加宽 */
+/* 秋天：小人身上带一点暖调（"穿秋衣"的观感），落叶也稍大 */
 html[data-season="autumn"] .pet-art{ filter:drop-shadow(0 2px 3px rgba(16,24,40,.16)) sepia(.14) saturate(1.12); }
-html[data-season="autumn"] .pet-prop-autumn{ width:26px; height:6px; border-radius:4px; }
+html[data-season="autumn"] .pet-prop-autumn{ width:13px; height:9px; }
 html[data-season="winter"] .btn{ background:linear-gradient(180deg,#6f9fca 0%,#4a7fb5 55%,#3a6a9c 100%); }
 html[data-season="autumn"] .btn{ background:linear-gradient(180deg,#e08a45 0%,#d2691e 55%,#b4551a 100%); }
 html[data-season="spring"] .btn{ background:linear-gradient(180deg,#ef7fb4 0%,#e0559b 55%,#c73f83 100%); }

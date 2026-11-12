@@ -2,14 +2,15 @@
  * 小角色的成长小游戏 —— 好感度 / 等级 / 刷课时长（规则层）。
  *
  * 定位与边界（和 pet.js 的既有原则完全同向）：
- *   - 数据全部本地：好感度存弹窗自己的 localStorage；刷课时长来自 content.js
+ *   - 数据全部本地：好感度存 chrome.storage.local 的 `omitonePetBond`（弹窗与上课页
+ *     共享同一份，真源在 content.js 的写入侧）；刷课时长来自 content.js
  *     写进 chrome.storage 的 `omitoneStudyStats`（只读消费）；
  *   - 对刷课逻辑零反向影响：没有任何代码路径从这里写回调度/答题状态；
  *   - 本文件只放**纯规则**（可被 Node 测试），存取与演出在 pet.js 里。
  *
  * 拓展点（想加内容就是加数据，不是改逻辑）：
  *   - 加等级   → LEVELS 加一行（min 是好感度门槛；只准往后追加，勿动老门槛）；
- *   - 加台词   → PAT_LINES 按等级加一组；
+ *   - 加台词   → PAT_LINES 按等级加一组；她自己在上课页开口的那一句池是 IDLE_LINES（保持短句）；
  *   - 加成就   → ACHIEVEMENTS 加一行（id/name/desc/need/line）；
  *   - 调手感   → RULES 一处（摸头上限 / 每日刷课转化上限 / 每多少分钟一点）。
  */
@@ -53,6 +54,18 @@
     ['无论多久，我都会在这里。', '和你在一起的每一天都开心。'],
     ['这份默契，不用说出来也存在。', '和你并肩坐着，就很有干劲。'],
     ['不管刷到多晚，我都在。', '往后也请多指教啦。']
+  ];
+
+  // ── 闲置台词（刷课页她偶尔自己开口；与摸头分开，因为摸头那句是"回应"）──
+  // ⚠️ 全部保持短句：她在页面上的气泡有行数上限，长句会被裁 —— 用户说过的"一大坨"就是这么来的。
+  var IDLE_LINES = [
+    '要不要站起来动一下？',
+    '我在这儿陪你刷～',
+    '这一节看了挺久了吧？',
+    '累了就歇会儿，我守着。',
+    '点我摸摸头有奖励哦。',
+    '别走开呀。',
+    '下一节就快了吧。'
   ];
 
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
@@ -226,6 +239,7 @@
     RULES: RULES,
     LEVELS: LEVELS,
     PAT_LINES: PAT_LINES,
+    IDLE_LINES: IDLE_LINES,
     ACHIEVEMENTS: ACHIEVEMENTS,
     dayKeyOf: dayKeyOf,
     prevDayKeyOf: prevDayKeyOf,

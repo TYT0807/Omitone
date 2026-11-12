@@ -1,0 +1,139 @@
+/* field-shape.expr —— 「现场到底长什么样」的测绘表达式（给 tools/debug-probe.js 用）
+ *
+ *   npm run field-shape
+ *   = node tools/debug-probe.js --port=9334 --match=chaoxing --file=tools/field-shape.expr
+ *
+ * 为什么要它：夹具（tools/browser-e2e.js 里的 build*Html）一旦长得像"实现"而不是像"现场"，
+ * 断言测的就是"代码和自己一致"（AGENTS §5）。这种分歧不该靠回忆或猜 ——
+ * 用户那台调试浏览器（9334）就是实地，量一次即可定谁对谁错。
+ * **量不出来的形状就是无效沙盒：改夹具，别改断言迁就它。**
+ *
+ * ⚠️ 只读：这里只读 DOM 与 `window.attachments`，不点任何东西、不写 storage、不导航，
+ *    也**不碰 chrome.storage**（那里面是 API Key，绝不允许进输出）。
+ *    `_kindFromAttachment` 是唯一被实跑的插件方法 —— 它没有副作用，且正是"沙盒说支持、
+ *    现场其实不支持"那类分歧的判据。
+ *
+ * 本文件不是独立 JS：它被 `(async () => { … })()` 包起来跑，所以顶层直接 `return`。
+ */
+var MAX_DEPTH = 4;
+
+// 字体反爬会把某些字母写成私有区码点（U+E000–U+F8FF），打到终端上"看着少一个字母" ——
+// 实测 ans-attach-ct 会显示成 "an -attach-ct"。所以私有区一律显式标成 {U+xxxx}，
+// 别让下一个人以为是探针坏了、或者更糟：以为 class 真的对不上。
+function plain(s) {
+  return String(s === undefined || s === null ? '' : s).split('').map(function (c) {
+    var n = c.charCodeAt(0);
+    if (n === 9 || n === 10 || n === 13) return ' ';
+    if (n >= 0xE000 && n <= 0xF8FF) return '{U+' + n.toString(16) + '}';
+    return c;
+  }).join('').replace(/ +/g, ' ').trim();
+}
+function cut(s, n) { s = plain(s); return s.length > n ? s.slice(0, n) + '…' : s; }
+function charCount(s) { return plain(s).replace(/\s+/g, '').length; }
+
+var out = { url: cut(location.href, 130), docs: [], attachments: [] };
+
+function scan(doc, label, depth) {
+  if (!doc || depth > MAX_DEPTH) return;
+  var rec = { label: label, boxes: [], cards: [], isFinished: [], iframes: [] };
+  try {
+    var bs = doc.querySelectorAll('.ans-attach-ct');
+    for (var i = 0; i < bs.length; i++) {
+      var icon = bs[i].querySelector('.ans-job-icon');
+      // ⚠️ 完成与否只认 class（`ans-job-finished`）：批次 20-G 实测**已完成的盒子里
+      //    那行 aria-label 照样写着「任务点未完成」**，图标文字一个字都不能信。
+      rec.boxes.push({
+        finished: bs[i].classList.contains('ans-job-finished'),
+        cls: cut(bs[i].className, 54),
+        ariaLabel: icon ? cut(icon.getAttribute('aria-label'), 16) : '(无 .ans-job-icon)',
+        text: cut(bs[i].innerText, 40)
+      });
+    }
+    var fs = doc.querySelectorAll('#isFinished, input[name="isFinished"]');
+    for (var j = 0; j < fs.length; j++) {
+      // `raw` 是原值的 JSON —— 空串和 "false" 是两件事（批次 20-A：空串=平台没话说，
+      // 当成"未完成"会把已经发过回帖的卡片反复重开，3 次预算烧光后整节既不发也不走）
+      rec.isFinished.push({ raw: JSON.stringify(plain(fs[j].value)), inBox: !!(fs[j].closest && fs[j].closest('.ans-attach-ct')) });
+    }
+    var cs = doc.querySelectorAll('#topicMainDiv[data], [data*="groupweb.chaoxing.com/course/topic"]');
+    for (var k = 0; k < cs.length; k++) {
+      // inBox 决定 `_discussionBoxFinishedFlag` 走不走得通：卡片与任务盒实测隔了两层 iframe
+      rec.cards.push({ inBox: !!(cs[k].closest && cs[k].closest('.ans-attach-ct')), data: cut(cs[k].getAttribute('data'), 90) });
+    }
+    var ifs = doc.querySelectorAll('iframe');
+    for (var m = 0; m < ifs.length; m++) {
+      var raw = String(ifs[m].getAttribute('src') || '');
+      var resolved = String(ifs[m].src || '');
+      if (/insertbbs|bbscircle|vote|zt\/|topic|work\?/i.test(raw + resolved) || ifs[m].id === 'voteIframe') {
+        rec.iframes.push({ id: ifs[m].id || '', attrSrc: cut(raw, 90), resolvedSrc: cut(resolved, 90) });
+      }
+    }
+  } catch (e) { rec.error = cut(e && e.message, 60); }
+  if (out.docs.length < 40) out.docs.push(rec);
+  var kids = [];
+  try { kids = Array.prototype.slice.call(doc.querySelectorAll('iframe')); } catch (e2) {}
+  for (var q = 0; q < kids.length && q < 30; q++) {
+    var sub = null;
+    try { sub = kids[q].contentDocument; } catch (e3) { continue; }   // 跨域：跳过，绝不抛（抛了会打断整轮）
+    if (sub && sub !== doc) scan(sub, 'iframe#' + (kids[q].id || cut(kids[q].src, 34)), depth + 1);
+  }
+}
+scan(document, 'top', 0);
+
+// 投票覆盖层的**出厂**形状（现场：容器不带 style、由样式表收着；iframe 的 src 是空串 → about:blank）
+var vc = document.querySelector('.voteContainer');
+var vi = document.getElementById('voteIframe');
+out.voteOverlay = {
+  container: vc ? {
+    display: getComputedStyle(vc).display,
+    inlineStyle: cut(vc.getAttribute('style'), 40),
+    parent: vc.parentElement ? (vc.parentElement.tagName + '.' + cut(vc.parentElement.className, 24)) : ''
+  } : null,
+  iframe: vi ? { attrSrc: JSON.stringify(String(vi.getAttribute('src'))), resolvedSrc: cut(vi.src, 90) } : null
+};
+if (vi) {
+  try {
+    var vd = vi.contentDocument;
+    out.voteOverlay.inner = vd ? {
+      readyState: String(vd.readyState), url: cut(vd.URL, 60),
+      bodyChars: charCount(vd.body ? (vd.body.innerText || vd.body.textContent) : ''),
+      radios: vd.querySelectorAll('input[type=radio],input[type=checkbox]').length,
+      optionLists: vd.querySelectorAll('.topic-option-list, .topic-options').length
+    } : 'CROSS/无';
+  } catch (e4) { out.voteOverlay.inner = 'CROSS ' + cut(e4.message, 40); }
+}
+
+// 附件表（各帧 window.attachments）+ 类型判定实跑
+(function collect(win, depth) {
+  if (!win || depth > MAX_DEPTH) return;
+  try {
+    if (Array.isArray(win.attachments)) win.attachments.forEach(function (a) {
+      var p = (a && a.property) || {};
+      var line = [cut(p.module || a.module, 18), cut(p.type || a.type, 12),
+        'job=' + String(p.job === undefined ? a.job : p.job),
+        'jobid=' + cut(p.jobid || a._jobid || a.jobid, 20),
+        'name=' + cut(p.name || a.name, 22)].join(' ');
+      if (out.attachments.indexOf(line) < 0) out.attachments.push(line);
+    });
+  } catch (e) {}
+  var f = [];
+  try { f = Array.prototype.slice.call(win.document.querySelectorAll('iframe')); } catch (e2) {}
+  for (var i = 0; i < f.length && i < 30; i++) {
+    try { if (f[i].contentWindow && f[i].contentWindow !== win) collect(f[i].contentWindow, depth + 1); } catch (e3) {}
+  }
+})(window, 0);
+
+var app = window._xxtApp;
+if (app && typeof app._kindFromAttachment === 'function') {
+  out.kindOf = {};
+  ['insertvote', 'insertbbs', 'insertvideo', 'questionwork', 'insertimage'].forEach(function (mod) {
+    try {
+      out.kindOf[mod] = String(app._kindFromAttachment({
+        property: { module: mod, type: mod.replace(/^insert/, ''), job: true }, job: true
+      }));
+    } catch (e) { out.kindOf[mod] = 'ERR'; }
+  });
+  out.enableVoteType = typeof (app.configs && app.configs.enableVote);
+}
+
+return JSON.stringify(out, null, 1);

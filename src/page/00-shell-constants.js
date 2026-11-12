@@ -55,6 +55,21 @@
    */
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
+  /**
+   * 投票任务点（insertvote）的四个数。
+   *
+   * 覆盖层是平台自己点出来的（直接访问那个 api/work 地址是 403），所以要等它长出来；
+   * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
+   * 新增 await 必须可超时是硬规矩（AGENTS §2.2）。
+   *
+   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
+   * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   */
+  var VOTE_OVERLAY_WAIT_MS = 12000;
+  var VOTE_BOX_WAIT_MS = 15000;
+  var VOTE_MAX_TRIES = 4;
+  var VOTE_COOLDOWN_MS = 5 * 60 * 1000;
+
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
     autoMaxPlaybackRate: true,
@@ -64,6 +79,9 @@
     enableDiscussion: true,
     discussionReply: '1',
     discussionTimeoutMs: 90000,
+    // 投票任务点（insertvote）：点开平台自己的投票覆盖层、随手勾第一项、提交。
+    // 不计分，只要把任务盒翻成已完成；关掉它就会停在「还有任务点未完成」那一节。
+    enableVote: true,
     autoNext: true,
     enableQuiz: true,
     // 内部调参（不上弹窗）：追加的题目容器选择器。学习通改版换了题目标记时，
@@ -75,6 +93,11 @@
     // 「乱选」：不接 AI，本地随机生成答案。给不想配 API key 的用户用，
     // 只求把卷交出去，不求对。默认关。
     randomAnswer: false,
+    // 乱选填满整卷之后、**点提交之前**留给检查的秒数（判据见 75-quiz-dom.js `_maybeSubmitQuiz`）。
+    // 为什么默认 30 而不是 0：交卷是不可逆的，而乱选的答案是猜的 —— 原样填完就交，
+    // 用户看到的第一句永远是「怎么不能改了」。30 秒里可以自己改、也可以直接交（手动点）。
+    // 设 0 = 完全不自动交卷，停在「等你检查后自己交」；设大了就是给自己更多检查时间。
+    randomAnswerReviewSec: 30,
     enableCaptcha: true,
     // 主内容区被换成跨域页面（验证码/反作弊）且持续 20 秒无法访问时自动刷新恢复（3 分钟冷却）
     blockedReload: true,

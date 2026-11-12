@@ -114,8 +114,14 @@
       }
 
       var now = Date.now();
-      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 5000) {
+      var mediaSig = String(reason || '') + '|' + (media.paused ? 'paused' : 'playing');
+      // ⚠️ 5 秒 → 30 秒，并且**只在理由/播放状态变了**时立刻出：
+      //    这一条每 tick 都发（现场约 5 秒一条），200 条日志环十几分钟就被它刷满，
+      //    而用户来问「为什么这节跳过」时要看的那几条早就被冲掉了。
+      //    心跳本身留着（30 秒一条照样看得出 `currentTime` 在走）。
+      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 30000 || mediaSig !== this._mediaWaitLogSig) {
         this._mediaWaitLogAt = now;
+        this._mediaWaitLogSig = mediaSig;
         emitRuntimeLog('info', 'media pending, delay completion', {
           reason: reason || '',
           currentTime: Number(media.currentTime || 0),
@@ -1091,10 +1097,21 @@
         var duration = Number(current.duration || 0);
         if (duration && Number(current.currentTime || 0) >= duration - 0.5) return;
 
-        emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
-          hidden: !!(document.hidden || document.visibilityState === 'hidden'),
-          time: Math.round(Number(current.currentTime || 0))
-        });
+        // ⚠️ 这条 warn 要节流（批次 20-H，实测冲掉过别的现场证据）：
+        // 标签页在后台时站点自己会把视频暂停，于是它**每秒一条**，把 runtimeLogs
+        // 那个只有 200 条的缓冲区整个占满 —— 真正要看的「讨论为什么没发上」就被冲走了。
+        var hiddenNow = !!(document.hidden || document.visibilityState === 'hidden');
+        var now = Date.now();
+        self._pauseResumeSuppressed = (self._pauseResumeSuppressed || 0) + 1;
+        if (now - (self._pauseResumeLogAt || 0) >= 60000) {
+          emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
+            hidden: hiddenNow,
+            time: Math.round(Number(current.currentTime || 0)),
+            suppressed: self._pauseResumeSuppressed - 1
+          });
+          self._pauseResumeLogAt = now;
+          self._pauseResumeSuppressed = 0;
+        }
         var resumed = current.play();
         if (resumed && typeof resumed.then === 'function') {
           resumed.then(function () {

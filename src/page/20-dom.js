@@ -10,9 +10,10 @@
  * 主文档 / 主窗口 / 遍历 frame 与 document 的工具
  * 后台 Worker、超时包装、可见性绑定等基础设施
  *
- * 本段的方法（21 个）：
+ * 本段的方法（23 个）：
  *   _getMainFrame、_getMainDocument、_getCurrentTitle、_getCurrentChapterId、
- *   _dismissPopups、_walkFrames、_safeJsonParse、_safeDocOf、_safeWinDoc、
+ *   _dismissPopups、_isUnfinishedTaskPrompt、_handleUnfinishedTaskPrompt、
+ *   _walkFrames、_safeJsonParse、_safeDocOf、_safeWinDoc、
  *   _isFrameSameOrigin、_getMainWindow、_withTimeout、_ensureBackgroundWorker、
  *   _workerDelay、_bindVisibilityHandlers、_resolveImageUrl、
  *   _markMainFrameCrossOrigin、_checkBlockedByCrossOrigin、_walkDocs、_studyDocs、
@@ -52,6 +53,10 @@
 
 
     _dismissPopups: function () {
+      // 「还有任务点未完成」这道门单独管：它不是要关掉的弹窗，是平台在说"这一节还有事没做"。
+      try {
+        if (this._handleUnfinishedTaskPrompt()) return true;
+      } catch (eP) {}
       var texts = ['继续', '下一节', '跳过', '取消', '关闭', '知道了', '确定'];
       // ⚠️ **只在弹窗容器之内**按文案点按钮（2026-11-10 真实日志逼出来的）。
       // 整页扫会抓到章节页**常驻**的「下一节」导航（class 带 `prev_next`）：
@@ -77,6 +82,8 @@
           if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(container))) {
             return false;
           }
+          // 「还有任务点未完成」这道门里一个都不许点：那个「下一节」会把人带回同一道门。
+          if (this._isUnfinishedTaskPrompt(container)) continue;
           for (var j = 0; j < texts.length; j++) {
             if (t.indexOf(texts[j]) !== -1) {
               // 记下到底点了什么。这个函数**只按文案匹配、点完就返回**，
@@ -106,6 +113,81 @@
         }
       } catch (e) {}
       return false;
+    },
+
+
+    /**
+     * 这道弹窗是不是平台在说「这一节还有任务点没做完」。
+     *
+     * 实测（2026-11-11 章节 1209049219）它有两种容器，文案都是
+     * 「当前章节还有任务点未完成，是否去完成？」：
+     *   `#jobFinishTip.AlertCon02` 里的 `a.graybtn02.marleft10.nextbutton`
+     *   `.maskDiv.jobFinishTip` 里的 `a.btnBlue.popMoveDele`
+     * 两种的 onclick 都带 `scroll2Job()` —— 那才是"去完成"的键。
+     */
+    _isUnfinishedTaskPrompt: function (node) {
+      if (!node) return false;
+      try {
+        if (/jobFinishTip/i.test(String(node.className || '')) || node.id === 'jobFinishTip') return true;
+      } catch (e0) {}
+      try {
+        return /还有任务点未完成|是否去完成/.test(textOf(node));
+      } catch (e1) { return false; }
+    },
+
+
+    /**
+     * 认下这道门，点它自己的「去学习」键（批次 20-G）。
+     *
+     * 为什么必须专门管它：`_dismissPopups` 的文案表里有「下一节」，而这个弹窗里
+     * **恰好也有一个带 next 的按钮**（`PCount.next` 那条路）。旧行为是抓到它、点它 →
+     * 平台同一道门再弹一次 → 再点 —— 页面在"点下一节 / 被拒绝"里原地转圈。
+     * 用户肉眼看到的"卡在这一节"就是这里（实测日志 `dismiss popups: click {text:"下一节"}`
+     * 反复出现，而 `#jobFinishTip` 一直在）。
+     *
+     * 返回 true 表示"这道门已经归我管"，`_dismissPopups` 就别再碰里面的任何按钮。
+     * 找不到键时**也返回 true**：宁可不点，也不要退回点「下一节」。
+     */
+    _handleUnfinishedTaskPrompt: function () {
+      var box = null;
+      try {
+        var boxes = document.querySelectorAll('#jobFinishTip, .jobFinishTip, .AlertCon02, .maskDiv, .layui-layer');
+        for (var i = 0; i < boxes.length; i++) {
+          if (!visible(boxes[i])) continue;
+          if (!this._isUnfinishedTaskPrompt(boxes[i])) continue;
+          box = boxes[i];
+          break;
+        }
+      } catch (e0) { return false; }
+      if (!box) return false;
+
+      var pick = null;
+      var label = '';
+      try {
+        var nodes = box.querySelectorAll('a, button, .btn, [class*="btn"]');
+        for (var j = 0; j < nodes.length; j++) {
+          if (!visible(nodes[j])) continue;
+          var onclick = '';
+          try { onclick = String(nodes[j].getAttribute('onclick') || ''); } catch (e1) {}
+          // scroll2Job 是平台自己的"跳回未完成任务点"，优先级高于文案
+          if (/scroll2Job/.test(onclick)) { pick = nodes[j]; label = textOf(nodes[j]); break; }
+          if (!pick && /去学习|去完成/.test(textOf(nodes[j]))) { pick = nodes[j]; label = textOf(nodes[j]); }
+        }
+      } catch (e2) {}
+
+      // 20 秒冷却：这道门每 3 秒就会被扫一次，别把页面来回滚。
+      // 计的是"点过键"的次数；认出门但没点，就不烧冷却。
+      var now = Date.now();
+      if (pick && now - (this._unfinishedPromptClickedAt || 0) < 20000) return true;
+      emitRuntimeLog('info', pick ? 'unfinished task prompt: go to job' : 'unfinished task prompt: no button', {
+        box: String(box.id || box.className || '').slice(0, 60),
+        button: pick ? String(label || '').slice(0, 20) : '',
+        cls: pick ? String(pick.className || '').slice(0, 50) : ''
+      });
+      if (!pick) return true;
+      this._unfinishedPromptClickedAt = now;
+      try { pick.click(); } catch (e3) {}
+      return true;
     },
 
 

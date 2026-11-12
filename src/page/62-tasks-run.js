@@ -6,20 +6,26 @@
  *    根目录的 page.js 由 tools/concat-page.js 按文件名排序拼接而成（npm run concat）。
  *    改这个域请改本文件，然后跑 npm run concat；直接改根目录 page.js 会被覆盖。
  *
- * 把识别出的任务点真正跑起来：视频 / 阅读 / PPT 音频 / OCS 式学习
+ * 把识别出的任务点真正跑起来：视频 / 阅读 / PPT 音频 / 投票 / OCS 式学习
  * 任务点等待与 pending 处理（等它加载完、等它出成绩）
  * 文档类任务点：翻页式 / 滚动式的推进与完成判定
  *
  * ⚠️ `_runPptAudioJob` 的逐页循环可能远超看门狗的 150 秒（每页还要等音频放完），
  *    所以每翻一页都调 `this._tickProgress(...)` 刷心跳。**别删这个心跳**（理由同上一条）。
+ *    `_runChaoxingVoteJob` 的两段等待同样带心跳与超时。
  *
- * 本段的方法（18 个）：
+ * 本段的方法（33 个）：
  *   _clearDocumentPendingState、_runChaoxingJob、_runChaoxingReadJob、
  *   _runPptAudioJob、_tryAdvanceIdleSection、_runOcsStyleStudy、_shouldWaitForTaskDiscovery、
  *   _getTaskIdentity、_isTaskStillLoading、_handlePendingTask、_frameHasTaskPoint、
  *   _locateDocumentTask、_extractFrameKey、_isDocumentFrameFinished、
  *   _buildAriaPagedDocumentTask、
- *   _buildPagedDocumentTask、_buildScrollDocumentTask、_handleDocumentTask
+ *   _buildPagedDocumentTask、_buildScrollDocumentTask、_handleDocumentTask、
+ *   _runChaoxingVoteJob、_openVoteOverlay、_voteOverlayDocReady、_voteOverlayHasContent、
+ *   _voteOverlayForm、_voteOverlayText、_pickVoteOptions、_waitVoteBoxFinished、
+ *   _voteBoxFinished、
+ *   _dismissVoteDialog、_closeVoteOverlay、_voteTryKeyOf、_noteVoteTry、
+ *   _clearVoteTry、_voteTryCooledDown
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -75,6 +81,10 @@
           return true;
         }
         return this._runChaoxingReadJob(job);
+      }
+
+      if (job.kind === 'vote') {
+        return this._runChaoxingVoteJob(job);
       }
 
       if (job.kind === 'hyperlink') {
@@ -360,6 +370,34 @@
       var doc = this._getMainDocument() || document;
       if (!doc || !doc.body || String(doc.readyState || '') !== 'complete') return false;
 
+      // ⚠️ 批次 20-I：**这页压根不是刷课页时，一步都不许推。**
+      // 现场那条链（2026-11-10 19:12:18 之后）：`skip completed` → `_dismissPopups()` 误点了
+      // 常驻的「下一节」→ 页面被带去 `https://i.chaoxing.com/base?…`，那里没有课程结构，
+      // 而这条逃生门照样往下走：附件 0、任务帧 0、没视频、readyState complete →
+      // 30 秒后拿 `location.href + 标题` 当键**又点一次**，然后在陌生页面上 `study stuck`。
+      // 后果不是"白点一下"，是**学习进度停在原地而日志看着像在推进**。
+      // 这道门只挡"整页连一个课程标记都认不出"的形状，正常刷课页 / OCS 页都有其中一样，
+      // 挡不住它们；被挡下时**一定出日志**，不静默。
+      var looksLikeCourse = false;
+      try {
+        looksLikeCourse = !!(doc.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title') ||
+          document.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title'));
+      } catch (eShape) { looksLikeCourse = true; }   // 读不动就当"像"，不许在这里静默跳走
+      if (!looksLikeCourse) {
+        var declineNow = Date.now();
+        if (!this._idleDeclineLogAt || declineNow - this._idleDeclineLogAt >= 120000) {
+          this._idleDeclineLogAt = declineNow;
+          emitRuntimeLog('warn', 'study idle declined: 这一页认不出课程结构，不点前进', {
+            href: String(location.href || '').slice(0, 110),
+            everyMs: 120000,
+            hint: '页面被推到了没有课程目录/任务点的地方（刷课页之外的地址）。' +
+              '这里不点「下一节」，是因为在陌生页面上点它只会把进度越带越偏 —— 请手动回到章节页'
+          });
+        }
+        this._idleEmptySince = 0;
+        return true;
+      }
+
       var now = Date.now();
       if (!this._idleEmptySince) {
         this._idleEmptySince = now;
@@ -538,6 +576,31 @@
             this._studyCompleteAt = 0;
             emitRuntimeLog('info', 'study hold quiz before next unit', { searchedCount: this._ocsSearchedJobs.length });
             return true;
+          }
+          // ⚠️ 讨论任务点不建 job，`searchedCount` 数不到它（批次 20-D，与 60 片段同一判据）。
+          // 这一支翻的是「这一页的 job 都跑完了」，而讨论还在等 tick 链去开回帖页。
+          var discHoldStyle = this._shouldHoldDiscussionBeforeFinish();
+          if (discHoldStyle.hold) {
+            this._studyCompleteAt = 0;
+            emitRuntimeLog('info', 'study hold discussion before next unit', {
+              searchedCount: this._ocsSearchedJobs.length,
+              pending: discHoldStyle.pending,
+              total: discHoldStyle.total,
+              reason: discHoldStyle.reason,
+              heldMs: discHoldStyle.heldMs,
+              budgetMs: discHoldStyle.budgetMs
+            });
+            return true;
+          }
+          if (discHoldStyle.pending > 0) {
+            emitRuntimeLog('warn', 'study discussion hold spent, advance anyway', {
+              searchedCount: this._ocsSearchedJobs.length,
+              pending: discHoldStyle.pending,
+              total: discHoldStyle.total,
+              reason: discHoldStyle.reason,
+              spent: discHoldStyle.spent,
+              runner: 'style'
+            });
           }
           emitRuntimeLog('info', 'study next unit', { searchedCount: this._ocsSearchedJobs.length });
           if (this.configs.autoNext) {
@@ -1001,3 +1064,392 @@
       task.scrollStep(task.totalPages);
       return true;
     },
+
+    /**
+     * 投票任务点（附件 `module:"insertvote"` + `type:"vote"`）。
+     *
+     * ⚠️ 只能走平台自己的那一次点击。封面帧 `ananas/modules/zt/vote/index-pc-new.html`
+     * 的内联脚本会现算出 `mooc-ans/api/work?...&type=vote&ktoken=…&enc=…`，把它写进
+     * **顶层文档**的 `#voteIframe` 并 show `.voteContainer`（2026-11-11 真页实测）。
+     * 直接访问那个地址是 403 —— enc 是服务端按 jobid 算的，抄不来也不该抄。
+     *
+     * 所以这里做的就是把用户那几下点出来：点封面 → 等覆盖层长出选项 →
+     * 每组（按 input[name] 分）勾第一项 → 点提交 → 等平台把任务盒翻成
+     * `ans-job-finished`（就是「下一节」放不放行那条判据，与 20-G 同源）。
+     * 投票不计分，随手投一项就是完成任务点的全部要求。
+     *
+     * 每一步都可超时、都留证据；连续 VOTE_MAX_TRIES 次没翻旗就进 VOTE_COOLDOWN_MS
+     * 冷却（到期自动再试，是"能解释、可恢复"的出口，不是永久跳过），
+     * 免得把同一个投票的提交打成刷屏。
+     */
+    _runChaoxingVoteJob: async function (job) {
+      if (!job) return false;
+      // 与准入闸同一句写法：`=== false` 才是"用户关了"，
+      // 老配置里**没有这一项**（undefined）必须照常投。
+      if (this.configs.enableVote === false) {
+        emitRuntimeLog('info', 'vote disabled, skip', { jobid: job.jobid, name: job.name });
+        return true;
+      }
+
+      var boxBefore = this._voteBoxFinished(job);
+      if (boxBefore === true) {
+        emitRuntimeLog('info', 'vote already finished', { jobid: job.jobid, by: 'box-flag' });
+        return true;
+      }
+
+      var cooled = this._voteTryCooledDown(job);
+      if (cooled) {
+        emitRuntimeLog('warn', 'vote cooling down', {
+          jobid: job.jobid, tries: cooled.tries, retryInMs: cooled.retryInMs, last: cooled.last
+        });
+        return true;
+      }
+
+      var voteDoc = await this._openVoteOverlay(job);
+      if (!voteDoc) {
+        this._noteVoteTry(job, 'overlay');
+        emitRuntimeLog('warn', 'vote overlay not ready', {
+          jobid: job.jobid, hasCoverFrame: !!job.frame, hasCoverDoc: !!job.doc
+        });
+        return true;
+      }
+
+      var form = this._voteOverlayForm(voteDoc);
+      if (!form.firsts.length && !form.submit) {
+        // 覆盖层里既没有选项也没有提交键：多半是「已参与」或压根没有这道投票
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-form');
+        emitRuntimeLog('warn', 'vote has nothing to submit', { jobid: job.jobid, text: form.text });
+        return true;
+      }
+
+      var picked = this._pickVoteOptions(form);
+      if (!picked.checked) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-check');
+        emitRuntimeLog('warn', 'vote option not selectable', {
+          jobid: job.jobid, groups: picked.groups, inputs: form.inputCount
+        });
+        return true;
+      }
+
+      if (!form.submit) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-submit');
+        emitRuntimeLog('warn', 'vote submit button missing', {
+          jobid: job.jobid, picked: picked.values.join(','), text: form.text
+        });
+        return true;
+      }
+      try {
+        form.submit.click();
+      } catch (eClick) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'submit-throw');
+        emitRuntimeLog('warn', 'vote submit click threw', { jobid: job.jobid, err: String(eClick && eClick.message || eClick).slice(0, 60) });
+        return true;
+      }
+
+      var wait = await this._waitVoteBoxFinished(job, voteDoc);
+      var boxAfter = this._voteBoxFinished(job);
+      var ok = wait.by === 'box' || boxAfter === true;
+      this._closeVoteOverlay(voteDoc);
+      emitRuntimeLog(ok ? 'info' : 'warn', ok ? 'vote submitted' : 'vote submitted but box not finished', {
+        jobid: job.jobid, picked: picked.values.join(','), groups: picked.checked,
+        submitBy: form.submitBy, by: wait.by, waitedMs: wait.waitedMs, dismissed: wait.dismissed,
+        boxBefore: boxBefore, boxAfter: boxAfter
+      });
+      if (ok) this._clearVoteTry(job); else this._noteVoteTry(job, 'not-finished');
+      return true;
+    },
+
+    /**
+     * 展开投票覆盖层并拿到它的文档；拿不到返回 null。
+     *
+     * 已经在顶层展开且就是这一份投票 → 直接复用，不再重复点封面。
+     */
+    _openVoteOverlay: async function (job) {
+      var jobid = String(job && job.jobid || '');
+      var ready = this._voteOverlayDocReady(jobid);
+      if (ready) return ready;
+
+      var cover = null;
+      try {
+        var d = job && job.doc;
+        if (d) {
+          cover = d.querySelector('#render') || d.querySelector('#cover') ||
+            d.querySelector('.ans-cmp-icon') || d.querySelector('.ans-attach-cmp');
+        }
+      } catch (eFind) {}
+      if (!cover) return null;
+      try {
+        cover.click();
+      } catch (eClick) {
+        return null;
+      }
+
+      var deadline = Date.now() + VOTE_OVERLAY_WAIT_MS;
+      var waited = 0;
+      while (Date.now() < deadline) {
+        var doc = this._voteOverlayDocReady(jobid);
+        if (doc) {
+          this._tickProgress('vote overlay');
+          return doc;
+        }
+        await sleep(500);
+        waited += 500;
+      }
+      emitRuntimeLog('debug', 'vote overlay wait exhausted', { jobid: jobid, waitedMs: waited });
+      return null;
+    },
+
+    /**
+     * 顶层那份投票覆盖层现在能不能读。
+     *
+     * 四个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
+     * **body 里真有字**。
+     *
+     * 可见这条不是洁癖 —— 收起状态里所有 `offsetParent` 都是 null，
+     * 于是选项与提交键会一起被读成"不存在"，然后每轮都白点一次封面。
+     *
+     * 「有字」这条是 2026-11-11 真页实测补的：平台把 `#voteIframe` 的 src 写进顶层
+     * 之后还要一段时间才把卷子填进去。上一轮这里只看到"框架在、可见、文档开着"
+     * 就当就绪直接复用，跳过了点封面，于是
+     * `vote has nothing to submit {"jobid":"1744278953051380","text":""}` ——
+     * 正文明明是空的。空档期算"没就绪"，让上面那个轮询继续等／再点一次封面，
+     * 比拿一份空卷子去判"这道题没得提交"准得多。
+     */
+    _voteOverlayDocReady: function (jobid) {
+      var frame = null;
+      try { frame = document.getElementById('voteIframe'); } catch (e0) { return null; }
+      if (!frame) return null;
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (container && !container.offsetParent) {
+          var display = '';
+          try { display = String(window.getComputedStyle(container).display || ''); } catch (eCs) { display = ''; }
+          if (display === 'none') return null;
+        }
+      } catch (e1) {}
+      var doc = null;
+      try { doc = frame.contentDocument; } catch (eCross) { return null; }
+      if (!doc || !doc.body) return null;
+      if (String(doc.readyState || '') === 'loading') return null;
+      if (jobid && String(frame.src || '').indexOf(jobid) < 0) return null;
+      if (!this._voteOverlayHasContent(doc)) return null;
+      return doc;
+    },
+
+    /**
+     * 投票覆盖层里是不是真写出了东西。
+     *
+     * 判据用"文字或选项任一存在"，不用"文字够长"：有些投票只有图标和两个
+     * radio，正文文字短；反过来一份刚开出来的空文档两者都没有。
+     */
+    _voteOverlayHasContent: function (doc) {
+      try {
+        var text = '';
+        try { text = String(doc.body.innerText || doc.body.textContent || '').replace(/\s+/g, ''); } catch (eTxt) { text = ''; }
+        if (text.length > 0) return true;
+        return !!(doc.querySelector && doc.querySelector(
+          '.topic-option-list, .topic-options, input[type=radio], input[type=checkbox]'
+        ));
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
+     * 投票覆盖层的一份快照：选项按 name 分组取第一项、提交键、正文摘要。
+     *
+     * 选项只认两种形状（真页实测：`input[name=answer8000083064]` +
+     * `.topic-option-list` 里一个 radio），别的 input 一律不当选项 ——
+     * 覆盖层里还挂着「本地上传 / 从云盘选择」那些隐藏弹窗，里面也有 input。
+     */
+    _voteOverlayForm: function (voteDoc) {
+      var out = { firsts: [], inputs: [], inputCount: 0, submit: null, submitBy: '', text: '' };
+      var self = this;
+      var all = [];
+      try { all = [].slice.call(voteDoc.querySelectorAll('input[type=radio], input[type=checkbox]')); } catch (e0) {}
+      out.inputs = all.filter(function (i) {
+        if (!i || i.disabled) return false;
+        var inTopic = false;
+        try { inTopic = !!(i.closest && i.closest('.topic-option-list, .topic-options, .ans-qt-list')); } catch (e1) { inTopic = false; }
+        return inTopic || /^answer/i.test(String(i.name || ''));
+      });
+      out.inputCount = out.inputs.length;
+      var seen = {};
+      out.inputs.forEach(function (i) {
+        var key = String(i.name || i.type || 'q');
+        if (seen[key]) return;
+        seen[key] = true;
+        out.firsts.push(i);
+      });
+      try {
+        var cands = [].slice.call(voteDoc.querySelectorAll('a.btn-submit, a.jb_btn_92, button, a, input[type=button], input[type=submit]'));
+        for (var c = 0; c < cands.length; c++) {
+          var el = cands[c];
+          var label = String((el.innerText || el.textContent || el.value) || '').replace(/\s+/g, '').slice(0, 12);
+          var isSubmitClass = false;
+          try { isSubmitClass = /btn-submit/.test(String(el.className || '')); } catch (e2) { isSubmitClass = false; }
+          if (!isSubmitClass && !/^(提交|确定|投票|立即投票)$/.test(label)) continue;
+          if (/^(取消|返回|关闭)$/.test(label)) continue;
+          out.submit = el;
+          out.submitBy = isSubmitClass ? 'class' : 'text';
+          break;
+        }
+      } catch (e3) {}
+      out.text = self._voteOverlayText(voteDoc);
+      return out;
+    },
+
+    _voteOverlayText: function (voteDoc) {
+      try {
+        return String((voteDoc.body && (voteDoc.body.innerText || voteDoc.body.textContent)) || '')
+          .replace(/\s+/g, ' ').trim().slice(0, 160);
+      } catch (e) {
+        return '';
+      }
+    },
+
+    /**
+     * 每组勾第一项，勾完**读回 checked** 才算数。
+     *
+     * 「勾选证据」这条不是多余：真页实测 `.click()` 之后 `checked` 由 false 变 true，
+     * 而沙盒里出过"根本没选就交上去"的症状（批次 19-A 记的那件事）。
+     * 读不回来就当作没投出去，交给上层重试，绝不报"提交成功"。
+     */
+    _pickVoteOptions: function (form) {
+      var values = [];
+      var checked = 0;
+      (form.firsts || []).forEach(function (input) {
+        try { input.click(); } catch (eClick) {}
+        if (!input.checked) {
+          try { input.checked = true; } catch (eSet) {}
+        }
+        if (input.checked) {
+          checked++;
+          values.push(String(input.value || input.name || '').slice(0, 16));
+        }
+      });
+      return { groups: (form.firsts || []).length, checked: checked, values: values };
+    },
+
+    _waitVoteBoxFinished: async function (job, voteDoc) {
+      var deadline = Date.now() + VOTE_BOX_WAIT_MS;
+      var waited = 0;
+      var dismissed = 0;
+      while (Date.now() < deadline) {
+        if (this._voteBoxFinished(job) === true) return { by: 'box', waitedMs: waited, dismissed: dismissed };
+        if (this._dismissVoteDialog(voteDoc)) dismissed++;
+        await sleep(600);
+        waited += 600;
+        this._tickProgress('vote wait box');
+      }
+      return { by: 'timeout', waitedMs: waited, dismissed: dismissed };
+    },
+
+    /**
+     * 「这个投票做完了没有」= 它所在任务盒带不带 `ans-job-finished`。
+     *
+     * 复用 20-G 那份判据（`_discussionBoxFinishedFlag`），不再抄第二份 ——
+     * 平台「下一节」放不放行用的就是这条，图标 aria-label 是滞后的、不可信。
+     * 返回 null = 读不到盒子（跨域 / 结构不同），调用方按"没确认"处理。
+     */
+    _voteBoxFinished: function (job) {
+      try {
+        var node = job && job.frame ? job.frame : null;
+        if (!node && job && job.doc) {
+          var w = null;
+          try { w = job.doc.defaultView; } catch (eWin) { w = null; }
+          try { node = w && w.frameElement; } catch (eFe) { node = null; }
+        }
+        return this._discussionBoxFinishedFlag(node);
+      } catch (e) {
+        return null;
+      }
+    },
+
+    /**
+     * 提交后可能弹出「已到截止时间，作答内容已自动提交」这类提示
+     * （真页实测就在覆盖层里，默认隐藏，触发时才可见）。只点可见盒子里的
+     * 「知道了 / 确定」，**不点提交** —— 那是重复交卷。
+     */
+    _dismissVoteDialog: function (voteDoc) {
+      try {
+        if (!voteDoc) return '';
+        var boxes = [].slice.call(voteDoc.querySelectorAll('.popDiv, .maskDiv, .layui-layer'));
+        for (var i = 0; i < boxes.length; i++) {
+          var box = boxes[i];
+          var visible = false;
+          try { visible = !!box.offsetParent; } catch (eVis) { visible = false; }
+          if (!visible) continue;
+          var btn = null;
+          [].forEach.call(box.querySelectorAll('a, button'), function (x) {
+            var label = String((x.innerText || x.value) || '').replace(/\s+/g, '').slice(0, 10);
+            if (!btn && /^(知道了|确定|确认)$/.test(label)) btn = x;
+          });
+          if (btn) {
+            btn.click();
+            return String(btn.innerText || btn.value || '').replace(/\s+/g, '').slice(0, 10);
+          }
+        }
+      } catch (e) {}
+      return '';
+    },
+
+    /**
+     * 收起覆盖层。优先按平台自己的「返回」，它会把 `.voteContainer` 关回去；
+     * 按不到才直接收起容器 —— 覆盖层一直挡着刷课页，后面的视频/讨论都点不着。
+     */
+    _closeVoteOverlay: function (voteDoc) {
+      try {
+        if (voteDoc) {
+          var back = null;
+          [].forEach.call(voteDoc.querySelectorAll('a, button'), function (x) {
+            var label = String((x.innerText || x.textContent) || '').replace(/\s+/g, '');
+            if (!back && /^返回$/.test(label)) back = x;
+          });
+          if (back) { back.click(); return 'back'; }
+        }
+      } catch (e) {}
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (container) { container.style.display = 'none'; return 'hide'; }
+      } catch (e2) {}
+      return 'none';
+    },
+
+    _voteTryKeyOf: function (job) {
+      return String((job && (job.jobid || job.objectid)) || (job && job.name) || 'vote');
+    },
+
+    /** 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。 */
+    _noteVoteTry: function (job, reason) {
+      if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
+      var key = this._voteTryKeyOf(job);
+      var prev = this._voteTryMap[key] || { n: 0, at: 0 };
+      this._voteTryMap[key] = { n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || '') };
+    },
+
+    _clearVoteTry: function (job) {
+      try {
+        if (this._voteTryMap) delete this._voteTryMap[this._voteTryKeyOf(job)];
+      } catch (e) {}
+    },
+
+    /** 够次数就冷却，冷却到期自动放行 —— 返回 null 表示"可以再试"。 */
+    _voteTryCooledDown: function (job) {
+      var key = this._voteTryKeyOf(job);
+      var rec = this._voteTryMap && this._voteTryMap[key];
+      if (!rec) return null;
+      var tries = Number(rec.n || 0);
+      if (tries < VOTE_MAX_TRIES) return null;
+      var age = Date.now() - Number(rec.at || 0);
+      if (age >= VOTE_COOLDOWN_MS) {
+        this._clearVoteTry(job);
+        return null;
+      }
+      return { tries: tries, retryInMs: VOTE_COOLDOWN_MS - age, last: String(rec.last || '') };
+    },
+

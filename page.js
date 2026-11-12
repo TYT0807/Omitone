@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '9b607d12c5';
+var OMITONE_CODE_REV = 'b11048574c';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -42,6 +42,21 @@ var OMITONE_CODE_REV = '9b607d12c5';
    */
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
+  /**
+   * 投票任务点（insertvote）的四个数。
+   *
+   * 覆盖层是平台自己点出来的（直接访问那个 api/work 地址是 403），所以要等它长出来；
+   * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
+   * 新增 await 必须可超时是硬规矩（AGENTS §2.2）。
+   *
+   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
+   * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   */
+  var VOTE_OVERLAY_WAIT_MS = 12000;
+  var VOTE_BOX_WAIT_MS = 15000;
+  var VOTE_MAX_TRIES = 4;
+  var VOTE_COOLDOWN_MS = 5 * 60 * 1000;
+
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
     autoMaxPlaybackRate: true,
@@ -51,6 +66,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
     enableDiscussion: true,
     discussionReply: '1',
     discussionTimeoutMs: 90000,
+    // 投票任务点（insertvote）：点开平台自己的投票覆盖层、随手勾第一项、提交。
+    // 不计分，只要把任务盒翻成已完成；关掉它就会停在「还有任务点未完成」那一节。
+    enableVote: true,
     autoNext: true,
     enableQuiz: true,
     // 内部调参（不上弹窗）：追加的题目容器选择器。学习通改版换了题目标记时，
@@ -62,6 +80,11 @@ var OMITONE_CODE_REV = '9b607d12c5';
     // 「乱选」：不接 AI，本地随机生成答案。给不想配 API key 的用户用，
     // 只求把卷交出去，不求对。默认关。
     randomAnswer: false,
+    // 乱选填满整卷之后、**点提交之前**留给检查的秒数（判据见 75-quiz-dom.js `_maybeSubmitQuiz`）。
+    // 为什么默认 30 而不是 0：交卷是不可逆的，而乱选的答案是猜的 —— 原样填完就交，
+    // 用户看到的第一句永远是「怎么不能改了」。30 秒里可以自己改、也可以直接交（手动点）。
+    // 设 0 = 完全不自动交卷，停在「等你检查后自己交」；设大了就是给自己更多检查时间。
+    randomAnswerReviewSec: 30,
     enableCaptcha: true,
     // 主内容区被换成跨域页面（验证码/反作弊）且持续 20 秒无法访问时自动刷新恢复（3 分钟冷却）
     blockedReload: true,
@@ -459,6 +482,16 @@ var OMITONE_CODE_REV = '9b607d12c5';
     //   两侧错开时表现不是「没暂停」而是「这一节永久停摆」（日志却写着已暂停）。
     _quizForceSkipPaperKey: '',
 
+    // 「乱选填完了，先别交，给用户留几秒改」的窗口（判据见 75-quiz-dom.js `_maybeSubmitQuiz`，
+    // 秒数来自配置 `randomAnswerReviewSec`；用户 2026-11-12：交完就不能改了，这太诡异）。
+    //   _quizReviewPaperKey   窗口是为**哪一份卷子**arm 的（键变了 = 换卷子，旧窗口作废）
+    //   _quizReviewUntil      窗口到点时刻；到点那一次才真的点提交。
+    //                         0 = 「这份卷子正停在等用户自己交」（设置填 0 时走这条）
+    // 两个字段合起来就是「按卷子键只打一条日志」的去重位 —— 这条每秒被调到，
+    // 只按时间节流仍会把日志刷满（用户 2026-11-12 抱怨过刷屏）。
+    _quizReviewPaperKey: '',
+    _quizReviewUntil: 0,
+
     // 上一次给「题干乱码」计轮的时刻。
     //
     // `_handleQuiz` 被 OCS 循环**每秒**调一次，所以乱码轮次绝不能按调用次数累加
@@ -564,6 +597,12 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
     _pauseResumePending: false,
 
+    // 批次 20-H：后台暂停恢复这条日志原本一次 pause 就写一条，实测 200 格缓冲里占了 97 条，
+    // 把讨论那半的证据全冲掉了。现在 60 秒最多一条，并带上被抑制掉的条数。
+    _pauseResumeLogAt: 0,
+
+    _pauseResumeSuppressed: 0,
+
     _visibilityBound: false,
 
     _captchaActive: false,
@@ -601,6 +640,30 @@ var OMITONE_CODE_REV = '9b607d12c5';
     _discussionPageAt: 0,
 
     _discussionPageResult: false,
+
+    _discussionEditorEl: null,
+
+    // 批次 20-F：刷课页读过讨论页递回来的 window.name 没有（每份文档只读一次）
+    _discussionNameRead: false,
+
+    _discussionPendingCache: null,
+
+    _discussionHoldSinceAt: 0,
+
+    _discussionHoldKey: '',
+
+    _discussionHoldSpent: 0,
+
+    _discussionDupLogAt: 0,
+
+    _discussionSettledLogAt: 0,
+
+    _unfinishedPromptClickedAt: 0,
+
+    // 批次 21：投票任务点的尝试台账（键 = jobid）。**只在内存里** ——
+    // 刷新页面就该重新观察一次，写进 localStorage 反而会把"这一轮没投出去"
+    // 拖成"这一章永远不投"。
+    _voteTryMap: {},
 
     _quizApiFailUntil: 0,
 
@@ -728,7 +791,18 @@ var OMITONE_CODE_REV = '9b607d12c5';
           // 2026-11-10 批次 7 加的（缺哪个就说明那一半还没进浏览器）：
           // popup-scope=只在弹窗容器里点按钮 / radio-clickthrough=分离控件补点文本项 /
           // choice-visible=审计按"看得见的选中"计数 / idle-stuck-repeat=空转每 2 分钟重播
-          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat'],
+          // 2026-11-11 批次 20 加的：flag-3state=#isFinished 空值不再当"未完成" /
+          // post-evidence=回帖确认要真证据 / page-dedup=同一话题本站只发一次 /
+          // study-hold-discuss=还有讨论没做完时不许宣布整节完成
+          // 20-F 加的：post-hydrate-wait=回帖先等页面水合、基线贴着点击取、
+          // 点了没反应再点一次，结果用 window.name 递回刷课页
+          // 20-G 加的：box-finished=#isFinished 是空的时改读任务盒的 ans-job-finished /
+          // go-to-job=「还有任务点未完成」那道门点去学习、不再点下一节
+          // 2026-11-11 批次 21 加的：vote-job=投票任务点（insertvote）认得出类型、
+          // 走平台自己那一次点击真投出去（缺这个标记就说明新 page.js 没被加载）
+          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat',
+          'flag-3state', 'post-evidence', 'page-dedup', 'study-hold-discuss',
+          'post-hydrate-wait', 'box-finished', 'go-to-job', 'vote-job'],
         // 代码内容指纹（由 `tools/concat-page.js` 按片段内容算出，拼在 page.js 第一行）。
         // 装 dist 的人看 `content bridge ready` 里的 build；**直接加载源码目录**的人看这个 ——
         // 它一变就说明代码换了，改完没重新加载一眼就能看出来。
@@ -816,6 +890,12 @@ var OMITONE_CODE_REV = '9b607d12c5';
       this._attachmentFingerprint = '';
       this._ocsStudyStarted = false;
       this._restudySkipNoticeAt = 0;
+      // 「为讨论任务点按住这一节」的预算按**新一轮**起算（批次 20-D）：
+      // 上一节烧掉的 90 秒不该让下一节一发现讨论就直接翻页。
+      this._discussionHoldSinceAt = 0;
+      this._discussionHoldKey = '';
+      this._discussionHoldSpent = 0;
+      this._discussionPendingCache = null;
       this._clearCheckInterval();
     },
 
@@ -998,6 +1078,10 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
 
     _dismissPopups: function () {
+      // 「还有任务点未完成」这道门单独管：它不是要关掉的弹窗，是平台在说"这一节还有事没做"。
+      try {
+        if (this._handleUnfinishedTaskPrompt()) return true;
+      } catch (eP) {}
       var texts = ['继续', '下一节', '跳过', '取消', '关闭', '知道了', '确定'];
       // ⚠️ **只在弹窗容器之内**按文案点按钮（2026-11-10 真实日志逼出来的）。
       // 整页扫会抓到章节页**常驻**的「下一节」导航（class 带 `prev_next`）：
@@ -1023,6 +1107,8 @@ var OMITONE_CODE_REV = '9b607d12c5';
           if (/确认提交|确定提交|确认交卷|是否提交|是否交卷|交卷确认/.test(textOf(container))) {
             return false;
           }
+          // 「还有任务点未完成」这道门里一个都不许点：那个「下一节」会把人带回同一道门。
+          if (this._isUnfinishedTaskPrompt(container)) continue;
           for (var j = 0; j < texts.length; j++) {
             if (t.indexOf(texts[j]) !== -1) {
               // 记下到底点了什么。这个函数**只按文案匹配、点完就返回**，
@@ -1052,6 +1138,81 @@ var OMITONE_CODE_REV = '9b607d12c5';
         }
       } catch (e) {}
       return false;
+    },
+
+
+    /**
+     * 这道弹窗是不是平台在说「这一节还有任务点没做完」。
+     *
+     * 实测（2026-11-11 章节 1209049219）它有两种容器，文案都是
+     * 「当前章节还有任务点未完成，是否去完成？」：
+     *   `#jobFinishTip.AlertCon02` 里的 `a.graybtn02.marleft10.nextbutton`
+     *   `.maskDiv.jobFinishTip` 里的 `a.btnBlue.popMoveDele`
+     * 两种的 onclick 都带 `scroll2Job()` —— 那才是"去完成"的键。
+     */
+    _isUnfinishedTaskPrompt: function (node) {
+      if (!node) return false;
+      try {
+        if (/jobFinishTip/i.test(String(node.className || '')) || node.id === 'jobFinishTip') return true;
+      } catch (e0) {}
+      try {
+        return /还有任务点未完成|是否去完成/.test(textOf(node));
+      } catch (e1) { return false; }
+    },
+
+
+    /**
+     * 认下这道门，点它自己的「去学习」键（批次 20-G）。
+     *
+     * 为什么必须专门管它：`_dismissPopups` 的文案表里有「下一节」，而这个弹窗里
+     * **恰好也有一个带 next 的按钮**（`PCount.next` 那条路）。旧行为是抓到它、点它 →
+     * 平台同一道门再弹一次 → 再点 —— 页面在"点下一节 / 被拒绝"里原地转圈。
+     * 用户肉眼看到的"卡在这一节"就是这里（实测日志 `dismiss popups: click {text:"下一节"}`
+     * 反复出现，而 `#jobFinishTip` 一直在）。
+     *
+     * 返回 true 表示"这道门已经归我管"，`_dismissPopups` 就别再碰里面的任何按钮。
+     * 找不到键时**也返回 true**：宁可不点，也不要退回点「下一节」。
+     */
+    _handleUnfinishedTaskPrompt: function () {
+      var box = null;
+      try {
+        var boxes = document.querySelectorAll('#jobFinishTip, .jobFinishTip, .AlertCon02, .maskDiv, .layui-layer');
+        for (var i = 0; i < boxes.length; i++) {
+          if (!visible(boxes[i])) continue;
+          if (!this._isUnfinishedTaskPrompt(boxes[i])) continue;
+          box = boxes[i];
+          break;
+        }
+      } catch (e0) { return false; }
+      if (!box) return false;
+
+      var pick = null;
+      var label = '';
+      try {
+        var nodes = box.querySelectorAll('a, button, .btn, [class*="btn"]');
+        for (var j = 0; j < nodes.length; j++) {
+          if (!visible(nodes[j])) continue;
+          var onclick = '';
+          try { onclick = String(nodes[j].getAttribute('onclick') || ''); } catch (e1) {}
+          // scroll2Job 是平台自己的"跳回未完成任务点"，优先级高于文案
+          if (/scroll2Job/.test(onclick)) { pick = nodes[j]; label = textOf(nodes[j]); break; }
+          if (!pick && /去学习|去完成/.test(textOf(nodes[j]))) { pick = nodes[j]; label = textOf(nodes[j]); }
+        }
+      } catch (e2) {}
+
+      // 20 秒冷却：这道门每 3 秒就会被扫一次，别把页面来回滚。
+      // 计的是"点过键"的次数；认出门但没点，就不烧冷却。
+      var now = Date.now();
+      if (pick && now - (this._unfinishedPromptClickedAt || 0) < 20000) return true;
+      emitRuntimeLog('info', pick ? 'unfinished task prompt: go to job' : 'unfinished task prompt: no button', {
+        box: String(box.id || box.className || '').slice(0, 60),
+        button: pick ? String(label || '').slice(0, 20) : '',
+        cls: pick ? String(pick.className || '').slice(0, 50) : ''
+      });
+      if (!pick) return true;
+      this._unfinishedPromptClickedAt = now;
+      try { pick.click(); } catch (e3) {}
+      return true;
     },
 
 
@@ -1778,8 +1939,14 @@ var OMITONE_CODE_REV = '9b607d12c5';
       }
 
       var now = Date.now();
-      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 5000) {
+      var mediaSig = String(reason || '') + '|' + (media.paused ? 'paused' : 'playing');
+      // ⚠️ 5 秒 → 30 秒，并且**只在理由/播放状态变了**时立刻出：
+      //    这一条每 tick 都发（现场约 5 秒一条），200 条日志环十几分钟就被它刷满，
+      //    而用户来问「为什么这节跳过」时要看的那几条早就被冲掉了。
+      //    心跳本身留着（30 秒一条照样看得出 `currentTime` 在走）。
+      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 30000 || mediaSig !== this._mediaWaitLogSig) {
         this._mediaWaitLogAt = now;
+        this._mediaWaitLogSig = mediaSig;
         emitRuntimeLog('info', 'media pending, delay completion', {
           reason: reason || '',
           currentTime: Number(media.currentTime || 0),
@@ -2755,10 +2922,21 @@ var OMITONE_CODE_REV = '9b607d12c5';
         var duration = Number(current.duration || 0);
         if (duration && Number(current.currentTime || 0) >= duration - 0.5) return;
 
-        emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
-          hidden: !!(document.hidden || document.visibilityState === 'hidden'),
-          time: Math.round(Number(current.currentTime || 0))
-        });
+        // ⚠️ 这条 warn 要节流（批次 20-H，实测冲掉过别的现场证据）：
+        // 标签页在后台时站点自己会把视频暂停，于是它**每秒一条**，把 runtimeLogs
+        // 那个只有 200 条的缓冲区整个占满 —— 真正要看的「讨论为什么没发上」就被冲走了。
+        var hiddenNow = !!(document.hidden || document.visibilityState === 'hidden');
+        var now = Date.now();
+        self._pauseResumeSuppressed = (self._pauseResumeSuppressed || 0) + 1;
+        if (now - (self._pauseResumeLogAt || 0) >= 60000) {
+          emitRuntimeLog('warn', 'video paused unexpectedly, resuming (anti background pause)', {
+            hidden: hiddenNow,
+            time: Math.round(Number(current.currentTime || 0)),
+            suppressed: self._pauseResumeSuppressed - 1
+          });
+          self._pauseResumeLogAt = now;
+          self._pauseResumeSuppressed = 0;
+        }
         var resumed = current.play();
         if (resumed && typeof resumed.then === 'function') {
           resumed.then(function () {
@@ -3686,6 +3864,11 @@ var OMITONE_CODE_REV = '9b607d12c5';
       var raw = frame ? (frame.src || '') : location.href;
       var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
       var key = match ? match[1] : raw;
+      // 「这一节的目录项被认出来多久了」—— 批次 20-I。
+      // 原先 `_chapterChangedAt` 只由 `_resetRuntimeState()` 写，也就是**只有换过章节**才有值，
+      // 首次进页面时它是 0。而"帧还没渲染"这个窗口第一次加载时同样存在，
+      // 所以这里把**首次认出章节号**也算一次变更（判据见 `_isCurrentCompleted` 末段）。
+      var isNewKey = !this._lastChapterKey || this._lastChapterKey !== key;
       if (this._lastChapterKey && this._lastChapterKey !== key) {
         this._resetRuntimeState();
         this._lastLearningCardKey = '';
@@ -3694,6 +3877,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
         emitRuntimeLog('info', 'chapter changed');
       }
       this._lastChapterKey = key;
+      if (isNewKey) this._chapterChangedAt = Date.now();
       this._detectLearningCardChange();
     },
 
@@ -3730,10 +3914,38 @@ var OMITONE_CODE_REV = '9b607d12c5';
         return true;
       }
 
-      var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-      if (!active) return false;
-      if (active.querySelector('.catalog_points_er, .catalog_points_san')) return false;
-      if (!active.querySelector('.catalog_points_yi, .icon_Completed, .icon_completed')) return false;
+      // ⚠️ 批次 20-I：下面这四行原判据，是拿用户**正在刷的那门课**（163 个目录项）量出来的，
+      //   量到的三条和注释里想的意思相反：
+      //   ① 现场只有两种标记，各带一句人话：
+      //        `<span class="icon_Completed prevTips">…已完成…</span>`（83 项）
+      //        `<span class="catalog_points_yi prevTips">…N个待完成任务点…</span>`（57 项）
+      //      `.catalog_points_er` / `.catalog_points_san` 在这门课**一个都没出现**。
+      //      原第 94 行把 `catalog_points_yi` 和 `icon_Completed` **并列**当成"这一节已完成"的证据 ——
+      //      可 yi 那句文案就是「还有 N 个待完成任务点」，语义正好反。
+      //      今天没酿成事故纯属侥幸：`_hasTaskPoint()` 里「目录带 yi 就算有任务点」把它的返回值
+      //      兜成 true，末行 `!this._hasTaskPoint()` 于是过不去。**同一个 class 在同一个文件里
+      //      被两处读出相反含义**，改哪一处都会把另一处拆掉 —— 现在两处统一口径：
+      //      `catalog_points_*` 一律算"还没做完"（那边也一起改了）。
+      //   ② 目录项的 id 是 `cur<chapterId>`（140/163 是这个形状），稳态下它与 `.posCatalog_active`
+      //      **是同一个元素**；但 active 那一下是平台自己的脚本挪的，而 `_detectPageChange` 读主帧
+      //      `src`，**当场就变**。真日志：`chapter changed` 与 `skip completed {by:"catalog-marker",
+      //      tasks:0}` 同一秒 —— 认 active 等于允许拿**上一节**的"已完成"给刚切过来的这一节发证。
+      //   ③ 平台还留了一份机器可读的正面否决：`<input type="hidden" class="jobUnfinishCount" value="N">`
+      //      （现场 57 项带它，值 1~6，与 yi 标记的 N 一致）。N>0 说的是"这一节还有事"，
+      //      比"这一瞬间页面里没认出任务点"这种 absence 证据硬。
+      // 两道窗口也不许越过：帧自己说还在加载（批次 19-B）时不认目录；章节号刚认出来的
+      // 发现窗口内不认目录 —— 目录图标是页面级的，它"显示已完成"时那一节可能还一个字没渲染。
+      // 成本是有界的：`_taskDiscoveryWindowMs(0)` = 10 秒，过完照旧推进；
+      // 真没任务点的空节由 `_tryAdvanceIdleSection` 那条（自带 30 秒窗和 `study stuck` 日志）接手。
+      if (this._taskFrameLoadingUntil > Date.now()) return false;
+      if (!this._chapterChangedAt ||
+          Date.now() - this._chapterChangedAt < this._taskDiscoveryWindowMs(0)) return false;
+
+      var catalogItem = this._catalogItemForChapter();
+      if (!catalogItem) return false;
+      if (this._catalogUnfinishedCount(catalogItem) > 0) return false;
+      if (catalogItem.querySelector('[class*="catalog_points"]')) return false;
+      if (!catalogItem.querySelector('.icon_Completed, .icon_completed')) return false;
 
       if (this._detectQuiz()) return false;
 
@@ -3745,6 +3957,44 @@ var OMITONE_CODE_REV = '9b607d12c5';
         return true;
       }
       return false;
+    },
+
+    /**
+     * 「这一节的目录项是哪一颗」—— 批次 20-I。
+     *
+     * 优先按章节号认（现场形状 `id="cur1209049294"`），拿不到章节号或目录里没有这颗时才退回
+     * `.posCatalog_active`。退回那一支必须留着：OCS / 移动端布局下目录结构不一样，
+     * 而 `_getCurrentChapterId()` 也可能只认得到一个 URL 兜底键。
+     */
+    _catalogItemForChapter: function () {
+      var cid = '';
+      try { cid = String(this._getCurrentChapterId() || ''); } catch (eCid) { cid = ''; }
+      if (/^\d+$/.test(cid)) {
+        try {
+          var byId = document.getElementById('cur' + cid);
+          if (byId) return byId;
+        } catch (eById) {}
+      }
+      try {
+        return document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
+      } catch (eAct) { return null; }
+    },
+
+    /**
+     * 目录项上的「还有几个任务点没做」（`input.jobUnfinishCount`）。
+     * 拿不到返回 NaN —— 调用方一律用 `> 0` 判，NaN 走"没有这份证据"，不当否决也不当放行。
+     * ⚠️ 那颗 input **自己就是直接子节点**，`querySelector('.jobUnfinishCount')` 能找到它，
+     *    但对 `<input>` 取文字的那套（`textOf()`/`innerText`）永远拿不到值（批次 14-B 同一族坑），
+     *    所以这里只读 `.value`。
+     */
+    _catalogUnfinishedCount: function (item) {
+      if (!item || !item.querySelector) return NaN;
+      var n = null;
+      try { n = item.querySelector('.jobUnfinishCount, input[name="jobUnfinishCount"]'); } catch (e) { return NaN; }
+      if (!n) return NaN;
+      var raw = String(n.value !== undefined && n.value !== null ? n.value : (n.getAttribute && n.getAttribute('value')) || '');
+      var num = Number(raw.replace(/[^0-9]/g, ''));
+      return raw === '' || isNaN(num) ? NaN : num;
     },
 
     _skipIfCompleted: function () {
@@ -3789,8 +4039,11 @@ var OMITONE_CODE_REV = '9b607d12c5';
         } catch (eBare) { bareHit = null; }
         if (bareHit) return true;
 
-        var bareActive = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-        if (bareActive && bareActive.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+        var bareActive = this._catalogItemForChapter();
+        // ⚠️ `catalog_points_*` 一整族的文案是「N个待完成任务点」（批次 20-I 现场量的），
+        //    所以它在这儿算**有任务点** —— 与 `_isCurrentCompleted` 末段同一口径，不许反过来读。
+        if (bareActive && bareActive.querySelector('[class*="catalog_points"]')) return true;
+        if (bareActive && this._catalogUnfinishedCount(bareActive) > 0) return true;
 
         var bareText = '';
         try { bareText = textOf(document.body); } catch (eBareText) { bareText = ''; }
@@ -3818,8 +4071,12 @@ var OMITONE_CODE_REV = '9b607d12c5';
       var doc = this._getMainDocument();
       if (!doc) return true;   // 主帧在、但跨域读不到 —— 必须保守
 
-      var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-      if (active && active.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+      var catalogItem = this._catalogItemForChapter();
+      // 同上：`catalog_points_*` 与 `jobUnfinishCount>0` 都是平台在说"这一节还有任务点没做"。
+      // 按章节号认（`#cur<chapterId>`），不认 `.posCatalog_active` —— 后者切章节时会慢半拍，
+      // 拿上一节的标记给这一节作证就是这个函数最容易漏的一类误判。
+      if (catalogItem && catalogItem.querySelector('[class*="catalog_points"]')) return true;
+      if (catalogItem && this._catalogUnfinishedCount(catalogItem) > 0) return true;
       if (doc.querySelector('.ans-job-icon, .ans-task-icon, .taskPoint, .ans-job-num, [class*="task"], [class*="job"]')) return true;
       if (textOf(doc.body).indexOf('任务点') !== -1) return true;
       return false;
@@ -3859,8 +4116,12 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
       var finished = false;
       if (wrap) {
+        // ⚠️ 批次 20-I：这里原先还认 `.catalog_points_yi` 当"这个任务点已完成"。
+        //   现场（用户正在刷的这门课，逐帧量过）：任务盒里**从来没有**这个 class ——
+        //   它只长在**目录项**上，那句文案是「N个待完成任务点」，意思正好相反。
+        //   留着它就是等哪天目录 DOM 挪进卡片、把没做完的任务点直接判成做完。
         finished = wrap.classList.contains("ans-job-finished") ||
-          !!wrap.querySelector(".job-color, .ans-job-finished, .catalog_points_yi");
+          !!wrap.querySelector(".job-color, .ans-job-finished");
       }
 
       var doc = null;
@@ -4054,18 +4315,23 @@ var OMITONE_CODE_REV = '9b607d12c5';
       //   实测把 2026-10-17 那份故障夹具全线改红过（2026-11-10 批次 2）。
       //   准入闸宁可宽：判错类型的代价是"多看一眼"，判不进门的代价是"整章跳过"。
       var quizLike = !!doc.querySelector(this._quizDetectorSelector);
+      // 投票封面（`ananas/modules/zt/vote`）：框里只有图标与标题，选项要在平台
+      // 自己点开之后才出现在顶层 `#voteIframe` 里 —— 上面任何一条 DOM 信号都照不到它，
+      // 于是整帧被准入闸拒掉、连 jobid 都不匹配（2026-11-11 真页实测）。
+      var vote = !!doc.querySelector('.ans-cmp-iconVote');
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
       var timereader = doc.querySelector('iframe[name="bookifame"][src*="timing"]');
       var documentJob = doc.querySelector('#panView, .fileBox, .pageNum, #docContainer, .docBox');
 
-      if (!(videojs || quiz || quizLike || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
+      if (!(videojs || quiz || quizLike || vote || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
 
       return {
         videojs: videojs,
         quiz: quiz,
         quizLike: quizLike,
+        vote: vote,
         read: read,
         pptWithAudio: pptWithAudio,
         hyperlink: hyperlink,
@@ -4163,6 +4429,14 @@ var OMITONE_CODE_REV = '9b607d12c5';
       // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
       // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
       if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
+      // 投票任务点（2026-11-11 实测章节 1209049220 的唯一未完成点）：附件是
+      // `module:"insertvote"` + `type:"vote"` + `job:true`。这里原先说不出类型，
+      // 于是既不建 job、也不进「认不出」的那条去重日志之外的任何分支 ——
+      // 整节只剩这一个未完成任务盒，「下一节」被平台拦下 → 去学习 → 回到同一章，
+      // 表现为 study finished → next unit → 任务点未完成 的死循环。
+      // ⚠️ 必须排在 work|exam|quiz 之前：投票页渲染出来的就是「答题」（有单选题），
+      //    让 quiz 族先抢会把它送去接 AI 答题，而投票只要随手投一项。
+      if (/insertvote/.test(module) || /^vote$/.test(type) || /(?:^|\/)vote(?:\/|$)/.test(type)) return 'vote';
       if (/work|exam|quiz/.test(module)) return 'quiz';
       // 图片任务点：打开看一眼即可，按「阅读」处理
       if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) return 'read';
@@ -4178,7 +4452,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
      *   ① 附件元数据 —— 「这个任务点是什么」的权威来源。卷子常常渲染在
      *      本帧抠不到题的那一层（三层嵌套的 jobid 场景），只有附件说得出 quiz；
      *   ②..⑧ DOM，从最具体到最兜底：
-     *      videojs → quiz → read → ppt-audio → timereader → hyperlink → document。
+     *      videojs → quiz → vote → read → ppt-audio → timereader → hyperlink → document。
      *      （`document` 是兜底，绝不能排在 ppt/timereader 之前 —— 它那些类名太通用。）
      *
      * 唯一的例外是 read 家族：附件那份映射只说得出 `read`，分不清图片阅读 /
@@ -4191,6 +4465,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
       if (elements) {
         if (elements.videojs) fromDom = 'video';
         else if (elements.quiz) fromDom = 'quiz';
+        else if (elements.vote) fromDom = 'vote';
         else if (elements.read) fromDom = 'read';
         else if (elements.pptWithAudio) fromDom = 'ppt-audio';
         else if (elements.timereader) fromDom = 'timereader';
@@ -4321,7 +4596,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
       var kind = this._kindFromChaoxingElements(elements, null, doc) || 'other';
 
       var wrap = frame.parentElement;
-      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
+      // 批次 20-I：`.catalog_points_yi` 已从"已完成"判据里去掉 —— 它只长在目录项上、
+      // 文案是「N个待完成任务点」（任务盒里现场量到 0 个），当完成证据是反的。
+      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished'));
       var name = frameData.name || frame.getAttribute('title') || this._getCurrentTitle() || '未知任务点';
       return {
         frame: frame,
@@ -4359,7 +4636,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
         frameDoc = frameWin && frameWin.document ? frameWin.document : null;
       } catch (e0) {}
       var frameData = this._getChaoxingFrameData(frame, frameWin);
-      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
+      // 批次 20-I：`.catalog_points_yi` 已从"已完成"判据里去掉 —— 它只长在目录项上、
+      // 文案是「N个待完成任务点」（任务盒里现场量到 0 个），当完成证据是反的。
+      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished'));
       return {
         frame: frame,
         win: frameWin,
@@ -4393,6 +4672,57 @@ var OMITONE_CODE_REV = '9b607d12c5';
     // —— 取证字段自己不可读，等于白取证。**字符串只受 2000 字截断，数字原样保留**，
     // 所以前 5 个选择器的命中数按**位置**压成 `"1/0/0/3/0"`（`qHits`，用来定位是哪个类名命中的），
     // 总和 `qTotal` 则按**整份**清单的并集数（用来判"有没有题形"，见下面那段警告）。
+    /**
+     * 这一帧是不是**讨论模块**（`insertbbs` / `bbscircle`）—— 只用来把拒绝原因说准，
+     * 不参与任何准入判定（批次 20-D）。
+     *
+     * 判据取三处，因为实测两种形状都出现过：模块自己就带 `module` 属性，
+     * 或者属性在外层容器上、帧只留下 `/ananas/modules/insertbbs/index.html` 这个 src。
+     * （讨论任务点的**真判据**只有一份，在讨论域的 `_findDiscussionModuleFrames`；
+     * 这里只是给它配一句人能看懂的拒绝原因，不许在这里长出第二套讨论识别。）
+     */
+    _isDiscussionModuleFrame: function (frame) {
+      if (!frame) return false;
+      var mod = '';
+      var src = '';
+      try { mod = String(frame.getAttribute && frame.getAttribute('module') || ''); } catch (e0) {}
+      try { src = String(frame.getAttribute && frame.getAttribute('src') || ''); } catch (e1) {}
+      if (!mod) {
+        // 属性挂在上层容器上时，往上最多找两层
+        var box = frame.parentElement;
+        for (var up = 0; up < 2 && box; up++) {
+          try {
+            mod = String(box.getAttribute && box.getAttribute('module') || '');
+          } catch (e2) { mod = ''; }
+          if (mod) break;
+          box = box.parentElement;
+        }
+      }
+      return /insertbbs|bbscircle|bbs|discuss/i.test(mod + ' ' + src);
+    },
+
+
+    /**
+     * 这一帧是不是**投票封面**（`ananas/modules/zt/vote`）。
+     *
+     * 为什么单独问、不并进 `_kindFromAttachment`：附件那份映射已经认得出 insertvote，
+     * 但 OCS 扫描的准入闸（`_searchChaoxingJobOcs`）在**匹配 jobid 之前**只看 DOM ——
+     * 投票封面帧里既没有播放器也没有题形容器，那条闸当场把它拒了，附件根本没机会说话
+     * （2026-11-11 真页实测：`rejects:[… "帧里认不出任务类型" src=/ananas/modules/zt/vote/…]`，
+     * 而整节的未完成任务点就是它，于是 study finished → next unit → 「还有任务点未完成」死循环）。
+     *
+     * 判据只要一样就够：模块地址（帧自己说的），或封面那枚投票图标
+     * `.ans-cmp-iconVote`（ananas 组件类名，别的模块没有）。
+     */
+    _isVoteCoverFrame: function (frame, doc) {
+      var src = '';
+      try { src = String(frame && (frame.getAttribute && frame.getAttribute('src') || frame.src) || ''); } catch (e0) { src = ''; }
+      if (/ananas\/modules\/zt\/vote|\/zt\/vote\//.test(src)) return true;
+      if (!doc || !doc.querySelector) return false;
+      try { return !!doc.querySelector('.ans-cmp-iconVote'); } catch (e1) { return false; }
+    },
+
+
     _frameRejectSignature: function (doc, found) {
       if (!doc) return { reach: 'no-doc' };
       var sig = {};
@@ -4619,6 +4949,23 @@ var OMITONE_CODE_REV = '9b607d12c5';
         var scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || '')));
         ev.retrySpent = !!(scope && scope === this._quizParseRetryScope);
       } catch (eRetry) {}
+      // ⚠️ 只落**标量**（批次 10-A 那条：日志里塞对象，`Number(对象)` = NaN、深度也被存储裁掉）。
+      // 目录这一族是 `by:"catalog-marker"` 的全部依据，没有它们这句话就还是答不上「凭什么说做完了」。
+      try {
+        var cat = this._catalogItemForChapter();
+        ev.catalogId = cat ? String(cat.id || '').slice(0, 24) : '';
+        ev.catalogMark = cat ? (function (node) {
+          var kids = node.children || [];
+          for (var ci = 0; ci < kids.length; ci++) {
+            var kc = String(kids[ci].className || '');
+            if (/catalog_points|icon_Completed|icon_completed/.test(kc)) return kc.replace(/\s+/g, ' ').trim().slice(0, 34);
+          }
+          return '';
+        })(cat) : '';
+        ev.catalogUnfinished = String(this._catalogUnfinishedCount(cat));
+        ev.chapterAgeMs = this._chapterChangedAt ? Date.now() - this._chapterChangedAt : -1;
+        ev.frameLoadingLeftMs = Math.max(0, (Number(this._taskFrameLoadingUntil) || 0) - Date.now());
+      } catch (eCat) {}
       return ev;
     },
 
@@ -4668,6 +5015,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
           // 准入闸专用的弱信号，见 `_detectChaoxingJobElements` 里同名字段的注释。
           // 判类型**不许**读它 —— 那正是「像题即题」把课件判成测验的那条路。
           quizLike: !!doc.querySelector(appRef._quizDetectorSelector),
+          // 投票封面帧：这里能拿到 frame 自己，所以模块地址也算信号。
+          // 判"这是不是投票"只此一处真源（`_isVoteCoverFrame`），两条扫描链共用。
+          vote: appRef._isVoteCoverFrame(frame, doc),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
@@ -4734,7 +5084,14 @@ var OMITONE_CODE_REV = '9b607d12c5';
           //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
           //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
           if (!win || !found || (!domKind && !found.quizLike)) {
-            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
+            // ⚠️ 讨论任务点（`insertbbs` / `bbscircle`）**本来就不归这条链** —— 它由
+            // 讨论域那条独立的 `_tryDiscussionTask` 处理。原先它和"真认不出类型"共用
+            // 同一句原因，于是实测日志里的 `rejects:[work + 3× insertbbs]` 看起来像
+            // "识别失败"，而实际是"这压根不是我该做的活"（批次 20-D：只分开原因，不放开准入）。
+            var discReject = this._isDiscussionModuleFrame(frame)
+              ? '讨论任务点（insertbbs/bbscircle）：由讨论链路处理，这条链不建 job'
+              : '';
+            noteReject(frame, discReject || '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
               this._frameRejectSignature(doc, found));
             continue;
           }
@@ -4856,6 +5213,30 @@ var OMITONE_CODE_REV = '9b607d12c5';
                   });
                 };
               }(this, frame, win, doc, jobName, attachment, jobKind);
+            }
+          } else if (jobKind === 'vote') {
+            // ⚠️ 用 `=== false` 而不是 `!x`（与 enableDiscussion 那几道闸同一个写法）：
+            //   升级前的 localStorage 里**没有** enableVote 这一项，`!undefined` 会把
+            //   所有老用户的投票静默挡掉 —— 那正是本次要修的那个死循环。
+            if (this.configs.enableVote === false) {
+              noteReject(frame, '是投票任务，但「自动投票」开关是关的');
+              continue;
+            }
+            if (workType === 'job' || (workType === 'finished' && this.configs.restudy)) {
+              func = function (self, jobFrame, jobWin, jobDoc, name, att) {
+                return function () {
+                  return self._runChaoxingVoteJob({
+                    frame: jobFrame,
+                    win: jobWin,
+                    doc: jobDoc,
+                    attachment: att,
+                    kind: 'vote',
+                    workType: workType,
+                    name: name,
+                    jobid: targetJobId
+                  });
+                };
+              }(this, frame, win, doc, jobName, attachment);
             }
           } else if (jobKind === 'hyperlink') {
             if (!this.configs.enableHyperlink) {
@@ -5240,6 +5621,37 @@ var OMITONE_CODE_REV = '9b607d12c5';
             self._ocsStudyStarted = false;
             return;
           }
+          // ⚠️ 「我这条链没活」推不出「这一节做完了」（批次 20-D）。
+          // 讨论任务点压根不建 job：它的类型 `_kindFromAttachment` 认不出来，
+          // 上面那关就把它拒了（拒绝原因现在会明说"由讨论链路处理"），
+          // 于是**挂着三个没发帖的讨论的页面**在这里读出来就是 `searchedCount:0`
+          // → 翻页。实测 22:46:46 / 22:47:08 每二十秒翻一次，而平台一步都不认。
+          // 该不该为讨论按住，判据在讨论域的 `_shouldHoldDiscussionBeforeFinish`
+          // （带预算、带"一份文档最多烧两个预算"的兜底 —— 按住不放比翻过去更糟）。
+          var discHold = self._shouldHoldDiscussionBeforeFinish();
+          if (discHold.hold) {
+            emitRuntimeLog('info', 'study hold discussion before finish', {
+              searchedCount: searchedJobs.length,
+              pending: discHold.pending,
+              total: discHold.total,
+              reason: discHold.reason,
+              heldMs: discHold.heldMs,
+              budgetMs: discHold.budgetMs
+            });
+            self._ocsStudyStarted = false;
+            return;
+          }
+          if (discHold.pending > 0) {
+            emitRuntimeLog('warn', 'study discussion hold spent, advance anyway', {
+              searchedCount: searchedJobs.length,
+              pending: discHold.pending,
+              total: discHold.total,
+              reason: discHold.reason,
+              heldMs: discHold.heldMs,
+              spent: discHold.spent,
+              hint: '还有讨论任务点没落地，但为它按住的预算已经烧完（或已封顶）—— 照常推进。反复出现说明讨论链路自己发不出去，看 discussion reply not confirmed / discussion nothing pending 那两条'
+            });
+          }
           // `searchedCount:0` 单独一句没法回答「凭什么说这一节做完了」——
           // 把窗口读数一起落下：这一轮到底等过几个附件、等了多久，一眼分得开
           // "真的空章节"与"清单压根没渲染出来"（2026-11-11 的 3.1 是后者）。
@@ -5434,6 +5846,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
         document: 2,
         timereader: 2,
         'ppt-audio': 2,
+        vote: 3,
         hyperlink: 3,
         other: 4
       };
@@ -5541,6 +5954,10 @@ var OMITONE_CODE_REV = '9b607d12c5';
           return true;
         }
         return this._runChaoxingReadJob(job);
+      }
+
+      if (job.kind === 'vote') {
+        return this._runChaoxingVoteJob(job);
       }
 
       if (job.kind === 'hyperlink') {
@@ -5826,6 +6243,34 @@ var OMITONE_CODE_REV = '9b607d12c5';
       var doc = this._getMainDocument() || document;
       if (!doc || !doc.body || String(doc.readyState || '') !== 'complete') return false;
 
+      // ⚠️ 批次 20-I：**这页压根不是刷课页时，一步都不许推。**
+      // 现场那条链（2026-11-10 19:12:18 之后）：`skip completed` → `_dismissPopups()` 误点了
+      // 常驻的「下一节」→ 页面被带去 `https://i.chaoxing.com/base?…`，那里没有课程结构，
+      // 而这条逃生门照样往下走：附件 0、任务帧 0、没视频、readyState complete →
+      // 30 秒后拿 `location.href + 标题` 当键**又点一次**，然后在陌生页面上 `study stuck`。
+      // 后果不是"白点一下"，是**学习进度停在原地而日志看着像在推进**。
+      // 这道门只挡"整页连一个课程标记都认不出"的形状，正常刷课页 / OCS 页都有其中一样，
+      // 挡不住它们；被挡下时**一定出日志**，不静默。
+      var looksLikeCourse = false;
+      try {
+        looksLikeCourse = !!(doc.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title') ||
+          document.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title'));
+      } catch (eShape) { looksLikeCourse = true; }   // 读不动就当"像"，不许在这里静默跳走
+      if (!looksLikeCourse) {
+        var declineNow = Date.now();
+        if (!this._idleDeclineLogAt || declineNow - this._idleDeclineLogAt >= 120000) {
+          this._idleDeclineLogAt = declineNow;
+          emitRuntimeLog('warn', 'study idle declined: 这一页认不出课程结构，不点前进', {
+            href: String(location.href || '').slice(0, 110),
+            everyMs: 120000,
+            hint: '页面被推到了没有课程目录/任务点的地方（刷课页之外的地址）。' +
+              '这里不点「下一节」，是因为在陌生页面上点它只会把进度越带越偏 —— 请手动回到章节页'
+          });
+        }
+        this._idleEmptySince = 0;
+        return true;
+      }
+
       var now = Date.now();
       if (!this._idleEmptySince) {
         this._idleEmptySince = now;
@@ -6004,6 +6449,31 @@ var OMITONE_CODE_REV = '9b607d12c5';
             this._studyCompleteAt = 0;
             emitRuntimeLog('info', 'study hold quiz before next unit', { searchedCount: this._ocsSearchedJobs.length });
             return true;
+          }
+          // ⚠️ 讨论任务点不建 job，`searchedCount` 数不到它（批次 20-D，与 60 片段同一判据）。
+          // 这一支翻的是「这一页的 job 都跑完了」，而讨论还在等 tick 链去开回帖页。
+          var discHoldStyle = this._shouldHoldDiscussionBeforeFinish();
+          if (discHoldStyle.hold) {
+            this._studyCompleteAt = 0;
+            emitRuntimeLog('info', 'study hold discussion before next unit', {
+              searchedCount: this._ocsSearchedJobs.length,
+              pending: discHoldStyle.pending,
+              total: discHoldStyle.total,
+              reason: discHoldStyle.reason,
+              heldMs: discHoldStyle.heldMs,
+              budgetMs: discHoldStyle.budgetMs
+            });
+            return true;
+          }
+          if (discHoldStyle.pending > 0) {
+            emitRuntimeLog('warn', 'study discussion hold spent, advance anyway', {
+              searchedCount: this._ocsSearchedJobs.length,
+              pending: discHoldStyle.pending,
+              total: discHoldStyle.total,
+              reason: discHoldStyle.reason,
+              spent: discHoldStyle.spent,
+              runner: 'style'
+            });
           }
           emitRuntimeLog('info', 'study next unit', { searchedCount: this._ocsSearchedJobs.length });
           if (this.configs.autoNext) {
@@ -6467,6 +6937,395 @@ var OMITONE_CODE_REV = '9b607d12c5';
       task.scrollStep(task.totalPages);
       return true;
     },
+
+    /**
+     * 投票任务点（附件 `module:"insertvote"` + `type:"vote"`）。
+     *
+     * ⚠️ 只能走平台自己的那一次点击。封面帧 `ananas/modules/zt/vote/index-pc-new.html`
+     * 的内联脚本会现算出 `mooc-ans/api/work?...&type=vote&ktoken=…&enc=…`，把它写进
+     * **顶层文档**的 `#voteIframe` 并 show `.voteContainer`（2026-11-11 真页实测）。
+     * 直接访问那个地址是 403 —— enc 是服务端按 jobid 算的，抄不来也不该抄。
+     *
+     * 所以这里做的就是把用户那几下点出来：点封面 → 等覆盖层长出选项 →
+     * 每组（按 input[name] 分）勾第一项 → 点提交 → 等平台把任务盒翻成
+     * `ans-job-finished`（就是「下一节」放不放行那条判据，与 20-G 同源）。
+     * 投票不计分，随手投一项就是完成任务点的全部要求。
+     *
+     * 每一步都可超时、都留证据；连续 VOTE_MAX_TRIES 次没翻旗就进 VOTE_COOLDOWN_MS
+     * 冷却（到期自动再试，是"能解释、可恢复"的出口，不是永久跳过），
+     * 免得把同一个投票的提交打成刷屏。
+     */
+    _runChaoxingVoteJob: async function (job) {
+      if (!job) return false;
+      // 与准入闸同一句写法：`=== false` 才是"用户关了"，
+      // 老配置里**没有这一项**（undefined）必须照常投。
+      if (this.configs.enableVote === false) {
+        emitRuntimeLog('info', 'vote disabled, skip', { jobid: job.jobid, name: job.name });
+        return true;
+      }
+
+      var boxBefore = this._voteBoxFinished(job);
+      if (boxBefore === true) {
+        emitRuntimeLog('info', 'vote already finished', { jobid: job.jobid, by: 'box-flag' });
+        return true;
+      }
+
+      var cooled = this._voteTryCooledDown(job);
+      if (cooled) {
+        emitRuntimeLog('warn', 'vote cooling down', {
+          jobid: job.jobid, tries: cooled.tries, retryInMs: cooled.retryInMs, last: cooled.last
+        });
+        return true;
+      }
+
+      var voteDoc = await this._openVoteOverlay(job);
+      if (!voteDoc) {
+        this._noteVoteTry(job, 'overlay');
+        emitRuntimeLog('warn', 'vote overlay not ready', {
+          jobid: job.jobid, hasCoverFrame: !!job.frame, hasCoverDoc: !!job.doc
+        });
+        return true;
+      }
+
+      var form = this._voteOverlayForm(voteDoc);
+      if (!form.firsts.length && !form.submit) {
+        // 覆盖层里既没有选项也没有提交键：多半是「已参与」或压根没有这道投票
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-form');
+        emitRuntimeLog('warn', 'vote has nothing to submit', { jobid: job.jobid, text: form.text });
+        return true;
+      }
+
+      var picked = this._pickVoteOptions(form);
+      if (!picked.checked) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-check');
+        emitRuntimeLog('warn', 'vote option not selectable', {
+          jobid: job.jobid, groups: picked.groups, inputs: form.inputCount
+        });
+        return true;
+      }
+
+      if (!form.submit) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'no-submit');
+        emitRuntimeLog('warn', 'vote submit button missing', {
+          jobid: job.jobid, picked: picked.values.join(','), text: form.text
+        });
+        return true;
+      }
+      try {
+        form.submit.click();
+      } catch (eClick) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'submit-throw');
+        emitRuntimeLog('warn', 'vote submit click threw', { jobid: job.jobid, err: String(eClick && eClick.message || eClick).slice(0, 60) });
+        return true;
+      }
+
+      var wait = await this._waitVoteBoxFinished(job, voteDoc);
+      var boxAfter = this._voteBoxFinished(job);
+      var ok = wait.by === 'box' || boxAfter === true;
+      this._closeVoteOverlay(voteDoc);
+      emitRuntimeLog(ok ? 'info' : 'warn', ok ? 'vote submitted' : 'vote submitted but box not finished', {
+        jobid: job.jobid, picked: picked.values.join(','), groups: picked.checked,
+        submitBy: form.submitBy, by: wait.by, waitedMs: wait.waitedMs, dismissed: wait.dismissed,
+        boxBefore: boxBefore, boxAfter: boxAfter
+      });
+      if (ok) this._clearVoteTry(job); else this._noteVoteTry(job, 'not-finished');
+      return true;
+    },
+
+    /**
+     * 展开投票覆盖层并拿到它的文档；拿不到返回 null。
+     *
+     * 已经在顶层展开且就是这一份投票 → 直接复用，不再重复点封面。
+     */
+    _openVoteOverlay: async function (job) {
+      var jobid = String(job && job.jobid || '');
+      var ready = this._voteOverlayDocReady(jobid);
+      if (ready) return ready;
+
+      var cover = null;
+      try {
+        var d = job && job.doc;
+        if (d) {
+          cover = d.querySelector('#render') || d.querySelector('#cover') ||
+            d.querySelector('.ans-cmp-icon') || d.querySelector('.ans-attach-cmp');
+        }
+      } catch (eFind) {}
+      if (!cover) return null;
+      try {
+        cover.click();
+      } catch (eClick) {
+        return null;
+      }
+
+      var deadline = Date.now() + VOTE_OVERLAY_WAIT_MS;
+      var waited = 0;
+      while (Date.now() < deadline) {
+        var doc = this._voteOverlayDocReady(jobid);
+        if (doc) {
+          this._tickProgress('vote overlay');
+          return doc;
+        }
+        await sleep(500);
+        waited += 500;
+      }
+      emitRuntimeLog('debug', 'vote overlay wait exhausted', { jobid: jobid, waitedMs: waited });
+      return null;
+    },
+
+    /**
+     * 顶层那份投票覆盖层现在能不能读。
+     *
+     * 四个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
+     * **body 里真有字**。
+     *
+     * 可见这条不是洁癖 —— 收起状态里所有 `offsetParent` 都是 null，
+     * 于是选项与提交键会一起被读成"不存在"，然后每轮都白点一次封面。
+     *
+     * 「有字」这条是 2026-11-11 真页实测补的：平台把 `#voteIframe` 的 src 写进顶层
+     * 之后还要一段时间才把卷子填进去。上一轮这里只看到"框架在、可见、文档开着"
+     * 就当就绪直接复用，跳过了点封面，于是
+     * `vote has nothing to submit {"jobid":"1744278953051380","text":""}` ——
+     * 正文明明是空的。空档期算"没就绪"，让上面那个轮询继续等／再点一次封面，
+     * 比拿一份空卷子去判"这道题没得提交"准得多。
+     */
+    _voteOverlayDocReady: function (jobid) {
+      var frame = null;
+      try { frame = document.getElementById('voteIframe'); } catch (e0) { return null; }
+      if (!frame) return null;
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (container && !container.offsetParent) {
+          var display = '';
+          try { display = String(window.getComputedStyle(container).display || ''); } catch (eCs) { display = ''; }
+          if (display === 'none') return null;
+        }
+      } catch (e1) {}
+      var doc = null;
+      try { doc = frame.contentDocument; } catch (eCross) { return null; }
+      if (!doc || !doc.body) return null;
+      if (String(doc.readyState || '') === 'loading') return null;
+      if (jobid && String(frame.src || '').indexOf(jobid) < 0) return null;
+      if (!this._voteOverlayHasContent(doc)) return null;
+      return doc;
+    },
+
+    /**
+     * 投票覆盖层里是不是真写出了东西。
+     *
+     * 判据用"文字或选项任一存在"，不用"文字够长"：有些投票只有图标和两个
+     * radio，正文文字短；反过来一份刚开出来的空文档两者都没有。
+     */
+    _voteOverlayHasContent: function (doc) {
+      try {
+        var text = '';
+        try { text = String(doc.body.innerText || doc.body.textContent || '').replace(/\s+/g, ''); } catch (eTxt) { text = ''; }
+        if (text.length > 0) return true;
+        return !!(doc.querySelector && doc.querySelector(
+          '.topic-option-list, .topic-options, input[type=radio], input[type=checkbox]'
+        ));
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
+     * 投票覆盖层的一份快照：选项按 name 分组取第一项、提交键、正文摘要。
+     *
+     * 选项只认两种形状（真页实测：`input[name=answer8000083064]` +
+     * `.topic-option-list` 里一个 radio），别的 input 一律不当选项 ——
+     * 覆盖层里还挂着「本地上传 / 从云盘选择」那些隐藏弹窗，里面也有 input。
+     */
+    _voteOverlayForm: function (voteDoc) {
+      var out = { firsts: [], inputs: [], inputCount: 0, submit: null, submitBy: '', text: '' };
+      var self = this;
+      var all = [];
+      try { all = [].slice.call(voteDoc.querySelectorAll('input[type=radio], input[type=checkbox]')); } catch (e0) {}
+      out.inputs = all.filter(function (i) {
+        if (!i || i.disabled) return false;
+        var inTopic = false;
+        try { inTopic = !!(i.closest && i.closest('.topic-option-list, .topic-options, .ans-qt-list')); } catch (e1) { inTopic = false; }
+        return inTopic || /^answer/i.test(String(i.name || ''));
+      });
+      out.inputCount = out.inputs.length;
+      var seen = {};
+      out.inputs.forEach(function (i) {
+        var key = String(i.name || i.type || 'q');
+        if (seen[key]) return;
+        seen[key] = true;
+        out.firsts.push(i);
+      });
+      try {
+        var cands = [].slice.call(voteDoc.querySelectorAll('a.btn-submit, a.jb_btn_92, button, a, input[type=button], input[type=submit]'));
+        for (var c = 0; c < cands.length; c++) {
+          var el = cands[c];
+          var label = String((el.innerText || el.textContent || el.value) || '').replace(/\s+/g, '').slice(0, 12);
+          var isSubmitClass = false;
+          try { isSubmitClass = /btn-submit/.test(String(el.className || '')); } catch (e2) { isSubmitClass = false; }
+          if (!isSubmitClass && !/^(提交|确定|投票|立即投票)$/.test(label)) continue;
+          if (/^(取消|返回|关闭)$/.test(label)) continue;
+          out.submit = el;
+          out.submitBy = isSubmitClass ? 'class' : 'text';
+          break;
+        }
+      } catch (e3) {}
+      out.text = self._voteOverlayText(voteDoc);
+      return out;
+    },
+
+    _voteOverlayText: function (voteDoc) {
+      try {
+        return String((voteDoc.body && (voteDoc.body.innerText || voteDoc.body.textContent)) || '')
+          .replace(/\s+/g, ' ').trim().slice(0, 160);
+      } catch (e) {
+        return '';
+      }
+    },
+
+    /**
+     * 每组勾第一项，勾完**读回 checked** 才算数。
+     *
+     * 「勾选证据」这条不是多余：真页实测 `.click()` 之后 `checked` 由 false 变 true，
+     * 而沙盒里出过"根本没选就交上去"的症状（批次 19-A 记的那件事）。
+     * 读不回来就当作没投出去，交给上层重试，绝不报"提交成功"。
+     */
+    _pickVoteOptions: function (form) {
+      var values = [];
+      var checked = 0;
+      (form.firsts || []).forEach(function (input) {
+        try { input.click(); } catch (eClick) {}
+        if (!input.checked) {
+          try { input.checked = true; } catch (eSet) {}
+        }
+        if (input.checked) {
+          checked++;
+          values.push(String(input.value || input.name || '').slice(0, 16));
+        }
+      });
+      return { groups: (form.firsts || []).length, checked: checked, values: values };
+    },
+
+    _waitVoteBoxFinished: async function (job, voteDoc) {
+      var deadline = Date.now() + VOTE_BOX_WAIT_MS;
+      var waited = 0;
+      var dismissed = 0;
+      while (Date.now() < deadline) {
+        if (this._voteBoxFinished(job) === true) return { by: 'box', waitedMs: waited, dismissed: dismissed };
+        if (this._dismissVoteDialog(voteDoc)) dismissed++;
+        await sleep(600);
+        waited += 600;
+        this._tickProgress('vote wait box');
+      }
+      return { by: 'timeout', waitedMs: waited, dismissed: dismissed };
+    },
+
+    /**
+     * 「这个投票做完了没有」= 它所在任务盒带不带 `ans-job-finished`。
+     *
+     * 复用 20-G 那份判据（`_discussionBoxFinishedFlag`），不再抄第二份 ——
+     * 平台「下一节」放不放行用的就是这条，图标 aria-label 是滞后的、不可信。
+     * 返回 null = 读不到盒子（跨域 / 结构不同），调用方按"没确认"处理。
+     */
+    _voteBoxFinished: function (job) {
+      try {
+        var node = job && job.frame ? job.frame : null;
+        if (!node && job && job.doc) {
+          var w = null;
+          try { w = job.doc.defaultView; } catch (eWin) { w = null; }
+          try { node = w && w.frameElement; } catch (eFe) { node = null; }
+        }
+        return this._discussionBoxFinishedFlag(node);
+      } catch (e) {
+        return null;
+      }
+    },
+
+    /**
+     * 提交后可能弹出「已到截止时间，作答内容已自动提交」这类提示
+     * （真页实测就在覆盖层里，默认隐藏，触发时才可见）。只点可见盒子里的
+     * 「知道了 / 确定」，**不点提交** —— 那是重复交卷。
+     */
+    _dismissVoteDialog: function (voteDoc) {
+      try {
+        if (!voteDoc) return '';
+        var boxes = [].slice.call(voteDoc.querySelectorAll('.popDiv, .maskDiv, .layui-layer'));
+        for (var i = 0; i < boxes.length; i++) {
+          var box = boxes[i];
+          var visible = false;
+          try { visible = !!box.offsetParent; } catch (eVis) { visible = false; }
+          if (!visible) continue;
+          var btn = null;
+          [].forEach.call(box.querySelectorAll('a, button'), function (x) {
+            var label = String((x.innerText || x.value) || '').replace(/\s+/g, '').slice(0, 10);
+            if (!btn && /^(知道了|确定|确认)$/.test(label)) btn = x;
+          });
+          if (btn) {
+            btn.click();
+            return String(btn.innerText || btn.value || '').replace(/\s+/g, '').slice(0, 10);
+          }
+        }
+      } catch (e) {}
+      return '';
+    },
+
+    /**
+     * 收起覆盖层。优先按平台自己的「返回」，它会把 `.voteContainer` 关回去；
+     * 按不到才直接收起容器 —— 覆盖层一直挡着刷课页，后面的视频/讨论都点不着。
+     */
+    _closeVoteOverlay: function (voteDoc) {
+      try {
+        if (voteDoc) {
+          var back = null;
+          [].forEach.call(voteDoc.querySelectorAll('a, button'), function (x) {
+            var label = String((x.innerText || x.textContent) || '').replace(/\s+/g, '');
+            if (!back && /^返回$/.test(label)) back = x;
+          });
+          if (back) { back.click(); return 'back'; }
+        }
+      } catch (e) {}
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (container) { container.style.display = 'none'; return 'hide'; }
+      } catch (e2) {}
+      return 'none';
+    },
+
+    _voteTryKeyOf: function (job) {
+      return String((job && (job.jobid || job.objectid)) || (job && job.name) || 'vote');
+    },
+
+    /** 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。 */
+    _noteVoteTry: function (job, reason) {
+      if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
+      var key = this._voteTryKeyOf(job);
+      var prev = this._voteTryMap[key] || { n: 0, at: 0 };
+      this._voteTryMap[key] = { n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || '') };
+    },
+
+    _clearVoteTry: function (job) {
+      try {
+        if (this._voteTryMap) delete this._voteTryMap[this._voteTryKeyOf(job)];
+      } catch (e) {}
+    },
+
+    /** 够次数就冷却，冷却到期自动放行 —— 返回 null 表示"可以再试"。 */
+    _voteTryCooledDown: function (job) {
+      var key = this._voteTryKeyOf(job);
+      var rec = this._voteTryMap && this._voteTryMap[key];
+      if (!rec) return null;
+      var tries = Number(rec.n || 0);
+      if (tries < VOTE_MAX_TRIES) return null;
+      var age = Date.now() - Number(rec.at || 0);
+      if (age >= VOTE_COOLDOWN_MS) {
+        this._clearVoteTry(job);
+        return null;
+      }
+      return { tries: tries, retryInMs: VOTE_COOLDOWN_MS - age, last: String(rec.last || '') };
+    },
+
 
     /**
      * 进度心跳：**长任务的循环必须定期调它**。
@@ -7347,24 +8206,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
         window.addEventListener('message', function (ev) {
           var data = ev && ev.data;
           if (!data || typeof data !== 'object' || data.omitoneDiscussion !== 'failed') return;
-          var key = String(self._discussionLastOpenedKey || '');
-          if (!key) return;
-          var tries = self._bumpDiscussionTry(key);
-          var limit = 3;   // 最多重试 3 次：平台若压根发不出去，无限重开只会空转
-          if (tries > limit) {
-            emitRuntimeLog('warn', 'discussion reply keeps failing, give up for now', {
-              key: key.slice(0, 40),
-              tries: tries,
-              hint: '已连续失败 ' + tries + ' 次，24 小时内不再尝试（可手动处理，或清掉 localStorage 里的 omitone_discussion_done）'
-            });
-            return;
-          }
-          self._unmarkDiscussionDone(key);
-          emitRuntimeLog('warn', 'discussion reply failed, will retry', {
-            key: key.slice(0, 40),
-            tries: tries,
-            limit: limit
-          });
+          // 键优先取讨论页递回来的那一份；本内存里的 `_discussionLastOpenedKey`
+          // 只是"同一个文档里重开"才有效，跳回来时它是空的
+          self._handleDiscussionFailure(String(data.key || ''), 'postmessage');
         });
       } catch (e) {}
     },
@@ -7388,8 +8232,21 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
 
     // 在课程页/同源 iframe 中找讨论任务点的可点击入口（优先带真实链接的 <a>）
+    /**
+     * ⚠️ 这条兜底路径**只会点它返回的那个节点**，所以它必须能拒绝"不像入口的东西"。
+     * 实测翻车（批次 20-C）：日志留下 `discussion task entry clicked {name:"目录 讨论 笔记 标注"}`，
+     * 那是课程页顶部那条**导航标签带** —— 它的文字里含「讨论」二字、且长度没超 40，
+     * 于是被当成讨论入口点了，顺带把 `目录 讨论 笔记 标注|` 这个假键记成"24 小时内已发过"。
+     * 现在要求：文字得**像单独一个入口**（不是几块导航拼在一起），
+     * 且要么网址本身长成讨论区（topic / bbscircle / groupweb / discuss），
+     * 要么正好命中 attachments 里那个讨论任务点的真名。宁缺毋滥 ——
+     * 返回 null 时调用方只是"这一轮没打开"，点错导航却会把任务点记成做过。
+     */
     _findDiscussionEntry: function (preferredName) {
       var KEY = /讨论|话题|回帖|发帖|参与讨论/;
+      var NAV = /目录|笔记|标注|章节|任务点|排行|公告|作业|考试/;
+      var NAV_ALL = new RegExp(NAV.source, 'g');
+      var TOPIC_HREF = /topic|bbscircle|groupweb|discuss/i;
       var docs = [];
       try {
         var mainDoc = this._getMainDocument();
@@ -7411,11 +8268,19 @@ var OMITONE_CODE_REV = '9b607d12c5';
           var text = String(textOf(node) || '').trim();
           if (!text || text.length > 40) continue;
           if (!KEY.test(text)) continue;
+          // 一条文字里同时出现两块导航词（「目录 … 笔记 标注」）= 那不是入口，是标签带
+          var navHits = (text.match(NAV_ALL) || []).length;
+          if (navHits >= 2) continue;
           var link = node.tagName === 'A' ? node : node.querySelector('a[href]');
           var href = link ? String(link.getAttribute('href') || '') : String(node.getAttribute('href') || '');
+          var nameHit = !!(preferredName && text.indexOf(preferredName) >= 0);
+          var hrefHit = !!href && href !== '#' && !/^javascript:/i.test(href) && TOPIC_HREF.test(href);
+          // 讨论区网址没有、真名也没对上 → 只剩"页面上随便一个写着讨论的节点"，拒绝
+          if (!nameHit && !hrefHit) continue;
           var score = 0;
-          if (preferredName && text.indexOf(preferredName) >= 0) score += 2;
-          if (href && href !== '#' && !/^javascript:/i.test(href)) score += 1;
+          if (nameHit) score += 2;
+          if (hrefHit) score += 1;
+          if (navHits === 0) score += 1;
           if (!best || score > best.score) best = { node: link || node, href: href, text: text, score: score };
         }
         if (best) return best;
@@ -7436,6 +8301,28 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
     // 讨论任务点在页面里是卡片 #topicMainDiv，其 data 属性就是讨论区地址（groupweb.chaoxing.com/course/topic/...）
     /**
+     * 读一个 `#isFinished` 节点，返回**三态**：`true` 已完成 / `false` 未完成 / `null` 读不出结论。
+     *
+     * ⚠️ 为什么必须把"未完成"和"读不出"分开（批次 20-A，实测驱动）：
+     * 现场那一节的三张讨论卡片里，`#isFinished` **存在但 value 是空串** —— 平台在
+     * "这个任务点没有服务端完成标志"时就是这么渲染的。旧实现把空串当成 `false`（未完成），
+     * 于是**已经发过回帖**的卡片会被自愈逻辑读成"本地说发过了、平台却说没做完，八成是发失败"，
+     * 反复重开重发，直到 3 次重试预算烧光 —— 烧光后这一节既不再发也不推进，
+     * 就是用户那句「又卡住了」。空串不代表"没做完"，它代表"平台没话说"，
+     * 这时候**只有我们本地那份记录算数**。
+     */
+    _discussionFinishedFlagOf: function (node) {
+      if (!node) return null;
+      var raw = '';
+      try { raw = String(node.value !== undefined && node.value !== null ? node.value : (node.getAttribute && node.getAttribute('value')) || ''); } catch (e0) { return null; }
+      raw = raw.trim();
+      if (/^true$/i.test(raw)) return true;
+      if (/^false$/i.test(raw)) return false;
+      return null;
+    },
+
+
+    /**
      * 某个讨论卡片自己的"已完成"标志。
      *
      * 学习通把 `#isFinished` 放在**每个讨论模块自己的页面**里，值来自服务端。
@@ -7443,19 +8330,19 @@ var OMITONE_CODE_REV = '9b607d12c5';
      * 它们可能落在同一个文档中，于是所有卡片共用同一个标志：
      * 第一个已完成，其余全被当作"已回复"而永久跳过；反之则会反复重开同一个。
      *
-     * 返回 null 表示"在卡片范围内找不到"，由调用方决定怎么兜底
-     * （不要在这里返回 false —— 那会把"未知"当成"未完成"，可能重复发评论）。
+     * 返回 null 表示"读不出结论"（找不到节点，或节点值是空串），由调用方决定怎么兜底
+     * （不要在这里返回 false —— 那会把"未知"当成"未完成"，见 `_discussionFinishedFlagOf`）。
      */
     _scopedDiscussionFinishedFlag: function (card) {
       if (!card) return null;
+      var self = this;
       var readFlag = function (scope) {
         if (!scope || !scope.querySelector) return null;
         var flag = null;
         try {
           flag = scope.querySelector('#isFinished, input[name="isFinished"][value], input[name="isFinished"]');
         } catch (e) {}
-        if (!flag) return null;
-        return /true/i.test(String(flag.value || flag.getAttribute('value') || ''));
+        return self._discussionFinishedFlagOf(flag);
       };
 
       // 1) 卡片内部
@@ -7476,6 +8363,47 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
         var found = readFlag(scope);
         if (found !== null) return found;
+      }
+      return null;
+    },
+
+
+    /**
+     * 平台自己怎么说**这一块讨论**做完没做完（批次 20-G）。
+     *
+     * 实测（2026-11-11 章节 1209049219，用户肉眼「只有一个没完成」逼出来的）：
+     * 卡片里那个 `#isFinished` **值是空的**，三张讨论卡一张都读不出结论 ——
+     * 于是「4 个任务盒里只有 1 个还没做完」这个平台明摆着的事实，
+     * 被读成"三个都记过账 = 整节做完"，页面反复点「下一节」而平台不放行。
+     *
+     * 平台拦翻页用的就是这条判据（它自己的 `scroll2Job()` 源码）：
+     * 任务盒 `.ans-attach-ct` 上没有 `ans-job-finished` = 未完成。
+     * ⚠️ 别拿图标上的 `aria-label` 当回事：实测**连已完成的盒子也写着「任务点未完成」**，
+     * 只有 class 才是真的。
+     *
+     * 卡片与盒子不同层，实测链路是三层：
+     *   knowledge/cards 文档（4 个 `.ans-attach-ct`）
+     *     └ iframe → ananas/modules/insertbbs 文档
+     *          └ iframe → mooc-ans/bbscircle 文档（`#topicMainDiv[data]` 就在这里）
+     * 所以从卡片出发，**沿 frame 链往上走**（最多 4 层），在哪一层碰到盒子就用哪一层。
+     * 跨域时 `frameElement` 抛 SecurityError —— 接住返回 null，当"平台没说"。
+     */
+    _discussionBoxFinishedFlag: function (card) {
+      var node = card;
+      for (var hop = 0; hop < 4 && node; hop++) {
+        var box = null;
+        try { box = node.closest ? node.closest('.ans-attach-ct') : null; } catch (e0) { return null; }
+        if (box) {
+          if (String(box.className || '').indexOf('ans-job-finished') >= 0) return true;
+          // 盒子里没有任务点图标 = 这一项压根不是任务点，别拿它当"未完成"
+          var icon = null;
+          try { icon = box.querySelector('.ans-job-icon'); } catch (e1) {}
+          return icon ? false : null;
+        }
+        var win = null;
+        try { win = node.ownerDocument ? node.ownerDocument.defaultView : null; } catch (e2) { return null; }
+        if (!win) return null;
+        try { node = win.frameElement || null; } catch (e3) { return null; }   // 跨域：读不到就当没说
       }
       return null;
     },
@@ -7504,6 +8432,11 @@ var OMITONE_CODE_REV = '9b607d12c5';
     _collectDiscussionTargets: function () {
       var self = this;
       var targets = [];
+      // 实测（2026-11-11 现场，章节 1209049219）同一批卡片**被收了两次**：
+      // `_walkDocs` 有两条路径能走到同一份文档，于是三个讨论在 `targets` 里是六条，
+      // 「这一节还剩几个讨论」的读数直接翻倍。行为上没出过事（只用第一条），
+      // 但排查时它对不上肉眼可见的三张卡片，所以按稳定键去重。
+      var seenKeys = {};
       var docs = this._studyDocs();
       for (var d = 0; d < docs.length; d++) {
         this._walkDocs(docs[d], function (doc) {
@@ -7528,25 +8461,48 @@ var OMITONE_CODE_REV = '9b607d12c5';
             // 多张卡片落在一个文档里时会共用同一个标志，导致批量漏做或反复重开。
             var scoped = self._scopedDiscussionFinishedFlag(card);
             var finished;
+            var finishedKnown;
             if (scoped !== null) {
               finished = scoped;
-            } else if (sameDoc <= 1) {
-              // 只有一张卡片：文档级查找与卡片级等价，保留旧行为（最保守）
-              var fin = null;
-              try { fin = doc.getElementById('isFinished'); } catch (eF) {}
-              finished = !!fin && /true/i.test(String(fin.value || ''));
+              finishedKnown = true;
             } else {
-              // 多张卡片又找不到各自标志：按"未完成"处理。
-              // 重复发评论由 _isDiscussionDone（24 小时）与提交前的二次确认兜住，
-              // 而漏做是完全静默的 —— 两者相权取其轻。
-              finished = false;
+              // 服务端标志读不出来时，改问平台自己的判据（批次 20-G）：
+              // 这张卡所在的任务盒带不带 `ans-job-finished` —— 它就是「下一节」放不放行的那条。
+              // 本课程实测 `#isFinished` 是**空值**，按标志读的两条路全部落空，于是
+              // 「三张讨论卡里还有一张没做完」被读成了「这一节讨论都做完了」。
+              // 按卡取盒（不是按文档取盒），多张卡挤在同一个文档里也不会串。
+              var boxFlag = self._discussionBoxFinishedFlag(card);
+              if (boxFlag !== null) {
+                finished = boxFlag;
+                finishedKnown = true;
+              } else if (sameDoc <= 1) {
+                // 只有一张卡片：文档级查找与卡片级等价，保留旧行为（最保守）
+                var fin = null;
+                try { fin = doc.getElementById('isFinished'); } catch (eF) {}
+                var docFlag = self._discussionFinishedFlagOf(fin);
+                finished = docFlag === true;
+                finishedKnown = docFlag !== null;
+              } else {
+                // 多张卡片又找不到各自标志：按"未完成"处理。
+                // 重复发评论由 _isDiscussionDone（24 小时）与提交前的二次确认兜住，
+                // 而漏做是完全静默的 —— 两者相权取其轻。
+                // ⚠️ finishedKnown 必须留 false：这是"我们没读到平台的说法"，不是"平台说没做完"，
+                // 下游的自愈重试预算只许在前者成立时烧（批次 20-A）。
+                finished = false;
+                finishedKnown = false;
+              }
             }
+
+            var tKey = self._discussionKeyOf(url);
+            if (seenKeys[tKey]) continue;
+            seenKeys[tKey] = 1;
 
             targets.push({
               url: url,
               title: String(textOf(card) || '').replace(/\s+/g, ' ').trim().slice(0, 60),
-              key: self._discussionKeyOf(url),
-              finished: finished
+              key: tKey,
+              finished: finished,
+              finishedKnown: finishedKnown
             });
           }
         });
@@ -7640,6 +8596,58 @@ var OMITONE_CODE_REV = '9b607d12c5';
     },
 
 
+    /**
+     * 「这一节的讨论任务点都算处理完了」的**依据**（批次 20-D）。
+     *
+     * 为什么专门写一条：这个出口原本直接 `return null`，于是"三个话题真发过了"和
+     * "三个话题全被重试预算挡在外面"（20-A 之前的实际现场）留下一模一样的空白 ——
+     * 用户只看到讨论没做、日志里啥也没有。分类计数直接指出是哪一类。
+     * 60 秒最多播一条：`_tryDiscussionTask` 每 3 秒就会走到这里一次。
+     */
+    _logDiscussionAllSettled: function (targets) {
+      var self = this;
+      var now = Date.now();
+      if (now - (this._discussionSettledLogAt || 0) < 60000) return;
+      this._discussionSettledLogAt = now;
+      var out = { serverFinished: 0, believeLocal: 0, tryBudget: 0, unexplained: 0 };
+      var list = targets || [];
+      for (var i = 0; i < list.length; i++) {
+        var t = list[i];
+        if (t.finished) out.serverFinished++;
+        else if (!self._isDiscussionDone(t.key)) out.unexplained++;
+        else if (t.finishedKnown === true) out.tryBudget++;
+        else out.believeLocal++;
+      }
+      emitRuntimeLog('info', 'discussion nothing pending', {
+        total: list.length,
+        serverFinished: out.serverFinished,
+        believeLocal: out.believeLocal,
+        tryBudget: out.tryBudget,
+        unexplained: out.unexplained,
+        hint: out.tryBudget
+          ? '有话题被重试预算挡住（平台确实说了"没完成"而我们连试 3 次）—— 需要人看一眼，或清掉本地 omitone_discussion_done'
+          : 'believeLocal 指的是 #isFinished 读不出结论、只有我们本地记过"已发"，20-A 之后不再拿它当"未完成"重开'
+      });
+    },
+
+
+    /**
+     * 「本地记过已发、平台说没做完」这个话题**还能不能再试一次**（批次 20-G）。
+     *
+     * 抽出来是因为「要不要重开它」和「这一节能不能宣布做完」必须是同一个答案：
+     * 前者在 `_findDiscussionTask` 里、后者在 `_discussionPendingInfo` 里，
+     * 两处各写一遍迟早分叉 —— 分叉的表现就是"扩展一边说没任务、一边又去重开"，
+     * 而平台在中间弹「还有任务点未完成」。（判据无副作用；烧额度由调用方 `_bumpDiscussionTry` 做。）
+     */
+    _discussionHealEligible: function (t) {
+      if (!t || t.finishedKnown !== true) return false;      // 平台没表态：本地记录是唯一证据，不许重开
+      if (!this._isDiscussionDone(t.key)) return false;      // 没记过账：它本来就是 pending
+      var markedAt = Number(this._discussionDoneMap()[t.key] || 0);
+      if (!markedAt || Date.now() - markedAt < 90000) return false;   // 刚发过，先给平台时间刷新
+      return this._getDiscussionTries(t.key) < 3;                    // 最多三次，别把整节锁死
+    },
+
+
     _findDiscussionTask: async function () {
       // 1) 最可靠：页面里已有话题卡片，直接拿到讨论区地址
       var targets = [];
@@ -7655,13 +8663,20 @@ var OMITONE_CODE_REV = '9b607d12c5';
           // ── 自愈：本地记过"已发"，但**平台说这个讨论还没完成** ──
           // 那多半是当时发失败了（跨域那会儿撤不掉标记，见 ⑲）。
           // 超过 90 秒平台仍是"未完成"，就允许重来一次（最多 3 次，靠 `try|` 计数兜底）。
-          var markedAt = Number(self1._discussionDoneMap()[t.key] || 0);
-          if (!markedAt || Date.now() - markedAt < 90000) return false;   // 刚发过，先给平台时间刷新
-          if (self1._getDiscussionTries(t.key) >= 3) return false;        // 已经试够次数了，别再折腾
+          // ⚠️ 前提是平台**真的说了"还没完成"**（批次 20-A）：`#isFinished` 空串时
+          // `finishedKnown` 不是 true，这条标志读不出结论 —— 此时本地那份记录是唯一证据，
+          // 拿它去烧 3 次预算只会把这一节做成"既不再发帖、也永远不推进"（实测现场）。
+          if (!self1._discussionHealEligible(t)) return false;
           self1._bumpDiscussionTry(t.key);
           return true;
         });
-        if (!pending.length) return null; // 本节讨论任务点已完成（服务端已记录回复）
+        if (!pending.length) {
+          // 「本节讨论都做完了」这句话不能只写在返回里 —— 数不出为什么做完，
+          // 下次出问题（比如 20-A 那种"标志读不出所以全被预算挡在外面"）和
+          // "真的都发过了"在日志里长得一模一样。60 秒最多播一条。
+          this._logDiscussionAllSettled(targets);
+          return null; // 本节讨论任务点已完成（服务端已记录回复）
+        }
         var t0 = pending[0];
         return { key: t0.key, name: t0.title || '讨论', url: t0.url, el: null, href: t0.url };
       }
@@ -7723,11 +8738,125 @@ var OMITONE_CODE_REV = '9b607d12c5';
     },
 
 
+    /**
+     * 「这一页还有几个讨论任务点等着发帖」——给学习循环当"别说这一节做完了"的依据（批次 20-D）。
+     *
+     * 为什么学习循环需要这一句话：讨论任务点的模块是 `insertbbs`，
+     * `_kindFromAttachment` 认不出它的类型（视频/阅读/测验/PPT/超链接/翻页文档都不是），
+     * 于是 OCS 那条链把候选帧**全部拒掉**、`searchedCount` 读成 0，接着
+     * `study finished on page` → `study next unit`，每二十秒翻一节而平台根本不认 ——
+     * 因为讨论实际上归 `_tryDiscussionTask` 这条**独立的 tick 链**管，
+     * 学习循环"我这边没活"推不出"这一节做完了"。
+     *
+     * 返回 `{pending, total, source, sig}`：
+     *   source = 'cards' 卡片已渲染（最可靠，和 `_findDiscussionTask` 用的是同一批键）
+     *   source = 'frame' 只有 `insertbbs` 模块、卡片还没渲染 —— 只该短暂按住
+     *   source = 'none'  这一页压根没有讨论任务点（或用户关了讨论）
+     * `sig` 是"待办那批话题的键"拼出来的签名，预算按它起算：做完一个、剩下一个时，
+     * 剩下的那个应当重新享有一整个预算，而不是继承前一个已经烧掉的时间。
+     * 全文档扫描不便宜，结果缓存 2 秒（tick 每 250 毫秒一轮）。
+     */
+    _discussionPendingInfo: function () {
+      var self = this;
+      var now = Date.now();
+      if (this.configs.enableDiscussion === false) {
+        return { pending: 0, total: 0, source: 'disabled', sig: '' };
+      }
+      var cache = this._discussionPendingCache;
+      if (cache && now - Number(cache.at || 0) < 2000) return cache.value;
+
+      var value = { pending: 0, total: 0, source: 'none', sig: '' };
+      try {
+        var targets = this._collectDiscussionTargets();
+        if (targets.length) {
+          value.total = targets.length;
+          value.source = 'cards';
+          var todo = targets.filter(function (t) {
+            if (t.finished) return false;
+            // 「本地已记过」= 已经发过（或已开过）这个讨论，成败由讨论页那边的回执决定，
+            // 不该再让学习循环为它按住这一节 —— 否则发不出去的话题会把整节锁到永远。
+            if (!self._isDiscussionDone(t.key)) return true;
+            // 例外（批次 20-G）：本地记过账、但**平台仍说这个盒子没做完**，
+            // 而且还在自愈额度内 —— 那就和 `_findDiscussionTask` 一样当作"没做完"，
+            // 否则一边准备重开发帖、一边宣布整节完成去点「下一节」。
+            return self._discussionHealEligible(t);
+          });
+          value.pending = todo.length;
+          value.sig = todo.map(function (t) { return String(t.key || ''); }).join(',').slice(0, 200);
+        }
+      } catch (e0) {}
+      if (value.source === 'none') {
+        try {
+          var frames = this._findDiscussionModuleFrames();
+          if (frames.length) {
+            value.total = frames.length;
+            value.source = 'frame';
+            // 本页从没开过讨论页时，给异步解析（模块 → 卡片）留一点时间；
+            // 开过之后（`_discussionOpenedAt`）不再靠这个猜。
+            value.pending = (this._discussionOpenedAt || 0) ? 0 : frames.length;
+            value.sig = value.pending ? 'frame:' + frames.length : '';
+          }
+        } catch (e1) {}
+      }
+      this._discussionPendingCache = { at: now, value: value };
+      return value;
+    },
+
+
+    /**
+     * 学习循环在宣布"这一节做完了"之前该不该为讨论任务点按住（批次 20-D）。
+     *
+     * 预算分开是有意为之：卡片是真数出来的，给足 90 秒让 tick 链去开讨论页；
+     * 只有 `insertbbs` 帧时"还有几个没做"是我们**猜**的，猜的东西最多按 20 秒。
+     *
+     * ⚠️ 超预算不等于"接着按下一轮"：`_discussionHoldSpent` 记的是**这一份文档里烧掉过
+     * 几个预算**。最多两个，之后这一节照常用完就翻 —— 否则"标记写上又撤回"的抖动
+     * 会让签名反复重置、整节课永远停在同一页（用户看到的还是卡住，只是换了个方向）。
+     */
+    _shouldHoldDiscussionBeforeFinish: function () {
+      var info = this._discussionPendingInfo();
+      var now = Date.now();
+      // 讨论页正开着（新标签页）或刚由我们打开：这一节肯定还没做完
+      var inflight = false;
+      try {
+        if (this._discussionWindow && !this._discussionWindow.closed) inflight = true;
+      } catch (e0) { inflight = false; }
+      var openedRecently = now - (this._discussionOpenedAt || 0) < 90000;
+      if (inflight || openedRecently) {
+        if (!this._discussionHoldSinceAt) this._discussionHoldSinceAt = now;
+        return { hold: true, reason: inflight ? 'window-open' : 'just-opened', pending: 1, total: info.total, heldMs: now - this._discussionHoldSinceAt, budgetMs: 90000 };
+      }
+      if (!info.pending) {
+        this._discussionHoldSinceAt = 0;
+        this._discussionHoldKey = '';
+        return { hold: false, reason: info.source === 'none' ? 'no-discussion-task' : (info.source === 'disabled' ? 'discussion-off' : 'all-recorded'), pending: 0, total: info.total, source: info.source, heldMs: 0, budgetMs: 0 };
+      }
+      var budgetMs = info.source === 'cards' ? 90000 : 20000;
+      if (this._discussionHoldKey !== info.sig) {
+        this._discussionHoldKey = info.sig;
+        this._discussionHoldSinceAt = now;
+      }
+      var heldMs = now - (this._discussionHoldSinceAt || now);
+      if (heldMs >= budgetMs) {
+        this._discussionHoldSpent = Number(this._discussionHoldSpent || 0) + 1;
+        this._discussionHoldSinceAt = 0;
+        this._discussionHoldKey = '';
+        return { hold: false, reason: 'budget-spent', pending: info.pending, total: info.total, source: info.source, heldMs: heldMs, budgetMs: budgetMs, spent: this._discussionHoldSpent };
+      }
+      if (Number(this._discussionHoldSpent || 0) >= 2) {
+        return { hold: false, reason: 'budget-cap', pending: info.pending, total: info.total, source: info.source, heldMs: 0, budgetMs: budgetMs, spent: this._discussionHoldSpent };
+      }
+      return { hold: true, reason: info.source, pending: info.pending, total: info.total, source: info.source, heldMs: heldMs, budgetMs: budgetMs };
+    },
+
+
     // 刷课页侧：发现讨论任务点就打开讨论页
     _tryDiscussionTask: async function () {
       if (this.configs.enableDiscussion === false) return false;
       // 首次调用时挂上"讨论页回首掏"的监听（跨域，只能靠 postMessage）
       this._bindDiscussionOutcome();
+      // 同一标签页跳过去又跳回来时没有 opener，结果只写在 window.name 里（批次 20-F）
+      this._consumeDiscussionWindowName();
       // 旧版本留下的"已发过"记录不可信，升级后自动作废一次（不需要用户敲命令）
       this._migrateDiscussionDoneOnce();
       if (this._discussionBusy) return true;
@@ -7757,6 +8886,14 @@ var OMITONE_CODE_REV = '9b607d12c5';
         this._discussionLastOpenedKey = String(task.key || '');
         // 同源时还能顺手存一份（跨域时这个 localStorage 是另一份，仅作兜底）
         try { localStorage.setItem('omitone_discussion_key', String(task.key || '')); } catch (eKey) {}
+        /**
+         * ⚠️ 把**本页的键**写进 `window.name`（批次 20-F）。
+         * 弹窗被拦时接下来是 `location.href` 自己跳去 groupweb，
+         * 讨论页既没有 opener、回来时本页又是一份全新文档 ——
+         * `window.name` 是同标签跨域导航后仍然留着的少数通道之一，
+         * 讨论页发完回帖会把它改写成 `omitoneX|<键>`（失败）或 `omitoneOK|<键>`（成功）。
+         */
+        try { window.name = 'omitoneD|' + String(task.key || ''); } catch (eName) {}
         this._discussionOpenedAt = Date.now();
 
         var navigated = false;
@@ -7984,11 +9121,18 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
 
     // 记录提交前的回复状态，用于判断本次是否真的发出去了
+    /**
+     * ⚠️ 除了条数，还要记下**列表容器当时在不在**（批次 20-B）：
+     * 回帖页刚注入脚本时列表常常还没水合，读出来是 0 条；等我们填完、点完，
+     * 列表渲染出 20 条 —— 这 0→20 是**页面自己加载**，不是"我们发出去了"。
+     * 上一版就是把它当成"多了一条"，日志留下一条假的 `discussion reply confirmed`。
+     */
     _discussionBaseline: function () {
-      var info = { count: 0, text: '' };
+      var info = { count: 0, text: '', listPresent: false };
       try {
         var list = document.querySelector('.topicDetail_replyList');
         if (list) {
+          info.listPresent = true;
           info.count = list.querySelectorAll('.topicDetail_replyItem').length;
           info.text = String(list.innerText || '');
         }
@@ -8005,24 +9149,29 @@ var OMITONE_CODE_REV = '9b607d12c5';
      */
     _discussionEvidence: function () {
       var content = String(this.configs.discussionReply || '1').trim();
-      var before = this._discussionBefore || { count: 0, text: '' };
+      var before = this._discussionBefore || { count: 0, text: '', listPresent: false };
       var ev = {
         contentLen: content.length,
         filled: this._discussionFilledOk === true,
         listPresent: false,
+        beforeListPresent: before.listPresent === true,
         items: -1,
         beforeItems: Number(before.count || 0),
         grew: false,
         hasContent: false,
         successText: false,
-        editorEmpty: null
+        rejectedText: false,
+        editorEmpty: null,
+        cleared: false
       };
       try {
         var list = document.querySelector('.topicDetail_replyList');
         if (list) {
           ev.listPresent = true;
           ev.items = list.querySelectorAll('.topicDetail_replyItem').length;
-          ev.grew = ev.items > ev.beforeItems;
+          // 「多了一条」只有在**基线本身可信**时才算数（批次 20-B）：
+          // 提交前列表不存在或确实一条都没有 → 0 不是可信基线，0→N 无法区分水合与新增。
+          ev.grew = ev.beforeItems > 0 && ev.items > ev.beforeItems;
           // ⚠️ 只有回复内容**够长**时才做文本匹配。
           // 默认回复就是 "1"，而 "1" 在页面上到处都是（日期 / 楼层 / 题号 / 计数）——
           // 拿它去 `indexOf` 近乎恒真，于是"发失败"也能被判成成功（本次的真因）。
@@ -8032,29 +9181,44 @@ var OMITONE_CODE_REV = '9b607d12c5';
         }
       } catch (e1) {}
       try {
-        ev.successText = /发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/
-          .test(String(document.body.innerText || ''));
+        var bodyText = String(document.body.innerText || '');
+        ev.successText = /发布成功|发表成功|提交成功|回复成功|评论成功|操作成功/.test(bodyText);
+        // 反向证据：平台明确说了没发出去。没有这一条，"页面弹了个错误"和"没来得及确认"
+        // 在日志里长得一模一样，而前者重试是白费、后者重试才有意义。
+        ev.rejectedText = /回复失败|发送失败|发布失败|发表失败|操作失败|内容不能为空|请输入内容|请输入回复|请登录|请先登录|操作太频繁|频繁请求|禁言|审核中/.test(bodyText);
       } catch (e2) {}
-      var editor = this._findDiscussionEditor();
+      // ⚠️ 必须量**我们填进去的那一个节点**（批次 20-B）：`_findDiscussionEditor()`
+      // 会按可见面积重新挑，页面一改版就可能挑到另一块输入区，
+      // 于是"编辑区已清空"量的根本不是刚才填过的那块。
+      var editor = this._discussionEditorEl || null;
+      if (!editor || !document.contains(editor)) editor = this._findDiscussionEditor();
       if (editor) {
         ev.editorEmpty = String(editor.value !== undefined ? editor.value : editor.textContent || '').trim() === '';
+        ev.cleared = ev.filled && ev.editorEmpty === true;
       }
       return ev;
     },
 
 
     /**
-     * 这次提交算不算成功。**只认正向证据**，按强弱排序：
-     *   ① 回复条目真的多了一条（最强，与内容长短无关）
+     * 这次提交算不算成功。先否后肯：
+     *   ⓪ 页面上有"失败 / 不能为空 / 请登录 / 太频繁"之类的拒绝文案 → 直接判失败（批次 20-B）
+     *   ① 回复条目真的多了一条（**要求提交前就有可信基线**，水合的 0→N 不算）
      *   ② 回复列表里出现了我们那段文字（要求内容够长，避免 "1" 恒真）
      *   ③ 页面弹了「发布成功」之类的提示
-     *   ④ 仅当页面上**根本没有回复列表**可对账时，才退而相信"填进去过 + 编辑区已清空"
+     *   ④ 填进去过、**我们那块编辑区被平台清空了**、且列表里至少有一条 ——
+     *      这条专门补 ① 的洞：话题原本零回复时基线是 0，发成功也只能靠"框被清空"证明
+     *   ⑤ 页面上根本没有回复列表可对账时，才退而相信"填进去过 + 编辑区已清空"
      *
-     * ⚠️ ④ 绝对不能提前：编辑区为空是"发成功"和"发失败"**共有**的现象。
+     * ⚠️ ④⑤ 都排在正向证据之后：编辑区为空本身是"发成功"和"发失败"**共有**的现象，
+     * 单凭它下结论就是上一版假 `confirmed` 的来源；实测这个平台上发失败时
+     * 文字**留在框里**（那条未确认的记录 `editorEmpty:false`），所以清空加上"列表非空"才是站得住的组合。
      */
     _discussionSuccessHint: function () {
       var ev = this._discussionEvidence();
+      if (ev.rejectedText) return false;
       if (ev.grew || ev.hasContent || ev.successText) return true;
+      if (ev.listPresent && ev.filled && ev.cleared && ev.items >= 1) return true;
       if (!ev.listPresent && ev.filled && ev.editorEmpty === true) return true;
       return false;
     },
@@ -8124,11 +9288,15 @@ var OMITONE_CODE_REV = '9b607d12c5';
     },
 
 
-    // 判据拒了也要留话（30 秒节流）—— 否则"为什么这条讨论没发"和"页面不是讨论页"在日志里长得一样
+    // 判据拒了也要留话 —— 否则"为什么这条讨论没发"和"页面不是讨论页"在日志里长得一样。
+    // ⚠️ 节流从 30 秒放到 **120 秒**：刷课时这条每 tick 都会被 `study-page` 拒一次，
+    //    30 秒等于一条都没挡住（现场实测约 31 秒一条，和 `media pending` 一起把
+    //    200 条日志环刷满，真正要看的「为什么跳过这一节」几条分钟后就查不到了）。
+    //    换了**别的**理由仍然立刻出日志 —— 节流只压同一条重复。
     _declineDiscussionPage: function (reason, info) {
       var now = Date.now();
       var signature = String(reason || '');
-      if (!this._discussionDeclineLogAt || now - this._discussionDeclineLogAt > 30000 || signature !== this._discussionDeclineSignature) {
+      if (!this._discussionDeclineLogAt || now - this._discussionDeclineLogAt > 120000 || signature !== this._discussionDeclineSignature) {
         this._discussionDeclineLogAt = now;
         this._discussionDeclineSignature = signature;
         var payload = { reason: reason };
@@ -8172,12 +9340,157 @@ var OMITONE_CODE_REV = '9b607d12c5';
     },
 
 
+    /**
+     * 发帖前等页面"活过来"（批次 20-F）。
+     *
+     * 实测现场（2026-11-11 23:08）：话题页的回复列表是服务端先出 HTML、页面 JS 再用
+     * XHR 水合的（`getTopReplyList` → `getReplyList`）。脚本注入太早时
+     * 「回复」按钮**已经在 DOM 里、事件却还没绑上** ——
+     * 于是填了、点了、一条请求都没发，日志只留下 `not confirmed`，
+     * 而这条讨论实际一条都没发出去；紧接着刷课页把这一节判成"做完"翻过去。
+     *
+     * 判据用列表水合（已经有回复项，或页面写出了「共N条回复」），最长等 12 秒。
+     * **等不到也照发** —— 真的一条回复都没有的话题是存在的，
+     * 卡在这里不放行比重演一次"点了没反应"更糟。
+     */
+    _waitDiscussionReady: async function () {
+      var deadline = Date.now() + 12000;
+      var by = 'timeout';
+      var waited = 0;
+      while (Date.now() < deadline) {
+        try {
+          if (document.querySelector('.topicDetail_replyItem')) { by = 'list'; break; }
+          if (String(document.readyState || '') === 'complete') {
+            var em = document.querySelector('.classReplyCount');
+            // 那个 <em> 默认带 `hide`，innerText 读不到东西 —— 只能按 textContent 数
+            if (em && /\d+/.test(String(em.textContent || ''))) { by = 'count'; break; }
+          }
+        } catch (e0) { by = 'error'; break; }
+        await sleep(500);
+        waited += 500;
+      }
+      emitRuntimeLog('info', 'discussion page hydrated', {
+        by: by, waitedMs: waited, items: this._discussionBaseline().count
+      });
+    },
+
+
+    // 刷课页在同一个标签页跳过来时把它的键写在 window.name 里（见 _tryDiscussionTask）
+    _discussionStudyKeyOfName: function () {
+      var raw = '';
+      try { raw = String(window.name || ''); } catch (e0) { return ''; }
+      if (raw.indexOf('omitoneD|') !== 0) return '';
+      return raw.slice(9).slice(0, 80);
+    },
+
+
+    /**
+     * 「讨论页说这次没发出去」的统一收口。
+     * 原先只有 postMessage 一条路能走到这里，同一标签页跳转那条路（弹窗被拦时的路径）
+     * 根本没有 opener，失败信号就丢了 —— 刷课页的"已做"标记一直留着，
+     * 24 小时内不再重试，用户只看到"这一节卡着"。
+     */
+    _handleDiscussionFailure: function (keyIn, source) {
+      var key = String(keyIn || this._discussionLastOpenedKey || '');
+      if (!key) return false;
+      var tries = this._bumpDiscussionTry(key);
+      var limit = 3;   // 最多重试 3 次：平台若压根发不出去，无限重开只会空转
+      if (tries > limit) {
+        emitRuntimeLog('warn', 'discussion reply keeps failing, give up for now', {
+          key: key.slice(0, 40),
+          tries: tries,
+          source: source,
+          hint: '已连续失败 ' + tries + ' 次，24 小时内不再尝试（可手动处理，或清掉 localStorage 里的 omitone_discussion_done）'
+        });
+        return true;
+      }
+      this._unmarkDiscussionDone(key);
+      emitRuntimeLog('warn', 'discussion reply failed, will retry', {
+        key: key.slice(0, 40),
+        tries: tries,
+        limit: limit,
+        source: source
+      });
+      return true;
+    },
+
+
+    /**
+     * 刷课页侧：读回讨论页用 `window.name` 递回来的结果（批次 20-F）。
+     *
+     * `window.name` 是**同一标签页跨域导航后仍然保留**的少数几个通道之一 ——
+     * 弹窗被拦时刷课页自己 `location.href` 跳去 groupweb，回来是一份全新的文档，
+     * `window.opener` 压根不存在，postMessage 那条路是死的。
+     */
+    _consumeDiscussionWindowName: function () {
+      if (this._discussionNameRead) return;
+      this._discussionNameRead = true;
+      var raw = '';
+      try { raw = String(window.name || ''); } catch (e0) { return; }
+      if (raw.indexOf('omitoneX|') !== 0 && raw.indexOf('omitoneOK|') !== 0) return;
+      var key = raw.slice(9);
+      try { window.name = ''; } catch (e1) {}
+      if (raw.indexOf('omitoneX|') === 0) {
+        this._handleDiscussionFailure(key, 'window-name');
+        return;
+      }
+      emitRuntimeLog('info', 'discussion reply landed', { key: key.slice(0, 40), source: 'window-name' });
+    },
+
+
+    /**
+     * 把发帖结果递回刷课页（批次 20-F）。
+     *
+     * ⚠️ 两条通道都得走，因为打开方式有两种：
+     *   · `window.open` 成功 → 讨论页有 opener → postMessage 能到
+     *   · 弹窗被拦、刷课页自己 `location.href` 跳过来 → **根本没有 opener**，
+     *     而且发完回帖跳回去时刷课页是一份全新文档，
+     *     内存里那个 `_discussionLastOpenedKey` 早跟着旧文档没了 ——
+     *     只有 `window.name` 能跨过这次同标签的跨域导航把话带到。
+     * 在这里调 `_unmarkDiscussionDone` 撤的是 groupweb 自己那份存储，
+     * 对刷课页（mooc1）毫无影响（2026-10-17 实测踩到）。
+     */
+    _announceDiscussionOutcome: function (ok, studyKey) {
+      var key = String(studyKey || '');
+      try {
+        if (!ok && window.opener && !window.opener.closed) {
+          window.opener.postMessage({ omitoneDiscussion: 'failed', key: key }, '*');
+        }
+      } catch (eNotify) {}
+      try { window.name = (ok ? 'omitoneOK|' : 'omitoneX|') + key; } catch (eName) {}
+    },
+
+
     _runDiscussionMode: async function () {
       if (this._discussionBusy) return;
       if (this._discussionPosted) return; // 每个页面只发一次，避免重复评论
+      /**
+       * ⚠️ 「每个页面只发一次」原先**只记在内存里**（批次 20-E）：
+       * 实测同一个话题在 22:38:34 和 22:45:22 各发了一条内容「1」的回帖，
+       * 中间那次是 `discussion done, waiting for reload` 之后页面自己重载
+       * （`auto resume after reload`）→ 新的 document → `_discussionPosted` 又是 false
+       * → 对着同一个话题再发一遍。讨论页在 `groupweb`、刷课页在 `mooc1`，
+       * 两边的 localStorage 不是同一份，所以**本站也得记一份**按话题的账。
+       */
+      var pageKey = 'page|' + this._discussionKeyOf(location.href);
+      if (this._isDiscussionDone(pageKey)) {
+        this._discussionPosted = true;
+        var nowDup = Date.now();
+        if (!this._discussionDupLogAt || nowDup - this._discussionDupLogAt > 60000) {
+          this._discussionDupLogAt = nowDup;
+          emitRuntimeLog('info', 'discussion already posted on this topic, skip', {
+            key: pageKey.slice(0, 48),
+            url: String(location.href || '').slice(0, 110),
+            hint: '本站记过这条回帖（24 小时内），不再重复发帖；要强制重发清掉 groupweb 这个源里的 omitone_discussion_done'
+          });
+        }
+        return;
+      }
       this._discussionBusy = true;
       emitRuntimeLog('info', 'discussion page detected, posting reply', { url: String(location.href || '').slice(0, 120) });
       try {
+        // 先等页面水合，再找控件（批次 20-F）：按钮在 DOM 里但没有事件时点它没有任何反应
+        await this._waitDiscussionReady();
         var editor = this._findDiscussionEditor();
         if (!editor) {
           await this._expandDiscussionEditor();
@@ -8205,7 +9518,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
           return; // 不锁定 _discussionPosted：下一轮再试，避免一次没找到就永久放弃
         }
         this._discussionPosted = true; // 找到控件后才锁定，确保每页只发一次
-        this._discussionBefore = this._discussionBaseline();
+        // ⚠️ 存下**这一块**编辑区：提交后的证据要量"刚填过的那个节点现在空不空"，
+        // 而不是"再找一次页面上最大的输入区"（批次 20-B，页面一改版就会挑到别处）。
+        this._discussionEditorEl = editor;
         var content = String(this.configs.discussionReply || '1');
         var filledOk = this._fillDiscussionEditor(editor, content) === true;
         if (!filledOk) {
@@ -8224,48 +9539,82 @@ var OMITONE_CODE_REV = '9b607d12c5';
             editor: String(editor.tagName || '') + (editor.id ? '#' + editor.id : '')
           });
           this._unmarkDiscussionDone(this._discussionPendingKey());
+          this._unmarkDiscussionDone(pageKey);
         }
-        button.click();
-        emitRuntimeLog('info', 'discussion reply submitted', {
-          content: content.slice(0, 40),
-          editor: String(editor.tagName || '') + (editor.id ? '#' + editor.id : ''),
-          button: String(button.className || '').slice(0, 60),
-          url: String(location.href || '').slice(0, 100)
-        });
+        // 按话题的账在**点下去之前**写（批次 20-E）：点完立刻刷新也能被这份记录挡住，
+        // 不会对着同一个话题发出第二条
+        this._markDiscussionDone(pageKey);
 
-        // 等待提交结果（最多 10 秒）；未确认也继续返回——宁可少发一次，也不能卡住刷课
+        // 刷课页那一侧的键（同一标签页跳转时写在 window.name 里，弹窗路径拿不到就留空）
+        var studyKey = this._discussionStudyKeyOfName();
         var confirmed = false;
-        for (var i = 0; i < 10; i++) {
-          await sleep(1000);
-          if (this._discussionSuccessHint()) {
-            confirmed = true;
-            // 把"凭什么算成功"一起记下来 —— 只写 confirmed 的话，下次还是查不出来
-            emitRuntimeLog('info', 'discussion reply confirmed', { evidence: this._discussionEvidence() });
-            break;
+        var ev = null;
+        var attempts = 0;
+        for (var attempt = 1; attempt <= 2 && !confirmed; attempt++) {
+          attempts = attempt;
+          /**
+           * ⚠️ 基线必须**贴着点击这一刻**取（批次 20-F）。
+           * 原先基线在填之前取，那会儿列表常常还没水合、读到 0 条；
+           * 等点完再看，页面自己长出了 20 条 —— 于是两个方向都错：
+           * 没发出去却"看着像长了"（上一版就是这条假 `confirmed`），
+           * 真发出去了（20→21）又因为"基线 0"被别的判据盖过去。
+           */
+          this._discussionBefore = this._discussionBaseline();
+          try { button.click(); } catch (eClick) {}
+          emitRuntimeLog('info', 'discussion reply submitted', {
+            content: content.slice(0, 40),
+            editor: String(editor.tagName || '') + (editor.id ? '#' + editor.id : ''),
+            button: String(button.className || '').slice(0, 60),
+            attempt: attempt,
+            beforeItems: Number(this._discussionBefore.count) || 0,
+            url: String(location.href || '').slice(0, 100)
+          });
+
+          // 等待提交结果（每轮最多 8 秒）；未确认也继续返回——宁可少发一次，也不能卡住刷课
+          for (var i = 0; i < 8; i++) {
+            await sleep(1000);
+            if (this._discussionSuccessHint()) {
+              confirmed = true;
+              // 把"凭什么算成功"一起记下来 —— 只写 confirmed 的话，下次还是查不出来
+              emitRuntimeLog('info', 'discussion reply confirmed', {
+                evidence: this._discussionEvidence(), attempt: attempt
+              });
+              break;
+            }
           }
+          if (confirmed) break;
+          ev = this._discussionEvidence();
+          // 只有「文字还好好待在框里、且平台没明说失败」才值得再点一次 ——
+          // 实测那种情况下压根一个请求都没发（点击早于页面绑定事件），再点就出去了。
+          // 平台已经报错（rejectedText）就不再点，避免对着同一话题连发多条。
+          if (attempt >= 2 || ev.rejectedText === true || ev.filled !== true || ev.editorEmpty !== false) break;
+          emitRuntimeLog('warn', 'discussion submit click had no effect, retrying', {
+            attempt: attempt, items: ev.items, beforeItems: Number(this._discussionBefore.count) || 0
+          });
+          this._discussionEditorEl = this._findDiscussionEditor() || this._discussionEditorEl;
+          button = this._findDiscussionSubmitButton(this._discussionEditorEl) || button;
+          if (this._discussionEditorEl) this._fillDiscussionEditor(this._discussionEditorEl, content);
+          await sleep(800);
         }
         if (!confirmed) {
-          // 没看到成功提示有两种情况：
-          //   ① 内容压根没填进去（fill 已报过 warn 并撤了标记）→ 会重试
-          //   ② 填进去了但页面没给提示 → 大概率已经发出去，**不再重发**（避免两条一样的回复）
-          //
           // ⚠️ 把三条判据各自的实况一起记下来 —— 只说"未确认"的话，
-          // 下次还是得靠猜（这一轮就因为看不到细节多绕了一趟）。
-          var diagHint = this._discussionEvidence();
-          diagHint.content = String(content || '').slice(0, 20);
-          emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', diagHint);
-
-          // ⚠️ 必须告诉刷课页"这次没成"，让它撤掉"已做"标记并重试。
-          // **只能走 postMessage**：讨论页在 groupweb.chaoxing.com、刷课页在
-          // mooc1.chaoxing.com，两边的 localStorage 根本不是同一份 ——
-          // 在这里调 `_unmarkDiscussionDone` 撤的是本地空存储，等于没撤
-          //（2026-10-17 实测踩到，所以上一版"失败可重试"完全没生效）。
-          try {
-            if (window.opener && !window.opener.closed) {
-              window.opener.postMessage({ omitoneDiscussion: 'failed' }, '*');
-            }
-          } catch (eNotify) {}
+          // 下次还是得靠猜（这一轮就因为看不到细节多绕了两趟）。
+          ev = ev || this._discussionEvidence();
+          ev.content = String(content || '').slice(0, 20);
+          ev.attempts = attempts;
+          // 20-F：本站这份账在"**确实没发出去**"的三种情形撤回 ——
+          // 没填上（filled=false）、平台明说失败（rejectedText=true）、
+          // 或**文字还留在框里**（editorEmpty=false ⇒ 这一下压根没生效）。
+          // 最后一种原先是留着不撤的，理由"大概率已发出" —— 实测恰恰相反：
+          // 23:08 那条就是这么被记成"已发"、再也没重试过，整节卡在讨论任务点上。
+          if (!ev.filled || ev.rejectedText === true || ev.editorEmpty === false) {
+            this._unmarkDiscussionDone(pageKey);
+            ev.pageKeyReleased = true;
+          }
+          emitRuntimeLog('warn', 'discussion reply not confirmed, resume anyway', ev);
         }
+        // 把真实结果递回刷课页（成功/失败都要说，失败更要说）
+        this._announceDiscussionOutcome(confirmed, studyKey);
 
         await sleep(600);
         var returnUrl = '';
@@ -8596,6 +9945,9 @@ var OMITONE_CODE_REV = '9b607d12c5';
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      // 换卷子 = 上一份的检查窗口作废（留着会让新卷子直接跳过窗口、填完就交）
+      this._quizReviewPaperKey = '';
+      this._quizReviewUntil = 0;
       emitRuntimeLog('info', 'quiz paper switched, reset per-paper state', { paper: key.slice(0, 90) });
 
       // ③ 换过去那份已经完成时，别把它当"没答过"
@@ -8866,6 +10218,8 @@ var OMITONE_CODE_REV = '9b607d12c5';
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      this._quizReviewPaperKey = '';
+      this._quizReviewUntil = 0;
       // 换任务了，上一道弹题的失败记录不该带过来
       this._popupQuizKey = '';
       this._popupQuizAttempts = 0;
@@ -13473,6 +14827,54 @@ var OMITONE_CODE_REV = '9b607d12c5';
         this._quizAnswered = false;
         return false;
       }
+      // ===== 乱选交卷前的「可设置检查窗口」（2026-11-12，用户直接提出）=====
+      //
+      // 原话：「关于乱答最好留一个可设置的窗口，别直接默认『不会』然后就提交还不能修改啊，
+      // 这太诡异了」。乱选的答案是**猜的**，而交卷不可逆 —— 填完立刻交，
+      // 用户看到的第一个事实永远是「想改也改不了了」。所以这里按配置停一下手：
+      //   · `randomAnswerReviewSec > 0`：arm 一个窗口，窗口内每次被调到都只等不点，
+      //     到点那一次才真的交（这期间 `_quizAnswered` 已经是 true，
+      //     `_handleQuiz` 开头会直接 return，不会把用户刚改的答案又随机冲掉）；
+      //   · `randomAnswerReviewSec === 0`：完全不自动交卷，停在「等你检查后自己交」，
+      //     每 10 秒一条日志说清怎么恢复（静默按住用户的卷子是本仓库最不能接受的一类）。
+      // ⚠️ 窗口必须记住「是为哪一份卷子 arm 的」：这里被 OCS 循环**每秒**调到，
+      //   没有卷子键就会每一秒重数一遍，窗口永远走不完（同族坑见 `_quizGarbledRoundAt`）。
+      //   `_quizReviewUntil === 0` 是「这份卷子正停在等用户」的记号 ——
+      //   所以用户把设置从 0 调回大于 0 时，这里会**重新 arm**，不会一升设置就立刻交卷。
+      // ⚠️ 两种状态**各按卷子键只打一条日志**：这条每秒被调到，只按时间节流仍会把日志刷满，
+      //   而完全静默又让人不知道插件在等什么。
+      if (this._isRandomAnswerMode()) {
+        var reviewSec = Number(this.configs && this.configs.randomAnswerReviewSec);
+        if (!isFinite(reviewSec)) reviewSec = 30;
+        var reviewKey = String(this._getQuizWorkKey(effectiveDoc || submitDoc) || '');
+        var reviewNow = Date.now();
+        if (reviewSec <= 0) {
+          if (this._quizReviewPaperKey !== reviewKey || this._quizReviewUntil !== 0) {
+            this._quizReviewPaperKey = reviewKey;
+            this._quizReviewUntil = 0;
+            emitRuntimeLog('info', 'quiz held for manual review', {
+              key: reviewKey.slice(0, 60),
+              hint: '乱选已把整卷填满，按设置停在「不自动交卷」：检查完自己点提交即可；' +
+                '想让它自己交，把设置「乱选交卷前留几秒检查」改成大于 0'
+            });
+          }
+          return false;
+        }
+        if (this._quizReviewPaperKey !== reviewKey || this._quizReviewUntil === 0) {
+          this._quizReviewPaperKey = reviewKey;
+          this._quizReviewUntil = reviewNow + reviewSec * 1000;
+          emitRuntimeLog('info', 'quiz review window armed before submit', {
+            seconds: reviewSec,
+            key: reviewKey.slice(0, 60),
+            hint: '乱选填完了整卷，' + reviewSec + ' 秒内可以自己改，到点自动交卷（交卷不可逆）'
+          });
+          return false;
+        }
+        if (reviewNow < this._quizReviewUntil) return false;
+        this._quizReviewPaperKey = '';
+        this._quizReviewUntil = 0;
+      }
+
       if (submitQuestions) {
         this._rememberSubmittedQuizAnswers(submitQuestions, effectiveDoc || submitDoc);
       }
@@ -13930,12 +15332,35 @@ var OMITONE_CODE_REV = '9b607d12c5';
         '[class*="question"][class*="pop"]'
       ];
 
+      // 投票覆盖层归 `_runChaoxingVoteJob` 独占，弹题扫描不许碰它。
+      // 它的形状和弹题一模一样（一段题干 + A/B 两个 radio + 一个「提交」键），
+      // 2026-11-11 真页实测两边抢过同一份卷子：日志里
+      // `tick progress {note:"vote overlay"}` 紧跟着
+      // `popup quiz answered {options:["是","否"], rawAnswer:"A", type:"single"}` ——
+      // 投票被弹题链路顺手投掉，投票 runner 只能干等到超时，
+      // 完成证据也就落在错的那条链上。
+      function isVoteOverlay(node) {
+        var hops = 0;
+        while (node && node.nodeType === 1 && hops < 4) {
+          hops++;
+          try {
+            if (node.id === 'voteIframe') return true;
+            if (node.closest && node.closest('.voteContainer')) return true;
+            var owner = node.ownerDocument;
+            node = owner && owner.defaultView ? owner.defaultView.frameElement : null;
+          } catch (e) {
+            return false;
+          }
+        }
+        return false;
+      }
+
       function searchAll(doc, depth) {
         if (!doc || depth > 3) return null;
 
         for (var i = 0; i < selectors.length; i++) {
           var node = doc.querySelector(selectors[i]);
-          if (node && app._isSubmitConfirmDialog(node)) continue;
+          if (node && (app._isSubmitConfirmDialog(node) || isVoteOverlay(node))) continue;
           // 播放器容器 / 含 video 的浮层（水印、广告、倍速提示）不是题。
           // .vjs-overlay 这类选择器极易命中视频浮层，误判后插件会把它当题反复问模型。
           if (node && node.querySelector && node.querySelector('video')) continue;
@@ -13945,6 +15370,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
         var sections = doc.querySelectorAll('div, section');
         for (var j = 0; j < sections.length; j++) {
           if (!visible(sections[j])) continue;
+          if (isVoteOverlay(sections[j])) continue;
           if (sections[j].querySelector && sections[j].querySelector('video')) continue;
           var sectionText = textOf(sections[j]);
           if (sectionText.length > 20 && sectionText.length < 600 && /[A-F][.、．))]/.test(sectionText)) {
@@ -13960,6 +15386,7 @@ var OMITONE_CODE_REV = '9b607d12c5';
 
         var frames = doc.querySelectorAll('iframe');
         for (var k = 0; k < frames.length; k++) {
+          if (isVoteOverlay(frames[k])) continue;
           try {
             var subDoc = frames[k].contentDocument || (frames[k].contentWindow && frames[k].contentWindow.document);
             var found = searchAll(subDoc, depth + 1);

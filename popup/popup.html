@@ -321,6 +321,10 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 }
 .hint{ margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
 .hint b{ color:var(--fg-2); font-weight:600; }
+/* 外链只有一处用途：去 DeepSeek 官网注册、充值、拿 Key。
+   rel 必须带 noreferrer —— 弹窗带着扩展身份，不该把来源泄给外部站点。 */
+a.ext{ color:var(--accent); font-weight:500; text-decoration:none; }
+a.ext:hover{ text-decoration:underline; }
 
 /* ---------- 检测更新 ---------- */
 .update-row{ position:relative; display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap; }
@@ -549,9 +553,8 @@ body.has-bg::after{
       <button type="button" id="revokeCaptcha">撤销当前页授权</button>
     </div>
     <p class="hint" style="margin-top:8px;">
-      <b>1.3.0 正式版：</b>答题分批更稳（每批 ≤3 题、多选一题一问），报错按根因分类，
-      小角色支持好感度养成并跟到上课页。<br>
-      刷课不需要 API Key。要用 <b>AI 答题</b> 或 <b>验证码识别</b> 才需要，在下面「AI 接入」里填。
+      <b>1.3.0 稳定版。</b>这个插件是公益项目，<b>永久免费</b>，没有任何收费功能、也没有会员。<br>
+      <b>刷课不需要 API Key</b>；只有 <b>AI 答题</b> 和 <b>验证码识别</b> 需要，在下面的「AI 接入」里填。
     </p>
     <div class="update-row" id="updateRow">
       <span class="update-msg" id="updateMsg">当前版本 1.3.0</span>
@@ -641,11 +644,26 @@ body.has-bg::after{
         <label for="enableHyperlink">超链接</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableHyperlink"></div>
       </div>
+      <div class="row">
+        <label for="enableDiscussion">讨论（进话题页发一条就回来）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
+      </div>
+      <div class="field">
+        <label for="discussionReply">讨论回复内容</label>
+        <input id="discussionReply" type="text" placeholder="1" />
+        <p class="hint">默认只有一个 <b>1</b>。建议改成一句正常的话再去发。</p>
+      </div>
+      <div class="row">
+        <label for="enableVote">投票（随手勾第一项就提交）</label>
+        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableVote"></div>
+      </div>
+      <p class="hint">讨论和投票都<b>不需要 API Key</b>。投票不计分，但它是任务点：不投，下一节点不会动。
+        关掉哪一类，那一类就请自己完成。</p>
     </div>
   </details>
 
   <details class="group">
-    <summary><span>答题</span><i class="rule"></i><span class="tag">需要 API Key / 也可乱选</span></summary>
+    <summary><span>答题</span><i class="rule"></i><span class="tag">需要 Key · 也可乱选</span></summary>
     <div class="group-body">
       <div class="row">
         <label for="enableQuiz">AI 自动答题（关闭后只刷课不答题）</label>
@@ -655,10 +673,16 @@ body.has-bg::after{
         <label for="randomAnswer">乱选（不接 AI，随机作答）</label>
         <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="randomAnswer"></div>
       </div>
-      <p class="hint"><b>不需要 Key</b>：本地随机作答，只求把卷交出去，不保证正确率。
-      「AI 自动答题」<b>也要开着</b>，否则乱选不生效。随机答案<b>不进答案记忆</b>。</p>
+      <p class="hint"><b>不需要 Key</b>：本地随机作答，只求把卷交上去，不保证对错。
+        它要跟「AI 自动答题」一起开着才生效。</p>
+      <div class="field">
+        <label for="randomAnswerReviewSec">乱选交卷前留几秒检查</label>
+        <input type="number" id="randomAnswerReviewSec" min="0" max="600" step="1" placeholder="30" />
+      </div>
+      <p class="hint">交卷不能撤回，而乱选的答案是猜的。填完整卷后会先停这么多秒让你检查，到点自动交。
+        <b>填 0</b> 就不自动交卷，停在「等你自己点提交」。</p>
       <div class="row">
-        <label for="enableCaptcha">自动识别验证码（独立于答题开关）</label>
+        <label for="enableCaptcha">自动识别验证码（和答题开关各自独立）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
       </div>
       <div class="row">
@@ -668,37 +692,21 @@ body.has-bg::after{
       <div class="field">
         <label for="visionModel">看图模型</label>
         <input type="text" id="visionModel" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
-        <p class="hint"><b>默认关闭 —— 图片很贵</b>：每张图按视觉模型计费，通常是纯文本的十几到几十倍。
-        开启后先把图转成文字再答题，能救「看图选择 / 图形题」。
-        <b>看图模型可以留空</b>：默认模型自带看图，换成纯文本模型才需要另填。下面两项是花费上限。</p>
+        <p class="hint"><b>默认关闭 —— 看图很贵</b>，一张图通常是纯文本的十几到几十倍花费。<br>
+        开启后先把图转成文字再答题，能救「看图选择 / 图形题」。<br>
+        模型名<b>可以留空</b>：默认模型自带看图，换成纯文本模型才需要在这里另填。</p>
       </div>
       <div class="field">
         <label for="visionBudgetPerChapter">每章看图次数上限</label>
         <input type="number" id="visionBudgetPerChapter" min="0" max="500" step="1" placeholder="30" />
-        <p class="hint">到顶后本章不再发任何看图请求（会在日志里记一条）。设 <b>0</b> 等于关闭。</p>
+        <p class="hint">这是每章的看图花费上限。到顶后本章不再发看图请求，日志会记一条。设 <b>0</b> 等于关闭。</p>
       </div>
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
         <input type="text" id="captchaModel" placeholder="如 deepseek-flash / qwen-vl-max" />
-        <p class="hint"><b>留空 = 用上面那个主模型识别。</b>DeepSeek 这类主模型自带看图，留空就能用。
-        若你把主模型换成了纯文本模型，这里<b>必须</b>单独填一个会看图的型号 ——
-        否则验证码墙只试一次就会停手（不再反复烧钱重试），日志会明说「这个模型看不懂图」，
-        请在那个页面上亲手输一次。</p>
-      </div>
-    </div>
-  </details>
-
-  <details class="group">
-    <summary><span>讨论任务点</span><i class="rule"></i><span class="tag plain">不需 Key</span></summary>
-    <div class="group-body">
-      <div class="row">
-        <label for="enableDiscussion">自动发评论（跳转后自动返回）</label>
-        <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
-      </div>
-      <div class="field">
-        <label for="discussionReply">回复内容</label>
-        <input id="discussionReply" type="text" placeholder="1" />
-        <p class="hint">默认是 <b>1</b>，在老师眼里就是灌水 —— <b>请改成正常的话。</b></p>
+        <p class="hint"><b>留空就用上面的主模型识别</b>，DeepSeek 留空即可。<br>
+        只有把主模型换成纯文本模型时，这里才<b>必须</b>另填一个会看图的型号 ——
+        否则验证码墙只试一次就停手，日志会明说「这个模型看不懂图」，那一张请亲手输一次。</p>
       </div>
     </div>
   </details>
@@ -718,9 +726,9 @@ body.has-bg::after{
         </select>
       </div>
       <p class="hint">
-        <b>推荐 DeepSeek</b>：便宜、快，也是唯一在真实答题里实测通过的。
-        其它渠道的地址与模型名是快照，<b>厂商换版就失效</b> —— 改「模型名」那一格即可；
-        表里没有的服务商选<b>自定义 OpenAI 兼容</b>。密钥怎么拿见 <b>《使用说明.pdf》</b>。
+        <b>推荐 DeepSeek</b>：便宜、快，也是唯一在真实答题里实测通过的。<br>
+        <a class="ext" href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">点此去 DeepSeek 官网注册、充值、获取 API Key ↗</a><br>
+        换别家时，地址和模型名要跟着改；表里没有的服务商选<b>自定义 OpenAI 兼容</b>。
       </p>
       <div class="field">
         <label for="thinkingLevel">思考强度</label>
@@ -751,6 +759,7 @@ body.has-bg::after{
       <div class="field">
         <label for="apiKey">API Key</label>
         <input type="password" id="apiKey">
+        <p class="hint">没有 Key？<a class="ext" href="https://platform.deepseek.com/" target="_blank" rel="noopener noreferrer">去 DeepSeek 官网充值并创建一个 ↗</a>（整串复制，粘贴时别带空格）</p>
       </div>
       <div class="field">
         <label for="model">模型名</label>
@@ -759,8 +768,8 @@ body.has-bg::after{
       <div class="field">
         <label for="systemPrompt">自定义 system 提示词（高级）</label>
         <textarea id="systemPrompt" rows="3" placeholder="留空即用内置的压缩版提示词"></textarea>
-        <p class="hint">只有明确知道自己在做什么时才填。<b>内置那版是压过的</b>，
-        换成长提示词会让每次请求都更贵；填错格式也不会导致解析失败（有兜底）。</p>
+        <p class="hint">不确定就<b>留空</b>。留空用的是内置提示词，已经压到最短；
+        填成长提示词会让每一次请求都更贵。</p>
       </div>
       <div class="field">
         <button class="btn" id="saveApi" style="width:100%">保存 API 设置</button>

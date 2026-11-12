@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 85 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 91 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.2.9` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -18,6 +18,7 @@
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 | `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
 | `debug-probe.js` | `node tools/debug-probe.js` | 连上面那个浏览器，在**真学习通页面**上跑插件的只读探针 `xxtAI.probe()`（`--expr=` 可换成任意表达式）。**排查真实问题的唯一入口** —— 见下方专节 |
+| `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
 
 `npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
 
@@ -310,7 +311,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 85 个场景 / 861 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 91 个场景 / 935 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -409,7 +410,16 @@ node tools/debug-live.js "https://mooc1.chaoxing.com/mycourse/studentstudy?chapt
 node tools/debug-probe.js                                                                  # 读插件在真页面上的当场判断
 node tools/debug-probe.js --expr="xxtAI.diagnose()"                                        # 任意表达式
 node tools/debug-probe.js --port=9334 --match=studentstudy                                 # 端口 / 标签匹配词
+npm run field-shape                                                                        # 形状测绘：夹具与现场有分歧时定谁对
 ```
+
+`npm run field-shape` 就是上面那条命令换成 `--file=tools/field-shape.expr`。**什么时候跑它**：
+一条 e2e 断言在沙盒里绿、在真页面上却不生效（或反过来），第一件事不是改判据，
+而是量**现场那份 DOM 到底长什么样**（AGENTS §5「夹具要长得像现场，不像实现」）。
+它比手写 `--expr` 强的地方是把"每次都要重新想的那几项"固定下来了：任务盒 class（⚠️ 字体反爬
+会把字母写成私有区码点，输出里显式标成 `{U+xxxx}`，别读成"class 真的对不上"）、
+`#isFinished` 的**原值**（空串 = 平台没话说，不等于未完成）、讨论卡在第几层、
+投票覆盖层的**出厂状态**、以及 `_kindFromAttachment` 对着真 `attachments` 的实跑结果。
 
 `debug-probe.js` 默认调的是 page.js 里的 **`xxtAI.probe()`（只读）**，一次给出：
 完成判定（`hasTasks` / `allFinished`）、任务点清单（`type` / `finished` / `wrap` / `src`）、

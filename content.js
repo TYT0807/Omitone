@@ -74,6 +74,9 @@
     autoNext: true,
     enableQuiz: true,
     randomAnswer: false,
+    // 乱选交卷前留给用户检查的秒数（真源在 src/page/00-shell-constants.js；
+    // 配置没加载完时 content 侧靠它兜底，别让它读成 undefined）。
+    randomAnswerReviewSec: 30,
     enableMedia: true,
     enablePPT: true,
     enableHyperlink: true,
@@ -1658,10 +1661,17 @@
   //   · 只读刷课统计、只写好感度存档（omitonePetBond，与弹窗共享），与调度零耦合。
   const PAGE_PET_ID = 'omitone-page-pet-host';
   const PAGE_PET_HIDDEN_KEY = 'omitonePagePetHidden';
+  // 拖动后的位置（{x,y} = 宿主左上角，CSS 像素）。和"收起"一样是**纯外观存档**：
+  // 读不到就用默认锚点，写失败也只是下次还在老地方。
+  const PAGE_PET_POS_KEY = 'omitonePagePetPos';
   const BOND_STORAGE_KEY = 'omitonePetBond';
   let pagePet = null;
   let pagePetBond = null;
   let pagePetSayTimer = null;
+  // 自动台词（她的"自言自语"）与上一次开口的时刻。开口时刻记在宿主元素的 data 上（见 pagePetSay），
+  // 这里只留一个常量：两句自动台词之间的最小间隔，比弹窗里任何一次操作都长得多。
+  const PAGE_PET_IDLE_MIN_GAP_MS = 75000;
+  let pagePetIdleTimer = null;
 
   function petGameModule() {
     return (typeof self !== 'undefined' && self.OmitonePetGame) || null;
@@ -1693,30 +1703,96 @@
     } catch (e) {}
   }
 
+  // 「她刚才开口了」记在**宿主元素的 data** 上，而不是闭包变量里 ——
+  // 自动台词那条"刚说过就别再说"要靠它判，而 e2e 从页面世界看不见闭包。
+  // 只写自己宿主上的一个属性，不碰存档、不碰调度。
+  function pagePetSaid() {
+    try { if (pagePet) pagePet.host.dataset.saidAt = String(Date.now()); } catch (e) {}
+  }
+
+  function pagePetLastSaidMs() {
+    try { return Number(pagePet && pagePet.host.dataset.saidAt) || 0; } catch (e) { return 0; }
+  }
+
   function pagePetSay(text, ms) {
     if (!pagePet) return;
     try {
-      pagePet.els.bubble.textContent = String(text || '');
-      pagePet.els.bubble.classList.add('show');
+      const bubble = pagePet.els.bubble;
+      const clean = String(text || '');
+      pagePetSaid();
+      // 长句在卡片里最多 4 行（CSS 已限 max-height）；这里再兜一刀，
+      // 免得某条成就文案把气泡撑成一块挡板（用户说的"一大坨"）。
+      // ⚠️ 上限按**卡片实际能装多少字**定：内容宽 224-22≈200px、一行约 16 个汉字、5 行 ——
+      //   96 字那时已经有 6 行，最后一行被 max-height 裁成半截，看起来更乱。
+      bubble.textContent = clean.length > 60 ? clean.slice(0, 57) + '…' : clean;
+      // 靠哪边的屏幕边缘，气泡就往反方向长 —— 否则贴右边缘时右半边直接出界。
+      const base = pagePet.els.card || pagePet.els.wrap;
+      const rect = base.getBoundingClientRect();
+      const center = rect.left + rect.width / 2;
+      bubble.classList.toggle('side-right', center >= window.innerWidth / 2);
+      bubble.classList.toggle('side-left', center < window.innerWidth / 2);
+      bubble.classList.add('show');
       clearTimeout(pagePetSayTimer);
+      const hold = ms || (clean.length > 40 ? 4200 : 2600);
       pagePetSayTimer = setTimeout(function () {
-        try { pagePet.els.bubble.classList.remove('show'); } catch (e) {}
-      }, ms || 2600);
+        try { bubble.classList.remove('show'); } catch (e) {}
+      }, hold);
     } catch (e) {}
   }
 
-  function pagePetHearts(x, y) {
+  /** 她自己开口说一句。定时器和 e2e 都调这个，**该不该说**全在这里判。
+   *  @returns {string} 真说出来的台词；空串 = 这一拍不该说话。
+   *  ⚠️ 四条"别说"少任何一条，都会变成用户讨厌的那个东西：
+   *    · 标签页在后台 —— 看不见还在说，切回来时一堆排着队跳出来；
+   *    · 已被收起 —— 那是用户明确表达过"别在这儿"；
+   *    · 正被拖着走 —— 气泡会跟着乱跳；
+   *    · 刚说过话（含摸头/升级/成就）—— 自动台词永远排在真人互动之后。 */
+  function pagePetIdleSay() {
+    if (!pagePet || !pagePetBond) return '';
+    try {
+      if (document.hidden) return '';
+      if (pagePet.els.wrap.classList.contains('mode-hidden')) return '';
+      if (pagePet.els.card.classList.contains('dragging')) return '';
+      if (Date.now() - pagePetLastSaidMs() < PAGE_PET_IDLE_MIN_GAP_MS) return '';
+      const game = petGameModule();
+      const pool = (game && game.IDLE_LINES) || [];
+      const line = String(pool[Math.floor(Math.random() * pool.length)] || '');
+      if (!line) return '';
+      pagePetSay(line, 3200);
+      return line;
+    } catch (e) { return ''; }
+  }
+
+  function pagePetHearts(clientX, clientY) {
     if (!pagePet) return;
     try {
+      // ⚠️ 心形是 append 到 wrap 里的**绝对定位**元素，坐标必须以 wrap 左上角为原点。
+      //    原先直接把 `ev.clientX/clientY`（**视口**坐标）当 left/top 写进去 ——
+      //    在 1699 宽的屏上等于把她扔到 wrap 外一千多像素处，于是"点了她一下什么也没发生"。
+      const base = pagePet.els.wrap.getBoundingClientRect();
+      const ox = (Number(clientX) || 0) - base.left;
+      const oy = (Number(clientY) || 0) - base.top;
       for (let i = 0; i < 4; i++) {
         const h = document.createElement('span');
         h.className = 'heart';
         h.textContent = '❤';
-        h.style.left = Math.round(x + (Math.random() * 26 - 13)) + 'px';
-        h.style.top = Math.round(y + (Math.random() * 10 - 5)) + 'px';
+        h.style.left = Math.round(ox + (Math.random() * 26 - 13)) + 'px';
+        h.style.top = Math.round(oy + (Math.random() * 10 - 5)) + 'px';
         pagePet.els.wrap.appendChild(h);
         setTimeout(function () { try { h.remove(); } catch (e) {} }, 1100);
       }
+    } catch (e) {}
+  }
+
+  function pagePetPatAnim() {
+    if (!pagePet) return;
+    try {
+      const img = pagePet.els.img;
+      // 先摘再挂：连点两次也要第二次照样动（同名 class 已在时 animation 不会重放）
+      img.classList.remove('pat');
+      void img.offsetWidth;
+      img.classList.add('pat');
+      setTimeout(function () { try { img.classList.remove('pat'); } catch (e) {} }, 480);
     } catch (e) {}
   }
 
@@ -1758,7 +1834,12 @@
 
       const host = document.createElement('div');
       host.id = PAGE_PET_ID;
-      host.style.cssText = ['all:initial', 'position:fixed', 'right:14px', 'bottom:120px',
+      // 默认锚点是 2026-11-12 在真刷课页量出来的，不是拍的：
+      //   状态面板 right:18 宽 280 → 横向 1401~1681、纵向 690~810
+      //   学习通自己的右侧竖条 .iconBox → 1629~1669 × 553~806（253px 高，往上挪躲不掉，只能往左让开）
+      //   超星机器人 cx-robot-wrapper → 1431~1671 × 668~728
+      // 所以横向让开竖条（右边缘 1615 < 竖条左边缘 1629）、纵向压在面板与机器人上方。
+      host.style.cssText = ['all:initial', 'position:fixed', 'right:84px', 'bottom:176px',
         'z-index:2147483646', 'pointer-events:none'].join(';');
       const shadow = host.attachShadow({ mode: 'open' });
       if (!shadow) return null;
@@ -1767,29 +1848,56 @@
         '<style>',
         ':host{all:initial}',
         '*{box-sizing:border-box;margin:0;padding:0}',
-        '.wrap{position:relative;width:92px;pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.4;color:#334155;-webkit-user-select:none;user-select:none}',
-        '.pet{display:block;width:60px;height:auto;margin:0 auto;cursor:pointer;filter:drop-shadow(0 4px 10px rgba(15,23,42,.28));transform-origin:50% 90%;animation:om-pet-bob 3.4s ease-in-out infinite}',
+        // 整只宠物=一张卡。原先是 5 个零散元素直接坐在页面上（立绘/徽章/进度条/按钮各一块），
+        // 叠在学习通自己的右侧条与我们的状态面板上，看着就是"右下角乱七八糟"。
+        '.wrap{position:relative;width:158px;pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
+        '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16);cursor:grab}',
+        '.card.dragging{cursor:grabbing;box-shadow:0 14px 30px rgba(15,23,42,.22)}',
+        // 悬停必须有反应 —— 用户原话「交互也基本上不会动」。
+        // ⚠️ 只用**不改几何**的属性（边框/阴影）+ 让立绘歪一下头：卡片自己一旦带 transform，
+        //   getBoundingClientRect 就和 style.left/top 差几像素，拖动每一拍都按差值漂一次
+        //   （"拖着拖着她就跑偏"），而 e2e 那条"位移逐像素跟着手指"也正是断这个。
+        '.card.peek{border-color:rgba(244,63,94,.34);box-shadow:0 10px 26px rgba(244,63,94,.19)}',
+        '.card.peek .pet{animation:om-pet-peek .52s ease}',
+        '@keyframes om-pet-peek{0%{transform:translateY(0) rotate(0)}26%{transform:translateY(-2px) rotate(-6deg)}58%{transform:translateY(0) rotate(4deg)}100%{transform:translateY(0) rotate(0)}}',
+        '.pet{display:block;width:52px;height:auto;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
         '@keyframes om-pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}',
+        // 摸头必须有**立刻看得见**的反应 —— 原先只有升级才动一下，用户读成"点了没反应"。
+        '.pet.pat{animation:om-pet-pat .44s ease}',
+        '@keyframes om-pet-pat{0%{transform:translateY(0) scale(1)}32%{transform:translateY(3px) scale(1.07,.9)}66%{transform:translateY(-2px) scale(.96,1.05)}100%{transform:translateY(0) scale(1)}}',
         '.pet.cheer{animation:om-pet-cheer .9s ease}',
         '@keyframes om-pet-cheer{0%{transform:scale(1)}30%{transform:scale(1.12) rotate(-4deg)}60%{transform:scale(1.06) rotate(3deg)}100%{transform:scale(1)}}',
-        '.level{display:block;width:max-content;margin:2px auto 0;padding:1px 6px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700;white-space:nowrap}',
-        '.bond{width:60px;height:4px;margin:3px auto 0;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
+        '.col{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding-bottom:1px}',
+        '.level{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 7px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700}',
+        '.bond{width:100%;height:4px;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
         '.bond i{display:block;height:100%;width:0;border-radius:2px;background:linear-gradient(90deg,#ffb6c1,#ff7d9c);transition:width .4s}',
-        '.bubble{position:absolute;left:66px;bottom:52px;max-width:200px;background:#fff;border:1px solid rgba(15,23,42,.12);border-radius:10px;padding:6px 9px;font-size:12px;color:#0f172a;box-shadow:0 8px 24px rgba(15,23,42,.16);opacity:0;transition:opacity .25s;pointer-events:none;word-break:break-word}',
-        '.bubble.show{opacity:1}',
+        '.hide{border:0;background:rgba(241,245,249,.9);border-radius:6px;font-size:10px;padding:2px 8px;cursor:pointer;color:#64748b;font-family:inherit}',
+        '.hide:hover{background:#e2e8f0;color:#334155}',
+        // 气泡：原先 `left:66px` 挂在 92px 宽的 wrap 里 → 可用宽度只剩 26px，
+        // `max-width:200px` 只是上限、不会把盒子撑开，于是每行一个字，量到 31×215 的**竖排一大坨**。
+        // 现在改到卡片**头顶**、`width:max-content`（不受 wrap 宽度限死），并按屏幕左右半区决定往哪边长。
+        '.bubble{position:absolute;bottom:calc(100% - 4px);width:max-content;max-width:min(224px,calc(100vw - 28px));min-width:96px;max-height:104px;overflow:hidden;padding:7px 11px;border-radius:12px;background:#fff;border:1px solid rgba(15,23,42,.1);box-shadow:0 8px 22px rgba(15,23,42,.16);font-size:12px;line-height:1.5;color:#0f172a;opacity:0;transform:translateY(6px) scale(.96);transition:opacity .18s ease,transform .18s ease;pointer-events:none;word-break:break-word}',
+        '.bubble.show{opacity:1;transform:translateY(0) scale(1)}',
+        '.bubble::after{content:"";position:absolute;top:calc(100% - 5px);width:9px;height:9px;background:#fff;border-right:1px solid rgba(15,23,42,.1);border-bottom:1px solid rgba(15,23,42,.1);transform:rotate(45deg)}',
+        '.bubble.side-right{right:0}.bubble.side-right::after{right:26px}',
+        '.bubble.side-left{left:0}.bubble.side-left::after{left:26px}',
         '.heart{position:absolute;width:14px;height:14px;color:#f43f5e;font-size:13px;line-height:14px;pointer-events:none;animation:om-heart-up 1s ease-out forwards}',
         '@keyframes om-heart-up{0%{transform:translateY(0);opacity:1}100%{transform:translateY(-36px);opacity:0}}',
-        '.hide{margin-top:3px;border:0;background:rgba(241,245,249,.92);border-radius:6px;font-size:10px;padding:2px 7px;cursor:pointer;color:#64748b;font-family:inherit}',
-        '.pill{display:none;margin:0 auto;pointer-events:auto;cursor:pointer;border:1px solid rgba(15,23,42,.12);background:rgba(255,255,255,.95);border-radius:999px;padding:4px 10px;font-size:12px;font-weight:700;color:#64748b;box-shadow:0 6px 18px rgba(15,23,42,.14);font-family:inherit}',
-        '.mode-hidden .pet,.mode-hidden .level,.mode-hidden .bond,.mode-hidden .hide{display:none}',
+        '.pill{display:none;margin:0 auto;pointer-events:auto;cursor:pointer;border:1px solid rgba(15,23,42,.12);background:rgba(255,255,255,.95);border-radius:999px;padding:5px 11px;font-size:12px;font-weight:700;color:#64748b;box-shadow:0 6px 18px rgba(15,23,42,.14);font-family:inherit}',
+        '.mode-hidden .card{display:none}',
+        '.mode-hidden .bubble{display:none}',
         '.mode-hidden .pill{display:inline-block}',
         '</style>',
         '<div class="wrap" id="wrap">',
+        '<div class="card" id="card">',
         '<img class="pet" id="petImg" src="' + chrome.runtime.getURL('popup/pet.png') + '" alt="Omitone" draggable="false">',
-        '<div class="bubble" id="bubble"></div>',
+        '<div class="col">',
         '<div class="level" id="level">初识</div>',
         '<div class="bond"><i id="bondBar"></i></div>',
         '<button class="hide" id="hideBtn" title="收起来（会留一个小入口，随时点回来）">收</button>',
+        '</div>',
+        '</div>',
+        '<div class="bubble side-right" id="bubble"></div>',
         '<button class="pill" id="pillBtn" title="叫她出来">宠</button>',
         '</div>'
       ].join('');
@@ -1799,6 +1907,7 @@
         host: host,
         els: {
           wrap: shadow.getElementById('wrap'),
+          card: shadow.getElementById('card'),
           img: shadow.getElementById('petImg'),
           bubble: shadow.getElementById('bubble'),
           level: shadow.getElementById('level'),
@@ -1813,8 +1922,116 @@
     }
     if (!pagePet || !pagePet.els.img) { pagePet = null; return null; }
 
+    // ── 可拖动 ────────────────────────────────────────────────────────────
+    // 原先她**完全没有拖动**：位置写死 `right:14px; bottom:120px`，而那个位置正好压住
+    // 我们自己的状态面板和学习通的右侧条 —— 用户唯一能表达的"别挡在这儿"就是拖开，
+    // 所以这里给整张卡加指针拖动，并把落点存进外观存档（读不到就用默认锚点）。
+    let dragState = null;
+    let suppressPatUntil = 0;
+
+    function clampPagePetPos(x, y) {
+      const w = pagePet.els.wrap.offsetWidth || 158;
+      const h = pagePet.els.wrap.offsetHeight || 86;
+      const nx = Math.max(8, Math.min(window.innerWidth - w - 8, Math.round(Number(x) || 0)));
+      const ny = Math.max(8, Math.min(window.innerHeight - h - 8, Math.round(Number(y) || 0)));
+      return { x: nx, y: ny };
+    }
+
+    function applyPagePetPos(x, y) {
+      const p = clampPagePetPos(x, y);
+      // ⚠️ 这里必须走 `pagePet.host` —— 构建块里的 `const host` 只在那个 try 块里存在，
+      // 直接写 `host` 是未声明标识符，ReferenceError 会被 handler 自己的 catch 吞掉，
+      // 表现就是"拖不动、什么日志都没有"（2026-11-12 实测踩过）。
+      const el = pagePet && pagePet.host;
+      if (!el) return p;
+      // 一旦落到 left/top，就必须把 right/bottom 放开 —— 四个都在时浏览器按 left/top 摆，
+      // 但留着它们会让窗口变小时被两边同时拉扯（表现成"卡在一半"）。
+      el.style.left = p.x + 'px';
+      el.style.top = p.y + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      pagePet.pos = p;
+      return p;
+    }
+
+    function persistPagePetPos() {
+      if (!pagePet || !pagePet.pos) return;
+      try {
+        const patch = {};
+        patch[PAGE_PET_POS_KEY] = pagePet.pos;
+        chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+      } catch (e) {}
+    }
+
+    try {
+      const card = pagePet.els.card;
+      card.addEventListener('pointerdown', function (ev) {
+        try {
+          if (ev.button !== 0) return;
+          // 按钮上的按下不接管：那是"收起/唤回"，不是搬她
+          if (ev.target === pagePet.els.hideBtn || ev.target === pagePet.els.pillBtn) return;
+          const r = pagePet.host.getBoundingClientRect();
+          dragState = { ox: ev.clientX - r.left, oy: ev.clientY - r.top, sx: ev.clientX, sy: ev.clientY, moved: false, pid: ev.pointerId };
+          card.classList.add('dragging');
+          // 这里**不许** setPointerCapture ——
+          // 一旦在 pointerdown 上捕获，浏览器会把兼容的 mousedown/mouseup/click 一起改派给捕获目标（card），
+          // 挂在立绘上的"摸头"监听就再也收不到真鼠标点击：
+          // 沙盒里 dispatchEvent 直接打在 img 上，照旧全绿，于是"摸不动"只在现场出现、只在真鼠标下出现。
+          // 改成下面 pointermove 越过 6px 阈值再捕获 —— 拖动照样跟手，点击照样归她。
+        } catch (e) {}
+      });
+      card.addEventListener('pointermove', function (ev) {
+        try {
+          if (!dragState) return;
+          // 6px 以内当"点"，不动她 —— 否则每次摸头都会把她挪一两个像素
+          if (!dragState.moved && Math.abs(ev.clientX - dragState.sx) + Math.abs(ev.clientY - dragState.sy) < 6) return;
+          // 真要搬她了才捕获：此后指针飞出卡片也能继续跟手、pointerup 也一定回到这张卡
+          if (!dragState.moved && card.setPointerCapture && dragState.pid != null) {
+            try { card.setPointerCapture(dragState.pid); } catch (e) {}
+          }
+          dragState.moved = true;
+          applyPagePetPos(ev.clientX - dragState.ox, ev.clientY - dragState.oy);
+        } catch (e) {}
+      });
+      const endDrag = function (ev) {
+        try {
+          if (!dragState) return;
+          const moved = dragState.moved;
+          dragState = null;
+          pagePet.els.card.classList.remove('dragging');
+          if (moved) {
+            // 拖完那一下 pointerup 会跟着派发 click —— 不许她因此被"摸"一次
+            suppressPatUntil = Date.now() + 260;
+            persistPagePetPos();
+            pagePetSay('想把我放哪儿，拽着我就行～', 2000);
+          }
+        } catch (e) {}
+      };
+      card.addEventListener('pointerup', endDrag);
+      card.addEventListener('pointercancel', function () {
+        try { dragState = null; pagePet.els.card.classList.remove('dragging'); } catch (e) {}
+      });
+      // 悬停反应。走 JS 挂 class 而不是纯 CSS `:hover`：
+      // e2e 派发得出 pointerenter，派不出"真·悬停状态"（那要 CDP Input 域），
+      // 于是 CSS 写法等于**没测试**——而这条正是用户说"不会动"的两处之一。
+      card.addEventListener('pointerenter', function () {
+        try { pagePet.els.card.classList.add('peek'); } catch (e) {}
+      });
+      card.addEventListener('pointerleave', function () {
+        try { pagePet.els.card.classList.remove('peek'); } catch (e) {}
+      });
+      // 窗口变小/切全屏：把她拉回可视范围，别留在屏幕外（进不来就只能重装扩展）
+      window.addEventListener('resize', function () {
+        try {
+          if (pagePet && pagePet.pos) applyPagePetPos(pagePet.pos.x, pagePet.pos.y);
+        } catch (e) {}
+      });
+    } catch (e) {}
+
     pagePet.els.img.addEventListener('click', function (ev) {
       try {
+        if (Date.now() < suppressPatUntil) return;
+        pagePetPatAnim();
         const rect = pagePet.els.img.getBoundingClientRect();
         pagePetHearts(ev.clientX || rect.left + rect.width / 2, ev.clientY || rect.top + 8);
         const game = petGameModule();
@@ -1859,11 +2076,15 @@
     });
 
     try {
-      chrome.storage.local.get([BOND_STORAGE_KEY, PAGE_PET_HIDDEN_KEY], function (r) {
+      chrome.storage.local.get([BOND_STORAGE_KEY, PAGE_PET_HIDDEN_KEY, PAGE_PET_POS_KEY], function (r) {
         try {
           if (chrome.runtime.lastError) return;
           const g = petGameModule();
           if (!g) return;
+          const pos = r && r[PAGE_PET_POS_KEY];
+          if (pos && typeof pos === 'object' && isFinite(Number(pos.x)) && isFinite(Number(pos.y))) {
+            applyPagePetPos(pos.x, pos.y);   // 越界也会被 clamp 拉回屏内
+          }
           pagePetBond = g.rollDay(r && r[BOND_STORAGE_KEY], g.dayKeyOf(Date.now()));
           if (r && r[PAGE_PET_HIDDEN_KEY]) pagePet.els.wrap.classList.add('mode-hidden');
           renderPagePet();
@@ -1885,6 +2106,24 @@
           else pagePet.els.wrap.classList.remove('mode-hidden');
         }
       });
+    } catch (e) {}
+    // 她偶尔自己开口（"交互不会动"的另一半）。判据全在 pagePetIdleSay 里，这里只管拍子。
+    // ⚠️ 先清后建：SPA 换页把她从 DOM 里摘掉再重建时，不清就一个页面挂着好几个 interval，
+    //   每个都各自说话 —— 表现正是用户讨厌的"话痨"。
+    try {
+      // e2e 的把手：主世界派发这个事件 = 手动跑一拍"她该不该说话"，不等 15 秒的定时器。
+      // ⚠️ 两件事：① 只能走 DOM 事件 —— 闭包里的函数挂在 `host.__xxx` 上主世界**读不到**
+      //   （内容脚本与页面是两个 JS 世界，只有 DOM/属性共用，实测踩过）；
+      //   ② 这里必须写 `pagePet.host` —— 构建块里那个 `const host` 早出了作用域，
+      //   裸写会把 ReferenceError 交给下面这个 catch 静默吞掉（拖动就那样坏掉过一次）。
+      //   不传数据也不回数据：测试读的是气泡本身有没有被点亮。
+      pagePet.host.addEventListener('omitone:pet-idle-tick', function () {
+        try { pagePetIdleSay(); } catch (e) {}
+      });
+      // 先清后建：SPA 换页把她从 DOM 里摘掉再重建时，不清就一个页面挂着好几个 interval，
+      // 每个都各自说话 —— 表现正是用户讨厌的"话痨"。
+      if (pagePetIdleTimer) clearInterval(pagePetIdleTimer);
+      pagePetIdleTimer = setInterval(pagePetIdleSay, 15000);
     } catch (e) {}
     return pagePet;
   }

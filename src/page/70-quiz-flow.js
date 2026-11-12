@@ -337,6 +337,9 @@
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      // 换卷子 = 上一份的检查窗口作废（留着会让新卷子直接跳过窗口、填完就交）
+      this._quizReviewPaperKey = '';
+      this._quizReviewUntil = 0;
       emitRuntimeLog('info', 'quiz paper switched, reset per-paper state', { paper: key.slice(0, 90) });
 
       // ③ 换过去那份已经完成时，别把它当"没答过"
@@ -607,6 +610,8 @@
       this._quizCurrentQuestions = null;
       this._quizReadyToSubmit = false;
       this._quizReadyWorkKey = '';
+      this._quizReviewPaperKey = '';
+      this._quizReviewUntil = 0;
       // 换任务了，上一道弹题的失败记录不该带过来
       this._popupQuizKey = '';
       this._popupQuizAttempts = 0;

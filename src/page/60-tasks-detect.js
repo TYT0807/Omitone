@@ -14,14 +14,17 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（37 个）：
+ * 本段的方法（41 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
+ *   _catalogItemForChapter、_catalogUnfinishedCount、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
  *   _matchChaoxingAttachment、_kindFromAttachment、_kindFromChaoxingElements、
  *   _getChaoxingJobName、_getAttachmentWorkType、_buildAttachmentOnlyJob、
  *   _resolveJobFrame、_isJobAlreadySearched、_getAttachmentFingerprint、
- *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_frameRejectSignature、
+ *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_isDiscussionModuleFrame、
+ *   _isVoteCoverFrame、
+ *   _frameRejectSignature、
  *   _maybeHoldSkipForUnparsedQuiz、_noteQuizParseRetryExhausted、_quizScanRetrySignal、
  *   _noteTaskFrameStillLoading、_skipCompletedEvidence、_searchIFramesOcs、
  *   _taskDiscoveryWindowMs、_noteOcsDiscoveryTick、
@@ -36,6 +39,11 @@
       var raw = frame ? (frame.src || '') : location.href;
       var match = raw.match(/(?:knowledgeid|chapterId)=([^&]+)/i);
       var key = match ? match[1] : raw;
+      // 「这一节的目录项被认出来多久了」—— 批次 20-I。
+      // 原先 `_chapterChangedAt` 只由 `_resetRuntimeState()` 写，也就是**只有换过章节**才有值，
+      // 首次进页面时它是 0。而"帧还没渲染"这个窗口第一次加载时同样存在，
+      // 所以这里把**首次认出章节号**也算一次变更（判据见 `_isCurrentCompleted` 末段）。
+      var isNewKey = !this._lastChapterKey || this._lastChapterKey !== key;
       if (this._lastChapterKey && this._lastChapterKey !== key) {
         this._resetRuntimeState();
         this._lastLearningCardKey = '';
@@ -44,6 +52,7 @@
         emitRuntimeLog('info', 'chapter changed');
       }
       this._lastChapterKey = key;
+      if (isNewKey) this._chapterChangedAt = Date.now();
       this._detectLearningCardChange();
     },
 
@@ -80,10 +89,38 @@
         return true;
       }
 
-      var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-      if (!active) return false;
-      if (active.querySelector('.catalog_points_er, .catalog_points_san')) return false;
-      if (!active.querySelector('.catalog_points_yi, .icon_Completed, .icon_completed')) return false;
+      // ⚠️ 批次 20-I：下面这四行原判据，是拿用户**正在刷的那门课**（163 个目录项）量出来的，
+      //   量到的三条和注释里想的意思相反：
+      //   ① 现场只有两种标记，各带一句人话：
+      //        `<span class="icon_Completed prevTips">…已完成…</span>`（83 项）
+      //        `<span class="catalog_points_yi prevTips">…N个待完成任务点…</span>`（57 项）
+      //      `.catalog_points_er` / `.catalog_points_san` 在这门课**一个都没出现**。
+      //      原第 94 行把 `catalog_points_yi` 和 `icon_Completed` **并列**当成"这一节已完成"的证据 ——
+      //      可 yi 那句文案就是「还有 N 个待完成任务点」，语义正好反。
+      //      今天没酿成事故纯属侥幸：`_hasTaskPoint()` 里「目录带 yi 就算有任务点」把它的返回值
+      //      兜成 true，末行 `!this._hasTaskPoint()` 于是过不去。**同一个 class 在同一个文件里
+      //      被两处读出相反含义**，改哪一处都会把另一处拆掉 —— 现在两处统一口径：
+      //      `catalog_points_*` 一律算"还没做完"（那边也一起改了）。
+      //   ② 目录项的 id 是 `cur<chapterId>`（140/163 是这个形状），稳态下它与 `.posCatalog_active`
+      //      **是同一个元素**；但 active 那一下是平台自己的脚本挪的，而 `_detectPageChange` 读主帧
+      //      `src`，**当场就变**。真日志：`chapter changed` 与 `skip completed {by:"catalog-marker",
+      //      tasks:0}` 同一秒 —— 认 active 等于允许拿**上一节**的"已完成"给刚切过来的这一节发证。
+      //   ③ 平台还留了一份机器可读的正面否决：`<input type="hidden" class="jobUnfinishCount" value="N">`
+      //      （现场 57 项带它，值 1~6，与 yi 标记的 N 一致）。N>0 说的是"这一节还有事"，
+      //      比"这一瞬间页面里没认出任务点"这种 absence 证据硬。
+      // 两道窗口也不许越过：帧自己说还在加载（批次 19-B）时不认目录；章节号刚认出来的
+      // 发现窗口内不认目录 —— 目录图标是页面级的，它"显示已完成"时那一节可能还一个字没渲染。
+      // 成本是有界的：`_taskDiscoveryWindowMs(0)` = 10 秒，过完照旧推进；
+      // 真没任务点的空节由 `_tryAdvanceIdleSection` 那条（自带 30 秒窗和 `study stuck` 日志）接手。
+      if (this._taskFrameLoadingUntil > Date.now()) return false;
+      if (!this._chapterChangedAt ||
+          Date.now() - this._chapterChangedAt < this._taskDiscoveryWindowMs(0)) return false;
+
+      var catalogItem = this._catalogItemForChapter();
+      if (!catalogItem) return false;
+      if (this._catalogUnfinishedCount(catalogItem) > 0) return false;
+      if (catalogItem.querySelector('[class*="catalog_points"]')) return false;
+      if (!catalogItem.querySelector('.icon_Completed, .icon_completed')) return false;
 
       if (this._detectQuiz()) return false;
 
@@ -95,6 +132,44 @@
         return true;
       }
       return false;
+    },
+
+    /**
+     * 「这一节的目录项是哪一颗」—— 批次 20-I。
+     *
+     * 优先按章节号认（现场形状 `id="cur1209049294"`），拿不到章节号或目录里没有这颗时才退回
+     * `.posCatalog_active`。退回那一支必须留着：OCS / 移动端布局下目录结构不一样，
+     * 而 `_getCurrentChapterId()` 也可能只认得到一个 URL 兜底键。
+     */
+    _catalogItemForChapter: function () {
+      var cid = '';
+      try { cid = String(this._getCurrentChapterId() || ''); } catch (eCid) { cid = ''; }
+      if (/^\d+$/.test(cid)) {
+        try {
+          var byId = document.getElementById('cur' + cid);
+          if (byId) return byId;
+        } catch (eById) {}
+      }
+      try {
+        return document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
+      } catch (eAct) { return null; }
+    },
+
+    /**
+     * 目录项上的「还有几个任务点没做」（`input.jobUnfinishCount`）。
+     * 拿不到返回 NaN —— 调用方一律用 `> 0` 判，NaN 走"没有这份证据"，不当否决也不当放行。
+     * ⚠️ 那颗 input **自己就是直接子节点**，`querySelector('.jobUnfinishCount')` 能找到它，
+     *    但对 `<input>` 取文字的那套（`textOf()`/`innerText`）永远拿不到值（批次 14-B 同一族坑），
+     *    所以这里只读 `.value`。
+     */
+    _catalogUnfinishedCount: function (item) {
+      if (!item || !item.querySelector) return NaN;
+      var n = null;
+      try { n = item.querySelector('.jobUnfinishCount, input[name="jobUnfinishCount"]'); } catch (e) { return NaN; }
+      if (!n) return NaN;
+      var raw = String(n.value !== undefined && n.value !== null ? n.value : (n.getAttribute && n.getAttribute('value')) || '');
+      var num = Number(raw.replace(/[^0-9]/g, ''));
+      return raw === '' || isNaN(num) ? NaN : num;
     },
 
     _skipIfCompleted: function () {
@@ -139,8 +214,11 @@
         } catch (eBare) { bareHit = null; }
         if (bareHit) return true;
 
-        var bareActive = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-        if (bareActive && bareActive.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+        var bareActive = this._catalogItemForChapter();
+        // ⚠️ `catalog_points_*` 一整族的文案是「N个待完成任务点」（批次 20-I 现场量的），
+        //    所以它在这儿算**有任务点** —— 与 `_isCurrentCompleted` 末段同一口径，不许反过来读。
+        if (bareActive && bareActive.querySelector('[class*="catalog_points"]')) return true;
+        if (bareActive && this._catalogUnfinishedCount(bareActive) > 0) return true;
 
         var bareText = '';
         try { bareText = textOf(document.body); } catch (eBareText) { bareText = ''; }
@@ -168,8 +246,12 @@
       var doc = this._getMainDocument();
       if (!doc) return true;   // 主帧在、但跨域读不到 —— 必须保守
 
-      var active = document.querySelector('.posCatalog_select.posCatalog_active, .posCatalog_active');
-      if (active && active.querySelector('.catalog_points_er, .catalog_points_san, .catalog_points_yi')) return true;
+      var catalogItem = this._catalogItemForChapter();
+      // 同上：`catalog_points_*` 与 `jobUnfinishCount>0` 都是平台在说"这一节还有任务点没做"。
+      // 按章节号认（`#cur<chapterId>`），不认 `.posCatalog_active` —— 后者切章节时会慢半拍，
+      // 拿上一节的标记给这一节作证就是这个函数最容易漏的一类误判。
+      if (catalogItem && catalogItem.querySelector('[class*="catalog_points"]')) return true;
+      if (catalogItem && this._catalogUnfinishedCount(catalogItem) > 0) return true;
       if (doc.querySelector('.ans-job-icon, .ans-task-icon, .taskPoint, .ans-job-num, [class*="task"], [class*="job"]')) return true;
       if (textOf(doc.body).indexOf('任务点') !== -1) return true;
       return false;
@@ -209,8 +291,12 @@
 
       var finished = false;
       if (wrap) {
+        // ⚠️ 批次 20-I：这里原先还认 `.catalog_points_yi` 当"这个任务点已完成"。
+        //   现场（用户正在刷的这门课，逐帧量过）：任务盒里**从来没有**这个 class ——
+        //   它只长在**目录项**上，那句文案是「N个待完成任务点」，意思正好相反。
+        //   留着它就是等哪天目录 DOM 挪进卡片、把没做完的任务点直接判成做完。
         finished = wrap.classList.contains("ans-job-finished") ||
-          !!wrap.querySelector(".job-color, .ans-job-finished, .catalog_points_yi");
+          !!wrap.querySelector(".job-color, .ans-job-finished");
       }
 
       var doc = null;
@@ -404,18 +490,23 @@
       //   实测把 2026-10-17 那份故障夹具全线改红过（2026-11-10 批次 2）。
       //   准入闸宁可宽：判错类型的代价是"多看一眼"，判不进门的代价是"整章跳过"。
       var quizLike = !!doc.querySelector(this._quizDetectorSelector);
+      // 投票封面（`ananas/modules/zt/vote`）：框里只有图标与标题，选项要在平台
+      // 自己点开之后才出现在顶层 `#voteIframe` 里 —— 上面任何一条 DOM 信号都照不到它，
+      // 于是整帧被准入闸拒掉、连 jobid 都不匹配（2026-11-11 真页实测）。
+      var vote = !!doc.querySelector('.ans-cmp-iconVote');
       var read = doc.querySelector('#img.imglook, .imglook#img');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
       var timereader = doc.querySelector('iframe[name="bookifame"][src*="timing"]');
       var documentJob = doc.querySelector('#panView, .fileBox, .pageNum, #docContainer, .docBox');
 
-      if (!(videojs || quiz || quizLike || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
+      if (!(videojs || quiz || quizLike || vote || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
 
       return {
         videojs: videojs,
         quiz: quiz,
         quizLike: quizLike,
+        vote: vote,
         read: read,
         pptWithAudio: pptWithAudio,
         hyperlink: hyperlink,
@@ -513,6 +604,14 @@
       // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
       // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
       if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
+      // 投票任务点（2026-11-11 实测章节 1209049220 的唯一未完成点）：附件是
+      // `module:"insertvote"` + `type:"vote"` + `job:true`。这里原先说不出类型，
+      // 于是既不建 job、也不进「认不出」的那条去重日志之外的任何分支 ——
+      // 整节只剩这一个未完成任务盒，「下一节」被平台拦下 → 去学习 → 回到同一章，
+      // 表现为 study finished → next unit → 任务点未完成 的死循环。
+      // ⚠️ 必须排在 work|exam|quiz 之前：投票页渲染出来的就是「答题」（有单选题），
+      //    让 quiz 族先抢会把它送去接 AI 答题，而投票只要随手投一项。
+      if (/insertvote/.test(module) || /^vote$/.test(type) || /(?:^|\/)vote(?:\/|$)/.test(type)) return 'vote';
       if (/work|exam|quiz/.test(module)) return 'quiz';
       // 图片任务点：打开看一眼即可，按「阅读」处理
       if (/insertimage/.test(module) || /^(?:image|jpg|jpeg|png|gif|webp)/.test(type)) return 'read';
@@ -528,7 +627,7 @@
      *   ① 附件元数据 —— 「这个任务点是什么」的权威来源。卷子常常渲染在
      *      本帧抠不到题的那一层（三层嵌套的 jobid 场景），只有附件说得出 quiz；
      *   ②..⑧ DOM，从最具体到最兜底：
-     *      videojs → quiz → read → ppt-audio → timereader → hyperlink → document。
+     *      videojs → quiz → vote → read → ppt-audio → timereader → hyperlink → document。
      *      （`document` 是兜底，绝不能排在 ppt/timereader 之前 —— 它那些类名太通用。）
      *
      * 唯一的例外是 read 家族：附件那份映射只说得出 `read`，分不清图片阅读 /
@@ -541,6 +640,7 @@
       if (elements) {
         if (elements.videojs) fromDom = 'video';
         else if (elements.quiz) fromDom = 'quiz';
+        else if (elements.vote) fromDom = 'vote';
         else if (elements.read) fromDom = 'read';
         else if (elements.pptWithAudio) fromDom = 'ppt-audio';
         else if (elements.timereader) fromDom = 'timereader';
@@ -671,7 +771,9 @@
       var kind = this._kindFromChaoxingElements(elements, null, doc) || 'other';
 
       var wrap = frame.parentElement;
-      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
+      // 批次 20-I：`.catalog_points_yi` 已从"已完成"判据里去掉 —— 它只长在目录项上、
+      // 文案是「N个待完成任务点」（任务盒里现场量到 0 个），当完成证据是反的。
+      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished'));
       var name = frameData.name || frame.getAttribute('title') || this._getCurrentTitle() || '未知任务点';
       return {
         frame: frame,
@@ -709,7 +811,9 @@
         frameDoc = frameWin && frameWin.document ? frameWin.document : null;
       } catch (e0) {}
       var frameData = this._getChaoxingFrameData(frame, frameWin);
-      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished, .catalog_points_yi'));
+      // 批次 20-I：`.catalog_points_yi` 已从"已完成"判据里去掉 —— 它只长在目录项上、
+      // 文案是「N个待完成任务点」（任务盒里现场量到 0 个），当完成证据是反的。
+      var finished = !!(wrap && wrap.querySelector('.job-color, .ans-job-finished'));
       return {
         frame: frame,
         win: frameWin,
@@ -743,6 +847,57 @@
     // —— 取证字段自己不可读，等于白取证。**字符串只受 2000 字截断，数字原样保留**，
     // 所以前 5 个选择器的命中数按**位置**压成 `"1/0/0/3/0"`（`qHits`，用来定位是哪个类名命中的），
     // 总和 `qTotal` 则按**整份**清单的并集数（用来判"有没有题形"，见下面那段警告）。
+    /**
+     * 这一帧是不是**讨论模块**（`insertbbs` / `bbscircle`）—— 只用来把拒绝原因说准，
+     * 不参与任何准入判定（批次 20-D）。
+     *
+     * 判据取三处，因为实测两种形状都出现过：模块自己就带 `module` 属性，
+     * 或者属性在外层容器上、帧只留下 `/ananas/modules/insertbbs/index.html` 这个 src。
+     * （讨论任务点的**真判据**只有一份，在讨论域的 `_findDiscussionModuleFrames`；
+     * 这里只是给它配一句人能看懂的拒绝原因，不许在这里长出第二套讨论识别。）
+     */
+    _isDiscussionModuleFrame: function (frame) {
+      if (!frame) return false;
+      var mod = '';
+      var src = '';
+      try { mod = String(frame.getAttribute && frame.getAttribute('module') || ''); } catch (e0) {}
+      try { src = String(frame.getAttribute && frame.getAttribute('src') || ''); } catch (e1) {}
+      if (!mod) {
+        // 属性挂在上层容器上时，往上最多找两层
+        var box = frame.parentElement;
+        for (var up = 0; up < 2 && box; up++) {
+          try {
+            mod = String(box.getAttribute && box.getAttribute('module') || '');
+          } catch (e2) { mod = ''; }
+          if (mod) break;
+          box = box.parentElement;
+        }
+      }
+      return /insertbbs|bbscircle|bbs|discuss/i.test(mod + ' ' + src);
+    },
+
+
+    /**
+     * 这一帧是不是**投票封面**（`ananas/modules/zt/vote`）。
+     *
+     * 为什么单独问、不并进 `_kindFromAttachment`：附件那份映射已经认得出 insertvote，
+     * 但 OCS 扫描的准入闸（`_searchChaoxingJobOcs`）在**匹配 jobid 之前**只看 DOM ——
+     * 投票封面帧里既没有播放器也没有题形容器，那条闸当场把它拒了，附件根本没机会说话
+     * （2026-11-11 真页实测：`rejects:[… "帧里认不出任务类型" src=/ananas/modules/zt/vote/…]`，
+     * 而整节的未完成任务点就是它，于是 study finished → next unit → 「还有任务点未完成」死循环）。
+     *
+     * 判据只要一样就够：模块地址（帧自己说的），或封面那枚投票图标
+     * `.ans-cmp-iconVote`（ananas 组件类名，别的模块没有）。
+     */
+    _isVoteCoverFrame: function (frame, doc) {
+      var src = '';
+      try { src = String(frame && (frame.getAttribute && frame.getAttribute('src') || frame.src) || ''); } catch (e0) { src = ''; }
+      if (/ananas\/modules\/zt\/vote|\/zt\/vote\//.test(src)) return true;
+      if (!doc || !doc.querySelector) return false;
+      try { return !!doc.querySelector('.ans-cmp-iconVote'); } catch (e1) { return false; }
+    },
+
+
     _frameRejectSignature: function (doc, found) {
       if (!doc) return { reach: 'no-doc' };
       var sig = {};
@@ -969,6 +1124,23 @@
         var scope = String(this._studyProgressKey() || (location.href + '|' + (this._getCurrentTitle() || '')));
         ev.retrySpent = !!(scope && scope === this._quizParseRetryScope);
       } catch (eRetry) {}
+      // ⚠️ 只落**标量**（批次 10-A 那条：日志里塞对象，`Number(对象)` = NaN、深度也被存储裁掉）。
+      // 目录这一族是 `by:"catalog-marker"` 的全部依据，没有它们这句话就还是答不上「凭什么说做完了」。
+      try {
+        var cat = this._catalogItemForChapter();
+        ev.catalogId = cat ? String(cat.id || '').slice(0, 24) : '';
+        ev.catalogMark = cat ? (function (node) {
+          var kids = node.children || [];
+          for (var ci = 0; ci < kids.length; ci++) {
+            var kc = String(kids[ci].className || '');
+            if (/catalog_points|icon_Completed|icon_completed/.test(kc)) return kc.replace(/\s+/g, ' ').trim().slice(0, 34);
+          }
+          return '';
+        })(cat) : '';
+        ev.catalogUnfinished = String(this._catalogUnfinishedCount(cat));
+        ev.chapterAgeMs = this._chapterChangedAt ? Date.now() - this._chapterChangedAt : -1;
+        ev.frameLoadingLeftMs = Math.max(0, (Number(this._taskFrameLoadingUntil) || 0) - Date.now());
+      } catch (eCat) {}
       return ev;
     },
 
@@ -1018,6 +1190,9 @@
           // 准入闸专用的弱信号，见 `_detectChaoxingJobElements` 里同名字段的注释。
           // 判类型**不许**读它 —— 那正是「像题即题」把课件判成测验的那条路。
           quizLike: !!doc.querySelector(appRef._quizDetectorSelector),
+          // 投票封面帧：这里能拿到 frame 自己，所以模块地址也算信号。
+          // 判"这是不是投票"只此一处真源（`_isVoteCoverFrame`），两条扫描链共用。
+          vote: appRef._isVoteCoverFrame(frame, doc),
           read: doc.querySelector('#img.imglook'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
@@ -1084,7 +1259,14 @@
           //   弱信号 `quizLike` 只放它**进门**，类型仍然由「附件 + 窄判据」定，
           //   所以课件页该走阅读链路还是走阅读链路（见「任务类型仲裁」场景）。
           if (!win || !found || (!domKind && !found.quizLike)) {
-            noteReject(frame, '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
+            // ⚠️ 讨论任务点（`insertbbs` / `bbscircle`）**本来就不归这条链** —— 它由
+            // 讨论域那条独立的 `_tryDiscussionTask` 处理。原先它和"真认不出类型"共用
+            // 同一句原因，于是实测日志里的 `rejects:[work + 3× insertbbs]` 看起来像
+            // "识别失败"，而实际是"这压根不是我该做的活"（批次 20-D：只分开原因，不放开准入）。
+            var discReject = this._isDiscussionModuleFrame(frame)
+              ? '讨论任务点（insertbbs/bbscircle）：由讨论链路处理，这条链不建 job'
+              : '';
+            noteReject(frame, discReject || '帧里认不出任务类型（视频/阅读/测验/PPT/超链接/翻页文档都没有）',
               this._frameRejectSignature(doc, found));
             continue;
           }
@@ -1206,6 +1388,30 @@
                   });
                 };
               }(this, frame, win, doc, jobName, attachment, jobKind);
+            }
+          } else if (jobKind === 'vote') {
+            // ⚠️ 用 `=== false` 而不是 `!x`（与 enableDiscussion 那几道闸同一个写法）：
+            //   升级前的 localStorage 里**没有** enableVote 这一项，`!undefined` 会把
+            //   所有老用户的投票静默挡掉 —— 那正是本次要修的那个死循环。
+            if (this.configs.enableVote === false) {
+              noteReject(frame, '是投票任务，但「自动投票」开关是关的');
+              continue;
+            }
+            if (workType === 'job' || (workType === 'finished' && this.configs.restudy)) {
+              func = function (self, jobFrame, jobWin, jobDoc, name, att) {
+                return function () {
+                  return self._runChaoxingVoteJob({
+                    frame: jobFrame,
+                    win: jobWin,
+                    doc: jobDoc,
+                    attachment: att,
+                    kind: 'vote',
+                    workType: workType,
+                    name: name,
+                    jobid: targetJobId
+                  });
+                };
+              }(this, frame, win, doc, jobName, attachment);
             }
           } else if (jobKind === 'hyperlink') {
             if (!this.configs.enableHyperlink) {
@@ -1590,6 +1796,37 @@
             self._ocsStudyStarted = false;
             return;
           }
+          // ⚠️ 「我这条链没活」推不出「这一节做完了」（批次 20-D）。
+          // 讨论任务点压根不建 job：它的类型 `_kindFromAttachment` 认不出来，
+          // 上面那关就把它拒了（拒绝原因现在会明说"由讨论链路处理"），
+          // 于是**挂着三个没发帖的讨论的页面**在这里读出来就是 `searchedCount:0`
+          // → 翻页。实测 22:46:46 / 22:47:08 每二十秒翻一次，而平台一步都不认。
+          // 该不该为讨论按住，判据在讨论域的 `_shouldHoldDiscussionBeforeFinish`
+          // （带预算、带"一份文档最多烧两个预算"的兜底 —— 按住不放比翻过去更糟）。
+          var discHold = self._shouldHoldDiscussionBeforeFinish();
+          if (discHold.hold) {
+            emitRuntimeLog('info', 'study hold discussion before finish', {
+              searchedCount: searchedJobs.length,
+              pending: discHold.pending,
+              total: discHold.total,
+              reason: discHold.reason,
+              heldMs: discHold.heldMs,
+              budgetMs: discHold.budgetMs
+            });
+            self._ocsStudyStarted = false;
+            return;
+          }
+          if (discHold.pending > 0) {
+            emitRuntimeLog('warn', 'study discussion hold spent, advance anyway', {
+              searchedCount: searchedJobs.length,
+              pending: discHold.pending,
+              total: discHold.total,
+              reason: discHold.reason,
+              heldMs: discHold.heldMs,
+              spent: discHold.spent,
+              hint: '还有讨论任务点没落地，但为它按住的预算已经烧完（或已封顶）—— 照常推进。反复出现说明讨论链路自己发不出去，看 discussion reply not confirmed / discussion nothing pending 那两条'
+            });
+          }
           // `searchedCount:0` 单独一句没法回答「凭什么说这一节做完了」——
           // 把窗口读数一起落下：这一轮到底等过几个附件、等了多久，一眼分得开
           // "真的空章节"与"清单压根没渲染出来"（2026-11-11 的 3.1 是后者）。
@@ -1784,6 +2021,7 @@
         document: 2,
         timereader: 2,
         'ppt-audio': 2,
+        vote: 3,
         hyperlink: 3,
         other: 4
       };

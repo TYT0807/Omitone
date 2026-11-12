@@ -470,6 +470,51 @@ function buildExamWorkHtml() {
     '</body></html>';
 }
 
+/**
+ * 章节测验页的**现场形状**（批次 23/24，2026-11-12 量出来的，不是拍的）。
+ *
+ * 为什么 `/quiz` 那份不够用：`.TiMu` 那一族题目它都有，唯独**提交这一层是空的** ——
+ * 没有 `window.btnBlueSubmit`、没有 `.btnSubmit`、没有 `#form1`，而 `/quiz` 自己就是顶层文档，
+ * `_getCurrentTitle()` 读的是外层刷课页的 `.prev_title`，在这里恒为空串。三条全落空 →
+ * `_shouldAutoSubmitQuiz()` 直接返回 false → `auto submit skipped` →
+ * 于是「填满了、ready 也过了，可提交键一次都没被点」。**现场不是这样**：
+ * 2026-09-18 的真实日志就是 `quiz form ready: true` → `call btnBlueSubmit()`，
+ * 站点的提交入口是页面上同名函数 + `.btnSubmit`/`#form1` 那一族标记
+ * （`/exam-work` 那份作业夹具早就照这个补过了，注释里写着「原先三样都没有 → 插件永不提交」）。
+ * 所以这里给章节测验补同一套形状，而不是去改那条闸。
+ *
+ * 题目部分直接复用 `buildQuizHtml()`（含填空题两个空），只换提交层 —— 两份夹具不会各长各的。
+ */
+function buildQuizRealHtml() {
+  return buildQuizHtml().replace(
+    '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>',
+    '<form id="form1" name="form1" onsubmit="return false;">' +
+    '<div class="subBtn"><button id="submitBtn" type="button" class="btnSubmit">提交</button></div>' +
+    '</form>' +
+    '<script>' +
+    'window.__omBlueCalls = 0; window.__omOkCalls = 0; window.__submitted = false;' +
+    // 站点自己的提交函数：先弹自己的确认框（#workpop + #popok），点确定才真的交卷。
+    'window.btnBlueSubmit = function(){' +
+    '  window.__omBlueCalls++;' +
+    '  if (window.__submitted || document.getElementById("workpop")) return;' +
+    '  var pop = document.createElement("div");' +
+    '  pop.id = "workpop"; pop.style.display = "block";' +
+    '  pop.innerHTML = \'<div id="popcontent">请完成所有题目，确认提交？</div><a id="popok">确定</a>\';' +
+    '  document.body.appendChild(pop);' +
+    '  document.getElementById("popok").addEventListener("click", function(){' +
+    '    window.__omOkCalls++; window.__submitted = true;' +
+    '    Array.from(document.querySelectorAll("input,textarea")).forEach(function(i){ i.disabled = true; });' +
+    '    Array.from(document.querySelectorAll(".TiMu")).forEach(function(q){' +
+    '      var d = document.createElement("div"); d.className = "status"; d.textContent = "已完成"; q.appendChild(d);' +
+    '    });' +
+    '    if (pop.parentNode) pop.parentNode.removeChild(pop);' +
+    '  });' +
+    '};' +
+    'document.getElementById("submitBtn").addEventListener("click", function(){ window.btnBlueSubmit(); });' +
+    '</script>'
+  );
+}
+
 /** 学习通学生端外壳：题目内容整体装在 #frame_content 里 */
 function buildChapterQuizShellHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -747,20 +792,336 @@ function buildDiscussionMultiHtml() {
 }
 
 /**
- * 两个讨论任务点挂在同一页（两张卡片都**不带** isFinished）——
- * 用于验证「第一个做完之后，第二个还能不能被找到」。
+ * 两个讨论任务点挂在同一页（两张卡片都**不带**可用的 isFinished）——
+ * 用于验证「第一个做完之后，第二个还能不能被找到」与「旧"已发过"标记作废后能重扫」。
+ *
+ * ⚠️ 批次 20-G 之后，每张卡必须各自套一个任务盒 `.ans-attach-ct`（不带 `ans-job-finished`
+ *    = 平台的说法是"这个还没做完"），盒里那份 `#isFinished` 是**空值** —— 这是真页面量出来的形状。
+ *    原先这里只是两张光秃秃的卡片：读不出任何平台表态，于是自愈那条断言的前提
+ *    （「平台说没完成 + 本地记过已发」）**根本不存在**，批次 20-A 把"读不出"和"未完成"分开之后，
+ *    它就变成一条永远不会成立的断言（实测红：`healed:false`）。
  */
 function buildDiscussionTwoHtml() {
   function card(id, title) {
     return '<div id="topicMainDiv" data="https://groupweb.chaoxing.com/course/topic' +
       '?clazzid=1&courseid=2&mtopicid=' + id + '&ut=s">' + title + '</div>';
   }
+  function box(id, title) {
+    return '<div class="ans-attach-ct"><i class="ans-job-icon" aria-label="任务点未完成"></i>' +
+      '<input type="hidden" id="isFinished" value="">' + card(id, title) + '</div>';
+  }
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
     '<title>课程学习 - 学习通</title></head><body>' +
     '<div id="iframe">' +
-    card(777, '讨论一：联系实际谈坚持党的全面领导') +
-    card(888, '讨论二：说说你身边的变化') +
+    box(777, '讨论一：联系实际谈坚持党的全面领导') +
+    box(888, '讨论二：说说你身边的变化') +
     '</div></body></html>';
+}
+
+/**
+ * 批次 20-G 的现场形状（2026-11-11 章节 1209049219 一层一层量出来的）：
+ *   顶层 studentstudy → iframe#iframe（knowledge/cards，4 个 `.ans-attach-ct` 任务盒）
+ *     └ 盒里 iframe（ananas/modules/insertbbs）
+ *          └ 再一层 iframe（mooc-ans/bbscircle）—— `#topicMainDiv[data]` 住在这里
+ *   平台的说法写在**盒子**的 class 上（`ans-job-finished`）；卡片自己那份 `#isFinished` 是**空值**。
+ *   ⚠️ 图标上的 `aria-label` 是坏的：实测连已完成的盒子也写着「任务点未完成」，夹具照抄这个坏值，
+ *      这样断言才证明我们读的是 class、不是 aria。
+ */
+function buildDiscBoxTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body><div class="prev_title">章节</div>' +
+    '<iframe id="iframe" src="/disc-box-cards"></iframe></body></html>';
+}
+
+/** cards 文档：3 个讨论盒（第 1 个未完成）+ 1 个作业盒 */
+function buildDiscBoxCardsHtml() {
+  function boxCls(finished) { return 'ans-attach-ct' + (finished ? ' ans-job-finished' : ''); }
+  function jobBox(label) { return '<i class="ans-job-icon" aria-label="' + label + '"></i>'; }
+  function discussBox(tag, finished) {
+    // 三个盒子的 aria 一律写「任务点未完成」—— 真页面就是这样，只有 class 说了真话
+    return '<div class="' + boxCls(finished) + '" job="' + (finished ? 'true' : 'false') + '">' +
+      jobBox('任务点未完成') +
+      '<div class="attach-name">讨论任务点 ' + tag + '</div>' +
+      '<iframe src="/disc-box-mod-' + tag + '"></iframe>' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程卡片</title></head><body>' +
+    '<div class="' + boxCls(true) + '" job="true">' + jobBox('任务点已完成') +
+    '<div class="attach-name">作业（已完成，不是话题卡）</div>' +
+    '<iframe src="/blank"></iframe></div>' +
+    discussBox('A', false) + discussBox('B', true) + discussBox('C', true) +
+    '</body></html>';
+}
+
+/** insertbbs 模块文档：只是再套一层，真页面就是这一层把话题页塞进来的 */
+function buildDiscBoxModHtml(tag, id, title) {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>讨论</title></head><body>' +
+    '<iframe src="/disc-box-topic-' + tag + '"></iframe></body></html>';
+}
+
+/** bbscircle 文档：一张话题卡片 + 一个**空值**的 #isFinished（实测就是这样读不出结论） */
+function buildDiscBoxTopicHtml(id, title) {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>话题</title></head><body><div class="PublicCardBox">' +
+    '<div id="topicMainDiv" data="https://groupweb.chaoxing.com/course/topic/view/x' +
+    '?clazzid=1&courseid=2&mtopicid=' + id + '">' + title + '</div>' +
+    '<input type="hidden" id="isFinished" value="">' +
+    '</div></body></html>';
+}
+
+/**
+ * 批次 20-I「目录标记说的是这一节做没做完吗」的夹具。
+ *
+ * ⚠️ 逐字抄自用户正在刷的那门课（2026-11-12 实地 `npm run field-shape` 一族探针量出来的）：
+ *   `<div class="posCatalog_select posCatalog_active" id="cur1209049293">`
+ *     `<span class="posCatalog_name" title="…" onclick="getTeacherAjax('265799647','152708211','1209049293');">13.2.1 …</span>`
+ *     `<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>`
+ *   `</div>`
+ *   待完成那一节多一个 `<input type="hidden" value="1" class="jobUnfinishCount">`，
+ *   图标换成 `<span class="catalog_points_yi prevTips"><span class="prevHoverTips">1个待完成任务点<i></i></span>`
+ *   `<span class="orangeNew">1</span></span>`。
+ * 全书只有这两种标记（`icon_Completed` 83 项 / `catalog_points_yi` 57 项），
+ * **`.catalog_points_er` / `.catalog_points_san` 一个都没有** ——
+ * 旧判据把 yi 当"已完成"、把 er/san 当"未完成"，方向整个是反的。
+ * 这里刻意把 `posCatalog_active` 挂在**上一节（已完成）**、把主帧指向**新章节**，
+ * 这就是真日志里 `chapter changed` 与 `skip completed {by:"catalog-marker",tasks:0}`
+ * 同一秒的那个形状：目录上那一闪而过的 active 还属于上一节。
+ */
+function buildCatalogTopHtml() {
+  function item(cid, name, no, tail) {
+    return '<div class="posCatalog_select' + (cid === '1209049293' ? ' posCatalog_active' : '') +
+      '" id="cur' + cid + '">' +
+      '<span class="posCatalog_name" title="' + name + '" onclick="getTeacherAjax(\'265799647\',\'152708211\',\'' + cid + '\');">' +
+      no + ' ' + name + ' </span>' + tail + '</div>';
+  }
+  var done = '<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>';
+  var pending = '<input type="hidden" value="1" class="jobUnfinishCount">' +
+    '<span class="catalog_points_yi prevTips"><span class="prevHoverTips">1个待完成任务点<i></i></span>' +
+    '<span class="orangeNew">1</span></span>';
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body>' +
+    '<div class="prev_title">问题二 这一节还没做完</div>' +
+    '<div id="curCatalog"><div id="con1">' +
+    item('1209049293', '问题一 这一节做完了', '13.2.1', done) +
+    item('1209049294', '问题二 这一节还没做完', '13.2.2', pending) +
+    '</div></div>' +
+    '<iframe id="iframe" src="/catalog-cards?chapterId=1209049294&courseId=265799647"></iframe>' +
+    '</body></html>';
+}
+
+/** 卡片层：**一个任务点都没有**（真页面里这种节只有正文），
+ *  所以完成判定只能靠目录 —— 而这正是本批次要钉住的那条出口。
+ *  ⚠️ 类名里不许出现 task / job、正文里不许出现「任务点」三个字，
+ *     否则 `_hasTaskPoint()` 会被这三处撞灯，场景就测不到目录那条支。 */
+function buildCatalogCardsHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程卡片</title></head><body>' +
+    '<div class="content"><p>这一段只有正文，什么点都没有。</p></div>' +
+    '</body></html>';
+}
+
+/** 没有主帧、没有正文那一份：`/no-course` 用来钉「非刷课页不许点前进」 */
+function buildNoCourseHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>个人中心</title></head><body>' +
+    '<div class="ui-avatar">这里没有课程结构</div>' +
+    '</body></html>';
+}
+
+/**
+ * 投票任务点（批次 21，2026-11-11 真页实测章节 1209049220 —— 那一节只剩这一个未完成盒）。
+ *
+ * 真页面是「点封面才长出覆盖层」这条链，四层逐一照抄：
+ *   /vote        顶层：只有 #iframe + `window.attachments`（module=insertvote、job=true）
+ *   /vote-cards  卡片层：一个**未完成**的 `.ans-attach-ct` 盒，里面挂投票封面帧
+ *   /vote-cover  封面帧：只有图标与标题（`.ans-cmp-icon.ans-cmp-iconVote#cover`）
+ *                加一个可点的 `#render`。**关键形状**：真页面的内联脚本在点击那一刻
+ *                才往**顶层文档**写 `#voteIframe` 并 show `.voteContainer`；
+ *                直接导航那个地址是 403（enc/ktoken 由服务端算），所以覆盖层
+ *                只能由平台脚本自己拼出来 —— 夹具也必须在这一跳里拼
+ *   /vote-inner  覆盖层里那份投票：`ul.topic-options > li.topic-option-list >
+ *                div.optionRadio > input[type=radio][name=answer…]` +
+ *                `a.btn.jb_btn_92.btn-submit`「提交」+ 一个「已到截止时间」提示框
+ */
+/**
+ * 顶层学习页。
+ *
+ * ⚠️ `.voteContainer` 与 `#voteIframe` 是**平台出厂就带**的（2026-11-11 实地逐字量出来的）：
+ *   `<body class="popOverflow" id="body-content">` 下挂着
+ *   `<div class="voteContainer"><iframe width="100%" height="100%" src="" id="voteIframe" frameborder="0">`，
+ *   收起状态由**样式表**决定（`getComputedStyle().display === 'none'`，标签上没有 style），
+ *   里面那份文档是 `about:blank`（readyState=complete、0 个字、0 个 radio）。
+ *   原先这份夹具是"点了封面才把覆盖层拼出来"的形状 —— 那正好是本次实测的缺陷**测不出来**的形状：
+ *   代码第一眼看到的 `#voteIframe` 必须来自出厂 DOM，不然"复用了一份空壳"这件事永远只能靠手工种。
+ */
+function buildVoteTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>投票 - 学习通</title>' +
+    '<style>.voteContainer{display:none;position:fixed;left:0;top:0;width:560px;height:440px;background:#fff}</style>' +
+    '</head><body class="popOverflow" id="body-content">' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/vote-cards" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    '<div class="voteContainer">\n\t' +
+    '<iframe width="100%" height="100%" src="" id="voteIframe" frameborder="0"></iframe>' +
+    '</div>' +
+    '<script>window.__coverClicks=0;window.__backClicks=0;window.__dialogDismissed=0;' +
+    'window.attachments=[' +
+    '{jobid:"vote-1",name:"made in china 是让你自豪的标签吗？",' +
+    'property:{_jobid:"vote-1",jobid:"vote-1",name:"投票",module:"insertvote",type:"vote",job:true},' +
+    'job:true}]</script>' +
+    '</body></html>';
+}
+
+function buildVoteCardsHtml() {
+  var payload = { jobid: 'vote-1', _jobid: 'vote-1', workid: '9001', name: '投票' };
+  var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>章节</title></head><body>' +
+    '<div class="ans-attach-ct" id="tp-vote">' +
+    '<i class="ans-job-icon" aria-label="任务点未完成"></i>' +
+    '<div class="attach-name">投票：made in china 是让你自豪的标签吗？</div>' +
+    '<iframe jobid="vote-1" data="' + dataAttr + '" ' +
+    'src="/ananas/modules/zt/vote/index-pc-new.html?jobid=vote-1" ' +
+    'style="width:100%;height:120px;border:0"></iframe>' +
+    '</div></body></html>';
+}
+
+/**
+ * 封面帧：只有图标 + 标题，点 `#render` 才由平台的脚本把卷子挂进**顶层那份出厂覆盖层**。
+ *
+ * ⚠️ 实地形状：顶层的 `.voteContainer` / `#voteIframe` **本来就在那儿**（见 buildVoteTopHtml），
+ *    平台这段脚本只做两件事 —— 写 `src`、把容器放出来。夹具以前是"没有就现造一个"，
+ *    那等于把要验的那个前提（第一眼就有一份空壳摆在顶层）抹掉了。
+ *
+ * `__coverClicks` 记在**顶层** window 上，因为「覆盖层被点了几次」正是本场景
+ *    要盯的行为：一份空文档被当成"就绪"时，runner 会跳过这一跳，于是永远拿不到卷子
+ *    （2026-11-11 实测的第一轮就是这么红的 —— `vote has nothing to submit {text:""}`）。
+ */
+function buildVoteCoverHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>投票</title><style>.ans-cmp-icon{width:40px;height:40px;display:inline-block}</style>' +
+    '</head><body>' +
+    '<div id="render" style="width:220px;height:80px">' +
+    '<i class="ans-cmp-icon ans-cmp-iconVote" id="cover"></i>' +
+    '<div class="ans-cmp-title">made in china 是让你自豪的标签吗？</div>' +
+    '</div>' +
+    '<script>' +
+    'document.getElementById("render").addEventListener("click", function () {' +
+    '  var top = window.top;' +
+    '  top.__coverClicks = (top.__coverClicks || 0) + 1;' +
+    '  var box = top.document.querySelector(".voteContainer");' +
+    '  var f = top.document.getElementById("voteIframe");' +
+    '  if (!box || !f) return;' +
+    '  box.style.display = "block";' +
+    '  f.src = "/mooc2/work/vote?jobid=vote-1&type=vote&ktoken=KT&enc=ENC";' +
+    '});' +
+    '</script></body></html>';
+}
+
+/**
+ * 覆盖层里那份投票：两个 radio + 一个「提交」。
+ *
+ * 提交后做两件真页面会做的事：① 把**顶层**那个任务盒加上 `ans-job-finished`
+ * （平台改的就是这个 class，完成判定只认它）；② 弹出「已到截止时间，作答内容
+ * 已自动提交」提示框 —— 插件要点掉「知道了」，而且**不许**点成「提交」（会二次提交）。
+ * 勾选与提交都记在本帧 window 上，供断言取**勾选证据**。
+ */
+function buildVoteInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>投票</title></head><body>' +
+    '<div class="ans-qt-list">' +
+    '<div class="qt-title">made in china 是让你自豪的标签吗？</div>' +
+    '<ul class="topic-options">' +
+    '<li class="topic-option-list"><div class="optionRadio">' +
+    '<input type="radio" name="answer8000083064" value="A" /><span>A. 是</span></div></li>' +
+    '<li class="topic-option-list"><div class="optionRadio">' +
+    '<input type="radio" name="answer8000083064" value="B" /><span>B. 否</span></div></li>' +
+    '</ul>' +
+    '<a href="javascript:void(0)" class="btn jb_btn_92 btn-submit color-white">提交</a>' +
+    '<a href="javascript:void(0)" class="icon-back">返回</a>' +
+    '</div>' +
+    '<div class="maskDiv" id="endTimeDialog" style="display:none">' +
+    '<div class="popDiv wid440 height212" style="width:440px;height:212px">' +
+    '<div class="popTop">提示</div>' +
+    '<div class="popCenter">已到截止时间，作答内容已自动提交</div>' +
+    '<a href="javascript:void(0)" class="btn" id="knowBtn">知道了</a>' +
+    '</div></div>' +
+    '<script>' +
+    // 任务盒在**卡片层文档**里（真页面也是这样：覆盖层挂顶层、盒子留在 article 帧），
+    // 所以这里必须穿过 #iframe 去改 class，不能在外层文档里找。
+    'var voteBoxOfTop=function(){' +
+    '  try {' +
+    '    var d=window.top.document.getElementById("iframe");' +
+    '    var cd=d&&(d.contentDocument||(d.contentWindow&&d.contentWindow.document));' +
+    '    return cd?cd.querySelector(".ans-attach-ct"):null;' +
+    '  } catch (e) { return null; }' +
+    '};' +
+    'window.__submitted=0;window.__picked="";' +
+    'document.querySelector(".btn-submit").addEventListener("click", function () {' +
+    '  window.__submitted++;' +
+    '  var on=[];' +
+    '  var ins=document.querySelectorAll("input[type=radio]");' +
+    '  for(var i=0;i<ins.length;i++){ if(ins[i].checked) on.push(ins[i].value); }' +
+    '  window.__picked=on.join(",");' +
+    '  var box=voteBoxOfTop();' +
+    '  if(box && String(box.className).indexOf("ans-job-finished")<0){ box.className+=" ans-job-finished"; }' +
+    '  document.getElementById("endTimeDialog").style.display="block";' +
+    '});' +
+    'document.getElementById("knowBtn").addEventListener("click", function () {' +
+    '  window.top.__dialogDismissed=(window.top.__dialogDismissed||0)+1;' +
+    '  document.getElementById("endTimeDialog").style.display="none";' +
+    '});' +
+    'document.querySelector(".icon-back").addEventListener("click", function () {' +
+    '  window.top.__backClicks=(window.top.__backClicks||0)+1;' +
+    '  window.top.document.querySelector(".voteContainer").style.display="none";' +
+    '});' +
+    '</script></body></html>';
+}
+
+/**
+ * 「当前章节还有任务点未完成，是否去完成？」这道门（批次 20-G 实测到的两种形状）。
+ * ⚠️ onclick 逐字照抄真页面（`scroll2Job` / `PCount.next('1','1209049219',…)` / `WAY.box.hide()`），
+ *    只在前面加一句计数 —— 因为旧代码在这里点到的是「下一节」，而真页面的「下一节」
+ *    正是靠这段 onclick 走的；夹具若换成一个不带这些字样的干净按钮，`/scroll2Job/` 那半优先级
+ *    根本没被走到（AGENTS §5「夹具要长得像现场，不像实现」）。
+ *    平台那几个函数在这里打桩，点了不报错。
+ */
+function buildUnfinishedPromptHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title><style>' +
+    '.maskDiv{position:fixed;left:20px;top:20px;width:440px;height:180px;background:#fff}' +
+    '</style></head><body>' +
+    '<div id="iframe"></div>' +
+    '<div class="maskDiv jobFinishTip"><div class="popDiv wid440">' +
+    '<div class="popTop">提示</div>' +
+    '<div class="popCenter">当前章节还有任务点未完成，是否去完成？</div>' +
+    '<div class="popBottom">' +
+    '<a class="jb_btn jb_btn_92 fr fs14 preChapter" href="javascript:void(0)" ' +
+    'onclick="window.__pre=(window.__pre||0)+1">上一节</a>' +
+    '<a class="jb_btn jb_btn_92 fr fs14 nextChapter" href="javascript:void(0)" ' +
+    'onclick="window.__next=(window.__next||0)+1;closeDeleteWindow();PCount.next(\'1\',\'1209049219\',\'265799647\',\'\')">下一节</a>' +
+    '<a class="btnBlue btn_92_cancel fr fs14 popMoveDel" href="javascript:void(0)" ' +
+    'onclick="window.__job=(window.__job||0)+1;scroll2Job()">去学习</a>' +
+    '<a class="popClose fr" href="javascript:void(0)" ' +
+    'onclick="window.__close=(window.__close||0)+1"></a>' +
+    '</div></div></div>' +
+    '<div id="jobFinishTip" class="AlertCon02" style="display:none">' +
+    '<div class="con03 marTop30">当前章节还有任务点未完成，是否去完成？</div>' +
+    '<a class="bluebtn02 prebutton nextChapter" href="javascript:void(0)" ' +
+    'onclick="window.__next2=(window.__next2||0)+1;WAY.box.hide();PCount.next(\'1\',\'1209049219\',\'265799647\',\'\')">下一节</a>' +
+    '<a class="graybtn02 marleft10 nextbutton" href="javascript:void(0)" ' +
+    'onclick="window.__job2=(window.__job2||0)+1;WAY.box.hide();scroll2Job()">去学习</a>' +
+    '</div>' +
+    '<script>window.__pre=0;window.__next=0;window.__job=0;window.__close=0;' +
+    'window.__next2=0;window.__job2=0;' +
+    'window.scroll2Job=function(){window.__scroll2JobCalls=(window.__scroll2JobCalls||0)+1;};' +
+    'window.closeDeleteWindow=function(){};' +
+    'window.PCount={next:function(){window.__nextReal=(window.__nextReal||0)+1;}};' +
+    'window.WAY={box:{hide:function(){}}};</script>' +
+    '</body></html>';
 }
 
 /** 空白页：只用来跑纯逻辑断言，不需要任何特定 DOM */
@@ -969,6 +1330,8 @@ function buildSubmitKeyInnerHtml() {
 
 var MOCK_PAGES = {
   '/quiz': buildQuizHtml,
+  // 章节测验的现场形状（题同 `/quiz`，补上真实提交入口那一层：btnBlueSubmit + .btnSubmit + #form1）
+  '/quiz-real': buildQuizRealHtml,
   '/chapter-quiz': buildChapterQuizShellHtml,
   '/quiz-inner': buildChapterQuizInnerHtml,
   '/exam-work': buildExamWorkHtml,
@@ -982,6 +1345,27 @@ var MOCK_PAGES = {
   '/discussion': buildDiscussionHtml,
   '/discussion-multi': buildDiscussionMultiHtml,
   '/discussion-two': buildDiscussionTwoHtml,
+  // ── 批次 20-G：真页面一层一层量出来的形状（完成与否写在**盒子**的 class 上，卡片里那份 #isFinished 是空值）──
+  '/disc-box': buildDiscBoxTopHtml,
+  '/disc-box-cards': buildDiscBoxCardsHtml,
+  '/disc-box-mod-A': function () { return buildDiscBoxModHtml('A', '9001', '阐述你对美好生活有什么样的期待'); },
+  '/disc-box-mod-B': function () { return buildDiscBoxModHtml('B', '9002', '结合专业谈谈怎么创造美好生活'); },
+  '/disc-box-mod-C': function () { return buildDiscBoxModHtml('C', '9003', '说说你身边的变化'); },
+  '/disc-box-topic-A': function () { return buildDiscBoxTopicHtml('9001', '阐述你对美好生活有什么样的期待'); },
+  '/disc-box-topic-B': function () { return buildDiscBoxTopicHtml('9002', '结合专业谈谈怎么创造美好生活'); },
+  '/disc-box-topic-C': function () { return buildDiscBoxTopicHtml('9003', '说说你身边的变化'); },
+  // ── 批次 20-I：目录标记的现场形状（`id="cur<chapterId>"` + icon_Completed「已完成」
+  //    / catalog_points_yi「N个待完成任务点」+ input.jobUnfinishCount）；
+  //    /no-course 是"页面被推到没有课程结构的地方"那一族 ──
+  '/catalog': buildCatalogTopHtml,
+  '/catalog-cards': buildCatalogCardsHtml,
+  '/no-course': buildNoCourseHtml,
+  '/vote': buildVoteTopHtml,
+  '/vote-cards': buildVoteCardsHtml,
+  '/ananas/modules/zt/vote/index-pc-new.html': buildVoteCoverHtml,
+  '/mooc2/work/vote': buildVoteInnerHtml,
+  '/vote-empty-inner': function () { return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>空白</title></head><body></body></html>'; },
+  '/unfinished-prompt': buildUnfinishedPromptHtml,
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
   '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
@@ -2804,6 +3188,225 @@ SCENARIOS.push({
       'return String(h.shadowRoot.getElementById("wrap").className||"");})()'
     );
     check('点「宠」唤回（隐藏模式解除）', !/mode-hidden/.test(restored), restored);
+
+    // ── 2026-11-12 现场补的三条 ────────────────────────────────────────────
+    // 上面那四条（挂载/摸头/收起/唤回）在拖动整个坏掉的那几天**全是绿的** ——
+    // 因为它们一条都没碰"她往哪儿摆、说话是什么形状、拖得动吗"。用户看到的正是这三样。
+    // ① 气泡形状：旧 CSS 是 `left:66px` 挂在 92px 宽的 wrap 里，可用宽度只剩 26px，
+    //    `max-width:200px` 只是上限不会把盒子撑开 → 每行一个字，现场量到 31×215 的竖排。
+    var bubbleShape = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var b=h.shadowRoot.getElementById("bubble");' +
+      'b.textContent="\u6210\u5c31\u70b9\u4eae\u300c\u4e09\u65e5\u6253\u9c7c\u300d\u2014\u2014 \u8fd9\u4e00\u5468\u4f60\u90fd\u5728\u8ba4\u771f\u5237\u8bfe\uff0c\u597d\u611f\u5ea6\u53c8\u8fd1\u4e86\u4e00\u6b65\uff1b\u518d\u591a\u6765\u51e0\u5929\u5c31\u80fd\u5347\u5230\u300c\u8001\u670b\u53cb\u300d\u3002";' +
+      'b.classList.add("show");var r=b.getBoundingClientRect();' +
+      'return {w:Math.round(r.width),h:Math.round(r.height),left:Math.round(r.left),right:Math.round(r.right),vw:window.innerWidth};})()'
+    );
+    check('气泡是横排的一小块，不再每行一个字（旧形状 31×215）',
+      !!bubbleShape && bubbleShape.w >= 120 && bubbleShape.h <= 110 &&
+      bubbleShape.w >= bubbleShape.h * 1.2 && bubbleShape.left >= 0 && bubbleShape.right <= bubbleShape.vw,
+      JSON.stringify(bubbleShape));
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var b=h.shadowRoot.getElementById("bubble");b.textContent="";b.classList.remove("show");return true;})()'
+    );
+
+    // ② 拖动：pointerdown 要挂上 dragging、move 之后 host 真的跟着走。
+    //    ⚠️ 这条是本轮真正的回归闸：拖动 handler 里曾引用了块级作用域外的裸 `host`
+    //    （`const host` 只在构建那个 try 块里存在），ReferenceError 被 handler 自己的
+    //    catch 吞掉 → 现场表现为"拖不动、日志一条没有"，而沙盒四条全绿。
+    //    收尾用 pointercancel（不写存档），再把 inline 位置清回默认锚点。
+    var drag = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var c=h.shadowRoot.getElementById("card");var errs=[];' +
+      'window.addEventListener("error",function(e){errs.push(String(e.message||e));});' +
+      'var r0=h.getBoundingClientRect();var x=r0.left+20,y=r0.top+20;' +
+      'function pe(t,px,py){c.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,composed:true,' +
+      'pointerId:3,pointerType:"mouse",isPrimary:true,button:0,buttons:(t==="pointercancel"||t==="pointerup")?0:1,clientX:px,clientY:py}));}' +
+      // 往左上拖：这个方向在沙盒视口里不会撞边界，位移必须**逐像素等于**手指位移
+      'pe("pointerdown",x,y);var clsDown=String(c.className);' +
+      'pe("pointermove",x-120,y+90);var r1=h.getBoundingClientRect();' +
+      'pe("pointercancel",x-120,y+90);var clsEnd=String(c.className);' +
+      // 再往右外拖：越界必须被 clamp 拉回屏内（留 8px 边），不许拖出窗口再也点不到
+      'var r2=h.getBoundingClientRect();var ax=r2.left+20,ay=r2.top+20;' +
+      'pe("pointerdown",ax,ay);pe("pointermove",ax+900,ay);var r3=h.getBoundingClientRect();' +
+      'pe("pointercancel",ax+900,ay);' +
+      'var w=Math.round(r3.width);' +
+      'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";' +
+      'return {clsDown:clsDown,clsEnd:clsEnd,dx:Math.round(r1.left-r0.left),dy:Math.round(r1.top-r0.top),' +
+      'clampedLeft:Math.round(r3.left),clampExpect:Math.round(window.innerWidth)-w-8,errs:errs};})()'
+    );
+    check('拖得动：按住挂 dragging、位移逐像素跟着手指、松手类清掉、拖出右缘被 clamp 回屏内',
+      !!drag && /dragging/.test(drag.clsDown) && !/dragging/.test(drag.clsEnd) &&
+      drag.dx === -120 && drag.dy === 90 && drag.clampedLeft === drag.clampExpect && drag.errs.length === 0,
+      JSON.stringify(drag).slice(0, 220));
+
+    // ③ 她不再压在右下角那两块东西上。沙盒里状态面板**不会出现**（它只在点了「开始刷课」
+    //    之后挂），所以这里断的是现场量出来的两条"让位带"，而不是去比一个不存在的矩形：
+    //      · 状态面板 bottom:18 + 高约 120 → 视口底部 138px 是它的带子
+    //      · 学习通自己的右侧竖条 .iconBox 宽 40、左边缘在 vw-70
+    //    实测默认锚点 right:84 / bottom:176 → 右边缘留 84、底边留 176，两条都过。
+    var geo = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var c=h.shadowRoot.getElementById("card");var b=c.getBoundingClientRect();' +
+      'return {rightGap:Math.round(window.innerWidth-b.right),bottomGap:Math.round(window.innerHeight-b.bottom),' +
+      'vw:window.innerWidth,vh:window.innerHeight,w:Math.round(b.width),h:Math.round(b.height),' +
+      'l:Math.round(b.left),t:Math.round(b.top)};})()'
+    );
+    check('默认锚点让开右下角两块地：右侧 ≥70px（站点竖条）、底部 ≥140px（状态面板带）',
+      !!geo && geo.rightGap >= 70 && geo.bottomGap >= 140 &&
+      geo.l >= 0 && geo.t >= 0 && geo.l + geo.w <= geo.vw && geo.t + geo.h <= geo.vh,
+      JSON.stringify(geo).slice(0, 220));
+
+    // ④ 心形的落点。这一条以前**根本没有**，所以"把视口坐标当 wrap 内坐标"那个 bug
+    //    （1699 宽的屏上把她扔到屏外一千多像素）改坏了也没人报警 —— 反向验证注入它，红 0 条。
+    //    判据用**相对 wrap 原点**的期望值比：合成 click 的 clientX=0，
+    //    处理器会退回"立绘中心"，所以期望值算得出来，且与随机抖动（±13/±5）留了余量。
+    var hearts = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h.shadowRoot;var img=sr.getElementById("petImg");' +
+      'Array.prototype.forEach.call(sr.querySelectorAll(".heart"),function(x){x.remove();});' +
+      'img.click();' +
+      'var list=Array.prototype.slice.call(sr.querySelectorAll(".heart"));' +
+      'var wr=sr.getElementById("wrap").getBoundingClientRect();' +
+      'var ir=img.getBoundingClientRect();' +
+      'var got=list.map(function(x){return {l:Math.round(parseFloat(x.style.left)||0),t:Math.round(parseFloat(x.style.top)||0)};});' +
+      'var wantL=Math.round(ir.left+ir.width/2-wr.left),wantT=Math.round(ir.top+8-wr.top);' +
+      'var bad=got.filter(function(p){return Math.abs(p.l-wantL)>18||Math.abs(p.t-wantT)>18;});' +
+      'return {n:got.length,wantL:wantL,wantT:wantT,bad:bad.length,sample:got.slice(0,2),offscreen:got.filter(function(p){return p.l>window.innerWidth||p.t>window.innerHeight;}).length};})()'
+    );
+    check('摸头的心形长在她身上：4 颗、按 wrap 原点定位、没有一颗被扔到视口外',
+      !!hearts && hearts.n === 4 && hearts.bad === 0 && hearts.offscreen === 0,
+      JSON.stringify(hearts).slice(0, 220));
+
+    // ⑤ 悬停反应（用户原话"交互也基本上不会动"）。走 pointerenter 而不是 CSS :hover：
+    //    Runtime.evaluate 派发不出真·悬停态，纯 CSS 写法等于没测试。
+    var hover = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var c=h.shadowRoot.getElementById("card");' +
+      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'pointerId:7,pointerType:"mouse",clientX:0,clientY:0}));}' +
+      'var base=getComputedStyle(c).boxShadow;' +
+      'pe("pointerenter");var on=c.classList.contains("peek");' +
+      'var shadowOn=getComputedStyle(c).boxShadow,borderOn=getComputedStyle(c).borderColor;' +
+      'pe("pointerleave");var off=c.classList.contains("peek");' +
+      'return {on:on,off:off,changed:shadowOn!==base,back:getComputedStyle(c).boxShadow===base,' +
+      'borderOn:borderOn,base:base,on2:shadowOn};})()'
+    );
+    check('鼠标移上去她真的有反应（peek 挂上、阴影/边框换了色），移开就收回',
+      !!hover && hover.on === true && hover.off === false && hover.changed === true && hover.back === true,
+      JSON.stringify(hover).slice(0, 240));
+
+    // ⑥ 她自己偶尔开口：四条"别说"各挡各的。
+    //    ⚠️ 每个"闭嘴"断言前都要先把**别的**门槛拨到"该说话"（quiet() 把上次开口推到 200 秒前），
+    //    否则"她没说"可能只是时间没到 —— 那就是把已知缺陷改坏了也照样绿的假绿。
+    await ctx.client.send('Page.bringToFront');   // document.hidden 必须为 false，否则正例永远不成立
+    var idle = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h.shadowRoot;var wrap=sr.getElementById("wrap");var c=sr.getElementById("card");' +
+      'var b=sr.getElementById("bubble");' +
+      // 把手是"拍一拍"的事件，**回执读气泡本身** —— 内容脚本与页面是两个 JS 世界，' +
+      // 函数与数据都传不过来（只有 DOM 与属性共用）。
+      'function tick(){b.textContent="";b.classList.remove("show");' +
+      'h.dispatchEvent(new Event("omitone:pet-idle-tick"));' +
+      'return {sp:/show/.test(String(b.className)),txt:String(b.textContent||"")};}' +
+      'function quiet(){h.dataset.saidAt=String(Date.now()-200000);}' +
+      // 自证：把"上次开口"拨到 200 秒前拍一下，气泡必须亮。不亮 = 监听器压根没挂上，
+      // 下面每一条"她闭嘴"都会因此假绿 —— 先把它单独钉成一条前提断言。
+      'var saved=String(h.dataset.saidAt||"");quiet();var probe=tick();' +
+      'if(saved){h.dataset.saidAt=saved;}else{h.removeAttribute("data-said-at");}' +
+      'if(probe.sp!==true)return {hook:false};' +
+      'var o={hook:true,hidden:document.hidden};' +
+      // 时间门槛：刚说过话（上面那一下就是"刚说过"）→ 不许插话。此时其它条件都允许说话。
+      'o.freshQuiet=!tick().sp;' +
+      // 被收起：拨到该说了，也必须闭嘴
+      'quiet();wrap.classList.add("mode-hidden");o.hiddenQuiet=!tick().sp;' +
+      'wrap.classList.remove("mode-hidden");' +
+      // 正被拖着走：同上
+      'quiet();c.classList.add("dragging");o.dragQuiet=!tick().sp;c.classList.remove("dragging");' +
+      // 正例：安静够了 → 说一句，气泡真的亮，形状是一小块
+      'quiet();var t=tick();var r=b.getBoundingClientRect();' +
+      'o.line=t.txt;o.spoke=t.sp&&t.txt.length>0;' +
+      'o.shape={w:Math.round(r.width),h:Math.round(r.height)};' +
+      // 一句之后立刻又不说（否则 15 秒一拍 = 话痨）
+      'o.onceOnly=!tick().sp;' +
+      'o.saidRefreshed=(Number(h.dataset.saidAt)>Date.now()-3000);' +
+      'b.classList.remove("show");return o;})()'
+    );
+    check('前提：自动台词的把手真的通（拨旧时间戳拍一下，气泡必须亮）',
+      !!idle && idle.hook === true, JSON.stringify(idle).slice(0, 160));
+    check('她自己开口只在该开口时：刚说过/被收起/正拖着 → 三种都闭嘴；安静够了 → 说一句且只一句',
+      !!idle && idle.freshQuiet === true && idle.hiddenQuiet === true && idle.dragQuiet === true &&
+      idle.spoke === true && idle.onceOnly === true && idle.saidRefreshed === true,
+      JSON.stringify(idle).slice(0, 260));
+    check('自动台词那口气的形状也是一小块横排（不是竖条）',
+      !!idle && !!idle.shape && idle.shape.w >= 88 && idle.shape.h <= 62 && idle.shape.w > idle.shape.h,
+      JSON.stringify(idle && idle.shape));
+
+    // ⑦ 真鼠标点得动（2026-11-12 现场）。①–⑥ 全是 dispatchEvent / .click()，
+    //    而 pointerdown 里那句 setPointerCapture 会把兼容的 mousedown/mouseup/click
+    //    **一起改派给捕获目标（card）** —— 挂在立绘上的摸头监听收不到真点击，
+    //    合成事件却照样全绿。用户报的「刷课页吉祥物不能互动了」就是这么来的：
+    //    悬停、拖动都真在动，只有"摸她一下"死的。只有 CDP Input 域能测到这一条。
+    //    ⚠️ 数 .pat 用观察器计数，不用"读当下 class"：那一个 class 只活 480ms，
+    //    比的是几个 CDP 往返的快慢，不是行为 —— 现场踩过一次假阴性。
+    var patPt = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var i=h.shadowRoot.getElementById("petImg");var r=i.getBoundingClientRect();' +
+      'window.__pat=0;' +
+      'if(!window.__patObs){window.__patObs=new MutationObserver(function(){' +
+      'if(i.classList.contains("pat"))window.__pat++;});' +
+      'window.__patObs.observe(i,{attributes:true,attributeFilter:["class"]});}' +
+      'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});' +
+      'return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2),pat:window.__pat,' +
+      'hostLeft:Math.round(h.getBoundingClientRect().left)};})()'
+    );
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: patPt.x, y: patPt.y, button: 'left', buttons: 1, clickCount: 1 });
+    await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: patPt.x, y: patPt.y, button: 'left', buttons: 0, clickCount: 1 });
+    var trusted = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var b=sr.getElementById("bubble");' +
+      'return {patSeen:window.__pat,hearts:sr.querySelectorAll(".heart").length,' +
+      'spoke:/show/.test(String(b.className||"")),txt:String(b.textContent||"").slice(0,20)};})()'
+    );
+    check('真鼠标（CDP Input 域）点她也摸头：pat 挂上过、心形冒出、气泡有回执 —— 合成事件测不到这一条',
+      !!trusted && trusted.patSeen > patPt.pat && trusted.hearts > 0 && trusted.spoke === true,
+      JSON.stringify(trusted) + ' @' + JSON.stringify(patPt));
+
+    // ⑧ 配对：改成"越过 6px 才捕获"之后，真·拖动那一下仍然不许摸头 ——
+    //    否则拖她一次就白涨一次好感，等于把"放哪儿"变成了"刷好感"。
+    //    拖出去再原路拖回（净位移 0），并把 inline 位置清回默认锚点。
+    async function dragPt(pt, ddx) {
+      await ctx.client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: pt.x, y: pt.y, button: 'left', buttons: 1, clickCount: 1 });
+      for (var s = 1; s <= 4; s++) {
+        await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: pt.x + Math.round(ddx * s / 4), y: pt.y, button: 'left', buttons: 1, clickCount: 0 });
+      }
+      await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: pt.x + ddx, y: pt.y, button: 'left', buttons: 0, clickCount: 1 });
+    }
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});return true;})()'
+    );
+    var patBeforeDrag = await ctx.client.evaluate('window.__pat|0');
+    await dragPt(patPt, 60);
+    var dragged = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card"),i=sr.getElementById("petImg"),b=sr.getElementById("bubble");' +
+      'var r=h.getBoundingClientRect();' +
+      'return {patAdded:window.__pat,hearts:sr.querySelectorAll(".heart").length,' +
+      'dragClass:c.classList.contains("dragging"),movedX:Math.round(r.left-' + patPt.hostLeft + '),' +
+      'txt:String(b.textContent||"").slice(0,20)};})()'
+    );
+    check('真·拖动仍然不摸头（拖一次不许白涨一次好感），拖完 dragging 已摘、她确实跟着走',
+      !!dragged && dragged.patAdded === patBeforeDrag && dragged.hearts === 0 &&
+      dragged.dragClass === false && dragged.movedX === 60,
+      JSON.stringify(dragged) + ' 拖前 pat 计数=' + patBeforeDrag);
+    // 原路拖回 + 清回默认锚点，别把位置脏留给后面的场景
+    await dragPt({ x: patPt.x + 60, y: patPt.y }, -60);
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";' +
+      'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});return true;})()'
+    );
   }
 });
 
@@ -4795,7 +5398,7 @@ SCENARIOS.push({
       { module: 'work', expect: 'quiz', label: '测验任务点 → quiz' },
       { module: '', type: 'ppt', expect: 'read', label: '按扩展名 ppt → read' },
       { module: '', type: 'mp3', expect: 'video', label: '按扩展名 mp3 → video' },
-      { module: 'insertvote', expect: null, label: '投票（不支持，须返回 null 而不是乱猜）' }
+      { module: 'insertvote', expect: 'vote', label: '投票任务点 → vote（认不出就当没任务，整节会死循环）' }
     ];
 
     var results = await ctx.client.evaluate(
@@ -4868,13 +5471,15 @@ SCENARIOS.push({
       passed.video === 'finished' && passed.doc === 'finished', JSON.stringify(passed));
 
     // 不支持的类型必须留下可查的日志，而不是静默丢弃
+    // ⚠️ 用例以前用的是 insertvote —— 2026-11-11 真页实测后投票**已支持**（kind=vote），
+    //    再拿它当"不支持"就是测一件不存在的事。换成真正没有判型的一条：insertcard。
     var logged = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;app._unsupportedJobLogged=null;' +
-      'app._buildAttachmentOnlyJob({job:true,property:{module:"insertvote"}});' +
+      'app._buildAttachmentOnlyJob({job:true,property:{module:"insertcard"}});' +
       'return app._unsupportedJobLogged;})(window._xxtApp)'
     ).catch(function () { return null; });
     check('不支持的 task point 会被记录（便于排查"任务点没做"）',
-      !!(logged && logged['insertvote|']), JSON.stringify(logged));
+      !!(logged && logged['insertcard|']), JSON.stringify(logged));
 
     // ---- R1（2026-11-10「所有题目都被跳过」）：无主帧 + 顶层页认不出任何标记 ----
     // `_hasTaskPoint()` 的返回值同时喂三条跳过出口（`_isCurrentCompleted` →
@@ -7236,6 +7841,165 @@ SCENARIOS.push({
     check('前置条件：标记确实写进去了', !!probe && probe.before === true, JSON.stringify(probe));
     check('收到"发失败"消息后标记被撤销（否则这个讨论会被静默跳过 24 小时）',
       !!probe && probe.after === false, JSON.stringify(probe));
+  }
+});
+
+/**
+ * ---- 任务盒的 class 才是平台的说法：三张讨论卡里那张没做完的必须被认出来 ----
+ *
+ * 现场（2026-11-11，章节 1209049219）：用户肉眼看到"这一节只剩一个讨论没完成"，
+ * 插件却宣布"本节讨论都做完了"→ 点下一节 → 平台回一句「当前章节还有任务点未完成」→ 原地转圈。
+ *
+ * 量出来的根因：这一族讨论卡所在文档里 `#isFinished` 是**空值**（`finishedKnown` 读不出结论），
+ * 而平台真正的判据写在**任务盒** `.ans-attach-ct` 的 class 上（带 `ans-job-finished` = 已完成）。
+ * 更阴的是图标 `aria-label`：实测连已完成的盒子也写着「任务点未完成」——所以夹具把这三份坏 aria
+ * 照抄下来，下面那条"读 aria 会把三张全读成没做完"的自证一断言，谁改用 aria 就会红。
+ * 盒子在卡片的**上两层 frame**，因此 `_discussionBoxFinishedFlag` 要沿 frameElement 往上爬。
+ */
+SCENARIOS.push({
+  name: '讨论完成与否以任务盒 class 为准（#isFinished 空值时不再宣布全做完）',
+  path: '/disc-box',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      // 夹具自己钉住它依赖的共享状态：上一个场景往扩展 storage 写过 enableDiscussion:false，
+      // `_discussionPendingInfo` 会在生产判据第一行就短路成 {pending:0,source:"disabled"}，
+      // 表现成"一条日志都没有、断言全红"（AGENTS §5）。
+      'app.configs=app.configs||{};app.configs.enableDiscussion=true;' +
+      'function reset(){app._discussionPendingCache=null;app._discussionOpenedAt=0;app._discussionWindow=null;' +
+      '  app._discussionHoldSinceAt=0;app._discussionHoldKey="";app._discussionHoldSpent=0;}' +
+      'try{localStorage.removeItem(app._discussionStoreKey);}catch(e){}' +
+      // 夹具自证：三个讨论盒的 aria 全写「任务点未完成」，只有 class 说了真话
+      'var aria=[];' +
+      'function walk(doc,d){if(!doc||d>4)return;' +
+      '  try{Array.prototype.forEach.call(doc.querySelectorAll(".ans-attach-ct"),function(b){' +
+      // 只数讨论盒的 aria —— 作业盒不在这次实测结论里，混进来这条自证就说不了它想说的话
+      '    if(!/讨论/.test(String(b.innerText||"")))return;' +
+      '    var i=null;try{i=b.querySelector(".ans-job-icon");}catch(e){}' +
+      '    aria.push(String((i&&i.getAttribute("aria-label"))||""));});}catch(e){}' +
+      '  try{Array.prototype.forEach.call(doc.querySelectorAll("iframe"),function(f){' +
+      '    try{walk(f.contentDocument,d+1);}catch(e){}});}catch(e){}}' +
+      'walk(document,0);' +
+      'var targets=app._collectDiscussionTargets();' +
+      'var keys={};targets.forEach(function(t){keys[String(t.key)]=1;});' +
+      'var todo=targets.filter(function(t){return !t.finished;})[0]||null;' +
+      'var r={' +
+      '  n:targets.length, unique:Object.keys(keys).length,' +
+      '  flags:targets.map(function(t){return (t.finished?"D":"U")+(t.finishedKnown?"k":"?");}),' +
+      '  ariaBad:aria.filter(function(s){return /未完成/.test(s);}).length,' +
+      '  ariaGood:aria.filter(function(s){return /已完成/.test(s);}).length,' +
+      '  todoKey:todo?String(todo.key):null,' +
+      '  flagOfNonBox:(function(){try{return String(app._discussionBoxFinishedFlag(document.body));}catch(e){return "ERR";}})()' +
+      '};' +
+      // ① 一张都没记过账：pending 必须是 1（旧实现读不出标志 → 这里是 0，整节被放走）
+      'reset();r.p1=app._discussionPendingInfo();r.h1=app._shouldHoldDiscussionBeforeFinish();' +
+      // ② 刚记过账（<90 秒）：不烧自愈额度，也先不锁整节 —— 给平台时间刷新
+      'if(todo){app._markDiscussionDone(todo.key);}' +
+      'r.healFresh=todo?app._discussionHealEligible(todo):null;' +
+      'reset();r.p2=app._discussionPendingInfo();' +
+      // ③ 记过账但 3 分钟后平台仍说没做完 → 允许重来，且"重开发帖"与"宣布完成"必须同口径
+      'if(todo){try{var m=app._discussionDoneMap();m[todo.key]=Date.now()-180000;' +
+      '  localStorage.setItem(app._discussionStoreKey,JSON.stringify(m));}catch(e){}}' +
+      'r.healOld=todo?app._discussionHealEligible(todo):null;' +
+      'reset();r.p3=app._discussionPendingInfo();r.h3=app._shouldHoldDiscussionBeforeFinish();' +
+      'var task=await app._findDiscussionTask();' +
+      'r.taskKey=task?String(task.key):null;' +
+      // ④ 额度烧尽（3 次）后不再无限自愈：这时才允许放走，且理由要说得出口
+      'if(todo){try{var mm=app._discussionDoneMap();mm[todo.key]=Date.now()-180000;' +
+      '  localStorage.setItem(app._discussionStoreKey,JSON.stringify(mm));}catch(e){}' +
+      '  for(var q=0;q<3;q++){app._bumpDiscussionTry(todo.key);}}' +
+      'r.healSpent=todo?app._discussionHealEligible(todo):null;' +
+      'reset();r.p4=app._discussionPendingInfo();' +
+      'return r;})()'
+    );
+
+    check('前置条件：三层 frame 走到底，收到 3 张讨论卡且键互不重复',
+      !!probe && probe.n === 3 && probe.unique === 3, JSON.stringify(probe));
+    check('夹具自证：三个盒子的 aria 全写「任务点未完成」（读 aria 会把已完成的两张也读成没做完）',
+      !!probe && probe.ariaBad >= 3 && probe.ariaGood === 0, JSON.stringify(probe && probe.ariaBad) + '/' + JSON.stringify(probe && probe.ariaGood));
+    check('三张卡各自的答案都读得出来（finishedKnown=true），且只有一张未完成',
+      !!probe && probe.flags.length === 3 && probe.flags.filter(function (s) { return s === 'Uk'; }).length === 1 &&
+      probe.flags.filter(function (s) { return s === 'Dk'; }).length === 2, JSON.stringify(probe && probe.flags));
+    check('没记过账时这一节按住不放（旧实现此处 pending=0 → 直接点下一节 → 平台拒）',
+      !!probe && probe.p1 && probe.p1.pending === 1 && probe.p1.source === 'cards' &&
+      probe.h1 && probe.h1.hold === true, JSON.stringify(probe && [probe.p1, probe.h1]));
+    check('卡片所在文档的 #isFinished 是空值时改读任务盒：非任务盒元素返回 null（读不出＝没说，不是"没做完"）',
+      !!probe && probe.flagOfNonBox === 'null', JSON.stringify(probe && probe.flagOfNonBox));
+    check('刚发过（<90 秒）不烧自愈额度', !!probe && probe.healFresh === false, JSON.stringify(probe && probe.healFresh));
+    check('平台仍说没做完 + 已超时 → 允许重来一次', !!probe && probe.healOld === true, JSON.stringify(probe && probe.healOld));
+    check('"重开发帖"与"按住这一节"同口径：pending=1、hold=true、找到的就是那张卡',
+      !!probe && probe.p3 && probe.p3.pending === 1 && probe.h3 && probe.h3.hold === true &&
+      probe.taskKey === probe.todoKey, JSON.stringify(probe && [probe.p3, probe.h3, probe.taskKey, probe.todoKey]));
+    check('额度烧尽（3 次）后不再无限自愈，放走时 pending 归 0',
+      !!probe && probe.healSpent === false && probe.p4 && probe.p4.pending === 0, JSON.stringify(probe && [probe.healSpent, probe.p4]));
+  }
+});
+
+/**
+ * ---- 「当前章节还有任务点未完成，是否去完成？」只能点「去学习」----
+ *
+ * 现场（2026-11-11，同一章节）：这道门弹出时，旧的通用弹窗清理按文案点了「下一节」——
+ * 平台当场把同一句话再弹一次，页面就在原地转圈（用户看到的"卡住"）。
+ * 修法两处：这道门由 `_handleUnfinishedTaskPrompt` 单独管（优先 onclick 里的 `scroll2Job`），
+ * 通用循环遇到它整块跳过；**认出门但找不到「去学习」也返回 true**，宁可原地等也不点「下一节」。
+ * 夹具把两种形状都放进去：可见的 `.maskDiv.jobFinishTip`（真页面那种）与隐藏的 `#jobFinishTip.AlertCon02`
+ * （通用循环本来会在这里点到「下一节」的那族），onclick 逐字照抄真页面。
+ */
+SCENARIOS.push({
+  name: '「还有任务点未完成」这道门只点「去学习」，绝不点「下一节」',
+  path: '/unfinished-prompt',
+  run: async function (ctx) {
+    var probe = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'function C(){return {pre:window.__pre||0,next:window.__next||0,job:window.__job||0,' +
+      '  next2:window.__next2||0,job2:window.__job2||0,scroll:window.__scroll2JobCalls||0,' +
+      '  nextReal:window.__nextReal||0};}' +
+      // 计数器是累计的，断言要的是"这一步点没点" —— 每步都取增量，否则下一步的 0 其实是上一步的 1
+      'function D(a,b){var o={};for(var k in b)o[k]=b[k]-a[k];return o;}' +
+      'function show(which){' +
+      '  var m=document.querySelector(".maskDiv.jobFinishTip");var h=document.getElementById("jobFinishTip");' +
+      '  if(m)m.style.display=(which==="mask")?"":"none";' +
+      '  if(h)h.style.display=(which==="alert")?"":"none";}' +
+      'var r={};' +
+      'show("mask");app._unfinishedPromptClickedAt=0;var b0=C();' +
+      'r.handled=app._dismissPopups();r.dMask=D(b0,C());' +
+      // 冷却：这道门每 3 秒扫一次，20 秒内不许把页面来回滚
+      'var b1=C();r.handledAgain=app._dismissPopups();r.dCool=D(b1,C());' +
+      // 另一种形状（隐藏的 #jobFinishTip.AlertCon02）——通用循环以前正是在这里点到「下一节」
+      'show("alert");app._unfinishedPromptClickedAt=0;var b2=C();' +
+      'r.handledAlert=app._dismissPopups();r.dAlert=D(b2,C());' +
+      // 门还在、但「去学习」这一族没有：必须认出门并返回 true，且一个键都不许点
+      'Array.prototype.forEach.call(document.querySelectorAll("a"),function(a){' +
+      '  if(/去学习|去完成/.test(a.textContent||"")){if(a.parentNode)a.parentNode.removeChild(a);}});' +
+      'show("mask");app._unfinishedPromptClickedAt=0;var b3=C();' +
+      'r.handledNoJob=app._dismissPopups();r.dNoJob=D(b3,C());' +
+      'show("alert");app._unfinishedPromptClickedAt=0;var b4=C();' +
+      'r.handledNoJobAlert=app._dismissPopups();r.dNoJobAlert=D(b4,C());' +
+      // 夹具自证：这两道门确实长得像现场（文案 + 「下一节」在容器内可见）
+      'r.promptVisible=!!(function(){var b=document.querySelector(".maskDiv.jobFinishTip");' +
+      '  return b&&/还有任务点未完成/.test(b.innerText||"");})();' +
+      'return r;})()'
+    );
+
+    check('可见那道门走「去学习」（onclick 里的 scroll2Job 优先于文案）',
+      !!probe && probe.handled === true && probe.dMask.job === 1 && probe.dMask.scroll === 1,
+      JSON.stringify(probe && [probe.handled, probe.dMask]));
+    check('「下一节」一次都没被点（真页面这里点一次＝平台再弹同一段话，原地转圈）',
+      !!probe && probe.dMask.next === 0 && probe.dMask.pre === 0 && probe.dMask.nextReal === 0 &&
+      probe.dAlert.next2 === 0 && probe.dNoJob.next === 0 && probe.dNoJobAlert.next2 === 0,
+      JSON.stringify(probe && [probe.dMask, probe.dAlert, probe.dNoJob, probe.dNoJobAlert]));
+    check('隐藏的 #jobFinishTip.AlertCon02 那种形状也只点「去学习」',
+      !!probe && probe.dAlert.job2 === 1 && probe.dAlert.next2 === 0, JSON.stringify(probe && probe.dAlert));
+    check('20 秒冷却：第二次扫到这道门不再点第二下',
+      !!probe && probe.dCool.job === 0 && probe.handledAgain === true,
+      JSON.stringify(probe && [probe.dCool, probe.handledAgain]));
+    check('门里没有任何「去学习」时仍然认得出这道门（返回 true），且一个键都不点',
+      !!probe && probe.handledNoJob === true && probe.handledNoJobAlert === true &&
+      probe.dNoJob.next === 0 && probe.dNoJob.pre === 0 &&
+      probe.dNoJobAlert.next2 === 0, JSON.stringify(probe && [probe.handledNoJob, probe.dNoJob, probe.dNoJobAlert]));
+    check('夹具自证：这道门的文案与形状就是现场那种', !!probe && probe.promptVisible === true, JSON.stringify(probe));
   }
 });
 
@@ -9763,6 +10527,598 @@ SCENARIOS.push({
       logged.ph.meta.unfillable === 1 && logged.nf && logged.nf.meta &&
       logged.nf.meta.indices.join(',') === '6',
       JSON.stringify(logged && { ph: logged.ph && logged.ph.meta, nf: logged.nf && logged.nf.meta }));
+  }
+});
+
+/**
+ * ---- 批次 21：投票任务点（insertvote）----
+ *
+ * 现场（2026-11-11 真页实测，章节 1209049220）：那一节只剩一个未完成的任务盒，
+ * 附件是 `module:"insertvote" / type:"vote" / job:true`。旧实现说不出它的类型 ——
+ * 不建 job → 这一节带着一个永不完成的盒子 →「下一节」被平台拦下 → 去学习 →
+ * 回到同一章。用户报的「又遇到同一个问题了」就是这一条。
+ *
+ * 本场景按**真页面的四层形状**跑完整条链，并钉住四件事：
+ *   ① 认得出（准入闸不再在 jobid 匹配之前把它拒掉）；
+ *   ② 开关关着时**不建 job**，且不因为"存储里没有这一项"而误关（`=== false`）；
+ *   ③ 空白的 `#voteIframe` 不算"就绪" —— 必须真的点封面把卷子取回来（第一轮实测
+ *      就红在这里：`vote has nothing to submit {text:""}`）；
+ *   ④ 勾选要读回 `checked`、提交只点一次、完成判定只认任务盒 class；
+ *      这份覆盖层**归投票链路独占**，弹题扫描器不许再来抢（实测两边抢过同一份卷子）。
+ */
+SCENARIOS.push({
+  name: '投票任务点：认得出、空覆盖层不算就绪、勾了才提交',
+  path: '/vote',
+  run: async function (ctx) {
+    var nap = '(new Promise(function(r){setTimeout(r,300)}))';
+
+    // ---- ① / ②：识别与开关 ----
+    var gate = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._voteTryMap={};' +
+      'var on=null, off=null, offAgain=null;' +
+      'app.configs.enableVote=true;' +
+      'try{on=app._searchChaoxingJobOcs([]);}catch(e){on="throw:"+e.message;}' +
+      'app.configs.enableVote=false;' +
+      'try{off=app._searchChaoxingJobOcs([]);}catch(e2){off="throw:"+e2.message;}' +
+      // 升级前存下来的配置里**没有** enableVote 这一项 —— 必须当成"开着"
+      // 升级前存下来的配置里**没有** enableVote 这一项 —— 必须当成"开着"。
+      // ⚠️ 整体换掉 configs，不是 delete 属性：`delete` 在这个对象上不生效
+      //    （实测 stillThere 仍为 true），拿它模拟"老配置"会做成空测。
+      'var savedCfg=app.configs;' +
+      'var noKeyObj=Object.assign({}, savedCfg); delete noKeyObj.enableVote;' +
+      'app.configs=noKeyObj;' +
+      'try{offAgain=app._searchChaoxingJobOcs([]);}catch(e3){offAgain="throw:"+e3.message;}' +
+      'app.configs=savedCfg;' +
+      'app.configs.enableVote=true;' +
+      'function shape(j){return j&&typeof j==="object"?' +
+      '  {kind:String(j.kind),jobid:String(j.jobid),workType:String(j.workType),' +
+      '   hasFunc:typeof j.func==="function"}:String(j);}' +
+      'return {on:shape(on), off:shape(off), noKey:shape(offAgain),' +
+      // 中间量：那份"老配置"里确实没有这一项（否则上面那条就是空测）
+      ' keyGone:("enableVote" in noKeyObj), restored:("enableVote" in app.configs)};})()'
+    );
+    check('夹具自证：这份 insertvote 附件被认成 vote 任务点（jobid 对上、带可执行 func）',
+      !!gate && !!gate.on && gate.on.kind === 'vote' && gate.on.jobid === 'vote-1' &&
+      gate.on.workType === 'job' && gate.on.hasFunc === true,
+      JSON.stringify(gate));
+    check('「自动投票」关着时不建 job（这一份留给用户自己投）',
+      !!gate && gate.off === 'null', JSON.stringify(gate && gate.off));
+    check('配置里压根没有 enableVote 这一项（升级前的老配置）时**不能**当成关',
+      !!gate && !!gate.noKey && gate.noKey.kind === 'vote',
+      JSON.stringify(gate && { noKey: gate.noKey, stillThere: gate.stillThere, typeNow: gate.typeNow }));
+
+    // ---- ③：出厂那份空壳覆盖层不算就绪，必须真点一次封面 ----
+    // 实地形状：顶层带着 `.voteContainer`（样式表收着）+ `#voteIframe`（src="" → about:blank、0 字）。
+    // 这里**不预先种任何东西**，让第一眼看到的覆盖层就是出厂那一份 —— 种出来的形状测不到真缺陷。
+    var stale = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'window.__coverClicks=0;' +
+      'var shipped=document.getElementById("voteIframe");' +
+      'var vc=document.querySelector(".voteContainer");' +
+      'var out={shipped:!!shipped, srcAttr:shipped?String(shipped.getAttribute("src")):"(无)",' +
+      '  hidden:!!vc&&getComputedStyle(vc).display==="none"};' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var doc=job?await app._openVoteOverlay(job):null;' +
+      'out.hasJob=!!job; out.coverClicks=Number(window.__coverClicks||0); out.ready=!!doc;' +
+      'if(doc){' +
+      '  out.text=String(app._voteOverlayText(doc)||"").slice(0,60);' +
+      '  var form=app._voteOverlayForm(doc);' +
+      '  out.firsts=(form.firsts||[]).length; out.hasSubmit=!!form.submit;' +
+      '  out.submitBy=form.submitBy;' +
+      '}' +
+      'return out;})()'
+    );
+    check('夹具自证：顶层那份覆盖层是**出厂形状**（#voteIframe 已在、src 是空串、容器收着）',
+      !!stale && stale.shipped === true && stale.srcAttr === '' && stale.hidden === true,
+      JSON.stringify(stale));
+    check('空白覆盖层**不算**就绪：真的点了一次封面去取卷子',
+      !!stale && stale.hasJob === true && stale.coverClicks >= 1,
+      JSON.stringify(stale));
+    check('点完拿到的是真有内容的那份：正文非空、认得出 1 组选项和提交键',
+      !!stale && stale.ready === true && !!stale.text && stale.text.length > 0 &&
+      stale.firsts === 1 && stale.hasSubmit === true,
+      JSON.stringify(stale));
+
+    // ---- ③-b：src 已经写上、卷子却还没填进来的那段空档（真页日志就是这么红的）----
+    // 实地证据：`vote has nothing to submit {"jobid":"1744278953051380","text":""}` ——
+    // 平台把带 jobid 的地址写进顶层 `#voteIframe` 与卷子真正渲染出来之间有一段路，
+    // 这一眼读到的是"src 对得上、正文是空的"。旧代码在这里当就绪，直接拿空卷子去判"没得提交"。
+    var racing = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'window.__coverClicks=0;' +
+      'var f=document.getElementById("voteIframe");' +
+      'f.src="/vote-empty-inner?jobid=vote-1";' +
+      'await ' + nap + ';' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var doc=job?await app._openVoteOverlay(job):null;' +
+      'var out={coverClicks:Number(window.__coverClicks||0), ready:!!doc, srcHasJobid:/jobid=vote-1/.test(String(f.src))};' +
+      'if(doc){ var form=app._voteOverlayForm(doc); out.firsts=(form.firsts||[]).length; out.hasSubmit=!!form.submit; }' +
+      'return out;})()'
+    );
+    check('src 写上了但正文还空着 → 仍**不算**就绪：会再点一次封面，最后拿到有内容的那份',
+      !!racing && racing.srcHasJobid === true && racing.coverClicks >= 1 &&
+      racing.ready === true && racing.firsts === 1 && racing.hasSubmit === true,
+      JSON.stringify(racing));
+
+    // ---- ④-a：这份覆盖层归投票独占，弹题扫描器不许认领 ----
+    var ownership = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var fr=document.getElementById("voteIframe");' +
+      'var inner=null;try{inner=fr&&fr.contentDocument;}catch(e){}' +
+      // 夹具自证：它对"旧判据"来说**就是**一道弹题（有 A./B. 字样 + 按钮 + 可点选项）
+      'var selfProof=false;' +
+      'if(inner){var secs=inner.querySelectorAll("div, section");' +
+      ' for(var i=0;i<secs.length;i++){' +
+      '   var t=String(secs[i].innerText||"");' +
+      '   if(t.length>20&&t.length<600&&/[A-F][.、．))]/.test(t)&&' +
+      '      secs[i].querySelector("button, .btn, [class*=\\"submit\\"]")&&' +
+      '      secs[i].querySelector("input[type=radio], li, label")){selfProof=true;break;}' +
+      ' }}' +
+      'var claimed=app._checkPopupQuiz();' +
+      'var claimedInVote=false;' +
+      'try{ var d=claimed&&claimed.ownerDocument;' +
+      '   var fe=d&&d.defaultView&&d.defaultView.frameElement;' +
+      '   claimedInVote=!!fe&&fe.id==="voteIframe"; }catch(e2){}' +
+      // 阳性对照：扫描器本身**没坏** —— 挂一个真的弹题进去，它必须认出来
+      'var decoy=document.createElement("div");decoy.className="layui-layer";' +
+      'decoy.style.cssText="position:fixed;left:40px;top:40px;width:320px;height:220px;background:#fff";' +
+      'decoy.innerHTML="<div>这道视频弹题选什么？</div><div>A. 苹果 B. 香蕉</div>" +' +
+      '"<label><input type=\\"radio\\" name=\\"dq\\">苹果</label><button>提交</button>";' +
+      'document.body.appendChild(decoy);' +
+      'var found=app._checkPopupQuiz();' +
+      'var foundText=String((found&&found.innerText)||"").slice(0,40);' +
+      'decoy.parentNode.removeChild(decoy);' +
+      'return {selfProof:selfProof, claimed:!!claimed, claimedInVote:claimedInVote,' +
+      ' decoyFound:!!found, decoyText:foundText};})()'
+    );
+    check('夹具自证：这份投票在**旧判据**眼里就是一道弹题（不然下面那条是空测）',
+      !!ownership && ownership.selfProof === true, JSON.stringify(ownership));
+    check('覆盖层摊开时，弹题扫描器不认领它（投票归投票链路独占）',
+      !!ownership && ownership.claimed === false, JSON.stringify(ownership));
+    check('阳性对照：扫描器没坏 —— 真弹题照样认得出（排除"整条链一起哑"）',
+      !!ownership && ownership.decoyFound === true && /苹果/.test(String(ownership.decoyText)),
+      JSON.stringify(ownership));
+
+    // ---- ④-b：真跑一遍 job：勾选读回、只提交一次、盒子 class 翻转 ----
+    var done = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var out={hasFunc:!!job&&typeof job.func==="function"};' +
+      'if(!job||typeof job.func!=="function") return out;' +
+      'out.ran=await job.func();' +
+      'var fr=document.getElementById("voteIframe");' +
+      'var w=null;try{w=fr&&fr.contentWindow;}catch(e){}' +
+      'out.submitted=Number((w&&w.__submitted)||0);' +
+      'out.picked=String((w&&w.__picked)||"");' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      'var box=cd.querySelector(".ans-attach-ct");' +
+      'out.boxCls=String(box&&box.className);' +
+      'out.backClicks=Number(window.__backClicks||0);' +
+      'out.tryMap=JSON.stringify(app._voteTryMap||{});' +
+      // 再做一次：已经完成就不许再排进待办（否则同一份票被反复提交）
+      'var again=app._searchChaoxingJobOcs([]);' +
+      'out.again=again?String(again.kind)+"/"+String(again.workType):null;' +
+      'return out;})()'
+    );
+    check('前置条件：任务点带着可执行的 func 交出来', !!done && done.hasFunc === true, JSON.stringify(done));
+    check('勾选项**读回**了 checked（有勾选证据，不是空点一次提交）',
+      !!done && done.picked === 'A', JSON.stringify(done && done.picked));
+    check('只提交一次', !!done && done.submitted === 1, JSON.stringify(done && done.submitted));
+    check('完成判定以任务盒 class 为准：ans-job-finished 真写上了',
+      !!done && /ans-job-finished/.test(String(done.boxCls)), JSON.stringify(done && done.boxCls));
+    check('跑完收起覆盖层（点平台的「返回」，不是自己 hide 掉）',
+      !!done && done.backClicks >= 1, JSON.stringify(done && done.backClicks));
+    check('成功这一轮把重试计数清零', !!done && done.tryMap === '{}', JSON.stringify(done && done.tryMap));
+    check('已经完成的任务点不再被排进待办（不会反复提交同一份票）',
+      !!done && (done.again === null || /finished/.test(String(done.again))),
+      JSON.stringify(done && done.again));
+  }
+});
+
+/** ---- 51. 目录标记只说「这一节」的话（批次 20-I） ---- */
+//
+// 现场量的三条，逐条钉住（用户正在刷的那门课，163 个目录项）：
+//   ① `.catalog_points_yi` 的文案是「**N个待完成任务点**」，`icon_Completed` 才是「已完成」；
+//      `.catalog_points_er/san` 全书**一个都没有** —— 旧判据把 yi 当成完成证据，方向是反的。
+//   ② 目录项的 id 是 `cur<chapterId>`，稳态下与 `.posCatalog_active` 同一个元素，
+//      但 active 由平台脚本挪、主帧 `src` 当场就变 → 切章节那一秒读 active 会拿到**上一节**
+//      的「已完成」，替刚切过来的这一节发证（真日志：`chapter changed` 与
+//      `skip completed {by:"catalog-marker",tasks:0}` 同一秒）。
+//   ③ `input.jobUnfinishCount` 是平台留的机器可读否决（现场 57 项，值 1~6）。
+// ①②③ 合起来是下面 `completedRaced` 那一组：旧代码在这里**必然为 true 并点掉一节**。
+SCENARIOS.push({
+  name: '目录标记：待完成任务点不算已完成、切章节不借上一节的章',
+  path: '/catalog',
+  run: async function (ctx) {
+    // 换标记用**现场那套 markup**（span/prevHoverTips/orangeNew/input 四件齐全），
+    // 不是随手拼一个 class —— 判据读的就是这几层。
+    var swap =
+      'function swap(cid,kind){var n=document.getElementById("cur"+cid);if(!n)return "no-item";' +
+      'var old=n.querySelectorAll("input.jobUnfinishCount,[class*=catalog_points],[class*=icon_]");' +
+      'for(var i=0;i<old.length;i++){old[i].parentNode.removeChild(old[i]);}' +
+      'if(kind==="done"){var s=document.createElement("span");s.className="icon_Completed prevTips";' +
+      'var t=document.createElement("span");t.className="prevHoverTips";t.textContent="已完成";' +
+      's.appendChild(t);n.appendChild(s);return "done";}' +
+      'var u=document.createElement("input");u.type="hidden";u.value="1";u.className="jobUnfinishCount";' +
+      'n.appendChild(u);' +
+      'var s2=document.createElement("span");s2.className="catalog_points_yi prevTips";' +
+      'var t2=document.createElement("span");t2.className="prevHoverTips";t2.textContent="1个待完成任务点";' +
+      's2.appendChild(t2);n.appendChild(s2);return "pending";}'
+
+    var r = await ctx.client.evaluate(
+      '(function(){' + swap +
+      'var app=window._xxtApp;var out={};' +
+      'var pend=document.getElementById("cur1209049294"),done=document.getElementById("cur1209049293");' +
+      // ---- 夹具自证：形状与现场一致 ----
+      'out.activeIsOld=String((document.querySelector(".posCatalog_active")||{}).id||"");' +
+      'out.pendTip=String((pend.querySelector(".prevHoverTips")||{}).textContent||"");' +
+      'out.doneTip=String((done.querySelector(".prevHoverTips")||{}).textContent||"");' +
+      'out.erSanAnywhere=document.querySelectorAll(".catalog_points_er,.catalog_points_san").length;' +
+      'out.pendingCountIsInput=(function(){var u=pend.querySelector("input.jobUnfinishCount");' +
+      '  return u?String(u.value):"(无)";})();' +
+      'out.itemsAreFlat=pend.querySelectorAll(".posCatalog_select").length===0;' +
+      'out.hasMainFrame=!!document.getElementById("iframe");' +
+      'out.visibleBoxes=document.querySelectorAll(".ans-attach-ct").length;' +
+      // ---- 判据实跑：认章节号，不认 active ----
+      'out.itemForChapter=String((app._catalogItemForChapter()||{}).id||"");' +
+      'out.uncPend=String(app._catalogUnfinishedCount(pend));' +
+      'out.uncDone=String(app._catalogUnfinishedCount(done));' +
+      'out.hasTaskPoint=app._hasTaskPoint();' +
+      'var st=app._getVisibleTaskCompletionState();' +
+      'out.noVisibleTasks=!!st&&st.hasTasks===false;' +
+      // ---- ① 现场那一秒：active 还挂着上一节的「已完成」，这一节写着「1个待完成任务点」 ----
+      'app._chapterChangedAt=Date.now()-60000;app._taskFrameLoadingUntil=0;app._quizParseRetryUntil=0;' +
+      'app._quizSubmitPending=false;app.configs.restudy=false;app.configs.autoNext=true;' +
+      'out.completedRaced=app._isCurrentCompleted();' +
+      'out.evidenceRaced=String(app._completionEvidence||"");' +
+      'var unitCalls=0,cardCalls=0;var oldU=app.nextUnit,oldC=app._switchToNextLearningCard;' +
+      'app.nextUnit=function(){unitCalls++;};app._switchToNextLearningCard=function(){cardCalls++;return false;};' +
+      'out.skippedRaced=app._skipIfCompleted();' +
+      // ⚠️ 计数器必须**当场取样后清零**再往下做阳性对照 —— 对照那一跳真的会调
+      //    `_switchToNextLearningCard` + `nextUnit` 各一次，最后统一读就会把它们记到 race 头上。
+      'out.unitCallsRaced=unitCalls;out.cardCallsRaced=cardCalls;unitCalls=0;cardCalls=0;' +
+      // ---- ② 这一节自己也变成「已完成」+ 发现窗口已过 → 目录这条出口照常推进 ----
+      'out.swapDone=swap("1209049294","done");' +
+      'out.completedAfterWindow=app._isCurrentCompleted();' +
+      'out.evidenceAfter=String(app._completionEvidence||"");' +
+      'out.skippedAfter=app._skipIfCompleted();' +
+      'out.unitCallsAfter=unitCalls;out.cardCallsAfter=cardCalls;unitCalls=0;cardCalls=0;' +
+      // ---- ③ 同一份「已完成」，但章节号**刚刚**认出来（窗口内）→ 目录不许发证 ----
+      'app._chapterChangedAt=Date.now();app._idleEmptySince=0;' +
+      'out.completedInsideWindow=app._isCurrentCompleted();' +
+      'out.evidenceInside=String(app._completionEvidence||"");' +
+      // ---- ④ 换回「待完成」时 `_hasTaskPoint()` 必须重新变 true（yi 与"有任务点"同一口径） ----
+      'out.swapPending=swap("1209049294","pending");' +
+      'out.hasTaskPointAgain=app._hasTaskPoint();' +
+      'app.nextUnit=oldU;app._switchToNextLearningCard=oldC;' +
+      'return out;})()'
+    );
+
+    check('夹具自证：目录项 id 是 cur<chapterId>、active 停在上一节、' +
+      '待完成那节的 tip 写「1个待完成任务点」且计数是可读的 input（与实地同一形状）',
+      !!r && r.activeIsOld === 'cur1209049293' && r.pendTip === '1个待完成任务点' &&
+      r.doneTip === '已完成' && r.pendingCountIsInput === '1' && r.itemsAreFlat === true &&
+      r.erSanAnywhere === 0 && r.hasMainFrame === true && r.visibleBoxes === 0,
+      JSON.stringify(r && { activeIsOld: r.activeIsOld, pendTip: r.pendTip, doneTip: r.doneTip,
+        pendingCountIsInput: r.pendingCountIsInput, erSanAnywhere: r.erSanAnywhere,
+        itemsAreFlat: r.itemsAreFlat, visibleBoxes: r.visibleBoxes }));
+    check('前置：这一节页面里确实**一个可见任务点都没有**（否则测不到目录那条支）',
+      !!r && r.noVisibleTasks === true, JSON.stringify(r && r.noVisibleTasks));
+    check('按章节号认目录项（拿到的是这一节 cur1209049294，不是 active 的上一节）',
+      !!r && r.itemForChapter === 'cur1209049294', JSON.stringify(r && r.itemForChapter));
+    check('jobUnfinishCount 读成数字 1；已完成那节没有这个 input → NaN（不冒充否决）',
+      !!r && r.uncPend === '1' && r.uncDone === 'NaN', JSON.stringify(r && { uncPend: r.uncPend, uncDone: r.uncDone }));
+    check('「N个待完成任务点」= 这一节**有**任务点：_hasTaskPoint() 为 true（旧判据在这条上方向相反）',
+      !!r && r.hasTaskPoint === true && r.hasTaskPointAgain === true,
+      JSON.stringify(r && { hasTaskPoint: r.hasTaskPoint, again: r.hasTaskPointAgain }));
+    check('★ 切章节那一秒不再被当成做完：上一节的「已完成」不给这一节发证，跳过出口一次都不点',
+      !!r && r.completedRaced === false && r.evidenceRaced === '' &&
+      r.skippedRaced === false && r.unitCallsRaced === 0 && r.cardCallsRaced === 0,
+      JSON.stringify(r && { completedRaced: r.completedRaced, evidenceRaced: r.evidenceRaced,
+        skippedRaced: r.skippedRaced, unitCallsRaced: r.unitCallsRaced, cardCallsRaced: r.cardCallsRaced }));
+    check('阳性对照：这一节自己显示「已完成」且窗口已过 → 目录这条出口照常推进（by=catalog-marker）',
+      !!r && r.swapDone === 'done' && r.completedAfterWindow === true &&
+      r.evidenceAfter === 'catalog-marker' && r.skippedAfter === true &&
+      r.unitCallsAfter === 1 && r.cardCallsAfter === 1,
+      JSON.stringify(r && { swapDone: r.swapDone, completedAfterWindow: r.completedAfterWindow,
+        evidenceAfter: r.evidenceAfter, skippedAfter: r.skippedAfter,
+        unitCallsAfter: r.unitCallsAfter, cardCallsAfter: r.cardCallsAfter }));
+    check('发现窗口内目录图标不许发证（章节号刚认出来，帧可能还没渲染任务点）',
+      !!r && r.completedInsideWindow === false && r.evidenceInside === '',
+      JSON.stringify(r && { completedInsideWindow: r.completedInsideWindow, evidenceInside: r.evidenceInside }));
+  }
+});
+
+/** ---- 52. 页面被推到没有课程结构的地方，空转逃生门不许再点「下一节」（批次 20-I） ---- */
+//
+// 现场那条链（2026-11-10 19:12:18 → 19:13:23）：`skip completed` → `_dismissPopups()`
+// 误点常驻的「下一节」→ 页面到了 `https://i.chaoxing.com/base?…`，那里没有课程结构，
+// 而 `_tryAdvanceIdleSection` 照样往下走（附件 0、任务帧 0、没视频、readyState complete）→
+// 30 秒后拿 `location.href + 标题` 当键**又点一次** → 在陌生页面上 `study stuck`。
+// 现在这道门要求页面至少认出一个课程标记；认不出就**只出日志、不点前进**。
+// 阳性对照在同一页做：临时挂一个 `.prev_title` 进去，同一条门必须放行并点一次 ——
+// 否则"整条链一次都没走到那层"也会让上面那组断言全绿（AGENTS §5 那条假绿）。
+SCENARIOS.push({
+  name: '非刷课页：空转逃生门不点前进，且日志说清为什么',
+  path: '/no-course',
+  run: async function (ctx) {
+    var probe =
+      '(function(){var app=window._xxtApp;' +
+      'window.__b20i=window.__b20i||[];' +
+      'if(!window.__b20iBound){window.__b20iBound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b20i.push(m);});}' +
+      'var out={noMainFrame:!document.getElementById("iframe"),' +
+      '  noCourseShape:!document.querySelector(".ans-attach-ct, .ans-job-icon, [id^=cur], .posCatalog_select, .prev_title"),' +
+      '  readyState:String(document.readyState)};' +
+      'function run(){' +
+      '  var unitCalls=0,cardCalls=0;var oldU=app.nextUnit,oldC=app._switchToNextLearningCard;' +
+      '  app.nextUnit=function(){unitCalls++;};app._switchToNextLearningCard=function(){cardCalls++;return false;};' +
+      // ⚠️ 必须自己钉住 `autoNext`：推进那一段最后一步是 `if (!this.configs.autoNext) return true;`
+      //    —— 它**返回 true 却一次都不点**，和"被课程形状挡下"在断言里长得一模一样。
+      //    全套跑时前面某个场景把 storage 里的 autoNext 写成 false（整轮共用一份扩展存储），
+      //    定向跑就复现不出来（AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+      '  var oldAuto=app.configs.autoNext;app.configs.autoNext=true;' +
+      '  app._idleEmptySince=Date.now()-40000;app._idleAdvanceKey="";app._idleDeclineLogAt=0;' +
+      '  var handled=app._tryAdvanceIdleSection([]);' +
+      '  app.nextUnit=oldU;app._switchToNextLearningCard=oldC;app.configs.autoNext=oldAuto;' +
+      '  return {handled:handled,unitCalls:unitCalls,cardCalls:cardCalls,emptySince:app._idleEmptySince};}' +
+      'out.declined=run();' +
+      // 阳性对照：这一页只要多一个课程标记，同一条门就该放行
+      'var t=document.createElement("div");t.className="prev_title";t.textContent="某一节";' +
+      'document.body.appendChild(t);' +
+      'out.control=run();' +
+      't.parentNode.removeChild(t);' +
+      'return out;})()';
+
+    var r = await ctx.client.evaluate(probe);
+    // 日志走 postMessage，异步送达 —— 不等一拍就读，"没发"和"没等到"长得一模一样
+    await new Promise(function (res) { setTimeout(res, 400); });
+    var logs = await ctx.client.evaluate(
+      '(function(){var out={names:[],declined:null};' +
+      '(window.__b20i||[]).forEach(function(m){var n=String(m.message||"");' +
+      '  out.names.push(n);if(n.indexOf("study idle declined")===0)out.declined=m;});' +
+      'window.__b20i=[];return out;})()'
+    );
+
+    check('夹具自证：这一页没有主帧、也没有任何一个课程标记，readyState 已 complete',
+      !!r && r.noMainFrame === true && r.noCourseShape === true && r.readyState === 'complete',
+      JSON.stringify(r));
+    check('认不出课程结构 → 这道门接管（handled=true），**一次前进都不点**',
+      !!r && !!r.declined && r.declined.handled === true &&
+      r.declined.unitCalls === 0 && r.declined.cardCalls === 0,
+      JSON.stringify(r && r.declined));
+    check('接管之后把"空够 30 秒"的计时清零（不会下一轮又攒出一个可点窗口）',
+      !!r && !!r.declined && r.declined.emptySince === 0,
+      JSON.stringify(r && r.declined && r.declined.emptySince));
+    check('阳性对照：同一条链、同一页，多一个 .prev_title 就放行并点一次（说明挡住的是这道门，不是别处）',
+      !!r && !!r.control && r.control.handled === true && r.control.unitCalls === 1,
+      JSON.stringify(r && r.control));
+    check('被挡下一定出日志（静默跳过用户的进度是不可接受的）',
+      !!logs && !!logs.declined && /study idle declined/.test(String(logs.declined.message)) &&
+      !!logs.declined.meta && /i\.mooc|no-course|\.html|https?:/.test(String(logs.declined.meta.href || '')) === true,
+      JSON.stringify(logs && { names: logs.names.slice(-6), declined: logs.declined }));
+  }
+});
+
+/** ---- 41. 乱选一次真交卷：零模型请求、填满整卷、先留可设置的检查窗口、到点真的交出去 ----
+ *
+ * 为什么要这一条（2026-11-12，用户两句直接问出来的）：
+ *   ①「沙盒里面的题目根本没有填空然后就过去了？如果不接 API 省钱，
+ *      为啥不用『乱答』真乱答一次，好歹确定确实可以答？」
+ *   ②「关于乱答最好留一个可设置的窗口，别直接默认『不会』然后就提交还不能修改啊，这太诡异了」
+ *   查完现状，两个直觉都对、但落点不一样：
+ *     · 填空题**有**断言 —— 「答题往返 + 回填 DOM」逐题断 `#answer1004==="甲乙"` 与
+ *       `.fillBox` 两个输入框分别是 甲/乙；而且那条走的本来就是**本地假服务器**
+ *       （127.0.0.1 + e2e-key），一分钱不花。所以"沙盒没填空"是错觉。
+ *     · 乱选也有一组断言（「多选题」场景里的 ⑦⑦b⑦c⑦d⑦e），可 ⑦e 是**手工逐题调 `_fill*` 原语**，
+ *       绕过了 `_handleQuiz` 的接线。真缝有两条：
+ *         - **提交门在沙盒里从来没开过**：`/quiz` 那份夹具没有现场那层提交入口
+ *           （`window.btnBlueSubmit` / `.btnSubmit` / `#form1` 三样全空，而 `_getCurrentTitle()`
+ *           只读外层刷课页的 `.prev_title`，在这里恒为空串）→ `auto submit skipped` →
+ *           「填满了却一次都没交」，与用户看到的现象一模一样。
+ *           修法按 AGENTS §5：**改夹具**（新 `/quiz-real`，形状量自现场真日志
+ *           `quiz form ready: true` → `call btnBlueSubmit()`），不去动那道闸。
+ *         - **交卷不可逆**：乱选的答案是猜的，填完立刻交 = 用户连改的机会都没有。
+ *           现在按配置 `randomAnswerReviewSec` 先停一个窗口（批次 24）。
+ *   所以这条把整串跑完：抠题 → 本地随机答案 → 回填 → 满卷判定 → **窗口内一次都不交** →
+ *   到点自动交（`btnBlueSubmit()` + 站点确认框 `#popok`），全程零模型请求；
+ *   最后把窗口设成 0，验「停在原地等用户自己交，而且不会把刚填/刚改的答案再随机冲掉」。
+ */
+SCENARIOS.push({
+  name: '乱选一次真交卷：零模型请求、逐题有值、填空不是白框、先留检查窗口再到点交卷',
+  path: '/quiz-real',
+  run: async function (ctx) {
+    var before = ctx.mock.requests.length;
+
+    // 夹具自证（AGENTS §5：夹具要长得像现场，否则测的是"代码和自己一致"）：
+    // 现场那三样提交入口 + 填空题两个可见输入框，缺一样这条测的就不是这件事。
+    var shape = await ctx.client.evaluate(
+      '(function(){var btn=document.getElementById("submitBtn");' +
+      'return {blanks:document.querySelectorAll(".fillBox input").length,' +
+      'form1:document.querySelectorAll("#form1").length,' +
+      'btnSubmit:document.querySelectorAll(".btnSubmit").length,' +
+      'blue:typeof window.btnBlueSubmit,tiMu:document.querySelectorAll(".TiMu").length,' +
+      'tag:btn?String(btn.tagName):"(none)",text:btn?String(btn.innerText||btn.value||""):""};})()'
+    );
+    check('前提：夹具照现场补齐提交入口（btnBlueSubmit + .btnSubmit + #form1）与填空题两个可见空',
+      !!shape && shape.blanks === 2 && shape.form1 === 1 && shape.btnSubmit === 1 &&
+      shape.blue === 'function' && shape.tiMu === 5 &&
+      shape.tag === 'BUTTON' && /提交/.test(shape.text),
+      JSON.stringify(shape));
+
+    // 日志缓冲：runtime_log 走 postMessage **异步**送达，每一段读之前都要等一拍
+    await ctx.client.evaluate(
+      '(function(){window.__b24=[];if(!window.__b24Bound){window.__b24Bound=true;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b24.push(m);});}})()'
+    );
+    var drainLogs = async function () {
+      await new Promise(function (res) { setTimeout(res, 400); });
+      var out = await ctx.client.evaluate(
+        '(function(){var names=(window.__b24||[]).map(function(m){return String(m.message||"")});' +
+        'var held=0,armed=0;(window.__b24||[]).forEach(function(m){var n=String(m.message||"");' +
+        '  if(n==="quiz held for manual review")held++;if(n==="quiz review window armed before submit")armed++;});' +
+        'window.__b24=[];return {names:names.slice(-8),held:held,armed:armed};})()'
+      );
+      return out;
+    };
+
+    // ⚠️ 刻意**不** writeConfig：用户开「乱选」时本来就没有凭据，留空 apiKey 才对得上那条路
+    // （`_getQuizApiUnavailableReason` 在乱选下第一行就返回空串；否则 `_skipQuizForApiUnavailable`
+    // 会把整道题跳过 —— 变成"什么都不答"而不是"乱答"）。
+    // 这一段代替 OCS 循环：真实循环**每秒**调到 `_maybeSubmitQuiz`，这里就按同样的节奏调，
+    // 才能同时验到「窗口内不交」「窗口没被重数」与「到点才交」。
+    var sim = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:true,apiKey:"",hasApiKey:false,' +
+      'autoNext:false,enableCaptcha:false,enableDiscussion:false,randomAnswerReviewSec:10});' +
+      'app._quizApiFailUntil=0;app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'app._quizReadyToSubmit=false;app._quizReadyWorkKey="";app._quizCurrentQuestions=null;' +
+      'app._quizReviewPaperKey="";app._quizReviewUntil=0;' +
+      'window.__b24=[];' +
+      'var out={isRandom:app._isRandomAnswerMode(),reason:app._getQuizApiUnavailableReason()};' +
+      // ① 跑完整一轮：抠题 → 随机答案 → 回填 → 满卷判定
+      'await app._handleQuiz(null);' +
+      'var ready=false;' +
+      'for(var i=0;i<40;i++){if(app._quizReadyToSubmit===true){ready=true;break;}await nap(300);}' +
+      'out.ready=ready;' +
+      'out.readyAt=Date.now();out.armedLeftMs=(app._quizReviewUntil||0)-Date.now();' +
+      'out.armedKey=String(app._quizReviewPaperKey||"");' +
+      // ② 窗口内连调四次：一次都不许交，且窗口不能被重数（leftMs 必须单调往下）。
+      //    ⚠️ 窗口设 10 秒，比采样循环**明显长** —— 实测这一页每次 nap(500) 实际跨到 ~1.5 秒
+      //    （回填审计那些活还在跑），3 秒的窗口在第四次调用前就走完了，
+      //    于是"窗口内不交"测的其实是"脚本跑多快"（2026-11-12 三条一起红就是这个）。
+      'out.during=[];' +
+      'for(var k=0;k<4;k++){app._maybeSubmitQuiz(null);' +
+      '  out.during.push({blue:window.__omBlueCalls||0,left:(app._quizReviewUntil||0)-Date.now(),' +
+      '    key:String(app._quizReviewPaperKey||"").slice(-6)});await nap(500);}' +
+      // ③ 等到窗口真的过（最多 16 秒），再调一次 → 该调站点的 btnBlueSubmit()
+      'var w=0;while((app._quizReviewUntil||0)-Date.now()>0&&w<40){await nap(400);w++;}' +
+      'out.waited=w;' +
+      'app._maybeSubmitQuiz(null);' +
+      'await nap(500);' +
+      'out.afterWindow={blue:window.__omBlueCalls||0,key:String(app._quizReviewPaperKey||""),' +
+      '  pending:!!app._quizSubmitPending};' +
+      // ④ page.js 在 +1200ms 自己去点站点确认框里的 #popok
+      'await nap(1600);' +
+      'out.done={blue:window.__omBlueCalls||0,ok:window.__omOkCalls||0,submitted:window.__submitted===true};' +
+      // 逐题取证（失败时要一眼看出是哪题、什么题型、填成什么）
+      'var qs=app._extractQuestions(null)||[];' +
+      'out.per=qs.map(function(q){var v="";try{v=String(app._getQuizQuestionFilledValue(null,q)||"");}catch(e){v="(err)";}' +
+      '  return {qid:String(q.qid||""),type:String(q.type||""),v:v};});' +
+      'out.blanks=Array.prototype.map.call(document.querySelectorAll(".fillBox input"),function(i){return i.value;});' +
+      'var audit=app._auditQuizFillBeforeSubmit(qs,null)||{};var m=audit.meta||{};' +
+      'out.audit={total:m.total,withValue:m.withValue,text:m.text,textVisible:m.textVisible,textHidden:m.textHidden};' +
+      'return out;})()'
+    );
+
+    check('乱选开关真的开着，且没有"API 不可用"那条理由（有理由=整题被跳过，什么都不答）',
+      !!sim && sim.isRandom === true && sim.reason === '',
+      JSON.stringify(sim && { isRandom: sim.isRandom, reason: sim.reason }));
+    check('整卷一个模型请求都没发（这就是不花钱的那条路）',
+      ctx.mock.requests.length === before,
+      '多发了 ' + (ctx.mock.requests.length - before) + ' 次');
+    check('逐题都有值：单选/多选/判断/填空/简答 一题都没留白',
+      !!sim && sim.ready === true && sim.per.length >= 5 && sim.per.every(function (p) { return p.v !== ''; }),
+      JSON.stringify(sim && { ready: sim.ready, per: sim.per }));
+    check('填空题不是白框：两个空都写进了**可见的输入框**（用户说的"根本没填空"就断在这）',
+      !!sim && sim.blanks.length === 2 &&
+      sim.blanks.every(function (b) { return String(b).length > 0; }) &&
+      sim.audit.text >= 1 && sim.audit.textVisible === sim.audit.text,
+      JSON.stringify(sim && { blanks: sim.blanks, audit: sim.audit }));
+    check('★ 交卷前真的停了一个可设置的窗口：窗口内四次调用一次都没提交，倒计时逐次变小（没被重数）',
+      !!sim && sim.armedLeftMs > 0 && sim.armedKey !== '' &&
+      sim.during.length === 4 && sim.during.every(function (d) { return d.blue === 0; }) &&
+      sim.during[3].left > 0 && sim.during[3].left < sim.during[0].left &&
+      sim.during.every(function (d) { return d.key === sim.armedKey.slice(-6); }),
+      JSON.stringify(sim && { armedLeftMs: sim.armedLeftMs, during: sim.during }));
+    check('★ 到点自动交出去：站点的 btnBlueSubmit() 被调了、窗口标记清掉了（否则永远是"填了但交不出去"）',
+      !!sim && !!sim.afterWindow && sim.afterWindow.blue >= 1 && sim.afterWindow.key === '',
+      JSON.stringify(sim && { afterWindow: sim.afterWindow, done: sim.done }));
+    var armedLogs = await drainLogs();
+    check('窗口只登记一次、且这条链有日志（每秒重数 = 窗口永远走不完；静默 = 用户不知道插件在等什么）',
+      !!armedLogs && armedLogs.armed === 1,
+      JSON.stringify(armedLogs));
+    check('站点自己的确认框也被点了（#popok），卷子真的进入已提交状态',
+      !!sim && !!sim.done && sim.done.blue >= 1 && sim.done.ok >= 1 && sim.done.submitted === true,
+      JSON.stringify(sim && sim.done));
+
+    // ===== ⑤ 窗口设成 0：完全不自动交卷，且不许把用户的答案反复随机冲掉 =====
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 10000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!window._xxtApp && !!document.getElementById("submitBtn")'))) await sleep(200);
+    await ctx.client.evaluate(
+      '(function(){window.__b24=[];if(!window.__b24Bound){window.__b24Bound=true;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b24.push(m);});}})()'
+    );
+
+    var manual = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:true,apiKey:"",hasApiKey:false,' +
+      'autoNext:false,enableCaptcha:false,enableDiscussion:false,randomAnswerReviewSec:0});' +
+      'app._quizApiFailUntil=0;app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'app._quizReadyToSubmit=false;app._quizReadyWorkKey="";app._quizCurrentQuestions=null;' +
+      'app._quizReviewPaperKey="";app._quizReviewUntil=0;window.__b24=[];' +
+      'var out={};' +
+      'await app._handleQuiz(null);' +
+      'for(var i=0;i<40&&app._quizReadyToSubmit!==true;i++)await nap(300);' +
+      'out.ready=app._quizReadyToSubmit===true;' +
+      // 用户改一笔（模拟"检查时自己动手改填空"），后面必须一个字都不变
+      'var box=document.querySelector(".fillBox input");if(box)box.value="我自己改的";' +
+      'var beforeVals=Array.prototype.map.call(document.querySelectorAll(".fillBox input"),function(i){return i.value;}).join("|");' +
+      'out.beforeVals=beforeVals;' +
+      // 窗口=0：连调六次提交都不许交
+      'out.blueEach=[];' +
+      'for(var k=0;k<6;k++){app._maybeSubmitQuiz(null);out.blueEach.push(window.__omBlueCalls||0);await nap(400);}' +
+      // 而且这一份卷子还在"等用户"的状态：再跑一轮 _handleQuiz 不许重新随机（会盖掉手改的答案）
+      'out.answered=app._quizAnswered===true;' +
+      'await app._handleQuiz(null);await nap(600);' +
+      'out.afterVals=Array.prototype.map.call(document.querySelectorAll(".fillBox input"),function(i){return i.value;}).join("|");' +
+      'out.blue=window.__omBlueCalls||0;out.ok=window.__omOkCalls||0;' +
+      'out.submitted=window.__submitted===true;out.state={key:String(app._quizReviewPaperKey||""),until:app._quizReviewUntil||0};' +
+      // ⑥ 用户检查完想让它自己交：把设置从 0 调回 3 秒 —— 必须**重新给一个窗口**，
+      //    而不是「一升设置就立刻交卷」（那正好把刚改完的卷子秒交出去，回到用户抱怨的那个行为）
+      'app.configs=Object.assign({},app.configs,{randomAnswerReviewSec:3});' +
+      'app._maybeSubmitQuiz(null);' +
+      'out.raised={blue:window.__omBlueCalls||0,left:(app._quizReviewUntil||0)-Date.now(),' +
+      '  key:String(app._quizReviewPaperKey||"").slice(-6)};' +
+      'app._maybeSubmitQuiz(null);await nap(400);app._maybeSubmitQuiz(null);' +
+      'out.raised2Blue=window.__omBlueCalls||0;' +
+      'out.raisedKey=String(app._quizReviewPaperKey||"").slice(-6);' +
+      'return out;})()'
+    );
+    var manualLogs = await drainLogs();
+
+    check('★ 窗口设 0 = 不自动交卷：六次提交调用一次都没点，卷子还停在原地等用户',
+      !!manual && manual.ready === true && manual.blue === 0 && manual.ok === 0 &&
+      manual.submitted === false &&
+      Array.isArray(manual.blueEach) && manual.blueEach.length === 6 &&
+      manual.blueEach.every(function (n) { return n === 0; }),
+      JSON.stringify(manual && { ready: manual.ready, blueEach: manual.blueEach, submitted: manual.submitted }));
+    check('停在等用户这件事出日志，而且**一份卷子只出一条**（静默=不知道插件在等什么，每秒一条=刷屏）',
+      !!manualLogs && manualLogs.held === 1 && manualLogs.armed === 1,
+      JSON.stringify(manualLogs));
+    check('★ 设置从 0 调回大于 0 = 重新给一个检查窗口，而不是「一升设置就立刻交卷」',
+      !!manual && !!manual.raised && manual.raised.blue === 0 && manual.raised.left > 0 &&
+      manual.raised2Blue === 0 && manual.raisedKey === manual.raised.key,
+      JSON.stringify(manual && { raised: manual.raised, raised2Blue: manual.raised2Blue, raisedKey: manual.raisedKey }));
+    check('等用户期间再跑一轮答题不会重新随机：用户手改的那一笔原样还在',
+      !!manual && manual.afterVals === manual.beforeVals && manual.answered === true &&
+      /我自己改的/.test(String(manual.afterVals || '')),
+      JSON.stringify(manual && { beforeVals: manual.beforeVals, afterVals: manual.afterVals, answered: manual.answered }));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{randomAnswer:false});return true;})()'
+    );
   }
 });
 

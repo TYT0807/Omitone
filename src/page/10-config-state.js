@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（138 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizBlockedByApiAt、_quizBlockedSinceAt、_quizBlockedHoldLogAt、_quizBlockedGiveUpLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt、_taskFrameLoadingUntil、_taskFrameLoadingScope
+ * 本段的状态字段（152 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizReviewPaperKey、_quizReviewUntil、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizBlockedByApiAt、_quizBlockedSinceAt、_quizBlockedHoldLogAt、_quizBlockedGiveUpLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_pauseResumeLogAt、_pauseResumeSuppressed、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_discussionEditorEl、_discussionNameRead、_discussionPendingCache、_discussionHoldSinceAt、_discussionHoldKey、_discussionHoldSpent、_discussionDupLogAt、_discussionSettledLogAt、_unfinishedPromptClickedAt、_voteTryMap、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt、_taskFrameLoadingUntil、_taskFrameLoadingScope
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -127,6 +127,16 @@
     //   两侧错开时表现不是「没暂停」而是「这一节永久停摆」（日志却写着已暂停）。
     _quizForceSkipPaperKey: '',
 
+    // 「乱选填完了，先别交，给用户留几秒改」的窗口（判据见 75-quiz-dom.js `_maybeSubmitQuiz`，
+    // 秒数来自配置 `randomAnswerReviewSec`；用户 2026-11-12：交完就不能改了，这太诡异）。
+    //   _quizReviewPaperKey   窗口是为**哪一份卷子**arm 的（键变了 = 换卷子，旧窗口作废）
+    //   _quizReviewUntil      窗口到点时刻；到点那一次才真的点提交。
+    //                         0 = 「这份卷子正停在等用户自己交」（设置填 0 时走这条）
+    // 两个字段合起来就是「按卷子键只打一条日志」的去重位 —— 这条每秒被调到，
+    // 只按时间节流仍会把日志刷满（用户 2026-11-12 抱怨过刷屏）。
+    _quizReviewPaperKey: '',
+    _quizReviewUntil: 0,
+
     // 上一次给「题干乱码」计轮的时刻。
     //
     // `_handleQuiz` 被 OCS 循环**每秒**调一次，所以乱码轮次绝不能按调用次数累加
@@ -232,6 +242,12 @@
 
     _pauseResumePending: false,
 
+    // 批次 20-H：后台暂停恢复这条日志原本一次 pause 就写一条，实测 200 格缓冲里占了 97 条，
+    // 把讨论那半的证据全冲掉了。现在 60 秒最多一条，并带上被抑制掉的条数。
+    _pauseResumeLogAt: 0,
+
+    _pauseResumeSuppressed: 0,
+
     _visibilityBound: false,
 
     _captchaActive: false,
@@ -269,6 +285,30 @@
     _discussionPageAt: 0,
 
     _discussionPageResult: false,
+
+    _discussionEditorEl: null,
+
+    // 批次 20-F：刷课页读过讨论页递回来的 window.name 没有（每份文档只读一次）
+    _discussionNameRead: false,
+
+    _discussionPendingCache: null,
+
+    _discussionHoldSinceAt: 0,
+
+    _discussionHoldKey: '',
+
+    _discussionHoldSpent: 0,
+
+    _discussionDupLogAt: 0,
+
+    _discussionSettledLogAt: 0,
+
+    _unfinishedPromptClickedAt: 0,
+
+    // 批次 21：投票任务点的尝试台账（键 = jobid）。**只在内存里** ——
+    // 刷新页面就该重新观察一次，写进 localStorage 反而会把"这一轮没投出去"
+    // 拖成"这一章永远不投"。
+    _voteTryMap: {},
 
     _quizApiFailUntil: 0,
 
@@ -396,7 +436,18 @@
           // 2026-11-10 批次 7 加的（缺哪个就说明那一半还没进浏览器）：
           // popup-scope=只在弹窗容器里点按钮 / radio-clickthrough=分离控件补点文本项 /
           // choice-visible=审计按"看得见的选中"计数 / idle-stuck-repeat=空转每 2 分钟重播
-          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat'],
+          // 2026-11-11 批次 20 加的：flag-3state=#isFinished 空值不再当"未完成" /
+          // post-evidence=回帖确认要真证据 / page-dedup=同一话题本站只发一次 /
+          // study-hold-discuss=还有讨论没做完时不许宣布整节完成
+          // 20-F 加的：post-hydrate-wait=回帖先等页面水合、基线贴着点击取、
+          // 点了没反应再点一次，结果用 window.name 递回刷课页
+          // 20-G 加的：box-finished=#isFinished 是空的时改读任务盒的 ans-job-finished /
+          // go-to-job=「还有任务点未完成」那道门点去学习、不再点下一节
+          // 2026-11-11 批次 21 加的：vote-job=投票任务点（insertvote）认得出类型、
+          // 走平台自己那一次点击真投出去（缺这个标记就说明新 page.js 没被加载）
+          'popup-scope', 'radio-clickthrough', 'choice-visible', 'idle-stuck-repeat',
+          'flag-3state', 'post-evidence', 'page-dedup', 'study-hold-discuss',
+          'post-hydrate-wait', 'box-finished', 'go-to-job', 'vote-job'],
         // 代码内容指纹（由 `tools/concat-page.js` 按片段内容算出，拼在 page.js 第一行）。
         // 装 dist 的人看 `content bridge ready` 里的 build；**直接加载源码目录**的人看这个 ——
         // 它一变就说明代码换了，改完没重新加载一眼就能看出来。
@@ -484,6 +535,12 @@
       this._attachmentFingerprint = '';
       this._ocsStudyStarted = false;
       this._restudySkipNoticeAt = 0;
+      // 「为讨论任务点按住这一节」的预算按**新一轮**起算（批次 20-D）：
+      // 上一节烧掉的 90 秒不该让下一节一发现讨论就直接翻页。
+      this._discussionHoldSinceAt = 0;
+      this._discussionHoldKey = '';
+      this._discussionHoldSpent = 0;
+      this._discussionPendingCache = null;
       this._clearCheckInterval();
     },
 

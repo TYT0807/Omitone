@@ -283,12 +283,35 @@
         '[class*="question"][class*="pop"]'
       ];
 
+      // 投票覆盖层归 `_runChaoxingVoteJob` 独占，弹题扫描不许碰它。
+      // 它的形状和弹题一模一样（一段题干 + A/B 两个 radio + 一个「提交」键），
+      // 2026-11-11 真页实测两边抢过同一份卷子：日志里
+      // `tick progress {note:"vote overlay"}` 紧跟着
+      // `popup quiz answered {options:["是","否"], rawAnswer:"A", type:"single"}` ——
+      // 投票被弹题链路顺手投掉，投票 runner 只能干等到超时，
+      // 完成证据也就落在错的那条链上。
+      function isVoteOverlay(node) {
+        var hops = 0;
+        while (node && node.nodeType === 1 && hops < 4) {
+          hops++;
+          try {
+            if (node.id === 'voteIframe') return true;
+            if (node.closest && node.closest('.voteContainer')) return true;
+            var owner = node.ownerDocument;
+            node = owner && owner.defaultView ? owner.defaultView.frameElement : null;
+          } catch (e) {
+            return false;
+          }
+        }
+        return false;
+      }
+
       function searchAll(doc, depth) {
         if (!doc || depth > 3) return null;
 
         for (var i = 0; i < selectors.length; i++) {
           var node = doc.querySelector(selectors[i]);
-          if (node && app._isSubmitConfirmDialog(node)) continue;
+          if (node && (app._isSubmitConfirmDialog(node) || isVoteOverlay(node))) continue;
           // 播放器容器 / 含 video 的浮层（水印、广告、倍速提示）不是题。
           // .vjs-overlay 这类选择器极易命中视频浮层，误判后插件会把它当题反复问模型。
           if (node && node.querySelector && node.querySelector('video')) continue;
@@ -298,6 +321,7 @@
         var sections = doc.querySelectorAll('div, section');
         for (var j = 0; j < sections.length; j++) {
           if (!visible(sections[j])) continue;
+          if (isVoteOverlay(sections[j])) continue;
           if (sections[j].querySelector && sections[j].querySelector('video')) continue;
           var sectionText = textOf(sections[j]);
           if (sectionText.length > 20 && sectionText.length < 600 && /[A-F][.、．))]/.test(sectionText)) {
@@ -313,6 +337,7 @@
 
         var frames = doc.querySelectorAll('iframe');
         for (var k = 0; k < frames.length; k++) {
+          if (isVoteOverlay(frames[k])) continue;
           try {
             var subDoc = frames[k].contentDocument || (frames[k].contentWindow && frames[k].contentWindow.document);
             var found = searchAll(subDoc, depth + 1);
