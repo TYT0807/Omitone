@@ -167,7 +167,13 @@ function saveFailureText(result) {
   if (/Could not establish connection|Receiving end does not exist|message port closed|background unavailable|超时/i.test(raw)) {
     return "后台脚本没响应 —— 到扩展页点「重新加载」，再回学习通页按 F5";
   }
-  if (code === "forbidden_sender") return "保存被拒：没认出这是设置弹窗，关掉弹窗重开一次";
+  // 后台带回来的 `popup-deny:…` / `page-deny:…` 说清缺的是哪一样（frameId、tab.url 还是 URL）。
+  // 光说「没认出这是设置弹窗」等于把诊断又推回给用户：2026-11-12 同学机器就是这么卡住的，
+  // 而这台机器与作者那台的差别只在「弹窗是怎么打开的」，从界面上一字都读不出来。
+  if (code === "forbidden_sender") {
+    const why = raw && raw !== "forbidden_sender" ? "（" + raw.slice(0, 60) + "）" : "";
+    return "保存被拒：没认出这是设置弹窗" + why + " —— 关掉它，从浏览器右上角的图标重新点开再试";
+  }
   if (code === "forbidden_patch") return "保存被拒：这一项不允许从这里改";
   if (code === "invalid_patch") return "保存被拒：" + ((result && result.field) || "某个设置项") + " 的值不合法";
   if (code === "unknown_message") return "后台脚本版本对不上 —— 重新加载扩展后再试";
@@ -182,6 +188,19 @@ async function patchConfig(patch, expectedFingerprint) {
     const error = new Error(saveFailureText(result));
     error.code = result && result.code;
     error.detail = result && result.error;
+    // 这是**本机弹窗与后台之间**的事，不是和 AI 服务商之间的事。
+    // 打上标记，免得调用方把它当成 fetch 异常去分类成「连接不上服务商」（见检测 API 连接的 catch）。
+    error.localBridge = true;
+    // 只记形状，不记 patch 的内容（里面有密钥）。
+    // 注意：这一跳本身也要经过后台，如果后台连"这是弹窗"都没认出来，日志同样写不进去 ——
+    // 所以「为什么被拒」必须同时出现在**界面**上（见 saveFailureText 的括号），否则用户无从求助。
+    try {
+      await appendPopupLog("error", "config rejected by background", {
+        code: String(error.code || ""), why: String(error.detail || "").slice(0, 120),
+        page: String(location.href).split("#")[0].replace(/^chrome-extension:\/\/[^/]+/, ""),
+        build: String((chrome.runtime.getManifest() || {}).version_name || "")
+      });
+    } catch (e) {}
     throw error;
   }
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...result.config });
@@ -743,7 +762,20 @@ async function testApiConnectionNoBackground() {
   } catch (error) {
     const message = error && error.message ? error.message : String(error);
     if (!isCurrent() || error.code === "stale_config") { toast("配置已变化，请重新检测"); return; }
-    // 走到这里说明请求根本没发出去（fetch 抛异常）—— 这才是真正的「连接失败」。
+    // 本地这一跳就断了（保存被拒 / 后台没响应）—— 它**不是**服务商的错，不许进分类器。
+    // 以前这里不分来源一律 describe(0, message)，于是同学机器上看到的是
+    // 「【连接不上服务商】网络不通、被代理/防火墙拦截……服务商原话：保存被拒：没认出这是设置弹窗」：
+    // 一句本机的权限判断被贴了「服务商原话」，人就跑去查校园网和代理，而网络这一层根本没参与。
+    if (error && error.localBridge) {
+      try {
+        await appendPopupLog("error", "api test never sent: local bridge rejected", {
+          error: message.slice(0, 300), code: String(error.code || ""), detail: String(error.detail || "")
+        });
+      } catch (e) {}
+      toast(message);
+      return;
+    }
+    // 走到这里才说明请求真的发不出去（fetch 抛异常）—— 这才是「连接失败」。
     // 也要翻译成人话：Failed to fetch / Timeout 对用户没有信息量
     const described = (typeof self !== "undefined" && self.OmitoneApiError)
       ? self.OmitoneApiError.describe(0, message)
@@ -1038,9 +1070,15 @@ async function checkUpdate(opts) {
 
     const versionOrder = cmpVersion(remoteVersion, local.version);
     const newerVersion = versionOrder > 0;
-    // 同一版本号换了包：给 1 分钟容差，避免本机时钟略快就误报"有更新"
+    // 同一版本号换了包。容差必须盖过「构建 → 上传」这段固有间隔，否则**每个从 zip 装的人
+    // 都会永久看到「线上的包比本地新」**——包就是从那一次构建上传的，上传必然晚于构建：
+    //   1.2.8 构建 22:52 / 上传 22:55（3 分钟）
+    //   1.2.9 构建 16:38 / 上传 16:43（5 分钟）
+    //   1.3.0 构建 20:37 / 上传 20:40（3 分钟）  ← 旧代码的容差只有 60 秒，所以同学一装上就报更新
+    // 30 分钟既能盖住这条流水线，又拦得住真正的换包：重发一次附件意味着又一轮修复，
+    // 中间隔着的是小时级、天级（实测 1.2.9 → 1.3.0 隔 21 天），不会是半小时。
     const newerBuild = versionOrder === 0 && local.builtAt > 0 && remoteAt > 0 &&
-      remoteAt - local.builtAt > 60000;
+      remoteAt - local.builtAt > 30 * 60 * 1000;
 
     // 文案原则：一句话说清"是什么 / 要不要动"。三种结果，三种说法，不多解释。
     if (newerVersion) {

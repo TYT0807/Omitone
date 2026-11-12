@@ -70,9 +70,34 @@ async function main() {
   for (const field of ['apiType', 'apiUrl', 'apiKey', 'model', 'captchaModel', 'visionModel', 'thinkingLevel']) check('fingerprint detects ' + field, p.configFingerprint(h.local.config) !== p.configFingerprint(Object.assign({}, h.local.config, { [field]: 'changed' })));
   check('study scope uses live tab not sender.tab URL', (await h.send('get_page_scope', study)).scope === 'study');
   check('ungranted captcha has no scope', (await h.send('get_page_scope', captcha)).scope === 'none');
-  for (const invalid of [{ ...study, id: 'other-extension' }, { ...study, frameId: 7 }, { ...study, url: 'https://evil.test' }, {}, { ...popup, tab: { id: 1 }, frameId: 0 }]) {
+  for (const invalid of [{ ...study, id: 'other-extension' }, { ...study, frameId: 7 }, { ...study, url: 'https://evil.test' }, {},
+    { ...popup, frameId: 3 }, { ...popup, url: popup.url + '.evil' },
+    { ...popup, url: 'chrome-extension://other-extension/popup/popup.html' }]) {
     check('reject spoofed/untrusted API sender', !(await h.send('api_fetch', invalid, { url: 'https://api.test' })).success);
   }
+  // 2026-11-12 同学机器：设置面板从图标点开、从侧边栏点开，**全部**报「没认出这是设置弹窗」，
+  // 而作者这台机器同一个包正常。日志里一条弹窗侧记录都没有（写日志也走同一道闸），
+  // 于是把"弹窗的 sender 长什么样"当成了身份证据的两条判据全部露了馅：
+  //   · `sender.tab` 在有的浏览器里指的是**当前活动标签页**（本扩展握着 activeTab），
+  //     指向的是学习通网页 —— 旧判据要求它必须像扩展页，于是把自家弹窗判成外站；
+  //   · 有的版本给弹窗压根不带 `frameId`，`undefined !== 0` 就是"拒"。
+  // 这三条钉住：形状怎么变都认，而 URL 对不上、别的扩展、非 0 帧号仍然拒（上面那组）。
+  check('弹窗的 sender 挂着活动标签页（activeTab 形状）仍算自家 UI',
+    (await h.send('get_config', { ...popup, tab: { id: 1, url: 'https://mooc1.chaoxing.com/course' } })).success === true);
+  check('弹窗在标签页/侧边栏里打开、tab.url 看不见时也算自家 UI',
+    (await h.send('get_config', { ...popup, tab: { id: 9 } })).success === true);
+  check('弹窗的 sender 不带 frameId 时也算自家 UI（部分浏览器版本没这个字段）',
+    (await h.send('get_config', { id: popup.id, url: popup.url })).success === true);
+  check('弹窗地址带 #锚点 或查询串仍是同一页',
+    (await h.send('get_config', { ...popup, url: popup.url + '#api' })).success === true &&
+    (await h.send('get_config', { ...popup, url: popup.url + '?ui=fancy' })).success === true);
+  // 认不出来时要说清缺哪一样（界面只留一句人话，这串进日志给用户复制求助）
+  const denyFrame = await h.send('get_config', { ...popup, frameId: 4 });
+  const denyWeb = await h.send('get_config', { ...study, url: 'https://evil.test/x' });
+  check('拒绝理由点名缺的是哪一样，且不把配置漏出去',
+    denyFrame.code === 'forbidden_sender' && /^popup-deny:frame:4$/.test(String(denyFrame.error)) &&
+    denyWeb.code === 'forbidden_sender' && /^page-deny:/.test(String(denyWeb.error)) &&
+    !JSON.stringify(denyFrame).includes('secret') && !JSON.stringify(denyWeb).includes('secret'));
   check('no forbidden sender reached network', h.calls.length === 0);
   check('ping reveals no config', !JSON.stringify(await h.send('ping', {})).includes('secret'));
   check('content cannot grant captcha', !(await h.send('grant_captcha', study, { tabId: 2, url: captcha.url })).success);

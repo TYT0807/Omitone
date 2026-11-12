@@ -6942,6 +6942,7 @@ SCENARIOS.push({
       'port:f({success:false,error:"Message port closed before a response was received."}),' +
       'timeout:f({success:false,error:"配置保存超时"}),' +
       'sender:f({success:false,code:"forbidden_sender"}),' +
+      'senderWhy:f({success:false,code:"forbidden_sender",error:"popup-deny:frame:4"}),' +
       'patched:f({success:false,code:"forbidden_patch"}),' +
       'invalid:f({success:false,code:"invalid_patch",field:"model"}),' +
       'unknown:f({success:false,code:"unknown_message"}),' +
@@ -6956,6 +6957,14 @@ SCENARIOS.push({
       /没认出这是设置弹窗/.test(mapText.sender) && /不允许从这里改/.test(mapText.patched) &&
       /值不合法/.test(mapText.invalid) && /model/.test(mapText.invalid) &&
       /版本对不上/.test(mapText.unknown) && /配置已变化/.test(mapText.stale), JSON.stringify(mapText));
+    // 同学机器那次「保存全被拒」最难的不是修，是**看不见**：界面只说"没认出来"，
+    // 到底缺 frameId、tab.url 还是 URL 对不上，一个字都没有，只能来回猜。
+    // 现在后台把形状一起带回来，界面原样钉在括号里，用户复制日志就能发出来。
+    check('「没认出这是设置弹窗」把缺的那一样说出来，并指到图标那条路',
+      /popup-deny:frame:4/.test(mapText.senderWhy) && /没认出这是设置弹窗/.test(mapText.senderWhy) &&
+      /右上角的图标/.test(mapText.senderWhy), JSON.stringify(mapText));
+    check('后台没给形状时不硬凑空括号',
+      mapText.sender.indexOf('（') === -1 && /右上角的图标/.test(mapText.sender), JSON.stringify(mapText));
 
     // 真链路 ①：不合法的值由**真后台**拒掉，断言它给的 code 与字段名真的走进了界面文案。
     var realInvalid = await ctx.client.evaluate(
@@ -8238,6 +8247,68 @@ SCENARIOS.push({
     check('限流是功能不是摆设：刚查过再点，一个请求都不发，且说清什么时候再来',
       !!probe && /刚查过/.test(String(probe.gatedMsg)) && /后再来/.test(String(probe.gatedMsg)) &&
       probe.callsBefore === probe.callsAfter, JSON.stringify(probe));
+  }
+});
+
+/**
+ * ---- 同一个版本号里换过包：容差必须盖住「构建 → 上传」那几分钟 ----
+ *
+ * 现场（2026-11-12，同学机器）：他从下载页的 zip 装的，装完就提示「线上的包比本地新 —— 是否更新？」，
+ * 而那个"更新"就是他手上这一份。判据本身没错（同版本号换包要能发现），
+ * 错在容差：旧代码只留 60 秒，而**上传永远晚于构建** ——
+ * 实测三次 1.2.8 差 3 分钟、1.2.9 差 5 分钟、1.3.0 差 3 分钟。
+ * 作者这台机器看不出来，是因为他直接加载源码目录，`version_name` 里没有构建戳，
+ * 那条判据压根不走 —— 又一个"只有装出来的用户才会撞上"的形状。
+ *
+ * 这里把 `chrome.runtime.getManifest` 换成带戳的现场形状（e2e 装的是源码目录，真戳不存在），
+ * 然后用真按钮、真限流闸跑两条：差 3 分钟不算更新，差 2 天算更新。
+ */
+SCENARIOS.push({
+  name: '同版本号换包：构建到上传的几分钟不算更新，隔两天才算',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    // 自动检测会真打 api.github.com，回调落点不可控 —— 先掐掉源头（上一场景同一手法）
+    await ctx.client.evaluate(
+      'try{localStorage.setItem("omitone.update.autoAt",String(Date.now()));' +
+      'localStorage.setItem("omitone.update.manualAt","0");}catch(e){};1');
+    var out = await ctx.client.evaluate(
+      '(async function(){' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof self.checkUpdate==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,fn:typeof self.checkUpdate};' +
+      'if(o.fn!=="function")return o;' +
+      // 现场形状：本机这份是 1.3.0、构建于 2026-11-12 20:37（本地时间）
+      'var real=chrome.runtime.getManifest;' +
+      'chrome.runtime.getManifest=function(){return {version:"1.3.0",version_name:"1.3.0 b20261112-2037"};};' +
+      'var read=function(){return String((document.getElementById("updateMsg")||{}).textContent||"");};' +
+      'var btnShown=function(){var b=document.getElementById("doUpdate");' +
+      '  return !!b&&getComputedStyle(b).display!=="none";};' +
+      'var mockAt=function(minutesLater){' +
+      '  var t=new Date(2026,10,12,20,37,0).getTime()+minutesLater*60000;' +
+      '  window.fetch=function(){return Promise.resolve({ok:true,json:function(){' +
+      '    return Promise.resolve({tag_name:"v1.3.0",assets:[{name:"omitone.zip",updated_at:new Date(t).toISOString()}]});}});};' +
+      '};' +
+      // ① 构建后 3 分钟上传 —— 就是他下的那个包，不能报更新
+      'mockAt(3);' +
+      'try{await self.checkUpdate({manual:true});}catch(e){o.err1=String(e);}' +
+      'o.gap3=read();o.gap3Btn=btnShown();' +
+      // ② 两天后重新换过包 —— 这次必须报，容差不能把真更新也吞掉
+      // （第一次调用已经把 manualAt 写成"刚刚"，不限流闸放开就直接撞进「刚查过」那条文案）
+      'try{localStorage.setItem("omitone.update.manualAt","0");}catch(e){}' +
+      'chrome.runtime.getManifest=function(){return {version:"1.3.0",version_name:"1.3.0 b20261110-0900"};};' +
+      'mockAt(3);' +
+      'try{await self.checkUpdate({manual:true});}catch(e){o.err2=String(e);}' +
+      'o.gap2d=read();o.gap2dBtn=btnShown();' +
+      'chrome.runtime.getManifest=real;' +
+      'return o;})()'
+    );
+    check('前提：弹窗脚本已接管（checkUpdate 可调）',
+      !!out && out.fn === 'function' && out.ready === 'complete', JSON.stringify(out));
+    check('同版本号、线上包只比本地构建晚 3 分钟 → 说「已是最新版」，不亮更新按钮',
+      !!out && /已经是最新版/.test(String(out.gap3)) && out.gap3Btn === false, JSON.stringify(out));
+    check('同版本号、线上包晚两天 → 仍然报「线上的包比本地新」并亮出按钮（容差没把真更新吞掉）',
+      !!out && /线上的包比本地新/.test(String(out.gap2d)) && out.gap2dBtn === true, JSON.stringify(out));
   }
 });
 

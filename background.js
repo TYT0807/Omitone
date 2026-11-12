@@ -100,16 +100,53 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   });
 
   function isPopup(sender) {
-    // 扩展自己的页面都算「可信 UI」：popup 窗口、`?play=1` 的沉浸式窗口，
-    // 以及被当成普通标签页打开的 popup.html（测试和"在标签页里打开"都会这样）。
-    // 判据是**同源 + 同一个路径**，并允许查询串 —— 之前要求"无 tab 且 URL 完全相等"，
-    // 结果带 `?ui=fancy` 或作为标签页打开时全被当成外站，保存设置直接 forbidden。
-    if (!sender || sender.id !== chrome.runtime.id || !sender.url) return false;
-    // 只认顶层文档：网页里嵌 iframe 时 sender.tab.url 是网页地址，这里会直接拒掉
-    if (sender.frameId !== 0) return false;
-    if (sender.tab && String(sender.tab.url || '').indexOf('chrome-extension://') !== 0) return false;
+    return popupVerdict(sender).trusted === true;
+  }
+  /**
+   * 「这条消息是不是自家设置弹窗发来的」，并把**不成立时缺了哪一样**一起交出来。
+   *
+   * 只用两样稳定的证据：`sender.id` 是扩展自己 + `sender.url` 逐字是本扩展的
+   * `popup/popup.html`（允许查询串与 `#锚点`）。这两样都由浏览器按**发消息的那个文档**填，
+   * 网页改不成我们的源；而 popup.html 不在 `web_accessible_resources` 里，
+   * 网页也既进不到这个源、没法把它嵌进 iframe。
+   *
+   * 故意**不**用下面这些当身份证据（2026-11-12 同学机器：从图标点开弹窗也报
+   * 「没认出这是设置弹窗」，作者这台机器同一个包却正常 —— 差的全是形状，不是代码）：
+   *   · `sender.tab` / `sender.tab.url`：它说的是"当前活动标签页"，不是发消息的文档。
+   *     握着 `activeTab` 时弹窗一打开它就带着学习通页面，握着 `tabs` 时才看得见 URL，
+   *     两个字段在不在、指向谁，全看浏览器版本与打开方式；
+   *   · `sender.frameId`：部分版本给弹窗压根不带这个字段，所以只在它是**数字且非 0** 时才拒。
+   */
+  function popupVerdict(sender) {
+    if (!sender) return { trusted: false, reason: 'sender-missing' };
+    if (sender.id !== chrome.runtime.id) return { trusted: false, reason: 'id-mismatch:' + String(sender.id || '') };
+    if (!sender.url) return { trusted: false, reason: 'url-missing' };
+    if (typeof sender.frameId === 'number' && sender.frameId !== 0) {
+      return { trusted: false, reason: 'frame:' + sender.frameId };
+    }
+    // **不看 `sender.tab.url`**。它说的是"当前活动标签页"，不是发消息的那个文档：
+    // 本扩展申请了 `activeTab`，弹窗一打开浏览器就把活动页挂进 `sender.tab`（学习通页面），
+    // 拿它当身份证据必然误判 —— 2026-11-12 同学机器从图标点开弹窗也报「没认出这是设置弹窗」，
+    // 而作者这台机器同一个包正常，差的就是这个字段在不在。
+    // 去掉它不降低安全性：`sender.id` 与 `sender.url` 都是浏览器按发送文档填的，
+    // 网页改不成我们的源，而 popup.html 不在 `web_accessible_resources` 里、也没法被网页嵌。
     var base = chrome.runtime.getURL('popup/popup.html');
-    return sender.url === base || sender.url.indexOf(base + '?') === 0;
+    var url = String(sender.url).split('#')[0];
+    if (url === base || url.indexOf(base + '?') === 0) return { trusted: true, reason: '' };
+    return { trusted: false, reason: 'url-mismatch:' + url.replace(/^chrome-extension:\/\/[^/]+/, '') };
+  }
+  /**
+   * 拒绝时带回「缺的是哪一样」，形如 `popup-deny:frame:3` / `page-deny:url-mismatch:/x.html`。
+   *
+   * 为什么要它：`forbidden_sender` 在界面上只会翻成一句「没认出这是设置弹窗」，
+   * 同学机器上就是这么卡住的 —— 而到底是 `frameId`、`tab.url` 还是 URL 本身对不上，
+   * 从外面一个字都读不出来，只能来回猜。这串进日志，用户复制日志就能发出来。
+   * 只放形状，不放配置内容、也不放密钥。
+   */
+  function denyDetail(verdict, sender) {
+    var ours = !!(sender && typeof sender.url === 'string'
+      && sender.url.indexOf(chrome.runtime.getURL('')) === 0);
+    return (ours ? 'popup-deny:' : 'page-deny:') + ((verdict && verdict.reason) || 'unknown');
   }
   // 学习通换章节走的是 pushState：**同一个文档、同一份已注入的脚本**，
   // 而 `sender.url` 冻结在脚本注入那一刻（旧章节），`tab.url` 与 `sender.tab.url` 已是新章节。
@@ -327,9 +364,11 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     message = message || {};
     if (message.type === 'ping') return Promise.resolve({ success: true, time: Date.now(), startedAt: startedAt });
     if (message.type === 'runtime_log_append' || message.type === 'runtime_log_clear') return runtimeLogs.handle(message, sender);
-    var popup = isPopup(sender);
+    var verdict = popupVerdict(sender);
+    var popup = verdict.trusted === true;
     if (message.type === 'grant_captcha' || message.type === 'revoke_captcha') {
-      return popup ? manageGrant(message.payload, message.type === 'grant_captcha') : Promise.resolve(failure('forbidden_sender'));
+      return popup ? manageGrant(message.payload, message.type === 'grant_captcha')
+        : Promise.resolve(failure('forbidden_sender', denyDetail(verdict, sender)));
     }
     return (popup ? Promise.resolve({ scope: 'popup' }) : pageScope(sender)).then(function (scope) {
       if (message.type === 'get_page_scope') {
@@ -337,7 +376,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
         if (scope.expiresAt) result.expiresAt = scope.expiresAt;
         return result;
       }
-      if (scope.scope === 'none') return failure('forbidden_sender');
+      if (scope.scope === 'none') return failure('forbidden_sender', denyDetail(verdict, sender));
       if (message.type === 'get_config') {
         return getConfig().then(function (config) {
           return { success: true, config: scope.scope === 'captcha' ? policy.publicConfig(config, 'captcha') : config };
