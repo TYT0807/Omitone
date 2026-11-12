@@ -151,13 +151,37 @@ function apiFormFingerprint() {
   return POLICY.configFingerprint({ ...config, ...getApiFormConfig() });
 }
 
+/**
+ * 把后台返回的失败码翻成「下一步该做什么」。
+ *
+ * 真实原因原先在 sendRuntimeMessageWithTimeout 里就已经取到了（后台脚本没起来时
+ * 就是 "Could not establish connection. Receiving end does not exist."），
+ * 但界面只留「配置保存失败」四个字 —— 线上 issue #1（macOS Chrome）因此读成
+ * 「按钮点了没反应、设置一直存不上」，谁都不知道该去重载扩展。
+ */
+function saveFailureText(result) {
+  const code = result && result.code;
+  const raw = String((result && (result.error || result.field)) || "");
+  if (code === "stale_config") return "配置已变化，请重新检测";
+  // 超时和"接不上"是同一件事：后台脚本没在跑（未打包目录缺文件是最常见成因）
+  if (/Could not establish connection|Receiving end does not exist|message port closed|background unavailable|超时/i.test(raw)) {
+    return "后台脚本没响应 —— 到扩展页点「重新加载」，再回学习通页按 F5";
+  }
+  if (code === "forbidden_sender") return "保存被拒：没认出这是设置弹窗，关掉弹窗重开一次";
+  if (code === "forbidden_patch") return "保存被拒：这一项不允许从这里改";
+  if (code === "invalid_patch") return "保存被拒：" + ((result && result.field) || "某个设置项") + " 的值不合法";
+  if (code === "unknown_message") return "后台脚本版本对不上 —— 重新加载扩展后再试";
+  return "配置保存失败" + (raw ? "：" + raw.slice(0, 60) : "");
+}
+
 async function patchConfig(patch, expectedFingerprint) {
   const result = await sendRuntimeMessageWithTimeout({
     type: "config_patch", payload: { patch, expectedFingerprint }
   }, 8000, "配置保存超时");
   if (!result || !result.success) {
-    const error = new Error(result && result.code === "stale_config" ? "配置已变化，请重新检测" : "配置保存失败");
+    const error = new Error(saveFailureText(result));
     error.code = result && result.code;
+    error.detail = result && result.error;
     throw error;
   }
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...result.config });
@@ -165,14 +189,15 @@ async function patchConfig(patch, expectedFingerprint) {
 }
 
 function reportSaveError(error) {
-  toast(error && error.message ? error.message : "保存失败，请重试");
+  toast(error && error.message ? error.message : "保存失败，请重试", 5000);
 }
 
-function toast(msg) {
+function toast(msg, ms) {
   els.toast.textContent = msg;
   els.toast.classList.add("show");
   clearTimeout(toast._timer);
-  toast._timer = setTimeout(() => els.toast.classList.remove("show"), 1600);
+  // 失败的话原来 1.6 秒就消失，读不到字等于没反馈
+  toast._timer = setTimeout(() => els.toast.classList.remove("show"), ms || 1600);
 }
 
 function withoutRemovedConfigFields(rawConfig) {

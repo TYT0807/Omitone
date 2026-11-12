@@ -6929,6 +6929,77 @@ SCENARIOS.push({
     check('「复制日志」按钮真的在界面上（不是只有函数）',
       (await ctx.client.evaluate('!!document.getElementById("copyLogs")')) === true);
 
+    // ---- 批次 31：保存失败要说清为什么（线上 issue #1）----
+    // 症状：macOS 上后台脚本起不来时，弹窗一直只弹一句「无法保存配置」，日志面板同时是空的。
+    // 原因是后台已经把 "Could not establish connection…" 带回来了，但界面把它丢掉，
+    // 只剩四个字 —— 用户据此只能猜「是不是我操作不对」，猜不到「去扩展页点重新加载」。
+    // 这里钉三层：文案逐码点名 / 真链路能把原因送到界面 / 长句完整可读且停留够久。
+    var mapText = await ctx.client.evaluate(
+      '(function(){var f=self.saveFailureText;' +
+      'if(typeof f!=="function")return {missing:true};' +
+      'return {missing:false,' +
+      'swDead:f({success:false,error:"Could not establish connection. Receiving end does not exist."}),' +
+      'port:f({success:false,error:"Message port closed before a response was received."}),' +
+      'timeout:f({success:false,error:"配置保存超时"}),' +
+      'sender:f({success:false,code:"forbidden_sender"}),' +
+      'patched:f({success:false,code:"forbidden_patch"}),' +
+      'invalid:f({success:false,code:"invalid_patch",field:"model"}),' +
+      'unknown:f({success:false,code:"unknown_message"}),' +
+      'stale:f({success:false,code:"stale_config"})};})()'
+    );
+    check('前提：saveFailureText 在弹窗里可调用', !mapText.missing, JSON.stringify(mapText));
+    check('后台没起来 / 端口关闭 / 保存超时都翻成「后台脚本没响应」并给出重载+F5',
+      ['swDead', 'port', 'timeout'].every(function (k) {
+        return /后台脚本没响应/.test(mapText[k]) && /重新加载/.test(mapText[k]) && /F5/.test(mapText[k]);
+      }), JSON.stringify(mapText));
+    check('五个失败码逐个点名原因（不许再共用一句「配置保存失败」）',
+      /没认出这是设置弹窗/.test(mapText.sender) && /不允许从这里改/.test(mapText.patched) &&
+      /值不合法/.test(mapText.invalid) && /model/.test(mapText.invalid) &&
+      /版本对不上/.test(mapText.unknown) && /配置已变化/.test(mapText.stale), JSON.stringify(mapText));
+
+    // 真链路 ①：不合法的值由**真后台**拒掉，断言它给的 code 与字段名真的走进了界面文案。
+    var realInvalid = await ctx.client.evaluate(
+      '(function(){return patchConfig({__e2e_bogus_field:1}).then(' +
+      'function(){return {ok:true};},' +
+      'function(e){return {ok:false,msg:String(e&&e.message||""),code:String((e&&e.code)||"")};});})()'
+    );
+    check('真后台拒绝不合法设置项时，抛出的那句点名「保存被拒」和具体字段',
+      realInvalid.ok === false && realInvalid.code === 'invalid_patch' &&
+      /保存被拒/.test(realInvalid.msg) && /__e2e_bogus_field/.test(realInvalid.msg),
+      JSON.stringify(realInvalid));
+
+    // 真链路 ②：把「和后台说话」那一层换成现场那种 lastError 形状（后台脚本没注册），
+    // 验的是 patchConfig 的接线而不是文案函数本身 —— 否则改坏转发也照样绿。
+    var swDead = await ctx.client.evaluate(
+      '(function(){var orig=self.sendRuntimeMessageWithTimeout;' +
+      'self.sendRuntimeMessageWithTimeout=function(){' +
+      'return Promise.resolve({success:false,error:"Could not establish connection. Receiving end does not exist."});};' +
+      'return patchConfig({enableQuiz:true}).then(function(){' +
+      'self.sendRuntimeMessageWithTimeout=orig;return {ok:true};},' +
+      'function(e){self.sendRuntimeMessageWithTimeout=orig;' +
+      'return {ok:false,msg:String(e&&e.message||""),code:String((e&&e.code)||"")};});})()'
+    );
+    check('后台无连接时 patchConfig 抛出的就是那句可执行的下一步（不是「配置保存失败」）',
+      swDead.ok === false && /后台脚本没响应/.test(swDead.msg) && !/配置保存失败/.test(swDead.msg),
+      JSON.stringify(swDead));
+
+    var toastState = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var el=document.getElementById("toast");var cs=self.getComputedStyle(el);' +
+      'reportSaveError(new Error("后台脚本没响应 —— 到扩展页点「重新加载」，再回学习通页按 F5"));' +
+      'var shownNow=el.classList.contains("show");' +
+      'setTimeout(function(){res({shownNow:shownNow,stillShown:el.classList.contains("show"),' +
+      'text:el.textContent,whiteSpace:cs.whiteSpace,overflow:cs.overflow,' +
+      'radius:cs.borderRadius,height:Math.round(el.getBoundingClientRect().height)});},2400);});})()'
+    );
+    check('失败提示至少停留 2.4 秒（原来 1.6 秒就消失，读不到字等于没反馈）',
+      !!toastState && toastState.shownNow === true && toastState.stillShown === true,
+      JSON.stringify(toastState));
+    check('长句完整可读：不换行、不省略、也不再挤成一颗胶囊',
+      !!toastState && toastState.text.indexOf('后台脚本没响应') !== -1 &&
+      toastState.whiteSpace === 'normal' && toastState.overflow !== 'hidden' &&
+      toastState.radius.indexOf('999') === -1, JSON.stringify(toastState));
+
     var errs = ctx.client.errors();
     check('弹窗无未捕获异常', errs.length === 0, errs.slice(0, 2).join(' | '));
   }

@@ -347,8 +347,11 @@ a.ext:hover{ text-decoration:underline; }
 /* ---------- 提示条 / 日志 ---------- */
 .toast{
   min-height:15px; margin-top:10px; opacity:0; color:var(--fg-2);
-  background:var(--card); border:1px solid var(--hairline); border-radius:999px;
-  padding:0 12px; text-align:center; font-size:12px; line-height:2;
+  background:var(--card); border:1px solid var(--hairline);
+  /* 保存失败现在要点名原因，句子比一行长：留竖内边距、允许折行，圆角收成 14px
+     才不会让两行文字挤在胶囊里被切掉 */
+  padding:5px 12px; text-align:center; font-size:12px; line-height:1.5;
+  white-space:normal; word-break:break-word; border-radius:14px;
   transition:opacity .2s var(--ease);
 }
 .toast.show{ opacity:1; }
