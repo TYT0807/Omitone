@@ -32,3 +32,7 @@ tmp/
 # 开发期一次性探针 / 浏览器临时 profile（跑完就删；万一忘了，别让 git add -A 带进来）
 tools/_*.js
 .tmp-*/
+
+# 验收证据与逐阶段回执：里面是机器本机路径、临时目录与 profile 名，只留本地不入库
+omitone-acceptance-*.jsonl
+omitone-acceptance-*.json

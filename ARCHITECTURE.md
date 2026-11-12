@@ -111,7 +111,7 @@ npm run concat:check  # 校验两者一致（npm test 里会自动跑一次）
 ### 产物验收证据
 
 `npm run acceptance:built` 使用前台监督进程运行 `omitone-sandbox.cjs` 的完整 built 模式，
-并在工作区根目录新建 `omitone-acceptance-<UTC时间-UUID>.jsonl`。基线、构建、浏览器身份、
+并在工作区 `tmp/acceptance/`（不入库）新建 `omitone-acceptance-<UTC时间-UUID>.jsonl`。基线、构建、浏览器身份、
 每个场景开始/完成与收尾同步追加并 fsync；内容只包含验证状态、数量、路径和摘要，
 不收集课程内容、模型请求体或真实凭据。终端输出不作为通过证据。
 

@@ -219,8 +219,9 @@ async function supervise() {
   const plan = sandbox.acceptancePlan();
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   const runId = stamp + '-' + crypto.randomUUID();
-  const file = path.join(ROOT, 'omitone-acceptance-' + runId + '.jsonl');
+  const file = path.join(ROOT, 'tmp', 'acceptance', 'omitone-acceptance-' + runId + '.jsonl');
   const receipt = file.slice(0, -1);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const journal = new Journal(file, { runId, plan }); journal.close();
   console.log('EVIDENCE=' + file);
   console.log('RECEIPT=' + receipt);

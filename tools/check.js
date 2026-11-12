@@ -15,6 +15,7 @@
 var fs = require('fs');
 var path = require('path');
 var vm = require('vm');
+var os = require('os');
 var spawnSync = require('child_process').spawnSync;
 
 var ROOT = path.join(__dirname, '..');
@@ -1743,6 +1744,95 @@ function checkBridgeMessageTypes() {
 }
 
 // ---------------------------------------------------------------------------
+// 21. 仓库公开面卫生
+//
+// 为什么要有这条：本机路径（带着 Windows 用户名）、逐阶段验收证据、临时 profile 目录
+// 这类东西**只该留在自己机器上**。它们不会让任何一条测试变红，却能跟着一次
+// `git add -A` 整包提交上去 —— 而仓库是公开的。实测踩过：5 份 `omitone-acceptance-*.jsonl`
+// 里写着 `C:\Users\<用户名>\AppData\Local\Temp\omitone-sandbox-XXXX`，
+// 连着一批真实 `chapterId` 一起挂在 GitHub 上好几天。
+//
+// 判据分两半，**文件名与内容都要管**：
+//   ① 文件名：证据 jsonl/json、`*.bak*`、`*.log`、`tmp/`、`.workbuddy/`、`dist/` 不许被跟踪
+//   ② 内容：跟踪中的文本文件不许出现本机 home 路径、`<盘>:\Users\` 这种带用户名的路径，
+//      也不许出现现场粘来的真编号（学习通章节号 10 位 `12…`；id 上下文里非 9 开头的长数字）
+// 反向验证：临时把某个跟踪文件里塞一行 `C:\Users\someone\` 必须让它变红。
+// ---------------------------------------------------------------------------
+function checkPublicHygiene() {
+  var r = spawnSync('git', ['ls-files', '-z'], { cwd: ROOT, encoding: 'buffer' });
+  if (r.status !== 0) {
+    warn('仓库公开面卫生：`git ls-files` 不可用，这一项没跑成');
+    return;
+  }
+  var files = r.stdout.toString('utf8').split('\0').filter(Boolean);
+
+  // ① 文件名闸
+  var BAD_NAME = [
+    [/^omitone-acceptance-\d{8}T\d{6}Z-[a-f0-9-]{36}\.jsonl?$/, '验收证据/回执（里面有本机路径）'],
+    [/\.bak\d*$/, '备份文件'],
+    [/\.log$/, '日志'],
+    [/^(tmp|\.workbuddy|dist|node_modules)\//, '本地工作目录']
+  ];
+  var nameHits = [];
+  files.forEach(function (f) {
+    BAD_NAME.forEach(function (b) {
+      if (b[0].test(f)) nameHits.push(f + '（' + b[1] + '）');
+    });
+  });
+
+  // ② 内容闸。两份文件天生带着这些字面量，属于"检测器自己的样例"，排除掉：
+  //    publish-audit.js 的注释里写着 `C:/Users/<用户名>`，本文件写着这些正则。
+  var SELF_EXPLAIN = ['tools/publish-audit.js', 'tools/check.js'];
+  var TEXT_EXT = /\.(js|cjs|mjs|json|md|html|css|txt|xml|yml|yaml|expr|gitignore|editorconfig|svg)$/i;
+  var home = (os.homedir() || '').replace(/\\/g, '/');
+  function esc(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  // 本仓库的**夹具号一律 9 开头**（章节 9000049xxx、课程 900000001、任务 9000000000000001）。
+  // 所以「出现在 id 上下文里、又不是 9 开头」的长数字 = 从现场粘过来的真号，必须换掉。
+  // 「本仓库的绝对路径」(D:\Omite) **不算泄漏**：里面没有用户名，而文档与工具注释是真要靠它
+  // 讲道理（扩展 ID 由路径大小写算出来，见 AGENTS.md §7.2）。带用户名的路径由前两条管。
+  var ID_CTX = "(?:chapterId|courseId|chapterid|courseid|jobid|jobId|qid)[=:'\"\\\\ ]{1,4}|getTeacherAjax\\(\\\\*['\"]|nodeId_|answer field ";
+  var COMMON = [
+    [new RegExp(esc(home), 'i'), '本机 home 路径'],
+    [/[a-z]:[\\/]{1,2}(?:users|home)[\\/]{1,2}\w/i, '带用户名的用户目录路径'],
+    [/\b12\d{8}\b/, '疑似真实课程章节号（学习通章节号出厂就是 12 开头 10 位）'],
+    [new RegExp('(?:' + ID_CTX + ')(?!9)\\d{8,}', 'i'), 'id 上下文里的真实编号（该换成 9 开头的合成夹具号）']
+  ];
+  var contentHits = [];
+  files.forEach(function (f) {
+    if (SELF_EXPLAIN.indexOf(f) !== -1) return;
+    if (/\.min\.js$/i.test(f)) return; // 第三方压缩库：满屏数字，扫它只会误报
+    if (!TEXT_EXT.test(f)) return;
+    var abs = path.join(ROOT, f);
+    var buf;
+    try { buf = fs.readFileSync(abs); } catch (e) { return; }
+    if (buf.indexOf(0) !== -1) return; // 二进制（图片/PDF）交给 publish-audit 去扫
+    var lines = buf.toString('utf8').split(/\r?\n/);
+    lines.forEach(function (line, i) {
+      if (/卫生样例/.test(line)) return;
+      COMMON.forEach(function (p) {
+        if (p[0].test(line) && contentHits.length < 12) {
+          contentHits.push(f + ':' + (i + 1) + ' ' + p[1] + ' → ' + line.trim().slice(0, 90));
+        }
+      });
+    });
+  });
+
+  if (nameHits.length || contentHits.length) {
+    var msg = [];
+    if (nameHits.length) {
+      msg.push('不该被跟踪的文件：\n      ' + nameHits.slice(0, 8).join('\n      ') +
+        (nameHits.length > 8 ? '\n      …共 ' + nameHits.length + ' 个' : ''));
+    }
+    if (contentHits.length) {
+      msg.push('公开内容里带着私人信息：\n      ' + contentHits.join('\n      '));
+    }
+    fail('仓库公开面卫生未过：' + msg.join('\n    '));
+    return;
+  }
+  pass('仓库公开面卫生（' + files.length + ' 个跟踪文件：无证据/备份/日志入库，无本机路径与真实章节号）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -1767,6 +1857,7 @@ checkSelectorCase();
 checkSelectorTruthSource();
 checkPetSpritePools();
 checkBridgeMessageTypes();
+checkPublicHygiene();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

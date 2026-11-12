@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'b11048574c';
+var OMITONE_CODE_REV = '0d2e6b3852';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -1144,7 +1144,7 @@ var OMITONE_CODE_REV = 'b11048574c';
     /**
      * 这道弹窗是不是平台在说「这一节还有任务点没做完」。
      *
-     * 实测（2026-11-11 章节 1209049219）它有两种容器，文案都是
+     * 实测（2026-11-11 章节 9000049219）它有两种容器，文案都是
      * 「当前章节还有任务点未完成，是否去完成？」：
      *   `#jobFinishTip.AlertCon02` 里的 `a.graybtn02.marleft10.nextbutton`
      *   `.maskDiv.jobFinishTip` 里的 `a.btnBlue.popMoveDele`
@@ -3962,7 +3962,7 @@ var OMITONE_CODE_REV = 'b11048574c';
     /**
      * 「这一节的目录项是哪一颗」—— 批次 20-I。
      *
-     * 优先按章节号认（现场形状 `id="cur1209049294"`），拿不到章节号或目录里没有这颗时才退回
+     * 优先按章节号认（现场形状 `id="cur9000049294"`），拿不到章节号或目录里没有这颗时才退回
      * `.posCatalog_active`。退回那一支必须留着：OCS / 移动端布局下目录结构不一样，
      * 而 `_getCurrentChapterId()` 也可能只认得到一个 URL 兜底键。
      */
@@ -4429,7 +4429,7 @@ var OMITONE_CODE_REV = 'b11048574c';
       // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
       // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
       if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
-      // 投票任务点（2026-11-11 实测章节 1209049220 的唯一未完成点）：附件是
+      // 投票任务点（2026-11-11 实测章节 9000049220 的唯一未完成点）：附件是
       // `module:"insertvote"` + `type:"vote"` + `job:true`。这里原先说不出类型，
       // 于是既不建 job、也不进「认不出」的那条去重日志之外的任何分支 ——
       // 整节只剩这一个未完成任务盒，「下一节」被平台拦下 → 去学习 → 回到同一章，
@@ -7088,7 +7088,7 @@ var OMITONE_CODE_REV = 'b11048574c';
      * 「有字」这条是 2026-11-11 真页实测补的：平台把 `#voteIframe` 的 src 写进顶层
      * 之后还要一段时间才把卷子填进去。上一轮这里只看到"框架在、可见、文档开着"
      * 就当就绪直接复用，跳过了点封面，于是
-     * `vote has nothing to submit {"jobid":"1744278953051380","text":""}` ——
+     * `vote has nothing to submit {"jobid":"9000000000000001","text":""}` ——
      * 正文明明是空的。空档期算"没就绪"，让上面那个轮询继续等／再点一次封面，
      * 比拿一份空卷子去判"这道题没得提交"准得多。
      */
@@ -8371,7 +8371,7 @@ var OMITONE_CODE_REV = 'b11048574c';
     /**
      * 平台自己怎么说**这一块讨论**做完没做完（批次 20-G）。
      *
-     * 实测（2026-11-11 章节 1209049219，用户肉眼「只有一个没完成」逼出来的）：
+     * 实测（2026-11-11 章节 9000049219，用户肉眼「只有一个没完成」逼出来的）：
      * 卡片里那个 `#isFinished` **值是空的**，三张讨论卡一张都读不出结论 ——
      * 于是「4 个任务盒里只有 1 个还没做完」这个平台明摆着的事实，
      * 被读成"三个都记过账 = 整节做完"，页面反复点「下一节」而平台不放行。
@@ -8432,7 +8432,7 @@ var OMITONE_CODE_REV = 'b11048574c';
     _collectDiscussionTargets: function () {
       var self = this;
       var targets = [];
-      // 实测（2026-11-11 现场，章节 1209049219）同一批卡片**被收了两次**：
+      // 实测（2026-11-11 现场，章节 9000049219）同一批卡片**被收了两次**：
       // `_walkDocs` 有两条路径能走到同一份文档，于是三个讨论在 `targets` 里是六条，
       // 「这一节还剩几个讨论」的读数直接翻倍。行为上没出过事（只用第一条），
       // 但排查时它对不上肉眼可见的三张卡片，所以按稳定键去重。

@@ -197,11 +197,11 @@ async function main() {
 
   // ── 章节切换（pushState）后的发送方身份 ───────────────────────────────
   // 学习通换章节是**同一个文档**里改 URL，而 sender.url 冻结在脚本注入那一刻。
-  // 真页面实测（2026-11-11 毛概 1218202540→1218202541）：这条失配一旦判死，
+  // 真页面实测（2026-11-11 毛概 9000049540→9000049541）：这条失配一旦判死，
   // 整节的通道永久 scope:'none' —— 不答题、不写日志、状态面板不动。
   // 放宽只认「浏览器实时 sender.tab.url 逐字等于 tabs.get + 同源 + 两边都是学习通」。
-  const CH_A = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=1218202540';
-  const CH_B = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=1218202541';
+  const CH_A = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=9000049540';
+  const CH_B = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=9000049541';
   const liveSender = (id, injectedUrl, liveUrl) =>
     ({ id: 'test-extension', tab: { id, url: liveUrl }, frameId: 0, url: injectedUrl });
   {

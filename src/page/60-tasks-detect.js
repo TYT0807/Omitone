@@ -137,7 +137,7 @@
     /**
      * 「这一节的目录项是哪一颗」—— 批次 20-I。
      *
-     * 优先按章节号认（现场形状 `id="cur1209049294"`），拿不到章节号或目录里没有这颗时才退回
+     * 优先按章节号认（现场形状 `id="cur9000049294"`），拿不到章节号或目录里没有这颗时才退回
      * `.posCatalog_active`。退回那一支必须留着：OCS / 移动端布局下目录结构不一样，
      * 而 `_getCurrentChapterId()` 也可能只认得到一个 URL 兜底键。
      */
@@ -604,7 +604,7 @@
       // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
       // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
       if (/insertvideo|insertaudio/.test(module) || /(?:^|\.)(?:mp4|m3u8|avi|mp3|m4a)$/.test(type) || /video|audio/.test(type)) return 'video';
-      // 投票任务点（2026-11-11 实测章节 1209049220 的唯一未完成点）：附件是
+      // 投票任务点（2026-11-11 实测章节 9000049220 的唯一未完成点）：附件是
       // `module:"insertvote"` + `type:"vote"` + `job:true`。这里原先说不出类型，
       // 于是既不建 job、也不进「认不出」的那条去重日志之外的任何分支 ——
       // 整节只剩这一个未完成任务盒，「下一节」被平台拦下 → 去学习 → 回到同一章，

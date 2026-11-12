@@ -119,7 +119,7 @@
     /**
      * 这道弹窗是不是平台在说「这一节还有任务点没做完」。
      *
-     * 实测（2026-11-11 章节 1209049219）它有两种容器，文案都是
+     * 实测（2026-11-11 章节 9000049219）它有两种容器，文案都是
      * 「当前章节还有任务点未完成，是否去完成？」：
      *   `#jobFinishTip.AlertCon02` 里的 `a.graybtn02.marleft10.nextbutton`
      *   `.maskDiv.jobFinishTip` 里的 `a.btnBlue.popMoveDele`

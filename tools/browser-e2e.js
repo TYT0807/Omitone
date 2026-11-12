@@ -819,7 +819,7 @@ function buildDiscussionTwoHtml() {
 }
 
 /**
- * 批次 20-G 的现场形状（2026-11-11 章节 1209049219 一层一层量出来的）：
+ * 批次 20-G 的现场形状（2026-11-11 章节 9000049219 一层一层量出来的）：
  *   顶层 studentstudy → iframe#iframe（knowledge/cards，4 个 `.ans-attach-ct` 任务盒）
  *     └ 盒里 iframe（ananas/modules/insertbbs）
  *          └ 再一层 iframe（mooc-ans/bbscircle）—— `#topicMainDiv[data]` 住在这里
@@ -875,8 +875,8 @@ function buildDiscBoxTopicHtml(id, title) {
  * 批次 20-I「目录标记说的是这一节做没做完吗」的夹具。
  *
  * ⚠️ 逐字抄自用户正在刷的那门课（2026-11-12 实地 `npm run field-shape` 一族探针量出来的）：
- *   `<div class="posCatalog_select posCatalog_active" id="cur1209049293">`
- *     `<span class="posCatalog_name" title="…" onclick="getTeacherAjax('265799647','152708211','1209049293');">13.2.1 …</span>`
+ *   `<div class="posCatalog_select posCatalog_active" id="cur9000049293">`
+ *     `<span class="posCatalog_name" title="…" onclick="getTeacherAjax('900000001','900000002','9000049293');">13.2.1 …</span>`
  *     `<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>`
  *   `</div>`
  *   待完成那一节多一个 `<input type="hidden" value="1" class="jobUnfinishCount">`，
@@ -891,9 +891,9 @@ function buildDiscBoxTopicHtml(id, title) {
  */
 function buildCatalogTopHtml() {
   function item(cid, name, no, tail) {
-    return '<div class="posCatalog_select' + (cid === '1209049293' ? ' posCatalog_active' : '') +
+    return '<div class="posCatalog_select' + (cid === '9000049293' ? ' posCatalog_active' : '') +
       '" id="cur' + cid + '">' +
-      '<span class="posCatalog_name" title="' + name + '" onclick="getTeacherAjax(\'265799647\',\'152708211\',\'' + cid + '\');">' +
+      '<span class="posCatalog_name" title="' + name + '" onclick="getTeacherAjax(\'900000001\',\'900000002\',\'' + cid + '\');">' +
       no + ' ' + name + ' </span>' + tail + '</div>';
   }
   var done = '<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>';
@@ -904,10 +904,10 @@ function buildCatalogTopHtml() {
     '<title>课程学习 - 学习通</title></head><body>' +
     '<div class="prev_title">问题二 这一节还没做完</div>' +
     '<div id="curCatalog"><div id="con1">' +
-    item('1209049293', '问题一 这一节做完了', '13.2.1', done) +
-    item('1209049294', '问题二 这一节还没做完', '13.2.2', pending) +
+    item('9000049293', '问题一 这一节做完了', '13.2.1', done) +
+    item('9000049294', '问题二 这一节还没做完', '13.2.2', pending) +
     '</div></div>' +
-    '<iframe id="iframe" src="/catalog-cards?chapterId=1209049294&courseId=265799647"></iframe>' +
+    '<iframe id="iframe" src="/catalog-cards?chapterId=9000049294&courseId=900000001"></iframe>' +
     '</body></html>';
 }
 
@@ -931,7 +931,7 @@ function buildNoCourseHtml() {
 }
 
 /**
- * 投票任务点（批次 21，2026-11-11 真页实测章节 1209049220 —— 那一节只剩这一个未完成盒）。
+ * 投票任务点（批次 21，2026-11-11 真页实测章节 9000049220 —— 那一节只剩这一个未完成盒）。
  *
  * 真页面是「点封面才长出覆盖层」这条链，四层逐一照抄：
  *   /vote        顶层：只有 #iframe + `window.attachments`（module=insertvote、job=true）
@@ -1083,7 +1083,7 @@ function buildVoteInnerHtml() {
 
 /**
  * 「当前章节还有任务点未完成，是否去完成？」这道门（批次 20-G 实测到的两种形状）。
- * ⚠️ onclick 逐字照抄真页面（`scroll2Job` / `PCount.next('1','1209049219',…)` / `WAY.box.hide()`），
+ * ⚠️ onclick 逐字照抄真页面（`scroll2Job` / `PCount.next('1','9000049219',…)` / `WAY.box.hide()`），
  *    只在前面加一句计数 —— 因为旧代码在这里点到的是「下一节」，而真页面的「下一节」
  *    正是靠这段 onclick 走的；夹具若换成一个不带这些字样的干净按钮，`/scroll2Job/` 那半优先级
  *    根本没被走到（AGENTS §5「夹具要长得像现场，不像实现」）。
@@ -1102,7 +1102,7 @@ function buildUnfinishedPromptHtml() {
     '<a class="jb_btn jb_btn_92 fr fs14 preChapter" href="javascript:void(0)" ' +
     'onclick="window.__pre=(window.__pre||0)+1">上一节</a>' +
     '<a class="jb_btn jb_btn_92 fr fs14 nextChapter" href="javascript:void(0)" ' +
-    'onclick="window.__next=(window.__next||0)+1;closeDeleteWindow();PCount.next(\'1\',\'1209049219\',\'265799647\',\'\')">下一节</a>' +
+    'onclick="window.__next=(window.__next||0)+1;closeDeleteWindow();PCount.next(\'1\',\'9000049219\',\'900000001\',\'\')">下一节</a>' +
     '<a class="btnBlue btn_92_cancel fr fs14 popMoveDel" href="javascript:void(0)" ' +
     'onclick="window.__job=(window.__job||0)+1;scroll2Job()">去学习</a>' +
     '<a class="popClose fr" href="javascript:void(0)" ' +
@@ -1111,7 +1111,7 @@ function buildUnfinishedPromptHtml() {
     '<div id="jobFinishTip" class="AlertCon02" style="display:none">' +
     '<div class="con03 marTop30">当前章节还有任务点未完成，是否去完成？</div>' +
     '<a class="bluebtn02 prebutton nextChapter" href="javascript:void(0)" ' +
-    'onclick="window.__next2=(window.__next2||0)+1;WAY.box.hide();PCount.next(\'1\',\'1209049219\',\'265799647\',\'\')">下一节</a>' +
+    'onclick="window.__next2=(window.__next2||0)+1;WAY.box.hide();PCount.next(\'1\',\'9000049219\',\'900000001\',\'\')">下一节</a>' +
     '<a class="graybtn02 marleft10 nextbutton" href="javascript:void(0)" ' +
     'onclick="window.__job2=(window.__job2||0)+1;WAY.box.hide();scroll2Job()">去学习</a>' +
     '</div>' +
@@ -1467,14 +1467,14 @@ function buildFrameSigInnerHtml() {
   // 避免 document.write 里再套一层引号 —— 那种转义在本仓库已静默吃过好几次亏。
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
     '<title>单元测试</title></head><body>' +
-    '<div id="curKpointId" style="display:none">1218202549</div>' +
+    '<div id="curKpointId" style="display:none">9000049549</div>' +
     '<iframe id="fFirst" src="/frame-sig-first" data="{&quot;jobid&quot;:&quot;job-first&quot;}" style="width:100%;height:420px;border:0"></iframe>' +
     // 第二份卷子：藏在 javascript: 帧里，这一层没有 jobid
     '<iframe id="fPaper" src="javascript:;" style="width:620px;height:400px;border:0"></iframe>' +
     // 真·空帧，作对照：签名应当全是 0
     '<iframe id="fEmpty" src="javascript:void(function(){document.open" style="width:620px;height:400px;border:0"></iframe>' +
     '<script>' +
-    'window.attachments=[{jobid:"job-first",name:"单元测试",property:{job:"true"},otherInfo:"nodeId_1218202549"}];' +
+    'window.attachments=[{jobid:"job-first",name:"单元测试",property:{job:"true"},otherInfo:"nodeId_9000049549"}];' +
     'function seed(id,blocks){var f=document.getElementById(id);var d=f&&f.contentDocument;' +
     'if(!d)return false;d.open();d.write("<div></div>");d.close();' +
     'blocks.forEach(function(b){var e=d.createElement("div");e.className=b[0];e.textContent=b[1];d.body.appendChild(e);});' +
@@ -1522,14 +1522,14 @@ function buildNestedPaperTopHtml() {
 function buildNestedPaperCardsHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
     '<title>知识卡片</title></head><body>' +
-    '<div id="curKpointId" style="display:none">1300000001</div>' +
+    '<div id="curKpointId" style="display:none">9000049001</div>' +
     // 已完成的那条任务点（PPT）：卡片页满屏都是这种字，正是旧判据上当的地方
     '<div class="ans-line-height"><span class="ans-job-finished">任务点已完成</span><span>PPT课件</span></div>' +
     '<div class="ans-job-insert-online"><iframe class="ans-attach-online ans-attach-oc" ' +
     'src="/nested-paper-work" data="{&quot;jobid&quot;:&quot;job-nested&quot;}" ' +
     'style="width:100%;height:520px;border:0"></iframe></div>' +
     '<script>window.attachments=[{jobid:"job-nested",name:"单元测试",property:{job:"true"},' +
-    'otherInfo:"nodeId_1300000001"}];</script></body></html>';
+    'otherInfo:"nodeId_9000049001"}];</script></body></html>';
 }
 
 function buildNestedPaperWorkHtml() {
@@ -5136,7 +5136,7 @@ SCENARIOS.push({
     // 点选顺序决定平台隐藏域 #answer{qid} 的内容，而本文件对多选答案的规范形式
     //（`_canonicalQuizAnswer`）是排序过的。模型给乱序时若按原序点，
     // 隐藏域会写成 "CA" 而不是 "AC" —— 平台按字符串比对就判错。
-    // 现场实测（用户日志）：`answer field 405907427 value= DBAC`（点选是 A→B→C→D），
+    // 现场实测（用户日志）：`answer field 905907427 value= DBAC`（点选是 A→B→C→D），
     // 表现是"顺序碰巧对时能过、不对就判错重交"，也就是用户说的"时灵时不灵"。
     var r4e = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var q=window.__mq;var el=q._element;' +
@@ -7847,7 +7847,7 @@ SCENARIOS.push({
 /**
  * ---- 任务盒的 class 才是平台的说法：三张讨论卡里那张没做完的必须被认出来 ----
  *
- * 现场（2026-11-11，章节 1209049219）：用户肉眼看到"这一节只剩一个讨论没完成"，
+ * 现场（2026-11-11，章节 9000049219）：用户肉眼看到"这一节只剩一个讨论没完成"，
  * 插件却宣布"本节讨论都做完了"→ 点下一节 → 平台回一句「当前章节还有任务点未完成」→ 原地转圈。
  *
  * 量出来的根因：这一族讨论卡所在文档里 `#isFinished` 是**空值**（`finishedKnown` 读不出结论），
@@ -10533,7 +10533,7 @@ SCENARIOS.push({
 /**
  * ---- 批次 21：投票任务点（insertvote）----
  *
- * 现场（2026-11-11 真页实测，章节 1209049220）：那一节只剩一个未完成的任务盒，
+ * 现场（2026-11-11 真页实测，章节 9000049220）：那一节只剩一个未完成的任务盒，
  * 附件是 `module:"insertvote" / type:"vote" / job:true`。旧实现说不出它的类型 ——
  * 不建 job → 这一节带着一个永不完成的盒子 →「下一节」被平台拦下 → 去学习 →
  * 回到同一章。用户报的「又遇到同一个问题了」就是这一条。
@@ -10622,7 +10622,7 @@ SCENARIOS.push({
       JSON.stringify(stale));
 
     // ---- ③-b：src 已经写上、卷子却还没填进来的那段空档（真页日志就是这么红的）----
-    // 实地证据：`vote has nothing to submit {"jobid":"1744278953051380","text":""}` ——
+    // 实地证据：`vote has nothing to submit {"jobid":"9000000000000001","text":""}` ——
     // 平台把带 jobid 的地址写进顶层 `#voteIframe` 与卷子真正渲染出来之间有一段路，
     // 这一眼读到的是"src 对得上、正文是空的"。旧代码在这里当就绪，直接拿空卷子去判"没得提交"。
     var racing = await ctx.client.evaluate(
@@ -10752,7 +10752,7 @@ SCENARIOS.push({
     var r = await ctx.client.evaluate(
       '(function(){' + swap +
       'var app=window._xxtApp;var out={};' +
-      'var pend=document.getElementById("cur1209049294"),done=document.getElementById("cur1209049293");' +
+      'var pend=document.getElementById("cur9000049294"),done=document.getElementById("cur9000049293");' +
       // ---- 夹具自证：形状与现场一致 ----
       'out.activeIsOld=String((document.querySelector(".posCatalog_active")||{}).id||"");' +
       'out.pendTip=String((pend.querySelector(".prevHoverTips")||{}).textContent||"");' +
@@ -10782,7 +10782,7 @@ SCENARIOS.push({
       //    `_switchToNextLearningCard` + `nextUnit` 各一次，最后统一读就会把它们记到 race 头上。
       'out.unitCallsRaced=unitCalls;out.cardCallsRaced=cardCalls;unitCalls=0;cardCalls=0;' +
       // ---- ② 这一节自己也变成「已完成」+ 发现窗口已过 → 目录这条出口照常推进 ----
-      'out.swapDone=swap("1209049294","done");' +
+      'out.swapDone=swap("9000049294","done");' +
       'out.completedAfterWindow=app._isCurrentCompleted();' +
       'out.evidenceAfter=String(app._completionEvidence||"");' +
       'out.skippedAfter=app._skipIfCompleted();' +
@@ -10792,7 +10792,7 @@ SCENARIOS.push({
       'out.completedInsideWindow=app._isCurrentCompleted();' +
       'out.evidenceInside=String(app._completionEvidence||"");' +
       // ---- ④ 换回「待完成」时 `_hasTaskPoint()` 必须重新变 true（yi 与"有任务点"同一口径） ----
-      'out.swapPending=swap("1209049294","pending");' +
+      'out.swapPending=swap("9000049294","pending");' +
       'out.hasTaskPointAgain=app._hasTaskPoint();' +
       'app.nextUnit=oldU;app._switchToNextLearningCard=oldC;' +
       'return out;})()'
@@ -10800,7 +10800,7 @@ SCENARIOS.push({
 
     check('夹具自证：目录项 id 是 cur<chapterId>、active 停在上一节、' +
       '待完成那节的 tip 写「1个待完成任务点」且计数是可读的 input（与实地同一形状）',
-      !!r && r.activeIsOld === 'cur1209049293' && r.pendTip === '1个待完成任务点' &&
+      !!r && r.activeIsOld === 'cur9000049293' && r.pendTip === '1个待完成任务点' &&
       r.doneTip === '已完成' && r.pendingCountIsInput === '1' && r.itemsAreFlat === true &&
       r.erSanAnywhere === 0 && r.hasMainFrame === true && r.visibleBoxes === 0,
       JSON.stringify(r && { activeIsOld: r.activeIsOld, pendTip: r.pendTip, doneTip: r.doneTip,
@@ -10808,8 +10808,8 @@ SCENARIOS.push({
         itemsAreFlat: r.itemsAreFlat, visibleBoxes: r.visibleBoxes }));
     check('前置：这一节页面里确实**一个可见任务点都没有**（否则测不到目录那条支）',
       !!r && r.noVisibleTasks === true, JSON.stringify(r && r.noVisibleTasks));
-    check('按章节号认目录项（拿到的是这一节 cur1209049294，不是 active 的上一节）',
-      !!r && r.itemForChapter === 'cur1209049294', JSON.stringify(r && r.itemForChapter));
+    check('按章节号认目录项（拿到的是这一节 cur9000049294，不是 active 的上一节）',
+      !!r && r.itemForChapter === 'cur9000049294', JSON.stringify(r && r.itemForChapter));
     check('jobUnfinishCount 读成数字 1；已完成那节没有这个 input → NaN（不冒充否决）',
       !!r && r.uncPend === '1' && r.uncDone === 'NaN', JSON.stringify(r && { uncPend: r.uncPend, uncDone: r.uncDone }));
     check('「N个待完成任务点」= 这一节**有**任务点：_hasTaskPoint() 为 true（旧判据在这条上方向相反）',
