@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '0d2e6b3852';
+var OMITONE_CODE_REV = '595e1e2d76';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -4498,6 +4498,15 @@ var OMITONE_CODE_REV = '0d2e6b3852';
 
       var kind = this._kindFromAttachment(attachment);
       if (!kind) {
+        // 讨论任务点说不出 kind 是设计如此（`insertbbs` 既不是视频也不是阅读/测验），
+        // 它归讨论域那条独立 tick 链管 —— 原先这里和"真认不出类型"共用一句
+        // 「unsupported task point type, skipped」，把"换了人做"报成"没人做"，
+        // 而任务盒名字里没有「讨论」二字的那一族看起来就像被无声跳过了（批次 29，
+        // 与准入闸「讨论任务点…由讨论链路处理」那条原因同一个口径）。
+        if (this._isDiscussionAttachment(attachment)) {
+          this._logDiscussionHandoffOnce(attachment);
+          return null;
+        }
         // 不要静默丢弃：任务点被无声跳过时，用户只能看到"这个任务点没做"，
         // 完全无从判断是识别失败还是不支持的题型。这里留一条去重日志。
         this._logUnsupportedJobOnce(module, type);
@@ -8228,6 +8237,37 @@ var OMITONE_CODE_REV = '0d2e6b3852';
         String(property.type || attachment.type || '');
       if (/discuss|discus|bbs|topic|forum|thread|talk/i.test(meta)) return true;
       return /讨论|话题|回帖|发帖/.test(this._discussionNameOf(attachment));
+    },
+
+
+    /**
+     * 「这份附件是讨论任务点，但它不归建 job 那条链」的去重日志（批次 29）。
+     *
+     * 为什么单独写一条：`insertbbs` 在 `_kindFromAttachment` 里说不出类型（设计如此 ——
+     * 讨论既不是视频也不是阅读/测验），于是 `_buildAttachmentOnlyJob` 落到
+     * 「unsupported task point type, skipped」那句话上。可讨论**本来就归本域那条
+     * 独立 tick 链管**，把"换了人做"报成"没人做"，排查时会顺着这条根本不存在的路找。
+     * 判据只看附件自己说的 module/type（任务盒名字里有没有「讨论」二字都算），
+     * 与 `_isDiscussionAttachment` 同一份，不再开第二处判据。
+     *
+     * ⚠️ 开关关掉时是**另一回事**：那时这条链整个不进，这一族才是真的没人做，
+     * 必须用 warn 说明是开关挡的，否则用户只看到"讨论没做、日志说 skipped"。
+     */
+    _logDiscussionHandoffOnce: function (attachment) {
+      var off = !!(this.configs && this.configs.enableDiscussion === false);
+      var key = off ? 'off' : 'on';
+      if (this._discussionHandoffLogged === key) return;
+      this._discussionHandoffLogged = key;
+      var property = (attachment && attachment.property) || {};
+      emitRuntimeLog(off ? 'warn' : 'info', off
+        ? 'discussion task point skipped by switch'
+        : 'discussion task point handed to discussion link', {
+        name: this._discussionNameOf(attachment).slice(0, 40),
+        module: String(property.module || (attachment && attachment.module) || '(空)'),
+        hint: off
+          ? '「任务点类型」里讨论开关是关的 —— 这一类任务点既不发帖也不会记成做完，平台那边会一直挂着未完成'
+          : '讨论任务点不走附件建 job 那条链，由讨论链路自己进话题页发一条'
+      });
     },
 
 

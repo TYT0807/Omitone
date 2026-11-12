@@ -673,6 +673,15 @@
 
       var kind = this._kindFromAttachment(attachment);
       if (!kind) {
+        // 讨论任务点说不出 kind 是设计如此（`insertbbs` 既不是视频也不是阅读/测验），
+        // 它归讨论域那条独立 tick 链管 —— 原先这里和"真认不出类型"共用一句
+        // 「unsupported task point type, skipped」，把"换了人做"报成"没人做"，
+        // 而任务盒名字里没有「讨论」二字的那一族看起来就像被无声跳过了（批次 29，
+        // 与准入闸「讨论任务点…由讨论链路处理」那条原因同一个口径）。
+        if (this._isDiscussionAttachment(attachment)) {
+          this._logDiscussionHandoffOnce(attachment);
+          return null;
+        }
         // 不要静默丢弃：任务点被无声跳过时，用户只能看到"这个任务点没做"，
         // 完全无从判断是识别失败还是不支持的题型。这里留一条去重日志。
         this._logUnsupportedJobOnce(module, type);

@@ -8,11 +8,11 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（48 个）：
+ * 本段的方法（49 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
  *   _unmarkDiscussionDone、_discussionPendingKey、_getDiscussionTries、
  *   _bumpDiscussionTry、_migrateDiscussionDoneOnce、_bindDiscussionOutcome、
- *   _discussionNameOf、_isDiscussionAttachment、
+ *   _discussionNameOf、_isDiscussionAttachment、_logDiscussionHandoffOnce、
  *   _findDiscussionEntry、_isDiscussionContext、_discussionFinishedFlagOf、
  *   _scopedDiscussionFinishedFlag、_discussionBoxFinishedFlag、
  *   _discussionKeyOf、_collectDiscussionTargets、_findDiscussionModuleFrames、
@@ -172,6 +172,37 @@
         String(property.type || attachment.type || '');
       if (/discuss|discus|bbs|topic|forum|thread|talk/i.test(meta)) return true;
       return /讨论|话题|回帖|发帖/.test(this._discussionNameOf(attachment));
+    },
+
+
+    /**
+     * 「这份附件是讨论任务点，但它不归建 job 那条链」的去重日志（批次 29）。
+     *
+     * 为什么单独写一条：`insertbbs` 在 `_kindFromAttachment` 里说不出类型（设计如此 ——
+     * 讨论既不是视频也不是阅读/测验），于是 `_buildAttachmentOnlyJob` 落到
+     * 「unsupported task point type, skipped」那句话上。可讨论**本来就归本域那条
+     * 独立 tick 链管**，把"换了人做"报成"没人做"，排查时会顺着这条根本不存在的路找。
+     * 判据只看附件自己说的 module/type（任务盒名字里有没有「讨论」二字都算），
+     * 与 `_isDiscussionAttachment` 同一份，不再开第二处判据。
+     *
+     * ⚠️ 开关关掉时是**另一回事**：那时这条链整个不进，这一族才是真的没人做，
+     * 必须用 warn 说明是开关挡的，否则用户只看到"讨论没做、日志说 skipped"。
+     */
+    _logDiscussionHandoffOnce: function (attachment) {
+      var off = !!(this.configs && this.configs.enableDiscussion === false);
+      var key = off ? 'off' : 'on';
+      if (this._discussionHandoffLogged === key) return;
+      this._discussionHandoffLogged = key;
+      var property = (attachment && attachment.property) || {};
+      emitRuntimeLog(off ? 'warn' : 'info', off
+        ? 'discussion task point skipped by switch'
+        : 'discussion task point handed to discussion link', {
+        name: this._discussionNameOf(attachment).slice(0, 40),
+        module: String(property.module || (attachment && attachment.module) || '(空)'),
+        hint: off
+          ? '「任务点类型」里讨论开关是关的 —— 这一类任务点既不发帖也不会记成做完，平台那边会一直挂着未完成'
+          : '讨论任务点不走附件建 job 那条链，由讨论链路自己进话题页发一条'
+      });
     },
 
 

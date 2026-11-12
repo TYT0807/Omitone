@@ -468,6 +468,28 @@ function checkUserEntryPoints() {
     problemsHere.push('文档里有指向不存在文件的链接（点开就是 404）: ' + broken.join(', '));
   }
 
+  // 3b) README 里的 `<img>` **不许用相对路径**（GitHub 只重写 markdown 图片，不重写 HTML 的）
+  //
+  // 真实故障：门面两张弹窗截图写成 `<img src="docs/images/popup.png">`。
+  // GitHub 的渲染器把 markdown `![]()` 的相对路径改写成 raw 直链，
+  // 却**原样留着 HTML `<img src>`** —— 浏览器于是按当前页面地址去拼，
+  // 请求打到 `https://github.com/TYT0807/Omitone/blob/main/docs/images/popup.png`，
+  // 那是一整张网页而不是 PNG，**图片当场裂掉、什么错都不报**。
+  // 上面第 3 条只查"文件在不在仓库里"，它一直是通过的 —— 所以这条单独查**能不能渲染**。
+  // 写法只有两种是对的：绝对 raw 直链，或改用 markdown `![alt](路径)` 语法。
+  var imgRe = /<img[^>]+src\s*=\s*["']([^"']+)["']/gi;
+  var badImg = [];
+  var imgM;
+  while ((imgM = imgRe.exec(readme))) {
+    var src = imgM[1];
+    if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.charAt(0) === '/') continue; // 绝对地址 / 站根路径
+    badImg.push(src);
+  }
+  if (badImg.length) {
+    problemsHere.push('README.md 的 HTML <img> 用了相对路径（GitHub 不会重写，页面上就是裂图）: ' +
+      badImg.join(', ') + ' —— 改成绝对 raw 直链，或换成 markdown 图片语法');
+  }
+
   // 4) 说明书源文件里不许写死带版本号的压缩包名
   var hardcoded = read('docs/manual.html').match(/omitone-\d+\.\d+\.\d+\.zip/);
   if (hardcoded) {

@@ -5481,6 +5481,76 @@ SCENARIOS.push({
     check('不支持的 task point 会被记录（便于排查"任务点没做"）',
       !!(logged && logged['insertcard|']), JSON.stringify(logged));
 
+    // ---- 批次 29：「只有附件、任务盒名字里没有『讨论』二字」那一族的口径 ----
+    // 现场形状（批次 20 复述）：附件 `module:"insertbbs"`，名字里没有讨论字样。
+    // 讨论**本来就归讨论域那条独立 tick 链**（`_isDiscussionAttachment` 只看 module/type，
+    // 与名字无关），可 `_buildAttachmentOnlyJob` 说不出 kind 时把它和"真认不出类型"
+    // 共用一句 `unsupported task point type, skipped` —— 把"换了人做"写成"没人做"，
+    // 排查会顺着这条根本不存在的放弃路径找。反过来，用户把讨论开关关掉才是**真的**
+    // 没人发帖，那一句必须单独说得出来（warn，不是 info）。
+    var b29 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b29=[];' +
+      'if(!window.__b29Hook){window.__b29Hook=1;' +
+      '  window.addEventListener("message",function(e){var m=e.data;' +
+      '    if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b29.push(m);});}' +
+      // 两道去重计数与共享配置都由本场景自己钉住（扩展存储整轮共用，别依赖上一个场景跑过）
+      'app._unsupportedJobLogged=Object.create(null);' +
+      'app._discussionHandoffLogged=null;' +
+      'var prevDisc=app.configs.enableDiscussion;' +
+      'app.configs.enableDiscussion=true;' +
+      'var att={job:true,name:"第一章 第二节",property:{module:"insertbbs"}};' +
+      'var card={job:true,name:"卡片任务",property:{module:"insertcard"}};' +
+      'var r={nameBacked:app._discussionNameOf(att),isDisc:app._isDiscussionAttachment(att)};' +
+      'r.built=app._buildAttachmentOnlyJob(att)?1:0;' +
+      'r.builtTwice=app._buildAttachmentOnlyJob(att)?1:0;' +
+      'r.cardBuilt=app._buildAttachmentOnlyJob(card)?1:0;' +   // 对照件也不建 job，但走的是另一句日志
+      'app._discussionHandoffLogged=null;' +
+      'app.configs.enableDiscussion=false;' +
+      'r.offBuilt=app._buildAttachmentOnlyJob(att)?1:0;' +
+      'app.configs.enableDiscussion=prevDisc;' +
+      'r.discEntry=String(prevDisc);' +
+      'r.discRestored=String(app.configs.enableDiscussion);' +
+      'return r;})()'
+    );
+    // 日志走 postMessage，异步送达 —— 不等一拍就读，"没发"与"没等到"长得一模一样
+    await new Promise(function (resolve) { setTimeout(resolve, 400); });
+    var b29Log = await ctx.client.evaluate(
+      '(function(){var logs=window.__b29||[];var rows=[];' +
+      'logs.forEach(function(m){rows.push({level:String(m.level||""),message:String(m.message||""),' +
+      'module:m.meta&&m.meta.module,name:m.meta&&m.meta.name,hint:m.meta&&m.meta.hint||""});});' +
+      'window.__b29=[];return {seen:logs.length,rows:rows};})()'
+    );
+    function b29Rows(message) {
+      return (b29Log.rows || []).filter(function (r) { return r.message === message; });
+    }
+    check('夹具自证：这一族的附件名字里确实没有「讨论」二字，而判据仍认得出它是讨论',
+      b29.nameBacked === '第一章 第二节' && !/讨论|话题|回帖|发帖/.test(b29.nameBacked) &&
+      b29.isDisc === true, JSON.stringify(b29));
+    check('讨论附件不在这条链建 job（两次调用与关掉开关时都不建）',
+      b29.built === 0 && b29.builtTwice === 0 && b29.offBuilt === 0, JSON.stringify(b29));
+    check('它不再被记成「unsupported task point type, skipped」——那句里不许出现 insertbbs',
+      b29Rows('unsupported task point type, skipped').every(function (r) { return r.module !== 'insertbbs'; }),
+      JSON.stringify(b29Rows('unsupported task point type, skipped')));
+    check('改记成「交给讨论链路」的一条（info，带附件自己说的 module 与名字）',
+      b29Rows('discussion task point handed to discussion link').length === 1 &&
+      b29Rows('discussion task point handed to discussion link')[0].level === 'info' &&
+      b29Rows('discussion task point handed to discussion link')[0].module === 'insertbbs',
+      JSON.stringify(b29Rows('discussion task point handed to discussion link')));
+    check('同一状态连问两次只播一条（去重，别把日志刷成洪水）',
+      b29Log.seen > 0 && b29Rows('discussion task point handed to discussion link').length === 1,
+      JSON.stringify({ seen: b29Log.seen, rows: b29Log.rows }));
+    check('对照仍然有效：真认不出类型的 insertcard 照样留下可查的 skipped 记录',
+      b29Rows('unsupported task point type, skipped').some(function (r) { return r.module === 'insertcard'; }),
+      JSON.stringify(b29Rows('unsupported task point type, skipped')));
+    check('讨论开关关掉时另报一条 warn，明说是开关挡的（那才是真的没人发帖）',
+      b29Rows('discussion task point skipped by switch').length === 1 &&
+      b29Rows('discussion task point skipped by switch')[0].level === 'warn' &&
+      /开关/.test(b29Rows('discussion task point skipped by switch')[0].hint),
+      JSON.stringify(b29Rows('discussion task point skipped by switch')));
+    check('本场景把进门前读到的 enableDiscussion 原样还回去（自己钉状态、不把临时的 false 留给后面）',
+      b29.discRestored === b29.discEntry, JSON.stringify(b29));
+
     // ---- R1（2026-11-10「所有题目都被跳过」）：无主帧 + 顶层页认不出任何标记 ----
     // `_hasTaskPoint()` 的返回值同时喂三条跳过出口（`_isCurrentCompleted` →
     // `_skipIfCompleted` → nextUnit、`_runTick` 尾部跳过分支、`_locateDocumentTask`

@@ -79,13 +79,13 @@
 其中「怎样才算对」是专门给你这种"不知道屏幕上这算不算正常"的情况写的。</sub>
 
 <p align="center">
-  <a href="docs/images/popup.png"><img src="docs/images/popup.png" alt="设置弹窗（真实截图）" width="360"></a><br>
+  <a href="https://github.com/TYT0807/Omitone/blob/main/docs/images/popup.png"><img src="https://raw.githubusercontent.com/TYT0807/Omitone/main/docs/images/popup.png" alt="设置弹窗（真实截图）" width="360"></a><br>
   <sub><strong>默认的「精简」档</strong> —— 顶部是版本号与运行状态，下面按「播放 / 任务点 / 答题 …」
   分组，用不到的直接折叠，它还会记住你折了哪些。<br>点图可看原图（712×1520）。</sub>
 </p>
 
 <p align="center">
-  <a href="docs/images/popup-fancy.png"><img src="docs/images/popup-fancy.png" alt="精美模式：小角色与好感度养成（真实截图）" width="360"></a><br>
+  <a href="https://github.com/TYT0807/Omitone/blob/main/docs/images/popup-fancy.png"><img src="https://raw.githubusercontent.com/TYT0807/Omitone/main/docs/images/popup-fancy.png" alt="精美模式：小角色与好感度养成（真实截图）" width="360"></a><br>
   <sub>切到<strong>「精美」</strong>档会多一个小角色：摸摸头、换装换表情，还有<strong>好感度养成</strong>
   （她身旁的「初识」就是等级铭牌）—— 刷课时她也会跟到学习页右下角陪你。纯装饰，不影响刷课。<br>
   点图可看原图（712×1520）。</sub>
@@ -696,7 +696,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 91 个场景，935 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 91 个场景，943 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1225,7 +1225,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（226 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（115 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（91 个场景 / 935 项）
+npm run e2e      # 真实 Edge 功能交叉检验（91 个场景 / 943 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
