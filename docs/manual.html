@@ -1147,6 +1147,17 @@
       <td>先确认是不是<b>没刷新页面</b>（只重载了扩展）。刷新学习通页面再看日志第一行有没有 <code>start</code>。</td>
     </tr>
     <tr>
+      <td><b>页面隔一会儿就自己整页刷新一次，下面的录音 / 音频任务点一直出不来</b></td>
+      <td>这一页的内容被平台放到了一个插件<b>读不到</b>的地方，日志里那条 <code>main frame is cross-origin</code>
+          会分清是哪一种：<br>
+          ① <b>还在课程站自己的另一台机器上</b>（平台的验证 / 防刷中间页）—— 刷新有机会解决，
+             但现在<b>最多刷 3 次就停半小时</b>，不会再整夜反复刷。<br>
+          ② <b>被换成了另一家的地址</b> —— 这种<b>刷新没用</b>，插件已经改成一次都不刷。
+             按顺序查这三样：浏览器自带的<b>跟踪防范 / 广告拦截</b>、装的<b>拦截类扩展</b>、
+             <b>网络代理或加速器</b>；都排除掉之后<b>退出登录再重新进一次</b>。
+             日志那一行会把这一步直接写出来，不用猜。</td>
+    </tr>
+    <tr>
       <td><b>AI 一直读不到题</b></td>
       <td>① 日志里有没有 <code>quiz scan found 0 questions</code>；<br>
           ② 密钥是否真的保存上了（最常被忽略 —— 确认「检测 API 连接」能过）；<br>
@@ -1260,6 +1271,13 @@
       <td>这一页的任务点<b>一个都没法做</b>，所以直接进下一节。
           括号里的 <code>rejects</code> 会<b>逐条说明每一帧为什么被拒</b>（认不出类型 / 已经做过 / 本轮搜过）——
           遇到"某节被跳过"时，先看这一行。</td>
+    </tr>
+    <tr>
+      <td><code>main frame is cross-origin</code><br><code>study search skipped: main frame document unreadable</code></td>
+      <td>这一页的<b>内容区被换到了插件读不到的地方</b>，所以任务点一个都做不了。
+          两句都会写 <code>sameSite:</code> —— <b>true</b> 是平台自己的验证页（会最多刷 3 次再停半小时）；
+          <b>false</b> 是被换成了<b>另一家</b>的地址（刷新没用，一次都不刷），
+          查拦截 / 代理 / 重新登录，见上面那张表。</td>
     </tr>
     <tr>
       <td><code>discussion reply confirmed</code><br><code>discussion reply not confirmed</code></td>

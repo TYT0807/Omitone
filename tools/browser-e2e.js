@@ -1130,6 +1130,33 @@ function buildBlankHtml() {
     '<title>课程学习 - 学习通</title></head><body><div id="iframe"></div></body></html>';
 }
 
+/**
+ * ---- 批次 35：主内容帧被换成跨域地址时的那两页 ----
+ *
+ * 现场形状（同学那边「看不到下面那个录音，然后卡死了」）：顶层还是课程页，
+ * `#iframe` 的 src 被平台换走了 → JS 读不到里面 → page.js 什么都做不了，
+ * 只能整页刷新。刷新本身会**抹掉页面内存**，所以这一族的全部风险都在"账记在哪儿"。
+ *
+ * 两种跨域必须分开测，因为修法完全不同：
+ *   同站（mooc2 ≠ mooc1，站点相同、origin 不同）→ 多半是验证/反爬中间页，刷新有机会解决 → 有预算地刷
+ *   别家（localhost）                       → 刷完还是它                        → 一次都不刷
+ * ⚠️ 别用"同 host 换端口"造跨域：那一族在某些引擎里会留在可读的 about:blank 上，
+ *    判据会直接变成空测。换 host 才是真的读不到。
+ */
+function buildBlockedInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>内容帧</title></head><body><div class="content">这里是被换走的内容帧</div></body></html>';
+}
+
+function buildBlockedFrameTopHtml(frameHost) {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="' + frameHost + PORT + '/blocked-inner" ' +
+    'style="width:100%;height:700px;border:0"></iframe>' +
+    '</div></body></html>';
+}
+
 /** 学习通风格弹窗验证码 */
 function buildCaptchaDialogHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -1340,6 +1367,10 @@ var MOCK_PAGES = {
   '/media': buildMediaHtml,
   '/media-90': buildNinetyPercentHtml,
   '/blank': buildBlankHtml,
+  // 批次 35：主内容帧跨域的三页（两种跨域 + 被换走的那一页本身）
+  '/blocked-inner': buildBlockedInnerHtml,
+  '/blocked-same-site': function () { return buildBlockedFrameTopHtml('http://mooc2.chaoxing.com:'); },
+  '/blocked-off-site': function () { return buildBlockedFrameTopHtml('http://localhost:'); },
   '/captcha-dialog': buildCaptchaDialogHtml,
   '/captcha-verify': buildStandaloneCaptchaHtml,
   '/discussion': buildDiscussionHtml,
@@ -8494,6 +8525,299 @@ SCENARIOS.push({
   }
 });
 
+/**
+ * ---- 批次 35 ①：主内容帧跨域（同站墙）时，整页刷新必须有预算 ----
+ *
+ * 现场（同学那边「看不到下面那个录音，然后卡死了，我们的又能刷」）：顶层还是课程页，
+ * `#iframe` 被平台换成**同站另一台机器**，JS 读不到里面。旧实现这时每 20 秒 `location.reload()`
+ * 一次、**永远刷不完** —— 因为"已经刷过几次"记在页面内存里，而自己那一下刷新正好把它抹掉。
+ * 页面下方那些任务点永远来不及渲染出来，看上去就是"插件在发呆、页面一直在跳"。
+ *
+ * ⚠️ 这里的"一页的一生"是**手工造**的（内存计数归零 + 墙已挂 21 秒），不是真刷 6 次：
+ *   真刷一次整页会打断后面的步骤，而最贵的动作本身就是被测对象 —— 与 14-A 验证码墙同一做法。
+ *   "预算确实活得过一次真刷新"由**另一条场景**单独证（见下面 ③），两条合起来才闭合。
+ */
+SCENARIOS.push({
+  name: '主内容帧跨域时整页刷新有预算（同站墙）',
+  path: '/blocked-same-site',
+  run: async function (ctx) {
+    // 必须等帧真的导航到跨域地址上：没导航完时它还是可读的 about:blank，判据会空测
+    var unreadable = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a&&a._getMainFrame();' +
+      'return !!f&&!a._isFrameSameOrigin(f);})()', 12000);
+
+    var setup = JSON.parse(await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var KEY="omitone:blocked-reload-budget";' +
+      'var w={lives:0,reloads:0,got:[]};' +
+      'window.__blockedWall=w;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});' +
+      'w.read=function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}")||{};}catch(e){return {};}};' +
+      'w.seed=function(reloads,resumeAt){try{sessionStorage.setItem(KEY,JSON.stringify(' +
+      '  {reloads:reloads,resumeAt:resumeAt,href:String(location.href||"")}));}catch(e){}};' +
+      'w.metas=function(name){return w.got.filter(function(m){return m.message===name;})' +
+      '  .map(function(m){return m.meta||{};});};' +
+      // 刷新换成计数器盯住（它与 14-A 的 `_reloadForStandaloneCaptcha` 是同一个理由）
+      'app._reloadBlockedPage=function(){w.reloads++;};' +
+      'w.life=function(cfg){w.lives++;app._crossOriginLogAt=0;' +
+      '  app.configs=Object.assign({},app.configs,cfg||{});' +
+      '  app._mainFrameCrossOriginSince=Date.now()-21000;' +
+      '  var blocked=app._checkBlockedByCrossOrigin();' +
+      '  return JSON.stringify({blocked:blocked,reloads:w.reloads,budget:w.read()});};' +
+      'var f=app._getMainFrame(),o=app._frameOriginOf(f);' +
+      'return JSON.stringify({seam:typeof app._reloadBlockedPage==="function",' +
+      '  loopStopped:!app._tickLoopInterval&&!app._tickRunning, ' +
+      '  readable:app._isFrameSameOrigin(f),srcOrigin:o,sameSite:app._isFrameSameSiteAsTop(o),' +
+      '  topHost:String(location.hostname||""),ready:String(document.readyState)});})()'
+    ));
+
+    check('夹具自证：#iframe 是**同站不同源**、JS 真的读不到它（否则整条场景是空测）',
+      unreadable === true && setup.readable === false && setup.sameSite === true &&
+      setup.seam === true && setup.ready === 'complete' &&
+      setup.loopStopped === true &&
+      setup.topHost === 'mooc1.chaoxing.com' &&
+      /^http:\/\/mooc2\.chaoxing\.com:\d+$/.test(String(setup.srcOrigin)),
+      JSON.stringify(setup));
+
+    var lives = [];
+    for (var k = 0; k < 6; k++) {
+      lives.push(JSON.parse(await ctx.client.evaluate('window.__blockedWall.life()')));
+    }
+    // 关掉暂停、只把开关拨到"不刷新"，再走一轮 —— 否则这一轮会被上一轮的暂停挡着，
+    // 测的就不是开关，而是预算（AGENTS §5：一条断言只破一件事）
+    await ctx.client.evaluate('window.__blockedWall.seed(0,0)');
+    var switchOff = JSON.parse(
+      await ctx.client.evaluate('window.__blockedWall.life({blockedReload:false})'));
+    await sleep(400);   // 日志走 postMessage，不等一拍读到的是空缓冲
+    var ledger = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__blockedWall;return JSON.stringify({' +
+      'blocked:w.metas("blocked page unreachable from JS, reload to recover"),' +
+      'spent:w.metas("blocked page reload round spent, pausing reloads"),' +
+      'every:w.metas("main frame is cross-origin")});})()'
+    ));
+
+    check('每一轮都判「这一页被挡住、本轮不继续跑」（返回 true = tick 提前收手）',
+      lives.every(function (l) { return l.blocked === true; }) && switchOff.blocked === true,
+      JSON.stringify(lives.map(function (l) { return l.blocked; })));
+
+    check('一轮 3 次刷完就收手：第 4 轮起一次都不再刷（旧写法是每 20 秒刷一次、永远刷不完）',
+      lives[0].reloads === 1 && lives[1].reloads === 2 && lives[2].reloads === 3 &&
+      lives[3].reloads === 3 && lives[4].reloads === 3 && lives[5].reloads === 3,
+      JSON.stringify(lives.map(function (l) { return l.reloads; })));
+
+    check('刷新账本按页累加：第 1 / 2 / 3 轮各写下一次（不是每次都从 0 开始）',
+      Number(lives[0].budget.reloads) === 1 && Number(lives[1].budget.reloads) === 2 &&
+      Number(lives[2].budget.reloads) === 3,
+      JSON.stringify(lives.slice(0, 3).map(function (l) { return l.budget; })));
+
+    check('刷满一轮写下 30 分钟暂停，并把次数清零准备下一轮',
+      (ledger.spent || []).length === 1 && Number(lives[3].budget.reloads) === 0 &&
+      Number(lives[3].budget.resumeAt) > Date.now() + 29 * 60000,
+      JSON.stringify({ spent: ledger.spent, budget: lives[3].budget }));
+
+    check('暂停期间即使内存计数归零、墙照挂 21 秒，也一次都不刷',
+      lives[4].reloads === 3 && lives[5].reloads === 3 &&
+      Number(lives[5].budget.resumeAt) === Number(lives[3].budget.resumeAt),
+      JSON.stringify({ reloads: [lives[4].reloads, lives[5].reloads], budget: lives[5].budget }));
+
+    check('设置里关掉「被挡住时刷新页面」后一次都不刷',
+      switchOff.reloads === 3 && Number(switchOff.budget.reloads) === 0 &&
+      Number(switchOff.budget.resumeAt) === 0,
+      JSON.stringify(switchOff));
+
+    check('刷新日志逐条点名第几次、上限 3 次',
+      (ledger.blocked || []).length === 3 &&
+      ledger.blocked.map(function (m) { return m.reload; }).join(',') === '1,2,3' &&
+      ledger.blocked.every(function (m) { return m.of === 3; }),
+      JSON.stringify(ledger.blocked));
+
+    var everyCross = ledger.every || [];
+    check('跨域日志每一轮都有一条，且写明这是同站的墙、刷新有机会解决',
+      everyCross.length === 7 && everyCross.every(function (m) { return m.sameSite === true; }) &&
+      String((everyCross[0] || {}).hint || '').indexOf('刷新有机会解决') !== -1,
+      JSON.stringify({ n: everyCross.length, first: everyCross[0] }));
+
+    check('暂停期间日志要说清还剩多久（否则用户只看到一直在卡）',
+      everyCross.slice(4).some(function (m) { return Number(m.resumeInMs) > 28 * 60000; }),
+      JSON.stringify(everyCross.map(function (m) { return m.resumeInMs; })));
+
+    check('日志只带 origin、不带路径（学习通的地址里全是 clazzid / 章节号，日志会被复制发出去）',
+      everyCross.length > 0 && everyCross.every(function (m) {
+        var o = String(m.srcOrigin || '');
+        return o.indexOf('blocked-inner') === -1 && /^http:\/\/mooc2\.chaoxing\.com:\d+$/.test(o);
+      }),
+      JSON.stringify(everyCross.slice(0, 2).map(function (m) { return m.srcOrigin; })));
+
+    // ---- 同一刻的"一个帧都没配上"必须自己说出原因（现场那格 searchedCount:0 就是这么查的）----
+    await ctx.client.evaluate('(function(){window._xxtApp._frameUnreadableLogAt=0;})()');
+    var searched = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,r;try{r=app._searchChaoxingJobOcs([]);}catch(e){}' +
+      'return JSON.stringify({nullReturned:r===null});})()'
+    ));
+    await sleep(400);
+    var unread = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__blockedWall;' +
+      'return JSON.stringify(w.metas("study search skipped: main frame document unreadable"));})()'
+    ));
+    check('主帧读不到时，任务点查找除了返回"没活干"，还要打出是哪一站（同站 / 别家）',
+      searched.nullReturned === true && unread.length >= 1 && unread[0].sameSite === true &&
+      /^http:\/\/mooc2\.chaoxing\.com:\d+$/.test(String(unread[0].srcOrigin || '')),
+      JSON.stringify({ searched: searched, unread: unread }));
+
+    // ---- 墙过了（帧重新读得通）：那笔刷新账必须作废 ----
+    await ctx.client.evaluate(
+      '(function(){var w=window.__blockedWall;w.seed(2,Date.now()+30*60000);' +
+      'var f=window._xxtApp._getMainFrame();f.src="/blocked-inner";})()'
+    );
+    var readableAgain = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a._getMainFrame();' +
+      'if(!f||!a._isFrameSameOrigin(f))return false;' +
+      'var d=null;try{d=f.contentDocument;}catch(e){return false;}' +
+      'return !!(d&&d.body&&String(d.body.innerText||"").indexOf("被换走")!==-1);})()', 12000);
+    var healed = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return JSON.stringify({blocked:app._checkBlockedByCrossOrigin(),' +
+      '  budget:window.__blockedWall.read()});})()'
+    ));
+    check('帧重新读得通 = 墙过了：不再判被挡住，且把上一面墙的刷新账整个作废',
+      readableAgain === true && healed.blocked === false &&
+      Number(healed.budget.reloads) === 0 && Number(healed.budget.resumeAt) === 0,
+      JSON.stringify({ readableAgain: readableAgain, healed: healed }));
+  }
+});
+
+/**
+ * ---- 批次 35 ②：内容帧被换成**别家**地址时，一次都不许刷 ----
+ *
+ * 另一半根因：刷新对这一族是白刷（刷完还是那一家的页面），却每 20 秒把整页推倒一次。
+ * 现场最常见的来源是浏览器自己的跟踪防范 / 广告拦截扩展 / 网络代理把内容帧换掉了 ——
+ * 这些都不是插件能修的，所以这里要的是**停在原地、把话说清楚**，不是反复刷。
+ */
+SCENARIOS.push({
+  name: '内容帧被换成别家地址时一次都不刷',
+  path: '/blocked-off-site',
+  run: async function (ctx) {
+    var unreadable = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a&&a._getMainFrame();' +
+      'return !!f&&!a._isFrameSameOrigin(f);})()', 12000);
+
+    var setup = JSON.parse(await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var KEY="omitone:blocked-reload-budget";' +
+      'var w={reloads:0,got:[]};' +
+      'window.__blockedWall=w;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});' +
+      'w.read=function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}")||{};}catch(e){return {};}};' +
+      'w.metas=function(name){return w.got.filter(function(m){return m.message===name;})' +
+      '  .map(function(m){return m.meta||{};});};' +
+      'app._reloadBlockedPage=function(){w.reloads++;};' +
+      'w.life=function(){app._crossOriginLogAt=0;' +
+      '  app.configs=Object.assign({},app.configs,{blockedReload:true});' +
+      '  app._mainFrameCrossOriginSince=Date.now()-21000;' +
+      '  return JSON.stringify({blocked:app._checkBlockedByCrossOrigin(),' +
+      '    reloads:w.reloads,budget:w.read()});};' +
+      'var f=app._getMainFrame(),o=app._frameOriginOf(f);' +
+      'return JSON.stringify({loopStopped:!app._tickLoopInterval&&!app._tickRunning,' +
+      '  readable:app._isFrameSameOrigin(f),srcOrigin:o,' +
+      '  sameSite:app._isFrameSameSiteAsTop(o),topHost:String(location.hostname||"")});})()'
+    ));
+
+    check('夹具自证：内容帧确实被换成了**别家**（localhost），与顶层不同站、JS 读不到',
+      unreadable === true && setup.readable === false && setup.sameSite === false &&
+      setup.loopStopped === true &&
+      setup.topHost === 'mooc1.chaoxing.com' &&
+      /^http:\/\/localhost:\d+$/.test(String(setup.srcOrigin)),
+      JSON.stringify(setup));
+
+    var lives = [];
+    for (var k = 0; k < 3; k++) {
+      lives.push(JSON.parse(await ctx.client.evaluate('window.__blockedWall.life()')));
+    }
+    await sleep(400);
+    var ledger = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__blockedWall;return JSON.stringify({' +
+      'blocked:w.metas("blocked page unreachable from JS, reload to recover"),' +
+      'spent:w.metas("blocked page reload round spent, pausing reloads"),' +
+      'every:w.metas("main frame is cross-origin")});})()'
+    ));
+
+    check('别家占着内容帧时依然判「本轮不继续跑」（不能装作没事继续往下刷）',
+      lives.every(function (l) { return l.blocked === true; }),
+      JSON.stringify(lives.map(function (l) { return l.blocked; })));
+
+    check('别家的墙一次都不刷：刷新计数与刷新日志、刷新账本全是空的',
+      lives[2].reloads === 0 && (ledger.blocked || []).length === 0 &&
+      (ledger.spent || []).length === 0 && Number(lives[2].budget.reloads || 0) === 0 &&
+      Number(lives[2].budget.resumeAt || 0) === 0,
+      JSON.stringify({ reloads: lives[2].reloads, ledger: ledger, budget: lives[2].budget }));
+
+    var hints = (ledger.every || []).map(function (m) { return String(m.hint || ''); }).join(' | ');
+    check('日志要说清这是别家、并把下一步指到插件管不着的地方（拦截扩展 / 代理 / 重新登录）',
+      (ledger.every || []).length === 3 &&
+      ledger.every.every(function (m) { return m.sameSite === false; }) &&
+      /拦截|代理|重新登录/.test(hints) && hints.indexOf('刷新解决不了') !== -1,
+      JSON.stringify({ n: (ledger.every || []).length, hints: hints.slice(0, 220) }));
+  }
+});
+
+/**
+ * ---- 批次 35 ③：刷新预算必须活得过一次**真**刷新 ----
+ *
+ * 上面两条把刷新换成了计数器，所以它们测的是"账怎么用"；这一条不桩任何东西，
+ * 真的让整页刷一次，回来只看一件事：**那笔账还在不在**。
+ * 旧写法记在页面内存里，刷完直接归零 —— 于是"刷 3 次收手"从来没成立过，
+ * 现场表现就是整夜每 20 秒刷一次。这条断言红了，就等于根因回来了。
+ */
+SCENARIOS.push({
+  name: '跨域墙的刷新预算活得过一次真刷新',
+  path: '/blocked-same-site',
+  run: async function (ctx) {
+    var unreadable = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a&&a._getMainFrame();' +
+      'return !!f&&!a._isFrameSameOrigin(f);})()', 12000);
+    var pageUrl = await ctx.client.evaluate('String(location.href)');
+
+    // 不桩 `_reloadBlockedPage`：让它真刷一次。evaluate 的上下文会被这次导航打掉，所以吞掉异常。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;try{app._clearTickLoop();}catch(e){}' +
+      'window.__xxtWallMark="before-reload";' +
+      'try{sessionStorage.setItem("omitone:blocked-reload-budget",JSON.stringify(' +
+      '  {reloads:2,resumeAt:0,href:String(location.href||"")}));}catch(e){}' +
+      'app._mainFrameCrossOriginSince=Date.now()-21000;' +
+      'app._checkBlockedByCrossOrigin();return "called";})()'
+    ).catch(function () {});
+
+    var backUp = await waitFor(ctx.client,
+      '(function(){return document.readyState==="complete"&&!!window._xxtApp' +
+      '&&!window.__xxtWallMark;})()', 20000);
+
+    var after = JSON.parse(await ctx.client.evaluate(
+      '(function(){var raw="";try{raw=String(sessionStorage.getItem("omitone:blocked-reload-budget")||"");}catch(e){}' +
+      'var o={};try{o=JSON.parse(raw)||{};}catch(e){}' +
+      'return JSON.stringify({mark:String(typeof window.__xxtWallMark),' +
+      '  reloads:Number(o.reloads)||0,resumeAt:Number(o.resumeAt)||0,' +
+      '  href:String(o.href||""),samePage:String(o.href||"")===String(location.href)});})()'
+    ));
+
+    check('夹具自证：这一页真的被整页刷过一次（刷新前那个内存标记已经不在了）',
+      unreadable === true && backUp === true && after.mark === 'undefined',
+      JSON.stringify({ unreadable: unreadable, backUp: backUp, mark: after.mark }));
+
+    check('刷新预算跨过真刷新活下来：第 3 次记在账上（旧写法一刷就归零，于是永远刷不完）',
+      after.reloads === 3, JSON.stringify(after));
+
+    check('这笔账仍属于这一页（换页 / 翻章不作废它，但也不许算到下一页头上）',
+      after.samePage === true && String(after.href) === String(pageUrl),
+      JSON.stringify({ after: after, pageUrl: pageUrl }));
+  }
+});
+
 /** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
@@ -11507,7 +11831,9 @@ async function main() {
       '--no-default-browser-check',
       '--disable-sync',
       // 让场景页的 chaoxing.com 落到本地 mock 服务上（只在本机调试用）
-      '--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1',
+      // mooc2 是给批次 35 的「同站跨源内容帧」夹具用的：站点相同（chaoxing.com）、origin 不同，
+      // 这才是现场那种"帧被换成平台另一台机器"的形状。
+      '--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1, MAP mooc2.chaoxing.com 127.0.0.1',
       '--disable-background-networking',
       'about:blank'
     ], { stdio: 'ignore', detached: process.platform !== 'win32' });

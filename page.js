@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '487e91384b';
+var OMITONE_CODE_REV = '9624901ff8';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -1406,10 +1406,80 @@ var OMITONE_CODE_REV = '487e91384b';
     },
 
 
-    // 主 iframe 被换成跨域页面（验证码/反作弊拦截）：JS 完全无法访问其内部，
-    // 既检测不到验证码也填不了，唯一恢复手段就是刷新页面（刷新后由自动续跑接管）
+    // 主 iframe 被换成跨域页面：JS 完全无法访问其内部，既检测不到验证码也填不了。
+    //
+    // ⚠️ 批次 35：跨域有**两种**，处置正好相反，旧代码把它们并成一种、还把刷新次数记在内存里 ——
+    //   ① 帧地址仍是**同一个站**的另一台机器（平台自己的验证 / 反爬中间页）：刷新**有机会**解决；
+    //   ② 帧地址压根是**别家**（浏览器拦截页 / 代理 / 门户改写）：刷新**必然**解决不了。
+    // 而旧写法每轮末尾 `location.reload()`，一刷新内存计数全清零（`_blockedReloadAt` 变回 0，
+    // 于是 `now - 0 > 180000` **恒真**）—— 只要那一帧一直读不到，就是**每 20 秒刷一次、永远刷不完**。
+    // 同学那边「看不到下面那个录音，然后卡死了」正是这一族：整页反复刷新，
+    // 页面下方那些任务点永远来不及渲染出来，看上去就是"插件在那儿发呆、页面自己一直在跳"。
+    // 所以预算改记 sessionStorage（活得比刷新久、比标签页短），一轮 3 次，用完停 30 分钟。
+    _frameOriginOf: function (frame) {
+      var raw = '';
+      try { raw = String((frame && (frame.getAttribute('src') || frame.src)) || ''); } catch (eRaw) { return ''; }
+      if (!raw) return '';
+      // about:blank / about:srcdoc 没有站点概念，原样带进日志（短串，不含地址信息）
+      if (/^about:/i.test(raw)) return raw.slice(0, 24);
+      try { return new URL(raw, location.href).origin; } catch (eUrl) { return ''; }
+    },
+
+
+    /**
+     * 这一帧和顶层页是不是**同一个站** —— 按域名的最后两段比。
+     *
+     * 为什么不在这里抄一份"哪些域名算学习通"：那份真源在 `libs/runtime-policy.js`（内容脚本侧），
+     * page.js 再抄一遍，将来两处一定会读出相反的含义（本项目踩过同族：同一个 class 两处反着读）。
+     * 而这里要的判据本来与厂商无关：能跑到这一步的顶层页必然是课程站自己，
+     * 所以"帧被换成同站另一台机器"与"帧被换成别家的页面"用"与顶层同不同站"就分得开。
+     */
+    _isFrameSameSiteAsTop: function (origin) {
+      var host = '';
+      try { host = String(new URL(origin || 'about:blank', location.href).hostname || ''); } catch (eHost) { return false; }
+      var topHost = '';
+      try { topHost = String(location.hostname || ''); } catch (eTop) { return false; }
+      var tail = function (h) {
+        var parts = String(h || '').toLowerCase().split('.');
+        return parts.length < 2 ? '' : parts.slice(-2).join('.');
+      };
+      var a = tail(host), b = tail(topHost);
+      return !!a && a === b;
+    },
+
+
+    // 刷新预算：记在 sessionStorage，理由见 `_checkBlockedByCrossOrigin` 上面那段。
+    // `href` 变了 = 换了一面墙（翻章 / 换课），旧账作废（与 14-A 验证码墙同一个口径）。
+    _readBlockedReloadBudget: function () {
+      try {
+        var raw = sessionStorage.getItem('omitone:blocked-reload-budget');
+        if (!raw) return { reloads: 0, resumeAt: 0 };
+        var obj = JSON.parse(raw) || {};
+        if (obj.href && obj.href !== String(location.href || '')) return { reloads: 0, resumeAt: 0 };
+        return { reloads: Number(obj.reloads) || 0, resumeAt: Number(obj.resumeAt) || 0 };
+      } catch (e) {
+        return { reloads: 0, resumeAt: 0 };
+      }
+    },
+
+
+    _writeBlockedReloadBudget: function (reloads, resumeAt, href) {
+      try {
+        sessionStorage.setItem('omitone:blocked-reload-budget',
+          JSON.stringify({ reloads: reloads || 0, resumeAt: resumeAt || 0, href: href || '' }));
+      } catch (e) {}
+    },
+
+
     _markMainFrameCrossOrigin: function () {
       if (!this._mainFrameCrossOriginSince) this._mainFrameCrossOriginSince = Date.now();
+    },
+
+
+    // 刷新单独抽出来，是为了让测试能盯住这个动作本身（与 `_reloadForStandaloneCaptcha` 同一条理由）：
+    // 真刷一次整页会打断后面几步，而这一步正是这一面墙上最贵的动作。
+    _reloadBlockedPage: function () {
+      try { window.location.reload(); } catch (e) {}
     },
 
 
@@ -1418,12 +1488,15 @@ var OMITONE_CODE_REV = '487e91384b';
       if (!frame) return false;
       if (this._isFrameSameOrigin(frame)) {
         this._mainFrameCrossOriginSince = 0;
+        // 读得通了 = 这面墙过了。那笔刷新账必须作废 —— 留着它，下一次真被挡住时
+        // 起手就是"预算已用完、停 30 分钟"，等于把上一次墙的账算到这面墙上（14-A 同条规矩）。
+        this._writeBlockedReloadBudget(0, 0, '');
         return false;
       }
 
       this._markMainFrameCrossOrigin();
-      var held = Date.now() - (this._mainFrameCrossOriginSince || Date.now());
       var now = Date.now();
+      var held = now - (this._mainFrameCrossOriginSince || now);
 
       // 页面还在加载时 iframe 归属可能未定，先不判定为被拦截，避免误刷新
       if (document.readyState !== 'complete') {
@@ -1431,20 +1504,45 @@ var OMITONE_CODE_REV = '487e91384b';
         return false;
       }
 
+      var srcOrigin = this._frameOriginOf(frame);
+      var sameSite = this._isFrameSameSiteAsTop(srcOrigin);
+      var budget = this._readBlockedReloadBudget();
+      var maxReloads = 3;
+
       if (now - (this._crossOriginLogAt || 0) > 15000) {
         this._crossOriginLogAt = now;
-        emitRuntimeLog('warn', 'main frame is cross-origin, page likely blocked by captcha/anti-bot', {
-          heldSec: Math.round(held / 1000)
+        emitRuntimeLog('warn', 'main frame is cross-origin', {
+          heldSec: Math.round(held / 1000),
+          // 只报 origin，不报完整地址：学习通的地址里全是 clazzid / cnum / chapterId，
+          // 而这份日志是会被「复制日志」发出去的。
+          srcOrigin: srcOrigin || '(no-src)',
+          topOrigin: String(location.origin || ''),
+          sameSite: sameSite,
+          reloads: budget.reloads,
+          resumeInMs: Math.max(0, (budget.resumeAt || 0) - now),
+          // 两种跨域的下一步完全不同，别再只甩一句"可能被验证码挡了"
+          hint: sameSite
+            ? '内容帧还是课程站的地址，但 JS 读不到 —— 多半是平台的验证 / 反爬中间页，刷新有机会解决'
+            : '内容帧被换成了另一家的地址（见 srcOrigin）—— 刷新解决不了；先查浏览器的跟踪防范 / 广告拦截扩展与网络代理，或退出重新登录'
         });
       }
 
-      if (held > 20000 && this.configs.blockedReload !== false) {
-        if (now - (this._blockedReloadAt || 0) > 180000) {
-          this._blockedReloadAt = now;
-          emitRuntimeLog('warn', 'blocked page unreachable from JS, reload to recover', {
-            heldSec: Math.round(held / 1000)
+      // 别家页面占着内容帧：刷新是白刷（刷完还是它），停在原地等人来处理
+      if (!sameSite) return true;
+
+      if (held > 20000 && this.configs.blockedReload !== false && now >= (budget.resumeAt || 0)) {
+        if (budget.reloads >= maxReloads) {
+          // 一整轮 3 次都没救回来 —— 收手 30 分钟，期间一次都不刷（上面那条日志会持续说还剩多久）
+          this._writeBlockedReloadBudget(0, now + 30 * 60000, location.href);
+          emitRuntimeLog('warn', 'blocked page reload round spent, pausing reloads', {
+            reloads: maxReloads, resumeInMs: 30 * 60000, heldSec: Math.round(held / 1000)
           });
-          try { window.location.reload(); } catch (e) {}
+        } else {
+          this._writeBlockedReloadBudget(budget.reloads + 1, budget.resumeAt || 0, location.href);
+          emitRuntimeLog('warn', 'blocked page unreachable from JS, reload to recover', {
+            reload: budget.reloads + 1, of: maxReloads, heldSec: Math.round(held / 1000)
+          });
+          this._reloadBlockedPage();
         }
       }
 
@@ -5008,6 +5106,22 @@ var OMITONE_CODE_REV = '487e91384b';
       var knowCardDoc = this._safeWinDoc(knowCardWin);
       if (!knowCardDoc) {
         this._markMainFrameCrossOrigin();
+        // ⚠️ 批次 35：这一刻 `searchedCount` 必然是 0（连一个帧都枚举不出来），
+        //   而现场日志原先只有「清单认到了 10 个任务点、一个帧都没配上」这一格事实 ——
+        //   真正的原因（主帧读不到、它指向哪一站）没人说。判据与 `_checkBlockedByCrossOrigin`
+        //   共用同两个 helper，所以这句和那句不可能互相打脸。
+        //   节流 15 秒：本方法被 OCS 循环每秒调一次。
+        var nowUnreadable = Date.now();
+        if (nowUnreadable - (this._frameUnreadableLogAt || 0) > 15000) {
+          this._frameUnreadableLogAt = nowUnreadable;
+          var unreadOrigin = this._frameOriginOf(this._getMainFrame());
+          emitRuntimeLog('warn', 'study search skipped: main frame document unreadable', {
+            srcOrigin: unreadOrigin || '(no-src)',
+            topOrigin: String(location.origin || ''),
+            sameSite: this._isFrameSameSiteAsTop(unreadOrigin),
+            attachments: (this._getChaoxingAttachments() || []).length
+          });
+        }
         return null;
       }
       this._mainFrameCrossOriginSince = 0;

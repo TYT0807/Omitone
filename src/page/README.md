@@ -46,7 +46,7 @@ npm run concat:check    # 只校验产物与片段是否一致（npm test 里已
 > 实测（`node tools/audit-fields.js`，每次改动都会变，别背数字）：私有字段**用到 159 个**，
 > `10-config-state.js` **声明了 125 个**；剩下 36 个是**用到才建**的，两种写法：
 > - `if (!this._x) this._x = Object.create(null);`（`_seekTriedKeys` / `_taskGiveUpLogged` / `_mainFrameCrossOriginSince`）
-> - 读取处自带 `|| 0` 兜底（`if (now - (this._blockedReloadAt || 0) > 180000)`）
+> - 读取处自带 `|| 0` 兜底（`if (now - (this._frameUnreadableLogAt || 0) > 15000)`）
 >
 > 脚本还会单独列出**既不在声明表、也看不到兜底**的字段（当前 3 个），那几个值得人工看一眼。
 >

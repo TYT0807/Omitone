@@ -1183,6 +1183,22 @@
       var knowCardDoc = this._safeWinDoc(knowCardWin);
       if (!knowCardDoc) {
         this._markMainFrameCrossOrigin();
+        // ⚠️ 批次 35：这一刻 `searchedCount` 必然是 0（连一个帧都枚举不出来），
+        //   而现场日志原先只有「清单认到了 10 个任务点、一个帧都没配上」这一格事实 ——
+        //   真正的原因（主帧读不到、它指向哪一站）没人说。判据与 `_checkBlockedByCrossOrigin`
+        //   共用同两个 helper，所以这句和那句不可能互相打脸。
+        //   节流 15 秒：本方法被 OCS 循环每秒调一次。
+        var nowUnreadable = Date.now();
+        if (nowUnreadable - (this._frameUnreadableLogAt || 0) > 15000) {
+          this._frameUnreadableLogAt = nowUnreadable;
+          var unreadOrigin = this._frameOriginOf(this._getMainFrame());
+          emitRuntimeLog('warn', 'study search skipped: main frame document unreadable', {
+            srcOrigin: unreadOrigin || '(no-src)',
+            topOrigin: String(location.origin || ''),
+            sameSite: this._isFrameSameSiteAsTop(unreadOrigin),
+            attachments: (this._getChaoxingAttachments() || []).length
+          });
+        }
         return null;
       }
       this._mainFrameCrossOriginSince = 0;
