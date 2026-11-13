@@ -2953,11 +2953,11 @@ SCENARIOS.push({
       'var d1=pet.getBoundingClientRect();' +
       'out.dragDx=Math.round(d1.left-d0.left);' +
       'out.inView=d1.left>=-1&&d1.right<=innerWidth+1&&d1.top>=-1;' +
-      // —— 换装 ——
-      'var img=pet.querySelector(".pet-art");out.src0=img?img.getAttribute("src"):"";' +
+      // —— 换装：这次点击是下面「姿」那条的前提（穿着非默认衣服），
+      //    换装本身的行为断言在「角色控件点一遍都要有反应」那一场 ——
+      'var img=pet.querySelector(".pet-art");' +
       'var bo=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
       'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
-      'out.src1=img?img.getAttribute("src"):"";' +
       // —— 换姿势：当前穿着非默认衣服，只能换身体姿态，不能把衣服换掉 ——
       'out.pose0=img?img.getAttribute("src"):"";' +
       'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
@@ -2965,10 +2965,9 @@ SCENARIOS.push({
       'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
       'out.pose1=img?img.getAttribute("src"):"";' +
       'out.poseAttr1=pet?pet.getAttribute("data-pose"):"";' +
-      // —— 隐藏（放最后）——
+      // —— 隐藏（放最后）：这一次点击只为「全程无未捕获异常」走一遍那条路径 ——
       'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
-      'out.hidden=pet?pet.style.display==="none":null;' +
       'out.errCount=out.errs.length;out.errText=out.errs.join(" | ");' +
       'return out;})()'
     );
@@ -2976,12 +2975,14 @@ SCENARIOS.push({
     check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, JSON.stringify(r && r.hits));
     check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, JSON.stringify(r && r.hits));
     check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, JSON.stringify(r && r.hits));
-    check('点「装」换立绘', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
+    // 这一场只测**命中测试 + 拖动 + 装束不被「姿」覆盖**这一层；
+    // 「点「装」换立绘」「点「藏」收起」两条与「弹窗前端：角色控件点一遍都要有反应」
+    // 是同分支、同层、同夹具的重复（谓词逐字相同），行为那一条留在那场里，摘掉这里。
+    // 上面那两次点击仍然保留：它们分别是「姿」那条的前提与「全程无未捕获异常」走过的路径。
     check('穿着别的衣服时点「姿」不会把衣服换掉', !!r && r.pose0 === r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
     check('「姿」仍然换了身体姿态', !!r && r.poseAttr0 !== r.poseAttr1, r ? r.poseAttr0 + ' → ' + r.poseAttr1 : '');
     check('拖动位移 > 30px', !!r && Math.abs(r.dragDx) > 30, r ? String(r.dragDx) : '');
     check('拖完仍在视口内', !!r && r.inView === true, '');
-    check('点「藏」收起', !!r && r.hidden === true, '');
     check('全程无未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
   }
 });
@@ -4170,8 +4171,13 @@ SCENARIOS.push({
       '  byDoc:app._kindFromChaoxingElements(null,null,document),' +
       '  hasQuiz:app._documentHasQuiz(document)};})()'
     );
-    check('12 条相邻优先级全部按唯一那份顺序走（有人再手抄 || 链就会在这里红）',
-      !!pins && pins.rows === 12 && pins.bad.length === 0, JSON.stringify(pins && pins.bad));
+    // ⚠️ 拆成两条：`rows === 12` 数的是**这张表自己写了几行**（夹具里的字面量），
+    //    和生产有没有算错无关 —— 它只保证"有人删行 = 少测一族"会被看见。
+    //    行为判定是 `bad.length === 0` 那一条，两者不许再挤在同一句名字里。
+    check('夹具自证：优先级表确实摊开了 12 行（有人删行就等于下面那条少测一族）',
+      !!pins && pins.rows === 12, JSON.stringify(pins && pins.rows));
+    check('相邻优先级全部按唯一那份顺序走（有人再手抄 || 链就会在这里红）',
+      !!pins && pins.bad.length === 0, JSON.stringify(pins && pins.bad));
     check('附件映射也只此一份（_kindFromAttachment 的六个口径）',
       !!pins && pins.attBad.length === 0, JSON.stringify(pins && pins.attBad));
     check('没有探测包时按文档现算，用的是同一个判据（真题页 ⇒ quiz）',
@@ -4820,14 +4826,16 @@ SCENARIOS.push({
       'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";' +
       'a._quizGarbledRounds=0;a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";' +
       'a._quizCurrentQuestions=null;' +
-      'var skipCalls=0,unitCalls=0;' +
-      'var oldSkip=a._skipQuiz,oldUnit=a.nextUnit;' +
-      'a._skipQuiz=function(){skipCalls++;};a.nextUnit=function(){unitCalls++;};' +
+      // 只桩 `nextUnit`：R2 已删掉运行期对 `_skipQuiz()` 的调用（现在只剩 `xxtAI.skipQuiz`
+      // 这个手动入口），桩它数出来恒为 0 —— 一条永远不会红的半句比没有更坏。
+      'var unitCalls=0;' +
+      'var oldUnit=a.nextUnit;' +
+      'a.nextUnit=function(){unitCalls++;};' +
       // 模拟 OCS 循环每秒调一次，连调 6 次（= 6 秒）
       'for(var i=0;i<6;i++){a._handleQuiz(null);}' +
       'out.roundsAfter6=a._quizGarbledRounds;' +
       'out.skipUntilAfter6=a._quizForceSkipUntil;' +
-      'out.skipCallsAfter6=skipCalls;out.unitCallsAfter6=unitCalls;' +
+      'out.unitCallsAfter6=unitCalls;' +
       // 把时间窗倒回 11 秒，模拟真的过了第 2、第 3 轮（e2e 不真等 20 秒）
       'a._quizGarbledRoundAt=Date.now()-11000;a._handleQuiz(null);' +
       'out.roundsAfterWindow2=a._quizGarbledRounds;' +
@@ -4843,10 +4851,10 @@ SCENARIOS.push({
       'out.writerKey=String(a._quizForceSkipPaperKey||"");' +
       'out.readerSameDocKey=String(a._getQuizWorkKey(document));' +
       'out.isSkippingDoc=a._isQuizForceSkipping(document);' +
-      'out.skipCallsFinal=skipCalls;out.unitCallsFinal=unitCalls;' +
+      'out.unitCallsFinal=unitCalls;' +
       'out.inProgress=a._quizInProgress;' +
       // ===== 还原：别的断言不能看见一个被污染的页面 =====
-      'a._skipQuiz=oldSkip;a.nextUnit=oldUnit;' +
+      'a.nextUnit=oldUnit;' +
       'document.documentElement.removeAttribute("data-om-font-miss");' +
       'a._quizForceSkipUntil=0;a._quizForceSkipPaperKey="";a._quizGarbledRounds=0;' +
       'a._quizGarbledRoundAt=0;a._quizGarbledPaperKey="";a._quizInProgress=false;' +
@@ -4862,8 +4870,8 @@ SCENARIOS.push({
       r2.probeMissAny === false && r2.probeCount >= 1, JSON.stringify(r2));
     check('R2b 每秒调一次 _handleQuiz，6 次只数进 1 轮（守卫确实开火了，不再 3 秒数满 3 轮）',
       !!r2 && r2.roundsAfter6 === 1, JSON.stringify(r2));
-    check('R2c 头 6 秒内既不跳卷也不进冷却（skipQuiz/nextUnit 零调用）',
-      !!r2 && r2.skipUntilAfter6 === 0 && r2.skipCallsAfter6 === 0 && r2.unitCallsAfter6 === 0,
+    check('R2c 头 6 秒内既不跳卷也不进冷却（nextUnit 零调用）',
+      !!r2 && r2.skipUntilAfter6 === 0 && r2.unitCallsAfter6 === 0,
       JSON.stringify(r2));
     check('R2b 过了 10 秒时间窗才数第 2 轮',
       !!r2 && r2.roundsAfterWindow2 === 2 && r2.skipUntilAfterWindow2 === 0, JSON.stringify(r2));
@@ -4872,8 +4880,8 @@ SCENARIOS.push({
       r2Cool && !!r2 && r2.hasPaperKey === true && r2.isSkipping === true, JSON.stringify(r2));
     check('HIGH-1 写入端的键就是读取端在同一文档上算出的键（同一文档 → 冷却真的生效）',
       !!r2 && r2.writerKey === r2.readerSameDocKey && r2.isSkippingDoc === true, JSON.stringify(r2));
-    check('R2c 数满 3 轮**不跳卷**：_skipQuiz 与 nextUnit 全程零调用、没岔住 _quizInProgress',
-      !!r2 && r2.skipCallsFinal === 0 && r2.unitCallsFinal === 0 && r2.inProgress === false,
+    check('R2c 数满 3 轮**不跳卷**：nextUnit 全程零调用、没岔住 _quizInProgress',
+      !!r2 && r2.unitCallsFinal === 0 && r2.inProgress === false,
       JSON.stringify(r2));
   }
 });
@@ -5749,7 +5757,7 @@ SCENARIOS.push({
       'app._buildAttachmentOnlyJob({job:true,property:{module:"insertcard"}});' +
       'return app._unsupportedJobLogged;})(window._xxtApp)'
     ).catch(function () { return null; });
-    check('不支持的 task point 会被记录（便于排查"任务点没做"）',
+    check('真认不出类型的那一族（insertcard）会被记进「不支持」日志（便于排查"任务点没做"）',
       !!(logged && logged['insertcard|']), JSON.stringify(logged));
 
     // ---- 批次 29：「只有附件、任务盒名字里没有『讨论』二字」那一族的口径 ----
@@ -6470,6 +6478,94 @@ SCENARIOS.push({
     check('每个选项都能推断出字母 A/B/C',
       JSON.stringify(probe.letters) === JSON.stringify(['A', 'B', 'C']),
       JSON.stringify(probe.letters));
+
+    // ---- 批次 42 补的零覆盖分支：连线/匹配题（选项文本成对重复）----
+    // 现场日志的形状：左右两列被一起抓成「6 个选项」，文本两两重复
+    //（Color / Transparency / Color / Transparency / …）。这种题拿选择题的作答方式
+    // 永远对不上，旧逻辑连着问 6 次模型、每次都被判错 —— 用户看到的就是「弹题卡住，
+    // 刷新后重来还是它」。判据是 `_looksLikeMatchingQuiz`（≥4 项且重复≥2），放弃原因
+    // `matching-or-duplicate-options` 把静默窗口拉到 30 分钟（其余原因 1 分钟）。
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var n=app._checkPopupQuiz();' +
+      'if(!n) return {noPopup:true};' +
+      'var texts=app._getOptionItems(n).map(function(i){return app._extractOptionText(i);});' +
+      'var out={nativeTexts:texts,nativeMatch:app._looksLikeMatchingQuiz(texts)};' +
+      // 阈值那道闸不能松：只重复一次、只有两项都还是普通选择题
+      'out.oneDupIsNot=app._looksLikeMatchingQuiz(["甲","乙","丙","甲"]);' +
+      'out.shortIsNot=app._looksLikeMatchingQuiz(["Color","Transparency"]);' +
+      'var ul=document.querySelector(".pop-quiz-options");' +
+      'while(ul.firstChild)ul.removeChild(ul.firstChild);' +
+      'var pair=["Color","Transparency","Color","Transparency","Color","Transparency"];' +
+      'pair.forEach(function(t,k){' +
+      '  var li=document.createElement("li");li.className="pop-quiz-option";' +
+      '  var inp=document.createElement("input");inp.type="radio";inp.setAttribute("name","pq");' +
+      '  inp.value=String.fromCharCode(65+k);' +
+      '  var sp=document.createElement("span");sp.textContent=String.fromCharCode(65+k)+". "+t;' +
+      '  li.appendChild(inp);li.appendChild(sp);ul.appendChild(li);});' +
+      'var items2=app._getOptionItems(n);' +
+      'out.builtCount=items2.length;' +
+      'out.builtTexts=items2.map(function(i){return app._extractOptionText(i);});' +
+      'out.builtMatch=app._looksLikeMatchingQuiz(out.builtTexts);' +
+      'return out;})()'
+    );
+    check('夹具自证：原生弹题那 3 项文本互不重复，判据不误报成匹配题',
+      !shape.noPopup &&
+      JSON.stringify(shape.nativeTexts) === JSON.stringify(['说法甲', '说法乙', '说法丙']) &&
+      shape.nativeMatch === false, JSON.stringify(shape));
+    check('只重复一次 / 只有两项都不算匹配题（阈值是 ≥4 项且重复 ≥2）',
+      shape.oneDupIsNot === false && shape.shortIsNot === false, JSON.stringify(shape));
+    check('现场那种形状：左右两列被抓成 6 项、文本成对重复时认成匹配题',
+      shape.builtCount === 6 && shape.builtMatch === true &&
+      JSON.stringify(shape.builtTexts) === JSON.stringify(
+        ['Color', 'Transparency', 'Color', 'Transparency', 'Color', 'Transparency']),
+      JSON.stringify(shape));
+
+    // 放弃那一支：必须在**发请求之前**就 return，并把这一族的静默窗口拉到 30 分钟。
+    // 配置自己钉一遍（存储是整轮共用的，别依赖上一个场景写过什么）。
+    var mcfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key',
+      model: 'e2e-model', enableQuiz: true, enableCaptcha: false,
+      enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, mcfg);
+    await sleep(600);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(mcfg) + '); true'
+    );
+    var mBefore = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b42=[];window.addEventListener("message",function(ev){' +
+      '  var d=ev&&ev.data;' +
+      '  if(d&&d.source==="xxt_app"&&d.type==="runtime_log")' +
+      '  window.__b42.push({level:String(d.level||""),msg:String(d.message||""),' +
+      '    reason:String((d.meta&&d.meta.reason)||"")});});' +
+      'app._popupQuizBlockedUntil=0;app._popupQuizAttempts=0;app._popupQuizKey="";' +
+      'window.__b42t0=Date.now();' +
+      'var n=app._checkPopupQuiz();if(n)app._handlePopupQuiz(n);' +
+      'return {hasPopup:!!n};})()'
+    );
+    // ⚠️ `emitRuntimeLog` 走 postMessage，**异步送达**；判据跑完立刻读缓冲一定读到空，
+    //    "该发的没发"和"没送到"长得一模一样 —— 等一拍，并把 seen 一起报出来。
+    await sleep(400);
+    var giveUp = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var ls=window.__b42||[];' +
+      'return {seen:ls.length,logs:ls.slice(-6),' +
+      'holdMs:Math.round((app._popupQuizBlockedUntil||0)-(window.__b42t0||0)),' +
+      'attempts:app._popupQuizAttempts};})()'
+    );
+    check('匹配题一次模型都不问（旧逻辑连着问 6 次、每次都被判错 = 「弹题卡住」）',
+      ctx.mock.requests.length === mBefore, '请求数 +' + (ctx.mock.requests.length - mBefore));
+    check('放弃原因点名 matching-or-duplicate-options（说不清是哪一种就没法定位）',
+      giveUp.logs.some(function (l) {
+        return l.msg === 'popup quiz unanswerable, stop asking model' &&
+          l.reason === 'matching-or-duplicate-options';
+      }), JSON.stringify({seen: giveUp.seen, logs: giveUp.logs}));
+    check('这一族的静默窗口是 30 分钟，不是其余原因的 1 分钟',
+      // 带上下留 2 分钟容差：`holdMs` 拿的是**生产写进字段的那个时刻**减去我调用前
+      // 记的基准，中间隔着 1~2 毫秒（实测 1800001）—— 卡死整点数只会误红。
+      // 判据要区分的是「30 分钟档 vs 1 分钟档」，不是毫秒。
+      giveUp.holdMs > 29 * 60000 && giveUp.holdMs < 31 * 60000, JSON.stringify(giveUp));
   }
 });
 
@@ -12750,6 +12846,179 @@ SCENARIOS.push({
     check('40-A：放手后这个判据**自己不会重新占住** —— 要再占住必须有人重新登记媒体任务；' +
       '计时留着旧值也不许让它直接返回 true（否则只是把停摆往后推 120 秒，这一节照样翻不过去）',
       !!repeat && repeat.p === false, JSON.stringify(repeat));
+  }
+});
+
+/** ---- 56. 目录说「还有 N 个待完成」时，「框都做完了」要有界否决（批次 38） ---- */
+//
+// 现场（2026-11-13 真页面）：`_isCurrentCompleted` 落到 `all-tasks-finished` 靠的是一份
+//   **absence 证据** —— "这一页此刻没认出没做完的任务框"。同一时刻目录那一行挂着
+//   `catalog_points_yi`「N个待完成任务点」+ `input.jobUnfinishCount`（值 >0），
+//   那是平台留的**正面证据**：这一节还有任务框没挂载出来。
+//   两者一撞，节就被翻过去 —— 用户看到的是「这一节点一下就跳了，里面还有题/视频没做」。
+// 本场景钉六件事：
+//   ① 目录带否决时，这一轮 `_isCurrentCompleted()` 为假、依据**不落** all-tasks-finished，
+//      并且「下一节」一次都没点（症状级，不只是谓词返回 false）；
+//   ② 否决读的是**目录那份 markup**（现场四件套），数字从 DOM 读回，不是我们自己编的；
+//   ③ 窗口内**不续期**（否则页面每几秒抖一下就永不超时）；
+//   ④ 预算用掉后**真的推进一次** + 留一条 warn（AGENTS §2.7：跳过要有解释、要可恢复）；
+//   ⑤ 换一张卡片重新给一次预算（上一节用掉的窗口不许冤枉下一节）；
+//   ⑥ 目录说「已完成」时照常推进、目录项认不出/抛出时不许按住（阳性对照 + 畸形页不停摆）。
+SCENARIOS.push({
+  name: '目录说还有N个待完成时不再一句框都做完了就翻页',
+  path: '/catalog',
+  run: async function (ctx) {
+    var out = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      // 完成判定的其它输入全部让路：只留「可见任务框全部已完成」这一条真判据在跑，
+      // 于是"翻页有没有被按住"完全由目录否决这一条决定，不是别的分支碰巧挡的。
+      'var origState=app._getVisibleTaskCompletionState, origKey=app._studyProgressKey;' +
+      'var origItem=app._catalogItemForChapter, origNext=app.nextUnit, origCard=app._switchToNextLearningCard;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true};};' +
+      'app._studyProgressKey=function(){return window.__vetoScope||"card-1";};' +
+      'app._isActiveMediaPending=function(){return false;};' +
+      'app._quizParseRetryUntil=0;app._quizSubmitPending=false;app.configs.restudy=false;app.configs.autoNext=true;' +
+      'var unitCalls=0,cardCalls=0;app.nextUnit=function(){unitCalls++;};' +
+      'app._switchToNextLearningCard=function(){cardCalls++;return false;};' +
+      'function reset(){app._catalogVetoUntil=0;app._catalogVetoScope="";app._catalogVetoWarnAt=0;' +
+      '  unitCalls=0;cardCalls=0;window.__vetoScope="card-1";}' +
+      // 换标记一律用**现场那套 markup**（input + span/catalog_points_yi + prevHoverTips + orangeNew），
+      // 判据读的就是这几层；随手拼一个 class 名会把场景测成"代码和自己一致"。
+      'function clearMarks(n){var old=n.querySelectorAll("input.jobUnfinishCount,[class*=catalog_points],[class*=icon_]");' +
+      '  for(var i=0;i<old.length;i++){old[i].parentNode.removeChild(old[i]);}}' +
+      'function addPending(n,val,useInput,useSpan){' +
+      '  if(useInput){var u=document.createElement("input");u.type="hidden";u.value=String(val);' +
+      '    u.className="jobUnfinishCount";n.appendChild(u);}' +
+      '  if(useSpan){var s=document.createElement("span");s.className="catalog_points_yi prevTips";' +
+      '    var t=document.createElement("span");t.className="prevHoverTips";' +
+      '    t.textContent=String(val)+"个待完成任务点";s.appendChild(t);' +
+      '    var or=document.createElement("span");or.className="orangeNew";or.textContent=String(val);' +
+      '    s.appendChild(or);n.appendChild(s);}}' +
+      'function addDone(n){var s=document.createElement("span");s.className="icon_Completed prevTips";' +
+      '  var t=document.createElement("span");t.className="prevHoverTips";t.textContent="已完成";' +
+      '  s.appendChild(t);n.appendChild(s);}' +
+      'var o={};' +
+      'var item=app._catalogItemForChapter();' +
+      // ---- 夹具自证：形状与实地一致，且 N 是从 DOM 上那颗 input 读回来的 ----
+      'o.itemId=String((item||{}).id||"");' +
+      'o.tip=String(((item&&item.querySelector(".prevHoverTips"))||{}).textContent||"");' +
+      'o.rawCount=String(((item&&item.querySelector("input.jobUnfinishCount"))||{}).value||"(无)");' +
+      'o.markerClass=String(((item&&item.querySelector("[class*=catalog_points]"))||{}).className||"(无)");' +
+      'o.noDoneMark=!(item&&item.querySelector(".icon_Completed"));' +
+      // ---- ① 否决武装：不判完成、依据不落 all-tasks-finished、一次下一节都不点 ----
+      'reset();' +
+      'o.arm=app._maybeHoldSkipForCatalog();' +
+      'o.held=app._isCurrentCompleted();' +
+      'o.evidence=String(app._completionEvidence||"");' +
+      'o.untilInside=app._catalogVetoUntil-Date.now();' +
+      'o.notClicked=app._skipIfCompleted();' +
+      'o.unitCallsHeld=unitCalls;o.cardCallsHeld=cardCalls;' +
+      // ---- ③ 窗口内再问一次：仍然按住，但**窗口终点没被推后**（不续期） ----
+      'var untilBefore=app._catalogVetoUntil;' +
+      'o.again=app._maybeHoldSkipForCatalog();' +
+      'o.notRenewed=app._catalogVetoUntil===untilBefore;' +
+      // ---- ④ 预算用掉：放行，而且这一轮**真的推进了一次** ----
+      'app._catalogVetoUntil=Date.now()-1;' +
+      'o.spent=app._maybeHoldSkipForCatalog();' +
+      'o.doneAfterSpent=app._isCurrentCompleted();' +
+      'o.evidenceAfterSpent=String(app._completionEvidence||"");' +
+      'o.skippedAfterSpent=app._skipIfCompleted();' +
+      'o.unitCallsAfterSpent=unitCalls;' +
+      'o.scopeStamped=String(app._catalogVetoScope||"");' +
+      // ---- ⑤ 换一张卡片：预算重新给一次 ----
+      'window.__vetoScope="card-2";' +
+      'o.nextCard=app._maybeHoldSkipForCatalog();' +
+      // ---- ② 只有 span（没有机器可读的 input）也要否决 ----
+      'reset();clearMarks(item);addPending(item,1,false,true);' +
+      'o.spanOnlyNoInput=item.querySelectorAll("input.jobUnfinishCount").length===0;' +
+      'o.spanOnly=app._maybeHoldSkipForCatalog();' +
+      // ---- ② 只有 input（没有 span）也要否决，claimed 用的就是 DOM 上那个值 ----
+      'clearMarks(item);addPending(item,2,true,false);' +
+      'o.countOnlyNoSpan=item.querySelectorAll("[class*=catalog_points]").length===0;' +
+      'o.countOnlyRaw=String(item.querySelector("input.jobUnfinishCount").value);' +
+      'o.countOnlyRead=app._catalogUnfinishedCount(item);' +
+      'reset();o.countOnly=app._maybeHoldSkipForCatalog();' +
+      // ---- ⑥ 目录说「已完成」= 阳性对照：出口照常推进 ----
+      'clearMarks(item);addDone(item);' +
+      'o.doneTip=String(item.querySelector(".prevHoverTips").textContent);' +
+      'reset();o.doneVeto=app._maybeHoldSkipForCatalog();' +
+      'o.doneCompleted=app._isCurrentCompleted();' +
+      'o.doneEvidence=String(app._completionEvidence||"");' +
+      'o.doneSkipped=app._skipIfCompleted();' +
+      'o.unitCallsDone=unitCalls;' +
+      // ---- ⑥ 目录项认不出 / 判据抛出：不许按住（畸形页面不能变成停摆） ----
+      'clearMarks(item);addPending(item,1,true,true);' +
+      'reset();app._catalogItemForChapter=function(){return null;};' +
+      'o.nullVeto=app._maybeHoldSkipForCatalog();' +
+      'o.nullCompleted=app._isCurrentCompleted();' +
+      'app._catalogItemForChapter=function(){throw new Error("boom");};' +
+      'o.throwVeto=app._maybeHoldSkipForCatalog();' +
+      'app._catalogItemForChapter=origItem;' +
+      'app._getVisibleTaskCompletionState=origState;app._studyProgressKey=origKey;' +
+      'app.nextUnit=origNext;app._switchToNextLearningCard=origCard;' +
+      'setTimeout(function(){' +
+      'function metaOf(name){for(var i=0;i<got.length;i++){if(got[i].message===name)return got[i].meta||{};}' +
+      '  return null;}' +
+      // ⚠️ 这里只读**第一条** delay / spent：武装过多次（①④⑤⑥），但 ①③④⑤ 阶段目录形状没变，' +
+      // 它们的 meta 本来就相同。绝不用 `claimed===N` 去筛条目再断 claimed（自筛自证）。
+      'o.delay=metaOf("catalog still lists unfinished task points, delay skip");' +
+      'o.spentLog=metaOf("catalog veto window spent, allow skip");' +
+      'o.seen=got.length;' +
+      'res(o);},400);});})()'
+    );
+    check('夹具自证：这一节的目录项是 cur<chapterId>、tip 写「1个待完成任务点」、' +
+      '计数是那颗可读的 input（值 1）、class 里带 catalog_points_、且没有 icon_Completed',
+      !!out && out.itemId === 'cur9000049294' && out.tip === '1个待完成任务点' &&
+      out.rawCount === '1' && /^catalog_points_/.test(out.markerClass) && out.noDoneMark === true,
+      JSON.stringify(out && { itemId: out.itemId, tip: out.tip, rawCount: out.rawCount,
+        markerClass: out.markerClass, noDoneMark: out.noDoneMark }));
+    check('★ 目录还写着「N个待完成任务点」时，「框都做完了」不再单独发证：' +
+      '这一轮 _isCurrentCompleted 为假、依据不落 all-tasks-finished、下一节一次都没点',
+      out && out.arm === true && out.held === false && out.evidence === '' &&
+      out.notClicked === false && out.unitCallsHeld === 0 && out.cardCallsHeld === 0,
+      JSON.stringify(out && { arm: out.arm, held: out.held, evidence: out.evidence,
+        notClicked: out.notClicked, unitCallsHeld: out.unitCallsHeld, cardCallsHeld: out.cardCallsHeld }));
+    check('延时是有界的：窗口落在 20 秒以内（等整帧挂载，但不是"等它长出来为止"）',
+      out && out.untilInside > 0 && out.untilInside <= 20000, 'untilInside=' + JSON.stringify(out && out.untilInside));
+    check('窗口内不续期：再问一次仍然按住，但窗口终点没被推后（否则页面抖一下就是永不超时）',
+      out && out.again === true && out.notRenewed === true,
+      JSON.stringify(out && { again: out.again, notRenewed: out.notRenewed }));
+    check('预算用掉后放行，且**真的推进一次**（把「跳过」换成另一种「磨蹭」是这次要避免的）',
+      out && out.spent === false && out.doneAfterSpent === true &&
+      out.evidenceAfterSpent === 'all-tasks-finished' && out.skippedAfterSpent === true &&
+      out.unitCallsAfterSpent === 1 && out.scopeStamped === 'card-1',
+      JSON.stringify(out && { spent: out.spent, doneAfterSpent: out.doneAfterSpent,
+        evidenceAfterSpent: out.evidenceAfterSpent, skippedAfterSpent: out.skippedAfterSpent,
+        unitCallsAfterSpent: out.unitCallsAfterSpent, scopeStamped: out.scopeStamped }));
+    check('换一张卡片预算重新给一次（上一节用掉的窗口不该冤枉下一节还没挂载的任务框）',
+      out && out.nextCard === true, JSON.stringify(out && { nextCard: out.nextCard }));
+    check('两种现场形状都算否决：只有 catalog_points_yi 那个 span（input 缺席）、' +
+      '以及只有 input.jobUnfinishCount（span 缺席，值从 DOM 读回是 2）',
+      out && out.spanOnlyNoInput === true && out.spanOnly === true &&
+      out.countOnlyNoSpan === true && out.countOnly === true &&
+      out.countOnlyRaw === '2' && Number(out.countOnlyRead) === 2,
+      JSON.stringify(out && { spanOnlyNoInput: out.spanOnlyNoInput, spanOnly: out.spanOnly,
+        countOnlyNoSpan: out.countOnlyNoSpan, countOnly: out.countOnly,
+        countOnlyRaw: out.countOnlyRaw, countOnlyRead: out.countOnlyRead }));
+    check('阳性对照：目录自己显示「已完成」时出口照常推进（by=all-tasks-finished、下一节点一次）—— ' +
+      '否决不是把出口焊死',
+      out && out.doneTip === '已完成' && out.doneVeto === false && out.doneCompleted === true &&
+      out.doneEvidence === 'all-tasks-finished' && out.doneSkipped === true && out.unitCallsDone === 1,
+      JSON.stringify(out && { doneTip: out.doneTip, doneVeto: out.doneVeto, doneCompleted: out.doneCompleted,
+        doneEvidence: out.doneEvidence, doneSkipped: out.doneSkipped, unitCallsDone: out.unitCallsDone }));
+    check('目录项认不出（null）或读目录抛出时不许按住，也不许把这一节判成没做完',
+      out && out.nullVeto === false && out.nullCompleted === true && out.throwVeto === false,
+      JSON.stringify(out && { nullVeto: out.nullVeto, nullCompleted: out.nullCompleted, throwVeto: out.throwVeto }));
+    check('delay skip 那条 warn 带取证字段，且 claimed 就是 DOM 上那颗 input 的值（不是夹具字面量）',
+      !!out && !!out.delay && String(out.delay.claimed) === out.rawCount && out.delay.marker === true &&
+      Number(out.delay.holdMs) > 0,
+      JSON.stringify(out && { delay: out.delay, rawCount: out.rawCount }));
+    check('窗口用掉也要留话（catalog veto window spent），否则日志里只剩"它为什么不跳"没人答',
+      !!out && !!out.spentLog && String(out.spentLog.claimed) === out.rawCount && out.spentLog.marker === true,
+      JSON.stringify(out && { spentLog: out.spentLog, seen: out.seen }));
   }
 });
 

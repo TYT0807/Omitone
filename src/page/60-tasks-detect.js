@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（41 个）：
+ * 本段的方法（43 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _catalogItemForChapter、_catalogUnfinishedCount、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
@@ -25,7 +25,8 @@
  *   _buildSyntheticChaoxingJob、_buildFrameFallbackJob、_isDiscussionModuleFrame、
  *   _isVoteCoverFrame、
  *   _frameRejectSignature、
- *   _maybeHoldSkipForUnparsedQuiz、_noteQuizParseRetryExhausted、_quizScanRetrySignal、
+ *   _maybeHoldSkipForUnparsedQuiz、_maybeHoldSkipForCatalog、_noteCatalogVetoSpent、
+ *   _noteQuizParseRetryExhausted、_quizScanRetrySignal、
  *   _noteTaskFrameStillLoading、_skipCompletedEvidence、_searchIFramesOcs、
  *   _taskDiscoveryWindowMs、_noteOcsDiscoveryTick、
  *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
@@ -85,6 +86,10 @@
       } catch (e0) {}
 
       if (state.hasTasks) {
+        // ⚠️ 批次 38：走到这里靠的是一份 **absence 证据**（"这一页此刻没认出没做完的框"），
+        //   而目录那一项上写着「N个待完成任务点」是一份**正面证据**。让正面证据先按住它一会儿
+        //   —— 有界、一张卡片一次，用完照旧放行（判据与实测账见 `_maybeHoldSkipForCatalog`）。
+        if (this._maybeHoldSkipForCatalog()) return false;
         this._completionEvidence = 'all-tasks-finished';
         return true;
       }
@@ -1000,6 +1005,71 @@
         holdMs: this._quizParseRetryUntil - now
       });
       return true;
+    },
+
+    /**
+     * 「目录那一项还写着有任务点没做完」时，把 `all-tasks-finished` 那一句**有界按住** —— 批次 38。
+     *
+     * 为什么这一支单独要一份否决：走到 `all-tasks-finished` 的前提是
+     * 「页面上**认得出**的任务框全都已完成」，这是一份 **absence 证据** —— 它说的是
+     * "这一瞬间我没看见没做完的框"，不是"这一节没有没做完的任务点"。而学习通的任务框是
+     * **惰性挂载**的（附件清单里有、DOM 里还没长出来），于是
+     * 「刚交完第一份卷子、第二份还没挂载」和「整节真做完了」在这一支里**长得一模一样**。
+     *
+     * 现场账（2026-11-13，`.workbuddy/hold-no-skip.js` 把"本来要跳过"按住量到的三条）：
+     * `skip completed {by:"all-tasks-finished", tasks:1, unfinished:0}` 连出三次，
+     * 而**同一秒**目录项上分别写着「还有 1 / 2 / （数字读成 NaN）个待完成任务点」——
+     * `unfinished` 读的是隐藏 `input.jobUnfinishCount`，那一族卡片上压根没有它。
+     *
+     * ⚠️ 所以这里认的是**「未做完」那颗标记本身**（`[class*="catalog_points"]`，现场文案
+     *    「N个待完成任务点」），隐藏 input 只当加码证据 —— 与 `_hasTaskPoint()` 末段、
+     *    `catalog-marker` 那一支**同一口径**，不许反过来读（批次 20-I 的教训：同一个 class
+     *    在同一个文件里被两处读出相反含义，改一处就拆另一处）。
+     *
+     * 成本被两件事夹住，不许把"跳过"换成"磨蹭"（与 `_maybeHoldSkipForUnparsedQuiz` 同一套纪律）：
+     *   ① **一张卡片只给一个窗口**：`_studyProgressKey()` 变了才算新证据、才重新起算；
+     *      窗口内不续期，否则页面每几秒抖一下就是永不超时；
+     *   ② **到期放行 + 留一条 warn**：AGENTS §2.7 —— 跳过用户的任务点必须可解释、可恢复。
+     */
+    _maybeHoldSkipForCatalog: function () {
+      var item = null;
+      try { item = this._catalogItemForChapter(); } catch (eItem) { item = null; }
+      if (!item) return false;                       // 目录项都认不出来 = 没有这份证据，不否决
+      var claimed = this._catalogUnfinishedCount(item);
+      var marker = false;
+      try { marker = !!item.querySelector('[class*="catalog_points"]'); } catch (eM) { marker = false; }
+      if (!marker && !(claimed > 0)) return false;   // 目录没说"还有几个没做"
+
+      var now = Date.now();
+      if (this._catalogVetoUntil > now) return true;
+      var scope = '';
+      try {
+        scope = String(this._studyProgressKey() || this._lastChapterKey || '') || 'no-scope';
+      } catch (eScope) { scope = 'no-scope'; }
+      if (scope === this._catalogVetoScope) {
+        this._noteCatalogVetoSpent(now, claimed, marker);
+        return false;
+      }
+      this._catalogVetoScope = scope;
+      // 基础 15 秒：这里等的是**整帧挂载**（比同一帧渲染完慢），但又短到不至于让慢一节的
+      // 代价扩散；`scaledMs` 让慢机放大，硬上限 20 秒保证最坏成本有界。
+      this._catalogVetoUntil = now + Math.min(20000, scaledMs(15000));
+      emitRuntimeLog('warn', 'catalog still lists unfinished task points, delay skip', {
+        claimed: claimed, marker: marker, holdMs: this._catalogVetoUntil - now,
+        hint: '页面上认得出的任务框都已完成，但目录那一项还写着「N个待完成任务点」—— ' +
+          '多半是这一节还有任务框没挂载。先按住不翻页，窗口用掉照旧推进'
+      });
+      return true;
+    },
+
+    _noteCatalogVetoSpent: function (now, claimed, marker) {
+      if (this._catalogVetoWarnAt && now - this._catalogVetoWarnAt < 60000) return;
+      this._catalogVetoWarnAt = now;
+      emitRuntimeLog('warn', 'catalog veto window spent, allow skip', {
+        claimed: claimed, marker: !!marker,
+        hint: '这一张卡片的延时窗口已经用掉：目录仍说有待完成，但页面没再长出新的任务框 —— ' +
+          '放行完成判定。上一条 `delay skip` 与这条相隔多久，就是这一族任务框挂载实际需要的时间'
+      });
     },
 
     _noteQuizParseRetryExhausted: function (now, sig, src) {
