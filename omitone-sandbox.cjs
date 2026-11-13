@@ -25,7 +25,11 @@ const { EventEmitter } = require('node:events');
 const ROOT = __dirname;
 const UPDATE_URL = 'https://api.github.com/repos/TYT0807/Omitone/releases/latest';
 const COURSE_HOSTS = new Set(['mooc1.chaoxing.com', 'mobilelearn.chaoxing.com', '127.0.0.1']);
-const OMIT = new Set(['.git', '.workbuddy', 'dist', 'node_modules', '.vscode', '.idea', 'tmp']);
+// `.debug-profile` 是 tools/debug-live.js 在**仓库根**建的现场调试浏览器用户目录（已 gitignore）。
+// 它里面有正在被 Edge 独占的文件（EdgeCoupons/coupons_data.db/LOCK），inventory 一旦走进去
+// readFileSync 直接 EBUSY —— 于是这套件从"能跑"变成"根本起不来"，而且它不在 `npm test` 里，
+// 坏了三个批次没人知道。check.js / publish-audit.js 早就排掉了它，这边补齐。
+const OMIT = new Set(['.git', '.workbuddy', 'dist', 'node_modules', '.vscode', '.idea', 'tmp', '.debug-profile']);
 const owned = new Set();
 const EVIDENCE_FILE = /^omitone-acceptance-\d{8}T\d{6}Z-[a-f0-9-]{36}\.jsonl?$/;
 const BASELINE_FILES = ['tools/check.js', 'tools/prompt-bench.js', 'tools/integration-test.js',

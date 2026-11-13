@@ -1124,20 +1124,20 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 ```bash
 npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段之后必须跑）
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
-npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致
+npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致 / 独立套件挂载
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
 npm run itest    # 集成测试：真实 content.js 的答题往返（299 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
-npm test         # 上面四步
+npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
 npm run e2e      # 真实 Edge 功能交叉检验（104 个场景 / 1068 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
 npm run log-store:test  # 独立日志模块、Worker 依赖及构建校验测试
 npm run popup-log:test  # 前端日志视图、异步状态与 LF/CRLF 负控
-npm run pet-game:test   # 角色小游戏纯规则：活跃计秒 / 好感度 / 等级与水位（18 项）
-npm run fuzz:test       # 暴力测试：错误分类全状态码扫 + 垃圾响应体 + 随机时钟/存档（7 项大断言）
-npm run sandbox  # 临时源码副本：原基线 + 回归 + 模块测试 + 真实 Edge
+npm run pet-game:test   # 角色小游戏纯规则：活跃计秒 / 好感度 / 等级与水位
+npm run fuzz:test       # 暴力测试：错误分类全状态码扫 + 垃圾响应体 + 随机时钟/存档
+npm run sandbox  # 临时源码副本：原基线 + 回归 + 模块测试 + 真实 Edge（约 5 分钟，不进 npm test）
 npm run sandbox:built  # 临时构建：核验 ZIP/展开目录一致后，用真实 Edge 加载产物
 npm run acceptance:test  # 记录器与验收规则自测（含真实子进程中止夹具）
 npm run acceptance:built  # 完整产物验收：逐阶段落盘证据 + 独立退出/清理回执

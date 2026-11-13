@@ -140,14 +140,14 @@ for (var k = 0; k < 3000; k++) {
   };
   try {
     var rolled = GAME.rollDay(st, '2026-11-01');
-    if (!(rolled.affection >= 0 && rolled.affection <= 100 && Number.isFinite(rolled.affection))) {
+    if (!(rolled.affection >= 0 && rolled.affection <= GAME.RULES.max && Number.isFinite(rolled.affection))) {
       gameBad.push('rollDay 未钳制: ' + JSON.stringify(aff)); break;
     }
     if (GAME.levelOf(rolled.affection) < 0 || GAME.levelOf(rolled.affection) >= GAME.LEVELS.length) {
       gameBad.push('levelOf 越界: ' + rolled.affection); break;
     }
     var pat = GAME.onPat(st, '2026-11-01');
-    if (!(pat.state.affection >= 0 && pat.state.affection <= 100) || typeof pat.line !== 'string') {
+    if (!(pat.state.affection >= 0 && pat.state.affection <= GAME.RULES.max) || typeof pat.line !== 'string') {
       gameBad.push('onPat 越界或台词缺失'); break;
     }
     var seconds = Math.floor(grng() * 1e9) - 1e8;
@@ -155,13 +155,22 @@ for (var k = 0; k < 3000; k++) {
     if (study.state.countedSeconds < st.countedSeconds - 1e-9) {
       gameBad.push('水位倒退: ' + st.countedSeconds + ' → ' + study.state.countedSeconds); break;
     }
-    if (!(study.state.affection >= 0 && study.state.affection <= 100)) {
+    if (!(study.state.affection >= 0 && study.state.affection <= GAME.RULES.max)) {
       gameBad.push('applyStudySeconds 未钳制'); break;
     }
   } catch (e) { gameBad.push('第 ' + k + ' 轮 threw: ' + e.message); break; }
 }
-check('垃圾存档 3000 轮（NaN/负数/1e9/错型/怪日期）：好感恒在 [0,100]、等级不越界、水位不倒退、永不抛异常',
+check('垃圾存档 3000 轮（NaN/负数/1e9/错型/怪日期）：好感恒在 [0, RULES.max]、等级不越界、水位不倒退、永不抛异常',
   gameBad.length === 0, gameBad.slice(0, 3).join(' | '));
+
+// ⚠️ 上面三条判据读的是生产自己的 RULES.max，所以这里把**那个数本身**钉住 ——
+// 否则有人把 max 改成 10 万，暴力测试照样全绿（自筛自证的老问题，见 AGENTS.md §5）。
+// 1.3.0 把上限从 100 提到 240 是给老档留继续养的空间；最高一档门槛必须仍在上限之内，
+// 否则「岁月同行」永远点亮不了。
+check('好感上限与等级表自洽：RULES.max 仍是 240，且最高一档 min（200）不超过它',
+  GAME.RULES.max === 240 && GAME.LEVELS[GAME.LEVELS.length - 1].min === 200 &&
+  GAME.LEVELS[GAME.LEVELS.length - 1].min <= GAME.RULES.max,
+  JSON.stringify({ max: GAME.RULES.max, topMin: GAME.LEVELS[GAME.LEVELS.length - 1].min }));
 
 // 每日配额的边界暴力：连续 onPat 至上限后不再涨
 var capped = GAME.rollDay(null, '2026-11-01');

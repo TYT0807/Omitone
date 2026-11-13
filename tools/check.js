@@ -2009,6 +2009,97 @@ function checkPublicHygiene() {
 }
 
 // ---------------------------------------------------------------------------
+// 22. 根目录那些独立套件必须挂在 `npm test` 链上
+//
+// 为什么要有这一条（批次 46 的直接教训）：`omitone-*.cjs` 这批套件各自只要 0~1 秒，
+// 却**一个都不在 `npm test` 里**，于是它们连着烂了三个批次没人发现 ——
+//   - `omitone-sandbox.cjs` 全盘扫描走进 `.debug-profile` 撞上 Edge 独占的 LOCK 文件，
+//     直接 EBUSY，整套**起不来**；
+//   - `omitone-regression.cjs` 的 L06 负控锚点 `}, DECRYPT_FETCH_TIMEOUT_MS);`
+//     早在批次 34 就不存在了，而它的 `mutateOnce` 要求锚点恰好命中 1 次 ——
+//     也就是说那一条自检当时必然抛错；
+//   - `omitone-fuzz-test.cjs` 还在按宠物好感上限的**旧值 100** 判越界，
+//     而正典早已提到 240（`GAME.RULES.max`），三处判据同时读错。
+// 三个都是"跑一下就会红"的量级，但没人跑，所以没人知道。
+//
+// 判据口径：**按目录里实际存在哪些套件来要求，而不是照抄一份写死的清单** ——
+// 写死清单的话，下次新增套件仍然会漏（这次烂的就是"漏"本身）。
+// 重件（`sandbox` 297 秒、`acceptance:built` 要起真浏览器）留在链外，但**留名要有理由、
+// 理由要能被校验**：排除表里的文件必须还存在、且必须仍被某个 npm 脚本调用得到，
+// 否则就是在给未来的漏挂开后门。
+// ---------------------------------------------------------------------------
+function checkTestSuiteWiring() {
+  var SUITE_RE = /^omitone-.*\.cjs$/;
+  var onDisk = fs.readdirSync(ROOT).filter(function (f) { return SUITE_RE.test(f); });
+
+  // 不进 `npm test` 的重件 —— 值是这个套件对应的 npm 脚本名
+  var HEAVY = {
+    'omitone-sandbox.cjs': 'sandbox',
+    'omitone-acceptance.cjs': 'acceptance:built'
+  };
+
+  var scripts = {};
+  try { scripts = JSON.parse(read('package.json')).scripts || {}; } catch (e) {}
+  var testChain = String(scripts.test || '');
+  if (!testChain) {
+    fail('package.json 里没有 `test` 脚本 —— 这一项守卫无从校验，请先修 `npm test`');
+    return;
+  }
+  if (!onDisk.length) {
+    fail('独立套件挂载检查失效：根目录数不到任何 `omitone-*.cjs` —— ' +
+      '守卫失效比没有守卫更糟，请核对这里的正则');
+    return;
+  }
+
+  var missing = [];
+  var expected = onDisk.filter(function (f) { return !HEAVY[f]; });
+  expected.forEach(function (f) {
+    if (testChain.indexOf('node ' + f) < 0) missing.push(f);
+  });
+
+  // 同一文件跑两种模式的（回归件：全场 + 自检），只挂一种等于漏了一半
+  var MODES = { 'omitone-regression.cjs': ['--self-test'] };
+  var missingModes = [];
+  Object.keys(MODES).forEach(function (f) {
+    if (onDisk.indexOf(f) < 0) return;
+    MODES[f].forEach(function (flag) {
+      if (testChain.indexOf('node ' + f + ' ' + flag) < 0) missingModes.push(f + ' ' + flag);
+    });
+  });
+
+  // 链上不许指向不存在的文件（那会让 `npm test` 直接炸在半路，且看不出是挂载问题）
+  var dangling = [];
+  (testChain.match(/node (omitone-[^\s]+\.cjs)/g) || []).forEach(function (frag) {
+    var f = frag.slice(5);
+    if (onDisk.indexOf(f) < 0) dangling.push(f);
+  });
+
+  // 排除表自证：条目要还存在于磁盘、且仍被它对应的那个脚本调用得到
+  var heavyBad = [];
+  Object.keys(HEAVY).forEach(function (f) {
+    if (onDisk.indexOf(f) < 0) { heavyBad.push(f + '（磁盘上已没有这个文件，排除表该删掉这一条）'); return; }
+    var scriptName = HEAVY[f];
+    var body = String(scripts[scriptName] || '');
+    if (!body) { heavyBad.push(f + '（排除理由指向脚本 `' + scriptName + '`，但 package.json 里没有它）'); return; }
+    if (body.indexOf('node ' + f) < 0) {
+      heavyBad.push(f + '（排除理由说它由 `' + scriptName + '` 跑，但那个脚本并没有调用它）');
+    }
+  });
+
+  var msg = [];
+  if (missing.length) msg.push('这些独立套件在根目录里、却没挂进 `npm test`：' + missing.join('、'));
+  if (missingModes.length) msg.push('这些套件只挂了一种模式：' + missingModes.join('、'));
+  if (dangling.length) msg.push('`npm test` 链里有不存在的套件：' + dangling.join('、'));
+  if (heavyBad.length) msg.push('重件排除表对不上：' + heavyBad.join('；'));
+  if (msg.length) {
+    fail('独立套件挂载未过：' + msg.join('\n      ') +
+      '\n      （留在链外的只有 ' + Object.keys(HEAVY).join(' / ') + '，其余秒级套件必须跟着 `npm test` 跑）');
+    return;
+  }
+  pass('独立套件挂载（链内 ' + expected.length + ' 个 + 链外重件 ' + Object.keys(HEAVY).length + ' 个，排除项均有脚本可跑）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2034,6 +2125,7 @@ checkSelectorTruthSource();
 checkPetSpritePools();
 checkBridgeMessageTypes();
 checkPublicHygiene();
+checkTestSuiteWiring();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

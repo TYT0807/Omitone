@@ -5,7 +5,7 @@
   "description": "学习通（chaoxing）课程自动化浏览器扩展：视频/音频播放、PPT 翻页、AI 答题、验证码识别、讨论任务点",
   "license": "GPL-3.0",
   "scripts": {
-    "test": "node tools/check.js && node tools/prompt-bench.js && node tools/integration-test.js && node tools/background-test.js",
+    "test": "node tools/check.js && node tools/prompt-bench.js && node tools/integration-test.js && node tools/background-test.js && node omitone-regression.cjs && node omitone-regression.cjs --self-test && node omitone-fuzz-test.cjs && node omitone-pet-game-test.cjs && node omitone-log-store-test.cjs && node omitone-popup-log-test.cjs && node omitone-acceptance-test.cjs",
     "check": "node tools/check.js",
     "concat": "node tools/concat-page.js",
     "concat:check": "node tools/concat-page.js --check",

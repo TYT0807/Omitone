@@ -21,9 +21,12 @@
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒`；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 
-`npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
+`npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
+留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
+和 `acceptance:built`（要起真浏览器）；`npm run check` 有一条「独立套件挂载」按目录里**实际存在哪些套件**
+来要求新增的必须挂进 `npm test`，写死的排除表要能被核对（文件还在、且仍被它声称的那个脚本调用得到）。
 
-根目录还有一批**独立测试入口**（不依赖 tools/，已被 `npm run sandbox` 纳入临时副本基线）：
+根目录还有一批**独立测试入口**（不依赖 tools/，秒级件已挂在 `npm test` 上，同时被 `npm run sandbox` 纳入临时副本基线）：
 
 | 入口 | 命令 | 是什么 |
 | --- | --- | --- |
@@ -128,6 +131,17 @@
     >
     > 守卫带**自保护**：某一侧收 0 种时直接判失败（"守卫失效比没有守卫更糟"），
     > 而不是静默通过。反向验证过：把提取正则改到匹配不上 → 报「守卫失效」。
+
+19. **题目选择器真源** —— 平台类名（`.Cy_…` 那一族）只许在 `_questionSelectors` 里写一次，
+    别处手抄的副本会漂（同一族 29 个类名，真源外出现即报错）
+20. **立绘池守卫** —— 服装 / 表情 / 姿势三池去重后必须与磁盘上的图片**逐张**对上，
+    多一张少一张都报（跨池引用与孤儿文件都会让玩家看到空白立绘）
+21. **仓库公开面卫生** —— 跟踪清单里不许有证据 jsonl、`*.bak*`、`*.log`、`tmp/`、`.workbuddy/`、`dist/`；
+    跟踪的文本里不许有本机 home 路径、带用户名的用户目录、从现场粘来的真实章节号
+    （**夹具号一律 9 开头**，id 上下文里出现非 9 开头的长数字即报）
+22. **独立套件挂载** —— 根目录每个 `omitone-*.cjs` 秒级套件都必须出现在 `npm test` 链里；
+    排除表只许是重件，且条目要"文件还在 + 仍被它声称的那个 npm 脚本调用得到"。
+    拦的是批次 46 那种腐烂：三个秒级套件在链外坏了三个批次没人发现
 
 失败时退出码为 1，可直接用于 CI。
 

@@ -297,6 +297,10 @@ const CASES = [];
 function test(id, group, name, run) { CASES.push({ id, group, name, run }); }
 function texts(roots) { return roots.map(root => root.textContent); }
 function messages(world) { return (world.browser.local.runtimeLogs || []).map(item => item.message); }
+// `content bridge ready` 是 content.js 每开一个授权页都要写的一条握手日志（批次 18 起，生产真实行为，
+// 夹具没有把它藏起来）。G01/G02/G03/G09/G10 钉的是「本例追加的日志按序不丢」，握手行不是它们的判据，
+// 所以这里显式把它滤掉；**容量那一族（G04）仍然按原始存储算** —— 存储里那 200 格确实被它占了一格。
+function appended(world) { return messages(world).filter(m => m !== 'content bridge ready'); }
 async function drain(world) { await world.clock.advance(0); }
 
 test('F01', 'font', '正常字体：文本、属性和明文混合内容正确转换', async w => {
@@ -421,13 +425,13 @@ test('L10', 'load', 'JSON 响应体挂起必须有界失败且不破坏原文', 
 
 test('G01', 'logs', '单标签连续日志保序且保留时间和级别', async w => {
   const t = w.tab(); await t.log('one'); await t.log('two'); await drain(w);
-  assert.deepEqual(messages(w), ['one', 'two']);
+  assert.deepEqual(appended(w), ['one', 'two']);
   assert.ok(w.browser.local.runtimeLogs.every(item => item.level === 'info' && item.time === w.clock.now));
 });
 test('G02', 'logs', '两个标签并发写入都保留', async w => {
   const a = w.tab(), b = w.tab();
   await Promise.all([a.log('tab-a'), b.log('tab-b')]); await drain(w);
-  assert.deepEqual(messages(w).sort(), ['tab-a', 'tab-b'], 'Lost concurrent log; trace=' + JSON.stringify(w.browser.trace.filter(x => x.key === 'runtimeLogs')));
+  assert.deepEqual(appended(w).sort(), ['tab-a', 'tab-b'], 'Lost concurrent log; trace=' + JSON.stringify(w.browser.trace.filter(x => x.key === 'runtimeLogs')));
 });
 test('G03', 'logs', '三标签多轮突发写入不丢日志', async w => {
   const tabs = [w.tab(), w.tab(), w.tab()], expected = [];
@@ -435,12 +439,16 @@ test('G03', 'logs', '三标签多轮突发写入不丢日志', async w => {
     const batch = tabs.map((t, i) => { const message = i + ':' + round; expected.push(message); return t.log(message); });
     await Promise.all(batch); await drain(w);
   }
-  assert.deepEqual(messages(w).sort(), expected.sort(), 'Every message below the 200-entry limit must survive');
+  assert.deepEqual(appended(w).sort(), expected.sort(), 'Every message below the 200-entry limit must survive');
 });
 test('G04', 'logs', '200 条容量边界保留最新日志', async w => {
   w.browser.local.runtimeLogs = Array.from({ length: 200 }, (_, i) => ({ message: 'old-' + i }));
   const t = w.tab(); await t.log('new'); await drain(w);
-  assert.equal(messages(w).length, 200); assert.equal(messages(w)[0], 'old-1'); assert.equal(messages(w).at(-1), 'new');
+  assert.equal(messages(w).length, 200); assert.equal(messages(w).at(-1), 'new');
+  // 握手行也进同一条队列：200 格满了它照样挤掉最旧的。开一页 = 一条握手，
+  // 于是 old-0、old-1 被挤出去，队头变成 old-2 —— 这里把它钉成事实，而不是当夹具噪声。
+  assert.ok(messages(w).includes('content bridge ready'), '夹具自证：握手行确实落进了 200 格容量');
+  assert.equal(messages(w)[0], 'old-2');
 });
 test('G05', 'logs', '普通外站不能写入运行日志', async w => {
   const t = w.tab({ url: 'https://untrusted.invalid/' }); await t.log('not-allowed'); await drain(w);
@@ -470,12 +478,12 @@ test('G08', 'logs', '存储写入回调挂起后队列有界恢复', async w => 
 test('G09', 'logs', '新页面实例追加日志不抹掉旧记录', async w => {
   await w.tab().log('before-reload'); await drain(w);
   await w.tab().log('after-reload'); await drain(w);
-  assert.deepEqual(messages(w), ['before-reload', 'after-reload']);
+  assert.deepEqual(appended(w), ['before-reload', 'after-reload']);
 });
 test('G10', 'logs', '两个标签并发追加不覆盖已有记录', async w => {
   w.browser.local.runtimeLogs = [{ message: 'existing' }];
   const a = w.tab(), b = w.tab(); await Promise.all([a.log('a'), b.log('b')]); await drain(w);
-  assert.deepEqual(messages(w).sort(), ['a', 'b', 'existing']);
+  assert.deepEqual(appended(w).sort(), ['a', 'b', 'existing']);
 });
 
 async function runCase(tree, spec, transform) {
@@ -518,7 +526,10 @@ async function selfTest(tree) {
     ['F02', 'new characters ignored', 'content.js', 'if (checked.has(char)) return;', 'if (checked.size) return;', '甲乙'],
     ['L02', 'JSON fallback removed', 'content.js', 'const table = FONT_TABLE.fromObject(data);', 'const table = null;', '甲'],
     ['L05', 'failure cached permanently', 'content.js', '          decryptTablePromise = null;', '          void 0;', '甲'],
-    ['L06', 'resource timeout disabled', 'content.js', '}, DECRYPT_FETCH_TIMEOUT_MS);', '}, 1000000);', true],
+    // 锚点写的是 `contentScaledMs(...)` 这一层包裹（慢机缩放接上之后调用点变了形），
+    // 旧的 `}, DECRYPT_FETCH_TIMEOUT_MS);` 早在批次 34 就不存在了 —— 因为这条链不在
+    // `npm test` 里，它烂了三个批次没人知道。
+    ['L06', 'resource timeout disabled', 'content.js', '}, contentScaledMs(DECRYPT_FETCH_TIMEOUT_MS));', '}, contentScaledMs(1000000));', true],
     ['G01', 'log append removed', 'runtime-log-store.js', 'logs.push(item);', 'void item;', ['one', 'two']],
     ['G02', 'global serialization removed', 'runtime-log-store.js', 'var task = logQueue.then(function () {', 'var task = Promise.resolve().then(function () {', ['tab-a', 'tab-b']],
     ['G04', 'capacity bound removed', 'runtime-log-store.js', 'var nextLogs = logs.slice(-MAX_LOGS);', 'var nextLogs = logs;', 200]
@@ -548,7 +559,7 @@ async function selfTest(tree) {
     await world.clock.settle(Promise.all([a.log('page-a'), b.log('page-b'),
       world.sendWorker({ type: 'runtime_log_append', payload: entry })]), 'Popup and pages');
     await drain(world);
-    assert.deepEqual(messages(world).sort(), ['page-a', 'page-b', 'popup-entry']);
+    assert.deepEqual(appended(world).sort(), ['page-a', 'page-b', 'popup-entry']);
     ok('popup and pages share the actual worker log writer');
     const stored = world.browser.local.runtimeLogs.find(item => item.message === 'popup-entry');
     assert.equal(stored.meta.apiKey, '[redacted]'); assert.equal(stored.meta.nested.authorization, '[redacted]'); assert.equal(stored.meta.count, 2);
