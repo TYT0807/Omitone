@@ -1504,8 +1504,8 @@ function buildFrameSigInnerHtml() {
     '<iframe id="fFirst" src="/frame-sig-first" data="{&quot;jobid&quot;:&quot;job-first&quot;}" style="width:100%;height:420px;border:0"></iframe>' +
     // 第二份卷子：藏在 javascript: 帧里，这一层没有 jobid
     '<iframe id="fPaper" src="javascript:;" style="width:620px;height:400px;border:0"></iframe>' +
-    // 真·空帧，作对照：签名应当全是 0
-    '<iframe id="fEmpty" src="javascript:void(function(){document.open" style="width:620px;height:400px;border:0"></iframe>' +
+    // 真·空帧，作对照：签名应当全是 0。⚠️ src 必须写成**能解析的完整程序**：现场日志里那 40 个字符是 `String(src).slice(0, 40)` 的**摘录**，不是页面真串；照摘录写成截断的那一版，浏览器一导航就是未捕获 SyntaxError，「场景结束无未捕获页面异常」于是变成赛跑（定向读得早=绿、全量读得晚=红，批次 47 实测）。补成 `})()` 后**前 40 字一字不动**，形状照样钉得住。
+    '<iframe id="fEmpty" src="javascript:void(function(){document.open})()" style="width:620px;height:400px;border:0"></iframe>' +
     '<script>' +
     'window.attachments=[{jobid:"job-first",name:"单元测试",property:{job:"true"},otherInfo:"nodeId_9000049549"}];' +
     'function seed(id,blocks){var f=document.getElementById(id);var d=f&&f.contentDocument;' +
@@ -3480,8 +3480,12 @@ SCENARIOS.push({
     //     全量跑却不翻（实测 tabs 3→4、flipMs -1）：那一发新标签开去了**别的窗口**，
     //     这一页仍是自己窗口的活动标签。所以这里先查窗口、再动作，两头都自证。
     //     ⚠️ 试过的两条死路：① `Browser.setWindowBounds {state:'minimized'}` 在这台 Edge 上
-    //        回 `result:{}` 却纹丝不动（读回 windowState 仍是 normal，hidden 也不翻）；
-    //        ② 在页面世界里改 `document.hidden` —— 内容脚本压根读不到。
+    //        回 `result:{}` 却纹丝不动（批次 47 带回读再量一次：`windowState` 仍是 normal、
+    //        bounds 一动不动，hidden 也不翻）；② 在页面世界里改 `document.hidden` —— 内容脚本压根读不到。
+    //     ⚠️ **沙盒那台 Edge 端不动标签的根因在启动参数上**（批次 47 逐特性量出来的）：
+    //        不加 `--disable-features=CalculateNativeWinOcclusion` 时，同窗口把另一枚端上去
+    //        `hasFocus` 正确翻过去了，可两枚的 `document.hidden` 都恒为 false（实测 flip=-1）；
+    //        加上它，同一发操作 200 毫秒就翻成 hidden=true。开关在 omitone-sandbox.cjs 的 launchEdge。
     //     ⚠️ **可见性要在排拍子之前就位，读完再核一次**：批次 41 第一版是"先排拍子再切窗口"，
     //        前台对照那趟读到 `hidden=true`（这扇窗口会被别的东西压住，OS 层遮挡同样算 hidden）——
     //        "她没说话"和"这趟压根不在要求的那一档里"就同形了。所以每一趟先站好位、再拍一次、
@@ -3509,12 +3513,18 @@ SCENARIOS.push({
     // 找「和这一页同一扇窗口」的接管标签，**全部收下来**（批次 45：以前只留第一枚）。
     // 只有一枚候选时够用；全量跑里那一枚（配置写入器 popup）实测端不动这一页，
     // 于是整场恒红 —— 而"哪一枚能动"事先并不知道，只能逐枚试、每枚自证。
+    // ⚠️ cdp:false 必须单独报出来：withBrowserClient 连不上时返回 null，
+    //    旧写法把它当成"没有候选"，于是"沙盒没把真实调试端口灌进来"长得和"这扇窗口里没有别的标签"一样。
+    //    这里再分一刀：ctx.targetId 没有 → 那一次 Browser.getWindowForTarget 直接抛，
+    //    外面看也只是 cdp:false（批次 47 在沙盒里就是这一族，两个红折腾了两轮）。
     var findStandIn = async function () {
-      var plan = { win: null, cands: [], opened: null };
-      return (await withBrowserClient(async function (bc) {
+      var plan = { win: null, cands: [], opened: null, cdp: false, haveTargetId: !!ctx.targetId };
+      if (!ctx.targetId) return plan;
+      var got = await withBrowserClient(async function (bc) {
         var infos = ((await bc.send('Target.getTargets')) || {}).targetInfos || [];
         var pages = infos.filter(function (x) { return x.type === 'page'; });
         var wa = await bc.send('Browser.getWindowForTarget', { targetId: ctx.targetId });
+        plan.cdp = true;
         plan.win = (wa && wa.windowId) || null;
         var sameWin = async function (tid) {
           var w = await bc.send('Browser.getWindowForTarget', { targetId: tid });
@@ -3527,7 +3537,16 @@ SCENARIOS.push({
           }
         }
         return plan;
-      })) || plan;
+      });
+      return got || plan;
+    };
+    /** 用 CDP 的 Target.activateTarget 端一枚标签（成功返回 true，失败返回错误串，让它进载荷别吞）。 */
+    var activateCdp = async function (tid) {
+      var r = await withBrowserClient(async function (bc) {
+        try { await bc.send('Target.activateTarget', { targetId: tid }); return true; }
+        catch (e) { return String((e && e.message) || e).slice(0, 60); }
+      });
+      return r === true ? true : (r === null ? '浏览器级连接没连上' : r);
     };
     /**
      * 把这一页挤下后台 = 把同窗口另一枚标签端成活动标签，并轮询到 hidden===true 为止。
@@ -3541,10 +3560,17 @@ SCENARIOS.push({
       var tried = [];
       var list = (bgPlan.cands || []).slice(0, 4);
       for (var i = 0; i < list.length; i++) {
+        // 两条路都试：`/json/activate`（HTTP，现场实测有效）与 `Target.activateTarget`（CDP）。
+        // 沙盒那台 Edge 用 HTTP 那条端不动（批次 47 实测：ok:true、focus 也真过去了，
+        // 但这一页的 document.hidden 纹丝不动），所以必须逐条实测，不能把"请求成功"当"端上了"。
+        var a1 = await activateCdp(list[i].id);
+        var m1 = await untilHidden(true, 5);
+        tried.push({ k: '现成/CDP', u: list[i].url, ok: a1 === true, ms: m1 });
+        if (m1 >= 0) return { win: bgPlan.win, cdp: bgPlan.cdp, noId: !bgPlan.haveTargetId, cand: list[i].id, opened: bgPlan.opened, flipMs: m1, how: '端标签(CDP)', tried: tried };
         var ok = await activateTab(list[i].id);
-        var ms = await untilHidden(true, 6);
-        tried.push({ k: '现成', u: list[i].url, ok: ok, ms: ms });
-        if (ms >= 0) return { win: bgPlan.win, cand: list[i].id, opened: bgPlan.opened, flipMs: ms, tried: tried };
+        var ms = await untilHidden(true, 5);
+        tried.push({ k: '现成/HTTP', u: list[i].url, ok: ok, ms: ms });
+        if (ms >= 0) return { win: bgPlan.win, cdp: bgPlan.cdp, noId: !bgPlan.haveTargetId, cand: list[i].id, opened: bgPlan.opened, flipMs: ms, how: '端标签(HTTP)', tried: tried };
       }
       await ctx.client.send('Page.bringToFront').catch(function () {});
       // 上一趟新开的那枚还挂着就先关掉（整轮只留一枚，否则三趟重试会攒出三枚空白标签抢焦点）
@@ -3559,17 +3585,38 @@ SCENARIOS.push({
         var w = await bc.send('Browser.getWindowForTarget', { targetId: tid });
         return w && w.windowId === bgPlan.win ? tid : null;
       });
-      if (!fresh) {
+      var ms2 = -1;
+      if (fresh) {
+        bgPlan.opened = fresh;
+        var ok2 = await activateTab(fresh);
+        ms2 = await untilHidden(true, 10);
+        tried.push({ k: '新开', u: 'about:blank', ok: ok2, ms: ms2 });
+        if (ms2 >= 0) {
+          return { win: bgPlan.win, cdp: bgPlan.cdp, noId: !bgPlan.haveTargetId, cand: fresh, opened: fresh, flipMs: ms2, how: '端标签', tried: tried };
+        }
+      } else {
         tried.push({ k: '新开', u: '(开去了别的窗口)', ok: false, ms: -1 });
-        return { win: bgPlan.win, cand: null, opened: bgPlan.opened, flipMs: -1, tried: tried };
       }
-      bgPlan.opened = fresh;
-      var ok2 = await activateTab(fresh);
-      var ms2 = await untilHidden(true, 10);
-      tried.push({ k: '新开', u: 'about:blank', ok: ok2, ms: ms2 });
-      return { win: bgPlan.win, cand: fresh, opened: fresh, flipMs: ms2, tried: tried };
+      /**
+       * 端标签两级都没翻起来 —— 把这趟试过的每一枚连实测一起交回去，别只报一个 false。
+       * ⚠️ 别再往这里加机制：批次 47 逐条量过这台 Edge（Edg/157.0.4341.46）还剩的两条路
+       *    都是死的 —— ① `Browser.setWindowBounds {state:'minimized'}` 不抛错，但回读
+       *       `windowState` 仍是 `normal`、bounds 一动不动（批次 41 也是这个结果，两次实测）；
+       *    ② 协议里**没有**可见性覆盖方法：`Emulation.setVisibilityStateOverride` /
+       *       `Emulation.clearVisibilityStateOverride` / `Page.setVisibilityOverride` /
+       *       `Page.setPageVisibility` 全部回 "wasn't found"，只有 `Page.setWebLifecycleState
+       *       {state:'frozen'}` 能读出 hidden:true —— 可 frozen 把 JS 执行整个冻住，
+       *       那就不是"在后台"而是"停了"，用它等于把"她没说话"验成"代码没跑"。
+       *    真的开关在**启动参数**上：`--disable-features=CalculateNativeWinOcclusion`
+       *    （见 omitone-sandbox.cjs 的 launchEdge），加上它同窗口激活 200 毫秒就翻。
+       */
+      return {
+        win: bgPlan.win, cdp: bgPlan.cdp, noId: !bgPlan.haveTargetId,
+        cand: fresh || null, opened: bgPlan.opened, flipMs: -1,
+        how: '端标签两级都没翻', tried: tried
+      };
     };
-    /** 唤回：先把这趟新开的接管标签关掉（留着会继续抢焦点），再端到最前，轮询到 hidden===false 为止。 */
+    /** 唤回：关掉这趟新开的接管标签，再端到最前，轮询到 hidden===false 为止。 */
     var wakeUp = async function () {
       if (bgPlan && bgPlan.opened) {
         await closeTab(bgPlan.opened);
@@ -3643,6 +3690,9 @@ SCENARIOS.push({
         before: bgIdle.beforeSwitch, at: bgIdle.atSchedule, after: bgIdle.hidden,
         flipMs: bgIdle.flipMs, attempts: bgIdle.attempts,
         win: bgIdle.how && bgIdle.how.win,
+        cdp: bgIdle.how && bgIdle.how.cdp,
+        noId: bgIdle.how && bgIdle.how.noId,
+        via: bgIdle.how && bgIdle.how.how,
         cand: !!(bgIdle.how && bgIdle.how.cand),
         tried: bgIdle.how && bgIdle.how.tried
       }).slice(0, 220));
@@ -6324,7 +6374,8 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'try{app._clearTickLoop();}catch(e){}' +
       'var KEY="omitone:standalone-captcha-budget";' +
-      'var w={rec:0,reloads:0,clicks:0,got:[],fail:"",running:false,finished:false};' +
+      'var w={rec:0,reloads:0,clicks:0,got:[],fail:"",running:false,finished:false,' +
+      '  wentBack:0,closed:0,lastHist:-1};' +
       'window.__wall=w;' +
       'window.addEventListener("message",function(e){var m=e.data;' +
       '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});' +
@@ -6334,23 +6385,48 @@ SCENARIOS.push({
       'w.metas=function(name){return w.got.filter(function(m){return m.message===name;})' +
       '  .map(function(m){return m.meta||{};});};' +
       // 刷新与识别全部换成计数器：真刷一次整页会打断后面四步，而这个动作本身就是被测的东西
-      'w.orig={reload:app._reloadForStandaloneCaptcha,rec:app._recognizeCaptchaImage,' +
-      '  fill:app._fillCaptchaInput,click:app._clickCaptchaSubmit,page:app._isStandaloneCaptchaPage};' +
-      'app._reloadForStandaloneCaptcha=function(){w.reloads++;};' +
-      'app._recognizeCaptchaImage=function(){w.rec++;var f=w.fail;' +
+      // 「过了之后离开这一页」（history.back / window.close）同样换成计数器 —— 它一跑，
+      // 这一页就不在了，后面几步读到的是别的文档，window.__wall 直接消失（批次 47 那条红）。
+      // 键名必须用**方法全名**：finish() 是按 `app[k]=w.orig[k]` 还原的，
+      // 键名缩成 reload/rec/fill/click/page 会既还原不了真方法、又在 app 上留下五个野字段。
+      'w.orig={_reloadForStandaloneCaptcha:app._reloadForStandaloneCaptcha,' +
+      '  _recognizeCaptchaImage:app._recognizeCaptchaImage,' +
+      '  _fillCaptchaInput:app._fillCaptchaInput,_clickCaptchaSubmit:app._clickCaptchaSubmit,' +
+      '  _isStandaloneCaptchaPage:app._isStandaloneCaptchaPage};' +
+      // 收尾那句 `_afterStandaloneCaptchaSolved` **不打桩**：批次 47 最初就是把它换成计数器，
+      // 于是「有没有上一页 → 走不走 history.back()」这条真分支从来没跑到过，而深度这件事
+      // e2e（1）与沙盒（≥2）天生不一样，钉任何一边都是拿 harness 当现场。
+      // 桩改打在**动作**上（下面的 w.nav）：页面不会被带走，分支却真的走。
+      'w.stub=function(fn){fn.__wallStub=true;return fn;};' +
+      // 把「离开这一页」的两个动作换成计数器：页面留在原地（后面几步读的还是同一份文档），
+      // 而生产的收尾照常自己挑分支。回读的三个自证字段（back/close 有没有真换上、
+      // 这一页有几条历史、是不是弹窗）就是下面那条夹具自证的取证。
+      'w.nav=function(){try{history.back=w.stub(function(){w.wentBack++;w.lastHist=history.length;});}catch(e){}' +
+      ' try{window.close=w.stub(function(){w.closed++;});}catch(e){}' +
+      ' return {back:!!(history.back&&history.back.__wallStub),' +
+      '   close:!!(window.close&&window.close.__wallStub),' +
+      '   hist:history.length,opener:!!window.opener};};' +
+      'w.naved=w.nav();' +
+      'w.stubbed=function(){var a=window._xxtApp,n=[' +
+      '  "_reloadForStandaloneCaptcha","_recognizeCaptchaImage","_fillCaptchaInput",' +
+      '  "_clickCaptchaSubmit"],i,c=0;' +
+      '  for(i=0;i<n.length;i++)if(a[n[i]]&&a[n[i]].__wallStub)c++;return c;};' +
+      'app._reloadForStandaloneCaptcha=w.stub(function(){w.reloads++;});' +
+      // （原先这里把 `_afterStandaloneCaptchaSolved` 整个换成计数器 —— 已删，见上面 w.nav）
+      'app._recognizeCaptchaImage=w.stub(function(){w.rec++;var f=w.fail;' +
       '  return Promise.resolve({ok:f==="ok",code:"ab12",' +
       '    error:f==="ok"?"":(f==="vision"?"验证码识别返回空回复（结束原因 无）"' +
       '      :(f==="thinking"?"验证码识别返回空回复（结束原因 length） —— 思考把输出的预算占满了，把「思考强度」调到关闭即可"' +
-      '      :(f==="notReady"?"验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）":"提交被拒，识别不对")))});};' +
+      '      :(f==="notReady"?"验证码的图还没加载完，或画布被跨域挡住（这次没有请求模型）":"提交被拒，识别不对")))});});' +
       // click 的桩必须**返回一个 via**：真实实现现在就是这么回话的，桩返回 undefined
       // 就等于把「日志里到底有没有凭据」这件事测成了空值
-      'app._fillCaptchaInput=function(){};' +
-      'app._clickCaptchaSubmit=function(){w.clicks++;return "submit-input";};' +
+      'app._fillCaptchaInput=w.stub(function(){});' +
+      'app._clickCaptchaSubmit=w.stub(function(){w.clicks++;return "submit-input";});' +
       'w.start=function(fail,pageGone){w.fail=fail;w.finished=false;w.running=true;' +
       // 每一步都把「这一页还是不是验证码页」拨回它该是的样子：
       // st5 为了让「过了」这条走通，把它改成了恒 false；不拨回来，下一步的循环会在
       // 第一次识别后就当成功收场，第 6 步要量的「跑满 4 次」根本不会出现。
-      '  app._isStandaloneCaptchaPage=pageGone?function(){return false;}:w.orig.page;' +
+      '  app._isStandaloneCaptchaPage=pageGone?function(){return false;}:w.orig._isStandaloneCaptchaPage;' +
       // ⚠️ 共享状态要自己钉：整轮共用同一个 app，前一个场景（如「模型 401」）写过
       //   enableCaptcha:false，这一关就会在循环之前被开关短路 —— rec 恒 0，看着像夹具坏了
       '  app.configs=Object.assign({},app.configs,{enableCaptcha:true});' +
@@ -6361,6 +6437,10 @@ SCENARIOS.push({
       '  rec:w.rec,reloads:w.reloads,budget:w.read()});};' +
       'w.counts=function(){var app=window._xxtApp;return JSON.stringify({' +
       '  seen:w.got.length, rec:w.rec, reloads:w.reloads, clicks:w.clicks,' +
+      '  wentBack:w.wentBack, closed:w.closed, lastHist:w.lastHist, stubbed:w.stubbed(),' +
+      '  notFns:["_reloadForStandaloneCaptcha","_recognizeCaptchaImage","_fillCaptchaInput",' +
+      '    "_clickCaptchaSubmit","_isStandaloneCaptchaPage","_afterStandaloneCaptchaSolved' +
+      '"].filter(function(k){return typeof app[k]!=="function";}).join(","),' +
       '  stillDetectable:!!app._detectStandaloneCaptcha(),' +
       '  stop:w.metas("standalone captcha stopped, needs a human"),' +
       '  pause:w.metas("standalone captcha paused, waiting for a human"),' +
@@ -6368,11 +6448,16 @@ SCENARIOS.push({
       '  solved:w.metas("standalone captcha solved"),' +
       '  failed:w.metas("captcha recognize failed"),' +
       '  reloadLog:w.metas("standalone captcha unsolved after retries, reload page"),' +
-      '  submitted:w.metas("standalone captcha code submitted")});};' +
+      '  submitted:w.metas("standalone captcha code submitted"),' +
+      // 收尾那句走的到底是哪一条分支，只看它自己打出来的日志（三条互斥）
+      '  backLog:w.metas("captcha solved, going back to previous page"),' +
+      '  waitLog:w.metas("captcha solved, waiting for page redirect"),' +
+      '  popupLog:w.metas("captcha popup solved, closing window")});};' +
       'w.finish=function(){var k;for(k in w.orig){app[k]=w.orig[k];}' +
+      '  try{delete history.back;}catch(e){} try{delete window.close;}catch(e){}' +
       '  w.seed(0,0);return w.counts();};' +
       'return JSON.stringify({ready:!!app._runStandaloneCaptchaMode&&!!app._readStandaloneCaptchaBudget,' +
-      '  detect:!!app._detectStandaloneCaptcha()});})()'
+      '  detect:!!app._detectStandaloneCaptcha(),nav:w.naved,origAfter:typeof app._afterStandaloneCaptchaSolved});})()'
     );
     var setupObj = JSON.parse(setup);
 
@@ -6405,12 +6490,33 @@ SCENARIOS.push({
     var st7 = await wallStep('0,0', 'thinking', 22000);
     await new Promise(function (r) { setTimeout(r, 700); });
     var c7 = JSON.parse(await ctx.client.evaluate('window.__wall.counts()'));
-    await ctx.client.evaluate('window.__wall.finish()');
+    var done = JSON.parse(await ctx.client.evaluate('window.__wall.finish()'));
 
     check('14-A 夹具自证：这一页真的挂得上验证码墙的桩、跑完七步后仍是抓得到图片与输入框的验证码页' +
       '（否则后面那几条是空测）',
       setupObj.ready === true && setupObj.detect === true && end.stillDetectable === true && end.seen > 0,
       JSON.stringify({ setup: setupObj, stillDetectable: end.stillDetectable, seen: end.seen }));
+    check('14-A 夹具自证：「过了」那一步真的走进生产那句收尾，它挑的分支由「这一页有没有上一页」决定 —— ' +
+      '桩打在 history.back / window.close 这两个动作上（不是把整句换成计数器）：' +
+      '真分支不跑，__wall 是被谁带走的就没人交代；这一页不是弹窗，所以只有回退／原地等两条',
+      // 收尾现在是**真跑**的：它自己读 history.length 挑分支。这里不钉「必须走 back」——
+      // e2e 把这一页当第一条历史打开（1 条），沙盒从起始页导航过来（≥2 条），
+      // 钉任何一边都是拿 harness 的导航深度当现场。钉的是「走的那条 == 它读到的那个数」：
+      // 两边都算对，但哪一边都不许走岔（走 back 时 lastHist 必须真 ≥2，原地等时它必须没被读过）。
+      !!setupObj.nav && setupObj.nav.back === true && setupObj.nav.close === true &&
+      setupObj.nav.opener === false &&
+      end.wentBack === (Number(setupObj.nav.hist) > 1 ? 1 : 0) &&
+      (end.wentBack === 1 ? end.backLog.length === 1 && Number(end.lastHist) >= 2 :
+        end.waitLog.length === 1 && end.backLog.length === 0 && end.lastHist === -1) &&
+      end.closed === 0 && end.popupLog.length === 0 &&
+      end.solved.length === 1 && done.wentBack === end.wentBack,
+      JSON.stringify({ nav: setupObj.nav, wentBack: end.wentBack, lastHist: end.lastHist,
+        backLog: end.backLog.length, waitLog: end.waitLog.length, solved: end.solved.length }));
+    check('14-A 夹具自证：四个桩确实挂在生产方法上（跑的时候数得到）、收尾那句从头到尾没被换掉，' +
+      'finish 又真的还原回去',
+      end.stubbed === 4 && c7.stubbed === 4 && done.stubbed === 0 && done.notFns === '' &&
+      setupObj.origAfter === 'function',
+      JSON.stringify({ end: end.stubbed, c7: c7.stubbed, done: done.stubbed, notFns: done.notFns }));
     check('14-A：模型看不懂图时一轮**只发 1 次**识别（旧写法每次烧满 4 次，钱花完也永远不可能对）',
       st1.rec === 1, JSON.stringify({ rec: st1.rec, reloads: st1.reloads }));
     check('14-A：看不懂图这一轮当场停手 —— 一次都不刷新，且预算里写下暂停时间',
@@ -13353,6 +13459,10 @@ async function main() {
       // 这才是现场那种"帧被换成平台另一台机器"的形状。
       '--host-resolver-rules=MAP mooc1.chaoxing.com 127.0.0.1, MAP mooc2.chaoxing.com 127.0.0.1',
       '--disable-background-networking',
+      // 批次 47：留着窗口遮挡计算时，同窗口端标签翻不动 document.hidden（实测 flipMs 恒 -1，
+      // 而 hasFocus 是对的）—— 宠物「真后台」那两条前提就没法在真场景里成立。关掉它 200 毫秒就翻。
+      // 与 omitone-sandbox.cjs 的 launchEdge 成对，别只改一处。
+      '--disable-features=CalculateNativeWinOcclusion',
       'about:blank'
     ], { stdio: 'ignore', detached: process.platform !== 'win32' });
 

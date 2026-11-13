@@ -259,7 +259,12 @@ class PageSession {
   errors() {
     return this.events.filter(e => e.method === 'Runtime.exceptionThrown').map(e => {
       const detail = e.params.exceptionDetails;
-      return detail.exception?.description || detail.text;
+      // 只回 description 的那一版，把「哪一份文档、哪一行」丢掉了。而「定向跑绿、全量跑红」
+      // 那一族异常能分辨的线索恰好只有这两样（批次 47 的 SyntaxError 就是这么悬了三轮）。
+      const frame = (detail.stackTrace && detail.stackTrace.callFrames || [])[0] || {};
+      const at = detail.url || frame.url || '';
+      const line = Number.isInteger(detail.lineNumber) ? detail.lineNumber : frame.lineNumber;
+      return (detail.exception?.description || detail.text) + (at ? ' @ ' + at + ':' + line : '');
     });
   }
 }
@@ -381,6 +386,10 @@ async function launchEdge(edge, profile, extension, proxyPort) {
     '--disable-extensions-except=' + extension, '--load-extension=' + extension,
     '--no-first-run', '--no-default-browser-check', '--disable-sync', '--disable-background-networking',
     '--disable-component-update', '--disable-quic', '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+    // 批次 47 实测的唯一开关：留着 CalculateNativeWinOcclusion 时，同窗口把另一枚标签端上去，
+    // hasFocus 正确翻过去了，可两枚标签的 document.hidden 都恒为 false —— 宠物「真后台」那条
+    // 前提在沙盒里永远挤不出来（三趟重试 flipMs 全是 -1）。关掉它，同一发操作 200 毫秒翻成 true。
+    '--disable-features=CalculateNativeWinOcclusion',
     '--proxy-server=http://127.0.0.1:' + proxyPort, '--proxy-bypass-list=<-loopback>',
     '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1', 'about:blank'
   ];
@@ -682,6 +691,12 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
   report.browser.commandLineVerified = !!commandLine;
   emit('browser_ready', { extension: snapshot, profile, browser: report.browser.product,
     commandLineVerified: true, pid: resources.browser.child.pid, port: resources.browser.port });
+  // browser-e2e 里走 CDP **HTTP** 的那几个端点（activateTab / closeTab / withBrowserClient）
+  // 读的是模块级 CDP_PORT。沙盒用 --remote-debugging-port=0 起浏览器，真实端口只有这里知道：
+  // 不灌进去，它们全都连到默认的 9222 上，于是宠物「真后台」那两条把"连不上 CDP"
+  // 报成"找不到同窗口的接管标签"（批次 45/47 的恒红，定向跑与全量跑同形）。
+  assert.ok(resources.browser.port > 0, 'Owned browser debug port must be resolved before scenarios run');
+  c.CDP_PORT = resources.browser.port;
   const version = JSON.parse(fs.readFileSync(path.join(snapshot, 'manifest.json'), 'utf8')).version;
   const guard = resources.guard = new NetworkGuard(cdp, c.PORT, version);
   await guard.start();
@@ -746,6 +761,19 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
   report.availableScenarios = c.SCENARIOS.length;
   report.selectedScenarios = selected.length;
   emit('scenario_plan', { hash: suite.hash, names: selected.map(scenario => scenario.name) });
+  // 夹具那两面「跨域墙」把 #iframe 指向 http://mooc2.chaoxing.com:PORT 与 http://localhost:PORT
+  // ——「同站不同源」与「别家」两种形状。场景要的是 **JS 读不到那一帧**，不是那一帧的内容，
+  // 所以沙盒在 Fetch 边界把它拦掉是**正确行为**（现场跑时 host-resolver 把 mooc2 映到
+  // 127.0.0.1，那一发压根不经过这道闸）。但下面那条「不许有意外的业务出网」数的是
+  // guard.denied，于是它被记成违规；而这条闸排在「断言数=0」后面 —— 前面一抛，它永远轮不到，
+  // 全量跑里这三条红就是这么一直被同一条 808 挡着的。
+  // 处置：按既有 expected 机制**显式登记**（与 omitone-egress.invalid 同一做法），
+  // allowlist 一个字没放宽；并按**本轮真选中的场景**登记，定向跑不会凭空多出一条没命中的登记。
+  const blockedWallTargets = { '/blocked-same-site': 'mooc2.chaoxing.com', '/blocked-off-site': 'localhost' };
+  for (const scenario of selected) {
+    const host = blockedWallTargets[String(scenario.path || '')];
+    if (host) guard.expected.add('http://' + host + ':' + c.PORT + '/blocked-inner');
+  }
   report.scenarios = [];
   for (const scenario of selected) {
     if (guard.stopping) throw new Error('Suite cancelled');
@@ -772,9 +800,18 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
       if (fixture) c.check('独立场景已加载本地模拟 API 配置', await session.evaluate(
         'window._xxtApp.configs.hasApiKey === true && window._xxtApp.configs.enableQuiz === true'));
       const behaviorBefore = c.checks;
-      const ctx = { client: session, url, extensionId, mock, close: () => guard.closePage(session) };
+      // targetId 必须一起给：browser-e2e 里凡是查「这一页在哪扇窗口」的场景
+      // （宠物「真后台」要核对同窗口候选）都要拿它去调 Browser.getWindowForTarget；
+      // 少了它，那一次调用直接报错，而 withBrowserClient 把错误吞成 null ——
+      // 报出来的就是「找不到同窗口的接管标签」，和真因（夹具没给 id）完全不同形。
+      const ctx = { client: session, url, extensionId, mock,
+        targetId: session.info && session.info.targetId, close: () => guard.closePage(session) };
       await deadline(scenario.run(ctx, mock), 180000, 'Scenario');
       behaviorAssertions = c.checks - behaviorBefore;
+      // ⚠️ 这条闸抓不住**迟到的导航异常**：批次 47 实测把坏 `javascript:` src 注回夹具、
+      // 定向跑读到 3 秒仍是 `pageErrors:0`（同一条在 --full 里红过一次）。所以保护不在这里，
+      // 在夹具自己 —— 页面里写进去的程序必须能解析（见 tools/browser-e2e.js 的 fEmpty 那条注释）。
+      // 异常一律带上「哪份文档 + 第几行」，否则下一次红只剩一句 description，又是三轮悬案。
       pageErrors = session.errors().length;
       c.check('场景至少执行一条原有断言', c.checks > behaviorBefore);
       c.check('场景结束无未捕获页面异常', session.errors().length === 0, session.errors().join(' | '));
@@ -788,11 +825,22 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
   report.assertions = c.checks;
   report.failures = Array.from(c.failures);
   report.network = { localRequests: guard.localCount, mockedUpdates: guard.updateCount,
-    unexpectedRequests: guard.denied, guardErrors: guard.errors, startupProxyDeniedHosts: Object.fromEntries(proxy.blocked) };
+    unexpectedRequests: guard.denied, guardErrors: guard.errors,
+    expectedDenials: Array.from(guard.expected), expectedHits: guard.expectedHits.size,
+    startupProxyDeniedHosts: Object.fromEntries(proxy.blocked) };
   await guard.closePage(config);
-  assert.equal(c.failures.length, 0, 'Scenario assertions failed');
-  assert.equal(guard.errors.length, 0, 'Network instrumentation failed');
-  assert.equal(guard.denied.length, 0, 'Unexpected business egress attempted');
+  // 三条闸排在一条抛错后面 = 后面那两条从来没验收过（批次 47 数出 5 条出网红，全被第一条挡住）。
+  // 判据一个字没改，只是**一次跑完再一起报**：哪几条红，一眼看全。
+  const gates = [];
+  if (c.failures.length) gates.push('Scenario assertions failed ' + c.failures.length);
+  if (guard.errors.length) gates.push('Network instrumentation failed ' + guard.errors.length);
+  if (guard.denied.length) gates.push('Unexpected business egress attempted ' + guard.denied.length);
+  // 登记过就必须真的拦到一次 —— 否则 expected 会烂成"什么都能塞进来"的洞：
+  // 夹具哪天改了地址、或者那两面墙压根没跑到，登记条目等于替真出网打掩护。
+  const declaredUnhit = Array.from(guard.expected).filter(url => !guard.expectedHits.has(url));
+  if (declaredUnhit.length) gates.push('Declared egress never attempted ' + declaredUnhit.join(', '));
+  report.gates = gates;
+  assert.equal(gates.length, 0, 'Suite gates failed: ' + gates.join(' | '));
 }
 
 async function execute(opts) {

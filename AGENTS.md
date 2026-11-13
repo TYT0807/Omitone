@@ -39,7 +39,7 @@ npm test          # 工程自检 + 提示词基准 + 集成测试（299 项）+ 
 改动可能影响真实浏览器行为时（答题链路、抠题、媒体、任务点调度）**先跑一次基线**：
 
 ```bash
-npm run e2e       # 真实 Edge 功能交叉检验（104 个场景 / 1068 项）
+npm run e2e       # 真实 Edge 功能交叉检验（104 个场景 / 1070 项）
 ```
 
 不要复用用户正在使用的浏览器实例。`npm run e2e` 自己会起一个独立临时 profile 并自动收尾。
@@ -331,13 +331,34 @@ npm run e2e       # 真实 Edge 功能交叉检验（104 个场景 / 1068 项）
   激活它 → **轮询到 `hidden===true`** → 收尾**轮询回 `hidden===false`**。
   抖动就用"整趟重来（带上限）"吸收，别把断言改松。
   ⚠️ 试过的两条死路：`Browser.setWindowBounds {state:'minimized'}` 在这台 Edge 上
-  回 `result:{}` 却纹丝不动（读回 `windowState` 仍是 `normal`）；页面世界里改 `document.hidden`。
+  回 `result:{}` 却纹丝不动（批次 47 带回读复测：`windowState` 仍是 `normal`、bounds 一动不动）；
+  页面世界里改 `document.hidden`。协议里也**没有**可见性覆盖方法 ——
+  `Emulation.setVisibilityStateOverride` / `Emulation.clearVisibilityStateOverride` /
+  `Page.setVisibilityOverride` / `Page.setPageVisibility` 全部回 `wasn't found`，
+  只有 `Page.setWebLifecycleState {state:'frozen'}` 读得出 `hidden:true`，可 frozen 把 JS 整个冻住，
+  那测的是"代码停了"而不是"她在后台"。
+  ⚠️ **沙盒／自己起的 Edge 实例端不动标签可见性，根因在启动参数**（批次 47 逐特性量出来的）：
+  留着 `CalculateNativeWinOcclusion` 时，同窗口把另一枚标签端上去 `hasFocus` 会正确翻过去，
+  可两枚的 `document.hidden` 恒为 false（flipMs 恒 -1）；加上
+  `--disable-features=CalculateNativeWinOcclusion` 后同一发操作 200 毫秒翻 true。
+  `HighEfficiencyModeEnabled` 与 `RendererBackgrounding` 单独量过，都不是这个开关。
+  开关写进 `omitone-sandbox.cjs` 的 `launchEdge` 与 `tools/browser-e2e.js` 的 spawn ——
+  **两处成对，别只改一处**；再看到"后台／前台类前提在沙盒里恒红"，先核对它在不在。
 
 - ⚠️ **反向验证的注入必须改到「真实状态」，只改自报的布尔等于没注入。**
   批次 41 实测：为了验"唤回前台"那条前提，第一版把收尾函数的返回值换成 `return true` ——
   页面照样被端回前台，于是**红 0 条**，差点被解读成"这条断言抓不住"。
   判据：写注入前先说出**它破坏的是哪个动作/状态**（少调哪一个 API、少写哪个字段），
   而不是"让哪个返回值变一改"；红 0 条先怀疑注入无效，再怀疑断言无效。
+- ⚠️ **桩要打在「动作」上，别把整句生产方法换成计数器 —— 那样真分支从来没跑到过。**
+  批次 47 实测：为了不让验证码墙「过了」那一步把页面带走（`window.__wall` 一刷就没了），
+  第一版把 `_afterStandaloneCaptchaSolved` **整个**打桩，于是「`history.length > 1` 才走 `history.back()`」
+  这条真分支变成零覆盖；补的夹具自证又去钉 `lastHist >= 2`，那是把**测试台怎么打开这一页**当现场 ——
+  e2e 直接导航过去（1 条历史）、沙盒从起始页跳过来（2 条），换一个 harness 就红。
+  改成只桩 `history.back` / `window.close` 这两个动作，断言变成「走的那条 == 页面自己读到的那个数」，
+  两个 harness 各覆盖一支，走岔哪一边都红（两处注入各红 1 条，实测）。
+  判据：**桩的下界是那个会把页面带走的 API**，不是含它的那句方法；
+  断言不许依赖 runner 的导航深度／窗口位置／profile —— 那些数一律从页面里读回来再比。
 
 - ⚠️ **同一条表达不许同时出现在 if 的两个分支里** —— 它会让"两个分支"塌成一个。
   批次 42 审计抓到：`if (a && b || a && !b || c)` 里的 `a && b` 永真时整条恒真，
