@@ -2193,6 +2193,129 @@ function checkFixtureParsable() {
 }
 
 // ---------------------------------------------------------------------------
+// 24. 跨域裸读必须有保护（AGENTS.md §2 第 1 条的机检）
+// ---------------------------------------------------------------------------
+// 这条规矩原本只写在文档里、靠人自觉，而它的失败模式正是文档自己承认「最难查」的那类：
+// 裸读跨域 iframe 的 `.document` 抛 SecurityError，异常冒泡到 `_runTick` 就把整轮调度
+// 静默打断 —— 页面不报错、日志不动，看起来像「扩展没干活」。
+//
+// ⚠️ 期望数字在**这里**各写一份，不照抄 `audit.SELF_CASES[].expect`。
+// 照抄的话，「把 expect 改成实际值」就能让自检永远绿 —— 那是假绿的另一个形状。
+// 这个审计的上一版就是反例：它按「行」判 try 保护，于是同行闭合的
+// `try { doc = frame.contentDocument; } catch (eCross) { return null; }`
+// 被报成危险，干净树也 exit 1（`62-tasks-run.js` 的 `_voteOverlayDocReady`）；
+// 再上一版漏了正则字面量，吞掉半份文件之后报「0 处」。
+// **误报和漏报都会训练人忽略这道闸**，所以九格按 pin 逐格复算，两个方向都得有格子。
+function checkSafedocGuard() {
+  var audit;
+  try {
+    audit = require('./audit-safedoc.js');
+  } catch (e) {
+    fail('跨域裸读审计加载失败：' + String((e && e.message) || e));
+    return;
+  }
+
+  var WANT = {
+    'same-line-try': { reads: 1, risky: 0, guarded: 1 },
+    'multiline-try': { reads: 1, risky: 0, guarded: 1 },
+    'no-try': { reads: 1, risky: 1, guarded: 0 },
+    'catch-body': { reads: 1, risky: 1, guarded: 0 },
+    'after-regex': { reads: 1, risky: 1, guarded: 0 },
+    'inside-helper': { reads: 1, risky: 0, guarded: 0, inHelpers: 1 },
+    'comment-only': { reads: 0, rawHits: 2 },
+    'unclosed-block': { reads: 0, lexerProblems: 1 },
+    'template-depth': { reads: 1, risky: 0, guarded: 1 }
+  };
+
+  var cases = audit.SELF_CASES || [];
+  var bad = [];
+  Object.keys(WANT).forEach(function (pin) {
+    var hit = cases.filter(function (c) { return c.pin === pin; });
+    if (hit.length !== 1) {
+      bad.push(pin + '：这一格应当恰好 1 个，实际 ' + hit.length + ' 个（自检格子被删掉或重复了）');
+      return;
+    }
+    var got;
+    try {
+      got = audit.scanSource('(自检)/' + pin, hit[0].src.join('\n'));
+    } catch (e2) {
+      bad.push(pin + '：复算时审计抛了 ' + String((e2 && e2.message) || e2));
+      return;
+    }
+    var want = WANT[pin];
+    Object.keys(want).forEach(function (field) {
+      var actual = field === 'lexerProblems' ? got.lexerProblems.length : got[field];
+      if (actual !== want[field]) {
+        bad.push(pin + '：' + field + ' 应为 ' + want[field] + '，审计给出 ' + actual);
+      }
+    });
+    if (got.alignmentProblems.length) {
+      bad.push(pin + '：对位自证不过 —— ' + got.alignmentProblems.join('；'));
+    }
+  });
+  var selfBad = audit.runSelfCheck();
+  if (selfBad.length) {
+    bad.push('审计自带的自检不过 ' + selfBad.length + ' 格：' + selfBad.join('；'));
+  }
+  if (bad.length) {
+    fail('跨域裸读审计的九格阴性对照不成立（会误报的守卫比没有守卫更害人）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+
+  // ---- 接线自证：它得真的在扫那 16 份片段，而不是构建产物或一个空目录 ----
+  var dirName = rel(audit.DIR);
+  if (dirName !== 'src/page') {
+    fail('跨域裸读审计的目录指错了：实际 ' + dirName +
+      '（要扫源码片段 src/page，不是构建产物 page.js）');
+    return;
+  }
+  var results;
+  var sum;
+  try {
+    results = audit.scanDir(audit.DIR);
+    sum = audit.summarize(results);
+  } catch (e3) {
+    fail('扫 src/page 时审计抛了：' + String((e3 && e3.message) || e3));
+    return;
+  }
+  var realCount = fs.readdirSync(audit.DIR).filter(function (f) {
+    return /\.js$/.test(f);
+  }).length;
+  if (sum.files !== realCount) {
+    fail('跨域裸读审计只扫了 ' + sum.files + ' 份，src/page 里实有 ' + realCount +
+      ' 份 .js —— 扫过的不是要保护的那批文件');
+    return;
+  }
+  // ⚠️ 「0 处命中」必须能和「根本没走到」区分开。安全助手本体（`_safeDocOf` /
+  // `_safeWinDoc`）**自己就要读 contentDocument**，所以一处都没有只可能是词法器
+  // 或目录坏了。这一格今天实测是三十多处命中。
+  if (sum.reads <= 0) {
+    fail('跨域裸读审计一处都没命中 —— 这不可能是真的（安全助手本体里必然有），' +
+      '怀疑词法器把内容吞掉了');
+    return;
+  }
+  if (sum.problems.length) {
+    fail('跨域裸读审计自己的对位/词法自证没过，它报的「没有保护 0 处」不可信：\n      ' +
+      sum.problems.join('\n      '));
+    return;
+  }
+  if (sum.risky > 0) {
+    fail('src/page 里有 ' + sum.risky +
+      ' 处裸读跨域 document 没被 try 包住（AGENTS.md §2 第 1 条；改用 _safeDocOf() / _safeWinDoc()，' +
+      '或把这一处放进 try 并留兜底）：\n      ' +
+      sum.riskyRows.map(function (r) {
+        return r.file + ':' + r.line + ':' + r.col + ' [' + r.fn + '] 当下在 ' + r.frameKind +
+          ' 里 → ' + r.text.slice(0, 90);
+      }).join('\n      '));
+    return;
+  }
+  pass('跨域裸读必须有保护（' + sum.files + ' 份片段共 ' + sum.reads + ' 处命中：try 体内 ' +
+    sum.guarded + ' 处、安全助手内 ' + sum.inHelpers + ' 处、裸奔 0 处；' +
+    '九格阴性对照按 pin 逐格复算 + 每一处行列回原文核对）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2220,6 +2343,7 @@ checkBridgeMessageTypes();
 checkPublicHygiene();
 checkTestSuiteWiring();
 checkFixtureParsable();
+checkSafedocGuard();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

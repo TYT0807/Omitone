@@ -10,6 +10,7 @@
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
 | `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 104 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 71 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
 | `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
+| `audit-safedoc.js` | `node tools/audit-safedoc.js`（`--json` 出机器可读）；被 `check.js` 第 24 项调用 | 跨域裸读审计：扫 `src/page/*.js`，逐字符判每一处 `.contentDocument` / `.contentWindow.document` **当下**在不在 try 体内。先跑 9 格自证再出结论：自证不过退出 2（结论作废），有裸奔退出 1，干净退出 0。`catch` / `finally` 体不算保护 |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -151,6 +152,18 @@
     `scanFixture(urlPath, fixtureHtml)` / 收尾真读那份问题清单 / 全表入口存在）。
     **为什么单独守这一条**：批次 47 实测把坏夹具注回真实浏览器，**那一条场景全绿**、异常压根不抛 ——
     这一族只能静态量，等浏览器回报会漏（详见 CHANGELOG 批次 48）
+24. **跨域裸读必须有保护** —— `audit-safedoc.js` 扫 `src/page/*.js`，把每一处
+    `.contentDocument` / `.contentWindow.document` 按**字符位置**判它当下在不在 try 体内
+    （`catch` / `finally` 体**不算**保护，那里意味着进去之前已经抛过一次）。
+    它自带 9 格阴性对照，`check.js` 第 24 项**另存一份按 `pin` 索引的期望数字**逐格复算 ——
+    所以"把 expect 改成实际值"糊不过去。另有三道自证：接线（`audit.DIR` 必须正好是 `src/page`、
+    扫到的份数要等于目录里实际的 .js 份数）、走到（命中数为 0 只可能是词法器坏了，因为
+    `_safeDocOf` 本体必然读一次）、对位（每一处命中回原文核对那一列真是裸读字样开头，
+    并且整目录拼起来大括号净深度必须为 0）。
+    **为什么单独守这一条**：`AGENTS.md` §2 第 1 条原本只是文档自律，而它的失败模式是
+    `SecurityError` 冒泡到 `_runTick` 把整轮调度静默打断。
+    ⚠️ 上一版这个审计按「行」算深度，把同行闭合的 `try { … } catch` 报成危险、干净树也退出非 0
+    —— 会误报的守卫会把人训练成忽略它，所以这次先让它自证、再让它说话（详见 CHANGELOG 批次 49）
 
 失败时退出码为 1，可直接用于 CI。
 
