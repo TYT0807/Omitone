@@ -2100,6 +2100,99 @@ function checkTestSuiteWiring() {
 }
 
 // ---------------------------------------------------------------------------
+// 23. 夹具 HTML 必须能被浏览器解析（批次 48）
+//
+// 要拦的是这一族：夹具照着**日志摘录**写，于是 `javascript:` 里少一个右括号
+// —— `String(src).slice(0, 40)` 那个长度是摘录宽度，不是页面真串。
+// 批次 47 的反向验证给出的是**否证**：把坏形状注回去，沙盒那条「场景结束无未捕获
+// 页面异常」读到 3 秒仍是 `pageErrors:0` —— 浏览器压根没跑那段程序，
+// 于是「页面静默丢掉整块脚本」和「代码坏了」在断言里长得一模一样。
+// 这一族只能静态量：每段内联 `<script>` 与每个 `javascript:` URL 过一次
+// `new vm.Script`（真源 tools/fixture-parse-guard.js），解析不了就报红。
+// ---------------------------------------------------------------------------
+function checkFixtureParsable() {
+  var guard;
+  try {
+    guard = require('./fixture-parse-guard.js');
+  } catch (e) {
+    fail('夹具可解析守卫加载失败：' + String((e && e.message) || e));
+    return;
+  }
+
+  // ---- 阴性对照：先证明这道闸关得上 ----
+  // 前两格证明它**会响**（坏内联体 / 坏 javascript: URL 各一条）；
+  // 第三格证明它**不误报**，且带 `src=` 的外链脚本与 `type="application/json"`
+  // 不算程序 —— 那两样浏览器也不会跑，扫了只会造出假红。
+  var CASES = [
+    { name: '内联 <script> 体少一个右括号', want: 1,
+      html: '<html><body><script>var a = (function(){document.open</script></body></html>' },
+    { name: 'javascript: URL 少一个右括号', want: 1,
+      html: '<html><body><a href="javascript:void(function(){document.open">go</a></body></html>' },
+    { name: '干净夹具（含外链脚本与 JSON 脚本，不许误报）', want: 0,
+      html: '<html><body><script>var a = (function(){return 1;})();</script>' +
+        '<a href="javascript:void(0)">go</a>' +
+        '<script src="./not-inlined.js"></script>' +
+        '<script type="application/json">{"broken": </script></body></html>' }
+  ];
+  var bad = [];
+  CASES.forEach(function (c) {
+    var n;
+    try { n = guard.problemsIn('阴性对照/' + c.name, c.html).length; }
+    catch (e2) { bad.push(c.name + '：探测本身抛了 ' + String((e2 && e2.message) || e2)); return; }
+    if (n !== c.want) bad.push(c.name + '：应报 ' + c.want + ' 条，实际 ' + n + ' 条');
+  });
+  if (bad.length) {
+    fail('夹具可解析守卫的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+
+  // ---- 接线自证：守卫写好了但没人调用 = 没有守卫 ----
+  var e2eSrc = read('tools/browser-e2e.js');
+  var wiring = [];
+  if (e2eSrc.indexOf("require('./fixture-parse-guard.js')") < 0) wiring.push('没有 require 这个守卫');
+  if (e2eSrc.indexOf('scanFixture(urlPath, fixtureHtml)') < 0) wiring.push('serve 那一步没把正要发出去的 HTML 交给 scanFixture()');
+  if (e2eSrc.indexOf('FIXTURE_PROBLEMS.length') < 0) wiring.push('收尾没有把 FIXTURE_PROBLEMS 报出来');
+  if (e2eSrc.indexOf('--validate-fixtures') < 0) wiring.push('没有 --validate-fixtures 全表入口');
+  if (wiring.length) {
+    fail('夹具守卫在 tools/browser-e2e.js 里没接到位：' + wiring.join('、'));
+    return;
+  }
+
+  // ---- 扫全表：MOCK_PAGES 每一页逐页生成并解析（定向跑只覆盖访问过的那几页） ----
+  // 为什么走子进程：MOCK_PAGES 住在 browser-e2e.js 里，而那个文件末尾就是 `main()`，
+  // 直接 require 会把整套真实 Edge 端到端拉起来。
+  // ⚠️ 与 checkFontTable 同一个教训：spawn **本身**失败时（实测本机 `spawnSync node.exe → EBUSY`）
+  // stdout/stderr 都是空的，不把 `result.error` 打出来，报出来就是一句「扫不了」后面什么都没有。
+  // EBUSY 是瞬时的，所以重试一次；两次都不行才报红 —— 报红也比静默跳过好。
+  var script = path.join(__dirname, 'browser-e2e.js');
+  var VALIDATE_SCAN_FLAG = '--validate-fixtures';
+  var result = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    result = spawnSync(process.execPath, [script, VALIDATE_SCAN_FLAG], { encoding: 'utf8', timeout: 60000 });
+    // 只有 EBUSY 这类**起不来**才值得重试；挂住（ETIMEDOUT）再跑一遍只会多等 60 秒。
+    if (!result.error || result.error.code === 'ETIMEDOUT') break;
+  }
+  if (result.error) {
+    // 两种失败输出都是空的，原因完全不同，必须分开说（否则又是一次「诊断把真原因吞掉」）：
+    // EBUSY = 本机 spawn 抖动；ETIMEDOUT = 子进程**挂住** —— 扫 71 页本是秒级的事，
+    // 挂住多半是那个分支没收尾、把启动器也叫起来了（批次 48 实测）。
+    var hint = result.error.code === 'ETIMEDOUT'
+      ? '（60 秒没返回：扫全表本该是秒级，怀疑它掉进了启动器）'
+      : '（已重试一次）';
+    fail('夹具全表扫描的子进程没跑成' + hint + '：' + String(result.error) +
+      '\n      status=' + result.status + ' signal=' + result.signal);
+    return;
+  }
+  var out = String((result.stdout || '') + (result.stderr || '')).trim();
+  if (result.status !== 0) {
+    fail('夹具里有浏览器解析不了的程序：\n      ' +
+      (out ? out.split('\n').join('\n      ') : '（子进程没有输出，status=' + result.status + '）'));
+    return;
+  }
+  pass('夹具 HTML 可解析（' + out.split(/\r?\n/).filter(Boolean).join('；') + '；含 3 格阴性对照）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2126,6 +2219,7 @@ checkPetSpritePools();
 checkBridgeMessageTypes();
 checkPublicHygiene();
 checkTestSuiteWiring();
+checkFixtureParsable();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

@@ -22,8 +22,24 @@ var path = require('path');
 var http = require('http');
 var crypto = require('crypto');
 var { spawn } = require('child_process');
+var fixtureGuard = require('./fixture-parse-guard.js');
 
 var ROOT = path.join(__dirname, '..');
+
+/**
+ * 夹具发出去之前的自扫（批次 48）。
+ *
+ * 为什么扫在**服务端**而不是等浏览器回报：批次 47 反向验证量出来的事实是
+ * 「场景结束无未捕获页面异常」那道闸**结构上抓不住**解析期的导航异常（读到 3 秒仍 pageErrors:0）。
+ * 所以 HTML 一离开夹具就当场解析一遍 —— 量不到形状就说明闸是假的，别把它当证据。
+ */
+var FIXTURE_PROBLEMS = [];
+var fixtureScanned = Object.create(null);
+function scanFixture(urlPath, html) {
+  if (fixtureScanned[urlPath] === html) return;
+  fixtureScanned[urlPath] = html;
+  FIXTURE_PROBLEMS = FIXTURE_PROBLEMS.concat(fixtureGuard.problemsIn(urlPath, html));
+}
 
 /**
  * 要加载哪个目录当扩展。
@@ -1797,8 +1813,10 @@ function startMockServer() {
 
     var urlPath = (req.url || '/').split('?')[0];
     if (MOCK_PAGES[urlPath]) {
+      var fixtureHtml = MOCK_PAGES[urlPath]();
+      scanFixture(urlPath, fixtureHtml);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(MOCK_PAGES[urlPath]());
+      return res.end(fixtureHtml);
     }
 
     if (urlPath === '/v1/chat/completions' && req.method === 'POST') {
@@ -13541,6 +13559,12 @@ async function main() {
   } catch (e) {}
 
   console.log('');
+  if (FIXTURE_PROBLEMS.length) {
+    console.log('夹具里有浏览器解析不了的程序（' + FIXTURE_PROBLEMS.length + ' 段）：');
+    FIXTURE_PROBLEMS.forEach(function (p) { console.log('  - ' + p); });
+    console.log('');
+    process.exitCode = 1;
+  }
   if (failures.length) {
     console.log('功能交叉检验未通过：' + failures.length + ' / ' + checks + ' 项失败');
     failures.forEach(function (f) { console.log('  - ' + f); });
@@ -13550,6 +13574,119 @@ async function main() {
     console.log('功能交叉检验全部通过：' + checks + ' / ' + checks + ' 项');
     console.log('');
   }
+}
+
+// ---------------------------------------------------------------------------
+// 入口（⚠️ 这一段受「沙盒切片契约」约束，改之前先读）
+//
+// omitone-sandbox.cjs 的 legacySuite() 不走本文件的启动器：它拿一个字面边界
+// —— 顶格的 main().catch(function (err) { —— 把本文件切开，只把前半截丢进 VM 里
+// 跑，好复用 SCENARIOS 与 MOCK_PAGES。那个 VM 给的 process 是桩，只有 env /
+// platform / cwd，所以这里同时压着两条约束：
+//   1. 那一行不许缩进，也不许出现第二处。批次 48 把 main() 缩进进了 else 分支，
+//      沙盒 104 个场景一个都没跑，报的是一句 Legacy launcher boundary must be unique；
+//   2. 边界**之前**的每一行都会被切片带走，那一段就不许无条件读 process.argv
+//      —— 在沙盒里它是 undefined，装载当场抛。取命令行开关一律走下面这个对桩
+//      免疫的 cliFlag()，别在边界前面直接写 process.argv。
+// 这两条在 npm run e2e 里全是绿的，只有沙盒会红 —— 所以让 sandboxBoundaryProblems()
+// 自己量一遍：--validate-fixtures（= npm run check 第 23 项 spawn 的那条）先红，
+// 不必再等一轮沙盒起不来才发现。
+// ---------------------------------------------------------------------------
+var VALIDATE_FLAG = '--validate-fixtures';
+
+function cliFlag(name) {
+  var argv = (typeof process !== 'undefined' && Array.isArray(process.argv)) ? process.argv : [];
+  return argv.indexOf(name) >= 0;
+}
+
+/**
+ * 摘掉注释与字符串体，只留下程序本体，再挑出真正取用 process.argv 且没有护栏的行。
+ * ⚠️ 必须先摘：上面那段说明文字本身就在讲 process.argv，不摘的话这道自证会把散文
+ * 报成违规（批次 48 实测一次报出 6 条假红 —— 会误报的守卫和没有守卫一样害人）。
+ */
+function bareArgvLines(lines) {
+  var out = [];
+  var inBlock = false;
+  var TICK = String.fromCharCode(96);
+  lines.forEach(function (raw) {
+    var line = raw;
+    if (inBlock) {
+      var end = line.indexOf('*/');
+      if (end < 0) { line = ''; }
+      else { inBlock = false; line = line.slice(end + 2); }
+    }
+    var cut = '';
+    var quote = '';
+    for (var i = 0; i < line.length; i++) {
+      var ch = line.charAt(i);
+      if (quote) {
+        if (ch === '\\') { i++; continue; }
+        if (ch === quote) { quote = ''; }
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === TICK) { quote = ch; continue; }
+      if (ch === '/' && line.charAt(i + 1) === '/') break;
+      if (ch === '/' && line.charAt(i + 1) === '*') {
+        var close = line.indexOf('*/', i + 2);
+        if (close < 0) { inBlock = true; break; }
+        i = close + 1;
+        continue;
+      }
+      cut += ch;
+    }
+    if (cut.indexOf('process.argv') >= 0 &&
+      cut.indexOf('Array.isArray(') < 0 && cut.indexOf('typeof ') < 0) out.push(raw);
+  });
+  return out;
+}
+
+function sandboxBoundaryProblems() {
+  var problems = [];
+  var lines = String(fs.readFileSync(__filename, 'utf8')).split(/\r?\n/);
+  var boundary = 'main().catch(function (err) {';
+  var at = [];
+  lines.forEach(function (l, i) { if (l.indexOf(boundary) === 0) at.push(i); });
+  if (at.length !== 1) {
+    problems.push('切片边界「' + boundary + '」顶格出现 ' + at.length + ' 次（应为 1）：缩进它、或再写一处，沙盒的 legacySuite() 就认不出唯一的边界');
+    return problems;
+  }
+  var bare = bareArgvLines(lines.slice(0, at[0]));
+  bare.forEach(function (l) {
+    problems.push('切片边界之前有一行在**程序里**读了 process.argv，却没被 typeof / Array.isArray 护栏包住：' +
+      l.trim() + ' —— 沙盒的 VM 只给 env / platform / cwd，这一句在装载当场就抛');
+  });
+  // 第三条：守卫入口必须**自己收尾**。分支掉进 main() 时，一次秒级的全表扫描会变成
+  // 整套真实 Edge（表现为命令不返回）—— 这一条就是这一轮自己踩出来的。
+  var flagAt = -1;
+  lines.forEach(function (l, i) {
+    if (l.indexOf('if (cliFlag(VALIDATE_FLAG)) {') === 0) flagAt = i;
+  });
+  if (flagAt < 0) {
+    problems.push('找不到顶格的全表扫描分支入口「if (cliFlag(VALIDATE_FLAG)) {」：守卫没有入口 = 没有守卫');
+  } else if (lines.slice(flagAt, at[0]).join('\n').indexOf('process.exit(') < 0) {
+    problems.push('全表扫描分支没有 process.exit( —— 它会掉进下面的 main()，一次扫描顺手把整套真实 Edge 拉起来');
+  }
+  return problems;
+}
+
+// 全表扫描：逐页生成并解析，也包括本轮没访问到的页（定向跑只扫访问过的那几页）。
+if (cliFlag(VALIDATE_FLAG)) {
+  var boundaryProblems = sandboxBoundaryProblems();
+  if (!boundaryProblems.length) console.log('沙盒切片契约：边界顶格唯一，边界之前没有裸 process.argv');
+  boundaryProblems.forEach(function (p) { console.log('沙盒切片契约不成立：' + p); });
+  var allProblems = fixtureGuard.validatePages(MOCK_PAGES);
+  if (allProblems.length) {
+    console.log('夹具可解析守卫：' + allProblems.length + ' 段解析不了');
+    allProblems.forEach(function (p) { console.log('  - ' + p); });
+  } else {
+    console.log('夹具可解析守卫：' + Object.keys(MOCK_PAGES).length +
+      ' 页、每页的内联 script 与 javascript: URL 全部能解析');
+  }
+  // ⚠️ 这一句是**收尾**，不是可选的退出码。切片契约要求 main() 顶格唯一，
+  // 所以全表扫描不能靠 else 分支躲开它，得自己走人。
+  // 批次 48 实测漏掉这一句的样子：扫完 71 页直接掉进下面的 main()，一条本该
+  // 秒级返回的守卫命令变成整套真实 Edge 端到端 —— 看着就像卡死。
+  process.exit(boundaryProblems.length || allProblems.length ? 1 : 0);
 }
 
 main().catch(function (err) {

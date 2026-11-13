@@ -8,7 +8,8 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 104 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 104 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 71 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
+| `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -142,6 +143,14 @@
 22. **独立套件挂载** —— 根目录每个 `omitone-*.cjs` 秒级套件都必须出现在 `npm test` 链里；
     排除表只许是重件，且条目要"文件还在 + 仍被它声称的那个 npm 脚本调用得到"。
     拦的是批次 46 那种腐烂：三个秒级套件在链外坏了三个批次没人发现
+23. **夹具 HTML 可解析** —— `fixture-parse-guard.js` 把夹具里每一段程序（内联 `<script>` 体、
+    `javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段 + 错误首行 + 程序开头"。
+    两条路径：`browser-e2e.js --validate-fixtures` 全表扫（71 页夹具，本项 spawn 一次做证据）+
+    服务端每次发页前扫**正要发出去的那一份**。自带 3 格阴性对照（两类坏形状各报一条、
+    干净夹具必须 0 条 —— **"不许误报"也是判据**）与 4 道接线自证（守卫被 require / 发页处真调
+    `scanFixture(urlPath, fixtureHtml)` / 收尾真读那份问题清单 / 全表入口存在）。
+    **为什么单独守这一条**：批次 47 实测把坏夹具注回真实浏览器，**那一条场景全绿**、异常压根不抛 ——
+    这一族只能静态量，等浏览器回报会漏（详见 CHANGELOG 批次 48）
 
 失败时退出码为 1，可直接用于 CI。
 
@@ -335,6 +344,29 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 
 前置：本机装有 Edge。路径用 `OMITONE_EDGE` 覆盖；端口用 `OMITONE_E2E_PORT` /
 `OMITONE_CDP_PORT` 覆盖；`OMITONE_E2E_DEBUG=1` 打印 target 列表与扩展 ID。
+
+### ⚠️ 沙盒切片契约：改这个文件**尾部**之前先读
+
+`omitone-sandbox.cjs` 的 `legacySuite()` 不 `require` 本文件，它拿**一个字面字符串**
+`'\nmain().catch(function (err) {'` 去切它，只把**前半截**丢进 `vm.runInContext` ——
+沙盒要的只是 `SCENARIOS` / `MOCK_PAGES`，不是那套真实浏览器启动器。于是尾部有三条**没写在别处**的约束，
+违反任何一条 = 沙盒整套起不来（104 场景一个没跑，只报一句 `Legacy launcher boundary must be unique`、
+`failures` 是空的）：
+
+1. **那一行必须顶格、且全文件唯一** —— 缩进进 `else` 分支就命中 0 次（批次 48 实测踩过）。
+2. **锚点之前的每一行都会被沙盒带走执行** —— 那段不许裸读 `process.argv`：VM 里的 `process`
+   只有 `env` / `platform` / `cwd`。要读命令行就包一层（本文件的 `cliFlag()`）；
+   自证匹配时要先把注释与字符串体摘掉，否则**光是在注释里提一句就报红**（也实测踩过，一次 6 条假红）。
+3. **锚点之后的代码沙盒看不见** —— 所以早退分支必须以 `process.exit(` 收尾，
+   否则会继续往下掉进启动器：症状是"本该秒级的离线扫描挂住不动"。
+
+这三条**都有静态自证**：`--validate-fixtures` 除了扫夹具还扫边界本身（顶格唯一 / 前缀无裸
+`process.argv` / 分支带 `process.exit`），`npm run check` 会 spawn 它一次并核对四道接线。
+
+> **为什么要静态**：批次 47 把"少一个右括号"的 `javascript:` 帧注回真实浏览器，
+> **那一条场景全绿**（`pageErrors:0`），异常压根不抛 —— 这一族等浏览器回报会漏。
+> 夹具现在两条路径都扫：发页前扫**正要发出去的那一份**（问题进报告并置退出码），
+> 离线入口扫**全表 71 页**（定向跑只覆盖访问过的那几页）。
 
 ### 要造「这一页在后台」：`openTab` **不够**，必须 `activateTab` + 轮询自证
 
