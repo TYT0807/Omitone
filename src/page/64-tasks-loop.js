@@ -253,7 +253,6 @@
           if (activeTask.type === 'video') {
             var video = this._getVideoEl();
             if (video) {
-              this._videoRetryCount = 0;
               this._skipChainCount = 0;
               this._isPlaying = true;
               this._ensurePlaybackRate(video, 'start');
@@ -274,7 +273,6 @@
             if (this._handleDocumentTask()) return;
             var fallbackVideo = this._getVideoEl();
             if (fallbackVideo) {
-              this._videoRetryCount = 0;
               this._skipChainCount = 0;
               this._isPlaying = true;
               this._ensurePlaybackRate(fallbackVideo, 'fallback');

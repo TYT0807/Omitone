@@ -349,7 +349,6 @@
       var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
 
       this._activeJobId = job.jobid || '';
-      this._videoRetryCount = 0;
       this._skipChainCount = 0;
       this._activeMediaJobPending = !video.ended;
       this._activeMediaJobManaged = true;
@@ -405,11 +404,25 @@
             }
           }
           this._isPlaying = false;
-          emitRuntimeLog('error', 'media play failed', {
-            name: job.name,
-            error: String((e2 && e2.message) || e2 || '').slice(0, 160)
-          });
-          console.error('[Omitone] chaoxing media play failed:', e2 && e2.message ? e2.message : e2);
+          // 站点的播放器自己在同一刻调 load()/pause() 时，这一发 play() 的 promise 会被它打断。
+          // 这**不等于**"这个视频看不了"：下一拍会重新接上（现场实测：打完这两句 currentTime 照走）。
+          // 状态面板把 error 级日志读成「异常运行」，所以只把这种自愈的中断降级；
+          // 真读不到源的仍然留 error —— 那才是要人看一眼的那一种。
+          var interruptedBySite = /interrupted by/i.test(errText);
+          var errDetail = String((e2 && e2.message) || e2 || '').slice(0, 160);
+          if (interruptedBySite) {
+            emitRuntimeLog('warn', 'media play interrupted by site player', {
+              name: job.name,
+              error: errDetail,
+              hint: '站点播放器自己动了 load/pause，这一下 play 被打断 —— 会重新接上，不用管'
+            });
+          } else {
+            emitRuntimeLog('error', 'media play failed', {
+              name: job.name,
+              error: errDetail
+            });
+            console.error('[Omitone] chaoxing media play failed:', e2 && e2.message ? e2.message : e2);
+          }
         }
       }
       return true;

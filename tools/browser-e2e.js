@@ -3497,19 +3497,20 @@ SCENARIOS.push({
       return await ctx.client.evaluate('(function(){return document.hidden;})()');
     };
     /** 轮询到要求的那一档为止；返回耗时（毫秒），没等到返回 -1 —— 只报实测，不报自认为的成功。 */
-    var untilHidden = async function (want) {
+    var untilHidden = async function (want, rounds) {
       var t0 = Date.now();
-      for (var i = 0; i < 14; i++) {
+      var n = rounds || 14;
+      for (var i = 0; i < n; i++) {
         if ((await readHidden()) === want) return Date.now() - t0;
         await sleep(150);
       }
       return -1;
     };
-    // 找一枚「和这一页同一扇窗口」的接管标签。优先用现成的（整轮唯一的配置写入器那一页通常就在），
-    // 一个都没有才新开 —— 而新开之前必须先把这一页端到最前，否则新标签会开去别的窗口
-    //（批次 39 就是这么恒红的）。找到之后整轮复用同一枚，别每趟都新开。
+    // 找「和这一页同一扇窗口」的接管标签，**全部收下来**（批次 45：以前只留第一枚）。
+    // 只有一枚候选时够用；全量跑里那一枚（配置写入器 popup）实测端不动这一页，
+    // 于是整场恒红 —— 而"哪一枚能动"事先并不知道，只能逐枚试、每枚自证。
     var findStandIn = async function () {
-      var plan = { win: null, cand: null, opened: null };
+      var plan = { win: null, cands: [], opened: null };
       return (await withBrowserClient(async function (bc) {
         var infos = ((await bc.send('Target.getTargets')) || {}).targetInfos || [];
         var pages = infos.filter(function (x) { return x.type === 'page'; });
@@ -3519,36 +3520,65 @@ SCENARIOS.push({
           var w = await bc.send('Browser.getWindowForTarget', { targetId: tid });
           return !!w && w.windowId === plan.win;
         };
-        for (var i = 0; i < pages.length && i < 8; i++) {
-          if (pages[i].targetId !== ctx.targetId && await sameWin(pages[i].targetId)) {
-            plan.cand = pages[i].targetId;
-            return plan;
+        for (var i = 0; i < pages.length && plan.cands.length < 4 && i < 16; i++) {
+          if (pages[i].targetId === ctx.targetId) continue;
+          if (await sameWin(pages[i].targetId)) {
+            plan.cands.push({ id: pages[i].targetId, url: String(pages[i].url || '').replace(/^https?:\/\//, '').slice(0, 34) });
           }
         }
-        await ctx.client.send('Page.bringToFront').catch(function () {});
-        var nt = await bc.send('Target.createTarget', { url: 'about:blank' });
-        plan.opened = (nt && nt.targetId) || null;
-        if (plan.opened && await sameWin(plan.opened)) plan.cand = plan.opened;
         return plan;
       })) || plan;
     };
-    /** 把这一页挤下后台 = 激活那枚同窗口的接管标签，并轮询到 hidden===true 为止。 */
+    /**
+     * 把这一页挤下后台 = 把同窗口另一枚标签端成活动标签，并轮询到 hidden===true 为止。
+     * ⚠️ 每一枚都要**实测** hidden 翻没翻：activateTab 回 true 只说明 HTTP 成功，
+     *    不说明这一页真的下后台（批次 45 全量跑就是这个：候选找到了、请求发出去了，hidden 不动）。
+     *    现成的四枚都端不动才新开一枚 —— 新开之前必须先把这一页端到最前，
+     *    否则新标签会开去别的窗口（批次 39 的恒红就是这么来的）。
+     */
     var pushBehind = async function () {
       if (!bgPlan) bgPlan = await findStandIn();
-      if (!bgPlan.cand) return { win: bgPlan.win, cand: null, opened: bgPlan.opened, flipMs: -1 };
-      await activateTab(bgPlan.cand);
-      return { win: bgPlan.win, cand: bgPlan.cand, opened: bgPlan.opened, flipMs: await untilHidden(true) };
+      var tried = [];
+      var list = (bgPlan.cands || []).slice(0, 4);
+      for (var i = 0; i < list.length; i++) {
+        var ok = await activateTab(list[i].id);
+        var ms = await untilHidden(true, 6);
+        tried.push({ k: '现成', u: list[i].url, ok: ok, ms: ms });
+        if (ms >= 0) return { win: bgPlan.win, cand: list[i].id, opened: bgPlan.opened, flipMs: ms, tried: tried };
+      }
+      await ctx.client.send('Page.bringToFront').catch(function () {});
+      // 上一趟新开的那枚还挂着就先关掉（整轮只留一枚，否则三趟重试会攒出三枚空白标签抢焦点）
+      if (bgPlan.opened) {
+        await closeTab(bgPlan.opened).catch(function () {});
+        bgPlan.opened = null;
+      }
+      var fresh = await withBrowserClient(async function (bc) {
+        var r = await bc.send('Target.createTarget', { url: 'about:blank' });
+        var tid = r && r.targetId;
+        if (!tid) return null;
+        var w = await bc.send('Browser.getWindowForTarget', { targetId: tid });
+        return w && w.windowId === bgPlan.win ? tid : null;
+      });
+      if (!fresh) {
+        tried.push({ k: '新开', u: '(开去了别的窗口)', ok: false, ms: -1 });
+        return { win: bgPlan.win, cand: null, opened: bgPlan.opened, flipMs: -1, tried: tried };
+      }
+      bgPlan.opened = fresh;
+      var ok2 = await activateTab(fresh);
+      var ms2 = await untilHidden(true, 10);
+      tried.push({ k: '新开', u: 'about:blank', ok: ok2, ms: ms2 });
+      return { win: bgPlan.win, cand: fresh, opened: fresh, flipMs: ms2, tried: tried };
     };
     /** 唤回：先把这趟新开的接管标签关掉（留着会继续抢焦点），再端到最前，轮询到 hidden===false 为止。 */
     var wakeUp = async function () {
       if (bgPlan && bgPlan.opened) {
         await closeTab(bgPlan.opened);
         bgPlan.opened = null;
-        bgPlan.cand = null;
       }
       await ctx.client.send('Page.bringToFront').catch(function () {});
       return await untilHidden(false) >= 0;
     };
+
     var readPet = async function () {
       return await ctx.client.evaluate(
         '(function(){var h=document.getElementById("omitone-page-pet-host");' +
@@ -3612,13 +3642,14 @@ SCENARIOS.push({
       JSON.stringify(bgIdle && {
         before: bgIdle.beforeSwitch, at: bgIdle.atSchedule, after: bgIdle.hidden,
         flipMs: bgIdle.flipMs, attempts: bgIdle.attempts,
-        win: bgIdle.how && bgIdle.how.win, cand: !!(bgIdle.how && bgIdle.how.cand),
-        opened: !!(bgIdle.how && bgIdle.how.opened)
+        win: bgIdle.how && bgIdle.how.win,
+        cand: !!(bgIdle.how && bgIdle.how.cand),
+        tried: bgIdle.how && bgIdle.how.tried
       }).slice(0, 220));
     check('前提收尾：这一页真的唤回前台了（**独立回读** document.hidden，不信任唤回函数自己报的那个数）' +
       '—— 回不去的话 ⑦ 真鼠标与前台对照全建在"还在后台"上',
       hiddenAfterBg === false && !!bgIdle && bgIdle.back === true,
-      JSON.stringify({ hiddenNow: hiddenAfterBg, back: bgIdle && bgIdle.back, how: bgIdle && bgIdle.how }).slice(0, 220));
+      JSON.stringify({ hiddenNow: hiddenAfterBg, back: bgIdle && bgIdle.back, how: bgIdle && bgIdle.how }).slice(0, 620));
     check('标签页在后台时她不插话，回到前台同一拍就说（旧写法在页面世界打桩 document.hidden，内容脚本读不到，恒绿）' +
       '—— 两趟都自证那一拍真的派发到 host 上，且可见性全程站在要求的那一档（不稳就整趟重来，最多三趟）',
       !!bgIdle && !!fgIdle && bgIdle.spoke === false && bgIdle.txt === '' &&
@@ -8950,7 +8981,7 @@ SCENARIOS.push({
       '(function(){var w=window.__blockedWall;return JSON.stringify({' +
       'blocked:w.metas("blocked page unreachable from JS, reload to recover"),' +
       'spent:w.metas("blocked page reload round spent, pausing reloads"),' +
-      'every:w.metas("main frame is cross-origin")});})()'
+      'every:w.metas("main frame unreadable")});})()'
     ));
 
     check('每一轮都判「这一页被挡住、本轮不继续跑」（返回 true = tick 提前收手）',
@@ -9020,6 +9051,58 @@ SCENARIOS.push({
       searched.nullReturned === true && unread.length >= 1 && unread[0].sameSite === true &&
       /^http:\/\/mooc2\.chaoxing\.com:\d+$/.test(String(unread[0].srcOrigin || '')),
       JSON.stringify({ searched: searched, unread: unread }));
+
+    // ---- 批次 44-③：src 属性写着顶层自己的地址、帧却读不到 —— 这一格现场真的出现过 ----
+    // 现场日志里抓到 `srcOrigin` 与 `topOrigin` **完全相同**、`sameSite:true`，而帧就是读不到：
+    // `src` 属性只记"当初想让它去哪"，帧自己在里面导航走之后属性不会跟着更新。
+    // 旧标题 `main frame is cross-origin` 在这种格子上是自己在跟自己打架。
+    // 夹具照现场做，不靠桩：① 把属性换成顶层自己的地址（真的导航过去、读得通）
+    // ② 再从帧**里面**把自己 replace 到墙那一边 → 属性留在同源、文档变成读不到。
+    // 属性用带查询串的写法，好让后面"墙过了"那一步的 `f.src="/blocked-inner"` 仍然算一次真导航。
+    await ctx.client.evaluate('(function(){var f=window._xxtApp._getMainFrame();' +
+      'window.__blockedWall.wallUrl=String(f.getAttribute("src"));' +
+      'f.setAttribute("src","/blocked-inner?b44=1");})()');
+    var innerReadable = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a._getMainFrame();' +
+      'if(!f||!a._isFrameSameOrigin(f))return false;' +
+      'var d=null;try{d=f.contentDocument;}catch(e){return false;}' +
+      'return !!(d&&d.body&&String(d.body.innerText||"").indexOf("被换走")!==-1);})()', 12000);
+    var walkedAway = await ctx.client.evaluate(
+      '(function(){var f=window._xxtApp._getMainFrame();' +
+      'try{f.contentWindow.location.replace(window.__blockedWall.wallUrl);return "sent";}' +
+      'catch(e){return String((e&&e.message)||e).slice(0,60);}})()');
+    var unreadableAgain = await waitFor(ctx.client,
+      '(function(){var a=window._xxtApp,f=a._getMainFrame();' +
+      'return !!f&&!a._isFrameSameOrigin(f);})()', 12000);
+    var staleBefore = Number(await ctx.client.evaluate(
+      '(function(){return window.__blockedWall.metas("main frame unreadable").length;})()'));
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._crossOriginLogAt=0;' +
+      'app._mainFrameCrossOriginSince=Date.now()-21000;app._checkBlockedByCrossOrigin();})()');
+    await sleep(400);   // 日志走 postMessage，不等一拍读到的是空缓冲
+    var staleAttr = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,w=window.__blockedWall;' +
+      'var f=app._getMainFrame(),o=app._frameOriginOf(f);' +
+      'var all=w.metas("main frame unreadable");' +
+      'return JSON.stringify({readable:app._isFrameSameOrigin(f),' +
+      '  attrIsTop:(o===String(location.origin)),nAfter:all.length,' +
+      '  last:all[all.length-1]||null,' +
+      '  oldName:w.metas("main frame is cross-origin").length});})()'
+    ));
+
+    check('夹具自证：src 属性 = 顶层 origin，帧却**真的**读不到（否则这一格是空测）',
+      innerReadable === true && walkedAway === 'sent' && unreadableAgain === true &&
+      staleAttr.readable === false && staleAttr.attrIsTop === true,
+      JSON.stringify({ inner: innerReadable, walkedAway: walkedAway,
+        unreadableAgain: unreadableAgain, stale: staleAttr }));
+
+    check('两个 origin 相同时那条日志改说「地址一模一样却读不到、属性可能是旧的」，全场不再有旧标题',
+      staleAttr.nAfter === staleBefore + 1 && !!staleAttr.last &&
+      staleAttr.last.sameOrigin === true && staleAttr.last.sameSite === true &&
+      /一模一样/.test(String(staleAttr.last.hint || '')) &&
+      /旧/.test(String(staleAttr.last.hint || '')) && staleAttr.oldName === 0,
+      JSON.stringify({ before: staleBefore, after: staleAttr.nAfter, last: staleAttr.last,
+        oldName: staleAttr.oldName }));
 
     // ---- 墙过了（帧重新读得通）：那笔刷新账必须作废 ----
     await ctx.client.evaluate(
@@ -9098,7 +9181,7 @@ SCENARIOS.push({
       '(function(){var w=window.__blockedWall;return JSON.stringify({' +
       'blocked:w.metas("blocked page unreachable from JS, reload to recover"),' +
       'spent:w.metas("blocked page reload round spent, pausing reloads"),' +
-      'every:w.metas("main frame is cross-origin")});})()'
+      'every:w.metas("main frame unreadable")});})()'
     ));
 
     check('别家占着内容帧时依然判「本轮不继续跑」（不能装作没事继续往下刷）',
@@ -9112,9 +9195,9 @@ SCENARIOS.push({
       JSON.stringify({ reloads: lives[2].reloads, ledger: ledger, budget: lives[2].budget }));
 
     var hints = (ledger.every || []).map(function (m) { return String(m.hint || ''); }).join(' | ');
-    check('日志要说清这是别家、并把下一步指到插件管不着的地方（拦截扩展 / 代理 / 重新登录）',
+    check('日志要说清这是别家（既不同站也不同源）、并把下一步指到插件管不着的地方（拦截扩展 / 代理 / 重新登录）',
       (ledger.every || []).length === 3 &&
-      ledger.every.every(function (m) { return m.sameSite === false; }) &&
+      ledger.every.every(function (m) { return m.sameSite === false && m.sameOrigin === false; }) &&
       /拦截|代理|重新登录/.test(hints) && hints.indexOf('刷新解决不了') !== -1,
       JSON.stringify({ n: (ledger.every || []).length, hints: hints.slice(0, 220) }));
   }
@@ -9172,7 +9255,196 @@ SCENARIOS.push({
   }
 });
 
-/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
+/**
+ * ---- 批次 44-②：站点播放器抢方向盘，不再报成「播放失败」----
+ *
+ * 现场（真实课程挂着跑）抓到两条 error 级的 `media play failed`，文案分别是
+ * `interrupted by a new load request` 与 `interrupted by a call to pause()` ——
+ * 都是站点自己的播放器在同一刻动了 load/pause，下一拍 currentTime 照走（现场实测自愈：
+ * 同一条视频报错后从 26s 一路走到 629s）。而 `content.js` 把 error 级日志读成「异常运行」，
+ * 右下角状态面板因此谎报过一次故障。
+ * 这条钉住**分界**：只有那种中断降级成 warn，真不支持的音源必须还是 error ——
+ * 只降级不吞掉（否则批次 40 那族"视频根本没有源"就再没人报警了）。
+ */
+SCENARIOS.push({
+  name: '播放被打断与真播放失败分等级（自愈的中断不再报成故障）',
+  path: '/blank',
+  run: async function (ctx) {
+    var res = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp,seen=[];' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")seen.push({level:m.level,message:m.message,meta:m.meta||{}});});' +
+      'function snap(){var s=seen.slice();seen.length=0;return s;}' +
+      'function pick(s,msg){return s.filter(function(x){return x.message===msg;});}' +
+      // ⚠️ 日志走 postMessage = **宏任务**；一串快速 resolve 的 await 会让它永远排不到，
+      //    于是"读了个空缓冲"看起来和"生产没发日志"一模一样。每次调用之后先让出一拍。
+      'function tick(){return new Promise(function(r){setTimeout(r,260);});}' +
+      'app.configs=Object.assign({},app.configs,{enableMedia:true});' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'var v=document.createElement("video");' +
+      // 只把"外围动作"桩掉（盯音源的这些动作各自有别的场景在测），被测面只有 play 的失败分类
+      'app._findMediaInDocument=function(){return v;};' +
+      'app._startVideoMonitoring=function(){};' +
+      'app._ensurePlaybackRate=function(){};' +
+      'app._trySeekToEnd=function(){return false;};' +
+      'app._videoEventHandle=function(){};' +
+      'app._maybeRepairMediaSource=async function(){return false;};' +
+      'var job={name:"3.6 sample.mp4",doc:document,jobid:"j1"};' +
+      'function rejectWith(msg,name){v.play=function(){return Promise.reject(new DOMException(msg,name));};}' +
+      'rejectWith("The play() request was interrupted by a new load request.","AbortError");' +
+      'var r1=await app._playChaoxingMediaJob(job);await tick();var p1=app._isPlaying;var s1=snap();' +
+      'rejectWith("The play() request was interrupted by a call to pause().","AbortError");' +
+      'var r2=await app._playChaoxingMediaJob(job);await tick();var s2=snap();' +
+      'rejectWith("The requested resource is not supported.","NotSupportedError");' +
+      'var r3=await app._playChaoxingMediaJob(job);await tick();var p3=app._isPlaying;var s3=snap();' +
+      'app._activeMediaJobPending=false;app._videoEl=null;' +
+      'return JSON.stringify({r:[r1,r2,r3],p1:p1,p3:p3,' +
+      '  i1:pick(s1,"media play interrupted by site player"),e1:pick(s1,"media play failed"),' +
+      '  i2:pick(s2,"media play interrupted by site player"),e2:pick(s2,"media play failed"),' +
+      '  i3:pick(s3,"media play interrupted by site player"),e3:pick(s3,"media play failed")});})()'
+    ));
+
+    check('夹具自证：三次都真的走进了播放分支（返回值全为 true，否则一条日志都不会有）',
+      res.r[0] === true && res.r[1] === true && res.r[2] === true, JSON.stringify(res.r));
+
+    check('两种「被打断」（新 load / 调用 pause）各记一条 warn，且一条 error 都不记',
+      res.i1.length === 1 && res.i1[0].level === 'warn' && res.e1.length === 0 &&
+      res.i2.length === 1 && res.i2[0].level === 'warn' && res.e2.length === 0,
+      JSON.stringify({ i1: res.i1, e1: res.e1, i2: res.i2, e2: res.e2 }));
+
+    check('warn 那条自带下一步（说清会自己重新接上，不用人管）',
+      res.i1.length === 1 && /重新接上/.test(String((res.i1[0].meta || {}).hint || '')),
+      JSON.stringify(res.i1));
+
+    check('真不支持的音源仍然记 error 级 media play failed（降级没有把这一族一起吞掉）',
+      res.e3.length === 1 && res.e3[0].level === 'error' && res.i3.length === 0,
+      JSON.stringify({ e3: res.e3, i3: res.i3 }));
+
+    check('两种都仍然把 _isPlaying 打回 false（不会因为改了日志等级就假装还在播）',
+      res.p1 === false && res.p3 === false, JSON.stringify({ p1: res.p1, p3: res.p3 }));
+
+    // ---- 面板这一头：日志等级最后会变成右下角那几个字（现场就是这里谎报过一次故障）----
+    // content.js 把 error 级读成「异常运行」，所以降级必须一路管到用户眼睛看得见的那一层。
+    // 这里不重跑播放，只把生产实际会发的那两条消息喂给面板（等级/名字/字段都照生产写）。
+    var panel = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function wait300(){return new Promise(function(r){setTimeout(r,300);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail")};}' +
+      'say("info","start",null);await wait300();var started=read();' +
+      'say("warn","media play interrupted by site player",' +
+      '  {name:"3.6 sample.mp4",error:"The play() request was interrupted by a new load request.",' +
+      '   hint:"站点播放器自己动了 load/pause，这一下 play 被打断 —— 会重新接上，不用管"});' +
+      'await wait300();var warn=read();' +
+      'say("error","media play failed",{name:"3.6 sample.mp4",' +
+      '  error:"The requested resource is not supported."});' +
+      'await wait300();var err=read();' +
+      'return JSON.stringify({started:started,warn:warn,err:err});})()'
+    ));
+
+    check('前提：状态面板真的被 start 激活了（没激活，下面两条就是空测）',
+      !!panel.started && panel.started.task !== '(无)' && !!panel.warn && !!panel.err,
+      JSON.stringify(panel.started));
+
+    check('自愈的中断在面板上写「正在重新接上」，不再写「异常运行」',
+      panel.warn.state === '等待中' && panel.warn.task === '视频播放中' &&
+      /重新接上/.test(String(panel.warn.detail || '')), JSON.stringify(panel.warn));
+
+    check('真不支持的音源在面板上仍然是「异常运行」，且把那句话说给用户',
+      panel.err.state === '异常运行' && panel.err.task === '视频播放失败' &&
+      /not supported/.test(String(panel.err.detail || '')), JSON.stringify(panel.err));
+  }
+});
+
+
+/** ---- 批次 44 ⑤：状态面板要把「没点名的 warn」也接住 ----
+ * 为什么单列这场：面板把每条运行日志翻译成三个字段（点色 / 那行任务 / 那句详情），
+ * 而 content.js 的翻译层只有 26 条按消息点名（外加一条 start、一条 error 兜底）。
+ * 修复前量到 **warn 级 110 个日志名里只有 13 个被点名**，剩下 97 个会把点色打成「注意」、
+ * 同时把任务与详情留成出厂值「运行中 / 状态更新中」——
+ * 一张卡片自己跟自己抵消：红点说有事，字却说一切正常。
+ * error 那一族有末分支兜底（「异常运行」），warn 没有，所以窟窿只在 warn 这一侧。
+ * ⚠️ 这里**不重跑生产链路**，只把生产实际会发的那几条消息按原等级、原名喂给面板 ——
+ * 断的是 content.js 的翻译层，不是 page.js 的判据层（判据层由上面那场负责）。 */
+SCENARIOS.push({
+  name: '没点名的 warn 不再被面板说成「正常运行」（注意点不许配上运行中）',
+  path: '/blank',
+  run: async function (ctx) {
+    var panel = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function wait300(){return new Promise(function(r){setTimeout(r,300);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail")};}' +
+      'var out={};' +
+      'say("info","start",null);await wait300();out.started=read();' +
+      'say("warn","media has no source, release pending",{heldMs:120000});' +
+      'await wait300();out.noSource=read();' +
+      'say("warn","main frame unreadable",{sameSite:true,sameOrigin:true});' +
+      'await wait300();out.unreadable=read();' +
+      'say("warn","study search skipped: main frame document unreadable",{sameSite:true});' +
+      'await wait300();out.unreadableSearch=read();' +
+      'say("warn","catalog veto window spent, allow skip",{waitedMs:20000});' +
+      'await wait300();out.vetoSpent=read();' +
+      'say("warn","task point given up (stuck without progress)",{kind:"quiz"});' +
+      'await wait300();out.givenUp=read();' +
+      'say("warn","vision bridge failed",{error:"bridge timeout"});' +
+      'await wait300();out.unnamed=read();' +
+      'say("info","study begin",{attachments:3});await wait300();out.infoCtl=read();' +
+      'say("error","tick error",{message:"boom"});await wait300();out.errCtl=read();' +
+      'say("info","media play recovered after source repair",{heldMs:1});await wait300();out.unnamedInfo=read();' +
+      'return JSON.stringify(out);})()'
+    ));
+
+    check('前提：面板已被 start 激活，且这九次都读回了字（读不到就是空测）',
+      !!panel.started && panel.started.task !== '(无)' &&
+      ['noSource', 'unreadable', 'unreadableSearch', 'vetoSpent', 'givenUp', 'unnamed', 'infoCtl', 'errCtl', 'unnamedInfo']
+        .every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
+      JSON.stringify(panel.started));
+
+    check('视频始终没源那一条点名成「视频没能播放」，不再留出厂值',
+      panel.noSource.state === '注意' && panel.noSource.task === '视频没能播放' &&
+      /没拿到地址/.test(String(panel.noSource.detail || '')), JSON.stringify(panel.noSource));
+
+    check('「页面内容读不到」两种写法都接得住（同一族、日志名不同）',
+      panel.unreadable.state === '注意' && panel.unreadable.task === '页面内容读不到' &&
+      panel.unreadableSearch.task === '页面内容读不到',
+      JSON.stringify({ a: panel.unreadable, b: panel.unreadableSearch }));
+
+    check('放弃等待那一族点名成「放弃等待，继续往下」（上限用尽与真放弃都算）',
+      panel.vetoSpent.task === '放弃等待，继续往下' && panel.givenUp.task === '放弃等待，继续往下' &&
+      panel.vetoSpent.state === '注意' && panel.givenUp.state === '注意',
+      JSON.stringify({ veto: panel.vetoSpent, givenUp: panel.givenUp }));
+
+    check('★ 没点名的 warn：点色仍是「注意」，但那两行不再是「运行中 / 状态更新中」',
+      panel.unnamed.state === '注意' && panel.unnamed.task !== '运行中' &&
+      panel.unnamed.detail !== '状态更新中' && /查看日志/.test(String(panel.unnamed.detail || '')),
+      JSON.stringify(panel.unnamed));
+
+    check('对照一：点过名的 info 仍走自己那一句（兜底没有把 study begin 抢走）',
+      panel.infoCtl.task === '扫描任务点' && panel.infoCtl.state !== '注意',
+      JSON.stringify(panel.infoCtl));
+
+    check('对照二：error 兜底没被新分支抢走（仍是「异常运行」）',
+      panel.errCtl.state === '异常运行', JSON.stringify(panel.errCtl));
+    // ⚠️ 上面那条对照一压根走不到尾部兜底（study begin 在链路前段就被点名接走了），
+    //    把 `level === warn` 写成无条件它也不会红 —— 只有没点名的 info 才走得到这一层。
+    check('对照三：没点名的 info 仍走出厂值「运行中」（warn 兜底没有吃宽到 info 这一层）',
+      panel.unnamedInfo.state === '正常运行' && panel.unnamedInfo.task === '运行中' &&
+      panel.unnamedInfo.detail === '状态更新中',
+      JSON.stringify(panel.unnamedInfo));
+  }
+});/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
  * 讨论任务 window.open 出来的窗口里插件静默不跑（用户报的「讨论新窗口默认关闭、插件失灵」）。

@@ -546,19 +546,26 @@
 
       if (now - (this._crossOriginLogAt || 0) > 15000) {
         this._crossOriginLogAt = now;
-        emitRuntimeLog('warn', 'main frame is cross-origin', {
+        // ⚠️ `srcOrigin` 读的是 iframe 的 **src 属性**，而属性只记"当初想让它去哪"，
+        //    帧自己导航走之后属性不会跟着变。所以这条日志只能说"读不到"，
+        //    不能说"这一帧现在是跨域的"（现场实测到地址与顶层一模一样却读不到的一格）。
+        var sameOrigin = !!srcOrigin && srcOrigin === String(location.origin || '');
+        emitRuntimeLog('warn', 'main frame unreadable', {
           heldSec: Math.round(held / 1000),
           // 只报 origin，不报完整地址：学习通的地址里全是 clazzid / cnum / chapterId，
           // 而这份日志是会被「复制日志」发出去的。
           srcOrigin: srcOrigin || '(no-src)',
           topOrigin: String(location.origin || ''),
           sameSite: sameSite,
+          sameOrigin: sameOrigin,
           reloads: budget.reloads,
           resumeInMs: Math.max(0, (budget.resumeAt || 0) - now),
-          // 两种跨域的下一步完全不同，别再只甩一句"可能被验证码挡了"
-          hint: sameSite
-            ? '内容帧还是课程站的地址，但 JS 读不到 —— 多半是平台的验证 / 反爬中间页，刷新有机会解决'
-            : '内容帧被换成了另一家的地址（见 srcOrigin）—— 刷新解决不了；先查浏览器的跟踪防范 / 广告拦截扩展与网络代理，或退出重新登录'
+          // 三种读不到的下一步完全不同，别再只甩一句"可能被验证码挡了"
+          hint: !sameSite
+            ? '内容帧被换成了另一家的地址（见 srcOrigin）—— 刷新解决不了；先查浏览器的跟踪防范 / 广告拦截扩展与网络代理，或退出重新登录'
+            : sameOrigin
+              ? '内容帧的地址和这一页一模一样却读不到 —— 帧正在切换、或被平台的验证 / 反爬中间页占住（src 属性可能是旧的），刷新有机会解决'
+              : '内容帧还是课程站的地址，但换到了另一台机器（见 srcOrigin），JS 读不到 —— 多半是平台的验证 / 反爬中间页，刷新有机会解决'
         });
       }
 

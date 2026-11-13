@@ -22,6 +22,7 @@
     "acceptance:built": "node omitone-acceptance.cjs",
     "e2e": "node tools/browser-e2e.js",
     "field-shape": "node tools/debug-probe.js --port=9334 --match=chaoxing --file=tools/field-shape.expr",
+    "field-logs": "node tools/field-logs.js",
     "test:all": "npm test && npm run e2e",
     "build": "node tools/build.js",
     "manual": "node tools/manual-pdf.js",

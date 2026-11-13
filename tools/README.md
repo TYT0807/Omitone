@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 102 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 104 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节） |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -19,6 +19,7 @@
 | `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
 | `debug-probe.js` | `node tools/debug-probe.js` | 连上面那个浏览器，在**真学习通页面**上跑插件的只读探针 `xxtAI.probe()`（`--expr=` 可换成任意表达式）。**排查真实问题的唯一入口** —— 见下方专节 |
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
+| `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒`；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest`；`npm run test:all` 再加上 `e2e`。
 
@@ -311,7 +312,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 102 个场景 / 1048 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 104 个场景 / 1068 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -427,7 +428,17 @@ node tools/debug-probe.js                                                       
 node tools/debug-probe.js --expr="xxtAI.diagnose()"                                        # 任意表达式
 node tools/debug-probe.js --port=9334 --match=studentstudy                                 # 端口 / 标签匹配词
 npm run field-shape                                                                        # 形状测绘：夹具与现场有分歧时定谁对
+npm run field-logs                                                                         # 直读现场那份日志环（不用人去点「复制日志」）
 ```
+
+`npm run field-logs` 补的是这条路的一半盲区：`debug-probe.js` 量得到**页面**（DOM、`_xxtApp`、
+`xxtAI.probe()`），但插件"当场怎么判的"那 200 条日志存在**扩展的 service worker** 侧，
+原先只有弹窗里「查看日志 / 复制日志」两个出口 —— 于是 agent 在现场其实还是半蒙眼的。
+它连的是同一个 9334 端口，只是把 `Runtime.evaluate` 发到 `service_worker` 目标上，
+**只取 `runtimeLogs` 这一个键**（同一份存储里躺着 API Key，整份 dump 一次就是把密钥打进终端）。
+实测这一条路当天就抓出三处：两条 `error` 级的 `media play failed` 其实是站点播放器抢方向盘且已自愈、
+`main frame is cross-origin` 的 `srcOrigin` 与 `topOrigin` 一模一样（标题和自己的证据打架）、
+以及一个只写 0 从不读的死字段。
 
 `npm run field-shape` 就是上面那条命令换成 `--file=tools/field-shape.expr`。**什么时候跑它**：
 一条 e2e 断言在沙盒里绿、在真页面上却不生效（或反过来），第一件事不是改判据，

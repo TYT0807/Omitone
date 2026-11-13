@@ -1532,6 +1532,15 @@
       state = 'wait';
       task = '视频播放中';
       detail = '等待视频播放完成';
+    } else if (/media play interrupted by site player/.test(msg)) {
+      // 站点播放器自己抢了一下方向盘，插件下一拍会重新接上 —— 不能报「异常运行」
+      state = 'wait';
+      task = '视频播放中';
+      detail = '站点播放器打断了一下，正在重新接上';
+    } else if (/media play failed/.test(msg)) {
+      state = 'error';
+      task = '视频播放失败';
+      detail = (data.error || '请在查看日志中确认详情');
     } else if (/managed media job ended/.test(msg)) {
       task = '视频任务完成';
       detail = '准备继续后续任务';
@@ -1614,9 +1623,25 @@
     } else if (/skip completed/.test(msg)) {
       task = '当前章节已完成';
       detail = '已跳过重复学习';
+    } else if (/media has no source, release pending/.test(msg)) {
+      state = 'warn';
+      task = '视频没能播放';
+      detail = '这一节的视频始终没拿到地址，已停止等待并继续';
+    } else if (/main frame unreadable|main frame document unreadable/.test(msg)) {
+      state = 'warn';
+      task = '页面内容读不到';
+      detail = '这一页的任务点暂时做不了，下一步写在日志里';
+    } else if (/veto window spent|parse retry spent|hold spent|given up \(stuck without progress\)|declined:/.test(msg)) {
+      state = 'warn';
+      task = '放弃等待，继续往下';
+      detail = '这一处没有进展，原因写在这一条日志里';
     } else if (level === 'error') {
       task = '异常运行';
       detail = data.message || '请在查看日志中确认详情';
+    } else if (level === 'warn') {
+      // 没点名的 warn 以前退回「运行中 / 状态更新中」—— 那两句会把「注意」这个点自己抵消掉
+      task = '有情况';
+      detail = '可在「查看日志」里看这一条';
     }
 
     return { state, task, detail };
