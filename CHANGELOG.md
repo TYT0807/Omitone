@@ -2581,9 +2581,30 @@
     ⑤ 那 7 条定向 `视频弹题选项识别` 11/11 全绿；六处注入（`.workbuddy/reverse43.js` 五处 +
     `reverse44.js` 一处补刀）全部抓住，跑完核对 `src/page/80-popup-quiz.js` 与 `page.js`
     **逐字节回到基线**（830604 字节 / rev `302d84f0c1`）—— 注入残留靠"按 INJ 标记 grep"查不出来时，
-    就只能靠这个逐字节比对兜住（批次 42 实际踩过：42-B 的替换文本不带标记，漏了一整轮）。
+    就只能靠这个逐字节比对兜住（踩过的是批次 38 的注入 42-B：替换文本没带标记，漏了一整轮）。
     完整 `npm run e2e` 全绿 **102 个场景 / 1048 项**（与批次 38 同一次全量跑）；
     `npm run check` / `npm test` 全绿 —— 集成 **299 项**、worker **126 项**、自检 21 项（本轮都没加）。
+
+- **㊾批次 43：现场恢复（断电后浏览器自己重启，跑的是磁盘上更旧的那一版）**（2026-11-13）
+
+  - **症状**：用户报「那边不刷课了」。现场量到 `xxtAI.probe()` 的 `attachments / tasks` 全空，
+    目录那一行还挂着待完成数字，而页面 rev 是 `91395173cc`（磁盘已是 `302d84f0c1`）——
+    **批次 38 / 40 的修复压根没进现场**，因为扩展重载与 F5 都发生在断电之前。
+  - **处置**：按 content.js 头上写明的正解走一遍 —— `chrome.runtime.reload()` → `Page.bringToFront`
+    → `Page.reload` → 复验。判据用**读回来的 rev**，不用"过了几秒"。
+    做完当场翻节（章节键换了两个）、`_isPlaying:true`、tick 心跳 71ms 前刚跳。
+  - **顺带把批次 38 的证据链在真页面上量了一遍（只读）**：`_getCurrentChapterId()` →
+    `_catalogItemForChapter()` 命中 `#cur<章节号>`（`posCatalog_select posCatalog_active`）、
+    `_catalogUnfinishedCount()` 读到数字、待完成图标在。**不是只过了夹具**。
+  - ⚠️ **两次把自己骗了，都记下来**：
+    ① 探针里写了 `_lastTickAt` —— **这个字段不存在**，于是"从未运行"和"我字段名写错"
+    给出同一个 `-1`。真字段是 `_tickProgressAt` / `_tickStartedAt`（`64-tasks-loop.js`）。
+    判据：**探针里每个字段名都要从 `grep` 拿，不许凭印象**（与批次 42 的"断言里的数要说得出从哪读回来"同族）。
+    ② 只走了一层 `iframe` 就下结论"页面里没有视频"—— 内容帧在**更深处**，
+    生产用的是有界深走（`#iframe` / `#contentFrame` / `#knowledgeFrame` / `#courseExporeContent`）。
+    判据：**"量不到"先问 walked 多深，再说没有**。
+  - **验证**：本轮**不改代码**（现场运维 + 一次性件都在 `.workbuddy/`，已 gitignore），
+    安装包不变、不升版本号。
 
 
 
