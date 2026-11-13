@@ -104,10 +104,10 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*482 行 / 4 方法 + 121 状态字段*
+*741 行 / 4 方法 + 161 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
-**以及绝大部分非方法属性** —— `configs`、121 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
+**以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
 
 **但不是全部**：另有约 30 个字段是"用到才建"的（`if (!this._x) …` 或读取处 `|| 0` 兜底），
 详见文件顶部「三条好记的规则」下面那段说明。要列全量用 `node tools/audit-fields.js`。
@@ -130,7 +130,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1112 行 / 42 方法*
+*1346 行 / 44 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、

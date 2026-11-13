@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd1883eab01';
+var OMITONE_CODE_REV = '38dc6812e2';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -608,6 +608,11 @@ var OMITONE_CODE_REV = 'd1883eab01';
 
     _mediaRepaired: null,
 
+    // 死流水线「原地重载」按源记账（批次 50，键同 `_getMediaSeekKey`）。
+    // 与 `_mediaRepaired` 一样**不随换节清理**：那是"这个源试过没有"的事实，
+    // 清了就会在同一节里反复重载。
+    _mediaReloadKeys: null,
+
     _pauseResumePending: false,
 
     // 批次 20-H：后台暂停恢复这条日志原本一次 pause 就写一条，实测 200 格缓冲里占了 97 条，
@@ -740,6 +745,12 @@ var OMITONE_CODE_REV = 'd1883eab01';
     // 源一旦挂上（或换成别的视频）立刻清零 —— 所以它必须是**独立字段**，
     // 不能借 `_mediaWaitLogAt`（那个是日志节流时间戳，会被别的调用方冲开）。
     _mediaNoSourceSince: 0,
+
+    // 「手里这个视频**流水线已死**（`video.error` 非空）」从什么时候开始算的（批次 50，0 = 没有）。
+    // 与上面那条**互斥地覆盖另一族**：`_mediaNoSourceSince` 要 readyState 0 且拿不到 duration，
+    // 而解码器半路死掉是 readyState 4 + 有时长 + `paused:false` —— 现场实测那一节被它占住将近一刻钟。
+    // 同样必须是**独立字段**，不借 `_mediaWaitLogAt`（那是日志节流时间戳）。
+    _mediaBrokenSince: 0,
 
     _documentWaitLogAt: 0,
 
@@ -895,6 +906,7 @@ var OMITONE_CODE_REV = 'd1883eab01';
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
       this._mediaNoSourceSince = 0;
+      this._mediaBrokenSince = 0;
       this._documentWaitLogAt = 0;
       this._lastLearningTabSwitchAt = 0;
       this._lastLearningCardKey = '';
@@ -2071,6 +2083,7 @@ var OMITONE_CODE_REV = 'd1883eab01';
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
       this._mediaNoSourceSince = 0;
+      this._mediaBrokenSince = 0;
       this._documentWaitLogAt = 0;
       this._guardLastTime = 0;
       this._guardLastWallTs = 0;
@@ -2162,6 +2175,42 @@ var OMITONE_CODE_REV = 'd1883eab01';
         return false;
       }
 
+      // 「源挂上了、播到一半**解码器死了**」这一族上面那条看不见（批次 50）——
+      // `noSourceShape` 要的是 readyState 0 且拿不到 duration，而现场那次是
+      // readyState 4 / duration 1448 / `error.code=3`：
+      // 2026-11-14 用户挂着刷课（CDP 9334），`currentTime` 从 628.771 起**将近一刻钟一格没动**，
+      // `paused` 却是 false —— 于是播放中的每一道判据都说"在播"，只有 `error` 说真话。
+      // 放手窗口沿用 `documentSkipTimeoutMs`（**不加新配置键**：加一个键要动三份默认值 +
+      // 界面绑定 + 策略区间，那些都由自检第 12 项守着，能复用就别新开面）。
+      // ⚠️ 放手**不等于标记完成** —— `_clearMediaPendingState` 只清状态、不上报完成，
+      //    真正的"这一节做完没"仍由平台的 `#isFinished` 说话；反复重派由外层的
+      //    `_countTaskIncomplete`（进度快照 `media:<秒>` 恒等 → 4 次就放弃 24 小时）收住。
+      //    静默跳过用户的任务点是这个项目不许的事（AGENTS §2.7），所以这里必须留 warn，
+      //    并把 code / message / 位置 / 是否重载过一起写进日志。
+      var brokenCode = this._mediaErrorCode(media);
+      if (!brokenCode) {
+        this._mediaBrokenSince = 0;
+      } else if (!this._mediaBrokenSince) {
+        this._mediaBrokenSince = Date.now();
+      } else if (Date.now() - this._mediaBrokenSince >= (Number(this.configs.documentSkipTimeoutMs) || 120000)) {
+        var brokenHeldMs = Date.now() - this._mediaBrokenSince;
+        var brokenMsg = '';
+        try { brokenMsg = String((media.error && media.error.message) || '').slice(0, 140); } catch (eErr) {}
+        var brokenKey = this._getMediaSeekKey(media);
+        this._mediaBrokenSince = 0;
+        emitRuntimeLog('warn', 'media pipeline dead, release pending', {
+          code: brokenCode,
+          message: brokenMsg,
+          reason: reason || '',
+          currentTime: Number(media.currentTime || 0),
+          duration: Number(media.duration || 0),
+          heldMs: brokenHeldMs,
+          reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey])
+        });
+        this._clearMediaPendingState('media-pipeline-dead');
+        return false;
+      }
+
       this._activeMediaJobPending = true;
       this._ensurePlaybackRate(media, reason || 'pending');
       if (media.paused) {
@@ -2170,7 +2219,7 @@ var OMITONE_CODE_REV = 'd1883eab01';
       }
 
       var now = Date.now();
-      // 签名只放**播放状态**这一维。
+      // 签名只放**播放状态**这一维（paused / playing），外加批次 50 的第三态 `broken<code>`。
       // ⚠️ reason 绝不能再进签名：reason 是「谁来问的」（'completion-check'、
       //    'ocs-runner-active-job' 等十几个调用方标识），同一个视频每秒被两个调用方
       //    一先一后地问，签名就每秒翻一次 —— 下面那道 30 秒闸被自己的签名绕过去。
@@ -2181,17 +2230,24 @@ var OMITONE_CODE_REV = 'd1883eab01';
       //    心跳本身留着（30 秒一条照样看得出 currentTime 在走），reason 仍在 payload 里。
       //    状态真变了（暂停↔播放）仍然立刻出，但受 5 秒下限约束：
       //    播放器自己抖动时不许把闸再冲开一次。
-      var mediaSig = media.paused ? 'paused' : 'playing';
+      var deadCode = this._mediaErrorCode(media);
+      // ⚠️ 死流水线**不许**再报成 `playing`（批次 50）：现场那一节 `paused` 恒 false、
+      //    时间恒 628.771，于是 200 条环里每一条都写着"playing" —— 而这句话的本意是
+      //    「看得出进度在不在走」。**诊断工具骗人比没有诊断更糟**（AGENTS §5）：
+      //    看日志的人会照着"在播"往别处查。
+      var mediaSig = deadCode ? ('broken' + deadCode) : (media.paused ? 'paused' : 'playing');
+      var waitPayload = {
+        reason: reason || '',
+        currentTime: Number(media.currentTime || 0),
+        duration: Number(media.duration || 0)
+      };
+      if (deadCode) waitPayload.errCode = deadCode;
       var sinceWaitLog = now - (Number(this._mediaWaitLogAt) || 0);
       if (!this._mediaWaitLogAt || sinceWaitLog > 30000
         || (mediaSig !== this._mediaWaitLogSig && sinceWaitLog > 5000)) {
         this._mediaWaitLogAt = now;
         this._mediaWaitLogSig = mediaSig;
-        emitRuntimeLog('info', 'media pending, delay completion', {
-          reason: reason || '',
-          currentTime: Number(media.currentTime || 0),
-          duration: Number(media.duration || 0)
-        });
+        emitRuntimeLog('info', 'media pending, delay completion', waitPayload);
       }
       return true;
     },
@@ -2921,8 +2977,99 @@ var OMITONE_CODE_REV = 'd1883eab01';
     },
 
 
+    /**
+     * 媒体元素此刻是不是"流水线已死"—— 返回 `MediaError.code`
+     * （1 中止 / 2 网络 / 3 解码失败 / 4 源不支持），没报错返回 0。
+     *
+     * 为什么要单独问它：现场实测（2026-11-14，用户挂着刷课，CDP 9334）那一节解码器抛了
+     * `PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding`，而 `paused` 仍是 false、
+     * `readyState` 仍是 4、`duration` 照样是 1448 —— 手上每一道"看 paused / 看有没有源"的判据
+     * 都说"在播"，**只有 `error` 这一个字段说真话**。
+     * ⚠️ 整个取值包 try：自定义播放器偶尔把 `error` 换成别的形状（字符串、没有 code 的对象），
+     *    而这条判据在 guard 与 tick 上每秒都会被问一次 —— 它一抛就把整轮巡检打死。
+     */
+    _mediaErrorCode: function (media) {
+      try {
+        if (!media) return 0;
+        var code = Number(media.error && media.error.code);
+        return (code >= 1 && code <= 4) ? code : 0;
+      } catch (e) {
+        return 0;
+      }
+    },
+
+
+    /**
+     * 死流水线的**原地重载**：源不动，`load()` 让浏览器重建解码管线，播放位置等元数据回来再接回去。
+     * 每个源只试一次（按 `_getMediaSeekKey` 记进 `_mediaReloadKeys`，与 `_mediaRepaired` 同一族），
+     * 免得"重载 ↔ 放手"互相打转。
+     *
+     * ⚠️ 为什么不用 `_maybeRepairMediaSource` 那条 blob 补救：那是**整个文件取回来重封 MIME**，
+     *    治的是"格式 / MIME 不对"这一族，对"下载到一半坏包"没用；而且它靠 `fetch` ——
+     *    现场那次它已经把 src 记成"补救过了"（`_mediaRepaired[src]=true`）却**一个 blob 都没挂上**
+     *    （`currentSrc` 仍是远端地址，多半被 CDN 的 CORS 挡在 `fetch` 那一步），
+     *    于是那条路对这一族永久关闭。**一个补救只管自己那一族，别指望它顺带治解码。**
+     * ⚠️ 这里**不等任何东西**（不调 `await`）：`load()` 之后由一次性 `loadedmetadata` 补 seek，
+     *    下一轮 guard 看到 `error` 已被清掉就照常走。在这条链上加等待就得配超时，
+     *    而等待本身没有收益（AGENTS §2.2）。
+     */
+    _reloadMediaInPlace: function (media, reason) {
+      try {
+        var code = this._mediaErrorCode(media);
+        if (!code) return false;
+        var key = this._getMediaSeekKey(media);
+        if (!key) return false;
+        if (!this._mediaReloadKeys) this._mediaReloadKeys = Object.create(null);
+        if (this._mediaReloadKeys[key]) return false;
+        this._mediaReloadKeys[key] = Date.now();
+
+        var resumeAt = Number(media.currentTime || 0);
+        emitRuntimeLog('warn', 'media pipeline dead, reload in place', {
+          code: code,
+          resumeAt: resumeAt,
+          reason: reason || ''
+        });
+        if (resumeAt > 0) {
+          var self = this;
+          media.addEventListener('loadedmetadata', function () {
+            // `load()` 会把 currentTime 归零，位置必须等元数据回来再补 ——
+            // 现在就设会被 readyState 0 的状态吞掉，症状是"重载过了，却从第一秒重新播"。
+            try { media.currentTime = resumeAt; } catch (e0) {}
+            self._ensurePlaybackRate(media, 'reload');
+          }, { once: true });
+        }
+        media.load();
+        var started = media.play();
+        if (started && typeof started.catch === 'function') {
+          started.catch(function () {
+            // 自动播放策略挡住了就静音重试一次（与 _tryResumePlayback 同一个兜底）
+            try {
+              media.muted = true;
+              var retry = media.play();
+              if (retry && typeof retry.catch === 'function') retry.catch(function () {});
+            } catch (e1) {}
+          });
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
     _tryResumePlayback: function (reason) {
       var now = Date.now();
+      var video = this._getVideoEl();
+      if (!video || !this._isPlaying) return;
+
+      // ⚠️ 死流水线先走重载，而且**必须放在下面三道闸之前**：那三道闸烧完 5 次就永久 return，
+      //    而计数器只在 `play` 事件里清零 —— 管线死了 `play` 事件永远不会来，
+      //    于是重载一次也轮不到（现场那 5 发 play() 全白烧，之后一动不动）。
+      if (this._mediaErrorCode(video)) {
+        this._reloadMediaInPlace(video, reason || 'resume');
+        return;
+      }
+
       if (now - this._guardLastResumeTs < this.configs.guardResumeCooldownMs) return;
 
       if (!this._resumeWindowStart || now - this._resumeWindowStart > this.configs.guardMaxResumeWindow) {
@@ -2934,8 +3081,6 @@ var OMITONE_CODE_REV = 'd1883eab01';
       this._resumeAttemptCount++;
       this._guardLastResumeTs = now;
 
-      var video = this._getVideoEl();
-      if (!video || !this._isPlaying) return;
       this._ensurePlaybackRate(video, reason || 'resume');
       video.play().catch(function () {
         video.muted = true;

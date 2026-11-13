@@ -351,7 +351,14 @@ function legacySuite(snapshot) {
   const source = fs.readFileSync(filename, 'utf8');
   const anchor = '\nmain().catch(function (err) {';
   const end = source.lastIndexOf(anchor);
-  assert.ok(end > 0 && source.indexOf(anchor) === end, 'Legacy launcher boundary must be unique');
+  const boundaryLines = source.split(/\r?\n/)
+    .map((line, i) => (line.startsWith('main().catch(function (err) {') ? i + 1 : 0))
+    .filter(Boolean);
+  assert.ok(end > 0 && source.indexOf(anchor) === end && boundaryLines.length === 1,
+    'tools/browser-e2e.js must keep exactly ONE `main().catch(function (err) {` line at column 0 ' +
+    `(the sandbox reuses everything before it and cannot see anything after it). ` +
+    `File: ${filename}. Found ${boundaryLines.length} at line(s): ` +
+    (boundaryLines.join(', ') || 'none — the launcher tail is missing or indented'));
   const timers = new Set();
   const context = vm.createContext({
     require: createRequire(filename), __dirname: path.dirname(filename), __filename: filename,

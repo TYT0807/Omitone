@@ -12940,6 +12940,13 @@ SCENARIOS.push({
  *
  * 夹具要点：reason 必须**交替**喂两个值 —— 只喂一个的话旧写法也只出一条，
  * 这条断言就变成空测（AGENTS §5「夹具要长得像现场」）。
+ *
+ * ⚠️ 夹具第二要点（批次 50 全量跑撞出来的）：**必须把 `error` 钉成空**。
+ *   这一页的 `src="mock-video.mp4"` 从来没被 serve，元素自己带 `MediaError.code=4`，
+ *   而本场景又把 readyState/duration/paused 全打桩成"在播" —— 那是一副现实里不存在的样子
+ *   （真报 4 的元素不会同时有首帧和时长）。批次 50 之后生产判据开始读 `error`，
+ *   于是签名悄悄变成 `broken4`，「暂停↔播放立刻出」这一维**再也没被测到**，
+ *   而它红出来的那条长得就像"批次 50 改坏了 37"。健康的在播形状要自己钉住。
  */
 SCENARIOS.push({
   name: '视频播放中的等待日志不许把证据窗挤空',
@@ -12957,6 +12964,7 @@ SCENARIOS.push({
       '    set: function(v){ this.__rate = v; } });',
       '  HTMLMediaElement.prototype.play = function(){ this.__played = (this.__played||0)+1; return Promise.resolve(); };',
       '  HTMLMediaElement.prototype.load = function(){};',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error", { configurable: true, get: function(){ return null; } });',
       '  window.__b37Patched = true;',
       '})()'
     ].join('\n');
@@ -12964,6 +12972,19 @@ SCENARIOS.push({
   run: async function (ctx) {
     var patched = await ctx.client.evaluate('window.__b37Patched === true');
     check('37 夹具自证：媒体元素原型打桩生效（不依赖真实编解码器）', patched === true, String(patched));
+
+    var healthy = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");' +
+      'return {err:v?v.error:"(没有这个元素)",code:app._mediaErrorCode(v),' +
+      '  ready:v?Number(v.readyState):-1,dur:v?Number(v.duration):-1};})()');
+    check('37 夹具自证：这一节从页面读回来必须是**健康在播**的形状 ——' +
+      'error 空、`_mediaErrorCode` 量出 0，同时首帧与时长都在' +
+      '（这一页的 src 从来没被 serve，元素自己带 code=4；不钉这一格，' +
+      '本场景会悄悄跑进批次 50 的死管线分支、签名变成 broken4，' +
+      '"暂停↔播放立刻出"那一维就再也没人测了）',
+      !!healthy && healthy.err === null && healthy.code === 0 &&
+      healthy.ready === 4 && healthy.dur === 100, JSON.stringify(healthy));
 
     function countMediaLogs() {
       return ctx.client.evaluate(
@@ -13119,6 +13140,9 @@ SCENARIOS.push({
  * 夹具要点（AGENTS §5「夹具要长得像现场」）：形状必须自己钉住 `readyState 0 + duration 拿不到 +
  * networkState 3 + ended false` 这四样，并且**自证走到了新分支**（不是 `!media` 那一支、也不是 `ended` 那一支），
  * 否则「放手了」和「压根没占住」同形。
+ * ⚠️ 第五样是批次 50 之后补的：**`error` 必须是空**。这一页的 `src` 从来没被 serve，
+ *   元素自己带 `MediaError.code=4`，而那恰好是批次 50「解码器死了」那一族的入口判据 ——
+ *   不钉住它，这一场景的放手就会走错分支，两条 warn 点错名还照样绿。
  */
 SCENARIOS.push({
   name: '视频一直没有源时不再永远占住这一节',
@@ -13138,6 +13162,7 @@ SCENARIOS.push({
       '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return false; } });',
       '  HTMLMediaElement.prototype.play = function(){ this.__played = (this.__played||0)+1; return Promise.resolve(); };',
       '  HTMLMediaElement.prototype.load = function(){};',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error", { configurable: true, get: function(){ return null; } });',
       '  window.__b40Patched = true;',
       '})()'
     ].join('\n');
@@ -13158,12 +13183,17 @@ SCENARIOS.push({
       'function num(x){try{return Number(x);}catch(e){return -1;}}' +
       'return {hasEl:!!v,found:!!found,' +
       '  ready:found?num(found.readyState):-1,net:found?num(found.networkState):-1,' +
-      '  durOk:found?(num(found.duration)>0):true,ended:found?!!found.ended:null};})()'
+      '  durOk:found?(num(found.duration)>0):true,ended:found?!!found.ended:null,' +
+      '  errNone:found?(found.error===null):null,code50:found?app._mediaErrorCode(found):-1};})()'
     );
     check('40 夹具自证：这一节的视频元素真的抓得到，而且四把旋钮在页面上读出来就是死的' +
-      '（打桩生效 ≠ 判据读得到；这条钉的是后者）',
+      '（打桩生效 ≠ 判据读得到；这条钉的是后者）。' +
+      '还必须先钉住这里**没有 error**、批次 50 那个判据在这副形状上量出 0 —— ' +
+      '现场那一格 `error` 是空的：「压根没挂上源」与「解码器死了」是两种病，' +
+      '混成一格就等于放手日志会点错名',
       !!shape && shape.hasEl === true && shape.found === true && shape.ready === 0 &&
-      shape.net === 3 && shape.durOk === false && shape.ended === false,
+      shape.net === 3 && shape.durOk === false && shape.ended === false &&
+      shape.errNone === true && shape.code50 === 0,
       JSON.stringify(shape));
 
     var arm = await ctx.client.evaluate(
@@ -13415,6 +13445,249 @@ SCENARIOS.push({
     check('窗口用掉也要留话（catalog veto window spent），否则日志里只剩"它为什么不跳"没人答',
       !!out && !!out.spentLog && String(out.spentLog.claimed) === out.rawCount && out.spentLog.marker === true,
       JSON.stringify(out && { spentLog: out.spentLog, seen: out.seen }));
+  }
+});
+
+/** ---- 57. 视频播到一半解码器死了，不再把这一节永远占住（批次 50）
+ * 现场（2026-11-14，用户挂着刷课，CDP 9334）：那一节 `<video>` 的 `currentTime` 从 628.770678 起
+ * **将近一刻钟一格没动**，而 `paused:false` / `readyState:4` / `duration:1448.46` / `ended:false` ——
+ * 唯一说真话的是 `error.code=3`
+ * （`PipelineStatus::PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding`）。
+ * 于是：批次 40 那条"从来没有过源"的有界放手**看不见它**（那一条要 readyState 0），
+ * guard 的 5 发 `play()` 全白烧（死管线永远不给 `play` 事件 → 计数器永不复位），
+ * 而日志每 30 秒打一句「media pending, delay completion」并签名写着 **playing** —— 诊断骗人。
+ *
+ * 本场景逐条钉住修法：
+ *   ① 死流水线走**原地重载**（动作计数证明真的 `load()` + `play()` 了，不是只改了返回值），
+ *      而且**不烧** resume 配额（那三道闸之前就得拐出去）；
+ *   ② 每个源只重载一次；
+ *   ③ 等待日志的签名要说 `broken<code>`，payload 要带 `errCode`；
+ *   ④ 重载没救回来 → 与批次 40 同款**有界放手**，warn 带 code / message / 位置 / reloaded；
+ *   ⑤ 窗口没到**仍然占住**，且 error 一消失计时就清零（"有界"不是"到点就放弃"）；
+ *   ⑥ 真救回来时位置接回原来那一秒（不是从第一秒重播）。
+ *
+ * ⚠️ 夹具形状（AGENTS §5）：`load()` / `play()` / `currentTime=` 三个**动作**各自记账 ——
+ *    批次 47 的教训是桩要打在动作上，别把生产方法换成计数器。
+ *    `currentTime` 的 setter 在"没救回来"时**只记录不落盘**，那正是现场的样子：
+ *    管线死了，往 `currentTime` 写多少都不动。
+ */
+SCENARIOS.push({
+  name: '视频解码器死了不再永远占住这一节',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  window.__b50FROZEN_T = 628.770678;',
+      '  window.__b50DUR = 1448.46;',
+      '  window.__b50Err = { code: 3, message: "PipelineStatus::PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding" };',
+      '  window.__b50Time = window.__b50FROZEN_T;',
+      '  window.__b50Frozen = true;',
+      '  window.__b50Loads = 0; window.__b50Plays = 0; window.__b50Seeks = []; window.__b50ReloadFixes = false;',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error",',
+      '    { configurable: true, get: function(){ return window.__b50Err || null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b50DUR; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "networkState",',
+      '    { configurable: true, get: function(){ return 1; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused",',
+      '    { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended",',
+      '    { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true,',
+      '    get: function(){ return window.__b50Frozen ? window.__b50FROZEN_T : window.__b50Time; },',
+      '    set: function(v){',
+      '      window.__b50Seeks.push(Number(v));',
+      '      if (!window.__b50Frozen) window.__b50Time = Number(v);',
+      '    } });',
+      '  HTMLMediaElement.prototype.play = function(){',
+      '    window.__b50Plays = (window.__b50Plays || 0) + 1; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){',
+      '    window.__b50Loads = (window.__b50Loads || 0) + 1;',
+      '    // 真 load() 会清掉 error、把位置归零、异步发 loadedmetadata；',
+      '    // 这里照做，只是"救没救回来"由 __b50ReloadFixes 决定（现场那次坏包就是 false）。',
+      '    if (!window.__b50ReloadFixes) return;',
+      '    window.__b50Err = null; window.__b50Frozen = false; window.__b50Time = 0;',
+      '    var el = this;',
+      '    setTimeout(function(){ try { el.dispatchEvent(new Event("loadedmetadata")); } catch (e) { window.__b50NoEvent = String(e); } }, 0);',
+      '  };',
+      '  window.__b50Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b50Patched === true');
+    check('50 夹具自证：媒体原型打桩生效（error / readyState / duration / paused / ended / currentTime / load / play）',
+      patched === true, String(patched));
+
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      // 其它两条会动进度/会点倍速菜单的分支让路，本场景只测「死管线怎么办」这一条。
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,autoMaxPlaybackRate:false,documentSkipTimeoutMs:1000});' +
+      'app._detectedMaxRate=0;app._rateProbing=false;app._captchaActive=false;' +
+      'var v=document.getElementById("omitone-video");' +
+      'if(!window.__b50Bound){window.__b50Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){(window.__b50i=window.__b50i||[]).push(m);}});}' +
+      'var found=null;try{found=app._getVideoEl();}catch(e){found=null;}' +
+      'window.__b50Key=found?String(app._getMediaSeekKey(found)):"";' +
+      'return {hasEl:!!v,found:!!found,same:found===v,' +
+      '  errCode:found?Number(found.error&&found.error.code):-1,' +
+      '  paused:found?!!found.paused:null,ready:found?Number(found.readyState):-1,' +
+      '  dur:found?Number(found.duration):-1,' +
+      '  t:found?Number(found.currentTime):-1,' +
+      '  probe:app._mediaErrorCode(found),probeFrozen:app._mediaErrorCode(null)};})()'
+    );
+    check('50 夹具自证：这一节的形状从页面读回来就是现场那副死样子 —— ' +
+      '能播的一切迹象（readyState 4 / 有时长 / 没暂停 / 没结束）都在，只有 error.code=3 说真话；' +
+      '而且 `_mediaErrorCode` 自己量的就是这个 3（它一恒 0，下面每一条"放手"都是空测）',
+      !!shape && shape.hasEl === true && shape.found === true && shape.same === true &&
+      shape.errCode === 3 && shape.paused === false && shape.ready === 4 &&
+      shape.dur === 1448.46 && shape.t === 628.770678 &&
+      shape.probe === 3 && shape.probeFrozen === 0,
+      JSON.stringify(shape));
+
+    var reload = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaReloadKeys=Object.create(null);app._mediaBrokenSince=0;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._resumeWindowStart=0;' +
+      'app._guardLastTime=Number(v.currentTime);app._guardLastWallTs=Date.now()-7000;' +
+      'window.__b50Loads=0;window.__b50Plays=0;window.__b50Seeks=[];window.__b50i=[];' +
+      // 走生产那条巡检（guard 定时器每轮调的就是它），不直接调 _tryResumePlayback —— ' +
+      'app._checkVideoStatus();' +
+      'var key=window.__b50Key;' +
+      'return {loads:window.__b50Loads,plays:window.__b50Plays,' +
+      '  attempts:Number(app._resumeAttemptCount),burned:Number(app._guardLastResumeTs)>0,' +
+      '  logged:!!(app._mediaReloadKeys&&app._mediaReloadKeys[key])};})()'
+    );
+    await sleep(400);
+    var reloadLog = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null};' +
+      '(window.__b50i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media pipeline dead, reload")===0){' +
+      '    out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b50i=[];return out;})()');
+    check('50-A：死管线那一轮 guard 走的是**原地重载**（真的 load() 一次 + play() 一次，并记下这个源），' +
+      '而不是接着白烧 play()',
+      !!reload && reload.loads === 1 && reload.plays === 1 && reload.logged === true,
+      JSON.stringify(reload));
+    check('50-A：重载必须排在 resume 那三道闸**之前** —— 这一轮 `_resumeAttemptCount` 仍是 0、' +
+      '冷却时间戳也没被写（管线死了 `play` 事件永不来，计数器一旦烧光就再也轮不到重载）',
+      !!reload && reload.attempts === 0 && reload.burned === false,
+      JSON.stringify(reload));
+    check('50-A：重载要留一条 warn 并点名 code（现场那种"再也没声音"必须一眼看得出来）',
+      !!reloadLog && reloadLog.n === 1 && !!reloadLog.first && reloadLog.first.level === 'warn' &&
+      !!reloadLog.first.meta && Number(reloadLog.first.meta.code) === 3 &&
+      Number(reloadLog.first.meta.resumeAt) === 628.770678,
+      JSON.stringify(reloadLog && reloadLog.first));
+
+    var once = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b50Loads=0;window.__b50Plays=0;window.__b50i=[];' +
+      'app._checkVideoStatus();app._checkVideoStatus();app._tryResumePlayback("no-progress");' +
+      'return {loads:window.__b50Loads,plays:window.__b50Plays};})()'
+    );
+    await sleep(400);
+    var onceLogs = await ctx.client.evaluate(
+      '(function(){var n=0;(window.__b50i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media pipeline dead, reload")===0)n++;});' +
+      'window.__b50i=[];return n;})()');
+    check('50-B：每个源**只重载一次**（再巡检三轮也不许把同一个视频反复重载 —— 那等于把这一节变成死循环重载）',
+      !!once && once.loads === 0 && once.plays === 0 && onceLogs === 0,
+      JSON.stringify({ once: once, logs: onceLogs }));
+
+    var sig = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaBrokenSince=0;app._mediaWaitLogAt=0;app._mediaWaitLogSig="";' +
+      'window.__b50i=[];' +
+      'var p1=app._isActiveMediaPending("completion-check");' +
+      'var armed=Number(app._mediaBrokenSince)||0;' +
+      'var p2=app._isActiveMediaPending("ocs-runner-active-job");' +
+      'return {p1:p1===true,p2:p2===true,armed:armed,armedFresh:armed>0&&(Date.now()-armed)<5000,' +
+      '  sig:String(app._mediaWaitLogSig),pending:!!app._activeMediaJobPending,holds:app._videoEl===v};})()'
+    );
+    await sleep(400);
+    var sigLog = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null};' +
+      '(window.__b50i||[]).forEach(function(m){' +
+      '  if(String(m.message||"") === "media pending, delay completion"){out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b50i=[];return out;})()');
+    check('50-C：等待日志**不许再说 playing** —— 签名要变成 broken3，payload 要带 errCode=3，' +
+      '位置与时长仍从页面读回（诊断工具骗人比没有诊断更糟）',
+      !!sig && sig.sig === 'broken3' && !!sigLog && sigLog.n >= 1 && !!sigLog.first.meta &&
+      Number(sigLog.first.meta.errCode) === 3 &&
+      Number(sigLog.first.meta.currentTime) === 628.770678 &&
+      Number(sigLog.first.meta.duration) === 1448.46,
+      JSON.stringify({ sig: sig && sig.sig, meta: sigLog && sigLog.first && sigLog.first.meta }));
+    check('50-C 前提：窗口没到**仍然占住**（两条都返回 true、计时刚武装起来、元素还攥在手里）—— ' +
+      '否则"放手"可能只是压根没占住',
+      !!sig && sig.p1 === true && sig.p2 === true && sig.armedFresh === true &&
+      sig.pending === true && sig.holds === true,
+      JSON.stringify(sig));
+
+    var release = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaBrokenSince=Date.now()-1500;window.__b50i=[];' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'return {p:p,pending:!!app._activeMediaJobPending,playing:!!app._isPlaying,' +
+      '  el:!!app._videoEl,counter:Number(app._mediaBrokenSince)||0};})()'
+    );
+    await sleep(400);
+    var relLog = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null};' +
+      '(window.__b50i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media pipeline dead, release")===0){' +
+      '    out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b50i=[];return out;})()');
+    check('50-D：到点**有界放手**（返回 false，pending / 播放标志 / 攥着的元素全复位，计时清零好让下一轮重新计）',
+      !!release && release.p === false && release.pending === false &&
+      release.playing === false && release.el === false && release.counter === 0,
+      JSON.stringify(release));
+    check('50-D：放手必须留话（warn 一条，带 code / message / 位置 / heldMs / reloaded）—— ' +
+      '静默跳过用户的任务点是这个项目不许的事，而"解码器死了"和"这节压根没视频"得分得开',
+      !!relLog && relLog.n === 1 && !!relLog.first && relLog.first.level === 'warn' &&
+      !!relLog.first.meta && Number(relLog.first.meta.code) === 3 &&
+      /PIPELINE_ERROR_DECODE/.test(String(relLog.first.meta.message)) &&
+      Number(relLog.first.meta.heldMs) >= 1500 && relLog.first.meta.reloaded === true &&
+      Number(relLog.first.meta.currentTime) === 628.770678 &&
+      String(relLog.first.meta.reason) === 'completion-check',
+      JSON.stringify(relLog && relLog.first));
+
+    var recover = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      // 重开一次"能救回来"的重载：清掉记账让重载可以再走一遍，这次 load() 会把 error 清掉。
+      'window.__b50Err={code:3,message:"PipelineStatus::PIPELINE_ERROR_DECODE"};' +
+      'window.__b50ReloadFixes=true;window.__b50Loads=0;window.__b50Seeks=[];' +
+      'app._mediaReloadKeys=Object.create(null);' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._guardLastTime=628.770678;app._guardLastWallTs=Date.now()-7000;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;' +
+      'app._mediaBrokenSince=Date.now()-99999;app._mediaWaitLogAt=0;app._mediaWaitLogSig="";' +
+      'app._checkVideoStatus();' +
+      'return {loads:window.__b50Loads,err:app._mediaErrorCode(v)};})()'
+    );
+    await sleep(400);
+    var held = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'return {p:p===true,counter:Number(app._mediaBrokenSince)||0,' +
+      '  sig:String(app._mediaWaitLogSig),t:Number(v.currentTime),seeks:window.__b50Seeks.slice(-3),' +
+      '  noEvent:window.__b50NoEvent||""};})()'
+    );
+    check('50-E：重载真救回来时（error 被 load() 清掉）**继续占住**，且计时清零 —— ' +
+      '哪怕它之前已经"该放手"了 99 秒；这条钉的是"有界"不是"到点就放弃"',
+      !!recover && recover.loads === 1 && recover.err === 0 &&
+      !!held && held.p === true && held.counter === 0 && held.sig === 'playing' && !held.noEvent,
+      JSON.stringify({ recover: recover, held: held }));
+    check('50-F：救回来那一刻位置**接回原来那一秒**（628.771），不是从第一秒重播 —— ' +
+      '写进 currentTime 的值必须就是死掉前那一格（现场那种 24 分钟的视频，回到 0 等于白看十分钟）',
+      !!held && held.t === 628.770678 && held.seeks.indexOf(628.770678) >= 0,
+      JSON.stringify(held));
   }
 });
 
