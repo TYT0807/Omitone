@@ -8,11 +8,12 @@
  *
  * 把题目里的图片取出来、交给视觉模型描述，再把描述并回题干
  * ⚠️ _takeVisionBudget 是**烧钱的安全阀**：预算耗尽必须停并写 warn 日志，绝不静默
+ *    这本账记 sessionStorage（批次 36-B）—— 记在内存里等于每刷新一次就重新发钱
  * 图片走独立请求 —— 塞进答题链的长前缀会让缓存全失效，反而更贵
  *
- * 本段的方法（5 个）：
- *   _takeVisionBudget、_collectQuestionImages、_applyVisionToQuestions、
- *   _mergeVisionIntoTitle、_isTextOnly
+ * 本段的方法（7 个）：
+ *   _takeVisionBudget、_readVisionLedger、_writeVisionLedger、_collectQuestionImages、
+ *   _applyVisionToQuestions、_mergeVisionIntoTitle、_isTextOnly
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -24,31 +25,48 @@
      *
      * 返回 true = 允许再发一次；false = 预算耗尽，必须停。
      * 耗尽时**必定写一条 warn 日志**，绝不静默 —— 静默烧钱是最糟的失败方式。
+     *
+     * ⚠️ 批次 36-B：这本账改记 sessionStorage。旧写法记在页面内存里，而刷课链路里
+     * 有好几步是**自己刷新自己**（跳章、验证码墙、跨域中间页、任务点 reload），
+     * 一刷就归零 —— 于是"每章最多 N 次"实际是"每刷一次再来 N 次"，
+     * 安全阀恰好挡不住它最该挡的那种失败：反复失败 → 反复刷新 → 反复发图。
      */
     _takeVisionBudget: function (chapterKey) {
       if (!this.configs.visionEnabled) return false;
       var key = String(chapterKey || 'unknown');
-      if (this._visionBudgetChapterKey !== key) {
-        // 换章即重置。不清零的话，一学期下来后面所有章节都用不了视觉。
-        this._visionBudgetChapterKey = key;
-        this._visionUsedInChapter = 0;
-      }
+      var used = this._readVisionLedger(key).used;
       var cap = Number(this.configs.visionBudgetPerChapter);
       if (!isFinite(cap) || cap < 0) cap = 0;
-      if (this._visionUsedInChapter >= cap) {
+      if (used >= cap) {
         // 同一章只提醒一次，否则每道题刷一条，日志会被淹掉
         if (this._visionBudgetWarnedKey !== key) {
           this._visionBudgetWarnedKey = key;
           emitRuntimeLog('warn', 'vision budget exhausted for this chapter, images will be ignored', {
-            used: this._visionUsedInChapter,
+            used: used,
             cap: cap,
             chapter: key
           });
         }
         return false;
       }
-      this._visionUsedInChapter++;
+      this._writeVisionLedger(key, used + 1);
       return true;
+    },
+
+
+    // 账本里只留**当前这一章**的数：`chapter` 对不上就当没花过 ——
+    // 就是旧写法"换章即重置"那一条。不清零的话，一学期下来后面所有章节都用不了视觉。
+    _readVisionLedger: function (chapterKey) {
+      var key = String(chapterKey || 'unknown');
+      var obj = this._readSessionLedger('omitone:vision-budget') || {};
+      if (String(obj.chapter || '') !== key) return { chapter: key, used: 0 };
+      return { chapter: key, used: Number(obj.used) || 0 };
+    },
+
+
+    _writeVisionLedger: function (chapterKey, used) {
+      this._writeSessionLedger('omitone:vision-budget',
+        { chapter: String(chapterKey || 'unknown'), used: Number(used) || 0 });
     },
 
     /**
@@ -132,8 +150,10 @@
 
         // 扣预算前先确认这一章还有额度。额度用完时 _describeQuestionImages 会自己写日志，
         // 这里就不再重复遍历后面的题 —— 直接整体退出，省掉剩下的抓图开销。
-        if (this._visionUsedInChapter >= Number(this.configs.visionBudgetPerChapter || 0) &&
-            this._visionBudgetChapterKey === chapterKey) {
+        // 批次 36-B：额度从会话账本读（旧的内存字段 `_visionUsedInChapter` 已被它自己的刷新抹掉）。
+        var capNow = Number(this.configs.visionBudgetPerChapter);
+        if (!isFinite(capNow) || capNow < 0) capNow = 0;
+        if (this._readVisionLedger(chapterKey).used >= capNow) {
           this._takeVisionBudget(chapterKey); // 触发一次「预算耗尽」日志
           emitRuntimeLog('info', 'vision skipped remaining questions', { from: i, total: questions.length });
           break;
@@ -150,7 +170,7 @@
         emitRuntimeLog('info', 'vision applied to quiz', {
           questions: questions.length,
           withImage: touched,
-          usedBudget: this._visionUsedInChapter
+          usedBudget: this._readVisionLedger(chapterKey).used
         });
       }
     },

@@ -10,12 +10,13 @@
  * 主文档 / 主窗口 / 遍历 frame 与 document 的工具
  * 后台 Worker、超时包装、可见性绑定等基础设施
  *
- * 本段的方法（28 个）：
+ * 本段的方法（31 个）：
  *   _getMainFrame、_getMainDocument、_getCurrentTitle、_getCurrentChapterId、
  *   _dismissPopups、_isUnfinishedTaskPrompt、_handleUnfinishedTaskPrompt、
  *   _walkFrames、_safeJsonParse、_safeDocOf、_safeWinDoc、
  *   _isFrameSameOrigin、_getMainWindow、_withTimeout、_ensureBackgroundWorker、
  *   _workerDelay、_bindVisibilityHandlers、_resolveImageUrl、
+ *   _sessionLedgerUsable、_readSessionLedger、_writeSessionLedger、
  *   _frameOriginOf、_isFrameSameSiteAsTop、_readBlockedReloadBudget、_writeBlockedReloadBudget、
  *   _markMainFrameCrossOrigin、_reloadBlockedPage、_checkBlockedByCrossOrigin、
  *   _walkDocs、_studyDocs、_walkDocuments
@@ -424,26 +425,84 @@
     },
 
 
-    // 刷新预算：记在 sessionStorage，理由见 `_checkBlockedByCrossOrigin` 上面那段。
-    // `href` 变了 = 换了一面墙（翻章 / 换课），旧账作废（与 14-A 验证码墙同一个口径）。
-    _readBlockedReloadBudget: function () {
+    /**
+     * 会话账本 —— 「刷新把账一起抹掉」这一族的共用底座（批次 36）。
+     *
+     * 四本账都必须**跨过一次 `location.reload()` 还记得已经花掉几次**：
+     * 跨域刷新（`_readBlockedReloadBudget`）、整页验证码墙（14-A）、
+     * 页面内验证码弹窗（批次 36-A）、每章看图花钱（批次 36-B）。
+     * 记在内存里等于没有账 —— 刷新一清，安全阀就变成「每轮 3 次、无限轮」。
+     *
+     * ⚠️ sessionStorage 自己也可能直接抛（无痕模式、本站 Cookie 被禁、
+     * iframe 的第三方存储限制）。旧写法是 `try { 读 } catch { 当没账 }` ——
+     * 于是「这台浏览器根本存不住」与「这一次还没花过」在代码里同形，
+     * 安全阀恰好在最需要它的浏览器上失效。
+     * 现在改成：先探一次可写性；存不住就退回**本页内存**（跨不了刷新，
+     * 但仍然挡住同一份文档里的死循环），并**只提醒一次**，
+     * 让用户知道这台浏览器上的自动重试上限只能管到本次刷新为止。
+     */
+    _sessionLedgerUsable: function () {
+      if (this._ledgerSessionOk !== null) return this._ledgerSessionOk;
+      var ok = false;
       try {
-        var raw = sessionStorage.getItem('omitone:blocked-reload-budget');
-        if (!raw) return { reloads: 0, resumeAt: 0 };
-        var obj = JSON.parse(raw) || {};
-        if (obj.href && obj.href !== String(location.href || '')) return { reloads: 0, resumeAt: 0 };
-        return { reloads: Number(obj.reloads) || 0, resumeAt: Number(obj.resumeAt) || 0 };
+        sessionStorage.setItem('omitone:__ledger_probe', '1');
+        sessionStorage.removeItem('omitone:__ledger_probe');
+        ok = true;
       } catch (e) {
-        return { reloads: 0, resumeAt: 0 };
+        ok = false;
+      }
+      this._ledgerSessionOk = ok;
+      if (!ok) {
+        if (!this._ledgerMemory) this._ledgerMemory = {};
+        emitRuntimeLog('warn', 'session storage unavailable, retry budgets reset on every reload', {
+          hint: '这台浏览器存不住会话数据（无痕模式 / 禁用了本站 Cookie / 嵌套页面的第三方存储限制）。' +
+            '插件照样会限制自动重试，但**刷新一次账就清零** —— 若页面因此反复刷新，请手动关掉对应开关'
+        });
+      }
+      return ok;
+    },
+
+
+    _readSessionLedger: function (key) {
+      var name = String(key || '');
+      if (!name) return null;
+      if (!this._sessionLedgerUsable()) return (this._ledgerMemory && this._ledgerMemory[name]) || null;
+      try {
+        var raw = sessionStorage.getItem(name);
+        if (!raw) return null;
+        var obj = JSON.parse(raw);
+        return (obj && typeof obj === 'object') ? obj : null;
+      } catch (e) {
+        return null;
       }
     },
 
 
+    _writeSessionLedger: function (key, value) {
+      var name = String(key || '');
+      if (!name) return;
+      var obj = (value && typeof value === 'object') ? value : {};
+      if (!this._sessionLedgerUsable()) {
+        if (!this._ledgerMemory) this._ledgerMemory = {};
+        this._ledgerMemory[name] = obj;
+        return;
+      }
+      try { sessionStorage.setItem(name, JSON.stringify(obj)); } catch (e) {}
+    },
+
+
+    // 刷新预算：记在 sessionStorage，理由见 `_checkBlockedByCrossOrigin` 上面那段。
+    // `href` 变了 = 换了一面墙（翻章 / 换课），旧账作废（与 14-A 验证码墙同一个口径）。
+    _readBlockedReloadBudget: function () {
+      var obj = this._readSessionLedger('omitone:blocked-reload-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { reloads: 0, resumeAt: 0 };
+      return { reloads: Number(obj.reloads) || 0, resumeAt: Number(obj.resumeAt) || 0 };
+    },
+
+
     _writeBlockedReloadBudget: function (reloads, resumeAt, href) {
-      try {
-        sessionStorage.setItem('omitone:blocked-reload-budget',
-          JSON.stringify({ reloads: reloads || 0, resumeAt: resumeAt || 0, href: href || '' }));
-      } catch (e) {}
+      this._writeSessionLedger('omitone:blocked-reload-budget',
+        { reloads: reloads || 0, resumeAt: resumeAt || 0, href: href || '' });
     },
 
 

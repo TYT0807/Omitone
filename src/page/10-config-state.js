@@ -10,7 +10,7 @@
  * **全部非方法属性都在这里**（configs、所有 `_xxx` 状态字段、_cellData、_questionSelectors 等）——
  * 这条规则很好记：找状态字段就来这个文件，不用在别处翻
  *
- * 本段的状态字段（152 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizReviewPaperKey、_quizReviewUntil、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizBlockedByApiAt、_quizBlockedSinceAt、_quizBlockedHoldLogAt、_quizBlockedGiveUpLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_pauseResumeLogAt、_pauseResumeSuppressed、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_discussionEditorEl、_discussionNameRead、_discussionPendingCache、_discussionHoldSinceAt、_discussionHoldKey、_discussionHoldSpent、_discussionDupLogAt、_discussionSettledLogAt、_unfinishedPromptClickedAt、_voteTryMap、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionUsedInChapter、_visionBudgetChapterKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt、_taskFrameLoadingUntil、_taskFrameLoadingScope
+ * 本段的状态字段（157 个）：configs、_videoEl、_videoCount、_currentVideoIndex、_isPlaying、_checkInterval、_tickLoopInterval、_tickRunning、_tickStartedAt、_tickEpoch、_tickProgressAt、_tickProgressNote、_tickProgressLogAt、_quizInProgress、_quizInProgressAt、_quizAnswered、_quizSubmitPending、_quizSubmitStartedAt、_quizSubmitLogAt、_quizLastSubmitAttemptAt、_quizHoldLogAt、_quizCorrectAnswerCache、_quizCurrentAnsweredKeys、_quizCurrentAnswerValues、_quizCurrentQuestions、_quizReadyToSubmit、_quizReadyWorkKey、_quizForceSkipUntil、_quizForceSkipPaperKey、_quizReviewPaperKey、_quizReviewUntil、_quizGarbledRoundAt、_quizApiSkipLogAt、_quizBlockedByApiAt、_quizBlockedSinceAt、_quizBlockedHoldLogAt、_quizBlockedGiveUpLogAt、_quizHoldReasonLogAt、_quizLocalMultiplePapers、_quizScanDiagAt、_popupQuizKey、_popupQuizAttempts、_popupQuizBlockedUntil、_popupQuizLogAt、_popupQuizSolvedKey、_popupQuizSolvedAt、_popupQuizWrongAnswers、_popupQuizLastFilled、_popupQuizQuietUntil、_popupBlockCheckedAt、_popupBlockCached、_quizBatchSentKey、_quizBatchSentAt、_continueStudyAt、_continueStudyScanAt、_continueStudyKey、_continueStudyClicks、_continueStudyBlockedUntil、_taskAttempts、_taskProgress、_detectedMaxRate、_rateDetectVideo、_rateDetectBusy、_rateProbing、_bgWorker、_bgWorkerUrl、_workerDelayCallbacks、_workerDelaySeq、_audioKeepalive、_mediaRepaired、_pauseResumePending、_pauseResumeLogAt、_pauseResumeSuppressed、_visibilityBound、_captchaActive、_captchaBusy、_captchaAttempts、_captchaFailCount、_captchaLastCheckAt、_captchaLastResult、_captchaDialogAbsentAt、_captchaDialogPauseLogged、_ledgerSessionOk、_ledgerMemory、_discussionWindow、_discussionOpenedAt、_discussionScanAt、_discussionBusy、_discussionPosted、_discussionExpanded、_discussionBefore、_discussionScrollAt、_discussionCardOpened、_discussionPageUrl、_discussionPageAt、_discussionPageResult、_discussionEditorEl、_discussionNameRead、_discussionPendingCache、_discussionHoldSinceAt、_discussionHoldKey、_discussionHoldSpent、_discussionDupLogAt、_discussionSettledLogAt、_unfinishedPromptClickedAt、_voteTryMap、_quizApiFailUntil、_quizApiLastError、_stepNavigationBound、_stepSwitchPending、_stepSwitchAt、_skipChainCount、_videoRetryCount、_lastChapterKey、_delayedNextUnitTimer、_guardLastTime、_guardLastWallTs、_guardLastResumeTs、_resumeWindowStart、_resumeAttemptCount、_activeMediaJobPending、_activeMediaJobManaged、_activeDocumentJobPending、_activeDocumentJobManaged、_activeDocumentJobDoc、_mediaWaitLogAt、_mediaWaitLogSig、_mediaNoSourceSince、_documentWaitLogAt、_lastLearningTabSwitchAt、_lastLearningCardKey、_docTaskState、_treeContainerEl、_taskDiscoverStartedAt、_taskWaitLogAt、_pendingTaskKey、_pendingTaskStartedAt、_pendingTaskLogAt、_submitConfirmLastClickAt、_activeJobId、_cellData、_unsupportedJobLogged、_visionBudgetWarnedKey、_discussionStoreKey、_taskGiveUpStoreKey、_quizContainerSelector、_questionSelectors、_quizDetectorSelector、_quizAnswerControlSelector、_questionTitleSelectors、_optionListSelectors、_quizRunPaperKey、_quizParseRetryUntil、_quizParseRetryScope、_quizParseRetryWarnAt、_taskFrameLoadingUntil、_taskFrameLoadingScope
  *
  * 本段的方法（4 个）：
  *   _assertActive、run、play、_resetRuntimeState
@@ -262,6 +262,19 @@
 
     _captchaLastResult: null,
 
+    // 批次 36-A：页面内验证码弹窗的「停手」辅助状态。
+    // 轮次与冷却本身记在 sessionStorage（见 `_readCaptchaDialogBudget`）；
+    // 下面两个只是"弹窗消失了多久"与"这条提醒发过没有"，被刷新抹掉无关紧要。
+    _captchaDialogAbsentAt: 0,
+
+    _captchaDialogPauseLogged: false,
+
+    // 批次 36-C：会话账本底座的可写性探测结果（null = 还没探过）。
+    // 一旦探出「这台浏览器存不住」，账本就退回内存（`_ledgerMemory`）并只提醒一次。
+    _ledgerSessionOk: null,
+
+    _ledgerMemory: null,
+
     _discussionWindow: null,
 
     _discussionOpenedAt: 0,
@@ -349,6 +362,18 @@
     _activeDocumentJobDoc: null,
 
     _mediaWaitLogAt: 0,
+
+    // 上一条「media pending, delay completion」发出时的**播放状态**签名（批次 37）。
+    // 只放 paused/playing 这一维，调用方标识（reason）绝不许进来 —— 那会把 30 秒闸绕过去。
+    // 它**不需要**跟着 `_mediaWaitLogAt = 0` 一起清：判据是 `!_mediaWaitLogAt || 超 30 秒 || (签名变了 && 超 5 秒)`，
+    // `_mediaWaitLogAt` 归零那一支排在前面，任何换视频/换章节/收摊的复位点都已经先放行一条了。
+    _mediaWaitLogSig: '',
+
+    // 「手里这个视频**从来没有过源**」是从什么时候开始算的（批次 40，0 = 没有）。
+    // 判据只认 readyState 0 且拿不到 duration 这一族；超过 `documentSkipTimeoutMs` 就放手，
+    // 源一旦挂上（或换成别的视频）立刻清零 —— 所以它必须是**独立字段**，
+    // 不能借 `_mediaWaitLogAt`（那个是日志节流时间戳，会被别的调用方冲开）。
+    _mediaNoSourceSince: 0,
 
     _documentWaitLogAt: 0,
 
@@ -504,6 +529,7 @@
       this._activeDocumentJobManaged = false;
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
+      this._mediaNoSourceSince = 0;
       this._documentWaitLogAt = 0;
       this._lastLearningTabSwitchAt = 0;
       this._lastLearningCardKey = '';
@@ -563,10 +589,11 @@
     //   省下的那点「模型看图」的钱，会乘以十倍从输入侧漏出去。
     //   所以图片走独立请求，只把结果文字拼进题干。
 
-    // 每章视觉调用计数（进了新章就清零，见 _resetVisionBudget）。
-    _visionUsedInChapter: 0,
-
-    _visionBudgetChapterKey: '',
+    // 「这一章的看图预算已用完」只提醒一次用的键（每道题都刷一条会把日志淹掉）。
+    // ⚠️ 计数本身**不在这里** —— 批次 36-B 起记在 sessionStorage（见 `_readVisionLedger`）：
+    // 记在内存里的话，刷课链路里那几步"自己刷新自己"（跳章 / 验证码墙 / 跨域中间页）
+    // 一刷就归零，「每章最多 N 次」实际变成「每刷一次再来 N 次」。
+    _visionBudgetWarnedKey: '',
 
 
     // ===================== 讨论任务点 =====================

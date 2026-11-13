@@ -45,6 +45,7 @@
       this._activeDocumentJobManaged = false;
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
+      this._mediaNoSourceSince = 0;
       this._documentWaitLogAt = 0;
       this._guardLastTime = 0;
       this._guardLastWallTs = 0;
@@ -106,6 +107,36 @@
         return false;
       }
 
+      // 「拿到元素但源从来没挂上」必须**有界放手**（批次 40）。
+      // 现场实测（2026-11-13，用户挂着刷课，CDP 9334）：这一节的播放器是
+      // `<video id="video_html5_api" class="vjs-tech">`，readyState 0 / networkState 3（NETWORK_NO_SOURCE）
+      // / duration null / currentTime 0 / error 空 / 0×0，`media.ended` 因此**永远是 false** ——
+      // 上面那条分支救不了它，于是 `_activeMediaJobPending` 恒真、整节停摆 12 分钟，
+      // 一条答题都没发出去，日志里 guard 时间戳每秒被刷新一次（= 一直在重试，但永不放手）。
+      // 判据只认「既没有首帧也没有时长」这种**从来没有过源**的形状；窗口对齐
+      // `documentSkipTimeoutMs`（默认 120 秒，62-tasks-run.js 里等文档资源用的就是它），
+      // 正常视频哪怕首帧慢也会在窗口内变成 readyState>0 或拿到 duration，那时清零重新计。
+      // ⚠️ 放手必须留 warn：静默跳过用户的任务点是这个项目不许的事（AGENTS §2.7），
+      //    而且现场证据（readyState/networkState/src）要一起落进日志，
+      //    否则「视频没播成」和「这一节压根没视频」两种情况在日志里长成一个样。
+      var noSourceShape = Number(media.readyState) === 0 && !(Number(media.duration) > 0);
+      if (!noSourceShape) {
+        this._mediaNoSourceSince = 0;
+      } else if (!this._mediaNoSourceSince) {
+        this._mediaNoSourceSince = Date.now();
+      } else if (Date.now() - this._mediaNoSourceSince >= (Number(this.configs.documentSkipTimeoutMs) || 120000)) {
+        var stuckHeldMs = Date.now() - this._mediaNoSourceSince;
+        var stuckSrc = '';
+        try { stuckSrc = String(media.currentSrc || media.src || '').slice(0, 120); } catch (eSrc) {}
+        this._mediaNoSourceSince = 0;
+        emitRuntimeLog('warn', 'media has no source, release pending', {
+          reason: reason || '', readyState: Number(media.readyState),
+          networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc
+        });
+        this._clearMediaPendingState('media-no-source');
+        return false;
+      }
+
       this._activeMediaJobPending = true;
       this._ensurePlaybackRate(media, reason || 'pending');
       if (media.paused) {
@@ -114,12 +145,21 @@
       }
 
       var now = Date.now();
-      var mediaSig = String(reason || '') + '|' + (media.paused ? 'paused' : 'playing');
-      // ⚠️ 5 秒 → 30 秒，并且**只在理由/播放状态变了**时立刻出：
-      //    这一条每 tick 都发（现场约 5 秒一条），200 条日志环十几分钟就被它刷满，
-      //    而用户来问「为什么这节跳过」时要看的那几条早就被冲掉了。
-      //    心跳本身留着（30 秒一条照样看得出 `currentTime` 在走）。
-      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 30000 || mediaSig !== this._mediaWaitLogSig) {
+      // 签名只放**播放状态**这一维。
+      // ⚠️ reason 绝不能再进签名：reason 是「谁来问的」（'completion-check'、
+      //    'ocs-runner-active-job' 等十几个调用方标识），同一个视频每秒被两个调用方
+      //    一先一后地问，签名就每秒翻一次 —— 下面那道 30 秒闸被自己的签名绕过去。
+      //    现场实测（2026-11-13，用户挂着刷课，CDP 9334 读 SW 那份 runtimeLogs）：
+      //    200 条环形日志里 196 条是这一句，整个窗口只装得下约 100 秒；
+      //    用户来问「刚才那节为什么跳过」时，那一刻的证据早被挤没了 ——
+      //    而这条日志的本意恰恰是「让人看得见进度」，反过来把别的证据全冲掉。
+      //    心跳本身留着（30 秒一条照样看得出 currentTime 在走），reason 仍在 payload 里。
+      //    状态真变了（暂停↔播放）仍然立刻出，但受 5 秒下限约束：
+      //    播放器自己抖动时不许把闸再冲开一次。
+      var mediaSig = media.paused ? 'paused' : 'playing';
+      var sinceWaitLog = now - (Number(this._mediaWaitLogAt) || 0);
+      if (!this._mediaWaitLogAt || sinceWaitLog > 30000
+        || (mediaSig !== this._mediaWaitLogSig && sinceWaitLog > 5000)) {
         this._mediaWaitLogAt = now;
         this._mediaWaitLogSig = mediaSig;
         emitRuntimeLog('info', 'media pending, delay completion', {

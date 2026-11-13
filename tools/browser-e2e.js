@@ -1256,11 +1256,13 @@ function buildPopupQuizNativeHtml() {
 /**
  * 视频内嵌**多选题**弹窗。
  *
- * 为什么必须单独有一个：非视频整卷里的多选已经改成**本地作答、不进请求**
- * （见第 21 条场景），于是"模型把多选答案摊平成一串字母"这种退化形状
- * **在整卷那条路上不会再出现**了。但视频弹题那条路仍然把多选交给模型
- * （答错就不让继续播，不能乱答），所以 `resegmentFlatAnswers` 依旧要守，
- * 只是必须换到**还活着的那条路**上来测 —— 否则测试还是绿的，它守的东西没了。
+ * ⚠️ 口径已变（README §6 #49）：以前这里写的是「非视频整卷的多选改成本地作答、
+ * 不进请求，所以只剩弹题这条路会把多选交给模型」—— 那句话已经不成立。
+ * 现在多选**默认就问模型**（本地只剩幂等补填与判错后的兜底），
+ * 于是"模型把多选答案摊平成一串字母"这种退化形状**两条路都会出现**。
+ * 这个夹具仍然要留着，但理由换成：`resegmentFlatAnswers` 守的是**弹题**这条链，
+ * 它和整卷走的是两套填题代码（`80-popup-quiz.js` / `75-quiz-dom.js`），
+ * 只测整卷那条，弹题这条坏了不会有人报警。
  */
 function buildPopupQuizMultiHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -2057,6 +2059,55 @@ function closeTab(tabId) {
 }
 
 /**
+ * 开一条**浏览器级** CDP 连接跑一段调用，跑完就关。
+ *
+ * ⚠️ `Browser.*` 和全局 `Target.*` 只挂在 `/json/version` 那条 ws 上，
+ * 用页面级的 `tab.webSocketDebuggerUrl` 调会直接 not found（踩过）。
+ * ⚠️ 现开现关、不常驻：浏览器级连接会把整轮的 target 事件堆进 `CdpClient.events`（没有上限）。
+ *
+ * @returns {Promise<any>} `fn` 的返回值；连不上时返回 null —— 调用方把它当证据打出来，别在这里替它猜成功
+ */
+async function withBrowserClient(fn) {
+  var ver = null;
+  try { ver = await httpGetJson('http://127.0.0.1:' + CDP_PORT + '/json/version'); } catch (e) { return null; }
+  if (!ver || !ver.webSocketDebuggerUrl) return null;
+  var c = new CdpClient(ver.webSocketDebuggerUrl);
+  try {
+    await c.connect();
+    return await fn(c);
+  } catch (e) {
+    if (DEBUG) console.log('  [debug] 浏览器级调用失败: ' + e.message);
+    return null;
+  } finally {
+    c.close();
+  }
+}
+
+/**
+ * 把某个标签页切成**它所在那个窗口**的活动标签。
+ *
+ * `document.hidden` 判的是「这个标签是它所在窗口的活动标签，且那扇窗口可见」，
+ * 所以把同窗口的另一个标签端上去，这一页就真的下后台了（实测 0~2 毫秒翻）。
+ * ⚠️ 「另开一个新标签再激活」在**只有一扇窗口**时同样管用，但全量跑不管用：
+ *    新标签会开去别的窗口（实测 tabs 3→4、flipMs -1）—— 所以必须先核对 windowId。
+ *
+ * 这个端点回的是**纯文本**（`Target is activated`），不能走 `requestJson`
+ * —— 它会因为「非 JSON 响应」而 reject，于是「激活成功」永远读成失败。
+ * @returns {Promise<boolean>} 只表示「请求发出去了且 HTTP 成功」，真实效果由调用方轮询自证。
+ */
+function activateTab(tabId) {
+  return new Promise(function (resolve) {
+    var req = http.request('http://127.0.0.1:' + CDP_PORT + '/json/activate/' + tabId, { method: 'PUT' }, function (res) {
+      res.on('data', function () {});
+      res.on('end', function () { resolve(res.statusCode >= 200 && res.statusCode < 300); });
+    });
+    req.setTimeout(6000, function () { req.destroy(); resolve(false); });
+    req.on('error', function () { resolve(false); });
+    req.end();
+  });
+}
+
+/**
  * 打开一个场景页面并等它就绪。
  *
  * target 可以是 mock 路径（`/quiz`）或完整 URL（`chrome-extension://<id>/popup/popup.html`）。
@@ -2152,6 +2203,8 @@ async function openScenarioPage(extensionId, scenario) {
 
   var ctx = {
     client: client,
+    // 场景页自己的 target id —— 要用**浏览器级** CDP 改这扇窗口的状态（见 setWindowState）
+    targetId: tab.id,
     url: url,
     close: async function () {
       client.close();
@@ -2650,7 +2703,8 @@ SCENARIOS.push({
 
     await reloadPet(ctx, { egg: false, mood: 79 });
     var moodBefore = await client.evaluate('localStorage.getItem("omitone.pet.mood")');
-    check('前置：79 分心情确实在高档阈值下', moodBefore === '79', String(moodBefore));
+    check('夹具自证：reloadPet 确实把心情写成了 79（这一步只证明存档落盘，"79 属于高档"由下一条断）',
+      moodBefore === '79', String(moodBefore));
     await client.evaluate('document.getElementById("mascot").click()');
     var moodTouched = await petEval(client, function () {
       var pet = document.getElementById('mascot');
@@ -2840,17 +2894,23 @@ SCENARIOS.push({
       'if(h)h.click();' +
       'await new Promise(function(r){setTimeout(r,150);});' +
       'out.hidden=pet.style.display==="none";' +
+      // 「藏」的**持久化**没人守过：以前这条断言写的是 `r.hidAfterHide || r.hidden`，
+      // 而 `hidAfterHide` 这个字段探针从来没写过 —— 左半边是死的，等于只断了"这一下收起来了"。
+      // 「下次打开弹窗还藏着」靠的是 localStorage 那个键（popup/pet.js:350 HIDE_KEY）。
+      'out.hideStored=localStorage.getItem("omitone.pet.hidden");' +
       'var sp=document.getElementById("btnPetShow");' +
       'out.hasShowBtn=!!sp;' +
       'if(sp)sp.click();' +
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.shown=pet.style.display!=="none"&&pet.classList.contains("show");' +
+      'out.hideCleared=localStorage.getItem("omitone.pet.hidden");' +
       'return out;})()'
     );
     check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false, JSON.stringify(r));
-    check('「藏」能把人收起来', !!r && r.hidAfterHide === true || (!!r && r.hidden === true), JSON.stringify(r));
-    check('「显示小人」按钮存在', !!r && r.hasShowBtn === true, JSON.stringify(r));
-    check('点「显示小人」能重新出现', !!r && r.shown === true, JSON.stringify(r));
+    check('「藏」能把人收起来，并把"藏着"写进存档（下次打开弹窗还在藏着的状态）',
+      !!r && r.hidden === true && r.hideStored === '1', JSON.stringify(r));
+    check('点「显示小人」能重新出现，并清掉存档里的"藏着"',
+      !!r && r.shown === true && (r.hideCleared === null || r.hideCleared === '0'), JSON.stringify(r));
     check('按在工具条上不会启动拖动（否则 click 被重定向成"戳"）', !!r && r.dragFromTools === false, JSON.stringify(r));
   }
 });
@@ -2975,9 +3035,17 @@ SCENARIOS.push({
       'if(b){b.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.src1=img?img.getAttribute("src"):"";' +
       'out.pose0=img?img.getAttribute("src"):"";' +
+      'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
       'var pb=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
       'if(pb){pb.click();await new Promise(function(r){setTimeout(r,180);});}' +
-      'out.pose1=pet?pet.getAttribute("data-pose"):"";' +
+      // 旧写法断 `pose0 !== pose1`，可 pose0 取的是 **img 的 src**、pose1 取的是 **pet 的
+      // data-pose** —— 两个值域（"pet.png" 与 "sit"）永远不相等，「姿」整个坏掉它照样绿。
+      // 「姿」有两条分支（popup/pet.js:605）：默认装束下换**姿势立绘**（改 src），
+      // 穿着别的衣服时只换 **CSS 姿态**（改 data-pose，不换图，免得把用户刚挑的衣服换掉）。
+      // 上面点过一次「装」，所以现在走的是第二条 —— 断言写成"两者之一真的变了"，
+      // 不认死某一条，否则以后默认装束的顺序一变就误红。
+      'out.pose1=img?img.getAttribute("src"):"";' +
+      'out.poseAttr=pet?pet.getAttribute("data-pose"):"";' +
       'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(h){h.click();await new Promise(function(r){setTimeout(r,140);});}' +
       'out.hidden=pet?pet.style.display==="none":null;' +
@@ -2991,7 +3059,10 @@ SCENARIOS.push({
     );
     check('前置：弹窗里有角色元件', !!r && r.hasPet === true, JSON.stringify(r));
     check('点「装」真的换图（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
-    check('点「姿」会换姿势立绘', !!r && r.pose0 !== r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
+    check('点「姿」确有换动作：换姿势立绘或换 CSS 姿态，两者至少变一个（旧写法拿 src 和 data-pose 比，恒不相等）',
+      !!r && (r.pose0 !== r.pose1 || r.poseAttr0 !== r.poseAttr) &&
+      ['sit', 'happy', 'point', 'sad'].indexOf(r.poseAttr) !== -1,
+      r ? r.pose0 + ' → ' + r.pose1 + ' / ' + r.poseAttr0 + ' → ' + r.poseAttr : '');
     check('点「藏」会收起来', !!r && r.hidden === true, '');
     check('「显示小人」能叫回来', !!r && r.shown === true, '');
     check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
@@ -3169,15 +3240,38 @@ SCENARIOS.push({
         '(function(){var h=document.getElementById("omitone-page-pet-host");' +
         'if(!h||!h.shadowRoot)return null;' +
         'var img=h.shadowRoot.getElementById("petImg");' +
+        'var lv=h.shadowRoot.getElementById("level");' +
         'return {img:!!img,loaded:!!img&&img.naturalWidth>0,' +
-        'level:String(h.shadowRoot.getElementById("level").textContent||"")};})()'
+        'level:String(lv.textContent||""),title:String(lv.getAttribute("title")||"")};})()'
       );
       if (mounted && mounted.img) break;
     }
     check('伴侣出现在学习页，且立绘真的加载了（web_accessible_resources 生效）',
       !!mounted && mounted.img === true && mounted.loaded === true, JSON.stringify(mounted));
-    check('等级徽章有字（好感度存档读到了）',
-      !!mounted && mounted.level.length > 0, JSON.stringify(mounted));
+    // 徽章那条旧断言是 `level.length > 0` —— 而模板里 `<div class="level" id="level">初识</div>`
+    // 出厂就带字（content.js:1895），渲染整段坏掉它照样绿。真判据是**渲染出来的那一档**：
+    // `title` 只有 `renderPagePet` 跑过才会有（content.js:1701），
+    // 再从里面读回好感度，按 LEVELS 阈值算出该显示哪一档名字。
+    // 存档是异步读的，元素先出现、渲染后落，所以这里要再等一拍（最多 3 秒），不能拿首次采样当结论。
+    for (var tw = 0; tw < 12; tw++) {
+      if (mounted && /^好感度/.test(mounted.title)) break;
+      await sleep(250);
+      mounted = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot)return null;' +
+        'var lv=h.shadowRoot.getElementById("level");' +
+        'return {level:String(lv.textContent||""),title:String(lv.getAttribute("title")||"")};})()'
+      );
+    }
+    var lvMin = [0, 15, 30, 50, 70, 90, 140, 200];
+    var lvName = ['初识', '打过招呼', '熟络', '亲近', '挚友', '形影不离', '心有灵犀', '岁月同行'];
+    var affMatch = /好感度\s*(\d+)/.exec((mounted && mounted.title) || '');
+    var aff = affMatch ? Number(affMatch[1]) : -1;
+    var expectName = null;
+    for (var li = lvMin.length - 1; li >= 0; li--) { if (aff >= lvMin[li]) { expectName = lvName[li]; break; } }
+    check('等级徽章按存档渲染（不是模板里那句出厂文案）：' +
+      'title 里的「好感度 ' + aff + '」对应「' + expectName + '」',
+      !!mounted && aff >= 0 && expectName === mounted.level, JSON.stringify(mounted));
 
     // 摸头：好感条宽度发生变化（存档在 storage，主世界读不到 —— 断 UI 表现）
     var before = await ctx.client.evaluate(
@@ -3327,7 +3421,7 @@ SCENARIOS.push({
       !!hover && hover.on === true && hover.off === false && hover.changed === true && hover.back === true,
       JSON.stringify(hover).slice(0, 240));
 
-    // ⑥ 她自己偶尔开口：四条"别说"各挡各的。
+    // ⑥ 她自己偶尔开口：四条"别说"各挡各的（第四条「标签页在后台」只能切真后台，见 ⑥-b）。
     //    ⚠️ 每个"闭嘴"断言前都要先把**别的**门槛拨到"该说话"（quiet() 把上次开口推到 200 秒前），
     //    否则"她没说"可能只是时间没到 —— 那就是把已知缺陷改坏了也照样绿的假绿。
     await ctx.client.send('Page.bringToFront');   // document.hidden 必须为 false，否则正例永远不成立
@@ -3354,6 +3448,10 @@ SCENARIOS.push({
       'wrap.classList.remove("mode-hidden");' +
       // 正被拖着走：同上
       'quiet();c.classList.add("dragging");o.dragQuiet=!tick().sp;c.classList.remove("dragging");' +
+      // 标签页在后台这一档**不在这个探针里**：内容脚本与页面是两个 JS world，
+      // 在页面世界里给 `document` 挂 own `hidden` 属性，内容脚本那边读到的仍是原型上的 false
+      // （实测：桩打上后"她照样说话"）。真把它翻成 hidden 只有一条路 —— 把**这一页所在的窗口**
+      // 最小化（切另一个标签页不够，实测见下面 ⑥-b），自证 hidden 后单独一段跑。
       // 正例：安静够了 → 说一句，气泡真的亮，形状是一小块
       'quiet();var t=tick();var r=b.getBoundingClientRect();' +
       'o.line=t.txt;o.spoke=t.sp&&t.txt.length>0;' +
@@ -3364,14 +3462,167 @@ SCENARIOS.push({
       'b.classList.remove("show");return o;})()'
     );
     check('前提：自动台词的把手真的通（拨旧时间戳拍一下，气泡必须亮）',
-      !!idle && idle.hook === true, JSON.stringify(idle).slice(0, 160));
+      !!idle && idle.hook === true && idle.hidden === false, JSON.stringify(idle).slice(0, 160));
     check('她自己开口只在该开口时：刚说过/被收起/正拖着 → 三种都闭嘴；安静够了 → 说一句且只一句',
       !!idle && idle.freshQuiet === true && idle.hiddenQuiet === true && idle.dragQuiet === true &&
       idle.spoke === true && idle.onceOnly === true && idle.saidRefreshed === true,
-      JSON.stringify(idle).slice(0, 260));
+      JSON.stringify(idle).slice(0, 300));
     check('自动台词那口气的形状也是一小块横排（不是竖条）',
       !!idle && !!idle.shape && idle.shape.w >= 88 && idle.shape.h <= 62 && idle.shape.w > idle.shape.h,
       JSON.stringify(idle && idle.shape));
+
+    // ⑥-b 「标签页在后台」这一档 —— 只能切**真**后台（批次 39，全量跑改法见批次 41）。
+    //     页面世界与内容脚本是两个 JS world：在页面世界里给 `document` 挂 own `hidden`
+    //     属性，内容脚本读到的仍是原型上的 false（实测打桩后"她照样说话"，那条断言恒绿）。
+    //     真翻 hidden 只有一条路：把**同一扇窗口的另一个标签**端成活动标签（`activateTab`，
+    //     实测 0~19 毫秒翻）。批次 39 是「随手开一个新标签再激活」—— 只有一扇窗口时管用，
+    //     全量跑却不翻（实测 tabs 3→4、flipMs -1）：那一发新标签开去了**别的窗口**，
+    //     这一页仍是自己窗口的活动标签。所以这里先查窗口、再动作，两头都自证。
+    //     ⚠️ 试过的两条死路：① `Browser.setWindowBounds {state:'minimized'}` 在这台 Edge 上
+    //        回 `result:{}` 却纹丝不动（读回 windowState 仍是 normal，hidden 也不翻）；
+    //        ② 在页面世界里改 `document.hidden` —— 内容脚本压根读不到。
+    //     ⚠️ **可见性要在排拍子之前就位，读完再核一次**：批次 41 第一版是"先排拍子再切窗口"，
+    //        前台对照那趟读到 `hidden=true`（这扇窗口会被别的东西压住，OS 层遮挡同样算 hidden）——
+    //        "她没说话"和"这趟压根不在要求的那一档里"就同形了。所以每一趟先站好位、再拍一次、
+    //        读回来不对就整趟重来（最多三趟）；三趟都稳不住才判失败。
+    //     ⚠️ 后台标签页的 setTimeout 被节流到最小 1 秒 → 排程 1600ms、节点侧等到 3400ms。
+    //     ⚠️ **必须配对跑一个同样排程、但不切后台的对照**：少了它，"气泡没亮"可能只是
+    //        定时器压根没跑。而且两趟都在页面世界里数拍子有没有真落地（`__pkTicks`），
+    //        `tickFired < 1` 一样整趟重来 —— 否则"她闭嘴"和"定时器被节流到没跑"同形。
+    //     读结果在**仍是后台时**用 CDP 读（evaluate 不抢焦点）：唤回前台再读的话，
+    //     她自己那条 15 秒 interval 可能正好插进来点亮气泡，把"该闭嘴"验成"说话了"。
+    var bgPlan = null;
+    var readHidden = async function () {
+      return await ctx.client.evaluate('(function(){return document.hidden;})()');
+    };
+    /** 轮询到要求的那一档为止；返回耗时（毫秒），没等到返回 -1 —— 只报实测，不报自认为的成功。 */
+    var untilHidden = async function (want) {
+      var t0 = Date.now();
+      for (var i = 0; i < 14; i++) {
+        if ((await readHidden()) === want) return Date.now() - t0;
+        await sleep(150);
+      }
+      return -1;
+    };
+    // 找一枚「和这一页同一扇窗口」的接管标签。优先用现成的（整轮唯一的配置写入器那一页通常就在），
+    // 一个都没有才新开 —— 而新开之前必须先把这一页端到最前，否则新标签会开去别的窗口
+    //（批次 39 就是这么恒红的）。找到之后整轮复用同一枚，别每趟都新开。
+    var findStandIn = async function () {
+      var plan = { win: null, cand: null, opened: null };
+      return (await withBrowserClient(async function (bc) {
+        var infos = ((await bc.send('Target.getTargets')) || {}).targetInfos || [];
+        var pages = infos.filter(function (x) { return x.type === 'page'; });
+        var wa = await bc.send('Browser.getWindowForTarget', { targetId: ctx.targetId });
+        plan.win = (wa && wa.windowId) || null;
+        var sameWin = async function (tid) {
+          var w = await bc.send('Browser.getWindowForTarget', { targetId: tid });
+          return !!w && w.windowId === plan.win;
+        };
+        for (var i = 0; i < pages.length && i < 8; i++) {
+          if (pages[i].targetId !== ctx.targetId && await sameWin(pages[i].targetId)) {
+            plan.cand = pages[i].targetId;
+            return plan;
+          }
+        }
+        await ctx.client.send('Page.bringToFront').catch(function () {});
+        var nt = await bc.send('Target.createTarget', { url: 'about:blank' });
+        plan.opened = (nt && nt.targetId) || null;
+        if (plan.opened && await sameWin(plan.opened)) plan.cand = plan.opened;
+        return plan;
+      })) || plan;
+    };
+    /** 把这一页挤下后台 = 激活那枚同窗口的接管标签，并轮询到 hidden===true 为止。 */
+    var pushBehind = async function () {
+      if (!bgPlan) bgPlan = await findStandIn();
+      if (!bgPlan.cand) return { win: bgPlan.win, cand: null, opened: bgPlan.opened, flipMs: -1 };
+      await activateTab(bgPlan.cand);
+      return { win: bgPlan.win, cand: bgPlan.cand, opened: bgPlan.opened, flipMs: await untilHidden(true) };
+    };
+    /** 唤回：先把这趟新开的接管标签关掉（留着会继续抢焦点），再端到最前，轮询到 hidden===false 为止。 */
+    var wakeUp = async function () {
+      if (bgPlan && bgPlan.opened) {
+        await closeTab(bgPlan.opened);
+        bgPlan.opened = null;
+        bgPlan.cand = null;
+      }
+      await ctx.client.send('Page.bringToFront').catch(function () {});
+      return await untilHidden(false) >= 0;
+    };
+    var readPet = async function () {
+      return await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'var b=h.shadowRoot.getElementById("bubble");' +
+        'var spoke=/show/.test(String(b.className));var txt=String(b.textContent||"");' +
+        'b.classList.remove("show");' +
+        'return {hidden:document.hidden,spoke:spoke,txt:txt,ticks:window.__pkTicks};})()'
+      );
+    };
+    var petIdleOnce = async function (toBackground) {
+      var want = !!toBackground;
+      var run = async function () {
+        var beforeSwitch = await readHidden();
+        var how = toBackground ? await pushBehind() : { woke: await wakeUp() };
+        var at = await ctx.client.evaluate(
+          '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+          'var b=h.shadowRoot.getElementById("bubble");' +
+          'b.textContent="";b.classList.remove("show");' +
+          // 拍子计数器：主世界也挂一个监听，只数"这一记拍子真的派发到 host 上了"
+          'if(typeof window.__pkTicks!=="number")window.__pkTicks=0;' +
+          'if(!window.__pkTickHooked){window.__pkTickHooked=1;' +
+          ' h.addEventListener("omitone:pet-idle-tick",function(){window.__pkTicks++;});}' +
+          'var fired=window.__pkTicks;' +
+          // 时间门槛拨到"该说话"（200 秒没开口），只剩这一档（后台/前台）在起作用
+          'h.dataset.saidAt=String(Date.now()-200000);' +
+          'setTimeout(function(){h.dispatchEvent(new Event("omitone:pet-idle-tick"));},1600);' +
+          'return {hidden:document.hidden,fired:fired};})()'
+        );
+        var t0 = Date.now();
+        await sleep(Math.max(700, 3400 - (Date.now() - t0)));
+        var out = await readPet();
+        out.beforeSwitch = beforeSwitch;
+        out.atSchedule = at && at.hidden;
+        out.how = how;
+        out.tickFired = (typeof out.ticks === 'number' ? out.ticks : 0) - (Number(at && at.fired) || 0);
+        return out;
+      };
+      var out = null, attempts = 0;
+      while (attempts < 3) {
+        attempts++;
+        out = await run();
+        // 这一趟算不算数：拍子真落地了 + 排的时候和读的时候都在要求的那一档可见性上
+        if (out.tickFired >= 1 && out.atSchedule === want && out.hidden === want) break;
+      }
+      out.attempts = attempts;
+      out.flipMs = out.how && typeof out.how.flipMs === 'number' ? out.how.flipMs : -1;
+      // 后台那趟测完就唤回 —— ⑦ 真鼠标和后面的场景都要求这一页在前台，
+      // 唤没唤回由下面「独立回读」那条前提验收，不由这里自报。
+      if (want) out.back = await wakeUp();
+      return out;
+    };
+    var bgIdle = await petIdleOnce(true);
+    // 唤回这件事**独立回读一次**再看：`wakeUp` 自己报的布尔只说明"它轮询到了"，
+    // 而这一页后来可能被别的东西压回去 —— ⑦ 真鼠标与前台对照都建立在"已经回到前台"上。
+    var hiddenAfterBg = await readHidden();
+    var fgIdle = await petIdleOnce(false);
+    check('前提：这一页真的被挤到后台了（切之前 hidden=false、排拍子时与读完时都还是 hidden=true）' +
+      '—— 没这一步，"她闭嘴"等于没测',
+      !!bgIdle && bgIdle.beforeSwitch === false && bgIdle.atSchedule === true &&
+      bgIdle.hidden === true && bgIdle.flipMs >= 0,
+      JSON.stringify(bgIdle && {
+        before: bgIdle.beforeSwitch, at: bgIdle.atSchedule, after: bgIdle.hidden,
+        flipMs: bgIdle.flipMs, attempts: bgIdle.attempts,
+        win: bgIdle.how && bgIdle.how.win, cand: !!(bgIdle.how && bgIdle.how.cand),
+        opened: !!(bgIdle.how && bgIdle.how.opened)
+      }).slice(0, 220));
+    check('前提收尾：这一页真的唤回前台了（**独立回读** document.hidden，不信任唤回函数自己报的那个数）' +
+      '—— 回不去的话 ⑦ 真鼠标与前台对照全建在"还在后台"上',
+      hiddenAfterBg === false && !!bgIdle && bgIdle.back === true,
+      JSON.stringify({ hiddenNow: hiddenAfterBg, back: bgIdle && bgIdle.back, how: bgIdle && bgIdle.how }).slice(0, 220));
+    check('标签页在后台时她不插话，回到前台同一拍就说（旧写法在页面世界打桩 document.hidden，内容脚本读不到，恒绿）' +
+      '—— 两趟都自证那一拍真的派发到 host 上，且可见性全程站在要求的那一档（不稳就整趟重来，最多三趟）',
+      !!bgIdle && !!fgIdle && bgIdle.spoke === false && bgIdle.txt === '' &&
+      fgIdle.atSchedule === false && fgIdle.hidden === false && fgIdle.spoke === true && fgIdle.txt.length > 0,
+      JSON.stringify({ bg: bgIdle, fg: fgIdle }).slice(0, 300));
 
     // ⑦ 真鼠标点得动（2026-11-12 现场）。①–⑥ 全是 dispatchEvent / .click()，
     //    而 pointerdown 里那句 setPointerCapture 会把兼容的 mousedown/mouseup/click
@@ -4816,23 +5067,15 @@ SCENARIOS.push({
     );
 
     check('单选题回填 A → #answer1001', result.a1001 === 'A', JSON.stringify(result.a1001));
-    // ⚠️ 多选不再是"模型给的 A,C"了：1.2.9 起非视频整卷的多选由**本地作答**、
-    //    压根不进请求（见第 21 条场景）。这里只守"它有值"——
-    //    "模型给多选答案时要能填成 AC" 由下面那段直接调 _fillAnswers 来锁。
-    check('多选题已填上（本地作答，不再是模型给的 A,C）',
-      /^[A-D]+$/.test(result.a1002 || ''), JSON.stringify(result.a1002));
-    var multiFromLlm = await ctx.client.evaluate(
-      '(function(){var app=window._xxtApp;' +
-      'var qs=app._extractQuestions(null);var idx=-1;' +
-      'for(var i=0;i<qs.length;i++){ if(qs[i].type==="multiple") idx=i; }' +
-      'if(idx<0) return {missing:true};' +
-      'app._fillAnswers([{index:idx,type:"multiple",answer:["A","C"]}],qs,null);' +
-      'var h=document.getElementById("answer1002");' +
-      'return {hidden:h?h.value:null};})()'
-    );
-    check('模型给出多选答案时，回填仍然是 A,C → #answer1002 = "AC"' +
-      '（弹题那条路与"本地算不出、交回模型"的题都走这里）',
-      multiFromLlm && multiFromLlm.hidden === 'AC', JSON.stringify(multiFromLlm));
+    // ⚠️ 旧口径（1.2.9 那阵）写过「多选本地作答、不进请求，这里只守它有值」——
+    //    README §6 #49 已经把它反转了：多选**默认问模型**，本地只剩"模型那份没填上"时的补填。
+    //    所以这条现在钉的是**模型给的答案原样落地**（宽松正则等于什么都没断：
+    //    本地兜底随便凑一组也是 A-D 字母串，坏了照样绿）。
+    check('多选题回填模型给的 A,C → #answer1002 = "AC"',
+      result.a1002 === 'AC', JSON.stringify(result.a1002));
+    // 原来这里还有一段「直接调 _fillAnswers 再验一次 AC」—— 上面那条严格断言落地后它就成了
+    // 重叠（同一分支、同一夹具形状、同一答案），按 AGENTS §5「一个注入只破一个行为」删掉。
+    // 「重复填同一答案不会把已选项切掉（幂等）」在多选本地作答那条场景里单独守着。
     check('判断题回填 true → #answer1003', result.a1003 === 'true', JSON.stringify(result.a1003));
     check('填空题多空拆分并拼接 → #answer1004 = "甲乙"', result.a1004 === '甲乙', JSON.stringify(result.a1004));
     check('填空两个输入框分别填 甲 / 乙',
@@ -4957,8 +5200,10 @@ SCENARIOS.push({
       'a._setQuizForceSkip(60000,out.keyA);' +
       'out.aSkips=a._isQuizForceSkipping(A.doc);' +
       'out.bSkips=a._isQuizForceSkipping(B.doc);' +
-      // 写入侧与读取侧在**同一个文档**上必须算出同一个键
-      'out.sameDocEqual=String(a._quizForceSkipPaperKey)===String(a._getQuizWorkKey(A.doc))&&a._isQuizForceSkipping(A.doc)===true;' +
+      // ⚠️ 这里原来还有一条「写入侧与读取侧在同一个文档上算出同一个键」，可它上一行刚把
+      // `out.keyA`（= `_getQuizWorkKey(A.doc)` 算出来的）写进 `_quizForceSkipPaperKey`，
+      // 再拿同一个表达式比回来 —— 自写自算，永远为真。同一份卷子确实被冻住那半边
+      // 已经由 `aSkips` 断到了；「读写必须同一个文档表达式」这条真不变式由 /submit-key 那一族守（README §6 #52）。
       // 认不出当前卷子时**保守**：冷却继续生效。
       // 这条要的是「抛异常」那种认不出 —— `_getQuizWorkKey` 永远带
       // `omitone.quiz.correct.` 前缀且有 location 兜底，**不可能返回空串**，
@@ -4982,8 +5227,6 @@ SCENARIOS.push({
       JSON.stringify(r3));
     check('R3 A 卷的冷却不再冻结 B 卷（同一时刻 A 仍被拦住）',
       !!r3 && r3.bSkips === false && r3.aSkips === true, JSON.stringify(r3));
-    check('R3 写入侧与读取侧在同一个文档上算出同一个键',
-      !!r3 && r3.sameDocEqual === true, JSON.stringify(r3));
     check('R3 认不出当前卷子时保守：冷却继续生效',
       !!r3 && r3.unknownPaperSkips === true, JSON.stringify(r3));
     check('R3 冷却过期后不再拦住任何卷子',
@@ -5047,7 +5290,6 @@ SCENARIOS.push({
     // 用户实测：多选**只选一个照样能提交成功** —— 说明补选不是平台约束。
     // 1.1.5 加它是为了"分散重试"（见 CHANGELOG 1.1.5 成因 2），
     // 但第一次就补 = 造一个模型没给的答案，那正是判错的一个来源。
-    var beforeReq = ctx.mock.requests.length;
     var r3 = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var el=window.__mq._element;' +
       'var qid=app._getQuestionIdFromElement(el);' +
@@ -5061,8 +5303,6 @@ SCENARIOS.push({
       r3 && r3.values.length === 1 && r3.values[0] === 'B', JSON.stringify(r3));
     check('原样填进 DOM（只填一项，不造答案）',
       r3 && r3.hidden === 'B', JSON.stringify(r3));
-    check('本地处理不发任何模型请求（零 token）', ctx.mock.requests.length === beforeReq,
-      '多发了 ' + (ctx.mock.requests.length - beforeReq) + ' 次');
 
     // ②b 只有**已经判错过**的单项组合才补选 —— 否则重试只会原地打转（1.1.5 要治的就是这个）
     // ⚠️ 用**自己的合成题**（qid 99101），不要把错误缓存写进 window.__mq ——
@@ -5658,25 +5898,36 @@ SCENARIOS.push({
 
     var rate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:1.5,autoMaxPlaybackRate:false,muted:true,audioMuted:true,enableSeek:true});' +
+      'app.configs=Object.assign({},app.configs,{playbackRate:1.5,autoMaxPlaybackRate:false,muted:true,enableSeek:true});' +
       'var v=document.getElementById("omitone-video");' +
       'app._ensurePlaybackRate(v,"e2e");' +
-      'return {rateApplied:v.playbackRate, muted:v.muted, target:app._getTargetPlaybackRate()};})()'
+      'return {rateApplied:v.playbackRate, muted:v.muted};})()'
     );
     check('倍速按配置应用（1.5x）', rate.rateApplied === 1.5, JSON.stringify(rate));
     check('静音按配置应用', rate.muted === true, JSON.stringify(rate.muted));
-    check('_getTargetPlaybackRate 返回配置值', rate.target === 1.5, String(rate.target));
 
-    // 自动最大倍速：打桩的播放器没有倍速菜单，探测路径会回落到配置值，不应抛异常
+    // 自动最大倍速的**夹紧**这一支以前是零覆盖：打桩播放器探测不到倍速菜单，
+    // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到配置值"，
+    // 而那句 `capped: r <= 2` 对着 1.5 恒为真 —— `_clampAutoRate` 的上限与 0.5 下限没有一条断言碰过。
+    // 现在把探测结果直接钉成 6x / 0.2x，逼它走进夹紧那一支。
     var autoResult = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2});' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2,playbackRate:1.5});' +
       'var v=document.getElementById("omitone-video");' +
-      'app._ensurePlaybackRate(v,"e2e-auto");' +
-      'var r=v.playbackRate;' +
-      'return {rate:r, capped:r<=2};})()'
+      // 钉住"已经探测过这台播放器"，否则这里会再排一次异步探测、把刚设的值改回去
+      'app._rateProbing=false; app._rateDetectVideo=v;' +
+      'app._detectedMaxRate=6; var over=app._getTargetPlaybackRate();' +
+      'app._ensurePlaybackRate(v,"e2e-auto"); var applied=v.playbackRate;' +
+      'app._detectedMaxRate=0.2; var floor=app._getTargetPlaybackRate();' +
+      'app._detectedMaxRate=0; var fallback=app._getTargetPlaybackRate();' +
+      'return {over:over, applied:applied, floor:floor, fallback:fallback};})()'
     );
-    check('自动倍速路径不抛异常且不超过上限', autoResult && autoResult.capped === true, JSON.stringify(autoResult));
+    check('自动倍速：探测到 6x、上限设 2x → 夹紧到 2x 并按下去（旧写法这条走不到，_clampAutoRate 全仓零覆盖）',
+      autoResult && autoResult.over === 2 && autoResult.applied === 2, JSON.stringify(autoResult));
+    check('自动倍速：夹紧的下限也在 —— 探测出 0.2x 这种荒值不许真按 0.2x 播',
+      autoResult && autoResult.floor === 0.5, String(autoResult && autoResult.floor));
+    check('探测不到倍速时回落到配置值（不是 0、不是 NaN）',
+      autoResult && autoResult.fallback === 1.5, String(autoResult && autoResult.fallback));
 
     var seek = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
@@ -5752,16 +6003,23 @@ SCENARIOS.push({
       audio.foundInDoc === 'omitone-video', JSON.stringify(audio));
 
     // 音频任务点应走配置倍速（不看自动最大倍速菜单）；
-    // 静音开关已删：插件不再替用户静音音频，要静音直接静音标签页
+    // 静音开关已删：插件不再替用户静音音频，要静音直接静音标签页。
+    // ⚠️ 这条以前把 `muted:false` 写进配置再去断 `audio.muted===false` —— 那个判据在
+    // `_ensurePlaybackRate` 里是 `video.muted = !isAudio && !!configs.muted`，把 `!isAudio` 整段删掉
+    // 它也照样绿。**要钉住"音频不被插件静音"，必须先把用户的静音开关打开。**
     var audioRate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:2,autoMaxPlaybackRate:false,muted:false});' +
+      'app.configs=Object.assign({},app.configs,{playbackRate:2,autoMaxPlaybackRate:false,muted:true});' +
+      'app._rateProbing=false;' +
       'var a=document.getElementById("omitone-audio");' +
+      'var v=document.getElementById("omitone-video");' +
       'app._ensurePlaybackRate(a,"e2e-audio");' +
-      'return {rate:a.playbackRate, muted:a.muted};})()'
+      'app._ensurePlaybackRate(v,"e2e-video");' +
+      'return {rate:a.playbackRate, audioMuted:a.muted, videoMuted:v.muted};})()'
     );
     check('音频应用配置倍速（2x）', audioRate.rate === 2, JSON.stringify(audioRate));
-    check('音频不再被插件静音（交给标签页静音，旧开关已删）', audioRate.muted === false, JSON.stringify(audioRate));
+    check('用户开了静音时：音频仍不归插件管（只有视频被静音）—— 旧写法把 muted 设成 false，这条恒真',
+      audioRate.audioMuted === false && audioRate.videoMuted === true, JSON.stringify(audioRate));
 
     // ---- 进度快照：整个"做不完就放弃"机制的安全阀
     // 静止的媒体 → 快照恒定 → 才允许判"卡住"；推进中的媒体 → 快照变化 → 绝不判卡住
@@ -8872,10 +9130,10 @@ SCENARIOS.push({
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
       'var qs=app._extractQuestions(null);' +
-      // ⚠️ "整批"的大小**不是全卷题数**：多选题从 1.2.9 起由本地作答、不进请求
-      //    （见「非视频整卷的多选本地作答」那条场景），所以这里必须按
-      //    "实际会发给模型的题数"来算，否则断言会跟着实现一起漂。
-      'var asked=qs.filter(function(q){return q.type!=="multiple";}).length;' +
+      // ⚠️ 这里**不再**按「多选不进请求」扣题数（那是 1.2.9 的旧口径，README §6 #49 已反转：
+      //    多选默认就问模型，本地只是补填）。假模型的截断条件是"这条 prompt 里有 ≥3 行题"，
+      //    行数就是发出去的题数，所以前提直接按全卷题数算 —— 与下面注释里"批的形状"一致。
+      'var asked=qs.length;' +
       'return {total:qs.length,asked:asked};})()'
     );
     check('装配：本卷实际要问模型的题数 ≥ 3（这样"整批"才会触发退化）',
@@ -8956,16 +9214,16 @@ SCENARIOS.push({
     await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
-    // ⚠️ "整批"的大小不是全卷题数：多选题由本地作答、不进请求（见第 21 条场景），
-    //    所以按"实际会发给模型的题数"来数，否则断言会跟着实现一起漂。
+    // ⚠️ 以前这里按「多选不进请求」扣掉多选题数（1.2.9 旧口径，README §6 #49 已反转）。
+    //    现在多选照样进请求，发出去的题数就是全卷题数，扣了反而和假模型的行对不上。
     var setup = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
       'var qs=app._extractQuestions(null);' +
-      'return {total:qs.length,asked:qs.filter(function(q){return q.type!=="multiple";}).length};})()'
+      'return {total:qs.length};})()'
     );
-    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.asked >= 1, JSON.stringify(setup));
+    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.total >= 1, JSON.stringify(setup));
 
     // 假模型改成"一行一个 JSON 值"（每行正好一题的答案）——
     // 升级前解析器的贪婪匹配会把多行从第一个 `[` 抓到最后一个 `]`，
@@ -9023,15 +9281,15 @@ SCENARIOS.push({
     await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
 
-    // ⚠️ 同第 33 条：整批大小按"实际会发给模型的题数"算（多选不进请求）
+    // ⚠️ 同上一条：多选题也进请求，发出去的题数就是全卷题数（旧口径「多选不进请求」已作废）
     var setup = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizCurrentQuestions=null;' +
       'var qs=app._extractQuestions(null);' +
-      'return {total:qs.length,asked:qs.filter(function(q){return q.type!=="multiple";}).length};})()'
+      'return {total:qs.length};})()'
     );
-    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.asked >= 1, JSON.stringify(setup));
+    check('装配：本卷要问模型的题数 ≥ 1', setup && setup.total >= 1, JSON.stringify(setup));
 
     // 假模型用 `|||` 把每题的答案串成一条（现场原样）：
     // 升级前：贪婪 `[...]` 匹配跨段拼出来不是合法 JSON → 判失败 → 一道题都答不上。
@@ -9115,12 +9373,12 @@ SCENARIOS.push({
 /**
  * ---- 36. 多选答案被"摊平"时也要能重新分段（视频弹题那条路） ----
  *
- * ⚠️ 这一条**原来挂在章节测验页（/quiz）上**，1.2.9 起必须换到弹题页：
- *    非视频整卷的多选已经改成"本地作答、不进请求"（见第 21 条场景），
- *    那条路上**再也不可能**出现"模型把多选答案摊平成一串"的形状了。
- *    留在原地的话，测的会是一条永远不会发生的退化 —— 绿的，但守的东西没了。
+ * ⚠️ 这一条**原来挂在章节测验页（/quiz）上**，当时搬过来的理由是"整卷的多选改成本地作答、
+ *    不进请求了"（1.2.9 旧口径）。那句话已经被 README §6 #49 推翻 —— 整卷的多选照样问模型，
+ *    摊平形状**两条路都会出现**。
+ *    但这条**不搬回去也不删**：弹题和整卷是两套填题代码（`80-popup-quiz.js` / `75-quiz-dom.js`），
+ *    `resegmentFlatAnswers` 在弹题这条链上坏掉时，整卷那条断言不会报警。
  *
- * 还活着的场景：视频里的多选弹题（答错就不让继续播，不能乱答）仍然交给模型。
  * 现场实测形状：一道多选回成 `["A","C"]`（**2 项对 1 题**）。
  * 升级前这一批长度不符 → 整批丢弃 → 弹题一个选项都点不上 → 反复重试直到放弃，
  * 视频也就卡在这里播不下去。
@@ -9169,7 +9427,7 @@ SCENARIOS.push({
 
     var prompt = ctx.mock.requests.length > before
       ? ctx.mock.requests[ctx.mock.requests.length - 1].prompt : '';
-    check('弹题这条路的提示词里**有**多选题（本地化没波及到它）',
+    check('弹题这条路的提示词里**有**多选题（弹题自己拼提示词，不走整卷那套）',
       /\d+\|m\|/.test(prompt), prompt.slice(0, 140));
 
     var filled = await ctx.client.evaluate(
@@ -9310,10 +9568,11 @@ SCENARIOS.push({
       'for(var i=0;i<ins.length;i++){if(ins[i].checked)checked.push(ins[i].value);}' +
       'return {value:e?e.value:null,checked:checked.sort().join("")};})()'
     );
-    check('多选答案形状合法（≥1 项、字母不越界）',
-      !!multi && /^[A-D]+$/.test(multi.value || ''), JSON.stringify(multi));
+    check('多选填的就是**模型给的那一份**（A,C）—— 不是本地猜的组合' +
+      '（旧的宽松正则等于没断：本地兜底随便凑一组也是 A-D 字母串）',
+      !!multi && multi.value === 'AC', JSON.stringify(multi));
     check('答案确实被勾到了选项上（隐藏域与勾选态一致，不是只写了个字段）',
-      !!multi && multi.checked === multi.value, JSON.stringify(multi));
+      !!multi && multi.checked === 'AC', JSON.stringify(multi));
 
     // 模型那条路没被影响：单选还是"问出来的"A
     var a1001 = await ctx.client.evaluate('document.getElementById("answer1001").value');
@@ -10391,22 +10650,33 @@ SCENARIOS.push({
 
     // 「命中了却被吃掉」要说清死在哪一道：旧日志只有 matchedSelectors + inputs，
     // 于是"容器全部被过滤"到底指不可见、嵌套去重还是解析返回 null，现场判不了。
+    //
+    // ⚠️ 写法换过一版：旧探针从 `dropStages` 里**挑 filtered 最大的那条**再断它
+    //   `matched > 0` —— 那是拿被测字段筛出条目、再断这个字段，`matched > 0` 由筛选条件
+    //   自己保证，永远红不了；真坏了（比如四格全 0 或死在 deduped）也只有一句"best 为 null"。
+    //   现在按**选择器名**直接取那一格，四格逐一钉：种下去的是"不可见且无文本"，
+    //   就必须落在 `filtered`，`deduped` / `unparsable` 得是 0。
+    var ghostSel = 'div[class*="question"]';
     var drop = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var ghost=document.createElement("div");ghost.className="questionGhostBoard";' +
       'ghost.style.display="none";document.body.appendChild(ghost);' +
       'var rep=app._diagnoseQuestionScan(document);' +
       'var stages=rep.dropStages||{};' +
-      'var keys=Object.keys(stages);var best=null;' +
-      'keys.forEach(function(k){var s=stages[k];if(s&&s.matched>0&&(!best||s.filtered>best.filtered))best=s;});' +
+      'var s=stages[' + JSON.stringify(ghostSel) + ']||null;' +
       'ghost.remove();' +
-      'return {keys:keys.length,best:best,containers:rep.containers,hint:String(rep.hint||"").slice(0,24)};})()'
+      'return {stage:s,keys:Object.keys(stages).join(","),containers:rep.containers,' +
+      'hint:String(rep.hint||"").slice(0,60)};})()'
     );
-    check('0 题诊断现在带 dropStages：能指出题形节点死在哪一道过滤（filtered/deduped/unparsable）',
-      drop && drop.keys > 0 && drop.best && drop.best.matched > 0 && drop.best.filtered === drop.best.matched,
+    check('0 题诊断按选择器给出四格：种下的不可见节点死在 filtered，不是 deduped / unparsable',
+      !!drop && !!drop.stage && drop.stage.matched >= 1 &&
+      drop.stage.filtered === drop.stage.matched &&
+      drop.stage.deduped === 0 && drop.stage.unparsable === 0,
       JSON.stringify(drop));
-    check('容器确实一个都没留下（否则这条取证是空测）',
-      drop && drop.containers === 0, JSON.stringify(drop));
+    check('容器确实一个都没留下（否则这条取证压根走不到 dropStages 那一支）',
+      drop && drop.containers === 0, JSON.stringify(drop && drop.containers));
+    check('hint 指得住：命中却被吃掉时那句要指向 dropStages（现场只有这一行会被当结论读）',
+      !!drop && drop.hint.indexOf('dropStages') !== -1, drop && drop.hint);
   }
 });
 
@@ -10630,9 +10900,13 @@ SCENARIOS.push({
       '  skipped:skipped,nextCalls:window.__nextCalls||0,skipMeta:skipMeta,flat:flat,' +
       '  seen:got.length});},400);});})()'
     );
+    // ⚠️ `containers` 这里**必须是 ≥1，不是 0**（实测 2）—— 本夹具是「有题形容器、但抠不出题」
+    //   那一族，而 `dropStages` 只在 `!report.containers` 时才计算（`src/page/30-log.js:273`）。
+    //   所以这一族的取证走 hint（下面那条 delay skip 断言钉它），"命中却被吃掉 → filtered"
+    //   那一支由 /submit-key 场景按选择器名钉着。两条渠道互斥，别把它们并成一条。
     check('11-A：真实夹具的页面级诊断给出 sig（qTotal 含第 15 条那族、answer 含 radio），不再是只有日志',
-      out && out.sig === true && out.qTotal >= 1 && out.answer >= 1 &&
-      typeof out.containers === 'number' && typeof out.drop === 'string',
+      out && out.sig === true && out.qTotal >= 1 && out.answer >= 1 && out.containers >= 1 &&
+      typeof out.drop === 'string',
       JSON.stringify(out && { qTotal: out.qTotal, answer: out.answer, containers: out.containers, drop: out.drop }));
     check('11-A：这个形状把延时窗口武装（armed=true、窗口 ≤12 秒）且**当刻不再宣称整节完成**',
       out && out.armed === true && out.doneWhileHeld === false &&
@@ -10640,7 +10914,7 @@ SCENARIOS.push({
       JSON.stringify(out && { armed: out.armed, doneWhileHeld: out.doneWhileHeld, untilDelta: out.untilDelta }));
     check('11-A：delay skip 那条带 `src:"quiz-scan"` 与 containers —— 与「帧被拒」那条分得开',
       out && !!out.delay && out.delay.src === 'quiz-scan' && out.delay.qTotal >= 1 &&
-      out.delay.answer >= 1 && typeof out.delay.containers === 'number',
+      out.delay.answer >= 1 && out.delay.containers >= 1,
       JSON.stringify(out && out.delay));
     check('成本封顶：窗口已武装时**不再重复全页诊断**（calls 不涨，返回 null）',
       out && out.sigHeld === null && out.cHeld === out.callsAfterArm,
@@ -11685,6 +11959,29 @@ SCENARIOS.push({
       (s0.aria === 'true' || s0.aria === 'false'), JSON.stringify(s0));
 
     var wasOn = s0.on === true;
+
+    // 哨兵法（原来这条断的是「其它开关是 number / boolean」—— 那是**出厂默认**的形状，
+    // 整张补丁被后台拒掉时它照样绿，等于什么都没守）。
+    // 做法：先把存储里另一个键钉成 41，再只改**界面上**那个控件为 17（不派发 change，
+    // 所以它自己不会触发保存），然后真鼠标点开关。弹窗发的是**一整张补丁**，
+    // 存储要是没变成 17，就说明这张补丁整体被拒 —— 正是同学机器上那道墙的形状。
+    var READ_REVIEW = 'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'res(((r&&r.config)||{}).randomAnswerReviewSec);});})';
+    await ctx.client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{};c.randomAnswerReviewSec=41;' +
+      'chrome.storage.local.set({config:c},function(){res(true);});});})');
+    await ctx.client.evaluate(
+      '(function(){var el=document.getElementById("randomAnswerReviewSec");' +
+      'if(!el) return false; el.value="17"; return true;})()');
+    var reviewDom = await ctx.client.evaluate(
+      'String((document.getElementById("randomAnswerReviewSec")||{}).value)');
+    var reviewBefore = await ctx.client.evaluate(READ_REVIEW);
+    check('前提：哨兵只写在界面上（17），存储里还是钉进去的旧值（41）—— ' +
+      '两边不同，才分得开「补丁落盘」与「本来就存过了」',
+      reviewDom === '17' && reviewBefore === 41,
+      'dom=' + JSON.stringify(reviewDom) + ' storage=' + JSON.stringify(reviewBefore));
+
     await ctx.client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: s0.x, y: s0.y, button: 'left', buttons: 1, clickCount: 1 });
     await ctx.client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: s0.x, y: s0.y, button: 'left', buttons: 0, clickCount: 1 });
     await sleep(900);   // 保存是 await 的：失败会 rollback 界面并弹「保存被拒」
@@ -11703,9 +12000,8 @@ SCENARIOS.push({
       /已自动保存/.test(toast) && !/被拒|无法保存|不合法/.test(toast), toast.slice(0, 120));
     check('存储里落的是那一族真值（on / auto，不是布尔）',
       !!stored && stored.slow === String(wasOn ? 'auto' : 'on'), JSON.stringify(stored));
-    check('同一次保存里的其它开关一起落盘（整张补丁没被连坐）',
-      !!stored && typeof stored.reviewSec === 'number' && typeof stored.rate === 'number' &&
-      typeof stored.muted === 'boolean', JSON.stringify(stored));
+    check('同一次保存里的**其它控件的值一起落盘**（哨兵 17 进了存储 = 整张补丁没被连坐拒掉）',
+      !!stored && stored.reviewSec === 17, JSON.stringify(stored));
 
     var logHit = await ctx.client.evaluate(
       'new Promise(function(res){chrome.storage.local.get("runtimeLogs",function(r){' +
@@ -11773,6 +12069,687 @@ SCENARIOS.push({
       'Object.prototype.hasOwnProperty.call(window._xxtApp.configs,"apiConnectionError")');
     check('apiConnectionError 留在扩展侧，不投影给页面（页面读不到才不会被页面脚本读到）',
       inPage === false, JSON.stringify({ inPage: inPage }));
+  }
+});
+
+/** ---- 54. 页面内验证码弹窗：刷不动要停手，而不是「3 发付费识别 → 刷新 → 再来 3 发」（批次 36-A / 36-C）
+ * 批次 14-A 只修了**整页**验证码那面墙；弹窗形态这条路（`_handleCaptchaDialog`）一直还是
+ * 「内存里数到 3 就 `location.reload()`」，而那一次刷新恰好把内存里的数清掉 ——
+ * 于是模型看不懂图、或压根没配视觉模型时，这条链路是**每 3 发付费识别刷一次页、永远刷不完**。
+ *
+ * 同一轮还查出旁边一处更安静的：这些预算的读写全包在 `try { } catch { 当没账 }` 里，
+ * 而这台浏览器存不住 sessionStorage（无痕 / 禁用本站 Cookie / 嵌套页的第三方存储限制）
+ * 时抛的正是这个异常 —— 于是「安全阀没装」与「还没花过钱」在代码里同形。
+ */
+SCENARIOS.push({
+  name: '页面内验证码弹窗刷不动会停手，不再无限刷',
+  path: '/captcha-dialog',
+  run: async function (ctx) {
+    /**
+     * ⚠️ 批次 37 复验时抓到的竞态（全量跑红、定向跑绿）：
+     * page.js 一注入，夹具的 setup 还没落地，它自己的心跳就已经拿**真桥**去识别这个弹窗了 ——
+     * 连错 3 次走 `_captchaReload()` → 真的 `location.reload()`，把整个 window 换掉。
+     * 于是 setup 里 `window._xxtApp` 是 undefined，报出来的是
+     * `Cannot set properties of undefined (setting '_captchaFailCount')`，
+     * 看着像夹具坏了，其实是**页面在夹具之前自己刷了一次**。
+     *
+     * 所以「停车」必须做成**轮询**、而且排在最前面：`_xxtApp` 一出现就
+     *   - park 住 `_captchaBusy`（`_handleCaptchaDialog` 第一行就 return，连识别都不发），
+     *   - 停 tick、拆掉心跳 worker，
+     *   - 把刷新换成计数桩（计数记 sessionStorage —— 它要活得过那一次刷新）。
+     * `parks` / `prereloads` 两本账都记 sessionStorage：parks>1 说明中途真刷过一次，
+     * prereloads>0 说明刷新发生在桩子落地之前。
+     */
+    var parkExpr = '(function(){' +
+      'var a=window._xxtApp;if(!a)return false;' +
+      'var PK="omitone:captcha-dialog-parks",PR="omitone:captcha-dialog-prereloads";' +
+      'function bump(k){try{sessionStorage.setItem(k,String((Number(sessionStorage.getItem(k))||0)+1));}catch(e){}}' +
+      'bump(PK);' +
+      'try{a._clearTickLoop();}catch(e){}' +
+      'try{if(a._bgWorker){a._bgWorker.postMessage({op:"stop"});a._bgWorker.terminate();a._bgWorker=null;}}catch(e){}' +
+      'a._captchaBusy=true;' +
+      // ⚠️ 停车要**连入口一起挡**：光把 `_captchaBusy` 置 true，护不住"已经在飞的那一发"，
+      //   更护不住停车之后新起的一轮 —— 现场实测（2026-11-13 全量跑）就是这一族：
+      //   定向跑快、全量跑慢，慢出来的那 1 发把 `prereloads` 顶成 1。
+      //   所以这里把 `_checkCaptchaDialog` 包成「盲」的（`__pkBlind` 为真时返回 null），
+      //   `_handleCaptchaDialog` / `_backgroundCaptchaTick` 找不到弹窗就一条请求都发不出去；
+      //   它由 setup **同步**解开（同一个 evaluate 里先解盲再算 detect），不给宏任务留缝。
+      'if(!window.__pkBlind){window.__pkBlind=true;' +
+      '  var origCheck=a._checkCaptchaDialog;' +
+      '  a._checkCaptchaDialog=function(){return window.__pkBlind?null:origCheck.call(a,arguments[0]);};}' +
+      'if(!window.__pkOrig)window.__pkOrig=a._reloadCaptchaDialogPage;' +
+      'a._reloadCaptchaDialogPage=function(){bump(PR);};' +
+      'return true;})()';
+    var parked = await waitFor(ctx.client, parkExpr, 10000);
+    await new Promise(function (r) { setTimeout(r, 900); });
+
+    await waitFor(ctx.client,
+      '(function(){var i=document.getElementById("imgVerCode");return !!(i&&i.complete&&i.naturalWidth>0);})()', 8000);
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      // 旧夹具在这里没有兜底：`_xxtApp` 一空，抛出来就是那句看不懂的
+      // `Cannot set properties of undefined` —— 让它把话说清楚
+            'if(!app)return JSON.stringify({missingApp:true});' +
+      // ⚠️ 解盲之前先**自证盲真的罩住了**：`blindBefore` 必须是 0（停车期间 `_checkCaptchaDialog`
+      //   被包成返回 null），`blindAfter` 必须是 1（解盲后同一个方法又认得出弹窗了 —— 弹窗就在那儿）。
+      //   没有这两下，「停车」这个前置就是个只写不读的标志位：包失败了后面照样全绿。
+      //   解盲与挂假桥在同一个同步块里完成，中间不会有宏任务插进来让停车又漏一发出去。
+      'var blindBefore=(function(){try{return app._checkCaptchaDialog()?1:0;}catch(e){return -1;}})();' +
+      'window.__pkBlind=false;' +
+      // 解盲后这一次必须**绕过 `_checkCaptchaDialog` 自带的 1500ms 防抖**（它返回缓存的
+      // `_captchaLastResult`，而停车期间那份缓存可能正好是 null —— 不清就会把"盲掉了"误报成"没盲掉"）。
+      'app._captchaLastCheckAt=0;app._captchaLastResult=null;' +
+      'var blindAfter=(function(){try{return app._checkCaptchaDialog()?1:0;}catch(e){return -1;}})();' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      // ⚠️ 光停 tick loop 不够：page.js 启动时另开了一个 Web Worker 心跳（1500ms），
+      //   页面隐藏时它直接调 `_backgroundCaptchaTick` → `_handleCaptchaDialog`，
+      //   走的是**真桥**（此时假桥还没挂上），于是 `enableCaptcha` 一开着，
+      //   在这段 setup 落地前就已经白烧 1~2 发，`_captchaFailCount` 带着脏值进来。
+      //   定向跑快、全量跑慢 —— 差的就是这几发，「第 1 轮刷页」会被挪到第 2 步。
+      'try{if(app._bgWorker){app._bgWorker.postMessage({op:"stop"});app._bgWorker.terminate();app._bgWorker=null;}}catch(e){}' +
+      'app._captchaFailCount=0;app._captchaAttempts=0;' +
+      'var KEY="omitone:captcha-dialog-budget";' +
+      'var w={llm:0,fetch:0,reloads:0,got:[],replyFail:true};' +
+      'window.__dlg=w;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});' +
+      // 付费的那一步换成假桥：识别失败=每一发都是白花钱；成功=能走「过了」那一条
+      'w.on=function(e){var m=e.data;if(!m||m.source!=="xxt_app")return;' +
+      '  if(m.type==="llm_captcha"){w.llm++;window.postMessage({source:"xxt_bridge",type:"llm_response",id:m.id,' +
+      '    data:w.replyFail?{success:false,error:"测试里故意识别失败"}:{success:true,data:"QXKS"}},"*");}' +
+      '  else if(m.type==="fetch_image"){w.fetch++;window.postMessage({source:"xxt_bridge",type:"llm_response",id:m.id,' +
+      '    data:{success:false,error:"测试里不放行取图"}},"*");}};' +
+      'window.addEventListener("message",w.on,true);' +
+      'w.seed=function(rounds,pauseUntil){var a=window._xxtApp;' +
+      'if(!a)throw new Error("夹具：这一步 page.js 不在这页上（这一页在夹具之前被真刷新过一次）");' +
+      // 轮次边界：账本清零时，内存里的「本轮第几发」也必须一起清零，
+      // 否则上一段剩的 1~2 发会把下一段的刷新时点整体前移（全量跑就是这么飘的）
+      'a._captchaFailCount=0;a._captchaAttempts=0;' +
+      'try{sessionStorage.setItem(KEY,JSON.stringify(' +
+      '  {rounds:rounds,pauseUntil:pauseUntil,href:String(location.href||"")}));}catch(e){}};' +
+      'w.read=function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}")||{};}catch(e){return {};}};' +
+      'w.metas=function(name){return w.got.filter(function(m){return m.message===name;})' +
+      '  .map(function(m){return m.meta||{};});};' +
+      // 刷新单独桩掉：真刷一次整页会打断后面几步，而这个动作本身就是被测的东西
+      'w.orig={reload:window.__pkOrig||app._reloadCaptchaDialogPage,open:app._captchaStillOpen};' +
+      'app._reloadCaptchaDialogPage=function(){w.reloads++;};' +
+      'w.step=function(fail,solve){var a=window._xxtApp;' +
+      'if(!a)throw new Error("夹具：这一步 page.js 不在这页上（这一页在夹具之后又被真刷新过一次）");' +
+      // ⚠️ 共享状态自己钉：整轮共用同一个 app，前一个场景写过 enableCaptcha:false 就会短路，
+      //   表现是"一条请求都没发"，看着像夹具坏了
+      '  a.configs=Object.assign({},a.configs,{enableCaptcha:true});' +
+      '  a._captchaLastCheckAt=0;a._captchaLastResult=null;a._captchaBusy=false;' +
+      '  w.replyFail=fail!=="ok";' +
+      '  a._captchaStillOpen=solve==="gone"?function(){return false;}:w.orig.open;' +
+      '  var c=a._checkCaptchaDialog();' +
+      '  if(!c)return Promise.resolve("no-dialog");' +
+      '  return a._handleCaptchaDialog(c).then(function(){return "done";});};' +
+      'w.counts=function(){var a=window._xxtApp;return JSON.stringify({' +
+      '  seen:w.got.length,llm:w.llm,fetch:w.fetch,reloads:w.reloads,budget:w.read(),' +
+      '  active:!!a._captchaActive,fails:Number(a._captchaFailCount)||0,' +
+      '  stop:w.metas("captcha dialog unsolved after 3 page reloads, stop spending"),' +
+      '  pause:w.metas("captcha dialog paused, waiting for a human"),' +
+      '  resume:w.metas("captcha dialog resume retry").length,' +
+      '  reloadLog:w.metas("captcha unsolved, reload page").length});};' +
+      'return JSON.stringify({ready:!!w.orig.reload&&!!app._readCaptchaDialogBudget&&!!app._readSessionLedger,' +
+      '  blind:[blindBefore,blindAfter],' +
+      '  detect:!!app._checkCaptchaDialog(),parked:!!window.__pkOrig,' +
+      '  parks:(function(){try{return Number(sessionStorage.getItem("omitone:captcha-dialog-parks"))||0;}catch(e){return -1;}})(),' +
+      '  prereloads:(function(){try{return Number(sessionStorage.getItem("omitone:captcha-dialog-prereloads"))||0;}catch(e){return -1;}})()});})()'
+    );
+    var setupObj = JSON.parse(setup);
+
+    check('36-A 夹具前置：page.js 一注入就被停车（连识别入口一起盲掉），setup 落地时它还在、这一页也没被真刷新过' +
+      '（旧写法在这里撞上 _xxtApp 为空，报出来是看不懂的 TypeError，看着像夹具坏了）；' +
+      'prereloads 只当证据不当闸 —— 停车前那发已经在飞的识别救不掉，刷不了真页、也不影响后面每一步自己 seed',
+      parked === true && setupObj.missingApp !== true && setupObj.parked === true &&
+      Number(setupObj.parks) === 1 &&
+      Array.isArray(setupObj.blind) && Number(setupObj.blind[0]) === 0 && Number(setupObj.blind[1]) === 1,
+      JSON.stringify({ parked: parked, setup: setupObj }));
+
+    async function failTimes(n) {
+      for (var i = 0; i < n; i++) {
+        await ctx.client.evaluate('(async function(){return await window.__dlg.step("fail");})()');
+      }
+      await new Promise(function (r) { setTimeout(r, 350); });
+      return JSON.parse(await ctx.client.evaluate('window.__dlg.counts()'));
+    }
+
+    await ctx.client.evaluate('(function(){window.__dlg.seed(0,0);return "ok";})()');
+    var r1 = await failTimes(3);
+    var r2 = await failTimes(3);
+    var r3 = await failTimes(3);
+    var r4 = await failTimes(3);
+    // 冷却到点：再给一轮机会（停手不是永久放弃）
+    await ctx.client.evaluate('(function(){window.__dlg.seed(3,Date.now()-1000);return "ok";})()');
+    var before5 = JSON.parse(await ctx.client.evaluate('window.__dlg.counts()'));
+    await ctx.client.evaluate('(async function(){return await window.__dlg.step("fail");})()');
+    await new Promise(function (r) { setTimeout(r, 350); });
+    var r5 = JSON.parse(await ctx.client.evaluate('window.__dlg.counts()'));
+
+    check('36-A 夹具自证：弹窗真的抓得到、假桥真的收到识别请求、刷新的桩也真的挂上了' +
+      '（否则下面几条是空测）',
+      setupObj.ready === true && setupObj.detect === true && r1.llm === 3 && r1.fetch === 0 &&
+      r1.reloads === 1 && r1.seen > 0,
+      JSON.stringify({ setup: setupObj, r1: { llm: r1.llm, fetch: r1.fetch, reloads: r1.reloads, seen: r1.seen } }));
+
+    check('36-A：第 1 轮 3 次识别失败刷一次页，且**这一轮记在账上**（旧写法刷了但没记，一刷全归零）',
+      r1.budget && Number(r1.budget.rounds) === 1 && r1.reloads === 1 && r1.fails === 0,
+      JSON.stringify({ budget: r1.budget, reloads: r1.reloads, fails: r1.fails }));
+
+    check('36-A：第 2 轮同样只刷一次，账上累计 2 轮',
+      Number(r2.budget && r2.budget.rounds) === 2 && r2.reloads === 2 && r2.llm === 6,
+      JSON.stringify({ budget: r2.budget, reloads: r2.reloads, llm: r2.llm }));
+
+    check('36-A：第 3 轮到顶就**不再刷新**，落一个暂停时间，并说清下一步怎么办（亲手输一次 + 换会看图的模型）',
+      r3.reloads === 2 && Number(r3.budget && r3.budget.pauseUntil) > Date.now() - 60000 &&
+      r3.stop.length === 1 && /亲手/.test(String((r3.stop[0] || {}).hint || '')) &&
+      /验证码识别模型|看图/.test(String((r3.stop[0] || {}).hint || '')),
+      JSON.stringify({ reloads: r3.reloads, budget: r3.budget, stop: r3.stop[0] }));
+
+    check('36-A：停手期间一条付费请求都不发、也不刷页（旧写法这里是**无限**的）',
+      r4.llm === r3.llm && r4.fetch === r3.fetch && r4.reloads === r3.reloads &&
+      r4.pause.length === 1 && r4.active === false,
+      JSON.stringify({ dLlm: r4.llm - r3.llm, dFetch: r4.fetch - r3.fetch, dReloads: r4.reloads - r3.reloads,
+        pause: r4.pause.length, active: r4.active }));
+
+    check('36-A：那条停手提醒只发一次（每 250ms 一轮的 tick 不许把日志淹掉）',
+      r4.pause.length === 1 && Number(r4.pause[0] && r4.pause[0].resumeInMs) > 0,
+      JSON.stringify({ pause: r4.pause }));
+
+    check('36-A：冷却到点确实再给一轮（请求重新开始发、旧账同时清零）',
+      r5.llm === before5.llm + 1 && r5.resume === 1 && Number(r5.budget && r5.budget.rounds) === 0,
+      JSON.stringify({ before: before5.llm, after: r5.llm, resume: r5.resume, budget: r5.budget }));
+
+    // ---- 过了 / 弹窗自己消失了，账都要清零（不许把上一面墙的账带到下一面墙）----
+    // ⚠️ `emitRuntimeLog` 走 postMessage，**异步送达**：动作和读日志必须分两次 evaluate，
+    // 中间等一拍。写在同一次里读到的是空数组，看着像"该发的没发"。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,w=window.__dlg;' +
+      'if(!app)throw new Error("夹具：这一段跑的时候 page.js 不在这页上（这一页被真刷新过一次）");' +
+      'w.seed(2,0);w.replyFail=false;' +
+      'app.configs=Object.assign({},app.configs,{enableCaptcha:true});' +
+      'app._captchaLastCheckAt=0;app._captchaLastResult=null;app._captchaBusy=false;' +
+      'app._captchaStillOpen=function(){return false;};' +
+      'var c=app._checkCaptchaDialog();' +
+      'window.__dlgSolved=c?1:0;' +
+      'if(c){app._handleCaptchaDialog(c);}return "ok";})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 6000); });
+    var solved = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__dlg;return JSON.stringify({budget:w.read(),' +
+      'detected:window.__dlgSolved,solvedCount:w.metas("captcha solved, continue").length,' +
+      'reloads:w.reloads});})()'
+    ));
+    check('36-A：真过了就把刷新轮次清零（停手这笔账不许带进下一面墙）',
+      solved.detected === 1 && Number(solved.budget && solved.budget.rounds) === 0 &&
+      !Number(solved.budget && solved.budget.pauseUntil) && solved.solvedCount >= 1,
+      JSON.stringify(solved));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,w=window.__dlg;var box=document.querySelector(".layui-layer");' +
+      'window.__heal={hadBox:!!box};if(!box)return "none";' +
+      // ① 弹窗真的不在了、而且已经离开 60 秒以上 —— 条件愈合，账要清零
+      'box.style.display="none";app._captchaLastCheckAt=0;app._captchaLastResult=null;' +
+      'w.seed(2,Date.now()+30*60000);app._captchaDialogAbsentAt=Date.now()-61000;' +
+      'app._checkCaptchaDialog();' +
+      'window.__heal.after={budget:w.read(),pauseLogged:!!app._captchaDialogPauseLogged};' +
+      // ② 反向对照：只离开 11 秒不清账（检测抖一下就清账等于把安全阀拆了）
+      'w.seed(2,Date.now()+30*60000);app._captchaDialogAbsentAt=Date.now()-11000;' +
+      'app._captchaLastCheckAt=0;app._captchaLastResult=null;app._checkCaptchaDialog();' +
+      'window.__heal.short={rounds:Number(w.read().rounds)||0};' +
+      'box.style.display="";app._captchaDialogAbsentAt=0;return "ok";})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var heal = JSON.parse(await ctx.client.evaluate(
+      '(function(){var h=window.__heal;h.gone=window.__dlg.metas("captcha dialog gone, retry budget reset").length;' +
+      'return JSON.stringify(h);})()'
+    ));
+    check('36-A：弹窗被人手动关掉（连续 60 秒不再检测到）就把账清零，连停手提醒的开关一起复位',
+      heal.hadBox === true && heal.after && Number(heal.after.budget.rounds) === 0 &&
+      !Number(heal.after.budget.pauseUntil) && heal.gone === 1 && heal.after.pauseLogged === false,
+      JSON.stringify({ after: heal.after, gone: heal.gone }));
+    check('36-A 反向对照：只漏看 11 秒不清账（检测抖动不许把安全阀拆了）',
+      heal.short && heal.short.rounds === 2 && heal.gone === 1, JSON.stringify(heal.short));
+
+    // ---- 36-C：这台浏览器存不住 sessionStorage 时，账退回内存 + 只提醒一次 ----
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,w=window.__dlg;' +
+      'if(!app)throw new Error("夹具：这一段跑的时候 page.js 不在这页上（这一页被真刷新过一次）");' +
+      'window.__noStore={};' +
+      'window.__noStore.realSet=Object.getOwnPropertyDescriptor(sessionStorage,"setItem");' +
+      'app._ledgerSessionOk=null;app._ledgerMemory=null;' +
+      'var patched=false;' +
+      'try{Object.defineProperty(sessionStorage,"setItem",{configurable:true,writable:true,value:function(){' +
+      '  throw new Error("测试里这台浏览器存不住会话数据");}});patched=true;}catch(e){}' +
+      'window.__noStore.patched=patched;' +
+      'if(!patched)return "no-patch";' +
+      'app._writeCaptchaDialogBudget(1,0,String(location.href));' +
+      'window.__noStore.back1=app._readCaptchaDialogBudget();' +
+      'app._writeCaptchaDialogBudget(2,Date.now()+60000,String(location.href));' +
+      'window.__noStore.back2=app._readCaptchaDialogBudget();' +
+      'var m=window.__noStore.realSet;' +
+      'if(m){Object.defineProperty(sessionStorage,"setItem",m);}' +
+      'app._ledgerSessionOk=null;app._ledgerMemory=null;w.seed(0,0);return "ok";})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var noStore = JSON.parse(await ctx.client.evaluate(
+      '(function(){var n=window.__noStore;' +
+      'var warn=n.patched?window.__dlg.metas("session storage unavailable, retry budgets reset on every reload"):[];' +
+      'n.warn=warn.length;n.hint=String((warn[0]||{}).hint||"").slice(0,40);return JSON.stringify(n);})()'
+    ));
+    check('36-C：sessionStorage 抛异常时账**不是**当成没账 —— 退回本页内存，安全阀仍然挡住同一份文档里的死循环',
+      noStore.patched === true && Number(noStore.back1 && noStore.back1.rounds) === 1 &&
+      Number(noStore.back2 && noStore.back2.rounds) === 2 && Number(noStore.back2 && noStore.back2.pauseUntil) > 0,
+      JSON.stringify(noStore));
+    check('36-C：这台浏览器存不住会话数据要**说一次**（只一条，别刷屏），并给出可执行的出路',
+      noStore.warn === 1 && /无痕|禁用了本站|存储/.test(String(noStore.hint || '')),
+      JSON.stringify({ warn: noStore.warn, hint: noStore.hint }));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,w=window.__dlg;' +
+      'if(!app)throw new Error("夹具：这一段跑的时候 page.js 不在这页上（这一页被真刷新过一次）");' +
+      'try{window.removeEventListener("message",w.on,true);}catch(e){}' +
+      'app._reloadCaptchaDialogPage=w.orig.reload;app._captchaStillOpen=w.orig.open;' +
+      'app._captchaDialogAbsentAt=0;app._captchaDialogPauseLogged=false;' +
+      'try{sessionStorage.removeItem("omitone:captcha-dialog-budget");}catch(e){}' +
+      'return "cleaned";})()'
+    );
+  }
+});
+
+/** ---- 55. 每章看图预算：刷新不会重新发满（批次 36-B）
+ * `_takeVisionBudget` 自己的注释写着「无论配置写错、页面版式异常、还是某道题反复触发，
+ * 都不可能无限发请求」。可它记在页面内存里，而刷课链路里跳章 / 验证码墙 / 跨域中间页
+ * 那几步是**自己刷新自己** —— 一刷就归零，"每章 N 次"实际是"每刷一次再来 N 次"。
+ */
+SCENARIOS.push({
+  name: '每章看图预算刷新后不会重新发满',
+  path: '/blank',
+  run: async function (ctx) {
+    // ⚠️ `emitRuntimeLog` 是 postMessage 异步送达，所以「花了没」与「日志几条」
+    // 分两次 evaluate 读：写在同一次里读到的日志恒空，会把"该响的没响"读成"没响"。
+    var g = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}' +
+      'window.__vSeen=[];' +
+      'var on=function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log"&&/vision budget/.test(String(m.message||"")))' +
+      '    window.__vSeen.push(m);};' +
+      'window.addEventListener("message",on);' +
+      'var KEY="omitone:vision-budget",out={};' +
+      // 上一场景可能在这同一个标签页里留过账（sessionStorage 跨导航还在）—— 自己钉死起点
+      'try{sessionStorage.removeItem(KEY);}catch(e){}' +
+      'window.removeEventListener("message",on);window.__vSeen=[];window.addEventListener("message",on);' +
+      // 这里原来还读了一次「起点账本是不是空」—— 上面刚 removeItem，它恒真，删了；
+      // 读写是否真的通，由下面那条 used=2 负责（写不上去就读不到 2）。
+      // 这一路的入口配置由场景自己钉死，别依赖上一个场景留下的状态
+      'app.configs=Object.assign({},app.configs,{visionEnabled:true,visionBudgetPerChapter:2});' +
+      'out.g1=app._takeVisionBudget("ch-36a");' +
+      'out.g2=app._takeVisionBudget("ch-36a");' +
+      // 账落在 sessionStorage 才算数：这一条就是"刷新之后还剩什么"
+      'out.rawUsed=(function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}").used;}catch(e){return -1;}})();' +
+      'out.g3=app._takeVisionBudget("ch-36a");' +
+      // 内存里"提醒过没有"那个键抹掉（等价于页面刚刷新完）：额度仍然不许放行
+      'app._visionBudgetWarnedKey="";' +
+      'out.g4=app._takeVisionBudget("ch-36a");' +
+      'out.otherChapter=app._takeVisionBudget("ch-36b");' +
+      'out.rawChapter=(function(){try{return JSON.parse(sessionStorage.getItem(KEY)||"{}").chapter;}catch(e){return "";}})();' +
+      // 额度写成 0：一进门就该停，而不是先把图抓完再发现没预算
+      'app.configs=Object.assign({},app.configs,{visionBudgetPerChapter:0});' +
+      'out.zero=app._takeVisionBudget("ch-36c");' +
+      'app.configs=Object.assign({},app.configs,{visionEnabled:false});' +
+      'out.disabled=app._takeVisionBudget("ch-36d");' +
+      'try{sessionStorage.removeItem(KEY);}catch(e){}' +
+      'return JSON.stringify(out);})()'
+    ));
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var warn = JSON.parse(await ctx.client.evaluate(
+      '(function(){var s=window.__vSeen||[];' +
+      'return JSON.stringify({total:s.length,' +
+      '  used:s.map(function(m){return (m.meta||{}).used;}),' +
+      '  chapters:s.map(function(m){return (m.meta||{}).chapter;})});})()'
+    ));
+
+    check('36-B 夹具自证：这一页真的读得到也写得上 sessionStorage（读不到就是这台浏览器存不住，' +
+      '那要按 36-C 那条路看，不是夹具坏了）—— 账本里能读到 used=2 就是读写都通的证据',
+      Number(g.rawUsed) === 2, JSON.stringify({ rawUsed: g.rawUsed }));
+    check('36-B：每章 2 次就是 2 次 —— 第 3 次拒绝并写 warn（旧写法在这里已经被刷新归零）',
+      g.g1 === true && g.g2 === true && g.g3 === false, JSON.stringify(g));
+    check('36-B：耗尽那条日志带 used 与章号，且判据只看账本 —— 把内存里"提醒过没有"的键抹掉' +
+      '（等价于刷新过一次）也不放行',
+      warn.used[0] === 2 && warn.chapters[0] === 'ch-36a' && g.g4 === false &&
+      warn.chapters[1] === 'ch-36a',
+      JSON.stringify({ warn: warn, g4: g.g4 }));
+    check('36-B：换章即重置的语义仍在（新章第一次照样放行，账本跟着换成新章）',
+      g.otherChapter === true && g.rawChapter === 'ch-36b',
+      JSON.stringify({ otherChapter: g.otherChapter, rawChapter: g.rawChapter }));
+    check('36-B：额度 0 与关了看图都要当场停手（0 额度仍要写一条 warn，不能静默）',
+      g.zero === false && g.disabled === false && warn.total === 3 && warn.chapters[2] === 'ch-36c',
+      JSON.stringify({ zero: g.zero, disabled: g.disabled, chapters: warn.chapters }));
+  }
+});
+
+/** ---- 42. 批次 37：视频等待日志把整份证据窗挤空 ----
+ *
+ * 为什么要这一条（2026-11-13，用户一句「现场我就一直挂着了，遇到问题你就去看看」当场撞上的）：
+ *   刷课几分钟后再去读日志，**读到的只剩视频心跳** —— SW 那份 runtimeLogs 是 200 条环形，
+ *   实测里面 **196 条**是同一句「media pending, delay completion」（每秒两条），
+ *   整个窗口只装得下约 100 秒。
+ *   也就是说「等一会儿再去看这一节为什么跳过」这件事**结构上做不到**：
+ *   出事那一刻的证据在用户开口之前就已经被挤没了。
+ *   根因不在「30 秒一条」这道闸（它是批次 22 为同一件事加的），在**签名怎么算**：
+ *   `mediaSig` 把 `reason` 拼了进去，而 reason 是**调用方标识**
+ *   （'completion-check' 来自完成判定、'ocs-runner-active-job' 来自 OCS 循环），
+ *   同一个视频每秒被这两个调用方一先一后地问 → 签名每秒翻一次 →
+ *   `mediaSig !== this._mediaWaitLogSig` 恒真 → 那道 30 秒闸被自己的签名完全绕过。
+ *   旧注释里写的本意（「200 条环十几分钟就被刷满」）恰恰是被它自己破掉的那件事。
+ *
+ * 夹具要点：reason 必须**交替**喂两个值 —— 只喂一个的话旧写法也只出一条，
+ * 这条断言就变成空测（AGENTS §5「夹具要长得像现场」）。
+ */
+SCENARIOS.push({
+  name: '视频播放中的等待日志不许把证据窗挤空',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true, get: function(){ return this.__ct || 0; }, set: function(v){ this.__ct = v; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
+      '    configurable: true, get: function(){ return this.__rate == null ? 1 : this.__rate; },',
+      '    set: function(v){ this.__rate = v; } });',
+      '  HTMLMediaElement.prototype.play = function(){ this.__played = (this.__played||0)+1; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){};',
+      '  window.__b37Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b37Patched === true');
+    check('37 夹具自证：媒体元素原型打桩生效（不依赖真实编解码器）', patched === true, String(patched));
+
+    function countMediaLogs() {
+      return ctx.client.evaluate(
+        '(function(){var n=0;(window.__b37i||[]).forEach(function(m){' +
+        'if(String(m.message||"").indexOf("media pending, delay completion")===0)n++;});' +
+        'window.__b37i=[];return n;})()');
+    }
+
+    // 阶段一：两个调用方标识**交替**喂 8 次，播放状态一直是 playing
+    var phase1 = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      'window.__b37i=[];' +
+      'if(!window.__b37Bound){window.__b37Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b37i.push(m);});}' +
+      'var v=document.getElementById("omitone-video");' +
+      'if(!v) return {noVideo:true};' +
+      'app._videoEl=v; app._activeMediaJobPending=true; app._isPlaying=true;' +
+      'app._mediaWaitLogAt=0; app._mediaWaitLogSig="";' +
+      'var seq=[];' +
+      'for(var i=0;i<8;i++) seq.push(i%2?"ocs-runner-active-job":"completion-check");' +
+      'var pending=seq.map(function(r){ try { return app._isActiveMediaPending(r)===true; } catch(e){ return "ERR "+e.message; } });' +
+      'return {noVideo:false,pending:pending,sig:String(app._mediaWaitLogSig)};' +
+      '})()'
+    );
+    // 日志走 postMessage，异步送达 —— 不等一拍就读，"没发"和"没等到"长得一模一样
+    await sleep(400);
+    var after1 = await ctx.client.evaluate(
+      '(function(){var out={count:0,first:null};' +
+      '(window.__b37i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media pending, delay completion")===0){' +
+      '    out.count++; if(!out.first) out.first=m; }});' +
+      'window.__b37i=[]; return out;})()'
+    );
+    check('37-A 夹具自证：8 次交替调用**每次都真的走进等待分支**（返回 true；' +
+      '否则"只出一条"很可能是压根没走到那一步的空测）',
+      !!phase1 && phase1.noVideo === false && Array.isArray(phase1.pending) &&
+      phase1.pending.length === 8 && phase1.pending.every(function (p) { return p === true; }),
+      JSON.stringify(phase1 && phase1.pending));
+    check('37-A：两个调用方交替问同一个视频，8 次只出 **1 条**' +
+      '（旧写法这里是 8 条：reason 进了签名 → 签名每秒翻 → 30 秒闸被自己绕过 → ' +
+      '现场 200 条环里 196 条是这一句，证据窗只剩约 100 秒）',
+      !!after1 && after1.count === 1, JSON.stringify(after1 && after1.count));
+    check('37-A：签名里**不许有调用方标识**（reason 一进去，两个调用方交替就能把 30 秒闸绕开）' +
+      '—— 断"不含 reason"，不钉它具体拼成什么字（拼法是实现细节，改写法不该让这条变红）',
+      !!phase1 && phase1.sig.length > 0 &&
+      phase1.sig.indexOf('completion-check') === -1 && phase1.sig.indexOf('ocs-runner') === -1,
+      JSON.stringify(phase1 && phase1.sig));
+    check('37-A：留下的那一条仍带得出证据（reason / currentTime / duration 一个不许少）',
+      !!after1 && !!after1.first && !!after1.first.meta &&
+      /^(completion-check|ocs-runner-active-job)$/.test(String(after1.first.meta.reason)) &&
+      after1.first.meta.duration === 100 && typeof after1.first.meta.currentTime === 'number',
+      JSON.stringify(after1 && after1.first));
+
+    // 阶段二：心跳那一维不能丢 —— 31 秒前发过，现在还得再出一条
+    var phase2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._mediaWaitLogAt=Date.now()-31000;' +
+      'var pending=app._isActiveMediaPending("completion-check")===true;' +
+      'pending=app._isActiveMediaPending("ocs-runner-active-job")===true&&pending;' +
+      'return {pending:pending};})()'
+    );
+    await sleep(400);
+    var after2 = await countMediaLogs();
+    check('37-A：30 秒心跳本身留着（隔 31 秒再问，两个调用方交替也只补一条 —— ' +
+      '"看得出 currentTime 在走"的那只手不能砍）',
+      !!phase2 && phase2.pending === true && after2 === 1,
+      JSON.stringify({ phase2: phase2, count: after2 }));
+
+    // 阶段三：播放状态**真**变了要立刻说（这才是签名该保留的那一维）
+    var phase3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=app._videoEl;' +
+      'app._mediaWaitLogAt=Date.now()-6000;' +
+      'Object.defineProperty(v,"paused",{configurable:true,get:function(){return true;}});' +
+      'var first=app._isActiveMediaPending("completion-check")===true;' +
+      'return {first:first,sig:String(app._mediaWaitLogSig)};})()'
+    );
+    await sleep(400);
+    var after3 = await countMediaLogs();
+    check('37-A：暂停↔播放这种**真状态变化**不等 30 秒就出（这里离上一条只过了 6 秒），' +
+      '且签名确实跟着状态变了（只断"与播放时不同"，不钉字面）',
+      !!phase3 && phase3.first === true && phase3.sig !== phase1.sig && after3 === 1,
+      JSON.stringify({ phase3: phase3, playingSig: phase1 && phase1.sig, count: after3 }));
+
+    // 阶段四：状态来回抖（播放器自己抖 paused/playing）不许把闸再冲开
+    var phase4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=app._videoEl;' +
+      'app._mediaWaitLogAt=Date.now()-1000;' +
+      'function setPaused(p){Object.defineProperty(v,"paused",{configurable:true,get:function(){return p;}});}' +
+      'for(var i=0;i<6;i++){ setPaused(i%2===0); app._isActiveMediaPending(i%2?"ocs-runner-active-job":"completion-check"); }' +
+      'return {stillPending:app._activeMediaJobPending===true,waitLogAt:app._mediaWaitLogAt};})()'
+    );
+    await sleep(400);
+    var after4 = await countMediaLogs();
+    check('37-A：状态 1 秒内来回抖 6 次**一条都不出**（5 秒下限；' +
+      '没有这道下限，"真状态变化立刻出"会变成新的刷屏源）',
+      !!phase4 && phase4.stillPending === true && after4 === 0,
+      JSON.stringify({ phase4: phase4, count: after4 }));
+
+    // 阶段五：**收摊/换视频之后**，下一段等待必须立刻重新开口（批次 36 家族的"跨复位不静默"）
+    //   签名这道闸只在「同一段等待里」有意义。`_clearMediaPendingState()`（换任务点、
+    //   完成判定放行、守卫收摊都走它）把 `_mediaWaitLogAt` 归零，于是新的一段即使
+    //   播放状态**一模一样**也要出第一条 —— 否则就是"换了个视频，日志却继续沉默 30 秒"，
+    //   用户看到的又是一个什么都不说的插件。
+    //   ⚠️ 这一段特意让两次的签名相同（都按 playing 播）：不同签名会走"状态变了"那一支，
+    //   那样测不到复位（测了也是白测）。
+    var phase5a = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'if(!v) return {noVideo:true};' +
+      'Object.defineProperty(v,"paused",{configurable:true,get:function(){return false;}});' +
+      'app._videoEl=v; app._activeMediaJobPending=true; app._isPlaying=true;' +
+      'app._mediaWaitLogAt=0; app._mediaWaitLogSig="";' +
+      'var p=app._isActiveMediaPending("completion-check")===true;' +
+      'return {pending:p,sig:String(app._mediaWaitLogSig)};})()'
+    );
+    await sleep(400);
+    var after5a = await countMediaLogs();
+    var phase5b = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'if(!v) return {noVideo:true};' +
+      // ① 收摊：这一段等待结束（内部把 _mediaWaitLogAt 归零、状态全清）
+      'app._clearMediaPendingState("e2e-phase5");' +
+      'var cleared={at:app._mediaWaitLogAt,pending:app._activeMediaJobPending};' +
+      // ② 马上开下一段：播放状态与上一段**完全同形**（都是 playing）
+      'app._videoEl=v; app._activeMediaJobPending=true; app._isPlaying=true;' +
+      'var p=app._isActiveMediaPending("completion-check")===true;' +
+      'return {cleared:cleared,pending:p,sig:String(app._mediaWaitLogSig)};})()'
+    );
+    await sleep(400);
+    var after5b = await countMediaLogs();
+    check('37-A 阶段五前提：收摊前那一段确实出过一条（否则后面"又出了一条"没有对照）',
+      !!phase5a && phase5a.pending === true && after5a === 1,
+      JSON.stringify({ phase5a: phase5a, count: after5a }));
+    check('37-A：换一段等待（收摊后重新开播）**即使播放状态一模一样也立刻出一条**' +
+      '—— 靠的是复位把 at 归零；签名相同还不说话，就是"插件又变成哑巴 30 秒"',
+      !!phase5b && phase5b.cleared && phase5b.cleared.at === 0 &&
+      phase5b.pending === true && phase5b.sig === phase5a.sig && after5b === 1,
+      JSON.stringify({ phase5b: phase5b, count: after5b, sigA: phase5a && phase5a.sig }));
+  }
+});
+
+/** ---- 55. 视频「从来没有过源」不再把整节永远占住（批次 40）
+ * 现场（2026-11-13，用户挂着刷课，CDP 9334）：某一节拿到的是
+ * `<video id="video_html5_api" class="vjs-tech">`，`readyState 0 / networkState 3`（NETWORK_NO_SOURCE）
+ * `/ duration null / currentTime 0 / ended false`，源地址在 `src` 上但播放器一次都没挂上 ——
+ * `media.ended` 永远是 false，`_isActiveMediaPending` 因此恒真，整节停摆 **12 分钟**，
+ * 一条答题都没发出去，日志里 guard 时间戳每秒刷新（= 一直在重试，但永不放手）。
+ *
+ * 修法口径：**有界**放手。窗口对齐 `documentSkipTimeoutMs`（和 62-tasks-run.js 等文档资源同一把尺），
+ * 到点清 pending 并落一条 warn（AGENTS §2.7：跳过用户的任务点必须可见、可恢复）；
+ * 源一旦真的挂上，计数立刻清零 —— 正常慢首帧不受影响。
+ *
+ * 夹具要点（AGENTS §5「夹具要长得像现场」）：形状必须自己钉住 `readyState 0 + duration 拿不到 +
+ * networkState 3 + ended false` 这四样，并且**自证走到了新分支**（不是 `!media` 那一支、也不是 `ended` 那一支），
+ * 否则「放手了」和「压根没占住」同形。
+ */
+SCENARIOS.push({
+  name: '视频一直没有源时不再永远占住这一节',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 四把可调的"形状旋钮"默认就是现场那副死样子；阶段四把它们翻成"源挂上了"。
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return window.__b40Ready == null ? 0 : window.__b40Ready; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b40Dur == null ? NaN : window.__b40Dur; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "networkState",',
+      '    { configurable: true, get: function(){ return window.__b40Net == null ? 3 : window.__b40Net; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", { configurable: true, get: function(){ return 0; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return false; } });',
+      '  HTMLMediaElement.prototype.play = function(){ this.__played = (this.__played||0)+1; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){};',
+      '  window.__b40Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b40Patched === true');
+    check('40 夹具自证：媒体原型打桩生效，且形状就是现场那副死样子' +
+      '（readyState 0 / networkState 3 / 拿不到 duration / ended false —— 少一样，下面的"放手"就是空测）',
+      patched === true, String(patched));
+
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");' +
+      'window.__b40i=[];' +
+      'if(!window.__b40Bound){window.__b40Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b40i.push(m);});}' +
+      'var found=null;try{found=app._getVideoEl();}catch(e){found=null;}' +
+      'function num(x){try{return Number(x);}catch(e){return -1;}}' +
+      'return {hasEl:!!v,found:!!found,' +
+      '  ready:found?num(found.readyState):-1,net:found?num(found.networkState):-1,' +
+      '  durOk:found?(num(found.duration)>0):true,ended:found?!!found.ended:null};})()'
+    );
+    check('40 夹具自证：这一节的视频元素真的抓得到，而且四把旋钮在页面上读出来就是死的' +
+      '（打桩生效 ≠ 判据读得到；这条钉的是后者）',
+      !!shape && shape.hasEl === true && shape.found === true && shape.ready === 0 &&
+      shape.net === 3 && shape.durOk === false && shape.ended === false,
+      JSON.stringify(shape));
+
+    var arm = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app.configs=Object.assign({},app.configs,{documentSkipTimeoutMs:1000});' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaNoSourceSince=0;app._mediaWaitLogAt=0;window.__b40i=[];' +
+      'var p1=app._isActiveMediaPending("completion-check")===true;' +
+      'var armed=Number(app._mediaNoSourceSince)||0;' +
+      'var p2=app._isActiveMediaPending("ocs-runner-active-job")===true;' +
+      'return {p1:p1,p2:p2,armed:armed,armedFresh:armed>0&&(Date.now()-armed)<5000,' +
+      '  stillPending:!!app._activeMediaJobPending,holds:app._videoEl===v};})()'
+    );
+    await sleep(400);
+    var earlyLogs = await ctx.client.evaluate(
+      '(function(){var n=0;(window.__b40i||[]).forEach(function(m){' +
+      'if(String(m.message||"").indexOf("media has no source")===0)n++;});' +
+      'window.__b40i=[];return n;})()');
+    check('40-A：窗口没到就**仍然占住**（首帧慢的视频不能被当成死源扔掉）—— ' +
+      '第 1 次调用把计时武装起来，第 2 次还在窗口内，两条都返回 true、一条放手日志都不许有',
+      !!arm && arm.p1 === true && arm.p2 === true && arm.armedFresh === true &&
+      arm.stillPending === true && arm.holds === true && earlyLogs === 0,
+      JSON.stringify({ arm: arm, earlyLogs: earlyLogs }));
+
+    var release = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaNoSourceSince=Date.now()-1500;window.__b40i=[];' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'return {p:p,pending:!!app._activeMediaJobPending,playing:!!app._isPlaying,' +
+      '  el:!!app._videoEl,counter:Number(app._mediaNoSourceSince)||0};})()'
+    );
+    await sleep(400);
+    var relLog = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null,levels:{}};' +
+      '(window.__b40i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media has no source")===0){' +
+      '    out.n++;out.levels[m.level]=(out.levels[m.level]||0)+1;if(!out.first)out.first=m;}});' +
+      'window.__b40i=[];return out;})()');
+    check('40-A：超过窗口就**有界放手**（返回 false、pending / 播放标志 / 抓着的元素全部复位，' +
+      '计时清零好让下一轮重新计 —— 不清就等于这一节此后永远不再试）',
+      !!release && release.p === false && release.pending === false &&
+      release.playing === false && release.el === false && release.counter === 0,
+      JSON.stringify(release));
+    check('40-A：放手必须留话（warn 一条，带 readyState / networkState / heldMs / src 和 reason）—— ' +
+      '静默跳过用户的任务点是这个项目不许的事，而且"视频没播成"和"这节压根没视频"得分得开',
+      !!relLog && relLog.n === 1 && relLog.levels && relLog.levels.warn === 1 &&
+      !!relLog.first && !!relLog.first.meta &&
+      Number(relLog.first.meta.readyState) === 0 && Number(relLog.first.meta.networkState) === 3 &&
+      Number(relLog.first.meta.heldMs) >= 1500 && typeof relLog.first.meta.src === 'string' &&
+      String(relLog.first.meta.reason) === 'completion-check',
+      JSON.stringify(relLog && relLog.first));
+
+    var recover = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b40Ready=4;window.__b40Dur=100;window.__b40Net=1;' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaNoSourceSince=Date.now()-99999;' +
+      'var p=app._isActiveMediaPending("completion-check")===true;' +
+      'var counter=Number(app._mediaNoSourceSince)||0;' +
+      'window.__b40Ready=0;window.__b40Dur=NaN;window.__b40Net=3;' +
+      'return {p:p,counter:counter,pending:!!app._activeMediaJobPending};})()'
+    );
+    check('40-A 可恢复：源真的挂上了（readyState 4 + 拿到 duration）就把计时清零、继续占住 —— ' +
+      '哪怕它之前已经"该放手"了 99 秒；这条钉的是"有界"不是"到点就放弃"',
+      !!recover && recover.p === true && recover.counter === 0 && recover.pending === true,
+      JSON.stringify(recover));
+
+    var repeat = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._videoEl=null;app._activeMediaJobPending=false;app._isPlaying=false;' +
+      'app._mediaNoSourceSince=Date.now()-99999;' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'return {p:p,counter:Number(app._mediaNoSourceSince)||0};})()'
+    );
+    check('40-A：放手后这个判据**自己不会重新占住** —— 要再占住必须有人重新登记媒体任务；' +
+      '计时留着旧值也不许让它直接返回 true（否则只是把停摆往后推 120 秒，这一节照样翻不过去）',
+      !!repeat && repeat.p === false, JSON.stringify(repeat));
   }
 });
 

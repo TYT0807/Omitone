@@ -8,16 +8,17 @@
  *
  * 验证码弹窗的检测、取图与识别；整页验证码模式的处理
  *
- * 本段的方法（23 个）：
+ * 本段的方法（27 个）：
  *   _checkCaptchaDialog、_captureCaptchaImage、_waitForCaptchaImage、_cleanCaptchaCode、
  *   _fillCaptchaInput、_clickCaptchaSubmit、_captchaSubmitStrategies、
  *   _captchaStillOpen、_captchaSuccessShown、_submitCaptchaWithStrategies、
- *   _clickCaptchaConfirm、_captchaReload、
+ *   _clickCaptchaConfirm、_captchaReload、_reloadCaptchaDialogPage、
  *   _recognizeCaptchaImage、_detectStandaloneCaptcha、
  *   _computeStandaloneCaptchaPage、_isStandaloneCaptchaPage、
  *   _runStandaloneCaptchaMode、_reloadForStandaloneCaptcha、
  *   _readStandaloneCaptchaBudget、_writeStandaloneCaptchaBudget、
  *   _afterStandaloneCaptchaSolved、
+ *   _readCaptchaDialogBudget、_writeCaptchaDialogBudget、_healCaptchaDialogBudget、
  *   _handleCaptchaDialog、_backgroundCaptchaTick
  * ========================================================================== */
 // @omitone-part-header-end
@@ -142,6 +143,7 @@
 
       this._captchaLastResult = result;
       this._captchaActive = !!result;
+      this._healCaptchaDialogBudget(!!result);
       // ⚠️ 这里原本有一句 `if (!result) this._diagnoseBlockedPage();`。
       // 那个函数在早前一轮「清理调试代码」时被删掉了，但调用点留了下来，
       // 于是「没有验证码」这个最常见的情况下每次都会抛 TypeError ——
@@ -514,9 +516,87 @@
       return false;
     },
 
+    /**
+     * 页面内验证码弹窗实在过不去时刷新整页 —— 批次 36-A：**刷新要记账**。
+     *
+     * 旧写法只刷不记：`location.reload()` 顺手把 `_captchaAttempts` / `_captchaFailCount`
+     * 一起抹掉（它们是页面内存里的字段），于是「3 次识别 → 刷新 → 再来 3 次」是**真的无限**，
+     * 而每一次识别都是一发看图请求、真金白银。挂着刷课整夜跑就在这条路上烧钱。
+     *
+     * 口径与 14-A（整页验证码墙）、批次 35（跨域中间页）完全一致：
+     * 账记 sessionStorage、换页（href 变了）即作废、连续 3 轮刷新仍过不去就停手 30 分钟；
+     * 停手期间连识别都不发（见 `_handleCaptchaDialog` 顶上那道闸）。
+     */
     _captchaReload: function () {
-      emitRuntimeLog('warn', 'captcha unsolved, reload page', {});
+      var budget = this._readCaptchaDialogBudget();
+      var rounds = budget.rounds + 1;
+      if (rounds >= 3) {
+        this._writeCaptchaDialogBudget(rounds, Date.now() + 30 * 60000, String(location.href || ''));
+        emitRuntimeLog('error', 'captcha dialog unsolved after 3 page reloads, stop spending', {
+          rounds: rounds,
+          resumeInMs: 30 * 60000,
+          hint: '不再刷新这一页，也不再发识别请求 —— 每一次刷新与识别都是再花一次钱、再向站方要一张新验证码。' +
+            '这一步请你在页面上亲手输入一次验证码；想让插件自己过，去设置里把「验证码识别模型」填成会看图的模型' +
+            '（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+        });
+        return;
+      }
+      this._writeCaptchaDialogBudget(rounds, 0, String(location.href || ''));
+      emitRuntimeLog('warn', 'captcha unsolved, reload page', { round: rounds });
+      this._reloadCaptchaDialogPage();
+    },
+
+
+    // 刷新单独抽出来，是为了让测试能盯住这个动作本身（与 `_reloadForStandaloneCaptcha` 同一条理由）：
+    // 真刷一次整页会打断后面几步，而这一步是这一面墙上最贵的动作。
+    _reloadCaptchaDialogPage: function () {
       try { window.location.reload(); } catch (e) {}
+    },
+
+
+    // 批次 36-A：弹窗验证码的刷新轮次。`rounds` = 这一页已经为同一个弹窗刷新过几次。
+    // `href` 变了 = 换了另一面墙（翻章 / 换课），旧账作废。
+    _readCaptchaDialogBudget: function () {
+      var obj = this._readSessionLedger('omitone:captcha-dialog-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { rounds: 0, pauseUntil: 0 };
+      return { rounds: Number(obj.rounds) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
+    },
+
+
+    _writeCaptchaDialogBudget: function (rounds, pauseUntil, href) {
+      this._writeSessionLedger('omitone:captcha-dialog-budget',
+        { rounds: rounds || 0, pauseUntil: pauseUntil || 0, href: href || '' });
+    },
+
+
+    /**
+     * 弹窗**真的消失了**（连续 60 秒没再检测到）就把账清零 —— 条件愈合必须清账。
+     *
+     * 不清的话：这一章曾经卡住过一次，下一章新弹的验证码（同一份文档里 href 可能没变）
+     * 会被 30 分钟前的旧账直接跳过，用户只会看到"这个验证码它不理"。
+     * 要"连续"而不是"一次没看到"：检测有抖动，一次漏看就把账清掉等于把安全阀拆了
+     * （清完下一次调用就又能发一发付费识别）。
+     */
+    _healCaptchaDialogBudget: function (present) {
+      if (present) {
+        this._captchaDialogAbsentAt = 0;
+        return;
+      }
+      var now = Date.now();
+      if (!this._captchaDialogAbsentAt) {
+        this._captchaDialogAbsentAt = now;
+        return;
+      }
+      if (now - this._captchaDialogAbsentAt < 60000) return;
+      this._captchaDialogAbsentAt = now;
+      var budget = this._readCaptchaDialogBudget();
+      if (!budget.rounds && !budget.pauseUntil) return;
+      this._writeCaptchaDialogBudget(0, 0, '');
+      this._captchaDialogPauseLogged = false;
+      emitRuntimeLog('info', 'captcha dialog gone, retry budget reset', {
+        hadRounds: budget.rounds,
+        hadPauseUntil: budget.pauseUntil
+      });
     },
 
 
@@ -742,24 +822,19 @@
     // 旧写法每轮末尾无条件 `location.reload()`，页面一刷内存计数全清零 ——
     // 于是「4 次识别 → 刷新 → 再来 4 次」是**真的无限**（实测在真页面上整夜跑）。
     // sessionStorage 活得比刷新久、又比标签页短，正好是这里要的粒度。
+    // 批次 36：读写都走 `_readSessionLedger` / `_writeSessionLedger` ——
+    // 那对底座管住了「sessionStorage 抛异常被当成没账」这个漏洞（见 20-dom.js）。
+    // `href` 变了 = 换了一面墙，旧账作废。
     _readStandaloneCaptchaBudget: function () {
-      try {
-        var raw = sessionStorage.getItem('omitone:standalone-captcha-budget');
-        if (!raw) return { cycles: 0, pauseUntil: 0 };
-        var obj = JSON.parse(raw) || {};
-        if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
-        return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
-      } catch (e) {
-        return { cycles: 0, pauseUntil: 0 };
-      }
+      var obj = this._readSessionLedger('omitone:standalone-captcha-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
+      return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
     },
 
 
     _writeStandaloneCaptchaBudget: function (cycles, pauseUntil, href) {
-      try {
-        sessionStorage.setItem('omitone:standalone-captcha-budget',
-          JSON.stringify({ cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' }));
-      } catch (e) {}
+      this._writeSessionLedger('omitone:standalone-captcha-budget',
+        { cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' });
     },
 
 
@@ -784,6 +859,36 @@
 
     _handleCaptchaDialog: async function (captcha) {
       if (this._captchaBusy) return;
+      /**
+       * 批次 36-A：停手期间连取图、连识别都不发 —— 与整页验证码墙同一道闸。
+       *
+       * 位置必须在 `_captchaBusy = true` 之后、**任何动作之前**：下面每一个分支都是
+       * 一发付费请求（`fetch_image` / `llm_captcha`），而旧写法只靠内存里的
+       * attempts / failCount 计数 —— 那两个字段会被它自己触发的 `location.reload()`
+       * 抹掉，所以那道"3 次就收手"的闸实际上从来没关上过。
+       */
+      var dialogBudget = this._readCaptchaDialogBudget();
+      var nowMs = Date.now();
+      if (dialogBudget.pauseUntil > nowMs) {
+        if (!this._captchaDialogPauseLogged) {
+          this._captchaDialogPauseLogged = true;
+          emitRuntimeLog('warn', 'captcha dialog paused, waiting for a human', {
+            rounds: dialogBudget.rounds,
+            resumeInMs: dialogBudget.pauseUntil - nowMs,
+            hint: '同一个弹窗已经刷新过 3 轮还是过不去，插件停手 30 分钟：' +
+              '这期间不再发识别请求、也不再刷新页面。请亲手在页面上输入一次验证码'
+          });
+        }
+        // 别让「插件自己不想再试」继续冒充「页面正被验证码挡着」：
+        // `_captchaActive` 是媒体播放与任务点推进的闸门，人手动关掉弹窗后它不该还亮着
+        this._captchaActive = false;
+        return;
+      }
+      if (dialogBudget.pauseUntil) {
+        this._writeCaptchaDialogBudget(0, 0, '');
+        this._captchaDialogPauseLogged = false;
+        emitRuntimeLog('info', 'captcha dialog resume retry', { hint: '冷却到点，再给一轮机会' });
+      }
       this._captchaBusy = true;
       var attempts = this._captchaAttempts || 0;
       try {
@@ -860,6 +965,8 @@
             this._captchaAttempts = 0;
             this._captchaFailCount = 0;
             this._captchaActive = false;
+            this._writeCaptchaDialogBudget(0, 0, '');
+            this._captchaDialogPauseLogged = false;
             return;
           }
         }
@@ -870,6 +977,8 @@
           this._captchaAttempts = 0;
           this._captchaFailCount = 0;
           this._captchaActive = false;
+          this._writeCaptchaDialogBudget(0, 0, '');
+          this._captchaDialogPauseLogged = false;
           return;
         }
         this._captchaAttempts = attempts + 1;

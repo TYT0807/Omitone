@@ -71,6 +71,7 @@
 - 「一拨开关就提示『保存被拒：某某的值不合法』，而且**别的设置也一起存不上**」—— 那个开关的取值没登记进插件的配置白名单，而白名单是**整张表一起拒**的，所以一个没登记的键会把所有设置一起锁死；现在三档（自动 / 开 / 关）都登记好了，还加了一道机检：任何一个界面开关只要"点得出去、策略不认"，`npm run check` 会直接报红，不会再等到同学那边才发现
 - 「填空题空着、单选题欠几个、卷子交不出去」，乱选交卷前多了一个**可设置**的检查窗口
 - 「验证码那一页整夜反复刷新、模型账单一直涨、题一道没做」
+- 「验证码弹窗明明过不去，插件还是反复刷这一页、识别费一直涨」—— 每一刷页面，"已经试过几轮"这笔账就被刷新抹掉了，所以永远数不到头。现在这笔账存在**会话**里：同一个弹窗最多刷 **3 轮**，到顶就停手 30 分钟（这期间一条识别请求都不发），日志会写明**请你亲手在页面上输一次**；弹窗过了、或者你手动关掉了，账立刻清零。设置里每章「看图」的额度同理，也不再被一次刷新重新发满
 - 「页面每隔二十来秒自己整页刷新一次，下面的录音 / 音频任务点一直出不来，看着像卡死了」—— 那一页的内容被平台换到了一个插件读不到的地方。现在它先分清是**哪一种**：还是课程站自己的验证页就最多刷 3 次、刷不动停半小时；被换到**别家**（浏览器的拦截 / 代理，或登录掉了）就一次都不刷，直接在日志里告诉你去查哪一处
 - 「刷课页右下角那只小角色拖不动、点她没反应、气泡挤成一长条」
 - 弹窗文字降噪，讨论与投票并进「任务点类型」（折叠分组从 6 个减到 5 个），
@@ -249,7 +250,7 @@
 | 总开关 | **关** | 没明确打开，一张图都不发 |
 | 单题张数 | 2 | 超过就不再看这题的图 |
 | 单图体积 | 400 KB | 超限**直接跳过、不做缩放**（缩放是隐性开销） |
-| 每章次数 | 30 | **用完即停，并且一定写一条日志** |
+| 每章次数 | 30 | **用完即停，并且一定写一条日志**；这一章用掉几次**活得过刷新**（以前记在页面内存里，插件自己刷新一次就重新发满） |
 
 「一定写一条」是刻意的：**静默烧钱是最难接受的失败方式**。每章次数用满后，本章不再发任何看图请求（进入下一章自动重置）。另外，弹窗「查看日志」里现在能看到**每一类请求各花了多少 token**
 （文本 / 验证码 / 看图分开记），不是只记一个总数。
@@ -592,7 +593,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 97 个场景，990 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 101 个场景，1031 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -988,6 +989,9 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | **整节被按住不推进，日志反复刷 `study hold quiz before finish`** | 见 §6 #55。看它带的 `pending:{total:N}`：`N>0` 是真有题没答完（正常等待）；`N:0` 且没有在飞动作时批次 9-C 起会改写成 warn `study quiz hold skipped: nothing pending to wait for` 并继续收尾 —— 这一条还在刷，说明 `_quizInProgress` / `_quizSubmitPending` 卡住了（超 5 分钟会自愈并 warn `quiz in-progress state leaked, reset`）。为什么一道都数不出来，看上一条 `quiz scan found 0 questions` 的 `dropStages` |
 | **一份卷子做了、同一页第二份不做**（`search job: every candidate frame was rejected`） | 批次 9-D 起，`rejects` 里每条带 `sig`：`sig.text` 是帧内正文前 60 字、`sig.qHit` 是各题形选择器命中数、另有 `video` / `answer` / `frames` / `pan`。**空帧**的签名 text 为空且命中全 0；**藏着第二份卷子**的帧会直接把题干文字打出来。判据本身这批没放宽 —— 拿着真实签名再决定下一步（见 §6 #56） |
 | **页面每隔二十来秒自己整页刷新、下面的任务点（录音 / 音频）一直出不来** | 批次 35。这是**主内容帧读不到**那一族：日志里 `main frame is cross-origin` 的 `sameSite` 决定是哪一种 —— `true` = 帧还在课程站自己的另一台机器上（平台的验证 / 反爬中间页），刷新有机会解决，现在一轮最多刷 3 次、刷不动就停 30 分钟（旧写法把"刷过几次"记在页面内存里，而自己那一下刷新正好把它抹掉，于是**永远刷不完**）；`false` = 帧被换成**别家**地址（浏览器的跟踪防范 / 广告拦截扩展 / 网络代理，或登录被顶掉），刷完还是它，现在**一次都不刷**、只把这条建议打在同一行日志里。同一刻的 `study search skipped: main frame document unreadable` 说明「清单认到 N 个任务点、一个帧都没配上」到底是为什么 |
+| **验证码弹窗刷了三轮还过不去，却还在一页页刷、识别费一直涨**（或「每章看图额度像每次都重新发满」） | 批次 36。与上一条同族：**账以前记在页面内存里，而刷新正好把内存抹掉**。现在两本账都在 sessionStorage —— `omitone:captcha-dialog-budget`（`{rounds, pauseUntil, href}`）与 `omitone:vision-budget`（`{chapter, used}`，按章）。日志按顺序读：`captcha unsolved, reload page {round:n}` → 到顶 `captcha dialog unsolved after 3 page reloads, stop spending`（带 `resumeInMs`，hint 说「亲手输一次 + 换会看图的模型」）→ 冷却期每轮只播一条 `captcha dialog paused, waiting for a human`。清账有三处：认对了、`href` 变了、弹窗**连续 60 秒**不再被检测到（`captcha dialog gone, retry budget reset`；只漏看 11 秒不算，检测抖动不许拆安全阀）。若这台浏览器存不住会话数据（无痕 / 禁用本站 Cookie / 嵌套页第三方存储限制），会有一条**只播一次**的 `session storage unavailable, retry budgets reset on every reload`：插件退回本页内存照样限额，但账随刷新清零，这时请手动关掉对应开关 |
+| **某一节的视频从头到尾不动、整节不往下刷，也不报错** | 批次 40。这一族的形状是播放器元素**从来没有挂上源**（`readyState 0 / networkState 3`、拿不到 `duration`、`ended` 永远是 false），而旧的等待判据只在「播完了」那一路收口，于是「媒体还在等」恒真 —— 现场实测整节停摆 12 分钟、日志照常在打（它不是崩溃，恰恰是最看不出来的那一类）。现在这类等待**有界**：最多等 120 秒（和设置里文档等待上限同一把尺 `documentSkipTimeoutMs`），到点放手让这一节继续推进，并落一条 `media has no source, release pending` 的 warn，带 `readyState / networkState / heldMs / src`。看到这条只有两种处理：源地址过期 → 刷新这一页；这一节压根没有能播的视频 → 自己在页面上点一次播放看看 |
+| **日志被同一句 `media pending, delay completion` 刷满，回头查「那一节为什么被跳过」时前面的都没了** | 批次 37。扩展里那份日志是**最近 200 条**的环形缓冲，所以刷屏等于直接缩短证据窗：现场实测 12 分钟 1422 条里 1392 条、最近 200 条里 196 条都是这一句 —— 只留得住约 100 秒。原因是节流的「签名」里混进了**调用方标识**（`reason`），两个调用方交替问同一个视频时签名每秒都变，「签名变了就补一条」这道本意去重的闸被自己绕过。现在签名只剩播放状态（`paused` / `playing`），`reason` 回到日志正文里当证据，另加 **5 秒下限**挡住平台把状态来回抖几格；30 秒心跳照旧 —— 「看得出 `currentTime` 在走」那只手留着 |
 
 > **2026-09 复现：同一条又出现了。** 所以上面那套判据**和真实判分页仍然对不上**。
 > 现在不用猜了 —— `quiz submit wait timeout` 那条日志会把**三道判据各自的结果**打出来
@@ -1045,13 +1049,14 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
 | 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
 | 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
-| 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode` |
+| 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode`；弹窗刷新那一下单独抽成 `_reloadCaptchaDialogPage`（最贵的动作要能被测试盯住），轮次账在 `_readCaptchaDialogBudget` / `_writeCaptchaDialogBudget` / `_healCaptchaDialogBudget` |
 | 讨论任务点 | `src/page/65-discussion.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
 | 弹题（视频内嵌题） | `src/page/80-popup-quiz.js`：`_checkPopupQuiz` / `_handlePopupQuiz` / `_fillPopupAnswer` |
 | 读图（视觉） | `src/page/74-quiz-vision.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
 | 日志与诊断文案 | `src/page/30-log.js`；日志出口 `emitRuntimeLog` 在 `src/page/00-shell-constants.js` |
 | 跨域 iframe 安全访问 | `src/page/20-dom.js`：`_safeDocOf` / `_safeWinDoc` |
 | 主内容帧读不到（整页反复自刷 / 任务点全被跳过） | `src/page/20-dom.js`：`_checkBlockedByCrossOrigin` / `_isFrameSameSiteAsTop` / `_readBlockedReloadBudget`（刷新账在 sessionStorage，键 `omitone:blocked-reload-budget`） |
+| **「刷过几次」这笔账要活过一次刷新**（凡是自己刷自己的重试循环都用它） | `src/page/20-dom.js`：`_sessionLedgerUsable` / `_readSessionLedger` / `_writeSessionLedger` —— 一次**写-读探针**定档（只看写成功不算，有些环境写不报错、读回来是空），存不住就退回本页内存并只播一条 warn。四本账：`omitone:blocked-reload-budget`（批次 35）、`omitone:standalone-captcha-budget`（14-A）、`omitone:captcha-dialog-budget`（批次 36-A，读写封装在 `50-captcha.js`）、`omitone:vision-budget`（批次 36-B，按章，判据在 `74-quiz-vision.js` 的 `_takeVisionBudget`） |
 | 状态字段、配置默认值 | `src/page/10-config-state.js`（**声明式的非方法属性都在这里**；另有约 30 个字段是惰性初始化的，用 `node tools/audit-fields.js` 列全量） |
 | 设置界面 | `popup/popup.js` + `popup/popup.html`（**记得同步 `src/page/00-shell-constants.js` 的 `DEFAULT_CONFIG`**） |
 
@@ -1123,7 +1128,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（299 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步
-npm run e2e      # 真实 Edge 功能交叉检验（97 个场景 / 990 项）
+npm run e2e      # 真实 Edge 功能交叉检验（101 个场景 / 1031 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '9624901ff8';
+var OMITONE_CODE_REV = '91395173cc';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -617,6 +617,19 @@ var OMITONE_CODE_REV = '9624901ff8';
 
     _captchaLastResult: null,
 
+    // 批次 36-A：页面内验证码弹窗的「停手」辅助状态。
+    // 轮次与冷却本身记在 sessionStorage（见 `_readCaptchaDialogBudget`）；
+    // 下面两个只是"弹窗消失了多久"与"这条提醒发过没有"，被刷新抹掉无关紧要。
+    _captchaDialogAbsentAt: 0,
+
+    _captchaDialogPauseLogged: false,
+
+    // 批次 36-C：会话账本底座的可写性探测结果（null = 还没探过）。
+    // 一旦探出「这台浏览器存不住」，账本就退回内存（`_ledgerMemory`）并只提醒一次。
+    _ledgerSessionOk: null,
+
+    _ledgerMemory: null,
+
     _discussionWindow: null,
 
     _discussionOpenedAt: 0,
@@ -704,6 +717,18 @@ var OMITONE_CODE_REV = '9624901ff8';
     _activeDocumentJobDoc: null,
 
     _mediaWaitLogAt: 0,
+
+    // 上一条「media pending, delay completion」发出时的**播放状态**签名（批次 37）。
+    // 只放 paused/playing 这一维，调用方标识（reason）绝不许进来 —— 那会把 30 秒闸绕过去。
+    // 它**不需要**跟着 `_mediaWaitLogAt = 0` 一起清：判据是 `!_mediaWaitLogAt || 超 30 秒 || (签名变了 && 超 5 秒)`，
+    // `_mediaWaitLogAt` 归零那一支排在前面，任何换视频/换章节/收摊的复位点都已经先放行一条了。
+    _mediaWaitLogSig: '',
+
+    // 「手里这个视频**从来没有过源**」是从什么时候开始算的（批次 40，0 = 没有）。
+    // 判据只认 readyState 0 且拿不到 duration 这一族；超过 `documentSkipTimeoutMs` 就放手，
+    // 源一旦挂上（或换成别的视频）立刻清零 —— 所以它必须是**独立字段**，
+    // 不能借 `_mediaWaitLogAt`（那个是日志节流时间戳，会被别的调用方冲开）。
+    _mediaNoSourceSince: 0,
 
     _documentWaitLogAt: 0,
 
@@ -859,6 +884,7 @@ var OMITONE_CODE_REV = '9624901ff8';
       this._activeDocumentJobManaged = false;
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
+      this._mediaNoSourceSince = 0;
       this._documentWaitLogAt = 0;
       this._lastLearningTabSwitchAt = 0;
       this._lastLearningCardKey = '';
@@ -918,10 +944,11 @@ var OMITONE_CODE_REV = '9624901ff8';
     //   省下的那点「模型看图」的钱，会乘以十倍从输入侧漏出去。
     //   所以图片走独立请求，只把结果文字拼进题干。
 
-    // 每章视觉调用计数（进了新章就清零，见 _resetVisionBudget）。
-    _visionUsedInChapter: 0,
-
-    _visionBudgetChapterKey: '',
+    // 「这一章的看图预算已用完」只提醒一次用的键（每道题都刷一条会把日志淹掉）。
+    // ⚠️ 计数本身**不在这里** —— 批次 36-B 起记在 sessionStorage（见 `_readVisionLedger`）：
+    // 记在内存里的话，刷课链路里那几步"自己刷新自己"（跳章 / 验证码墙 / 跨域中间页）
+    // 一刷就归零，「每章最多 N 次」实际变成「每刷一次再来 N 次」。
+    _visionBudgetWarnedKey: '',
 
 
     // ===================== 讨论任务点 =====================
@@ -1448,26 +1475,84 @@ var OMITONE_CODE_REV = '9624901ff8';
     },
 
 
-    // 刷新预算：记在 sessionStorage，理由见 `_checkBlockedByCrossOrigin` 上面那段。
-    // `href` 变了 = 换了一面墙（翻章 / 换课），旧账作废（与 14-A 验证码墙同一个口径）。
-    _readBlockedReloadBudget: function () {
+    /**
+     * 会话账本 —— 「刷新把账一起抹掉」这一族的共用底座（批次 36）。
+     *
+     * 四本账都必须**跨过一次 `location.reload()` 还记得已经花掉几次**：
+     * 跨域刷新（`_readBlockedReloadBudget`）、整页验证码墙（14-A）、
+     * 页面内验证码弹窗（批次 36-A）、每章看图花钱（批次 36-B）。
+     * 记在内存里等于没有账 —— 刷新一清，安全阀就变成「每轮 3 次、无限轮」。
+     *
+     * ⚠️ sessionStorage 自己也可能直接抛（无痕模式、本站 Cookie 被禁、
+     * iframe 的第三方存储限制）。旧写法是 `try { 读 } catch { 当没账 }` ——
+     * 于是「这台浏览器根本存不住」与「这一次还没花过」在代码里同形，
+     * 安全阀恰好在最需要它的浏览器上失效。
+     * 现在改成：先探一次可写性；存不住就退回**本页内存**（跨不了刷新，
+     * 但仍然挡住同一份文档里的死循环），并**只提醒一次**，
+     * 让用户知道这台浏览器上的自动重试上限只能管到本次刷新为止。
+     */
+    _sessionLedgerUsable: function () {
+      if (this._ledgerSessionOk !== null) return this._ledgerSessionOk;
+      var ok = false;
       try {
-        var raw = sessionStorage.getItem('omitone:blocked-reload-budget');
-        if (!raw) return { reloads: 0, resumeAt: 0 };
-        var obj = JSON.parse(raw) || {};
-        if (obj.href && obj.href !== String(location.href || '')) return { reloads: 0, resumeAt: 0 };
-        return { reloads: Number(obj.reloads) || 0, resumeAt: Number(obj.resumeAt) || 0 };
+        sessionStorage.setItem('omitone:__ledger_probe', '1');
+        sessionStorage.removeItem('omitone:__ledger_probe');
+        ok = true;
       } catch (e) {
-        return { reloads: 0, resumeAt: 0 };
+        ok = false;
+      }
+      this._ledgerSessionOk = ok;
+      if (!ok) {
+        if (!this._ledgerMemory) this._ledgerMemory = {};
+        emitRuntimeLog('warn', 'session storage unavailable, retry budgets reset on every reload', {
+          hint: '这台浏览器存不住会话数据（无痕模式 / 禁用了本站 Cookie / 嵌套页面的第三方存储限制）。' +
+            '插件照样会限制自动重试，但**刷新一次账就清零** —— 若页面因此反复刷新，请手动关掉对应开关'
+        });
+      }
+      return ok;
+    },
+
+
+    _readSessionLedger: function (key) {
+      var name = String(key || '');
+      if (!name) return null;
+      if (!this._sessionLedgerUsable()) return (this._ledgerMemory && this._ledgerMemory[name]) || null;
+      try {
+        var raw = sessionStorage.getItem(name);
+        if (!raw) return null;
+        var obj = JSON.parse(raw);
+        return (obj && typeof obj === 'object') ? obj : null;
+      } catch (e) {
+        return null;
       }
     },
 
 
+    _writeSessionLedger: function (key, value) {
+      var name = String(key || '');
+      if (!name) return;
+      var obj = (value && typeof value === 'object') ? value : {};
+      if (!this._sessionLedgerUsable()) {
+        if (!this._ledgerMemory) this._ledgerMemory = {};
+        this._ledgerMemory[name] = obj;
+        return;
+      }
+      try { sessionStorage.setItem(name, JSON.stringify(obj)); } catch (e) {}
+    },
+
+
+    // 刷新预算：记在 sessionStorage，理由见 `_checkBlockedByCrossOrigin` 上面那段。
+    // `href` 变了 = 换了一面墙（翻章 / 换课），旧账作废（与 14-A 验证码墙同一个口径）。
+    _readBlockedReloadBudget: function () {
+      var obj = this._readSessionLedger('omitone:blocked-reload-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { reloads: 0, resumeAt: 0 };
+      return { reloads: Number(obj.reloads) || 0, resumeAt: Number(obj.resumeAt) || 0 };
+    },
+
+
     _writeBlockedReloadBudget: function (reloads, resumeAt, href) {
-      try {
-        sessionStorage.setItem('omitone:blocked-reload-budget',
-          JSON.stringify({ reloads: reloads || 0, resumeAt: resumeAt || 0, href: href || '' }));
-      } catch (e) {}
+      this._writeSessionLedger('omitone:blocked-reload-budget',
+        { reloads: reloads || 0, resumeAt: resumeAt || 0, href: href || '' });
     },
 
 
@@ -1968,6 +2053,7 @@ var OMITONE_CODE_REV = '9624901ff8';
       this._activeDocumentJobManaged = false;
       this._activeDocumentJobDoc = null;
       this._mediaWaitLogAt = 0;
+      this._mediaNoSourceSince = 0;
       this._documentWaitLogAt = 0;
       this._guardLastTime = 0;
       this._guardLastWallTs = 0;
@@ -2029,6 +2115,36 @@ var OMITONE_CODE_REV = '9624901ff8';
         return false;
       }
 
+      // 「拿到元素但源从来没挂上」必须**有界放手**（批次 40）。
+      // 现场实测（2026-11-13，用户挂着刷课，CDP 9334）：这一节的播放器是
+      // `<video id="video_html5_api" class="vjs-tech">`，readyState 0 / networkState 3（NETWORK_NO_SOURCE）
+      // / duration null / currentTime 0 / error 空 / 0×0，`media.ended` 因此**永远是 false** ——
+      // 上面那条分支救不了它，于是 `_activeMediaJobPending` 恒真、整节停摆 12 分钟，
+      // 一条答题都没发出去，日志里 guard 时间戳每秒被刷新一次（= 一直在重试，但永不放手）。
+      // 判据只认「既没有首帧也没有时长」这种**从来没有过源**的形状；窗口对齐
+      // `documentSkipTimeoutMs`（默认 120 秒，62-tasks-run.js 里等文档资源用的就是它），
+      // 正常视频哪怕首帧慢也会在窗口内变成 readyState>0 或拿到 duration，那时清零重新计。
+      // ⚠️ 放手必须留 warn：静默跳过用户的任务点是这个项目不许的事（AGENTS §2.7），
+      //    而且现场证据（readyState/networkState/src）要一起落进日志，
+      //    否则「视频没播成」和「这一节压根没视频」两种情况在日志里长成一个样。
+      var noSourceShape = Number(media.readyState) === 0 && !(Number(media.duration) > 0);
+      if (!noSourceShape) {
+        this._mediaNoSourceSince = 0;
+      } else if (!this._mediaNoSourceSince) {
+        this._mediaNoSourceSince = Date.now();
+      } else if (Date.now() - this._mediaNoSourceSince >= (Number(this.configs.documentSkipTimeoutMs) || 120000)) {
+        var stuckHeldMs = Date.now() - this._mediaNoSourceSince;
+        var stuckSrc = '';
+        try { stuckSrc = String(media.currentSrc || media.src || '').slice(0, 120); } catch (eSrc) {}
+        this._mediaNoSourceSince = 0;
+        emitRuntimeLog('warn', 'media has no source, release pending', {
+          reason: reason || '', readyState: Number(media.readyState),
+          networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc
+        });
+        this._clearMediaPendingState('media-no-source');
+        return false;
+      }
+
       this._activeMediaJobPending = true;
       this._ensurePlaybackRate(media, reason || 'pending');
       if (media.paused) {
@@ -2037,12 +2153,21 @@ var OMITONE_CODE_REV = '9624901ff8';
       }
 
       var now = Date.now();
-      var mediaSig = String(reason || '') + '|' + (media.paused ? 'paused' : 'playing');
-      // ⚠️ 5 秒 → 30 秒，并且**只在理由/播放状态变了**时立刻出：
-      //    这一条每 tick 都发（现场约 5 秒一条），200 条日志环十几分钟就被它刷满，
-      //    而用户来问「为什么这节跳过」时要看的那几条早就被冲掉了。
-      //    心跳本身留着（30 秒一条照样看得出 `currentTime` 在走）。
-      if (!this._mediaWaitLogAt || now - this._mediaWaitLogAt > 30000 || mediaSig !== this._mediaWaitLogSig) {
+      // 签名只放**播放状态**这一维。
+      // ⚠️ reason 绝不能再进签名：reason 是「谁来问的」（'completion-check'、
+      //    'ocs-runner-active-job' 等十几个调用方标识），同一个视频每秒被两个调用方
+      //    一先一后地问，签名就每秒翻一次 —— 下面那道 30 秒闸被自己的签名绕过去。
+      //    现场实测（2026-11-13，用户挂着刷课，CDP 9334 读 SW 那份 runtimeLogs）：
+      //    200 条环形日志里 196 条是这一句，整个窗口只装得下约 100 秒；
+      //    用户来问「刚才那节为什么跳过」时，那一刻的证据早被挤没了 ——
+      //    而这条日志的本意恰恰是「让人看得见进度」，反过来把别的证据全冲掉。
+      //    心跳本身留着（30 秒一条照样看得出 currentTime 在走），reason 仍在 payload 里。
+      //    状态真变了（暂停↔播放）仍然立刻出，但受 5 秒下限约束：
+      //    播放器自己抖动时不许把闸再冲开一次。
+      var mediaSig = media.paused ? 'paused' : 'playing';
+      var sinceWaitLog = now - (Number(this._mediaWaitLogAt) || 0);
+      if (!this._mediaWaitLogAt || sinceWaitLog > 30000
+        || (mediaSig !== this._mediaWaitLogSig && sinceWaitLog > 5000)) {
         this._mediaWaitLogAt = now;
         this._mediaWaitLogSig = mediaSig;
         emitRuntimeLog('info', 'media pending, delay completion', {
@@ -3201,6 +3326,7 @@ var OMITONE_CODE_REV = '9624901ff8';
 
       this._captchaLastResult = result;
       this._captchaActive = !!result;
+      this._healCaptchaDialogBudget(!!result);
       // ⚠️ 这里原本有一句 `if (!result) this._diagnoseBlockedPage();`。
       // 那个函数在早前一轮「清理调试代码」时被删掉了，但调用点留了下来，
       // 于是「没有验证码」这个最常见的情况下每次都会抛 TypeError ——
@@ -3573,9 +3699,87 @@ var OMITONE_CODE_REV = '9624901ff8';
       return false;
     },
 
+    /**
+     * 页面内验证码弹窗实在过不去时刷新整页 —— 批次 36-A：**刷新要记账**。
+     *
+     * 旧写法只刷不记：`location.reload()` 顺手把 `_captchaAttempts` / `_captchaFailCount`
+     * 一起抹掉（它们是页面内存里的字段），于是「3 次识别 → 刷新 → 再来 3 次」是**真的无限**，
+     * 而每一次识别都是一发看图请求、真金白银。挂着刷课整夜跑就在这条路上烧钱。
+     *
+     * 口径与 14-A（整页验证码墙）、批次 35（跨域中间页）完全一致：
+     * 账记 sessionStorage、换页（href 变了）即作废、连续 3 轮刷新仍过不去就停手 30 分钟；
+     * 停手期间连识别都不发（见 `_handleCaptchaDialog` 顶上那道闸）。
+     */
     _captchaReload: function () {
-      emitRuntimeLog('warn', 'captcha unsolved, reload page', {});
+      var budget = this._readCaptchaDialogBudget();
+      var rounds = budget.rounds + 1;
+      if (rounds >= 3) {
+        this._writeCaptchaDialogBudget(rounds, Date.now() + 30 * 60000, String(location.href || ''));
+        emitRuntimeLog('error', 'captcha dialog unsolved after 3 page reloads, stop spending', {
+          rounds: rounds,
+          resumeInMs: 30 * 60000,
+          hint: '不再刷新这一页，也不再发识别请求 —— 每一次刷新与识别都是再花一次钱、再向站方要一张新验证码。' +
+            '这一步请你在页面上亲手输入一次验证码；想让插件自己过，去设置里把「验证码识别模型」填成会看图的模型' +
+            '（如 qwen-vl-max / gemini-2.5-flash / gpt-4o-mini）'
+        });
+        return;
+      }
+      this._writeCaptchaDialogBudget(rounds, 0, String(location.href || ''));
+      emitRuntimeLog('warn', 'captcha unsolved, reload page', { round: rounds });
+      this._reloadCaptchaDialogPage();
+    },
+
+
+    // 刷新单独抽出来，是为了让测试能盯住这个动作本身（与 `_reloadForStandaloneCaptcha` 同一条理由）：
+    // 真刷一次整页会打断后面几步，而这一步是这一面墙上最贵的动作。
+    _reloadCaptchaDialogPage: function () {
       try { window.location.reload(); } catch (e) {}
+    },
+
+
+    // 批次 36-A：弹窗验证码的刷新轮次。`rounds` = 这一页已经为同一个弹窗刷新过几次。
+    // `href` 变了 = 换了另一面墙（翻章 / 换课），旧账作废。
+    _readCaptchaDialogBudget: function () {
+      var obj = this._readSessionLedger('omitone:captcha-dialog-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { rounds: 0, pauseUntil: 0 };
+      return { rounds: Number(obj.rounds) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
+    },
+
+
+    _writeCaptchaDialogBudget: function (rounds, pauseUntil, href) {
+      this._writeSessionLedger('omitone:captcha-dialog-budget',
+        { rounds: rounds || 0, pauseUntil: pauseUntil || 0, href: href || '' });
+    },
+
+
+    /**
+     * 弹窗**真的消失了**（连续 60 秒没再检测到）就把账清零 —— 条件愈合必须清账。
+     *
+     * 不清的话：这一章曾经卡住过一次，下一章新弹的验证码（同一份文档里 href 可能没变）
+     * 会被 30 分钟前的旧账直接跳过，用户只会看到"这个验证码它不理"。
+     * 要"连续"而不是"一次没看到"：检测有抖动，一次漏看就把账清掉等于把安全阀拆了
+     * （清完下一次调用就又能发一发付费识别）。
+     */
+    _healCaptchaDialogBudget: function (present) {
+      if (present) {
+        this._captchaDialogAbsentAt = 0;
+        return;
+      }
+      var now = Date.now();
+      if (!this._captchaDialogAbsentAt) {
+        this._captchaDialogAbsentAt = now;
+        return;
+      }
+      if (now - this._captchaDialogAbsentAt < 60000) return;
+      this._captchaDialogAbsentAt = now;
+      var budget = this._readCaptchaDialogBudget();
+      if (!budget.rounds && !budget.pauseUntil) return;
+      this._writeCaptchaDialogBudget(0, 0, '');
+      this._captchaDialogPauseLogged = false;
+      emitRuntimeLog('info', 'captcha dialog gone, retry budget reset', {
+        hadRounds: budget.rounds,
+        hadPauseUntil: budget.pauseUntil
+      });
     },
 
 
@@ -3801,24 +4005,19 @@ var OMITONE_CODE_REV = '9624901ff8';
     // 旧写法每轮末尾无条件 `location.reload()`，页面一刷内存计数全清零 ——
     // 于是「4 次识别 → 刷新 → 再来 4 次」是**真的无限**（实测在真页面上整夜跑）。
     // sessionStorage 活得比刷新久、又比标签页短，正好是这里要的粒度。
+    // 批次 36：读写都走 `_readSessionLedger` / `_writeSessionLedger` ——
+    // 那对底座管住了「sessionStorage 抛异常被当成没账」这个漏洞（见 20-dom.js）。
+    // `href` 变了 = 换了一面墙，旧账作废。
     _readStandaloneCaptchaBudget: function () {
-      try {
-        var raw = sessionStorage.getItem('omitone:standalone-captcha-budget');
-        if (!raw) return { cycles: 0, pauseUntil: 0 };
-        var obj = JSON.parse(raw) || {};
-        if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
-        return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
-      } catch (e) {
-        return { cycles: 0, pauseUntil: 0 };
-      }
+      var obj = this._readSessionLedger('omitone:standalone-captcha-budget') || {};
+      if (obj.href && obj.href !== String(location.href || '')) return { cycles: 0, pauseUntil: 0 };
+      return { cycles: Number(obj.cycles) || 0, pauseUntil: Number(obj.pauseUntil) || 0 };
     },
 
 
     _writeStandaloneCaptchaBudget: function (cycles, pauseUntil, href) {
-      try {
-        sessionStorage.setItem('omitone:standalone-captcha-budget',
-          JSON.stringify({ cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' }));
-      } catch (e) {}
+      this._writeSessionLedger('omitone:standalone-captcha-budget',
+        { cycles: cycles || 0, pauseUntil: pauseUntil || 0, href: href || '' });
     },
 
 
@@ -3843,6 +4042,36 @@ var OMITONE_CODE_REV = '9624901ff8';
 
     _handleCaptchaDialog: async function (captcha) {
       if (this._captchaBusy) return;
+      /**
+       * 批次 36-A：停手期间连取图、连识别都不发 —— 与整页验证码墙同一道闸。
+       *
+       * 位置必须在 `_captchaBusy = true` 之后、**任何动作之前**：下面每一个分支都是
+       * 一发付费请求（`fetch_image` / `llm_captcha`），而旧写法只靠内存里的
+       * attempts / failCount 计数 —— 那两个字段会被它自己触发的 `location.reload()`
+       * 抹掉，所以那道"3 次就收手"的闸实际上从来没关上过。
+       */
+      var dialogBudget = this._readCaptchaDialogBudget();
+      var nowMs = Date.now();
+      if (dialogBudget.pauseUntil > nowMs) {
+        if (!this._captchaDialogPauseLogged) {
+          this._captchaDialogPauseLogged = true;
+          emitRuntimeLog('warn', 'captcha dialog paused, waiting for a human', {
+            rounds: dialogBudget.rounds,
+            resumeInMs: dialogBudget.pauseUntil - nowMs,
+            hint: '同一个弹窗已经刷新过 3 轮还是过不去，插件停手 30 分钟：' +
+              '这期间不再发识别请求、也不再刷新页面。请亲手在页面上输入一次验证码'
+          });
+        }
+        // 别让「插件自己不想再试」继续冒充「页面正被验证码挡着」：
+        // `_captchaActive` 是媒体播放与任务点推进的闸门，人手动关掉弹窗后它不该还亮着
+        this._captchaActive = false;
+        return;
+      }
+      if (dialogBudget.pauseUntil) {
+        this._writeCaptchaDialogBudget(0, 0, '');
+        this._captchaDialogPauseLogged = false;
+        emitRuntimeLog('info', 'captcha dialog resume retry', { hint: '冷却到点，再给一轮机会' });
+      }
       this._captchaBusy = true;
       var attempts = this._captchaAttempts || 0;
       try {
@@ -3919,6 +4148,8 @@ var OMITONE_CODE_REV = '9624901ff8';
             this._captchaAttempts = 0;
             this._captchaFailCount = 0;
             this._captchaActive = false;
+            this._writeCaptchaDialogBudget(0, 0, '');
+            this._captchaDialogPauseLogged = false;
             return;
           }
         }
@@ -3929,6 +4160,8 @@ var OMITONE_CODE_REV = '9624901ff8';
           this._captchaAttempts = 0;
           this._captchaFailCount = 0;
           this._captchaActive = false;
+          this._writeCaptchaDialogBudget(0, 0, '');
+          this._captchaDialogPauseLogged = false;
           return;
         }
         this._captchaAttempts = attempts + 1;
@@ -12987,31 +13220,48 @@ var OMITONE_CODE_REV = '9624901ff8';
      *
      * 返回 true = 允许再发一次；false = 预算耗尽，必须停。
      * 耗尽时**必定写一条 warn 日志**，绝不静默 —— 静默烧钱是最糟的失败方式。
+     *
+     * ⚠️ 批次 36-B：这本账改记 sessionStorage。旧写法记在页面内存里，而刷课链路里
+     * 有好几步是**自己刷新自己**（跳章、验证码墙、跨域中间页、任务点 reload），
+     * 一刷就归零 —— 于是"每章最多 N 次"实际是"每刷一次再来 N 次"，
+     * 安全阀恰好挡不住它最该挡的那种失败：反复失败 → 反复刷新 → 反复发图。
      */
     _takeVisionBudget: function (chapterKey) {
       if (!this.configs.visionEnabled) return false;
       var key = String(chapterKey || 'unknown');
-      if (this._visionBudgetChapterKey !== key) {
-        // 换章即重置。不清零的话，一学期下来后面所有章节都用不了视觉。
-        this._visionBudgetChapterKey = key;
-        this._visionUsedInChapter = 0;
-      }
+      var used = this._readVisionLedger(key).used;
       var cap = Number(this.configs.visionBudgetPerChapter);
       if (!isFinite(cap) || cap < 0) cap = 0;
-      if (this._visionUsedInChapter >= cap) {
+      if (used >= cap) {
         // 同一章只提醒一次，否则每道题刷一条，日志会被淹掉
         if (this._visionBudgetWarnedKey !== key) {
           this._visionBudgetWarnedKey = key;
           emitRuntimeLog('warn', 'vision budget exhausted for this chapter, images will be ignored', {
-            used: this._visionUsedInChapter,
+            used: used,
             cap: cap,
             chapter: key
           });
         }
         return false;
       }
-      this._visionUsedInChapter++;
+      this._writeVisionLedger(key, used + 1);
       return true;
+    },
+
+
+    // 账本里只留**当前这一章**的数：`chapter` 对不上就当没花过 ——
+    // 就是旧写法"换章即重置"那一条。不清零的话，一学期下来后面所有章节都用不了视觉。
+    _readVisionLedger: function (chapterKey) {
+      var key = String(chapterKey || 'unknown');
+      var obj = this._readSessionLedger('omitone:vision-budget') || {};
+      if (String(obj.chapter || '') !== key) return { chapter: key, used: 0 };
+      return { chapter: key, used: Number(obj.used) || 0 };
+    },
+
+
+    _writeVisionLedger: function (chapterKey, used) {
+      this._writeSessionLedger('omitone:vision-budget',
+        { chapter: String(chapterKey || 'unknown'), used: Number(used) || 0 });
     },
 
     /**
@@ -13095,8 +13345,10 @@ var OMITONE_CODE_REV = '9624901ff8';
 
         // 扣预算前先确认这一章还有额度。额度用完时 _describeQuestionImages 会自己写日志，
         // 这里就不再重复遍历后面的题 —— 直接整体退出，省掉剩下的抓图开销。
-        if (this._visionUsedInChapter >= Number(this.configs.visionBudgetPerChapter || 0) &&
-            this._visionBudgetChapterKey === chapterKey) {
+        // 批次 36-B：额度从会话账本读（旧的内存字段 `_visionUsedInChapter` 已被它自己的刷新抹掉）。
+        var capNow = Number(this.configs.visionBudgetPerChapter);
+        if (!isFinite(capNow) || capNow < 0) capNow = 0;
+        if (this._readVisionLedger(chapterKey).used >= capNow) {
           this._takeVisionBudget(chapterKey); // 触发一次「预算耗尽」日志
           emitRuntimeLog('info', 'vision skipped remaining questions', { from: i, total: questions.length });
           break;
@@ -13113,7 +13365,7 @@ var OMITONE_CODE_REV = '9624901ff8';
         emitRuntimeLog('info', 'vision applied to quiz', {
           questions: questions.length,
           withImage: touched,
-          usedBudget: this._visionUsedInChapter
+          usedBudget: this._readVisionLedger(chapterKey).used
         });
       }
     },
