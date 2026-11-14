@@ -66,6 +66,9 @@
   th, td { border: 1px solid var(--line); padding: 2mm 2.5mm; text-align: left; vertical-align: top; }
   th { background: var(--bg-soft); font-weight: 600; }
   tbody tr:nth-child(even) td { background: #fcfcfd; }
+  /* 表格跨页时：一行不许劈成两半，表头在下一页重复一次 */
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
 
   .figure { margin: 4mm 0 6mm; break-inside: avoid; }
   .figure svg { display: block; width: 100%; height: auto; }

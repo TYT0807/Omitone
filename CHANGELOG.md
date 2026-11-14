@@ -3671,10 +3671,25 @@
     写的页数与 PDF 实际页数比，不一致直接报错），改完说明书不跑 `npm run manual` 或不改 README 都会红。
     ⚠️ 本轮**改了 `content.js`（用户可见）**：要看到「投票任务」而不再是「vote」，
     得 `edge://extensions` 重新加载 + 刷新学习通页面（F5）。
+  - **排版（表格跨页的两条规矩）**：小表用的是说明书既有表格样式，但打印 CSS 里原先**没有**
+    `tr { break-inside: avoid }`，也没有表头重复 —— 一张九行的表落在 A4 分页附近时，
+    会出现「一行话被劈成两半」和「第二页不知道哪列是什么」。补了
+    `thead { display: table-header-group }` + `tr { break-inside: avoid }`（对已有的四问表无副作用，
+    那些表整块本来就 `break-inside: avoid`）。重出后仍是 **26 页**、位图 0 张。
+    **用眼睛复验**：一次性脚本 `.workbuddy/shot57.js`（无头 Edge + CDP，跑完即删）把那张表按
+    **文档坐标**截出来核对 —— 九行、两列、隔行浅灰、右侧说明没有溢出边框，
+    第一列那串 `执行任务：××` 在窄列里也没被拆行。
+    ⚠️ `Page.captureScreenshot` 的 `clip` **必须带 `scale`**（少了报
+    `-32602 Failed to deserialize params.clip.scale`，而 `Runtime.evaluate` 那步已经成功，
+    容易误读成"截图工具坏了"）；`clip` 用的是**文档坐标**（`getBoundingClientRect` + `scrollX/scrollY`），
+    与批次 56 那条「视口坐标混进 clip 会截出白图」是同一个坑的两面。
   - **发版链（本轮跑完）**：`npm run build` → `notes v1.3.0` → `replace-asset v1.3.0` → `verify v1.3.0` 全绿；
     线上 Release 说明 **5952 字**与 `release-notes-1.3.0.md` **逐字一致**，两个附件都按摘要判定过期并换掉 ——
-    `omitone.zip` **2035.6 KB**（本地 5f88c920d0d3…）· `Omitone-manual.pdf` **1671.2 KB**（本地 7a33ac3ee087…），
+    `omitone.zip` **2035.6 KB**（本地 1ab0174df97e…）· `Omitone-manual.pdf` **1671.1 KB**（本地 8f7b25a1027d…），
     换完 `verify` 复核为「用户下载到的东西是对的」。
+    ⚠️ 附件**换了两次**：第二次是上面那条打印 CSS 改完之后重出说明书 + 重打包 ——
+    `docs/manual.html` 是**进 zip 的**，所以只改说明书排版也会让 `omitone.zip` 过期。
+    判据：**收尾顺序是「文档与代码都定稿」之后才跑发版链**，中途跑过一次不等于跑过。
   - **文档同步**：`AGENTS.md` §4 那条改成"界面字样三份真源（含任务种类）都要同步说明书"；
     `tools/README.md` 工具行与第 27 项说明按三份真源 / 十一格 / 键对账重写；`HANDOVER.md` §9 该行收尾；
     README「1.3.0 动了什么」与 Release 页各补两条用户向说明（投票那一行不再打英文 / 说明书那几个字和屏幕一样了）。
