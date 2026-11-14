@@ -2616,9 +2616,9 @@ function checkSliceStatsDoc() {
 // 界面照常工作，只有新手照说明书去认界面时被引到错方向。
 //
 // ⚠️ 期望在**这里**各写一份，不照抄 `audit.selfTestCases()` 的 want（同第 24 / 25 / 26 项的规矩：
-// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。九格里「要报」占六格，因为本项最危险的
+// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十一格里「要报」占八格，因为本项最危险的
 // 坏法是**读不出来却装作核过了**：锚点失效 → 0 个取值 → "全部命中"。
-// 两格「不报」是防误报的对照（干净正文、被 `<b>` 加粗切开的字样）——
+// 三格「不报」是防误报的对照（干净正文、被 `<b>` 加粗切开的字样）——
 // 会误报的守卫和没有守卫一样害人。
 function checkManualUiLabels() {
   var audit;
@@ -2638,6 +2638,8 @@ function checkManualUiLabels() {
     '取值表一条都没读出': { want: 1, needle: '取值真源读不出来' },
     '真源只读出一半': { want: 1, needle: '取值真源读不出来' },
     'script 里的字样不算教给用户': { want: 1, needle: '未开启' },
+    '少写一个任务种类词': { want: 1, needle: '测验答题' },
+    '种类表漏一个键': { want: 1, needle: '没有中文取值' },
     '真说明书对真代码': { want: 0, needle: '' }
   };
 
@@ -2650,20 +2652,28 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 审计读的是不是那两个真源（锚点写错时它会安静地交出一份空清单）----
+  // ---- 审计读的是不是那三份真源（锚点写错时它会安静地交出一份空清单）----
   if (!info.labels.length && !info.readErrors.length) {
     fail('界面字样审计交出「0 个取值 + 0 条读取错误」—— 这条闸等于不存在，报的「一致」不可信');
     return;
   }
-  var fromContent = info.labels.filter(function (l) { return l.from.indexOf('content.js') === 0; }).length;
+  var fromContent = info.labels.filter(function (l) {
+    return l.from.indexOf('content.js setStatusPanel') === 0;
+  }).length;
   var fromPopup = info.labels.filter(function (l) { return l.from.indexOf('popup/popup.js') === 0; }).length;
-  if (info.labels.length && (!fromContent || !fromPopup)) {
-    fail('界面字样审计只读出 content.js ' + fromContent + ' 个 / popup/popup.js ' + fromPopup +
-      ' 个取值 —— 两个真源必须各出一半，否则「核过了」是假的');
+  var fromKind = info.labels.filter(function (l) { return l.from.indexOf('jobKindLabel') !== -1; }).length;
+  if (info.labels.length && (!fromContent || !fromPopup || !fromKind)) {
+    fail('界面字样审计只读出 徽标 ' + fromContent + ' 个 / popup 顶部 ' + fromPopup +
+      ' 个 / 任务种类 ' + fromKind + ' 个取值 —— 三份真源必须各出一半，否则「核过了」是假的');
+    return;
+  }
+  if (!info.kinds || info.kinds.length < 2) {
+    fail('界面字样审计：任务种类键只读出 ' + ((info.kinds || []).length) + ' 个（真源 src/page/60-tasks-detect.js）—— ' +
+      '键清单空了等于「种类表漏键」那一格从来没跑过');
     return;
   }
 
-  // ---- 真文档先点名（放在九格之前）----
+  // ---- 真文档先点名（放在十一格之前）----
   // 文档漂移是这一项最常见的坏法，人看到的应当是「哪个字样在说明书里不见了」，
   // 而不是「第几格期望数字不符」—— 后者把真正的原因塞在括号里第三句。
   var manualTxt;
@@ -2680,7 +2690,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 九格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
+  // ---- 十一格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
   var names = Object.keys(WANT);
   cases.forEach(function (c) {
     if (names.indexOf(c.pin) < 0) bad.push('多出一格没登记在 check.js 的期望表里：' + c.pin);
@@ -2709,39 +2719,49 @@ function checkManualUiLabels() {
     }
   });
   if (bad.length) {
-    fail('界面字样审计的九格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
+    fail('界面字样审计的十一格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
       bad.join('\n      '));
     return;
   }
 
-  // ---- 反向验证打在**整份真说明书**上、判据用**增量** ----
+  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**两份取值表各摘一次** ----
   // 只测合成夹具的话，"审计只对短夹具有效、对几千行的真说明书失效"照样报 0 条。
-  var target = info.labels.filter(function (l) {
-    return audit.visibleText(manualTxt).indexOf(l.text) !== -1;
-  })[0];
-  if (!target) {
-    fail('界面字样审计的反向验证没跑成：真说明书里一个真实字样都没命中，' +
-      '而上面那条真文档检查却报「一致」—— 两条判据打架，怀疑扫描口径与真实文档脱节');
-    return;
-  }
-  var poisoned = manualTxt.split(target.text).join('〔字样被摘掉〕');
-  if (poisoned === manualTxt) {
-    fail('界面字样审计的反向验证没跑成：把「' + target.text + '」全部摘掉后说明书字面没变，' +
-      '注入等于没注入');
-    return;
-  }
+  // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）。
+  var vtext = audit.visibleText(manualTxt);
   var before = audit.audit(info, manualTxt).length;
-  var afterIssues = audit.audit(info, poisoned);
-  if (afterIssues.length !== before + 1 ||
-      !afterIssues.some(function (x) { return x.indexOf('「' + target.text + '」') !== -1; })) {
-    fail('界面字样审计的反向验证没过：在真说明书里把「' + target.text + '」（真源 ' + target.from +
-      '）全部摘掉，应在原本的 ' + before + ' 条之上多报恰好 1 条并点名它，实际共报 ' +
-      afterIssues.length + ' 条 —— 这条闸对真实文档失效，它报的「一致」不可信');
-    return;
+  var AXES = [
+    { name: '状态徽标 / 弹窗字样', pool: info.labels.filter(function (l) { return !l.kindKey; }) },
+    { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) }
+  ];
+  var poisonedNames = [];
+  for (var ai = 0; ai < AXES.length; ai++) {
+    var ax = AXES[ai];
+    var target = ax.pool.filter(function (l) { return vtext.indexOf(l.text) !== -1; })[0];
+    if (!target) {
+      fail('界面字样审计的反向验证没跑成：' + ax.name + ' 这一族的取值在真说明书里一个都没命中，' +
+        '而上面那条真文档检查却报「一致」—— 两条判据打架，怀疑扫描口径与真实文档脱节');
+      return;
+    }
+    var poisoned = manualTxt.split(target.text).join('〔字样被摘掉〕');
+    if (poisoned === manualTxt) {
+      fail('界面字样审计的反向验证没跑成：把「' + target.text + '」全部摘掉后说明书字面没变，注入等于没注入');
+      return;
+    }
+    var afterIssues = audit.audit(info, poisoned);
+    if (afterIssues.length !== before + 1 ||
+        !afterIssues.some(function (x) { return x.indexOf('「' + target.text + '」') !== -1; })) {
+      fail('界面字样审计的反向验证没过（' + ax.name + '）：在真说明书里把「' + target.text +
+        '」（真源 ' + target.from + '）全部摘掉，应在原本的 ' + before + ' 条之上多报恰好 1 条并点名它，' +
+        '实际共报 ' + afterIssues.length + ' 条 —— 这条闸对真实文档失效，它报的「一致」不可信');
+      return;
+    }
+    poisonedNames.push('「' + target.text + '」');
   }
   pass('docs/manual.html 教的界面字样与代码一致（' + info.labels.length + ' 个真实取值：' +
-    'content.js 徽标 ' + fromContent + ' 个 + popup 顶部 ' + fromPopup + ' 个；' +
-    '九格阴性对照按 pin 逐格复算 + 拿真说明书把「' + target.text + '」全部摘掉恰好多报 1 条）');
+    'content.js 徽标 ' + fromContent + ' 个 + popup 顶部 ' + fromPopup + ' 个 + 任务种类 ' + fromKind +
+    ' 个；键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
+    '十一格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' 与 ') +
+    ' 全部摘掉各恰好多报 1 条）');
 }
 
 // ---------------------------------------------------------------------------

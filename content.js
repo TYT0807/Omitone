@@ -1497,6 +1497,7 @@
     const labels = {
       video: '视频播放',
       quiz: '测验答题',
+      vote: '投票任务',
       read: '阅读任务',
       document: '文档/PPT',
       timereader: '定时阅读',
