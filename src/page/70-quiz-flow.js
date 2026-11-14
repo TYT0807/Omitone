@@ -60,7 +60,21 @@
      * `media` 为空 = 这一页压根没有媒体元素，此时"框都做完了"才算数。
      */
     _shouldReleaseMediaPendingForCurrentCompletion: function (reason, media) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      // ⚠️ 批次 55-C：这一句原先**只查自报布尔**，而"放行"这件事自己就会把那两只布尔清零
+      //   （调用方拿到 true 后立刻 `_clearMediaPendingState()`）。于是自报全假的那一拍
+      //   这一句先拒绝放行 → 调用方只好走"还在等"那支，把 `_activeMediaJobPending`
+      //   重新武装起来（那一支还会打一条 `media pending`，因为放行时日志时钟一起被清零）
+      //   → 下一拍又满足放行 → 再清一次。两句话逐拍各执一词，**结构上不可能自己停下**。
+      //   现场实测（2026-11-14，用户挂着刷课，CDP 9334，`.workbuddy/field-ring57-before.txt`）：
+      //   `advance at 90% (locked 1x + not seekable)` 之后 `media pending` 与
+      //   `clear media pending` **每 500 毫秒成对出现**（15 条 clear 挤在 7 秒里），
+      //   两族合占 200 条环的 **41%** —— 证据窗只剩约 100 秒，而且
+      //   `_mediaBrokenSince` / `_mediaNoSourceSince` 每次刚攒起来就被清零，
+      //   批次 40 / 50 那两道有界放手在这一格里一秒都攒不起来。
+      //   「元素自己还在播」与「武装过一笔媒体任务」是同一种"有媒体信号"，必须一起算进来 ——
+      //   否则这一句就把自己刚清掉的状态当成了"没有媒体可管"的依据。
+      var stillPlaying = !!(media && media.isConnected && !media.paused && !media.ended);
+      if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
 
       var state = this._getVisibleTaskCompletionState();

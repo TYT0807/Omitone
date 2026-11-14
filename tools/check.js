@@ -2461,6 +2461,151 @@ function checkMarkdownTables() {
 }
 
 // ---------------------------------------------------------------------------
+// 26. src/page/README.md 里逐段抄的「N 行 / M 方法」快照要对得上实际
+// ---------------------------------------------------------------------------
+// 那份 README 是每个域「几行、几个方法」的唯一人读入口，而它**手抄**片段头部。
+// 2026-11-14 实测 16 段**全过期**（`50-captcha.js` 文档写 478 行 / 14 方法，实际 1008 行 / 27 方法），
+// 一条测试都没红 —— 头部由第 15 项核着是对的，抄下来的旧值没有任何东西对它。
+// 「有错地图比没地图更糟」（AGENTS §3 第 4 条）在这里的代价是：读的人照「478 行」去找代码，
+// 翻到两倍大的文件，还以为文档在骗他。
+//
+// ⚠️ 期望在**这里**各写一份，不照抄 `audit.selfTestCases()` 的 want（同第 24 / 25 项的规矩：
+// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十格里「要报」占七格，
+// 因为本项最危险的坏法是**静默跳过**：快照行换个分隔符、片段目录换路径、合计句改写 ——
+// 任何一种都让"没核到"长得像"核过了"。干净那一格是防误报的对照
+// （会误报的守卫和没有守卫一样害人）。
+function checkSliceStatsDoc() {
+  var audit;
+  try {
+    audit = require('./audit-slice-stats.js');
+  } catch (e) {
+    fail('片段快照审计加载失败：' + String((e && e.message) || e));
+    return;
+  }
+
+  var WANT = {
+    '干净快照全部对得上': { want: 0, needle: '' },
+    '某段行数写错': { want: 1, needle: '行数写' },
+    '某段方法数写少': { want: 1, needle: '方法数写' },
+    '凭空加一格没人核的状态字段': { want: 1, needle: '片段头部没声明这份清单' },
+    '状态字段数写错': { want: 1, needle: '状态字段写' },
+    '整段快照被删掉': { want: 1, needle: 'README 没有这一段的快照行' },
+    '多写一段不存在的文件': { want: 1, needle: '但 src/page/ 里没有这个文件' },
+    '快照行形状不认识': { want: 1, needle: '形状不认识' },
+    '合计句的方法总数写错': { want: 1, needle: '合计句：app 方法写' },
+    '真 README 对真片段': { want: 0, needle: '' }
+  };
+
+  var stats, cases, bad = [];
+  try {
+    stats = audit.sliceStats(path.join(ROOT, 'src', 'page'));
+    cases = audit.selfTestCases();
+  } catch (e2) {
+    fail('片段快照审计自证跑不起来：' + String((e2 && e2.message) || e2));
+    return;
+  }
+
+  // ---- 审计读的是不是这一个目录（路径常量写错时它会安静地数出一堆 0）----
+  var realFiles = fs.readdirSync(path.join(ROOT, 'src', 'page'))
+    .filter(function (f) { return /\.js$/.test(f); });
+  if (stats.length !== realFiles.length) {
+    fail('片段快照审计只看到 ' + stats.length + ' 个片段，src/page/ 实际有 ' + realFiles.length +
+      ' 个 .js —— 它扫的目录或口径和真源脱节，报的「一致」不可信');
+    return;
+  }
+  if (stats.some(function (s) { return !(s.lines > 0); })) {
+    fail('片段快照审计算出的行数里有 0 —— 读取失败被当成空片段，结论不可信');
+    return;
+  }
+
+  // ---- 十格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
+  var names = Object.keys(WANT);
+  cases.forEach(function (c) {
+    if (names.indexOf(c.pin) < 0) bad.push('多出一格没登记在 check.js 的期望表里：' + c.pin);
+  });
+  names.forEach(function (name) {
+    var hit = cases.filter(function (c) { return c.pin === name; });
+    if (hit.length !== 1) {
+      bad.push(name + '：这一格应当恰好 1 个，实际 ' + hit.length + ' 个（对照格被删掉或重复了）');
+      return;
+    }
+    var got;
+    try {
+      got = audit.audit(stats, hit[0].txt);
+    } catch (e3) {
+      bad.push(name + '：复算时审计抛了 ' + String((e3 && e3.message) || e3));
+      return;
+    }
+    if (got.length !== WANT[name].want) {
+      bad.push(name + '：应报 ' + WANT[name].want + ' 条，审计给出 ' + got.length + ' 条' +
+        (got.length ? '（' + got.slice(0, 3).join('；') + '）' : ''));
+      return;
+    }
+    if (WANT[name].needle && !got.some(function (x) { return x.indexOf(WANT[name].needle) !== -1; })) {
+      bad.push(name + '：报出的 ' + got.length + ' 条里没有点名「' + WANT[name].needle + '」 —— ' +
+        '红在别处等于这一格没测到');
+    }
+  });
+  if (bad.length) {
+    fail('片段快照审计的十格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+
+  // ---- 真文档：先点名，再谈反向验证（否则真坏那一段会被下面的增量抢掉）----
+  var readme;
+  try {
+    readme = fs.readFileSync(path.join(ROOT, 'src', 'page', 'README.md'), 'utf8');
+  } catch (e4) {
+    fail('片段快照审计读不到 src/page/README.md：' + String((e4 && e4.message) || e4));
+    return;
+  }
+  var realIssues = audit.audit(stats, readme);
+  if (realIssues.length) {
+    fail('src/page/README.md 的快照数字与实际对不上（' + realIssues.length + ' 处，改文档别改判据）：\n      ' +
+      realIssues.join('\n      '));
+    return;
+  }
+
+  // ---- 反向验证打在**整份真 README** 上、判据用**增量** ----
+  // 只测合成夹具的话，"审计只对短夹具有效、对几百行的真文档失效"照样报 0 条。
+  var rl = readme.split(/\r?\n/);
+  var target = -1, targetFile = '';
+  for (var i = 0; i + 1 < rl.length; i++) {
+    var hm = /^### `([^`]+\.js)`\s*$/.exec(rl[i]);
+    if (!hm || rl[i + 1].trim() !== '') continue;
+    var sm = /^\*(\d+) 行/.exec(rl[i + 2]);
+    if (sm) { target = i + 2; targetFile = hm[1]; break; }
+  }
+  if (target < 0) {
+    fail('片段快照审计在 src/page/README.md 里认不出任何一段「标题 + 快照」—— ' +
+      '它报的「一致」不可信，怀疑扫描口径与真实文档脱节');
+    return;
+  }
+  var poisoned = rl.slice(0);
+  poisoned[target] = poisoned[target].replace(/^\*(\d+) 行/, function (_m, n) {
+    return '*' + (Number(n) + 1) + ' 行';
+  });
+  if (poisoned[target] === rl[target]) {
+    fail('片段快照审计的反向验证没跑成：那一行（src/page/README.md:' + (target + 1) +
+      '）改成 +1 行后字面没变，注入等于没注入');
+    return;
+  }
+  var before = audit.audit(stats, readme).length;
+  var after = audit.audit(stats, poisoned.join('\n')).length;
+  if (after !== before + 1 ||
+      !audit.audit(stats, poisoned.join('\n')).some(function (x) { return x.indexOf(targetFile) === 0; })) {
+    fail('片段快照审计的反向验证没过：把 src/page/README.md:' + (target + 1) + '（' + targetFile +
+      '）的行数 +1，应在原本的 ' + before + ' 条之上多报恰好 1 条并点名 ' + targetFile +
+      '，实际共报 ' + after + ' 条 —— 这条闸对真实文档失效，它报的「一致」不可信');
+    return;
+  }
+  pass('src/page/README.md 快照与实际一致（' + stats.length + ' 个片段：行数 + 方法数 + 状态字段数 + 合计句；' +
+    '十格阴性对照按 pin 逐格复算 + 拿真 README 把 ' + targetFile +
+    ' 的行数 +1 恰好多报 1 条，src/page/README.md:' + (target + 1) + '）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2490,6 +2635,7 @@ checkTestSuiteWiring();
 checkFixtureParsable();
 checkSafedocGuard();
 checkMarkdownTables();
+checkSliceStatsDoc();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

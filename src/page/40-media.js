@@ -82,7 +82,16 @@
       //    方向是**只放得更少**：元素还在播就不许因为"框都显示完成"而放行这一节。
       var media = liveVideo || this._getVideoEl();
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending', media)) {
-        this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
+        // ⚠️ 批次 55-C：**只有真的武装过一笔媒体任务才走整份复位**。
+        //   放行判据如今在"自报全假、元素还在播"那一格也会说放行（那是它对现场的正确回答：
+        //   任务框都已完成、这一节没有媒体要等的了），而 `_clearMediaPendingState()` 会把
+        //   `_videoEl` 缓存连同 `_mediaWaitLogAt`、批次 40/50 的两个有界放手窗口、
+        //   以及**文档任务那一支**的 `_activeDocumentJobPending` 一起清零 ——
+        //   不加这道闸就是每拍清一次：日志从"两条成对"变成"一条 clear 每拍一条"（照样刷屏），
+        //   而同一节里正在等的文档任务点会被顺手抹掉，症状是"文档那一项悄悄不做"。
+        if (this._activeMediaJobPending || this._isPlaying || this._activeMediaJobManaged || this._checkInterval) {
+          this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
+        }
         return false;
       }
 

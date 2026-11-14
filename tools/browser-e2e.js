@@ -13988,6 +13988,97 @@ SCENARIOS.push({
       !!phase5b && phase5b.cleared && phase5b.cleared.at === 0 &&
       phase5b.pending === true && phase5b.sig === phase5a.sig && after5b === 1,
       JSON.stringify({ phase5b: phase5b, count: after5b, sigA: phase5a && phase5a.sig }));
+
+    // ---- 阶段六：批次 55-C，90% 提前收尾**之后**的那一格 ----
+    //   现场形状（`.workbuddy/field-ring57-before.txt`，+404s → +397s 那 7 秒）：
+    //   `advance at 90% (locked 1x + not seekable)` → `managed media job ended {reason:"ninety-percent"}`
+    //   把自报布尔全清了，可元素还在播（currentTime 616→623 一路走）、任务框也都显示已完成。
+    //   于是每一拍：`_isActiveMediaPending` 的早退闸被"元素还在播"顶开 →
+    //   放行判据却因为**自报布尔全假**先拒绝 → 走"还在等"那支（打一条 media pending、
+    //   顺手把 pending 重新武装）→ 下一拍放行成立（打一条 clear、把日志时钟清零）→ 回到开头。
+    //   两族每 500 毫秒成对出现，合占 200 条环的 41%。
+    //   ⚠️ 6a 是**前置**，不是可选：如果这一格在早退闸就返回 false（元素其实没在播），
+    //      6b 的"0 条 + 全 false"照样绿 —— 那是零覆盖，不是修好了。
+    function readPendingAndClearLines() {
+      return ctx.client.evaluate(
+        '(function(){var out={wait:0,clear:0,firstWait:null};' +
+        '(window.__b37i||[]).forEach(function(m){var s=String(m.message||"");' +
+        '  if(s.indexOf("media pending, delay completion")===0){out.wait++;if(!out.firstWait)out.firstWait=m;}' +
+        '  else if(s==="clear media pending")out.clear++;});' +
+        'window.__b37i=[];return out;})()');
+    }
+
+    // 6a：同一格，只是任务框**还没做完** —— 这一节必须照旧占住，并且开口说一声
+    var phase6a = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");if(!v) return {noVideo:true};' +
+      'window.__b37i=[];' +
+      'Object.defineProperty(v,"paused",{configurable:true,get:function(){return false;}});' +
+      'Object.defineProperty(v,"ended",{configurable:true,get:function(){return false;}});' +
+      'app._videoEl=v; app._videoCount=1; app._currentVideoIndex=0;' +
+      'app._activeMediaJobPending=false; app._isPlaying=false; app._activeMediaJobManaged=false;' +
+      'app._activeDocumentJobPending=false; app._checkInterval=null;' +
+      'app._mediaWaitLogAt=0; app._mediaWaitLogSig=""; app._mediaBrokenSince=0; app._mediaNoSourceSince=0;' +
+      'var orig=app._getVisibleTaskCompletionState;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:false,finished:1,total:2};};' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'app._getVisibleTaskCompletionState=orig;' +
+      'return {noVideo:false,p:p,armedNow:!!app._activeMediaJobPending,' +
+      '  err:app._mediaErrorCode(v),rs:Number(v.readyState),du:Number(v.duration)};})()'
+    );
+    await sleep(400);
+    var after6a = await readPendingAndClearLines();
+    check('55-C 6a 前提：这一格必须**真的走到那两层** —— 自报布尔全假、元素从页面读回来是' +
+      '健康在播（error 空 / readyState 4 / duration 100 / paused 假 / ended 假），' +
+      '框还没做完时照旧占住这一节并留一条等待日志' +
+      '（这一条不成立，6b 的"0 条"就只是早退闸短路，是零覆盖不是修好了）',
+      !!phase6a && phase6a.noVideo === false && phase6a.p === true &&
+      phase6a.armedNow === true && phase6a.err === 0 && phase6a.rs === 4 && phase6a.du === 100 &&
+      after6a.wait === 1 && after6a.clear === 0,
+      JSON.stringify({ phase6a: phase6a, logs: after6a }));
+
+    // 6b：框都显示已完成 —— 六拍交替问，既不许占住，也不许再成对打印
+    var phase6b = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");if(!v) return {noVideo:true};' +
+      'window.__b37i=[];' +
+      'app._videoEl=v; app._videoCount=1; app._currentVideoIndex=0;' +
+      'app._activeMediaJobPending=false; app._isPlaying=false; app._activeMediaJobManaged=false;' +
+      'app._activeDocumentJobPending=true; app._activeDocumentJobDoc={}; app._checkInterval=null;' +
+      'app._mediaWaitLogAt=0; app._mediaWaitLogSig=""; app._mediaBrokenSince=0; app._mediaNoSourceSince=0;' +
+      'var orig=app._getVisibleTaskCompletionState;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true,finished:2,total:2};};' +
+      // ⚠️ 每一拍**先把 `_videoEl` 缓存填回去**再问 —— 现场就是这样的：`_clearMediaPendingState()`
+      //   把缓存清空，可 guard 那一支（`_checkVideoStatus`）每拍都调 `_getVideoEl()`，
+      //   而 `_getVideoEl()` 自己会把缓存填回来。少了这一笔，旧写法只会红一拍
+      //   （第二拍就在 `_isActiveMediaPending` 的早退闸上短路了），现场那种"每拍成对"就复现不出来。
+      'var seq=[];for(var i=0;i<6;i++){ app._videoEl=v;' +
+      '  seq.push(app._isActiveMediaPending(i%2?"ocs-runner-active-job":"completion-check")); }' +
+      'app._getVisibleTaskCompletionState=orig;' +
+      'return {noVideo:false,seq:seq,pendingAfter:!!app._activeMediaJobPending,' +
+      '  playingAfter:!!app._isPlaying,docAfter:!!app._activeDocumentJobPending};})()'
+    );
+    await sleep(400);
+    var after6b = await readPendingAndClearLines();
+    check('55-C 6b：自报全假 + 元素还在播 + 框都已完成 → 六拍交替问**全部放行（false）**，' +
+      '旧写法这里是 true/false 轮流（每拍"占住一条 + 放行一条"= 现场那 41%）',
+      !!phase6b && phase6b.noVideo === false && Array.isArray(phase6b.seq) &&
+      phase6b.seq.length === 6 && phase6b.seq.every(function (x) { return x === false; }),
+      JSON.stringify(phase6b && phase6b.seq));
+    check('55-C 6b：六拍里 `media pending` 与 `clear media pending` **一条都不许多**' +
+      '（放行判据不能再只看自报布尔 —— 它拒绝时调用方会重新武装，而武装自己又打一条，' +
+      '这一对结构上停不下来）',
+      !!after6b && after6b.wait === 0 && after6b.clear === 0,
+      JSON.stringify(after6b));
+    check('55-C 6b：放行之后**也不许把 pending 重新武装起来**（`pendingAfter`/`playingAfter` 保持假）—— ' +
+      '否则这一节的"要不要走"每一拍都要重新判一次，日志跟着每拍一条',
+      !!phase6b && phase6b.pendingAfter === false && phase6b.playingAfter === false,
+      JSON.stringify(phase6b && { p: phase6b.pendingAfter, y: phase6b.playingAfter }));
+    check('55-C 6b：媒体这边放行**不许顺手抹掉同一节正在等的文档任务点**' +
+      '（`_clearMediaPendingState()` 连 `_activeDocumentJobPending` 一起清；' +
+      '没有事要清的时候就不能调它 —— 症状是"文档那一项悄悄不做"）',
+      !!phase6b && phase6b.docAfter === true,
+      JSON.stringify(phase6b && phase6b.docAfter));
   }
 });
 

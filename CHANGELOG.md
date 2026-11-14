@@ -3354,7 +3354,7 @@
     → 红 3 条，新那条给出 `afterChapters:5`，正是被它抓住的；反过来让刷课页这一支彻底闭嘴
     （连第一次都不说）→ 也红 3 条，"没有被永久消音"与"只播一条"同时报警。
     两个方向各红一次 —— 这一格钉的是**次数**，不是某个字面值。
-  - **验证**：`npm run e2e` 全量 **109 场景 / 1147 项全绿**（`e2e-counts.json` `passed:true`、E2E_EXIT=0）；
+  - **验证**：`npm run e2e` 全量 **109 场景 / 1147 项全绿**（`e2e-counts.json` `passed:true`、E2E_EXIT=0）； <!-- 历史计数:start --><!-- 历史计数:end -->
     `npm run check` 25 项全绿、`npm test` EXIT=0。沙盒 `--full` 跑了三次，两次红都**不在代码上**：
     第一次 `SBX_EXIT=1` 只红在 `tools/check.js` 的**计数守卫**（文档还写着 1144），回填后复跑；
     第二次 `sourceUnchanged:false` —— 我在它跑的过程中往 CHANGELOG 补了下面那条现场量测，
@@ -3408,6 +3408,88 @@
     中段仍夹着 30 / 31 秒一格的健康段（批次 51 那道闸在**非片尾**是好的）；
     两边 reason 照旧是 `completion-check` 与 `completed-visible-task:completion-check` ——
     与上面那份互相印证，不是单次巧合。
+
+- **61. 批次 55：片尾那一分钟「还在播」和「已做完」轮流说话把日志环压满，`src/page/README.md` 那列手抄数字全部过期**（2026-11-14）
+  - **55-C 症状（用户眼睛上是什么）**：不是"插件不刷课"，是**证据窗没了**。
+    200 条日志环里 41% 是同一对句子在打乒乓（`media pending, delay completion` 33% +
+    `clear media pending` 8%），环只能往回倒 14 分钟 —— 真出了别的事（答题被挡、验证码、跳过任务点）
+    日志已经被这对乒乓冲掉了，用户来问"刚才那一下怎么回事"时答不出。
+  - **55-C 根因（为什么批次 51 那道闸在片尾失效）**：`_shouldReleaseMediaPendingForCurrentCompletion()`
+    问的是 `_activeMediaJobManaged || _isPlaying` 两枚**自报布尔**，而"放行"这件事自己就会
+    通过 `_clearMediaPendingState()` 把它们连同 `_mediaWaitLogAt` 一起清零。
+    下一拍保护性重挂把元素重新拿到手、`pending` 重新武装 → 等待分支的 30 秒节流**时钟刚被归零**，
+    于是立刻又出一条 `media pending`。两边逐拍各执一词：
+    **清除即归零 ⇒ 归零即重播**，30 秒那道闸被自己绕过去。
+    推动它的是 90% 推进链（`_shouldAdvanceAtNinetyPercent` → `_finishCurrentMedia('ninety-percent')`），
+    所以只在**一节课的最后一分钟**成对出现，中段仍按 30 / 31 秒健康地跳。
+    ⚠️ 让它能逐拍重武装的是 `_getVideoEl()` 的**缓存一拍一填**：`_clearMediaPendingState()` 清掉
+    `_videoEl`，下一拍守卫又把它填回来 —— 夹具若只调一次判据就复现不出来，必须在循环里重新填
+    （e2e 场景 37 阶段六就是这么钉的，钉住之后它逐拍交出 `[true,false,true,false,true,false]`，与现场同形）。
+  - **55-C 处置（两格，都在 `src/page/`）**：
+    ① `70-quiz-flow.js:_shouldReleaseMediaPendingForCurrentCompletion` 第一句不再只看自报布尔，
+    补上**元素自己**那一维：`media.isConnected && !media.paused && !media.ended` 视为"这一节确实还在播"。
+    ② `40-media.js:_isActiveMediaPending` 的放行分支改成**真的武装过一笔媒体任务才走整份复位**
+    （`_activeMediaJobPending || _isPlaying || _activeMediaJobManaged || _checkInterval`），
+    没武装过就只返回 `false`，**不再把等待时钟与状态一起抹掉**。
+    ⚠️ **没有采的方案**："元素在播就永远不因为『框都显示完成』放行"—— 那会打死 90% 推进；
+    "把 `media pending` 的日志降噪"—— 症状只落在日志上，占用整节的判据照样逐拍翻转。
+    批次 40 / 50 的**有界放手**在更下面一层，仍然走得到（两条注入各破一层时都红，见下）。
+  - **55-C 断言**（`tools/browser-e2e.js` 场景 37 `/media` 阶段六，健康在播夹具）：
+    一条前提（任务框**没**做完时仍必须占着，且夹具自证 `error.code=0 / readyState=4 / duration=100`）+
+    四条正证（六次交替调用**全部**返回同一边 / 零条 `media pending` / 零条 `clear media pending` /
+    收摊后 `_activeDocumentJobPending` 仍为 `true`，即复位没把文档任务那一半一起带走）。
+  - **55-C 反向验证**（`.workbuddy/reverse55c.js`，跑完即删）：两处注入各红自己的 needle ——
+    撤掉①（`stillPlaying` 恒假）红 **3** 条、撤掉②（放行时无条件整份复位）红 **2** 条，
+    `EXIT=0` 且**还原核对与注入前基线逐字节一致**（含构建产物 `page.js`）。
+    ⚠️ 第一版采集只保留带 `[FAIL]` 的那一行，位置写在缩进续行里 → needle 全落空、报成"没红到位"；
+    按**块**采之后才对。
+  - **55-C 现场复验**（CDP 9334 只读探针 `.workbuddy/probe55c-live.expr` + `tools/field-logs.js --tail=200`，
+    2026-11-14 20:30 前后，只看 `runtimeLogs` 那一个键）：现场这一份构建已带 55-C 的两道闸
+    （按**源码字符串**核，不执行判据 —— `_isActiveMediaPending()` 自己会清状态，一问就把现场改了）：
+    `stillPlaying` 与 `_activeMediaJobPending` 两处都在。这一份 200 条环跨 **1365 秒**，
+    `media pending, delay completion` **47 条**（24%），相邻间隔 **35 条整 30 秒 + 5 条 31 秒**
+    （其余是换节/换卡片那几拍），`clear media pending` 整份环**只有 2 条**且都点名
+    `reason:"switch-learning-card"` = 换卡片时的正常放手。
+    本轮**真赶上一次片尾 90% 推进**：`managed media job ended {reason:"ninety-percent"}` 之后 7 秒
+    才跟着那一条 `clear media pending`，再往后仍是 30 秒一跳 —— 修复前那对逐拍乒乓没有复发。
+    ⚠️ **两个数不许混着读**：症状段那个 41%（33%+8%、环只倒得回 14 分钟）来自**上一轮 12.4 小时**那份现场；
+    本轮换构建前的同一节只量到 16%（32 条 / 跨 896 秒 / 中位 30 秒），**因为乒乓只在片尾那一分钟成对出现**，
+    中段本来就健康 —— 别把"换构建前中段 16%"读成"修复前也健康"，那是另一回事。
+    同一份环里 `search job: no attachments and no synthetic job` 从 31%（62 条 / 中位 6 秒）
+    变成 9%（17 条 / 中位 60 秒），但**这一轮没动这一族**，只能算换了一节、形状不同，
+    **不许当成 55-B 的成效**。
+  - **55-A 症状**：`src/page/README.md` 那一列「每片段几行、几个方法」是**手抄片段头部**的，
+    实测 **16 段全过期**（最远的 `50-captcha.js` 文档写 478 行 / 14 方法，实际 1008 行 / 27 方法，差出一倍），
+    合计句写 423 个 app 方法、实际 446。`npm test` 一条都不会红 —— 头部由第 15 项核着是对的，
+    只有"抄出来的那一页"没人对它。这属于 AGENTS §3 #4 说的**有错地图比没地图更糟**：
+    读的人照「478 行」去找代码，翻到两倍大的文件，还以为文档在骗他。
+  - **55-A 处置**：新增 `tools/audit-slice-stats.js`（真源）并挂进 `npm run check` **第 26 项**。
+    三件事，刻意不做第四件：① 每个 `### \`NN-xxx.js\`` 后面紧跟的那行 `*…*` 必须是可识别形状**且数字与实际一致**
+    （形状不认识就报，**不许静默跳过** —— 静默跳过等于这条闸没了）；② 片段目录里真实存在的文件
+    必须一个不漏、一个不多地各出现一次；③ 合计句三个数按实际复算。真值用**第 15 项同一把尺**现算
+    （`wc -l` 语义的行数 + 同一段成员算法）。状态字段那一格**只有片段头部自己声明了才要求文档写**
+    （`00` / `65` 那种 4 空格缩进配置项会让数字看起来像字段清单，第 15 项不核它，这里也不逼文档抄）。
+  - **55-A 自证**：审计自带十格（干净一格防误报 + 九格各破一个判据）；
+    `check.js` 第 26 项**另存一份按 `pin` 索引的期望数字与点名串**逐格复算 ——
+    照抄 `want` 的话把 `want` 改成实际值就能让闸永远绿（同第 24 / 25 项的规矩），
+    红在别处也算没测到。另有接线（审计看到的份数必须等于 `src/page/` 实际的 `.js` 份数、行数不能整体为 0）
+    与反向验证（**在整份真 README 上**把某段行数 +1，必须恰好多报 1 条**并且点名那一个文件**）。
+  - **55-A 反向验证**（`.workbuddy/reverse55a.js`，跑完即删）：四个注入**各红一处**、退出码都是 1 ——
+    文档把一个数抄回旧值 / 审计对不认识的形状静默跳过 / 审计一段标题都认不出来（"0 条不一致"被干净格顶红）/
+    合计句的方法总数抄错。还原后三份输入 + 构建产物与基线**逐字节一致**，26 项全绿。
+  - **验证**：完整 `npm run e2e` 全绿 **109 个场景 / 1152 项**（`.workbuddy/e2e-counts.json` 落盘
+    `passed:true`、E2E_EXIT=0；+5 条落在场景 37 阶段六）；
+    `npm run check` 26 项全绿；
+    55-A 反向验证 `node .workbuddy/reverse55a.js` 四个注入各红一处、55-C 两处注入各红 3 / 2 条，
+    两边收尾都与注入前基线**逐字节一致**。
+  - **文档同步**：`src/page/README.md` 16 段快照与合计句按实测回填（快照日期改 2026-11-14），
+    并改掉那句**假声明**（原文说"`npm test` 里的 check.js 强制校验这一页"—— 当时并没有）；
+    `tools/README.md` 加工具行与第 26 项说明；`AGENTS.md` §4 加一条"这列会过期，跑 check 让它点名，改文档不许改判据"；
+    `HANDOVER.md` 自检项数 25 → **26**。
+  - **留给下一批**：① 55-B（上一轮「留给下一批」①：`search job: no attachments and no synthetic job`
+    这类**没点名的 warn** 把右下角显示成「有情况」，而这一节本来就没有可做任务时该不该这样显示）；
+    ② `/disc-mod-a` 稳态"每分钟再播一次依据"仍靠拨表模拟，真实 60 秒跨轮没测；
+    ③ 词表探针推广到投票 / 作业那一族。
 
 ---
 

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '62aea53efc';
+var OMITONE_CODE_REV = '0b3ec7f9ce';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2120,7 +2120,16 @@ var OMITONE_CODE_REV = '62aea53efc';
       //    方向是**只放得更少**：元素还在播就不许因为"框都显示完成"而放行这一节。
       var media = liveVideo || this._getVideoEl();
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending', media)) {
-        this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
+        // ⚠️ 批次 55-C：**只有真的武装过一笔媒体任务才走整份复位**。
+        //   放行判据如今在"自报全假、元素还在播"那一格也会说放行（那是它对现场的正确回答：
+        //   任务框都已完成、这一节没有媒体要等的了），而 `_clearMediaPendingState()` 会把
+        //   `_videoEl` 缓存连同 `_mediaWaitLogAt`、批次 40/50 的两个有界放手窗口、
+        //   以及**文档任务那一支**的 `_activeDocumentJobPending` 一起清零 ——
+        //   不加这道闸就是每拍清一次：日志从"两条成对"变成"一条 clear 每拍一条"（照样刷屏），
+        //   而同一节里正在等的文档任务点会被顺手抹掉，症状是"文档那一项悄悄不做"。
+        if (this._activeMediaJobPending || this._isPlaying || this._activeMediaJobManaged || this._checkInterval) {
+          this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
+        }
         return false;
       }
 
@@ -10527,7 +10536,21 @@ var OMITONE_CODE_REV = '62aea53efc';
      * `media` 为空 = 这一页压根没有媒体元素，此时"框都做完了"才算数。
      */
     _shouldReleaseMediaPendingForCurrentCompletion: function (reason, media) {
-      if (!this._activeMediaJobPending && !this._isPlaying) return false;
+      // ⚠️ 批次 55-C：这一句原先**只查自报布尔**，而"放行"这件事自己就会把那两只布尔清零
+      //   （调用方拿到 true 后立刻 `_clearMediaPendingState()`）。于是自报全假的那一拍
+      //   这一句先拒绝放行 → 调用方只好走"还在等"那支，把 `_activeMediaJobPending`
+      //   重新武装起来（那一支还会打一条 `media pending`，因为放行时日志时钟一起被清零）
+      //   → 下一拍又满足放行 → 再清一次。两句话逐拍各执一词，**结构上不可能自己停下**。
+      //   现场实测（2026-11-14，用户挂着刷课，CDP 9334，`.workbuddy/field-ring57-before.txt`）：
+      //   `advance at 90% (locked 1x + not seekable)` 之后 `media pending` 与
+      //   `clear media pending` **每 500 毫秒成对出现**（15 条 clear 挤在 7 秒里），
+      //   两族合占 200 条环的 **41%** —— 证据窗只剩约 100 秒，而且
+      //   `_mediaBrokenSince` / `_mediaNoSourceSince` 每次刚攒起来就被清零，
+      //   批次 40 / 50 那两道有界放手在这一格里一秒都攒不起来。
+      //   「元素自己还在播」与「武装过一笔媒体任务」是同一种"有媒体信号"，必须一起算进来 ——
+      //   否则这一句就把自己刚清掉的状态当成了"没有媒体可管"的依据。
+      var stillPlaying = !!(media && media.isConnected && !media.paused && !media.ended);
+      if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
 
       var state = this._getVisibleTaskCompletionState();

@@ -38,19 +38,20 @@ npm run concat:check    # 只校验产物与片段是否一致（npm test 里已
 三条好记的规则：
 
 - **非方法属性基本都在 `10-config-state.js`**（`configs`、`_cellData`、`_questionSelectors`、
-  以及 121 个运行期状态字段）—— 但另有 36 个字段是**惰性初始化**的，不在那个声明表里，见下方说明
+  以及绝大多数运行期状态字段）—— 但**不是全部**，另有一批是"用到才建"的惰性字段，见下面那段
 - **所有 `_log*` / `_describe*` / `_diagnose*` 都在 `30-log.js`**
 - 抠题 / 填答 / 提交确认这一整块在 `75-quiz-dom.js`（`_questionSelectors` 起、`_handleSubmitConfirmDialog` 止）
 
 > ⚠️ **关于"状态字段都在一个文件里"这句 —— 别当成字面承诺。**
-> 实测（`node tools/audit-fields.js`，每次改动都会变，别背数字）：私有字段**用到 159 个**，
-> `10-config-state.js` **声明了 125 个**；剩下 36 个是**用到才建**的，两种写法：
-> - `if (!this._x) this._x = Object.create(null);`（`_seekTriedKeys` / `_taskGiveUpLogged` / `_mainFrameCrossOriginSince`）
-> - 读取处自带 `|| 0` 兜底（`if (now - (this._frameUnreadableLogAt || 0) > 15000)`）
+> 尺是 `node tools/audit-fields.js`（**每次改动都会变，别背数字**，下面是 2026-11-14 那次跑出来的）：
+> 私有字段**用到 232 个**，`10-config-state.js` 的声明表里**写了 166 个**；
+> 脚本把**不在那张表里**的分成两档，两种写法都是**刻意的**：
+> - **59 个**自带惰性初始化或读取兜底（正常）：`if (!this._x) this._x = Object.create(null);`
+>   （`_seekTriedKeys` / `_taskGiveUpLogged` / `_mainFrameCrossOriginSince`）／
+>   读取处自带 `|| 0`（`if (now - (this._frameUnreadableLogAt || 0) > 15000)`）
+> - **12 个**连兜底都没看到 —— 那一小撮值得人工看一眼
 >
-> 脚本还会单独列出**既不在声明表、也看不到兜底**的字段（当前 3 个），那几个值得人工看一眼。
->
-> 这是**刻意的**：惰性初始化不会被"某处忘了复位"弄坏，比依赖声明初值更抗错。
+> 惰性初始化不会被"某处忘了复位"弄坏，比依赖声明初值更抗错。
 > 代价是**找字段时不能只看 `10-config-state.js`** —— 用 `tools/audit-fields.js` 可以列出全量，
 > 或直接 `grep -rn "this\._字段名" src/page/`。
 > （本次审计已把主循环的 `_tickRunning` / `_tickStartedAt` / `_tickEpoch` 三个补进声明表 ——
@@ -69,8 +70,11 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 
 ## 这 16 个片段各自负责什么
 
-每个标题下面那行是**当前快照**（2026-10-10）：行数是片段文件的实际行数（含头部注释），
-方法数/状态字段数取自片段头部注释（由 `npm test` 里的 `tools/check.js` 强制校验，改了代码忘了改注释会红）。
+每个标题下面那行是**当前快照**（2026-11-14 实测）：行数是片段文件的实际行数（含头部注释，
+`wc -l` 同一把尺），方法数/状态字段数取自片段头部自己声明的清单。
+⚠️ **这一页是抄来的，抄来的东西必然过期** —— 现在有闸了：`npm run check` 第 26 项
+（真源 `tools/audit-slice-stats.js`）逐段比这一页与片段实际，**这一整页曾经 16 段全过期**
+（最远的 `50-captcha.js` 写 478 行 / 14 方法，实际 1008 行 / 27 方法）。
 
 三个合计数都是**会变的**，别背 —— 当场跑出来最准：
 
@@ -78,12 +82,14 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 node tools/check.js         # 校验各片段头部的「本段的方法 / 本段的状态字段」个数
 node tools/audit-fields.js  # 列全量私有字段：哪些不在声明表里、哪些连兜底都没有
 wc -l src/page/*.js         # 行数
+node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **423 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 433 个方法；状态字段 152 个。
-⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 16 项逐段核过，
-所以头部同步到位了，这里就不会漂。）
+（跑出来大致是：14 个域片段合计 **446 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 456 个方法；状态字段 162 个。
+⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
+第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
+它会把该填的数字直接报给你**。）
 
 > ⚠️ **上面「一句话地图」那张表的锚点指向这些标题 —— 所以标题里不要再塞数字。**
 > 之前标题写作 `` ### `40-media.js`（1108 行 / 42 方法） ``，GitHub 给它生成的 id 是
@@ -92,7 +98,7 @@ wc -l src/page/*.js         # 行数
 
 ### `00-shell-constants.js`
 
-*244 行*
+*386 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -104,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*741 行 / 4 方法 + 161 状态字段*
+*743 行 / 4 方法 + 162 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -114,7 +120,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `20-dom.js`
 
-*380 行 / 21 方法*
+*639 行 / 31 方法*
 
 跨域安全访问的**唯一入口**：`_safeDocOf` / `_safeWinDoc` / `_isFrameSameOrigin`
 （⚠️ **永远不要裸读跨域 iframe 的 `.document`** —— 抛出的 `SecurityError` 会静默打断整个 tick 循环，
@@ -123,14 +129,14 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `30-log.js`
 
-*267 行 / 8 方法*
+*376 行 / 9 方法*
 
 把状态转成「给人看的一行字」的辅助方法。规则：**所有 `_log*` / `_describe*` / `_diagnose*` 都在这里**。
 真正的日志出口 `emitRuntimeLog` 在外壳文件。
 
 ### `40-media.js`
 
-*1346 行 / 44 方法*
+*1367 行 / 44 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
@@ -138,13 +144,13 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `50-captcha.js`
 
-*478 行 / 14 方法*
+*1008 行 / 27 方法*
 
 验证码弹窗的检测、取图与识别；整页验证码模式（`_runStandaloneCaptchaMode`）。
 
 ### `60-tasks-detect.js`
 
-*1193 行 / 26 方法*
+*2173 行 / 43 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
@@ -155,7 +161,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*808 行 / 16 方法*
+*1455 行 / 33 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -165,7 +171,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*774 行 / 29 方法*
+*781 行 / 29 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
@@ -175,14 +181,14 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `65-discussion.js`
 
-*1743 行 / 51 方法*
+*1839 行 / 53 方法*
 
 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重。
 讨论任务点不在课程 iframe 内，点开会跳到独立讨论页 —— 所以它有一整套自己的页面判定与流程。
 
 ### `70-quiz-flow.js`
 
-*1284 行 / 47 方法*
+*2094 行 / 60 方法*
 
 答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
 `_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、
@@ -194,7 +200,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `72-quiz-answers.js`
 
-*1109 行 / 40 方法*
+*1177 行 / 42 方法*
 
 **答案本身**的处理（与"流程"分开）：答案缓存的读写（正确答案 / 已知错答 / 已提交答案
 `_loadQuizCorrectAnswerCache` / `_rememberCorrectQuizAnswers` / `_addWrongQuizAnswer`）、
@@ -207,7 +213,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `74-quiz-vision.js`
 
-*175 行 / 5 方法*
+*200 行 / 7 方法*
 
 **读图（视觉）**：把题目里的图片取出来（`_collectQuestionImages`）、交给视觉模型描述、
 再把描述并回题干（`_applyVisionToQuestions` / `_mergeVisionIntoTitle`）。
@@ -217,7 +223,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `75-quiz-dom.js`
 
-*1887 行 / 48 方法*
+*2112 行 / 52 方法*
 
 抠题与填答：从 DOM 里抠题干与选项、判定题型、单选 / 多选 / 判断 / 填空的填答实现、
 提交按钮与站点确认弹窗（`#workpop` / `#popok`）的处理。
@@ -228,14 +234,14 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `80-popup-quiz.js`
 
-*568 行 / 11 方法*
+*628 行 / 12 方法*
 
 视频内嵌弹题（弹窗题）的检测、填答、失败计数与放弃；
 「继续学习」提示按钮（不点它进不去正常播放页）。
 
 ### `90-console-api-startup.js`
 
-*239 行*
+*319 行*
 
 **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 `window.xxtAI` 控制台入口与启动逻辑。
 
