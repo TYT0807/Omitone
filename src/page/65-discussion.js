@@ -8,7 +8,7 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（51 个）：
+ * 本段的方法（53 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
  *   _unmarkDiscussionDone、_discussionPendingKey、_getDiscussionTries、
  *   _bumpDiscussionTry、_migrateDiscussionDoneOnce、_bindDiscussionOutcome、
@@ -17,6 +17,7 @@
  *   _scopedDiscussionFinishedFlag、_discussionBoxFinishedFlag、
  *   _discussionKeyOf、_collectDiscussionTargets、_discussionModuleName、
  *   _findDiscussionModuleFrames、_currentStudyParams、_logDiscussionResolveFail、
+ *   _discussionChapterCached、_discussionChapterRemember、
  *   _resolveDiscussionUrlFromModule、_discussionHealEligible、_findDiscussionTask、
  *   _logDiscussionAllSettled、
  *   _discussionPendingInfo、_shouldHoldDiscussionBeforeFinish、
@@ -599,6 +600,59 @@
     },
 
 
+    /**
+     * 章节页解析结果的缓存（批次 54）。
+     *
+     * 为什么必须有：`_tryDiscussionTask` 每 3 秒一轮，而第 2 步 `_findDiscussionTask`
+     * 对**每一枚**讨论模块各调一次 `_resolveDiscussionUrlFromModule` —— 每次一发
+     * `fetch(章节页)`。现场那一代（2026-11-14 量过：模块全部没有 src，第 1 步数不出卡片）
+     * 只要这几枚讨论**都已做完**，每一轮就全部返回空串、`return null`，下一轮原样重来 ——
+     * 3 枚模块 = **每分钟 60 发请求打在平台上，永不停**，用户只是挂着那一页而已。
+     *
+     * 两档有效期，按「这个结论会不会自己变」分：
+     *   · `url` / `finished` 各 10 分钟 —— 话题地址是服务端写死的；平台说「已完成」
+     *     短期内也不会翻回去（真要翻，10 分钟后照样重新量到）；
+     *   · `empty` 30 秒 —— 「章节页里还没卡片」「这一发没回数据」都会自己变（懒渲染、
+     *     网络抖动），不能按成功那一档冻 10 分钟，否则就成了"悄悄跳过任务点"。
+     *
+     * ⚠️ 键是**章节页绝对地址**，不是模块：同一枚讨论换个 `utenc` 就是另一个键，
+     * 那种情况下多抓一次是正确行为（平台换了说法，就该重新读）。
+     */
+    _DISCUSSION_CHAPTER_TTL: { ok: 600000, bad: 30000 },
+
+
+    /** 命中就返回那条缓存；过期就地删掉并返回 null（下次重抓）。 */
+    _discussionChapterCached: function (abs) {
+      var c = this._discussionChapterCache;
+      if (!c) return null;
+      var e = c[abs];
+      if (!e) return null;
+      var ttl = (e.kind === 'url' || e.kind === 'finished') ?
+        this._DISCUSSION_CHAPTER_TTL.ok : this._DISCUSSION_CHAPTER_TTL.bad;
+      if (Date.now() - (e.at || 0) > ttl) {
+        delete c[abs];
+        return null;
+      }
+      return e;
+    },
+
+
+    /** 写一条解析结果，顺带把已过期的清掉（防止换了几十个章节后缓存只涨不落）。 */
+    _discussionChapterRemember: function (abs, kind, url) {
+      var c = this._discussionChapterCache || (this._discussionChapterCache = {});
+      var now = Date.now();
+      var self = this;
+      Object.keys(c).forEach(function (k) {
+        var e = c[k];
+        var ttl = (e.kind === 'url' || e.kind === 'finished') ?
+          self._DISCUSSION_CHAPTER_TTL.ok : self._DISCUSSION_CHAPTER_TTL.bad;
+        if (now - (e.at || 0) > ttl) delete c[k];
+      });
+      c[abs] = { at: now, kind: kind, url: url || '' };
+      return c[abs];
+    },
+
+
     // 从讨论模块 iframe → 内嵌 #frame_content → 取回页面 HTML → 解析出讨论区地址
     _resolveDiscussionUrlFromModule: async function (mod) {
       if (!mod || !mod.frame) return '';
@@ -637,7 +691,18 @@
       var abs = chapterSrc;
       try { abs = new URL(chapterSrc, location.href).href; } catch (e1) {}
       trace.chapterUrl = String(abs).slice(0, 120);
+      // 先问缓存（批次 54）：命中就一发请求都不发。`serverFinished` 仍要写回**这一枚**
+      // 模块对象上 —— 调用方每轮重新 `_findDiscussionModuleFrames()`，拿到的是新包装对象，
+      // 它读的是 `modules[i].serverFinished`，不是缓存里那份。
+      var hit = this._discussionChapterCached(abs);
+      if (hit) {
+        this._discussionChapterCacheHits = (this._discussionChapterCacheHits || 0) + 1;
+        if (hit.kind === 'url') return String(hit.url || '');
+        if (hit.kind === 'finished') mod.serverFinished = true;
+        return '';
+      }
       var resp = null;
+      this._discussionChapterFetches = (this._discussionChapterFetches || 0) + 1;
       try {
         // ⚠️ 同样必须可超时：本函数在 _runTick 的讨论任务点链路上（`await _tryDiscussionTask()`），
         //    服务端不回数据时 await 会永久挂起。外层的 try/catch **拦不住挂起** —— 只有超时能。
@@ -648,6 +713,7 @@
         try { html = await this._withTimeout(resp.text(), 15000); } catch (e3) { html = null; }
       }
       if (typeof html !== 'string' || !html) {
+        this._discussionChapterRemember(abs, 'empty');
         this._logDiscussionResolveFail('fetch-failed', trace);
         return '';
       }
@@ -655,6 +721,7 @@
         html.match(/\bdata=["'](https?:\/\/groupweb\.chaoxing\.com\/course\/topic[^"']+)["']/i);
       if (!m) {
         trace.htmlChars = html.length;
+        this._discussionChapterRemember(abs, 'empty');
         this._logDiscussionResolveFail('no-topic-card', trace);
         return '';
       }
@@ -674,10 +741,13 @@
         // 把这枚模块**自己**也标上：调用方（`_findDiscussionTask` 第 2 步）要靠它把
         // 「平台说做完了」那一格记进「这一节的讨论都处理完了」那本账，而不是当成断链
         mod.serverFinished = true;
+        this._discussionChapterRemember(abs, 'finished');
         this._logDiscussionResolveFail('server-says-finished', trace);
         return '';
       }
-      return String(m[1]).replace(/&amp;/g, '&');
+      var topicUrl = String(m[1]).replace(/&amp;/g, '&');
+      this._discussionChapterRemember(abs, 'url', topicUrl);
+      return topicUrl;
     },
 
 
@@ -1386,10 +1456,12 @@
 
 
     // 判据拒了也要留话 —— 否则"为什么这条讨论没发"和"页面不是讨论页"在日志里长得一样。
-    // ⚠️ 节流从 30 秒放到 **120 秒**：刷课时这条每 tick 都会被 `study-page` 拒一次，
+    // ⚠️ 节流从 30 秒放到 **120 秒**：这一支曾经每 tick 都会被 `study-page` 拒一次，
     //    30 秒等于一条都没挡住（现场实测约 31 秒一条，和 `media pending` 一起把
     //    200 条日志环刷满，真正要看的「为什么跳过这一节」几条分钟后就查不到了）。
     //    换了**别的**理由仍然立刻出日志 —— 节流只压同一条重复。
+    //    批次 54-D 之后，刷课页那一支先被 `_studyDeclineAnnounced` 收成"一份页面只说一次"，
+    //    这把 120 秒的尺主要管的是**还在反复重算的其它理由**（如非课程页的 `return-jump-expired`）。
     _declineDiscussionPage: function (reason, info) {
       var now = Date.now();
       var signature = String(reason || '');
@@ -1425,6 +1497,30 @@
       }
       var now = Date.now();
       var href = String(location.href || '');
+      /**
+       * 刷课页这一支**只由网址决定**（`_isStudyCourseHref` 是一串纯网址正则），所以提到缓存判定
+       * 之前问一次（批次 54）。不提的话，为了得出"这一页不是回帖页"这个永远不会变的结论，
+       * `_computeDiscussionPage` 每 2 秒要把 `document.body.innerText` 前 3000 字读出来
+       * 再跑一遍正则。
+       *
+       * ⚠️ 日志键从"整条网址"改成**这一份文档**（批次 54-D）—— 现场量出来的：
+       *   同一份刷课页上相邻两条 `study-page` 间隔 ~100 秒，而对同一网址摘要连采三次，
+       *   **只有 `chapterId` 那一格在变**（`courseId` / `clazzid` / `cpi` / `enc` / `openc` 全部不变）。
+       *   也就是说"每网址一条"= **每一节一条**：刷一节课照样几十条，
+       *   和旧写法那条 120 秒节流在用户眼里长得一模一样（症状没变）。
+       *   现在一份页面只说一次：翻到第几节都不再补，但**换页面／刷新之后还会说**，
+       *   所以"平台真把回帖页搬到 study 形状的网址上"这种怪事仍然看得见 ——
+       *   这一族不许被永久消音（AGENTS §2 #7：静默永久跳过是不可接受的）。
+       */
+      if (this._isStudyCourseHref(href.toLowerCase())) {
+        var announced = this._studyDeclineAnnounced === true;
+        this._studyDeclineAnnounced = true;
+        this._discussionPageUrl = href;
+        this._discussionPageAt = now;
+        this._discussionPageResult = false;
+        if (announced) return false;
+        return this._declineDiscussionPage('study-page', { href: href.slice(0, 90) });
+      }
       if (this._discussionPageUrl !== href) {
         this._discussionPageUrl = href;
         this._discussionPageAt = 0;

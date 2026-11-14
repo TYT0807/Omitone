@@ -3190,7 +3190,7 @@
     而分类计数**本来就是 0**，于是把「tryBudget 为 0」报成「这个数没读回来」。
     改成先 `typeof === "number" && isFinite` 再取值、取不到才给哨兵。
     （AGENTS §5「断言里出现的每一个数都要说得出它是从页面读回来的」的另一半：**读回来的 0 不许当缺失**。）
-  - **验证**：完整 `npm run e2e` 全绿 **109 个场景 / 1136 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`、EXIT=0）；
+  - **验证**：完整 `npm run e2e` 全绿 **109 个场景 / 1136 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`、EXIT=0）； <!-- 历史计数:start --><!-- 历史计数:end -->
     讨论定向跑 91/91；`--validate-fixtures` 离线扫 **76 页夹具**全部可解析；`npm test` 与 `npm run check` 全绿；
     沙盒 `--full` 收尾实测 **EXIT=0 / `passed:true` / 109 场景全 `"failed": 0` / 1356 项 / `failures:[]` / `gates:[]` / `sourceUnchanged:true`**
     （前一轮的出网红见上一条；那一轮另有一条 `sourceUnchanged:false` —— 是**我自己**在跑的过程中改了 CHANGELOG，
@@ -3277,6 +3277,137 @@
   - ⚠️ **公开文档里凡「代码片段中有竖线」，必须写成 `\|`**；凡「按文档声明核对实际」的账本
     （体积、页数、项数、行数），改动后要么当场重算、要么让守卫去算。
     本轮三处症状（口径陈旧 / 表格散架 / 体积过期）本质是**同一件事**：门面是手抄的，手抄必然过期。
+
+---
+
+- **60. 批次 54：讨论章节页不再每 3 秒重抓一次，刷课页也不再每 2 秒重算「这不是回帖页」**（2026-11-14）
+  - **症状 ①（打在平台上的那一份）**：批次 52 那一代（模块 iframe **没有 src**、话题卡片不在任何活文档里）
+    的第 2 步 `_resolveDiscussionUrlFromModule` **每次被问都向平台重新 `fetch` 一遍章节页**，
+    而 `_tryDiscussionTask` 每 3 秒问一轮、一轮问遍这一节所有讨论模块。
+    关键是**"这一节的讨论全做完了"并不是出口**：三枚模块要么解出地址、要么命中 `server-says-finished`，
+    每一枚每一轮都照抓 —— 三个讨论的章节 = **每分钟约 60 发请求，只要用户停在这一节就永不停**。
+    现场量不到（这一轮那一节讨论模块数为 0，40 秒里只抓到 3 发），比率是按 `3 s` 周期与
+    `_findDiscussionTask` 第 2 步的循环算出来的，并在沙盒里逐轮钉死。
+    ⚠️ **为什么现场量不到，这条本轮量清楚了**：主世界的 `performance.getEntriesByType('resource')`
+    **看不见 content script（隔离世界）发出去的那一发 fetch** —— 20 秒窗口里 237 条 chaoxing 条目
+    一条没增，只涨页面自己的 `detect.chaoxing.com/api/monitor` 心跳。所以"到底发了几发"**只能由插件自己记账**
+    （`_discussionChapterFetches` / `_discussionChapterCacheHits` 两本计数就是为此而加），
+    别指望现场用资源计时凑出这个数。
+  - **症状 ②（挤日志的那一份）**：`_isDiscussionPage()` 为了得出「这一页不是回帖页」这个
+    **由网址单独决定**的结论，每 2 秒把 `document.body.innerText` 前 3000 字读出来再跑一遍正则；
+    而 `_declineDiscussionPage('study-page')` 每 120 秒**重播一条**
+    `discussion page declined {reason:"study-page"}` —— 刷一节课就是几十条，
+    把 200 条日志环里真正要看的证据挤掉（批次 37 / 51 同族）。
+    ✅ **这一条本轮现场量到了**（`node tools/field-logs.js --tail=200`，只读、只取 `runtimeLogs` 那一个键）：
+    同一个 `studentstudy?…` 网址上的 `discussion page declined {reason:"study-page"}`
+    两条间隔 **121 秒**（就是那把 120 秒的尺），而整份 200 条环里 `discussion page declined`
+    占了 **13 条 ≈ 6.5%**（另外 5 条落在 `i.mooc.chaoxing.com/space/index` 那一页）。
+    同一段现场还量到 `search job: no attachments and no synthetic job` 24 条
+    （**成串出现**：每 ~5 秒一条、连着 5 条，然后安静十几分钟 —— 那把尺是 `>5000ms`，不是每分钟），
+    留给下一批单独查（见「留给下一批」①）。
+  - **处置**：
+    ① 新增 `_discussionChapterCached` / `_discussionChapterRemember`，按**章节页绝对地址**缓存解析结果，
+    **两档有效期**：`url` / `finished` = 10 分钟（平台自己的说法，变得慢），
+    `empty`（`fetch-failed` / `no-topic-card`）= **30 秒**（懒渲染与网络抖动会自己好，
+    按 10 分钟冻住就成了悄悄跳过任务点，AGENTS §2 #6/#7）。写入时顺带扫掉过期条目（换几十章后不落盘）。
+    ⚠️ 命中缓存时仍要 `mod.serverFinished = true` **写回这一枚模块** —— 调用方每轮重新
+    `_findDiscussionModuleFrames()`，拿到的是新包装对象，它读 `modules[i].serverFinished`，不读缓存。
+    另加两本计数 `_discussionChapterFetches` / `_discussionChapterCacheHits`（断言与现场都要能问"到底发了几发"）。
+    ② 把 `_isStudyCourseHref(href)` 那一票**提到 2 秒缓存判定之前**（它是纯网址正则，不含 DOM），
+    刷课页每轮直接返回 `false`，不再读整页文字。
+    ③ 那句拒绝**不取消，但一份页面只说一次**（`_studyDeclineAnnounced`，54-D）。
+    ⚠️ 这里第一版写的是"每个网址只播一条"（`_discussionPageUrl` 变过才播），**上线前被现场打回去了**：
+    只读探针连量三次（`node tools/debug-probe.js --port=9334 --file=.workbuddy/probe55-url.expr`，
+    参数只落「长度:sha 前 8 位」、不落原值），刷课页网址上**只有 `chapterId` 在变**
+    （`courseId` / `clazzid` / `cpi` / `enc` / `openc` 的哈希在换节前逐位相同，换节那一刻只有
+    `chapterId` 从 `255ef785` 变成 `255ef788`）—— 于是"每个网址一条"实际等于**"每换一节补一条"**，
+    而用户刷一节课要换几十节。改成文档级一次性记号后，那把 120 秒的尺不再被喂：
+    本轮复测（现场那份**还没加载批次 54** 的构建）`discussion page declined` 相邻间隔
+    **120 / 121 / 122 秒**、200 条环只覆盖 **829 秒**，正是要压下去的那个形状。
+    ⚠️ **不许永久消音**（AGENTS §2 #7）：记号挂在 content script 实例上，重载扩展 / 新开一页
+    仍会说一次 —— 平台真把回帖页搬到 study 形状的网址上时那句话仍然看得见。
+  - **断言**：`tools/browser-e2e.js` 三处场景共 **+11 条**（1136 → 1147）。
+    `/disc-mod-a` 逐轮记 `fetch` / `hits` 的**差值**并断言序列 `'1,1,1,0'` / `'0,1,2,3'`
+    （第一版断的是总数 `6`，被测试纠正了：第 2 步的循环一发现没做完的就 `return`，
+    "这一轮问了几枚"本身就是控制流的一部分，总数会把这件事糊过去）；
+    再加「倒退 11 分钟后第 5 轮必须重新抓 3 发」与「一分钟后再问一遍：`fetch 0` / `hits 3`，
+    而依据仍然说得出 3 / 1 / 2 / 0」；两套来源（页面上包装 `window.fetch` 数到的 vs 生产自己累加的）互相对上。
+    `/disc-mod` 钉两档有效期（`url:2 finished:1 empty:2` → 倒退 60 秒 `empty` 必须已过期 →
+    倒退 11 分钟一格不许留）。场景 41 用**自己装的 `innerText` 取值器**数五轮里的整页读次数（必须 0），
+    并断同一个网址上 `discussion page declined` 只播一条。
+    54-D 在同一个场景再加两条：`history.replaceState` 连换五节（**只有 `chapterId` 在变，其余照抄现场**）
+    之后 `study-page` 仍只有一条；再把记号拨回"这一份还没说过"、多问一轮，必须**又出一条** ——
+    这一族没有被永久消音。⚠️ 这两条第一版**读成 0 条**：`emitRuntimeLog` 走 `postMessage` 是异步送达的，
+    判据跑完立刻读缓冲一定空（AGENTS §5 那个老坑本轮又踩一次），改成"再等一拍（400 毫秒）才数"；
+    夹具还要自己钉 `_studyDeclineAnnounced=false` —— 前一轮把它置了位，后一条从第一拍起就没话可说。
+  - **四个注入的反向验证，各红预期那几条**（`.workbuddy/reverse54.js`，EXIT=0；
+    收尾把切片与 `page.js` 与**注入前保存的基线**逐字节比，两边都一致）：
+    I1 摘掉缓存查询 → 红 4 条（序列 / 两套来源 / 10 分钟那一档 / 一分钟后再问）；
+    I2 命中时不回写 `mod.serverFinished` → **第一版红 0 条**，因为稳态那一句依据被 60 秒节流挡住了，
+    这一格实际是**零覆盖** —— 补「把 `_discussionSettledLogAt` 拨过 60 秒再问一轮」（等价于现场一分钟后的那一轮，
+    且第 4、5 轮"没再播"已在前面单独钉死，不是在拍内替被测代码清计时器）之后红 1 条；
+    I3 把 `bad` 档拉成与 `ok` 同档 → 红 1 条；I4 删掉网址短路 → 红 2 条（`readsDuring:5`、`declined:5`）。
+    ⚠️ I1 第一次报"注入没进构建产物"是**验证脚本自己的 bug**：切片是 LF、`page.js` 是 CRLF，
+    多行锚点不换算行尾就必然找不到 —— 单行锚点的 I2/I3/I4 全过，只有多行的 I1 栽在这条上。
+    **54-D 另两个注入**（`.workbuddy/reverse55d.js`，EXIT=0，收尾同样与注入前基线逐字节比）：
+    把"这一份说过没有"的记忆摘掉（每节都当第一次见，也就是现场那个每 ~100 秒一条的形状）
+    → 红 3 条，新那条给出 `afterChapters:5`，正是被它抓住的；反过来让刷课页这一支彻底闭嘴
+    （连第一次都不说）→ 也红 3 条，"没有被永久消音"与"只播一条"同时报警。
+    两个方向各红一次 —— 这一格钉的是**次数**，不是某个字面值。
+  - **验证**：`npm run e2e` 全量 **109 场景 / 1147 项全绿**（`e2e-counts.json` `passed:true`、E2E_EXIT=0）；
+    `npm run check` 25 项全绿、`npm test` EXIT=0。沙盒 `--full` 跑了三次，两次红都**不在代码上**：
+    第一次 `SBX_EXIT=1` 只红在 `tools/check.js` 的**计数守卫**（文档还写着 1144），回填后复跑；
+    第二次 `sourceUnchanged:false` —— 我在它跑的过程中往 CHANGELOG 补了下面那条现场量测，
+    **这正是批次 50 立的纪律在起作用**（跑的时候别改源，改完再跑）。第三次干净：
+    `passed:true` / 109 场景 / 沙盒口径 1365 条 / `failures:[]` / `gates:[]` / `sourceUnchanged:true`。
+    ⚠️ 看到 `sourceUnchanged:false` **先想"我刚才改了哪个文件"**，别去改判据。
+    **54-D 落地后按同一顺序重跑**：`npm run check` 25 项 EXIT=0 → `npm test` EXIT=0 →
+    沙盒 `--full` `SBX_EXIT=0` / 109 场景 / 沙盒口径 **1367** 条 / `failures:[]` / `gates:[]` /
+    `sourceUnchanged:true`（文档与说明书的改动全部在那之前落盘，这一次一趟过）。
+  - **54-D 现场正证**（重载扩展 + F5 之后在 9334 那一页读回来，`.workbuddy/field56-proof.js`，只读）：
+    ① **构建指纹三格全翻绿** —— 重载前 `typeof app._studyDeclineAnnounced` 是 `undefined`、
+    `_discussionChapterCached` 也是 `undefined`（现场那份连批次 54 都没加载），
+    重载后分别是 `boolean`（值 `true`）/ `function`，且 `String(app._isDiscussionPage)` 里含 `_isStudyCourseHref`。
+    ② **节拍按文档分堆** —— 同一把尺，**重载前**那份 200 条环（覆盖 1022 秒）里
+    `discussion page declined` **8 条 = 环的 4.0%**，相邻间隔 120 / 121 / 122 秒；
+    **重载后**这份文档活了 314 秒，环里属于它的**只有 1 条**（页面开始后 18.6 秒，
+    由 `performance.now()` 与 `_discussionDeclineLogAt` 同时读回算出），其余 4 条按 `+Xs` 偏移
+    全部落在重载之前。⚠️ **不分堆就会读反**：那条环同时装着两份文档的话，
+    "还是每 120 秒一条"看着像没修，其实新构建那一格一条都没多。
+    ③ 这 314 秒里换过至少两节（`study begin` 的 `attachments` 从 1 变 0 再变 1，`chapterId` 摘要在变），
+    换节**没有**补出第二条 —— 正是"每份页面只说一次"。
+    ⚠️ **讨论真发帖这一条仍然没有现场正证**（现场那一节讨论模块数为 0），别写成已实战验证。
+  - **顺带更正一条旧口径**：批次 52 收尾记的「提交发版之后现场仍跑旧构建」已解除 ——
+    用户重新加载扩展 + F5 之后，在 9334 那一页读回 `_discussionModuleName` / `_logDiscussionResolveFail`
+    都是 `function`、`_findDiscussionModuleFrames` 源码里带 `taken`，现场加载的确实是含批次 52 的那一份。
+    ⚠️ **讨论发帖这一条仍然没有现场正证**（现场那一节讨论模块数为 0），别写成已实战验证。
+  - **留给下一批**：① **本轮现场顺手量到的**：`search job: no attachments and no synthetic job`
+    是**成串**出现的（每 ~5 秒一条、连 5 条，然后安静十几分钟；尺在 `60-tasks-detect.js:2105` 的 `>5000ms`），
+    而它是**没点名的 warn** —— 按批次 44-⑤ 的兜底，这类 warn 会把右下角写成「有情况」。
+    要查的是：**这一节本来就没有可做任务时，右下角该不该显示「有情况」**（症状在用户眼睛上，不在日志里）；
+    ② 词表探针推广到投票 / 作业那一族（批次 21 / 52 同族风险）；
+    ③ `src/page/README.md` 里 16 条「每片段行数 / 方法数」**全部与实测对不上**（15/16 行数过期、
+    12/14 方法数过期，方向全是"变大"，如 `50-captcha` 写 478 行、实际 1008 行），
+    且那个数字**连口径都没写清**（是总行还是代码行？）——
+    要么按一条明确的尺加守卫，要么把这列删掉，**错的地图比没有地图更糟**；
+    ④ `/disc-mod-a` 稳态那一轮的"每分钟再播一次依据"目前靠拨表模拟，真实 60 秒跨轮没测；
+    ⑤ **本轮收尾复测现场时量到的更大一份**（批次 55-C）：`node tools/field-logs.js --tail=200`
+    这一份 200 条环**只覆盖 829 秒**，其中 `media pending, delay completion` 62 条（31%）
+    + `clear media pending` 31 条（15.5%）= **46%**。间隔分布说明它是**两个形状**：
+    中段按 30 / 31 秒一条（批次 51 那道闸是好的），而**一节课的最后一分钟**变成 0 / 1 秒成对轮流
+    （两边 reason 都是 `completion-check`，清掉那侧写 `completed-visible-task:completion-check`）——
+    也就是批次 51 立的那句"元素还在播就不许因为『框都显示完成』放行"在**片尾那一格**没兜住：
+    `_shouldReleaseMediaPendingForCurrentCompletion`（`70-quiz-flow.js:64`）问的是
+    `_activeMediaJobManaged || _isPlaying` 这两个**自报布尔**，而 `_clearMediaPendingState()`
+    自己会把 `_mediaWaitLogAt` 与 `_isPlaying` 一起清零 → 下一拍 OCS 重新拿到元素又武装上，
+    30 秒那道闸被"清除即归零"绕过去。修法方向同上：**问元素自己**（拿到元素、没结束、`paused` 为假
+    = 还在播 → 不因为框显示完成而放行），批次 40 / 50 的有界放手在它下面一层，仍然走得到。
+    ⚠️ 54-D 重载现场**之前**又量了一次同一把尺（`.workbuddy/field-ring57-before.txt`，
+    200 条覆盖 1022 秒）：`media pending, delay completion` **66 条 = 33.0%**
+    + `clear media pending` **16 条 = 8.0%** = **41%**，`clear` 那侧 14 / 16 条相邻间隔 ≤1 秒，
+    中段仍夹着 30 / 31 秒一格的健康段（批次 51 那道闸在**非片尾**是好的）；
+    两边 reason 照旧是 `completion-check` 与 `completed-visible-task:completion-check` ——
+    与上面那份互相印证，不是单次巧合。
 
 ---
 

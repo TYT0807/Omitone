@@ -9283,6 +9283,16 @@ SCENARIOS.push({
       'out.again=again;' +
       // 第 2 步（从模块解地址）在这页上**走不到**：B 那枚的同源内层帧让第 1 步先数出了卡片。
       // 「第一个已发过 ⇒ 拿到的必须是第二个」那条断言因此挪去 /disc-mod-a（现场那一代，第 1 步恒空）
+      // 批次 54：两档有效期必须**真的不一样** —— 断链（章节页还没卡片 / 这一发没回数据）30 秒就该
+      // 重试，解出地址与平台已记完成留 10 分钟。逐格问一次 `_discussionChapterCached`：
+      // 它自己会把过期的那一格删掉，所以"数得出几格"就是"没过期的那几格"。
+      'function kindsLive(){var o={};var c=app._discussionChapterCache||{};' +
+      '  Object.keys(c).forEach(function(k){var e=app._discussionChapterCached(k);' +
+      '    if(e)o[e.kind]=(o[e.kind]||0)+1;});return o;}' +
+      'out.kindsFresh=kindsLive();' +
+      'var cA=app._discussionChapterCache||{};' +
+      'Object.keys(cA).forEach(function(k){cA[k].at-=60000;});out.kinds60s=kindsLive();' +
+      'Object.keys(cA).forEach(function(k){cA[k].at-=660000;});out.kinds11min=kindsLive();' +
       'return out;})()'
     );
     // 日志走 postMessage，异步送达 —— 不等一拍就读，「没发」与「没等到」长得一模一样
@@ -9351,6 +9361,16 @@ SCENARIOS.push({
       !!r && !!r.again && r.again.returned === '' && r.again.second === '' &&
       byReason('server-says-finished').length === 1,
       JSON.stringify({ again: r && r.again, rows: byReason('server-says-finished').length }));
+    // ---- 批次 54：章节页缓存的两档有效期 ----
+    check('缓存把五种出口都记上了：2 格解出地址 + 1 格平台已记 + 2 格断链，没 mid 那一枚不占格',
+      !!r && !!r.kindsFresh && r.kindsFresh.url === 2 && r.kindsFresh.finished === 1 &&
+      r.kindsFresh.empty === 2, JSON.stringify(r && r.kindsFresh));
+    check('两档不一样：倒退 60 秒后断链那两格必须已过期（30 秒那一档），地址与平台已记仍留着（10 分钟那一档）',
+      !!r && !!r.kinds60s && !r.kinds60s.empty && r.kinds60s.url === 2 && r.kinds60s.finished === 1,
+      JSON.stringify(r && r.kinds60s));
+    check('再倒退到 11 分钟前：一格都不许留（不然平台后来改了主意，我们永远读不到新说法）',
+      !!r && !!r.kinds11min && Object.keys(r.kinds11min).length === 0,
+      JSON.stringify(r && r.kinds11min));
   }
 });
 
@@ -9391,19 +9411,59 @@ SCENARIOS.push({
       'app.configs=Object.assign({},app.configs,{enableDiscussion:false});' +
       'try{localStorage.removeItem(app._discussionStoreKey);}catch(e){}' +
       'app._discussionResolveFailLog=null;app._discussionScrollAt=0;app._discussionSettledLogAt=0;' +
+      // 批次 54：本场景自己钉住章节页缓存与两本计数 —— 背景的 tick 早就把这几枚模块抓过一遍，
+      // 不复位就会拿"别人那一轮的计数"当这一轮的证据（夹具必须自己钉住它依赖的共享状态）。
+      // fetch 那一本记在**页面上**（包装 window.fetch 数真请求），与生产自增的那本是两套来源。
+      'app._discussionChapterCache=null;app._discussionChapterFetches=0;app._discussionChapterCacheHits=0;' +
+      'window.__chFetch=0;' +
+      'if(!window.__chFetchHook){window.__chFetchHook=1;var _of=window.fetch;' +
+      '  window.fetch=function(u){try{if(String(u).indexOf("/bbscircle/chapter")>=0)window.__chFetch++;}' +
+      '    catch(e){} return _of.apply(this,arguments);};}' +
       'var cardsDoc=app._safeDocOf(document.querySelector("#iframe"));' +
       'var out={mods:app._findDiscussionModuleFrames().length,' +
       '  srcs:cardsDoc?cardsDoc.querySelectorAll("iframe.ans-module[src]").length:-1,' +
       '  anchors:cardsDoc?cardsDoc.querySelectorAll("iframe.ans-module").length:-1,' +
       '  boxes:cardsDoc?cardsDoc.querySelectorAll(".ans-attach-ct").length:-1,' +
       '  cards:cardsDoc?cardsDoc.querySelectorAll("#topicMainDiv").length:-1,' +
-      '  step1:app._collectDiscussionTargets().length, tasks:[]};' +
+      '  step1:app._collectDiscussionTargets().length, tasks:[], rounds:[]};' +
       'for(var p=0;p<4;p++){' +
+      '  var f0=window.__chFetch,h0=app._discussionChapterCacheHits;' +
       '  var t=await app._findDiscussionTask();' +
+      // 逐轮记差值，不记总数：第 2 步的循环一发现没做完的就 return，
+      // 所以"这一轮问了几枚"本身就是控制流的一部分，总数会把这件事糊过去
+      '  out.rounds.push({fetch:window.__chFetch-f0,hits:app._discussionChapterCacheHits-h0});' +
       '  if(!t){out.tasks.push(null);continue;}' +
       '  out.tasks.push({key:String(t.key||""),name:String(t.name||""),url:String(t.url||"")});' +
       '  app._markDiscussionDone(t.key);}' +
+      // 再把整张缓存倒退 11 分钟（超过"解出地址 / 平台已记完成"那一档的 10 分钟）——
+      // 稳态那一轮必须重新抓一遍，否则平台后来改了主意我们就永远读不到
+      'var c5=app._discussionChapterCache||{};' +
+      'Object.keys(c5).forEach(function(k){c5[k].at-=660000;});' +
+      'var f5=window.__chFetch;var t5=await app._findDiscussionTask();' +
+      'out.round5={task:t5?String(t5.name||""):null,fetch:window.__chFetch-f5,' +
+      '  hits:app._discussionChapterCacheHits};' +
+      // 日志是 postMessage 异步送达的：不等一拍就读，「没播」与「没等到」同形
+      '  await new Promise(function(rr){setTimeout(rr,320);});' +
+      '  function settledSoFar(){return (window.__dm3||[]).filter(function(m){' +
+      '    return m.message==="discussion nothing pending";});}' +
+      '  out.settledAt5=settledSoFar().length;' +
+      '  app._discussionSettledLogAt-=61000;' +
+      '  var f6=window.__chFetch,h6=app._discussionChapterCacheHits;' +
+      '  var t6=await app._findDiscussionTask();' +
+      '  out.round6={task:t6?String(t6.name||""):null,fetch:window.__chFetch-f6,' +
+      '    hits:app._discussionChapterCacheHits-h6};' +
+      '  await new Promise(function(rr){setTimeout(rr,320);});' +
+      '  var st6=settledSoFar();' +
+      '  out.settledAt6=st6.length;' +
+      '  out.lastSettled=st6.length?{total:Number(st6[st6.length-1].meta.total),' +
+      '    serverFinished:Number(st6[st6.length-1].meta.serverFinished),' +
+      '    believeLocal:Number(st6[st6.length-1].meta.believeLocal),' +
+      '    tryBudget:Number(st6[st6.length-1].meta.tryBudget),' +
+      '    unexplained:Number(st6[st6.length-1].meta.unexplained)}:null;' +
       'out.doneKeys=Object.keys(app._discussionDoneMap());' +
+      // 两套来源必须对上：`realTotal` 是页面上包装 window.fetch 数到的真请求，
+      // `selfTotal` 是生产自己累加的计数 —— 只断其中一个，"计数器写歪了"与"真少发了"同形
+      'out.realTotal=window.__chFetch;out.selfTotal=app._discussionChapterFetches;' +
       'return out;})()'
     );
     // 日志走 postMessage，异步送达 —— 不等一拍就读，「没播」与「没等到」同形
@@ -9451,8 +9511,28 @@ SCENARIOS.push({
       !!settled && settled.total === 3 && settled.serverFinished === 1 && settled.believeLocal === 2 &&
       settled.tryBudget === 0 && settled.unexplained === 0,
       JSON.stringify({ settled: settled, fails: log.fails }));
-    check('那句依据 60 秒只播一条（第四轮没有再播一遍）',
-      (log.settled || []).length === 1, JSON.stringify({ count: (log.settled || []).length }));
+    check('依据 60 秒只播一条：第 4、5 轮都没再播（第 6 轮是把那把尺拨过 60 秒之后才有的第二条）',
+      !!r && r.settledAt5 === 1 && r.settledAt6 === 2,
+      JSON.stringify(r && { settledAt5: r.settledAt5, settledAt6: r.settledAt6, count: (log.settled || []).length }));
+    // ---- 批次 54：第 2 步不再每轮重抓章节页 ----
+    var fetchSeq = ((r && r.rounds) || []).map(function (x) { return x.fetch; }).join(',');
+    var hitSeq = ((r && r.rounds) || []).map(function (x) { return x.hits; }).join(',');
+    check('逐轮抓的是 1,1,1,0、命中的是 0,1,2,3：只有"轮到还没抓过的那一枚"才发请求，稳态那一轮一发都不发' +
+      '（旧写法每轮每枚各一发，每 3 秒一轮 = 每分钟 60 发打在平台上且永不停）',
+      fetchSeq === '1,1,1,0' && hitSeq === '0,1,2,3',
+      JSON.stringify({ fetchSeq: fetchSeq, hitSeq: hitSeq, rounds: r && r.rounds }));
+    check('两套来源互相对上：页面上包装 window.fetch 数到 6 发 == 生产自己记的 6 发（含第 5 轮重抓的 3 发）',
+      !!r && r.realTotal === 6 && r.selfTotal === 6,
+      JSON.stringify({ realTotal: r && r.realTotal, selfTotal: r && r.selfTotal }));
+    check('成功那一档只有 10 分钟：整张缓存倒退 11 分钟后第 5 轮必须重新抓 3 发（命中数停在 6 不再涨）',
+      !!r && !!r.round5 && r.round5.fetch === 3 && r.round5.hits === 6 && r.round5.task === null,
+      JSON.stringify(r && r.round5));
+    check('一分钟后再问一遍：稳态那一轮一发都不发（3 发变 0 发），而依据仍然说得出 3 / 1 / 2 / 0 ——' +
+      '「平台已记完成」必须写回这一枚模块，调用方读的是模块不是缓存（旧写法每轮重抓才有这一格）',
+      !!r && !!r.round6 && r.round6.fetch === 0 && r.round6.hits === 3 && r.round6.task === null &&
+      !!r.lastSettled && r.lastSettled.total === 3 && r.lastSettled.serverFinished === 1 &&
+      r.lastSettled.believeLocal === 2 && r.lastSettled.tryBudget === 0 && r.lastSettled.unexplained === 0,
+      JSON.stringify(r && { round6: r.round6, lastSettled: r.lastSettled }));
   }
 });
 
@@ -11640,6 +11720,79 @@ SCENARIOS.push({
       live && live.clicks === 0, JSON.stringify(live));
     check('真跑一轮 tick：也没有任何"检测到讨论页 / 已发回帖"的动作',
       live && live.talkLogs === 0, JSON.stringify(live));
+
+    // ---- 批次 54：刷课页上这条判据不再每 2 秒重算一遍 ----
+    // 「这一页是不是回帖页」在刷课页上**只由网址决定**（`_isStudyCourseHref` 是一串纯网址正则）。
+    // 旧写法仍然每 2 秒跑一遍完整判据 —— 为了得出这个永远不会变的结论，每 2 秒读一次
+    // `document.body.innerText` 前 3000 字并跑正则，且每 120 秒重播一条拒绝日志。
+    var cost = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      // 共享状态自己钉：enableDiscussion 关了判据第一行就返回（那就不是在测这一支了），
+      // 而上面那一发 `_runTick` 可能刚把答题那三个标志立起来 —— 那样判据根本走不到网址那一步
+      'app.configs=Object.assign({},app.configs,{enableDiscussion:true});' +
+      'app._quizSubmitPending=false;app._quizReadyToSubmit=false;app._quizInProgress=false;' +
+      // 生产里唯一读整页文字的地方就是 `_computeDiscussionPage` 的 bodyHit 那一行。
+      // 读数在**同步的五次调用前后各取一次** —— 中间不可能插进别的代码，否则这个数
+      // 会把背景 tick 自己的读也算进来，就不再属于这条断言了。
+      'var proto=Object.getOwnPropertyDescriptor(HTMLElement.prototype,"innerText");' +
+      'var reads=0;Object.defineProperty(document.body,"innerText",{configurable:true,' +
+      '  get:function(){reads++;return proto.get.call(this);}});' +
+      'app._discussionPageUrl="";app._studyDeclineAnnounced=false;var gateBad=false;var r0=reads;' +
+      'for(var i=0;i<5;i++){' +
+      // 每轮把两道闸都拧回"已过期"（2 秒结果缓存 + 120 秒日志节流）——
+      // 于是"还在不在重算 / 还在不在重播"完全由生产决定，不是被闸挡出来的
+      '  app._discussionPageAt=Date.now()-3000;app._discussionDeclineLogAt=Date.now()-121000;' +
+      '  app._discussionDeclineSignature="";' +
+      '  if(app._isDiscussionPage()!==false)gateBad=true;}' +
+      'var readsDuring=reads-r0;delete document.body.innerText;' +
+      'setTimeout(function(){var decl=0;got.forEach(function(m){' +
+      '  if(m.message==="discussion page declined")decl++;});' +
+      '  res({readsDuring:readsDuring,declined:decl,gateBad:gateBad});},400);});})()'
+    );
+    check('判据五轮都没说这是讨论页，且一次都没读整页文字（结论只由网址决定，不必重算）',
+      cost && cost.gateBad === false && cost.readsDuring === 0, JSON.stringify(cost));
+    check('同一个网址上「discussion page declined」只播一条（旧写法每过 120 秒就重播一遍）',
+      cost && cost.declined === 1, JSON.stringify(cost));
+
+    // ---- 批次 54-D：日志键从"整条网址"改成"这一份文档" ----
+    // 现场三次采样同一个刷课页（只读、只比摘要）：相邻两条 study-page 拒绝相隔 ~100 秒，
+    // 而网址里**只有 chapterId 那一格在变**（courseId / clazzid / cpi / enc / openc 全不变）。
+    // 所以"每网址一条"其实等于"每节一条"—— 刷一节课照样几十条，症状没变。
+    // 这里用合成号造同样的形状：连翻五节只许说一次，而"这一页还没说过"仍要说（不许永久消音）。
+    var perDoc = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'app.configs=Object.assign({},app.configs,{enableDiscussion:true});' +
+      'app._quizSubmitPending=false;app._quizReadyToSubmit=false;app._quizInProgress=false;' +
+      'var base=location.pathname;' +
+      'app._studyDeclineAnnounced=false;app._discussionPageUrl="";' +
+      'var count=function(){var n=0;got.forEach(function(m){' +
+      '  if(m.message==="discussion page declined"&&m.meta&&m.meta.reason==="study-page")n++;});return n;};' +
+      'var gateBad=false;' +
+      'for(var i=0;i<5;i++){' +
+      '  history.replaceState(null,"",base+"?chapterId="+(900001+i)+"&courseId=900002&clazzid=900003&enc=synthetic"+i);' +
+      // 两道旧闸每轮都拨回"已过期"，于是"还在不在补一条"完全由生产那一支新键决定
+      '  app._discussionPageAt=Date.now()-3000;app._discussionDeclineLogAt=Date.now()-121000;' +
+      '  app._discussionDeclineSignature="";' +
+      '  if(app._isDiscussionPage()!==false)gateBad=true;}' +
+      // ⚠️ 日志走 postMessage 是异步的：同步读完五次调用就数，读到的是"没等到"而不是"没发"
+      'setTimeout(function(){var afterChapters=count();' +
+      // 对照：等于换了一份页面（重新加载 / 新标签），这句话必须还会说
+      '  history.replaceState(null,"",base+"?chapterId=900099&courseId=900002");' +
+      '  app._studyDeclineAnnounced=false;app._discussionPageUrl="";' +
+      '  app._discussionPageAt=0;app._discussionDeclineLogAt=0;app._discussionDeclineSignature="";' +
+      '  var gate2=app._isDiscussionPage();' +
+      '  setTimeout(function(){res({gateBad:gateBad,afterChapters:afterChapters,gate2:gate2,' +
+      '    afterReload:count(),newest:location.search.indexOf("900099")>=0});},400);},400);});})()'
+    );
+    check('连翻五节（只有 chapterId 在变）不再补一条 study-page：一份页面只说一次',
+      perDoc && perDoc.gateBad === false && perDoc.afterChapters === 1 && perDoc.newest === true,
+      JSON.stringify(perDoc));
+    check('但换页面（拨回「这一份还没说过」）它仍然会说一条 —— 这一族没有被永久消音',
+      perDoc && perDoc.gate2 === false && perDoc.afterReload === 2, JSON.stringify(perDoc));
   }
 });
 

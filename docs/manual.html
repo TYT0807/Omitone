@@ -1296,7 +1296,15 @@
           <code>no-chapter-url</code>（找不到章节页）/ <code>fetch-failed</code>（章节页没回话）/
           <code>no-topic-card</code>（回话里没有话题卡片）/ <code>server-says-finished</code>
           （平台自己已把这个讨论记成做完，<b>不是故障</b>）。
-          同一句话 90 秒只说一条，不会把最近记录刷满。</td>
+          同一句话 90 秒只说一条，不会把最近记录刷满。<br>
+          同一节的讨论页面<b>抓到过一次结论后，十分钟内直接用那个结论</b>，不再一遍遍向平台重抓；
+          停在某一节时后台请求数会明显少下来。</td>
+    </tr>
+    <tr>
+      <td><code>discussion page declined</code></td>
+      <td>插件判断<b>这一页不是回帖页</b>，所以不在这里发帖。刷课页上出现它是<b>正常的</b>，
+          意思只是"讨论不在这一页做"。<b>每个页面只说一次</b>，翻到第几节都不会再补，
+          不会把最近记录刷满。</td>
     </tr>
     <tr>
       <td><code>quiz round skipped: no progress</code></td>
