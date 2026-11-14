@@ -1610,6 +1610,14 @@
       state = 'warn';
       task = '答案解析失败，稍后重试';
       detail = (data.error || '');
+    } else if (/search job: attachments exist/.test(msg)) {
+      // 与「0 个附件」分开放：那一句现在只是 info（还在等清单挂上来），
+      // 这一句是**清单挂好了、却挑不出能做的那一个** —— 值得单独说一句人话。
+      state = 'warn';
+      task = '任务点挑不出做哪个';
+      detail = '这一节挂着 ' + (data.attachments != null ? data.attachments : '?') +
+        ' 个任务点，插件认得出清单、挑不出能做的那一个' +
+        (Number(data.emptyForMs) >= 60000 ? '（已经这样一分多钟了）' : '') + '，下一步会写进日志';
     } else if (/study no runnable job|no runnable job|waiting task|search job:/.test(msg)) {
       state = state === 'warn' ? 'warn' : 'wait';
       task = '等待任务识别';

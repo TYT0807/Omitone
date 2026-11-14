@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '0b3ec7f9ce';
+var OMITONE_CODE_REV = 'b96d751c5d';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -927,6 +927,9 @@ var OMITONE_CODE_REV = '0b3ec7f9ce';
       this._ocsSearchDeadline = 0;
       this._ocsLastNoJobLogAt = 0;
       this._lastSearchEmptyLogAt = 0;
+      // 「这一节多久没挑出活干了」的起点（0 = 现在有活干）。判据见 _searchChaoxingJob，
+      // 只由**决策点**那一路推进 —— 问一句的那一路（_locateDocumentTask）不许拨这张表。
+      this._searchEmptySince = 0;
       // 「这一节判成已完成」是**凭哪个证据**判的（`_isCurrentCompleted` 写入，
       // `_skipIfCompleted` 打进 `skip completed` 日志）—— 空串 = 没判成完成。
       this._completionEvidence = '';
@@ -6345,7 +6348,7 @@ var OMITONE_CODE_REV = '0b3ec7f9ce';
       return true;
     },
 
-    _searchChaoxingJob: function (searchedJobs) {
+    _searchChaoxingJob: function (searchedJobs, opts) {
       var attachments = this._getChaoxingAttachments();
 
       var jobs = [];
@@ -6454,10 +6457,39 @@ var OMITONE_CODE_REV = '0b3ec7f9ce';
       if (!jobs.length) {
         // 空章节时这个方法一次 tick 会被调好几次，原来每条都写日志 ——
         // 实测 5 秒能刷 8 条 warn，把 200 条环形缓冲冲掉一大截。
-        var nowEmpty = Date.now();
-        if (!this._lastSearchEmptyLogAt || nowEmpty - this._lastSearchEmptyLogAt > 5000) {
-          this._lastSearchEmptyLogAt = nowEmpty;
-          emitRuntimeLog('warn', attachments.length ? 'search job: attachments exist but no runnable job' : 'search job: no attachments and no synthetic job');
+        //
+        // ⚠️ 批次 55-B：**只有"这一页到底有没有活干"的那个决策点该说话**。
+        // `_locateDocumentTask()` 只是**问一句**"这页有没有文档任务"，而它每一拍都会被
+        // `_isTextOnly()` 调到（`_runTick` 尾部那个纯文本页跳过分支，64-tasks-loop.js:301）。
+        // 现场实测（2026-11-14，`.workbuddy/field-ring59.txt`，视频正在播的一节）：
+        // 这句话 896 秒里打了 **62 条 = 200 条环的 31%**，中位间隔 6 秒（每拍一条被 5 秒闸拦剩的）；
+        // 而调度器那句 `study no runnable job` **一条都没有** —— 它在
+        // `_isActiveStudyJobPending()`（62-tasks-run.js:482）就提前返回了，压根走不到 487 行。
+        // 也就是说这 62 条**全部来自"问一句"那一路**。症状在眼睛上：
+        // 一个本来正常的等待状态，把右下角那颗点顶成「注意」。
+        if (!(opts && opts.query)) {
+          var emptyNow = Date.now();
+          if (!this._searchEmptySince) this._searchEmptySince = emptyNow;
+          // 节流 5 秒 → 20 秒，与 `study no runnable job` 用同一把尺：
+          // 同一份证据窗经不起两句同义的话各刷各的。
+          if (!this._lastSearchEmptyLogAt || emptyNow - this._lastSearchEmptyLogAt > 20000) {
+            this._lastSearchEmptyLogAt = emptyNow;
+            var emptyMeta = {
+              attachments: attachments.length,
+              searchedCount: (searchedJobs && searchedJobs.length) || 0,
+              emptyForMs: emptyNow - this._searchEmptySince
+            };
+            if (attachments.length) {
+              // 任务清单挂着、却挑不出一个能做的 —— 这才真该「注意」。
+              emitRuntimeLog('warn', 'search job: attachments exist but no runnable job', emptyMeta);
+            } else {
+              // 0 个附件 = 这一页还没把任务清单挂上来，属于"还在等"，不是故障。
+              // 真出事另有其人，且都还是 warn / error：`study no runnable job`（确实没活干）、
+              // `media has no source, release pending`（视频始终没地址）、
+              // `study stuck: 本节没有可识别的任务`（点了前进也不动）。
+              emitRuntimeLog('info', 'search job: no attachments and no synthetic job', emptyMeta);
+            }
+          }
         }
         return null;
       }
@@ -6484,6 +6516,7 @@ var OMITONE_CODE_REV = '0b3ec7f9ce';
         return (kindWeight[a.kind] || 99) - (kindWeight[b.kind] || 99);
       });
 
+      this._searchEmptySince = 0;   // 挑出活干了 —— 「这一节多久没活」那把表重新起算
       emitRuntimeLog('info', 'search job matched candidates', { count: jobs.length, first: jobs[0] ? { kind: jobs[0].kind, name: jobs[0].name, workType: jobs[0].workType } : null });
       return jobs[0] || null;
     },
@@ -7286,7 +7319,11 @@ var OMITONE_CODE_REV = '0b3ec7f9ce';
         if (preferredTask) return preferredTask;
       }
 
-      var chaoxingJob = this._searchChaoxingJob();
+      // ⚠️ 批次 55-B：`{query:true}` = **我只是来问一句**，不是来判决"这一节有没有活干"的。
+      // 这一路每一拍都会被 `_isTextOnly()` 走到，以前它替调度器打了一整条 warn 链
+      // （现场量到一节 896 秒里 62 条、占 200 条日志环的 31%，而那时候视频正在正常播）。
+      // "确实没活干"由 `_runOcsStudyStyleLoop` 尾部的 `study no runnable job` 说，那才是决策点。
+      var chaoxingJob = this._searchChaoxingJob(null, { query: true });
       if (chaoxingJob && (chaoxingJob.kind === 'document' || chaoxingJob.kind === 'timereader' || chaoxingJob.kind === 'ppt-audio') && chaoxingJob.doc) {
         var jobTask = buildTask(chaoxingJob.doc);
         if (jobTask) return jobTask;

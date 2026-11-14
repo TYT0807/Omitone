@@ -572,6 +572,9 @@
       this._ocsSearchDeadline = 0;
       this._ocsLastNoJobLogAt = 0;
       this._lastSearchEmptyLogAt = 0;
+      // 「这一节多久没挑出活干了」的起点（0 = 现在有活干）。判据见 _searchChaoxingJob，
+      // 只由**决策点**那一路推进 —— 问一句的那一路（_locateDocumentTask）不许拨这张表。
+      this._searchEmptySince = 0;
       // 「这一节判成已完成」是**凭哪个证据**判的（`_isCurrentCompleted` 写入，
       // `_skipIfCompleted` 打进 `skip completed` 日志）—— 空串 = 没判成完成。
       this._completionEvidence = '';

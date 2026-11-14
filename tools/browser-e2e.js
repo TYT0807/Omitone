@@ -14833,6 +14833,207 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 批次 55-B：「问一句」的那一路不再替决策点喊「注意」 ----
+ * 为什么单列这场：`_searchChaoxingJob()` 里那句空搜索日志，原先**谁调它都打**，
+ * 而它有两个截然不同的调用者 ——
+ *   ① 调度器（62-tasks-run.js:487）：真的在判「这一页有没有活干」，说话是它的本职；
+ *   ② `_locateDocumentTask()`（62-tasks-run.js:793）：只是**问一句**「这页有没有文档任务」，
+ *      拿到 null 就是答案。可它每一拍都会被 `_isTextOnly()` 走到（`_runTick` 尾部
+ *      那个纯文本页跳过分支，64-tasks-loop.js:301）。
+ * 现场实测（2026-11-14，`.workbuddy/field-ring59.txt`，视频正在正常播的一节）：
+ * 这句话 896 秒里打了 **62 条 = 200 条日志环的 31%**，中位间隔 6 秒（每拍一条被那道 5 秒闸拦剩的）；
+ * 而同一刻调度器那句 `study no runnable job` **一条都没有** —— 它在
+ * `_isActiveStudyJobPending()`（62-tasks-run.js:482）就提前返回了，压根走不到 ① 。
+ * 所以那 62 条**全部来自 ②**。症状长在眼睛上：一个本来正常的等待状态，
+ * 把右下角那颗点顶成「注意」，还把真正出事那几条从证据窗里冲走。
+ * ⚠️ 断言一律**走真链路**（`_isTextOnly()` / `_locateDocumentTask()` 自己调下去），
+ *    不去源码里 needle `{query:true}` —— 那只会测到"代码和自己一致"。
+ *    同理每个数（附件数 / 等级 / emptyForMs）都从**发出来的日志**里读回来，不拿夹具常量比。 */
+SCENARIOS.push({
+  name: '空章节的等待不再顶成「注意」（问一句的那一路闭嘴）',
+  path: '/blank',
+  run: async function (ctx) {
+    function readSearchLogs() {
+      return ctx.client.evaluate(
+        '(function(){var out=[];' +
+        '(window.__b55i||[]).forEach(function(m){var s=String(m.message||"");' +
+        '  if(s.indexOf("search job")===0)out.push({level:String(m.level||""),msg:s,meta:m.meta||null});});' +
+        'window.__b55i=[];return JSON.stringify(out);})()');
+    }
+    // 「空搜索那两句」和生产那句好消息 `search job matched candidates` 同一个前缀，
+    // 混在一起计数会把"挑到活干了"当成"刷了空搜索日志"。按冒号那一句式分开。
+    function emptyBeats(list) {
+      return (list || []).filter(function (m) { return String(m.msg || '').indexOf('search job:') === 0; });
+    }
+
+    var base = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b55i=window.__b55i||[];' +
+      'if(!window.__b55Bound){window.__b55Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b55i.push(m);}});}' +
+      'var n=-1;try{n=Number(app._getChaoxingAttachments().length);}catch(e){n=-2;}' +
+      'var r=null;try{app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;r=app._searchChaoxingJob([]);}catch(e2){r="throw";}' +
+      'return JSON.stringify({hasApp:!!app,attach:n,frames:document.querySelectorAll("iframe").length,' +
+      '  emptyResult:r===null,threw:r==="throw"});})()'));
+
+    check('前提：这一页真的落在「空」那一格（附件 0、页面没有 iframe、判据返回 null）—— ' +
+      '不成立的话下面每一条都是零覆盖',
+      !!base && base.hasApp === true && base.attach === 0 && base.frames === 0 &&
+      base.emptyResult === true && base.threw === false, JSON.stringify(base));
+    await sleep(300);
+    await readSearchLogs();   // 把上面那次探测自己打出的日志丢掉，别让它混进后面的计数
+
+    // ---- A：决策点那一路仍然说话，但 0 个附件那一格降到 info ----
+    var a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;' +
+      'app._searchChaoxingJob([]);' +
+      'return JSON.stringify({since:Number(app._searchEmptySince)});})()'));
+    await sleep(300);
+    var aLogs = JSON.parse(await readSearchLogs());
+    check('A 决策点：0 个附件时**照旧要有一条**（不许静默），但等级是 info 而不是 warn —— ' +
+      '「这一页还没把任务清单挂上来」是还在等，不是出事',
+      aLogs.length === 1 && aLogs[0].msg === 'search job: no attachments and no synthetic job' &&
+      aLogs[0].level === 'info', JSON.stringify(aLogs));
+    check('A 决策点：这一路会拨「这一节多久没活」那张表（`_searchEmptySince` 从 0 变成刚记上的时刻）',
+      !!a && a.since > 0, JSON.stringify(a));
+
+    // ---- B：那把节流尺 = 20 秒，两边各钉一次 ----
+    // ⚠️ 计数必须「等一拍再从缓冲读」。`emitRuntimeLog` 走 postMessage，异步送达；
+    //    在同一个 evaluate 里同步读 `(window.__b55i||[]).length` 永远是 0 ——
+    //    于是"没重播"和"重播了但还没送到"长得一模一样（批次 9 实测过的假阴性）。
+    await ctx.client.evaluate('(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'app._lastSearchEmptyLogAt=Date.now()-8000;app._searchChaoxingJob([]);return 1;})()');
+    await sleep(300);
+    var b8 = JSON.parse(await readSearchLogs());
+    check('B 节流：隔 8 秒**不重播**（旧的那把尺是 5 秒，这里会红）—— 整段缓冲里也不许有别的空搜索条目',
+      emptyBeats(b8).length === 0, JSON.stringify(b8));
+
+    await ctx.client.evaluate('(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'app._lastSearchEmptyLogAt=Date.now()-21000;app._searchChaoxingJob([]);return 1;})()');
+    await sleep(300);
+    var b21 = JSON.parse(await readSearchLogs());
+    var b21Empty = emptyBeats(b21);
+    check('B 节流：隔 21 秒照旧重播（降等级不等于闭嘴，决策点还在说话），等级仍然是 info',
+      b21Empty.length === 1 && b21Empty[0].level === 'info' &&
+      b21Empty[0].msg === 'search job: no attachments and no synthetic job', JSON.stringify(b21));
+
+    // ---- C：payload 是算出来的，不是夹具里那个字面量 ----
+    var c = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'app._lastSearchEmptyLogAt=0;app._searchEmptySince=Date.now()-30000;' +
+      'app._searchChaoxingJob([]);' +
+      'return JSON.stringify({since:Number(app._searchEmptySince),at:Date.now()});})()'));
+    await sleep(300);
+    var cLogs = JSON.parse(await readSearchLogs());
+    // 参照系是**页面自己在调用返回后量到的差值** `at - since`，不是 Node 侧写死的 30000，
+    // 也不是那句 `X + (Y - Y)` 之类的恒等式（那种写法生产算错也照样绿）。
+    check('C 取证：那条日志带得出「已经空了多久」—— 表上种 30 秒前，读回来的数要和页面自己量到的差值对上（±1 秒）' +
+      '，且落在 29~60 秒区间',
+      !!c && cLogs.length === 1 && !!cLogs[0].meta &&
+      Number(cLogs[0].meta.emptyForMs) >= 29000 && Number(cLogs[0].meta.emptyForMs) <= 60000 &&
+      Number(cLogs[0].meta.emptyForMs) >= (c.at - c.since) - 1000 &&
+      Number(cLogs[0].meta.emptyForMs) <= (c.at - c.since) + 1000,
+      JSON.stringify({ meta: cLogs[0] && cLogs[0].meta, since: c.since, at: c.at }));
+    check('C 取证：同一条还带得出「页面挂着几个附件、已经搜过几个」—— 用户能一眼分清是没挂清单还是挑不出',
+      cLogs.length === 1 && !!cLogs[0].meta && Number(cLogs[0].meta.attachments) === 0 &&
+      Number(cLogs[0].meta.searchedCount) === 0, JSON.stringify(cLogs[0] && cLogs[0].meta));
+
+    // ---- D：问一句那一路（真链路 `_isTextOnly`）整条闭嘴 ----
+    // ⚠️ 这一格必须自己把两张表拨回 0：C 刚种过 30 秒前，不拨回去读到的就是上一格的残值
+    //    （实测拿到 1.79e12，差点被解读成"问一句也在拨表"）。
+    var d = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'app._searchEmptySince=0;app._lastSearchEmptyLogAt=0;' +
+      'var t1=app._isTextOnly();var t2=app._locateDocumentTask();' +
+      'app._lastSearchEmptyLogAt=0;var t3=app._isTextOnly();' +
+      'app._lastSearchEmptyLogAt=0;var l2=app._locateDocumentTask();' +
+      'return JSON.stringify({t1:t1===true||t1===false,t2:t2===null,t3:t3===true||t3===false,' +
+      '  l2:l2===null,since:Number(app._searchEmptySince),last:Number(app._lastSearchEmptyLogAt)});})()'));
+    await sleep(300);
+    var dLogs = JSON.parse(await readSearchLogs());
+    check('D 接线：走真链路问四次（`_isTextOnly` 两次 + `_locateDocumentTask` 两次，' +
+      '后两次还把那道节流闸拨回 0）—— `search job` **一条都不许多**',
+      !!d && d.t1 === true && d.t2 === true && d.t3 === true && d.l2 === true &&
+      dLogs.length === 0, JSON.stringify({ d: d, logs: dLogs }));
+    check('D 接线：问一句**不许拨那张表**（`_searchEmptySince` 保持 0）—— 否则决策点下次一开口' +
+      '就把别人等了 30 秒说成刚开始等',
+      !!d && d.since === 0, JSON.stringify(d && { since: d.since, last: d.last }));
+
+    // ---- E：挑出活干就把表清零 ----
+    var e = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'var f=document.createElement("iframe");' +
+      'f.className="ans-attach-online ans-insertvideo-online";' +
+      'f.setAttribute("src","/ananas/modules/video/index.html?v=2026");' +
+      'document.body.appendChild(f);window.__b55f=f;' +
+      'app._lastSearchEmptyLogAt=0;app._searchEmptySince=Date.now()-45000;' +
+      'var job=null;try{job=app._searchChaoxingJob([]);}catch(err){job="throw";}' +
+      'return JSON.stringify({kind:job?job.kind:null,threw:job==="throw",' +
+      '  since:Number(app._searchEmptySince)});})()'));
+    await sleep(300);
+    var eLogs = JSON.parse(await readSearchLogs());
+    check('E 复位：真的挑出一个 job 时，「多久没活」那张表必须清零（不清就永远背着旧账）',
+      !!e && e.threw === false && e.kind === 'video' && e.since === 0, JSON.stringify(e));
+    check('E 复位：这一格也不许留下空搜索那两句（挑到活干了，没有"空"可说）',
+      emptyBeats(eLogs).length === 0, JSON.stringify(eLogs));
+    check('E 复位：同一段缓冲里要能看见「挑出了候选」那一条 —— 证明这一格真的走到了有货那一支，' +
+      '而不是搜索本身抛了异常所以两条都没话说',
+      eLogs.some(function (m) { return m.msg === 'search job matched candidates'; }), JSON.stringify(eLogs));
+    await ctx.client.evaluate('(function(){var f=window.__b55f;if(f&&f.parentNode)f.parentNode.removeChild(f);return 1;})()');
+
+    // ---- F：附件挂着却挑不出 —— 这一格才该 warn ----
+    var f = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b55i=[];' +
+      'window.attachments=[{jobid:"b55-att-1",name:"合成附件",property:{job:"false"},' +
+      '  otherInfo:"nodeId_9000049549"}];' +
+      'var n=-1;try{n=Number(app._getChaoxingAttachments().length);}catch(err){n=-2;}' +
+      'app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;' +
+      'var r=null;try{r=app._searchChaoxingJob([]);}catch(err2){r="throw";}' +
+      'window.attachments=[];' +
+      'return JSON.stringify({attach:n,result:r===null,threw:r==="throw"});})()'));
+    await sleep(300);
+    var fLogs = JSON.parse(await readSearchLogs());
+    check('F 分级：附件挂着（夹具自证 attach=1）却挑不出能做的 —— **这一格仍是 warn**，' +
+      '降到 info 会把真出事说成"还在等"',
+      !!f && f.attach === 1 && f.result === true && fLogs.length === 1 &&
+      fLogs[0].msg === 'search job: attachments exist but no runnable job' &&
+      fLogs[0].level === 'warn', JSON.stringify({ f: f, logs: fLogs }));
+    check('F 分级：那一条要带得出挂着几个附件（面板那句话的数从这里来）',
+      fLogs.length === 1 && !!fLogs[0].meta && Number(fLogs[0].meta.attachments) === 1,
+      JSON.stringify(fLogs[0] && fLogs[0].meta));
+
+    // ---- G：右下角那两行跟着分级走（content.js 的翻译层）----
+    var g = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function wait300(){return new Promise(function(r){setTimeout(r,300);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail")};}' +
+      'var out={};' +
+      'say("info","start",null);await wait300();out.started=read();' +
+      'say("info","search job: no attachments and no synthetic job",{attachments:0,searchedCount:0,emptyForMs:31000});' +
+      'await wait300();out.infoBeat=read();' +
+      'say("warn","search job: attachments exist but no runnable job",{attachments:3,searchedCount:2,emptyForMs:75000});' +
+      'await wait300();out.warnBeat=read();' +
+      'return JSON.stringify(out);})()'));
+    check('前提：面板被 start 激活，两格都读回了字（读不到就是空测）',
+      !!g && !!g.started && g.started.task !== '(无)' && !!g.infoBeat &&
+      g.infoBeat.state !== '(无)' && !!g.warnBeat && g.warnBeat.state !== '(无)',
+      JSON.stringify(g && g.started));
+    check('G 眼睛上：0 个附件那一拍 = **等待中**，不再把那颗点顶成「注意」',
+      g.infoBeat.state === '等待中', JSON.stringify(g.infoBeat));
+    check('G 眼睛上：附件挂着挑不出那一拍 = 「注意」+ 一句说得出数的人话（不是那句万金油「等待任务识别」）',
+      g.warnBeat.state === '注意' && g.warnBeat.task === '任务点挑不出做哪个' &&
+      /3/.test(String(g.warnBeat.detail || '')) && /一分多钟/.test(String(g.warnBeat.detail || '')),
+      JSON.stringify(g.warnBeat));
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

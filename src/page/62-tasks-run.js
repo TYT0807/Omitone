@@ -790,7 +790,11 @@
         if (preferredTask) return preferredTask;
       }
 
-      var chaoxingJob = this._searchChaoxingJob();
+      // ⚠️ 批次 55-B：`{query:true}` = **我只是来问一句**，不是来判决"这一节有没有活干"的。
+      // 这一路每一拍都会被 `_isTextOnly()` 走到，以前它替调度器打了一整条 warn 链
+      // （现场量到一节 896 秒里 62 条、占 200 条日志环的 31%，而那时候视频正在正常播）。
+      // "确实没活干"由 `_runOcsStudyStyleLoop` 尾部的 `study no runnable job` 说，那才是决策点。
+      var chaoxingJob = this._searchChaoxingJob(null, { query: true });
       if (chaoxingJob && (chaoxingJob.kind === 'document' || chaoxingJob.kind === 'timereader' || chaoxingJob.kind === 'ppt-audio') && chaoxingJob.doc) {
         var jobTask = buildTask(chaoxingJob.doc);
         if (jobTask) return jobTask;
