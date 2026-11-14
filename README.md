@@ -292,10 +292,13 @@
 
 默认开启：跳转到讨论区 → 发一条评论 → 自动返回继续刷课。
 
-- 不想让它发言：弹窗里关掉「讨论任务点自动发评论」
+- 不想让它发言：弹窗「任务点类型」里关掉「讨论」（「投票」就在它下面一格）
 - **默认回复内容是 `"1"`** —— 请务必改成正常的话。
   `"1"` 这种回复在老师看来就是灌水，被记一笔不值得
 - 回复内容在弹窗「讨论回复内容」里自定义
+- 平台自己已经把这个讨论记成「完成」的，**不会再发第二条**（1.3.0 起读平台那个完成标志，不再只看插件自己那本账）
+- 某条讨论没发出去，日志现在会点名**断在哪一环**：读不到话题页 / 话题页没回话 / 回话里没有话题卡片 / 平台已记完成 —— 以前这四种情况一个字都不写，看上去就像"这一节没有讨论"
+- **投票是同一类"代替你表态"**：默认开，进投票**随手勾第一项**就提交。它不计分，但不投下一节点不会动；真有立场的问卷请自己填，不想让它投就关掉「投票」开关
 
 ### 6. 题库字体反爬可能失效
 
@@ -311,7 +314,7 @@
 
 ### 7. 其它已知限制
 
-- **不支持的任务点**：投票、直播会直接跳过（并留一条日志说明原因）
+- **不支持的任务点**：**直播**会直接跳过（并留一条日志说明原因）。**投票从 1.3.0 起是支持的** —— 点开平台自己的投票、随手勾第一项、提交；它不计分，但它是任务点：不投，下一节点不会动。开关在弹窗「任务点类型」里，默认开着。⚠️ 勾的是**第一项**，所以真会让你表态的问卷类投票请自己做
 - **部分题型不支持**：**连线题、排序题、拖拽题**这类需要真实交互的题无法自动作答 —— 插件会跳过它们（不会乱填），这几类题请自己手动做
 - **窗口最小化后会变慢**：已有后台节流对抗（Worker 心跳 + 音频保活），但浏览器自己的「睡眠标签页」是整页冻结，插件侧无法绕过
 - **验证码识别并不稳**：主模型自带看图（那一格留空即可），换成纯文本主模型才需另填视觉型号；识别失败会重试，也可能识别错 —— 错了就是白跑一轮
@@ -336,8 +339,9 @@
 | **「继续学习」提示** | 弹题答完 / 挂机判定后，播放器右下角的「继续学习」自动点掉，回到正常播放 |
 | **文档 / PPT / 图片** | 自动翻页、上报完成、等页内音频播完 |
 | **超链接任务点** | 自动点开 |
-| **讨论任务点** | 跳转讨论区 → 自动发评论（内容可配）→ 返回继续刷课 |
+| **讨论任务点** | 跳转讨论区 → 自动发评论（内容可配）→ 返回继续刷课；平台自己已记「这个讨论完成了」的**不会再发第二条**，某条真发不出去时日志会点名**断在哪一环** |
 | **多讨论任务点** | 同一章节多张讨论卡片各自独立处理，互不顶掉 |
+| **投票任务点** | 点开平台自己的投票 → 随手勾第一项 → 提交（投票不计分，但它是任务点：不投，下一节点不会动） |
 | **跳过不必做的点** | 老师没设为任务点的内容（`job:false`）直接跳过 |
 | **做不完就放弃** | 反复做不完的任务点记入 **24 小时跳过名单**，可一键清除让它重试 |
 | **后台节流对抗** | Worker 心跳 + 音频保活，窗口最小化后仍推进 |
@@ -611,8 +615,9 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | **答案缓存** | 交卷后记住正确答案，下次不再问模型 | 对错判定、写入与读回 | ✅ |
 | **验证码（弹窗）** | 课程页弹窗验证码：抓图 → 视觉模型 → 填入提交 | 命中检测、结果清洗 | ✅ |
 | **验证码（独立网址）** | 验证码是独立页面时同样处理，处理完自动返回 | 页面判定、抓图 | ✅ |
-| **讨论任务点** | 跳转讨论区 → 发评论 → 返回继续刷课 | 页面识别、控件定位 | ✅ 定位需真实 DOM 复核 |
+| **讨论任务点** | 解出话题章节页 → 跳转讨论区 → 发评论 → 返回继续刷课；两代模块形状都认，平台已记「完成」的不再重复发帖，发不出去时点名断在哪一环 | 页面识别、控件定位、两条解地址的路、四个出口各一个 `reason`、同一节不数两遍 | ✅ 定位仍需真实 DOM 复核 |
 | **多讨论任务点** | 同一章节多张讨论卡片各自独立处理，互不顶掉 | 同文档多卡片、去重键唯一性、已完成标志归属 | ✅ |
+| **投票任务点** | 点开平台自己的投票覆盖层 → 勾第一项 → 提交 | 认得出 `insertvote`、空覆盖层不算就绪、勾了才提交 | ✅ |
 | **题库字体反爬** | 解析 `font-cxsecret` 自定义字体，按字形哈希还原题目文本；表过期自动发现并拦卷止损 | 解密统计、文档标记、整卷拦停 | ✅ 回归 F06-F08 |
 | **报错按根因分类** | AI 请求失败给出【类别】与下一步（余额 / 密钥 / 限流 / 模型名 / 网络），弹窗常驻展示 | 分类器、请求链契约、弹窗状态行 | ✅ 含随机响应契约模糊 |
 | **答题分批 ≤3 题** | 每批 ≤3 题、多选一题一请求（上下文保护，宁慢勿废） | 分批算术、跨批不串味 | ✅ 硬断言 |
@@ -635,10 +640,10 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | 文档 | `insertdoc`（pdf / ppt / docx / innerbook） | 阅读流程：翻页 / 滚动 / 上报完成 |
 | 图片 | `insertimage` | 按阅读处理（打开即算） |
 | 测验 · 作业 · 考试 | `work` / `exam` | 答题流程 |
-| 讨论 | `insertbbs` | 独立模块：跳转发评论再返回 |
+| 讨论 | `insertbbs` | 独立模块：解出话题章节页 → 跳转发评论 → 返回。**模块名有两代写法**（`module` 属性上，或只写在 class 上）—— `_discussionModuleName()` 两代都认，只认 `insertbbs` / `bbscircle` / `bbs` 三个词 |
 | 超链接 | `link` | 点开即可（`enableHyperlink`） |
-| **投票** | `insertvote` | **不支持** —— 运行日志会留 `unsupported task point type` |
-| **直播** | `insertlive` | **不支持**，同上 |
+| 投票 | `insertvote` | 点开平台自己的投票覆盖层 → 勾第一项 → 提交（`enableVote`，默认开）。⚠️ 识别要排在 `work` / `exam` / `quiz` **之前**：投票页渲染出来的就是「答题」样子，被 quiz 抢走会白烧 token |
+| **直播** | `insertlive` | **不支持** —— 运行日志会留 `unsupported task point type` |
 
 ---
 
@@ -881,7 +886,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 3. **放弃名单必须能被用户清掉**（`xxtAI.clearTaskGiveUp()`，24 小时 TTL）。
    静默地永久跳过用户的任务点不可接受；跳过时必须留日志说明"为什么"和"怎么恢复"。
 
-### 5.9 讨论任务点：四个容易踩的点
+### 5.9 讨论任务点：六个容易踩的点
 
 1. **`#isFinished` 必须按卡片范围查找**，不能 `doc.getElementById` ——
    同一文档多张卡片会共用同一个"已完成"标志，导致批量漏做或反复重开同一个。
@@ -892,6 +897,14 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 4. **`_markDiscussionDone` 是先于打开动作写的**（防止重复打开）。
    若一个入口都没打开成功，必须 `_unmarkDiscussionDone` 撤回 ——
    否则这个任务点被静默跳过 24 小时，日志里毫无线索。
+5. **模块名有两代写法**：一代写在 `module` 属性上，另一代 `[module]` 数出 0、名字只在 class 里。
+   只按 `iframe[module]` 找 → 遇到后一代**一条都匹配不到**，在刷课页侧就成了"这一节没有讨论"，静默漏做。
+   `_discussionModuleName()` 两代都认，但**只认讨论系三个词**（`insertbbs` / `bbscircle` / `bbs`）——
+   拿 class 里任意一段当模块名会把 video、work 一起拖进来。
+6. **找模块 iframe 必须按节点去重**：`_studyDocs()` 回的是 `[主帧文档, 顶层文档]`，
+   而 `_walkDocs` 的 `seen` 是每次调用各自一份 —— 从顶层那一路再走进主帧文档时同一枚 iframe 会被收第二遍，
+   于是同一份章节页发两遍请求（最坏 2×15 秒）。摘掉这道去重，夹具里 3 枚立刻数成 6 枚。
+   另外四个 `return ''` 出口原先**一个字都不写**，现在各点名一个 `reason`（`no-chapter-url` / `fetch-failed` / `no-topic-card` / `server-says-finished`）。
 
 ---
 
@@ -952,7 +965,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 49 | **一份卷子只答了多选题、看着像乱选的，单选反而一题没答**（用户原话「只回答的多选题，估计是乱选的，单选题一题也是空着的」） | #39 那条"多选本地作答、不进请求"省的是 token，**代价是答案必错**：整卷只要有一道多选就基本过不了及格线。而课后检测的提交上限实测只有 2 次（日志 `quiz submit attempt count {count:1,max:2}`），拿猜的答案去交等于**白烧一次真提交**。当时的 `max:2` 之所以没爆成"疯狂提交"，是因为第二趟把多选交回了模型 —— 可用户看到的就是"第一趟全是乱选的多选" | 多选**与单选同等交给模型**（`_answerLocalMultiChoiceQuestions` 只剩"补填"一个身份，且**幂等**：模型已填好的绝不重填，复选重填会把自己切掉）。只有补填真的动过手，才把这份卷子记进 `_quizLocalMultiplePapers` 并把上限收到 2。`content.js` 的分批同步改：多选自己成批、**不打断正在攒的那一批**（旧写法会让一道多选拖着另外两题成一题一批，固定开销按批计，一份卷子多花十几批的钱）|
 | 50 | **屏幕上单选题一题没勾，日志却写 `quiz fill audit ok`** | 与 #48 同族，只是这次栽在选择题上：审计读的是 `#answer{qid}` 与 **`aria-checked`** —— 而 `aria-checked` 是 `_clickOptionItem` **只要有 qid 就顺手给文本项加上的**，没有任何 CSS 认它。等于**自己给自己开的证明**：只要写过，就永远"看得见" | `_hasVisibleChoiceSelection(el)` 是三档证据的唯一入口（站点 CSS 真会着色的 `check_answer*` / `cur` / `selected` / `active` + 可见的已勾选 radio/checkbox）；看不见时写 `quiz fill: no visible selection in question`（带 `radio`/`visibleRadio`/`markCls`），审计侧写 `quiz fill audit: value without visible selection`。选项控件与文本层分离的那套形状（`.Cy_*`）另有一步**补点文本项**（`radio-clickthrough`）。⚠️ **`aria-checked` 不许再算进证据** |
 | 51 | **刚开始还会检测题目，之后直接翻到下一节、然后整页卡住**（用户原话如此；真实日志：`skip completed` → `dismiss popups: click {cls:"… prev_next next fr"}` → 地址变成 `i.chaoxing.com/base` → 只剩 `search job: no attachments…` 与一条 `study stuck` 后彻底静默） | `_dismissPopups()` 整页 `querySelectorAll('button, a, .btn …')` 按文案点，把课程页**常驻**的「下一节」导航当成了弹窗按钮。翻过去的那一页没有课程结构可认，任务点扫不到，而 `study stuck` 每个键只报一次 → 报完永久安静 | 弹窗容器（`.layui-layer` / `[role="dialog"]` / `#workpop` …）之外**一律不点**，带 `prev_next` 的双保险也不点；关不掉就 return，不许拿 `[class*="close"]` 抓整页右上角的关闭按钮。翻页只走自己的路（`_switchToNextLearningCard()` / `#prevNextFocusNext`）。`study stuck` 改为**每 2 分钟重播**并带上当前 `href`。交卷确认框仍**谁都不点** |
-| 52 | **一份卷子两个键 → 「只许交 2 次」被绕开、疯狂提交**（真实日志：`quiz submit pending` 里那个键长成 `…123456%7C%7C%7C%7CK777`，中间三段全空；而 ready 那条按题目文档算的键五段齐全） | 交卷确认弹窗那一路传的是 `null`：`_resolveQuizSubmitDocument(null)` 退回**外层文档**，可题目挂在 iframe 里、五个 id 只在**题目那份文档**上。于是同一份卷子有两个键 —— 提交次数记在**外层那本账**，而 `_quizReadyWorkKey`、`_getQuizMaxSubmitAttempts`、`_shouldSkipQuizBySubmitAttempts`、按卷冷却全读**题目那份文档**那本账。上限那条永远读到 0，批次 7 定的「本地兜底过的卷子只交 2 次」形同不存在 | `_getQuizAccountDocument(preferredDoc)` = `preferredDoc || 题目那份文档`（与 ready 那一路**同形**）成为**唯一判据**，写账（`_markQuizSubmitPending`）与读账（`_getQuizSubmitAttemptCount` / `_shouldSkipQuizBySubmitAttempts` / `_getQuizMaxSubmitAttempts` 经由 `_getQuizSubmitAttemptKey`）全部从它出发，调用点没机会各算各的。`_handleSubmitConfirmDialog` 仍显式取一次 `confDoc`（只为让本函数那两条 warn 里的 `currentKey` 就是账本键，**不许手抄第二份表达式**）。日志另加 `readyKey` 与 `accountFrom`，两键不等还会单独 warn `submit confirm key mismatch, continue because quiz is ready`。**只收口提交账**，没动 `_resolveQuizAnswerDocument` 的 `null` 兜底（它喂着十几条读路径）。⚠️ **只改写账端是一次半成品** —— 读账那三路仍是旧口径，症状一模一样。回归＝场景 40 `/submit-key`（14 项）。⚠️ **按文档算键的函数，写账端与读账端必须是同一个文档表达式** —— 与 #43、批次 8 之前那条按卷冷却的 HIGH-1 同族 |
+| 52 | **一份卷子两个键 → 「只许交 2 次」被绕开、疯狂提交**（真实日志：`quiz submit pending` 里那个键长成 `…123456%7C%7C%7C%7CK777`，中间三段全空；而 ready 那条按题目文档算的键五段齐全） | 交卷确认弹窗那一路传的是 `null`：`_resolveQuizSubmitDocument(null)` 退回**外层文档**，可题目挂在 iframe 里、五个 id 只在**题目那份文档**上。于是同一份卷子有两个键 —— 提交次数记在**外层那本账**，而 `_quizReadyWorkKey`、`_getQuizMaxSubmitAttempts`、`_shouldSkipQuizBySubmitAttempts`、按卷冷却全读**题目那份文档**那本账。上限那条永远读到 0，批次 7 定的「本地兜底过的卷子只交 2 次」形同不存在 | `_getQuizAccountDocument(preferredDoc)` = `preferredDoc \|\| 题目那份文档`（与 ready 那一路**同形**）成为**唯一判据**，写账（`_markQuizSubmitPending`）与读账（`_getQuizSubmitAttemptCount` / `_shouldSkipQuizBySubmitAttempts` / `_getQuizMaxSubmitAttempts` 经由 `_getQuizSubmitAttemptKey`）全部从它出发，调用点没机会各算各的。`_handleSubmitConfirmDialog` 仍显式取一次 `confDoc`（只为让本函数那两条 warn 里的 `currentKey` 就是账本键，**不许手抄第二份表达式**）。日志另加 `readyKey` 与 `accountFrom`，两键不等还会单独 warn `submit confirm key mismatch, continue because quiz is ready`。**只收口提交账**，没动 `_resolveQuizAnswerDocument` 的 `null` 兜底（它喂着十几条读路径）。⚠️ **只改写账端是一次半成品** —— 读账那三路仍是旧口径，症状一模一样。回归＝场景 40 `/submit-key`（14 项）。⚠️ **按文档算键的函数，写账端与读账端必须是同一个文档表达式** —— 与 #43、批次 8 之前那条按卷冷却的 HIGH-1 同族 |
 
 | 53 | **插件在刷课页往课程讨论区真发了一条垃圾回帖**（真实日志 00:46:24 `quiz submit pending` → 00:46:26 `discussion page detected` + 内容「1」；用户看不到自己班群里多了什么） | 三处放宽**叠**起来才成立：① `omitone_return_url` 写完**永不清除** —— "是我们自己刚从刷课页跳过来的"这条放宽一旦触发就**永久生效**；② 放宽只问正文里有没有「讨论」二字 —— 课程页导航常年挂着这个标签；③ 发帖按钮按文字满页找（含「提交」就行），编辑区取"页面上最大的可见输入区"，**两者互不相干也能凑成"是讨论页"**，而那个「提交」正是卷子刚要点的按钮。根因不是哪一条写错了，是**三条各自"通常没事"的放宽没有一条问"会不会伤到别人"** | 四道闸，缺一都可能复发：`_isStudyCourseHref()` 让刷课/章节/`ananas` 那族网址**永不**走正文放宽；`_discussionReturnFresh()` 把放宽收成**一次跳转的 120 秒**窗口、过期就把两个键一起删；`_findDiscussionSubmitButton(nearEditor)` 要求按钮与编辑区**共用一块不是 body 的容器**（编辑区往上最多 4 层 —— ⚠️ 反向走"谁 contains 谁"是空的，body 永远包含一切）；`_quizInFlightForDiscussion()` 让答题在飞时**根本不进讨论判据**（讨论判据挂在 `_runTick` 最前，OCS 是**另一条并行循环**，两条循环抢同一个按钮）。每一次拒绝都留话：`discussion page declined {reason: study-page / return-jump-expired / no-discussion-text / no-editor / no-co-located-submit}`（30 秒节流）。⚠️ **收紧判据必须配一条"正常页仍能认出"的对照断言**（场景 42），否则"不发帖"和"发不出去"在日志里长得一样 |
 | 54 | **已经完成的界面要磨蹭很久才去下一个**（真实日志 00:46:41 `quiz waiting font decrypt {state:"(none)",sweepAgoMs:-1}` → 00:46:49 才发请求，每份卷子白等 8 秒） | `state:"(none)"` + `sweepAgoMs:-1` 不是"解得慢"，是 content.js 那次解密扫描**根本没跑到这一份文档** —— 等满窗口一个字也不会多解出来。批次 5 把"要不要等"收成问题目那份文档，但**没区分"在扫但没扫完"和"压根没扫"** | `sweepNotCovered` 时上限从配置值收窄到 `scaledMs(2500)`，超了就照答并 warn `font decrypt pending over limit, answer anyway`，那条日志同时带 `limitMs` 与 `configuredLimitMs`（本轮实际用了什么上限、用户配的是什么，一眼对得上）。⚠️ **有扫描戳的文档仍等满原窗口** —— 这道宽限只关"未覆盖"，不许改成"整体不等"（场景 43 有对照组钉住） |
@@ -1013,7 +1026,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 验证码识别出来是空 | 日志写 `验证码识别返回空回复（结束原因 …）`，**结束原因就是说给谁的**：`length` = 思考把输出的预算占满了（把「思考强度」调到关闭即可）；`无` 或其它 = 该模型不带视觉（`captchaModel` 填的型号换成带视觉的，留空会回退主模型） |
 | 验证码一直失败 / 401 | **API 地址留空时插件一个请求都不发**，日志直接说「API 地址没填」（避免把你的密钥发给一个你没选过的厂商）。地址填了仍失败时，日志会点名是哪台主机拒的（`目标 api.deepseek.com`）——401 就该看那一家而不是怀疑插件 |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
-| 讨论任务点没做 / 重复发评论 | 日志 `discussion task opened in new tab`、`discussion page detected, posting reply`、`discussion task has no usable entry` |
+| 讨论任务点没做 / 重复发评论 | 日志 `discussion task opened in new tab`、`discussion page detected, posting reply`、`discussion task has no usable entry`。**整节一条都没发出去**时看这两句：`discussion topic url not resolved {reason}` 直接点名断在哪一环（`no-chapter-url` 读不到话题页 / `fetch-failed` 话题页没回话 / `no-topic-card` 回话里没有卡片 / `server-says-finished` 平台自己已记完成，这一条**不发帖是对的**）；`discussion all settled {total,serverFinished,believeLocal}` 里 `serverFinished` 那格就是平台判完的个数 |
 | 日志停在某一条 | §6 的 #1 #2；搜 `tick watchdog` |
 | 窗口最小化后几乎不动 | 后台节流四层防线（Worker 心跳 / 音频保活 / `pause` 事件直接恢复 / 回前台重校验）。若仍停滞，检查 `edge://settings/system` 是否开了「睡眠标签页」——那是整页冻结，插件侧无法绕过 |
 | 音频任务点被跳过 | 媒体搜索的可见性过滤把隐藏 `<audio>` 滤掉了（`_pickMedia` 有隐藏音频兜底，别改坏） |
@@ -1054,7 +1067,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
 | 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
 | 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode`；弹窗刷新那一下单独抽成 `_reloadCaptchaDialogPage`（最贵的动作要能被测试盯住），轮次账在 `_readCaptchaDialogBudget` / `_writeCaptchaDialogBudget` / `_healCaptchaDialogBudget` |
-| 讨论任务点 | `src/page/65-discussion.js`：`_collectDiscussionTargets` / `_findDiscussionTask` / `_tryDiscussionTask` / `_runDiscussionMode` |
+| 讨论任务点 | `src/page/65-discussion.js`：`_discussionModuleName`（两代模块名）/ `_collectDiscussionTargets` / `_findDiscussionModuleFrames`（第 2 步找模块 iframe，按节点去重）/ `_findDiscussionTask` / `_logDiscussionResolveFail`（四个出口点名）/ `_tryDiscussionTask` / `_runDiscussionMode` |
 | 弹题（视频内嵌题） | `src/page/80-popup-quiz.js`：`_checkPopupQuiz` / `_handlePopupQuiz` / `_fillPopupAnswer` |
 | 读图（视觉） | `src/page/74-quiz-vision.js`：`_takeVisionBudget` / `_collectQuestionImages` / `_applyVisionToQuestions` |
 | 日志与诊断文案 | `src/page/30-log.js`；日志出口 `emitRuntimeLog` 在 `src/page/00-shell-constants.js` |

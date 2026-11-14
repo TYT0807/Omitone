@@ -323,7 +323,7 @@
     <tr><td>自动最大倍速</td><td>读播放器菜单取速度上限；读不到就逐档试探</td><td>不需要</td></tr>
     <tr><td>拖到结尾</td><td>可拖动的视频/音频直接跳到片尾，每个只试一次</td><td>不需要</td></tr>
     <tr><td>PPT / 文档 / 图片</td><td>自动翻页并上报完成</td><td>不需要</td></tr>
-    <tr><td>讨论任务点</td><td>进话题页留一句言 → 自动返回 → 继续刷课</td><td>不需要</td></tr>
+    <tr><td>讨论任务点</td><td>进话题页留一句言 → 自动返回 → 继续刷课；平台<b>已经记成完成</b>的那条不再重复发</td><td>不需要</td></tr>
     <tr><td>投票任务点</td><td>进投票随手勾第一项提交（它不计分，但仍是任务点）</td><td>不需要</td></tr>
     <tr><td>跳过不必做的点</td><td>老师没设为任务点的内容直接跳过</td><td>不需要</td></tr>
     <tr><td>题库字体反爬</td><td>还原学习通用自定义字体加密过的题目文字</td><td>不需要</td></tr>
@@ -1289,6 +1289,14 @@
       <td><code>discussion reply confirmed</code><br><code>discussion reply not confirmed</code></td>
       <td>讨论回帖<b>发出去了</b> / <b>没确认成功</b>。后者会自动重试（最多 3 次），
           并把"回复列表多没多一条、有没有成功提示"等证据一起记下来，不用你猜。</td>
+    </tr>
+    <tr>
+      <td><code>discussion topic url not resolved</code><br><code>discussion all settled</code></td>
+      <td>讨论<b>发不出去</b>时，日志会点名<b>断在哪一环</b>：
+          <code>no-chapter-url</code>（找不到章节页）/ <code>fetch-failed</code>（章节页没回话）/
+          <code>no-topic-card</code>（回话里没有话题卡片）/ <code>server-says-finished</code>
+          （平台自己已把这个讨论记成做完，<b>不是故障</b>）。
+          同一句话 90 秒只说一条，不会把最近记录刷满。</td>
     </tr>
     <tr>
       <td><code>quiz round skipped: no progress</code></td>

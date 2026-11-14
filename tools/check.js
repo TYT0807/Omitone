@@ -2316,6 +2316,151 @@ function checkSafedocGuard() {
 }
 
 // ---------------------------------------------------------------------------
+// 25. 公开文档的 markdown 表格不许有"列数和表头不一样"的行
+// ---------------------------------------------------------------------------
+// GitHub 渲染表格时，**代码片段里的竖线不转义也算列分隔符** —— 那一行会向右溢、
+// 多出来的格变成新列，网页上读起来是断的。这类损坏不进任何测试：文件语法正常、
+// 自检/集成/e2e 全绿，只有用户在 GitHub 上读那一页时看得见。
+// 2026-11-14 抓到 4 行（README §6 #52、HANDOVER §9 三行），其中一行还是**两条被并成一条**
+// —— 竖线计数顺带能抓到这种损坏。
+//
+// ⚠️ 期望数字在**这里**各写一份，不照抄 `audit.SELF_TEST[].want`（同第 24 项的规矩：
+// 照抄的话，把 want 改成实际值就能让自检永远绿）。三格"要报" + 三格"不报" ——
+// **会误报的守卫和没有守卫一样害人**，负向那三格（转义写法、围栏代码块、
+// 以竖线开头但没有分隔行的正文）少一格都不行，README 里大量 ASCII 图就靠它们不炸。
+function checkMarkdownTables() {
+  var audit;
+  try {
+    audit = require('./audit-md-tables.js');
+  } catch (e) {
+    fail('文档表格审计加载失败：' + String((e && e.message) || e));
+    return;
+  }
+
+  var WANT = {
+    '干净三列表 → 不报': 0,
+    '格里有未转义竖线 → 要报': 1,
+    '同一处写成转义 → 不报': 0,
+    '围栏代码块里的表样行 → 不报': 0,
+    '正文以竖线开头但没有分隔行 → 不报': 0,
+    '两列表被写成三列 → 要报': 1
+  };
+
+  var cells = audit.SELF_TEST || [];
+  var bad = [];
+  Object.keys(WANT).forEach(function (name) {
+    var hit = cells.filter(function (c) { return c.name === name; });
+    if (hit.length !== 1) {
+      bad.push(name + '：这一格应当恰好 1 个，实际 ' + hit.length + ' 个（对照格被删掉或重复了）');
+      return;
+    }
+    var got;
+    try {
+      got = audit.scanText(hit[0].text).length;
+    } catch (e2) {
+      bad.push(name + '：复算时审计抛了 ' + String((e2 && e2.message) || e2));
+      return;
+    }
+    if (got !== WANT[name]) {
+      bad.push(name + '：应报 ' + WANT[name] + ' 条，审计给出 ' + got + ' 条');
+    }
+  });
+  if (audit.selfCheck().length) {
+    bad.push('审计自带的六格对照没过：' + audit.selfCheck().join('；'));
+  }
+  if (bad.length) {
+    fail('文档表格审计的六格阴性对照不成立（会误报的守卫比没有守卫更害人）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+
+  // ---- 接线自证：清单要真的含 GitHub 首页那几份，且不碰 legacy ----
+  var files = audit.markdownFiles();
+  var need = ['README.md', 'HANDOVER.md', 'AGENTS.md'];
+  var missing = need.filter(function (n) { return files.indexOf(n) < 0; });
+  if (missing.length) {
+    fail('文档表格审计的清单里缺 ' + missing.join('、') +
+      ' —— GitHub 首页那一页压根没被扫到');
+    return;
+  }
+  if (files.some(function (f) { return f.indexOf('legacy/') === 0; })) {
+    fail('文档表格审计扫到了 legacy/ 下的 .md（那是死代码区，第 25 项只管公开面）');
+    return;
+  }
+
+  var res;
+  try {
+    res = audit.scanAll();
+  } catch (e4) {
+    fail('扫公开文档时审计抛了：' + String((e4 && e4.message) || e4));
+    return;
+  }
+  if (res.files !== res.total) {
+    fail('文档表格审计只读了 ' + res.files + ' 份，清单里共 ' + res.total +
+      ' 份 .md —— 有文件读不到，「没有不一致」是假的');
+    return;
+  }
+  // 先点名坏行，再谈自证：否则真坏的那一行会被下面的反向验证抢掉，
+  // 报出来的是「反向验证没过」，人得自己反推到底哪儿坏了。
+  if (res.problems.length) {
+    fail('公开文档里有 ' + res.problems.length +
+      ' 行的列数和表头不一致（GitHub 会把整行渲染成溢出的多列；把那一格里的竖线写成 ' +
+      '`\\|`，若是两条被并成一条就补回换行）：\n      ' +
+      audit.summarize(res).join('\n      '));
+    return;
+  }
+
+  // ---- 反向验证（拿真文档的形状，不是合成夹具）----
+  // 只测合成夹具的话，"README 里一张表都没认出来"和"扫描器只对短文本有效"都会照样报 0 条 ——
+  // 那正是本项最危险的假绿：干净结论和没干活长得一模一样。
+  var readme;
+  try {
+    readme = fs.readFileSync(path.join(audit.ROOT, 'README.md'), 'utf8');
+  } catch (e3) {
+    fail('文档表格审计读不到 README.md：' + String((e3 && e3.message) || e3));
+    return;
+  }
+  var rlines = readme.split(/\r?\n/);
+  var sepRow = /^\s*\|[\s:|-]+\|\s*$/;
+  var firstTable = -1;
+  var fenced = null;
+  for (var t = 0; t + 2 < rlines.length; t++) {
+    var fm = /^\s*(`{3,}|~{3,})/.exec(rlines[t]);
+    if (fm) {
+      var mark = fm[1].charAt(0);
+      if (!fenced) fenced = mark;
+      else if (fenced === mark) fenced = null;
+      continue;
+    }
+    if (fenced) continue;
+    if (/^\s*\|/.test(rlines[t]) && sepRow.test(rlines[t + 1]) &&
+        rlines[t + 1].indexOf('-') >= 0 && /^\s*\|/.test(rlines[t + 2])) {
+      firstTable = t;
+      break;
+    }
+  }
+  if (firstTable < 0) {
+    fail('文档表格审计在 README.md 的正文（围栏代码块之外）里认不出任何一张表 —— ' +
+      '它报的「0 条不一致」不可信，怀疑扫描口径与真实文档脱节');
+    return;
+  }
+  // ⚠️ 注入打在**整份 README** 上、判据用**增量**（多报恰好 1 条），不截三行片段：
+  // 截片段的话，"扫描器只对夹具有效、对几百行的真文档失效"这一类坏法照样绿。
+  var poisonedRows = rlines.slice(0);
+  poisonedRows[firstTable + 2] = poisonedRows[firstTable + 2] + ' 多出来的一格 |';
+  var before = audit.scanText(readme).length;
+  var after = audit.scanText(poisonedRows.join('\n')).length;
+  if (after !== before + 1) {
+    fail('文档表格审计的反向验证没过：把 README.md:' + (firstTable + 3) +
+      ' 那一行多加一格，应在原本的 ' + before + ' 条之上多报 1 条，实际共报 ' + after +
+      ' 条 —— 这条闸对真实文档（整份几百行）失效，它报的「一致」不可信');
+    return;
+  }
+  pass('公开文档表格列数一致（' + res.files + ' 份 .md 逐行与表头同格；六格阴性对照按名字逐格复算' +
+    ' + 拿 README 正文真表多加一格恰好多报 1 条，README.md:' + (firstTable + 3) + '）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2344,6 +2489,7 @@ checkPublicHygiene();
 checkTestSuiteWiring();
 checkFixtureParsable();
 checkSafedocGuard();
+checkMarkdownTables();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
