@@ -4,6 +4,7 @@
  *   node tools/field-logs.js                       // 最近 40 条
  *   node tools/field-logs.js --grep=catalog         // 只看含某串的（子串匹配，不是正则）
  *   node tools/field-logs.js --level=warn --tail=200
+ *   node tools/field-logs.js --grep=rejected --width=4000   // 把某一条的取证读到底
  *   node tools/field-logs.js --watch=90             // 持续追 90 秒（每 3 秒一轮，只打新条）
  *
  * 为什么要有这一步：守则与 HANDOVER 反复写着「现场出问题**先看日志再改代码**」，
@@ -38,6 +39,16 @@ var GREP = String(arg('grep', ''));
 var LEVEL = String(arg('level', ''));
 var WATCH_MS = Number(arg('watch', 0));
 var TIMEOUT = Number(arg('timeout', 20000));
+// 一条最多打这么多字的 meta（默认 240 = 环里 200 条还能一眼扫完）。
+// `--width=4000` 是用来**读某一条的完整取证**的，配合 `--grep=` 用。
+var WIDTH = Number(arg('width', 240));
+// ⚠️ 非数字必须落回默认，不许留 NaN：`json.length > NaN` 恒 false，
+// 写成 `--width=abc` 会让这道闸**静默取消**、把整份 meta 原样倒进终端。
+if (!(WIDTH >= 1)) WIDTH = 240;
+// ⚠️ 深度闸必须跟着行宽一起松。`rejects[].sig.answer` 落在第 4 层，
+// 原来写死 `depth > 3` 就把批次 9-D / 10-A 争来的帧签名**全部打成 `…`** ——
+// 存储侧费了三批改好的取证，在读它的这个工具里又看不见，而且无声无息。
+var MAX_DEPTH = WIDTH > 240 ? 8 : 3;
 
 // meta 里可能带页面文字，也可能带看起来像凭据的东西 —— 键名一撞就当敏感，值整个打掉。
 var SENSITIVE_KEY = /(key|token|secret|password|passwd|pwd|authorization|cookie|credential|apikey)/i;
@@ -108,7 +119,7 @@ async function readLogs() {
 }
 
 function redact(obj, depth) {
-  if (depth > 3) return '…';
+  if (depth > MAX_DEPTH) return '…';
   if (obj === null || obj === undefined) return obj;
   if (typeof obj === 'string') return obj.length > 300 ? obj.slice(0, 300) + '…' : obj;
   if (typeof obj !== 'object') return obj;
@@ -124,7 +135,14 @@ function line(item, nowMs) {
   var t = Number(item && item.time) || 0;
   var ageS = t ? Math.max(0, Math.round((nowMs - t) / 1000)) : -1;
   var meta = item && item.meta ? redact(item.meta, 0) : null;
-  var metaText = meta && Object.keys(meta).length ? '  ' + JSON.stringify(meta).slice(0, 240) : '';
+  var json = meta && Object.keys(meta).length ? JSON.stringify(meta) : '';
+  // 截断必须自己说出口：一行被切掉一半和"这条日志本来就这么短"在屏幕上长得一模一样。
+  var metaText = '';
+  if (json) {
+    metaText = '  ' + (json.length > WIDTH
+      ? json.slice(0, WIDTH) + '…（这条还有 ' + (json.length - WIDTH) + ' 字没打，--width=' + (json.length + 1) + ' 看全）'
+      : json);
+  }
   return '  +' + (ageS < 0 ? '?' : ageS + 's') + ' [' + String(item.level || 'info') + '] ' +
     String(item.message || '').slice(0, 160) + metaText;
 }

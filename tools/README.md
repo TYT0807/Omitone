@@ -24,7 +24,7 @@
 | `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
 | `debug-probe.js` | `node tools/debug-probe.js` | 连上面那个浏览器，在**真学习通页面**上跑插件的只读探针 `xxtAI.probe()`（`--expr=` 可换成任意表达式）。**排查真实问题的唯一入口** —— 见下方专节 |
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
-| `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒`；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
+| `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
 留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
