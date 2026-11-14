@@ -1272,20 +1272,20 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么"软件这么大"——体积账本
 
-扩展**解压后约 2.87 MB**（按打包目录逐文件合计，2026-11-12 重算），`dist/*.zip` 约 1.96 MB。构成如下
+扩展**解压后约 2.92 MB**（按打包目录逐文件合计，2026-11-14 重算），`dist/*.zip` 约 1.98 MB。构成如下
 （`node tools/build.js` 会把 `resources/table.json` 排除掉，改由 123 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `popup/`（88 张立绘 + 界面） | 约 1.59 MB (55.4%) | 立绘是主体：44 套服装 / 21 表情 / 24 姿势，每张 12~25 KB |
-| `page.js` | 784 KB (26.7%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
-| `libs/` | 156 KB (5.3%) | 字体解析 Typr 95 KB + 报错分类 / 提示词 / 地址构造 / 字形表 |
-| `content.js` | 149 KB (5.1%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
-| `resources/`（装的是 `table.bin`） | 123 KB (4.2%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `popup/`（88 张立绘 + 界面） | 约 1.60 MB (54.5%) | 立绘是主体：44 套服装 / 21 表情 / 24 姿势，每张 12~25 KB |
+| `page.js` | 830 KB (27.7%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
+| `libs/` | 156 KB (5.2%) | 字体解析 Typr 95 KB + 报错分类 / 提示词 / 地址构造 / 字形表 |
+| `content.js` | 150 KB (5.0%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
+| `resources/`（装的是 `table.bin`） | 123 KB (4.1%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
 | `LICENSE` | 35 KB (1.2%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
-| `icons/` | 28 KB (1.0%) | 三个尺寸的图标 |
-| `background.js` | 20 KB (0.7%) | service worker：跨域 fetch 代理 |
-| `runtime-log-store.js` + `popup-log-view.js` | 13 KB (0.5%) | 日志 Worker 工厂 + 前端日志视图 |
+| `icons/` | 28 KB (0.9%) | 三个尺寸的图标 |
+| `background.js` | 23 KB (0.8%) | service worker：跨域 fetch 代理 |
+| `runtime-log-store.js` + `popup-log-view.js` | 13 KB (0.4%) | 日志 Worker 工厂 + 前端日志视图 |
 | `manifest.json` | 2 KB | 扩展清单 |
 
 > **为什么这么大**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
