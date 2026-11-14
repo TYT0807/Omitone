@@ -3004,14 +3004,14 @@
     ② 批次 49 留观 ① —— 问"拿到 null 之后不判空就 `.querySelector`"这一族现场有没有真这么写过：
     **逐个数过 `src/page` 里那 11 处 `_safeDocOf` / `_safeWinDoc` 调用点，全都先判空再往下走**，
     阴性结论，不扩那把尺子（扩了只会误报，见批次 49 的教训）。
-  - **验证**：完整 `npm run e2e` 全绿 **105 个场景 / 1084 项**（数字只认完整跑，`.workbuddy/e2e-counts.json` 落盘 `passed:true`）；
+  - **验证**：完整 `npm run e2e` 全绿 **105 个场景 / 1084 项**（数字只认完整跑，`.workbuddy/e2e-counts.json` 落盘 `passed:true`）；<!-- 历史计数:start --><!-- 历史计数:end -->
     现场（调试浏览器 9334）只读复验：那一支 924.57 秒的视频 `currentTime` 每 30 秒一条等待日志、
     依次 508.6 / 538.6 / 568.6 / 598.8 / 629.1（**在推进**），整场日志里 `broken` / `media pipeline dead` /
     `media has no source` **一条都没有** —— 新判据在真实页面上不误伤；
     `return typeof window._xxtApp._mediaErrorCode` 在现场量到 `"function"`，确认现场加载的就是含批次 50 的那一份。
     沙盒 `--full` 干净复跑：`passed:true` / 105 场景全跑 / 1296 项断言 / `failures:[]` / 十份基线套件退出码全 0 /
     `sourceUnchanged:true`。⚠️ **第一次那跑报的是 `passed:false`，原因不是代码** —— 我在它跑的途中改了
-    `CHANGELOG.md`，源码指纹守卫按设计拦住（`Original source changed during sandbox run`，而 105 个场景
+    `CHANGELOG.md`，源码指纹守卫按设计拦住（`Original source changed during sandbox run`，而 105 个场景 <!-- 历史计数:start --><!-- 历史计数:end -->
     一条没红、`failures:[]`）。**沙盒跑期间不许动被跟踪的文件**，否则那份"红"是守卫在说话，不是产品在说话。
     ⚠️ 顺带量到一件别的事：现场 07:53–11:09 有 12 条 error 级 `media play failed`，文案全是
     "interrupted by a call to pause() / a new load request" —— 那是**旧构建**（`dist/omitone-1.3.0/page.js`
@@ -3022,6 +3022,88 @@
     别把它写成已实战验证；③ `/media` 那页的元素状态是**由"src 指向不存在的文件"隐式产生**的 ——
     这类"夹具自带的真状态"还有一批（`networkState` / `canPlayType` / `seeking`），
     下一条规矩落地时顺手列一份清单，别每次靠一条旧红提醒。
+
+- **57. 批次 51：等待日志不再每秒重播 —— 同一节里「还在播」与「任务框都完成了」轮流说话，把批次 40/50 的兜底一起清零**（2026-11-14）
+  - **用户看得见的症状**：右下角日志一直在滚同一句 `media pending, delay completion`，
+    而"刚才那一节为什么跳过去 / 为什么这一节不动了"根本查不到 —— 200 条环形日志被这一句独占，
+    证据窗只剩约 100 秒。更严重的一半在下面。
+  - **现场实测**（用户挂着刷课，CDP 9334，2026-11-13 04:58→17:23 那份 25374 行日志）：
+    `media pending, delay completion` **20500 条 = 整份日志的 81%**；相邻间隔只有三档 ——
+    **0 秒 9670 次 / 1 秒 9651 次 / 30 秒 973 次**（设计是 30 秒一条）；`reason` 分布
+    `completion-check` 10920 / `ocs-runner-active-job` 9575 / `ocs-next-check` 7 —— 两条几乎 1:1，
+    就是**两个调用方一边一条**的形状；同窗口 `clear media pending {reason:"completed-visible-task:*"}` 588 条。
+  - **根因是先后顺序，不是判据写错**：`_isActiveMediaPending` 旧写法**先**问「这一节该不该为
+    『任务框都显示已完成』放行」（那道判据读缓存字段 `this._videoEl`），**后**一行才
+    `var media = this._videoEl || this._getVideoEl()` —— 而 `_getVideoEl()` 自己会把缓存填回去（读即写）。
+    于是缓存为空那一拍：判据拿到 null → 放行 → `_clearMediaPendingState` 收摊；下一拍 OCS 循环
+    （`64-tasks-loop.js` 的 `activeTask.type === 'video'` 那支）用 `_getVideoEl()` 把元素拿回来、
+    设 `_isPlaying = true` → 又变回占住 → 再被清零。**每秒一个来回**。
+  - **真正被这顺序废掉的是批次 40/50**：清零的不只是日志时钟，还有 `_mediaNoSourceSince` 与
+    `_mediaBrokenSince` —— 那两条「有界放手」的窗口要**连续占着同一节**才攒得起来，
+    而在"任务框全显示已完成 + 播放器坏了"这一格里它们**一秒也攒不满**（刚武装就被放行抹掉）。
+    也就是说：批次 40/50 那两条兜底，**恰好在最需要它们的形状下永久失效**，这一节会一直占着不走。
+  - **改法只有一句**：先解析元素，再问放行 —— `_isActiveMediaPending` 里把
+    `var media = liveVideo || this._getVideoEl();` 提到判据**之前**，并把这枚元素当参数交给它；
+    `_shouldReleaseMediaPendingForCurrentCompletion(reason, media)` 从此**不许**再读缓存。
+    方向是**只放得更少**（元素还在播就不许因为"框都显示完成"而放手），放行的两条正常出口
+    （元素真 `ended` / 这一页压根没媒体元素）一条没动。
+  - **没有加第二道闸**：本来想给 `_mediaWaitLogAt` 再补一条"换一段等待才重新开口"的分段身份，
+    查了批次 37 的要求后**否掉**——那正是 37 阶段 5「换一段等待必须立刻重新开口」要的东西，
+    补上去就是把那条已验收的行为闷掉。刷屏的病根在"逐拍放手"，不在心跳。
+  - **改前零覆盖**：`grep _shouldReleaseMediaPendingForCurrentCompletion tools/*.js` → **0 命中**；
+    批次 37 那条场景抓不到这一族，因为它手动钉住 `app._videoEl = v`、**从不让清零那条路跑起来**。
+  - **新场景 58「等待日志不再每秒重播」（9 项断言）**：`/media` 那页按现场形状钉死
+    （`error.code=3` / `readyState 4` / 有时长 / 未暂停 / `ended` 可切），只把
+    `_getVisibleTaskCompletionState` 打桩成"框都完成了"，连跑 6 拍、每拍按生产顺序问两个调用方。
+    断言 ①两拍答案一致且都占住 ②`clear media pending` **0 条**、心跳**恰好 1 条**
+    ③`_mediaBrokenSince` 一拍武装后六拍同一个时间戳（单调不减）④前提：元素确实被第一个调用方自己拿回来了
+    ⑤⑥两条**阳性对照**：元素真 `ended`／压根拿不到元素时，放行照旧且留 `completed-visible-task:*` 点名理由。
+    ⚠️ 计时器**不在拍内清零** —— 那是被测行为，夹具自己清就等于替被测代码作案。
+  - **新断言验过有牙**（`node .workbuddy/reverse51.js`，两支注入各破一个行为，预期红逐条点名、多红也不符合；
+    还原后两份切片与 `page.js` 与注入前基线**逐字节一致**、`INJ51` 无残留）：
+    **α** 放行判据之前不再解析元素（退回旧写法）→ 红 4 条（51-A / 51-B / 51-C / 51-C 前提），
+    正是刷屏 + 兜底被清零那一族；**δ** 谓词摘掉 `!media.ended` → 只红 1 条（51-D 对照），
+    证明"该放的还放得掉"这一格有人守着。
+  - **现场复验（同一份 200 条环里同时留着两侧）**：修后最近 900 秒等待日志 21 条、
+    **间隔 ≈30 秒**（其间 4 次页面重载各放行一条，属批次 37 记录过的复位设计）、`clear media pending` **0 条**；
+    环的**最老 25 条**仍是 12 小时前那一段 —— 间隔 0–1 秒、每对配一条 `clear media pending {completed-visible-task:*}`。
+    构建身份用 `window._xxtApp._shouldReleaseMediaPendingForCurrentCompletion.length` 量到 **2**，
+    确认现场加载的就是含批次 51 的那一份。
+    ⚠️ **但这一轮现场 `allFinished:false`**（此刻这一节任务框并没有全显示完成），
+    所以"两个调用方各执一词"那一格**现场没有复现** —— 现场证据只到"不再刷屏 + 构建身份对得上"，
+    **因果证据在沙盒 51-A/B/C 与注入 α**，别把本批写成现场复现修复。
+  - **验证**：完整 `npm run e2e` 全绿 **106 个场景 / 1093 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`）；
+    定向跑 9/9；`npm test` 与 `npm run check` 24 项全绿；沙盒 `--full` **106 个场景 / 1307 项、0 条失败、
+    `sourceUnchanged:true`**（5 分 07 秒跑完；跑期间一个被跟踪文件都没动 —— 批次 50 的教训）。
+  - **收尾时抓到两处"发版工具自己会漏报"的**（都属同一类：**校验器拿的东西比工作区旧，却照样打勾**）：
+    ① **Release 说明与源文件双向漂移** —— 线上那一页缺批次 38/40/44 的三段，
+    `release-notes-1.3.0.md` 缺批次 33/34 的四段。根因不是有人改错了，是**流程本身**：
+    §3.7 要求"小修复并进当前版本说明"，而每一次都是临时 curl 直接 PATCH 线上、**从不回写源文件**
+    （git 历史坐实：那四段 ——「拨一下开关」「没认出这是设置弹窗」「连接不上服务商」「已经是最新版」——
+    对 `release-notes-1.3.0.md` 跑 `git log -S"<句>"` **全部 0 个提交**，说明它们**从来没进过这份源文件**，
+    只被 curl 直接写在线上那一页。⚠️ 后三句在 `README.md` 与 `docs/manual.html` 里**是有的**，
+    那是另外两份文档、不是 Release 的源文件 —— 别把本条读成"仓库里从来没有这段话"）。
+    附件有 sha256 可对，**说明那一页以前没有任何东西对它**。
+    ② **`verify` 说"包是对的"而它比对的是本地那个旧 dist** —— 忘了 `npm run build` 时
+    线上附件与本地 dist 逐字节一致（都停在 01:29），于是打印「✓ 用户下载到的东西是对的」，
+    可工作区的 `page.js` 早已拼进批次 51。本轮实测撞在这条上。
+  - **为此加的两道守卫 + 一条命令**（`tools/github-release.js`）：新增 `notes <tag>` 子命令，
+    正文**只从 `release-notes-<版本>.md` 读**（不接受手写正文，杜绝再出现只改线上的一路）；
+    `verify` 现在逐字比线上说明与源文件，不一致就报红并点名"哪几段只在其中一边"；
+    再按 mtime 问一句「dist 打包之后，`build.js` 的 `INCLUDE` 里有没有文件又改过」，改过就报红。
+    **两条都验过会红**：这一轮在推之前跑 `verify`，两道各自报红（漂移那段还准确点出线上多/缺的标题），
+    推完（`notes` + `build` + `replace-asset`）再跑就全绿、退出码 0。
+    mtime 而不是解 zip：判据误判的方向只会是**多报一次红**（叫你重跑构建，无害），不会漏报。
+  - **线上已同步**：说明 3139 字 → 4211 字（含批次 40/50/51 那两段用户向说明）；
+    `omitone.zip` 换成新构建（2077466 字节，sha256 `51dd82d3…`，旧的是 `3edba997…`），
+    说明书未变、按同名跳过。
+  - **留给下一批**：① `_getVideoEl()` 这种**读即写缓存**的方法还有几个调用方在依赖它的副作用？
+    本批只收了 `_isActiveMediaPending` 这一条路，另一处 `64-tasks-loop.js` 靠它填缓存才让
+    `_isPlaying` 有意义 —— 该列一份"哪些字段是读了会写"的清单，否则下一个同类 bug 还是靠刷屏才发现；
+    ② 现场每 120 秒一条 `discussion page declined {reason:"study-page"}`、`kindOf.insertbbs` 仍为空
+    —— 批次 20/43 那条「讨论任务点真做完」还没闭环；
+    ③ 环形日志被冲空这一族**只靠"刷屏"暴露**：如果哪天是一句话每 5 秒一条（不到 81%），
+    占比统计就看不出来了 —— 值得给日志环配一条"同一句占比"的现场量。
 
 
 

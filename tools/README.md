@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 105 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 71 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 106 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 71 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
 | `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
 | `audit-safedoc.js` | `node tools/audit-safedoc.js`（`--json` 出机器可读）；被 `check.js` 第 24 项调用 | 跨域裸读审计：扫 `src/page/*.js`，逐字符判每一处 `.contentDocument` / `.contentWindow.document` **当下**在不在 try 体内。先跑 9 格自证再出结论：自证不过退出 2（结论作废），有裸奔退出 1，干净退出 0。`catch` / `finally` 体不算保护 |
 | `build.js` | `npm run build` | 打包到 `dist/` |
@@ -348,7 +348,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 105 个场景 / 1084 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 106 个场景 / 1093 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -627,6 +627,7 @@ npm run manual
 ```bash
 npm run release -- push --message-file <提交信息文件> <改动文件...>
 npm run release -- release <tag> --notes-file <Release说明文件>
+npm run release -- notes <tag>                    # 只改那一页的说明，不动 tag、不动附件
 npm run release -- verify  <tag>
 npm run release -- replace-asset <tag>           # 附件过期时按同名替换，不必重发整版
 npm run release -- check-msg <提交信息文件>      # 只校验提交信息形状，不联网、不需要令牌
@@ -638,15 +639,35 @@ npm run release -- check-msg <提交信息文件>      # 只校验提交信息�
 `replace-asset` 则按同名替换掉它（附件名不变 → 永久下载链接不受影响）。
 两步是配套的：**verify 报 → replace-asset 修 → 再 verify 确认**。
 
+**为什么还有 `notes`**（2026-11-14 加）：AGENTS.md §3.7 要求小修复**并进当前版本的说明**，
+而以前这一步每次都是临时 curl **直接 PATCH 线上那一页**，从没回写 `release-notes-<版本>.md`。
+两边各写各的，漂移到**互缺半段**才发现 —— 线上缺批次 38/40/44 的三段，源文件缺批次 33/34 的四段，
+而且**没有任何一条守卫响过**（附件有 sha256 可对，说明那一页以前谁都没对）。
+规矩从此是：**说明只改源文件，再跑 `notes` 把源文件推上去**；`verify` 逐字比那两份，
+不一致就报红、点名是哪几段只在其中一边。
+
+⚠️ `verify` 里另外补了**两处它自己会漏报的**（同一类病：**校验器拿的东西比工作区旧，却照样打勾**）：
+
+- **本地构建过期**：原先只把**线上附件**跟**本地 `dist/*.zip`** 比。忘了 `npm run build` 时两边都是旧包、
+  逐字节一致，于是它打印「✓ 用户下载到的东西是对的」，而工作区的 `page.js` 早就是新的一份
+  （实测就撞在这条上：批次 51 已拼进 `page.js`，verify 仍说包是对的）。
+  现在按 mtime 问一句「dist 打包之后，进包的那批文件（`build.js` 的 `INCLUDE`）有没有再动过」，
+  动过就报红叫你 `npm run build`。用 mtime 而不是解 zip：误判方向只会是**多报一次红**
+  （提示重跑构建，无害），不会漏报。
+- **`INCLUDE` 读不到 = 校验器自己坏了**，必须报红，不能跳过 —— 与下面那条
+  「读不到白名单还打印完全一致」是同一个坑的第二半。
+
 ⚠️ `verify` 曾经只按 `ASSETS[].src` 找对应附件，于是**打进 zip 的文件永远找不到附件**、
 一律被判成过期 —— 自己建议"直接替换该附件"，自己却认不出已经换过了。现已改为
 「直接附件源比它自己 / 打进包的文件比本地重新构建的 zip」，且优先比 sha256 而不是字节数。
 ```
 
-**为什么不用 `git push`**：这台机器上 `git push` 能连上却永远不返回
-（实测挂满 5 分半），而同一条网络下 `git fetch` 几秒完成、
-`api.github.com` 与 `uploads.github.com` 都正常 —— push 通道单独不通。
-详见 AGENTS.md §7.3。
+**首选 `git push`，不是这里的 `push` 子命令**（2026-09-21 更正过）：原先写的是"这台机器
+`git push` 能连上却永远不返回"，实测真正的报错是 **缺凭据** ——
+远端是 HTTPS 而本机没有凭据助手，`terminal prompts disabled`，**根本没发起认证**。
+把令牌放进 URL 就能推（`credential.helper=` 那次实测 8 个提交一次推上去、历史完整），
+**比走 REST API 好**：API 那条路会把多个提交压成一个。
+`push` 子命令保留作备选；真·连不上时先重试几次（AGENTS.md §7.3）。
 
 **提交信息形状是硬性检查**（在发起任何请求**之前**拦下，不合格就一个字节都不发）。
 规则：**一行中文主题、≤30 字、不加 `chore:` 之类英文前缀、不写正文**。
@@ -669,7 +690,10 @@ npm run release -- check-msg <提交信息文件>      # 只校验提交信息�
 - `release`：tag 指向**远端当前 sha**（不是本地 `git rev-parse HEAD`，否则 422）。
   已存在的 tag / Release 会被更新而不是报错
 - `verify`：**发完必须跑**。确认 tag 指向 HEAD、每个附件 `state=uploaded`、
-  以及 README 那条下载直链确实有同名附件 —— **接口返 200 不等于传完了**
+  以及 README 那条下载直链确实有同名附件 —— **接口返 200 不等于传完了**。
+  它现在还比两件事：**本地 dist 有没有比源码旧**、**线上说明有没有和源文件一致**（见上）
+- `notes`：只 PATCH `releases/{id}` 的 `body`，文字**从 `release-notes-<版本>.md` 读**，
+  不接受手写正文 —— 就是为了不再出现"线上改了、源文件没跟上"
 
 ⚠️ **附件名在脚本里写死**（`omitone.zip` / `使用说明.pdf`），不接受参数。
 这是刻意的：README 的下载入口用的是 GitHub 永久链接
@@ -678,8 +702,12 @@ npm run release -- check-msg <提交信息文件>      # 只校验提交信息�
 而失效表现是"新用户点下载看到 404"——不报错、不留日志，
 受影响又恰好是那批"只会点这一个链接、也不会来反馈"的用户。
 
-令牌来源：环境变量 `GITHUB_TOKEN`，或 `.workbuddy/.ghtoken`（已 gitignore）。
-用完记得删，并提醒提供者 revoke。
+令牌来源：环境变量 `GITHUB_TOKEN` 优先，否则读**用户主目录**下的 `~/.omitone-release.ghtoken`
+（`tokenPath()` 已按此路径读）。⚠️ **刻意放在仓库之外**：仓库内的文件哪怕 .gitignore 挡住了，
+也随时可能被 `git add -f`、被打包工具带走、或被 AI 读进上下文；Windows 主目录下还有一部分
+会被 OneDrive 同步。两层叠加才安全（原因全文见脚本文件头与 HANDOVER §0.5）。
+用完**立刻 revoke 并删掉**，它不该长期留在磁盘上；顺序是"发版 → 核验远端 → 再删令牌"
+（§3.5 那次提前删令牌，结果 Release 和附件都没发出去）。
 
 ## fix-bom.js
 

@@ -52,9 +52,15 @@
       return false;
     },
 
-    _shouldReleaseMediaPendingForCurrentCompletion: function (reason) {
+    /**
+     * 「这一节该不该为『任务框都显示已完成』而放手」—— 唯一调用方是 `_isActiveMediaPending`，
+     * 它必须把**自己即将用来决定"还占不占着"的那枚元素**一起传进来（批次 51）。
+     * ⚠️ 不许改回读 `this._videoEl` 缓存：那个缓存会被 `_getVideoEl()` 一拍一填、
+     *    被 `_clearMediaPendingState()` 一拍一清，两个调用方因此逐拍各执一词。
+     * `media` 为空 = 这一页压根没有媒体元素，此时"框都做完了"才算数。
+     */
+    _shouldReleaseMediaPendingForCurrentCompletion: function (reason, media) {
       if (!this._activeMediaJobPending && !this._isPlaying) return false;
-      var media = this._videoEl;
       if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
 
       var state = this._getVisibleTaskCompletionState();

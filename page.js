@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '38dc6812e2';
+var OMITONE_CODE_REV = 'd5cac7f58f';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2104,12 +2104,24 @@ var OMITONE_CODE_REV = '38dc6812e2';
       var liveVideo = this._videoEl;
       var stillPlaying = !!(liveVideo && liveVideo.isConnected && !liveVideo.paused && !liveVideo.ended);
       if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
-      if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending')) {
+      // ⚠️ **先解析元素，再问「这一节是不是该放行」**（批次 51）。
+      //    旧写法把这两步反着来：放行判据读的是缓存字段 `this._videoEl`，元素要到下一行
+      //    才 `|| this._getVideoEl()` 拿 —— 而 `_getVideoEl()` 自己会把缓存填回去。
+      //    于是同一节里「还在播」与「任务框都显示已完成」逐拍轮流成立：
+      //    放行那一拍 `_clearMediaPendingState` 把日志时钟和批次 40/50 的放手窗口一起清零，
+      //    下一拍 OCS 循环用 `_getVideoEl()` 重新拿到元素 → 又变回占住 → 再被清零。
+      //    现场实测（2026-11-13，用户挂着刷课，CDP 9334，12.4 小时那份日志）：
+      //    这一对每秒两条，「media pending, delay completion」独占 20500 条 =
+      //    整份 200 条环形日志的 **81%**（证据窗只剩约 100 秒，用户来问"刚才为什么跳过"时
+      //    那一刻的记录早被挤没了）；更糟的是 `_mediaBrokenSince` 每次刚武装就被清零 ——
+      //    **批次 50 那 120 秒的有界放手在这一格里一秒都攒不起来**，正是要它放手的形状。
+      //    方向是**只放得更少**：元素还在播就不许因为"框都显示完成"而放行这一节。
+      var media = liveVideo || this._getVideoEl();
+      if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending', media)) {
         this._clearMediaPendingState('completed-visible-task:' + (reason || ''));
         return false;
       }
 
-      var media = this._videoEl || this._getVideoEl();
       if (!media) {
         if (!this._activeMediaJobPending) return false;
         var missingNow = Date.now();
@@ -10289,9 +10301,15 @@ var OMITONE_CODE_REV = '38dc6812e2';
       return false;
     },
 
-    _shouldReleaseMediaPendingForCurrentCompletion: function (reason) {
+    /**
+     * 「这一节该不该为『任务框都显示已完成』而放手」—— 唯一调用方是 `_isActiveMediaPending`，
+     * 它必须把**自己即将用来决定"还占不占着"的那枚元素**一起传进来（批次 51）。
+     * ⚠️ 不许改回读 `this._videoEl` 缓存：那个缓存会被 `_getVideoEl()` 一拍一填、
+     *    被 `_clearMediaPendingState()` 一拍一清，两个调用方因此逐拍各执一词。
+     * `media` 为空 = 这一页压根没有媒体元素，此时"框都做完了"才算数。
+     */
+    _shouldReleaseMediaPendingForCurrentCompletion: function (reason, media) {
       if (!this._activeMediaJobPending && !this._isPlaying) return false;
-      var media = this._videoEl;
       if (media && !media.ended && (this._activeMediaJobManaged || this._isPlaying)) return false;
 
       var state = this._getVisibleTaskCompletionState();

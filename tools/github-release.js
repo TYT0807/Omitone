@@ -16,10 +16,18 @@
  *   但打完 tag 要知道 tag 该指向哪个 sha —— API 提交会被 GitHub 重新签名，
  *   远端 sha 必然 ≠ 本地 sha，顺序反了会撞 `422 Object does not exist`。
  *
- * 三个子命令：
+ * 子命令：
  *   push    --message-file <文件> <文件...>   把改动提交到 main（走 API；备选方案，见上）
  *   release <tag> --notes-file <文件>         打 tag + 建 Release + 传两个附件
+ *   notes   <tag> --notes-file <文件>         **只改 Release 那一页的说明**，不动 tag、不动附件
  *   verify  <tag>                             核验远端状态（**发完必须跑一次**）
+ *   replace-asset <tag>                       附件过期时按同名替换，不必重发整版
+ *   check-msg <文件>                          只校验提交信息，不联网
+ *
+ * ⚠️ `notes` 这个子命令是**为了堵一类漂移**才加的：以前"合并说明"都是临时 curl 直接
+ *   PATCH 线上那一页，**从没回写 `release-notes-<版本>.md`**（2026-11-14 实测两边各缺半 ——
+ *   线上少了批次 38/40/44 的三段，源文件少了批次 33/34 的四段，而且都没人报警）。
+ *   规矩：**说明只改源文件，然后 `notes` 把源文件推上去**；`verify` 会逐字比那两份。
  *
  * 令牌：优先读环境变量 GITHUB_TOKEN，其次读**用户主目录**下的
  *   `~/.omitone-release.ghtoken` —— 用户主目录下的一个文件。
@@ -157,6 +165,80 @@ function git(args, quiet) {
 function manifestVersion() {
   var m = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8').replace(/^\uFEFF/, ''));
   return m.version;
+}
+
+/**
+ * 某一版 Release 说明的**源文件**（`release-notes-<版本>.md`，版本号不带 v 前缀）。
+ *
+ * ⚠️ 找不到就返回 null，**不猜**："取目录里最新的那份"会在新版本刚建目录、
+ * 说明还没落地时，把上一版的说明当成这一版的真源去比 —— 那是一条**恒红**的守卫，
+ * 而恒红的守卫和没有守卫一样害人（AGENTS.md §5）。
+ */
+function notesPathFor(tag) {
+  var version = String(tag || '').replace(/^v/, '');
+  var file = path.join(ROOT, 'release-notes-' + version + '.md');
+  return fs.existsSync(file) ? file : null;
+}
+
+/**
+ * 说明里的**段标题**（每段开头 `**…**` 那一句），只用来在漂移时**点名是哪几段对不上**。
+ *
+ * ⚠️ 它**不是**判据 —— 判据是上面那次逐字比对。标题两边都可能改写
+ * （同一件事换一种说法），拿它当判据会误报；只当"红的时候先告诉你往哪儿看"。
+ */
+function paraTitles(text) {
+  var out = [];
+  String(text).split(/\r?\n/).forEach(function (line) {
+    var m = /^\*\*(.+?)\*\*/.exec(line.trim());
+    if (m) out.push(m[1].replace(/\s+/g, ' ').slice(0, 24));
+  });
+  return out;
+}
+
+/**
+ * 本地构建产物 `dist/omitone-<版本>.zip` 是不是**比要打进包的那批源文件还旧**。
+ *
+ * 为什么问这个：verify 原来只把**线上附件**跟**本地 dist** 比。可 dist 自己会过期 ——
+ * 忘了 `npm run build` 时，两边都是旧包、逐字节一致，于是它打印
+ * 「✓ 改动涉及的附件都已换成最新内容，用户下载到的东西是对的」，
+ * 而工作区里的 `page.js` 早就是新的一份（2026-11-14 实测就撞在这条上：
+ * 批次 51 已经拼进 page.js，verify 仍说包是对的）。
+ * **那是假绿，比不查更糟** —— 它替你确认了一件没确认的事。
+ *
+ * 判据用 mtime，不比 zip 内容：比较的对象是"构建之后源码有没有再动过"，
+ * 而 mtime 误判的方向是**多报一次红**（提示你重跑 build，无害），不会漏报。
+ */
+function distFreshness(version) {
+  var zip = path.join(ROOT, 'dist', 'omitone-' + version + '.zip');
+  if (!fs.existsSync(zip)) return { zip: null };
+  var zipMtime = fs.statSync(zip).mtimeMs;
+  var INCLUDE = (function () {
+    try {
+      var bs = fs.readFileSync(path.join(ROOT, 'tools', 'build.js'), 'utf8');
+      var m = bs.match(/var INCLUDE\s*=\s*\[([\s\S]*?)\]/);
+      if (!m) return null;
+      return m[1].split(',').map(function (s) {
+        return s.trim().replace(/^['"]|['"]$/g, '');
+      }).filter(Boolean);
+    } catch (e) { return null; }
+  })();
+  if (!INCLUDE) return { zip: zip, includeBroken: true };
+  var newest = null;
+  var walk = function (p, depth) {
+    var st;
+    try { st = fs.statSync(p); } catch (e) { return; }
+    if (st.isDirectory()) {
+      if (depth > 2) return;
+      fs.readdirSync(p).forEach(function (name) { walk(path.join(p, name), depth + 1); });
+      return;
+    }
+    if (!newest || st.mtimeMs > newest.mtimeMs) {
+      newest = { file: path.relative(ROOT, p).replace(/\\/g, '/'), mtimeMs: st.mtimeMs };
+    }
+  };
+  INCLUDE.forEach(function (entry) { walk(path.join(ROOT, entry), 0); });
+  if (!newest) return { zip: zip, newest: null };
+  return { zip: zip, newest: newest, stale: newest.mtimeMs > zipMtime };
 }
 
 /**
@@ -379,6 +461,33 @@ async function cmdRelease(tag, notesFile) {
   }
 
   console.log('\n下一步必须核验：node tools/github-release.js verify ' + tag);
+}
+
+// ---------------------------------------------------------------------------
+// notes：**只改** Release 那一页的说明 —— 不动 tag、不动附件、不重发版本。
+//
+// 为什么要有这条命令（2026-11-14 加）：AGENTS.md §3.7 要求"小修复并进当前版本的说明"，
+// 而以前这一步每次都是**临时 curl 直接 PATCH 线上**，从没把改后的文字回写
+// `release-notes-<版本>.md`。两边各写各的，最后真的漂移到互缺半段（实测：
+// 线上少了批次 38/40/44，源文件少了批次 33/34），而且**没有任何一条守卫响过**。
+// 规矩从此是：**说明只改源文件**，再跑 `notes` 把源文件推上去；`verify` 逐字比那两份。
+// ---------------------------------------------------------------------------
+async function cmdNotes(tag, notesFile) {
+  if (!tag) throw new Error('notes 需要 tag，例如 v1.3.0');
+  var file = notesFile ? path.resolve(ROOT, notesFile) : notesPathFor(tag);
+  if (!fs.existsSync(file)) throw new Error('说明源文件不存在：' + file);
+  var body = fs.readFileSync(file, 'utf8').replace(/\s+$/, '');
+
+  var rel = await api('GET', base + '/releases/tags/' + tag);
+  var before = rel.body.length;
+  if (body === rel.body.replace(/\s+$/, '')) {
+    console.log('线上说明与 ' + path.relative(ROOT, file) + ' 已一致（' + before + ' 字），无需改动');
+    return;
+  }
+  var updated = await api('PATCH', base + '/releases/' + rel.id, { body: body });
+  console.log('说明已更新：' + updated.html_url);
+  console.log('  ' + before + ' 字 → ' + updated.body.length + ' 字（源文件 ' + path.relative(ROOT, file) + '）');
+  console.log('  updated_at ' + updated.updated_at);
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +755,57 @@ async function cmdVerify(tag) {
     console.log('tag 与 ' + BRANCH + ' 完全一致 ✓');
   }
 
+  // ---- 本地构建产物有没有过期 ----
+  // 放在**最外面**：这条与"tag 之后有没有新提交"无关 —— 工作区改了源码但还没提交时，
+  // 上面那段 compare 根本不跑，忘了 build 就没人拦（AGENTS.md §3.7 的⚠️正是这一条）。
+  var fresh = distFreshness(manifestVersion());
+  if (fresh.includeBroken) {
+    console.log('\n  ✗ 读不到 tools/build.js 的 INCLUDE 白名单 —— 无法判断本地构建是否过期');
+    clean = false;
+  } else if (!fresh.zip) {
+    console.log('\n  ⚠ 本地没有 dist/omitone-' + manifestVersion() + '.zip —— 先 npm run build，否则上面那条"附件已换过"没有本地依据');
+  } else if (fresh.stale) {
+    console.log('\n  ✗ 本地构建产物**比源码旧**：dist 打包之后 `' + fresh.newest.file + '` 又改过 ——');
+    console.log('    线上附件与这个旧 dist 一致也没用，用户拿到的还是修复前的代码。先 npm run build，再 replace-asset');
+    clean = false;
+  } else {
+    console.log('\n  ✓ 本地 dist 不早于任何进包源文件（最新的是 ' + fresh.newest.file + '）');
+  }
+
+  // ---- Release 说明 vs 源文件 ----
+  //
+  // 为什么单独比这一条：附件有 sha256 可对，**说明那一页以前没有任何东西对它**。
+  // 结果就是"合并说明"每次都直接 PATCH 线上、不回写 `release-notes-<版本>.md`，
+  // 两边漂移到互缺半段（2026-11-14 实测：线上缺批次 38/40/44，源文件缺批次 33/34）。
+  // 这条守卫报的是**行为**（用户在那一页看到的，是不是仓库里那份说明），不是文件名。
+  var notesFile = notesPathFor(tag);
+  if (!notesFile) {
+    console.log('\n  ⚠ 本地没有 release-notes-' + String(tag).replace(/^v/, '') +
+      '.md —— 线上那一页**没有源文件可对**，改了说明无法回写，漂移会无声积累');
+  } else {
+    var localBody = fs.readFileSync(notesFile, 'utf8').replace(/\s+$/, '');
+    var remoteBody = String(rel.body || '').replace(/\s+$/, '');
+    if (localBody === remoteBody) {
+      console.log('\n  ✓ Release 说明与 ' + path.basename(notesFile) + ' 逐字一致（' +
+        remoteBody.length + ' 字）');
+    } else {
+      var onlyRemote = paraTitles(remoteBody).filter(function (t) {
+        return paraTitles(localBody).indexOf(t) === -1;
+      });
+      var onlyLocal = paraTitles(localBody).filter(function (t) {
+        return paraTitles(remoteBody).indexOf(t) === -1;
+      });
+      console.log('\n  ✗ Release 说明与源文件已漂移（线上 ' + remoteBody.length +
+        ' 字 / ' + path.basename(notesFile) + ' ' + localBody.length + ' 字）');
+      if (onlyRemote.length) console.log('      只有线上有：' + onlyRemote.join(' / '));
+      if (onlyLocal.length) console.log('      只有源文件有：' + onlyLocal.join(' / '));
+      console.log('    → 先手工把两边并成一份**完整的**（谁漏的那半边补回源文件），');
+      console.log('      然后**只推源文件**：node tools/github-release.js notes ' + tag);
+      console.log('      （别再直接 PATCH 线上 —— 那正是这次漂移的来源）');
+      clean = false;
+    }
+  }
+
   if (bad.length || wrongNames.length || !linkOk || !clean) process.exitCode = 1;
 }
 
@@ -662,6 +822,7 @@ async function cmdVerify(tag) {
     await cmdPush(rest.positional, rest.flags['message-file'], dels);
   }
   else if (cmd === 'release') await cmdRelease(rest.positional[0], rest.flags['notes-file']);
+  else if (cmd === 'notes') await cmdNotes(rest.positional[0], rest.flags['notes-file']);
   else if (cmd === 'verify') await cmdVerify(rest.positional[0]);
   else if (cmd === 'replace-asset') await cmdReplaceAsset(rest.positional[0]);
   else if (cmd === 'check-msg') cmdCheckMsg(rest.positional[0]);
@@ -669,6 +830,7 @@ async function cmdVerify(tag) {
     console.log('用法:');
     console.log('  node tools/github-release.js push --message-file <文件> [--delete a,b] <文件...>');
     console.log('  node tools/github-release.js release <tag> --notes-file <文件>');
+    console.log('  node tools/github-release.js notes <tag> [--notes-file <文件>]   # 只改那一页的说明（默认读 release-notes-<版本>.md）');
     console.log('  node tools/github-release.js verify <tag>');
     console.log('  node tools/github-release.js replace-asset <tag>   # 附件过期时按同名替换，不必重发整版');
     console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');

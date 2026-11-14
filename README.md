@@ -594,7 +594,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 105 个场景，1084 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 106 个场景，1093 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1131,7 +1131,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（299 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
-npm run e2e      # 真实 Edge 功能交叉检验（105 个场景 / 1084 项）
+npm run e2e      # 真实 Edge 功能交叉检验（106 个场景 / 1093 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

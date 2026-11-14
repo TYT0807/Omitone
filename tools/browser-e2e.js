@@ -13691,6 +13691,192 @@ SCENARIOS.push({
   }
 });
 
+SCENARIOS.push({
+  name: '等待日志不再每秒重播',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 现场那一节的形状（2026-11-13 CDP 9334）：能播的迹象全在，只有 error 说真话。
+      '  window.__b51T = 628.770678;',
+      '  window.__b51DUR = 1448.46;',
+      '  window.__b51Err = { code: 3, message: "PipelineStatus::PIPELINE_ERROR_DECODE" };',
+      '  window.__b51Ended = false;',
+      '  window.__b51Seeks = []; window.__b51Loads = 0; window.__b51Plays = 0;',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error",',
+      '    { configurable: true, get: function(){ return window.__b51Err || null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b51DUR; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "networkState",',
+      '    { configurable: true, get: function(){ return 1; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused",',
+      '    { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended",',
+      '    { configurable: true, get: function(){ return window.__b51Ended === true; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true,',
+      '    get: function(){ return window.__b51T; },',
+      '    set: function(v){ window.__b51Seeks.push(Number(v)); window.__b51T = Number(v); } });',
+      '  HTMLMediaElement.prototype.play = function(){ window.__b51Plays++; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){ window.__b51Loads++; };',
+      '  window.__b51Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b51Patched === true');
+    check('51 夹具自证：媒体原型打桩生效（error / readyState / duration / paused / ended / currentTime / play / load）',
+      patched === true, String(patched));
+
+    // 放手窗口设成 10 分钟：本场景只测「占不占住、日志重不重播」，
+    // 到点放手那一维是批次 50 的场景在管的，别在这里互相顶。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,autoMaxPlaybackRate:false,documentSkipTimeoutMs:600000});' +
+      'app._detectedMaxRate=0;app._rateProbing=false;app._captchaActive=false;' +
+      'window.__b51i=window.__b51i||[];' +
+      'if(!window.__b51Bound){window.__b51Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b51i.push(m);}});}' +
+      'var v=document.getElementById("omitone-video");' +
+      'var found=null;try{found=app._getVideoEl();}catch(e){found=null;}' +
+      'return {hasEl:!!v,found:!!found,same:found===v,' +
+      '  errCode:found?Number(found.error&&found.error.code):-1,' +
+      '  ended:found?!!found.ended:null,paused:found?!!found.paused:null,' +
+      '  ready:found?Number(found.readyState):-1,dur:found?Number(found.duration):-1,' +
+      '  probe:app._mediaErrorCode(found)};})()'
+    );
+    check('51 夹具自证：这一节从页面读回来就是"还在播、只有解码器说死了"那副样子，' +
+      '且 `_getVideoEl()` 拿到的正是 DOM 里那一枚（两个调用方争的就是这一枚元素）',
+      !!setup && setup.hasEl === true && setup.found === true && setup.same === true &&
+      setup.errCode === 3 && setup.ended === false && setup.paused === false &&
+      setup.ready === 4 && setup.dur === 1448.46 && setup.probe === 3,
+      JSON.stringify(setup));
+
+    // 跨调用方那一拍：生产里 `_getVisibleTaskCompletionState()` 读的是章节页的任务框，
+    // 现场那一刻它们全显示"已完成"，而媒体元素还在手里播 —— 这正是把两个调用方顶岔开的形状。
+    var ticks = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var origState=app._getVisibleTaskCompletionState;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true,finished:2,total:2};};' +
+      'window.__b51i=[];' +
+      'app._videoEl=null;app._videoCount=0;app._currentVideoIndex=0;' +
+      'app._activeMediaJobPending=true;app._isPlaying=true;app._activeMediaJobManaged=false;' +
+      'app._mediaReloadKeys=Object.create(null);' +
+      'app._mediaWaitLogAt=0;app._mediaWaitLogSig="";app._mediaBrokenSince=0;app._mediaNoSourceSince=0;' +
+      'var out=[];' +
+      'for(var i=0;i<6;i++){' +
+      // 每一拍开头缓存是空的 —— 生产里真会有这一拍（`_finishCurrentMedia` / 播放器换元素 /
+      // 上一拍刚清过），本场景要钉的就是：**这一拍的两个调用方必须给同一个答案**。
+      // 计时器不许在拍里清零 —— 那是被测行为（谁清掉它，放手窗口就永远攒不满）。
+      '  app._videoEl=null;' +
+      '  var a=app._isActiveMediaPending("completion-check");' +
+      '  var cachedAfterA=!!app._videoEl;var armedAfterA=Number(app._mediaBrokenSince)||0;' +
+      '  var video=app._getVideoEl();if(video)app._isPlaying=true;' +
+      '  var b=app._isActiveMediaPending("ocs-runner-active-job");' +
+      '  out.push({a:a,b:b,same:(a===b),cachedAfterA:cachedAfterA,armedAfterA:armedAfterA,' +
+      '    armed:app._mediaBrokenSince,burning:Date.now(),pending:!!app._activeMediaJobPending,' +
+      '    holds:!!app._videoEl,sig:String(app._mediaWaitLogSig)});' +
+      '}' +
+      'app._getVisibleTaskCompletionState=origState;' +
+      'return out;})()'
+    );
+    await sleep(400);
+    var logs = await ctx.client.evaluate(
+      '(function(){var out={pending:0,clear:0,clearReasons:[],first:null};' +
+      '(window.__b51i||[]).forEach(function(m){' +
+      '  var s=String(m.message||"");' +
+      '  if(s==="media pending, delay completion"){out.pending++;if(!out.first)out.first=m;}' +
+      '  if(s==="clear media pending"){out.clear++;out.clearReasons.push(String(m.meta&&m.meta.reason||""));}' +
+      '});window.__b51i=[];return out;})()');
+    var allTrue = Array.isArray(ticks) && ticks.length === 6 && ticks.every(function (t) {
+      return t.a === true && t.b === true && t.same === true;
+    });
+    check('51-A：连跑 6 拍（每拍两个调用方各问一次）**答案必须一致且都是"仍占住"** —— ' +
+      '旧写法里放行那一拍读的是刚被清空的缓存、下一拍 OCS 又用 `_getVideoEl()` 把元素拿回来，' +
+      '于是"还在播"和"任务框都完成了"逐拍轮流成立（现场 12.4 小时里这一对每秒两条）',
+      allTrue, JSON.stringify(ticks));
+    check('51-B：6 拍里**一条 `clear media pending` 都不许有**，等待心跳只出一条（30 秒一条，不是每拍一条）—— ' +
+      '现场实测"media pending, delay completion"独占 20500 条 = 整份 200 条环形日志的 81%，' +
+      '证据窗被压到只剩约 100 秒',
+      Array.isArray(ticks) && ticks.length === 6 && !!logs && logs.clear === 0 &&
+      logs.clearReasons.length === 0 && logs.pending === 1,
+      JSON.stringify(logs));
+    check('51-C：批次 50 的放手窗口**攒得起来** —— `_mediaBrokenSince` 一拍武装后就单调不减、' +
+      '六拍始终是同一个时间戳（刚武装就被清零 = 120 秒一秒也攒不满，正是要它放手的形状）',
+      Array.isArray(ticks) && ticks.length === 6 && ticks.every(function (t) {
+        return t.armedAfterA > 0 && t.armed > 0 && (t.burning - t.armed) < 60000;
+      }) && ticks.every(function (t) { return t.armed === ticks[0].armed; }),
+      JSON.stringify(ticks.map(function (t) { return { a: t.armedAfterA, b: t.armed }; })));
+    check('51-C 前提：空缓存那一拍**第一个调用方自己就把元素拿回来了**（`cachedAfterA`），' +
+      '且六拍下来元素一直攥在手里、pending 仍为真、签名是 broken3 —— ' +
+      '否则 A/B/C 可能只是压根没占到这一节',
+      Array.isArray(ticks) && ticks.every(function (t) {
+        return t.cachedAfterA === true && t.holds === true && t.pending === true && t.sig === 'broken3';
+      }),
+      JSON.stringify(ticks.map(function (t) {
+        return { c: t.cachedAfterA, h: t.holds, p: t.pending, s: t.sig };
+      })));
+
+    // 阳性对照一：元素真的播完了 —— 「框都显示已完成」这条放行必须照常生效，
+    // 批次 51 的方向是只放得更少，不是把该放的也按住。
+    var endedRelease = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var origState=app._getVisibleTaskCompletionState;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true,finished:2,total:2};};' +
+      'window.__b51Ended=true;window.__b51i=[];' +
+      'app._videoEl=v;app._videoCount=1;app._currentVideoIndex=0;' +
+      'app._activeMediaJobPending=true;app._isPlaying=true;app._activeMediaJobManaged=false;' +
+      'app._mediaWaitLogAt=0;app._mediaBrokenSince=0;' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'app._getVisibleTaskCompletionState=origState;' +
+      'return {p:p,ended:!!v.ended,pending:!!app._activeMediaJobPending,' +
+      '  playing:!!app._isPlaying,el:!!app._videoEl};})()'
+    );
+    await sleep(400);
+    var endedLogs = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null};' +
+      '(window.__b51i||[]).forEach(function(m){' +
+      '  if(String(m.message||"")==="clear media pending"){out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b51i=[];return out;})()');
+    check('51-D 对照：元素**真的 ended** 时"任务框都完成了"这条放行照旧生效 —— ' +
+      '放手且留一条点名理由（completed-visible-task:*），状态一起复位',
+      !!endedRelease && endedRelease.p === false && endedRelease.ended === true &&
+      endedRelease.pending === false && endedRelease.playing === false && endedRelease.el === false &&
+      !!endedLogs && endedLogs.n === 1 && !!endedLogs.first &&
+      /^completed-visible-task:/.test(String(endedLogs.first.meta && endedLogs.first.meta.reason)),
+      JSON.stringify({ state: endedRelease, logs: endedLogs }));
+
+    // 阳性对照二：这一页压根没有媒体元素 —— 此时"框都做完了"就是唯一能依据的事实。
+    var noElRelease = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var origState=app._getVisibleTaskCompletionState, origGet=app._getVideoEl;' +
+      'app._getVisibleTaskCompletionState=function(){return {hasTasks:true,allFinished:true,finished:2,total:2};};' +
+      'app._getVideoEl=function(){return null;};' +
+      'window.__b51i=[];' +
+      'app._videoEl=null;app._videoCount=0;' +
+      'app._activeMediaJobPending=true;app._isPlaying=false;app._activeMediaJobManaged=false;' +
+      'app._mediaWaitLogAt=0;app._mediaBrokenSince=0;' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'app._getVisibleTaskCompletionState=origState;app._getVideoEl=origGet;' +
+      'return {p:p,pending:!!app._activeMediaJobPending,playing:!!app._isPlaying};})()'
+    );
+    await sleep(400);
+    var noElLogs = await ctx.client.evaluate(
+      '(function(){var out={n:0,first:null};' +
+      '(window.__b51i||[]).forEach(function(m){' +
+      '  if(String(m.message||"")==="clear media pending"){out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b51i=[];return out;})()');
+    check('51-E 对照：这一页**压根拿不到媒体元素**时放行照旧（返回 false + 一条 completed-visible-task 放手日志）—— ' +
+      '批次 51 只收紧"元素还在播"那一格，不许把没有媒体的正常收口一起挡住',
+      !!noElRelease && noElRelease.p === false && noElRelease.pending === false &&
+      noElRelease.playing === false && !!noElLogs && noElLogs.n === 1 &&
+      /^completed-visible-task:/.test(String(noElLogs.first && noElLogs.first.meta && noElLogs.first.meta.reason)),
+      JSON.stringify({ state: noElRelease, logs: noElLogs }));
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，
