@@ -3258,9 +3258,19 @@
     README 正文真表多加一格恰好多报 1 条）；六个注入反向验证 EXIT=0；
     `npm test` 见本批收尾记录。**本批没动一行生产代码**（README / HANDOVER / CHANGELOG /
     tools/README / `tools/check.js` 的一项 / 新工具 / `docs/manual.html`），
-    所以按 AGENTS §1 不跑 `npm run e2e`；但说明书 PDF 是安装包内的附件，
+    所以按 AGENTS §1 不跑 `npm run e2e`；但 `使用说明.pdf` 是 **Release 的独立附件**
+    （实测**不在** `omitone.zip` 里 —— `unzip -l` 里没有任何 pdf，写进包的是另外那份），
     故走 `npm run build` → `replace-asset v1.3.0` → `verify v1.3.0`（不升版本号 —— 公开面口径修正，
     不值得让用户为此重下一次）。
+  - **顺手抓到的一条真 bug（`replace-asset` 的判重比 `verify` 松）**：本轮 `replace-asset` 打印
+    「omitone.zip 已是最新（2031.4 KB）—— 跳过」，紧接着 `verify` 按 sha256 报
+    「本地 a612fdfb6d83… ≠ 线上 ab5c219ce918…」—— **同一件事两条命令互相打脸**。
+    根因：`cmdReplaceAsset` 只比**字节数**，而一批只改文档的构建照样换了**构建戳**
+    （zip 大小一位没变、内容变了）。判据：**跳过判据比核验判据松，就等于每次都靠 verify 兜底** ——
+    而 verify 恰恰是那条可以被人漏跑的命令（要令牌、要联网）。
+    现在 `replace-asset` 优先比 `asset.digest`（与 `verify` 同一把尺），只在接口没给摘要时退回比大小，
+    并**把"只比了字节数"这件事打印出来**。本轮实测两条分支都真走到：zip 摘要不一致 → 替换；
+    说明书摘要一致 → 跳过；替换后 `verify` 全绿（两个附件都「与本地构建逐字节一致」）。
   - **留给下一批**：① 批次 52 留下的三条（章节页 HTML 成功缓存 / 词表推广到投票作业族 /
     刷课页每 120 秒走进讨论判据）仍未做；② `src/page/README.md` 里十余条**每片段的行数与方法数**
     仍是手写、没有守卫 —— 和第 25 项同族（"文档声明与实际对不对得上"），值得并一把尺。

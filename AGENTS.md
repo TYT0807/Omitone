@@ -175,10 +175,18 @@ npm run e2e       # 真实 Edge 功能交叉检验（109 个场景 / 1136 项）
    只有**攒到值得让用户重新下载一次**的时候，才升版本号、发新版。
    **硬标准：一次只修了不到五条 bug，不升版本号** —— 直接并进当前版本（README 一段 + Release 页一条 + CHANGELOG 同段）。
 
-   ⚠️ **合并说明 ≠ 可以忘了附件。** 若改动**影响安装包**（`src/page/` → `page.js`、
-   `content.js`、`使用说明.pdf` 之类），线上那个 zip 就是旧的了 ——
-   必须 `npm run build` 再 `npm run release -- replace-asset vX.Y.Z` 把附件换掉，
+   ⚠️ **合并说明 ≠ 可以忘了附件。** 若改动**影响用户下载到的东西**，线上那个附件就是旧的了 ——
+   必须 `npm run build`（改了说明书就先 `npm run manual`）再
+   `npm run release -- replace-asset vX.Y.Z` 把附件换掉，
    否则用户点下载拿到的还是修复前的版本，而版本号和徽章看着都是新的。
+   ⚠️ **两个附件是两个东西，别混**：`page.js` / `content.js` / `libs/` / `resources/` 那一批
+   打进 **`omitone.zip`**；`使用说明.pdf` 是**独立附件**（上传名 `Omitone-manual.pdf`），
+   **不在 zip 里**（实测 `unzip -l dist/*.zip` 一个 pdf 都没有）。只改了说明书就换 zip，
+   或者换了 zip 却忘了说明书，都是漏。
+   ⚠️ **`replace-asset` 的判重现在按 sha256（与 `verify` 同一把尺），不要退回比字节数** ——
+   它原先只比大小，于是一批只改文档的构建换了**构建戳**（zip 大小一位没变）时它打印
+   「已是最新 —— 跳过」，下一步 `verify` 却按摘要报过期，两条命令互相打脸（2026-11-14 实测）。
+   **跳过判据比核验判据松 = 每次都靠那条可以被人漏跑的命令兜底。**
 
    ⚠️ **`npm run build` 不能被跳过，也不能指望 `verify` 替你发现。**
    `verify` 原先把**线上附件**跟**本地 `dist/*.zip`** 比 —— 忘了构建时两边都是旧包、

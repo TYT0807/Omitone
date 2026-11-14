@@ -502,7 +502,8 @@ async function cmdNotes(tag, notesFile) {
 // ⚠️ 附件名必须与 ASSETS 声明**逐字一致**：README 那条永久下载链接按附件名取，
 // 改了名字链接立刻 404，而且受影响的是"只会点这一个链接"的那批用户（AGENTS.md §7.5）。
 //
-// 判重按**字节数**比 —— 与 verify 里对说明书那条用的是同一个判据。
+// 判重按 **sha256 摘要**比（接口没给摘要时才退回字节数，并把这条说出来）——
+// 与 `verify` 用同一把尺，否则这里"跳过"、那里"过期"，两条命令互相打脸。
 // ---------------------------------------------------------------------------
 async function cmdReplaceAsset(tag) {
   if (!tag) throw new Error('replace-asset 需要 tag，例如 v1.1.6');
@@ -525,11 +526,27 @@ async function cmdReplaceAsset(tag) {
 
   for (var i = 0; i < wanted.length; i++) {
     var w = wanted[i];
-    var localSize = fs.statSync(path.join(ROOT, w.file)).size;
+    var localPath = path.join(ROOT, w.file);
+    var localSize = fs.statSync(localPath).size;
+    var localSha = crypto.createHash('sha256').update(fs.readFileSync(localPath)).digest('hex');
     var old = current.filter(function (a) { return a.name === w.name; })[0];
 
-    if (old && old.size === localSize) {
-      console.log('  ' + w.name + ' 已是最新（' + (localSize / 1024).toFixed(1) + ' KB）—— 跳过');
+    // ⚠️ 判重按 **sha256 摘要**，与 `verify` 同一把尺（`verify` 那段注释已经写明：
+    // 字节数相等不等于内容相等）。实测踩过：本命令原先只比字节数，
+    // 一批只改文档的构建把**构建戳**换掉了（zip 大小一位没变），于是这里打印
+    // 「omitone.zip 已是最新 —— 跳过」，紧接着 `verify` 按摘要报「本地 a612… ≠ 线上 ab5c…」，
+    // 同一件事两个命令互相打脸。**跳过判据比核验判据松，就等于每次都靠 verify 兜底。**
+    // 接口没给摘要（附件刚上传完 digest 可能为 null）时才退回比大小，并把这条明说出来。
+    if (old && old.digest) {
+      if (String(old.digest).replace(/^sha256:/, '') === localSha) {
+        console.log('  ' + w.name + ' 已是最新（sha256 ' + localSha.slice(0, 12) + '…）—— 跳过');
+        continue;
+      }
+      console.log('  ' + w.name + ' 摘要不一致（本地 ' + localSha.slice(0, 12) + '… ≠ 线上 ' +
+        String(old.digest).replace(/^sha256:/, '').slice(0, 12) + '…）—— 替换');
+    } else if (old && old.size === localSize) {
+      console.log('  ' + w.name + ' 已是最新（' + (localSize / 1024).toFixed(1) +
+        ' KB，接口未给摘要，只比了字节数）—— 跳过');
       continue;
     }
     if (old) {
