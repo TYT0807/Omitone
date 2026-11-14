@@ -3776,7 +3776,7 @@
     一条反向对照「start 那拍本身仍是已启动，不是没被点名的兜底」）；
     定向跑 7/7 绿，批次 44-⑤ 那场复跑 9/9 绿（**没有靠改松旧断言收工** ——
     先核对过它的「对照三」在新规则下依然成立：那一场里心跳的前一条是 error，按 ① 落回出厂值）；
-    完整 `npm run e2e` **111 个场景 / 1177 项**全绿（`.workbuddy/e2e-counts.json` 落盘 `通过=true`），
+    完整 `npm run e2e` **111 个场景 / 1177 项**全绿（`.workbuddy/e2e-counts.json` 落盘 `通过=true`）， <!-- 历史计数:start --><!-- 历史计数:end -->
     文档里那七处现行计数一起回填。
   - **沙盒也跑了**：`npm run sandbox`（`--full`）收尾 `SBX_EXIT=0` / `passed:true` / 逐场景 `failed:0` /
     沙盒口径 **1401 条** / `failures:[]` / `gates:[]` / `sourceUnchanged:true` ——
@@ -3799,6 +3799,38 @@
     但点名它们能让右下角多说一句有用的话；② 粘连的新风险是**旧状态停留过久** ——
     目前靠"心跳之外仍有一串点名判据（等待/完成/切换）"顶住，量不到"停留多久"这一维，
     要守得住得先给面板一个**最长停留**概念；③ 批次 58 的 ① ③ 原样未动。
+
+- **66. 批次 60：面板把"还在等"说成"出了事"，有一句甚至翻成反义（现场前几名的 warn 各自说清是什么事）**（2026-11-14）
+  - **动手前先量"该点名的到底是哪几条"**：批次 59 收尾留下的现场 ring 导出（194 条 /
+    warn 35 条）按家族排下来，最大一族是 `search job: no attachments and no synthetic job` ×17（49%）——
+    但**它在源码里早在批次 55-B 就降成 info 了**，是用户那几页没 F5、跑的还是旧构建。
+    ⚠️ **口径必须摘掉这一族再算**：剩下的 18 条全部落在本轮点名的六个家族里。
+    拿一份带旧构建的 ring 直接算比例，会给一批已经改完的东西再改一遍。
+  - **改法（仍然只动 `content.js` 的翻译层，11 个新分支）**：三条"还在等"从「注意」降到「等待中」
+    （`task frame still loading, search window extended` → 「任务框还在加载」并把这条日志自己带的
+    `holdMs` 换算成秒；`catalog still lists unfinished task points` → 「目录说还有没做完的」；
+    `autoplay blocked, muted retry ok` / `video paused unexpectedly, resuming` → 静音续播与后台续播）；
+    `every candidate frame was rejected` 原先落进通用那句「等待任务识别 / 正在等待可执行任务」，
+    听着像刚起步，事实是**已经围着这一节找过一圈、每一帧都被挡回来** → 改「这一节的帧挑不出活」并带帧数／清单数；
+    `standalone captcha page detected` 的轮次**从这条日志里读回来**（不写死「第 1 轮」）；
+    `font decrypt verdict` 一个日志名四种结论，原先共用一句「有情况」→ 按 `data.state` 分档
+    （`plain` 是"类名残留、字其实明文"，只配「正常运行」）；两条 AI 侧自愈句
+    （`llm prefix cache all missed` / `flat answers resegmented`）归「正常运行」，
+    `llm empty answer fallback` 才是真需要人复核的一句。
+  - ⚠️ **两条顺序约束（判据是按顺序命中的 `else if` 链，写反了新分支永远不会生效）**：
+    `every candidate frame was rejected` 必须在通用 `/search job:/` **之前**；
+    `study idle declined` 必须在通用 `/declined:/` **之前** —— 后者本轮改前是全场**唯一一句反义**：
+    这条日志的意思是"认不出课程结构，所以**不**点前进"，面板却写着「放弃等待，继续往下」。
+  - **e2e**：新增场景「现场前几名的 warn 各自说清是什么事（还在等不再点亮注意）」13 条断言，
+    其中三条是对照 —— 真放弃那一拍仍是「注意」、清单挂着挑不出那一条没被新分支抢走、
+    没点名的 warn 仍走「有情况」兜底（**本轮没有把 warn 一律降成等待**）。
+    完整 `npm run e2e` **112 个场景 / 1190 项**全绿，文档里那五处现行计数一起回填。
+  - **反向验证（六处注入，一个注入只破一件事）**：把两条顺序倒过来 / 摘掉分档 / 让轮次写死 /
+    把等待那一族改回 warn / 摘掉兜底 —— 各红 1 条且不越界，还原后与基线逐字节一致。
+  - **留给下一批**：① 环里剩下的未点名 info 家族（`seek reverted by site, retry`、
+    `audio keepalive started` 这一族"视频进度类"）仍不再有害，点名它们能让右下角多说一句有用的话；
+    ② 粘连的**旧状态停留过久**这一维还是量不到（要守得住得先给面板一个「最长停留」概念）；
+    ③ 批次 58 的 ① ③ 原样未动。
 
 ---
 

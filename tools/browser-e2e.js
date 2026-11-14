@@ -10436,6 +10436,126 @@ SCENARIOS.push({
     check('反向对照：出厂值只能当起点 —— start 那拍本身仍是「已启动」，不是没被点名的兜底',
       panel.started.task === '已启动', JSON.stringify(panel.started));
   }
+});
+
+
+/** ---- 批次 60：现场前几名的 warn 各自说清是什么事（"还在等"不再点亮「注意」）----
+ * 为什么单列这场：批次 59 把"没话说的 info"管住了，但 warn 这一侧还有第二种毛病 ——
+ * **它把内部记账级别的 warn 一律翻成「注意 / 有情况」**。
+ * 2026-11-14 只读审计（`.workbuddy/panel60-audit.js` 把五份现场日志环 678 条喂进
+ * `runtimeLogToStatus` **本体**，量的是真判据）：去掉批次 55-B 已降成 info 的那一族之后，
+ * 现行 warn 54 条里 **51 条（94%）点亮「注意」**，其中 35 条说的是"插件自己多等一轮"或
+ * "已经自愈"。更要紧的是 `study idle declined: 这一页认不出课程结构，不点前进` ——
+ * 它落进通用那句「放弃等待，继续往下」，**意思正好相反**（它明确**没**往下点）。
+ * ⚠️ 本场同时钉住两道**顺序**约束：`every candidate frame was rejected` 必须走在通用
+ * `search job:` 之前，`study idle declined` 必须走在 `/declined:/` 之前 —— 顺序错了我
+ * 新写的那两句永远不会被走到，而界面看起来"还是说了句话"，眼睛看不出来。 */
+SCENARIOS.push({
+  name: '现场前几名的 warn 各自说清是什么事（还在等不再点亮注意）',
+  path: '/blank',
+  run: async function (ctx) {
+    var panel = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function waitMs(ms){return new Promise(function(r){setTimeout(r,ms);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail")};}' +
+      'var out={};' +
+      'say("info","start",null);await waitMs(300);out.started=read();' +
+      // 同一个日志名喂两个不同 holdMs：只有一句把"这条日志自己带的秒数"算进界面，两句才会不同
+      'say("warn","task frame still loading, search window extended",{holdMs:8000,why:"loading-text"});' +
+      'await waitMs(300);out.loading8=read();' +
+      'say("warn","task frame still loading, search window extended",{holdMs:20000,why:"blank-frame-with-attachments"});' +
+      'await waitMs(300);out.loading20=read();' +
+      'say("warn","catalog still lists unfinished task points, delay skip",{claimed:1,holdMs:15000,marker:true});' +
+      'await waitMs(300);out.catalogHold=read();' +
+      'say("warn","task point given up (stuck without progress)",{kind:"quiz"});' +
+      'await waitMs(300);out.givenUp=read();' +
+      'say("warn","study idle declined: 这一页认不出课程结构，不点前进",{href:"https://example.invalid/x",everyMs:120000});' +
+      'await waitMs(300);out.declined=read();' +
+      'say("warn","font decrypt verdict",{state:"plain",roots:3});await waitMs(300);out.fontPlain=read();' +
+      'say("warn","font decrypt verdict",{state:"nomap",roots:1});await waitMs(300);out.fontNomap=read();' +
+      'say("warn","llm prefix cache all missed",{hit:0,miss:1200,hitRate:"0%"});await waitMs(300);out.cacheMiss=read();' +
+      'say("warn","llm flat answers resegmented (popup)",{expected:3,received:5});await waitMs(300);out.resegmented=read();' +
+      'say("warn","media autoplay blocked, muted retry ok",{name:"t.mp4"});await waitMs(300);out.autoplay=read();' +
+      'say("warn","video paused unexpectedly, resuming (anti background pause)",{hidden:true,time:42});' +
+      'await waitMs(300);out.paused=read();' +
+      'say("warn","llm empty answer fallback",{type:"judge",fallback:"true"});await waitMs(300);out.emptyFallback=read();' +
+      'say("warn","standalone captcha page detected, solving",{cycle:3});await waitMs(300);out.captchaPage=read();' +
+      'say("warn","search job: every candidate frame was rejected",{frames:2,attachments:1,rejects:[]});' +
+      'await waitMs(300);out.rejected=read();' +
+      'say("warn","search job: attachments exist",{attachments:6,emptyForMs:70000});await waitMs(300);out.attachmentsExist=read();' +
+      'say("warn","vision bridge failed",{error:"bridge timeout"});await waitMs(300);out.unnamed=read();' +
+      'return JSON.stringify(out);})()'
+    ));
+
+    var keys = ['loading8', 'loading20', 'catalogHold', 'givenUp', 'declined', 'fontPlain', 'fontNomap',
+      'cacheMiss', 'resegmented', 'autoplay', 'paused', 'emptyFallback', 'captchaPage',
+      'rejected', 'attachmentsExist', 'unnamed'];
+
+    check('前提：面板已被 start 激活，这十六次都读回了字（读不到就是空测）',
+      !!panel.started && panel.started.task !== '(无)' &&
+      keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
+      JSON.stringify(panel.started));
+
+    check('★ 等帧那一族改说「等待中 / 任务框还在加载」，秒数是这条日志自己带的（两拍各算一次）',
+      panel.loading8.state === '等待中' && panel.loading8.task === '任务框还在加载' &&
+      /约 8 秒/.test(panel.loading8.detail) && /约 20 秒/.test(panel.loading20.detail) &&
+      panel.loading8.detail !== panel.loading20.detail,
+      JSON.stringify({ a: panel.loading8, b: panel.loading20 }));
+
+    check('★ 目录按住那一条不再亮「注意」（改前它是「有情况」）',
+      panel.catalogHold.state === '等待中' && panel.catalogHold.task === '目录说还有没做完的',
+      JSON.stringify(panel.catalogHold));
+
+    check('对照：真放弃那一拍仍是「注意 / 放弃等待，继续往下」（本轮没有把 warn 一律降成等待）',
+      panel.givenUp.state === '注意' && panel.givenUp.task === '放弃等待，继续往下',
+      JSON.stringify(panel.givenUp));
+
+    check('★ "不点前进"不再被翻成"继续往下"（改前它是全场唯一一句**反义**）',
+      panel.declined.state === '注意' && panel.declined.task === '这一页不是章节页' &&
+      !/继续往下/.test(panel.declined.detail) && /回到章节页/.test(panel.declined.detail),
+      JSON.stringify(panel.declined));
+
+    check('题面解密按**结论**分档：明文残留 = 正常运行，解不出来 = 注意',
+      panel.fontPlain.state === '正常运行' && panel.fontPlain.task === '题面文字正常' &&
+      panel.fontNomap.state === '注意' && panel.fontNomap.task === '题面文字解不出来',
+      JSON.stringify({ plain: panel.fontPlain, nomap: panel.fontNomap }));
+
+    check('AI 侧三句各自说清是什么事（两条自愈、一条真要复核）',
+      panel.cacheMiss.state === '正常运行' && panel.cacheMiss.task === '正在问 AI' &&
+      panel.resegmented.state === '正常运行' && panel.resegmented.task === '正在整理答案' &&
+      panel.emptyFallback.state === '注意' && panel.emptyFallback.task === '有一题没拿到答案',
+      JSON.stringify({ cache: panel.cacheMiss, reseg: panel.resegmented, empty: panel.emptyFallback }));
+
+    check('视频两拍自愈：静音续播与后台续播都归「等待中」，不再是「有情况」',
+      panel.autoplay.state === '等待中' && panel.autoplay.task === '视频播放中' &&
+      /静音/.test(panel.autoplay.detail) &&
+      panel.paused.state === '等待中' && panel.paused.task === '视频续播中',
+      JSON.stringify({ autoplay: panel.autoplay, paused: panel.paused }));
+
+    check('独立验证码页的轮次从这一条日志里读回来（不是写死的「第 1 轮」）',
+      panel.captchaPage.state === '注意' && panel.captchaPage.task === '独立验证码页' &&
+      /第 3 轮/.test(panel.captchaPage.detail), JSON.stringify(panel.captchaPage));
+
+    check('★ 逐帧被拒点名成「这一节的帧挑不出活」并带帧数／清单数（通用那句「等待任务识别」不许抢在它前面）',
+      panel.rejected.state === '注意' && panel.rejected.task === '这一节的帧挑不出活' &&
+      /2 个帧/.test(panel.rejected.detail) && /1 个任务点/.test(panel.rejected.detail),
+      JSON.stringify(panel.rejected));
+
+    check('对照：清单挂着挑不出那一条没被新分支抢走（仍是「任务点挑不出做哪个」+ 一分多钟）',
+      panel.attachmentsExist.task === '任务点挑不出做哪个' &&
+      panel.attachmentsExist.state === '注意' && /6/.test(panel.attachmentsExist.detail),
+      JSON.stringify(panel.attachmentsExist));
+
+    check('对照：没点名的 warn 仍走「有情况 / 可在「查看日志」里看这一条」（兜底没被本轮挤掉）',
+      panel.unnamed.state === '注意' && panel.unnamed.task === '有情况' &&
+      /查看日志/.test(panel.unnamed.detail), JSON.stringify(panel.unnamed));
+  }
 });/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →

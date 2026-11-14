@@ -1519,9 +1519,9 @@
     const msg = String(message || '');
     const data = meta || {};
     let state = level === 'error' ? 'error' : (level === 'warn' ? 'warn' : 'normal');
-    // ⚠️ 批次 58：这里**不再预填出厂字样**。留 `null` 表示「下面 35 条判据一条都没点名这句话」，
+    // ⚠️ 批次 58：这里**不再预填出厂字样**。留 `null` 表示「下面这一批判据一条都没点名这句话」，
     // 调用方据此决定要不要动面板 —— 出厂值只能当**起点**，不能当**每一拍的落点**。
-    // （现场实测：没被点名的 info 占日志环 43%，`tick progress` 一家 25%。）
+    // （现场实测：没被点名的 info 占一条 200 条环的 43%，`tick progress` 一家 29%。）
     let task = null;
     let detail = null;
 
@@ -1629,6 +1629,72 @@
       detail = '这一节挂着 ' + (data.attachments != null ? data.attachments : '?') +
         ' 个任务点，插件认得出清单、挑不出能做的那一个' +
         (Number(data.emptyForMs) >= 60000 ? '（已经这样一分多钟了）' : '') + '，下一步会写进日志';
+    } else if (/every candidate frame was rejected/.test(msg)) {
+      // ⚠️ 这一族必须排在通用那条 `search job:` **之前**：它以前落进「等待任务识别 /
+      // 正在等待可执行任务」，听着像刚起步，事实是已经围着这一节找过一圈、每一帧都被挡回来。
+      state = 'warn';
+      task = '这一节的帧挑不出活';
+      detail = '看了 ' + (data.frames == null ? '?' : data.frames) + ' 个帧、清单上 ' +
+        (data.attachments == null ? '?' : data.attachments) + ' 个任务点，逐帧的原因写在这一条日志里';
+    } else if (/task frame still loading, search window extended/.test(msg)) {
+      // 帧自己写着「正在加载」（或整张白纸）—— 这是**插件主动多等一轮**，不是出了事。
+      state = 'wait';
+      task = '任务框还在加载';
+      detail = '这一节还有卡片没长出来，先按住不翻页' +
+        (Number(data.holdMs) ? '（约 ' + Math.round(Number(data.holdMs) / 1000) + ' 秒）' : '');
+    } else if (/catalog still lists unfinished task points/.test(msg)) {
+      // 同上一族：窗口用掉之后那条 `catalog veto window spent` 才是"放弃"，这一条只是"按住"。
+      state = 'wait';
+      task = '目录说还有没做完的';
+      detail = '页面上认得出的都做完了，先按住不翻页等它长齐';
+    } else if (/llm prefix cache all missed/.test(msg)) {
+      state = 'normal';
+      task = '正在问 AI';
+      detail = '这一批没有可复用的缓存，会比平时慢一点';
+    } else if (/flat answers resegmented/.test(msg)) {
+      // 条数对不上已经被**就地重切好了**（切不好才会走另一条日志），这一步不需要用户动手。
+      state = 'normal';
+      task = '正在整理答案';
+      detail = 'AI 交回来的条数对不上，已按题目重新切好';
+    } else if (/autoplay blocked, muted retry ok/.test(msg)) {
+      state = 'wait';
+      task = '视频播放中';
+      detail = '浏览器拦了带声音的自动播放，静音之后已经播起来了';
+    } else if (/video paused unexpectedly, resuming/.test(msg)) {
+      state = 'wait';
+      task = '视频续播中';
+      detail = '切到后台时被平台暂停了一下，插件又按了继续';
+    } else if (/llm empty answer fallback/.test(msg)) {
+      state = 'warn';
+      task = '有一题没拿到答案';
+      detail = '这一题按题型兜底填了一项，交卷前可以在页面上复核';
+    } else if (/standalone captcha page detected/.test(msg)) {
+      state = 'warn';
+      task = '独立验证码页';
+      detail = '正在自动识别（第 ' + (Number(data.cycle) || 1) + ' 轮）';
+    } else if (/font decrypt verdict/.test(msg)) {
+      // 同一个日志名、四种结论：只有"解不出来 / 解不全"才值得按下「注意」，
+      // `plain`（类名是残留、字其实是明文）是顺口记的一句，原先它和真故障共用一句「有情况」。
+      const fv = String(data.state || '');
+      if (fv === 'nodecl' || fv === 'nomap') {
+        state = 'warn';
+        task = '题面文字解不出来';
+        detail = fv === 'nodecl' ? '这份文档没有字体声明，题面可能还是乱码' : '字形映射没命中，题面可能还是乱码';
+      } else if (fv === 'partial') {
+        state = 'warn';
+        task = '题面有几个字解不出';
+        detail = '其余部分是明文，需要更新字形映射表';
+      } else {
+        state = 'normal';
+        task = '题面文字正常';
+        detail = '类名是残留，文字其实是明文';
+      }
+    } else if (/study idle declined/.test(msg)) {
+      // ⚠️ 必须排在通用那条 `/declined:/` **之前**：它落进「放弃等待，继续往下」是**说反了** ——
+      // 这一条恰恰是"认不出课程结构，所以**不**点前进"，要用户做的是回章节页，不是等它往下。
+      state = 'warn';
+      task = '这一页不是章节页';
+      detail = '认不出课程结构，插件停手不乱点，请手动回到章节页';
     } else if (/study no runnable job|no runnable job|waiting task|search job:/.test(msg)) {
       state = state === 'warn' ? 'warn' : 'wait';
       task = '等待任务识别';
