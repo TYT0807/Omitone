@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd5cac7f58f';
+var OMITONE_CODE_REV = '250fbebf8a';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -9152,20 +9152,55 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
     },
 
 
+    /**
+     * 这个节点是哪个模块（批次 52）。
+     *
+     * 现场有两代渲染，都在 2026-11-14 用只读探针在同一次会话里量到：
+     *   A `…/mooc-ans/knowledge/cards` 里
+     *     `<iframe class="ans-module ans-insertbbs-module" module="insertbbs" data="{…}">`
+     *     —— 模块名写在 **module 属性**上（这一代连 src 都没有，内容全靠页面 JS 后填）。
+     *   B 另一门课的同一份 cards 文档里 `[module]` 数出来是 **0**，任务盒里的模块 iframe
+     *     是 `<iframe src="/ananas/modules/video/index.html?…" class="ans-attach-online ans-insertvideo-online" data="{…}">`
+     *     —— 模块名**只写在 class 上**。
+     * 原先只按 `iframe[module]` 找，遇到 B 这一代一条都匹配不到，讨论任务点在刷课页侧
+     * 就变成"这一节没有讨论"（静默漏做）。
+     *
+     * 只认讨论系的名字（insertbbs / bbscircle / bbs），别的模块一律返回空串 ——
+     * 拿 class 里任意一段当模块名会把 video、work 都拖进来。
+     */
+    _discussionModuleName: function (el) {
+      if (!el || !el.getAttribute) return '';
+      var name = String(el.getAttribute('module') || '').trim();
+      if (name) return name;
+      var cls = String(el.getAttribute('class') || '');
+      var m = cls.match(/(?:^|[\s_-])(insertbbs|bbscircle|bbs)(?=[\s_-]|$)/i);
+      return m ? m[1] : '';
+    },
+
+
     // 卡片还没渲染时的退路：找讨论模块 iframe（module=insertbbs），它带着 mid / jobid / 标题
+    // ⚠️ 必须按**节点**去重（批次 52）：`_studyDocs()` 回的是 `[主帧文档, 顶层文档]`，
+    //    而 `_walkDocs` 的 `seen` 是**每次调用各自一份** —— 从顶层那一路再走进主帧文档时，
+    //    同一枚模块 iframe 会被第二次收集。摘掉这道去重实测就是翻倍（沙盒夹具 3 枚 → `mods:6`、
+    //    `discussion all settled` 的 total 一起翻），现场那一节按 jobid 去重后有 3 枚不同的讨论 ——
+    //    于是第 2 步对同一份章节页发两遍请求（最坏 2×15 秒）。
     _findDiscussionModuleFrames: function () {
       var self = this;
       var out = [];
+      var taken = [];
       var docs = this._studyDocs();
       for (var d = 0; d < docs.length; d++) {
         this._walkDocs(docs[d], function (doc) {
           var frames = [];
-          try { frames = Array.from(doc.querySelectorAll('iframe[module]')); } catch (e1) { return; }
+          try { frames = Array.from(doc.querySelectorAll('iframe')); } catch (e1) { return; }
           for (var i = 0; i < frames.length; i++) {
-            var module = String(frames[i].getAttribute('module') || '');
-            if (!/insertbbs|bbs|discuss/i.test(module)) continue;
+            if (taken.indexOf(frames[i]) >= 0) continue;
+            var name = self._discussionModuleName(frames[i]);
+            if (!/insertbbs|bbs|discuss/i.test(name)) continue;
+            taken.push(frames[i]);
             out.push({
               frame: frames[i],
+              module: name,
               data: self._safeJsonParse(String(frames[i].getAttribute('data') || ''), null) || {}
             });
           }
@@ -9194,9 +9229,51 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
     },
 
 
+    /**
+     * 「模块找到了、话题地址却没解出来」——把断掉的那一环点名（批次 52）。
+     *
+     * 这条链原先有四个出口全部 `return ''`（读不到 #frame_content、没有 mid、请求没回、
+     * 回来了但卡片正则没命中），而 `_findDiscussionTask` 对空串只会 `continue`。
+     * 于是现场日志里**一个字都没有**：讨论任务点没做、也没说为什么。
+     *
+     * ⚠️ 节流**按理由各记一笔**（与批次 37 同族）：原先只有一个槽位记「上一条的理由」，
+     * 而一节里几个讨论模块的失败理由常常不一样（一个没 mid、一个章节页没回、一个平台已记完成），
+     * `_tryDiscussionTask` 每 3 秒就把它们挨个再走一遍 —— 理由轮着换，槽位永远对不上，
+     * 于是每一条都被播出去，200 条的日志环几分钟就被同一件事刷满（实测：换个理由立刻又出一条）。
+     * 现在同一个理由 90 秒内只播一条，不同理由各自 90 秒；五分钟没人再提的理由顺手剪掉，
+     * 免得这张表只增不减。
+     */
+    _logDiscussionResolveFail: function (reason, info) {
+      var now = Date.now();
+      var memo = this._discussionResolveFailLog || {};
+      if (now - Number(memo[reason] || 0) < 90000) return;
+      var next = {};
+      Object.keys(memo).forEach(function (k) {
+        if (k !== reason && now - Number(memo[k] || 0) < 300000) next[k] = memo[k];
+      });
+      next[reason] = now;
+      this._discussionResolveFailLog = next;
+      var payload = { reason: reason };
+      Object.keys(info || {}).forEach(function (k) { payload[k] = info[k]; });
+      payload.hint = '讨论模块 iframe 找到了，但话题地址没解出来 —— reason: ' +
+        'no-chapter-url=既没读到内层 #frame_content 也没有 data.mid；' +
+        'fetch-failed=章节页请求没回或超时；' +
+        'no-topic-card=章节页回来了但里面没有 #topicMainDiv[data]；' +
+        'server-says-finished=平台自己写了「这个讨论已做完」（章节页 #isFinished=true），不再重复发帖';
+      emitRuntimeLog('warn', 'discussion topic url not resolved', payload);
+    },
+
+
     // 从讨论模块 iframe → 内嵌 #frame_content → 取回页面 HTML → 解析出讨论区地址
     _resolveDiscussionUrlFromModule: async function (mod) {
       if (!mod || !mod.frame) return '';
+      var data = mod.data || {};
+      var trace = {
+        module: String(mod.module || ''),
+        hasMid: !!data.mid,
+        hasJobid: !!(data.jobid || data._jobid),
+        isJob: data.isJob === true
+      };
       var chapterSrc = '';
       var doc = this._safeDocOf(mod.frame);
       if (doc) {
@@ -9207,7 +9284,6 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
         } catch (e0) {}
       }
       if (!chapterSrc) {
-        var data = mod.data || {};
         var mid = data.mid || '';
         if (mid) {
           var p = this._currentStudyParams();
@@ -9219,21 +9295,54 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
             '&courseid=' + encodeURIComponent(p.courseid) + '&isJob=true';
         }
       }
-      if (!chapterSrc) return '';
+      if (!chapterSrc) {
+        this._logDiscussionResolveFail('no-chapter-url', trace);
+        return '';
+      }
       var abs = chapterSrc;
       try { abs = new URL(chapterSrc, location.href).href; } catch (e1) {}
+      trace.chapterUrl = String(abs).slice(0, 120);
+      var resp = null;
       try {
         // ⚠️ 同样必须可超时：本函数在 _runTick 的讨论任务点链路上（`await _tryDiscussionTask()`），
         //    服务端不回数据时 await 会永久挂起。外层的 try/catch **拦不住挂起** —— 只有超时能。
-        var resp = await this._withTimeout(fetch(abs, { credentials: 'include' }), 15000);
-        if (!resp) return '';
-        var html = await this._withTimeout(resp.text(), 15000);
-        if (typeof html !== 'string') return '';
-        var m = html.match(/id=["']topicMainDiv["'][^>]*\bdata=["']([^"']+)["']/i) ||
-          html.match(/\bdata=["'](https?:\/\/groupweb\.chaoxing\.com\/course\/topic[^"']+)["']/i);
-        if (m) return String(m[1]).replace(/&amp;/g, '&');
-      } catch (e2) {}
-      return '';
+        resp = await this._withTimeout(fetch(abs, { credentials: 'include' }), 15000);
+      } catch (e2) { resp = null; }
+      var html = null;
+      if (resp && resp.text) {
+        try { html = await this._withTimeout(resp.text(), 15000); } catch (e3) { html = null; }
+      }
+      if (typeof html !== 'string' || !html) {
+        this._logDiscussionResolveFail('fetch-failed', trace);
+        return '';
+      }
+      var m = html.match(/id=["']topicMainDiv["'][^>]*\bdata=["']([^"']+)["']/i) ||
+        html.match(/\bdata=["'](https?:\/\/groupweb\.chaoxing\.com\/course\/topic[^"']+)["']/i);
+      if (!m) {
+        trace.htmlChars = html.length;
+        this._logDiscussionResolveFail('no-topic-card', trace);
+        return '';
+      }
+      /**
+       * 平台在这份章节页里写了自己的说法（2026-11-14 实测）：
+       *   `<input type="hidden" id="isFinished" value="true"/>`，
+       *   而它自己的脚本就是拿这个值往父帧 `postMessage({opType:"completeTopic"})`。
+       * ⚠️ 为什么只有这里读得到：这一代（2026-11-14 那门课的 3 个讨论）模块 iframe **没有 src**，
+       *    话题卡片不在活的文档里，第 1 步 `_collectDiscussionTargets` 自然数不出它 ——
+       *    不读这一句，等于"本地没记过 → 对着一个平台已判做完的话题再发一条回帖"。
+       * 只认明确的 `true`：空值（批次 20-G 那一代实测就是空串）与缺失一律照常返回地址 ——
+       * 拿不准时不许悄悄跳过任务点（AGENTS §2 #6/#7）。
+       */
+      var fin = html.match(/id=["']isFinished["'][^>]*\bvalue=["']([^"']*)["']/i);
+      if (fin && String(fin[1]).toLowerCase() === 'true') {
+        trace.serverFinished = true;
+        // 把这枚模块**自己**也标上：调用方（`_findDiscussionTask` 第 2 步）要靠它把
+        // 「平台说做完了」那一格记进「这一节的讨论都处理完了」那本账，而不是当成断链
+        mod.serverFinished = true;
+        this._logDiscussionResolveFail('server-says-finished', trace);
+        return '';
+      }
+      return String(m[1]).replace(/&amp;/g, '&');
     },
 
 
@@ -9244,6 +9353,9 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
      * "三个话题全被重试预算挡在外面"（20-A 之前的实际现场）留下一模一样的空白 ——
      * 用户只看到讨论没做、日志里啥也没有。分类计数直接指出是哪一类。
      * 60 秒最多播一条：`_tryDiscussionTask` 每 3 秒就会走到这里一次。
+     * ⚠️ 批次 52 起**第 2 步（从模块 iframe 解地址）也喂它**：2026-11-14 现场那一代模块全部没有
+     * src、只走第 2 步，这句话在那一代上从来没打印过 —— 三个话题都发过了和三条链都断了，
+     * 日志里同样是一片空白。
      */
     _logDiscussionAllSettled: function (targets) {
       var self = this;
@@ -9325,11 +9437,19 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
       // 2) 卡片还没渲染（懒加载）：从讨论模块 iframe 解析
       var modules = [];
       try { modules = this._findDiscussionModuleFrames(); } catch (e1) { modules = []; }
+      // 走通了的每一枚都要记账：否则"三个话题真发过了"和"三条链全断了"
+      // 在第 2 步这条路上都是**一句日志都没有**（第 1 步早就有 `_logDiscussionAllSettled`，
+      // 2026-11-14 现场那一代模块全部没有 src、只走这条路，那句话因此从来没打印过）。
+      var settled = [];
       for (var i = 0; i < modules.length; i++) {
         var url = await this._resolveDiscussionUrlFromModule(modules[i]);
-        if (!url) continue;
+        if (!url) {
+          if (modules[i].serverFinished === true) settled.push({ key: '', finished: true });
+          continue;
+        }
         // 同样必须用稳定键：多讨论任务点下 url.slice(-70) 会碰撞，导致漏做
         var moduleKey = this._discussionKeyOf(url);
+        settled.push({ key: moduleKey, url: url, finished: false });
         // ⚠️ 必须跳过"已经发过"的那个。原先这里是无条件 `return`：
         // 第一个讨论做完之后，本函数每次都返回同一个，而调用方
         // `if (this._isDiscussionDone(task.key)) return false;` 于是直接放弃 ——
@@ -9343,6 +9463,7 @@ var OMITONE_CODE_REV = 'd5cac7f58f';
       }
       // 让模块 iframe 进入视口，促使懒加载下一次渲染出卡片（10 秒内不重复滚动）
       if (modules.length) {
+        if (settled.length) this._logDiscussionAllSettled(settled);
         if (Date.now() - (this._discussionScrollAt || 0) > 10000) {
           this._discussionScrollAt = Date.now();
           try { modules[0].frame.scrollIntoView({ block: 'center' }); } catch (e2) {}

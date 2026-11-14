@@ -888,6 +888,160 @@ function buildDiscBoxTopicHtml(id, title) {
 }
 
 /**
+ * 批次 52（2026-11-14 只读实测）：讨论模块 iframe 的**两代**形状，以及它们唯一的邻居。
+ *
+ * 现场那一节的 cards 文档量出来是：`ans-attach-ct` **0 个**、`#topicMainDiv` **0 个**、
+ * `ans-module` **4 个**（3 个 `module="insertbbs"` + 1 个 `module="work"`），
+ * 全部**没有 src**，模块数据只写在实体的 `data="{&quot;…&quot;}"` 里。
+ * 这个形状直接解释了「为什么第 1 步 `_collectDiscussionTargets` 必然数不出东西」——
+ * 它靠的就是任务盒与话题卡片，而这一代两样都没有；讨论只能走第 2 步（模块 → 取回章节页 → 抠地址）。
+ *
+ * ⚠️ 那个 `module="work"` 的邻居**照抄**：它的数据里同样有 `mid`、`jobid`（`work-` 打头）。
+ *    谁把 `_findDiscussionModuleFrames` 的过滤器放宽成「凡是有 mid 的模块都算讨论」，
+ *    下面那条断言就红 —— 表现是插件拿一份**作业**去拼讨论地址。
+ *
+ * 两代的区别（都是实测，但来源不同，说清楚）：
+ *   A 世代：`module="insertbbs"` 属性 + 同名 class（本日 cards 文档实测）；
+ *   B 世代：`module` **属性整个没有**、模块名只写在 class 里 —— 这个现象是**在视频模块上**
+ *    实测到的（`ans-attach-online ans-insertvideo-online`，那一页 `[module]` 计数为 0），
+ *    讨论模块目前还没见过走这一代。所以 B 夹具取的是现场真写在 class 上的那个词
+ *    （`ans-insertbbs-module`），只把 `module` 属性摘掉：测的是「属性丢了、class 还在」这一格，
+ *    不是凭空造一个 class 名。
+ */
+function buildDiscModTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body><div class="prev_title">章节</div>' +
+    '<iframe id="iframe" src="/disc-mod-cards"></iframe></body></html>';
+}
+
+/** 把对象按现场那样写成实体编码的 data 属性值（`data="{&quot;mid&quot;:&quot;…&quot;}"`） */
+function discModData(obj) {
+  return JSON.stringify(obj).replace(/"/g, '&quot;');
+}
+
+/**
+ * 2026-11-14 现场那一代（A 世代）讨论模块 iframe 的**唯一形状**：带 `module="insertbbs"` 属性、
+ * 数据写在实体 `data="{…}"` 里、**没有 src** —— 于是这一枚的内层文档是 about:blank（同源但空），
+ * 话题卡片永远不在任何可读文档里，`_collectDiscussionTargets`（第 1 步）数不出东西。
+ * 两个卡片夹具共用这一份，免得「现场形状」被抄成两版后各自漂移。
+ */
+function discModBbsIframe(mid, title) {
+  return '<p class="editor-iframe"><iframe frameborder="0" scrolling="no"' +
+    ' class="ans-module ans-insertbbs-module" module="insertbbs"' +
+    ' data="' + discModData({
+      title: title, images: [], detail: '', endtime: '', replywordnum: '', replytimes: '',
+      allowViewReply: 1, _jobid: '9' + mid, jobid: '9' + mid, isJob: true, mid: mid
+    }) + '"></iframe></p>';
+}
+
+function buildDiscModCardsHtml() {
+  // 现场三句讨论标题（原样，去掉真实课程号）；mid 一律 9 开头的合成号
+  function bbs(mid, title) { return discModBbsIframe(mid, title); }
+  // 唯一的非讨论模块：数据形状几乎一样（也有 mid / jobid），只有 module 与 class 说了真话
+  var work = '<p class="editor-iframe"><iframe frameborder="0" scrolling="no"' +
+    ' class="ans-module ans-work-module" module="work"' +
+    ' data="' + discModData({
+      workid: '9000000000009', title: '示例章节标题（这一枚不是讨论）', worktype: 'workA',
+      mid: '9000000000000000000000000', _jobid: 'work-ffffffffffffffffffffffffffffffff',
+      jobid: 'work-ffffffffffffffffffffffffffffffff'
+    }) + '"><br/></iframe></p>';
+  // C：平台在章节页里已经说了「这个讨论做完了」（#isFinished=true）
+  var finished = bbs('9000000000003', '讨论C：平台已记完成的那一个');
+  // D：既没有内层 #frame_content，数据里也没有 mid —— 解析链该点名 no-chapter-url
+  var noMid = '<p class="editor-iframe"><iframe frameborder="0" scrolling="no"' +
+    ' class="ans-module ans-insertbbs-module" module="insertbbs"' +
+    ' data="' + discModData({ title: '讨论D：没有 mid 也没有内层帧', isJob: true }) + '"></iframe></p>';
+  // E：章节页回来了但一个字节都没有 → fetch-failed
+  var emptyBody = bbs('9000000000004', '讨论E：章节页空响应');
+  // F：章节页回的是「温馨提示」那族没有话题卡片的页面 → no-topic-card
+  var warmTip = bbs('9000000000005', '讨论F：章节页是温馨提示');
+  // B 世代：没有 module 属性；话题地址要从内层 #frame_content 读
+  var genB = '<p class="editor-iframe"><iframe frameborder="0" scrolling="no"' +
+    ' class="ans-module ans-insertbbs-module" src="/disc-mod-b-inner"' +
+    ' data="' + discModData({ title: '讨论B：属性丢了只剩 class', isJob: true }) + '"></iframe></p>';
+
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程卡片</title></head><body>' +
+    work + bbs('9000000000001', '阐述你对美好生活有什么样的期待') + genB + finished +
+    noMid + emptyBody + warmTip +
+    '</body></html>';
+}
+
+/** B 世代的模块文档：真页面这一层把话题页塞进 `#frame_content` */
+function buildDiscModBInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>讨论</title></head><body>' +
+    '<iframe id="frame_content" frameborder="0" scrolling="no"' +
+    ' src="/mooc-ans/bbscircle/chapter?mtopicid=9000000000002&jobid=9000000000002' +
+    '&isPortal=false&knowledgeid=9000049293&ut=s&clazzId=9152708211&utenc=&courseid=9265799647&isJob=true"' +
+    ' style="width:100%;height:180px"></iframe></body></html>';
+}
+
+/**
+ * 现场那一代**单独**一页：三枚模块全部没有 src（2026-11-14 实测那一节
+ * `ans-attach-ct` 0 个、`#topicMainDiv` 0 个、`ans-module` 4 枚）。
+ *
+ * ⚠️ 为什么要和 `/disc-mod` 拆开：那一页里 B 那枚模块的同源内层帧把章节页装成了**活的文档**，
+ * 于是第 1 步 `_collectDiscussionTargets` 数得出卡片、`_findDiscussionTask` 压根走不到第 2 步 ——
+ * 而第 2 步（从模块 iframe 解话题地址）正是现场那一代**唯一**的一条路。
+ * 两条路各自都要有覆盖，混在一张页上会互相顶掉（本批次实测：t2 拿到 null 就是这个原因）。
+ */
+function buildDiscModACardsHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程卡片</title></head><body>' +
+    discModBbsIframe('9000000000001', '讨论甲：现场那一代，没有 src') +
+    discModBbsIframe('9000000000002', '讨论乙：和甲同形状、排在第二个') +
+    discModBbsIframe('9000000000003', '讨论丙：平台已记完成的那一个') +
+    '</body></html>';
+}
+
+function buildDiscModAHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body><div class="prev_title">章节</div>' +
+    '<iframe id="iframe" src="/disc-mod-a-cards"></iframe></body></html>';
+}
+
+/**
+ * `/mooc-ans/bbscircle/chapter` 的响应 —— 逐字抄自 2026-11-14 实fetch回来的那 3601 字节
+ * （`PublicCardBox` + `#topicMainDiv[data]` + `#isFinished` + `openTopicUrl()`），
+ * 地址换成现场的**真形状** `v3/bbs/<bbsid>/<uuid>/replysList?courseId=…&classId=…`（号全是合成的）
+ * （没有 mtopicid 参数 —— `_discussionKeyOf` 因此走**哈希**那一支，和旧夹具互补）。
+ * 按 `mtopicid` 的尾号切换形状，让一个路径能喂出解析链的全部出口。
+ *
+ * ⚠️ **现场那句图片地址不许逐字抄进来**：真页是 `src="//mooc1.chaoxing.com/…/tl-new.png"`
+ *    （协议相对 → 解到 80 端口），而 mock 挂在随机端口上、`--host-resolver-rules` 只映射主机名，
+ *    于是沙盒里这条 `<img>` 变成一次**真的平台出网**，被网络边界闸抓成
+ *    「Unexpected business egress attempted 1」（批次 52 全量跑实测的红）。
+ *    改成根相对后落在 mock 同源（404 无害：资源加载失败不算页面异常，也不进 `pageErrors`）。
+ *    判据：**任何 `src` / `href` 都不许带写死的平台主机名** —— `cardImages` 这个 class 才是被读的东西，
+ *    生产代码没有任何一处读它的 src。
+ */
+function buildBbsChapterHtml(mid) {
+  var key = String(mid || '').slice(-1);
+  if (key === '4') return '';                       // 空响应 → fetch-failed
+  if (key === '5') {                                 // 温馨提示族：回来了，但没有话题卡片
+    return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+      '<title>温馨提示</title></head><body><div class="tips">暂无权限访问</div></body></html>';
+  }
+  var isFinished = key === '3' ? 'true' : '';
+  return '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" />' +
+    '<title>学生端预览效果图</title></head><body>' +
+    '<div class="PublicCardBox" id="topicMainDiv"' +
+    ' data="https://groupweb.chaoxing.com/course/topic/v3/bbs/9ffe00000000000000000000000000000/' +
+    '9ff000000000000000000000000000' + key + '/replysList?courseId=9265799647&classId=9152708211"' +
+    ' onclick="openTopicUrl()">' +
+    '<img class="cardImages" src="/mooc-ans/css/images/tl-new.png" />' +
+    '<div class="cardConright"><p class="cardRightTit overhidden2">阐述你对美好生活有什么样的期待</p></div>' +
+    '</div>' +
+    '<input type="hidden" id="isFinished" value="' + isFinished + '"/>' +
+    '<script>function openTopicUrl(){var u=document.getElementById("topicMainDiv").getAttribute("data");' +
+    'window.open(u);}' +
+    // 现场这一句就是平台自己宣告「本话题已完成」的方式（父帧收 opType:completeTopic）
+    'var f=document.getElementById("isFinished").value;' +
+    'if(f&&f=="true"){window.parent.postMessage({opType:"completeTopic"},"*");}</script></body></html>';
+}
+
+/**
  * 批次 20-I「目录标记说的是这一节做没做完吗」的夹具。
  *
  * ⚠️ 逐字抄自用户正在刷的那门课（2026-11-12 实地 `npm run field-shape` 一族探针量出来的）：
@@ -1213,20 +1367,120 @@ function buildStandaloneCaptchaHtml() {
     '</body></html>';
 }
 
-/** 讨论区页面（仿 groupweb 结构） */
+/**
+ * 讨论区（话题页）夹具 —— 批次 52 逐字抄自现场（2026-11-14 只读抓回的 groupweb 话题页，
+ * id 全部换成 9 开头的合成号）。现场的形状：
+ *   编辑器 `<div class="editContainer topicDetail_editContainer">` → `.edit_headTitle`
+ *     → `.edit_main > .replyEdit > .textareawrap > textarea[placeholder="回复话题"] + .wordcount`
+ *     → `.replyEditBtnGroup > .imgUpload/.fileUpload/.replyagreement` + 提交键
+ *   列表 `<div class="topicDetail_replyList">` 在服务端 HTML 里**是空的**（页面 JS 再水合），
+ *   「共N条回复」那个 `<em class="classReplyCount hide">` 出厂带 `hide`。
+ *
+ * ⚠️ 提交键是 **`<div class="jb_btn jb_btn_92 fr fs14 addReply">回复</div>`** —— 不是 `<button>`、不是 `<a>`。
+ *    这条是本次换夹具的主要理由：上一版放的是 `<button class="addReply">`，
+ *    而兜底 finder 的节点集（button / a / input[type=button] / [role=button]）**本来就捞得到 `<button>`**，
+ *    于是「精确选择器 `.addReply`」和「按文字兜底」两层同时起作用 —— 把 `.addReply` 摘掉夹具照样绿，
+ *    而真页面（div）当场找不到提交键（AGENTS §5「改坏了却没人报警，先怀疑覆盖不全」）。
+ *    换成现场那种 div 之后，兜底捞不到，那条**精确选择器整条**（三个候选合起来）是唯一保护 ——
+ *    只摘掉 `.addReply` 一个词不会红（`.replyEditBtnGroup .jb_btn` 还罩着），注入验证时按整条摘。
+ *
+ * 现场同一页还挂着三样会咬人的东西，全部照抄进来：
+ *   ① 举报弹窗的 `<textarea id="textarea" class="reportDescribe" placeholder="请输入举报内容">`
+ *      —— 编辑区判据若改成「id 叫 textarea」或「整页最大的输入区」就会挑到这块（它藏在 display:none 里）；
+ *   ② 每条回复自带的 `<div class="btnBlue btn_92 fr fs14 replyBtn">回复</div>`
+ *      —— 现场它在 mustache 模板里，水合后才出现在每条 `.topicDetail_replyItem` 内；
+ *      本夹具发帖成功后 append 的那条就带它，提交键判据不许把它当成发布按钮；
+ *   ③ 平台的多语言字典（`<script>` 里）写着「内容不能为空」「请输入内容」这些**拒绝文案**。
+ *      `_discussionEvidence` 判「平台明说没发出去」读的是 `body.innerText`，字典在 script 里读不到才对；
+ *      谁哪天换成 `textContent`，「发成功那一格」会当场变成「平台说失败」→ 断言立刻红。
+ *
+ * 另外带一段**平台语义脚本**：点 `.addReply` 时空框 → 就地打出「内容不能为空」；
+ * 有内容 → 追加一条真 `.topicDetail_replyItem`（文字取自己刚填进去的那句）、把条数写进
+ * `.classReplyCount`、清空编辑区。于是「发出去了没有」在沙盒里是**页面自己长出一条回复**，
+ * 不是插件自说自话（批次 23 给答题立的那条口径，这次轮到讨论）。
+ */
 function buildDiscussionHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
-    '<title>课程讨论区 - 回复话题</title></head><body>' +
-    '<div class="topicDetail_title"><h3>为什么说中国特色社会主义道路是历史的选择</h3></div>' +
-    '<div class="replyEdit">' +
-    '  <div class="textareawrap"><textarea placeholder="回复话题" style="width:520px;height:90px"></textarea></div>' +
-    '  <div class="replyEditBtnGroup">' +
-    '    <a class="replyBtn" href="javascript:void(0)">回复</a>' +
-    '    <button class="jb_btn jb_btn_92 fr fs14 addReply" type="button">回复</button>' +
+    '<title>课程讨论 - 话题详情</title>' +
+    // 现场这三条写在 kctl.css 里；沙盒不加载外链样式表，按实测值逐条抄进来
+    // （`.edit_headTitle` 与 `.classReplyCount` 现场**就是**隐藏的，尺寸是编辑区与按钮的可见前提）
+    '<style>' +
+    '.edit_headTitle{display:none;}' +
+    '.classReplyCount.hide{display:none;}' +
+    '.textareawrap textarea{width:520px;height:96px;}' +
+    '.addReply{display:inline-block;width:76px;height:30px;line-height:30px;text-align:center;cursor:pointer;}' +
+    '.cancleReplyBtn{display:inline-block;width:76px;height:30px;}' +
+    '#reportModal{display:none;}' +
+    '</style></head><body>' +
+    '<div class="subPageMain" id="subPageMain">' +
+    '  <div id="bbsTopicDetail"><div class="topicDetail_title">' +
+    '  <h3>阐述你对美好生活有什么样的期待</h3></div></div>' +
+    '  <div class="topicDetail_replyWrap">' +
+    '    <div class="topicDetail_replyTitle clear-float">' +
+    '      <em class="classReplyCount hide">共<span>0</span>条回复</em>' +
+    '      <div class="sortDiv" style="display: none;"><p class="sortBtn"><i class="sort"></i><span>时间倒序</span></p></div>' +
+    '    </div>' +
+    '    <div class="topicDetail_replyList"><!-- 现场：服务端出空列表，页面 JS 再水合 --></div>' +
+    '    <div class="replyMsg" style="display:none;"></div>' +
+    '  </div>' +
+    '  <div class="editContainer topicDetail_editContainer">' +
+    '    <div class="edit_headTitle">回复话题</div>' +
+    '    <div class="edit_main"><div class="replyEdit"><div class="textareawrap">' +
+    '      <textarea autoheight="true" placeholder="回复话题"></textarea>' +
+    '      <div class="wordcount">0</div>' +
+    '    </div>' +
+    '    <div class="replyImgList replyUploadImgList"><div class="addImg" style="display:none;">' +
+    '      <input type="file" accept="image/*"></div></div>' +
+    '    <div class="replyAttachList replyUploadFileList"></div>' +
+    '    <div class="replyEditBtnGroup">' +
+    '      <div class="imgUpload"><input type="file" accept="image/*"></div>' +
+    '      <div class="fileUpload"><input type="file" accept="*"></div>' +
+    '      <div class="radioWrap"><div class="recstart"></div></div>' +
+    '      <div class="replyagreement">上传图片、附件即表示您已阅读并接受' +
+    '<a target="_blank" href="#agreement">《用户协议》</a>,请遵守该协议</div>' +
+    '      <div class="jb_btn jb_btn_92 fr fs14 addReply">回复</div>' +
+    '      <div class="btnBlue btn_92 fr fs14 marginRight30 cancleReplyBtn">取消</div>' +
+    '    </div></div></div>' +
     '  </div>' +
     '</div>' +
-    '<div class="topicDetail_replyList"></div>' +
-    '</body></html>';
+    // ① 同页第二块 textarea（举报弹窗，出厂藏着）
+    '<div id="reportModal" class="maskDiv">' +
+    '<textarea id="textarea" class="reportDescribe" placeholder="请输入举报内容"' +
+    ' style="width:320px;height:110px"></textarea>' +
+    '<div class="jb_btn cancleReplyBtn">取消</div><div class="jb_btn confirmReport">确定</div>' +
+    '</div>' +
+    '<script>' +
+    // ③ 现场字典里的那几句拒绝文案 —— 只出现在 script 里，渲染不进 innerText
+    'window.TopicLang={"内容不能为空":"内容不能为空","请输入内容":"请输入内容",' +
+    '"该话题已到回复截止时间":"该话题已到回复截止时间","服务繁忙，请稍后重试":"服务繁忙，请稍后重试",' +
+    '"举报内容不能为空":"举报内容不能为空","已回复":"已回复","回复":"回复","取消":"取消"};' +
+    // 平台语义
+    'window.__postClicks=0;' +
+    'var ta=document.querySelector(".textareawrap textarea");' +
+    'var list=document.querySelector(".topicDetail_replyList");' +
+    'var wc=document.querySelector(".wordcount");' +
+    'var cnt=document.querySelector(".classReplyCount span");' +
+    'var msg=document.querySelector(".replyMsg");' +
+    'ta.addEventListener("input",function(){wc.textContent=String(ta.value.length);});' +
+    'function addRow(v){var row=document.createElement("div");row.className="topicDetail_replyItem";' +
+    'row.setAttribute("realId","9000000000"+list.children.length);' +
+    'var info=document.createElement("div");info.className="topicDetail_info";' +
+    'var nm=document.createElement("span");nm.className="author";nm.textContent="我自己";' +
+    'info.appendChild(nm);' +
+    'var main=document.createElement("div");main.className="topicDetail_main";' +
+    'var body=document.createElement("div");body.className="topicDetail_content";body.textContent=v;' +
+    // ② 每条回复自带一枚「回复」，就长在刚发出去那条里面
+    'var rb=document.createElement("div");rb.className="btnBlue btn_92 fr fs14 replyBtn";rb.textContent="回复";' +
+    'main.appendChild(body);main.appendChild(rb);row.appendChild(info);row.appendChild(main);' +
+    'list.appendChild(row);}' +
+    'document.querySelector(".addReply").addEventListener("click",function(){' +
+    '  window.__postClicks++;' +
+    '  var v=String(ta.value||"").trim();' +
+    '  if(!v){msg.textContent="内容不能为空";msg.style.display="block";return;}' +
+    '  msg.style.display="none";msg.textContent="";' +
+    '  addRow(v);cnt.textContent=String(list.children.length);' +
+    '  ta.value="";wc.textContent="0";});' +
+    '</script></body></html>';
 }
 
 /** 视频弹窗题（课程视频中途弹出的选择题） */
@@ -1403,6 +1657,12 @@ var MOCK_PAGES = {
   '/disc-box-topic-A': function () { return buildDiscBoxTopicHtml('9001', '阐述你对美好生活有什么样的期待'); },
   '/disc-box-topic-B': function () { return buildDiscBoxTopicHtml('9002', '结合专业谈谈怎么创造美好生活'); },
   '/disc-box-topic-C': function () { return buildDiscBoxTopicHtml('9003', '说说你身边的变化'); },
+  // 批次 52：讨论模块 iframe 的两代形状，与它们唯一的邻居（module="work"）
+  '/disc-mod': buildDiscModTopHtml,
+  '/disc-mod-cards': buildDiscModCardsHtml,
+  '/disc-mod-b-inner': buildDiscModBInnerHtml,
+  '/disc-mod-a': buildDiscModAHtml,
+  '/disc-mod-a-cards': buildDiscModACardsHtml,
   // ── 批次 20-I：目录标记的现场形状（`id="cur<chapterId>"` + icon_Completed「已完成」
   //    / catalog_points_yi「N个待完成任务点」+ input.jobUnfinishCount）；
   //    /no-course 是"页面被推到没有课程结构的地方"那一族 ──
@@ -1812,6 +2072,25 @@ function startMockServer() {
     }
 
     var urlPath = (req.url || '/').split('?')[0];
+
+    /**
+     * 批次 52：话题章节页按 **请求自己的 `mtopicid`** 换形状。
+     *
+     * 为什么不走 `MOCK_PAGES`：生产拼出来的地址路径是写死的 `/mooc-ans/bbscircle/chapter`，
+     * 而这里要拿一个路径喂出解析链的四个出口（正常 / 已做完 / 空响应 / 温馨提示）。
+     * ⚠️ 也**不许**改成在页面里打桩 `window.fetch` —— page.js 跑在 isolated world，
+     *    页面世界换掉的那个 `fetch` 它压根看不见（AGENTS §5 的 world 隔离那条）；
+     *    指回沙盒服务器才是这里唯一真的走生产代码的路。
+     */
+    if (urlPath === '/mooc-ans/bbscircle/chapter') {
+      var chapterQs = String((req.url || '').split('?')[1] || '');
+      var midHit = /(?:^|&)mtopicid=([^&]*)/.exec(chapterQs);
+      var chapterHtml = buildBbsChapterHtml(midHit ? decodeURIComponent(midHit[1]) : '');
+      scanFixture(urlPath, chapterHtml);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(chapterHtml);
+    }
+
     if (MOCK_PAGES[urlPath]) {
       var fixtureHtml = MOCK_PAGES[urlPath]();
       scanFixture(urlPath, fixtureHtml);
@@ -8927,6 +9206,439 @@ SCENARIOS.push({
     // 旧实现会判成功（默认回复是 "1"，文本匹配也近乎恒真），于是发失败也被记成已做。
     check('有回复列表但条目没多 → 即使填过、编辑区也空了，仍**不能**算成功（旧实现会误判）',
       !!probe && probe.withFill === false, JSON.stringify(probe));
+  }
+});
+
+/**
+ * ---- 批次 52：讨论模块 iframe 的两代形状都要认得，话题地址解不出来时点名断在哪一环 ----
+ *
+ * 为什么单独立一条：`_findDiscussionTask` 的**第 2 步**（模块 iframe → 取回章节页 → 抠话题地址）
+ * 在沙盒里从来没跑到过 —— 旧夹具只造了「话题卡片直接挂在任务盒里」那一代（走第 1 步），
+ * 而 2026-11-14 现场那节 3 个讨论是另一代：cards 文档里 `ans-attach-ct` **0 个**、
+ * `#topicMainDiv` **0 个**、只有 4 枚 `ans-module`（3 讨论 + 1 作业），模块**没有 src**、
+ * 数据只写在实体 `data="{…}"` 里。第 1 步数不出东西、第 2 步没有断言 ——
+ * 这一整条链坏掉不会有人报警（AGENTS §5：一处注入只对应一条断言，别指望别的层兜着）。
+ *
+ * 本场景钉四件事，全部按**标题**点名取证（不许"挑最大的那一格再断它非空"）：
+ *   ① 两代模块都收得到：带 `module="insertbbs"` 属性的、以及属性整个没有、只剩 class 里那个词的；
+ *   ② 唯一那个假邻居（`module="work"`，数据里同样有 mid/jobid）**不**被收进来；
+ *   ③ 每条出口各归各的名字：正常解出地址 / 平台已记完成 / 没有 mid 也没有内层帧 / 章节页空 / 温馨提示；
+ *   ④ 同一个理由 90 秒内只播一条（节流），**换个理由也各自只播一条**（原先只有一个槽位记上一条的
+ *      理由，四个理由轮着换就把槽位绕过去了 —— 每 3 秒一轮，200 条日志环几分钟就刷满）。
+ *
+ * 「第一个已发过 ⇒ 第二个还要能被找到」（第 2 步的让位）不在这个场景里：这一页 B 那枚模块带着
+ * 同源内层帧，话题卡片是个**活的文档**，第 1 步先数出东西、第 2 步压根走不到 —— 那是 20-G 那一代。
+ * 现场那一代（模块全部没有 src，第 1 步恒空）单独一页 `/disc-mod-a`，见下一条场景。
+ */
+SCENARIOS.push({
+  name: '讨论模块两代形状都认得，解不出话题地址时点名断在哪一环',
+  path: '/disc-mod?courseId=9265799647&clazzid=9152708211&chapterId=9000049293',
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'window.__dm=[];' +
+      'if(!window.__dmHook){window.__dmHook=1;' +
+      '  window.addEventListener("message",function(e){var m=e.data;' +
+      '    if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__dm.push(m);});}' +
+      // 场景自己钉住共享状态（扩展存储与 sessionStorage 整轮共用，不许依赖上一个场景跑过）
+      'try{localStorage.removeItem(app._discussionStoreKey);}catch(e){}' +
+      'app._discussionResolveFailLog=null;app._discussionScrollAt=0;' +
+      // B 世代那枚要先等内层文档加载完：读不到 #frame_content 就不是现场那个形状
+      'var deadline=Date.now()+5000,readyFlag=false;' +
+      'while(Date.now()<deadline){' +
+      '  var pre=app._findDiscussionModuleFrames();readyFlag=false;' +
+      '  for(var q=0;q<pre.length;q++){var dd=app._safeDocOf(pre[q].frame);' +
+      '    if(dd&&dd.getElementById("frame_content")){readyFlag=true;break;}}' +
+      '  if(readyFlag)break;' +
+      '  await new Promise(function(res){setTimeout(res,200);});}' +
+      'var mods=app._findDiscussionModuleFrames();' +
+      'var cardsDoc=app._safeDocOf(document.querySelector("#iframe"));' +
+      'var out={ready:readyFlag,found:mods.length,' +
+      '  attrNamed:mods.filter(function(x){return !!x.frame.getAttribute("module");}).length,' +
+      '  classOnly:mods.filter(function(x){return !x.frame.getAttribute("module");}).length,' +
+      '  anyWork:mods.filter(function(x){return /work/i.test(String(x.module));}).length,' +
+      '  anchors:cardsDoc?cardsDoc.querySelectorAll("iframe.ans-module").length:-1,' +
+      '  attrAll:cardsDoc?cardsDoc.querySelectorAll("iframe[module]").length:-1,' +
+      '  boxes:cardsDoc?cardsDoc.querySelectorAll(".ans-attach-ct").length:-1,' +
+      '  cards:cardsDoc?cardsDoc.querySelectorAll("#topicMainDiv").length:-1,' +
+      '  step1Keys:app._collectDiscussionTargets().map(function (t) { return String(t.key); }),' +
+      '  byTitle:{}};' +
+      'for(var i=0;i<mods.length;i++){' +
+      '  var t=String((mods[i].data&&mods[i].data.title)||"")||("noTitle#"+i);' +
+      '  var u=await app._resolveDiscussionUrlFromModule(mods[i]);' +
+      '  out.byTitle[t]={module:String(mods[i].module||""),url:u,' +
+      '    key:u?String(app._discussionKeyOf(u)||""):"",' +
+      '    hasMid:!!(mods[i].data&&mods[i].data.mid)};' +
+      '}' +
+      // ④ 同一个理由再撞一次：节流出路（换理由必须还能出）
+      'var again=null;' +
+      'var fin=null;' +
+      'for(var i2=0;i2<mods.length;i2++){var tt=String((mods[i2].data&&mods[i2].data.title)||"");' +
+      '  if(tt.indexOf("讨论C")===0)fin=mods[i2];}' +
+      'if(fin){again=await app._resolveDiscussionUrlFromModule(fin);' +
+      '  again={returned:String(again||"")};' +
+      '  var again2=await app._resolveDiscussionUrlFromModule(fin);' +
+      '  again.second=String(again2||"");}' +
+      'out.again=again;' +
+      // 第 2 步（从模块解地址）在这页上**走不到**：B 那枚的同源内层帧让第 1 步先数出了卡片。
+      // 「第一个已发过 ⇒ 拿到的必须是第二个」那条断言因此挪去 /disc-mod-a（现场那一代，第 1 步恒空）
+      'return out;})()'
+    );
+    // 日志走 postMessage，异步送达 —— 不等一拍就读，「没发」与「没等到」长得一模一样
+    await new Promise(function (resolve) { setTimeout(resolve, 500); });
+    var log = await ctx.client.evaluate(
+      '(function(){var rows=[];(window.__dm||[]).forEach(function(m){' +
+      '  if(m.message==="discussion topic url not resolved")rows.push({' +
+      '    reason:String(m.meta&&m.meta.reason||""),module:String(m.meta&&m.meta.module||""),' +
+      '    hasMid:String(!!(m.meta&&m.meta.hasMid)),level:String(m.level||""),' +
+      '    hint:String(m.meta&&m.meta.hint||"")});});' +
+      'window.__dm=[];return {rows:rows};})()'
+    );
+    function byReason(reason) {
+      return (log.rows || []).filter(function (x) { return x.reason === reason; });
+    }
+    var A = r && r.byTitle ? r.byTitle['阐述你对美好生活有什么样的期待'] : null;
+    var B = r && r.byTitle ? r.byTitle['讨论B：属性丢了只剩 class'] : null;
+    var C = r && r.byTitle ? r.byTitle['讨论C：平台已记完成的那一个'] : null;
+    var D = r && r.byTitle ? r.byTitle['讨论D：没有 mid 也没有内层帧'] : null;
+    var E = r && r.byTitle ? r.byTitle['讨论E：章节页空响应'] : null;
+    var F = r && r.byTitle ? r.byTitle['讨论F：章节页是温馨提示'] : null;
+
+    check('夹具自证：卡片文档里确实「没有任务盒、没有话题卡片」—— 三枚没有 src 的模块第 1 步一张也数不出',
+      !!r && r.boxes === 0 && r.cards === 0 && r.anchors === 7,
+      JSON.stringify({ boxes: r.boxes, cards: r.cards, anchors: r.anchors, step1Keys: r.step1Keys }));
+    check('夹具自证：这一页第 1 步唯一数得出的那张卡片就是 B 那枚的同源内层帧里的（两条路同一个键）',
+      !!r && r.step1Keys.length === 1 && !!B && r.step1Keys[0] === B.key,
+      JSON.stringify({ step1Keys: r && r.step1Keys, bKey: B && B.key }));
+    check('夹具自证：7 枚模块里只有 6 枚带 module 属性 —— 少的那一枚就是 B 世代（class 里才有名字）',
+      r && r.attrAll === 6, JSON.stringify({ attrAll: r && r.attrAll }));
+    check('前置：B 世代那枚的内层文档已加载（#frame_content 读得到）',
+      r && r.ready === true, JSON.stringify({ ready: r && r.ready }));
+    check('两代模块都收得到：5 枚带属性 + 1 枚只带 class，且**没有一枚被数两遍**',
+      r && r.found === 6 && r.attrNamed === 5 && r.classOnly === 1,
+      JSON.stringify({ found: r && r.found, attrNamed: r && r.attrNamed, classOnly: r && r.classOnly }));
+    check('那枚 module="work" 的假邻居没被当成讨论（它的数据里同样有 mid 与 jobid）',
+      r && r.anyWork === 0 && !!(A && A.hasMid && B && !B.hasMid),
+      JSON.stringify({ anyWork: r && r.anyWork, aHasMid: A && A.hasMid, bHasMid: B && B.hasMid }));
+    check('A 世代（无 src）从 data.mid 拼出章节页，抠回来的地址是现场那种 v3/bbs 形状',
+      !!A && /^https:\/\/groupweb\.chaoxing\.com\/course\/topic\/v3\/bbs\/9ffe0000/.test(A.url) &&
+      /\/replysList\?courseId=9265799647&classId=9152708211$/.test(A.url),
+      JSON.stringify(A));
+    check('B 世代（属性丢了、class 还在）走内层 #frame_content 也解得出地址',
+      !!B && B.module === 'insertbbs' && /9ff0000000000000000000000000002\/replysList/.test(B.url),
+      JSON.stringify(B));
+    check('两条地址的键都不是空、也互不相同（哈希那一支；旧夹具走的是 mtopicid 参数那一支）',
+      !!A && !!B && !!A.key && !!B.key && A.key !== B.key,
+      JSON.stringify({ a: A && A.key, b: B && B.key }));
+    check('出口点名：平台自己写了「这个讨论已做完」的，不再重复发帖（reason=server-says-finished）',
+      !!C && C.url === '' && byReason('server-says-finished').length === 1,
+      JSON.stringify({ c: C, rows: byReason('server-says-finished') }));
+    check('出口点名：既没有内层帧也没有 mid → reason=no-chapter-url',
+      !!D && D.url === '' && byReason('no-chapter-url').length === 1,
+      JSON.stringify({ d: D, rows: byReason('no-chapter-url') }));
+    check('出口点名：章节页一个字节都没回 → reason=fetch-failed',
+      !!E && E.url === '' && byReason('fetch-failed').length === 1,
+      JSON.stringify({ e: E, rows: byReason('fetch-failed') }));
+    check('出口点名：温馨提示那族页面里没话题卡片 → reason=no-topic-card',
+      !!F && F.url === '' && byReason('no-topic-card').length === 1,
+      JSON.stringify({ f: F, rows: byReason('no-topic-card') }));
+    check('四条出口各一条、全是 warn、hint 把四个理由都解释了一遍（不是一句"解不出来"）',
+      (log.rows || []).length === 4 && (log.rows || []).every(function (x) { return x.level === 'warn'; }) &&
+      byReason('server-says-finished').every(function (x) { return /isFinished|已完成|已做完/.test(x.hint); }),
+      JSON.stringify(log.rows));
+    check('同一个理由 90 秒内只播一条（第二次仍然拒绝，但不重复刷屏）',
+      !!r && !!r.again && r.again.returned === '' && r.again.second === '' &&
+      byReason('server-says-finished').length === 1,
+      JSON.stringify({ again: r && r.again, rows: byReason('server-says-finished').length }));
+  }
+});
+
+/**
+ * ---- 批次 52：现场那一代（模块全部没有 src）第 2 步是**唯一**的一条路 ----
+ *
+ * `/disc-mod` 那张页同时挂着两代模块，B 那枚的同源内层帧把章节页装成了**活的文档**，
+ * 于是第 1 步 `_collectDiscussionTargets` 先数出卡片、`_findDiscussionTask` 走不到第 2 步 ——
+ * 「已发过的那个必须让位给下一个」这条逻辑在 2026-11-14 现场那一代上从来没跑到过（本批次实测：
+ * 混页上第二轮拿到的是 null，因为第 1 步压根没让第 2 步开局）。
+ * 这一页只放现场那一代：三枚 `iframe.ans-module`、`src` 一个都没有
+ * （2026-11-14 只读量过同一节：`ans-attach-ct` 0 个、`#topicMainDiv` 0 个、模块 4 枚全部无 src）。
+ *
+ * 本场景钉五件事，全部按**标题**点名取证：
+ *   ① 夹具自证：这一页第 1 步一张卡片也数不出（否则测的还是第 1 步，本批次已经踩过一次）；
+ *   ② 第 2 步逐个让位：甲派出并记账后，第二轮拿到的必须是乙，两轮的键都非空且互不相同；
+ *   ③ 平台自己写了「这个讨论已做完」的丙一次都不许被派出去，且**不进本地那本账**
+ *      （它没有地址、没有键；记进去就是把平台的话冒充成「我们发过」，24 小时内不再复查）；
+ *   ④ 连着跑 4 轮（现场 `_tryDiscussionTask` 每 3 秒就是一轮）同一个失败理由只播一条 ——
+ *      节流按**理由各记一笔**，不是只记上一条的理由（批次 37 同族）；
+ *   ⑤ 第 2 步这条出口也要说得出「这一节的讨论都处理完了」的依据：3 个里 1 个平台已记、2 个本地记过，
+ *      且这句 60 秒只播一条。
+ */
+SCENARIOS.push({
+  name: '没有 src 的那一代：第 2 步要让位给下一个，平台已记完成的不占账',
+  path: '/disc-mod-a?courseId=9265799647&clazzid=9152708211&chapterId=9000049293',
+  run: async function (ctx) {
+    var r = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'window.__dm3=[];' +
+      'if(!window.__dm3Hook){window.__dm3Hook=1;' +
+      '  window.addEventListener("message",function(e){var m=e.data;' +
+      '    if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__dm3.push(m);});}' +
+      // 关掉背景调度：`_tryDiscussionTask` 每 3 秒也调同一个函数，会先把 60/90 秒的节流槽占掉，
+      // 于是这一场景读到的可能是**它那一轮**的依据（那时账还是空的）。本场景直接调
+      // `_findDiscussionTask`，不受这道闸影响 —— 关掉它只是把「谁播的日志」钉死成一个。
+      'app.configs=Object.assign({},app.configs,{enableDiscussion:false});' +
+      'try{localStorage.removeItem(app._discussionStoreKey);}catch(e){}' +
+      'app._discussionResolveFailLog=null;app._discussionScrollAt=0;app._discussionSettledLogAt=0;' +
+      'var cardsDoc=app._safeDocOf(document.querySelector("#iframe"));' +
+      'var out={mods:app._findDiscussionModuleFrames().length,' +
+      '  srcs:cardsDoc?cardsDoc.querySelectorAll("iframe.ans-module[src]").length:-1,' +
+      '  anchors:cardsDoc?cardsDoc.querySelectorAll("iframe.ans-module").length:-1,' +
+      '  boxes:cardsDoc?cardsDoc.querySelectorAll(".ans-attach-ct").length:-1,' +
+      '  cards:cardsDoc?cardsDoc.querySelectorAll("#topicMainDiv").length:-1,' +
+      '  step1:app._collectDiscussionTargets().length, tasks:[]};' +
+      'for(var p=0;p<4;p++){' +
+      '  var t=await app._findDiscussionTask();' +
+      '  if(!t){out.tasks.push(null);continue;}' +
+      '  out.tasks.push({key:String(t.key||""),name:String(t.name||""),url:String(t.url||"")});' +
+      '  app._markDiscussionDone(t.key);}' +
+      'out.doneKeys=Object.keys(app._discussionDoneMap());' +
+      'return out;})()'
+    );
+    // 日志走 postMessage，异步送达 —— 不等一拍就读，「没播」与「没等到」同形
+    await sleep(500);
+    var log = await ctx.client.evaluate(
+      '(function(){var fails=[],settled=[];' +
+      // ⚠️ 取证不许写 `Number(x||-1)`：分类计数**本来就是 0**，那样会把 0 读成"缺失"（本批次实测：
+      //    tryBudget/unexplained 都是 0，被写成 -1 报红）。按类型取，取不到才给哨兵。
+      'function n(v){return typeof v==="number"&&isFinite(v)?v:-1;}' +
+      '(window.__dm3||[]).forEach(function(m){' +
+      '  if(m.message==="discussion topic url not resolved")fails.push({' +
+      '    reason:String(m.meta&&m.meta.reason||""),level:String(m.level||"")});' +
+      '  if(m.message==="discussion nothing pending")settled.push({total:n(m.meta&&m.meta.total),' +
+      '    serverFinished:n(m.meta&&m.meta.serverFinished),believeLocal:n(m.meta&&m.meta.believeLocal),' +
+      '    tryBudget:n(m.meta&&m.meta.tryBudget),unexplained:n(m.meta&&m.meta.unexplained)});});' +
+      'window.__dm3=[];return {fails:fails,settled:settled};})()'
+    );
+    var t0 = r && r.tasks ? r.tasks[0] : null;
+    var t1 = r && r.tasks ? r.tasks[1] : null;
+    var t2 = r && r.tasks ? r.tasks[2] : null;
+    var t3 = r && r.tasks ? r.tasks[3] : null;
+    var settled = (log.settled || [])[0] || null;
+
+    check('夹具自证：这一页三枚模块全都没有 src —— 第 1 步（页面里现成的话题卡片）一张也数不出',
+      !!r && r.mods === 3 && r.srcs === 0 && r.anchors === 3 && r.boxes === 0 && r.cards === 0 && r.step1 === 0,
+      JSON.stringify(r && { mods: r.mods, srcs: r.srcs, anchors: r.anchors, boxes: r.boxes, cards: r.cards, step1: r.step1 }));
+    check('第 2 步第一轮派出的是甲：地址是现场那种 v3/bbs 形状、尾号对得上、键非空',
+      !!t0 && t0.name.indexOf('讨论甲') === 0 && !!t0.key &&
+      /^https:\/\/groupweb\.chaoxing\.com\/course\/topic\/v3\/bbs\/9ffe0000/.test(t0.url) &&
+      /9ff0000000000000000000000000001\/replysList/.test(t0.url), JSON.stringify(t0));
+    check('甲记过「已发」⇒ 第二轮必须让位给乙（原先这里无条件 return：同页第二个讨论永远轮不到）',
+      !!t1 && !!t0 && t1.name.indexOf('讨论乙') === 0 && !!t1.key && t1.key !== t0.key &&
+      /9ff0000000000000000000000000002\/replysList/.test(t1.url),
+      JSON.stringify({ t0: t0, t1: t1 }));
+    check('平台自己写了「已做完」的丙一次都没被派出去：第三、第四轮都是 null',
+      t2 === null && t3 === null, JSON.stringify({ t2: t2, t3: t3 }));
+    check('本地那本账只有两笔 —— 平台已记完成的那个不许冒充「我们发过」（它压根没有键）',
+      !!r && r.doneKeys.length === 2 && !!t0 && !!t1 &&
+      r.doneKeys.indexOf(t0.key) >= 0 && r.doneKeys.indexOf(t1.key) >= 0,
+      JSON.stringify(r && r.doneKeys));
+    check('4 轮跑完同一个失败理由只播一条（节流按理由各记一笔，不是只记上一条的理由）',
+      (log.fails || []).length === 1 && log.fails[0].reason === 'server-says-finished' &&
+      log.fails[0].level === 'warn', JSON.stringify(log.fails));
+    check('第 2 步也要播「这一节的讨论都处理完了」并说得出依据：3 个 / 1 个平台已记 / 2 个本地记过 / 0 个说不清',
+      !!settled && settled.total === 3 && settled.serverFinished === 1 && settled.believeLocal === 2 &&
+      settled.tryBudget === 0 && settled.unexplained === 0,
+      JSON.stringify({ settled: settled, fails: log.fails }));
+    check('那句依据 60 秒只播一条（第四轮没有再播一遍）',
+      (log.settled || []).length === 1, JSON.stringify({ count: (log.settled || []).length }));
+  }
+});
+
+/**
+ * ---- 讨论页真发一条：插件点下去之后，页面自己长出回复 ----
+ *
+ * 批次 52。现场（2026-11-14 只读抓回的那份 groupweb 话题页）确认了三件事，本场景按那个形状钉：
+ *   ① 提交键是 `<div class="jb_btn jb_btn_92 fr fs14 addReply">回复</div>` —— 不是 button、不是 a。
+ *      兜底 finder 的节点集（button / a / input[type=button] / input[type=submit] / [role=button]）
+ *      **根本捞不到它**，所以那条精确选择器（`.addReply` / `[class*="addReply"]` /
+ *      `.replyEditBtnGroup .jb_btn` 三个候选合起来）是**唯一**一层保护 ——
+ *      ⚠️ 反向验证要**整条摘掉**：夹具那个 div 同时带 `jb_btn` 与 addReply 且就住在
+ *      `.replyEditBtnGroup` 里，只摘 `.addReply` 一个词另外两个候选照样命中，断言不会红
+ *      （旧夹具放 `<button class="addReply">` 时两层同时在挡，摘掉精确选择器夹具照样绿，
+ *      而真页面（div）当场找不到提交键 —— AGENTS §5「改坏了却没人报警，先怀疑覆盖不全」）。
+ *   ② 「发出去没有」由**页面自己**回答：夹具里那段平台语义脚本只在内容非空时 append 一条真
+ *      `.topicDetail_replyItem`，空内容就地打「内容不能为空」。断言读的是 DOM 里多出来的那条，
+ *      不是插件自报的布尔（批次 23 给答题立的那条口径，这次轮到讨论）。
+ *   ③ 平台的拒绝文案写在 `<script>` 字典里 —— `rejectedText` 读的是 `body.innerText` 才没被它顶成恒真；
+ *      谁哪天换成 `textContent`，「发成功那一格」当场变成「平台说失败」。
+ *
+ * 三趟按顺序跑在**同一份页面**上（这才叫"重复发帖那份账"真的生效）：
+ *   ① 正常长内容 → 真发出去、账记上、成功标记递回刷课页；
+ *   ② 立刻再跑一次 → 本站那份账把它挡住，一次点击都不许多发；
+ *   ③ 负面控制：清账 + 回复内容设成空白 → 平台明说拒绝 ⇒ 不算成功，且**把刚写的那笔账撤回**
+ *      （不撤回就是这一节的讨论静默跳过 24 小时，用户只看到"没做"、日志看不出所以然）。
+ *
+ * ⚠️ 桩只打在 `history.back` / `window.close` 这两个"会把页面带走"的动作上（批次 47 的教训），
+ *    返回那条断言比的是**页面自己读到的 history.length** —— 换测试台也不红。
+ */
+SCENARIOS.push({
+  name: '讨论页真发一条：页面自己长出回复，失败时把账撤回',
+  path: '/discussion',
+  run: async function (ctx) {
+    var REPLY = '沙盒自证回帖：这一条要真的长在页面的回复列表里';
+    // 日志走 postMessage，异步送达 —— 读之前必须等一拍，否则「没发」与「没等到」同形
+    var HOOK =
+      'window.__dl=window.__dl||[];' +
+      'if(!window.__dlHook){window.__dlHook=1;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__dl.push(m);});}';
+    var STUB =
+      'window.__closed=0;window.__back=0;' +
+      'try{history.back=function(){window.__back++;};}catch(e9a){}' +
+      'try{window.close=function(){window.__closed++;};}catch(e9b){}';
+    var RESET =
+      'app._discussionPosted=false;app._discussionBusy=false;app._discussionExpanded=false;' +
+      'app._discussionCardOpened=false;app._discussionDupLogAt=0;app._discussionLastOpenedKey="";' +
+      'app._discussionEditorEl=null;app._discussionBefore=null;app._discussionFilledOk=false;';
+
+    async function takeLogs() {
+      await new Promise(function (res) { setTimeout(res, 450); });
+      return await ctx.client.evaluate(
+        '(function(){var o={};(window.__dl||[]).forEach(function(m){' +
+        '  if(!o[m.message])o[m.message]={level:String(m.level||""),meta:m.meta||{}};});' +
+        'window.__dl=[];return o;})()');
+    }
+
+    // ── ① 真发一条 ──
+    var r1 = await ctx.client.evaluate(
+      '(async function(){' + HOOK +
+      'var app=window._xxtApp;' + STUB +
+      'var histLen=Number(history.length)||0;' +
+      // 场景自己钉住共享状态：本站那份账 + 回程网址（留着它会把页面导航走，后面两趟就没页面了）
+      'try{localStorage.removeItem(app._discussionStoreKey);' +
+      '  localStorage.removeItem("omitone_return_url");}catch(e3){}' +
+      RESET +
+      'window.name="";' +
+      'app.configs=Object.assign({},app.configs,{enableDiscussion:true,discussionReply:' + JSON.stringify(REPLY) + '});' +
+      // 夹具自证两格必须在**发帖之前**取（发帖之后 .replyMsg 才可能被写进 innerText）
+      'var DICT="内容不能为空";' +
+      'var dictInHtml=String(document.documentElement.innerHTML||"").indexOf(DICT)!==-1;' +
+      'var dictInInner=String(document.body.innerText||"").indexOf(DICT)!==-1;' +
+      'var nodeSetA=document.querySelectorAll("button,a").length;' +
+      'var roleNodes=document.querySelectorAll("[role]").length;' +
+      'await app._runDiscussionMode();' +
+      'var list=document.querySelector(".topicDetail_replyList");' +
+      'var row=list?list.querySelector(".topicDetail_replyItem"):null;' +
+      'var cell=row?row.querySelector(".topicDetail_content"):null;' +
+      'var btn=document.querySelector(".addReply");' +
+      'var pageKey="page|"+String(app._discussionKeyOf(location.href)||"");' +
+      'return {histLen:histLen,items:(list?list.children.length:-1),' +
+      ' rowText:String(cell&&cell.textContent||""),rowFull:String(row&&row.textContent||""),' +
+      ' btnTag:String(btn&&btn.tagName||""),btnClass:String(btn&&btn.className||""),' +
+      ' nodeSetA:nodeSetA,roleNodes:roleNodes,dictInHtml:dictInHtml,dictInInner:dictInInner,' +
+      ' postClicks:Number(window.__postClicks||0),closed:Number(window.__closed||0),' +
+      ' back:Number(window.__back||0),name:String(window.name||""),' +
+      ' done:app._isDiscussionDone(pageKey),pageKey:pageKey,posted:app._discussionPosted===true};' +
+      '})()'
+    );
+    var L1 = await takeLogs();
+
+    // ── ② 同一话题立刻再跑一次（账**不清**，这趟测的就是"本站已经记过"）──
+    var r2 = await ctx.client.evaluate(
+      '(async function(){' + HOOK + 'var app=window._xxtApp;' + STUB +
+      RESET +
+      'await app._runDiscussionMode();' +
+      'var list=document.querySelector(".topicDetail_replyList");' +
+      'return {postClicks:Number(window.__postClicks||0),closed:Number(window.__closed||0),' +
+      ' back:Number(window.__back||0),items:list?list.children.length:-1,' +
+      ' name:String(window.name||""),posted:app._discussionPosted===true};})()'
+    );
+    var L2 = await takeLogs();
+
+    // ── ③ 负面控制：内容空白 ⇒ 平台当场拒绝 ⇒ 账要撤回 ──
+    var r3 = await ctx.client.evaluate(
+      '(async function(){' + HOOK + 'var app=window._xxtApp;' + STUB +
+      'var histLen=Number(history.length)||0;' +
+      'try{localStorage.removeItem(app._discussionStoreKey);}catch(e3){}' +
+      RESET +
+      'app.configs=Object.assign({},app.configs,{discussionReply:" "});' +
+      'await app._runDiscussionMode();' +
+      'var pageKey="page|"+String(app._discussionKeyOf(location.href)||"");' +
+      'var map=app._discussionDoneMap();' +
+      'var list=document.querySelector(".topicDetail_replyList");' +
+      'var msg=document.querySelector(".replyMsg");' +
+      'return {histLen:histLen,postClicks:Number(window.__postClicks||0),' +
+      ' closed:Number(window.__closed||0),back:Number(window.__back||0),' +
+      ' items:list?list.children.length:-1,done:app._isDiscussionDone(pageKey),' +
+      ' hasKey:Object.keys(map).indexOf(pageKey)!==-1,pageKey:pageKey,' +
+      ' name:String(window.name||""),msgShown:String(msg&&msg.innerText||"")};})()'
+    );
+    var L3 = await takeLogs();
+
+    var sub1 = L1['discussion reply submitted'];
+    var cf1 = L1['discussion reply confirmed'];
+    var hyd = L1['discussion page hydrated'];
+    var wait1 = L1['discussion done, waiting for redirect'];
+    var skip2 = L2['discussion already posted on this topic, skip'];
+    var nc3 = L3['discussion reply not confirmed, resume anyway'];
+    var wait3 = L3['discussion done, waiting for redirect'];
+
+    check('夹具自证：提交键是现场那种 <div class="…addReply">，兜底 finder 的节点集里没有它',
+      !!r1 && r1.btnTag === 'DIV' && r1.nodeSetA === 1 && r1.roleNodes === 0,
+      JSON.stringify({ btnTag: r1 && r1.btnTag, nodeSetA: r1 && r1.nodeSetA, roleNodes: r1 && r1.roleNodes }));
+    check('夹具自证：平台的拒绝文案只写在 <script> 字典里，body.innerText 读不到（换成 textContent 就恒真）',
+      !!r1 && r1.dictInHtml === true && r1.dictInInner === false,
+      JSON.stringify({ inHtml: r1 && r1.dictInHtml, inInner: r1 && r1.dictInInner }));
+    check('插件点下去之后，页面自己长出**一条**回复，文字就是插件填进去的那句',
+      !!r1 && r1.items === 1 && r1.rowText === REPLY && r1.postClicks === 1,
+      JSON.stringify({ items: r1 && r1.items, rowText: r1 && r1.rowText, postClicks: r1 && r1.postClicks }));
+    check('confirmed 那条日志给的是真凭据：hasContent/filled 都真、基线 0 条、平台没说失败',
+      !!cf1 && !!cf1.meta.evidence && cf1.meta.evidence.hasContent === true &&
+      cf1.meta.evidence.filled === true && cf1.meta.evidence.beforeItems === 0 &&
+      cf1.meta.evidence.items === 1 && cf1.meta.evidence.rejectedText === false,
+      JSON.stringify(cf1 && cf1.meta.evidence));
+    check('提交时点的就是 .addReply，编辑区是回复框 textarea 而不是举报弹窗那块 #textarea',
+      !!sub1 && String(sub1.meta.button).indexOf('addReply') !== -1 && sub1.meta.editor === 'TEXTAREA',
+      JSON.stringify(sub1 && sub1.meta));
+    check('按话题的账当场写上（同一话题 24 小时内不再重发）',
+      !!r1 && r1.done === true && r1.posted === true,
+      JSON.stringify({ done: r1 && r1.done, posted: r1 && r1.posted, pageKey: r1 && r1.pageKey }));
+    check('结果递回刷课页：window.name 带的是成功标记',
+      !!r1 && String(r1.name).indexOf('omitoneOK|') === 0, JSON.stringify(r1 && r1.name));
+    check('水合等待没白烧 12 秒（页面自己数得出「共N条回复」）',
+      !!hyd && (hyd.meta.by === 'count' || hyd.meta.by === 'list') && Number(hyd.meta.waitedMs) < 1000,
+      JSON.stringify(hyd && hyd.meta));
+    check('没有 opener 就不许关窗；走哪条返回由页面自己读到的 history 深度决定（不靠测试台导航深度）',
+      !!r1 && r1.closed === 0 && (r1.histLen > 1 ? r1.back === 1 : !!wait1),
+      JSON.stringify({ histLen: r1 && r1.histLen, back: r1 && r1.back, closed: r1 && r1.closed, waiting: !!wait1 }));
+
+    check('同一个话题第二次不再发帖：本站那份账挡住了，一次点击都没多发',
+      !!skip2 && !!r2 && r2.postClicks === 1 && r2.items === 1 && r2.closed === 0 && r2.back === 0,
+      JSON.stringify({ skip: !!skip2, r2: r2 }));
+    check('挡住之后内存里也认「这一页已经发过」，且不许把成功改口成失败',
+      !!r2 && r2.posted === true && String(r2.name).indexOf('omitoneOK|') === 0,
+      JSON.stringify({ posted: r2 && r2.posted, name: r2 && r2.name }));
+    check('这条跳过日志说清了怎么强制重发（点名 omitone_discussion_done），不是只说"已发过"',
+      !!skip2 && skip2.level === 'info' && /omitone_discussion_done/.test(String(skip2.meta.hint || '')),
+      JSON.stringify(skip2 && skip2.meta));
+
+    check('负面控制：空白内容被平台当场拒绝 → 这次不算成功（rejectedText 读的是页面真话）',
+      !!nc3 && nc3.level === 'warn' && nc3.meta.rejectedText === true &&
+      String(nc3.meta.content || '').trim() === '',
+      JSON.stringify(nc3 && nc3.meta));
+    check('平台明说失败时不再点第二次（不许对着同一话题连发），页面也确实没长出第二条',
+      !!nc3 && nc3.meta.attempts === 1 && !!r3 && r3.postClicks === 2 && r3.items === 1,
+      JSON.stringify({ attempts: nc3 && nc3.meta.attempts, postClicks: r3 && r3.postClicks, items: r3 && r3.items }));
+    check('确实没发出去 ⇒ 刚写的那笔账当场撤回（不许静默跳过这一节 24 小时）',
+      !!nc3 && nc3.meta.pageKeyReleased === true && !!r3 && r3.hasKey === false && r3.done === false,
+      JSON.stringify({ released: nc3 && nc3.meta.pageKeyReleased, hasKey: r3 && r3.hasKey, done: r3 && r3.done }));
+    check('那句拒绝真的是页面自己打出来的（.replyMsg 现在看得见）',
+      !!r3 && String(r3.msgShown).indexOf('内容不能为空') !== -1, JSON.stringify(r3 && r3.msgShown));
+    check('撤回之后照常收尾推进，且失败如实递回刷课页',
+      !!r3 && r3.closed === 0 && (r3.histLen > 1 ? r3.back === 1 : !!wait3) &&
+      String(r3.name).indexOf('omitoneX|') === 0,
+      JSON.stringify({ histLen: r3 && r3.histLen, back: r3 && r3.back, closed: r3 && r3.closed, name: r3 && r3.name, waiting: !!wait3 }));
   }
 });
 

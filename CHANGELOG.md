@@ -3072,8 +3072,8 @@
     ⚠️ **但这一轮现场 `allFinished:false`**（此刻这一节任务框并没有全显示完成），
     所以"两个调用方各执一词"那一格**现场没有复现** —— 现场证据只到"不再刷屏 + 构建身份对得上"，
     **因果证据在沙盒 51-A/B/C 与注入 α**，别把本批写成现场复现修复。
-  - **验证**：完整 `npm run e2e` 全绿 **106 个场景 / 1093 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`）；
-    定向跑 9/9；`npm test` 与 `npm run check` 24 项全绿；沙盒 `--full` **106 个场景 / 1307 项、0 条失败、
+  - **验证**：完整 `npm run e2e` 全绿 **106 个场景 / 1093 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`）； <!-- 历史计数:start --><!-- 历史计数:end -->
+    定向跑 9/9；`npm test` 与 `npm run check` 24 项全绿；沙盒 `--full` **106 个场景 / 1307 项、0 条失败、 <!-- 历史计数:start --><!-- 历史计数:end -->
     `sourceUnchanged:true`**（5 分 07 秒跑完；跑期间一个被跟踪文件都没动 —— 批次 50 的教训）。
   - **收尾时抓到两处"发版工具自己会漏报"的**（都属同一类：**校验器拿的东西比工作区旧，却照样打勾**）：
     ① **Release 说明与源文件双向漂移** —— 线上那一页缺批次 38/40/44 的三段，
@@ -3104,6 +3104,110 @@
     —— 批次 20/43 那条「讨论任务点真做完」还没闭环；
     ③ 环形日志被冲空这一族**只靠"刷屏"暴露**：如果哪天是一句话每 5 秒一条（不到 81%），
     占比统计就看不出来了 —— 值得给日志环配一条"同一句占比"的现场量。
+
+- **58. 批次 52：讨论任务点在真实课堂里一条都没发出去，而日志一个字都没有 —— 先把现场那两代形状量下来，再让每个断掉的环节点名**（2026-11-14）
+  - **现场（CDP 9334 只读探针，同一天量到两门课）**：讨论模块的 iframe 有**两代渲染**。
+    A 代在 `…/mooc-ans/knowledge/cards` 里长这样 —— 那份抓回的文档里 `module="insertbbs"` 的 iframe 出现 23 次
+    （探针按文档逐份打印上下文，同一节点会被列多遍；按 `jobid` 去重是 **3 枚不同的讨论**）、
+    **带 `src` 的一次都没有**（`<iframe frameborder="0" scrolling="no" class="ans-module ans-insertbbs-module" module="insertbbs" data="{…}">`，
+    内容全靠页面 JS 后填）。于是话题卡片**压根不在任何可读文档里**：第 1 步 `_collectDiscussionTargets()` 数出 **0**，
+    `_findDiscussionTask` 只剩第 2 步（去章节页反查话题地址）这一条路。
+    B 代在另一门课的同一份 cards 文档里 `[module]` 数出 **0**，模块名**只写在 class 上**
+    （`<iframe src="/ananas/modules/video/index.html?…" class="ans-attach-online ans-insertvideo-online" data="{…}">` 那一族）。
+    原先生产只按 `iframe[module]` 找 —— 遇到 B 代一条都匹配不到，讨论任务点在刷课页侧变成「这一节没有讨论」，**静默漏做**。
+  - **为此改的四处生产判据**（`src/page/65-discussion.js`，本段方法数 49 → 51）：
+    ① 新增 `_discussionModuleName()`：模块名先读 `module` 属性、没有再从 class 里认 `insertbbs|bbscircle|bbs` 三个词。
+    ⚠️ **只认讨论系** —— 拿 class 里任意一段当模块名会把 video、work 一起拖进来。
+    ② `_findDiscussionModuleFrames()`（第 2 步找模块 iframe 的那一支）改扫全部 `iframe`，并**按节点去重**（`taken` 数组）。
+    根因：`_studyDocs()` 回的是 `[主帧文档, 顶层文档]`，而 `_walkDocs` 的 `seen` 是**每次调用各自一份** ——
+    从顶层那一路再走进主帧文档时，同一枚模块 iframe 被收第二遍，于是第 2 步对**同一份章节页发两遍请求**（最坏 2×15 秒）。
+    ⚠️ 那句「3 个讨论变 6 条」是**夹具实测**（注入 #7 摘掉去重 → `mods:6`、`discussion all settled` 的
+    `total/serverFinished/believeLocal` 一起翻倍，两条红），不是现场量到的翻倍；现场只量到那一节
+    **按 `jobid` 去重后有 3 枚不同的讨论模块**（真实 jobid 属于那一门课的痕迹，不落仓库）。
+    ③ 新增 `_logDiscussionResolveFail(reason, info)`：这条链原先有**四个出口全部 `return ''`**
+    （读不到内层 `#frame_content` / 没有 mid / 章节页请求没回 / 回来了但卡片正则没命中），
+    而 `_findDiscussionTask` 对空串只会 `continue` —— 于是现场日志**一个字都没有**：讨论没做，也没说为什么。
+    现在四个出口分别点名 `no-chapter-url` / `fetch-failed` / `no-topic-card` / `server-says-finished`，
+    并各带一句 `hint` 把四种意思一次解释清楚（现场日志翻一眼就知道断在哪一环）。
+    ④ 第 2 步也开始喂 `_logDiscussionAllSettled()`：以前只有第 1 步打「这一节的讨论都处理完了」那句依据，
+    而 **A 代只走第 2 步** —— 「三个话题都发过了」和「三条链都断了」在日志里同样是**一片空白**。
+    现在每一枚走通或每一枚被平台判完的都进 `settled`，`serverFinished` 单独归一类。
+  - **`#isFinished` 只有章节页 HTML 读得到**（A 代那三个讨论实测 `<input type="hidden" id="isFinished" value="true"/>`，
+    平台自己的脚本就拿这个值往父帧 `postMessage({opType:"completeTopic"})`）：
+    ⚠️ 不读这一句，等于「本地没记过 → 对着一个平台已判做完的话题再发一条回帖」。
+    只认明确的 `true` —— 空值（B 代实测是空串）与缺失一律照常返回地址，拿不准时不许悄悄跳过任务点（AGENTS §2 #6/#7）。
+    命中时除了 `trace.serverFinished`，还把 `mod.serverFinished = true` 记在**模块自己**身上：
+    调用方靠它把「平台说做完了」那一格记进账里，而不是当成断链。
+  - **节流被自己那一个槽位绕过（批次 37 同族）**：`_logDiscussionResolveFail` 原先只记「上一条的理由」，
+    而一节里几个模块的失败理由常常不一样（一个没 mid、一个章节页没回、一个平台已记完成），
+    `_tryDiscussionTask` 每 3 秒把它们挨个再走一遍 —— 理由轮着换、槽位永远对不上，于是**每一条都被播出去**，
+    200 条的日志环几分钟就被同一件事刷满（实测：换个理由立刻又出一条）。
+    现在**按理由各记一笔**（同理由 90 秒只播一条），五分钟没人再提的理由顺手剪掉，免得这张表只增不减。
+  - **沙盒新增三个场景**（`/disc-mod` 与 `/disc-mod-a` 两页夹具）：
+    ⚠️ **两代必须各自一页** —— 同一份 HTML 里既放有 src 的模块又放没 src 的模块，第 1 步一定先赢、第 2 步永远走不到，
+    那正是批次 51「夹具要长得像现场，不像实现」这条的反面用法。
+    「讨论区识别」扩成**两代形状都认得，解不出话题地址时点名断在哪一环**（四个出口逐格钉 + 单理由 90 秒只播一条）；
+    「没有 src 的那一代：第 2 步要让位给下一个，平台已记完成的不占账」钉五格 ——
+    ① 夹具自证：3 枚模块、0 个 src、第 1 步**数不出**（否则测的还是第 1 步那条路）；
+    ② 逐个让位（甲 → 乙 → null → null）；③ 丙（平台已记完成）**不进本地账本**；
+    ④ 4 轮同理由只播 1 条；⑤ 那句依据要报数（`total3 / serverFinished1 / believeLocal2 / tryBudget0 / unexplained0`）。
+    「讨论页真发一条」钉的是**页面自己长出回复**：读 DOM 里多出来的那条 `.topicDetail_replyItem`，
+    不是插件自报的布尔（批次 23 给答题立的那条口径这次轮到讨论），外加「被平台拒掉时把『已做』标记撤回」。
+  - **同一批夹具里还有第二类现场痕迹：「真号前面加个 9」不是脱敏**。`mid` / `jobid` / `bbsid` / 话题 uuid
+    四个都写着 `9` 开头看着像合成号，号体逐条却还能在只读抓取的那份文档里对上（比如 bbsid 去掉前导 9
+    就是现场那一枚）。已全部换成**与现场无共同子串**的合成号（`9ffe00…` / `9ff000…` / 全零 mid / `work-ffff…`），
+    钉住这些字面量的四条断言同步改（改完讨论定向 91/91、离线扫 76 页夹具、`npm run check` 全绿）。
+    ⚠️ 判据：`npm run check` 的「仓库公开面卫生」查的是**目录级**痕迹（证据/备份/日志/本机路径/真实章节号），
+    它抓不到这种号 —— 所以**抄现场字符串进夹具之前先问「这串数字是不是从现场带来的」**，
+    要保留形状就整段重排，别只加前缀。
+  - **抄现场 HTML 时把平台出网一起抄进来了（沙盒网络边界闸抓到的一条红）**：新夹具 `buildBbsChapterHtml`
+    逐字抄现场那 3601 字节，连 `<img class="cardImages" src="//mooc1.chaoxing.com/mooc-ans/css/images/tl-new.png">`
+    一起抄 —— 协议相对地址解到 **80 端口**，而 mock 挂在随机端口上、`--host-resolver-rules` 只映射主机名，
+    于是沙盒里这张图片变成一次**真的平台出网请求**，被网络边界闸记成
+    「Unexpected business egress attempted 1」→ 整轮 `--full` 以 EXIT=1 收尾（断言一条没红、`sourceUnchanged:true`，
+    红只在这道闸上）。改成根相对 `/mooc-ans/css/images/tl-new.png` 后落在 mock 同源（404 无害：
+    资源加载失败不算页面异常，不进 `pageErrors`）。
+    ⚠️ **判据**：夹具里的 `src` / `href` **不许带写死的平台主机名** —— 现场那个 `<img>` 被读的只有 class，
+    生产代码没有任何一处读它的 src；抄形状时先问「这个属性值有没有代码读」，没人读的属性值**照样可能出网**。
+    ⚠️ 这类红**只在沙盒 `--full` 里暴露**：`npm run e2e` 走的是同一台 mock，但断言里不含出网闸，
+    该夹具的三条场景在 `--full` 之外全绿。
+  - **新断言验过有牙**（`node .workbuddy/reverse52.js` + 补跑的 `reverse52b.js`，七个注入各破一个行为，预期红逐条点名、多红也不符合；
+    还原后两份切片与 `page.js` 与注入前基线**逐字节一致**、`INJ52` 无残留）：
+    「已做标记不挡」→ 6 条；摘掉 `mod.serverFinished` → 1 条；节流退回**旧的单槽语义** → 3 条；
+    **精确选择器整条摘掉** → 16 条；第 2 步不再 broadcast 依据 → 2 条；`#isFinished` 那一支被关掉 → 7 条；
+    **按节点去重摘掉** → 2 条（夹具自证数成 `mods:6` 而 `srcs:0 / anchors:3` 不动，
+    依据那句跟着翻倍成 `total6 / serverFinished2 / believeLocal4` —— 这就是「同一份章节页发两遍请求」的形状）。
+    ⚠️ 两条口径写在这里，免得下一轮重踩：
+    ① 现场提交键是 `<div class="jb_btn jb_btn_92 fr fs14 addReply">回复</div>` —— 不是 button、不是 a，
+    兜底 finder 的节点集（button / a / input[type=button] / input[type=submit] / [role=button]）**根本捞不到它**；
+    但夹具里 `.replyEditBtnGroup .jb_btn` 这个候选**也罩得住**那枚按钮，
+    所以「`.addReply` 这一枪是唯一保护」是**说过头了** —— 唯一保护是**整条精确选择器**，注入要按整条摘才会红
+    （文档注释里两处旧口径已按这句改回诚实版本）。
+    ② 注入 #3 第一版写成「全局 90 秒只播一条」，那不是历史 bug 的形状（历史 bug 是**单槽**）：
+    它把后面三格的日志一起压掉、目标断言反而全绿（红 4 条、一条都不是预期的）。
+    改成 faithful 的单槽语义后才逐格对上 —— **红不对号时先怀疑注入写错了，不是断言写松了**。
+  - **取证自己差点把 0 读成缺失**：页面侧探针原先写 `Number(m.meta.tryBudget || -1)`，
+    而分类计数**本来就是 0**，于是把「tryBudget 为 0」报成「这个数没读回来」。
+    改成先 `typeof === "number" && isFinite` 再取值、取不到才给哨兵。
+    （AGENTS §5「断言里出现的每一个数都要说得出它是从页面读回来的」的另一半：**读回来的 0 不许当缺失**。）
+  - **验证**：完整 `npm run e2e` 全绿 **109 个场景 / 1136 项**（`.workbuddy/e2e-counts.json` 落盘 `passed:true`、EXIT=0）；
+    讨论定向跑 91/91；`--validate-fixtures` 离线扫 **76 页夹具**全部可解析；`npm test` 与 `npm run check` 全绿；
+    沙盒 `--full` 收尾实测 **EXIT=0 / `passed:true` / 109 场景全 `"failed": 0` / 1356 项 / `failures:[]` / `gates:[]` / `sourceUnchanged:true`**
+    （前一轮的出网红见上一条；那一轮另有一条 `sourceUnchanged:false` —— 是**我自己**在跑的过程中改了 CHANGELOG，
+    正好把批次 50 那条「跑期间不碰被跟踪文件」的教训又演了一遍）。
+  - **现场复验（本批收尾时重新只读量）**：此刻那一节（深走 11 份文档、1 帧跨域读不到）**讨论模块数为 0**、
+    旧构建的 `_collectDiscussionTargets()` 同样数出 0 —— 也就是说**现场这一轮没有 A 代形状可复现**，
+    A 代那 3 枚 src-less 模块（同一份文档里 `module="insertbbs"` 出现 23 次，是探针按文档逐份打印的重复）
+    是**早些时候另一节**量到的。所以本批写成「现场形状坐实 + 沙盒链路闭环」，
+    **不写成现场修复复现**；因果证据全在沙盒三个场景与六个注入里。
+    现场另有一条**每 120 秒**的 `discussion page declined {reason:"study-page"}`（节流在生效、不是刷屏），
+    但「刷课页为什么每 120 秒要问一次讨论页判据」没查 —— 见下方留给下一批。
+  - **留给下一批**：① 三个模块的章节页 fetch 仍然**每轮每模块各一次**（`_tryDiscussionTask` 约每 3 秒一轮），
+    该给这份章节页 HTML 配一份**成功后失效**的缓存，别让一节里的讨论把请求排成串；
+    ② `_discussionModuleName` 的词表只有讨论系三词 —— 投票 / 作业那一族若也「名字只写在 class 上」，
+    就是同一条静默漏做，值得把同一把尺推广过去并各配一条夹具自证；
+    ③ 上面那条「刷课页每 120 秒走进讨论页判据」要查出调用方：批次 9-A 之后这条判据本该在刷课页第一行就返回，
+    现在是**每轮都调用一次再由 `_isStudyCourseHref` 拒绝** —— 拒得对，但那一次调用本身是不是可以省掉。
 
 
 

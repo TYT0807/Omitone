@@ -175,7 +175,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `65-discussion.js`
 
-*770 行 / 27 方法*
+*1743 行 / 51 方法*
 
 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重。
 讨论任务点不在课程 iframe 内，点开会跳到独立讨论页 —— 所以它有一整套自己的页面判定与流程。
