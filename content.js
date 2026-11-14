@@ -158,6 +158,10 @@
   let statusPanel = null;
   let statusPanelActive = false;
   let statusLastSignature = '';
+  // 上一拍**被翻译层点名说出来的**那三行（批次 58）：没被点名的 info —— 现场实测占日志环
+  // 43%，其中 `tick progress` 一家 25% —— 不该把它擦回出厂值，否则右下角逐拍在
+  // 「等待中 / 视频播放中」与「正常运行 / 运行中」之间来回跳。
+  let statusLastNamed = null;
   let pageRuntimeActivityAt = 0;
   // 本次注入的「出发时刻」。判"运行脚本有没有响应"要用它，不能用"最近几秒有没有日志"——
   // 空闲时 ocs 循环 60 秒才写一条（实测 11:58:41 刚写过日志，11:58:47 就报未响应）。
@@ -1448,6 +1452,7 @@
     statusPanel.close.addEventListener('click', () => {
       statusPanelActive = false;
       statusLastSignature = '';
+      statusLastNamed = null;   // 两份缓存一起清：否则重开面板后一条心跳会把旧那件事又贴回来
       host.remove();
       statusPanel = null;
     });
@@ -1478,6 +1483,9 @@
     const taskText = String(task || '运行中').slice(0, 80);
     const detailText = String(detail || '').slice(0, 220);
     const signature = [stateKey, taskText, detailText].join('|');
+    // 「更新于」是这块面板唯一的活性凭据 —— **每条消息都刷**，不能跟着下面那道闸一起被挡掉。
+    // 批次 58 之后心跳不再改那三行，若时间也一起不动，用户看到的就是"停在几分钟前、像死了"。
+    panel.time.textContent = '更新于 ' + formatStatusTime();
     if (signature === statusLastSignature) return;
     statusLastSignature = signature;
 
@@ -1485,7 +1493,6 @@
     panel.state.textContent = labels[stateKey] || labels.normal;
     panel.task.textContent = taskText;
     panel.detail.textContent = detailText || '状态更新中';
-    panel.time.textContent = '更新于 ' + formatStatusTime();
   }
 
   function showStatusPanel(state, task, detail) {
@@ -1512,8 +1519,11 @@
     const msg = String(message || '');
     const data = meta || {};
     let state = level === 'error' ? 'error' : (level === 'warn' ? 'warn' : 'normal');
-    let task = '运行中';
-    let detail = '状态更新中';
+    // ⚠️ 批次 58：这里**不再预填出厂字样**。留 `null` 表示「下面 35 条判据一条都没点名这句话」，
+    // 调用方据此决定要不要动面板 —— 出厂值只能当**起点**，不能当**每一拍的落点**。
+    // （现场实测：没被点名的 info 占日志环 43%，`tick progress` 一家 25%。）
+    let task = null;
+    let detail = null;
 
     if (msg === 'start') {
       task = '已启动';
@@ -1653,7 +1663,11 @@
       detail = '可在「查看日志」里看这一条';
     }
 
-    return { state, task, detail };
+    // 一条判据都没点名：`named:false` —— 出厂字样只是**这次算出来的默认值**，
+    // 要不要写进面板由调用方决定（心跳不许把上一拍说出的真状态擦掉）。
+    const named = task !== null;
+    if (!named) { task = '运行中'; detail = '状态更新中'; }
+    return { state, task, detail, named };
   }
 
   // ── 刷课活跃时长（角色小游戏「好感度」的数据源）──────────────────────
@@ -2166,6 +2180,21 @@
     if (String(message || '') === 'start') statusPanelActive = true;
     if (!statusPanelActive) return;
     const next = runtimeLogToStatus(level || 'info', message || '', meta || null);
+    if (next.named) {
+      statusLastNamed = next;
+      setStatusPanel(next.state, next.task, next.detail);
+      return;
+    }
+    // 没被点名的 info —— 绝大多数是主循环心跳（`tick progress` 一类）。
+    // 直接写进面板会把上一拍说出来的那件事擦成「运行中 / 状态更新中」，
+    // 于是视频正在播的时候，右下角每几秒在「等待中 / 视频播放中」与「正常运行 / 运行中」
+    // 之间来回跳（2026-11-14 现场实测：20 秒切换 3 次，出厂值占 58%）。
+    // ⚠️ 但**告警不许被心跳续命**：上一拍是「注意 / 异常运行」时照样回出厂值，
+    // 否则面板会挂在一次已经过去的告警上（批次 44-⑤ 那条对照就是钉这个的）。
+    if (statusLastNamed && statusLastNamed.state !== 'warn' && statusLastNamed.state !== 'error') {
+      setStatusPanel(statusLastNamed.state, statusLastNamed.task, statusLastNamed.detail);
+      return;
+    }
     setStatusPanel(next.state, next.task, next.detail);
   }
 

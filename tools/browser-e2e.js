@@ -10360,6 +10360,82 @@ SCENARIOS.push({
       panel.unnamedInfo.detail === '状态更新中',
       JSON.stringify(panel.unnamedInfo));
   }
+});
+
+
+/** ---- 批次 59：心跳类 info 不再把面板擦回出厂值（右下角不许逐拍来回跳）----
+ * 为什么单列这场：上一场钉的是「没点名的 **warn** 不许说成运行中」，而 info 这一侧当时
+ * 被当作对照**留在出厂值**上 —— 问题是现场根本不是"偶尔来一条"：
+ * 2026-11-14 只读审计（`.workbuddy/panel58-audit.js` 拿 content.js 真判据逐条比对现场日志环）
+ * 量到 **没被点名的 info 有 16 个家族、占整条环的 43%**，其中 `tick progress` 一家 25%（每拍一条）。
+ * 于是视频正在播的时候，面板在「等待中 / 视频播放中」与「正常运行 / 运行中」之间逐拍轮流 ——
+ * 同一份证据窗里两条消息都是真的，只是**心跳不该把上一拍说出的那件事擦掉**。
+ * 现场实测（`.workbuddy/panel58b.expr`，20 秒采样）：切换 3 次，出厂值占 58%。
+ * ⚠️ 三条都要钉住，少一条就是半个契约：① 心跳不擦真状态；② 告警**不许被心跳续命**
+ *    （否则面板挂在一次已经过去的「注意」上）；③ 那三行粘住了，「更新于」仍要每条消息刷 ——
+ *    它是这块面板唯一的活性凭据，粘住它就变成"停在几秒前、像死了"。 */
+SCENARIOS.push({
+  name: '心跳类 info 不再把面板擦回出厂值（等待中的事不被心跳盖掉）',
+  path: '/blank',
+  run: async function (ctx) {
+    var panel = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function waitMs(ms){return new Promise(function(r){setTimeout(r,ms);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail"),time:q("time")};}' +
+      'var out={};' +
+      'say("info","start",null);await waitMs(300);out.started=read();' +
+      'say("info","media pending, delay completion",{heldMs:5000});await waitMs(300);out.pending=read();' +
+      'say("info","tick progress",{note:"ocs study loop",tickMs:2000});await waitMs(300);out.beatPending=read();' +
+      'say("info","study matched job",{kind:"video",name:"t"});await waitMs(300);out.job=read();' +
+      'say("info","tick progress",{note:"ocs study loop"});await waitMs(300);out.beatJob=read();' +
+      'say("warn","vision bridge failed",{error:"bridge timeout"});await waitMs(300);out.alarm=read();' +
+      'say("info","tick progress",{note:"ocs study loop"});await waitMs(300);out.beatAlarm=read();' +
+      // ⚠️ 这两拍各等 1100 毫秒：时间戳是**写入那一刻**按秒取的，
+      // 两次写入只差 300 毫秒会有约三成落进同一秒 —— 那就是一条恒红的断言。
+      'say("info","media pending, delay completion",{heldMs:8000});await waitMs(1100);out.t1=read();' +
+      'say("info","tick progress",{note:"ocs study loop"});await waitMs(1100);out.t2=read();' +
+      'return JSON.stringify(out);})()'
+    ));
+
+    var same3 = function (a, b) {
+      return !!a && !!b && a.state === b.state && a.task === b.task && a.detail === b.detail;
+    };
+
+    check('前提：面板已被 start 激活，这九次都读回了字（读不到就是空测）',
+      !!panel.started && panel.started.task !== '(无)' &&
+      ['pending', 'beatPending', 'job', 'beatJob', 'alarm', 'beatAlarm', 't1', 't2']
+        .every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
+      JSON.stringify(panel.started));
+
+    check('★ 心跳不再把「等待中 / 视频播放中」擦成出厂值（本轮主修）',
+      panel.pending.state === '等待中' && panel.pending.task === '视频播放中' &&
+      same3(panel.pending, panel.beatPending) &&
+      panel.beatPending.task !== '运行中',
+      JSON.stringify({ pending: panel.pending, beat: panel.beatPending }));
+
+    check('★ 粘的是上一拍、不是第一次：点名过的新那句照样生效，心跳再来也不擦',
+      panel.job.task === '执行任务：视频播放' && same3(panel.job, panel.beatJob),
+      JSON.stringify({ job: panel.job, beat: panel.beatJob }));
+
+    check('★ 告警不被心跳续命：上一条是「注意」时，心跳照样回到出厂值（面板不许挂在过去的告警上）',
+      panel.alarm.state === '注意' && panel.alarm.task === '有情况' &&
+      panel.beatAlarm.state === '正常运行' && panel.beatAlarm.task === '运行中' &&
+      panel.beatAlarm.detail === '状态更新中',
+      JSON.stringify({ alarm: panel.alarm, beat: panel.beatAlarm }));
+
+    check('★ 那三行粘住，「更新于」仍每条消息刷（活性凭据不能跟着 dedupe 一起被挡）',
+      same3(panel.t1, panel.t2) && !!panel.t1.time && panel.t1.time !== panel.t2.time,
+      JSON.stringify({ t1: panel.t1, t2: panel.t2 }));
+
+    check('反向对照：出厂值只能当起点 —— start 那拍本身仍是「已启动」，不是没被点名的兜底',
+      panel.started.task === '已启动', JSON.stringify(panel.started));
+  }
 });/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
