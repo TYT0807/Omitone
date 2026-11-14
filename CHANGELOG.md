@@ -3671,6 +3671,10 @@
     写的页数与 PDF 实际页数比，不一致直接报错），改完说明书不跑 `npm run manual` 或不改 README 都会红。
     ⚠️ 本轮**改了 `content.js`（用户可见）**：要看到「投票任务」而不再是「vote」，
     得 `edge://extensions` 重新加载 + 刷新学习通页面（F5）。
+  - **发版链（本轮跑完）**：`npm run build` → `notes v1.3.0` → `replace-asset v1.3.0` → `verify v1.3.0` 全绿；
+    线上 Release 说明 **5952 字**与 `release-notes-1.3.0.md` **逐字一致**，两个附件都按摘要判定过期并换掉 ——
+    `omitone.zip` **2035.6 KB**（本地 5f88c920d0d3…）· `Omitone-manual.pdf` **1671.2 KB**（本地 7a33ac3ee087…），
+    换完 `verify` 复核为「用户下载到的东西是对的」。
   - **文档同步**：`AGENTS.md` §4 那条改成"界面字样三份真源（含任务种类）都要同步说明书"；
     `tools/README.md` 工具行与第 27 项说明按三份真源 / 十一格 / 键对账重写；`HANDOVER.md` §9 该行收尾；
     README「1.3.0 动了什么」与 Release 页各补两条用户向说明（投票那一行不再打英文 / 说明书那几个字和屏幕一样了）。
