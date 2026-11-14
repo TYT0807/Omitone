@@ -150,13 +150,32 @@ for (var k = 0; k < 3000; k++) {
     if (!(pat.state.affection >= 0 && pat.state.affection <= GAME.RULES.max) || typeof pat.line !== 'string') {
       gameBad.push('onPat 越界或台词缺失'); break;
     }
+    // ⚠️ 配额也要钉：**上限是会改的数**（1.3.0 把每日摸头从 20 降到 6），
+    //   老档里的 18 必须被 rollDay 钳回来；不钳就"今天一次都不涨"，而负数能突破上限。
+    if (pat.state.patsToday > GAME.RULES.patDailyCap) {
+      gameBad.push('摸头每日配额被突破: ' + pat.state.patsToday); break;
+    }
     var seconds = Math.floor(grng() * 1e9) - 1e8;
     var study = GAME.applyStudySeconds(st, seconds, '2026-11-01');
-    if (study.state.countedSeconds < st.countedSeconds - 1e-9) {
-      gameBad.push('水位倒退: ' + st.countedSeconds + ' → ' + study.state.countedSeconds); break;
+    // ⚠️ 比的是**这一天开始时的水位**，不是 `st.countedSeconds` ——
+    //   怪日期会触发跨天，而跨天把水位归零是 1.3.0 的规矩（统计层每天从零重算，
+    //   不归零就永远加不上好感，见 pet-game.js rollDay 里那条现场实测）。
+    //   拿原始存档比，等于断言"跨天不许归零"，干净树上就会报假红。
+    if (study.state.countedSeconds < rolled.countedSeconds) {
+      gameBad.push('同一天内水位倒退: ' + rolled.countedSeconds + ' → ' + study.state.countedSeconds); break;
     }
     if (!(study.state.affection >= 0 && study.state.affection <= GAME.RULES.max)) {
       gameBad.push('applyStudySeconds 未钳制'); break;
+    }
+    if (study.state.day !== '2026-11-01') { gameBad.push('applyStudySeconds 没把 day 落在今天'); break; }
+    if (study.state.studyPointsToday > GAME.RULES.studyPointsDailyCap) {
+      gameBad.push('刷课每日上限被突破: ' + study.state.studyPointsToday); break;
+    }
+    // 陈旧统计格（昨天的 date）必须在今天一格都不折 —— 这一支不看随机水位，单独钉
+    var yest = GAME.applyStudySeconds(study.state,
+      { date: GAME.prevDayKeyOf('2026-11-01'), activeSeconds: 43200 }, '2026-11-01');
+    if (yest.gained !== 0 || yest.state.countedSeconds !== study.state.countedSeconds) {
+      gameBad.push('昨天的统计格在今天折了: +' + yest.gained); break;
     }
   } catch (e) { gameBad.push('第 ' + k + ' 轮 threw: ' + e.message); break; }
 }

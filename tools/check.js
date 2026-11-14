@@ -1746,26 +1746,30 @@ function checkSelectorTruthSource() {
 // ---------------------------------------------------------------------------
 // 20. 立绘池守卫
 //
-// 角色的三个池子（服装 SKINS / 表情 FACES / 姿势 POSES）定义在 `popup/pet.js`。
+// 角色的三个池子（服装 SKINS / 表情 FACES / 姿势 POSES）与她自己动的小动作池
+// （MOTIONS）定义在 `popup/pet-game.js` 的 `ART` 里 —— 弹窗的立绘册和上课页伴侣
+// （content.js 的自动换装）读同一份，抄两份必然漂移。
 // 历史事故：**文件名前缀与画面内容错位**（pet-e2~e6 画的是服装却被放进表情池、
 // pet-i5~i8 是表情却被放进表情池前的姿势族……），用户看到的就是
 // 「按了表情怎么换衣服了 / 表情里混着姿势」。2026-10-31 已逐张看图重建。
 //
-// 这条守卫钉住四件事，防止未来加立绘时再漂：
+// 这条守卫钉住五件事，防止未来加立绘时再漂：
 //   ① 池子里引用的每个文件都真实存在（防手滑写错文件名 —— 不报错、图片裂图）；
 //   ② popup/ 下所有 pet*.png 都被某个池子引用（防孤儿 —— 加了图忘了归类，
 //      立绘册里永远看不到它，还以为丢了）；
 //   ③ 除 pet.png（默认立绘，兼作服装与姿势的基座）外，**禁止跨池重复** ——
 //      一张图两个身份，正是"切换搞混"的根源；
-//   ④ 池子并集去重后必须等于磁盘上的实际张数（以上三条的合并断言）。
+//   ④ 池子并集去重后必须等于磁盘上的实际张数（以上三条的合并断言）；
+//   ⑤ MOTIONS 里每个动作名都要在 `content.js` 的样式里有同名 `@keyframes` ——
+//      名字写错**不报错**，只会让她"越来越安静"（自动动作那一拍找不到动画）。
 // ---------------------------------------------------------------------------
 function checkPetSpritePools() {
   var src;
-  try { src = read('popup/pet.js'); } catch (e) { fail('读取 popup/pet.js 失败: ' + e.message); return; }
+  try { src = read('popup/pet-game.js'); } catch (e) { fail('读取 popup/pet-game.js 失败: ' + e.message); return; }
 
   function pool(name) {
     var m = src.match(new RegExp('var ' + name + ' = \\[([\\s\\S]*?)\\];'));
-    if (!m) { fail('popup/pet.js 里找不到 ' + name + ' 池子（被改名/移动了？同步本守卫）'); return []; }
+    if (!m) { fail('popup/pet-game.js 里找不到 ' + name + ' 池子（被改名/移动了？同步本守卫）'); return []; }
     var out = [];
     // ⚠️ 必须是 [^"]*（零个或多个）：用 [^"]+ 会恰好匹配不到 "pet.png" 本身
     //    （pet 和 .png 之间没有字符）—— 基座立绘就这样从所有池子里消失了
@@ -1796,6 +1800,33 @@ function checkPetSpritePools() {
     if (!union[f]) issues.push('孤儿立绘 ' + f + ' —— 在 popup/ 里但没有任何池子引用（立绘册里看不到它）');
   });
 
+  // ⑤ 自动动作池与 content.js 的动画名对账（**两个文件之间**的字符串契约，拼错不报错）
+  var motions = [];
+  var mm2 = src.match(/var MOTIONS = \[([\s\S]*?)\];/);
+  if (!mm2) {
+    issues.push('popup/pet-game.js 里找不到 MOTIONS 池子（她自己在上课页做的那些小动作；同步本守卫）');
+  } else {
+    // ⚠️ 引号两种都要认 —— 只写 `'...'` 时，`["tilt","hop"]` 一个都匹配不到，
+    //   于是 motions 是空数组、下面 forEach 一格都不跑，守卫打印"自动动作 0 个都在 content.js 有动画"
+    //   照样绿（2026-11-15 实测：这条空守卫就是本批次第一版写出来的）。
+    var re2 = /["']([a-z-]+)["']/g, m2;
+    while ((m2 = re2.exec(mm2[1]))) motions.push(m2[1]);
+    if (!motions.length) {
+      issues.push('MOTIONS 池子解析出 0 个动作名（池子是空的，或写法改了正则读不到 —— 她不会再自己动，而本守卫会假绿）');
+    }
+    var contentSrc = '';
+    try { contentSrc = read('content.js'); } catch (e) { issues.push('读不到 content.js，自动动作对不了账'); }
+    motions.forEach(function (name) {
+      if (contentSrc.indexOf('@keyframes om-pet-' + name) === -1) {
+        issues.push('自动动作 ' + name + ' 在 content.js 里没有 @keyframes om-pet-' + name +
+          '（她那一拍什么都不会动，且不报错）');
+      }
+    });
+    if (motions.length && contentSrc.indexOf('.card .pet.mv-') === -1) {
+      issues.push('content.js 里没有 `.card .pet.mv-` 那族规则 —— 动作名对上了也不会被应用');
+    }
+  }
+
   if (issues.length) {
     fail('立绘池与磁盘不一致（分类漂移 / 文件名写错 / 漏归类）:\n      ' +
       issues.join('\n      '));
@@ -1803,7 +1834,7 @@ function checkPetSpritePools() {
   }
   pass('立绘池守卫（服装 ' + pools.SKINS.length + ' / 表情 ' + pools.FACES.length +
     ' / 姿势 ' + pools.POSES.length + '，去重 ' + Object.keys(union).length +
-    ' 张 = 磁盘 ' + onDisk.length + ' 张，无跨池无孤儿）');
+    ' 张 = 磁盘 ' + onDisk.length + ' 张，无跨池无孤儿；自动动作 ' + motions.length + ' 个都在 content.js 有动画）');
 }
 
 // ---------------------------------------------------------------------------

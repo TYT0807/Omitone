@@ -3480,8 +3480,8 @@ SCENARIOS.push({
       'new Promise(function (res) { chrome.storage.local.get("omitonePetBond", function (r) {' +
       'res(r && r.omitonePetBond ? r.omitonePetBond : null); }); })'
     );
-    check('1 小时刷课折 2 点好感（触发结算的那次摸头本身也 +1 → 1+2+1=4；水位停在 3600 秒）',
-      !!afterStudy && afterStudy.affection === 4 && afterStudy.countedSeconds === 3600 && afterStudy.patsToday === 2,
+    check('1 小时刷课折 6 点好感（10 分钟 1 点；触发结算的那次摸头本身也 +1 → 1+1+6=8；水位停在 3600 秒）',
+      !!afterStudy && afterStudy.affection === 8 && afterStudy.countedSeconds === 3600 && afterStudy.patsToday === 2,
       JSON.stringify(afterStudy));
 
     // 跨级：把好感拨到 14 → 等 onChanged → 再摸一下 → 15 → 徽章换「打过招呼」
@@ -4068,6 +4068,207 @@ SCENARIOS.push({
       'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";' +
       'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});return true;})()'
     );
+  }
+});
+
+// ── 前端专项：刷课页她自己动（随机换装 / 自动小动作 / 悬停期摸头不被吃掉）─────
+// 用户 2026-11-15 点单两件事：「顺便随机一下刷课吉祥物的服装和动作」和「竟然已经不能交互了」。
+// 后者根因在 CSS 特异度 —— `.card.peek .pet`(0,3,0) 把 `.pet.pat`(0,2,0) **整条吃掉**：
+// 鼠标停在她身上时摸头，动画根本不跑（她那身还歪着，但一帧都没动）。
+// ⚠️ 沙盒旧断言只读 class —— `img.click()` 之后 `.pat` 确实挂上了，于是"不能交互"绿了好几轮。
+// 判据：**读 computed animationName**。用户看得见的是她在动，不是那个类名。
+SCENARIOS.push({
+  name: '刷课页她自己动：随机换装不抖、自动小动作四道闸、悬停期摸头动画不被吃掉',
+  path: '/quiz',
+  run: async function (ctx) {
+    await ctx.client.send('Page.bringToFront').catch(function () {});
+    var mount = null;
+    for (var i = 0; i < 24; i++) {
+      await sleep(250);
+      mount = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot)return null;var img=h.shadowRoot.getElementById("petImg");' +
+        'return {img:!!img,outfit:String(h.dataset.outfit||""),' +
+        'src:img?String(img.getAttribute("src")||""):""};})()'
+      );
+      if (mount && mount.img && mount.outfit) break;
+    }
+    check('一上线就是随机一身（不再每次都从默认那张开始）',
+      !!mount && mount.img === true && /\.png$/.test(mount.outfit) && mount.src.indexOf(mount.outfit) >= 0,
+      JSON.stringify(mount));
+
+    // 换装 8 拍：每拍都必须换**另一身** —— 44 张里连续撞同一身并不稀罕，
+    // 而用户读到的却是"点了没反应"。断的是换出来的那个名字，不是"有没有监听器"。
+    var shots = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var img=h.shadowRoot.getElementById("petImg");' +
+      'var seen=[];for(var k=0;k<8;k++){h.dispatchEvent(new Event("omitone:pet-outfit-tick"));seen.push(String(h.dataset.outfit||""));}' +
+      'var distinct=[],same=0;' +
+      'for(var a=0;a<seen.length;a++){if(distinct.indexOf(seen[a])<0)distinct.push(seen[a]);if(a&&seen[a]===seen[a-1])same++;}' +
+      'return {seen:seen,distinct:distinct.length,same:same,' +
+      'srcOk:String(img.getAttribute("src")||"").indexOf(seen[seen.length-1])>=0};})()'
+    );
+    check('连拍 8 次每拍都换了一身（无连续同装、img 的 src 跟着换）',
+      !!shots && shots.same === 0 && shots.distinct >= 3 && shots.srcOk === true,
+      JSON.stringify(shots).slice(0, 200));
+
+    // 换上的那一身必须真加载得出来（文件在包里 + web_accessible_resources 覆盖到）
+    var loaded = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var img=h.shadowRoot.getElementById("petImg");' +
+      'return new Promise(function(res){var t0=Date.now();(function poll(){' +
+      'if(img.complete&&img.naturalWidth>0)return res({ok:true,src:String(img.getAttribute("src")||"").split("/").pop()});' +
+      'if(Date.now()-t0>4000)return res({ok:false,outfit:String(h.dataset.outfit||""),src:String(img.getAttribute("src")||"")});' +
+      'setTimeout(poll,80);})();});})()'
+    );
+    check('换上的这一身真的加载出来了（在包里且 web_accessible 生效）',
+      !!loaded && loaded.ok === true, JSON.stringify(loaded));
+
+    // 换装不许把她抖走（用户说的"位置乱了"就来自这里）：44 张原图宽 107~217 各不相同，
+    // 渲染盒必须**一张都不差**。⚠️ 先自证"这几张原图宽确实不同"，否则这条量的是空气。
+    var measureBox = '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var img=sr.getElementById("petImg"),card=sr.getElementById("card");' +
+      'var ir=img.getBoundingClientRect(),cr=card.getBoundingClientRect();' +
+      'return {ready:img.complete&&img.naturalWidth>0,nat:img.naturalWidth,outfit:String(h.dataset.outfit||""),' +
+      'iw:Math.round(ir.width),ih:Math.round(ir.height),cw:Math.round(cr.width),ch:Math.round(cr.height)};})()';
+    var rounds = [], natW = {};
+    for (var g = 0; g < 8 && Object.keys(natW).length < 3; g++) {
+      await ctx.client.evaluate(
+        '(function(){document.getElementById("omitone-page-pet-host").dispatchEvent(new Event("omitone:pet-outfit-tick"));return true;})()');
+      var box = null;
+      for (var t = 0; t < 40; t++) {
+        box = await ctx.client.evaluate(measureBox);
+        if (box && box.ready) break;
+        await sleep(80);
+      }
+      if (!box || !box.ready) break;
+      rounds.push(box);
+      natW[box.nat] = true;
+    }
+    var sameBox = rounds.length >= 2 && rounds.every(function (b) {
+      return b.iw === rounds[0].iw && b.ih === rounds[0].ih
+        && b.cw === rounds[0].cw && b.ch === rounds[0].ch;
+    });
+    check('换装不抖：' + Object.keys(natW).length + ' 张原图宽度不同（' + Object.keys(natW).join('/') +
+      '）而渲染盒一模一样（定宽定高 + object-fit 钉住了）',
+      Object.keys(natW).length >= 2 && sameBox === true && rounds[0].iw > 0,
+      JSON.stringify(rounds.slice(0, 4)).slice(0, 260));
+
+    // ── 她自己动一下 ────────────────────────────────────────────────────────
+    // 自动动作与自动台词共用那四道"别说"（看不见 / 被收起 / 正被拖着 / 上一拍还没演完）。
+    // ⚠️ 每条"她没动"之前都要先把**别的门槛拨到该动**再拍一下（正例必须动），
+    //   否则测到的是门槛串联、不是这一道闸 —— 上一批 ⑥ 同一课。
+    var tickMotion = '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var img=sr.getElementById("petImg");' +
+      'h.dataset.motion="";img.classList.remove("mv-tilt","mv-hop","mv-spin","mv-wiggle","mv-stretch");' +
+      'h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
+      'var name=String(h.dataset.motion||"");' +
+      'return {name:name,skip:String(h.dataset.motionSkip||""),cls:String(img.className||""),' +
+      'anim:name?getComputedStyle(img).animationName:"",' +
+      'rm:!!(window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches),' +
+      'hidden:document.hidden};})()';
+    await sleep(1800);
+    var spoke = await ctx.client.evaluate(tickMotion);
+    check('前提：拍一拍她自己动一下（动作名挂上 class，computed 动画跟着来；归因格说"没被挡"）',
+      !!spoke && spoke.rm === false && spoke.hidden === false && spoke.skip === ''
+      && spoke.name.length > 0
+      && spoke.cls.indexOf('mv-' + spoke.name) >= 0 && spoke.anim === 'om-pet-' + spoke.name,
+      JSON.stringify(spoke));
+
+    // 上一拍还在演 → 不许叠第二下（叠起来就是用户讨厌的"抽风"）。
+    // ⚠️ 两下必须写在**同一次 evaluate** 里：中间不跨任务，时间偷不跑，第二下必然还在 hold 内。
+    //   先等她上一拍真演完（读她自己登记的截止时刻，不猜毫秒），否则第一下也动不了。
+    var twiceProbe = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'if(Number(h.dataset.motionActUntil||0)>Date.now())return {late:true};' +
+      'h.dataset.motion="";h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
+      'var first=String(h.dataset.motion||""),firstAt=String(h.dataset.motionAt||"");' +
+      'h.dataset.motion="";h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
+      'return {late:false,first:first,firstAt:firstAt,second:String(h.dataset.motion||""),' +
+      'secondAt:String(h.dataset.motionAt||""),skip:String(h.dataset.motionSkip||"")};})()';
+    var twice = { late: true };
+    for (var tw = 0; tw < 40 && twice.late; tw++) {
+      twice = await ctx.client.evaluate(twiceProbe);
+      if (twice.late) await sleep(200);
+    }
+    check('上一拍还没跑完时不叠第二下（连发两下只动第一下，第二下的归因格点名「上一拍未完」）',
+      !!twice && twice.late === false && twice.first.length > 0 && twice.skip === 'busy' &&
+      twice.second === '' && twice.secondAt === twice.firstAt, JSON.stringify(twice));
+
+    // 每一道闸单独验：先把别的门槛拨到"该动"（等她上一拍演完），关上这一道 → 归因格必须点名这一道；
+    // 再开回来 → 照动。少了"点名"这一半，测到的是门槛串联而不是这一道闸（批次 61 的 I5 假绿就是栽在这）。
+    // waitFree 只读她登记的截止时刻、不拍她 —— 拍了就等于替她把上一演"续"上，反而永远等不到空档。
+    var waitFree = async function () {
+      for (var i = 0; i < 40; i++) {
+        var f = await ctx.client.evaluate('(function(){var h=document.getElementById("omitone-page-pet-host");' +
+          'return {busy:Number(h.dataset.motionActUntil||0)>Date.now()};})()');
+        if (!f || !f.busy) return true;
+        await sleep(200);
+      }
+      return false;
+    };
+    var shutTick = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.dataset.motion="";h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
+      'return {name:String(h.dataset.motion||""),skip:String(h.dataset.motionSkip||"")};})()';
+    var gateTry = async function (onJs, offJs, expectSkip) {
+      await ctx.client.evaluate(onJs);
+      await waitFree();
+      var shut = await ctx.client.evaluate(shutTick);
+      await ctx.client.evaluate(offJs);
+      await waitFree();
+      var open = await ctx.client.evaluate(tickMotion);
+      await sleep(1800);
+      return { shut: shut.name, shutSkip: shut.skip, expect: expectSkip,
+               open: open.name, openSkip: open.skip, openAnim: open.anim };
+    };
+    var hideGate = await gateTry(
+      '(function(){document.getElementById("omitone-page-pet-host").shadowRoot.getElementById("wrap").classList.add("mode-hidden");return true;})()',
+      '(function(){document.getElementById("omitone-page-pet-host").shadowRoot.getElementById("wrap").classList.remove("mode-hidden");return true;})()',
+      'hidden');
+    var dragGate = await gateTry(
+      '(function(){document.getElementById("omitone-page-pet-host").shadowRoot.getElementById("card").classList.add("dragging");return true;})()',
+      '(function(){document.getElementById("omitone-page-pet-host").shadowRoot.getElementById("card").classList.remove("dragging");return true;})()',
+      'dragging');
+    check('被收起时、正被拖着时都不自己动（挡住她的正是这一道闸，不是上一拍；门开回原样又照动）',
+      !!hideGate && hideGate.shut === '' && hideGate.shutSkip === hideGate.expect
+      && hideGate.openSkip === '' && hideGate.open.length > 0
+      && !!dragGate && dragGate.shut === '' && dragGate.shutSkip === dragGate.expect
+      && dragGate.openSkip === '' && dragGate.open.length > 0,
+      JSON.stringify({ hide: hideGate, drag: dragGate }).slice(0, 240));
+
+    // 悬停期摸头 —— 本轮真正修的那个 bug。不悬停那一次是**对照**：
+    // 两次都读同一个 computed 属性，只有"悬停会吃掉动画"修好了，两条才同时为真。
+    var hoverPat = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
+      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'pointerId:11,pointerType:"mouse",clientX:0,clientY:0}));}' +
+      'img.classList.remove("pat");void img.offsetWidth;img.click();' +
+      'var bare=getComputedStyle(img).animationName;' +
+      'pe("pointerleave");pe("pointerenter");' +
+      'var peekOn=c.classList.contains("peek");' +
+      'img.classList.remove("pat");void img.offsetWidth;img.click();' +
+      'var anim=getComputedStyle(img).animationName;pe("pointerleave");' +
+      'return {bare:bare,peekOn:peekOn,hover:anim,hoverCls:String(img.className||"")};})()');
+    check('悬停期摸头她照样动（peek 不再吃掉 pat 动画；不悬停那次作对照）',
+      !!hoverPat && hoverPat.peekOn === true && hoverPat.bare === 'om-pet-pat'
+      && hoverPat.hover === 'om-pet-pat' && /pat/.test(hoverPat.hoverCls),
+      JSON.stringify(hoverPat).slice(0, 220));
+
+    await sleep(1800);
+    var peekMotion = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
+      'c.dispatchEvent(new PointerEvent("pointerenter",{bubbles:false,cancelable:true,composed:true,' +
+      'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
+      'var peekOn=c.classList.contains("peek");' +
+      'h.dataset.motion="";img.classList.remove("mv-tilt","mv-hop","mv-spin","mv-wiggle","mv-stretch");' +
+      'h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
+      'var name=String(h.dataset.motion||"");var anim=name?getComputedStyle(img).animationName:"";' +
+      'c.dispatchEvent(new PointerEvent("pointerleave",{bubbles:false,cancelable:true,composed:true,' +
+      'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
+      'return {peekOn:peekOn,name:name,anim:anim};})()');
+    check('悬停期她自己动也不被 peek 吃掉（动画名 = om-pet-<这一拍的动作>）',
+      !!peekMotion && peekMotion.peekOn === true && peekMotion.name.length > 0
+      && peekMotion.anim === 'om-pet-' + peekMotion.name,
+      JSON.stringify(peekMotion));
   }
 });
 

@@ -348,47 +348,13 @@
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
     var HIDE_KEY = "omitone.pet.hidden";
-    // 「装」只走服装 —— 表情和动作是另一回事，混在一起用户会看不出规律。
-    //
-    // ⚠️ **文件前缀不可信**（2026-10-31 逐张看图核实的结论）：
-    //   pet-e2~e6 画的是围巾大衣/浴衣/睡衣/雨衣/制服外套 —— 是**服装**不是表情；
-    //   pet-i5~i8 画的是生气/哭/鼓脸/满足 —— 是**表情**不是姿势；
-    //   pet-e7~e10 画的是坐姿/挥手/趴姿/伸懒腰 —— 是**姿势**不是表情。
-    //   美术的命名和内容是错位的，分类只能以像素为准 —— 别"看着前缀顺手纠正"回去，
-    //   `tools/check.js` 的「立绘池守卫」会拦住池子之间的交叉与漏项。
-    var SKINS = ["pet.png",
-      "pet-1.png", "pet-2.png", "pet-3.png", "pet-4.png",
-      "pet-5.png", "pet-6.png", "pet-7.png", "pet-8.png",
-      "pet-9.png", "pet-10.png",
-      "pet-11.png", "pet-12.png", "pet-13.png", "pet-14.png",
-      "pet-15.png", "pet-16.png",
-      "pet-17.png", "pet-18.png", "pet-19.png", "pet-20.png",
-      "pet-21.png", "pet-22.png",
-      "pet-23.png", "pet-24.png", "pet-25.png", "pet-26.png",
-      "pet-27.png", "pet-28.png",
-      "pet-29.png", "pet-30.png", "pet-31.png", "pet-32.png",
-      "pet-33.png", "pet-34.png",
-      "pet-35.png", "pet-36.png", "pet-37.png", "pet-38.png",
-      // e2~e6：像素核实是服装（大衣/浴衣/睡衣/雨衣/制服外套），从原「表情」池移过来
-      "pet-e2.png", "pet-e3.png", "pet-e4.png", "pet-e5.png", "pet-e6.png"];   // 44 套服装
-    // 「表」走表情：同一身默认制服下的另一张脸。e1 = 默认制服的平和脸（基座）。
-    var FACES = ["pet-e1.png",
-                 "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png",
-                 "pet-e11.png", "pet-e12.png",
-                 "pet-e13.png", "pet-e14.png", "pet-e15.png",
-                 "pet-e16.png", "pet-e17.png",
-                 "pet-e18.png", "pet-e19.png", "pet-e20.png",
-                 "pet-e21.png", "pet-e22.png", "pet-e23.png",
-                 "pet-e24.png", "pet-e25.png", "pet-e26.png"];   // 21 张表情
-    var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
-                 "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png",
-                 "pet-i9.png", "pet-i10.png",
-                 "pet-i11.png", "pet-i12.png",
-                 "pet-i13.png", "pet-i14.png",
-                 "pet-i15.png", "pet-i16.png", "pet-i17.png",
-                 "pet-i18.png", "pet-i19.png", "pet-i20.png",
-                 "pet-i21.png", "pet-i22.png", "pet-i23.png"];  // 24 个姿势（全部是**默认装束**画的；
-                                                                // i1 虽像卫衣装，但它没有换装语义，归姿势）
+    // 三个立绘池（服装 / 表情 / 姿势）的真源在 `popup/pet-game.js` 的 `ART` ——
+    // 上课页那位伴侣（content.js）随机换装也读同一份，抄两份必然漂移。
+    // 池子的分类依据（"前缀不可信、只能按像素核实"）与机检都写在那里。
+    var ART = self.OmitonePetGame.ART;
+    var SKINS = ART.SKINS;
+    var FACES = ART.FACES;
+    var POSES = ART.POSES;
     // 穿着别的衣服时，「姿」只在这几种身体姿态之间切，不换图 ——
     // 换姿势图会把衣服一起换回默认装束（用户报的「点姿势怎么换衣服了」）。
     var POSE_STATES = ["sit", "happy", "point", "sad"];
@@ -1187,7 +1153,9 @@
           try {
             if (chrome.runtime.lastError) return;
             var stats = (r && r[STUDY_STATS_KEY]) || {};
-            var result = game.applyStudySeconds(bondState, Number(stats.activeSeconds) || 0, todayKey());
+            // 整份统计传进去：规则层靠 `stats.date` 挡掉**昨天那一格**（统计层落盘是节流的，
+            // 跨天时昨天那份还会多活一小段，不挡就是半夜白送一天上限）
+            var result = game.applyStudySeconds(bondState, stats, todayKey());
             if (result.gained > 0) { bondState = result.state; persistBond(); }
             renderBond(bondState);
             if (result.leveledUp) { celebrateBond(result.level); }
@@ -1231,11 +1199,13 @@
               persistBond();   // 迁到共享位建档（旧档从此只读）
             }
             var stats = (r && r[STUDY_STATS_KEY]) || {};
-            var settle = game.applyStudySeconds(bondState, Number(stats.activeSeconds) || 0, todayKey());
+            var settle = game.applyStudySeconds(bondState, stats, todayKey());
             if (settle.gained > 0) { bondState = settle.state; persistBond(); }
             renderBond(bondState);
             if (settle.leveledUp) celebrateBond(settle.level);
-            var mins = Math.floor((Number(stats.activeSeconds) || 0) / 60);
+            // 「今天已经刷了 N 分钟」只报**今天**那一格 —— 统计层落盘是节流的，
+            // 跨天时昨天那份还会多活一小段，不比对 date 就是早上第一句便在骗人。
+            var mins = String(stats.date || '') === todayKey() ? Math.floor((Number(stats.activeSeconds) || 0) / 60) : 0;
             if (mins >= 5 && mascot && !mascot.getAttribute("data-busy")) {
               say("今天已经一起刷了 " + mins + " 分钟啦" + (bondState.affection >= 30 ? "，有你真好。" : "～"), 3200);
             }

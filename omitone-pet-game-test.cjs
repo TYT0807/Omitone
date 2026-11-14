@@ -59,12 +59,20 @@ check('摸头 +1 入账', p1.gained === 1 && p1.state.affection === 1);
 
 var acc = p1.state;
 for (var i = 0; i < 30; i++) acc = GAME.onPat(acc, DAY).state;
-check('每日摸头上限 20 次（之后只有演出不再涨）',
-  acc.patsToday === 20 && acc.affection === 20,
+check('每日摸头上限 6 次（之后只有演出不再涨）',
+  acc.patsToday === 6 && acc.affection === 6,
   'pats=' + acc.patsToday + ' affection=' + acc.affection);
 
 var pNext = GAME.onPat(acc, '2026-11-02');
-check('跨天重置每日配额（好感不重置）', pNext.state.patsToday === 1 && pNext.state.affection === 21);
+check('跨天重置每日配额（好感不重置）', pNext.state.patsToday === 1 && pNext.state.affection === 7);
+
+// ⚠️ 配比是**用户能感觉到的那件事**（1.3.0：「刷课涨的经验远远慢于摸头」）。
+// 这四个数一改，手感就变，所以在这里钉住实值，而不是只钉"上限不越界"那种恒真判据。
+check('手感配比：1 次摸头 = 10 分钟刷课；每日摸头 6 / 刷课 15（刷课上限 > 摸头上限）',
+  GAME.RULES.patAffection === 1 && GAME.RULES.studyMinutesPerPoint === 10
+  && GAME.RULES.patDailyCap === 6 && GAME.RULES.studyPointsDailyCap === 15
+  && GAME.RULES.studyPointsDailyCap > GAME.RULES.patDailyCap,
+  JSON.stringify(GAME.RULES));
 
 check('等级表判定（0/14 初识 · 15 打过招呼 · 30 熟络）',
   GAME.levelOf(0) === 0 && GAME.levelOf(14) === 0 && GAME.levelOf(15) === 1 && GAME.levelOf(30) === 2);
@@ -75,21 +83,43 @@ check('追加等级判定（139 形影不离 · 140 心有灵犀 · 200 岁月�
 check('老档不降级（上限 100 时代的满档用户仍是形影不离）', GAME.levelOf(100) === 5);
 
 var st1 = GAME.applyStudySeconds(GAME.rollDay(null, DAY), 3600, DAY);
-check('刷课 60 分钟折 2 点好感（水位推进到 3600 秒）',
-  st1.gained === 2 && st1.state.affection === 2 && st1.state.countedSeconds === 3600);
+check('刷课 60 分钟折 6 点好感（10 分钟 1 点，水位推进到 3600 秒）',
+  st1.gained === 6 && st1.state.affection === 6 && st1.state.countedSeconds === 3600);
 
 var st2 = GAME.applyStudySeconds(st1.state, 3600 + 1800, DAY);
-check('水位只按已转化秒数推进（再 30 分钟 = +1）',
-  st2.gained === 1 && st2.state.countedSeconds === 5400);
+check('水位只按已转化秒数推进（再 30 分钟 = +3）',
+  st2.gained === 3 && st2.state.countedSeconds === 5400);
 
 var st3 = GAME.applyStudySeconds(GAME.rollDay(null, DAY), 12 * 3600, DAY);
-check('刷课每日上限 10 点（150 分钟封顶）',
-  st3.gained === 10 && st3.state.studyPointsToday === 10 && st3.state.countedSeconds === 18000);
+check('刷课每日上限 15 点（150 分钟封顶，水位只推进实际入账的那一段）',
+  st3.gained === 15 && st3.state.studyPointsToday === 15 && st3.state.countedSeconds === 9000,
+  'gained=' + st3.gained + ' counted=' + st3.state.countedSeconds);
 
-var st3b = GAME.applyStudySeconds(st3.state, 12 * 3600, '2026-11-02');
-check('被上限挡住的时长跨天继续折（不清空不蒸发）',
-  st3b.gained > 0 && st3b.state.countedSeconds > st3.state.countedSeconds,
-  'counted=' + st3b.state.countedSeconds);
+// 现场实证（2026-11-15）：水位停在历日的 32400，新一天统计层从零重算到 1532 秒
+// → pending 恒 0 → **刷课好感一整天一格都没加**，而摸头那天加了 20。
+// 这一条就是那个 bug 的回归锚：跨天必须把水位一起归零。
+var staleWater = GAME.applyStudySeconds(
+  { affection: 20, day: '2026-11-02', patsToday: 6, studyPointsToday: 0, countedSeconds: 32400 },
+  1532, '2026-11-03');
+check('历日水位撞上新一天的统计也能折算（跨天归零；现场刷课好感恒 0 的根因）',
+  staleWater.state.countedSeconds === 1200 && staleWater.gained === 2
+  && staleWater.state.affection === 22,
+  'counted=' + staleWater.state.countedSeconds + ' gained=' + staleWater.gained);
+
+// 统计层落盘是节流的（攒够 20 秒才写一次），跨天那一拍读到的可能是**昨天**那一格。
+// 水位刚归零，这一拍不挡住就等于把昨天的时长在今天再折一次 —— 半夜白送一天上限。
+var yestStats = GAME.applyStudySeconds(
+  GAME.rollDay(null, '2026-11-03'), { date: '2026-11-02', activeSeconds: 43200 }, '2026-11-03');
+check('昨天的统计格不在今天折算（date 不合就一格不折）',
+  yestStats.gained === 0 && yestStats.state.countedSeconds === 0
+  && yestStats.state.affection === 0,
+  'gained=' + yestStats.gained);
+
+var todayStats = GAME.applyStudySeconds(
+  GAME.rollDay(null, '2026-11-03'), { date: '2026-11-03', activeSeconds: 1200 }, '2026-11-03');
+check('同一天的统计格正常入账（对象入参，20 分钟 = 2 点）',
+  todayStats.gained === 2 && todayStats.state.countedSeconds === 1200,
+  'gained=' + todayStats.gained);
 
 var up = GAME.onPat(
   GAME.rollDay({ affection: 14, day: DAY, patsToday: 0, studyPointsToday: 0, countedSeconds: 0 }, DAY),
@@ -97,8 +127,22 @@ var up = GAME.onPat(
 );
 check('跨级时 leveledUp=true 且说等级台词', up.leveledUp === true && up.state.affection === 15 && up.line === GAME.LEVELS[1].line, up.line);
 
+// 到顶必须说**一句实话**：好感条没动是唯一会被读成"她坏了"的表现，
+// 而摸头台词池里任何一句（"再摸一下也可以哦"）都在暗示还有奖励。
+var capState = GAME.rollDay({ affection: 6, day: DAY, patsToday: 6, studyPointsToday: 0, countedSeconds: 0 }, DAY);
+var capPat = GAME.onPat(capState, DAY);
+check('摸头到当日上限：gained=0、capped=true、台词出自 PAT_CAP_LINES',
+  capPat.gained === 0 && capPat.capped === true && capPat.leveledUp === false
+  && GAME.PAT_CAP_LINES.indexOf(capPat.line) >= 0,
+  'gained=' + capPat.gained + ' line=' + capPat.line);
+
 var capped = GAME.onPat(GAME.rollDay({ affection: 240, day: DAY, patsToday: 0, studyPointsToday: 0, countedSeconds: 0 }, DAY), DAY);
 check('好感满值（240）不再上涨', capped.state.affection === 240 && capped.gained === 1, 'affection=' + capped.state.affection + ' gained=' + capped.gained);
+
+check('到顶台词不写死次数（那句归案，上限是 RULES 里的数）',
+  GAME.PAT_CAP_LINES.length > 0 && GAME.PAT_CAP_LINES.every(function (l) {
+    return String(l).indexOf(String(GAME.RULES.patDailyCap)) < 0 && /明天|再|陪我/.test(String(l));
+  }), JSON.stringify(GAME.PAT_CAP_LINES));
 
 // ══ 成就（1.3.0 追加）══════════════════════════════════════
 var carried = GAME.rollDay(

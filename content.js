@@ -1787,6 +1787,22 @@
   const PAGE_PET_IDLE_MIN_GAP_MS = 75000;
   let pagePetIdleTimer = null;
 
+  // ── 她自己动：自动换装 + 自动小动作（纯演出，不碰存档、不碰调度）──────
+  // 用户原话「已经不能交互了，还是让她自己动吧」。交互那一半是样式优先级的事
+  // （见 Shadow DOM 样式里那三个 `:not()`），"自己动"这一半在下面这几个定时器上。
+  const PAGE_PET_OUTFIT_GAP_MS = [300000, 540000];   // 5~9 分钟换一身
+  const PAGE_PET_MOTION_GAP_MS = [50000, 110000];    // 50~110 秒自己动一下
+  // 每个动作的收尾时长与样式里那条同名动画对齐 —— 提前摘 class 会看着像卡了一下，
+  // 晚摘则下一拍叠在这一拍上（表现成抽搐）。对不上的名字走兜底 1300。
+  const PAGE_PET_MOTION_MS = { tilt: 1300, hop: 850, spin: 1150, wiggle: 1000, stretch: 1450 };
+  let pagePetOutfitTimer = null;
+  let pagePetMotionTimer = null;
+  // 每次重建她时 `pagePetArtSeq` 自增，老的定时器链在下一拍自己停 ——
+  // SPA 换页把她摘掉再重建时不清，一个页面就挂着两条链，她开始无规律抽搐。
+  let pagePetArtSeq = 0;
+  let pagePetActUntil = 0;          // 上一拍演出还没跑完 → 这一拍不叠上去
+  let pagePetArtWarmed = false;     // 立绘热身整份文档只跑一次
+
   function petGameModule() {
     return (typeof self !== 'undefined' && self.OmitonePetGame) || null;
   }
@@ -1906,6 +1922,7 @@
       img.classList.remove('pat');
       void img.offsetWidth;
       img.classList.add('pat');
+      pagePetActUntil = Date.now() + 500;   // 这一拍归摸头，她自己动的排在后面
       setTimeout(function () { try { img.classList.remove('pat'); } catch (e) {} }, 480);
     } catch (e) {}
   }
@@ -1916,6 +1933,7 @@
     try {
       const def = game.LEVELS[level] || game.LEVELS[0];
       pagePet.els.img.classList.add('cheer');
+      pagePetActUntil = Date.now() + 1000;   // 升级这一拍别被她自己的小动作叠上去
       setTimeout(function () { try { pagePet.els.img.classList.remove('cheer'); } catch (e) {} }, 950);
       pagePetSay('好感度达到「' + def.name + '」！' + (def.line || ''), 3600);
     } catch (e) {}
@@ -1929,13 +1947,122 @@
         try {
           if (chrome.runtime.lastError) return;
           const stats = (r && r.omitoneStudyStats) || {};
-          const result = game.applyStudySeconds(pagePetBond, Number(stats.activeSeconds) || 0, game.dayKeyOf(Date.now()));
+          // 整份统计传进去，不是只传秒数 —— 规则层要靠 `stats.date` 挡掉**昨天那一格**：
+          // 统计层落盘是节流的（攒够 20 秒才写一次），跨天时昨天的 activeSeconds 会多活一小段，
+          // 而水位 countedSeconds 刚跟着新的一天归零，不挡等于半夜白送一天上限。
+          const result = game.applyStudySeconds(pagePetBond, stats, game.dayKeyOf(Date.now()));
           if (result.gained > 0) { pagePetBond = result.state; persistPagePetBond(); }
           renderPagePet();
           if (result.leveledUp) pagePetLevelUp(result.level);
         } catch (e) {}
       });
     } catch (e) {}
+  }
+
+  /** 系统/浏览器开了「减少动态效果」就别自己动 —— 换装是换一张静止图，不受这条限。 */
+  function pagePetReducedMotion() {
+    try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+    catch (e) { return false; }
+  }
+
+  /** 她此刻**为什么不能**自己动，返回一个名字；空串 = 能动。
+   *  四条与自动台词同源：看不见 / 被收起 / 正被拖着 / 上一拍未完（外加系统「减少动态」）。
+   *  ⚠️ 顺序不许动，且**结果要落进宿主的 dataset** 让 e2e 读回来：
+   *    只回一个 true/false 时，"被收起所以没动"和"上一拍还没演完所以没动"长得一模一样 ——
+   *    收起那道闸坏掉，沙盒照样全绿（批次 61 实测到的假绿就是这么来的）。 */
+  function pagePetActBlock() {
+    if (!pagePet || !pagePet.els.img) return 'nobuild';
+    if (document.hidden) return 'bg';
+    if (pagePet.els.wrap.classList.contains('mode-hidden')) return 'hidden';
+    if (pagePet.els.card.classList.contains('dragging')) return 'dragging';
+    if (Date.now() < pagePetActUntil) return 'busy';
+    if (pagePetReducedMotion()) return 'reduced';
+    return '';
+  }
+
+  // 立绘按像素算约 6 MB 解码位图，一次全要会把首屏顶一下 —— 每张隔 400 毫秒铺一张。
+  // 第一次自动换装是 5 分钟之后，那时整池早就热好了。
+  function pagePetWarmArt() {
+    if (pagePetArtWarmed) return;
+    const game = petGameModule();
+    const pool = (game && game.ART && game.ART.SKINS) || [];
+    if (!pool.length) return;
+    pagePetArtWarmed = true;
+    let i = 0;
+    (function step() {
+      if (i >= pool.length) return;
+      try { const im = new Image(); im.src = chrome.runtime.getURL('popup/' + pool[i]); } catch (e) {}
+      i += 1;
+      setTimeout(step, 400);
+    })();
+  }
+
+  /** 随机换一身立绘。@returns {string} 换上的文件名（空串 = 没有池子，什么也没做） */
+  function pagePetRefreshOutfit() {
+    const game = petGameModule();
+    const pool = (game && game.ART && game.ART.SKINS) || [];
+    if (!pagePet || !pagePet.els.img || pool.length < 2) return '';
+    let idx = Math.floor(Math.random() * pool.length);
+    // 连着两拍同一身不算"换了衣服"（44 张里撞车并不稀罕，用户读到的却是"没反应"）
+    if (String(pool[idx]) === pagePet.outfit) {
+      idx = (idx + 1 + Math.floor(Math.random() * (pool.length - 1))) % pool.length;
+    }
+    const file = String(pool[idx]);
+    try {
+      pagePet.els.img.src = chrome.runtime.getURL('popup/' + file);
+      pagePet.outfit = file;
+      // 状态写在**宿主的 data** 上：内容脚本与页面是两个 JS 世界，闭包读不到，
+      // 只有 DOM 属性共用 —— e2e 与现场探针都靠这一格知道她现在穿的是哪一身。
+      pagePet.host.dataset.outfit = file;
+      pagePet.host.dataset.outfitAt = String(Date.now());
+    } catch (e) {}
+    return file;
+  }
+
+  /** 她自己动一下（纯演出：不涨好感、不开口）。@returns {string} 动作名，空串 = 这一拍不做 */
+  function pagePetAutoMotion() {
+    const block = pagePetActBlock();
+    // 挡她的到底是哪一道闸 —— 写在宿主的 data 上，页面世界才读得到（e2e 与现场探针都靠这一格归因）
+    try { pagePet.host.dataset.motionSkip = block; } catch (e) {}
+    if (block) return '';
+    const game = petGameModule();
+    const pool = (game && game.ART && game.ART.MOTIONS) || [];
+    const name = String(pool[Math.floor(Math.random() * pool.length)] || '');
+    if (!name) return '';
+    const cls = 'mv-' + name;
+    const hold = PAGE_PET_MOTION_MS[name] || 1300;
+    const seq = pagePetArtSeq;
+    try {
+      const img = pagePet.els.img;
+      img.classList.remove(cls);
+      void img.offsetWidth;             // 同名 class 已在时不重放，先摘一次
+      img.classList.add(cls);
+      pagePetActUntil = Date.now() + hold;
+      // 测试台与现场探针要靠这一格判断"上一拍到底演完没有" —— 猜毫秒会抖，读她自己登记的最稳
+      pagePet.host.dataset.motionActUntil = String(pagePetActUntil);
+      pagePet.host.dataset.motion = name;
+      pagePet.host.dataset.motionAt = String(Date.now());
+      setTimeout(function () {
+        try {
+          if (seq !== pagePetArtSeq || !pagePet) return;   // 她已被重建，这一拍归新的一份管
+          pagePet.els.img.classList.remove(cls);
+        } catch (e) {}
+      }, hold);
+    } catch (e) {}
+    return name;
+  }
+
+  /** 排下一拍（'outfit' 换装 / 'motion' 动一下）。间隔带随机，免得每场都踩着同一个点。 */
+  function pagePetArm(kind) {
+    const seq = pagePetArtSeq;
+    const win = kind === 'outfit' ? PAGE_PET_OUTFIT_GAP_MS : PAGE_PET_MOTION_GAP_MS;
+    const gap = win[0] + Math.floor(Math.random() * Math.max(1, win[1] - win[0]));
+    const timer = setTimeout(function () {
+      if (seq !== pagePetArtSeq) return;
+      try { if (kind === 'outfit') pagePetRefreshOutfit(); else pagePetAutoMotion(); } catch (e) {}
+      pagePetArm(kind);
+    }, gap);
+    if (kind === 'outfit') pagePetOutfitTimer = timer; else pagePetMotionTimer = timer;
   }
 
   function ensurePagePet() {
@@ -1972,15 +2099,36 @@
         //   getBoundingClientRect 就和 style.left/top 差几像素，拖动每一拍都按差值漂一次
         //   （"拖着拖着她就跑偏"），而 e2e 那条"位移逐像素跟着手指"也正是断这个。
         '.card.peek{border-color:rgba(244,63,94,.34);box-shadow:0 10px 26px rgba(244,63,94,.19)}',
-        '.card.peek .pet{animation:om-pet-peek .52s ease}',
+        // ⚠️ 「摸头」「升级」「她自己动」这三拍都必须**排掉 peek 那条选择器**，否则会被整条吃掉：
+        //   `.card.peek .pet` 的特异度是 (0,3,0)，而 `.pet.pat` 只有 (0,2,0) —— 鼠标**正悬在她身上**
+        //   时点她（人就是这么点的），peek 赢，pat 那条动画一行都没跑，表现就是用户说的
+        //   「已经不能交互了」。沙盒用 `img.click()` 派事件、又不读 computed style，所以一直是绿的。
+        //   现在 peek 带三个 `:not()`，与三族一次性动画**互斥**，谁在跑谁说话。
+        '.card.peek .pet:not(.pat):not(.cheer):not([class*="mv-"]){animation:om-pet-peek .52s ease}',
         '@keyframes om-pet-peek{0%{transform:translateY(0) rotate(0)}26%{transform:translateY(-2px) rotate(-6deg)}58%{transform:translateY(0) rotate(4deg)}100%{transform:translateY(0) rotate(0)}}',
-        '.pet{display:block;width:52px;height:auto;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
+        // 立绘**盒**必须定死：88 张图全部高 240，宽却从 107 到 217（纵横比 0.45~0.90），
+        // 原先 `width:52px;height:auto` 让高度跟着图走 —— 换装时卡片上下抖十几像素，
+        // 还会把拖动用的 getBoundingClientRect 一起改了。`contain` + 底对齐 = 换装零位移。
+        '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
         '@keyframes om-pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}',
         // 摸头必须有**立刻看得见**的反应 —— 原先只有升级才动一下，用户读成"点了没反应"。
-        '.pet.pat{animation:om-pet-pat .44s ease}',
+        '.card .pet.pat{animation:om-pet-pat .44s ease}',
         '@keyframes om-pet-pat{0%{transform:translateY(0) scale(1)}32%{transform:translateY(3px) scale(1.07,.9)}66%{transform:translateY(-2px) scale(.96,1.05)}100%{transform:translateY(0) scale(1)}}',
-        '.pet.cheer{animation:om-pet-cheer .9s ease}',
+        '.card .pet.cheer{animation:om-pet-cheer .9s ease}',
         '@keyframes om-pet-cheer{0%{transform:scale(1)}30%{transform:scale(1.12) rotate(-4deg)}60%{transform:scale(1.06) rotate(3deg)}100%{transform:scale(1)}}',
+        // 她自己动的那一拍：动作名 = `popup/pet-game.js` 的 ART.MOTIONS，
+        // 这里每个名字都要有一条同名 `@keyframes om-pet-<名>`（`npm run check` 第 20 项第 ⑤ 条对账）。
+        // 全是**不改几何盒**的 transform：卡片宽度、状态面板、拖动用的矩形都不跟着抖。
+        '.card .pet.mv-tilt{animation:om-pet-tilt 1.25s ease}',
+        '@keyframes om-pet-tilt{0%,100%{transform:rotate(0)}30%{transform:rotate(-7deg)}65%{transform:rotate(5deg)}}',
+        '.card .pet.mv-hop{animation:om-pet-hop .78s cubic-bezier(.34,1.5,.64,1)}',
+        '@keyframes om-pet-hop{0%,100%{transform:translateY(0)}42%{transform:translateY(-11px)}}',
+        '.card .pet.mv-spin{animation:om-pet-spin 1.1s ease}',
+        '@keyframes om-pet-spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}',
+        '.card .pet.mv-wiggle{animation:om-pet-wiggle .95s ease}',
+        '@keyframes om-pet-wiggle{0%,100%{transform:translateX(0)}20%{transform:translateX(-3px)}40%{transform:translateX(3px)}60%{transform:translateX(-2px)}80%{transform:translateX(2px)}}',
+        '.card .pet.mv-stretch{animation:om-pet-stretch 1.4s ease}',
+        '@keyframes om-pet-stretch{0%,100%{transform:scale(1,1)}45%{transform:scale(1.06,.94)}}',
         '.col{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:4px;padding-bottom:1px}',
         '.level{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 7px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700}',
         '.bond{width:100%;height:4px;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
@@ -2028,7 +2176,11 @@
           bondBar: shadow.getElementById('bondBar'),
           hideBtn: shadow.getElementById('hideBtn'),
           pillBtn: shadow.getElementById('pillBtn')
-        }
+        },
+        // 她现在穿的是哪一身 / 刚做过哪个动作 —— 只给自动换装的"别连着两拍同一身"用，
+        // 真源同时写一份在 host.dataset 上给页面世界（e2e／现场探针）读。
+        outfit: 'pet.png',
+        motion: ''
       };
     } catch (e) {
       pagePet = null;
@@ -2238,6 +2390,25 @@
       // 每个都各自说话 —— 表现正是用户讨厌的"话痨"。
       if (pagePetIdleTimer) clearInterval(pagePetIdleTimer);
       pagePetIdleTimer = setInterval(pagePetIdleSay, 15000);
+    } catch (e) {}
+    // 她自己动：自动换装 + 自动小动作（用户点名的"还是让她自己动吧"）。
+    // ⚠️ `pagePetArtSeq` 自增就是"先清"—— 老的定时器链下一拍发现自己那份代号过期，自己停；
+    //   不清的话一个页面挂两条链，她动得毫无规律（表现和"抽搐"一模一样）。
+    try {
+      pagePetArtSeq += 1;
+      if (pagePetOutfitTimer) clearTimeout(pagePetOutfitTimer);
+      if (pagePetMotionTimer) clearTimeout(pagePetMotionTimer);
+      // e2e／现场的把手：手动拍一拍，不等 50 秒 / 5 分钟的定时器（与 omitone:pet-idle-tick 同一条路）
+      pagePet.host.addEventListener('omitone:pet-outfit-tick', function () {
+        try { pagePetRefreshOutfit(); } catch (e) {}
+      });
+      pagePet.host.addEventListener('omitone:pet-motion-tick', function () {
+        try { pagePetAutoMotion(); } catch (e) {}
+      });
+      pagePetWarmArt();
+      pagePetRefreshOutfit();   // 一上线就随机一身 —— 每次都从默认那张开始看着像"没在动"
+      pagePetArm('outfit');
+      pagePetArm('motion');
     } catch (e) {}
     return pagePet;
   }
