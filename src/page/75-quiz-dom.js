@@ -726,11 +726,27 @@
 
       // qid 抓不到时留一条 warn：平台读的是 #answer{qid}，没有 qid 就等于
       // 「点了、也选中了，但提交上去的是空」——这是最难从截图看出来的失败。
+      // ⚠️ 但这句话**只对「这份文档真的靠隐藏域交卷」成立**。视频内嵌弹题、以及一批
+      // 「点完由弹窗自己的 JS 直接交卷」的题，整份文档里一个 `[id^=answer数字]` 都没有 ——
+      // 那里读不到 qid 是**形状不同**，不是失败。不加这道闸的现场后果：每 90 秒刷一条
+      // warn 把右下角点成「注意」，还把真正的失败挤出 200 条日志环（2026-11-15 实测）。
       if (!qid) {
-        emitRuntimeLog('warn', 'option clicked without qid', {
-          text: textOf(item).slice(0, 30),
-          letter: String(letter || '').slice(0, 4)
-        });
+        var hiddenAnswerFamily = false;
+        try {
+          var probes = doc.querySelectorAll('[id^="answer"], [name^="answer"]');
+          for (var pi = 0; pi < probes.length; pi++) {
+            var one = String((probes[pi].id || probes[pi].getAttribute('name') || '')).trim();
+            // 认「answer + 数字」这一族（`#answer{qid}` 就是平台提交时读的那个字段名）；
+            // 宽松的 `answerBox` 那种形状不许把这条 warn 重新点亮。
+            if (/^answer\d/i.test(one)) { hiddenAnswerFamily = true; break; }
+          }
+        } catch (eProbe) {}
+        if (hiddenAnswerFamily) {
+          emitRuntimeLog('warn', 'option clicked without qid', {
+            text: textOf(item).slice(0, 30),
+            letter: String(letter || '').slice(0, 4)
+          });
+        }
       }
       if (qid) {
         item.setAttribute('aria-checked', 'true');

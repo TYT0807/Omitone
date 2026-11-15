@@ -1524,6 +1524,43 @@ function buildPopupQuizNativeHtml() {
 }
 
 /**
+ * 视频弹题的**空题干态**（批次 71）。
+ *
+ * 现场 2026-11-15 14:27 那条 `popup quiz answer matched no option` 的原始读数：
+ * 容器 outerHTML 就是 `<div class="tkTopic"> <div class="tkTopic_title">判断题</div></div>`，
+ * 里面**只有题型名**，而选项（对 / 错）挂在兄弟节点上 —— 同一条日志的
+ * `optionCount:2 / optionTexts:["对","错"]` 就是靠「选项是堂兄弟」那条兜底抓到的。
+ * 老逻辑把 `textOf(popup)` 那三个字直接当题干发给模型：模型只能瞎猜，猜错就被平台拒，
+ * 弹窗留着再问 —— 用户看到的就是「弹题一直在花钱」。
+ *
+ * ⚠️ 这份夹具**不声称** `_checkPopupQuiz` 能命中 `.tkTopic`：它的文本只有 3 个字，
+ *    而发现路径要求 `>5`。现场那道能被处理，说明**首发时题干还在**（答错之后站点
+ *    把题干重绘掉了）。所以这里直接对现场那个节点调 `_handlePopupQuiz` ——
+ *    与生产入口（`src/page/64-tasks-loop.js:169`）喂进去的是同一个形状，
+ *    测的是"拿到这个节点之后要不要花钱"这一半。
+ *
+ * ⚠️ 选项**必须写成 `<li>`**，不能写成 `<div class="tkOption">`：
+ *    兜底选择器是 `[class*="option"]` 这类**属性子串**匹配，而 CSS 属性子串匹配
+ *    **区分大小写** —— 驼峰的 `tkOption` 里是大写 O，匹配不到小写 `option`，
+ *    于是 `items` 读回 0，「不发请求」那条断言会因为"压根没抓到题"而**假绿**。
+ *    现场能抓到 2 项靠的是 `<li>`（标签选择器不看 class 大小写），这里就照现场写。
+ */
+function buildPopupQuizNoStemHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div class="tkBox" style="position:fixed;left:40px;top:120px;width:420px;background:#fff;border:2px solid #333;z-index:9999;padding:14px">' +
+    '  <div class="tkTopic"><div class="tkTopic_title">判断题</div></div>' +
+    '  <ul class="tkOptionList">' +
+    '    <li class="tkOption"><input type="radio" name="tkq" value="A"><span>A、对</span></li>' +
+    '    <li class="tkOption"><input type="radio" name="tkq" value="B"><span>B、错</span></li>' +
+    '  </ul>' +
+    '  <div class="tkBtnRow"><span class="btnBlueSubmit">确定</span></div>' +
+    '</div>' +
+    '</body></html>';
+}
+
+/**
  * 视频内嵌**多选题**弹窗。
  *
  * ⚠️ 口径已变（README §6 #49）：以前这里写的是「非视频整卷的多选改成本地作答、
@@ -1694,6 +1731,7 @@ var MOCK_PAGES = {
   '/popup-quiz-native': buildPopupQuizNativeHtml,
   '/popup-quiz-multi': buildPopupQuizMultiHtml,
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
+  '/popup-quiz-no-stem': buildPopupQuizNoStemHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
   '/font-residue': buildFontResidueHtml,
@@ -7851,6 +7889,141 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 6c-1. 批次 71：弹题的钱必须有上限（安全阀 + 按任务点的付费账本） ----
+ *
+ * 现场 2026-11-15 连量到二十多轮：`attempt` 恒为 1、`banned` 已涨到 ["A","B"]、
+ * 每 8~9 秒一问。根因是**填答成功那一支把 `_popupQuizAttempts` 归了零** ——
+ * 填进去 ≠ 平台接受了，于是计数永远在 0/1 之间跳，`attempts > 3` 永不成立，
+ * `_giveUpPopupQuiz` 和它那道 60 秒冷却从来没被调用过。
+ * 这里按"轮"驱动同一道弹题，逐轮读回 `attempts` / 请求增量 / 账本，
+ * 把三件事钉住：① 计数真的会累加；② 超上限就不再发请求；
+ * ③ 同一道第二次放弃起转本地作答，而**换个任务点重新给额度**（判断题的选项
+ *    指纹永远是「对/错」，账本若跨任务点累积会把后面真能答的题一起静音掉）。
+ */
+SCENARIOS.push({
+  name: '视频弹题付费上限（安全阀与账本）',
+  path: '/popup-quiz-native',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 前提自钉：上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，
+      // 于是这一页一加载就有一个 250ms 的循环在自动动弹题字段 —— 不清掉的话
+      // 下面逐轮的 attempts/请求增量全是随机的（批次 69 全量跑实测踩过同一族）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b71=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b71.push(' +
+      '{level:String(d.level||""),msg:String(d.message||""),' +
+      'reason:String((d.meta&&d.meta.reason)||"")});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._activeJobId="b71-job-a";' +
+      'return {max:app._getPopupQuizMaxAttempts(),loop:!!app._tickLoopInterval,' +
+      'checkInterval:!!app._checkInterval,api:app._isQuizApiUnavailable()===false};})()'
+    );
+    check('71 前提：API 可用、且这一页只剩我这一个驱动（自动续跑的循环已按掉）',
+      setup.loop === false && setup.checkInterval === false && setup.api === true && setup.max >= 1,
+      JSON.stringify(setup));
+
+    var max = Number(setup.max);
+    var rounds = [];
+    for (var r = 0; r < max * 2 + 3; r++) {
+      var beforeRound = ctx.mock.requests.length;
+      await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;' +
+        // 放弃窗口是 60 秒，测试不等它：直接把下一拍当作"冷却已过"，
+        // 这正是现场每 60 秒重来一轮的形状。
+        'app._popupQuizBlockedUntil=0;var n=app._checkPopupQuiz();' +
+        'return n?app._handlePopupQuiz(n):null;})()'
+      );
+      await sleep(1500);
+      var st = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var b=app._popupQuizSpend||{};' +
+        'var g=0,ks=Object.keys(b.gives||{});for(var i=0;i<ks.length;i++){g+=Number(b.gives[ks[i]])||0;}' +
+        'return {attempts:Number(app._popupQuizAttempts)||0,givesSum:g,' +
+        'silentCount:Object.keys(b.silent||{}).length,job:String(b.job||"")};})()'
+      );
+      rounds.push({ req: ctx.mock.requests.length - beforeRound, attempts: st.attempts,
+        givesSum: st.givesSum, silentCount: st.silentCount, job: st.job });
+    }
+    var reqSeq = rounds.map(function (x) { return x.req; });
+    var attSeq = rounds.map(function (x) { return x.attempts; });
+
+    check('71 安全阀：同一道弹题的 attempts 逐轮累加（旧代码填成功就归零，恒在 0/1 之间跳 = 阀永远不触发）',
+      rounds[1].attempts === 2 && rounds[2].attempts === 3, JSON.stringify(attSeq));
+    check('71 上限：第 ' + (max + 1) + ' 轮（attempts>上限）一次请求都不发',
+      rounds[max].req === 0, JSON.stringify(reqSeq));
+    check('71 账本：第一次放弃 gives=1 且还没静音（还要再给一次机会），第二次放弃才进静音名单',
+      rounds[max].givesSum === 1 && rounds[max].silentCount === 0 &&
+      rounds[rounds.length - 2].givesSum === 2 && rounds[rounds.length - 2].silentCount === 1,
+      JSON.stringify(rounds));
+    check('71 花钱总数：整道弹题在这节里不超过 2*上限 次请求（现场旧形状是每 8 秒一次、永不停）',
+      reqSeq.reduce(function (a, x) { return a + x; }, 0) <= max * 2, JSON.stringify(reqSeq));
+    check('71 静音之后：最后两轮换成本地作答，一条请求都不发',
+      rounds[rounds.length - 1].req === 0 && rounds[rounds.length - 2].req === 0,
+      JSON.stringify(reqSeq));
+
+    // 静音不等于放着不管：弹窗必须真的被点掉，否则它一直拦着播放（用户看到的还是"卡住"）
+    var domChecked = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input[type=radio]");' +
+      'var c=[];for(var i=0;i<ins.length;i++){if(ins[i].checked)c.push(ins[i].value);}return c;})()'
+    );
+    check('71 静音之后仍然把弹窗点掉（只省钱不挡路不行）',
+      domChecked.length >= 1, JSON.stringify(domChecked));
+
+    // emitRuntimeLog 走 postMessage，异步送达 —— 上面的 sleep 已经给过一拍，
+    // 这里取证把 seen 一起报出来，好分开"没发"与"没等到"。
+    var logs = await ctx.client.evaluate(
+      '(function(){var ls=window.__b71||[];var m={};for(var i=0;i<ls.length;i++)' +
+      '{m[ls[i].msg]=(m[ls[i].msg]||0)+1;}' +
+      'return {seen:ls.length,counts:m,' +
+      'localReasons:ls.filter(function(l){return l.msg==="popup quiz answered locally, no request";})' +
+      '.map(function(l){return l.reason;})};})()'
+    );
+    check('71 静音那一刻只说一次（"这道不再问模型了"必须是读得回来的事件，且不许刷屏）',
+      (logs.counts['popup quiz stops asking the model for this one'] || 0) === 1,
+      JSON.stringify(logs));
+    check('71 本地作答那条日志点名原因 gave-up-twice（说不清为什么没花钱就等于没日志）',
+      logs.localReasons.indexOf('gave-up-twice') !== -1, JSON.stringify(logs));
+
+    // 账本必须按任务点分桶：换一节重新给额度，否则上一节静音掉的「对/错」指纹
+    // 会把这一节真能答的判断题一起静音掉。
+    var beforeJobSwitch = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._activeJobId="b71-job-b";' +
+      'app._popupQuizBlockedUntil=0;var n=app._checkPopupQuiz();' +
+      'return n?app._handlePopupQuiz(n):null;})()'
+    );
+    await sleep(1500);
+    var afterJobSwitch = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var b=app._popupQuizSpend||{};' +
+      'return {job:String(b.job||""),silentCount:Object.keys(b.silent||{}).length,' +
+      'givesSum:(function(){var g=0,ks=Object.keys(b.gives||{});' +
+      'for(var i=0;i<ks.length;i++){g+=Number(b.gives[ks[i]])||0;}return g;})()};})()'
+    );
+    check('71 账本按任务点分桶：换一个任务点就重建桶（静音名单不跨任务点）',
+      afterJobSwitch.job === 'b71-job-b' && afterJobSwitch.silentCount === 0 &&
+      afterJobSwitch.givesSum === 0, JSON.stringify(afterJobSwitch));
+    check('71 换任务点之后重新给额度：这一发是花钱的（否则上一节的放弃会永久静音后面所有判断题）',
+      ctx.mock.requests.length > beforeJobSwitch,
+      '请求数 +' + (ctx.mock.requests.length - beforeJobSwitch));
+  }
+});
+
 /** ---- 6c-2. 视频里的填空题弹窗（没有选项，只有输入框） ---- */
 SCENARIOS.push({
   name: '视频填空题弹窗',
@@ -7891,6 +8064,148 @@ SCENARIOS.push({
     );
     check('填空弹窗两个空分别填 甲 / 乙',
       vals.b1 === '甲' && vals.b2 === '乙', JSON.stringify(vals));
+  }
+});
+
+/** ---- 6c-3. 批次 71：只有题型名的弹题不发请求 + 没有隐藏域时不再误报 ----
+ *
+ * 两件事共用现场那一份形状（`<div class="tkTopic">` 里只有「判断题」，选项在兄弟节点）：
+ *   ① 题干剥掉题型名之后是空的 —— 问了模型也只能瞎猜，每一发都是白花钱，
+ *      所以本地选一项把弹窗点掉（让步的是正确率，不是钱）；
+ *   ② `option clicked without qid` 这条 warn 只对「这份文档真的靠隐藏域交卷」成立 ——
+ *      弹题这种"点完由弹窗自己的 JS 交卷"的形状里压根没有 `#answer{数字}`，
+ *      原先它每 90 秒刷一条，把右下角点成「注意」，还把真失败挤出了 200 条日志环。
+ *      这里用"插一个隐藏域再点一次"做 A/B：同一处点击，红绿只由那份文档有没有隐藏域决定。
+ */
+SCENARIOS.push({
+  name: '弹题空题干不花钱（题型名弹题）',
+  path: '/popup-quiz-no-stem',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b71w=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b71w.push(' +
+      '{level:String(d.level||""),msg:String(d.message||""),' +
+      'reason:String((d.meta&&d.meta.reason)||""),letter:String((d.meta&&d.meta.letter)||"")});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._activeJobId="b71-job-c";return app._isQuizApiUnavailable()===false;})()'
+    );
+
+    // ---- 夹具自证：形状必须和现场那条日志的读数一模一样 ----
+    // 现场：cls=tkTopic / text=判断题 / optionCount=2 / optionTexts=["对","错"]
+    // 不钉这一格，"不发请求"就可能只是"这个弹窗压根没被抓到"给的（假绿）。
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var topic=document.querySelector(".tkTopic");' +
+      'if(!topic) return {noTopic:true};' +
+      'var items=app._getOptionItems(topic);' +
+      'var hidden=0,probe=document.querySelectorAll("input,div,span");' +
+      'for(var i=0;i<probe.length;i++){' +
+      '  var nm=String(probe[i].id||probe[i].getAttribute("name")||"");' +
+      '  if(/^answer[0-9]/i.test(nm)) hidden++;}' +
+      'return {raw:(topic.innerText||""),cls:String(topic.className||""),' +
+      'items:items.length,texts:items.map(function(x){return app._extractOptionText(x);}),' +
+      'letters:items.map(function(x,k){return app._inferOptionLetter(x,k);}),' +
+      'stem:app._popupQuizStem(topic,items),hiddenAnswerFields:hidden};})()'
+    );
+    var rawTrimmed = String(shape.raw || '').replace(/\s+/g, '');
+    check('71 夹具自证：弹窗容器只有题型名（现场读数是 cls=tkTopic、text=判断题）',
+      shape.cls === 'tkTopic' && rawTrimmed === '判断题', JSON.stringify(shape));
+    check('71 夹具自证：选项在兄弟节点、靠那条兜底抓到 2 项「对/错」（抓不到题就等于"当然不发请求"）',
+      shape.items === 2 && JSON.stringify(shape.texts) === JSON.stringify(['对', '错']) &&
+      JSON.stringify(shape.letters) === JSON.stringify(['A', 'B']), JSON.stringify(shape));
+    check('71 题干判据：剥掉题型名之后确实是空的（这一格才是"不该花钱"的依据）',
+      shape.stem === '', JSON.stringify(shape));
+    check('71 warn 判据前提：这份文档确实没有 `#answer{数字}` 隐藏域',
+      shape.hiddenAnswerFields === 0, JSON.stringify(shape));
+
+    // ---- ① 不发请求，本地点掉 ----
+    var beforeAsk = ctx.mock.requests.length;
+    var localFilled = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var topic=document.querySelector(".tkTopic");' +
+      'var p=app._handlePopupQuiz(topic);window.__b71node=topic;return p;})()'
+    );
+    await sleep(1800);
+    check('71 空题干一道请求都不发（旧逻辑把「判断题」三个字当题干发给模型，猜错就每 8 秒再问一次）',
+      ctx.mock.requests.length === beforeAsk, '请求数 +' + (ctx.mock.requests.length - beforeAsk));
+    var domState = await ctx.client.evaluate(
+      '(function(){var ins=document.querySelectorAll(".tkOption input[type=radio]");' +
+      'var c=[];for(var i=0;i<ins.length;i++){if(ins[i].checked)c.push(ins[i].value);}return c;})()'
+    );
+    check('71 空题干仍然把弹窗点掉（不点它就会一直拦着播放，看着像卡死）',
+      domState.length === 1, JSON.stringify(domState));
+    var logs71 = await ctx.client.evaluate(
+      '(function(){var ls=window.__b71w||[];return {seen:ls.length,' +
+      'local:ls.filter(function(l){return l.msg==="popup quiz answered locally, no request";})' +
+      '.map(function(l){return l.reason;}),' +
+      'qidWarns:ls.filter(function(l){return l.msg==="option clicked without qid";}).length};})()'
+    );
+    check('71 那条日志点名原因是 no-stem（说不清为什么没花钱就等于没日志）',
+      logs71.local.indexOf('no-stem') !== -1, JSON.stringify(logs71));
+    check('71 没有隐藏域的弹题不再刷 `option clicked without qid`',
+      logs71.qidWarns === 0, JSON.stringify(logs71));
+
+    // ---- ② A/B：插一个真隐藏域，同一处点击必须重新报警 ----
+    // 上面那条只证明"没有隐藏域时不响"；这一发证明"该响的还会响" ——
+    // 少了这一半，这条 warn 就等于被删掉了（而它是"点了但提交上去是空"的唯一线索）。
+    var beforeAb = Number(logs71.qidWarns);
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var inp=document.createElement("input");inp.type="hidden";inp.id="answer9";' +
+      'document.body.appendChild(inp);' +
+      'var items=app._getOptionItems(window.__b71node);' +
+      'app._clickOptionItem(items[1],"radio");return items.length;})()'
+    );
+    await sleep(600);
+    var afterAb = await ctx.client.evaluate(
+      '(function(){var ls=window.__b71w||[];var n=0;' +
+      'for(var i=0;i<ls.length;i++){if(ls[i].msg==="option clicked without qid")n++;}' +
+      'var hidden=document.getElementById("answer9");' +
+      'return {qidWarns:n,hiddenPresent:document.querySelectorAll("[id^=answer]").length,' +
+      'hiddenValue:String((hidden&&hidden.value)||"")};})()'
+    );
+    check('71 有隐藏域时同一处点击照样报警（闸不许把真失败一起静音）',
+      afterAb.qidWarns === beforeAb + 1, JSON.stringify({ before: beforeAb, after: afterAb }));
+    check('71 报警点上的那一格确实是空的（没 qid 就等于平台读的那个字段没写上）',
+      afterAb.hiddenPresent === 1 && afterAb.hiddenValue === '', JSON.stringify(afterAb));
+
+    // ---- ③ 同一个控件补上 qid 再点一次：报警必须归零、值必须写进去 ----
+    // 这一发把上两条钉死成"真的互为对照"：同一份文档、同一个选项、同一个函数，
+    // 唯一区别是有没有 qid —— 有 qid 就一声不响且提交得上，没 qid 就叫。
+    var beforeQid = Number(afterAb.qidWarns);
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var items=app._getOptionItems(window.__b71node);' +
+      'items[1].setAttribute("qid","9");' +
+      'app._clickOptionItem(items[1],"radio");return items.length;})()'
+    );
+    await sleep(600);
+    var afterQid = await ctx.client.evaluate(
+      '(function(){var ls=window.__b71w||[];var n=0;' +
+      'for(var i=0;i<ls.length;i++){if(ls[i].msg==="option clicked without qid")n++;}' +
+      'var hidden=document.getElementById("answer9");' +
+      'return {qidWarns:n,hiddenValue:String((hidden&&hidden.value)||"")};})()'
+    );
+    check('71 补上 qid 同一处点击就把答案写进 `#answer9`（证明那是提交通道，不是写不进去）',
+      afterQid.hiddenValue !== '', JSON.stringify(afterQid));
+    check('71 补上 qid 之后那条报警不再响（响的是"没 qid"，不是"点了选项"这件事）',
+      afterQid.qidWarns === beforeQid, JSON.stringify({ before: beforeQid, after: afterQid }));
   }
 });
 
