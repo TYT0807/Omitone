@@ -4213,7 +4213,7 @@
     `scenarios.length > 0` 且 `assertions > 0`（⚠️ `report.error` 在**场景断言红**时也写，
     不能拿来当「没跑」的判据 —— 加上这条自测时正是它把守卫第一次全打成假红），一个注入只破一层要验的行为。
     判据已写进 AGENTS §5，守卫另配 7 格自测（含「error 也写但场景跑完」那一格）。
-  - **验证**：完整 `npm run e2e` 全绿 **114 个场景 / 1252 项**（`e2e-counts.json` 落盘 `passed:true`、EXIT=0；从批次 64 的 1241 涨到 1252 正是本轮净增的 11 条）。定向跑**不写** `e2e-counts.json`，这份是完整跑的成绩；`npm test` 全绿（规则层 68 项、集成 299 项、worker 单测 126 项、自检 27 项）。
+  - **验证**：完整 `npm run e2e` 全绿 **114 个场景 / 1252 项**（`e2e-counts.json` 落盘 `passed:true`、EXIT=0；从批次 64 的 1241 涨到 1252 正是本轮净增的 11 条）。定向跑**不写** `e2e-counts.json`，这份是完整跑的成绩；`npm test` 全绿（规则层 68 项、集成 299 项、worker 单测 126 项、自检 27 项）。 <!-- 历史计数:start --><!-- 历史计数:end -->
   - **留给下一批**：① `omitone.pet.night` 这个键名在 `popup/pet.js` 是真源常量，但 e2e 里有**两处字面抄写**
     （`tools/browser-e2e.js:2607` 与 `:3747`）—— 键名一旦改，⑧ 日报那三支钉子会**静默失效**，
     退化成"看钟点的随机红"；值得加一条静态闸要求测试里出现的存储键名与常量对账（同族病见批次 62-D）。
@@ -4269,7 +4269,7 @@
     所以「没登录会自己跳到登录页」这一句是量出来的，不是猜的。课程页网址那一族的形状取自
     `_isStudyCourseHref`（`src/page/65-discussion.js:1440`，含 `/mycourse/studentstudy`），只当判据写进文中、不写成链接。
   - **验证**：本轮**纯文档**，未动一行代码 —— 未跑 `npm run concat`（`page.js` 没变），
-    e2e 计数与批次 65 相同（**114 场景 / 1252 项**）。说明书源文件改过 → 必须 `npm run manual`
+    e2e 计数与批次 65 相同（**114 场景 / 1252 项**）。说明书源文件改过 → 必须 `npm run manual` <!-- 历史计数:start --><!-- 历史计数:end -->
     重出 `使用说明.pdf`，再按 §3.7 换**两个**附件（`omitone.zip` 与 `Omitone-manual.pdf` 是两个东西，
     只换 zip 等于用户点开下载拿到的还是旧说明书）。
   - **留给下一批**：说明书第 0 节第 1 步仍写着「下完之后，用鼠标右键点这个 zip 文件 →
@@ -4299,7 +4299,7 @@
     Windows 11 那一句是查过的（多家教程 + Reddit 中文页都在说解压要先点「显示更多选项」），
     不是按印象写的。
   - **验证**：本轮**纯文档**，未动一行代码 —— 未跑 `npm run concat`（`page.js` 没变），
-    e2e 计数与批次 65 / 66 相同（**114 场景 / 1252 项**）。`npm run manual` 重出 `使用说明.pdf`
+    e2e 计数与批次 65 / 66 相同（**114 场景 / 1252 项**）。`npm run manual` 重出 `使用说明.pdf` <!-- 历史计数:start --><!-- 历史计数:end -->
     **28 页 / 1792.7 KB / 位图 0 张**；`npm test` 全绿。
     ⚠️ **页数这条闸连着点名了两次**：批次 66 出 27 页时 README 还写 26 → `npm test` 当场红一条；
     本轮 28 页，README 跟着改。**改说明书必带 README 那一处，别指望人记住。**
@@ -4344,6 +4344,74 @@
   - **留给下一批**：第 27 项只管「说明书教的界面**字样**」，管不到"这句对界面行为的**断言**是不是说了一半"。
     「刷课要不要 Key」「能不能刷完整门课」这一族门面断言目前**没有任何机检**，
     和批次 66/67 留下的「只能在电脑浏览器里用」那一格是同一族活。
+
+- **77. 批次 69：切到后台不再只给「正在播」那一段保活（tick 循环还在跑就该有豁免）**（2026-11-15）
+  - **现场形状**（CDP 9334 只读探针量回来的，不是猜的）：刷课页 `document.hidden === true`，
+    状态面板那格**冻在 20:45:08**，页面里 `setInterval` / `setTimeout` **25 秒一次都没回调**，
+    而这一节**一条媒体都没有在播**。也就是 Edge 把整条定时器队列冻住了 —— 插件连"改面板说自己停了"
+    这一下都没机会做，用户看到的就是"右下角还写着正常运行，其实早就不动了"。
+  - **根因是一句判据把豁免只管了一半**：`_syncAudioKeepalive()` 旧写法是
+    `if (this._isPlaying && hidden) 起音轨; else 停音轨`。那根听不见的 50Hz 音轨是浏览器
+    「正在播音频」的**后台节流豁免**凭证，而"在播"只是运行期里的一段：**这一节播完正等翻页**、
+    **文档 / PPT / 讨论 / 投票**这些区间一条媒体都没有，旧判据就在这些地方把音轨**停掉**，
+    后台标签页失去豁免 → 被冻结。批次 63 治的是"跟站点抢播放器"，这一条治的是"整条队列被冻"，
+    两件事独立。
+  - **落点（三处，缺一处都还剩一段没豁免）**：① `src/page/40-media.js:848` 判据改成
+    **在播 `_isPlaying` 或 tick 循环在跑 `_tickLoopInterval`** 且页面在后台 ——
+    ⚠️ 之所以敢直接读 `_tickLoopInterval`，是因为 `_clearTickLoop()` **先把句柄置空**再去清 check 区间，
+    点【停止】那一拍照样收尾，不会留一根没人管的音轨（这一格由 e2e 的 C / D 两格钉住）；
+    ② `src/page/64-tasks-loop.js:100` 在 `_runTick` 开头补一次 `_syncAudioKeepalive()` ——
+    「运行中但这一节压根没进过视频」那一段以前**没有任何调用点**（只有媒体事件和 visibilitychange 会调它），
+    不补就还是冻住；两个方法各自会早退，所以每拍调是幂等的；
+    ③ `src/page/10-config-state.js:456-457` 独立验证码页那一支**不经过 `_runTick`**（它自己 `setInterval(captchaTick,1500)`），
+    所以在那一支里补 `_bindVisibilityHandlers() + _syncAudioKeepalive()`。
+  - **"起了"不等于"在响"，所以把状态打进日志**：后台标签页没有用户手势时 `resume()` 会被浏览器拒绝，
+    那根音轨其实没跑、豁免也就没有 —— 以前这只能靠猜。现在起音轨那条 info 带 `{ state, because }`
+    （`because` 区分是**在播**起的还是**光靠 tick 循环**起的），`resume()` 落地后若 `state` 仍是
+    `suspended` 就出**一条**点名 warn `audio keepalive stayed suspended: browser has no user gesture for it`
+    （`keep.warned` 记账，一次起停只说一遍，不许变成新的刷屏源）。
+  - **验证**：`tools/browser-e2e.js` 两个新场景（+375 行）——  `/media` 那族钉「判据三格 + 真 AudioContext 起停收尾」，
+    `/captcha-verify` 那族钉独立验证码页那一支的接上与放掉。夹具自证里**桩打在 AudioContext 本身**
+    （记 `__b69closed`，让 `state` 跟着真实的 `close()` 走），断言分成"每一只建出来的都被 close() 过"
+    与"没有活的音轨"两格。**最后一格本轮在现场被打回过一次**：原先只读 `ctx.state`，
+    而 Chrome 对**正在运行**的上下文是**异步**翻成 `closed` 的（只有返回的 promise 是同步信号），
+    于是读出 `total:9 / open:3` 四条 `"suspended"` —— 那是夹具把 `state` 钉死成 `suspended`
+    让真正的 `close()` 变得不可见，**改的是夹具，不是判据**（分成两格之后反而更严：
+    现在分得清"根本没关"和"浏览器还没翻过来"）。改完定向 20/20 绿。
+    反向验证 `.workbuddy/reverse69.cjs` **七发注入各破一件事**：I1 判据退回旧形状、I2 摘掉 `_runTick`
+    那一条腿、I3 让早退分支不 close（造孤儿音轨）、I4 摘掉验证码分支那两句话、I5 让 `afterResume` 直接 return
+    （拒绝手势不再点名）、I6 放宽过头（不看可见性，前台也开着音轨）、I7 把 `{state,because}` 摘掉。
+    ⚠️ I7 第一版**锚点选小了**：10 空格那一行是 14 空格那条 warn 的 meta 的**后缀**，唯一性判据当场拒了它
+    —— 驱动行为是对的（就地还原 + 逐字节核对），要改的是锚点，不是判据。
+  - ⚠️ **全量跑打回一条自己写的前提**（定向 20/20 绿不算数）：`/captcha-verify` 的归因原先写成
+    「这一页**本来没绑过**可见性监听、run() 之后才有」。全量跑恒红（取证里 `boundBefore:true`）——
+    根因是**上一支场景的 `run()` 会把 `xxtRunning` 写进整轮共用的扩展 storage**
+    （`src/page/10-config-state.js:468`），content.js 加载这一页时读到它就自动续跑一遍
+    （`content.js:3153` → `src/page/90-console-api-startup.js:127-128` → `run()` 的 study 那一支），
+    监听在测试动手之前就绑上了。**前提不许靠运行顺序成立**（AGENTS §5「夹具必须自己钉住它依赖的
+    共享状态」又一类形状：这一格毒化的是**存储**，不是窗口尺寸／配置）。改法：归因改成按**调用次数**量 ——
+    桩打在 `_bindVisibilityHandlers` / `_syncAudioKeepalive` 这两个动作上、`run()` 一回来就摘掉；
+    并在动手前先 `_clearTickLoop() + _clearCheckInterval()` 把自启那一支的循环按掉，
+    否则它随时可能在两次 evaluate 之间起媒体监控，把「`_checkInterval` 是空的」顶成随机红。
+    顺带把「走的确实是验证码分支」换成硬证据：`run()` 返回时识别计数**恰好 +1** —— 同步块里
+    定时器插不进来，这一发只可能是那一支末尾的 `captchaTick()` 打的。I4 现在红的是这一格，不看顺序的脸色。
+  - **回归**：`npm run e2e` 全绿 **116 个场景 / 1272 项**（批次 68 是 114 / 1252，本轮 +2 场景 +20 断言）、
+    `npm test` 全绿。计数回填 6 处（AGENTS §1、README ×2、tools/README ×2、HANDOVER 页首基线），
+    批次 65 / 66 / 67 那三行**历史**计数按行尾成对标记豁免 —— 不改写当时的事实。
+  - ⚠️ **同一族还有第三处**：任何"顺手清掉某个字段"的放行/收摊分支，如果那个字段同时是**某把尺的时钟**，
+    就必须问"这一拍到底武装过没有"。批次 55-C 的 `_mediaWaitLogAt`、批次 61 的 `countedSeconds`、
+    本轮的 `_audioKeepalive` 是同一个形状。
+  - ⚠️ **本批还没有现场正证**：收尾时现场那份构建里 `audio keepalive started` 仍然**不带 payload**
+    （= 用户那台还在跑批次 63/65 那一份），要生效必须 `edge://extensions` 重新加载 + 学习通页 F5。
+    日志环里已经能看到这一族在旧构建上的样子：`audio keepalive started` 只在媒体事件那一拍出现，
+    播完等翻页的区间里**整段消失**。
+  - **留给下一批**：现场仍在每 8~9 秒烧一次大模型 —— 弹题（`div.tkTopic` / `li.ans-videoquiz-opt`）
+    那一族的"最多问 3 次就放手"**永远触发不了**，因为 `_fillPopupAnswer` 成功之后
+    `src/page/80-popup-quiz.js:457` 把 `_popupQuizAttempts` 归零，而那正是安全阀读的计数器
+    （现场读数：`attempt:1` 恒为 1、`banned` 已涨到 `["A","B"]`、跨章节切换还在刷）。
+    同族还有第二条：`option clicked without qid` 在视频弹题这一族是**假警报** ——
+    现场实测这一族全文档 `#answer*` / `[name^=answer]` 计数为 **0**，平台读的是勾选态加
+    `a#videoquiz-submit`，qid 本来就不存在。
 
 ---
 

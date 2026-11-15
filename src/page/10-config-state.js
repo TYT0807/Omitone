@@ -451,6 +451,10 @@
           });
         };
         this._tickLoopInterval = setInterval(captchaTick, 1500);
+        // 这条分支不经过 _startTickLoop / _runTick，「每拍量一次」在这里没有 ——
+        // 所以绑上可见性监听并立刻量一次，切后台时这条 1500ms 的识别循环才不会被冻住。
+        this._bindVisibilityHandlers();
+        this._syncAudioKeepalive();
         captchaTick();
         return;
       }
@@ -467,6 +471,10 @@
       this._resetRuntimeState();
       this._clearTickLoop();
       this._bindStepNavigation();
+      // 保活音轨要在「切到后台」那一刻就被点起来，而不是等下一拍 tick：
+      // 以前只有 _startVideoMonitoring 绑这个监听，于是从没起过媒体的页面（文档 / PPT /
+      // 讨论）在后台只能靠 250ms 的循环 —— 而后台里恰恰是这个循环先被节流到每分钟一次。
+      this._bindVisibilityHandlers();
       // 只在启动时测一次帧率（700ms rAF），慢机据此放宽下面所有等待上限。
       // 测不出来时 perfFactor() 恒为 1，行为与改动前一致。
       startPerfProbe();

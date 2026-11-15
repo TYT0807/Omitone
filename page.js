@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '516ba9ef1b';
+var OMITONE_CODE_REV = '9eb7a62334';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -806,6 +806,10 @@ var OMITONE_CODE_REV = '516ba9ef1b';
           });
         };
         this._tickLoopInterval = setInterval(captchaTick, 1500);
+        // 这条分支不经过 _startTickLoop / _runTick，「每拍量一次」在这里没有 ——
+        // 所以绑上可见性监听并立刻量一次，切后台时这条 1500ms 的识别循环才不会被冻住。
+        this._bindVisibilityHandlers();
+        this._syncAudioKeepalive();
         captchaTick();
         return;
       }
@@ -822,6 +826,10 @@ var OMITONE_CODE_REV = '516ba9ef1b';
       this._resetRuntimeState();
       this._clearTickLoop();
       this._bindStepNavigation();
+      // 保活音轨要在「切到后台」那一刻就被点起来，而不是等下一拍 tick：
+      // 以前只有 _startVideoMonitoring 绑这个监听，于是从没起过媒体的页面（文档 / PPT /
+      // 讨论）在后台只能靠 250ms 的循环 —— 而后台里恰恰是这个循环先被节流到每分钟一次。
+      this._bindVisibilityHandlers();
       // 只在启动时测一次帧率（700ms rAF），慢机据此放宽下面所有等待上限。
       // 测不出来时 perfFactor() 恒为 1，行为与改动前一致。
       startPerfProbe();
@@ -2848,11 +2856,30 @@ var OMITONE_CODE_REV = '516ba9ef1b';
         oscillator.connect(gain);
         gain.connect(ctx.destination);
         oscillator.start();
+        var app = this;
+        var keep = { ctx: ctx, oscillator: oscillator, warned: false,
+          because: this._isPlaying ? 'playing' : 'running' };
+        this._audioKeepalive = keep;
+        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)',
+          { state: ctx.state, because: keep.because });
+        // 「起了」不等于「在响」：后台标签页没有用户手势时 resume() 会被拒，
+        // 那时这条音轨根本没跑、豁免也就没有 —— 不点名出来就只能靠猜（一次起停只说一遍）。
+        var afterResume = function () {
+          try {
+            if (app._audioKeepalive !== keep) return;
+            if (keep.warned || ctx.state !== 'suspended') return;
+            keep.warned = true;
+            emitRuntimeLog('warn', 'audio keepalive stayed suspended: browser has no user gesture for it',
+              { state: ctx.state, because: keep.because });
+          } catch (eLog) {}
+        };
         if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
-          ctx.resume().catch(function () {});
+          try {
+            var pResume = ctx.resume();
+            if (pResume && typeof pResume.then === 'function') pResume.then(afterResume, afterResume);
+            else afterResume();
+          } catch (eResume) { afterResume(); }
         }
-        this._audioKeepalive = { ctx: ctx, oscillator: oscillator };
-        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)');
       } catch (e) {}
     },
 
@@ -2867,7 +2894,11 @@ var OMITONE_CODE_REV = '516ba9ef1b';
 
     _syncAudioKeepalive: function () {
       var hidden = !!(document.hidden || document.visibilityState === 'hidden');
-      if (this._isPlaying && hidden) this._startAudioKeepalive();
+      // 「在播」只是运行期里的一段：这一节播完正等翻页、文档 / PPT / 讨论 / 投票这些区间
+      // 一条媒体都没有，可 tick 循环还在跑。旧判据在这段把音轨停掉，后台标签页就失去
+      // 「正在播音频」的豁免 —— Edge 直接把定时器队列冻住（现场实测：面板冻在 20:45:08、
+      // setInterval 25 秒不回调，而徽标还写着「正常运行」，连「改面板说自己停了」都做不到）。
+      if ((this._isPlaying || this._tickLoopInterval) && hidden) this._startAudioKeepalive();
       else this._stopAudioKeepalive();
     },
 
@@ -8132,6 +8163,9 @@ var OMITONE_CODE_REV = '516ba9ef1b';
     },
 
     _runTick: async function () {
+      // 每拍量一次保活音轨：这一族页面里可能再也没有任何播放事件来触发它 ——
+      // 尤其文档 / PPT 这类从没起过 _startVideoMonitoring 的页。
+      this._syncAudioKeepalive();
       if (this._tickRunning) return;
       this._tickRunning = true;
       var myEpoch = this._tickEpoch = (this._tickEpoch || 0) + 1;

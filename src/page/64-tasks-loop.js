@@ -95,6 +95,9 @@
     },
 
     _runTick: async function () {
+      // 每拍量一次保活音轨：这一族页面里可能再也没有任何播放事件来触发它 ——
+      // 尤其文档 / PPT 这类从没起过 _startVideoMonitoring 的页。
+      this._syncAudioKeepalive();
       if (this._tickRunning) return;
       this._tickRunning = true;
       var myEpoch = this._tickEpoch = (this._tickEpoch || 0) + 1;

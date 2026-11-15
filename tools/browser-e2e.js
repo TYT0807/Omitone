@@ -16124,6 +16124,400 @@ SCENARIOS.push({
   }
 });
 
+/* ── 批次 69：保活音轨跟着「运行中」走，不再只管「正在播」那一段 ──────────────
+ * 现场（2026-11-15，用户那台调试浏览器 CDP 9334）：刷课页 `document.hidden=true`，
+ * 面板时间冻在 20:45:08、页面里 `setInterval` 25 秒不回调（Edge 把这一页的定时器队列
+ * 整个冻住），而那一刻页面里**一条媒体都没有** —— 保活音轨的判据原来是「在播 且 后台」，
+ * 于是「这一节播完正等翻页」「文档 / 讨论 / 投票」这些区间自己把豁免停掉了。
+ *
+ * 夹具要点（AGENTS §5）：
+ *  - page.js 跑在页面**主世界**，`document.hidden` 在这一层改得到桩（与 58 同族）。
+ *  - 音频引擎：真 Edge 有原生 AudioContext（取证里 `ac=native`）；沙盒那层没有就补一个
+ *    **形状相同**的桩（`ac=stub`），两档都点名 —— 本场景测的是开关逻辑，不是浏览器响不响。
+ *    但「建了几份 Context、停掉之后关没关」必须数得回来，所以构造函数包了一层计数器。
+ *  - ⚠️ **每一格先把音轨摘干净、再在同一个 evaluate 里同步派发事件**：tick 每 250 毫秒
+ *    也会量一次，异步等一下就分不清是「切后台那一刻」还是「下一拍」起起来的 —— 两条腿
+ *    要分开归因（拆掉任意一条，只应当红对应那一格）。
+ *  - 站点桩照 58 那一份摘掉（play 不改变 paused、不产生事件），免得生产自己把
+ *    `_isPlaying` 拨来拨去，把我这一格的前置条件顶翻。
+ */
+SCENARIOS.push({
+  name: '保活音轨跟着运行中走，不再只管正在播那一段',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  var H = { v: false };',
+      '  Object.defineProperty(document, "hidden", { configurable: true, get: function(){ return H.v; } });',
+      '  Object.defineProperty(document, "visibilityState", { configurable: true, get: function(){ return H.v ? "hidden" : "visible"; } });',
+      '  window.__b69setHidden = function (x) { H.v = !!x; };',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error", { configurable: true, get: function(){ return null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return true; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '    get: function(){ return 42; }, set: function (v) { this.__b69Set = v; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", { configurable: true,',
+      '    get: function(){ return this.__b69Rate == null ? 1 : this.__b69Rate; }, set: function (v) { this.__b69Rate = v; } });',
+      '  HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.pause = function () {};',
+      '  HTMLMediaElement.prototype.load = function () {};',
+      // 音频引擎：没有原生件就补一个形状相同的桩；两种都包一层计数器，
+      // 于是「每拍新建一份」这种泄漏数得回来，「拒绝 resume」也能按档造出来。
+      '  var Orig = window.AudioContext || window.webkitAudioContext;',
+      '  window.__b69ac = Orig ? "native" : "stub";',
+      '  if (!Orig) {',
+      '    Orig = function () {',
+      '      var self = this; self.state = "suspended"; self.destination = {};',
+      '      self.createOscillator = function () { return { frequency: { value: 0 }, connect: function () {},',
+      '        start: function () {}, stop: function () { self.state = "closed"; } }; };',
+      '      self.createGain = function () { return { gain: { value: 0 }, connect: function () {} }; };',
+      '      self.resume = function () { self.state = "running"; return Promise.resolve(); };',
+      '      self.close = function () { self.state = "closed"; return Promise.resolve(); };',
+      '    };',
+      '  }',
+      '  window.__b69ctxs = [];',
+      '  window.__b69reject = false;',
+      '  window.AudioContext = function () {',
+      '    var c = new Orig();',
+      // 每一份都记一次「close() 有没有被调用」—— 这才是生产行为。',
+      // 浏览器把 state 换到 closed 是异步的（running 状态下的 close() 走 Promise），',
+      // 拿 state 同步读一眼就判漏，测的是浏览器的换挡速度。
+      '    c.__b69closed = false;',
+      '    var rawClose = (typeof c.close === "function") ? c.close.bind(c) : null;',
+      '    c.close = function () { c.__b69closed = true;',
+      '      if (!rawClose) return;',
+      '      try { var p = rawClose(); if (p && typeof p.catch === "function") p.catch(function () {}); } catch (eRc) {} };',
+      '    if (window.__b69reject) {',
+      // 「resume 被拒 → 一直不响」这一档要造得出，但**不许把 closed 也遮住**：',
+      // 上一版无条件回 suspended，于是那三份明明关掉了还读成没关，红的是夹具自己撒的谎。
+      '      try { Object.defineProperty(c, "state", { configurable: true,',
+      '        get: function(){ return c.__b69closed ? "closed" : "suspended"; } }); } catch (eS) {}',
+      '      c.resume = function () { return Promise.reject(new Error("not allowed without a user gesture")); };',
+      '    }',
+      '    window.__b69ctxs.push(c);',
+      '    return c;',
+      '  };',
+      '  window.webkitAudioContext = window.AudioContext;',
+      '  window.__b69Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    // 事件腿与循环腿都要在**同一次 evaluate 里**「摘音轨 → 派发 → 回读」，
+    // 中间不给 tick 落地的机会；只有 69-F 那一格故意只摘不派，等下一拍。
+    function beat(code) {
+      return ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+        'window.__b69log=window.__b69log||[];' + code +
+        'return {alive:!!app._audioKeepalive,because:(app._audioKeepalive||{}).because||null,' +
+        'ctxs:window.__b69ctxs.length,loop:!!app._tickLoopInterval,playing:app._isPlaying===true,' +
+        'hidden:document.hidden};})()');
+    }
+
+    var probe = await ctx.client.evaluate('(function(){' +
+      'var app=window._xxtApp;' +
+      'if(!app) return {err:"no-app"};' +
+      'window.__b69log=[];' +
+      'if(!window.__b69Bound){window.__b69Bound=true;' +
+      '  window.addEventListener("message",function(e){var m=e.data;' +
+      '    if(m&&m.source==="xxt_app"&&m.type==="runtime_log") window.__b69log.push(m);});}' +
+      'try{app._bindVisibilityHandlers();}catch(eB1){}' +
+      'try{app._checkVideoStatus=function(){};}catch(eB2){}' +
+      'var a=null;try{var C=window.AudioContext||window.webkitAudioContext;' +
+      '  var t=new C();try{t.close();}catch(eC){}}catch(eT){a=String(eT&&eT.message);}' +
+      'return {patched:window.__b69Patched===true,setter:typeof window.__b69setHidden==="function",' +
+      'ac:window.__b69ac,bound:app._visibilityBound===true,loopBefore:!!app._tickLoopInterval,' +
+      'hasStart:typeof app._startTickLoop==="function",hasClear:typeof app._clearTickLoop==="function",' +
+      'checkStub:app._checkVideoStatus.length===0,buildErr:a};})()');
+    check('69 夹具自证：hidden 桩能切、音频引擎建得出来（native 或同形状的桩）、可见性监听已绑、' +
+      'tick 循环的两个开关都在、`_checkVideoStatus` 已摘 —— 少任一件，下面每一格测的都是空气。' +
+      // ⚠️ 这一页**不是**自动开始那一档：沙盒里没有续跑标记 → shouldAutoStart() 为假 →
+      //    tick 循环压根没跑（取证里的 loopBefore 就是它）。所以循环由本场景自己起，
+      //    「起没起来」交给 69-B 那一格按句柄读回来，不自证在这儿拿它当真值。
+      !!probe && probe.patched === true && probe.setter === true &&
+      (probe.ac === 'native' || probe.ac === 'stub') && probe.bound === true &&
+      probe.hasStart === true && probe.hasClear === true &&
+      probe.checkStub === true && probe.buildErr === null,
+      JSON.stringify(probe));
+
+    // 摆成现场那一档：在后台、没媒体在播、循环先停掉（旧判据在这一档就是把保活停着不起）
+    var off = await beat('app._isPlaying=false;window.__b69setHidden(true);' +
+      'try{app._clearTickLoop();}catch(e1){}app._stopAudioKeepalive();' +
+      'window.__b69ctxs.length=0;');
+    check('69 前提：摆成「在后台 + 没媒体在播 + 循环已停」，音轨是空的、计数器清零',
+      !!off && off.alive === false && off.hidden === true && off.loop === false &&
+      off.ctxs === 0, JSON.stringify(off));
+
+    var a = await beat('app._isPlaying=true;document.dispatchEvent(new Event("visibilitychange"));');
+    check('69-A 回归闸：「在播 + 后台」照样起音轨，而且起它的理由点名是「playing」',
+      !!a && a.alive === true && a.because === 'playing', JSON.stringify(a));
+
+    var aNeg = await beat('app._isPlaying=false;document.dispatchEvent(new Event("visibilitychange"));');
+    check('69-A 对照：循环停着 + 没媒体在播 → 音轨必须**没有**（放宽判据不是"任何时候都开着"，' +
+      '这一格就是那条反向的闸）',
+      !!aNeg && aNeg.alive === false && aNeg.loop === false, JSON.stringify(aNeg));
+
+    // 现场出事的那一档：循环在跑、这一刻没有媒体。摘干净再**同步**派发 → 只能是被事件腿起的
+    var b = await beat('app._isPlaying=false;try{app._startTickLoop();}catch(e2){}' +
+      'app._stopAudioKeepalive();document.dispatchEvent(new Event("visibilitychange"));');
+    check('69-B 现场那一档：运行中但这一刻没媒体在播，切后台那一刻就起音轨，理由点名是「running」' +
+      '（旧判据在这一档停着不起 —— 用户那台浏览器定时器被冻住、面板冻在 20:45:08 的就是这一档）',
+      !!b && b.alive === true && b.because === 'running' && b.loop === true &&
+      b.playing === false, JSON.stringify(b));
+
+    // 第二条腿：不派发任何事件，只等下一拍 tick 把它量回来
+    var fBefore = await beat('app._stopAudioKeepalive();');
+    var f = null;
+    for (var i = 0; i < 14; i++) {
+      await sleep(200);
+      f = await beat('');
+      if (f && f.alive === true) break;
+    }
+    check('69-F 第二条腿：一个事件都不派发，只靠下一拍 tick 也把音轨量回来' +
+      '（`_runTick` 里那一句 —— 从没起过媒体的页面连 visibilitychange 都可能没人绑，' +
+      '只靠事件这一条腿就是漏的）',
+      !!fBefore && fBefore.alive === false && !!f && f.alive === true &&
+      f.because === 'running' && f.loop === true, JSON.stringify({ before: fBefore, after: f }));
+
+    // 稳态：每拍都量 ≠ 每拍都重建
+    var eBefore = await beat('');
+    await sleep(1500);
+    var e = await beat('');
+    check('69-E 稳态 1.5 秒（至少 5 拍）里**不再新建第二份** AudioContext —— ' +
+      '每拍量一次不等于每拍重建，否则一轮下来建出几十份，浏览器直接不给了',
+      !!eBefore && eBefore.alive === true && !!e && e.alive === true &&
+      e.ctxs === eBefore.ctxs, JSON.stringify({ before: eBefore, after: e }));
+
+    // 停止链路：_clearTickLoop 先把句柄置空再清 check 区间，所以放宽判据不会放宽到「停了还在响」
+    var c = await beat('try{app._clearTickLoop();}catch(e3){}');
+    check('69-C 点【停止】之后音轨跟着收尾（`_clearTickLoop` 先清句柄、再经 `_clearCheckInterval` 量一次）' +
+      '—— 现场这条必须成立，否则用户停了插件，标签页还带着一条音轨不被节流',
+      !!c && c.alive === false && c.loop === false, JSON.stringify(c));
+
+    var dStart = await beat('app._isPlaying=true;document.dispatchEvent(new Event("visibilitychange"));');
+    var d = await beat('window.__b69setHidden(false);' +
+      'document.dispatchEvent(new Event("visibilitychange"));');
+    check('69-D 端回前台那一拍就把音轨放掉（它只该在后台存在；前台里留着就是一条白响的轨道）',
+      !!dStart && dStart.alive === true && !!d && d.alive === false && d.hidden === false,
+      JSON.stringify({ start: dStart, end: d }));
+
+    var logs = await ctx.client.evaluate('(function(){var out=[];' +
+      '(window.__b69log||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("audio keepalive started")===0)out.push({level:String(m.level||""),meta:m.meta||null});});' +
+      'return JSON.stringify(out);})()');
+    var started = JSON.parse(logs) || [];
+    var tagged = started.filter(function (x) {
+      return !!x.meta && typeof x.meta.state === 'string' && x.meta.state !== '' &&
+        (x.meta.because === 'playing' || x.meta.because === 'running');
+    });
+    check('69-G 起音轨那一条日志把「state + because」带着走（每一条都要有），且这一轮里' +
+      '至少有一条是「running」起的 —— 没有 because 就等于"运行中起的那一类"看不见',
+      started.length >= 2 && tagged.length === started.length &&
+      tagged.some(function (x) { return x.meta.because === 'running'; }),
+      JSON.stringify({ total: started.length, tagged: tagged.map(function (x) { return x.meta; }) }));
+
+    // 拒绝 resume 那一档：起了，但浏览器不让响 —— 必须点名，而且一次起停只说一遍
+    var wSetup = await beat('window.__b69reject=true;window.__b69setHidden(true);app._isPlaying=false;' +
+      'try{app._startTickLoop();}catch(e4){}app._stopAudioKeepalive();' +
+      'document.dispatchEvent(new Event("visibilitychange"));window.__b69log=[];');
+    await sleep(500);
+    var w1 = await ctx.client.evaluate('(function(){var n=0,first=null;' +
+      '(window.__b69log||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("audio keepalive stayed suspended")===0){n++;if(!first)first={level:String(m.level||""),meta:m.meta||null};}});' +
+      'var app=window._xxtApp;return JSON.stringify({n:n,first:first,alive:!!app._audioKeepalive,' +
+      'state:(app._audioKeepalive&&app._audioKeepalive.ctx)?app._audioKeepalive.ctx.state:"(无)"});})()');
+    var warn1 = JSON.parse(w1);
+    // 再叫两次起保活（同一条音轨还挂着 → 早退），不许把 warn 刷成洪水
+    await beat('app._stopAudioKeepalive();document.dispatchEvent(new Event("visibilitychange"));');
+    await sleep(500);
+    var w2 = await ctx.client.evaluate('(function(){var n=0;' +
+      '(window.__b69log||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("audio keepalive stayed suspended")===0)n++;});' +
+      'return JSON.stringify({n:n});})()');
+    var warn2 = JSON.parse(w2);
+    check('69-W 浏览器拒绝 resume 时**点名成 warn**（"起了"不等于"真在响"，没有用户手势时' +
+      '这条音轨等于没开）：带 state=suspended 与 because，且一次起停只说一遍',
+      !!wSetup && wSetup.alive === true && warn1.n === 1 && warn1.first &&
+      warn1.first.level === 'warn' && warn1.first.meta &&
+      warn1.first.meta.state === 'suspended' &&
+      (warn1.first.meta.because === 'running' || warn1.first.meta.because === 'playing') &&
+      warn2.n <= 2, JSON.stringify({ setup: wSetup, w1: warn1, w2: warn2 }));
+
+    // 收尾分两格归因：① 生产有没有对每一份建过的 Context 调过 close()；
+    // ② 浏览器有没有真的把它们换到 closed（running 状态下这一步是异步的，给 3 秒）。
+    // 合成一格读同步 state，测到的是"浏览器换得多快"，不是"有没有漏关"。
+    var stop = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'window.__b69reject=false;try{app._clearTickLoop();}catch(e5){}app._isPlaying=false;' +
+      'app._stopAudioKeepalive();' +
+      'return JSON.stringify({live:!!app._audioKeepalive,' +
+      'total:window.__b69ctxs.length,' +
+      'called:window.__b69ctxs.filter(function(c){return c.__b69closed===true;}).length});})()');
+    var st = JSON.parse(stop);
+    check('69 收尾：摘掉音轨时**每一份建过的 Context 都被 close() 过**（漏着就是每轮攒一份，' +
+      '浏览器给到上限之后保活彻底起不来），且 _audioKeepalive 已置空 —— ' +
+      '这一格只问"有没有调 close"，不问浏览器换到 closed 要多久',
+      !!st && st.total >= 2 && st.live === false && st.called === st.total,
+      JSON.stringify(st));
+
+    var leaked = null;
+    for (var lk = 0; lk < 20; lk++) {
+      var s2 = await ctx.client.evaluate('(function(){' +
+        'var o=window.__b69ctxs.filter(function(c){return c.state!=="closed";});' +
+        'return JSON.stringify({open:o.length,total:window.__b69ctxs.length,' +
+        'states:window.__b69ctxs.map(function(c){return c.state;})});})()');
+      leaked = JSON.parse(s2);
+      if (leaked.open === 0) break;
+      await sleep(150);
+    }
+    check('69 收尾：close() 之后浏览器把每一份都落到了 closed（最多等 3 秒）—— ' +
+      '落不下来就是真漏着，这一格读的是 state，跟上面那格分开才归因得清',
+      !!leaked && leaked.open === 0, JSON.stringify(leaked));
+  }
+});
+
+/* ── 批次 69 第二支：独立验证码页那条分支（不走 _runTick，两条腿都得自己接上）──
+ * `run()` 里 `pageScope==='captcha'` 那一支直接 return：不起 `_startVideoMonitoring`
+ * （所以 `_checkInterval` 是空的、可见性监听以前**从来没绑过**），也不走 `_runTick`，
+ * 只有这条 1500 毫秒的识别循环。切到后台时它先被节流到每分钟一次、五分钟后被冻住 ——
+ * 验证码填不上，刷课也就停在这一页。
+ * 归因：这一页上没有任何别的东西会绑 visibilitychange，所以「派发事件 → 音轨起来」
+ * 只可能是 run() 那一支自己接的。
+ */
+SCENARIOS.push({
+  name: '独立验证码页切到后台时识别循环不被冻住',
+  path: '/captcha-verify',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  var H = { v: false };',
+      '  Object.defineProperty(document, "hidden", { configurable: true, get: function(){ return H.v; } });',
+      '  Object.defineProperty(document, "visibilityState", { configurable: true, get: function(){ return H.v ? "hidden" : "visible"; } });',
+      '  window.__b69cset = function (x) { H.v = !!x; };',
+      '  var Orig = window.AudioContext || window.webkitAudioContext;',
+      '  window.__b69cac = Orig ? "native" : "stub";',
+      '  if (!Orig) {',
+      '    Orig = function () {',
+      '      var self = this; self.state = "suspended"; self.destination = {};',
+      '      self.createOscillator = function () { return { frequency: { value: 0 }, connect: function () {},',
+      '        start: function () {}, stop: function () { self.state = "closed"; } }; };',
+      '      self.createGain = function () { return { gain: { value: 0 }, connect: function () {} }; };',
+      '      self.resume = function () { self.state = "running"; return Promise.resolve(); };',
+      '      self.close = function () { self.state = "closed"; return Promise.resolve(); };',
+      '    };',
+      '  }',
+      '  window.__b69cctxs = [];',
+      '  window.AudioContext = function () { var c = new Orig();',
+      '    c.__b69closed = false;',
+      '    var rawClose = (typeof c.close === "function") ? c.close.bind(c) : null;',
+      '    c.close = function () { c.__b69closed = true;',
+      '      if (!rawClose) return;',
+      '      try { var p = rawClose(); if (p && typeof p.catch === "function") p.catch(function () {}); } catch (eRc) {} };',
+      '    window.__b69cctxs.push(c); return c; };',
+      '  window.webkitAudioContext = window.AudioContext;',
+      '  window.__b69cPatched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    // 把「识别」这一发换成计数器：本场景要测的是这条分支有没有把保活接上，
+    // 不是识别本身（那一半由 7109 / 7206 两支负责）。桩的下界就在这一个会把整页
+    // 刷走、会真的发请求的 API 上 —— `captchaTick` 里的循环照旧一拍一拍地走。
+    var setup = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'if(!app) return {err:"no-app"};' +
+      'window.__b69cmode=0;' +
+      'if(!app.__b69cOrig){app.__b69cOrig=app._runStandaloneCaptchaMode;}' +
+      'app._runStandaloneCaptchaMode=function(){window.__b69cmode++;return Promise.resolve();};' +
+      'try{app._checkVideoStatus=function(){};}catch(e1){}' +
+      // 这一页在 SW 那一侧的 scope 是 study（沙盒 URL 不是真站 antispiderShowVerify 那一条），
+      // 而 DOM 形状真的是验证码墙 —— 按现场补上 scope 这一个字段，再走 run() 的验证码分支。
+      'var standalone=app._isStandaloneCaptchaPage()===true;' +
+      // 先把自动续跑那一支的循环按掉：上一支场景的 run() 会把 xxtRunning 写进**整轮共用**的
+      // 扩展 storage，这一页加载时 content.js 就自己 run() 了一遍（study 那一支），
+      // 于是这一页在测试动手之前已经有一个 250ms 的循环在跑 —— 两次 evaluate 之间它随时可能
+      // 起媒体监控，把下面 `_checkInterval` 是空的这格顶成随机红。清完再量。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      // 归因不靠「这一页本来没绑过可见性监听」，改成直接量「run() 的验证码分支自己调了这两句」：
+      // 桩打在动作上（`_bindVisibilityHandlers` / `_syncAudioKeepalive`），run() 一回来就摘掉。
+      // 批次 69 全量跑实测 boundBefore:true —— 上一条注释那个自启会把监听早就绑上。
+      'var bindFn=app._bindVisibilityHandlers,syncFn=app._syncAudioKeepalive;' +
+      'var bindCalls=0,syncCalls=0;' +
+      'app._bindVisibilityHandlers=function(){bindCalls++;return bindFn.apply(app,arguments);};' +
+      'app._syncAudioKeepalive=function(){syncCalls++;return syncFn.apply(app,arguments);};' +
+      'var boundAtEntry=app._visibilityBound===true;' +
+      'var scopeBefore=String((app.configs||{}).pageScope||"");' +
+      'var modeBefore=window.__b69cmode;' +
+      'app.configs.pageScope="captcha";' +
+      'try{app.run();}catch(e2){}' +
+      // 同步块里定时器插不进来，所以 run() 返回时多出来的那一发识别只可能是
+      // 验证码分支末尾那句 captchaTick() 打的 —— 这一格才是"走的确实是那一支"的硬证据。
+      'var modeAtReturn=window.__b69cmode;' +
+      'app._bindVisibilityHandlers=bindFn;app._syncAudioKeepalive=syncFn;' +
+      'return {patched:window.__b69cPatched===true,setter:typeof window.__b69cset==="function",' +
+      'ac:window.__b69cac,standalone:standalone,scopeBefore:scopeBefore,' +
+      'scope:String((app.configs||{}).pageScope||""),' +
+      'loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      'bindCalls:bindCalls,syncCalls:syncCalls,modeBeat:modeAtReturn-modeBefore,' +
+      'boundAtEntry:boundAtEntry,boundAfter:app._visibilityBound===true,' +
+      'playing:app._isPlaying===true,stubbed:app._runStandaloneCaptchaMode!==app.__b69cOrig,' +
+      'hidden:document.hidden};})()');
+    check('69-验证码 前提：这一页 DOM 真的是验证码墙、走的确实是 run() 的验证码分支' +
+      '（识别循环由那一支自己点上 —— run() 返回时多出一发识别、`_checkInterval` 是空的 = ' +
+      '从没起过媒体监控）、识别已换成计数器，而**绑监听 + 量一次音轨这两句是那一支自己调的**' +
+      '（按调用次数归因，不按「这一页本来没绑过」—— 整轮共用的 xxtRunning 会让这一页自动续跑）',
+      !!setup && setup.patched === true && setup.setter === true &&
+      (setup.ac === 'native' || setup.ac === 'stub') && setup.standalone === true &&
+      setup.scopeBefore === 'study' && setup.scope === 'captcha' &&
+      setup.loop === true && setup.checkInterval === false &&
+      setup.bindCalls >= 1 && setup.syncCalls >= 1 && setup.modeBeat === 1 &&
+      setup.boundAfter === true &&
+      setup.playing === false && setup.stubbed === true, JSON.stringify(setup));
+
+    var beat = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'window.__b69cset(true);app._stopAudioKeepalive();var before=!!app._audioKeepalive;' +
+      'document.dispatchEvent(new Event("visibilitychange"));' +
+      'return JSON.stringify({before:before,alive:!!app._audioKeepalive,' +
+      'because:(app._audioKeepalive||{}).because||null,hidden:document.hidden,' +
+      'bound:app._visibilityBound===true});})()');
+    var b = JSON.parse(beat);
+    check('69-验证码：切到后台那一刻就把音轨起起来，理由点名「running」（这一页永远不会有「在播」）' +
+      '—— 起不来的话这条 1500 毫秒的识别循环先被节流、后被冻住，验证码永远填不上',
+      b.before === false && b.alive === true && b.because === 'running' &&
+      b.hidden === true && b.bound === true, JSON.stringify(b));
+
+    await sleep(2000);
+    var alive = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'return JSON.stringify({alive:!!app._audioKeepalive,mode:window.__b69cmode,' +
+      'ctxs:window.__b69cctxs.length});})()');
+    var av = JSON.parse(alive);
+    check('69-验证码：两秒之后循环真的还在拍（识别计数 ≥1 = 这一支确实活着），' +
+      '而音轨仍然挂着且没有反复重建',
+      av.alive === true && av.mode >= 1 && av.ctxs <= 2, JSON.stringify(av));
+
+    var back = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'window.__b69cset(false);document.dispatchEvent(new Event("visibilitychange"));' +
+      'var called=window.__b69cctxs.filter(function(c){return c.__b69closed===true;}).length;' +
+      'return JSON.stringify({alive:!!app._audioKeepalive,called:called,' +
+      'ctxs:window.__b69cctxs.length});})()');
+    var bk = JSON.parse(back);
+    check('69-验证码：端回前台立刻放掉音轨，且放掉的那份真的被 close() 过（不留没关的 Context）',
+      bk.alive === false && bk.ctxs >= 1 && bk.called === bk.ctxs, JSON.stringify(bk));
+
+    var cLeaked = null;
+    for (var cl = 0; cl < 20; cl++) {
+      var cs = await ctx.client.evaluate('(function(){' +
+        'var o=window.__b69cctxs.filter(function(c){return c.state!=="closed";});' +
+        'return JSON.stringify({open:o.length,total:window.__b69cctxs.length,' +
+        'states:window.__b69cctxs.map(function(c){return c.state;})});})()');
+      cLeaked = JSON.parse(cs);
+      if (cLeaked.open === 0) break;
+      await sleep(150);
+    }
+    check('69-验证码 收尾：close() 之后每一份都落到 closed（最多等 3 秒）—— ' +
+      '这一页只有这一条音轨，漏一份就是每切一次后台攒一份',
+      !!cLeaked && cLeaked.open === 0, JSON.stringify(cLeaked));
+  }
+});
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

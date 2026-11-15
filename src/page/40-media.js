@@ -803,11 +803,30 @@
         oscillator.connect(gain);
         gain.connect(ctx.destination);
         oscillator.start();
+        var app = this;
+        var keep = { ctx: ctx, oscillator: oscillator, warned: false,
+          because: this._isPlaying ? 'playing' : 'running' };
+        this._audioKeepalive = keep;
+        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)',
+          { state: ctx.state, because: keep.because });
+        // 「起了」不等于「在响」：后台标签页没有用户手势时 resume() 会被拒，
+        // 那时这条音轨根本没跑、豁免也就没有 —— 不点名出来就只能靠猜（一次起停只说一遍）。
+        var afterResume = function () {
+          try {
+            if (app._audioKeepalive !== keep) return;
+            if (keep.warned || ctx.state !== 'suspended') return;
+            keep.warned = true;
+            emitRuntimeLog('warn', 'audio keepalive stayed suspended: browser has no user gesture for it',
+              { state: ctx.state, because: keep.because });
+          } catch (eLog) {}
+        };
         if (ctx.state === 'suspended' && typeof ctx.resume === 'function') {
-          ctx.resume().catch(function () {});
+          try {
+            var pResume = ctx.resume();
+            if (pResume && typeof pResume.then === 'function') pResume.then(afterResume, afterResume);
+            else afterResume();
+          } catch (eResume) { afterResume(); }
         }
-        this._audioKeepalive = { ctx: ctx, oscillator: oscillator };
-        emitRuntimeLog('info', 'audio keepalive started (anti background throttling)');
       } catch (e) {}
     },
 
@@ -822,7 +841,11 @@
 
     _syncAudioKeepalive: function () {
       var hidden = !!(document.hidden || document.visibilityState === 'hidden');
-      if (this._isPlaying && hidden) this._startAudioKeepalive();
+      // 「在播」只是运行期里的一段：这一节播完正等翻页、文档 / PPT / 讨论 / 投票这些区间
+      // 一条媒体都没有，可 tick 循环还在跑。旧判据在这段把音轨停掉，后台标签页就失去
+      // 「正在播音频」的豁免 —— Edge 直接把定时器队列冻住（现场实测：面板冻在 20:45:08、
+      // setInterval 25 秒不回调，而徽标还写着「正常运行」，连「改面板说自己停了」都做不到）。
+      if ((this._isPlaying || this._tickLoopInterval) && hidden) this._startAudioKeepalive();
       else this._stopAudioKeepalive();
     },
 

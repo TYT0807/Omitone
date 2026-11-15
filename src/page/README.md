@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*746 行 / 4 方法 + 162 状态字段*
+*754 行 / 4 方法 + 162 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1437 行 / 44 方法*
+*1460 行 / 44 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
@@ -171,7 +171,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*781 行 / 29 方法*
+*784 行 / 29 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
