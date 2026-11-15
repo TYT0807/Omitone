@@ -1791,10 +1791,12 @@
   // 这里只留一个常量：两句自动台词之间的最小间隔，比弹窗里任何一次操作都长得多。
   const PAGE_PET_IDLE_MIN_GAP_MS = 75000;
   let pagePetIdleTimer = null;
-  // 她上一句自言自语说了什么 —— 只为**别连着两句一模一样**（15 秒一拍、池子 4~5 句时
+  // 她上一句**说出来**的话 —— 只为**别连着两句一模一样**（15 秒一拍、池子 4~5 句时
   // 撞带是必然的，用户读到的"卡带"就是这么来的）。留在内存里就够：换了页面重建，
   // 中间隔着一次可见的停顿，不是"连着两句"。
-  let pagePetLastIdleLine = '';
+  // ⚠️ 批次 65 起这一格不再只服务自言自语：升级／成就／日报那几族也从这里避让，
+  //   因为用户听到的是"她连着两句同一句"，跟那一句出自哪一族无关。
+  let pagePetLastLine = '';
   // 摸头那句同理（页面上连点时最容易撞重复）；与上面那份分开记，
   // 因为"刚自言自语完"和"上一句摸头话"是两码事，混在一起会把她自己的话挡掉。
   let pagePetLastPatLine = '';
@@ -1857,7 +1859,7 @@
   }
 
   function pagePetSay(text, ms) {
-    if (!pagePet) return;
+    if (!pagePet) return false;
     try {
       const bubble = pagePet.els.bubble;
       const clean = String(text || '');
@@ -1879,21 +1881,44 @@
       pagePetSayTimer = setTimeout(function () {
         try { bubble.classList.remove('show'); } catch (e) {}
       }, hold);
-    } catch (e) {}
+    } catch (e) { return false; }
+    // 归因要等在这里：调用方只在**气泡真的亮了**之后登记"这句是哪一族"（批次 61 的规矩）。
+    return true;
   }
 
-  /** 从规则层抽一句情境台词并说出来（打招呼 / 自言自语共用这一条路）。
-   *  ⚠️ 台词真源**只有一份** —— `popup/pet-game.js` 的 SAY 表。这里不许再写池子：
-   *   原先这一格是 `game.IDLE_LINES` 平池（7 句），页面与她自己的小窗各抄一份必然分叉。
-   *  @returns {string} 真说出来的话；空串 = 那一格是空的／规则层没加载，调用方什么都不说 */
+  /** 从规则层抽一句情境台词并说出来（打招呼 / 自言自语 / 升级 / 成就共用这一条路）。
+   *  ⚠️ 台词真源**只有一份** —— `popup/pet-game.js` 的 SAY 表。这里不许再写池子，
+   *   也不许把等级名/成就名/分钟数拼成句子：原先这一格是 `game.IDLE_LINES` 平池（7 句）、
+   *   升级与成就在页面与弹窗各抄一份同样的拼接 —— 页面与她自己的小窗各抄一份必然分叉。
+   *  @returns {string} 真说出来的话；空串 = 那一格是空的／占位缺值／规则层没加载／气泡没亮，
+   *             调用方据此什么都不说 */
   function pagePetSayLine(name, ctx, ms) {
     const game = petGameModule();
     if (!game || typeof game.pickLine !== 'function') return '';
-    const line = String(game.pickLine(name, ctx || {}, null, pagePetLastIdleLine) || '');
+    const line = String(game.pickLine(name, ctx || {}, null, pagePetLastLine) || '');
     if (!line) return '';
-    pagePetLastIdleLine = line;
-    pagePetSay(line, ms);
-    return line;
+    const pool = game.SAY && game.SAY[name];
+    // 时段桶只有**分桶**那几族（idle / greet / season…）才说得通，平池留空串 ——
+    // 不然探针会把"这一句是哪个钟点格抽的"读成一个根本没参与过选句的数。
+    const period = (pool && !Array.isArray(pool)) ? String(game.periodOf((ctx || {}).hour) || '') : '';
+    return pagePetSayFrom(name, line, ms, period);
+  }
+
+  /** 登记"这一句是哪一族、原话是什么"，然后说出来；**气泡真的亮了才登记**。
+   *  写在 say 之前更坏：她压根没开口却登记成说过，测试拿它当证据就成假绿；
+   *  被四条闸挡住时不覆盖，否则探针读到的是上一句的桶。
+   *  @param {string} [period] 分桶那几族的时段格名；其余留空
+   *  @returns {string} 真说出来的话；空串 = 气泡没亮（调用方什么都不记） */
+  function pagePetSayFrom(name, line, ms, period) {
+    const text = String(line || '');
+    if (!pagePet || !text || !pagePetSay(text, ms)) return '';
+    pagePetLastLine = text;
+    try {
+      pagePet.host.dataset.sayFrom = String(name);
+      pagePet.host.dataset.sayLine = text;
+      pagePet.host.dataset.sayPeriod = String(period || '');
+    } catch (e) {}
+    return text;
   }
 
   /** 她自己开口说一句。定时器和 e2e 都调这个，**该不该说**全在这里判。
@@ -1912,15 +1937,8 @@
       if (pagePet.els.wrap.classList.contains('mode-hidden')) return '';
       if (pagePet.els.card.classList.contains('dragging')) return '';
       if (Date.now() - pagePetLastSaidMs() < PAGE_PET_IDLE_MIN_GAP_MS) return '';
-      const game = petGameModule();
-      const hour = Number(hourOverride);
-      const line = pagePetSayLine('idle', { hour: hour }, 3200);
-      if (!line) return '';
-      // 归因格（批次 61 的规矩：让"她为什么没说／说了哪句"本身读得回来）。
-      // 只在**真说了**这一拍写 —— 被四条闸挡住时不覆盖，否则探针读到的是上一句的桶。
-      pagePet.host.dataset.sayPeriod = String((game && game.periodOf(hour)) || '');
-      pagePet.host.dataset.sayLine = line;
-      return line;
+      // 归因（说了哪一句、哪一时段格）在 `pagePetSayLine` 里写 —— 只在她真的开口那一支。
+      return pagePetSayLine('idle', { hour: Number(hourOverride) }, 3200);
     } catch (e) { return ''; }
   }
 
@@ -1966,7 +1984,7 @@
       pagePet.els.img.classList.add('cheer');
       pagePetActUntil = Date.now() + 1000;   // 升级这一拍别被她自己的小动作叠上去
       setTimeout(function () { try { pagePet.els.img.classList.remove('cheer'); } catch (e) {} }, 950);
-      pagePetSay('好感度达到「' + def.name + '」！' + (def.line || ''), 3600);
+      pagePetSayLine('levelup', { name: def.name, line: def.line }, 3600);
     } catch (e) {}
   }
 
@@ -2348,9 +2366,10 @@
             for (const a of fresh) ids.push(a.id);
             game.markAchievements(pagePetBond, ids, game.dayKeyOf(Date.now()));
             persistPagePetBond();
-            pagePetSay('成就点亮「' + fresh[0].name + '」—— ' + (fresh[0].line || ''), 3600);
+            pagePetSayLine('achievement', { name: fresh[0].name, line: fresh[0].line }, 3600);
           } else if (result.line) {
-            pagePetSay(result.line, 2400);
+            // 摸头那句由规则层的 `onPat` 选好（含"今天次数用完了"那一档），这里只登记成哪一族
+            pagePetSayFrom('pat', result.line, 2400);
           }
         }
         settleStudyIntoBond();

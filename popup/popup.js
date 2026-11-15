@@ -576,8 +576,12 @@ const updateDiscussion = bindToggle(els.enableDiscussion, () => enableDiscussion
 const updateVote = bindToggle(els.enableVote, () => enableVoteVal, (value) => { enableVoteVal = value; });
 const updateRestudy = bindToggle(els.restudy, () => restudyVal, (value) => { restudyVal = value; });
 
-/** 更新顶部的运行状态指示：圆点 + 文字徽章。 */
-function updateRunState(running) {
+/** 更新顶部的运行状态指示：圆点 + 文字徽章。
+ *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
+ *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
+ *    把同一刻刚报的「今天一起刷了多久」顶掉（批次 65 的日报断言实测撞在这条上）。
+ *    状态照旧要跟（data-busy / 呼吸），只是**别把没发生过的事说成发生过**。 */
+function updateRunState(running, initial) {
   if (!els.runDot || !els.runState) return;
   els.runDot.classList.toggle("on", !!running);
   els.runState.classList.toggle("on", !!running);
@@ -590,7 +594,13 @@ function updateRunState(running) {
   shownRunState = !!running;
   // 广播给角色：它要知道"现在在不在跑"，但这条链路是**单向只读**的 ——
   // 角色只接收状态，绝不反过来影响运行逻辑。
-  try { document.dispatchEvent(new CustomEvent("omitone:run", { detail: !!running })); } catch (e) {}
+  try {
+    const runEvent = new CustomEvent("omitone:run", { detail: !!running });
+    // ⚠️ 首屏同步的标记只能挂在事件对象上：CustomEvent 的 init 只认 detail / bubbles /
+    //   cancelable / composed，多余字段会被**静默丢掉**（挂进 detail 又得改所有读它的地方）。
+    runEvent.omitoneInitial = !!initial;
+    document.dispatchEvent(runEvent);
+  } catch (e) {}
 }
 
 async function load() {
@@ -599,9 +609,9 @@ async function load() {
   // 于是打开弹窗完全看不出是不是已开启。这里补上指示（语义见 updateRunState）。
   try {
     const runResult = await chrome.storage.local.get("xxtRunning");
-    updateRunState(!!(runResult && runResult.xxtRunning));
+    updateRunState(!!(runResult && runResult.xxtRunning), true);
   } catch (e) {
-    updateRunState(false);
+    updateRunState(false, true);
   }
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 

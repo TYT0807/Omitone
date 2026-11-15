@@ -170,6 +170,37 @@
     stop: ['收工，歇会儿吧', '停下来啦，去走走', '结束啦，喝口水吧'],
     // 深夜开窗的那句劝睡（一天里最多打一次招呼，池子给它是为了别永远同一句）
     nightWarn: ['这么晚还没睡…别熬太久', '凌晨了，剩下的明天再刷', '我陪着，但你得去睡'],
+    // ── 大事那几句（批次 65）──
+    // 这三族原先**各只有一句**，而且弹窗与上课页**各抄一份一模一样的**（「好感度达到「X」！Y」
+    // 在两处出现过）。批次 64 立的规矩是"真源只有一份"，这一族把那份补齐。
+    // `{name}` / `{line}` / `{mins}` 由 `fill` 从 ctx 填 —— **填不出就回空串**：
+    // 「升到「」啦 —— 」这种半句话比不说话坏，用户会以为她坏了。
+    levelup: [
+      '好感度达到「{name}」！{line}',
+      '我们到「{name}」了。{line}',
+      '升到「{name}」啦 —— {line}',
+      '又近了一步，现在我叫「{name}」。{line}'
+    ],
+    achievement: [
+      '成就点亮「{name}」—— {line}',
+      '拿到「{name}」了！{line}',
+      '「{name}」这一枚收进来了。{line}',
+      '解锁「{name}」：{line}'
+    ],
+    // 「今天一起刷了 N 分钟」：好感度不到 30 与到了 30 是两种口气 ——
+    // 原来是同一句后面接一个三元（「，有你真好。」/「～」），那是半个真源，现在各成一族。
+    daily: [
+      '今天已经一起刷了 {mins} 分钟啦',
+      '{mins} 分钟了，进度在走，我也在',
+      '今天陪你刷到 {mins} 分钟了',
+      '一起 {mins} 分钟，这一节稳得很'
+    ],
+    dailyHigh: [
+      '今天已经一起刷了 {mins} 分钟啦，有你真好。',
+      '{mins} 分钟了 —— 有你在，什么都不难。',
+      '今天陪你刷了 {mins} 分钟，我一直在。',
+      '{mins} 分钟了，谢谢你还在。'
+    ],
     // 按季节嘟囔（弹窗里那棵树/那片雪跟着它换话；原先在 pet.js 里另有一份）
     season: {
       spring: ['花开的时候，最适合刷课了', '今天也要一点点进步', '风是软的，刚刚好', '窗外有鸟在叫呢。'],
@@ -184,7 +215,7 @@
     IDLE_LINES = IDLE_LINES.concat(SAY.idle[PERIODS[_pi]] || []);
   }
 
-  /** 从一个池子里抽一句，避开她上一句刚说过的（连着两句一模一样 = 用户读到的"卡带"）。 */
+  /** 从一个池子里抽一句模板，避开她上一句刚说过的（连着两句一模一样 = 用户读到的"卡带"）。 */
   function pickFrom(list, rnd, exclude) {
     if (!list || !list.length) return '';
     if (list.length === 1) return String(list[0]);
@@ -196,25 +227,52 @@
     return String(list[idx] || '');
   }
 
+  /** 把 `{name}` 这类占位换成 ctx 里的同名字段。
+   *  ⚠️ **任何一个占位拿不到值就回空串**（调用方据此什么都不说）：
+   *  「升到「」啦 —— 」这种半句话在用户眼里是"她坏了"，比闭嘴难看得多。 */
+  function fill(tpl, ctx) {
+    var out = String(tpl || '');
+    var miss = false;
+    out = out.replace(/\{([A-Za-z_]\w*)\}/g, function (whole, key) {
+      var v = ctx ? ctx[key] : undefined;
+      if (v === undefined || v === null || String(v) === '') { miss = true; return whole; }
+      return String(v);
+    });
+    return miss ? '' : out;
+  }
+
 
   /**
    * 抽一句台词。
    * @param {string} name   SAY 里的格子名：'idle' / 'greet' 按时段分桶，'season' 按季节分桶，
    *                        其余是平池
    * @param {Object} ctx    `{hour}` 定时段、`{bucket}` 直接点名要哪一格（季节用）；
-   *                        时段桶的 hour 不是数就用本地钟
+   *                        时段桶的 hour 不是数就用本地钟。
+   *                        带占位的那几族（levelup / achievement / daily…）在这里给 `{name}`
+   *                        `{line}` `{mins}` 传值 —— **缺一个就整句不说**。
    * @param {Function} rnd  可注入的随机源（测试要确定性），默认 Math.random
-   * @param {string} exclude 她上一句刚说过的话 —— 连着两句一模一样，用户读到的是"卡带"
-   * @returns {string} 台词；**空串 = 这一格池子空的**，调用方据此什么都不说
+   * @param {string} exclude 她上一句**说出来**的话 —— 连着两句一模一样，用户读到的是"卡带"。
+   *                        ⚠️ 比的是**填完之后**的句子：exclude 里存的是她说过的那一句，
+   *                        拿没填的模板去比等于永远不撞带，重复就是这么漏回去的。
+   * @returns {string} 台词；**空串 = 这一格池子空的／占位缺值**，调用方据此什么都不说
    */
   function pickLine(name, ctx, rnd, exclude) {
     var pool = SAY && SAY[name];
     if (!pool) return '';
-    if (Array.isArray(pool)) return pickFrom(pool, rnd, exclude);
     var c = ctx || {};
     // 点名点错了格（比如给季节传了个 'rainy'）也给空串 —— 少说一句不出事，
     // 硬凑一句不相干的才是把"她说话很怪"造出来。
-    return pickFrom(pool[String(c.bucket || '') || periodOf(c.hour)] || [], rnd, exclude);
+    var list = Array.isArray(pool) ? pool : (pool[String(c.bucket || '') || periodOf(c.hour)] || []);
+    if (!list.length) return '';
+    var pick = typeof rnd === 'function' ? rnd : Math.random;
+    var n = list.length;
+    var idx = Math.floor(pick() * n);
+    if (idx >= n) idx = n - 1;
+    var line = fill(list[idx], c);
+    if (n === 1 || !line || !exclude || String(line) !== String(exclude)) return line;
+    var alt = fill(list[(idx + 1 + Math.floor(pick() * (n - 1))) % n], c);
+    // 备选填不出（缺值）就用第一选 —— 别为了避重把她憋成一句话都不说
+    return alt || line;
   }
 
 

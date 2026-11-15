@@ -334,6 +334,9 @@
         setTimeout(function () {
           try {
             if (!mascot.classList.contains("show") || bookOpen || dragging || Date.now() < petBusyUntil) return;
+            // 她正说着话就不插嘴：开屏那句「今天一起刷了 N 分钟」亮 3.2 秒，1.4 秒这拍硬挤会把日报顶掉。
+            // 顶掉之前这一格是**先记下 6 小时标记再说**，所以那一晚的招呼也一并白扣了。
+            if (bubble && bubble.classList.contains("show")) return;
             localStorage.setItem(NIGHT_KEY, String(Date.now()));
             setPose("sad", 2600);
             sayLine("nightWarn", null, 2800);
@@ -994,15 +997,18 @@
           if (now - lastPat > 4000) { lastPat = now; addMood(1); }
           // 好感度入账（每日有上限，规则在 pet-game.js）：出台词 / 升级庆祝。
           // 游戏层的任何失败都吞掉 —— 摸头本身的演出不能因为它坏掉
+          // ⚠️ **一次摸头只出一句**，四支按优先级排：升级 > 点亮成就 > 每三下换一句口吻 > 本级摸头话。
+          //   以前"每三下一句 poke"是**叠**在后面说的，于是第 3 下刚说完本级那句就被顶掉，
+          //   跨级那一下更是把庆祝那句当场盖成「又戳我？」—— 用户永远只看得见最后一句，
+          //   而归因格登记的也是它（批次 65 的 ⑦ 实测读出 from=poke）。
+          patCount += 1;
           try {
             var patResult = petGamePat();
             if (patResult && patResult.leveledUp) celebrateBond(patResult.level);          // 升级台词压过一切
             else if (patResult && patResult.achievement) celebrateAchievement(patResult.achievement);
+            else if (patCount % 3 === 0) sayLine("poke", null, 2000);
             else if (patResult && patResult.line) sayAs("pat", patResult.line, 2400);
           } catch (eGame) {}
-          // 每三次摸头说一句（池子在规则层，连着两句不重样）。原来这套台词在 omScene 里
-          // 另有一个点击处理器，两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
-          if (++patCount % 3 === 0) sayLine("poke", null, 2000);
         }
       });
     }
@@ -1135,7 +1141,7 @@
         var rect = mascot.getBoundingClientRect();
         heartBurst(rect.left + rect.width / 2, rect.top + 8);
         setPose("happy", 1400);
-        say("成就点亮「" + a.name + "」—— " + (a.line || ""), 3600);
+        sayLine('achievement', { name: a.name, line: a.line }, 3600);
       } catch (e) {}
     }
     /** 摸头/结刷课时长之后各跑一次：把新达标的成就写入存档并回报第一条 */
@@ -1173,7 +1179,7 @@
         heartBurst(rect.left + rect.width / 3, rect.top + 20);
         setPose("cheer", 1600);
         var def = game.LEVELS[level] || game.LEVELS[0];
-        say("好感度达到「" + def.name + "」！" + (def.line || ""), 3600);
+        sayLine('levelup', { name: def.name, line: def.line }, 3600);
       } catch (e) {}
     }
     function syncStudyIntoGame() {
@@ -1238,7 +1244,8 @@
             // 跨天时昨天那份还会多活一小段，不比对 date 就是早上第一句便在骗人。
             var mins = String(stats.date || '') === todayKey() ? Math.floor((Number(stats.activeSeconds) || 0) / 60) : 0;
             if (mins >= 5 && mascot && !mascot.getAttribute("data-busy")) {
-              say("今天已经一起刷了 " + mins + " 分钟啦" + (bondState.affection >= 30 ? "，有你真好。" : "～"), 3200);
+              // 30 是**口气**的分档（到「熟络」那一档才开始道谢），不是台词：台词全在规则层那两族里
+              sayLine(bondState.affection >= 30 ? "dailyHigh" : "daily", { mins: mins }, 3200);
             }
           } catch (e) {}
         });
@@ -1299,17 +1306,20 @@
     }
 
     // 运行状态：跑起来时呼吸变快 + 说一句；停下来回到常态
+    // ⚠️ 首屏那一次同步**只跟状态、不开口**：打开小窗时并没有发生"开始/停下"，
+    //    却每次都补一句「收工，歇会儿吧」，把同一刻刚报的「今天一起刷了多久」顶掉。
     document.addEventListener("omitone:run", function (ev) {
       if (!mascot) return;
+      var spoken = ev && !ev.omitoneInitial;
       if (ev.detail) {
         // 这一行不能省：闲置轮换 / 闲聊都靠 data-busy 让位，
         // CSS 里呼吸加快也是它；拆文件时漏掉，运行中照样会自己换装搭话。
         mascot.setAttribute("data-busy", "1");
         setPose("happy", 1600);
-        sayLine("start", null, 2600);
+        if (spoken) sayLine("start", null, 2600);
       } else {
         mascot.removeAttribute("data-busy");
-        sayLine("stop", null, 2600);
+        if (spoken) sayLine("stop", null, 2600);
       }
     });
 

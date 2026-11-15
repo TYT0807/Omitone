@@ -250,9 +250,42 @@ Object.keys(GAME.SAY).forEach(function (k) {
   if (Array.isArray(p)) allLines = allLines.concat(p);
   else Object.keys(p).forEach(function (b) { allLines = allLines.concat(p[b]); });
 });
-check('全部台词都是短句（≤20 字，页面气泡 60 字上限／弹窗一行装得下）',
-  allLines.filter(function (s) { return s.length > 20; }).length === 0,
-  JSON.stringify(allLines.filter(function (s) { return s.length > 20; })));
+// ⚠️ 带占位的那几族（批次 65：levelup / achievement / daily / dailyHigh）量的必须是**填完之后**的句子。
+//   按模板量会两样都错：`{line}` 在模板里只有 6 个字符，填进去是一整句（实测最坏 17 字），
+//   于是"太长"是假的；反过来模板很短、填完爆掉 60 字被页面气泡截成「…」，那种长才是真的。
+//   上限取**它替换掉的那两句硬编码**的实际长度：旧「好感度达到「岁月同行」！从初识走到今天，谢谢你没缺席。」
+//   最坏 29~30 字，用户从没说过长 —— 所以 34 是"不比原来更长"的实测上限，离页面 60 字截断线还有一半。
+var WORST = { name: '岁月同行', line: '从初识走到今天，谢谢你没缺席。', mins: '999' };
+function filledOf(s) {
+  return String(s).replace(/\{([A-Za-z_]\w*)\}/g, function (w, k) { return WORST[k] === undefined ? w : WORST[k]; });
+}
+var tooLong = allLines.filter(function (s) {
+  var out = filledOf(s);
+  return /\{/.test(s) ? out.length > 34 : out.length > 20;
+});
+check('台词长度按"填完之后"量：平池 ≤20 字，带占位那几族 ≤34 字（页面气泡 60 字才截断）',
+  tooLong.length === 0, JSON.stringify(tooLong));
+// 占位名打错（{mians}）在生产里等于"她永远不说这一句"（fill 缺值回空串），一条测试都看不见 ——
+// 所以把占位名单钉成"界面真的会传的那几个键"。
+var KNOWN_KEYS = { name: 1, line: 1, mins: 1 };
+var badTokens = [];
+allLines.forEach(function (s) {
+  String(s).replace(/\{([A-Za-z_]\w*)\}/g, function (w, k) { if (!KNOWN_KEYS[k]) badTokens.push(s + ' ← ' + w); return w; });
+});
+check('模板里的占位只许是界面真的会传的键（name / line / mins），打错=她永远不说这一句',
+  badTokens.length === 0, JSON.stringify(badTokens));
+check('带占位的那几族：缺任一字段就整句不说（半句话比闭嘴坏），填满就一定不含花括号',
+  ['levelup', 'achievement', 'daily', 'dailyHigh'].every(function (f) {
+    var need = { levelup: ['name', 'line'], achievement: ['name', 'line'], daily: ['mins'], dailyHigh: ['mins'] }[f];
+    var full = { name: '熟络', line: '和你待在一起很安心。', mins: '42' };
+    if (GAME.pickLine(f, full, function () { return 0.5; }).indexOf('{') >= 0) return false;
+    return need.every(function (key) {
+      var c = {};
+      need.forEach(function (k2) { c[k2] = full[k2]; });
+      c[key] = '';
+      return GAME.pickLine(f, c, function () { return 0.5; }) === '';
+    });
+  }));
 check('池子总量比批次 64 之前厚（自言自语 ≥20 句、全部 ≥60 句）',
   GAME.IDLE_LINES.length >= 20 && allLines.length >= 60,
   'idle=' + GAME.IDLE_LINES.length + ' all=' + allLines.length);
@@ -294,6 +327,22 @@ var repeatBad = [];
 });
 check('带上上一句就不会连着两句一模一样（200 轮 × 四格都不撞带）',
   repeatBad.length === 0, JSON.stringify(repeatBad.slice(0, 3)));
+// 批次 65：带占位的那几族，`exclude` 里存的是她**说出来**的那一句（填完的）。
+// ⚠️ 这条测的是"比的是填完的句子"而不是"比模板" —— 拿模板比，`{name}` 永远不等于填好的句子，
+//   那道避让分支一次都不会走到，200 轮里 1/4 概率撞带，红得毫无悬念（不是恒绿的摆设）。
+var tRepeat = [];
+[['levelup', { name: '熟络', line: '和你待在一起很安心。' }],
+  ['achievement', { name: '温柔惯犯', line: '被你摸了一百次，都摸出习惯来了。' }],
+  ['daily', { mins: '42' }], ['dailyHigh', { mins: '128' }]].forEach(function (pair) {
+  var last = GAME.pickLine(pair[0], pair[1]);
+  for (var i = 0; i < 200; i++) {
+    var got = GAME.pickLine(pair[0], pair[1], null, last);
+    if (got === last) tRepeat.push(pair[0] + ':' + got);
+    last = got;
+  }
+});
+check('带占位那几族连着两句也不重样（exclude 比的是填完之后的句子，不是模板）',
+  tRepeat.length === 0, JSON.stringify(tRepeat.slice(0, 3)));
 
 // ⑤ 摸头池子加宽 + onPat 的 lastLine
 check('PAT_LINES 每级至少三句且与等级表同长（旧值 2 句/级，一下午必撞重复）',
@@ -322,6 +371,22 @@ check('popup/pet.js 不再自带 POKES / SEASON_LINES 池子',
   !/var\s+POKES\s*=/.test(petSrc) && !/var\s+SEASON_LINES\s*=/.test(petSrc));
 check('popup/pet.js 与 content.js 都走 pickLine（台词真源只有一份）',
   /pickLine\(/.test(petSrc) && /pickLine\(/.test(pageSrc));
+// 批次 65：升级／成就／日报那三句以前**两处各抄一份**（字符串拼接），这一格钉"抄回去就报警"。
+// ⚠️ 判据是**拼接形状**而不是字面：池子里当然有「好感度达到」这几个字，但那在规则层；
+//   界面里再出现 `'…「' + name` / `'…」！' + def.line` 这种拼法，就是第二份真源又长出来了。
+var COPY_ANCHORS = [
+  // ⚠️ 锚点必须**咬住"这是说出来的那句"**：界面里还有正当的 `'「' + name + '」'` 拼接
+  //   （宠物徽章那行「下一级「X」还差 N 点」是**标签**不是台词，两处都有），
+  //   不加 say/pagePetSay 前缀它会一并报上来 —— 会误报的守卫和没有守卫一样害人。
+  ['说出来的台词里拼等级/成就名', /(?:say|sayAs|pagePetSay|pagePetSayLine)\s*\(\s*['"][^'"\n]*['"]\s*\+/],
+  ['说出来的台词里拼分钟数', /(?:say|sayAs|pagePetSay|pagePetSayLine)\s*\(\s*['"][^'"\n]*刷了 ['"]\s*\+/]
+];
+var copiedLine = [];
+[['popup/pet.js', petSrc], ['content.js', pageSrc]].forEach(function (pair) {
+  COPY_ANCHORS.forEach(function (a) { if (a[1].test(pair[1])) copiedLine.push(pair[0] + ' ← ' + a[0]); });
+});
+check('两处界面都不再把等级名/成就名/分钟数拼进台词（第二份真源不许长回来）',
+  copiedLine.length === 0, JSON.stringify(copiedLine));
 
 console.log('');
 if (failures.length) {

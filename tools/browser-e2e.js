@@ -3701,6 +3701,90 @@ SCENARIOS.push({
     check('好感到 15 → 徽章换成「打过招呼」（无页面异常）',
       !!leveled && leveled.badge === '打过招呼' && leveled.aff === 15 && leveled.errs.length === 0,
       JSON.stringify(leveled));
+
+    // ⑦ 升级那一句的**归因**（批次 65：这一句以前是弹窗里拼出来的，现在只从规则层 levelup 那一族出）。
+    //    ⚠️ 断言不钉句子字面（钉字面=把台词池抄第二份），钉的是三件可读回来的事：
+    //      登记成哪一族、气泡与归因格同一句、**徽章那一档的名字真的进了句子**（名字从页面 DOM 读回来，
+    //      不是测试里的常量）—— 拼接漏了字段、忘写归因、填了个 undefined，这三种都会红。
+    var saidLevel = await ctx.client.evaluate(
+      '(function(){var m=document.getElementById("mascot");' +
+      'var b=document.getElementById("mascotBubble");' +
+      'var d=(m&&m.dataset)?m.dataset:{};' +
+      'return {from:String(d.sayFrom||""),attr:String(d.sayLine||""),' +
+      'bubble:String(b?b.textContent:""),badge:String(document.getElementById("petLevel").textContent||"")};})()'
+    );
+    check('跨级那一句登记成 levelup 这一族，气泡与归因格同一句',
+      !!saidLevel && saidLevel.from === 'levelup' && saidLevel.attr.length > 0 &&
+      saidLevel.attr === saidLevel.bubble, JSON.stringify(saidLevel));
+    check('升级那句真的把新等级名填进去了（徽章那一档出现在句子里，且没留占位/undefined）',
+      !!saidLevel && saidLevel.badge.length > 0 && saidLevel.attr.indexOf(saidLevel.badge) >= 0 &&
+      !/\{/.test(saidLevel.attr) && !/undefined/.test(saidLevel.attr), JSON.stringify(saidLevel));
+
+    // ⑧ 日报那一句（「今天已经一起刷了 N 分钟」）：只在**弹窗初始化**那一次说，所以要重载才测得到。
+    //    ⚠️ 跨 reload 的轮询必须等 `readyState==="complete"`，不是等 `getElementById` 拿到元素 ——
+    //      元素先有、监听器后挂，正好落在这个缝里读数会得到一条**看着像台词写错了**的红。
+    //    ⚠️ 每一趟自己把依赖的共享状态钉住（统计=今天 3600 秒、水位=3600 让结算空转、好感按档位拨）：
+    //      不钉的话，前一个场景写过的 stats 会让"这一趟压根不在要求的那一档里"和"她没说"同形。
+    //    水位钉成与 activeSeconds 相等 → `applyStudySeconds` 折出 0 点 → 初始化那一下不会顺手升级，
+    //    否则 levelup 那一族会把归因格盖掉，日报这一族变成零覆盖。
+    var dailyProbe = async function (affection) {
+      await ctx.client.evaluate(
+        'new Promise(function (res) {' +
+        'var game = self.OmitonePetGame; var k = game.dayKeyOf(Date.now());' +
+        'var st = { date: k, activeSeconds: 3600, lastActiveAt: Date.now(), lastFlushAt: Date.now() };' +
+        'chrome.storage.local.set({ omitoneStudyStats: st }, function () {' +
+        '  chrome.storage.local.get("omitonePetBond", function (r) {' +
+        '    var b = (r && r.omitonePetBond) || { day: k };' +
+        '    b.affection = ' + affection + '; b.day = k; b.countedSeconds = 3600;' +
+        '    b.patsToday = 0; b.studyPointsToday = 0; b.ach = b.ach || {};' +
+        '    chrome.storage.local.set({ omitonePetBond: b }, function () { res(true); });' +
+        '  });' +
+        '}); })'
+      );
+      await sleep(250);   // onChanged 把内存拨过去，免得 reload 后第一拍又拿旧档写回存档
+      // 钉住深夜那一格：23:00–05:00 打开小窗她会补一句「nightWarn」，把日报顶掉。
+      // 全量跑什么时候都可能落在夜里，不钉的话这条断言就成了"看钟点"的随机红。
+      await ctx.client.evaluate('(function(){localStorage.setItem("omitone.pet.night", String(Date.now()));return true;})()');
+      await ctx.client.send('Page.reload', { ignoreCache: false });
+      var done = false;
+      for (var rw = 0; rw < 40; rw++) {
+        await sleep(120);
+        done = await ctx.client.evaluate(
+          '(function(){return document.readyState==="complete"&&!!document.getElementById("mascot");})()'
+        );
+        if (done) break;
+      }
+      await sleep(700);   // 初始化里那次 chrome.storage.local.get 的回调 + 台词落气泡
+      return await ctx.client.evaluate(
+        '(function(){var m=document.getElementById("mascot");' +
+        'var b=document.getElementById("mascotBubble");' +
+        'return {ready:document.readyState,hidden:document.hidden,' +
+        'shown:m?String(m.style.display||""):"无",from:m?String(m.dataset.sayFrom||""):"",' +
+        'attr:m?String(m.dataset.sayLine||""):"",bubble:b?String(b.textContent||""):""};})()'
+      );
+    };
+    var dailyLow = await dailyProbe(15);
+    var dailyHigh = await dailyProbe(40);
+    var minsBack = await ctx.client.evaluate(
+      'new Promise(function (res) { chrome.storage.local.get("omitoneStudyStats", function (r) {' +
+      'var st = r && r.omitoneStudyStats;' +
+      'res(st ? { date: String(st.date || ""), mins: Math.floor((Number(st.activeSeconds) || 0) / 60) } : null); }); })'
+    );
+    check('前提：日报这两趟都真的走在要求的那一档里（重载完成、她可见、统计是今天且够 5 分钟）',
+      !!dailyLow && dailyLow.ready === 'complete' && dailyLow.hidden === false &&
+      dailyLow.shown !== 'none' && dailyHigh && dailyHigh.hidden === false &&
+      !!minsBack && minsBack.date.length > 0 && minsBack.mins >= 5,
+      JSON.stringify({ low: dailyLow, high: dailyHigh, mins: minsBack }));
+    check('日报按好感度分档：15 走 daily、到 30 以上走 dailyHigh（两句都登记得回来、气泡同源）',
+      !!dailyLow && dailyLow.from === 'daily' && dailyLow.attr === dailyLow.bubble &&
+      dailyLow.attr.length > 0 && !!dailyHigh && dailyHigh.from === 'dailyHigh' &&
+      dailyHigh.attr === dailyHigh.bubble && dailyHigh.attr.length > 0,
+      JSON.stringify({ low: dailyLow, high: dailyHigh }));
+    check('日报那句里的分钟数是从存储读回来的那个数，且没留占位/undefined',
+      !!dailyLow && !!minsBack && dailyLow.attr.indexOf(String(minsBack.mins)) >= 0 &&
+      !/\{/.test(dailyLow.attr) && !/undefined/.test(dailyLow.attr) &&
+      !/\{/.test(dailyHigh.attr) && !/undefined/.test(dailyHigh.attr),
+      JSON.stringify({ low: dailyLow.attr, high: dailyHigh.attr, mins: minsBack }));
   }
 });
 
@@ -3991,6 +4075,73 @@ SCENARIOS.push({
     check('同一时段连着两拍也不重样（规则层的"上一句"真的接进了页面这一侧）',
       !!idleCtx && idleCtx.repeat.first.length > 0 && idleCtx.repeat.second !== idleCtx.repeat.first,
       JSON.stringify(idleCtx.repeat));
+
+    // ⑥-d 大事那几句在**页面这一侧**也点名得到（批次 65：升级／成就以前是两处各抄一句拼接）。
+    //     存档从写入器（那一枚 `?ui=lite` 的扩展页）拨过来：主世界读不到 chrome.storage，
+    //     但 content.js 监听 omitonePetBond 的改动并把新档换进内存，拨完等一拍她就换档。
+    //     ⚠️ 每一趟把 `omitoneStudyStats.activeSeconds` 一起钉成 0：页面摸头之后会 `settleStudyIntoBond`，
+    //        统计层里留着别的情景写进去的时长就会**顺手再升一级**，那一级的 levelup 会把
+    //        这一趟要验的成就／普通摸头盖掉 —— 那时"她说了哪一族"读回来的就不是我要的那一个。
+    //     ⚠️ 三次点击各等 2.2 秒：2 秒内连戳三下会走「躲开」那一族，说出来的就不是这三句了。
+    var cwPet = await initConfigWriter(ctx.extensionId);
+    var setBond = async function (over) {
+      await cwPet.evaluate(
+        'new Promise(function (res) {' +
+        'var g = self.OmitonePetGame; var k = g.dayKeyOf(Date.now());' +
+        'var b = { affection: 0, day: k, patsToday: 0, studyPointsToday: 0, countedSeconds: 0,' +
+        ' totalPats: 0, totalStudyMinutes: 0, nightPats: 0, streakDays: 1, lastMetDay: k, ach: {} };' +
+        'var over = ' + JSON.stringify(over) + ';' +
+        'for (var key in over) b[key] = over[key];' +
+        'chrome.storage.local.set({ omitonePetBond: b, omitoneStudyStats:' +
+        ' { date: k, activeSeconds: 0, lastActiveAt: Date.now(), lastFlushAt: Date.now() } },' +
+        ' function () { res(true); }); })'
+      );
+      await sleep(500);   // onChanged → 页面里那一份内存
+    };
+    var patOnce = async function () {
+      await sleep(2200);
+      return await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'var sr=h.shadowRoot;var b=sr.getElementById("bubble");var lv=sr.getElementById("level");' +
+        'b.textContent="";b.classList.remove("show");' +
+        'sr.getElementById("petImg").click();' +
+        'return {sp:/show/.test(String(b.className)),bubble:String(b.textContent||""),' +
+        'from:String(h.dataset.sayFrom||""),attr:String(h.dataset.sayLine||""),' +
+        'per:String(h.dataset.sayPeriod||""),title:String(lv.getAttribute("title")||"")};})()'
+      );
+    };
+    await setBond({ affection: 14, totalPats: 0 });
+    var bigLevel = await patOnce();
+    await setBond({ affection: 40, totalPats: 99 });
+    var bigAch = await patOnce();
+    // 六枚成就全按 id 记成"已经点亮"→ 这一摸既跨不过级也没有新成就，只剩本级摸头话那一族
+    await setBond({ affection: 40, totalPats: 120,
+      ach: { pat100: '1', study600: '1', streak7: '1', streak30: '1', night20: '1', firstSnow: '1' } });
+    var bigPat = await patOnce();
+    var affOf = function (r) {
+      var m = /好感度\s*(\d+)/.exec((r && r.title) || '');
+      return m ? Number(m[1]) : -1;
+    };
+    check('前提：页面这三摸她都开了口，而且每一摸都登记了"哪一族"（三条点名断言的前提）',
+      !!bigLevel && !!bigAch && !!bigPat &&
+      [bigLevel, bigAch, bigPat].every(function (r) { return r.sp === true && r.from.length > 0 && r.bubble.length > 0; }),
+      JSON.stringify({ level: bigLevel, ach: bigAch, pat: bigPat }));
+    check('跨级那一摸点名 levelup：好感从 14 走到 15（读回来的是徽章 title 里那个数）、气泡与归因格同源',
+      !!bigLevel && bigLevel.from === 'levelup' && affOf(bigLevel) === 15 &&
+      bigLevel.attr === bigLevel.bubble, JSON.stringify(bigLevel));
+    check('点亮成就那一摸点名 achievement（这一摸没跨级：40→41）',
+      !!bigAch && bigAch.from === 'achievement' && affOf(bigAch) === 41 &&
+      bigAch.attr === bigAch.bubble, JSON.stringify({ ach: bigAch, lvl: bigLevel.from }));
+    check('都点亮过之后普通一摸点名 pat（三族在页面侧各走各的，不是写死同一个常量）',
+      !!bigPat && bigPat.from === 'pat' && bigPat.attr === bigPat.bubble &&
+      bigPat.from !== bigLevel.from && bigPat.from !== bigAch.from, JSON.stringify(bigPat));
+    check('页面这三句都不许留没填的占位／undefined／空的「」',
+      [bigLevel, bigAch, bigPat].every(function (r) {
+        return !!r && !/\{/.test(r.bubble) && !/undefined/.test(r.bubble) && !/「」/.test(r.bubble);
+      }), JSON.stringify([bigLevel.bubble, bigAch.bubble, bigPat.bubble]));
+    check('平池那三族的时段格必须是空串（"这一句是哪个钟点格抽的"对它们没意义）',
+      [bigLevel, bigAch, bigPat].every(function (r) { return !!r && r.per === ''; }),
+      JSON.stringify([bigLevel.per, bigAch.per, bigPat.per]));
 
     // ⑥-b 「标签页在后台」这一档 —— 只能切**真**后台（批次 39，全量跑改法见批次 41）。
     //     页面世界与内容脚本是两个 JS world：在页面世界里给 `document` 挂 own `hidden`
