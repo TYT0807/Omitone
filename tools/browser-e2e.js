@@ -3018,10 +3018,13 @@ SCENARIOS.push({
     var moodPlayed = await petEval(client, function () {
       var pet = document.getElementById('mascot'), bubble = document.getElementById('mascotBubble');
       return { pose: pet.getAttribute('data-pose'), line: bubble.textContent, speaking: bubble.classList.contains('show'),
-        animation: getComputedStyle(pet.querySelector('.pet-art')).animationName };
+        animation: getComputedStyle(pet.querySelector('.pet-art')).animationName,
+        from: pet.getAttribute('data-say-from'), said: pet.getAttribute('data-say-line') };
     });
     check('手动 busy 结束后补播高心情 cheer 及台词', moodPlayed.pose === 'cheer' &&
-      moodPlayed.animation === 'pet-cheer' && moodPlayed.speaking && /心情不错/.test(moodPlayed.line), JSON.stringify(moodPlayed));
+      moodPlayed.animation === 'pet-cheer' && moodPlayed.speaking &&
+      moodPlayed.from === 'moodHigh' && moodPlayed.line.length > 0 &&
+      moodPlayed.line === moodPlayed.said, JSON.stringify(moodPlayed));
     await advancePet(client, 1201);
     check('补播 cheer 到期正常回坐',
       await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
@@ -3185,6 +3188,10 @@ SCENARIOS.push({
       'if(b){b.click();b.click();b.click();}' +
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.dodged=pet.classList.contains("dodge");' +
+      // ⚠️ 上面那枚 class **生产里从来没往人身上加**（`popup/pet.js` 只有 remove），所以它单独是个空信号。
+      // 真信号是这一族演的那个姿态与那句台词的归因 —— 三个「装」点下去既不该 shake 也不该说 dodge 那一族。
+      'out.afterToolsPose=pet.getAttribute("data-pose");' +
+      'out.afterToolsFrom=pet.getAttribute("data-say-from");' +
       'if(b){b.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:2,button:0,isPrimary:true,clientX:b.getBoundingClientRect().left+5,clientY:b.getBoundingClientRect().top+5}));}' +
       'out.dragFromTools=pet.classList.contains("dragging");' +
       'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
@@ -3201,9 +3208,23 @@ SCENARIOS.push({
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.shown=pet.style.display!=="none"&&pet.classList.contains("show");' +
       'out.hideCleared=localStorage.getItem("omitone.pet.hidden");' +
+      // 归因格的"不写死"证明：同一条通道在 dodge 那一族上必须读出 dodge。
+      // 只钉 moodHigh 是不够的 —— 实现里把名字写成常量，那一条照样绿。
+      'pet.click();pet.click();pet.click();' +
+      'await new Promise(function(r2){setTimeout(r2,260);});' +
+      'out.triple={pose:pet.getAttribute("data-pose"),from:pet.getAttribute("data-say-from"),' +
+      'said:pet.getAttribute("data-say-line"),line:document.getElementById("mascotBubble").textContent,' +
+      'show:document.getElementById("mascotBubble").classList.contains("show")};' +
       'return out;})()'
     );
-    check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false, JSON.stringify(r));
+    check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false &&
+      r.afterToolsPose !== 'shake' && r.afterToolsFrom !== 'dodge', JSON.stringify(r));
+    // 与下面 moodHigh 那一格配对：同一条归因通道在两个族上读出两个不同的名字，
+    // 实现里把名字写死成一个常量就当场红一条（只钉一族是拦不住的）。
+    check('连戳她三下真的躲开，且那句归因到 dodge 一族（归因格与气泡同源）',
+      !!r && r.triple && r.triple.pose === 'shake' && r.triple.from === 'dodge' &&
+      r.triple.show === true && r.triple.line.length > 0 && r.triple.line === r.triple.said,
+      JSON.stringify(r && r.triple));
     check('「藏」能把人收起来，并把"藏着"写进存档（下次打开弹窗还在藏着的状态）',
       !!r && r.hidden === true && r.hideStored === '1', JSON.stringify(r));
     check('点「显示小人」能重新出现，并清掉存档里的"藏着"',
@@ -3928,6 +3949,48 @@ SCENARIOS.push({
     check('自动台词那口气的形状也是一小块横排（不是竖条）',
       !!idle && !!idle.shape && idle.shape.w >= 88 && idle.shape.h <= 62 && idle.shape.w > idle.shape.h,
       JSON.stringify(idle && idle.shape));
+
+    // ⑥-c 台词的**时段桶**（批次 64：用户「吉祥物的话有点单一和少了」）。
+    //     ⚠️ 探针必须把钟点钉死（detail.hour）：不钉的话测的是本机时钟，
+    //        凌晨跑和下午跑拿到的池子不一样，红了也不知道是代码坏了还是天亮了。
+    //     读回来的是宿主 dataset 上的**归因格**（内容脚本写的）—— 两个 JS world 只有 DOM 共用，
+    //        页面世界读不到 SAY 那张表，所以这里比的是"桶名 + 句子与归因格同源 + 桶间/连拍不重样"，
+    //        句子内容本身由 omitone-pet-game-test.cjs 的规则层那几十项钉住。
+    var idleCtx = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h.shadowRoot;var wrap=sr.getElementById("wrap");var c=sr.getElementById("card");' +
+      'var b=sr.getElementById("bubble");' +
+      'function tickAt(hour){b.textContent="";b.classList.remove("show");' +
+      'h.dataset.sayPeriod="";h.dataset.sayLine="";' +
+      'h.dispatchEvent(new CustomEvent("omitone:pet-idle-tick",{detail:{hour:hour}}));' +
+      'return {sp:/show/.test(String(b.className)),txt:String(b.textContent||"")+"" ,' +
+      'per:String(h.dataset.sayPeriod||""),line:String(h.dataset.sayLine||"")};}' +
+      'function quiet(){h.dataset.saidAt=String(Date.now()-200000);}' +
+      // 前提自证：三条会让她闭嘴的闸此刻都得是"允许说话"的形状，否则下面全是假绿
+      'var o={hidden:document.hidden,drag:c.classList.contains("dragging"),' +
+      'coll:wrap.classList.contains("mode-hidden")};' +
+      'quiet();o.dawn=tickAt(2);quiet();o.midday=tickAt(12);quiet();o.night=tickAt(23);' +
+      // 同一桶连着两拍：上一句被排除掉，才会真的换一句
+      'quiet();var first=tickAt(15);quiet();o.repeat={first:first.txt,second:tickAt(15).txt};' +
+      'b.classList.remove("show");return o;})()'
+    );
+    check('前提：这一趟三条"别说"闸都是开着的，且探针拍子真的落地（凌晨那一格必须亮）',
+      !!idleCtx && idleCtx.hidden === false && idleCtx.drag === false && idleCtx.coll === false &&
+      idleCtx.dawn && idleCtx.dawn.sp === true && idleCtx.dawn.txt.length > 0,
+      JSON.stringify(idleCtx).slice(0, 200));
+    check('她按时间说话：凌晨/中午/深夜三个钟点各自落在说好的那一格，归因格与气泡同源',
+      !!idleCtx && idleCtx.dawn.per === 'dawn' && idleCtx.midday.per === 'midday' &&
+      idleCtx.night.per === 'night' && idleCtx.midday.sp === true && idleCtx.night.sp === true &&
+      idleCtx.dawn.line === idleCtx.dawn.txt && idleCtx.midday.line === idleCtx.midday.txt &&
+      idleCtx.night.line === idleCtx.night.txt,
+      JSON.stringify(idleCtx).slice(0, 400));
+    check('三个时段是三句不同的话（不再翻来覆去那一句）',
+      !!idleCtx && idleCtx.dawn.txt !== idleCtx.midday.txt &&
+      idleCtx.midday.txt !== idleCtx.night.txt && idleCtx.dawn.txt !== idleCtx.night.txt,
+      JSON.stringify([idleCtx.dawn.txt, idleCtx.midday.txt, idleCtx.night.txt]));
+    check('同一时段连着两拍也不重样（规则层的"上一句"真的接进了页面这一侧）',
+      !!idleCtx && idleCtx.repeat.first.length > 0 && idleCtx.repeat.second !== idleCtx.repeat.first,
+      JSON.stringify(idleCtx.repeat));
 
     // ⑥-b 「标签页在后台」这一档 —— 只能切**真**后台（批次 39，全量跑改法见批次 41）。
     //     页面世界与内容脚本是两个 JS world：在页面世界里给 `document` 挂 own `hidden`

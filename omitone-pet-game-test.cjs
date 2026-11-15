@@ -207,6 +207,122 @@ var patLine = GAME.onPat(GAME.rollDay(null, DAY), DAY);
 check('onPat 返回体仍含 line/level（伴侣与弹窗共用）',
   typeof patLine.line === 'string' && patLine.level === 0 && patLine.state.totalPats === 1);
 
+// ══ 台词层（批次 64）：时段分桶 / 单一真源 / 不撞带 ═══════════
+// 用户原话「吉祥物的话有点单一和少了」。判据全部对着**规则层**量，不看界面 ——
+// 界面那两份（content.js / popup/pet.js）只要求它们**从这里取**，不许自带池子。
+
+// ① 时段边界：注释里那张表就是真源，改了边界必须同时改这里（别把判据改松）
+var PERIOD_EDGE = [
+  [0, 'dawn'], [4, 'dawn'], [5, 'morning'], [9, 'morning'],
+  [10, 'midday'], [13, 'midday'], [14, 'afternoon'], [17, 'afternoon'],
+  [18, 'evening'], [21, 'evening'], [22, 'night'], [23, 'night']
+];
+var edgeBad = PERIOD_EDGE.filter(function (p) { return GAME.periodOf(p[0]) !== p[1]; });
+check('periodOf 的十二个边界钟点落在注释说的那一格',
+  edgeBad.length === 0, JSON.stringify(edgeBad));
+check('24 个钟点全覆盖且只出六个时段名',
+  (function () {
+    var seen = {};
+    for (var h = 0; h < 24; h++) seen[GAME.periodOf(h)] = 1;
+    return Object.keys(seen).sort().join(',') === GAME.PERIODS.slice().sort().join(',');
+  })());
+check('越界／非数的钟点折回 0~23（不把 -5 点当成不存在的格子）',
+  GAME.periodOf(-5) === GAME.periodOf(19) && GAME.periodOf(27) === GAME.periodOf(3) &&
+  GAME.PERIODS.indexOf(GAME.periodOf('abc')) >= 0 && GAME.periodOf('abc') === GAME.periodOf(undefined));
+
+// ② 池子形状：六个桶都在、都不空、都短
+['idle', 'greet'].forEach(function (name) {
+  var miss = GAME.PERIODS.filter(function (p) { return !(GAME.SAY[name] && GAME.SAY[name][p] && GAME.SAY[name][p].length >= 2); });
+  check('SAY.' + name + ' 六个时段桶各有至少两句', miss.length === 0, miss.join(','));
+});
+['poke', 'dodge', 'moodHigh', 'moodLow', 'start', 'stop', 'nightWarn'].forEach(function (name) {
+  check('SAY.' + name + ' 是至少三句的平池',
+    Array.isArray(GAME.SAY[name]) && GAME.SAY[name].length >= 3,
+    GAME.SAY && GAME.SAY[name] && GAME.SAY[name].length);
+});
+check('SAY.season 四季各有至少三句（原先在 pet.js 里只有两句一季）',
+  ['spring', 'summer', 'autumn', 'winter'].every(function (s) {
+    return GAME.SAY.season && GAME.SAY.season[s] && GAME.SAY.season[s].length >= 3;
+  }));
+var allLines = [];
+Object.keys(GAME.SAY).forEach(function (k) {
+  var p = GAME.SAY[k];
+  if (Array.isArray(p)) allLines = allLines.concat(p);
+  else Object.keys(p).forEach(function (b) { allLines = allLines.concat(p[b]); });
+});
+check('全部台词都是短句（≤20 字，页面气泡 60 字上限／弹窗一行装得下）',
+  allLines.filter(function (s) { return s.length > 20; }).length === 0,
+  JSON.stringify(allLines.filter(function (s) { return s.length > 20; })));
+check('池子总量比批次 64 之前厚（自言自语 ≥20 句、全部 ≥60 句）',
+  GAME.IDLE_LINES.length >= 20 && allLines.length >= 60,
+  'idle=' + GAME.IDLE_LINES.length + ' all=' + allLines.length);
+var dupAll = allLines.length - Object.keys(allLines.reduce(function (m, s) { m[s] = (m[s] || 0) + 1; return m; }, {})).length;
+check('同一份池子里不许有重复句子（重复=抽到两次同句的元凶）', dupAll === 0,
+  JSON.stringify(allLines.filter(function (s, i) { return allLines.indexOf(s) !== i; })));
+
+// ③ IDLE_LINES 只是 SAY.idle 的展平，不是第二份真源
+check('IDLE_LINES 恰好等于六个时段桶的并（不是另抄一份）',
+  GAME.IDLE_LINES.join('\u0001') === GAME.PERIODS.reduce(function (acc, p) {
+    return acc.concat(GAME.SAY.idle[p] || []);
+  }, []).join('\u0001'));
+
+// ④ pickLine 的四条行为
+check('名字不在表里 → 空串（调用方据此什么都不说，不硬凑一句）',
+  GAME.pickLine('nope', {}) === '' && GAME.pickLine('', {}) === '');
+check('点名点错格子（季节格子给了时段名）→ 空串',
+  GAME.pickLine('season', { bucket: 'rainy' }) === '');
+check('季节按 bucket 取，不落在时段上',
+  GAME.SAY.season.winter.indexOf(GAME.pickLine('season', { bucket: 'winter', hour: 12 }, function () { return 0; })) >= 0);
+check('按时段取句：同一格永远从那一桶里出（钉死钟点取证，不靠运气）',
+  ['dawn', 'morning', 'midday', 'afternoon', 'evening', 'night'].every(function (p) {
+    var hour = { dawn: 2, morning: 7, midday: 12, afternoon: 15, evening: 19, night: 23 }[p];
+    var got = GAME.pickLine('idle', { hour: hour }, function () { return 0.999; });
+    return GAME.SAY.idle[p].indexOf(got) >= 0;
+  }));
+check('可注入随机源 → 同一拍抽同一句（测试要确定性，不能靠 Math.random 碰）',
+  GAME.pickLine('poke', {}, function () { return 0; }) === GAME.SAY.poke[0] &&
+  GAME.pickLine('poke', {}, function () { return 0.999; }) === GAME.SAY.poke[GAME.SAY.poke.length - 1]);
+var repeatBad = [];
+['idle', 'greet', 'poke', 'season'].forEach(function (name) {
+  var ctx = name === 'season' ? { bucket: 'spring' } : { hour: 20 };
+  var last = GAME.pickLine(name, ctx);
+  for (var i = 0; i < 200; i++) {
+    var got = GAME.pickLine(name, ctx, null, last);
+    if (got === last) repeatBad.push(name + ':' + got);
+    last = got;
+  }
+});
+check('带上上一句就不会连着两句一模一样（200 轮 × 四格都不撞带）',
+  repeatBad.length === 0, JSON.stringify(repeatBad.slice(0, 3)));
+
+// ⑤ 摸头池子加宽 + onPat 的 lastLine
+check('PAT_LINES 每级至少三句且与等级表同长（旧值 2 句/级，一下午必撞重复）',
+  GAME.PAT_LINES.length === GAME.LEVELS.length &&
+  GAME.PAT_LINES.every(function (g) { return g.length >= 3; }),
+  GAME.PAT_LINES.map(function (g) { return g.length; }).join(','));
+check('PAT_CAP_LINES ≥5 句（到顶那句实话一天要说很多次）', GAME.PAT_CAP_LINES.length >= 5, GAME.PAT_CAP_LINES.length);
+var patRepeat = '', patBad = [];
+for (var pi = 0; pi < 60; pi++) {
+  var st = GAME.rollDay({ affection: 40, day: DAY }, DAY);
+  st.patsToday = 0;
+  var pr = GAME.onPat(st, DAY, Date.now(), patRepeat);
+  if (pr.line && pr.line === patRepeat) patBad.push(pr.line);
+  if (pr.line) patRepeat = pr.line;
+}
+check('onPat 传了上一句就不重样（60 次连戳）', patBad.length === 0, JSON.stringify(patBad.slice(0, 3)));
+check('onPat 不传第四参时行为与旧调用点一致（仍给一句本级台词）',
+  typeof GAME.onPat(GAME.rollDay({ affection: 40, day: DAY }, DAY), DAY, Date.now()).line === 'string');
+
+// ⑥ 两处界面必须从规则层取词，不许再自带池子（这一格是防"漂移回去"的静态闸）
+var fs = require('fs');
+var path = require('path');
+function srcOf(f) { return fs.readFileSync(path.join(__dirname, f), 'utf8'); }
+var petSrc = srcOf('popup/pet.js'), pageSrc = srcOf('content.js');
+check('popup/pet.js 不再自带 POKES / SEASON_LINES 池子',
+  !/var\s+POKES\s*=/.test(petSrc) && !/var\s+SEASON_LINES\s*=/.test(petSrc));
+check('popup/pet.js 与 content.js 都走 pickLine（台词真源只有一份）',
+  /pickLine\(/.test(petSrc) && /pickLine\(/.test(pageSrc));
+
 console.log('');
 if (failures.length) {
   console.log('小游戏规则测试未通过：' + failures.length + ' 项');

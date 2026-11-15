@@ -1791,6 +1791,13 @@
   // 这里只留一个常量：两句自动台词之间的最小间隔，比弹窗里任何一次操作都长得多。
   const PAGE_PET_IDLE_MIN_GAP_MS = 75000;
   let pagePetIdleTimer = null;
+  // 她上一句自言自语说了什么 —— 只为**别连着两句一模一样**（15 秒一拍、池子 4~5 句时
+  // 撞带是必然的，用户读到的"卡带"就是这么来的）。留在内存里就够：换了页面重建，
+  // 中间隔着一次可见的停顿，不是"连着两句"。
+  let pagePetLastIdleLine = '';
+  // 摸头那句同理（页面上连点时最容易撞重复）；与上面那份分开记，
+  // 因为"刚自言自语完"和"上一句摸头话"是两码事，混在一起会把她自己的话挡掉。
+  let pagePetLastPatLine = '';
 
   // ── 她自己动：自动换装 + 自动小动作（纯演出，不碰存档、不碰调度）──────
   // 用户原话「已经不能交互了，还是让她自己动吧」。交互那一半是样式优先级的事
@@ -1875,14 +1882,30 @@
     } catch (e) {}
   }
 
+  /** 从规则层抽一句情境台词并说出来（打招呼 / 自言自语共用这一条路）。
+   *  ⚠️ 台词真源**只有一份** —— `popup/pet-game.js` 的 SAY 表。这里不许再写池子：
+   *   原先这一格是 `game.IDLE_LINES` 平池（7 句），页面与她自己的小窗各抄一份必然分叉。
+   *  @returns {string} 真说出来的话；空串 = 那一格是空的／规则层没加载，调用方什么都不说 */
+  function pagePetSayLine(name, ctx, ms) {
+    const game = petGameModule();
+    if (!game || typeof game.pickLine !== 'function') return '';
+    const line = String(game.pickLine(name, ctx || {}, null, pagePetLastIdleLine) || '');
+    if (!line) return '';
+    pagePetLastIdleLine = line;
+    pagePetSay(line, ms);
+    return line;
+  }
+
   /** 她自己开口说一句。定时器和 e2e 都调这个，**该不该说**全在这里判。
+   *  @param {number} [hourOverride] 只给 e2e／现场探针用：把钟点钉成某个数，好按**时段桶**取证
+   *         （不传就走本地钟，与 `periodOf` 自己的兜底同一口径）。
    *  @returns {string} 真说出来的台词；空串 = 这一拍不该说话。
    *  ⚠️ 四条"别说"少任何一条，都会变成用户讨厌的那个东西：
    *    · 标签页在后台 —— 看不见还在说，切回来时一堆排着队跳出来；
    *    · 已被收起 —— 那是用户明确表达过"别在这儿"；
    *    · 正被拖着走 —— 气泡会跟着乱跳；
    *    · 刚说过话（含摸头/升级/成就）—— 自动台词永远排在真人互动之后。 */
-  function pagePetIdleSay() {
+  function pagePetIdleSay(hourOverride) {
     if (!pagePet || !pagePetBond) return '';
     try {
       if (document.hidden) return '';
@@ -1890,10 +1913,13 @@
       if (pagePet.els.card.classList.contains('dragging')) return '';
       if (Date.now() - pagePetLastSaidMs() < PAGE_PET_IDLE_MIN_GAP_MS) return '';
       const game = petGameModule();
-      const pool = (game && game.IDLE_LINES) || [];
-      const line = String(pool[Math.floor(Math.random() * pool.length)] || '');
+      const hour = Number(hourOverride);
+      const line = pagePetSayLine('idle', { hour: hour }, 3200);
       if (!line) return '';
-      pagePetSay(line, 3200);
+      // 归因格（批次 61 的规矩：让"她为什么没说／说了哪句"本身读得回来）。
+      // 只在**真说了**这一拍写 —— 被四条闸挡住时不覆盖，否则探针读到的是上一句的桶。
+      pagePet.host.dataset.sayPeriod = String((game && game.periodOf(hour)) || '');
+      pagePet.host.dataset.sayLine = line;
       return line;
     } catch (e) { return ''; }
   }
@@ -2307,8 +2333,9 @@
         pagePetHearts(ev.clientX || rect.left + rect.width / 2, ev.clientY || rect.top + 8);
         const game = petGameModule();
         if (!game || !pagePetBond) return;
-        const result = game.onPat(pagePetBond, game.dayKeyOf(Date.now()));
+        const result = game.onPat(pagePetBond, game.dayKeyOf(Date.now()), Date.now(), pagePetLastPatLine);
         pagePetBond = result.state;
+        if (result.line) pagePetLastPatLine = result.line;
         persistPagePetBond();
         renderPagePet();
         if (result.leveledUp) {
@@ -2360,7 +2387,9 @@
           if (r && r[PAGE_PET_HIDDEN_KEY]) pagePet.els.wrap.classList.add('mode-hidden');
           renderPagePet();
           settleStudyIntoBond();
-          pagePetSay('一起来刷课吧～点我摸摸头', 3000);
+          // 上线那一句改走规则层的 `greet`（按时段）—— 原先写死一句，
+          // 早上和凌晨听见的是同一句「一起来刷课吧」，用户读到的就是"话少又不对景"。
+          pagePetSayLine('greet', null, 3000);
         } catch (e) {}
       });
     } catch (e) {}
@@ -2387,9 +2416,10 @@
       //   （内容脚本与页面是两个 JS 世界，只有 DOM/属性共用，实测踩过）；
       //   ② 这里必须写 `pagePet.host` —— 构建块里那个 `const host` 早出了作用域，
       //   裸写会把 ReferenceError 交给下面这个 catch 静默吞掉（拖动就那样坏掉过一次）。
-      //   不传数据也不回数据：测试读的是气泡本身有没有被点亮。
-      pagePet.host.addEventListener('omitone:pet-idle-tick', function () {
-        try { pagePetIdleSay(); } catch (e) {}
+      //   不传数据时只当"拍一拍"（读的是气泡本身有没有被点亮）；带 `detail.hour` 才钉时段 ——
+      //   测试要按桶取证时用这一枚，其余调用方（含旧的 `new Event(...)`）行为不变。
+      pagePet.host.addEventListener('omitone:pet-idle-tick', function (ev) {
+        try { pagePetIdleSay(ev && ev.detail && ev.detail.hour); } catch (e) {}
       });
       // 先清后建：SPA 换页把她从 DOM 里摘掉再重建时，不清就一个页面挂着好几个 interval，
       // 每个都各自说话 —— 表现正是用户讨厌的"话痨"。

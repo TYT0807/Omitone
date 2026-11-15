@@ -305,7 +305,8 @@
       setTimeout(function () {                        // 5.2s：指着更新栏
         if (!alive(eggSeq)) return;
         pose("point");
-        say(isUpdateMuted() ? "今天也要好好学习" : "要检查更新吗？", 4300);
+        if (!isUpdateMuted()) say("要检查更新吗？", 4300);
+        else sayLine("greet", null, 4300);
       }, 5200);
       setTimeout(function () {                        // 9.5s：收尾
         if (!alive(eggSeq)) return;
@@ -335,7 +336,7 @@
             if (!mascot.classList.contains("show") || bookOpen || dragging || Date.now() < petBusyUntil) return;
             localStorage.setItem(NIGHT_KEY, String(Date.now()));
             setPose("sad", 2600);
-            say("这么晚还没睡…别熬太久", 2800);
+            sayLine("nightWarn", null, 2800);
           } catch (e) {}
         }, isEgg ? 10000 : 1400);   // 彩蛋在演的时候晚点说，别抢台词
       }
@@ -921,23 +922,41 @@
 
 
     // ── 会说话：连戳躲避 / 自己嘟囔 / 按季节打招呼 ─────────────────────
-    var SEASON_LINES = {
-      spring: ["花开的时候，最适合刷课了", "今天也要一点点进步"],
-      summer: ["记得喝水，别中暑", "冰激凌化了就不好吃了"],
-      autumn: ["落叶踩起来咯吱响", "天凉了，记得加件外套"],
-      winter: ["手好冷，但还想陪你", "雪停了再走也不迟"]
-    };
+    // ⚠️ 台词**一份真源都不许留在这里**（批次 64）：原先这一格有 SEASON_LINES、POKES 两份池子，
+    //   POKES 还在本文件里出现了两次，上课页（content.js）另有 IDLE_LINES ——
+    //   弹窗里听过的话页面上听不到、反过来也一样，用户读到的就是"翻来覆去那几句"。
+    //   现在全部走 `petLine(名字)` → `popup/pet-game.js` 的 SAY 表。
     var sayTimer = null;
     function say(text, ms) {
-      if (!bubble || document.hidden || mascot.style.display === "none" || stopped) return;
+      if (!bubble || document.hidden || mascot.style.display === "none" || stopped) return false;
       bubble.textContent = text;
       bubble.classList.add("show");
       clearTimeout(sayTimer);
       sayTimer = setTimeout(function () { bubble.classList.remove("show"); }, ms || 2600);
+      return true;
     }
+    /** 从规则层抽一句她该说的话。同一格连着两句不许一模一样（池子里 3~5 句时必然撞带）。
+     *  @returns {string} 空串 = 那一格是空的／规则层没加载 —— 调用方据此**什么都不说** */
+    var petLastSaid = {};
+    function petLine(name, ctx) {
+      var g = getGame();
+      if (!g || typeof g.pickLine !== "function") return "";
+      var line = String(g.pickLine(name, ctx || {}, null, petLastSaid[name]) || "");
+      if (line) petLastSaid[name] = line;
+      return line;
+    }
+    function sayAs(name, line, ms) {
+      if (!line) return "";
+      // 归因格（批次 61 的规矩）：**气泡真的亮了才写** —— 写在 say 之前等于"她没说话却登记成说过"，
+      // 那种归因比没有归因更坏（测试会拿它当证据）。测试据此点名"这句是哪一族"，
+      // 而不是钉某一句字面：钉字面就等于把台词池抄第二份。
+      if (!say(line, ms)) return "";
+      if (mascot) { mascot.dataset.sayFrom = name; mascot.dataset.sayLine = line; }
+      return line;
+    }
+    function sayLine(name, ctx, ms) { return sayAs(name, petLine(name, ctx), ms); }
 
     // 连戳三次（2 秒内）→ 躲到旁边，并说一句；普通一下 = 摸头
-    var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
     var pokeStamps = [], lastPat = 0, patCount = 0;
     if (mascot) {
       mascot.addEventListener("click", function (ev) {
@@ -965,7 +984,7 @@
               setTimeout(function () { if (alive(dodgeSeq)) mascot.style.transition = ""; }, 320);
             }, 900);
           }
-          say("别戳啦，我去旁边站会儿", 2200);
+          sayLine("dodge", null, 2200);
           addMood(-2);
         } else {
           // 摸头：冒心心 + 开心一下。心情 +1 有 4 秒冷却，免得连点直接刷满
@@ -979,19 +998,16 @@
             var patResult = petGamePat();
             if (patResult && patResult.leveledUp) celebrateBond(patResult.level);          // 升级台词压过一切
             else if (patResult && patResult.achievement) celebrateAchievement(patResult.achievement);
-            else if (patResult && patResult.line) say(patResult.line, 2400);
+            else if (patResult && patResult.line) sayAs("pat", patResult.line, 2400);
           } catch (eGame) {}
-          // 每三次摸头说一句。原来这套台词在 omScene 里另有一个点击处理器，
-          // 两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
-          if (++patCount % 3 === 0) {
-            say(POKES[Math.floor(patCount / 3 - 1) % POKES.length], 2000);
-          }
+          // 每三次摸头说一句（池子在规则层，连着两句不重样）。原来这套台词在 omScene 里
+          // 另有一个点击处理器，两边会互相抢姿态（一个要 happy、一个在 happy/sit 之间翻），已合并到这一处。
+          if (++patCount % 3 === 0) sayLine("poke", null, 2000);
         }
       });
     }
 
     // 自己嘟囔：45~90 秒一次，正在忙（运行中）就不打扰
-    var lines = SEASON_LINES[season] || SEASON_LINES.spring;
     function chatLoop() {
       if (chatLoopTimer || !autonomousVisible()) return;
       var wait = 45000 + Math.random() * 45000;
@@ -1000,7 +1016,7 @@
         if (!autonomousVisible()) return;
         try {
           if (mascot && mascot.style.display !== "none" && !mascot.getAttribute("data-busy")) {
-            say(lines[Math.floor(Math.random() * lines.length)], 3000);
+            sayLine("season", { bucket: season }, 3000);
           }
         } catch (e) {}
         chatLoop();
@@ -1037,8 +1053,8 @@
           return;
         }
         pendingMoodBand = "";
-        if (band === "high") { setPose("cheer", 1200); say("心情不错，想转个圈", 2400); }
-        else if (band === "low") { setPose("sad", 4200); say("有点低落…陪我刷会儿课吧", 3000); }
+        if (band === "high") { setPose("cheer", 1200); sayLine("moodHigh", null, 2400); }
+        else if (band === "low") { setPose("sad", 4200); sayLine("moodLow", null, 3000); }
         else { setPose("sit"); }
       } catch (e) {}
     }
@@ -1139,8 +1155,9 @@
     function petGamePat() {
       var game = getGame();
       if (!game || !bondState) return null;
-      var result = game.onPat(bondState, todayKey());
+      var result = game.onPat(bondState, todayKey(), Date.now(), petLastSaid.pat);
       bondState = result.state;
+      if (result.line) petLastSaid.pat = result.line;   // 连戳时别两句一模一样
       persistBond();
       renderBond(bondState);
       syncStudyIntoGame();   // 摸头时顺手把攒下的刷课时长结一次（多数时候是空操作）
@@ -1289,10 +1306,10 @@
         // CSS 里呼吸加快也是它；拆文件时漏掉，运行中照样会自己换装搭话。
         mascot.setAttribute("data-busy", "1");
         setPose("happy", 1600);
-        say("开工啦，你忙你的", 2600);
+        sayLine("start", null, 2600);
       } else {
         mascot.removeAttribute("data-busy");
-        say("收工，歇会儿吧", 2600);
+        sayLine("stop", null, 2600);
       }
     });
 
@@ -1313,7 +1330,16 @@
 var petEl = document.getElementById("mascot");
 var petBubble = document.getElementById("mascotBubble");
 var pokeIdx = 0;
-var POKES = ["别戳我啦", "在看书呢…", "再戳就跳走了", "好啦好啦，刷课要紧"];
+var lastPokeLine = "";
+// ⚠️ 台词只有一份真源（popup/pet-game.js 的 SAY.poke）。这里原来抄了第二份 POKES，
+//   于是"改了一处另一处不动" —— 精简窗口和精美小窗说的从来不一样（批次 64 收掉的）。
+function nextPokeLine() {
+  var g = self.OmitonePetGame;
+  if (!g || typeof g.pickLine !== "function") return "";
+  var l = String(g.pickLine("poke", {}, null, lastPokeLine) || "");
+  if (l) lastPokeLine = l;
+  return l;
+}
 // ⚠️ 精美模式下点击统一由 omFancy 接管（摸头心心 / 连戳躲闪 / 三句一聊）。
 // 两边都挂 click 的后果是互相抢姿态：一个要 happy，另一个在 happy/sit 之间翻，
 // 看起来就是"点了表情不对"。这里只给**精简模式**兜底 —— 那套 omFancy 整段不启动。
@@ -1321,10 +1347,11 @@ if (petEl && document.documentElement.getAttribute("data-ui") !== "fancy" && !do
 
   petEl.addEventListener("click", function (ev) {
     ev.stopPropagation();
-    pokeIdx = (pokeIdx + 1) % POKES.length;
-    petEl.setAttribute("data-pose", pokeIdx % 2 === 0 ? "happy" : "sit");
-    if (petBubble) {
-      petBubble.textContent = POKES[pokeIdx];
+    pokeIdx = (pokeIdx + 1) % 2;
+    petEl.setAttribute("data-pose", pokeIdx === 0 ? "happy" : "sit");
+    var pokeLine = nextPokeLine();
+    if (petBubble && pokeLine) {
+      petBubble.textContent = pokeLine;
       petBubble.classList.add("show");
       clearTimeout(petEl._pokeTimer);
       petEl._pokeTimer = setTimeout(function () { petBubble.classList.remove("show"); }, 2200);
