@@ -1664,6 +1664,11 @@
       state = 'wait';
       task = '视频续播中';
       detail = '切到后台时被平台暂停了一下，插件又按了继续';
+    } else if (/anti background pause held off/.test(msg)) {
+      // 冷却期间画面不再来回闪，但进度确实停着 —— 要说清是站点按住的，不是插件坏了。
+      state = 'wait';
+      task = '视频在后台停住';
+      detail = '站点自己按住了播放器，插件不再和它对打；切回前台那一拍就继续播';
     } else if (/llm empty answer fallback/.test(msg)) {
       state = 'warn';
       task = '有一题没拿到答案';

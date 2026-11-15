@@ -190,7 +190,9 @@
           currentTime: Number(media.currentTime || 0),
           duration: Number(media.duration || 0),
           heldMs: brokenHeldMs,
-          reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey])
+          reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey]),
+          reloadTimes: Number(brokenKey && this._mediaReloadKeys &&
+            this._mediaReloadKeys[brokenKey] && this._mediaReloadKeys[brokenKey].n) || 0
         });
         this._clearMediaPendingState('media-pipeline-dead');
         return false;
@@ -986,17 +988,26 @@
 
     /**
      * 死流水线的**原地重载**：源不动，`load()` 让浏览器重建解码管线，播放位置等元数据回来再接回去。
-     * 每个源只试一次（按 `_getMediaSeekKey` 记进 `_mediaReloadKeys`，与 `_mediaRepaired` 同一族），
-     * 免得"重载 ↔ 放手"互相打转。
      *
      * ⚠️ 为什么不用 `_maybeRepairMediaSource` 那条 blob 补救：那是**整个文件取回来重封 MIME**，
-     *    治的是"格式 / MIME 不对"这一族，对"下载到一半坏包"没用；而且它靠 `fetch` ——
-     *    现场那次它已经把 src 记成"补救过了"（`_mediaRepaired[src]=true`）却**一个 blob 都没挂上**
-     *    （`currentSrc` 仍是远端地址，多半被 CDN 的 CORS 挡在 `fetch` 那一步），
-     *    于是那条路对这一族永久关闭。**一个补救只管自己那一族，别指望它顺带治解码。**
+     *    治的是「格式 / MIME 不对」这一族，对「下载到一半坏包」没用；而且它靠 `fetch` ——
+     *    2026-11-15 现场直接量到：那个源的 `fetch` 抛 `TypeError`（CDN `s2.cldisk.com` 不给 CORS 头），
+     *    所以那条路对这一族**永久关闭**，还顺手把 src 记成「补救过了」。**一个补救只管自己那一族，别指望它顺带治解码。**
      * ⚠️ 这里**不等任何东西**（不调 `await`）：`load()` 之后由一次性 `loadedmetadata` 补 seek，
      *    下一轮 guard 看到 `error` 已被清掉就照常走。在这条链上加等待就得配超时，
      *    而等待本身没有收益（AGENTS §2.2）。
+     *
+     * 2026-11-15 现场（CDP 9334，用户挂着刷课）把原先「每个源只试一次」改成了**有界重试**，两条实测：
+     *   ① `load()` 确实是对症的药 —— 那一节 `error.code=3`、`currentTime` 卡在 4.39 **两分多钟**，
+     *      手工 `load()` 之后 `error` 归 0、`readyState` 回 4，再 `play()` 8 秒时间真的走了 7.95 秒。
+     *   ② 但原先重载把位置**放回死掉那一秒**（日志里 `resumeAt=4.39`），而 `error.message` 明写着
+     *      坏包在 `timestamp=4650667`（4.65 秒）—— 重载完立刻又撞同一个坏字节，第二次解码错误
+     *      落在同一个位置，而那时「只试一次」的闸已经烧光，这一节只能干等到 120 秒兜底放手。
+     *      **一次机会全花在同一个坑上。**
+     * 所以现在：第一次仍回原位（纯网络抖动不需要跳，跳了白丢进度）；第二次起落到坏包时间戳之后。
+     * ⚠️ 次数与间隔写死在这里，**不开新配置键** —— 加一个键要动三份默认值 + 界面绑定 +
+     *    策略区间（自检第 12 项守着），而这两个数不是给用户调的。上限 3 次、间隔 20 秒，
+     *    整体仍由 `_isActiveMediaPending` 那个 120 秒放手兜底 —— 不可能无限重载。
      */
     _reloadMediaInPlace: function (media, reason) {
       try {
@@ -1005,20 +1016,42 @@
         var key = this._getMediaSeekKey(media);
         if (!key) return false;
         if (!this._mediaReloadKeys) this._mediaReloadKeys = Object.create(null);
-        if (this._mediaReloadKeys[key]) return false;
-        this._mediaReloadKeys[key] = Date.now();
+        var prevReload = this._mediaReloadKeys[key];
+        var doneAttempts = Number(prevReload && prevReload.n) || 0;
+        if (doneAttempts >= 3) return false;
+        if (doneAttempts > 0 && Date.now() - (Number(prevReload.at) || 0) < 20000) return false;
 
-        var resumeAt = Number(media.currentTime || 0);
+        var diedAt = Number(media.currentTime || 0);
+        // 坏包位置就写在 message 里（PIPELINE_ERROR_DECODE 带 {timestamp=<微秒> ...}）。
+        // 解析失败就当没有（回原位 / 往前挪 12 秒），不许因为读不出时间戳而不救。
+        var badSec = 0;
+        try {
+          var mBad = /timestamp=(\d+)/.exec(String((media.error && media.error.message) || ''));
+          if (mBad) badSec = Number(mBad[1]) / 1000000;
+        } catch (eMsg) {}
+        var resumeAt = diedAt;
+        if (doneAttempts > 0) {
+          var jumpTo = Math.max(diedAt, (badSec > 0 ? badSec : diedAt) + 12);
+          var dur = Number(media.duration || 0);
+          // 不许跳到结尾之后（那等于直接判完）；离结尾太近就留在原位，让它自然播完。
+          if (dur > 30) jumpTo = Math.min(jumpTo, Math.max(diedAt, dur - 10));
+          resumeAt = jumpTo;
+        }
+        this._mediaReloadKeys[key] = { at: Date.now(), n: doneAttempts + 1, resumeAt: resumeAt };
+
         emitRuntimeLog('warn', 'media pipeline dead, reload in place', {
           code: code,
+          attempt: doneAttempts + 1,
+          diedAt: diedAt,
           resumeAt: resumeAt,
+          badSec: Math.round(badSec * 100) / 100,
           reason: reason || ''
         });
         if (resumeAt > 0) {
           var self = this;
           media.addEventListener('loadedmetadata', function () {
             // `load()` 会把 currentTime 归零，位置必须等元数据回来再补 ——
-            // 现在就设会被 readyState 0 的状态吞掉，症状是"重载过了，却从第一秒重新播"。
+            // 现在就设会被 readyState 0 的状态吞掉，症状是「重载过了，却从第一秒重新播」。
             try { media.currentTime = resumeAt; } catch (e0) {}
             self._ensurePlaybackRate(media, 'reload');
           }, { once: true });
@@ -1305,6 +1338,18 @@
         var duration = Number(current.duration || 0);
         if (duration && Number(current.currentTime || 0) >= duration - 0.5) return;
 
+        // ── 后台对打的自限闸（批次 63）──────────────────────────────────
+        // 站点在页面 hidden 时自己把视频按住，而我们 600 毫秒后又 play() 一次 ——
+        // 两边一来一回，画面在播放/暂停之间闪（用户看到的是"疯狂暂停"），
+        // 而**进度一分不涨**：2026-11-15 16:12 现场实测，标签页在后台那 15 秒里
+        // currentTime 一直停在 241.24，日志里这条 warn 一分钟来两回。
+        // 判据不看"有没有暂停事件"，看**恢复之后时间有没有往前走**（下面那发 6 秒回测）：
+        // 连着三次没动才认定这一页在后台被按住了，转 5 分钟冷却；
+        // 回到前台那一拍立刻作废冷却（见 20-dom.js `_bindVisibilityHandlers`）。
+        // 能在后台照常播的那些站点因为"时间在动"会被清零，行为一点不变。
+        if (document.hidden && Date.now() < (self._bgHoldUntil || 0)) return;
+        if (!document.hidden) { self._bgHoldUntil = 0; self._bgStuckCount = 0; }
+
         // ⚠️ 这条 warn 要节流（批次 20-H，实测冲掉过别的现场证据）：
         // 标签页在后台时站点自己会把视频暂停，于是它**每秒一条**，把 runtimeLogs
         // 那个只有 200 条的缓冲区整个占满 —— 真正要看的「讨论为什么没发上」就被冲走了。
@@ -1330,6 +1375,31 @@
               current.play().catch(function () {});
             } catch (e1) {}
           });
+        }
+        // 这一发恢复到底有没有让进度往前走 —— 6 秒后回测一次（只有 hidden 才记账，
+        // 且必须比的是**同一只**元素：站点换源时 _getVideoEl() 会给出另一只，
+        // 那种情况当作"没走到冷却"重新计数，不许拿别人的时间差定我的罪）。
+        if (hiddenNow) {
+          var t0 = Number(current.currentTime || 0);
+          var watched = current;
+          setTimeout(function () {
+            try {
+              if (!document.hidden) { self._bgHoldUntil = 0; self._bgStuckCount = 0; return; }
+              if ((self._getVideoEl() || current) !== watched) { self._bgStuckCount = 0; return; }
+              if (Number(watched.currentTime || 0) > t0 + 0.5) { self._bgStuckCount = 0; return; }
+              self._bgStuckCount = (self._bgStuckCount || 0) + 1;
+              if (self._bgStuckCount < 3) return;
+              self._bgHoldUntil = Date.now() + 5 * 60 * 1000;
+              emitRuntimeLog('warn', 'anti background pause held off', {
+                hint: '这一页在后台，站点自己把视频按住了 —— 连着三次恢复都没让进度往前走，' +
+                      '所以五分钟之内不再和它对打（对打只会让画面在播放/暂停之间闪，进度还是不动）。' +
+                      '把这一页切回前台，下一拍就续播',
+                stuck: self._bgStuckCount,
+                time: Math.round(Number(watched.currentTime || 0)),
+                holdMs: 5 * 60 * 1000
+              });
+            } catch (e) {}
+          }, 6000);
         }
       }, 600);
     },

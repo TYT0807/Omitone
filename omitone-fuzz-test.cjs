@@ -128,6 +128,9 @@ check('随机状态 500 次落盘判定：shouldFlush/markFlushed 互恰、秒�
 var GARBAGE_AFFECTION = [-1e9, 0, 1, 99, 100, 100.5, 1e9, NaN, null, undefined, '50', '', {}, [], true];
 var DAY_GARBAGE = ['2026-11-01', '', null, undefined, ' nonsense ', 42, '9999-99-99'];
 var gameBad = [];
+// 「水位高过统计当场归零」这一支在 3000 轮里到底走到过没有 —— 走到过才允许被放过，
+// 否则它就是条空例外（例外写下来是为了放行真行为，不是为了让判据永远绿）。
+var staleResetRounds = 0;
 var grng = mulberry32(20261031);
 for (var k = 0; k < 3000; k++) {
   var aff = GARBAGE_AFFECTION[Math.floor(grng() * GARBAGE_AFFECTION.length)];
@@ -161,8 +164,21 @@ for (var k = 0; k < 3000; k++) {
     //   怪日期会触发跨天，而跨天把水位归零是 1.3.0 的规矩（统计层每天从零重算，
     //   不归零就永远加不上好感，见 pet-game.js rollDay 里那条现场实测）。
     //   拿原始存档比，等于断言"跨天不许归零"，干净树上就会报假红。
+    //   第二种**允许**的下跌：水位高过统计（旧语义与垃圾档都会留下这种永远追不上的水位，
+    //   pet-game.js 当场归零 —— 2026-11-15 16:00 现场实测"刷了 3 小时 28 分、好感一分不涨"）。
+    //   放不放过这一支要钉到具体形状：归零后只按单点秒数的整倍数走，且不许越过表本身。
+    var meter = Number(seconds) || 0;
+    var perPoint = GAME.RULES.studyMinutesPerPoint * 60;
+    var staleMark = rolled.countedSeconds > meter;
     if (study.state.countedSeconds < rolled.countedSeconds) {
-      gameBad.push('同一天内水位倒退: ' + rolled.countedSeconds + ' → ' + study.state.countedSeconds); break;
+      if (!staleMark) {
+        gameBad.push('同一天内水位倒退（既不是跨天、水位也没高过统计）: ' +
+          rolled.countedSeconds + ' → ' + study.state.countedSeconds); break;
+      }
+      staleResetRounds++;
+      if (study.state.countedSeconds > Math.max(0, meter) || study.state.countedSeconds % perPoint !== 0) {
+        gameBad.push('水位高过统计归零之后又越界: meter=' + meter + ' counted=' + study.state.countedSeconds); break;
+      }
     }
     if (!(study.state.affection >= 0 && study.state.affection <= GAME.RULES.max)) {
       gameBad.push('applyStudySeconds 未钳制'); break;
@@ -179,8 +195,13 @@ for (var k = 0; k < 3000; k++) {
     }
   } catch (e) { gameBad.push('第 ' + k + ' 轮 threw: ' + e.message); break; }
 }
-check('垃圾存档 3000 轮（NaN/负数/1e9/错型/怪日期）：好感恒在 [0, RULES.max]、等级不越界、水位不倒退、永不抛异常',
+check('垃圾存档 3000 轮（NaN/负数/1e9/错型/怪日期）：好感恒在 [0, RULES.max]、等级不越界、' +
+  '水位只在"跨天"或"高过统计"这两种情形下下跌、永不抛异常',
   gameBad.length === 0, gameBad.slice(0, 3).join(' | '));
+// 例外必须**真的被走到过**：3000 轮一次都没命中「水位高过统计」，说明这一支是条空例外 ——
+// 那等于把判据改成"水位可以随便跌"（AGENTS.md §5：不会失败的检查等于没有检查）。
+check('垃圾存档 3000 轮里「水位高过统计当场归零」这一支真的走到过（不是空例外）',
+  staleResetRounds > 0, 'staleResetRounds=' + staleResetRounds);
 
 // ⚠️ 上面三条判据读的是生产自己的 RULES.max，所以这里把**那个数本身**钉住 ——
 // 否则有人把 max 改成 10 万，暴力测试照样全绿（自筛自证的老问题，见 AGENTS.md §5）。

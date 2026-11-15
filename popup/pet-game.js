@@ -318,7 +318,13 @@
     }
     var beforeLevel = levelOf(next.affection);
     var perPointSeconds = RULES.studyMinutesPerPoint * 60;
-    var pending = Math.max(0, (Number(s.activeSeconds) || 0) - next.countedSeconds);
+    var active = Number(s.activeSeconds) || 0;
+    // 水位比表还高，只可能是**旧语义**留下的那一格：新语义下 counted 只跟着 pending 走，
+    // 永远追不过 activeSeconds。上面那道跨天归零要等零点才生效，而 2026-11-15 16:00
+    // 现场实测 countedSeconds 32400 撞上当天 activeSeconds 12840 —— 人已经刷了 3 小时 28 分，
+    // studyPointsToday 还是 0（摸头那天加了 6）。不当场捡回来，用户今晚看到的仍是"刷课一分不涨"。
+    if (next.countedSeconds > active) next.countedSeconds = 0;
+    var pending = Math.max(0, active - next.countedSeconds);
     var earnable = Math.floor(pending / perPointSeconds);
     var room = RULES.studyPointsDailyCap - next.studyPointsToday;
     var allowed = Math.max(0, Math.min(earnable, room));

@@ -120,7 +120,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `20-dom.js`
 
-*639 行 / 31 方法*
+*643 行 / 31 方法*
 
 跨域安全访问的**唯一入口**：`_safeDocOf` / `_safeWinDoc` / `_isFrameSameOrigin`
 （⚠️ **永远不要裸读跨域 iframe 的 `.document`** —— 抛出的 `SecurityError` 会静默打断整个 tick 循环，
@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1367 行 / 44 方法*
+*1437 行 / 44 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、

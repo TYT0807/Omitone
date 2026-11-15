@@ -368,13 +368,23 @@
     var OUTFITS = SKINS.length;
     var immersive = document.body.classList.contains("im");
     var POS_KEY = immersive ? "omitone.pet.pos.im" : "omitone.pet.pos";
+    // 底部那条控制带（返回设置 / 恢复角色入口）是 fixed 居中在 bottom:18px。
+    // 沉浸式里把她拖到底不许压住它 —— 现场量到重叠 2x27，按钮被她盖住就点不着了。
+    // 留白从**那条自己的盒子**量回来，不写死一个"差不多"的高度（换字号它就骗人）。
+    function controlBand() {
+      if (!immersive) return 24;
+      var bar = document.querySelector(".im-controls");
+      var b = bar && bar.getBoundingClientRect();
+      if (!b || !b.height) return 24;
+      return Math.round(window.innerHeight - b.top) + 8;
+    }
     function clampPosition(x, y) {
       var w = mascot.offsetWidth || (immersive ? 150 : 40);
       var h = mascot.offsetHeight || (immersive ? 210 : 56);
       // 工具条向左伸出、位于人物底部，也必须留在视口里。
       var minX = immersive ? 2 : Math.max(2, 88 - w);
       var maxX = Math.max(minX, window.innerWidth - w - 12);
-      var maxY = Math.max(2, window.innerHeight - h - 24);
+      var maxY = Math.max(2, window.innerHeight - h - controlBand());
       return { x: Math.round(Math.max(minX, Math.min(maxX, x))), y: Math.round(Math.max(2, Math.min(maxY, y))) };
     }
     function putPosition(x, y) {
@@ -383,7 +393,11 @@
       return p;
     }
     function homePosition() {
-      return immersive ? { x: (window.innerWidth - 150) / 2, y: (window.innerHeight - 210) / 2 } : { x: window.innerWidth - 56, y: 2 };
+      if (!immersive) return { x: window.innerWidth - 56, y: 2 };
+      // 竖直方向在「控制条以上」那一段里居中，别拿整个视口当高度 ——
+      // 矮窗口里 (innerHeight-210)/2 会把她的脚正好落在按钮条上。
+      var loose = Math.max(2, Math.round((window.innerHeight - 210) / 2));
+      return { x: (window.innerWidth - 150) / 2, y: clampPosition(0, loose).y };
     }
     var FACE_KEY = "omitone.pet.face";
     var faceIdx = -1;

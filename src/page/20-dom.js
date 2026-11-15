@@ -363,6 +363,10 @@
       document.addEventListener('visibilitychange', function () {
         self._syncAudioKeepalive();
         if (!document.hidden) {
+          // 回到前台：批次 63 那 5 分钟冷却立刻作废 —— 冷却的理由是"在后台按不住"，
+          // 人已经回来了还继续冷却，就是自己罚自己（进度白停五分钟）。
+          self._bgHoldUntil = 0;
+          self._bgStuckCount = 0;
           // 回到前台：立即校验一次视频状态与倍速
           self._checkVideoStatus();
           var video = self._getVideoEl();

@@ -3293,20 +3293,180 @@ SCENARIOS.push({
   url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
+    // ⚠️ 窗口原尺寸必须在**任何一次改尺寸之前**捕获。
+    // 下面「带 w/h 打开」那两条断言会让页面自己 chrome.windows.update 到 620x470 ——
+    // 等它做完再读"原尺寸"，读到的就是 620x470，收尾"还原"还原的是这个泄漏值，
+    // 于是下一场景（弹窗开关那族）在 470 高的视口里点 y≈519 那一格，
+    // elementFromPoint 返回 null → 前提红 → 整族 6 条连坐（全量实测踩过）。
+    var orig = null;
+    try {
+      orig = await ctx.client.evaluate('(async function(){' +
+        'var w=await chrome.windows.getCurrent();' +
+        'return {id:w.id,left:w.left,top:w.top,width:w.width,height:w.height};})()');
+    } catch (e) { orig = null; }
+
     var r = await ctx.client.evaluate(
       '(async function(){' +
       'await new Promise(function(r){setTimeout(r,1200);});' +
       'var out={};' +
       'out.imClass=document.body.classList.contains("im");' +
+      'out.imHtml=document.documentElement.classList.contains("im");' +
+      // 用「量不量得到」判隐藏，不用 display 计算值 —— 现在藏的是祖先
+      // （.container 整条被藏），子节点自己的 display 照样是 flex/block。
       'var top=document.querySelector(".top");' +
-      'out.topHidden=top?getComputedStyle(top).display==="none":null;' +
+      'out.topPainted=!!(top&&top.getClientRects().length);' +
+      'var keep={fxLayer:1,mascot:1,petBook:1,toast:1};' +
+      'out.strays=Array.prototype.slice.call(document.body.children).filter(function(el){' +
+      ' var b=el.getBoundingClientRect();' +
+      ' return !keep[el.id] && !el.classList.contains("im-controls") && b.width>0 && b.height>0;' +
+      ' }).map(function(el){return el.tagName+"#"+(el.id||"-");});' +
       'var pet=document.getElementById("mascot");' +
       'out.petVisible=pet?getComputedStyle(pet).display!=="none":null;' +
       'return out;})()'
     );
-    check('body 带上了 .im 类', !!r && r.imClass === true, JSON.stringify(r));
-    check('设置面板被隐藏', !!r && r.topHidden === true, JSON.stringify(r));
+    check('body 与 html 都带上了 .im 类（html 那条要盖掉 356px 的弹窗定宽）',
+      !!r && r.imClass === true && r.imHtml === true, JSON.stringify(r));
+    check('设置面板不再参与布局（整棵子树一个矩形都量不到）', !!r && r.topPainted === false, JSON.stringify(r));
+    check('body 底下除角色/粒子/立绘册/提示条/控制条之外没有第二样东西还露着',
+      !!r && Array.isArray(r.strays) && r.strays.length === 0, JSON.stringify(r));
     check('吉祥物仍然显示', !!r && r.petVisible === true, JSON.stringify(r));
+
+    // ── 「展开」的开窗尺寸 ──────────────────────────────────────────────
+    // chrome.windows.create 里的 width/height 会被 Edge 记住的旧位置**整个忽略**
+    //（现场实测：请求 760x680，开出来 1400x900）。真正认账的是新窗口自己
+    // 按 URL 上的 w/h 补的那一发 chrome.windows.update —— 所以这里换一个
+    // 带尺寸的 search 重新加载，量窗口有没有真落到那一档。
+    try {
+      await ctx.client.evaluate('(async function(){ location.search="play=1&ui=fancy&w=620&h=470"; return 1; })()');
+    } catch (e) { /* 导航会把执行上下文掀掉，这条 rejection 是预期内的 */ }
+    var fitted = null;
+    for (var f = 0; f < 24; f++) {
+      await sleep(250);
+      try {
+        fitted = await ctx.client.evaluate('(async function(){' +
+          'var w=await chrome.windows.getCurrent();' +
+          'return {ready:document.readyState,win:{w:w.width,h:w.height},inner:{w:window.innerWidth,h:window.innerHeight}};})()');
+      } catch (e) { fitted = null; continue; }
+      if (fitted && fitted.ready === "complete" && Math.abs(fitted.win.w - 620) <= 10) break;
+    }
+    check('带 w/h 打开时窗口自己拉到那一档（不是 create 那一发被忽略就完事）',
+      !!fitted && Math.abs(fitted.win.w - 620) <= 10 && Math.abs(fitted.win.h - 470) <= 10,
+      JSON.stringify({ target: { w: 620, h: 470 }, got: fitted }));
+    check('拉完之后文档根仍然跟着视口（尺寸是自己算的，不是猜的）',
+      !!fitted && fitted.ready === "complete" && Math.abs(fitted.inner.w - fitted.win.w) <= 24,
+      JSON.stringify(fitted));
+
+    // ── 沉浸式几何（批次 62）──────────────────────────────────────────
+    // 现场量到的形状（CDP 9334，用户那台 1.5 倍缩放的机器）：
+    //   1400x900 那档 -> 文档根仍然只有 **356px** 宽，右边 **1030px** 是空的背景；
+    //   拉到 760x680 -> 空白 390px，底部居中的控制条压进那 356 列 **80px**；
+    //   拉到 420x380 -> 控制条整条 179px 落进列里，还和角色重叠 **41x27**。
+    // 根因是 `html{width:356px}`（popup.html 给扩展弹窗定尺寸的那条）在沉浸式里没人覆盖，
+    // 而控制条 / 角色是 `position:fixed`，按**视口**排 —— 两套坐标系并存在同一个页面上。
+    // 所以这里量的是**关系**（谁跟谁重叠、根元素跟不跟视口一致），不是像素审美。
+    var GEOM = '(async function(){' +
+      'function rc(el){ if(!el) return null; var b=el.getBoundingClientRect();' +
+      ' return {x:Math.round(b.left),y:Math.round(b.top),w:Math.round(b.width),h:Math.round(b.height),r:Math.round(b.right),b:Math.round(b.bottom)}; }' +
+      'function hit(a,b){ if(!a||!b) return null;' +
+      ' var w=Math.min(a.r,b.r)-Math.max(a.x,b.x), h=Math.min(a.b,b.b)-Math.max(a.y,b.y);' +
+      ' return (w>0&&h>0)?{w:w,h:h}:null; }' +
+      'var html=rc(document.documentElement), body=rc(document.body);' +
+      'var ctrl=rc(document.querySelector(".im-controls"));' +
+      'var pet=rc(document.getElementById("mascot"));' +
+      'return {inner:{w:window.innerWidth,h:window.innerHeight},htmlW:html?html.w:null,bodyW:body?body.w:null,' +
+      ' ctrl:ctrl,pet:pet,overCtrlPet:hit(ctrl,pet),overCtrlHtml:hit(ctrl,html),' +
+      ' inView:!!(ctrl&&ctrl.x>=0&&ctrl.r<=window.innerWidth&&ctrl.b<=window.innerHeight),' +
+      ' scroll:{sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight},' +
+      ' tall:Array.prototype.slice.call(document.querySelectorAll("body *")).filter(function(el){' +
+      '   var b=el.getBoundingClientRect(); return b.height>0&&b.bottom>window.innerHeight+1;' +
+      ' }).slice(0,10).map(function(el){var b=el.getBoundingClientRect();var c=getComputedStyle(el);' +
+      '   return el.tagName+"."+String(el.className).split(" ")[0]+" b="+Math.round(b.bottom)+" pos="+c.position+" top="+c.top+" h="+c.height;}) ,' +
+      ' kids:Array.prototype.slice.call(document.body.children).map(function(el){var b=el.getBoundingClientRect();' +
+      '   return el.tagName+"#"+(el.id||"-")+"."+(String(el.className).split(" ")[0]||"-")' +
+      '     +" disp="+getComputedStyle(el).display+" b="+Math.round(b.bottom);}) };})()';
+
+    // 现场（1400x900 / 760x680 / 420x380）三档都量过；沙盒这一档只能到 520x400 ——
+    // 普通标签窗口的最小宽度把 420 顶成 inner 493，那条「夹具自证」会正确报红，
+    // 所以沙盒取**它自己拉得动**的最窄一档，420x380 那组数字留在上面的注释里当现场证据。
+    var SIZES = [{ w: 760, h: 680 }, { w: 520, h: 400 }];
+    // orig 已在 run 开头捕获（见那里那条⚠️），这里只许用，不许重新读一遍
+
+    for (var i = 0; i < SIZES.length; i++) {
+      var size = SIZES[i];
+      var tag = size.w + 'x' + size.h;
+      await ctx.client.evaluate('(async function(){' +
+        'var w=await chrome.windows.getCurrent();' +
+        'await chrome.windows.update(w.id,{left:40,top:40,width:' + size.w + ',height:' + size.h + '});' +
+        'return 1;})()');
+      // 轮询到视口稳定，别猜毫秒（缩放/重排是异步的）
+      var g = null, last = '';
+      for (var k = 0; k < 20; k++) {
+        await sleep(250);
+        g = await ctx.client.evaluate(GEOM);
+        var now = JSON.stringify(g && g.inner);
+        if (now === last && g && g.ctrl) break;
+        last = now;
+      }
+      var dw = g && g.inner ? Math.abs(g.inner.w - size.w) : -1;
+      check(tag + '：**夹具自证** —— 窗口真的被拉到了这一档（视口与请求宽之差必须 ≤40，覆盖窗口装饰）',
+        dw >= 0 && dw <= 40, JSON.stringify({ requested: size, inner: g && g.inner, deltaW: dw }));
+      check(tag + '：文档根跟随视口宽度，不许把沉浸式留成一条 356px 的弹窗列',
+        !!g && g.htmlW === g.inner.w && g.bodyW === g.inner.w, JSON.stringify(g && { inner: g.inner, htmlW: g.htmlW, bodyW: g.bodyW }));
+      check(tag + '：底部控制条整条在视口内', !!g && g.inView === true, JSON.stringify(g && { inner: g.inner, ctrl: g.ctrl }));
+      check(tag + '：控制条不与角色重叠（角色压住按钮就点不着了）',
+        !!g && g.overCtrlPet === null, JSON.stringify(g && { ctrl: g.ctrl, pet: g.pet, over: g.overCtrlPet }));
+      check(tag + '：沉浸式页面没有幻影滚动（ scrollWidth/Height 不许超出视口）',
+        !!g && g.scroll.sw <= g.inner.w && g.scroll.sh <= g.inner.h, JSON.stringify(g && { inner: g.inner, scroll: g.scroll, tall: g.tall, kids: g.kids }));
+    }
+
+    // 拖到底也不许压住控制条 —— 走**真指针事件**，让生产的钳位逻辑自己算，不在测试里重算一遍
+    await ctx.client.evaluate('(async function(){' +
+      'var w=await chrome.windows.getCurrent();' +
+      'await chrome.windows.update(w.id,{left:40,top:40,width:520,height:400});return 1;})()');
+    await sleep(600);
+    var drag = await ctx.client.evaluate('(async function(){' +
+      'var pet=document.getElementById("mascot");' +
+      'var b=pet.getBoundingClientRect();' +
+      'var sx=b.left+b.width/2, sy=b.top+20;' +
+      'function fire(t,x,y){ pet.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,pointerId:1,isPrimary:true,clientX:x,clientY:y,pointerType:"mouse"})); }' +
+      'fire("pointerdown",sx,sy);' +
+      'for(var i=1;i<=6;i++){ fire("pointermove",sx,sy+i*30); await new Promise(function(r){setTimeout(r,40);}); }' +
+      'fire("pointermove",60,window.innerHeight-6); await new Promise(function(r){setTimeout(r,40);});' +
+      'fire("pointerup",60,window.innerHeight-6);' +
+      'await new Promise(function(r){setTimeout(r,300);});' +
+      'function rc(el){var q=el.getBoundingClientRect();return{x:Math.round(q.left),y:Math.round(q.top),w:Math.round(q.width),h:Math.round(q.height),r:Math.round(q.right),b:Math.round(q.bottom)};}' +
+      'var p=rc(document.getElementById("mascot")), c=rc(document.querySelector(".im-controls"));' +
+      'var ovW=Math.min(p.r,c.r)-Math.max(p.x,c.x), ovH=Math.min(p.b,c.b)-Math.max(p.y,c.y);' +
+      'var inView=p.x>=0&&p.r<=window.innerWidth&&p.b<=window.innerHeight;' +
+      'return {pet:p,ctrl:c,over:(ovW>0&&ovH>0)?{w:ovW,h:ovH}:null,inView:inView,inner:{w:window.innerWidth,h:window.innerHeight}};})()');
+    check('把角色拖到最底：仍然不压住控制条，且整只留在视口内',
+      !!drag && drag.over === null && drag.inView === true, JSON.stringify(drag));
+
+    if (orig && orig.id) {
+      try {
+        await ctx.client.evaluate('(async function(){' +
+          'await chrome.windows.update(' + orig.id + ',{left:' + (orig.left || 0) + ',top:' + (orig.top || 0) +
+          ',width:' + orig.width + ',height:' + orig.height + '});return 1;})()');
+      } catch (e) { /* 收尾失败不影响结论，下面那条会量回来 */ }
+      var restored = null;
+      for (var z = 0; z < 12; z++) {
+        await sleep(200);
+        try {
+          restored = await ctx.client.evaluate('(async function(){' +
+            'var w=await chrome.windows.getCurrent();' +
+            'return {w:w.width,h:w.height,innerH:window.innerHeight};})()');
+        } catch (e) { restored = null; continue; }
+        if (restored && Math.abs(restored.w - orig.width) <= 2 && Math.abs(restored.h - orig.height) <= 2) break;
+      }
+      // 这条是**量回来的**，不是"发了 update 就算还原"。上一轮就是因为还原值取错了基线，
+      // 把窗口留在 620x470，下一族弹窗开关点 y≈519 直接掉到视口外，连红 6 条。
+      check('收尾：窗口真的还回了进来时那一档（尺寸不许泄漏给下一个场景）',
+        !!restored && Math.abs(restored.w - orig.width) <= 2 && Math.abs(restored.h - orig.height) <= 2,
+        JSON.stringify({ orig: { w: orig.width, h: orig.height }, got: restored }));
+    } else {
+      check('前提：窗口原尺寸在动任何尺寸之前就读到了（读不到就没有"还原"这回事）',
+        false, JSON.stringify(orig));
+    }
   }
 });
 
@@ -10685,6 +10845,8 @@ SCENARIOS.push({
       'say("warn","media autoplay blocked, muted retry ok",{name:"t.mp4"});await waitMs(300);out.autoplay=read();' +
       'say("warn","video paused unexpectedly, resuming (anti background pause)",{hidden:true,time:42});' +
       'await waitMs(300);out.paused=read();' +
+      'say("warn","anti background pause held off",{stuck:3,time:512,holdMs:300000});' +
+      'await waitMs(300);out.held=read();' +
       'say("warn","llm empty answer fallback",{type:"judge",fallback:"true"});await waitMs(300);out.emptyFallback=read();' +
       'say("warn","standalone captcha page detected, solving",{cycle:3});await waitMs(300);out.captchaPage=read();' +
       'say("warn","search job: every candidate frame was rejected",{frames:2,attachments:1,rejects:[]});' +
@@ -10695,10 +10857,10 @@ SCENARIOS.push({
     ));
 
     var keys = ['loading8', 'loading20', 'catalogHold', 'givenUp', 'declined', 'fontPlain', 'fontNomap',
-      'cacheMiss', 'resegmented', 'autoplay', 'paused', 'emptyFallback', 'captchaPage',
+      'cacheMiss', 'resegmented', 'autoplay', 'paused', 'held', 'emptyFallback', 'captchaPage',
       'rejected', 'attachmentsExist', 'unnamed'];
 
-    check('前提：面板已被 start 激活，这十六次都读回了字（读不到就是空测）',
+    check('前提：面板已被 start 激活，这十七次都读回了字（读不到就是空测）',
       !!panel.started && panel.started.task !== '(无)' &&
       keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
       JSON.stringify(panel.started));
@@ -10738,6 +10900,12 @@ SCENARIOS.push({
       /静音/.test(panel.autoplay.detail) &&
       panel.paused.state === '等待中' && panel.paused.task === '视频续播中',
       JSON.stringify({ autoplay: panel.autoplay, paused: panel.paused }));
+
+    // 冷却那一条如果没人管，会掉进最后那条兜底（「有情况 / 可在查看日志里看这一条」），
+    // 用户看到的是"插件出事了"，而实际是"站点按住了、切回前台就好"。
+    check('★ 冷却那一条不兜底成「有情况」：说清是后台被站点按住、切回前台就续播',
+      panel.held.state === '等待中' && panel.held.task === '视频在后台停住' &&
+      /切回前台/.test(panel.held.detail), JSON.stringify(panel.held));
 
     check('独立验证码页的轮次从这一条日志里读回来（不是写死的「第 1 轮」）',
       panel.captchaPage.state === '注意' && panel.captchaPage.task === '独立验证码页' &&
@@ -13705,11 +13873,21 @@ SCENARIOS.push({
       'var r=el.getBoundingClientRect();var x=r.left+r.width/2,y=r.top+r.height/2;' +
       'var hit=document.elementFromPoint(x,y);' +
       'return {x:x,y:y,w:r.width,on:el.classList.contains("on"),' +
+      'innerH:window.innerHeight,inView:(y>=0&&y<=window.innerHeight),' +
       'aria:el.getAttribute("aria-checked"),hitSelf:hit===el,hitChild:!!hit&&el.contains(hit)};})()';
     await sleep(500);   // 等 load() 把存储里的状态读回界面，否则基线读的是出厂 HTML
+    // ⚠️ 自己钉住「这一点在视口里」，别依赖上一个场景留下的窗口尺寸 ——
+    //   沉浸式那族场景会真的把窗口拉到 620x470 / 520x400，而这里的点击坐标是按
+    //   rect 算的：开关落在折叠线下时 elementFromPoint 返回 null、
+    //   dispatchMouseEvent 点的是空气，于是前提连带整族 6 条一起红（全量实测踩过）。
+    //   滚进视野是**这一族自己该管的**：不 resize 窗口（那会把尺寸泄漏给下一个场景）。
+    await ctx.client.evaluate('(function(){var el=document.getElementById("slowMachineMode");' +
+      'if(el&&el.scrollIntoView)el.scrollIntoView({block:"center",inline:"center"});return 1;})()');
+    await sleep(200);
     var s0 = await ctx.client.evaluate(PROBE);
-    check('前提：兼容慢机开关可见、且中心点真实命中它自己（不是被别的元素挡住）',
-      !!s0 && !s0.err && s0.w > 0 && (s0.hitSelf === true || s0.hitChild === true) &&
+    check('前提：兼容慢机开关可见、中心点落在视口内、且真实命中它自己（不是被别的元素挡住）',
+      !!s0 && !s0.err && s0.w > 0 && s0.inView === true &&
+      (s0.hitSelf === true || s0.hitChild === true) &&
       (s0.aria === 'true' || s0.aria === 'false'), JSON.stringify(s0));
 
     var wasOn = s0.on === true;
@@ -14479,6 +14657,245 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 58. 标签页在后台被站点按住时不再和它对打（批次 63）
+ *
+ * 现场（2026-11-15 16:12，CDP 9334）：刷课那枚标签页被切到后台之后，
+ * `video paused unexpectedly, resuming (anti background pause)` 一分钟来两回，
+ * 而 currentTime 连着 15 秒停在 241.24 —— **那发恢复从来没生效过**。
+ * 用户看到的是"播放/暂停来回闪，像在疯狂暂停"，实际进度一分不涨；
+ * 把标签页端回前台，同一只视频立刻 8 秒走 8 秒、一分钟内 0 条这条 warn。
+ *
+ * 修法口径：**不看"有没有暂停事件"，看恢复之后时间有没有往前走**。
+ * 连着三次没动 → 认定这一页在后台被站点按住了，转 5 分钟冷却（期间不抢恢复）
+ * 并发一条点名 warn；回到前台那一拍冷却立刻作废、马上续播。
+ *
+ * 夹具要点（AGENTS §5）：
+ *  - page.js 跑在页面**主世界**，所以 `document.hidden` 在这一层改得到桩 ——
+ *    §5 里"改了内容脚本读不到"说的是 content.js（isolated world），不是这一层。
+ *    ⚠️ 但桩生效不生效**要让生产自己说**：那条 warn 的 `hidden` 字段是生产读的值。
+ *  - 站点桩两档：`fight` = play() 之后照样暂停、时间不动（现场那一档）；
+ *    `ok` = play() 之后真在播、时间照走（后台也播得动的那些站点）。
+ *  - ⚠️ **每一拍自己有一个计数器**：`poke()` 递增 `__b63Seq`，被这一拍安排的
+ *    `_workerDelay` 回调执行时把它的号写进 `__b63Running`，`play()` 只往那一号上加。
+ *    为什么不用"整只元素的 play 总次数"：这一页上叫 play 的不止这一族
+ *    （任务循环、`_tryResumePlayback`、覆盖层恢复那些），实测 delta 会多出 1、
+ *    也会在对照档少 1 —— 拿总数当证据，"别人多叫一次"是假红，"自己那发没叫"也是假红。
+ *    按号读回来之后，谁的哪一拍说得清（AGENTS §5：归因要读得回来）。
+ *  - 监控定时器照样摘、`_checkVideoStatus` 照样桩成空操作 —— 不是为了数得清
+ *    （那已经由按号计数管住了），是让这一页在测试期间自己别乱动生产状态。
+ */
+SCENARIOS.push({
+  name: '后台被站点按住时不再对打：三次恢复不动就冷却，回前台立刻续播',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  var H = { v: true };',
+      '  Object.defineProperty(document, "hidden", { configurable: true, get: function(){ return H.v; } });',
+      '  Object.defineProperty(document, "visibilityState", { configurable: true, get: function(){ return H.v ? "hidden" : "visible"; } });',
+      '  window.__b63setHidden = function (x) { H.v = !!x; };',
+      '  window.__b63SiteMode = "fight";',
+      '  window.__b63Counts = {}; window.__b63Running = null; window.__b63Seq = 0;',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: function(){ return 4; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error", { configurable: true, get: function(){ return null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return false; } });',
+      // paused：fight 档站点一直按着；ok 档 play() 之后松手
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return this.__b63Paused !== false; } });',
+      // currentTime：fight 档钉死 42（现场那个"15 秒不动"的形状）；
+      // ok 档从"上一次真的播起来"那一刻起走，所以恢复之后时间一定在动
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '    get: function(){',
+      '      if (window.__b63SiteMode === "ok" && this.__b63Started) return 42 + (Date.now() - this.__b63Started) / 1000;',
+      '      return 42;',
+      '    }, set: function (v) { this.__b63Set = v; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", { configurable: true,',
+      '    get: function(){ return this.__b63Rate == null ? 1 : this.__b63Rate; }, set: function (v) { this.__b63Rate = v; } });',
+      '  HTMLMediaElement.prototype.play = function () {',
+      '    this.__b63Played = (this.__b63Played || 0) + 1;',
+      // 只往「安排这一次恢复的那一拍」的账上加 —— 别人叫的 play 一律不算进本拍。
+      '    var id = window.__b63Running;',
+      '    if (id != null) window.__b63Counts[id] = (window.__b63Counts[id] || 0) + 1;',
+      '    if (window.__b63SiteMode === "ok") { this.__b63Paused = false; if (!this.__b63Started) this.__b63Started = Date.now(); }',
+      '    else { this.__b63Paused = true; }',
+      '    return Promise.resolve();',
+      '  };',
+      '  HTMLMediaElement.prototype.pause = function () { this.__b63Paused = true; };',
+      '  HTMLMediaElement.prototype.load = function () {};',
+      '  window.__b63Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var shape = await ctx.client.evaluate('(function(){' +
+      'return {patched:window.__b63Patched===true,setter:typeof window.__b63setHidden==="function",' +
+      'hidden:document.hidden,vis:document.visibilityState};})()');
+    check('58 夹具自证：hidden 桩与站点桩都装上了，且这一层读到的就是"在后台"那一档',
+      !!shape && shape.patched === true && shape.setter === true &&
+      shape.hidden === true && shape.vis === 'hidden', JSON.stringify(shape));
+
+    var setup = await ctx.client.evaluate('(function(){' +
+      'var app=window._xxtApp, v=document.getElementById("omitone-video");' +
+      'if(!app) return {err:"no-app"}; if(!v) return {err:"no-video"};' +
+      'if(app._clearCheckInterval) app._clearCheckInterval();' +
+      'app._checkVideoStatus=function(){};' +
+      // 按拍归因：被这一拍安排的 _workerDelay 回调执行时，把这一拍的号挂到全局上，
+      // play() 只往那一号的账上加。别的族（任务循环、覆盖层恢复）叫的 play 落不进本拍。
+      'if(!app.__b63WD){app.__b63WD=app._workerDelay;var origWD=app.__b63WD;' +
+      'app._workerDelay=function(fn,ms){var id=window.__b63Seq;' +
+      'return origWD.call(app,function(){var prev=window.__b63Running;' +
+      'window.__b63Running=id;try{fn();}finally{window.__b63Running=prev;}},ms);};}' +
+      'window.__b63Counts={};' +
+      'app._videoEl=v; app._isPlaying=true; app._rateProbing=false; app._pauseResumePending=false;' +
+      'app._bgStuckCount=0; app._bgHoldUntil=0; v.__b63Played=0; v.__b63Started=0;' +
+      'window.__b63SiteMode="fight"; window.__b63log=[];' +
+      'if(!window.__b63Bound){window.__b63Bound=true;window.addEventListener("message",function(e){' +
+      ' var m=e.data; if(m&&m.source==="xxt_app"&&m.type==="runtime_log") window.__b63log.push(m);});}' +
+      'return {ok:true,interval:app._checkInterval||null,wrapped:app._workerDelay!==app.__b63WD};})()');
+    check('58 前提：监控定时器摘掉了、按拍归因的账本装上了、生产状态摆成「正在播 + 这一页在后台」' +
+      '（归因没装成就是"整页 play 总数"在当证据，别人多叫一次也算我头上）',
+      !!setup && setup.ok === true && !setup.interval && setup.wrapped === true, JSON.stringify(setup));
+
+    // 叫一拍：先把形状摆成「站点刚把这一页按住」，再派发 pause，等 600 毫秒那一拍落地
+    function poke() {
+      return ctx.client.evaluate('(function(){' +
+        'var app=window._xxtApp, v=document.getElementById("omitone-video");' +
+        'window.__b63Seq++; var id=window.__b63Seq;' +
+        // 两档共同的入口形状：pause 事件到达那一刻视频是暂停的。
+        // 差别只在 play() 之后 —— fight 档照样按住、时间不动；ok 档真在播、时间照走。
+        'v.__b63Paused=true; app._isPlaying=true; app._rateProbing=false;' +
+        'app._pauseResumePending=false; app._captchaActive=false;' +
+        'try { app._handleVideoPause({target:v}); } catch(e){ return {err:String(e&&e.message)}; }' +
+        'return {id:id};})()').then(async function (r) {
+        if (!r || r.id == null) return { err: r && r.err, id: null };
+        // ⚠️ **等这一拍的排拍真的走完**再读账，不许只 sleep 固定毫秒。
+        // `_workerDelay` 那 600 毫秒不是硬保证（忙起来会漂到 1 秒之后）——
+        // 上一拍的回调要是落在下一拍之后，它会把 `_pauseResumePending` 清零、
+        // 并且在 ok 档顺手把 paused 松开，于是下一拍的 worker 早退、
+        // 本拍记到 0 次 —— 实测在反向验证那一轮就以「58 对照-3」的身份偶发过一次。
+        var drain = null;
+        for (var d = 0; d < 30; d++) {
+          await sleep(200);
+          drain = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+            'return {pending:app._pauseResumePending===true};})()');
+          if (!drain || drain.pending !== true) break;
+        }
+        var after = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+          'var v=document.getElementById("omitone-video");' +
+          'return {n:(window.__b63Counts||{})[' + JSON.stringify(r.id) + ']||0,' +
+          'counts:window.__b63Counts,total:v.__b63Played||0,' +
+          'stuck:app._bgStuckCount||0,hold:app._bgHoldUntil||0};})()');
+        return { id: r.id, n: after && after.n, counts: after && after.counts, total: after && after.total,
+          stuck: after && after.stuck, hold: after && after.hold, pending: drain && drain.pending };
+      });
+    }
+
+    var pokes = [];
+    for (var i = 0; i < 3; i++) {
+      var p = await poke();
+      pokes.push(p);
+      check('58-' + (i + 1) + '：站点在后台按着不放时，这一拍**确实去抢了一次恢复**（本拍 play 记到 1 次）',
+        !!p && !p.err && p.n === 1, JSON.stringify({ p: p, all: pokes }));
+    }
+
+    // 三次恢复之后时间都没动 → 三发回测各自 +1 → 冷却生效
+    var waited = null;
+    for (var w = 0; w < 14; w++) {
+      await sleep(500);
+      waited = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+        'return {stuck:app._bgStuckCount||0,holdLeft:(app._bgHoldUntil||0)-Date.now()};})()');
+      if (waited && waited.holdLeft > 0) break;
+    }
+    check('58：三次恢复都没让进度往前走 → 计数走到 3 且冷却落在未来（不是"数了个空气"）',
+      !!waited && waited.stuck >= 3 && waited.holdLeft > 0, JSON.stringify(waited));
+
+    var heldPoke = await poke();
+    check('58：冷却期间再叫一拍 —— **不再抢恢复**（本拍 play 记到 0 次；这才是"不对打"的直接证据，' +
+      '旧写法在这儿还会再 play 一次）',
+      !!heldPoke && !heldPoke.err && heldPoke.n === 0, JSON.stringify(heldPoke));
+
+    await sleep(400);   // 日志走 postMessage，异步送达：不等一拍就是"没发"与"没等到"同形
+    var warn1 = await ctx.client.evaluate('(function(){var out=[];' +
+      '(window.__b63log||[]).forEach(function(m){var s=String(m.message||"");' +
+      'if(s.indexOf("anti background pause held off")===0) out.push({msg:s.slice(0,40),meta:m.meta});});' +
+      'return {n:out.length,first:out[0]||null};})()');
+    check('58：转冷却时出**一条**点名 warn，取证带 stuck 与 holdMs（跳过必须可见，AGENTS §2.7）',
+      !!warn1 && warn1.n === 1 && !!warn1.first && warn1.first.meta &&
+      warn1.first.meta.stuck >= 3 && warn1.first.meta.holdMs === 300000 &&
+      /前台/.test(String(warn1.first.meta.hint || '')), JSON.stringify(warn1));
+
+    // 回到前台：冷却立刻作废，下一拍照常续播
+    var unheld = await ctx.client.evaluate('(function(){window.__b63setHidden(false);' +
+      'return {hidden:document.hidden,vis:document.visibilityState};})()');
+    check('58 前提：切回前台后生产那一层读到的就是 visible' +
+      '（hidden 桩在这一层不生效的话，"回前台立刻续播"那条测的是空气）',
+      !!unheld && unheld.hidden === false && unheld.vis === 'visible', JSON.stringify(unheld));
+    var front = await poke();
+    check('58：切回前台那一拍就续播（本拍 play 记到 1 次），冷却与计数当场清零 —— ' +
+      '人回来了还罚站五分钟就是自己坑自己',
+      !!front && !front.err && front.n === 1 && front.hold === 0 && front.stuck === 0,
+      JSON.stringify({ unheld: unheld, front: front }));
+
+    // 对照：后台里**确实播得动**的那些站点，行为一点不许变
+    var okSetup = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");' +
+      'window.__b63SiteMode="ok"; window.__b63setHidden(true);' +
+      'app._bgStuckCount=0; app._bgHoldUntil=0; v.__b63Started=Date.now();' +
+      'window.__b63log=[]; return {hidden:document.hidden};})()');
+    check('58 对照前提：切到「后台也播得动」那一档，且这一页仍然报"在后台"',
+      !!okSetup && okSetup.hidden === true, JSON.stringify(okSetup));
+    for (var j = 0; j < 3; j++) {
+      var q = await poke();
+      check('58 对照-' + (j + 1) + '：后台播得动时照样抢恢复（本拍 play 记到 1 次，一刀切关掉会把这类站点也弄停）',
+        !!q && !q.err && q.n === 1, JSON.stringify(q));
+    }
+    await sleep(9000);   // 三发 6 秒回测都该走完
+    var okEnd = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video");var n=0;' +
+      '(window.__b63log||[]).forEach(function(m){' +
+      'if(String(m.message||"").indexOf("anti background pause held off")===0)n++;});' +
+      'return {stuck:app._bgStuckCount||0,hold:app._bgHoldUntil||0,warns:n,' +
+      'time:Number(v.currentTime),moving:Number(v.currentTime)>42.5};})()');
+    check('58 对照：进度真的在动 → 计数清零、不转冷却、一条 warn 都不发（AGENTS §5：' +
+      '"没红"要先证明那一层走到了 —— 这里靠 currentTime 真的走过了 42.5 自证）',
+      !!okEnd && okEnd.stuck === 0 && okEnd.hold === 0 && okEnd.warns === 0 &&
+      okEnd.moving === true, JSON.stringify(okEnd));
+
+    // ── 第二轮对打：验**另一条**释放腿。生产里解除冷却有两处 —— 一处在 `_handleVideoPause`
+    //    的那一拍里（上面「切回前台那一拍就续播」走的是它），另一处在 20-dom.js 的
+    //    `visibilitychange` 监听里（人不撞 pause、只是把标签页端回前台，就是它负责）。
+    //    只验一条腿＝另一条拆了也没人报警，而拆掉的后果是「最多再罚站五分钟」。
+    var againSetup = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'window.__b63SiteMode="fight"; window.__b63setHidden(true);' +
+      'app._bgStuckCount=0; app._bgHoldUntil=0; window.__b63log=[];' +
+      'if(app._bindVisibilityHandlers) app._bindVisibilityHandlers();' +
+      'return {bound:app._visibilityBound===true,hidden:document.hidden};})()');
+    check('58 前台事件前提：可见性监听器真的挂上了、这一页重新报"在后台"' +
+      '（没挂上的话派发的事件谁也惊不动，"事件那一拍就解除"测的是空气）',
+      !!againSetup && againSetup.bound === true && againSetup.hidden === true,
+      JSON.stringify(againSetup));
+    for (var k = 0; k < 3; k++) { await poke(); }
+    var waited2 = null;
+    for (var w2 = 0; w2 < 18; w2++) {
+      await sleep(500);
+      waited2 = await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+        'return {stuck:app._bgStuckCount||0,holdLeft:(app._bgHoldUntil||0)-Date.now()};})()');
+      if (waited2 && waited2.holdLeft > 0) break;
+    }
+    var evt = await ctx.client.evaluate('(function(){window.__b63setHidden(false);' +
+      'var app=window._xxtApp;var before=app._bgHoldUntil||0;' +
+      'document.dispatchEvent(new Event("visibilitychange"));' +
+      'return {before:before,hold:app._bgHoldUntil||0,stuck:app._bgStuckCount||0,hidden:document.hidden};})()');
+    check('58 前台事件：只把标签页端回前台（不撞 pause）冷却与计数当场作废 —— ' +
+      '这是生产的第二条释放腿，漏掉它就要白白多罚站最多五分钟',
+      !!evt && evt.hidden === false && evt.before > 0 && evt.hold === 0 && evt.stuck === 0,
+      JSON.stringify({ setup: againSetup, held: waited2, evt: evt }));
+  }
+});
+
+
+
+
 /** ---- 55. 视频「从来没有过源」不再把整节永远占住（批次 40）
  * 现场（2026-11-13，用户挂着刷课，CDP 9334）：某一节拿到的是
  * `<video id="video_html5_api" class="vjs-tech">`，`readyState 0 / networkState 3`（NETWORK_NO_SOURCE）
@@ -14813,7 +15230,9 @@ SCENARIOS.push({
  * 本场景逐条钉住修法：
  *   ① 死流水线走**原地重载**（动作计数证明真的 `load()` + `play()` 了，不是只改了返回值），
  *      而且**不烧** resume 配额（那三道闸之前就得拐出去）；
- *   ② 每个源只重载一次；
+ *   ② 同一个源**有界重试**：最多 3 次、每次间隔不低于 20 秒（批次 62-B 之前是"只试一次"，
+ *      而现场实测第一次重载把位置放回死掉那一秒、又撞回同一个坏字节 —— 一次机会全花在同一个坑上）；
+ *   ②b 第二次起重载**落到坏包时间戳之后**（那个数从 error.message 的 timestamp 读，不是猜毫秒）；
  *   ③ 等待日志的签名要说 `broken<code>`，payload 要带 `errCode`；
  *   ④ 重载没救回来 → 与批次 40 同款**有界放手**，warn 带 code / message / 位置 / reloaded；
  *   ⑤ 窗口没到**仍然占住**，且 error 一消失计时就清零（"有界"不是"到点就放弃"）；
@@ -14832,7 +15251,7 @@ SCENARIOS.push({
       '(function(){',
       '  window.__b50FROZEN_T = 628.770678;',
       '  window.__b50DUR = 1448.46;',
-      '  window.__b50Err = { code: 3, message: "PipelineStatus::PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding" };',
+      '  window.__b50Err = { code: 3, message: "PipelineStatus::PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding: {timestamp=628770678 duration=21333 size=81 is_key_frame=1}" };',
       '  window.__b50Time = window.__b50FROZEN_T;',
       '  window.__b50Frozen = true;',
       '  window.__b50Loads = 0; window.__b50Plays = 0; window.__b50Seeks = []; window.__b50ReloadFixes = false;',
@@ -14947,7 +15366,7 @@ SCENARIOS.push({
       '(function(){var n=0;(window.__b50i||[]).forEach(function(m){' +
       '  if(String(m.message||"").indexOf("media pipeline dead, reload")===0)n++;});' +
       'window.__b50i=[];return n;})()');
-    check('50-B：每个源**只重载一次**（再巡检三轮也不许把同一个视频反复重载 —— 那等于把这一节变成死循环重载）',
+    check('50-B：**冷却期内**不许再重载（连巡三轮 + 直接调 resume 都不动）—— 重载挂在 6 秒一次的 guard 上，没有间隔闸就等于把这一节变成死循环重载',
       !!once && once.loads === 0 && once.plays === 0 && onceLogs === 0,
       JSON.stringify({ once: once, logs: onceLogs }));
 
@@ -15041,6 +15460,66 @@ SCENARIOS.push({
       '写进 currentTime 的值必须就是死掉前那一格（现场那种 24 分钟的视频，回到 0 等于白看十分钟）',
       !!held && held.t === 628.770678 && held.seeks.indexOf(628.770678) >= 0,
       JSON.stringify(held));
+
+    // —— 批次 62-B：自愈的两条新腿。第一次重载回原位（纯网络抖动不该白丢进度），
+    //    第二次起跳过 error.message 里那个 timestamp；总共不超过 3 次。
+    //    ⚠️ 这里按**生产自己写的形状**把记账拨过冷却，而不是改松判据（AGENTS §3.1）。
+    var second = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));' +
+      'window.__b50Err={code:3,message:"PipelineStatus::PIPELINE_ERROR_DECODE: Failed to send audio packet for decoding: {timestamp=628770678 duration=21333 size=81}"};' +
+      'window.__b50Frozen=true;window.__b50Time=628.770678;window.__b50ReloadFixes=true;' +
+      'window.__b50Loads=0;window.__b50Plays=0;window.__b50Seeks=[];window.__b50i=[];' +
+      'app._mediaReloadKeys=Object.create(null);' +
+      'app._mediaReloadKeys[key]={at:Date.now()-21000,n:1,resumeAt:628.770678};' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._guardLastTime=628.770678;app._guardLastWallTs=Date.now()-7000;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._mediaBrokenSince=0;app._mediaWaitLogAt=0;' +
+      'app._checkVideoStatus();' +
+      'var rec=app._mediaReloadKeys[key]||{};' +
+      'return {loads:window.__b50Loads,plays:window.__b50Plays,' +
+      '  n:Number(rec.n)||0,resumeAt:Number(rec.resumeAt)||0};})()'
+    );
+    await sleep(400);   // 落点是 loadedmetadata 里补的那一发 seek，异步送达，别当场读（AGENTS §5）
+    var secondRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var out={seeks:(window.__b50Seeks||[]).slice(-3),t:Number(v.currentTime),n:0,first:null};' +
+      '(window.__b50i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("media pipeline dead, reload")===0){out.n++;if(!out.first)out.first=m;}});' +
+      'window.__b50i=[];return out;})()'
+    );
+    check('50-G：过了冷却**允许第二次重载**，而且落点必须**跳过坏包** —— ' +
+      '现场第一次重载回到 628.771 那一秒、再撞同一个 timestamp=628770678 又死一次；' +
+      '现在第二次落到它之后（628.771+12=640.771），并且真的写进 currentTime（不是只改了返回值）',
+      !!second && second.loads === 1 && second.plays === 1 && second.n === 2 &&
+      second.resumeAt === 640.770678 &&
+      !!secondRead && secondRead.n === 1 && secondRead.seeks.indexOf(640.770678) >= 0 &&
+      secondRead.t === 640.770678 &&
+      !!secondRead.first && !!secondRead.first.meta &&
+      Number(secondRead.first.meta.attempt) === 2 &&
+      Number(secondRead.first.meta.diedAt) === 628.770678 &&
+      Number(secondRead.first.meta.badSec) === 628.77 &&
+      Number(secondRead.first.meta.resumeAt) === 640.770678,
+      JSON.stringify({ second: second, read: secondRead }));
+
+    var capped = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));' +
+      'window.__b50Err={code:3,message:"PipelineStatus::PIPELINE_ERROR_DECODE: {timestamp=628770678}"};' +
+      'window.__b50Frozen=true;window.__b50ReloadFixes=false;' +
+      'window.__b50Loads=0;window.__b50Plays=0;window.__b50Seeks=[];window.__b50i=[];' +
+      'app._mediaReloadKeys=Object.create(null);' +
+      'app._mediaReloadKeys[key]={at:Date.now()-999000,n:3,resumeAt:640.770678};' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._guardLastTime=628.770678;app._guardLastWallTs=Date.now()-7000;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;' +
+      'app._checkVideoStatus();app._tryResumePlayback("no-progress");app._checkVideoStatus();' +
+      'return {loads:window.__b50Loads,plays:window.__b50Plays,seeks:(window.__b50Seeks||[]).length};})()'
+    );
+    check('50-H：三次用尽后**即使冷却早过了也不再重载**（有界重试不许退化成死循环）—— ' +
+      '这条钉的是上限，兜底仍是那个 120 秒有界放手',
+      !!capped && capped.loads === 0 && capped.plays === 0 && capped.seeks === 0,
+      JSON.stringify(capped));
   }
 });
 

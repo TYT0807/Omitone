@@ -1242,13 +1242,6 @@ document.addEventListener("DOMContentLoaded", () => {
   restoreGroupState();
 });
 
-// ── 沉浸式窗口（?play=1）：只留吉祥物 ──────────────────────────────
-// 之前这个参数**只改了窗口尺寸**，从来没给 body 加 .im —— 于是打开后
-// 就是一张放大的普通弹窗，右边一大片空白（用户说的"虚无"）。
-try {
-  if (new URLSearchParams(location.search).get("play") === "1") document.body.classList.add("im");
-} catch (e) {}
-
 // ── 界面模式：精简（默认，1.2.8 那种素净样子）/ 精美（角色 + 粒子 + 玻璃） ──
 // 切换会**重新加载**页面 —— 两套模式差别太大，热切换容易留下半截状态。
 (function uiMode() {
@@ -1275,21 +1268,69 @@ try {
 
 // ── 沉浸式窗口 / 自定义背景 ────────────────────────────────────────────────
 //
-// 两个约束值得写下来：
+// 三个约束值得写下来：
 //   ① 浏览器**不允许弹窗自己改尺寸**（resizeTo 对 extension popup 无效），
 //      所以「展开」只能新开一个更大的窗口 —— 用 ?play=1 区分模式，不复用第二套页面。
-//   ② 自定义背景要落盘，但 storage.local 只有 10MB。
+//   ② chrome.windows.create 里的 width/height **会被忽略** —— Edge 记住了同一
+//      URL 上一次的窗口位置（现场实测：请求 760x680，开出来 1400x900）。
+//      认账的是新窗口自己补的那一发 chrome.windows.update，所以尺寸走 URL 传参。
+//   ③ 自定义背景要落盘，但 storage.local 只有 10MB。
 //      所以上传时先缩到最长边 1600px、JPEG 质量 0.72 —— 通常 150~350KB，够用且不撑爆。
 (function omScene() {
+  // 目标尺寸按**屏幕可用区**算，不许写死 —— 现场那台 1.5 倍缩放、可用区 1707x912 的
+  // 机器上写死的 760x680 只是"能用"，换到 768 高的笔记本就顶出任务栏。
+  function immersiveTarget() {
+    var aw = Math.max(560, Number(screen.availWidth) || 1280);
+    var ah = Math.max(520, Number(screen.availHeight) || 800);
+    return {
+      w: Math.max(560, Math.min(820, Math.round(aw * 0.52))),
+      h: Math.max(440, Math.min(700, Math.round(ah * 0.8)))
+    };
+  }
+
+  // 沉浸式窗口 onLoad 把自己拉到目标尺寸（见上面 ②）。
+  // 只在 URL 带了 w/h 时才动手：测试台与任何"我就想按这个尺寸开"的调用方
+  // 不带这两个参数，进来就别改 —— 否则会把别人刚设好的尺寸抢回去。
+  function fitToQuerySize() {
+    var q = new URLSearchParams(location.search);
+    var w = Math.round(Number(q.get("w"))), h = Math.round(Number(q.get("h")));
+    if (!(w >= 320 && w <= 4000 && h >= 320 && h <= 4000)) return;
+    try {
+      chrome.windows.getCurrent(function (win) {
+        try {
+          if (!win || win.id == null) return;
+          if (Math.abs(win.width - w) < 24 && Math.abs(win.height - h) < 24) return;
+          var aw = Number(screen.availWidth) || 1280, ah = Number(screen.availHeight) || 800;
+          var al = Number(screen.availLeft) || 0, at = Number(screen.availTop) || 0;
+          chrome.windows.update(win.id, {
+            left: Math.max(al, Math.round(al + (aw - w) / 2)),
+            top: Math.max(at, Math.round(at + (ah - h) / 2)),
+            width: w, height: h
+          });
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
   try {
-    if (new URLSearchParams(location.search).get("play") === "1") document.body.classList.add("im");
+    var params = new URLSearchParams(location.search);
+    // 之前 ?play=1 只改了窗口尺寸、从来没加 .im —— 于是打开后就是一张放大的
+    // 普通弹窗，右边一大片空白（用户说的"虚无"）。
+    // html 也要加：`html{width:356px}` 那条给扩展弹窗定尺寸的规则得被覆盖掉，
+    // 否则文档根只有 356px，而角色和控制条是 fixed、按视口排（现场量过）。
+    if (params.get("play") === "1") {
+      document.body.classList.add("im");
+      document.documentElement.classList.add("im");
+      fitToQuerySize();
+    }
 
     var btnExpand = document.getElementById("btnExpand");
     if (btnExpand) {
       btnExpand.addEventListener("click", function () {
+        var t = immersiveTarget();
         chrome.windows.create({
-          url: chrome.runtime.getURL("popup/popup.html") + "?play=1",
-          type: "popup", width: 760, height: 680
+          url: chrome.runtime.getURL("popup/popup.html") + "?play=1&w=" + t.w + "&h=" + t.h,
+          type: "popup", width: t.w, height: t.h
         });
         try { window.close(); } catch (e) {}
       });

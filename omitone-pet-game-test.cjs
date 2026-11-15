@@ -106,6 +106,26 @@ check('历日水位撞上新一天的统计也能折算（跨天归零；现场�
   && staleWater.state.affection === 22,
   'counted=' + staleWater.state.countedSeconds + ' gained=' + staleWater.gained);
 
+// 跨天归零要等零点，可**旧语义留下的那一格今晚还在**：2026-11-15 16:00 现场实测
+// countedSeconds 32400 撞当天 activeSeconds 12840（已刷 3 小时 28 分）→ 好感一格不涨。
+// 这一条钉的是"当场捡回来"，不是等明天。
+var sameDayStale = GAME.applyStudySeconds(
+  { affection: 78, day: '2026-11-15', patsToday: 6, studyPointsToday: 0, countedSeconds: 32400 },
+  { date: '2026-11-15', activeSeconds: 12840 }, '2026-11-15');
+check('同一天里水位高过统计（旧语义残留）当场归零，刷课时长立刻开始入账',
+  sameDayStale.state.countedSeconds === 9000 && sameDayStale.gained === 15
+  && sameDayStale.state.studyPointsToday === 15 && sameDayStale.state.affection === 93,
+  'counted=' + sameDayStale.state.countedSeconds + ' gained=' + sameDayStale.gained);
+
+// 反过来：水位**没**超过统计时不许动它，否则每拍都把已入账的秒数重折一遍（好感翻倍）。
+var noOvercount = GAME.applyStudySeconds(
+  { affection: 10, day: '2026-11-15', patsToday: 0, studyPointsToday: 2, countedSeconds: 1200 },
+  { date: '2026-11-15', activeSeconds: 1500 }, '2026-11-15');
+check('水位没超过统计时不许归零（不然同一段时间反复入账）',
+  noOvercount.gained === 0 && noOvercount.state.countedSeconds === 1200
+  && noOvercount.state.studyPointsToday === 2,
+  'counted=' + noOvercount.state.countedSeconds + ' gained=' + noOvercount.gained);
+
 // 统计层落盘是节流的（攒够 20 秒才写一次），跨天那一拍读到的可能是**昨天**那一格。
 // 水位刚归零，这一拍不挡住就等于把昨天的时长在今天再折一次 —— 半夜白送一天上限。
 var yestStats = GAME.applyStudySeconds(
