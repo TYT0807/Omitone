@@ -1561,6 +1561,83 @@ function buildPopupQuizNoStemHtml() {
 }
 
 /**
+ * 视频弹题的**「答完被站点收走、下一拍同一道题再弹回来」**那一族（批次 72）。
+ *
+ * 为什么单开一份夹具：批次 71 把安全阀接回 `_popupQuizAttempts` 之后，还剩一条清零路
+ * 不是插件写的，是**站点自己的形状** —— 点完确定它把弹窗整个收走（于是
+ * `_activePopupBlock` 认定"这道过去了"，把 `_popupQuizKey / _popupQuizAttempts /
+ * _popupQuizLastFilled` 一起清空），下一拍又带着**同一道题**弹回来。
+ * 那一族里 `attempts` 永远只数到 1，`attempts > 上限` 永不成立，放弃计数与静音名单
+ * 一次都不会生效 —— 钱按每 8~9 秒一发地烧；而且已判错的字母跟着 `_popupQuizLastFilled`
+ * 一起被抹掉，本地作答会挑回同一个字母（现场 15:28~15:31 直接量到 对/错 来回点：
+ * `option clicked without qid {letter:"B","text":"B、错"}` 连着七条，下一轮整批换成
+ * `{letter:"A","text":"A、对"}`，间隔 8.7~9.0 秒）。
+ *
+ * ⚠️ 夹具必须长成**站点会自己动 DOM** 的样子，不是长成功能代码的样子：
+ *   · 弹窗根节点用 `.tkTopic`（`_checkPopupQuiz` 的显式选择器之一），题干与选项都在里面 ——
+ *     这一族要测的是"会真发请求"那一支，题干必须读得到（上面那份只有题型名的夹具走的是
+ *     「不发请求」那条支路，测不到本批的封顶）。
+ *   · 「收走 + 弹回」写在夹具自己的脚本里，由**点确定**触发（生产里就是 `_fillPopupAnswer`
+ *     点的那一颗），而不是让测试驱动手动 `removeChild` —— 后者测的是"我改了 DOM"，
+ *     前者测的才是"站点改了 DOM 之后插件还剩什么状态"。
+ *   · 弹回来时往题干那块加一行「回答错误，请重新作答」—— 现场就是这样，它让
+ *     "是不是同一道题"没法拿原文比（`_popupQuizStemMark` 就是为这一行写的）。
+ *   · 监听挂在 `document` 上（委托）：节点每轮都是重建的，绑在旧节点上的监听会跟着
+ *     `removeChild` 一起消失，那样第二轮起站点就不收走弹窗了 —— 形状会静默退化成
+ *     批次 71 已经覆盖的"弹窗一直挂着"那一族，本批两条断言都会假绿。
+ */
+function buildPopupQuizRecallHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div id="pqMount"></div>' +
+    '<script>' +
+    'window.__site = { taken: 0, back: 0 };' +
+    'var BOX = [' +
+    '  "<div class=\\"tkTopic\\" id=\\"pqBox\\" style=\\"position:fixed;left:40px;top:120px;' +
+    'width:420px;background:#fff;border:2px solid #333;z-index:9999;padding:14px\\">",' +
+    '  "<div class=\\"tkTopic_title\\">判断题</div>",' +
+    '  "<div class=\\"tkTopic_body\\">增加毛细管管径，管内液柱会升高。</div>",' +
+    '  "<div class=\\"tkTopic_note\\" id=\\"pqNote\\"></div>",' +
+    '  "<ul class=\\"tkOptionList\\">",' +
+    '  "<li class=\\"tkOption\\"><input type=\\"radio\\" name=\\"tkq2\\" value=\\"A\\">' +
+    '<span>A、对</span></li>",' +
+    '  "<li class=\\"tkOption\\"><input type=\\"radio\\" name=\\"tkq2\\" value=\\"B\\">' +
+    '<span>B、错</span></li>",' +
+    '  "</ul>",' +
+    // 提交键的**形状**必须照现场：学习通这一族用 <a> 当按钮，文字是「提交」。
+    // 上一版写成 <span class="btnBlueSubmit">，而插件找按钮的选择器里没有 span、
+    // [class*="submit"] 又不匹配大写字母的 Submit —— 于是「提交」一次都没被点下去，
+    // 站点从来没把弹窗收走过，夹具无声退化成 71 那一族（taken 全 0 才暴露）。
+    '  "<div class=\\"tkBtnRow\\"><a class=\\"jq_btn\\" id=\\"pqSubmit\\" href=\\"javascript:void(0);\\">提交</a></div>",' +
+    '  "</div>"' +
+    '].join("");' +
+    'window.__site.show = function (withNote) {' +
+    '  document.getElementById("pqMount").innerHTML = BOX;' +
+    '  window.__site.back++;' +
+    '  var n = document.getElementById("pqNote");' +
+    '  if (n && withNote) n.textContent = "回答错误，请重新作答";' +
+    '};' +
+    'document.addEventListener("click", function (ev) {' +
+    '  var t = ev && ev.target;' +
+    '  if (!t || t.id !== "pqSubmit") return;' +
+    '  var b = document.getElementById("pqBox");' +
+    '  if (!b || !b.parentNode) return;' +
+    '  b.parentNode.removeChild(b);' +
+    '  window.__site.taken++;' +
+    // 700ms 是**刻意的**：这一族要复现的是"中间有若干拍压根看不到弹窗"，
+    // 而 `_activePopupBlock` 正是在看不到的那一拍把 key/attempts/lastFilled 一起清空 ——
+    // 那才是 71 那把尺失效的原因。收走与弹回之间只差 80 毫秒的话，测试根本观察不到空窗，
+    // 夹具就无声退化成 71 那一族（上一版正是这样，靠形状自证才抓出来）。
+    // 它同时必须**小于**下面每一拍的间隔 × 若干拍，否则一轮都插不进去（场景会拖到几十秒）。
+    '  setTimeout(function () { window.__site.show(true); }, 700);' +
+    '}, true);' +
+    'window.__site.show(false);' +
+    '</' + 'script>' +
+    '</body></html>';
+}
+
+/**
  * 视频内嵌**多选题**弹窗。
  *
  * ⚠️ 口径已变（README §6 #49）：以前这里写的是「非视频整卷的多选改成本地作答、
@@ -1732,6 +1809,7 @@ var MOCK_PAGES = {
   '/popup-quiz-multi': buildPopupQuizMultiHtml,
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
   '/popup-quiz-no-stem': buildPopupQuizNoStemHtml,
+  '/popup-quiz-recall': buildPopupQuizRecallHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
   '/font-residue': buildFontResidueHtml,
@@ -7997,8 +8075,10 @@ SCENARIOS.push({
     check('71 静音那一刻只说一次（"这道不再问模型了"必须是读得回来的事件，且不许刷屏）',
       (logs.counts['popup quiz stops asking the model for this one'] || 0) === 1,
       JSON.stringify(logs));
-    check('71 本地作答那条日志点名原因 gave-up-twice（说不清为什么没花钱就等于没日志）',
-      logs.localReasons.indexOf('gave-up-twice') !== -1, JSON.stringify(logs));
+    check('71 本地作答那条日志点名原因 gave-up-twice，且**不被后到的预算改写成 ask-cap**' +
+      '（说不清为什么没花钱就等于没日志；预算那一格每拍都先跑，覆盖式写法会把先到的原因抹掉）',
+      logs.localReasons.indexOf('gave-up-twice') !== -1 &&
+      logs.localReasons.indexOf('ask-cap') === -1, JSON.stringify(logs));
 
     // 账本必须按任务点分桶：换一节重新给额度，否则上一节静音掉的「对/错」指纹
     // 会把这一节真能答的判断题一起静音掉。
@@ -8021,6 +8101,203 @@ SCENARIOS.push({
     check('71 换任务点之后重新给额度：这一发是花钱的（否则上一节的放弃会永久静音后面所有判断题）',
       ctx.mock.requests.length > beforeJobSwitch,
       '请求数 +' + (ctx.mock.requests.length - beforeJobSwitch));
+  }
+});
+
+/** ---- 6c-1b. 批次 72：站点每轮把弹窗收走时，付费封顶改记账本 ----
+ *
+ * 上面那条 71 测的是"弹窗一直挂着"那一族 —— 那里 `attempts` 数得起来，安全阀有用。
+ * 这一条测**剩下那一族**：站点答完就把弹窗收走，`_activePopupBlock` 于是按它的
+ * 口径认定"这道过去了"，把 `_popupQuizKey / _popupQuizAttempts / _popupQuizLastFilled`
+ * **一起清空**；下一拍同一道题再弹回来时走的是"当作新题"那一支，`attempts` 永远只到 1。
+ * 结果是 `attempts > 上限` 结构性地不可能成立 —— 放弃计数、静音名单、60 秒冷却
+ * 一次都不生效，钱每 8~9 秒烧一发，而已判错的字母跟着一起被抹掉（现场量到 对/错 来回点）。
+ *
+ * 所以本条把三件事分开钉：
+ *   ① **形状自证** —— 站点真的每轮收走又弹回，且 `attempts` 确实数不起来
+ *      （这条要是红了，说明夹具退化成 71 那一族，本条其余断言都不算证据）；
+ *   ② **封顶记账本** —— 请求总数正好等于 2×上限，到顶之后一条都不发；
+ *   ③ **让步的是正确率不是路** —— 到顶之后本地作答挑的是**没被拒过**的字母
+ *      （靠账本里的 rejected + 题干比对补记），并且每个选项都被拒过之后
+ *      这道被放弃、播放不再被挡 —— 否则本批只是把"白花钱"换成"免费但永远卡住"。
+ */
+SCENARIOS.push({
+  name: '弹题被站点收走再弹回时的付费封顶（账本）',
+  path: '/popup-quiz-recall',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 同 71：上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，
+      // 于是这一页一加载就有一个 250ms 的循环在自动动弹窗 —— 不清掉的话下面逐轮
+      // 的取数全是随机的（批次 69 全量跑实测踩过同一族）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b72=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b72.push(' +
+      '{level:String(d.level||""),msg:String(d.message||""),' +
+      'reason:String((d.meta&&d.meta.reason)||""),picked:String((d.meta&&d.meta.picked)||""),' +
+      'banned:(d.meta&&d.meta.banned)||[]});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'app._activeJobId="b72-job-a";' +
+      'var box=app._checkPopupQuiz();' +
+      'var boxItems=box?app._getOptionItems(box):[];' +
+      'return {max:app._getPopupQuizMaxAttempts(),loop:!!app._tickLoopInterval,' +
+      'checkInterval:!!app._checkInterval,api:app._isQuizApiUnavailable()===false,' +
+      'popupNow:!!box,' +
+      // 夹具自证：提交键必须能被**生产那套找按钮的规则**认出来，否则"站点每轮收走"
+      // 这件事永远不会发生，本条剩下所有断言读的都是一个不存在的形状。
+      'submitFound:!!(box&&app._findDialogButtonByText(box,["提交","确定","确认","交卷","完成"])),' +
+      // 夹具自证：题干读得回来。空题干会走 'no-stem' 那一支（一条请求都不发），
+      // 那时下面"请求总数正好 2×上限"读的是另一个分支，整条场景变成空测。
+      'stemLen:String((box&&app._popupQuizStem(box,boxItems))||"").length,' +
+      'optionCount:boxItems.length,' +
+      'taken:window.__site.taken,back:window.__site.back};})()'
+    );
+    check('72 前提：API 可用、只剩我这一个驱动、夹具出厂就带着弹窗、提交键按生产的找法找得到、' +
+      '题干与选项都读得回来、且还没被站点收走过',
+      setup.loop === false && setup.checkInterval === false && setup.api === true &&
+      setup.max >= 1 && setup.popupNow === true && setup.back === 1 && setup.taken === 0 &&
+      setup.submitFound === true && setup.stemLen > 0 && setup.optionCount >= 2,
+      JSON.stringify(setup));
+
+    var max = Number(setup.max);
+    var cap = max * 2;
+    // 站点每收走一次就要隔 700ms 才把弹窗弹回来，而下面每一拍只走 200ms ——
+    // 所以每"问一发"平均要占掉 3~4 拍（中间那几拍看到的是空窗，正是本批要的形状）。
+    // 轮数按 (封顶发数 + 到顶后的本地作答 + 收尾) × 每发占的拍数 留足余量，
+    // 下面所有断言都按读数找那一轮，不猜奇偶、不猜第几拍。
+    var rounds = [];
+    for (var r = 0; r < (cap + 4) * 5; r++) {
+      var beforeRound = ctx.mock.requests.length;
+      await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;' +
+        // 这一拍在生产里就是"站点收走弹窗又弹回"之后的那个 tick：静默期与"已答放行"
+        // 都已过期。测试不等 8 秒，只把那两个时间戳推到过去 —— 与本批要测的账本无关。
+        'app._popupQuizQuietUntil=0;app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;' +
+        'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+        'var n=app._activePopupBlock();' +
+        'return n?app._handlePopupQuiz(n):null;})()'
+      );
+      await sleep(200);
+      var st = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var b=app._popupQuizSpend||{};' +
+        'var ks=Object.keys(b.asks||{}),as=0,rs=0;for(var i=0;i<ks.length;i++){' +
+        'as+=(Number(b.asks[ks[i]])||0);rs+=(b.rejected[ks[i]]||[]).length;}' +
+        'return {attempts:Number(app._popupQuizAttempts)||0,asksSum:as,rejectedSum:rs,' +
+        // 账本里存的**内容**也要读回来 —— 只比条数的话，把字母换成模型原话（判断题回 true）
+        // 这一格照样绿，而那时已拒名单永远比不中，本批要防的正是那件事。
+        'rejectedVals:(function(){var o=[],gs=Object.keys((b.rejected)||{});' +
+        'for(var k=0;k<gs.length;k++){o=o.concat(b.rejected[gs[k]]||[]);}return o;})(),' +
+        'filledVals:Object.keys(b.filled||{}).map(function(kk){' +
+        'return String((b.filled[kk]||{}).letter||"");}),' +
+        'silentCount:Object.keys(b.silent||{}).length,givesSum:(function(){var g=0,' +
+        'gs=Object.keys(b.gives||{});for(var j=0;j<gs.length;j++){g+=(Number(b.gives[gs[j]])||0);}' +
+        'return g;})(),' +
+        'filledKeys:Object.keys(b.filled||{}).length,' +
+        'taken:window.__site.taken,back:window.__site.back,' +
+        'popupNow:!!app._checkPopupQuiz(),' +
+        'blocksPlayback:app._popupQuizBlocksPlayback(),banned:(app._popupQuizWrongAnswers||[]).slice()};})()'
+      );
+      var rec = { req: ctx.mock.requests.length - beforeRound };
+      Object.keys(st).forEach(function (k) { rec[k] = st[k]; });
+      rounds.push(rec);
+    }
+
+    var reqSeq = rounds.map(function (x) { return x.req; });
+    var attSeq = rounds.map(function (x) { return x.attempts; });
+    var takenSeq = rounds.map(function (x) { return x.taken; });
+    var reqTotal = reqSeq.reduce(function (a, x) { return a + x; }, 0);
+    // 到顶那一轮由读数本身指出（不许按轮次奇偶猜 —— 站点收走与弹回之间的空窗长度
+    // 是墙钟时间，机器慢一点就会多几拍空窗，猜奇偶只会造出一条恒红的断言）。
+    var capRound = -1;
+    for (var ci = 0; ci < rounds.length; ci++) {
+      if (rounds[ci].silentCount === 1) { capRound = ci; break; }
+    }
+
+    // ① 形状自证：站点每轮真的收走过（taken 逐轮涨），而 attempts 数不起来。
+    check('72 形状自证：站点每轮都把弹窗收走过（taken 至少涨到封顶那一发），夹具没退化成"弹窗一直挂着"',
+      capRound > 0 && rounds[capRound].taken >= cap &&
+      takenSeq[rounds.length - 1] >= rounds[0].taken,
+      JSON.stringify({ capRound: capRound, taken: takenSeq }));
+    check('72 形状自证：中间真的有"看不到弹窗"的那一拍（弹窗在场与不在场两种读数都出现过 —— ' +
+      '没有空窗就没有"key/attempts 被清空"，本批要测的那一族压根没复现）',
+      rounds.some(function (x) { return x.popupNow === false; }) &&
+      rounds.some(function (x) { return x.popupNow === true; }),
+      JSON.stringify(rounds.map(function (x) { return x.popupNow ? 1 : 0; })));
+    check('72 形状自证：这一族里 attempts 结构性地数不起来（≤1 就是"弹窗没了就清零"每轮执行的后果，' +
+      '也正是 71 那把尺在这一族失效的原因；若它涨起来了说明夹具走的是 71 那一族）',
+      attSeq.every(function (a) { return a <= 1; }), JSON.stringify(attSeq));
+    check('72 形状自证：放弃计数 gives 全程为 0 —— 证明"封顶"不是靠 attempts 那把尺做到的',
+      rounds.every(function (x) { return x.givesSum === 0; }),
+      JSON.stringify(rounds.map(function (x) { return x.givesSum; })));
+
+    // ② 封顶记在账本上，不记在弹窗上。
+    check('72 封顶：请求总数正好 2×上限（=' + cap + '），既不超也真花到了那几发',
+      reqTotal === cap, JSON.stringify(reqSeq));
+    check('72 封顶：到顶之后每一轮一条都不发（到顶那一轮自己也不发 —— 预算是在发之前查的）',
+      capRound > 0 && rounds.slice(capRound).every(function (x) { return x.req === 0; }),
+      JSON.stringify({ capRound: capRound, req: reqSeq }));
+    check('72 账本：asks 累计到顶就停（读回来的数与请求条数同源，不是测试自己种的常量）',
+      rounds[rounds.length - 1].asksSum === cap, JSON.stringify(rounds.map(function (x) { return x.asksSum; })));
+    check('72 账本：静音名单到顶那一刻写进 1 格（前一轮还是 0）',
+      capRound > 0 && rounds[capRound - 1].silentCount === 0 && rounds[capRound].silentCount === 1,
+      JSON.stringify(rounds.map(function (x) { return x.silentCount; })));
+
+    // ③ 让步的是正确率，不是把视频永久挡在那儿。
+    check('72 补记：被拒的字母进了账本（≥1 格）—— 站点收走弹窗那一族里唯一能留住这条证据的地方',
+      rounds[rounds.length - 1].rejectedSum >= 1,
+      JSON.stringify(rounds.map(function (x) { return x.rejectedSum; })));
+
+    // ⚠️ 上面那条只数**条数**，把字母换成模型原话它照样绿 —— 而判断题的模型原话是 `true`，
+    //    记成原话就等于"已拒名单里躺着一个平台永远不会写出来的值"，本地作答会挑回那个
+    //    已经被拒过的字母（对/错 来回点）。所以这一格比的是**存的到底是什么**。
+    var rejectedVals = rounds[rounds.length - 1].rejectedVals || [];
+    var filledVals = rounds[rounds.length - 1].filledVals || [];
+    check('72 账本里存的是**选项字母**，不是模型原话（判断题模型回 true/「正确」，' +
+      '记原话的话已拒名单永远比不中 —— 这一格钉的是值，不是条数）',
+      rejectedVals.length > 0 &&
+      rejectedVals.every(function (v) { return /^[A-F]$/.test(String(v)); }) &&
+      filledVals.length > 0 &&
+      filledVals.every(function (v) { return v === '' || /^[A-F]$/.test(String(v)); }),
+      JSON.stringify({ rejected: rejectedVals, filled: filledVals }));
+
+    var localLogs = await ctx.client.evaluate(
+      '(function(){var ls=window.__b72||[];' +
+      'var first=null;for(var i=0;i<ls.length;i++){' +
+      'if(ls[i].msg==="popup quiz answered locally, no request"&&ls[i].reason==="ask-cap"){first=ls[i];break;}}' +
+      'var stops=0;for(var j=0;j<ls.length;j++){if(ls[j].msg==="popup quiz stops asking the model for this one")stops++;}' +
+      'return {seen:ls.length,stops:stops,first:first,' +
+      'reasons:ls.filter(function(l){return l.msg==="popup quiz answered locally, no request";})' +
+      '.map(function(l){return l.reason;})};})()'
+    );
+    var bannedAtFirst = (localLogs.first && localLogs.first.banned) || [];
+    check('72 本地作答点名原因 ask-cap，且挑的是**没被拒过**的那个字母（否则同一道判断题就在 对/错 之间来回点）',
+      !!localLogs.first && localLogs.first.picked !== '' &&
+      bannedAtFirst.map(String).indexOf(localLogs.first.picked) === -1,
+      JSON.stringify(localLogs));
+    check('72 静音那一刻只说一次（"这道不再问模型了"必须是读得回来的事件，且不许刷屏）',
+      localLogs.stops === 1, JSON.stringify(localLogs));
+
+    var last = rounds[rounds.length - 1];
+    check('72 收尾不卡住：每个选项都被拒过之后这道被放弃，播放不再被弹窗挡着' +
+      '（只把花钱停掉、把视频永久挡住，等于换了个故障）',
+      last.blocksPlayback === false, JSON.stringify(last));
   }
 });
 

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '49fc0f7f7a';
+var OMITONE_CODE_REV = '187a0eaab7';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -16495,7 +16495,11 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
     _popupQuizSpendBucket: function () {
       var job = String(this._activeJobId || '') || 'job:none';
       if (!this._popupQuizSpend || this._popupQuizSpend.job !== job) {
-        this._popupQuizSpend = { job: job, gives: Object.create(null), silent: Object.create(null) };
+        this._popupQuizSpend = {
+          job: job, gives: Object.create(null), silent: Object.create(null),
+          asks: Object.create(null), rejected: Object.create(null),
+          filled: Object.create(null)
+        };
       }
       return this._popupQuizSpend;
     },
@@ -16511,17 +16515,178 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
       gives++;
       bucket.gives[key] = gives;
       var wasSilent = !!bucket.silent[key];
-      if (gives >= 2) bucket.silent[key] = 1;
+      if (gives >= 2) bucket.silent[key] = 'gave-up-twice';
       if (!wasSilent && bucket.silent[key]) {
         emitRuntimeLog('warn', 'popup quiz stops asking the model for this one', {
           reason: 'gave-up-twice',
           gives: gives,
           fingerprint: String(key).slice(0, 80),
           hint: '这一道（按选项指纹认）在本节已经放弃两次 —— 从现在起本地选一个不花钱的答案，' +
-            '不再问模型。代价是它可能选错；好处是钱停在 8 次以内，而不是每 8 秒一次'
+            '不再问模型。代价是它可能选错；好处是钱停在 2×上限 次以内，而不是每 8 秒一次'
         });
       }
       return { gives: gives, silent: !!bucket.silent[key] };
+    },
+
+
+    /**
+     * 这一道（按选项指纹认）在本节**还能不能再发请求** —— 封顶记在账本上，不记在弹窗上。
+     *
+     * ⚠️ 为什么上一批那把 `attempts` 的尺不够（读代码就能定死，不靠现场猜）：
+     * `_activePopupBlock` 在 `_checkPopupQuiz()` 拿不到弹窗时把 `_popupQuizKey`
+     * 与 `_popupQuizAttempts` **一起清空** —— 那一句的本意是"这道过去了，下一道重新给满次数"。
+     * 可站点有一族形状是**答完就把弹窗收走、下一拍带着同一道题再弹回来**：
+     * 收走 = 清空，弹回 = 走"当作新题"那一支（`attempts` 重新从 1 数），
+     * 于是 `attempts > 上限` 依旧永远不成立，`_notePopupQuizGiveUp` 一次都不会被调用。
+     * 上一批摘掉"填成功就归零"只堵了**另一条**清零路，这一条是站点自己的形状，堵不掉。
+     *
+     * （现场 2026-11-15 15:14 那串 `answered {attempt:0}` ↔ `rejected by site {attempt:1}`
+     *  轮流出现的读数**不能**当这族的证据 —— 事后核对，那台浏览器跑的仍是上一批之前的构建，
+     *  那正是上一批已经修掉的归零 bug。这一族的证据只有上面那段代码路径。）
+     *
+     * 判据换成**发过几发**：每发请求前从账本里取一格，取满（默认 2×上限 = 6 发）
+     * 就进静音名单，之后这一道一律本地作答。账本按 `_activeJobId` 分桶，
+     * **不随弹窗生命周期走** —— 弹窗消失、重开、甚至整节重进都还在。
+     *
+     * 为什么正好是 2×上限：`attempts` 那把尺**能用**的形状里，第一次放弃花掉上限次请求、
+     * 第二次放弃再花掉上限次，`gives>=2` 进静音名单 —— 总数本来就是 2×上限。
+     * 这一格只是把同一个预算搬到**尺失效**的那一族形状上，没有多给一分钱。
+     */
+    _popupQuizAskBudget: function (key) {
+      var bucket = this._popupQuizSpendBucket();
+      var cap = Math.max(1, this._getPopupQuizMaxAttempts()) * 2;
+      var asks = Number(bucket.asks[key]) || 0;
+      if (asks < cap) return { allowed: true, asks: asks, cap: cap };
+      var wasSilent = !!bucket.silent[key];
+      // 静音名单里存的是**进名单的原因**（不是 1）—— 本地作答那条日志要点名到底是
+      // "放弃过两次"还是"这一节发满了"，靠调用顺序猜会猜错：71 那一族里先由放弃进名单、
+      // 之后每一拍都已经过预算，顺序判据会把它们全说成 ask-cap。
+      // 已有原因时**不覆盖**：先到的那个才是这道真正放手的那一刻。
+      if (!wasSilent) bucket.silent[key] = 'ask-cap';
+      if (!wasSilent) {
+        emitRuntimeLog('warn', 'popup quiz stops asking the model for this one', {
+          reason: 'ask-cap',
+          asks: asks,
+          cap: cap,
+          fingerprint: String(key).slice(0, 80),
+          hint: '这一道（按选项指纹认）在本节已经发过 ' + asks + ' 发请求 —— 到顶了，' +
+            '之后本地选一个不花钱的答案，不再问模型。弹窗每轮被站点收走又弹回来，' +
+            '所以这笔账记在任务点上、不记在弹窗上'
+        });
+      }
+      return { allowed: false, asks: asks, cap: cap };
+    },
+
+
+    /**
+     * 取一格额度（**真的发请求之前**调用）。与 `_popupQuizAskBudget` 分开写，
+     * 是为了让"乱选模式不发请求"那一支不许消耗额度 —— 它在下面自己 return。
+     */
+    _takePopupQuizAsk: function (key) {
+      var bucket = this._popupQuizSpendBucket();
+      var asks = (Number(bucket.asks[key]) || 0) + 1;
+      bucket.asks[key] = asks;
+      return asks;
+    },
+
+
+    /**
+     * 题干的**可比对形态** —— 剥掉站点在答错后追加的反馈短语与所有空白。
+     *
+     * ⚠️ 为什么必须有它：站点的反馈（「回答错误，请重新作答」）就长在题干那一块里，
+     *    拿原文比会每轮都不相等，"是不是同一道题"这个问题就只能靠猜。
+     *    与 `_popupQuizFingerprint` 里那份短语表是同一族，两处要改一起改。
+     */
+    _popupQuizStemMark: function (stem) {
+      return String(stem || '')
+        .replace(/回答错误|答案错误|请重新作答|重新作答|再试一次|不正确|提交失败/g, '')
+        .replace(/[\s　]+/g, '')
+        .slice(0, 120);
+    },
+
+
+    /**
+     * 记一笔「这个字母被平台拒了」，记在**不随弹窗消失**的账本上。
+     *
+     * 两个来源（缺一不可，各自对应站点的一种形状）：
+     *   1. 弹窗还挂在原地、指纹又走回来 —— 上面那段"同一道题"分支直接看见它被拒；
+     *   2. 站点**把弹窗收走了**、下一拍带着同一道题弹回来 —— 那一支走的是"当作新题"，
+     *      `_popupQuizLastFilled` 已经被 `_activePopupBlock` 清空，光看弹窗什么也判不出来。
+     *      这一族由下面的 `_popupQuizRecheckRejected` 补。
+     */
+    _notePopupQuizRejected: function (key, letter) {
+      var bucket = this._popupQuizSpendBucket();
+      var list = bucket.rejected[key] || (bucket.rejected[key] = []);
+      var v = String(letter || '');
+      if (v && list.indexOf(v) === -1) list.push(v);
+      return list;
+    },
+
+
+    /**
+     * 这一轮**实际点到了哪个选项**（字母）。
+     *
+     * ⚠️ 为什么不能直接记模型的原话：判断题的模型答案是 `true`（或「正确」），
+     *    而本地作答的已拒名单比的是 A/B 这种字母 —— 记原话的话这条证据永远对不上，
+     *    表现就是"同一道判断题永远选 对、平台每次都拒、还一直付费"。
+     *    普通题也一样：模型回「甲」而点到的是 B 时，拉黑「甲」拉不到任何东西。
+     *
+     * 取字母走的是 `_applyChoiceAnswer` 自己那两步（`_normalizeChoiceAnswerValues`
+     * → `_matchOptionItem`），**不在这里另写一份匹配规则**（AGENTS §2 说的"两份规则互漂"）。
+     * 复选会填好几项，这里只认第一项 —— 弹题里的复选本来就少，
+     * 而"一个字母都对不上"比"少记一个字母"糟得多。
+     */
+    _popupQuizFilledLetter: function (popup, optionItems, answer, type) {
+      var values = [];
+      try { values = this._normalizeChoiceAnswerValues(answer, type || '', popup) || []; } catch (eV) { values = []; }
+      if (!values.length) return '';
+      var item = null;
+      try { item = this._matchOptionItem(popup, values[0], type); } catch (eM) { item = null; }
+      if (!item) return '';
+      for (var i = 0; i < optionItems.length; i++) {
+        if (optionItems[i] === item) {
+          return String(this._inferOptionLetter(item, i) || String.fromCharCode(65 + i));
+        }
+      }
+      return '';
+    },
+
+
+    /**
+     * 记下「这一道刚填进去的是什么、题干长什么样」—— 记在账本上。
+     *
+     * 为什么当场不记在 `_popupQuizLastFilled` 上就够了：那一格是**弹窗的生命周期**，
+     * 站点把弹窗收走的那一刻 `_activePopupBlock` 就把它清空（那是它对"这道过去了"的理解）。
+     * 而"收走又弹回来"恰恰是**没过去**，于是这条证据在需要它的那一刻已经没了 ——
+     * 表现是"同一道判断题永远选 A、平台每次都拒、还一直付费"。
+     */
+    _notePopupQuizFilled: function (key, letter, stem) {
+      var bucket = this._popupQuizSpendBucket();
+      bucket.filled[key] = {
+        letter: String(letter || ''),
+        stem: this._popupQuizStemMark(stem)
+      };
+    },
+
+
+    /**
+     * 弹窗带着**同一指纹**回来时，判断它是不是上一道没过去的那题，是就把上一轮填的
+     * 字母记成被拒（来源 2，见 `_notePopupQuizRejected`）。
+     *
+     * 为什么要比题干：指纹只看选项文本，而**判断题的选项永远是「对 / 错」** —— 
+     * 一个视频里连着三道判断题，指纹完全相同。不比题干就会把"上一道答对了、
+     * 弹窗正常关掉、这是新的一道"误记成"答错了"，于是把正确的那个字母永久拉黑。
+     * 题干两边都读不到（现场那种容器里只有题型名）时两串都是空 → 相等 → 认成同一道，
+     * 那一族本来就只能本地瞎选，拉黑是对的。
+     */
+    _popupQuizRecheckRejected: function (key, popup, optionItems) {
+      var bucket = this._popupQuizSpendBucket();
+      var rec = bucket.filled[key];
+      if (!rec || !rec.letter) return;
+      var stem = '';
+      try { stem = this._popupQuizStem(popup, optionItems); } catch (e) { stem = ''; }
+      if (this._popupQuizStemMark(stem) !== String(rec.stem || '')) return;
+      this._notePopupQuizRejected(key, rec.letter);
     },
 
 
@@ -16531,11 +16696,15 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
      * 两个调用场景（都不该花请求）：
      *   1. 题干是空的 —— 只有题型名（「判断题」）这种容器现场就是这样，
      *      模型看不到问题，问了也是瞎猜，每一发都是白花钱；
-     *   2. 这一道在本节已经放弃两次（`_notePopupQuizGiveUp` 的静音名单）。
+     *   2. 这一道在本节已经放弃两次，或本节已经发满 2×上限
+     *      （`_notePopupQuizGiveUp` / `_popupQuizAskBudget` 的静音名单）。
      * 填答与交卷**仍然走 `_fillPopupAnswer`** —— 不在这里另写一份选项匹配，
      * 那正是 AGENTS §2 说的"两份规则互漂"。
+     *
+     * `stem` 由调用方把它已经读到的题干原样传进来（只用来记账，见 `_notePopupQuizFilled`），
+     * 这里不再重算一遍 —— 两处算出来的题干若漂了，"是不是同一道题"就判不准。
      */
-    _answerPopupQuizLocally: function (popup, optionItems, type, reason) {
+    _answerPopupQuizLocally: function (popup, optionItems, type, reason, stem) {
       var items = optionItems || [];
       if (!items.length) {
         // 一个选项都没有 → 没有"点一下就能过"的形状，别硬点。
@@ -16574,14 +16743,20 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
         this._popupQuizBlockedUntil = 0;
         this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);
         this._popupQuizLastFilled = String(picked);
+        this._notePopupQuizFilled(key, picked, stem);
       }
       emitRuntimeLog('warn', 'popup quiz answered locally, no request', {
         reason: reason, picked: picked, filled: filled ? 1 : 0,
         attempt: this._popupQuizAttempts,
+        banned: banned.slice(0, 6),
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
-          '所以本地选一项，不花钱' : '这一道在本节已经放弃两次，之后只本地作答，不再发请求'
+          '所以本地选一项，不花钱' :
+          (reason === 'ask-cap' ?
+            '这一道在本节已经发满 2×上限 次请求（弹窗被站点每轮收走，所以按任务点记账）—— ' +
+            '之后本地选一项，不再花钱' :
+            '这一道在本节已经放弃两次，之后只本地作答，不再发请求')
       });
       return filled;
     },
@@ -16704,6 +16879,10 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
           if (this._popupQuizWrongAnswers.indexOf(this._popupQuizLastFilled) === -1) {
             this._popupQuizWrongAnswers.push(this._popupQuizLastFilled);
           }
+          // 同一笔账记进**不随弹窗消失**的账本：站点答完就把弹窗收走，下面那段
+          // "换题就清空 wrong"会把它抹掉，于是本地作答又挑回同一个已被拒的字母 ——
+          // 表现是"同一道判断题在 对/错 之间来回点，视频一直过不去"。
+          this._notePopupQuizRejected(key, this._popupQuizLastFilled);
           // 特意留一条日志：用户报过"答完弹题就卡住、不知道会不会自己好"，
           // 这条能直接说明"不是卡住，是上一个答案被平台拒了、正在换一个重试"。
           emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
@@ -16714,10 +16893,17 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
           this._popupQuizLastFilled = '';
         }
       } else {
+        // 站点每答一次就把弹窗收走，下一拍它带着**同一指纹**回来 —— 上面那句"弹窗没了
+        // 就清零"和这里都属于"当作新题"。已判错的字母不能跟着一起丢，否则
+        //   · 发给模型的 previousWrongAnswers 变空 → 它回同一个已被拒的答案；
+        //   · 本地作答又挑回那个字母 → 同一道判断题在 对/错 之间来回点，视频一直过不去。
+        // 而"这一轮被收走又弹回来"本身就是**被拒的证据**（答对了站点就不会再弹），
+        // 所以先按账本补记上一轮那个字母，再把它当作本题的已拒名单发下去。
+        this._popupQuizRecheckRejected(key, popup, this._getOptionItems(popup));
         this._popupQuizKey = key;
         this._popupQuizAttempts = 1;
-        this._popupQuizWrongAnswers = [];
         this._popupQuizLastFilled = '';
+        this._popupQuizWrongAnswers = (this._popupQuizSpendBucket().rejected[key] || []).slice();
       }
 
       var maxAttempts = this._getPopupQuizMaxAttempts();
@@ -16753,17 +16939,20 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
         // —— 它只能瞎猜，猜错就被平台拒，弹窗留着再问，**每 8 秒一次**。
         var stem = this._popupQuizStem(popup, optionItems);
         var spend = this._popupQuizSpendBucket();
+        // 查预算：到顶时 `_popupQuizAskBudget` 自己会把这一道写进静音名单（并只说一次），
+        // 名单里存的就是"为什么不再问了"，下面那一格直接拿它当原因点名。
+        this._popupQuizAskBudget(key);
 
         // 两种情况一律**不发请求**，本地选一项把弹窗点掉：
         //   · 题干是空的（只有题型名）—— 问了也只能瞎猜，那一发是纯浪费；
-        //   · 这一道在本节已经放弃两次 —— 继续问就是"每 60 秒再来 4 发"，永不收敛。
+        //   · 这一道已经放弃两次、或本节已发满 2×上限 —— 继续问就是"每 8 秒再来一发"，永不收敛。
         // 让步的是**正确率**，不是**钱**：本地选也可能选错，但一条请求都不花。
         if (!stem) {
-          this._answerPopupQuizLocally(popup, optionItems, type, 'no-stem');
+          this._answerPopupQuizLocally(popup, optionItems, type, 'no-stem', stem);
           return;
         }
         if (spend.silent[key]) {
-          this._answerPopupQuizLocally(popup, optionItems, type, 'gave-up-twice');
+          this._answerPopupQuizLocally(popup, optionItems, type, String(spend.silent[key]), stem);
           return;
         }
 
@@ -16787,6 +16976,8 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
             this._logRandomAnswers([question]);
             result = { success: true, data: [this._buildRandomQuizAnswers([question])[0]] };
           } else {
+            // 只有**真要发请求**这一支才取额度 —— 乱选模式上面那条分支一条都不发。
+            this._takePopupQuizAsk(key);
             result = await bridgeSend('llm_request', { questions: [question] });
           }
           if (result && result.success && result.data) {
@@ -16806,20 +16997,27 @@ var OMITONE_CODE_REV = '49fc0f7f7a';
               // 每 8~9 秒一问（那个 8 秒正是静默期），2026-11-15 连量到二十多轮。
               // 计数只在**弹窗真的没了**时由 `_activePopupBlock` 清零，那才是"这道过去了"。
               this._popupQuizBlockedUntil = 0;
+              // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
+              // ⚠️ 记的是**实际点到的那个字母**，不是模型原话（判断题原话是 true/正确，
+              // 拿它去比已拒名单永远比不中 —— 见 `_popupQuizFilledLetter`）。
+              this._popupQuizLastFilled = this._popupQuizFilledLetter(popup, optionItems, answer, type) ||
+                String(this._normalizeAnswerValue(answer) || '');
               // 把「模型答了什么 + 实际匹配到哪个选项 + 选项原文」打进日志。
               // 现场报过「四个选项的题正确答案是 A，却一直选 D」，光看代码猜不出来 ——
               // 这条日志就是为了下次复现时能直接看出是模型答错还是匹配错。
               emitRuntimeLog('info', 'popup quiz answered', {
                 attempt: this._popupQuizAttempts,
                 rawAnswer: String(this._normalizeAnswerValue(answer) || '').slice(0, 60),
+                letter: String(this._popupQuizLastFilled).slice(0, 60),
                 type: type,
                 optionCount: question.options.length,
                 options: question.options.slice(0, 6),
                 // 告诉看日志的人"接下来会静一会儿，不是卡死"
                 waitMs: scaledMs(POPUP_QUIZ_QUIET_MS)
               });
-              // 记下这轮填的答案。下一轮如果同一道题还在，就说明它没被接受。
-              this._popupQuizLastFilled = String(this._normalizeAnswerValue(answer) || '');
+              // 同一笔账再记进账本 —— 站点「答完就把弹窗收走」那一族里，上面那一格
+              // 会在收走的那一刻被清空，只有账本留得住"上一轮填的是哪个字母"。
+              this._notePopupQuizFilled(key, this._popupQuizLastFilled, stem);
               // 静默 8 秒：给站点足够时间收走弹窗。这段时间内哪怕指纹变了也不碰它，
               // 否则站点重绘 → 指纹变 → 重问重填 → 选项闪烁，就是这么来的。
               this._popupQuizQuietUntil = Date.now() + 8000;
