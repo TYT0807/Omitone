@@ -297,8 +297,13 @@ npm run e2e       # 真实 Edge 功能交叉检验（114 个场景 / 1252 项）
   于是"预期红的没红"其实是"没跑"（批次 65 实测撞在这条上：注入把台词退回字符串拼接，
   规则层静态闸当场红 → 弹窗那半截 ⑦ 归因断言根本没执行）。
   **判据：沙盒类注入的驱动脚本要解析输出末尾那份 `SANDBOX_REPORT`，断言
-  `report.scenarios.length > 0` 且 `!report.error`**；一个注入尽量只破一层要验的行为，
+  `report.scenarios.length > 0` 且 `report.assertions > 0`**；一个注入尽量只破一层要验的行为，
   静态闸那一半单开一条注入（本批的 I3b）用 `node omitone-pet-game-test.cjs` 直接跑。
+  ⚠️ **「跑了但红了」不等于「没跑」，别用 `!report.error` 去分它们**：`report.error` 有**两个**
+  来源 —— ① 基线套件中途 abort（场景确实一条都没跑，`scenarios` 是空），② `runBrowserSuite`
+  末尾那句 `assert.equal(gates.length, 0)`（场景**全跑完了、断言红了**）。两边写的是同一个字段，
+  所以「没红是因为没跑」这个结论**只能由 `scenarios.length === 0` 给出**；拿 `report.error` 当
+  「没跑」的判据，会把一次合法的红读成没跑，反向验证就此自我否定（批次 65 实测）。
 
 - ⚠️ **注入脚本的 `from` 与 `to` 必须互不包含**。踩过：为了"让某个判据永远成立"，把注入写成
   在锚点行**前面**加一句 `return true;` —— 于是 `from` 成了 `to` 的前缀，替换后
