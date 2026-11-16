@@ -243,6 +243,21 @@
             return '…' + String(k).slice(-46) + '=' + String(r[k] || '').slice(0, 8);
           });
         })(),
+        // 批次 78：**站点自己回包判对过**的那些字母（`siteRight` 那本账上真实存在的格子）。
+        // 现场拿它与上面 `banned` 对照就能一眼定死：同一格同一个字母既判对又被拉黑 = 闸坏了。
+        siteRightKeys: (function () {
+          var r = (app._popupQuizSpend && app._popupQuizSpend.siteRight) || {};
+          return Object.keys(r).slice(0, 8).map(function (k) {
+            var rec = r[k] || {};
+            return '…' + String(k).slice(-46) + '=' + String(rec.letter || '') +
+              '(uses=' + (Number(rec.uses) || 0) + ',eid=' + String(rec.eid || '') + ')';
+          });
+        })(),
+        // 眼前这一道（按批次 77 那把尺算出来的键）平台判对过的字母；'' = 账上没这一格。
+        // ⚠️ 读的是 `_popupQuizSiteRightPeek`（纯读）—— 诊断不许把额度用掉。
+        siteRight: node ? app._popupQuizSiteRightPeek(
+          app._popupQuizRejectKey(app._popupQuizFingerprint(node),
+            app._popupQuizStem(node, app._getOptionItems(node)))) : '',
         popup: node ? app._describePopupQuiz(node) : null
       };
       console.log('[Omitone] popup quiz diagnose:', report);

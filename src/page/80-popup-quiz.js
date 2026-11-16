@@ -9,7 +9,7 @@
  * 弹题（弹窗题）的检测、填答、失败计数与放弃
  * 「继续学习」提示按钮的处理（不点它进不去正常播放页）
  *
- * 本段的方法（32 个）：
+ * 本段的方法（39 个）：
  *   _findContinueStudyButton、_tryContinueStudyPrompt、_activePopupBlock、
  *   _popupQuizBlocksPlayback、_popupQuizFingerprint、_getPopupQuizMaxAttempts、
  *   _checkPopupQuiz、_popupQuizSiteVerdict、_popupQuizSpanVisible、_clickPopupContinue、
@@ -17,6 +17,9 @@
  *   _looksLikeMatchingQuiz、_fillPopupAnswer、_popupQuestionBlock、_popupQuizStem、
  *   _stemIsOnlyOptions、_popupQuizSpendBucket、_notePopupQuizGiveUp、_popupQuizAskBudget、
  *   _takePopupQuizAsk、_popupQuizStemMark、_popupQuizRejectKey、_popupQuizScopedFlag、
+ *   _popupQuizInstallNetLedger、_popupQuizUrlParam、_popupQuizSiteRightNote、
+ *   _popupQuizSiteRightPeek、_popupQuizSiteRightKnown、_popupQuizSiteRightUse、
+ *   _popupQuizTrySiteRightAnswer、
  *   _notePopupQuizRejected、_popupQuizFilledLetter、
  *   _notePopupQuizFilled、_notePopupQuizPaid、_popupQuizPaidAnswer、
  *   _popupQuizRecheckRejected、_answerPopupQuizLocally
@@ -382,7 +385,12 @@
         this._popupQuizSpend = {
           job: job, gives: Object.create(null), silent: Object.create(null),
           asks: Object.create(null), rejected: Object.create(null),
-          filled: Object.create(null), answered: Object.create(null),
+          filled: Object.create(null),
+          // 批次 78：站点**自己回包说「这个字母是对的」**的那一格。
+          // 它存在的理由：判决槽（#spanHas）在站点每答一次就重绘的那一族里根本读不到，
+          // 而"这一道平台已经判对了"这件事必须有地方活过那一拍，否则
+          // 「弹窗收走又带同一指纹回来」只能被读成"被拒"，把正确字母永久拉黑。
+          siteRight: Object.create(null),
           paid: Object.create(null)
         };
       }
@@ -537,6 +545,263 @@
 
 
     /**
+     * 装上「**读站点自己的交卷回包**」这本账 —— 批次 78。
+     *
+     * 为什么判决槽（`#spanHas`）不够用（现场 2026-11-16 用网络记账本量出来的）：
+     *   · 站点每答一次就把弹窗**收走/重绘**，下一拍我们再看那三句话全是 `display:none`，
+     *     于是 `_popupQuizSiteVerdict()` 只能报 `''`（读不准）→ 走旧推断「弹窗还在 = 被拒」；
+     *   · 而站点自己那一发 `GET /mooc-ans/question/quiz-validation?…&eventid=…&answerContent=A`
+     *     的回包写得清清楚楚：`{"msg":"通过","isRight":true}` —— 同一个字母，现场读数
+     *     `eventid=2055152 …answerContent=A isRight=true`，紧跟着 `eventid` 同一发的 B 是 `false`。
+     *   · 于是「平台刚判对的那个字母」被我们记进已拒名单，A、B 一先一后全进去 →
+     *     `all-options-rejected` → 60 秒冷却 → **视频永久停在这道判断题上**。
+     *   · ⚠️ 弹窗 DOM 上**根本没有 eventid**（`.workbuddy/b78-eid-probe.expr` 递归走遍同域帧、
+     *     `Ext.ComponentQuery`、window 全局、隐藏 input 五路都摘不到），只有网络那一发带着它。
+     *     所以"这一发回包属于哪一道题"必须**在我们自己填答案那一刻**绑定（见 `_notePopupQuizFilled`
+     *     打的 `_popupQuizFilledBind`），不能指望从回包或 DOM 里现读。
+     *
+     * 只挂钩子、不改站点的那一发：`open`/`send`/`fetch` 全部原样转发，回包只**旁听**。
+     * 挂在这一帧的 window 上（弹题与站点的那发同源同帧），且只在真的处理过弹题的帧里挂 ——
+     * 没弹过题的页面一条钩子都不装。
+     */
+    _popupQuizInstallNetLedger: function () {
+      if (this._popupQuizNetLedgerOn) return;
+      this._popupQuizNetLedgerOn = 1;
+      var self = this;
+      var MARK = 'quiz-validation';
+
+      // 回包只旁听：任何一步抛错都不许影响到站点那一发本身
+      var listen = function (url, pack) {
+        try { self._popupQuizSiteRightNote(url, pack); } catch (e) {}
+      };
+      var bindOf = function () {
+        try { return self._popupQuizFilledBind || null; } catch (e) { return null; }
+      };
+
+      try {
+        var proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+        if (proto && !proto.__omitoneQuizNet) {
+          proto.__omitoneQuizNet = 1;
+          var oOpen = proto.open;
+          var oSend = proto.send;
+          proto.open = function (method, url) {
+            try { this.__omitoneQuizUrl = String(url == null ? '' : url); } catch (eU) {}
+            return oOpen.apply(this, arguments);
+          };
+          proto.send = function () {
+            try {
+              var u = String(this.__omitoneQuizUrl || '');
+              if (u.indexOf(MARK) !== -1) {
+                var xhr = this;
+                // 绑定在 **load 那一刻**取，不在 send 那一刻：填答案 → 点提交 → send 是同一拍里
+                // 同步发生的，而 `_popupQuizFilledBind` 要等 `_fillPopupAnswer` 返回之后才打上
+                // （差几微秒）。在 send 那刻读到的是**上一发**的绑定，第一发则是 null ——
+                // 整本账永远记不上，而这一步没有任何报错。
+                // 站点回包最快也几十毫秒，下一拍是 8 秒之后，所以 load 时刻读到的就是这一发；
+                // ⚠️ 剩下的错位在 `_popupQuizSiteRightNote` 里按**内容**对齐（URL 的 answerContent
+                //    必须等于绑定里我们刚点中的那个字母），不靠猜时间。
+                xhr.addEventListener('load', function () {
+                  listen(u, { bind: bindOf(), text: xhr.responseText });
+                });
+              }
+            } catch (eS) {}
+            return oSend.apply(this, arguments);
+          };
+        }
+      } catch (eX) {}
+
+      try {
+        var oFetch = window.fetch;
+        if (typeof oFetch === 'function' && !oFetch.__omitoneQuizNet) {
+          var wrapped = function (input) {
+            var u = '';
+            try { u = String((input && input.url) || input || ''); } catch (eU) {}
+            var p = oFetch.apply(this, arguments);
+            try {
+              if (u.indexOf(MARK) !== -1) {
+                // clone() 才能读体：原响应还要交回站点自己用。
+                // 绑定同样在**回包到**那一刻取（理由见上面 XMLHttpRequest 那一段）。
+                p.then(function (res) {
+                  try {
+                    var b = bindOf();
+                    var t = res && typeof res.clone === 'function' ? res.clone().text() : null;
+                    if (t && typeof t.then === 'function') {
+                      t.then(function (txt) { listen(u, { bind: b, text: txt }); }, function () {});
+                    }
+                  } catch (eR) {}
+                }, function () {});
+              }
+            } catch (eP) {}
+            return p;
+          };
+          wrapped.__omitoneQuizNet = 1;
+          window.fetch = wrapped;
+        }
+      } catch (eF) {}
+    },
+
+
+    /**
+     * 从 URL 里摘一个查询参数（**不用 `URL`**：跨帧的 base 传错会直接抛，
+     * 而这发只是旁听，不值得为它冒任何抛错的险）。
+     */
+    _popupQuizUrlParam: function (url, name) {
+      try {
+        var m = new RegExp('[?&]' + name + '=([^&#]*)').exec(String(url || ''));
+        if (!m) return '';
+        var v = String(m[1] || '');
+        try { v = decodeURIComponent(v.replace(/\+/g, ' ')); } catch (eD) {}
+        return v;
+      } catch (e) {
+        return '';
+      }
+    },
+
+
+    /**
+     * 站点回包说「这一发答对了」→ 把**这一个字母**记进 `siteRight` 那一格。
+     *
+     * 三道闸，缺一道都会把"上一道判对的字母"填给下一道题：
+     *   1. `isRight` 必须是**真** `true`（`"true"`、缺字段、false 一律不记）；
+     *   2. 提交那一刻的绑定必须在（`_popupQuizFilledBind.at` 起 3 分钟内）——
+     *      过期绑定属于**上一道**，认了就是跨题串台；
+     *   3. 题干必须可比对（`_popupQuizScopedFlag`）—— 读不到题干时身份只剩「对/错」这一族选项，
+     *      这一道判对的字母会被当成下一道的答案。那一族本来就只能本地瞎选，
+     *      批次 72/77 立的让步在这里同样成立，**不记**。
+     *
+     * ⚠️ 这一格被两个地方读，各管各的（同一份事实，两把不同的尺）：
+     *   · `_popupQuizSiteRightPeek` —— 还能不能**免费**把那个字母填回去（用满 3 次就停）；
+     *   · `_popupQuizSiteRightKnown` —— 拉黑那一路的闸，**不看额度**（详那一段的理由）。
+     * 站点判 `isRight:false` 的那一发**不记**：那一族的证据已经由判决槽 + "弹窗还在"推断覆盖，
+     * 再叠一层拉黑只会把"我们以为被拒"升级成"我们主动拉黑"，那是另一件事，不混在这批。
+     */
+    _popupQuizSiteRightNote: function (url, pack) {
+      var text = pack && pack.text ? String(pack.text) : '';
+      if (!text || text.indexOf('isRight') === -1) return;
+      var data = null;
+      try { data = JSON.parse(text); } catch (eP) { data = null; }
+      if (!data || data.isRight !== true) return;
+      var b = pack.bind;
+      if (!b || !b.key) return;
+      var at = Number(b.at) || 0;
+      if (!at || Date.now() - at > 180000) return;
+      var stem = String(b.stem || '');
+      if (!this._popupQuizScopedFlag(stem)) return;
+      var rkey = this._popupQuizRejectKey(b.key, stem);
+      // 站点 answerContent 发的不一定是一个字母（有的课程发选项原文）—— 对不上就退回
+      // 我们自己**实际点中**的那个字母（`_popupQuizFilledBind.letter` 记的就是它）。
+      var sent = String(this._popupQuizUrlParam(url, 'answerContent') || '').trim();
+      var sentLetter = /^[A-Za-z]$/.test(sent) ? sent.toUpperCase() : '';
+      var bindLetter = String(b.letter || '').toUpperCase();
+      // ⚠️ 内容对齐：回包读到的这一发，URL 上那个字母必须等于绑定里我们刚点中的那个。
+      //    不等就是**别人**交的这一发（用户自己点提交、上一道的回包晚到、绑定是上一道），
+      //    认了等于把"平台判对"安到一道没答过的题上 —— 宁可不记。
+      //    （绑定取不到字母、或站点发的是选项原文那一族，只能退回我们自己点中的那个字母。）
+      if (sentLetter && bindLetter && sentLetter !== bindLetter) return;
+      var letter = sentLetter || bindLetter;
+      if (!/^[A-Z]$/.test(letter)) return;
+      var bucket = this._popupQuizSpendBucket();
+      var prev = bucket.siteRight[rkey];
+      emitRuntimeLog('info', 'popup quiz site-confirmed answer recorded', {
+        letter: letter,
+        eventid: this._popupQuizUrlParam(url, 'eventid').slice(0, 32),
+        msg: String(data.msg || '').slice(0, 20),
+        // 同一个字母被站点**反复**判对（我们每重填一次它就再回一发）时，那笔「用了几次」
+        // 必须累计 —— 否则这条记录被自己刷新成 0，快路就永远用不完、视频可能原地打转。
+        uses: (prev && prev.letter === letter) ? (Number(prev.uses) || 0) : 0,
+        repeat: prev && prev.letter === letter ? 1 : 0,
+        scoped: 1
+      });
+      bucket.siteRight[rkey] = {
+        letter: letter,
+        at: Date.now(),
+        eid: this._popupQuizUrlParam(url, 'eventid').slice(0, 32),
+        uses: (prev && prev.letter === letter) ? (Number(prev.uses) || 0) : 0
+      };
+    },
+
+
+    /**
+     * 这一道平台判对过哪个字母（纯读，日志归因也用它 —— 不许读一次就少一次额度）。
+     *
+     * ⚠️ `uses >= 3` 就**当没有**：与 `_popupQuizPaidAnswer` 的「用满 3 次作废」同一把尺。
+     * 判对了却还挡在这儿反复重填，说明重填这一步没让它过去 —— **免费重填**这一条路必须停下，
+     * 否则视频原地打转（那正是本批要消灭的症状）。停下之后交回老流程，老流程该花钱花钱。
+     */
+    _popupQuizSiteRightPeek: function (rkey) {
+      var rec = this._popupQuizSpendBucket().siteRight[rkey];
+      if (!rec || !rec.letter) return '';
+      if ((Number(rec.uses) || 0) >= 3) return '';
+      return String(rec.letter);
+    },
+
+
+    /**
+     * 这个字母**是不是平台判对过的那一个** —— 拉黑那一路唯一的闸（内存名单与账本都读它）。
+     *
+     * ⚠️ 与 `_popupQuizSiteRightPeek` 差一格，而且是**故意**差的：peek 管"还能不能免费重填"
+     *    （用满 3 次就停），这一格管"平台有没有说过它对"。后者是个**事实**，不因额度用满而失效。
+     *    把它也套上额度就是批次 78 第一版留的那个口子：额度一到，A 被拉黑 → 本地/付费改点 B →
+     *    B 真被判错 → A、B 全在名单里 → `all-options-rejected` → 60 秒冷却 → 视频原地转。
+     *    那道口子的代价不是一发钱，是**把平台亲口说对的那个字母永久删出候选**。
+     * 唯一的例外由调用方给：站点判决槽当场明说「回答错误」（`verdict==='wrong'`）时照旧拉黑 ——
+     * 那是**比这条记录更新、更直接**的证据（回包可能属于晚到的上一发），不能让旧事实挡住新证据。
+     */
+    _popupQuizSiteRightKnown: function (rkey, letter) {
+      var rec = this._popupQuizSpendBucket().siteRight[rkey];
+      if (!rec || !rec.letter) return false;
+      return String(rec.letter) === String(letter || '').toUpperCase();
+    },
+
+
+    /**
+     * 靠这条记录**免费填回过一次**就记一次，用满 3 次后 peek 不再给（见 `_popupQuizSiteRightPeek`）。
+     *
+     * 为什么必须有限：站点判对了而弹窗还留着，说明**填回去这一步没让它过去**
+     * （可能压根没点到、可能这一格等的不是这个字母）。无限重刷同一字母 = 视频原地打转。
+     *
+     * ⚠️ 用满**不删这条记录**：删掉就把"平台说过 A 对"这个事实一起抹了，
+     *    于是下一拍拉黑闸门失效（见 `_popupQuizSiteRightKnown` 那段），正是批次 78 第一版的口子。
+     *    作废的是"还能不能白拿"，不是"这件事有没有发生过"。
+     */
+    _popupQuizSiteRightUse: function (rkey) {
+      var rec = this._popupQuizSpendBucket().siteRight[rkey];
+      if (!rec) return;
+      rec.uses = (Number(rec.uses) || 0) + 1;
+    },
+
+
+    /**
+     * **不花钱**把平台判对的那个字母填回去。
+     *
+     * 返回 true = 这一拍已经处理完（填进去了），调用方直接 return。
+     * 填不进去（这一族的选项里没这个字母 / `_fillPopupAnswer` 拒了）返回 false，
+     * 交回老流程 —— 那一支先看拉黑那道闸（平台判对过的字母不会被拉黑），
+     * 所以这里**不**消耗额度：没做到的事不该记账。
+     */
+    _popupQuizTrySiteRightAnswer: function (popup, optionItems, type, rkey, stem) {
+      var letter = this._popupQuizSiteRightPeek(rkey);
+      if (!letter) return false;
+      var filled = false;
+      try { filled = !!this._fillPopupAnswer(popup, letter, type); } catch (eF) { filled = false; }
+      if (!filled) return false;
+      this._popupQuizSiteRightUse(rkey);
+      var key = this._popupQuizFingerprint(popup, optionItems);
+      this._popupQuizLastFilled = String(letter);
+      this._notePopupQuizFilled(key, letter, stem);
+      emitRuntimeLog('info', 'popup quiz reused site-confirmed answer, no request', {
+        letter: letter,
+        // 这一次是这条记录的**第几回**使用（1..3）—— 现场要看得出"还在救"还是"快作废了"
+        uses: Number((this._popupQuizSpendBucket().siteRight[rkey] || {}).uses) || 0,
+        verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+        scoped: this._popupQuizScopedFlag(stem),
+        options: (optionItems || []).slice(0, 6).map(this._extractOptionText.bind(this))
+      });
+      return true;
+    },
+
+
+    /**
      * 记一笔「这个字母被平台拒了」，记在**不随弹窗消失**的账本上。
      *
      * ⚠️ `rkey` 传的是 `_popupQuizRejectKey()` 那一把**按题收窄**的尺，不是粗指纹：
@@ -548,12 +813,40 @@
      *   2. 站点**把弹窗收走了**、下一拍带着同一道题弹回来 —— 那一支走的是"当作新题"，
      *      `_popupQuizLastFilled` 已经被 `_activePopupBlock` 清空，光看弹窗什么也判不出来。
      *      这一族由下面的 `_popupQuizRecheckRejected` 补。
+     *
+     * ⚠️ 批次 78：**平台自己回包判对过的字母不拉黑**（`_popupQuizSiteRightKnown`）。
+     *    现场那一条把视频永久卡死的链就是「站点刚回 `isRight:true`，下一拍弹窗被收走重绘、
+     *    判决槽读不出唯一一句 → 我们按推断把它记成被拒」。这一格是**唯一的闸**：
+     *    两条来源（原地那一支、recheck 那一支）都从这儿过，各写一份就会互漂。
+     *    ⚠️ 这道闸**不跟"免费重填的额度"走**：额度用满只该停掉"白拿"，
+     *       不该把平台亲口说对的字母变成候选之外 —— 那正是第一版留的口子（详 `Known` 那段）。
+     *    唯一让步：调用方把站点判决当场读成 `wrong` 传进来时照旧拉黑 —— 平台最新那句直接说的话，
+     *       比一条旧回包更有资格定性这一发。
      */
-    _notePopupQuizRejected: function (rkey, letter) {
+    _notePopupQuizRejected: function (rkey, letter, verdict) {
       var bucket = this._popupQuizSpendBucket();
       var list = bucket.rejected[rkey] || (bucket.rejected[rkey] = []);
       var v = String(letter || '');
-      if (v && list.indexOf(v) === -1) list.push(v);
+      if (!v) return list;
+      if (verdict !== 'wrong' && this._popupQuizSiteRightKnown(rkey, v)) {
+        emitRuntimeLog('info', 'popup quiz not banning site-confirmed letter', {
+          letter: v.slice(0, 8),
+          // 名单没变长 —— 现场拿这条与 'retrying with a different one' 对照，
+          // 就能分清「平台真判错」与「平台刚判对、我们差点误拉黑」。
+          banned: list.slice(0, 6),
+          // 站点那一发的题号，从回包账本里读回来的（DOM 上没有这个字段，批次 78 量过）
+          eventid: String((bucket.siteRight[rkey] || {}).eid || ''),
+          // 这一格名单是**只算这一道题**(1)还是与同选项的别的题共用(0) —— 三条 78 日志都要带，
+          // 少一条现场就分不清这条"救回来"的到底算在哪道题上。
+          // 这里只有 rkey 没有 stem，而 `|s|` 正是 `_popupQuizRejectKey` 按
+          // `_popupQuizStemMark(stem)` 非空才加的标记 —— 同一把尺，不必再读一遍题干。
+          scoped: String(rkey || '').indexOf('|s|') !== -1 ? 1 : 0,
+          // 这条记录已经被免费重填用过几次 —— 现场要分得开「还在免费救」与「已经改回花钱那一支」
+          uses: Number((bucket.siteRight[rkey] || {}).uses) || 0
+        });
+        return list;
+      }
+      if (list.indexOf(v) === -1) list.push(v);
       return list;
     },
 
@@ -600,6 +893,19 @@
       bucket.filled[key] = {
         letter: String(letter || ''),
         stem: this._popupQuizStemMark(stem)
+      };
+      // 批次 78：**提交那一刻的"这是哪一道"只有我们自己知道**。
+      // 站点回包里带着 eventid，但弹窗 DOM 上没有它（五路探针都摘不到，见 `_popupQuizInstallNetLedger`），
+      // 而回包到达时弹窗往往已被收走 —— 所以在这里（每一发填答都过这一格，两个模型填答点
+      // 与本地作答点共用）留一张**原始题干**的便条，旁听到回包时拿它算 rkey。
+      // ⚠️ 存**未剥过**的 stem，让 `_popupQuizRejectKey` 自己再算一遍 mark：
+      //    两处各算一次 mark 就是"两份尺互漂"，而 `_popupQuizSiteRightNote` 与这里
+      //    必须算出**同一个** rkey，否则判对的字母会记到另一格上。
+      this._popupQuizFilledBind = {
+        key: String(key || ''),
+        stem: String(stem || ''),
+        letter: String(letter || ''),
+        at: Date.now()
       };
     },
 
@@ -689,9 +995,12 @@
       // ⚠️ 批次 74：这一支把"弹窗收走又带同一指纹回来"当成被拒的证据。
       // 但站点答对后也可能收走弹窗（尤其 errorContinue 类只显「继续」）——
       // 所以在补记之前先读站点判决，判对就**不拉黑**，与 _handlePopupQuiz 里那条同一口径。
-      if (this._popupQuizSiteVerdict(popup) === 'right') return;
+      // ⚠️ 判决只读**一次**，读完把同一串既当 return 的判据、又当拉黑那道的闸（批次 75 立的规矩：
+      //    取证的尺与记账的尺不许各读各的）。
+      var verdictNow = this._popupQuizSiteVerdict(popup);
+      if (verdictNow === 'right') return;
       if (this._popupQuizStemMark(stem) !== String(rec.stem || '')) return;
-      this._notePopupQuizRejected(rkey, rec.letter);
+      this._notePopupQuizRejected(rkey, rec.letter, verdictNow);
     },
 
 
@@ -955,6 +1264,8 @@
 
 
     _handlePopupQuiz: async function (popup) {
+      // 批次 78：到**真的在处理弹题**的这一帧才挂钩子（没弹过题的页面一条钩子都不装）。
+      this._popupQuizInstallNetLedger();
       var popupText = textOf(popup);
       if (popupText === '知道了' || popupText === '关闭' || popupText === '确定') {
         popup.click();
@@ -1001,33 +1312,59 @@
       var stem = this._popupQuizStem(popup, optionItems);
       var rkey = this._popupQuizRejectKey(key, stem);
 
+      // 题型在这里算一次就够了 —— 批次 78 的快路（免费填回判对的字母）与下面发请求那一段
+      // 都要用它。同一个纯函数读同一份 DOM 读两遍就是"两份尺互漂"。
+      // 题型不能靠"题干里有没有'正确/判断'这几个字"来猜 ——
+      // "下列说法正确的是？"是单选题，却因为含"正确"被判成判断题，
+      // 模型随之收到错误的题型并回 true/正确，而选项里根本没有这个文本，
+      // 于是一个都匹配不上（这就是"扫描了但从不填空"的另一种形态）。
+      // 可靠依据只有两个：控件类型（复选=多选、文本框=填空）和选项文本。
+      var type = this._detectPopupQuizType(popup, optionItems);
+
+      // ── 批次 78：平台**回包已经判对**的那个字母，免费填回去，不花钱也不再拉黑 ──────
+      // 现场那一族：站点答完就把弹窗收走、重绘，判决槽一句都读不出（verdict=''），
+      // 老推断只能说"这一发被拒了"；而网络那一发明明白白写着 `"isRight":true`
+      // —— 于是正确字母被拉黑、另一个也被拉黑、`all-options-rejected`、视频永久停住。
+      // 填不进去（现场选项里压根没这个字母）时返回 false，交回下面老流程 —— 那一支照常拉黑。
+      if (this._popupQuizTrySiteRightAnswer(popup, optionItems, type, rkey, stem)) return;
+
       if (key === this._popupQuizKey) {
         this._popupQuizAttempts++;
         // 走到这里说明：同一道题、弹窗还在 —— 上一轮填进去的答案没被平台接受，
         // 那就是错的。记下来，本轮带给模型让它换个答案。
         // （只在**确认没通过**时才记，所以不会把「其实答对了、只是弹窗关得慢」的答案误禁。）
         if (this._popupQuizLastFilled) {
-          if (!this._popupQuizWrongAnswers) this._popupQuizWrongAnswers = [];
-          if (this._popupQuizWrongAnswers.indexOf(this._popupQuizLastFilled) === -1) {
-            this._popupQuizWrongAnswers.push(this._popupQuizLastFilled);
-          }
+          // ⚠️ 判决在这里**只读一次**，然后三处共用同一个串：内存名单那一格、账本那一格
+          //    （`_notePopupQuizRejected` 里那道闸）、下面日志的 `verdict`。
+          //    两处各读一次就会互漂 —— 账本挡住了、内存名单还把它发给模型，
+          //    模型便永远避开正确的那个字母（现场「A/B 全被判错」的另一半成因）。
+          var verdictNow = this._popupQuizSiteVerdict(popup);
+          var keptSiteRight = verdictNow !== 'wrong' &&
+            this._popupQuizSiteRightKnown(rkey, this._popupQuizLastFilled);
           // 同一笔账记进**不随弹窗消失**的账本：站点答完就把弹窗收走，下面那段
           // "换题就清空 wrong"会把它抹掉，于是本地作答又挑回同一个已被拒的字母 ——
           // 表现是"同一道判断题在 对/错 之间来回点，视频一直过不去"。
-          this._notePopupQuizRejected(rkey, this._popupQuizLastFilled);
-          // 特意留一条日志：用户报过"答完弹题就卡住、不知道会不会自己好"，
-          // 这条能直接说明"不是卡住，是上一个答案被平台拒了、正在换一个重试"。
-          emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
-            attempt: this._popupQuizAttempts,
-            rejected: String(this._popupQuizLastFilled).slice(0, 40),
-            banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
-            // 拉黑这个字母的**依据**是站点判了错，还是仅仅"弹窗还在" —— 现场必须分得开。
-            // 'wrong' = 平台自己说的；'unknown' = 那三句话一句都没显，走的还是旧推断。
-            verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
-            // 批次 77：这一格的已拒名单是**只算这一道题**(scoped:1)，还是和同选项的
-            // 别的题共用一份(scoped:0 —— 题干读不到，只能退回粗指纹)。
-            scoped: this._popupQuizScopedFlag(stem)
-          });
+          this._notePopupQuizRejected(rkey, this._popupQuizLastFilled, verdictNow);
+          if (!keptSiteRight) {
+            if (!this._popupQuizWrongAnswers) this._popupQuizWrongAnswers = [];
+            if (this._popupQuizWrongAnswers.indexOf(this._popupQuizLastFilled) === -1) {
+              this._popupQuizWrongAnswers.push(this._popupQuizLastFilled);
+            }
+            // 特意留一条日志：用户报过"答完弹题就卡住、不知道会不会自己好"，
+            // 这条能直接说明"不是卡住，是上一个答案被平台拒了、正在换一个重试"。
+            emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
+              attempt: this._popupQuizAttempts,
+              rejected: String(this._popupQuizLastFilled).slice(0, 40),
+              banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
+              // 拉黑这个字母的**依据**是站点判了错，还是仅仅"弹窗还在" —— 现场必须分得开。
+              // 'wrong' = 平台自己说的；'unknown' = 那三句话一句都没显，走的还是旧推断。
+              // ⚠️ 复用上面那一次读数（同一个 popup 读两遍就是两份尺互漂）。
+              verdict: verdictNow || 'unknown',
+              // 批次 77：这一格的已拒名单是**只算这一道题**(scoped:1)，还是和同选项的
+              // 别的题共用一份(scoped:0 —— 题干读不到，只能退回粗指纹)。
+              scoped: this._popupQuizScopedFlag(stem)
+            });
+          }
           this._popupQuizLastFilled = '';
         }
       } else {
@@ -1055,13 +1392,6 @@
       }
 
       if (!this._isQuizApiUnavailable()) {
-        // 题型不能靠"题干里有没有'正确/判断'这几个字"来猜 ——
-        // "下列说法正确的是？"是单选题，却因为含"正确"被判成判断题，
-        // 模型随之收到错误的题型并回 true/正确，而选项里根本没有这个文本，
-        // 于是一个都匹配不上（这就是"扫描了但从不填空"的另一种形态）。
-        // 可靠依据只有两个：控件类型（复选=多选、文本框=填空）和选项文本。
-        var type = this._detectPopupQuizType(popup, optionItems);
-
         // 连线/匹配题：左右两列被一起抓成了「6 个选项」，文本成对重复
         // （日志实测：Color / Transparency / Color / Transparency / …）。
         // 这种题选择题的作答方式永远对不上，旧逻辑会连着问 6 次模型、每次都被判错 ——
@@ -1254,6 +1584,10 @@
       // 放手这一刻的名单是「只算这一道题」的还是与同选项的别的题共用的 —— 现场只有
       // reason + banned 时这两件事长得一模一样（批次 75 的那条 all-options-rejected 就卡在这）。
       var gStem = this._popupQuizStem(popup, this._getOptionItems(popup));
+      // 批次 78：放手这一刻，这一道在站点回包里**判对过**哪个字母（'' = 账上没这一格）。
+      // 现场那条「A/B 全被判错」要是同时带着一个非空值，那就是闸没挡住，不是平台真判错。
+      var gRight = this._popupQuizSiteRightPeek(
+        this._popupQuizRejectKey(this._popupQuizFingerprint(popup), gStem));
       emitRuntimeLog('error', 'popup quiz unanswerable, stop asking model', {
         reason: reason || 'unknown',
         attempts: this._popupQuizAttempts,
@@ -1261,6 +1595,7 @@
         // 分不清「平台真把每个选项都判过错」还是「我们的已拒名单自己漂了」。
         verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
         scoped: this._popupQuizScopedFlag(gStem),
+        siteRight: gRight,
         banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
         snapshot: this._describePopupQuiz(popup)
       });
