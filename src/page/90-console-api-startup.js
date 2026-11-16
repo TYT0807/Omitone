@@ -232,6 +232,17 @@
         // "平台真判错"与"我们的已拒名单漂了"。
         verdict: node ? (app._popupQuizSiteVerdict(node) || 'unknown') : '',
         banned: (app._popupQuizWrongAnswers || []).slice(0, 8),
+        // 批次 77：这一格的名单是**只算这一道题**(1)，还是题干读不到、与同选项的题共用一份(0)。
+        // ⚠️ 与日志那几格同一个来源：读 `_popupQuizScopedFlag`（名单实际落在哪把尺上）。
+        scoped: node ? app._popupQuizScopedFlag(app._popupQuizStem(node, app._getOptionItems(node))) : 0,
+        // 账本上"哪个键拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
+        // 一道题一格（键尾带 |s|题干）= 收窄生效；只有一格粗键 = 同选项的题在共用名单。
+        rejectedKeys: (function () {
+          var r = (app._popupQuizSpend && app._popupQuizSpend.rejected) || {};
+          return Object.keys(r).slice(0, 8).map(function (k) {
+            return '…' + String(k).slice(-46) + '=' + String(r[k] || '').slice(0, 8);
+          });
+        })(),
         popup: node ? app._describePopupQuiz(node) : null
       };
       console.log('[Omitone] popup quiz diagnose:', report);

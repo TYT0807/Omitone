@@ -1638,6 +1638,108 @@ function buildPopupQuizRecallHtml() {
 }
 
 /**
+ * 视频弹题的「同一个视频里连着好几道判断题、选项永远是 对/错」那一族（批次 77）。
+ *
+ * 现场（2026-11-16 10:33 net 抓包与日志对账）：`eventid=2055151` 与 `2055152` 是两道题，
+ * 而 `_popupQuizFingerprint` 只看**选项文本**，两道题的指纹都是 `tkTopic|o|对\u0001错` ——
+ * 于是上一道判错的字母被当成这一道的已拒名单：平台刚把 A 判成对，这一道已经
+ * 「每个选项都被判错过」，本地作答无可选 → 放弃 → 视频永久停在它上面。
+ *
+ * ⚠️ 形状由**测试逐轮点动**，夹具自己不许定时（AGENTS §5：不许把断言绑在机器快慢上）：
+ *   · `pop(名字)` 每轮换一整块新弹窗 —— 现场每换一题就重建一次 `.tkTopic_con`，
+ *     `ext-genNNNN` 那串 id 每题都在变（10:33 的现场快照量到的）；
+ *   · `take()` 把整块摘走 —— 生产里 `_activePopupBlock` 正是在看不见弹窗的那一拍
+ *     把 key / attempts / lastFilled 一起清空，那才是"换题"的真实后果；
+ *   · `reject()` 显出站点自己的 `#spanNot`，弹窗**原地不动** —— 站点判错时就是不收走。
+ *     这与 72 那份"点完就收走、下一拍带同一指纹弹回来"是两族形状，别混。
+ *
+ * ⚠️ 点提交**不摘弹窗**、只记数：这一族要测的正是"答错还挂在原地"，摘走发生在换题那一刻。
+ * `submits` 那一格是夹具自证 —— 它一直是 0 就说明提交键没被生产那套找按钮的规则认出来，
+ * 下面所有断言读的都是一个不存在的形状（批次 72 就是靠这一格抓出来的）。
+ *
+ * `pop('none')` 是**读不到题干**的那一族：现场 2026-11-16 00:22 的快照是
+ * `<div class="tkTopic"><div class="tkTopic_con" id="ext-gen…">` —— 连「判断题」那个
+ * 题型名都没有，题干那一格 `tkItem_title` 是空的，选项照旧挂在里面。
+ * ⚠️ 选项**必须在 `.tkTopic` 里面**：外层挂着题干块的兄弟节点那种形状（批次 71 那份）
+ *    文本只有 3 个字，`_checkPopupQuiz` 的 `>5` 那道闸根本命中不了，测试台里它压根不是
+ *    一个"会被处理的弹窗"。放进来的这一份才是现场真会被扫到的形状。
+ * 提交键跟着放在 `.tkTopic` 里（生产只在弹窗子树里找它），判决槽放在**外面** ——
+ * 塞进来的话「回答错误，请重新作答」会被整块兜底当成题干读回来，这一族就不再是空题干，
+ * 批次 72 立的那条让步与批次 77 的退尺（scoped=0）都测不到了。
+ */
+function buildPopupQuizScopeHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<style>.tkBox{position:fixed;left:40px;top:120px;width:460px;background:#fff;' +
+    'border:2px solid #333;z-index:9999;padding:14px}</style>' +
+    '<video id="v"></video>' +
+    '<div id="pqMount"></div>' +
+    '<script>' +
+    'window.__site = { pops: 0, takes: 0, submits: 0, rejects: 0, last: "" };' +
+    // 四道题干都是合成的句子（不带真实课程痕迹），选项永远是 对/错 ——
+    // 现场连着三道判断题就是这样：题干不同、选项相同、指纹相同、eventid 不同。
+    'var STEMS = {' +
+    '  q1: "合成题干甲：毛细管管径增大时，管内液柱会升高。",' +
+    '  q2: "合成题干乙：系统的固有频率与驱动力频率相等时会发生共振。",' +
+    '  q3: "合成题干丙：金属疲劳的先兆是表面出现微观裂纹。",' +
+    '  q4: "合成题干丁：同一截面惯性矩越大，梁的抗弯能力越强。",' +
+    '  none: ""' +
+    '};' +
+    // 现场形状：ul.ans-videoquiz-opt > li > label > input + span「A、对」
+    // 页面里那几个字符串用反引号 —— HTML 属性自带双引号，再套一层 \\\" 迟早写歪。
+    'var OPTS = `<ul class="ans-videoquiz-opt"><li><label><input type="radio" name="b77q" value="A">' +
+    '<span>A、对</span></label></li><li><label><input type="radio" name="b77q" value="B">' +
+    '<span>B、错</span></label></li></ul>`;' +
+    // 三个判决槽出厂全是 display:none —— 站点就是直接切这个属性（批次 74 量的）
+    'var VERDICT = `<span id="spanHas" style="display:none">回答正确</span>' +
+    '<span id="spanNot" style="display:none">回答错误，请重新作答</span>' +
+    '<span id="spanNotBack" style="display:none">回答错误</span>`;' +
+    'var SUBMIT = `<div class="tkBtnRow"><a class="jq_btn" id="pqSubmit" ' +
+    'href="javascript:void(0);">提交</a></div>`;' +
+    'function boxStem(stem) {' +
+    '  return `<div class="tkBox"><div class="tkTopic" id="pqBox"><div class="tkTopic_title">判断题</div>' +
+    '<div class="tkTopic_con tkScroll"><div class="tkItem"><div class="tkItem_title">` + stem + `</div>` + OPTS +' +
+    '`</div></div>` + VERDICT + SUBMIT + `</div></div>`;' +
+    '}' +
+    // 00:22 现场那一发读不到题干的形状：连题型名都没有，tkItem_title 是空的，
+    // 选项与提交键都在 `.tkTopic` 里面（不然 `_checkPopupQuiz` 的 `>5` 那道闸命中不了），
+    // 判决槽留在外面 —— 见上面那段注释。
+    'function boxNoStem() {' +
+    '  return `<div class="tkBox"><div class="tkTopic" id="pqBox">' +
+    '<div class="tkTopic_con tkScroll"><div class="tkItem"><div class="tkItem_title"></div>` + OPTS +' +
+    '`</div></div>` + SUBMIT + `</div>` + VERDICT + `</div>`;' +
+    '}' +
+    'window.__site.pop = function (name) {' +
+    '  var stem = STEMS[name];' +
+    '  if (stem === undefined) stem = "";' +
+    '  document.getElementById("pqMount").innerHTML = stem ? boxStem(stem) : boxNoStem();' +
+    '  window.__site.pops++; window.__site.last = name;' +
+    '  return stem !== "";' +
+    '};' +
+    'window.__site.take = function () {' +
+    '  var m = document.getElementById("pqMount");' +
+    '  if (!m || !m.innerHTML) return false;' +
+    '  m.innerHTML = "";' +
+    '  window.__site.takes++;' +
+    '  return true;' +
+    '};' +
+    'window.__site.reject = function () {' +
+    '  var n = document.getElementById("spanNot");' +
+    '  if (!n) return false;' +
+    '  n.style.display = "inline";' +
+    '  window.__site.rejects++;' +
+    '  return true;' +
+    '};' +
+    'document.addEventListener("click", function (ev) {' +
+    '  var t = ev && ev.target;' +
+    '  if (!t || t.id !== "pqSubmit") return;' +
+    '  window.__site.submits++;' +
+    '}, true);' +
+    '</' + 'script>' +
+    '</body></html>';
+}
+
+/**
  * 视频内嵌判断题弹窗 —— **外层一直挂着，题干与选项那一块被站点摘掉、过一会儿整块换新的拼回来**（批次 73）。
  *
  * 现场形状（2026-11-15 16:55:05 那条自相矛盾的日志量出来的）：
@@ -1952,6 +2054,7 @@ var MOCK_PAGES = {
   '/popup-quiz-no-stem': buildPopupQuizNoStemHtml,
   '/popup-quiz-recall': buildPopupQuizRecallHtml,
   '/popup-quiz-rerender': buildPopupQuizRerenderHtml,
+  '/popup-quiz-scope': buildPopupQuizScopeHtml,
   '/popup-quiz-verdict': buildPopupQuizVerdictHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
@@ -3512,14 +3615,24 @@ SCENARIOS.push({
       'out.petShown=!!(pet&&pet.classList.contains("show"));' +
       'out.ui=document.documentElement.getAttribute("data-ui");' +
       // —— 命中测试：三个按钮的中心点，elementFromPoint 必须命中按钮自己 ——
-      'var hits={};["pose","outfit","hide"].forEach(function(a){' +
+      'var vp={w:innerWidth,h:innerHeight};out.vp=vp;' +
+      'var tools=document.getElementById("petTools");' +
+      'out.toolsRect=(function(){if(!tools)return "noEl";var t=tools.getBoundingClientRect();' +
+      '  return Math.round(t.left)+","+Math.round(t.top)+","+Math.round(t.width)+"x"+Math.round(t.height);})();' +
+      'out.petRect=(function(){if(!pet)return "noEl";var p=pet.getBoundingClientRect();' +
+      '  return Math.round(p.left)+","+Math.round(p.top)+","+Math.round(p.width)+"x"+Math.round(p.height);})();' +
+      'var hits={},rects={};["pose","outfit","hide"].forEach(function(a){' +
       '  var b=document.querySelector("#petTools button[data-act=\\""+a+"\\"]");' +
-      '  if(!b){hits[a]="missing";return;}' +
+      '  if(!b){hits[a]="missing";rects[a]="noEl";return;}' +
       '  var rc=b.getBoundingClientRect();' +
-      '  var el=document.elementFromPoint(rc.left+rc.width/2, rc.top+rc.height/2);' +
+      '  var cx=rc.left+rc.width/2, cy=rc.top+rc.height/2;' +
+      '  var el=document.elementFromPoint(cx,cy);' +
       '  hits[a]=(el===b||(el&&b.contains(el)));' +
+      '  rects[a]=Math.round(rc.left)+","+Math.round(rc.top)+","+Math.round(rc.width)+"x"+Math.round(rc.height)' +
+      "    +\"@\"+Math.round(cx)+\"/\"+Math.round(cy)+' inView='+(cx>=0&&cy>=0&&cx<vp.w&&cy<vp.h)" +
+      "    +\" hit=\"+(el?String(el.tagName)+'#'+el.id+'.'+String(el.className).slice(0,24):'null');" +
       '});' +
-      'out.hits=hits;' +
+      'out.hits=hits;out.rects=rects;' +
       // —— 拖动（放在点击之前，避免姿态/换装干扰位置）——
       'function ev(t,x,y){return new PointerEvent(t,{bubbles:true,pointerId:1,button:0,isPrimary:true,clientX:x,clientY:y});}' +
       'var d0=pet.getBoundingClientRect();' +
@@ -3549,9 +3662,10 @@ SCENARIOS.push({
       'return out;})()'
     );
     check('角色在精美模式下自动出现', !!r && r.petShown === true, JSON.stringify({shown: r && r.petShown, ui: r && r.ui}));
-    check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, JSON.stringify(r && r.hits));
-    check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, JSON.stringify(r && r.hits));
-    check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, JSON.stringify(r && r.hits));
+    var hitInfo = JSON.stringify({hits: r && r.hits, rects: r && r.rects, vp: r && r.vp, toolsRect: r && r.toolsRect, petRect: r && r.petRect});
+    check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, hitInfo);
+    check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, hitInfo);
+    check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, hitInfo);
     // 这一场只测**命中测试 + 拖动 + 装束不被「姿」覆盖**这一层；
     // 「点「装」换立绘」「点「藏」收起」两条与「弹窗前端：角色控件点一遍都要有反应」
     // 是同分支、同层、同夹具的重复（谓词逐字相同），行为那一条留在那场里，摘掉这里。
@@ -8341,7 +8455,12 @@ SCENARIOS.push({
       var st = await ctx.client.evaluate(
         '(function(){var app=window._xxtApp;var b=app._popupQuizSpend||{};' +
         'var ks=Object.keys(b.asks||{}),as=0,rs=0;for(var i=0;i<ks.length;i++){' +
-        'as+=(Number(b.asks[ks[i]])||0);rs+=(b.rejected[ks[i]]||[]).length;}' +
+        'as+=(Number(b.asks[ks[i]])||0);}' +
+        // ⚠️ 批次 77：已拒名单从这一批起记在**按题收窄**的键上（粗指纹 + 题干），
+        //    与 asks 的键**不是同一把尺** —— 再拿 asks 的键去索引 rejected 就永远是 0，
+        //    那条"补记进了账本"会变成一条恒红的假断言。各数各的键。
+        'var rks=Object.keys(b.rejected||{});for(var ri=0;ri<rks.length;ri++){' +
+        'rs+=(b.rejected[rks[ri]]||[]).length;}' +
         'return {attempts:Number(app._popupQuizAttempts)||0,asksSum:as,rejectedSum:rs,' +
         // 账本里存的**内容**也要读回来 —— 只比条数的话，把字母换成模型原话（判断题回 true）
         // 这一格照样绿，而那时已拒名单永远比不中，本批要防的正是那件事。
@@ -8640,6 +8759,304 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 6c-1e. 弹题：连着几道判断题选项相同，已拒名单不许跨题串台（批次 77） ---- */
+SCENARIOS.push({
+  name: '弹题连着几道判断题时，已拒名单只算这一道题',
+  path: '/popup-quiz-scope',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 同 72/73：上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，这一页一加载
+      // 就有 250ms 的循环在自动动弹窗 —— 不清掉的话下面逐轮取数全是随机的（批次 69 实测踩过）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b77=[];window.__b77cur=0;window.__b77k="";' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b77.push({' +
+      'msg:String(d.message||""),reason:String((d.meta&&d.meta.reason)||""),' +
+      'picked:String((d.meta&&d.meta.picked)||""),banned:(d.meta&&d.meta.banned)||[],' +
+      'verdict:String((d.meta&&d.meta.verdict)||""),scoped:(d.meta&&d.meta.scoped),' +
+      'rejected:String((d.meta&&d.meta.rejected)||""),letter:String((d.meta&&d.meta.letter)||""),' +
+      'attempt:(d.meta&&d.meta.attempt)});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;app._popupQuizLogAt=0;' +
+      'app._activeJobId="b77-job-a";' +
+      'return {max:app._getPopupQuizMaxAttempts(),loop:!!app._tickLoopInterval,' +
+      'checkInterval:!!app._checkInterval,api:app._isQuizApiUnavailable()===false,' +
+      'rejKeyFn:typeof app._popupQuizRejectKey,stemMarkFn:typeof app._popupQuizStemMark,' +
+      // 归因通道自己要有三格对照：scoped 读的必须是**名单实际落在哪把尺**（题干可比对形态），
+      // 不是"题干那一串非空"。站点答错后把「回答错误，请重新作答」接在题干块里，
+      // 那种串按旧写法会打出 scoped:1，而名单其实记在粗指纹上 —— 现场就被这条日志带偏。
+      'scopedFn:typeof app._popupQuizScopedFlag,' +
+      'scopedNotice:app._popupQuizScopedFlag("回答错误，请重新作答"),' +
+      'scopedBlank:app._popupQuizScopedFlag(""),' +
+      'scopedReal:app._popupQuizScopedFlag("合成题干甲：毛细管管径增大时，管内液柱会升高。"),' +
+      // 出厂形状：这一族的弹窗**必须由测试逐轮换**，所以出厂时现场是不能有弹窗的。
+      'popupNow:!!app._checkPopupQuiz(),' +
+      'pops:window.__site.pops,takes:window.__site.takes,submits:window.__site.submits,' +
+      'rejects:window.__site.rejects};})()'
+    );
+    check('77 前提：API 可用、只剩我这一个驱动、账本与弹窗状态是干净的、夹具出厂**没有**挂着弹窗' +
+      '（有就说明换题不是测试点动的，下面每一轮的读数都不属于这一轮）、拉黑专用的那把尺在位、' +
+      'scoped 那三格对照（纯反馈短语=0 / 空串=0 / 真题干=1）',
+      setup.loop === false && setup.checkInterval === false && setup.api === true &&
+      setup.max >= 1 && setup.rejKeyFn === 'function' && setup.stemMarkFn === 'function' &&
+      setup.scopedFn === 'function' && setup.scopedNotice === 0 &&
+      setup.scopedBlank === 0 && setup.scopedReal === 1 &&
+      setup.popupNow === false && setup.pops === 0 && setup.takes === 0 &&
+      setup.submits === 0 && setup.rejects === 0,
+      JSON.stringify(setup));
+
+    var DRIVE =
+      '(function(step){var app=window._xxtApp,s=window.__site;' +
+      // 静默期与 60 秒冷却在生产里是真的会过去的；测试不等它们，只把时间戳推到过去
+      // （与批次 72 同一口径 —— 这一批要测的是账本上那两把尺，不是墙钟）。
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizBlockedUntil=0;app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'if(step==="take"){s.take();}else if(step==="reject"){s.reject();}' +
+      'else if(step.indexOf("pop:")===0){s.pop(step.slice(4));}' +
+      'var node=app._activePopupBlock();' +
+      // 粗指纹全程是同一串（判断题的选项永远是 对/错）—— 记下来给 take/burn 那两轮用，
+      // 那两轮现场没有弹窗，指纹无处可取。
+      'if(node){window.__b77k=app._popupQuizFingerprint(node);}' +
+      'if(step==="burn"){var bk=window.__b77k,taken=0;window.__b77burn=null;' +
+      '  for(var i=0;i<40;i++){var bud=app._popupQuizAskBudget(bk);' +
+      '    if(!bud.allowed){window.__b77burn={taken:taken,cap:bud.cap,asks:bud.asks};break;}' +
+      '    app._takePopupQuizAsk(bk);taken++;}' +
+      '  return null;}' +
+      'return node?app._handlePopupQuiz(node):null;})(';
+    var READ =
+      '(function(){var app=window._xxtApp,s=window.__site;var b=app._popupQuizSpend||{};' +
+      'var k=window.__b77k||"";var rk=Object.keys(b.rejected||{});' +
+      'var fill=(b.filled||{})[k]||{};var n=app._checkPopupQuiz();' +
+      'var items=n?app._getOptionItems(n):[];var stem=n?String(app._popupQuizStem(n,items)||""):"";' +
+      'var out={key:k,attempts:Number(app._popupQuizAttempts)||0,' +
+      'banned:(app._popupQuizWrongAnswers||[]).slice(),lastFilled:String(app._popupQuizLastFilled||""),' +
+      // 名单**按哪几把尺存的**必须读得回来：批次 77 换的就是这一格的尺。
+      'rejKeys:rk.map(function(x){return {tail:String(x).slice(-70),' +
+      'stemmed:String(x).indexOf("|s|")!==-1,letters:(b.rejected[x]||[]).slice()};}),' +
+      'rejTotal:(function(){var c=0;for(var i=0;i<rk.length;i++){c+=(b.rejected[rk[i]]||[]).length;}return c;})(),' +
+      'asks:Number((b.asks||{})[k])||0,gives:Number((b.gives||{})[k])||0,' +
+      'silent:String((b.silent||{})[k]||""),silentKeys:Object.keys(b.silent||{}).length,' +
+      'filledLetter:String(fill.letter||""),filledStem:String(fill.stem||""),' +
+      'burn:window.__b77burn||null,' +
+      // 夹具形状每轮都现场量一遍：题干读不读得回来直接决定走 no-stem 还是走真发请求，
+      // 提交键找不找得到决定站点会不会真的收下这一发。
+      'popupNow:!!n,submitFound:!!(n&&app._findDialogButtonByText(n,["提交","确定","确认","交卷","完成"])),' +
+      'optionCount:items.length,stemLen:stem.length,' +
+      'stemMarkLen:String(app._popupQuizStemMark(stem)||"").length,' +
+      'type:String(n?app._detectPopupQuizType(n,items):""),' +
+      'verdictNow:n?String(app._popupQuizSiteVerdict(n)||""):"",' +
+      'blocks:app._popupQuizBlocksPlayback(),' +
+      'pops:s.pops,takes:s.takes,submits:s.submits,rejects:s.rejects,siteLast:String(s.last||""),' +
+      'logs:window.__b77.slice(window.__b77cur||0)};' +
+      'window.__b77cur=window.__b77.length;return out;})()';
+
+    var rounds = [];
+    async function drive(step) {
+      var before = ctx.mock.requests.length;
+      await ctx.client.evaluate(DRIVE + JSON.stringify(step) + ')');
+      await sleep(220);
+      var st = await ctx.client.evaluate(READ);
+      var rec = { step: step, req: ctx.mock.requests.length - before };
+      Object.keys(st).forEach(function (x) { rec[x] = st[x]; });
+      rounds.push(rec);
+      return rec;
+    }
+    function at(step, from) {
+      for (var i = (from || 0); i < rounds.length; i++) { if (rounds[i].step === step) return rounds[i]; }
+      return null;
+    }
+    function firstLog(r, msg, field) {
+      var ls = r.logs || [];
+      for (var i = 0; i < ls.length; i++) { if (ls[i].msg === msg) return field ? ls[i][field] : ls[i]; }
+      return field === undefined ? null : '';
+    }
+
+    // ── ① Q1（题干甲）：问两发、第一发被判错，名单落到**这一道题**自己的尺上 ──
+    var r1 = await drive('pop:q1');
+    check('77 形状自证：有题干那一族现场读得回题干（stemMark 非空）、两个选项、提交键按生产的找法认得出、' +
+      '题型是 judge —— 这几格只要有一格不对，下面全部断言读的都是一个不存在的形状',
+      r1.popupNow === true && r1.submitFound === true && r1.optionCount === 2 &&
+      r1.stemLen > 0 && r1.stemMarkLen > 0 && r1.type === 'judge' && r1.siteLast === 'q1' &&
+      r1.pops === 1 && r1.rejects === 0,
+      JSON.stringify({ popupNow: r1.popupNow, submitFound: r1.submitFound, optionCount: r1.optionCount, stemLen: r1.stemLen, stemMarkLen: r1.stemMarkLen, type: r1.type, siteLast: r1.siteLast }));
+    check('77 Q1 第一发：真发了请求、真填进去一个**字母**（模型原话是 true，账本里必须已经换成 A/B）',
+      r1.req === 1 && r1.attempts === 1 && r1.lastFilled === 'A' &&
+      r1.filledLetter === 'A' && r1.filledStem.length > 0 && r1.submits >= 1,
+      JSON.stringify({ req: r1.req, attempts: r1.attempts, lastFilled: r1.lastFilled, filledLetter: r1.filledLetter, filledStem: r1.filledStem, submits: r1.submits }));
+
+    var r2 = await drive('reject');
+    check('77 Q1 被判错：站点显出自己的 #spanNot（verdict=wrong），这一格的名单只涨到 1 个字母',
+      r2.verdictNow === 'wrong' && r2.attempts === 2 && r2.banned.length === 1 &&
+      String(r2.banned[0]) === 'A' && r2.rejTotal === 1 && r2.rejKeys.length === 1 &&
+      r2.rejKeys[0].stemmed === true && String(r2.rejKeys[0].tail).indexOf('甲') !== -1 &&
+      JSON.stringify(r2.rejKeys[0].letters) === JSON.stringify(['A']),
+      JSON.stringify({ verdict: r2.verdictNow, attempts: r2.attempts, banned: r2.banned, rejKeys: r2.rejKeys }));
+    check('77 Q1 重试这一拍的日志点名 scoped:1 —— 现场要能分清「只算这一道题」与「跟别的题共用一份」',
+      firstLog(r2, 'popup quiz answer rejected by site, retrying with a different one', 'scoped') === 1,
+      JSON.stringify(r2.logs));
+
+    // ── ② 把**钱**那一把尺用到顶（生产自己的预算，不是测试写死的一格） ──
+    var cap = Number(setup.max) * 2;
+    var r3 = await drive('burn');
+    check('77 钱那一把尺一把没动：用到顶正好取满 2×上限（=' + cap + '）格，且封顶仍记在**粗指纹**上' +
+      '（批次 72 那条让步「宁可少答，也不能每 8 秒问一次」靠的就是这一格 —— 收窄黑名单不许多花钱）',
+      !!r3.burn && r3.burn.cap === cap && r3.burn.asks === cap && r3.asks === cap &&
+      r3.silent === 'ask-cap' && r3.silentKeys === 1,
+      JSON.stringify({ burn: r3.burn, asks: r3.asks, silent: r3.silent, silentKeys: r3.silentKeys }));
+
+    // ── ③ 换题：站点把整块摘走（清空 key/attempts/lastFilled）→ 下一道同选项、不同题干 ──
+    var r4 = await drive('take');
+    check('77 形状自证：摘走那一拍现场确实没有弹窗，_activePopupBlock 把 key/attempts/lastFilled 一起清空' +
+      '（这正是"同一道题"这件事在插件里丢掉的时刻）',
+      r4.popupNow === false && r4.attempts === 0 && r4.banned.length === 0 &&
+      r4.lastFilled === '' && r4.takes === 1,
+      JSON.stringify({ popupNow: r4.popupNow, attempts: r4.attempts, banned: r4.banned, lastFilled: r4.lastFilled, takes: r4.takes }));
+
+    var r5 = await drive('pop:q2');
+    var picked5 = firstLog(r5, 'popup quiz answered locally, no request', 'picked');
+    check('77 核心：换到**另一道**判断题（题干乙、选项一模一样）时，已拒名单是空的 —— ' +
+      '上一道判错的 A 不许串到这一道（现场「平台刚把 A 判成对，我们这里 A/B 全错」就是这一格）',
+      r5.stemLen > 0 && String(r5.siteLast) === 'q2' && r5.banned.length === 0 &&
+      r5.attempts === 1 && r5.req === 0,
+      JSON.stringify({ stemLen: r5.stemLen, banned: r5.banned, attempts: r5.attempts, req: r5.req, logs: r5.logs }));
+    check('77 核心：到顶之后本地作答挑的是**被上一道判错过的那个 A**，且一条请求都不发 —— ' +
+      '这就是「收窄黑名单一分钱都不多花」：让步的是正确率，钱停在 2×上限',
+      picked5 === 'A' && r5.req === 0 &&
+      firstLog(r5, 'popup quiz answered locally, no request', 'reason') === 'ask-cap' &&
+      firstLog(r5, 'popup quiz answered locally, no request', 'scoped') === 1,
+      JSON.stringify({ picked: picked5, req: r5.req, logs: r5.logs }));
+
+    // ── ④ 负对照：这一道题**自己**的名单照样拦得住（不许把名单整个扔掉当修复） ──
+    var r6 = await drive('reject');
+    var picked6 = firstLog(r6, 'popup quiz answered locally, no request', 'picked');
+    check('77 负对照：乙这道自己被判错之后，A 进了**乙这一格**的名单，本地作答改挑 B —— ' +
+      '按题收窄只是不再串台，不是不再拉黑',
+      r6.banned.length === 1 && String(r6.banned[0]) === 'A' && picked6 === 'B' &&
+      r6.req === 0 && r6.attempts === 2,
+      JSON.stringify({ banned: r6.banned, picked: picked6, req: r6.req, attempts: r6.attempts }));
+
+    var r7 = await drive('reject');
+    var yiKey = null, jiaKey = null;
+    (r7.rejKeys || []).forEach(function (x) {
+      if (String(x.tail).indexOf('乙') !== -1) yiKey = x;
+      if (String(x.tail).indexOf('甲') !== -1) jiaKey = x;
+    });
+    check('77 每题一份名单：乙这道把 A/B 都赔进去时，甲那道那一格**仍然是只含 A** —— ' +
+      '两把尺各自记账，串台是单向污染的（现场量到的正是甲污染了乙）',
+      !!yiKey && !!jiaKey && JSON.stringify(yiKey.letters) === JSON.stringify(['A', 'B']) &&
+      JSON.stringify(jiaKey.letters) === JSON.stringify(['A']) && r7.rejTotal === 3,
+      JSON.stringify({ rejKeys: r7.rejKeys, rejTotal: r7.rejTotal }));
+    check('77 放弃只算这一道：乙两个字母都赔光 → every option already rejected（scoped:1）→ 冷却放行播放',
+      // ⚠️ 这里不断 `gives`：那一格只由「attempts 超上限」那一条支路记（`_notePopupQuizGiveUp`），
+      // 而这一族是「名单里已经一个字母都不剩」先走到的 —— 现场那两条 reason 是两回事，
+      // 断错了会把一条不存在的账当成修复的证据。
+      r7.blocks === false &&
+      firstLog(r7, 'popup quiz every option already rejected', 'reason') === 'ask-cap' &&
+      firstLog(r7, 'popup quiz every option already rejected', 'scoped') === 1 &&
+      firstLog(r7, 'popup quiz unanswerable, stop asking model', 'reason') === 'all-options-rejected' &&
+      firstLog(r7, 'popup quiz unanswerable, stop asking model', 'scoped') === 1 &&
+      r7.req === 0,
+      JSON.stringify({ blocks: r7.blocks, gives: r7.gives, req: r7.req, logs: r7.logs }));
+
+    // ── ⑤ 被放弃的是乙，丙不是：新题不许"生下来就每个选项都被判错过" ──
+    await drive('take');
+    var r9 = await drive('pop:q3');
+    var picked9 = firstLog(r9, 'popup quiz answered locally, no request', 'picked');
+    var everyCount = 0;
+    rounds.forEach(function (x) {
+      (x.logs || []).forEach(function (l) {
+        if (l.msg === 'popup quiz every option already rejected') everyCount++;
+      });
+    });
+    check('77 换到丙（题干丙、选项仍然一模一样）：名单又是空的、本地答得出去 —— ' +
+      '上一道放弃不等于这一道不可答（现场视频永久卡在判断题上就是少了这一格）',
+      r9.banned.length === 0 && String(r9.siteLast) === 'q3' && picked9 === 'A' && r9.req === 0,
+      JSON.stringify({ banned: r9.banned, picked: picked9, req: r9.req }));
+    check('77 全程「每个选项都被判错过」只响一次（只有乙真把两个字母都赔进去）—— ' +
+      '旧尺下每道同选项的判断题都会响这一条',
+      everyCount === 1, JSON.stringify({ everyCount: everyCount }));
+
+    // ── ⑥ 题干读不到时退回粗指纹（批次 72 那条让步不许被这一批改掉） ──
+    await drive('take');
+    var r11 = await drive('pop:none');
+    check('77 形状自证：读不到题干那一族确实读回来是空的（stemLen=0，连题型名都没有）、' +
+      '选项照样抓得到 2 个、提交键在弹窗子树里找得到 —— ' +
+      '这一族走的必须是 no-stem，不然退尺那条路从来没被走到',
+      r11.stemLen === 0 && r11.stemMarkLen === 0 && r11.optionCount === 2 &&
+      r11.popupNow === true && r11.submitFound === true,
+      JSON.stringify({ stemLen: r11.stemLen, stemMarkLen: r11.stemMarkLen, optionCount: r11.optionCount, popupNow: r11.popupNow, submitFound: r11.submitFound }));
+    check('77 题干读不到时 scoped=0、原因点名 no-stem、一条请求都不发（与批次 71/72 同一口径）',
+      firstLog(r11, 'popup quiz answered locally, no request', 'scoped') === 0 &&
+      firstLog(r11, 'popup quiz answered locally, no request', 'reason') === 'no-stem' &&
+      r11.req === 0 && r11.banned.length === 0,
+      JSON.stringify({ logs: r11.logs, banned: r11.banned, req: r11.req }));
+
+    var r12 = await drive('reject');
+    var coarseKeys = (r12.rejKeys || []).filter(function (x) { return x.stemmed === false; });
+    check('77 退尺：题干读不到时拉黑记在**粗指纹**那一格（键里没有 |s|），且存的仍是字母 A —— ' +
+      '没有更细的身份就不许假装有一份，那一族本来就只能本地瞎选',
+      coarseKeys.length === 1 && JSON.stringify(coarseKeys[0].letters) === JSON.stringify(['A']) &&
+      firstLog(r12, 'popup quiz answer rejected by site, retrying with a different one', 'scoped') === 0 &&
+      r12.req === 0,
+      JSON.stringify({ rejKeys: r12.rejKeys, logs: r12.logs, req: r12.req }));
+
+    // ── ⑦ 反向：粗指纹那一格也不许漏回**有题干**的题 ──
+    await drive('take');
+    var r14 = await drive('pop:q4');
+    var picked14 = firstLog(r14, 'popup quiz answered locally, no request', 'picked');
+    check('77 双向不串台：瞎选那一族攒下的粗指纹名单，不许污染读得到题干的丁 —— ' +
+      '丁的名单是空的、挑的是 A、scoped=1、一条请求都不发',
+      r14.banned.length === 0 && String(r14.siteLast) === 'q4' && r14.stemLen > 0 &&
+      picked14 === 'A' &&
+      firstLog(r14, 'popup quiz answered locally, no request', 'scoped') === 1 && r14.req === 0,
+      JSON.stringify({ banned: r14.banned, picked: picked14, req: r14.req, logs: r14.logs }));
+
+    // ── ⑧ 总账：钱一把没多花 ──
+    var reqTotal = rounds.reduce(function (a, x) { return a + x.req; }, 0);
+    var reqSeq = rounds.map(function (x) { return x.req; });
+    var afterCap = rounds.slice(rounds.indexOf(r3) + 1);
+    var allLetters = [];
+    rounds.forEach(function (x) {
+      (x.rejKeys || []).forEach(function (k) { allLetters = allLetters.concat(k.letters || []); });
+    });
+    check('77 总账：整场只发了 2 发请求（Q1 首发 + 一次重试），到顶之后每一轮都是 0 发 —— ' +
+      '把名单按题收窄**没有**换来任何一次额外付费',
+      reqTotal === 2 && afterCap.every(function (x) { return x.req === 0; }),
+      JSON.stringify(reqSeq));
+    check('77 账本里存的每一个值都是**选项字母**（不是模型原话 true/「正确」—— 那会让名单永远比不中，' +
+      '批次 72 钉过这一格，换了尺之后要重新钉一遍）',
+      allLetters.length >= 4 &&
+      allLetters.every(function (v) { return /^[A-F]$/.test(String(v)); }),
+      JSON.stringify(allLetters));
+    check('77 静音那一刻仍然只说一次（"这道不再问模型了"不许因为按题分格而刷屏）',
+      rounds.reduce(function (a, x) {
+        return a + (x.logs || []).filter(function (l) {
+          return l.msg === 'popup quiz stops asking the model for this one';
+        }).length;
+      }, 0) === 1,
+      JSON.stringify(rounds.map(function (x) {
+        return (x.logs || []).filter(function (l) { return l.msg.indexOf('stops asking') !== -1 ? l.reason : null; })
+          .filter(Boolean);
+      })));
+  }
+});
+
 /** ---- 6c-1c. 弹题：站点判对、但弹窗不关只显「继续」（批次 74） ---- */
 SCENARIOS.push({
   name: '视频弹题答对后站点不关弹窗时不再误判为被拒',
@@ -8727,8 +9144,11 @@ SCENARIOS.push({
     await sleep(400);
     var right = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
-      'var b=app._popupQuizSpend||{};var rej=(b.rejected&&b.rejected[key])||[];' +
-      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,' +
+      'var b=app._popupQuizSpend||{};' +
+      // 批次 77：已拒名单按题收窄，键与粗指纹不再相同 —— 按 rejected **自己的键**取全量。
+      'var rej=[],rejKeys=Object.keys(b.rejected||{});' +
+      'for(var ri=0;ri<rejKeys.length;ri++){rej=rej.concat(b.rejected[rejKeys[ri]]||[]);}' +
+      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,rejKeys:rejKeys,' +
       'solvedKey:app._popupQuizSolvedKey,key:key,lastFilled:String(app._popupQuizLastFilled||""),' +
       'blockedUntil:Number(app._popupQuizBlockedUntil)||0,' +
       'continueClicks:Number(window.__b74c)||0,' +
@@ -8765,8 +9185,11 @@ SCENARIOS.push({
     await sleep(400);
     var wrongRead = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
-      'var b=app._popupQuizSpend||{};var rej=(b.rejected&&b.rejected[key])||[];' +
-      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,' +
+      'var b=app._popupQuizSpend||{};' +
+      // 批次 77：已拒名单按题收窄，键与粗指纹不再相同 —— 按 rejected **自己的键**取全量。
+      'var rej=[],rejKeys=Object.keys(b.rejected||{});' +
+      'for(var ri=0;ri<rejKeys.length;ri++){rej=rej.concat(b.rejected[rejKeys[ri]]||[]);}' +
+      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,rejKeys:rejKeys,' +
       'verdict:app._popupQuizSiteVerdict(box),continueClicks:Number(window.__b74c)||0,' +
       // 批次 75：拉黑这一步**当时写进日志的依据**，从载荷里读回来（不是测试自己种的字符串）。
       'loggedVerdict:(function(){var a=(window.__b75||[]).filter(function(e){return e.m.indexOf("rejected by site")!==-1;});' +

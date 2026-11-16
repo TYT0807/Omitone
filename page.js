@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '1a92d33c3c';
+var OMITONE_CODE_REV = '9823fcd797';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -16618,22 +16618,72 @@ var OMITONE_CODE_REV = '1a92d33c3c';
 
 
     /**
-     * 题干的**可比对形态** —— 剥掉站点在答错后追加的反馈短语与所有空白。
+     * 题干的**可比对形态** —— 剥掉站点在答错后追加的反馈短语、所有空白与标点。
      *
      * ⚠️ 为什么必须有它：站点的反馈（「回答错误，请重新作答」）就长在题干那一块里，
      *    拿原文比会每轮都不相等，"是不是同一道题"这个问题就只能靠猜。
      *    与 `_popupQuizFingerprint` 里那份短语表是同一族，两处要改一起改。
+     * ⚠️ **标点也必须剥，只剥空白不够**：站点那句反馈中间那个「，」不是空白。
+     *    上一版留下的就是这一个字符 —— 纯反馈短语因此 mark 非空，被当成"有题干"，
+     *    于是 `scoped` 那格说「只算这一道题」，实际名单却按粗指纹那一尺在走（钱也按那一尺封顶）。
+     *    判据要的是**有没有题目本身的文字**，不是一个孤零零的逗号。
      */
     _popupQuizStemMark: function (stem) {
       return String(stem || '')
         .replace(/回答错误|答案错误|请重新作答|重新作答|再试一次|不正确|提交失败/g, '')
-        .replace(/[\s　]+/g, '')
+        .replace(/[\s　.,;:!?\u3001\u3002\u300C\u300D\u300E\u300F\u00B7\u2026\u2014\u201C\u201D\u2018\u2019"'()\uFF08\uFF09\[\]\u3010\u3011<>\u300A\u300B\/\\+\-*_=^%$#@&|~\uFF0C\uFF1B\uFF1A\uFF01\uFF1F\uFF0E]/g, '')
         .slice(0, 120);
     },
 
 
     /**
+     * **拉黑专用的键**（批次 77）：粗指纹 + 题干可比对形态。
+     *
+     * 为什么必须有它（现场 2026-11-16 10:33，两道题一起给的证据）：
+     *   · `_popupQuizFingerprint` 只看**选项文本**，而一个视频里判断题的选项永远是「对 / 错」；
+     *   · net 抓包：`eventid=2055152 …answerContent=A` → 站点回 `"isRight":true`（A 是对的），
+     *     而日志 `popup quiz unanswerable {banned:["A","B"],reason:"attempts-exceeded"}`
+     *     的快照题干是「西方炼金术认为金属都是活的有机体…」—— **另一道**判断题；
+     *   · 于是 A 是被**上一道**拉黑的，这一道连一次都没答过就已经「每个选项都被判错过了」，
+     *     本地作答无可选 → `all-options-rejected` → 60 秒冷却 → 视频永远停在它上面。
+     *   · 同一族里更狠的一格：`{banned:["A","B"]}` 还被当作 `previousWrongAnswers` 发给模型，
+     *     两个字母都"错"、只有两个字母，它只能回同一个 B，**每发一次钱都被平台判错一次**。
+     *
+     * ⚠️ **花钱的尺一把没动**：`asks` / `silent` / `gives` / `filled` / `paid` 全部留在
+     *    粗指纹上。批次 72 那条让步（「宁可少答，也不能每 8 秒问一次」）依赖的正是
+     *    "选项相同就共用一份额度"；只收窄黑名单不会多花一分钱，这一点由 e2e 的
+     *    「收窄后仍零请求」那条断言钉着。
+     *
+     * 题干读不到时（现场那种容器里只有题型名）**退回粗指纹** —— 那一族本来就只能本地瞎选，
+     * 没有更细的身份可用，行为与批次 72 完全一致。
+     */
+    _popupQuizRejectKey: function (key, stem) {
+      var mark = this._popupQuizStemMark(stem);
+      return mark ? (String(key || '') + '|s|' + mark) : String(key || '');
+    },
+
+
+    /**
+     * 日志里那一格 `scoped` 到底在说什么 —— 批次 77 的取证的**归因通道**，必须与
+     * 记账用的那把尺同一个来源，不许各读各的。
+     *
+     * ⚠️ 判据是 `_popupQuizStemMark(stem)` 非空，**不是** `stem` 非空。
+     * 现场答错之后站点把那一句「回答错误，请重新作答」接在选项同一块里，
+     * 于是 `stem` 读回来是一串非空、可 `_popupQuizStemMark` 把这句剥掉之后什么都不剩 ——
+     * 那种时候名单落在**粗指纹**上（`_popupQuizRejectKey` 走的就是没有 `|s|` 的那一支），
+     * 而按 `stem` 打出来的日志会说 scoped:1「只算这一道题」，现场就被这条日志带偏了。
+     */
+    _popupQuizScopedFlag: function (stem) {
+      return this._popupQuizStemMark(stem) ? 1 : 0;
+    },
+
+
+    /**
      * 记一笔「这个字母被平台拒了」，记在**不随弹窗消失**的账本上。
+     *
+     * ⚠️ `rkey` 传的是 `_popupQuizRejectKey()` 那一把**按题收窄**的尺，不是粗指纹：
+     *    黑名单跨题串台就是现场「选项相同的两道题里，后一道连答都没答过就已经
+     *    A/B 全被判错过」的成因（见 `_popupQuizRejectKey` 那段）。
      *
      * 两个来源（缺一不可，各自对应站点的一种形状）：
      *   1. 弹窗还挂在原地、指纹又走回来 —— 上面那段"同一道题"分支直接看见它被拒；
@@ -16641,9 +16691,9 @@ var OMITONE_CODE_REV = '1a92d33c3c';
      *      `_popupQuizLastFilled` 已经被 `_activePopupBlock` 清空，光看弹窗什么也判不出来。
      *      这一族由下面的 `_popupQuizRecheckRejected` 补。
      */
-    _notePopupQuizRejected: function (key, letter) {
+    _notePopupQuizRejected: function (rkey, letter) {
       var bucket = this._popupQuizSpendBucket();
-      var list = bucket.rejected[key] || (bucket.rejected[key] = []);
+      var list = bucket.rejected[rkey] || (bucket.rejected[rkey] = []);
       var v = String(letter || '');
       if (v && list.indexOf(v) === -1) list.push(v);
       return list;
@@ -16768,8 +16818,13 @@ var OMITONE_CODE_REV = '1a92d33c3c';
      * 弹窗正常关掉、这是新的一道"误记成"答错了"，于是把正确的那个字母永久拉黑。
      * 题干两边都读不到（现场那种容器里只有题型名）时两串都是空 → 相等 → 认成同一道，
      * 那一族本来就只能本地瞎选，拉黑是对的。
+     *
+     * ⚠️ 批次 77：`filled` 仍按**粗指纹**取（它是批次 74「认判决」的前提，收窄会让
+     *    题干漂动的题失去保护），但补记进去的是 `rkey` 那一格 —— 拉黑的尺按题走。
+     *    `stem` 由调用方把它已经算好的题干传进来，这里不再重读一遍（两处读法若漂，
+     *    "是不是同一道题"就判不准，与 `_answerPopupQuizLocally` 的 `stem` 同一个理由）。
      */
-    _popupQuizRecheckRejected: function (key, popup, optionItems) {
+    _popupQuizRecheckRejected: function (key, rkey, popup, stem) {
       var bucket = this._popupQuizSpendBucket();
       var rec = bucket.filled[key];
       if (!rec || !rec.letter) return;
@@ -16777,10 +16832,8 @@ var OMITONE_CODE_REV = '1a92d33c3c';
       // 但站点答对后也可能收走弹窗（尤其 errorContinue 类只显「继续」）——
       // 所以在补记之前先读站点判决，判对就**不拉黑**，与 _handlePopupQuiz 里那条同一口径。
       if (this._popupQuizSiteVerdict(popup) === 'right') return;
-      var stem = '';
-      try { stem = this._popupQuizStem(popup, optionItems); } catch (e) { stem = ''; }
       if (this._popupQuizStemMark(stem) !== String(rec.stem || '')) return;
-      this._notePopupQuizRejected(key, rec.letter);
+      this._notePopupQuizRejected(rkey, rec.letter);
     },
 
 
@@ -16824,7 +16877,11 @@ var OMITONE_CODE_REV = '1a92d33c3c';
         // 每个选项都被判错过了：再点下去只是重复，直接放弃并冷却。
         emitRuntimeLog('warn', 'popup quiz every option already rejected', {
           reason: reason, banned: banned.slice(0, 6), optionCount: items.length,
-          verdict: this._popupQuizSiteVerdict(popup) || 'unknown'
+          verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+          // 批次 77：这份名单是**只算这一道题**的(1)，还是与同选项的别的题共用的(0)。
+          // 现场要一眼分开「这道真的两个字母都判错过」与「上一道把名单污染了」。
+          // ⚠️ 读的是 `_popupQuizScopedFlag`（名单实际落在哪把尺上），不是"题干串非空"。
+          scoped: this._popupQuizScopedFlag(stem)
         });
         this._giveUpPopupQuiz(popup, 'all-options-rejected');
         return false;
@@ -16846,6 +16903,7 @@ var OMITONE_CODE_REV = '1a92d33c3c';
         banned: banned.slice(0, 6),
         // 站点自己此刻判成了什么 —— 现场日志要能分清「我们以为被拒」与「平台真判错」。
         verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+        scoped: this._popupQuizScopedFlag(stem),
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
@@ -17071,6 +17129,20 @@ var OMITONE_CODE_REV = '1a92d33c3c';
         return;
       }
 
+      // ── 批次 77：拉黑这一族改按**这一道题**记账 ─────────────────────────────
+      // 选项相同、题干不同的两道题共用一份已拒名单，就是现场「平台刚刚把 A 判成对的，
+      // 而我们的名单上 A/B 全错」的成因（证据与推理见 `_popupQuizRejectKey`）。
+      // ⚠️ 只有 `rejected` 这一格换尺：asks / silent / gives / filled / paid 全留在粗指纹上，
+      //    所以**每节每族选项的封顶仍是 2×上限 发**，收窄黑名单一分钱都不多花。
+      //
+      // ⚠️ 题干必须从**选项所在的那一层**读，不能读 `textOf(popup)`。
+      // 现场 2026-11-15 14:17 那一发就是读错了层：容器 `.tkTopic` 里只有
+      // 「判断题」这个题型名，选项在兄弟节点，于是发给模型的问题是「判断题」三个字
+      // —— 它只能瞎猜，猜错就被平台拒，弹窗留着再问，**每 8 秒一次**。
+      var optionItems = this._getOptionItems(popup);
+      var stem = this._popupQuizStem(popup, optionItems);
+      var rkey = this._popupQuizRejectKey(key, stem);
+
       if (key === this._popupQuizKey) {
         this._popupQuizAttempts++;
         // 走到这里说明：同一道题、弹窗还在 —— 上一轮填进去的答案没被平台接受，
@@ -17084,7 +17156,7 @@ var OMITONE_CODE_REV = '1a92d33c3c';
           // 同一笔账记进**不随弹窗消失**的账本：站点答完就把弹窗收走，下面那段
           // "换题就清空 wrong"会把它抹掉，于是本地作答又挑回同一个已被拒的字母 ——
           // 表现是"同一道判断题在 对/错 之间来回点，视频一直过不去"。
-          this._notePopupQuizRejected(key, this._popupQuizLastFilled);
+          this._notePopupQuizRejected(rkey, this._popupQuizLastFilled);
           // 特意留一条日志：用户报过"答完弹题就卡住、不知道会不会自己好"，
           // 这条能直接说明"不是卡住，是上一个答案被平台拒了、正在换一个重试"。
           emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
@@ -17093,7 +17165,10 @@ var OMITONE_CODE_REV = '1a92d33c3c';
             banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
             // 拉黑这个字母的**依据**是站点判了错，还是仅仅"弹窗还在" —— 现场必须分得开。
             // 'wrong' = 平台自己说的；'unknown' = 那三句话一句都没显，走的还是旧推断。
-            verdict: this._popupQuizSiteVerdict(popup) || 'unknown'
+            verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+            // 批次 77：这一格的已拒名单是**只算这一道题**(scoped:1)，还是和同选项的
+            // 别的题共用一份(scoped:0 —— 题干读不到，只能退回粗指纹)。
+            scoped: this._popupQuizScopedFlag(stem)
           });
           this._popupQuizLastFilled = '';
         }
@@ -17104,11 +17179,13 @@ var OMITONE_CODE_REV = '1a92d33c3c';
         //   · 本地作答又挑回那个字母 → 同一道判断题在 对/错 之间来回点，视频一直过不去。
         // 而"这一轮被收走又弹回来"本身就是**被拒的证据**（答对了站点就不会再弹），
         // 所以先按账本补记上一轮那个字母，再把它当作本题的已拒名单发下去。
-        this._popupQuizRecheckRejected(key, popup, this._getOptionItems(popup));
+        // ⚠️ 补记要比题干（批次 72 立的规矩），读回来的名单则是**这一道题**自己的（批次 77）：
+        //    上一道判断题拉黑的字母不能出现在这一道的名单里。
+        this._popupQuizRecheckRejected(key, rkey, popup, stem);
         this._popupQuizKey = key;
         this._popupQuizAttempts = 1;
         this._popupQuizLastFilled = '';
-        this._popupQuizWrongAnswers = (this._popupQuizSpendBucket().rejected[key] || []).slice();
+        this._popupQuizWrongAnswers = (this._popupQuizSpendBucket().rejected[rkey] || []).slice();
       }
 
       var maxAttempts = this._getPopupQuizMaxAttempts();
@@ -17120,7 +17197,6 @@ var OMITONE_CODE_REV = '1a92d33c3c';
       }
 
       if (!this._isQuizApiUnavailable()) {
-        var optionItems = this._getOptionItems(popup);
         // 题型不能靠"题干里有没有'正确/判断'这几个字"来猜 ——
         // "下列说法正确的是？"是单选题，却因为含"正确"被判成判断题，
         // 模型随之收到错误的题型并回 true/正确，而选项里根本没有这个文本，
@@ -17138,11 +17214,8 @@ var OMITONE_CODE_REV = '1a92d33c3c';
           return;
         }
 
-        // ⚠️ 题干必须从**选项所在的那一层**读，不能读 `textOf(popup)`。
-        // 现场 2026-11-15 14:17 那一发就是读错了层：容器 `.tkTopic` 里只有
-        // 「判断题」这个题型名，选项在兄弟节点，于是发给模型的问题是「判断题」三个字
-        // —— 它只能瞎猜，猜错就被平台拒，弹窗留着再问，**每 8 秒一次**。
-        var stem = this._popupQuizStem(popup, optionItems);
+        // 题干在上面批次 77 那一格里已经算好了（`stem`）—— 同一个函数里读两遍就是
+        // "两份尺互漂"，比题干、记账、发请求必须用**同一串**。
         var spend = this._popupQuizSpendBucket();
         // 查预算：到顶时 `_popupQuizAskBudget` 自己会把这一道写进静音名单（并只说一次），
         // 名单里存的就是"为什么不再问了"，下面那一格直接拿它当原因点名。
@@ -17190,8 +17263,10 @@ var OMITONE_CODE_REV = '1a92d33c3c';
             if (reusedPaid) {
               // 复用前先看它是不是**平台已经判错的那个字母**：是的话这一格已经不值钱了，
               // 丢掉、带已拒名单照常重新问 —— 否则会把同一个错答案反复填三遍。
+              // ⚠️ 批次 77：读 `rkey` 那一格 —— 别的题判错过的字母不影响这一道值不值钱
+              //    （`_popupQuizPaidAnswer` 上面那道题干比对已经保证这格是**这一道**买的）。
               var paidLetter = this._popupQuizFilledLetter(popup, optionItems, reusedPaid, type);
-              if (paidLetter && (spend.rejected[key] || []).indexOf(paidLetter) !== -1) {
+              if (paidLetter && (spend.rejected[rkey] || []).indexOf(paidLetter) !== -1) {
                 this._notePopupQuizPaid(key, '');
                 reusedPaid = '';
               }
@@ -17318,12 +17393,16 @@ var OMITONE_CODE_REV = '1a92d33c3c';
      * 冷却是 60 秒而不是永久：万一弹窗其实是可答的（比如只是模型抽风），还能再试。
      */
     _giveUpPopupQuiz: function (popup, reason) {
+      // 放手这一刻的名单是「只算这一道题」的还是与同选项的别的题共用的 —— 现场只有
+      // reason + banned 时这两件事长得一模一样（批次 75 的那条 all-options-rejected 就卡在这）。
+      var gStem = this._popupQuizStem(popup, this._getOptionItems(popup));
       emitRuntimeLog('error', 'popup quiz unanswerable, stop asking model', {
         reason: reason || 'unknown',
         attempts: this._popupQuizAttempts,
         // 放手这一刻站点判成了什么 —— 现场那条 all-options-rejected 只有 reason 时，
         // 分不清「平台真把每个选项都判过错」还是「我们的已拒名单自己漂了」。
         verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+        scoped: this._popupQuizScopedFlag(gStem),
         banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
         snapshot: this._describePopupQuiz(popup)
       });
@@ -17633,6 +17712,17 @@ var OMITONE_CODE_REV = '1a92d33c3c';
         // "平台真判错"与"我们的已拒名单漂了"。
         verdict: node ? (app._popupQuizSiteVerdict(node) || 'unknown') : '',
         banned: (app._popupQuizWrongAnswers || []).slice(0, 8),
+        // 批次 77：这一格的名单是**只算这一道题**(1)，还是题干读不到、与同选项的题共用一份(0)。
+        // ⚠️ 与日志那几格同一个来源：读 `_popupQuizScopedFlag`（名单实际落在哪把尺上）。
+        scoped: node ? app._popupQuizScopedFlag(app._popupQuizStem(node, app._getOptionItems(node))) : 0,
+        // 账本上"哪个键拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
+        // 一道题一格（键尾带 |s|题干）= 收窄生效；只有一格粗键 = 同选项的题在共用名单。
+        rejectedKeys: (function () {
+          var r = (app._popupQuizSpend && app._popupQuizSpend.rejected) || {};
+          return Object.keys(r).slice(0, 8).map(function (k) {
+            return '…' + String(k).slice(-46) + '=' + String(r[k] || '').slice(0, 8);
+          });
+        })(),
         popup: node ? app._describePopupQuiz(node) : null
       };
       console.log('[Omitone] popup quiz diagnose:', report);
