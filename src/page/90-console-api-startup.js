@@ -227,6 +227,11 @@
         blocked: !!(app._popupQuizBlockedUntil && Date.now() < app._popupQuizBlockedUntil),
         attempts: app._popupQuizAttempts,
         maxAttempts: app._getPopupQuizMaxAttempts(),
+        // 站点自己此刻判成了什么 —— 批次 74 留的那句「下次现场真撞上，用 xxtAI 读一遍
+        // _popupQuizSiteVerdict 对个账」就是给这一格用的：现场不用等下一条日志，手动调一次就分得开
+        // "平台真判错"与"我们的已拒名单漂了"。
+        verdict: node ? (app._popupQuizSiteVerdict(node) || 'unknown') : '',
+        banned: (app._popupQuizWrongAnswers || []).slice(0, 8),
         popup: node ? app._describePopupQuiz(node) : null
       };
       console.log('[Omitone] popup quiz diagnose:', report);

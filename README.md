@@ -671,7 +671,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 121 个场景，1330 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 121 个场景，1335 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1052,6 +1052,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 54 | **已经完成的界面要磨蹭很久才去下一个**（真实日志 00:46:41 `quiz waiting font decrypt {state:"(none)",sweepAgoMs:-1}` → 00:46:49 才发请求，每份卷子白等 8 秒） | `state:"(none)"` + `sweepAgoMs:-1` 不是「解得慢」，是 content.js 那次解密扫描**根本没跑到这一份文档** —— 等满窗口一个字也不会多解出来。批次 5 把「要不要等」收成问题目那份文档，但**没区分「在扫但没扫完」和「压根没扫」** | `sweepNotCovered` 时上限从配置值收窄到 `scaledMs(2500)`，超了就照答并 warn `font decrypt pending over limit, answer anyway`，那条日志同时带 `limitMs` 与 `configuredLimitMs`（本轮实际用了什么上限、用户配的是什么，一眼对得上）。⚠️ **有扫描戳的文档仍等满原窗口** —— 这道宽限只关「未覆盖」，不许改成「整体不等」（场景 43 有对照组钉住） |
 | 55 | **整节被按住不动，日志里一直刷 `study hold quiz before finish`**（真实日志连着十几条，`pending:{total:0}`） | OCS 收尾循环问的是「还有没有题要做」，答话的却是另一句「判据说有」；而**具体数题**那一路一道容器都没收着（`total:0`）。于是「我自己没数出来」被当成「还有题要做」，为 0 道题按住整节 | 判据抽成 `_shouldHoldQuizBeforeFinish(pendingDesc)` 并**只留一份**：`pendingDesc` 拿不到、`total≠0`、`_quizInProgress`/`_quizSubmitPending` 在飞 —— **三条一律照旧 hold**（宁可慢，不能因为自己数漏就跳必做的题）；只有「`total:0` 且确实没有在飞的答题动作」才放行，并 warn `study quiz hold skipped: nothing pending to wait for`。为什么数不出来不再靠猜：`_diagnoseQuestionScan()` 在容器为 0 时给 `dropStages`（每个选择器 `matched/filtered/deduped/unparsable`） |
 | 56 | **一份卷子做了、同一页的第二份不做**（真实日志 00:46:55 `frames:8`：4 个 `javascript:void(function(){document.open` + 3 个 `javascript:` 全被拒成「认不出任务类型」） | 旧日志只给帧的 `src` 前 40 字 —— **判不了那是空帧还是第二份卷子**，而这两件事的处理方向完全相反。没有证据就放宽类型准入，代价是别的帧跟着被误收 | `_frameRejectSignature()` 给「认不出类型」与「取不到 jobid」两条拒绝各带一份内容签名 `{text, qHit, video, answer, frames, pan, signals}`；题形命中数**走 `_questionSelectors` 真源**（手抄类名会被 check 的「题目选择器真源守卫」拦）。⚠️ **这一批只取证、不改判据** —— 等真实日志里的签名说话，下一批再决定放不放宽准入 |
+| 57 | **视频弹题的「答案」到底是从哪儿被站点读走的**（批次 75 现场读回来的正典，改弹题链路前必读） | 现场那道判断题 A 与 B 先后都被判「回答错误」，而 DOM 里被点中的 radio 确实 `checked:true` —— 判断题必有一个正确项，两次都错只能说明**平台没收到我们选的那一项**。而我们的代码里从来没有一句话说明"站点按什么收答案"，全靠猜（猜过 `input.value`、猜过 `.tkTopic_con` 里的文本） | 站点自己 `videojs-ext.min.js` 里的 `checkResult` 才是真源，它做的事是：`Ext.query('input', this.el.dom)` 拿**它自己那份 el 里的 input**，逐个看 `input.checked`，命中的按**下标**去 `this.data.options[idx].name` 取值，`join(',')` 成 `answerContent` 提交。三条推论：① **`input.value` 全程不参与**（现场两个 value 都是空串，正常），所以按 value 匹配/改写都不承重；② 提交读的是**组件那一份 DOM** —— 我们点的那份 `.tkTopic` 只要不是 `cmp.el.dom`，`checked` 就是给旁观者看的；③ 站点每轮**整层重绘**弹窗（现场同一道题的内层 id 从 `ext-gen1066` 变成 `ext-gen1069`、`tabindex` 3→4），点击与提交之间隔着一次重绘就等于没点。⚠️ **这三条还没被正向证据钉死**：`Ext.ComponentQuery.query('*')` 里没找到持有 `.tkTopic` 的组件（可能是探针用错，也可能是弹窗真是静态 markup），所以下一批先用 XHR 记账本把那一发**真发出去的 `answerContent`** 抓出来 —— 空串=通道断了，带字母=回到答案质量那条线 |
 
 ---
 
@@ -1226,7 +1227,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（299 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
-npm run e2e      # 真实 Edge 功能交叉检验（121 个场景 / 1330 项）
+npm run e2e      # 真实 Edge 功能交叉检验（121 个场景 / 1335 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入

@@ -8662,8 +8662,13 @@ SCENARIOS.push({
       // 关掉自动循环，这一页只由本场景逐轮驱动（否则上一个 run() 留下的自启会乱动状态）。
       'app._clearTickLoop();app._clearCheckInterval();' +
       'window.__b74=[];' +
+      // 批次 75：取证要读**载荷**（meta.verdict），而 __b74 只存了 message 那句标题 ——
+      // 加一本平行账，把 message 与 meta 一起留着，__b74 的形状不许动（旧断言读它）。
+      'window.__b75=[];' +
       'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
-      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b74.push(String(d.message||""));});' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log"){' +
+      'window.__b74.push(String(d.message||""));' +
+      'window.__b75.push({m:String(d.message||""),meta:d.meta||null});}});' +
       // 「继续」键的真实计数：生产里 _clickPopupContinue 调 btn.click()，这个监听就是站点的续播处理器。
       'window.__b74c=0;' +
       '(function(){var b=document.getElementById("videoquiz-continue");' +
@@ -8711,7 +8716,7 @@ SCENARIOS.push({
     var reqBase1 = ctx.mock.requests.length;
     await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
-      'window.__b74=[];window.__b74c=0;' +
+      'window.__b74=[];window.__b75=[];window.__b74c=0;' +
       'window.__setVerdict("right");' +
       'app._popupQuizKey=key;app._popupQuizAttempts=1;app._popupQuizWrongAnswers=[];' +
       'app._popupQuizLastFilled="A";app._popupQuizSolvedKey="";' +
@@ -8749,7 +8754,7 @@ SCENARIOS.push({
     // 不会被随后的模型作答把提交再点一次、把 verdict 翻成 right，污染读数。
     await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
-      'window.__b74=[];window.__b74c=0;' +
+      'window.__b74=[];window.__b75=[];window.__b74c=0;' +
       'window.__setVerdict("wrong");' +
       'app._popupQuizKey=key;app._popupQuizAttempts=app._getPopupQuizMaxAttempts();' +
       'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="A";' +
@@ -8763,6 +8768,13 @@ SCENARIOS.push({
       'var b=app._popupQuizSpend||{};var rej=(b.rejected&&b.rejected[key])||[];' +
       'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,' +
       'verdict:app._popupQuizSiteVerdict(box),continueClicks:Number(window.__b74c)||0,' +
+      // 批次 75：拉黑这一步**当时写进日志的依据**，从载荷里读回来（不是测试自己种的字符串）。
+      'loggedVerdict:(function(){var a=(window.__b75||[]).filter(function(e){return e.m.indexOf("rejected by site")!==-1;});' +
+      'return a.length ? (a[a.length-1].meta ? a[a.length-1].meta.verdict : "(meta 空)") : "(无日志)";})(),' +
+      // 放手那一刻那条（现场真正会出现的一行）也要带得上依据与已拒名单 —— 读回来自证，不种常量。
+      'giveUpVerdict:(function(){var a=(window.__b75||[]).filter(function(e){return e.m.indexOf("unanswerable, stop asking model")!==-1;});' +
+      'var m=a.length?(a[a.length-1].meta||{}):null;' +
+      'return {logs:a.length, verdict:m?m.verdict:"(无日志)", reason:m?m.reason:"", banned:m&&m.banned?m.banned:[]};})(),' +
       'acceptedLogs:(window.__b74||[]).filter(function(m){return m.indexOf("accepted by site")!==-1;}).length};})()'
     );
     check('74 负对照（判错仍按旧推断拉黑）：verdict 读成 wrong 时字母进账本已拒名单、不进"放行"、不点「继续」' +
@@ -8771,6 +8783,98 @@ SCENARIOS.push({
       wrongRead.verdict === 'wrong' && wrongRead.rejected.indexOf('A') !== -1 &&
       wrongRead.continueClicks === 0 && wrongRead.acceptedLogs === 0,
       JSON.stringify(wrongRead));
+
+    // ── 批次 75：把「拉黑/放弃的依据」写进日志载荷，现场才分得开「平台真判错」与「我们以为被拒」 ──
+    check('75 判错那一拍，两条日志的载荷都点名依据是平台自己说的（verdict:"wrong"）—— ' +
+      '现场那条 unanswerable 只有 reason 时，无从判断是拉黑算法漂了还是题目真难',
+      wrongRead.loggedVerdict === 'wrong' && wrongRead.giveUpVerdict.logs === 1 &&
+      wrongRead.giveUpVerdict.verdict === 'wrong' && wrongRead.giveUpVerdict.reason === 'attempts-exceeded' &&
+      wrongRead.giveUpVerdict.banned.indexOf('A') !== -1,
+      JSON.stringify(wrongRead));
+
+    // ── 批次 75 第二格：那三个判决槽一句都没显（旧站点形状）→ 依据只能写 unknown，不许硬编 wrong ──
+    // 这一轮把付费额度顶到 2×上限（`_popupQuizAskBudget` 自己写进静音名单），
+    // 于是走的是**本地作答**那一支：一条请求都不发，日志带着 verdict:"unknown"。
+    var reqBase3 = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'window.__b74=[];window.__b75=[];window.__b74c=0;' +
+      'window.__setVerdict("none");' +
+      'var b=app._popupQuizSpendBucket();b.asks[key]=Math.max(1,app._getPopupQuizMaxAttempts())*2;' +
+      'app._popupQuizKey=key;app._popupQuizAttempts=1;app._popupQuizWrongAnswers=[];' +
+      'app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;' +
+      // 上一轮 _giveUpPopupQuiz 设过 60 秒放弃冷却，400ms 探测缓存也可能带着旧弹窗节点 —— 两样都得清，
+      // 否则这一拍 _activePopupBlock() 直接返回 null，本地作答那一条日志压根不会生成。
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();return n?app._handlePopupQuiz(n):null;})()'
+    );
+    await sleep(400);
+    var localRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();' +
+      'var a=(window.__b75||[]).filter(function(e){return e.m.indexOf("answered locally, no request")!==-1;});' +
+      'var m=a.length?(a[a.length-1].meta||{}):null;' +
+      'return {logs:a.length, meta:m, verdict:(m&&m.verdict!==undefined)?String(m.verdict):"(meta 里没这一格)",' +
+      'verdictNow:app._popupQuizSiteVerdict(box),' +
+      'picked:m?String(m.picked||""):"", reason:m?String(m.reason||""):"", filled:m?m.filled:null,' +
+      'banned:m&&m.banned?m.banned.length:-1, opts:m&&m.options?m.options.length:-1,' +
+      'stopsLogs:(window.__b74||[]).filter(function(t){return t.indexOf("stops asking the model")!==-1;}).length};})()'
+    );
+    var req3 = ctx.mock.requests.length - reqBase3;
+    check('75 判决槽全隐时依据写成 unknown（不是硬编 wrong）—— 这一格是"旧站点/没显判决"那一族，' +
+      '日志必须承认"我们只是推断"（logs/verdictNow/picked 都是从页面读回来的）',
+      localRead.logs === 1 && localRead.meta !== null && localRead.verdictNow === '' &&
+      localRead.verdict === 'unknown' && localRead.reason === 'ask-cap' && localRead.picked === 'A',
+      JSON.stringify(localRead));
+    check('75 到顶本地作答仍不花钱，且载荷带得上现场形状（选项文本与已拒名单是读回来的数）',
+      req3 === 0 && localRead.stopsLogs === 1 && localRead.filled === 1 &&
+      localRead.opts === 2 && localRead.banned === 0,
+      JSON.stringify({ req3: req3, stopsLogs: localRead.stopsLogs, filled: localRead.filled,
+        opts: localRead.opts, banned: localRead.banned }));
+
+    // ── 批次 75 第三格：现场 2026-11-16 真实出现过的那一行 ──
+    // `popup quiz unanswerable, stop asking model {"reason":"all-options-rejected","attempts":1,...}`
+    // —— 两个选项全在已拒名单里、而站点那三个判决槽一句都没显。以前这一行只有 reason，
+    // 分不清「平台真把 A/B 都判过错」与「我们的名单自己漂了」；现在依据单独读得回来。
+    var reqBase4 = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'window.__b74=[];window.__b75=[];window.__b74c=0;' +
+      'window.__setVerdict("none");' +
+      'var b=app._popupQuizSpendBucket();b.asks[key]=Math.max(1,app._getPopupQuizMaxAttempts())*2;' +
+      'app._popupQuizKey=key;app._popupQuizAttempts=1;' +
+      'app._popupQuizWrongAnswers=["A","B"];app._popupQuizLastFilled="";' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();return n?app._handlePopupQuiz(n):null;})()'
+    );
+    await sleep(400);
+    var allBanRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();' +
+      'var pick=function(t){var a=(window.__b75||[]).filter(function(e){return e.m.indexOf(t)!==-1;});' +
+      'return a.length?(a[a.length-1].meta||null):null;};' +
+      'var every=pick("every option already rejected"),give=pick("unanswerable, stop asking model");' +
+      'var b=app._popupQuizSpendBucket(),key=app._popupQuizFingerprint(box);' +
+      'return {everyVerdict:every?every.verdict:"(无日志)",everyBanned:every&&every.banned?every.banned:[],' +
+      'everyCount:every?every.optionCount:-1,everyReason:every?every.reason:"",' +
+      'giveVerdict:give?give.verdict:"(无日志)",giveReason:give?give.reason:"",' +
+      'giveBanned:give&&give.banned?give.banned:[],verdictNow:app._popupQuizSiteVerdict(box),' +
+      'rejected:((b.rejected&&b.rejected[key])||[]).slice(),' +
+      'localLogs:(window.__b74||[]).filter(function(t){return t.indexOf("answered locally")!==-1;}).length,' +
+      'continueClicks:Number(window.__b74c)||0};})()'
+    );
+    var req4 = ctx.mock.requests.length - reqBase4;
+    check('75 全选项已拒那一族：两条日志（every option already rejected 与 unanswerable）的依据都读成 unknown，' +
+      '且名单是 A/B 两项（现场那一行就是这个形状）—— 判决没显时不许冒充"平台说的"',
+      allBanRead.verdictNow === '' && allBanRead.everyVerdict === 'unknown' &&
+      allBanRead.giveVerdict === 'unknown' && allBanRead.everyBanned.length === 2 &&
+      allBanRead.giveBanned.length === 2 && allBanRead.everyCount === 2 &&
+      allBanRead.everyReason === 'ask-cap' && allBanRead.giveReason === 'all-options-rejected',
+      JSON.stringify(allBanRead));
+    check('75 全选项已拒这一拍：一条请求都不发、不再本地硬点、也不点「继续」（放手留给冷却）',
+      req4 === 0 && allBanRead.localLogs === 0 && allBanRead.continueClicks === 0,
+      JSON.stringify({ req4: req4, localLogs: allBanRead.localLogs, continueClicks: allBanRead.continueClicks }));
   }
 });
 

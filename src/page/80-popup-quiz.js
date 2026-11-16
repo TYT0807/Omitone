@@ -680,7 +680,8 @@
       if (!picked) {
         // 每个选项都被判错过了：再点下去只是重复，直接放弃并冷却。
         emitRuntimeLog('warn', 'popup quiz every option already rejected', {
-          reason: reason, banned: banned.slice(0, 6), optionCount: items.length
+          reason: reason, banned: banned.slice(0, 6), optionCount: items.length,
+          verdict: this._popupQuizSiteVerdict(popup) || 'unknown'
         });
         this._giveUpPopupQuiz(popup, 'all-options-rejected');
         return false;
@@ -700,6 +701,8 @@
         reason: reason, picked: picked, filled: filled ? 1 : 0,
         attempt: this._popupQuizAttempts,
         banned: banned.slice(0, 6),
+        // 站点自己此刻判成了什么 —— 现场日志要能分清「我们以为被拒」与「平台真判错」。
+        verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
@@ -944,7 +947,10 @@
           emitRuntimeLog('info', 'popup quiz answer rejected by site, retrying with a different one', {
             attempt: this._popupQuizAttempts,
             rejected: String(this._popupQuizLastFilled).slice(0, 40),
-            banned: (this._popupQuizWrongAnswers || []).slice(0, 6)
+            banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
+            // 拉黑这个字母的**依据**是站点判了错，还是仅仅"弹窗还在" —— 现场必须分得开。
+            // 'wrong' = 平台自己说的；'unknown' = 那三句话一句都没显，走的还是旧推断。
+            verdict: this._popupQuizSiteVerdict(popup) || 'unknown'
           });
           this._popupQuizLastFilled = '';
         }
@@ -1172,6 +1178,10 @@
       emitRuntimeLog('error', 'popup quiz unanswerable, stop asking model', {
         reason: reason || 'unknown',
         attempts: this._popupQuizAttempts,
+        // 放手这一刻站点判成了什么 —— 现场那条 all-options-rejected 只有 reason 时，
+        // 分不清「平台真把每个选项都判过错」还是「我们的已拒名单自己漂了」。
+        verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
+        banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
         snapshot: this._describePopupQuiz(popup)
       });
 
