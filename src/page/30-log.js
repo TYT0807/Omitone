@@ -359,15 +359,41 @@
     },
 
 
+    /**
+     * 弹题取证的**唯一形状**。
+     *
+     * ⚠️ 调用方（`_handlePopupQuiz`）递进来的选项可能是**发请求之前**抓的那一份，
+     * 而站点会在等模型回来的这几秒里把弹窗重绘 —— 外层 `.tkTopic` 还在，
+     * 里面的题干与选项被整块摘掉。现场三条自相矛盾的日志就是这个时刻
+     * （2026-11-15 16:35:43 / 16:40:19 / 16:44:02）：`html` 只剩「判断题」一格，
+     * `optionCount` 却写着 2、`optionTexts` 是 对/错。看日志的人只能靠猜，
+     * 而"猜"在本项目里已经错过三次（AGENTS §5 的假绿家族）。
+     *
+     * 判据：**日志里的选项必须和 `html` 是同一份 DOM**。递进来的选项若已经
+     * 不挂在这个容器里，就改用现场读回来的那一份，并把旧快照的条数单独写成
+     * `staleCount` —— 于是「现场 0 个、刚才还有 2 个」变成一个读得回来的事件，
+     * 而不是一个矛盾。
+     */
     _describePopupQuiz: function (popup, optionItems) {
       try {
-        if (!optionItems) optionItems = this._getOptionItems(popup);
+        var passed = optionItems || [];
+        var live = this._getOptionItems(popup) || [];
+        var allInside = passed.length > 0;
+        for (var i = 0; i < passed.length; i++) {
+          try {
+            if (!passed[i] || !popup.contains(passed[i])) { allInside = false; break; }
+          } catch (eC) { allInside = false; break; }
+        }
+        var items = allInside ? passed : live;
         return {
           cls: String(popup.className || '').slice(0, 120),
           text: textOf(popup).slice(0, 200),
-          optionCount: optionItems.length,
-          optionTexts: optionItems.slice(0, 6).map(this._extractOptionText.bind(this)),
-          optionLetters: optionItems.slice(0, 6).map(this._inferOptionLetter.bind(this)),
+          optionCount: items.length,
+          optionTexts: items.slice(0, 6).map(this._extractOptionText.bind(this)),
+          optionLetters: items.slice(0, 6).map(this._inferOptionLetter.bind(this)),
+          // >0 = 上面那几格是**现场**的，而调用方手里还攥着 staleCount 个旧选项。
+          // 没有这一格，"重绘"这件事在日志里就是隐形的 —— 只能等下一个人再猜一遍。
+          staleCount: (passed.length && !allInside) ? passed.length : 0,
           html: String(popup.outerHTML || '').replace(/\s+/g, ' ').slice(0, 900)
         };
       } catch (e) {

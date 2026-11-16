@@ -9,14 +9,16 @@
  * 弹题（弹窗题）的检测、填答、失败计数与放弃
  * 「继续学习」提示按钮的处理（不点它进不去正常播放页）
  *
- * 本段的方法（25 个）：
+ * 本段的方法（30 个）：
  *   _findContinueStudyButton、_tryContinueStudyPrompt、_activePopupBlock、
  *   _popupQuizBlocksPlayback、_popupQuizFingerprint、_getPopupQuizMaxAttempts、
- *   _checkPopupQuiz、_handlePopupQuiz、_giveUpPopupQuiz、_detectPopupQuizType、
+ *   _checkPopupQuiz、_popupQuizSiteVerdict、_popupQuizSpanVisible、_clickPopupContinue、
+ *   _handlePopupQuiz、_giveUpPopupQuiz、_detectPopupQuizType、
  *   _looksLikeMatchingQuiz、_fillPopupAnswer、_popupQuestionBlock、_popupQuizStem、
  *   _stemIsOnlyOptions、_popupQuizSpendBucket、_notePopupQuizGiveUp、_popupQuizAskBudget、
  *   _takePopupQuizAsk、_popupQuizStemMark、_notePopupQuizRejected、_popupQuizFilledLetter、
- *   _notePopupQuizFilled、_popupQuizRecheckRejected、_answerPopupQuizLocally
+ *   _notePopupQuizFilled、_notePopupQuizPaid、_popupQuizPaidAnswer、
+ *   _popupQuizRecheckRejected、_answerPopupQuizLocally
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -379,7 +381,8 @@
         this._popupQuizSpend = {
           job: job, gives: Object.create(null), silent: Object.create(null),
           asks: Object.create(null), rejected: Object.create(null),
-          filled: Object.create(null)
+          filled: Object.create(null), answered: Object.create(null),
+          paid: Object.create(null)
         };
       }
       return this._popupQuizSpend;
@@ -551,6 +554,69 @@
 
 
     /**
+     * 记下「这一道**已经花过钱了**、模型回的是什么」—— 记在账本上，不记在弹窗上。
+     *
+     * ⚠️ 为什么必须有它（现场 2026-11-15 16:55:05 那条自相矛盾的日志逼出来的）：
+     * 那一族弹题的外层 `.tkTopic` **一直挂在原地**，而里面装着题干与选项的
+     * `.tkTopic_con` 在模型往返的那几秒里被站点**摘掉**、过一会儿再拼回来。
+     * 现场读数：`html` 只剩 `<div class="tkTopic"><div class="tkTopic_title">判断题</div></div>`
+     * （那是**回包那一刻**现场读的），而 `optionCount:2`、`optionTexts:["对","错"]`
+     * （那是**发请求之前**快照的）—— 两半不是同一份 DOM，才会同时出现。
+     * 后果不只是日志难看：`_fillPopupAnswer` 每次都从弹窗节点**现场重扫**选项
+     * （见 75 片段的 `_matchOptionItem`），那一刻扫到 0 个 → 填不进去 →
+     * **这一发的钱已经花了，答案却丢了**；下一拍选项拼回来，同一道题再问一发。
+     *
+     * 所以：买到的答案先存进账本，等选项真的回来了**直接用它**，不再发第二发。
+     * `value` 传空 = 清掉这一格（复用成功、或发现它正是平台已判错的那个字母时走这条）。
+     */
+    _notePopupQuizPaid: function (key, value, stem) {
+      var bucket = this._popupQuizSpendBucket();
+      var v = String(value == null ? '' : value).trim().slice(0, 40);
+      if (!v) {
+        try { delete bucket.paid[key]; } catch (e) { bucket.paid[key] = null; }
+        return '';
+      }
+      var rec = bucket.paid[key] || (bucket.paid[key] = { value: v, stem: '', uses: 0 });
+      rec.value = v;
+      rec.stem = this._popupQuizStemMark(stem);
+      return v;
+    },
+
+
+    /**
+     * 取「这一道上一发买到的答案」，**读一次算一次**；题干对不上就不给。
+     *
+     * ⚠️ 为什么不能只按指纹给：判断题的选项永远是「对 / 错」，同一个视频里连着三道
+     * 判断题的指纹**完全相同**（见 `_popupQuizFingerprint` 那段⚠️与 `_popupQuizSpendBucket`
+     * 的分桶说明）。只按指纹复用 = 把上一道买来的答案填给下一道 —— 那是拿钱买错题。
+     * 两边题干都读不到时两串都是空 → 相等 → 认成同一道，与 `_popupQuizRecheckRejected` 同口径。
+     *
+     * **用满 3 次还没填进去就作废**（选项一直没拼回来）：不复用作废的话，
+     * 每一拍都停在"复用→还是空→失败"里打转，永远走不到本地作答那一步，
+     * 弹窗就变成不花钱但**也过不去**的死循环。作废后下一拍回到正常流程，
+     * 由 `_popupQuizAskBudget` / 静音名单照常管钱。
+     */
+    _popupQuizPaidAnswer: function (key, stem) {
+      var bucket = this._popupQuizSpendBucket();
+      var rec = bucket.paid[key];
+      if (!rec || !rec.value) return '';
+      // 题干对不上 = 这是**另一道题**（判断题的选项永远是 对/错，指纹分不开它们）。
+      // 这一格属于上一道，直接作废 —— 留着只会把上一道的答案填给这一道。
+      if (this._popupQuizStemMark(stem) !== String(rec.stem || '')) {
+        try { delete bucket.paid[key]; } catch (e) { bucket.paid[key] = null; }
+        return '';
+      }
+      var uses = (Number(rec.uses) || 0) + 1;
+      rec.uses = uses;
+      if (uses > 3) {
+        try { delete bucket.paid[key]; } catch (e) { bucket.paid[key] = null; }
+        return '';
+      }
+      return String(rec.value);
+    },
+
+
+    /**
      * 弹窗带着**同一指纹**回来时，判断它是不是上一道没过去的那题，是就把上一轮填的
      * 字母记成被拒（来源 2，见 `_notePopupQuizRejected`）。
      *
@@ -564,6 +630,10 @@
       var bucket = this._popupQuizSpendBucket();
       var rec = bucket.filled[key];
       if (!rec || !rec.letter) return;
+      // ⚠️ 批次 74：这一支把"弹窗收走又带同一指纹回来"当成被拒的证据。
+      // 但站点答对后也可能收走弹窗（尤其 errorContinue 类只显「继续」）——
+      // 所以在补记之前先读站点判决，判对就**不拉黑**，与 _handlePopupQuiz 里那条同一口径。
+      if (this._popupQuizSiteVerdict(popup) === 'right') return;
       var stem = '';
       try { stem = this._popupQuizStem(popup, optionItems); } catch (e) { stem = ''; }
       if (this._popupQuizStemMark(stem) !== String(rec.stem || '')) return;
@@ -741,6 +811,87 @@
     },
 
 
+    /**
+     * 读站点**自己的**判分结果 —— 视频弹题（ans.videojs.VideoQuiz）交卷后，
+     * 站点把「回答正确」写进 #spanHas、把「回答错误」写进 #spanNot / #spanNotBack，
+     * 三者在站点 CSS 里默认 display:none，只有命中对应结果才显出来（已从正典核实）。
+     *
+     * 为什么要读它：以前判定"答没答对"的唯一依据是推断 ——
+     * 「同一道弹题、弹窗还在 = 上一轮填的没被接受，那就是错的」。
+     * 可是有一类课程（errorContinue=1 / dtype=InteractiveQuiz）**答对之后弹窗并不会自己关**，
+     * 它只是把 #videoquiz-continue 显出来等人点「继续」。
+     * 于是正确的那个字母被误判成"被平台拒了"、永久拉黑；换的那个才是真错，也拉黑；
+     * 两个一拉黑就 all-options-rejected，而「继续」既不在我们的按钮文本表里、也没人点 ——
+     * 视频永远卡在这道其实已经答对的题上。这就是现场「视频界面的答题还没修复」的根因。
+     *
+     * ⚠️ 只有读到**明确的一个**时才下结论：两者都显或都不显 → 返回 ''（读不准），
+     * 交回旧的"弹窗还在就算被拒"推断，这样文档题/PPT 题那些不叫 spanHas 的弹窗族不被改坏。
+     */
+    _popupQuizSiteVerdict: function (popup) {
+      var has = this._popupQuizSpanVisible(popup, 'spanHas');
+      var not = this._popupQuizSpanVisible(popup, 'spanNot') ||
+                this._popupQuizSpanVisible(popup, 'spanNotBack');
+      if (has && !not) return 'right';
+      if (not && !has) return 'wrong';
+      return '';
+    },
+
+
+    /**
+     * 判一个 verdict 槽（spanHas / spanNot / spanNotBack）此刻是否**可见**。
+     * 优先读 computed display（站点就是直接切这个属性）；读不到才退回几何尺寸。
+     * 全部包在 try 内：跨帧读不到就当不可见，绝不让它抛出打断整条判分。
+     */
+    _popupQuizSpanVisible: function (root, id) {
+      try {
+        var node = null;
+        if (root && typeof root.querySelector === 'function') {
+          node = root.querySelector('#' + id);
+        }
+        if (!node && root && root.ownerDocument && typeof root.ownerDocument.getElementById === 'function') {
+          node = root.ownerDocument.getElementById(id);
+        }
+        if (!node) return false;
+        var disp = '';
+        try {
+          var view = node.ownerDocument && node.ownerDocument.defaultView;
+          if (view && view.getComputedStyle) {
+            disp = String(view.getComputedStyle(node).display || '');
+          }
+        } catch (eCs) { disp = ''; }
+        if (disp) return disp !== 'none';
+        return !!(node.offsetWidth || node.offsetHeight ||
+          (node.getClientRects && node.getClientRects().length));
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
+     * 点视频弹题答对后显出来的「继续」键（#videoquiz-continue / .ans-videoquiz-continue）。
+     *
+     * 站点答对后**不一定**自动恢复播放：源码里只有当 #videoquiz-continue 仍是 display:none 时
+     * 才 fireEvent('continue')。有一类课程把这枚键显出来等人点 —— 不点，视频就一直停在这道弹题上。
+     * 以前我们的按钮文本表里根本没有「继续」，只找 跳过/关闭/取消/知道了/下次再说，
+     * 于是答对了也走不掉。只在可见时才点；不可见说明这一发站点自己续播，返回 false 告诉调用方没点到。
+     */
+    _clickPopupContinue: function (popup) {
+      var btn = null;
+      try {
+        if (popup && typeof popup.querySelector === 'function') {
+          btn = popup.querySelector('#videoquiz-continue') ||
+                popup.querySelector('.ans-videoquiz-continue');
+        }
+        if (!btn && popup && popup.ownerDocument && typeof popup.ownerDocument.getElementById === 'function') {
+          btn = popup.ownerDocument.getElementById('videoquiz-continue');
+        }
+      } catch (e) { btn = null; }
+      if (!btn || !visible(btn)) return false;
+      try { btn.click(); return true; } catch (e2) { return false; }
+    },
+
+
     _handlePopupQuiz: async function (popup) {
       var popupText = textOf(popup);
       if (popupText === '知道了' || popupText === '关闭' || popupText === '确定') {
@@ -750,6 +901,30 @@
 
       // 同一道弹题的指纹：弹窗没关就一定是同一道。换题（文本变了）才重新计数。
       var key = this._popupQuizFingerprint(popup);
+
+      // ⚠️ 先问站点自己判成了什么 —— 这是本批次（74）修复的核心。
+      // 旧判定把「弹窗还在 / 收走又带同一指纹回来」当成上一轮**答错**的证据，
+      // 于是把其实答对了（站点只是没自动关弹窗、把「继续」显出来等你点）的字母永久拉黑。
+      // 现在改读站点自己的判决：判对就放行、绝不拉黑，并顺手点掉那枚「继续」。
+      // 认判决的前提是「这一道我们确实填过」—— _popupQuizLastFilled（这一拍刚填）
+      // 或账本里这一指纹有 filled 记录（弹窗被收走又弹回来的那一族）。两者都没有就别认，
+      // 免得把上一节残留的 #spanHas 当成这一道的结果。
+      var filledRec = (this._popupQuizSpendBucket().filled || {})[key];
+      var weAnsweredThisKey = !!this._popupQuizLastFilled || !!(filledRec && filledRec.letter);
+      if (weAnsweredThisKey && this._popupQuizSiteVerdict(popup) === 'right') {
+        emitRuntimeLog('info', 'popup quiz accepted by site, releasing block', {
+          letter: String(this._popupQuizLastFilled || (filledRec && filledRec.letter) || '').slice(0, 20),
+          clickedContinue: this._clickPopupContinue(popup)
+        });
+        this._popupQuizSolvedKey = key;
+        this._popupQuizSolvedAt = Date.now();
+        this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);
+        this._popupQuizBlockedUntil = 0;
+        this._popupQuizLastFilled = '';
+        this._popupQuizAttempts = 0;
+        return;
+      }
+
       if (key === this._popupQuizKey) {
         this._popupQuizAttempts++;
         // 走到这里说明：同一道题、弹窗还在 —— 上一轮填进去的答案没被平台接受，
@@ -853,13 +1028,32 @@
         try {
           // 乱选模式：弹题同样本地生成，**不发请求**（与主流程同源）。
           var result;
+          var reusedPaid = '';
           if (this._isRandomAnswerMode()) {
             this._logRandomAnswers([question]);
             result = { success: true, data: [this._buildRandomQuizAnswers([question])[0]] };
           } else {
-            // 只有**真要发请求**这一支才取额度 —— 乱选模式上面那条分支一条都不发。
-            this._takePopupQuizAsk(key);
-            result = await bridgeSend('llm_request', { questions: [question] });
+            // ⚠️ 先问账本：这一道**上一发是不是已经买过答案了**。
+            // 站点把 `.tkTopic_con`（题干 + 选项那一块）摘掉的那几秒里，回包时现场扫不到
+            // 任何选项，于是钱花了、答案填不进去（见 `_notePopupQuizPaid` 那段现场读数）。
+            // 等选项拼回来的下一拍直接用它 —— **不取额度、不发第二发**。
+            reusedPaid = this._popupQuizPaidAnswer(key, stem);
+            if (reusedPaid) {
+              // 复用前先看它是不是**平台已经判错的那个字母**：是的话这一格已经不值钱了，
+              // 丢掉、带已拒名单照常重新问 —— 否则会把同一个错答案反复填三遍。
+              var paidLetter = this._popupQuizFilledLetter(popup, optionItems, reusedPaid, type);
+              if (paidLetter && (spend.rejected[key] || []).indexOf(paidLetter) !== -1) {
+                this._notePopupQuizPaid(key, '');
+                reusedPaid = '';
+              }
+            }
+            if (reusedPaid) {
+              result = { success: true, data: [reusedPaid] };
+            } else {
+              // 只有**真要发请求**这一支才取额度 —— 乱选模式与上面那条复用一条都不发。
+              this._takePopupQuizAsk(key);
+              result = await bridgeSend('llm_request', { questions: [question] });
+            }
           }
           if (result && result.success && result.data) {
             var answer = Array.isArray(result.data) ? result.data[0] : result.data;
@@ -883,6 +1077,8 @@
               // 拿它去比已拒名单永远比不中 —— 见 `_popupQuizFilledLetter`）。
               this._popupQuizLastFilled = this._popupQuizFilledLetter(popup, optionItems, answer, type) ||
                 String(this._normalizeAnswerValue(answer) || '');
+              // 复用成功 → 这一格已经落地，从账本里摘掉（留着会把上一道的答案填给下一道同指纹的题）。
+              if (reusedPaid) this._notePopupQuizPaid(key, '');
               // 把「模型答了什么 + 实际匹配到哪个选项 + 选项原文」打进日志。
               // 现场报过「四个选项的题正确答案是 A，却一直选 D」，光看代码猜不出来 ——
               // 这条日志就是为了下次复现时能直接看出是模型答错还是匹配错。
@@ -890,6 +1086,9 @@
                 attempt: this._popupQuizAttempts,
                 rawAnswer: String(this._normalizeAnswerValue(answer) || '').slice(0, 60),
                 letter: String(this._popupQuizLastFilled).slice(0, 60),
+                // 说清这一发**有没有再扣一次钱**：true = 用的是上一发已经买到的答案，
+                // 这一拍一条请求都没发（站点那几秒把选项摘走、现在拼回来了）。
+                fromPaidCache: !!reusedPaid,
                 type: type,
                 optionCount: question.options.length,
                 options: question.options.slice(0, 6),
@@ -905,13 +1104,23 @@
               return;
             }
             // 模型答了但匹配不到任何选项：这是"空转"的真正成因，
-            // 必须把选项结构打进日志，否则只能靠猜
+            // 必须把选项结构打进日志，否则只能靠猜。
+            // ⚠️ 但在打日志之前，先把**这一发买到的答案存进账本**（钱已经花了）。
+            // 这一支最常见的成因不是模型答得离谱，而是站点此刻正把选项那一块摘在外面
+            // （见 `_notePopupQuizPaid` 那段现场读数）—— 下一拍选项拼回来时直接复用，
+            // 不再为同一道题付第二发。存账本这件事**不许跟着日志一起被 5 秒节流挡掉**，
+            // 否则节流窗口里那一发就真丢了。
+            this._notePopupQuizPaid(key, String(this._normalizeAnswerValue(answer) || ''), stem);
             if (Date.now() - (this._popupQuizLogAt || 0) > 5000) {
               this._popupQuizLogAt = Date.now();
               emitRuntimeLog('error', 'popup quiz answer matched no option', {
                 attempt: this._popupQuizAttempts,
                 maxAttempts: maxAttempts,
                 answer: String(this._normalizeAnswerValue(answer) || '').slice(0, 80),
+                // true = 这一发没白花钱，选项回来后会免费复用；
+                // false = 模型回的是空答案，账本里没东西可复用。
+                storedForReuse: !!(this._popupQuizSpendBucket().paid || {})[key],
+                reusedThisRound: !!reusedPaid,
                 options: this._describePopupQuiz(popup, optionItems)
               });
             }

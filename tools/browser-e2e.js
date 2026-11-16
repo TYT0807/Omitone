@@ -1638,6 +1638,147 @@ function buildPopupQuizRecallHtml() {
 }
 
 /**
+ * 视频内嵌判断题弹窗 —— **外层一直挂着，题干与选项那一块被站点摘掉、过一会儿整块换新的拼回来**（批次 73）。
+ *
+ * 现场形状（2026-11-15 16:55:05 那条自相矛盾的日志量出来的）：
+ *   `html` = `<div class="tkTopic"><div class="tkTopic_title">判断题</div></div>` —— 回包那一刻**现场**读的
+ *   `optionCount:2` + `optionTexts:["对","错"]` —— 发请求**之前**快照的
+ * 两半不是同一份 DOM：站点摘掉的是 `.tkTopic_con`（题干和选项都长在它里面），
+ * 外层 `.tkTopic` 原地不动 —— 所以 `_checkPopupQuiz` 一直"看得见弹窗"，
+ * 而 `_fillPopupAnswer` 每回从弹窗节点现场重扫选项都扫到 0 个（见 75 片段的 `_matchOptionItem`），
+ * 于是**钱花了、答案填不进去**，下一拍选项回来又为同一道题付第二发。
+ *
+ * ⚠️ 摘除的**触发时机**是这条夹具承重的一面墙：不许按毫秒定时，必须挂在
+ * "页面发出 `llm_request` 那一发 postMessage"上 —— 定时摘除要么早于本次扫描
+ * （题干读空 → 走 no-stem 本地作答，一条请求都不发，整条场景变成空测），
+ * 要么晚于回包（填得进去，本批要防的形状从来没出现过）。
+ * 挂在请求上则**必然**晚于扫描、必然早于回包，两头都确定。
+ *
+ * ⚠️ 拼回来由测试自己喊 `window.__site.back()`，同样不许靠定时器：复用那一拍要的前提是
+ * "选项已经回到现场"，靠 900ms 之类的数去赌就是把断言绑在 runner 的快慢上（AGENTS §5）。
+ * 而且拼回来的是**新建的一份**（`insertAdjacentHTML`），不是把旧节点放回去 ——
+ * 旧节点能放回来的话，那一发的答案照样落得地，本批的形状就复现不出来。
+ */
+function buildPopupQuizRerenderHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div id="pqMount"></div>' +
+    '<script>' +
+    'window.__site = { detached: 0, back: 0, submits: 0, checked: [],' +
+    '  stem: "当固有频率和驱动力频率相等时才会发生共振。" };' +
+    // 外层：只有题型名与提交行，**题干和选项都不在这份字符串里** —— 站点摘的就是那一块。
+    'var SHELL = [' +
+    '  "<div class=\\"tkTopic\\" id=\\"pqBox\\" style=\\"position:fixed;left:40px;top:120px;' +
+    'width:420px;background:#fff;border:2px solid #333;z-index:9999;padding:14px\\">",' +
+    '  "<div class=\\"tkTopic_title\\">判断题</div>",' +
+    '  "<div class=\\"tkBtnRow\\"><a class=\\"jq_btn\\" id=\\"pqSubmit\\" href=\\"javascript:void(0);\\">提交</a></div>",' +
+    '  "</div>"' +
+    '].join("");' +
+    // class 逐字照抄现场：tkTopic_con tkScroll / tkItem / tkItem_title / ans-videoquiz-opt，
+    // 选项是 <label>、文字带「A、」前缀（探针量到 rawText 就是 "A、对"）。
+    'function conHtml() {' +
+    '  return "<div class=\\"tkTopic_con tkScroll\\" id=\\"pqCon\\">" +' +
+    '    "<div class=\\"tkItem\\">" +' +
+    '    "<div class=\\"tkItem_title\\">" + window.__site.stem + "</div>" +' +
+    '    "<ul class=\\"ans-videoquiz-opt\\">" +' +
+    '    "<li><label><input type=\\"radio\\" name=\\"b73q\\" value=\\"A\\"><span>A、对</span></label></li>" +' +
+    '    "<li><label><input type=\\"radio\\" name=\\"b73q\\" value=\\"B\\"><span>B、错</span></label></li>" +' +
+    '    "</ul></div></div>";' +
+    '}' +
+    'window.__site.detach = function () {' +
+    '  var con = document.getElementById("pqCon");' +
+    '  if (!con || !con.parentNode) return false;' +
+    '  con.parentNode.removeChild(con);' +
+    '  window.__site.detached++;' +
+    '  return true;' +
+    '};' +
+    'window.__site.attach = function () {' +
+    '  if (document.getElementById("pqCon")) return false;' +
+    '  var row = document.querySelector("#pqBox .tkBtnRow");' +
+    '  if (!row) return false;' +
+    '  row.insertAdjacentHTML("beforebegin", conHtml());' +
+    '  window.__site.back++;' +
+    '  return true;' +
+    '};' +
+    // 摘除挂在**请求**上：postMessage 与页面同帧、必然在扫描之后、回包之前。
+    // `noDetach` 是第 3 拍（负对照）的开关 —— 那一拍要测的是**题干闸门拦不拦得住复用**，
+    // 若同时把选项摘走，"新问一发"和"摘走导致填不上"就缠在一起，红了也说不清是哪一道。
+    // （同一个场景里一轮只测一件事，与 AGENTS §5「一个注入只破一个行为」同理。）
+    'window.addEventListener("message", function (ev) {' +
+    '  var d = ev && ev.data;' +
+    '  if (d && d.source === "xxt_app" && d.type === "llm_request" && !window.__site.noDetach) window.__site.detach();' +
+    '});' +
+    'document.addEventListener("click", function (ev) {' +
+    '  var t = ev && ev.target;' +
+    '  if (!t || t.id !== "pqSubmit") return;' +
+    // 提交时从**现场**读勾了哪一项：读到 A/B 才证明点的是拼回来的那份新节点，
+    // 点在旧（已摘除）节点上时这里必然是「(空)」—— 这是本批最重要的一格证据。
+    '  var c = document.querySelector("#pqCon input[type=radio]:checked");' +
+    '  window.__site.checked.push(c ? c.value : "(空)");' +
+    '  window.__site.submits++;' +
+    '  window.__site.detach();' +
+    '  window.__site.attach();' +
+    '}, true);' +
+    'document.getElementById("pqMount").innerHTML = SHELL;' +
+    'window.__site.attach();' +
+    '</' + 'script>' +
+    '</body></html>';
+}
+
+/**
+ * 视频内嵌判断题弹窗 —— **答对之后站点不关弹窗，只把 #spanHas 与「继续」显出来等人点**（批次 74）。
+ *
+ * 现场形状（从站点自己的 ans.videojs.VideoQuiz 正典与它的 CSS 核实，2026-11-16）：
+ *   · 交卷走 validationUrl2 的 GET，判分结果写进三个默认 display:none 的槽：
+ *     答对 → #spanHas 显；答错 → #spanNot / #spanNotBack 显。
+ *   · #videoquiz-continue（.ans-videoquiz-continue）默认 display:none；
+ *     有一类课程（errorContinue=1 / dtype=InteractiveQuiz）**答对不自动续播**，
+ *     只把这枚「继续」显出来 —— 不点，视频就一直停在这道已经答对的弹题上。
+ *   · 选项的 input value 是空的（模板 value="{isRight}" 在弹题里没灌值），
+ *     站点判分只看 `input.checked` + 在 renderData.options 里的下标，与 value 无关。
+ *
+ * ⚠️ 为什么 71/72/73 那三份夹具测不到这个 bug：它们答错后要么弹窗挂着、要么收走又弹回，
+ * 而插件把"弹窗还在 / 带同一指纹回来"一律推断成**上一轮答错** ——
+ * 于是**正确**的那个字母被永久拉黑，换的那个才是真错也拉黑，
+ * 两个一拉黑就 all-options-rejected，「继续」又不在我们的按钮文本表里 → 视频永远卡死。
+ * 这份夹具把"站点判对、但弹窗不关、只显「继续」"这一形状单独钉住，
+ * 让 74 新加的 `_popupQuizSiteVerdict` / `_clickPopupContinue` 有东西可读、可点。
+ *
+ * ⚠️ 本夹具**只交出现场的结果态**（三个槽默认 display:none + 「继续」默认 display:none 的真实元素），
+ * 三种结果态由测试用 `window.__setVerdict('right'|'wrong')` 直接把那三个槽的 display 拨过去 ——
+ * 站点怎么算出这个结果（validationUrl2 那一发）是站点的代码、不是我们的，我们只读它的结果态。
+ * 「继续」键的计数监听由测试在 setup 里装到真实元素上，生产里 `_clickPopupContinue` 调 `btn.click()`
+ * 时它自增 —— continueClicks 是页面自己数出来的，不是测试种的常量。
+ * （这份夹具的内联 script 在本沙盒里不执行，所以判分逻辑一律摆在测试侧，与 72/73"脚本自己动 DOM"
+ * 那两份不同：那两份测的是站点改写后插件还剩什么状态，本份测的是插件怎么**读**站点留下的结果态。）
+ */
+function buildPopupQuizVerdictHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title></head><body>' +
+    '<video id="v"></video>' +
+    '<div class="tkTopic" id="pqBox" style="position:fixed;left:40px;top:120px;width:440px;' +
+    'background:#fff;border:2px solid #333;z-index:9999;padding:14px">' +
+    '  <div class="tkTopic_title">判断题</div>' +
+    '  <div class="tkItem"><div class="tkItem_title">增加毛细管管径，管内液柱会升高。</div>' +
+    '    <ul class="ans-videoquiz-opt">' +
+    '      <li><label><span class="tkRadio"><input type="radio" name="b74q" value=""></span><i></i><span>A、对</span></label></li>' +
+    '      <li><label><span class="tkRadio"><input type="radio" name="b74q" value=""></span><i></i><span>B、错</span></label></li>' +
+    '    </ul></div>' +
+    '  <span class="spanHas" id="spanHas" style="display:none">回答成功!</span>' +
+    '  <span class="spanNot" id="spanNot" style="display:none">回答错误!</span>' +
+    '  <span class="spanNotBack" id="spanNotBack" style="display:none"></span>' +
+    '  <div class="tkBtnRow">' +
+    '    <a class="ans-videoquiz-submit" id="videoquiz-submit" href="javascript:void(0);">提交</a>' +
+    '    <span class="ans-videoquiz-submit" id="videoquiz-submitting" style="display:none">提交中</span>' +
+    '    <a class="ans-videoquiz-continue" id="videoquiz-continue" href="javascript:void(0);" style="display:none">继续</a>' +
+    '  </div>' +
+    '</div>' +
+    '</body></html>';
+}
+
+
+/**
  * 视频内嵌**多选题**弹窗。
  *
  * ⚠️ 口径已变（README §6 #49）：以前这里写的是「非视频整卷的多选改成本地作答、
@@ -1810,6 +1951,8 @@ var MOCK_PAGES = {
   '/popup-quiz-blank': buildPopupQuizBlankHtml,
   '/popup-quiz-no-stem': buildPopupQuizNoStemHtml,
   '/popup-quiz-recall': buildPopupQuizRecallHtml,
+  '/popup-quiz-rerender': buildPopupQuizRerenderHtml,
+  '/popup-quiz-verdict': buildPopupQuizVerdictHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
   '/font-residue': buildFontResidueHtml,
@@ -8298,6 +8441,336 @@ SCENARIOS.push({
     check('72 收尾不卡住：每个选项都被拒过之后这道被放弃，播放不再被弹窗挡着' +
       '（只把花钱停掉、把视频永久挡住，等于换了个故障）',
       last.blocksPlayback === false, JSON.stringify(last));
+  }
+});
+
+/** ---- 6c-1b. 弹题：外层挂着、题干与选项那一层被摘走再换新（批次 73） ---- */
+SCENARIOS.push({
+  name: '弹题选项被站点摘走又换新时，买到的答案不重付',
+  path: '/popup-quiz-rerender',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 同 72：上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有
+      // 250ms 的循环在自动动弹窗 —— 不清掉的话下面逐轮取数全是随机的（批次 69 实测踩过）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b73=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b73.push({' +
+      'level:String(d.level||""),msg:String(d.message||""),' +
+      'answer:String((d.meta&&d.meta.answer)||""),' +
+      'stored:(d.meta&&d.meta.storedForReuse),' +
+      'reusedThisRound:(d.meta&&d.meta.reusedThisRound),' +
+      'fromCache:(d.meta&&d.meta.fromPaidCache),' +
+      'letter:String((d.meta&&d.meta.letter)||""),' +
+      'optCount:(d.meta&&d.meta.options&&d.meta.options.optionCount),' +
+      'stale:(d.meta&&d.meta.options&&d.meta.options.staleCount)});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;app._popupQuizLogAt=0;' +
+      'app._activeJobId="b73-job-a";' +
+      'var box=app._checkPopupQuiz();' +
+      'var items=box?app._getOptionItems(box):[];' +
+      'var stem=String((box&&app._popupQuizStem(box,items))||"");' +
+      'return {max:app._getPopupQuizMaxAttempts(),loop:!!app._tickLoopInterval,' +
+      'checkInterval:!!app._checkInterval,api:app._isQuizApiUnavailable()===false,' +
+      'popupNow:!!box,' +
+      // 夹具自证三格，缺一条整条场景就变成空测：
+      // ① 提交键要能被生产那套找按钮的规则认出来（否则"站点重绘"不会发生）；
+      // ② 题干读得回来（读空就走 no-stem 本地作答，**一条请求都不发**，本批的形状不存在）；
+      // ③ 出厂时站点一次都没摘过（detached 必须 0，否则"摘走→换新"这一族从来没走到）。
+      'submitFound:!!(box&&app._findDialogButtonByText(box,["提交","确定","确认","交卷","完成"])),' +
+      'stemLen:stem.length,stem:stem.slice(0,40),optionCount:items.length,' +
+      // 存的题干标记要跟**这一拍读到的题干**同源 —— 第 1 拍之后站点已经把那一层摘走，
+      // 届时现场题干只剩「提交」，拿它反过来验第 1 拍存进去的标记会**恒红**（批次 73 实测踩过）。
+      // 所以基准必须在摘走之前、由 setup 自己量一次钉住。
+      'stemMark:String((box&&app._popupQuizStemMark(stem))||""),' +
+      'type:String((box&&app._detectPopupQuizType(box,items))||""),' +
+      'paidWrite:typeof app._notePopupQuizPaid==="function",' +
+      'paidRead:typeof app._popupQuizPaidAnswer==="function",' +
+      'detached:window.__site.detached,back:window.__site.back};})()'
+    );
+    check('73 前提：API 可用、只剩我这一个驱动、夹具出厂带着弹窗与两个选项、提交键按生产的找法认得出、' +
+      '题干读得回来（且题干标记非空 —— 复用那一闸拿它当基准）、两个复用钩子都在、且站点还没摘过任何一层',
+      setup.loop === false && setup.checkInterval === false && setup.api === true &&
+      setup.max >= 1 && setup.popupNow === true && setup.submitFound === true &&
+      setup.stemLen > 0 && setup.stemMark.length > 0 && setup.optionCount >= 2 &&
+      setup.paidWrite === true && setup.paidRead === true &&
+      setup.detached === 0 && setup.back === 1,
+      JSON.stringify(setup));
+
+    var tick = '(function(){var app=window._xxtApp;' +
+      // 生产里走到这一拍要等过静默期/已答放行/冷却；测试不等，只把那几个时间戳推到过去
+      // —— 本批要测的是账本，不是那三个计时器。
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();return n?app._handlePopupQuiz(n):null;})()';
+    var readSpend = '(function(){var app=window._xxtApp;var b=app._popupQuizSpend||{};' +
+      'var ks=Object.keys(b.paid||{});var rec=ks.length?b.paid[ks[0]]:null;' +
+      'var box=app._checkPopupQuiz();var items=box?app._getOptionItems(box):[];' +
+      'var as=0,ak=Object.keys(b.asks||{});for(var i=0;i<ak.length;i++){as+=(Number(b.asks[ak[i]])||0);}' +
+      'return {liveItems:items.length,stemNow:String(app._popupQuizStem(box,items)||"").slice(0,40),' +
+      'asksSum:as,paidKeys:ks.length,' +
+      'paidVal:rec?String(rec.value):"",paidUses:rec?Number(rec.uses):-1,' +
+      'paidStem:rec?String(rec.stem):"",paidKey:ks.length?String(ks[0]):"",' +
+      'checkedNow:(function(){var c=document.querySelector("#pqCon input[type=radio]:checked");' +
+      'return c?c.value:"(无)";})(),' +
+      'siteDetached:window.__site.detached,siteBack:window.__site.back,' +
+      'submits:window.__site.submits,checked:window.__site.checked.slice(),' +
+      'logs:window.__b73.slice()};})()';
+    // 每一拍开头把日志缓冲清空 —— `window.__b73` 是累加的，不清就会拿上一拍的
+    // `fromPaidCache:true` 来判这一拍（批次 73 的负对照第一条就是这么假红的）。
+    var clearLogs = '(function(){window.__b73=[];return window.__site.checked.length;})()';
+
+    // ── 第 1 拍：发请求 → 站点当场把题干+选项摘走 → 回包时现场扫不到选项 ──
+    var reqBefore = ctx.mock.requests.length;
+    var checkedBase = await ctx.client.evaluate(clearLogs);
+    await ctx.client.evaluate(tick);
+    await sleep(500);
+    var r1 = await ctx.client.evaluate(readSpend);
+    var req1 = ctx.mock.requests.length - reqBefore;
+    var miss = r1.logs.filter(function (l) { return l.msg === 'popup quiz answer matched no option'; });
+    check('73 形状成立：发了一发、站点确实把那一层摘走（夹具自证）、回包时现场 0 个选项、' +
+      '于是判「matched no option」',
+      req1 === 1 && r1.siteDetached === 1 && r1.liveItems === 0 && miss.length >= 1,
+      JSON.stringify({ req1: req1, siteDetached: r1.siteDetached, liveItems: r1.liveItems,
+        missCount: miss.length, stemNow: r1.stemNow, logs: r1.logs.map(function (l) { return l.msg; }) }));
+    check('73 取证不再混两份 DOM：那条 matched no option 里的 options 是**现场**的（optionCount 0），' +
+      '调用方手里那几个旧选项改成单列一格 staleCount（=2），不再冒充现场',
+      miss.length >= 1 && miss[miss.length - 1].optCount === 0 &&
+      miss[miss.length - 1].stale === setup.optionCount,
+      JSON.stringify(miss[miss.length - 1] || {}));
+    check('73 这一发的答案进了账本：有值、用满次数 0、存的题干标记就是**摘走之前**那一拍的题干标记' +
+      '（基准由 setup 先钉住；拿摘走之后的现场题干反过来比会恒红，批次 73 实测踩过）',
+      r1.paidKeys === 1 && r1.paidVal !== '' && r1.paidUses === 0 &&
+      r1.paidStem === setup.stemMark && r1.paidStem.length > 0,
+      JSON.stringify({ paidKeys: r1.paidKeys, paidVal: r1.paidVal, paidUses: r1.paidUses,
+        paidStem: r1.paidStem, stemMark: setup.stemMark, stemNow: r1.stemNow }));
+
+    // ── 第 2 拍：站点把**新建的一份**选项拼回来 → 直接复用上一发买到的答案，不再发第二发 ──
+    await ctx.client.evaluate('(function(){return window.__site.attach();})()');
+    await ctx.client.evaluate(clearLogs);
+    await ctx.client.evaluate(tick);
+    await sleep(500);
+    var r2 = await ctx.client.evaluate(readSpend);
+    var req2 = ctx.mock.requests.length - reqBefore;
+    var answered = r2.logs.filter(function (l) { return l.msg === 'popup quiz answered'; });
+    var fromCache = answered.filter(function (l) { return l.fromCache === true; });
+    check('73 核心：选项拼回来后**复用上一发买到的答案** —— 请求总数仍是 1 发，' +
+      '且那条 answered 自己点名 fromPaidCache',
+      req2 === 1 && fromCache.length === 1 && r2.submits === 1,
+      JSON.stringify({ req2: req2, submits: r2.submits, siteBack: r2.siteBack,
+        answeredFlags: answered.map(function (l) { return l.fromCache; }) }));
+    // 证据是**提交那一刻夹具从现场读回来的勾选**：点在已摘除的旧节点上时它只会记「(空)」。
+    // ⚠️ 不拿 `checkedNow` 当证据 —— 站点提交后立刻把那一块换成全新的一份，
+    // 事后再读现场 radio 必然是「(无)」，那跟"根本没点到"长得一模一样（批次 73 实测踩过）。
+    check('73 复用的是**拼回来的那份新节点**：提交时现场读到的是 A/B 之一，且现场确实有 2 个选项',
+      r2.checked.length === checkedBase + 1 && r2.checked[r2.checked.length - 1] !== '(空)' &&
+      r2.liveItems === 2,
+      JSON.stringify({ checked: r2.checked, checkedBase: checkedBase,
+        checkedNow: r2.checkedNow, liveItems: r2.liveItems }));
+    check('73 账本那一格用完就摘掉（留着会把这一道的答案填给下一道同指纹的题）',
+      r2.paidKeys === 0,
+      JSON.stringify({ paidKeys: r2.paidKeys, paidVal: r2.paidVal, asksSum: r2.asksSum }));
+
+    // ── 第 3 拍：负对照 —— **另一道题**（判断题的选项永远是 对/错，指纹一模一样） ──
+    // 现场最贵的一种误用就是把上一道买来的答案填给下一道：题干两边都读得到时必须拦住。
+    // 这一拍把 `noDetach` 打开（站点不再中途摘走那一层）—— 只测题干闸门这一件事，
+    // 否则"新问的一发"和"摘走导致填不上"缠在一起，红了也说不清是哪道闸（AGENTS §5 同理）。
+    var planted = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var box=app._checkPopupQuiz();var items=app._getOptionItems(box);' +
+      'var k=app._popupQuizFingerprint(box,items);' +
+      // 换掉题干文字（选项一个字没动 → 指纹不变 → 这正是"同指纹的另一道题"）
+      'document.querySelector("#pqCon .tkItem_title").textContent = ' +
+      '"增加毛细管管径，管内液柱会升高。";' +
+      // 种一格**属于上一道题**的已买答案：题干对不上，就不许被拿出来用
+      'app._notePopupQuizPaid(k,"B","当固有频率和驱动力频率相等时才会发生共振。");' +
+      'window.__site.noDetach = true;' +
+      'var b=app._popupQuizSpend;return {key:String(k).slice(0,30),' +
+      'paidKeys:Object.keys(b.paid||{}).length,' +
+      'paidVal:(function(){var ks=Object.keys(b.paid||{});return ks.length?String(b.paid[ks[0]].value):"";})(),' +
+      'liveItems:items.length,checkedLen:window.__site.checked.length};})()'
+    );
+    // 前置自证：种下去的那一格必须真在账本里、且现场确实挂着 2 个选项 ——
+    // 少了这一条，下面"没复用"可能只是因为压根没东西可复用（读 0 条也能"通过"）。
+    check('73 负对照的前提：这一格已买答案确实种进了账本、现场确实挂着两个选项',
+      planted.paidKeys === 1 && planted.paidVal === 'B' && planted.liveItems === 2,
+      JSON.stringify(planted));
+    var req3Base = ctx.mock.requests.length;
+    await ctx.client.evaluate(clearLogs);
+    await ctx.client.evaluate(tick);
+    await sleep(500);
+    var r3 = await ctx.client.evaluate(readSpend);
+    var req3 = ctx.mock.requests.length - req3Base;
+    var answered3 = r3.logs.filter(function (l) { return l.msg === 'popup quiz answered'; });
+    var cached3 = answered3.filter(function (l) { return l.fromCache === true; });
+    check('73 负对照：同指纹但**题干不同**（另一道判断题）时，上一道买来的答案不许复用 —— ' +
+      '它被作废（这一拍结束时账本那一格是空的），这一道按正常流程重新问：' +
+      '本拍请求 +1、本拍 answered 里没有 fromPaidCache、并且真提交了一次',
+      req3 === 1 && cached3.length === 0 && answered3.length >= 1 &&
+      r3.paidKeys === 0 && r3.checked.length === planted.checkedLen + 1 &&
+      r3.checked[r3.checked.length - 1] !== '(空)',
+      JSON.stringify({ req3: req3, answeredFlags: answered3.map(function (l) { return l.fromCache; }),
+        paidKeys: r3.paidKeys, paidVal: r3.paidVal, stemNow: r3.stemNow,
+        checked: r3.checked, checkedBase: planted.checkedLen }));
+
+    // ── 收尾：三道都过去了，播放不该被弹窗按住 ──
+    var last = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;return {blocks:app._popupQuizBlocksPlayback(),' +
+      'attempts:Number(app._popupQuizAttempts)||0,bucket:app._popupQuizSpend?Object.keys(app._popupQuizSpend):[]};})()'
+    );
+    check('73 收尾：账本六格齐全（含本批新增的 paid），且这一道不再按住播放',
+      Array.isArray(last.bucket) && last.bucket.indexOf('paid') !== -1,
+      JSON.stringify(last));
+  }
+});
+
+/** ---- 6c-1c. 弹题：站点判对、但弹窗不关只显「继续」（批次 74） ---- */
+SCENARIOS.push({
+  name: '视频弹题答对后站点不关弹窗时不再误判为被拒',
+  path: '/popup-quiz-verdict',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
+    // ⚠️ 这一族夹具的**内联 script 不在本沙盒里执行**（现场形状已由 72/73 那两份"脚本自己动 DOM"
+    // 的夹具覆盖，本批要读的是站点判完之后留在原地的**结果态**，不是站点怎么算出来的）。
+    // 所以这里由测试直接把那三个 verdict 槽的 display 拨过去、并给「继续」键装一个计数监听 ——
+    // 拨的是真实元素、点的是真实键，读数（continueClicks）由页面自己数出来，不是测试种的常量。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 关掉自动循环，这一页只由本场景逐轮驱动（否则上一个 run() 留下的自启会乱动状态）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b74=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b74.push(String(d.message||""));});' +
+      // 「继续」键的真实计数：生产里 _clickPopupContinue 调 btn.click()，这个监听就是站点的续播处理器。
+      'window.__b74c=0;' +
+      '(function(){var b=document.getElementById("videoquiz-continue");' +
+      'if(b)b.addEventListener("click",function(){window.__b74c++;});})();' +
+      // 测试侧的 verdict 拨盘：把 spanHas / spanNot / spanNotBack 与「继续」按站点结果态显出来/藏起来。
+      'window.__setVerdict=function(v){' +
+      '  var sh=function(id,on){var el=document.getElementById(id);if(el)el.style.display=on?"inline-block":"none";};' +
+      '  sh("spanHas", v==="right"); sh("spanNot", v==="wrong"); sh("spanNotBack", false);' +
+      '  sh("videoquiz-continue", v==="right");' +
+      '};' +
+      'app._activeJobId="b74-job";' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'return 1;})()'
+    );
+
+    // 夹具自证 + 把「上一拍我们填了 A 并交卷、站点判对只是没关弹窗」这一现场状态摆出来。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();' +
+      'if(!box) return {found:false};' +
+      'var key=app._popupQuizFingerprint(box);' +
+      'var opts=app._getOptionItems(box);' +
+      'window.__setVerdict("right");' +
+      'window.__b74c=0;' +
+      // spanHas 显出来了吗 —— 用生产读判决同一把尺（computed display）自证夹具形状。
+      'var hasDisp=app._popupQuizSpanVisible(box,"spanHas");' +
+      'var hasVerdict=app._popupQuizSiteVerdict(box);' +
+      // 提交键要能被生产的找按钮规则认出（且不能选到那颗隐藏的「提交中」孪生）。
+      'var submitBtn=app._findDialogButtonByText(box,["提交","确定","确认","交卷","完成"]);' +
+      'return {found:true,key:key,optCount:opts.length,hasDisp:hasDisp,hasVerdict:hasVerdict,' +
+      'submitId:submitBtn?String(submitBtn.id||""):"(无)",' +
+      'continueVisible:(function(){var el=document.getElementById("videoquiz-continue");' +
+      'return el.ownerDocument.defaultView.getComputedStyle(el).display;})()};})()'
+    );
+    check('74 前提：夹具形状是现场那种 —— 弹窗命中、两个选项、spanHas 读得出且判成 right、' +
+      '提交键认得到且不是隐藏的「提交中」、「继续」这一拍显出来了',
+      setup.found === true && setup.optCount === 2 && setup.hasDisp === true &&
+      setup.hasVerdict === 'right' && setup.submitId === 'videoquiz-submit' &&
+      setup.continueVisible !== 'none',
+      JSON.stringify(setup));
+
+    // ── 第 1 轮：站点判「对」 → 正确字母不许被拉黑、「继续」被点到、不发请求 ──
+    var reqBase1 = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'window.__b74=[];window.__b74c=0;' +
+      'window.__setVerdict("right");' +
+      'app._popupQuizKey=key;app._popupQuizAttempts=1;app._popupQuizWrongAnswers=[];' +
+      'app._popupQuizLastFilled="A";app._popupQuizSolvedKey="";' +
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();return n?app._handlePopupQuiz(n):null;})()'
+    );
+    await sleep(400);
+    var right = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'var b=app._popupQuizSpend||{};var rej=(b.rejected&&b.rejected[key])||[];' +
+      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,' +
+      'solvedKey:app._popupQuizSolvedKey,key:key,lastFilled:String(app._popupQuizLastFilled||""),' +
+      'blockedUntil:Number(app._popupQuizBlockedUntil)||0,' +
+      'continueClicks:Number(window.__b74c)||0,' +
+      'hasSilentVerdict:app._popupQuizSiteVerdict(box),' +
+      'acceptedLogs:(window.__b74||[]).filter(function(m){return m.indexOf("accepted by site")!==-1;}).length};})()'
+    );
+    var req1 = ctx.mock.requests.length - reqBase1;
+    check('74 答对不被拉黑：正确字母既没进内存已拒名单、也没记账本（这就是把对的永久拉黑、' +
+      '换来一个真错也拉黑、最后 all-options-rejected 卡死的那条路）',
+      right.banned.length === 0 && right.rejected.indexOf('A') === -1,
+      JSON.stringify(right));
+    check('74 答对即放行：写了"已答放行"标记、清空放弃冷却、且 lastFilled 交还干净',
+      right.solvedKey === right.key && right.blockedUntil === 0 && right.lastFilled === '',
+      JSON.stringify(right));
+    check('74 答对点「继续」：站点只显「继续」不自动续播那一族里，这枚键真的被点下去了' +
+      '（continueClicks 由页面自己数，不是测试种的常量）',
+      right.continueClicks >= 1, JSON.stringify(right));
+    check('74 答对不再花钱：判对这一拍一条 llm_request 都不发（钱只花在"还没答对"上）',
+      req1 === 0 && right.acceptedLogs >= 1, JSON.stringify({ req1: req1, acceptedLogs: right.acceptedLogs }));
+
+    // ── 第 2 轮 负对照：站点判「错」 → 旧行为保留（拉黑、不点继续） ──
+    // 把 attempts 顶到上限，判错后下一拍就越界放弃并 return —— 这样判错这一轮只验"拉黑+不点继续"，
+    // 不会被随后的模型作答把提交再点一次、把 verdict 翻成 right，污染读数。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'window.__b74=[];window.__b74c=0;' +
+      'window.__setVerdict("wrong");' +
+      'app._popupQuizKey=key;app._popupQuizAttempts=app._getPopupQuizMaxAttempts();' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="A";' +
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedAt=0;app._popupQuizBlockedUntil=0;app._popupQuizSolvedKey="";' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();return n?app._handlePopupQuiz(n):null;})()'
+    );
+    await sleep(400);
+    var wrongRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'var b=app._popupQuizSpend||{};var rej=(b.rejected&&b.rejected[key])||[];' +
+      'return {banned:(app._popupQuizWrongAnswers||[]).slice(),rejected:rej,' +
+      'verdict:app._popupQuizSiteVerdict(box),continueClicks:Number(window.__b74c)||0,' +
+      'acceptedLogs:(window.__b74||[]).filter(function(m){return m.indexOf("accepted by site")!==-1;}).length};})()'
+    );
+    check('74 负对照（判错仍按旧推断拉黑）：verdict 读成 wrong 时字母进账本已拒名单、不进"放行"、不点「继续」' +
+      '（attempts 顶到上限→判错后随即放弃，内存 wrongAnswers 被 _giveUpPopupQuiz 清空是预期的，' +
+      '能留住这条证据的是不随放弃清零的账本 —— 正是 72 那批立它的原因）',
+      wrongRead.verdict === 'wrong' && wrongRead.rejected.indexOf('A') !== -1 &&
+      wrongRead.continueClicks === 0 && wrongRead.acceptedLogs === 0,
+      JSON.stringify(wrongRead));
   }
 });
 
