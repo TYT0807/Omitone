@@ -72,6 +72,7 @@
     playbackRate: 1.0,
     muted: false,
     autoNext: true,
+    autoNextCourse: true,
     enableQuiz: true,
     randomAnswer: false,
     // 乱选交卷前留给用户检查的秒数（真源在 src/page/00-shell-constants.js；
@@ -1700,6 +1701,35 @@
       state = 'warn';
       task = '这一页不是章节页';
       detail = '认不出课程结构，插件停手不乱点，请手动回到章节页';
+    } else if (/course finished|course switch/.test(msg)) {
+      // 批次 82：这一族里有三条带着 `declined:`，**必须排在通用那条 `/declined:/` 之前** ——
+      // 落进「放弃等待，继续往下」是说反了：这里没有"等不到"，是这一门**真的刷完了**。
+      // 它自己接着换下一门的那两条不该点亮右下角；停下来等人拿主意的那三条才值得「注意」。
+      if (/picked next/.test(msg)) {
+        state = 'wait';
+        task = '进入下一门';
+        detail = '上一门刷完了，正在进这一门（本轮换课 ' + (Number(data.sw) || 1) + '/' + (Number(data.limit) || 8) + '）';
+      } else if (/back to user center/.test(msg)) {
+        state = 'wait';
+        task = '这一门刷完了';
+        detail = '正在回用户中心挑还有任务没完成的一门';
+      } else if (/auto switch is off/.test(msg)) {
+        state = 'warn';
+        task = '这一门刷完了';
+        detail = '「刷完自动换下一门」是关的，所以停在这里';
+      } else if (/budget used up/.test(msg)) {
+        state = 'warn';
+        task = '刷完不换下一门';
+        detail = '这一次换课已到上限（' + (Number(data.sw) || 0) + '/' + (Number(data.limit) || 8) + '），请手动进下一门';
+      } else if (/no course with unfinished/.test(msg)) {
+        state = 'warn';
+        task = '刷完不换下一门';
+        detail = '读得到进度的课都刷完了，另有 ' + (Number(data.noProg) || 0) + ' 张卡片读不到进度（不盲进）';
+      } else {
+        state = 'warn';
+        task = '这一门刷完了';
+        detail = '没往下换课，原因写在这一条日志里';
+      }
     } else if (/study no runnable job|no runnable job|waiting task|search job:/.test(msg)) {
       state = state === 'warn' ? 'warn' : 'wait';
       task = '等待任务识别';

@@ -13,6 +13,7 @@ const DEFAULTS = {
   advanceAtNinetyPercent: true,
   muted: false,
   autoNext: true,
+  autoNextCourse: true,
   enableQuiz: true,
   randomAnswer: false,
   // 乱选填满整卷后、自动交卷前留给用户检查的秒数（0 = 不自动交卷）
@@ -81,6 +82,7 @@ const els = {
   advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
   muted: $("muted"),
   autoNext: $("autoNext"),
+  autoNextCourse: $("autoNextCourse"),
   enableQuiz: $("enableQuiz"),
   randomAnswer: $("randomAnswer"),
   randomAnswerReviewSec: $("randomAnswerReviewSec"),
@@ -133,6 +135,7 @@ let blockedReloadVal = true;
 let enableSeekVal = true;
 let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
+let autoNextCourseVal = true;
 let enableQuizVal = true;
 let randomAnswerVal = false;
 let enableCaptchaVal = true;
@@ -490,6 +493,7 @@ async function saveToggleConfig(showToast = true) {
     advanceAtNinetyPercent: advanceAtNinetyPercentVal,
     muted: mutedVal,
     autoNext: autoNextVal,
+    autoNextCourse: autoNextCourseVal,
     enableQuiz: enableQuizVal,
     randomAnswer: randomAnswerVal,
     randomAnswerReviewSec: (function () {
@@ -568,6 +572,7 @@ const updateBlockedReload = bindToggle(els.blockedReload, () => blockedReloadVal
 const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; });
 const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
+const updateAutoNextCourse = bindToggle(els.autoNextCourse, () => autoNextCourseVal, (value) => { autoNextCourseVal = value; });
 const updateRandomAnswer = bindToggle(els.randomAnswer, () => randomAnswerVal, (value) => { randomAnswerVal = value; });
 const updateQuiz = bindToggle(els.enableQuiz, () => enableQuizVal, (value) => { enableQuizVal = value; });
 const updateCaptcha = bindToggle(els.enableCaptcha, () => enableCaptchaVal, (value) => { enableCaptchaVal = value; });
@@ -627,6 +632,7 @@ async function load() {
   enableSeekVal = config.enableSeek !== false;
   advanceAtNinetyPercentVal = config.advanceAtNinetyPercent !== false;
   autoNextVal = config.autoNext !== false;
+  autoNextCourseVal = config.autoNextCourse !== false;
   enableQuizVal = config.enableQuiz !== false;
   randomAnswerVal = config.randomAnswer === true;
   enableCaptchaVal = config.enableCaptcha !== false;
@@ -644,6 +650,7 @@ async function load() {
   updateSeek(enableSeekVal);
   updateNinety(advanceAtNinetyPercentVal);
   updateAutoNext(autoNextVal);
+  updateAutoNextCourse(autoNextCourseVal);
   updateQuiz(enableQuizVal);
   updateRandomAnswer(randomAnswerVal);
   updateCaptcha(enableCaptchaVal);

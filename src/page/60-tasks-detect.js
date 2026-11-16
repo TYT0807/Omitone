@@ -14,9 +14,9 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（43 个）：
+ * 本段的方法（44 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
- *   _catalogItemForChapter、_catalogUnfinishedCount、
+ *   _catalogItemForChapter、_catalogUnfinishedCount、_catalogCourseScan、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
  *   _matchChaoxingAttachment、_kindFromAttachment、_kindFromChaoxingElements、
@@ -175,6 +175,64 @@
       var raw = String(n.value !== undefined && n.value !== null ? n.value : (n.getAttribute && n.getAttribute('value')) || '');
       var num = Number(raw.replace(/[^0-9]/g, ''));
       return raw === '' || isNaN(num) ? NaN : num;
+    },
+
+    /**
+     * 批次 82-A：**整门课**还有没有小节没做完 ——「刷课的尽头」的判据，全程只读。
+     *
+     * 依据是现场量出来的（2026-11-16，一门 74 个小节的课，**74 个无一例外**）：
+     *   已做完的小节 → 目录项里有 `.icon_Completed`（当前节之前 38 个，全是这一种）
+     *   没做完的小节 → 只有 `.catalog_points_sa`（没开始，之后 35 个）
+     *                 或 `.catalog_points_yi`（进行中，就是当前节）
+     *   当前那一节还额外挂着 `input.jobUnfinishCount`（这一节自己还剩几个任务点）
+     * 所以「这门课到尽头」= 目录读得到（`leaves>0`）**而且**一个不带 `icon_Completed` 的都没有。
+     *
+     * ⚠️ `ready:false` 只说明"这一页没有课程目录"（OCS 页 / 移动端布局 / 用户中心），
+     *    调用方**不许**把它读成"这门课做完了" —— 读不到是没证据，不是有结论。
+     *    这一条与 `_catalogUnfinishedCount` 返回 NaN 走同一把尺。
+     * ⚠️ 目录只在**外层刷课页**上；`document` 读不到时再退一步问主帧文档，
+     *    问的必须是 `_getMainDocument()`（裸读跨域帧的 `.document` 会把整拍吞掉，AGENTS §2.1）。
+     */
+    _catalogCourseScan: function () {
+      var out = { ready: false, leaves: 0, unfinished: 0, activeLeft: NaN, courseId: '' };
+      var docs = [];
+      try { docs.push(document); } catch (eTop) { docs = []; }
+      var mainDoc = null;
+      try { mainDoc = this._getMainDocument(); } catch (eMain) { mainDoc = null; }
+      if (mainDoc && docs.indexOf(mainDoc) === -1) docs.push(mainDoc);
+      var items = null;
+      for (var d = 0; d < docs.length && !items; d++) {
+        try { items = docs[d].querySelectorAll('.posCatalog_select:not(.firstLayer)'); } catch (eQ) { items = null; }
+        if (items && !items.length) items = null;
+      }
+      if (!items || !items.length) return out;
+      for (var i = 0; i < items.length; i++) {
+        out.leaves++;
+        var done = false;
+        try { done = !!items[i].querySelector('.icon_Completed'); } catch (eC) { done = false; }
+        if (!done) out.unfinished++;
+      }
+      out.ready = out.leaves > 0;
+      var cur = null;
+      try { cur = this._catalogItemForChapter(); } catch (eCur) { cur = null; }
+      out.activeLeft = this._catalogUnfinishedCount(cur);
+      // 课程号优先读站点自己埋的隐藏字段 `#curCourseId`（现场实测这一页上有
+      // `curCourseId / curChapterId / curCpi / curClazzId` 七枚）—— 它比从地址栏刨靠谱：
+      // 换课、带 `&ut=s`、从站内其它入口进来，地址那一族参数不一定齐。
+      var cidRaw = '';
+      var cidIn = null;
+      try { cidIn = document.getElementById('curCourseId'); } catch (eId) { cidIn = null; }
+      try {
+        cidRaw = cidIn && cidIn.value !== undefined && cidIn.value !== null ? String(cidIn.value) : '';
+      } catch (eV) { cidRaw = ''; }
+      if (!/^\d+$/.test(cidRaw.replace(/\s+/g, ''))) {
+        try {
+          cidRaw = String((String(location.href || '').match(/[?&]course[iI][dD]=(\d+)/) || [])[1] || '');
+        } catch (eRe) { cidRaw = ''; }
+      }
+      cidRaw = cidRaw.replace(/\s+/g, '');
+      out.courseId = /^\d+$/.test(cidRaw) ? cidRaw : '';
+      return out;
     },
 
     _skipIfCompleted: function () {
@@ -1968,6 +2026,14 @@
             }
             self._nextUnitNoopKey = progressKey;
             if (self._nextUnitNoopCount >= 3) {
+              // 批次 82-A：先问一句「这门课是不是到尽头了」，再决定要不要喊"卡住"。
+              // 旧写法在**最后一节**上打的也是这条 error（「本学习卡片上还有没做完的任务点」），
+              // 而那时候这门课一个小节都没剩 —— 用户看到的就是「刷完了却被告知卡住了，
+              // 后面什么都不会发生」。目录那本账（`_catalogCourseScan`）分得开这两种形状。
+              if (self._leaveFinishedCourse('next-noop')) {
+                self._ocsStudyStarted = false;
+                return;
+              }
               if (self._nextUnitBlockedKey !== progressKey) {
                 self._nextUnitBlockedKey = progressKey;
                 emitRuntimeLog('error', 'study stuck: 下一节点了没反应，已停止空转', {

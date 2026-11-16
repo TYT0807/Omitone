@@ -1092,6 +1092,103 @@ function buildCatalogCardsHtml() {
     '</body></html>';
 }
 
+/**
+ * ---- 批次 82-A/B 的夹具：目录里还剩两节没做完的刷课页 ----
+ *
+ * 三枚标记**逐字抄自现场**（2026-11-16 实战窗口实地探针，那一门 74 个叶子全部落在下面三种里，
+ * 第四种一个都没有，`markTally` 与整页 tally 两边逐类相等）：
+ *   已完成   `<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>`
+ *   部分完成 上面再加 `<input type="hidden" value="1" class="jobUnfinishCount">`，图标换成
+ *            `<span class="catalog_points_yi prevTips"><span class="prevHoverTips">1个待完成任务点<i></i></span>`
+ *            `<span class="orangeNew">1</span></span>`
+ *   未开始   `<span class="catalog_points_sa prevTips"><span class="prevHoverTips">需完成之前闯关任务点，该章节才可解锁<i></i></span></span>`
+ * 两个要点，都是量出来的，不是推的：
+ *   ① 标记挂在**叶子的子节点**上，叶子自己的 class 只有 `posCatalog_select`（active 那节多一个
+ *      `posCatalog_active`）。所以"这一节做完没有"必须 `item.querySelector('.icon_Completed')`，
+ *      读叶子 className 恒为否 —— 那样 `unfinished` 会永远等于 leaves，尽头永远认不出来。
+ *   ② `input.jobUnfinishCount` **只在 active 那一节上**（现场整页只有 1 枚，值 1）。
+ *      它是"这一节"的否决，不是"这一门课"的计数。
+ * `#curCourseId` 是站点埋在页面里的课程号（现场是 9 位数字），换课那条链拿它说明"刚刷完的是哪门"。
+ * ⚠️ 这一页**故意不放 `#iframe`**：`_tryAdvanceIdleSection` 这道逃生门只在"没有主帧 / 主帧读不到"
+ *    那条路上才走得到，有 `#iframe` 时 `_runOcsStyleStudy` 会接管，这条链一次都不会被调用（批次 20-I 同一件事）。
+ */
+function buildCourseEndHtml() {
+  function leaf(cid, name, no, marker) {
+    return '<div class="posCatalog_select' + (cid === '9000049302' ? ' posCatalog_active' : '') +
+      '" id="cur' + cid + '">' +
+      '<span class="posCatalog_name" title="' + name + '" onclick="getTeacherAjax(\'900000001\',\'900000002\',\'' + cid + '\');">' +
+      '<em class="posCatalog_sbar">' + no + '</em> ' + name + ' </span>' + marker + '</div>';
+  }
+  var done = '<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>';
+  var part = '<input type="hidden" value="1" class="jobUnfinishCount">' +
+    '<span class="catalog_points_yi prevTips"><span class="prevHoverTips">1个待完成任务点<i></i></span>' +
+    '<span class="orangeNew">1</span></span>';
+  var locked = '<span class="catalog_points_sa prevTips"><span class="prevHoverTips">' +
+    '需完成之前闯关任务点，该章节才可解锁<i></i></span></span>';
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body>' +
+    '<input type="hidden" id="curCourseId" name="courseId" value="900000001">' +
+    '<input type="hidden" id="curChapterId" name="chapterId" value="9000049302">' +
+    '<div class="prev_title">6.2 示例小节乙</div>' +
+    '<div id="curCatalog"><div id="con1">' +
+    leaf('9000049301', '6.1 示例小节甲', '6.1', done) +
+    leaf('9000049302', '6.2 示例小节乙', '6.2', part) +
+    leaf('9000049303', '6.3 示例小节丙', '6.3', locked) +
+    '</div></div>' +
+    '<div class="content"><p>这一节只有正文，任务帧一个都没有 —— 正是"点下一节也没反应"那种页。</p></div>' +
+    '</body></html>';
+}
+
+/**
+ * ---- 批次 82-C 的夹具：用户中心那一页（顶层 + 装卡片的那个帧）----
+ *
+ * ⚠️ 卡片**不在顶层文档里**，这是实地量出来的，不是想当然：
+ *   `https://i.mooc.chaoxing.com/space/index?ws=2` 顶层 `document.querySelectorAll('.course').length === 0`，
+ *   38 张全在 `#frame_content`（`mooc2-ans.chaoxing.com/visit/interaction?s=…`）里面；
+ *   那个帧之所以读得到，是站点两边都写了 `document.domain='chaoxing.com'`。
+ *   **顶层一枚卡片都不放**是刻意的：放了，"走进子帧去读"这一支就永远测不到，
+ *   夹具会替生产把 bug 藏起来（AGENTS §5「夹具要长得像现场，不像实现」）。
+ * 卡片形状逐字抄自现场：
+ *   `<div class="course clearfix learnCourse stu_<clazzId>" id="c_<courseId>">`
+ *     `<div class="course-cover"><input class="clazzId/courseId/role/curPersonId">`
+ *     `<a href="https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=…&amp;clazzid=…&amp;cpi=…&amp;ismooc2=1&amp;v=2" target="_blank">`
+ *   进度那一行在 `div.fl.l-txt` 里，原话是「任务点进度: 已完成/总数」。
+ * 现场 38 张里 **22 张压根没有这一行**，所以这里必须留一张读不到进度的卡：
+ * 它不许被当成候选（不知道有没有做完就跳进去 = 可能白烧一晚），但要单独报数让用户看见"这些我没碰"。
+ */
+function buildUserCenterTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>个人中心 - 学习通</title></head><body>' +
+    '<div class="wrap1200 clearfix"><div class="fl leftSide"><div class="personalInfor">示例用户</div></div>' +
+    '<div class="mainright rightF">' +
+    '<iframe id="frame_content" src="/course-pick-inner" style="width:100%;height:900px;border:0"></iframe>' +
+    '</div></div></body></html>';
+}
+
+function buildUserCenterCardsHtml() {
+  var dot = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+  function card(cid, name, prog) {
+    return '<div class="course clearfix learnCourse stu_900000002" id="c_' + cid + '">' +
+      '<div class="course-cover">' +
+      '<input type="hidden" class="clazzId" name="clazzId" value="900000002">' +
+      '<input type="hidden" class="courseId" name="courseId" value="' + cid + '">' +
+      '<input type="hidden" class="role" name="role" value="0">' +
+      '<a href="https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=' + cid +
+      '&amp;clazzid=900000002&amp;cpi=900000003&amp;ismooc2=1&amp;v=2" target="_blank">' +
+      '<img src="' + dot + '" alt=""></a></div>' +
+      '<div class="course-info"><div class="fl l-txt">' + name +
+      (prog ? '<br>任务点进度: ' + prog : '<br>这门没有进度那一行') +
+      '</div></div></div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程列表</title></head><body><div class="course-list">' +
+    card('900000011', '课程甲 一门还没开头', '0/88') +
+    card('900000012', '课程乙 开了头没学完', '32/72') +
+    card('900000013', '课程丙 已经全刷完', '192/192') +
+    card('900000014', '课程丁 读不到进度', '') +
+    '</div></body></html>';
+}
+
 /** 没有主帧、没有正文那一份：`/no-course` 用来钉「非刷课页不许点前进」 */
 function buildNoCourseHtml() {
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
@@ -2286,6 +2383,11 @@ var MOCK_PAGES = {
   //    /no-course 是"页面被推到没有课程结构的地方"那一族 ──
   '/catalog': buildCatalogTopHtml,
   '/catalog-cards': buildCatalogCardsHtml,
+  // 批次 82-A/B：目录里还剩两节没做完的刷课页（认尽头 + 回用户中心）
+  '/course-end': buildCourseEndHtml,
+  // 批次 82-C：用户中心那一页 —— 顶层一枚卡片都没有，卡片全在 #frame_content 里（现场形状）
+  '/course-pick': buildUserCenterTopHtml,
+  '/course-pick-inner': buildUserCenterCardsHtml,
   '/no-course': buildNoCourseHtml,
   '/vote': buildVoteTopHtml,
   '/vote-cards': buildVoteCardsHtml,
@@ -19919,6 +20021,476 @@ SCENARIOS.push({
     check('69-验证码 收尾：close() 之后每一份都落到 closed（最多等 3 秒）—— ' +
       '这一页只有这一条音轨，漏一份就是每切一次后台攒一份',
       !!cLeaked && cLeaked.open === 0, JSON.stringify(cLeaked));
+  }
+});
+/** ---- 42. 批次 82-A/B：刷课要有「尽头」这一步 ----
+ *
+ * 为什么要这一条（2026-11-16 用户直接点的题）：
+ *   「我注意到好像刷课我们一直都没有设置过尽头」—— 现场确实没有。一门课最后一节做完之后，
+ *   那两条"点了没反应"的终点（`60-tasks-detect.js` 的 next-noop、`62-tasks-run.js` 的 idle-stuck）
+ *   打的是 **error**「本学习卡片上还有没做完的任务点」/「本节没有可识别的任务」，
+ *   而真话是「这一门刷完了」。用户看到的症状 = 日志一直在报错，课却不再动。
+ *   现在这两条在喊"卡住"之前先问一句「这门是不是到尽头了」，是 → 带着课程号回用户中心挑下一门。
+ *
+ * 判据全部来自现场实测（实战窗口 9334 只读探针，那一门 74 个叶子）：
+ *   `.posCatalog_select:not(.firstLayer)` 是叶子；完成与否写在**叶子的子节点**上
+ *   （`icon_Completed prevTips` 40 枚 / `catalog_points_yi` 1 枚 / `catalog_points_sa` 33 枚，
+ *   逐叶 tally 与整页 tally 逐类相等 —— 没有第二棵目录树，`[id^="cur"]` 剩下的都是隐藏 input）；
+ *   `input.jobUnfinishCount` **只在 active 那一节**，它是"这一节"的否决，不是整门课的计数。
+ *   ⚠️ 读叶子的 className 恒为"没打勾"（标记不在叶子上），那样 `unfinished` 永远等于 `leaves`，
+ *      尽头永远认不出来 —— 所以 ① 号断言把"标记是子节点"这件事钉死。
+ */
+SCENARIOS.push({
+  name: '刷到尽头：目录全打勾才认「这一门刷完了」，然后带着课程号回用户中心',
+  path: '/course-end?chapterId=9000049302&courseId=900000001&clazzid=900000002&cpi=900000003',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var reqBefore = ctx.mock.requests.length;
+
+    // 桩只打在**会把页面带走的那一个动作**上（AGENTS §5「桩要打在动作上」）：
+    // `_gotoUrl` 是换课这一族唯一的出口，桩掉它就能读回"它到底想跳去哪"，
+    // 而 `_isCourseAtEnd` / `_catalogCourseScan` / 开关那几道判据全部真跑。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b82=[];window.__b82nav=[];window.__b82unit=0;window.__b82card=0;' +
+      'if(!window.__b82bound){window.__b82bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b82.push(m);});}' +
+      'app._gotoUrl=function(u){window.__b82nav.push(String(u||""));};' +
+      'app.nextUnit=function(){window.__b82unit++;};' +
+      'app._switchToNextLearningCard=function(){window.__b82card++;return false;};' +
+      // 夹具自己钉住共享状态：整轮共用一份扩展存储，上一个场景写过的 autoNext/autoNextCourse
+      // 会让这里判到错的分支上去（AGENTS §5）。
+      // ⚠️ `slowMachineMode` **也必须钉**，这一条是全量跑红出来的（定向跑绿）：
+      //    批次 34 那两个场景把 `slowMachineMode:'on'` 留在整轮共用的存储里，而空转那一门的
+      //    窗口是 `scaledMs(30000)`（`_tryAdvanceIdleSection`）—— 因子 2 就是 60 秒，
+      //    这里种的"40 秒前"永远够不到，`_leaveFinishedCourse` 一次都不会被问到，
+      //    表现恰好是"日志一条都没有"。`'off'` 让 `perfFactor()` 直接返回 1，
+      //    顺带挡掉另一条同形 poison：全量跑机器忙，`auto` 会因 fps<45 自己升到 1.5/2。
+      'app.configs.autoNext=true;app.configs.autoNextCourse=true;app.configs.slowMachineMode="off";return 1;})()'
+    );
+
+    async function snap() {
+      // 日志走 postMessage，异步送达 —— 不等一拍就读，"没发"和"没等到"长得一模一样
+      await sleep(420);
+      return JSON.parse(await ctx.client.evaluate(
+        '(function(){return JSON.stringify({names:(window.__b82||[]).map(function(m){return String(m.message||"")}), ' +
+        'metas:(window.__b82||[]).map(function(m){return (m&&m.meta)||{}}), ' +
+        'nav:window.__b82nav||[], unit:window.__b82unit, card:window.__b82card});})()'
+      ));
+    }
+    function cnt(s, needle) {
+      var n = 0;
+      for (var i = 0; i < s.names.length; i++) if (s.names[i].indexOf(needle) === 0) n++;
+      return n;
+    }
+
+    var sh = JSON.parse(await ctx.client.evaluate(
+      '(function(){' +
+      'var leaves=document.querySelectorAll(".posCatalog_select:not(.firstLayer)");' +
+      'var kinds={};var own=false;var act=null;' +
+      'for(var i=0;i<leaves.length;i++){' +
+      '  if(/icon_|catalog_points/.test(String(leaves[i].className||"")))own=true;' +
+      '  var m=leaves[i].querySelector(".icon_Completed, .catalog_points_yi, .catalog_points_sa");' +
+      '  var k=m?String(m.className):"NO-MARKER";kinds[k]=(kinds[k]||0)+1;' +
+      '  if(leaves[i].classList.contains("posCatalog_active"))act=leaves[i];}' +
+      'var u=act?act.querySelector("input.jobUnfinishCount"):null;' +
+      'var cid=document.getElementById("curCourseId");' +
+      'return JSON.stringify({leaves:leaves.length,kinds:kinds,ownClassCarriesMarker:own,' +
+      'activeUnfinish:u?String(u.value):"no-input",iframe:document.querySelectorAll("#iframe").length,' +
+      'attach:document.querySelectorAll(".ans-attach-ct").length,' +
+      'courseId:cid?String(cid.value):"(none)",prevTitle:!!document.querySelector(".prev_title")});})()'
+    ));
+    check('夹具自证：目录就是现场那三种标记、而且挂在叶子的**子节点**上（叶子自己的 class 里没有 icon_ / catalog_points）、' +
+      'active 那节带 value=1 的 jobUnfinishCount、#curCourseId 在、这一页没有 #iframe（有主帧就轮不到这道逃生门）',
+      sh.leaves === 3 && sh.ownClassCarriesMarker === false &&
+      sh.kinds['icon_Completed prevTips'] === 1 &&
+      sh.kinds['catalog_points_yi prevTips'] === 1 &&
+      sh.kinds['catalog_points_sa prevTips'] === 1 &&
+      sh.activeUnfinish === '1' && sh.courseId === '900000001' &&
+      sh.iframe === 0 && sh.attach === 0 && sh.prevTitle === true, JSON.stringify(sh));
+
+    // ① 还没到尽头 —— 这一条是整个功能最危险的反面：读错一次就把用户正在学的课跳走
+    var s2 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var sc=app._catalogCourseScan();' +
+      'var before=window.__b82nav.length;var left=app._leaveFinishedCourse("probe");' +
+      'return JSON.stringify({ready:sc.ready,leaves:sc.leaves,unfinished:sc.unfinished,' +
+      'activeLeft:isNaN(Number(sc.activeLeft))?"NaN":Number(sc.activeLeft),courseId:sc.courseId,' +
+      'atEnd:app._isCourseAtEnd(sc),left:left,navAdded:window.__b82nav.length-before});})()'
+    ));
+    check('还剩两节没打勾（1 节「N个待完成任务点」+ 1 节「未解锁」）→ 不许认成尽头：' +
+      '扫描 unfinished=2 / activeLeft=1、_isCourseAtEnd=false，_leaveFinishedCourse 直接返回 false 且一次导航都不发',
+      s2.ready === true && s2.leaves === 3 && s2.unfinished === 2 && s2.activeLeft === 1 &&
+      s2.courseId === '900000001' && s2.atEnd === false && s2.left === false && s2.navAdded === 0,
+      JSON.stringify(s2));
+
+    // ② 课程号的取值范围 + "读不到目录"那一格（安全阀最容易出错的地方）
+    var s3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'var f=document.getElementById("curCourseId");var old=String(f.value);' +
+      'f.value="900000009";out.fromField=String(app._catalogCourseScan().courseId);f.value=old;' +
+      'var cat=document.getElementById("curCatalog");var p=cat.parentNode;p.removeChild(cat);' +
+      'var sc=app._catalogCourseScan();' +
+      'out.ready=sc.ready;out.leaves=sc.leaves;out.atEnd=app._isCourseAtEnd(sc);' +
+      'out.left=app._leaveFinishedCourse("probe");' +
+      'p.insertBefore(cat,p.firstChild);out.restored=app._catalogCourseScan().leaves;' +
+      'return JSON.stringify(out);})()'
+    ));
+    check('课程号读的是站点自己埋的 #curCourseId（把它改成 900000009，扫描跟着就报 900000009）—— 不是从地址上猜的',
+      s3.fromField === '900000009', JSON.stringify(s3));
+    check('目录压根没渲染出来（ready=false、leaves=0）**不许**被读成「这一门刷完了」——' +
+      '读不到证据不等于没有任务；这一格判反了就会把用户正在学的课跳走',
+      s3.ready === false && s3.leaves === 0 && s3.atEnd === false &&
+      s3.left === false && s3.restored === 3, JSON.stringify(s3));
+
+    // ③ 逐叶补成现场"全打勾"那种形状（站点自己就是这么写的），尽头才该成立
+    var s4 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var leaves=document.querySelectorAll(".posCatalog_select:not(.firstLayer)");' +
+      'for(var i=0;i<leaves.length;i++){' +
+      '  var olds=leaves[i].querySelectorAll(".catalog_points_yi, .catalog_points_sa, input.jobUnfinishCount");' +
+      '  for(var j=olds.length-1;j>=0;j--)olds[j].parentNode.removeChild(olds[j]);' +
+      '  var sp=document.createElement("span");sp.className="icon_Completed prevTips";' +
+      '  sp.innerHTML="<span class=\\"prevHoverTips\\">已完成<i></i></span>";' +
+      '  leaves[i].appendChild(sp);}' +
+      'var sc=app._catalogCourseScan();' +
+      'return JSON.stringify({leaves:sc.leaves,unfinished:sc.unfinished,' +
+      'activeLeft:isNaN(Number(sc.activeLeft))?"NaN":Number(sc.activeLeft),atEnd:app._isCourseAtEnd(sc)});})()'
+    ));
+    check('三节全打上 .icon_Completed（并把 active 那节的 jobUnfinishCount 一起摘掉）→ ' +
+      '扫描 unfinished=0、没有否决依据（activeLeft 读回 NaN），_isCourseAtEnd 这才成立',
+      s4.leaves === 3 && s4.unfinished === 0 && s4.activeLeft === 'NaN' && s4.atEnd === true,
+      JSON.stringify(s4));
+
+    // ④ 走真那条链：空转 30 秒 + 上一次已经点过前进 → 原来这里打的是误导的 error
+    var s5 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var k="";try{k=String(app._studyProgressKey()||"")}catch(e){}' +
+      'if(!k)k=String(location.href||"")+"|"+String(app._getCurrentTitle()||"");' +
+      'app._idleEmptySince=Date.now()-40000;app._idleAdvanceKey=k;app._idleDeclineLogAt=0;' +
+      'var g={frames:(function(){try{return (app._collectVisibleTaskFrames()||[]).length}catch(e){return "throw"}})(),' +
+      'quizPend:!!app._isQuizLearningPending(null),jobPend:!!app._isActiveStudyJobPending("idle-section"),' +
+      'video:!!app._getVideoEl(),keyHead:k.slice(0,26),slow:String(app.configs.slowMachineMode||"")};' +
+      'var before=window.__b82nav.length;var handled=app._tryAdvanceIdleSection([]);' +
+      'return JSON.stringify({handled:handled,guards:g,nav:window.__b82nav.slice(before),' +
+      'unit:window.__b82unit,card:window.__b82card,emptySince:app._idleEmptySince});})()'
+    ));
+    check('这条链真的走到了那一步（任务帧 0、没有待答的题、没有没做完的任务点、没有在播的视频，' +
+      '进度键非空，空转窗口没被慢机因子放大）—— 否则下面几条测的是别的分支',
+      s5.guards.frames === 0 && s5.guards.quizPend === false && s5.guards.jobPend === false &&
+      s5.guards.video === false && String(s5.guards.keyHead || '').length > 3 &&
+      s5.guards.slow === 'off', JSON.stringify(s5));
+    check('到尽头这一拍：接管（handled=true）、发**且只发**一次导航，地址是用户中心那一条，' +
+      '带着 omitonePick=1 与刚刷完的课程号 omitoneDone=900000001',
+      s5.handled === true && s5.nav.length === 1 &&
+      s5.nav[0].indexOf('https://i.mooc.chaoxing.com/space/index?ws=2') === 0 &&
+      s5.nav[0].indexOf('omitonePick=1') !== -1 &&
+      s5.nav[0].indexOf('omitoneDone=900000001') !== -1, JSON.stringify(s5));
+    check('换课那一拍不点「下一节」也不切学习卡片（unit=0 / card=0），并把"空够 30 秒"的计时清零',
+      s5.unit === 0 && s5.card === 0 && s5.emptySince === 0, JSON.stringify(s5));
+
+    var l5 = await snap();
+    check('接管这一拍出的是「course finished, back to user center」（1 条），' +
+      '而不是原来那两条误导的 error「study stuck」/「认不出课程结构」—— 日志说的必须是真话',
+      cnt(l5, 'course finished, back to user center') === 1 &&
+      cnt(l5, 'study stuck') === 0 && cnt(l5, 'study idle declined') === 0,
+      JSON.stringify({ names: l5.names.slice(-8) }));
+
+    // ⑤ 60 秒冷却：同一拍重复调用只认领、不再导航，也不许退回那句 error
+    var s6 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._idleEmptySince=Date.now()-40000;' +
+      'var before=window.__b82nav.length;var handled=app._tryAdvanceIdleSection([]);' +
+      'return JSON.stringify({handled:handled,navAdded:window.__b82nav.length-before,' +
+      'switchAge:Date.now()-Number(app._courseSwitchAt||0)});})()'
+    ));
+    var l6 = await snap();
+    check('60 秒之内再空转一轮：照样认领这一拍（handled=true）但不重复导航（navAdded=0），' +
+      '而且**不许**退回那条误导的 study stuck',
+      s6.handled === true && s6.navAdded === 0 && s6.switchAge < 60000 &&
+      cnt(l6, 'course finished, back to user center') === 1 && cnt(l6, 'study stuck') === 0,
+      JSON.stringify({ s6: s6, names: l6.names.slice(-8) }));
+
+    // ⑥ 开关关掉：停在原地，但要说话，且把"有几节"报的是这一页读回来的数（不是写死的）
+    var s7 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._courseSwitchAt=0;app.configs.autoNextCourse=false;' +
+      'var before=window.__b82nav.length;var r=app._leaveFinishedCourse("idle-stuck");' +
+      'var sc=app._catalogCourseScan();' +
+      'return JSON.stringify({claimed:r,navAdded:window.__b82nav.length-before,sections:sc.leaves});})()'
+    ));
+    var l7 = await snap();
+    check('关掉「刷完自动换下一门」：一次导航都不发，但这一拍仍然被认领，并且出 ' +
+      '「course finished, auto switch is off」——那条取证里的小节数是从这一页读回来的 3 节（不是写死的）',
+      s7.claimed === true && s7.navAdded === 0 && s7.sections === 3 &&
+      cnt(l7, 'course finished, auto switch is off') === 1 &&
+      cnt(l7, 'course finished, back to user center') === 1,
+      JSON.stringify({ s7: s7, off: (l7.metas.filter(function (m) {
+        return String(m && m.sections) === '3'; })[0]) || null }));
+
+    check('整条「认尽头 → 回用户中心」零模型请求（换课不花钱，问模型才是花钱的那一步）',
+      ctx.mock.requests.length === reqBefore,
+      JSON.stringify({ before: reqBefore, after: ctx.mock.requests.length }));
+  }
+});
+
+/** ---- 43. 批次 82-C：用户中心那一页里挑下一门 ----
+ *
+ * ⚠️ 这一条的夹具形状是**现场量出来的，而量之前我的假设是错的**：
+ *   原本以为课程卡片在 `space/index` 那一页的顶层文档里，实地探针打出来
+ *   顶层 `.course` = **0**，38 张全在 `#frame_content`（`mooc2-ans.chaoxing.com/visit/interaction`）里面，
+ *   那个帧读得到是因为站点两边都写了 `document.domain='chaoxing.com'`。
+ *   只查顶层的实现会恒为"没有候选"，换课永远停在那句 decline 上 —— 而且**一条测试都不会红**，
+ *   除非夹具把卡片只放在子帧里（这里就是这么放的，顶层一枚都不放）。
+ * 挑法：只认平台自己写的「任务点进度: a/b」那一行，a<b 才有资格；a===b 跳过；
+ * **读不到那一行的 22/38 张也跳过** —— 不知道它有没有做完就跳进去，可能白烧一整晚。
+ * 候选里取**比率最大**的那门（先把开了头的学完，免得 38 门全停在半路），
+ * 换课次数记在这一页自己的 sessionStorage（顶层与用户中心跨站时 storage 是分开的，所以
+ * "是我们自己导航来的"这个前提必须走 URL 标记 `omitonePick=1`）。
+ */
+SCENARIOS.push({
+  name: '用户中心挑下一门：卡片全在子帧里、只认读得到进度的卡、换课有预算',
+  path: '/course-pick?ws=2',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var reqBefore = ctx.mock.requests.length;
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b83=[];window.__b83nav=[];' +
+      'if(!window.__b83bound){window.__b83bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b83.push(m);});}' +
+      'app._gotoUrl=function(u){window.__b83nav.push(String(u||""));};' +
+      'app.configs.autoNextCourse=true;' +
+      'try{sessionStorage.removeItem("omitone:course-switch");}catch(e){}app._coursePickDone=false;' +
+      'return 1;})()'
+    );
+
+    async function snap() {
+      await sleep(420);
+      return JSON.parse(await ctx.client.evaluate(
+        '(function(){return JSON.stringify({names:(window.__b83||[]).map(function(m){return String(m.message||"")}), ' +
+        'metas:(window.__b83||[]).map(function(m){return (m&&m.meta)||{}}), nav:window.__b83nav||[]});})()'
+      ));
+    }
+    function cnt(s, needle) {
+      var n = 0;
+      for (var i = 0; i < s.names.length; i++) if (s.names[i].indexOf(needle) === 0) n++;
+      return n;
+    }
+
+    // ① 夹具自证：卡片**只**在子帧里，顶层一枚都没有（这就是现场）
+    var sh = JSON.parse(await ctx.client.evaluate(
+      '(function(){var top=document.querySelectorAll(".course").length;' +
+      'var f=document.getElementById("frame_content");var rd="?",cards=-1,tally={};' +
+      'try{var d=f.contentDocument;rd=d?"readable":"null";' +
+      '  if(d){var cs=d.querySelectorAll(".course");cards=cs.length;' +
+      '  for(var i=0;i<cs.length;i++){var a=cs[i].querySelector("a[href*=stucoursemiddle]");' +
+      '    var t=String(cs[i].innerText||"").replace(/\\s+/g," ");' +
+      '    var m=t.match(/任务点进度[:：]?\\s*(\\d+)\\s*\\/\\s*(\\d+)/);' +
+      '    var k=m?(Number(m[1])>=Number(m[2])?"full":(Number(m[1])===0?"zero":"partial")):"no-progress";' +
+      '    tally[k]=(tally[k]||0)+1;' +
+      '    if(!a)tally["NO-LINK"]=(tally["NO-LINK"]||0)+1;}}}' +
+      'catch(e){rd="THROW";}' +
+      'return JSON.stringify({top:top,frame:rd,cards:cards,tally:tally,search:String(location.search||"")});})()'
+    ));
+    check('夹具自证：顶层 .course = 0，38 张的位置在这里换成 4 张全在 #frame_content 里，' +
+      '帧读得到（现场靠 document.domain）、四类卡齐（0/88、32/72、192/192、读不到进度），每张都带 stucoursemiddle 链接',
+      sh.top === 0 && sh.frame === 'readable' && sh.cards === 4 &&
+      sh.tally.zero === 1 && sh.tally.partial === 1 && sh.tally.full === 1 &&
+      sh.tally['no-progress'] === 1 && !sh.tally['NO-LINK'], JSON.stringify(sh));
+
+    // ② 走进子帧这一支必须在承重：把帧摘掉，候选必须变成 0
+    var s2 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var withFrame=app._readCourseCards();' +
+      'var f=document.getElementById("frame_content");var p=f.parentNode;p.removeChild(f);' +
+      'var noFrame=app._readCourseCards();p.appendChild(f);' +
+      'return JSON.stringify({docs:withFrame.docs,cards:withFrame.picked.length,noProg:withFrame.noProg,' +
+      'afterDocs:noFrame.docs,afterCards:noFrame.picked.length});})()'
+    ));
+    check('候选是从**子帧**里读出来的：带帧 docs=2 / 能读到进度 3 张 / 读不到进度 1 张，' +
+      '把那一帧摘掉立刻变成 0 张（只查顶层的实现就在这里恒为"没有候选"）',
+      s2.docs === 2 && s2.cards === 3 && s2.noProg === 1 &&
+      s2.afterDocs === 1 && s2.afterCards === 0, JSON.stringify(s2));
+
+    // ⚠️ 摘掉再挂回去的 iframe 会**重新装载**（这是浏览器的行为，不是代码问题），
+    //    所以"恢复"必须轮询等它的文档回来 —— 当场读必然读到 0 张，那条红是假的。
+    var s2b = null;
+    for (var i2 = 0; i2 < 12; i2++) {
+      await sleep(250);
+      s2b = JSON.parse(await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var c=app._readCourseCards();' +
+        'return JSON.stringify({docs:c.docs,cards:c.picked.length,noProg:c.noProg});})()'
+      ));
+      if (s2b.cards === 3) break;
+    }
+    check('挂回去之后等一拍仍然读回 3 张候选（夹具没被这一条改坏，也没有把"重装载的空窗"当成结论）',
+      s2b.docs === 2 && s2b.cards === 3 && s2b.noProg === 1, JSON.stringify(s2b));
+
+    // ③ 用户自己打开用户中心（地址上没有我们那个标记）→ 一步都不许做
+    var s3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._coursePickDone=false;' +
+      'var before=window.__b83nav.length;' +
+      'var r=app._pickNextCourseFromUserCenter();' +
+      'return JSON.stringify({req:app._coursePickRequested(),claimed:r,' +
+      'navAdded:window.__b83nav.length-before,search:String(location.search||"")});})()'
+    ));
+    var l3 = await snap();
+    check('地址上没有 omitonePick=1（用户自己点开用户中心）→ 不认领、不导航、一条 decline 都不打：' +
+      '插件绝不因为"顺便路过的这一页"去动他的浏览器',
+      s3.req === false && s3.claimed === false && s3.navAdded === 0 &&
+      cnt(l3, 'course switch') === 0, JSON.stringify({ s3: s3, names: l3.names }));
+
+    // ④ 打上标记（用 history.replaceState，让生产那条 `_coursePickRequested()` 谓词真跑）
+    var s4 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1&omitoneDone=900000013");' +
+      'app._coursePickDone=false;window.__b83nav.length=0;' +
+      'try{sessionStorage.removeItem("omitone:course-switch");}catch(e){}' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'var cardHref=d.getElementById("c_900000012").querySelector("a[href*=stucoursemiddle]").getAttribute("href");' +
+      'var r=app._pickNextCourseFromUserCenter();' +
+      'var led=app._readSessionLedger("omitone:course-switch")||{};' +
+      'return JSON.stringify({claimed:r,nav:(window.__b83nav||[])[0]||"",navCount:window.__b83nav.length,' +
+      'cardHref:cardHref,sw:led.sw,tried:led.tried||[]});})()'
+    ));
+    var l4 = await snap();
+    check('标记 + 刚刷完的是全刷完那门（omitoneDone=900000013）→ 挑中的是 32/72 那一门，' +
+      '不是还没开头的 0/88，也不是卡片顺序里的第一张：先接着学"开了头没学完"的那门',
+      s4.claimed === true && s4.navCount === 1 &&
+      String(s4.nav || '').indexOf('courseid=900000012') !== -1 &&
+      String(s4.nav || '').indexOf('courseid=900000011') === -1 &&
+      String(s4.nav || '').indexOf('courseid=900000013') === -1, JSON.stringify(s4));
+    check('跳过去的地址**逐字就是那张卡片自己的 href**（不自己拼地址）—— 站点哪天换域名/换参数，跟的是它',
+      !!s4.nav && s4.nav === s4.cardHref, JSON.stringify({ nav: s4.nav, cardHref: s4.cardHref }));
+    check('换过一次的账落在这一页自己的 sessionStorage：sw=1，tried 里带着刚从 URL 读回来的那门 900000013',
+      s4.sw === 1 && (s4.tried || []).indexOf('900000013') !== -1, JSON.stringify(s4));
+    check('挑成一次出「course switch picked next」，取证里带上 sw / cards / noProg（那 1 张读不到进度的卡要看得见）',
+      cnt(l4, 'course switch picked next') === 1 &&
+      (l4.metas.filter(function (m) { return String(m && m.cards) === '3' && Number(m && m.noProg) === 1; })).length >= 1,
+      JSON.stringify({ names: l4.names.slice(-5) }));
+
+    // ⑤ 同一页不许反复挑（否则每 3 秒重挑一次，把用户的浏览器刷爆）
+    var s5 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var r=app._pickNextCourseFromUserCenter();' +
+      'return JSON.stringify({claimed:r,navCount:window.__b83nav.length});})()'
+    ));
+    check('同一页上第二次调用只认领、不再挑（`_coursePickDone` 那道闸）—— ' +
+      '每拍重挑一次会把用户这一页来回刷',
+      s5.claimed === true && s5.navCount === 1, JSON.stringify(s5));
+
+    // ⑥ 三条 decline 各有各的形状，而且都不许导航
+    var s6 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={};window.__b83nav.length=0;' +
+      'app._coursePickDone=false;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:8,tried:["900000013"],at:Date.now()}));' +
+      'out.budgetClaimed=app._pickNextCourseFromUserCenter();out.budgetNav=window.__b83nav.length;' +
+      'app._coursePickDone=false;window.__b83nav.length=0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:1,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'out.noneClaimed=app._pickNextCourseFromUserCenter();out.noneNav=window.__b83nav.length;' +
+      'app._coursePickDone=false;app.configs.autoNextCourse=false;window.__b83nav.length=0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:0,tried:[],at:Date.now()}));' +
+      'out.offClaimed=app._pickNextCourseFromUserCenter();out.offNav=window.__b83nav.length;' +
+      'out.search=String(location.search||"");return JSON.stringify(out);})()'
+    ));
+    var l6 = await snap();
+    check('换课预算用完（sw=8 到上限）→ 只说「switch budget used up」，一步都不跳：' +
+      '这条防的是"换过去又换回来"的空转，上限到了就停下来跟人说话',
+      s6.budgetClaimed === true && s6.budgetNav === 0 &&
+      cnt(l6, 'course switch declined: switch budget used up') === 1, JSON.stringify({ s6: s6 }));
+    check('候选全被本轮换课名单排除了 → 「no course with unfinished task points」，' +
+      '并且 hint 里点名还有 1 张读不到进度的卡没碰（读不到 ≠ 没做完，也不许跳进去）',
+      s6.noneClaimed === true && s6.noneNav === 0 &&
+      cnt(l6, 'course switch declined: no course with unfinished task points') === 1 &&
+      (l6.metas.filter(function (m) { return Number(m && m.noProg) === 1; })).length >= 1,
+      JSON.stringify({ s6: s6, names: l6.names.slice(-6) }));
+    check('开关关掉 → 「declined: auto switch is off」，不跳（这一页是我们自己导航来的，仍然要认领，' +
+      '不能再打那条"认不出课程结构"的 warn）',
+      s6.offClaimed === true && s6.offNav === 0 &&
+      cnt(l6, 'course switch declined: auto switch is off') === 1 &&
+      cnt(l6, 'study idle declined') === 0, JSON.stringify({ s6: s6, names: l6.names.slice(-6) }));
+
+    // 收尾：把地址恢复成打开时那样，别把标记留给下一个场景（整轮共用同一个标签）
+    await ctx.client.evaluate('(function(){history.replaceState(null,"",location.pathname);return 1;})()');
+    check('整条「挑下一门」零模型请求（换课这一步不花钱，进去之后才轮到原来那套管线）',
+      ctx.mock.requests.length === reqBefore,
+      JSON.stringify({ before: reqBefore, after: ctx.mock.requests.length }));
+  }
+});
+
+
+/** ---- 批次 82 ③：右下角面板要把「刷完一门」这一族说成人话 ----
+ * 为什么单列一场：上面那两场断的是 page.js 的判据层（该不该导航、导航去哪），
+ * 而用户在这台电脑上真正看见的是**右下角那三格字**。content.js 的翻译层里有一条通用判据
+ * `/declined:/` → 「放弃等待，继续往下」，而这一批新增的三条 `course switch declined: …`
+ * 名字里就带 `declined:` —— 不点名接住，它们会落进那句话，把「这一门刷完了」说成
+ * 「有一处等不到所以放弃了」（说反了，且方向还错：那一句让用户去找卡住的环节，其实该他挑课）。
+ * ⚠️ 这里**不重跑生产链路**，只把生产实际会发的那五条按原等级、原名、原字段喂给面板 ——
+ * 断的是翻译层；等级与字段名一律照生产写，改了生产而不改这里，这一场会红。 */
+SCENARIOS.push({
+  name: '刷完一门这一族在面板上要说清真话（不许落进「放弃等待，继续往下」）',
+  path: '/blank',
+  run: async function (ctx) {
+    var panel = JSON.parse(await ctx.client.evaluate(
+      '(async function(){' +
+      'function say(level,message,meta){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+      '  level:level,message:message,meta:meta||null},"*");}' +
+      'function wait300(){return new Promise(function(r){setTimeout(r,300);});}' +
+      'function read(){var h=document.getElementById("omitone-status-panel-host");' +
+      '  if(!h||!h.shadowRoot)return null;' +
+      '  var q=function(r){var e=h.shadowRoot.querySelector("[data-role="+r+"]");' +
+      '    return e?String(e.textContent||""):"(无)";};' +
+      '  return {state:q("state"),task:q("task"),detail:q("detail")};}' +
+      'var out={};' +
+      'say("info","start",null);await wait300();out.started=read();' +
+      'say("warn","course finished, back to user center",{leaves:3,unfinished:0,activeLeft:0});' +
+      'await wait300();out.toCenter=read();' +
+      'say("warn","course switch picked next",{sw:2,limit:8,cards:3,noProg:1});' +
+      'await wait300();out.picked=read();' +
+      'say("warn","course finished, auto switch is off",{leaves:3,unfinished:0,activeLeft:0});' +
+      'await wait300();out.off=read();' +
+      'say("warn","course switch declined: switch budget used up",{sw:8,limit:8,cards:3,noProg:1});' +
+      'await wait300();out.budget=read();' +
+      'say("warn","course switch declined: no course with unfinished task points",{sw:8,limit:8,cards:0,noProg:22});' +
+      'await wait300();out.none=read();' +
+      'say("warn","course switch declined: something the translator has never seen",{sw:1,limit:8});' +
+      'await wait300();out.unseen=read();' +
+      'return JSON.stringify(out);})()'
+    ));
+
+    var keys = ['toCenter', 'picked', 'off', 'budget', 'none', 'unseen'];
+    check('前提：面板被 start 激活，且这六次都读回了字（读不到就是空测）',
+      !!panel.started && panel.started.task !== '(无)' &&
+      keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
+      JSON.stringify({ started: panel.started, missing: keys.filter(function (k) { return !panel[k]; }) }));
+
+    check('自己会接着换的两条是「等待中」，不点亮「注意」：回用户中心 / 进下一门',
+      panel.toCenter.state === '等待中' && panel.toCenter.task === '这一门刷完了' &&
+      /用户中心/.test(String(panel.toCenter.detail || '')) &&
+      panel.picked.state === '等待中' && panel.picked.task === '进入下一门',
+      JSON.stringify({ toCenter: panel.toCenter, picked: panel.picked }));
+
+    check('「本轮第几次换课」那两个数是从日志字段读回来的，不是写死的（sw=2 / limit=8）',
+      /2\s*\/\s*8/.test(String(panel.picked.detail || '')), JSON.stringify(panel.picked));
+
+    check('★ 三条 declined 一个都不许写成「放弃等待，继续往下」——这一族没有"等不到"，是刷完了',
+      [panel.off, panel.budget, panel.none, panel.unseen].every(function (p) {
+        return p && p.task !== '放弃等待，继续往下' && p.state === '注意';
+      }),
+      JSON.stringify({ off: panel.off, budget: panel.budget, none: panel.none, unseen: panel.unseen }));
+
+    check('开关关着 → 「这一门刷完了」＋点名那个开关；到上限与没得挑 → 「刷完不换下一门」',
+      panel.off.task === '这一门刷完了' && /刷完自动换下一门/.test(String(panel.off.detail || '')) &&
+      panel.budget.task === '刷完不换下一门' && panel.none.task === '刷完不换下一门',
+      JSON.stringify({ off: panel.off, budget: panel.budget, none: panel.none }));
+
+    check('「读不到进度不盲进」那几张卡要出现在面板上（noProg=22 是从字段读回来的）',
+      /22/.test(String(panel.none.detail || '')), JSON.stringify(panel.none));
+
+    check('这一族里没点名的新 decline 仍落「注意」，但那两行不是出厂值、也不猜原因（只说去看日志）',
+      panel.unseen.task !== '运行中' && panel.unseen.detail !== '状态更新中' &&
+      /日志/.test(String(panel.unseen.detail || '')), JSON.stringify(panel.unseen));
   }
 });
 // ===========================================================================

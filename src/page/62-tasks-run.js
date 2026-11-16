@@ -386,6 +386,13 @@
           document.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title'));
       } catch (eShape) { looksLikeCourse = true; }   // 读不动就当"像"，不许在这里静默跳走
       if (!looksLikeCourse) {
+        // 批次 82-B：这一页**是我们自己为了换课导航过来的**（地址上带着 `omitonePick=1`）时，
+        // 用户中心这一页归换课流程管，挑一课进去；不是我们带来的（用户自己打开用户中心）
+        // 时 `_pickNextCourseFromUserCenter()` 第一行就返回 false，照旧只说一句"认不出课程结构"。
+        if (this._pickNextCourseFromUserCenter()) {
+          this._idleEmptySince = 0;
+          return true;
+        }
         var declineNow = Date.now();
         if (!this._idleDeclineLogAt || declineNow - this._idleDeclineLogAt >= 120000) {
           this._idleDeclineLogAt = declineNow;
@@ -415,6 +422,16 @@
       if (!key) key = String(location.href || '') + '|' + String(this._getCurrentTitle() || '');
 
       if (key === this._idleAdvanceKey) {
+        // 批次 82-A：这一支也先问"是不是这门课的最后一节"。上一节做满、卡片也翻到最后、
+        // 站点的「下一节」点下去页面纹丝不动 —— 那不是"本节没有可识别的任务"，是**这门刷完了**。
+        // ⚠️ 计时必须跟着清零（和上面「认不出课程结构」那道门同一个口径）：
+        //    这一支的进入条件就是"已经空够 30 秒"，不清零的话每一拍都立刻满足它，
+        //    换课那两条 warn 就变成每拍重播 —— 而 `_leaveFinishedCourse` 自己的 60 秒冷却
+        //    只挡导航，挡不住"每拍都进来问一次"。
+        if (this._leaveFinishedCourse('idle-stuck')) {
+          this._idleEmptySince = 0;
+          return true;
+        }
         // 上一次已经推过了、页面还是原样：不再点，但**不能只说一次**。
         // 现场（2026-11-10 19:13:23）这里打了一条就永久静默，而后面只剩
         // `search job: no attachments and no synthetic job` 每分钟一条 —— 用户分不清

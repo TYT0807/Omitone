@@ -6,7 +6,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
   var own = Object.prototype.hasOwnProperty;
-  var booleans = ['autoMaxPlaybackRate', 'muted', 'enableDiscussion', 'autoNext', 'enableQuiz',
+  var booleans = ['autoMaxPlaybackRate', 'muted', 'enableDiscussion', 'autoNext', 'autoNextCourse', 'enableQuiz',
     'enableVote',
     'randomAnswer', 'enableCaptcha', 'blockedReload', 'enableMedia', 'enableSeek',
     'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled',

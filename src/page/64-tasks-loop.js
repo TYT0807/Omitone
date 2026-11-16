@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（29 个）：
+ * 本段的方法（35 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -19,7 +19,9 @@
  *   _getLearningCards、_getLearningCardText、_getActiveLearningCardIndex、
  *   _getCurrentVisibleLearningTaskType、_isAssessmentLearningCard、
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
- *   _switchToNextLearningCard、nextUnit、_advanceLearningStep、
+ *   _switchToNextLearningCard、nextUnit、_gotoUrl、_isCourseAtEnd、_leaveFinishedCourse、
+ *   _coursePickRequested、_readCourseCards、_pickNextCourseFromUserCenter、
+ *   _advanceLearningStep、
  *   _bindStepNavigation、_initCellData、_getTreeContainer
  * ========================================================================== */
 // @omitone-part-header-end
@@ -694,6 +696,204 @@
         if (nextButton) nextButton.click();
       } catch (e) {}
       this._resetRuntimeState();
+    },
+
+    // 换课这一族唯一的"离开这一页"的出口。写成方法而不是直接 `location.href=`，
+    // 是为了让 e2e 能把**这一个动作**桩掉、读回"它到底想跳去哪"，
+    // 而判据本身（尽头判定 / 卡片选课）照样真跑（AGENTS §5「桩要打在动作上」）。
+    _gotoUrl: function (url) {
+      location.href = String(url || '');
+    },
+
+    /**
+     * 批次 82-A：这一门课**到尽头**了没有。三条同时成立才算，少一条就退回原来的"卡住了"分支。
+     * 只在"想点下一节却点不动"的那一刻被问到 —— 我们从不因为目录说"没剩"就主动跳走。
+     */
+    _isCourseAtEnd: function (scan) {
+      var s = scan || this._catalogCourseScan();
+      return !!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0));
+    },
+
+    // 用户中心（课程卡片列表）的地址。现场实测域名是 `i.mooc.chaoxing.com`（2026-11-16，
+    // 那一页 `ws=2` 是「课程」那一栏）；换课整条链路只有这一个外部地址，写死在这里好查。
+    _COURSE_PICKER_BASE: 'https://i.mooc.chaoxing.com/space/index?ws=2',
+
+    // 一次登录会话里最多连着换几门课。防的是「换过去 → 那门也读不出尽头 → 又换回来」这种乒乓；
+    // 用完就停在原地说话，不半夜把用户的前 8 门课全点开。
+    _COURSE_SWITCH_LIMIT: 8,
+
+    /**
+     * 批次 82-B：这门课刷完了 → 回用户中心挑下一门。
+     *
+     * ⚠️ **状态只能挂在地址上**：刷课页在 `mooc1.chaoxing.com`，用户中心在 `i.mooc.chaoxing.com`，
+     *    不同源的 sessionStorage 在同一个标签页里是**两块地方**，
+     *    在刷课页写的账到了用户中心读不回来（反之也一样）。所以"是谁让我来挑课的"用
+     *    `omitonePick=1` 这个查询参数带过去；**换了几门**的账则整个记在用户中心自己那一块
+     *    sessionStorage 里（换课永远要经过这一页，账就写在这页，天然不会丢）。
+     * @returns {boolean} true = 这一拍我认领了（要么已经走人，要么明确决定留下），别再打"卡住"那条 error
+     */
+    _leaveFinishedCourse: function (reason) {
+      var scan = this._catalogCourseScan();
+      if (!this._isCourseAtEnd(scan)) return false;
+      if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
+      this._courseSwitchAt = Date.now();
+      var ev = {
+        reason: String(reason || ''),
+        sections: scan.leaves,
+        unfinished: scan.unfinished,
+        activeLeft: Number(scan.activeLeft) > 0 ? scan.activeLeft : 0
+      };
+      if (!this.configs.autoNextCourse) {
+        emitRuntimeLog('warn', 'course finished, auto switch is off', Object.assign({
+          hint: '目录里 ' + scan.leaves + ' 个小节全打了完成勾、站点的「下一节」也点不动 —— 这一门**刷完了**。' +
+            '自动换下一门的开关（任务点 → 刷完自动换下一门）现在是关的，所以停在这里。' +
+            '想让它自己接着挑下一门，去面板里打开它',
+          everyMs: 0
+        }, ev));
+        return true;
+      }
+      var url = '';
+      try {
+        url = this._COURSE_PICKER_BASE + '&omitonePick=1' +
+          (scan.courseId ? '&omitoneDone=' + encodeURIComponent(scan.courseId) : '');
+      } catch (eU) { url = ''; }
+      if (!url) return false;
+      emitRuntimeLog('warn', 'course finished, back to user center', Object.assign({
+        hint: '这一门课目录里已经没有没做完的小节了，插件现在回用户中心，' +
+          '从「任务点进度 a/b 且 a<b」的课里挑一门接着刷 —— 到那边之后还会有一条 picked / declined 说明挑没挑上',
+        href: url.slice(0, 120),
+        everyMs: 0
+      }, ev));
+      try { this._gotoUrl(url); } catch (eNav) { return false; }
+      return true;
+    },
+
+    // 我们自己导航到用户中心时留在地址上的标记。用户自己打开用户中心时它不存在，
+    // `_pickNextCourseFromUserCenter` 第一行就返回 false —— 绝不因为"顺便路过的这一页"去动他的浏览器。
+    _coursePickRequested: function () {
+      try { return /[?&]omitonePick=1/.test(String(location.search || '')); } catch (e) { return false; }
+    },
+
+    /**
+     * 批次 82-C：读用户中心的课程卡片，只认平台自己写的那一行「任务点进度: 已完成/总数」。
+     *
+     * 现场实测（2026-11-16，38 张卡）：16 张读得到这一行（8 张 a<b、8 张 a===b），
+     * 另外 **22 张压根没有这一行**（它们是同班次的其它课，卡片形状与链接一模一样）。
+     * 那 22 张**不许**当成候选 —— 读不到进度就等于不知道它有没有做完，跳进去可能是一门早就刷完的课，
+     * 白烧一整晚。所以这里只交读得到数的，读不到的数量单独报出来，让用户看见"还有这些我没碰"。
+     *
+     * ⚠️ 卡片**不在用户中心那一页的顶层文档里**（2026-11-16 实地量：顶层 `.course` = 0，
+     *    38 张全在 `#frame_content` = `mooc2-ans.chaoxing.com/visit/interaction` 里面）。
+     *    那个帧**读得到**，因为站点两边都写了 `document.domain='chaoxing.com'`（跨子域脚本互访的老机制），
+     *    所以 `contentDocument` 不抛 —— 只查顶层的话这一条恒为"没有候选"，换课永远停在那句 decline 上。
+     *    反过来讲：万一哪天站点不写 `document.domain` 了，`contentDocument` 抛 SecurityError，
+     *    这里必须**跳过那一帧**继续走（裸读会当场打断整拍），结果退化成 decline 而不是崩 —— 与
+     *    README §6 #2 是同一条规矩。e2e 的夹具因此刻意把卡片只放在子帧里，顶层一枚都不放。
+     */
+    _readCourseCards: function () {
+      var res = { picked: [], noProg: 0, docs: 0 };
+      var docs = [];
+      try { docs.push(document); } catch (eTop) { docs = []; }
+      try {
+        var fr = document.querySelectorAll('iframe');
+        for (var i = 0; i < fr.length; i++) {
+          var d = null;
+          try { d = fr[i].contentDocument; } catch (eCross) { d = null; }   // 跨域帧读不到就跳过，不裸读
+          if (d && docs.indexOf(d) === -1) docs.push(d);
+        }
+      } catch (eFr) {}
+      for (var k = 0; k < docs.length; k++) {
+        var list = null;
+        res.docs++;
+        try { list = docs[k].querySelectorAll('.course'); } catch (eQ) { continue; }
+        if (!list) continue;
+        for (var j = 0; j < list.length; j++) {
+          var txt = '';
+          try { txt = String(list[j].innerText || '').replace(/\s+/g, ' '); } catch (eT) { txt = ''; }
+          var m = txt.match(/任务点进度[:：]?\s*(\d+)\s*\/\s*(\d+)/);
+          if (!m) { if (/course/.test(String(list[j].className || ''))) res.noProg++; continue; }
+          var href = '';
+          try {
+            var a = list[j].querySelector('a[href*="stucoursemiddle"]');
+            href = a ? String(a.getAttribute('href') || '') : '';
+          } catch (eA) { href = ''; }
+          // 只走学习通自己的域名：卡片链接由页面提供，不收来路不明的地址（防被改成外站跳转）
+          if (!/^https:\/\/([a-z0-9-]+\.)*chaoxing\.com\//i.test(href)) continue;
+          res.picked.push({
+            done: Number(m[1]), total: Number(m[2]), href: href,
+            courseId: String((href.match(/courseid=(\d+)/i) || [])[1] || ''),
+            name: txt.replace(/任务点进度[:：]?\s*\d+\s*\/\s*\d+/, '').replace(/\s+/g, ' ').trim().slice(0, 24)
+          });
+        }
+      }
+      return res;
+    },
+
+    /**
+     * 批次 82-B/C：在**我们自己导航来的**用户中心页上挑一门接着刷的课。
+     *
+     * 挑法：先接着学「已经开了头但没学完」的那门（比率最大），比率相同按卡片顺序 ——
+     * 免得每门都开个头、38 门全停在半路。全都在 `tried` 里（本轮换过）或压根没有候选 → 停下来说话。
+     * @returns {boolean} true = 这一页归我管了（调用方别再打「认不出课程结构」那条 warn）
+     */
+    _pickNextCourseFromUserCenter: function () {
+      if (!this._coursePickRequested()) return false;
+      if (this._coursePickDone) return true;
+      this._coursePickDone = true;
+      var ledger = null;
+      try { ledger = this._readSessionLedger('omitone:course-switch'); } catch (eL) { ledger = null; }
+      if (!ledger || typeof ledger !== 'object') ledger = { sw: 0, tried: [], at: Date.now() };
+      if (!(ledger.sw >= 0) || !Array.isArray(ledger.tried)) ledger = { sw: 0, tried: [], at: Date.now() };
+      if (Date.now() - Number(ledger.at || 0) > 6 * 3600 * 1000) { ledger.sw = 0; ledger.tried = []; ledger.at = Date.now(); }
+      var justDone = '';
+      try { justDone = String((String(location.search || '').match(/[?&]omitoneDone=(\d+)/) || [])[1] || ''); } catch (eD) { justDone = ''; }
+      if (justDone && ledger.tried.indexOf(justDone) === -1) ledger.tried.push(justDone);
+      var cards = this._readCourseCards();
+      var ev = { sw: ledger.sw, limit: this._COURSE_SWITCH_LIMIT, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg };
+      if (!this.configs.autoNextCourse) {
+        emitRuntimeLog('warn', 'course switch declined: auto switch is off', Object.assign({
+          hint: '这一页是插件自己为了换课导航过来的，但「刷完自动换下一门」已经关掉了，' +
+            '所以这里一步都不做 —— 请自己挑一门进去，或者把那个开关打开',
+          everyMs: 0
+        }, ev));
+        return true;
+      }
+      if (ledger.sw >= this._COURSE_SWITCH_LIMIT) {
+        emitRuntimeLog('warn', 'course switch declined: switch budget used up', Object.assign({
+          hint: '这一次已经连续换了 ' + ledger.sw + ' 门课，到上限了（防的是"换过去又换回来"的空转）。' +
+            '插件停在这里不再自动换课 —— 想继续就手动进下一门，或者关掉再打开刷课让它重新起账',
+          everyMs: 0
+        }, ev));
+        return true;
+      }
+      var best = null;
+      for (var i = 0; i < cards.picked.length; i++) {
+        var c = cards.picked[i];
+        if (!(c.total > 0) || !(c.done < c.total)) continue;
+        if (c.courseId && ledger.tried.indexOf(c.courseId) !== -1) continue;
+        var ratio = c.total > 0 ? c.done / c.total : 0;
+        if (!best || ratio > best.ratio) best = { card: c, ratio: ratio };
+      }
+      if (!best) {
+        emitRuntimeLog('warn', 'course switch declined: no course with unfinished task points', Object.assign({
+          hint: '用户中心里能读到「任务点进度 a/b」的卡片都学完了（或者被本轮换课名单排除了）。' +
+            '另有 ' + cards.noProg + ' 张卡片上读不到进度那一行 —— 那些插件**不会**盲进，' +
+            '因为不知道它有没有做完。要么都刷完了，要么请手动进那一门',
+          everyMs: 0
+        }, ev));
+        return true;
+      }
+      ledger.sw = Number(ledger.sw || 0) + 1;
+      ledger.at = Date.now();
+      try { this._writeSessionLedger('omitone:course-switch', ledger); } catch (eW) {}
+      emitRuntimeLog('warn', 'course switch picked next', Object.assign({
+        hint: '上一门已经刷完，现在进这一门继续（进度 ' + best.card.done + '/' + best.card.total + '）。' +
+          '进去之后原来的那套管线照常跑：站点自己落在哪一节就从哪一节开始，一节一节往前推',
+        href: best.card.href.slice(0, 120),
+        everyMs: 0
+      }, ev));
+      try { this._gotoUrl(best.card.href); } catch (eNav) {}
+      return true;
     },
 
     _advanceLearningStep: function () {
