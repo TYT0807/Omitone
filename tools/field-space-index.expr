@@ -1,0 +1,164 @@
+/* field-space-index.expr —— 「用户中心那一页到底长什么样」的测绘表达式（给 tools/debug-probe.js 用）
+ *
+ *   npm run field-space
+ *   = node tools/debug-probe.js --port=9334 --match=space/index --file=tools/field-space-index.expr
+ *
+ * 为什么要它：批次 82-B 要「跑完一门之后回用户中心，挑还有任务没完成的课」。
+ * 可这一页在插件里现在的身份是**陌生页面**（`study idle declined … href=…/space/index?ws=1`），
+ * 我们从来没量过它的课程列表到底挂在哪一层、"还有几个没完成"这句话写在哪个元素上。
+ * 没有这份测绘，夹具只能照"实现"长，断言测的就又是"代码和自己一致"（AGENTS §5）。
+ *
+ * ⚠️ 只读：这里只读 DOM 文本、class 与 href，**不点任何东西、不写 storage、不导航、不碰 chrome.storage**
+ *    （那里面是 API Key，绝不允许进输出）。跨域帧读不到就跳过，不抛。
+ *
+ * ⚠️ 输出有界：每一族样本最多 8 条、文本最多 60 字，整份结果压成一行 JSON ——
+ *    现场浏览器要跑刷课，探针不许把控制台刷满。
+ *
+ * 本文件不是独立 JS：它被 `(async () => { … })()` 包起来跑，所以顶层直接 `return`。
+ */
+
+function txt(el, n) {
+  if (!el) return '';
+  var s = String(el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
+  return s.slice(0, n || 60);
+}
+
+// class 链从里到外取三层，够认形状了（站点那一族列表的判据通常就在最近的两层上）
+function chainOf(el, up) {
+  var out = [], node = el, hops = 0;
+  while (node && node.nodeType === 1 && hops < (up || 3)) {
+    var cls = String(node.className || '').replace(/\s+/g, '.').slice(0, 60);
+    out.push(node.tagName.toLowerCase() + (cls ? '.' + cls : '') + (node.id ? '#' + node.id : ''));
+    node = node.parentElement;
+    hops++;
+  }
+  return out.join(' < ');
+}
+
+// 一句文本里出现「待完成 / 未完成 / 进度 / 任务点」——这就是"挑课"要读的那一格。
+// ⚠️ 现场实测（2026-11-16 第一次跑本探针）这句话写的是 **`任务点进度: 0/88 0%`**，
+//    不是「待完成」那一族字样 —— 第一版按「待完成|未完成」去筛，`undoneSamples` 数到 0 条，
+//    差点得出"这一页没有进度信息"的错误结论。
+var UNDONE_RE = /待完成|未完成|还剩|剩余|进行中|个任务|未学|未开始|任务点进度|进度[:：]/;
+
+function surveyDoc(doc, where, out) {
+  var all;
+  try { all = doc.querySelectorAll('a'); } catch (e) { return; }
+  var links = Array.prototype.slice.call(all);
+  for (var i = 0; i < links.length && out.links.length < 8; i++) {
+    var a = links[i];
+    var href = String(a.getAttribute('href') || '');
+    var t = txt(a, 60);
+    // 只认"像是进课那一发"的链接：href 带课程/学习关键字，或文本像课名且不太长
+    if (!/course|mycourse|kc\.|mooc2|stucourse|Course|study/i.test(href) && !(t.length > 4 && t.length < 40)) continue;
+    if (!t) continue;
+    out.links.push({ text: t, href: href.slice(0, 120), chain: chainOf(a, 3) });
+  }
+  // 带「未完成」这一类字样的元素：逐条点名到它自己那一格，别只报总数
+  try {
+    var nodes = doc.querySelectorAll('li,div,span,p,td,em,i,b,font');
+    for (var j = 0; j < nodes.length && out.undoneSamples.length < 8; j++) {
+      var el = nodes[j];
+      // 只看**自己这一层**的文本（外层 li 包着整门课会把内层那一格一起带进来，
+      // 那样"哪一列写着未完成"就读不准了）
+      var own = '';
+      for (var k = 0; k < el.childNodes.length; k++) {
+        if (el.childNodes[k].nodeType === 3) own += el.childNodes[k].nodeValue;
+      }
+      if (!UNDONE_RE.test(String(own))) continue;
+      out.undoneSamples.push({ own: txt({ innerText: String(own) }, 50), chain: chainOf(el, 3) });
+    }
+  } catch (e2) {}
+  // 候选容器：把"每行是一门课"那一族的形状量出来（子元素数 + 第一行长什么样）
+  var SELS = ['ul.demo', '.course-list', '.courseList', '.listStyle', 'ul.list', '.pin-list',
+    '.tShapeList', '.course', '.data', 'ul.pic', '.list1', '.kclist'];
+  for (var s = 0; s < SELS.length; s++) {
+    try {
+      var found = doc.querySelectorAll(SELS[s]);
+      if (!found.length) continue;
+      out.containers.push({
+        sel: SELS[s], tag: String(found[0].tagName).toLowerCase(), count: found.length,
+        firstKids: found[0].children ? found[0].children.length : -1,
+        firstText: txt(found[0], 80), firstChain: chainOf(found[0], 2)
+      });
+    } catch (e3) {}
+  }
+  // ── 课程卡片本体（批次 82-B 真正要读的那一格）────────────────────────────
+  // 现场实测：一门课 = 一个 `div.course.clearfix.learnCourse.stu_…#c_<课程号>`，
+  // 里面写着「任务点进度: 0/88 0%」+ 课名 + 学校 + 老师 + 开课时间。
+  // 这里把**卡片内部的层**拆开：挑课要靠 (a) 进度那句话在哪个元素上、(b) 进课要点哪一个链接。
+  try {
+    var cards = doc.querySelectorAll('.course');
+    for (var c = 0; c < cards.length && out.cards.length < 3; c++) {
+      var card = cards[c];
+      var prog = null;
+      // 找到"写着进度"的那一层自己（只看直接文本，理由同上）
+      var inside = card.querySelectorAll('*');
+      for (var q = 0; q < inside.length; q++) {
+        var own2 = '';
+        for (var w = 0; w < inside[q].childNodes.length; w++) {
+          if (inside[q].childNodes[w].nodeType === 3) own2 += inside[q].childNodes[w].nodeValue;
+        }
+        if (UNDONE_RE.test(String(own2))) { prog = { tag: inside[q].tagName.toLowerCase(), cls: String(inside[q].className || '').slice(0, 50), own: txt({ innerText: String(own2) }, 50) }; break; }
+      }
+      var cl = card.querySelectorAll('a'), links2 = [];
+      for (var z = 0; z < cl.length && links2.length < 4; z++) {
+        links2.push({ text: txt(cl[z], 30), href: String(cl[z].getAttribute('href') || '').slice(0, 110), cls: String(cl[z].className || '').slice(0, 40) });
+      }
+      out.cards.push({
+        where: where, id: String(card.id || ''), cls: String(card.className || '').slice(0, 70),
+        text: txt(card, 150), progress: prog, links: links2,
+        kids: card.children ? card.children.length : -1,
+        // 站点常把课程号/班级号放在 data-* 或 id 上，进课那一跳要用它拼地址
+        data: (function () { var d = {}, names = card.attributes || [];
+          for (var n = 0; n < names.length; n++) { if (names[n].name.indexOf('data-') === 0) d[names[n].name] = String(names[n].value).slice(0, 40); }
+          return d; })()
+      });
+    }
+  } catch (e6) {}
+  // 帧：中心页那一族常常把列表塞在 iframe 里，外层数到 0 不代表没有
+  try {
+    var frs = doc.querySelectorAll('iframe');
+    for (var f = 0; f < frs.length; f++) {
+      var rec = { src: String(frs[f].getAttribute('src') || '').slice(0, 120), readable: false, href: '', lis: -1 };
+      try {
+        var cd = frs[f].contentDocument;
+        if (cd) {
+          rec.readable = true;
+          rec.href = String(cd.location.href || '').slice(0, 140);
+          rec.lis = cd.querySelectorAll('li').length;
+          rec.ready = String(cd.readyState || '');
+          surveyDoc(cd, 'frame:' + String(cd.location.href || '').slice(0, 70), out);
+        }
+      } catch (e4) { rec.err = String((e4 && e4.name) || e4).slice(0, 20); }
+      out.frames.push(rec);
+    }
+  } catch (e5) {}
+}
+
+var out = {
+  href: String(location.href || '').slice(0, 160),
+  title: String(document.title || '').slice(0, 40),
+  ready: String(document.readyState || ''),
+  bodyLen: String((document.body && (document.body.innerText || '')) || '').length,
+  liTotal: document.querySelectorAll('li').length,
+  aTotal: document.querySelectorAll('a').length,
+  links: [], undoneSamples: [], containers: [], cards: [], frames: [],
+  // 插件在这一页能不能认出刷课结构（现场那条 `study idle declined` 的判据本身）
+  plugin: (function () {
+    try {
+      var app = window._xxtApp;
+      if (!app) return { present: false };
+      return {
+        present: true,
+        hasStudyFind: typeof app._searchChaoxingJobOcs === 'function',
+        // 只数不点：这一句在这一页应当返回 false/null（现场就是因此拒绝前进）
+        jobNow: (function () { try { var j = app._searchChaoxingJobOcs([]); return !!j && String(j.kind || ''); } catch (e) { return 'throw'; } })()
+      };
+    } catch (e) { return { present: false }; }
+  })()
+};
+
+surveyDoc(document, 'top', out);
+
+return JSON.stringify(out);

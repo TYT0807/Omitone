@@ -1252,6 +1252,189 @@ function buildVoteInnerHtml() {
 }
 
 /**
+ * 批次 80：现场那一族「`jobid=` 那一格是空的、身份挂在 `workId` 上」的问卷调查。
+ *
+ * 2026-11-16 实地量到的覆盖层地址（`/ananas/modules/zt/vote/index-pc-new.html` 那份封面帧
+ * 的 data 里 `id` 就是那个数）：
+ *   `/mooc-ans/api/work?api=1&workId=43068723&jobid=&needRedirect=true&type=vote&knowledgeid=…&ktoken=…&enc=…`
+ * 上一版身份闸只拿 **jobid** 去 `src` 里找，而这一族 `jobid=` 是空的、卡片上的 jobid 又是
+ * **另一套数**（现场那个 1568684896894399），于是每一发都判「没就绪」：
+ * `vote overlay not ready` + `vote cooling down {"last":"overlay","tries":4}` 每 5 分钟一轮，
+ * 整章再也走不动 —— 现场卡住的那一章死的就是这一条。
+ *
+ * 覆盖层与 `buildVoteTopHtml` 同一形状：**出厂就挂着**（样式表收着、`src=""` → about:blank），
+ * 收起尺寸按现场量到的 1691x828（不收掉就一直压着「下一节」与播放键）。
+ * 三张卡片各代表现场的一族，由封面把 `data.id` 写进覆盖层地址的 `workId=`：
+ *   · `7700123` **被手动结束的问卷** —— 零选项、正文写着「手动结束」，**却带一枚能点的「提交」**。
+ *     现场那份就是这样，所以「没有选项」不足以走 no-form 那支（那里会因为 submit 在而不认），
+ *     必须先认「结束」，否则每轮白点一次封面。
+ *   · `7700124` **还能投的问卷** —— 两个 radio + 提交。它证明身份闸认 workId 之后
+ *     **仍然只认对得上的那一发**，不是「地址里有 workId 就算我的」。
+ *   · `7700125` **站点一直没把卷子填出来**的那一发 —— 点开封面后覆盖层是空的。
+ *     用来验本批主线：开不出来就**把覆盖层收掉**，而不是留它压着整页走人。
+ */
+function buildVoteWidTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>投票 - 学习通</title>' +
+    '<style>.voteContainer{display:none;position:fixed;left:0;top:0;width:1691px;height:828px;background:#fff}</style>' +
+    '</head><body class="popOverflow" id="body-content">' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/vote-wid-cards" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
+    '<div class="voteContainer">' +
+    '<iframe width="100%" height="100%" src="" id="voteIframe" frameborder="0"></iframe>' +
+    '</div>' +
+    '<script>window.__coverClicks=0;window.__backClicks=0;' +
+    // 三张卡片的 jobid 是 15 位长号（现场卡片附件上那一族），**与 data.id 那套 8 位数不是同一个数** ——
+    // 夹具若把两边写成同一个数，身份闸退回 indexOf 也比得出"是我的"，本批的修复就等于没测到。
+    'window.attachments=[' +
+    '{jobid:"900000000003301",name:"合成问卷甲：这门课你最喜欢哪一部分？",' +
+    'property:{_jobid:"900000000003301",jobid:"900000000003301",name:"投票",module:"insertvote",type:"vote",job:true},' +
+    'job:true},' +
+    '{jobid:"900000000003302",name:"合成问卷乙：这门课的语速合适吗？",' +
+    'property:{_jobid:"900000000003302",jobid:"900000000003302",name:"投票",module:"insertvote",type:"vote",job:true},' +
+    'job:true},' +
+    '{jobid:"900000000003303",name:"合成问卷丙：这门课要不要再加一章？",' +
+    'property:{_jobid:"900000000003303",jobid:"900000000003303",name:"投票",module:"insertvote",type:"vote",job:true},' +
+    'job:true}]</script>' +
+    '</body></html>';
+}
+
+/**
+ * 三张投票卡片。`data` 上同时带**卡片自己的长 jobid**（任务点身份）与封面帧的 `id`
+ * （覆盖层地址的 `workId`）—— 现场就是这两个数互相不认识。
+ */
+function buildVoteWidCardsHtml() {
+  function box(jobid, wid, title) {
+    var payload = { id: wid, jobid: jobid, _jobid: jobid, title: title };
+    return '<div class="ans-attach-ct">' +
+      '<i class="ans-job-icon" aria-label="任务点未完成"></i>' +
+      '<div class="attach-name">投票：' + title + '</div>' +
+      '<iframe jobid="' + jobid + '" data="' + JSON.stringify(payload).replace(/"/g, '&quot;') + '" ' +
+      'src="/vote-wid-cover" style="width:100%;height:120px;border:0"></iframe>' +
+      '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>章节</title></head><body>' +
+    box('900000000003301', 7700123, '合成问卷甲：这门课你最喜欢哪一部分？') +
+    box('900000000003302', 7700124, '合成问卷乙：这门课的语速合适吗？') +
+    box('900000000003303', 7700125, '合成问卷丙：这门课要不要再加一章？') +
+    '</body></html>';
+}
+
+/**
+ * 封面帧：按平台的做法从**自己那个 iframe 元素的 `data`** 里取 `id`，
+ * 写进顶层覆盖层地址的 `workId=`，并把 `jobid=` 那一格**留空**（现场形状）。
+ * 计数记在顶层（`__coverClicks`）—— 「这一轮到底点了几次封面」正是本场景要盯的行为。
+ */
+function buildVoteWidCoverHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>投票</title><style>.ans-cmp-icon{width:40px;height:40px;display:inline-block}</style>' +
+    '</head><body>' +
+    '<div id="render" style="width:220px;height:80px">' +
+    '<i class="ans-cmp-icon ans-cmp-iconVote" id="cover"></i>' +
+    '<div class="ans-cmp-title">点开填写</div>' +
+    '</div>' +
+    '<script>' +
+    'document.getElementById("render").addEventListener("click", function () {' +
+    '  var raw = "{}";' +
+    '  try { raw = String(window.frameElement.getAttribute("data") || "{}"); } catch (e0) { return; }' +
+    '  var wid = "";' +
+    '  try { wid = String((JSON.parse(raw) || {}).id || ""); } catch (e1) { wid = ""; }' +
+    '  if (!wid) return;' +
+    '  var top = window.top;' +
+    '  top.__coverClicks = (top.__coverClicks || 0) + 1;' +
+    '  var box = top.document.querySelector(".voteContainer");' +
+    '  var f = top.document.getElementById("voteIframe");' +
+    '  if (!box || !f) return;' +
+    '  box.style.display = "block";' +
+    // 逐字照抄现场那串参数顺序与空格：`jobid=` 紧跟在 `workId=` 后面且为空。
+    '  f.src = "/mooc-ans/api/work?api=1&workId=" + wid + "&jobid=&needRedirect=true&type=vote' +
+    '&knowledgeid=9000049219&ktoken=KT&enc=ENC";' +
+    '});' +
+    '</script></body></html>';
+}
+
+/**
+ * 覆盖层里的三份卷子，按地址上的 `workId` 由 mock 服务选一份（见 startMockServer 里那个分支）。
+ *
+ * `wid=7700123`（被手动结束的问卷）形状取自 2026-11-16 实地快照：
+ *   正文「返回 2019-09-17 09:48 手动结束 提交」，**零个 radio/checkbox**，
+ *   隐藏域 `preventsubmit/courseId/classId/activeId/puid/_token` 齐全，
+ *   还挂着一个 `type=file` 的上传键，提交键是 `a.btn.jb_btn_92.btn-submit`。
+ * ⚠️ 那个 `type=file` 与那几枚隐藏 input 是本夹具承重的一面墙：
+ *   `_voteOverlayForm` 只把 radio/checkbox 当选项，若夹具"干净得只剩一句提示"，
+ *   现场那种「有提交键、有上传框、但一个选项都没有」的形状就复现不出来。
+ */
+function buildVoteWidSurveyHtml(wid) {
+  var head = '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>问卷</title></head><body>';
+  var back = '<a href="javascript:void(0)" class="icon-back">返回</a>';
+  var submit = '<a href="javascript:void(0)" class="btn jb_btn_92 btn-submit color-white">提交</a>';
+  var scripts =
+    '<script>' +
+    // 这一发卷子对应哪张卡片：按 `data` 里的 `"id":<workId>` 整格匹配，不靠裸数字前缀
+    'var WID=' + JSON.stringify('"id":' + String(wid || '')) + ';' +
+    'window.__submitted=0;window.__picked="";' +
+    // 「为什么任务盒没翻转」要能读回来 —— 上一轮只报 b2Finished:false，分不清是**没找到盒**、
+    // 找错盒，还是这份卷子的 wid 压根不是请求里那个（夹具自己那一环坏了也会伪装成生产坏了）。
+    'window.__flip={wid:WID,boxes:-1,hit:-1};' +
+    'document.addEventListener("click", function (ev) {' +
+    '  var t=ev&&ev.target; if(!t) return;' +
+    '  if(t.className&&String(t.className).indexOf("icon-back")>=0){' +
+    '    try{window.top.__backClicks=(window.top.__backClicks||0)+1;' +
+    '      window.top.document.querySelector(".voteContainer").style.display="none";}catch(e){}' +
+    '    return;}' +
+    '  if(!t.classList||!t.classList.contains("btn-submit")) return;' +
+    '  window.__submitted++;' +
+    '  var on=[],ins=document.querySelectorAll("input[type=radio]");' +
+    '  for(var i=0;i<ins.length;i++){ if(ins[i].checked) on.push(ins[i].value); }' +
+    '  window.__picked=on.join(",");' +
+    '  var box=null;' +
+    '  try{ var d=window.top.document.getElementById("iframe").contentDocument;' +
+    '    var bs=d.querySelectorAll(".ans-attach-ct");' +
+    '    window.__flip.boxes=bs.length;' +
+    // ⚠️ `data` 挂在盒子里那枚**封面 iframe** 上（现场就是这层形状，生产也从那里取 workId），
+    //    不在 `.ans-attach-ct` 本身上 —— 早先照着盒子读，三个盒全都"匹配不上"。
+    '    for(var b=0;b<bs.length;b++){ var fr=bs[b].querySelector("iframe");' +
+    '      if(fr && String(fr.getAttribute("data")||"").indexOf(WID)>=0){ box=bs[b]; window.__flip.hit=b; } }' +
+    '    if(!box) window.__flip.why="no-box";' +
+    '  }catch(e2){ window.__flip.why=String(e2&&e2.name||e2); }' +
+    '  if(box && String(box.className).indexOf("ans-job-finished")<0){ box.className+=" ans-job-finished"; }' +
+    '}, true);' +
+    '</' + 'script>';
+  if (String(wid) === '7700125') {
+    // 站点收下了请求、卷子一直没渲染：src 写上了、文档也 complete，正文与选项都是空的。
+    return head + '<div class="voteWrap"></div>' + scripts + '</body></html>';
+  }
+  if (String(wid) === '7700123') {
+    return head +
+      '<div class="voteWrap">' + back +
+      '<div class="zt-time">2019-09-17 09:48</div>' +
+      '<div class="zt-tip">本次问卷已被手动结束，感谢参与</div>' +
+      '<input type="hidden" name="preventsubmit" value="1">' +
+      '<input type="hidden" name="courseId" value="9000049219">' +
+      '<input type="hidden" name="classId" value="9000051801">' +
+      '<input type="hidden" name="activeId" value="7700123">' +
+      '<input type="hidden" name="puid" value="9000000123">' +
+      '<input type="hidden" name="_token" value="ENC">' +
+      '<input type="file" name="fileUpload">' +
+      submit + '</div>' + scripts + '</body></html>';
+  }
+  // 还能投的那一发（7700124 与兜底）：现场形状 —— 一个 name 组两个 radio + 提交
+  return head +
+    '<div class="voteWrap">' + back +
+    '<div class="ans-qt-list">' +
+    '<div class="qt-title">合成问卷乙：这门课的语速合适吗？</div>' +
+    '<ul class="topic-options">' +
+    '<li class="topic-option-list"><div class="optionRadio">' +
+    '<input type="radio" name="answer8000083064" value="A" /><span>A. 合适</span></div></li>' +
+    '<li class="topic-option-list"><div class="optionRadio">' +
+    '<input type="radio" name="answer8000083064" value="B" /><span>B. 偏快</span></div></li>' +
+    '</ul></div>' + submit + '</div>' + scripts + '</body></html>';
+}
+
+/**
  * 「当前章节还有任务点未完成，是否去完成？」这道门（批次 20-G 实测到的两种形状）。
  * ⚠️ onclick 逐字照抄真页面（`scroll2Job` / `PCount.next('1','9000049219',…)` / `WAY.box.hide()`），
  *    只在前面加一句计数 —— 因为旧代码在这里点到的是「下一节」，而真页面的「下一节」
@@ -1666,6 +1849,14 @@ function buildPopupQuizRecallHtml() {
  * 提交键跟着放在 `.tkTopic` 里（生产只在弹窗子树里找它），判决槽放在**外面** ——
  * 塞进来的话「回答错误，请重新作答」会被整块兜底当成题干读回来，这一族就不再是空题干，
  * 批次 72 立的那条让步与批次 77 的退尺（scoped=0）都测不到了。
+ *
+ * `strip()`（批次 81）：站点**收下答案那一刻**把装题干与选项的那一层整个摘掉，容器只剩题型名 ——
+ * 2026-11-16 三轮同形读回来的 html 是 `<div class="tkTopic"> <div class="tkTopic_title">判断题</div></div>`。
+ * ⚠️ **原地摘**（`#pqBox` 仍是同一个元素，只把它的孩子一个个 `removeChild`）：现场生产手里那个节点
+ *    就是"被掏空的同一份"，换 `innerHTML` 造新节点会让 400ms 缓存对不上，测的就不是这一族。
+ * ⚠️ 摘完这一份**自己不再会被 `_checkPopupQuiz` 扫到**（只剩 3 个字，过不了上面那条 `>5` 闸）——
+ *    这不是夹具的缺陷，正是现场那一拍的成因：节点是先被扫到、再被掏空的，
+ *    所以场景里必须"扫一次（填满的）→ 摘 → 再扫一次（命中缓存，拿到掏空的那一个）"。
  */
 function buildPopupQuizScopeHtml(withNet) {
   /**
@@ -1710,7 +1901,7 @@ function buildPopupQuizScopeHtml(withNet) {
     '<video id="v"></video>' +
     '<div id="pqMount"></div>' +
     '<script>' +
-    'window.__site = { pops: 0, takes: 0, submits: 0, rejects: 0, last: "" };' +
+    'window.__site = { pops: 0, takes: 0, submits: 0, rejects: 0, strips: 0, last: "" };' +
     // 四道题干都是合成的句子（不带真实课程痕迹），选项永远是 对/错 ——
     // 现场连着三道判断题就是这样：题干不同、选项相同、指纹相同、eventid 不同。
     'var STEMS = {' +
@@ -1765,6 +1956,17 @@ function buildPopupQuizScopeHtml(withNet) {
     '  window.__site.rejects++;' +
     '  return true;' +
     '};' +
+    'window.__site.strip = function () {' +
+    '  var box = document.getElementById("pqBox");' +
+    '  if (!box || !box.parentNode) return false;' +
+    '  var kids = [].slice.call(box.children), left = [];' +
+    '  for (var i = 0; i < kids.length; i++) {' +
+    '    if (kids[i].className && String(kids[i].className).indexOf("tkTopic_title") !== -1) continue;' +
+    '    box.removeChild(kids[i]); left.push(String(kids[i].className || kids[i].id));' +
+    '  }' +
+    '  window.__site.strips = (window.__site.strips || 0) + 1;' +
+    '  return left;' +
+    '};' +
     'document.addEventListener("click", function (ev) {' +
     '  var t = ev && ev.target;' +
     '  if (!t || t.id !== "pqSubmit") return;' +
@@ -1772,6 +1974,29 @@ function buildPopupQuizScopeHtml(withNet) {
     '}, true);' +
     NET +
     '</' + 'script>' +
+    '</body></html>';
+}
+
+/**
+ * 批次 79：**弹窗与站点那一发交卷请求都在视频帧里**的那一族。
+ *
+ * 现场 2026-11-16 用逐帧探针量到的（`.workbuddy/b79-who.log`）：
+ *   `发在 [/0/0] /ananas/modules/video/index.html  批次78钩子在这一层=没有  记录器钩子=有
+ *    eventid=2616437  站点收到=B  isRight=false  这一层.tkTopic=1`
+ * 也就是弹窗、`quiz-validation` 那一发、该记的那本账**全在视频帧里**，顶层只是刷课壳页。
+ * 批次 78 把钩子挂在顶层 window 上 —— 沙盒里全绿（那份夹具的弹窗与 XHR 同在一个 document），
+ * 真站上等于一条回包都没旁听到。
+ *
+ * 所以这一份夹具把 `buildPopupQuizScopeHtml(true)` **整份搬进同源的子帧**：
+ * 顶层只有 `<video>` 与那枚 iframe。这样"钩子挂在哪一层"才是一个读得出来的差别，
+ * 而不是测试自己写的字符串。
+ */
+function buildPopupQuizFrameTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body class="popOverflow">' +
+    '<div class="course_main">' +
+    '<iframe id="pqFrame" src="/popup-quiz-frame-inner" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div>' +
     '</body></html>';
 }
 
@@ -2067,6 +2292,11 @@ var MOCK_PAGES = {
   '/ananas/modules/zt/vote/index-pc-new.html': buildVoteCoverHtml,
   '/mooc2/work/vote': buildVoteInnerHtml,
   '/vote-empty-inner': function () { return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8"><title>空白</title></head><body></body></html>'; },
+  // ── 批次 80：现场那一族「`jobid=` 空、身份在 `workId` 上」的问卷调查（三份卷子由
+  //    mock 服务按 workId 选，见 startMockServer 里的 `/mooc-ans/api/work` 分支）──
+  '/vote-wid': buildVoteWidTopHtml,
+  '/vote-wid-cards': buildVoteWidCardsHtml,
+  '/vote-wid-cover': buildVoteWidCoverHtml,
   '/unfinished-prompt': buildUnfinishedPromptHtml,
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
@@ -2093,6 +2323,9 @@ var MOCK_PAGES = {
   '/popup-quiz-scope': buildPopupQuizScopeHtml,
   // 批次 78：同一族弹窗，但交卷那一发**真的发出去**（XHR → 本机 mock 服务按 eventid 判对错）
   '/popup-quiz-net': function () { return buildPopupQuizScopeHtml(true); },
+  // 批次 79：同一族弹窗整份搬进**同源子帧**（顶层只有壳）—— 用来量钩子挂在哪一层
+  '/popup-quiz-frame': buildPopupQuizFrameTopHtml,
+  '/popup-quiz-frame-inner': function () { return buildPopupQuizScopeHtml(true); },
   '/popup-quiz-verdict': buildPopupQuizVerdictHtml,
   '/video-continue': buildVideoContinueHtml,
   '/mooc2-work': buildMooc2WorkHtml,
@@ -2519,6 +2752,23 @@ function startMockServer() {
     }
 
     /**
+     * 批次 80：现场那一族问卷调查的卷子出口 —— **同一个路径，按 workId 换卷子**。
+     *
+     * 走服务端而不是三条不同的 MOCK_PAGES 路径，是因为现场就是这一个路径
+     * （`/mooc-ans/api/work?api=1&workId=…&jobid=&…`）：身份只在查询串里，
+     * 路径一动不动。写成三个路径会让"身份闸到底在读哪一格"这件事在沙盒里失去意义。
+     * 认不出的 workId 一律回**空白卷子**（站点收下请求但没渲染出内容那一族）。
+     */
+    if (urlPath === '/mooc-ans/api/work') {
+      var workQs = String((req.url || '').split('?')[1] || '');
+      var widHit = /(?:^|&)workId=([^&]*)/.exec(workQs);
+      var workHtml = buildVoteWidSurveyHtml(widHit ? decodeURIComponent(widHit[1]) : '');
+      scanFixture(urlPath, workHtml);
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(workHtml);
+    }
+
+    /**
      * 批次 78：站点那一发交卷请求**真的**落在这里 —— 判决表与"为什么在服务端判"
      * 见 `startMockServer` 顶部那段（夹具自己造假响应 = 让生产读自己的假设）。
      */
@@ -2934,6 +3184,23 @@ async function initConfigWriter(extensionId) {
 async function clearExtLocalStorage() {
   if (!cfgClient) return;
   try { await cfgClient.evaluate('try { localStorage.clear(); true; } catch (e) { false; }'); } catch (e) {}
+}
+
+// 同 3163 的道理，但这一件必须在**开页之前**做：上一支场景的 run() 会把 xxtRunning 写进
+// 整轮共用的扩展存储，于是这一页一加载 content.js 就自己续跑一遍（`maybeMarkAutoResume`
+// → 页面 `run()` → `_ensureOcsStudyRunner()`）。批次 80 全量跑实测（定向 16/16 绿、全量 6 条红）：
+// 场景里那句 `_clearTickLoop()` **杀不掉它** —— 那个 runner 是一个脱离 tick 的 `while` 异步循环
+// （`60-tasks-detect.js:1708` 起），清掉 interval 只是没人再叫 `_runTick`，已经起来的循环
+// 还在自己点任务盒、自己发 `study matched job`。那一轮 `/vote-wid` 上同时有两个驱动，
+// 「封面点了几次 / 投没投进去 / 账记了几笔」全部读数失真。
+// 这里把那个键按掉，比在页面里事后抢救早一整拍。带 `noAutoResume:true` 的场景才做，
+// 因为另一些场景（批次 63/70 那一族）**要靠**自动续跑成立。
+async function clearAutoResumeFlag() {
+  if (!cfgClient) return;
+  try {
+    await cfgClient.evaluate('new Promise(function (res) { chrome.storage.local.set({ xxtRunning: false }, ' +
+      'function () { res(true); }); })');
+  } catch (e) {}
 }
 
 async function writeConfig(extensionId, cfg) {
@@ -8422,13 +8689,18 @@ SCENARIOS.push({
       '(function(){var ls=window.__b71||[];var m={};for(var i=0;i<ls.length;i++)' +
       '{m[ls[i].msg]=(m[ls[i].msg]||0)+1;}' +
       'return {seen:ls.length,counts:m,' +
-      'localReasons:ls.filter(function(l){return l.msg==="popup quiz answered locally, no request";})' +
-      '.map(function(l){return l.reason;})};})()'
+      // ⚠️ 批次 83：这一道最后**一个字母都不剩**，所以"本地选一项"那一支根本走不到 ——
+      // 点名原因的日志换成「every option already rejected」（载荷里同样带 reason）。
+      // 只读 `answered locally` 的话，那条日志永远不会出现，原因就成了读不回来的东西。
+      'localReasons:ls.filter(function(l){' +
+      'return l.msg==="popup quiz answered locally, no request"||' +
+      'l.msg==="popup quiz every option already rejected";}).map(function(l){return l.reason;})};})()'
     );
     check('71 静音那一刻只说一次（"这道不再问模型了"必须是读得回来的事件，且不许刷屏）',
       (logs.counts['popup quiz stops asking the model for this one'] || 0) === 1,
       JSON.stringify(logs));
-    check('71 本地作答那条日志点名原因 gave-up-twice，且**不被后到的预算改写成 ask-cap**' +
+    check('71 本地那一拍的日志点名原因 gave-up-twice（能挑就记 answered locally、一个都不剩就记 ' +
+      'every option already rejected，两族都算），且**不被后到的预算改写成 ask-cap**' +
       '（说不清为什么没花钱就等于没日志；预算那一格每拍都先跑，覆盖式写法会把先到的原因抹掉）',
       logs.localReasons.indexOf('gave-up-twice') !== -1 &&
       logs.localReasons.indexOf('ask-cap') === -1, JSON.stringify(logs));
@@ -8502,7 +8774,9 @@ SCENARIOS.push({
       'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b72.push(' +
       '{level:String(d.level||""),msg:String(d.message||""),' +
       'reason:String((d.meta&&d.meta.reason)||""),picked:String((d.meta&&d.meta.picked)||""),' +
-      'banned:(d.meta&&d.meta.banned)||[]});});' +
+      'banned:(d.meta&&d.meta.banned)||[],' +
+      // 批次 83：名单里**平台亲口说过错的**有几个 —— 这一族只有推断，所以它必须读回 0。
+      'bySite:(d.meta&&d.meta.bySite===undefined?-1:Number(d.meta.bySite))});});' +
       'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
       'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
       'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
@@ -8587,12 +8861,21 @@ SCENARIOS.push({
     for (var ci = 0; ci < rounds.length; ci++) {
       if (rounds[ci].silentCount === 1) { capRound = ci; break; }
     }
+    // ⚠️ 批次 83：这一族的**停**不再是"花满 2×上限"，而是"这一道的每个字母都赔光了"。
+    // 停止那一轮由读数本身指出（名单长度第一次达到选项数），不按轮次奇偶猜。
+    var optCount = Number(setup.optionCount);
+    var stopRound = -1;
+    for (var si = 0; si < rounds.length; si++) {
+      if (rounds[si].rejectedSum >= optCount) { stopRound = si; break; }
+    }
 
-    // ① 形状自证：站点每轮真的收走过（taken 逐轮涨），而 attempts 数不起来。
-    check('72 形状自证：站点每轮都把弹窗收走过（taken 至少涨到封顶那一发），夹具没退化成"弹窗一直挂着"',
-      capRound > 0 && rounds[capRound].taken >= cap &&
-      takenSeq[rounds.length - 1] >= rounds[0].taken,
-      JSON.stringify({ capRound: capRound, taken: takenSeq }));
+    // ① 形状自证：站点真的收走过（每次提交都被收走、又弹回），而 attempts 数不起来。
+    check('72 形状自证：交上去的每一发都被站点收走过、又弹回（收走次数至少等于选项数 —— ' +
+      '批次 83 起这一族不再靠"花满 2×上限"证明形状：两个字母在两发里就用尽了，' +
+      '所以这里读 taken/back，而不是读 cap）',
+      stopRound > 0 && rounds[rounds.length - 1].taken >= optCount &&
+      rounds[rounds.length - 1].back > setup.back,
+      JSON.stringify({ stopRound: stopRound, taken: takenSeq, back: rounds.map(function (x) { return x.back; }) }));
     check('72 形状自证：中间真的有"看不到弹窗"的那一拍（弹窗在场与不在场两种读数都出现过 —— ' +
       '没有空窗就没有"key/attempts 被清空"，本批要测的那一族压根没复现）',
       rounds.some(function (x) { return x.popupNow === false; }) &&
@@ -8601,18 +8884,25 @@ SCENARIOS.push({
     check('72 形状自证：这一族里 attempts 结构性地数不起来（≤1 就是"弹窗没了就清零"每轮执行的后果，' +
       '也正是 71 那把尺在这一族失效的原因；若它涨起来了说明夹具走的是 71 那一族）',
       attSeq.every(function (a) { return a <= 1; }), JSON.stringify(attSeq));
-    check('72 形状自证：放弃计数 gives 全程为 0 —— 证明"封顶"不是靠 attempts 那把尺做到的',
-      rounds.every(function (x) { return x.givesSum === 0; }),
+    check('72 账本：放弃计数到 2 就停（批次 83：静音之后不再往上加 —— 冷却一过仍然走到"放弃"那一拍，' +
+      '继续加只会读成"这道已经放弃 42 次"，那句话没有下一层含义，现场只会以为还在重试）',
+      rounds[rounds.length - 1].givesSum === 2 &&
+      rounds.every(function (x) { return x.givesSum <= 2; }),
       JSON.stringify(rounds.map(function (x) { return x.givesSum; })));
 
     // ② 封顶记在账本上，不记在弹窗上。
-    check('72 封顶：请求总数正好 2×上限（=' + cap + '），既不超也真花到了那几发',
-      reqTotal === cap, JSON.stringify(reqSeq));
+    check('72 封顶：钱在"每个字母都赔光"那一刻就停 —— 总数不超过选项数、更不靠花满 2×上限，' +
+      '且从那一轮之后每一轮一条都不发（批次 83 免掉的就是这几发）',
+      stopRound > 0 && reqTotal <= optCount && reqTotal < cap &&
+      rounds.slice(stopRound + 1).every(function (x) { return x.req === 0; }),
+      JSON.stringify({ stopRound: stopRound, reqTotal: reqTotal, req: reqSeq }));
     check('72 封顶：到顶之后每一轮一条都不发（到顶那一轮自己也不发 —— 预算是在发之前查的）',
       capRound > 0 && rounds.slice(capRound).every(function (x) { return x.req === 0; }),
       JSON.stringify({ capRound: capRound, req: reqSeq }));
-    check('72 账本：asks 累计到顶就停（读回来的数与请求条数同源，不是测试自己种的常量）',
-      rounds[rounds.length - 1].asksSum === cap, JSON.stringify(rounds.map(function (x) { return x.asksSum; })));
+    check('72 账本：asks 与请求条数同源（读回来的数不是测试自己种的常量），且停在选项数以内',
+      rounds[rounds.length - 1].asksSum === reqTotal && rounds[rounds.length - 1].asksSum <= optCount,
+      JSON.stringify({ asksSum: rounds[rounds.length - 1].asksSum, reqTotal: reqTotal,
+        asks: rounds.map(function (x) { return x.asksSum; }) }));
     check('72 账本：静音名单到顶那一刻写进 1 格（前一轮还是 0）',
       capRound > 0 && rounds[capRound - 1].silentCount === 0 && rounds[capRound].silentCount === 1,
       JSON.stringify(rounds.map(function (x) { return x.silentCount; })));
@@ -8637,18 +8927,39 @@ SCENARIOS.push({
 
     var localLogs = await ctx.client.evaluate(
       '(function(){var ls=window.__b72||[];' +
-      'var first=null;for(var i=0;i<ls.length;i++){' +
-      'if(ls[i].msg==="popup quiz answered locally, no request"&&ls[i].reason==="ask-cap"){first=ls[i];break;}}' +
+      // ⚠️ 批次 83：这一族现在**不会**花满 2×上限，所以原因不再是 ask-cap —— 生产自己点名的是
+      // `model-repeated-rejected`（模型回的是已经判错的字母）与 `gave-up-twice`（放弃两次后进静音名单）。
+      // 名字承诺的东西必须和谓词一一对应，这里改成"每一条本地作答都挑自己名单之外的那个字母"。
+      'var a=[];for(var i=0;i<ls.length;i++){' +
+      'if(ls[i].msg==="popup quiz answered locally, no request"){' +
+      'a.push({reason:String(ls[i].reason||""),picked:String(ls[i].picked||""),' +
+      'banned:(ls[i].banned||[]).map(String),' +
+      'bySite:(ls[i].bySite===undefined?-1:Number(ls[i].bySite))});}}' +
       'var stops=0;for(var j=0;j<ls.length;j++){if(ls[j].msg==="popup quiz stops asking the model for this one")stops++;}' +
-      'return {seen:ls.length,stops:stops,first:first,' +
-      'reasons:ls.filter(function(l){return l.msg==="popup quiz answered locally, no request";})' +
-      '.map(function(l){return l.reason;})};})()'
+      'return {seen:ls.length,stops:stops,locals:a,' +
+      'reasons:a.map(function(x){return x.reason;})};})()'
     );
-    var bannedAtFirst = (localLogs.first && localLogs.first.banned) || [];
-    check('72 本地作答点名原因 ask-cap，且挑的是**没被拒过**的那个字母（否则同一道判断题就在 对/错 之间来回点）',
-      !!localLogs.first && localLogs.first.picked !== '' &&
-      bannedAtFirst.map(String).indexOf(localLogs.first.picked) === -1,
+    check('72 本地作答挑的是**没被拒过**的那个字母（否则同一道判断题就在 对/错 之间来回点）—— ' +
+      '每一条都拿它自己载荷里的 banned 比；原因由生产点名（批次 83 起这一族是 ' +
+      'model-repeated-rejected / gave-up-twice，不再要求只有花满才有的 ask-cap）',
+      localLogs.locals.length >= 1 &&
+      localLogs.locals.every(function (l) {
+        return l.picked !== '' && l.banned.indexOf(l.picked) === -1;
+      }) &&
+      localLogs.reasons.indexOf('ask-cap') === -1,
       JSON.stringify(localLogs));
+    // ⚠️ 批次 83 的**负面对照**：这一族的名单全部来自推断（弹窗被收走 = 只有"我们以为被拒"，
+    // 判决槽一句都没显 → 载荷 bySite=0）。推断只够用来**挑字母**，不够格断言"剩下那个就是答案"，
+    // 所以「只剩一个字母没被拒」那一支在这里**不许**免掉付费询问 —— 第二发必须真花出去。
+    // 摘掉 bySite 那道条件（把 bannedSite 换成 bannedAny）时，这一条要红。
+    check('72 负面对照（批次 83）：这一道的名单只有**推断**（每条本地作答的 bySite 都读回 0）—— ' +
+      '"只剩一个字母没被拒"那一支不许据此免掉询问：全程不出现 reason=only-one-never-rejected，' +
+      '且两个字母各买一发（reqTotal ≥ 选项数的那一发下限 2）',
+      localLogs.locals.length >= 1 &&
+      localLogs.locals.every(function (l) { return l.bySite === 0; }) &&
+      localLogs.reasons.indexOf('only-one-never-rejected') === -1 && reqTotal >= 2,
+      JSON.stringify({ reasons: localLogs.reasons, bySite: localLogs.locals.map(function (l) { return l.bySite; }),
+        reqTotal: reqTotal }));
     check('72 静音那一刻只说一次（"这道不再问模型了"必须是读得回来的事件，且不许刷屏）',
       localLogs.stops === 1, JSON.stringify(localLogs));
 
@@ -9059,9 +9370,10 @@ SCENARIOS.push({
       JSON.stringify(jiaKey.letters) === JSON.stringify(['A']) && r7.rejTotal === 3,
       JSON.stringify({ rejKeys: r7.rejKeys, rejTotal: r7.rejTotal }));
     check('77 放弃只算这一道：乙两个字母都赔光 → every option already rejected（scoped:1）→ 冷却放行播放',
-      // ⚠️ 这里不断 `gives`：那一格只由「attempts 超上限」那一条支路记（`_notePopupQuizGiveUp`），
-      // 而这一族是「名单里已经一个字母都不剩」先走到的 —— 现场那两条 reason 是两回事，
-      // 断错了会把一条不存在的账当成修复的证据。
+      // ⚠️ 这里不断 `gives`：批次 83 起「一个都不剩」那一支**也**记一笔放弃，但它记在
+      // 按题收窄的那把尺（`_popupQuizRejectKey`）上，而上面 9209 行读的是**粗指纹**那一格 ——
+      // 那一格现在恒为 0，拿它当"这一族没记账"的证据会读出一个假阴性。
+      // 按题那一格的读数在 批次 72 的场景里钉（"放弃计数到 2 就停"）。
       r7.blocks === false &&
       firstLog(r7, 'popup quiz every option already rejected', 'reason') === 'ask-cap' &&
       firstLog(r7, 'popup quiz every option already rejected', 'scoped') === 1 &&
@@ -9131,9 +9443,10 @@ SCENARIOS.push({
     rounds.forEach(function (x) {
       (x.rejKeys || []).forEach(function (k) { allLetters = allLetters.concat(k.letters || []); });
     });
-    check('77 总账：整场只发了 2 发请求（Q1 首发 + 一次重试），到顶之后每一轮都是 0 发 —— ' +
-      '把名单按题收窄**没有**换来任何一次额外付费',
-      reqTotal === 2 && afterCap.every(function (x) { return x.req === 0; }),
+    check('77 总账：整场只发了 1 发请求（Q1 首发 —— 平台自己把 A 判错之后，' +
+      '"只剩一个字母没被拒"那一支把重试那一发也免了，批次 83 起这一发本来就不该花），' +
+      '烧满预算之后每一轮都是 0 发 —— 把名单按题收窄**没有**换来任何一次额外付费',
+      reqTotal === 1 && afterCap.every(function (x) { return x.req === 0; }),
       JSON.stringify(reqSeq));
     check('77 账本里存的每一个值都是**选项字母**（不是模型原话 true/「正确」—— 那会让名单永远比不中，' +
       '批次 72 钉过这一格，换了尺之后要重新钉一遍）',
@@ -9599,6 +9912,531 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 6c-1g. 批次 79：弹窗在视频帧里时，钩子要挂在**发交卷那一发的帧**上 ---- */
+//
+// 批次 78 那本账在沙盒里全绿、在真站上等于没装：夹具把弹窗与 XHR 放在同一个 document 里，
+// 于是"钩子挂在顶层"这个错法照样能旁听到回包。现场逐帧量出来是另一回事 ——
+// 弹窗、`quiz-validation` 那一发、该记的账**全在视频帧里**，顶层只是刷课壳页。
+// 本场景把同一份夹具整搬进同源子帧，让"挂在哪一层"变成页面里读得出来的差别：
+//   · 标记必须出现在**子帧**的 `XMLHttpRequest.prototype` 上，顶层那层不许被标记；
+//   · 回包旁听得到 → 账本记下服务端判对的那个字母；
+//   · 下一拍同一指纹弹回来时**一条请求都不发**（批次 72 那条让步在嵌套形状下也要成立）；
+//   · 传 null 时退回顶层（弹窗本来就在顶层文档那一族靠的就是它）。
+SCENARIOS.push({
+  name: '视频弹题在子帧里：钩子挂到发那一发的帧，判对的字母照样白拿',
+  path: '/popup-quiz-frame',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 同 78：上一支场景的 run() 把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有
+      // 循环在自动动弹窗 —— 不清掉下面每一拍的读数都不属于这一轮（批次 69 踩过）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b79=[];window.__b79cur=0;window.__b79k="";' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b79.push({' +
+      'msg:String(d.message||""),letter:String((d.meta&&d.meta.letter)||""),' +
+      'uses:(d.meta&&d.meta.uses),eventid:String((d.meta&&d.meta.eventid)||""),' +
+      'serverMsg:String((d.meta&&d.meta.msg)||""),scoped:(d.meta&&d.meta.scoped),' +
+      'verdict:String((d.meta&&d.meta.verdict)||""),attempt:(d.meta&&d.meta.attempt)});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;app._popupQuizLogAt=0;' +
+      'app._popupQuizFilledBind=null;app._popupQuizNetLedgerOn=0;' +
+      'app._activeJobId="b79-job-a";' +
+      // ── 帧形状自证：弹窗**不在顶层文档里**，顶层压根没有 `__site` ──
+      'var f=document.getElementById("pqFrame");var cw=null,cd=null;' +
+      'try{cw=f.contentWindow;cd=f.contentDocument;}catch(e){}' +
+      // 形状自证**得先有弹窗**才量得到节点落在哪一层：只往子帧挂 DOM（不发请求、不处理），
+      // 上一版这里直接 `_checkPopupQuiz()` 拿到 null，那四格 `nodeIs*` 全在比 null，
+      // 报出来的红跟"层级挂错了"长得一模一样（AGENTS §5：绿有两种，红也有两种）。
+      'if(cw&&cw.__site){cw.__site.take();cw.__site.pop("q1");}' +
+      'var n=app._checkPopupQuiz();' +
+      'return {frameFound:!!f,frameDoc:!!cd,childHasSite:!!(cw&&cw.__site),' +
+      '  topHasSite:("__site" in window),nodeIsFrameEl:!!n&&n.ownerDocument===cd,' +
+      '  nodeIsTopDoc:!!n&&n.ownerDocument===document,' +
+      '  viewIsChild:!!n&&!!cw&&n.ownerDocument.defaultView===cw,viewIsTop:!!n&&n.ownerDocument.defaultView===window,' +
+      '  api:app._isQuizApiUnavailable()===false,loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      '  siteRightEmpty:Object.keys(app._popupQuizSpendBucket().siteRight).length,' +
+      '  netOn:!!app._popupQuizNetLedgerOn,' +
+      '  topMarked:!!(window.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      '  childMarked:!!(cw&&cw.XMLHttpRequest&&cw.XMLHttpRequest.prototype.__omitoneQuizNet)};})()'
+    );
+    check('79 形状自证：弹窗与站点那一发都在**同源子帧**里（顶层没有 `__site`、弹窗节点的 ' +
+      'ownerDocument.defaultView 就是那个子帧的 window，不是顶层）—— 现场那一族就是这个形状；' +
+      '两层的 XHR 原型都还没被标记、账本干净、钩子懒装还没动',
+      !!setup && setup.frameFound === true && setup.frameDoc === true &&
+      setup.childHasSite === true && setup.topHasSite === false &&
+      setup.nodeIsFrameEl === true && setup.nodeIsTopDoc === false &&
+      setup.viewIsChild === true && setup.viewIsTop === false &&
+      setup.api === true && setup.loop === false && setup.checkInterval === false &&
+      setup.siteRightEmpty === 0 && setup.netOn === false &&
+      setup.topMarked === false && setup.childMarked === false,
+      JSON.stringify(setup));
+
+    // 夹具自己那一层：`s` 在子帧里，动 DOM 全部排在取节点之前（同 78 那段⚠️）。
+    var DRIVE =
+      '(function(step){var app=window._xxtApp;' +
+      'var cw=document.getElementById("pqFrame").contentWindow;var s=cw.__site;' +
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizBlockedUntil=0;' +
+      'var p=step.indexOf("probe:")===0?step.slice(6).split("|"):null;' +
+      'if(p){s.take();s.pop(p[0]);}' +
+      'else if(step.indexOf("pop:")===0){s.pop(step.slice(4));}' +
+      'else if(step.indexOf("again:")===0){s.pop(step.slice(6));}' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var node=app._activePopupBlock();' +
+      'if(node){window.__b79k=app._popupQuizFingerprint(node);}' +
+      // 控制步：**不装钩子、也不设 filledBind**，只让夹具点提交把站点那一发发出去。
+      'if(p){if(!node)return {probe:"no-node"};' +
+      '  var pi=app._getOptionItems(node);s.sendText=false;' +
+      '  var ok=s.submit();' +
+      '  return {probe:p[0],submitted:!!ok,stemLen:String(app._popupQuizStem(node,pi)||"").length};}' +
+      'return node?app._handlePopupQuiz(node):null;})(';
+
+    var READ =
+      '(function(){var app=window._xxtApp;' +
+      'var cw=null;try{cw=document.getElementById("pqFrame").contentWindow;}catch(e0){}' +
+      'var s=cw?cw.__site:null,b=app._popupQuizSpend||{},k=window.__b79k||"";' +
+      'var n=app._checkPopupQuiz();' +
+      'var items=n?app._getOptionItems(n):[];var stem=n?String(app._popupQuizStem(n,items)||""):"";' +
+      'var rk=app._popupQuizRejectKey(k,stem);' +
+      'var sr=(b.siteRight||{}),srk=Object.keys(sr),rej=(b.rejected||{});' +
+      'var out={' +
+      'keyTail:String(k).slice(-24),rkeyTail:String(rk).slice(-40),stemTail:stem.slice(-14),' +
+      'popup:!!n,nodeStillFrame:!!n&&n.ownerDocument===cw.document,' +
+      'type:String(n?app._detectPopupQuizType(n,items):""),optionCount:items.length,stemLen:stem.length,' +
+      'attempts:Number(app._popupQuizAttempts)||0,' +
+      'lastFilled:String(app._popupQuizLastFilled||""),' +
+      'filledLetter:String(((b.filled||{})[k]||{}).letter||""),' +
+      'asks:Number((b.asks||{})[k])||0,' +
+      'srKeys:srk.map(function(x){return {tail:String(x).slice(-40),letter:String((sr[x]||{}).letter||""),' +
+      '  uses:Number((sr[x]||{}).uses)||0,eid:String((sr[x]||{}).eid||"")};}),' +
+      'srTotal:srk.length,rightNow:app._popupQuizSiteRightPeek(rk),' +
+      'bannedNow:(rej[rk]||[]).join(","),banned:(app._popupQuizWrongAnswers||[]).slice(),' +
+      'checkedIdx:(function(){var ins=n?[].slice.call(n.querySelectorAll("input[type=radio]")):[];' +
+      '  for(var i=0;i<ins.length;i++){if(ins[i].checked)return i;}return -1;})(),' +
+      'netOn:!!app._popupQuizNetLedgerOn,' +
+      'topMarked:!!(window.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      'childMarked:!!(cw&&cw.XMLHttpRequest&&cw.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      'childFetchMarked:!!(cw&&cw.fetch&&cw.fetch.__omitoneQuizNet),' +
+      'sends:s?((s.sends||[]).slice()):null,submits:s?s.submits:-1,pops:s?s.pops:-1,' +
+      'logs:window.__b79.slice(window.__b79cur||0)};' +
+      'window.__b79cur=window.__b79.length;return out;})()';
+
+    var rounds = [];
+    async function drive(step) {
+      var before = ctx.mock.requests.length;
+      var beforeQv = ctx.mock.quizValidations.length;
+      var did = await ctx.client.evaluate(DRIVE + JSON.stringify(step) + ')');
+      await sleep(300);
+      var st = await ctx.client.evaluate(READ);
+      var rec = { step: step, req: ctx.mock.requests.length - before, did: did || null };
+      rec.qv = ctx.mock.quizValidations.slice(beforeQv);
+      Object.keys(st).forEach(function (x) { rec[x] = st[x]; });
+      rounds.push(rec);
+      return rec;
+    }
+    function at(step) {
+      for (var i = 0; i < rounds.length; i++) { if (rounds[i].step === step) return rounds[i]; }
+      return null;
+    }
+    function firstLog(r, msg, field) {
+      var ls = r.logs || [];
+      for (var i = 0; i < ls.length; i++) { if (ls[i].msg === msg) return field ? ls[i][field] : ls[i]; }
+      return field === undefined ? null : '';
+    }
+    function logCount(r, msg) {
+      return (r.logs || []).filter(function (l) { return l.msg === msg; }).length;
+    }
+    function countAll(msg) {
+      return rounds.reduce(function (a, x) { return a + logCount(x, msg); }, 0);
+    }
+
+    // ── ① 控制步：那一发**真的**到了服务端，但钩子还没装 → 账本必须是空的 ──
+    var r0 = await drive('probe:q1');
+    check('79 控制步：夹具点提交 → 站点那一发 XHR 从**子帧**真落到本机 mock 服务' +
+      '（服务端按 eventid=900001 + answerContent=A 判 isRight:true），而生产还没处理过弹题、' +
+      '钩子还没装 → 两层原型都仍没标记、账本 0 条、也没有任何"记账"日志。' +
+      '这一格证明下面每一次"记上了"都是钩子的功劳，不是夹具替生产写好答案',
+      !!r0.did && r0.did.submitted === true && r0.did.stemLen > 0 &&
+      r0.qv.length === 1 && String(r0.qv[0].eid) === '900001' && String(r0.qv[0].answer) === 'A' &&
+      r0.qv[0].isRight === true && r0.srTotal === 0 && r0.rightNow === '' &&
+      r0.netOn === false && r0.topMarked === false && r0.childMarked === false &&
+      r0.sends.length === 1 && logCount(r0, 'popup quiz site-confirmed answer recorded') === 0,
+      JSON.stringify({ did: r0.did, qv: r0.qv, sr: r0.srTotal, netOn: r0.netOn,
+        topMarked: r0.topMarked, childMarked: r0.childMarked, logs: r0.logs }));
+
+    // ── ② 核心：生产处理过一次 → 钩子挂在发那一发的那一层 ──
+    var r1 = await drive('pop:q1');
+    check('★ 79 核心（挂在哪一层）：处理过一帧弹题之后，标记在**子帧**的 XHR/fetch 上，' +
+      '顶层原型仍然没有标记（批次 78 只挂顶层时，这一格在真站上等于一条回包都没旁听到）；' +
+      '`netOn` 从页面读回为真',
+      r1.nodeStillFrame === true && r1.childMarked === true && r1.childFetchMarked === true &&
+      r1.topMarked === false && r1.netOn === true,
+      JSON.stringify({ childMarked: r1.childMarked, childFetchMarked: r1.childFetchMarked,
+        topMarked: r1.topMarked, netOn: r1.netOn, nodeStillFrame: r1.nodeStillFrame }));
+    check('79 记账（跨帧也记上）：花钱那一发答完 → 站点从**子帧**发的那一回包被旁听到，' +
+      '账本按这一道题的尺存下 A（uses=0、带着服务端 eventid 900001），日志点名 serverMsg=「通过」、scoped=1；' +
+      '勾选证据 checkedIdx=0 是从子帧 DOM 读回来的，不是日志自报',
+      r1.req === 1 && r1.type === 'judge' && r1.optionCount === 2 && r1.stemLen > 0 &&
+      r1.filledLetter === 'A' && r1.lastFilled === 'A' && r1.checkedIdx === 0 &&
+      r1.srTotal === 1 && r1.srKeys.length === 1 && r1.srKeys[0].letter === 'A' &&
+      r1.srKeys[0].uses === 0 && r1.srKeys[0].eid === '900001' &&
+      r1.rightNow === 'A' && r1.bannedNow === '' && r1.banned.length === 0 &&
+      logCount(r1, 'popup quiz site-confirmed answer recorded') === 1 &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'serverMsg') === '通过' &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'scoped') === 1,
+      JSON.stringify({ req: r1.req, type: r1.type, filled: r1.filledLetter, checkedIdx: r1.checkedIdx,
+        sr: r1.srKeys, rightNow: r1.rightNow, qv: r1.qv, logs: r1.logs }));
+
+    // ── ③ 让步条款在嵌套形状下也要成立：同一指纹弹回来不再花钱 ──
+    var r2 = await drive('again:q1');
+    check('79 免费重填：弹窗收走又带同一指纹回到**同一层子帧**时，账本里那个字母还在 → ' +
+      '一条请求都不发、直接把 A 勾回去（checkedIdx=0 从子帧 DOM 读回）、这一道自己那一格 uses 从 0 涨到 1、' +
+      '已拒名单仍然空、attempts 不涨',
+      r2.req === 0 && r2.rightNow === 'A' && r2.checkedIdx === 0 &&
+      r2.bannedNow === '' && r2.banned.length === 0 && r2.attempts === 1 &&
+      r2.srTotal === 1 && r2.srKeys[0].uses === 1 && r2.childMarked === true &&
+      logCount(r2, 'popup quiz reused site-confirmed answer, no request') === 1 &&
+      firstLog(r2, 'popup quiz reused site-confirmed answer, no request', 'letter') === 'A' &&
+      firstLog(r2, 'popup quiz reused site-confirmed answer, no request', 'uses') === 1 &&
+      firstLog(r2, 'popup quiz reused site-confirmed answer, no request', 'scoped') === 1,
+      JSON.stringify({ req: r2.req, rightNow: r2.rightNow, checkedIdx: r2.checkedIdx,
+        uses: (r2.srKeys[0] || {}).uses, banned: r2.bannedNow, attempts: r2.attempts, logs: r2.logs }));
+
+    // ── ④ 兜底那一支：取不到弹窗那一帧的 window 时退回顶层（顶层有题那一族靠它）──
+    var r3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._popupQuizInstallNetLedger(null);' +
+      'var cw=document.getElementById("pqFrame").contentWindow;' +
+      'return {topMarked:!!(window.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      '  childMarked:!!(cw&&cw.XMLHttpRequest&&cw.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      '  netOn:!!app._popupQuizNetLedgerOn,' +
+      // 顶层被标记之后，站点那一发仍然只在子帧里发；顶层这层钩子不该替它记账
+      '  srTotal:Object.keys((app._popupQuizSpend||{}).siteRight||{}).length};})()'
+    );
+    check('79 兜底：`_popupQuizInstallNetLedger(null)` 退回顶层（弹窗本来就在顶层文档那一族靠的就是这一支），' +
+      '已经把钩子挂上的子帧不受影响、账本也不被这一发重复追加',
+      !!r3 && r3.topMarked === true && r3.childMarked === true && r3.netOn === true &&
+      r3.srTotal === 1, JSON.stringify(r3));
+
+    // ── ⑤ 总账：三拍里只花了一发钱，日志说得清是哪一层记上的 ──
+    check('79 总账：三轮里只有生产处理那一拍花钱（模型 1 发），免费重填那一拍一条都不发；' +
+      '「记上一笔」2 条（生产点提交 1 + 免费重填再点提交又听到 1 —— 站点每收一发就回一发，' +
+      '同一道反复判对时那笔"用了几次"必须累计）、「免费重填」1 条、「不拉黑」0 条，' +
+      '且带 letter 的日志说的都是 A',
+      ctx.mock.requests.length - rounds[0].req + rounds[0].req === ctx.mock.requests.length &&
+      rounds.reduce(function (a, x) { return a + x.req; }, 0) === 1 &&
+      countAll('popup quiz site-confirmed answer recorded') === 2 &&
+      countAll('popup quiz reused site-confirmed answer, no request') === 1 &&
+      countAll('popup quiz not banning site-confirmed letter') === 0 &&
+      at('pop:q1') !== null && firstLog(at('pop:q1'), 'popup quiz site-confirmed answer recorded', 'letter') === 'A' &&
+      firstLog(at('again:q1'), 'popup quiz reused site-confirmed answer, no request', 'letter') === 'A',
+      JSON.stringify({ totalReq: rounds.reduce(function (a, x) { return a + x.req; }, 0),
+        qvTotal: ctx.mock.quizValidations.length,
+        recorded: countAll('popup quiz site-confirmed answer recorded'),
+        reused: countAll('popup quiz reused site-confirmed answer, no request'),
+        notBanning: countAll('popup quiz not banning site-confirmed letter') }));
+  }
+});
+
+/** ---- 6c-1h. 批次 81：站点收下答案那一刻把选项那一层摘掉 —— 空壳不等于「这道答不了」 ---- */
+//
+// 现场 2026-11-16 两轮同形（本会话直接从日志环读回来的）：
+//   · 放手那一拍的取证快照 —— `popup quiz answer matched no option` 里
+//     `optionCount:0`、`html:"<div class=\"tkTopic\"> <div class=\"tkTopic_title\">判断题</div></div>"`；
+//   · 放行那一拍的读数 —— `already accepted by site, releasing block`
+//     `{letter:"A",eventid:"2055191",reason:"no-stem",scoped:0,clsSame:1,waitedMs:258}`。
+// 站点收下答案时把装题干与选项的那一层整个摘掉，生产手里**同一个元素**的粗指纹跟着变形
+// （`tkTopic|o|对\u0001错` → `tkTopic|t|判断题`），于是账本按新 key 查不到「这一道刚填过」，
+// 放手那条路读回来 `siteRight:"" / banned:[] / scoped:0` → 打 error + 60 秒冷却 ——
+// **平台已经判对的那一道被我们自己按住一分钟**，这就是用户报的「视频界面的答题」。
+//
+// 本场景钉住三种形状，底线全是「不再为这一道花第二发钱」（用户：可以让步，不能一直付费）：
+//   ① 有回包依据 → 立刻放行（静默 + 清冷却），不记放弃、不打 error；
+//   ② 没依据（这一道压根没填过）→ 有尽头地等一拍，只说一条 info；
+//   ③ 等过 20 秒仍然空 → 才按旧路放手（warn + error + 60 秒冷却）—— 旧行为留给真不可答那一道。
+// ⚠️ ① 的依据只能来自 `_popupQuizFilledBind` 那张便条：塌壳那一拍粗指纹自己也变了，
+//    拿 `bucket.filled[key]` 或 `b.key === key` 问「是不是同一道」必然问不到 ——
+//    那正是本批要修的病，所以下面专门有一条断言读「按壳 key 查账本 = 查不到」当反证。
+SCENARIOS.push({
+  name: '视频弹题塌成空壳：平台已判对的那一道不再被当成答不了',
+  path: '/popup-quiz-net',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,s=window.__site;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 同 78/79：上一支场景把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有循环在
+      // 自动动弹窗 —— 不清掉下面每一拍的读数都不属于这一轮（批次 69 踩过）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b81=[];window.__b81cur=0;window.__b81full="";window.__b81shell="";' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b81.push({' +
+      'level:String(d.level||""),msg:String(d.message||""),' +
+      'letter:String((d.meta&&d.meta.letter)||""),eventid:String((d.meta&&d.meta.eventid)||""),' +
+      'uses:(d.meta&&d.meta.uses),scoped:(d.meta&&d.meta.scoped),reason:String((d.meta&&d.meta.reason)||""),' +
+      'clsSame:(d.meta&&d.meta.clsSame),bound:(d.meta&&d.meta.bound),right:(d.meta&&d.meta.right),' +
+      'filled:(d.meta&&d.meta.filled),waitedMs:(d.meta&&d.meta.waitedMs),' +
+      'siteRight:String((d.meta&&d.meta.siteRight)||""),serverMsg:String((d.meta&&d.meta.msg)||""),' +
+      'banned:(d.meta&&d.meta.banned)||[]});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;app._popupQuizLogAt=0;' +
+      'app._popupQuizFilledBind=null;app._popupQuizNetLedgerOn=0;' +
+      'app._activeJobId="b81-job-a";' +
+      'var bk=app._popupQuizSpendBucket();' +
+      // 本批的零件必须真的在**被加载的那一份**里 —— 少了任何一个，下面读到的全是旧构建的行为。
+      'return {fns:[typeof app._popupQuizEmptyShellPass,typeof app._popupQuizBindIfFresh,' +
+      '  typeof app._popupQuizRejectKeyBound,typeof app._popupQuizScopedFlagBound].join("/"),' +
+      '  shellKey:typeof bk.emptyShell,shellVal:String(bk.emptyShell),' +
+      '  stripFn:typeof s.strip,strips:Number(bk&&s.strips)||0,' +
+      '  loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      '  api:app._isQuizApiUnavailable()===false,popupNow:!!app._checkPopupQuiz(),' +
+      '  srEmpty:Object.keys(bk.siteRight).length,asksEmpty:Object.keys(bk.asks).length};})()'
+    );
+    check('81 前提：API 可用、只剩我这一个驱动、出厂没有弹窗、账本干净；本批四个零件' +
+      '（空壳那一拍 / 便条读数 / 收窄键 / 取证归因）都是 function，`emptyShell` 出厂是 null，' +
+      '夹具那一刀 `strip()` 在位',
+      !!setup && setup.loop === false && setup.checkInterval === false && setup.api === true &&
+      setup.popupNow === false && setup.srEmpty === 0 && setup.asksEmpty === 0 &&
+      setup.fns === 'function/function/function/function' &&
+      setup.shellKey === 'object' && setup.shellVal === 'null' &&
+      setup.stripFn === 'function' && setup.strips === 0,
+      JSON.stringify(setup));
+
+    // 每一拍把「动手前后从页面里读回来的形状」放进 ev 带回来 —— 断言只读这些数，
+    // 不读「测试自己刚种进去的常量」（AGENTS §5）。
+    var DRIVE =
+      '(function(step){var app=window._xxtApp,s=window.__site;var ev={step:step};' +
+      // 静默期与冷却在生产里真的会过去；测试不等墙钟，只把时间戳推到过去（同 72/78/79 口径）。
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizBlockedUntil=0;' +
+      'function scan(){app._popupBlockCheckedAt=0;app._popupBlockCached=null;return app._activePopupBlock();}' +
+      // ── 第一拍：花钱把 q1 答掉（站点回包判对 A，账本与便条都落在**有选项那一份**的尺上）──
+      'if(step==="pop"){s.pop("q1");var n0=scan();' +
+      '  if(!n0)return {step:step,err:"no-node"};' +
+      '  window.__b81full=String(app._popupQuizFingerprint(n0));' +
+      '  ev.options=app._getOptionItems(n0).length;ev.stemLen=String(app._popupQuizStem(n0,app._getOptionItems(n0))||"").length;' +
+      '  return Promise.resolve(app._handlePopupQuiz(n0)).then(function(){return ev;});}' +
+      // ── 塌壳那一拍：三个变体只差「依据从哪来」──
+      // nobind/late 先换一道**没填过**的题（现场另一族：容器长不出选项、也从来没答过）。
+      'var noBind=(step==="strip-nobind"),late=(step==="strip-late");' +
+      'if(noBind||late){s.take();s.pop("q3");}' +
+      'var n1=scan();if(!n1)return {step:step,err:"no-full-node"};' +
+      'ev.fullKey=String(app._popupQuizFingerprint(n1));' +
+      'ev.fullOptions=app._getOptionItems(n1).length;' +
+      'if(noBind){app._popupQuizFilledBind=null;}' +
+      // 站点那一刀：**原地**摘掉装题干与选项的那一层，`#pqBox` 还是同一个元素。
+      'var left=s.strip();ev.stripped=Array.isArray(left)?left.length:-1;' +
+      // 再扫一次：400ms 缓存里那一个正是被掏空的同一份 —— 现场生产拿到的就是它
+      //（`waitedMs:258` 那个量级就是这么来的）。
+      'var n2=app._activePopupBlock();ev.sameNode=(n1===n2);' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      // 空壳自己**不再会被扫到**（只剩「判断题」3 个字，过不了 `textOf(node).length > 5`）。
+      // 这一格证明下面几条断言读的是「先扫到、再被掏空」那一族，不是测试硬塞给生产一个节点。
+      'ev.freshScan=!!app._checkPopupQuiz();' +
+      'window.__b81shell=String(app._popupQuizFingerprint(n2));' +
+      'ev.shellKey=window.__b81shell;ev.shellOptions=app._getOptionItems(n2).length;' +
+      'ev.shellStem=String(app._popupQuizStem(n2,[])||"");' +
+      // 题型尺在塌壳那一拍自己就漂（判断题 → single），所以它**不能**当闸（见断言下面那段）。
+      'ev.shellType=String(app._detectPopupQuizType(n2,[]));' +
+      // ⚠️ 「第一次看见空壳」那一格由**每一拍自己钉**，不依赖上一拍留没留下。
+      //   批次 81 反向验证 I1 实测踩的就是这个耦合：放行那一拍一旦不放行，它会顺手把
+      //   `bucket.emptyShell` 占掉，于是下一拍「等一拍」读回来 `logs:[]`（它已不是第一次看见），
+      //   一条注入越界顶红两条断言 —— 而这一拍要测的本来就是"第一次看见"，
+      //   到一拍要测的本来就是"已经等过尽头"（同 AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+      'var bk=app._popupQuizSpendBucket();' +
+      'if(noBind){app._popupQuizFilledBind=null;bk.emptyShell=null;ev.pinnedShell="first";}' +
+      'else if(late){bk.emptyShell={key:ev.shellKey,at:Date.now()-21000};' +
+      '  ev.rewound=1;ev.pinnedShell="21s";}' +
+      'else{bk.emptyShell=null;ev.pinnedShell="clean";}' +
+      'return Promise.resolve(app._handlePopupQuiz(n2)).then(function(){return ev;});})(';
+
+    var READ =
+      '(function(){var app=window._xxtApp,s=window.__site,b=app._popupQuizSpend||{};' +
+      'var now=Date.now(),fk=window.__b81full||"",sk=window.__b81shell||"";' +
+      'var sr=(b.siteRight||{}),srk=Object.keys(sr),es=b.emptyShell;' +
+      'var givesTotal=0;Object.keys(b.gives||{}).forEach(function(x){givesTotal+=Number(b.gives[x])||0;});' +
+      'var out={' +
+      'fullKeyTail:String(fk).slice(-20),shellKeyTail:String(sk).slice(-20),' +
+      'filledFull:String((((b.filled||{})[fk]||{}).letter)||""),' +
+      'filledShell:String((((b.filled||{})[sk]||{}).letter)||""),' +
+      'asksFull:Number((b.asks||{})[fk])||0,asksShell:Number((b.asks||{})[sk])||0,' +
+      'srTotal:srk.length,srLetter:String(((sr[srk[0]]||{}).letter)||""),' +
+      'srUses:Number(((sr[srk[0]]||{}).uses)||0),srEid:String(((sr[srk[0]]||{}).eid)||""),' +
+      'srStemmed:srk.length?String(srk[0]).indexOf("|s|")!==-1:false,' +
+      'bindLetter:String(((app._popupQuizFilledBind||{}).letter)||""),' +
+      'bindKeyTail:String(((app._popupQuizFilledBind||{}).key)||"").slice(-20),' +
+      'shellSeen:(es===null?"null":(es&&Number(es.at)>0?"timed":"other")),' +
+      'lastFilled:String(app._popupQuizLastFilled||""),attempts:Number(app._popupQuizAttempts)||0,' +
+      'blockedMs:Math.max(0,(Number(app._popupQuizBlockedUntil)||0)-now),' +
+      'quietMs:Math.max(0,(Number(app._popupQuizQuietUntil)||0)-now),' +
+      'givesTotal:givesTotal,banned:(app._popupQuizWrongAnswers||[]).slice(),' +
+      'submits:s.submits,sends:(s.sends||[]).slice(),strips:s.strips,' +
+      'logs:window.__b81.slice(window.__b81cur||0)};' +
+      'window.__b81cur=window.__b81.length;return out;})()';
+
+    var rounds = [];
+    async function drive(step) {
+      var before = ctx.mock.requests.length;
+      var did = await ctx.client.evaluate(DRIVE + JSON.stringify(step) + ')');
+      // 站点那一发是真网络（本机 loopback），回包要落进旁听钩子才记得上账；
+      // 日志走 postMessage 异步送达，读完再取缓冲（AGENTS §5）。
+      await sleep(300);
+      var st = await ctx.client.evaluate(READ);
+      var rec = { step: step, req: ctx.mock.requests.length - before, ev: did || {} };
+      Object.keys(st).forEach(function (x) { rec[x] = st[x]; });
+      rounds.push(rec);
+      return rec;
+    }
+    function at(step) {
+      for (var i = 0; i < rounds.length; i++) { if (rounds[i].step === step) return rounds[i]; }
+      return null;
+    }
+    function firstLog(r, msg, field) {
+      var ls = r.logs || [];
+      for (var i = 0; i < ls.length; i++) { if (ls[i].msg === msg) return field ? ls[i][field] : ls[i]; }
+      return field === undefined ? null : '';
+    }
+    function logCount(r, msg) {
+      return (r.logs || []).filter(function (l) { return l.msg === msg; }).length;
+    }
+    function countAll(msg) {
+      return rounds.reduce(function (a, x) { return a + logCount(x, msg); }, 0);
+    }
+    function levelOf(msg) {
+      for (var i = 0; i < rounds.length; i++) {
+        var ls = rounds[i].logs || [];
+        for (var j = 0; j < ls.length; j++) { if (ls[j].msg === msg) return ls[j].level; }
+      }
+      return '';
+    }
+
+    // ⚠️ `ctx.mock.requests` 是**整轮共用**的累加器（前面每个场景都往里写）。
+    //   总账那条原来写成 `length === 1`，定向跑从零开始所以绿，**全量跑前面已经攒了 30 发**
+    //   就恒红（2026-11-16 实测）。按 AGENTS §5「夹具必须自己钉住它依赖的共享状态」：
+    //   基线在本场景动手之前取，断言只读本场景这几拍的**增量**。
+    var mockBase = ctx.mock.requests.length;
+
+    // ── ① 先花一发：钱花在**有选项那一份**上，账本与便条也都记在那一把尺上 ──
+    var r1 = await drive('pop');
+    check('81 前提（花钱那一拍）：q1 有题干两个选项，模型一发答对 → 站点回包判对 A、' +
+      '账本按**这一道题**的细键存下 A（uses=0、eventid=900001），`bucket.filled` 与 ' +
+      '`_popupQuizFilledBind` 都落在带选项的那把粗指纹（`|o|`）上 —— ' +
+      '下面塌壳那一拍读的就是"这把尺还在不在"',
+      r1.req === 1 && r1.ev.options === 2 && r1.ev.stemLen > 0 &&
+      String(r1.fullKeyTail).indexOf('|o|') !== -1 && r1.filledFull === 'A' &&
+      r1.bindLetter === 'A' && String(r1.bindKeyTail).indexOf('|o|') !== -1 &&
+      r1.srTotal === 1 && r1.srLetter === 'A' && r1.srUses === 0 &&
+      r1.srEid === '900001' && r1.srStemmed === true && r1.asksFull === 1 &&
+      r1.submits >= 1 && logCount(r1, 'popup quiz site-confirmed answer recorded') === 1,
+      JSON.stringify({ ev: r1.ev, req: r1.req, key: r1.fullKeyTail, filled: r1.filledFull,
+        bind: r1.bindLetter + '/' + r1.bindKeyTail, sr: r1.srLetter + '/' + r1.srUses + '/' + r1.srEid,
+        asks: r1.asksFull, submits: r1.submits, logs: r1.logs }));
+
+    // ── ② 核心：站点收下答案那一刀 —— 同一个元素塌成空壳 ──
+    var r2 = await drive('strip');
+    check('81 形状自证（塌壳那一拍）：站点那一刀是**原地摘**的 —— 摘之前 2 个选项、摘之后 0 个，' +
+      '两次扫到的是同一个节点（`sameNode`），而空壳自己**再也扫不出来**（`freshScan` 假：' +
+      '只剩「判断题」3 个字，过不了 `textOf>5` 那道闸）—— 现场生产手里那一个正是' +
+      '"先扫到、再被掏空"的同一份；粗指纹跟着变形（`|o|` → `|t|`）、题干读成空串，' +
+      '题型也自己漂成 single（所以它**不能**当放行闸，见 `_popupQuizEmptyShellPass` 头上那条⚠️）',
+      r2.ev.sameNode === true && r2.ev.fullOptions === 2 && r2.ev.stripped > 0 &&
+      r2.ev.shellOptions === 0 && r2.ev.freshScan === false && r2.ev.shellStem === '' &&
+      String(r2.ev.fullKey).indexOf('|o|') !== -1 && String(r2.ev.shellKey).indexOf('|t|') !== -1 &&
+      r2.ev.shellType === 'single' && r2.filledShell === '',
+      JSON.stringify({ ev: r2.ev, filledShell: r2.filledShell, shellKey: r2.shellKeyTail }));
+    check('81 放行（本批要修的那一条）：塌壳这一拍**平台已经判对** → 走「已经过去了」那一支 —— ' +
+      '只打一条 info 点名 eventid/字母/依据（letter=A、eventid=900001、reason=no-stem、clsSame=1），' +
+      '清掉冷却（blockedMs=0）、开静默期（quietMs>0）、放弃账不动（gives=0）、' +
+      '并且**一条请求都不发**（req=0、壳那把尺的 asks 仍是 0）；' +
+      '旧写法在这一拍打的是 error + 60 秒静音，所以这里同时断「不可答」那句话一条都没出',
+      logCount(r2, 'popup quiz already accepted by site, releasing block') === 1 &&
+      firstLog(r2, 'popup quiz already accepted by site, releasing block', 'letter') === 'A' &&
+      firstLog(r2, 'popup quiz already accepted by site, releasing block', 'eventid') === '900001' &&
+      firstLog(r2, 'popup quiz already accepted by site, releasing block', 'reason') === 'no-stem' &&
+      firstLog(r2, 'popup quiz already accepted by site, releasing block', 'scoped') === 0 &&
+      firstLog(r2, 'popup quiz already accepted by site, releasing block', 'clsSame') === 1 &&
+      levelOf('popup quiz already accepted by site, releasing block') === 'info' &&
+      countAll('popup quiz unanswerable, stop asking model') === 0 &&
+      logCount(r2, 'popup quiz reused site-confirmed answer, no request') === 0 &&
+      r2.req === 0 && r2.asksShell === 0 && r2.givesTotal === 0 &&
+      r2.blockedMs === 0 && r2.quietMs > 0 && r2.shellSeen === 'null' &&
+      r2.lastFilled === '' && r2.attempts === 0 && r2.banned.length === 0,
+      JSON.stringify({ req: r2.req, asksShell: r2.asksShell, gives: r2.givesTotal,
+        blockedMs: r2.blockedMs, quietMs: r2.quietMs, shellSeen: r2.shellSeen,
+        lastFilled: r2.lastFilled, attempts: r2.attempts, logs: r2.logs }));
+
+    // ── ③ 没依据（这一道压根没填过）→ 有尽头地等一拍，不花钱也不记放弃 ──
+    var r3 = await drive('strip-nobind');
+    check('81 等一拍：空壳但**没有任何依据**（便条已清、这一道没填过）→ 只说一条 info ' +
+      '`has no options yet, waiting a beat`，取证点名 bound=0 / right=0（现场只看这两个数就' +
+      '分得开"没填过"与"填过但回包说错"），登记下第一次看见空壳的时刻（shellSeen=timed）；' +
+      '这一拍不填、不花钱、不记放弃、不设冷却',
+      logCount(r3, 'popup quiz has no options yet, waiting a beat') === 1 &&
+      firstLog(r3, 'popup quiz has no options yet, waiting a beat', 'bound') === 0 &&
+      firstLog(r3, 'popup quiz has no options yet, waiting a beat', 'right') === 0 &&
+      firstLog(r3, 'popup quiz has no options yet, waiting a beat', 'reason') === 'no-stem' &&
+      logCount(r3, 'popup quiz already accepted by site, releasing block') === 0 &&
+      countAll('popup quiz unanswerable, stop asking model') === 0 &&
+      r3.req === 0 && r3.givesTotal === 0 && r3.blockedMs === 0 &&
+      r3.shellSeen === 'timed' && r3.ev.pinnedShell === 'first' &&
+      r3.ev.shellOptions === 0 && r3.ev.sameNode === true,
+      JSON.stringify({ ev: r3.ev, req: r3.req, gives: r3.givesTotal, blockedMs: r3.blockedMs,
+        shellSeen: r3.shellSeen, logs: r3.logs }));
+
+    // ── ④ 等过尽头仍然空 → 才按旧路放手（旧行为一条没丢）──
+    var r4 = await drive('strip-late');
+    check('81 到尽头才放手：把「第一次看见空壳」那一格推回 21 秒（不等墙钟，同 72/78 口径）→ ' +
+      '先一条 warn 点名 waitedMs≥20000 / bound=0 / filled=0，再按旧路打 error ' +
+      '`unanswerable`（reason=no-options-no-stem、scoped=0、siteRight=空串 —— 壳那把尺本来就' +
+      '读不到细键那一格），并恢复 60 秒冷却；这一拍照样**一条请求都不发**',
+      r4.ev.rewound === 1 &&
+      logCount(r4, 'popup quiz shell stayed empty') === 1 &&
+      Number(firstLog(r4, 'popup quiz shell stayed empty', 'waitedMs')) >= 20000 &&
+      firstLog(r4, 'popup quiz shell stayed empty', 'bound') === 0 &&
+      firstLog(r4, 'popup quiz shell stayed empty', 'filled') === 0 &&
+      logCount(r4, 'popup quiz unanswerable, stop asking model') === 1 &&
+      levelOf('popup quiz unanswerable, stop asking model') === 'error' &&
+      firstLog(r4, 'popup quiz unanswerable, stop asking model', 'reason') === 'no-options-no-stem' &&
+      firstLog(r4, 'popup quiz unanswerable, stop asking model', 'siteRight') === '' &&
+      r4.req === 0 && r4.blockedMs > 50000 && r4.shellSeen === 'null',
+      JSON.stringify({ ev: r4.ev, req: r4.req, blockedMs: r4.blockedMs,
+        shellSeen: r4.shellSeen, logs: r4.logs }));
+
+    // ── ⑤ 总账：四拍里只花了一发钱，「不可答」那句话只说了一次 ──
+    check('81 总账：塌壳的三拍（放行 / 等一拍 / 到尽头）加起来**一条请求都没发** —— ' +
+      '整轮只有第一拍那次真答题花了钱（钱尺一步没动，用户那句「可以让步，不能一直付费」），' +
+      '而「不可答」只在真的等过尽头那一拍说过一次',
+      rounds.reduce(function (a, x) { return a + x.req; }, 0) === 1 &&
+      countAll('popup quiz unanswerable, stop asking model') === 1 &&
+      countAll('popup quiz already accepted by site, releasing block') === 1 &&
+      countAll('popup quiz has no options yet, waiting a beat') === 1 &&
+      ctx.mock.requests.length - mockBase === 1,
+      JSON.stringify({ totalReq: rounds.reduce(function (a, x) { return a + x.req; }, 0),
+        mockReq: ctx.mock.requests.length - mockBase, unanswerable: countAll('popup quiz unanswerable, stop asking model'),
+        released: countAll('popup quiz already accepted by site, releasing block'),
+        waited: countAll('popup quiz has no options yet, waiting a beat') }));
+  }
+});
+
 /** ---- 6c-1c. 弹题：站点判对、但弹窗不关只显「继续」（批次 74） ---- */
 SCENARIOS.push({
   name: '视频弹题答对后站点不关弹窗时不再误判为被拒',
@@ -9782,20 +10620,27 @@ SCENARIOS.push({
       'return {logs:a.length, meta:m, verdict:(m&&m.verdict!==undefined)?String(m.verdict):"(meta 里没这一格)",' +
       'verdictNow:app._popupQuizSiteVerdict(box),' +
       'picked:m?String(m.picked||""):"", reason:m?String(m.reason||""):"", filled:m?m.filled:null,' +
-      'banned:m&&m.banned?m.banned.length:-1, opts:m&&m.options?m.options.length:-1,' +
+      'banned:m&&m.banned?m.banned.length:-1, bannedList:(m&&m.banned||[]).map(String),' +
+      'bySite:(m&&m.bySite!==undefined)?Number(m.bySite):-1,' +
+      'opts:m&&m.options?m.options.length:-1,' +
       'stopsLogs:(window.__b74||[]).filter(function(t){return t.indexOf("stops asking the model")!==-1;}).length};})()'
     );
     var req3 = ctx.mock.requests.length - reqBase3;
     check('75 判决槽全隐时依据写成 unknown（不是硬编 wrong）—— 这一格是"旧站点/没显判决"那一族，' +
-      '日志必须承认"我们只是推断"（logs/verdictNow/picked 都是从页面读回来的）',
+      '日志必须承认"我们只是推断"（logs/verdictNow/picked 都是从页面读回来的）；' +
+      '挑的必须是**这一道自己没被判错过**的那个字母（上一轮平台真把 A 判错过，批次 83 起名单要并进来）',
       localRead.logs === 1 && localRead.meta !== null && localRead.verdictNow === '' &&
-      localRead.verdict === 'unknown' && localRead.reason === 'ask-cap' && localRead.picked === 'A',
+      localRead.verdict === 'unknown' && localRead.reason === 'ask-cap' &&
+      localRead.picked === 'B' && localRead.bannedList.indexOf('B') === -1,
       JSON.stringify(localRead));
-    check('75 到顶本地作答仍不花钱，且载荷带得上现场形状（选项文本与已拒名单是读回来的数）',
+    check('75 到顶本地作答仍不花钱，且载荷带得上现场形状（选项文本读回来 2 项、' +
+      '已拒名单是**这一道自己**那一格：上一轮平台亲口判错的 A 在里面，bySite 与它同源）',
       req3 === 0 && localRead.stopsLogs === 1 && localRead.filled === 1 &&
-      localRead.opts === 2 && localRead.banned === 0,
+      localRead.opts === 2 && localRead.banned === 1 &&
+      localRead.bannedList.indexOf('A') !== -1 && localRead.bySite === 1,
       JSON.stringify({ req3: req3, stopsLogs: localRead.stopsLogs, filled: localRead.filled,
-        opts: localRead.opts, banned: localRead.banned }));
+        opts: localRead.opts, banned: localRead.banned, bannedList: localRead.bannedList,
+        bySite: localRead.bySite }));
 
     // ── 批次 75 第三格：现场 2026-11-16 真实出现过的那一行 ──
     // `popup quiz unanswerable, stop asking model {"reason":"all-options-rejected","attempts":1,...}`
@@ -15799,6 +16644,430 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 50b. 批次 80：现场那一族「jobid= 空、身份在 workId 上」的问卷调查 ---- */
+//
+// 2026-11-16 现场卡死的那一章（用户报「实战又卡住了」）三件事叠在一起，逐件钉住：
+//   ① 身份闸只拿 jobid 去 `src` 里找，而这一族平台写的是 `jobid=` **空** + `workId=<封面 data.id>`，
+//      卡片上的 jobid 又是另一套 15 位长号 —— 于是每一发都判「没就绪」，
+//      `vote overlay not ready` + `vote cooling down {"last":"overlay","tries":4}` 每 5 分钟一轮；
+//   ② 开不出来那几发**谁都不负责把已经撑开的覆盖层收回去** —— 现场量到 `.voteContainer`
+//      1691x828 一直挂着，刷课循环每 20 秒点一次「下一节」全点在那层白纸上，整章原地不动；
+//   ③ 那一章的问卷是**被手动结束**的：覆盖层打开后一个选项都没有，正文写着「手动结束」，
+//      却带一枚可用的「提交」—— 再点一万次封面也不会长出可勾的东西，
+//      所以要给一个**更长但仍然到期**的冷却（30 分钟），而不是永久跳过（AGENTS §2.7）。
+SCENARIOS.push({
+  name: '投票身份闸认 workId：开不出来就收覆盖层，被手动结束的问卷只冷却不永久跳',
+  path: '/vote-wid',
+  // 这一页只许有一个驱动（本场景自己），而上一支场景留下的 xxtRunning 会在这一页
+  // 自动续跑出一个 study runner —— 见 `clearAutoResumeFlag` 头上那段（批次 80 全量跑 6 条红）。
+  noAutoResume: true,
+  run: async function (ctx) {
+    var nap = '(new Promise(function(r){setTimeout(r,300)}))';
+
+    var setup = await ctx.client.evaluate(
+      '(async function(){' +
+      'var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, {enableVote:true, restudy:false, autoNext:false});' +
+      // 上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有循环在
+      // 自己动任务点 —— 不清掉下面每一拍的读数都不属于这一轮（批次 69 踩过）。
+      // ⚠️ 只按掉"已经跑起来的"那一支不够：自动续跑链里 `run()` 是异步的，它在
+      // `_clearTickLoop()` **之后**才把循环起回来（批次 80 全量跑实测：定向绿、全量恒红，
+      // 红的那条正是"冷却只说一次"）。所以这一轮的夹具把"起循环"这件事本身桩掉 ——
+      // 它是夹具自证（钉住"只剩我这一个驱动"），不是被测行为。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app._startTickLoop=function(){};app.run=function(){return Promise.resolve();};' +
+      'window.__b80=[];window.__b80cur=0;' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b80.push({' +
+      'msg:String(d.message||""),last:String((d.meta&&d.meta.last)||""),' +
+      'note:String((d.meta&&d.meta.note)||""),' +
+      'reason:String((d.meta&&d.meta.reason)||""),by:String((d.meta&&d.meta.by)||""),' +
+      'tries:(d.meta&&d.meta.tries),retryInMs:(d.meta&&d.meta.retryInMs),' +
+      'jobid:String((d.meta&&d.meta.jobid)||""),waitedMs:(d.meta&&d.meta.waitedMs),' +
+      'text:String((d.meta&&d.meta.text)||"").slice(0,40)});});' +
+      'app._voteTryMap={};' +
+      'window.__coverClicks=0;window.__backClicks=0;' +
+      'await ' + nap + ';' +
+      'var vc=document.querySelector(".voteContainer");' +
+      'var f=document.getElementById("voteIframe");' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      // 身份闸的四条要能分开读数：现场那一族的地址逐字取自 2026-11-16 的快照
+      'var FIELD="/mooc-ans/api/work?api=1&workId=43068723&jobid=&needRedirect=true&type=vote";' +
+      'var OUT={' +
+      '  shippedContainerHidden:!!vc&&getComputedStyle(vc).display==="none",' +
+      // ⚠️ 不许写 `getAttribute("src")||"x"`：出厂那一格**就是空串**，`||` 会把"空串"和"读不到"糊成一个值
+      //    （上一轮的 `shippedSrc:"x"` 就是这么来的 —— 那条断言承诺的是"src 是空串"，它自己先分不出来）。
+      '  shippedSrc:(function(){var v=f.getAttribute("src");return v===null?"<absent>":String(v);})(),' +
+      '  boxes:cd.querySelectorAll(".ans-attach-ct").length,' +
+      '  boxesFinished:cd.querySelectorAll(".ans-attach-ct.ans-job-finished").length,' +
+      '  hasJob:!!job, kind:String(job&&job.kind||""), jobid:String(job&&job.jobid||""),' +
+      '  hasFunc:!!job&&typeof job.func==="function",' +
+      '  coverDataHasJobid:!!(job&&job.frame&&/900000000003301/.test(String(job.frame.getAttribute("data")||""))),' +
+      '  workId:app._voteWorkIdOf(job),' +
+      '  frameWidAttr:String(job&&job.frame?job.frame.getAttribute("jobid"):""),' +
+      // 三种形状必须分得开：没这一格（null）/ 有这一格但是空的（''）/ 带号（原值）
+      '  urlJobidField:app._voteUrlJobid(FIELD),' +
+      '  urlJobidNull:String(app._voteUrlJobid("/mooc2/work/vote?jobid=vote-1&type=vote")),' +
+      '  urlJobidAbsent:app._voteUrlJobid("/mooc2/work/vote?type=vote")===null,' +
+      '  urlWid:app._voteUrlIdentity(FIELD),' +
+      '  apiWinsOverWid:app._voteUrlIdentity("/api/work?api=1&workId=43068723&jobid="),' +
+      '  logs:window.__b80.slice(0)};' +
+      'window.__b80cur=window.__b80.length;return OUT;})()'
+    );
+    check('80 形状自证：出厂覆盖层收着且 `src` 是空串、三张投票卡片都没完成、第一个任务点认成 vote 且带 func，' +
+      '卡片 jobid 是 15 位长号而封面 data.id 是 8 位（**两个数互相不认识** —— 现场就是这个形状，' +
+      '若夹具把两边写成一个数，身份闸退回旧的 indexOf 也比得出"是我的"，本批的修复等于没测到）',
+      !!setup && setup.shippedContainerHidden === true && setup.shippedSrc === '' &&
+      setup.boxes === 3 && setup.boxesFinished === 0 &&
+      setup.hasJob === true && setup.kind === 'vote' && setup.jobid === '900000000003301' &&
+      setup.hasFunc === true && setup.coverDataHasJobid === true &&
+      setup.workId === '7700123' && setup.frameWidAttr === '900000000003301',
+      JSON.stringify(setup));
+    check('80 身份三格读数：现场那条地址 `jobid=` 取回**空串**（不是 null、不是"匹配不上"）、' +
+      '带号那条取回原值、没有这一格才取回 null；workId 取的是 `workId=` 而不是地址里第一个数字' +
+      '（`api=1` 会先撞上，那是上一版差点写成的错法）',
+      !!setup && setup.urlJobidField === '' && setup.urlJobidNull === 'vote-1' &&
+      setup.urlJobidAbsent === true && setup.urlWid === '43068723' &&
+      setup.apiWinsOverWid === '43068723',
+      JSON.stringify(setup && { j1: setup.urlJobidField, j2: setup.urlJobidNull,
+        j3: setup.urlJobidAbsent, wid: setup.urlWid, apiFirst: setup.apiWinsOverWid }));
+
+    // ── ① 被手动结束的那一发：认得出、认得出「结束」、不点提交、收覆盖层、冷却 30 分钟 ──
+    var r1 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var ran=await job.func();' +
+      // 日志走 postMessage 是**异步**送达的，func 一返回就读缓冲必然读空 ——
+      // 那和"这条日志没发"长得一模一样（AGENTS §5）。
+      'await ' + nap + ';await ' + nap + ';' +
+      'var f=document.getElementById("voteIframe");' +
+      'var vc=document.querySelector(".voteContainer");' +
+      'var inner=null;try{inner=f.contentWindow;}catch(e){}' +
+      'var doc=inner?inner.document:null;' +
+      'var form=doc?app._voteOverlayForm(doc):{firsts:[],submit:null,text:""};' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      'var box1=cd.querySelectorAll(".ans-attach-ct")[0];' +
+      'var out={' +
+      '  ran:!!ran, coverClicks:Number(window.__coverClicks||0),' +
+      '  srcWorkId:app._voteUrlIdentity(String(f.src||"")),' +
+      '  srcJobidSlot:String(app._voteUrlJobid(String(f.src||""))),' +
+      // 现场那份卷子的形状：**零选项 + 一句「手动结束」+ 一枚可用的提交键**
+      '  firsts:form.firsts.length, hasSubmit:!!form.submit,' +
+      '  ended:app._voteOverlayEnded(form.text), textTail:String(form.text||"").slice(-20),' +
+      '  innerSubmitted:Number((inner&&inner.__submitted)||0),' +
+      '  containerDisplay:String(getComputedStyle(vc).display),' +
+      '  box1Finished:/ans-job-finished/.test(String(box1.className)),' +
+      '  tryMap:JSON.stringify(app._voteTryMap||{}),' +
+      '  logs:window.__b80.slice(window.__b80cur||0)};' +
+      'window.__b80cur=window.__b80.length;return out;})()'
+    );
+    check('80 ★核心一（身份闸认 workId）：这一族 `jobid=` 是空的、地址身份在 workId 上 —— ' +
+      '封面点开后 `_openVoteOverlay` 必须把卷子交出来（旧版在这里永远判"没就绪"，' +
+      '于是 last:"overlay" 的 5 分钟冷却每轮重复、整章再也走不动）',
+      !!r1 && r1.coverClicks >= 1 && r1.srcWorkId === '7700123' && r1.srcJobidSlot === '' &&
+      r1.firsts === 0 && r1.hasSubmit === true && r1.ended === true,
+      JSON.stringify(r1 && { coverClicks: r1.coverClicks, wid: r1.srcWorkId,
+        jobidSlot: r1.srcJobidSlot, firsts: r1.firsts, hasSubmit: r1.hasSubmit,
+        ended: r1.ended, text: r1.textTail }));
+    check('80 ★核心二（人工结束的问卷不再白烧）：零选项 + 正文「手动结束」→ 认成"这场结束了"，' +
+      '**一个提交键都不点**（现场那份是已被手动结束的问卷，点提交等于替用户交一份空卷），' +
+      '覆盖层收回去（display:none），任务盒**不算完成**（我们没投进去，不能替平台说它做完了）',
+      !!r1 && r1.innerSubmitted === 0 && r1.containerDisplay === 'none' &&
+      r1.box1Finished === false,
+      JSON.stringify(r1 && { innerSubmitted: r1.innerSubmitted, display: r1.containerDisplay,
+        box1Finished: r1.box1Finished }));
+    check('80 冷却读数：这一发的账落在 `last:"ended"`、**30 分钟**（1800000ms）而不是那族失败的 5 分钟，' +
+      '日志 `vote survey closed` 点名 retryInMs 与 `vote overlay closed after failed try` 不许出现' +
+      '（这一支是"认结束"，不是"开不出来"，两条归因不能混）',
+      !!r1 && /"n":1,"at":\d+,"last":"ended","cool":1800000/.test(String(r1.tryMap)) &&
+      (function () {
+        var closed = (r1.logs || []).filter(function (l) { return l.msg === 'vote survey closed'; });
+        var stale = (r1.logs || []).filter(function (l) { return l.msg === 'vote overlay closed after failed try'; });
+        return closed.length === 1 && Number(closed[0].retryInMs) === 1800000 &&
+          closed[0].last === 'ended' && stale.length === 0;
+      })(),
+      JSON.stringify(r1 && { tryMap: r1.tryMap, logs: r1.logs }));
+
+    // ── ② 冷却内不再白点封面（这一章还会被反复扫到）──
+    var r2 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var k=String(job.jobid);' +
+      // 门槛不许抄进测试里：先量出生产自己认为"几次算冷却"—— n=3 说还可以再试、n=4 说按住。
+      // 这两格一起钉住边界就是 4（写死 4 的话，生产哪天改成 5 这条也不会红）。
+      'app._voteTryMap[k]={n:3,at:Date.now(),last:"ended",cool:1800000};' +
+      'var atThree=app._voteTryCooledDown(job);' +
+      'app._voteTryMap[k]={n:4,at:Date.now(),last:"ended",cool:1800000};' +
+      'var gate=app._voteTryCooledDown(job);' +
+      'var before=Number(window.__coverClicks||0);' +
+      'await job.func();' +
+      'await ' + nap + ';await ' + nap + ';' +
+      'return {coverClicks:Number(window.__coverClicks||0), before:before,' +
+      '  atThreeNull:atThree===null, gateTries:gate?Number(gate.tries):-1,' +
+      '  gateLast:gate?String(gate.last||""):"", gateCoolMs:gate?Number(gate.coolMs):-1,' +
+      '  tries:((app._voteTryMap||{})[k]||{}).n,' +
+      '  logs:window.__b80.slice(window.__b80cur||0)};})()'
+    );
+    check('80 冷却生效：先把边界量出来（n=3 还可以再试、n=4 才按住 —— 门槛从生产读，不抄进测试），' +
+      '按住那一拍**一次封面都不点**（现场那一族每 20 秒就被扫一遍，不冷却就是无限点封面），' +
+      '日志点名 `vote cooling down` 且 last=ended、tries 就是读回来的那个边界',
+      !!r2 && r2.atThreeNull === true && Number(r2.gateTries) === 4 && r2.gateLast === 'ended' &&
+      Number(r2.gateCoolMs) === 1800000 &&
+      r2.coverClicks === r2.before && Number(r2.tries) === 4 &&
+      (function () {
+        var c = (r2.logs || []).filter(function (l) { return l.msg === 'vote cooling down'; });
+        return c.length === 1 && c[0].last === 'ended' && Number(c[0].tries) === Number(r2.gateTries);
+      })(),
+      JSON.stringify(r2 && { coverClicks: r2.coverClicks, before: r2.before, atThree: r2.atThreeNull,
+        gateTries: r2.gateTries, gateLast: r2.gateLast, coolMs: r2.gateCoolMs, tries: r2.tries, logs: r2.logs }));
+
+    // ── ③ 冷却到期还会再点开（不是永久跳过，AGENTS §2.7）──
+    var r3 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var k=String(job.jobid);var rec=(app._voteTryMap||{})[k];' +
+      'if(rec) rec.at = Date.now()-31*60*1000;' +
+      'var before=Number(window.__coverClicks||0);' +
+      'await job.func();' +
+      'await ' + nap + ';' +
+      'return {coverClicks:Number(window.__coverClicks||0), before:before,' +
+      '  rewound:!!rec, tries:((app._voteTryMap||{})[k]||{}).n};})()'
+    );
+    check('80 到期重试：把冷却推到 31 分钟之前（30 分钟那一档到期）→ **真的再点开一次封面**，' +
+      '计数从新的一笔起（老师中途重新开放这场问卷时下一轮就该投得进去；"永久跳过"在这里是不可接受的）',
+      !!r3 && r3.rewound === true && r3.coverClicks === r3.before + 1 && Number(r3.tries) === 1,
+      JSON.stringify(r3));
+
+    // ── ④ 身份闸不许跨票认领：甲的卷子挂在覆盖层里时，乙必须说"这不是我的" ──
+    var r4 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      // 让甲"过去"（现场是投完了），搜索才会落到乙；随后把覆盖层摆成**甲的卷子还开着**那一拍
+      'var b1=cd.querySelectorAll(".ans-attach-ct")[0];' +
+      'if(String(b1.className).indexOf("ans-job-finished")<0) b1.className+=" ans-job-finished";' +
+      'app._voteTryMap={};' +
+      'var vc=document.querySelector(".voteContainer");var f=document.getElementById("voteIframe");' +
+      'vc.style.display="block";' +
+      // 等**文档真的**换成那一份（不是只把 src 写上）—— 下面那对读数要的就是"加载着的是谁的"。
+      // ⚠️ 必须等**想要的那个 workId**：导航空窗里 `location.href` 仍是上一场那份，
+      //    只看"取不取到 identity"会当场返回甲的号，于是这一格量的成了"永远等不到"（上一轮就栽在这）。
+      'async function loadedWid(want){var end=Date.now()+8000;var w="";' +
+      '  while(Date.now()<end){var h="";try{h=String(f.contentWindow.location.href||"");}catch(e0){}' +
+      '    w=app._voteUrlIdentity(h);if(w===want)return w;' +
+      '    await new Promise(function(r){setTimeout(r,100)});}' +
+      '  return "timeout:"+w;}' +
+      'f.src="/mooc-ans/api/work?api=1&workId=7700123&jobid=&needRedirect=true&type=vote";' +
+      'var loadedJia=await loadedWid("7700123");' +
+      'var jobB=app._searchChaoxingJobOcs([]);' +
+      'var widB=app._voteWorkIdOf(jobB);' +
+      // 旧判据的形状：把 jobid 当"地址里含不含这个数"来看。现场两个数比不上，
+      // 这里再造一个**前缀撞上**的号，证明换成整格相等不是走个形式。
+      'var fake={jobid:"770012",attachment:{property:{}},frame:jobB.frame};' +
+      'var out={kind:String(jobB.kind), jobid:String(jobB.jobid||""), widB:widB,' +
+      '  loadedJia:loadedJia,' +
+      '  isMineB:app._voteOverlayIsMine(f,jobB), readyB:app._voteOverlayDocReady(jobB)===null,' +
+      '  srcHasPrefix:String(f.src).indexOf(String(fake.jobid))>=0,' +
+      '  isMinePrefix:app._voteOverlayIsMine(f,fake),' +
+      '  shippedShell:app._voteOverlayIsMine({src:""},jobB)};' +
+      // ── 导航空窗：把地址换成乙的、**不等导航**，此刻文档还是甲那份 ──
+      // （一章连着两场投票时现场就是这个几百毫秒；只比 `src` 属性会当场"对上"，' +
+      //   于是乙把甲的卷面 —— 现场那份是被手动结束的 —— 当成自己的读完收场。）
+      'f.src="/mooc-ans/api/work?api=1&workId=7700124&jobid=&needRedirect=true&type=vote";' +
+      'out.midIsMine=app._voteOverlayIsMine(f,jobB);' +
+      'out.midDocWid=app._voteUrlIdentity((function(){try{return String(f.contentWindow.location.href)}catch(e1){return ""}})());' +
+      'out.midSrcWid=app._voteUrlIdentity(String(f.src));' +
+      'out.readyMidNull=app._voteOverlayDocReady(jobB)===null;' +
+      'var loadedYi=await loadedWid("7700124");' +
+      'out.afterIsMine=app._voteOverlayIsMine(f,jobB);' +
+      'out.loadedYi=loadedYi;return out;})()'
+    );
+    check('80 ★身份闸跨票不认领：覆盖层里挂的是**甲**（workId=7700123）的卷子时，' +
+      '乙（workId=7700124）问一句"这是我的吗"必须得到 false、`_voteOverlayDocReady` 必须是 null' +
+      '（否则乙会把甲的卷面当成自己的交掉）；出厂空壳 `src=""` 同样不许认领',
+      !!r4 && r4.kind === 'vote' && r4.jobid === '900000000003302' && r4.widB === '7700124' &&
+      r4.loadedJia === '7700123' && r4.isMineB === false && r4.readyB === true &&
+      r4.shippedShell === false,
+      JSON.stringify(r4));
+    check('80 整格相等（不是 indexOf）：一个能**撞上地址前缀**的 jobid（770012 对上 workId=7700123）' +
+      '在旧判据眼里"地址里含这个数"= 认领，新判据按整格比必须说不是',
+      !!r4 && r4.srcHasPrefix === true && r4.isMinePrefix === false, JSON.stringify(r4));
+    check('80 ★导航空窗（批次 80 实测的第二半）：`src` 已经换成乙的、文档却还是甲那一份时' +
+      '身份闸必须说"不是我的"（`midSrcWid`=7700124 而 `midDocWid`=7700123 就是这一拍），' +
+      '`_voteOverlayDocReady` 也不许把这份旧文档交出去；等导航落到乙的那一份之后才改口说"是我的"',
+      !!r4 && r4.midSrcWid === '7700124' && r4.midDocWid === '7700123' &&
+      r4.midIsMine === false && r4.readyMidNull === true &&
+      r4.loadedYi === '7700124' && r4.afterIsMine === true,
+      JSON.stringify(r4 && { midSrc: r4.midSrcWid, midDoc: r4.midDocWid, midIsMine: r4.midIsMine,
+        readyMidNull: r4.readyMidNull, loadedYi: r4.loadedYi, afterIsMine: r4.afterIsMine }));
+
+    // ── ⑤ 乙这一发真的投得进去（证明身份闸认 workId 之后不是"有 workId 就放行"）──
+    var r5 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      // 上一拍为了量身份闸，把覆盖层摆成了"开着、里面是乙"那一格 —— 不清回去，这一拍
+      // `_openVoteOverlay` 第一步就"复用现成的"，一次封面都不点，测的就不是"乙这一发投得进去"。
+      'var vc0=document.querySelector(".voteContainer");var f0=document.getElementById("voteIframe");' +
+      'vc0.style.display="none";f0.src="";' +
+      'await ' + nap + ';' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var before=Number(window.__coverClicks||0);' +
+      'var ran=await job.func();' +
+      'await ' + nap + ';await ' + nap + ';' +
+      'var f=document.getElementById("voteIframe");' +
+      'var inner=null;try{inner=f.contentWindow;}catch(e){}' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      'var b2=cd.querySelectorAll(".ans-attach-ct")[1];' +
+      'var vc=document.querySelector(".voteContainer");' +
+      'var out={coverClicks:Number(window.__coverClicks||0), before:before, ran:!!ran,' +
+      '  srcWorkId:app._voteUrlIdentity(String(f.src||"")),' +
+      '  picked:String((inner&&inner.__picked)||""),submitted:Number((inner&&inner.__submitted)||0),' +
+      '  flip:JSON.stringify((inner&&inner.__flip)||null),' +
+      '  b2Finished:/ans-job-finished/.test(String(b2.className)),' +
+      '  display:String(getComputedStyle(vc).display),' +
+      '  tryKeyLeft:Object.keys(app._voteTryMap||{}).length};' +
+      'return out;})()'
+    );
+    check('80 乙照常投进去：点到乙的封面后地址换成 workId=7700124 → 卷子是乙自己的（两个 radio），' +
+      '**读回 checked 的勾选证据**、只提交一次、任务盒 class 翻转、覆盖层收回、冷却账清空',
+      !!r5 && r5.coverClicks === r5.before + 1 && r5.srcWorkId === '7700124' &&
+      r5.picked === 'A' && r5.submitted === 1 && r5.b2Finished === true &&
+      r5.display === 'none' && r5.tryKeyLeft === 0,
+      JSON.stringify(r5));
+
+    // ── ⑥ 本批主线：开不出来就**把覆盖层收掉**，不许留它压着「下一节」──
+    var r6 = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'var cd=document.getElementById("iframe").contentDocument;' +
+      'var b2=cd.querySelectorAll(".ans-attach-ct")[1];' +
+      'b2.className+=" ans-job-finished";' +
+      'app._voteTryMap={};' +
+      'var job=app._searchChaoxingJobOcs([]);' +
+      'var f=document.getElementById("voteIframe");var vc=document.querySelector(".voteContainer");' +
+      // 覆盖层有没有**压在正文上** —— 现场量的那层 1691x828 白纸一直挂着，「下一节」就点在它身上。
+      // ⚠️ 采样点取容器自己的左上角内侧，**不取视口中心**：沙盒里视口中心被扩展自己那台
+      //    日志面板（`#xxt-panel`，z-index 比覆盖层高）占着，元素命中判定量到的永远是面板，
+      //    于是"覆盖层压没压住"读不出来（批次 80 上一轮 `openedHit:"other"` 就是这么来的）。
+      //    面板那一格仍然回读进 `centerChain`，一眼分得开是面板还是别的东西。
+      'function hitAt(px,py){var el=document.elementFromPoint(px,py);var chain="";var hop=0,n=el;' +
+      '  while(n&&hop<5){ chain+=(hop?">":"")+String(n.tagName||"").toLowerCase()' +
+      '    +(n.id?"#"+n.id:"")+(n.className&&String(n.className).trim()?"."+String(n.className).trim().split(/\\s+/).join("."):"");' +
+      '    n=n.parentElement;hop++;}' +
+      '  var on=el,isVc=false,h2=0;while(on&&h2<12){ if(on.classList&&on.classList.contains("voteContainer")){isVc=true;break;}' +
+      '    on=on.parentElement;h2++;}' +
+      '  return {hit:isVc?"voteContainer":"other",chain:chain};}' +
+      'function probe(){var rc=vc.getBoundingClientRect();var x=Math.round(rc.left)+24,y=Math.round(rc.top)+24;' +
+      '  var c=hitAt(Math.floor(window.innerWidth/2),Math.floor(window.innerHeight/2));' +
+      '  var o=hitAt(x,y);' +
+      '  return {hit:o.hit,chain:o.chain,centerChain:c.chain,display:String(getComputedStyle(vc).display),' +
+      '    rect:Math.round(rc.width)+"x"+Math.round(rc.height),vp:window.innerWidth+"x"+window.innerHeight,' +
+      '    inBox:rc.left<=x&&x<rc.right&&rc.top<=y&&y<rc.bottom};}' +
+      'var boxes=cd.querySelectorAll(".ans-attach-ct");' +
+      // 先**手工**点开丙的封面一次：这就是"站点把全屏覆盖层撑开了"的那一拍，' +
+      // 中心点必须被它压住（现场量的就是 1691x828 那一层白纸一直挂着）。
+      'var cf=null;try{cf=boxes[2].querySelector("iframe").contentDocument;}catch(eC){}' +
+      'var cr=cf&&cf.getElementById("cover"); if(cr) cr.click();' +
+      'await ' + nap + ';await ' + nap + ';' +
+      'var before=Number(window.__coverClicks||0);' +
+      'var opened=probe();' +
+      // 走**生产入口**（`job.func()` = `_runChaoxingVoteJob`），不直接调 `_openVoteOverlay`：
+      // 失败那一笔账只由生产入口记（`_closeStaleVoteOverlay` 是收拾现场，故意不记账），
+      // 只调内层那一格的话，"记账只在一侧"这条根本没有被测到（上一轮的 `last:"",n:0` 就是它）。
+      'var ran=await job.func();' +
+      'var closed=probe();' +
+      'var submitted=-1;try{var iw=f.contentWindow;submitted=Number((iw&&iw.__submitted)||0);}catch(eS){}' +
+      'var keys=Object.keys(app._voteTryMap||{});' +
+      // 日志走 postMessage 是**异步**送达的，判据函数一跑完就读缓冲，"没发"与"没到"同形（AGENTS §5）
+      'await ' + nap + ';await ' + nap + ';' +
+      'var rec=(app._voteTryMap||{})[String(job.jobid)]||{};' +
+      'return {jobid:String(job.jobid||""), wid:app._voteWorkIdOf(job),' +
+      '  coverClicks:Number(window.__coverClicks||0), before:before, ran:!!ran, submitted:submitted,' +
+      '  openedHit:opened.hit, closedHit:closed.hit,' +
+      '  openedChain:opened.chain, closedChain:closed.chain,' +
+      '  centerOpened:opened.centerChain, centerClosed:closed.centerChain,' +
+      '  openedInBox:opened.inBox, rect:opened.rect, vp:opened.vp,' +
+      '  displayOpened:opened.display, displayClosed:closed.display, displayNow:String(getComputedStyle(vc).display),' +
+      '  last:String(rec.last||""), n:Number(rec.n||0), mapKeys:keys.length,' +
+      '  srcWorkId:app._voteUrlIdentity(String(f.src||"")),' +
+      '  logs:window.__b80.slice(window.__b80cur||0)};})()'
+    );
+    check('80 ★核心三（开不出来就收掉）：丙这一发点开封面后站点一直没把卷子填出来（workId=7700125 那份空文档）' +
+      '→ 生产入口投不进任何东西（一个提交键都没点），**且已经撑开的覆盖层被收回去**：' +
+      '覆盖层从"压着正文"变成"不压"，display 回到 none —— 这一条就是现场整章走不动的根因',
+      !!r6 && r6.wid === '7700125' && r6.coverClicks === r6.before + 1 && r6.submitted === 0 &&
+      r6.openedHit === 'voteContainer' && r6.openedInBox === true && r6.displayOpened === 'block' &&
+      r6.closedHit !== 'voteContainer' &&
+      r6.displayClosed === 'none' && r6.displayNow === 'none' && r6.srcWorkId === '7700125',
+      JSON.stringify(r6 && { wid: r6.wid, submitted: r6.submitted, coverClicks: r6.coverClicks,
+        before: r6.before,
+        openedHit: r6.openedHit, openedChain: r6.openedChain, openedInBox: r6.openedInBox,
+        closedHit: r6.closedHit, closedChain: r6.closedChain, centerOpened: r6.centerOpened,
+        rect: r6.rect, vp: r6.vp, displayOpened: r6.displayOpened,
+        displayClosed: r6.displayClosed, displayNow: r6.displayNow,
+        srcWorkId: r6.srcWorkId }));
+    check('80 收拾现场不记失败次数（记账只在一侧）：等待用尽那条日志点名 reason=wait-exhausted，' +
+      '且丙那份空文档里连「返回」都没渲染出来 → 按不到平台的返回键时才直接收起容器（by=hide）；' +
+      '整本账只有 `_runChaoxingVoteJob` 记的那一笔（last=overlay、n=1、mapKeys=1）',
+      !!r6 && r6.last === 'overlay' && Number(r6.n) === 1 && Number(r6.mapKeys) === 1 &&
+      (function () {
+        var st = (r6.logs || []).filter(function (l) { return l.msg === 'vote overlay closed after failed try'; });
+        var ex = (r6.logs || []).filter(function (l) { return l.msg === 'vote overlay wait exhausted'; });
+        return st.length === 1 && st[0].reason === 'wait-exhausted' && st[0].by === 'hide' &&
+          ex.length === 1 && Number(ex[0].waitedMs) >= 10000;
+      })(),
+      JSON.stringify(r6 && { last: r6.last, n: r6.n, mapKeys: r6.mapKeys, logs: r6.logs }));
+
+    // ── ⑦ 收尾自证：这一页的三个 workId 各自 served 对了（不是夹具替生产写好答案）──
+    var r7 = await ctx.client.evaluate(
+      '(function(){var f=document.getElementById("voteIframe");var inner=null;' +
+      'try{inner=f.contentWindow;}catch(e){}' +
+      // 「这份文档正文是空的」要按**可见正文**量：覆盖层收回之后 `innerText` 会退回 `textContent`' +
+      //（未渲染的文档规范就是这么定的），于是脚本源码被当成正文读了回来（上一轮的取证就是它）。
+      // 这里**不借生产那个 `_voteOverlayBodyText`** —— 那正是本批被测的那一格，自证要用另一把尺。
+      'var vis="",raw="";try{var b=inner.document.body;raw=String(b.innerText||b.textContent||"");' +
+      '  var c=b.cloneNode(true);var dead=c.querySelectorAll("script,style,noscript");' +
+      '  for(var i=0;i<dead.length;i++){dead[i].parentNode.removeChild(dead[i]);}' +
+      '  vis=String(c.textContent||"").replace(/\\s+/g,"");}catch(eT){}' +
+      'var out={finalSrcWid:String(window._xxtApp._voteUrlIdentity(String(f.src||""))),' +
+      '  visText:vis.slice(0,24),rawText:raw.replace(/\\s+/g,"").slice(0,24),' +
+      '  radios:(function(){try{return inner.document.querySelectorAll("input[type=radio],input[type=checkbox]").length;}catch(eR){return -1;}})(),' +
+      '  coverTotal:Number(window.__coverClicks||0),backTotal:Number(window.__backClicks||0),' +
+      // 整轮的日志都在 `__b80` 里（监听器从 setup 挂上就没摘过），所以这两格量的是**整个场景**，
+      // 不是最后一拍 —— 泄漏的驱动只会出现在某一拍，按整轮数才抓得住。
+      '  driverLogs:(function(){var a=window.__b80||[];var notes=[],s=0,c=0;' +
+      '  for(var i=0;i<a.length;i++){' +
+      '    if(a[i].msg==="tick progress")notes.push(String(a[i].note||""));' +
+      '    else if(a[i].msg==="study begin")s++;' +
+      '    else if(a[i].msg==="vote cooling down")c++;}' +
+      '  return {notes:notes,begin:s,cool:c,total:a.length};})()};' +
+      'return out;})()'
+    );
+    check('80 收尾：最后一份挂在覆盖层里的确实是丙（站点收了请求但没渲染出卷子，剥掉脚本之后正文是空的、' +
+      '一枚选项都没有），整轮封面只点了 5 次（甲 1 + 到期重试 1 + 乙 1 + 丙的手工一次与生产一次），收回 2 次以上',
+      !!r7 && r7.finalSrcWid === '7700125' && r7.visText === '' && r7.radios === 0 &&
+      r7.coverTotal === 5 && r7.backTotal >= 2,
+      JSON.stringify(r7));
+    // ⚠️ 这一条不测生产，它测**这一轮只有一个驱动**这个前提本身。
+    // 上面那些「封面只点 5 次」「冷却只说一次」的读数，全都要靠 setup 里那句
+    // `_clearTickLoop()` + 把 `_startTickLoop` / `run` 桩掉才成立；而泄漏进来的驱动
+    // 未必从同一扇门进来（批次 80 全量跑红的那条就是 `run()` 在清空**之后**异步把循环起回来的）。
+    // ⚠️ **判据按 note 归因，不按条数**（本条第一版就是照数写错的）：`tick progress` 不是
+    //    泄漏专属 —— 投票 runner 自己就调 `_tickProgress('vote overlay')` 刷心跳，
+    //    定向单跑这一支场景实测也有 1 条。数"有没有"会把它当成泄漏，红得毫无意义。
+    //    泄漏那一族的特征是**主刷课循环的 note**（`ocs study loop` / `ocs wait *-check`）
+    //    与 `study begin`（只有 `run()` 会打），所以逐条点名 note 才分得开这两件事。
+    check('80 驱动自证（批次 80 收口）：整轮每一条 `tick progress` 的 note 都在投票那一族里' +
+      '（`vote overlay` / `vote wait box` —— 主循环那一族是 `ocs …`，出现即红），且 `study begin` 0 条 —— ' +
+      '这一页只有本场景这一个驱动，上面所有"点了几次 / 说了几次"的读数才属于这一轮。' +
+      '同时数两条**这一轮确实发过**的消息（`tick progress` ≥1、`vote cooling down` ≥1）自证计数器不是瞎的：' +
+      '只数"没有"的那两样，钩子整个失灵时也会照样绿',
+      !!r7 && Array.isArray(r7.driverLogs.notes) && r7.driverLogs.notes.length >= 1 &&
+      r7.driverLogs.notes.every(function (n) { return String(n).indexOf('vote') === 0; }) &&
+      Number(r7.driverLogs.begin) === 0 && Number(r7.driverLogs.cool) >= 1 &&
+      Number(r7.driverLogs.total) >= 1,
+      JSON.stringify(r7 && { driver: r7.driverLogs, coverTotal: r7.coverTotal, backTotal: r7.backTotal }));
+  }
+});
+
 /** ---- 51. 目录标记只说「这一节」的话（批次 20-I） ---- */
 //
 // 现场量的三条，逐条钉住（用户正在刷的那门课，163 个目录项）：
@@ -18740,6 +20009,7 @@ async function main() {
       var ctx = null;
       try {
         if (scenario.inject === false) await clearExtLocalStorage();
+        if (scenario.noAutoResume) await clearAutoResumeFlag();
         ctx = await openScenarioPage(extensionId, scenario);
         ctx.mock = mock;
         ctx.extensionId = extensionId;

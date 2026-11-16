@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 123 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 81 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 126 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 81 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
 | `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
 | `audit-safedoc.js` | `node tools/audit-safedoc.js`（`--json` 出机器可读）；被 `check.js` 第 24 项调用 | 跨域裸读审计：扫 `src/page/*.js`，逐字符判每一处 `.contentDocument` / `.contentWindow.document` **当下**在不在 try 体内。先跑 9 格自证再出结论：自证不过退出 2（结论作废），有裸奔退出 1，干净退出 0。`catch` / `finally` 体不算保护 |
 | `audit-md-tables.js` | `node tools/audit-md-tables.js`（`--json` 出机器可读）；被 `check.js` 第 25 项调用 | 公开文档表格审计：扫全部跟踪中的 md 文件（排除 legacy 目录），逐行数「没被奇数个反斜杠转义的竖线」，与表头格数不符就点名到文件行号。先跑 6 格对照（含未转义竖线要报、转义与围栏代码块不报、以竖线开头但无分隔行的正文不报）再出结论：对照不过退出 2，有不一致退出 1，干净退出 0 |
@@ -24,6 +24,7 @@
 | `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
 | `debug-probe.js` | `node tools/debug-probe.js` | 连上面那个浏览器，在**真学习通页面**上跑插件的只读探针 `xxtAI.probe()`（`--expr=` 可换成任意表达式）。**排查真实问题的唯一入口** —— 见下方专节 |
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
+| `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
@@ -406,7 +407,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 123 个场景 / 1383 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 126 个场景 / 1416 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -545,6 +546,7 @@ node tools/debug-probe.js                                                       
 node tools/debug-probe.js --expr="xxtAI.diagnose()"                                        # 任意表达式
 node tools/debug-probe.js --port=9334 --match=studentstudy                                 # 端口 / 标签匹配词
 npm run field-shape                                                                        # 形状测绘：夹具与现场有分歧时定谁对
+npm run field-space                                                                        # 用户中心那一页的形状（批次 82 挑课要靠它）
 npm run field-logs                                                                         # 直读现场那份日志环（不用人去点「复制日志」）
 ```
 

@@ -14,14 +14,16 @@
  *    所以每翻一页都调 `this._tickProgress(...)` 刷心跳。**别删这个心跳**（理由同上一条）。
  *    `_runChaoxingVoteJob` 的两段等待同样带心跳与超时。
  *
- * 本段的方法（33 个）：
+ * 本段的方法（40 个）：
  *   _clearDocumentPendingState、_runChaoxingJob、_runChaoxingReadJob、
  *   _runPptAudioJob、_tryAdvanceIdleSection、_runOcsStyleStudy、_shouldWaitForTaskDiscovery、
  *   _getTaskIdentity、_isTaskStillLoading、_handlePendingTask、_frameHasTaskPoint、
  *   _locateDocumentTask、_extractFrameKey、_isDocumentFrameFinished、
  *   _buildAriaPagedDocumentTask、
  *   _buildPagedDocumentTask、_buildScrollDocumentTask、_handleDocumentTask、
- *   _runChaoxingVoteJob、_openVoteOverlay、_voteOverlayDocReady、_voteOverlayHasContent、
+ *   _runChaoxingVoteJob、_openVoteOverlay、_closeStaleVoteOverlay、_voteOverlayDocReady、
+ *   _voteOverlayIsMine、_voteUrlJobid、_voteUrlIdentity、_voteWorkIdOf、
+ *   _voteOverlayHasContent、_voteOverlayBodyText、_voteOverlayEnded、
  *   _voteOverlayForm、_voteOverlayText、_pickVoteOptions、_waitVoteBoxFinished、
  *   _voteBoxFinished、
  *   _dismissVoteDialog、_closeVoteOverlay、_voteTryKeyOf、_noteVoteTry、
@@ -1119,6 +1121,25 @@
       }
 
       var form = this._voteOverlayForm(voteDoc);
+      // 平台已把这场投票判结束 —— 现场 2026-11-16 那一章卡在的正是这种：
+      // 「made in china 是让你自豪的标签吗？」是一场**被手动结束的问卷调查**，
+      // 覆盖层打开后一个选项都没有。这种卷子再点一万次封面也不会长出可勾的东西，
+      // 所以给它一个**更长但仍然会到期**的冷却（`VOTE_ENDED_COOLDOWN_MS`），
+      // 并把"为什么投不出去"讲明白。
+      // ⚠️ 只在「没有可勾选项」时才认结束：正文里出现"结束"两个字不足以停手，
+      // 否则一场还能投的投票会被一句题干里的"本课程已结束"误判死。
+      if (!form.firsts.length && this._voteOverlayEnded(form.text)) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        emitRuntimeLog('warn', 'vote survey closed', {
+          jobid: job.jobid, text: form.text, last: 'ended',
+          retryInMs: VOTE_ENDED_COOLDOWN_MS,
+          hint: '这场投票/问卷平台判已结束（多为老师手动结束），没有能勾的选项。' +
+            '不是永久跳过 —— ' + Math.round(VOTE_ENDED_COOLDOWN_MS / 60000) +
+            ' 分钟后还会再点开一次，重新开放就投得进去。'
+        });
+        return true;
+      }
       if (!form.firsts.length && !form.submit) {
         // 覆盖层里既没有选项也没有提交键：多半是「已参与」或压根没有这道投票
         this._closeVoteOverlay(voteDoc);
@@ -1174,7 +1195,7 @@
      */
     _openVoteOverlay: async function (job) {
       var jobid = String(job && job.jobid || '');
-      var ready = this._voteOverlayDocReady(jobid);
+      var ready = this._voteOverlayDocReady(job);
       if (ready) return ready;
 
       var cover = null;
@@ -1185,17 +1206,23 @@
             d.querySelector('.ans-cmp-icon') || d.querySelector('.ans-attach-cmp');
         }
       } catch (eFind) {}
-      if (!cover) return null;
+      // 找不到封面也**先把覆盖层收掉**再走：这一支常常是"上一发已经点开了、这一发找不回封面"，
+      // 那份全屏 `.voteContainer` 会一直压着页面，「下一节」「播放」全都点不着（现场 2026-11-16 就是这么死的）。
+      if (!cover) {
+        this._closeStaleVoteOverlay('no-cover', jobid);
+        return null;
+      }
       try {
         cover.click();
       } catch (eClick) {
+        this._closeStaleVoteOverlay('cover-throw', jobid);
         return null;
       }
 
       var deadline = Date.now() + VOTE_OVERLAY_WAIT_MS;
       var waited = 0;
       while (Date.now() < deadline) {
-        var doc = this._voteOverlayDocReady(jobid);
+        var doc = this._voteOverlayDocReady(job);
         if (doc) {
           this._tickProgress('vote overlay');
           return doc;
@@ -1204,14 +1231,52 @@
         waited += 500;
       }
       emitRuntimeLog('debug', 'vote overlay wait exhausted', { jobid: jobid, waitedMs: waited });
+      // ⚠️ 这一句是本批的**主线**：上面那一发封面是**我们自己点的**，站点就把全屏覆盖层撑起来了；
+      // 而"就绪"那道闸没过去（身份对不上 / 文档没填出来），老代码就在这里 return null ——
+      // 谁都不负责把已经撑开的覆盖层收回去。现场量到 `.voteContainer` 1691x828 一直挂着，
+      // 于是刷课循环每 20 秒点一次「下一节」都点在覆盖层上，整章原地不动。
+      this._closeStaleVoteOverlay('wait-exhausted', jobid);
       return null;
+    },
+
+
+    /**
+     * 把**已经撑开但这一轮用不上**的投票覆盖层收回去。
+     *
+     * 只在"我们点过封面、却没拿到可用的卷子"那三个出口调用；优先按平台自己的「返回」
+     * （它会把 `.voteContainer` 关回去并清状态），按不到才直接收起容器 ——
+     * 理由同 `_closeVoteOverlay` 那段：覆盖层一直挡着刷课页，后面的视频/讨论/「下一节」都点不着。
+     *
+     * ⚠️ 这条**不记失败次数**：它是"收拾现场"，不是"又试了一次没成"。
+     * 记账仍在 `_runChaoxingVoteJob` 那一侧，免得一次收拾把冷却提前打满。
+     */
+    _closeStaleVoteOverlay: function (reason, jobid) {
+      var opened = false;
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (!container) return false;
+        var disp = '';
+        try { disp = String(window.getComputedStyle(container).display || ''); } catch (eCs) { disp = ''; }
+        opened = !!container.offsetParent || disp !== 'none';
+        if (!opened) return false;
+      } catch (e0) {
+        return false;
+      }
+      var voteDoc = null;
+      try {
+        var f = document.getElementById('voteIframe');
+        voteDoc = f && f.contentDocument ? f.contentDocument : null;
+      } catch (eCross) { voteDoc = null; }
+      var by = this._closeVoteOverlay(voteDoc);
+      emitRuntimeLog('debug', 'vote overlay closed after failed try', { reason: String(reason || ''), by: by, jobid: String(jobid || '') });
+      return true;
     },
 
     /**
      * 顶层那份投票覆盖层现在能不能读。
      *
-     * 四个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
-     * **body 里真有字**。
+     * 五个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
+     * **这一份就是当前这个任务点的**、**body 里真有字**。
      *
      * 可见这条不是洁癖 —— 收起状态里所有 `offsetParent` 都是 null，
      * 于是选项与提交键会一起被读成"不存在"，然后每轮都白点一次封面。
@@ -1222,8 +1287,15 @@
      * `vote has nothing to submit {"jobid":"9000000000000001","text":""}` ——
      * 正文明明是空的。空档期算"没就绪"，让上面那个轮询继续等／再点一次封面，
      * 比拿一份空卷子去判"这道题没得提交"准得多。
+     *
+     * 「身份」这条换成 job 入参是 2026-11-16 现场实测补的（批次 80）。原先只拿
+     * **jobid** 去 `src` 里找，而现场这一族课程（`votetype=1` 的问卷调查）平台写出来的
+     * 地址是 `jobid=` **空**、身份挂在 `workId=43068723` 上（那个数就是封面帧 `data.id`）。
+     * 于是每一发都判"没就绪"，`vote overlay not ready` + `vote cooling down`
+     * `{"last":"overlay","tries":4}` 每 5 分钟一轮，**整章再也走不动**。
+     * 现在改成**按地址自己声明的那一格正面比**，见 `_voteOverlayIsMine`。
      */
-    _voteOverlayDocReady: function (jobid) {
+    _voteOverlayDocReady: function (job) {
       var frame = null;
       try { frame = document.getElementById('voteIframe'); } catch (e0) { return null; }
       if (!frame) return null;
@@ -1239,9 +1311,122 @@
       try { doc = frame.contentDocument; } catch (eCross) { return null; }
       if (!doc || !doc.body) return null;
       if (String(doc.readyState || '') === 'loading') return null;
-      if (jobid && String(frame.src || '').indexOf(jobid) < 0) return null;
+      if (!this._voteOverlayIsMine(frame, job)) return null;
       if (!this._voteOverlayHasContent(doc)) return null;
       return doc;
+    },
+
+    /**
+     * 顶层那份覆盖层是不是**当前这个投票任务点**的。
+     *
+     * 覆盖层地址自己声明了它是谁的（`jobid=` / `workId=`），所以按地址里的声明正面比，
+     * 四条按强弱排：
+     *   1. 地址里 `jobid=<非空>` → **必须等于**本任务点的 jobid（现场大多数投票是这种）；
+     *   2. 地址里 `jobid=` 是**空格**（2026-11-16 实地量到的这一族：`…&jobid=&workId=43068723&…`）
+     *      → 身份挂在 workId 上，两个数都取得到就必须相等；
+     *   3. 地址里压根没有 `jobid` 这一格、但任务点有号 → 退回旧判据「src 含 jobid」；
+     *   4. 三条都比不出数字 → 认它（这一发是我们自己点开的）。
+     *
+     * 第 4 条只兜"取不到数"的形状，兜不住出厂空壳 —— `src=""` 在第一行就返回 false。
+     * 批次 23 那道闸必须留着：顶层 `.voteContainer` / `#voteIframe` 是平台**出厂就挂着**的，
+     * `src=""` → `about:blank`，把那份空壳当就绪复用等于跳过点封面、白吃一次投票。
+     *
+     * ⚠️ 第 1 条从旧判据的 `indexOf` 换成**整格相等**：上一版用"src 里含这个 jobid"，
+     * 于是 A 投票的覆盖层能被 B 投票"含住"（jobid 是数字串，前后缀撞上的概率不低）。
+     *
+     * ⚠️ 比的是**真正加载着的那份地址**，不是 `src` 属性（批次 80 实测补的第二半）：
+     * 一章里连着两场投票时，点第二场的封面只把 `src` 换掉，iframe 导航要几百毫秒，
+     * 那几百毫秒里 `contentDocument` 还是**上一场**那份 —— 只比属性的话身份当场就"对上"了，
+     * 于是乙把甲的卷面（现场那份是被手动结束的问卷）当成自己的读完收场，
+     * 沙盒里表现为「乙一格都没提交、覆盖层却已经收回」。
+     * 只在读得到、而且那份地址**自己声明了身份**时才用它：跨域读不到就退回属性，
+     * 平台带 `needRedirect=true` 跳转落地到一条没有身份参数的地址时也退回属性 ——
+     * 这两种情况下退回都等于本批修复前的行为，不会把本来投得进去的投票判死。
+     */
+    _voteOverlayIsMine: function (frame, job) {
+      var src = '';
+      try { src = String(frame.src || frame.getAttribute('src') || ''); } catch (e0) { src = ''; }
+      if (!src) return false;
+      try {
+        var live = frame.contentWindow && frame.contentWindow.location
+          ? String(frame.contentWindow.location.href || '') : '';
+        if (/^https?:/i.test(live) &&
+          (this._voteUrlJobid(live) !== null || this._voteUrlIdentity(live))) src = live;
+      } catch (eCross) {}
+      var jobid = '';
+      try { jobid = String((job && job.jobid) || ''); } catch (e1) { jobid = ''; }
+      var hasJobid = !!jobid && jobid !== 'null' && jobid !== 'undefined';
+      var urlJobid = this._voteUrlJobid(src);
+      if (urlJobid && hasJobid) return urlJobid === jobid;
+      if (urlJobid === '') {
+        var workId = this._voteWorkIdOf(job);
+        var urlWorkId = this._voteUrlIdentity(src);
+        if (workId && urlWorkId) return workId === urlWorkId;
+      }
+      if (urlJobid === null && hasJobid) return src.indexOf(jobid) >= 0;
+      return true;
+    },
+
+    /**
+     * 地址里 `jobid=` 那一格的**原值**。
+     *
+     * 三种返回值必须分得开：`null`（没有这一格）、`''`（有这一格但是空的 —— 现场那一族）、
+     * 字符串（正常带号）。上一版把「空的」和「没这一格」都当成"匹配不上"，
+     * 于是 `jobid=&workId=…` 这一族永远判"不是我的"，整章卡死。
+     */
+    _voteUrlJobid: function (src) {
+      var m = /[?&#]jobid=([^&#]*)/i.exec(String(src || ''));
+      return m ? String(m[1]) : null;
+    },
+
+    /**
+     * 从覆盖层地址里取出**投票的身份数字**。
+     *
+     * 现场这一族的地址是 `…/mooc-ans/api/work?api=1&workId=43068723&jobid=&…` ——
+     * `jobid` 是空的，身份在 `workId`。按 `workId` → `workid` → 顶层 `id=` 的顺序取，
+     * **不许**"抓地址里第一个数字"：`api=1` 那种小数字会先撞上，比什么都比不上。
+     * `jobid=` 留空时它自己那格是空串，取不出来 —— 交给上面第 3 条兜底。
+     */
+    _voteUrlIdentity: function (src) {
+      var s = String(src || '');
+      var m = /[?&](?:workId|workid|work_id)=([^&#]{2,})/i.exec(s);
+      if (m) return String(m[1]);
+      m = /[?&]id=([^&#]{2,})/i.exec(s);
+      if (m) return String(m[1]);
+      return '';
+    },
+
+    /**
+     * 这个投票任务点的 workId —— 现场形状里就是**封面帧 `data` 里那个 `id`**。
+     *
+     * 2026-11-16 量出来的：封面帧（`/ananas/modules/zt/vote/index-pc-new.html`）自带
+     * `data='{"id":43068723,"title":"…"}'`，点封面时平台把**这个数**写进覆盖层地址的
+     * `workId=`，同时把 `jobid=` 留空。卡片附件上的 jobid 是**另一套数**
+     * （现场那个 1568684896894399），拿它去比 `workId` 永远比不上 —— 这正是卡死的原因。
+     *
+     * 取不到返回空串，上层会退到「src 非空即算」，绝不因为这里没数把投票判死。
+     */
+    _voteWorkIdOf: function (job) {
+      var cands = [];
+      try {
+        var p = job && job.attachment && job.attachment.property ? job.attachment.property : null;
+        if (p) cands.push(p.workId, p.workid, p.voteWorkId, p.id);
+        var att = job && job.attachment ? job.attachment : null;
+        if (att) cands.push(att.workId, att.workid);
+      } catch (e0) {}
+      try {
+        var f = job && job.frame;
+        var rawData = f && f.getAttribute ? String(f.getAttribute('data') || '') : '';
+        if (rawData) {
+          var parsed = this._safeJsonParse(rawData, {});
+          cands.push(parsed.workId, parsed.workid, parsed.id);
+        }
+      } catch (e1) {}
+      for (var i = 0; i < cands.length; i++) {
+        var v = String(cands[i] === undefined || cands[i] === null ? '' : cands[i]);
+        if (v && v !== 'null' && v !== 'undefined' && /^[A-Za-z0-9_-]{2,}$/.test(v)) return v;
+      }
+      return '';
     },
 
     /**
@@ -1252,8 +1437,7 @@
      */
     _voteOverlayHasContent: function (doc) {
       try {
-        var text = '';
-        try { text = String(doc.body.innerText || doc.body.textContent || '').replace(/\s+/g, ''); } catch (eTxt) { text = ''; }
+        var text = this._voteOverlayBodyText(doc).replace(/\s+/g, '');
         if (text.length > 0) return true;
         return !!(doc.querySelector && doc.querySelector(
           '.topic-option-list, .topic-options, input[type=radio], input[type=checkbox]'
@@ -1261,6 +1445,48 @@
       } catch (e) {
         return false;
       }
+    },
+
+    /**
+     * 覆盖层那份文档的**可见正文**（批次 80）。
+     *
+     * ⚠️ 不许写成 `innerText || textContent` 就完事：`textContent` 把 `<script>` 里的源码
+     * 也算正文，而现场那一族"站点收下了请求、卷子一直没渲染"的文档正是
+     * `<div class="voteWrap"></div>` + 一段脚本 —— 按 textContent 量它永远"有内容"，
+     * `_voteOverlayHasContent` 于是**恒真**：空文档被当成就绪卷子复用，等待永远不超时，
+     * 那层全屏覆盖层就永远不收回去（现场整章走不动的那一层白纸）。
+     * `innerText` 在渲染中的文档上对这一份就是空串，所以空串要**继续往下剥**，
+     * 剥完还是没有字才算"没内容"；只有在拿不到 innerText（异常）时才走克隆那条路。
+     */
+    _voteOverlayBodyText: function (doc) {
+      var raw = '';
+      try { raw = String((doc && doc.body && doc.body.innerText) || ''); } catch (eIn) { raw = ''; }
+      if (raw) return raw;
+      try {
+        if (!doc || !doc.body || typeof doc.body.cloneNode !== 'function') return '';
+        var c = doc.body.cloneNode(true);
+        var dead = (c.querySelectorAll && c.querySelectorAll('script,style,noscript')) || [];
+        for (var i = 0; i < dead.length; i++) {
+          if (dead[i].parentNode) dead[i].parentNode.removeChild(dead[i]);
+        }
+        return String(c.textContent || '');
+      } catch (e) {
+        return '';
+      }
+    },
+
+    /**
+     * 覆盖层正文是不是「这场投票已经结束了」的说法。
+     *
+     * 词表按现场看到的形状来（「本次问卷已被手动结束」「投票已结束」「不在作答时间」
+     * 「已过截止时间」），并留两种平台写法：`结束` 与 `截止`。
+     * 判据只是"正文里出现这些字"，所以**调用方必须自己确认没有可勾的选项** ——
+     * 光靠这句话不能停手（题干里带"本课程已结束"这种话不算）。
+     */
+    _voteOverlayEnded: function (text) {
+      var s = String(text || '').replace(/\s+/g, '');
+      if (!s) return false;
+      return /(手动结束|已结束|结束投票|已经结束|任务结束|已截止|已经截止|过截止时间|不在作答时间|作答时间已)/.test(s);
     },
 
     /**
@@ -1309,8 +1535,7 @@
 
     _voteOverlayText: function (voteDoc) {
       try {
-        return String((voteDoc.body && (voteDoc.body.innerText || voteDoc.body.textContent)) || '')
-          .replace(/\s+/g, ' ').trim().slice(0, 160);
+        return this._voteOverlayBodyText(voteDoc).replace(/\s+/g, ' ').trim().slice(0, 160);
       } catch (e) {
         return '';
       }
@@ -1428,12 +1653,22 @@
       return String((job && (job.jobid || job.objectid)) || (job && job.name) || 'vote');
     },
 
-    /** 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。 */
-    _noteVoteTry: function (job, reason) {
+    /**
+     * 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。
+     *
+     * `coolOverride` 只给「已经结束了」那一类用（`VOTE_ENDED_COOLDOWN_MS`）：
+     * 这种投票点封面一万次也不会有卷子，冷却要长；但它**仍然到期重试**，
+     * 不写「永久跳过」—— 老师中途重新开放时，下一轮就该投进去（AGENTS §2.7）。
+     */
+    _noteVoteTry: function (job, reason, coolOverride) {
       if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
       var key = this._voteTryKeyOf(job);
       var prev = this._voteTryMap[key] || { n: 0, at: 0 };
-      this._voteTryMap[key] = { n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || '') };
+      var cool = Number(coolOverride || 0);
+      this._voteTryMap[key] = {
+        n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || ''),
+        cool: cool > 0 ? cool : 0
+      };
     },
 
     _clearVoteTry: function (job) {
@@ -1449,11 +1684,16 @@
       if (!rec) return null;
       var tries = Number(rec.n || 0);
       if (tries < VOTE_MAX_TRIES) return null;
+      var span = VOTE_COOLDOWN_MS;
+      try {
+        var own = Number(rec.cool || 0);
+        if (own > 0) span = own;
+      } catch (e0) {}
       var age = Date.now() - Number(rec.at || 0);
-      if (age >= VOTE_COOLDOWN_MS) {
+      if (age >= span) {
         this._clearVoteTry(job);
         return null;
       }
-      return { tries: tries, retryInMs: VOTE_COOLDOWN_MS - age, last: String(rec.last || '') };
+      return { tries: tries, retryInMs: span - age, last: String(rec.last || ''), coolMs: span };
     },
 

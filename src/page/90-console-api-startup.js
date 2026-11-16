@@ -235,9 +235,13 @@
         // 批次 77：这一格的名单是**只算这一道题**(1)，还是题干读不到、与同选项的题共用一份(0)。
         // ⚠️ 与日志那几格同一个来源：读 `_popupQuizScopedFlag`（名单实际落在哪把尺上）。
         scoped: node ? app._popupQuizScopedFlag(app._popupQuizStem(node, app._getOptionItems(node))) : 0,
-        // 账本上"哪个键拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
+        // 账本上"哪一道拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
         // 一道题一格（键尾带 |s|题干）= 收窄生效；只有一格粗键 = 同选项的题在共用名单。
-        rejectedKeys: (function () {
+        // ⚠️ 字段名里**不许出现 `key` 这个词**（批次 79-C）：`tools/field-logs.js` 的
+        //    `SENSITIVE_KEY` 按**字段名**屏蔽，为的是别把 API Key 打到日志里；
+        //    上一版这两格叫 `rejectedKeys` / `siteRightKeys`，于是现场读回来全是「(已屏蔽)」——
+        //    最该拿去对账的两格恰好看不见，而屏蔽本身是对的（改名字，不改屏蔽词表）。
+        rejectedBans: (function () {
           var r = (app._popupQuizSpend && app._popupQuizSpend.rejected) || {};
           return Object.keys(r).slice(0, 8).map(function (k) {
             return '…' + String(k).slice(-46) + '=' + String(r[k] || '').slice(0, 8);
@@ -245,7 +249,8 @@
         })(),
         // 批次 78：**站点自己回包判对过**的那些字母（`siteRight` 那本账上真实存在的格子）。
         // 现场拿它与上面 `banned` 对照就能一眼定死：同一格同一个字母既判对又被拉黑 = 闸坏了。
-        siteRightKeys: (function () {
+        // 名字同样避开屏蔽词（见上面 `rejectedBans` 那段）。
+        siteRightRows: (function () {
           var r = (app._popupQuizSpend && app._popupQuizSpend.siteRight) || {};
           return Object.keys(r).slice(0, 8).map(function (k) {
             var rec = r[k] || {};

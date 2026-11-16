@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **473 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 483 个方法；状态字段 163 个。
+（跑出来大致是：14 个域片段合计 **485 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 495 个方法；状态字段 163 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*386 行*
+*391 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -161,7 +161,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*1459 行 / 33 方法*
+*1699 行 / 40 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -234,7 +234,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `80-popup-quiz.js`
 
-*1691 行 / 39 方法*
+*2081 行 / 44 方法*
 
 视频内嵌弹题（弹窗题）的检测、填答、失败计数与放弃；
 「继续学习」提示按钮（不点它进不去正常播放页）。
@@ -245,9 +245,22 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 「平台判对过哪个字母」从此记在 `siteRight` 那一格（**只按批次 77 那把按题收窄的尺**记账），
 两处免费用它：把判对的字母填回去、挡住一次误拉黑。**钱那一把尺一把没动**。
 
+⚠️ 批次 79 补了批次 78 留下的两个洞（现场 2026-11-16 用 `.workbuddy/b79-who.cjs` 逐帧量的）：
+1. **钩子要挂在发那一发的帧上** —— 真站的弹题与 `quiz-validation` 都在视频帧
+   （`/ananas/modules/video/index.html`）里，顶层只是刷课壳页；上一版只挂顶层，
+   于是这本账在现场**一格都没记上**（沙盒里弹窗与 XHR 同在一个 document，所以全绿）。
+   `_popupQuizInstallNetLedger(win)` 现在收弹窗自己那个 `ownerDocument.defaultView`，
+   幂等**按窗口**判（`__omitoneQuizNet` 标记），一节课里帧被重建多次也各挂各的。
+2. **平台判错的字母不再花钱重填** —— 复用付费缓存那一支早就有闸，现问的那一支没有；
+   现场同一道判断题因此连付三发买同一个「这两个都不对」。现在发请求之前先看名单：
+   单选那一族（judge/single）若已把候选削到 **1 个** → 直接免费点它（`only-one-never-rejected`），
+   削到 **0 个** → 立刻放弃冷却（`all-banned-before-ask`），
+   模型万一还回**已被判错**的那个字母 → 不填、不留在付费缓存、改走免费那一支
+   （`model-repeated-rejected`）。让步的仍然只是正确率，不是钱。
+
 ### `90-console-api-startup.js`
 
-*350 行*
+*355 行*
 
 **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 `window.xxtAI` 控制台入口与启动逻辑。
 

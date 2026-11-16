@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '03bd6af096';
+var OMITONE_CODE_REV = '783cfdeddf';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -43,7 +43,7 @@ var OMITONE_CODE_REV = '03bd6af096';
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
   /**
-   * 投票任务点（insertvote）的四个数。
+   * 投票任务点（insertvote）的五个数。
    *
    * 覆盖层是平台自己点出来的（直接访问那个 api/work 地址是 403），所以要等它长出来；
    * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
@@ -51,11 +51,16 @@ var OMITONE_CODE_REV = '03bd6af096';
    *
    * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
    * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   *
+   * `VOTE_ENDED_COOLDOWN_MS` 单独放宽到 30 分钟：认出一张**已被手动结束**的问卷之后，
+   * 每 5 分钟再点一次封面除了把全屏覆盖层重新撑起来之外没有任何收益（现场 2026-11-16），
+   * 但也不能从此不看它 —— 老师重新开放就要能接着投，所以是"更长但仍然会再试"。
    */
   var VOTE_OVERLAY_WAIT_MS = 12000;
   var VOTE_BOX_WAIT_MS = 15000;
   var VOTE_MAX_TRIES = 4;
   var VOTE_COOLDOWN_MS = 5 * 60 * 1000;
+  var VOTE_ENDED_COOLDOWN_MS = 30 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
@@ -7784,6 +7789,25 @@ var OMITONE_CODE_REV = '03bd6af096';
       }
 
       var form = this._voteOverlayForm(voteDoc);
+      // 平台已把这场投票判结束 —— 现场 2026-11-16 那一章卡在的正是这种：
+      // 「made in china 是让你自豪的标签吗？」是一场**被手动结束的问卷调查**，
+      // 覆盖层打开后一个选项都没有。这种卷子再点一万次封面也不会长出可勾的东西，
+      // 所以给它一个**更长但仍然会到期**的冷却（`VOTE_ENDED_COOLDOWN_MS`），
+      // 并把"为什么投不出去"讲明白。
+      // ⚠️ 只在「没有可勾选项」时才认结束：正文里出现"结束"两个字不足以停手，
+      // 否则一场还能投的投票会被一句题干里的"本课程已结束"误判死。
+      if (!form.firsts.length && this._voteOverlayEnded(form.text)) {
+        this._closeVoteOverlay(voteDoc);
+        this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        emitRuntimeLog('warn', 'vote survey closed', {
+          jobid: job.jobid, text: form.text, last: 'ended',
+          retryInMs: VOTE_ENDED_COOLDOWN_MS,
+          hint: '这场投票/问卷平台判已结束（多为老师手动结束），没有能勾的选项。' +
+            '不是永久跳过 —— ' + Math.round(VOTE_ENDED_COOLDOWN_MS / 60000) +
+            ' 分钟后还会再点开一次，重新开放就投得进去。'
+        });
+        return true;
+      }
       if (!form.firsts.length && !form.submit) {
         // 覆盖层里既没有选项也没有提交键：多半是「已参与」或压根没有这道投票
         this._closeVoteOverlay(voteDoc);
@@ -7839,7 +7863,7 @@ var OMITONE_CODE_REV = '03bd6af096';
      */
     _openVoteOverlay: async function (job) {
       var jobid = String(job && job.jobid || '');
-      var ready = this._voteOverlayDocReady(jobid);
+      var ready = this._voteOverlayDocReady(job);
       if (ready) return ready;
 
       var cover = null;
@@ -7850,17 +7874,23 @@ var OMITONE_CODE_REV = '03bd6af096';
             d.querySelector('.ans-cmp-icon') || d.querySelector('.ans-attach-cmp');
         }
       } catch (eFind) {}
-      if (!cover) return null;
+      // 找不到封面也**先把覆盖层收掉**再走：这一支常常是"上一发已经点开了、这一发找不回封面"，
+      // 那份全屏 `.voteContainer` 会一直压着页面，「下一节」「播放」全都点不着（现场 2026-11-16 就是这么死的）。
+      if (!cover) {
+        this._closeStaleVoteOverlay('no-cover', jobid);
+        return null;
+      }
       try {
         cover.click();
       } catch (eClick) {
+        this._closeStaleVoteOverlay('cover-throw', jobid);
         return null;
       }
 
       var deadline = Date.now() + VOTE_OVERLAY_WAIT_MS;
       var waited = 0;
       while (Date.now() < deadline) {
-        var doc = this._voteOverlayDocReady(jobid);
+        var doc = this._voteOverlayDocReady(job);
         if (doc) {
           this._tickProgress('vote overlay');
           return doc;
@@ -7869,14 +7899,52 @@ var OMITONE_CODE_REV = '03bd6af096';
         waited += 500;
       }
       emitRuntimeLog('debug', 'vote overlay wait exhausted', { jobid: jobid, waitedMs: waited });
+      // ⚠️ 这一句是本批的**主线**：上面那一发封面是**我们自己点的**，站点就把全屏覆盖层撑起来了；
+      // 而"就绪"那道闸没过去（身份对不上 / 文档没填出来），老代码就在这里 return null ——
+      // 谁都不负责把已经撑开的覆盖层收回去。现场量到 `.voteContainer` 1691x828 一直挂着，
+      // 于是刷课循环每 20 秒点一次「下一节」都点在覆盖层上，整章原地不动。
+      this._closeStaleVoteOverlay('wait-exhausted', jobid);
       return null;
+    },
+
+
+    /**
+     * 把**已经撑开但这一轮用不上**的投票覆盖层收回去。
+     *
+     * 只在"我们点过封面、却没拿到可用的卷子"那三个出口调用；优先按平台自己的「返回」
+     * （它会把 `.voteContainer` 关回去并清状态），按不到才直接收起容器 ——
+     * 理由同 `_closeVoteOverlay` 那段：覆盖层一直挡着刷课页，后面的视频/讨论/「下一节」都点不着。
+     *
+     * ⚠️ 这条**不记失败次数**：它是"收拾现场"，不是"又试了一次没成"。
+     * 记账仍在 `_runChaoxingVoteJob` 那一侧，免得一次收拾把冷却提前打满。
+     */
+    _closeStaleVoteOverlay: function (reason, jobid) {
+      var opened = false;
+      try {
+        var container = document.querySelector('.voteContainer');
+        if (!container) return false;
+        var disp = '';
+        try { disp = String(window.getComputedStyle(container).display || ''); } catch (eCs) { disp = ''; }
+        opened = !!container.offsetParent || disp !== 'none';
+        if (!opened) return false;
+      } catch (e0) {
+        return false;
+      }
+      var voteDoc = null;
+      try {
+        var f = document.getElementById('voteIframe');
+        voteDoc = f && f.contentDocument ? f.contentDocument : null;
+      } catch (eCross) { voteDoc = null; }
+      var by = this._closeVoteOverlay(voteDoc);
+      emitRuntimeLog('debug', 'vote overlay closed after failed try', { reason: String(reason || ''), by: by, jobid: String(jobid || '') });
+      return true;
     },
 
     /**
      * 顶层那份投票覆盖层现在能不能读。
      *
-     * 四个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
-     * **body 里真有字**。
+     * 五个条件缺一不可：`#voteIframe` 在、`.voteContainer` **可见**、文档已开出来、
+     * **这一份就是当前这个任务点的**、**body 里真有字**。
      *
      * 可见这条不是洁癖 —— 收起状态里所有 `offsetParent` 都是 null，
      * 于是选项与提交键会一起被读成"不存在"，然后每轮都白点一次封面。
@@ -7887,8 +7955,15 @@ var OMITONE_CODE_REV = '03bd6af096';
      * `vote has nothing to submit {"jobid":"9000000000000001","text":""}` ——
      * 正文明明是空的。空档期算"没就绪"，让上面那个轮询继续等／再点一次封面，
      * 比拿一份空卷子去判"这道题没得提交"准得多。
+     *
+     * 「身份」这条换成 job 入参是 2026-11-16 现场实测补的（批次 80）。原先只拿
+     * **jobid** 去 `src` 里找，而现场这一族课程（`votetype=1` 的问卷调查）平台写出来的
+     * 地址是 `jobid=` **空**、身份挂在 `workId=43068723` 上（那个数就是封面帧 `data.id`）。
+     * 于是每一发都判"没就绪"，`vote overlay not ready` + `vote cooling down`
+     * `{"last":"overlay","tries":4}` 每 5 分钟一轮，**整章再也走不动**。
+     * 现在改成**按地址自己声明的那一格正面比**，见 `_voteOverlayIsMine`。
      */
-    _voteOverlayDocReady: function (jobid) {
+    _voteOverlayDocReady: function (job) {
       var frame = null;
       try { frame = document.getElementById('voteIframe'); } catch (e0) { return null; }
       if (!frame) return null;
@@ -7904,9 +7979,122 @@ var OMITONE_CODE_REV = '03bd6af096';
       try { doc = frame.contentDocument; } catch (eCross) { return null; }
       if (!doc || !doc.body) return null;
       if (String(doc.readyState || '') === 'loading') return null;
-      if (jobid && String(frame.src || '').indexOf(jobid) < 0) return null;
+      if (!this._voteOverlayIsMine(frame, job)) return null;
       if (!this._voteOverlayHasContent(doc)) return null;
       return doc;
+    },
+
+    /**
+     * 顶层那份覆盖层是不是**当前这个投票任务点**的。
+     *
+     * 覆盖层地址自己声明了它是谁的（`jobid=` / `workId=`），所以按地址里的声明正面比，
+     * 四条按强弱排：
+     *   1. 地址里 `jobid=<非空>` → **必须等于**本任务点的 jobid（现场大多数投票是这种）；
+     *   2. 地址里 `jobid=` 是**空格**（2026-11-16 实地量到的这一族：`…&jobid=&workId=43068723&…`）
+     *      → 身份挂在 workId 上，两个数都取得到就必须相等；
+     *   3. 地址里压根没有 `jobid` 这一格、但任务点有号 → 退回旧判据「src 含 jobid」；
+     *   4. 三条都比不出数字 → 认它（这一发是我们自己点开的）。
+     *
+     * 第 4 条只兜"取不到数"的形状，兜不住出厂空壳 —— `src=""` 在第一行就返回 false。
+     * 批次 23 那道闸必须留着：顶层 `.voteContainer` / `#voteIframe` 是平台**出厂就挂着**的，
+     * `src=""` → `about:blank`，把那份空壳当就绪复用等于跳过点封面、白吃一次投票。
+     *
+     * ⚠️ 第 1 条从旧判据的 `indexOf` 换成**整格相等**：上一版用"src 里含这个 jobid"，
+     * 于是 A 投票的覆盖层能被 B 投票"含住"（jobid 是数字串，前后缀撞上的概率不低）。
+     *
+     * ⚠️ 比的是**真正加载着的那份地址**，不是 `src` 属性（批次 80 实测补的第二半）：
+     * 一章里连着两场投票时，点第二场的封面只把 `src` 换掉，iframe 导航要几百毫秒，
+     * 那几百毫秒里 `contentDocument` 还是**上一场**那份 —— 只比属性的话身份当场就"对上"了，
+     * 于是乙把甲的卷面（现场那份是被手动结束的问卷）当成自己的读完收场，
+     * 沙盒里表现为「乙一格都没提交、覆盖层却已经收回」。
+     * 只在读得到、而且那份地址**自己声明了身份**时才用它：跨域读不到就退回属性，
+     * 平台带 `needRedirect=true` 跳转落地到一条没有身份参数的地址时也退回属性 ——
+     * 这两种情况下退回都等于本批修复前的行为，不会把本来投得进去的投票判死。
+     */
+    _voteOverlayIsMine: function (frame, job) {
+      var src = '';
+      try { src = String(frame.src || frame.getAttribute('src') || ''); } catch (e0) { src = ''; }
+      if (!src) return false;
+      try {
+        var live = frame.contentWindow && frame.contentWindow.location
+          ? String(frame.contentWindow.location.href || '') : '';
+        if (/^https?:/i.test(live) &&
+          (this._voteUrlJobid(live) !== null || this._voteUrlIdentity(live))) src = live;
+      } catch (eCross) {}
+      var jobid = '';
+      try { jobid = String((job && job.jobid) || ''); } catch (e1) { jobid = ''; }
+      var hasJobid = !!jobid && jobid !== 'null' && jobid !== 'undefined';
+      var urlJobid = this._voteUrlJobid(src);
+      if (urlJobid && hasJobid) return urlJobid === jobid;
+      if (urlJobid === '') {
+        var workId = this._voteWorkIdOf(job);
+        var urlWorkId = this._voteUrlIdentity(src);
+        if (workId && urlWorkId) return workId === urlWorkId;
+      }
+      if (urlJobid === null && hasJobid) return src.indexOf(jobid) >= 0;
+      return true;
+    },
+
+    /**
+     * 地址里 `jobid=` 那一格的**原值**。
+     *
+     * 三种返回值必须分得开：`null`（没有这一格）、`''`（有这一格但是空的 —— 现场那一族）、
+     * 字符串（正常带号）。上一版把「空的」和「没这一格」都当成"匹配不上"，
+     * 于是 `jobid=&workId=…` 这一族永远判"不是我的"，整章卡死。
+     */
+    _voteUrlJobid: function (src) {
+      var m = /[?&#]jobid=([^&#]*)/i.exec(String(src || ''));
+      return m ? String(m[1]) : null;
+    },
+
+    /**
+     * 从覆盖层地址里取出**投票的身份数字**。
+     *
+     * 现场这一族的地址是 `…/mooc-ans/api/work?api=1&workId=43068723&jobid=&…` ——
+     * `jobid` 是空的，身份在 `workId`。按 `workId` → `workid` → 顶层 `id=` 的顺序取，
+     * **不许**"抓地址里第一个数字"：`api=1` 那种小数字会先撞上，比什么都比不上。
+     * `jobid=` 留空时它自己那格是空串，取不出来 —— 交给上面第 3 条兜底。
+     */
+    _voteUrlIdentity: function (src) {
+      var s = String(src || '');
+      var m = /[?&](?:workId|workid|work_id)=([^&#]{2,})/i.exec(s);
+      if (m) return String(m[1]);
+      m = /[?&]id=([^&#]{2,})/i.exec(s);
+      if (m) return String(m[1]);
+      return '';
+    },
+
+    /**
+     * 这个投票任务点的 workId —— 现场形状里就是**封面帧 `data` 里那个 `id`**。
+     *
+     * 2026-11-16 量出来的：封面帧（`/ananas/modules/zt/vote/index-pc-new.html`）自带
+     * `data='{"id":43068723,"title":"…"}'`，点封面时平台把**这个数**写进覆盖层地址的
+     * `workId=`，同时把 `jobid=` 留空。卡片附件上的 jobid 是**另一套数**
+     * （现场那个 1568684896894399），拿它去比 `workId` 永远比不上 —— 这正是卡死的原因。
+     *
+     * 取不到返回空串，上层会退到「src 非空即算」，绝不因为这里没数把投票判死。
+     */
+    _voteWorkIdOf: function (job) {
+      var cands = [];
+      try {
+        var p = job && job.attachment && job.attachment.property ? job.attachment.property : null;
+        if (p) cands.push(p.workId, p.workid, p.voteWorkId, p.id);
+        var att = job && job.attachment ? job.attachment : null;
+        if (att) cands.push(att.workId, att.workid);
+      } catch (e0) {}
+      try {
+        var f = job && job.frame;
+        var rawData = f && f.getAttribute ? String(f.getAttribute('data') || '') : '';
+        if (rawData) {
+          var parsed = this._safeJsonParse(rawData, {});
+          cands.push(parsed.workId, parsed.workid, parsed.id);
+        }
+      } catch (e1) {}
+      for (var i = 0; i < cands.length; i++) {
+        var v = String(cands[i] === undefined || cands[i] === null ? '' : cands[i]);
+        if (v && v !== 'null' && v !== 'undefined' && /^[A-Za-z0-9_-]{2,}$/.test(v)) return v;
+      }
+      return '';
     },
 
     /**
@@ -7917,8 +8105,7 @@ var OMITONE_CODE_REV = '03bd6af096';
      */
     _voteOverlayHasContent: function (doc) {
       try {
-        var text = '';
-        try { text = String(doc.body.innerText || doc.body.textContent || '').replace(/\s+/g, ''); } catch (eTxt) { text = ''; }
+        var text = this._voteOverlayBodyText(doc).replace(/\s+/g, '');
         if (text.length > 0) return true;
         return !!(doc.querySelector && doc.querySelector(
           '.topic-option-list, .topic-options, input[type=radio], input[type=checkbox]'
@@ -7926,6 +8113,48 @@ var OMITONE_CODE_REV = '03bd6af096';
       } catch (e) {
         return false;
       }
+    },
+
+    /**
+     * 覆盖层那份文档的**可见正文**（批次 80）。
+     *
+     * ⚠️ 不许写成 `innerText || textContent` 就完事：`textContent` 把 `<script>` 里的源码
+     * 也算正文，而现场那一族"站点收下了请求、卷子一直没渲染"的文档正是
+     * `<div class="voteWrap"></div>` + 一段脚本 —— 按 textContent 量它永远"有内容"，
+     * `_voteOverlayHasContent` 于是**恒真**：空文档被当成就绪卷子复用，等待永远不超时，
+     * 那层全屏覆盖层就永远不收回去（现场整章走不动的那一层白纸）。
+     * `innerText` 在渲染中的文档上对这一份就是空串，所以空串要**继续往下剥**，
+     * 剥完还是没有字才算"没内容"；只有在拿不到 innerText（异常）时才走克隆那条路。
+     */
+    _voteOverlayBodyText: function (doc) {
+      var raw = '';
+      try { raw = String((doc && doc.body && doc.body.innerText) || ''); } catch (eIn) { raw = ''; }
+      if (raw) return raw;
+      try {
+        if (!doc || !doc.body || typeof doc.body.cloneNode !== 'function') return '';
+        var c = doc.body.cloneNode(true);
+        var dead = (c.querySelectorAll && c.querySelectorAll('script,style,noscript')) || [];
+        for (var i = 0; i < dead.length; i++) {
+          if (dead[i].parentNode) dead[i].parentNode.removeChild(dead[i]);
+        }
+        return String(c.textContent || '');
+      } catch (e) {
+        return '';
+      }
+    },
+
+    /**
+     * 覆盖层正文是不是「这场投票已经结束了」的说法。
+     *
+     * 词表按现场看到的形状来（「本次问卷已被手动结束」「投票已结束」「不在作答时间」
+     * 「已过截止时间」），并留两种平台写法：`结束` 与 `截止`。
+     * 判据只是"正文里出现这些字"，所以**调用方必须自己确认没有可勾的选项** ——
+     * 光靠这句话不能停手（题干里带"本课程已结束"这种话不算）。
+     */
+    _voteOverlayEnded: function (text) {
+      var s = String(text || '').replace(/\s+/g, '');
+      if (!s) return false;
+      return /(手动结束|已结束|结束投票|已经结束|任务结束|已截止|已经截止|过截止时间|不在作答时间|作答时间已)/.test(s);
     },
 
     /**
@@ -7974,8 +8203,7 @@ var OMITONE_CODE_REV = '03bd6af096';
 
     _voteOverlayText: function (voteDoc) {
       try {
-        return String((voteDoc.body && (voteDoc.body.innerText || voteDoc.body.textContent)) || '')
-          .replace(/\s+/g, ' ').trim().slice(0, 160);
+        return this._voteOverlayBodyText(voteDoc).replace(/\s+/g, ' ').trim().slice(0, 160);
       } catch (e) {
         return '';
       }
@@ -8093,12 +8321,22 @@ var OMITONE_CODE_REV = '03bd6af096';
       return String((job && (job.jobid || job.objectid)) || (job && job.name) || 'vote');
     },
 
-    /** 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。 */
-    _noteVoteTry: function (job, reason) {
+    /**
+     * 记一次没成功的尝试；键是 jobid，同一章里多个投票各算各的。
+     *
+     * `coolOverride` 只给「已经结束了」那一类用（`VOTE_ENDED_COOLDOWN_MS`）：
+     * 这种投票点封面一万次也不会有卷子，冷却要长；但它**仍然到期重试**，
+     * 不写「永久跳过」—— 老师中途重新开放时，下一轮就该投进去（AGENTS §2.7）。
+     */
+    _noteVoteTry: function (job, reason, coolOverride) {
       if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
       var key = this._voteTryKeyOf(job);
       var prev = this._voteTryMap[key] || { n: 0, at: 0 };
-      this._voteTryMap[key] = { n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || '') };
+      var cool = Number(coolOverride || 0);
+      this._voteTryMap[key] = {
+        n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || ''),
+        cool: cool > 0 ? cool : 0
+      };
     },
 
     _clearVoteTry: function (job) {
@@ -8114,12 +8352,17 @@ var OMITONE_CODE_REV = '03bd6af096';
       if (!rec) return null;
       var tries = Number(rec.n || 0);
       if (tries < VOTE_MAX_TRIES) return null;
+      var span = VOTE_COOLDOWN_MS;
+      try {
+        var own = Number(rec.cool || 0);
+        if (own > 0) span = own;
+      } catch (e0) {}
       var age = Date.now() - Number(rec.at || 0);
-      if (age >= VOTE_COOLDOWN_MS) {
+      if (age >= span) {
         this._clearVoteTry(job);
         return null;
       }
-      return { tries: tries, retryInMs: VOTE_COOLDOWN_MS - age, last: String(rec.last || '') };
+      return { tries: tries, retryInMs: span - age, last: String(rec.last || ''), coolMs: span };
     },
 
 
@@ -16524,13 +16767,24 @@ var OMITONE_CODE_REV = '03bd6af096';
         this._popupQuizSpend = {
           job: job, gives: Object.create(null), silent: Object.create(null),
           asks: Object.create(null), rejected: Object.create(null),
+          // 批次 83：`rejected` 是**两种证据混在一起**的那本账 —— 站点判决当场说「回答错误」
+          // 是一类，「弹窗被收走又带同一指纹回来」由我们推断是另一类（`_popupQuizRecheckRejected`）。
+          // 后者可以推断出"这一发没过去"，但**不够格免掉一次付费询问**：推断错了只是少花一发，
+          // 判对方向错了就是把正确答案永久点不回去。所以要另存一本只收前者那类的账，
+          // 「候选削到一个就不问了」那一步只读它（见 `_popupQuizRejectBySite`）。
+          rejectedSite: Object.create(null),
           filled: Object.create(null),
           // 批次 78：站点**自己回包说「这个字母是对的」**的那一格。
           // 它存在的理由：判决槽（#spanHas）在站点每答一次就重绘的那一族里根本读不到，
           // 而"这一道平台已经判对了"这件事必须有地方活过那一拍，否则
           // 「弹窗收走又带同一指纹回来」只能被读成"被拒"，把正确字母永久拉黑。
           siteRight: Object.create(null),
-          paid: Object.create(null)
+          paid: Object.create(null),
+          // 批次 81：「容器还在、里面一道选项都没有」这一拍**第一次**看见的时刻。
+          // 用它把"等一拍拍 DOM 重绘回来"做成**有尽头**的等待（见 `_popupQuizEmptyShellPass`），
+          // 而不是旧写法那样第一眼就当"这道不可答"放弃 + 冷却 60 秒。
+          // 记在账本上（按任务点作废），不新开一个全局状态字段。
+          emptyShell: null
         };
       }
       return this._popupQuizSpend;
@@ -16540,24 +16794,42 @@ var OMITONE_CODE_REV = '03bd6af096';
     /**
      * 记一笔「这一道又放弃了一次」，并回答**还要不要为它花钱**。
      * 第二次放弃起进入静音名单：之后一律本地作答，一条请求都不发。
+     *
+     * ⚠️ 批次 83：这一格按**哪一道题**记（调用方给的是 `_popupQuizRejectKey` 那把尺），
+     * 不按「对/错」这一族选项记。理由是批次 77 已经验证过的那一件事：
+     * 判断题的选项指纹永远是同一串，名单按族记会把上一道判错的字母算到这一道头上 ——
+     * 而「这道放弃过两次」同样是**这一道题**的账：把上一道考砸了的事实静音掉后面那些
+     * 真能答的判断题，省的是钱，赔的是一整节的正确率。
+     * ⚠️ 只有 `asks`（发请求的总数封顶）留在粗指纹上：那是批次 72 立的**每节每族**预算，
+     *    它管的是"这一族选项在本节最多花 2×上限 发"，与"具体哪道题考砸了"无关。
+     *
+     * `scoped` 只用来把"这一格按哪把尺记的"打进日志（现场要能分开这两件事）。
      */
-    _notePopupQuizGiveUp: function (key) {
+    _notePopupQuizGiveUp: function (rkey, scoped) {
       var bucket = this._popupQuizSpendBucket();
-      var gives = Number(bucket.gives[key]) || 0;
+      var gives = Number(bucket.gives[rkey]) || 0;
+      // ⚠️ 批次 83：进了静音名单之后**不再往上加**。这一格只服务一个判断 —— 到 2 次就静音，
+      // 之后每拍仍然会走到「放弃」（弹窗挂着、冷却一过就重来），继续加只会把它读成
+      // 「这道已经放弃 42 次」（批次 83 定向实测），而那句话没有任何下一层含义，
+      // 现场还会据此以为仍在一次次重试、花钱没停。
+      if (bucket.silent[rkey]) return { gives: gives, silent: true };
       gives++;
-      bucket.gives[key] = gives;
-      var wasSilent = !!bucket.silent[key];
-      if (gives >= 2) bucket.silent[key] = 'gave-up-twice';
-      if (!wasSilent && bucket.silent[key]) {
+      bucket.gives[rkey] = gives;
+      var wasSilent = !!bucket.silent[rkey];
+      if (gives >= 2) bucket.silent[rkey] = 'gave-up-twice';
+      if (!wasSilent && bucket.silent[rkey]) {
         emitRuntimeLog('warn', 'popup quiz stops asking the model for this one', {
           reason: 'gave-up-twice',
           gives: gives,
-          fingerprint: String(key).slice(0, 80),
-          hint: '这一道（按选项指纹认）在本节已经放弃两次 —— 从现在起本地选一个不花钱的答案，' +
+          // ⚠️ 名单那一格是批次 77 才收窄的，钱那一格没有 —— 日志必须说清这一格记在哪个键上，
+          // 否则「上一道的放弃会不会管到这一道」这件事在现场读起来又是一次猜。
+          scoped: Number(scoped) || 0,
+          fingerprint: String(rkey).slice(0, 80),
+          hint: '这一道（按选项指纹 + 题干认）在本节已经放弃两次 —— 从现在起本地选一个不花钱的答案，' +
             '不再问模型。代价是它可能选错；好处是钱停在 2×上限 次以内，而不是每 8 秒一次'
         });
       }
-      return { gives: gives, silent: !!bucket.silent[key] };
+      return { gives: gives, silent: !!bucket.silent[rkey] };
     },
 
 
@@ -16684,6 +16956,79 @@ var OMITONE_CODE_REV = '03bd6af096';
 
 
     /**
+     * **题干那一格被站点摘掉时，从我们自己那张便条把细键拿回来** —— 批次 81。
+     *
+     * 为什么必须有它（现场 2026-11-16 17:0x，eventid 2055185 / 2055186 / 2055187 三轮同形）：
+     *   · 站点把答案收下那一刻会把装题干与选项的那一层整个摘掉，容器里只剩题型名 ——
+     *     现场读回来的 html 是 `<div class="tkTopic"><div class="tkTopic_title">判断题</div></div>`；
+     *   · 于是下一拍 `_popupQuizStem()` 拿到空串 → `_popupQuizRejectKey` 退回**粗指纹** →
+     *     而「平台判对了哪个字母」记在**细键**那一格上 → 读回来是 `siteRight:""`、`banned:[]`；
+     *   · 表现就是同三秒里两句话互相打脸：上一拍 `reused site-confirmed answer`（scoped:1，
+     *     明明白白知道 A 是平台判对的），下一拍 `unanswerable`（scoped:0，说什么都不知道），
+     *     然后**记一笔放弃 + 60 秒静音** —— 平台已经判对的那一道白占住视频一分钟。
+     *
+     * 依据用 `_popupQuizFilledBind`（批次 78 就在填答那一刻留下的那张**原始题干**便条），
+     * 而不是账本里存好的 mark：这一把尺必须与 `_popupQuizSiteRightNote` **写入时**算的那一把
+     * 同源（它用的就是 `bind.key` + `bind.stem`），两边各读一份就会互漂。
+     *
+     * ⚠️ 三个条件缺一个就退回粗指纹，行为与批次 77 完全一致：
+     *   1. 便条上的粗指纹与这一拍的粗指纹**同一个**（否则这是另一道选项相同的题 ——
+     *      而"选项被摘掉的那一拍"根本对不上，见下面 `_popupQuizBindIfFresh` 头上那段，
+     *      那一族由 `_popupQuizEmptyShellPass` 直接问便条）；
+     *   2. 便条还新鲜（与 `_popupQuizSiteRightNote` 的 3 分钟同一把尺）；
+     *   3. 便条那道题干的 mark 非空（否则压根没有更细的身份可用）。
+     * ⚠️ **花钱的那把尺一把没动**：`asks` 仍按粗指纹封顶 2×上限；`gives` / `silent`
+     *    按题记本来就是批次 83 立的口径，这里只是让"题干被摘掉的那一拍"也认得是哪一道。
+     */
+    _popupQuizRejectKeyBound: function (key, stem) {
+      if (this._popupQuizStemMark(stem)) return this._popupQuizRejectKey(key, stem);
+      var b = this._popupQuizBindIfFresh();
+      if (b && b.key === String(key || '')) return b.rkey;
+      return String(key || '');
+    },
+
+
+    /**
+     * 「最近一次填答」那张便条还**能不能当身份用** —— 批次 81 的唯一读取口。
+     *
+     * 为什么必须有它，而不直接在调用方读 `_popupQuizFilledBind`：这张便条是**全局一格**，
+     * 而它的有效期是站点回包那条链定的（`_popupQuizSiteRightNote`：`Date.now() - bind.at > 180000`
+     * 就不认）。读取口只有一处，两边才不会一把尺松、一把尺紧。
+     *
+     * ⚠️ 关键一点：**弹窗塌成空壳的那一拍，粗指纹自己也变了**。
+     * `_popupQuizFingerprint` 有选项时走 `cls|o|<选项文本>`、一个选项都没有时退回
+     * `cls|t|<整块文本剥掉反馈语>`（现场就是 `tkTopic|o|对\u0001错` → `tkTopic|t|判断题`）。
+     * 所以"这一拍的空壳是不是便条上那一道"**不能用粗指纹相等来问** —— 只能问便条自己，
+     * 再用能读回来的那一格（题型）做反证。这就是本函数把 `rkey` 与 `type` 一起交出去的原因。
+     */
+    _popupQuizBindIfFresh: function () {
+      var b = this._popupQuizFilledBind;
+      if (!b || !b.key) return null;
+      var at = Number(b.at) || 0;
+      if (!at || Date.now() - at > 180000) return null;
+      var mark = this._popupQuizStemMark(b.stem);
+      if (!mark) return null;
+      return {
+        key: String(b.key),
+        rkey: this._popupQuizRejectKey(b.key, b.stem),
+        letter: String(b.letter || ''),
+        cls: String(b.key || '').split('|')[0],
+        at: at
+      };
+    },
+
+
+    /**
+     * 与 `_popupQuizRejectKeyBound` **同一把尺**的归因通道：`scoped` 说的是
+     * 「名单/这一格记在哪把尺上」，所以它必须由那把尺自己回答，不许再看题干串非空。
+     * 细键真的生效了才报 1 —— 这样现场读到的 scoped 与账本落点不会分家（批次 77 立的规矩）。
+     */
+    _popupQuizScopedFlagBound: function (key, stem) {
+      return this._popupQuizRejectKeyBound(key, stem) !== String(key || '') ? 1 : 0;
+    },
+
+
+    /**
      * 装上「**读站点自己的交卷回包**」这本账 —— 批次 78。
      *
      * 为什么判决槽（`#spanHas`）不够用（现场 2026-11-16 用网络记账本量出来的）：
@@ -16700,14 +17045,30 @@ var OMITONE_CODE_REV = '03bd6af096';
      *     打的 `_popupQuizFilledBind`），不能指望从回包或 DOM 里现读。
      *
      * 只挂钩子、不改站点的那一发：`open`/`send`/`fetch` 全部原样转发，回包只**旁听**。
-     * 挂在这一帧的 window 上（弹题与站点的那发同源同帧），且只在真的处理过弹题的帧里挂 ——
-     * 没弹过题的页面一条钩子都不装。
+     *
+     * ⚠️ 挂在**哪一层**是批次 79 修的第二个 bug，别改回只挂顶层。
+     * 现场 2026-11-16 用 `.workbuddy/b79-who.cjs` 逐帧量出来：
+     *   `发在 [/0/0] /ananas/modules/video/index.html  批次78钩子在这一层=没有  记录器钩子=有
+     *    eventid=2616437  站点收到=B  isRight=false  这一层.tkTopic=1`
+     * 也就是**弹窗、站点那一发 XHR、我们该记的那本账全在视频帧里**，而顶层是刷课壳页。
+     * 钩子挂在顶层 window 上 = 现场一条回包都旁听不到 → `siteRight` 永远是空的 →
+     * 批次 78 那本账在沙盒里全绿（弹窗与 XHR 同在一个 document），在真站上等于没装。
+     * 所以 `win` 传的是**弹窗自己那一帧**的 window（`popup.ownerDocument.defaultView`）；
+     * 弹题在顶层文档的那一族，`defaultView` 就是 `window`，同一支代码两边都覆盖。
+     *
+     * 幂等**按窗口**判，不按"本 app 装过一次"判：一节课里视频帧会被重建成好几个 window，
+     * 每一层各挂一次（同层重复调用被 `__omitoneQuizNet` 标记挡住）。
+     * 仍然只在真的处理过弹题的帧里挂 —— 没弹过题的页面一条钩子都不装。
      */
-    _popupQuizInstallNetLedger: function () {
-      if (this._popupQuizNetLedgerOn) return;
-      this._popupQuizNetLedgerOn = 1;
+    _popupQuizInstallNetLedger: function (win) {
+      var target = null;
+      try { target = (win && win.XMLHttpRequest) ? win : null; } catch (eW) { target = null; }
+      if (!target) { try { target = window; } catch (eT) { target = null; } }
+      if (!target) return;
       var self = this;
       var MARK = 'quiz-validation';
+      // 「至少有一层的钩子真的在位」—— 诊断与 e2e 读这一格；它不许在什么都没挂时被写成 1。
+      var hooked = 0;
 
       // 回包只旁听：任何一步抛错都不许影响到站点那一发本身
       var listen = function (url, pack) {
@@ -16718,65 +17079,75 @@ var OMITONE_CODE_REV = '03bd6af096';
       };
 
       try {
-        var proto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
-        if (proto && !proto.__omitoneQuizNet) {
-          proto.__omitoneQuizNet = 1;
-          var oOpen = proto.open;
-          var oSend = proto.send;
-          proto.open = function (method, url) {
-            try { this.__omitoneQuizUrl = String(url == null ? '' : url); } catch (eU) {}
-            return oOpen.apply(this, arguments);
-          };
-          proto.send = function () {
-            try {
-              var u = String(this.__omitoneQuizUrl || '');
-              if (u.indexOf(MARK) !== -1) {
-                var xhr = this;
-                // 绑定在 **load 那一刻**取，不在 send 那一刻：填答案 → 点提交 → send 是同一拍里
-                // 同步发生的，而 `_popupQuizFilledBind` 要等 `_fillPopupAnswer` 返回之后才打上
-                // （差几微秒）。在 send 那刻读到的是**上一发**的绑定，第一发则是 null ——
-                // 整本账永远记不上，而这一步没有任何报错。
-                // 站点回包最快也几十毫秒，下一拍是 8 秒之后，所以 load 时刻读到的就是这一发；
-                // ⚠️ 剩下的错位在 `_popupQuizSiteRightNote` 里按**内容**对齐（URL 的 answerContent
-                //    必须等于绑定里我们刚点中的那个字母），不靠猜时间。
-                xhr.addEventListener('load', function () {
-                  listen(u, { bind: bindOf(), text: xhr.responseText });
-                });
-              }
-            } catch (eS) {}
-            return oSend.apply(this, arguments);
-          };
+        var proto = target.XMLHttpRequest && target.XMLHttpRequest.prototype;
+        if (proto) {
+          if (proto.__omitoneQuizNet) hooked = 1;
+          else {
+            proto.__omitoneQuizNet = 1;
+            hooked = 1;
+            var oOpen = proto.open;
+            var oSend = proto.send;
+            proto.open = function (method, url) {
+              try { this.__omitoneQuizUrl = String(url == null ? '' : url); } catch (eU) {}
+              return oOpen.apply(this, arguments);
+            };
+            proto.send = function () {
+              try {
+                var u = String(this.__omitoneQuizUrl || '');
+                if (u.indexOf(MARK) !== -1) {
+                  var xhr = this;
+                  // 绑定在 **load 那一刻**取，不在 send 那一刻：填答案 → 点提交 → send 是同一拍里
+                  // 同步发生的，而 `_popupQuizFilledBind` 要等 `_fillPopupAnswer` 返回之后才打上
+                  // （差几微秒）。在 send 那刻读到的是**上一发**的绑定，第一发则是 null ——
+                  // 整本账永远记不上，而这一步没有任何报错。
+                  // 站点回包最快也几十毫秒，下一拍是 8 秒之后，所以 load 时刻读到的就是这一发；
+                  // ⚠️ 剩下的错位在 `_popupQuizSiteRightNote` 里按**内容**对齐（URL 的 answerContent
+                  //    必须等于绑定里我们刚点中的那个字母），不靠猜时间。
+                  xhr.addEventListener('load', function () {
+                    listen(u, { bind: bindOf(), text: xhr.responseText });
+                  });
+                }
+              } catch (eS) {}
+              return oSend.apply(this, arguments);
+            };
+          }
         }
       } catch (eX) {}
 
       try {
-        var oFetch = window.fetch;
-        if (typeof oFetch === 'function' && !oFetch.__omitoneQuizNet) {
-          var wrapped = function (input) {
-            var u = '';
-            try { u = String((input && input.url) || input || ''); } catch (eU) {}
-            var p = oFetch.apply(this, arguments);
-            try {
-              if (u.indexOf(MARK) !== -1) {
-                // clone() 才能读体：原响应还要交回站点自己用。
-                // 绑定同样在**回包到**那一刻取（理由见上面 XMLHttpRequest 那一段）。
-                p.then(function (res) {
-                  try {
-                    var b = bindOf();
-                    var t = res && typeof res.clone === 'function' ? res.clone().text() : null;
-                    if (t && typeof t.then === 'function') {
-                      t.then(function (txt) { listen(u, { bind: b, text: txt }); }, function () {});
-                    }
-                  } catch (eR) {}
-                }, function () {});
-              }
-            } catch (eP) {}
-            return p;
-          };
-          wrapped.__omitoneQuizNet = 1;
-          window.fetch = wrapped;
+        var oFetch = target.fetch;
+        if (typeof oFetch === 'function') {
+          if (oFetch.__omitoneQuizNet) hooked = 1;
+          else {
+            var wrapped = function (input) {
+              var u = '';
+              try { u = String((input && input.url) || input || ''); } catch (eU) {}
+              var p = oFetch.apply(this, arguments);
+              try {
+                if (u.indexOf(MARK) !== -1) {
+                  // clone() 才能读体：原响应还要交回站点自己用。
+                  // 绑定同样在**回包到**那一刻取（理由见上面 XMLHttpRequest 那一段）。
+                  p.then(function (res) {
+                    try {
+                      var b = bindOf();
+                      var t = res && typeof res.clone === 'function' ? res.clone().text() : null;
+                      if (t && typeof t.then === 'function') {
+                        t.then(function (txt) { listen(u, { bind: b, text: txt }); }, function () {});
+                      }
+                    } catch (eR) {}
+                  }, function () {});
+                }
+              } catch (eP) {}
+              return p;
+            };
+            wrapped.__omitoneQuizNet = 1;
+            target.fetch = wrapped;
+            hooked = 1;
+          }
         }
       } catch (eF) {}
+
+      if (hooked) this._popupQuizNetLedgerOn = 1;
     },
 
 
@@ -16927,7 +17298,7 @@ var OMITONE_CODE_REV = '03bd6af096';
       this._popupQuizSiteRightUse(rkey);
       var key = this._popupQuizFingerprint(popup, optionItems);
       this._popupQuizLastFilled = String(letter);
-      this._notePopupQuizFilled(key, letter, stem);
+      this._notePopupQuizFilled(key, letter, stem, type);
       emitRuntimeLog('info', 'popup quiz reused site-confirmed answer, no request', {
         letter: letter,
         // 这一次是这条记录的**第几回**使用（1..3）—— 现场要看得出"还在救"还是"快作废了"
@@ -16967,6 +17338,13 @@ var OMITONE_CODE_REV = '03bd6af096';
       var list = bucket.rejected[rkey] || (bucket.rejected[rkey] = []);
       var v = String(letter || '');
       if (!v) return list;
+      // 批次 83：这一笔是**平台当场说的**还是**我们推断的**，两边要分得开。
+      // 推断那一类（弹窗被收走又带同一指纹回来）只进 `rejected`；平台判决槽明说
+      // 「回答错误」的那一类才同时进 `rejectedSite` —— 后面"候选削到一个就不花钱问模型"
+      // 那一步只读后者（理由见 `_popupQuizSpendBucket` 那一格与 `_popupQuizRejectBySite`）。
+      var bySite = verdict === 'wrong'
+        ? (bucket.rejectedSite[rkey] || (bucket.rejectedSite[rkey] = []))
+        : null;
       if (verdict !== 'wrong' && this._popupQuizSiteRightKnown(rkey, v)) {
         emitRuntimeLog('info', 'popup quiz not banning site-confirmed letter', {
           letter: v.slice(0, 8),
@@ -16986,7 +17364,31 @@ var OMITONE_CODE_REV = '03bd6af096';
         return list;
       }
       if (list.indexOf(v) === -1) list.push(v);
+      if (bySite && bySite.indexOf(v) === -1) bySite.push(v);
       return list;
+    },
+
+
+    /**
+     * 这一道题**被平台当场判错**的字母（纯读）—— 与 `rejected` 的差别只有一件事：
+     * 这一本只收站点自己说出口的证据，不收"弹窗被收走又弹回来"那一类推断。
+     *
+     * ⚠️ 为什么这一格必须单独存在（批次 83，全量 e2e 实测 14 条红顶出来的）：
+     * 批次 79-B 那一步「候选削到一个 → 不花钱问模型」读的是**混在一起的** `rejected`。
+     * 在真站上那一条读的确实是平台原话（现场四拍里 attempt1/2 都带 `verdict:"wrong"`），
+     * 可在"弹窗每轮被站点收走"那一族里，名单里那一格从头到尾只是我们的推断 ——
+     * 于是批次 72 立的**付费封顶安全阀**（发满 2×上限才收手）被一道推断提前绕开了：
+     * 推断错一次，就把"还能花钱问"变成"免费点掉并且从此不再问"，而日志看着都像省了钱。
+     * 省钱的让步要建立在平台说出口的事实上；推断只够用来**挑一个不重复的字母填**
+     * （那一步本来就不花钱），不够格免掉一次询问。
+     */
+    _popupQuizRejectBySite: function (rkey) {
+      try {
+        var list = this._popupQuizSpendBucket().rejectedSite[rkey];
+        return Array.isArray(list) ? list : [];
+      } catch (e) {
+        return [];
+      }
     },
 
 
@@ -17044,6 +17446,7 @@ var OMITONE_CODE_REV = '03bd6af096';
         key: String(key || ''),
         stem: String(stem || ''),
         letter: String(letter || ''),
+        cls: String(key || '').split('|')[0],
         at: Date.now()
       };
     },
@@ -17144,6 +17547,98 @@ var OMITONE_CODE_REV = '03bd6af096';
 
 
     /**
+     * 「容器还挂在原地、里面一道选项都没有」这一拍到底该怎么办 —— 批次 81。
+     *
+     * 旧写法只有一句话：`_giveUpPopupQuiz(popup, 'no-options-' + reason)` —— 记一笔放弃、
+     * 打一条 **error**、静音 60 秒。可现场量出来的那一族里，**上一拍**刚刚打出
+     * `reused site-confirmed answer` + 站点回包 `"msg":"通过"`（见 `_popupQuizRejectKeyBound`
+     * 头上那三轮 eventid）。于是同一道题被我们自己说了两句相反的话，而代价是
+     * **平台已经判对的那一道再占住视频一分钟** —— 这正是用户报的「视频界面的答题」。
+     *
+     * 所以这一拍分三种形状，各自的动作不一样（返回 true = 这一拍已经处理完，调用方别再放手）：
+     *   ① 便条还新鲜、而**回包说我们填的那个字母对** → 这是「已经过去了」，做与
+     *      `_popupQuizSiteVerdict()==='right'` 那一支同一套收尾（放行 + 静默），
+     *      区别只在判决槽那三句话此刻一句都不显，依据只能来自回包那本账；
+     *   ② 没填过 / 依据不够 → **有尽头地等**一拍：站点摘掉那一层是为了重绘，
+     *      下一拍多半就拼回来。只说一条 info，不填、不花钱、不记放弃；
+     *   ③ 等过 20 秒仍然空 → 才按旧路「答不了」放手（error + 冷却），
+     *      并把这一道登记进放弃账 —— 那才是真的不可答。
+     * ⚠️ 判据不许靠「睡了多久猜」：`emptyShell.at` 记的是**第一次看见空壳的时刻**，
+     *    20 秒是从这里量的，与 AGENTS §5 那条「读她登记的截止时刻，别猜毫秒」同一口径。
+     *
+     * ⚠️ ① 的依据**只能来自便条**，这里有两条看着能用、实际错的路（都是本批次写的时候踩出来的）：
+     *   · 问「账本 `filled` 里这一格有没有字母」：塌壳那一拍的**粗指纹自己也变了**
+     *     （`_popupQuizFingerprint` 有选项走 `cls|o|…`、没选项退回 `cls|t|…`，现场就是
+     *     `tkTopic|o|对\u0001错` → `tkTopic|t|判断题`），拿新的 key 去查旧 key 那一格永远查不到 ——
+     *     这正是本批次要修的病，用它当依据等于把病写进判据；
+     *   · 问「题型对不对得上」：`type` 走 `_detectPopupQuizType`，它**没有选项时把判断题判成
+     *     `single`**（`looksJudge` 要求恰好两个「对/错」文本），填答那一拍是 `judge`、
+     *     塌壳这一拍是 `single` —— 拿它当闸会把放行整个挡死，修复等于没做。
+     *   所以强度与站点自己说「通过」那一支**一致**：「我们刚亲手填进去一个字母」+
+     *   「它自己的回包说那个字母对」，中间不掺猜。`clsSame` 只写进日志当取证，**不作闸**。
+     */
+    _popupQuizEmptyShellPass: function (popup, key, stem, reason) {
+      var bucket = this._popupQuizSpendBucket();
+      var rkey = this._popupQuizRejectKeyBound(key, stem);
+      var scoped = this._popupQuizScopedFlagBound(key, stem);
+      var bind = this._popupQuizBindIfFresh();
+      var filledLetter = bind ? bind.letter : '';
+      var rightKey = bind ? bind.rkey : rkey;
+
+      if (filledLetter && this._popupQuizSiteRightKnown(rightKey, filledLetter)) {
+        var siteRec = (bucket.siteRight || {})[rightKey] || {};
+        bucket.emptyShell = null;
+        this._popupQuizSolvedKey = key;
+        this._popupQuizSolvedAt = Date.now();
+        this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);
+        this._popupQuizBlockedUntil = 0;
+        this._popupQuizLastFilled = '';
+        this._popupQuizAttempts = 0;
+        emitRuntimeLog('info', 'popup quiz already accepted by site, releasing block', {
+          letter: filledLetter.slice(0, 20),
+          eventid: String(siteRec.eid || '').slice(0, 32),
+          uses: Number(siteRec.uses) || 0,
+          scoped: scoped,
+          reason: reason,
+          // 「便条那个容器」与「这一拍这个容器」的 class 是否同一个 —— 只当取证，不当闸
+          // （换 class 就把放行挡死，等于把本批次修的病留在判据里，见头上那条⚠️）。
+          clsSame: bind && bind.cls === String(key || '').split('|')[0] ? 1 : 0,
+          waitedMs: bind ? Date.now() - bind.at : 0,
+          hint: '容器里一个选项都没有（站点收下答案那一刻把那一层摘掉了），而它自己的回包写着「通过」—— ' +
+            '这一道是**过去了**，不是答不了。旧写法在这里记放弃并静音 60 秒，' +
+            '等于平台判对了我们还替它按住视频一分钟'
+        });
+        return true;
+      }
+
+      var now = Date.now();
+      var seen = bucket.emptyShell;
+      if (!seen || String(seen.key) !== String(key) || !(Number(seen.at) > 0)) {
+        bucket.emptyShell = { key: String(key), at: now };
+        emitRuntimeLog('info', 'popup quiz has no options yet, waiting a beat', {
+          reason: reason, scoped: scoped, waitedMs: 0,
+          // 为什么没走放行那一支：`bound`=便条在不在（新鲜且有题干），`right`=回包认不认那个字母。
+          // 现场只看这两个数就分得开「这一道压根没填过」与「填过但回包说错」。
+          bound: bind ? 1 : 0, right: bind && this._popupQuizSiteRightKnown(bind.rkey, bind.letter) ? 1 : 0,
+          hint: '弹窗容器在、里面还没有选项（站点正在重绘）。这一拍不填、不花钱、不记放弃；' +
+            '20 秒后还是这样才按「答不了」放手'
+        });
+        return true;
+      }
+      var waited = now - Number(seen.at);
+      if (waited < 20000) return true;
+      bucket.emptyShell = null;
+      emitRuntimeLog('warn', 'popup quiz shell stayed empty', {
+        reason: reason, scoped: scoped, waitedMs: waited,
+        filled: filledLetter ? 1 : 0,
+        bound: bind ? 1 : 0,
+        hint: '20 秒内容器里仍然一个选项都没有 —— 这一道按「答不了」放手并冷却'
+      });
+      return false;
+    },
+
+
+    /**
      * **不花钱**地把弹窗点掉：挑一个还没被平台判错的选项，走与模型答案同一条填答路。
      *
      * 两个调用场景（都不该花请求）：
@@ -17159,17 +17654,40 @@ var OMITONE_CODE_REV = '03bd6af096';
      */
     _answerPopupQuizLocally: function (popup, optionItems, type, reason, stem) {
       var items = optionItems || [];
+      var key = this._popupQuizFingerprint(popup, items);
       if (!items.length) {
         // 一个选项都没有 → 没有"点一下就能过"的形状，别硬点。
+        // ⚠️ 但"没选项"在现场有两件不同的事（批次 81）：站点收下答案后把装题干与选项的
+        //    那一层摘掉（这一道**过去了**），与它压根长不出选项（这一道**答不了**）。
+        //    旧写法把它们并成一句 `no-options-*` 的 error + 60 秒静音 —— 于是平台刚判对
+        //    的那一道也被按住一分钟。分开判的那一格里有现场读数。
+        if (this._popupQuizEmptyShellPass(popup, key, stem, reason)) return false;
         this._giveUpPopupQuiz(popup, 'no-options-' + reason);
         return false;
       }
+      // 批次 83：这一道题的**收窄键**（粗指纹 + 题干可比对形态）在本函数里算一次，
+      // 记账、点名原因、日志三处共用 —— 两处各算一份就是"两份尺互漂"。
+      // ⚠️ 批次 81：题干那一格被站点摘掉时不能就此退回粗指纹 —— 账本上的名单与
+      //    「平台判对了哪个字母」都记在细键那一格，退回去就等于**现场看着像"没依据"**。
+      var rkey = this._popupQuizRejectKeyBound(key, stem);
       var banned = [];
       try {
         banned = (this._popupQuizWrongAnswers || []).map(function (v) {
           return String(v || '').toUpperCase();
         });
       } catch (eB) {}
+      // ⚠️ 批次 79-B：名单还要**并上账本**里这一道题那一格（`_popupQuizRejectKey` 那把尺）。
+      // 内存那份（`_popupQuizWrongAnswers`）跟着弹窗的生命周期走 —— 站点把弹窗收走的那一刻
+      // `_activePopupBlock` 就把它清了；账本那份才留得住"平台判错过哪些字母"。
+      // 只读内存，上面新加的那道闸就可能把**已经被判错**的字母免费点回去：不花钱，
+      // 但同一道判断题还是在 对/错 之间来回点，视频照样过不去。
+      try {
+        var ledgerBanned = (this._popupQuizSpendBucket().rejected || {})[rkey] || [];
+        for (var lb = 0; lb < ledgerBanned.length; lb++) {
+          var lu = String(ledgerBanned[lb] || '').toUpperCase();
+          if (lu && banned.indexOf(lu) === -1) banned.push(lu);
+        }
+      } catch (eL) {}
       var picked = '';
       var allBanned = true;
       for (var i = 0; i < items.length; i++) {
@@ -17181,35 +17699,48 @@ var OMITONE_CODE_REV = '03bd6af096';
       }
       if (!picked) {
         // 每个选项都被判错过了：再点下去只是重复，直接放弃并冷却。
+        // ⚠️ 批次 83：**这一笔必须记账**（`_notePopupQuizGiveUp`）。这一步是批次 83
+        // 那条「答案空间已经空了，一发都不发」的**后果**，如果不记账，站点那一族里
+        // 每一拍（冷却一过）都会重新走到这里 —— 而账上「放弃过几次」永远是 0，
+        // 批次 71/72 立的静音名单与封顶那一格就再也轮不到（实测：三个字母三发就用尽，
+        // 之后每 60 秒重来一轮，静音/只说一次那两条事件从来不发）。
+        // 记账之后：第二次「一个都不剩」起进静音名单，原因写 `gave-up-twice`，
+        // 后面每拍都走名单那一支（照旧一条请求都不发，但不再反复登记放弃）。
         emitRuntimeLog('warn', 'popup quiz every option already rejected', {
           reason: reason, banned: banned.slice(0, 6), optionCount: items.length,
           verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
           // 批次 77：这份名单是**只算这一道题**的(1)，还是与同选项的别的题共用的(0)。
           // 现场要一眼分开「这道真的两个字母都判错过」与「上一道把名单污染了」。
-          // ⚠️ 读的是 `_popupQuizScopedFlag`（名单实际落在哪把尺上），不是"题干串非空"。
-          scoped: this._popupQuizScopedFlag(stem)
+          // ⚠️ 读的是「名单实际落在哪把尺上」（`_popupQuizScopedFlagBound` 就是问上面那把
+          //    `rkey` 收没收窄），不是"题干串非空" —— 批次 81 之后细键还能从填答便条拿回来，
+          //    再看题干会把明明按题记的那一格说成按族记。
+          scoped: this._popupQuizScopedFlagBound(key, stem)
         });
+        this._notePopupQuizGiveUp(rkey, this._popupQuizScopedFlagBound(key, stem));
         this._giveUpPopupQuiz(popup, 'all-options-rejected');
         return false;
       }
       var filled = false;
       try { filled = !!this._fillPopupAnswer(popup, picked, type); } catch (eF) { filled = false; }
-      var key = this._popupQuizFingerprint(popup, items);
       if (filled) {
         this._popupQuizSolvedKey = key;
         this._popupQuizSolvedAt = Date.now();
         this._popupQuizBlockedUntil = 0;
         this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);
         this._popupQuizLastFilled = String(picked);
-        this._notePopupQuizFilled(key, picked, stem);
+        this._notePopupQuizFilled(key, picked, stem, type);
       }
       emitRuntimeLog('warn', 'popup quiz answered locally, no request', {
         reason: reason, picked: picked, filled: filled ? 1 : 0,
         attempt: this._popupQuizAttempts,
         banned: banned.slice(0, 6),
+        // 批次 83：这份名单里**平台当场说过错的**有几个 —— 现场拿它和 `banned.length` 一比，
+        // 就分得开「站点自己判的」与「我们因为弹窗被收走而推断的」。
+        // （推断那一类只用来挑字母，不够格免掉一次付费询问，见 `_popupQuizRejectBySite`。）
+        bySite: this._popupQuizRejectBySite(rkey).length,
         // 站点自己此刻判成了什么 —— 现场日志要能分清「我们以为被拒」与「平台真判错」。
         verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
-        scoped: this._popupQuizScopedFlag(stem),
+        scoped: this._popupQuizScopedFlagBound(key, stem),
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
@@ -17217,7 +17748,17 @@ var OMITONE_CODE_REV = '03bd6af096';
           (reason === 'ask-cap' ?
             '这一道在本节已经发满 2×上限 次请求（弹窗被站点每轮收走，所以按任务点记账）—— ' +
             '之后本地选一项，不再花钱' :
-            '这一道在本节已经放弃两次，之后只本地作答，不再发请求')
+            (reason === 'only-one-never-rejected' ?
+              '平台已经把这一道除这一个以外的选项全判错过 —— 答案不用再花钱问模型，' +
+              '直接免费点剩下的那一个（它也可能错，但一发都不花）' :
+              (reason === 'model-repeated-rejected' ?
+                '模型这一发回的是平台**已经判错过**的那个字母 —— 不再为它填第二遍，' +
+                '改免费点没被判过的那一个' :
+                (reason === 'all-banned-before-ask' ?
+                  '这一道的每个选项都已被判错过（平台亲口说的有几个、推断的有几个，看上面 bySite 与 ' +
+                  'banned 两格）—— 单选/判断题只有一个字母算对，再问模型也只能问出这些已知错的，' +
+                  '所以一发都不发，直接放弃并冷却' :
+                  '这一道在本节已经放弃两次，之后只本地作答，不再发请求'))))
       });
       return filled;
     },
@@ -17404,7 +17945,12 @@ var OMITONE_CODE_REV = '03bd6af096';
 
     _handlePopupQuiz: async function (popup) {
       // 批次 78：到**真的在处理弹题**的这一帧才挂钩子（没弹过题的页面一条钩子都不装）。
-      this._popupQuizInstallNetLedger();
+      // 批次 79：挂的是**这个弹窗自己那一帧**的 window —— 现场那一发 `quiz-validation`
+      // 由视频帧发出（`.workbuddy/b79-who.log`：「批次78钩子在这一层=没有」），
+      // 挂在顶层等于旁听不到任何回包。取不到 defaultView 时函数自己退回顶层窗口。
+      var popupWin = null;
+      try { popupWin = popup && popup.ownerDocument && popup.ownerDocument.defaultView; } catch (eW) { popupWin = null; }
+      this._popupQuizInstallNetLedger(popupWin);
       var popupText = textOf(popup);
       if (popupText === '知道了' || popupText === '关闭' || popupText === '确定') {
         popup.click();
@@ -17449,7 +17995,10 @@ var OMITONE_CODE_REV = '03bd6af096';
       // —— 它只能瞎猜，猜错就被平台拒，弹窗留着再问，**每 8 秒一次**。
       var optionItems = this._getOptionItems(popup);
       var stem = this._popupQuizStem(popup, optionItems);
-      var rkey = this._popupQuizRejectKey(key, stem);
+      // ⚠️ 批次 81：题干那一格被站点摘走的那一拍（`_popupQuizEmptyShellPass` 现场那一族），
+      //    这里不许退回粗指纹 —— 回包记的「平台判对了哪个字母」落在细键上，
+      //    退回来就读成"没依据"，于是把已经判对的那一道放弃掉再静音 60 秒。
+      var rkey = this._popupQuizRejectKeyBound(key, stem);
 
       // 题型在这里算一次就够了 —— 批次 78 的快路（免费填回判对的字母）与下面发请求那一段
       // 都要用它。同一个纯函数读同一份 DOM 读两遍就是"两份尺互漂"。
@@ -17500,8 +18049,10 @@ var OMITONE_CODE_REV = '03bd6af096';
               // ⚠️ 复用上面那一次读数（同一个 popup 读两遍就是两份尺互漂）。
               verdict: verdictNow || 'unknown',
               // 批次 77：这一格的已拒名单是**只算这一道题**(scoped:1)，还是和同选项的
-              // 别的题共用一份(scoped:0 —— 题干读不到，只能退回粗指纹)。
-              scoped: this._popupQuizScopedFlag(stem)
+              // 别的题共用一份(scoped:0 —— 题干读不到、填答便条也对不上，只能退回粗指纹)。
+              // ⚠️ 批次 81：用 `_popupQuizScopedFlagBound`（它问的就是"上面那把尺真收窄了吗"），
+              //    不许再看题干串非空 —— 取证的那格与记账的那格必须同一个来源。
+              scoped: this._popupQuizScopedFlagBound(key, stem)
             });
           }
           this._popupQuizLastFilled = '';
@@ -17524,8 +18075,11 @@ var OMITONE_CODE_REV = '03bd6af096';
 
       var maxAttempts = this._getPopupQuizMaxAttempts();
       if (this._popupQuizAttempts > maxAttempts) {
-        // 记一笔账：同一道（按选项指纹认）在本节第二次放弃起，后面只本地作答、不再发请求。
-        this._notePopupQuizGiveUp(key);
+        // 记一笔账：这**一道题**在本节第二次放弃起，后面只本地作答、不再发请求。
+        // ⚠️ 批次 83：记在 `rkey`（按题）而不是 `key`（按选项那一族）—— 判断题的选项
+        // 指纹永远是「对/错」，按族记会让上一道考砸的放弃把这一节后面那些真能答的
+        // 判断题一起静音掉（省的是一整节的正确率，不是钱）。
+        this._notePopupQuizGiveUp(rkey, this._popupQuizScopedFlagBound(key, stem));
         this._giveUpPopupQuiz(popup, 'attempts-exceeded');
         return;
       }
@@ -17552,13 +18106,57 @@ var OMITONE_CODE_REV = '03bd6af096';
         //   · 题干是空的（只有题型名）—— 问了也只能瞎猜，那一发是纯浪费；
         //   · 这一道已经放弃两次、或本节已发满 2×上限 —— 继续问就是"每 8 秒再来一发"，永不收敛。
         // 让步的是**正确率**，不是**钱**：本地选也可能选错，但一条请求都不花。
+        // ⚠️ 静音名单现在有**两把尺**（批次 83）：放弃是按题记的（`rkey`），封顶预算
+        //    是按选项那一族记的（`key`，批次 72 的每节每族预算）。按题那一格先读 ——
+        //    它是"这一道考砸了"，比"这一族在本节花满了"更具体，原因点名也要点它。
         if (!stem) {
           this._answerPopupQuizLocally(popup, optionItems, type, 'no-stem', stem);
           return;
         }
-        if (spend.silent[key]) {
-          this._answerPopupQuizLocally(popup, optionItems, type, String(spend.silent[key]), stem);
+        var silentWhy = spend.silent[rkey] || spend.silent[key] || '';
+        if (silentWhy) {
+          this._answerPopupQuizLocally(popup, optionItems, type, String(silentWhy), stem);
           return;
+        }
+
+        // ── 批次 79-B / 83：已被判错的字母，**不该再花钱问模型** ────────────────
+        // 现场 2026-11-16 同一道判断题连着四拍（`.workbuddy/b79-who.log` + 面板日志）：
+        //   attempt1 填 A → `verdict:"wrong"`；attempt2 填 B → `verdict:"wrong"`；
+        //   attempt3 `banned:["A","B"]` 之后**还在花第三发**（`fromPaidCache:false letter:"B"`）；
+        //   attempt4 才 `attempts-exceeded` 放弃。三道请求买的是同一个「这两个都不对」。
+        // ⚠️ 只在 `scoped:1`（名单按**这一道题**记）时成立：题干读不到时名单是
+        //    同选项别的题共用的粗指纹，"削到一个"根本不是这一道的证据（那一走上面 `!stem` 已经挡了）。
+        if (this._popupQuizScopedFlag(stem) && (type === 'judge' || type === 'single')) {
+          // 两种让步要的**证据硬度不一样**，所以分两本账读（批次 83 立的口径）：
+          //   · 「一个都不剩」→ 读混在一起的那本（`rejected`，含推断）。
+          //     理由是结构性的，不是证据性的：判断题/单选题只有**一个**字母算对，
+          //     而模型的回包只能落在这几个字母之一 —— 每个都被判错过，这一发买回来的
+          //     必然是我们已经知道错的那个。钱花下去连"让步正确率"都换不到，
+          //     所以这一格不需要平台亲口说过。（实测成因：站点答完就把弹窗收走，
+          //     判决槽一句都不显，只有"收走又弹回"这一条推断 —— 那一族原先把 2×上限
+          //     六发全花光，而两个字母在前两发就已经用尽了。）
+          //   · 「只剩一个」→ 只读**平台当场判错**那一本（`rejectedSite`）。
+          //     这一支是在**断言剩下那个就是答案**，而"弹窗被收走"没有说过这句话；
+          //     拿推断当答案，等于把批次 72 立的付费封顶安全阀绕开
+          //     （详 `_popupQuizRejectBySite` 那段与那 14 条红）。
+          var bannedAny = (spend.rejected || {})[rkey] || [];
+          var bannedSite = this._popupQuizRejectBySite(rkey);
+          var leftAny = 0;
+          var leftSite = 0;
+          for (var bi = 0; bi < optionItems.length; bi++) {
+            var bl = this._inferOptionLetter(optionItems[bi], bi) || String.fromCharCode(65 + bi);
+            var bu = String(bl).toUpperCase();
+            if (bannedAny.indexOf(bu) === -1) leftAny++;
+            if (bannedSite.indexOf(bu) === -1) leftSite++;
+          }
+          if (leftAny === 0) {
+            this._answerPopupQuizLocally(popup, optionItems, type, 'all-banned-before-ask', stem);
+            return;
+          }
+          if (bannedSite.length && leftSite === 1) {
+            this._answerPopupQuizLocally(popup, optionItems, type, 'only-one-never-rejected', stem);
+            return;
+          }
         }
 
         var question = {
@@ -17608,6 +18206,34 @@ var OMITONE_CODE_REV = '03bd6af096';
           }
           if (result && result.success && result.data) {
             var answer = Array.isArray(result.data) ? result.data[0] : result.data;
+            // ⚠️ 批次 79-B：**现问的这一支原先没有闸** —— 上面那道闸（复用付费缓存那一支）
+            // 管的是"上一发买的答案还值不值钱"，而模型**这一发**回一个已被平台判错的字母时，
+            // 老代码照样无条件 `_fillPopupAnswer`，于是同一道判断题在 对/错 之间来回点、
+            // 每一拍再花一发。现场 2026-11-16 读数（面板 + `.workbuddy/b79-who.log`）：
+            //   `attempt:2 banned:["A","B"] verdict:"wrong"` → 紧跟着 `attempt:2 fromPaidCache:false letter:"B"`
+            // 钱已经花了，但**这一发对这一道已经一文不值**：不再填它、也不留在付费缓存里
+            // （留着下一拍复用那道闸照样会丢它，却会让诊断读到一个"还能用"的假格），
+            // 改走免费那一支把没被判过的字母点掉；全都判过就放弃 + 冷却。
+            // ⚠️ 只管单选那一族（判断题/单选题）：多选题的答案是**一组**字母，
+            //    其中一个被判错不代表整组不值钱，而且 `_popupQuizFilledLetter` 本来只看第一个。
+            if ((type === 'judge' || type === 'single') && this._popupQuizScopedFlag(stem)) {
+              var freshLetter = this._popupQuizFilledLetter(popup, optionItems, answer, type);
+              if (freshLetter && (spend.rejected[rkey] || []).indexOf(freshLetter) !== -1) {
+                this._notePopupQuizPaid(key, '');
+                emitRuntimeLog('warn', 'popup quiz model answer already rejected, not re-filling', {
+                  letter: String(freshLetter).slice(0, 8),
+                  attempt: this._popupQuizAttempts,
+                  banned: (spend.rejected[rkey] || []).slice(0, 6),
+                  scoped: 1,
+                  // 这一发确实花了钱（请求已经发出去了）；这条日志说的是"不再为它填第二遍"。
+                  // 下一拍该免费的那一支接手，本节的封顶由 `_popupQuizAskBudget` 兜住。
+                  paid: 1,
+                  type: type
+                });
+                this._answerPopupQuizLocally(popup, optionItems, type, 'model-repeated-rejected', stem);
+                return;
+              }
+            }
             var filled = this._fillPopupAnswer(popup, answer, type);
             if (filled) {
               // 填进去了。此时弹窗多半还挂在 DOM 上（站点异步关闭），
@@ -17648,7 +18274,7 @@ var OMITONE_CODE_REV = '03bd6af096';
               });
               // 同一笔账再记进账本 —— 站点「答完就把弹窗收走」那一族里，上面那一格
               // 会在收走的那一刻被清空，只有账本留得住"上一轮填的是哪个字母"。
-              this._notePopupQuizFilled(key, this._popupQuizLastFilled, stem);
+              this._notePopupQuizFilled(key, this._popupQuizLastFilled, stem, type);
               // 静默 8 秒：给站点足够时间收走弹窗。这段时间内哪怕指纹变了也不碰它，
               // 否则站点重绘 → 指纹变 → 重问重填 → 选项闪烁，就是这么来的。
               this._popupQuizQuietUntil = Date.now() + 8000;
@@ -17725,15 +18351,20 @@ var OMITONE_CODE_REV = '03bd6af096';
       var gStem = this._popupQuizStem(popup, this._getOptionItems(popup));
       // 批次 78：放手这一刻，这一道在站点回包里**判对过**哪个字母（'' = 账上没这一格）。
       // 现场那条「A/B 全被判错」要是同时带着一个非空值，那就是闸没挡住，不是平台真判错。
-      var gRight = this._popupQuizSiteRightPeek(
-        this._popupQuizRejectKey(this._popupQuizFingerprint(popup), gStem));
+      // ⚠️ 批次 81：这一格**以前只会读成空串**，而空串在这条日志里同时意味着
+      //    「平台没说过」与「题干被摘掉、细键退化成粗指纹所以读不到那一格」—— 现场正是被
+      //    这句话带偏过一次（上一拍才打完 `reused site-confirmed answer`）。
+      //    现在用与记账同一把尺（`_popupQuizRejectKeyBound`）读，退化那一拍也认得自己的账。
+      var gKey = this._popupQuizFingerprint(popup);
+      var gRkey = this._popupQuizRejectKeyBound(gKey, gStem);
+      var gRight = this._popupQuizSiteRightPeek(gRkey);
       emitRuntimeLog('error', 'popup quiz unanswerable, stop asking model', {
         reason: reason || 'unknown',
         attempts: this._popupQuizAttempts,
         // 放手这一刻站点判成了什么 —— 现场那条 all-options-rejected 只有 reason 时，
         // 分不清「平台真把每个选项都判过错」还是「我们的已拒名单自己漂了」。
         verdict: this._popupQuizSiteVerdict(popup) || 'unknown',
-        scoped: this._popupQuizScopedFlag(gStem),
+        scoped: this._popupQuizScopedFlagBound(gKey, gStem),
         siteRight: gRight,
         banned: (this._popupQuizWrongAnswers || []).slice(0, 6),
         snapshot: this._describePopupQuiz(popup)
@@ -18047,9 +18678,13 @@ var OMITONE_CODE_REV = '03bd6af096';
         // 批次 77：这一格的名单是**只算这一道题**(1)，还是题干读不到、与同选项的题共用一份(0)。
         // ⚠️ 与日志那几格同一个来源：读 `_popupQuizScopedFlag`（名单实际落在哪把尺上）。
         scoped: node ? app._popupQuizScopedFlag(app._popupQuizStem(node, app._getOptionItems(node))) : 0,
-        // 账本上"哪个键拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
+        // 账本上"哪一道拉黑了哪些字母" —— 现场一眼看出是不是跨题串台：
         // 一道题一格（键尾带 |s|题干）= 收窄生效；只有一格粗键 = 同选项的题在共用名单。
-        rejectedKeys: (function () {
+        // ⚠️ 字段名里**不许出现 `key` 这个词**（批次 79-C）：`tools/field-logs.js` 的
+        //    `SENSITIVE_KEY` 按**字段名**屏蔽，为的是别把 API Key 打到日志里；
+        //    上一版这两格叫 `rejectedKeys` / `siteRightKeys`，于是现场读回来全是「(已屏蔽)」——
+        //    最该拿去对账的两格恰好看不见，而屏蔽本身是对的（改名字，不改屏蔽词表）。
+        rejectedBans: (function () {
           var r = (app._popupQuizSpend && app._popupQuizSpend.rejected) || {};
           return Object.keys(r).slice(0, 8).map(function (k) {
             return '…' + String(k).slice(-46) + '=' + String(r[k] || '').slice(0, 8);
@@ -18057,7 +18692,8 @@ var OMITONE_CODE_REV = '03bd6af096';
         })(),
         // 批次 78：**站点自己回包判对过**的那些字母（`siteRight` 那本账上真实存在的格子）。
         // 现场拿它与上面 `banned` 对照就能一眼定死：同一格同一个字母既判对又被拉黑 = 闸坏了。
-        siteRightKeys: (function () {
+        // 名字同样避开屏蔽词（见上面 `rejectedBans` 那段）。
+        siteRightRows: (function () {
           var r = (app._popupQuizSpend && app._popupQuizSpend.siteRight) || {};
           return Object.keys(r).slice(0, 8).map(function (k) {
             var rec = r[k] || {};

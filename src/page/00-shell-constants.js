@@ -56,7 +56,7 @@
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
   /**
-   * 投票任务点（insertvote）的四个数。
+   * 投票任务点（insertvote）的五个数。
    *
    * 覆盖层是平台自己点出来的（直接访问那个 api/work 地址是 403），所以要等它长出来；
    * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
@@ -64,11 +64,16 @@
    *
    * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
    * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   *
+   * `VOTE_ENDED_COOLDOWN_MS` 单独放宽到 30 分钟：认出一张**已被手动结束**的问卷之后，
+   * 每 5 分钟再点一次封面除了把全屏覆盖层重新撑起来之外没有任何收益（现场 2026-11-16），
+   * 但也不能从此不看它 —— 老师重新开放就要能接着投，所以是"更长但仍然会再试"。
    */
   var VOTE_OVERLAY_WAIT_MS = 12000;
   var VOTE_BOX_WAIT_MS = 15000;
   var VOTE_MAX_TRIES = 4;
   var VOTE_COOLDOWN_MS = 5 * 60 * 1000;
+  var VOTE_ENDED_COOLDOWN_MS = 30 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
