@@ -532,14 +532,7 @@
       for (var i = 0; i < list.length; i++) {
         var a = list[i], got = !!(bondState.ach && bondState.ach[a.id]);
         if (got) on++;
-        var hint = "";
-        if (!got) {
-          if (a.need.pats != null) hint = "（" + Math.min(bondState.totalPats || 0, a.need.pats) + "/" + a.need.pats + "）";
-          else if (a.need.studyMinutes != null) hint = "（" + (Math.floor((bondState.totalStudyMinutes || 0) / 6) / 10) + " / " + Math.round(a.need.studyMinutes / 60) + " 小时）";
-          else if (a.need.streakDays != null) hint = "（" + Math.min(bondState.streakDays || 0, a.need.streakDays) + "/" + a.need.streakDays + " 天）";
-          else if (a.need.nightPats != null) hint = "（" + Math.min(bondState.nightPats || 0, a.need.nightPats) + "/" + a.need.nightPats + "）";
-          else hint = "（等冬天）";
-        }
+        var hint = got ? "" : game.achHint(bondState, a);
         html += '<div class="pet-book-ach' + (got ? " on" : "") + '"><b>' + (got ? "✦ " : "") + a.name + "</b><span>" + a.desc + hint + "</span></div>";
       }
       box.innerHTML = '<div class="pet-book-sep">成就 · ' + on + " / " + list.length + "</div>" + html;
@@ -1118,7 +1111,7 @@
         if (!game || !state) return;
         var bar = document.getElementById("petBond");
         var badge = document.getElementById("petLevel");
-        var lv = game.levelOf(state.affection);
+        var lv = game.displayLevelOf(state);   // 只升不降：她不会因版本改动从"很熟"退回"生疏"
         var levelDef = game.LEVELS[lv] || game.LEVELS[0];
         var nextDef = game.LEVELS[lv + 1];
         // 进度条指向**下一级**：本级门槛到下一级门槛之间的位置
@@ -1228,7 +1221,14 @@
             var game = getGame();
             var stored = r && r[BOND_KEY];
             if (stored) {
+              // 尺度换算（PAST_SCALES）在 rollDay 里做一次；做过就必须落盘，
+              // 否则「旧日的满格」那一格每次开面板重算、纪念成就永远点不亮。
+              var wasVersion = Number(stored.bondVersion) || 1;
               bondState = game.rollDay(stored, todayKey());
+              if (wasVersion < game.BOND_VERSION) {
+                persistBond();          // 换算过就钉住版本，别每次开面板重算一遍
+                checkAchievements();    // 「旧日的满格」在这一步点亮，不必等下一次摸头
+              }
             } else {
               var legacy = null;
               try { legacy = JSON.parse(localStorage.getItem(LEGACY_BOND_KEY) || "null"); } catch (e2) {}

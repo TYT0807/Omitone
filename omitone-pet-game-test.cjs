@@ -9,6 +9,8 @@
  * 测它们把 content.js / pet.js 拖进测试环境 —— 抽出来才能便宜地测满。
  */
 'use strict';
+var fs = require('fs');
+var path = require('path');
 var STATS = require('./libs/study-stats.js');
 var GAME = require('./popup/pet-game.js');
 
@@ -387,6 +389,196 @@ var copiedLine = [];
 });
 check('两处界面都不再把等级名/成就名/分钟数拼进台词（第二份真源不许长回来）',
   copiedLine.length === 0, JSON.stringify(copiedLine));
+// 称号的读法也只许有一份真源：界面若绕过 displayLevelOf 直接拿 levelOf 现算，
+// 棘轮就等于没装 —— 表现正是用户说的那句"更新完她突然不熟了"。
+// ⚠️ 先摘掉整行注释再匹配（批次 98 那一族：注释里提一句"别再调 levelOf()"就能把守卫搅浑）。
+function codeOnly(src) {
+  return src.split('\n').filter(function (ln) {
+    var t = ln.replace(/^\s+/, '');
+    return t.indexOf('//') !== 0 && t.indexOf('*') !== 0;
+  }).join('\n');
+}
+var rawLevelRead = [];
+[['popup/pet.js', petSrc], ['content.js', pageSrc]].forEach(function (pair) {
+  var code = codeOnly(pair[1]);
+  if (!/displayLevelOf\(/.test(code)) rawLevelRead.push(pair[0] + ' 没走 displayLevelOf');
+  if (/(^|[^A-Za-z])levelOf\(/.test(code)) rawLevelRead.push(pair[0] + ' 还在自己算 levelOf');
+});
+check('两处界面都只从 displayLevelOf 读称号（不许再各自拿 levelOf 现算，棘轮才承重）',
+  rawLevelRead.length === 0, JSON.stringify(rawLevelRead));
+// 进度句交空串的意思是"这一格没话"。界面若再补一句兜底文案，就是那句写死的「（等冬天）」
+// 换个位置长回来 —— 新 kinds 又会被标成假话，而且这回藏在规则层调用后面，更难看见。
+var achHintFallback = [];
+[['popup/pet.js', petSrc], ['content.js', pageSrc]].forEach(function (pair) {
+  if (/achHint\([^)]*\)\s*(\|\||\?\?)/.test(codeOnly(pair[1]))) achHintFallback.push(pair[0]);
+});
+check('界面不许给进度句补兜底文案（achHint 交空串=这格没话，补一句假的就是旧 bug 回魂）',
+  achHintFallback.length === 0, JSON.stringify(achHintFallback));
+
+// ══ 存档版本化与「永不掉级」（批次 100）══════════════════════════════
+// 用户要的是这一句：「保证更新的时候吉祥物不会从很熟变成不熟这种充满挫败感的情况」。
+// 1.3.0 已经发生过一半：上限 100 → 240、六档 → 八档，当年刷满 100 的老档今天读出来是
+// 「100 / 240，下一级还差 40 点」—— 称号没退（六道老门槛一字没动），但"我们到过顶"这件事
+// 在界面上一点痕迹都不留，用户读到的就是突然生疏了。下面这批断言钉四件事：
+//   ① 老尺度写下的存档，换算后显示的等级**与当年完全一致**（按 0 到当年上限逐格遍历）
+//   ② 换算不许把 affection 放大（悄悄送分是另一种"更新把我当小孩"）
+//   ③ 到过的档位只升不降（棘轮）—— 将来有人抬门槛或压上限也退不回去
+//   ④ rollDay 幂等：新增字段漏携带，第二次读写就静默丢掉
+
+var OLD = (GAME.PAST_SCALES || [])[0] || {};
+check('PAST_SCALES 登记了第 1 代的尺度（上限／门槛清单／纪念成就 id 三样都齐）',
+  OLD.version === 1 && OLD.max > 0 && Array.isArray(OLD.levelMins) && OLD.levelMins.length > 0 && !!OLD.grant,
+  JSON.stringify(OLD));
+// 历史门槛与当前表前 N 档对账 —— 两条独立写下的数据必须一致；不一致就是"改了史实"，
+// 那一族的后果由下一条遍历断言指到具体哪一个好感度会掉档。
+check('登记的历史门槛与当前等级表前 ' + OLD.levelMins.length + ' 档一字不差（改已有门槛=当众掉级，得显式认账）',
+  GAME.LEVELS.slice(0, OLD.levelMins.length).map(function (l) { return l.min; }).join(',') === OLD.levelMins.join(','),
+  '表内=' + GAME.LEVELS.map(function (l) { return l.min; }).join(',') + ' 史实=' + OLD.levelMins.join(','));
+
+/** 第 1 代尺度下**当年界面会显示**的那一档 —— 门槛取自登记的历史数据，不从 LEVELS 现推 */
+function legacyLevelOf(a) {
+  var lv = 0;
+  for (var i = 0; i < OLD.levelMins.length; i++) if (a >= OLD.levelMins[i]) lv = i;
+  return lv;
+}
+var titleBad = [], inflateBad = [], verBad = [];
+for (var oa = 0; oa <= OLD.max; oa++) {
+  // 第 1 代存档的真实形状：没有 bondVersion、没有 peak*、没有成就表之外的字段
+  var v1 = GAME.rollDay({ affection: oa, day: DAY, patsToday: 0, studyPointsToday: 0, countedSeconds: 0 }, DAY);
+  if (GAME.displayLevelOf(v1) !== legacyLevelOf(oa)) {
+    titleBad.push(oa + ' 档=' + (GAME.LEVELS[GAME.displayLevelOf(v1)] || {}).name);
+  }
+  if (v1.affection !== oa) inflateBad.push(oa + ' 分=' + v1.affection);
+  if (v1.bondVersion !== GAME.BOND_VERSION) verBad.push(oa + ' 版本=' + v1.bondVersion);
+}
+check('黄金老档逐格遍历（0 到当年上限 ' + OLD.max + '，一格不漏）：称号与当年一字不差、好感一个不放大、版本补上',
+  titleBad.length === 0 && inflateBad.length === 0 && verBad.length === 0,
+  JSON.stringify({ title: titleBad.slice(0, 3), inflate: inflateBad.slice(0, 3), ver: verBad.slice(0, 3) }));
+
+// 棘轮真正承重的场景：好感那一格被压回去了（将来压上限／垃圾存档手改），称号仍不许倒退
+var ratchet = GAME.rollDay({ affection: 20, day: DAY, bondVersion: GAME.BOND_VERSION, peakLevel: 6, peakAffection: 150 }, DAY);
+check('棘轮：到过第七档的人就算好感被压回 20 也仍显示第七档（只升不降）',
+  GAME.displayLevelOf(ratchet) === 6 && GAME.levelOf(ratchet.affection) === 1
+  && ratchet.affection === 20 && ratchet.peakAffection === 150,
+  JSON.stringify({ show: GAME.displayLevelOf(ratchet), raw: GAME.levelOf(ratchet.affection), aff: ratchet.affection }));
+check('棘轮自己也不许越界（手改存档吹到 99 档，界面按数组取元素不许崩）',
+  GAME.displayLevelOf(GAME.rollDay({ affection: 0, day: DAY, peakLevel: 99 }, DAY)) === GAME.LEVELS.length - 1
+  && GAME.displayLevelOf(null) === 0);
+
+// 「当年满过格」只认那一代的满格，且必须是一枚**纪念**（不靠统计、也不人人有份）
+function achIds(list) { return list.map(function (a) { return a.id; }).join(','); }
+function byId(id) {
+  for (var i = 0; i < GAME.ACHIEVEMENTS.length; i++) if (GAME.ACHIEVEMENTS[i].id === id) return GAME.ACHIEVEMENTS[i];
+  return null;
+}
+var maxedV1 = GAME.rollDay({ affection: OLD.max, day: DAY }, DAY);
+check('当年刷满上限的老档记下"满过"，并点亮「' + OLD.grant + '」（补一枚纪念，而不是把数字补大）',
+  maxedV1.legacyCeil === OLD.max && achIds(GAME.evaluateAchievements(maxedV1, DAY)) === OLD.grant,
+  JSON.stringify({ ceil: maxedV1.legacyCeil, got: achIds(GAME.evaluateAchievements(maxedV1, DAY)) }));
+var almostV1 = GAME.rollDay({ affection: OLD.max - 1, day: DAY }, DAY);
+check('差一点没满的老档不许白送这一枚（上限那一格就是那一格）',
+  almostV1.legacyCeil === 0 && achIds(GAME.evaluateAchievements(almostV1, DAY)).indexOf(OLD.grant) < 0,
+  achIds(GAME.evaluateAchievements(almostV1, DAY)));
+check('今天新建的档拿不到这一枚（是纪念，不是签到），但版本号照样写上',
+  GAME.rollDay(null, DAY).legacyCeil === 0 && GAME.rollDay(null, DAY).bondVersion === GAME.BOND_VERSION
+  && achIds(GAME.evaluateAchievements(GAME.rollDay(null, DAY), DAY)).indexOf(OLD.grant) < 0);
+// 回滚留下的"比当前还新"的档：字段照带、数字照留、棘轮照旧不回退，但版本标记**降回当前** ——
+// 因为换算必须幂等（上面那条遍历），降回来才能在下一次升版时补做那一代的换算。
+var newer = GAME.rollDay({ affection: OLD.max, day: DAY, bondVersion: 99, ach: { pat100: 'x' }, peakLevel: 6 }, DAY);
+check('比当前更新的档（回滚留下的）不补领纪念、字段照带、棘轮照旧不退，版本标记降回当前以便补换算',
+  newer.legacyCeil === 0 && newer.affection === OLD.max && newer.bondVersion === GAME.BOND_VERSION
+  && newer.ach.pat100 === 'x' && newer.peakLevel === 6, JSON.stringify(newer));
+
+// 幂等 + 携带：漏一格字段 = 下次读写把它静默丢掉（这正是 1.3.0 那批字段容易踩的坑）
+var probeIn = { affection: 40, day: DAY, totalPats: 9, totalStudyMinutes: 120, nightPats: 3,
+  streakDays: 2, lastMetDay: DAY, ach: { pat100: DAY }, peakLevel: 3, peakAffection: 40,
+  legacyCeil: OLD.max, bondVersion: 1 };
+var pass1 = GAME.rollDay(probeIn, DAY), pass2 = GAME.rollDay(pass1, DAY);
+var drift = Object.keys(pass1).filter(function (k) {
+  return JSON.stringify(pass1[k]) !== JSON.stringify(pass2[k]);
+}).concat(Object.keys(pass2).filter(function (k) { return !(k in pass1); }));
+check('rollDay 幂等且字段全携带（第二次过一遍，一格不变也不多长一格）',
+  drift.length === 0, JSON.stringify({ drift: drift, keys: Object.keys(pass1).length }));
+var carriedAll = Object.keys(probeIn).filter(function (k) {
+  return k !== 'bondVersion' && JSON.stringify(pass1[k]) !== JSON.stringify(probeIn[k]);
+});
+check('喂进去的每一格都读得回来（除版本标记外不许被换算改掉）',
+  carriedAll.length === 0, JSON.stringify(carriedAll));
+
+// ── 成就那侧：进度句搬进规则层，界面不许再自己写死兜底 ──
+var hintState = GAME.rollDay({ affection: 0, day: DAY, totalPats: 7, totalStudyMinutes: 30,
+  streakDays: 2, nightPats: 1 }, DAY);
+var noHint = GAME.ACHIEVEMENTS.filter(function (a) { return String(GAME.achHint(hintState, a)).length === 0; });
+check('每一枚未点亮的成就都得有一句进度（界面原先写死"等冬天"兜底，新 kinds 会被标成假话）',
+  noHint.length === 0, noHint.map(function (a) { return a.id + ' need=' + JSON.stringify(a.need); }).join(' | '));
+check('进度句里的数是读回来的，不是常量（30 分钟说 0.5 小时、7 次说 7/100、连击 2 说 2/7）',
+  GAME.achHint(hintState, byId('pat100')) === '（7/100）'
+  && GAME.achHint(hintState, byId('study600')) === '（0.5 / 10 小时）'
+  && GAME.achHint(hintState, byId('streak7')) === '（2/7 天）'
+  && GAME.achHint(hintState, byId('night20')) === '（1/20）',
+  ['pat100', 'study600', 'streak7', 'night20'].map(function (i) { return i + '=' + GAME.achHint(hintState, byId(i)); }).join(' | '));
+check('季节那一句照 need.season 说季节名（不再写死"冬天"），认不出的 need 交空串不硬凑',
+  GAME.achHint(hintState, { need: { season: 'autumn' } }) === '（等秋天）'
+  && GAME.achHint(hintState, { need: { season: 'rainy' } }) === '（等那个季节）'
+  && GAME.achHint(hintState, { need: { whatever: 1 } }) === ''
+  && GAME.achHint(hintState, null) === '');
+check('进度句只认 need、不看亮没亮（亮不亮归界面判，规则层不该两份都算）',
+  GAME.achHint(GAME.markAchievements(hintState, ['pat100'], DAY), byId('pat100')) === '（7/100）',
+  GAME.achHint(hintState, byId('pat100')));
+
+// 成就表本身的形状：id 唯一、四样齐全、台词填进庆祝模板后仍在 34 字上限内
+var achIdsAll = GAME.ACHIEVEMENTS.map(function (a) { return a.id; });
+var dupAch = achIdsAll.filter(function (v, i) { return achIdsAll.indexOf(v) !== i; });
+var thinAch = GAME.ACHIEVEMENTS.filter(function (a) {
+  return !a.id || !a.name || !a.desc || !a.line || !a.need || Object.keys(a.need).length === 0;
+});
+check('每一枚成就都有 id/名称/说明/台词与非空 need，id 不重样',
+  dupAch.length === 0 && thinAch.length === 0,
+  JSON.stringify({ dup: dupAch, thin: thinAch.map(function (a) { return a.id; }) }));
+var achOverflow = [];
+GAME.ACHIEVEMENTS.forEach(function (a) {
+  (GAME.SAY.achievement || []).forEach(function (tpl) {
+    var out = filledOf(tpl.replace(/\{name\}/g, a.name).replace(/\{line\}/g, a.line));
+    if (out.length > 34) achOverflow.push(a.id + '=' + out.length);
+  });
+});
+check('成就台词填进庆祝模板后仍 ≤34 字（量的是**填完之后**，不是句子本身）',
+  achOverflow.length === 0, JSON.stringify(achOverflow));
+check('纪念成就说明里那个数就是登记过的当年上限（写了数字就得同源）',
+  byId(OLD.grant) && String(byId(OLD.grant).desc).indexOf(String(OLD.max)) >= 0,
+  byId(OLD.grant) ? byId(OLD.grant).desc : '（没有这枚成就）');
+
+// ══ 用户向文档里那两处数字，与规则层同源（批次 100）═══════════════════
+// 本轮把「6 枚成就」改成 7 枚 —— 而 README / 说明书里那个数是手抄的。
+// AGENTS §4：「行为改了而文档没改，是这一族唯一的失败形状」，集成 403、e2e 1529、界面字样三条闸
+// 一条都不会红，只有照说明书理解现场的用户被引到错方向。所以照第 30 项（换课上限）的手法办。
+// ⚠️ 只核**承诺页**（README + 说明书），不核 CHANGELOG —— 那里写的是史实，按 AGENTS 不回改。
+function docText(f) {
+  var raw;
+  try { raw = fs.readFileSync(path.join(__dirname, f), 'utf8'); } catch (e) { return null; }
+  // 注释与 script 里的出现不算（第 27 项同一口径）：那两处用户看不见，抄错也不该红
+  return raw.replace(/<!--[\s\S]*?-->/g, '').replace(/<script[\s\S]*?<\/script>/g, '');
+}
+var docAchBad = [], docLevelBad = [], docNameBad = [];
+['README.md', 'docs/manual.html'].forEach(function (f) {
+  var txt = docText(f);
+  if (txt === null) { docAchBad.push(f + ' 读不到'); docLevelBad.push(f + ' 读不到'); docNameBad.push(f + ' 读不到'); return; }
+  var ach = (txt.match(/(\d+)\s*枚成就/g) || []).map(function (s) { return Number(/\d+/.exec(s)[0]); });
+  var lv = (txt.match(/好感度?分?\s*(?:<b>|\*\*)?(\d+)\s*级/g) || [])
+    .concat(txt.match(/(\d+)\s*级成长/g) || [])
+    .map(function (s) { return Number(/\d+/.exec(s)[0]); });
+  if (!ach.length) docAchBad.push(f + ' 一处「N 枚成就」都没写（句子被改断，闸要跟着改）');
+  if (!lv.length) docLevelBad.push(f + ' 一处「N 级」都没写（句子被改断，闸要跟着改）');
+  ach.forEach(function (n) { if (n !== GAME.ACHIEVEMENTS.length) docAchBad.push(f + ' 写 ' + n + ' 枚、真源 ' + GAME.ACHIEVEMENTS.length); });
+  lv.forEach(function (n) { if (n !== GAME.LEVELS.length) docLevelBad.push(f + ' 写 ' + n + ' 级、真源 ' + GAME.LEVELS.length); });
+  GAME.ACHIEVEMENTS.forEach(function (a) { if (txt.indexOf(a.name) < 0) docNameBad.push(f + ' 缺「' + a.name + '」'); });
+});
+check('文档里「N 枚成就」那个数与规则层同源（README + 说明书，且句子不许被改断到扫不着）',
+  docAchBad.length === 0, JSON.stringify(docAchBad));
+check('文档里「好感分 N 级 / N 级成长」那个数与等级表同源（README + 说明书）',
+  docLevelBad.length === 0, JSON.stringify(docLevelBad));
+check('每一枚成就的名字都出现在 README 与说明书里（新增成就没登记=用户看不见的功能）',
+  docNameBad.length === 0, JSON.stringify(docNameBad));
 
 console.log('');
 if (failures.length) {

@@ -10,11 +10,14 @@
  *     与 content.js 里。立绘池放这里是因为**两处都要用**：弹窗的立绘册 + 上课页她自己换装。
  *
  * 拓展点（想加内容就是加数据，不是改逻辑）：
- *   - 加等级   → LEVELS 加一行（min 是好感度门槛；只准往后追加，勿动老门槛）；
+ *   - 加等级   → LEVELS 加一行（min 是好感度门槛；只准**往后追加**，勿动老门槛）；
+ *     ⚠️ 改了**已有**门槛或 RULES.max = 尺度变更，必须同时往 PAST_SCALES 追加一代（见那里的注释），
+ *     否则老存档会当着用户的面从"很熟"退回"生疏"；
  *   - 加台词   → 情境话（她自己开口 / 打招呼 / 被戳 / 开工收工）加进 SAY，按时段分桶的就
  *     六个桶各加一句；摸头那句按等级加进 PAT_LINES 那一组。全部**保持短句**（见那里的⚠️）；
  *   - 加立绘   → ART 的三个池子按**像素核实**归类加一行（勿按文件名前缀猜，见那里的⚠️）；
- *   - 加成就   → ACHIEVEMENTS 加一行（id/name/desc/need/line）；
+ *   - 加成就   → ACHIEVEMENTS 加一行（id/name/desc/need/line），**并且**给 achHint 补一支
+ *     （新的 need 种类没有进度句，界面那一格就只会空着）；
  *   - 调手感   → RULES 一处（摸头上限 / 每日刷课转化上限 / 每多少分钟一点）。
  */
 (function (root, factory) {
@@ -51,6 +54,26 @@
     { min: 90,  name: '形影不离', line: '有你在的地方，就是我的位置。' },
     { min: 140, name: '心有灵犀', line: '原来陪伴久了，连沉默都很舒服。' },
     { min: 200, name: '岁月同行', line: '从初识走到今天，谢谢你没缺席。' }
+  ];
+
+  // ── 存档版本与迁移（**「更新绝不让她从很熟退回生疏」就靠这一族**）──────────
+  // 为什么非要版本号：这份存档只有一个入口 —— 所有读写都过 rollDay，而 rollDay 是
+  //   「缺字段补默认值 + 钳区间」的写法。默认值对**新增字段**是对的，对**改过的尺度**是错的。
+  // 已经踩过一次的实例：1.3.0 把上限由 100 提到 240、六档追加成八档。当年刷满 100 的老档
+  //   今天读出来是「100 / 240，下一级还差 40 点」—— 好感条从满格变两成。称号没退
+  //   （前六道门槛没动），但"我们到过那里"在界面上一点痕迹都不留，用户读到的就是突然生疏了。
+  // 规矩：**改 RULES.max 或 LEVELS 里已有的门槛**，就在这里追加一格 PAST_SCALES，
+  //   然后跑 `npm run pet-game:test` —— 那条「黄金老档绝不掉级」断言会替你算每一档。
+  var BOND_VERSION = 2;
+  // 每格描述**那一版写下**的存档尺度：max = 当时的上限，levelMins = 当时那几档的门槛（**逐字抄下史实**），
+  //   grant = 补给"当年到过那个上限"的人的纪念成就 id（改上限不该没收旧成绩）。
+  // ⚠️ levelMins 必须**独立成一份**，不许在测试里从 LEVELS 前 N 条现推 —— 现推等于"代码和自己比"，
+  //   谁改了已有门槛两边一起变，那条「黄金老档绝不掉级」就永远抓不到。它是数据，测试拿它跟 LEVELS 对账。
+  // ⚠️ 记账方向容易搞反：**离开**第 N 代时才补第 N 代这一格、同时把上面的 BOND_VERSION 抬到 N+1。
+  //   所以下次再提上限，是往这里追加 `{ version: 2, max: 240, levelMins: [...八条...], grant: '...' }`，
+  //   并把 BOND_VERSION 改成 3 —— 不许改第 1 代那一格（那是史实，改了等于篡改别人已经拿到的成绩）。
+  var PAST_SCALES = [
+    { version: 1, max: 100, levelMins: [0, 15, 30, 50, 70, 90], grant: 'oldCeiling' }
   ];
 
   // ── 摸头台词（按等级一组，随机抽一句；不含升级台词——那由 LEVELS.line 出）──
@@ -351,6 +374,41 @@
     return lv;
   }
 
+  /** 界面该显示哪一档 —— **只升不降**的棘轮。
+   *  levelOf 是纯函数，门槛一改就会当着用户的面倒退；peakLevel 记的是历史上到过的那一档，
+   *  取大值。上限拿 LEVELS.length 兜一道：万一将来删档，界面按数组取元素不许越界。 */
+  function displayLevelOf(state) {
+    var lv = levelOf(state ? Number(state.affection) || 0 : 0);
+    var peak = state ? Number(state.peakLevel) || 0 : 0;
+    return Math.max(lv, Math.min(peak, LEVELS.length - 1));
+  }
+
+  /** 棘轮：到过的分数与档位只往上记，永不回退（rollDay / onPat / applyStudySeconds 各拨一次） */
+  function bumpPeak(next) {
+    if (next.affection > next.peakAffection) next.peakAffection = next.affection;
+    var lv = levelOf(next.affection);
+    if (lv > next.peakLevel) next.peakLevel = lv;
+    return next;
+  }
+
+  /** 把更早版本写下的存档换算到当前尺度（就地改，rollDay 里调一次）。
+   *  ⚠️ 换算**不许动 affection** —— 把 100 悄悄乘成 240 是凭空送分，用户一眼看出不对，
+   *  而且下一次上限再变时这笔账就彻底算不清了。当年满格过这件事记在 legacyCeil，
+   *  由「旧日的满格」那枚纪念成就去说。
+   *  @returns {Object} next（同一个对象） */
+  function migrateBond(next) {
+    var from = Number(next.bondVersion) || 1;   // 没写版本号 = 版本化之前那份档，按第 1 代尺度处理
+    for (var i = 0; i < PAST_SCALES.length; i++) {
+      var sc = PAST_SCALES[i];
+      // 只认"这份档是哪一代尺度写下的"那一条：第 N 代的用户见过的是第 N 代的天花板，
+      // 更老的世代早被它盖过去了（拿 affection 去比旧旧上限会白送纪念）。
+      if (sc.version !== from) continue;
+      if (sc.grant && next.affection >= sc.max) next.legacyCeil = sc.max;
+    }
+    next.bondVersion = BOND_VERSION;
+    return bumpPeak(next);
+  }
+
   /** 跨天兜底：任何读写前都过一遍 —— 日期变了就重置每日配额，字段缺失补默认值。
    *  ⚠️ 新增存档字段必须在这里补携带，否则下次读写会被这层重建静默丢掉。 */
   function rollDay(state, todayKey) {
@@ -367,7 +425,12 @@
       nightPats: Number(s.nightPats) || 0,
       streakDays: Number(s.streakDays) || 0,
       lastMetDay: String(s.lastMetDay || ''),
-      ach: (s.ach && typeof s.ach === 'object' && !Array.isArray(s.ach)) ? s.ach : {}
+      ach: (s.ach && typeof s.ach === 'object' && !Array.isArray(s.ach)) ? s.ach : {},
+      // ── 版本与棘轮 ──
+      bondVersion: Number(s.bondVersion) || 1,
+      peakAffection: Math.max(0, Number(s.peakAffection) || 0),
+      peakLevel: clamp(Number(s.peakLevel) || 0, 0, LEVELS.length - 1),
+      legacyCeil: Math.max(0, Number(s.legacyCeil) || 0)
     };
     if (next.day !== todayKey) {
       next.day = todayKey;
@@ -386,7 +449,7 @@
     next.patsToday = clamp(next.patsToday, 0, RULES.patDailyCap);
     next.studyPointsToday = clamp(next.studyPointsToday, 0, RULES.studyPointsDailyCap);
     next.countedSeconds = Math.max(0, next.countedSeconds);
-    return next;
+    return migrateBond(next);
   }
 
   // ── 成就（纯装饰：解锁只多一句台词和一格亮灯，不影响任何功能）────────
@@ -401,9 +464,13 @@
     { id: 'streak30',  name: '老朋友',    desc: '连续 30 天都见面',
       need: { streakDays: 30 },     line: '一个月了。你已经是我生活的一部分。' },
     { id: 'night20',   name: '夜猫子搭档', desc: '累计 20 次凌晨（0-5 点）摸头',
-      need: { nightPats: 20 },      line: '这个点还醒着啊……记得早点休息，我陪你。' },
+      need: { nightPats: 20 },      line: '这个点还醒着啊……早点睡，我陪你。' },
     { id: 'firstSnow', name: '初雪之约',  desc: '在下雪的季节（12-2 月）来摸摸她',
-      need: { season: 'winter' },   line: '冬天的第一场雪，是你陪我一起看的。' }
+      need: { season: 'winter' },   line: '冬天的第一场雪，是你陪我一起看的。' },
+    // 纪念成就：不靠统计点亮，只认「版本化之前那份档当年在上限上刷满过」（见 migrateBond）。
+    // 改上限不该没收旧成绩 —— 那一百点不是没发生过，是当时的天花板就在那儿。
+    { id: 'oldCeiling', name: '旧日的满格', desc: '在好感上限还是 100 的年代刷到过顶',
+      need: { legacyCeiled: true }, line: '那时候的满格，我一直记得。' }
   ];
 
   function seasonOf(todayKey) {
@@ -437,6 +504,8 @@
       else if (a.need.streakDays != null) met = (state.streakDays || 0) >= a.need.streakDays;
       else if (a.need.nightPats != null) met = (state.nightPats || 0) >= a.need.nightPats;
       else if (a.need.season != null) met = season === a.need.season;
+      // 只认迁移时记下的那一格 —— 统计层永远算不出"当年的上限"，不许拿现在的数凑。
+      else if (a.need.legacyCeiled) met = (Number(state.legacyCeil) || 0) > 0;
       if (met) out.push(a);
     }
     return out;
@@ -449,6 +518,28 @@
       if (!state.ach[ids[i]]) state.ach[ids[i]] = todayKey;
     }
     return state;
+  }
+
+  var SEASON_CN = { spring: '春天', summer: '夏天', autumn: '秋天', winter: '冬天' };
+
+  /** 未点亮成就旁边那句**活的进度**（界面只显示，不再自己写判据）。
+   *  ⚠️ 新增 `need` 种类必须在这里补一支 —— 界面以前用一句写死的「（等冬天）」兜底，
+   *  于是任何新 kinds 都会被标成"等冬天"这种假话。测试里「每枚未点亮成就都要出话」拦这个，
+   *  认不出来时返回空串（宁可那一格只显示说明，也不显示错的进度）。 */
+  function achHint(state, a) {
+    if (!a || !a.need || !state) return '';
+    var n = a.need;
+    function num(v) { var x = Number(v); return isFinite(x) && x > 0 ? x : 0; }
+    function tenthsOfHours(mins) { return Math.floor(mins / 6) / 10; }   // 保留一位小数的"小时"
+    if (n.pats != null) return '（' + Math.min(num(state.totalPats), n.pats) + '/' + n.pats + '）';
+    if (n.studyMinutes != null) {
+      return '（' + tenthsOfHours(num(state.totalStudyMinutes)) + ' / ' + Math.round(n.studyMinutes / 60) + ' 小时）';
+    }
+    if (n.streakDays != null) return '（' + Math.min(num(state.streakDays), n.streakDays) + '/' + n.streakDays + ' 天）';
+    if (n.nightPats != null) return '（' + Math.min(num(state.nightPats), n.nightPats) + '/' + n.nightPats + '）';
+    if (n.legacyCeiled) return '（老存档才有）';   // 这一枚现在拿不到，直说，别留一个永远点不亮的坑
+    if (n.season != null) return '（等' + (SEASON_CN[n.season] || '那个季节') + '）';
+    return '';
   }
 
   /**
@@ -476,6 +567,7 @@
     if (hour >= 0 && hour < 5) next.nightPats += 1;       // 夜猫子搭档
     touchDay(next, todayKey);
     var afterLevel = levelOf(next.affection);
+    bumpPeak(next);
     if (afterLevel > beforeLevel) {
       line = (LEVELS[afterLevel] || {}).line || '';
     } else {
@@ -528,12 +620,15 @@
       touchDay(next, todayKey);
     }
     var afterLevel = levelOf(next.affection);
+    bumpPeak(next);
     return { state: next, gained: allowed, leveledUp: afterLevel > beforeLevel, level: afterLevel };
   };
 
   return {
     RULES: RULES,
     LEVELS: LEVELS,
+    BOND_VERSION: BOND_VERSION,
+    PAST_SCALES: PAST_SCALES,
     PAT_LINES: PAT_LINES,
     PAT_CAP_LINES: PAT_CAP_LINES,
     IDLE_LINES: IDLE_LINES,
@@ -547,10 +642,13 @@
     prevDayKeyOf: prevDayKeyOf,
     seasonOf: seasonOf,
     levelOf: levelOf,
+    displayLevelOf: displayLevelOf,
+    migrateBond: migrateBond,
     rollDay: rollDay,
     touchDay: touchDay,
     evaluateAchievements: evaluateAchievements,
     markAchievements: markAchievements,
+    achHint: achHint,
     onPat: onPat,
     applyStudySeconds: applyStudySeconds
   };

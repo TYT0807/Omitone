@@ -1928,7 +1928,8 @@
     const game = petGameModule();
     if (!game) return;
     try {
-      const lv = game.levelOf(pagePetBond.affection);
+      // displayLevelOf 而不是 levelOf：称号是**只升不降**的棘轮，改了门槛也不会把她打回生疏
+      const lv = game.displayLevelOf(pagePetBond);
       const levelDef = game.LEVELS[lv] || game.LEVELS[0];
       const nextDef = game.LEVELS[lv + 1];
       const pct = nextDef
