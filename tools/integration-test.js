@@ -3362,6 +3362,232 @@ async function testDisplacedStudyPageRescue() {
     JSON.stringify({ contentMs: msC && msC[1], pageMs: pMs && pMs[1], routeAt: routeAt }));
 }
 
+/** ---- [22] 批次 95：可拖区间还服务不了目标时，不许把一次性机会花在它身上 ---- */
+async function testSeekDeferUntilSeekable() {
+  console.log('\n[22] 拖到结尾：区间没长出来时先等，不把它判成「站点防拖拽」（批次 95）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var media = read('src/page/40-media.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  // 方法体里的 emitRuntimeLog / Date 是外壳注入的自由变量，单独取出来跑要自己注进去
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var m = src.match(re);
+    return m ? Number(m[1]) : null;
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var nowMs = 1700000000000;
+  var FakeDate = { now: function () { return nowMs; } };
+  var inj = { emitRuntimeLog: say, Date: FakeDate };
+
+  var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  var covers = buildFrom(media, '_seekableCovers', {});
+  var defer = buildFrom(media, '_deferSeekUntilSeekable', inj);
+  var trySeek = buildFrom(media, '_trySeekToEnd', inj);
+  var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
+
+  // 两个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言还按旧数跑 = 假绿）
+  var deferBody = bodyOf(media, '_deferSeekUntilSeekable');
+  var windowMs = firstNum(deferBody, /Date\.now\(\) \+ (\d+)/);
+  var capTries = firstNum(deferBody, /st\.tries >= (\d+)/);
+
+  check('① 五件都能从 40-media.js 原样取出来真跑，两个预算也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, covers, defer, trySeek, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+    windowMs > 0 && capTries > 1,
+    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, ninety: typeof isNinety, windowMs: windowMs, capTries: capTries }));
+  if (!trySeek || !covers || !defer || !isNinety) return;
+
+  function mkRanges(list) {
+    return {
+      length: list.length,
+      start: function (i) { return list[i][0]; },
+      end: function (i) { return list[i][1]; }
+    };
+  }
+  // opt.ranges：区间数组；'missing' = 这个属性压根没有；'throws' = 一读就抛
+  // opt.ignoreWrites：站点把写入整个吞掉（规范里 seek 到区间外就是这个形状）
+  function mkVideo(opt) {
+    opt = opt || {};
+    var rec = { writes: [], cur: opt.current == null ? 0 : opt.current };
+    var v = {
+      tagName: opt.tagName || 'VIDEO',
+      isConnected: true,
+      duration: opt.duration,
+      currentSrc: 'https://ananas.chaoxing.com/video/910000001/at_1700000000000.mp4',
+      __rec: rec
+    };
+    Object.defineProperty(v, 'currentTime', {
+      get: function () { return rec.cur; },
+      set: function (n) { rec.writes.push(n); if (!opt.ignoreWrites) rec.cur = n; }
+    });
+    if (opt.ranges === 'missing') return v;
+    if (opt.ranges === 'throws') {
+      v.seekable = { get length() { throw new Error('读不到'); } };
+      return v;
+    }
+    v.seekable = mkRanges(opt.ranges || []);
+    return v;
+  }
+  function mkApp() {
+    var delays = [];
+    var app = {
+      configs: { enableSeek: true },
+      _rateProbing: false,
+      _captchaActive: false,
+      _activeJobId: '',
+      _workerDelay: function (fn) { delays.push(fn); },
+      _isRateLockedAtOne: function () { return true; },
+      _getMediaSeekKey: getKey,
+      _seekableCovers: covers,
+      _deferSeekUntilSeekable: defer,
+      _trySeekToEnd: trySeek,
+      _isNinetyPercentVideo: isNinety
+    };
+    return { app: app, delays: delays };
+  }
+  var seekTo = function (app, v, reason) { return app._trySeekToEnd(v, reason); };
+  var keyOf = function (v) { return getKey.call({}, v); };
+
+  var DUR = 1401.4;
+  var TARGET = DUR - 3;
+
+  // ---- ② 口径本身：四格互斥，读不到时往「照旧拖一次」那一边失败 ----
+  var lad = {
+    yes: covers.call({}, mkVideo({ duration: DUR, ranges: [[0, DUR]] }), TARGET),
+    empty: covers.call({}, mkVideo({ duration: DUR, ranges: [] }), TARGET),
+    outside: covers.call({}, mkVideo({ duration: DUR, ranges: [[0, 60]] }), TARGET),
+    missing: covers.call({}, mkVideo({ duration: DUR, ranges: 'missing' }), TARGET),
+    throws: covers.call({}, mkVideo({ duration: DUR, ranges: 'throws' }), TARGET),
+    mid: covers.call({}, mkVideo({ duration: DUR, ranges: [[0, 60], [1200, DUR]] }), TARGET)
+  };
+  check('② 区间口径四格分得开：含尾部 yes、没长出来 empty、长出来但不含尾部 outside、多段命中中间那段也算 yes；读不到与抛异常一律当 yes（宁可照旧拖一次，别把能拖的机会判成不可拖）',
+    lad.yes === 'yes' && lad.empty === 'empty' && lad.outside === 'outside' &&
+    lad.missing === 'yes' && lad.throws === 'yes' && lad.mid === 'yes',
+    JSON.stringify(lad));
+
+  // ---- ③ 这一拍区间还是空的：进度条一下都不许动，一次性机会不许花掉 ----
+  logs.length = 0;
+  var a3 = mkApp(), v3 = mkVideo({ duration: DUR, ranges: [] });
+  var r3 = seekTo(a3.app, v3, 'loadedmetadata');
+  var k3 = keyOf(v3);
+  check('③ 区间还没长出来时：不写 currentTime、_seekTriedKeys 不登记、不排任何延时，且 90% 提前收尾那一格仍是 false（「现在还不行」没被压成「不行」）',
+    r3 === false && v3.__rec.writes.length === 0 && !!a3.app._seekTriedKeys &&
+    !a3.app._seekTriedKeys[k3] && !a3.app._seekRevertedKeys[k3] &&
+    a3.delays.length === 0 && a3.app._isNinetyPercentVideo(v3) === false,
+    JSON.stringify({ ret: r3, writes: v3.__rec.writes.length, tried: a3.app._seekTriedKeys, delays: a3.delays.length, ninety: a3.app._isNinetyPercentVideo(v3) }));
+  check('④ 空区间这一拍要留一条日志点名凭什么没拖（cover 与 reason 都得在），不能静默什么都不做',
+    logs.length === 1 && /waiting/.test(logs[0].message) && logs[0].meta &&
+    logs[0].meta.cover === 'empty' && logs[0].meta.reason === 'loadedmetadata' &&
+    Number(logs[0].meta.to) === Number(TARGET.toFixed(1)),
+    JSON.stringify(logs));
+
+  // ---- ⑤ 现场那一族的真实形状：先空、区间长出来之后同一支视频要真拖过去 ----
+  logs.length = 0;
+  var a5 = mkApp(), v5 = mkVideo({ duration: DUR, ranges: [] });
+  seekTo(a5.app, v5, 'guard');
+  v5.seekable = mkRanges([[0, DUR]]);
+  var r5 = seekTo(a5.app, v5, 'guard');
+  var w5 = v5.__rec.writes;
+  check('⑤ 同一支视频：第一拍区间空（不写），区间长出来后的那一拍真把 currentTime 写到 duration-3、并登记为已检查',
+    r5 === true && w5.length === 1 && Number(w5[0].toFixed(1)) === Number(TARGET.toFixed(1)) &&
+    a5.app._seekTriedKeys[keyOf(v5)] === true && /seek to end/.test(logs.map(function (l) { return l.message; }).join('|')),
+    JSON.stringify({ ret: r5, writes: w5, tried: a5.app._seekTriedKeys[keyOf(v5)], msgs: logs.map(function (l) { return l.message; }) }));
+
+  // ---- ⑥ 区间一直不含尾部：时间预算用尽后**照旧真拖一次** ----
+  // ⚠️ 收口不许写成"闸门自己判不可拖"：那等于把"等区间没等到"当成"站点防拖拽"，
+  //    正是本次要修的那一族的反面。结论只能来自"写下去被弹回"（下面 flush 之后才成立）。
+  logs.length = 0;
+  var a6 = mkApp(), v6 = mkVideo({ duration: DUR, ranges: [[0, 60]], current: 1.1, ignoreWrites: true });
+  seekTo(a6.app, v6, 'guard');
+  nowMs += windowMs + 1;   // 时钟走过唯一的窗口，次数一格没多用 —— 这一格钉时间那条护栏
+  var r6 = seekTo(a6.app, v6, 'guard');
+  var revBefore6 = a6.app._seekRevertedKeys[keyOf(v6)];
+  var flushed6 = 0;
+  while (a6.delays.length && flushed6 < 5) { var fn6 = a6.delays.shift(); flushed6++; try { fn6(); } catch (e6b) { break; } }
+  check('⑥ 时间预算用尽：那一拍真把 currentTime 写下去（闸门自己绝不预先判"不可拖"），弹回判定跑完之后 _seekRevertedKeys 才为真、90% 提前收尾才成立；日志点名 tries 与 cover，不静默放手',
+    r6 === true && revBefore6 !== true && a6.app._seekTriedKeys[keyOf(v6)] === true &&
+    a6.app._seekRevertedKeys[keyOf(v6)] === true && flushed6 >= 1 && v6.__rec.writes.length === 3 &&
+    a6.app._isNinetyPercentVideo(v6) === true &&
+    logs.some(function (l) { return /never became reachable/.test(l.message) && l.meta &&
+      l.meta.cover === 'outside' && Number(l.meta.tries) === 2; }) &&
+    logs.some(function (l) { return l.message === 'seek reverted by site, keep playing normally'; }),
+    JSON.stringify({ ret: r6, revBefore: revBefore6, rev: a6.app._seekRevertedKeys[keyOf(v6)], writes: v6.__rec.writes.length, flushed: flushed6, ninety: a6.app._isNinetyPercentVideo(v6), msgs: logs.map(function (l) { return l.message; }) }));
+  nowMs = 1700000000000;
+
+  // ---- ⑦ 两条预算各自独立承重：只留次数那一条时也要能收口 ----
+  logs.length = 0;
+  var a7 = mkApp(), v7 = mkVideo({ duration: DUR, ranges: [[0, 60]], current: 1.1, ignoreWrites: true });
+  var rets7 = [];
+  for (var i7 = 0; i7 < capTries; i7++) rets7.push(seekTo(a7.app, v7, 'guard'));
+  check('⑦ 次数预算用尽（时钟一步没走，只有 tries 到顶）：前 capTries-1 拍一格都不动进度条，最后一拍真写下去 —— 两条护栏各测一条，删掉任一条另一条都得还在',
+    rets7[0] === false && rets7[capTries - 2] === false && rets7[capTries - 1] === true &&
+    rets7.filter(function (x) { return x === true; }).length === 1 &&
+    v7.__rec.writes.length === 1 && a7.app._seekTriedKeys[keyOf(v7)] === true &&
+    a7.app._seekRevertedKeys[keyOf(v7)] !== true &&
+    logs.filter(function (l) { return /never became reachable/.test(l.message); }).length === 1 &&
+    Number(logs.filter(function (l) { return /never became reachable/.test(l.message); })[0].meta.tries) === capTries,
+    JSON.stringify({ trueAt: rets7.indexOf(true), tries: capTries, writes: v7.__rec.writes.length, rev: a7.app._seekRevertedKeys[keyOf(v7)], msgs: logs.map(function (l) { return l.message; }) }));
+
+  // ---- ⑧ 等待日志每支视频只说第一次（这一族每 1500 毫秒就来一拍） ----
+  var a8 = mkApp(), v8 = mkVideo({ duration: DUR, ranges: [] });
+  logs.length = 0;
+  for (var i8 = 0; i8 < 40; i8++) seekTo(a8.app, v8, 'guard');
+  check('⑧ 还在等区间的 40 拍里，「等区间」那条日志只出第一次（每拍重播会把 200 条证据环挤空，批次 37 / 51 同一族）',
+    logs.filter(function (l) { return /waiting for it/.test(l.message); }).length === 1,
+    JSON.stringify({ total: logs.length, msgs: logs.map(function (l) { return l.message; }).slice(0, 4) }));
+
+  // ---- ⑨ 旧行为没被弄坏：区间明明含尾部却两次弹回，仍按「站点防拖拽」收尾 ----
+  logs.length = 0;
+  var a9 = mkApp(), v9 = mkVideo({ duration: DUR, ranges: [[0, DUR]], ignoreWrites: true });
+  var r9 = seekTo(a9.app, v9, 'job-start');
+  var flushed = 0;
+  while (a9.delays.length && flushed < 5) {
+    var fn9 = a9.delays.shift();
+    flushed++;
+    try { fn9(); } catch (e9) { break; }
+  }
+  check('⑨ 区间含尾部却两次弹回（真·防拖拽）：仍走旧收尾 —— 拖过、重试两次、_seekRevertedKeys 置真并出「keep playing normally」，本次改动没把这族放掉',
+    r9 === true && v9.__rec.writes.length === 3 && a9.app._seekTriedKeys[keyOf(v9)] === true &&
+    a9.app._seekRevertedKeys[keyOf(v9)] === true &&
+    logs.some(function (l) { return /seek reverted by site, retry/.test(l.message); }) &&
+    logs.some(function (l) { return l.message === 'seek reverted by site, keep playing normally'; }),
+    JSON.stringify({ ret: r9, writes: v9.__rec.writes.length, flushed: flushed, msgs: logs.map(function (l) { return l.message; }) }));
+
+  // ---- ⑩ 记账要有界：>300 复位那一块必须把这一族三本账一起清 ----
+  var resetBody = bodyOf(media, '_trySeekToEnd');
+  var resetBand = resetBody.slice(resetBody.indexOf('length > 300'));
+  check('⑩ 「只检查一次」那本账过 300 就整体复位，且把新增的 _seekDeferKeys 一起清掉（漏一本就是无界增长的账）',
+    resetBand.indexOf('_seekTriedKeys = Object.create(null)') >= 0 &&
+    resetBand.indexOf('_seekRevertedKeys = Object.create(null)') >= 0 &&
+    resetBand.indexOf('_seekDeferKeys = Object.create(null)') >= 0,
+    resetBand.slice(0, 220).replace(/\s+/g, ' '));
+  check('⑪ 一次性标记排在区间闸门之后（写在前面就是本次要修的那个 bug 本身，静态钉住顺序）',
+    resetBody.indexOf('_deferSeekUntilSeekable') >= 0 &&
+    resetBody.indexOf('_seekTriedKeys[key] = true') > resetBody.indexOf('_deferSeekUntilSeekable'),
+    JSON.stringify({ gate: resetBody.indexOf('_deferSeekUntilSeekable'), mark: resetBody.indexOf('_seekTriedKeys[key] = true') }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -3395,6 +3621,7 @@ async function main() {
   await testCacheBlockWarnThreshold();
   await testJobRejectLogThrottle();
   await testDisplacedStudyPageRescue();
+  await testSeekDeferUntilSeekable();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

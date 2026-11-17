@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'a161da3fb2';
+var OMITONE_CODE_REV = '0923c03608';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2442,16 +2442,21 @@ var OMITONE_CODE_REV = 'a161da3fb2';
       if (Object.keys(this._seekTriedKeys).length > 300) {
         this._seekTriedKeys = Object.create(null);
         this._seekRevertedKeys = Object.create(null);
+        this._seekDeferKeys = Object.create(null);
       }
 
       var duration = Number(video.duration);
       if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
-      this._seekTriedKeys[key] = true; // 检查完成：此后无论成败都不再动这个视频
 
       var current = Number(video.currentTime || 0);
       if (current >= duration - 8) return false; // 已在结尾附近，无需拖动
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
+
+      // ⚠️ 这一发"只做一次"的机会不许花在**区间还服务不了它**的时刻上，见下面两个新方法
+      if (this._deferSeekUntilSeekable(video, key, target, duration, reason)) return false;
+
+      this._seekTriedKeys[key] = true; // 检查完成：此后无论成败都不再动这个视频
       try {
         video.currentTime = target;
       } catch (e) {
@@ -2499,6 +2504,76 @@ var OMITONE_CODE_REV = 'a161da3fb2';
       };
       this._workerDelay(function () { verifySeek(0); }, 1500);
       return true;
+    },
+
+
+    /**
+     * 现场实测（2026-11-17，一门鉴赏课里同一支 1401.4 秒的视频，章节号用合成夹具号 910000001 代）：
+     *   +1100s  seekable video: seek to end {"from":0,"to":1398.4}
+     *   +1099s / +1097s  seek reverted by site, retry —— 两次读回的都是 **1.1**
+     *   +1096s  seek reverted by site, keep playing normally → 此后这一支按 1 倍速看完了 23 分钟
+     *   而 12:26 只读量回来的是 seekable=[[0,1401.4]]、bufferedEnd=1400.86 —— **整支早就拖得动了**
+     *
+     * 那两次"弹回"根本不是站点防拖拽：规范里 seek 到 seekable 区间之外**就是被忽略、
+     * currentTime 原地不动**（`to` 那里写着 1398.4，读回 1.1 —— 连"被按回原位"都不是，是从头播）。
+     * 旧代码把这一刻的失败当结论，而且**一次性机会花在元数据刚就绪的那一拍**，
+     * 于是"这一支不可拖"永久成立，`_isNinetyPercentVideo` 接着让它看到 90%（waitedMs=1256041）。
+     *
+     * 所以现在先问一句"目标位置在不在可拖区间里"：不在就**把这一发留给区间长出来之后**，
+     * 有界重试（时间预算 + 次数预算双上限）；任一预算用掉就**照旧真拖一次**才收手 ——
+     * "不可拖拽"这个结论只能来自"写进去被弹回"，不许来自"等区间没等到"。
+     * 真在区间里还被弹回，才叫"不可拖拽"。判据口径与 AGENTS §2 #12 同一族：
+     * **"现在还不行"不许被压成"不行"**。
+     *
+     * 返回 true = 这一拍不动进度条（还在等区间）；false = 照旧往下拖。
+     */
+    _deferSeekUntilSeekable: function (video, key, target, duration, reason) {
+      var cover = this._seekableCovers(video, target);
+      if (cover === 'yes') return false;
+
+      if (!this._seekDeferKeys) this._seekDeferKeys = Object.create(null);
+      var st = this._seekDeferKeys[key];
+      if (!st) st = this._seekDeferKeys[key] = { tries: 0, until: Date.now() + 180000 };
+      st.tries++;
+
+      // 预算用掉：不再干等，**照旧往下拖一次**（登记与"不可拖"的结论都交给那一次的写入去拿）
+      if (st.tries >= 120 || Date.now() > st.until) {
+        emitRuntimeLog('info', 'seek target never became reachable, attempt once anyway', {
+          tries: st.tries, cover: cover, reason: reason || '',
+          to: Number(target.toFixed(1)), duration: Number(Number(duration).toFixed(1))
+        });
+        return false;
+      }
+
+      // 只说第一次，后面安静等（这一族每 1500 毫秒就来一拍，说两次就把证据窗挤满了）
+      if (st.tries === 1) {
+        emitRuntimeLog('info', 'seek target not in seekable range yet, waiting for it', {
+          cover: cover, reason: reason || '', to: Number(target.toFixed(1)),
+          duration: Number(Number(duration).toFixed(1)), windowMs: st.until - Date.now()
+        });
+      }
+      return true;
+    },
+
+
+    // 'yes' = 目标落在某个 seekable 段里（可以真拖）；'empty' = 区间还没长出来；
+    // 'outside' = 长出来了但不含尾部。**这两态都等** —— 规范里往区间外写就是被忽略，
+    // 现场那一发失败（读回 1.1 而 to 写着 1398.4）正是元数据刚就绪、区间还没长齐的那一刻。
+    // 读不到 seekable 一律当 'yes' —— 宁可照旧拖一次，也别把"能拖"的机会因为探针本身读不出
+    // 而判成"不可拖"（那会把 23 分钟白送给旧行为）。
+    _seekableCovers: function (video, target) {
+      var r = null;
+      try { r = video && video.seekable; } catch (e) { return 'yes'; }
+      if (!r) return 'yes';
+      var n = 0;
+      try { n = Number(r.length) || 0; } catch (e2) { return 'yes'; }
+      if (!n) return 'empty';
+      for (var i = 0; i < n; i++) {
+        var a = 0, b = 0;
+        try { a = Number(r.start(i)); b = Number(r.end(i)); } catch (e3) { return 'yes'; }
+        if (a <= target && target <= b) return 'yes';
+      }
+      return 'outside';
     },
 
 

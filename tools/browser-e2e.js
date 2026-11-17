@@ -7776,6 +7776,15 @@ SCENARIOS.push({
       '  Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get: function(){ return 4; } });',
       '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
       '    configurable: true, get: function(){ return this.__ct || 0; }, set: function(v){ this.__ct = v; } });',
+      // ⚠️ seekable 必须一起钉上：现场一支真在播的视频，区间出厂就是整支（2026-11-17 实测
+      // `seekable=[[0,1368.9]]`，而 buffered 只有最后 3 秒），而这一页没真在放 mock-video.mp4，
+      // 不钉的话读回来是**空区间** —— 那是现场不存在的形状，会让批次 95 那道"等区间"闸门
+      // 把"本来拖得动"的视频全判成"还没长出来"（第一次全量跑就红在这两条上）。
+      // `__ranges` 可按元素改写：写成不含尾部 = "区间还没长出来"那一族，下面的断言就这么造。
+      '  Object.defineProperty(HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '    var rs = this.__ranges || [[0, 100]];',
+      '    return { length: rs.length, start: function(i){ return rs[i][0]; }, end: function(i){ return rs[i][1]; } };',
+      '  } });',
       '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
       '    configurable: true, get: function(){ return this.__rate == null ? 1 : this.__rate; },',
       '    set: function(v){ this.__rate = v; } });',
@@ -7851,6 +7860,79 @@ SCENARIOS.push({
       'return {ok:ok, ct:a.__ct||0, tag:String(a.tagName)};})()'
     );
     check('音频也能拖到结尾（AUDIO，100 → 97）', audioSeek.ok === true && audioSeek.ct === 97, JSON.stringify(audioSeek));
+
+    // ---- 批次 95：区间还服务不了目标时，不许把"只做一次"的机会花掉 ----
+    // 现场那一发的账是：元数据刚就绪 → 拖到 1398.4 → 读回 1.1 → 判成"站点防拖拽" →
+    // 于是这一支按 1 倍速看了 23 分钟（waitedMs=1256041）。这里在真浏览器里钉同一族形状：
+    // 区间不含尾部 → 一拍都不许动进度条、不许登记"已试过"；区间长出来 → 同一支视频真拖过去；
+    // 区间一直不长 → 预算用尽后必须**真拖一次**（"等不到"不许被实现成"不再试"）。
+    await ctx.client.evaluate(
+      '(function(){var w={got:[]};window.__seekWait=w;' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")w.got.push(m);});return "ok";})()'
+    );
+    var waitOnce = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false; app._activeJobId="e2e-wait";' +
+      // 倍速先钉成"锁在 1x"：否则 ninety 那一格是因为倍速而 false，测不到"等区间不算不可拖"这半截
+      'app._detectedMaxRate=1;' +
+      'app._seekTriedKeys=null; app._seekRevertedKeys=null; app._seekDeferKeys=null;' +
+      'var v=document.getElementById("omitone-video"); v.__ct=0; v.__ranges=[[0,60]];' +
+      'var k=app._getMediaSeekKey(v);' +
+      'var a1=app._trySeekToEnd(v,"guard"), a2=app._trySeekToEnd(v,"guard");' +
+      'return {ret:[a1,a2], ct:v.__ct, tried:!!(app._seekTriedKeys||{})[k], rev:!!(app._seekRevertedKeys||{})[k],' +
+      // ⚠️ 这一串是**拼进字符串再交给页面执行**的：`\s` `\d` 在 JS 字符串里会丢掉反斜杠
+      // （变成 `s` `d`），正则静默不匹配 → Number 出 NaN → JSON 里成 null，
+      // 三条断言一起红。所以这里只用 `[0-9]` 这种不带反斜杠的写法。
+      '  ninety:app._isNinetyPercentVideo(v), cap:Number((String(app._deferSeekUntilSeekable).match(/tries >= ([0-9]+)/)||[])[1])};})()'
+    );
+    check('95 区间不含尾部：这两拍一下都不写进度条、不登记"已试过"、不判"不可拖"，90% 提前收尾也不成立（「现在还不行」没被压成「不行」）',
+      waitOnce.ret[0] === false && waitOnce.ret[1] === false && waitOnce.ct === 0 &&
+      waitOnce.tried === false && waitOnce.rev === false && waitOnce.ninety === false && waitOnce.cap > 1,
+      JSON.stringify(waitOnce));
+    var grewNow = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var v=document.getElementById("omitone-video"); v.__ranges=[[0,100]];' +
+      'var k=app._getMediaSeekKey(v);' +
+      'var ok=app._trySeekToEnd(v,"guard");' +
+      'return {ok:ok, ct:v.__ct||0, tried:!!(app._seekTriedKeys||{})[k]};})()'
+    );
+    check('95 区间长出来之后，同一支视频照旧真拖到结尾（等待没把那一发机会吃掉）',
+      grewNow.ok === true && grewNow.ct === 97 && grewNow.tried === true, JSON.stringify(grewNow));
+    // ⚠️ 日志要等一拍再读（emitRuntimeLog 走 postMessage，异步送达）
+    await new Promise(function (r) { setTimeout(r, 700); });
+    var waitLogs = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__seekWait;return JSON.stringify({' +
+      'waiting:w.got.filter(function(m){return /not in seekable range yet/.test(String(m.message||""))}).length,' +
+      'waitingCover:(w.got.filter(function(m){return /not in seekable range yet/.test(String(m.message||""))})[0]||{}).meta||{},' +
+      'total:w.got.length});})()'
+    ));
+    check('95 等区间那两拍要说清凭什么没拖（cover=outside、to 都在），且只说第一次（每拍重播会挤空 200 条证据环，批次 37 / 51 同一族）',
+      waitLogs.waiting === 1 && waitLogs.waitingCover.cover === 'outside' &&
+      Number(waitLogs.waitingCover.to) === 97,
+      JSON.stringify({ logs: waitLogs, acted: waitOnce.ct }));
+    var budget = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._seekTriedKeys=null; app._seekRevertedKeys=null; app._seekDeferKeys=null;' +
+      'var v=document.getElementById("omitone-video"); v.__ct=0; v.__ranges=[[0,60]];' +
+      'var k=app._getMediaSeekKey(v); var rets=[]; var guard=0;' +
+      'while(guard++<600){ var r=app._trySeekToEnd(v,"guard"); rets.push(r); if(r) break; }' +
+      'v.__ranges=null;' +   // 复原成夹具出厂形状，别把区间改写漏给后面的断言
+      'return {tries:rets.length, ct:v.__ct||0, tried:!!(app._seekTriedKeys||{})[k], rev:!!(app._seekRevertedKeys||{})[k]};})()'
+    );
+    check('95 区间一直不长也要有尽头：到预算那一拍必须真写一次进度条（"等不到"不许实现成"不再试"，更不许由闸门自己判成不可拖）',
+      budget.tries === waitOnce.cap && budget.ct === 97 && budget.tried === true && budget.rev === false,
+      JSON.stringify({ budget: budget, cap: waitOnce.cap }));
+    await new Promise(function (r) { setTimeout(r, 700); });
+    var budgetLogs = JSON.parse(await ctx.client.evaluate(
+      '(function(){var w=window.__seekWait;var g=w.got.filter(function(m){return /never became reachable/.test(String(m.message||""))});' +
+      'return JSON.stringify({n:g.length, meta:(g[0]||{}).meta||{}});})()'
+    ));
+    check('95 预算用尽那一条留得下话：点名 tries 与 cover，全场只说一次',
+      budgetLogs.n === 1 && Number(budgetLogs.meta.tries) === waitOnce.cap &&
+      budgetLogs.meta.cover === 'outside',
+      JSON.stringify(budgetLogs));
 
     // ---- 1.2.5：拖不动 + 锁 1x 的音频也纳入「90% 提前收尾」（_isNinetyPercentVideo 放开音频）----
     var audioNinety = await ctx.client.evaluate(
@@ -11732,6 +11814,14 @@ SCENARIOS.push({
       '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
       '    configurable: true, get: function(){ return this.__ct || 0; },',
       '    set: function(v){ /* 拖拽被播放器弹回：不采纳 */ } });',
+      // ⚠️ 现场这一族的真实形状是「区间含整支、写入照样被弹回」（2026-11-17 实测
+      // seekable=[[0,1368.9]] 而 from 81 → to 1365.9 读回 80.3），不是「区间是空的」。
+      // 这里若漏钉 seekable，读回来是空区间 → 批次 95 的闸门会说"还没长出来、再等等"，
+      // 于是"站点真的按住"这一族永远不会被认定 —— 两条断言就是这么红的（已实测）。
+      '  Object.defineProperty(HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '    var rs = this.__ranges || [[0, 100]];',
+      '    return { length: rs.length, start: function(i){ return rs[i][0]; }, end: function(i){ return rs[i][1]; } };',
+      '  } });',
       // 倍速锁 1x：写入 playbackRate 被压回 1
       '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
       '    configurable: true, get: function(){ return 1; }, set: function(v){ /* 被压回 1x */ } });',
