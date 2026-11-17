@@ -16,6 +16,7 @@
 | `audit-md-tables.js` | `node tools/audit-md-tables.js`（`--json` 出机器可读）；被 `check.js` 第 25 项调用 | 公开文档表格审计：扫全部跟踪中的 md 文件（排除 legacy 目录），逐行数「没被奇数个反斜杠转义的竖线」，与表头格数不符就点名到文件行号。先跑 6 格对照（含未转义竖线要报、转义与围栏代码块不报、以竖线开头但无分隔行的正文不报）再出结论：对照不过退出 2，有不一致退出 1，干净退出 0 |
 | `audit-slice-stats.js` | `node tools/audit-slice-stats.js`（`--json` 出机器可读、`--selftest` 跑十格自证）；被 `check.js` 第 26 项调用 | 片段快照审计：核 `src/page/README.md` 里逐段手抄的「*N 行 / M 方法（+ K 状态字段）*」与合计句，和 `src/page/*.js` 的实际值（与第 15 项同一把尺）比对得上；形状不认识、少一段、多一段、合计句三个数不对都点名。先跑十格自证再出结论：自证不过退出 2，有不一致退出 1，干净退出 0 |
 | `audit-manual-ui-labels.js` | `node tools/audit-manual-ui-labels.js`（`--json` 出机器可读、`--selftest` 跑十一格自证）；被 `check.js` 第 27 项调用 | 界面字样审计：真值从代码读三份表（`content.js` 的 `setStatusPanel` 徽标 `labels` + `popup/popup.js` 顶部状态那两个分支 + `content.js` 的 `jobKindLabel` 任务种类词），逐个要求它出现在 `docs/manual.html` 的**可见正文**里（注释、`script`、`style` 里的出现不算；被行内标签切开算、被块级标签切开不算）。另做**键对账**：任务种类键清单也从代码读（`src/page/60-tasks-detect.js` 的 `fromDom = 'x'` 与兜底 `\|\| 'other'`），每个键必须在 `jobKindLabel` 有中文取值，缺一个就是面板直接打英文原词。读不出来（锚点丢失 / 命中多处 / 值为空串 / 键清单缩成一条）一律报红，不当成"没东西要核"。先跑十一格自证再出结论：自证不过退出 2，有不一致退出 1，干净退出 0 |
+| `audit-switch-budget.js` | `node tools/audit-switch-budget.js`（`--json` 出机器可读、`--selftest` 跑八格自证）；被 `check.js` 第 30 项调用 | 换课上限数字对账：真值从代码读（`src/page/64-tasks-loop.js` 里 `_COURSE_SWITCH_LIMIT: <整数>,` 那一行），要求 README / HANDOVER / 说明书 / Release 说明里「最多 · 最少 · 上限 · 预算 …N 门」这一族逐个等于它。**只认可见正文**（围栏代码块、HTML 注释、`script` 与 `style` 里的不算，且掩码保持行数与列宽），另加一条卫生检查：命中要落在至少两个文件上，否则"正则失效"会打印成全绿。`CHANGELOG.md` 按史实不扫。要拦的是批次 85/86 那一族漂移：代码把 8 提到 30 再改成按课数取大，Release 页带着旧数活了 8 个批次而一条测试都不会红 |
 | `build.js` | `npm run build` | 打包到 `dist/` |
 | `manual-pdf.js` | `npm run manual` | 从 `docs/manual.html` 生成 **`使用说明.pdf` 到仓库根目录**（版本号自动盖入） |
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
@@ -256,6 +257,22 @@
     那是 AGENTS §5 第四类假绿最干净的形状。`check.js` 第 29 条另存一份期望数字跑六格对照
     （四处全写之不报 / 封面漏正向声明 / 排查表漏地址栏 / 域名只活在注释里 /
     整处被改写得认不出 / README 整个没读进来）。
+30. **对用户承诺的那个"换课门数"必须等于代码里的常量** —— `audit-switch-budget.js`
+    真值只从代码读（`src/page/64-tasks-loop.js` 里 `_COURSE_SWITCH_LIMIT: <整数>,` **那一行**；
+    读不到、认出多处、不是正整数一律**报错**，不许当成"没东西要核"），再要求
+    README / HANDOVER / 说明书 / Release 说明里「最多 · 最少 · 上限 · 预算 …N 门」这一族逐个等于它。
+    **为什么要单独守**：批次 85 把上限由 8 提到 30、批次 86 又改成按用户中心课数取大，
+    **代码改了而对用户说话那几页没跟着改** —— `release-notes-1.3.0.md` 带着「最多换 8 门」活了 8 个批次，
+    集成、真实浏览器、界面字样三条闸全绿，只有照 Release 页理解现场的人被引到错方向。
+    三处刻意做严：① **只认可见正文**（围栏代码块、HTML 注释、`script` 与 `style` 里的不算，
+    与第 27 / 29 条同一把尺），但**掩码不许改变行数与列宽**，否则报出来的行号对不上原文；
+    ② **卫生检查**：命中要落在至少两个文件上 —— 正则被改坏或那一族句式被整体换掉时，
+    扫描会静默变成 0 条命中然后打印"通过"（AGENTS §5 第四类假绿）；
+    ③ `CHANGELOG.md` **按史实不扫**（口径同 `checkTestCounts()` 的 `liveOnly()`），
+    `Math.max(N, …)` 里那个 N 也不扫 —— 它是代码的转述、不是对用户的承诺。
+    `check.js` 第 30 条另存一份期望数字跑五格对照（数字全写对 / 文档退回 8 门要点名文件 /
+    README 单独写歪 / 整套一句都不提要响 / 代码侧没读到要响）＋ 两格掩码形状自证；
+    真注入的验收记录在 CHANGELOG「批次 94」段。
 
 失败时退出码为 1，可直接用于 CI。
 

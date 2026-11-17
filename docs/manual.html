@@ -1170,7 +1170,8 @@
 
 <p>
   另外有两道防"来回空转"的闸：<b>60 秒之内不会重复换课</b>，
-  而且<b>连续刷课最多换 30 门</b>（六小时重新起账，进过的课还会记在名单里、同一门不反复进）。
+  而且<b>一轮连续刷课最多换几门，按你用户中心里能进的课来给，最少 30 门</b>（六小时重新起账，
+  真正防来回空转的是名单：同一门六小时内只进一次）。
   到上限了日志会直说，想继续就手动进下一门，或者关掉再打开刷课重新起账。
 </p>
 
@@ -1549,8 +1550,10 @@
       <td><code>course finished, auto switch is off</code><br><code>course switch declined: …</code></td>
       <td>刷完了但<b>没有自动换课</b>，原因写在后面：<code>auto switch is off</code>
           （「刷完自动换下一门」关着）、<code>switch budget used up</code>
-          （这一次已经连续换到上限 8 门了）、<code>no course with unfinished task points</code>
-          （能读到进度的课程卡片都学完了）。<b>都在等人拿主意</b>，见上面 4.1 节。</td>
+          （这一次换课的门数到上限了 —— 上限按用户中心里<b>能进的课</b>来给，最少 30 门）、
+          <code>no course with unfinished task points</code>
+          （<b>读得到进度的课程卡片都学完了</b>，而<b>卡片上没写进度</b>的那一批也已经每门进去让目录判过一次了）。
+          <b>都在等人拿主意</b>，见上面 4.1 节。</td>
     </tr>
     <tr>
       <td><code>study idle declined: …不点前进</code></td>

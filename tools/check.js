@@ -2995,6 +2995,109 @@ function checkBrowserOnlyClaim() {
     '说明书封面 / §7 / §9.2 / README 门面全部传达；含 5 格阴性对照）');
 }
 
+// 30. 换课上限那个数字：文档写的必须就是代码里的那一个
+//     批次 85 把 8 提到 30、批次 86 再改成按用户中心课数取大，可 Release 页与说明书
+//     到批次 93 收尾还写着「最多换 8 门」—— 判据、日志、沙盒全绿，只有用户看得见那一页是错的。
+function checkSwitchBudgetClaim() {
+  var audit = require('./audit-switch-budget.js');
+  var limit;
+  try {
+    limit = audit.limitFromSource();
+  } catch (e) {
+    fail('换课上限对账读不出代码真源：' + ((e && e.message) || e) +
+      '\n      真源是 ' + audit.SOURCE + ' 里的 `_COURSE_SWITCH_LIMIT`；常量改名要连这条闸一起改');
+    return;
+  }
+  var clean = audit.cleanFixture();
+  var CASES = [
+    { name: '干净夹具（数字全对 + 围栏与注释里的错数不算）', files: clean, problems: 0 },
+    {
+      name: '三处文档退回旧的 8 门要红',
+      files: audit.mutate(clean, '最少 30 门', '最少 8 门'),
+      problems: 3, needle: '不一致'
+    },
+    {
+      name: 'README 那句写歪要红并点名文件',
+      files: audit.mutate(clean, '最多 30 门', '最多 8 门'),
+      problems: 1, needle: 'README.md'
+    },
+    {
+      // 这一格防的是"正则被改坏 → 一条扫不到 → 打印全绿"
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提门数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到数字要响（不许当成没东西要核）',
+      files: clean,
+      limitOverride: 0, problems: 1, needle: '代码侧的换课上限没读到'
+    }
+  ];
+  var bad = [];
+  CASES.forEach(function (t) {
+    var res;
+    try {
+      res = audit.audit({ docs: t.files, limit: ('limitOverride' in t) ? t.limitOverride : limit });
+    } catch (e2) {
+      bad.push(t.name + '：审计本身抛了 ' + String((e2 && e2.message) || e2));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      bad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      bad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  // 掩码不许是空操作，也不许改变行数／列宽：围栏与 HTML 注释里的错数必须真被挖掉，
+  // 而报出来的行号与原文对得上（否则夹具第一条就是假绿）
+  function checkMaskShape(label, raw, isHtml, visibleLine) {
+    var masked = audit.maskInvisible(raw, isHtml);
+    var a = raw.split('\n');
+    var b = masked.split('\n');
+    if (a.length !== b.length) {
+      bad.push(label + '：掩码后行数变了（' + a.length + ' → ' + b.length + '），报出来的行号会对不上原文');
+      return;
+    }
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].length !== b[i].length) {
+        bad.push(label + '：第 ' + (i + 1) + ' 行掩码后长度 ' + b[i].length + '，原文 ' + a[i].length + '（列位置要保住）');
+      }
+      if (i === visibleLine) continue;
+      if (/[0-9]/.test(b[i])) bad.push(label + '：第 ' + (i + 1) + ' 行的数字没被挖掉 —— 掩码没生效，那是用户看不见的地方');
+    }
+  }
+  checkMaskShape('围栏代码块', '```\n最多 8 门\n```\n', false, 3);
+  checkMaskShape('HTML 注释与 script',
+    '<p>最少 30 门</p>\n<!-- 最少 8 门 -->\n<script>a="最少 5 门";</script>\n', true, 0);
+  if (bad.length) {
+    fail('换课上限对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+
+  var docs = {};
+  var missing = [];
+  audit.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) docs[f] = fs.readFileSync(p, 'utf8');
+    else missing.push(f);
+  });
+  var real = audit.audit({ docs: docs, limit: limit });
+  if (missing.length) {
+    fail('换课上限对账有 ' + missing.length + ' 份文档没读进来：' + missing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (real.problems.length) {
+    fail('换课上限对账有 ' + real.problems.length + ' 条要说：\n      ' + real.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成 `_COURSE_SWITCH_LIMIT` 现在写的数（' + limit + '），别改判据迁就现状；' +
+      '\n      CHANGELOG 里的历史条目**按史实不扫**，也不要顺手回改');
+    return;
+  }
+  pass('换课上限文档对账（代码 ' + limit + ' 门；文档 ' + real.claims.length + ' 处逐个相等，' +
+    '分布在 ' + new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 5 格阴性对照 + 2 格掩码形状自证）');
+}
+
 // ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
@@ -3029,6 +3132,7 @@ checkSliceStatsDoc();
 checkManualUiLabels();
 checkE2eExprParsable();
 checkBrowserOnlyClaim();
+checkSwitchBudgetClaim();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
