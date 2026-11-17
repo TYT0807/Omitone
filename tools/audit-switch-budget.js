@@ -29,7 +29,7 @@
  * 用法：
  *   node tools/audit-switch-budget.js            # 核真文档，有问题退出 1
  *   node tools/audit-switch-budget.js --json     # 同上，机器可读
- *   node tools/audit-switch-budget.js --selftest # 八格自证，不过退出 2
+ *   node tools/audit-switch-budget.js --selftest # 九格自证（含跨族阴性对照），不过退出 2
  */
 'use strict';
 
@@ -43,8 +43,13 @@ var DOCS = ['README.md', 'AGENTS.md', 'HANDOVER.md', 'release-notes-1.3.0.md', '
 
 // 「最多 30 门」「最少 30 门」「上限 30 门」「预算 30 门」「换课上限 30 门」
 // _lead 与数字之间允许少量非数字（ markdown 加粗、中文连接词 ），但不许跨行
+// ⚠️ 间隔里**不许出现「问」**：批次 97 给用户新加了一句「（换课前）一轮最多问 40 门」，
+//    那是 `COURSE_PROBE_LIMIT` 的承诺（由 `tools/audit-course-probe-claims.js` 第 31 项承重），
+//    不是这一族。旧口径把它读成「最多 …40 门」，于是**四份写对了的文档各挨一条假红** ——
+//    同一个教训的第三次：引导词必须"只有本族会这么写"，而且**两把尺要各自排除对头**
+//    （探针那一族反过来要求数字前必须有「问」，所以互不越界；见那边头注与自证 ⑫⑬）。
 var LEAD = '(?:最多|最少|至多|上限|预算)';
-var CLAIM_RE = new RegExp(LEAD + '[^0-9<>\\n]{0,12}?([0-9]{1,3})\\s*门', 'g');
+var CLAIM_RE = new RegExp(LEAD + '[^0-9<>\\n问]{0,12}?([0-9]{1,3})\\s*门', 'g');
 
 function readText(abs) {
   return fs.readFileSync(abs, 'utf8');
@@ -247,6 +252,23 @@ function runSelfTest() {
     limit: LIMIT
   });
   record('HTML 注释里补一句不会把"至少 2 个文件"这条糊过去', !inComment.ok, inComment.problems.join(' | '));
+  // ⑨ **跨族阴性对照**（批次 97 撞出来的真红：那一条假红是打在四份写对了的文档上的）：
+  //     探针那一族对用户承诺「一轮最多问 40 门」，句式与本族只差一个「问」字。
+  //     旧口径把它读成「最多 …40 门」，当场报 4 条**根本不存在的承诺不符**。
+  //     判据：这一句必须**一条数字不符都不报**，而本族那句「最多换 30 门」照旧被抓到。
+  var neighbor = auditFiles({
+    docs: {
+      'README.md': '- 换课前先在后台挨门读一遍进度：一轮最多问 40 门、单页最多 12 秒。\n' +
+        '- 一轮连续刷课**最多换 30 门**。\n',
+      'HANDOVER.md': '换课上限 **最少 30 门**（取用户中心课数的较大值）；那一读最多问 40 门。\n'
+    },
+    limit: LIMIT
+  });
+  var neighborReds = neighbor.problems.filter(function (p) { return /不一致/.test(p); });
+  record('探针那一族「一轮最多问 40 门」不许被抓成换课上限（误报的守卫会让人开始忽略它）',
+    neighborReds.length === 0 && neighbor.claims.length === 2,
+    '数字不符 ' + neighborReds.length + ' 条 / 命中 ' + neighbor.claims.length + ' 处（期望 0 条 / 2 处）' +
+    (neighborReds.length ? '：' + neighborReds.join(' | ') : ''));
   cases.forEach(function (c) { console.log((c.pass ? '✓ ' : '✗ ') + c.label + (c.detail && !c.pass ? ' —— ' + c.detail : '')); });
   console.log(okAll ? '自证通过（共 ' + cases.length + ' 格）' : '自证失败');
   return okAll;

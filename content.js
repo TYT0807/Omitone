@@ -1780,6 +1780,15 @@
         state = 'warn';
         task = '刷完不换下一门';
         detail = '用户中心的卡片这一轮都进过了（其中 ' + (Number(data.noProg) || 0) + ' 张没写进度、已让目录判过），没有下一门了';
+      } else if (/probing course homes/.test(msg)) {
+        // 批次 97：这一条是「我正在后台问进度」，不是「停下来等人拿主意」。漏了它就会落进下面
+        // 那句兜底 —— 点亮「注意」并说「没往下换课」，恰好**说反了**（它正要往下换）。
+        // 两个数都从那条日志的 meta 里读：在这儿抄一份，常量一调就变成第二把尺（AGENTS §4）；
+        // 读不到写 '-'，不许压成 0（「最多等 0 秒」是一条听起来很具体的假承诺）。
+        state = 'wait';
+        task = '这一门刷完了';
+        detail = '正在后台读 ' + (data.blindCount == null ? '-' : data.blindCount) +
+          ' 门没写进度的课的首页，最多等 ' + (data.deferSec == null ? '-' : data.deferSec) + ' 秒';
       } else {
         state = 'warn';
         task = '这一门刷完了';

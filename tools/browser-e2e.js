@@ -21637,6 +21637,10 @@ SCENARIOS.push({
     var s5b = JSON.parse(await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app._coursePickDone=false;window.__b83nav.length=0;' +
+      // 批次 97：把探针钉成「敲过了、沙盒里没人答这一发」（桥只在 chaoxing 域上接，mock origin 答不上来）。
+      // 这两步测的是批次 85/87 的**挑选与记账**，"还在问"那一格由下面的 ⑦ 单独测 —— 一件事一步。
+      // ⚠️ 只钉这一格，**不许**把上面那两条断言的 `navCount` 从 1 改成 0 了事（那等于把断言改成描述坏行为）。
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
       'var logBefore=(window.__b83||[]).length;' +
       'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
       'var d=document.getElementById("frame_content").contentDocument;' +
@@ -21676,6 +21680,9 @@ SCENARIOS.push({
         names: l5bNew.names, metas: l5bNew.metas }));
 
     // ⑥ 三条 decline 各有各的形状，而且都不许导航
+    // ⚠️ 这一段**故意不**重新钉探针缓存：它继承 ⑤-b 那一发的「敲过了、没人答」。
+    //    要是把它改成 pending，第 2 发（全部进过）会先撞上「还在问」那一格并认领这一拍，
+    //    「no course with unfinished task points」那条就成了零覆盖 —— 那一格由下面的 ⑦-a 单独测。
     var s6 = JSON.parse(await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var out={};window.__b83nav.length=0;' +
@@ -21722,6 +21729,140 @@ SCENARIOS.push({
       s6.offClaimed === true && s6.offNav === 0 &&
       cnt(l6, 'course switch declined: auto switch is off') === 1 &&
       cnt(l6, 'study idle declined') === 0, JSON.stringify({ s6: s6, names: l6.names.slice(-6) }));
+
+    // ⑦ 批次 97：挑下一门之前，先在后台问一轮「这些门的课程首页还剩多少任务点」。
+    //    三格各占一拍（AGENTS §2 #12 + #14：「还不知道」不许压成「读不出」，也不许压成"这一拍什么都不说"）：
+    //      ⑦-a 还在问 → 认领这一拍、一步都不跳、只说一句话，而且**不**置 `_coursePickDone`
+    //      ⑦-b 到点   → 照手里有的（这回啥也没有）挑一门，换课计数照常 +1，且不再重复说话
+    //      ⑦-c/d/e 答回来了 → 三种判法（已完成 / 进不去 / 还要刷）**都不许把这门从名单里删掉**
+    //    ⚠️ 桥（`bridgeSend`）是模块作用域函数，页面世界里够不着，所以这里只能把**缓存**钉成生产写出来的形状；
+    //       「写入口与读出口键形一致」那一半由集成层 `[25]` 的 ⑬ 拿**真** `_askCourseProbe` 证（那里能注入桥）。
+    var s7a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      // ⑥ 第三发把「刷完自动换下一门」关掉了，而这一族场景共用同一个 app 对象 ——
+      // 不钉回来，⑦ 每一发都会在第一道闸上直接 decline，探针那三格根本走不到（AGENTS §5：夹具要自己钉住共享状态）。
+      'app.configs.autoNextCourse=true;' +
+      'var u=(app._readCourseCards().unknown||[])[0]||{};' +
+      'out.cid=String(u.courseId||"");out.clazz=String(u.clazzId||"");' +
+      'app._coursePickDone=false;window.__b83nav.length=0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'app._courseProbeSpokeAt=0;' +
+      'app._courseProbeCache={pendingAt:Date.now(),at:0,answered:false,ok:false,rows:{},asked:0,ms:-1,why:""};' +
+      'out.pendingAt=app._courseProbeCache.pendingAt;' +
+      'out.logBefore=(window.__b83||[]).length;' +
+      'out.claimed=app._pickNextCourseFromUserCenter();out.navCount=window.__b83nav.length;' +
+      'out.pickDone=app._coursePickDone;out.spoke=Number(app._courseProbeSpokeAt||0);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l7a = await snap();
+    var l7aNew = { names: l7a.names.slice(s7a.logBefore), metas: l7a.metas.slice(s7a.logBefore) };
+    var probeMeta7 = null;
+    for (var qi7 = 0; qi7 < l7aNew.names.length; qi7++) {
+      if (l7aNew.names[qi7].indexOf('course switch probing course homes') === 0) probeMeta7 = l7aNew.metas[qi7];
+    }
+    // 那句话里的「最多等 N 秒」是生产常量换算来的 —— 从**日志文本**里读回来，⑦-b 照它回拨，
+    // 这样测试用的秒数与判据说的是同一个数（不是测试自己写死一个 24）。
+    var deferSec7 = Number((String((probeMeta7 && probeMeta7.hint) || '').match(/最多等\s*(\d+)\s*秒/) || [])[1] || 0);
+    check('批次 97 ⑦-a「还在问」单独占一格：探针刚敲下去、后台还没答上时，这一拍只说一句话、**一步都不跳**，' +
+      '而且不许置 `_coursePickDone`（置了就没有下一拍去读答案，换课永远钉死在这一页上）。' +
+      '那句话带 everyMs=0 —— 一锤子买卖，不许每拍刷屏；「最多等 N 秒」的 N 要读得回来（⑦-b 靠它回拨）',
+      s7a.claimed === true && s7a.navCount === 0 && s7a.pickDone === false && s7a.spoke > 0 &&
+      cnt(l7aNew, 'course switch probing course homes') === 1 &&
+      cnt(l7aNew, 'course switch picked next') === 0 &&
+      cnt(l7aNew, 'course switch declined') === 0 &&
+      !!probeMeta7 && Number(probeMeta7.everyMs) === 0 && deferSec7 > 0,
+      JSON.stringify({ s7a: s7a, newNames: l7aNew.names, deferSec: deferSec7,
+        hint: probeMeta7 ? String(probeMeta7.hint || '').slice(0, 120) : '' }));
+
+    // ⑦-b：回拨到预算之外（但仍在新那一次询问的静默期之内 —— 证明这一拍**没有**再敲后台）
+    var backMs7 = (deferSec7 + 2) * 1000;
+    var s7b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'app._coursePickDone=false;window.__b83nav.length=0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'app._courseProbeSpokeAt=0;' +
+      'var c={pendingAt:Date.now()-' + backMs7 + ',at:0,answered:false,ok:false,rows:{},asked:0,ms:-1,why:""};' +
+      'app._courseProbeCache=c;out.pendingAt=c.pendingAt;' +
+      'out.logBefore=(window.__b83||[]).length;' +
+      'out.claimed=app._pickNextCourseFromUserCenter();out.nav=String(window.__b83nav[0]||"");out.navCount=window.__b83nav.length;' +
+      'out.pickDone=app._coursePickDone;out.spoke=Number(app._courseProbeSpokeAt||0);' +
+      'out.counts=app._courseProbeCounts();' +
+      'out.notReasked=(app._courseProbeCache===c)&&c.answered===false&&c.pendingAt===out.pendingAt;' +
+      'var led=app._readSessionLedger("omitone:course-switch")||{};out.sw=Number(led.sw||0);out.tried=(led.tried||[]).length;' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l7b = await snap();
+    var l7bNew = { names: l7b.names.slice(s7b.logBefore), metas: l7b.metas.slice(s7b.logBefore) };
+    check('批次 97 ⑦-b「到点照手里有的往下走」：过了预算那一拍必须**真的跳一次**（探针再慢也不许把换课钉死），' +
+      '换课计数照常 +1、`_coursePickDone` 这回落定，而且不再重复说那句「还在问」（spoke 仍是 0 = 这一拍压根没走到说话那一步）。' +
+      '取证里 pAsk 仍是 pending、pNeed/pRows 仍是 **-1 不是 0** —— "数不清"写成 0 就等于宣称"确认没有还要刷的门"，方向是放行。' +
+      'notReasked 那一格证明这一拍**没有**再敲一次后台（否则每一拍都去抓一遍首页，38 门轮着抓）。' +
+      'tried 这一拍**仍是 3 不变**：换课名单只在那门课报完、带 `omitoneDone=` 回到用户中心时才登记（`64-tasks-loop.js:1261`），' +
+      '挑的那一刻只加 sw —— 把它写成 4 就是照想象写断言，不是量出来的',
+      s7b.claimed === true && s7b.navCount === 1 && s7b.pickDone === true && s7b.spoke === 0 &&
+      String(s7b.nav || '').indexOf('courseid=' + s7a.cid) !== -1 &&
+      String(s7b.nav || '').indexOf('clazzid=' + s7a.clazz) !== -1 &&
+      s7b.sw === 4 && s7b.tried === 3 && s7b.notReasked === true &&
+      s7b.counts.pAsk === 'pending' && Number(s7b.counts.pNeed) === -1 && Number(s7b.counts.pRows) === -1 &&
+      cnt(l7bNew, 'course switch picked next') === 1 &&
+      cnt(l7bNew, 'course switch probing course homes') === 0 &&
+      cnt(l7bNew, 'course switch declined') === 0,
+      JSON.stringify({ s7b: s7b, backMs: backMs7, deferSec: deferSec7, newNames: l7bNew.names }));
+
+    // ⑦-c/d/e：答案回来了 —— 三种判法都只许排队，一种都不许把这门从候选里删掉
+    var s7c = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={cases:[]};' +
+      'app.configs.autoNextCourse=true;' +
+      'var u=(app._readCourseCards().unknown||[])[0]||{};' +
+      'var key=String(u.courseId||"")+":"+String(u.clazzId||"");out.key=key;' +
+      'out.base=(window.__b83||[]).length;' +
+      'function mkRow(verdict,extra){var r={verdict:verdict,jobs:"",jobsAll:0,jobsDone:0,yi:0,why:""};' +
+      ' for(var k in extra){if(Object.prototype.hasOwnProperty.call(extra,k))r[k]=extra[k];} return r;}' +
+      'function once(verdict,extra){var rows={};rows[key]=mkRow(verdict,extra||{});' +
+      ' var cache={pendingAt:0,at:Date.now(),answered:true,ok:true,rows:rows,asked:1,ms:120,why:""};' +
+      ' app._coursePickDone=false;window.__b83nav.length=0;' +
+      ' sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      ' app._courseProbeCache=cache;' +
+      ' var claimed=app._pickNextCourseFromUserCenter();' +
+      ' var led=app._readSessionLedger("omitone:course-switch")||{};' +
+      ' out.cases.push({verdict:verdict,key:key,claimed:claimed,navCount:window.__b83nav.length,' +
+      ' nav:String(window.__b83nav[0]||""),sw:Number(led.sw||0),counts:app._courseProbeCounts(),' +
+      // 拿到答案之后不许再敲一次后台（对象同一性 = 写入口没把缓存换成新 pending）
+      ' notReasked:app._courseProbeCache===cache,' +
+      ' say:String((app._COURSE_PROBE_SAY&&app._COURSE_PROBE_SAY[verdict])||"")});}' +
+      'once("done",{jobs:"72 / 72",jobsAll:72,jobsDone:72});' +
+      'once("blocked",{why:"403 这一页现在问不出进不进得去"});' +
+      'once("need",{jobs:"30 / 33",jobsAll:33,jobsDone:30});' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l7c = await snap();
+    // 三次调用各打一条「picked next」，按到达顺序对上号（postMessage 同一端口保序）
+    var picked7 = [];
+    for (var qk7 = 0; qk7 < l7c.names.length - s7c.base; qk7++) {
+      var nm7 = l7c.names[s7c.base + qk7];
+      if (String(nm7).indexOf('course switch picked next') === 0) picked7.push(l7c.metas[s7c.base + qk7]);
+    }
+    var c7 = s7c.cases || [];
+    check('批次 97 ⑦-c/d/e：探针答回来了，三种判法（站点说已完成 / 问不出进不进得去 / 还有任务点没完成）' +
+      '**一种都不许把这门从候选里删掉** —— 每一发都真跳一次、换课计数都 +1。' +
+      '把「已完成」当成"不用进门"就等于拿一个会过期的首页读数永久关掉这门课的门（AGENTS §2 #12 反面）。' +
+      '三发的取证各点名自己的判法：blind=1、probeVerdict 对上、那句中文说法逐字来自 `_COURSE_PROBE_SAY`（不是测试写死的词表）',
+      c7.length === 3 && picked7.length === 3 &&
+      c7.every(function (c) { return c.claimed === true && c.navCount === 1 && c.sw === 4 && c.notReasked === true; }) &&
+      c7.every(function (c, i) {
+        var m = picked7[i] || {};
+        return String(c.nav).indexOf('courseid=' + s7a.cid) !== -1 &&
+          Number(m.blind) === 1 && String(m.probeVerdict || '') === c.verdict &&
+          String(m.hint || '').indexOf(c.say) !== -1 && c.say.length > 0 &&
+          String(m.pAsk || '') === 'ok';
+      }) &&
+      Number(c7[0].counts.pDone) === 1 && Number(c7[0].counts.pNeed) === 0 &&
+      Number(c7[1].counts.pBlocked) === 1 && Number(c7[1].counts.pDone) === 0 &&
+      Number(c7[2].counts.pNeed) === 1 && Number(c7[2].counts.pRows) === 1 &&
+      String(picked7[2].probeJobs || '') === '30 / 33' &&
+      String(picked7[1].probeWhy || '').indexOf('403') !== -1,
+      JSON.stringify({ key: s7c.key, cases: c7, metas: picked7, base: s7c.base, names: l7c.names.slice(s7c.base) }));
 
     // 收尾：把地址恢复成打开时那样，别把标记留给下一个场景（整轮共用同一个标签）
     await ctx.client.evaluate('(function(){history.replaceState(null,"",location.pathname);return 1;})()');

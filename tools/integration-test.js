@@ -435,6 +435,34 @@ function extractPromptText(requestBody) {
   return '';
 }
 
+/**
+ * 把 content.js 里那份**真的**面板分类器 `runtimeLogToStatus` 取出来供测试调用。
+ *
+ * 为什么要有这一手（批次 92 的教训，批次 97 又撞上同一族）：这一族断言原先写成
+ * 「拿正则比 `clsBlock` 里有没有那两句赋值」—— 判据分支被改成永远走不到的形状
+ * （`data.allLoading === 'yes'`）时，正则照样匹配得上源字符串，断言照样绿。
+ * 只有**真调用**才能把"红绿"交给返回值（AGENTS §5「断言的是行为还是实现细节」）。
+ *
+ * ⚠️ 取不出来时必须交回 `fn:null` 让调用方**当场点名"这一格没执行"**，
+ *    不许返回一个空函数继续往下跑 —— 那是把「没跑到」报成「通过」，
+ *    与生产里"还没问到就 return true 认领但不说话"是同一个形状。
+ * @param {string} text content.js 原文（CRLF 已归一）
+ * @returns {{fn:(Function|null), at:Object, err:string}}
+ */
+function extractPanelClassifier(text) {
+  var at = { clsStart: text.indexOf('function jobKindLabel(') };
+  at.fnStart = text.indexOf('function runtimeLogToStatus(', at.clsStart < 0 ? 0 : at.clsStart);
+  at.fnEnd = at.fnStart < 0 ? -1 : text.indexOf('\n  }', at.fnStart);
+  if (!(at.clsStart >= 0 && at.fnStart > at.clsStart && at.fnEnd > at.fnStart)) {
+    return { fn: null, at: at, err: '' };
+  }
+  try {
+    return { fn: new Function(text.slice(at.clsStart, at.fnEnd + 4) + '\n  return runtimeLogToStatus;')(), at: at, err: '' };
+  } catch (e) {
+    return { fn: null, at: at, err: String(e && e.message) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 测试用例
 // ---------------------------------------------------------------------------
@@ -2856,14 +2884,10 @@ async function testJobRejectLogThrottle() {
   // ---- ⑦′⑦ 面板分类器**真跑**：把 content.js 里那份 `runtimeLogToStatus` 本体取出来喂两种形状
   // ⚠️ 批次 92：这一格原先是拿正则比 `clsBlock` 里有没有那两句赋值 —— 那样判据分支写成永远走不到
   // （例如条件被改成 `data.allLoading === 'yes'`）照样绿。改成真调用，红绿都由返回值说话。
-  var clsStart = cTxt.indexOf('function jobKindLabel(');
-  var fnStart = cTxt.indexOf('function runtimeLogToStatus(', clsStart < 0 ? 0 : clsStart);
-  var fnEnd = fnStart < 0 ? -1 : cTxt.indexOf('\n  }', fnStart);
-  var classifier = (clsStart >= 0 && fnStart > clsStart && fnEnd > fnStart)
-    ? new Function(cTxt.slice(clsStart, fnEnd + 4) + '\n  return runtimeLogToStatus;')()
-    : null;
+  var pc = extractPanelClassifier(cTxt);
+  var classifier = pc.fn;
   check('⑦′ 面板分类器能从 content.js 里取出来真跑（取不出来时下面那格是「没执行」，不是「通过」）',
-    typeof classifier === 'function', JSON.stringify({ clsStart: clsStart, fnStart: fnStart, fnEnd: fnEnd }));
+    typeof classifier === 'function', JSON.stringify(pc.at) + (pc.err ? ' err=' + pc.err : ''));
   if (typeof classifier !== 'function') return;
 
   var MSG = 'search job: every candidate frame was rejected';
@@ -3897,6 +3921,466 @@ async function testPopupQuizLocalComboGroup() {
     JSON.stringify({ ternaryInCaller: wired, emptyGuard: guard, judge: judgeRoot, noSeed: noSeed }));
 }
 
+/** ---- [25] 批次 97：换课前问一轮课程首页 —— 判据真跑、顺序冻结、三端超时嵌套 ---- */
+/**
+ * 为什么这一段每条都要从盘上取真实那一份来跑：判据住在 `background.js` 的 IIFE 里，
+ * 抄进测试就等于两边各拿一把尺，改生产阈值时测试不会跟着红（AGENTS §5）。
+ * ⚠️ 本段之前 `classifyCourseHome` **从没被任何断言真跑过** —— 现场那份四态
+ * （`notes/census-97-full.md`）是探针记下的计数器按同一判定顺序**重算**的，
+ * 那个区别要紧：重算证明"当时那 38 页读回来该怎么判"，不证明"这段代码现在还那么判"。
+ */
+async function testCourseHomeProbeSignals() {
+  console.log('\n[25] 课程首页进度探针：六格真值表 + 顺序冻结 + 字节解码 + payload 卫生 + 串行预算 + 三端超时嵌套（批次 97）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var bg = read('background.js');
+  var cnt = read('content.js');
+  var shell = read('src/page/00-shell-constants.js');
+  var loop = read('src/page/64-tasks-loop.js');
+
+  // 后台那几件是顶层 function，只在这一层缩进闭合；抓过了头就交白卷，宁可不跑
+  var topFnText = function (src, name) {
+    var at = src.indexOf('\n  function ' + name + '(');
+    if (at < 0) return null;
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n  }', start);
+    if (end < 0) return null;
+    var text = src.slice(start, end + 4);
+    return text.indexOf('\n  function ') >= 0 ? null : text;
+  };
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var evalNum = function (expr) {
+    try { return Number(new Function('return (' + expr + ')')()); } catch (e) { return null; }
+  };
+  var numVar = function (src, name) {
+    var m = src.match(new RegExp('var ' + name + ' = ([^;\\n]+);'));
+    return m ? evalNum(m[1]) : null;
+  };
+  var codeOf = function (src) {
+    var out = String(src).replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, ' '); });
+    return out.replace(/(^|[^:])\/\/[^\n]*/g, function (m, prefix) {
+      return prefix + new Array(m.length - prefix.length + 2).join(' ');
+    });
+  };
+
+  // ---- 后台判据那一族：常量 + 四个顶层函数原样搬进一个闭包里跑 ----
+  var varsAt = bg.indexOf('var COURSE_HOME_BASE');
+  var varsEnd = bg.indexOf(';', bg.indexOf('var COURSE_PROBE_BODY_MAX', varsAt));
+  var varsBlock = (varsAt >= 0 && varsEnd > varsAt) ? bg.slice(varsAt, varsEnd + 1) : '';
+  var fClass = topFnText(bg, 'classifyCourseHome');
+  var fDecode = topFnText(bg, 'decodeCourseHomeBody');
+  var fProbe = topFnText(bg, 'probeCourseHome');
+  var fBatch = topFnText(bg, 'courseHomeProbe');
+  check('⓪ 后台那一族取得出完整四件（分类器 / 字节解码 / 单门探测 / 串行批）—— 取不全就整段不跑，那种"绿"是零覆盖',
+    !!(varsBlock && fClass && fDecode && fProbe && fBatch),
+    JSON.stringify({ vars: !!varsBlock, classify: !!fClass, decode: !!fDecode, probe: !!fProbe, batch: !!fBatch }));
+
+  var sent = [];            // 每发探测的 {url, ms}
+  var sentLimit = [];       // readLimited 收到的正文上限（拿去与常量比，不写死数字）
+  var inflight = 0, maxInflight = 0;
+  var fakeNow = 1700000000000;
+  var responder = function () { return { html: '', status: 200, stepMs: 50 }; };
+  // `failure()` 是后台 IIFE 里那一行的信封构造器（单行函数，顶层抓取器抓不到），
+  // 这里只需它**不带 verdict** —— 生产正是靠"没有 verdict"落到「读不出」那一格。
+  var failureStub = function (code, error) { return { success: false, code: code, error: error || code }; };
+  var timedFetchStub = function (url, options, ms, consume) {
+    sent.push({ url: url, ms: ms });
+    inflight++;
+    if (inflight > maxInflight) maxInflight = inflight;
+    var resp = responder(url) || {};
+    return Promise.resolve().then(function () {
+      inflight--;
+      if (resp.hang) { var f = failureStub('timeout', '请求超时'); f.status = resp.status || 0; return f; }
+      fakeNow += (typeof resp.stepMs === 'number' ? resp.stepMs : 50);
+      return consume({
+        status: resp.status || 200,
+        headers: { get: function () { return null; } },
+        __html: resp.html
+      });
+    });
+  };
+  var readLimitedStub = function (response, limit) {
+    sentLimit.push(limit);
+    return Promise.resolve(new TextEncoder().encode(String(response.__html)));
+  };
+
+  var harness = null;
+  try {
+    harness = new Function('timedFetch', 'readLimited', 'failure', 'Date',
+      'return (function () {\n' + varsBlock + '\n' + fClass + '\n' + fDecode + '\n' + fProbe + '\n' + fBatch +
+      '\n  return { classify: classifyCourseHome, decode: decodeCourseHomeBody, probe: probeCourseHome,' +
+      ' batch: courseHomeProbe, consts: function () { return { base: COURSE_HOME_BASE, limit: COURSE_PROBE_LIMIT,' +
+      ' fetchMs: COURSE_PROBE_FETCH_MS, budgetMs: COURSE_PROBE_BUDGET_MS, bodyMax: COURSE_PROBE_BODY_MAX,' +
+      ' idRe: String(COURSE_ID_RE) }; } };\n})()')(
+      timedFetchStub, readLimitedStub, failureStub, { now: function () { return fakeNow; } });
+  } catch (eHarness) { harness = null; }
+  if (!harness) {
+    check('⓪-b 后台那一族能拼成可跑的闭包（拼不出来这段一条都不算跑过）', false, String(eHarness && eHarness.message || eHarness));
+    return;
+  }
+  var KC = harness.consts();
+
+  // ---- 夹具：按站点自己的写法长出来的一页课程首页（合成号，不带真实课程）----
+  var homeHtml = function (o) {
+    o = o || {};
+    var s = '<html><head>';
+    if (o.enc !== 'none') s += '<script>var enc = "' + (o.enc || '0a1b2c3d4e5f') + '";</script>';
+    s += '</head><body>';
+    var n = o.toOld || 0;
+    for (var i = 0; i < n; i++) s += '<a href="javascript:void(0)" onclick="toOld(\'' + (100 + i) + '\', \'' + (200 + i) + '\', \'' + (300 + i) + '\')">节</a>';
+    for (var y = 0; y < (o.yi || []).length; y++) s += '<span class="catalog_points_yi">' + o.yi[y] + '</span>';
+    for (var d = 0; d < (o.done || 0); d++) s += '<span class="catalog_state icon_yiwanc">已</span>';
+    for (var p = 0; p < (o.prog || 0); p++) s += '<span class="catalog_jindu">中</span>';
+    if (o.jobs) s += '<div class="catalog_ressbar">已完成任务点：' + o.jobs + '</div>';
+    if (o.empty) s += '<p>暂无章节内容</p>';
+    if (o.denied) s += '<p>很抱歉，您没有权限访问这个页面</p>';
+    if (o.login) s += '<p>请登录</p>';
+    return s + '</body></html>';
+  };
+
+  // ---- ① 六格真值表：每格钉一个现场形状 ----
+  var vNeed = harness.classify(homeHtml({ jobs: '42 / 88', toOld: 22, done: 21, prog: 26 }));
+  check('① 站点自己写「已完成任务点 42 / 88」→ 判「还要刷」（现场：戏剧鉴赏）',
+    vNeed.verdict === 'need' && vNeed.why === 'jobs' && vNeed.jobsDone === 42 && vNeed.jobsAll === 88,
+    JSON.stringify(vNeed));
+  var vDone = harness.classify(homeHtml({ jobs: '72 / 72', toOld: 74, done: 74, prog: 1 }));
+  check('① 同一格写成「72 / 72」→ 判「已完成」，且进度条那一类行信号（74 行打勾 + 1 行进行中）不许把它翻过去',
+    vDone.verdict === 'done' && vDone.why === 'jobs-all-done', JSON.stringify(vDone));
+  var vNone = harness.classify(homeHtml({ jobs: '0 / 0', toOld: 5, prog: 6 }));
+  check('① 「0 / 0」而目录不空（5 个可点章节、6 行进行中）→ 判「这一门没有任务点」，**不许**当成刷完了（现场：数据结构）—— 误判成已完成等于永久不再进门',
+    vNone.verdict === 'nopoints' && vNone.why === 'zero-task-points', JSON.stringify(vNone));
+  var vEmpty = harness.classify(homeHtml({ jobs: '0 / 0', empty: true }));
+  check('① 站点原话「暂无章节内容」→ 单独一格「目录为空」，哪怕同一页也写着「0 / 0」也轮不到它说话（现场：数据库原理及应用 / 安全知识竞赛）',
+    vEmpty.verdict === 'empty' && vEmpty.why === 'site-says-no-catalog', JSON.stringify(vEmpty));
+  var v403 = harness.classify(homeHtml({ denied: true, jobs: '0 / 10', toOld: 3 }));
+  var vLogin = harness.classify(homeHtml({ login: true }));
+  var vEnc = harness.classify(homeHtml({ enc: 'none', jobs: '3 / 10', toOld: 4 }));
+  var vNode = harness.classify(homeHtml({ jobs: '3 / 10', toOld: 0 }));
+  check('② 四种「进不去」各点名各的原因（403 说自己班号 / 短登录页 / 没有 enc / 没有可点节点）—— 少任何一格都会被读成"这门刷完了"',
+    v403.why === 'server-denied-check-own-clazzid' && vLogin.why === 'need-login' &&
+      vEnc.why === 'no-enc' && vNode.why === 'no-clickable-node' &&
+      v403.verdict === 'blocked' && vLogin.verdict === 'blocked' &&
+      vEnc.verdict === 'blocked' && vNode.verdict === 'blocked',
+    JSON.stringify({ denied: v403.why, login: vLogin.why + '/' + vLogin.len, enc: vEnc.why, node: vNode.why }));
+  var vUnread = harness.classify(homeHtml({ toOld: 3, done: 1, prog: 0, yi: [0, 0] }));
+  check('② 什么信号都不闭合（3 个可点章节 vs 1 行打勾 + 0 行进行中）→ 判「读不出」并继续许它进门，**绝不猜成已完成**（AGENTS §2 #12：读不出必须单独占一格）',
+    vUnread.verdict === 'unreadable' && vUnread.why === 'no-signal-closes', JSON.stringify(vUnread));
+
+  // ---- ③ 求和 vs 数格子（批次 94 那一轮就错在这一格）----
+  var vSum = harness.classify(homeHtml({ toOld: 6, yi: [5, 7], done: 1, prog: 1 }));
+  var vZeros = harness.classify(homeHtml({ toOld: 5, yi: [0, 0, 0, 0, 0], prog: 6 }));
+  check('③ `catalog_points_yi` 读的是**每行那个数字并求和**，不是数出现几次：两格 5/7 → 12（格数 2），五格全 0 → 0（格数 5 照样不算进度）—— 数格子会凭空造出进度（现场：离散数学 121 格真值 279 / 实用语文 51 格真值 131）',
+    vSum.yi === 12 && vSum.yiCells === 2 && vSum.verdict === 'need' && vSum.why === 'row-pending-points' &&
+      vZeros.yi === 0 && vZeros.yiCells === 5,
+    JSON.stringify({ sum: { yi: vSum.yi, cells: vSum.yiCells }, zeros: { yi: vZeros.yi, cells: vZeros.yiCells } }));
+  var vRows = harness.classify(homeHtml({ toOld: 72, done: 72, prog: 0 }));
+  var vRowsNeed = harness.classify(homeHtml({ toOld: 141, done: 80, prog: 61 }));
+  check('③ 老模板那两门（站点没写「已完成任务点」）靠**行分解闭合**判：72 打勾 + 0 进行中 = 72 个可点章节 → 已完成；80 + 61 = 141 → 还要刷；分解不闭合就退回读不出（上面那条）—— 三格共用同一把尺，差一行都不许报结论',
+    vRows.verdict === 'done' && vRows.why === 'rows-all-checked' &&
+      vRowsNeed.verdict === 'need' && vRowsNeed.why === 'rows-in-progress',
+    JSON.stringify({ done: { d: vRows.doneRows, p: vRows.progRows, t: vRows.toOld, v: vRows.verdict }, need: { d: vRowsNeed.doneRows, p: vRowsNeed.progRows, t: vRowsNeed.toOld, v: vRowsNeed.verdict } }));
+
+  // ---- ④ 顺序冻结：两种信号同时在场时，谁先说话由这段代码决定 ----
+  var vBoth1 = harness.classify(homeHtml({ jobs: '63 / 63', yi: [9, 9], done: 0, prog: 9, toOld: 9 }));
+  var vBoth2 = harness.classify(homeHtml({ jobs: '42 / 88', yi: [7], done: 0, prog: 0, toOld: 1 }));
+  check('④ 「已完成任务点 X/Y」必须**排在**行信号之前：63/63 那一页哪怕挂着 18 个待完成点与 9 行进行中，也照站点总数判已完成；42/88 那一页 `why` 必须是 `jobs`，不许是行信号那一族（AGENTS §2 #5 同一族：判断顺序就是仲裁顺序）',
+    vBoth1.verdict === 'done' && vBoth1.why === 'jobs-all-done' && vBoth1.yi === 18 &&
+      vBoth2.verdict === 'need' && vBoth2.why === 'jobs',
+    JSON.stringify({ bothDone: { v: vBoth1.verdict, why: vBoth1.why, yi: vBoth1.yi }, bothNeed: { v: vBoth2.verdict, why: vBoth2.why } }));
+
+  // ---- ⑤ 字节 ≠ 字符串（批次 97 第一版踩的那一格）----
+  var htmlStr = homeHtml({ jobs: '30 / 33', toOld: 25, done: 22, prog: 4 });
+  var bytes = new TextEncoder().encode(htmlStr);
+  var vBytes = harness.classify(bytes);
+  var vDecoded = harness.classify(harness.decode(bytes));
+  check('⑤ 探测拿到的是**字节流**：直接喂给判据只能落「空回包」那一格（不许把字节 `String()` 成 "60,33,68…" 再判 —— 那会把每一门都读成进不去）；先过解码器才与字符串同解（现场：程序设计基础 30/33）',
+    vBytes.verdict === 'unreadable' && vBytes.why === 'empty-response' &&
+      vDecoded.verdict === 'need' && vDecoded.jobs === '30/33',
+    JSON.stringify({ rawBytes: { v: vBytes.verdict, why: vBytes.why }, decoded: { v: vDecoded.verdict, jobs: vDecoded.jobs } }));
+
+  // ---- ⑥ payload 卫生：这一发带着用户 cookie 出门 ----
+  sent.length = 0;
+  var bad = [];
+  bad.push(await harness.batch({ list: [{ cid: '700001', clazz: '900002', url: 'https://evil.example/' }], }));
+  bad.push(await harness.batch({ list: [{ cid: '700001', clazz: '900002' }], extra: 1 }));
+  bad.push(await harness.batch({ list: [{ cid: '700001', clazz: '别的课的班号' }] }));
+  bad.push(await harness.batch({ list: [] }));
+  bad.push(await harness.batch([]));
+  var allRejected = bad.every(function (r) { return r && r.success === false && r.code === 'invalid_payload'; });
+  check('⑥ payload 逐键白名单：条目多带 `url`、顶层多带键、班号不是纯数字、空清单、整体是数组 —— 五形一律拒收（`invalid_payload`），一个请求都不发。课号班号必须**成对**来自同一张卡片：拿别的课的班号站点直接回 403（AGENTS §2 #12）',
+    allRejected && sent.length === 0,
+    JSON.stringify({ codes: bad.map(function (r) { return r && r.code; }), fetched: sent.length }));
+
+  // ---- ⑦ 地址只在后台拼 + 单页上限是真源那个数 ----
+  sent.length = 0;
+  var okRows = await harness.batch({ list: [{ cid: '700001', clazz: '900002' }, { cid: '700003', clazz: '900004' }] });
+  check('⑦ 出门那条地址由后台拼：以真源 `COURSE_HOME_BASE` 开头、带得上这两门的课号与班号；单页正文上限用的就是常量那个数（不从测试里抄数字）',
+    okRows.success === true && sent.length === 2 &&
+      sent.every(function (s) { return s.url.indexOf(KC.base) === 0 && /\d{6}/.test(s.url); }) &&
+      sentLimit.length === 2 && sentLimit.every(function (l) { return l === KC.bodyMax; }),
+    JSON.stringify({ base: KC.base, url0: sent[0] && sent[0].url, limits: sentLimit, bodyMax: KC.bodyMax }));
+
+  // ---- ⑧ 串行 + 预算：并发必须恒为 1，预算到点把没问到的记成 skip ----
+  maxInflight = 0;
+  var many = [];
+  for (var mi = 0; mi < 6; mi++) many.push({ cid: String(700001 + mi), clazz: String(900001 + mi) });
+  responder = function () { return { html: homeHtml({ jobs: '1 / 9', toOld: 2 }), status: 200, stepMs: 9000 }; };
+  var slow = await harness.batch({ list: many });
+  var skipRows = slow.rows.filter(function (r) { return r.verdict === 'skip'; });
+  check('⑧ 六门串行（同时在飞的最多 1 发 —— 新开第二枚学习页会把前一门顶下线，AGENTS §2 #15），整轮预算一到就把剩下的记成 `skip/budget` 并**照常交回同样条数**，绝不让换课被探针拖死',
+    maxInflight === 1 && slow.rows.length === many.length && slow.asked === many.length &&
+      skipRows.length > 0 && skipRows.every(function (r) { return r.why === 'budget'; }),
+    JSON.stringify({ maxInflight: maxInflight, rows: slow.rows.length, asked: slow.asked, skipped: skipRows.length, ms: slow.ms }));
+
+  // ---- ⑨ 回不来 ≠ 进不去：两格分开 ----
+  sent.length = 0;
+  responder = function () { return { hang: true }; };
+  var hung = await harness.batch({ list: [{ cid: '700009', clazz: '900009' }] });
+  responder = function () { return { html: homeHtml({ toOld: 3, done: 1 }), status: 500 }; };
+  var http5 = await harness.batch({ list: [{ cid: '700010', clazz: '900010' }] });
+  check('⑨ 压根没拿到回话（超时）判「读不出」并点名 `timeout`；HTTP 非 200 而正文里一个认识的信号都没有判「进不去」并点名 `http-500` —— 两格混了，用户就会把"网络断了"听成"这门课没权限"',
+    hung.rows.length === 1 && hung.rows[0].verdict === 'unreadable' && hung.rows[0].why === 'timeout' &&
+      http5.rows[0].verdict === 'blocked' && http5.rows[0].why === 'http-500',
+    JSON.stringify({ hang: hung.rows[0] && { v: hung.rows[0].verdict, why: hung.rows[0].why }, http5: http5.rows[0] && { v: http5.rows[0].verdict, why: http5.rows[0].why } }));
+  responder = function () { return { html: homeHtml({ jobs: '1 / 9', toOld: 2 }), status: 200 }; };
+
+  // ---- ⑩ 三端超时嵌套：从三份真源读回来比大小，不写死 ----
+  var PENDING = numVar(shell, 'COURSE_PROBE_PENDING_MS');
+  var FRESH = numVar(shell, 'COURSE_PROBE_FRESH_MS');
+  var ASK = numVar(shell, 'COURSE_PROBE_ASK_MS');
+  var DEFER = numVar(shell, 'COURSE_PROBE_DEFER_MS');
+  var SPOKE = numVar(shell, 'COURSE_PROBE_SPOKE_MS');
+  var bridgeM = cnt.match(/type: 'course_home_probe',\s*payload: msg\.payload \}, (\d+)/);
+  var BRIDGE = bridgeM ? Number(bridgeM[1]) : null;
+  check('⑩ 超时由外向内一层比一层长：后台最坏（整轮预算 ' + KC.budgetMs + ' + 单页 ' + KC.fetchMs + '）< 桥 ' + BRIDGE + ' < 页面 ' + ASK + '，且等待上限 ' + DEFER + ' < 页面那一头 —— 外面比里面短就等于**永远拿不到真答案**（AGENTS §2 #2：只有超时能救挂起）',
+    BRIDGE !== null && ASK !== null && DEFER !== null && KC.budgetMs + KC.fetchMs < BRIDGE &&
+      BRIDGE < ASK && DEFER < ASK && PENDING > 0 && FRESH > ASK && SPOKE > 0,
+    JSON.stringify({ fetch: KC.fetchMs, budget: KC.budgetMs, bridge: BRIDGE, ask: ASK, defer: DEFER, pending: PENDING, fresh: FRESH, spoke: SPOKE }));
+
+  // ---- 页面侧：计数格位 / 权重只重排 / 键形状一致 / 等待会说话 ----
+  var logs = [];
+  var emit = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var rankM = loop.match(/_COURSE_PROBE_RANK: \{([^}]*)\}/);
+  var RANK = rankM ? (new Function('return ({' + rankM[1] + '})'))() : null;
+  var asks = [];
+  var app = {
+    _COURSE_PROBE_RANK: RANK,
+    _courseProbeCounts: buildFrom(loop, '_courseProbeCounts', {}),
+    _courseProbeWeight: buildFrom(loop, '_courseProbeWeight', {}),
+    _orderBlindByProbe: buildFrom(loop, '_orderBlindByProbe', {}),
+    _courseProbeDeferred: buildFrom(loop, '_courseProbeDeferred', {
+      emitRuntimeLog: emit, COURSE_PROBE_DEFER_MS: DEFER, COURSE_PROBE_SPOKE_MS: SPOKE
+    }),
+    _askCourseProbe: buildFrom(loop, '_askCourseProbe', {
+      bridgeSend: function (type, payload) { asks.push({ type: type, payload: payload }); return Promise.resolve(askAnswer); },
+      COURSE_PROBE_PENDING_MS: PENDING, COURSE_PROBE_FRESH_MS: FRESH, COURSE_PROBE_ASK_MS: ASK
+    }),
+    _withTimeout: function (p) { return p; }
+  };
+  var pageReady = !!(RANK && app._courseProbeCounts && app._courseProbeWeight && app._orderBlindByProbe &&
+    app._courseProbeDeferred && app._askCourseProbe);
+  check('⑩-b 页面侧五件都从 `src/page/64-tasks-loop.js` 取出来跑（取不全就整段不跑，那种绿是零覆盖）', pageReady,
+    JSON.stringify({ rank: !!RANK, counts: !!app._courseProbeCounts, weight: !!app._courseProbeWeight, order: !!app._orderBlindByProbe, deferred: !!app._courseProbeDeferred, ask: !!app._askCourseProbe }));
+  if (!pageReady) return;
+
+  // ⑪ 数不清单独占一格，而且那一格是 -1 不是 0
+  app._courseProbeCache = null;
+  var c0 = app._courseProbeCounts();
+  app._courseProbeCache = { pendingAt: 1, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+  var c1 = app._courseProbeCounts();
+  app._courseProbeCache = { pendingAt: 0, at: 2, answered: true, ok: false, rows: {}, asked: 0, ms: -1, why: 'invalid_payload' };
+  var c2 = app._courseProbeCounts();
+  app._courseProbeCache = { pendingAt: 0, at: 3, answered: true, ok: true, asked: 4, ms: 120, rows: {
+    '1:a': { verdict: 'need' }, '2:b': { verdict: 'done' }, '3:c': { verdict: '啥都不认识' }, '4:d': { verdict: 'skip', why: 'budget' } } };
+  var c3 = app._courseProbeCounts();
+  var minus = ['pRows', 'pNeed', 'pDone', 'pNoPts', 'pUnread', 'pBlocked', 'pEmpty', 'pSkip'];
+  check('⑪ 「还没问 / 还在问 / 问了问不出」三格各自点名，且计数一律是 **-1 而不是 0**（`0` 在日志里读起来就是"确认没有还要刷的门"，方向是放行）；后台给出不认识的判法时**并进「读不出」那一格**，绝不落进已完成',
+    c0.pAsk === 'no' && minus.every(function (k) { return c0[k] === -1; }) &&
+      c1.pAsk === 'pending' && minus.every(function (k) { return c1[k] === -1; }) &&
+      c2.pAsk === 'fail' && c2.pWhy === 'invalid_payload' &&
+      c3.pAsk === 'ok' && c3.pRows === 4 && c3.pNeed === 1 && c3.pDone === 1 && c3.pSkip === 1 && c3.pUnread === 1,
+    JSON.stringify({ no: c0, pending: c1, fail: c2, ok: c3 }));
+
+  // ⑫ 权重只重排、绝不丢行；判法相同的门靠排序稳定性保住卡片顺序
+  var cards = [
+    { courseId: '1', clazzId: 'a' }, { courseId: '2', clazzId: 'b' },
+    { courseId: '3', clazzId: 'c' }, { courseId: '4', clazzId: 'd' },
+    { courseId: '5', clazzId: 'e' }, { courseId: '6', clazzId: 'f' }
+  ];
+  app._courseProbeCache = { pendingAt: 0, at: 4, answered: true, ok: true, asked: 6, ms: 200, rows: {
+    '1:a': { verdict: 'done', jobsAll: 10, jobsDone: 10 },
+    '2:b': { verdict: 'empty' },
+    '3:c': { verdict: 'need', jobsAll: 88, jobsDone: 42 },
+    '4:d': { verdict: 'need', jobsAll: 100, jobsDone: 0 },
+    '5:e': { verdict: 'blocked' },
+    '6:f': { verdict: 'nopoints' } } };
+  var ordered = app._orderBlindByProbe(cards);
+  var ids = ordered.map(function (o) { return o.card.courseId; });
+  var wOf = function (id) { for (var i = 0; i < ordered.length; i++) if (ordered[i].card.courseId === id) return ordered[i].weight; return null; };
+  // 没答过的门（缓存里没有它）必须落在「读不出」那一桶，照旧许它进门
+  var orphan = app._courseProbeWeight(null);
+  check('⑫ 探针**只改挑谁的顺序、不把任何一门从名单里删掉**：六门进六门出；差得最多的先挑（0/100 排在 42/88 前），已完成与目录为空排到最后，站点说没有任务点的那门排在已完成之前（它只是没活，不是刷完了）；缓存里压根没有的那门落在「读不出」桶（' + orphan + '），照旧许进门',
+    ordered.length === cards.length && ids.join(',') === '4,3,6,1,5,2' &&
+      wOf('4') < wOf('3') && wOf('3') < wOf('6') && wOf('6') < wOf('1') && wOf('1') < wOf('2') &&
+      orphan === RANK.unreadable * 1000,
+    JSON.stringify({ order: ids, weights: ordered.map(function (o) { return o.card.courseId + '=' + o.weight; }), rank: RANK, orphan: orphan }));
+
+  // ⑬ 写进去的键与读出来的键必须是同一形状（不同形 = 探针答了但挑选永远读不到，且一声不响）
+  var askAnswer = { success: true, asked: 2, ms: 90, rows: [
+    { cid: '700001', clazz: '900002', verdict: 'need', jobsAll: 50, jobsDone: 1 },
+    { cid: '700003', clazz: '900004', verdict: 'done', jobsAll: 9, jobsDone: 9 } ] };
+  app._courseProbeCache = null;
+  var blindCards = [{ courseId: 700001, clazzId: 900002 }, { courseId: 700003, clazzId: 900004 }];
+  var askReturn = app._askCourseProbe.call(app, fakeNow, blindCards);
+  await new Promise(function (r) { setTimeout(r, 10); });
+  var askOrder = app._orderBlindByProbe.call(app, blindCards);
+  var askIds = askOrder.map(function (o) { return o.card.courseId; });
+  check('⑬ 问出去那一发只交课号与班号（不发地址、不发课程名），答回来按课号排进缓存；**写缓存用的键与挑选读的键是同一形状** —— 700001 那门被认成「还要刷」并排到 700003 之前（键形状一变就成了"探针答了但挑选永远读不到"，不报错、不留日志）',
+    askReturn === undefined && asks.length === 1 && asks[0].type === 'course_home_probe' &&
+      asks[0].payload.list.length === 2 &&
+      Object.keys(asks[0].payload.list[0]).sort().join(',') === 'cid,clazz' &&
+      String(asks[0].payload.list[0].url) === 'undefined' &&
+      app._courseProbeCache.answered === true && app._courseProbeCache.ok === true &&
+      app._courseProbeCache.asked === 2 && askIds.join(',') === '700001,700003' &&
+      askOrder[0].row.verdict === 'need' && askOrder[1].row.verdict === 'done',
+    JSON.stringify({ asks: asks.map(function (a) { return { type: a.type, keys: Object.keys(a.payload.list[0]) }; }), cache: { answered: app._courseProbeCache.answered, ok: app._courseProbeCache.ok, asked: app._courseProbeCache.asked, rows: Object.keys(app._courseProbeCache.rows) }, order: askIds }));
+
+  // ⑭ 还在问那一格：认领这一拍、说一句话、但不锁死这一页
+  logs.length = 0;
+  var pickDoneBefore = false;
+  app._coursePickDone = pickDoneBefore;
+  app._courseProbeSpokeAt = 0;
+  app._courseProbeCache = { pendingAt: 5000, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+  var defer1 = app._courseProbeDeferred.call(app, 5000 + Math.floor(DEFER / 2), 32);
+  var deferSame = app._courseProbeDeferred.call(app, 5000 + Math.floor(DEFER / 2), 32);
+  var spoke = logs.filter(function (l) { return l.message === 'course switch probing course homes'; });
+  var hint = spoke.length === 1 ? String(spoke[0].meta.hint || '') : '';
+  var hintSec = (hint.match(/最多等 (\d+) 秒/) || [])[1];
+  check('⑭ 「还在问」那一格：**说话 + 认领这一拍**，但**不置** `_coursePickDone`（置了就等于这一页从此不再挑课）；同一拍再进来不许重复刷屏（`everyMs: 0` = 这句话每页只说一次）；hint 里那句「最多等 N 秒」的 N 必须等于真源那个等待上限换算的秒数（文档与判据同源，AGENTS §3 那条数字承诺）',
+    defer1 === true && deferSame === true && spoke.length === 1 &&
+      spoke[0].meta.everyMs === 0 && app._coursePickDone === pickDoneBefore &&
+      hintSec !== undefined && Number(hintSec) === Math.round(DEFER / 1000),
+    JSON.stringify({ defer1: defer1, deferSame: deferSame, spoke: spoke.length, everyMs: spoke[0] && spoke[0].meta.everyMs, pickDone: app._coursePickDone, hintSec: hintSec, deferMs: DEFER }));
+
+  // ⑮ 等待有界：预算一到就照手里有的挑，而且这句话不许把答案锁死
+  logs.length = 0;
+  app._courseProbeCache = { pendingAt: 1000, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+  var deferPast = app._courseProbeDeferred.call(app, 1000 + DEFER, 32);
+  app._courseProbeCache = { pendingAt: 0, at: 9, answered: true, ok: true, rows: {}, asked: 1, ms: 10, why: '' };
+  var deferAnswered = app._courseProbeDeferred.call(app, 9, 32);
+  app._courseProbeCache = null;
+  var deferNoCache = app._courseProbeDeferred.call(app, 9, 32);
+  check('⑮ 等待**有界**：预算一到就交回 false（照手里有的挑，探针再慢也不许把换课钉死在这一页）；已经答上来的那一格交回 false（该往下走了）；压根没问过的也交回 false（说话那一格只管"还在问"，别顺手把没问过的也认领走 —— 那一族由上面几条兜底）',
+    deferPast === false && deferAnswered === false && deferNoCache === false && logs.length === 0,
+    JSON.stringify({ past: deferPast, answered: deferAnswered, noCache: deferNoCache, logs: logs.length }));
+
+  // ⑯ 顺序承诺的那句话与桶号一致（改桶号忘改句子 = 日志骗人）
+  var SAY_ORDER = ['还要刷', '读不出', '没有任务点', '已完成', '进不去', '目录为空'];
+  var verdictOfWord = { '还要刷': 'need', '读不出': 'unreadable', '没有任务点': 'nopoints', '已完成': 'done', '进不去': 'blocked', '目录为空': 'empty' };
+  logs.length = 0;
+  app._courseProbeSpokeAt = 0;
+  app._courseProbeCache = { pendingAt: 2000, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+  app._courseProbeDeferred.call(app, 2000 + 1000, 5);
+  var orderHint = logs.length === 1 ? String(logs[0].meta.hint || '') : '';
+  var positions = SAY_ORDER.map(function (w) { return orderHint.indexOf(w); });
+  var buckets = SAY_ORDER.map(function (w) { return RANK[verdictOfWord[w]]; });
+  var ascending = buckets.every(function (b, i) { return i === 0 || b >= buckets[i - 1]; });
+  check('⑯ hint 里承诺的判法顺序「还要刷 → 读不出 → 没有任务点 → 已完成 → 进不去 → 目录为空」必须与 `_COURSE_PROBE_RANK` 的桶号同向（' + buckets.join('/') + '）—— 桶号改了而句子没改，用户按那句理解现场就被引到错方向（AGENTS §3 那条「行为改了文档没改」唯一的失败形状）',
+    positions.every(function (p) { return p >= 0; }) &&
+      positions.every(function (p, i) { return i === 0 || p > positions[i - 1]; }) && ascending &&
+      orderHint.indexOf('只改挑谁的顺序') >= 0,
+    JSON.stringify({ positions: positions, buckets: buckets, count: logs[0] && logs[0].meta.hint ? String(logs[0].meta.hint).slice(0, 20) : '' }));
+
+  // ⑰ 调用点顺序与「不 await」：判定那一拍的返回值就是认领与否
+  var pickBody = codeOf(bodyOf(loop, '_pickNextCourseFromUserCenter'));
+  var askBody = codeOf(bodyOf(loop, '_askCourseProbe'));
+  var callAt = pickBody.indexOf('this._askCourseProbe(');
+  var deferAt = pickBody.indexOf('this._courseProbeDeferred(');
+  var orderAt = pickBody.indexOf('this._orderBlindByProbe(');
+  check('⑰ 调用点顺序钉住：先问（不 await）、再看要不要为它等这一拍、最后才排队挑课 —— 三行各在彼此之后（少了 defer 那一行就会拿空缓存排序，少了排序就等于探针白问）；`_askCourseProbe` 体内一个 `await` 都不许有（那个返回值是"这一拍认领了没有"，改成 async 等于换掉整条换课的仲裁顺序，AGENTS §2 #8）',
+    callAt >= 0 && deferAt > callAt && orderAt > deferAt && askBody.indexOf('await ') === -1,
+    JSON.stringify({ call: callAt, defer: deferAt, order: orderAt, awaits: askBody.split('await ').length - 1 }));
+
+  // ⑱ 单轮问课上限：上限就是那个常量，超了要报「丢了几个」而不是静默截断
+  sent.length = 0;
+  var over = [];
+  for (var oi = 0; oi < KC.limit + 3; oi++) over.push({ cid: String(700000 + oi), clazz: String(900000 + oi) });
+  var capped = await harness.batch({ list: over });
+  var counted = [];
+  for (var ci = 0; ci < over.length; ci++) counted.push({ courseId: String(700000 + ci), clazzId: String(900000 + ci) });
+  app._courseProbeCache = { pendingAt: 0, at: 5, answered: true, ok: true, asked: capped.asked, ms: 10, rows: {} };
+  for (var ri = 0; ri < capped.rows.length; ri++) {
+    app._courseProbeCache.rows[capped.rows[ri].cid + ':' + capped.rows[ri].clazz] = capped.rows[ri];
+  }
+  var cappedOrder = app._orderBlindByProbe.call(app, counted);
+  check('⑱ 一轮最多问 ' + KC.limit + ' 门（现场最大账号 38 门），多出来那 3 门**报得出丢了几个**（`dropped`），而不是静默截断；而且它们照旧留在候选里、只排到最后 —— 静默丢掉等于"这账号有几门课永远不会被挑"',
+    capped.asked === KC.limit && capped.dropped === 3 && capped.rows.length === KC.limit &&
+      sent.length === KC.limit && counted.length === KC.limit + 3 &&
+      cappedOrder.length === counted.length &&
+      cappedOrder.slice(KC.limit).every(function (o) { return o.row === null && o.weight === RANK.unreadable * 1000; }),
+    JSON.stringify({ limit: KC.limit, asked: capped.asked, dropped: capped.dropped, rows: capped.rows.length,
+      fetched: sent.length, candidates: counted.length, ordered: cappedOrder.length,
+      tail: cappedOrder.slice(KC.limit).map(function (o) { return o.card.courseId + '=' + o.weight; }) }));
+
+  // ⑲ 面板那一头**真跑**：页面刚发出去的那条日志（带它自己算的 meta）喂给 content.js 里那份真的
+  //    `runtimeLogToStatus`，红绿由返回值说话。
+  //    ⚠️ 这一格补的是批次 97 差点漏掉的那族：新增一条 `course switch *` 日志而**没在分类器里点名**，
+  //    生产不会报错、集成上面那十几格照旧全绿 —— 它落进那句兜底 `else`，右下角点亮「注意」并说
+  //    「没往下换课」，而这一刻插件**正要往下换**。症状与批次 55-B / 60 那两条「warn 兜底说反话」同形。
+  //    判据同 ⑦′：正则比源字符串抓不到"分支压根走不到"，所以这里必须调用真函数（AGENTS §5）。
+  logs.length = 0;
+  app._courseProbeSpokeAt = 0;
+  app._courseProbeCache = { pendingAt: 6000, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+  app._courseProbeDeferred.call(app, 6000 + 1000, 7);
+  var probeMeta = logs.length === 1 ? logs[0].meta : null;
+  var ppc = extractPanelClassifier(cnt);
+  check('⑲a 页面说的那条探针日志能拿到 meta，且分类器取得出来（取不出来这一格是「没执行」，不是「通过」）',
+    !!probeMeta && typeof ppc.fn === 'function',
+    JSON.stringify({ logs: logs.length, meta: probeMeta, at: ppc.at, err: ppc.err }));
+  if (probeMeta && typeof ppc.fn === 'function') {
+    var panelReal = ppc.fn('info', 'course switch probing course homes', probeMeta);
+    // 两个数都从**页面算出来的 meta** 里读回来比，不在这里抄一份 24 —— 抄了就成了第二把尺（AGENTS §4）
+    var saysBlind = String(panelReal.detail).indexOf(String(probeMeta.blindCount)) >= 0;
+    var saysDefer = String(panelReal.detail).indexOf(String(probeMeta.deferSec)) >= 0;
+    check('⑲b 面板对这条的读法是 wait「这一门刷完了 / 正在后台读 N 门…最多等 M 秒」，不许落进兜底那句' +
+      '「没往下换课」（漏了那一支就是给一条正常推进的日志点亮「注意」，而且**说的正好是反话**）；' +
+      'N、M 两个数都取自页面 meta（' + probeMeta.blindCount + ' / ' + probeMeta.deferSec + '），不是这边抄的常量',
+      panelReal.state === 'wait' && panelReal.task === '这一门刷完了' &&
+        panelReal.named === true && saysBlind && saysDefer &&
+        String(panelReal.detail).indexOf('没往下换课') < 0 &&
+        Number(probeMeta.deferSec) === Math.round(DEFER / 1000),
+      JSON.stringify({ panel: panelReal, meta: probeMeta, deferMs: DEFER }));
+    // ⑳ meta 缺字段那一格（旧页面产物 / 拼接没跟上 / 常量那一行被删）：只许写「-」，不许压成 0
+    var panelBare = ppc.fn('info', 'course switch probing course homes', { hint: 'x' });
+    var panelNull = ppc.fn('info', 'course switch probing course homes', null);
+    check('⑳ 读不到的数写「-」，不许被算成一个看起来很像真的 0 —— 「最多等 0 秒」是一条**具体的假承诺**，' +
+      '现场没人会怀疑它（AGENTS §2 #12「读不出必须单独占一格」同族，缺字段那一格与 null meta 都要走到）',
+      panelBare.state === 'wait' && /- 门/.test(panelBare.detail) && /- 秒/.test(panelBare.detail) &&
+        String(panelBare.detail).indexOf('0') < 0 &&
+        /- 门/.test(panelNull.detail) && /- 秒/.test(panelNull.detail),
+      JSON.stringify({ bare: panelBare, nul: panelNull }));
+  }
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -3933,6 +4417,7 @@ async function main() {
   await testSeekDeferUntilSeekable();
   await testCanonicalMultipleAnswerOrEmpty();
   await testPopupQuizLocalComboGroup();
+  await testCourseHomeProbeSignals();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

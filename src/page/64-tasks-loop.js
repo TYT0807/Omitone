@@ -1098,14 +1098,18 @@
       var keys = Object.keys(rows);
       out.pRows = keys.length;
       out.pMs = Number(cache.ms) >= 0 ? Number(cache.ms) : -1;
+      // ⚠️ 真拿到答案了，这几格才从「数不清」切到「数得清」：**必须归零再数**。
+      //    起点留着 -1 会让每一类都少报一个（只有 1 门还要刷时报成 `0`），
+      //    而 `0` 在这一族日志里读起来正是「确认没有」—— 凭空多出一条方向是放行的断言
+      //    （AGENTS §2 #2 同一族），没数到的那几类也会一直挂着 -1 像是读不出。
+      //    判法与格位只在这张表里写一次：新增一型只要加一行，别在下面的链上补 else if。
+      var FIELD = { need: 'pNeed', done: 'pDone', nopoints: 'pNoPts', blocked: 'pBlocked', empty: 'pEmpty', skip: 'pSkip' };
+      for (var f in FIELD) { if (Object.prototype.hasOwnProperty.call(FIELD, f)) out[FIELD[f]] = 0; }
+      out.pUnread = 0;
       for (var i = 0; i < keys.length; i++) {
         var v = String(rows[keys[i]].verdict || '');
-        if (v === 'need') out.pNeed++;
-        else if (v === 'done') out.pDone++;
-        else if (v === 'nopoints') out.pNoPts++;
-        else if (v === 'blocked') out.pBlocked++;
-        else if (v === 'empty') out.pEmpty++;
-        else if (v === 'skip') out.pSkip++;
+        var field = FIELD[v];
+        if (field) out[field]++;
         else out.pUnread++;   // 包括后台给了个不认识的判法 —— 一律算「读不出」，不许并进已完成
       }
       return out;
@@ -1226,6 +1230,10 @@
             '最多等 ' + Math.round(COURSE_PROBE_DEFER_MS / 1000) + ' 秒；到点没问完就照卡片顺序进一门，让目录判。' +
             '问出来的先后是「还要刷 → 读不出 → 没有任务点 → 已完成 → 进不去 → 目录为空」，' +
             '只改挑谁的顺序，不把任何一门从名单里删掉',
+          // ⚠️ 面板（`content.js` 的 `runtimeLogToStatus`）要说同一句话里的两个数，只能从这里拿：
+          //    在那边写死 24 就会在有人调常量时变成第二把尺（AGENTS §4「对用户承诺的数字」同族）。
+          blindCount: Number(count) || 0,
+          deferSec: Math.round(COURSE_PROBE_DEFER_MS / 1000),
           everyMs: 0
         });
       }

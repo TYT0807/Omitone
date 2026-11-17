@@ -902,9 +902,13 @@ function checkTestCounts() {
   // 而执行段里只有调用、没有定义。
   var selfSrc = read('tools/check.js');
   var execAt = selfSrc.indexOf("console.log('\\nOmitone 工程自检");
+  // ⚠️ 字符类里**要带数字**：`checkE2eExprParsable`（第 28 项）这个名字含「2」，
+  //    旧口径 `[A-Za-z]*` 走到那里就断在 `(` 之前 —— 于是"31 项自检"数出来是 30，
+  //    文档里那句「自检 29 项」与注释里最大的编号 30 长期差一格而没人发现。
+  //    口径改成"能数到人写的编号"：**声明覆盖的范围与实际走的分支之间的差，不会自己喊出来**（AGENTS §2 #18）。
   var actualChecks = execAt < 0
     ? 0
-    : new Set(selfSrc.slice(execAt).match(/\bcheck[A-Z][A-Za-z]*\(/g) || []).size;
+    : new Set(selfSrc.slice(execAt).match(/\bcheck[A-Z][A-Za-z0-9]*\(/g) || []).size;
   if (actualChecks > 0) {
     selfCheckChecked = true;
     targets.forEach(function (t) {
@@ -3031,6 +3035,16 @@ function checkSwitchBudgetClaim() {
       name: '代码侧没读到数字要响（不许当成没东西要核）',
       files: clean,
       limitOverride: 0, problems: 1, needle: '代码侧的换课上限没读到'
+    },
+    {
+      // 批次 97 撞出来的真红：探针那一族「一轮最多问 40 门」句式与本族只差一个「问」字，
+      // 旧口径把它读成换课上限，四份写对了的文档各挨一条**根本不存在的**承诺不符。
+      // 期望写在 check.js 里，与审计自带的那一格各算各的（口径同第 24 项的九格）。
+      name: '探针那一族「一轮最多问 40 门」不许被抓成换课上限（跨族阴性对照）',
+      files: Object.assign({}, clean, {
+        'README.md': '- 一轮连续刷课**最多换 30 门**；换课前那一读一轮最多问 40 门。\n'
+      }),
+      problems: 0, claims: 4, needle: ''
     }
   ];
   var bad = [];
@@ -3045,6 +3059,10 @@ function checkSwitchBudgetClaim() {
     if (res.problems.length !== t.problems) {
       bad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
         JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      // 「0 条问题」有两种：都对上了，与**压根没扫到**。所以这一格除了要求不报，还要求命中数照旧
+      bad.push(t.name + '：问题 0 条，但命中 ' + res.claims.length + ' 处（期望 ' + t.claims +
+        ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
     } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
       bad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
     }
@@ -3095,7 +3113,137 @@ function checkSwitchBudgetClaim() {
     return;
   }
   pass('换课上限文档对账（代码 ' + limit + ' 门；文档 ' + real.claims.length + ' 处逐个相等，' +
-    '分布在 ' + new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 5 格阴性对照 + 2 格掩码形状自证）');
+    '分布在 ' + new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 6 格阴性对照（其中一格是跨族不许误报）+ 2 格掩码形状自证）');
+}
+
+// 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
+//     批次 97 一轮加出九个常量（40 门 / 12 秒 / 20 秒 / 34 秒 / 36 秒 / 24 秒 / 8 秒 / 45 秒 / 30 分钟），
+//     其中四个直接对用户承诺了"可能要等多久"。第 30 项管的是换课**上限**那一族，这一项管**这一读**那一族 ——
+//     同一族教训：代码改了而用户看得见的页没改，判据、日志、沙盒全绿，只有被引到错方向的人知道。
+function checkCourseProbeClaims() {
+  var audit;
+  try {
+    audit = require('./audit-course-probe-claims.js');
+  } catch (e) {
+    fail('探针数字对账加载失败：' + String((e && e.message) || e));
+    return;
+  }
+  var consts;
+  try {
+    consts = audit.constsFromSource();
+  } catch (e2) {
+    fail('探针数字对账读不出代码真源：' + ((e2 && e2.message) || e2) +
+      '\n      真源是 ' + audit.SOURCES.join(' / ') + ' 里的 `COURSE_PROBE_*`；常量改名要连这条闸一起改');
+    return;
+  }
+  // ⚠️ 掩码那一手**只许有一份**：探针这一族故意复用批次 94 的 `maskInvisible`。
+  //    两处各写一份的话，改一处另一处静默过期 —— 正是本件要防的那类事，所以在这里钉住"是同一个函数"，
+  //    形状自证（围栏 / HTML 注释 / script 挖空且行号列位不动）由第 30 项那一格承重。
+  var budgetAudit = require('./audit-switch-budget.js');
+  var bad = [];
+  if (audit.maskInvisible !== budgetAudit.maskInvisible) {
+    bad.push('探针对账自己另写了一份掩码 —— 第 30 项的掩码形状自证就此盖不住这一族，改一处另一处会静默过期');
+  }
+
+  // 下面这几格的期望条数**写在 check.js 里**，不吃审计自带的十三格自证：
+  // 只改审计里的 `expect` 不能把这道闸蒙过去（口径同第 24 项自带九格期望表）。
+  // ⚠️ 夹具与锚点的数字**一律从真源算**（`cleanFixture(consts)` + `rightValues(consts)`）——
+  //    原先这里写死 24 / 34 / 40，于是批次 97 反向验证 E2 把代码里的 `COURSE_PROBE_ASK_MS`
+  //    改成 35000 之后，**这几格自证先红**（"干净夹具"报了 2 条），而下面那句 `return`
+  //    把真正该说的话「文档说 36 秒、真源是 35 秒」整个压在底下 —— 报的是**错的原因**：
+  //    看起来像"守卫坏了"，真相是"守卫好好的、文档过期了"，而那正是这一项要抓的东西。
+  var R = audit.rightValues(consts);
+  var W = { defer: audit.wrongValue('defer', R), bridge: audit.wrongValue('bridge', R), limit: audit.wrongValue('limit', R) };
+  var clean = audit.cleanFixture(consts);
+  var CASES = [
+    { name: '干净夹具（数字全对 + 围栏/注释/script 里的错数不算）', docs: clean, problems: 0, coverMin: 7 },
+    {
+      name: '「最多为它等」写成 ' + W.defer + ' 秒要红（夹具里三页各写了一次）',
+      docs: audit.mutate(clean, '最多为它等 ' + R.defer + ' 秒', '最多为它等 ' + W.defer + ' 秒'),
+      problems: 3, needle: 'defer'
+    },
+    {
+      name: '桥那一头写成 ' + W.bridge + ' 秒要红并点名文件（说明书那一处；HANDOVER 那处带 ** 号，锚点照不到）',
+      docs: audit.mutate(clean, '桥那一头 ' + R.bridge + ' 秒', '桥那一头 ' + W.bridge + ' 秒'),
+      problems: 1, needle: 'docs/manual.html'
+    },
+    {
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      docs: { 'README.md': '这里不提数字。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 3, needle: '只在 0 个文件'
+    },
+    {
+      name: '句式被整体改写（把「最多问 ' + R.limit + ' 门」换成「最少 30 门」）要点名那句消失了',
+      docs: audit.mutate(clean, '最多问 ' + R.limit + ' 门', '最少 30 门'),
+      problems: 1, needle: '一句都没有'
+    }
+  ];
+  CASES.forEach(function (t) {
+    var res;
+    try {
+      res = audit.audit({ docs: t.docs, consts: consts });
+    } catch (e3) {
+      bad.push(t.name + '：审计本身抛了 ' + String((e3 && e3.message) || e3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      bad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 2)));
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      bad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    } else if (t.coverMin && res.claims.length < t.coverMin) {
+      bad.push(t.name + '：只扫到 ' + res.claims.length + ' 处承诺（要 ≥' + t.coverMin +
+        '）—— "0 问题"可能是空扫');
+    }
+  });
+  // 代码侧少读一个常量不许降级成"那就不用核这一格"
+  var halfConsts = {};
+  Object.keys(consts).forEach(function (k) { if (k !== 'fresh') halfConsts[k] = consts[k]; });
+  var halfRes = audit.audit({ docs: clean, consts: halfConsts });
+  if (!halfRes.problems.some(function (p) { return p.indexOf('代码侧的探针常量有读不齐的') >= 0; })) {
+    bad.push('把 fresh 那一格从真源里抽掉，审计没点名「常量有读不齐的」—— 读不出会被当成通过');
+  }
+  // 审计自带的十三格自证照跑（判据在审计里，期望另有一份在上面）；
+  // ⚠️ 还要求**格数没被人删**：自证掉格只少打几行，谁都不会发现（AGENTS §5「名字里的清单要和谓词对应」）
+  var sc = audit.selfCheck();
+  if (!sc.ok) {
+    bad.push('审计自带的自证有 ' + sc.bad.length + ' 格红：' + sc.bad.join('；').slice(0, 400));
+  }
+  if (Number(sc.total) !== 13) {
+    bad.push('审计自带的自证是 ' + sc.total + ' 格，而文档（HANDOVER 批次 97 那一行 / 本件那句 [ok]）' +
+      '承诺的是 13 格 —— 自证格子被删了要连文档一起改');
+  }
+  if (bad.length) {
+    fail('探针数字对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+
+  var docs = {};
+  var missing = [];
+  audit.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) docs[f] = fs.readFileSync(p, 'utf8');
+    else missing.push(f);
+  });
+  if (missing.length) {
+    fail('探针数字对账有 ' + missing.length + ' 份文档没读进来：' + missing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var real = audit.audit({ docs: docs, consts: consts });
+  if (real.problems.length) {
+    fail('探针数字对账有 ' + real.problems.length + ' 条要说：\n      ' + real.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成真源现在的数（一轮 ' + consts.limit + ' 门 · 单页 ' + consts.fetch +
+      ' 秒 · 整轮 ' + consts.budget + ' 秒 · 桥 ' + consts.bridge + ' 秒 · 页面 ' + consts.ask +
+      ' 秒 · 为它等 ' + consts.defer + ' 秒 · ' + consts.fresh + ' 分钟不重问），别改判据迁就现状；' +
+      '\n      CHANGELOG 里的历史条目**按史实不扫**，也不要顺手回改');
+    return;
+  }
+  pass('探针数字文档对账（代码 ' + Object.keys(audit.CONSTANT_SPECS).length + ' 个常量：一轮 ' + consts.limit +
+    ' 门 / 整轮 ' + consts.budget + ' 秒 / 桥 ' + consts.bridge + ' 秒 / 页面 ' + consts.ask + ' 秒 / 为它等 ' +
+    consts.defer + ' 秒；文档 ' + real.claims.length + ' 处逐个相等，分布在 ' +
+    new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 6 格阴性对照 + 审计自带 ' +
+    sc.total + ' 格自证）');
 }
 
 // ---------------------------------------------------------------------------
@@ -3133,6 +3281,7 @@ checkManualUiLabels();
 checkE2eExprParsable();
 checkBrowserOnlyClaim();
 checkSwitchBudgetClaim();
+checkCourseProbeClaims();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
