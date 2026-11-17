@@ -2796,6 +2796,111 @@ function checkManualUiLabels() {
 }
 
 // ---------------------------------------------------------------------------
+// 28. e2e 里「拼成字符串、再交给页面执行」的脚本必须能解析（任务 #139）
+//
+// 要拦的是这一族：`client.evaluate('(function(){…' + '…})()')` 里的 JS **源码本身合法**
+// —— 那只是几个字符串字面量，`node --check` 全绿、集成测试全绿、
+// 上一项（夹具 HTML 可解析）也全绿（它只管 MOCK_PAGES 那批 HTML）。
+// 错在**字符串的内容**，所以只有把内容折出来再解析一次才量得到。
+//
+// 批次 87 实测撞过：换课场景里那一串少写一个右花括号，一路跑到真实 Edge 才报
+// 「页面抛异常: SyntaxError」—— 不带文件行号，人得从场景名反推是哪一串。
+// 这一项把它压成秒级静态闸。
+//
+// ⚠️ 覆盖面必须一起钉：只钉「红几条」的话，守卫整个认不出调用点也会报「0 条问题」，
+//    那是 AGENTS §5 第四类假绿最干净的形状。所以自证里每格都要求 `checked` 计数，
+//    真文件跑之前还有一道「折叠解析条数不许塌到地板以下」的闸。
+// ---------------------------------------------------------------------------
+function checkE2eExprParsable() {
+  var guard;
+  try {
+    guard = require('./e2e-expr-guard.js');
+  } catch (e) {
+    fail('页面脚本串守卫加载失败：' + String((e && e.message) || e));
+    return;
+  }
+
+  // ---- 阴性对照：期望数字在**这里**各写一份，不照抄守卫自带的 selfTest ----
+  // 第 1 格证明它会响；第 2 格证明它不把「函数体片段」当错（`return 1` 按脚本解析必红，
+  // 而那是合法内容 —— 会误报的守卫和没有守卫一样害人）；
+  // 第 3 格证明含变量的实参**不计入已检查**；第 4 格证明注释与字符串里的调用点不算。
+  var CASES = [
+    {
+      name: '少一个右花括号必报', src: "c.evaluate('(function(){try{x();}catch(e){});');",
+      problems: 1, checked: 1, skipped: 0
+    },
+    {
+      name: '函数体片段（顶层 return）不许误报', src: "c.evaluate('return document.hidden;');",
+      problems: 0, checked: 1, skipped: 0
+    },
+    {
+      name: '含变量只计 skipped（不许冒充已检查）', src: "c.evaluate('x=' + n + ';');",
+      problems: 0, checked: 0, skipped: 1
+    },
+    {
+      name: '注释里与字符串里的调用点都不算',
+      src: "// c.evaluate('(function(){');\nvar s = 'c.evaluate(\"(function(){\");';",
+      problems: 0, checked: 0, skipped: 0
+    },
+    {
+      name: 'waitFor 认第二个实参（坏串要响）', src: "waitFor(c, '(function(){return 1);');",
+      problems: 1, checked: 1, skipped: 0
+    }
+  ];
+  var bad = [];
+  CASES.forEach(function (t) {
+    var r;
+    try { r = guard.scan(t.src, '阴性对照/' + t.name); }
+    catch (e2) { bad.push(t.name + '：探测本身抛了 ' + String((e2 && e2.message) || e2)); return; }
+    if (r.problems.length !== t.problems) bad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + r.problems.length + ' 条');
+    if (r.checked !== t.checked) bad.push(t.name + '：应计入"已折叠解析" ' + t.checked + ' 条，实际 ' + r.checked + ' 条');
+    if (r.skipped !== t.skipped) bad.push(t.name + '：应计入"跳过" ' + t.skipped + ' 条，实际 ' + r.skipped + ' 条');
+  });
+  if (bad.length) {
+    fail('页面脚本串守卫的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+
+  // ---- 扫真文件 ----
+  var FILES = ['tools/browser-e2e.js', 'tools/integration-test.js'];
+  var total = 0;
+  var checked = 0;
+  var skipped = 0;
+  var found = [];
+  FILES.forEach(function (f) {
+    var r = guard.scan(read(f), f);
+    total += r.total;
+    checked += r.checked;
+    skipped += r.skipped;
+    r.problems.forEach(function (p) { found.push({ file: f, line: p.line, why: p.why, head: p.head }); });
+  });
+
+  // 地板：写这份守卫时实测 total 743 / 折叠解析 515（integration-test.js 那 7 处全是
+  // 变量实参，本来就折叠不出唯一内容）。**取整千以下的松地板** —— 将来把某段串改成
+  // `runIn(client, function(){…})`（内容由 node --check 保证，比这一族更强）
+  // 会让计数往下走，那是好事，不该被这道闸拦住；而"调用点一个都认不出"必须拦住。
+  if (total < 500) {
+    fail('页面脚本串守卫的入口识别塌了：只认到 ' + total + ' 处 `.evaluate(`/`waitFor(`（写这份闸时 743 处）。' +
+      '\n      多半是扫描器本身认不出调用点了 —— 它报「0 条问题」时并没有在检查任何东西');
+    return;
+  }
+  if (checked < 300) {
+    fail('页面脚本串守卫的覆盖面塌了：' + total + ' 处入口里只折叠出 ' + checked + ' 条纯字面串（写这份闸时 515 条）。' +
+      '\n      覆盖面下降要说清原因并一起改这里的地板，别让它静默变成"什么都没查"');
+    return;
+  }
+  if (found.length) {
+    fail('e2e 里有页面脚本串解析不了（跑起来就是「页面抛异常: SyntaxError」，且不带行号）：\n      ' +
+      found.map(function (p) {
+        return p.file + ':' + p.line + ' —— ' + p.why + '\n        串开头：' + p.head;
+      }).join('\n      '));
+    return;
+  }
+  pass('e2e 页面脚本串可解析（' + FILES.join(' + ') + '：' + total + ' 处入口，折叠解析 ' + checked +
+    ' 条纯字面串，' + skipped + ' 条含变量/模板串由真函数 toString() 保证；含 5 格阴性对照）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2827,6 +2932,7 @@ checkSafedocGuard();
 checkMarkdownTables();
 checkSliceStatsDoc();
 checkManualUiLabels();
+checkE2eExprParsable();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
