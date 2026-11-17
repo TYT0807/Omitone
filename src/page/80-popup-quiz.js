@@ -9,7 +9,7 @@
  * 弹题（弹窗题）的检测、填答、失败计数与放弃
  * 「继续学习」提示按钮的处理（不点它进不去正常播放页）
  *
- * 本段的方法（44 个）：
+ * 本段的方法（45 个）：
  *   _findContinueStudyButton、_tryContinueStudyPrompt、_activePopupBlock、
  *   _popupQuizBlocksPlayback、_popupQuizFingerprint、_getPopupQuizMaxAttempts、
  *   _checkPopupQuiz、_popupQuizSiteVerdict、_popupQuizSpanVisible、_clickPopupContinue、
@@ -22,7 +22,8 @@
  *   _popupQuizInstallNetLedger、_popupQuizUrlParam、_popupQuizSiteRightNote、
  *   _popupQuizSiteRightPeek、_popupQuizSiteRightKnown、_popupQuizSiteRightUse、
  *   _popupQuizTrySiteRightAnswer、
- *   _notePopupQuizRejected、_popupQuizRejectBySite、_popupQuizFilledLetter、
+ *   _notePopupQuizRejected、_popupQuizRejectBySite、_popupQuizLetterGroup、
+ *   _popupQuizFilledLetter、
  *   _notePopupQuizFilled、_notePopupQuizPaid、_popupQuizPaidAnswer、
  *   _popupQuizRecheckRejected、_answerPopupQuizLocally
  * ========================================================================== */
@@ -789,7 +790,12 @@
 
 
     /**
-     * 站点回包说「这一发答对了」→ 把**这一个字母**记进 `siteRight` 那一格。
+     * 站点回包说「这一发答对了」→ 把**这一发答对的那一组字母**记进 `siteRight` 那一格。
+     *
+     * ⚠️ 批次 84：单选/判断题那一格是一个字母，多选题是**一组**（站点自己发
+     * `answerContent=A,B`）。这一格存的必须是**当时交出去的那一整个组合**，
+     * 不能只留第一个字母 —— 否则下一道多选题看见"A 平台判对过"就把 A 单独点上去，
+     * 而平台说的从来不是"A 单独算对"，是"A 和它那一组算对"。
      *
      * 三道闸，缺一道都会把"上一道判对的字母"填给下一道题：
      *   1. `isRight` 必须是**真** `true`（`"true"`、缺字段、false 一律不记）；
@@ -818,18 +824,21 @@
       var stem = String(b.stem || '');
       if (!this._popupQuizScopedFlag(stem)) return;
       var rkey = this._popupQuizRejectKey(b.key, stem);
-      // 站点 answerContent 发的不一定是一个字母（有的课程发选项原文）—— 对不上就退回
-      // 我们自己**实际点中**的那个字母（`_popupQuizFilledBind.letter` 记的就是它）。
+      // 站点 answerContent 发的不一定是一个字母（有的课程发选项原文，多选发的是**一组**
+      // 逗号连接的字母）—— 对不上就退回我们自己**实际点中**的那些
+      // （`_popupQuizFilledBind.letter` 记的就是它，批次 84 起它同样是规范形的组合）。
       var sent = String(this._popupQuizUrlParam(url, 'answerContent') || '').trim();
-      var sentLetter = /^[A-Za-z]$/.test(sent) ? sent.toUpperCase() : '';
-      var bindLetter = String(b.letter || '').toUpperCase();
-      // ⚠️ 内容对齐：回包读到的这一发，URL 上那个字母必须等于绑定里我们刚点中的那个。
+      var sentLetter = this._popupQuizLetterGroup(sent);
+      var bindLetter = this._popupQuizLetterGroup(b.letter);
+      // ⚠️ 内容对齐：回包读到的这一发，URL 上那一组字母必须等于绑定里我们刚点中的那一组。
       //    不等就是**别人**交的这一发（用户自己点提交、上一道的回包晚到、绑定是上一道），
       //    认了等于把"平台判对"安到一道没答过的题上 —— 宁可不记。
-      //    （绑定取不到字母、或站点发的是选项原文那一族，只能退回我们自己点中的那个字母。）
+      //    （组合两侧都先过 `_popupQuizLetterGroup`，所以"C,A"与"A,C"是同一组 ——
+      //     按原序比会把我们刚交出去的那一发读成"别人的"，多选题就永远救不回来。）
+      //    （绑定取不到字母、或站点发的是选项原文那一族，只能退回我们自己点中的那一组。）
       if (sentLetter && bindLetter && sentLetter !== bindLetter) return;
       var letter = sentLetter || bindLetter;
-      if (!/^[A-Z]$/.test(letter)) return;
+      if (!letter) return;
       var bucket = this._popupQuizSpendBucket();
       var prev = bucket.siteRight[rkey];
       emitRuntimeLog('info', 'popup quiz site-confirmed answer recorded', {
@@ -880,7 +889,11 @@
     _popupQuizSiteRightKnown: function (rkey, letter) {
       var rec = this._popupQuizSpendBucket().siteRight[rkey];
       if (!rec || !rec.letter) return false;
-      return String(rec.letter) === String(letter || '').toUpperCase();
+      // 两侧都用 `_popupQuizLetterGroup` 的规范形比（批次 84）：这一格存的是组合，
+      // 而调用方递来的字母顺序不一定相同 —— "C,A" 与 "A,C" 是同一发答案，
+      // 按原串比就会把平台亲口说对的那一组读成"没说过"，闸门等于没有。
+      var mine = this._popupQuizLetterGroup(letter);
+      return !!mine && String(rec.letter) === mine;
     },
 
 
@@ -958,6 +971,12 @@
       var list = bucket.rejected[rkey] || (bucket.rejected[rkey] = []);
       var v = String(letter || '');
       if (!v) return list;
+      // 批次 84：字母那一族一律先写成**规范形**再入账（`"C,A"` → `"A,C"`）。
+      // 这一格是唯一的写入口（原地那一支、账本补记、复用/新发那两道闸都读它），
+      // 三个来源各按自己的顺序存，组合比对就永远对不上 —— 与 `_popupQuizSiteRightKnown` 同一理由。
+      // 不是字母组合的那一族（选项原文）原样存，让"这一格压根比不中字母"保持可见。
+      var grouped = this._popupQuizLetterGroup(v);
+      if (grouped) v = grouped;
       // 批次 83：这一笔是**平台当场说的**还是**我们推断的**，两边要分得开。
       // 推断那一类（弹窗被收走又带同一指纹回来）只进 `rejected`；平台判决槽明说
       // 「回答错误」的那一类才同时进 `rejectedSite` —— 后面"候选削到一个就不花钱问模型"
@@ -1013,7 +1032,36 @@
 
 
     /**
-     * 这一轮**实际点到了哪个选项**（字母）。
+     * 把「一组选项字母」写成**唯一那一种形状**：大写、去重、按字母序、逗号连接。
+     * `"C,A"` → `"A,C"`，`"a"` → `"A"`，`"A,A"` → `"A"`。
+     *
+     * ⚠️ 为什么必须有它（批次 84）：多选题这一发交出去的是**一个组合**，而组合的
+     * 书写顺序有三处各不相同的来源 —— 站点回包按**目录顺序**拼（`checkResult` 自己
+     * 就是遍历选项得出的）、模型按**它想到的顺序**给（`["D","B","A"]`）、
+     * 我们点选前还会再排一次序（`_normalizeChoiceAnswerValues` 末尾那个 `.sort()`，
+     * 因为点选顺序决定隐藏域 `#answer{qid}` 的内容）。三把顺序各自都对，
+     * 可一旦拿原串互比，"我们刚交的那一发"就永远不等于"回包里那一发"，
+     * 于是批次 78 那道「平台说对的字母不拉黑」闸门形同虚设。
+     *
+     * 认不出来就交空串，**不猜**：`"TRUE"`（选项原文）拆成字母会变成 E/R/T/U 五个
+     * 假选项，所以这里只认「逗号分隔、每格正好一个字母」那一族形状。
+     * 拿空串的那一路调用方一律退回旧行为（按我们点中的那一格记账）。
+     */
+    _popupQuizLetterGroup: function (raw) {
+      var parts = String(raw == null ? '' : raw).toUpperCase().split(',');
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var one = parts[i].trim();
+        if (!/^[A-Z]$/.test(one)) return '';
+        if (out.indexOf(one) === -1) out.push(one);
+      }
+      if (!out.length) return '';
+      return out.sort().join(',');
+    },
+
+
+    /**
+     * 这一轮**实际点到了哪些选项**（字母，多选就是规范形的组合 `"A,C"`）。
      *
      * ⚠️ 为什么不能直接记模型的原话：判断题的模型答案是 `true`（或「正确」），
      *    而本地作答的已拒名单比的是 A/B 这种字母 —— 记原话的话这条证据永远对不上，
@@ -1021,23 +1069,31 @@
      *    普通题也一样：模型回「甲」而点到的是 B 时，拉黑「甲」拉不到任何东西。
      *
      * 取字母走的是 `_applyChoiceAnswer` 自己那两步（`_normalizeChoiceAnswerValues`
-     * → `_matchOptionItem`），**不在这里另写一份匹配规则**（AGENTS §2 说的"两份规则互漂"）。
-     * 复选会填好几项，这里只认第一项 —— 弹题里的复选本来就少，
-     * 而"一个字母都对不上"比"少记一个字母"糟得多。
+     * → `_matchOptionItem`），**不在这里另写一份匹配规则**（AGENTS §2 说的"两份规则互漂"），
+     * 所以补选（多选低于最少项数）之后的那几项也算得进来。
+     *
+     * ⚠️ 批次 84：多选题这里**原先只交回第一个字母**，代价不是"少记一个字母"，是
+     *    把整组的答案记成了单个字母 —— 于是那一格被当成"平台判对了 A"（`A` 单独算对），
+     *    免费重填把 A 一个人点上去、拉黑闸门也只保护 A 一个字母。
+     *    现在交回整组：**只匹配得上的那些**，一个都对不上才交空串（调用方自有兜底）。
      */
     _popupQuizFilledLetter: function (popup, optionItems, answer, type) {
       var values = [];
       try { values = this._normalizeChoiceAnswerValues(answer, type || '', popup) || []; } catch (eV) { values = []; }
       if (!values.length) return '';
-      var item = null;
-      try { item = this._matchOptionItem(popup, values[0], type); } catch (eM) { item = null; }
-      if (!item) return '';
-      for (var i = 0; i < optionItems.length; i++) {
-        if (optionItems[i] === item) {
-          return String(this._inferOptionLetter(item, i) || String.fromCharCode(65 + i));
+      var letters = [];
+      for (var v = 0; v < values.length; v++) {
+        var item = null;
+        try { item = this._matchOptionItem(popup, values[v], type); } catch (eM) { item = null; }
+        if (!item) continue;
+        for (var i = 0; i < optionItems.length; i++) {
+          if (optionItems[i] !== item) continue;
+          var one = String(this._inferOptionLetter(item, i) || String.fromCharCode(65 + i));
+          if (letters.indexOf(one) === -1) letters.push(one);
+          break;
         }
       }
-      return '';
+      return this._popupQuizLetterGroup(letters.join(','));
     },
 
 
@@ -1834,9 +1890,14 @@
             // 钱已经花了，但**这一发对这一道已经一文不值**：不再填它、也不留在付费缓存里
             // （留着下一拍复用那道闸照样会丢它，却会让诊断读到一个"还能用"的假格），
             // 改走免费那一支把没被判过的字母点掉；全都判过就放弃 + 冷却。
-            // ⚠️ 只管单选那一族（判断题/单选题）：多选题的答案是**一组**字母，
-            //    其中一个被判错不代表整组不值钱，而且 `_popupQuizFilledLetter` 本来只看第一个。
-            if ((type === 'judge' || type === 'single') && this._popupQuizScopedFlag(stem)) {
+            // ⚠️ 批次 84 起**多选也过这道闸**。以前它故意只管单选那一族，理由是
+            //    "多选题的答案是**一组**字母，其中一个被判错不代表整组不值钱" ——
+            //    那个理由当时是对的，因为 `_popupQuizFilledLetter` 只看第一个字母，
+            //    名单里那一格根本分不清"判错的是 A 还是 A,C"。
+            //    现在两侧记的都是**整组**（规范形 `"A,C"`），比的是组合对组合：
+            //    模型这一发回的正是平台判错过的那一组 → 一文不值，不再填第二遍；
+            //    回的是一组没试过的（哪怕里面有个字母出现在别组里）→ 照旧填。
+            if ((type === 'judge' || type === 'single' || type === 'multiple') && this._popupQuizScopedFlag(stem)) {
               var freshLetter = this._popupQuizFilledLetter(popup, optionItems, answer, type);
               if (freshLetter && (spend.rejected[rkey] || []).indexOf(freshLetter) !== -1) {
                 this._notePopupQuizPaid(key, '');

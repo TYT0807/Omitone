@@ -2053,20 +2053,35 @@ function buildPopupQuizScopeHtml(withNet) {
    */
   var NET = withNet ?
     'window.__site.sends = [];' +
-    'var EIDS = { q1: "900001", q2: "900002", q3: "900003", q4: "900004", none: "900005" };' +
+    'var EIDS = { q1: "900001", q2: "900002", q3: "900003", q4: "900004", none: "900005", q5: "900006" };' +
     'window.__site.eidOf = function () { return EIDS[window.__site.last] || "900009"; };' +
     'window.__site.submit = function () { var b = document.getElementById("pqSubmit");' +
     '  if (!b) return false; b.click(); return true; };' +
+    // 批次 96：控制步要让「交出去的那一发」带上**一整组**勾选，又**不能**经过生产的填答那一支 ——
+    // `_fillPopupAnswer` 填完会顺手点提交，控制步自己那一发就变成两发交卷请求。
+    // 这里只做站点那一下 click，勾哪几格由调用方按字母点名（下标口径与上面那一发交卷同一个）。
+    'window.__site.tick = function (letters) {' +
+    '  var ins = [].slice.call(document.querySelectorAll("#pqBox input[type=radio], #pqBox input[type=checkbox]"));' +
+    '  var want = String(letters || "").toUpperCase().split(","); var n = 0;' +
+    '  for (var i = 0; i < ins.length; i++) {' +
+    '    if (want.indexOf(String.fromCharCode(65 + i)) === -1) continue;' +
+    '    ins[i].click(); n++; }' +
+    '  return n; };' +
     'document.addEventListener("click", function (ev) {' +
     '  var t = ev && ev.target;' +
     '  if (!t || t.id !== "pqSubmit") return;' +
-    '  var inputs = [].slice.call(document.querySelectorAll("#pqBox input[type=radio]"));' +
-    '  var idx = -1;' +
-    '  for (var i = 0; i < inputs.length; i++) { if (inputs[i].checked) { idx = i; break; } }' +
-    '  if (idx < 0) idx = 0;' +
-    '  var letter = String.fromCharCode(65 + idx);' +
-    '  var span = inputs[idx] && inputs[idx].parentNode ?' +
-    '    inputs[idx].parentNode.querySelector("span") : null;' +
+    // 批次 96：复选也在这一发里 —— 站点把**勾上的每一个**按下标拼成 `answerContent=A,C`
+    // （单选只有一个，joined 就是那一个字母，与升级前逐字相同）。
+    '  var inputs = [].slice.call(document.querySelectorAll("#pqBox input[type=radio], #pqBox input[type=checkbox]"));' +
+    '  var picked = [], first = null;' +
+    '  for (var i = 0; i < inputs.length; i++) {' +
+    '    if (!inputs[i].checked) continue;' +
+    '    picked.push(String.fromCharCode(65 + i));' +
+    '    if (!first) first = inputs[i];' +
+    '  }' +
+    '  if (!picked.length) { picked.push("A"); first = inputs[0] || null; }' +
+    '  var letter = picked.join(",");' +
+    '  var span = first && first.parentNode ? first.parentNode.querySelector("span") : null;' +
     '  var send = (window.__site.sendText && span) ? span.textContent : letter;' +
     '  var eid = window.__site.eidOf();' +
     '  window.__site.sends.push({ eid: eid, sent: String(send), letter: letter });' +
@@ -2090,6 +2105,8 @@ function buildPopupQuizScopeHtml(withNet) {
     '  q2: "合成题干乙：系统的固有频率与驱动力频率相等时会发生共振。",' +
     '  q3: "合成题干丙：金属疲劳的先兆是表面出现微观裂纹。",' +
     '  q4: "合成题干丁：同一截面惯性矩越大，梁的抗弯能力越强。",' +
+    // 批次 96：一道多选题（选项四个、要点两个），站点那一发发的是 `A,C` 这种组合。
+    '  q5: "合成题干戊：下列哪些属于半导体存储器？（多选）",' +
     '  none: ""' +
     '};' +
     // 现场形状：ul.ans-videoquiz-opt > li > label > input + span「A、对」
@@ -2097,6 +2114,14 @@ function buildPopupQuizScopeHtml(withNet) {
     'var OPTS = `<ul class="ans-videoquiz-opt"><li><label><input type="radio" name="b77q" value="A">' +
     '<span>A、对</span></label></li><li><label><input type="radio" name="b77q" value="B">' +
     '<span>B、错</span></label></li></ul>`;' +
+    // 批次 96：多选题那一族 —— 同一套壳，选项换成 4 个**复选**、题型名写「多选题」。
+    // ⚠️ 题型名必须含"多选"：`_getMultiChoiceMinSelections` 靠它把最少项数定成 2，
+    //    写成别的这一格会退化成 1，夹具测的就不再是"多选本来要点够几项"那一族。
+    'var OPTS_MULTI = `<ul class="ans-videoquiz-opt"><li><label><input type="checkbox" name="b96q" value="A">' +
+    '<span>A、随机存储器</span></label></li><li><label><input type="checkbox" name="b96q" value="B">' +
+    '<span>B、只读存储器</span></label></li><li><label><input type="checkbox" name="b96q" value="C">' +
+    '<span>C、高速缓存</span></label></li><li><label><input type="checkbox" name="b96q" value="D">' +
+    '<span>D、光盘</span></label></li></ul>`;' +
     // 三个判决槽出厂全是 display:none —— 站点就是直接切这个属性（批次 74 量的）
     'var VERDICT = `<span id="spanHas" style="display:none">回答正确</span>' +
     '<span id="spanNot" style="display:none">回答错误，请重新作答</span>' +
@@ -2106,6 +2131,12 @@ function buildPopupQuizScopeHtml(withNet) {
     'function boxStem(stem) {' +
     '  return `<div class="tkBox"><div class="tkTopic" id="pqBox"><div class="tkTopic_title">判断题</div>' +
     '<div class="tkTopic_con tkScroll"><div class="tkItem"><div class="tkItem_title">` + stem + `</div>` + OPTS +' +
+    '`</div></div>` + VERDICT + SUBMIT + `</div></div>`;' +
+    '}' +
+    // 批次 96：多选题的容器（其余与 boxStem 逐字同形，只换题型名与选项）
+    'function boxStemMulti(stem) {' +
+    '  return `<div class="tkBox"><div class="tkTopic" id="pqBox"><div class="tkTopic_title">多选题</div>' +
+    '<div class="tkTopic_con tkScroll"><div class="tkItem"><div class="tkItem_title">` + stem + `</div>` + OPTS_MULTI +' +
     '`</div></div>` + VERDICT + SUBMIT + `</div></div>`;' +
     '}' +
     // 00:22 现场那一发读不到题干的形状：连题型名都没有，tkItem_title 是空的，
@@ -2119,7 +2150,8 @@ function buildPopupQuizScopeHtml(withNet) {
     'window.__site.pop = function (name) {' +
     '  var stem = STEMS[name];' +
     '  if (stem === undefined) stem = "";' +
-    '  document.getElementById("pqMount").innerHTML = stem ? boxStem(stem) : boxNoStem();' +
+    '  document.getElementById("pqMount").innerHTML = name === "q5" ? boxStemMulti(stem) :' +
+    '    (stem ? boxStem(stem) : boxNoStem());' +
     '  window.__site.pops++; window.__site.last = name;' +
     '  return stem !== "";' +
     '};' +
@@ -2908,7 +2940,13 @@ function startMockServer() {
     '900002': { A: false, B: false },
     '900003': { A: true, B: false },
     '900004': { '*': true },
-    '900005': { A: true, B: true }
+    '900005': { A: true, B: true },
+    /**
+     * 批次 96：**多选题** —— 站点比的是**整个组合**，不是单个字母。
+     * 表里把 `A` / `C` 单独列成 false（只勾一个也算错），正是本批要修的那件事：
+     * 「平台判对了 A,C 这一组」从来不等于「平台判对了 A」。
+     */
+    '900006': { 'A,C': true, 'A': false, 'C': false, 'A,B': false, 'B,C': false }
   };
   // 场景按这一格数「站点到底收到过几发」，与 `requests`（模型那几发 = 钱）分开记
   var quizValidations = [];
@@ -2977,9 +3015,15 @@ function startMockServer() {
       var qvDec = function (v) { try { return decodeURIComponent(String(v || '')); } catch (eD) { return String(v || ''); } };
       var qvId = qvDec(qvEid && qvEid[1]);
       var qvAnswer = qvDec(qvAns && qvAns[1]);
-      // 判决按 (eventid, 答案) 两个键取，见顶部那张表；单个字母一律大写化（站点有的课程发小写）
+      // 判决按 (eventid, 答案) 两个键取，见顶部那张表；单个字母一律大写化（站点有的课程发小写）。
+      // 批次 96：多选那一族（`c,a`）先归成**规范形**再查表 —— 站点的 `checkResult` 是遍历选项
+      // 按下标拼 answerContent 的，天然有序，所以判决表也按那一族形状写；顺序与重复不归一下就等于
+      // "同一个组合换种写法就判错"，那是夹具造的规则，站点的隐藏域不是这么比的。
+      var qvRaw = qvAnswer.trim();
+      var qvKey = /^[A-Za-z](,[A-Za-z])*$/.test(qvRaw)
+        ? qvRaw.toUpperCase().split(',').filter(function (x, i, a) { return a.indexOf(x) === i; }).sort().join(',')
+        : qvRaw;
       var qvTable = QUIZ_VALIDATION_RIGHT[qvId] || null;
-      var qvKey = /^[A-Za-z]$/.test(qvAnswer.trim()) ? qvAnswer.trim().toUpperCase() : qvAnswer;
       var qvRight = !!qvTable && (qvTable[qvKey] === true || qvTable['*'] === true);
       quizValidations.push({
         eid: qvId,
@@ -10192,6 +10236,457 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 6c-1f2. 批次 84（构建 96）：多选题弹题记的是**整组**，不是第一个字母 ---- */
+//
+// 批次 78 那本账在多选题上是错的，错法只有一处：`_popupQuizFilledLetter` 复选时只认第一项。
+// 而站点发的 `answerContent` 本来就是**组合**（`A,C`），旧口径把它摘成 `A` 记进三本账
+// （填答便条 / siteRight / 已拒名单），于是：
+//   · 下一道多选题看见「A 平台判对过」就把 A **单独**点上去 —— 平台说的从来不是这一句；
+//   · 回包里那一组与便条里那一个字母比不中，批次 78 那道「内容对齐」闸一判就否；
+//   · 「模型这一发回的正是刚被判错的那一组」也永远比不中，白花一发再填一遍。
+// 所以这一支场景要分别证四件事，每件都能单独红：
+//   ① 真花钱那一发**两格都勾上了**（checkedSet 从 DOM 数回来，不是日志自报）；
+//   ② 三本账存的都是规范形 `"A,C"`，免费重填那一拍两格照样都勾回去；
+//   ③ 组合两侧**顺序不同**也算同一组（模型给 ["C","A"]、站点按目录序回 A,C、点选前还排一次序）；
+//   ④ 只勾一个 A 交上去，服务端自己判 false —— 这条前提由站点说，不由测试写死。
+SCENARIOS.push({
+  name: '弹题多选题：站点判对的是「A 和 C 这一组」，不是一个字母',
+  path: '/popup-quiz-net',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, enableCaptcha: false, enableDiscussion: false, autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
+    // 同 78 的口径：**判决不在夹具里造**。夹具点提交 → 站点形状那一发 XHR 真打到本机 mock 服务，
+    // 服务端按 (eventid=900006, answerContent) 定 isRight（`A,C` 真、单一个字母一律假）。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,s=window.__site;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 上一支场景的 run() 把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有循环在自动动弹窗 ——
+      // 不清掉下面每一轮的读数都不属于这一轮（批次 69 踩过）。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b96=[];window.__b96cur=0;window.__b96k="";' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b96.push({' +
+      'msg:String(d.message||""),reason:String((d.meta&&d.meta.reason)||""),' +
+      'picked:String((d.meta&&d.meta.picked)||""),banned:(d.meta&&d.meta.banned)||[],' +
+      'verdict:String((d.meta&&d.meta.verdict)||""),scoped:(d.meta&&d.meta.scoped),' +
+      'rejected:String((d.meta&&d.meta.rejected)||""),letter:String((d.meta&&d.meta.letter)||""),' +
+      'type:String((d.meta&&d.meta.type)||""),uses:(d.meta&&d.meta.uses),' +
+      'paid:(d.meta&&d.meta.paid),repeat:(d.meta&&d.meta.repeat),' +
+      'eventid:String((d.meta&&d.meta.eventid)||""),serverMsg:String((d.meta&&d.meta.msg)||""),' +
+      'optionCount:(d.meta&&d.meta.optionCount),attempt:(d.meta&&d.meta.attempt)});});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;app._popupQuizLogAt=0;' +
+      'app._popupQuizFilledBind=null;app._activeJobId="b96-job-a";' +
+      'return {max:app._getPopupQuizMaxAttempts(),loop:!!app._tickLoopInterval,' +
+      'checkInterval:!!app._checkInterval,api:app._isQuizApiUnavailable()===false,' +
+      // 本批动了四处记账口径，全在同一片段里 —— 少拼一段就是"下面读的都是旧构建"。
+      'fns:[typeof app._popupQuizLetterGroup,typeof app._popupQuizFilledLetter,' +
+      '  typeof app._popupQuizSiteRightNote,typeof app._popupQuizSiteRightKnown].join("/"),' +
+      // 新尺自己先说得清六种形状，下面每一条断言才有一把可信的尺（纯函数，直接从页面量回来）：
+      // 顺序、大小写、重复收掉；**选项原文与连写字母交空串，不猜**（"TRUE" 拆成 E/R/T/U 是五个假选项）。
+      'canon:[app._popupQuizLetterGroup("C,A"),app._popupQuizLetterGroup("a,c,c"),' +
+      '  app._popupQuizLetterGroup("A"),app._popupQuizLetterGroup("TRUE"),' +
+      '  app._popupQuizLetterGroup("AC"),app._popupQuizLetterGroup("")].join("|"),' +
+      'siteRightShape:typeof (app._popupQuizSpendBucket().siteRight),' +
+      'siteRightEmpty:Object.keys(app._popupQuizSpendBucket().siteRight).length,' +
+      'netOn:!!app._popupQuizNetLedgerOn,' +
+      'protoMarked:!!(window.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      'popupNow:!!app._checkPopupQuiz(),' +
+      'submitFn:typeof s.submit,tickFn:typeof s.tick,sendsIsArr:Array.isArray(s.sends),' +
+      'pops:s.pops,takes:s.takes,submits:s.submits};})()'
+    );
+    check('96 前提：API 可用、只剩我这一个驱动、账本干净且 siteRight 是空对象、旁听钩子没装、' +
+      '夹具出厂没有弹窗、交卷那一发与「按字母勾格」两个零件都在位；新尺 `_popupQuizLetterGroup` 在位，' +
+      '且自己就把六种形状说清（"C,A"→"A,C"、大小写与重复收掉、单个字母照旧、' +
+      '选项原文 "TRUE" 与连写 "AC" 一律交空串）',
+      setup.loop === false && setup.checkInterval === false && setup.api === true &&
+      setup.max >= 2 &&
+      setup.fns === 'function/function/function/function' &&
+      setup.canon === 'A,C|A,C|A|||' &&
+      setup.siteRightShape === 'object' && setup.siteRightEmpty === 0 &&
+      setup.netOn === false && setup.protoMarked === false && setup.popupNow === false &&
+      setup.submitFn === 'function' && setup.tickFn === 'function' && setup.sendsIsArr === true &&
+      setup.pops === 0 && setup.takes === 0 && setup.submits === 0,
+      JSON.stringify(setup));
+
+    var DRIVE =
+      '(function(step){var app=window._xxtApp,s=window.__site;' +
+      // 静默期与 solved 标记在生产里真的会过去；测试不等墙钟，只把时间戳拨掉（同 72/77/78 口径）。
+      'app._popupQuizQuietUntil=0;app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;' +
+      'app._popupQuizBlockedUntil=0;' +
+      'var p=step.indexOf("probe:")===0?step.slice(6).split("|"):null;' +
+      'var bp=step.indexOf("ban:")===0?step.slice(4).split("|"):null;' +
+      // ⚠️ 夹具动 DOM（take / pop / probe 自己那一发）**必须全部排在取节点之前** ——
+      // `_activePopupBlock` 有 400ms 缓存，读完再动就拿到**已摘下的旧节点**（批次 78 实测红十条）。
+      'if(p){s.take();s.pop(p[0]);}' +
+      'else if(bp){s.take();s.pop(bp[0]);}' +
+      'else if(step==="take"){s.take();}' +
+      'else if(step.indexOf("pop:")===0){s.pop(step.slice(4));}' +
+      // again: = 站点把弹窗**收走又带着同一指纹弹回来**（不调生产的 take 那一拍，否则变成"另一道题"）。
+      'else if(step.indexOf("again:")===0){s.pop(step.slice(6));}' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var node=app._activePopupBlock();' +
+      'if(node){window.__b96k=app._popupQuizFingerprint(node);}' +
+      // ── 控制步 probe:<题>|<绑定字母组>|<绑定已存在多久>|<发选项原文?>|<勾哪几格> ──
+      // 第五格是本批加的：多选题"交出去的那一发"里勾了几格，决定了 URL 上的组合长什么样，
+      // 而这一格必须**由夹具勾**（调生产 `_fillPopupAnswer` 它会顺手点提交，同一拍变成两发交卷请求）。
+      'if(p){' +
+      '  if(!node)return {probe:"no-node"};' +
+      '  var pi=app._getOptionItems(node);' +
+      '  s.sendText=(p[3]==="1");' +
+      '  app._popupQuizFilledBind={key:window.__b96k,stem:String(app._popupQuizStem(node,pi)||""),' +
+      '    letter:String(p[1]||""),at:Date.now()-(Number(p[2])||0)};' +
+      '  var ticked=(p[4]===undefined||p[4]==="")?-1:s.tick(p[4]);' +
+      '  var ok=s.submit();s.sendText=false;' +
+      '  return {probe:p[0],submitted:!!ok,ticked:ticked,bind:String(p[1]||""),' +
+      '    stemLen:String(app._popupQuizStem(node,pi)||"").length};}' +
+      // ── ban:<题>|<字母组>[|wrong] —— 只走拉黑那**唯一一道闸**，不调处理入口（那一调就花钱）──
+      // 三个读数各钉一层：`knownRaw` 问 Known 原序认不认（本批新加的那半层规范形只在这一层看得见）、
+      // `knownRev` 是同一组反着写（两侧都 true 才叫"顺序不承重"）、
+      // `listBefore/listAfter` 问写入口到底有没有把这一组塞进名单。
+      'if(bp){' +
+      '  if(!node)return {ban:"no-node"};' +
+      '  var blk=app._getOptionItems(node);' +
+      '  var brk=app._popupQuizRejectKey(window.__b96k,String(app._popupQuizStem(node,blk)||""));' +
+      '  var sb=(app._popupQuizSpend||{}).rejected||{},ss=(app._popupQuizSpend||{}).rejectedSite||{};' +
+      '  var before=(sb[brk]||[]).slice(),siteBefore=(ss[brk]||[]).slice();' +
+      '  var bq=String(bp[1]||"");' +
+      '  var knownRaw=app._popupQuizSiteRightKnown(brk,bq)===true;' +
+      '  var knownRev=app._popupQuizSiteRightKnown(brk,bq.split(",").reverse().join(","))===true;' +
+      '  app._notePopupQuizRejected(brk,bq,bp[2]==="wrong"?"wrong":undefined);' +
+      '  return {ban:"done",rkeyTail:String(brk).slice(-40),knownRaw:knownRaw,knownRev:knownRev,' +
+      '    listBefore:before.join("|"),listAfter:(sb[brk]||[]).join("|"),' +
+      '    siteBefore:siteBefore.join("|"),siteAfter:(ss[brk]||[]).join("|")};}' +
+      'return node?app._handlePopupQuiz(node):null;})(';
+
+    var READ =
+      '(function(){var app=window._xxtApp,s=window.__site,b=app._popupQuizSpend||{};' +
+      'var k=window.__b96k||"";var n=app._checkPopupQuiz();' +
+      'var items=n?app._getOptionItems(n):[];var stem=n?String(app._popupQuizStem(n,items)||""):"";' +
+      'var rk=app._popupQuizRejectKey(k,stem);' +
+      'var sr=(b.siteRight||{}),srk=Object.keys(sr),rej=(b.rejected||{});' +
+      'var out={' +
+      'keyTail:String(k).slice(-24),rkeyTail:String(rk).slice(-40),' +
+      'attempts:Number(app._popupQuizAttempts)||0,' +
+      'bannedNow:(rej[rk]||[]).slice().join("|"),' +
+      'bannedSiteNow:((b.rejectedSite||{})[rk]||[]).slice().join("|"),' +
+      'lastFilled:String(app._popupQuizLastFilled||""),' +
+      'filledLetter:String(((b.filled||{})[k]||{}).letter||""),' +
+      'paidNow:String(((b.paid||{})[k]||{}).value||""),' +
+      'asks:Number((b.asks||{})[k])||0,silent:String((b.silent||{})[k]||""),' +
+      'srKeys:srk.map(function(x){return {tail:String(x).slice(-40),' +
+      '  stemmed:String(x).indexOf("|s|")!==-1,letter:String((sr[x]||{}).letter||""),' +
+      '  uses:Number((sr[x]||{}).uses)||0,eid:String((sr[x]||{}).eid||"")};}),' +
+      'srTotal:srk.length,' +
+      // 纯读这一道现在能不能白拿那一组 —— 断言只许用它，不许用会消耗额度的那把。
+      'rightNow:app._popupQuizSiteRightPeek(rk),' +
+      'knownGroup:app._popupQuizSiteRightKnown(rk,"A,C")===true,' +
+      // 本批沿用的不变量：**平台判对过（且还有效）的那一组绝不出现在它自己那道题的名单里**。
+      'banAndRight:(function(){var c=0;for(var i=0;i<srk.length;i++){' +
+      '  var L=String((sr[srk[i]]||{}).letter||""),u=Number((sr[srk[i]]||{}).uses)||0;' +
+      '  var R=rej[srk[i]]||[];if(L&&u<3&&R.indexOf(L)!==-1)c++;}return c;})(),' +
+      // ⚠️ 本批换掉的取证口径：多选题的证据是**勾上了哪几格**，而批次 78 那份 `checkedIdx`
+      //    只报第一格 —— 那正是本批要修的同一个瞎点，拿它当证据等于用坏掉的尺量。
+      'checkedSet:(function(){var ins=n?[].slice.call(' +
+      '  n.querySelectorAll("input[type=radio], input[type=checkbox]")):[];' +
+      '  var got=[];for(var i=0;i<ins.length;i++){if(ins[i].checked)got.push(i);}return got.join(",");})(),' +
+      'verdictNow:n?String(app._popupQuizSiteVerdict(n)||""):"",type:String(n?app._detectPopupQuizType(n,items):""),' +
+      'stemLen:stem.length,optionCount:items.length,popupNow:!!n,' +
+      'netOn:!!app._popupQuizNetLedgerOn,protoMarked:!!(window.XMLHttpRequest.prototype.__omitoneQuizNet),' +
+      'bindLetter:String((app._popupQuizFilledBind||{}).letter||""),' +
+      'pops:s.pops,takes:s.takes,submits:s.submits,sends:(s.sends||[]).slice(),' +
+      'logs:window.__b96.slice(window.__b96cur||0)};' +
+      'window.__b96cur=window.__b96.length;return out;})()';
+
+    var rounds = [];
+    async function drive(step) {
+      var before = ctx.mock.requests.length;
+      var beforeQv = ctx.mock.quizValidations.length;
+      var did = await ctx.client.evaluate(DRIVE + JSON.stringify(step) + ')');
+      // 站点那一发是**真网络**（本机 loopback），回包要落进旁听钩子才记得上账。
+      // 采样必须显著大于被测的那次往返（AGENTS §5 那条 60 秒/90 秒的教训）。
+      await sleep(300);
+      var st = await ctx.client.evaluate(READ);
+      var rec = { step: step, req: ctx.mock.requests.length - before, did: did || null };
+      rec.qv = ctx.mock.quizValidations.slice(beforeQv);
+      Object.keys(st).forEach(function (x) { rec[x] = st[x]; });
+      rounds.push(rec);
+      return rec;
+    }
+    function firstLog(r, msg, field) {
+      var ls = r.logs || [];
+      for (var i = 0; i < ls.length; i++) { if (ls[i].msg === msg) return field ? ls[i][field] : ls[i]; }
+      return field === undefined ? null : '';
+    }
+    function logCount(r, msg) {
+      return (r.logs || []).filter(function (l) { return l.msg === msg; }).length;
+    }
+    function countAll(msg) {
+      return rounds.reduce(function (a, x) { return a + logCount(x, msg); }, 0);
+    }
+    function qvOf(r) {
+      return (r.qv || []).map(function (x) { return x.eid + '/' + x.answer + '=' + (x.isRight ? 'right' : 'wrong'); });
+    }
+
+    // ── ① 前提：只勾**一个** A 交上去，站点自己判的是假 ──
+    var r0 = await drive('probe:q5|A|0|0|A');
+    check('96 形状自证（整批的前提由服务端说，不由测试写死）：夹具只勾 A 一格（ticked=1、' +
+      'checkedSet 从 DOM 数回来就是 "0"），站点那一发发的是 `answerContent=A`，' +
+      '服务端按 900006/A 回 **isRight:false**。题型 multiple、四个选项、题干读得回来，' +
+      '而生产一条都没处理过（钩子没装、账本空、一句日志都没有）—— ' +
+      '"A 单独不算对"是这一批要消灭的那个误判，它现在出自站点的回包而不是我的断言',
+      r0.did && r0.did.submitted === true && r0.did.ticked === 1 && r0.checkedSet === '0' &&
+      r0.type === 'multiple' && r0.optionCount === 4 && r0.stemLen > 0 &&
+      r0.qv.length === 1 && String(r0.qv[0].eid) === '900006' && String(r0.qv[0].answer) === 'A' &&
+      r0.qv[0].isRight === false && r0.srTotal === 0 && r0.rightNow === '' &&
+      r0.netOn === false && r0.protoMarked === false && r0.sends.length === 1 && r0.logs.length === 0,
+      JSON.stringify({ did: r0.did, qv: qvOf(r0), checked: r0.checkedSet, type: r0.type,
+        options: r0.optionCount, sr: r0.srTotal, netOn: r0.netOn, logs: r0.logs }));
+
+    // ── ② 正路：花钱那一发两格都点上，账本记的是整组 ──
+    var r1 = await drive('pop:q5');
+    check('96 花钱那一发真的勾了**两格**：模型按 libs/prompt.js 的多选约定回 ["A","C"]，' +
+      '页面里 checkedSet 读回来是 "0,2"（从 DOM 数，不是日志自报 —— 旧口径也只可能勾中 0 一格），' +
+      '站点那一发发出去的也是 A,C，服务端按**组合**判 isRight:true',
+      r1.req === 1 && r1.checkedSet === '0,2' && r1.type === 'multiple' && r1.optionCount === 4 &&
+      r1.qv.length === 1 && String(r1.qv[0].answer) === 'A,C' && r1.qv[0].isRight === true &&
+      // sends 是**累计**的（① 那一发单项的 A 也在里面），所以这一拍读到的是两条、最新那条是 A,C
+      r1.sends.length === 2 && String(r1.sends[1].letter) === 'A,C' &&
+      r1.verdictNow === '',
+      JSON.stringify({ req: r1.req, checked: r1.checkedSet, type: r1.type, options: r1.optionCount,
+        qv: qvOf(r1), sends: r1.sends, verdict: r1.verdictNow }));
+    check('96 本批的正面修复：三本账存的都是**整组**规范形 "A,C"（旧口径在这里存 "A" —— ' +
+      '于是下一道多选题会把 A 单独点上去，而平台说的从来不是那一句）。' +
+      '填答便条、跨轮 lastFilled、提交那刻的绑定、siteRight 记录、peek 读数五个来源必须同一个形状，' +
+      '记录还带着服务端的 eventid 与这一道题自己的尺（stemmed），名单此时仍是空的',
+      r1.filledLetter === 'A,C' && r1.lastFilled === 'A,C' && r1.bindLetter === 'A,C' &&
+      r1.srTotal === 1 && r1.srKeys.length === 1 && r1.srKeys[0].letter === 'A,C' &&
+      r1.srKeys[0].stemmed === true && r1.srKeys[0].uses === 0 && r1.srKeys[0].eid === '900006' &&
+      r1.rightNow === 'A,C' && r1.bannedNow === '' && r1.asks === 1 && r1.attempts === 1,
+      JSON.stringify({ filled: r1.filledLetter, lastFilled: r1.lastFilled, bind: r1.bindLetter,
+        sr: r1.srKeys, rightNow: r1.rightNow, banned: r1.bannedNow, asks: r1.asks, attempts: r1.attempts }));
+    check('96 日志说得出组合：`popup quiz answered` 的 letter 是 A,C 且 type=multiple / optionCount=4，' +
+      '「记上一笔」那条也带 A,C、serverMsg=「通过」、scoped=1、repeat=0 —— ' +
+      '现场靠这两句分清「多选真答了两格」与「只点了一个字母」',
+      firstLog(r1, 'popup quiz answered', 'letter') === 'A,C' &&
+      firstLog(r1, 'popup quiz answered', 'type') === 'multiple' &&
+      firstLog(r1, 'popup quiz answered', 'optionCount') === 4 &&
+      logCount(r1, 'popup quiz site-confirmed answer recorded') === 1 &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'letter') === 'A,C' &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'serverMsg') === '通过' &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'scoped') === 1 &&
+      firstLog(r1, 'popup quiz site-confirmed answer recorded', 'repeat') === 0,
+      JSON.stringify({ logs: r1.logs }));
+
+    // ── ③ 核心：同一道多选题被反复弹回来 —— 免费重填填的是**整组** ──
+    var frees = [];
+    for (var fi = 0; fi < 3; fi++) frees.push(await drive('again:q5'));
+    frees.forEach(function (r, ix) {
+      // 第三拍用的是最后一份额度（uses 3 → peek 当没有），那一拍读回来的 rightNow 本来就是空串。
+      check('96 免费重填第 ' + (ix + 1) + ' 拍：弹窗收走又带同一指纹回来时，判决槽照旧读不出，' +
+        '而快路把**整组**填回去 —— 一条请求都不发、checkedSet 照旧 "0,2"（旧口径这一格只会勾回 A，' +
+        '站点当场判假，于是每一拍都要重新花钱问模型）、uses=' + (ix + 1) +
+        '、名单仍然空、attempts 不涨（快路在拉黑那一段之前就返回了）、asks 不涨' +
+        (ix === 2 ? '；这一拍用的是最后一份额度，peek 已经当没有（rightNow 空），下一拍才交回老流程' : ''),
+        r.req === 0 && r.checkedSet === '0,2' && r.verdictNow === '' &&
+        (ix === 2 ? r.rightNow === '' : r.rightNow === 'A,C') &&
+        r.bannedNow === '' && r.attempts === 1 && r.asks === 1 &&
+        logCount(r, 'popup quiz reused site-confirmed answer, no request') === 1 &&
+        firstLog(r, 'popup quiz reused site-confirmed answer, no request', 'letter') === 'A,C' &&
+        firstLog(r, 'popup quiz reused site-confirmed answer, no request', 'uses') === ix + 1 &&
+        firstLog(r, 'popup quiz reused site-confirmed answer, no request', 'scoped') === 1 &&
+        r.srTotal === 1 && r.srKeys[0].letter === 'A,C',
+        JSON.stringify({ step: r.step, req: r.req, checked: r.checkedSet, rightNow: r.rightNow,
+          uses: (r.srKeys[0] || {}).uses, banned: r.bannedNow, attempts: r.attempts, asks: r.asks,
+          logs: r.logs }));
+    });
+
+    // ── ④ 用满 3 次作废：停的是"白填"，不是"平台说过这一组对" ──
+    var r5 = await drive('again:q5');
+    check('96 让步的边界：第 4 拍额度用满（uses=3 之后 peek 当没有），免费重填停了、这一拍重新花钱，' +
+      '但**判对过的那一组不进名单**：拉黑那道闸看的是"平台说过 A,C 对"这个事实，不看额度。' +
+      '配套三格自洽：`reused` 0 条、`retrying` 0 条（名单没变长就不该说"换一个"）、' +
+      '`not banning` 1 条且带 scoped=1 / uses=3 / eventid=900006 / letter 就是那一整组；' +
+      '这一拍照样两格都点上（checkedSet "0,2"），记录不删、uses 不被刷回 0',
+      r5.req === 1 && r5.rightNow === '' && r5.attempts === 2 && r5.checkedSet === '0,2' &&
+      r5.bannedNow === '' &&
+      logCount(r5, 'popup quiz reused site-confirmed answer, no request') === 0 &&
+      logCount(r5, 'popup quiz answer rejected by site, retrying with a different one') === 0 &&
+      logCount(r5, 'popup quiz not banning site-confirmed letter') === 1 &&
+      firstLog(r5, 'popup quiz not banning site-confirmed letter', 'letter') === 'A,C' &&
+      firstLog(r5, 'popup quiz not banning site-confirmed letter', 'scoped') === 1 &&
+      firstLog(r5, 'popup quiz not banning site-confirmed letter', 'uses') === 3 &&
+      firstLog(r5, 'popup quiz not banning site-confirmed letter', 'eventid') === '900006' &&
+      r5.srTotal === 1 && r5.srKeys[0].uses === 3 && r5.srKeys[0].letter === 'A,C' &&
+      r5.knownGroup === true,
+      JSON.stringify({ req: r5.req, rightNow: r5.rightNow, checked: r5.checkedSet,
+        banned: r5.bannedNow, attempts: r5.attempts, sr: r5.srKeys, known: r5.knownGroup, logs: r5.logs }));
+
+    // ── ⑤ 顺序不承重：把同一组反着写，三处都还得认它是同一组 ──
+    // ⚠️ 为什么这一发要直调那道闸而不是造一轮真流程：三把顺序（模型回话、站点回包、点选前的排序）
+    //    都是**同源同序**地写进账本的，真流程造不出"只有便条是反的"这一形状；
+    //    而这一族错了不会崩，只会让批次 78 那道保护闸形同虚设 —— 只能按名字点名量。
+    var r6 = await drive('ban:q5|C,A');
+    check('96 异序算同一组（**Known 那一层**单独点名）：拿 "C,A" 问"平台判对过吗"读出 true，' +
+      '反着写 "A,C" 也 true（两侧都 true 才叫顺序不承重），名单因此没变长、这一道现在还能白拿那一组。' +
+      '摘掉 `_popupQuizSiteRightKnown` 里那道规范形，`knownRaw` 翻成 false —— 闸门当没这回事，' +
+      '"C,A" 进了名单，平台亲口说对的那一组被我们自己删出候选',
+      r6.did && r6.did.ban === 'done' && r6.did.knownRaw === true && r6.did.knownRev === true &&
+      r6.did.listBefore === '' && r6.did.listAfter === '' &&
+      r6.bannedNow === '' && r6.banAndRight === 0,
+      JSON.stringify({ did: r6.did, banned: r6.bannedNow, rightNow: r6.rightNow }));
+    check('96 异序进名单也写成规范形（**写入口那一层**单独点名）：日志 letter 是 A,C 而不是 C,A —— ' +
+      '三个来源各按自己的顺序入账，组合比对就永远对不上。摘掉 `_notePopupQuizRejected` 里那道规范形，' +
+      '这一格翻成 "C,A"，而闸门那一侧照旧认得（knownRaw 仍 true）—— 两处各测一层，互不搭便车',
+      logCount(r6, 'popup quiz not banning site-confirmed letter') === 1 &&
+      firstLog(r6, 'popup quiz not banning site-confirmed letter', 'letter') === 'A,C' &&
+      firstLog(r6, 'popup quiz not banning site-confirmed letter', 'scoped') === 1,
+      JSON.stringify({ letter: firstLog(r6, 'popup quiz not banning site-confirmed letter', 'letter'),
+        knownRaw: r6.did && r6.did.knownRaw, logs: r6.logs }));
+    // 站点那一发是**顺序反的**那一族：URL 上写的与我们记的形状不同序，内容对齐那道闸不许把它读成"别人的"
+    var r6b = await drive('probe:q5|C,A|0|0|A,C');
+    check('96 内容对齐那道闸吃顺序：夹具勾 A、C 两格（站点发 A,C）而提交那刻的绑定写的是**反序的 "C,A"**，' +
+      '两侧规范化之后仍是同一组，**照样记上**（repeat=1、uses 不被刷回 0）。' +
+      '把 `_popupQuizSiteRightNote` 里任何一侧的规范形摘掉，"我们刚交出去的那一发"就不等于' +
+      '"回包里那一发"，多选题会被读成"这一发不是我们填的"而永远救不回来',
+      r6b.did && r6b.did.submitted === true && r6b.did.ticked === 2 && r6b.checkedSet === '0,2' &&
+      r6b.qv.length === 1 && String(r6b.qv[0].answer) === 'A,C' && r6b.qv[0].isRight === true &&
+      r6b.srTotal === 1 && r6b.srKeys[0].letter === 'A,C' && r6b.srKeys[0].uses === 3 &&
+      logCount(r6b, 'popup quiz site-confirmed answer recorded') === 1 &&
+      firstLog(r6b, 'popup quiz site-confirmed answer recorded', 'letter') === 'A,C' &&
+      firstLog(r6b, 'popup quiz site-confirmed answer recorded', 'repeat') === 1 &&
+      firstLog(r6b, 'popup quiz site-confirmed answer recorded', 'uses') === 3 &&
+      firstLog(r6b, 'popup quiz site-confirmed answer recorded', 'scoped') === 1,
+      JSON.stringify({ did: r6b.did, qv: qvOf(r6b), checked: r6b.checkedSet, sr: r6b.srKeys, logs: r6b.logs }));
+
+    // ── ⑥ 闸只挡平台判对过的那一组，其余照常 ──
+    var r7 = await drive('ban:q5|B,D');
+    check('96 闸只挡那一个组合：毫不相干的 B,D **照常进名单**（把它也挡掉就是绕开批次 72 的付费封顶），' +
+      '存的仍是规范形 "B,D"；这一发不是平台当场说的，所以 `rejectedSite` 那一本一个字都不加、' +
+      '也不许出「不拉黑判对字母」那句',
+      r7.did && r7.did.ban === 'done' && r7.did.knownRaw === false && r7.did.knownRev === false &&
+      r7.did.listBefore === '' && r7.did.listAfter === 'B,D' &&
+      r7.did.siteBefore === '' && r7.did.siteAfter === '' &&
+      r7.bannedNow === 'B,D' && r7.bannedSiteNow === '' &&
+      logCount(r7, 'popup quiz not banning site-confirmed letter') === 0 && r7.banAndRight === 0,
+      JSON.stringify({ did: r7.did, banned: r7.bannedNow, bannedSite: r7.bannedSiteNow, logs: r7.logs }));
+    var r8 = await drive('ban:q5|A,C|wrong');
+    check('96 那道闸唯一的例外对组合同样生效：调用方把站点判决读成 wrong 时，' +
+      '**连平台判对过的那一组也拉黑**（一条旧回包不许挡住最新那句直接说的话），' +
+      '并且同时进 `rejectedSite` 那一本。删掉 `_notePopupQuizRejected` 里 `verdict !== "wrong"` 那一半，' +
+      '这一格会翻成"名单还是只有 B,D"。uses 已经 3，所以这条合法例外不会撞上那条不变量',
+      r8.did && r8.did.ban === 'done' && r8.did.knownRaw === true &&
+      r8.did.listBefore === 'B,D' && r8.did.listAfter === 'B,D|A,C' &&
+      r8.did.siteAfter === 'A,C' && r8.bannedNow === 'B,D|A,C' && r8.bannedSiteNow === 'A,C' &&
+      logCount(r8, 'popup quiz not banning site-confirmed letter') === 0 &&
+      r8.banAndRight === 0 && r8.srKeys[0].uses === 3 && r8.knownGroup === true,
+      JSON.stringify({ did: r8.did, banned: r8.bannedNow, bannedSite: r8.bannedSiteNow,
+        sr: r8.srKeys, known: r8.knownGroup, logs: r8.logs }));
+
+    // ── ⑦ 核心之二：模型这一发回的正是被判错的那一组 → 不再为它填第二遍 ──
+    await drive('take');
+    var r10 = await drive('pop:q5');
+    check('96 付费那一发之前的闸现在也管多选：名单里躺着平台当场判错的 "A,C"，' +
+      '模型这一发回的正是同一组，钱已经花了，但**不再为它填第二遍**，付费缓存那一格跟着清掉。' +
+      '旧代码把 multiple 整个排除在这道闸之外（理由是"名单里只存了第一个字母，比不中"），' +
+      '于是同一道多选题被同一组答案反复填、反复交、反复花钱。' +
+      '日志点名 letter=A,C、paid=1、type=multiple、scoped=1，且这一拍的 asks 确实涨到 3',
+      r10.req === 1 && r10.asks === 3 && r10.attempts === 1 && r10.silent === '' &&
+      logCount(r10, 'popup quiz model answer already rejected, not re-filling') === 1 &&
+      firstLog(r10, 'popup quiz model answer already rejected, not re-filling', 'letter') === 'A,C' &&
+      firstLog(r10, 'popup quiz model answer already rejected, not re-filling', 'paid') === 1 &&
+      firstLog(r10, 'popup quiz model answer already rejected, not re-filling', 'type') === 'multiple' &&
+      firstLog(r10, 'popup quiz model answer already rejected, not re-filling', 'scoped') === 1 &&
+      logCount(r10, 'popup quiz answered') === 0,
+      JSON.stringify({ req: r10.req, asks: r10.asks, attempts: r10.attempts, paid: r10.paidNow, logs: r10.logs }));
+    check('96 闸落下之后接的是免费那一支，并把短板量出来：本地挑一个没被点过的字母（一发都不花），' +
+      '挑到的是 A —— 名单里那两格是**组合**，单个字母比不中，所以没被误挡（保守那一侧）。' +
+      '交出去之后服务端按 900006/A 判 false：多选题的本地兜底只会点一格、不会点一组，' +
+      '这是本批**没动**的已知短板（改它要的是"组合搜索"，另立任务），' +
+      '这一格钉的是"短板被看见"而不是"短板已修"（这一拍的请求数已在上一条钉过，这里只看落点形状）',
+      r10.checkedSet === '0' &&
+      firstLog(r10, 'popup quiz answered locally, no request', 'reason') === 'model-repeated-rejected' &&
+      firstLog(r10, 'popup quiz answered locally, no request', 'picked') === 'A' &&
+      firstLog(r10, 'popup quiz answered locally, no request', 'scoped') === 1 &&
+      r10.qv.length === 1 && String(r10.qv[0].answer) === 'A' && r10.qv[0].isRight === false &&
+      r10.bannedNow === 'B,D|A,C',
+      JSON.stringify({ req: r10.req, checked: r10.checkedSet, qv: qvOf(r10), banned: r10.bannedNow, logs: r10.logs }));
+
+    // ── ⑧ 总账 ──
+    var reqTotal = rounds.reduce(function (a, x) { return a + x.req; }, 0);
+    var reqSeq = rounds.map(function (x) { return x.req; });
+    var freeRounds = rounds.filter(function (x) { return x.step === 'again:q5'; });
+    var qvTotal = rounds.reduce(function (a, x) { return a + (x.qv || []).length; }, 0);
+    var cap = Number(setup.max) * 2;
+    check('96 总账（钱）：整场 3 发请求（首发 + 额度用满那一拍 + 闸落下之前那一拍），' +
+      '被重弹的四拍里三拍是 0 发；asks 从 1 涨到 3，远没到本节封顶 ' + cap + '，' +
+      '全程没触发 ask-cap —— 把多选记成整组**没有**换来任何一次额外付费，' +
+      '省的是"同一道已判对的题被反复问"那几发',
+      reqTotal === 3 && freeRounds.length === 4 &&
+      freeRounds.filter(function (x) { return x.req === 0; }).length === 3 &&
+      r1.asks === 1 && r5.asks === 2 && r10.asks === 3 && r10.asks <= cap &&
+      rounds.every(function (x) { return x.silent === ''; }),
+      JSON.stringify({ reqTotal: reqTotal, seq: reqSeq, asks: [r1.asks, r5.asks, r10.asks], cap: cap }));
+    check('96 总账（形状）：账本从头到尾只有 1 格（戊自己那一把按题的尺），存的就是整组 "A,C"、' +
+      'eid 900006；没有任何一轮出现「平台判对过且仍有效的那一组同时躺在名单里」；' +
+      '「这一道现在能不能白拿那一组」在两处读数一致（peek 与 Known 各读各的，不许互相抄）',
+      rounds.every(function (x) { return x.banAndRight === 0; }) &&
+      r10.srTotal === 1 && r10.srKeys.every(function (x) {
+        return x.letter === 'A,C' && x.stemmed === true && x.eid === '900006';
+      }) && r10.knownGroup === true && r10.rightNow === '',
+      JSON.stringify({ bad: rounds.filter(function (x) { return x.banAndRight !== 0; })
+        .map(function (x) { return x.step; }), sr: r10.srKeys, known: r10.knownGroup }));
+    check('96 总账（旁听不掺手）：站点那一发由**站点形状的那一发 XHR** 发出，钩子只听不改 —— ' +
+      '页面里"点过几次提交键"与"记到几次 send"两个独立计数相等，且等于服务端收到的发数' +
+      '（多一次 = 钩子重复发了，少一次 = 钩子吞掉了站点那一发，两边都会红）。' +
+      '服务端收到的组合与单项各占一半：判真的那几发必须是 A,C，判假的必须是一个字母',
+      r10.netOn === true && r10.protoMarked === true &&
+      r10.submits === r10.sends.length && r10.sends.length === qvTotal &&
+      rounds.every(function (x) { return (x.qv || []).length <= 1; }) &&
+      rounds.reduce(function (a, x) { return a + (x.qv || []).length; }, 0) === qvTotal &&
+      rounds.filter(function (x) { return (x.qv || []).length === 1 && x.qv[0].isRight === true; })
+        .every(function (x) { return String(x.qv[0].answer) === 'A,C'; }) &&
+      rounds.filter(function (x) { return (x.qv || []).length === 1 && x.qv[0].isRight === false; })
+        .map(function (x) { return String(x.qv[0].answer); }).join(',') === 'A,A',
+      JSON.stringify({ submits: r10.submits, sends: r10.sends.length, qvTotal: qvTotal,
+        answers: rounds.filter(function (x) { return (x.qv || []).length; })
+          .map(function (x) { return x.step + ':' + qvOf(x); }) }));
+    check('96 总账（日志说得清）：「记上一笔」6 次（首发、被重弹的三拍各再确认一次、额度用满重新花钱那一拍、' +
+      '异序控制步那一发 —— 每一发服务端判真的回包各记一次）、「免费重填」3 次、' +
+      '「不拉黑」3 次（额度用满那一拍 + 异序那一发 + 换题补记那一发）、「已判错不再填」1 次、' +
+      '「本地作答」1 次，' +
+      '且这些句子**每一条**都带 scoped=1 —— 现场要靠它们分清「整组救回来了」与「还在烧钱」',
+      countAll('popup quiz site-confirmed answer recorded') === 6 &&
+      countAll('popup quiz reused site-confirmed answer, no request') === 3 &&
+      countAll('popup quiz not banning site-confirmed letter') === 3 &&
+      countAll('popup quiz model answer already rejected, not re-filling') === 1 &&
+      countAll('popup quiz answered locally, no request') === 1 &&
+      countAll('popup quiz answer rejected by site, retrying with a different one') === 0 &&
+      rounds.every(function (x) {
+        return (x.logs || []).every(function (l) {
+          if (l.msg.indexOf('site-confirmed') === -1 && l.msg.indexOf('not banning') === -1 &&
+              l.msg.indexOf('already rejected') === -1 && l.msg.indexOf('answered locally') === -1) return true;
+          return l.scoped === 1;
+        });
+      }),
+      JSON.stringify({
+        recorded: countAll('popup quiz site-confirmed answer recorded'),
+        reused: countAll('popup quiz reused site-confirmed answer, no request'),
+        notBanning: countAll('popup quiz not banning site-confirmed letter'),
+        gated: countAll('popup quiz model answer already rejected, not re-filling'),
+        local: countAll('popup quiz answered locally, no request'),
+        retrying: countAll('popup quiz answer rejected by site, retrying with a different one')
+      }));
+  }
+});
+
 /** ---- 6c-1g. 批次 79：弹窗在视频帧里时，钩子要挂在**发交卷那一发的帧**上 ---- */
 //
 // 批次 78 那本账在沙盒里全绿、在真站上等于没装：夹具把弹窗与 XHR 放在同一个 document 里，
@@ -14757,6 +15252,8 @@ SCENARIOS.push({
 SCENARIOS.push({
   name: '弹题的多选答案被摊平时要能重新分段',
   path: '/popup-quiz-multi',
+  // 这一条只认"本轮那一发"，所以不许上一支场景的自动续跑来替它答题（见下面 setup 那段）。
+  noAutoResume: true,
   run: async function (ctx) {
     var cfg = {
       apiType: 'openai',
@@ -14771,8 +15268,32 @@ SCENARIOS.push({
     await writeConfig(ctx.extensionId, cfg);
     await sleep(600);
     await ctx.client.evaluate(
-      'window._xxtApp.configs = Object.assign({}, window._xxtApp.configs, ' + JSON.stringify(cfg) + '); true'
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，这一页一加载就有循环在自动答弹窗题。
+      // 批次 84 全量跑实测：定向 6/6 绿、全量红一条，红的正是下面「两项都点上了」——
+      // 自动循环先答过一次，那一组进了已拒名单，本轮这一发被闸门挡回本地兜底（多选只点一格）。
+      'app._clearTickLoop(); app._clearCheckInterval();' +
+      'window.__b84=[];' +
+      'window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log")window.__b84.push({' +
+      'msg:String(d.message||""),letter:String((d.meta&&d.meta.letter)||""),' +
+      'banned:(d.meta&&d.meta.banned)||[],reason:String((d.meta&&d.meta.reason)||""),' +
+      'scoped:(d.meta&&d.meta.scoped)});});' +
+      'app._popupQuizSpend=null; app._popupQuizKey=""; app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[]; app._popupQuizLastFilled=""; app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0; app._popupQuizQuietUntil=0; app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0; app._popupBlockCached=null; app._popupQuizLogAt=0;' +
+      'app._popupQuizFilledBind=null; return true;})()'
     );
+    var baseState = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return {loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,ledgerCleared:!app._popupQuizSpend};})()'
+    );
+    check('96 前提：这一页只有本场景在动弹窗（tick 与检查间隔都停着、付费账本从空开始）—— ' +
+      '这一格钉的是"读数属于本轮"，摘掉上面那两句清理，下面每一条读的都是上一支场景留下的旧账',
+      baseState && baseState.loop === false && baseState.checkInterval === false &&
+      baseState.ledgerCleared === true, JSON.stringify(baseState));
 
     // 前提：这确实是一道"复选控件"的多选弹题（题型判错就测不到这条路）
     var shape = await ctx.client.evaluate(
@@ -14804,10 +15325,22 @@ SCENARIOS.push({
     var filled = await ctx.client.evaluate(
       '(function(){var ins=document.querySelectorAll(".ans-pop-quiz input[type=checkbox]");' +
       'var checked=[];for(var i=0;i<ins.length;i++){if(ins[i].checked) checked.push(ins[i].value);}' +
-      'return {checked:checked.sort().join("")};})()'
+      'var ls=window.__b84||[], divert=null, local=null;' +
+      'for(var k=0;k<ls.length;k++){' +
+      'if(!divert && ls[k].msg==="popup quiz model answer already rejected, not re-filling")' +
+      'divert={letter:ls[k].letter,banned:ls[k].banned,scoped:ls[k].scoped};' +
+      'if(!local && ls[k].msg==="popup quiz answered locally, no request")local={reason:ls[k].reason};}' +
+      'return {checked:checked.sort().join(""),divert:divert,local:local,logCount:ls.length};})()'
     );
     check('摊平的 `["A","C"]` 被重新分段成一道多选，两项都点上了（旧实现整批丢弃、一个都点不上）',
       filled && filled.checked === 'AC', JSON.stringify(filled));
+
+    // ⚠️ 这一格是上面那条的**归因通道**：只点上一格时，"摊平没救回来"与"这一发被已拒名单挡回本地兜底"
+    // 在勾选形状上一模一样（批次 84 全量跑就栽在这里，定向绿、全量红）。把"为什么没填"做成读得回来的值。
+    check('96 这一发付费答案没有被"已拒名单"闸门挡回本地兜底（本地兜底对多选只点一格，' +
+      '症状与"摊平没救回来"同形）：闸门没走、本地兜底也没走，日志里两条都不存在',
+      filled && filled.divert === null && filled.local === null && filled.logCount > 0,
+      JSON.stringify(filled));
 
     check('同一道弹题没有被重复问（整批只问了一次）',
       ctx.mock.requests.length - before === 1,
