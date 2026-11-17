@@ -2901,6 +2901,101 @@ function checkE2eExprParsable() {
 }
 
 // ---------------------------------------------------------------------------
+// 29. 「只能在电脑浏览器里用」这一口径在四处说同一件事（任务 #116 / 批次 70）
+// ---------------------------------------------------------------------------
+// 为什么要有它（批次 66/67 连着两轮留下、一直没人钉的一条）：这一族断言散在
+// **四个地方**（说明书封面那块红框、§7 排查表「装了也开着却什么都没发生」那一行、
+// §9.2 已知限制清单那一行、README 封面警示）。把其中任何一处的「客户端和手机装不了」
+// 或「看有没有地址栏」删掉，**集成测试、真实浏览器测试、上一项那条语法闸一条都不会红** ——
+// 只有照着一份过期门面去装的新用户会发现：他装进了学习通客户端，那里根本没有扩展。
+// 第 27 项管的是"界面字样说明书教没教"，管不到这类**方向性断言**，所以另开一项。
+//
+// ⚠️ 期望数字在**这里**各写一份，不照抄 `audit-browser-only.js --selftest` 的 want
+//    （同第 24~28 项的规矩：照抄的话，把 want 改成实际值就能让这条闸永远绿）。
+//    六格里「要报」占五格，因为本项最危险的坏法是**位置认不出却报「0 条问题」**：
+//    锚点失效 → 四处缩成三处 → "该在的都在"。所以每一格都同时钉 `checked` 恒为 4。
+// ---------------------------------------------------------------------------
+function checkBrowserOnlyClaim() {
+  var audit;
+  try {
+    audit = require('./audit-browser-only.js');
+  } catch (e) {
+    fail('装机口径审计加载失败：' + String((e && e.message) || e));
+    return;
+  }
+  var M = 'docs/manual.html';
+  var R = 'README.md';
+  var clean;
+  try { clean = audit.cleanFixture(); }
+  catch (e0) { fail('装机口径审计的干净夹具造不出来：' + String((e0 && e0.message) || e0)); return; }
+
+  var CASES = [
+    { name: '四处都写全必不报', files: clean, problems: 0, needle: '' },
+    {
+      name: '封面漏掉「电脑浏览器」必报',
+      files: audit.mutate(clean, M, '只能装在电脑浏览器里', '装在别的软件里'),
+      problems: 1, needle: '正向声明'
+    },
+    {
+      name: '排查表漏掉「地址栏」判据必报',
+      files: audit.mutate(clean, M, '看有没有地址栏', '看是不是网页'),
+      problems: 1, needle: '有没有地址栏'
+    },
+    {
+      name: '域名只写在注释里必报（注释用户在页面上看不见）',
+      files: audit.mutate(clean, M, '有没有一条能输网址的地址栏，里面带着 chaoxing.com。',
+        '有没有一条能输网址的地址栏。<!-- 里面带着 chaoxing.com。 -->'),
+      problems: 1, needle: 'chaoxing.com'
+    },
+    {
+      name: '整处被改写得认不出要说「锚点找不到」，不许报 0 条',
+      files: audit.mutate(clean, M, '<tr><td>装了、也开着，可学习通里什么都没发生</td>', '<tr><td>另一件事</td>'),
+      problems: 1, needle: '起始锚点找不到'
+    },
+    {
+      name: 'README 整个没读进来也要响',
+      files: (function () { var f = {}; f[M] = clean[M]; return f; })(),
+      problems: 1, needle: '没读进来'
+    }
+  ];
+
+  var bad = [];
+  var N = audit.LOCATIONS.length;
+  CASES.forEach(function (t) {
+    var res;
+    try { res = audit.audit(t.files); }
+    catch (e2) { bad.push(t.name + '：审计本身抛了 ' + String((e2 && e2.message) || e2)); return; }
+    if (res.issues.length !== t.problems) {
+      bad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.issues.length + ' 条 ' +
+        JSON.stringify(res.issues.slice(0, 3)));
+    } else if (t.needle && !res.issues.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      bad.push(t.name + '：报了 ' + res.issues.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+    // 认不出某一处时**不许把那一处从账上抹掉** —— 覆盖数恒为 4 才说明"少了"会被看见
+    if (res.checked !== N) bad.push(t.name + '：位置数应恒为 ' + N + '，实际 ' + res.checked);
+  });
+  if (bad.length) {
+    fail('装机口径审计的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+
+  var real = audit.audit(audit.readFiles(ROOT));
+  if (real.checked !== N) {
+    fail('装机口径审计只核到 ' + real.checked + ' 处位置（判据里写了 ' + N + ' 处）——' +
+      '\n      有一处的锚点认不出，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (real.issues.length) {
+    fail('「只能在电脑浏览器里用」这一口径在 ' + real.issues.length + ' 处断了：\n      ' +
+      real.issues.join('\n      ') +
+      '\n      改法：把缺的那句话写回**那一处**的可见正文，别改判据迁就现状');
+    return;
+  }
+  pass('装机口径四处一致（' + N + ' 处位置逐处点名 × ' + real.families + ' 族字样，' +
+    '说明书封面 / §7 / §9.2 / README 门面全部传达；含 5 格阴性对照）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -2933,6 +3028,7 @@ checkMarkdownTables();
 checkSliceStatsDoc();
 checkManualUiLabels();
 checkE2eExprParsable();
+checkBrowserOnlyClaim();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
