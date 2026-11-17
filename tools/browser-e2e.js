@@ -14242,6 +14242,10 @@ SCENARIOS.push({
       'say("warn","standalone captcha page detected, solving",{cycle:3});await waitMs(300);out.captchaPage=read();' +
       'say("warn","search job: every candidate frame was rejected",{frames:2,attachments:1,rejects:[]});' +
       'await waitMs(300);out.rejected=read();' +
+      // 批次 92：现场每一枚候选帧都挂着 frame-loading，"还没长出来"不能写成"挑不出活"
+      'say("warn","search job: every candidate frame was rejected",{frames:3,attachments:2,allLoading:true,' +
+      '  rejects:[{reason:"loading",loading:"frame-loading"},{reason:"loading",loading:"frame-loading"},{reason:"loading",loading:"frame-loading"}]});' +
+      'await waitMs(300);out.rejectedLoading=read();' +
       'say("warn","search job: attachments exist",{attachments:6,emptyForMs:70000});await waitMs(300);out.attachmentsExist=read();' +
       'say("warn","vision bridge failed",{error:"bridge timeout"});await waitMs(300);out.unnamed=read();' +
       'return JSON.stringify(out);})()'
@@ -14249,9 +14253,9 @@ SCENARIOS.push({
 
     var keys = ['loading8', 'loading20', 'catalogHold', 'givenUp', 'declined', 'fontPlain', 'fontNomap',
       'cacheMiss', 'resegmented', 'autoplay', 'paused', 'held', 'emptyFallback', 'captchaPage',
-      'rejected', 'attachmentsExist', 'unnamed'];
+      'rejected', 'rejectedLoading', 'attachmentsExist', 'unnamed'];
 
-    check('前提：面板已被 start 激活，这十七次都读回了字（读不到就是空测）',
+    check('前提：面板已被 start 激活，这十八次都读回了字（读不到就是空测）',
       !!panel.started && panel.started.task !== '(无)' &&
       keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
       JSON.stringify(panel.started));
@@ -14306,6 +14310,16 @@ SCENARIOS.push({
       panel.rejected.state === '注意' && panel.rejected.task === '这一节的帧挑不出活' &&
       /2 个帧/.test(panel.rejected.detail) && /1 个任务点/.test(panel.rejected.detail),
       JSON.stringify(panel.rejected));
+
+    // 批次 92 现场（notes/field-watch-20261117-0943.md §5①）：这一条 4 次里的每一枚候选帧
+    // 都挂着 frame-loading —— 帧还没长出来，界面却说"挑不出活"（注意）。用户读到的是"这一节没活了"，
+    // 而真相是"再等一会儿"。⚠️ 上一格（rejects:[] 没有 allLoading）必须**仍然是注意**，
+    // 否则这条新分支写成"凡是这一族都降级"，真故障就被哑掉了。
+    check('★ 每一枚候选帧都写着在加载时改口「等待中 / 任务框还在加载」，帧数从这条日志自己读回来',
+      panel.rejectedLoading.state === '等待中' && panel.rejectedLoading.task === '任务框还在加载' &&
+      /3 个帧/.test(panel.rejectedLoading.detail) && /每一帧都还写着在加载/.test(panel.rejectedLoading.detail) &&
+      panel.rejectedLoading.detail !== panel.rejected.detail,
+      JSON.stringify({ loading: panel.rejectedLoading, plain: panel.rejected }));
 
     check('对照：清单挂着挑不出那一条没被新分支抢走（仍是「任务点挑不出做哪个」+ 一分多钟）',
       panel.attachmentsExist.task === '任务点挑不出做哪个' &&

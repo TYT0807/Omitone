@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（46 个）：
+ * 本段的方法（48 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _catalogItemForChapter、_catalogUnfinishedCount、_catalogCourseScan、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
@@ -29,7 +29,7 @@
  *   _noteQuizParseRetryExhausted、_quizScanRetrySignal、
  *   _noteTaskFrameStillLoading、_skipCompletedEvidence、_searchIFramesOcs、
  *   _taskDiscoveryWindowMs、_noteOcsDiscoveryTick、
- *   _searchChaoxingJobOcs、_studyProgressKey、_nextUnitNoopMemo、_clearNextUnitNoop、
+ *   _searchChaoxingJobOcs、_jobRejectLogDue、_rejectsAllStillLoading、_studyProgressKey、_nextUnitNoopMemo、_clearNextUnitNoop、
  *   _ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
@@ -1633,21 +1633,56 @@
         // 不节流的话日志缓冲会被这一条刷爆、把真正有用的条目全挤掉 ——
         // 实测用户导出的 200 条里，大半就是同一句的重复。
         // 判据：拒绝原因的组合变了（页面结构变了）或距上次已超过 30 秒，才再记一条。
+        // ⚠️ 批次 92：**只认签名变了会被逐拍抖动绕过**（同族 37 / 51）—— 现场 24 分钟
+        //   的环里这一条出现 4 次，取证显示两枚帧都还挂着 `frame-loading`，
+        //   也就是"还没长出来"被说成了"挑不出活"。现在：签名变了也要距上一条 5 秒以上，
+        //   30 秒那条地板不动（状态可能真的变了，得补一句）。
+        var allStillLoading = this._rejectsAllStillLoading(rejects);
         var rejectSignature = rejects.map(function (item) {
           return String(item.reason || '');
-        }).join('|');
+        }).join('|') + (allStillLoading ? '|still-loading' : '');
         var nowReject = Date.now();
-        if (rejectSignature !== this._jobRejectSignature || nowReject - (this._jobRejectLogAt || 0) > 30000) {
+        if (this._jobRejectLogDue(rejectSignature, nowReject)) {
           this._jobRejectSignature = rejectSignature;
           this._jobRejectLogAt = nowReject;
           emitRuntimeLog('warn', 'search job: every candidate frame was rejected', {
             frames: iframes.length,
             attachments: attachments.length,
+            // 「每一枚候选帧都自己写着还没加载好」单独占一格，不许和"帧里真没活"混成一句：
+            // 前者界面该说「任务框还在加载」（等待中），后者才该说「这一节的帧挑不出活」（注意）。
+            // 同族规矩见 AGENTS §2 #12（四态不许压成两态）与批次 61（把"为什么"做成读得回来的值）。
+            allLoading: allStillLoading,
             rejects: rejects
           });
         }
       }
       return null;
+    },
+
+    /**
+     * 「每枚候选帧都被拒」这一句该不该再说一遍 —— 抽出来只因为它必须能被测：
+     * 判据埋在 OCS 每秒一调的循环里，靠肉眼读不出"签名抖一下会不会绕过 30 秒地板"。
+     * 规矩：从没记过就说；距上一条 >30 秒补一句（状态可能真变了）；
+     * 签名变了**也要**距上一条 >5 秒 —— 只认签名不认时间就是刷屏的入口。
+     */
+    _jobRejectLogDue: function (signature, now) {
+      var lastAt = Number(this._jobRejectLogAt || 0);
+      if (!lastAt) return true;
+      if (now - lastAt > 30000) return true;
+      return signature !== this._jobRejectSignature && now - lastAt > 5000;
+    },
+
+    /**
+     * 「每一枚候选帧都自己写着还没加载好」—— 面板要说「还在等」还是「挑不出活」就分在这一格。
+     *
+     * 抽出来只因为 `every` 在空数组上是 **true**：清单为空时若也算"都在加载"，
+     * 界面会把"一帧都没找到"读成"再等一拍"，而那恰恰是该出声音的那一格。
+     */
+    _rejectsAllStillLoading: function (rejects) {
+      if (!rejects || !rejects.length) return false;
+      return rejects.every(function (item) {
+        return !!(item && item.loading === 'frame-loading');
+      });
     },
 
     /**

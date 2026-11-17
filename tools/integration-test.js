@@ -2752,6 +2752,148 @@ async function testCacheBlockWarnThreshold() {
     JSON.stringify(callSites.map(function (l) { return l.trim(); })));
 }
 
+/**
+ * 批次 92：「每枚候选帧都被拒」这句 warn 的节流地板，以及「还在加载」单独占一格。
+ *
+ * 现场（2026-11-17 巡检 notes/field-watch-20261117-0943.md §5①）：这一条在 24 分钟的环里
+ * 出现 4 次，取证显示**每一枚候选帧都挂着 `frame-loading`** —— 帧还没长出来，
+ * 而面板那一格写的是「这一节的帧挑不出活」（注意）。同族的两条老账：
+ * 批次 37（节流被 reason 交替绕过）与批次 51（两句话轮流把证据窗挤空）——
+ * **只认签名变了、不认时间**就是刷屏的入口，因为 OCS 循环每秒调一次，
+ * 拒绝清单里两三条原因只要措辞或顺序抖一下就是一条新 warn。
+ *
+ * ⚠️ 两个判据都从 `src/page/60-tasks-detect.js` 里**取真实那一份**来跑，门槛数字也从源码读回来：
+ * 抄进测试就等于两边各拿一把尺，改生产阈值时测试不会跟着红。
+ */
+async function testJobRejectLogThrottle() {
+  console.log('\n[20] 「每枚候选帧都被拒」的节流地板与「还在加载」那一格');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var detect = read('src/page/60-tasks-detect.js');
+  var cTxt = read('content.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    return new Function('return (' + src.slice(r.start, r.end) + '\n    })')();
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return '';
+    return src.slice(r.start, r.end + 5);
+  };
+
+  var due = buildFrom(detect, '_jobRejectLogDue');
+  var allLoading = buildFrom(detect, '_rejectsAllStillLoading');
+  check('①′ 两个判据都能从切片里取出来真跑（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    typeof due === 'function' && typeof allLoading === 'function',
+    'due=' + typeof due + ' allLoading=' + typeof allLoading);
+  if (typeof due !== 'function' || typeof allLoading !== 'function') return;
+
+  // ---- ① 门槛数字从源码读回来（两把尺：30 秒地板 + 防抖动的短地板）
+  var nums = (bodyOf(detect, '_jobRejectLogDue').match(/now - lastAt > (\d+)/g) || [])
+    .map(function (s) { return Number(s.replace(/\D+/g, '')); });
+  var LONG = nums[0], FLOOR = nums[1];
+  check('① 算术里确实是「两把尺」而不是一把（一把长地板补一句、一把短地板挡抖动），数字从磁盘读回来',
+    nums.length === 2 && LONG > FLOOR && FLOOR > 0, '读到的门槛=' + JSON.stringify(nums));
+
+  var T = 1700000000000;
+  var cell = function (lastAt, lastSig, sig, at) {
+    return due.call({ _jobRejectLogAt: lastAt, _jobRejectSignature: lastSig }, sig, at);
+  };
+
+  // ---- ② 节流矩阵（每一格都说得出它是哪一道闸给的）
+  check('②a 从没记过就直接说（第一条不许被任何地板吞掉，否则新问题永远不出声）',
+    cell(0, '', 'A', T) === true);
+  check('②b 同签名且没到长地板就不说（这就是「每秒一调」原本的抑制路径）',
+    cell(T - (LONG - 1000), 'A', 'A', T) === false);
+  check('②c 同签名但过了长地板就补一句（状态可能真变了，长期沉默比刷屏更糟）',
+    cell(T - (LONG + 1000), 'A', 'A', T) === true);
+  check('②d 签名变了且过了短地板才说（页面结构变了要有声音）',
+    cell(T - (FLOOR + 1000), 'A', 'B', T) === true);
+  check('②e ★签名逐拍抖动但没到短地板就不说（这一格就是本批次新增的那道地板）',
+    cell(T - (FLOOR - 1000), 'A', 'B', T) === false);
+
+  // ---- ③ 边界两侧：门槛是 `>` 还是 `>=`，只钉一侧抓不住写反
+  var bLong = cell(T - LONG, 'A', 'A', T);
+  var bFloor = cell(T - FLOOR, 'A', 'B', T);
+  check('③ 两道地板的「恰好等于门槛」都不算越线（比较方向写反这里必红，且两格分开取证）',
+    bLong === false && bFloor === false, 'longBoundary=' + bLong + ' floorBoundary=' + bFloor);
+
+  // ---- ④ 接线：emit 那一格真的走这道判据，旧写法不许留在原地形成两套尺
+  var iCall = detect.indexOf('this._jobRejectLogDue(rejectSignature, nowReject)');
+  check('④a 日志出口真的问 `_jobRejectLogDue`（判据写好了但调用点没换 = 这道地板是死的，现场照样刷屏）',
+    iCall > 0, 'indexOf=' + iCall);
+  check('④b 旧的「只看签名不看时间」那道 inline 判断已经不在了（两套判据并存时改哪一套都看不出）',
+    !/rejectSignature !== this\._jobRejectSignature \|\|/.test(detect),
+    '仍残留旧写法');
+
+  // ---- ⑤ 「还在加载」那一格的口径（含 `every` 在空数组上的陷阱）
+  check('⑤a 每一枚都挂着 frame-loading 才算「还在加载」，混进一枚真拒绝就不算',
+    allLoading.call({}, [{ loading: 'frame-loading' }, { loading: 'frame-loading' }]) === true &&
+    allLoading.call({}, [{ loading: 'frame-loading' }, { reason: '是测验任务但已完成' }]) === false);
+  check('⑤b ★空清单不许被 `every` 读成「都在加载」（一帧都没找到恰恰是该出声音的那一格）',
+    allLoading.call({}, []) === false && allLoading.call({}, null) === false);
+  check('⑤c 项里没有 loading 字段、或者压根不是对象时一律不算在加载',
+    allLoading.call({}, [{}, { loading: 'other' }]) === false && allLoading.call({}, [null]) === false);
+
+  // ---- ⑥ 取证与级别：降噪靠分类，不靠把声音关掉
+  var emitAt = detect.indexOf("emitRuntimeLog('warn', 'search job: every candidate frame was rejected'");
+  var emitBlock = emitAt < 0 ? '' : detect.slice(emitAt, emitAt + 700);
+  check('⑥ 取证里带 allLoading 这一格、级别仍是 warn（改成 info 就等于把这一族从现场摘掉），签名也带上「还在加载」的标记',
+    emitAt > 0 && emitBlock.indexOf('allLoading: allStillLoading') > 0 &&
+    detect.indexOf("'|still-loading'") > 0, JSON.stringify({ emitAt: emitAt, hasField: emitBlock.indexOf('allLoading') > 0 }));
+
+  // ---- ⑦′⑦ 面板分类器**真跑**：把 content.js 里那份 `runtimeLogToStatus` 本体取出来喂两种形状
+  // ⚠️ 批次 92：这一格原先是拿正则比 `clsBlock` 里有没有那两句赋值 —— 那样判据分支写成永远走不到
+  // （例如条件被改成 `data.allLoading === 'yes'`）照样绿。改成真调用，红绿都由返回值说话。
+  var clsStart = cTxt.indexOf('function jobKindLabel(');
+  var fnStart = cTxt.indexOf('function runtimeLogToStatus(', clsStart < 0 ? 0 : clsStart);
+  var fnEnd = fnStart < 0 ? -1 : cTxt.indexOf('\n  }', fnStart);
+  var classifier = (clsStart >= 0 && fnStart > clsStart && fnEnd > fnStart)
+    ? new Function(cTxt.slice(clsStart, fnEnd + 4) + '\n  return runtimeLogToStatus;')()
+    : null;
+  check('⑦′ 面板分类器能从 content.js 里取出来真跑（取不出来时下面那格是「没执行」，不是「通过」）',
+    typeof classifier === 'function', JSON.stringify({ clsStart: clsStart, fnStart: fnStart, fnEnd: fnEnd }));
+  if (typeof classifier !== 'function') return;
+
+  var MSG = 'search job: every candidate frame was rejected';
+  var shapeAll = classifier('warn', MSG, { frames: 3, attachments: 2, allLoading: true,
+    rejects: [{ loading: 'frame-loading' }, { loading: 'frame-loading' }, { loading: 'frame-loading' }] });
+  var shapeNone = classifier('warn', MSG, { frames: 2, attachments: 1, rejects: [] });
+  var shapeFalse = classifier('warn', MSG, { frames: 2, attachments: 1, allLoading: false,
+    rejects: [{ loading: 'frame-loading' }, { reason: 'quiz done' }] });
+  check('⑦ 面板按 allLoading 分两格：为真降成 wait「任务框还在加载」，为假／没给仍是 warn「这一节的帧挑不出活」（只留前者就是把真故障也哑掉）',
+    shapeAll.state === 'wait' && shapeAll.task === '任务框还在加载' &&
+    /3 个帧/.test(shapeAll.detail) && /每一帧都还写着在加载/.test(shapeAll.detail) &&
+    shapeAll.named === true &&
+    shapeNone.state === 'warn' && shapeNone.task === '这一节的帧挑不出活' &&
+    /2 个帧/.test(shapeNone.detail) && /1 个任务点/.test(shapeNone.detail) &&
+    shapeFalse.state === 'warn' && shapeFalse.task === '这一节的帧挑不出活',
+    JSON.stringify({ all: shapeAll, none: shapeNone, asFalse: shapeFalse }));
+
+  // ---- ⑨ 调用点反孤儿：两个新判据各只有一处真调用
+  var callLines = function (needle, defNeedle) {
+    return detect.split(/\r?\n/).filter(function (l) {
+      return l.indexOf(needle) >= 0 && l.indexOf(defNeedle) < 0;
+    });
+  };
+  var dueCalls = callLines('this._jobRejectLogDue(', '_jobRejectLogDue: function');
+  var loadCalls = callLines('this._rejectsAllStillLoading(', '_rejectsAllStillLoading: function');
+  check('⑧ 两个判据各自都还有真调用点（函数留着、没人叫它 = 这一格静默回到旧行为）',
+    dueCalls.length === 1 && loadCalls.length === 1,
+    JSON.stringify({ due: dueCalls.length, loading: loadCalls.length }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -2783,6 +2925,7 @@ async function main() {
   await testScopeReconnectAfterPageChange();
   await testOcsDiscoveryWindow();
   await testCacheBlockWarnThreshold();
+  await testJobRejectLogThrottle();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

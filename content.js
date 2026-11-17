@@ -1649,10 +1649,21 @@
     } else if (/every candidate frame was rejected/.test(msg)) {
       // ⚠️ 这一族必须排在通用那条 `search job:` **之前**：它以前落进「等待任务识别 /
       // 正在等待可执行任务」，听着像刚起步，事实是已经围着这一节找过一圈、每一帧都被挡回来。
-      state = 'warn';
-      task = '这一节的帧挑不出活';
-      detail = '看了 ' + (data.frames == null ? '?' : data.frames) + ' 个帧、清单上 ' +
-        (data.attachments == null ? '?' : data.attachments) + ' 个任务点，逐帧的原因写在这一条日志里';
+      // ⚠️ 批次 92：`allLoading` 为真 = **每一枚候选帧都自己写着还没加载好**，那是"再等一拍"
+      // 而不是"这一节挑不出活"，界面要落到「等待中 / 任务框还在加载」，与
+      // `task frame still loading` 那一族同一句话。这一格没分出来时，现场每门课切节的
+      // 那几十秒里右下角一直亮着「注意」，而插件其实什么都没做错。
+      if (data.allLoading === true) {
+        state = 'wait';
+        task = '任务框还在加载';
+        detail = '看了 ' + (data.frames == null ? '?' : data.frames) + ' 个帧，每一帧都还写着在加载，' +
+          '先按住不翻页，逐帧的原因写在这一条日志里';
+      } else {
+        state = 'warn';
+        task = '这一节的帧挑不出活';
+        detail = '看了 ' + (data.frames == null ? '?' : data.frames) + ' 个帧、清单上 ' +
+          (data.attachments == null ? '?' : data.attachments) + ' 个任务点，逐帧的原因写在这一条日志里';
+      }
     } else if (/task frame still loading, search window extended/.test(msg)) {
       // 帧自己写着「正在加载」（或整张白纸）—— 这是**插件主动多等一轮**，不是出了事。
       state = 'wait';
