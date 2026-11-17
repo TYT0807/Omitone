@@ -1228,7 +1228,7 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致 / 独立套件挂载
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试：真实 content.js 的答题往返（299 项）
+npm run itest    # 集成测试：真实 content.js 的答题往返（308 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
 npm run e2e      # 真实 Edge 功能交叉检验（134 个场景 / 1483 项）
@@ -1340,6 +1340,12 @@ DeepSeek 的上下文缓存不是按「固定长度」命中的，而是要求**
 `content.js` 也会把每次请求的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
 写进运行日志（关键词 `llm prefix cache` / `llm prefix cache all missed`）——
 **改动提示词后先看这两个地方，别只看输入变短了没有。**
+
+⚠️ **`all missed` 只在输入够一整块（≥256 token）时才发**（批次 76）。
+缓存按 256 token 一块起算，而视频弹题是「一题一发」，实测整份输入只有 146 / 197 token
+（2026-11-17 现场日志环）—— 这种请求 `hit` 恒为 0 是**结构性的**，和提示词卫生无关。
+以前它每门课都要挂几十条 warn 在日志里，把真正该看的那条（大请求全 miss）淹掉了。
+够不上一块的那几条现在走 `info`，取证里带 `belowBlock:256` 说明为什么不是 warn。
 
 ### 压缩提示词的正确姿势
 

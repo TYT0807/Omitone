@@ -2622,6 +2622,136 @@ async function testOcsDiscoveryWindow() {
   }
 }
 
+/**
+ * 批次 76：短提示词的「缓存全没命中」不再当告警。
+ *
+ * 现场（2026-11-17，刷课中的日志环）：两条 `llm prefix cache all missed`，
+ * 取证分别是 `{hit:0,miss:197}` 与 `{hit:0,miss:146}` —— 都来自视频弹题那种
+ * **单题一次请求**的链路。DeepSeek 的公共前缀缓存以 256 token 为一块，
+ * 不足一块的请求**结构上不可能命中**，所以"全没命中"这句话没有任何信息量，
+ * 却是一条 warn：用户会照着"前缀被打脏了"去查提示词卫生，方向整个错掉。
+ *
+ * ⚠️ 这里取的是 content.js 里**真实的那一份**函数体，阈值也从源码读回来，
+ * 不在测试里抄一份数字 —— 抄了就等于测试和生产各拿一把尺，谁漂了都不知道。
+ */
+async function testCacheBlockWarnThreshold() {
+  console.log('\n[19] 短提示词的「缓存全没命中」不再骗人（不够一块就不该是 warn）');
+
+  var src = fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8').replace(/\r\n/g, '\n');
+  function bodyOf(anchor) {
+    var at = src.indexOf(anchor);
+    if (at < 0) return '';
+    var end = src.indexOf('\n  }', at);
+    return end < 0 ? '' : src.slice(at, end);
+  }
+
+  var blockFromSrc = Number((src.match(/CACHE_BLOCK_MIN_TOKENS\s*=\s*(\d+)/) || [])[1]);
+  var body = bodyOf('function logCacheUsage(usage) {');
+  check('①取得出 content.js 里的 logCacheUsage 与那块阈值（取不到是签名变了，不等于没回归）',
+    body.length > 200 && blockFromSrc > 0 &&
+    body.indexOf('prefixMissSuppressed++') >= 0 && body.indexOf('all missed') >= 0,
+    JSON.stringify({ bodyLen: body.length, block: blockFromSrc }));
+  if (body.length <= 200 || !(blockFromSrc > 0)) return;
+
+  var BLOCK = blockFromSrc;
+  var fnSrc = body;
+
+  /** 把真实函数体装进一个可控时钟的沙箱里跑，回收它写出的每一条日志。 */
+  function mk() {
+    var logs = [];
+    var box = { now: 1000000 };
+    var FakeDate = { now: function () { return box.now; } };
+    var factory = new Function('appendRuntimeLog', 'Date',
+      'let prefixMissLogAt = 0;\n' +
+      'let prefixMissSuppressed = 0;\n' +
+      'const CACHE_BLOCK_MIN_TOKENS = ' + BLOCK + ';\n' +
+      // bodyOf 交出的是**不含收尾花括号**的那一截，这里要自己补上再收尾
+      fnSrc + '\n  }\n' +
+      'return function (usage) { return logCacheUsage(usage); };');
+    var call = factory(function (level, message, meta) {
+      logs.push({ level: level, message: message, meta: meta });
+    }, FakeDate);
+    return { call: call, logs: logs, box: box };
+  }
+
+  // 装不起来就别往下跑：后面每一条都会变成"没执行"，而"没执行"和"通过"长得一样
+  var probe = null, probeErr = '';
+  try { probe = mk(); } catch (e) { probeErr = (e && e.message) || String(e); }
+  check('①′真函数体能装进沙箱跑起来（装不起来后面每一条都是空测）', !!probe, probeErr);
+  if (!probe) return;
+
+  // ---- ① 现场那一族：单题弹题，整份输入不到一块
+  var short = mk();
+  short.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 197 });
+  check('①现场形状（hit:0 / miss:197，不够 ' + BLOCK + ' 一块）只出 info，**不再出 warn**',
+    short.logs.length === 1 && short.logs[0].level === 'info' &&
+    short.logs[0].message === 'llm prefix cache' &&
+    short.logs[0].meta.belowBlock === BLOCK,
+    JSON.stringify(short.logs));
+
+  // ---- ② 够一块还全 miss = 真的可疑，warn 必须保留（别把闸一起拆了）
+  var longMiss = mk();
+  longMiss.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 1200 });
+  check('②够一块而全没命中（miss:1200）**仍然**给那条 warn',
+    longMiss.logs.length === 1 && longMiss.logs[0].level === 'warn' &&
+    longMiss.logs[0].message === 'llm prefix cache all missed' &&
+    longMiss.logs[0].meta.hit === 0 && longMiss.logs[0].meta.miss === 1200,
+    JSON.stringify(longMiss.logs));
+
+  // ---- ③ 边界钉住比较方向：恰好一块要 warn，差一个 token 不 warn
+  var atBlock = mk();
+  atBlock.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: BLOCK });
+  var underBlock = mk();
+  underBlock.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: BLOCK - 1 });
+  check('③阈值两侧各钉一格（恰好 ' + BLOCK + ' 算够一块，该 warn；差一个 token 不该）',
+    atBlock.logs.length === 1 && atBlock.logs[0].level === 'warn' &&
+    underBlock.logs.length === 1 && underBlock.logs[0].level === 'info',
+    JSON.stringify({ at: atBlock.logs.map(function (l) { return l.level; }),
+      under: underBlock.logs.map(function (l) { return l.level; }) }));
+
+  // ---- ④ 有命中的正常形状照旧，且不许带上 belowBlock（那是"短"的标记，不是通用字段）
+  var hitCase = mk();
+  hitCase.call({ prompt_cache_hit_tokens: 800, prompt_cache_miss_tokens: 200 });
+  check('④有命中（hit:800 / miss:200）出 info 且不带 belowBlock',
+    hitCase.logs.length === 1 && hitCase.logs[0].level === 'info' &&
+    hitCase.logs[0].message === 'llm prefix cache' &&
+    hitCase.logs[0].meta.belowBlock === undefined &&
+    hitCase.logs[0].meta.hitRate === '80%',
+    JSON.stringify(hitCase.logs));
+
+  // ---- ⑤ 非 DeepSeek：两个字段都没有 → 一条都不写
+  var noUsage = mk();
+  noUsage.call({ prompt_tokens: 50, completion_tokens: 10 });
+  noUsage.call(null);
+  check('⑤服务商没给这两个字段时一条日志都不写（别的模型不该被这一族刷屏）',
+    noUsage.logs.length === 0, JSON.stringify(noUsage.logs));
+
+  // ---- ⑥ 防空转记账：短请求不许冒充"缓存恢复正常"把 suppressed 抹掉
+  //      长 miss(warn) → 长 miss(被吞) → 短 miss(什么也没证明) → 窗口过后长 miss
+  //      第四条里 suppressed 必须还是 1；写成 0 就是"中间那条短日志把账清了"。
+  var acct = mk();
+  acct.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 1200 });
+  acct.box.now += 1000;
+  acct.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 1500 });
+  acct.box.now += 1000;
+  acct.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 197 });
+  acct.box.now += 400000;
+  acct.call({ prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 1300 });
+  var warns = acct.logs.filter(function (l) { return l.level === 'warn'; });
+  check('⑥节流与记账：四条请求只出两条 warn，且中间那条短请求**没把** suppressed 抹成 0',
+    acct.logs.length === 3 && warns.length === 2 &&
+    warns[0].meta.suppressed === 0 && warns[1].meta.suppressed === 1,
+    JSON.stringify(acct.logs));
+
+  // ---- ⑦ 函数活着不等于有人在叫它（AGENTS §2 #3 那一族的反面）
+  var callSites = src.split(/\r?\n/).filter(function (l) {
+    return l.indexOf('logCacheUsage(') >= 0 && l.indexOf('function logCacheUsage(') < 0;
+  });
+  check('⑦真调用点还在，且交的是响应里的 usage（函数留着、调用点被删 = 这一族日志静默消失）',
+    callSites.length === 1 && callSites[0].indexOf('.usage') >= 0,
+    JSON.stringify(callSites.map(function (l) { return l.trim(); })));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -2652,6 +2782,7 @@ async function main() {
   await testQuizPaperDepthAndApiBlock();
   await testScopeReconnectAfterPageChange();
   await testOcsDiscoveryWindow();
+  await testCacheBlockWarnThreshold();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

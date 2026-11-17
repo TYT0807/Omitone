@@ -619,6 +619,14 @@
   }
 
   /**
+   * 服务商把公共前缀切成多大的**一块**来缓存（小于这一块的请求根本没有"命中"可言）。
+   * DeepSeek 的文档口径是 256 token 起算，实测现场也对得上：单题弹题那一族
+   * `miss` 只有 146 / 197（2026-11-17 现场日志环里那两条 `all missed`），
+   * 而整批取题的请求轻松上千 —— 也就是说前者的 hit 恒为 0 是**结构性的**。
+   */
+  const CACHE_BLOCK_MIN_TOKENS = 256;
+
+  /**
    * 记录前缀缓存命中情况。
    *
    * DeepSeek 在 usage 里给 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
@@ -626,8 +634,10 @@
    * 只看输入总长度会得出完全相反的结论 —— 我们曾经把提示词压到极短，
    * 输入是短了，但公共前缀短到无法被识别成缓存单元，于是每一分输入都按原价计费。
    *
-   * 命中为 0 时给一条 warn，因为那说明请求前缀被什么东西打脏了
+   * 命中为 0 **且输入够一块**时才给 warn：那才说明前缀被什么东西打脏了
    * （提示词里混进了每次都变的内容，或重试时题目被从中间删掉）。
+   * ⚠️ 短于一块的请求一律不算可疑（批次 76）：那种"全没命中"和提示词卫生毫无关系，
+   * 而 warn 会把用户支去查错方向 —— 现场那一族每门课都要发几十次，恒常挂在那儿。
    */
   function logCacheUsage(usage) {
     if (!usage || typeof usage !== 'object') return;
@@ -642,6 +652,12 @@
       miss: missTokens,
       hitRate: total ? Math.round(hitTokens / total * 100) + '%' : 'n/a'
     };
+    // 整份输入还凑不满一块缓存 —— 这种请求「命中 0」是结构性的，不是前缀被打脏。
+    // ⚠️ 也不许拿它去清 `prefixMissSuppressed`：它既不是"脏了"的证据，也不是"缓存正在工作"的证据。
+    if (total > 0 && total < CACHE_BLOCK_MIN_TOKENS) {
+      appendRuntimeLog('info', 'llm prefix cache', { ...meta, belowBlock: CACHE_BLOCK_MIN_TOKENS });
+      return;
+    }
     if (total && hitTokens === 0) {
       const now = Date.now();
       if (!prefixMissLogAt || now - prefixMissLogAt > 300000) {
