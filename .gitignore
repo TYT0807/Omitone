@@ -36,3 +36,7 @@ tools/_*.js
 # 验收证据与逐阶段回执：里面是机器本机路径、临时目录与 profile 名，只留本地不入库
 omitone-acceptance-*.jsonl
 omitone-acceptance-*.json
+
+# 现场巡检的原始输出：里面是**真实课程号与账号痕迹**（38 门课的名册、章节号、换课台账）
+# 与批次 28-B 同一口径 —— 这类东西只留本地，绝不进公开仓库
+notes/
