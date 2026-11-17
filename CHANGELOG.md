@@ -5726,12 +5726,20 @@
   学习通登录态在里面 —— 删了等于把人从那一门课上登出去，cookie 只能人肉重登；
   它的 Cookies 库文件此刻实测 `EBUSY`（正在跑 = 不能动）。`probe-profile` 里也确实有
   `.chaoxing.com` 的 cookie，所以那两台**只删组件缓存、保留 `Default/`**（493 MB → 111 MB，登录态一格没少）。
-- **三道断言写进脚本，读不到就 FATAL 不删**：`.workbuddy/sweep-edge-cache.js`
-  （① 列 msedge browser 进程的 `--user-data-dir`，正在跑的那台跳过；② 只碰组件缓存那一族；
+- **四道断言写进脚本，读不到就 FATAL 不删**：`.workbuddy/sweep-edge-cache.js`
+  （① 列 msedge browser 进程的 `--user-data-dir`，正在跑的那台整份跳过；② 只碰纯缓存那一族；
   ③ 散件先过 `.workbuddy/audit-wb-refs.js` 那把尺 —— 跟踪文档 + `notes/` 台账 + `tools/` `src/` + 技能
   全部 grep 一遍，**被引用就不删**。实测 `bak97/` 就是这样被 `reverse97.js` 的还原清单钉住的：
-  那份基线一旦缺了 `MANIFEST.json`，下一轮还原会照着空清单**空转**并照样打印「RESTORED: 0 份与基线逐字节一致」）。
+  那份基线一旦缺了 `MANIFEST.json`，下一轮还原会照着空清单**空转**并照样打印「RESTORED: 0 份与基线逐字节一致」；
+  ④ **阴性对照**：每条候选路径再过一遍 `/(Network|Cookies|Login Data|Local Storage|Session Storage)/i`，
+  命中就整轮 FATAL、一项都不删 —— ①②③ 管"别删错台"，④ 管**判据自己写歪时当场响**：
+  哪天有人把「只删纯缓存」扩成整个 `Default/`，前三条一条都不会拦）。
   干跑列清单、加 `--apply` 才动手；`--apply` 实测 **释放 13.1 GB / 失败 0 项**。
+- **还剩 905 MB 要等现场那台关掉才收得走**（已写进脚本，不用人记）：`real-edge-profile` 整台 1046 MB，
+  其中 `Default/Cache` 348 + `Code Cache` 171 + `GPUCache` 2 + 组件缓存 384 = **905 MB 是纯缓存**，
+  而 `Default/Network` 只占 1 MB —— 那 1 MB 就是不能碰的登录态。本轮跑的时候它 `isBusy()` 命中，
+  脚本整份跳过；**等刷课落实完、浏览器一关，再跑一次 `--apply` 就自动收进来**。
+  为了腾盘子把现场关掉是本末倒置。
 - **两条顺手量到的口径**（都进了 AGENTS §7.8）：释放的体积要**分盘报** —— `Temp` 在 C:、
   `.workbuddy` 在 D:，只看 `D:` 的可用空间会得到「清了 13 GB 只回来 0.8 GB」这句自相矛盾的话；
   PowerShell 别用 `-Command` 内联，那串里的 `|` 会被 shell 抢走，报的是

@@ -981,7 +981,7 @@ README 的说明书链接指向的是**仓库文件**，不是 Release 附件，
 
 | 哪一份 | 是谁 | 有什么 | 怎么处置 |
 | --- | --- | --- | --- |
-| `.workbuddy/real-edge-profile` | **CDP 9334 上那台现场浏览器**（`tools/field-browser.js` 写死的 `--user-data-dir`） | 学习通登录态 + 正在刷的那一门 | **整个不许动** —— 删了等于把人从学习通登出去， cookie 只能人肉重新登 |
+| `.workbuddy/real-edge-profile` | **CDP 9334 上那台现场浏览器**（`tools/field-browser.js` 写死的 `--user-data-dir`） | 学习通登录态 + 正在刷的那一门 | **跑着的时候整个不许动** —— cookie 库实测 `EBUSY`，而删了等于把人从学习通登出去，只能人肉重新登。**关掉之后**再收它那 905 MB 纯缓存 |
 | `.workbuddy/probe-profile`、`miniwin-profile` | 一次性探针脚本（`probe-bg.js` / `ext-pref.js`）自己起的 | `probe-profile` 的 `Default/Network/Cookies` 里**确实有** `.chaoxing.com` | 只删组件缓存那一族，**留 `Default/`** |
 | `%LOCALAPPDATA%\Temp\omitone-e2e-*` | `tools/browser-e2e.js` 每次跑的临时台 | 夹具页的缓存，**没有登录态**（抽查三枚的 Cookies 里 chaoxing 串 0 处） | 整枚删 |
 
@@ -989,17 +989,31 @@ README 的说明书链接指向的是**仓库文件**，不是 Release 附件，
 `ProvenanceData` ~169 MB（+ `Subresource Filter` / `Edge Wallet` / `WidevineCdm` 这些），
 删掉 Edge 会自己重下；**唯一的身份在 `Default/Network/Cookies`**，那个不许碰。
 
-**动手前三个断言，缺一条就不删**（`node .workbuddy/sweep-edge-cache.js` 干跑，加 `--apply` 才真删；
-它自己就带这三道闸）：
+**动手前四个断言，缺一条就不删**（`node .workbuddy/sweep-edge-cache.js` 干跑，加 `--apply` 才真删；
+它自己就带这四道闸）：
 
 1. **那台在跑吗** —— 列 msedge **browser** 进程的 `--user-data-dir`（`.workbuddy/list-user-data-dirs.ps1`）。
    正在跑的那台**连缓存都别删**（Cookies 库文件实测 `EBUSY`，硬删是在损坏中的档案上动刀）。
    ⚠️ 读不到进程列表要当 **FATAL** 退出不删，别"当作没在跑"继续 —— 判据写反一次就是一次不可逆的删。
-2. **它有没有登录态** —— 只删组件缓存，保留 `Default/`。
+2. **它有没有登录态** —— 只删纯缓存那一族（`component_crx_cache` / `ProvenanceData` 这类组件缓存 +
+   `Default/{Cache,Code Cache,GPUCache}`），`Default/Network/Cookies`、`Local Storage`、`Session Storage`
+   **不列进候选**（删了等于把人登出去，重新登录只能人肉来）。
 3. **散件有没有长期引用** —— 对着「跟踪文档 + `notes/` 台账 + `tools/` `src/` 源码 + 技能目录」grep
    （`.workbuddy/audit-wb-refs.js` 就是那把尺），**被引用的一律留**：实测 `bak97/` 就是被
    `reverse97.js` 的还原清单钉住才留下的，而反向验证的基线一旦缺了 `MANIFEST.json`，
    下一轮还原会照着空清单**空转**并照样打印「RESTORED: 0 份与基线逐字节一致」。
+4. **候选里不许混进登录态**（阴性对照）—— 把每条候选路径过一遍
+   `/(Network|Cookies|Login Data|Local Storage|Session Storage)/i`，命中就整轮 **FATAL 退出、一项都不删**。
+   前三条管的是"别删错台"，这一条管的是**判据自己写歪时当场响** —— 比如哪天有人把
+   `CACHE_ONLY_PROFILES` 那支扩成整个 `Default/`，前三条一条都不会拦，而这条会。
+
+**现场那台（`real-edge-profile`）自己那 **905 MB** 纯缓存，只能在它关掉之后收**（实测：
+`Default/Cache` 348 + `Code Cache` 171 + `GPUCache` 2 + `component_crx_cache` 202 +
+`ProvenanceData` 169 + `Subresource Filter` 13；整台 1046 MB，其中 `Default/Network` 只占 1 MB ——
+那 1 MB 就是不能碰的登录态）。脚本现在就是这么写的 ——
+`isBusy()` 命中就整份跳过，不命中才把这六格列入候选，
+`Default/Network/Cookies` 与 `Local Storage` 由第 4 条闸死死挡在候选之外。
+所以「刷课全部落实了、人准备合上笔记本」是再跑一次 `--apply` 的时机，**别为了腾盘子把现场关掉**。
 
 **记账要说清释放的是哪个盘。** 实测踩法：`Temp` 在 **C:**、`.workbuddy` 在 **D:**，
 只比 `D:` 的可用空间会得到「清了 13 GB 只回来 0.8 GB」这种自相矛盾的句子 ——
