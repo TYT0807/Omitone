@@ -970,4 +970,43 @@ README 的说明书链接指向的是**仓库文件**，不是 Release 附件，
 台账里要照这样写清**哪些门是真跑、哪些仍是计数器**（`notes/census-97-full.md` 的「部署后复验」那一节
 只覆盖三门，其余 35 门仍是探针口径，别把它读成"38 门都过了生产函数"）。
 
+### 7.8 沙盒／探针多开的 Edge 会把盘吃光 —— 清理前先分清「组件缓存」与「登录态」
+
+`.workbuddy/` 与 `notes/` 都在 `.gitignore` 里，**git 永远不会替人清理它们**。实测攒到
+2026-11-17：`%LOCALAPPDATA%\Temp\omitone-e2e-*` 积了 **110 枚**临时 profile（`npm run e2e`
+每跑一次留一枚，runner 自己在日志里打印「可手动删除」，但从来没人删过），合计 **12.2 GB**；
+`.workbuddy` 那三台命名 profile 又各带 ~370 MB 的 Edge 组件缓存。
+
+**三份 profile 各有各的身份，删错代价不同**：
+
+| 哪一份 | 是谁 | 有什么 | 怎么处置 |
+| --- | --- | --- | --- |
+| `.workbuddy/real-edge-profile` | **CDP 9334 上那台现场浏览器**（`tools/field-browser.js` 写死的 `--user-data-dir`） | 学习通登录态 + 正在刷的那一门 | **整个不许动** —— 删了等于把人从学习通登出去， cookie 只能人肉重新登 |
+| `.workbuddy/probe-profile`、`miniwin-profile` | 一次性探针脚本（`probe-bg.js` / `ext-pref.js`）自己起的 | `probe-profile` 的 `Default/Network/Cookies` 里**确实有** `.chaoxing.com` | 只删组件缓存那一族，**留 `Default/`** |
+| `%LOCALAPPDATA%\Temp\omitone-e2e-*` | `tools/browser-e2e.js` 每次跑的临时台 | 夹具页的缓存，**没有登录态**（抽查三枚的 Cookies 里 chaoxing 串 0 处） | 整枚删 |
+
+**大头不是用户数据，是 Edge 自造的东西**：每份 profile 里 `component_crx_cache` ~201 MB +
+`ProvenanceData` ~169 MB（+ `Subresource Filter` / `Edge Wallet` / `WidevineCdm` 这些），
+删掉 Edge 会自己重下；**唯一的身份在 `Default/Network/Cookies`**，那个不许碰。
+
+**动手前三个断言，缺一条就不删**（`node .workbuddy/sweep-edge-cache.js` 干跑，加 `--apply` 才真删；
+它自己就带这三道闸）：
+
+1. **那台在跑吗** —— 列 msedge **browser** 进程的 `--user-data-dir`（`.workbuddy/list-user-data-dirs.ps1`）。
+   正在跑的那台**连缓存都别删**（Cookies 库文件实测 `EBUSY`，硬删是在损坏中的档案上动刀）。
+   ⚠️ 读不到进程列表要当 **FATAL** 退出不删，别"当作没在跑"继续 —— 判据写反一次就是一次不可逆的删。
+2. **它有没有登录态** —— 只删组件缓存，保留 `Default/`。
+3. **散件有没有长期引用** —— 对着「跟踪文档 + `notes/` 台账 + `tools/` `src/` 源码 + 技能目录」grep
+   （`.workbuddy/audit-wb-refs.js` 就是那把尺），**被引用的一律留**：实测 `bak97/` 就是被
+   `reverse97.js` 的还原清单钉住才留下的，而反向验证的基线一旦缺了 `MANIFEST.json`，
+   下一轮还原会照着空清单**空转**并照样打印「RESTORED: 0 份与基线逐字节一致」。
+
+**记账要说清释放的是哪个盘。** 实测踩法：`Temp` 在 **C:**、`.workbuddy` 在 **D:**，
+只比 `D:` 的可用空间会得到「清了 13 GB 只回来 0.8 GB」这种自相矛盾的句子 ——
+数字没错，是**两个盘各说各的**。汇报时分开报，或者分开跑 `Get-PSDrive C` / `Get-PSDrive D`。
+
+⚠️ 顺带一条 shell 卫生：**PowerShell 别用 `-Command` 内联**，那串里的 `|` 与引号会被 shell 抢走，
+报的是「`'Sort-Object'` 不是内部或外部命令」这种完全看不出根因的中文乱码错 —— **写成 `.ps1` 走 `-File`**。
+（与 §3.4「别用 `node -e` 内联大段中文」同一族：凡是带引号嵌套 + 管道的一次性命令，落成文件再跑。）
+
 

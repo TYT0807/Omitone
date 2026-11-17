@@ -5714,6 +5714,34 @@
   所以不是计时抖动。这三条留给 #137 收尾时**改期望到新形状**，不是改判据迁就红项。
   批次 98 那句「红 2 条」按史实留着不回改（AGENTS §3.5 旧数不改）。
 
+### 维护 · 2026-11-17 · 清掉沙盒多开 Edge 留下的 13 GB（用户点头才动的手）
+
+- **症状**（量的，不是猜的）：用户问「.workbuddy 怎么 2.1 GB」，一查真正的大头不在仓库里 ——
+  `%LOCALAPPDATA%\Temp\omitone-e2e-*` 积了 **110 枚** 临时 profile。`tools/browser-e2e.js`
+  每跑一次留一枚，并在日志里打印「可手动删除」，**而从来没人删过**：跑一轮全量 e2e 就 +1 枚，
+  批次 44 到批次 99 之间跑了上百轮。逐枚 `du` 合计 **12.2 GB**（近 20 枚各 ~490 MB，
+  因为那一枚里 `component_crx_cache` 201 MB + `ProvenanceData` 169 MB 都是 Edge 自造的组件缓存）。
+- **为什么不是"整个目录删掉"**：三台命名 profile 身份不同。`.workbuddy/real-edge-profile`
+  **就是 CDP 9334 上那台现场浏览器**（`tools/field-browser.js` 写死的 `--user-data-dir`），
+  学习通登录态在里面 —— 删了等于把人从那一门课上登出去，cookie 只能人肉重登；
+  它的 Cookies 库文件此刻实测 `EBUSY`（正在跑 = 不能动）。`probe-profile` 里也确实有
+  `.chaoxing.com` 的 cookie，所以那两台**只删组件缓存、保留 `Default/`**（493 MB → 111 MB，登录态一格没少）。
+- **三道断言写进脚本，读不到就 FATAL 不删**：`.workbuddy/sweep-edge-cache.js`
+  （① 列 msedge browser 进程的 `--user-data-dir`，正在跑的那台跳过；② 只碰组件缓存那一族；
+  ③ 散件先过 `.workbuddy/audit-wb-refs.js` 那把尺 —— 跟踪文档 + `notes/` 台账 + `tools/` `src/` + 技能
+  全部 grep 一遍，**被引用就不删**。实测 `bak97/` 就是这样被 `reverse97.js` 的还原清单钉住的：
+  那份基线一旦缺了 `MANIFEST.json`，下一轮还原会照着空清单**空转**并照样打印「RESTORED: 0 份与基线逐字节一致」）。
+  干跑列清单、加 `--apply` 才动手；`--apply` 实测 **释放 13.1 GB / 失败 0 项**。
+- **两条顺手量到的口径**（都进了 AGENTS §7.8）：释放的体积要**分盘报** —— `Temp` 在 C:、
+  `.workbuddy` 在 D:，只看 `D:` 的可用空间会得到「清了 13 GB 只回来 0.8 GB」这句自相矛盾的话；
+  PowerShell 别用 `-Command` 内联，那串里的 `|` 会被 shell 抢走，报的是
+  「`'Sort-Object'` 不是内部或外部命令」这种看不出根因的乱码错（**写成 `.ps1` 走 `-File`**）——
+  本轮就是它先撞了一次，而脚本里那句「读不到进程列表就 FATAL」把删除拦住了，没造成任何损失。
+- **清理之后复核现场没坏**：`studentstudy` 仍 1 枚、`rev` 仍是 `e85aaf80e9`、
+  `unfinished` 由 11 降到 **10**、`chapterId` 走到 705036006；再跑一发定向 e2e 证明
+  临时 profile 会自己新建（`omitone-e2e-isrHWR`，那条链 **27 / 27** 全绿）。
+  `npm test` 全绿（自检通过 + 文档数字对账通过）。
+
 ---
 
 ## 1.2.9 — 角色动作、立绘册与验证码权限收紧（2026-10-22 发布，沿用 1.2.9 未升号）
