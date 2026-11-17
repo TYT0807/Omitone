@@ -1165,16 +1165,31 @@ function buildUserCenterTopHtml() {
     '</div></div></body></html>';
 }
 
+/**
+ * 用户中心的课程卡片。
+ *
+ * ⚠️ 批次 87：`clazzid` **每门各发一个**，不再四张共用一个。
+ * 现场那条硬事实是「`courseid` / `clazzid` / `cpi` 必须成对来自同一张卡片，
+ * 拿别的课的 `clazzid` 站点直接回 403」（AGENTS §2 #12）。夹具要是共用一个班号，
+ * "拼地址时串了班号"这种 bug 就**测不出来** —— 拿哪张的 clazzid 结果都一样。
+ * 现在断言可以逐张钉：拼出来的 `clazzid` 必须等于**这一张自己**的那个。
+ *
+ * 第 5 张（课程戊）是批次 87 新钉的一族：卡片上 `courseid` 有、`clazzid` 空
+ *（现场确实有这么发的：旁听 / 未分班）。它既不是候选也不是"刷完了"，
+ * 单独占 `noClazz` 一格，decline 那句话要把它点名出来 —— 压成两态就会误划成"已完成"。
+ */
 function buildUserCenterCardsHtml() {
   var dot = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
-  function card(cid, name, prog) {
-    return '<div class="course clearfix learnCourse stu_900000002" id="c_' + cid + '">' +
+  function card(cid, kid, name, prog) {
+    var hasKid = !!kid;
+    return '<div class="course clearfix learnCourse stu_' + (hasKid ? kid : '') + '" id="c_' + cid + '">' +
       '<div class="course-cover">' +
-      '<input type="hidden" class="clazzId" name="clazzId" value="900000002">' +
+      '<input type="hidden" class="clazzId" name="clazzId" value="' + (hasKid ? kid : '') + '">' +
       '<input type="hidden" class="courseId" name="courseId" value="' + cid + '">' +
       '<input type="hidden" class="role" name="role" value="0">' +
       '<a href="https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=' + cid +
-      '&amp;clazzid=900000002&amp;cpi=900000003&amp;ismooc2=1&amp;v=2" target="_blank">' +
+      (hasKid ? '&amp;clazzid=' + kid + '&amp;cpi=900000003' : '') +
+      '&amp;ismooc2=1&amp;v=2" target="_blank">' +
       '<img src="' + dot + '" alt=""></a></div>' +
       '<div class="course-info"><div class="fl l-txt">' + name +
       (prog ? '<br>任务点进度: ' + prog : '<br>这门没有进度那一行') +
@@ -1182,11 +1197,80 @@ function buildUserCenterCardsHtml() {
   }
   return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
     '<title>课程列表</title></head><body><div class="course-list">' +
-    card('900000011', '课程甲 一门还没开头', '0/88') +
-    card('900000012', '课程乙 开了头没学完', '32/72') +
-    card('900000013', '课程丙 已经全刷完', '192/192') +
-    card('900000014', '课程丁 读不到进度', '') +
+    card('900000011', '900000021', '课程甲 一门还没开头', '0/88') +
+    card('900000012', '900000022', '课程乙 开了头没学完', '32/72') +
+    card('900000013', '900000023', '课程丙 已经全刷完', '192/192') +
+    card('900000014', '900000024', '课程丁 读不到进度', '') +
+    card('900000015', '', '课程戊 卡片上没有班号', '') +
     '</div></body></html>';
+}
+
+/**
+ * 换课落点：课程首页（批次 87 现场量出来的形状）。
+ *
+ * 真页面（`mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse?courseid=&clazzid=&ut=s`，
+ * 实测 108824 字节）顶层文档上：
+ *   · 61 个 `div.chapter_item[id^="cur"]`，每个的 `onclick` 写着站点自己的
+ *     `toOld('课号','章号','班号',0)`，`title` 是章名；
+ *   · `window.toOld` 是个**函数**（`enc` / `cpi` 是它内部的局部量，外面读不到，
+ *     所以那条 `transfer?…&refer=<带 enc 的 studentstudy>` 只能让站点自己拼）；
+ *   · `.posCatalog_select` 与 `.ans-attach-ct` **恒为 0** —— 目录和学习帧都在这页之外，
+ *     于是这一页上「能点的只有章节本身」。
+ * 夹具按现场形状放**三枚**章节点（真页面 61 枚，这里够判"取第一个"了），
+ * 章号故意互不相同、且第一枚不是 id 最小的那枚 —— 只按 DOM 顺序取第一枚才钉得住"按站点给的顺序进门"。
+ * `toOld` 在这里只登记不调页：e2e 断的是**插件调了它、给的三个号是什么**，
+ * 真跳转由页面自己的函数负责（把它桩掉就等于测了个假跳转）。
+ */
+function buildCourseHomeHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程首页</title></head><body>' +
+    '<script>window.toOld=function(){' +
+    '  window.__b87toOld=(window.__b87toOld||[]).concat([[].slice.call(arguments).map(String)]);' +
+    '};window.isToOldLink=false;window.ServerHost="mooc1.chaoxing.com";</script>' +
+    '<div class="catalog_catalog">' +
+    '<div class="chapter_item cur" id="cur18000002" title="第三章 夹具里排第一的章" ' +
+    'onclick="toOld(\'900000012\',\'9000049200\',\'900000022\',0)">第三章</div>' +
+    '<div class="chapter_item" id="cur18000001" title="第一章 站点给的顺序里第二" ' +
+    'onclick="toOld(\'900000012\',\'9000049100\',\'900000022\',0)">第一章</div>' +
+    '<div class="chapter_item" id="cur18000003" title="第二章 没有 cur 前缀也不算" ' +
+    'onclick="toOld(\'900000012\',\'9000049150\',\'900000022\',0)">第二章</div>' +
+    '</div>' +
+    '<div id="curCourseId" style="display:none">900000012</div>' +
+    '</body></html>';
+}
+
+/** 首页的**残缺形状**：章节点在、站点的 `toOld` 没了（页面变了 / JS 没跑起来）。 */
+function buildCourseHomeNoFnHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程首页（没有进章函数）</title></head><body>' +
+    '<div class="chapter_item cur" id="cur18000002" title="只有节点没有函数的一章" ' +
+    'onclick="toOld(\'900000012\',\'9000049200\',\'900000022\',0)">只有节点</div>' +
+    '</body></html>';
+}
+
+/** 首页的**另一种残缺**：`toOld` 在，可那一行参数不是「三个纯数字引号」的老形状。 */
+function buildCourseHomeOddArgsHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程首页（进章写法变了）</title></head><body>' +
+    '<script>window.toOld=function(){};</script>' +
+    '<div class="chapter_item cur" id="cur18000002" title="参数换了形状的一章" ' +
+    'onclick="toOld(courseId, chapterId, clazzId, 0)">参数不是字面量</div>' +
+    '</body></html>';
+}
+
+/**
+ * 首页那一族的**第三枚残缺**：路径完全对、标记也在，可一个章节点都长不出来
+ *（现场对应「这门课没有目录」或页面 JS 还没渲染完）。
+ * 这一枚存在的理由：判据第三条不齐时**必须不认领**（返回 false），
+ * 把话筒交回原来那条「这一页认不出课程结构」—— 认领了却又什么都不做、只留一句
+ * `declined: 没有章节点`，用户看到的就是一句谁都不认识的漂亮话。
+ */
+function buildCourseHomeEmptyHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程首页（长不出章节）</title></head><body>' +
+    '<script>window.toOld=function(){};</script>' +
+    '<div class="course-info">这门课的目录这次没渲染出来</div>' +
+    '</body></html>';
 }
 
 /** 没有主帧、没有正文那一份：`/no-course` 用来钉「非刷课页不许点前进」 */
@@ -2388,6 +2472,18 @@ var MOCK_PAGES = {
   // 批次 82-C：用户中心那一页 —— 顶层一枚卡片都没有，卡片全在 #frame_content 里（现场形状）
   '/course-pick': buildUserCenterTopHtml,
   '/course-pick-inner': buildUserCenterCardsHtml,
+  // 批次 89：同一份用户中心形状挂到**现场那个真实路径**上（`i.mooc.chaoxing.com/space/index`）——
+  // 现场实测那一页 `_getMainDocument()=null`、顶层 1 枚 iframe、正文 89 字、
+  // 课程标记 0 个、网址不属于课程那一族，而它每 20 秒替「清单还没挂上来」说一次话。
+  // `/blank` 那条网址不像课程页，用它测「课程页刚加载、标记还没长出来」是错的形状，
+  // 所以下面那一格也挂上真实路径（同一份 HTML，只换网址）。
+  '/space/index': buildUserCenterTopHtml,
+  '/mycourse/studentstudy': buildBlankHtml,
+  // 批次 87：换课真正的落点 —— 课程首页（章节点在 + 站点自己的 toOld），还有两枚残缺形状
+  '/mooc2-ans/mycourse/studentcourse': buildCourseHomeHtml,
+  '/mooc2-ans/mycourse/studentcourse-nofn': buildCourseHomeNoFnHtml,
+  '/mooc2-ans/mycourse/studentcourse-oddargs': buildCourseHomeOddArgsHtml,
+  '/mooc2-ans/mycourse/studentcourse-empty': buildCourseHomeEmptyHtml,
   '/no-course': buildNoCourseHtml,
   '/vote': buildVoteTopHtml,
   '/vote-cards': buildVoteCardsHtml,
@@ -19446,7 +19542,7 @@ SCENARIOS.push({
  *    同理每个数（附件数 / 等级 / emptyForMs）都从**发出来的日志**里读回来，不拿夹具常量比。 */
 SCENARIOS.push({
   name: '空章节的等待不再顶成「注意」（问一句的那一路闭嘴）',
-  path: '/blank',
+  path: '/mycourse/studentstudy',
   run: async function (ctx) {
     function readSearchLogs() {
       return ctx.client.evaluate(
@@ -19468,8 +19564,18 @@ SCENARIOS.push({
       '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b55i.push(m);}});}' +
       'var n=-1;try{n=Number(app._getChaoxingAttachments().length);}catch(e){n=-2;}' +
       'var r=null;try{app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;r=app._searchChaoxingJob([]);}catch(e2){r="throw";}' +
+      // 批次 89：这一格现在是「网址像课程页、DOM 还空着」那一族 —— 说话靠的是判据的**网址那一半**。
+      // 三个数都从生产自己读回来，不拿夹具形状推断（推断出来的话生产算错也照样绿）。
+      'var gate=null;try{gate={url:app._isStudyCourseHref(location.href),' +
+      '  shape:app._documentHasCourseShape(),hold:app._pageCouldHoldTaskList()};}catch(e3){gate="throw";}' +
       'return JSON.stringify({hasApp:!!app,attach:n,frames:document.querySelectorAll("iframe").length,' +
-      '  emptyResult:r===null,threw:r==="throw"});})()'));
+      '  emptyResult:r===null,threw:r==="throw",gate:gate});})()'));
+
+    check('前提·批次 89：这一页的网址属于课程那一族、DOM 里还一个课程标记都没有（真刷课页刚加载的形状），' +
+      '所以「还在等清单」这句**必须还说** —— 靠的是判据网址那一半，不是 DOM 那一半',
+      !!base && !!base.gate && base.gate !== 'throw' &&
+      base.gate.url === true && base.gate.shape === false && base.gate.hold === true,
+      JSON.stringify(base && base.gate));
 
     check('前提：这一页真的落在「空」那一格（附件 0、页面没有 iframe、判据返回 null）—— ' +
       '不成立的话下面每一条都是零覆盖',
@@ -19626,6 +19732,162 @@ SCENARIOS.push({
       g.warnBeat.state === '注意' && g.warnBeat.task === '任务点挑不出做哪个' &&
       /3/.test(String(g.warnBeat.detail || '')) && /一分多钟/.test(String(g.warnBeat.detail || '')),
       JSON.stringify(g.warnBeat));
+  }
+});
+
+/* ── 批次 89：用户中心那一页不再每 20 秒替「这一页还没把清单挂上来」说话 ─────────
+ * 现场（2026-11-17，用户那台调试浏览器 CDP 9334）：200 条日志环只盖住 **1016 秒**，
+ * 而 `i.mooc.chaoxing.com/space/index` 那一页一家占掉 62 条 = **31%**：
+ *   `search job: no attachments and no synthetic job` **48 条**（每 20 秒一条，
+ *     `emptyForMs` 现场读到 **12,034,503 毫秒 = 3.3 小时** —— 它在替一件永远不会变的事报进度），
+ *   `discussion page declined {reason:"return-jump-expired"}` **8 条**（每 120 秒）。
+ * 同一发只读探针量回来的那一页形状：`_getMainDocument()=null`、顶层 1 枚 iframe、
+ * 正文 89 个字、课程标记 0 个、网址不属于课程那一族、正文里连一个讨论字样都没有。
+ *
+ * ⚠️ **保留** `study idle declined`（每 120 秒、带当前地址、还告诉用户怎么回章节页）：
+ *    那一页唯一该说话的声音，也是「被站点顶下线」时现场仅剩的证据（技能 SKILL.md §0 那条实测）。
+ *
+ * 夹具要点（AGENTS §5「夹具要长得像现场」+ 批次 87 那条教训）：
+ *  - 路径必须是现场的 `/space/index` —— 判据**读网址**，夹具路径不像现场就是零覆盖。
+ *  - 卡片仍挂在 `#frame_content` 里（顶层一枚都没有），与现场同一族形状。
+ *  - 计数按**消息名**指认；每一格先 `_clearTickLoop()` 把自动续跑那一支按掉，
+ *    否则两次 evaluate 之间背景 tick 随时往里写。
+ */
+SCENARIOS.push({
+  name: '用户中心那一页：两句废话闭嘴、该说的那一句还在说、判据两半各自承重',
+  path: '/space/index',
+  run: async function (ctx) {
+    function readBeat() {
+      return ctx.client.evaluate(
+        '(function(){var out=[];' +
+        '(window.__b89||[]).forEach(function(m){out.push({level:String(m.level||""),' +
+        '  msg:String(m.message||""),meta:m.meta||null});});' +
+        'window.__b89=[];return JSON.stringify(out);})()');
+    }
+    function beats(list, prefix) {
+      return (list || []).filter(function (m) { return m.msg.indexOf(prefix) === 0; });
+    }
+
+    // ---- 前提自证：这一页真的就是现场那一页的形状 ----
+    var base = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b89=window.__b89||[];' +
+      'if(!window.__b89Bound){window.__b89Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b89.push(m);}});}' +
+      // 自动续跑那一支按掉（批次 69 的教训：xxtRunning 是整轮共用的存储，别按"本来没跑"当前提）
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      // 讨论判据的三道前置自己钉住：开关开着、没有在飞的卷子、放宽窗口是"没有"而不是"过期"
+      'app.configs=Object.assign({},app.configs,{enableDiscussion:true});' +
+      'app._quizSubmitPending=false;app._quizReadyToSubmit=false;app._quizInProgress=false;' +
+      'try{localStorage.removeItem("omitone_return_url");localStorage.removeItem("omitone_return_url_at");}catch(e){}' +
+      'var att=-1;try{att=Number(app._getChaoxingAttachments().length);}catch(e2){att=-2;}' +
+      'var frames=-1;try{frames=Number((app._collectVisibleTaskFrames()||[]).length);}catch(e3){frames=-2;}' +
+      'return JSON.stringify({' +
+      '  url:app._isStudyCourseHref(location.href),shape:app._documentHasCourseShape(),' +
+      '  hold:app._pageCouldHoldTaskList(),pick:!!(app._coursePickRequested&&app._coursePickRequested()),' +
+      '  attach:att,taskFrames:frames,topIframes:document.querySelectorAll("iframe").length,' +
+      '  bodyChars:String(document.body.innerText||"").slice(0,3000).length,' +
+      '  discWord:/讨论|话题|回帖|发帖|发表回复|我的回复|发布话题/.test(String(document.body.innerText||"").slice(0,3000)),' +
+      '  discUrlOrTitle:(function(){var h=String(location.href||"").toLowerCase();var t=String(document.title||"");' +
+      '    return /discuss|discus|bbs|topic|thread|forum|comment|talk|group/.test(h)||/讨论|话题|回帖|发帖/.test(t);})(),' +
+      '  declineCache:[app._discussionDeclineLogAt||0,String(app._discussionDeclineSignature||""),app._discussionPageAt||0]});})()'));
+
+    check('前提·批次 89：这一页判据两半都不像课程页（网址不是课程那一族 + DOM 一个课程标记都没有），' +
+      '`_pageCouldHoldTaskList()` 因此为 false；顶层只有 iframe、卡片不在顶层（现场同一族形状）',
+      !!base && base.url === false && base.shape === false && base.hold === false &&
+      base.topIframes === 1 && base.taskFrames === 0 && base.attach === 0,
+      JSON.stringify(base && { url: base.url, shape: base.shape, hold: base.hold, attach: base.attach, taskFrames: base.taskFrames, topIframes: base.topIframes }));
+    check('前提·批次 89：这一页也不像讨论页（网址与标题没有讨论字样、正文 89 字里也没有），' +
+      '而且**不是我们自己为换课导航来的**（没有 omitonePick 标记）—— 否则下面"该闭嘴"那一格测的是别的东西',
+      !!base && base.discWord === false && base.discUrlOrTitle === false && base.pick === false,
+      JSON.stringify(base && { discWord: base.discWord, discUrlOrTitle: base.discUrlOrTitle, pick: base.pick, bodyChars: base.bodyChars }));
+
+    // ---- A：每 20 秒那一句闭嘴，但记账不许跟着脱钩（AGENTS §2 #13）----
+    var a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b89=[];' +
+      'var r=[];for(var i=0;i<3;i++){app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;' +
+      '  r.push(String(app._searchChaoxingJob([])));}' +
+      'return JSON.stringify({allsNull:r.every(function(x){return x==="null";}),res:r,' +
+      '  since:Number(app._searchEmptySince),hold:app._pageCouldHoldTaskList()});})()'));
+    await sleep(300);
+    var aLogs = JSON.parse(await readBeat());
+    check('A 闭嘴：用户中心上决策点那一路连问三次（每次都把 20 秒那道闸拨回 0）—— ' +
+      '`search job:` **一条都不许多**（旧写法每 20 秒一条，现场 3.3 小时一直在报同一件事）',
+      !!a && a.allsNull === true && a.hold === false && beats(aLogs, 'search job').length === 0,
+      JSON.stringify({ a: a, logs: aLogs }));
+    check('A 记账：静音不等于忘记 —— `_searchEmptySince` 照旧被拨上（它是跨拍的表，' +
+      '哪天真回到课程页要拿它算"多久没活"）',
+      !!a && a.since > 0, JSON.stringify(a && { since: a.since }));
+
+    // ---- B：对照 —— 补上 DOM 那一半，同一页立刻恢复开口（证明不是"这一页永久消音"）----
+    var b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b89=[];' +
+      'var d=document.createElement("div");d.className="ans-attach-ct";' +
+      'd.innerHTML="<div class=\\"ans-icon-join\\">合成任务点盒</div>";' +
+      'document.body.appendChild(d);window.__b89box=d;' +
+      'var shape=app._documentHasCourseShape(),hold=app._pageCouldHoldTaskList();' +
+      'app._lastSearchEmptyLogAt=0;app._searchEmptySince=0;' +
+      'var res=String(app._searchChaoxingJob([]));' +
+      'return JSON.stringify({shape:shape,hold:hold,res:res});})()'));
+    await sleep(300);
+    var bLogs = JSON.parse(await readBeat());
+    var bEmpty = beats(bLogs, 'search job:');
+    check('B 对照：同一个页面上只要 DOM 长出课程标记，判据两半就翻成 true、那一句**照旧要说** —— ' +
+      '所以批次 89 收的是"这一页压根不是课程页"那一族，不是把用户中心永久消音',
+      !!b && b.shape === true && b.hold === true && bEmpty.length === 1 &&
+      bEmpty[0].msg === 'search job: no attachments and no synthetic job' &&
+      bEmpty[0].level === 'info', JSON.stringify({ b: b, logs: bLogs }));
+    await ctx.client.evaluate('(function(){var d=window.__b89box;if(d&&d.parentNode)d.parentNode.removeChild(d);return 1;})()');
+
+    // ---- C：该说话的那一句还在说（也是"被顶下线"现场唯一的证据）----
+    var c = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b89=[];' +
+      'app._idleDeclineLogAt=0;app._idleEmptySince=0;app._idleAdvanceKey="";app._idleStuckLoggedKey="";' +
+      'var handled=null;try{handled=app._tryAdvanceIdleSection([]);}catch(e){handled="throw";}'+
+      'return JSON.stringify({handled:String(handled),href:String(location.href||"").slice(0,90)});})()'));
+    await sleep(400);
+    var cLogs = JSON.parse(await readBeat());
+    var cDecline = beats(cLogs, 'study idle declined');
+    check('C 保留：`study idle declined` 仍然出得来，且带着**当前地址**（那一页"不是章节页"这件事由它讲，' +
+      '现场被站点顶下线时也只剩这一条能认）',
+      !!c && c.handled === 'true' && cDecline.length === 1 &&
+      !!cDecline[0].meta && String(cDecline[0].meta.href||'').indexOf('/space/index') !== -1,
+      JSON.stringify({ c: c, declined: cDecline }));
+    check('C 不乱动：这一页既没被点「下一节」也没落成 `study stuck`（批次 20-I 那道门没被批次 89 松动）',
+      beats(cLogs, 'study idle:').length === 0 && beats(cLogs, 'study stuck').length === 0,
+      JSON.stringify(cLogs.map(function (m) { return m.msg; })));
+
+    // ---- D：讨论那一支同样闭嘴，且是 bodyHit 那一格在承重 ----
+    var d = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b89=[];' +
+      'app._discussionDeclineLogAt=0;app._discussionDeclineSignature="";app._discussionPageAt=0;' +
+      'var page=app._computeDiscussionPage();var ctx2=app._isDiscussionContext();' +
+      'return JSON.stringify({page:page,context:ctx2});})()'));
+    await sleep(400);
+    var dLogs = JSON.parse(await readBeat());
+    check('D 闭嘴：既不像讨论页、又不在我们自己跳过去的窗口里、正文里一个讨论字样都没有 —— ' +
+      '「放宽窗口过期」这句**不说**（现场它每 120 秒替用户中心说一次，可那页压根没像过讨论页）',
+      !!d && d.page === false && d.context === false &&
+      beats(dLogs, 'discussion page declined').length === 0,
+      JSON.stringify({ d: d, logs: dLogs }));
+
+    var e = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b89=[];' +
+      'var t=document.createElement("div");t.id="b89-disc-word";t.textContent="课程讨论区回帖";' +
+      'document.body.appendChild(t);window.__b89word=t;' +
+      'var hit=/讨论|话题|回帖|发帖|发表回复|我的回复|发布话题/.test(String(document.body.innerText||"").slice(0,3000));' +
+      'app._discussionDeclineLogAt=0;app._discussionDeclineSignature="";app._discussionPageAt=0;' +
+      'var page=app._computeDiscussionPage();' +
+      'return JSON.stringify({bodyHit:hit,page:page});})()'));
+    await sleep(400);
+    var eLogs = JSON.parse(await readBeat());
+    var eDecline = beats(eLogs, 'discussion page declined');
+    check('E 对照：正文里出现讨论字样之后，同一发**必须**说、且点名 reason=return-jump-expired —— ' +
+      '证明 D 那一格闭的是"这页没像过讨论页"，不是把整条判据静音（那才是真出事时的取证）',
+      !!e && e.bodyHit === true && e.page === false && eDecline.length === 1 &&
+      !!eDecline[0].meta && eDecline[0].meta.reason === 'return-jump-expired',
+      JSON.stringify({ e: e, decline: eDecline }));
+    await ctx.client.evaluate('(function(){var t=window.__b89word;if(t&&t.parentNode)t.parentNode.removeChild(t);return 1;})()');
   }
 });
 
@@ -20241,13 +20503,15 @@ SCENARIOS.push({
  *   只查顶层的实现会恒为"没有候选"，换课永远停在那句 decline 上 —— 而且**一条测试都不会红**，
  *   除非夹具把卡片只放在子帧里（这里就是这么放的，顶层一枚都不放）。
  * 挑法：只认平台自己写的「任务点进度: a/b」那一行，a<b 才有资格；a===b 跳过；
- * **读不到那一行的 22/38 张也跳过** —— 不知道它有没有做完就跳进去，可能白烧一整晚。
+ * **读不到那一行的那一张（现场 22/38 张）不再一律跳过** —— 批次 85 把它降成**兜底候选**：
+ * 第一族空了就进它一门，让**目录的完成勾**去判（现场量过那 22 张卡片上除了课名与教师名什么都没有，
+ * 「%」与「进度」各只出现 16 次 = 正是读得到的那 16 张，所以"进去看目录"是唯一判得对的路）。
  * 候选里取**比率最大**的那门（先把开了头的学完，免得 38 门全停在半路），
  * 换课次数记在这一页自己的 sessionStorage（顶层与用户中心跨站时 storage 是分开的，所以
  * "是我们自己导航来的"这个前提必须走 URL 标记 `omitonePick=1`）。
  */
 SCENARIOS.push({
-  name: '用户中心挑下一门：卡片全在子帧里、只认读得到进度的卡、换课有预算',
+  name: '用户中心挑下一门：卡片全在子帧里、进度挑不到就兜底进一门让目录判、换课有预算',
   path: '/course-pick?ws=2',
   noAutoResume: true,
   run: async function (ctx) {
@@ -20280,7 +20544,7 @@ SCENARIOS.push({
     // ① 夹具自证：卡片**只**在子帧里，顶层一枚都没有（这就是现场）
     var sh = JSON.parse(await ctx.client.evaluate(
       '(function(){var top=document.querySelectorAll(".course").length;' +
-      'var f=document.getElementById("frame_content");var rd="?",cards=-1,tally={};' +
+      'var f=document.getElementById("frame_content");var rd="?",cards=-1,tally={},kids={},dupKid=0,noKid=0;' +
       'try{var d=f.contentDocument;rd=d?"readable":"null";' +
       '  if(d){var cs=d.querySelectorAll(".course");cards=cs.length;' +
       '  for(var i=0;i<cs.length;i++){var a=cs[i].querySelector("a[href*=stucoursemiddle]");' +
@@ -20288,15 +20552,23 @@ SCENARIOS.push({
       '    var m=t.match(/任务点进度[:：]?\\s*(\\d+)\\s*\\/\\s*(\\d+)/);' +
       '    var k=m?(Number(m[1])>=Number(m[2])?"full":(Number(m[1])===0?"zero":"partial")):"no-progress";' +
       '    tally[k]=(tally[k]||0)+1;' +
-      '    if(!a)tally["NO-LINK"]=(tally["NO-LINK"]||0)+1;}}}' +
+      '    if(!a)tally["NO-LINK"]=(tally["NO-LINK"]||0)+1;' +
+      '    var h=a?String(a.getAttribute("href")||""):"";' +
+      '    var km=h.match(/courseid=(\\d+)/i),kd=h.match(/clazzid=(\\d+)/i);' +
+      '    if(!kd)noKid++;' +
+      '    else{if(kids[kd[1]])dupKid++;kids[kd[1]]=1;' +
+      '      if(!km||km[1]!==cs[i].id.slice(2))tally["ID-不配对"]=(tally["ID-不配对"]||0)+1;}}}}' +
       'catch(e){rd="THROW";}' +
-      'return JSON.stringify({top:top,frame:rd,cards:cards,tally:tally,search:String(location.search||"")});})()'
+      'return JSON.stringify({top:top,frame:rd,cards:cards,tally:tally,noKid:noKid,dupKid:dupKid,' +
+      'kidCount:Object.keys(kids).length,search:String(location.search||"")});})()'
     ));
-    check('夹具自证：顶层 .course = 0，38 张的位置在这里换成 4 张全在 #frame_content 里，' +
-      '帧读得到（现场靠 document.domain）、四类卡齐（0/88、32/72、192/192、读不到进度），每张都带 stucoursemiddle 链接',
-      sh.top === 0 && sh.frame === 'readable' && sh.cards === 4 &&
+    check('夹具自证：顶层 .course = 0，卡片全在 #frame_content 里，帧读得到（现场靠 document.domain）；' +
+      '四类进度齐（0/88、32/72、192/192、读不到进度 ×2）、每张都带 stucoursemiddle 链接；' +
+      '批次 87 那两格也自证：班号**每门各一个**（4 张有班号、dupKid=0），另有 1 张压根没班号',
+      sh.top === 0 && sh.frame === 'readable' && sh.cards === 5 &&
       sh.tally.zero === 1 && sh.tally.partial === 1 && sh.tally.full === 1 &&
-      sh.tally['no-progress'] === 1 && !sh.tally['NO-LINK'], JSON.stringify(sh));
+      sh.tally['no-progress'] === 2 && !sh.tally['NO-LINK'] && !sh.tally['ID-不配对'] &&
+      sh.kidCount === 4 && sh.dupKid === 0 && sh.noKid === 1, JSON.stringify(sh));
 
     // ② 走进子帧这一支必须在承重：把帧摘掉，候选必须变成 0
     var s2 = JSON.parse(await ctx.client.evaluate(
@@ -20304,13 +20576,30 @@ SCENARIOS.push({
       'var withFrame=app._readCourseCards();' +
       'var f=document.getElementById("frame_content");var p=f.parentNode;p.removeChild(f);' +
       'var noFrame=app._readCourseCards();p.appendChild(f);' +
+      'var pairOk=true,pairs=[];' +
+      'withFrame.picked.concat(withFrame.unknown).forEach(function(c){' +
+      '  var h=String(c.homeUrl||"");' +
+      '  var ok=h.indexOf("courseid="+c.courseId)!==-1 && h.indexOf("clazzid="+c.clazzId)!==-1 && ' +
+      '    /[?&]ut=s/.test(h) && /[?&]omitonePick=1/.test(h);' +
+      '  if(!ok)pairOk=false;pairs.push(c.courseId+":"+c.clazzId+":"+(ok?"ok":"BAD"));' +
+      '  if(h.indexOf("stucoursemiddle")!==-1)pairOk=false;});' +
       'return JSON.stringify({docs:withFrame.docs,cards:withFrame.picked.length,noProg:withFrame.noProg,' +
-      'afterDocs:noFrame.docs,afterCards:noFrame.picked.length});})()'
+      'unknown:withFrame.unknown.length,noClazz:withFrame.noClazz,uHref:String((withFrame.unknown[0]||{}).href||""),' +
+      'pairOk:pairOk,pairs:pairs,' +
+      'afterDocs:noFrame.docs,afterCards:noFrame.picked.length,afterUnknown:noFrame.unknown.length,' +
+      'afterClazz:noFrame.noClazz});})()'
     ));
-    check('候选是从**子帧**里读出来的：带帧 docs=2 / 能读到进度 3 张 / 读不到进度 1 张，' +
-      '把那一帧摘掉立刻变成 0 张（只查顶层的实现就在这里恒为"没有候选"）',
-      s2.docs === 2 && s2.cards === 3 && s2.noProg === 1 &&
-      s2.afterDocs === 1 && s2.afterCards === 0, JSON.stringify(s2));
+    check('候选是从**子帧**里读出来的：带帧 docs=2 / 读得到进度 3 张 / 读不到进度 1 张（noProg 与 unknown 各 1，' +
+      '那张确实带着 chaoxing.com 的进课地址 —— 批次 85 之后它是**兜底候选**，不再是"一律不进"）；' +
+      '把那一帧摘掉两族立刻都变成 0（只查顶层的实现就在这里恒为"没有候选"）。' +
+      '批次 87 新钉的两格：进课地址是「这一张自己的课号 + 这一张自己的班号」成对拼出来的（pairOk，' +
+      '四张的号各不相同）、且不再带着那条会落在错误页上的 stucoursemiddle；' +
+      '卡片上压根没有班号的那一张单独落在 noClazz=1（摘掉帧也一起变成 0）',
+      s2.docs === 2 && s2.cards === 3 && s2.noProg === 2 && s2.unknown === 1 && s2.noClazz === 1 &&
+      /^https:\/\/mooc1\.chaoxing\.com\/visit\/stucoursemiddle/.test(s2.uHref) &&
+      s2.pairOk === true && s2.pairs.length === 4 &&
+      s2.afterDocs === 1 && s2.afterCards === 0 && s2.afterUnknown === 0 && s2.afterClazz === 0,
+      JSON.stringify(s2));
 
     // ⚠️ 摘掉再挂回去的 iframe 会**重新装载**（这是浏览器的行为，不是代码问题），
     //    所以"恢复"必须轮询等它的文档回来 —— 当场读必然读到 0 张，那条红是假的。
@@ -20319,12 +20608,14 @@ SCENARIOS.push({
       await sleep(250);
       s2b = JSON.parse(await ctx.client.evaluate(
         '(function(){var app=window._xxtApp;var c=app._readCourseCards();' +
-        'return JSON.stringify({docs:c.docs,cards:c.picked.length,noProg:c.noProg});})()'
+        'return JSON.stringify({docs:c.docs,cards:c.picked.length,noProg:c.noProg,unknown:c.unknown.length,' +
+        'noClazz:c.noClazz});})()'
       ));
       if (s2b.cards === 3) break;
     }
-    check('挂回去之后等一拍仍然读回 3 张候选（夹具没被这一条改坏，也没有把"重装载的空窗"当成结论）',
-      s2b.docs === 2 && s2b.cards === 3 && s2b.noProg === 1, JSON.stringify(s2b));
+    check('挂回去之后等一拍仍然读回 3 张候选 + 1 张兜底 + 1 张没班号（夹具没被这一条改坏，也没有把"重装载的空窗"当成结论）',
+      s2b.docs === 2 && s2b.cards === 3 && s2b.noProg === 2 && s2b.unknown === 1 && s2b.noClazz === 1,
+      JSON.stringify(s2b));
 
     // ③ 用户自己打开用户中心（地址上没有我们那个标记）→ 一步都不许做
     var s3 = JSON.parse(await ctx.client.evaluate(
@@ -20347,11 +20638,16 @@ SCENARIOS.push({
       'app._coursePickDone=false;window.__b83nav.length=0;' +
       'try{sessionStorage.removeItem("omitone:course-switch");}catch(e){}' +
       'var d=document.getElementById("frame_content").contentDocument;' +
-      'var cardHref=d.getElementById("c_900000012").querySelector("a[href*=stucoursemiddle]").getAttribute("href");' +
+      'var a=d.getElementById("c_900000012").querySelector("a[href*=stucoursemiddle]");' +
+      'var cardHref=a.getAttribute("href");' +
+      'var cardClazz=(String(cardHref).match(/clazzid=(\\d+)/i)||[])[1]||"";' +
+      'var otherClazz=(String(d.getElementById("c_900000011").querySelector("a[href*=stucoursemiddle]")' +
+      '  .getAttribute("href")).match(/clazzid=(\\d+)/i)||[])[1]||"";' +
       'var r=app._pickNextCourseFromUserCenter();' +
       'var led=app._readSessionLedger("omitone:course-switch")||{};' +
       'return JSON.stringify({claimed:r,nav:(window.__b83nav||[])[0]||"",navCount:window.__b83nav.length,' +
-      'cardHref:cardHref,sw:led.sw,tried:led.tried||[]});})()'
+      'cardHref:cardHref,cardClazz:cardClazz,otherClazz:otherClazz,' +
+      'sw:led.sw,tried:led.tried||[]});})()'
     ));
     var l4 = await snap();
     check('标记 + 刚刷完的是全刷完那门（omitoneDone=900000013）→ 挑中的是 32/72 那一门，' +
@@ -20360,14 +20656,27 @@ SCENARIOS.push({
       String(s4.nav || '').indexOf('courseid=900000012') !== -1 &&
       String(s4.nav || '').indexOf('courseid=900000011') === -1 &&
       String(s4.nav || '').indexOf('courseid=900000013') === -1, JSON.stringify(s4));
-    check('跳过去的地址**逐字就是那张卡片自己的 href**（不自己拼地址）—— 站点哪天换域名/换参数，跟的是它',
-      !!s4.nav && s4.nav === s4.cardHref, JSON.stringify({ nav: s4.nav, cardHref: s4.cardHref }));
+    check('批次 87：落点**不再**是卡片那条 stucoursemiddle（它 302 三次最后停在缺 ut=s 的 ' +
+      'mooc2-ans/mycourse/stu，站点回 781 字节「无效的参数」→ 刷课根本没开始）。' +
+      '现在拼的是课程首页那一族，四格齐：域名 + 这一张自己的课号 + **这一张自己的**班号' +
+      '（不是邻桌那张的，串了必 403）+ ut=s + 我们自己那个 omitonePick 标记',
+      !!s4.nav && s4.nav !== s4.cardHref &&
+      s4.nav === 'https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse' +
+        '?courseid=900000012&clazzid=' + s4.cardClazz + '&ut=s&omitonePick=1' &&
+      !!s4.cardClazz && s4.cardClazz !== s4.otherClazz &&
+      s4.nav.indexOf('clazzid=' + s4.otherClazz) === -1,
+      JSON.stringify({ nav: s4.nav, cardClazz: s4.cardClazz, otherClazz: s4.otherClazz }));
     check('换过一次的账落在这一页自己的 sessionStorage：sw=1，tried 里带着刚从 URL 读回来的那门 900000013',
       s4.sw === 1 && (s4.tried || []).indexOf('900000013') !== -1, JSON.stringify(s4));
-    check('挑成一次出「course switch picked next」，取证里带上 sw / cards / noProg（那 1 张读不到进度的卡要看得见）',
+    check('挑成一次出「course switch picked next」，取证里带上 sw / cards / noProg / unknown / noClazz / limit，' +
+      '并且 blind=0（这一门是**读得到进度**挑中的，不是兜底那一路）',
       cnt(l4, 'course switch picked next') === 1 &&
-      (l4.metas.filter(function (m) { return String(m && m.cards) === '3' && Number(m && m.noProg) === 1; })).length >= 1,
-      JSON.stringify({ names: l4.names.slice(-5) }));
+      (l4.metas.filter(function (m) {
+        return String(m && m.cards) === '3' && Number(m && m.noProg) === 2 &&
+          Number(m && m.unknown) === 1 && Number(m && m.noClazz) === 1 &&
+          Number(m && m.limit) === 30 && Number(m && m.blind) === 0;
+      })).length >= 1,
+      JSON.stringify({ names: l4.names.slice(-5), metas: l4.metas.slice(-2) }));
 
     // ⑤ 同一页不许反复挑（否则每 3 秒重挑一次，把用户的浏览器刷爆）
     var s5 = JSON.parse(await ctx.client.evaluate(
@@ -20379,15 +20688,60 @@ SCENARIOS.push({
       '每拍重挑一次会把用户这一页来回刷',
       s5.claimed === true && s5.navCount === 1, JSON.stringify(s5));
 
+    // ⑤-b 批次 85：读得到进度的三门**都进过了** → 不许就此停下叫用户手动，
+    //        退到「卡片没写进度那一行」那一族，进去一门**让目录判**（现场量过：那 22 张卡片上
+    //        除了课名和教师名什么进度都没有，% 与「进度」各只出现 16 次 = 就是读得到的那 16 张，
+    //        所以"进去看目录"是**唯一**能判得对的路，不是猜）。
+    var s5b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._coursePickDone=false;window.__b83nav.length=0;' +
+      'var logBefore=(window.__b83||[]).length;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'var cardHref=d.getElementById("c_900000014").querySelector("a[href*=stucoursemiddle]").getAttribute("href");' +
+      'var cardClazz=(String(cardHref).match(/clazzid=(\\d+)/i)||[])[1]||"";' +
+      'var r=app._pickNextCourseFromUserCenter();' +
+      'var led=app._readSessionLedger("omitone:course-switch")||{};' +
+      'return JSON.stringify({claimed:r,nav:(window.__b83nav||[])[0]||"",navCount:window.__b83nav.length,' +
+      'cardHref:cardHref,cardClazz:cardClazz,sw:led.sw,tried:(led.tried||[]).length,logBefore:logBefore});})()'
+    ));
+    var l5b = await snap();
+    // ⚠️ 日志缓冲是**整场累计**的：④ 那一发也打了「course switch picked next」。
+    //    直接从整条缓冲数"只有一条"会把上一发算进来（实测红在这里），
+    //    所以按调用前那一格切出**这一次新增的**几条再数。
+    var l5bNew = {
+      names: l5b.names.slice(s5b.logBefore),
+      metas: l5b.metas.slice(s5b.logBefore)
+    };
+    check('批次 85 的兜底那一支真的走到：三门读得到进度的都在换课名单里 → 挑的是那张**没写进度**的卡片（900000014），' +
+      '跳数只有一发、账记到 sw=4（旧行为在这里是直接 decline）。' +
+      '批次 87 之后落点同样换成这门自己的课程首页：课号 + 这一张的班号 + ut=s + 标记，' +
+      '不再是那张会落到「无效的参数」上的 stucoursemiddle',
+      s5b.claimed === true && s5b.navCount === 1 &&
+      String(s5b.nav || '').indexOf('courseid=900000014') !== -1 &&
+      !!s5b.cardClazz &&
+      s5b.nav === 'https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse' +
+        '?courseid=900000014&clazzid=' + s5b.cardClazz + '&ut=s&omitonePick=1' &&
+      s5b.nav !== s5b.cardHref && s5b.sw === 4, JSON.stringify(s5b));
+    check('兜底进那一条日志把「这一门是靠目录判的」写进取证：blind=1、unknown=1、limit=30 —— ' +
+      '面板与日志都读得出来"这不是按进度挑的"，才不会把盲进伪装成有依据。' +
+      '条数按**这一发新增的那几格**数（缓冲是整场累计的，④ 也打过同名的一条）',
+      cnt(l5bNew, 'course switch picked next') === 1 &&
+      (l5bNew.metas.filter(function (m) {
+        return Number(m && m.blind) === 1 && Number(m && m.unknown) === 1 && Number(m && m.limit) === 30;
+      })).length === 1,
+      JSON.stringify({ from: s5b.logBefore, total: l5b.names.length,
+        names: l5bNew.names, metas: l5bNew.metas }));
+
     // ⑥ 三条 decline 各有各的形状，而且都不许导航
     var s6 = JSON.parse(await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'var out={};window.__b83nav.length=0;' +
       'app._coursePickDone=false;' +
-      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:8,tried:["900000013"],at:Date.now()}));' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:30,tried:["900000013"],at:Date.now()}));' +
       'out.budgetClaimed=app._pickNextCourseFromUserCenter();out.budgetNav=window.__b83nav.length;' +
       'app._coursePickDone=false;window.__b83nav.length=0;' +
-      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:1,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:4,tried:["900000011","900000012","900000013","900000014"],at:Date.now()}));' +
       'out.noneClaimed=app._pickNextCourseFromUserCenter();out.noneNav=window.__b83nav.length;' +
       'app._coursePickDone=false;app.configs.autoNextCourse=false;window.__b83nav.length=0;' +
       'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:0,tried:[],at:Date.now()}));' +
@@ -20395,16 +20749,32 @@ SCENARIOS.push({
       'out.search=String(location.search||"");return JSON.stringify(out);})()'
     ));
     var l6 = await snap();
-    check('换课预算用完（sw=8 到上限）→ 只说「switch budget used up」，一步都不跳：' +
-      '这条防的是"换过去又换回来"的空转，上限到了就停下来跟人说话',
+    check('换课预算用完（sw=30 到上限）→ 只说「switch budget used up」，一步都不跳：' +
+      '这条防的是"换过去又换回来"的空转，上限到了就停下来跟人说话。' +
+      '那个 30 是**读回来的字段**（limit），批次 85 把兜底那一族也算进换课次数，所以封顶跟着放宽。' +
+      '批次 87：没班号那一张**不**算进 navigable（它压根进不去），所以 limit 还是 30 而不是 31',
       s6.budgetClaimed === true && s6.budgetNav === 0 &&
-      cnt(l6, 'course switch declined: switch budget used up') === 1, JSON.stringify({ s6: s6 }));
-    check('候选全被本轮换课名单排除了 → 「no course with unfinished task points」，' +
-      '并且 hint 里点名还有 1 张读不到进度的卡没碰（读不到 ≠ 没做完，也不许跳进去）',
+      cnt(l6, 'course switch declined: switch budget used up') === 1 &&
+      (l6.metas.filter(function (m) {
+        return Number(m && m.sw) === 30 && Number(m && m.limit) === 30 &&
+          Number(m && m.unknown) === 1 && Number(m && m.noClazz) === 1;
+      })).length >= 1, JSON.stringify({ s6: s6, metas: l6.metas.slice(-3) }));
+    check('两族都进过了（读得到进度 3 门 + 没写进度那 1 门全在换课名单里）→ 这才说「no course with unfinished task points」，' +
+      '并且取证里 unknown=1 要点名"那一张确实进去让目录判过了" —— ' +
+      '批次 85 之后**兜底那一族也会挡住 decline**，只有真的一枚不剩才停下来。' +
+      '批次 87 还要那句话把「另有 N 张课号+班号配不齐 = 进不去」单独讲出来（noClazz=1）：' +
+      '压成两态时这一族**必然被误划成"已完成"**，几周后就变成用户那句"我有一科一直没刷"',
       s6.noneClaimed === true && s6.noneNav === 0 &&
       cnt(l6, 'course switch declined: no course with unfinished task points') === 1 &&
-      (l6.metas.filter(function (m) { return Number(m && m.noProg) === 1; })).length >= 1,
-      JSON.stringify({ s6: s6, names: l6.names.slice(-6) }));
+      (l6.metas.filter(function (m) {
+        return Number(m && m.unknown) === 1 && Number(m && m.cards) === 3 &&
+          Number(m && m.tried) === 4 && Number(m && m.noClazz) === 1;
+      })).length >= 1 &&
+      (l6.metas.filter(function (m) {
+        return String(m && m.hint || '').indexOf('配不齐') !== -1 &&
+          String(m && m.hint || '').indexOf('1 张') !== -1;
+      })).length >= 1,
+      JSON.stringify({ s6: s6, names: l6.names.slice(-6), metas: l6.metas.slice(-3) }));
     check('开关关掉 → 「declined: auto switch is off」，不跳（这一页是我们自己导航来的，仍然要认领，' +
       '不能再打那条"认不出课程结构"的 warn）',
       s6.offClaimed === true && s6.offNav === 0 &&
@@ -20420,13 +20790,288 @@ SCENARIOS.push({
 });
 
 
+/** ---- 批次 87 ①：换课落在课程首页之后，**进门**这一步真的发生 ----
+ * 现场那条链（2016-11-16 逐跳量过，见 `src/page/64-tasks-loop.js` 里 `_COURSE_HOME_BASE` 的注释）：
+ *   卡片 href `mooc1/visit/stucoursemiddle` → JS 中转壳（0 个章节点）→
+ *   `mooc2-ans/mycourse/stu`（缺 `ut=s`）= **781 字节「无效的参数」** →
+ *   日志只剩一句「这一页认不出课程结构」，而**刷课根本没开始**。
+ * 正解不是我们猜地址（`enc` 是服务端按课算的，猜出来 404），而是落到
+ *   `mooc2-ans/mycourse/studentcourse?courseid=&clazzid=&ut=s`
+ * 之后**叫站点自己的** `toOld(课号, 章号, 班号, 0)` 把顶层帧送进章节 —— 地址由它自己拼。
+ *
+ * 这一场断四件事，每件都对应一条会静默失灵的路：
+ *   ① 三个号**逐字来自那一枚章节点的 onclick**（不是插件自己拼的，也不是测试写死的常量）；
+ *   ② 动作打在这一个方法上，所以判据（标记 / 路径 / 节点 / 有界尝试）全程真跑；
+ *   ③ 有界尝试 + 5 秒冷却：`toOld` 万一没走成，不许把这一页来回重载；
+ *   ④ 三条判据不齐时**不认领**（返回 false），把话筒交回原来那条「认不出课程结构」。
+ */
+SCENARIOS.push({
+  name: '换课落在课程首页：叫站点自己的 toOld 进章（三个号逐字来自 DOM）、尝试有界、判据不齐就不认领',
+  path: '/mooc2-ans/mycourse/studentcourse?courseid=900000012&clazzid=900000022&ut=s&omitonePick=1',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var reqBefore = ctx.mock.requests.length;
+
+    // 夹具自证 —— 首页**只有章节点**：没目录、没任务点、没 #iframe。
+    // 这几格是"钩子必须排在任务点那一族之前"的全部理由，夹具不钉住它们，
+    // 换成一张带附件的页面就等于让生产绕过了整场测试。
+    var sh = JSON.parse(await ctx.client.evaluate(
+      '(function(){var nodes=document.querySelectorAll("div.chapter_item[onclick*=\\"toOld(\\"]");' +
+      'var first=nodes[0]||null;var oc=first?String(first.getAttribute("onclick")||""):"";' +
+      'var m=oc.match(/toOld\\(\\s*.(\\d+).\\s*,\\s*.(\\d+).\\s*,\\s*.(\\d+).\\s*,\\s*0/);' +
+      'return JSON.stringify({nodes:nodes.length,toOldFn:typeof window.toOld,isToOldLink:window.isToOldLink,' +
+      'catalog:document.querySelectorAll(".posCatalog_select").length,' +
+      'attach:document.querySelectorAll(".ans-attach-ct").length,' +
+      'iframe:document.querySelectorAll("iframe").length,' +
+      'curId:first?String(first.id||""):"",' +
+      'triple:m?[m[1],m[2],m[3]]:null,path:String(location.pathname||""),search:String(location.search||"")});})()'
+    ));
+    check('夹具自证：首页形状 = 3 枚 chapter_item 带站点自己的 toOld(...)、typeof window.toOld 是 function、' +
+      '而 .posCatalog_select / .ans-attach-ct / iframe **全为 0**（现场那页 108824 字节里只有章节能点）；' +
+      '第一枚的 id 以 cur 开头 —— 正是它把 looksLikeCourse 撑成 true、让旧链路空转 30 秒去点不存在的「下一节」',
+      sh.nodes === 3 && sh.toOldFn === 'function' && sh.isToOldLink === false &&
+      sh.catalog === 0 && sh.attach === 0 && sh.iframe === 0 &&
+      /^cur/.test(sh.curId) && Array.isArray(sh.triple) && sh.triple.length === 3,
+      JSON.stringify(sh));
+
+    /**
+     * 跑一发生产判据并把它的全部可见后果读回来。
+     *
+     * ⚠️ 桩**只打在动作**（`_enterCourseHomeChapter`）上，判据四条（标记 / 路径 / 章节点 /
+     * 有界尝试）全程真跑（AGENTS §5「桩要打在动作上，别把整句生产方法换成计数器」）。
+     * `o.real` = 还原真动作，用来验「插件确实叫的是站点自己那个 `window.toOld`」那一截。
+     * `o.url` = 换地址（钉路径闸与标记闸），`o.ledger` = 直接写尝试账，`o.keep` = 不动账。
+     */
+    async function fire(o) {
+      o = o || {};
+      var src = '(function(){var app=window._xxtApp;';
+      src += 'if(!window.__b87orig)window.__b87orig=app._enterCourseHomeChapter;';
+      src += 'window.__b87act=window.__b87act||[];';
+      src += o.real ? 'app._enterCourseHomeChapter=window.__b87orig;'
+        : 'app._enterCourseHomeChapter=function(c,k,j){window.__b87act.push([String(c),String(k),String(j)]);};';
+      src += 'app.configs.autoNextCourse=' + (o.autoOff ? 'false' : 'true') + ';';
+      if (o.url !== undefined) src += 'history.replaceState(null,"","' + o.url + '");';
+      if (typeof o.ledger === 'string') src += 'sessionStorage.setItem("omitone:home-enter",JSON.stringify(' + o.ledger + '));';
+      else if (!o.keep) src += 'sessionStorage.removeItem("omitone:home-enter");';
+      src += 'var got=[];var h=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);};';
+      src += 'window.addEventListener("message",h);';
+      src += 'var actBefore=window.__b87act.length,oldBefore=(window.__b87toOld||[]).length;';
+      src += 'var r=app._enterChapterFromCourseHome();';
+      src += 'return new Promise(function(res){setTimeout(function(){window.removeEventListener("message",h);';
+      src += 'var led=null;try{led=JSON.parse(sessionStorage.getItem("omitone:home-enter")||"null");}catch(e){}';
+      src += 'res(JSON.stringify({claimed:r,acted:window.__b87act.length-actBefore,actLast:window.__b87act.slice(-1)[0]||null,';
+      src += 'toOldCalled:(window.__b87toOld||[]).length-oldBefore,toOldLast:(window.__b87toOld||[]).slice(-1)[0]||null,';
+      src += 'tries:led?Number(led.tries):-1,cid:led?String(led.cid):"",';
+      src += 'logs:got.map(function(m){return String(m.message||"")}),';
+      src += 'metas:got.map(function(m){return (m&&m.meta)||{}})}));},260);});})()';
+      return JSON.parse(await ctx.client.evaluate(src));
+    }
+    function said(a, needle) {
+      var n = 0;
+      for (var i = 0; i < a.logs.length; i++) if (a.logs[i] === needle) n++;
+      return n;
+    }
+    var HOME_URL = '/mooc2-ans/mycourse/studentcourse?courseid=900000012&clazzid=900000022&ut=s&omitonePick=1';
+
+    // ② 认领头，并且三个号**逐字来自那一枚章节点**
+    var a1 = await fire({});
+    check('首页 + 标记 + 章节点齐 → 认领（claimed=true）、动作正好一发、**那三个号逐字是 DOM 上 onclick 里的那三个**' +
+      '（测试自己从 onclick 解析一份来比，不写死常量），站点自己的 toOld 这一发被动作桩挡住（called=0，' +
+      '证明插件从头到尾只经过这一个口子，绝不自己拼那条带 enc 的地址）；' +
+      '尝试账起在 tries=1、cid 记的是这门课的课号；出的那条日志是 warn「course home enter chapter」，' +
+      '取证三格也逐字回读到同样三个号',
+      a1.claimed === true && a1.acted === 1 && a1.toOldCalled === 0 &&
+      JSON.stringify(a1.actLast) === JSON.stringify(sh.triple) &&
+      a1.tries === 1 && a1.cid === sh.triple[0] &&
+      said(a1, 'course home enter chapter') === 1 &&
+      a1.metas.filter(function (m) {
+        return m.courseId === sh.triple[0] && m.chapterId === sh.triple[1] && m.clazzId === sh.triple[2];
+      }).length === 1, JSON.stringify({ a1: a1, triple: sh.triple }));
+
+    // ③ 还原真动作再走一次 —— 接线本身也要有证据
+    var a2 = await fire({ real: true });
+    check('把桩摘掉（还原生产那个动作）再走一次：站点自己的 `window.toOld` 真被调用一次，' +
+      '收到的参数**逐字**是 DOM 上那三个号加上第 4 个 0（`toOld(cid, chapterId, clazzId, 0)` 的现场形状）。' +
+      '这一条断的是"我们叫的就是它"，地址由站点自己拼 —— 我们一行都不猜',
+      a2.claimed === true && a2.toOldCalled === 1 &&
+      JSON.stringify(a2.toOldLast) === JSON.stringify([sh.triple[0], sh.triple[1], sh.triple[2], '0']),
+      JSON.stringify(a2));
+
+    // ④ 5 秒冷却：紧接着再问一次，一步都不许再动
+    var a3 = await fire({ keep: true });
+    check('5 秒内同一页再问一次 → 仍然认领，但一发都不叫、账也不加（冷却读的是**账上那一格 at**，' +
+      '不是内存变量：页面被站点重载也不会把冷却抹掉）。旧写法在这里是每拍叫一次，等于把这一页来回刷',
+      a3.claimed === true && a3.toOldCalled === 0 && a3.acted === 0 && a3.tries === 1,
+      JSON.stringify(a3));
+
+    // ⑤ 3 次封顶 + 同一份文档里同一条理由只说一次
+    var a4 = await fire({ ledger: '{cid:"' + sh.triple[0] + '",tries:3,at:Date.now()-60000}' });
+    check('尝试账到 3（且已过冷却）→ 不再叫站点那一发，改出一条 warn「declined: still not in after 3 tries」，' +
+      '那句话要教用户怎么办（自己点一章 / 关掉再打开刷课重新起账），而不是留一句听不懂的英文',
+      a4.claimed === true && a4.toOldCalled === 0 && a4.acted === 0 &&
+      said(a4, 'course home declined: still not in after 3 tries') === 1 &&
+      String((a4.metas.filter(function (m) {
+        return String(m && m.hint || '').indexOf('3 次') !== -1;
+      })[0] || {}).hint || '').indexOf('重新起账') !== -1, JSON.stringify(a4));
+    var a4b = await fire({ ledger: '{cid:"' + sh.triple[0] + '",tries:3,at:Date.now()-60000}' });
+    check('同一份文档里同一条拒绝理由**只说一次**（`_homeEnterSaid`）—— 这一页不会因为我们重试就变样，' +
+      '每拍重播只会把 200 条日志环刷满、盖掉真正要看的「为什么跳过这一节」',
+      a4b.claimed === true && said(a4b, 'course home declined: still not in after 3 tries') === 0,
+      JSON.stringify(a4b.logs));
+
+    // ⑥ 三条判据不齐 → **不认领**（返回 false，让原来那条「认不出课程结构」说话）
+    var a5 = await fire({ url: '/mooc2-ans/mycourse/studentcourse?courseid=900000012&clazzid=900000022&ut=s' });
+    check('地址上没有 omitonePick=1（用户自己点开课程首页）→ 不认领、不动、一条日志都不打：' +
+      '插件绝不因为"顺便路过的这一页"去替用户点章节',
+      a5.claimed === false && a5.acted === 0 && a5.toOldCalled === 0 && a5.logs.length === 0,
+      JSON.stringify(a5));
+    var a6 = await fire({ url: '/course-pick?omitonePick=1' });
+    check('标记在、路径不是 `mycourse/studentcourse`（用户中心带着同一个标记）→ 不认领：' +
+      '两族靠路径分开，否则用户中心那一页会被这条抢走，换课挑选那条链路整条失效',
+      a6.claimed === false && a6.acted === 0 && a6.toOldCalled === 0, JSON.stringify(a6));
+    var a7 = await fire({ autoOff: true, url: HOME_URL });
+    check('「刷完自动换下一门」关掉 → 认领但一发都不叫，出一条「declined: auto switch is off」并教他怎么打开；' +
+      '认领是必须的：不认领就会掉进那句误导性的「这一页认不出课程结构」',
+      a7.claimed === true && a7.acted === 0 && a7.toOldCalled === 0 &&
+      said(a7, 'course home declined: auto switch is off') === 1, JSON.stringify(a7.logs));
+
+    // ⑦ 承重的那条：`_runTick` 里那一行钩子真的在链路里，不是只写了个方法
+    var live = JSON.parse(await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var app=window._xxtApp;' +
+      'if(!window.__b87orig)window.__b87orig=app._enterCourseHomeChapter;' +
+      'window.__b87act=[];window.__b87toOld=[];' +
+      'app._enterCourseHomeChapter=function(c,k,j){window.__b87act.push([String(c),String(k),String(j)]);};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"","' + HOME_URL + '");' +
+      'sessionStorage.removeItem("omitone:home-enter");app._homeEnterSaid={};' +
+      'var got=[];window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);});' +
+      'Promise.resolve(app._runTick()).then(function(){setTimeout(function(){' +
+      'res(JSON.stringify({acts:window.__b87act.length,tried:JSON.stringify(window.__b87act[0]||null),' +
+      'logs:got.map(function(m){return String(m.message||"")})}));},500);})' +
+      '.catch(function(err){res(JSON.stringify({error:String(err&&err.message||err)}));});});})()'
+    ));
+    check('真跑一轮 `_runTick()`：这一拍由首页进章那条钩子拿走 —— 动作被调一次、' +
+      '且**没有**「study idle declined / study stuck」那两条误导日志（旧链路在这页上靠 ' +
+      '`[id^="cur"]` 把 `looksLikeCourse` 撑成 true，空转 30 秒后去打首页上压根不存在的「下一节」，' +
+      '症状正是"换了课，可刷课没开始"）。这一条钉的是**顺序**：钩子必须排在任务点那一族之前',
+      !live.error && live.acts === 1 && live.tried === JSON.stringify(sh.triple) &&
+      live.logs.filter(function (s) {
+        return s.indexOf('study idle declined') === 0 || s.indexOf('study stuck') === 0;
+      }).length === 0 && said({ logs: live.logs }, 'course home enter chapter') === 1,
+      JSON.stringify(live));
+
+    // 收尾：把桩、地址与账恢复原样，别把状态留给下一个场景（整轮共用同一个标签）
+    await ctx.client.evaluate('(function(){var app=window._xxtApp;' +
+      'if(window.__b87orig)app._enterCourseHomeChapter=window.__b87orig;' +
+      'history.replaceState(null,"",location.pathname+"?courseid=900000012&clazzid=900000022&ut=s");' +
+      'try{sessionStorage.removeItem("omitone:home-enter");}catch(e){}' +
+      'app.configs.autoNextCourse=true;return 1;})()');
+    check('整条「首页进章」零模型请求（进门这一步不花钱，进章节之后才轮到原来那套管线）',
+      ctx.mock.requests.length === reqBefore,
+      JSON.stringify({ before: reqBefore, after: ctx.mock.requests.length }));
+  }
+});
+
+
+/** ---- 批次 87 ②：课程首页的三枚残缺形状，各自怎么收手 ----
+ * 分三场而不是一场：判据里每一条都要**页面自己长那样**，用 replaceState 造形状
+ * 会让另一条判据（DOM）读的还是原来那一页，断的就不是生产那条链。
+ * 三场的共同底线：**认得出多少就说多少，且一定出日志**（AGENTS §2 #7 静默跳过不可接受）；
+ * 但「章节点压根长不出来」那一枚是**不认领** —— 那句话该由原来那条「认不出课程结构」来说。 */
+SCENARIOS.push({
+  name: '课程首页残缺形状之一：章节点在、站点的 toOld 没了 → 收手并把原因说清，不猜地址',
+  path: '/mooc2-ans/mycourse/studentcourse-nofn?courseid=900000012&clazzid=900000022&ut=s&omitonePick=1',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b87act=[];app._enterCourseHomeChapter=function(c,k,j){window.__b87act.push(String(c));};' +
+      'app.configs.autoNextCourse=true;app._homeEnterSaid={};' +
+      'sessionStorage.removeItem("omitone:home-enter");' +
+      'var got=[];var h=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);};' +
+      'window.addEventListener("message",h);' +
+      'var r=app._enterChapterFromCourseHome();' +
+      'return new Promise(function(res){setTimeout(function(){window.removeEventListener("message",h);' +
+      'res(JSON.stringify({claimed:r,acted:window.__b87act.length,node:!!document.querySelector("div.chapter_item[onclick*=\\"toOld(\\"]"),' +
+      'fn:typeof window.toOld,logs:got.map(function(m){return String(m.message||"")}),' +
+      'metas:got.map(function(m){return (m&&m.meta)||{}})}));},260);});})()'
+    ));
+    check('章节点读得到（node=true）而 `typeof window.toOld` 不是 function → 认领、一发都不叫，' +
+      '日志点名「site enter handler missing」，hint 里说清**为什么不自己拼**' +
+      '（enc 是服务端按课算的，拼出来就是 404）并让他手动点一章',
+      a.claimed === true && a.acted === 0 && a.node === true && a.fn !== 'function' &&
+      a.logs.filter(function (s) { return s === 'course home declined: site enter handler missing'; }).length === 1 &&
+      a.metas.filter(function (m) { return String(m && m.hint || '').indexOf('404') !== -1; }).length === 1,
+      JSON.stringify(a));
+  }
+});
+
+SCENARIOS.push({
+  name: '课程首页残缺形状之二：站点换掉了进章那三个参数 → 判据不猜号，收手并把形状原文带进日志',
+  path: '/mooc2-ans/mycourse/studentcourse-oddargs?courseid=900000012&clazzid=900000022&ut=s&omitonePick=1',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b87act=[];app._enterCourseHomeChapter=function(c,k,j){window.__b87act.push(String(c));};' +
+      'app.configs.autoNextCourse=true;app._homeEnterSaid={};' +
+      'sessionStorage.removeItem("omitone:home-enter");' +
+      'var oc=String(document.querySelector(".chapter_item").getAttribute("onclick")||"");' +
+      'var got=[];var h=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);};' +
+      'window.addEventListener("message",h);' +
+      'var r=app._enterChapterFromCourseHome();' +
+      'return new Promise(function(res){setTimeout(function(){window.removeEventListener("message",h);' +
+      'res(JSON.stringify({claimed:r,acted:window.__b87act.length,onclick:oc,fn:typeof window.toOld,' +
+      'logs:got.map(function(m){return String(m.message||"")}),metas:got.map(function(m){return (m&&m.meta)||{}})}));' +
+      '},260);});})()'
+    ));
+    check('`onclick` 里那三个参数不再是「三个带引号的纯数字」（站点改成变量了）→ 认领、一发都不叫，' +
+      '日志点名「enter handler args unparsable」，**取证里带着 onclick 原文**：' +
+      '这一族将来要靠现场日志改判据，没有原文就得再复现一次页面',
+      a.claimed === true && a.acted === 0 && a.fn === 'function' &&
+      a.logs.filter(function (s) { return s === 'course home declined: enter handler args unparsable'; }).length === 1 &&
+      a.metas.filter(function (m) {
+        return String(m && m.onclick || '').indexOf('toOld(courseId') !== -1;
+      }).length === 1, JSON.stringify(a));
+  }
+});
+
+SCENARIOS.push({
+  name: '课程首页残缺形状之三：路径对、标记在，可章节点一个都没长出来 → 不认领，把话筒交回原来那条判据',
+  path: '/mooc2-ans/mycourse/studentcourse-empty?courseid=900000012&clazzid=900000022&ut=s&omitonePick=1',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b87act=[];app._enterCourseHomeChapter=function(c,k,j){window.__b87act.push(String(c));};' +
+      'app.configs.autoNextCourse=true;app._homeEnterSaid={};' +
+      'sessionStorage.removeItem("omitone:home-enter");' +
+      'var got=[];var h=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")got.push(m);};' +
+      'window.addEventListener("message",h);' +
+      'var r=app._enterChapterFromCourseHome();' +
+      'return new Promise(function(res){setTimeout(function(){window.removeEventListener("message",h);' +
+      'res(JSON.stringify({claimed:r,acted:window.__b87act.length,req:app._coursePickRequested(),' +
+      'pathOk:/\\/mycourse\\/studentcourse\\b/i.test(String(location.pathname||"")),' +
+      'node:document.querySelectorAll("div.chapter_item[onclick*=\\"toOld(\\"]").length,' +
+      'logs:got.map(function(m){return String(m.message||"")})}));},260);});})()'
+    ));
+    check('前两格（标记 + 路径）都对、第三格 DOM 里 0 枚章节点 → **不认领**（claimed=false）且一条日志都不打：' +
+      '这一页"没有章节能点"是原链路那句「这一页认不出课程结构」的活，' +
+      '这里抢下来只会多一条谁都不认识的 `declined`，还会把原来的那条挡住',
+      a.req === true && a.pathOk === true && a.node === 0 &&
+      a.claimed === false && a.acted === 0 && a.logs.length === 0, JSON.stringify(a));
+  }
+});
+
+
 /** ---- 批次 82 ③：右下角面板要把「刷完一门」这一族说成人话 ----
  * 为什么单列一场：上面那两场断的是 page.js 的判据层（该不该导航、导航去哪），
  * 而用户在这台电脑上真正看见的是**右下角那三格字**。content.js 的翻译层里有一条通用判据
  * `/declined:/` → 「放弃等待，继续往下」，而这一批新增的三条 `course switch declined: …`
  * 名字里就带 `declined:` —— 不点名接住，它们会落进那句话，把「这一门刷完了」说成
  * 「有一处等不到所以放弃了」（说反了，且方向还错：那一句让用户去找卡住的环节，其实该他挑课）。
- * ⚠️ 这里**不重跑生产链路**，只把生产实际会发的那五条按原等级、原名、原字段喂给面板 ——
+ * ⚠️ 这里**不重跑生产链路**，只把生产实际会发的那七条按原等级、原名、原字段喂给面板 ——
  * 断的是翻译层；等级与字段名一律照生产写，改了生产而不改这里，这一场会红。 */
 SCENARIOS.push({
   name: '刷完一门这一族在面板上要说清真话（不许落进「放弃等待，继续往下」）',
@@ -20446,33 +21091,46 @@ SCENARIOS.push({
       'say("info","start",null);await wait300();out.started=read();' +
       'say("warn","course finished, back to user center",{leaves:3,unfinished:0,activeLeft:0});' +
       'await wait300();out.toCenter=read();' +
-      'say("warn","course switch picked next",{sw:2,limit:8,cards:3,noProg:1});' +
+      'say("warn","course switch picked next",{sw:2,limit:30,cards:3,noProg:1,unknown:1,blind:0,unreadable:1});' +
       'await wait300();out.picked=read();' +
+      'say("warn","course switch picked next",{sw:4,limit:30,cards:0,noProg:22,unknown:22,blind:1,unreadable:22});' +
+      'await wait300();out.pickedBlind=read();' +
       'say("warn","course finished, auto switch is off",{leaves:3,unfinished:0,activeLeft:0});' +
       'await wait300();out.off=read();' +
-      'say("warn","course switch declined: switch budget used up",{sw:8,limit:8,cards:3,noProg:1});' +
+      'say("warn","course switch declined: switch budget used up",{sw:30,limit:30,cards:3,noProg:1,unknown:1});' +
       'await wait300();out.budget=read();' +
-      'say("warn","course switch declined: no course with unfinished task points",{sw:8,limit:8,cards:0,noProg:22});' +
+      'say("warn","course switch declined: no course with unfinished task points",{sw:4,limit:30,cards:3,noProg:22,unknown:22,tried:4});' +
       'await wait300();out.none=read();' +
-      'say("warn","course switch declined: something the translator has never seen",{sw:1,limit:8});' +
+      'say("warn","course switch declined: something the translator has never seen",{sw:1,limit:30});' +
       'await wait300();out.unseen=read();' +
       'return JSON.stringify(out);})()'
     ));
 
-    var keys = ['toCenter', 'picked', 'off', 'budget', 'none', 'unseen'];
-    check('前提：面板被 start 激活，且这六次都读回了字（读不到就是空测）',
+    var keys = ['toCenter', 'picked', 'pickedBlind', 'off', 'budget', 'none', 'unseen'];
+    check('前提：面板被 start 激活，且这七次都读回了字（读不到就是空测）',
       !!panel.started && panel.started.task !== '(无)' &&
       keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
       JSON.stringify({ started: panel.started, missing: keys.filter(function (k) { return !panel[k]; }) }));
 
-    check('自己会接着换的两条是「等待中」，不点亮「注意」：回用户中心 / 进下一门',
+    check('自己会接着换的三条是「等待中」，不点亮「注意」：回用户中心 / 进下一门 / 盲进让目录判',
       panel.toCenter.state === '等待中' && panel.toCenter.task === '这一门刷完了' &&
       /用户中心/.test(String(panel.toCenter.detail || '')) &&
-      panel.picked.state === '等待中' && panel.picked.task === '进入下一门',
-      JSON.stringify({ toCenter: panel.toCenter, picked: panel.picked }));
+      panel.picked.state === '等待中' && panel.picked.task === '进入下一门' &&
+      panel.pickedBlind.state === '等待中' && panel.pickedBlind.task === '进入下一门',
+      JSON.stringify({ toCenter: panel.toCenter, picked: panel.picked, pickedBlind: panel.pickedBlind }));
 
-    check('「本轮第几次换课」那两个数是从日志字段读回来的，不是写死的（sw=2 / limit=8）',
-      /2\s*\/\s*8/.test(String(panel.picked.detail || '')), JSON.stringify(panel.picked));
+    check('「本轮第几次换课」那两个数是从日志字段读回来的，不是写死的（sw=2 / limit=30）',
+      /2\s*\/\s*30/.test(String(panel.picked.detail || '')), JSON.stringify(panel.picked));
+
+    // 批次 85：`blind` 这一格必须真的分流两句 —— 把"卡片没写进度、先进去让目录判"这种
+    // 说法显示成"正在进这一门"，等于对用户隐瞒这一门是按什么挑的（反向验证 85-B 钉的就是这里）。
+    check('★ 盲进那一条（blind=1）要说清"这一门卡片上没写进度、先进去让目录判"，' +
+      '不许跟按进度挑的那条（blind=0）显示成同一句话',
+      /没写进度/.test(String(panel.pickedBlind.detail || '')) &&
+      /目录/.test(String(panel.pickedBlind.detail || '')) &&
+      /没写进度/.test(String(panel.picked.detail || '')) === false &&
+      /4\s*\/\s*30/.test(String(panel.pickedBlind.detail || '')),
+      JSON.stringify({ picked: panel.picked, pickedBlind: panel.pickedBlind }));
 
     check('★ 三条 declined 一个都不许写成「放弃等待，继续往下」——这一族没有"等不到"，是刷完了',
       [panel.off, panel.budget, panel.none, panel.unseen].every(function (p) {
@@ -20485,8 +21143,11 @@ SCENARIOS.push({
       panel.budget.task === '刷完不换下一门' && panel.none.task === '刷完不换下一门',
       JSON.stringify({ off: panel.off, budget: panel.budget, none: panel.none }));
 
-    check('「读不到进度不盲进」那几张卡要出现在面板上（noProg=22 是从字段读回来的）',
-      /22/.test(String(panel.none.detail || '')), JSON.stringify(panel.none));
+    check('封顶那一条把「看过几门 / 封顶几门」两个数读回来（30/30，不是写死的），' +
+      '没得挑那一条把「没写进度那几张已经让目录判过」写在面板上（noProg=22 是从字段读回来的）',
+      /30\s*\/\s*30/.test(String(panel.budget.detail || '')) &&
+      /22/.test(String(panel.none.detail || '')) && /目录/.test(String(panel.none.detail || '')),
+      JSON.stringify({ budget: panel.budget, none: panel.none }));
 
     check('这一族里没点名的新 decline 仍落「注意」，但那两行不是出厂值、也不猜原因（只说去看日志）',
       panel.unseen.task !== '运行中' && panel.unseen.detail !== '状态更新中' &&

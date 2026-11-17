@@ -21,6 +21,7 @@
     "acceptance:test": "node omitone-acceptance-test.cjs",
     "acceptance:built": "node omitone-acceptance.cjs",
     "e2e": "node tools/browser-e2e.js",
+    "field-browser": "node tools/field-browser.js",
     "field-shape": "node tools/debug-probe.js --port=9334 --match=chaoxing --file=tools/field-shape.expr",
     "field-space": "node tools/debug-probe.js --port=9334 --match=space/index --file=tools/field-space-index.expr",
     "field-logs": "node tools/field-logs.js",

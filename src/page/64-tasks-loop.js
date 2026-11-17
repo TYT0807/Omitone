@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（35 个）：
+ * 本段的方法（40 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -19,8 +19,9 @@
  *   _getLearningCards、_getLearningCardText、_getActiveLearningCardIndex、
  *   _getCurrentVisibleLearningTaskType、_isAssessmentLearningCard、
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
- *   _switchToNextLearningCard、nextUnit、_gotoUrl、_isCourseAtEnd、_leaveFinishedCourse、
- *   _coursePickRequested、_readCourseCards、_pickNextCourseFromUserCenter、
+ *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_leaveFinishedCourse、
+ *   _coursePickRequested、_courseHomeUrl、_readCourseCards、_pickNextCourseFromUserCenter、
+ *   _enterChapterFromCourseHome、_enterCourseHomeChapter、
  *   _advanceLearningStep、
  *   _bindStepNavigation、_initCellData、_getTreeContainer
  * ========================================================================== */
@@ -141,6 +142,13 @@
 
         // 讨论页处理期间（已打开讨论标签）：刷课页完全暂停推进，等它关闭或超时再继续
         if (this._handleDiscussionWait()) return;
+
+        // 批次 87：这一页是**换课时我们自己导航来的课程首页** → 让站点自己那一发「进章」把顶层帧送进章节。
+        // 必须排在任务点/播放那一族**之前**：首页上压根没有任务点，往下走会被
+        // `looksLikeCourse`（章节节点也带 `id^="cur…"`）认成"像课程页"，空转 30 秒后去打一个
+        // 首页上根本不存在的「下一节」，最后说一句误导性的 `study stuck` —— 症状正是「换了课，可刷课没开始」。
+        // 判据三条都不齐时它第一行就返回 false，其它任何页面（含用户中心）一步都不受它影响。
+        if (this._enterChapterFromCourseHome()) return;
 
         // 讨论任务点：在本节其它任务（视频/题目）之前处理掉，处理完刷新章节再继续，
         // 避免和正在播放的视频抢进度
@@ -698,6 +706,20 @@
       this._resetRuntimeState();
     },
 
+    /**
+     * 这一页跑的到底是哪一版 page.js —— `OMITONE_CODE_REV` 是 `tools/concat-page.js`
+     * 盖在产物第一行的**内容指纹**（只由片段内容决定，不掺时间戳，所以拼接可复现）。
+     *
+     * 为什么换课这一族非要把它写进日志（2026-11-16 现场实测）：同一台浏览器里
+     * 三页可以是三个指纹 —— 磁盘 `0f0f7a2485`、刷课页 `0c68ddd917`、用户中心 `783cfdeddf`，
+     * 而**只有 82 之前那一版没有选课代码**。症状是「说了『这一门刷完了，回用户中心』
+     * 之后一句 picked / declined 都没有」，看着像判据坏了，其实是那个标签页重载之前
+     * 的旧 page.js 还在跑（AGENTS §3.3 那一步没做）。两端的指纹都打在行上，一眼分得开。
+     */
+    _codeRev: function () {
+      try { return String(typeof OMITONE_CODE_REV !== 'undefined' ? OMITONE_CODE_REV : 'none'); } catch (e) { return 'none'; }
+    },
+
     // 换课这一族唯一的"离开这一页"的出口。写成方法而不是直接 `location.href=`，
     // 是为了让 e2e 能把**这一个动作**桩掉、读回"它到底想跳去哪"，
     // 而判据本身（尽头判定 / 卡片选课）照样真跑（AGENTS §5「桩要打在动作上」）。
@@ -718,9 +740,50 @@
     // 那一页 `ws=2` 是「课程」那一栏）；换课整条链路只有这一个外部地址，写死在这里好查。
     _COURSE_PICKER_BASE: 'https://i.mooc.chaoxing.com/space/index?ws=2',
 
-    // 一次登录会话里最多连着换几门课。防的是「换过去 → 那门也读不出尽头 → 又换回来」这种乒乓；
-    // 用完就停在原地说话，不半夜把用户的前 8 门课全点开。
-    _COURSE_SWITCH_LIMIT: 8,
+    /**
+     * 批次 87：换课要落的是**课程首页**，不是卡片自己那条 `stucoursemiddle` 链接。
+     *
+     * 现场实测（2026-11-16，38 门里 36 门）：卡片那条 href 的 302 链是
+     * `visit/stucoursemiddle?courseid=&clazzid=` → `mooc1/mooc-ans/mycourse/studentcourse?…&fromMiddle=1`
+     * （一张 JS 中转壳：`chapter_item` 0 个、`toOld` 0 次）→ 最后停在
+     * `mooc2-ans/mycourse/stu?courseid=&clazzid=` —— 那里少一个 `ut=s`，
+     * 站点回的是 **781 字节的「无效的参数」**。于是"课是换了"，可顶层帧既没目录也没任务点，
+     * 日志只会说一句"这一页认不出课程结构"，而**刷课根本没开始**。
+     * 同一对号换到下面这一族：108824 字节、61 个 `chapter_item`、站点自己的 `toOld(...)`
+     * 就挂在第一个章节点上（顶层帧实测 `typeof window.toOld === "function"`、`isToOldLink` 为 false）。
+     */
+    _COURSE_HOME_BASE: 'https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse',
+
+    /**
+     * 拼课程首页地址。两个号都必须**纯数字**（它们只从同一张卡片上成对读出来，
+     * 拿别班的 `clazzid` 必 403 —— AGENTS §2 #12），拼不出来就交空串给调用方定性。
+     * `omitonePick=1` 是"这一页是我们自己导航来的"那一族标记：跨站导航时 sessionStorage
+     * 是两块地方，只有地址能带话（批次 82-B 的口径）。
+     */
+    _courseHomeUrl: function (courseId, clazzId) {
+      var c = String(courseId || '');
+      var k = String(clazzId || '');
+      if (!/^\d+$/.test(c) || !/^\d+$/.test(k)) return '';
+      return this._COURSE_HOME_BASE + '?courseid=' + c + '&clazzid=' + k + '&ut=s&omitonePick=1';
+    },
+
+    // 一次登录会话里最多连着换几门课的**下限**。**真正防乒乓的是 `tried` 名单**（同一门六小时内只进一次），
+    // 这一格只是给"这一轮最多点开多少扇门"封个底。批次 85 从 8 提到 30 —— 因为现在读不到进度的
+    // 卡片也会进去问一次目录，课多的人（现场 38 张卡）不该被 8 门挡在"请手动"上。
+    _COURSE_SWITCH_LIMIT: 30,
+
+    /**
+     * 批次 86：换课预算按**用户中心里实际有多少门可进的课**来给，取它和 `_COURSE_SWITCH_LIMIT` 的较大值。
+     *
+     * 为什么不能写死：同一门六小时内只进一次是 `tried` 名单管的，所以"把整张课表走完"这件事
+     * 结构上不可能乒乓 —— 一个数字卡在那儿，唯一的作用是让课多的人**刷不完自己的课**
+     *（现场 38 张卡片、上限 30，剩 8 门会被一句"到上限了"拦下）。
+     */
+    _courseSwitchBudget: function (cards) {
+      var c = cards || { picked: [], unknown: [] };
+      var navigable = (c.picked || []).length + (c.unknown || []).length;
+      return Math.max(this._COURSE_SWITCH_LIMIT, navigable);
+    },
 
     /**
      * 批次 82-B：这门课刷完了 → 回用户中心挑下一门。
@@ -741,6 +804,7 @@
         reason: String(reason || ''),
         sections: scan.leaves,
         unfinished: scan.unfinished,
+        rev: this._codeRev(),
         activeLeft: Number(scan.activeLeft) > 0 ? scan.activeLeft : 0
       };
       if (!this.configs.autoNextCourse) {
@@ -759,8 +823,9 @@
       } catch (eU) { url = ''; }
       if (!url) return false;
       emitRuntimeLog('warn', 'course finished, back to user center', Object.assign({
-        hint: '这一门课目录里已经没有没做完的小节了，插件现在回用户中心，' +
-          '从「任务点进度 a/b 且 a<b」的课里挑一门接着刷 —— 到那边之后还会有一条 picked / declined 说明挑没挑上',
+        hint: '这一门课目录里已经没有没做完的小节了，插件现在回用户中心挑一门接着刷：' +
+          '先挑卡片上写着「任务点进度 a/b 且 a<b」里进度最远的那门，一门都没有就进那些' +
+          '没写进度行的卡片**让目录判** —— 到那边之后还会有一条 picked / declined 说明挑没挑上',
         href: url.slice(0, 120),
         everyMs: 0
       }, ev));
@@ -770,17 +835,26 @@
 
     // 我们自己导航到用户中心时留在地址上的标记。用户自己打开用户中心时它不存在，
     // `_pickNextCourseFromUserCenter` 第一行就返回 false —— 绝不因为"顺便路过的这一页"去动他的浏览器。
+    // ⚠️ 两侧都认大小写：我们**自己种进去**的参数经站点中转后会被改写（现场读回 `omitonepick`），
+    //    写死小写、读的时候不分大小写（AGENTS §2 #12）。
     _coursePickRequested: function () {
-      try { return /[?&]omitonePick=1/.test(String(location.search || '')); } catch (e) { return false; }
+      try { return /[?&]omitonepick=1/i.test(String(location.search || '')); } catch (e) { return false; }
     },
 
     /**
-     * 批次 82-C：读用户中心的课程卡片，只认平台自己写的那一行「任务点进度: 已完成/总数」。
+     * 批次 82-C：读用户中心的课程卡片。两类分开交 ——
+     *   `picked`  卡片上写得到「任务点进度: 已完成/总数」，可以按比率排序挑最远的先收尾
+     *   `unknown` 卡片上**没有**那一行（同班次的其它课常常是这个形状），但链接是学习通自己的
      *
      * 现场实测（2026-11-16，38 张卡）：16 张读得到这一行（8 张 a<b、8 张 a===b），
-     * 另外 **22 张压根没有这一行**（它们是同班次的其它课，卡片形状与链接一模一样）。
-     * 那 22 张**不许**当成候选 —— 读不到进度就等于不知道它有没有做完，跳进去可能是一门早就刷完的课，
-     * 白烧一整晚。所以这里只交读得到数的，读不到的数量单独报出来，让用户看见"还有这些我没碰"。
+     * 另外 **22 张压根没有这一行**（卡片形状与链接跟前面那 16 张一模一样）。
+     * ⚠️ 批次 85 改过口径：以前那 22 张直接**不碰**、只在 decline 里报个数让人手动。
+     *    那是把"预筛"当成了"判据" —— 一门课到底做没做完，**权威判据是目录那本账**
+     *    （`_catalogCourseScan`：每节都带 `.icon_Completed` 才算刷完），卡片上那一行只是
+     *    省一次导航的便宜筛子。读不到数就甩回手动，等于把"我没证据"的活儿推回给用户。
+     *    现在 `unknown` 排在 `picked` 之后当兜底：真跳进一门早就刷完的课，代价是
+     *    「进去 → 目录说全打勾 → 原路回来换下一门」，**一个任务点都不做、一次 API 都不发**，
+     *    而且 `tried` 名单保证同一门六小时内只进一次 —— 不会空转一整晚。
      *
      * ⚠️ 卡片**不在用户中心那一页的顶层文档里**（2026-11-16 实地量：顶层 `.course` = 0，
      *    38 张全在 `#frame_content` = `mooc2-ans.chaoxing.com/visit/interaction` 里面）。
@@ -791,7 +865,7 @@
      *    README §6 #2 是同一条规矩。e2e 的夹具因此刻意把卡片只放在子帧里，顶层一枚都不放。
      */
     _readCourseCards: function () {
-      var res = { picked: [], noProg: 0, docs: 0 };
+      var res = { picked: [], unknown: [], noProg: 0, noClazz: 0, docs: 0 };
       var docs = [];
       try { docs.push(document); } catch (eTop) { docs = []; }
       try {
@@ -810,18 +884,42 @@
         for (var j = 0; j < list.length; j++) {
           var txt = '';
           try { txt = String(list[j].innerText || '').replace(/\s+/g, ' '); } catch (eT) { txt = ''; }
-          var m = txt.match(/任务点进度[:：]?\s*(\d+)\s*\/\s*(\d+)/);
-          if (!m) { if (/course/.test(String(list[j].className || ''))) res.noProg++; continue; }
           var href = '';
           try {
             var a = list[j].querySelector('a[href*="stucoursemiddle"]');
             href = a ? String(a.getAttribute('href') || '') : '';
           } catch (eA) { href = ''; }
           // 只走学习通自己的域名：卡片链接由页面提供，不收来路不明的地址（防被改成外站跳转）
-          if (!/^https:\/\/([a-z0-9-]+\.)*chaoxing\.com\//i.test(href)) continue;
+          var navigable = /^https:\/\/([a-z0-9-]+\.)*chaoxing\.com\//i.test(href);
+          // ⚠️ 批次 87：候选必须**同时**读得到 `courseid` 与 `clazzid` —— 进课地址是
+          //   `mooc2-ans/mycourse/studentcourse?courseid=&clazzid=&ut=s`，这两个号**成对**来自同一张卡片，
+          //   少一个或拿错（拿别班的 clazzid）站点直接回 403 /「无效的参数」（AGENTS §2 #12）。
+          //   读不到 clazzid 的卡片单独占一格（`noClazz`）报给用户，不许悄悄当成"没有下一门"。
+          var cidM = href.match(/courseid=(\d+)/i);
+          var clazzM = href.match(/clazzid=(\d+)/i);
+          var cid = cidM ? String(cidM[1]) : '';
+          var clazz = clazzM ? String(clazzM[1]) : '';
+          var homeUrl = this._courseHomeUrl(cid, clazz);
+          if (navigable && !homeUrl) res.noClazz++;
+          var enterable = navigable && !!homeUrl;
+          var m = txt.match(/任务点进度[:：]?\s*(\d+)\s*\/\s*(\d+)/);
+          if (!m) {
+            if (/course/.test(String(list[j].className || ''))) res.noProg++;
+            if (enterable) {
+              res.unknown.push({
+                href: href,
+                homeUrl: homeUrl,
+                courseId: cid, clazzId: clazz,
+                name: txt.replace(/\s+/g, ' ').trim().slice(0, 24)
+              });
+            }
+            continue;
+          }
+          if (!enterable) continue;
           res.picked.push({
             done: Number(m[1]), total: Number(m[2]), href: href,
-            courseId: String((href.match(/courseid=(\d+)/i) || [])[1] || ''),
+            homeUrl: homeUrl,
+            courseId: cid, clazzId: clazz,
             name: txt.replace(/任务点进度[:：]?\s*\d+\s*\/\s*\d+/, '').replace(/\s+/g, ' ').trim().slice(0, 24)
           });
         }
@@ -830,10 +928,12 @@
     },
 
     /**
-     * 批次 82-B/C：在**我们自己导航来的**用户中心页上挑一门接着刷的课。
+     * 批次 82-B/C + 85：在**我们自己导航来的**用户中心页上挑一门接着刷的课。
      *
      * 挑法：先接着学「已经开了头但没学完」的那门（比率最大），比率相同按卡片顺序 ——
-     * 免得每门都开个头、38 门全停在半路。全都在 `tried` 里（本轮换过）或压根没有候选 → 停下来说话。
+     * 免得每门都开个头、38 门全停在半路。这一族空了再退到「卡片没写进度行」的那一族，
+     * 按卡片顺序进一门**让目录判**（批次 85：读不到 ≠ 叫用户手动）。
+     * 两族都在 `tried` 里（本轮进过）→ 才停下来说话。
      * @returns {boolean} true = 这一页归我管了（调用方别再打「认不出课程结构」那条 warn）
      */
     _pickNextCourseFromUserCenter: function () {
@@ -849,7 +949,8 @@
       try { justDone = String((String(location.search || '').match(/[?&]omitoneDone=(\d+)/) || [])[1] || ''); } catch (eD) { justDone = ''; }
       if (justDone && ledger.tried.indexOf(justDone) === -1) ledger.tried.push(justDone);
       var cards = this._readCourseCards();
-      var ev = { sw: ledger.sw, limit: this._COURSE_SWITCH_LIMIT, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg };
+      var budget = this._courseSwitchBudget(cards);
+      var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, rev: this._codeRev() };
       if (!this.configs.autoNextCourse) {
         emitRuntimeLog('warn', 'course switch declined: auto switch is off', Object.assign({
           hint: '这一页是插件自己为了换课导航过来的，但「刷完自动换下一门」已经关掉了，' +
@@ -858,9 +959,10 @@
         }, ev));
         return true;
       }
-      if (ledger.sw >= this._COURSE_SWITCH_LIMIT) {
+      if (ledger.sw >= budget) {
         emitRuntimeLog('warn', 'course switch declined: switch budget used up', Object.assign({
-          hint: '这一次已经连续换了 ' + ledger.sw + ' 门课，到上限了（防的是"换过去又换回来"的空转）。' +
+          hint: '这一次已经连续换了 ' + ledger.sw + ' 门课，到上限了（上限 = 这一页能进的课的数量，' +
+            '最少 30 —— 不是拍脑袋的数，是真的换完了才会碰到）。' +
             '插件停在这里不再自动换课 —— 想继续就手动进下一门，或者关掉再打开刷课让它重新起账',
           everyMs: 0
         }, ev));
@@ -872,13 +974,24 @@
         if (!(c.total > 0) || !(c.done < c.total)) continue;
         if (c.courseId && ledger.tried.indexOf(c.courseId) !== -1) continue;
         var ratio = c.total > 0 ? c.done / c.total : 0;
-        if (!best || ratio > best.ratio) best = { card: c, ratio: ratio };
+        if (!best || ratio > best.ratio) best = { card: c, ratio: ratio, blind: false };
+      }
+      // 批次 85：读得到进度的候选一个都不剩时，退到「卡片上没写进度那一行」的那一族 ——
+      // **进去问目录**，别把活儿推回给用户。已进过的（`tried`）跳过，所以这一支每门只走一次。
+      if (!best) {
+        for (var u = 0; u < cards.unknown.length; u++) {
+          var uc = cards.unknown[u];
+          if (uc.courseId && ledger.tried.indexOf(uc.courseId) !== -1) continue;
+          best = { card: uc, ratio: NaN, blind: true };
+          break;
+        }
       }
       if (!best) {
         emitRuntimeLog('warn', 'course switch declined: no course with unfinished task points', Object.assign({
-          hint: '用户中心里能读到「任务点进度 a/b」的卡片都学完了（或者被本轮换课名单排除了）。' +
-            '另有 ' + cards.noProg + ' 张卡片上读不到进度那一行 —— 那些插件**不会**盲进，' +
-            '因为不知道它有没有做完。要么都刷完了，要么请手动进那一门',
+          hint: '用户中心里的卡片这一轮**都进过了**：写得到「任务点进度 a/b」的要么学完、要么进过，' +
+            '读不到那一行的 ' + cards.unknown.length + ' 张也都进去让目录判过一遍了（判据是目录的完成勾，不是卡片那一行）。' +
+            (cards.noClazz ? '另有 ' + cards.noClazz + ' 张卡片上「课程号 + 班号」配不齐 —— 那一族是**进不去**，不是刷完了。' : '') +
+            '所以这一次没有下一门 —— 要么真的全刷完了，要么等六小时换课名单重新起账再试',
           everyMs: 0
         }, ev));
         return true;
@@ -887,13 +1000,126 @@
       ledger.at = Date.now();
       try { this._writeSessionLedger('omitone:course-switch', ledger); } catch (eW) {}
       emitRuntimeLog('warn', 'course switch picked next', Object.assign({
-        hint: '上一门已经刷完，现在进这一门继续（进度 ' + best.card.done + '/' + best.card.total + '）。' +
-          '进去之后原来的那套管线照常跑：站点自己落在哪一节就从哪一节开始，一节一节往前推',
-        href: best.card.href.slice(0, 120),
+        hint: best.blind
+          ? '上一门已经刷完。这一门卡片上没写「任务点进度」，插件**先当它没刷完进去看一眼**：' +
+            '目录里每节都打了勾就原样回来换下一门（一个任务点都不做、一次 API 都不发），' +
+            '有没勾的小节就从站点落的那一节开始推'
+          : '上一门已经刷完，现在进这一门继续（进度 ' + best.card.done + '/' + best.card.total + '）。' +
+            '落点是这门课的课程首页（卡片那条 `stucoursemiddle` 链接落在一张错误页上，批次 87），' +
+            '首页之后还有一条「course home …」说明有没有真进进章节',
+        blind: best.blind ? 1 : 0,
+        unreadable: cards.unknown.length,
+        href: String(best.card.homeUrl || '').slice(0, 120),
         everyMs: 0
       }, ev));
-      try { this._gotoUrl(best.card.href); } catch (eNav) {}
+      try { this._gotoUrl(best.card.homeUrl); } catch (eNav) {}
       return true;
+    },
+
+    /**
+     * 批次 87：**我们自己导航来的那张课程首页**上，用站点自己的 `toOld(...)` 进第一章。
+     *
+     * 为什么非得由我们开口点这一下：顶层帧落在首页时既没有任务点也没有目录（现场实测
+     * `.posCatalog_select` = 0、`.ans-attach-ct` = 0），能点的只有章节本身 ——
+     * `div.chapter_item[id^="cur"][onclick="toOld('课号','章号','班号',0)"]`。
+     * 调它，站点自己拼 `mooc1/mycourse/transfer?…&refer=<带 enc 的 studentstudy>` 并把**顶层帧**换过去；
+     * 我们一行地址都不猜（AGENTS §2 #10「地址只许照抄站点自己的那一串」的最强形式 = 让站点自己拼）。
+     * 三条路都堵着，只剩这一条：
+     *   · `manifest.json` 没有 `all_frames` → "在学习帧里点一下"那一族天生无效；
+     *   · `enc` 是服务端按课算的，只有落到这一页才读得到（用户中心那一页没有它）；
+     *   · 从 `i.mooc` 跨站 fetch `mooc2-ans` 的目录 HTML 会被 CORS 挡（页面世界里没有权限）。
+     *
+     * ⚠️ 判据故意做窄，为的是绝不因为"用户自己点开的一页"去动他的浏览器 —— 三条不齐一律返回
+     *    false（**不认领**，换课那条链照旧走）：① 地址上有我们自己种的标记；② 路径确实是
+     *    `mycourse/studentcourse`（用户中心带着同一个标记，靠这一条分开）；③ 顶层文档里真有一个
+     *    `onclick` 调 `toOld(` 的章节点。认领之后的每一步失败都出日志，不静默（AGENTS §2 #7）。
+     * @returns {boolean} true = 这一拍归换课流程管（已经跳走 / 明确决定不再跳）
+     */
+    _enterChapterFromCourseHome: function () {
+      if (!this._coursePickRequested()) return false;
+      var pathname = '';
+      try { pathname = String(location.pathname || ''); } catch (eP) { pathname = ''; }
+      if (!/\/mycourse\/studentcourse\b/i.test(pathname)) return false;
+      var node = null;
+      try { node = document.querySelector('div.chapter_item[onclick*="toOld("]'); } catch (eQ) { node = null; }
+      if (!node) return false;
+      var onclick = '';
+      try { onclick = String(node.getAttribute('onclick') || ''); } catch (eA) { onclick = ''; }
+      var chapter = '';
+      try { chapter = String(node.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 24); } catch (eT) {}
+      var m = /toOld\(\s*'(\d+)'\s*,\s*'(\d+)'\s*,\s*'(\d+)'/.exec(onclick);
+      var courseId = m ? m[1] : '';
+      var ev = {
+        href: String(location.href || '').slice(0, 110),
+        chapter: chapter,
+        onclick: onclick.slice(0, 90),
+        rev: this._codeRev()
+      };
+      var said = this._homeEnterSaid || (this._homeEnterSaid = {});
+      function decline(reason, hint) {
+        // 一份文档里同一条理由只说一次：这一页不会因为我们重试就变样，每拍重播只会把日志环刷满
+        if (!said[reason]) {
+          said[reason] = 1;
+          emitRuntimeLog('warn', 'course home declined: ' + reason, Object.assign({ hint: hint, everyMs: 0 }, ev));
+        }
+        return true;
+      }
+      if (!this.configs.autoNextCourse) {
+        return decline('auto switch is off', '这一页是插件自己为了换课导航来的课程首页，但「刷完自动换下一门」' +
+          '已经关掉了，所以不替你点章节 —— 自己点一下左边那一章，或者把那个开关打开');
+      }
+      if (!m) {
+        return decline('enter handler args unparsable', '章节点上写着站点自己的 toOld(...)，可是那三个号（课号 / 章号 / 班号）' +
+          '按老形状读不出来 —— 站点改了它自己的进章写法，插件不猜地址（猜错就是拿别班的班号发请求，必 403）。' +
+          '这一门请手动点一下章节，剩下的照常跑');
+      }
+      if (typeof window.toOld !== 'function') {
+        return decline('site enter handler missing', '章节节点在，可这一页已经没有站点自己的 toOld 函数了（页面形状变了）。' +
+          '插件不自己拼那条带 enc 的地址 —— enc 是服务端按课算的，猜出来就是 404。这一门请手动点一下章节');
+      }
+      // 有界尝试：`toOld` 那一跳万一没走成（被站点按住 / 又弹回这一页），不许每拍再叫一次。
+      // 记在**这一页自己那一族的 sessionStorage**里（换页不换源就还在），所以整份文档重载也挡得住；
+      // 跨 30 分钟或换了课就重新起账。
+      var now = Date.now();
+      var led = null;
+      try { led = this._readSessionLedger('omitone:home-enter'); } catch (eL) { led = null; }
+      if (!led || typeof led !== 'object' || String(led.cid || '') !== courseId ||
+          !(Number(led.tries) > 0) || now - Number(led.at || 0) > 30 * 60 * 1000) {
+        led = { cid: courseId, tries: 0, at: 0 };
+      }
+      if (now - Number(led.at || 0) < 5000) return true;
+      if (Number(led.tries) >= 3) {
+        return decline('still not in after 3 tries', '在这一页上叫了 3 次站点自己的「进章」，顶层帧都没能落到章节里 —— ' +
+          '插件停手，不再刷这一页（继续跳只会把这一页来回重载）。' +
+          '请自己点一下左边任意一节，或者关掉再打开刷课让它重新起账');
+      }
+      led.tries = Number(led.tries || 0) + 1;
+      led.at = now;
+      try { this._writeSessionLedger('omitone:home-enter', led); } catch (eW) {}
+      emitRuntimeLog('warn', 'course home enter chapter', Object.assign({
+        hint: '这一页是换课时插件自己导航来的课程首页：顶层文档里那个章节点带着站点自己的 ' +
+          'toOld(课号, 章号, 班号)，现在叫它 —— 由站点自己拼 transfer + 带 enc 的章节地址，' +
+          '换到章节页之后原来的那套管线照常跑（具体刷哪一节交给学习页的目录扫描，首页只管进门）。' +
+          '这一跳没落成的话，下面还会有一条 course home declined 说明是第几次、卡在哪',
+        courseId: courseId,
+        chapterId: m[2],
+        clazzId: m[3],
+        tries: led.tries,
+        everyMs: 0
+      }, ev));
+      try {
+        this._enterCourseHomeChapter(m[1], m[2], m[3]);
+      } catch (eNav) {
+        decline('enter handler threw', '调站点自己的 toOld(...) 时抛了异常，原因写在这一格：' +
+          String((eNav && eNav.message) || eNav || '').slice(0, 120));
+      }
+      return true;
+    },
+
+    // 单独一个方法 = e2e 能把**这一个动作**桩掉、读回它想进哪一章，而判据（标记 / 路径 /
+    // 章节点 / 有界尝试）照样真跑（AGENTS §5「桩要打在动作上」）。
+    _enterCourseHomeChapter: function (courseId, chapterId, clazzId) {
+      window.toOld(courseId, chapterId, clazzId, 0);
     },
 
     _advanceLearningStep: function () {

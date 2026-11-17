@@ -14,9 +14,10 @@
  *    所以每翻一页都调 `this._tickProgress(...)` 刷心跳。**别删这个心跳**（理由同上一条）。
  *    `_runChaoxingVoteJob` 的两段等待同样带心跳与超时。
  *
- * 本段的方法（40 个）：
+ * 本段的方法（42 个）：
  *   _clearDocumentPendingState、_runChaoxingJob、_runChaoxingReadJob、
- *   _runPptAudioJob、_tryAdvanceIdleSection、_runOcsStyleStudy、_shouldWaitForTaskDiscovery、
+ *   _runPptAudioJob、_tryAdvanceIdleSection、_documentHasCourseShape、_pageCouldHoldTaskList、
+ *   _runOcsStyleStudy、_shouldWaitForTaskDiscovery、
  *   _getTaskIdentity、_isTaskStillLoading、_handlePendingTask、_frameHasTaskPoint、
  *   _locateDocumentTask、_extractFrameKey、_isDocumentFrameFinished、
  *   _buildAriaPagedDocumentTask、
@@ -380,11 +381,7 @@
       // 后果不是"白点一下"，是**学习进度停在原地而日志看着像在推进**。
       // 这道门只挡"整页连一个课程标记都认不出"的形状，正常刷课页 / OCS 页都有其中一样，
       // 挡不住它们；被挡下时**一定出日志**，不静默。
-      var looksLikeCourse = false;
-      try {
-        looksLikeCourse = !!(doc.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title') ||
-          document.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title'));
-      } catch (eShape) { looksLikeCourse = true; }   // 读不动就当"像"，不许在这里静默跳走
+      var looksLikeCourse = this._documentHasCourseShape(doc);
       if (!looksLikeCourse) {
         // 批次 82-B：这一页**是我们自己为了换课导航过来的**（地址上带着 `omitonePick=1`）时，
         // 用户中心这一页归换课流程管，挑一课进去；不是我们带来的（用户自己打开用户中心）
@@ -463,6 +460,38 @@
       if (this._switchToNextLearningCard('idle-section')) return true;
       this.nextUnit();
       return true;
+    },
+
+    /**
+     * 「这一页的样子像不像一门课」—— 批次 20-I 那道逃生门的判据，批次 89 把它抽成方法，
+     * 因为现在**两个地方**要问同一句话（空转推进的门 / 空日志该不该说）。写两遍迟早漂开。
+     *
+     * ⚠️ 读不动就当"像" —— 这里宁可多说一句，也不许静默跳走（批次 20-I 的原意）。
+     * @param {Document} [doc] 已经算好的那份文档；不给就自己取主帧、退到外层页
+     */
+    _documentHasCourseShape: function (doc) {
+      var d = doc || null;
+      try {
+        if (!d) d = this._getMainDocument() || document;
+        return !!(d.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title') ||
+          document.querySelector('.ans-attach-ct, .ans-job-icon, [id^="cur"], .posCatalog_select, .prev_title'));
+      } catch (eShape) { return true; }
+    },
+
+    /**
+     * 「这一页有没有可能挂着任务清单」—— 只用来决定**要不要为"这一页还没把清单挂上来"
+     * 那句话写日志**（批次 89）。判据是 DOM 形状**或**网址属于课程那一族，两者都不像才闭嘴：
+     *
+     * - 网址那一半不能省：真刷课页刚加载、任务点标记还没长出来时 DOM 是空的，
+     *   而那正是「还在等清单」最该留话的时候（批次 19-B / 35 就是靠这条查出来的）。
+     * - 用户中心（`i.mooc.chaoxing.com/space/index`）两边都不像 —— 现场实测它
+     *   每 20 秒替这句说一次、`emptyForMs` 一路涨到 12,034,503 毫秒（3.3 小时），
+     *   把 200 条日志环的 31% 吃在一个**永远不会有任务清单**的页面上。
+     *   那一页真正该留的声音是 `study idle declined`（每 120 秒、自带 href），它没动。
+     */
+    _pageCouldHoldTaskList: function () {
+      if (this._documentHasCourseShape()) return true;
+      try { return this._isStudyCourseHref(location.href); } catch (eHref) { return true; }
     },
 
     _runOcsStyleStudy: async function (expectedVersion) {

@@ -593,10 +593,11 @@
       this._completionEvidence = '';
       this._jobTransitionUntil = 0;
       this._studyCompleteAt = 0;
-      // 「点了下一节但页面没动」的防空转计数（判据见 _studyProgressKey）
-      this._nextUnitNoopCount = 0;
-      this._nextUnitNoopKey = '';
-      this._nextUnitBlockedKey = '';
+      // ⚠️ 「点了下一节但页面没动」的防空转记账**不在这里清**（批次 86）。
+      // 它挂在 `_nextUnitNoopMemo()` 上，判据见 `_studyProgressKey`。
+      // 原因：`nextUnit()` 的最后一行调的就是本函数 —— 等于"每数一次立刻抹账"，
+      // 于是真卡死的页面也永远到不了阈值，尽头判定 `_leaveFinishedCourse('next-noop')`
+      // 一次都没被问过（2026-11-16 现场：进度键 7 轮不变、计数轮轮为 0）。
       this._chapterChangedAt = Date.now();
       this._attachmentFingerprint = '';
       this._ocsStudyStarted = false;

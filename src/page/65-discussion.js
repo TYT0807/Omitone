@@ -1421,7 +1421,14 @@
         // 真讨论页有自己的网址形状（groupweb / course/topic / bbscircle），
         // 靠一句导航里的「讨论」就把课程页当成回帖页，代价是往用户班群里发垃圾帖。
         if (this._isStudyCourseHref(href)) return this._declineDiscussionPage('study-page', { href: href.slice(0, 90) });
-        if (!this._discussionReturnFresh()) return this._declineDiscussionPage('return-jump-expired', { href: href.slice(0, 90) });
+        // ⚠️ 批次 89：正文里连一个讨论字样都没有的页面，「放宽窗口过期」这句是空话 ——
+        // 它承诺的是"我们本来要跳去回帖页、窗口过了才认不出"，可这页压根没像过讨论页，
+        // 什么东西都没被跳过。现场实测这一支 16 分钟里在用户中心刷了 8 条。
+        // 正文**有**讨论字样时照旧说：那才是"看着像回帖页、但我们不是自己跳过去的"。
+        if (!this._discussionReturnFresh()) {
+          if (!bodyHit) return false;
+          return this._declineDiscussionPage('return-jump-expired', { href: href.slice(0, 90) });
+        }
         if (!bodyHit) return this._declineDiscussionPage('no-discussion-text', { href: href.slice(0, 90) });
         relaxed = true;
       }

@@ -14,7 +14,7 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（44 个）：
+ * 本段的方法（46 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
  *   _catalogItemForChapter、_catalogUnfinishedCount、_catalogCourseScan、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
@@ -29,7 +29,8 @@
  *   _noteQuizParseRetryExhausted、_quizScanRetrySignal、
  *   _noteTaskFrameStillLoading、_skipCompletedEvidence、_searchIFramesOcs、
  *   _taskDiscoveryWindowMs、_noteOcsDiscoveryTick、
- *   _searchChaoxingJobOcs、_studyProgressKey、_ensureOcsStudyRunner、_searchChaoxingJob、
+ *   _searchChaoxingJobOcs、_studyProgressKey、_nextUnitNoopMemo、_clearNextUnitNoop、
+ *   _ensureOcsStudyRunner、_searchChaoxingJob、
  *   _getVisibleTaskCompletionState、_isActiveDocumentPending、
  *   _isActiveStudyJobPending
  * ========================================================================== */
@@ -1667,6 +1668,27 @@
     },
 
     /**
+     * 「点了下一节但页面没动」的**跨轮**记账（判据见 `_studyProgressKey`，用法见 `_ensureOcsStudyRunner`）。
+     *
+     * ⚠️ 这一格**故意不写进 `_resetRuntimeState()`**：`nextUnit()` 的最后一行就是那个重置，
+     *    而这个计数要数的正是那一次点击 —— 写在被重置的字段上等于"每次数完立刻抹掉"，
+     *    阈值永远到不了（批次 86 实测：进度键连续 7 轮不变、计数轮轮为 0）。
+     * 清零只有两条路：进度键变了（页面真的走了），或这一轮有推进证据
+     *（任务点判完成 / 进度快照变化）—— 都不是"匹配到了一个任务点"。
+     */
+    _nextUnitNoopMemo: function () {
+      if (!this._nextUnitNoopStuck) this._nextUnitNoopStuck = { key: '', rounds: 0, notified: '' };
+      return this._nextUnitNoopStuck;
+    },
+
+    _clearNextUnitNoop: function () {
+      var memo = this._nextUnitNoopMemo();
+      memo.key = '';
+      memo.rounds = 0;
+      memo.notified = '';
+    },
+
+    /**
      * 「这一节的附件清单可能还没渲染完」给多长的发现窗口 —— 两条 runner 共用一份口径。
      *
      * ⚠️ 0 个附件**反而要等最久**。真实日志（2026-11-11，3.1 那一节 8 秒被翻过去）：
@@ -1805,9 +1827,11 @@
                   name: job.name || ''
                 });
               }
-              // 有活干 = 有进展，把"点下一节没反应"的计数清零
-              self._nextUnitNoopCount = 0;
-              self._nextUnitBlockedKey = '';
+              // ⚠️ 「匹配到任务点」**不再**清零"点下一节没反应"的记账（批次 86）。
+              // 现场（2026-11-16）：最后一节压着一份**平台判已结束**的问卷调查，每轮都匹配得到它、
+              // 点开、发现一个可勾的选项都没有、进冷却 —— 旧写法在这里当成"有活干"把账清了，
+              // 于是那节永远走不到尽头判定，换课判据一次都没被问过。
+              // 现在只在下面**有推进证据**的那两格清零（任务点判完成 / 进度快照变了）。
               // 同一份任务点被**每秒**重复匹配时不再刷屏。
               // 实测（2026-10-17）：答题链路的"无进展"窗口是 60 秒，期间每秒都会重新匹配一次，
               // 于是「study matched job」也每秒一条，把 200 条的日志缓冲刷满。
@@ -1829,6 +1853,8 @@
               // 那样会让必做任务点被误跳过。
               var jobKey = self._taskPointKey(job);
               if (self._isJobCompleted(job)) {
+                // 推进证据之一：这个任务点这轮真的被平台认成完成了
+                self._clearNextUnitNoop();
                 if (jobKey) {
                   if (self._taskAttempts) delete self._taskAttempts[jobKey];
                   if (self._taskProgress) delete self._taskProgress[jobKey];
@@ -1840,6 +1866,9 @@
                 self._taskProgress[jobKey] = snapshot;
                 if (snapshot && previous !== undefined && snapshot === previous) {
                   self._countTaskIncomplete(job, 'stuck-no-progress');
+                } else if (snapshot && previous !== undefined) {
+                  // 推进证据之二：进度快照变了 = 这一轮确实往前挪了一点
+                  self._clearNextUnitNoop();
                 }
               }
 
@@ -2017,15 +2046,24 @@
             // 判据：连续 3 轮准备点下一节时，「学习进度键」**完全相同**
             //（章节 + 学习卡片 + 附件指纹三者都没变 = 前一次点击没起作用）。
             // 真的往前走了，键必然变，所以不会误伤。
+            //
+            // ⚠️ 记账挂在 `_nextUnitNoopMemo()` 那个**跨轮**对象上，不挂在会被清掉的字段上（批次 86）。
+            //    `nextUnit()` 的最后一行就是 `_resetRuntimeState()` —— 这个计数要数的正是那一次点击，
+            //    而点击自己把账抹了。实测（2026-11-16，最后一节压着已结束的问卷）：
+            //    连续 7 轮进度键一模一样（`distinctKeys:1`），计数却轮轮被抹回 `0` ——
+            //    「连着 3 轮」这个阈值结构上到不了，下面的尽头判定一次都没被问过，
+            //    用户看到的就是「这一门刷完了却不走下一门」。
             var progressKey = self._studyProgressKey();
-            if (progressKey && progressKey === self._nextUnitNoopKey) {
-              self._nextUnitNoopCount = (self._nextUnitNoopCount || 0) + 1;
+            var noop = self._nextUnitNoopMemo();
+            if (!progressKey) {
+              self._clearNextUnitNoop();
+            } else if (progressKey !== noop.key) {
+              self._clearNextUnitNoop();
+              noop.key = progressKey;
             } else {
-              self._nextUnitNoopCount = 0;
-              self._nextUnitBlockedKey = '';
+              noop.rounds = (noop.rounds || 0) + 1;
             }
-            self._nextUnitNoopKey = progressKey;
-            if (self._nextUnitNoopCount >= 3) {
+            if (noop.rounds >= 3) {
               // 批次 82-A：先问一句「这门课是不是到尽头了」，再决定要不要喊"卡住"。
               // 旧写法在**最后一节**上打的也是这条 error（「本学习卡片上还有没做完的任务点」），
               // 而那时候这门课一个小节都没剩 —— 用户看到的就是「刷完了却被告知卡住了，
@@ -2034,10 +2072,10 @@
                 self._ocsStudyStarted = false;
                 return;
               }
-              if (self._nextUnitBlockedKey !== progressKey) {
-                self._nextUnitBlockedKey = progressKey;
+              if (noop.notified !== progressKey) {
+                noop.notified = progressKey;
                 emitRuntimeLog('error', 'study stuck: 下一节点了没反应，已停止空转', {
-                  rounds: self._nextUnitNoopCount,
+                  rounds: noop.rounds,
                   attachments: discovery.seen,
                   hint: '本学习卡片上还有没做完的任务点，平台因此不让往下走。请手动处理它（例如把这道题做完交卷）；' +
                         '处理完会自动继续，也可在控制台执行 xxtAI.next() 手动推进'
@@ -2180,9 +2218,18 @@
         if (!(opts && opts.query)) {
           var emptyNow = Date.now();
           if (!this._searchEmptySince) this._searchEmptySince = emptyNow;
+          // ⚠️ 批次 89：**这一页压根不可能挂任务清单时，这句闭嘴。**
+          // 用户中心（`i.mooc.chaoxing.com/space/index`）现场实测 `emptyForMs` 涨到
+          // 12,034,503 毫秒 —— 3.3 小时里每 20 秒说一次「清单还没挂上来，我还在等」，
+          // 而它永远不会有；200 条日志环里它一家占 48 条（24%）。
+          // 那一页该留的声音是 `study idle declined`（每 120 秒一条、带当前地址），它没动。
+          // 判据见 `_pageCouldHoldTaskList`：DOM 形状**或**网址属于课程那一族，两边都不像才静音 ——
+          // 网址那一半是保住「真刷课页刚加载、标记还没长出来」那种最该留话的时刻。
+          // 上面的 `_searchEmptySince` 记账照旧不动：它是跨拍的表，静音不等于忘记。
           // 节流 5 秒 → 20 秒，与 `study no runnable job` 用同一把尺：
           // 同一份证据窗经不起两句同义的话各刷各的。
-          if (!this._lastSearchEmptyLogAt || emptyNow - this._lastSearchEmptyLogAt > 20000) {
+          if (this._pageCouldHoldTaskList() &&
+            (!this._lastSearchEmptyLogAt || emptyNow - this._lastSearchEmptyLogAt > 20000)) {
             this._lastSearchEmptyLogAt = emptyNow;
             var emptyMeta = {
               attachments: attachments.length,

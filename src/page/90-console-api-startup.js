@@ -299,6 +299,9 @@
     probe: function () {
       if (!app) return null;
       var out = { at: new Date().toISOString(), href: String(location.href || '').slice(0, 110) };
+      // 这一页跑的是哪一版 page.js —— 现场实测同一台浏览器三个标签页可以是三个指纹，
+      // 而「说了刷完了却一句 picked 都没有」多半就是那一页还是旧的那一份（要 F5，不是判据坏了）。
+      safe('rev', function () { return app._codeRev(); });
       function safe(name, fn) {
         try { out[name] = fn(); } catch (e) {
           out[name] = 'ERR:' + (e && e.name ? e.name : '?') + ' ' + String((e && e.message) || e || '').slice(0, 50);

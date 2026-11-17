@@ -1708,7 +1708,9 @@
       if (/picked next/.test(msg)) {
         state = 'wait';
         task = '进入下一门';
-        detail = '上一门刷完了，正在进这一门（本轮换课 ' + (Number(data.sw) || 1) + '/' + (Number(data.limit) || 8) + '）';
+        detail = (Number(data.blind) === 1
+          ? '上一门刷完了；这一门卡片上没写进度，先进去让目录判一下'
+          : '上一门刷完了，正在进这一门') + '（本轮换课 ' + (Number(data.sw) || 1) + '/' + (Number(data.limit) || 30) + '）';
       } else if (/back to user center/.test(msg)) {
         state = 'wait';
         task = '这一门刷完了';
@@ -1720,11 +1722,11 @@
       } else if (/budget used up/.test(msg)) {
         state = 'warn';
         task = '刷完不换下一门';
-        detail = '这一次换课已到上限（' + (Number(data.sw) || 0) + '/' + (Number(data.limit) || 8) + '），请手动进下一门';
+        detail = '这一次已经连着看过 ' + (Number(data.sw) || 0) + '/' + (Number(data.limit) || 30) + ' 门，到封顶了；六小时后重新起账，现在要接着刷请手动进下一门';
       } else if (/no course with unfinished/.test(msg)) {
         state = 'warn';
         task = '刷完不换下一门';
-        detail = '读得到进度的课都刷完了，另有 ' + (Number(data.noProg) || 0) + ' 张卡片读不到进度（不盲进）';
+        detail = '用户中心的卡片这一轮都进过了（其中 ' + (Number(data.noProg) || 0) + ' 张没写进度、已让目录判过），没有下一门了';
       } else {
         state = 'warn';
         task = '这一门刷完了';
