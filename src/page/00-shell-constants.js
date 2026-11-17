@@ -75,6 +75,25 @@
   var VOTE_COOLDOWN_MS = 5 * 60 * 1000;
   var VOTE_ENDED_COOLDOWN_MS = 30 * 60 * 1000;
 
+  /**
+   * 批次 93：被站点顶下线的学习页 —— 三个地板（判据在 `64-tasks-loop.js` 的那三件套里）。
+   *
+   * 单独把数字放到这里，是为了让「日志里承诺多久后再说一次」和「判据里真的等多久」
+   * 是同一个数：以前 `willRetryInMs` / `everyMs` 各抄一遍 300000，改判据时文档就悄悄在说谎
+   * （批次 37/51 那一族的数字版）。
+   *
+   * `ASK_PENDING_MS` 管的是「还没问到答案」—— 这一族**不接管这一拍**，把话交回老那句地板
+   *   （`study idle declined`，在 `62-tasks-run.js` 里）；认领了却一个字都不说，
+   *   在沙盒里等于让这一族永久哑掉（AGENTS §2 #7）；
+   * `ASK_FRESH_MS` 管的是「答案已经有了」—— 无论有用没用，这段时间内都不重问后台
+   *   （停在门户页时每一拍都走到这里，2 秒敲一次后台等于自己造轮询）；
+   * `SILENCE_MS` 管的是「同一格说了之后」—— 这一族真说话的那几格都不许永久哑掉；
+   *   「还在问」与「读不出」两格不在这一族说话，所以不受这把尺管。
+   */
+  var DISPLACED_ASK_PENDING_MS = 20000;
+  var DISPLACED_ASK_FRESH_MS = 60000;
+  var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
+
   var DEFAULT_CONFIG = {
     playbackRate: 1.0,
     autoMaxPlaybackRate: true,

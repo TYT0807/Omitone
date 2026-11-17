@@ -2894,6 +2894,474 @@ async function testJobRejectLogThrottle() {
     JSON.stringify({ due: dueCalls.length, loading: loadCalls.length }));
 }
 
+/**
+ * 批次 93：被站点顶下线的学习页 —— 四态分开说，能自己回去才回去。
+ *
+ * 现场（2026-11-16 用户原话「连续开两个课程有一个会被顶下去」；巡检
+ * notes/field-watch-20261117-*.md 里那一枚停在 `i.mooc.chaoxing.com/space/index` 的标签页）：
+ * 站点把同一账号的第二枚学习页顶下线，被顶的那一枚从此只会每 120 秒说一句
+ * 「这一页认不出课程结构，请手动回到章节页」，可底下有四种完全不同的真相 ——
+ * 能自己回去 / 另一枚还占着账号（不能抢）/ 回去过两次还被顶（该交给人的）/ 这页压根不是插件带来的。
+ * 压成一句时，「不用管」和「这一门一直没刷」在用户眼里长得一模一样（AGENTS §2 #12 那一族）。
+ *
+ * ⚠️ 四件套都从盘上取**真实那一份**来跑，三个地板也从 `00-shell-constants.js` 读回来：
+ *   后台 `background.js`               `noteTabStudyUrl` / `pruneTabStudyMemory` / `studyRescueVerdict`
+ *   页面 `src/page/64-tasks-loop.js`   `_askStudyTabState` / `_displacedStudyPagePlan` / `_speakDisplacedStudyPage`
+ * 抄进测试就等于两边各拿一把尺，改生产阈值时测试不会跟着红。
+ */
+async function testDisplacedStudyPageRescue() {
+  console.log('\n[21] 被站点顶下线的学习页：四态分开说，能自己回去才回去');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var bg = read('background.js');
+  var shell = read('src/page/00-shell-constants.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var runTxt = read('src/page/62-tasks-run.js');
+  var cTxt = read('content.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return '';
+    return src.slice(r.start, r.end + 5);
+  };
+  // 页面那三件是 app 的属性，跑之前要把自由变量注进去（emitRuntimeLog / location / bridgeSend）
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var args = names.map(function (k) { return inj[k]; });
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, args);
+  };
+  // 后台那几件是顶层 function，只在这一层缩进闭合；抓过了头就交白卷，宁可不跑
+  var topFnText = function (src, name) {
+    var at = src.indexOf('\n  function ' + name + '(');
+    if (at < 0) return null;
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n  }', start);
+    if (end < 0) return null;
+    var text = src.slice(start, end + 4);
+    return text.indexOf('\n  function ') >= 0 ? null : text;
+  };
+  var evalNum = function (expr) {
+    try { return Number(new Function('return (' + expr + ')')()); } catch (e) { return null; }
+  };
+  var numVar = function (src, name) {
+    var m = src.match(new RegExp('var ' + name + ' = ([^;\\n]+);'));
+    return m ? evalNum(m[1]) : null;
+  };
+
+  var PENDING = numVar(shell, 'DISPLACED_ASK_PENDING_MS');
+  var FRESH = numVar(shell, 'DISPLACED_ASK_FRESH_MS');
+  var SILENCE = numVar(shell, 'DISPLACED_SILENCE_MS');
+  var AWAY = numVar(bg, 'STUDY_AWAY_WINDOW_MS');
+  var CAP = numVar(bg, 'STUDY_RESCUE_CAP');
+  var MEM_MAX = numVar(bg, 'STUDY_MEMORY_MAX');
+  var reM = bg.match(/var STUDY_URL_RE = (\/[^;\n]+\/[a-z]*)/);
+  var SRE = null;
+  try { SRE = reM ? new Function('return (' + reM[1] + ')')() : null; } catch (eRe) { SRE = null; }
+
+  // 现场实测的两个地址（合成号，不带真实课程）
+  var STUDY_URL = 'https://mooc1.chaoxing.com/mycourse/studentstudy?courseId=7&clazzid=3&cpi=9';
+  var PORTAL_URL = 'https://i.mooc.chaoxing.com/space/index?t=1700000000000';
+
+  // 后台那一本账：把 var 声明 + 三个顶层函数原样搬进一个闭包里跑，Date 由测试控制
+  var fakeNow = 1700000000000;
+  var harness = null;
+  (function () {
+    var varsAt = bg.indexOf('var STUDY_URL_RE');
+    var varsEnd = bg.indexOf('Object.create(null);', varsAt);
+    var varsBlock = (varsAt >= 0 && varsEnd > varsAt)
+      ? bg.slice(varsAt, varsEnd + 'Object.create(null);'.length) : '';
+    var fPrune = topFnText(bg, 'pruneTabStudyMemory');
+    var fNote = topFnText(bg, 'noteTabStudyUrl');
+    var fVerdict = topFnText(bg, 'studyRescueVerdict');
+    if (!varsBlock || !fPrune || !fNote || !fVerdict) return;
+    try {
+      harness = new Function('Date', 'return (function () {\n' + varsBlock + '\n' + fPrune + '\n' + fNote + '\n' + fVerdict +
+        '\nreturn { note: noteTabStudyUrl, verdict: studyRescueVerdict,' +
+        ' mem: function () { return tabStudyMemory; },' +
+        ' reset: function () { tabStudyMemory = Object.create(null); } };\n})()')(
+        { now: function () { return fakeNow; } });
+    } catch (eBuild) { harness = null; }
+  })();
+
+  // 三个地板住在 00 那片（同一个 IIFE 作用域），被单独取出来跑时看不见，只能按名字注进去；
+  // 生产里改了名而测试还注旧名，ReferenceError 会当场响，不会静默当成没回归。
+  var floors = {
+    DISPLACED_ASK_PENDING_MS: PENDING,
+    DISPLACED_ASK_FRESH_MS: FRESH,
+    DISPLACED_SILENCE_MS: SILENCE
+  };
+  var plan = buildFrom(loop, '_displacedStudyPagePlan', floors);
+  var logs = [];
+  var speak = buildFrom(loop, '_speakDisplacedStudyPage', {
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); },
+    location: { href: PORTAL_URL },
+    DISPLACED_SILENCE_MS: SILENCE
+  });
+  var sends = [];
+  var askMs = [];
+  var askAnswer = null;
+  // `Date` 也注进去：缓存上的时刻必须由测试控制，否则这一族断言会跟着真实时钟漂
+  // （地板是 20 秒/60 秒，而一次全量跑里两条断言之间就可能跨过它 —— 那叫不稳定，不叫覆盖）。
+  var askNow = 0;
+  var ask = buildFrom(loop, '_askStudyTabState', Object.assign({
+    bridgeSend: function (type, payload) {
+      sends.push({ type: type, payload: payload });
+      return Promise.resolve(askAnswer);
+    },
+    Date: { now: function () { return askNow; } }
+  }, floors));
+
+  check('①′ 四件套都能从盘上取出来真跑，三个地板也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    !!harness && typeof plan === 'function' && typeof speak === 'function' && typeof ask === 'function' &&
+    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH,
+    'harness=' + !!harness + ' plan=' + typeof plan + ' speak=' + typeof speak + ' ask=' + typeof ask +
+      ' floors=' + JSON.stringify([PENDING, FRESH, SILENCE]));
+  if (!harness || typeof plan !== 'function' || typeof speak !== 'function' || typeof ask !== 'function') return;
+  if (!(PENDING > 0 && FRESH > PENDING && SILENCE > FRESH)) return;
+  var verdict = harness.verdict;
+  var flushMicro = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+
+  var askBodyTxt = bodyOf(loop, '_askStudyTabState');
+  var planBodyTxt = bodyOf(loop, '_displacedStudyPagePlan');
+  var speakBodyTxt = bodyOf(loop, '_speakDisplacedStudyPage');
+  check('② 三个地板与后台那两个数都从源码读回来（不是抄进测试的常量），而且那三件套真的引用常量、没在原地再抄一遍数字 —— 日志里承诺的等待和判据真的等待必须是同一个数',
+    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH && AWAY > SILENCE && CAP >= 1 && MEM_MAX >= 8 &&
+    askBodyTxt.indexOf('DISPLACED_ASK_PENDING_MS') >= 0 && askBodyTxt.indexOf('DISPLACED_ASK_FRESH_MS') >= 0 &&
+    planBodyTxt.indexOf('DISPLACED_ASK_PENDING_MS') >= 0 && planBodyTxt.indexOf('DISPLACED_SILENCE_MS') >= 0 &&
+    speakBodyTxt.indexOf('DISPLACED_SILENCE_MS') >= 0 &&
+    !/[<>=] (20000|60000|300000)\b/.test(askBodyTxt + planBodyTxt + speakBodyTxt),
+    JSON.stringify({ pending: PENDING, fresh: FRESH, silence: SILENCE, away: AWAY, cap: CAP, memMax: MEM_MAX }));
+
+  check('③ 那条 URL 判据从源码读回来，且现场两个地址一个算学习页、一个不算（被顶回去落在用户中心门户，它不许被当成「还在刷课」）',
+    SRE instanceof RegExp && SRE.test(STUDY_URL) === true && SRE.test(PORTAL_URL) === false,
+    'pattern=' + (SRE && SRE.source));
+
+  var N = 1700000000000;
+  var mkMem = function (over) {
+    return Object.assign({ studyHref: STUDY_URL, studyAt: N - 60000, awayAt: N - 30000, rescues: 0 }, over || {});
+  };
+  var rowsV = [
+    { n: '台账里压根没有这一枚', mem: null, others: 0, reason: 'never-study', may: false, was: false, href: '' },
+    { n: '账上 studyAt 是 0', mem: { studyHref: STUDY_URL, studyAt: 0, awayAt: 0, rescues: 0 }, others: 0, reason: 'never-study', may: false, was: false, href: '' },
+    { n: '刚才在刷、现在被顶走', mem: mkMem(), others: 0, reason: 'go-back', may: true, was: true, href: STUDY_URL },
+    { n: '另一枚学习页还活着', mem: mkMem(), others: 1, reason: 'another-study-tab', may: false, was: true, href: STUDY_URL },
+    { n: '自己回去过 CAP 次', mem: mkMem({ rescues: CAP }), others: 0, reason: 'rescue-cap', may: false, was: true, href: STUDY_URL },
+    { n: '上一次刷课早已超窗', mem: mkMem({ studyAt: N - AWAY - 5000, awayAt: 0 }), others: 0, reason: 'study-too-long-ago', may: false, was: false, href: '' },
+    { n: '数不出有几枚（NaN）', mem: mkMem(), others: NaN, reason: 'others-unknown', may: false, was: true, href: STUDY_URL },
+    { n: '数不出有几枚（负数）', mem: mkMem(), others: -3, reason: 'others-unknown', may: false, was: true, href: STUDY_URL }
+  ];
+  var badV = rowsV.filter(function (r) {
+    var o = verdict(r.mem, r.others, N);
+    return o.reason !== r.reason || o.mayRescue !== r.may || o.wasStudy !== r.was || o.studyHref !== r.href;
+  }).map(function (r) {
+    var o = verdict(r.mem, r.others, N);
+    return r.n + '[' + o.reason + '/may=' + o.mayRescue + '/was=' + o.wasStudy + ']';
+  });
+  check('④ 四态真值表逐格对得上（外加一格：数不清账号里有几枚时**不许导航** —— 把这一枚送回去就是同时开两枚，站点会顶掉另一门）',
+    badV.length === 0, '对不上的格=' + JSON.stringify(badV));
+
+  var vAnother = verdict(mkMem(), 1, N);
+  check('⑤ 另一枚学习页还活着时 wasStudy 仍为真（这一枚确实是学习页，只是不能抢），但 mayRescue 必须假、一次都不许导航（AGENTS §2 #15）',
+    vAnother.wasStudy === true && vAnother.mayRescue === false && vAnother.reason === 'another-study-tab' &&
+    vAnother.otherStudyTabs === 1, JSON.stringify(vAnother));
+
+  var vLate = verdict(mkMem({ studyAt: N - AWAY - 120000, awayAt: 0 }), 0, N);
+  check('⑥ 上一次刷课早已超出时间窗：不回去，但**不许**说成「这页从没刷过课」—— 年龄要带得回来、理由要和学习页缺失那一格分开',
+    vLate.reason === 'study-too-long-ago' && vLate.reason !== 'never-study' &&
+    vLate.studyAgeMs > AWAY && vLate.studyAgeMs !== -1 && vLate.mayRescue === false,
+    JSON.stringify({ reason: vLate.reason, age: vLate.studyAgeMs, away: AWAY }));
+
+  // ── 台账记账（noteTabStudyUrl 真写、真读回来比）───────────────────────────
+  // ⚠️ 必须**冻结快照**再比对：账上存的是活对象，后面每一次 note 都会改它（超窗那一支
+  //    就是把同一枚对象的 awayAt 又写了一次）。直接拿引用比，读到的永远是最后那个值。
+  var snap = function (id) {
+    var o = harness.mem()[id];
+    return o ? Object.assign({}, o) : null;
+  };
+  harness.reset();
+  fakeNow = N;
+  harness.note(11, STUDY_URL);
+  var e11 = snap(11);
+  check('⑦ 学习页导航把地址与时刻记下来（时刻走的是注入的 Date，不是测试自己造的第二把尺）',
+    !!e11 && e11.studyHref === STUDY_URL && e11.studyAt === N && e11.awayAt === 0 && e11.rescues === 0,
+    JSON.stringify(e11));
+
+  harness.note(11, PORTAL_URL);
+  var away1 = snap(11).awayAt;
+  harness.note(11, 'https://www.chaoxing.com/other');
+  var away2 = snap(11).awayAt;
+  check('⑧ 被顶走的时刻在第一次非学习页导航上落账（这是「离开多久」的基准，没它就没法说「刚被顶走」还是「停了一整天」）',
+    away1 === N && away2 > 0 && snap(11).studyHref === STUDY_URL,
+    JSON.stringify({ away1: away1, away2: away2, fakeNow: fakeNow }));
+  check('⑨ 第二次导航不移动 awayAt（否则「离开多久」会被自己的心跳抹掉，永远数不到阈值），studyHref 也不许被非学习页地址覆盖（那就是回去的靶子）',
+    away2 === away1 && snap(11).studyHref === STUDY_URL,
+    JSON.stringify({ away1: away1, away2: away2 }));
+
+  // 窗内走回来 = 自愈一次；超窗走回来 = 用户自己重开，不算自愈
+  fakeNow = N + 60000;
+  harness.note(11, STUDY_URL + '&back=1');
+  var backIn = snap(11);
+  var lateAt = N + AWAY + 10 * 60000;
+  fakeNow = lateAt - 1000;
+  harness.note(11, PORTAL_URL);
+  var beforeLateBack = snap(11);
+  fakeNow = lateAt;
+  harness.note(11, STUDY_URL + '&back=2');
+  var backLate = snap(11);
+  check('⑩ 窗内自己走回来记一次自愈并把 awayAt 归零；超窗之后走回来**不涨**自愈次数（那是人手动重开的，账不许算到插件头上 —— 否则两三次后就直接放弃换课）',
+    backIn.rescues === 1 && backIn.awayAt === 0 && backIn.studyAt === N + 60000 &&
+    beforeLateBack.rescues === 1 && beforeLateBack.awayAt > backIn.awayAt &&
+    backLate.rescues === 1 && backLate.awayAt === 0 && backLate.studyAt === lateAt,
+    JSON.stringify({ inWin: backIn, displacedAgain: beforeLateBack, outWin: backLate }));
+
+  var keysBefore = Object.keys(harness.mem()).length;
+  harness.note('12', STUDY_URL);
+  harness.note(12.5, STUDY_URL);
+  harness.note(13, null);
+  harness.note(14, 42);
+  var dirtyKept = Object.keys(harness.mem()).length - keysBefore;
+  harness.reset();
+  for (var mi = 0; mi < MEM_MAX + 5; mi++) {
+    fakeNow = N + mi * 1000;
+    harness.note(100 + mi, STUDY_URL);
+  }
+  var idsLeft = Object.keys(harness.mem()).length;
+  check('⑪ 台账卫生：tabId 不是整数、地址不是字符串都不落账（脏参数会把别人那一枚的账写歪）；台账封个底，超限时按 studyAt 丢最旧的而不是无限涨（开过很多标签页的会话不能吃光 SW 内存）',
+    dirtyKept === 0 && !harness.mem()[12] && !harness.mem()[13] && !harness.mem()[14] &&
+    idsLeft === MEM_MAX && harness.mem()[100] === undefined && harness.mem()[104] === undefined &&
+    harness.mem()[100 + MEM_MAX + 4] !== undefined,
+    JSON.stringify({ dirtyKept: dirtyKept, idsLeft: idsLeft, max: MEM_MAX }));
+
+  harness.reset();
+  fakeNow = N;
+  harness.note(21, STUDY_URL);
+  fakeNow = N + 8000;
+  harness.note(21, PORTAL_URL);
+  var chained = verdict(snap(21), 0, N + 20000);
+  check('⑫ 记的那本账喂得进判定：noteTabStudyUrl 写的字段名与 studyRescueVerdict 读的字段名对得上（拼错一个字段这一格立刻红），离开时长从账上读回来',
+    chained.reason === 'go-back' && chained.mayRescue === true && chained.studyHref === STUDY_URL &&
+    chained.awayMs === 12000 && chained.rescues === 0, JSON.stringify(chained));
+
+  // ── 页面侧四态（cache 形状就是 _askStudyTabState 写的那一份）──────────────
+  var cacheOf = function (over) {
+    return Object.assign({
+      pendingAt: 0, at: N, answered: true, ok: true, reason: '', studyHref: '',
+      studyAgeMs: 0, awayMs: 0, otherStudyTabs: 0, rescues: 0, mayRescue: false
+    }, over || {});
+  };
+  var rowsAsk = [
+    { n: '压根还没问', cache: null, want: 'asking' },
+    { n: '问了、答案还没回来（地板内）', cache: cacheOf({ answered: false, ok: false, pendingAt: N - 1000 }), want: 'asking' },
+    { n: '问了但始终没答案（地板外）', cache: cacheOf({ answered: false, ok: false, pendingAt: N - PENDING - 1 }), want: 'unknown' },
+    { n: '问到过、可那条答案没用', cache: cacheOf({ answered: true, ok: false, reason: 'unreadable' }), want: 'unknown' }
+  ];
+  var badAsk = rowsAsk.filter(function (r) { return plan(r.cache, N, '', 0) !== r.want; })
+    .map(function (r) { return r.n + '[' + plan(r.cache, N, '', 0) + ']'; });
+  check('⑬ 「还没问 / 还在问 / 问了没答案 / 问到过但答案没用」四格分开：只有**还没拿到答案**才允许不说话，拿到过没用的那条必须立刻落进读不出（否则后台一直答非所问时这一族永久哑掉）',
+    badAsk.length === 0, '落错的格=' + JSON.stringify(badAsk));
+
+  var rowsAct = [
+    { n: '能自己回去', cache: cacheOf({ mayRescue: true, reason: 'go-back', studyHref: STUDY_URL }), want: 'go-back' },
+    { n: '另一枚占着账号', cache: cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2 }), want: 'another-page' },
+    { n: '回去过两次还被顶', cache: cacheOf({ reason: 'rescue-cap', rescues: CAP }), want: 'gave-up' },
+    { n: '这页从没当过学习页', cache: cacheOf({ reason: 'never-study' }), want: 'not-ours' },
+    { n: '上一次刷课早已超窗', cache: cacheOf({ reason: 'study-too-long-ago', studyAgeMs: AWAY + 60000 }), want: 'not-ours' },
+    { n: '数不出有几枚', cache: cacheOf({ reason: 'others-unknown', otherStudyTabs: -1 }), want: 'unknown' },
+    { n: '后台给了个没见过的说法', cache: cacheOf({ reason: '突然想起来了' }), want: 'unknown' }
+  ];
+  var badAct = rowsAct.filter(function (r) { return plan(r.cache, N, '__没说过过的另一种说法__', 0) !== r.want; })
+    .map(function (r) { return r.n + '[' + plan(r.cache, N, '__没说过过的另一种说法__', 0) + ']'; });
+  check('⑭ 后台那一格理由到界面那一句话的映射逐格对得上（七格都走一遍：五种 reason + 数不出 + 没见过的说法），不许有任何一格被压成「认不出课程结构」',
+    badAct.length === 0, '落错的格=' + JSON.stringify(badAct));
+
+  var notOursCache = cacheOf({ reason: 'never-study' });
+  check('⑮ 不是插件带来的那一页每份页面只说一次：第一次要说（否则用户不知道我们看见了他开的页），说过之后隔一天也不重播',
+    plan(notOursCache, N, '', 0) === 'not-ours' &&
+    plan(notOursCache, N + 1000, 'not-ours', N) === 'silent' &&
+    plan(notOursCache, N + 24 * 3600 * 1000, 'not-ours', N) === 'silent',
+    JSON.stringify([plan(notOursCache, N, '', 0), plan(notOursCache, N + 1000, 'not-ours', N)]));
+
+  var goCache = cacheOf({ mayRescue: true, reason: 'go-back', studyHref: STUDY_URL, studyAgeMs: 60000, awayMs: 120000 });
+  var unknownCache = cacheOf({ reason: 'others-unknown', otherStudyTabs: -1 });
+  check('⑯ 其余三格有地板但**不许永久静默**：同一格在地板内不重播、过了地板照旧再说；而「读不出」那一格永不静默（它是唯一会把活儿交回老口径的信号）',
+    plan(goCache, N, '', 0) === 'go-back' &&
+    plan(goCache, N + SILENCE - 1000, 'go-back', N) === 'silent' &&
+    plan(goCache, N + SILENCE + 1000, 'go-back', N) === 'go-back' &&
+    plan(unknownCache, N, 'unknown', N) === 'unknown' &&
+    plan(unknownCache, N + 1000, 'unknown', N) === 'unknown',
+    JSON.stringify([plan(goCache, N + SILENCE - 1000, 'go-back', N), plan(unknownCache, N + 1000, 'unknown', N)]));
+
+  var mkCtx = function () {
+    var st = {
+      navs: [],
+      ctx: {
+        _studyTabStateCache: null,
+        _displacedSpokeAct: '',
+        _displacedSpokeAt: 0,
+        _askStudyTabState: function () {},
+        _displacedStudyPagePlan: plan,
+        _gotoUrl: function (u) { st.navs.push(u); }
+      }
+    };
+    return st;
+  };
+  var runSpeak = function (st, cache, now) {
+    logs.length = 0;
+    st.navs.length = 0;
+    st.ctx._studyTabStateCache = cache;
+    var threw = null, ret;
+    try { ret = speak.call(st.ctx, now); } catch (e) { threw = e; }
+    return { ret: ret, navs: st.navs.slice(), logs: logs.slice(), threw: threw, ctx: st.ctx };
+  };
+
+  var stGo = mkCtx();
+  var rGo = runSpeak(stGo, goCache, N);
+  var goMeta = rGo.logs[0] && rGo.logs[0].meta;
+  var stBad = mkCtx();
+  stBad.ctx._gotoUrl = function () { throw new Error('导航这一下炸了'); };
+  var rBad = runSpeak(stBad, goCache, N);
+  check('⑰ 「能自己回去」那一格真的在**同一枚标签页内**导航（靶地址就是台账里那一条，不是新开一枚），日志带得上读得回来的靶地址与离开时长；导航炸了也不许冒泡到主循环',
+    rGo.ret === true && rGo.navs.length === 1 && rGo.navs[0] === STUDY_URL &&
+    rGo.logs.length === 1 && rGo.logs[0].level === 'warn' && /study displaced, going back/.test(rGo.logs[0].message) &&
+    !!goMeta && goMeta.target === STUDY_URL && goMeta.reason === 'go-back' &&
+    goMeta.href === PORTAL_URL && goMeta.everyMs === SILENCE &&
+    goMeta.studyAgeMs === goCache.studyAgeMs && goMeta.awayMs === goCache.awayMs &&
+    stGo.ctx._displacedSpokeAct === 'go-back' && stGo.ctx._displacedSpokeAt === N &&
+    rBad.threw === null && rBad.ret === true && rBad.logs.length === 1,
+    JSON.stringify({ ret: rGo.ret, navs: rGo.navs, meta: goMeta, badThrew: String(rBad.threw), badRet: rBad.ret }));
+
+  var rHold = runSpeak(mkCtx(), cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2, awayMs: 5000 }), N);
+  var rUnread = runSpeak(mkCtx(), cacheOf({ answered: true, ok: false, reason: 'unreadable', why: '后台没给答案' }), N);
+  var rAsking = runSpeak(mkCtx(), null, N);
+  var rPend = runSpeak(mkCtx(), cacheOf({ answered: false, ok: false, pendingAt: N - 1000 }), N);
+  check('⑱ 三种「不许动」的形状：另一枚占着时一次都不导航（送回去就是把那一门顶下线）、问到过但没用时返回 false 把话交回老口径（既不导航也不闭嘴）、' +
+    '还在问时同样返回 false —— 这一族**没有任何一格可以认领了却一个字都不说**（全量 e2e 的 20-I 与 89-C 就是被"还在问不说话"顶红的）',
+    rHold.ret === true && rHold.navs.length === 0 && rHold.logs.length === 1 &&
+    /study displaced, held back/.test(rHold.logs[0].message) &&
+    rHold.logs[0].meta.otherStudyTabs === 2 && rHold.logs[0].meta.willRetryInMs === SILENCE &&
+    rUnread.ret === false && rUnread.navs.length === 0 && rUnread.logs.length === 0 &&
+    rAsking.ret === false && rAsking.navs.length === 0 && rAsking.logs.length === 0 &&
+    rPend.ret === false && rPend.logs.length === 0,
+    JSON.stringify({ hold: { ret: rHold.ret, navs: rHold.navs.length, logs: rHold.logs.length }, unread: { ret: rUnread.ret, logs: rUnread.logs.length }, asking: { ret: rAsking.ret, logs: rAsking.logs.length }, pend: { ret: rPend.ret, logs: rPend.logs.length } }));
+
+  var rCap = runSpeak(mkCtx(), cacheOf({ reason: 'rescue-cap', rescues: CAP }), N);
+  var rNever = runSpeak(mkCtx(), cacheOf({ reason: 'never-study' }), N);
+  var rLong = runSpeak(mkCtx(), cacheOf({ reason: 'study-too-long-ago', studyAgeMs: AWAY + 120000 }), N);
+  var capHintRe = new RegExp('回过 ' + CAP + ' 次');
+  var longMinRe = new RegExp(Math.round((AWAY + 120000) / 60000) + ' 分钟前');
+  check('⑲ 该交给人的那一格点亮 warn 并把「回过几次」从账上带回来（不在日志里另抄一个上限数，那个数归后台管）；「不是插件带来的页」只说一次、落 info，且「从没刷过」与「上一次是几分钟前」两种说法要分开',
+    rCap.ret === true && rCap.navs.length === 0 && rCap.logs[0].level === 'warn' &&
+    /study displaced, gave up/.test(rCap.logs[0].message) &&
+    rCap.logs[0].meta.rescues === CAP && rCap.logs[0].meta.cap === undefined &&
+    capHintRe.test(rCap.logs[0].meta.hint) &&
+    rNever.logs[0].level === 'info' && /study idle: not our page/.test(rNever.logs[0].message) &&
+    rNever.logs[0].meta.everyMs === 0 && /从没当过学习页/.test(rNever.logs[0].meta.hint) &&
+    longMinRe.test(rLong.logs[0].meta.hint) && !/从没当过学习页/.test(rLong.logs[0].meta.hint),
+    JSON.stringify({ cap: rCap.logs[0] && rCap.logs[0].meta, never: rNever.logs[0] && rNever.logs[0].meta, long: rLong.logs[0] && rLong.logs[0].meta }));
+
+  // 抑制落到 speak 这一层：同一个 ctx 连说两次，第二次不许再发一条
+  var stOnce = mkCtx();
+  var first = runSpeak(stOnce, notOursCache, N);
+  var second = runSpeak(stOnce, notOursCache, N + 5000);
+  var third = runSpeak(stOnce, goCache, N + 10000);
+  check('⑳ 抑制真的记账：同一格第二次一句话都不说，但**换了格就立刻再说**（换态时哑掉等于把新真相藏起来 —— 哪怕只过了 5 秒）',
+    first.logs.length === 1 && second.logs.length === 0 && second.ret === true &&
+    third.logs.length === 1 && /going back/.test(third.logs[0].message) && third.navs.length === 1,
+    JSON.stringify({ first: first.logs.length, second: second.logs.length, third: third.logs.length }));
+
+  // 问后台那一件：两把地板 + 超时数 + 读不出那一格的字段形状
+  // ⚠️ 全程走虚拟时钟（`Date` 已注进 ask）：真实时钟下两条断言之间一旦跨过地板，
+  //    这一族就变成看运气跑，全量／定向各红一次。
+  var T0 = 1700000000000;
+  sends.length = 0;
+  askMs.length = 0;
+  askAnswer = null;
+  askNow = T0;
+  var stAsk = { _withTimeout: function (p, ms) { askMs.push(ms); return p; } };
+  ask.call(stAsk, T0);
+  var sentFirst = sends.length;
+  askNow = T0 + 1000;
+  ask.call(stAsk, T0 + 1000);
+  var sentPending = sends.length;
+  await flushMicro();
+  var failedCache = Object.assign({}, stAsk._studyTabStateCache);
+  ask.call(stAsk, T0 + 1000);
+  var sentAfterFailed = sends.length;
+  askAnswer = {
+    success: true, reason: 'go-back', mayRescue: true, studyHref: STUDY_URL,
+    studyAgeMs: 60000, awayMs: 12000, otherStudyTabs: 0, rescues: 0
+  };
+  askNow = T0 + FRESH + 5000;
+  ask.call(stAsk, T0 + FRESH + 5000);
+  await flushMicro();
+  var okCache = Object.assign({}, stAsk._studyTabStateCache);
+  askNow = T0 + FRESH + 6000;
+  ask.call(stAsk, T0 + FRESH + 6000);
+  var sentAfterOk = sends.length;
+  askNow = T0 + 2 * FRESH + 60000;
+  ask.call(stAsk, T0 + 2 * FRESH + 60000);
+  var sentStale = sends.length;
+  var pMs = askBodyTxt.match(/_withTimeout\(bridgeSend\('study_tab_state'\), (\d+)\)/);
+  check('㉑ 问后台有两把地板且都不许被绕过：还没答案时地板内不重敲、答案落地后（有用没用都算）另一把地板内不重敲 —— 停在门户页时每一拍（2 秒）都走到这里，没地板就是自己造一个轮询；超时数从源码读回来且远小于桥的 90 秒',
+    sentFirst === 1 && sentPending === 1 && sentAfterFailed === 1 && sentAfterOk === 2 && sentStale === 3 &&
+    !!pMs && Number(pMs[1]) > 0 && Number(pMs[1]) < 90000 && askMs.length === 3 && askMs[0] === Number(pMs[1]),
+    JSON.stringify({ sends: [sentFirst, sentPending, sentAfterFailed, sentAfterOk, sentStale], ms: pMs && pMs[1], wrapped: askMs }));
+
+  check('㉒ 答案的形状被原样收进缓存，读不出那一格单独占位：ok 假、reason 写死成 unreadable、枚数拿不到就是 -1（不许当成「零枚」，也不许当成「有很多枚」），mayRescue 一律假',
+    !!failedCache && failedCache.answered === true && failedCache.ok === false &&
+    failedCache.reason === 'unreadable' && failedCache.otherStudyTabs === -1 && failedCache.mayRescue === false &&
+    !!okCache && okCache.ok === true && okCache.reason === 'go-back' && okCache.mayRescue === true &&
+    okCache.studyHref === STUDY_URL && okCache.otherStudyTabs === 0 &&
+    plan(okCache, T0 + FRESH + 7000, '', 0) === 'go-back' &&
+    plan(failedCache, T0 + 100000, '', 0) === 'unknown',
+    JSON.stringify({ failed: failedCache, ok: okCache }));
+
+  var declineBody = bodyOf(runTxt, '_tryAdvanceIdleSection');
+  var iAsk = declineBody.indexOf('this._speakDisplacedStudyPage(');
+  var iLegacy = declineBody.indexOf("'study idle declined");
+  check('㉓ 接线：这一族先问四态，「还在问」与「问不出」两格都退回老那句「认不出课程结构」（老话不许被删 —— 它是这两格唯一的出口，⑱ 钉的是这两格都返回 false），而且调用点不带 await、函数本身也不是 async（它的布尔值就是这一拍的仲裁，改成 Promise 就恒真）',
+    iAsk >= 0 && iLegacy > iAsk && declineBody.indexOf('await this._speakDisplacedStudyPage') < 0 &&
+    declineBody.indexOf("'study idle declined") >= 0 &&
+    runTxt.indexOf('_tryAdvanceIdleSection: async function') < 0 &&
+    loop.indexOf('_speakDisplacedStudyPage: async function') < 0 &&
+    typeof runSpeak(mkCtx(), null, N).ret === 'boolean',
+    JSON.stringify({ askAt: iAsk, legacyAt: iLegacy }));
+
+  var dAt = cTxt.indexOf("/study displaced/.test(msg)");
+  var nAt = cTxt.indexOf("/study idle: not our page/.test(msg)");
+  var cAt = cTxt.indexOf("/study idle declined/.test(msg)");
+  var band = cTxt.slice(dAt, nAt);
+  check('㉔ 面板分类器把「被顶下线」排在「认不出课程结构」之前（顺序错了四态全被老那一格抢先，界面照样只有一句话），三格各自落等待/等待/注意，而「不是插件带来的那一页」落进正常档、不点亮注意',
+    dAt >= 0 && nAt > dAt && cAt > dAt &&
+    /going back[\s\S]{0,120}state = 'wait'/.test(band) &&
+    /held back[\s\S]{0,120}state = 'wait'/.test(band) &&
+    /state = 'warn'/.test(band) &&
+    /state = 'normal';/.test(cTxt.slice(nAt, cAt)),
+    JSON.stringify({ displaced: dAt, notOurs: nAt, declined: cAt }));
+
+  var msC = cTxt.match(/sendRuntimeMessageWithTimeout\(\{ type: 'study_tab_state' \}, (\d+)/);
+  var routeAt = bg.indexOf("message.type === 'study_tab_state'");
+  var routeBand = routeAt >= 0 ? bg.slice(routeAt, routeAt + 1400) : '';
+  check('㉕ 桥接三端都有这一条（页面问、content 转、后台答）且两头各自带超时；后台那一支是只读的：带 payload 就拒、只数别人不算自己、非学习页地址一条都不回',
+    loop.indexOf("bridgeSend('study_tab_state'") >= 0 && cTxt.indexOf("msg.type === 'study_tab_state'") >= 0 &&
+    routeAt >= 0 && !!msC && Number(msC[1]) > 0 && Number(msC[1]) < 90000 &&
+    routeBand.indexOf('invalid_payload') >= 0 && routeBand.indexOf('t.id !== selfTab.id') >= 0 &&
+    routeBand.indexOf('STUDY_URL_RE.test(') >= 0,
+    JSON.stringify({ contentMs: msC && msC[1], pageMs: pMs && pMs[1], routeAt: routeAt }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -2926,6 +3394,7 @@ async function main() {
   await testOcsDiscoveryWindow();
   await testCacheBlockWarnThreshold();
   await testJobRejectLogThrottle();
+  await testDisplacedStudyPageRescue();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

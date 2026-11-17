@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（40 个）：
+ * 本段的方法（43 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -21,6 +21,7 @@
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
  *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_leaveFinishedCourse、
  *   _coursePickRequested、_courseHomeUrl、_readCourseCards、_pickNextCourseFromUserCenter、
+ *   _askStudyTabState、_displacedStudyPagePlan、_speakDisplacedStudyPage、
  *   _enterChapterFromCourseHome、_enterCourseHomeChapter、
  *   _advanceLearningStep、
  *   _bindStepNavigation、_initCellData、_getTreeContainer
@@ -839,6 +840,156 @@
     //    写死小写、读的时候不分大小写（AGENTS §2 #12）。
     _coursePickRequested: function () {
       try { return /[?&]omitonepick=1/i.test(String(location.search || '')); } catch (e) { return false; }
+    },
+
+    /**
+     * 批次 93：问后台两件事 ——「这一枚标签页刚才是不是学习页」「现在有几枚学习页」。
+     *
+     * ⚠️ **这条不许 await**。它的调用点 `_tryAdvanceIdleSection` 是同步的，返回值就是
+     *    「这一拍我认领了没有」；把它改成 async 会让调用点拿到一个恒真值的 Promise，
+     *    等于把整条空转逃生门的判定顺序换掉（AGENTS §2 #8 那一族）。
+     *    所以这里只负责把答案放进缓存，判定读缓存；缓存还没答案 = 「还在问」那一格，
+     *    那一格由调用方说**老地板**（`study idle declined`：这一页认不出课程结构）——
+     *    问到之前那句话本来就是真话，而"在问"绝不许变成"这一拍什么都不说"。
+     */
+    _askStudyTabState: function (now) {
+      var cache = this._studyTabStateCache;
+      // 「还在问」与「问过、答案没用」是两格，各用各的地板；两格都不许**永久**哑掉。
+      // ⚠️ 问出来的失败答案也必须有个地板：停在门户页时每拍（2 秒）都会走到这里，
+      //    没有地板就等于每 2 秒敲一次后台，而下一拍判出来的还是同一格（批次 37/51 那一族的查询版）。
+      if (cache && !cache.answered && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return;
+      if (cache && cache.answered && now - cache.at < DISPLACED_ASK_FRESH_MS) return;
+      this._studyTabStateCache = {
+        pendingAt: now, at: 0, answered: false, ok: false, reason: '', studyHref: '',
+        studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
+      };
+      var self = this;
+      // ⚠️ `_withTimeout` 超时是 `resolve(undefined)`（AGENTS §2 #2），所以下面必须先认 `!data`
+      Promise.resolve(this._withTimeout(bridgeSend('study_tab_state'), 8000)).then(function (data) {
+        var ok = !!(data && data.success === true && typeof data.reason === 'string' && data.reason);
+        // ⚠️ 枚数只在**答案可用**时读：`Number(undefined)` 是 0，而桥超时交的正是 `undefined` ——
+        //    那样会把「问不到」记成「确认账号里没有别的学习页」，取证里就成了一个凭空的断言
+        //    （AGENTS §2 #12：读不出必须单独占一格，不许被压进任何一格）。
+        var others = ok ? Number(data.otherStudyTabs) : NaN;
+        if (!Number.isFinite(others) || others < 0) others = -1;
+        self._studyTabStateCache = {
+          pendingAt: 0,
+          at: Date.now(),
+          answered: true,
+          ok: ok,
+          reason: ok ? String(data.reason) : 'unreadable',
+          why: ok ? '' : String((data && data.error) || '后台没给答案').slice(0, 80),
+          studyHref: ok ? String(data.studyHref || '') : '',
+          studyAgeMs: ok ? Number(data.studyAgeMs) : -1,
+          awayMs: ok ? Number(data.awayMs) || 0 : 0,
+          otherStudyTabs: others,
+          rescues: ok ? Number(data.rescues) : -1,
+          mayRescue: ok ? data.mayRescue === true : false
+        };
+      }).catch(function () {
+        self._studyTabStateCache = {
+          pendingAt: 0, at: Date.now(), answered: true, ok: false, reason: 'unreadable', why: '问后台这条路本身抛了',
+          studyHref: '', studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
+        };
+      });
+    },
+
+    /**
+     * 批次 93：四态判定（纯函数，`tools/integration-test.js` 把它取出来真跑）。
+     *
+     * 为什么非要分四格：现场那一枚停在用户中心的标签页，过去只会说一句
+     * 「这一页认不出课程结构…请手动回到章节页」（AGENTS §2 #12 压成两态的那一族），
+     * 而底下有四种完全不同的真相 —— 我们能自己回去 / 另一门占着账号不能抢（#15）/
+     * 回去过两次还被顶下来（该交给人的）/ 这页压根是用户自己开的（不欠他一句"回章节页"）。
+     * 压成一句时，"不用管"和"这一门一直没刷"在用户眼里长得一模一样。
+     *
+     * @returns {string} 'asking' 还没问到答案（交回调用方说老话）· 'silent' 答案有了但这条刚说过
+     *                   'go-back' · 'another-page' · 'gave-up' · 'not-ours' · 'unknown'
+     */
+    _displacedStudyPagePlan: function (cache, now, lastAct, lastAt) {
+      if (!cache) return 'asking';
+      if (!cache.ok) {
+        // ⚠️ 只有「还没问到答案」才允许不说话；「问到过、但答案没用」必须**立刻**落进读不出那一格，
+        //    否则后台一直答非所问时这一族就永久哑掉（AGENTS §2 #7：静默永久跳过不可接受）。
+        if (!cache.answered && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return 'asking';
+        return 'unknown';                       // 问了没答案 = 读不出，单独占一格
+      }
+      var act = cache.mayRescue === true ? 'go-back'
+        : cache.reason === 'another-study-tab' ? 'another-page'
+        : cache.reason === 'rescue-cap' ? 'gave-up'
+        : (cache.reason === 'never-study' || cache.reason === 'study-too-long-ago') ? 'not-ours'
+        : 'unknown';       // others-unknown（数不出几枚学习页，后台因此不许导航）与后台给了个没见过的都落这一格
+      // 重复的口径：不是插件带来的那一格**每份页面只说一次**（批次 54-D / 89 同族）；
+      // 其余三格 5 分钟内同一条不重播，但**不许永久哑掉** —— 换态了就立刻再说。
+      if (lastAct === act) {
+        if (act === 'not-ours') return 'silent';
+        if (act !== 'unknown' && now - (Number(lastAt) || 0) < DISPLACED_SILENCE_MS) return 'silent';
+      }
+      return act;
+    },
+
+    /**
+     * 批次 93：把上面那一格落成日志与（只在安全时的）导航。
+     * @returns {boolean} true = 这一拍已经处理过，调用方不必再走「卡住了」那条 error；
+     *                    false = 「还在问」与「读不出」两格，交回调用方按老口径说话
+     *                    （**既不导航也不闭嘴** —— AGENTS §2 #7：静默跳过不可接受）
+     */
+    _speakDisplacedStudyPage: function (now) {
+      this._askStudyTabState(now);
+      var cache = this._studyTabStateCache;
+      var act = this._displacedStudyPagePlan(cache, now, this._displacedSpokeAct, this._displacedSpokeAt);
+      // ⚠️ 「还在问」与「问不出」两格都必须**交回调用方说老话**，不许这一拍认领却一句话都不说。
+      //    以前这里让「还在问」也认领（return true 不说话），全量 e2e 当场红两条：
+      //    批次 20-I「被挡下一定出日志」与批次 89 C「被顶下线现场只剩 `study idle declined` 能认」。
+      //    沙盒里桥永远答不上来 = 永远停在「还在问」= 这一族彻底哑掉，正是 AGENTS §2 #7 禁止的那一格；
+      //    而「认不出课程结构」这句话在问到答案之前本来就是**真话**，当下唯一该说的就是它。
+      if (act === 'unknown' || act === 'asking') return false;
+      var c = cache || {};
+      var ev = {
+        reason: String(c.reason || ''),
+        studyAgeMs: Number(c.studyAgeMs),
+        awayMs: Number(c.awayMs) || 0,
+        otherStudyTabs: Number(c.otherStudyTabs),
+        rescues: Number(c.rescues),
+        href: String(location.href || '').slice(0, 90),
+        everyMs: act === 'not-ours' ? 0 : DISPLACED_SILENCE_MS
+      };
+      if (act === 'silent') return true;
+      if (act === 'go-back' && c.studyHref) {
+        emitRuntimeLog('warn', 'study displaced, going back', Object.assign({
+          hint: '这一枚标签页刚才还在刷课，被站点推到了没有课程结构的地址。' +
+            '现在账号下没有别的学习页占着，插件就把它自己送回去 —— 是同一枚标签页内导航，' +
+            '绝不新开一枚（新开等于把另一门顶下线）',
+          target: String(c.studyHref).slice(0, 90)
+        }, ev));
+        this._displacedSpokeAt = now;
+        this._displacedSpokeAct = act;
+        try { this._gotoUrl(c.studyHref); } catch (eNav) { return true; }
+        return true;
+      }
+      if (act === 'another-page') {
+        emitRuntimeLog('warn', 'study displaced, held back', Object.assign({
+          hint: '这一枚标签页刚才也在刷课，被站点顶了回来。但账号下还有 ' + (Number(c.otherStudyTabs) || 1) +
+            ' 枚学习页活着 —— 同一账号一次只许有一枚，这时候把它送回去就会把那一枚顶下线，' +
+            '所以这一枚先不动，等那门刷完再排它',
+          willRetryInMs: DISPLACED_SILENCE_MS
+        }, ev));
+      } else if (act === 'gave-up') {
+        emitRuntimeLog('warn', 'study displaced, gave up', Object.assign({
+          hint: '这一枚已经自己回过 ' + (Number(c.rescues) || 0) + ' 次学习页，每次都被站点顶回来 —— ' +
+            '再打转只会把进度越带越偏。这一门请手动打开一次章节页，或者去面板里把它排到队首'
+        }, ev));
+      } else {
+        emitRuntimeLog('info', 'study idle: not our page', Object.assign({
+          hint: '这一页不是插件带来的，插件也没在这页刷过课（' +
+            (c.reason === 'study-too-long-ago' ? '上一次刷课是 ' +
+              Math.round((Number(c.studyAgeMs) || 0) / 60000) + ' 分钟前' : '这页从没当过学习页') +
+            '），所以这里不点「下一节」、也不催你回章节页 —— 每份页面只说这一次'
+        }, ev));
+      }
+      this._displacedSpokeAt = now;
+      this._displacedSpokeAct = act;
+      return true;
     },
 
     /**

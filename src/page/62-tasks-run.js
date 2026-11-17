@@ -391,6 +391,16 @@
           return true;
         }
         var declineNow = Date.now();
+        // ⚠️ 批次 93：这一句「请手动回到章节页」以前是这一族的**唯一出口**，可底下有四种真相
+        //   （能自己回去 / 另一枚学习页占着不能抢 / 回去过两次还被顶 / 这页压根不是插件带来的），
+        //   压成一句就把"不用管"和"这一门一直没刷"说成了同一件事（AGENTS §2 #12 那一族）。
+        //   现在先问后台分格说话，**只有「还在问」与「问不出」那两格才退回下面这句老话** ——
+        //   问不到时既不导航也不闭嘴，这是这一族唯一安全的保守方向
+        //   （批次 20-I 与批次 89 C 两条断言认的就是这一句：被挡下**一定**要出日志、而且带当前地址）。
+        if (this._speakDisplacedStudyPage(declineNow)) {
+          this._idleEmptySince = 0;
+          return true;
+        }
         if (!this._idleDeclineLogAt || declineNow - this._idleDeclineLogAt >= 120000) {
           this._idleDeclineLogAt = declineNow;
           emitRuntimeLog('warn', 'study idle declined: 这一页认不出课程结构，不点前进', {

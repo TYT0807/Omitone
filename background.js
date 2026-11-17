@@ -64,7 +64,10 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     tabEpochs[tabId] = (tabEpochs[tabId] || 0) + 1;
     serialGrant(function () { return removeGrant(tabId); }).catch(function () {});
   }
-  chrome.tabs.onRemoved.addListener(revokeTab);
+  chrome.tabs.onRemoved.addListener(function (tabId) {
+    revokeTab(tabId);
+    delete tabStudyMemory[tabId];   // 批次 93：标签页没了，它那一枚的「上次在哪刷课」也就没意义了
+  });
 
   // ── 从学习通页面打开的验证码窗口：自动授一个限时、绑定网址的权限 ──────
   // 只认「opener 是学习通」+「目标网址像验证码页」两条同时成立。
@@ -96,8 +99,97 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
     if (typeof changeInfo.url !== 'string') return;
     revokeTab(tabId);
+    noteTabStudyUrl(tabId, changeInfo.url);
     autoGrantTab(tab);
   });
+
+  // ── 每一枚标签页「上一次是在哪一页刷课」的台账（批次 93）───────────────────
+  // ⚠️ 为什么这件事只能记在 SW：要判的是「**这一枚**标签页刚才还在刷课，现在被站点顶走了」，
+  //    而刷课页在 `mooc1.chaoxing.com`、被顶回去落在 `i.mooc.chaoxing.com` ——
+  //    同一枚标签页里不同源的 sessionStorage 是**两块地方**（批次 82-B 的口径），
+  //    页面自己写的账换源就读不回来；localStorage 又是跨标签页共享的，分不出"哪一枚"。
+  //    只有 SW 的 tabId 视角能把同一枚标签页的两段对上，而且它本来就听着 tabs 事件。
+  // ⚠️ 数"有几枚学习页"不需要 "tabs" 权限：`host_permissions` 里有 `*://*.chaoxing.com/*`，
+  //    按 2026-11-17 现场实测 `chrome.tabs.query({})` 2/2 枚都读得到 url。
+  //    这一格是 AGENTS §2 #15（同一账号一次只许有一枚学习页）唯一能机器核对的地方。
+  var STUDY_URL_RE = /\/mycourse\/studentstudy\b/i;
+  var STUDY_AWAY_WINDOW_MS = 30 * 60 * 1000;   // 被顶走多久之内还算「这一枚本来是学习页」
+  var STUDY_RESCUE_CAP = 2;                     // 一枚标签页最多自己回去几次（防「回去→又被顶→再回去」打转）
+  var STUDY_MEMORY_MAX = 32;                    // 台账封个底，别让开过很多标签页的会话无限涨
+  var tabStudyMemory = Object.create(null);
+
+  function pruneTabStudyMemory() {
+    var ids = Object.keys(tabStudyMemory);
+    if (ids.length <= STUDY_MEMORY_MAX) return;
+    ids.sort(function (a, b) { return (Number(tabStudyMemory[a].studyAt) || 0) - (Number(tabStudyMemory[b].studyAt) || 0); });
+    for (var i = 0; i < ids.length - STUDY_MEMORY_MAX; i++) delete tabStudyMemory[ids[i]];
+  }
+
+  /**
+   * 只从 `tabs.onUpdated` 的 `changeInfo.url` 喂进来 —— SW 睡着时漏掉的导航不会补记，
+   * 那属于「读不出」那一格，调用方拿不到账时必须保守（既不导航也不闭嘴）。
+   */
+  function noteTabStudyUrl(tabId, url) {
+    if (!Number.isInteger(tabId) || typeof url !== 'string') return;
+    var now = Date.now();
+    var old = tabStudyMemory[tabId];
+    var before = old ? (Number(old.rescues) || 0) : 0;
+    if (STUDY_URL_RE.test(url)) {
+      // 「这一枚之前在别处（awayAt 已记）」且上一次刷课还在时间窗内 —— 走回来就算自愈一次，
+      // 上限的存在是为了挡「回去→被顶→再回去」打转（AGENTS §2 #13：这类账只能在真前进时清零）。
+      var cameBack = !!(old && old.awayAt && old.studyHref && (now - (Number(old.studyAt) || 0)) <= STUDY_AWAY_WINDOW_MS);
+      tabStudyMemory[tabId] = { studyHref: url, studyAt: now, awayAt: 0, rescues: before + (cameBack ? 1 : 0) };
+      pruneTabStudyMemory();
+      return;
+    }
+    if (old && old.studyHref && !old.awayAt) old.awayAt = now;   // 第一次被顶走才记时刻
+  }
+
+  /**
+   * 四态判定（纯函数，`tools/integration-test.js` 把它从本文件里取出来真跑）：
+   *   go-back             这一枚刚才在刷课、现在没有别的学习页占着、也没到自愈上限 → 可以在**同一枚标签页内**回去
+   *   another-study-tab   另一枚学习页还活着 → 绝不能导航（AGENTS §2 #15：新开等于把前一枚顶下线）
+   *   rescue-cap          自己回去过两次还被顶下来 → 交给人的那一格，别再打转
+   *   never-study         台账里压根没有这一枚（SW 起来之后它一次都没进过学习页）→ 那是用户自己开的页
+   *   study-too-long-ago  上一次刷课早已超出时间窗 → 不回去，但也**不许**说成「从来没刷过」
+   *   others-unknown      数不出账号里有几枚学习页 → **不导航**（回去就等于新开，会把另一门顶下线）
+   */
+  function studyRescueVerdict(memory, otherStudyTabs, now) {
+    var m = memory || {};
+    var studyAt = Number(m.studyAt) || 0;
+    var awayAt = Number(m.awayAt) || 0;
+    var rescues = Number(m.rescues) || 0;
+    var others = Number(otherStudyTabs);
+    // ⚠️ 「数不清有几枚」单独占一格，而且**数不清就不许导航**。这里fail-open 的后果比别处重：
+    //    把同一枚标签页送回去 = 账号下同时两枚学习页 = 站点把**另一门**顶下线（AGENTS §2 #15，
+    //    2026-11-16 现场就是用户那句「连续开两个课程有一个会被顶下去」）。
+    //    所以脏值/负数不能归 0（那等于"确认没有别的学习页"），只能交回调用方说老话。
+    var othersUnreadable = !Number.isFinite(others) || others < 0;
+    var out = {
+      wasStudy: false,
+      studyHref: '',
+      studyAgeMs: studyAt > 0 ? Math.max(0, now - studyAt) : -1,
+      awayMs: awayAt ? Math.max(0, now - awayAt) : 0,
+      otherStudyTabs: othersUnreadable ? -1 : others,
+      rescues: rescues,
+      mayRescue: false,
+      reason: 'never-study'
+    };
+    if (!m.studyHref || studyAt <= 0) return out;
+    out.studyAgeMs = now - studyAt;
+    if (out.studyAgeMs > STUDY_AWAY_WINDOW_MS) {
+      out.reason = 'study-too-long-ago';
+      return out;
+    }
+    out.wasStudy = true;
+    out.studyHref = String(m.studyHref);
+    if (othersUnreadable) { out.reason = 'others-unknown'; return out; }
+    if (others > 0) { out.reason = 'another-study-tab'; return out; }
+    if (rescues >= STUDY_RESCUE_CAP) { out.reason = 'rescue-cap'; return out; }
+    out.mayRescue = true;
+    out.reason = 'go-back';
+    return out;
+  }
 
   function isPopup(sender) {
     return popupVerdict(sender).trusted === true;
@@ -377,6 +469,22 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
         return result;
       }
       if (scope.scope === 'none') return failure('forbidden_sender', denyDetail(verdict, sender));
+      if (message.type === 'study_tab_state') {
+        // 只读：问「这一枚标签页刚才是不是学习页、现在有几枚学习页」。不给 payload，
+        // 也不回任何别的标签页的地址 —— 只回本标签页自己的历史与一个计数（批次 93）。
+        if (message.payload && Object.keys(message.payload).length) return failure('invalid_payload');
+        if (scope.scope !== 'study' || !scope.tab || !Number.isInteger(scope.tab.id)) return failure('forbidden_sender');
+        var selfTab = scope.tab;
+        return chromeCall(chrome.tabs, 'query', [{ url: '*://*.chaoxing.com/*' }]).then(function (tabs) {
+          var others = 0;
+          (tabs || []).forEach(function (t) {
+            if (t && t.id !== selfTab.id && STUDY_URL_RE.test(String(t.url || ''))) others++;
+          });
+          var state = studyRescueVerdict(tabStudyMemory[selfTab.id], others, Date.now());
+          state.success = true;
+          return state;
+        });
+      }
       if (message.type === 'get_config') {
         return getConfig().then(function (config) {
           return { success: true, config: scope.scope === 'captcha' ? policy.publicConfig(config, 'captcha') : config };

@@ -14247,15 +14247,25 @@ SCENARIOS.push({
       '  rejects:[{reason:"loading",loading:"frame-loading"},{reason:"loading",loading:"frame-loading"},{reason:"loading",loading:"frame-loading"}]});' +
       'await waitMs(300);out.rejectedLoading=read();' +
       'say("warn","search job: attachments exist",{attachments:6,emptyForMs:70000});await waitMs(300);out.attachmentsExist=read();' +
+      // 批次 93：被站点顶下线的学习页，四格各说一句自己的话（都在 `study idle declined` 之后新加，
+      // 若被通用那一条抢先，界面就只剩「这一页不是章节页」—— 那是"这页没能力管"，真相是"刚才在刷被推走了"）
+      'say("warn","study displaced, going back",{target:"https://mooc1.chaoxing.com/mycourse/studentstudy?courseId=7",reason:"go-back",awayMs:90000,rescues:0});' +
+      'await waitMs(300);out.displacedGo=read();' +
+      'say("warn","study displaced, held back",{otherStudyTabs:2,willRetryInMs:300000});' +
+      'await waitMs(300);out.displacedHold=read();' +
+      'say("warn","study displaced, gave up",{rescues:2});await waitMs(300);out.displacedCap=read();' +
+      'say("info","study idle: not our page",{href:"https://example.invalid/x",everyMs:0});' +
+      'await waitMs(300);out.notOurs=read();' +
       'say("warn","vision bridge failed",{error:"bridge timeout"});await waitMs(300);out.unnamed=read();' +
       'return JSON.stringify(out);})()'
     ));
 
     var keys = ['loading8', 'loading20', 'catalogHold', 'givenUp', 'declined', 'fontPlain', 'fontNomap',
       'cacheMiss', 'resegmented', 'autoplay', 'paused', 'held', 'emptyFallback', 'captchaPage',
-      'rejected', 'rejectedLoading', 'attachmentsExist', 'unnamed'];
+      'rejected', 'rejectedLoading', 'attachmentsExist', 'displacedGo', 'displacedHold', 'displacedCap',
+      'notOurs', 'unnamed'];
 
-    check('前提：面板已被 start 激活，这十八次都读回了字（读不到就是空测）',
+    check('前提：面板已被 start 激活，这二十二次都读回了字（读不到就是空测）',
       !!panel.started && panel.started.task !== '(无)' &&
       keys.every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
       JSON.stringify(panel.started));
@@ -14329,6 +14339,23 @@ SCENARIOS.push({
     check('对照：没点名的 warn 仍走「有情况 / 可在「查看日志」里看这一条」（兜底没被本轮挤掉）',
       panel.unnamed.state === '注意' && panel.unnamed.task === '有情况' &&
       /查看日志/.test(panel.unnamed.detail), JSON.stringify(panel.unnamed));
+
+    // 批次 93：这一族四格里只有「回去两次还被顶」要人接手。前两句在改前会掉进
+    // `/study idle declined/` 之外更靠后的兜底 —— 界面只说"这一页不是章节页"，
+    // 而真相是"这一枚刚才在刷课，被站点推走了"，用户据此会去做的事完全不同（等 vs 手动打开）。
+    check('★ 被顶下线：正在自己回去 / 另一门占着不抢 —— 两格都归「等待中」，各说一句自己的话',
+      panel.displacedGo.state === '等待中' && panel.displacedGo.task === '被顶下线，正在回去' &&
+      panel.displacedHold.state === '等待中' && panel.displacedHold.task === '另一门还占着账号' &&
+      panel.displacedGo.task !== panel.displacedHold.task,
+      JSON.stringify({ go: panel.displacedGo, hold: panel.displacedHold }));
+
+    check('★ 被顶下线的另外两格：占着那一格把「几枚活着」从日志里读回来，回不去那一格才点亮「注意」并带上回过几次；不是插件带来的页归正常运行（不催用户回章节页）',
+      /有 2 枚/.test(panel.displacedHold.detail) &&
+      panel.displacedCap.state === '注意' && panel.displacedCap.task === '回学习页没回成' &&
+      /回去过 2 次/.test(panel.displacedCap.detail) &&
+      panel.notOurs.state === '正常运行' && panel.notOurs.task === '这一页插件不刷课' &&
+      !/回到章节页/.test(panel.notOurs.detail),
+      JSON.stringify({ hold: panel.displacedHold, cap: panel.displacedCap, notOurs: panel.notOurs }));
   }
 });/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
  * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，

@@ -1077,8 +1077,11 @@
           <td>状态亮到<b>注意 / 异常运行</b>时先别急着动手：会亮到这一格的，都是它自己完不成、
               需要你决定的一步 —— 题面文字解不出来、有一题没拿到答案、独立验证码页正在识别、
               页面内容读不到。按第二行那句中文去「查看日志」里找同一时刻的那条记录再看。
-              其中<b>「这一页不是章节页」</b>是唯一一句请你<b>直接动手</b>的：手动回到章节页，
-              插件在认不出课程结构的页面上<b>不会</b>乱点「下一节」。</td></tr>
+              其中<b>「这一页不是章节页」</b>与<b>「回学习页没回成」</b>是请你<b>直接动手</b>的两句：
+              前者是插件在认不出课程结构的页面上<b>不会</b>乱点「下一节」，请你手动回到章节页；
+              后者是这一枚标签页本来在刷课、被站点顶下线，<b>插件已经自己送它回去过两次都没成</b>，
+              再请人接手。至于<b>「被顶下线，正在回去」</b>与<b>「另一门还占着账号」</b>，
+              是它<b>按规矩在等</b> —— 同一账号一次只能有一枚学习页，抢不得。</td></tr>
     </tbody>
   </table>
 </div>
@@ -1553,6 +1556,16 @@
       <td><code>study idle declined: …不点前进</code></td>
       <td>当前这一页<b>认不出课程结构</b>（多半不在章节页上），所以插件<b>停手不乱点</b>。
           请你手动回到章节页。它每 2 分钟会说一次，不会只说一次就永久静默。</td>
+    </tr>
+    <tr>
+      <td><code>study displaced, going back</code><br><code>study displaced, held back</code><br><code>study displaced, gave up</code><br><code>study idle: not our page</code></td>
+      <td>这一枚标签页<b>本来在刷课，被站点顶下线了</b>（学习通同一账号只认一枚学习页，
+          开第二枚就会把前一枚推走）。四句话各说各的：<code>going back</code>
+          —— 账号下没有别的学习页，<b>插件正把它自己送回去</b>（同一个标签页内跳转，不新开）；
+          <code>held back</code> —— 别的那一门还占着账号，<b>先不抢</b>，插件会自己再问一次；
+          <code>gave up</code> —— <b>回去两次都被顶下来</b>，这一门请你手动打开一次章节页；
+          <code>not our page</code> —— 这一页不是插件带来的，插件在这里<b>没有活要干</b>，
+          一句说完就不再重播。前三句都是<b>等待中</b>，只有 <code>gave up</code> 亮<b>注意</b>。</td>
     </tr>
     <tr>
       <td><code>main frame unreadable</code><br><code>study search skipped: main frame document unreadable</code></td>

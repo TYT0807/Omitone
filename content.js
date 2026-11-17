@@ -1722,6 +1722,32 @@
         task = '题面文字正常';
         detail = '类名是残留，文字其实是明文';
       }
+    } else if (/study displaced/.test(msg)) {
+      // ⚠️ 必须排在 `/study idle declined/` **之前**：那一格说的是"这一页插件没能力管"，
+      // 而这一族是「这一枚标签页刚才明明在刷课」—— 真相不同，界面就不该共用一句话。
+      // ⚠️ 批次 93 的分工：能自己回去 / 另一枚占着不能抢，**都不该点亮「注意」**（插件在按规矩办事，
+      // 出事的是站点那一头，而我们下一步都已经安排好了）；只有回去两次还被顶下来那一格才真的要人。
+      if (/going back/.test(msg)) {
+        state = 'wait';
+        task = '被顶下线，正在回去';
+        detail = '这一枚刚才在刷课，被站点推走了；账号下没有别的学习页，插件正把它自己送回去';
+      } else if (/held back/.test(msg)) {
+        state = 'wait';
+        task = '另一门还占着账号';
+        detail = '这一枚也被顶下来了，但有 ' + (Number(data.otherStudyTabs) || 1) +
+          ' 枚学习页活着 —— 同一账号只能有一枚，先不抢，插件会自己再问一次';
+      } else {
+        state = 'warn';
+        task = '回学习页没回成';
+        detail = '已经自己回去过 ' + (Number(data.rescues) || 0) +
+          ' 次都被顶下来，这一门请手动打开一次章节页（插件不再打转）';
+      }
+    } else if (/study idle: not our page/.test(msg)) {
+      // 用户自己开的门户页 / 上一次刷课早已超出时间窗：既不是故障，也不是"在等什么"，
+      // 更不该催他回章节页 —— 每份页面只说这一次（批次 54-D / 89 同一口径）。
+      state = 'normal';
+      task = '这一页插件不刷课';
+      detail = '不是插件带来的页，插件在这一页没有活要干';
     } else if (/study idle declined/.test(msg)) {
       // ⚠️ 必须排在通用那条 `/declined:/` **之前**：它落进「放弃等待，继续往下」是**说反了** ——
       // 这一条恰恰是"认不出课程结构，所以**不**点前进"，要用户做的是回章节页，不是等它往下。
@@ -3066,6 +3092,15 @@
       }
       const response = await sendRuntimeMessageWithTimeout({ type: 'storage_set', payload: { xxtRunning: payload.xxtRunning } }, 5000);
       window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: response }, '*');
+      return;
+    }
+
+    if (msg.type === 'study_tab_state') {
+      // 批次 93：只读地问 SW 两件事 ——「这一枚标签页刚才是不是学习页」「现在有几枚学习页」。
+      // ⚠️ 必须带超时（AGENTS §2 #2）：SW 睡着、扩展刚重载、桥没接上时，拿不到答案也要有结论，
+      //    页面那一侧把这种情况单独归成「读不出」那一格，绝不因为问不到而原地等。
+      const stateResponse = await sendRuntimeMessageWithTimeout({ type: 'study_tab_state' }, 6000, 'study_tab_state timeout');
+      window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: stateResponse }, '*');
       return;
     }
 
