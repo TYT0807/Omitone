@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'ce8c74e346';
+var OMITONE_CODE_REV = 'e878e9f001';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -79,6 +79,17 @@ var OMITONE_CODE_REV = 'ce8c74e346';
    */
   var DISPLACED_ASK_PENDING_MS = 20000;
   var DISPLACED_ASK_FRESH_MS = 60000;
+  // 批次 97：换课前先在后台问一遍「这些门的课程首页还剩多少任务点」。
+  // ⚠️ 这一族四个数是**从外到内包着**的，改任何一条都要对着另外几条重看一遍（集成测试按名字拦顺序）：
+  //   后台最坏 = 整轮预算 20 秒 + 单页上限 12 秒 = 32 秒（真源在 background.js 的 COURSE_PROBE_* 那几行）
+  //   → content 那一头 34 秒 > 32 秒 → 页面这一头 COURSE_PROBE_ASK_MS 36 秒 > 34 秒；
+  //   而换课最多为探针等 COURSE_PROBE_DEFER_MS 24 秒，到点就按卡片顺序挑 ——
+  //   探针只许改挑选顺序，永远不许把换课拖死（AGENTS §2 #2「新增 await 必须可超时」同一族）。
+  var COURSE_PROBE_PENDING_MS = 45000;          // 问了还没答上来，这段时间内不再敲第二次后台
+  var COURSE_PROBE_FRESH_MS = 30 * 60 * 1000;   // 答过的，30 分钟内不重问（正常一页只挑一次，这条只挡异常重入）
+  var COURSE_PROBE_ASK_MS = 36000;              // 页面等这一发桥的上限
+  var COURSE_PROBE_DEFER_MS = 24000;            // 换课最多为探针等这么久
+  var COURSE_PROBE_SPOKE_MS = 8000;             // 「还在问」这句话最少隔多久说一次
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
@@ -9717,6 +9728,159 @@ var OMITONE_CODE_REV = 'ce8c74e346';
     },
 
     /**
+     * 批次 97：探针回答按判法计数（AGENTS §2 #12：四态报数，「读不出」单独占一格）。
+     *
+     * ⚠️ 没答案时每一格都是 **-1，不是 0**。`0` 在日志里读起来就是「确认没有还要刷的门」，
+     *    而真相是「还没问到」—— 批次 93 实测踩过这条（`Number(undefined)` 读出 0，凭空多出一条
+     *    方向是放行的断言）。`pAsk` 写的是字符串，读的人一眼分得开没问 / 还在问 / 问了问不出 / 问到了。
+     * @returns {object} 平铺的取证字段，调用方 Object.assign 进日志 meta
+     */
+    _courseProbeCounts: function () {
+      var cache = this._courseProbeCache;
+      var out = { pAsk: 'no', pRows: -1, pNeed: -1, pDone: -1, pNoPts: -1, pUnread: -1, pBlocked: -1, pEmpty: -1, pSkip: -1, pMs: -1 };
+      if (!cache) return out;
+      if (!cache.answered) { out.pAsk = 'pending'; return out; }
+      if (!cache.ok) { out.pAsk = 'fail'; out.pWhy = String(cache.why || '').slice(0, 80); return out; }
+      out.pAsk = 'ok';
+      var rows = cache.rows || {};
+      var keys = Object.keys(rows);
+      out.pRows = keys.length;
+      out.pMs = Number(cache.ms) >= 0 ? Number(cache.ms) : -1;
+      for (var i = 0; i < keys.length; i++) {
+        var v = String(rows[keys[i]].verdict || '');
+        if (v === 'need') out.pNeed++;
+        else if (v === 'done') out.pDone++;
+        else if (v === 'nopoints') out.pNoPts++;
+        else if (v === 'blocked') out.pBlocked++;
+        else if (v === 'empty') out.pEmpty++;
+        else if (v === 'skip') out.pSkip++;
+        else out.pUnread++;   // 包括后台给了个不认识的判法 —— 一律算「读不出」，不许并进已完成
+      }
+      return out;
+    },
+
+    // 判法 → 对用户说的那句话（日志 hint 读这一份，别在句子处再抄一遍英文原词）
+    _COURSE_PROBE_SAY: {
+      need: '还有任务点没完成',
+      done: '站点说这一门已经刷完',
+      nopoints: '站点说这一门没有任务点要刷',
+      empty: '站点说这一门暂无章节内容',
+      blocked: '这一门现在问不出进不进得去（进不去 ≠ 刷完了）',
+      unreadable: '站点没给出读得出的进度（进去让目录判）',
+      skip: '这一轮没来得及问它'
+    },
+    // 判法 → 挑选优先级（小的先挑）。`skip` 与 `unreadable` 同格：都没答案，都照旧许进门。
+    _COURSE_PROBE_RANK: { need: 0, unreadable: 1, skip: 1, nopoints: 2, done: 3, blocked: 4, empty: 5 },
+
+    /**
+     * 批次 97：把「这一门在挑选里排第几」算成一个数（小的先挑）。
+     *
+     * ⚠️ 判法**只用来排队，不用来筛掉候选**：把「站点说已完成」当成"不用进门"，就等于拿一个
+     *    会过期的首页读数永久关掉这门课的门（AGENTS §2 #12 的反面；批次 85 的出口必须留着）。
+     *    没问过 / 没答上 / 后台给了个不认识的判法 → 一律落在「读不出」那一格，照旧允许进门。
+     * 同一格内按站点自己报的「还差多少任务点」从多到少，让差得最多的那门先被推。
+     */
+    _courseProbeWeight: function (row) {
+      var rank = this._COURSE_PROBE_RANK;
+      var unknown = rank.unreadable * 1000;
+      if (!row) return unknown;
+      var bucket = rank[row.verdict];
+      if (typeof bucket !== 'number') bucket = rank.unreadable;
+      var left = Number(row.jobsAll) - Number(row.jobsDone);
+      if (!(left > 0)) left = Number(row.yi) > 0 ? Number(row.yi) : 0;
+      return bucket * 1000 - Math.min(999, left);
+    },
+
+    /** 按判法给「卡片没写进度」那一族排队；权重相同的门靠排序稳定性保住卡片顺序。 */
+    _orderBlindByProbe: function (list) {
+      var cache = this._courseProbeCache;
+      var rows = cache && cache.ok ? cache.rows : null;
+      var out = [];
+      for (var i = 0; i < list.length; i++) {
+        var card = list[i];
+        var row = rows ? rows[String(card.courseId) + ':' + String(card.clazzId)] : null;
+        out.push({ card: card, row: row || null, weight: this._courseProbeWeight(row) });
+      }
+      out.sort(function (a, b) { return a.weight - b.weight; });
+      return out;
+    },
+
+    /**
+     * 批次 97：问后台「这些门的课程首页还剩多少任务点」—— **只放进缓存，绝不在这里 await**。
+     *
+     * 调用点 `_pickNextCourseFromUserCenter` 的返回值就是「这一拍我认领了没有」，把它改成 async
+     * 等于换掉整条换课的仲裁顺序（AGENTS §2 #8）。所以判定那一拍读缓存，缓存没答案 = 「还在问」
+     * 那一格，由 `_courseProbeDeferred` 说话并认领，到预算点再用手里有的往下走（批次 93 同族手法）。
+     * @param {number} now 本次判定的时间基准
+     * @param {Array} blind 卡片上没写「任务点进度」的那一族候选
+     */
+    _askCourseProbe: function (now, blind) {
+      var cache = this._courseProbeCache;
+      if (cache && !cache.answered && cache.pendingAt && now - cache.pendingAt < COURSE_PROBE_PENDING_MS) return;
+      if (cache && cache.answered && now - cache.at < COURSE_PROBE_FRESH_MS) return;
+      var list = [];
+      for (var i = 0; i < (blind || []).length; i++) {
+        var card = blind[i];
+        if (!card || !card.courseId || !card.clazzId) continue;
+        list.push({ cid: String(card.courseId), clazz: String(card.clazzId) });
+      }
+      if (!list.length) return;   // 没有盲候选就别敲后台
+      this._courseProbeCache = { pendingAt: now, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+      var self = this;
+      // ⚠️ `_withTimeout` 超时交回的是 `undefined`（AGENTS §2 #2），所以下面先认 `!data`
+      Promise.resolve(this._withTimeout(bridgeSend('course_home_probe', { list: list }), COURSE_PROBE_ASK_MS)).then(function (data) {
+        var ok = !!(data && data.success === true && Array.isArray(data.rows));
+        var map = {};
+        if (ok) {
+          for (var j = 0; j < data.rows.length; j++) {
+            var r = data.rows[j];
+            if (r && r.cid) map[String(r.cid) + ':' + String(r.clazz || '')] = r;
+          }
+        }
+        self._courseProbeCache = {
+          pendingAt: 0,
+          at: Date.now(),
+          answered: true,
+          ok: ok,
+          rows: map,
+          asked: ok ? Number(data.asked) : -1,
+          ms: ok ? Number(data.ms) : -1,
+          why: ok ? '' : String((data && (data.error || data.code)) || '后台没给答案').slice(0, 80)
+        };
+      }).catch(function () {
+        self._courseProbeCache = {
+          pendingAt: 0, at: Date.now(), answered: true, ok: false, rows: {}, asked: -1, ms: -1,
+          why: '问后台这条路本身抛了'
+        };
+      });
+    },
+
+    /**
+     * 批次 97：「还在问」那一格 —— 认领这一拍，但**不**置 `_coursePickDone`（下一拍还要再来读答案）。
+     *
+     * ⚠️ 这一格必须说话（AGENTS §2 #14：「还不知道」不许实现成"这一拍什么都不说，还顺手把这一拍认领走"）。
+     * ⚠️ 也必须**有界**：预算一到就照手里有的答案挑，探针再慢也不许把换课钉死在这一页上。
+     * @returns {boolean} true = 这一拍先等着，调用方直接认领、不要再另起一句 decline
+     */
+    _courseProbeDeferred: function (now, count) {
+      var cache = this._courseProbeCache;
+      if (!cache || cache.answered) return false;
+      if (!(now - Number(cache.pendingAt) < COURSE_PROBE_DEFER_MS)) return false;
+      if (!this._courseProbeSpokeAt || now - this._courseProbeSpokeAt >= COURSE_PROBE_SPOKE_MS) {
+        this._courseProbeSpokeAt = now;
+        emitRuntimeLog('info', 'course switch probing course homes', {
+          hint: '上一门刷完了，可用户中心里有 ' + count + ' 门课的卡片上没写「任务点进度」。' +
+            '插件先在后台挨门读一遍站点自己的课程首页（只读 HTML，不动那枚正在播的学习页，也不新开标签），' +
+            '最多等 ' + Math.round(COURSE_PROBE_DEFER_MS / 1000) + ' 秒；到点没问完就照卡片顺序进一门，让目录判。' +
+            '问出来的先后是「还要刷 → 读不出 → 没有任务点 → 已完成 → 进不去 → 目录为空」，' +
+            '只改挑谁的顺序，不把任何一门从名单里删掉',
+          everyMs: 0
+        });
+      }
+      return true;
+    },
+
+    /**
      * 批次 82-B/C + 85：在**我们自己导航来的**用户中心页上挑一门接着刷的课。
      *
      * 挑法：先接着学「已经开了头但没学完」的那门（比率最大），比率相同按卡片顺序 ——
@@ -9728,7 +9892,9 @@ var OMITONE_CODE_REV = 'ce8c74e346';
     _pickNextCourseFromUserCenter: function () {
       if (!this._coursePickRequested()) return false;
       if (this._coursePickDone) return true;
-      this._coursePickDone = true;
+      // 批次 97：这一行原来在这里无条件置位。现在「还在问探针」那一格要先等几拍，
+      // 所以「这一页不再重看」改到真要做决定之前才置（下面四处），等答案的那一拍不设。
+      var pickNow = Date.now();
       var ledger = null;
       try { ledger = this._readSessionLedger('omitone:course-switch'); } catch (eL) { ledger = null; }
       if (!ledger || typeof ledger !== 'object') ledger = { sw: 0, tried: [], at: Date.now() };
@@ -9741,6 +9907,7 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       var budget = this._courseSwitchBudget(cards);
       var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, rev: this._codeRev() };
       if (!this.configs.autoNextCourse) {
+        this._coursePickDone = true;
         emitRuntimeLog('warn', 'course switch declined: auto switch is off', Object.assign({
           hint: '这一页是插件自己为了换课导航过来的，但「刷完自动换下一门」已经关掉了，' +
             '所以这里一步都不做 —— 请自己挑一门进去，或者把那个开关打开',
@@ -9749,6 +9916,7 @@ var OMITONE_CODE_REV = 'ce8c74e346';
         return true;
       }
       if (ledger.sw >= budget) {
+        this._coursePickDone = true;
         emitRuntimeLog('warn', 'course switch declined: switch budget used up', Object.assign({
           hint: '这一次已经连续换了 ' + ledger.sw + ' 门课，到上限了（上限 = 这一页能进的课的数量，' +
             '最少 30 —— 不是拍脑袋的数，是真的换完了才会碰到）。' +
@@ -9768,13 +9936,20 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       // 批次 85：读得到进度的候选一个都不剩时，退到「卡片上没写进度那一行」的那一族 ——
       // **进去问目录**，别把活儿推回给用户。已进过的（`tried`）跳过，所以这一支每门只走一次。
       if (!best) {
-        for (var u = 0; u < cards.unknown.length; u++) {
-          var uc = cards.unknown[u];
+        // 批次 97：卡片没写进度那一族，先在后台读一遍站点自己的课程首页（只读、串行、有预算），
+        // 判法只改挑选顺序、绝不删候选；问不出时照旧走批次 85 那条「进去让目录判」。
+        this._askCourseProbe(pickNow, cards.unknown);
+        if (this._courseProbeDeferred(pickNow, cards.unknown.length)) return true;
+        var ordered = this._orderBlindByProbe(cards.unknown);
+        for (var u = 0; u < ordered.length; u++) {
+          var uc = ordered[u].card;
           if (uc.courseId && ledger.tried.indexOf(uc.courseId) !== -1) continue;
-          best = { card: uc, ratio: NaN, blind: true };
+          best = { card: uc, ratio: NaN, blind: true, probe: ordered[u].row };
           break;
         }
       }
+      this._coursePickDone = true;
+      Object.assign(ev, this._courseProbeCounts());
       if (!best) {
         emitRuntimeLog('warn', 'course switch declined: no course with unfinished task points', Object.assign({
           hint: '用户中心里的卡片这一轮**都进过了**：写得到「任务点进度 a/b」的要么学完、要么进过，' +
@@ -9790,13 +9965,20 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       try { this._writeSessionLedger('omitone:course-switch', ledger); } catch (eW) {}
       emitRuntimeLog('warn', 'course switch picked next', Object.assign({
         hint: best.blind
-          ? '上一门已经刷完。这一门卡片上没写「任务点进度」，插件**先当它没刷完进去看一眼**：' +
+          ? '上一门已经刷完。这一门卡片上没写「任务点进度」' +
+            (best.probe
+              ? '，站点自己的课程首页说：' + (this._COURSE_PROBE_SAY[String(best.probe.verdict)] || '判法不认识，按读不出办') + '。'
+              : '，插件在后台也没问出它的进度。') +
+            '插件**先当它没刷完进去看一眼**：' +
             '目录里每节都打了勾就原样回来换下一门（一个任务点都不做、一次 API 都不发），' +
             '有没勾的小节就从站点落的那一节开始推'
           : '上一门已经刷完，现在进这一门继续（进度 ' + best.card.done + '/' + best.card.total + '）。' +
             '落点是这门课的课程首页（卡片那条 `stucoursemiddle` 链接落在一张错误页上，批次 87），' +
             '首页之后还有一条「course home …」说明有没有真进进章节',
         blind: best.blind ? 1 : 0,
+        probeVerdict: best.probe ? String(best.probe.verdict || '') : '',
+        probeJobs: best.probe ? String(best.probe.jobs || '') : '',
+        probeWhy: best.probe ? String(best.probe.why || '') : '',
         unreadable: cards.unknown.length,
         href: String(best.card.homeUrl || '').slice(0, 120),
         everyMs: 0
@@ -14000,15 +14182,27 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       }
 
       if (type === 'multiple') {
-        return raw
-          .replace(/[，、;；\s]+/g, ',')
-          .split(',')
-          .join('')
-          .toUpperCase()
-          .split('')
-          .filter(function (item, index, arr) { return /^[A-Z]$/.test(item) && arr.indexOf(item) === index; })
-          .sort()
-          .join('');
+        // ⚠️ **「连写」是合法形状**，不许要求"一格一字母"：站点自己的隐藏域就是
+        //    `picked.join('')`（见 `75-quiz-dom.js` 里无徽标那一支，现场实测提交前读回 `DBAC`），
+        //    模型也常直接回 `"AC"` —— 一刀切严会把合法答案交回空串，表现成"同一道多选反复花钱"。
+        //    能认的是「**每个字符都是一个真实存在的选项字母**」：本站一题最多 8 个选项
+        //    （`_expandMultiChoiceLetters` 里 `total > 8` 就退回 6）。⚠️ A-F 那一族只是**正则**的上界，
+        //    不是「点得动」的上界：无徽标那一路的隐藏域按 `String.fromCharCode(65 + order)` 兜底，
+        //    第 7、8 枚字母真点得动（真源见 `75-quiz-dom.js` 里 `if (!/^[A-F]$/i.test(l))` 那一行）。
+        //    所以这里**放宽到 A-H**：正好盖住补组合那一族能产出的最高一枚，一个都不许多拒。
+        // ⚠️ 认不出来一律交**空串**，绝不猜（AGENTS §2 #18）：实测改前 `ALL OF THE ABOVE` 进来会被拆成
+        //    `"ABEFHLOTV"` —— 凭空多出九个"选项"（`TURE` 同理拆成 `ERTU`），比"没有结论"危险得多。
+        var multiCells = raw.replace(/[，、;；\s]+/g, ',').split(',');
+        var multiLetters = [];
+        for (var mc = 0; mc < multiCells.length; mc++) {
+          var cell = multiCells[mc].trim().toUpperCase();
+          if (!cell) continue;
+          if (!/^[A-H]+$/.test(cell)) return '';
+          for (var mn = 0; mn < cell.length; mn++) {
+            if (multiLetters.indexOf(cell.charAt(mn)) === -1) multiLetters.push(cell.charAt(mn));
+          }
+        }
+        return multiLetters.sort().join('');
       }
 
       return raw.toUpperCase();
@@ -18656,6 +18850,12 @@ var OMITONE_CODE_REV = 'ce8c74e346';
         return false;
       }
       var filled = false;
+      // 批次 99：上面那一圈只挑得出**一枚**字母，而真多选题（站点最少要选 2 项）勾一格必然判错 ——
+      // 更贵的是那一枚会被单独记进已判错名单（`_notePopupQuizRejected` 记的就是 `_popupQuizLastFilled`），
+      // 于是每一轮换一枚、永远凑不出站点要的那一组（任务 #145 的现场表现：这道多选弹题一直在转）。
+      // 不接手时（不定项 / 凑出来的组合全被判过 / 含填不动的字母）照旧用那一枚，行为不后退。
+      var comboTry = type === 'multiple' ? this._popupQuizLocalCombo(popup, items, banned, picked) : null;
+      if (comboTry && comboTry.group) picked = comboTry.group;
       try { filled = !!this._fillPopupAnswer(popup, picked, type); } catch (eF) { filled = false; }
       if (filled) {
         this._popupQuizSolvedKey = key;
@@ -18667,6 +18867,9 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       }
       emitRuntimeLog('warn', 'popup quiz answered locally, no request', {
         reason: reason, picked: picked, filled: filled ? 1 : 0,
+        // 批次 99：多选这一族「有没有凑成组」与「没凑的哪一种原因」要读得回来 ——
+        // 现场靠这一格分得开「这题本来就该单枚」与「该凑却全被判过了」。
+        combo: comboTry ? comboTry.why : 'not-multiple',
         attempt: this._popupQuizAttempts,
         banned: banned.slice(0, 6),
         // 批次 83：这份名单里**平台当场说过错的**有几个 —— 现场拿它和 `banned.length` 一比，
@@ -18679,16 +18882,16 @@ var OMITONE_CODE_REV = 'ce8c74e346';
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
-          '所以本地选一项，不花钱' :
+          '所以本地自己挑答案（多选题挑一整组，看 picked 与 combo），不花钱' :
           (reason === 'ask-cap' ?
             '这一道在本节已经发满 2×上限 次请求（弹窗被站点每轮收走，所以按任务点记账）—— ' +
-            '之后本地选一项，不再花钱' :
+            '之后本地自己挑答案（多选题挑一整组，看 picked 与 combo），不再花钱' :
             (reason === 'only-one-never-rejected' ?
               '平台已经把这一道除这一个以外的选项全判错过 —— 答案不用再花钱问模型，' +
               '直接免费点剩下的那一个（它也可能错，但一发都不花）' :
               (reason === 'model-repeated-rejected' ?
                 '模型这一发回的是平台**已经判错过**的那个字母 —— 不再为它填第二遍，' +
-                '改免费点没被判过的那一个' :
+                '改免费点没被判过的那一个（多选题凑成一组，看 picked 与 combo）' :
                 (reason === 'all-banned-before-ask' ?
                   '这一道的每个选项都已被判错过（平台亲口说的有几个、推断的有几个，看上面 bySite 与 ' +
                   'banned 两格）—— 单选/判断题只有一个字母算对，再问模型也只能问出这些已知错的，' +
@@ -18698,6 +18901,71 @@ var OMITONE_CODE_REV = 'ce8c74e346';
       return filled;
     },
 
+
+    /**
+     * 多选题的本地兜底该点**哪一组**（批次 99，任务 #145）。
+     *
+     * 为什么要单独有这一格：`_answerPopupQuizLocally` 挑的是"第一枚没被判过的字母"，
+     * 对真多选题（站点最少要 2 项）那一格**结构上不可能对**；而它交出去的那一枚随后会被
+     * `_notePopupQuizRejected` 按单字母记进名单 —— 于是名单越记越碎，组合却一次都没试过。
+     * 补组合的手法不另写一份，直接用章节小测那一条 `_expandMultiChoiceLetters`（相邻项优先），
+     * 免得两份规则互漂（AGENTS §2）。
+     *
+     * 三条不许（每条都对应一种实测过的坏形状）：
+     *   1. **不定项与认不出题型的不凑** —— `_getMultiChoiceMinSelections` 给 1 就交回空串。
+     *      凭空多补一项＝造一个没人给的答案，那正是 `75-quiz-dom.js` 里写明的那个判错来源；
+     *   2. **两把尺先收敛** —— 本文件的名单是 `_popupQuizLetterGroup` 的带逗号形 `"A,C"`，
+     *      而 `_expandMultiChoiceLetters` 内部比的是 `_canonicalQuizAnswer` 的不带逗号形 `"AC"`。
+     *      原样喂进去，「避开已判错组合」这句承诺就永久为空、不报错也不留日志（AGENTS §2 #18）；
+     *      认不出来的那些（选项原文）不进名单 —— 它本来就比不中字母组合；
+     *   3. **不交回填不动的字母** —— `_normalizeChoiceAnswerValues` 只把 `[A-F]` 当字母，
+     *      组合里混进 G 会让整串退化成"选项原文"而一个都点不上，那种组合直接跳过。
+     *
+     * 返回 `{ group, why }`：`group` 用**本文件那一把尺**（`"A,C"`，空串＝不接手），
+     * `why` 是给日志的归因：`ok` / `min-1` / `no-seed` / `all-banned`。
+     */
+    _popupQuizLocalCombo: function (popup, items, banned, seedLetter) {
+      var out = { group: '', why: 'min-1' };
+      var min = 1;
+      try { min = Number(this._getMultiChoiceMinSelections(popup)) || 1; } catch (eM) { min = 1; }
+      if (min < 2) return out;
+      var bannedCombo = [];
+      for (var b = 0; b < (banned || []).length; b++) {
+        var oneBan = '';
+        try { oneBan = this._canonicalQuizAnswer(banned[b], 'multiple'); } catch (eC) { oneBan = ''; }
+        if (oneBan && bannedCombo.indexOf(oneBan) === -1) bannedCombo.push(oneBan);
+      }
+      out.why = 'no-seed';
+      var seeds = [];
+      var pushSeed = function (ch) {
+        var up = String(ch || '').toUpperCase();
+        if (!/^[A-F]$/.test(up) || seeds.indexOf(up) !== -1) return;
+        seeds.push(up);
+      };
+      pushSeed(seedLetter);
+      for (var i = 0; i < (items || []).length; i++) {
+        pushSeed(this._inferOptionLetter(items[i], i) || String.fromCharCode(65 + i));
+      }
+      if (!seeds.length) return out;
+      out.why = 'all-banned';
+      for (var s = 0; s < seeds.length; s++) {
+        var combo = [];
+        try { combo = this._expandMultiChoiceLetters([seeds[s]], min, popup, bannedCombo) || []; } catch (eE) { combo = []; }
+        if (combo.length < 2) continue;
+        var letters = [];
+        for (var c = 0; c < combo.length; c++) {
+          var cu = String(combo[c] || '').toUpperCase();
+          if (!/^[A-F]$/.test(cu)) { letters = []; break; }
+          if (letters.indexOf(cu) === -1) letters.push(cu);
+        }
+        if (letters.length < 2) continue;
+        letters.sort();
+        out.group = this._popupQuizLetterGroup(letters.join(','));
+        out.why = 'ok';
+        return out;
+      }
+      return out;
+    },
 
     _checkPopupQuiz: function () {
       var selectors = [
@@ -19037,7 +19305,7 @@ var OMITONE_CODE_REV = 'ce8c74e346';
         // 名单里存的就是"为什么不再问了"，下面那一格直接拿它当原因点名。
         this._popupQuizAskBudget(key);
 
-        // 两种情况一律**不发请求**，本地选一项把弹窗点掉：
+        // 两种情况一律**不发请求**，本地自己挑答案（多选题挑的是一整组）把弹窗点掉：
         //   · 题干是空的（只有题型名）—— 问了也只能瞎猜，那一发是纯浪费；
         //   · 这一道已经放弃两次、或本节已发满 2×上限 —— 继续问就是"每 8 秒再来一发"，永不收敛。
         // 让步的是**正确率**，不是**钱**：本地选也可能选错，但一条请求都不花。

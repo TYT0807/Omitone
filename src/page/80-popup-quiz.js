@@ -9,7 +9,7 @@
  * 弹题（弹窗题）的检测、填答、失败计数与放弃
  * 「继续学习」提示按钮的处理（不点它进不去正常播放页）
  *
- * 本段的方法（45 个）：
+ * 本段的方法（46 个）：
  *   _findContinueStudyButton、_tryContinueStudyPrompt、_activePopupBlock、
  *   _popupQuizBlocksPlayback、_popupQuizFingerprint、_getPopupQuizMaxAttempts、
  *   _checkPopupQuiz、_popupQuizSiteVerdict、_popupQuizSpanVisible、_clickPopupContinue、
@@ -25,7 +25,7 @@
  *   _notePopupQuizRejected、_popupQuizRejectBySite、_popupQuizLetterGroup、
  *   _popupQuizFilledLetter、
  *   _notePopupQuizFilled、_notePopupQuizPaid、_popupQuizPaidAnswer、
- *   _popupQuizRecheckRejected、_answerPopupQuizLocally
+ *   _popupQuizRecheckRejected、_answerPopupQuizLocally、_popupQuizLocalCombo
  * ========================================================================== */
 // @omitone-part-header-end
 
@@ -1397,6 +1397,12 @@
         return false;
       }
       var filled = false;
+      // 批次 99：上面那一圈只挑得出**一枚**字母，而真多选题（站点最少要选 2 项）勾一格必然判错 ——
+      // 更贵的是那一枚会被单独记进已判错名单（`_notePopupQuizRejected` 记的就是 `_popupQuizLastFilled`），
+      // 于是每一轮换一枚、永远凑不出站点要的那一组（任务 #145 的现场表现：这道多选弹题一直在转）。
+      // 不接手时（不定项 / 凑出来的组合全被判过 / 含填不动的字母）照旧用那一枚，行为不后退。
+      var comboTry = type === 'multiple' ? this._popupQuizLocalCombo(popup, items, banned, picked) : null;
+      if (comboTry && comboTry.group) picked = comboTry.group;
       try { filled = !!this._fillPopupAnswer(popup, picked, type); } catch (eF) { filled = false; }
       if (filled) {
         this._popupQuizSolvedKey = key;
@@ -1408,6 +1414,9 @@
       }
       emitRuntimeLog('warn', 'popup quiz answered locally, no request', {
         reason: reason, picked: picked, filled: filled ? 1 : 0,
+        // 批次 99：多选这一族「有没有凑成组」与「没凑的哪一种原因」要读得回来 ——
+        // 现场靠这一格分得开「这题本来就该单枚」与「该凑却全被判过了」。
+        combo: comboTry ? comboTry.why : 'not-multiple',
         attempt: this._popupQuizAttempts,
         banned: banned.slice(0, 6),
         // 批次 83：这份名单里**平台当场说过错的**有几个 —— 现场拿它和 `banned.length` 一比，
@@ -1420,16 +1429,16 @@
         options: items.slice(0, 6).map(this._extractOptionText.bind(this)),
         hint: reason === 'no-stem' ?
           '这个弹窗的容器里只有题型名（例如「判断题」），题干是空的 —— 问了模型也只能瞎猜，' +
-          '所以本地选一项，不花钱' :
+          '所以本地自己挑答案（多选题挑一整组，看 picked 与 combo），不花钱' :
           (reason === 'ask-cap' ?
             '这一道在本节已经发满 2×上限 次请求（弹窗被站点每轮收走，所以按任务点记账）—— ' +
-            '之后本地选一项，不再花钱' :
+            '之后本地自己挑答案（多选题挑一整组，看 picked 与 combo），不再花钱' :
             (reason === 'only-one-never-rejected' ?
               '平台已经把这一道除这一个以外的选项全判错过 —— 答案不用再花钱问模型，' +
               '直接免费点剩下的那一个（它也可能错，但一发都不花）' :
               (reason === 'model-repeated-rejected' ?
                 '模型这一发回的是平台**已经判错过**的那个字母 —— 不再为它填第二遍，' +
-                '改免费点没被判过的那一个' :
+                '改免费点没被判过的那一个（多选题凑成一组，看 picked 与 combo）' :
                 (reason === 'all-banned-before-ask' ?
                   '这一道的每个选项都已被判错过（平台亲口说的有几个、推断的有几个，看上面 bySite 与 ' +
                   'banned 两格）—— 单选/判断题只有一个字母算对，再问模型也只能问出这些已知错的，' +
@@ -1439,6 +1448,71 @@
       return filled;
     },
 
+
+    /**
+     * 多选题的本地兜底该点**哪一组**（批次 99，任务 #145）。
+     *
+     * 为什么要单独有这一格：`_answerPopupQuizLocally` 挑的是"第一枚没被判过的字母"，
+     * 对真多选题（站点最少要 2 项）那一格**结构上不可能对**；而它交出去的那一枚随后会被
+     * `_notePopupQuizRejected` 按单字母记进名单 —— 于是名单越记越碎，组合却一次都没试过。
+     * 补组合的手法不另写一份，直接用章节小测那一条 `_expandMultiChoiceLetters`（相邻项优先），
+     * 免得两份规则互漂（AGENTS §2）。
+     *
+     * 三条不许（每条都对应一种实测过的坏形状）：
+     *   1. **不定项与认不出题型的不凑** —— `_getMultiChoiceMinSelections` 给 1 就交回空串。
+     *      凭空多补一项＝造一个没人给的答案，那正是 `75-quiz-dom.js` 里写明的那个判错来源；
+     *   2. **两把尺先收敛** —— 本文件的名单是 `_popupQuizLetterGroup` 的带逗号形 `"A,C"`，
+     *      而 `_expandMultiChoiceLetters` 内部比的是 `_canonicalQuizAnswer` 的不带逗号形 `"AC"`。
+     *      原样喂进去，「避开已判错组合」这句承诺就永久为空、不报错也不留日志（AGENTS §2 #18）；
+     *      认不出来的那些（选项原文）不进名单 —— 它本来就比不中字母组合；
+     *   3. **不交回填不动的字母** —— `_normalizeChoiceAnswerValues` 只把 `[A-F]` 当字母，
+     *      组合里混进 G 会让整串退化成"选项原文"而一个都点不上，那种组合直接跳过。
+     *
+     * 返回 `{ group, why }`：`group` 用**本文件那一把尺**（`"A,C"`，空串＝不接手），
+     * `why` 是给日志的归因：`ok` / `min-1` / `no-seed` / `all-banned`。
+     */
+    _popupQuizLocalCombo: function (popup, items, banned, seedLetter) {
+      var out = { group: '', why: 'min-1' };
+      var min = 1;
+      try { min = Number(this._getMultiChoiceMinSelections(popup)) || 1; } catch (eM) { min = 1; }
+      if (min < 2) return out;
+      var bannedCombo = [];
+      for (var b = 0; b < (banned || []).length; b++) {
+        var oneBan = '';
+        try { oneBan = this._canonicalQuizAnswer(banned[b], 'multiple'); } catch (eC) { oneBan = ''; }
+        if (oneBan && bannedCombo.indexOf(oneBan) === -1) bannedCombo.push(oneBan);
+      }
+      out.why = 'no-seed';
+      var seeds = [];
+      var pushSeed = function (ch) {
+        var up = String(ch || '').toUpperCase();
+        if (!/^[A-F]$/.test(up) || seeds.indexOf(up) !== -1) return;
+        seeds.push(up);
+      };
+      pushSeed(seedLetter);
+      for (var i = 0; i < (items || []).length; i++) {
+        pushSeed(this._inferOptionLetter(items[i], i) || String.fromCharCode(65 + i));
+      }
+      if (!seeds.length) return out;
+      out.why = 'all-banned';
+      for (var s = 0; s < seeds.length; s++) {
+        var combo = [];
+        try { combo = this._expandMultiChoiceLetters([seeds[s]], min, popup, bannedCombo) || []; } catch (eE) { combo = []; }
+        if (combo.length < 2) continue;
+        var letters = [];
+        for (var c = 0; c < combo.length; c++) {
+          var cu = String(combo[c] || '').toUpperCase();
+          if (!/^[A-F]$/.test(cu)) { letters = []; break; }
+          if (letters.indexOf(cu) === -1) letters.push(cu);
+        }
+        if (letters.length < 2) continue;
+        letters.sort();
+        out.group = this._popupQuizLetterGroup(letters.join(','));
+        out.why = 'ok';
+        return out;
+      }
+      return out;
+    },
 
     _checkPopupQuiz: function () {
       var selectors = [
@@ -1778,7 +1852,7 @@
         // 名单里存的就是"为什么不再问了"，下面那一格直接拿它当原因点名。
         this._popupQuizAskBudget(key);
 
-        // 两种情况一律**不发请求**，本地选一项把弹窗点掉：
+        // 两种情况一律**不发请求**，本地自己挑答案（多选题挑的是一整组）把弹窗点掉：
         //   · 题干是空的（只有题型名）—— 问了也只能瞎猜，那一发是纯浪费；
         //   · 这一道已经放弃两次、或本节已发满 2×上限 —— 继续问就是"每 8 秒再来一发"，永不收敛。
         // 让步的是**正确率**，不是**钱**：本地选也可能选错，但一条请求都不花。

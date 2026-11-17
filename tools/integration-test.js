@@ -3588,6 +3588,315 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ gate: resetBody.indexOf('_deferSeekUntilSeekable'), mark: resetBody.indexOf('_seekTriedKeys[key] = true') }));
 }
 
+/** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */
+async function testCanonicalMultipleAnswerOrEmpty() {
+  console.log('\n[23] 多选答案规范化：认不出来交空串，但连写、乱序、重复这些合法形状一个不许变（批次 98）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  // ⚠️ 静态扫方法体之前先剥注释（批次 98 实测踩过）：注释里引了一句真源 `/^[A-F]$/i`，
+  //    `letterBound` 于是读出两种字母类（F/H）→ 按「一个体里两种上界＝读不出」判成 0 →
+  //    ① 当场红并触发整段提前 return，②-⑦ 一条都没执行 —— 而「没执行」在报告里和「通过」长得一样。
+  //    注释是给人看的，不许进断言的证据；剥成等长空格、位置不动，`buildFrom` 仍拿原文拼函数。
+  var stripComments = function (src) {
+    var out = String(src).replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, ' '); });
+    return out.replace(/(^|[^:])\/\/[^\n]*/g, function (m, prefix) {
+      return prefix + new Array(m.length - prefix.length + 2).join(' ');
+    });
+  };
+  var codeOf = function (body) { return stripComments(body); };
+  // 字母上界不写死成 'F' / 'H'：那两处字面量改了而测试还按旧的跑，就是一条假绿。
+  // 一个方法体里出现两种上界也当读不出处理（宁可没有结论，也不要一个错位的结论）。
+  var letterBound = function (body) {
+    var re = /\[A-([A-Z])/g, seen = {}, m;
+    while ((m = re.exec(body))) seen[m[1]] = 1;
+    var list = Object.keys(seen);
+    return { bound: list.length === 1 ? list[0].charCodeAt(0) - 64 : 0, classes: list.join('/') };
+  };
+
+  var dom = read('src/page/75-quiz-dom.js');
+  var quiz = read('src/page/72-quiz-answers.js');
+
+  var app = {
+    _normalizeAnswerValue: buildFrom(dom, '_normalizeAnswerValue', {}),
+    _normalizeJudgeAnswerValue: buildFrom(dom, '_normalizeJudgeAnswerValue', {}),
+    _canonicalQuizAnswer: buildFrom(quiz, '_canonicalQuizAnswer', {}),
+    _canonicalQuizAnswerForQuestion: buildFrom(quiz, '_canonicalQuizAnswerForQuestion', {}),
+    _expandMultiChoiceLetters: buildFrom(dom, '_expandMultiChoiceLetters', {}),
+    // 桩只打在「读 DOM」这一发动作上（本集成层拿不到真 DOM），字母与规范化那一路全是真代码
+    _getOptionItems: function () { return [1, 2, 3, 4, 5, 6]; },
+    _matchOptionItem: function () { return null; },
+    _getOptionStoredAnswerValue: function () { return ''; },
+    _extractOptionText: function () { return ''; }
+  };
+  var ask = function (v, t) { return app._canonicalQuizAnswer(v, t); };
+
+  var clickBound = letterBound(codeOf(bodyOf(dom, '_normalizeChoiceAnswerValues'))).bound;
+  var canonInfo = letterBound(codeOf(bodyOf(quiz, '_canonicalQuizAnswer')));
+  // 剥注释这一手自己也承重，所以要能量回来：剥完之后行数不变、多选分支与判定预查两句真代码
+  // 还在原处 = 剥掉的确实只有注释。少了任何一件，说明字符串里的 `//` 把代码一起吃掉了。
+  var canonCode = codeOf(bodyOf(quiz, '_canonicalQuizAnswer'));
+  var stripKeptCode = canonCode.split('\n').length === bodyOf(quiz, '_canonicalQuizAnswer').split('\n').length &&
+    canonCode.indexOf("type === 'multiple'") >= 0 && canonCode.indexOf('var judgeAny') >= 0 &&
+    letterBound(canonCode).bound > 0;
+
+  check('① 五件都能从盘上原样取出来真跑、两个字母上界也从**代码**（不是注释）里读得回来、剥注释没吃掉任何一行代码（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    ['_normalizeAnswerValue', '_normalizeJudgeAnswerValue', '_canonicalQuizAnswer',
+      '_canonicalQuizAnswerForQuestion', '_expandMultiChoiceLetters'].every(function (n) {
+        return typeof app[n] === 'function';
+      }) && clickBound > 0 && canonInfo.bound > 0 && stripKeptCode,
+    JSON.stringify({ types: Object.keys(app).map(function (k) { return k + '=' + typeof app[k]; }), clickBound: clickBound, canon: canonInfo, stripKeptCode: stripKeptCode }));
+  if (typeof app._canonicalQuizAnswer !== 'function' || typeof app._expandMultiChoiceLetters !== 'function' ||
+      clickBound <= 0 || canonInfo.bound <= 0 || !stripKeptCode) return;
+
+  // ---- ② 合法形状：一个都不许多拒，而且四种写法必须收敛成同一串（AGENTS §2 #18 的「全序规范形」）----
+  var legalShapes = ['A,C', 'C,A', 'AC', 'CA', ['A', 'C'], 'A、C', 'A;C', ' a , c ', 'A,A,C', 'C , A'];
+  var shapeBad = [];
+  legalShapes.forEach(function (v) {
+    var got = ask(v, 'multiple');
+    if (got !== 'AC') shapeBad.push(JSON.stringify(v) + '=' + JSON.stringify(got));
+  });
+  var idempotent = legalShapes.every(function (v) { return ask(ask(v, 'multiple'), 'multiple') === 'AC'; });
+  var siteShape = ask('DBAC', 'multiple') === 'ABCD' && ask('G,H', 'multiple') === 'GH' && ask('ABCDEFGH', 'multiple') === 'ABCDEFGH';
+  check('② 十种合法写法（逗号、顿号、分号、空格、重复、数组、连写、乱序）全部归成 AC、规范形幂等，站点那种连写 DBAC 与八选项 ABCDEFGH 照旧认（一刀切严就是「同一道多选反复花钱」）',
+    shapeBad.length === 0 && idempotent && siteShape,
+    JSON.stringify({ bad: shapeBad, idempotent: idempotent, dbac: ask('DBAC', 'multiple'), eight: ask('ABCDEFGH', 'multiple') }));
+
+  // ---- ③ 规范化不许新拒一个「点得动」的字母 ----
+  // 上界不是 `_normalizeChoiceAnswerValues` 那个 A-F 正则，而是补组合那一族的选项上限：
+  // 隐藏域在无徽标那一路用 `String.fromCharCode(65 + order)` 兜底（75-quiz-dom.js 里
+  // 「if (!/^[A-F]$/i.test(l))」那一行），所以第 7、8 枚字母是真点得动的 —— 只比 A-F 会低估。
+  var capMatch = codeOf(bodyOf(dom, '_expandMultiChoiceLetters')).match(/total < 2 \|\| total > (\d+)/);
+  var capTotal = capMatch ? Number(capMatch[1]) : 0;
+  var rejectBad = [];
+  // 规范形是「去重 + 排序」，期望值照这个口径算，别写成没去重的连写（BB 归成 B 是对的）
+  var uniqSorted = function (s) {
+    var bag = {};
+    s.split('').forEach(function (ch) { bag[ch] = 1; });
+    return Object.keys(bag).sort().join('');
+  };
+  for (var i = 1; i <= capTotal; i++) {
+    var one = String.fromCharCode(64 + i);
+    if (ask(one, 'multiple') !== one) rejectBad.push(one + ' 单枚=' + JSON.stringify(ask(one, 'multiple')));
+    if (i > 1) {
+      var want = uniqSorted(one + 'B');
+      if (ask(one + 'B', 'multiple') !== want) rejectBad.push(one + 'B 连写=' + JSON.stringify(ask(one + 'B', 'multiple')) + '，期望 ' + want);
+      if (ask(one + ',B', 'multiple') !== want) rejectBad.push(one + ',B 逗号=' + JSON.stringify(ask(one + ',B', 'multiple')) + '，期望 ' + want);
+    }
+  }
+  check('③ 补组合那一族的选项上限是第 ' + capTotal + ' 枚字母（第 7、8 枚经 `65 + order` 兜底真点得动），规范化认到第 ' + canonInfo.bound + ' 枚，逐枚与两两组合真跑过且全部认；A 到第 ' + capTotal + ' 枚一个都不许多拒（改窄成 A-F 这一条就红 —— 那会新拒掉本来点得动的答案）',
+    capTotal > 0 && canonInfo.bound >= capTotal && rejectBad.length === 0,
+    JSON.stringify({ capTotal: capTotal, canonBound: canonInfo.bound, regexBoundOfClickPath: clickBound, bad: rejectBad }));
+
+  // ---- ④ 认不出来的形状一律交空串（改前实测：ABEFHLOTV / ERTU / AC / AB，全是凭空造出来的选项）----
+  var garbage = ['ALL OF THE ABOVE', 'TURE', 'A-C', 'AB,正确', '甲、乙', '选项1'];
+  var garbageBad = [];
+  garbage.forEach(function (v) {
+    var got = ask(v, 'multiple');
+    if (got !== '') garbageBad.push(JSON.stringify(v) + '=' + JSON.stringify(got));
+  });
+  check('④ 六种认不出来的形状（选项原文、拼错的字母组、破折号分隔、字母混中文、中文顿号、带数字）全部交空串，绝不猜（AGENTS §2 #18：凭空多出九个「选项」比「没有结论」危险得多）',
+    garbageBad.length === 0,
+    JSON.stringify({ bad: garbageBad, all: garbage.map(function (v) { return v + '=' + JSON.stringify(ask(v, 'multiple')); }) }));
+
+  // ---- ⑤ 判定那一族排在 multiple 分支之前，新闸不许把它们改成交空串 ----
+  var multiBody = canonCode;
+  var judgeBeforeMulti = multiBody.indexOf('judgeAny') >= 0 &&
+    multiBody.indexOf("type === 'multiple'") > multiBody.indexOf('var judgeAny');
+  var judgeShapes = [['TRUE', 'true'], ['true', 'true'], ['对', 'true'], ['正确', 'true'], ['YES', 'true'], ['NONE', 'false']];
+  var judgeBad = judgeShapes.filter(function (p) { return ask(p[0], 'multiple') !== p[1]; })
+    .map(function (p) { return p[0] + '=' + JSON.stringify(ask(p[0], 'multiple')); });
+  check('⑤ 判定形状在 type=multiple 下照旧给出 true/false（TRUE、对、正确、YES、NONE 六枚）且静态钉住判定预查排在 multiple 分支之前 —— 任务里那句「TRUE 交空串」实测是错的，TRUE 根本走不到多选那一支',
+    judgeBeforeMulti && judgeBad.length === 0,
+    JSON.stringify({ ordered: judgeBeforeMulti, bad: judgeBad }));
+
+  // ---- ⑥ 交空串不等于放弃这一道：下游兜底要真在跑 ----
+  var expandBody = bodyOf(dom, '_expandMultiChoiceLetters');
+  var fellBack = expandBody.indexOf('if (!canonical) canonical = sorted.join(') >= 0;
+  var oneGroup = app._expandMultiChoiceLetters(['A'], 2, {}, []);
+  var twoGroup = app._expandMultiChoiceLetters(['C'], 2, {}, ['AC']);
+  check('⑥ 规范化交空串时下游仍有兜底：拉黑比较那句「canonical 为空就退回 sorted.join」还在，真跑一次单枚 A 补足两格、被拉黑的 AC 也换得出别的组合（空串不许变成「这一道彻底不做」）',
+    fellBack && oneGroup.length >= 2 && twoGroup.length >= 2 && twoGroup.join('') !== 'AC',
+    JSON.stringify({ fallbackInSource: fellBack, one: oneGroup, banned: twoGroup }));
+
+  // ---- ⑦ 其余题型一条都不许多变 ----
+  check('⑦ 新闸只管 multiple：单选 A 还是 A、判断题 TRUE 还是 true、填空题 hello 还是 HELLO、空值与 null 还是空串（改错分支就是把整条答题链路一起废掉的那种改法）',
+    ask('A', 'single') === 'A' && ask('TRUE', 'judge') === 'true' && ask('hello', 'fill') === 'HELLO' &&
+      ask('', 'multiple') === '' && ask(null, 'multiple') === '' && ask(undefined, 'single') === '',
+    JSON.stringify({ single: ask('A', 'single'), judge: ask('TRUE', 'judge'), fill: ask('hello', 'fill'), empty: ask('', 'multiple'), nul: ask(null, 'multiple') }));
+}
+
+/** ---- [24] 批次 99：多选弹题的本地兜底要凑出一整组，而且两把尺先收敛成一种写法 ---- */
+async function testPopupQuizLocalComboGroup() {
+  console.log('\n[24] 多选弹题本地兜底：凑一整组、避开被判过的组合、不定项不凭空补、点不动的字母不交（批次 99）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  // 静态判据一律先剥注释（同一族坑第二次）：本批那两句注释里**原样抄了**真源的正则与形状，
+  // 拿原文数 `[A-F]` 会把注释也算成一处上界。
+  var stripComments = function (src) {
+    var out = String(src).replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, ' '); });
+    return out.replace(/(^|[^:])\/\/[^\n]*/g, function (m, prefix) {
+      return prefix + new Array(m.length - prefix.length + 2).join(' ');
+    });
+  };
+  var codeOf = function (body) { return stripComments(body); };
+  var letterBound = function (body) {
+    var re = /\[A-([A-Z])/g, seen = {}, m;
+    while ((m = re.exec(body))) seen[m[1]] = 1;
+    var list = Object.keys(seen);
+    return { bound: list.length === 1 ? list[0].charCodeAt(0) - 64 : 0, classes: list.join('/') };
+  };
+
+  var pop = read('src/page/80-popup-quiz.js');
+  var dom = read('src/page/75-quiz-dom.js');
+  var quiz = read('src/page/72-quiz-answers.js');
+
+  // 「填答尺」的上界从代码读回来，不写死 F：组合里混进一枚这一路点不动的字母，
+  // 整串会退化成"选项原文"而一个都不点（那比不接手更糟）。
+  var clickBound = letterBound(codeOf(bodyOf(dom, '_normalizeChoiceAnswerValues'))).bound;
+  var minByType = function (typeName, optCount) {
+    return {
+      __n: optCount,
+      textContent: typeName || '',
+      getAttribute: function (k) { return (k === 'typename' || k === 'typeName') ? String(typeName || '') : ''; },
+      querySelector: function () { return null; }
+    };
+  };
+  var mkItems = function (n) {
+    var arr = [];
+    for (var i = 0; i < n; i++) arr.push({ getAttribute: function () { return ''; }, querySelector: function () { return null; } });
+    return arr;
+  };
+  var fakeTextOf = function (el) { return String((el && el.textContent) || ''); };
+
+  var app = {
+    _popupQuizLocalCombo: buildFrom(pop, '_popupQuizLocalCombo', {}),
+    _popupQuizLetterGroup: buildFrom(pop, '_popupQuizLetterGroup', {}),
+    _getMultiChoiceMinSelections: buildFrom(dom, '_getMultiChoiceMinSelections', { textOf: fakeTextOf }),
+    _inferOptionLetter: buildFrom(dom, '_inferOptionLetter', { textOf: fakeTextOf }),
+    _expandMultiChoiceLetters: buildFrom(dom, '_expandMultiChoiceLetters', {}),
+    _canonicalQuizAnswer: buildFrom(quiz, '_canonicalQuizAnswer', {}),
+    _normalizeAnswerValue: buildFrom(dom, '_normalizeAnswerValue', {}),
+    _normalizeJudgeAnswerValue: buildFrom(dom, '_normalizeJudgeAnswerValue', {}),
+    _canonicalQuizAnswerForQuestion: buildFrom(quiz, '_canonicalQuizAnswerForQuestion', {}),
+    // 桩只打在「读 DOM」这一发（集成层拿不到真 DOM），字母、组合、规范化那一路全是真代码
+    _getOptionItems: function (el) { return mkItems((el && el.__n) || 0); },
+    _matchOptionItem: function () { return null; },
+    _getOptionStoredAnswerValue: function () { return ''; },
+    _extractOptionText: function () { return ''; }
+  };
+  // combo(题目形状, 选项数, 名单, 起步那一枚) → { group, why }
+  var combo = function (typeName, optCount, banned, seed) {
+    return app._popupQuizLocalCombo(minByType(typeName, optCount), mkItems(optCount), banned || [], seed);
+  };
+  var callerCode = codeOf(bodyOf(pop, '_answerPopupQuizLocally'));
+  var wired = callerCode.indexOf("type === 'multiple' ? this._popupQuizLocalCombo(") >= 0;
+  var guard = callerCode.indexOf('if (comboTry && comboTry.group) picked = comboTry.group;') >= 0;
+  var headered = pop.indexOf('本段的方法（46 个）') >= 0 && /_answerPopupQuizLocally、_popupQuizLocalCombo/.test(pop);
+  var need = ['_popupQuizLocalCombo', '_popupQuizLetterGroup', '_getMultiChoiceMinSelections',
+    '_inferOptionLetter', '_expandMultiChoiceLetters', '_canonicalQuizAnswer'];
+
+  check('① 六件都能从盘上原样取出来真跑、填答尺的上界从**代码**（不是注释）里读得回来、新方法登记进片段头部、调用方那一行接在填答之前且只在有组合时接手（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    need.every(function (n) { return typeof app[n] === 'function'; }) && clickBound > 0 && wired && guard && headered,
+    JSON.stringify({ types: need.map(function (k) { return k + '=' + typeof app[k]; }), clickBound: clickBound, wired: wired, guard: guard, headered: headered }));
+  if (!need.every(function (n) { return typeof app[n] === 'function'; }) || clickBound <= 0 || !wired || !guard || !headered) return;
+
+  // ---- ② 真多选凑出一整组，而且交出去的就是本文件那一把尺 ----
+  var g2 = combo('多选题', 4, [], 'A');
+  var g2Letters = (g2.group || '').split(',');
+  var g2Ok = g2.why === 'ok' && g2Letters.length >= 2 && g2.group === app._popupQuizLetterGroup(g2.group) &&
+    g2Letters.every(function (ch) { return /^[A-Z]$/.test(ch) && ch.charCodeAt(0) - 64 <= clickBound; });
+  var g1 = combo('单选题', 4, [], 'A');
+  check('② 四选项的真多选题本地兜底交出「' + g2.group + '」：至少两格、是本文件尺的规范形（`_popupQuizLetterGroup` 原样认回、排序去重带逗号）、每一枚都不超过填答尺第 ' + clickBound + ' 枚；判断题/单选题按题型名交回空串（`why` 点名为什么没凑）',
+    g2Ok && g1.group === '',
+    JSON.stringify({ multiple: g2, single: g1, clickBound: clickBound, canonicalRoundTrip: app._popupQuizLetterGroup(g2.group) }));
+
+  // ---- ③ 转尺那一格承重（AGENTS §2 #18）----
+  // 名单在本文件是带逗号形 `"A,B"`，而 `_expandMultiChoiceLetters` 内部比的是不带逗号形 `"AB"`。
+  // 摘掉转换，"避开已判错的组合"就永久为空：不报错、不留日志，只是每一轮又交出同一组。
+  var g3 = combo('多选题', 4, ['A,B'], 'A');
+  var bannedForm = ['A,B'].map(function (v) { return app._canonicalQuizAnswer(v, 'multiple'); });
+  check('③ 名单里躺着 `"A,B"`（本文件的带逗号形）时，产出的组合不再是 A,B（实交「' + g3.group + '」）—— 因为喂给补组合那一族之前先过 `_canonicalQuizAnswer` 收敛成不带逗号形「' + bannedForm.join('/') + '」；不转尺就比不中、下一轮照旧交同一组（现场表现：这道多选弹题一直在转）',
+    g3.why === 'ok' && g3.group !== 'A,B' && app._canonicalQuizAnswer(g3.group, 'multiple') !== 'AB',
+    JSON.stringify({ bannedRaw: ['A,B'], bannedCanonical: bannedForm, got: g3 }));
+
+  // ---- ④ 闭环：这一轮交出去的那一组，下一轮（平台判错、记进名单之后）必须换 ----
+  var round1 = combo('多选题', 5, [], 'A');
+  var asLedger = [app._popupQuizLetterGroup(round1.group)];   // `_notePopupQuizRejected` 记的就是这一形
+  var round2 = combo('多选题', 5, asLedger, 'A');
+  var commaFree = app._canonicalQuizAnswer(round1.group, 'multiple');
+  check('④ 填完之后平台判错、名单里多出这一组，下一轮本地兜底换得出**别的一组**（round1 ' + round1.group + ' → round2 ' + round2.group + '），且那一条记进名单时经 `_canonicalQuizAnswer` 出来的就是补组合那一族比的那一形（' + JSON.stringify(commaFree) + '，不带逗号）—— 记账与避让必须是同一把尺，否则「换一组」这句承诺是空的',
+    round2.why === 'ok' && round2.group !== round1.group && commaFree === String(round1.group).replace(/,/g, '') &&
+      commaFree.indexOf(',') === -1 && round2.group.split(',').length >= 2,
+    JSON.stringify({ round1: round1, ledger: asLedger, round2: round2, canonical: commaFree }));
+
+  // ---- ⑤ 不定项与认不出题型的不凑（凭空多补一项＝造一个没人给的答案）----
+  var free1 = combo('不定项选择题', 4, [], 'A');
+  var unknown = combo('', 4, [], 'A');
+  check('⑤ 不定项（站点允许只选一项）与认不出题型的一律不接手：`group` 交回空串、`why` 点名 min-1 —— 照真多选补第二格就是把一个没人给的答案交上去，那正是 75 片段里写明「不能一律钉成 2」的来源',
+    free1.group === '' && free1.why === 'min-1' && unknown.group === '' && unknown.why === 'min-1',
+    JSON.stringify({ budingxiang: free1, unknownType: unknown }));
+
+  // ---- ⑥ 全被判过 / 只剩点不动的字母时不接手（调用方保留原来那一枚，行为不后退）----
+  var allPairs = ['A,B', 'A,C', 'A,D', 'B,C', 'B,D', 'C,D'];
+  var exhausted = combo('多选题', 4, allPairs, 'A');
+  // 七选项、起步那枚是第 6 枚 F：补组合那一族给 F 找的第一个邻居正是第 7 枚 G。
+  // 不摘掉那把 A–F 尺时这里交回的该是别的组合；摘掉它就交出 `F,G` —— 填答那一路读不出字母、
+  // 整串退化成"选项原文"，一个选项都不会被点（比不接手更糟）。
+  var seedF7 = combo('多选题', 7, [], 'F');
+  check('⑥ 四选项的两两组合全被判过时交回空串（`why=all-banned`，此时调用方仍填原来那一枚，不是"这道干脆不做"）；七选项里起步第 6 枚 F 时不交含第 7 枚的组合（填答尺只认到第 ' + clickBound + ' 枚，' + JSON.stringify(seedF7.group) + ' 里不许出现点不动的字母）',
+    exhausted.group === '' && exhausted.why === 'all-banned' && seedF7.group !== 'F,G' &&
+      seedF7.group.split(',').every(function (ch) { return ch.charCodeAt(0) - 64 <= clickBound; }),
+    JSON.stringify({ allBanned: exhausted, seedF7: seedF7, clickBound: clickBound }));
+
+  // ---- ⑦ 单选/判断一条不动：接手条件由 type 与「有没有真组合」两半共同决定 ----
+  var judgeRoot = combo('判断题', 2, [], 'A');
+  var noSeed = combo('多选题', 0, [], 'G');
+  check('⑦ 本地兜底只在 `type` 是 multiple 时问一次凑组，且只有真凑出组合才替换那一枚（静态钉住这两行：少了前者判断题也被改，少了后者空串会把唯一能点的那格丢掉）；判断题形状自己只交回空串，一个可用字母都认不出来时也交回空串（`why=no-seed`，绝不猜）',
+    wired && guard && judgeRoot.group === '' && judgeRoot.why === 'min-1' &&
+      noSeed.group === '' && noSeed.why === 'no-seed',
+    JSON.stringify({ ternaryInCaller: wired, emptyGuard: guard, judge: judgeRoot, noSeed: noSeed }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -3622,6 +3931,8 @@ async function main() {
   await testJobRejectLogThrottle();
   await testDisplacedStudyPageRescue();
   await testSeekDeferUntilSeekable();
+  await testCanonicalMultipleAnswerOrEmpty();
+  await testPopupQuizLocalComboGroup();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

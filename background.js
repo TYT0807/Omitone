@@ -191,6 +191,156 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     return out;
   }
 
+  // ── 批次 97：课程首页进度探针 ──────────────────────────────────────────────
+  // 为什么在后台问：用户中心那张卡片只有 6/38 门写了「任务点进度 a/b」（2026-11-17 现场实量，
+  // 台账 notes/census-97-full.md），剩下 32 门在换课挑选里全是**盲进** —— 进错一门不只是白跑，
+  // 还把它的课号记进 6 小时黑名单（`omitoneDone`），于是"这一门一直没刷"过几周也看不出来。
+  // 课程首页自己把进度写得更细，而跨域带 cookie 的 fetch 只有 SW 这里能成（AGENTS §2 #11）。
+
+  // ⚠️ 地址在**这里**拼，页面只许交课号与班号：改成页面传整条地址，等于给任意网页开一个
+  //    「带着用户 cookie 去 fetch 任意 URL」的原语（AGENTS §2 #4「构造只许一处真源」同一族）。
+  var COURSE_HOME_BASE = 'https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse';
+  var COURSE_ID_RE = /^\d{1,12}$/;
+  var COURSE_PROBE_LIMIT = 40;          // 一轮最多问几门（现场最大的账号 38 张卡片）
+  var COURSE_PROBE_FETCH_MS = 12000;    // 单页 fetch 上限（实测 100~230ms，最厚那页 39 万字）
+  var COURSE_PROBE_BUDGET_MS = 20000;   // 整轮预算：超了把没问到的记成 skip，换课不许被探针拖死
+  var COURSE_PROBE_BODY_MAX = 1500000;  // 单页正文上限（实测最大 395KB，留四倍余量）
+
+  /**
+   * 课程首页 HTML → 这一门还要不要刷（纯函数；38 门现场全量对账见 notes/census-97-full.md）。
+   * ⚠️ 它**还没接进集成层** —— 台账那份四态是用探针记下的计数器按同一判定顺序重算的
+   *   （`notes/census-97-full.md` 里写清了这一步），不是本函数在 38 页 HTML 上真跑过。
+   *   要接就像 `[21]` 那一段那样从本文件取出去跑，别抄一份进测试。
+   *
+   * 判法只有这六格（AGENTS §2 #12：「读不出」必须单独占一格，不许被压进「已完成」）：
+   *   need        还要刷 —— 站点自己说没完成
+   *   done        已完成 —— X===Y>0，或老模板每一行都打了勾
+   *   nopoints    这一门压根没有任务点（站点写「0 /0」而目录不空）—— **不等于刷完了**
+   *   empty       站点原话「暂无章节内容」，那是真没内容（实测 len 恒 16566）
+   *   blocked     进不去 / 拼不出进课那一跳（403、要登录、没有 enc、没有可点章节）
+   *   unreadable  以上都不闭合 —— 交给目录判，绝不猜成已完成
+   *
+   * ⚠️ 顺序就是判据，不许重排（与技能 course-entry.expr 同一口径）：
+   *   · 「已完成任务点 X/Y」必须**先于**逐行 class 那两格 —— 新模板两种信号都有，
+   *     中间插进去会把 63/63 那一类读成别的（AGENTS §2 #5 同一族）；
+   *   · 老模板的 class 只在「已完成行 + 进行中行 = 可点章节数」这一分解**闭合**时才当结论
+   *     （现场 7 门老模板 7/7 闭合），不闭合就是读不出 —— 分解不成立还照 class 报已完成，
+   *     正是把"这一门没刷"说成"这一门刷完了"的那条路。
+   */
+  function classifyCourseHome(html) {
+    var b = typeof html === 'string' ? html : '';
+    var out = { verdict: 'unreadable', why: '', jobs: '', jobsDone: -1, jobsAll: -1, yi: 0, yiCells: 0,
+      toOld: 0, doneRows: 0, progRows: 0, len: b.length };
+    if (!b) { out.why = 'empty-response'; return out; }
+    // 403「很抱歉，您没有权限访问这个页面」多半是我们自己参数配错（AGENTS §2 #12）——
+    // 课号班号必须成对来自同一张卡片，所以这一格的名字直接点名去查那一处，别推给站点。
+    if (/很抱歉，您没有权限访问这个页面/.test(b)) { out.verdict = 'blocked'; out.why = 'server-denied-check-own-clazzid'; return out; }
+    if (/请登录|passport2/.test(b) && b.length < 3000) { out.verdict = 'blocked'; out.why = 'need-login'; return out; }
+    var toOlds = b.match(/toOld\('(\d+)',\s*'(\d+)',\s*'(\d+)'(?:,\s*(\d+))?\)/g);
+    out.toOld = toOlds ? toOlds.length : 0;
+    out.doneRows = b.split('icon_yiwanc').length - 1;
+    out.progRows = b.split('catalog_jindu').length - 1;
+    // ⚠️ `catalog_points_yi` 是**每行目录都带一个**的 span，里面才是数字：数出现次数等于数行数，
+    //    现场数据结构那门出现 5 次、每次都是 0 —— 老口径把它当"N 个待完成任务点"会凭空造出进度。
+    var yiRe = /catalog_points_yi[^>]*>\s*(\d+)\s*</g, cell, cells = 0;
+    while ((cell = yiRe.exec(b))) { cells++; out.yi += Number(cell[1]) || 0; }
+    out.yiCells = cells;
+    var jm = b.replace(/<[^>]+>/g, ' ').match(/已完成任务点[:：]?\s*(\d+)\s*\/\s*(\d+)/);
+    if (jm) { out.jobs = jm[1] + '/' + jm[2]; out.jobsDone = Number(jm[1]); out.jobsAll = Number(jm[2]); }
+    if (/暂无章节内容/.test(b)) { out.verdict = 'empty'; out.why = 'site-says-no-catalog'; return out; }
+    // `enc` 是站点服务端按课算的那一串，进章节那一跳（`transfer?…&refer=<带 enc 的 studentstudy>`）
+    // 少它就 404（AGENTS §2 #10）—— 拿不到就说「进不去」，别说「没内容」。
+    if (!/var\s+enc\s*=\s*"[0-9a-f]+"/.test(b)) { out.verdict = 'blocked'; out.why = 'no-enc'; return out; }
+    if (out.toOld === 0) { out.verdict = 'blocked'; out.why = 'no-clickable-node'; return out; }
+    if (jm) {
+      if (out.jobsAll > out.jobsDone) { out.verdict = 'need'; out.why = 'jobs'; return out; }
+      // 「0 /0」+ 目录不空：站点说这门没有任务点。它和"全做完了"是两件事 ——
+      // 数据结构实测 jobs=0/0、5 个可点章节、6 行进行中，按"已完成"记就等于永久不再进门。
+      if (out.jobsAll === 0) { out.verdict = 'nopoints'; out.why = 'zero-task-points'; return out; }
+      out.verdict = 'done'; out.why = 'jobs-all-done'; return out;
+    }
+    if (out.yi > 0) { out.verdict = 'need'; out.why = 'row-pending-points'; return out; }
+    if (out.doneRows + out.progRows === out.toOld) {
+      if (out.progRows > 0) { out.verdict = 'need'; out.why = 'rows-in-progress'; return out; }
+      out.verdict = 'done'; out.why = 'rows-all-checked'; return out;
+    }
+    out.why = 'no-signal-closes';
+    return out;
+  }
+
+  /** 探针读到的是**字节流** —— `readLimited` 交回 Uint8Array，不是字符串。
+   *   直接把字节交给 `String()` 得到的是「60,33,68,79…」（逗号分隔的数字），
+   *   于是每一门都被读成「进不去」，而站点其实回了整页 HTML（AGENTS §2 #2 同族：
+   *   拿回来的东西要先认「这是不是我要的那一格」，再拿去判）。 */
+  function decodeCourseHomeBody(bytes) {
+    try { return new TextDecoder('utf-8').decode(bytes); } catch (e) { return ''; }
+  }
+
+  /** 问一门课：抓它自己的课程首页，交回判定。任何一条路径都带超时（AGENTS §2 #2）。 */
+  function probeCourseHome(item) {
+    var url = COURSE_HOME_BASE + '?courseid=' + item.cid + '&clazzid=' + item.clazz + '&ut=s';
+    return timedFetch(url, { credentials: 'include' }, COURSE_PROBE_FETCH_MS, function (response) {
+      return readLimited(response, COURSE_PROBE_BODY_MAX).then(function (bytes) {
+        var v = classifyCourseHome(decodeCourseHomeBody(bytes));
+        v.cid = item.cid;
+        v.clazz = item.clazz;
+        v.http = response.status;
+        // 非 200 而正文里又没有任何认识的信号 → 那是**进不去**，不是「读不出」，别混格
+        if (response.status !== 200 && v.verdict === 'unreadable') { v.verdict = 'blocked'; v.why = 'http-' + response.status; }
+        return v;
+      });
+    }).then(function (r) {
+      if (r && r.verdict) return r;
+      // 压根没拿到回话（超时 / 网络断 / 正文没读完）—— 这是「读不出」，不是站点说「进不去」，
+      // 两者格位不同（AGENTS §2 #12）：读不出照旧许进门让目录判，进不去才排到最后。
+      return { cid: item.cid, clazz: item.clazz, verdict: 'unreadable', why: String((r && r.code) || 'no-response'),
+        http: Number(r && r.status) || 0, len: 0, jobs: '', jobsDone: -1, jobsAll: -1, yi: 0, yiCells: 0,
+        toOld: 0, doneRows: 0, progRows: 0 };
+    });
+  }
+
+  /**
+   * 串行问一批（AGENTS §2 #15：同一账号一次只许有一枚学习页 —— 探针只 fetch HTML，
+   * 一导航都不做，所以现场那枚正在播的学习页一点也不会被碰）。
+   * payload 只认 `{list:[{cid,clazz}]}`，别的键一律拒：这一发带着用户 cookie 出门。
+   */
+  function courseHomeProbe(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.list) ||
+      !payload.list.length) return failure('invalid_payload', "只收 {list:[{cid,clazz}]}");
+    var topKeys = Object.keys(payload);
+    for (var t = 0; t < topKeys.length; t++) if (topKeys[t] !== 'list') return failure('invalid_payload', '多了不认识的键：' + topKeys[t]);
+    var want = [];
+    for (var i = 0; i < payload.list.length; i++) {
+      var it = payload.list[i];
+      if (!it || typeof it !== 'object' || Array.isArray(it)) return failure('invalid_payload', '第 ' + i + ' 条不是对象');
+      var ik = Object.keys(it);
+      for (var q = 0; q < ik.length; q++) if (ik[q] !== 'cid' && ik[q] !== 'clazz') return failure('invalid_payload', '第 ' + i + ' 条多了不认识的键：' + ik[q]);
+      var cid = String(it.cid === null || it.cid === undefined ? '' : it.cid);
+      var clazz = String(it.clazz === null || it.clazz === undefined ? '' : it.clazz);
+      // 必须是纯数字，而且**成对**：拿别的课的班号拼进去，站点直接回 403（AGENTS §2 #12）
+      if (!COURSE_ID_RE.test(cid) || !COURSE_ID_RE.test(clazz)) return failure('invalid_payload', 'courseid/clazzid 必须是纯数字');
+      if (want.length < COURSE_PROBE_LIMIT) want.push({ cid: cid, clazz: clazz });
+    }
+    var dropped = payload.list.length - want.length;
+    var startedAt = Date.now();
+    var rows = [];
+    function step() {
+      if (rows.length >= want.length) return rows;
+      if (Date.now() - startedAt > COURSE_PROBE_BUDGET_MS) {
+        for (var j = rows.length; j < want.length; j++) {
+          rows.push({ cid: want[j].cid, clazz: want[j].clazz, verdict: 'skip', why: 'budget', len: 0,
+            jobs: '', jobsDone: -1, jobsAll: -1, yi: 0, yiCells: 0, toOld: 0, doneRows: 0, progRows: 0, http: 0 });
+        }
+        return rows;
+      }
+      return probeCourseHome(want[rows.length]).then(function (row) { rows.push(row); return step(); });
+    }
+    return Promise.resolve().then(step).then(function (rs) {
+      return { success: true, rows: rs, asked: want.length, dropped: dropped, ms: Date.now() - startedAt };
+    });
+  }
+
+
   function isPopup(sender) {
     return popupVerdict(sender).trusted === true;
   }
@@ -484,6 +634,12 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
           state.success = true;
           return state;
         });
+      }
+      if (message.type === 'course_home_probe') {
+        // 批次 97：只读地问「这几门的课程首页还剩多少任务点」。地址在后台拼（见 COURSE_HOME_BASE 上面
+        // 那段注释），页面只交课号与班号；只有学习通页面（scope=study）能问，别的来源一律拒。
+        if (scope.scope !== 'study') return failure('forbidden_sender');
+        return courseHomeProbe(message.payload);
       }
       if (message.type === 'get_config') {
         return getConfig().then(function (config) {

@@ -164,15 +164,27 @@
       }
 
       if (type === 'multiple') {
-        return raw
-          .replace(/[，、;；\s]+/g, ',')
-          .split(',')
-          .join('')
-          .toUpperCase()
-          .split('')
-          .filter(function (item, index, arr) { return /^[A-Z]$/.test(item) && arr.indexOf(item) === index; })
-          .sort()
-          .join('');
+        // ⚠️ **「连写」是合法形状**，不许要求"一格一字母"：站点自己的隐藏域就是
+        //    `picked.join('')`（见 `75-quiz-dom.js` 里无徽标那一支，现场实测提交前读回 `DBAC`），
+        //    模型也常直接回 `"AC"` —— 一刀切严会把合法答案交回空串，表现成"同一道多选反复花钱"。
+        //    能认的是「**每个字符都是一个真实存在的选项字母**」：本站一题最多 8 个选项
+        //    （`_expandMultiChoiceLetters` 里 `total > 8` 就退回 6）。⚠️ A-F 那一族只是**正则**的上界，
+        //    不是「点得动」的上界：无徽标那一路的隐藏域按 `String.fromCharCode(65 + order)` 兜底，
+        //    第 7、8 枚字母真点得动（真源见 `75-quiz-dom.js` 里 `if (!/^[A-F]$/i.test(l))` 那一行）。
+        //    所以这里**放宽到 A-H**：正好盖住补组合那一族能产出的最高一枚，一个都不许多拒。
+        // ⚠️ 认不出来一律交**空串**，绝不猜（AGENTS §2 #18）：实测改前 `ALL OF THE ABOVE` 进来会被拆成
+        //    `"ABEFHLOTV"` —— 凭空多出九个"选项"（`TURE` 同理拆成 `ERTU`），比"没有结论"危险得多。
+        var multiCells = raw.replace(/[，、;；\s]+/g, ',').split(',');
+        var multiLetters = [];
+        for (var mc = 0; mc < multiCells.length; mc++) {
+          var cell = multiCells[mc].trim().toUpperCase();
+          if (!cell) continue;
+          if (!/^[A-H]+$/.test(cell)) return '';
+          for (var mn = 0; mn < cell.length; mn++) {
+            if (multiLetters.indexOf(cell.charAt(mn)) === -1) multiLetters.push(cell.charAt(mn));
+          }
+        }
+        return multiLetters.sort().join('');
       }
 
       return raw.toUpperCase();

@@ -92,6 +92,17 @@
    */
   var DISPLACED_ASK_PENDING_MS = 20000;
   var DISPLACED_ASK_FRESH_MS = 60000;
+  // 批次 97：换课前先在后台问一遍「这些门的课程首页还剩多少任务点」。
+  // ⚠️ 这一族四个数是**从外到内包着**的，改任何一条都要对着另外几条重看一遍（集成测试按名字拦顺序）：
+  //   后台最坏 = 整轮预算 20 秒 + 单页上限 12 秒 = 32 秒（真源在 background.js 的 COURSE_PROBE_* 那几行）
+  //   → content 那一头 34 秒 > 32 秒 → 页面这一头 COURSE_PROBE_ASK_MS 36 秒 > 34 秒；
+  //   而换课最多为探针等 COURSE_PROBE_DEFER_MS 24 秒，到点就按卡片顺序挑 ——
+  //   探针只许改挑选顺序，永远不许把换课拖死（AGENTS §2 #2「新增 await 必须可超时」同一族）。
+  var COURSE_PROBE_PENDING_MS = 45000;          // 问了还没答上来，这段时间内不再敲第二次后台
+  var COURSE_PROBE_FRESH_MS = 30 * 60 * 1000;   // 答过的，30 分钟内不重问（正常一页只挑一次，这条只挡异常重入）
+  var COURSE_PROBE_ASK_MS = 36000;              // 页面等这一发桥的上限
+  var COURSE_PROBE_DEFER_MS = 24000;            // 换课最多为探针等这么久
+  var COURSE_PROBE_SPOKE_MS = 8000;             // 「还在问」这句话最少隔多久说一次
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {

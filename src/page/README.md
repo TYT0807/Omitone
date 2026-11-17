@@ -70,7 +70,7 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 
 ## 这 16 个片段各自负责什么
 
-每个标题下面那行是**当前快照**（2026-11-16 实测）：行数是片段文件的实际行数（含头部注释，
+每个标题下面那行是**当前快照**（2026-11-17 实测）：行数是片段文件的实际行数（含头部注释，
 `wc -l` 同一把尺），方法数/状态字段数取自片段头部自己声明的清单。
 ⚠️ **这一页是抄来的，抄来的东西必然过期** —— 现在有闸了：`npm run check` 第 26 项
 （真源 `tools/audit-slice-stats.js`）逐段比这一页与片段实际，**这一整页曾经 16 段全过期**
@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **509 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 519 个方法；状态字段 163 个。
+（跑出来大致是：14 个域片段合计 **515 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 525 个方法；状态字段 163 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*413 行*
+*424 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -171,7 +171,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1361 行 / 43 方法*
+*1533 行 / 48 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
@@ -200,7 +200,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `72-quiz-answers.js`
 
-*1177 行 / 42 方法*
+*1189 行 / 42 方法*
 
 **答案本身**的处理（与"流程"分开）：答案缓存的读写（正确答案 / 已知错答 / 已提交答案
 `_loadQuizCorrectAnswerCache` / `_rememberCorrectQuizAnswers` / `_addWrongQuizAnswer`）、
@@ -234,7 +234,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `80-popup-quiz.js`
 
-*2142 行 / 45 方法*
+*2216 行 / 46 方法*
 
 视频内嵌弹题（弹窗题）的检测、填答、失败计数与放弃；
 「继续学习」提示按钮（不点它进不去正常播放页）。

@@ -3103,6 +3103,16 @@
       window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: stateResponse }, '*');
       return;
     }
+    if (msg.type === 'course_home_probe') {
+      // 批次 97：把「这几门的课程首页还剩多少任务点」那一发**只读**问句转给后台（跨域带 cookie 的
+      // fetch 只有 SW 能成，AGENTS §2 #11）。⚠️ 这一头的超时必须比后台那一轮的最坏情况长
+      // （整轮预算 + 单页上限），否则页面拿到的是「桥超时」而不是真答案；但也不许无限长 ——
+      // 桥挂死会把整条换课链一起拖住（AGENTS §2 #2：只有超时能救挂起）。
+      const probeResponse = await sendRuntimeMessageWithTimeout({ type: 'course_home_probe', payload: msg.payload }, 34000, 'course_home_probe timeout');
+      window.postMessage({ source: 'xxt_bridge', id: msg.id, type: 'llm_response', data: probeResponse }, '*');
+      return;
+    }
+
 
     if (msg.type === 'runtime_log') {
       pageRuntimeActivityAt = Date.now();
