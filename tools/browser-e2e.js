@@ -5139,6 +5139,9 @@ SCENARIOS.push({
         ' totalPats: 0, totalStudyMinutes: 0, nightPats: 0, streakDays: 1, lastMetDay: k, ach: {} };' +
         'var over = ' + JSON.stringify(over) + ';' +
         'for (var key in over) b[key] = over[key];' +
+        // 成就要点全：从规则层读回全部 id（别手抄清单 —— 以后再加成就不该再红这一格）
+        'if (b.allLit) { var litIds = g.ACHIEVEMENTS.map(function (a) { return a.id; });' +
+        '  for (var li = 0; li < litIds.length; li++) b.ach[litIds[li]] = k; delete b.allLit; }' +
         'chrome.storage.local.set({ omitonePetBond: b, omitoneStudyStats:' +
         ' { date: k, activeSeconds: 0, lastActiveAt: Date.now(), lastFlushAt: Date.now() } },' +
         ' function () { res(true); }); })'
@@ -5161,9 +5164,8 @@ SCENARIOS.push({
     var bigLevel = await patOnce();
     await setBond({ affection: 40, totalPats: 99 });
     var bigAch = await patOnce();
-    // 六枚成就全按 id 记成"已经点亮"→ 这一摸既跨不过级也没有新成就，只剩本级摸头话那一族
-    await setBond({ affection: 40, totalPats: 120,
-      ach: { pat100: '1', study600: '1', streak7: '1', streak30: '1', night20: '1', firstSnow: '1' } });
+    // 全部成就从规则层读回 id、记成"已经点亮"→ 这一摸既跨不过级也没有新成就，只剩本级摸头话那一族
+    await setBond({ affection: 40, totalPats: 120, allLit: true });
     var bigPat = await patOnce();
     var affOf = function (r) {
       var m = /好感度\s*(\d+)/.exec((r && r.title) || '');

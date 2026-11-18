@@ -195,11 +195,16 @@ var night = GAME.onPat(GAME.rollDay(null, DAY), DAY, new Date('2026-11-01T03:00:
 var day2 = GAME.onPat(night.state, DAY, new Date('2026-11-01T14:00:00').getTime());
 check('凌晨摸头计入夜猫子（白天不计）', night.state.nightPats === 1 && day2.state.nightPats === 1);
 
+// 季节成就现在四季各一枚（C 阶段起）—— 期望名单必须按测试日期**自己算**当季那枚，
+// 手抄固定名单会让这条断言变成"看日历"的随机红（11 月跑就多出 autumnDay，实测撞过）。
+var seasonAchOf = function (dayKey) {
+  return { spring: 'springDay', summer: 'summerDay', autumn: 'autumnDay', winter: 'firstSnow' }[GAME.seasonOf(dayKey)];
+};
 var achState = GAME.rollDay({ totalPats: 100, totalStudyMinutes: 600, nightPats: 20, affection: 55, day: DAY }, DAY);
 var got = GAME.evaluateAchievements(achState, DAY);
 var gotIds = got.map(function (a) { return a.id; }).sort().join(',');
-check('统计达标一次点亮（pat100/study600/night20；亲近非冬不点）',
-  gotIds === 'night20,pat100,study600', gotIds);
+check('统计达标一次点亮（pat100/study600/night20；亲近非冬不点，但当季那枚会亮）',
+  gotIds === ['night20', 'pat100', 'study600', seasonAchOf(DAY)].sort().join(','), gotIds);
 
 var marked = GAME.markAchievements(achState, ['pat100', 'study600'], DAY);
 var again = GAME.evaluateAchievements(marked, DAY).map(function (a) { return a.id; }).join(',');
@@ -535,7 +540,9 @@ function byId(id) {
 }
 var maxedV1 = GAME.rollDay({ affection: OLD.max, day: DAY }, DAY);
 check('当年刷满上限的老档记下"满过"，并点亮「' + OLD.grant + '」（补一枚纪念，而不是把数字补大）',
-  maxedV1.legacyCeil === OLD.max && achIds(GAME.evaluateAchievements(maxedV1, DAY)) === OLD.grant,
+  maxedV1.legacyCeil === OLD.max &&
+  GAME.evaluateAchievements(maxedV1, DAY).map(function (a) { return a.id; }).sort().join(',') ===
+    [OLD.grant, seasonAchOf(DAY)].sort().join(','),
   JSON.stringify({ ceil: maxedV1.legacyCeil, got: achIds(GAME.evaluateAchievements(maxedV1, DAY)) }));
 var almostV1 = GAME.rollDay({ affection: OLD.max - 1, day: DAY }, DAY);
 check('差一点没满的老档不许白送这一枚（上限那一格就是那一格）',
@@ -587,6 +594,23 @@ check('季节那一句照 need.season 说季节名（不再写死"冬天"），�
 check('进度句只认 need、不看亮没亮（亮不亮归界面判，规则层不该两份都算）',
   GAME.achHint(GAME.markAchievements(hintState, ['pat100'], DAY), byId('pat100')) === '（7/100）',
   GAME.achHint(hintState, byId('pat100')));
+
+// C 阶段新增的 need 种类（peakLevel / patsToday / studyPointsToday）：进度句与判达标都从状态读。
+// peakLevel 那句按「第几级」1 起算（与文档「10 级」同一口径）； affection 给 100 是故意的 ——
+// rollDay 末尾的 bumpPeak 只会往上记，别让它把 peakLevel 顶过夹具给的 6，否则期望值就是猜的。
+var hintPeak = GAME.rollDay({ affection: 100, day: DAY, totalPats: 7, totalStudyMinutes: 30,
+  streakDays: 2, nightPats: 1, patsToday: 4, studyPointsToday: 9, peakLevel: 6 }, DAY);
+check('新增三档 need 的进度句都从状态读数（峰值档 1 起算、当日两格按今天读）',
+  GAME.achHint(hintPeak, byId('peakTop')) === '（曾到过 7 / 10 级）'
+  && GAME.achHint(hintPeak, byId('fullDayPats')) === '（今天 4/6 次）'
+  && GAME.achHint(hintPeak, byId('fullDayStudy')) === '（今天 9/15 点）',
+  ['peakTop', 'fullDayPats', 'fullDayStudy'].map(function (i) { return i + '=' + GAME.achHint(hintPeak, byId(i)); }).join(' | '));
+var evalIds = GAME.evaluateAchievements(
+  GAME.rollDay({ affection: 0, day: DAY, patsToday: 6, studyPointsToday: 15, peakLevel: 9 }, DAY),
+  DAY).map(function (a) { return a.id; });
+check('新增三档 need 真会被判达标（峰值到顶 / 摸满当日 / 刷满当日；11 月那季成就也会亮，成员式断言容得住）',
+  ['peakTop', 'fullDayPats', 'fullDayStudy'].every(function (i) { return evalIds.indexOf(i) >= 0; }),
+  JSON.stringify(evalIds));
 
 // 成就表本身的形状：id 唯一、四样齐全、台词填进庆祝模板后仍在 34 字上限内
 var achIdsAll = GAME.ACHIEVEMENTS.map(function (a) { return a.id; });

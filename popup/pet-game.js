@@ -538,16 +538,34 @@
   var ACHIEVEMENTS = [
     { id: 'pat100',    name: '温柔惯犯',  desc: '累计摸头 100 次',
       need: { pats: 100 },          line: '被你摸了一百次，都摸出习惯来了。' },
+    { id: 'pat500',    name: '温柔的惯性', desc: '累计摸头 500 次',
+      need: { pats: 500 },          line: '五百次了，你的手我一听就认得。' },
     { id: 'study600',  name: '学习搭子',  desc: '累计陪伴刷课 10 小时',
       need: { studyMinutes: 600 },  line: '十个小时了——这都是我们俩的时间。' },
+    { id: 'study3600', name: '铁杆搭档',  desc: '累计陪伴刷课 60 小时',
+      need: { studyMinutes: 3600 }, line: '六十个小时——这是刷出来的默契。' },
     { id: 'streak7',   name: '天天见面',  desc: '连续 7 天都见面',
       need: { streakDays: 7 },      line: '连续一周都见面，这算不算默契？' },
     { id: 'streak30',  name: '老朋友',    desc: '连续 30 天都见面',
       need: { streakDays: 30 },     line: '一个月了。你已经是我生活的一部分。' },
     { id: 'night20',   name: '夜猫子搭档', desc: '累计 20 次凌晨（0-5 点）摸头',
       need: { nightPats: 20 },      line: '这个点还醒着啊……早点睡，我陪你。' },
+    { id: 'fullDayPats', name: '今日全勤', desc: '一天之内摸满 6 次有效摸头',
+      need: { patsToday: 6 },       line: '今天的份一次没落下，记住了。' },
+    { id: 'fullDayStudy', name: '满格的一天', desc: '单日刷课好感拿满 15 点（150 分钟）',
+      need: { studyPointsToday: 15 }, line: '从早到晚都在，今天辛苦啦。' },
+    { id: 'springDay', name: '春日初逢',  desc: '在春天（3-5 月）来摸摸她',
+      need: { season: 'spring' },   line: '风软软的，花开的时候你来了。' },
+    { id: 'summerDay', name: '仲夏同在',  desc: '在夏天（6-8 月）来摸摸她',
+      need: { season: 'summer' },   line: '再热的日子，也一起坐过来了。' },
+    { id: 'autumnDay', name: '秋叶来信',  desc: '在秋天（9-11 月）来摸摸她',
+      need: { season: 'autumn' },   line: '踩着落叶来的，是你呀。' },
     { id: 'firstSnow', name: '初雪之约',  desc: '在下雪的季节（12-2 月）来摸摸她',
       need: { season: 'winter' },   line: '冬天的第一场雪，是你陪我一起看的。' },
+    // peakLevel 是只升不降的棘轮（bumpPeak）：哪怕好感条后来被别的口径重算，"到过顶"不会作废。
+    // need 引 LEVELS.length 而不是写死 9 —— 以后再追加档位时这一枚自动跟着指向新的最高档。
+    { id: 'peakTop',   name: '到过山顶',  desc: '到过最高的那一档（棘轮记着，到了就算数）',
+      need: { peakLevel: LEVELS.length - 1 }, line: '最高的那档，是我们一起到的。' },
     // 纪念成就：不靠统计点亮，只认「版本化之前那份档当年在上限上刷满过」（见 migrateBond）。
     // 改上限不该没收旧成绩 —— 那一百点不是没发生过，是当时的天花板就在那儿。
     { id: 'oldCeiling', name: '旧日的满格', desc: '在好感上限还是 100 的年代刷到过顶',
@@ -585,6 +603,9 @@
       else if (a.need.streakDays != null) met = (state.streakDays || 0) >= a.need.streakDays;
       else if (a.need.nightPats != null) met = (state.nightPats || 0) >= a.need.nightPats;
       else if (a.need.season != null) met = season === a.need.season;
+      else if (a.need.peakLevel != null) met = (state.peakLevel || 0) >= a.need.peakLevel;
+      else if (a.need.patsToday != null) met = (state.patsToday || 0) >= a.need.patsToday;
+      else if (a.need.studyPointsToday != null) met = (state.studyPointsToday || 0) >= a.need.studyPointsToday;
       // 只认迁移时记下的那一格 —— 统计层永远算不出"当年的上限"，不许拿现在的数凑。
       else if (a.need.legacyCeiled) met = (Number(state.legacyCeil) || 0) > 0;
       if (met) out.push(a);
@@ -618,6 +639,9 @@
     }
     if (n.streakDays != null) return '（' + Math.min(num(state.streakDays), n.streakDays) + '/' + n.streakDays + ' 天）';
     if (n.nightPats != null) return '（' + Math.min(num(state.nightPats), n.nightPats) + '/' + n.nightPats + '）';
+    if (n.peakLevel != null) return '（曾到过 ' + Math.min(num(state.peakLevel) + 1, LEVELS.length) + ' / ' + LEVELS.length + ' 级）';
+    if (n.patsToday != null) return '（今天 ' + Math.min(num(state.patsToday), n.patsToday) + '/' + n.patsToday + ' 次）';
+    if (n.studyPointsToday != null) return '（今天 ' + Math.min(num(state.studyPointsToday), n.studyPointsToday) + '/' + n.studyPointsToday + ' 点）';
     if (n.legacyCeiled) return '（老存档才有）';   // 这一枚现在拿不到，直说，别留一个永远点不亮的坑
     if (n.season != null) return '（等' + (SEASON_CN[n.season] || '那个季节') + '）';
     return '';
