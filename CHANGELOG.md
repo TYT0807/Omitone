@@ -5381,15 +5381,19 @@
 - **未做**：本轮**不升版本号、不推远端、不动线上附件**（用户「先把还没落实的全落实了再考虑上传」）。
   提交之后把这一版部署到现场（现场那一枚学习页正被这个 bug 按支消耗），部署验收按 `rev`
   与提交里那份 `page.js` **逐字**比。
-- **11-18 现场回执（只读，同一支工序 `expr/media-state.expr`）**：批次 95 那一族在现场按预期走通了 ——
+- **11-18 现场回执（只读，同一支工序 `expr/media-state.expr`）**：批次 95 那一族在现场**整条链路跑通** ——
   一支 1335.2 秒的视频，`reason:"guard"` 那一发真拖 `1.9 → 1332.2`，`seekable` 读出 `[[0,1335.2]]`、
   `buffered` 里带尾段 `[1322.8,1332.6]`（`coverProd:"yes"`），两次读回都被弹回之后才落
-  `seek reverted by site, keep playing normally` 并写入 `_seekRevertedKeys`；随后
-  `tried / reverted / rateLocked / ninetyOk` **四格同真** ⇒ 「不可拖拽」这个结论确实来自
-  **"写进去被弹回"**，不是"等区间没等到"，90% 提前收尾那一格已武装。
-  ⚠️ 同一门课**上一支**（1345.96 秒）在 95% 处读回的是 `tried:false / reverted:false`，而它按 1x 播到了结尾 ——
+  `seek reverted by site, keep playing normally` 并写入 `_seekRevertedKeys`；中段
+  `tried / reverted / rateLocked / ninetyOk` **四格同真**（`rate` 恒 1、配对 `dCt` 恒 = 墙钟）；
+  到 `ratio 0.914` 时 90% 提前收尾**真的发生了**：`advance at 90% (locked 1x + not seekable) {duration:1335.2, jobid:9000000000001（合成号，现场原号不落公开面）, ratio:0.914}`
+  紧跟 `managed media job ended {jobid:9000000000001, reason:"ninety-percent"}`，随后页面翻到下一节、
+  目录 `unfinished` 由 **45 → 43**（同一枚 `studentstudy`，全程未开第二枚）。
+  ⇒ **「不可拖拽」这个结论确实来自"写进去被弹回"，不是"等区间没等到"，且它真的换来了提前收尾**；
+  §2 #17 那格"整支按 1x 白播"在这一支只白播了尾 8.6%，而不是整支。
+  ⚠️ **对照同一门课的上一支（1345.96 秒）**：我在 95% 处读回的是 `tried:false / reverted:false`，而它按 1x 播到了结尾 ——
   那一支的 job-start 早被 200 条日志环（约 20 分钟）挤了出去，**成因读不出**：既不许记成"批次 95 没生效"，
-  也不许记成"没问题"。**「还没到拖的时机」这一猜测已排除**（本轮逐行读 `_trySeekToEnd` 量到，`src/page/40-media.js:320-396`）：
+  也不许记成"没问题"（同一条修法的两支，一支四格同真并提前收尾、另一支一次都没试，差别只在能不能取证）。**「还没到拖的时机」这一猜测已排除**（本轮逐行读 `_trySeekToEnd` 量到，`src/page/40-media.js:320-396`）：
   341 行那句 `current >= duration - 8` 只在**已经贴着结尾**时才跳过，本来的设计是**一进这一节就拖一次**
   （现场这一支正是 `ct 1.9` 就拖）；而 348 行先写 `_seekTriedKeys[key]=true` 才动进度条，375/389 行把
   `reverted` 落成 **false=拖成功／true=两次弹回**。所以 `tried:false` 配 `reverted:false` 这一对
