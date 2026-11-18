@@ -3720,7 +3720,7 @@ var SCENARIOS = [];
 
 // 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
 SCENARIOS.push({
-  name: '角色动作专项：88 张立绘与 15 动作完整覆盖',
+  name: '角色动作专项：100 张立绘与 15 动作完整覆盖',
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
@@ -3737,14 +3737,15 @@ SCENARIOS.push({
       return { groups: groups, sources: sources, meta: document.getElementById('petBookMeta').textContent,
         keys: Array.from(body.querySelectorAll('[data-anim]')).map(function (el) { return el.getAttribute('data-anim'); }) };
     });
-    check('立绘去重后 88 张，默认 pet.png 只出现一次', book.sources.length === 88 &&
-      new Set(book.sources).size === 88 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
+    check('立绘去重后 100 张，默认 pet.png 只出现一次', book.sources.length === 100 &&
+      new Set(book.sources).size === 100 && book.sources.filter(function (src) { return src === 'pet.png'; }).length === 1,
       JSON.stringify(book));
-    // 2026-10-31 逐张看图重分类：e2~e6 是服装（原误归表情）→ 服装 44 / 表情 21；
-    // pet.png 双身份（服装+姿势基座）在册内去重 → 去重姿势 23
-    check('分组为 44 服装 / 21 表情 / 23 去重姿势，汇总显示 88',
-      book.groups['服装'].length === 44 && book.groups['表情'].length === 21 &&
-      book.groups['姿势（默认装束）'].length === 23 && /88\s*张/.test(book.meta), JSON.stringify(book.groups));
+    // 2026-10-31 逐张看图重分类：e2~e6 是服装（原误归表情）→ 服装 48 / 表情 25；
+    // 2026-11-18 批次 113 本地生图 +12：服装 44→48 / 表情 21→25 / 姿势 24→28；
+    // pet.png 双身份（服装+姿势基座）在册内去重 → 去重姿势 27
+    check('分组为 48 服装 / 25 表情 / 27 去重姿势，汇总显示 100',
+      book.groups['服装'].length === 48 && book.groups['表情'].length === 25 &&
+      book.groups['姿势（默认装束）'].length === 27 && /100\s*张/.test(book.meta), JSON.stringify(book.groups));
     var actions = [ ['spin', 950], ['jump', 760], ['shake', 1000], ['bow', 1000], ['peek', 1150],
       ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900],
       ['nod', 1100], ['sway', 1200], ['stretch', 1400], ['heart', 900] ];

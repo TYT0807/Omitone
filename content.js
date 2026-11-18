@@ -2273,7 +2273,7 @@
         //   现在 peek 带三个 `:not()`，与三族一次性动画**互斥**，谁在跑谁说话。
         '.card.peek .pet:not(.pat):not(.cheer):not([class*="mv-"]){animation:om-pet-peek .52s ease}',
         '@keyframes om-pet-peek{0%{transform:translateY(0) rotate(0)}26%{transform:translateY(-2px) rotate(-6deg)}58%{transform:translateY(0) rotate(4deg)}100%{transform:translateY(0) rotate(0)}}',
-        // 立绘**盒**必须定死：88 张图全部高 240，宽却从 107 到 217（纵横比 0.45~0.90），
+        // 立绘**盒**必须定死：100 张图全部高 240，宽却从 107 到 217（纵横比 0.45~0.90），
         // 原先 `width:52px;height:auto` 让高度跟着图走 —— 换装时卡片上下抖十几像素，
         // 还会把拖动用的 getBoundingClientRect 一起改了。`contain` + 底对齐 = 换装零位移。
         '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',

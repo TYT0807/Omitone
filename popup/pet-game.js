@@ -417,7 +417,9 @@
     "pet-33.png", "pet-34.png",
     "pet-35.png", "pet-36.png", "pet-37.png", "pet-38.png",
     // e2~e6：像素核实是服装（大衣/浴衣/睡衣/雨衣/制服外套），从原「表情」池移过来
-    "pet-e2.png", "pet-e3.png", "pet-e4.png", "pet-e5.png", "pet-e6.png"];   // 44 套服装
+    "pet-e2.png", "pet-e3.png", "pet-e4.png", "pet-e5.png", "pet-e6.png",
+    // 39~42：批次 113 本地生图（女仆/女巫/咖啡厅/宇航服），按 pet.png 参图产的同风格
+    "pet-39.png", "pet-40.png", "pet-41.png", "pet-42.png"];   // 48 套服装
   // 「表」走表情：同一身默认制服下的另一张脸。e1 = 默认制服的平和脸（基座）。
   var FACES = ["pet-e1.png",
                "pet-i5.png", "pet-i6.png", "pet-i7.png", "pet-i8.png",
@@ -426,7 +428,8 @@
                "pet-e16.png", "pet-e17.png",
                "pet-e18.png", "pet-e19.png", "pet-e20.png",
                "pet-e21.png", "pet-e22.png", "pet-e23.png",
-               "pet-e24.png", "pet-e25.png", "pet-e26.png"];   // 21 张表情
+               "pet-e24.png", "pet-e25.png", "pet-e26.png",
+               "pet-e27.png", "pet-e28.png", "pet-e29.png", "pet-e30.png"];   // 25 张表情
   var POSES = ["pet.png", "pet-i1.png", "pet-i2.png", "pet-i3.png", "pet-i4.png",
                "pet-e7.png", "pet-e8.png", "pet-e9.png", "pet-e10.png",
                "pet-i9.png", "pet-i10.png",
@@ -434,7 +437,8 @@
                "pet-i13.png", "pet-i14.png",
                "pet-i15.png", "pet-i16.png", "pet-i17.png",
                "pet-i18.png", "pet-i19.png", "pet-i20.png",
-               "pet-i21.png", "pet-i22.png", "pet-i23.png"];  // 24 个姿势（全部是**默认装束**画的；
+               "pet-i21.png", "pet-i22.png", "pet-i23.png",
+               "pet-i24.png", "pet-i25.png", "pet-i26.png", "pet-i27.png"];  // 28 个姿势（全部是**默认装束**画的；
                                                               // i1 虽像卫衣装，但它没有换装语义，归姿势）
   // 页面上她**自己动**的那几个小动作（不占素材，全是 CSS 形变，动画名在 content.js 的样式里）。
   // 弹窗那侧的动作库（ANIMS）是给人点的，这一份是给她自己排的 —— 时长短、不抢视线。
