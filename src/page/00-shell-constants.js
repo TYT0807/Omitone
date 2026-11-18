@@ -196,6 +196,11 @@
     // 因此 content.js 里是**按渠道白名单**发参数的，未知渠道一个参数都不发
     // （见 libs/thinking.js 的说明）。默认值选 'off' 也意味着老用户升级后行为不变。
     thinkingLevel: 'off',
+    // 整卷（作业/考试卷）单独的思考档位：'' = 跟随全局 thinkingLevel；
+    // 'off' / 'low' / 'high' = 整卷强制用这一档，弹题等其他请求不受影响。
+    // 为什么分开：整卷一次问十几题、单题更难，开思考收益比弹题高；
+    // 而弹题刷课量大、默认 off 最省。两边混用一个开关时，要么整卷吃亏、要么弹题烧钱。
+    thinkingPaperLevel: '',
     systemPrompt: '',
     videoCheckInterval: 1500,
     // 慢机自适应：auto=按实测帧率/核心数放大所有等待上限，on=固定 2 倍，off=完全不放大。

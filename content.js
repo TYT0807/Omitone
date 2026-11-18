@@ -93,6 +93,10 @@
     // 必须在这里也放一份：content.js 在配置还没加载完时靠它兜底，
     // 缺了会读成 undefined（`tools/check.js` 的「读了就必须有自己的默认值」守卫会报错）。
     thinkingLevel: 'off',
+    // 整卷思考档位：'' = 跟随全局（真源与校验在 libs/thinking.js effectiveLevel）。
+    // 与 thinkingLevel 同理：配置没加载完时靠它兜底，缺了读成 undefined
+    // 也会被 effectiveLevel 当成「跟随全局」，但放一份让默认值表完整。
+    thinkingPaperLevel: '',
     // 慢机自适应开关：auto / on / off。content 侧用它放宽注入探针与字形表加载的超时，
     // page 侧还会结合实测帧率再算一次系数（见 00-shell-constants.js 的 perfFactor）。
     // 必须在这里放一份：配置未加载完时靠它兜底，check 的「读了就要有默认值」守卫会核对。
@@ -296,6 +300,19 @@
       return THINKING.buildThinkingParams(config).params || {};
     } catch (e) {
       return {};
+    }
+  }
+
+  /**
+   * 这次请求按任务类型算出来的思考档位（见 libs/thinking.js 的 effectiveLevel）。
+   * kind 'paper'（整卷）可以单独设一档（thinkingPaperLevel），其余跟随全局。
+   */
+  function effectiveThinkingLevel(config, kind) {
+    if (!THINKING) return (config && config.thinkingLevel) || 'off';
+    try {
+      return THINKING.effectiveLevel(config, kind);
+    } catch (e) {
+      return (config && config.thinkingLevel) || 'off';
     }
   }
 
@@ -751,6 +768,20 @@
     };
 
     let maxTokens = Number(config.maxTokens) > 0 ? Number(config.maxTokens) : 8192;
+    // OpenAI 兼容协议里**没有独立的"思考预算"** —— 思考和答案共用 max_tokens。
+    // 所以"高"档如果只发 reasoning 参数、不抬输出上限，思考本身就把预算吃光：
+    // 答案写到一半被截断 → 上层拆批重问 → 反复花钱却一题没答上（"越高越没用"的根因）。
+    // 这里按档位把 max_tokens 抬到最小值（off 不抬；low ≥12288 / high ≥16384），
+    // 只抬不降 —— 用户自己设的更大预算照旧生效。
+    const thinkingMinTokens = THINKING ? THINKING.minMaxTokens(config.thinkingLevel) : 0;
+    if (thinkingMinTokens > maxTokens) {
+      appendRuntimeLog('info', 'llm max_tokens raised for thinking level', {
+        from: maxTokens,
+        to: thinkingMinTokens,
+        level: String(config.thinkingLevel || 'off')
+      });
+      maxTokens = thinkingMinTokens;
+    }
     let tokenField = 'max_tokens';
 
     // 思考参数：按渠道白名单算一次（见 libs/thinking.js）。
@@ -767,6 +798,13 @@
       // ⚠️ 只发白名单里的字段：其他 OpenAI 兼容服务商对未知参数的反应不一致，
       // 有的忽略、有的直接 400，所以"不发"是安全默认（见 buildThinkingParams）。
       Object.assign(body, thinkingParams);
+      // qwen 的 thinking_budget 必须**小于** max_tokens，否则整发请求被拒。
+      // 而上面"超上限对半砍"那支会把 maxTokens 砍小 —— budget 是在循环外算好的，
+      // 砍完之后它可能反过来盖住新上限。所以每发都收口一次：
+      // 留三成给答案（至少 512），qwen 不认再走下面"摘思考参数重试"那支兜底。
+      if (body.thinking_budget && body.thinking_budget >= maxTokens) {
+        body.thinking_budget = Math.max(512, Math.floor(maxTokens * 0.7));
+      }
       const response = await apiFetch(url, {
         method: 'POST',
         headers,
@@ -947,12 +985,25 @@
 
   async function handleLLMRequestDirect(payload) {
     const questions = payload && payload.questions ? payload.questions : [];
+    const kind = String((payload && payload.kind) || '');
     const config = await loadConfig();
+    // 整卷可以单独设思考档位（thinkingPaperLevel，'' = 跟随全局）。
+    // 折进 effConfig 后，下游（参数映射 / max_tokens 抬升 / 日志 describe）都自动用这一档；
+    // 弹题等其他请求 kind 为空或 'popup'，跟随全局 —— 刷课量默认 off 最省。
+    const effConfig = Object.assign({}, config, {
+      thinkingLevel: effectiveThinkingLevel(config, kind)
+    });
+    // effConfig 是派生副本，指纹 WeakMap 里没有它 —— 把快照原本的指纹随行过来。
+    // 不能按 effConfig 重算：thinkingLevel 被整卷档覆盖过，重算出的指纹与后台存的
+    // 配置对不上，失败回写会被竞争闸拒掉（退避永远写不上）。
+    const effFingerprint = requestFingerprints.get(config);
+    if (effFingerprint) requestFingerprints.set(effConfig, effFingerprint);
     appendRuntimeLog('info', 'llm_request direct', {
       questionCount: questions.length,
+      kind: kind || 'popup-or-legacy',
       // 把"这次用的是哪家、什么思考强度、发了什么参数"记下来。
       // 换渠道出问题时，第一个要问的就是这个 —— 否则只能靠猜。
-      thinking: THINKING ? THINKING.describe(config) : 'thinking module missing'
+      thinking: THINKING ? THINKING.describe(effConfig) : 'thinking module missing'
     });
 
     const missing = missingModuleError();
@@ -960,7 +1011,7 @@
       appendRuntimeLog('error', 'llm_request aborted', { error: missing });
       return { success: false, error: missing };
     }
-    if (!config.apiKey) return { success: false, error: 'Please configure API Key first' };
+    if (!effConfig.apiKey) return { success: false, error: 'Please configure API Key first' };
     if (!questions.length) return { success: false, error: 'no questions to answer' };
 
     // 分批请求。
@@ -1135,7 +1186,7 @@
     // ⚠️ 只对 `truncated` 拆 —— 普通解析失败/网络失败拆了也是白拆，还多花钱。
     const requestChunkWithSplit = async (entries, depth, labelOverride) => {
       if (permanentFailure) return false;
-      const result = await requestAnswersWithRetry(config, entries.map((entry) => entry.question));
+      const result = await requestAnswersWithRetry(effConfig, entries.map((entry) => entry.question));
       if (result && result.permanentError) permanentFailure = result;
       if (result && result.success && Array.isArray(result.data)) {
         sawResponse = true;   // 有应答（即使随后因长度不符被整批丢弃）
@@ -1230,7 +1281,7 @@
             count: unfilled.length,
             total: questions.length
           });
-          const refill = await requestAnswersWithRetry(config, unfilled.map((entry) => entry.question));
+          const refill = await requestAnswersWithRetry(effConfig, unfilled.map((entry) => entry.question));
           if (refill && refill.permanentError) permanentFailure = refill;
           if (refill && refill.success && Array.isArray(refill.data)) {
             mergeAnswers(unfilled, refill, 'refill');

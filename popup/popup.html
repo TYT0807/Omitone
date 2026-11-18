@@ -766,6 +766,20 @@ body.has-bg::after{
         </p>
       </div>
       <div class="field">
+        <label for="thinkingPaperLevel">整卷思考强度</label>
+        <select id="thinkingPaperLevel">
+          <option value="">跟随全局（默认）</option>
+          <option value="off">关闭</option>
+          <option value="low">低（会多花推理 token）</option>
+          <option value="high">高（最贵 · 选了就不乱猜）</option>
+        </select>
+        <p class="hint" id="thinkingPaperHint">
+          只管<b>作业 / 考试卷</b>，弹题等其他请求仍按上面的「思考强度」走。
+          整卷选「高」时模型没答上的题会<b>停下来等（重问模型或你手动作答）</b>，
+          不再拿猜测占位交卷。
+        </p>
+      </div>
+      <div class="field">
         <label for="apiType">协议类型</label>
         <select id="apiType">
           <option value="openai">OpenAI 兼容</option>

@@ -12361,6 +12361,8 @@ SCENARIOS.push({
       'thinkingValues: Array.prototype.map.call(document.getElementById("thinkingLevel").options, function(o){return o.value;}),' +
       'thinkingSelected: document.getElementById("thinkingLevel").value,' +
       'thinkingHint: document.getElementById("thinkingHint") ? document.getElementById("thinkingHint").textContent : null,' +
+      'paperValues: Array.prototype.map.call(document.getElementById("thinkingPaperLevel").options, function(o){return o.value;}),' +
+      'paperSelected: document.getElementById("thinkingPaperLevel").value,' +
       'apiUrl: document.getElementById("apiUrl").value,' +
       'model: document.getElementById("model").value,' +
       'toggleCount: document.querySelectorAll(".toggle").length,' +
@@ -12390,6 +12392,13 @@ SCENARIOS.push({
       JSON.stringify(ui.thinkingValues) === JSON.stringify(['off', 'low', 'high']),
       JSON.stringify(ui.thinkingValues));
     check('思考强度默认是「关闭」（升级前的行为）', ui.thinkingSelected === 'off', String(ui.thinkingSelected));
+    // ---- 整卷思考强度：四档（多一个"跟随全局"）+ 默认空串 ----
+    // 它是 #160 的页面侧开关：只有作业/考试卷读它，空串 = 按上面的全局档走。
+    check('整卷思考强度四档，顺序是 跟随全局/关闭/低/高',
+      JSON.stringify(ui.paperValues) === JSON.stringify(['', 'off', 'low', 'high']),
+      JSON.stringify(ui.paperValues));
+    check('整卷思考强度默认是「跟随全局」（空串原样保存，不许被归一成 off）',
+      ui.paperSelected === '', String(ui.paperSelected));
     // ⚠️ 不能直接断言"说明里是 DeepSeek 的参数"：这个场景与其它场景共用 chrome.storage，
     // 前面答过题的场景已经把 apiUrl 写成 mock 地址了，那时渠道是"认不出"→ 说明是"不发参数"。
     // 所以这里**显式**把表单设成 DeepSeek 再刷新说明（只改表单、不派发 input，
@@ -12447,11 +12456,24 @@ SCENARIOS.push({
     check('切换后说明跟着更新为高（含 reasoning_effort）',
       !!persisted.hint && persisted.hint.indexOf('reasoning_effort') !== -1,
       String(persisted.hint).slice(-160));
+    // 整卷档单独落盘一次（两次 change 的保存是并发的，合在一个 evaluate 里读会有写序竞态）
+    var paperPersisted = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var tp=document.getElementById("thinkingPaperLevel");tp.value="high";' +
+      'tp.dispatchEvent(new Event("change"));' +
+      'setTimeout(function(){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{};' +
+      'res({paper:c.thinkingPaperLevel,level:c.thinkingLevel});});},600);});})()'
+    );
+    check('整卷思考强度切换后落盘', paperPersisted.paper === 'high', JSON.stringify(paperPersisted));
     // 收尾：把思考强度改回默认，避免影响后面的场景读到 high
     await ctx.client.evaluate(
       '(function(){return new Promise(function(res){' +
       'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
-      'tl.dispatchEvent(new Event("change"));setTimeout(res,300);});})()'
+      'tl.dispatchEvent(new Event("change"));' +
+      'var tp=document.getElementById("thinkingPaperLevel");tp.value="";' +
+      'tp.dispatchEvent(new Event("change"));' +
+      'setTimeout(res,300);});})()'
     );
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
 

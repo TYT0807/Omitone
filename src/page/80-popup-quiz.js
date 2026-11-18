@@ -1969,7 +1969,7 @@
             } else {
               // 只有**真要发请求**这一支才取额度 —— 乱选模式与上面那条复用一条都不发。
               this._takePopupQuizAsk(key);
-              result = await bridgeSend('llm_request', { questions: [question] });
+              result = await bridgeSend('llm_request', { questions: [question], kind: 'popup' });
             }
           }
           if (result && result.success && result.data) {

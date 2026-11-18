@@ -35,7 +35,10 @@
   // （不是某一个开关坏了 —— 一个没登记的键会把同一次保存里的其它改动一起吞掉）。
   var enums = { slowMachineMode: ['auto', 'on', 'off'] };
   var runtimeFields = booleans.concat(Object.keys(numbers), Object.keys(enums),
-    ['discussionReply', 'questionSelectorOverrides']);
+    ['discussionReply', 'questionSelectorOverrides',
+      // 思考档位要投给页面：整卷「不乱猜」闸在页面侧读 thinkingPaperLevel /
+      // thinkingLevel（70-quiz-flow.js _isNoGuessPaper），不投影就读不到用户选的档。
+      'thinkingLevel', 'thinkingPaperLevel']);
   function httpUrl(value) {
     if (typeof value !== 'string') return null;
     try {
@@ -61,6 +64,8 @@
     if (own.call(enums, key)) return enums[key].indexOf(value) !== -1;
     if (key === 'apiType') return ['openai', 'claude', 'gemini'].indexOf(value) !== -1;
     if (key === 'thinkingLevel') return ['off', 'low', 'high'].indexOf(value) !== -1;
+    // 整卷思考档位：'' = 跟随全局，是合法值；其余只许三档。
+    if (key === 'thinkingPaperLevel') return ['', 'off', 'low', 'high'].indexOf(value) !== -1;
     if (key === 'questionSelectorOverrides') {
       // 追加的题目容器选择器（学习通改版应急）：字符串数组，条数与单条长度都有上界 ——
       // 选择器最终会进 querySelectorAll，无界输入既慢又可能抛异常
@@ -87,7 +92,7 @@
     // Only API identity participates. Runtime status/toggle writes must not stale API tests.
     config = config || {};
     var result = {};
-    ['apiType', 'apiUrl', 'apiKey', 'model', 'captchaModel', 'visionModel', 'thinkingLevel', 'systemPrompt']
+    ['apiType', 'apiUrl', 'apiKey', 'model', 'captchaModel', 'visionModel', 'thinkingLevel', 'thinkingPaperLevel', 'systemPrompt']
       .sort().forEach(function (key) {
         result[key] = typeof config[key] === 'string' ? config[key] : '';
       });

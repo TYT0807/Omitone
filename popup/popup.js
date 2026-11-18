@@ -38,7 +38,9 @@ const DEFAULTS = {
   visionModel: "",
   visionBudgetPerChapter: 30,
   // 思考强度：'off'（默认）/ 'low' / 'high'。参数映射的唯一真源是 libs/thinking.js。
-  thinkingLevel: "off"
+  thinkingLevel: "off",
+  // 整卷思考强度：'' = 跟随全局（默认）。只管作业/考试卷，弹题仍按 thinkingLevel 走。
+  thinkingPaperLevel: ""
 };
 
 const RUNTIME_LOGS_KEY = "runtimeLogs";
@@ -104,6 +106,7 @@ const els = {
   visionBudgetPerChapter: $("visionBudgetPerChapter"),
   thinkingLevel: $("thinkingLevel"),
   thinkingHint: $("thinkingHint"),
+  thinkingPaperLevel: $("thinkingPaperLevel"),
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
@@ -446,7 +449,9 @@ function getApiFormConfig() {
     model: els.model.value.trim(),
     captchaModel: els.captchaModel.value.trim(),
     visionModel: els.visionModel.value.trim(),
-    thinkingLevel: els.thinkingLevel.value
+    thinkingLevel: els.thinkingLevel.value,
+    // '' = 跟随全局，是合法值，原样保存（不许 normalizeLevel —— 那会替用户硬选一档）。
+    thinkingPaperLevel: els.thinkingPaperLevel.value
   };
 }
 
@@ -732,6 +737,10 @@ async function load() {
   els.thinkingLevel.value = typeof OmitoneThinking !== "undefined"
     ? OmitoneThinking.normalizeLevel(config.thinkingLevel)
     : "off";
+  // 整卷思考强度：'' = 跟随全局（默认）。空串是合法值，不能走 normalizeLevel；
+  // 认不出的值一律回落 ''（跟随全局），不替用户选档。
+  const paperLevel = String(config.thinkingPaperLevel == null ? "" : config.thinkingPaperLevel).trim().toLowerCase();
+  els.thinkingPaperLevel.value = ["", "off", "low", "high"].includes(paperLevel) ? paperLevel : "";
   els.discussionReply.value = config.discussionReply || "1";
   els.systemPrompt.value = config.systemPrompt || "";
   if (!config.apiUrl || !config.model) {
@@ -964,6 +973,13 @@ els.thinkingLevel.addEventListener("change", async () => {
   apiTestGeneration++;
   updateThinkingHint();
   try { await saveApiConfig(false); toast("思考强度已保存"); } catch (error) { reportSaveError(error); }
+});
+
+// 整卷思考强度：同样切换即落盘。它不影响"当前实际发送"那句说明
+// （那是按全局档 + 渠道生成的），所以不用刷新 hint。
+els.thinkingPaperLevel.addEventListener("change", async () => {
+  apiTestGeneration++;
+  try { await saveApiConfig(false); toast("整卷思考强度已保存"); } catch (error) { reportSaveError(error); }
 });
 
 els.reset.addEventListener("click", resetDefault);

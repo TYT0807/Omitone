@@ -1596,6 +1596,117 @@ async function testThinkingLevels() {
     ? JSON.parse(retryHarness.sandbox.__sentRequests[1].body) : {};
   check('第二次已经摘掉思考参数', !('reasoning_effort' in secondBody) && !('thinking' in secondBody),
     JSON.stringify(secondBody).slice(0, 160));
+
+  // ---------------------------------------------------------------------------
+  // 批次 121：整卷/弹题按 kind 路由 + max_tokens 随思考档位抬升。
+  // 根因：OpenAI 兼容协议**没有独立的思考预算**，思考和答案共用 max_tokens ——
+  // 不抬上限的话，"高档"的推理本身就把预算吃光，答案写到一半被截断（越高越没用）。
+  // ---------------------------------------------------------------------------
+  check('minMaxTokens 三档映射（off 不抬 / low 12288 / high 16384 / 未知回落 0）',
+    THINKING.minMaxTokens('off') === 0 && THINKING.minMaxTokens('low') === 12288
+    && THINKING.minMaxTokens('high') === 16384 && THINKING.minMaxTokens('bogus') === 0,
+    'off=' + THINKING.minMaxTokens('off') + ' low=' + THINKING.minMaxTokens('low')
+    + ' high=' + THINKING.minMaxTokens('high') + ' bogus=' + THINKING.minMaxTokens('bogus'));
+  check('effectiveLevel：整卷单独档生效（paper 吃 thinkingPaperLevel）',
+    THINKING.effectiveLevel({ thinkingLevel: 'off', thinkingPaperLevel: 'high' }, 'paper') === 'high');
+  check('effectiveLevel：整卷空串跟随全局（空串是「跟随」不是「关」）',
+    THINKING.effectiveLevel({ thinkingLevel: 'low', thinkingPaperLevel: '' }, 'paper') === 'low');
+  check('effectiveLevel：整卷键缺失同样跟随全局',
+    THINKING.effectiveLevel({ thinkingLevel: 'low' }, 'paper') === 'low');
+  check('effectiveLevel：弹题只认全局档，不吃整卷档',
+    THINKING.effectiveLevel({ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'popup') === 'low');
+  check('effectiveLevel：kind 空串与未知值都按全局',
+    THINKING.effectiveLevel({ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, '') === 'low'
+    && THINKING.effectiveLevel({ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'other') === 'low');
+  check('effectiveLevel：大小写与空白容忍（界面存大写也不炸）',
+    THINKING.effectiveLevel({ thinkingLevel: 'off', thinkingPaperLevel: ' HIGH ' }, 'paper') === 'high');
+
+  // kind 真的从 payload 流到路由：整卷请求带 kind:'paper' 时按整卷档发参数、抬上限；
+  // 弹题 kind:'popup' 时按全局档发、不抬。同一种配置跑两遍，两边形状必须相反。
+  var kindCfg = { apiUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash', thinkingLevel: 'off', thinkingPaperLevel: 'high' };
+  var paperHarness = createHarness({ config: kindCfg });
+  paperHarness.sendFromPage({
+    source: 'xxt_app', id: 210, type: 'llm_request',
+    payload: { questions: [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }], kind: 'paper' }
+  });
+  await paperHarness.waitForResponse(210);
+  var paperBody = paperHarness.sandbox.__sentRequests[0]
+    ? JSON.parse(paperHarness.sandbox.__sentRequests[0].body) : null;
+  check('kind=paper：按整卷档（high）发思考参数', !!paperBody && paperBody.reasoning_effort === 'high'
+    && paperBody.thinking && paperBody.thinking.type === 'enabled',
+    paperBody ? ('reasoning_effort=' + paperBody.reasoning_effort + ' thinking=' + JSON.stringify(paperBody.thinking)) : '没有发出请求');
+  check('kind=paper：max_tokens 抬到 16384', !!paperBody && paperBody.max_tokens === 16384,
+    paperBody ? ('max_tokens=' + paperBody.max_tokens) : '没有发出请求');
+  var popupHarness = createHarness({ config: kindCfg });
+  popupHarness.sendFromPage({
+    source: 'xxt_app', id: 220, type: 'llm_request',
+    payload: { questions: [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }], kind: 'popup' }
+  });
+  await popupHarness.waitForResponse(220);
+  var popupBody = popupHarness.sandbox.__sentRequests[0]
+    ? JSON.parse(popupHarness.sandbox.__sentRequests[0].body) : null;
+  check('kind=popup：按全局档（off）发思考参数，不吃整卷档', !!popupBody && popupBody.thinking
+    && popupBody.thinking.type === 'disabled' && !('reasoning_effort' in popupBody),
+    popupBody ? ('thinking=' + JSON.stringify(popupBody.thinking)) : '没有发出请求');
+  check('kind=popup：max_tokens 保持 8192 不抬', !!popupBody && popupBody.max_tokens === 8192,
+    popupBody ? ('max_tokens=' + popupBody.max_tokens) : '没有发出请求');
+
+  // ---- 页面侧「不乱猜」闸（批次 121 第三块拼图）：整卷高档时作业/考试卷不许拿猜测占位交卷 ----
+  // 前面两组断言管「参数发出去的样子」；这一块管「模型没答上时页面上会发生什么」。
+  // 这一闸此前零自动化覆盖，改坏了集成层不会有任何一格红。
+  var quizSrc = fs.readFileSync(path.join(ROOT, 'src/page/70-quiz-flow.js'), 'utf8').replace(/\r\n/g, '\n');
+  var buildSlice = function (name, inj) {
+    var at = quizSrc.indexOf(name + ': function');
+    if (at < 0) return null;
+    var start = quizSrc.indexOf('function', at);
+    var end = quizSrc.indexOf('\n    },', start);
+    if (end <= start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + quizSrc.slice(start, end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var gate = buildSlice('_isNoGuessPaper');
+  var holds = [];
+  var hold = buildSlice('_noteNoGuessPaperHold', {
+    emitRuntimeLog: function (level, msg) { holds.push(level + ' ' + msg); }
+  });
+  check('「不乱猜」闸两件真源都能从 70-quiz-flow.js 取到（拿桩等于把闸放过去）',
+    typeof gate === 'function' && typeof hold === 'function',
+    JSON.stringify({ gate: typeof gate, hold: typeof hold }));
+  if (gate && hold) {
+    var mkGateApp = function (title, cfg) {
+      return { _getCurrentTitle: function () { return title; }, configs: cfg || {} };
+    };
+    check('作业卷、整卷高档时拦下（不拿猜测占位交卷）',
+      gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: 'high' })) === true, '应判 true');
+    check('考试卷、整卷高档时同样拦下',
+      gate.call(mkGateApp('期末考试', { thinkingPaperLevel: 'high' })) === true, '应判 true');
+    check('章节测验不拦（平时分小卷卡住等人的代价反而高）',
+      gate.call(mkGateApp('第3章 章节测验', { thinkingPaperLevel: 'high' })) === false, '应判 false');
+    check('整卷 low 保持原行为（猜测填满是既有兜底）',
+      gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: 'low' })) === false, '应判 false');
+    check('整卷 off 不拦',
+      gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: 'off' })) === false, '应判 false');
+    check('整卷空串跟随全局：全局 high 时作业卷拦下',
+      gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: '', thinkingLevel: 'high' })) === true, '应判 true');
+    check('整卷空串跟随全局：全局 off 时作业卷不拦',
+      gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: '', thinkingLevel: 'off' })) === false, '应判 false');
+    var holdDoc = { quizKey: 'k1' };
+    var holdApp = {
+      _getQuizWorkKey: function (d) { return d.quizKey; },
+      _isQuizQuestionFilled: function () { return false; },
+      _getCurrentTitle: function () { return '第3章 作业'; }
+    };
+    hold.call(holdApp, holdDoc, [{}, {}]);
+    var firstCount = holds.length;
+    hold.call(holdApp, holdDoc, [{}, {}]);
+    check('同一卷子只说一次（否则 200 条日志环被它冲成复读机）',
+      firstCount === 1 && holds.length === 1 && String(holds[0]).indexOf('quiz hold') >= 0,
+      '说的话语数=' + holds.length + '，首条=' + JSON.stringify(holds[0] || ''));
+    hold.call(holdApp, { quizKey: 'k2' }, [{}]);
+    check('换一份卷子要再说一次（warn-once 按 workKey 记账，不跨卷）',
+      holds.length === 2, '说的话语数=' + holds.length);
+  }
 }
 
 /**

@@ -11,7 +11,7 @@
  * 按提交次数跳过、API 不可用时的退避与跳过、乱选模式
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（60 个）：
+ * 本段的方法（62 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -30,7 +30,7 @@
  *   _shouldHoldQuizBeforeNext、_isQuizLearningPending、_describePendingQuizQuestions、
  *   _handleQuiz、
  *   _extractQuestions、_getQuizDocumentFromQuestions、_getQuizDocumentsFromQuestions、
- *   _looksLikeQuizTitle、
+ *   _looksLikeQuizTitle、_isNoGuessPaper、_noteNoGuessPaperHold、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
  *   _prepareQuizRedoIfNeeded、
  *   _probeFontDecrypt、_hasFontDecryptMiss、_quizTextGarbledRatio
@@ -1705,6 +1705,14 @@
           bestEffort: skippedBestEffort
         });
         if (skippedBestEffort > 0) {
+          // 「不乱猜」闸（批次 121）：整卷思考强度=高的作业/考试卷，本地猜测是
+          // 对这份明确意愿的违背 —— 宁可停在这里等人，也不拿猜测占位交卷。
+          // 没有这道闸的话，下面三步补填会瞬间把猜测糊满整卷、直接交出去。
+          if (this._isNoGuessPaper()) {
+            this._quizInProgress = false;
+            this._noteNoGuessPaperHold(quizDoc, questions);
+            return;
+          }
           this._fillBestEffortQuizAnswers(questions, quizDoc);
           // 这条分支**不会再发请求**（payload 为空），所以它是这一卷最后一次机会：
           // 还空着的题若不补占位，`rescueReady` 永远 false → 不发不交 → 整节原地转圈。
@@ -1729,7 +1737,7 @@
           this._logRandomAnswers(questions);
           result = { success: true, data: this._buildRandomQuizAnswers(questions) };
         } else {
-          result = await bridgeSend('llm_request', { questions: payload });
+          result = await bridgeSend('llm_request', { questions: payload, kind: 'paper' });
         }
         if (!result || !result.success) {
           console.error('quiz llm request failed:', result && result.error ? result.error : 'unknown');
@@ -1773,19 +1781,24 @@
         this._fillAnswers(answers, questions, quizDoc);
         this._fillCachedQuizAnswers(questions, quizDoc);
         this._clearKnownWrongFilledQuizAnswers(questions, quizDoc);
+        // 「不乱猜」闸（批次 121）：闸生效时不补任何本地猜测 —— 三步补填全跳过。
+        // 模型把整卷答上了就照常提交（formReady 为真，与闸无关）；
+        // 只有真缺题时才停下等人。下一拍只把还空着的题重新问模型（已答的不重问），
+        // 空转有既有的 noop 轮次与换课预算兜底，日志由 _noteNoGuessPaperHold 每卷只说一次。
+        var noGuessHold = this._isNoGuessPaper();
         // 补填"放弃折腾"的题：它们没进这次请求，表单缺了它们就永远不提交。
         // 放在清理之后是有意的：先让 `_clearKnownWrongFilledQuizAnswers` 处理其他题，
         // 再补上这些题的本地猜测，本轮就不会被它误清。
-        this._fillBestEffortQuizAnswers(questions, quizDoc);
+        if (!noGuessHold) this._fillBestEffortQuizAnswers(questions, quizDoc);
         // 多选**补填**（批次 7 之后本地答案只剩这一个身份）：它是**幂等**的 ——
         //   上面 `_fillAnswers` 已经填好的题在入口第一道判断上就返回了（不重填，
         //   复选重填会把自己切掉），只有仍然空着的才被补上。
         // 少了这一步就有个窄缝：模型给的多选组合恰好落在"已知错答"里（组合试完那一种），
         // 会被上面那步抹掉、又没有别的答案可补 → 表单缺一题 → 整卷永不提交。
-        this._answerLocalMultiChoiceQuestions(questions, quizDoc);
+        if (!noGuessHold) this._answerLocalMultiChoiceQuestions(questions, quizDoc);
         // 交卷前的最后一道占位（批次 16）：模型那一份被整批丢弃、多选也补不上的题，
         // 不再留白 —— 留白就是稳丢的分，而且表单不满这一卷永远交不出去。
-        this._fillBlankQuizQuestions(questions, quizDoc);
+        if (!noGuessHold) this._fillBlankQuizQuestions(questions, quizDoc);
         var formReady = this._areQuizAnswersFilled(quizDoc, questions, { requireThisRun: true });
         console.log('[Omitone] quiz form ready:', formReady);
         this._quizAnswered = formReady;
@@ -1794,6 +1807,8 @@
         this._quizInProgress = false;
         if (formReady) {
           this._maybeSubmitQuiz(quizDoc, questions);
+        } else if (noGuessHold) {
+          this._noteNoGuessPaperHold(quizDoc, questions);
         } else {
           console.warn('[Omitone] skip submit because some answers are still empty');
         }
@@ -1898,6 +1913,52 @@
     _looksLikeQuizTitle: function () {
       var title = this._getCurrentTitle();
       return title.indexOf('章节测验') !== -1 || title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1;
+    },
+
+    /**
+     * 「不乱猜」闸（批次 121）对这一卷是否生效 —— 两个条件同时成立：
+     *   ① 标题含「作业」或「考试」。章节测验**不拦**：它是平时分小卷，
+     *      猜错几道代价低，卡住一卷等人的代价反而高；
+     *   ② 整卷思考档位落在 'high'（thinkingPaperLevel，'' = 跟随全局 thinkingLevel）。
+     *
+     * 为什么只认 'high'：'high' 是用户明确说「这一卷值得花大钱慢慢想」——
+     * 拿本地猜测把表单糊满直接交出去，违背的正是这份明确意愿。
+     * low / off 保持原行为：猜测填满是既有兜底，改它等于把所有用户都架上"等人"。
+     */
+    _isNoGuessPaper: function () {
+      var title = this._getCurrentTitle();
+      if (title.indexOf('作业') === -1 && title.indexOf('考试') === -1) return false;
+      var cfg = this.configs || {};
+      var level = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
+      if (!level) level = String(cfg.thinkingLevel || 'off');
+      return level === 'high';
+    },
+
+    /**
+     * 「不乱猜」闸拦下之后的那句话 —— 同一份卷子只说一次。
+     * 不按 workKey 记账的话，学习循环每一拍都会撞进这条 hold，
+     * 200 条日志环会被它冲成复读机，现场再也翻不出别的证据。
+     */
+    _noteNoGuessPaperHold: function (quizDoc, questions) {
+      var key = '';
+      try { key = this._getQuizWorkKey(quizDoc); } catch (eKey) {}
+      this._noGuessPaperNotified = this._noGuessPaperNotified || Object.create(null);
+      if (key && this._noGuessPaperNotified[key]) return;
+      if (key) this._noGuessPaperNotified[key] = true;
+      var unfilled = 0;
+      for (var i = 0; i < (questions || []).length; i++) {
+        try {
+          if (!this._isQuizQuestionFilled(quizDoc, questions[i])) unfilled += 1;
+        } catch (eFill) {
+          unfilled += 1;
+        }
+      }
+      emitRuntimeLog('warn', 'quiz hold, waiting for model or manual answer', {
+        title: String(this._getCurrentTitle() || '').slice(0, 60),
+        total: (questions || []).length,
+        unfilled: unfilled,
+        reason: '整卷思考强度=高，不拿猜测占位交卷；缺的题下一拍重问模型，或你手动作答后自动提交'
+      });
     },
 
     _extractFromDocument: function (doc) {

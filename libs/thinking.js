@@ -43,6 +43,38 @@
   }
 
   /**
+   * 思考档位 → 输出总预算（max_tokens）的**下限**。
+   *
+   * 为什么要有这张表：OpenAI 兼容协议里思考与答案**共用同一份 max_tokens**，
+   * 没有单独的思考额度。low/high 打开思考后，推理先烧掉一大截，
+   * 留给答案的不够 → 输出被截断 → 上层拆批重问 → 「强度越高越没用」。
+   * off 不抬（= 升级前的行为，一个字节都不变）。
+   * 用户自己填过更大的 maxTokens 时取大者，不会被压小。
+   */
+  var LEVEL_MIN_MAX_TOKENS = { off: 0, low: 12288, high: 16384 };
+
+  function minMaxTokens(level) {
+    return LEVEL_MIN_MAX_TOKENS[normalizeLevel(level)] || 0;
+  }
+
+  /**
+   * 按任务类型算「这次请求该用哪一档」。
+   *
+   * kind 'paper'（整卷：章节测验/作业/考试）看 thinkingPaperLevel ——
+   * 用户可以给整卷单独设一档，''（默认）表示跟随全局 thinkingLevel；
+   * 其他请求（弹题、验证码等）一律跟随全局 —— 弹题是刷课量、答错可重试，
+   * 跟着全局默认 off 最省。档位认不出来就落 off（与 normalizeLevel 同一口径）。
+   */
+  function effectiveLevel(config, kind) {
+    var cfg = config || {};
+    if (String(kind || '') === 'paper') {
+      var paper = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
+      if (LEVELS.indexOf(paper) !== -1) return paper;
+    }
+    return normalizeLevel(cfg.thinkingLevel);
+  }
+
+  /**
    * 认渠道。用**地址优先**，地址认不出来再看模型名 ——
    * 自定义渠道常常填了别名地址而模型名是官方名，反之亦然，两边都认更稳。
    */
@@ -185,7 +217,10 @@
     LEVELS: LEVELS,
     LEVEL_LABEL: LEVEL_LABEL,
     PROVIDERS: PROVIDERS,
+    LEVEL_MIN_MAX_TOKENS: LEVEL_MIN_MAX_TOKENS,
     normalizeLevel: normalizeLevel,
+    minMaxTokens: minMaxTokens,
+    effectiveLevel: effectiveLevel,
     detectProvider: detectProvider,
     isVerified: isVerified,
     buildThinkingParams: buildThinkingParams,
