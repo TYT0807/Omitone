@@ -405,7 +405,12 @@
           // 用它把"等一拍拍 DOM 重绘回来"做成**有尽头**的等待（见 `_popupQuizEmptyShellPass`），
           // 而不是旧写法那样第一眼就当"这道不可答"放弃 + 冷却 60 秒。
           // 记在账本上（按任务点作废），不新开一个全局状态字段。
-          emptyShell: null
+          emptyShell: null,
+          // 批次 155：「站点已收下、放行」那条 info 同一道题只说一次 —— 弹窗一直挂着时
+          // 静默期（8 秒）一过这一拍就会原样再进来一遍，账本（filled / siteRight）都在，
+          // 同一句话每 8 秒刷一条，把 200 条日志环刷空。只圈住说话那一发，
+          // 放行动作（清冷却 / 开静默 / 点「继续」）照旧每拍都做。
+          releaseSaid: Object.create(null)
         };
       }
       return this._popupQuizSpend;
@@ -1270,20 +1275,25 @@
         this._popupQuizBlockedUntil = 0;
         this._popupQuizLastFilled = '';
         this._popupQuizAttempts = 0;
-        emitRuntimeLog('info', 'popup quiz already accepted by site, releasing block', {
-          letter: filledLetter.slice(0, 20),
-          eventid: String(siteRec.eid || '').slice(0, 32),
-          uses: Number(siteRec.uses) || 0,
-          scoped: scoped,
-          reason: reason,
-          // 「便条那个容器」与「这一拍这个容器」的 class 是否同一个 —— 只当取证，不当闸
-          // （换 class 就把放行挡死，等于把本批次修的病留在判据里，见头上那条⚠️）。
-          clsSame: bind && bind.cls === String(key || '').split('|')[0] ? 1 : 0,
-          waitedMs: bind ? Date.now() - bind.at : 0,
-          hint: '容器里一个选项都没有（站点收下答案那一刻把那一层摘掉了），而它自己的回包写着「通过」—— ' +
-            '这一道是**过去了**，不是答不了。旧写法在这里记放弃并静音 60 秒，' +
-            '等于平台判对了我们还替它按住视频一分钟'
-        });
+        // 批次 155：这一发同页只说一次（releaseSaid 见 `_popupQuizSpendBucket`）。
+        var saidKey = 'shell|' + String(rightKey);
+        if (!bucket.releaseSaid[saidKey]) {
+          bucket.releaseSaid[saidKey] = 1;
+          emitRuntimeLog('info', 'popup quiz already accepted by site, releasing block', {
+            letter: filledLetter.slice(0, 20),
+            eventid: String(siteRec.eid || '').slice(0, 32),
+            uses: Number(siteRec.uses) || 0,
+            scoped: scoped,
+            reason: reason,
+            // 「便条那个容器」与「这一拍这个容器」的 class 是否同一个 —— 只当取证，不当闸
+            // （换 class 就把放行挡死，等于把本批次修的病留在判据里，见头上那条⚠️）。
+            clsSame: bind && bind.cls === String(key || '').split('|')[0] ? 1 : 0,
+            waitedMs: bind ? Date.now() - bind.at : 0,
+            hint: '容器里一个选项都没有（站点收下答案那一刻把那一层摘掉了），而它自己的回包写着「通过」—— ' +
+              '这一道是**过去了**，不是答不了。旧写法在这里记放弃并静音 60 秒，' +
+              '等于平台判对了我们还替它按住视频一分钟'
+          });
+        }
         return true;
       }
 
@@ -1717,13 +1727,21 @@
       // 认判决的前提是「这一道我们确实填过」—— _popupQuizLastFilled（这一拍刚填）
       // 或账本里这一指纹有 filled 记录（弹窗被收走又弹回来的那一族）。两者都没有就别认，
       // 免得把上一节残留的 #spanHas 当成这一道的结果。
-      var filledRec = (this._popupQuizSpendBucket().filled || {})[key];
+      var bucket = this._popupQuizSpendBucket();
+      var filledRec = (bucket.filled || {})[key];
       var weAnsweredThisKey = !!this._popupQuizLastFilled || !!(filledRec && filledRec.letter);
       if (weAnsweredThisKey && this._popupQuizSiteVerdict(popup) === 'right') {
-        emitRuntimeLog('info', 'popup quiz accepted by site, releasing block', {
-          letter: String(this._popupQuizLastFilled || (filledRec && filledRec.letter) || '').slice(0, 20),
-          clickedContinue: this._clickPopupContinue(popup)
-        });
+        // 批次 155：「继续」要点、静默期照开 —— 记忆键只圈住说话那一发，动作每拍都做
+        //（点「继续」原先藏在日志载荷里，跟着闭嘴就把续播那一下也吞了）。
+        var clickedContinue = this._clickPopupContinue(popup);
+        var saidKey = 'site|' + String(key);
+        if (!bucket.releaseSaid[saidKey]) {
+          bucket.releaseSaid[saidKey] = 1;
+          emitRuntimeLog('info', 'popup quiz accepted by site, releasing block', {
+            letter: String(this._popupQuizLastFilled || (filledRec && filledRec.letter) || '').slice(0, 20),
+            clickedContinue: clickedContinue
+          });
+        }
         this._popupQuizSolvedKey = key;
         this._popupQuizSolvedAt = Date.now();
         this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);

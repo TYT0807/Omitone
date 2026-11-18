@@ -3429,6 +3429,7 @@ async function testSeekDeferUntilSeekable() {
   var covers = buildFrom(media, '_seekableCovers', {});
   var defer = buildFrom(media, '_deferSeekUntilSeekable', inj);
   var trySeek = buildFrom(media, '_trySeekToEnd', inj);
+  var noteSkip = buildFrom(media, '_noteSeekSkip', inj);
   var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
 
   // 两个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言还按旧数跑 = 假绿）
@@ -3436,11 +3437,11 @@ async function testSeekDeferUntilSeekable() {
   var windowMs = firstNum(deferBody, /Date\.now\(\) \+ (\d+)/);
   var capTries = firstNum(deferBody, /st\.tries >= (\d+)/);
 
-  check('① 五件都能从 40-media.js 原样取出来真跑，两个预算也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    [getKey, covers, defer, trySeek, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+  check('① 六件都能从 40-media.js 原样取出来真跑，两个预算也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, covers, defer, trySeek, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
     windowMs > 0 && capTries > 1,
-    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, ninety: typeof isNinety, windowMs: windowMs, capTries: capTries }));
-  if (!trySeek || !covers || !defer || !isNinety) return;
+    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, windowMs: windowMs, capTries: capTries }));
+  if (!trySeek || !covers || !defer || !isNinety || !noteSkip) return;
 
   function mkRanges(list) {
     return {
@@ -3486,6 +3487,7 @@ async function testSeekDeferUntilSeekable() {
       _seekableCovers: covers,
       _deferSeekUntilSeekable: defer,
       _trySeekToEnd: trySeek,
+      _noteSeekSkip: noteSkip,
       _isNinetyPercentVideo: isNinety
     };
     return { app: app, delays: delays };
@@ -3610,6 +3612,49 @@ async function testSeekDeferUntilSeekable() {
     resetBody.indexOf('_deferSeekUntilSeekable') >= 0 &&
     resetBody.indexOf('_seekTriedKeys[key] = true') > resetBody.indexOf('_deferSeekUntilSeekable'),
     JSON.stringify({ gate: resetBody.indexOf('_deferSeekUntilSeekable'), mark: resetBody.indexOf('_seekTriedKeys[key] = true') }));
+
+  // ---- ⑫ 现场实测（2026-11-18，同一门鉴赏课连刷两支）：一支 `tried/reverted` 双双为真、
+  //      另一支**一次都没试**（整支按 1x 白播 22 分钟），而盘上零证据 —— 那四个出口既不写日志
+  //      也不登记。现在每一格出口按媒体钥匙留一笔账，探针读得回来。这一族**不发日志**：
+  //      `_trySeekToEnd` 每 1500 毫秒就来一拍，说话会把 200 条的证据窗吃光（AGENTS §2 #16(b)）。
+  logs.length = 0;
+  var a12 = mkApp(), v12 = mkVideo({ duration: DUR, ranges: [[0, DUR]] });
+  a12.app._captchaActive = true;
+  var r12 = seekTo(a12.app, v12, 'guard');
+  var k12 = keyOf(v12);
+  var s12 = a12.app._seekSkipLedger && a12.app._seekSkipLedger[k12];
+  check('⑫ 被验证码闸挡下的那一支：进度条一下都没写、tried 不登记，但按**这一支的钥匙**留下一格（last／reasons.captcha／dur 全读得回来），且这一族一条日志都不发',
+    r12 === false && v12.__rec.writes.length === 0 &&
+    !(a12.app._seekTriedKeys && a12.app._seekTriedKeys[k12]) &&
+    !!s12 && s12.last === 'captcha' && s12.reasons.captcha === 1 &&
+    s12.dur === Number(DUR.toFixed(1)) && s12.src === true && logs.length === 0,
+    JSON.stringify({ ret: r12, writes: v12.__rec.writes.length, skip: s12 || null, logs: logs.length }));
+
+  // ---- ⑬ 账必须按钥匙分家：并成一格就是「读得出却归错因」，比读不出更贵 ----
+  var a13 = mkApp(), v13 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k13 = keyOf(v13);
+  a13.app._captchaActive = true;
+  seekTo(a13.app, v13, 'guard'); seekTo(a13.app, v13, 'guard'); seekTo(a13.app, v13, 'guard');
+  var v13b = mkVideo({ duration: 812.5, ranges: [[0, 812.5]] });
+  v13b.currentSrc = 'https://ananas.chaoxing.com/video/910000002/at_1700000000000.mp4';
+  var k13b = keyOf(v13b);
+  a13.app._captchaActive = false;
+  a13.app._rateProbing = true;
+  seekTo(a13.app, v13b, 'guard');
+  var L13 = a13.app._seekSkipLedger || {};
+  var keys13 = Object.keys(L13);
+  check('⑬ 同一支连问三拍累加到 3，换一枚（不同 src、不同时长、不同闸门）另开一格且各说各的原因 —— 两把钥匙并成一格就是归错因',
+    k13 !== k13b && keys13.length === 2 && L13[k13].n === 3 && L13[k13].last === 'captcha' &&
+    L13[k13b].n === 1 && L13[k13b].last === 'probing' && L13[k13b].dur === 812.5,
+    JSON.stringify({ keys: keys13.length, a: L13[k13] || null, b: L13[k13b] || null }));
+
+  // ---- ⑭ 出口清单与接线一一对应（§2 #18 那一族：新增一格忘了接线，什么都不红，只在现场少说一句话）----
+  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end'];
+  var body14 = bodyOf(media, '_trySeekToEnd');
+  var calls14 = (body14.match(/this\._noteSeekSkip\(/g) || []).length;
+  var wired14 = exits14.filter(function (r) { return body14.indexOf("_noteSeekSkip('" + r + "'") >= 0; });
+  check('⑭ 「不试拖」六格出口全部接上账，且方法体里恰好六处调用（多一格没进清单、少一格没接线，都在这条上红）',
+    wired14.length === exits14.length && calls14 === exits14.length,
+    JSON.stringify({ need: exits14.length, wired: wired14, calls: calls14 }));
 }
 
 /** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */

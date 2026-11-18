@@ -14,9 +14,9 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（46 个）：
+ * 本段的方法（47 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
- *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、
+ *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
  *   _playChaoxingMediaJob、_startSlideMedia、_waitSlideAudioDone、
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
@@ -312,6 +312,35 @@
     },
 
 
+    // 「这一支为什么一次都没试拖」以前在盘上是**零证据**：下面 `_trySeekToEnd` 里那些
+    // 直接 `return false` 的出口既不写日志也不登记，于是"在等元数据""被验证码闸挡住"
+    // 与"压根没走到这一发"长得一模一样（AGENTS §2 #12 那一族：读不出不许塌成结论）。
+    // 所以每一格出口按**媒体钥匙**记一笔账：跨拍累积、**不许被 `_resetRuntimeState` 抹掉**
+    // （§2 #13 实测踩过同族），探针 `media-state.expr` 拿当前那一枚的钥匙读回来。
+    // 这里**不加日志** —— 这一发每 1500 毫秒就来一拍，说话会把 200 条的证据窗吃光（§2 #16(b)），
+    // 而"没试拖"本身不是异常；只有现场问一句才需要它。
+    _noteSeekSkip: function (reason, media, key) {
+      try {
+        if (!this._seekSkipLedger) this._seekSkipLedger = Object.create(null);
+        var k = String(key || '');
+        var st = this._seekSkipLedger[k];
+        if (!st) {
+          if (Object.keys(this._seekSkipLedger).length > 300) this._seekSkipLedger = Object.create(null);
+          st = this._seekSkipLedger[k] = { n: 0, first: Date.now(), reasons: Object.create(null) };
+        }
+        st.n++;
+        st.reasons[reason] = (st.reasons[reason] || 0) + 1;
+        st.last = reason;
+        st.at = Date.now();
+        var dur = NaN;
+        try { dur = Number(media && media.duration); } catch (e) { dur = NaN; }
+        st.dur = isFinite(dur) ? Number(dur.toFixed(1)) : null;
+        try { st.src = !!(media && (media.currentSrc || media.src)); } catch (e) { st.src = false; }
+        return st;
+      } catch (e) { return null; }
+    },
+
+
     // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
     // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
@@ -320,14 +349,15 @@
     _trySeekToEnd: function (video, reason) {
       var mediaTag = video && String(video.tagName || '').toUpperCase();
       if (mediaTag !== 'VIDEO' && mediaTag !== 'AUDIO') return false; // 只拖视频/音频，其它元素不碰
-      if (!this.configs.enableSeek) return false;
-      if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
-      if (this._captchaActive) return false;
+      // 钥匙先算（纯读数，无副作用，判定顺序一格未动）：下面每一格"不试"都要归到这一支上
+      var key = this._getMediaSeekKey(video);
+      if (!this.configs.enableSeek) { this._noteSeekSkip('disabled', video, key); return false; }
+      if (this._rateProbing) { this._noteSeekSkip('probing', video, key); return false; } // 倍速探测期间不动进度条，探测结束后的巡检会再进来
+      if (this._captchaActive) { this._noteSeekSkip('captcha', video, key); return false; }
       if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);
       if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
-      var key = this._getMediaSeekKey(video);
-      if (!key) return false;
-      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次
+      if (!key) { this._noteSeekSkip('no-key', video, key); return false; }
+      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次（这是"试过了"，不进 skip 账）
       if (Object.keys(this._seekTriedKeys).length > 300) {
         this._seekTriedKeys = Object.create(null);
         this._seekRevertedKeys = Object.create(null);
@@ -335,10 +365,10 @@
       }
 
       var duration = Number(video.duration);
-      if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
+      if (!isFinite(duration) || duration <= 20) { this._noteSeekSkip('no-meta', video, key); return false; } // 元数据未就绪/时长太短：不标记，下次再检查
 
       var current = Number(video.currentTime || 0);
-      if (current >= duration - 8) return false; // 已在结尾附近，无需拖动
+      if (current >= duration - 8) { this._noteSeekSkip('near-end', video, key); return false; } // 已在结尾附近，无需拖动
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 

@@ -613,7 +613,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 给接手的人 / AI：先看这里
 
-这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 1.73 万行**）：
+这份 README 是**完整交接文档**。按下面的顺序读，不要通读 `page.js`（**约 2 万行**）：
 
 > ### ⚠️ `page.js` 已拆成 `src/page/` 下的 16 个**按域**片段
 >
@@ -675,7 +675,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 136 个场景，1529 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 136 个场景，1535 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1232,7 +1232,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（400 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
-npm run e2e      # 真实 Edge 功能交叉检验（136 个场景 / 1529 项）
+npm run e2e      # 真实 Edge 功能交叉检验（136 个场景 / 1535 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
@@ -1364,7 +1364,7 @@ DeepSeek 的上下文缓存不是按「固定长度」命中的，而是要求**
 manifest.json           MV3 清单
 background.js           service worker：跨域 fetch 代理 + 抓图转 dataURL
 content.js              隔离世界桥接：注入 page.js、转发消息、字体解密、状态浮窗
-page.js                 页面上下文运行时（主体，约 1.73 万行，全项目最值得小心对待的文件）
+page.js                 页面上下文运行时（主体，约 2 万行，全项目最值得小心对待的文件）
 libs/prompt.js          LLM 提示词唯一真源
 libs/api-url.js         API 地址构造与密钥清洗唯一真源（content.js 与 popup 共用）
 libs/font-table.js      字形映射表的二进制格式唯一真源（编码/解码/明文包装）

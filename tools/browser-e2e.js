@@ -89,6 +89,9 @@ var CAPTCHA_SVG = 'data:image/svg+xml;base64,' + Buffer.from(
 
 var failures = [];
 var checks = 0;
+/** 真正跑到 scenario.run() 并返回的场景数 —— 用来判「这一趟跑满了没有」。
+ *  没跑满的那一趟拿不到全套动态断言数，它交给文档核对的那本账必须是上一份完整读数。 */
+var scenariosRan = 0;
 /** 当前场景名，用于给断言加前缀 */
 var currentScenario = '';
 
@@ -11356,8 +11359,10 @@ SCENARIOS.push({
       '  return Promise.resolve(app._handlePopupQuiz(n0)).then(function(){return ev;});}' +
       // ── 塌壳那一拍：三个变体只差「依据从哪来」──
       // nobind/late 先换一道**没填过**的题（现场另一族：容器长不出选项、也从来没答过）。
-      'var noBind=(step==="strip-nobind"),late=(step==="strip-late");' +
+      'var noBind=(step==="strip-nobind"),late=(step==="strip-late"),again=(step==="strip-again");' +
       'if(noBind||late){s.take();s.pop("q3");}' +
+      // 复述拍（批次 155）：整替重建**同一道** q1 —— 指纹与第一拍同一把尺，弹窗「还挂着」的现场形状。
+      'if(again){s.take();s.pop("q1");}' +
       'var n1=scan();if(!n1)return {step:step,err:"no-full-node"};' +
       'ev.fullKey=String(app._popupQuizFingerprint(n1));' +
       'ev.fullOptions=app._getOptionItems(n1).length;' +
@@ -11502,6 +11507,24 @@ SCENARIOS.push({
       JSON.stringify({ req: r2.req, asksShell: r2.asksShell, gives: r2.givesTotal,
         blockedMs: r2.blockedMs, quietMs: r2.quietMs, shellSeen: r2.shellSeen,
         lastFilled: r2.lastFilled, attempts: r2.attempts, logs: r2.logs }));
+
+    // ── ②b 复述拍（批次 155）：静默期一过、同一道弹窗原样再进来 —— 动作照做，话不再说 ──
+    // 现场形状：放行那一拍把 lastFilled 交还成空串、solvedKey 只压 8 秒；静默期过去后同一弹窗
+    // 重新过闸，依据还是第一拍留下的那两样（bind 180 秒内新鲜 + siteRight 不动）。这一拍要验的是
+    // §2 #16 的另一半：闸只圈住 emitRuntimeLog 那一发，放行的**动作**（清冷却、开静默期、
+    // lastFilled 交还）每一拍都要真做 —— 「继续」/清冷却藏在日志载荷里跟着闭嘴就是把续播吞了。
+    var r2b = await drive('strip-again');
+    check('81 复述拍：同一道弹窗第二次塌壳放行 —— 「站点已收下」那条 info 不再说第二遍' +
+      '（本拍 logCount=0），而放行动作照做（quietMs>0、lastFilled 交还、req=0、壳尺 asks 仍 0）；' +
+      'fullKeyTail 与第一拍相等、stripped>0 且 fullOptions=2 证明走到这一拍的是同一道题' +
+      '重建后再被掏空，不是换了题目让闸恰好没命中',
+      logCount(r2b, 'popup quiz already accepted by site, releasing block') === 0 &&
+      r2b.ev.pinnedShell === 'clean' && r2b.ev.fullOptions === 2 && r2b.ev.stripped > 0 &&
+      String(r2b.ev.fullKey).slice(-20) === r1.fullKeyTail &&
+      r2b.quietMs > 0 && r2b.lastFilled === '' && r2b.req === 0 && r2b.asksShell === 0,
+      JSON.stringify({ ev: { fullKeyTail: String(r2b.ev.fullKey).slice(-20),
+        pinnedShell: r2b.ev.pinnedShell, stripped: r2b.ev.stripped, fullOptions: r2b.ev.fullOptions },
+        quietMs: r2b.quietMs, lastFilled: r2b.lastFilled, req: r2b.req, logs: r2b.logs }));
 
     // ── ③ 没依据（这一道压根没填过）→ 有尽头地等一拍，不花钱也不记放弃 ──
     var r3 = await drive('strip-nobind');
@@ -11667,6 +11690,42 @@ SCENARIOS.push({
       right.continueClicks >= 1, JSON.stringify(right));
     check('74 答对不再花钱：判对这一拍一条 llm_request 都不发（钱只花在"还没答对"上）',
       req1 === 0 && right.acceptedLogs >= 1, JSON.stringify({ req1: req1, acceptedLogs: right.acceptedLogs }));
+
+    // ── 第 1b 轮 复述拍（批次 155）：静默期过去、弹窗还挂着 —— 动作每拍都做，话不再说第二遍 ──
+    // 现场形状：第 1 轮放行把 lastFilled 交还成空串（上面那条断言钉过），8 秒后同一弹窗重新过
+    // solvedKey 闸 —— 这一拍「我们填过」的证据只剩账本里 bucket.filled[key] 那格。所以这里用
+    // 生产自己的记账方法 `_notePopupQuizFilled` 落那一格（不手搓形状），**不动 lastFilled** ——
+    // 正是要证明放行判据里 `weAnsweredThisKey` 的 filledRec 那一半也认账。
+    var reqBase1b = ctx.mock.requests.length;
+    var repeatDid = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'window.__b74=[];window.__b75=[];window.__b74c=0;window.__setVerdict("right");' +
+      'app._notePopupQuizFilled(key,"A",String(app._popupQuizStem(box,app._getOptionItems(box))||""));' +
+      'app._popupQuizKey=key;app._popupQuizAttempts=1;app._popupQuizWrongAnswers=[];' +
+      'app._popupQuizSolvedKey="";app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;' +
+      'app._popupQuizBlockedUntil=0;app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'var n=app._activePopupBlock();if(n){app._handlePopupQuiz(n);}' +
+      'return {found:!!n,key:key,verdict:app._popupQuizSiteVerdict(box)};})()'
+    );
+    await sleep(400);
+    var repeatRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=app._checkPopupQuiz();var key=app._popupQuizFingerprint(box);' +
+      'return {solvedKey:app._popupQuizSolvedKey,key:key,lastFilled:String(app._popupQuizLastFilled||""),' +
+      'blockedUntil:Number(app._popupQuizBlockedUntil)||0,' +
+      'quietMs:Math.max(0,(Number(app._popupQuizQuietUntil)||0)-Date.now()),' +
+      'continueClicks:Number(window.__b74c)||0,' +
+      'acceptedLogs:(window.__b74||[]).filter(function(m){return m.indexOf("accepted by site")!==-1;}).length};})()'
+    );
+    var req1b = ctx.mock.requests.length - reqBase1b;
+    check('74 复述拍：同一道弹窗静默期后再进来 —— 放行动作照做（solvedKey 重新写回这一道、冷却保持 0、' +
+      '静默期重新打开、「继续」再点一次），且一条请求都不发；' +
+      '但「站点已收下」那条 info 不再说第二遍（acceptedLogs=0，§2 #16：闸只圈住说话那一发，' +
+      '动作藏在载荷里跟着闭嘴 = 续播被吞）—— 这一拍填过的证据来自账本那格（lastFilled 已是空串）',
+      repeatDid.found === true && repeatDid.verdict === 'right' &&
+      repeatRead.acceptedLogs === 0 && repeatRead.solvedKey === repeatRead.key &&
+      repeatRead.blockedUntil === 0 && repeatRead.lastFilled === '' && repeatRead.quietMs > 0 &&
+      repeatRead.continueClicks >= 1 && req1b === 0,
+      JSON.stringify({ drive: repeatDid, read: repeatRead, req: req1b }));
 
     // ── 第 2 轮 负对照：站点判「错」 → 旧行为保留（拉黑、不点继续） ──
     // 把 attempts 顶到上限，判错后下一拍就越界放弃并 return —— 这样判错这一轮只验"拉黑+不点继续"，
@@ -22417,6 +22476,7 @@ async function main() {
         }
 
         await scenario.run(ctx, mock);
+        scenariosRan++;
       } catch (error) {
         check('场景执行未抛异常', false, error && error.message ? error.message : String(error));
       } finally {
@@ -22436,12 +22496,19 @@ async function main() {
   // 所以只能由 e2e 自己交出来，否则文档里的数字永远靠人肉同步（已经漏过两次）。
   // 落在 .workbuddy/ 下（已在 .gitignore），不入版本库。
   try {
-    if (!E2E_FILTER) fs.writeFileSync(path.join(ROOT, '.workbuddy', 'e2e-counts.json'), JSON.stringify({
-      scenarios: SCENARIOS.length,
-      assertions: checks,
-      passed: failures.length === 0,
-      at: new Date().toISOString()
-    }, null, 2));
+    if (!E2E_FILTER && scenariosRan === selected.length) {
+      fs.writeFileSync(path.join(ROOT, '.workbuddy', 'e2e-counts.json'), JSON.stringify({
+        scenarios: SCENARIOS.length,
+        assertions: checks,
+        passed: failures.length === 0,
+        at: new Date().toISOString()
+      }, null, 2));
+    } else if (!E2E_FILTER) {
+      // 这一句必须出声：批次 105 撞了四次「浏览器中途被带走」，而账照旧被半途的 checks 写脏，
+      // 于是 check.js 第 9 项报的是「文档写 1529、实测 1308」—— 红的是文档，文档一字没错。
+      console.log('  计数账未更新：这一趟只真跑到 ' + scenariosRan + ' / ' + selected.length +
+        ' 个场景，项数不是全套读数（文档核对继续用上一份完整账）。');
+    }
   } catch (e) {}
 
   console.log('');

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'e85aaf80e9';
+var OMITONE_CODE_REV = 'fa8d898d72';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2434,6 +2434,35 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
     },
 
 
+    // 「这一支为什么一次都没试拖」以前在盘上是**零证据**：下面 `_trySeekToEnd` 里那些
+    // 直接 `return false` 的出口既不写日志也不登记，于是"在等元数据""被验证码闸挡住"
+    // 与"压根没走到这一发"长得一模一样（AGENTS §2 #12 那一族：读不出不许塌成结论）。
+    // 所以每一格出口按**媒体钥匙**记一笔账：跨拍累积、**不许被 `_resetRuntimeState` 抹掉**
+    // （§2 #13 实测踩过同族），探针 `media-state.expr` 拿当前那一枚的钥匙读回来。
+    // 这里**不加日志** —— 这一发每 1500 毫秒就来一拍，说话会把 200 条的证据窗吃光（§2 #16(b)），
+    // 而"没试拖"本身不是异常；只有现场问一句才需要它。
+    _noteSeekSkip: function (reason, media, key) {
+      try {
+        if (!this._seekSkipLedger) this._seekSkipLedger = Object.create(null);
+        var k = String(key || '');
+        var st = this._seekSkipLedger[k];
+        if (!st) {
+          if (Object.keys(this._seekSkipLedger).length > 300) this._seekSkipLedger = Object.create(null);
+          st = this._seekSkipLedger[k] = { n: 0, first: Date.now(), reasons: Object.create(null) };
+        }
+        st.n++;
+        st.reasons[reason] = (st.reasons[reason] || 0) + 1;
+        st.last = reason;
+        st.at = Date.now();
+        var dur = NaN;
+        try { dur = Number(media && media.duration); } catch (e) { dur = NaN; }
+        st.dur = isFinite(dur) ? Number(dur.toFixed(1)) : null;
+        try { st.src = !!(media && (media.currentSrc || media.src)); } catch (e) { st.src = false; }
+        return st;
+      } catch (e) { return null; }
+    },
+
+
     // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
     // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
@@ -2442,14 +2471,15 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
     _trySeekToEnd: function (video, reason) {
       var mediaTag = video && String(video.tagName || '').toUpperCase();
       if (mediaTag !== 'VIDEO' && mediaTag !== 'AUDIO') return false; // 只拖视频/音频，其它元素不碰
-      if (!this.configs.enableSeek) return false;
-      if (this._rateProbing) return false; // 倍速探测期间不动进度条，探测结束后的巡检会再进来
-      if (this._captchaActive) return false;
+      // 钥匙先算（纯读数，无副作用，判定顺序一格未动）：下面每一格"不试"都要归到这一支上
+      var key = this._getMediaSeekKey(video);
+      if (!this.configs.enableSeek) { this._noteSeekSkip('disabled', video, key); return false; }
+      if (this._rateProbing) { this._noteSeekSkip('probing', video, key); return false; } // 倍速探测期间不动进度条，探测结束后的巡检会再进来
+      if (this._captchaActive) { this._noteSeekSkip('captcha', video, key); return false; }
       if (!this._seekTriedKeys) this._seekTriedKeys = Object.create(null);
       if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
-      var key = this._getMediaSeekKey(video);
-      if (!key) return false;
-      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次
+      if (!key) { this._noteSeekSkip('no-key', video, key); return false; }
+      if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次（这是"试过了"，不进 skip 账）
       if (Object.keys(this._seekTriedKeys).length > 300) {
         this._seekTriedKeys = Object.create(null);
         this._seekRevertedKeys = Object.create(null);
@@ -2457,10 +2487,10 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
       }
 
       var duration = Number(video.duration);
-      if (!isFinite(duration) || duration <= 20) return false; // 元数据未就绪/时长太短：不标记，下次再检查
+      if (!isFinite(duration) || duration <= 20) { this._noteSeekSkip('no-meta', video, key); return false; } // 元数据未就绪/时长太短：不标记，下次再检查
 
       var current = Number(video.currentTime || 0);
-      if (current >= duration - 8) return false; // 已在结尾附近，无需拖动
+      if (current >= duration - 8) { this._noteSeekSkip('near-end', video, key); return false; } // 已在结尾附近，无需拖动
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 
@@ -17866,7 +17896,12 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
           // 用它把"等一拍拍 DOM 重绘回来"做成**有尽头**的等待（见 `_popupQuizEmptyShellPass`），
           // 而不是旧写法那样第一眼就当"这道不可答"放弃 + 冷却 60 秒。
           // 记在账本上（按任务点作废），不新开一个全局状态字段。
-          emptyShell: null
+          emptyShell: null,
+          // 批次 155：「站点已收下、放行」那条 info 同一道题只说一次 —— 弹窗一直挂着时
+          // 静默期（8 秒）一过这一拍就会原样再进来一遍，账本（filled / siteRight）都在，
+          // 同一句话每 8 秒刷一条，把 200 条日志环刷空。只圈住说话那一发，
+          // 放行动作（清冷却 / 开静默 / 点「继续」）照旧每拍都做。
+          releaseSaid: Object.create(null)
         };
       }
       return this._popupQuizSpend;
@@ -18731,20 +18766,25 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
         this._popupQuizBlockedUntil = 0;
         this._popupQuizLastFilled = '';
         this._popupQuizAttempts = 0;
-        emitRuntimeLog('info', 'popup quiz already accepted by site, releasing block', {
-          letter: filledLetter.slice(0, 20),
-          eventid: String(siteRec.eid || '').slice(0, 32),
-          uses: Number(siteRec.uses) || 0,
-          scoped: scoped,
-          reason: reason,
-          // 「便条那个容器」与「这一拍这个容器」的 class 是否同一个 —— 只当取证，不当闸
-          // （换 class 就把放行挡死，等于把本批次修的病留在判据里，见头上那条⚠️）。
-          clsSame: bind && bind.cls === String(key || '').split('|')[0] ? 1 : 0,
-          waitedMs: bind ? Date.now() - bind.at : 0,
-          hint: '容器里一个选项都没有（站点收下答案那一刻把那一层摘掉了），而它自己的回包写着「通过」—— ' +
-            '这一道是**过去了**，不是答不了。旧写法在这里记放弃并静音 60 秒，' +
-            '等于平台判对了我们还替它按住视频一分钟'
-        });
+        // 批次 155：这一发同页只说一次（releaseSaid 见 `_popupQuizSpendBucket`）。
+        var saidKey = 'shell|' + String(rightKey);
+        if (!bucket.releaseSaid[saidKey]) {
+          bucket.releaseSaid[saidKey] = 1;
+          emitRuntimeLog('info', 'popup quiz already accepted by site, releasing block', {
+            letter: filledLetter.slice(0, 20),
+            eventid: String(siteRec.eid || '').slice(0, 32),
+            uses: Number(siteRec.uses) || 0,
+            scoped: scoped,
+            reason: reason,
+            // 「便条那个容器」与「这一拍这个容器」的 class 是否同一个 —— 只当取证，不当闸
+            // （换 class 就把放行挡死，等于把本批次修的病留在判据里，见头上那条⚠️）。
+            clsSame: bind && bind.cls === String(key || '').split('|')[0] ? 1 : 0,
+            waitedMs: bind ? Date.now() - bind.at : 0,
+            hint: '容器里一个选项都没有（站点收下答案那一刻把那一层摘掉了），而它自己的回包写着「通过」—— ' +
+              '这一道是**过去了**，不是答不了。旧写法在这里记放弃并静音 60 秒，' +
+              '等于平台判对了我们还替它按住视频一分钟'
+          });
+        }
         return true;
       }
 
@@ -19178,13 +19218,21 @@ var OMITONE_CODE_REV = 'e85aaf80e9';
       // 认判决的前提是「这一道我们确实填过」—— _popupQuizLastFilled（这一拍刚填）
       // 或账本里这一指纹有 filled 记录（弹窗被收走又弹回来的那一族）。两者都没有就别认，
       // 免得把上一节残留的 #spanHas 当成这一道的结果。
-      var filledRec = (this._popupQuizSpendBucket().filled || {})[key];
+      var bucket = this._popupQuizSpendBucket();
+      var filledRec = (bucket.filled || {})[key];
       var weAnsweredThisKey = !!this._popupQuizLastFilled || !!(filledRec && filledRec.letter);
       if (weAnsweredThisKey && this._popupQuizSiteVerdict(popup) === 'right') {
-        emitRuntimeLog('info', 'popup quiz accepted by site, releasing block', {
-          letter: String(this._popupQuizLastFilled || (filledRec && filledRec.letter) || '').slice(0, 20),
-          clickedContinue: this._clickPopupContinue(popup)
-        });
+        // 批次 155：「继续」要点、静默期照开 —— 记忆键只圈住说话那一发，动作每拍都做
+        //（点「继续」原先藏在日志载荷里，跟着闭嘴就把续播那一下也吞了）。
+        var clickedContinue = this._clickPopupContinue(popup);
+        var saidKey = 'site|' + String(key);
+        if (!bucket.releaseSaid[saidKey]) {
+          bucket.releaseSaid[saidKey] = 1;
+          emitRuntimeLog('info', 'popup quiz accepted by site, releasing block', {
+            letter: String(this._popupQuizLastFilled || (filledRec && filledRec.letter) || '').slice(0, 20),
+            clickedContinue: clickedContinue
+          });
+        }
         this._popupQuizSolvedKey = key;
         this._popupQuizSolvedAt = Date.now();
         this._popupQuizQuietUntil = Date.now() + scaledMs(POPUP_QUIZ_QUIET_MS);
