@@ -147,13 +147,37 @@ function line(item, nowMs) {
     String(item.message || '').slice(0, 160) + metaText;
 }
 
+// ⚠️ 谓词单独抽出来：--grep / --level 必须同时管住「打印哪几条」和「报哪个数」。
+//    原来计数那句拿的是**未过滤**的环尾时间，却在同一行后面挂「（过滤「X」）」
+//    —— 四条不同 needle 报出同一个「最新一条距今 22 秒」就是这么来的（AGENTS §2 #22 同族：
+//    会误报的读数比没有读数更害人）。
+function matchesFilter(x) {
+  if (LEVEL && String(x.level || 'info') !== LEVEL) return false;
+  if (GREP && String(x.message || '').indexOf(GREP) < 0 && JSON.stringify(x.meta || '').indexOf(GREP) < 0) return false;
+  return true;
+}
+
 function pick(logs) {
-  var out = logs.filter(function (x) {
-    if (LEVEL && String(x.level || 'info') !== LEVEL) return false;
-    if (GREP && String(x.message || '').indexOf(GREP) < 0 && JSON.stringify(x.meta || '').indexOf(GREP) < 0) return false;
-    return true;
-  });
-  return out.slice(-TAIL);
+  return logs.filter(matchesFilter).slice(-TAIL);
+}
+
+// 把「筛了什么、命中几条、最新一条命中距今多久」当一句话交出去；没筛就不打这行。
+function reportFilter(allLogs, nowMs) {
+  if (!GREP && !LEVEL) return;
+  var hit = allLogs.filter(matchesFilter);
+  var label = (GREP ? "「" + GREP + "」" : '') + (GREP && LEVEL ? ' + ' : '') + (LEVEL ? 'level=' + LEVEL : '');
+  var tail = '（环内共 ' + allLogs.length + ' 条）';
+  if (!hit.length) {
+    console.log('筛选 ' + label + '：命中 0 条' + tail);
+    console.log('  ⚠️ 0 条不等于「没发生过」：环只留最后 ' + allLogs.length + ' 条；' +
+      '也可能是 needle 与日志真名不符 —— 先回源码 grep emitRuntimeLog 把原句抄出来，' +
+      '且 --grep 是子串不是正则，写成 a|b 恒 0（AGENTS §2 #22）。');
+    return;
+  }
+  var newestHit = Number(hit[hit.length - 1].time) || 0;
+  console.log('筛选 ' + label + '：命中 ' + hit.length + ' 条' + tail +
+    '，最新命中距今 ' + Math.round((nowMs - newestHit) / 1000) + ' 秒' +
+    (hit.length > TAIL ? '；下面只打最后 ' + TAIL + ' 条（--tail= 可放宽）' : ''));
 }
 
 (async function () {
@@ -167,8 +191,9 @@ function pick(logs) {
   }
   var nowMs = Date.now();
   var newest = Number(first.logs[first.logs.length - 1].time) || 0;
-  console.log('最新一条距今 ' + Math.round((nowMs - newest) / 1000) + ' 秒' +
-    (GREP ? '（过滤「' + GREP + '」）' : '') + '\n');
+  console.log('环内最新一条距今 ' + Math.round((nowMs - newest) / 1000) + ' 秒（没过滤，整环最后一条）');
+  reportFilter(first.logs, nowMs);
+  console.log('');
   pick(first.logs).forEach(function (x) { console.log(line(x, nowMs)); });
 
   if (!WATCH_MS) return;
@@ -178,7 +203,7 @@ function pick(logs) {
   while (Date.now() < until) {
     await new Promise(function (r) { setTimeout(r, 3000); });
     var round = await readLogs();
-    var fresh = round.logs.filter(function (x) { return (Number(x.time) || 0) > lastTime; });
+    var fresh = round.logs.filter(function (x) { return (Number(x.time) || 0) > lastTime && matchesFilter(x); });
     fresh.forEach(function (x) { lastTime = Math.max(lastTime, Number(x.time) || 0); console.log(line(x, Date.now())); });
   }
   console.log('--- 追完 ---');
