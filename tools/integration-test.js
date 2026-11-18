@@ -1152,9 +1152,10 @@ async function testEmptyAnswerRefill() {
   check('共发出 2 次请求（原批 + 1 次补问）', harness.sandbox.__sentRequests.length === 2,
     '实际 ' + harness.sandbox.__sentRequests.length + ' 次');
 
-  var refillPrompt = extractPromptText(JSON.parse(harness.sandbox.__sentRequests[1].body));
-  check('补问只包含漏答的判断题',
-    refillPrompt.indexOf('判断题乙') !== -1 && refillPrompt.indexOf('单选题甲') === -1,
+  var refillReq = harness.sandbox.__sentRequests[1];
+  var refillPrompt = refillReq ? extractPromptText(JSON.parse(refillReq.body)) : '';
+  check('补问只包含漏答的判断题（第 2 条请求也得真存在，不许拿空串蒙过"不含单选题甲"）',
+    refillPrompt !== '' && refillPrompt.indexOf('判断题乙') !== -1 && refillPrompt.indexOf('单选题甲') === -1,
     refillPrompt.slice(0, 160));
   check('补问的答案按原 index 回填（index=1）', byIndex[1] === true, JSON.stringify(byIndex[1]));
 }
@@ -1300,9 +1301,10 @@ async function testDiscardedBatchRefillPerQuestion() {
 
   check('共 4 次请求（主批 1 + 拆开补问 3）',
     harness.sandbox.__sentRequests.length === 4, '实际 ' + harness.sandbox.__sentRequests.length + ' 次');
-  var onePrompt = extractPromptText(JSON.parse(harness.sandbox.__sentRequests[1].body));
-  check('拆开后的每一批只含一道题（第 2 次请求里没有别的题面）',
-    onePrompt.indexOf('单选题乙') < 0 && onePrompt.indexOf('判断题丙') < 0, onePrompt.slice(0, 160));
+  var splitReq = harness.sandbox.__sentRequests[1];
+  var onePrompt = splitReq ? extractPromptText(JSON.parse(splitReq.body)) : '';
+  check('拆开后的每一批只含一道题（第 2 次请求存在、且里面没有别的题面）',
+    onePrompt !== '' && onePrompt.indexOf('单选题乙') < 0 && onePrompt.indexOf('判断题丙') < 0, onePrompt.slice(0, 160));
 
   var logs = (harness.sandbox.__store && harness.sandbox.__store.runtimeLogs) || [];
   var msgs = logs.map(function (e) { return String(e.message || ''); });
@@ -1337,6 +1339,107 @@ async function testDiscardedBatchRefillPerQuestion() {
     !floodMsgs.some(function (m) { return m.indexOf('refill split per question') >= 0; }) &&
     floodMsgs.some(function (m) { return m === 'llm refill unanswered'; }),
     JSON.stringify(floodMsgs).slice(0, 260));
+}
+
+// ---------------------------------------------------------------------------
+// [8d] 模型**少答**（嫌简答题长、整题跳过）：这一格走整批丢弃，且拆开补问后长答案不许被削
+//
+// 批次 6 那条待办写的是「`libs/prompt.js` 里 3 题一批对应 `out:7`，一道简答题要占的字数
+// 远超这个预算」。本轮先把句子里的**前提**量掉：`out:` 是 `tools/prompt-bench.js` 里
+// **量出来的**合成输出 token 数，不是发给服务商的额度；整条链上唯一的输出上限是
+// `content.js` 的 `max_tokens`（恒 8192，与题目数无关），而 `normalizeItem` → 位置对齐 →
+// `_fillTextarea` 一路没有任何一处按长度截答案。所以「预算把简答挤掉」这一格**在代码里不存在**。
+//
+// 但同一条链上真有一格会把简答丢掉，方向与待办写的相反：三种长度救法
+// （`resegmentFlatAnswers` / `trimTrailingOptionLetters` / `absorbExtraOptionLetters`）
+// **全都只处理「回得比题多」**。模型回得**比题少**时三道救法一条都不够着，
+// 直接落进「整批丢弃」——同批两道**已经答对**的选择题跟着一起被扔。钉四件事：
+//   ① 少答这一格确实走丢弃（而不是错位硬填给隔壁题）；
+//   ② 丢弃日志带上题型且**含 short**（[8c] 那格只有 single/judge，覆盖不到这一型 ——
+//      AGENTS §2 #18：闸门按题型清单串起来时，新增一型必须同步进清单，这里补的是断言侧同族）；
+//   ③ 拆开补问后简答题的长答案**逐字**回来（首尾都在，一处被削就红）；
+//   ④ 主批请求文本里带着完整简答题题干 —— 排除「挤」发生在**输入侧**截题干那一族。
+// ---------------------------------------------------------------------------
+async function testTooFewAnswersKeepsShortAnswerVerbatim() {
+  console.log('\n[8d] 模型少答（跳过简答题）：整批丢弃 + 拆开补问后长答案逐字不削');
+
+  // 一条真会出现在简答题里的长度（不是 `'简答文本'` 那种四位占位）。
+  var LONG_ANSWER = '答：数据库事务的ACID指原子性、一致性、隔离性与持久性。' +
+    '原子性要求事务内的操作要么全部生效、要么全部撤销；一致性要求事务前后数据都满足既定约束；' +
+    '隔离性要求并发事务互不干扰，一个事务中途写出的中间状态对其他事务不可见；' +
+    '持久性要求一旦提交，即使断电重启这些改动也不会丢失。';
+  var SHORT_TITLE = '简述数据库事务的ACID特性及其含义，并举例说明隔离性在并发场景下的表现。';
+
+  var callNo = 0;
+  var harness = createHarness({
+    modelResponder: function (promptText) {
+      callNo++;
+      // 主批：3 道题只回 2 项 —— 模型把最后那道简答题整题跳过（「少答」那一格）。
+      if (callNo === 1) return JSON.stringify(['A', true]);
+      // 拆开补问：按题面认题，简答那一条回**完整长答案**。
+      if (promptText.indexOf('事务的ACID') >= 0) return JSON.stringify([LONG_ANSWER]);
+      if (promptText.indexOf('单选题甲') >= 0) return JSON.stringify(['A']);
+      return JSON.stringify([true]);
+    }
+  });
+  harness.sendFromPage({
+    source: 'xxt_app', id: 86, type: 'llm_request',
+    payload: {
+      questions: [
+        { index: 0, type: 'single', title: '单选题甲', options: ['甲', '乙', '丙', '丁'], previousWrongAnswers: [] },
+        { index: 1, type: 'judge', title: '判断题丙', options: ['正确', '错误'], previousWrongAnswers: [] },
+        { index: 2, type: 'short', title: SHORT_TITLE, options: [], previousWrongAnswers: [] }
+      ]
+    }
+  });
+  var data = await harness.waitForResponse(86);
+
+  check('少答那一轮最终也拿到了应答', data !== null);
+  if (!data) return;
+  check('success = true（简答没让整卷卡死）', data.success === true, JSON.stringify(data).slice(0, 220));
+
+  var reqs = harness.sandbox.__sentRequests || [];
+  var firstPrompt = reqs.length ? extractPromptText(JSON.parse(reqs[0].body)) : '';
+  check('前提自证：三道题在**同一批**里问出（简答题不像多选那样独占一批）',
+    firstPrompt.indexOf('单选题甲') >= 0 && firstPrompt.indexOf('判断题丙') >= 0 &&
+    firstPrompt.indexOf('ACID') >= 0, '第一批题面数=' +
+    ['单选题甲', '判断题丙', 'ACID'].filter(function (k) { return firstPrompt.indexOf(k) >= 0; }).length);
+  check('④ 输入侧没截题干（长题面逐字进了请求，"挤"不在这一头）',
+    firstPrompt.indexOf(SHORT_TITLE) >= 0,
+    '题目块里简答题干长度=' + (function () {
+      var at = firstPrompt.indexOf('3|t|');
+      return at < 0 ? -1 : firstPrompt.slice(at).split('\n')[0].length - 4;
+    })() + ' / 原长 ' + SHORT_TITLE.length);
+
+  var list = Array.isArray(data.data) ? data.data : [];
+  var byIndex = {};
+  list.forEach(function (a) { byIndex[a.index] = a.answer; });
+  check('夹具自证：这条简答答案本身就够长（缩成占位符会让下面那条等值断言变廉价）',
+    LONG_ANSWER.length >= 120, '实际 ' + LONG_ANSWER.length + ' 字');
+  check('③ 简答题拿到**逐字完整**的长答案（任何一处被削、被压平、被换成都都红）',
+    byIndex[2] === LONG_ANSWER,
+    '回来 ' + (typeof byIndex[2] === 'string' ? byIndex[2].length : 0) + ' 字 / 应 ' + LONG_ANSWER.length +
+    ' 字，头部=' + JSON.stringify(String(byIndex[2] == null ? '' : byIndex[2]).slice(0, 20)));
+  check('① 跟着同批被丢弃的两道选择题，补问后各归各题（没被错位硬填）',
+    byIndex[0] === 'A' && byIndex[1] === true, JSON.stringify({ q0: byIndex[0], q1: byIndex[1] }));
+
+  check('共 4 次请求（主批 1 + 拆开补问 3），没退化成反复重问整批',
+    reqs.length === 4, '实际 ' + reqs.length + ' 次');
+
+  var logs = (harness.sandbox.__store && harness.sandbox.__store.runtimeLogs) || [];
+  var msgs = logs.map(function (e) { return String(e.message || ''); });
+  var discardedLog = null;
+  logs.forEach(function (e) { if (String(e.message || '').indexOf('batch discarded') >= 0) discardedLog = e; });
+  check('①+② 少答走的确实是「整批丢弃」，且丢弃日志的题型里含 short',
+    !!discardedLog && String((discardedLog.meta || {}).types || '') === 'single,judge,short',
+    JSON.stringify(discardedLog && discardedLog.meta));
+  check('① 丢弃日志把收到的那几项抄回来了（只报"几个对几个"判不出是少答还是错批）',
+    !!discardedLog && String((discardedLog.meta || {}).received || '') === '2' &&
+    String((discardedLog.meta || {}).expected || '') === '3',
+    JSON.stringify(discardedLog && discardedLog.meta));
+  check('补问走的是 refill split per question（一题一问，简答这次独占一批）',
+    msgs.some(function (m) { return m.indexOf('refill split per question') >= 0; }),
+    JSON.stringify(msgs).slice(0, 240));
 }
 
 // ---------------------------------------------------------------------------
@@ -4446,6 +4549,7 @@ async function main() {
   await testEmptyAnswerRefill();
   await testMiddleOptionLetterAbsorb();
   await testDiscardedBatchRefillPerQuestion();
+  await testTooFewAnswersKeepsShortAnswerVerbatim();
   await testFontTable();
   await testThinkingLevels();
   await testApiKeyNormalize();
