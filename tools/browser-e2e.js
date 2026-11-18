@@ -4339,17 +4339,32 @@ SCENARIOS.push({
       await ctx.client.evaluate('(async function(){ location.search="play=1&ui=fancy&w=620&h=470"; return 1; })()');
     } catch (e) { /* 导航会把执行上下文掀掉，这条 rejection 是预期内的 */ }
     var fitted = null;
+    var fitStarted = Date.now();
+    var FIT_READ = '(async function(){' +
+      'var w=await chrome.windows.getCurrent();' +
+      'return {ready:document.readyState,href:String(location.href).slice(-46),winId:w.id,state:w.state,' +
+      'win:{w:w.width,h:w.height},inner:{w:window.innerWidth,h:window.innerHeight}};})()';
     for (var f = 0; f < 24; f++) {
       await sleep(250);
       try {
-        fitted = await ctx.client.evaluate('(async function(){' +
-          'var w=await chrome.windows.getCurrent();' +
-          'return {ready:document.readyState,win:{w:w.width,h:w.height},inner:{w:window.innerWidth,h:window.innerHeight}};})()');
+        fitted = await ctx.client.evaluate(FIT_READ);
       } catch (e) { fitted = null; continue; }
       if (fitted && fitted.ready === "complete" && Math.abs(fitted.win.w - 620) <= 10) break;
     }
+    // ⚠️ 轮询到点而尺寸没动时，「机器把人饿住了」与「窗口管理侧接了但不认」在同一条取证里长一样。
+    // 判据一个字不动，只多读一次：再等 5 秒，late 动到了 = 慢；late 还在原位 = 不是慢。
+    fitted = fitted || {};
+    fitted.waitedMs = Date.now() - fitStarted;
+    if (fitted.win && Math.abs(fitted.win.w - 620) > 10) {
+      await sleep(5000);
+      try {
+        var lateRead = await ctx.client.evaluate(FIT_READ);
+        fitted.late = lateRead && lateRead.win;
+        fitted.lateState = lateRead && lateRead.state;
+      } catch (e) { fitted.late = 'read-throw'; }
+    }
     check('带 w/h 打开时窗口自己拉到那一档（不是 create 那一发被忽略就完事）',
-      !!fitted && Math.abs(fitted.win.w - 620) <= 10 && Math.abs(fitted.win.h - 470) <= 10,
+      !!fitted.win && Math.abs(fitted.win.w - 620) <= 10 && Math.abs(fitted.win.h - 470) <= 10,
       JSON.stringify({ target: { w: 620, h: 470 }, got: fitted }));
     check('拉完之后文档根仍然跟着视口（尺寸是自己算的，不是猜的）',
       !!fitted && fitted.ready === "complete" && Math.abs(fitted.inner.w - fitted.win.w) <= 24,
@@ -4372,7 +4387,11 @@ SCENARIOS.push({
       'var html=rc(document.documentElement), body=rc(document.body);' +
       'var ctrl=rc(document.querySelector(".im-controls"));' +
       'var pet=rc(document.getElementById("mascot"));' +
+      'var winState="?", winId=null;' +
+      'try{var cw=await chrome.windows.getCurrent();winState=cw.state;winId=cw.id;}' +
+      'catch(e){winState="read-throw:"+String(e&&e.message||e).slice(0,40);}' +
       'return {inner:{w:window.innerWidth,h:window.innerHeight},htmlW:html?html.w:null,bodyW:body?body.w:null,' +
+      ' winState:winState,winId:winId,' +
       ' ctrl:ctrl,pet:pet,overCtrlPet:hit(ctrl,pet),overCtrlHtml:hit(ctrl,html),' +
       ' inView:!!(ctrl&&ctrl.x>=0&&ctrl.r<=window.innerWidth&&ctrl.b<=window.innerHeight),' +
       ' scroll:{sw:document.documentElement.scrollWidth,sh:document.documentElement.scrollHeight},' +
@@ -4393,10 +4412,17 @@ SCENARIOS.push({
     for (var i = 0; i < SIZES.length; i++) {
       var size = SIZES[i];
       var tag = size.w + 'x' + size.h;
-      await ctx.client.evaluate('(async function(){' +
-        'var w=await chrome.windows.getCurrent();' +
-        'await chrome.windows.update(w.id,{left:40,top:40,width:' + size.w + ',height:' + size.h + '});' +
-        'return 1;})()');
+      var updStarted = Date.now();
+      // 这一发是本场景**自己**改窗口尺寸（不经 popup.js）—— 它要是没拉动，就说明根因不在页面那侧。
+      // 成败必须读得回来：rejected 与 resolved-but-no-effect 是两件事，以前两条都长得像"没跑到那一档"。
+      var upd = 'eval-throw';
+      try {
+        upd = await ctx.client.evaluate('(async function(){' +
+          'var w=await chrome.windows.getCurrent();' +
+          'try { await chrome.windows.update(w.id,{left:40,top:40,width:' + size.w + ',height:' + size.h + '}); return "resolved"; }' +
+          'catch (e) { return "rejected:" + String(e && e.message || e).slice(0, 90); }' +
+          '})()');
+      } catch (e) { upd = 'eval-throw'; }
       // 轮询到视口稳定，别猜毫秒（缩放/重排是异步的）
       var g = null, last = '';
       for (var k = 0; k < 20; k++) {
@@ -4407,8 +4433,12 @@ SCENARIOS.push({
         last = now;
       }
       var dw = g && g.inner ? Math.abs(g.inner.w - size.w) : -1;
+      var gEv = g && { inner: g.inner, winState: g.winState, winId: g.winId };
       check(tag + '：**夹具自证** —— 窗口真的被拉到了这一档（视口与请求宽之差必须 ≤40，覆盖窗口装饰）',
-        dw >= 0 && dw <= 40, JSON.stringify({ requested: size, inner: g && g.inner, deltaW: dw }));
+        dw >= 0 && dw <= 40, JSON.stringify({
+          requested: size, inner: g && g.inner, deltaW: dw,
+          // upd=resolved 而尺寸不动 = 窗口管理侧接了不认；state 不是 normal 就是它自己给的口供
+          upd: upd, waitedMs: Date.now() - updStarted, got: gEv }));
       check(tag + '：文档根跟随视口宽度，不许把沉浸式留成一条 356px 的弹窗列',
         !!g && g.htmlW === g.inner.w && g.bodyW === g.inner.w, JSON.stringify(g && { inner: g.inner, htmlW: g.htmlW, bodyW: g.bodyW }));
       check(tag + '：底部控制条整条在视口内', !!g && g.inView === true, JSON.stringify(g && { inner: g.inner, ctrl: g.ctrl }));
