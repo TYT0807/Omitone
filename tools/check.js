@@ -2378,7 +2378,15 @@ function checkMarkdownTables() {
     '同一处写成转义 → 不报': 0,
     '围栏代码块里的表样行 → 不报': 0,
     '正文以竖线开头但没有分隔行 → 不报': 0,
-    '两列表被写成三列 → 要报': 1
+    '两列表被写成三列 → 要报': 1,
+    // 后六格是 2026-11-18 补的两族盲区（旧口径**数竖线根数**，对这两族恒绿：
+    // 行尾竖线外续了句子的行，根数与规整行**相等**；缺行首竖线的行压根不在表里）
+    '行尾竖线外续了句子 → 要报': 1,
+    '行尾只贴一对 HTML 注释也算外溢 → 要报': 1,
+    '没写行尾竖线但格数正好 → 不报': 0,
+    '缺行首竖线把表截断 → 要报': 1,
+    '表后一句散文提到竖线 → 不报': 0,
+    '孤行格数对得上但表没接着写 → 不报': 0
   };
 
   var cells = audit.SELF_TEST || [];
@@ -2401,10 +2409,10 @@ function checkMarkdownTables() {
     }
   });
   if (audit.selfCheck().length) {
-    bad.push('审计自带的六格对照没过：' + audit.selfCheck().join('；'));
+    bad.push('审计自带的十二格对照没过：' + audit.selfCheck().join('；'));
   }
   if (bad.length) {
-    fail('文档表格审计的六格阴性对照不成立（会误报的守卫比没有守卫更害人）：\n      ' +
+    fail('文档表格审计的十二格阴性对照不成立（会误报的守卫比没有守卫更害人）：\n      ' +
       bad.join('\n      '));
     return;
   }
@@ -2458,6 +2466,9 @@ function checkMarkdownTables() {
   var rlines = readme.split(/\r?\n/);
   var sepRow = /^\s*\|[\s:|-]+\|\s*$/;
   var firstTable = -1;
+  // 第三刀（摘行首竖线）要一张**至少两行数据**的真表：断表判据要求那一行**后面还接着写**，
+  // 只有一行数据的表摘掉它就没有"后面那一段"，注入会合法地一条不报 —— 那一刀等于没测。
+  var twoRow = -1;
   var fenced = null;
   for (var t = 0; t + 2 < rlines.length; t++) {
     var fm = /^\s*(`{3,}|~{3,})/.exec(rlines[t]);
@@ -2470,13 +2481,19 @@ function checkMarkdownTables() {
     if (fenced) continue;
     if (/^\s*\|/.test(rlines[t]) && sepRow.test(rlines[t + 1]) &&
         rlines[t + 1].indexOf('-') >= 0 && /^\s*\|/.test(rlines[t + 2])) {
-      firstTable = t;
-      break;
+      if (firstTable < 0) firstTable = t;
+      if (twoRow < 0 && /^\s*\|/.test(rlines[t + 3]) && !sepRow.test(rlines[t + 3])) twoRow = t;
+      if (firstTable >= 0 && twoRow >= 0) break;
     }
   }
   if (firstTable < 0) {
     fail('文档表格审计在 README.md 的正文（围栏代码块之外）里认不出任何一张表 —— ' +
       '它报的「0 条不一致」不可信，怀疑扫描口径与真实文档脱节');
+    return;
+  }
+  if (twoRow < 0) {
+    fail('反向验证第三刀要一张**至少两行数据**的真表（断表判据要求那一行后面还接着写），' +
+      'README.md 正文里找不出这样的表 —— 那一刀不能省，省了「表被一行截断」这一族就没人自证');
     return;
   }
   // ⚠️ 注入打在**整份 README** 上、判据用**增量**（多报恰好 1 条），不截三行片段：
@@ -2491,8 +2508,37 @@ function checkMarkdownTables() {
       ' 条 —— 这条闸对真实文档（整份几百行）失效，它报的「一致」不可信');
     return;
   }
-  pass('公开文档表格列数一致（' + res.files + ' 份 .md 逐行与表头同格；六格阴性对照按名字逐格复算' +
-    ' + 拿 README 正文真表多加一格恰好多报 1 条，README.md:' + (firstTable + 3) + '）');
+  // 第二刀：**把句子写在收尾竖线外面** —— 旧口径（数竖线根数）对这一族恒绿，
+  // 而 2026-11-18 实测 HANDOVER.md 里 15 行就是这个形状（GitHub 把它们渲染成多出来的一列）。
+  var tailRows = rlines.slice(0);
+  tailRows[firstTable + 2] = String(tailRows[firstTable + 2]).replace(/\s+$/, '') +
+    ' <!-- 写在竖线外面的一句 -->';
+  var tailRes = audit.scanText(tailRows.join('\n'));
+  var tailOnRow = tailRes.filter(function (p) { return p.line === firstTable + 3; }).length;
+  if (tailRes.length !== before + 1 || tailOnRow !== 1) {
+    fail('文档表格审计对「收尾竖线外面还有文字」这一族没抓到：把 README.md:' + (firstTable + 3) +
+      ' 的行尾竖线后面续一句，应恰好在原本 ' + before + ' 条之上多报 1 条并点名到那一行，' +
+      '实际共报 ' + tailRes.length + ' 条、落在该行 ' + tailOnRow + ' 条 —— ' +
+      '旧口径数的是竖线根数：规整行是「格数 + 1 根」、这种行是「格数根」，两者相等所以恒绿');
+    return;
+  }
+
+  // 第三刀：**摘掉一行的行首竖线**（GFM 一见不以竖线开头的行就收表，后面整段不再是表）。
+  var brokenRows = rlines.slice(0);
+  brokenRows[twoRow + 2] = String(brokenRows[twoRow + 2]).replace(/^\s*\|/, ' ');
+  var brokenRes = audit.scanText(brokenRows.join('\n'));
+  var brokenOnRow = brokenRes.filter(function (p) { return p.line === twoRow + 3; }).length;
+  if (brokenRes.length !== before + 1 || brokenOnRow !== 1) {
+    fail('文档表格审计对「缺行首竖线把表截断」这一族没抓到：摘掉 README.md:' + (twoRow + 3) +
+      ' 的行首竖线（那张表后面还接着写），应恰好在原本 ' + before + ' 条之上多报 1 条并点名到那一行，' +
+      '实际共报 ' + brokenRes.length + ' 条、落在该行 ' + brokenOnRow + ' 条 —— ' +
+      '批次 34 实测 §9 因此掉了 37 行，而这一族此前没有任何东西替它数过');
+    return;
+  }
+
+  pass('公开文档表格列数一致（' + res.files + ' 份 .md 逐行按 GFM 切法与表头同格；十二格阴性对照按名字逐格复算' +
+    ' + 拿 README 正文真表三刀各恰好多报 1 条：第一/二刀（多加一格、行尾竖线外续句子）落在 README.md:' +
+    (firstTable + 3) + '，第三刀（摘掉行首竖线）落在 README.md:' + (twoRow + 3) + '）');
 }
 
 // ---------------------------------------------------------------------------

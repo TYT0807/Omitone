@@ -10,14 +10,23 @@
  *
  * 这类损坏**不会让任何测试变红**，只在网页上看得见，而那一页是用户与接手的人第一眼读的东西。
  *
- *   node tools/audit-md-tables.js            # 先自证（六格对照），再扫全部跟踪中的 .md
+ *   node tools/audit-md-tables.js            # 先自证（十二格对照），再扫全部跟踪中的 .md
  *   node tools/audit-md-tables.js --json     # 机器可读，给 check.js 的失败信息用
  *
  * ⚠️ **只数「没被反斜杠转义的竖线」，并且跳过 ``` 围栏代码块。**
  * 反引号里 `\|` 才算字面竖线，GitHub 也一样处理；不转义就是列分隔符。
  * 围栏里的东西是给人看的代码，不是表格 —— 本项目 README 里有大量 ASCII 流程图与
  * `|` 开头的示例，不跳过就会一片假红。**会误报的守卫和没有守卫一样害人**（批次 48 的教训），
- * 所以本文件自带六格对照，`check.js` 那一项按 pin 逐格复算：把 pin 改小不能把闸蒙过去。
+ * 所以本文件自带十二格对照，`check.js` 那一项按 pin 逐格复算：把 pin 改小不能把闸蒙过去。
+ *
+ * ⚠️ **比较格数用 `rowCells()`（按 GFM 切法），不用竖线根数**（2026-11-18 补）：
+ * 规整行的根数是「格数 + 1」，而**把句子写在收尾竖线外面**的那一行根数还是「格数」——
+ * 两种写法在旧口径里**相等**，于是 `HANDOVER.md` 里 15 行（13 行是历次把
+ * `<!-- 历史计数 -->` 贴到竖线外面）溢出成第 4 列而这条闸**一条都不报**，
+ * 症状与批次 53 立这条闸时抓到的那一族**一模一样**，只是旧尺看不见。
+ * 同轮还补了「**缺行首竖线把表截断**」那一族（批次 34 的 §9 掉了 37 行）：
+ * 判据要"夹着的那一行本身正好是表头格数 **且** 表在它后面真的接着写"两条同时成立，
+ * 单一条会把散文里的竖线成片报红。
  *
  * ⚠️ **口径比 GFM 窄，是有意的**：GFM 也认「不以竖线开头的表头行」（只要下一行是分隔行），
  * 这种写法本审计**不报**。放宽到那一步就会把 README 里的 ASCII 图与正文里的竖线成片报红，
@@ -32,17 +41,46 @@ var cp = require('child_process');
 
 var ROOT = path.resolve(__dirname, '..');
 
-/** 这一行里「算分隔符」的竖线有几根：连续奇数个反斜杠紧跟的竖线是转义，不算。 */
-function countCells(row) {
-  var n = 1;
+/**
+ * 这一行**真的**有几个格子 —— 按 cmark-gfm 的切法，不是按竖线根数。
+ *
+ * ⚠️ 为什么不能只数竖线：规整行是「格数 + 1 根」（首尾各一根），
+ * 而**把句子写在收尾竖线外面**的那一行是「格数根 + 外面那段文字」，
+ * 根数与规整行**相等**，于是旧口径对它恒绿 —— 2026-11-18 实测 `HANDOVER.md` 里 15 行这个形状，
+ * GitHub 把它们渲染成第 4 列，而 `npm run check` 第 25 项一条不报。
+ * 规矩：**行首竖线**丢掉前面那个空格子，**行尾竖线**丢掉后面那个空格子，剩下几段就是几格。
+ */
+function rowCells(row) {
+  var parts = [];
+  var cur = '';
   for (var i = 0; i < row.length; i++) {
-    if (row.charAt(i) !== '|') continue;
+    if (row.charAt(i) !== '|') { cur += row.charAt(i); continue; }
     var bs = 0;
     for (var j = i - 1; j >= 0 && row.charAt(j) === '\\'; j--) bs++;
-    if (bs % 2 === 1) continue;
-    n++;
+    if (bs % 2 === 1) { cur += row.charAt(i); continue; }
+    parts.push(cur);
+    cur = '';
   }
-  return n;
+  parts.push(cur);
+  if (parts.length <= 1) return parts.length;
+  if (/^\s*\|/.test(row)) parts.shift();
+  if (/\|\s*$/.test(row)) parts.pop();
+  return parts.length;
+}
+
+/** 收尾竖线**之外**还有文字吗？有就返回那段（去掉首尾空白），没有返回空串。 */
+function trailingOutsideLastPipe(row) {
+  var i = -1;
+  for (var k = row.length - 1; k >= 0; k--) {
+    if (row.charAt(k) !== '|') continue;
+    var bs = 0;
+    for (var j = k - 1; j >= 0 && row.charAt(j) === '\\'; j--) bs++;
+    if (bs % 2 === 1) continue;
+    i = k;
+    break;
+  }
+  if (i < 0) return '';
+  return row.slice(i + 1).trim();
 }
 
 /** 第二行必须长成像 `| --- | --- |` 的分隔行，否则这一组不当表格看（防假红）。 */
@@ -51,7 +89,7 @@ function isSeparator(line) {
 }
 
 /**
- * 扫一份 markdown 文本，返回「列数和表头不一致」的行说明（带**这份文本里的**行号）。
+ * 扫一份 markdown 文本，返回「列数和表头不一致」与「表被一行截断」的行说明（带**这份文本里的**行号）。
  * @param {string} text
  */
 function scanText(text) {
@@ -75,25 +113,69 @@ function scanText(text) {
     var rows = [];
     while (i < lines.length && /^\s*\|/.test(lines[i])) { rows.push(lines[i]); i++; }
     if (rows.length < 2 || !isSeparator(rows[1])) continue;
-    var head = countCells(rows[0]);
+    var head = rowCells(rows[0]);
     rows.forEach(function (r, k) {
-      var n = countCells(r);
+      var n = rowCells(r);
       if (n === head) return;
+      var tail = trailingOutsideLastPipe(r);
       out.push({
         line: start + k + 1,
         cells: n,
         headCells: head,
         headLine: start + 1,
+        kind: tail ? 'tail' : 'cells',
+        tail: tail.slice(0, 40),
         text: r.trim().slice(0, 70)
       });
     });
+
+    // 「表被截断」那一族：表在下面**又继续**了，中间夹着一行没写行首竖线的表格行。
+    // GFM 一见不以竖线开头的行就收表 —— 后面那些行在网页上**不是表**，
+    // 2026-11-14 实测 HANDOVER.md §9 因此掉了 37 行（批次 34 那节）。
+    // 判据做窄：夹着的那一行本身要**正好是表头的格数**（少了行首竖线的表格行就是这个形状），
+    // 而且表要在它后面**真的接着**至少一行同格数的行 —— 两条都成立才报，防误报。
+    // ⚠️ 两条闸**各有一格对照钉着**：缺格数那一闸由「表后一句散文提到竖线」钉（格数不等就不报），
+    // 缺"后面真的接着写"那一闸由「孤行格数对得上但表没接着写」钉 ——
+    // 少任何一格，摘掉对应那道闸都测不出来（批次 110 写反向验证时就是这么发现后一格的）。
+    var gap = i;
+    var resumed = 0;
+    if (gap < lines.length && String(lines[gap]).trim() !== '' && !/^\s*\|/.test(lines[gap]) &&
+        rowCells(lines[gap]) === head && lines[gap].indexOf('|') >= 0) {
+      var k2 = gap + 1;
+      while (k2 < lines.length && /^\s*\|/.test(lines[k2]) && rowCells(lines[k2]) === head) {
+        resumed++;
+        k2++;
+      }
+    }
+    if (resumed >= 1) {
+      out.push({
+        line: gap + 1,
+        cells: rowCells(lines[gap]),
+        headCells: head,
+        headLine: start + 1,
+        kind: 'broken',
+        tail: '后面 ' + resumed + ' 行也不再是表',
+        text: String(lines[gap]).trim().slice(0, 70)
+      });
+    }
   }
   return out;
 }
 
 /**
- * 六格对照：三格必须报、三格必须不报。任一不符就整项作废。
+ * 十二格对照：五格必须报、七格必须不报。任一不符就整项作废。
  * `want` 是**期望的问题条数**，不是实际值 —— 改动扫描逻辑时这里会先响。
+ *
+ * 后六格是 2026-11-18 补的两族盲区（批次 105 台账 §9 那条待办）：
+ * ① **句子写在收尾竖线外面** —— 旧口径数竖线根数，而那种行的根数**与规整行相等**，
+ *    于是 `HANDOVER.md` 里 15 行溢出成第 4 列而第 25 项恒绿；
+ * ② **缺行首竖线把表截断** —— 表在那一行之后整体不再是表（GFM 一见非竖线行就收表）。
+ * 另有三格阴性对照**各钉一道"防误报"的闸**，一格都不许多占：
+ * 「没写行尾竖线但格数正好」钉**行尾竖线可以合法省略**（摘掉 `parts.pop()` 就红它），
+ * 「表后一句散文提到竖线」钉**孤行那一闸要求格数与表头相等**（散文只有 2 格），
+ * 「孤行格数对得上但表没接着写」钉**另一闸要求表在后面真的接着写**（形状与真断表一模一样，
+ * 只差后面没有下一行表格行）。⚠️ 最后一格是本轮写反向验证时想「摘掉那一闸该由哪一格红」
+ * 才发现**没有任何一格红** —— 前两格看着像覆盖了它，实际两条闸都过不了的是格数那一闸。
  */
 var SELF_TEST = [
   { name: '干净三列表 → 不报', want: 0,
@@ -107,10 +189,22 @@ var SELF_TEST = [
   { name: '正文以竖线开头但没有分隔行 → 不报', want: 0,
     text: '| 这不是表格\n| 这一行也不是\n' },
   { name: '两列表被写成三列 → 要报', want: 1,
-    text: '| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n' }
+    text: '| a | b |\n| --- | --- |\n| 1 | 2 | 3 |\n' },
+  { name: '行尾竖线外续了句子 → 要报', want: 1,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 | 追加的一句\n' },
+  { name: '行尾只贴一对 HTML 注释也算外溢 → 要报', want: 1,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 | <!-- x --><!-- y -->\n' },
+  { name: '没写行尾竖线但格数正好 → 不报', want: 0,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3\n' },
+  { name: '缺行首竖线把表截断 → 要报', want: 1,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n2 | 3 | 4 |\n| 5 | 6 | 7 |\n' },
+  { name: '表后一句散文提到竖线 → 不报', want: 0,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n这一行讲竖线 | 只是散文\n' },
+  { name: '孤行格数对得上但表没接着写 → 不报', want: 0,
+    text: '| a | b | c |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n2 | 3 | 4 |\n这一句是正文，表到这儿就结束了\n' }
 ];
 
-/** 跑六格对照，返回不合格的那些（空数组 = 自证通过）。 */
+/** 跑十二格对照，返回不合格的那些（空数组 = 自证通过）。 */
 function selfCheck() {
   return SELF_TEST.filter(function (t) {
     return scanText(t.text).length !== t.want;
@@ -160,6 +254,14 @@ function scanAll() {
 
 function summarize(r) {
   return r.problems.map(function (p) {
+    if (p.kind === 'broken') {
+      return p.file + ':' + p.line + ' —— 这一行**缺行首竖线**，表在这里断开（' + p.tail +
+        '），表头在第 ' + p.headLine + ' 行：' + p.text;
+    }
+    if (p.kind === 'tail') {
+      return p.file + ':' + p.line + ' —— ' + p.cells + ' 格，表头（' + p.headLine + ' 行）是 ' +
+        p.headCells + ' 格：**收尾竖线外面还有文字**（`' + p.tail + '`），GitHub 把它渲染成多出来的一列：' + p.text;
+    }
     return p.file + ':' + p.line + ' —— ' + p.cells + ' 格，表头（' + p.headLine + ' 行）是 ' +
       p.headCells + ' 格：' + p.text;
   });
@@ -168,7 +270,8 @@ function summarize(r) {
 module.exports = {
   ROOT: ROOT,
   SELF_TEST: SELF_TEST,
-  countCells: countCells,
+  rowCells: rowCells,
+  trailingOutsideLastPipe: trailingOutsideLastPipe,
   scanText: scanText,
   selfCheck: selfCheck,
   markdownFiles: markdownFiles,
@@ -182,11 +285,12 @@ if (require.main === module) {
   console.log('文档表格审计 —— 扫了 ' + res.files + ' 份 .md（清单共 ' + res.total + ' 份）');
   if (res.selfFails.length) {
     console.log('');
-    console.log('❌ 六格对照没过，上面与下面的计数都不可信：');
+    console.log('❌ 十二格对照没过，上面与下面的计数都不可信：');
     res.selfFails.forEach(function (x) { console.log('   ' + x); });
     process.exit(2);
   }
-  console.log('  ✅ 六格对照全过（未转义竖线要报、转义与围栏代码块不报、无分隔行的正文不报）');
+  console.log('  ✅ 十二格对照全过（未转义竖线要报、转义与围栏代码块不报、无分隔行的正文不报、' +
+    '行尾外溢与断表要报、合法省略行尾竖线／散文里的竖线／格数对得上但表没接着写都不报）');
   if (asJson) {
     console.log(JSON.stringify({ files: res.files, problems: summarize(res) }, null, 2));
   } else if (res.problems.length) {
