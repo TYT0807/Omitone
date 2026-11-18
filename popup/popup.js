@@ -92,6 +92,7 @@ const els = {
   discussionReply: $("discussionReply"),
   systemPrompt: $("systemPrompt"),
   restudy: $("restudy"),
+  pagePetEnabled: $("pagePetEnabled"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
   apiUrl: $("apiUrl"),
@@ -581,6 +582,47 @@ const updateDiscussion = bindToggle(els.enableDiscussion, () => enableDiscussion
 const updateVote = bindToggle(els.enableVote, () => enableVoteVal, (value) => { enableVoteVal = value; });
 const updateRestudy = bindToggle(els.restudy, () => restudyVal, (value) => { restudyVal = value; });
 
+// 吉祥物开关不走 bindToggle：bindToggle 的每一拍都落主配置（saveToggleConfig），
+// 而这个开关是**纯外观存档**，跟收起/位置/好感度同一族，真源在 storage.local 的
+// omitonePagePetMinimal 独立键上（content.js 的监听器即时生效，与主配置零耦合）。
+// 这里镜像 bindToggle 的交互形状（点击/键盘/label 三条路），只把落盘那一发换成她自己的键。
+let pagePetEnabledVal = true;
+const updatePagePetEnabled = (on) => {
+  els.pagePetEnabled.className = "toggle" + (on ? " on" : "");
+  els.pagePetEnabled.setAttribute("aria-checked", on ? "true" : "false");
+};
+const togglePagePetEnabled = async () => {
+  const value = !pagePetEnabledVal;
+  const prev = pagePetEnabledVal;
+  pagePetEnabledVal = value;
+  updatePagePetEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePagePetMinimal: value ? 0 : 1 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    pagePetEnabledVal = prev;
+    updatePagePetEnabled(prev);
+    reportSaveError(error);
+  }
+};
+els.pagePetEnabled.addEventListener("click", togglePagePetEnabled);
+els.pagePetEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePagePetEnabled();
+  }
+});
+const pagePetEnabledLabel = document.querySelector("label[for=\"pagePetEnabled\"]");
+if (pagePetEnabledLabel) {
+  pagePetEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePagePetEnabled();
+  });
+}
+
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。
  *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
  *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
@@ -658,6 +700,14 @@ async function load() {
   updateDiscussion(enableDiscussionVal);
   updateVote(enableVoteVal);
   updateRestudy(restudyVal);
+  // 吉祥物开关不在主配置里，单独读她自己的键（键缺席 = 精致 = 开）
+  try {
+    chrome.storage.local.get("omitonePagePetMinimal", (r) => {
+      if (chrome.runtime.lastError) return;
+      pagePetEnabledVal = !(r && r.omitonePagePetMinimal);
+      updatePagePetEnabled(pagePetEnabledVal);
+    });
+  } catch (e) { /* storage 不可用就当开着 */ }
   renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
@@ -711,6 +761,8 @@ async function resetDefault() {
     apiTestGeneration++;
     clearTimeout(apiAutoSaveTimer);
     await patchConfig({ ...DEFAULTS, apiConnectionError: "" });
+    // 吉祥物开关也回默认（精致 = 出现）。她的好感度/位置/收起那几格是用户存档，不动。
+    try { chrome.storage.local.set({ omitonePagePetMinimal: 0 }); } catch (e) {}
     await load();
     toast("已恢复默认");
   } catch (error) { reportSaveError(error); }

@@ -1083,6 +1083,9 @@ function checkConfigDefaults() {
     if (!ids.length) {
       problems.push('popup/popup.html 里没找到开关 —— 守卫失效，请同步这段正则');
     }
+    var PET_LOCAL_TOGGLES = { pagePetEnabled: 'omitonePagePetMinimal' };
+    // 白名单的 id 不走下面的 bindToggle 尺（放在 forEach **之前**——先前放后面，flag 完才过滤，等于没豁免）
+    ids = ids.filter(function (id) { return !PET_LOCAL_TOGGLES[id]; });
     ids.forEach(function (id) {
       // 用 bindToggle(els.<id>, () => <VAR> …) 里的变量名做纽带
       var reBind = new RegExp('bindToggle\\(els\\.' + id + '\\b[^,]*,\\s*\\(\\)\\s*=>\\s*([A-Za-z_][A-Za-z0-9_]*)');
@@ -1102,6 +1105,26 @@ function checkConfigDefaults() {
       var reSave = new RegExp('\\n\\s*' + key + '\\s*:\\s*' + v + '\\b');
       if (!reSave.test(popupJs)) {
         problems.push('开关 ' + id + '（配置键 ' + key + '）保存时没有写出去 —— 改了存不住');
+      }
+    });
+
+    // 吉祥物开关不走主配置：她的存档一族（收起/位置/好感度）全在 storage.local 的独立键上，
+    // 与调度零耦合，页面端有独立监听器即时生效。白名单不是免检 —— 换一把尺按「真接线」核对：
+    // 点击/键盘两路都挂上、落盘写的就是她自己的键、打开弹窗从她的键读回。
+    // 三条 needle 都按 popup.js 的现形写死，少任何一条当场红；开关从 HTML 里摘掉时
+    // ids 里不再出现，这三条照旧对 popup.js 核 —— 界面没了代码还在，同样算失配。
+    Object.keys(PET_LOCAL_TOGGLES).forEach(function (id) {
+      var key = PET_LOCAL_TOGGLES[id];
+      if (popupJs.indexOf('els.' + id + '.addEventListener("click", togglePagePetEnabled)') < 0 ||
+          popupJs.indexOf('els.' + id + '.addEventListener("keydown"') < 0) {
+        problems.push('开关 ' + id + ' 没有接上点击/键盘两路 —— 点了不会有反应');
+      }
+      if (popupJs.indexOf('{ ' + key + ': value ? 0 : 1 }') < 0) {
+        problems.push('开关 ' + id + ' 落盘没有写她自己的键 ' + key + ' —— 改了存不住');
+      }
+      if (popupJs.indexOf(key + '", (r)') < 0 ||
+          popupJs.indexOf('pagePetEnabledVal = !(r && r.' + key + ')') < 0) {
+        problems.push('开关 ' + id + ' 打开弹窗没有从 ' + key + ' 读回 —— 重开会显示错的状态');
       }
     });
   } catch (e) {

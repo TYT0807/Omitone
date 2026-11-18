@@ -1882,7 +1882,13 @@
   // 读不到就用默认锚点，写失败也只是下次还在老地方。
   const PAGE_PET_POS_KEY = 'omitonePagePetPos';
   const BOND_STORAGE_KEY = 'omitonePetBond';
+  // 精简模式：页面上完全不出现她（连收起后的小「宠」也没有）。开关是**纯外观存档**，
+  // 与收起/位置/好感度同一族 —— 放 storage.local 独立键，不进主配置（零耦合原则同向）。
+  // 键缺席 = 精致（她照常出现），默认行为不变。
+  const PAGE_PET_MINIMAL_KEY = 'omitonePagePetMinimal';
   let pagePet = null;
+  // null = 精简开关的真值还没读到（不能抢在真值前面决定挂不挂）；true = 精简，false = 精致。
+  let pagePetMinimal = null;
   let pagePetBond = null;
   let pagePetSayTimer = null;
   // 自动台词（她的"自言自语"）与上一次开口的时刻。开口时刻记在宿主元素的 data 上（见 pagePetSay），
@@ -1920,6 +1926,36 @@
   let pagePetArtSeq = 0;
   let pagePetActUntil = 0;          // 上一拍演出还没跑完 → 这一拍不叠上去
   let pagePetArtWarmed = false;     // 立绘热身整份文档只跑一次
+
+  // ── 精简模式的执行体与开关监听 ─────────────────────────────────────────
+  // ⚠️ 这一段必须挂在构建体**外面**（这个闭包层），不能塞进 ensurePagePet ——
+  //   精简模式下她根本不构建，构建体内注册的 storage.onChanged（收起/好感度那份）
+  //   永远不会执行，弹窗把开关拨回「精致」就没人接了。
+  //   三件事缺一不可：真值先于构建（ensurePagePet 进门先查）；即时生效（已在页上
+  //   就藏宿主，位置/好感度存档都不动）；关掉时原样放出来或正常挂载。
+  function applyPagePetMinimal() {
+    try {
+      if (pagePetMinimal) {
+        if (pagePet && pagePet.host) pagePet.host.style.display = 'none';
+        return;
+      }
+      if (pagePet && pagePet.host) { pagePet.host.style.display = ''; return; }
+      ensurePagePet();
+    } catch (e) { /* 纯外观，失败无害 */ }
+  }
+  try {
+    chrome.storage.local.get([PAGE_PET_MINIMAL_KEY], function (r) {
+      pagePetMinimal = !!(r && r[PAGE_PET_MINIMAL_KEY]);
+      applyPagePetMinimal();
+    });
+  } catch (e) { /* storage 不可用就当精致 */ }
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes || !changes[PAGE_PET_MINIMAL_KEY]) return;
+      pagePetMinimal = !!changes[PAGE_PET_MINIMAL_KEY].newValue;
+      applyPagePetMinimal();
+    });
+  } catch (e) { /* 同上 */ }
 
   function petGameModule() {
     return (typeof self !== 'undefined' && self.OmitonePetGame) || null;
@@ -2240,6 +2276,18 @@
     const game = petGameModule();
     if (pagePet && pagePet.host && pagePet.host.isConnected) return pagePet;
     if (!game || !document.body) return null;
+    if (pagePetMinimal === null) {
+      // 精简开关还没读到（首条运行日志来得比 initial get 回话还早的竞态）：
+      // 先读一次再决定挂不挂 —— 别抢在真值前面把她构建出来。
+      try {
+        chrome.storage.local.get([PAGE_PET_MINIMAL_KEY], function (r) {
+          pagePetMinimal = !!(r && r[PAGE_PET_MINIMAL_KEY]);
+          if (!pagePetMinimal) ensurePagePet();
+        });
+      } catch (e) { pagePetMinimal = false; ensurePagePet(); }
+      return null;
+    }
+    if (pagePetMinimal) return null;   // 精简模式：她根本不出现，连「宠」残桩也没有
     try {
       const stale = document.getElementById(PAGE_PET_ID);
       if (stale) stale.remove();
