@@ -5391,11 +5391,18 @@
   目录 `unfinished` 由 **45 → 43**（同一枚 `studentstudy`，全程未开第二枚）。
   ⇒ **「不可拖拽」这个结论确实来自"写进去被弹回"，不是"等区间没等到"，且它真的换来了提前收尾**；
   §2 #17 那格"整支按 1x 白播"在这一支只白播了尾 8.6%，而不是整支。
+  - **回执的前提：现场跑的就是已提交的这一份**。新探针 `expr/deployed-sha.expr`（SW 里 `fetch(runtime.getURL())` + `crypto.subtle.digest`，AGENTS §7.7 那条手法的可复用版）一次比四份产物
+    `page.js` / `content.js` / `libs/prompt.js` / `background.js`，**sha256 + 字节 + 解码后字符数**三口径逐份相等（manifest 1.3.0 / `rev e85aaf80e9`）。以前只对过 `background.js` 一份。
+  - 病灶再收窄一格（下一支的日志环里读到的正证）：拖拽本来就发生在 **`reason:"loadedmetadata"、from:0`**，
+    而 `_checkVideoStatus` 的 `guard` 那一路每 1.5 秒还会补一次 ⇒ 上一支那对 `false/false` 是**两条路一次都没登记**，
+    最像 `_getVideoEl()` 拿到的不是**在播的那个节点**（于是 `duration` 恒 `NaN`，走 338 行"故意不标记"那一格）。
+    **这是推论不是结论**（那一支已无从回查）；要让它下次能归因，做法见 `.workbuddy/seek-attribution-plan.md`
+    —— 把四个出口做成**读得回来的计数**＋每种理由一辈子一条日志，**不是**日志洪水（§2 #16(b)）。
   ⚠️ **对照同一门课的上一支（1345.96 秒）**：我在 95% 处读回的是 `tried:false / reverted:false`，而它按 1x 播到了结尾 ——
   那一支的 job-start 早被 200 条日志环（约 20 分钟）挤了出去，**成因读不出**：既不许记成"批次 95 没生效"，
   也不许记成"没问题"（同一条修法的两支，一支四格同真并提前收尾、另一支一次都没试，差别只在能不能取证）。**「还没到拖的时机」这一猜测已排除**（本轮逐行读 `_trySeekToEnd` 量到，`src/page/40-media.js:320-396`）：
   341 行那句 `current >= duration - 8` 只在**已经贴着结尾**时才跳过，本来的设计是**一进这一节就拖一次**
-  （现场这一支正是 `ct 1.9` 就拖）；而 348 行先写 `_seekTriedKeys[key]=true` 才动进度条，375/389 行把
+  （两条来路都在现场读到过：`reason:"loadedmetadata"` 那发 `from:0`，与 `reason:"guard"` 那发 `from:1.9` —— 后者每 1.5 秒补一次）；而 348 行先写 `_seekTriedKeys[key]=true` 才动进度条，375/389 行把
   `reverted` 落成 **false=拖成功／true=两次弹回**。所以 `tried:false` 配 `reverted:false` 这一对
   **只可能**是「整支从头到尾一次都没试」。剩下能造成这一格的出口**只有四格、且全都不写日志**：
   `_rateProbing` 恒真（324）、`_captchaActive` 恒真（325）、`_getMediaSeekKey` 交回空串（328-329，
