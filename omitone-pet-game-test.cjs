@@ -634,6 +634,79 @@ check('纪念成就说明里那个数就是登记过的当年上限（写了数�
   byId(OLD.grant) && String(byId(OLD.grant).desc).indexOf(String(OLD.max)) >= 0,
   byId(OLD.grant) ? byId(OLD.grant).desc : '（没有这枚成就）');
 
+// ══ 记忆翻牌：发牌 / 每天首胜 / 最佳纪录棘轮（批次 108，D 阶段）════════
+// e2e 只验「面板开得开、牌翻得动」；配对规则与记账全在规则层，这里用纯函数量。
+function deckInfo(deck) {
+  var uniq = deck.filter(function (v, i, a) { return a.indexOf(v) === i; });
+  return { total: deck.length, faces: uniq.length,
+    allFromFaces: uniq.every(function (f) { return GAME.ART.FACES.indexOf(f) >= 0; }),
+    eachTwice: uniq.every(function (f) { return deck.filter(function (x) { return x === f; }).length === 2; }) };
+}
+var detI = 0;
+var dDeck1 = GAME.dealMemoryDeck(function () { return (detI++) / 1000; });
+var dInfo1 = deckInfo(dDeck1);
+check('发牌 12 张 = 6 对、每张恰好两枚、全部来自表情池（配对判定靠 data-face 对得上）',
+  dInfo1.total === GAME.RULES.memoryPairs * 2 && dInfo1.faces === GAME.RULES.memoryPairs
+  && dInfo1.allFromFaces && dInfo1.eachTwice,
+  JSON.stringify(dInfo1));
+var dDeckHalf = GAME.dealMemoryDeck(function () { return 0.5; });
+check('常数 rnd 仍是合法牌堆（洗牌不许抛异常）', deckInfo(dDeckHalf).total === GAME.RULES.memoryPairs * 2
+  && deckInfo(dDeckHalf).eachTwice, JSON.stringify(deckInfo(dDeckHalf)));
+var dDeckNaN = GAME.dealMemoryDeck(function () { return NaN; });
+check('恒 NaN 的 rnd 退化为恒等交换也不抛（烂随机数不能让面板开不出牌）',
+  dDeckNaN.length === GAME.RULES.memoryPairs * 2
+  && dDeckNaN.slice(0, GAME.RULES.memoryPairs).every(function (f, i) { return dDeckNaN[GAME.RULES.memoryPairs + i] === f; }),
+  JSON.stringify(dDeckNaN.slice(0, 3)));
+
+var mState = GAME.rollDay({ affection: 10, day: DAY }, DAY);
+var mW1 = GAME.recordMemoryWin(mState, DAY, 9, 42);
+check('首胜 +1：好感入账、memoryRewardDay 记下今天、胜场起账、最佳按步数落档',
+  mW1.gained === GAME.RULES.gameDailyReward && mW1.firstToday === true
+  && mW1.state.affection === 11 && mW1.state.memoryRewardDay === DAY
+  && mW1.state.memoryWins === 1 && mW1.state.memoryBestMoves === 9
+  && mW1.state.memoryBestSeconds === 42,
+  JSON.stringify({ gained: mW1.gained, aff: mW1.state.affection, best: mW1.state.memoryBestMoves }));
+var mW2 = GAME.recordMemoryWin(mW1.state, DAY, 12, 50);
+check('同天第二局纯玩：不涨好感、胜场照记、首胜标记不再亮',
+  mW2.gained === 0 && mW2.firstToday === false && mW2.state.memoryWins === 2
+  && mW2.state.affection === 11 && mW2.state.memoryRewardDay === DAY);
+var mW3 = GAME.recordMemoryWin(mW2.state, DAY, 7, 30);
+check('更少步数刷新最佳（棘轮往上）', mW3.bestMoves === true
+  && mW3.state.memoryBestMoves === 7 && mW3.state.memoryBestSeconds === 30);
+var mW4 = GAME.recordMemoryWin(mW3.state, DAY, 11, 5);
+check('更差的成绩不许把最佳往下带', mW4.bestMoves === false
+  && mW4.state.memoryBestMoves === 7 && mW4.state.memoryBestSeconds === 30);
+var mW5 = GAME.recordMemoryWin(mW4.state, DAY, 7, 21);
+check('平步数比秒数：更快那局刷新', mW5.bestMoves === true
+  && mW5.state.memoryBestMoves === 7 && mW5.state.memoryBestSeconds === 21);
+var mW6 = GAME.recordMemoryWin(mW5.state, DAY, 7, 44);
+check('平步数更慢不刷新（不是随便写）', mW6.bestMoves === false
+  && mW6.state.memoryBestMoves === 7 && mW6.state.memoryBestSeconds === 21);
+var NEXT_DAY = '2026-11-02';
+var mCarried = GAME.rollDay(mW6.state, NEXT_DAY);
+check('rollDay 携带翻牌四格：胜场/最佳/秒数照旧，memoryRewardDay 不重置（它是门槛不是余额）',
+  mCarried.memoryWins === mW6.state.memoryWins && mCarried.memoryBestMoves === 7
+  && mCarried.memoryBestSeconds === 21 && mCarried.memoryRewardDay === DAY,
+  JSON.stringify({ rewardDay: mCarried.memoryRewardDay, wins: mCarried.memoryWins }));
+var mW7 = GAME.recordMemoryWin(mCarried, NEXT_DAY, 8, 40);
+check('跨天首胜再领一次（门槛比对 todayKey，过了就重亮）',
+  mW7.gained === GAME.RULES.gameDailyReward && mW7.firstToday === true
+  && mW7.state.memoryRewardDay === NEXT_DAY);
+var mMax = GAME.recordMemoryWin(GAME.rollDay({ affection: GAME.RULES.max, day: DAY }, DAY), DAY, 6, 20);
+check('好感满值那天的首胜照样记账（clamp 吃掉 +1，不许出现"满了就整天白玩"的特殊状态）',
+  mMax.gained === GAME.RULES.gameDailyReward && mMax.state.affection === GAME.RULES.max
+  && mMax.state.memoryRewardDay === DAY && mMax.leveledUp === false);
+var mEdge = GAME.recordMemoryWin(GAME.rollDay({ affection: 14, day: DAY }, DAY), DAY, 5, 10);
+check('跨级那局 leveledUp=true 且 level 指新档', mEdge.leveledUp === true
+  && mEdge.level === GAME.levelOf(15) && mEdge.state.affection === 15);
+var mFresh = GAME.rollDay({ affection: 0, day: DAY }, DAY);
+check('没玩过的老档 rollDay 补出翻牌四格（不补就是 undefined 算术）',
+  mFresh.memoryWins === 0 && mFresh.memoryBestMoves === 0
+  && mFresh.memoryBestSeconds === 0 && mFresh.memoryRewardDay === '');
+check('gamewin 台词池非空且抽得出来（空池=赢了不说话，静默失灵）',
+  (GAME.SAY.gamewin || []).length >= 2
+  && GAME.SAY.gamewin.indexOf(GAME.pickLine('gamewin', {}, null, '')) >= 0);
+
 // ══ 用户向文档里那两处数字，与规则层同源（批次 100）═══════════════════
 // 本轮把「6 枚成就」改成 7 枚 —— 而 README / 说明书里那个数是手抄的。
 // AGENTS §4：「行为改了而文档没改，是这一族唯一的失败形状」，集成 403、e2e 1529、界面字样三条闸
@@ -686,8 +759,23 @@ var docSaidBad = [];
   }
   if (tot && Number(tot[1]) !== allLines.length) docSaidBad.push(f + ' 写 ' + tot[1] + ' 句、真源 ' + allLines.length);
 });
-check('文档里那句「随口 40 句 / 全部 110 句」与台词表同源（句数是承诺，手抄必然过期）',
+check('文档里那句「随口 N 句 / 全部 N 句」与台词表同源（句数是承诺，手抄必然过期）',
   docSaidBad.length === 0, JSON.stringify(docSaidBad));
+
+// 新小游戏也是对用户的承诺：名字要登记、那个「+N」必须与 RULES.gameDailyReward 同源
+var docGameBad = [];
+['README.md', 'docs/manual.html'].forEach(function (f) {
+  var txt = docText(f);
+  if (txt === null) { docGameBad.push(f + ' 读不到'); return; }
+  if (txt.indexOf('记忆翻牌') < 0) docGameBad.push(f + ' 没提「记忆翻牌」（新功能没登记=用户看不见）');
+  var gain = txt.match(/每天首胜\s*(?:<b>|\*\*)?\+\s*(\d+)/);
+  if (!gain) docGameBad.push(f + ' 那句「每天首胜 +N」扫不着（被改断了，闸要跟着改）');
+  else if (Number(gain[1]) !== GAME.RULES.gameDailyReward) {
+    docGameBad.push(f + ' 写 +' + gain[1] + '、真源 +' + GAME.RULES.gameDailyReward);
+  }
+});
+check('文档里「记忆翻牌 / 每天首胜 +N」与规则层同源（README + 说明书）',
+  docGameBad.length === 0, JSON.stringify(docGameBad));
 
 console.log('');
 if (failures.length) {

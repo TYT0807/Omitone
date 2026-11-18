@@ -480,6 +480,53 @@ html[data-ui="lite"] .pet-mood{ display:none; }
 .pet-book-ach.on{ background:var(--accent-soft); border-color:var(--accent); }
 .pet-book-ach.on b{ color:var(--accent-2); }
 
+/* ── 记忆翻牌面板（点工具条的「玩」）────────────────────────────────
+   与立绘册同形（同一套 head 样式复用 .pet-book-head），区别只在 body：
+   4 列卡牌网格，卡背是纯 CSS（♥ 徽记），卡面是她的表情图。 */
+.pet-game{
+  position:fixed; left:50%; top:50%; z-index:10001;
+  width:min(250px, calc(100vw - 24px)); max-height:min(360px, calc(100vh - 24px));
+  display:flex; flex-direction:column; overflow:hidden;
+  background:rgba(255,255,255,.96);
+  border:1px solid var(--hairline); border-radius:12px;
+  box-shadow:0 14px 34px rgba(16,24,40,.22);
+  opacity:0; pointer-events:none; transform:translate(-50%,-48%) scale(.97);
+  transition:opacity .18s linear, transform .22s var(--ease-spring);
+}
+@media (prefers-color-scheme:dark){
+  .pet-game{ background:rgba(26,30,38,.97); }
+}
+.pet-game.show{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
+.pet-game-body{
+  min-height:0; padding:8px; overflow:auto; overscroll-behavior:contain;
+  display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:5px;
+}
+.pet-card{
+  position:relative; padding:0; border:1px solid var(--hairline); border-radius:8px;
+  background:var(--card); cursor:pointer; overflow:hidden;
+  aspect-ratio:1 / 1; display:block;
+  transition:transform .18s var(--ease-spring), border-color .18s linear, opacity .25s linear;
+}
+.pet-card:hover{ border-color:var(--accent); }
+/* 卡背：纯 CSS 心形徽记（E 阶段素材扩充前先不占位画图） */
+.pet-card::before{
+  content:"♥"; position:absolute; inset:0;
+  display:flex; align-items:center; justify-content:center;
+  font-size:15px; color:var(--accent-2);
+  background:linear-gradient(145deg, rgba(255,182,193,.28), rgba(255,182,193,.08));
+  transition:opacity .16s linear;
+}
+/* 卡面：图常驻在 DOM（配对判定与测试都要读 data-face），翻开才让它盖住卡背 */
+.pet-card img{
+  position:absolute; inset:0; width:100%; height:100%; object-fit:contain;
+  display:block; opacity:0; transition:opacity .16s linear; -webkit-user-drag:none;
+}
+.pet-card.up img, .pet-card.done img{ opacity:1; }
+.pet-card.up::before, .pet-card.done::before{ opacity:0; }
+.pet-card.up{ border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+.pet-card.done{ border-color:var(--accent); background:var(--accent-soft); cursor:default; opacity:.92; }
+.pet-card.busy{ pointer-events:none; }
+
 /* ── 好感度（成长小游戏）：等级徽章 + 好感度条 ─────────────────────────
    与情绪条同位不同色：情绪是「现在的心情」（会掉），好感度是「累计的羁绊」（只涨）。
    ⚠️ 位置在**工具条下方**一列竖排（心情条 2px → 工具条 2px → 徽章 22px → 好感条 36px）：

@@ -333,7 +333,7 @@
       if ((hr >= 23 || hr < 5) && Date.now() - lastNight > 6 * 3600 * 1000) {
         setTimeout(function () {
           try {
-            if (!mascot.classList.contains("show") || bookOpen || dragging || Date.now() < petBusyUntil) return;
+            if (!mascot.classList.contains("show") || bookOpen || gameOpen || dragging || Date.now() < petBusyUntil) return;
             // 她正说着话就不插嘴：开屏那句「今天一起刷了 N 分钟」亮 3.2 秒，1.4 秒这拍硬挤会把日报顶掉。
             // 顶掉之前这一格是**先记下 6 小时标记再说**，所以那一晚的招呼也一并白扣了。
             if (bubble && bubble.classList.contains("show")) return;
@@ -564,6 +564,165 @@
       else if ((i = POSES.indexOf(src)) >= 0) { poseIdx = i; }
     }
 
+    // ── 记忆翻牌（点工具条的「玩」）────────────────────────────────────
+    // 卡面就是她的表情图（FACES）；规则在 popup/pet-game.js：每天**首胜** +1
+    // 好感，最佳纪录（步数少者优先，平了比秒数）是棘轮只往上记。这里只做
+    // 发牌、翻面与配对，存档结算全走规则层 —— 与册子同款三样关法（×/点外面/Esc）。
+    var gamePanel = document.getElementById("petGame");
+    var gameBody = document.getElementById("petGameBody");
+    var gameMeta = document.getElementById("petGameMeta");
+    var gameOpen = false;
+    var gameCards = [];
+    var gameFirst = null;
+    var gameBusy = false;
+    var gameMoves = 0;
+    var gameStartAt = 0;
+    var gameTimer = null;
+    // 本局已结算过 —— 每对配对各排一枚 320ms 回调，翻得快时它们**同帧醒来**，
+    // 六枚都看到满盘就会连入账六次；再叠加 storage 回声把内存档拨回旧值，
+    // 最终落在哪个中间值全看交错（e2e 实测读回 3）。一局只许入账一次。
+    var gameSettled = false;
+
+    function gameBestText() {
+      if (!bondState || !bondState.memoryBestMoves) return "尚无纪录";
+      return "最佳 " + bondState.memoryBestMoves + " 步 · " + (bondState.memoryBestSeconds || 0) + " 秒";
+    }
+    function stopGameTimer() {
+      if (gameTimer) { clearInterval(gameTimer); gameTimer = null; }
+    }
+    function gameTick() {
+      if (!gameMeta || !gameStartAt) return;
+      gameMeta.textContent = "步数 " + gameMoves + " · " + Math.round((Date.now() - gameStartAt) / 1000) + " 秒 · " + gameBestText();
+    }
+    function buildGameBoard() {
+      if (!gameBody) return;
+      var g = getGame();
+      var deck = g ? g.dealMemoryDeck() : [];
+      var html = "";
+      for (var i = 0; i < deck.length; i++) {
+        html += '<button type="button" class="pet-card" data-face="' + deck[i] +
+                '" title="？"><img src="' + deck[i] + '" alt="" draggable="false"></button>';
+      }
+      gameBody.innerHTML = html;
+      gameCards = [];
+      var els = gameBody.querySelectorAll(".pet-card");
+      for (var j = 0; j < els.length; j++) {
+        gameCards.push({ el: els[j], face: els[j].getAttribute("data-face"), done: false });
+      }
+    }
+    /** 台词优先级与摸头/结时长同一族：升级 > 成就 > 玩赢了 —— 谁在说话，别互相顶 */
+    function checkGameWin() {
+      var doneCount = 0;
+      for (var i = 0; i < gameCards.length; i++) if (gameCards[i].done) doneCount++;
+      if (doneCount !== gameCards.length) return;
+      if (gameSettled) return;
+      gameSettled = true;
+      stopGameTimer();
+      var sec = gameStartAt ? Math.round((Date.now() - gameStartAt) / 1000) : 0;
+      gameStartAt = 0;
+      var g = getGame();
+      if (!g || !bondState) {
+        if (gameMeta) gameMeta.textContent = "完成 " + gameMoves + " 步 · " + sec + " 秒";
+        return;
+      }
+      var result = g.recordMemoryWin(bondState, todayKey(), gameMoves, sec);
+      bondState = result.state;
+      persistBond();
+      renderBond(bondState);
+      syncStudyIntoGame();
+      if (gameMeta) {
+        gameMeta.textContent = result.firstToday
+          ? "首胜 " + gameMoves + " 步 · " + sec + " 秒 · 好感 +" + result.gained
+          : "完成 " + gameMoves + " 步 · " + sec + " 秒（今天的 +1 已领过）";
+      }
+      if (result.leveledUp) {
+        celebrateBond(result.level);
+      } else {
+        var freshAch = checkAchievements();   // 只赢了没升级，也可能正好点亮成就
+        if (freshAch) celebrateAchievement(freshAch);
+        else {
+          if (result.gained > 0 && mascot) {
+            var rect = mascot.getBoundingClientRect();
+            heartBurst(rect.left + rect.width / 2, rect.top + 8);
+            setPose("happy", 1600);
+          }
+          sayAs("gamewin", petLine("gamewin"), 3000);
+        }
+      }
+    }
+    function onCardClick(ev) {
+      var b = ev.target && ev.target.closest ? ev.target.closest(".pet-card") : null;
+      if (!b || gameBusy || !gameOpen) return;
+      var card = null;
+      for (var i = 0; i < gameCards.length; i++) if (gameCards[i].el === b) { card = gameCards[i]; break; }
+      if (!card || card.done || card === gameFirst) return;
+      b.classList.add("up");
+      if (!gameStartAt) { gameStartAt = Date.now(); gameTimer = setInterval(gameTick, 1000); }
+      if (!gameFirst) { gameFirst = card; return; }
+      gameMoves++;
+      var first = gameFirst;
+      gameFirst = null;
+      if (first.face === card.face) {
+        first.done = card.done = true;
+        setTimeout(function () {
+          first.el.classList.remove("up"); first.el.classList.add("done");
+          card.el.classList.remove("up"); card.el.classList.add("done");
+          checkGameWin();
+        }, 320);
+      } else {
+        gameBusy = true;
+        setTimeout(function () {
+          first.el.classList.remove("up");
+          card.el.classList.remove("up");
+          gameBusy = false;
+        }, 700);
+      }
+      gameTick();
+    }
+    function openGame() {
+      if (!gamePanel) return;
+      closeBook();   // 两个面板都钉在屏幕中央，先收册子免得叠着
+      setPose("sit");
+      gameMoves = 0;
+      gameFirst = null;
+      gameBusy = false;
+      gameSettled = false;
+      gameStartAt = 0;
+      stopGameTimer();
+      buildGameBoard();
+      if (gameMeta) gameMeta.textContent = "每天首胜 +1 好感 · " + gameBestText();
+      gamePanel.classList.add("show");
+      gamePanel.setAttribute("aria-hidden", "false");
+      gameOpen = true;
+    }
+    function closeGame() {
+      if (!gamePanel || !gameOpen) return;
+      gamePanel.classList.remove("show");
+      gamePanel.setAttribute("aria-hidden", "true");
+      gameOpen = false;
+      stopGameTimer();
+      gameFirst = null;
+      gameBusy = false;
+    }
+    if (gamePanel) {
+      if (gameBody) gameBody.addEventListener("click", onCardClick);
+      var gameCloseBtn = document.getElementById("petGameClose");
+      if (gameCloseBtn) gameCloseBtn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        closeGame();
+      });
+      // 点面板外面关掉。工具条上的「玩」要排除，否则会被判成"点外面"先关再开。
+      document.addEventListener("mousedown", function (ev) {
+        if (!gameOpen) return;
+        if (gamePanel.contains(ev.target)) return;
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        closeGame();
+      });
+      document.addEventListener("keydown", function (ev) {
+        if (gameOpen && (ev.key === "Escape" || ev.keyCode === 27)) closeGame();
+      });
+    }
+
     // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
     try {
       if (localStorage.getItem(HIDE_KEY) === "1") mascot.style.display = "none";
@@ -579,6 +738,8 @@
         var act = b.getAttribute("data-act");
         if (act === "book") {
           if (bookOpen) closeBook(); else openBook();
+        } else if (act === "game") {
+          if (gameOpen) closeGame(); else openGame();
         } else if (act === "pose") {
           var poseSeq = newSeq(1450, true);
           var pa = mascot.querySelector(".pet-art");
@@ -624,6 +785,7 @@
         } else if (act === "hide") {
           newSeq(0, true);
           closeBook();
+          closeGame();
           try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
           mascot.style.display = "none";
         }

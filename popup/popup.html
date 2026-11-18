@@ -505,6 +505,7 @@ body.has-bg::after{
   <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
   <div class="pet-tools" id="petTools">
     <button type="button" data-act="book" title="立绘册：一次挑完所有服装/表情/姿势">册</button>
+    <button type="button" data-act="game" title="记忆翻牌：翻出成对的表情，每天首胜涨好感">玩</button>
     <button type="button" data-act="pose" title="换个姿势">姿</button>
     <button type="button" data-act="outfit" title="换装">装</button>
     <button type="button" data-act="face" title="换表情 / 动作">表</button>
@@ -524,6 +525,16 @@ body.has-bg::after{
     <button type="button" id="petBookClose" title="关上">×</button>
   </div>
   <div class="pet-book-body" id="petBookBody"></div>
+</div>
+
+<!-- 记忆翻牌：点工具条的「玩」打开（卡面是她的表情，规则在 popup/pet-game.js） -->
+<div class="pet-game" id="petGame" aria-hidden="true">
+  <div class="pet-book-head">
+    <b>记忆翻牌</b>
+    <span id="petGameMeta"></span>
+    <button type="button" id="petGameClose" title="关上">×</button>
+  </div>
+  <div class="pet-game-body" id="petGameBody"></div>
 </div>
 
 <div class="im-controls" aria-label="沉浸式控制">

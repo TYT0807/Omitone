@@ -4796,6 +4796,74 @@ SCENARIOS.push({
       !/\{/.test(dailyLow.attr) && !/undefined/.test(dailyLow.attr) &&
       !/\{/.test(dailyHigh.attr) && !/undefined/.test(dailyHigh.attr),
       JSON.stringify({ low: dailyLow.attr, high: dailyHigh.attr, mins: minsBack }));
+
+    // ── 记忆翻牌（批次 108）：点「玩」开面板、照 data-face 打出完美一局、首胜 +1 ──
+    // ⚠️ 成就格先全部预点亮：配对胜利本身不碰任何成就 need，但好感/streak 的常规变动
+    //    可能顺手点亮别的成就 —— 成就台词会顶掉 gamewin 那一句，归因断言就红了。
+    var gameSetup = await ctx.client.evaluate(
+      'new Promise(function (res) {' +
+      'var game = self.OmitonePetGame; var k = game.dayKeyOf(Date.now());' +
+      'chrome.storage.local.get("omitonePetBond", function (r) {' +
+      'var b = (r && r.omitonePetBond) || { day: k };' +
+      'b.day = k; b.patsToday = 0; b.studyPointsToday = 0; b.countedSeconds = 3600;' +
+      'b.ach = {}; (game.ACHIEVEMENTS || []).forEach(function (a) { b.ach[a.id] = k; });' +
+      'b.memoryRewardDay = "";' +
+      'chrome.storage.local.set({ omitonePetBond: b }, function () { res({ aff: b.affection }); }); }); })'
+    );
+    await sleep(400);   // onChanged → 弹窗内存
+    await ctx.client.evaluate('document.querySelector(\'.pet-tools button[data-act="game"]\').click()');
+    await sleep(250);
+    var gamePanel = await ctx.client.evaluate(
+      '(function(){var p=document.getElementById("petGame");' +
+      'var cards=[].slice.call(document.querySelectorAll("#petGameBody .pet-card"));' +
+      'var faces={};cards.forEach(function(c){faces[c.getAttribute("data-face")]=1;});' +
+      'return {shown:p.classList.contains("show"),aria:p.getAttribute("aria-hidden"),' +
+      'cards:cards.length,faces:Object.keys(faces).length};})()'
+    );
+    check('点「玩」→ 记忆翻牌面板亮起，12 张卡 = 6 对表情',
+      !!gamePanel && gamePanel.shown === true && gamePanel.aria === 'false' &&
+      gamePanel.cards === 12 && gamePanel.faces === 6, JSON.stringify(gamePanel));
+    // 完美一局：按 data-face 两两配对点完。配对分支是同步记账（done 立刻落），
+    // 中途无错配就全程无 busy 锁 —— 12 发连点安全；最后那一对 320ms 后触发结算。
+    var winRound = async function () {
+      await ctx.client.evaluate(
+        '(function(){var cards=[].slice.call(document.querySelectorAll("#petGameBody .pet-card"));' +
+        'var by={};cards.forEach(function(c){var f=c.getAttribute("data-face");(by[f]=by[f]||[]).push(c);});' +
+        'Object.keys(by).forEach(function(f){by[f][0].click();by[f][1].click();});' +
+        'return cards.length;})()'
+      );
+      await sleep(700);   // 320ms 结算回调 + persistBond 落盘
+      return await ctx.client.evaluate(
+        'new Promise(function (res) { chrome.storage.local.get("omitonePetBond", function (r) {' +
+        'var b = r && r.omitonePetBond;' +
+        'var m = document.getElementById("mascot");' +
+        'res({bond: b, from: m ? String(m.dataset.sayFrom || "") : ""}); }); })'
+      );
+    };
+    var r1 = await winRound();
+    check('首胜入账：好感 +1、memoryRewardDay 记今天、最佳 6 步、胜场 1，台词登记成 gamewin',
+      !!r1 && !!r1.bond && r1.bond.affection === Number(gameSetup.aff) + 1 &&
+      r1.bond.memoryRewardDay === r1.bond.day && r1.bond.memoryBestMoves === 6 &&
+      r1.bond.memoryWins === 1 && r1.from === 'gamewin',
+      JSON.stringify({ aff0: gameSetup.aff, bond: r1 && r1.bond, from: r1 && r1.from }));
+    // 工具条按钮是开关：开着时点一下是**收起**。第二局要关一次、再开一次
+    //（openGame 才会重置棋盘重发牌），只点一下第二局的点击全会被关着的面板拒掉。
+    await ctx.client.evaluate('document.querySelector(\'.pet-tools button[data-act="game"]\').click()');
+    await sleep(250);
+    await ctx.client.evaluate('document.querySelector(\'.pet-tools button[data-act="game"]\').click()');
+    await sleep(250);
+    var r2 = await winRound();
+    check('同天第二局纯玩：好感不再涨、胜场照记、领奖日不变',
+      !!r2 && !!r2.bond && r2.bond.affection === Number(gameSetup.aff) + 1 &&
+      r2.bond.memoryWins === 2 && r2.bond.memoryRewardDay === r1.bond.memoryRewardDay,
+      JSON.stringify(r2 && r2.bond));
+    var escClosed = await ctx.client.evaluate(
+      '(function(){document.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape"}));' +
+      'var p=document.getElementById("petGame");' +
+      'return {shown:p.classList.contains("show"),aria:p.getAttribute("aria-hidden")};})()'
+    );
+    check('Esc 关得上面板（aria-hidden 同步回 true）',
+      !!escClosed && escClosed.shown === false && escClosed.aria === 'true', JSON.stringify(escClosed));
   }
 });
 

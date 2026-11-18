@@ -40,7 +40,9 @@
     patAffection: 1,          // 每次有效摸头的好感度
     patDailyCap: 6,           // 每日有效摸头次数（之后摸头只有演出 + 一句实话，不再涨）
     studyMinutesPerPoint: 10, // 每刷课 10 分钟折 1 点好感
-    studyPointsDailyCap: 15   // 刷课每日最多贡献的好感（= 150 分钟封顶）
+    studyPointsDailyCap: 15,  // 刷课每日最多贡献的好感（= 150 分钟封顶）
+    memoryPairs: 6,           // 记忆翻牌的对数（= 卡片数 / 2）
+    gameDailyReward: 1        // 记忆翻牌每天**首胜**的好感（第二局起纯玩，不涨）
   };
 
   // ── 等级表（按 min 升序；line 是升级时她会说的话）────────────────────
@@ -265,7 +267,14 @@
       summer: ['记得喝水，别中暑', '冰激凌化了就不好吃了', '今天也好热，你撑着点。', '我把窗户开一条缝。'],
       autumn: ['落叶踩起来咯吱响', '天凉了，记得加件外套', '秋天的晚上最适合刷课。', '风一吹我就想打个盹。'],
       winter: ['手好冷，但还想陪你', '雪停了再走也不迟', '这个点还能坐住，厉害呀。', '给你留了半杯热水。']
-    }
+    },
+    // 记忆翻牌赢了一局（她看全程，赢了替你高兴一句；不写死步数/秒数，那些是成绩不是台词）
+    gamewin: [
+      '全都对上了，好记性！',
+      '翻得又快又稳，厉害呀。',
+      '和我一样记性好呢。',
+      '再来一局吗？我陪你。'
+    ]
   };
 
   // 把六个时段桶展平成 IDLE_LINES（对照表 / 粗判用），保持单一真源在 SAY.idle。
@@ -511,7 +520,12 @@
       bondVersion: Number(s.bondVersion) || 1,
       peakAffection: Math.max(0, Number(s.peakAffection) || 0),
       peakLevel: clamp(Number(s.peakLevel) || 0, 0, LEVELS.length - 1),
-      legacyCeil: Math.max(0, Number(s.legacyCeil) || 0)
+      legacyCeil: Math.max(0, Number(s.legacyCeil) || 0),
+      // ── 记忆翻牌（每天首胜 +1；最佳纪录是棘轮，只往上记）──
+      memoryWins: Number(s.memoryWins) || 0,
+      memoryBestMoves: Math.max(0, Number(s.memoryBestMoves) || 0),
+      memoryBestSeconds: Math.max(0, Number(s.memoryBestSeconds) || 0),
+      memoryRewardDay: String(s.memoryRewardDay || '')
     };
     if (next.day !== todayKey) {
       next.day = todayKey;
@@ -729,6 +743,65 @@
     return { state: next, gained: allowed, leveledUp: afterLevel > beforeLevel, level: afterLevel };
   };
 
+  // ── 记忆翻牌（D 阶段）：发牌与记成绩，全是纯函数 ────────────────────────
+  // 卡面用她的**表情池**（FACES）—— 以吉祥物为主角的意思就是牌是她自己的脸。
+  // 随机源可注入（测试要确定性；界面传 undefined 走 Math.random）。
+
+  /** 洗牌（Fisher-Yates；rnd 可注入） */
+  function shuffleInto(list, rnd) {
+    var pick = typeof rnd === 'function' ? rnd : Math.random;
+    for (var i = list.length - 1; i > 0; i--) {
+      var j = Math.floor(pick() * (i + 1));
+      // ⚠️ 闸要写成 !(j>=0 && j<len)：NaN 与「<0」「>=len」两个比较全是 false，
+      // 写成 j<0||j>=len 时 NaN 会漏过去，swap 就把 undefined 混进牌堆（规则套件实测抓到）。
+      if (!(j >= 0 && j < list.length)) j = 0;   // 烂 rnd（越界/恒 NaN）退化为 j=0，别抛异常
+      var t = list[i]; list[i] = list[j]; list[j] = t;
+    }
+    return list;
+  }
+
+  /** 发一局牌：从 FACES 挑 memoryPairs 张**互不相同**的脸，各复制一份再洗匀。
+   *  @returns {string[]} 长度 = memoryPairs × 2 的文件名数组，每张恰好出现两次 */
+  function dealMemoryDeck(rnd) {
+    var pool = FACES.slice();
+    shuffleInto(pool, rnd);
+    var faces = pool.slice(0, Math.min(RULES.memoryPairs, pool.length));
+    var deck = faces.concat(faces);
+    return shuffleInto(deck, rnd);
+  }
+
+  /**
+   * 记一局胜利。
+   * @returns {{state, gained, leveledUp, level, bestMoves, firstToday}}
+   *   gained = 今天首胜才有 RULES.gameDailyReward（第二局起纯玩）；
+   *   bestMoves = 这一局是不是**新纪录**（步数更少算更好；同步数比秒）。
+   *   ⚠️ 好感已满时首胜照样记这一天（gained 照常返回，只是入账被 clamp 到上限）——
+   *   与摸头的既有口径一致，不开"留着以后领"的特殊格。
+   */
+  function recordMemoryWin(state, todayKey, moves, seconds) {
+    var next = rollDay(state, todayKey);
+    var mv = Math.max(1, Math.floor(Number(moves) || 0) || 1);
+    var sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    var beforeLevel = levelOf(next.affection);
+    var gained = 0;
+    var firstToday = next.memoryRewardDay !== todayKey;
+    if (firstToday) {
+      next.memoryRewardDay = todayKey;
+      gained = RULES.gameDailyReward;
+      next.affection = clamp(next.affection + gained, 0, RULES.max);
+    }
+    next.memoryWins += 1;
+    var better = next.memoryBestMoves === 0 ||
+      mv < next.memoryBestMoves ||
+      (mv === next.memoryBestMoves && sec > 0 && sec < (next.memoryBestSeconds || 0));
+    if (better) { next.memoryBestMoves = mv; next.memoryBestSeconds = sec; }
+    touchDay(next, todayKey);
+    bumpPeak(next);
+    var afterLevel = levelOf(next.affection);
+    return { state: next, gained: gained, leveledUp: afterLevel > beforeLevel, level: afterLevel,
+      bestMoves: better, firstToday: firstToday };
+  }
+
   return {
     RULES: RULES,
     LEVELS: LEVELS,
@@ -757,6 +830,8 @@
     markAchievements: markAchievements,
     achHint: achHint,
     onPat: onPat,
-    applyStudySeconds: applyStudySeconds
+    applyStudySeconds: applyStudySeconds,
+    dealMemoryDeck: dealMemoryDeck,
+    recordMemoryWin: recordMemoryWin
   };
 });
