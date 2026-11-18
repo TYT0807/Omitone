@@ -15144,6 +15144,8 @@ SCENARIOS.push({
       'await wait300();out.vetoSpent=read();' +
       'say("warn","task point given up (stuck without progress)",{kind:"quiz"});' +
       'await wait300();out.givenUp=read();' +
+      'say("warn","检测到其他浏览器扩展注入了页面资源，可能与视频卡住有关",{ids:"fake_ext_a",count:2,hint:"建议先禁用其他刷课/视频/脚本类扩展再重试"});' +
+      'await wait300();out.foreignHint=read();' +
       'say("warn","vision bridge failed",{error:"bridge timeout"});' +
       'await wait300();out.unnamed=read();' +
       'say("info","study begin",{attachments:3});await wait300();out.infoCtl=read();' +
@@ -15152,9 +15154,9 @@ SCENARIOS.push({
       'return JSON.stringify(out);})()'
     ));
 
-    check('前提：面板已被 start 激活，且这九次都读回了字（读不到就是空测）',
+    check('前提：面板已被 start 激活，且这十次都读回了字（读不到就是空测）',
       !!panel.started && panel.started.task !== '(无)' &&
-      ['noSource', 'unreadable', 'unreadableSearch', 'vetoSpent', 'givenUp', 'unnamed', 'infoCtl', 'errCtl', 'unnamedInfo']
+      ['noSource', 'unreadable', 'unreadableSearch', 'vetoSpent', 'givenUp', 'foreignHint', 'unnamed', 'infoCtl', 'errCtl', 'unnamedInfo']
         .every(function (k) { return panel[k] && panel[k].state !== '(无)'; }),
       JSON.stringify(panel.started));
 
@@ -15171,6 +15173,11 @@ SCENARIOS.push({
       panel.vetoSpent.task === '放弃等待，继续往下' && panel.givenUp.task === '放弃等待，继续往下' &&
       panel.vetoSpent.state === '注意' && panel.givenUp.state === '注意',
       JSON.stringify({ veto: panel.vetoSpent, givenUp: panel.givenUp }));
+
+    check('其他扩展注入的提醒点名成「疑似插件干扰」—— 用户看到的不是日志原文，' +
+      '而是能照着做的一句话（先禁其他刷课/视频扩展）',
+      panel.foreignHint.state === '注意' && panel.foreignHint.task === '疑似插件干扰' &&
+      /禁用/.test(String(panel.foreignHint.detail || '')), JSON.stringify(panel.foreignHint));
 
     check('★ 没点名的 warn：点色仍是「注意」，但那两行不再是「运行中 / 状态更新中」',
       panel.unnamed.state === '注意' && panel.unnamed.task !== '运行中' &&
@@ -20014,6 +20021,131 @@ SCENARIOS.push({
     check('40-A：放手后这个判据**自己不会重新占住** —— 要再占住必须有人重新登记媒体任务；' +
       '计时留着旧值也不许让它直接返回 true（否则只是把停摆往后推 120 秒，这一节照样翻不过去）',
       !!repeat && repeat.p === false, JSON.stringify(repeat));
+  }
+});
+
+/** ---- 55b. 其他扩展的注入痕迹要写进卡住诊断（任务 #157）----
+ * 用户报告：装了刷题酱等别的刷课/视频扩展之后，我们的视频会直接卡住，用户不知道为什么。
+ * page.js 跑在页面主世界（没有 chrome.runtime），但它**自己的**注入脚本标签
+ * `xxt-page-script` 的 src 就是一枚 chrome-extension:// URL —— 自家 id 从这里认，
+ * 宠物图片同一个 id，一条排除就盖住全部自家痕迹。
+ *
+ * 诚实口径（AGENTS §2 #18 同族）：探针只会交三种结论 —— found / none / unreadable。
+ * 「读不出自家 id」绝不猜成 found；「页面干净」只说 none，**不说**「已排除其他插件」
+ * （content script 可以一个 DOM 节点都不留地干活，没看见 ≠ 没有）。
+ * 提醒独立成句、限频 10 分钟，老的放手地板日志一条不许少（AGENTS §2 #14）。
+ */
+SCENARIOS.push({
+  name: '其他扩展的注入痕迹写进卡住诊断（任务 #157）',
+  path: '/media',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return window.__b40Ready == null ? 0 : window.__b40Ready; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b40Dur == null ? NaN : window.__b40Dur; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "networkState",',
+      '    { configurable: true, get: function(){ return window.__b40Net == null ? 3 : window.__b40Net; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", { configurable: true, get: function(){ return 0; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get: function(){ return false; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "ended", { configurable: true, get: function(){ return false; } });',
+      '  HTMLMediaElement.prototype.play = function(){ this.__played = (this.__played||0)+1; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){};',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error", { configurable: true, get: function(){ return null; } });',
+      '  window.__b40Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b40Patched === true');
+    check('157 夹具自证：媒体原型打桩生效（复用批次 40 的死形，放手路径才能走到、而不是压根没占住）',
+      patched === true, String(patched));
+
+    var probeFound = await ctx.client.evaluate(
+      '(function(){' +
+      'var mk=function(u){var e=document.createElement("img");e.src=u;' +
+      '  e.setAttribute("data-b157","1");document.body.appendChild(e);return e;};' +
+      'mk("chrome-extension://fakeforeignext-a/inj.js");' +
+      'mk("chrome-extension://fakeforeignext-b/pic.png");' +
+      'var app=window._xxtApp;' +
+      'app._foreignExtScan=null;app._foreignExtHintAt=0;' +
+      'var ownTag=document.getElementById("xxt-page-script");' +
+      'var mOwn=/^[a-z][a-z0-9-]*-extension:\\/\\/([^/]+)/i.exec(String((ownTag&&ownTag.src)||""));' +
+      'var ownId=mOwn?mOwn[1]:"";' +
+      'var scan=app._scanForeignExtensionArtifacts(null);' +
+      'return {ownId:ownId,ownTagThere:!!ownTag,state:scan.state,ids:scan.ids,count:scan.count,' +
+      '  selfExcluded:scan.ids.indexOf(ownId)<0,' +
+      '  hasA:scan.ids.indexOf("fakeforeignext-a")>=0,' +
+      '  hasB:scan.ids.indexOf("fakeforeignext-b")>=0,' +
+      '  cached:app._foreignExtScan===scan};})()'
+    );
+    check('157-① 探针在这页交 found、两枚假外来 id 都认得出，而且**自家 id 被排除** —— ' +
+      '排除只此一条就盖住 page.js 标签与宠物图（同 id）；没排除的话，每一页都会把自己当成"别人"，' +
+      'found 就成了恒真；缓存也真的落进了 _foreignExtScan（give-up 路径每一拍都会问，不许每拍全页扫）',
+      !!probeFound && probeFound.ownTagThere === true && String(probeFound.ownId).length > 0 &&
+      probeFound.state === 'found' && probeFound.hasA === true && probeFound.hasB === true &&
+      probeFound.selfExcluded === true && probeFound.count >= 2 && probeFound.cached === true,
+      JSON.stringify(probeFound));
+
+    var arm = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'app.configs=Object.assign({},app.configs,{documentSkipTimeoutMs:1000});' +
+      'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
+      'app._mediaNoSourceSince=Date.now()-1500;app._mediaWaitLogAt=0;window.__b157i=[];' +
+      'if(!window.__b157Bound){window.__b157Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b157i.push(m);});}' +
+      'var p=app._isActiveMediaPending("completion-check");' +
+      'return {p:p};})()'
+    );
+    await sleep(400);
+    var rel = await ctx.client.evaluate(
+      '(function(){var out={relN:0,first:null,hintN:0,hintFirst:null};' +
+      '(window.__b157i||[]).forEach(function(m){' +
+      '  var msg=String(m.message||"");' +
+      '  if(msg.indexOf("media has no source")===0){out.relN++;if(!out.first)out.first=m;}' +
+      '  if(msg.indexOf("检测到其他浏览器扩展")===0){out.hintN++;if(!out.hintFirst)out.hintFirst=m;}});' +
+      'return out;})()'
+    );
+    check('157-② 放手日志把 foreign 结论一并带上（found + 两枚假 id 都在 foreignIds 里），' +
+      '而老的地板日志「media has no source, release pending」照旧在、照旧 warn 恰好一条 —— ' +
+      '新字段是加话，不是换话（AGENTS §2 #14）',
+      !!arm && arm.p === false && !!rel && rel.relN === 1 &&
+      !!rel.first && String(rel.first.level) === 'warn' &&
+      !!rel.first.meta && String(rel.first.meta.foreign) === 'found' &&
+      String(rel.first.meta.foreignIds).indexOf('fakeforeignext-a') >= 0 &&
+      String(rel.first.meta.foreignIds).indexOf('fakeforeignext-b') >= 0,
+      JSON.stringify(rel && rel.first));
+    check('157-③ found 时独立提醒恰好一条（warn、带 ids 与 count），限频字段落了时间戳 —— ' +
+      '提醒独立成句才点得名：放手日志说的是「这一节放手了」，提醒说的是「为什么卡，先禁别的扩展」',
+      !!rel && rel.hintN === 1 && !!rel.hintFirst &&
+      String(rel.hintFirst.level) === 'warn' &&
+      String(rel.hintFirst.message).indexOf('检测到其他浏览器扩展') === 0 &&
+      !!rel.hintFirst.meta &&
+      String(rel.hintFirst.meta.ids).indexOf('fakeforeignext-a') >= 0 &&
+      Number(rel.hintFirst.meta.count) >= 2,
+      JSON.stringify(rel && rel.hintFirst));
+
+    var noneCtl = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var old=document.querySelectorAll("img[data-b157]");' +
+      'for(var k=0;k<old.length;k++)old[k].parentNode.removeChild(old[k]);' +
+      'app._foreignExtScan=null;app._foreignExtHintAt=0;window.__b157i=[];' +
+      'var scan=app._scanForeignExtensionArtifacts(null);' +
+      'app._noteForeignExtensionHint(scan);' +
+      'var hints=0;(window.__b157i||[]).forEach(function(m){' +
+      '  if(String(m.message||"").indexOf("检测到其他浏览器扩展")===0)hints++;});' +
+      'return {state:scan.state,count:scan.count,ids:scan.ids,' +
+      '  left:document.querySelectorAll("img[data-b157]").length,' +
+      '  hintAt:Number(app._foreignExtHintAt)||0,hints:hints};})()'
+    );
+    check('157-④ 拿掉假痕迹后探针改口 none、痕迹数归零，none 不出提醒也不落限频时间戳 —— ' +
+      '页面干净 ≠ 没有隐形干预（content script 可以一个 DOM 节点都不留地干活），' +
+      '说了「没事」就是假话，这一格钉的是「沉默是诚实的」',
+      !!noneCtl && noneCtl.state === 'none' && noneCtl.count === 0 &&
+      noneCtl.ids && noneCtl.ids.length === 0 && noneCtl.left === 0 &&
+      noneCtl.hintAt === 0 && noneCtl.hints === 0,
+      JSON.stringify(noneCtl));
   }
 });
 

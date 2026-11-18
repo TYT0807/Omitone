@@ -1807,6 +1807,10 @@
     } else if (/skip completed/.test(msg)) {
       task = '当前章节已完成';
       detail = '已跳过重复学习';
+    } else if (/检测到其他浏览器扩展/.test(msg)) {
+      state = 'warn';
+      task = '疑似插件干扰';
+      detail = '检测到其他扩展注入了页面资源，建议先禁用其他刷课/视频类扩展';
     } else if (/media has no source, release pending/.test(msg)) {
       state = 'warn';
       task = '视频没能播放';

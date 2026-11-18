@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **516 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 526 个方法；状态字段 163 个。
+（跑出来大致是：14 个域片段合计 **518 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 528 个方法；状态字段 165 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*760 行 / 4 方法 + 163 状态字段*
+*770 行 / 4 方法 + 165 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1566 行 / 47 方法*
+*1644 行 / 49 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
@@ -171,7 +171,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1541 行 / 48 方法*
+*1550 行 / 48 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、

@@ -498,12 +498,21 @@
       }
 
       this._markTaskGivenUp(key, { name: job.name, reason: reason || 'incomplete', attempts: attempts });
-      emitRuntimeLog('warn', 'task point given up (stuck without progress)', {
+      var giveUpPayload = {
         name: String(job.name || '').slice(0, 40),
         attempts: attempts,
         reason: reason || '',
         hint: '该任务点可能被设为防拖拽/不可翻页，或本身不计分。24 小时内不再尝试；控制台 xxtAI.clearTaskGiveUp() 可清除'
-      });
+      };
+      // 任务 #157：放弃这一刻问一句「页面里有没有别的扩展注入的资源」，found 才进 payload ——
+      // 文档类任务点的放弃不该被无关字段刷屏；found 时另出一句用户向提醒。
+      var giveUpForeign = this._scanForeignExtensionArtifacts(null);
+      if (giveUpForeign.state === 'found') {
+        giveUpPayload.foreign = giveUpForeign.state;
+        giveUpPayload.foreignIds = String((giveUpForeign.ids || []).join(','));
+      }
+      emitRuntimeLog('warn', 'task point given up (stuck without progress)', giveUpPayload);
+      this._noteForeignExtensionHint(giveUpForeign);
     },
 
     _getExplicitActiveLearningCardKey: function () {

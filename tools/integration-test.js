@@ -3758,6 +3758,36 @@ async function testSeekDeferUntilSeekable() {
   check('⑭ 「不试拖」六格出口全部接上账，且方法体里恰好六处调用（多一格没进清单、少一格没接线，都在这条上红）',
     wired14.length === exits14.length && calls14 === exits14.length,
     JSON.stringify({ need: exits14.length, wired: wired14, calls: calls14 }));
+
+  // ---- ⑮⑯⑰ 其他扩展注入痕迹探针（任务 #157）：四态诚实、缓存限频、提醒独立成句 ----
+  // found 那一格的 DOM 扫描在无 DOM 的测试台里走不到（那是 e2e 的地盘），这里钉住的是
+  // 测试台够得着的三件事：认不出就交 unreadable 绝不猜 found、60 秒缓存、提醒的 found 闸与限频。
+  var scanForeign = buildFrom(media, '_scanForeignExtensionArtifacts', { Date: FakeDate });
+  var noteHint = buildFrom(media, '_noteForeignExtensionHint', { emitRuntimeLog: say, Date: FakeDate });
+  var probeApp = { _foreignExtScan: null };
+  var probeRes = scanForeign.call(probeApp, null);
+  check('⑮ 探针在无 DOM 的测试台里交 unreadable、痕迹数 0（认不出自家 id 就交空结论，绝不猜 found —— AGENTS §2 #18 同族）',
+    typeof scanForeign === 'function' && !!probeRes && probeRes.state === 'unreadable' &&
+    probeRes.count === 0 && probeRes.ids && probeRes.ids.length === 0,
+    JSON.stringify(probeRes));
+  var probeRes2 = scanForeign.call(probeApp, null);
+  check('⑯ 探针 60 秒内复用缓存（give-up 路径卡住时每一拍都会问，不许每拍全页扫）',
+    probeRes2 === probeRes && probeApp._foreignExtScan === probeRes,
+    JSON.stringify({ same: probeRes2 === probeRes }));
+  var hintApp = { _foreignExtHintAt: 0 };
+  var hintMark = logs.length;
+  noteHint.call(hintApp, { state: 'found', ids: ['ext_a', 'ext_b'], count: 3 });
+  noteHint.call(hintApp, { state: 'found', ids: ['ext_a'], count: 1 });
+  noteHint.call(hintApp, { state: 'none', ids: [], count: 0 });
+  noteHint.call(hintApp, { state: 'unreadable', ids: [], count: 0 });
+  var hintMsgs = logs.slice(hintMark).filter(function (m) {
+    return String(m.message || '').indexOf('检测到其他浏览器扩展') === 0;
+  });
+  check('⑰ found 出一句用户向提醒（warn、带 ids/count/hint）且 10 分钟限频内第二发静默；none / unreadable 一句不出（页面干净 ≠ 没有隐形干预，说了「没事」就是假话）',
+    hintMsgs.length === 1 && hintApp._foreignExtHintAt === nowMs &&
+    !!hintMsgs[0].meta && String(hintMsgs[0].meta.ids) === 'ext_a,ext_b' &&
+    Number(hintMsgs[0].meta.count) === 3 && String(hintMsgs[0].level) === 'warn',
+    JSON.stringify(hintMsgs));
 }
 
 /** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */

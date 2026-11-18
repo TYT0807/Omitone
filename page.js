@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'fa8d898d72';
+var OMITONE_CODE_REV = '14cf401136';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -797,6 +797,14 @@ var OMITONE_CODE_REV = 'fa8d898d72';
     // 同样必须是**独立字段**，不借 `_mediaWaitLogAt`（那是日志节流时间戳）。
     _mediaBrokenSince: 0,
 
+    // 其他浏览器扩展注入痕迹的探针缓存（40-media.js 的 _scanForeignExtensionArtifacts 写，
+    // 60 秒 TTL）：give-up 路径在卡住期间**每一拍**都会问，不许每拍全页扫。
+    _foreignExtScan: null,
+
+    // 上一条「检测到其他浏览器扩展…」提醒发出的时刻（0 = 没发过），限频 10 分钟 ——
+    // 提醒独立成句，老的放手/放弃地板日志一条不许少（AGENTS §2 #14）。
+    _foreignExtHintAt: 0,
+
     _documentWaitLogAt: 0,
 
     _lastLearningTabSwitchAt: 0,
@@ -960,6 +968,8 @@ var OMITONE_CODE_REV = 'fa8d898d72';
       this._mediaWaitLogAt = 0;
       this._mediaNoSourceSince = 0;
       this._mediaBrokenSince = 0;
+      this._foreignExtScan = null;
+      this._foreignExtHintAt = 0;
       this._documentWaitLogAt = 0;
       this._lastLearningTabSwitchAt = 0;
       this._lastLearningCardKey = '';
@@ -2274,11 +2284,16 @@ var OMITONE_CODE_REV = 'fa8d898d72';
         var stuckHeldMs = Date.now() - this._mediaNoSourceSince;
         var stuckSrc = '';
         try { stuckSrc = String(media.currentSrc || media.src || '').slice(0, 120); } catch (eSrc) {}
+        // 任务 #157：放手这一刻顺手问一句「页面里有没有别的扩展注入的资源」——
+        // 证据跟着放手日志走（foreign / foreignIds），found 时另出一句用户向提醒。
+        var noSrcForeign = this._scanForeignExtensionArtifacts(media);
         this._mediaNoSourceSince = 0;
         emitRuntimeLog('warn', 'media has no source, release pending', {
           reason: reason || '', readyState: Number(media.readyState),
-          networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc
+          networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc,
+          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(','))
         });
+        this._noteForeignExtensionHint(noSrcForeign);
         this._clearMediaPendingState('media-no-source');
         return false;
       }
@@ -2305,6 +2320,7 @@ var OMITONE_CODE_REV = 'fa8d898d72';
         var brokenMsg = '';
         try { brokenMsg = String((media.error && media.error.message) || '').slice(0, 140); } catch (eErr) {}
         var brokenKey = this._getMediaSeekKey(media);
+        var deadForeign = this._scanForeignExtensionArtifacts(media);
         this._mediaBrokenSince = 0;
         emitRuntimeLog('warn', 'media pipeline dead, release pending', {
           code: brokenCode,
@@ -2315,8 +2331,10 @@ var OMITONE_CODE_REV = 'fa8d898d72';
           heldMs: brokenHeldMs,
           reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey]),
           reloadTimes: Number(brokenKey && this._mediaReloadKeys &&
-            this._mediaReloadKeys[brokenKey] && this._mediaReloadKeys[brokenKey].n) || 0
+            this._mediaReloadKeys[brokenKey] && this._mediaReloadKeys[brokenKey].n) || 0,
+          foreign: deadForeign.state, foreignIds: String((deadForeign.ids || []).join(','))
         });
+        this._noteForeignExtensionHint(deadForeign);
         this._clearMediaPendingState('media-pipeline-dead');
         return false;
       }
@@ -2362,6 +2380,75 @@ var OMITONE_CODE_REV = 'fa8d898d72';
       return true;
     },
 
+
+    // ---- 其他浏览器扩展的注入痕迹探针（用户现场：装了刷题酱等刷课/视频类扩展后，
+    // 我们的视频经常直接卡住，用户不知道为什么 —— 卡住诊断里要能看见这一格）----
+    // 扫顶层文档与媒体所在文档里带扩展资源地址（chrome-extension:// 一族）的 src/href 元素。
+    // 自家 id 从本插件自己的注入标签里读（content.js 注入的 'xxt-page-script'，src 就是
+    // chrome-extension://<id>/page.js —— 宠物图与 page.js 标签都用同一个 id，一次排除全干净；
+    // 页面世界里没有 chrome.runtime，只能这样认自己）。
+    // ⚠️ 诚实口径三格分开：found / none / unreadable。「none」只说明**没有 DOM 痕迹**——
+    //    content script 可以不落任何元素就改 playbackRate / 暂停视频，所以 none 那一格
+    //    绝不许写成「已排除其他插件」；认不出自家 id 就交 unreadable，绝不猜（AGENTS §2 #18 同族）。
+    // ⚠️ 60 秒缓存：give-up 路径（_countTaskIncomplete）在卡住期间**每一拍**都会问，
+    //    不许每拍全页扫。导航后由 _resetRuntimeState 清掉，旧页结论不带进新页。
+    _scanForeignExtensionArtifacts: function (media) {
+      var now = Date.now();
+      var cached = this._foreignExtScan;
+      if (cached && now - cached.at < 60000) return cached;
+      var result = { state: 'unreadable', ids: [], count: 0, at: now };
+      var ownId = '';
+      try {
+        var tag = document.getElementById('xxt-page-script');
+        var mOwn = /^[a-z][a-z0-9-]*-extension:\/\/([^/]+)/i.exec(String((tag && tag.src) || ''));
+        if (mOwn) ownId = mOwn[1];
+      } catch (eOwn) {}
+      if (ownId) {
+        var docs = [];
+        try { docs.push(document); } catch (eTop) {}
+        try {
+          var mdoc = media && media.ownerDocument;
+          if (mdoc && docs.indexOf(mdoc) < 0) docs.push(mdoc);
+        } catch (eMed) {}
+        var seen = Object.create(null);
+        for (var d = 0; d < docs.length; d++) {
+          var nodes = null;
+          try {
+            nodes = docs[d].querySelectorAll(
+              '[src^="chrome-extension://"],[src^="moz-extension://"],[src^="safari-web-extension://"],[src^="edge-extension://"],' +
+              '[href^="chrome-extension://"],[href^="moz-extension://"],[href^="safari-web-extension://"],[href^="edge-extension://"]');
+          } catch (eQ) { continue; }
+          for (var i = 0; i < nodes.length; i++) {
+            var u = '';
+            try { u = String(nodes[i].getAttribute('src') || nodes[i].getAttribute('href') || ''); } catch (eA) { continue; }
+            var mId = /^[a-z][a-z0-9-]*-extension:\/\/([^/]+)/i.exec(u);
+            var eid = mId ? mId[1] : '';
+            if (!eid || eid === ownId) continue;
+            result.count++;
+            if (!seen[eid]) { seen[eid] = 1; result.ids.push(eid); }
+          }
+        }
+        result.state = result.ids.length ? 'found' : 'none';
+        if (result.ids.length > 3) result.ids = result.ids.slice(0, 3);
+      }
+      this._foreignExtScan = result;
+      return result;
+    },
+
+    // found 坐实时的**用户向提醒**：独立成句、限频 10 分钟 ——
+    // 老的放手/放弃日志原样保留（AGENTS §2 #14：新增分格说话不许抢走地板日志）。
+    // none / unreadable 一句不出：页面干净不代表没有隐形干预，说了「没事」反而是假话。
+    _noteForeignExtensionHint: function (scan) {
+      if (!scan || scan.state !== 'found' || !(scan.ids && scan.ids.length)) return;
+      var now = Date.now();
+      if (this._foreignExtHintAt && now - this._foreignExtHintAt < 600000) return;
+      this._foreignExtHintAt = now;
+      emitRuntimeLog('warn', '检测到其他浏览器扩展注入了页面资源，可能与视频卡住有关', {
+        ids: String((scan.ids || []).join(',')),
+        count: Number(scan.count) || 0,
+        hint: '建议先禁用其他刷课/视频/脚本类扩展再重试；页面干净也不代表没有隐形干预'
+      });
+    },
 
     // 从候选媒体里挑一个：优先可见的（video 或 audio），其次隐藏的 audio。
     // 音频常被自定义播放器隐藏（无可见控件/零尺寸）但照样能播；
@@ -9176,12 +9263,21 @@ var OMITONE_CODE_REV = 'fa8d898d72';
       }
 
       this._markTaskGivenUp(key, { name: job.name, reason: reason || 'incomplete', attempts: attempts });
-      emitRuntimeLog('warn', 'task point given up (stuck without progress)', {
+      var giveUpPayload = {
         name: String(job.name || '').slice(0, 40),
         attempts: attempts,
         reason: reason || '',
         hint: '该任务点可能被设为防拖拽/不可翻页，或本身不计分。24 小时内不再尝试；控制台 xxtAI.clearTaskGiveUp() 可清除'
-      });
+      };
+      // 任务 #157：放弃这一刻问一句「页面里有没有别的扩展注入的资源」，found 才进 payload ——
+      // 文档类任务点的放弃不该被无关字段刷屏；found 时另出一句用户向提醒。
+      var giveUpForeign = this._scanForeignExtensionArtifacts(null);
+      if (giveUpForeign.state === 'found') {
+        giveUpPayload.foreign = giveUpForeign.state;
+        giveUpPayload.foreignIds = String((giveUpForeign.ids || []).join(','));
+      }
+      emitRuntimeLog('warn', 'task point given up (stuck without progress)', giveUpPayload);
+      this._noteForeignExtensionHint(giveUpForeign);
     },
 
     _getExplicitActiveLearningCardKey: function () {
