@@ -367,7 +367,9 @@
       ["spin", "转圈", 950], ["jump", "蹦一下", 760], ["shake", "摇头", 1000],
       ["bow", "鞠个躬", 1000], ["peek", "探头", 1150], ["dizzy", "晕乎", 1400],
       ["sleep", "打盹", 2300], ["cheer", "欢呼", 1200], ["surprise", "吓一跳", 700],
-      ["think", "思考", 2000], ["sing", "哼歌", 1900]
+      ["think", "思考", 2000], ["sing", "哼歌", 1900],
+      ["nod", "点点头", 1100], ["sway", "晃一晃", 1200],
+      ["stretch", "伸个懒腰", 1400], ["heart", "比个心", 900]
     ];
     var OUTFITS = SKINS.length;
     var immersive = document.body.classList.contains("im");

@@ -3720,7 +3720,7 @@ var SCENARIOS = [];
 
 // 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
 SCENARIOS.push({
-  name: '角色动作专项：88 张立绘与 11 动作完整覆盖',
+  name: '角色动作专项：88 张立绘与 15 动作完整覆盖',
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
@@ -3746,11 +3746,12 @@ SCENARIOS.push({
       book.groups['服装'].length === 44 && book.groups['表情'].length === 21 &&
       book.groups['姿势（默认装束）'].length === 23 && /88\s*张/.test(book.meta), JSON.stringify(book.groups));
     var actions = [ ['spin', 950], ['jump', 760], ['shake', 1000], ['bow', 1000], ['peek', 1150],
-      ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900] ];
-    // 第 12 个按钮是「随机动作」，它不是动作本身，单独断言
+      ['dizzy', 1400], ['sleep', 2300], ['cheer', 1200], ['surprise', 700], ['think', 2000], ['sing', 1900],
+      ['nod', 1100], ['sway', 1200], ['stretch', 1400], ['heart', 900] ];
+    // 最后一个按钮是「随机动作」，它不是动作本身，单独断言
     var animKeys = book.keys.filter(function (k) { return k !== 'random'; });
-    check('11 动作 key 完整且无重复', animKeys.length === 11 &&
-      actions.every(function (a) { return animKeys.indexOf(a[0]) !== -1; }) && new Set(animKeys).size === 11,
+    check('15 动作 key 完整且无重复', animKeys.length === 15 &&
+      actions.every(function (a) { return animKeys.indexOf(a[0]) !== -1; }) && new Set(animKeys).size === 15,
       JSON.stringify(book.keys));
     check('「随机动作」入口存在', book.keys.indexOf('random') !== -1, JSON.stringify(book.keys));
     for (var i = 0; i < actions.length; i++) {
@@ -3763,8 +3764,8 @@ SCENARIOS.push({
         check(key + '：真实 CSSAnimation 正在运行', state.animation !== 'none' &&
           state.active.indexOf(state.animation) !== -1, JSON.stringify(state));
       }
-      if (key === 'surprise' || key === 'think' || key === 'sing') {
-        var symbol = { surprise: '!', think: '?', sing: '♪' }[key];
+      if (key === 'surprise' || key === 'think' || key === 'sing' || key === 'heart') {
+        var symbol = { surprise: '!', think: '?', sing: '♪', heart: '♥' }[key];
         check(key + '：头顶显示 ' + symbol, state.symbol === '"' + symbol + '"', JSON.stringify(state));
       }
       // 最后 1ms 前不能提前坐下；到期后确实回坐，不能只断言 timer 存在。
@@ -3969,6 +3970,20 @@ SCENARIOS.push({
       await client.evaluate('!document.getElementById("mascot").hasAttribute("data-eat")') === true);
 
     await reloadPet(ctx, { egg: false, mood: 79 });
+    // 批次 150 落了四季成就：11 月摸头必解锁「秋叶来信」，它的庆祝演出（setPose 1400ms）
+    // 会把 busy 从 1050ms 拉长到 1650ms，moodHigh 补播就迟到 —— 这一族单独测的是跨档补播，
+    // 成就有自己的专项。照摸头话场景的手法把成就全点灯（id 从规则层读回，不手抄清单），
+    // 好感钉在 40（与摸头话场景同档：这一摸不跨级）。
+    await client.evaluate(
+      'new Promise(function (res) {' +
+      'var game = self.OmitonePetGame, k = game.dayKeyOf(Date.now());' +
+      'var b = { affection: 40, day: k, patsToday: 0, studyPointsToday: 0, countedSeconds: 0,' +
+      ' totalPats: 120, streakDays: 1, lastMetDay: k, ach: {} };' +
+      'var ids = game.ACHIEVEMENTS.map(function (a) { return a.id; });' +
+      'for (var i = 0; i < ids.length; i++) b.ach[ids[i]] = k;' +
+      'chrome.storage.local.set({ omitonePetBond: b }, function () { res(true); }); })'
+    );
+    await sleep(400);   // onChanged → 弹窗内存采纳（不等就点，摸的还是旧内存态）
     var moodBefore = await client.evaluate('localStorage.getItem("omitone.pet.mood")');
     check('夹具自证：reloadPet 确实把心情写成了 79（这一步只证明存档落盘，"79 属于高档"由下一条断）',
       moodBefore === '79', String(moodBefore));
@@ -4019,11 +4034,14 @@ SCENARIOS.push({
         scrollable: body.scrollHeight > body.clientHeight, pageY: scrollY };
       // 滚到「最后一个动作按钮」而不是滚动容器的最底 —— 面板末尾现在是成就区
       // （1.3.0 起立绘册末尾挂成就列表），滚到底看到的是成就，不再是动作按钮。
-      var last = body.querySelector('[data-anim="sing"]');
+      // 最后一个是谁从 DOM 读回，不手抄键名 —— 动作库一扩充，手抄的那发就指错按钮。
+      var buttons = body.querySelectorAll('.pet-book-anim:not([data-anim="random"])');
+      var last = buttons[buttons.length - 1];
       var r0 = last.getBoundingClientRect(), b0 = body.getBoundingClientRect();
       // 用 rect.height（DOMRect 没有 clientHeight —— 实测踩过：undefined 混进 delta
       // 变 NaN，scrollTop += NaN 按规范静默跳过，滚动纹丝不动）
       body.scrollTop += (r0.top + r0.height / 2) - (b0.top + b0.height / 2);
+      out.lastKey = last.getAttribute('data-anim');
       return out;
     });
     check('前置：CDP 确实模拟 380x240 视口', geometry.width === 380 && geometry.height === 240, JSON.stringify(geometry));
@@ -4032,20 +4050,21 @@ SCENARIOS.push({
     check('内容在面板内部滚动，不靠整页撑高', geometry.scrollable && /auto|scroll/.test(geometry.overflow), JSON.stringify(geometry));
     var hit = await petEval(client, function () {
       var body = document.getElementById('petBookBody');
-      var last = body.querySelector('[data-anim="sing"]'), r = last.getBoundingClientRect();
+      var buttons = body.querySelectorAll('.pet-book-anim:not([data-anim="random"])');
+      var last = buttons[buttons.length - 1], r = last.getBoundingClientRect();
       var br = body.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
       var target = document.elementFromPoint(x, y);
       return { key: last.getAttribute('data-anim'), x: x, y: y, scrollTop: body.scrollTop,
         pageY: scrollY, within: r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
         hit: !!target && (target === last || last.contains(target)) };
     });
-    check('最后一个哼歌按钮滚入面板后中心点真实命中', hit.key === 'sing' && hit.scrollTop > 0 &&
+    check('最后一个动作按钮滚入面板后中心点真实命中', hit.key === geometry.lastKey && hit.scrollTop > 0 &&
       hit.within && hit.hit && hit.y >= 0 && hit.y < 240 && hit.pageY === geometry.pageY, JSON.stringify(hit));
     // 不用 DOM click 掩盖遮挡：由 CDP 在真实命中点发鼠标事件。
     await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
     await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
-    check('短视口最后按钮真实鼠标点击触发 sing',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sing');
+    check('短视口最后按钮真实鼠标点击触发它自己的动作',
+      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === hit.key);
   }
 });
 
@@ -4127,8 +4146,8 @@ SCENARIOS.push({
           mode: document.documentElement.getAttribute('data-motion'), transition: pet.style.transition,
           particles: document.querySelectorAll('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf').length };
       });
-      check(label + '：设置真实生效且 11 动作按钮仍然能切换静态姿态', reduced.mode === 'eco' &&
-        reduced.reduce === !!pass && reduced.seen.length === 11 &&
+      check(label + '：设置真实生效且 15 动作按钮仍然能切换静态姿态', reduced.mode === 'eco' &&
+        reduced.reduce === !!pass && reduced.seen.length === 15 &&
         reduced.seen.every(function (pair) { return pair[0] === pair[1]; }), JSON.stringify(reduced));
       check(label + '：动作 / 换装 / 摸头 / 显示均无角色 CSS 或 WAAPI 动画',
         reduced.violations.length === 0 && !/translate|transform/.test(reduced.transition), JSON.stringify(reduced));

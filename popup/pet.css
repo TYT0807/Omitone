@@ -152,12 +152,38 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
   0%,100%{ transform:rotate(-3deg) }
   50%{ transform:rotate(4deg) translateY(-2px) }
 }
+.pet[data-pose="nod"] .pet-art{ animation:pet-nod 1.05s ease-in-out 1; }
+@keyframes pet-nod{
+  0%,100%{ transform:rotate(0) }
+  22%{ transform:rotate(8deg) translateY(2px) }
+  45%{ transform:rotate(0) }
+  68%{ transform:rotate(8deg) translateY(2px) }
+}
+.pet[data-pose="sway"] .pet-art{ animation:pet-sway 1.15s ease-in-out 1; }
+@keyframes pet-sway{
+  0%,100%{ transform:translateX(0) rotate(0) }
+  25%{ transform:translateX(-8px) rotate(-5deg) }
+  75%{ transform:translateX(8px) rotate(5deg) }
+}
+.pet[data-pose="stretch"] .pet-art{ animation:pet-stretch 1.35s ease-in-out 1; }
+@keyframes pet-stretch{
+  0%,100%{ transform:scale(1,1) }
+  40%{ transform:scale(.94,1.09) translateY(-3px) }
+  70%{ transform:scale(.97,1.04) translateY(-1px) }
+}
+.pet[data-pose="heart"] .pet-art{ animation:pet-heart .85s cubic-bezier(.3,1.4,.5,1) 1; }
+@keyframes pet-heart{
+  0%,100%{ transform:translateY(0) }
+  35%{ transform:translateY(-5px) scale(1.03) }
+  60%{ transform:translateY(-1px) scale(.99) }
+}
 
-/* 头顶符号：只有三种"需要一句话外音"的状态才冒，别到处都是 */
+/* 头顶符号：只有四种"需要一句话外音"的状态才冒，别到处都是 */
 .pet-inner{ position:relative; }
 .pet[data-pose="surprise"] .pet-inner::after,
 .pet[data-pose="think"] .pet-inner::after,
-.pet[data-pose="sing"] .pet-inner::after{
+.pet[data-pose="sing"] .pet-inner::after,
+.pet[data-pose="heart"] .pet-inner::after{
   position:absolute; left:50%; top:-13px; transform:translateX(-50%);
   font-size:13px; font-weight:700; line-height:1; color:var(--accent);
   text-shadow:0 1px 2px rgba(255,255,255,.7); pointer-events:none;
@@ -166,6 +192,7 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 .pet[data-pose="surprise"] .pet-inner::after{ content:"!"; }
 .pet[data-pose="think"] .pet-inner::after{ content:"?"; color:var(--accent-2); }
 .pet[data-pose="sing"] .pet-inner::after{ content:"♪"; }
+.pet[data-pose="heart"] .pet-inner::after{ content:"♥"; color:#e05a7a; }
 .pet[data-glyph-side="1"] .pet-inner::after{ top:14px; left:12%; }
 @keyframes pet-glyph{
   0%{ opacity:0; transform:translateX(-50%) translateY(4px) scale(.4) }
