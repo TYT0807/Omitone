@@ -1066,7 +1066,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 症状 | 先查 |
 | --- | --- |
 | AI 一直读不到题 | 三条线索依次排除：① 日志有没有 `quiz scan found 0 questions`（扫描失败，转 `xxtAI.diagnose()`）；② `enableQuiz` 是否被硬守卫跳过 —— 见 §6 #27（**表单没保存**是最常被忽略的原因）；③ 是否卡在某个标题含「作业/考试」的章节不动 —— 见 §6 #26 |
-| **日志报 `font decrypt miss` / 卷子被自动跳过** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时整卷被拦（`quiz text garbled` → 3 轮后 `quiz skipped: text stays garbled`）。⚠️ 缺字形的题面是**通顺但错误的中文**（肉眼难察觉），自动拦截是止损，根因与解法见已知缺陷 #6 |
+| **日志报 `font decrypt miss` / 同一卷反复不答** | 字体反爬两层守卫在工作：解密没完成时抽题先等（`quiz waiting font decrypt`）；映射表缺字形时这一卷被按住（`quiz text garbled by font decrypt` → 连续 3 轮后 `quiz paused: text stays garbled`，**这一卷暂停 90 秒再试，不翻走整节**）。⚠️ 缺字形的题面是**通顺但错误的中文**（肉眼难察觉），自动按住是止损，根因与解法见已知缺陷 #6 |
 | **报错看不懂、不知道该查什么** | 报错已按根因分类（`libs/api-error.js` 统一出口）：【账户余额不足】→ 去充值、【API Key 无效或无权限】→ 重新生成整段复制、【触发限流】→ 等自动退避、【服务商服务端故障】→ 等恢复、【连接不上服务商】→ 才是真网络问题。每条都带服务商原话与 HTTP 状态码 —— 弹窗测试、页面日志、状态面板同一套口径 |
 | **视频里弹出题后一直空转**（AI 在扫描但不填空） | 见 §6 #31。先跑 `xxtAI.diagnosePopup()` 看弹窗结构/选项/推断字母；日志里找 `popup quiz answer matched no option`（匹配失败）与 `popup quiz unanswerable, stop asking model`（已放弃） |
 | **题答对了，但视频右下角还有个「继续学习」不点就卡着** | 见 §6 #32。日志里找 `click continue-study prompt`（点到了）与 `continue-study button did not respond`（点了没反应，已停手）。若你的模板文案不是「继续学习/继续观看/继续播放」，把 `xxtAI.diagnosePopup()` 的输出贴到 issue |
@@ -1113,7 +1113,7 @@ if (/insertdoc|insertvideo|…/.test(module)) return 'job';  // ④ 只有字段
 | 验证码识别出来是空 | 日志写 `验证码识别返回空回复（结束原因 …）`，**结束原因就是说给谁的**：`length` = 思考把输出的预算占满了（把「思考强度」调到关闭即可）；`无` 或其它 = 该模型不带视觉（`captchaModel` 填的型号换成带视觉的，留空会回退主模型） |
 | 验证码一直失败 / 401 | **API 地址留空时插件一个请求都不发**，日志直接说「API 地址没填」（避免把你的密钥发给一个你没选过的厂商）。地址填了仍失败时，日志会点名是哪台主机拒的（`目标 api.deepseek.com`）——401 就该看那一家而不是怀疑插件 |
 | 某个任务点一直做不完 / 一直在耗时间 | `xxtAI.taskGiveUpList()`；日志里 `task point stuck` / `task point given up` |
-| 讨论任务点没做 / 重复发评论 | 日志 `discussion task opened in new tab`、`discussion page detected, posting reply`、`discussion task has no usable entry`。**整节一条都没发出去**时看这两句：`discussion topic url not resolved {reason}` 直接点名断在哪一环（`no-chapter-url` 读不到话题页 / `fetch-failed` 话题页没回话 / `no-topic-card` 回话里没有卡片 / `server-says-finished` 平台自己已记完成，这一条**不发帖是对的**）；`discussion all settled {total,serverFinished,believeLocal}` 里 `serverFinished` 那格就是平台判完的个数 |
+| 讨论任务点没做 / 重复发评论 | 日志 `discussion task opened in new tab`、`discussion page detected, posting reply`、`discussion task has no usable entry`。**整节一条都没发出去**时看这两句：`discussion topic url not resolved {reason}` 直接点名断在哪一环（`no-chapter-url` 读不到话题页 / `fetch-failed` 话题页没回话 / `no-topic-card` 回话里没有卡片 / `server-says-finished` 平台自己已记完成，这一条**不发帖是对的**）；`discussion nothing pending {total,serverFinished,believeLocal}` 里 `serverFinished` 那格就是平台判完的个数 |
 | 日志停在某一条 | §6 的 #1 #2；搜 `tick watchdog` |
 | 窗口最小化后几乎不动 | 后台节流四层防线（Worker 心跳 / 音频保活 / `pause` 事件直接恢复 / 回前台重校验）。1.3.0 起音频保活**只要插件在跑就顶着**（旧形状只管视频在播那一段，于是播完等翻页、文档 / PPT / 讨论 / 投票这些没有媒体的区间在后台会被整个冻住）。若仍停滞，检查 `edge://settings/system` 是否开了「睡眠标签页」——那是整页冻结，插件侧无法绕过；日志出 `audio keepalive stayed suspended` 则是浏览器没给这一页播放授权，这条音轨根本没响 |
 | 音频任务点被跳过 | 媒体搜索的可见性过滤把隐藏 `<audio>` 滤掉了（`_pickMedia` 有隐藏音频兜底，别改坏） |

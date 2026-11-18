@@ -1480,7 +1480,9 @@
 
 <p>
   日志是英文的，因为它首先是给开发者看的。但其中最常出现的几行，你也能直接读懂 ——
-  <b>知道它们在说什么，就基本能自己判断「是在正常干活」还是「真的坏了」。</b>
+  <b>知道它们在说什么，就基本能自己判断「是在正常干活」还是「真的坏了」。</b><br>
+  下面这张表默认写的是<b>面板「最近记录」里的字样</b>（导出日志发给我们时，就按这一张对照）；
+  只有标了 <b>F12</b> 的那几行在浏览器控制台里，面板看不到。
 </p>
 
 <table>
@@ -1495,8 +1497,15 @@
       <td>这次请求花掉多少 token、其中多少走了便宜的缓存。属于正常记录。</td>
     </tr>
     <tr>
-      <td><code>quiz answers count: N</code></td>
-      <td>这一卷抠出并回答了 N 道题。<b>N 与卷面题数一致就是对的。</b></td>
+      <td><code>[Omitone] quiz answers count: N</code><br>（F12 控制台，<b>不在面板「最近记录」里</b>）</td>
+      <td>这一卷抠出并回答了 N 道题。<b>N 与卷面题数一致就是对的。</b>
+          ⚠️ 这一行只打在浏览器控制台（按 F12 才看得见），面板的「最近记录」与导出的日志里都没有它。</td>
+    </tr>
+    <tr>
+      <td><code>quiz fill audit ok</code> / <code>quiz fill audit: …</code></td>
+      <td>交卷前对着页面 DOM 复查这一卷：括号里 <code>total</code> 是卷面题数、
+          <b><code>checkedInDom</code> 是真勾上的题数</b>，两个数对得上就是答全了（这一条<b>在面板里</b>）。
+          出 <b>warn</b> 那两句说明"值在、可看不见"或"简答没落进可见的框"—— 扩展会拦下这一次交卷。</td>
     </tr>
     <tr>
       <td><code>quiz scan found 0 questions</code></td>
@@ -1540,9 +1549,10 @@
           扩展会<b>自动拦下这类卷子</b>（见下一条），等表更新后重新加载扩展即可。</td>
     </tr>
     <tr>
-      <td><code>quiz skipped: text stays garbled</code></td>
-      <td>这卷的题面确认存在解不出来的文字，已自动跳过并留了这条记录。
-          <b>这是止损，不是卡死</b> —— 这一卷请先手动做。</td>
+      <td><code>quiz paused: text stays garbled</code></td>
+      <td>这卷的题面连续 3 轮仍确认存在解不出来的文字，扩展把<b>这一卷暂停 90 秒</b>后再试一次，
+          并留下这条记录。<b>这是止损，不是卡死，也不会翻走整节</b> ——
+          表（<code>resources/table.json</code>）补上新字形、重新加载扩展后会自动恢复；反复出现的那一卷请先手动做。</td>
     </tr>
     <tr>
       <td><code>content bridge ready</code></td>
@@ -1614,7 +1624,7 @@
           并把「回复列表多没多一条、有没有成功提示」等证据一起记下来，不用你猜。</td>
     </tr>
     <tr>
-      <td><code>discussion topic url not resolved</code><br><code>discussion all settled</code></td>
+      <td><code>discussion topic url not resolved</code><br><code>discussion nothing pending</code></td>
       <td>讨论<b>发不出去</b>时，日志会点名<b>断在哪一环</b>：
           <code>no-chapter-url</code>（找不到章节页）/ <code>fetch-failed</code>（章节页没回话）/
           <code>no-topic-card</code>（回话里没有话题卡片）/ <code>server-says-finished</code>

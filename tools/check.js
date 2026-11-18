@@ -3347,10 +3347,167 @@ function checkCourseProbeClaims() {
     sc.total + ' 格自证）');
 }
 
+// 32. 说明书 §7「日志里的字样」那张表教的字样 == 代码真发得出来的那一句
+//     第 27 项只管**界面字样**（面板徽标 / 弹窗顶部 / 任务种类词），那张日志名表以前没有任何东西对着。
+//     批次 117 实测抓到 3 处过期，其中 `quiz skipped: text stays garbled` 正是用户照着根本找不到的那种
+//     （代码发的是 `quiz paused: …`，而 `quiz skipped:` 这个前缀下面另有真句子 —— 按前缀比会绿，所以比整句）。
+function checkManualLogNames() {
+  var audit;
+  try {
+    audit = require('./audit-manual-log-names.js');
+  } catch (e) {
+    fail('手册日志名对账加载失败：' + String((e && e.message) || e) +
+      '\n      真源是 tools/audit-manual-log-names.js —— 它被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var bad = [];
+
+  // ⚠️ 期望表写在 check.js 里，不吃审计自带的那 23 格 selftest（口径同第 24 / 31 项）：
+  //    只把审计里的期望改掉不能把这道闸蒙过去。
+  var NAMES = [
+    { name: 'quiz paused: text stays garbled', where: 'x', via: 'panel' },
+    { name: 'quiz skipped: no question could be filled', where: 'x', via: 'panel' },
+    { name: 'llm prefix cache', where: 'x', via: 'panel' },
+    { name: 'course switch declined: auto switch is off', where: 'x', via: 'panel' },
+    { name: 'block quiz submit because answers are not ready', where: 'x', via: 'panel' },
+    { name: 'quiz answers count', where: 'x', via: 'console' },
+    { name: 'start', where: 'x', via: 'panel' }
+  ];
+  // 走**真管道**：手册格在 `manualCells()` 里就被 `cellText()` 摘过 `[Omitone] ` 前缀，这里照抄那一手
+  function cell(t) { return { row: 1, line: 1, text: audit.cellText(t) }; }
+  var CASES = [
+    { name: '整句对着真源 → 过', cells: [cell('quiz paused: text stays garbled')], checked: 1, red: 0 },
+    { name: '同前缀换整句 → 必须红（按前缀比就是在这里漏的）',
+      cells: [cell('quiz skipped: text stays garbled')], checked: 1, red: 1, needle: 'quiz skipped: text stays garbled' },
+    { name: '真名 + 中文原因 → 过', cells: [cell('llm prefix cache: 整份输入还凑不满一块')], checked: 1, red: 0 },
+    { name: '省略号族：真名开头过、编的名字红',
+      cells: [cell('course switch declined: …'), cell('course switch faked: …')], checked: 2, red: 1, needle: 'course switch faked' },
+    { name: '手册摘掉真名尾巴（answers are not ready）→ 过',
+      cells: [cell('answers are not ready')], checked: 1, red: 0 },
+    { name: 'F12 那一面（控制台字样带中括号）也算真源 → 过',
+      cells: [cell('[Omitone] quiz answers count: N')], checked: 1, red: 0 },
+    { name: '中文散文格不核对（会误报的守卫和没有守卫一样害人）',
+      cells: [cell('倒计时结束 / 视频或课件播完')], checked: 0, red: 0 },
+    { name: '短标签整格等于真名要核对；拼错的长名要红',
+      cells: [cell('start'), cell('couse switch picked next')], checked: 2, red: 1, needle: 'couse' }
+  ];
+  CASES.forEach(function (t) {
+    var res;
+    try {
+      res = audit.evaluate(t.cells, NAMES);
+    } catch (e2) {
+      bad.push(t.name + '：核对本身抛了 ' + String((e2 && e2.message) || e2));
+      return;
+    }
+    if (res.checked !== t.checked) {
+      bad.push(t.name + '：核到 ' + res.checked + ' 条，期望 ' + t.checked + ' 条（跳过了本该核的格，或把散文拖进来了）');
+    }
+    if (res.bad.length !== t.red) {
+      bad.push(t.name + '：红 ' + res.bad.length + ' 条，期望 ' + t.red + ' 条 ' +
+        JSON.stringify(res.bad.map(function (b) { return b.text; })));
+    } else if (t.needle && !res.bad.some(function (b) { return b.text.indexOf(t.needle) >= 0; })) {
+      bad.push(t.name + '：红了 ' + res.bad.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+
+  // 表形那一族：找不到表 / 只圈出三格，都必须交回 error，**不许读成"0 条 = 通过"**
+  function tableHtml(rows, headerInTh) {
+    return '<table><tr><th>字样</th><th>' + (headerInTh ? '日志里的字样' : '什么意思') + '</th></tr>' +
+      rows.map(function (r) { return '<tr><td><code>' + r + '</code></td><td>说明</td></tr>'; }).join('\n') +
+      '</table>';
+  }
+  var shape = [
+    { name: '整页没有那张表', html: '<p>这里什么都没有</p>', wantError: true },
+    { name: '有表头字样但圈不出 <table>', html: '<p>日志里的字样</p>', wantError: true },
+    { name: '表只剩 3 格（判据 5：形状不对就 FATAL）', html: tableHtml(['quiz paused: text stays garbled', 'start', 'llm prefix cache'], true), wantError: true },
+    { name: '合成表 11 格要能逐格取回', html: tableHtml(['start', 'quiz paused: text stays garbled'].concat(
+      ['a one', 'a two', 'a three', 'a four', 'a five', 'a six', 'a seven', 'a eight', 'a nine']), true),
+      wantError: false, cells: 11 }
+  ];
+  shape.forEach(function (s) {
+    var got;
+    try {
+      got = audit.manualCells(s.html, s.wantError ? undefined : 10);
+    } catch (e3) {
+      bad.push(s.name + '：取表抛了 ' + String((e3 && e3.message) || e3));
+      return;
+    }
+    if (s.wantError) {
+      if (!got || !got.error) bad.push(s.name + '：表形坏了却没交回 error —— 这张表不再被核对，而闸门会打印"全部通过"');
+    } else if (got.error) {
+      bad.push(s.name + '：好好的表被报成形不对（' + got.error + '）');
+    } else if (got.cells.length !== s.cells) {
+      bad.push(s.name + '：取到 ' + got.cells.length + ' 格，期望 ' + s.cells + ' 格');
+    }
+  });
+
+  // 审计自带的那 23 格也要跑，且**格数不许被人删**（自证掉格只少打几行，没人会发现）
+  var SELFTEST_LINES = 23;
+  var stOut = '';
+  var stStatus = null;
+  var stErr = null;
+  var script = path.join(__dirname, 'audit-manual-log-names.js');
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var r = spawnSync(process.execPath, [script, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    stErr = r.error || null;
+    stOut = String(r.stdout || '');
+    stStatus = r.status;
+    if (!r.error || r.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  if (stErr) {
+    bad.push('日志名审计自带的自证没跑成' + (stErr.code === 'ETIMEDOUT' ? '（60 秒没返回）' : '（已重试一次）') +
+      '：' + String(stErr));
+  } else {
+    var last = stOut.trim().split('\n').pop();
+    if (stStatus !== 0 || last !== '[ok] 自检 ' + SELFTEST_LINES + ' 格全对') {
+      bad.push('日志名审计自带的自证不是那句「' + SELFTEST_LINES + ' 格全对」（status=' + stStatus +
+        '，末行=' + JSON.stringify(last) + '）—— 期望格被改/被删，先回头核审计，别改这里的数');
+    }
+  }
+
+  // ---- 真表：手册那一页对着代码跑一遍 ----
+  var reg = audit.emittedNames();
+  var got = audit.manualCells();
+  if (got.error) {
+    fail('手册日志名对账读不出那张表：' + got.error +
+      '\n      先修表形或修本工具，别当通过（这张表不再被核对时，闸门打印的"通过"是空的）');
+    return;
+  }
+  var res = audit.evaluate(got.cells, reg.names);
+  if (bad.length) {
+    fail('手册日志名对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + bad.join('\n      '));
+    return;
+  }
+  if (!res.checked) {
+    fail('手册日志名对账一条都没核到 —— 措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿（AGENTS §2 #21）');
+    return;
+  }
+  // 表被整族删格时 checked 会掉，但"掉到多少"是浮动的：这里只钉一个明显低于现状的下限，实际数照印
+  if (res.checked < 20) {
+    fail('手册日志名对账只核到 ' + res.checked + ' 条（下限 20）—— 那张表被整族删格或改形时，' +
+      '这一族用户照着找不到的字样就没人管了。要改的是手册，不是这把尺');
+    return;
+  }
+  if (res.bad.length) {
+    fail('说明书教了代码里从来不发的日志字样 ' + res.bad.length + ' 处：\n      ' +
+      res.bad.map(function (b) {
+        return 'docs/manual.html:' + b.line + '（表内第 ' + b.row + ' 行）: ' + b.text +
+          (b.near.length ? ' —— 代码里同前缀的真名: ' + b.near.join(' / ') : ' —— 代码里连同前缀都没有');
+      }).join('\n      ') +
+      '\n      要改的是手册那一行，不是这把尺（AGENTS §4「要改文档，不许改判据」）');
+    return;
+  }
+  pass('说明书日志名对账（表内 ' + res.checked + ' 条逐个对着代码里真发过的那一句；' +
+    '真源 ' + reg.names.length + ' 条 = 面板 ' +
+    reg.names.filter(function (n) { return n.via === 'panel'; }).length + ' / 控制台 ' +
+    reg.names.filter(function (n) { return n.via === 'console'; }).length +
+    '，另有 ' + reg.dynamic + ' 处名字整个拼自变量静态核不到；含 ' + CASES.length + ' 格合成表 + ' +
+    shape.length + ' 格表形 FATAL + 审计自带 ' + SELFTEST_LINES + ' 格自证）');
+}
+
 // ---------------------------------------------------------------------------
 // 执行
-// ---------------------------------------------------------------------------
-console.log('\nOmitone 工程自检\n');
+// ---------------------------------------------------------------------------console.log('\nOmitone 工程自检\n');
 
 var jsFiles = checkSyntax();
 var manifest = checkManifest();
@@ -3383,6 +3540,7 @@ checkE2eExprParsable();
 checkBrowserOnlyClaim();
 checkSwitchBudgetClaim();
 checkCourseProbeClaims();
+checkManualLogNames();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
