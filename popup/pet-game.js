@@ -14,7 +14,8 @@
  *     ⚠️ 改了**已有**门槛或 RULES.max = 尺度变更，必须同时往 PAST_SCALES 追加一代（见那里的注释），
  *     否则老存档会当着用户的面从"很熟"退回"生疏"；
  *   - 加台词   → 情境话（她自己开口 / 打招呼 / 被戳 / 开工收工）加进 SAY，按时段分桶的就
- *     六个桶各加一句；摸头那句按等级加进 PAT_LINES 那一组。全部**保持短句**（见那里的⚠️）；
+ *     六个桶各加一句，按好感阶段分化的加进 `SAY.idleBond` 三池（两族由 `pickIdleLine` 并池抽，
+ *     **界面不许自己补兜底**）；摸头那句按等级加进 PAT_LINES 那一组。全部**保持短句**（见那里的⚠️）；
  *   - 加立绘   → ART 的三个池子按**像素核实**归类加一行（勿按文件名前缀猜，见那里的⚠️）；
  *   - 加成就   → ACHIEVEMENTS 加一行（id/name/desc/need/line），**并且**给 achHint 补一支
  *     （新的 need 种类没有进度句，界面那一格就只会空着）；
@@ -53,7 +54,11 @@
     { min: 70,  name: '挚友',     line: '无论刷到多晚，我都陪着你。' },
     { min: 90,  name: '形影不离', line: '有你在的地方，就是我的位置。' },
     { min: 140, name: '心有灵犀', line: '原来陪伴久了，连沉默都很舒服。' },
-    { min: 200, name: '岁月同行', line: '从初识走到今天，谢谢你没缺席。' }
+    { min: 200, name: '岁月同行', line: '从初识走到今天，谢谢你没缺席。' },
+    // 追加两档：门槛仍落在 `RULES.max = 240` 之内 ⇒ **不构成尺度变更**，不许往 PAST_SCALES 补一代
+    //   （那一格只记"当年见过多少分"，补错等于替老档凭空改成绩）。
+    { min: 215, name: '长夜同守', line: '你把灯留着，我把你陪着。' },
+    { min: 232, name: '往后都在', line: '默契早就有了，往后只是不离。' }
   ];
 
   // ── 存档版本与迁移（**「更新绝不让她从很熟退回生疏」就靠这一族**）──────────
@@ -87,7 +92,9 @@
     ['有你在，什么题都不怕。', '今晚也一起加油！', '摸摸头，思路都清楚了。', '这点累不算什么。'],
     ['无论多久，我都会在这里。', '和你在一起的每一天都开心。', '你的手一放过来我就知道了。', '不用说话，这样就好。'],
     ['这份默契，不用说出来也存在。', '和你并肩坐着，就很有干劲。', '老搭档了，摸一下就懂。', '进度我在看着，你放心。'],
-    ['不管刷到多晚，我都在。', '往后也请多指教啦。', '走到现在不容易呀。', '谢谢你没把我当工具。']
+    ['不管刷到多晚，我都在。', '往后也请多指教啦。', '走到现在不容易呀。', '谢谢你没把我当工具。'],
+    ['灯下就我们两个，挺好的。', '你困不困？我再看一节。', '这种夜，熬着熬着就过去了。', '你的手放上来我就不慌。'],
+    ['不用介绍了，我们认识很久。', '你今天的节奏我很熟。', '再难的章节，两个人就短了。', '摸一下就好，别停下手上的活。']
   ];
 
   // ── 摸头到顶时的那句实话 ───────────────────────────────────────────
@@ -174,6 +181,34 @@
         '明天再刷也来得及。'
       ]
     },
+    // ── 按**好感阶段**分化的自言自语（用户点名：不同阶段的对话也分化一下）──
+    // 为什么还要加一族：上面六个桶说的是"几点"，八档谁待着都是那几句 —— 熟没熟看不出来。
+    //   这一族说"熟到什么程度"，与时段桶**并成一个池**抽（见 `pickIdleLine`）。
+    // ⚠️ 三池都必须与 `SAY.idle` 的句子的**字面不重叠**：重叠了 `from` 归因就会指错桶，
+    //   而测试按 `from` 断"阶段那一族真的走到过"。
+    idleBond: {
+      new: [
+        '还在摸索你的习惯，多担待。',
+        '这一节我陪你从头看起。',
+        '我还不太会插话，你忙你的。',
+        '你刚才是不是点错了一次？',
+        '慢慢来，我不催。'
+      ],
+      close: [
+        '你的节奏我记下了：先易后难。',
+        '累了就说，我接着往下看。',
+        '这一章你卡过两次了哦。',
+        '今天比昨天快一点。',
+        '我看着呢，你放心走神一小会儿。'
+      ],
+      deep: [
+        '不用说了，我知道你要先看哪一节。',
+        '这种章节，我们两个熬得过去。',
+        '你手一放上来我就知道今天累不累。',
+        '别急着赶，今天的份够多了。',
+        '夜很深了，剩下的我盯着。'
+      ]
+    },
     // 小窗刚打开那句（见面）
     greet: {
       dawn: ['这个点还没休息呀。', '夜里我陪你，别熬太久。'],
@@ -238,6 +273,19 @@
     IDLE_LINES = IDLE_LINES.concat(SAY.idle[PERIODS[_pi]] || []);
   }
 
+  /** 把"最近说过的"从池子里挑出去。`exclude` 允许是**一句**或**一个数组**（最近几句）。
+   *  ⚠️ 全被排除时照旧回原池 —— 记账记太严把她说成一句话都不说，比重复一句更难看待。 */
+  function dropRecent(list, exclude) {
+    if (!exclude) return list;
+    var banned = [].concat(exclude).map(String);
+    if (!banned.length) return list;
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (banned.indexOf(String(list[i])) < 0) out.push(list[i]);
+    }
+    return out.length ? out : list;
+  }
+
   /** 从一个池子里抽一句模板，避开她上一句刚说过的（连着两句一模一样 = 用户读到的"卡带"）。 */
   function pickFrom(list, rnd, exclude) {
     if (!list || !list.length) return '';
@@ -296,6 +344,39 @@
     var alt = fill(list[(idx + 1 + Math.floor(pick() * (n - 1))) % n], c);
     // 备选填不出（缺值）就用第一选 —— 别为了避重把她憋成一句话都不说
     return alt || line;
+  }
+
+  /** 好感等级 → 自言自语那三池的名字。**拿不到等级就回空串**（调用方据此只走时段池），
+   *  不许把"不知道熟不熟"猜成"初识" —— 那会让老档在界面上突然说起生分话。 */
+  function bandOf(level) {
+    var lv = Number(level);
+    if (!isFinite(lv) || lv < 0) return '';
+    if (lv <= 2) return 'new';
+    if (lv <= 5) return 'close';
+    return 'deep';
+  }
+
+  /**
+   * 自言自语选句：把「几点」与「熟到什么程度」两族并成一个池。
+   * 真源只有 `SAY.idle` 与 `SAY.idleBond` 两格 —— **界面不许自己补兜底**，
+   * 两格都抽不出就回空串，调用方这一拍什么都不说。
+   * @param {Object} ctx `{hour}` 定时段（不传走本地钟）、`{level}` 定阶段（`displayLevelOf` 的结果）
+   * @param {Function} rnd 可注入的随机源（测试要确定性），默认 Math.random
+   * @param {string|Array} exclude **最近说过的**（一句或几句）—— 并池之后两族会抽到同一格，
+   *        只挡上一句不够：`dawn` 抽到阶段那一格、`midday` 抽时段、`night` 又抽回同一格，
+   *        用户读到的是三句里的两句重复，而按时段断言"三句不同"的测试会随机红。
+   * @returns {{line: string, period: string, band: string, from: string}}
+   *          `from` = 'bond'（阶段那一族抽的）/ 'period'（时段那一族）/ ''（没抽出来）
+   */
+  function pickIdleLine(ctx, rnd, exclude) {
+    var c = ctx || {};
+    var period = periodOf(c.hour);
+    var band = bandOf(c.level);
+    var per = (SAY.idle && SAY.idle[period]) || [];
+    var bnd = (band && SAY.idleBond && SAY.idleBond[band]) || [];
+    var line = String(pickFrom(dropRecent(per.concat(bnd), exclude), rnd) || '');
+    if (!line) return { line: '', period: period, band: band, from: '' };
+    return { line: line, period: period, band: band, from: bnd.indexOf(line) >= 0 ? 'bond' : 'period' };
   }
 
 
@@ -636,6 +717,8 @@
     SAY: SAY,
     periodOf: periodOf,
     pickLine: pickLine,
+    bandOf: bandOf,
+    pickIdleLine: pickIdleLine,
     ART: ART,
     ACHIEVEMENTS: ACHIEVEMENTS,
     dayKeyOf: dayKeyOf,

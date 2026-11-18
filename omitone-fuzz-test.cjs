@@ -207,8 +207,8 @@ check('垃圾存档 3000 轮里「水位高过统计当场归零」这一支真�
 // 否则有人把 max 改成 10 万，暴力测试照样全绿（自筛自证的老问题，见 AGENTS.md §5）。
 // 1.3.0 把上限从 100 提到 240 是给老档留继续养的空间；最高一档门槛必须仍在上限之内，
 // 否则「岁月同行」永远点亮不了。
-check('好感上限与等级表自洽：RULES.max 仍是 240，且最高一档 min（200）不超过它',
-  GAME.RULES.max === 240 && GAME.LEVELS[GAME.LEVELS.length - 1].min === 200 &&
+check('好感上限与等级表自洽：RULES.max 仍是 240，且最高一档 min（232）不超过它',
+  GAME.RULES.max === 240 && GAME.LEVELS[GAME.LEVELS.length - 1].min === 232 &&
   GAME.LEVELS[GAME.LEVELS.length - 1].min <= GAME.RULES.max,
   JSON.stringify({ max: GAME.RULES.max, topMin: GAME.LEVELS[GAME.LEVELS.length - 1].min }));
 

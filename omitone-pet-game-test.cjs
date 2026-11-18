@@ -79,8 +79,11 @@ check('手感配比：1 次摸头 = 10 分钟刷课；每日摸头 6 / 刷课 15
 check('等级表判定（0/14 初识 · 15 打过招呼 · 30 熟络）',
   GAME.levelOf(0) === 0 && GAME.levelOf(14) === 0 && GAME.levelOf(15) === 1 && GAME.levelOf(30) === 2);
 
-check('追加等级判定（139 形影不离 · 140 心有灵犀 · 200 岁月同行）',
-  GAME.levelOf(139) === 5 && GAME.levelOf(140) === 6 && GAME.levelOf(200) === 7 && GAME.levelOf(240) === 7);
+check('追加等级判定（139 形影不离 · 140 心有灵犀 · 200 岁月同行 · 214/215 长夜同守 · 231/232 往后都在 · 240 仍封顶）',
+  GAME.levelOf(139) === 5 && GAME.levelOf(140) === 6 && GAME.levelOf(200) === 7 &&
+  GAME.levelOf(214) === 7 && GAME.levelOf(215) === 8 && GAME.LEVELS[8].name === '长夜同守' &&
+  GAME.levelOf(231) === 8 && GAME.levelOf(232) === 9 && GAME.LEVELS[9].name === '往后都在' &&
+  GAME.levelOf(240) === 9 && GAME.levelOf(999) === 9);
 
 check('老档不降级（上限 100 时代的满档用户仍是形影不离）', GAME.levelOf(100) === 5);
 
@@ -300,6 +303,65 @@ check('IDLE_LINES 恰好等于六个时段桶的并（不是另抄一份）',
   GAME.IDLE_LINES.join('\u0001') === GAME.PERIODS.reduce(function (acc, p) {
     return acc.concat(GAME.SAY.idle[p] || []);
   }, []).join('\u0001'));
+
+// ③b 按好感阶段分化的自言自语（批次 104：用户「不同阶段的对话也分化一下」）
+//     ⚠️ 这一族的成立条件是**两族并池 + 归因指得对**，不是"多加了几句"。
+//       所以断言读的是 from / band 这两格，而不是句子数量 —— 数量那条上面已经跟着 allLines 走了。
+var HOUR = { dawn: 2, morning: 7, midday: 12, afternoon: 15, evening: 19, night: 23 };
+var bondKeys = Object.keys(GAME.SAY.idleBond || {});
+check('阶段三池的格子名与 bandOf 的取值一一对应（名单与谓词不对齐时，新增那一池一步都不会走到）',
+  bondKeys.length === 3 && ['new', 'close', 'deep'].every(function (k) {
+    return bondKeys.indexOf(k) >= 0 && (GAME.SAY.idleBond[k] || []).length >= 3;
+  }), JSON.stringify(bondKeys.map(function (k) { return k + ':' + GAME.SAY.idleBond[k].length; })));
+var idleFlat = GAME.IDLE_LINES;
+var bondOverlap = bondKeys.reduce(function (acc, k) {
+  return acc.concat((GAME.SAY.idleBond[k] || []).filter(function (s) { return idleFlat.indexOf(s) >= 0; }));
+}, []);
+check('阶段三池与时段六桶字面不重叠（重叠了 from 归因就指错桶，测试按 from 断"走到过"）',
+  bondOverlap.length === 0, JSON.stringify(bondOverlap));
+check('bandOf 的分界：0~2 生分 / 3~5 熟络 / 6~9 深，拿不到等级交空串（不许把"不知道"猜成初识）',
+  GAME.bandOf(0) === 'new' && GAME.bandOf(2) === 'new' && GAME.bandOf(3) === 'close' &&
+  GAME.bandOf(5) === 'close' && GAME.bandOf(6) === 'deep' && GAME.bandOf(9) === 'deep' &&
+  GAME.bandOf(undefined) === '' && GAME.bandOf(NaN) === '' && GAME.bandOf(-1) === '' &&
+  GAME.bandOf('x') === '');
+var bandBad = [];
+['new', 'close', 'deep'].forEach(function (b, bi) {
+  var lvl = [0, 3, 6][bi];
+  var seenPeriod = 0, seenBond = 0;
+  for (var i = 0; i < 400; i++) {
+    var g = GAME.pickIdleLine({ hour: HOUR.midday, level: lvl });
+    if (g.period !== 'midday') bandBad.push('period:' + g.period);
+    if (g.band !== b) bandBad.push('band:' + g.band);
+    if (g.from === 'bond') { seenBond++; if (GAME.SAY.idleBond[b].indexOf(g.line) < 0) bandBad.push('from-bond:' + g.line); }
+    else if (g.from === 'period') { seenPeriod++; if (GAME.SAY.idle.midday.indexOf(g.line) < 0) bandBad.push('from-period:' + g.line); }
+    else bandBad.push('from-empty:' + g.line);
+  }
+  if (!seenBond || !seenPeriod) bandBad.push(b + ':只走到一族 period=' + seenPeriod + ' bond=' + seenBond);
+});
+check('两族真的并成一个池：时段格照旧对得上，阶段那几句也真说得上口，且 from 与实际来源逐次相符',
+  bandBad.length === 0, JSON.stringify(bandBad.slice(0, 4)));
+var noLevelBad = [];
+for (var ni = 0; ni < 200; ni++) {
+  var gn = GAME.pickIdleLine({ hour: HOUR.night });      // 老档／等级读不出来那一族
+  if (gn.band !== '' || gn.from !== 'period' || GAME.SAY.idle.night.indexOf(gn.line) < 0) noLevelBad.push(gn);
+}
+check('不知道熟不熟时只走时段那一族（阶段那几句不会当着面把老档说成生分）',
+  noLevelBad.length === 0, JSON.stringify(noLevelBad.slice(0, 2)));
+// ⚠️ 这一条是**为什么排除要传"最近几句"而不是"上一句"**的根据：并池之后 dawn 抽阶段、
+//   midday 抽时段、night 又抽回 dawn 那一句是常见形状，而 e2e ⑥-c 按"三个时段三句不同"断言。
+var recentBad = [];
+var recent = [];
+for (var ri = 0; ri < 300; ri++) {
+  var gr = GAME.pickIdleLine({ hour: HOUR.dawn, level: 4 }, null, recent.slice(-3));
+  if (recent.slice(-3).indexOf(gr.line) >= 0) recentBad.push(gr.line);
+  recent.push(gr.line);
+}
+check('把最近三句交进去就不会隔一两句又卡带（并池后单挡上一句不够，三时段断言会随机红）',
+  recentBad.length === 0, JSON.stringify(recentBad.slice(0, 3)));
+var wholePool = GAME.SAY.idle.midday.concat(GAME.SAY.idleBond.close);
+var starved = GAME.pickIdleLine({ hour: HOUR.midday, level: 3 }, null, wholePool);
+check('整个池子都被记成"刚说过"时照旧说一句（记严了不许把她憋成闭嘴）',
+  wholePool.indexOf(starved.line) >= 0, JSON.stringify(starved));
 
 // ④ pickLine 的四条行为
 check('名字不在表里 → 空串（调用方据此什么都不说，不硬凑一句）',
@@ -559,10 +621,10 @@ function docText(f) {
   // 注释与 script 里的出现不算（第 27 项同一口径）：那两处用户看不见，抄错也不该红
   return raw.replace(/<!--[\s\S]*?-->/g, '').replace(/<script[\s\S]*?<\/script>/g, '');
 }
-var docAchBad = [], docLevelBad = [], docNameBad = [];
+var docAchBad = [], docLevelBad = [], docNameBad = [], docLevelNameBad = [];
 ['README.md', 'docs/manual.html'].forEach(function (f) {
   var txt = docText(f);
-  if (txt === null) { docAchBad.push(f + ' 读不到'); docLevelBad.push(f + ' 读不到'); docNameBad.push(f + ' 读不到'); return; }
+  if (txt === null) { docAchBad.push(f + ' 读不到'); docLevelBad.push(f + ' 读不到'); docNameBad.push(f + ' 读不到'); docLevelNameBad.push(f + ' 读不到'); return; }
   var ach = (txt.match(/(\d+)\s*枚成就/g) || []).map(function (s) { return Number(/\d+/.exec(s)[0]); });
   var lv = (txt.match(/好感度?分?\s*(?:<b>|\*\*)?(\d+)\s*级/g) || [])
     .concat(txt.match(/(\d+)\s*级成长/g) || [])
@@ -572,6 +634,7 @@ var docAchBad = [], docLevelBad = [], docNameBad = [];
   ach.forEach(function (n) { if (n !== GAME.ACHIEVEMENTS.length) docAchBad.push(f + ' 写 ' + n + ' 枚、真源 ' + GAME.ACHIEVEMENTS.length); });
   lv.forEach(function (n) { if (n !== GAME.LEVELS.length) docLevelBad.push(f + ' 写 ' + n + ' 级、真源 ' + GAME.LEVELS.length); });
   GAME.ACHIEVEMENTS.forEach(function (a) { if (txt.indexOf(a.name) < 0) docNameBad.push(f + ' 缺「' + a.name + '」'); });
+  GAME.LEVELS.forEach(function (l) { if (txt.indexOf(l.name) < 0) docLevelNameBad.push(f + ' 缺「' + l.name + '」'); });
 });
 check('文档里「N 枚成就」那个数与规则层同源（README + 说明书，且句子不许被改断到扫不着）',
   docAchBad.length === 0, JSON.stringify(docAchBad));
@@ -579,6 +642,28 @@ check('文档里「好感分 N 级 / N 级成长」那个数与等级表同源�
   docLevelBad.length === 0, JSON.stringify(docLevelBad));
 check('每一枚成就的名字都出现在 README 与说明书里（新增成就没登记=用户看不见的功能）',
   docNameBad.length === 0, JSON.stringify(docNameBad));
+check('每一档好感称号名都出现在 README 与说明书里（追加档位没登记=用户不知道自己到过哪）',
+  docLevelNameBad.length === 0, JSON.stringify(docLevelNameBad));
+
+// ⚠️ 句数也是**对用户承诺的数字**（AGENTS §4「改了行为没改文档」那一族）。这两处原先写的是
+//   「二十五句 / 一百三十来句」—— 后面那个数从没量过（真源 95 句，现在 110），
+//   而"来句"这种中文概数正则也抓不住。所以口径改成**阿拉伯数字 + 两条都核对**。
+var bondTotal = bondKeys.reduce(function (a, k) { return a + GAME.SAY.idleBond[k].length; }, 0);
+var docSaidBad = [];
+['README.md', 'docs/manual.html'].forEach(function (f) {
+  var txt = docText(f);
+  if (txt === null) { docSaidBad.push(f + ' 读不到'); return; }
+  var said = txt.match(/随口\S{0,6}句就有\s*(?:<b>|\*\*)?(\d+)\s*句/);
+  var tot = txt.match(/全部加起来\s*(?:<b>|\*\*)?(\d+)\s*句/);
+  if (!said) docSaidBad.push(f + ' 那句「随口…句就有 N 句」扫不着（被改断了，闸要跟着改）');
+  if (!tot) docSaidBad.push(f + ' 那句「全部加起来 N 句」扫不着（被改断了，闸要跟着改）');
+  if (said && Number(said[1]) !== idleFlat.length + bondTotal) {
+    docSaidBad.push(f + ' 写 ' + said[1] + ' 句、真源 ' + (idleFlat.length + bondTotal));
+  }
+  if (tot && Number(tot[1]) !== allLines.length) docSaidBad.push(f + ' 写 ' + tot[1] + ' 句、真源 ' + allLines.length);
+});
+check('文档里那句「随口 40 句 / 全部 110 句」与台词表同源（句数是承诺，手抄必然过期）',
+  docSaidBad.length === 0, JSON.stringify(docSaidBad));
 
 console.log('');
 if (failures.length) {

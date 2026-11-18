@@ -5053,10 +5053,11 @@ SCENARIOS.push({
       'var sr=h.shadowRoot;var wrap=sr.getElementById("wrap");var c=sr.getElementById("card");' +
       'var b=sr.getElementById("bubble");' +
       'function tickAt(hour){b.textContent="";b.classList.remove("show");' +
-      'h.dataset.sayPeriod="";h.dataset.sayLine="";' +
+      'h.dataset.sayPeriod="";h.dataset.sayLine="";h.dataset.sayFam="";h.dataset.sayBand="";' +
       'h.dispatchEvent(new CustomEvent("omitone:pet-idle-tick",{detail:{hour:hour}}));' +
       'return {sp:/show/.test(String(b.className)),txt:String(b.textContent||"")+"" ,' +
-      'per:String(h.dataset.sayPeriod||""),line:String(h.dataset.sayLine||"")};}' +
+      'per:String(h.dataset.sayPeriod||""),line:String(h.dataset.sayLine||""),' +
+      'fam:String(h.dataset.sayFam||""),band:String(h.dataset.sayBand||"")};}' +
       'function quiet(){h.dataset.saidAt=String(Date.now()-200000);}' +
       // 前提自证：三条会让她闭嘴的闸此刻都得是"允许说话"的形状，否则下面全是假绿
       'var o={hidden:document.hidden,drag:c.classList.contains("dragging"),' +
@@ -5064,6 +5065,14 @@ SCENARIOS.push({
       'quiet();o.dawn=tickAt(2);quiet();o.midday=tickAt(12);quiet();o.night=tickAt(23);' +
       // 同一桶连着两拍：上一句被排除掉，才会真的换一句
       'quiet();var first=tickAt(15);quiet();o.repeat={first:first.txt,second:tickAt(15).txt};' +
+      // 连着 24 拍（每拍都先"安静够久"）：两族并池之后要说得出"阶段那族真的走到过"，
+      //   也要数得出"最近三句不重样"。24 而不是 12：阶段那族在并池里占 5/9，
+      //   12 拍全躲开它的概率还有万分之几 —— 这不是洁癖，是这一族红一次就要人重跑一整趟。
+      'o.series=[];o.fams={};o.bandSeen={};o.stall=null;' +
+      'for(var i=0;i<24;i++){quiet();var s=tickAt(20);' +
+      'if(!s.sp||!s.txt){o.stall={i:i,sp:!!s.sp,fam:s.fam};break;}' +
+      'o.series.push(s.txt);o.fams[s.fam]=(o.fams[s.fam]||0)+1;' +
+      'o.bandSeen[s.band]=(o.bandSeen[s.band]||0)+1;}' +
       'b.classList.remove("show");return o;})()'
     );
     check('前提：这一趟三条"别说"闸都是开着的，且探针拍子真的落地（凌晨那一格必须亮）',
@@ -5083,6 +5092,33 @@ SCENARIOS.push({
     check('同一时段连着两拍也不重样（规则层的"上一句"真的接进了页面这一侧）',
       !!idleCtx && idleCtx.repeat.first.length > 0 && idleCtx.repeat.second !== idleCtx.repeat.first,
       JSON.stringify(idleCtx.repeat));
+
+    // ⑥-c2 好感阶段那一族（批次 104：用户「不同阶段的对话也分化一下」）。
+    //     ⚠️ 页面世界读不到 SAY 那张表（隔离区），所以这里比的还是**归因格**：
+    //       `sayFam` 说这一句抽自哪一族、`sayBand` 说当时是哪一阶段 —— 两格都由内容脚本在
+    //       **气泡真亮之后**才写，所以"两族都走到过"读的是真开口，不是计数器。
+    //     ⚠️ `band` 必须是三格之一：那一格空串意味着等级没读回来（老档／存档没到位），
+    //       这时阶段那族**按设计不参与**（不许把"不知道熟不熟"猜成生分话），
+    //       拿它当"两族都走到"的现场会是一次假绿。
+    var idleSeries = (idleCtx && idleCtx.series) || [];
+    var idleRecentDup = [];
+    for (var si = 3; si < idleSeries.length; si++) {
+      if (idleSeries.slice(si - 3, si).indexOf(idleSeries[si]) >= 0) idleRecentDup.push(si + ':' + idleSeries[si]);
+    }
+    check('前提：连着 24 拍每一拍都真亮了、也真说了话（中途闭嘴就把卡住的那一拍报出来）',
+      !!idleCtx && idleCtx.stall === null && idleSeries.length === 24,
+      JSON.stringify(idleCtx && (idleCtx.stall || { n: idleSeries.length })));
+    check('这一页的好感阶段读得回来（new/close/deep 三格之一；空串=等级没到位，下面两条不许当证据）',
+      ['new', 'close', 'deep'].indexOf(idleCtx && idleCtx.dawn.band) >= 0 &&
+      ['new', 'close', 'deep'].indexOf(idleCtx && idleCtx.midday.band) >= 0,
+      JSON.stringify(idleCtx && { dawn: idleCtx.dawn.band, fams: idleCtx.fams }));
+    check('熟不熟听得出来：24 拍里阶段那族与时段那族都开口过，且每一拍归因只落在这两格里',
+      !!idleCtx && (idleCtx.fams.bond || 0) >= 1 && (idleCtx.fams.period || 0) >= 1 &&
+      (idleCtx.fams.bond || 0) + (idleCtx.fams.period || 0) === 24,
+      JSON.stringify(idleCtx && idleCtx.fams));
+    check('最近三句之内不重样（并池之后只挡上一句会隔一句卡带，⑥-c 那条三时段断言也会随机红）',
+      idleSeries.length === 24 && idleRecentDup.length === 0,
+      JSON.stringify(idleRecentDup.slice(0, 3)));
 
     // ⑥-d 大事那几句在**页面这一侧**也点名得到（批次 65：升级／成就以前是两处各抄一句拼接）。
     //     存档从写入器（那一枚 `?ui=lite` 的扩展页）拨过来：主世界读不到 chrome.storage，

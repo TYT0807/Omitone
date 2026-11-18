@@ -1891,6 +1891,12 @@
   // ⚠️ 批次 65 起这一格不再只服务自言自语：升级／成就／日报那几族也从这里避让，
   //   因为用户听到的是"她连着两句同一句"，跟那一句出自哪一族无关。
   let pagePetLastLine = '';
+  // 最近**说出来**的几句（摸头／升级／成就也算，不只自言自语）。并池之后只挡上一句不够：
+  //   「凌晨抽到阶段那格 → 中午抽时段 → 深夜又抽回凌晨那一句」中间隔了一句，
+  //   人耳听着还是卡带，而按"三个时段三句不同"断言的测试会被这种隔一句的重复随机红。
+  //   留 3 句是权衡：并完两族池子 9 句，挡掉 3 句还剩 6 句可抽，远没到"憋得不说话"那一档。
+  const PAGE_PET_RECENT_LINES = 3;
+  let pagePetRecentLines = [];
   // 摸头那句同理（页面上连点时最容易撞重复）；与上面那份分开记，
   // 因为"刚自言自语完"和"上一句摸头话"是两码事，混在一起会把她自己的话挡掉。
   let pagePetLastPatLine = '';
@@ -1996,22 +2002,30 @@
     // 时段桶只有**分桶**那几族（idle / greet / season…）才说得通，平池留空串 ——
     // 不然探针会把"这一句是哪个钟点格抽的"读成一个根本没参与过选句的数。
     const period = (pool && !Array.isArray(pool)) ? String(game.periodOf((ctx || {}).hour) || '') : '';
-    return pagePetSayFrom(name, line, ms, period);
+    return pagePetSayFrom(name, line, ms, period, '', period ? 'period' : '');
   }
 
   /** 登记"这一句是哪一族、原话是什么"，然后说出来；**气泡真的亮了才登记**。
    *  写在 say 之前更坏：她压根没开口却登记成说过，测试拿它当证据就成假绿；
    *  被四条闸挡住时不覆盖，否则探针读到的是上一句的桶。
    *  @param {string} [period] 分桶那几族的时段格名；其余留空
+   *  @param {string} [band] 自言自语专用：好感阶段那一格名（new/close/deep）；其余留空
+   *  @param {string} [fam] 这一句抽自哪一族：'bond'（阶段）/ 'period'（时段）/ ''（两族都没参与）
+   *         ⚠️ **每一句都覆写**，包括空串 —— 留着上一句的归因，探针就会把"摸头那一句"
+   *           读成"阶段那一族又走过一次"（批次 61 同一族：归因格必须是当次那一拍的）。
    *  @returns {string} 真说出来的话；空串 = 气泡没亮（调用方什么都不记） */
-  function pagePetSayFrom(name, line, ms, period) {
+  function pagePetSayFrom(name, line, ms, period, band, fam) {
     const text = String(line || '');
     if (!pagePet || !text || !pagePetSay(text, ms)) return '';
     pagePetLastLine = text;
+    pagePetRecentLines.unshift(text);
+    if (pagePetRecentLines.length > PAGE_PET_RECENT_LINES) pagePetRecentLines.length = PAGE_PET_RECENT_LINES;
     try {
       pagePet.host.dataset.sayFrom = String(name);
       pagePet.host.dataset.sayLine = text;
       pagePet.host.dataset.sayPeriod = String(period || '');
+      pagePet.host.dataset.sayBand = String(band || '');
+      pagePet.host.dataset.sayFam = String(fam || '');
     } catch (e) {}
     return text;
   }
@@ -2032,8 +2046,17 @@
       if (pagePet.els.wrap.classList.contains('mode-hidden')) return '';
       if (pagePet.els.card.classList.contains('dragging')) return '';
       if (Date.now() - pagePetLastSaidMs() < PAGE_PET_IDLE_MIN_GAP_MS) return '';
-      // 归因（说了哪一句、哪一时段格）在 `pagePetSayLine` 里写 —— 只在她真的开口那一支。
-      return pagePetSayLine('idle', { hour: Number(hourOverride) }, 3200);
+      // 归因（说了哪一句、哪一时段格、哪一阶段、抽自哪一族）在下面写 —— 只在她真的开口那一支。
+      // ⚠️ 走 `pickIdleLine` 而不是通用的 `pickLine('idle')`：自言自语现在**两族并池**
+      //   （几点 + 熟到什么程度），只喂时段池的话阶段那几句永远说不上，
+      //   而等级拿错（读分数不读显示档）会让回退过的老档开口说生分话。
+      const game = petGameModule();
+      if (!game || typeof game.pickIdleLine !== 'function') return '';
+      const got = game.pickIdleLine(
+        { hour: Number(hourOverride), level: game.displayLevelOf(pagePetBond) },
+        null, pagePetRecentLines);
+      if (!got || !got.line) return '';
+      return pagePetSayFrom('idle', got.line, 3200, got.period, got.band, got.from);
     } catch (e) { return ''; }
   }
 
