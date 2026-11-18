@@ -757,6 +757,9 @@ function checkTestCounts() {
   var assertionsChecked = false;
   var itestChecked = false;
   var selfCheckChecked = false;
+  // ⚠️ 同上一条教训：这两格也必须声明在所有用到它的代码块之前（下面「N 场景 / M 项」那一段才置位）。
+  var scenePairChecked = false;
+  var scenePairHits = 0;
 
   var src = read('tools/browser-e2e.js');
   var actualScenes = (src.match(/SCENARIOS\.push\(/g) || []).length;
@@ -959,12 +962,64 @@ function checkTestCounts() {
             }
           });
         });
+
+        // ---- 「N 场景 / M 项」成对声明：M 等于账本当前项数时，N 必须等于代码里的场景数 ----
+        //
+        // 为什么要这一条（2026-11-18，批次 111）：上面那段场景尺只认 **带「个」的** `N 个场景`，
+        // 而公开面写基线用的是不带「个」的那一族（`136 场景 / 1556 项`）。于是加/删一个场景后
+        // **那一族一条都不会红** —— 与批次 105 那族「恒绿的尺」同一形状（声明覆盖的范围与实际
+        // 走的分支之间的差，不会自己喊出来，AGENTS §2 #18）。
+        //
+        // ⚠️ **为什么不干脆把尺放宽成 `N 个?场景`**：实测会一次报出 28 条假红，而假红里大半
+        //   根本不是在承诺当前基线 —— `402 场景` 是 HTTP 状态码、`104 场景一个都没跑` 是失败现场、
+        //   `5 场景` 是定向筛选跑掉的条数、`批次 74 场景内` 是编号、`136 场景` 后面接的是**当时的**项数。
+        //   **会误报的守卫和没有守卫一样害人**（AGENTS §5），所以不放宽。
+        //
+        // 判据因此只做一件事：**看这句话说的是不是"现在"**。同一处并排写的 `M 项` 等于账本当前读数
+        // （1556），才认定这句在承诺现行基线，于是要求 `N` 等于代码场景数。历史句写的是
+        // `104 场景 / 1280 项`、`136 场景 / 1529 项`，M 对不上就天然出界 —— 既不用给它们贴
+        // 「历史计数」标记，也不用把判据改松（口径同 `tools/audit-switch-budget.js` 的"承诺 vs 引述旧数"）。
+        //
+        // ⚠️ 反面的一条**卫生检查**：若整套文档里一对「与当前项数并排的场景数」都扫不到，这条尺
+        //   等于不存在（措辞被整体改写就会静默脱检，那是最坏的一种绿），必须响。
+        var pairRe = /(\d{1,4})\s*个?场景\s*[/／]\s*(\d{1,5})\**\s*项/g;
+        var pairHits = 0;
+        var pairFiles = {};
+        targets.forEach(function (t) {
+          var file = t[0], text = t[1];
+          if (text === null) { try { text = read(file); } catch (e) { return; } }
+          if (!text) return;
+          text.split(/\r?\n/).forEach(function (line) {
+            pairRe.lastIndex = 0;
+            var mp;
+            while ((mp = pairRe.exec(line)) !== null) {
+              if (Number(mp[2]) !== actualAssertions) continue;   // 引述的是别的日子那份账，不算承诺
+              pairHits++;
+              pairFiles[file] = (pairFiles[file] || 0) + 1;
+              if (Number(mp[1]) !== actualScenes) {
+                problems.push(file + ' 写的是「' + mp[0] + '」—— 项数对得上当前账本（' + actualAssertions +
+                  '），那同一处的场景数就该是代码里的 ' + actualScenes + '，不是 ' + mp[1]);
+              }
+            }
+          });
+        });
+        scenePairChecked = true;
+        scenePairHits = pairHits;
+        if (pairHits === 0) {
+          problems.push('「N 场景 / M 项」这一族一条都没扫到（当前项数 ' + actualAssertions +
+            '）—— 要么基线写法被整体改写、这条尺已等于不存在，要么场景数与项数被拆到两处说话；' +
+            '请把它俩并排写回同一处（AGENTS §4：改了承诺的数字，用户看得见的每一页都要跟着改，而且要有闸）');
+        }
       }
     } catch (e) {}
   }
 
   var sceneNote = '场景数与代码一致: ' + actualScenes + ' 个' +
     (assertionsChecked ? '；断言总数与 e2e 实测一致' : '（断言总数未校验：还没跑过 e2e，跑一次即可）') +
+    // ⚠️ 这一格要说清**扫到几对**：一条都没扫到时上面已经报错，但"扫到 1 对"与"扫到 8 对"
+    //    是完全不同的覆盖面 —— 数字印出来，下一次改措辞的人才有东西可对照。
+    (scenePairChecked ? '；「N 场景 / M 项」并排承诺 ' + scenePairHits + ' 处逐个与代码同数'
+                      : '（并排的场景数未校验：还没跑过 e2e 交账）') +
     (itestChecked ? '；集成条数与实测一致' : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
     (selfCheckChecked ? '；自检项数与实际一致' : '（自检项数未校验：守卫失效）') +
     '（CHANGELOG 只查最新一段，历史记录不查）';
