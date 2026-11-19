@@ -5054,7 +5054,7 @@ async function testCourseHomeProbeSignals() {
 }
 
 async function testPetChatRequest() {
-  console.log('\n[26] 宠物聊天：请求构造纯函数 + 发送层接线（批次 122）');
+  console.log('\n[26] 宠物聊天：请求构造纯函数 + 发送层接线（批次 123）');
 
   var read = function (rel) {
     return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');

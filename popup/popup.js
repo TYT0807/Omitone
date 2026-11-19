@@ -399,7 +399,7 @@ async function testApiConnectionDirect(cfg) {
   return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
 }
 
-// ── 宠物聊天（批次 122）────────────────────────────────────────────────────
+// ── 宠物聊天（批次 123）────────────────────────────────────────────────────
 // 弹窗里「聊」那枚按钮的唯一请求出口。复用答题同一条 api_fetch 链路（后台代理 +
 // 用户自己配置的 Key/模型），不接任何第三方中转。三个 apiType 分支与
 // testApiConnectionDirect 的三胞胎同族 —— 改一处必须三处一起改的规矩在这里同样适用。
