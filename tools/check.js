@@ -3663,6 +3663,120 @@ function checkProfileSweep() {
 }
 
 // ---------------------------------------------------------------------------
+// 34. 实验支线的发布闸（真源 tools/channel-gate.js）
+//     用户口径（2026-11-19）：1.3.1 是**实验版支线**，「不提供直接下载」，
+//     要等现场把课刷完、进度复账没被收回才考虑转正。
+//     ⚠️ 这一族事故不报错：在实验支线上跑 `replace-asset`，它会按**当前工作树的版本号**
+//     取 dist 里那个包（实验版那份），却挂到线上固定的附件名 `omitone.zip` 上 ——
+//     每条命令都打印成功，而 README 那条永久直链从此给所有人发实验版。
+//     五格各自承重，摘掉任意一格都要红：
+//       a 闸自己的逐格对照全绿，且格数没被人删（口径同第 33 项）
+//       b release 与 replace-asset 两条**真的问了闸**，且问在联网之前
+//       c 只读的 verify 不许被挡（§3.7 要求发版必跑它，挡死=造一条恒红的守卫）
+//       d 门面那句「不提供直接下载」在实验通道要在、转正之后要没 —— 两格反向各红一次
+//       e AGENTS §3.8 那条规矩还指着这份真源
+// ---------------------------------------------------------------------------
+function checkChannelGate() {
+  var bad = [];
+  var cells = null;
+
+  // ---- a. 闸自带的逐格对照 ----
+  var CELLS_MIN = 15;
+  if (!exists('tools/channel-gate.js')) {
+    fail('实验支线的发布闸真源不存在：tools/channel-gate.js（AGENTS §3.8 那条规矩落不到命令上）');
+    return;
+  }
+  var gatePath = path.join(__dirname, 'channel-gate.js');
+  var gOut = '';
+  var gStatus = null;
+  var gErr = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var gr = spawnSync(process.execPath, [gatePath, '--selftest'], { encoding: 'utf8', timeout: 30000 });
+    gErr = gr.error || null;
+    gOut = String(gr.stdout || '') + String(gr.stderr || '');
+    gStatus = gr.status;
+    if (!gr.error || gr.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  if (gErr) {
+    bad.push('通道闸的逐格自证没跑成' + (gErr.code === 'ETIMEDOUT' ? '（30 秒没返回）' : '（已重试一次）') +
+      '：' + String(gErr));
+  } else {
+    var gm = gOut.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (gStatus !== 0 || !gm) {
+      bad.push('通道闸自证退出码 ' + gStatus + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(gOut.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (Number(gm[1]) !== Number(gm[2])) {
+      bad.push('通道闸自证自己报了 ' + gm[1] + ' / ' + gm[2] + ' 两数不等，却退出 ' + gStatus +
+        ' —— 有格没过还被当成通过');
+    } else if (Number(gm[2]) < CELLS_MIN) {
+      bad.push('通道闸对照格数从下限 ' + CELLS_MIN + ' 掉到 ' + gm[2] + ' —— 删掉的那格不会自己喊，' +
+        '少一格「放行」的对照，闸把正式版一起挡死也照样绿');
+    } else {
+      cells = Number(gm[2]);
+    }
+  }
+
+  // ---- b + c. 发版工具那两半（先剥注释：头部大段散文写着 release / replace-asset，拿原文数就是把散文当调用） ----
+  var relCode = stripComments(read('tools/github-release.js'));
+  if (relCode.indexOf("require('./channel-gate.js')") === -1) {
+    bad.push("tools/github-release.js 没有 require 通道闸 —— 闸写着却没人问，等于还是那句「别跑这条命令」");
+  }
+  [['cmdRelease', 'release'], ['cmdReplaceAsset', 'replace-asset']].forEach(function (pair) {
+    var body = fnBodyAt(relCode, pair[0]);
+    if (!body) { bad.push('发版工具里找不到 ' + pair[0] + ' 的函数体 —— 那一发没法确认它问了闸'); return; }
+    var ask = body.indexOf("blockReasonForRepo('" + pair[1] + "')");
+    if (ask === -1) {
+      bad.push(pair[0] + ' 没问通道闸（' + pair[1] + '）—— 实验支线上这条命令会照样把包推上线');
+    } else {
+      var netAt = body.indexOf('await api(');
+      if (netAt !== -1 && netAt < ask) {
+        bad.push(pair[0] + ' 的闸问在**第一次联网之后** —— 前面的 GET 已经动过远端了，挡要挡在最前面');
+      }
+      if (body.indexOf('process.exitCode = 1') < ask) {
+        bad.push(pair[0] + ' 挡下之后没有非零退出 —— 打印一句红字却回 0，链式命令会当成成功继续跑');
+      }
+    }
+  });
+  var verifyBody = fnBodyAt(relCode, 'cmdVerify');
+  if (!verifyBody) {
+    bad.push('发版工具里找不到 cmdVerify 的函数体 —— 「只读核验不许被挡」那一格没处可查');
+  } else if (verifyBody.indexOf('blockReasonForRepo') !== -1) {
+    bad.push('cmdVerify 被接进了通道闸 —— verify 是 §3.7 要求**发版必跑**的只读核验，' +
+      '把它挡死就得到一条恒红的发版流程（会误报的守卫和没有守卫一样害人）');
+  }
+
+  // ---- d. 门面那句实验口径：在的时候必须有，转正之后必须没 ----
+  // ⚠️ 通道判定**用闸那一把尺**，不在这里再写一遍 /experimental/ ——
+  //    两份口径各判各的，正是「写入口与读出口两侧都要过同一把尺」那一族（AGENTS §2 #18）
+  var gate = require('./channel-gate.js');
+  var isExp = gate.isExperimental(gate.readChannelNames().version_name);
+  var readme = read('README.md');
+  var hasNoDownload = readme.indexOf('不提供直接下载') >= 0;
+  if (isExp && !hasNoDownload) {
+    bad.push('工作树是实验版（version_name 带 experimental），README 却没有那句「不提供直接下载」—— ' +
+      '同学点开这一页会以为那条直链给的就是这一版');
+  }
+  if (!isExp && hasNoDownload) {
+    bad.push('README 还写着「不提供直接下载」，但 version_name 已经没有 experimental 了 —— ' +
+      '转正之后这句变成假话，而且它正好把用户挡在能下载的那一步外面');
+  }
+
+  // ---- e. AGENTS 那条规矩指着这份真源 ----
+  var agents = read('AGENTS.md');
+  if (agents.indexOf('tools/channel-gate.js') === -1) {
+    bad.push('AGENTS.md §3.8 没把 tools/channel-gate.js 写成真源 —— 下一轮接手的人只会去找那句文字规矩');
+  }
+
+  if (bad.length) {
+    fail('实验支线发布闸没接牢（这族事故的表现是「下载的人装到了实验版」，而每条命令都打印成功）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
+    'release / replace-asset 问在联网之前，verify 照旧放行，README 实验口径与 version_name 同进同退）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -3700,6 +3814,7 @@ checkSwitchBudgetClaim();
 checkCourseProbeClaims();
 checkManualLogNames();
 checkProfileSweep();
+checkChannelGate();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

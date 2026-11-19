@@ -6,7 +6,8 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.3.0-orange)
+![版本](https://img.shields.io/badge/版本-1.3.1-orange)
+![通道](https://img.shields.io/badge/通道-实验版%20·%20未发布-yellow)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 
@@ -15,6 +16,11 @@
 ### [**⬇ 点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)
 
 [**📖 在线看图解说明书**](https://tyt0807.github.io/Omitone/docs/manual.html) &nbsp;·&nbsp; [**下载 PDF 版**](https://github.com/TYT0807/Omitone/releases/latest/download/Omitone-manual.pdf)
+
+> 🧪 **这一页属于 `exp/1.3.1` 实验分支，上面那条链接下载的仍然是 1.3.0 正式版。**
+> 实验版**不公开发布、不提供直接下载**：这一支线的改动要先在真课上跑到「刷课确定没有问题」，
+> 才并回稳定版、发出去给同学。要装插件就照下面三步装稳定版；
+> 想帮着测重度改动，再从这个分支 `npm run build` 之后加载 `dist/omitone-1.3.1/` 那一份。
 
 <sub>**不懂 GitHub 也没关系** —— 第一个链接点下去，浏览器会自己开始下载：
 不用注册、不用登录、不用点绿色的 Code 按钮、不用装 Git。<br>
@@ -52,6 +58,26 @@
 </p>
 
 </div>
+
+<details>
+<summary><strong>1.3.1 实验版（未发布）· 这一支在动什么 · 怎么才算转正</strong> —— 只有切到这一条分支才看得见</summary>
+
+**这一版没有下载口。** `exp/1.3.1` 是从稳定版切出来的实验支线，线上 Releases 那一页仍然只有 1.3.0；
+上面那两个下载链接（插件包与说明书 PDF）拿到的都还是 1.3.0。
+
+**切出来之后落在这条支线上的**（一句话一条，都是「没遇到过就感觉不到变化」的那一类）：
+
+- 思考强度改成三个场景各设上下限，默认发出去的字节一个不变
+- 新用户点「检测连接」终于有结果了 —— 以前弹窗与后台各拿一把尺，新用户永远对不上
+- 跑完一轮测试自动收掉临时浏览器，作者的 C 盘不再被它堆满
+- 弹窗一打开不再先撞一大段说明：口径留两句，其余折进一行小字
+
+**转正条件**：现场把剩下的课按串行刷完，用同一口径复账过一轮进度、确认没有被事后收回，
+才把这一支并回稳定版、发版、换附件。在那之前**不发 Release、不换附件、不推 GitHub**。
+
+逐条来龙去脉在 [CHANGELOG.md](CHANGELOG.md) 的 1.3.1 段。
+
+</details>
 
 <details>
 <summary><strong>1.3.0 稳定版（2026-11-12）动了什么 · 怎么升级</strong> —— 明细不堆在门面，点开看</summary>

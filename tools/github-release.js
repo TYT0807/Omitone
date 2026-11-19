@@ -29,6 +29,14 @@
  *   线上少了批次 38/40/44 的三段，源文件少了批次 33/34 的四段，而且都没人报警）。
  *   规矩：**说明只改源文件，然后 `notes` 把源文件推上去**；`verify` 会逐字比那两份。
  *
+ * ⚠️ **通道闸（`tools/channel-gate.js`）**：`release` 与 `replace-asset` 这两条会改
+ *   「同学点下载拿到的那一份字节」，所以它们先看 `manifest.version_name` ——
+ *   带 `experimental`（当前工作树是 1.3.1 实验支线）就当场挡下并给出口，**不联网、不读令牌**。
+ *   这一条不是装饰：`replace-asset` 取的本地包是按**当前工作树的版本号**推的，
+ *   在实验支线上跑它，上传的就是实验版那份，而附件名仍是线上的 `omitone.zip` ——
+ *   命令照样打印成功，README 那条永久直链却从此给所有人发实验版（AGENTS §3.8）。
+ *   `verify` / `notes` / `push` 不受影响（只读核验是发版流程**必跑**的一发，挡死它就是造一条恒红的守卫）。
+ *
  * 令牌：优先读环境变量 GITHUB_TOKEN，其次读**用户主目录**下的
  *   `~/.omitone-release.ghtoken` —— 用户主目录下的一个文件。
  *
@@ -58,6 +66,7 @@ var execFileSync = require('child_process').execFileSync;
 var crypto = require('crypto');
 
 var ROOT = path.join(__dirname, '..');
+var channelGate = require('./channel-gate.js');
 var OWNER = 'TYT0807';
 var REPO = 'Omitone';
 var API = 'https://api.github.com';
@@ -390,6 +399,9 @@ async function cmdPush(files, messageFile, deletions) {
 // ---------------------------------------------------------------------------
 async function cmdRelease(tag, notesFile) {
   if (!tag) throw new Error('release 需要 tag，例如 v1.1.2');
+  // 通道闸：实验版支线不许公开建 Release（AGENTS §3.8）—— 挡在联网与读说明之前
+  var gate = channelGate.blockReasonForRepo('release');
+  if (gate) { console.log(gate); process.exitCode = 1; return; }
   if (!notesFile) throw new Error('release 需要 --notes-file');
   var body = fs.readFileSync(path.resolve(ROOT, notesFile), 'utf8').replace(/\s+$/, '');
 
@@ -507,6 +519,10 @@ async function cmdNotes(tag, notesFile) {
 // ---------------------------------------------------------------------------
 async function cmdReplaceAsset(tag) {
   if (!tag) throw new Error('replace-asset 需要 tag，例如 v1.1.6');
+  // 通道闸：这一份会按**当前工作树的版本号**取 dist 里的包，却挂到线上那个固定附件名上 ——
+  // 在实验支线上跑它，等于把实验版发成同学下载的官方版（AGENTS §3.8）
+  var gateAsset = channelGate.blockReasonForRepo('replace-asset');
+  if (gateAsset) { console.log(gateAsset); process.exitCode = 1; return; }
 
   var version = manifestVersion();
   var wanted = ASSETS.map(function (a) {
@@ -851,6 +867,7 @@ async function cmdVerify(tag) {
     console.log('  node tools/github-release.js verify <tag>');
     console.log('  node tools/github-release.js replace-asset <tag>   # 附件过期时按同名替换，不必重发整版');
     console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');
+    console.log('  （实验支线上 release / replace-asset 会被 tools/channel-gate.js 挡下：见 AGENTS §3.8）');
     process.exitCode = 1;
   }
 })().catch(function (e) {
