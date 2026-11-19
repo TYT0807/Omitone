@@ -106,7 +106,7 @@ function skipOneArg(src, pos) {
  * 这种**拼出来的**名字（`src/page/20-dom.js:184`、`src/page/70-quiz-flow.js` 少答那一族）——
  * 只取第一段会把三元运算的第二个名字漏掉，手册教它时就是一次假红。
  */
-function spanLiterals(src, pos, stops, depth0Only) {
+function spanLiterals(src, pos, stops, depth0Only, keepShape) {
   var out = [];
   stops = stops || ',)';
   var depth = 0;
@@ -130,7 +130,12 @@ function spanLiterals(src, pos, stops, depth0Only) {
       // （会误报的守卫和没有守卫一样害人，AGENTS §5）。
       // 所以嵌套那一格改按**它长在什么位置上**判：三元／拼接的延续位算名字，调用实参与数组元素不算。
       var nested = depth0Only && depth > 0 && !isPhraseContinuation(src, i);
-      if (v.length >= 3 && /[a-z]/i.test(v) && v.indexOf('\n') < 0 && !nested) out.push(v);
+      // `keepShape`（第 35 项要用）：那条 `/[a-z]/i` 的形状筛是为了**不让选择器混进日志名**，
+      // 但它会把**整句中文**的日志名一起丢掉 —— 实测 `检测到其他浏览器扩展注入了页面资源`
+      // 从 418 条里消失，而那句真发过（`src/page/40-media.js:315`）。
+      // 本工具那一族按「短 + 不含换行」筛够用；医生规则表要的是**全都要**，所以把这一格做成可选，
+      // 默认关（本工具的判据与手册对账的期望表一个字没动）。
+      if (v.length >= 3 && (keepShape || /[a-z]/i.test(v)) && v.indexOf('\n') < 0 && !nested) out.push(v);
       i = lit.end - 1;
     }
   }
@@ -462,6 +467,9 @@ module.exports = {
   nameLiterals: nameLiterals,
   skipOneArg: skipOneArg,
   spanLiterals: spanLiterals,
+  // 第 35 项（audit-diagnose-needles.js）要自己走一遍"注释 vs 字面量"的状态机，
+  // 复用这一把而不是抄第二份 —— 两份扫描器必然分叉（AGENTS §2 #4 同一口径）。
+  literalAt: literalAt,
   evaluate: evaluate,
   matches: matches,
   isCheckable: isCheckable,

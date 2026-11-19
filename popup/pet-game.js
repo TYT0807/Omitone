@@ -443,7 +443,19 @@
   // 页面上她**自己动**的那几个小动作（不占素材，全是 CSS 形变，动画名在 content.js 的样式里）。
   // 弹窗那侧的动作库（ANIMS）是给人点的，这一份是给她自己排的 —— 时长短、不抢视线。
   var MOTIONS = ["tilt", "hop", "spin", "wiggle", "stretch"];
-  var ART = { SKINS: SKINS, FACES: FACES, POSES: POSES, MOTIONS: MOTIONS };
+  // 「医生」体检那两身行头 —— **不新增素材**，取的就是 SKINS 里已有的两张（白大衣 pet-e2 / 制服外套 pet-e6）。
+  // 阶段语义照用户那句「诊断穿医生装 → 修复中穿侦探装 → 修完换其他衣服」：
+  //   diagnose = 读数、给结论（医生）
+  //   repair   = 她正动手查这一条线（侦探）
+  //   收尾     = 回到用户自己挑的那一身 —— 这一族**只临时改图，绝不写 OUT_KEY/SRC_KEY 存档**，
+  //              否则用户选好的衣服会被体检悄悄换掉（批次 61 那一族「换姿势把衣服一起换了」同形）。
+  // ⚠️ file 必须是 SKINS 里已有的那张：写一张池外的图，立绘册看不到她却能穿到她身上，
+  //    而第 20 项「孤儿立绘」那一格会当场点名（那是它该红的形状）。
+  var ROLES = {
+    doctor: { name: '医生', file: 'pet-e2.png', prop: '🩺', ms: 12000 },
+    detective: { name: '侦探', file: 'pet-e6.png', prop: '🕵️', ms: 12000 }
+  };
+  var ART = { SKINS: SKINS, FACES: FACES, POSES: POSES, MOTIONS: MOTIONS, ROLES: ROLES };
 
   function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
 

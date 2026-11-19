@@ -1,8 +1,10 @@
-// ── 四季主题 / 点击水纹 / 彩蛋小人 ──────────────────────────────────────────
+// ── 四季主题 / 点击水纹 / 吉祥物角色 ──────────────────────────────────────
 //
 // 纯取乐，与刷课逻辑**零耦合**：不读配置、不写存储、不碰 page.js。
 // 外层包 try/catch —— 任何一步出错都静默放弃，绝不能让装饰拖垮弹窗。
 // 四季是**每次打开重掷**，刻意不做持久化（用户要的就是"每次都不同"）。
+// 1.3.1 起：设置页（data-ui=fancy）只跑四季/水纹装饰，**不再画她**；
+// 角色本体只在逗玩窗口（body.im）里现身 —— 正主在刷课页右下角（content.js）。
 (function omFancy() {
   try {
     // 精简模式下整套角色逻辑不启动 —— 不是"藏起来"，是**真不跑**
@@ -237,12 +239,9 @@
     }
     function alive(t) { return t === petSeq; }
 
-    // ── 出场：常规"淡入落座"；**1% 概率**才走"吊边 → 攀爬 → 落座"的彩蛋 ──
-    // 每次打开独立重掷、不记忆 —— "再开一次"就是重新抽一次。
-    var EASTER_RATE = 0.01;
-    // ?egg=1 可以手动看一次彩蛋（调试/预览用），不影响 1% 的随机
-    var isEgg = new URLSearchParams(location.search).get("egg") === "1" || Math.random() < EASTER_RATE;
-    window.__omitoneEgg = isEgg;
+    // ── 出场 ──
+    // 1.3.1 起：出场彩蛋（1% 概率吊边攀爬、指着更新栏）随「设置页不再画她」一起拆掉 ——
+    // 它的整个舞台（更新栏、显示小人按钮）都在设置页，正主搬走之后没有地方可演。
 
     function setPose(name, holdMs, token) {
       var t = token || newSeq((holdMs || 0) + 250, true);
@@ -284,39 +283,9 @@
       });
     } catch (e) {}
 
-    if (isEgg && !isEcoMotion()) {
-      var eggSeq = newSeq(11000, false);
-      setTimeout(function () {                        // 1.4s：被发现挂在边缘
-        if (!alive(eggSeq)) return;
-        mascot.classList.add("show");
-        mascot.style.transform = "translateY(-96px)";
-        pose("hang");
-      }, 1400);
-      setTimeout(function () {                        // 3.0s：挣扎着往下爬
-        if (!alive(eggSeq)) return;
-        mascot.style.transform = "translateY(-58px)";
-        pose("climb");
-      }, 3000);
-      setTimeout(function () {                        // 4.2s：落座
-        if (!alive(eggSeq)) return;
-        mascot.style.transform = "";
-        pose("sit");
-      }, 4200);
-      setTimeout(function () {                        // 5.2s：指着更新栏
-        if (!alive(eggSeq)) return;
-        pose("point");
-        if (!isUpdateMuted()) say("要检查更新吗？", 4300);
-        else sayLine("greet", null, 4300);
-      }, 5200);
-      setTimeout(function () {                        // 9.5s：收尾
-        if (!alive(eggSeq)) return;
-        pose("happy");
-        mascot.classList.add("show");            // 彩蛋收尾必须回到可见状态
-        mascot.style.transform = "";
-      }, 9500);
-    } else {
-      // 精美模式下 0.8 秒淡入。之前"默认不出现"是为了彩蛋的意外感，
-      // 但结果是工具条和彩蛋都够不着 —— 可用性优先，改成默认现身。
+    // 逗玩窗口里 0.8 秒淡入落座。设置页不再画她（1.3.1 起）——
+    // 正主在刷课页右下角，弹窗侧唯一能见到她的地方是「打开逗玩窗口」开的 ?play=1。
+    if (document.body.classList.contains("im")) {
       var entrySeq = newSeq(1050, false);
       setTimeout(function () {
         mascot.classList.add("show");
@@ -341,13 +310,9 @@
             setPose("sad", 2600);
             sayLine("nightWarn", null, 2800);
           } catch (e) {}
-        }, isEgg ? 10000 : 1400);   // 彩蛋在演的时候晚点说，别抢台词
+        }, 1400);
       }
     } catch (e) {}
-
-    // 通用触发：悬停「检测更新」→ 指过去 1.8 秒
-    var updLink = document.getElementById("checkUpdate");
-    if (updLink) updLink.addEventListener("mouseenter", function () { setPose("point", 1800); });
 
     // ── 悬停工具条 / 双击收起 / 换装 ──────────────────────────────────────
     var OUT_KEY = "omitone.pet.outfit";
@@ -359,9 +324,6 @@
     var SKINS = ART.SKINS;
     var FACES = ART.FACES;
     var POSES = ART.POSES;
-    // 穿着别的衣服时，「姿」只在这几种身体姿态之间切，不换图 ——
-    // 换姿势图会把衣服一起换回默认装束（用户报的「点姿势怎么换衣服了」）。
-    var POSE_STATES = ["sit", "happy", "point", "sad"];
     // 动作库：不占素材，全是 CSS 形变（+ 一个头顶字符）。第三个值 = 停留时长。
     var ANIMS = [
       ["spin", "转圈", 950], ["jump", "蹦一下", 760], ["shake", "摇头", 1000],
@@ -816,9 +778,230 @@
       });
     }
 
-    // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
+    // ── 本地体检「诊」（批次 130）──────────────────────────────────────────
+    // 判断层在 libs/diagnose.js（上课页她自己开口、这里、集成测试共用同一份规则）。
+    // 这一层只做三件事：把日志交出去 → 把结论画出来（条数/长度已在判据层限死）→
+    // 把「动手」转交给 popup.js 挂的那两枚现成按钮。**这里不点任何东西、不改任何配置。**
+    //
+    // 换装巧思（用户点单的原话：医生装→侦探装→修完换其他衣服）：
+    //   诊断中 = ROLES.doctor（白大褂那张），点下修复按钮 = ROLES.detective（制服那张），
+    //   两拍各 12 秒后自动换回她自己的衣服。
+    // ⚠️ 换装**绝不写** OUT_KEY / SRC_KEY —— 那两格是用户自己挑的存档，
+    //    为了一个彩蛋把人家的衣服改掉是 bug，不是巧思（同一族见「已完成任务重学」不许顺手覆盖配置）。
+    var diagPanel = document.getElementById("petDiag");
+    var diagLog = document.getElementById("petDiagLog");
+    var diagMeta = document.getElementById("petDiagMeta");
+    var diagAskBtn = document.getElementById("petDiagAsk");
+    var roleProp = document.getElementById("petRoleProp");
+    var diagOpen = false;
+    var diagBusy = false;
+    var diagLast = null;          // 最近一次 analyze 的结果，「让她解释」拿它算摘要
+    var diagExplain = "";         // 模型那句人话（重画时还要用，留在内存）
+    var roleTimer = 0;
+    var roleSavedSrc = "";        // 穿上角色装之前那一张图，收工要换回它
+    var ROLES = ART.ROLES || {};
+
+    /** 穿上某个角色的衣服。**只改 <img src>**，12 秒后原样换回来。 */
+    function dressRole(roleKey) {
+      var role = ROLES[roleKey];
+      var art = mascot.querySelector(".pet-art");
+      if (!role || !art) return false;
+      if (!roleTimer) roleSavedSrc = art.getAttribute("src") || "";
+      art.setAttribute("src", role.file);
+      playMotion(art);
+      mascot.setAttribute("data-role", roleKey);
+      if (roleProp) { roleProp.textContent = role.prop || ""; roleProp.classList.add("show"); }
+      clearTimeout(roleTimer);
+      roleTimer = setTimeout(function () { undressRole(); }, Number(role.ms) > 0 ? Number(role.ms) : 12000);
+      return true;
+    }
+    function undressRole() {
+      clearTimeout(roleTimer);
+      roleTimer = 0;
+      var art = mascot.querySelector(".pet-art");
+      // 换回来时只认"进来时那一张"，中途用户自己换过衣服就不许覆盖他的选择
+      if (art && roleSavedSrc && art.getAttribute("src") !== roleSavedSrc) art.setAttribute("src", roleSavedSrc);
+      roleSavedSrc = "";
+      mascot.removeAttribute("data-role");
+      if (roleProp) roleProp.classList.remove("show");
+    }
+
+    function hhmmDiag(ms) {
+      if (!(ms > 0)) return "";
+      var d = new Date(ms);
+      function p(n) { return (n < 10 ? "0" : "") + n; }
+      return p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
+    function addDiagRow(cls) {
+      var row = document.createElement("div");
+      row.className = "pet-chat-row " + cls;
+      diagLog.appendChild(row);
+      // 有界的第二道把关：判据层最多交 4 条，这里再兜一次"整卡不超过 8 行"，
+      // 免得将来谁把 MAX_FINDINGS 调大之后面板直接溢出。
+      while (diagLog.children.length > 8) diagLog.removeChild(diagLog.firstChild);
+      return row;
+    }
+
+    /** 把一次 analyze 的结果画进卡片（先清后画，全走 textContent —— 日志里出现什么字都只是字）。 */
+    function renderDiag(res) {
+      if (!diagLog) return;
+      diagLog.textContent = "";
+      var s = (res && res.stats) || {};
+      var head = addDiagRow("pet-diag-sum");
+      if (!res || res.verdict === "unknown") {
+        head.classList.add("pet-diag-unknown");
+        head.textContent = (res && res.note) || "日志读不出 —— 读不出不等于没问题，下面那句结论不能当真";
+        return;
+      }
+      var seen = "看了 " + (s.inWindow || 0) + " 条（这 " + Math.max(1, Math.round((s.windowMs || 0) / 60000)) + " 分钟）";
+      if (res.verdict === "healthy") {
+        head.classList.add("pet-diag-note");
+        head.textContent = "没发现要处理的事。" + seen + "，其中有过推进的记录。";
+      } else if (res.verdict === "note") {
+        head.textContent = "只是报个平安，没有要处理的。" + seen + "。";
+      } else {
+        head.textContent = seen + "，" + (res.findings || []).length + " 条要处理" +
+          (res.totalRules > (res.findings || []).length ? "（还有 " + (res.totalRules - res.findings.length) + " 条没地方放）" : "") + "。";
+      }
+      (res.findings || []).forEach(function (f) {
+        var row = addDiagRow("pet-diag-item sev" + (typeof f.severity === "number" ? f.severity : 1));
+        var b = document.createElement("b");
+        b.textContent = f.title + "（" + f.count + " 次" + (f.lastAt ? "，最后 " + hhmmDiag(f.lastAt) : "") + "）";
+        row.appendChild(b);
+        var why = document.createElement("span");
+        why.className = "pet-diag-why";
+        why.textContent = f.advice;
+        row.appendChild(why);
+        if (f.evidence) {
+          var ev = document.createElement("span");
+          ev.className = "pet-diag-ev";
+          ev.textContent = f.evidence;
+          row.appendChild(ev);
+        }
+        if (f.action) {
+          var btn = document.createElement("button");
+          btn.type = "button";
+          btn.setAttribute("data-diag-act", f.action);
+          btn.textContent = f.action === "reload" ? "重载这一页" : "去设置里补";
+          row.appendChild(btn);
+        }
+      });
+      if (diagExplain) {
+        var ex = addDiagRow("pet-diag-item pet-diag-say");
+        ex.textContent = diagExplain;
+      }
+    }
+
+    async function runDiag() {
+      if (!diagPanel || !diagLog || diagBusy) return;
+      diagBusy = true;
+      if (diagMeta) diagMeta.textContent = "医生正在翻日志…";
+      // 第一拍换医生装（诊断中）；换装失败（素材没入池）也不影响结论
+      dressRole("doctor");
+      var logs = [];
+      try {
+        logs = typeof window.omitonePetDiagReadLogs === "function" ? await window.omitonePetDiagReadLogs() : [];
+      } catch (eDiag) {
+        logs = [];
+      }
+      if (logs && logs.error) logs = [];
+      var lib = (typeof self !== "undefined" && self.OmitoneDiagnose) || null;
+      diagLast = lib && typeof lib.analyze === "function"
+        ? lib.analyze(logs, { now: Date.now() })
+        : { verdict: "unknown", findings: [], stats: {}, note: "体检规则没加载上（libs/diagnose.js 缺失）" };
+      diagExplain = "";
+      renderDiag(diagLast);
+      if (diagMeta) {
+        diagMeta.textContent = diagLast.verdict === "unknown" ? "读不出 · 不联网"
+          : (diagLast.verdict === "issue" ? "有 " + (diagLast.findings || []).length + " 条 · 只读本地" : "只读本地 · 不花钱");
+      }
+      diagBusy = false;
+    }
+
+    function openDiag() {
+      if (!diagPanel || diagOpen) return;
+      setPose("sit");
+      diagPanel.classList.add("show");
+      diagPanel.setAttribute("aria-hidden", "false");
+      diagOpen = true;
+      runDiag();
+    }
+    function closeDiag() {
+      if (!diagPanel || !diagOpen) return;
+      diagPanel.classList.remove("show");
+      diagPanel.setAttribute("aria-hidden", "true");
+      diagOpen = false;
+      undressRole();      // 关上卡片 = 这一轮结束，不许把医生装留在身上
+    }
+
+    if (diagPanel) {
+      var diagCloseBtn = document.getElementById("petDiagClose");
+      if (diagCloseBtn) diagCloseBtn.addEventListener("click", function (ev) { ev.stopPropagation(); closeDiag(); });
+      var diagRerunBtn = document.getElementById("petDiagRerun");
+      if (diagRerunBtn) diagRerunBtn.addEventListener("click", function (ev) { ev.stopPropagation(); runDiag(); });
+      // 「让她解释」：把**有界摘要**（≤900 字，判据层算好的那一份）走 #161 那条链路问一句人话。
+      if (diagAskBtn) diagAskBtn.addEventListener("click", async function (ev) {
+        ev.stopPropagation();
+        if (!diagLast || diagExplain || diagAskBtn.disabled) return;
+        if (diagLast.verdict === "unknown") { diagExplain = "读不出来的东西没法解释 —— 先按 F5 让页面把日志重新写起来。"; renderDiag(diagLast); return; }
+        var digest = "";
+        try {
+          digest = (self.OmitoneDiagnose && self.OmitoneDiagnose.buildDigest) ? self.OmitoneDiagnose.buildDigest(diagLast) : "";
+        } catch (eD) { digest = ""; }
+        if (!digest) { diagExplain = "摘要算不出来，这一条只能照上面的话手动做。"; renderDiag(diagLast); return; }
+        diagAskBtn.disabled = true;
+        diagAskBtn.textContent = "…";
+        var res = null;
+        try {
+          res = typeof window.omitonePetDiagExplain === "function" ? await window.omitonePetDiagExplain(digest) : null;
+        } catch (eAsk) { res = null; }
+        diagAskBtn.disabled = false;
+        diagAskBtn.textContent = "让她解释";
+        diagExplain = res && res.ok ? String(res.text)
+          : (res && res.noKey ? "没填 API Key，这一句问不到模型 —— 上面的建议照做就行。"
+            : (res && res.error ? "问模型没成（" + String(res.error).slice(0, 60) + "），上面的建议照做就行。"
+              : "问模型没成，上面的建议照做就行。"));
+        if (diagOpen) renderDiag(diagLast);
+      });
+      // 修复按钮：转交 popup.js 那两个现成动作，第二拍换侦探装（"她正在查/正在动手"）。
+      diagLog && diagLog.addEventListener("click", async function (ev) {
+        var b = ev.target && ev.target.closest ? ev.target.closest("button[data-diag-act]") : null;
+        if (!b) return;
+        ev.stopPropagation();
+        var kind = b.getAttribute("data-diag-act");
+        if (b.disabled) return;
+        b.disabled = true;
+        var prev = b.textContent;
+        b.textContent = "…";
+        dressRole("detective");
+        var r = null;
+        try {
+          r = typeof window.omitonePetDiagAction === "function" ? await window.omitonePetDiagAction(kind) : null;
+        } catch (eAct) { r = null; }
+        b.disabled = false;
+        b.textContent = prev;
+        var row = addDiagRow("pet-diag-item pet-diag-done sev0");
+        row.textContent = (r && r.note) ? String(r.note).slice(0, 80) : "这个动作没接上界面，照上面的话手动做吧";
+        if (diagMeta) diagMeta.textContent = r && r.ok ? "动作已交出去 · 只读本地" : "动作没做成 · 只读本地";
+      });
+      // 与聊天/册子同一族的三样关法：× / 点外面 / Esc（点外面排除工具条，否则点「诊」打不开）
+      document.addEventListener("mousedown", function (ev) {
+        if (!diagOpen) return;
+        if (diagPanel.contains(ev.target)) return;
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        closeDiag();
+      });
+      document.addEventListener("keydown", function (ev) {
+        if (diagOpen && (ev.key === "Escape" || ev.keyCode === 27)) closeDiag();
+      });
+    }
+
+    // 上次按了"藏"就一直藏着，直到在窗口底部点「让她回来」。
+    // ⚠️ 必须带 important：`body.im > #mascot{display:block!important}` 是那把"只露她"的
+    //   白名单尺，普通内联样式赢不过它 —— 不带 important 的"藏"在现场等于没按。
     try {
-      if (localStorage.getItem(HIDE_KEY) === "1") mascot.style.display = "none";
+      if (localStorage.getItem(HIDE_KEY) === "1") mascot.style.setProperty("display", "none", "important");
     } catch (e) {}
 
     var tools = document.getElementById("petTools");
@@ -829,67 +1012,48 @@
         ev.stopPropagation();
         ev.stopImmediatePropagation && ev.stopImmediatePropagation();
         var act = b.getAttribute("data-act");
-        if (act === "book") {
-          if (bookOpen) closeBook(); else openBook();
-        } else if (act === "game") {
+        // 她身上只剩「玩」「藏」两枚（1.3.1 起）：换装/表情/姿势走随机与立绘册，
+        // 聊天/体检挪到窗口底部那排带汉字的大按钮，入口在 .im-controls。
+        if (act === "game") {
           if (gameOpen) closeGame(); else openGame();
-        } else if (act === "chat") {
-          // 「聊」只在开关打开时认（按钮本身也是开关开着才显示，这里是对形状的第二次把关）
-          if (!document.body.classList.contains("pet-chat-on")) return;
-          if (chatOpen) closeChat(); else openChat();
-        } else if (act === "pose") {
-          var poseSeq = newSeq(1450, true);
-          var pa = mascot.querySelector(".pet-art");
-          var curSrc = pa ? pa.getAttribute("src") : "";
-          // 姿势立绘都是**默认装束**画的：穿着别的衣服时换姿势图，
-          // 等于把用户刚挑好的衣服一起换掉。非默认装束下只切 CSS 姿态，不换图。
-          if (SKINS.indexOf(curSrc) > 0) {
-            poseIdx = (poseIdx + 1) % POSE_STATES.length;
-            setPose(POSE_STATES[poseIdx], 1200, poseSeq);
-          } else {
-            poseIdx = (poseIdx + 1) % POSES.length;
-            if (pa) { pa.setAttribute("src", POSES[poseIdx]); playMotion(pa); }
-            try { localStorage.setItem(SRC_KEY, POSES[poseIdx]); } catch (e) {}
-            setPose("sit", 1200, poseSeq);
-          }
-          lockManualOutfit();
-          addMood(2);
-        } else if (act === "outfit") {
-          setPose("sit", 450);
-          applyOutfit(outfitIdx + (ev.shiftKey ? -1 : 1));
-          lockManualOutfit();
-          addMood(2);
-        } else if (act === "face") {
-          setPose("sit", 450);
-          var fa = mascot.querySelector(".pet-art");
-          var faceCur = fa ? fa.getAttribute("src") : "";
-          // 表情立绘也是**默认制服**画的（与姿势同一类问题）：穿着别的衣服时
-          // 直接换表情图 = 把用户刚挑好的衣服一起换掉（用户报的「点表情怎么换衣服了」）。
-          // 与「姿」同一策略：非默认装束下不换图，说一句提示，绝不静默偷换。
-          if (SKINS.indexOf(faceCur) > 0) {
-            say("换个表情要回默认装束哦 —— 先按「装」回到 pet.png", 2600);
-            lockManualOutfit();
-            return;
-          }
-          faceIdx = (faceIdx + 1) % FACES.length;
-          if (fa) { fa.setAttribute("src", FACES[faceIdx]); playMotion(fa); }
-          try {
-            localStorage.setItem("omitone.pet.face", String(faceIdx));
-            localStorage.setItem(SRC_KEY, FACES[faceIdx]);
-          } catch (e) {}
-          lockManualOutfit();
-          addMood(2);
         } else if (act === "hide") {
           newSeq(0, true);
           closeBook();
           closeGame();
           closeChat();
+          closeDiag();
           try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
-          mascot.style.display = "none";
+          mascot.style.setProperty("display", "none", "important");
         }
-        if (bookOpen) markBook();   // 册开着的时候按「装/表/姿」，高亮跟着走
       });
     }
+
+    // 逗玩窗口底部那排汉字按钮：与工具条同一批开合函数，只是入口更大、字读得清。
+    var imBookBtn = document.getElementById("imBook");
+    if (imBookBtn) imBookBtn.addEventListener("click", function () {
+      if (bookOpen) closeBook(); else openBook();
+    });
+    var imChatBtn = document.getElementById("imChat");
+    if (imChatBtn) imChatBtn.addEventListener("click", function () {
+      // 「和她聊天」只在开关打开时认（按钮本身也是开关开着才显示，这里是对形状的第二次把关）
+      if (!document.body.classList.contains("pet-chat-on")) return;
+      if (chatOpen) closeChat(); else openChat();
+    });
+    var imDiagBtn = document.getElementById("imDiag");
+    if (imDiagBtn) imDiagBtn.addEventListener("click", function () {
+      if (chatOpen) closeChat();
+      if (diagOpen) closeDiag(); else openDiag();
+    });
+
+    // 设置页「吉祥物」栏的三个入口经 popup.js 开窗带上 &open=，进来直接落到对应面板。
+    try {
+      var openTo = new URLSearchParams(location.search).get("open");
+      if (document.body.classList.contains("im") && openTo) {
+        if (openTo === "book") openBook();
+        else if (openTo === "chat" && document.body.classList.contains("pet-chat-on")) openChat();
+        else if (openTo === "diag") openDiag();
+      }
+    } catch (e) {}
 
     // 双击：收成小头像 / 展开
     if (mascot) {
@@ -965,108 +1129,6 @@
       openBook();
     });
 
-    // ── 彩蛋动作：先定位 → 站到链接旁边 → 在**固定落脚点**做动作 ────────
-    //
-    // 坐标只有一套：`.pet` 是 position:fixed / left:0 / top:0，位移全写在
-    // translate 上 —— 所以 translate 的数值就是**视口绝对坐标**，和
-    // getBoundingClientRect() 完全同源，中间不需要任何换算。
-    //
-    // ⚠️ 这里原来有个真 bug：变量叫 lr0，下面却写 lr.right → ReferenceError，
-    //    整段当场抛错，人停在原地一动不动（"出现了但不会动"就是它）。
-    //    node --check 查不出这种错，只能靠真实浏览器跑一遍。
-    function crawlToUpdate(expectedSeq) {
-      var link = document.getElementById("checkUpdate");
-      if (!link || !mascot || immersive || (expectedSeq && !alive(expectedSeq))) return;
-      if (isEcoMotion()) { setPose("point", 1200); return; }
-      var home = mascot.style.translate || ((window.innerWidth - 56) + "px 2px");
-      var my = expectedSeq || newSeq(16000, false);   // 这一套动作独占舞台
-      if (expectedSeq) {
-        petBusyUntil = Date.now() + 16000;
-        mascot._busyUntil = petBusyUntil;
-      }
-
-      /** 每次现量：窗口大小/滚动变了，也还是贴在链接旁边，不会站错地方 */
-      function target() {
-        var r = link.getBoundingClientRect();
-        var pw = mascot.offsetWidth || 40;
-        var ph = mascot.offsetHeight || 56;
-        var pad = 6;
-        var x, y;
-        if (r.left - pw - pad >= 2) {             // 优先站左边（她从右边过来，不挡字）
-          x = r.left - pw - pad;
-          y = r.top + (r.height - ph) / 2;
-        } else if (r.top - ph - pad >= 2) {       // 左边没地方就站上方
-          x = r.left;
-          y = r.top - ph - pad;
-        } else {                                   // 再不行就压到右下角
-          x = r.left + 2;
-          y = r.bottom + 2;
-        }
-        return clampPosition(x, y);
-      }
-
-      // ① 蹲下 → ② 挥手：都只改姿态、**不换图**，所以人物不会"变个人"
-      setPose("crouch", 0, my);
-      setTimeout(function () {
-        if (!alive(my)) return;
-        setPose("wave", 0, my);
-      }, 780);
-
-      // ③ 爬过去：3.2 秒补间，落到刚才量好的固定点
-      setTimeout(function () {
-        if (!alive(my)) return;
-        var p = target();                          // 出发前再量一次，防中途布局变动
-        setPose("crawl", 0, my);
-        mascot.style.transition = "translate 3.2s cubic-bezier(.4,0,.2,1)";
-        mascot.style.translate = p.x + "px " + p.y + "px";
-
-        // ④ 到位：指着它、连拍三下
-        setTimeout(function () {
-          if (!alive(my)) return;
-          mascot.style.transition = "";
-          setPose("point", 6000, my);
-          patLink(link, 3, my);
-
-          // ⑤ 收尾：没被人拖走的话，自己爬回原来的位置
-          setTimeout(function () {
-            if (!alive(my)) return;
-            if (mascot.style.translate !== p.x + "px " + p.y + "px") return;  // 用户拖走了就别抢
-            setPose("crawl", 0, my);
-            mascot.style.transition = "translate 1.6s cubic-bezier(.4,0,.2,1)";
-            mascot.style.translate = home;
-            setTimeout(function () {
-              if (!alive(my)) return;
-              mascot.style.transition = "";
-              setPose("sit", 0, my);
-            }, 1700);
-          }, 9000);
-        }, 3300);
-      }, 1500);
-    }
-
-    /**
-     * 拍链接：拍的是**元素本身**，而且每一下都重新量一次它的位置 ——
-     * 所以永远落在"检测更新"那几个字上，不会拍到旁边的空白。
-     */
-    function patLink(link, times, token) {
-      var n = 0;
-      var timer = setInterval(function () {
-        if (!alive(token) || isEcoMotion()) { clearInterval(timer); return; }
-        var r = link.getBoundingClientRect();
-        var cx = r.left + r.width * 0.62;          // 手落在文字上（小人站在左边）
-        var cy = r.top + r.height * 0.55;
-        try { burst(cx, cy, true); } catch (e) {}
-        try {
-          link.animate([
-            { transform: "scale(1)" },
-            { transform: "scale(1.12)", offset: .45 },
-            { transform: "scale(1)" }
-          ], { duration: 320, easing: "ease-out" });
-        } catch (e) {}
-        if (++n >= times) clearInterval(timer);
-      }, 900);
-    }
-
     var stopped = false, idleLoopTimer = null, chatLoopTimer = null;
     function autonomousVisible() { return !stopped && !document.hidden && mascot.style.display !== "none"; }
     function stopAutonomous() {
@@ -1132,48 +1194,17 @@
     }
     idleLoop();
 
-    // 底部与沉浸式恢复入口共用恢复逻辑。
-    var btnPetShow = document.getElementById("btnPetShow");
+    // 「让她回来」：把她从「藏」里放回原位（入口在逗玩窗口底部那一排）。
     var imRestore = document.getElementById("imRestorePet");
     if (imRestore) imRestore.addEventListener("click", function () {
       newSeq(0, true);
       mascot.classList.remove("collapsed");
-      mascot.style.display = "block";
+      mascot.style.removeProperty("display"); // 交还给 CSS（body.im > #mascot 的 block）接管
       mascot.classList.add("show");
       var home = homePosition(); putPosition(home.x, home.y);
       try { localStorage.removeItem(HIDE_KEY); localStorage.removeItem(POS_KEY); } catch (e) {}
       resumeAutonomous();
     });
-    if (btnPetShow) {
-      btnPetShow.addEventListener("click", function () {
-        try { localStorage.removeItem(HIDE_KEY); } catch (e) {}
-        var showSeq = newSeq(1200, true);
-        mascot.style.display = "block";
-        mascot.style.visibility = "visible";
-        mascot.style.opacity = "1";
-        var home = homePosition();
-        putPosition(home.x, home.y);
-        try { localStorage.removeItem(POS_KEY); } catch (e) {}
-        mascot.classList.add("show");
-        mascot.classList.remove("collapsed");
-        setPose("happy", 900, showSeq);   // 0.9 秒后正好接上彩蛋第一拍（蹲下），不会被"回坐姿"打断
-        try {
-          var once = localStorage.getItem("omitone.pet.egged") !== "1";
-          localStorage.setItem("omitone.pet.egged", "1");
-          var t = once ? document.getElementById("toast") : null;
-          if (!t) throw new Error("seen");
-          if (t) {
-            t.textContent = "恭喜触发彩蛋<(￣︶￣)↗ 请到最上面看看她";
-            t.classList.add("prominent", "show");
-            setTimeout(function () { t.classList.remove("prominent", "show"); }, 5200);
-          }
-        } catch (e) {}
-        // ⚠️ 动作序列放在 try 外面：提示只弹一次，但**每次都要动**。
-        // 之前它被包在 if(t) 里，第二次起 t 为 null → 永远不爬 → "人物出现了但不会动"。
-        try { say("我在这儿～看上面", 2000); } catch (e) {}
-        setTimeout(function () { crawlToUpdate(showSeq); }, 900);
-      });
-    }
 
 
 
@@ -1385,6 +1416,9 @@
             (nextDef ? "（下一级「" + nextDef.name + "」还差 " + (nextDef.min - state.affection) + " 点）" : "（已满）"));
         }
         if (badge) badge.textContent = levelDef.name;
+        // 设置页「吉祥物」栏的状态行：设置页不画她了，这里只报等级与好感（跟着存档走）。
+        var st = document.getElementById("petStatus");
+        if (st) st.textContent = "现在「" + levelDef.name + "」· 好感 " + state.affection + " / " + game.RULES.max;
       } catch (e) {}
     }
     /** 成就解锁演出：比升级庆祝轻 —— 心心 + 一句话（升级台词优先，见调用处的 else if） */
@@ -1591,11 +1625,10 @@
 (function omPetSceneRole() {
   try {
     var imBack = document.getElementById("imBack");
-    var imRestorePet = document.getElementById("imRestorePet");
     if (imBack) imBack.addEventListener("click", function () {
       location.href = chrome.runtime.getURL("popup/popup.html");
     });
-    // 恢复角色由 omFancy 中的共享入口处理。
+    // 「让她回来」由 omFancy 中的共享入口处理。
 // 戳一戳：只在沉浸式窗口里可点（弹窗里保持 pointer-events:none，绝不挡操作）
 var petEl = document.getElementById("mascot");
 var petBubble = document.getElementById("mascotBubble");

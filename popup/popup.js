@@ -107,6 +107,7 @@ const els = {
   restudy: $("restudy"),
   pagePetEnabled: $("pagePetEnabled"),
   petChatEnabled: $("petChatEnabled"),
+  petDoctorEnabled: $("petDoctorEnabled"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
   apiUrl: $("apiUrl"),
@@ -446,10 +447,13 @@ function buildPetChatRequest(cfg, history, sys, urls) {
   };
 }
 
-async function petChatSend(history) {
+async function petChatSend(history, opts) {
+  const o = opts || {};
   const cfg = { ...config, apiKey: normalizeApiKey(config.apiKey) };
   if (!cfg.apiKey) return { ok: false, noKey: true };
-  const sys = (typeof self !== "undefined" && self.OmitonePrompt && self.OmitonePrompt.PET_CHAT_SYSTEM) || "";
+  const promptLib = (typeof self !== "undefined" && self.OmitonePrompt) || {};
+  // 提示词唯一真源在 libs/prompt.js（AGENTS §2 #4）；这里只按名字取，不许内联。
+  const sys = o.sysKey ? promptLib[o.sysKey] || "" : promptLib.PET_CHAT_SYSTEM || "";
   const req = buildPetChatRequest(cfg, history, sys);
   if (!req) return { ok: false, error: "" };
   let response;
@@ -478,10 +482,71 @@ async function petChatSend(history) {
   }
   text = String(text).trim().replace(/\s+/g, " ");
   if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试" };
-  return { ok: true, text: text.slice(0, 160) };
+  // 上限默认 160（聊天气泡那一格）；体检解释要长一点，但**天花板 400 写死在这里** ——
+  // 面板装不下是判据层的责任，不能靠调用方自觉（AGENTS §2「输出必须有界」）。
+  const want = Number(o.maxChars) > 0 ? Number(o.maxChars) : 160;
+  return { ok: true, text: text.slice(0, Math.min(want, 400)) };
 }
 // pet.js 只管界面；发请求统一走这个钩子（经典脚本按加载顺序共享全局作用域）
 window.omitonePetChatSend = petChatSend;
+
+// ── 本地体检「医生」（批次 130）────────────────────────────────────────────
+// 判断层在 libs/diagnose.js（弹窗 / 上课页 / 集成测试三处共用同一份规则），
+// 这里只补界面需要的三件事：**把日志交出去、把结论解释成人话、把动作接回现有按钮**。
+// ⚠️ 全程只读 —— 不许在这里点任何东西、改任何配置；动作一律转交给弹窗里本来就有的入口。
+
+/** 读出这台电脑上的运行日志环（200 条，键 runtimeLogs，与日志视图同一份真源）。 */
+async function petDiagReadLogs() {
+  try {
+    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
+    const arr = result && Array.isArray(result[RUNTIME_LOGS_KEY]) ? result[RUNTIME_LOGS_KEY] : [];
+    return arr;
+  } catch (e) {
+    return { error: "日志读不出来（存储暂时不可用）" };
+  }
+}
+
+/** 「让她解释」：把有界摘要交给模型说一句人话。复用 petChatSend 的整条链路 ——
+ *  也就是 #161 那条 api_fetch + 用户自己配置的 Key，不接任何中转站。 */
+async function petDiagExplain(digest) {
+  const text = String(digest || "").slice(0, 900);
+  if (!text) return { ok: false, error: "没有可解释的结论" };
+  return await petChatSend(
+    [{ role: "user", text: "下面是本地体检给出的结论，请用人话告诉主人下一步怎么办，别编造清单里没有的事：\n" + text }],
+    { sysKey: "PET_DOCTOR_SYSTEM", maxChars: 280 }
+  );
+}
+
+/** 卡片上那一枚按钮的唯一出口：只做「界面里本来就有的那两件事」。
+ *  动作名与 libs/diagnose.js 规则表里的 `action` 一一对应 ——
+ *  ⚠️ **规则新增一型 action 必须同步进这里那一族清单**，否则卡片上会出现
+ *  一枚点了没反应的按钮（AGENTS §2 #18：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来）。
+ *  @param {string} kind 'reload' | 'open-settings'
+ *  @returns {Promise<{ok:boolean, note:string}>} —— note 是要印在卡片上的那一句 */
+async function petDiagAction(kind) {
+  try {
+    if (kind === "reload") {
+      const [tab] = await withTimeout(chrome.tabs.query({ active: true, currentWindow: true }), 3000, "读取标签页超时");
+      if (!tab || !tab.id) return { ok: false, note: "没找到当前标签页" };
+      if (/^chrome-extension:/i.test(tab.url || "")) return { ok: false, note: "这一页不是网页，重新加载请对学习通页面按 F5" };
+      await withTimeout(chrome.tabs.reload(tab.id), 8000, "重新加载超时");
+      return { ok: true, note: "已重新加载这一页" };
+    }
+    if (kind === "open-settings") {
+      const key = document.getElementById("apiKey");
+      const group = key ? key.closest("details") : null;
+      if (group) group.open = true;
+      if (key) { key.scrollIntoView({ block: "center" }); key.focus(); }
+      return { ok: !!key, note: key ? "已跳到 API 那一栏，填好后按「检测连接」" : "没找到 API 那一栏，请在设置里手动打开" };
+    }
+    return { ok: false, note: "这个动作我不认识，只能照上面的话手动做" };
+  } catch (error) {
+    return { ok: false, note: "动作没做成：" + String(error && error.message ? error.message : error).slice(0, 40) };
+  }
+}
+window.omitonePetDiagReadLogs = petDiagReadLogs;
+window.omitonePetDiagExplain = petDiagExplain;
+window.omitonePetDiagAction = petDiagAction;
 
 async function appendPopupLog(level, message, meta) {
   try {
@@ -844,6 +909,50 @@ if (petChatEnabledLabel) {
   });
 }
 
+// 「医生主动提醒」开关：又是独立键、不走主配置（同批次 34 那条教训 —— 主配置里没登记的键
+// 会让 validatePatch 把**整份**保存全部拒掉）。
+// 与聊天那一枚的**默认相反**：聊天开口必花 Key，默认关；体检的结论由本地规则表算出，
+// 只有"开口前让模型想一遍怎么说"那一步花 Key、且有 5 分钟冷却封顶，所以默认开
+// （键缺席 = 开，判据与 content.js 那一支必须同一把尺）。
+// 它只管"上课页上她要不要自己开口体检"，弹窗里那枚「诊」不受它约束 ——
+// 关掉提醒之后用户仍然可以随时主动查一次。
+let petDoctorEnabledVal = false;
+const updatePetDoctorEnabled = (on) => {
+  els.petDoctorEnabled.className = "toggle" + (on ? " on" : "");
+  els.petDoctorEnabled.setAttribute("aria-checked", on ? "true" : "false");
+};
+const togglePetDoctorEnabled = async () => {
+  const value = !petDoctorEnabledVal;
+  const prev = petDoctorEnabledVal;
+  petDoctorEnabledVal = value;
+  updatePetDoctorEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePetDoctorOn: value ? 1 : 0 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    petDoctorEnabledVal = prev;
+    updatePetDoctorEnabled(prev);
+    reportSaveError(error);
+  }
+};
+els.petDoctorEnabled.addEventListener("click", togglePetDoctorEnabled);
+els.petDoctorEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePetDoctorEnabled();
+  }
+});
+const petDoctorEnabledLabel = document.querySelector("label[for=\"petDoctorEnabled\"]");
+if (petDoctorEnabledLabel) {
+  petDoctorEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePetDoctorEnabled();
+  });
+}
+
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。
  *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
  *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
@@ -938,6 +1047,16 @@ async function load() {
       updatePetChatEnabled(petChatEnabledVal);
     });
   } catch (e) { /* storage 不可用就当关着 */ }
+  // 医生提醒开关：键缺席 = 关（要花 Key 的功能不许默认烧钱）。⚠️ 谓词必须与 content.js 那一支同一把尺
+  // —— 只认 1 / true 算开，0、false、缺席都算关（AGENTS §2 #23：写入口与读出口两侧基准必须相同）。
+  try {
+    chrome.storage.local.get("omitonePetDoctorOn", (r) => {
+      if (chrome.runtime.lastError) return;
+      var raw = r && r.omitonePetDoctorOn;
+      petDoctorEnabledVal = raw === 1 || raw === true;
+      updatePetDoctorEnabled(petDoctorEnabledVal);
+    });
+  } catch (e) { /* storage 不可用就当关着 */ }
   renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
@@ -995,6 +1114,8 @@ async function resetDefault() {
     try { chrome.storage.local.set({ omitonePagePetMinimal: 0 }); } catch (e) {}
     // 聊天开关也回默认（默认关 —— 用户主动开的付费功能，恢复默认就该收回去）
     try { chrome.storage.local.set({ omitonePetChatOn: 0 }); } catch (e) {}
+    // 医生提醒回默认（默认关：会花钱的功能不许默认开着）
+    try { chrome.storage.local.set({ omitonePetDoctorOn: 0 }); } catch (e) {}
     await load();
     toast("已恢复默认");
   } catch (error) { reportSaveError(error); }
@@ -1639,17 +1760,35 @@ document.addEventListener("DOMContentLoaded", () => {
       fitToQuerySize();
     }
 
-    var btnExpand = document.getElementById("btnExpand");
-    if (btnExpand) {
-      btnExpand.addEventListener("click", function () {
-        var t = immersiveTarget();
-        chrome.windows.create({
-          url: chrome.runtime.getURL("popup/popup.html") + "?play=1&w=" + t.w + "&h=" + t.h,
-          type: "popup", width: t.w, height: t.h
-        });
-        try { window.close(); } catch (e) {}
+    // 「打开逗玩窗口」与吉祥物栏的三个入口共用同一发开窗：带 &open= 深链，
+    // 让窗口里的她直接落到立绘册 / 聊天 / 体检（pet.js 读 open 参数开面板）。
+    function openPlay(open) {
+      var t = immersiveTarget();
+      chrome.windows.create({
+        url: chrome.runtime.getURL("popup/popup.html") + "?play=1" +
+          (open ? "&open=" + open : "") + "&w=" + t.w + "&h=" + t.h,
+        type: "popup", width: t.w, height: t.h
       });
+      try { window.close(); } catch (e) {}
     }
+    var btnExpand = document.getElementById("btnExpand");
+    if (btnExpand) btnExpand.addEventListener("click", function () { openPlay(""); });
+
+    // 「和她聊天」开关没开时，窗口里不会出现聊天 —— 别让人点了没反应：
+    // 照样开窗（看得到她），但补一句去哪儿开。
+    [["btnPetBook", "book"], ["btnPetDiag", "diag"]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (el) el.addEventListener("click", function () { openPlay(p[1]); });
+    });
+    var btnPetChat = document.getElementById("btnPetChat");
+    if (btnPetChat) btnPetChat.addEventListener("click", function () {
+      // 开关没开就不开窗：开窗会顺手关掉弹窗，那句提示就没人看得见了。
+      if (!petChatEnabledVal) {
+        toast("聊天还没打开：先在「吉祥物」里点亮「吉祥物聊天」", 4000);
+        return;
+      }
+      openPlay("chat");
+    });
 
     var fileInput = document.getElementById("bgFile");
     var btnBg = document.getElementById("btnBg");

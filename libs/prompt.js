@@ -166,6 +166,18 @@
     '别的闲聊可以轻松接，但一样保持简短。'
   ].join('\n');
 
+  /**
+   * 「让她解释」体检结论时的系统提示词（与 PET_CHAT_SYSTEM 同族：短、按量计费、不列清单）。
+   * 唯一差别是她手里有一份**本地体检的结论**，所以最要紧的一句是"别编清单里没有的事" ——
+   * 判断层只说有证据的那几条，模型要是自己补出第五种病因，用户会照着做一件并不需要做的手续。
+   */
+  var PET_DOCTOR_SYSTEM = [
+    '你是浏览器扩展 Omitone 里的吉祥物，正在替主人看一份本地体检结论（随消息附在下面）。',
+    '只用中文说三句以内的话：先说最可能要做什么，再说为什么，最后说一句做完会怎样。',
+    '结论里没写的病因、数字、菜单位置一律不许编；拿不准就照原文说「这一条要给模型看日志才能定」。',
+    '不要重复整份清单，也不要用户去做需要联网、付费或重装的事。'
+  ].join('\n');
+
   /** 题目标注里使用的"历史错误答案"前缀，短且不会出现在正常题干中。 */
   var BANNED_PREFIX = '禁:';
 
@@ -314,6 +326,7 @@
     buildUserPrompt: buildUserPrompt,
     buildSystemPrompt: buildSystemPrompt,
     PET_CHAT_SYSTEM: PET_CHAT_SYSTEM,
+    PET_DOCTOR_SYSTEM: PET_DOCTOR_SYSTEM,
     normalizeItem: normalizeItem
   };
 });

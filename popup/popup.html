@@ -471,16 +471,19 @@ a.ext:hover{ text-decoration:underline; }
 .mode-switch[data-on="1"] span:nth-of-type(2){ color:#fff; }
 .mode-switch[data-on="0"] span:nth-of-type(1){ color:#fff; }
 
-/* 精简模式下这些按钮本身没意义，直接收掉（别让用户点了没反应） */
+/* 精简模式下这些按钮本身没意义，直接收掉（别让用户点了没反应）；
+   「吉祥物」那组的四个入口与状态行也一起 —— lite 不跑 pet.js，状态行没人填。
+   角色本体在哪儿出现统一由 pet.css 的 body:not(.im) #mascot 那条管。 */
 html[data-ui="lite"] #btnExpand,
 html[data-ui="lite"] #btnBg,
 html[data-ui="lite"] #btnBgClear,
-html[data-ui="lite"] #btnPetShow{ display:none !important; }
+html[data-ui="lite"] #btnPetBook,
+html[data-ui="lite"] #btnPetChat,
+html[data-ui="lite"] #btnPetDiag,
+html[data-ui="lite"] .pet-status{ display:none !important; }
 
 /* ---------- 精简模式：回到 1.2.8 那种素净样子（无角色、无粒子、无玻璃） ---------- */
-html[data-ui="lite"] .fx-layer,
-html[data-ui="lite"] body:not(.im) .pet,
-html[data-ui="lite"] body:not(.im) .pet-tools{ display:none !important; }
+html[data-ui="lite"] .fx-layer{ display:none !important; }
 html[data-ui="lite"] body::before{ display:none; }
 html[data-ui="lite"] details.group{
   background:var(--card); border-color:var(--hairline); box-shadow:0 1px 2px rgba(16,24,40,.04);
@@ -520,14 +523,13 @@ body.has-bg::after{
   <div class="pet-inner"><img class="pet-art" src="pet.png" alt="" draggable="false"></div>
   <i class="pet-prop pet-prop-winter"></i><i class="pet-prop pet-prop-summer"></i>
   <i class="pet-prop pet-prop-autumn"></i><i class="pet-prop pet-prop-spring"></i>
+  <i class="pet-roleprop" id="petRoleProp"></i>
+  <!-- 她身上只留两枚：**玩**（记忆翻牌）与**藏**（收起）。
+       册 / 聊 / 诊 以前也挤在这一排 16px 小圆里（八个字挤成一片马赛克），
+       现在挪到窗口底部那排带汉字的按钮上 —— 见下方 .im-controls。 -->
   <div class="pet-tools" id="petTools">
-    <button type="button" data-act="book" title="立绘册：一次挑完所有服装/表情/姿势">册</button>
     <button type="button" data-act="game" title="记忆翻牌：翻出成对的表情，每天首胜涨好感">玩</button>
-    <button type="button" data-act="chat" title="和她聊天（设置里开启后才出现）">聊</button>
-    <button type="button" data-act="pose" title="换个姿势">姿</button>
-    <button type="button" data-act="outfit" title="换装">装</button>
-    <button type="button" data-act="face" title="换表情 / 动作">表</button>
-    <button type="button" data-act="hide" title="把它收起来">藏</button>
+    <button type="button" data-act="hide" title="把她收起来（要再叫她，用窗口下面那枚「让她回来」）">藏</button>
   </div>
   <div class="pet-mood" id="petMood"><i></i></div>
   <div class="pet-level" id="petLevel" title="好感度等级">初识</div>
@@ -535,7 +537,7 @@ body.has-bg::after{
   <div class="pet-bubble" id="mascotBubble"></div>
 </div>
 
-<!-- 立绘册：点工具条的「册」或右键角色打开 -->
+<!-- 立绘册：逗玩窗口底部那枚「立绘册」，或右键角色打开 -->
 <div class="pet-book" id="petBook" aria-hidden="true">
   <div class="pet-book-head">
     <b>立绘册</b>
@@ -545,7 +547,7 @@ body.has-bg::after{
   <div class="pet-book-body" id="petBookBody"></div>
 </div>
 
-<!-- 记忆翻牌：点工具条的「玩」打开（卡面是她的表情，规则在 popup/pet-game.js） -->
+<!-- 记忆翻牌：点她身上的「玩」打开（卡面是她的表情，规则在 popup/pet-game.js） -->
 <div class="pet-game" id="petGame" aria-hidden="true">
   <div class="pet-book-head">
     <b>记忆翻牌</b>
@@ -555,7 +557,7 @@ body.has-bg::after{
   <div class="pet-game-body" id="petGameBody"></div>
 </div>
 
-<!-- 和她聊天：点工具条的「聊」打开。默认关（开关在下方「吉祥物」组）；
+<!-- 和她聊天：逗玩窗口底部那枚「和她聊天」打开。默认关（开关在下方「吉祥物」组）；
      回复走你自己配置的 API Key（与答题同一条链路），按量计费。 -->
 <div class="pet-chat" id="petChat" aria-hidden="true">
   <div class="pet-book-head">
@@ -570,9 +572,30 @@ body.has-bg::after{
   </div>
 </div>
 
-<div class="im-controls" aria-label="沉浸式控制">
+<!-- 体检：逗玩窗口底部那枚「本地体检」打开。判据与限长在 libs/diagnose.js，结论**最多四条**；
+     「让她解释」那一步走你填好的 Key（联网、按量计费），没填 Key 时只有本地结论。 -->
+<div class="pet-chat pet-diag" id="petDiag" aria-hidden="true">
+  <div class="pet-book-head">
+    <b>本地体检</b>
+    <span id="petDiagMeta">只读本机日志 · 问模型走你的 Key</span>
+    <button type="button" id="petDiagClose" title="关上">×</button>
+  </div>
+  <div class="pet-chat-log" id="petDiagLog"></div>
+  <div class="pet-chat-foot">
+    <button type="button" id="petDiagRerun">再查一次</button>
+    <button type="button" id="petDiagAsk" title="让她把上面这几条说一句人话（要用你填好的 Key）">让她解释</button>
+  </div>
+</div>
+
+<!-- 逗玩窗口底部那一排：她是窗口里唯一的主角，功能全在这一排**带汉字的按钮**上。
+     以前这八件事挤在她身上那一排 16px 小圆里（字 9px，投影上根本读不出），
+     挪到这里之后字号按正文走，也留出了以后加"找乐子"按钮的位置。 -->
+<div class="im-controls" aria-label="逗玩窗口控制">
   <button type="button" id="imBack">返回设置</button>
-  <button type="button" id="imRestorePet">恢复角色入口</button>
+  <button type="button" id="imBook" title="立绘册：一次挑完所有服装 / 表情 / 姿势">立绘册</button>
+  <button type="button" id="imChat" title="和她聊天（设置里开启后才出现，走你填的 Key）">和她聊天</button>
+  <button type="button" id="imDiag" title="本地体检：读这台电脑上的运行日志给结论（问模型那一步用你填的 Key）">本地体检</button>
+  <button type="button" id="imRestorePet">让她回来</button>
 </div>
 
   <div class="container">
@@ -860,17 +883,34 @@ body.has-bg::after{
   <details class="group">
     <summary><span>吉祥物</span><i class="rule"></i><span class="tag plain">纯外观 · 聊天需 Key</span></summary>
     <div class="group-body">
+      <!-- 1.3.1 起：设置弹窗里**不再画第二个她**。刷课页右下角那一个是正主，
+           要逗她、看立绘、聊天、体检都去「打开逗玩窗口」——那一扇才放得下。
+           以前弹窗右上角也站着一个 40px 的她，旁边挤着成就 / 等级 / 好感条 / 进度，
+           工具条八个 9px 小字，用户原话是"看着字更小了、布局有点混乱"。 -->
+      <p class="hint">她常驻<b>刷课页右下角</b>陪你。这一栏只管开关与入口。</p>
+      <p class="pet-status" id="petStatus">还没读到她的存档</p>
+      <div class="minor minor-pet">
+        <button id="btnExpand">打开逗玩窗口</button>
+        <button id="btnPetBook">看立绘册</button>
+        <button id="btnPetChat">和她聊天</button>
+        <button id="btnPetDiag">本地体检</button>
+      </div>
       <div class="row">
         <label for="pagePetEnabled">刷课页显示吉祥物</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="pagePetEnabled"></div>
       </div>
+      <p class="hint">关掉 = 精简模式：页面上完全不出现她，好感度存档一直都在。</p>
       <div class="row">
         <label for="petChatEnabled">吉祥物聊天</label>
         <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="petChatEnabled"></div>
       </div>
-      <p class="hint">关掉就是<b>精简模式</b>：页面上完全不出现她，连收起后的小「宠」也没有，
-      绝不会挡住任何内容。想她了再打开，好感度存档一直都在。</p>
-      <p class="hint">「聊天」默认关；开了之后工具条会多一枚「聊」，说话用<b>你填好的 Key</b>（按量计费）。</p>
+      <p class="hint">默认关。开了用你填好的 Key（按量计费）。</p>
+      <div class="row">
+        <label for="petDoctorEnabled">医生主动提醒</label>
+        <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="petDoctorEnabled"></div>
+      </div>
+      <p class="hint">默认关。开了她会边刷课边读本机日志自查，有事用你的 Key 问一句模型（按量计费）；
+      不填 Key 只照本地规矩说。手动查走「本地体检」，不受这枚开关管。</p>
     </div>
   </details>
 
@@ -880,11 +920,12 @@ body.has-bg::after{
     <button id="clearLogs">清空日志</button>
   </div>
 
+  <!-- 背景是整扇窗口的装饰，与"她在不在"无关，留在这一排。
+       「打开逗玩窗口」与「显示小人」已经并进上面「吉祥物」那一栏（弹窗里不再画她，
+       也就没有"把小人显示出来"这件事了）。 -->
   <div class="minor">
-    <button id="btnExpand">展开逗玩</button>
     <button id="btnBg">换背景</button>
     <button id="btnBgClear">恢复默认背景</button>
-    <button id="btnPetShow">显示小人</button>
     <input type="file" id="bgFile" accept="image/*" hidden>
   </div>
 
@@ -902,6 +943,7 @@ body.has-bg::after{
 <script src="../libs/prompt.js"></script>
 <script src="../libs/thinking.js"></script>
 <script src="../libs/runtime-policy.js"></script>
+<script src="../libs/diagnose.js"></script>
 <script src="../popup-log-view.js"></script>
 <script src="popup.js"></script>
 <script src="pet-game.js"></script>

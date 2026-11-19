@@ -210,6 +210,10 @@
           console.warn('[Omitone] runtime log unavailable; study continues');
         }
       }).catch(() => {});
+    // 「医生」吃的是**这一页自己**那一份环，与后台那本全局账各记各的：
+    // 后台那本混着别门课/别标签页的旧账，拿它答"这一页怎么了"会答出别人的故事。
+    // 这一发必须放在转发**之后** —— 判断层坏了不能把日志转发一起拖死（刷课优先）。
+    doctorNote(item.level, item.message);
   }
 
   function sendRuntimeMessageWithTimeout(message, timeoutMs, timeoutError) {
@@ -2050,6 +2054,265 @@
   // 因为"刚自言自语完"和"上一句摸头话"是两码事，混在一起会把她自己的话挡掉。
   let pagePetLastPatLine = '';
 
+  // ── 本地自愈「医生」：这一页自己的日志环 → 判断 → 有界说一句 ──────────────
+  // 判断真源只在 [`libs/diagnose.js`](libs/diagnose.js) —— 弹窗卡片、页面她本人、集成测试
+  // 三处共用同一份规则，抄到界面上必然分叉（同 `popup/pet-game.js` 台词池那条教训）。
+  // 这里只留**这一页自己**那份环：跨标签页的全局环里混着别门课的旧账，
+  // 拿它答"这一页怎么了"会答出别人的故事（AGENTS §2 #19 同一族：口径不同的读数不许比）。
+  const PAGE_DOCTOR_KEY = 'omitonePetDoctorOn';   // 独立外观键，与精简/位置/好感度同一族
+  const DOCTOR_RING_MAX = 120;          // 只留最近 120 条：环满丢最旧，不许无限长
+  const DOCTOR_ANALYZE_MS = 20000;      // 两次判断的最小间隔（一条 warn 就判一次 = 每拍都在体检）
+  const DOCTOR_GAP_MS = 5 * 60 * 1000;  // 同一个结论 5 分钟内最多打扰一次
+  const DOCTOR_MIN_SEVERITY = 2;        // 她自己开口只在"这一路走不通"以上；提醒级交给卡片
+  const DOCTOR_ASK_TIMEOUT_MS = 15000;  // 问模型那一发的硬超时（不到手就照本地结论说，绝不挂着等）
+  const DOCTOR_ASK_MAX_CHARS = 280;     // 模型回话封顶：气泡是一句话，不是一份报告
+  let doctorRing = [];
+  // null = 开关真值还没读到（**不许抢在真值前面说话**，同精简模式那条竞态）；
+  // true = 用户明确打开（这一档开口前会花 Key）；false = 关掉或缺席 —— 三态分开，别把"还不知道"压成别的。
+  let doctorOn = null;
+  let doctorAnalyzeAt = 0;
+  let doctorLastCode = '';
+  let doctorLastCodeAt = 0;
+  let doctorRoleTimer = 0;
+  let doctorAsking = false;   // 同一时刻最多一发在问：并发的那一拍不跟着花钱
+  let doctorAskCount = 0;     // 这一页真发出去几发问（测试与现场对账用）
+
+  function diagnoseModule() {
+    return (typeof self !== 'undefined' && self.OmitoneDiagnose) || null;
+  }
+
+  /** 把「医生这一拍到底为什么没说话」写成页面读得回来的一格。
+   *  ⚠️ 只回空串的话，"被收起来了"与"20 秒内刚判过"在 e2e 与现场里长得一模一样 ——
+   *    摘掉任何一道闸，测试照样全绿（批次 61 给自动小动作立过的规矩，`motionSkip` 同族）。
+   *  @returns {string} 恒为空串，调用方直接 `return doctorMark('…')` 当出口用 */
+  function doctorMark(reason) {
+    try { if (pagePet && pagePet.host) pagePet.host.dataset.doctorSkip = String(reason || ''); } catch (e) {}
+    return '';
+  }
+
+  /** 把一条日志记进本页的环；warn/error 才有机会触发一次判断（info 只攒证据）。 */
+  function doctorNote(level, message) {
+    const now = Date.now();
+    const text = String(message || '').slice(0, 2000);
+    if (!text) return;
+    doctorRing.push({ time: now, level: level || 'info', message: text });
+    if (doctorRing.length > DOCTOR_RING_MAX) doctorRing.splice(0, doctorRing.length - DOCTOR_RING_MAX);
+    if (level !== 'warn' && level !== 'error') return;
+    if (doctorOn !== true) {
+      // 「还不知道」与「用户关了」是两格 —— 压成一句"没开"，现场就分不出是回调没回来还是人关的
+      doctorMark(doctorOn === null ? 'switch-unknown' : 'switch-off');
+      return;
+    }
+    if (now - doctorAnalyzeAt < DOCTOR_ANALYZE_MS) { doctorMark('throttle'); return; }
+    doctorAnalyzeAt = now;
+    const res = doctorAnalyze(now);
+    if (!res) { doctorMark('no-diagnose'); return; }
+    // 说出结论的那一段里有 await（问模型），**不能让它把 doctorNote 拖成异步** ——
+    // 调用方（emitRuntimeLog 链路）同步返回；派发结果靠 doctorMark / 气泡自己落地
+    void doctorDeliver(res);
+  }
+
+  /** 跑一次本地判断。**读不出交 null**，绝不当成"没问题"（AGENTS §2 #12）。 */
+  function doctorAnalyze(now) {
+    const dx = diagnoseModule();
+    if (!dx || typeof dx.analyze !== 'function') return null;
+    try {
+      // 窗口按环里最旧一条到"现在"算：环本来就只有一页的量，切掉一小时前的旧账没意义
+      const first = doctorRing.length ? Number(doctorRing[0].time) : 0;
+      const span = first > 0 && now > first ? now - first : 0;
+      return dx.analyze(doctorRing, { now: now, windowMs: span > 0 ? span : undefined });
+    } catch (e) { return null; }
+  }
+
+  /** 问模型想一遍怎么说（**开口前才花钱**的那一发）。没 Key / 问不通 / 超时都交 {ok:false}，
+   *  调用方退回本地结论 —— 网络坏了她也永远有话说。提示词唯一真源 `libs/prompt.js`。 */
+  function doctorAskModel(f) {
+    const cfg = configs || {};
+    const apiKey = normalizeApiKey(cfg.apiKey || '');
+    // 没填 Key 就一步都不发（连请求体都不拼）：承诺过「不填 Key 只照本地规矩说」
+    if (!apiKey || !cfg.model || !cfg.apiUrl) return Promise.resolve({ ok: false, reason: 'no-key' });
+    const sys = (PROMPT && PROMPT.PET_DOCTOR_SYSTEM) || '';
+    const user = '下面是本地体检给出的结论，请用人话告诉主人下一步怎么办，只说结论里提到的事：\n' +
+      '结论：' + String(f.title || '') + '\n依据：' + String(f.evidence || '') + '\n建议：' + String(f.advice || '');
+    let req;
+    try {
+      if (cfg.apiType === 'claude') {
+        req = {
+          url: buildClaudeApiUrl(cfg.apiUrl),
+          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+          body: { model: cfg.model, max_tokens: 320, temperature: 0.6, system: sys, messages: [{ role: 'user', content: user }] }
+        };
+      } else if (cfg.apiType === 'gemini') {
+        req = {
+          url: buildGeminiApiUrl(cfg.apiUrl, cfg.model, apiKey),
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            systemInstruction: { parts: [{ text: sys }] },
+            contents: [{ role: 'user', parts: [{ text: user }] }],
+            generationConfig: { temperature: 0.6, maxOutputTokens: 320 }
+          }
+        };
+      } else {
+        req = {
+          url: buildOpenAICompatibleUrl(cfg.apiUrl),
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+          body: { model: cfg.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+            temperature: 0.6, max_tokens: 320 }
+        };
+      }
+    } catch (e) { return Promise.resolve({ ok: false, reason: 'request-build' }); }
+    doctorAskCount += 1;
+    return apiFetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) }, DOCTOR_ASK_TIMEOUT_MS)
+      .then(function (res) {
+        // `success:false` 不许被算成"回话为空"以外的假读数：status 单独带出（AGENTS §2 #2 同族）
+        if (!res || res.success !== true) return { ok: false, reason: 'http-' + String((res && res.status) || 'net') };
+        const data = res.data || {};
+        let text = '';
+        if (cfg.apiType === 'claude') text = (((data.content || [])[0] || {}).text || '');
+        else if (cfg.apiType === 'gemini') {
+          const parts = ((((data.candidates || [])[0] || {}).content || {}).parts) || [];
+          text = parts.map(function (p) { return p && p.text ? p.text : ''; }).join(' ');
+        } else text = ((((data.choices || [])[0] || {}).message || {}).content || '');
+        text = String(text || '').trim().slice(0, DOCTOR_ASK_MAX_CHARS);
+        if (!text) return { ok: false, reason: 'empty-reply' };
+        // 回一句 JSON（e2e 实测：假模型对不可解析的提示词回 '[]'）不是人话，照说会把 '[]' 挂上气泡
+        if (/^\s*[\[{]/.test(text)) return { ok: false, reason: 'ask-shape' };
+        return { ok: true, text: text };
+      })
+      .catch(function () { return { ok: false, reason: 'ask-throw' }; });
+  }
+
+  /** 给问模型那一发装**硬超时**：`await` 只有超时能拦住"挂起"（try/catch 拦不住，AGENTS §2 #2）。
+   *  setTimeout 取本闭包注入的那一份（测试台里是记录桩，测试可以手动把超时拨响）。 */
+  function doctorAskBounded(f) {
+    return new Promise(function (resolve) {
+      let done = false;
+      const tid = setTimeout(function () {
+        if (done) return;
+        done = true;
+        resolve({ ok: false, reason: 'ask-timeout' });
+      }, DOCTOR_ASK_TIMEOUT_MS + 2000);
+      Promise.resolve().then(function () { return doctorAskModel(f); }).then(function (v) {
+        if (done) return;
+        done = true;
+        clearTimeout(tid);
+        resolve(v && typeof v === 'object' ? v : { ok: false, reason: 'ask-bad-shape' });
+      }, function () {
+        if (done) return;
+        done = true;
+        clearTimeout(tid);
+        resolve({ ok: false, reason: 'ask-throw' });
+      });
+    });
+  }
+
+  /** 把最硬那一条说出去。先过闸（都在**花钱之前**），过了闸才问模型想一遍怎么说，
+   *  问不出就照本地结论说。@returns {string} 真点名说出去的结论码；空串 = 这一拍没说（原因写进 `dataset.doctorSkip`） */
+  async function doctorDeliver(res) {
+    const f = res && Array.isArray(res.findings) ? res.findings[0] : null;
+    if (!f) return doctorMark('no-finding');
+    if (!(Number(f.severity) >= DOCTOR_MIN_SEVERITY)) return doctorMark('quiet');
+    if (doctorOn === false) return doctorMark('switch-off');
+    const now = Date.now();
+    if (String(f.code) === doctorLastCode && now - doctorLastCodeAt < DOCTOR_GAP_MS) return doctorMark('cooldown');
+    if (!pagePet || !pagePet.host || !pagePet.host.isConnected) return doctorMark('no-pet');
+    // 她**看不见**就别换装、别说：被收起或标签页在后台时气泡根本没人看见，
+    // 而行头一挂就是 12 秒（`pagePetRoleOn` 的定时器），用户唤回她时先撞上一身医生袍。
+    // ⚠️ 只取 `pagePetIdleSay` 那两道"看不见"的闸，不许整把抄 `pagePetActBlock()` ——
+    //   'busy'（上一拍还没演完）与 'reduced'（系统减少动态效果）挡的是**动画**，
+    //   体检是一句话，被它们压掉就变成"有硬伤也不吭声"。
+    if (document.hidden) return doctorMark('bg');
+    if (pagePet.els.wrap && pagePet.els.wrap.classList.contains('mode-hidden')) return doctorMark('hidden');
+    // —— 到这里才花钱。同一时刻最多一发在问：并发的那一拍不跟着花钱，直接照本地结论说。
+    let line = String(f.title || '');
+    if (!doctorAsking) {
+      doctorAsking = true;
+      try {
+        const a = await doctorAskBounded(f);
+        if (a && a.ok === true && a.text) line = String(a.text);
+      } finally { doctorAsking = false; }
+    }
+    // 问的这一会儿世界会变：**收到话也要重过一遍闸** —— 开关可能被关、她可能被收起/进后台
+    if (doctorOn === false) return doctorMark('switch-off-late');
+    const now2 = Date.now();
+    if (String(f.code) === doctorLastCode && now2 - doctorLastCodeAt < DOCTOR_GAP_MS) return doctorMark('cooldown-late');
+    if (!pagePet || !pagePet.host || !pagePet.host.isConnected) return doctorMark('no-pet-late');
+    if (document.hidden) return doctorMark('bg-late');
+    if (pagePet.els.wrap && pagePet.els.wrap.classList.contains('mode-hidden')) return doctorMark('hidden-late');
+    const dressed = pagePetRoleOn('doctor');
+    // ⚠️ `'体检：' +` 这个字面形状别拆 —— e2e 的 DOC_TRUTH 契约按它抓说话前缀（browser-e2e.js）
+    const said = pagePetSayFrom('diagnose', '体检：' + line, 4600, '', '', '');
+    if (!said) {
+      if (dressed) pagePetRoleOff();
+      return doctorMark('bubble-blocked');
+    }
+    doctorLastCode = String(f.code);
+    doctorLastCodeAt = now2;
+    doctorMark('');   // 说了 → 把"为什么没说"那一格擦干净，现场读到的才是这一拍
+    return doctorLastCode;
+  }
+
+  // ── 换装巧思（用户原话：医生装=诊断、侦探装=修复中、修完换回别的衣服）──────
+  // ⚠️ 这一族**只临时改图，绝不写 OUT_KEY/SRC_KEY 存档** ——
+  //   体检把人自己挑好的衣服悄悄换掉，比不换更害人（批次 61「换姿势把衣服一起换了」同形）。
+  // ⚠️ 角色装期间自动换装必须让路（见 pagePetRefreshOutfit 那一格），
+  //   否则两族抢同一张 <img>，表现成"医生穿到一半变回裙子"。
+  function pagePetRoleOn(roleKey, msOverride) {
+    const game = petGameModule();
+    const role = game && game.ART && game.ART.ROLES ? game.ART.ROLES[roleKey] : null;
+    if (!pagePet || !pagePet.els.img || !role) return false;
+    try {
+      clearTimeout(doctorRoleTimer);
+      if (!pagePet.roleBase) pagePet.roleBase = pagePet.els.img.getAttribute('src') || '';
+      pagePet.els.img.setAttribute('src', chrome.runtime.getURL('popup/' + role.file));
+      pagePet.host.dataset.role = String(roleKey);
+      pagePet.host.dataset.roleFile = String(role.file);
+      if (pagePet.els.roleProp) {
+        pagePet.els.roleProp.textContent = String(role.prop || '');
+        pagePet.els.roleProp.classList.add('show');
+      }
+      const hold = Number(msOverride) > 0 ? Number(msOverride) : (Number(role.ms) > 0 ? Number(role.ms) : 12000);
+      doctorRoleTimer = setTimeout(pagePetRoleOff, hold);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** 卸下行头，回到她**在穿的那一身**；没穿着角色装时是无害的空操作。 */
+  function pagePetRoleOff() {
+    clearTimeout(doctorRoleTimer);
+    if (!pagePet) return;
+    try {
+      if (pagePet.roleBase) pagePet.els.img.setAttribute('src', pagePet.roleBase);
+      if (pagePet.els.roleProp) pagePet.els.roleProp.classList.remove('show');
+      delete pagePet.host.dataset.role;
+      delete pagePet.host.dataset.roleFile;
+    } catch (e) {}
+    pagePet.roleBase = '';
+  }
+
+  /** 开关"算开"的那一格。⚠️ 弹窗那侧写的是 1 / 0（与 omitonePetChatOn 同一族），
+   *  **键缺席 = 关**：这一功能开口前会花用户的 Key，不许默认烧钱（用户原话「默认开只会一直烧钱，用户又看不到」）。
+   *  1 与 true 都认（测试台可能直接写布尔）；0、false、缺席都算关。 */
+  function isDoctorOn(v) { return v === 1 || v === true; }
+
+  function applyPageDoctorSwitch() {
+    if (doctorOn === false && pagePet) pagePetRoleOff();   // 关掉时把挂着的行头一起收了
+  }
+  try {
+    chrome.storage.local.get([PAGE_DOCTOR_KEY], function (r) {
+      // 键缺席 = 关着（花钱的功能默认不开）；弹窗那枚「诊」不受这枚开关管，随时能手动查
+      doctorOn = !!(r && isDoctorOn(r[PAGE_DOCTOR_KEY]));
+      if (doctorOn === false) applyPageDoctorSwitch();
+    });
+  } catch (e) { /* 读不到就不主动说话，卡片那一路照旧能查 */ }
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes || !changes[PAGE_DOCTOR_KEY]) return;
+      doctorOn = isDoctorOn(changes[PAGE_DOCTOR_KEY].newValue);
+      applyPageDoctorSwitch();
+    });
+  } catch (e) { /* 同上 */ }
+
   // ── 她自己动：自动换装 + 自动小动作（纯演出，不碰存档、不碰调度）──────
   // 用户原话「已经不能交互了，还是让她自己动吧」。交互那一半是样式优先级的事
   // （见 Shadow DOM 样式里那三个 `:not()`），"自己动"这一半在下面这几个定时器上。
@@ -2348,6 +2611,10 @@
     const game = petGameModule();
     const pool = (game && game.ART && game.ART.SKINS) || [];
     if (!pagePet || !pagePet.els.img || pool.length < 2) return '';
+    // 角色装（医生／侦探）期间让路：两族抢同一张 <img>，表现成"医生穿到一半变回裙子"；
+    // 更贵的是它会改写 pagePet.outfit，角色装收尾时复原到的就是那次随机的一身 ——
+    // 用户自己挑的衣服就这么被体检换掉了（批次 61「换姿势把衣服一起换了」同形）。
+    if (pagePet.roleBase) return '';
     let idx = Math.floor(Math.random() * pool.length);
     // 连着两拍同一身不算"换了衣服"（44 张里撞车并不稀罕，用户读到的却是"没反应"）
     if (String(pool[idx]) === pagePet.outfit) {
@@ -2474,6 +2741,10 @@
         '@keyframes om-pet-pat{0%{transform:translateY(0) scale(1)}32%{transform:translateY(3px) scale(1.07,.9)}66%{transform:translateY(-2px) scale(.96,1.05)}100%{transform:translateY(0) scale(1)}}',
         '.card .pet.cheer{animation:om-pet-cheer .9s ease}',
         '@keyframes om-pet-cheer{0%{transform:scale(1)}30%{transform:scale(1.12) rotate(-4deg)}60%{transform:scale(1.06) rotate(3deg)}100%{transform:scale(1)}}',
+        // 「医生／侦探」那两身行头的道具 —— 立绘是 <img>，伪元素挂不上，只能自己占一格。
+        // 位置钉在头顶偏右（wrap 是 relative），字号与气泡区分开，一眼是"她在_ROLE"而不是"她在说话"。
+        '.roleprop{display:none;position:absolute;left:34px;top:-8px;z-index:2;font-size:15px;line-height:1;pointer-events:none;text-shadow:0 1px 3px rgba(15,23,42,.28)}',
+        '.roleprop.show{display:block}',
         // 她自己动的那一拍：动作名 = `popup/pet-game.js` 的 ART.MOTIONS，
         // 这里每个名字都要有一条同名 `@keyframes om-pet-<名>`（`npm run check` 第 20 项第 ⑤ 条对账）。
         // 全是**不改几何盒**的 transform：卡片宽度、状态面板、拖动用的矩形都不跟着抖。
@@ -2510,6 +2781,7 @@
         '</style>',
         '<div class="wrap" id="wrap">',
         '<div class="card" id="card">',
+        '<i class="roleprop" id="roleProp"></i>',
         '<img class="pet" id="petImg" src="' + chrome.runtime.getURL('popup/pet.png') + '" alt="Omitone" draggable="false">',
         '<div class="col">',
         '<div class="level" id="level">初识</div>',
@@ -2529,6 +2801,7 @@
           wrap: shadow.getElementById('wrap'),
           card: shadow.getElementById('card'),
           img: shadow.getElementById('petImg'),
+          roleProp: shadow.getElementById('roleProp'),
           bubble: shadow.getElementById('bubble'),
           level: shadow.getElementById('level'),
           bondBar: shadow.getElementById('bondBar'),

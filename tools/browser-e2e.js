@@ -3690,20 +3690,10 @@ async function reloadPet(ctx, options) {
     source: '(' + installPetClock.toString() + ')(' + JSON.stringify(tag) + ',' + JSON.stringify(options) + ');'
   });
   try {
-    if (options.egg !== undefined) {
-      var url = new URL(ctx.url);
-      if (options.egg) url.searchParams.set('egg', '1');
-      else url.searchParams.delete('egg');
-      await client.send('Page.navigate', { url: url.href });
-    } else await client.send('Page.reload', { ignoreCache: true });
+    await client.send('Page.reload', { ignoreCache: true });
     var ready = await waitFor(client,
       'document.readyState === "complete" && !!window.__omE2EClock && window.__omE2EClock.tag === ' + JSON.stringify(tag), 10000);
     if (!ready) throw new Error('角色专项 reload / 新文档时钟未就绪');
-    if (options.entryOnly) {
-      check('前置：egg=1 新文档真实进入彩蛋入场路径',
-        await client.evaluate('window.__omitoneEgg === true && window.__omE2EClock.stats().scheduled > 0') === true);
-      return;
-    }
     if (!options.reduce) {
       // 等真实 rAF 帧率探测结束，再显式选择正常档，避免低速 CI 把正向动画基线自动降级。
       var governed = await waitFor(client, '!!window.__omitoneMotion', 5000);
@@ -3716,11 +3706,11 @@ async function reloadPet(ctx, options) {
       c.advance(1600);
       var pet = document.getElementById('mascot');
       return { before: before, after: c.stats(), shown: !!pet && pet.classList.contains('show'),
-        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, egg: window.__omitoneEgg };
+        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches };
     });
     check('前置：新文档 timer / 随机确已接管，正常出场回调实际执行',
       initial.before.scheduled > 0 && initial.after.runs > initial.before.runs &&
-      initial.after.randomReads > 0 && initial.shown && initial.egg === false && initial.reduce === !!options.reduce,
+      initial.after.randomReads > 0 && initial.shown && initial.reduce === !!options.reduce,
       JSON.stringify(initial));
   } finally {
     await client.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
@@ -3733,12 +3723,14 @@ async function advancePet(client, ms) {
 
 async function openPetBook(client) {
   var opened = await petEval(client, function () {
-    var button = document.querySelector('#petTools [data-act="book"]');
+    var book = document.getElementById('petBook');
+    if (book.getAttribute('aria-hidden') === 'false') return true;
+    var button = document.getElementById('imBook');
     if (!button) return false;
     button.click();
     return document.getElementById('petBook').getAttribute('aria-hidden') === 'false';
   });
-  check('前置：通过「册」按钮打开面板（非直接改 DOM）', opened === true);
+  check('前置：通过「立绘册」按钮打开面板（非直接改 DOM）', opened === true);
 }
 
 async function petAction(client, key) {
@@ -3783,12 +3775,18 @@ var SCENARIOS = [];
 // 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
 SCENARIOS.push({
   name: '角色动作专项：100 张立绘与 15 动作完整覆盖',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
     await reloadPet(ctx);
     await openPetBook(client);
+    // 1.3.1 起场景走 ?play=1（设置页不再画她），默认落点是沉浸式 homePosition 现场算的
+    // （760 高 ≈275，竖直居中）；旧口径 y=2 是非沉浸（右上角）时代的写法。
+    // 基线从页面读回，断言只管「动作不许把她挪离默认落点」。
+    var homeY = await client.evaluate(
+      'parseFloat(getComputedStyle(document.getElementById("mascot")).translate.split(" ")[1])');
+    check('前置：默认落点基线读得回', typeof homeY === 'number' && isFinite(homeY) && homeY >= 0, String(homeY));
     var book = await petEval(client, function () {
       var body = document.getElementById('petBookBody'), groups = {}, group = '';
       Array.from(body.children).forEach(function (el) {
@@ -3839,7 +3837,7 @@ SCENARIOS.push({
       check(key + '：到期回 sit',
         await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
     }
-    // 默认落点 y=2 不应靠整个人下移来躲裁切；检查符号最终绘制盒，而非只看 content。
+    // 默认落点由 homePosition 现场算（沉浸式竖直居中）；符号不许靠整个人下移躲裁切，检查最终绘制盒。
     for (var glyphKey of ['surprise', 'think', 'sing']) {
       await petAction(client, glyphKey);
       var glyph = await petEval(client, function () {
@@ -3854,10 +3852,10 @@ SCENARIOS.push({
           top: y, bottom: y + parseFloat(p.height), left: x, right: x + parseFloat(p.width),
           pseudoTop: p.top, pseudoLeft: p.left, content: p.content, viewport: [innerWidth, innerHeight] };
       });
-      check(glyphKey + '：默认顶边落点不变，符号绘制盒仍完整在视口内',
-        glyph.translateY === 2 && glyph.top >= -1 && glyph.left >= -1 &&
+      check(glyphKey + '：默认落点未被动作挪走，符号绘制盒仍完整在视口内',
+        glyph.translateY === homeY && glyph.top >= -1 && glyph.left >= -1 &&
         glyph.bottom <= glyph.viewport[1] + 1 && glyph.right <= glyph.viewport[0] + 1,
-        JSON.stringify(glyph));
+        JSON.stringify(glyph) + ' homeY=' + homeY);
     }
     check('动作执行全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
   }
@@ -3865,7 +3863,7 @@ SCENARIOS.push({
 
 SCENARIOS.push({
   name: '角色动作专项：连续动作令牌 / 同动作重播',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -3926,53 +3924,11 @@ SCENARIOS.push({
 });
 
 SCENARIOS.push({
-  name: '角色动作专项：显示小人 crawl 取消 / 图册让闲置让位',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  name: '角色动作专项：图册让闲置让位 / 夏季吃动作 / 摸头跨档补播',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
-    await reloadPet(ctx);
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 901);
-    check('前置：显示小人的延迟 crawl 真实进入 crouch',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crouch');
-    await advancePet(client, 1501);
-    var crawl = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { pose: pet.getAttribute('data-pose'), transition: pet.style.transition, translate: pet.style.translate };
-    });
-    check('前置：已进入 crawl 且真实启动 translate 移动', crawl.pose === 'crawl' &&
-      /translate/.test(crawl.transition) && !!crawl.translate, JSON.stringify(crawl));
-    // 打开册本身会取消，因此先开册再点击「显示小人」重开 crawl，测试动作按钮的取消能力。
-    await openPetBook(client);
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 2401);
-    check('前置：图册已打开时第二次显示仍能真正开始 crawl',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crawl');
-    await petAction(client, 'sleep');
-    var frozen = await client.evaluate('document.getElementById("mascot").style.translate');
-    check('手动动作取消已开始 crawl 的空间过渡',
-      await client.evaluate('document.getElementById("mascot").style.transition') === '');
-    await advancePet(client, 2301);
-    await advancePet(client, 15000);
-    var cancelled = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { pose: pet.getAttribute('data-pose'), translate: pet.style.translate, transition: pet.style.transition };
-    });
-    check('旧 crawl 后续 point / 回家 timer 均失效', cancelled.pose === 'sit' &&
-      cancelled.translate === frozen && cancelled.transition === '', JSON.stringify(cancelled));
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 300);
-    var pending = await petAction(client, 'sleep');
-    check('前置：显示后的 900ms 延迟内已手动切 sleep', pending.pose === 'sleep');
-    await advancePet(client, 601);
-    check('手动动作取消尚未开始的延迟 crawl',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sleep');
-    await advancePet(client, 1700);
-    await advancePet(client, 17000);
-    check('被取消的延迟 crawl 不会在后续阶段复活',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
-
     // 先证明 idle 分支实际能驱动角色，再 reload 验证开册让位；不能靠「没变化」猜前置。
     await reloadPet(ctx);
     await advancePet(client, 16901);
@@ -3994,29 +3950,7 @@ SCENARIOS.push({
     });
     check('开册持续超过两轮 idle 仍不抢姿态', idleBlocked.pose === 'sit' && idleBlocked.open === 'false', JSON.stringify(idleBlocked));
 
-    // 抢占发生在挂边 callback 之前也必须把人显出来，不能只取消原入场序列。
-    await reloadPet(ctx, { egg: true, entryOnly: true });
-    var eggBefore = await client.evaluate('!document.getElementById("mascot").classList.contains("show")');
-    check('前置：egg 入场首拍前角色确实尚未显示', eggBefore === true);
-    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
-    await advancePet(client, 11001);
-    var eggRun = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { show: pet.classList.contains('show'), transform: pet.style.transform,
-        busy: pet.getAttribute('data-busy'), display: getComputedStyle(pet).display };
-    });
-    check('run 抢占 egg 入场后角色可见，过期入场回调不把它移出视口', eggRun.show &&
-      eggRun.transform === '' && eggRun.busy === '1' && eggRun.display !== 'none', JSON.stringify(eggRun));
-    await reloadPet(ctx, { egg: true, entryOnly: true });
-    await advancePet(client, 1401);
-    var hanging = await client.evaluate('({pose:document.getElementById("mascot").getAttribute("data-pose"),transform:document.getElementById("mascot").style.transform})');
-    check('前置：第二次 egg 真实进入带负向位移的挂边首拍', hanging.pose === 'hang' &&
-      /-96px/.test(hanging.transform), JSON.stringify(hanging));
-    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
-    check('run 抢占已挂边的 egg 会清除旧入场 transform 并保持 show',
-      await client.evaluate('document.getElementById("mascot").classList.contains("show") && document.getElementById("mascot").style.transform === ""') === true);
-
-    await reloadPet(ctx, { egg: false, random: 0.3 });
+    await reloadPet(ctx, { random: 0.3 });
     var eating = await petEval(client, function () {
       // 停止按钮仍走完整真实 click 冒泡链，但不启动刷课，避免和后续场景串存储。
       document.getElementById('stop').click();
@@ -4032,7 +3966,7 @@ SCENARIOS.push({
     check('夏季吃动作期限结束后清掉 data-eat',
       await client.evaluate('!document.getElementById("mascot").hasAttribute("data-eat")') === true);
 
-    await reloadPet(ctx, { egg: false, mood: 79 });
+    await reloadPet(ctx, { mood: 79 });
     // 批次 150 落了四季成就：11 月摸头必解锁「秋叶来信」，它的庆祝演出（setPose 1400ms）
     // 会把 busy 从 1050ms 拉长到 1650ms，moodHigh 补播就迟到 —— 这一族单独测的是跨档补播，
     // 成就有自己的专项。照摸头话场景的手法把成就全点灯（id 从规则层读回，不手抄清单），
@@ -4081,7 +4015,7 @@ SCENARIOS.push({
 
 SCENARIOS.push({
   name: '角色动作专项：380x240 立绘册面板内滚动命中',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -4095,6 +4029,10 @@ SCENARIOS.push({
       var out = { width: innerWidth, height: innerHeight, top: rect.top, bottom: rect.bottom,
         left: rect.left, right: rect.right, overflow: getComputedStyle(body).overflowY,
         scrollable: body.scrollHeight > body.clientHeight, pageY: scrollY };
+      // 底部按钮排不许长高：fixed+left:50% 的收缩适配只看锚点右侧可用宽，窄口会把按钮
+      // 压成一字宽竖排文字塔、整条带长到 88px 盖住面板中部，点击全被它拦走（批次 131）。
+      var band = document.querySelector('.im-controls');
+      if (band) { var bandRect = band.getBoundingClientRect(); out.bandH = Math.round(bandRect.height); out.bandW = Math.round(bandRect.width); }
       // 滚到「最后一个动作按钮」而不是滚动容器的最底 —— 面板末尾现在是成就区
       // （1.3.0 起立绘册末尾挂成就列表），滚到底看到的是成就，不再是动作按钮。
       // 最后一个是谁从 DOM 读回，不手抄键名 —— 动作库一扩充，手抄的那发就指错按钮。
@@ -4111,15 +4049,26 @@ SCENARIOS.push({
     check('短视口整块图册仍在视口内', geometry.top >= -1 && geometry.bottom <= 241 &&
       geometry.left >= -1 && geometry.right <= 381, JSON.stringify(geometry));
     check('内容在面板内部滚动，不靠整页撑高', geometry.scrollable && /auto|scroll/.test(geometry.overflow), JSON.stringify(geometry));
+    check('窄视口底部按钮排保持一行横排，不许压成竖排文字塔',
+      typeof geometry.bandH === 'number' && geometry.bandH > 0 && geometry.bandH <= 40,
+      'band ' + geometry.bandW + 'x' + geometry.bandH);
     var hit = await petEval(client, function () {
       var body = document.getElementById('petBookBody');
       var buttons = body.querySelectorAll('.pet-book-anim:not([data-anim="random"])');
       var last = buttons[buttons.length - 1], r = last.getBoundingClientRect();
       var br = body.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
       var target = document.elementFromPoint(x, y);
+      // 命中被拦时要知道是谁拦的、它自己铺在哪 —— 光看 id 定不了位（批次 131：
+      // imRestorePet 在 y=136 命中而 band 理论 top≈189，两个数对不上，必须量 rect 本身）。
+      var stack = document.elementsFromPoint(x, y).slice(0, 4).map(function (el) {
+        var rc = el.getBoundingClientRect();
+        return (el.id || el.tagName) + '@' + [rc.left, rc.top, rc.right, rc.bottom].map(Math.round).join(',');
+      });
       return { key: last.getAttribute('data-anim'), x: x, y: y, scrollTop: body.scrollTop,
         pageY: scrollY, within: r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
-        hit: !!target && (target === last || last.contains(target)) };
+        hit: !!target && (target === last || last.contains(target)),
+        hitTag: target ? target.tagName : '', hitId: target ? (target.id || target.className || '') : '',
+        stack: stack };
     });
     check('最后一个动作按钮滚入面板后中心点真实命中', hit.key === geometry.lastKey && hit.scrollTop > 0 &&
       hit.within && hit.hit && hit.y >= 0 && hit.y < 240 && hit.pageY === geometry.pageY, JSON.stringify(hit));
@@ -4128,24 +4077,43 @@ SCENARIOS.push({
     await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
     check('短视口最后按钮真实鼠标点击触发它自己的动作',
       await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === hit.key);
+    // 真实下限再量一次：逗玩窗口最小就是 560x440（popup.js immersiveTarget），
+    // 那里带的可用宽只有 280px、仍小于按钮排自然宽，正是现场会撞上的尺寸。
+    await reloadPet(ctx, { width: 560, height: 440 });
+    await openPetBook(client);
+    await sleep(300);
+    var bandMin = await petEval(client, function () {
+      var band = document.querySelector('.im-controls');
+      if (!band) return null;
+      var r = band.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight };
+    });
+    check('真实最小窗口 560x440 底部按钮排同样保持一行横排',
+      !!bandMin && bandMin.vw === 560 && bandMin.vh === 440 && bandMin.h > 0 && bandMin.h <= 40,
+      JSON.stringify(bandMin));
   }
 });
 
 SCENARIOS.push({
   name: '角色动作专项：动态 eco / 系统减少动态效果',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
     await reloadPet(ctx);
-    await client.evaluate('document.querySelector("#petTools [data-act=outfit]").click()');
+    await openPetBook(client);
+    // 1.3.1 工具条只剩「玩」「藏」，WAAPI 换装改从立绘册挑图进来（pet.js 的 data-src 点击 → playMotion）。
+    await petEval(client, function () {
+      document.querySelector('#petBookBody [data-src]').click();
+    });
     var outfitBaseline = await petEval(client, petMotionSnapshot);
-    check('前置：正常换装确实启动 WAAPI', outfitBaseline.mode !== 'eco' && outfitBaseline.waapi > 0,
+    check('前置：立绘册挑图确实启动 WAAPI', outfitBaseline.mode !== 'eco' && outfitBaseline.waapi > 0,
       JSON.stringify(outfitBaseline));
-    // 新序列会取消旧 WAAPI，先摸头再换装，令降档时 CSS / WAAPI / 粒子同时在场。
+    // 新序列会取消旧 WAAPI，先摸头再挑另一张图，令降档时 CSS / WAAPI / 粒子同时在场。
     await petEval(client, function () {
       document.getElementById('mascot').click();
-      document.querySelector('#petTools [data-act="outfit"]').click();
+      var cells = document.querySelectorAll('#petBookBody [data-src]');
+      cells[Math.min(1, cells.length - 1)].click();
     });
     var baseline = await petEval(client, petMotionSnapshot);
     check('前置：正常模式确有角色 CSS 动画、换装 WAAPI 和摸头粒子', baseline.mode !== 'eco' &&
@@ -4189,14 +4157,10 @@ SCENARIOS.push({
           seen.push([button.getAttribute('data-anim'), pet.getAttribute('data-pose')]);
           record(button.getAttribute('data-anim'));
         });
-        ['outfit', 'face', 'pose'].forEach(function (act) {
-          document.querySelector('#petTools [data-act="' + act + '"]').click(); record(act);
-        });
+        // 换装在低动态下同样走册子（工具条只剩「玩」「藏」）：挑一张图，同样只许静态提示。
+        var srcCell = body.querySelector('[data-src]');
+        if (srcCell) { srcCell.click(); record('outfit'); }
         pet.click(); record('pet');
-        // 底部显示按钮还会走 crawl；低动态模式下只允许静态提示，不允许空间移动。
-        document.getElementById('btnPetShow').click();
-        window.__omE2EClock.advance(2401);
-        record('show');
         observer.takeRecords().forEach(function (mutation) {
           Array.from(mutation.addedNodes).forEach(function (node) {
             if (node.nodeType === 1 && (node.matches('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf') ||
@@ -4212,7 +4176,7 @@ SCENARIOS.push({
       check(label + '：设置真实生效且 15 动作按钮仍然能切换静态姿态', reduced.mode === 'eco' &&
         reduced.reduce === !!pass && reduced.seen.length === 15 &&
         reduced.seen.every(function (pair) { return pair[0] === pair[1]; }), JSON.stringify(reduced));
-      check(label + '：动作 / 换装 / 摸头 / 显示均无角色 CSS 或 WAAPI 动画',
+      check(label + '：动作 / 换装 / 摸头均无角色 CSS 或 WAAPI 动画',
         reduced.violations.length === 0 && !/translate|transform/.test(reduced.transition), JSON.stringify(reduced));
       check(label + '：同套点击不生成瞬时粒子（包含创建后立即移除）',
         reduced.additions.length === 0 && reduced.particles === 0, JSON.stringify(reduced));
@@ -4223,10 +4187,10 @@ SCENARIOS.push({
   }
 });
 
-// 交互回归：连点换装不能误判为"戳她"；「藏」与「显示小人」必须闭环。
+// 交互回归：连点「玩」不能误判为"戳她"；「藏」与「让她回来」必须闭环。
 SCENARIOS.push({
-  name: '弹窗前端：连点换装不误判 / 显示小人闭环',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  name: '弹窗前端：连点「玩」不误判 / 藏与让她回来闭环',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4236,12 +4200,12 @@ SCENARIOS.push({
       'if(!pet) return {ok:false};' +
       'pet.classList.add("show");' +
       'var out={ok:true};' +
-      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
+      'var b=document.querySelector("#petTools button[data-act=\\"game\\"]");' +
       'if(b){b.click();b.click();b.click();}' +
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.dodged=pet.classList.contains("dodge");' +
       // ⚠️ 上面那枚 class **生产里从来没往人身上加**（`popup/pet.js` 只有 remove），所以它单独是个空信号。
-      // 真信号是这一族演的那个姿态与那句台词的归因 —— 三个「装」点下去既不该 shake 也不该说 dodge 那一族。
+      // 真信号是这一族演的那个姿态与那句台词的归因 —— 三个「玩」点下去既不该 shake 也不该说 dodge 那一族。
       'out.afterToolsPose=pet.getAttribute("data-pose");' +
       'out.afterToolsFrom=pet.getAttribute("data-say-from");' +
       'if(b){b.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:2,button:0,isPrimary:true,clientX:b.getBoundingClientRect().left+5,clientY:b.getBoundingClientRect().top+5}));}' +
@@ -4254,7 +4218,8 @@ SCENARIOS.push({
       // 而 `hidAfterHide` 这个字段探针从来没写过 —— 左半边是死的，等于只断了"这一下收起来了"。
       // 「下次打开弹窗还藏着」靠的是 localStorage 那个键（popup/pet.js:350 HIDE_KEY）。
       'out.hideStored=localStorage.getItem("omitone.pet.hidden");' +
-      'var sp=document.getElementById("btnPetShow");' +
+      // 1.3.1 起「显示小人」入口在窗口底部那排（#imRestorePet），弹窗里的按钮已拆。
+      'var sp=document.getElementById("imRestorePet");' +
       'out.hasShowBtn=!!sp;' +
       'if(sp)sp.click();' +
       'await new Promise(function(r){setTimeout(r,200);});' +
@@ -4269,7 +4234,7 @@ SCENARIOS.push({
       'show:document.getElementById("mascotBubble").classList.contains("show")};' +
       'return out;})()'
     );
-    check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false &&
+    check('连点「玩」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false &&
       r.afterToolsPose !== 'shake' && r.afterToolsFrom !== 'dodge', JSON.stringify(r));
     // 与下面 moodHigh 那一格配对：同一条归因通道在两个族上读出两个不同的名字，
     // 实现里把名字写死成一个常量就当场红一条（只钉一族是拦不住的）。
@@ -4279,7 +4244,7 @@ SCENARIOS.push({
       JSON.stringify(r && r.triple));
     check('「藏」能把人收起来，并把"藏着"写进存档（下次打开弹窗还在藏着的状态）',
       !!r && r.hidden === true && r.hideStored === '1', JSON.stringify(r));
-    check('点「显示小人」能重新出现，并清掉存档里的"藏着"',
+    check('点「让她回来」能重新出现，并清掉存档里的"藏着"',
       !!r && r.shown === true && (r.hideCleared === null || r.hideCleared === '0'), JSON.stringify(r));
     check('按在工具条上不会启动拖动（否则 click 被重定向成"戳"）', !!r && r.dragFromTools === false, JSON.stringify(r));
   }
@@ -4294,7 +4259,7 @@ SCENARIOS.push({
 // ══════════════════════════════════════════════════════════════════════
 SCENARIOS.push({
   name: '弹窗前端：全功能自检（含命中测试）',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4304,14 +4269,15 @@ SCENARIOS.push({
       'var pet=document.getElementById("mascot");' +
       'out.petShown=!!(pet&&pet.classList.contains("show"));' +
       'out.ui=document.documentElement.getAttribute("data-ui");' +
-      // —— 命中测试：三个按钮的中心点，elementFromPoint 必须命中按钮自己 ——
+      // —— 命中测试：按钮的中心点，elementFromPoint 必须命中按钮自己 ——
+      // 1.3.1 起她身上只剩「玩」「藏」两枚（换装/表情/姿势收进立绘册与随机）。
       'var vp={w:innerWidth,h:innerHeight};out.vp=vp;' +
       'var tools=document.getElementById("petTools");' +
       'out.toolsRect=(function(){if(!tools)return "noEl";var t=tools.getBoundingClientRect();' +
       '  return Math.round(t.left)+","+Math.round(t.top)+","+Math.round(t.width)+"x"+Math.round(t.height);})();' +
       'out.petRect=(function(){if(!pet)return "noEl";var p=pet.getBoundingClientRect();' +
       '  return Math.round(p.left)+","+Math.round(p.top)+","+Math.round(p.width)+"x"+Math.round(p.height);})();' +
-      'var hits={},rects={};["pose","outfit","hide"].forEach(function(a){' +
+      'var hits={},rects={};["game","hide"].forEach(function(a){' +
       '  var b=document.querySelector("#petTools button[data-act=\\""+a+"\\"]");' +
       '  if(!b){hits[a]="missing";rects[a]="noEl";return;}' +
       '  var rc=b.getBoundingClientRect();' +
@@ -4333,18 +4299,6 @@ SCENARIOS.push({
       'var d1=pet.getBoundingClientRect();' +
       'out.dragDx=Math.round(d1.left-d0.left);' +
       'out.inView=d1.left>=-1&&d1.right<=innerWidth+1&&d1.top>=-1;' +
-      // —— 换装：这次点击是下面「姿」那条的前提（穿着非默认衣服），
-      //    换装本身的行为断言在「角色控件点一遍都要有反应」那一场 ——
-      'var img=pet.querySelector(".pet-art");' +
-      'var bo=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
-      'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
-      // —— 换姿势：当前穿着非默认衣服，只能换身体姿态，不能把衣服换掉 ——
-      'out.pose0=img?img.getAttribute("src"):"";' +
-      'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
-      'var bp=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
-      'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
-      'out.pose1=img?img.getAttribute("src"):"";' +
-      'out.poseAttr1=pet?pet.getAttribute("data-pose"):"";' +
       // —— 隐藏（放最后）：这一次点击只为「全程无未捕获异常」走一遍那条路径 ——
       'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
@@ -4353,15 +4307,12 @@ SCENARIOS.push({
     );
     check('角色在精美模式下自动出现', !!r && r.petShown === true, JSON.stringify({shown: r && r.petShown, ui: r && r.ui}));
     var hitInfo = JSON.stringify({hits: r && r.hits, rects: r && r.rects, vp: r && r.vp, toolsRect: r && r.toolsRect, petRect: r && r.petRect});
-    check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, hitInfo);
-    check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, hitInfo);
+    check('「玩」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.game === true, hitInfo);
     check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, hitInfo);
-    // 这一场只测**命中测试 + 拖动 + 装束不被「姿」覆盖**这一层；
-    // 「点「装」换立绘」「点「藏」收起」两条与「弹窗前端：角色控件点一遍都要有反应」
-    // 是同分支、同层、同夹具的重复（谓词逐字相同），行为那一条留在那场里，摘掉这里。
-    // 上面那两次点击仍然保留：它们分别是「姿」那条的前提与「全程无未捕获异常」走过的路径。
-    check('穿着别的衣服时点「姿」不会把衣服换掉', !!r && r.pose0 === r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
-    check('「姿」仍然换了身体姿态', !!r && r.poseAttr0 !== r.poseAttr1, r ? r.poseAttr0 + ' → ' + r.poseAttr1 : '');
+    // 这一场只测**命中测试 + 拖动**这一层；「点「玩」开小游戏」「点「藏」收起」
+    // 的行为断言分别在「小游戏摸头涨好感」与「连点「玩」不误判 / 藏与让她回来闭环」
+    // 那两场里（同分支、同层、同夹具的重复这里不再背一份）。
+    // 上面那两次点击仍然保留：「全程无未捕获异常」要各自真走一遍那条路径。
     check('拖动位移 > 30px', !!r && Math.abs(r.dragDx) > 30, r ? String(r.dragDx) : '');
     check('拖完仍在视口内', !!r && r.inView === true, '');
     check('全程无未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
@@ -4399,7 +4350,9 @@ SCENARIOS.push({
       // （.container 整条被藏），子节点自己的 display 照样是 flex/block。
       'var top=document.querySelector(".top");' +
       'out.topPainted=!!(top&&top.getClientRects().length);' +
-      'var keep={fxLayer:1,mascot:1,petBook:1,toast:1};' +
+      // 1.3.1 起小游戏/聊天/体检三块面板也是 body 的直接孩子（display:flex 但 opacity:0 挂着，
+      // .show 才露脸）—— 量得到矩形不算"漏网"，它们与立绘册同属"我们的面板"。
+      'var keep={fxLayer:1,mascot:1,petBook:1,petGame:1,petChat:1,petDiag:1,toast:1};' +
       'out.strays=Array.prototype.slice.call(document.body.children).filter(function(el){' +
       ' var b=el.getBoundingClientRect();' +
       ' return !keep[el.id] && !el.classList.contains("im-controls") && b.width>0 && b.height>0;' +
@@ -4587,12 +4540,77 @@ SCENARIOS.push({
 
 
 
+// ── 前端专项：设置页不再画她（1.3.1 起角色只在逗玩窗口与刷课页现身） ─────────
+// 设置页是"控制中心"：等级/好感状态行 + 四枚入口按钮（深链进逗玩窗口对应面板）。
+// 这里断三层：JS 出场判过 body.im；CSS 兜底 body:not(.im) #mascot 恒藏；
+// lite 模式连状态行与入口一起收。哪天有人在设置页把她画回来，三条至少红一条。
+SCENARIOS.push({
+  name: '设置页不再画她：角色本体隐藏、入口齐全；lite 连状态行一起收',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    // 先抄走好感存档，种一份最小档（affection:5）—— 没存档时 renderBond 直接折返，
+    // 状态行停在出厂占位话，那条断言就会随场景顺序翻红。收尾原样放回。
+    var savedBond = JSON.parse(await client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("omitonePetBond",' +
+      'function(r){res(JSON.stringify(r||{}))})})'));
+    await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
+      JSON.stringify({ omitonePetBond: { affection: 5 } }) + ',function(){res(true)})})');
+    // 清掉角色自己的 localStorage 键（藏着/坐标/装束），再重载 —— 让「本体恒藏」
+    // 这条断言走的是 CSS 兜底那条路，而不是上一次场景留下的内联 important 藏。
+    await client.evaluate('(function(){["omitone.pet.hidden","omitone.pet.pos","omitone.pet.pos.im",' +
+      '"omitone.pet.src","omitone.pet.outfit","omitone.pet.face","omitone.pet.mood","omitone.pet.night"]' +
+      '.forEach(function(k){localStorage.removeItem(k);});return 1;})()');
+    try { await client.evaluate('location.reload()'); } catch (e) { /* 导航掀掉执行上下文是预期内的 */ }
+    await waitFor(client, 'document.readyState === "complete"', 10000);
+    await sleep(800);
+    var fancy = await client.evaluate(
+      '(function(){var pet=document.getElementById("mascot");' +
+      'var ids=["btnExpand","btnPetBook","btnPetChat","btnPetDiag","petStatus"];' +
+      'var missing=ids.filter(function(id){return !document.getElementById(id);});' +
+      'return {display:pet?getComputedStyle(pet).display:"(no el)",' +
+      'rects:pet?pet.getClientRects().length:-1,' +
+      'status:document.getElementById("petStatus")?document.getElementById("petStatus").textContent:"",'+
+      'missing:missing};})()'
+    );
+    check('设置页（fancy）里她的本体恒藏（JS 出场判 + CSS 兜底各占一半）',
+      fancy.display === 'none' && fancy.rects === 0, JSON.stringify(fancy));
+    check('设置页「吉祥物」栏四枚入口与状态行都在（打开逗玩窗口/看立绘册/和她聊天/本地体检）',
+      fancy.missing.length === 0, JSON.stringify(fancy.missing));
+    check('状态行由 renderBond 填出等级与好感（不再是出厂占位话）',
+      /好感/.test(fancy.status) && fancy.status.indexOf('还没读到她的存档') === -1, fancy.status);
+
+    // lite 模式：pet.js 第一行就折返，入口与状态行由 popup.html 的 lite 规则收掉。
+    try { await client.evaluate('location.search = "ui=lite"'); } catch (e) { /* 预期：导航掀掉上下文 */ }
+    await waitFor(client, 'document.readyState === "complete" && document.documentElement.getAttribute("data-ui") === "lite"', 10000);
+    await sleep(400);
+    var lite = await client.evaluate(
+      '(function(){var g=function(id){var el=document.getElementById(id);return el?getComputedStyle(el).display:"(no el)";};' +
+      'return {expand:g("btnExpand"),book:g("btnPetBook"),chat:g("btnPetChat"),diag:g("btnPetDiag"),' +
+      'status:g("petStatus"),mascot:g("mascot")};})()'
+    );
+    check('lite 模式：四枚入口与状态行 display:none，角色本体也不画',
+      lite.expand === 'none' && lite.book === 'none' && lite.chat === 'none' && lite.diag === 'none' &&
+      lite.status === 'none' && lite.mascot === 'none', JSON.stringify(lite));
+
+    // 收尾：好感存档原样放回（原来就没有就摘掉，不许写 undefined 进去）。
+    if (savedBond.omitonePetBond !== undefined) {
+      await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
+        JSON.stringify({ omitonePetBond: savedBond.omitonePetBond }) + ',function(){res(true)})})');
+    } else {
+      await client.evaluate('new Promise(function(res){chrome.storage.local.remove("omitonePetBond",function(){res(true)})})');
+    }
+    check('设置页专项全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
+  }
+});
+
 // ── 前端专项：角色控件"点了要有反应" ──────────────────────────────────────
 // 这类 bug（点了没反应、装扮没换）**不会抛异常**，只能靠"点完之后状态变了没有"来抓。
 // 以后新增任何角色控件，都在这里补一条断言。
 SCENARIOS.push({
   name: '弹窗前端：角色控件点一遍都要有反应',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4603,25 +4621,26 @@ SCENARIOS.push({
       'var pet=document.getElementById("mascot");' +
       'var img=pet&&pet.querySelector(".pet-art");' +
       'out.hasPet=!!pet;out.src0=img?img.getAttribute("src"):"";' +
-      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
-      'if(b){b.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      // 1.3.1 起换装/换姿势的入口是立绘册（imBook 开门，册子里挑图 / 点动作），
+      // 工具条只剩「玩」「藏」两枚。
+      'var ib=document.getElementById("imBook");' +
+      'if(ib){ib.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      'out.bookOpen=document.getElementById("petBook")&&document.getElementById("petBook").getAttribute("aria-hidden")==="false";' +
+      'var cell=null;' +
+      'Array.prototype.forEach.call(document.querySelectorAll("#petBookBody [data-src]"),function(c){' +
+      '  if(!cell&&c.getAttribute("data-src")!==out.src0)cell=c;});' +
+      'if(cell){cell.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.src1=img?img.getAttribute("src"):"";' +
-      'out.pose0=img?img.getAttribute("src"):"";' +
       'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
-      'var pb=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
-      'if(pb){pb.click();await new Promise(function(r){setTimeout(r,180);});}' +
-      // 旧写法断 `pose0 !== pose1`，可 pose0 取的是 **img 的 src**、pose1 取的是 **pet 的
-      // data-pose** —— 两个值域（"pet.png" 与 "sit"）永远不相等，「姿」整个坏掉它照样绿。
-      // 「姿」有两条分支（popup/pet.js:605）：默认装束下换**姿势立绘**（改 src），
-      // 穿着别的衣服时只换 **CSS 姿态**（改 data-pose，不换图，免得把用户刚挑的衣服换掉）。
-      // 上面点过一次「装」，所以现在走的是第二条 —— 断言写成"两者之一真的变了"，
-      // 不认死某一条，否则以后默认装束的顺序一变就误红。
-      'out.pose1=img?img.getAttribute("src"):"";' +
+      'var ab=document.querySelector("#petBookBody [data-anim]:not([data-anim=\\"random\\"])");' +
+      'out.animKey=ab?ab.getAttribute("data-anim"):"";' +
+      'if(ab){ab.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.poseAttr=pet?pet.getAttribute("data-pose"):"";' +
+      'if(ib){ib.click();await new Promise(function(r){setTimeout(r,150);});}' +
       'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(h){h.click();await new Promise(function(r){setTimeout(r,140);});}' +
       'out.hidden=pet?pet.style.display==="none":null;' +
-      'var sp=document.getElementById("btnPetShow");' +
+      'var sp=document.getElementById("imRestorePet");' +
       'if(sp){sp.click();await new Promise(function(r){setTimeout(r,140);});}' +
       'out.shown=pet?pet.style.display!=="none":null;' +
       'document.querySelectorAll(".toggle").forEach(function(t){t.click();t.click();});' +
@@ -4630,13 +4649,13 @@ SCENARIOS.push({
       'return out;})()'
     );
     check('前置：弹窗里有角色元件', !!r && r.hasPet === true, JSON.stringify(r));
-    check('点「装」真的换图（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
-    check('点「姿」确有换动作：换姿势立绘或换 CSS 姿态，两者至少变一个（旧写法拿 src 和 data-pose 比，恒不相等）',
-      !!r && (r.pose0 !== r.pose1 || r.poseAttr0 !== r.poseAttr) &&
-      ['sit', 'happy', 'point', 'sad'].indexOf(r.poseAttr) !== -1,
-      r ? r.pose0 + ' → ' + r.pose1 + ' / ' + r.poseAttr0 + ' → ' + r.poseAttr : '');
+    check('前置：立绘册真的开了（imBook 开门，不是直接改 DOM）', !!r && r.bookOpen === true, JSON.stringify(r));
+    check('册子里挑一张图真的换立绘（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
+    check('册子里点一个动作真的换了 CSS 姿态（动作键就是姿态名）',
+      !!r && typeof r.animKey === 'string' && r.animKey !== '' && r.animKey !== 'random' && r.poseAttr === r.animKey,
+      r ? r.poseAttr0 + ' → ' + r.poseAttr + '（点了 ' + r.animKey + '）' : '');
     check('点「藏」会收起来', !!r && r.hidden === true, '');
-    check('「显示小人」能叫回来', !!r && r.shown === true, '');
+    check('「让她回来」能叫回来', !!r && r.shown === true, '');
     check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
   }
 });
@@ -4718,7 +4737,7 @@ SCENARIOS.push({
 //    再点（直接改完立刻点，摸的还是旧内存态）。
 SCENARIOS.push({
   name: '小游戏：摸头涨好感、跨级换徽章、刷课时长折算',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var ui = await ctx.client.evaluate(
@@ -5885,7 +5904,7 @@ SCENARIOS.push({
       'Array.prototype.forEach.call(document.querySelectorAll("#petTools button"), function (b) { targets.push(b); });' +
       'Array.prototype.forEach.call(document.querySelectorAll(".toggle"), function (b) { targets.push(b); });' +
       'targets.push(document.getElementById("petBookClose"));' +
-      'targets.push(document.getElementById("btnPetShow"));' +
+      'targets.push(document.getElementById("imRestorePet"));' +
       'var clicks = 0;' +
       'for (var i = 0; i < 400; i++) {' +
       '  var t = targets[Math.floor(rand() * targets.length)];' +
@@ -5967,6 +5986,227 @@ SCENARIOS.push({
     check('伴侣连点 30 次：好感条有值、零异常、收起唤回正常',
       !!brute && brute.alive === true && brute.bar !== '' && brute.hid === true && brute.back === true && brute.errs.length === 0,
       JSON.stringify(brute));
+  }
+});
+
+// ── 上课页本地医生（批次 130）：真实浏览器里才暴露的那三件事 ──────────────────
+// 集成层那 29 格（tools/integration-test.js 的 testLocalDoctor）喂的是**打桩**的伴侣，
+// 它量不到装机时才看得见的东西：
+//   ① `libs/diagnose.js` 真进了 manifest 的 content_scripts —— 漏了的话判断层在页面世界里
+//      根本不存在，医生永远只交一句「no-diagnose」，一条测试都不会红；
+//   ② 医生装那张 png 真在 web_accessible_resources 里 —— 不在的话 <img> 加载失败、
+//      naturalWidth 恒 0，用户看到的是一只空相框；
+//   ③ 弹窗那枚开关写进存储的是 1 / 0，content 侧认的必须是同一族（§2 #23 读写两侧基准不同）。
+// ⚠️ needle、结论标题、装的文件名与道具、存储键、节流窗口**全部从真源读回来**，
+//   这份文件里不抄第二份（§5「断言里出现的每一个数，都要说得出它是从哪儿读回来的」）。
+var DOC_TRUTH = (function () {
+  var dx = String(fs.readFileSync(path.join(ROOT, 'libs/diagnose.js'), 'utf8'));
+  var cg = String(fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8'));
+  var pg = String(fs.readFileSync(path.join(ROOT, 'popup/pet-game.js'), 'utf8'));
+  function rule(code) {
+    var from = dx.indexOf('var RULES = [');
+    var at = from < 0 ? -1 : dx.indexOf("code: '" + code + "'", from);
+    if (at < 0) return null;
+    var seg = dx.slice(at, dx.indexOf('\n    },', at));
+    return {
+      needle: (seg.match(/needles:\s*\[\s*'([^']+)'/) || [])[1] || '',
+      title: (seg.match(/title:\s*'([^']+)'/) || [])[1] || '',
+      severity: Number((seg.match(/severity:\s*(\d+)/) || [])[1])
+    };
+  }
+  return {
+    media: rule('media-dead'),
+    stuck: rule('stuck'),
+    key: (cg.match(/PAGE_DOCTOR_KEY\s*=\s*'([^']+)'/) || [])[1] || '',
+    prefix: (cg.match(/\('diagnose',\s*'([^']+)'\s*\+/) || [])[1] || '',
+    throttle: Number((cg.match(/DOCTOR_ANALYZE_MS\s*=\s*(\d+)/) || [])[1]),
+    file: (pg.match(/doctor:\s*\{\s*name:[^,]+,\s*file:\s*'([^']+)'/) || [])[1] || '',
+    prop: (pg.match(/doctor:\s*\{\s*name:[^,]+,\s*file:[^,]+,\s*prop:\s*'([^']+)'/) || [])[1] || ''
+  };
+})();
+
+SCENARIOS.push({
+  name: '上课页本地医生：开关关掉不吭声、医生装真加载、结论有界一句、20 秒内不判第二次',
+  path: '/quiz',
+  // 伴侣宿主建不建由精简键决定（见 setPagePetMinimal 头上那段）
+  pagePetOn: true,
+  // ⚠️ 这一场吃的是「一页只判一次」那 20 秒窗口：页面自己跑起来会先占掉那一发
+  //   （§5 xxtRunning 那条 —— 跑过 run 的场景会让每页加载都自动续跑），必须先按掉。
+  noAutoResume: true,
+  run: async function (ctx) {
+    var T = DOC_TRUTH;
+    var truthOk = !!T.media && !!T.stuck && T.media.severity >= 2 && T.media.needle.length > 0 &&
+      T.media.title.length > 0 && T.stuck.needle.length > 0 && T.stuck.needle !== T.media.needle &&
+      T.key.length > 0 && T.prefix.length > 0 && T.throttle > 0 && T.file.length > 0 && T.prop.length > 0;
+    check('夹具自证：这一场的 needle、结论标题、医生装文件名与道具、存储键、节流窗口都从真源读回来了，' +
+      '且挑的那条规则够硬（severity 至少 2 才轮到她开口）—— 真源改了名时这条先红，' +
+      '后面任何一条红才只能读成「没跑到」',
+      truthOk, JSON.stringify(T));
+    if (!truthOk) return;
+
+    var DOCTOR_READ = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h&&h.shadowRoot,img=sr&&sr.getElementById("petImg"),bub=sr&&sr.getElementById("bubble"),' +
+      'rp=sr&&sr.getElementById("roleProp"),wrap=sr&&sr.getElementById("wrap");' +
+      'if(!img||!bub)return {gone:true};' +
+      'return {gone:false,skip:String(h.dataset.doctorSkip||""),role:String(h.dataset.role||""),' +
+      'roleFile:String(h.dataset.roleFile||""),src:String(img.getAttribute("src")||""),' +
+      'natW:Number(img.naturalWidth||0),shown:bub.classList.contains("show"),' +
+      'bubble:String(bub.textContent||""),sayFrom:String(h.dataset.sayFrom||""),' +
+      'sayLine:String(h.dataset.sayLine||""),prop:String(rp&&rp.textContent||""),' +
+      'tuck:!!(wrap&&wrap.classList.contains("mode-hidden")),hidden:document.hidden,' +
+      'ready:document.readyState};})()';
+    // 挂载 / 重新加载后的等待：沿用伴侣那场 48×500ms 的窗口（满载机器上挂载会迟到）
+    async function waitDoctor() {
+      for (var i = 0; i < 48; i++) {
+        await sleep(500);
+        var r = await ctx.client.evaluate(DOCTOR_READ);
+        if (r && r.gone === false && r.ready === 'complete') return r;
+      }
+      return null;
+    }
+    // 发一条真日志进这一页的环（走的就是 content.js 收 runtime_log 那一路，不是另开一个口子）。
+    // 「还不知道」那一格**不消耗节流**（doctorNote 在按判断地板之前就 return 了），所以可以放心重试。
+    async function emitDoctor(needle) {
+      var last = null;
+      for (var i = 0; i < 4; i++) {
+        await ctx.client.evaluate('(function(){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+          'level:"warn",message:' + JSON.stringify(needle) + ',meta:null},"*");return true;})()');
+        await sleep(220);
+        last = await ctx.client.evaluate(DOCTOR_READ);
+        if (!last || last.skip !== 'switch-unknown') return last;
+      }
+      return last;
+    }
+    // 开关写的是弹窗那侧的字面形状（1 / 0），键名从 content.js 读回来
+    async function setDoctor(value) {
+      var cw = await initConfigWriter(ctx.extensionId);
+      await cw.evaluate('new Promise(function (res) { chrome.storage.local.set(' +
+        JSON.stringify({ k: value }).replace('"k"', JSON.stringify(T.key)) +
+        ', function () { res(true); }); })');
+    }
+
+    // ── ① 开关关掉：一条硬伤进来，她一个字都不多说、一身都不换 ──────────────
+    // ⚠️ ②③ 吃的是「没 Key 走本地结论」那条路 —— 配置整轮共用（quiz 场景留下的
+    //   `config` 对象带着 Key + 假模型地址），医生会真去问假模型，而假模型对不可解析的
+    //   提示词回 '[]'，气泡就成了「体检：[]」（§5 夹具必须自己钉住它依赖的共享状态）。
+    //   配置真源是存储里那一枚 `config` 对象（content.js 经 storage.onChanged 现场重读），
+    //   清成空对象就是"没 Key"的出厂状态 —— 写顶层散键没人读，等于什么都没钉。
+    await writeConfig(ctx.extensionId, {});
+    await setDoctor(0);
+    var b0 = await waitDoctor();
+    check('前提：开关按成关掉之后伴侣照旧挂载（她的出现与这枚开关无关）',
+      !!b0 && b0.gone === false, JSON.stringify(b0));
+    if (!b0) return;
+    await sleep(1200);                       // 让装机期可能自己冒出来的日志先走完
+    var off = await emitDoctor(T.media.needle);
+    check('① 开关关掉时「' + T.media.needle + '」这一条她一个字都没多说：归因格点名 switch-off' +
+      '（弹窗写的 0 必须被认成关掉，认不出的话这句会直接开口）、没换医生装、气泡里没有那一句体检 —— ' +
+      '静音不等于忘记：这一条日志照旧进了这一页的环',
+      off.skip === 'switch-off' && off.role !== 'doctor' && off.roleFile === '' &&
+        off.bubble.indexOf(T.prefix) === -1 && off.sayFrom !== 'diagnose',
+      JSON.stringify({ off: off }));
+
+    // ── ② 开关打开：真判断 → 真换装（图必须真加载）→ 有界一句话 ──────────────
+    await setDoctor(1);
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b1 = await waitDoctor();
+    check('前提：开关打开后重新加载这一页，伴侣回来了（节流是按一页计的，重开一次才拿到干净窗口）',
+      !!b1 && b1.gone === false, JSON.stringify(b1));
+    if (!b1) return;
+    await sleep(1200);
+    var pre = await ctx.client.evaluate(DOCTOR_READ);
+    check('前提：这一页到目前为止医生还没替她说过话、也没被谁先占掉判断窗口' +
+      '（占了的话下面读到的是别人的账，那一格的"没说"根本不是开关造成的）',
+      pre.hidden === false && pre.tuck === false && pre.sayFrom !== 'diagnose' &&
+        pre.skip !== 'throttle',
+      JSON.stringify(pre));
+    if (pre.sayFrom === 'diagnose' || pre.skip === 'throttle') return;
+    var tOn = Date.now();
+    var on = await emitDoctor(T.media.needle);
+    var wantLine = T.prefix + T.media.title;
+    var wantSrc = 'chrome-extension://' + ctx.extensionId + '/popup/' + T.file;
+    check('② 同一句硬伤在开关打开后让她：换上医生装（文件名读自 ROLES.doctor=' + T.file + '）、' +
+      '那张图 naturalWidth>0（png 真在 web_accessible_resources 里，否则这里是一只空相框）、道具显影、' +
+      '气泡正好是「' + wantLine + '」这一句且长度没被 60 字上限咬掉、归因格记到 diagnose、' +
+      '「为什么没说」那一格擦干净',
+      on.skip === '' && on.role === 'doctor' && on.roleFile === T.file && on.src === wantSrc &&
+        on.natW > 0 && on.prop === T.prop && on.shown === true && on.bubble === wantLine &&
+        on.bubble.length === wantLine.length && on.sayFrom === 'diagnose' && on.sayLine === wantLine,
+      JSON.stringify({ want: wantLine, wantSrc: wantSrc, on: on }));
+
+    // ── ③ 20 秒内的第二条：不再判第二次 ──────────────────────────────────
+    var elapsed = Date.now() - tOn;
+    var second = await emitDoctor(T.stuck.needle);
+    check('③ 第二次特意换一枚**同等级、不同码**的硬伤（' + T.stuck.needle + '）来测：' +
+      elapsed + ' 毫秒 < DOCTOR_ANALYZE_MS（读回来 = ' + T.throttle + '）时她不再判第二次，' +
+      '归因格点名 throttle、气泡里还是第一句、行头没动 —— ' +
+      '挑同码会被「同一个结论 5 分钟只打扰一次」那把冷却闸挡住，那一轮就成了自证式假绿',
+      elapsed < T.throttle && second.skip === 'throttle' && second.sayFrom === 'diagnose' &&
+        second.sayLine === wantLine && second.role === 'doctor',
+      JSON.stringify({ elapsed: elapsed, throttle: T.throttle, second: second }));
+
+    // ── ③-bis 模型回的不是人话时退回本地结论（反向验证 content.js 的 ask-shape 闸）──
+    // 假模型对不可解析的提示词回的是字面 '[]'；没有那道闸时气泡会把「体检：[]」原样说出来。
+    // ⚠️ 配置要写进存储里那一枚 `config` 对象（writeConfig 的写法）—— 写顶层散键没人读，
+    //   这一发根本不出门，摘掉闸也照样绿（§5：注入必须改到真实状态，本格由此而来）。
+    await writeConfig(ctx.extensionId, { apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model' });
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b3 = await waitDoctor();
+    check('前提：配了 Key 重新加载后伴侣照旧挂载（③-bis 的开口要走一次真模型请求）',
+      !!b3 && b3.gone === false, JSON.stringify(b3));
+    if (!b3) return;
+    await sleep(1200);
+    var askBefore = ctx.mock.requests.length;
+    var junk = await emitDoctor(T.media.needle);
+    var asked = ctx.mock.requests.length - askBefore;
+    check('前提：③-bis 这一发真去问了模型（mock 台账 +1，实得 ' + asked + ' 发）—— ' +
+      '没出门的话后面的绿全是假的（§5：注入必须改到真实状态）',
+      asked >= 1, JSON.stringify({ asked: asked }));
+    if (asked < 1) return;
+    check('③-bis 模型回了一句 JSON（假模型对医生的摘要回字面 \'[]\'）时她退回本地结论：' +
+      '气泡仍是「' + wantLine + '」而不是「' + T.prefix + '[]」、归因格记 diagnose、「为什么没说」擦干净、' +
+      '医生装没脱 —— 这道闸挡的是「网关回什么就照念什么」那一族，不是把模型的话整个不认',
+      junk.sayFrom === 'diagnose' && junk.bubble === wantLine && junk.sayLine === wantLine &&
+        junk.skip === '' && junk.role === 'doctor',
+      JSON.stringify({ want: wantLine, got: junk }));
+
+    // ── ④ 她被收起来时不换装也不开口（再重开一页拿干净的判断窗口）──────────
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b2 = await waitDoctor();
+    check('前提：第二次重新加载后伴侣回来了', !!b2 && b2.gone === false, JSON.stringify(b2));
+    if (!b2) return;
+    var tuck = await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");w.classList.add("mode-hidden");' +
+      'return {on:w.classList.contains("mode-hidden")};})()');
+    await sleep(600);
+    var hid = await emitDoctor(T.media.needle);
+    check('④ 她被收起来时医生**既不换装也不开口**，归因格点名 hidden（不是 throttle、不是 no-pet）；' +
+      '收起这一步真落在 wrap 的 class 上。⚠️ 只取这一道"看不见"的闸：后台那一格由集成层与' +
+      '宠物那场「真后台」一起管，沙盒里标签可见性不稳（§5），把它抄进来只会让这一场恒红',
+      tuck.on === true && hid.tuck === true && hid.skip === 'hidden' && hid.role !== 'doctor' &&
+        hid.roleFile === '' && hid.src.indexOf('/popup/' + T.file) === -1 &&
+        hid.bubble.indexOf(T.prefix) === -1,
+      JSON.stringify({ tuck: tuck, base: b2, hidden: hid }));
+
+    // ── ⑤ 收尾卫生：这一格按回出厂（键缺席=开着），别把状态留给后面的场景 ────
+    await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");w.classList.remove("mode-hidden");' +
+      'return {off:!w.classList.contains("mode-hidden")};})()');
+    var cwEnd = await initConfigWriter(ctx.extensionId);
+    await cwEnd.evaluate('new Promise(function (res) { chrome.storage.local.remove(' +
+      JSON.stringify([T.key, 'config']) + ', function () { res(true); }); })');
+    await sleep(250);
+    var rest = await ctx.client.evaluate('(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");' +
+      'return {tuck:w.classList.contains("mode-hidden")};})()');
+    var stored = await cwEnd.evaluate('new Promise(function (res) { chrome.storage.local.get(' +
+      JSON.stringify([T.key, 'config']) + ', function (r) { res(Object.keys(r || {}).length); }); })');
+    check('⑤ 收尾：她被放回原样、医生开关按回出厂（存储里那一格整个不存在 = 默认关着，问模型按量计费的功能不许默认烧钱），' +
+      '③-bis 写进去的那枚 `config` 也一起收走 —— 这两枚键是整轮共用的，留着会让后面任何一场读到' +
+      '"有 Key"或"她本来就不该说话"（§5 夹具必须自己钉住共享状态）',
+      rest.tuck === false && stored === 0, JSON.stringify({ rest: rest, stored: stored }));
   }
 });
 
@@ -22833,7 +23073,7 @@ SCENARIOS.push({
 });
 
 /** ---- 批次 123：吉祥物聊天 —— 这是插件第一个「按量计费」的宠物功能，钱安全三格必须全链路成立 ----
- * ① 出厂（开关没开）工具条上**根本没有**「聊」这枚按钮（CSS display:none），面板也收着；
+ * ① 出厂（开关没开）逗玩窗口底部那排**根本没有**「和她聊天」这枚按钮（CSS display:none），面板也收着；
  * ② 开关打开后按钮才出现 —— 走设置里那枚真实开关，不手工改 body 类；
  * ③ 开了、面板开了、但没填 Key：说话那一刻 popup.js 的 petChatSend 第一格就折返 noKey，
  *    **一发网络请求都不该有**。本场景全程不带任何网络桩 —— 若有代码真发了请求，fetch
@@ -22843,7 +23083,7 @@ SCENARIOS.push({
  * （三厂商形状 / 裁历史 / 截长度）由集成层 [26] 负责，两层各管各的。 */
 SCENARIOS.push({
   name: '吉祥物聊天：出厂不可见；开了也没 Key 时一句话都不发，界面教人去配 Key',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -22858,33 +23098,33 @@ SCENARIOS.push({
     await reloadPet(ctx, { width: 420, height: 640 });
 
     var off = await petEval(client, function () {
-      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      var btn = document.getElementById('imChat');
       var panel = document.getElementById('petChat');
       return { on: document.body.classList.contains('pet-chat-on'),
         display: btn ? getComputedStyle(btn).display : '(no button)',
         panel: panel ? panel.getAttribute('aria-hidden') : '(no panel)' };
     });
-    check('出厂：聊天开关关，body 没有 pet-chat-on、「聊」display:none、面板 aria-hidden=true',
+    check('出厂：聊天开关关，body 没有 pet-chat-on、「和她聊天」display:none、面板 aria-hidden=true',
       off.on === false && off.display === 'none' && off.panel === 'true', JSON.stringify(off));
 
     await petEval(client, function () { document.getElementById('petChatEnabled').click(); });
     var toggled = await petEval(client, function () {
-      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      var btn = document.getElementById('imChat');
       return { on: document.body.classList.contains('pet-chat-on'),
         display: btn ? getComputedStyle(btn).display : '(no button)',
         aria: document.getElementById('petChatEnabled').getAttribute('aria-checked') };
     });
-    check('点开设置里的「吉祥物聊天」，body 挂上 pet-chat-on、「聊」真实可见、开关 aria 翻到 true',
+    check('点开设置里的「吉祥物聊天」，body 挂上 pet-chat-on、「和她聊天」真实可见、开关 aria 翻到 true',
       toggled.on === true && toggled.display === 'block' && toggled.aria === 'true', JSON.stringify(toggled));
 
     await petEval(client, function () {
-      document.querySelector('.pet-tools button[data-act="chat"]').click();
+      document.getElementById('imChat').click();
     });
     var opened = await petEval(client, function () {
       var panel = document.getElementById('petChat');
       return { show: panel.classList.contains('show'), aria: panel.getAttribute('aria-hidden') };
     });
-    check('点「聊」面板开门（.show 加上、aria-hidden=false）',
+    check('点「和她聊天」面板开门（.show 加上、aria-hidden=false）',
       opened.show === true && opened.aria === 'false', JSON.stringify(opened));
 
     await petEval(client, function () {

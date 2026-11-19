@@ -1095,6 +1095,22 @@ function checkConfigDefaults() {
         clickNeedle: 'els.petChatEnabled.addEventListener("click", togglePetChatEnabled)',
         saveNeedle: '{ omitonePetChatOn: value ? 1 : 0 }',
         loadNeedle: 'petChatEnabledVal = !!(r && r.omitonePetChatOn === 1)'
+      },
+      // 医生主动提醒：默认**关**（问模型那一发按量计费，不许用户看不见时默认烧钱），
+      // 所以「缺席/0/false 都算关」，只有 1/true 算开 —— 与上面两枚都不一样，
+      // 这正是每个开关各带一份 needle 的理由。
+      // pageNeedle 那一格是这一族最贵的一处（批次 130 实测踩过）：**页面侧读回的基准
+      // 必须和弹窗写出去的是同一种写法**。原先写成 `=== false`，而弹窗写的是 `0`，
+      // `0 === false` 不成立 → 开关关掉、提醒照旧响，界面和日志都不报错。
+      petDoctorEnabled: {
+        key: 'omitonePetDoctorOn',
+        clickNeedle: 'els.petDoctorEnabled.addEventListener("click", togglePetDoctorEnabled)',
+        saveNeedle: '{ omitonePetDoctorOn: value ? 1 : 0 }',
+        // 默认改关之后弹窗那一支只认 1/true —— 缺席 = 关，不许再走"算关"的旧尺。
+        // ⚠️ 这一格只钉"弹窗那一行长成这样"；**两侧是不是真的同一把尺**由集成层 [27] ⑰
+        // 拿五个值（缺席/0/false/1/'0'）分别喂两份读回来的代码比出来，别只靠这里的字面串。
+        loadNeedle: 'petDoctorEnabledVal = raw === 1 || raw === true',
+        pageNeedle: "function isDoctorOn(v) { return v === 1 || v === true; }"
       }
     };
     // 白名单的 id 不走下面的 bindToggle 尺（放在 forEach **之前**——先前放后面，flag 完才过滤，等于没豁免）
@@ -1141,6 +1157,22 @@ function checkConfigDefaults() {
       if (popupJs.indexOf(t.key + '", (r)') < 0 ||
           popupJs.indexOf(t.loadNeedle) < 0) {
         problems.push('开关 ' + id + ' 打开弹窗没有从 ' + t.key + ' 读回 —— 重开会显示错的状态');
+      }
+      // pageNeedle：这一枚的存档**页面侧也要读**（弹窗与学习页两份代码各自算一次开关）。
+      // 只核弹窗两路 = 半边覆盖：弹窗写 0/1、页面比 === false，界面照常打勾、日志照常响，
+      // 一条测试都不红（批次 130 实测）。判据只认「读回的基准写死在这一串里」，
+      // 页面源码取不到就当失败 —— 宁可红，不要一声不响地跳过这一格。
+      if (t.pageNeedle) {
+        var contentJs = '';
+        try { contentJs = read('content.js'); } catch (eRead) { contentJs = ''; }
+        if (!contentJs) {
+          problems.push('开关 ' + id + ' 声明了页面侧判据，但 content.js 读不到 —— 这一格没验到');
+        } else if (contentJs.indexOf(t.key) < 0) {
+          problems.push('开关 ' + id + ' 页面侧根本没读 ' + t.key + ' —— 关掉了她照样提醒');
+        } else if (contentJs.indexOf(t.pageNeedle) < 0) {
+          problems.push('开关 ' + id + ' 页面侧读回的基准和弹窗写出去的不是一套（' + t.pageNeedle +
+            ' 在 content.js 里找不到）—— 关掉开关可能没反应');
+        }
       }
     });
   } catch (e) {
@@ -3840,6 +3872,162 @@ function checkChannelGate() {
 }
 
 // ---------------------------------------------------------------------------
+// 35. 本地自愈「医生」的规则表，必须对着代码里真发出去过的那句日志
+//     （真源 tools/audit-diagnose-needles.js，判断层在 libs/diagnose.js）
+//
+//     为什么要有这一条：规则靠 `message.indexOf(needle)` 命中日志环，needle 写错
+//     **不抛、不红、不留日志** —— 只会让那一条规则一辈子不触发，用户点开「诊」
+//     永远看到「这次没查出问题」。AGENTS §2 #22 记过同一族现场（按中文语义猜词表，
+//     四格全 0 条），差别是那次是临时探针，**这一条是常驻功能**，猜错就一直错下去。
+//     与第 32 项的分工：那条量**说明书教的字样**，这一条量**判断层自己吃的字样**。
+//     a–f 各独立承重，摘掉任意一格都要红（本轮 reverse130 逐格验过）：
+//       a 逐格对照的**名字清单**钉在这里 —— 只改审计里的期望不能蒙过这道闸（口径同 24/31/32）
+//       b 审计 `--selftest` 退出 0，且那句「对照格数: N」不许掉到下限以下
+//       c 第 32 项那把尺的 `keepShape` 不许被退回（形状筛会把**整句中文**的日志名一起丢掉，
+//         于是 foreign-ext 那一条规则永远命中不了 —— 实测踩过）
+//       d `libs/diagnose.js` 被 manifest 与 popup.html **两处**加载（少一处就是"点了没反应"）
+//       e 判断层保持纯函数（代码里不许出现 `chrome.` / `document.` / `window.`），
+//         否则这条闸在 node 里 `require` 不动，而 `selfCheck()` 也再没人跑得起来
+//       f 「本地自愈」这句用户看得见的提示在 README 与说明书可见正文里都还在（#163 硬要求），
+//         且两份工具索引指得到真源（找不到就会有人重写第二份，AGENTS §2 #4）
+// ---------------------------------------------------------------------------
+function checkDiagnoseRuleTable(manifest) {
+  var audit;
+  try {
+    audit = require('./audit-diagnose-needles.js');
+  } catch (e) {
+    fail('医生规则表对账加载失败：' + String((e && e.message) || e) +
+      '\n      真源是 tools/audit-diagnose-needles.js —— 它被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var bad = [];
+
+  // ---- a. 对照格的名字清单 ----
+  // ⚠️ 清单写死在这里，不吃审计自己的 CELLS：改了审计里的 pin 文案不能把某一格悄悄换掉。
+  //    （AGENTS §5「断言名字里的清单要和谓词一一对应」——名字承诺了什么，就得要求什么。）
+  var PINS = [
+    'A 干净夹具 → 0 条',
+    'B needle 代码里没有 → 点名那条规则',
+    'C 只在注释里提到 → 两条 needle 都算没发过',
+    'D 名字长在别的调用里（不是 emit 那一发）→ 不算',
+    'E 同一条 needle 属于两条规则 → 点名两条',
+    'F needles 为空 → 恒不触发要响',
+    'G 动作弹窗不认 → 点名那个动作（顺带 reload 变白挂）',
+    'H severity 越界 → 点名那一格',
+    'I title 超上限 → 会被截断要响',
+    'J 推进字样没发过 → 单独点名',
+    'K 规则表空 → FATAL（不许打印通过）',
+    'L 弹窗源码读不到而规则有动作 → FATAL',
+    'M 弹窗白挂一枚没人发的动作 → 点名',
+    'N selfCheck 没通过 → 转述它自己的话',
+    'O 阴性对照：注释与真代码混在一处，真代码那一发必须算发过',
+    'P 整句中文的日志名必须收进真源（承重：不许退回第 32 项那条 `[a-z]` 形状筛）'
+  ];
+  var gotPins = (audit.CELLS || []).map(function (c) { return c.pin; });
+  PINS.forEach(function (p) {
+    if (gotPins.indexOf(p) < 0) bad.push('审计里少了这一格：「' + p + '」—— 删掉的那格不会自己喊');
+  });
+
+  // ---- b. 审计自带的逐格对照真跑一遍（含真仓库那一格）----
+  var CELLS_MIN = 16;
+  var script = path.join(__dirname, 'audit-diagnose-needles.js');
+  var stOut = '', stStatus = null, stErr = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var r = spawnSync(process.execPath, [script, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    stErr = r.error || null;
+    stOut = String(r.stdout || '') + String(r.stderr || '');
+    stStatus = r.status;
+    if (!r.error || r.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  var stCells = null;
+  if (stErr) {
+    bad.push('医生的逐格对照没跑成' + (stErr.code === 'ETIMEDOUT' ? '（60 秒没返回）' : '（已重试一次）') +
+      '：' + String(stErr));
+  } else {
+    var m = stOut.match(/对照格数:\s*(\d+)/);
+    if (stStatus !== 0 || !m) {
+      bad.push('医生的逐格对照退出码 ' + stStatus + '，或那句「对照格数: N」根本没打印（末行=' +
+        JSON.stringify(stOut.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (Number(m[1]) < CELLS_MIN || Number(m[1]) !== gotPins.length) {
+      bad.push('逐格对照报 ' + m[1] + ' 格，与代码里的 ' + gotPins.length + ' 格对不上（下限 ' +
+        CELLS_MIN + '）—— 有格被跳过或被删时，"全绿"这两个字就没有内容');
+    } else stCells = Number(m[1]);
+  }
+
+  // ---- c. keepShape 那一手还在（两侧都要，少一边就等于没有）----
+  var namesCode = stripComments(read('tools/audit-manual-log-names.js'));
+  var needlesCode = stripComments(read('tools/audit-diagnose-needles.js'));
+  if (namesCode.indexOf('keepShape ||') < 0) {
+    bad.push('audit-manual-log-names.js 里那条 `/[a-z]/i` 形状筛又被无条件生效了（keepShape 那一格没了）' +
+      ' —— 整句中文的日志名会被丢掉，医生那一条 foreign-ext 永远命中不了');
+  }
+  if (needlesCode.indexOf("spanLiterals(x.src, afterLevel, ',)', false, true)") < 0) {
+    bad.push('audit-diagnose-needles.js 没把 keepShape 传成 true —— 形状筛照旧吃掉整句中文的日志名');
+  }
+
+  // ---- d. 判断层两处加载 ----
+  var inManifest = false;
+  ((manifest && manifest.content_scripts) || []).forEach(function (cs) {
+    (cs.js || []).forEach(function (p) { if (/libs\/diagnose\.js$/.test(p)) inManifest = true; });
+  });
+  var popupHtml = read('popup/popup.html');
+  var inPopup = /<script[^>]+src="\.\.\/libs\/diagnose\.js"/.test(popupHtml);
+  if (!inManifest) bad.push('manifest.json 的 content_scripts 没注入 libs/diagnose.js —— 学习页上的医生没有脑子');
+  if (!inPopup) bad.push('popup/popup.html 没加载 libs/diagnose.js —— 弹窗里点「诊」会当场报 diagnose 未定义');
+
+  // ---- e. 判断层保持纯函数 ----
+  // 剥注释后比：文件头那句「挂 self.OmitoneDiagnose」是散文，不是代码（AGENTS §5 批次 98 同一族）。
+  var diagCode = stripComments(read('libs/diagnose.js'));
+  var impure = ['chrome.', 'document.', 'window.'].filter(function (k) { return diagCode.indexOf(k) >= 0; });
+  if (impure.length) {
+    bad.push('libs/diagnose.js 的代码里出现了 ' + impure.join(' / ') +
+      ' —— 判断层一旦依赖宿主环境，这条闸（和 selfCheck 那 25 格）在 node 里就跑不起来了');
+  }
+
+  // ---- f. 用户看得见的提示 + 工具索引指得到真源 ----
+  var manualVisible = require('./audit-manual-ui-labels.js').visibleText(read('docs/manual.html'));
+  if (read('README.md').indexOf('本地自愈') < 0) {
+    bad.push('README 里没有「本地自愈」那一句 —— 用户要求过这条提示要放在显眼位置，' +
+      '而第 27 项那把尺只量**界面字样**，量不到这句承诺');
+  }
+  if (manualVisible.indexOf('本地自愈') < 0) {
+    bad.push('说明书的可见正文里没有「本地自愈」那一段（注释与 script 里的不算）—— 装了扩展的人不知道她有这本事');
+  }
+  if (read('tools/README.md').indexOf('audit-diagnose-needles.js') < 0) {
+    bad.push('tools/README.md 没登记 audit-diagnose-needles.js —— 下一轮找不到真源就会重写第二份');
+  }
+  if (read('libs/README.md').indexOf('diagnose.js') < 0) {
+    bad.push('libs/README.md 没登记 diagnose.js —— 同上（判断层与提示词一样，得先说清真源在哪）');
+  }
+
+  var stats = { rules: 0, needles: 0, progress: 0 };
+  try {
+    var real = audit.realInput();
+    var ev = audit.evaluate(real);
+    var s = ev.stats || {};
+    stats.rules = s.rules || real.rules.length;
+    stats.needles = s.needles || 0;
+    stats.progress = s.progress || real.progress.length;
+    if (ev.fatal || (ev.problems || []).length) {
+      bad.push('真仓库这一格没过：' + (ev.problems || []).join('\n        '));
+    }
+  } catch (e2) {
+    bad.push('真仓库那一格跑挂了：' + String((e2 && e2.message) || e2));
+  }
+
+  if (bad.length) {
+    fail('医生的规则表没对着代码接牢（这一族坏了的表现是「点开诊断永远说没问题」，而一条日志都不留）：\n      ' +
+      bad.join('\n      ') +
+      '\n      改法：去 src/page/*.js、content.js、background.js 里 grep `emitRuntimeLog(` 把真名抄回规则表，' +
+      '别改这把尺');
+    return;
+  }
+  pass('医生规则表对账（' + stats.rules + ' 条规则 / ' + stats.needles + ' 条 needle / ' +
+    stats.progress + ' 条推进字样，全部对着代码里真发过的那一句；逐格对照 ' + stCells + ' 格全对，' +
+    'keepShape 两侧都在，判断层两处加载且保持纯函数，README 与说明书都教了「本地自愈」）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -3878,6 +4066,7 @@ checkCourseProbeClaims();
 checkManualLogNames();
 checkProfileSweep();
 checkChannelGate();
+checkDiagnoseRuleTable(manifest);
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
