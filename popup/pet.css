@@ -577,7 +577,7 @@ html[data-ui="lite"] .pet-mood{ display:none; }
 html[data-ui="lite"] .pet-bond, html[data-ui="lite"] .pet-level{ display:none; }
 [data-motion="eco"] .pet-bond i{ animation:none !important; transition:none !important; }
 
-/* ── 和她聊天（批次 122）────────────────────────────────────────────────────
+/* ── 和她聊天（批次 123）────────────────────────────────────────────────────
    形状照抄 .pet-book（实底、居中、三样关法），只是把身体换成了对话流 + 一条输入行。
    「聊」默认藏起：设置 → 吉祥物 → 吉祥物聊天 打开后才入列 —— 聊天要花 Key 的钱，
    绝不许"升级即默认花钱"。 */
