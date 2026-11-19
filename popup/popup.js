@@ -37,9 +37,20 @@ const DEFAULTS = {
   visionEnabled: false,
   visionModel: "",
   visionBudgetPerChapter: 30,
-  // 思考强度：'off'（默认）/ 'low' / 'high'。参数映射的唯一真源是 libs/thinking.js。
+  // 思考强度：参数映射与区间解析的唯一真源是 libs/thinking.js。
+  // 三个场景各一格 `'min-max'`（下限 / 上限），上下限相等 = 固定档。
+  // ⚠️ 出厂值必须是 `''`（"这一格从没写过"），和 content.js 一样 —— 理由不是风格：
+  // load() 里 `config = {...DEFAULTS, ...存储}` 让这里写 anything 非空都**恒等于写过**，
+  // `rangeForTier` 就永远走不到"由老键推导"那一支。存量用户把全局档调到"高"、
+  // 存储里只有 thinkingLevel:'high' 而没有新键，弹窗会被这份默认值渲染成"关闭"，
+  // 他动任何一个开关触发保存就把 off-off 写回盘 —— 症状是"答案变差了但一句报错都没有"。
+  // 「恢复默认仍回到最省那一格」不靠这里：DEFAULTS 里 thinkingLevel:'off' 已经接管。
+  thinkingRangeCourse: "",
+  thinkingRangeQuiz: "",
+  thinkingRangeExam: "",
+  // 改造前的两个老键：新键一旦写过就不再看它们，但「恢复默认」仍要把它们按回出厂值，
+  // 否则存量的 thinkingLevel:'high' 会让"恢复默认后再清掉新键"这条路回到旧档。
   thinkingLevel: "off",
-  // 整卷思考强度：'' = 跟随全局（默认）。只管作业/考试卷，弹题仍按 thinkingLevel 走。
   thinkingPaperLevel: ""
 };
 
@@ -105,9 +116,15 @@ const els = {
   visionEnabled: $("visionEnabled"),
   visionModel: $("visionModel"),
   visionBudgetPerChapter: $("visionBudgetPerChapter"),
-  thinkingLevel: $("thinkingLevel"),
   thinkingHint: $("thinkingHint"),
-  thinkingPaperLevel: $("thinkingPaperLevel"),
+  // 三行上下限（思考强度）。id 由场景名拼出来，所以这里点名写死 ——
+  // 少写一行不会报错，只会拿到 undefined 元素、下面注册监听时当场抛（这正是想要的：宁可启动就响）。
+  thinkingMinCourse: $("thinkingMinCourse"),
+  thinkingMaxCourse: $("thinkingMaxCourse"),
+  thinkingMinQuiz: $("thinkingMinQuiz"),
+  thinkingMaxQuiz: $("thinkingMaxQuiz"),
+  thinkingMinExam: $("thinkingMinExam"),
+  thinkingMaxExam: $("thinkingMaxExam"),
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
@@ -130,6 +147,14 @@ const els = {
 };
 
 let config = { ...DEFAULTS };
+// 存储里**原样**那一份（没有 DEFAULTS 兜底）。指纹必须拿它算 —— 后台与 content.js
+// 指纹的都是"盘上存的那份"（见 content.js loadConfig 的注释），弹窗这里原先用
+// `{...DEFAULTS, ...存储}` 兜过底的 config 算指纹，于是同一个键在两侧读成两个值：
+// thinkingLevel 从没写过时，存储侧读出 `""`、弹窗侧被 DEFAULTS 顶成 `"off"`，
+// `config_patch` 的 expectedFingerprint 永远对不上 → 后台回 `stale_config` →
+// 用户点「检测 API 连接」只看见「配置已变化，请重新检测」，连接结果一句不给。
+// 批次 123-b 把 thinkingLevel 从表单里撤掉之后这条才暴露，不是那时才坏的。
+let storedConfig = {};
 let mutedVal = false;
 let autoMaxRateVal = true;
 let slowMachineVal = false;
@@ -156,7 +181,7 @@ let shownRunState = null;
 const POLICY = self.OmitonePolicy;
 
 function apiFormFingerprint() {
-  return POLICY.configFingerprint({ ...config, ...getApiFormConfig() });
+  return POLICY.configFingerprint({ ...storedConfig, ...getApiFormConfig() });
 }
 
 /**
@@ -211,6 +236,7 @@ async function patchConfig(patch, expectedFingerprint) {
     } catch (e) {}
     throw error;
   }
+  storedConfig = withoutRemovedConfigFields(result.config || {});
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...result.config });
   return config;
 }
@@ -534,34 +560,98 @@ function getApiFormConfig() {
     model: els.model.value.trim(),
     captchaModel: els.captchaModel.value.trim(),
     visionModel: els.visionModel.value.trim(),
-    thinkingLevel: els.thinkingLevel.value,
-    // '' = 跟随全局，是合法值，原样保存（不许 normalizeLevel —— 那会替用户硬选一档）。
-    thinkingPaperLevel: els.thinkingPaperLevel.value
+    // 三格区间一次全发（不发老键）：老键留在盘上当史实，新键一旦写过就由它说话。
+    // ⚠️ 一次全发是**故意的** —— 只发刚动过那一格，等于让另外两格继续靠老键推导，
+    // 用户看到界面写着"下限=高"、页面算出来却是老键那一档，两边读出来的成本不一样。
+    thinkingRangeCourse: rangeFromForm("course"),
+    thinkingRangeQuiz: rangeFromForm("quiz"),
+    thinkingRangeExam: rangeFromForm("exam")
   };
 }
 
 /**
- * 刷新「思考强度」下面那句说明。
+ * 思考强度那一组：三行上下限 ↔ 三个配置键。
  *
- * 为什么值得单独做：这张表是**按渠道**决定的 —— 同一个"关闭"，DeepSeek 会发
- * `thinking:{type:disabled}`、Kimi 什么参数都不发（K3 关不掉），认不出的渠道
- * 一个参数都不发。用户看不到这层差别，就会以为"我关了思考它却没关"是 bug。
- * 这里把**实际会发出去的参数**摊开给他看。
- * 说明文字由 libs/thinking.js 统一生成，避免 UI 与代码两处措辞分叉。
+ * 场景名、配置键、档位顺序**全部从 libs/thinking.js 现取**，不在这里抄一份词表 ——
+ * 抄一份就是两处真源：真源加一档时这边不会变红，只会静默少一行可选值。
+ */
+const THINK_TIERS = (typeof OmitoneThinking !== "undefined" && OmitoneThinking.TIERS)
+  ? OmitoneThinking.TIERS : ["course", "quiz", "exam"];
+
+function thinkSel(tier, edge) {
+  const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+  return els["thinking" + cap(edge) + cap(tier)];
+}
+
+/** 两个 select 拼成一格 `'min-max'`。万一选倒了（下限高于上限），按大小排好再发。 */
+function rangeFromForm(tier) {
+  const a = thinkSel(tier, "min").value;
+  const b = thinkSel(tier, "max").value;
+  if (typeof OmitoneThinking === "undefined") return a + "-" + b;
+  return OmitoneThinking.levelRank(a) <= OmitoneThinking.levelRank(b) ? a + "-" + b : b + "-" + a;
+}
+
+/**
+ * 用**解析之后**的区间回填两格，而不是直接读那一格新键。
+ *
+ * 新键从没写过（老用户）时，`rangeForTier` 会回落到 thinkingLevel / thinkingPaperLevel
+ * 推出的那一档；照新键的出厂值填成"关闭"，下一次保存就把那位"整卷档=高"的用户
+ * 悄悄按回关闭 —— 而且一句报错都没有，症状是"答案变差了"。
+ */
+function renderThinkingSelects(cfg) {
+  THINK_TIERS.forEach((tier) => {
+    const r = typeof OmitoneThinking !== "undefined"
+      ? OmitoneThinking.rangeForTier(cfg || {}, tier) : { min: "off", max: "off" };
+    thinkSel(tier, "min").value = r.min;
+    thinkSel(tier, "max").value = r.max;
+  });
+}
+
+// content.js 从回包的推理 token 反推"模型自己想到了哪一档"，按场景各存一格。
+// 读不到就整段不说 —— 把"没读到"讲成"它从没思考过"是这句提示最贵的一种错。
+const THINK_OBSERVE_KEY = "omitoneThinkingObserved";
+let thinkingObserved = {};
+
+async function loadThinkingObserved() {
+  try {
+    const got = await chrome.storage.local.get([THINK_OBSERVE_KEY]);
+    thinkingObserved = (got && got[THINK_OBSERVE_KEY]) || {};
+  } catch (e) {
+    thinkingObserved = {};
+  }
+  updateThinkingHint();
+}
+
+/**
+ * 刷新「思考强度」下面那三行说明。
+ *
+ * 为什么值得逐场景写：同一句"上限=高"，DeepSeek 是什么思考参数都不发（让它自己定）、
+ * Kimi 关不掉思考、认不出的渠道一个字段都不发。用户看不到这层差别，
+ * 就会把"我关了它却没关"当成 bug。文字由 libs/thinking.js 统一生成，UI 不另写一套措辞。
  */
 function updateThinkingHint() {
   if (!els.thinkingHint) return;
-  const desc = typeof OmitoneThinking !== "undefined"
-    ? OmitoneThinking.describe({
-        apiUrl: els.apiUrl.value.trim(),
-        model: els.model.value.trim(),
-        thinkingLevel: els.thinkingLevel.value
-      })
-    : "（缺少 libs/thinking.js，无法解析渠道）";
-  const base = "用默认的「关闭」就好，这是唯一实测过的档位。"
-    + "另外两档更贵也更慢，个别服务商会直接拒绝 —— 真被拒绝时程序会自动去掉这个参数重试一次，"
-    + "并把原因写进日志，不会把整次答题判死。";
-  els.thinkingHint.innerHTML = base + "<br><br><b>当前实际发送：</b>" + escapeHtml(desc);
+  if (typeof OmitoneThinking === "undefined") {
+    els.thinkingHint.textContent = "（缺少 libs/thinking.js，无法解析渠道）";
+    return;
+  }
+  const base = { apiUrl: els.apiUrl.value.trim(), model: els.model.value.trim() };
+  const lines = THINK_TIERS.map((tier) => {
+    // 取**表单上此刻**选的那一档，不是盘上那份 —— 用户边改边看，说明要跟着手里的选择走。
+    const cfg = Object.assign({}, base);
+    cfg[OmitoneThinking.TIER_RANGE_KEYS[tier]] = rangeFromForm(tier);
+    const obs = thinkingObserved[tier];
+    const seen = obs && obs.tokens >= 0 && OmitoneThinking.LEVEL_LABEL[obs.approx]
+      ? "｜上次它自己想到「" + OmitoneThinking.LEVEL_LABEL[obs.approx] + "」（约 " + obs.tokens + " 推理 token）"
+      : "";
+    return escapeHtml(OmitoneThinking.describe(cfg, { tier: tier })) + escapeHtml(seen);
+  });
+  els.thinkingHint.innerHTML =
+    "下限 = 至少想到这一档；上限 = 最多花到这一档。<b>两格拉开，中间交给模型自己定</b>，"
+    + "钱只按上限备（不替它决定每次都想满）。<br>"
+    + "「测试」= 章节测验与弹题，「考试」= 作业 / 考试卷。<b>考试那行的下限选「高」</b>，"
+    + "模型没答上的题会<b>停下来等</b>（下一拍重问，或你手动作答后自动提交），不拿猜测占位交卷。<br><br>"
+    + "<b>当前实际发送：</b><br>" + lines.join("<br>");
 }
 
 function escapeHtml(text) {
@@ -791,6 +881,7 @@ async function load() {
   } catch (e) {
     updateRunState(false, true);
   }
+  storedConfig = withoutRemovedConfigFields(result.config || {});
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 
   els.rate.value = config.playbackRate;
@@ -867,21 +958,17 @@ async function load() {
   els.visionBudgetPerChapter.value = config.visionBudgetPerChapter !== undefined ? String(config.visionBudgetPerChapter) : "30";
   // 乱选交卷前的检查秒数：老配置里没这个键时回落 30；**0 要原样显示**（0 = 不自动交卷，是用户的选择）。
   els.randomAnswerReviewSec.value = config.randomAnswerReviewSec !== undefined ? String(config.randomAnswerReviewSec) : "30";
-  // 思考强度：老配置里没有这个键，回落 'off' —— 也就是升级前的行为，不会突变。
-  els.thinkingLevel.value = typeof OmitoneThinking !== "undefined"
-    ? OmitoneThinking.normalizeLevel(config.thinkingLevel)
-    : "off";
-  // 整卷思考强度：'' = 跟随全局（默认）。空串是合法值，不能走 normalizeLevel；
-  // 认不出的值一律回落 ''（跟随全局），不替用户选档。
-  const paperLevel = String(config.thinkingPaperLevel == null ? "" : config.thinkingPaperLevel).trim().toLowerCase();
-  els.thinkingPaperLevel.value = ["", "off", "low", "high"].includes(paperLevel) ? paperLevel : "";
+  // 思考强度三行：回填走 rangeForTier（认新键、也认没写过新键的老用户），见那函数上的注释。
+  renderThinkingSelects(config);
   els.discussionReply.value = config.discussionReply || "1";
   els.systemPrompt.value = config.systemPrompt || "";
   if (!config.apiUrl || !config.model) {
     applyProviderPreset(els.providerPreset.value);
   }
-  // 放在最后：这句依赖 apiUrl / model / thinkingLevel 三个字段都已填好
-  updateThinkingHint();
+  // 放在最后：这句依赖 apiUrl / model / 三个场景的区间都已填好。
+  // 再等一眼「模型上次自己想到哪一档」那本账 —— content.js 从回包 token 反推后按场景写进存储，
+  // 不 await 的话首屏那三行少了后缀，要等用户动一下选择器才补齐（症状是"提示闪一下才全"）。
+  await loadThinkingObserved();
 }
 
 function applyProviderPreset(presetId) {
@@ -939,7 +1026,8 @@ async function testApiConnectionNoBackground() {
   }
 
   const generation = ++apiTestGeneration;
-  const fingerprint = POLICY.configFingerprint(cfg);
+  // 与 isCurrent / 后台 expectedFingerprint 同一把尺：盘上原样 + 表单，不掺 DEFAULTS 兜底
+  const fingerprint = apiFormFingerprint();
   const isCurrent = () => generation === apiTestGeneration && apiFormFingerprint() === fingerprint;
   try {
     clearTimeout(apiAutoSaveTimer);
@@ -1104,18 +1192,24 @@ function scheduleApiAutoSave() {
 });
 els.apiType.addEventListener("change", scheduleApiAutoSave);
 
-// 思考强度的选择器：切换即落盘，并刷新"当前实际发送"那句说明
-els.thinkingLevel.addEventListener("change", async () => {
-  apiTestGeneration++;
-  updateThinkingHint();
-  try { await saveApiConfig(false); toast("思考强度已保存"); } catch (error) { reportSaveError(error); }
-});
-
-// 整卷思考强度：同样切换即落盘。它不影响"当前实际发送"那句说明
-// （那是按全局档 + 渠道生成的），所以不用刷新 hint。
-els.thinkingPaperLevel.addEventListener("change", async () => {
-  apiTestGeneration++;
-  try { await saveApiConfig(false); toast("整卷思考强度已保存"); } catch (error) { reportSaveError(error); }
+// 思考强度：六格上下限，任一格改动 = 同一行另一头不许越界（选倒时以刚动的这一头为准），
+// 再整组落盘 + 刷新"当前实际发送"。
+// ⚠️ 倒着写的组合 rangeFromForm 也会排好再发，但界面上留一个倒着的选框，
+// 用户按看到的理解成本、系统按排好的花钱 —— 两边读出的不是同一件事。
+THINK_TIERS.forEach((tier) => {
+  const minEl = thinkSel(tier, "min");
+  const maxEl = thinkSel(tier, "max");
+  [minEl, maxEl].forEach((el) => {
+    el.addEventListener("change", async () => {
+      apiTestGeneration++;
+      if (typeof OmitoneThinking !== "undefined"
+        && OmitoneThinking.levelRank(minEl.value) > OmitoneThinking.levelRank(maxEl.value)) {
+        (el === minEl ? maxEl : minEl).value = el.value;
+      }
+      updateThinkingHint();
+      try { await saveApiConfig(false); toast("思考强度已保存"); } catch (error) { reportSaveError(error); }
+    });
+  });
 });
 
 els.reset.addEventListener("click", resetDefault);

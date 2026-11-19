@@ -47,6 +47,21 @@
 | Gemini | Google | `https://generativelanguage.googleapis.com` | 自己填 | 同上 | ❌ 未实测 |
 | 其他 / 自定义 | OpenAI 兼容 | 自己填 | 自己填 | 认不出的渠道：**关闭档一个参数都不发**；低/高才发通用 `reasoning_effort` | — |
 
+**上下限拉开那一族（「交给模型自选」）各家发什么** —— 这一支走的是 `auto(range)`，
+与上面三档的 `params` 是两套写法，两边都要照代码核对：
+
+- **DeepSeek**：下限是「关闭」时**什么都不发**（V4 出厂默认就开着思考、强度自己判，
+  "不干预"在这种渠道上恰好就是模型自选）；下限不是「关闭」时发
+  `thinking:{type:enabled}` 而**不带 `reasoning_effort`** —— 发一个强度等于替它定死，
+  正是这次要改掉的毛病。
+- **通义千问**：`enable_thinking:true` + `thinking_budget=` **上限**对应的那格预算（低 1024 / 高 16384）。
+  这一家是四家里最贴近"自选"的：上限钉死成本，中间由模型自己烧。上限认不出就不钉预算。
+- **Kimi**：**什么都不发**。恒思考模型不用发参数就满足"至少想一下"，而"上限"没有确认过的字段可表达，
+  发错直接 400。
+- **其他 / 自定义**：**什么都不发** —— 认不出渠道就更不许替它挑字段。
+- 万一某家连 `auto` 都没写：退化成 `该渠道没有自选写法，按下限 × 发`，界面必须把这句原话讲出来，
+  不许假装"自选"生效了。
+
 官方文档入口（核对时从这里开始，别从第三方博客开始）：
 
 - DeepSeek 思考模式：<https://api-docs.deepseek.com/guides/thinking_mode/>
@@ -100,7 +115,11 @@ curl -s https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions \
 
 一次渠道更新通常只动两处，但**必须同时改**，否则弹出界面显示的和实际发出去的不一致：
 
-1. `libs/thinking.js` —— 思考参数（`PROVIDERS` 表里的 `params`）、是否需要改 `verifiedLevels`
+1. `libs/thinking.js` —— 思考参数（`PROVIDERS` 表里的 `params` 三档 **加上 `auto` 那一支**、
+   `canDisable`），以及是否需要改 `verifiedLevels`
+   ⚠️ **`auto` 与 `params` 是两套写法，改一家要两半都改**：用户把上下限拉开时走的是 `auto(range)`，
+   它只保证「至少想到下限、成本钉在上限」，**不是**把下限当强度发出去。
+   只改 `params` 的话，界面显示的是「交给模型自选」，实际发出去的却是一个钉死的强度。
 2. `popup/popup.js` 的 `PROVIDER_PRESETS` —— base_url 与模型名
 3. `docs/manual.html` —— 面向用户的渠道对照表（要重跑 `npm run manual` 出 PDF）
 4. 本文件的表格与**最后核对日期**
@@ -131,4 +150,7 @@ npm run e2e     # 真实 Edge，含多选题等场景
    这也正是 1.1.5 之前的行为，保持它就不会把任何现有用户搞挂。
 6. **测过的才算测过**。表格里"实测"那一列只有 DeepSeek 的"关闭"档为真：
    那是本项目一直以来的线上行为。其余都是照官方文档填的，
-   **没有在真实题库里跑过**，所以 UI 上必须继续标"未实测"，不许美化。
+   **没有在真实题库里跑过**，所以 UI 上必须继续标「未验证」，不许美化。
+   尺子真源是 `buildThinkingParams` 的 `verified: auto ? false : isVerified(provider, range.min)` ——
+   **拉开上下限（auto）一律算未验证**（没人验过"模型自己挑"这一族），固定档才逐档查 `verifiedLevels`；
+   往 `verifiedLevels` 里加一档之前，要有真跑过的那次答题记录，不许照文档推。

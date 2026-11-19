@@ -53,9 +53,12 @@
       // 思考参数只有一个真源（libs/thinking.js）。这条链路以前**一个都不带**，
       // 于是「把思考强度关成 off」这个用户开关对验证码无效 —— 默认开思考的模型
       // 每次先推理一轮，正文被预算截空（就是上面那串 out=93~937 的实测）。
+      // ⚠️ 这里**故意钉死 `off-off`**，不跟三个场景区间走：验证码是"看图认字"，
+      // 想再多也不会认得更准，但每一发都在花输出预算 —— 让区间能把它抬上去，
+      // 等于让用户放开答题思考时顺手把验证码也调贵了（他看不见这一格）。
       Object.assign(body, thinking.buildThinkingParams({
-        apiUrl: config.apiUrl, model: model, thinkingLevel: config.thinkingLevel
-      }).params);
+        apiUrl: config.apiUrl, model: model, thinkingRange: 'off-off'
+      }, { tier: 'course' }).params);
     } else throw new Error('unsupported api type');
     return { url: url, method: 'POST', headers: headers, body: JSON.stringify(body), timeoutMs: 90000 };
   }

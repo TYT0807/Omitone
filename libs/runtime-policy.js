@@ -34,10 +34,28 @@
   // `validatePatch` 于是拒掉**整张补丁**，症状是「任何一个开关都存不住」
   // （不是某一个开关坏了 —— 一个没登记的键会把同一次保存里的其它改动一起吞掉）。
   var enums = { slowMachineMode: ['auto', 'on', 'off'] };
-  var runtimeFields = booleans.concat(Object.keys(numbers), Object.keys(enums),
+  // 三个场景各自的思考区间（批次 123-b）：`'min-max'`，也认单值 `'high'`（上下限相等），
+  // `''` = 这一格从没写过，交给老键（thinkingLevel / thinkingPaperLevel）推导。
+  // 顺序不管（`'high-low'` 与 `'low-high'` 同义）—— 真源 libs/thinking.js 取小的一格当下限，
+  // 这里若比它严，就会把界面发得出、真源读得懂的串顶成 invalid_patch，
+  // 而 invalid_patch 拒的是**整张补丁**（用户在界面上动任何一项都存不住）。
+  var rangeKeys = ['thinkingRangeCourse', 'thinkingRangeQuiz', 'thinkingRangeExam'];
+  var rangeWords = ['off', 'low', 'high'];
+  function validRange(value) {
+    if (value === '') return true;
+    if (typeof value !== 'string' || value.length > 16) return false;
+    var parts = value.split('-');
+    if (parts.length > 2) return false;
+    for (var i = 0; i < parts.length; i++) {
+      if (rangeWords.indexOf(parts[i]) === -1) return false;
+    }
+    return true;
+  }
+  var runtimeFields = booleans.concat(Object.keys(numbers), Object.keys(enums), rangeKeys,
     ['discussionReply', 'questionSelectorOverrides',
-      // 思考档位要投给页面：整卷「不乱猜」闸在页面侧读 thinkingPaperLevel /
-      // thinkingLevel（70-quiz-flow.js _isNoGuessPaper），不投影就读不到用户选的档。
+      // 思考档位要投给页面：整卷「不乱猜」闸在页面侧读三个新区间键，
+      // 兜底才读 thinkingPaperLevel / thinkingLevel（70-quiz-flow.js _examThinkingMin / _isNoGuessPaper）。
+      // 不投影就是「弹窗改了、页面读不到」—— 一句报错都没有，用户只看见答案变差。
       'thinkingLevel', 'thinkingPaperLevel']);
   function httpUrl(value) {
     if (typeof value !== 'string') return null;
@@ -66,6 +84,7 @@
     if (key === 'thinkingLevel') return ['off', 'low', 'high'].indexOf(value) !== -1;
     // 整卷思考档位：'' = 跟随全局，是合法值；其余只许三档。
     if (key === 'thinkingPaperLevel') return ['', 'off', 'low', 'high'].indexOf(value) !== -1;
+    if (rangeKeys.indexOf(key) !== -1) return validRange(value);
     if (key === 'questionSelectorOverrides') {
       // 追加的题目容器选择器（学习通改版应急）：字符串数组，条数与单条长度都有上界 ——
       // 选择器最终会进 querySelectorAll，无界输入既慢又可能抛异常
@@ -92,7 +111,10 @@
     // Only API identity participates. Runtime status/toggle writes must not stale API tests.
     config = config || {};
     var result = {};
-    ['apiType', 'apiUrl', 'apiKey', 'model', 'captchaModel', 'visionModel', 'thinkingLevel', 'thinkingPaperLevel', 'systemPrompt']
+    ['apiType', 'apiUrl', 'apiKey', 'model', 'captchaModel', 'visionModel', 'thinkingLevel', 'thinkingPaperLevel',
+      // 区间换了 = 发给服务商的思考参数换了（off-off 发 thinking.disabled，off-high 什么都不发），
+      // 所以"这一家收不收这个参数"的旧结论对它不再成立 —— 与 thinkingLevel 同一族理由。
+      'systemPrompt'].concat(rangeKeys)
       .sort().forEach(function (key) {
         result[key] = typeof config[key] === 'string' ? config[key] : '';
       });

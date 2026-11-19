@@ -200,7 +200,18 @@
     // 'off' / 'low' / 'high' = 整卷强制用这一档，弹题等其他请求不受影响。
     // 为什么分开：整卷一次问十几题、单题更难，开思考收益比弹题高；
     // 而弹题刷课量大、默认 off 最省。两边混用一个开关时，要么整卷吃亏、要么弹题烧钱。
+    // ⚠️ 上面这两个键从 2026-11-19 起是**迁移用的老键**（弹窗不再写它们）：
+    //    现行真源是下面三个场景区间，老键只在"新键从没写过"时参与推导。
     thinkingPaperLevel: '',
+    // 三个场景各自的思考区间 `'min-max'`（真源 libs/thinking.js）。
+    // 页面侧只读 `thinkingRangeExam`（「不乱猜」闸要看考试档的**下限**），
+    // 但三格都放默认值：缺格会读成 undefined，`check.js` 的默认值守卫要拦。
+    // ⚠️ 默认是**空串**而不是 `off-off` —— 空串代表"这一格从没写过"，
+    // `_examThinkingMin` 与 `libs/thinking.js` 都据此回落到上面那两个老键推导；
+    // 写死 `off-off` 会把"把整卷档调到高"的老用户**悄悄降回关闭**，而且一句报错都没有。
+    thinkingRangeCourse: '',
+    thinkingRangeQuiz: '',
+    thinkingRangeExam: '',
     systemPrompt: '',
     videoCheckInterval: 1500,
     // 慢机自适应：auto=按实测帧率/核心数放大所有等待上限，on=固定 2 倍，off=完全不放大。

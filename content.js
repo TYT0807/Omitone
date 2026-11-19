@@ -89,14 +89,23 @@
     apiConnectionFailed: false,
     model: 'deepseek-flash',
     systemPrompt: '',
-    // 思考强度：'off'（默认）/ 'low' / 'high'。详见 libs/thinking.js。
+    // 思考强度（老键，2026-11-19 起由下面三个区间键接管）：'off'（默认）/ 'low' / 'high'。
     // 必须在这里也放一份：content.js 在配置还没加载完时靠它兜底，
     // 缺了会读成 undefined（`tools/check.js` 的「读了就必须有自己的默认值」守卫会报错）。
+    // 留着不删 —— 老用户的存储里只有它，libs/thinking.js 的 legacyRange 靠它推导区间，
+    // 删了默认值就等于把老用户悄悄降回 off。
     thinkingLevel: 'off',
-    // 整卷思考档位：'' = 跟随全局（真源与校验在 libs/thinking.js effectiveLevel）。
-    // 与 thinkingLevel 同理：配置没加载完时靠它兜底，缺了读成 undefined
-    // 也会被 effectiveLevel 当成「跟随全局」，但放一份让默认值表完整。
+    // 整卷思考档位（老键）：'' = 跟随全局。同上，只为迁移而留。
     thinkingPaperLevel: '',
+    // 三个场景各自的**思考区间** `'min-max'`（真源与校验在 libs/thinking.js）。
+    // ⚠️ 默认**必须是空串**，不能写成 `off-off`：`configs` 是合并后的那份（存储盖在默认值上），
+    // 空串才表示"这一格从没写过"，`rangeForTier` 才会走第三条去由上面那两个老键推导。
+    // 写死 `off-off` 会把"把全局档调到高"的老用户**悄悄降回关闭** —— 症状是"答案变差了、
+    // 没有任何报错"，正是 legacyRange 想防的那类回归（批次 123-b 集成 [10] 钉住这一格）。
+    // 用户真正放开的那一格由弹窗写入（`off-high` 这种），默认值不参与。
+    thinkingRangeCourse: '',
+    thinkingRangeQuiz: '',
+    thinkingRangeExam: '',
     // 慢机自适应开关：auto / on / off。content 侧用它放宽注入探针与字形表加载的超时，
     // page 侧还会结合实测帧率再算一次系数（见 00-shell-constants.js 的 perfFactor）。
     // 必须在这里放一份：配置未加载完时靠它兜底，check 的「读了就要有默认值」守卫会核对。
@@ -288,31 +297,88 @@
   }
 
   /**
+   * 这次请求的思考快照（渠道白名单 × 场景区间，真源 libs/thinking.js）。
+   *
+   * 拿不到模块就交回 `null`，调用方各自退回「不发参数、不抬预算」——
+   * 也就是升级前的行为。绝不允许因为模块缺失而多发一个字段：
+   * 多发一个不认识的参数是 400，比少一个参数贵得多，而且症状像"插件坏了"。
+   */
+  function thinkingSnapshot(config, opts) {
+    if (!THINKING) return null;
+    try {
+      return THINKING.buildThinkingParams(config, opts);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * 这次请求该带哪些思考参数（按渠道白名单，见 libs/thinking.js）。
    *
    * 返回一个**可安全合并进请求体**的对象：认不出的渠道返回空对象 ——
    * 每个厂商对未知参数的反应不一样，有的忽略、有的直接 400，
    * 所以"不发"永远是安全默认。
    */
-  function buildThinkingParams(config) {
-    if (!THINKING) return {};
+  function buildThinkingParams(config, opts) {
+    const built = thinkingSnapshot(config, opts);
+    return built && built.params ? built.params : {};
+  }
+
+  /** 一行话说明这次用的是哪家、哪个场景、哪段区间（日志与界面共用同一措辞）。 */
+  function thinkingDescribe(config, opts) {
+    if (!THINKING) return 'thinking module missing';
     try {
-      return THINKING.buildThinkingParams(config).params || {};
+      return THINKING.describe(config, opts);
     } catch (e) {
-      return {};
+      return 'thinking describe failed';
     }
   }
 
-  /**
-   * 这次请求按任务类型算出来的思考档位（见 libs/thinking.js 的 effectiveLevel）。
-   * kind 'paper'（整卷）可以单独设一档（thinkingPaperLevel），其余跟随全局。
-   */
-  function effectiveThinkingLevel(config, kind) {
-    if (!THINKING) return (config && config.thinkingLevel) || 'off';
+  // 「模型自己想到哪一档」这件事没法直接问，只能从回包的推理 token 数反推。
+  // 读数与估算的尺子都在 libs/thinking.js（`readReasoningTokens` / `levelFromTokens`），
+  // 这里只负责**别说假话**与**别刷屏**两件事。
+  const THINKING_OBSERVE_KEY = 'omitoneThinkingObserved';
+  const THINKING_OBSERVE_THROTTLE_MS = 120000;
+  const thinkingLastObservedAt = Object.create(null);
+
+  function noteThinkingObservation(data, built) {
+    if (!THINKING || !built) return;
+    let read;
     try {
-      return THINKING.effectiveLevel(config, kind);
+      read = THINKING.readReasoningTokens(data);
     } catch (e) {
-      return (config && config.thinkingLevel) || 'off';
+      return;
+    }
+    // 读不出（-1）就一句都不说：把「这一家的字段我们不认识」写成 0，
+    // 用户读到的是「这次它真没思考」—— 那条假话比沉默贵得多。
+    if (!read || !(read.tokens >= 0)) return;
+    const tier = String(built.tier || 'course');
+    const now = Date.now();
+    if (now - (thinkingLastObservedAt[tier] || 0) < THINKING_OBSERVE_THROTTLE_MS) return;
+    thinkingLastObservedAt[tier] = now;
+    const record = {
+      tokens: read.tokens,
+      field: read.field,
+      approx: THINKING.levelFromTokens(read.tokens),
+      range: built.range,
+      auto: built.auto === true,
+      provider: built.provider,
+      at: now
+    };
+    appendRuntimeLog('info', 'thinking observed', Object.assign({ tier: tier }, record));
+    // 记一笔给弹窗看（"上次它自己选了多强"）。按场景各存一格，
+    // 所以必须先读回整本再合并写 —— 直接 set 会把另外两个场景的观察抹掉。
+    try {
+      chrome.storage.local.get([THINKING_OBSERVE_KEY], function (r) {
+        if (chrome.runtime.lastError) return;
+        const all = (r && r[THINKING_OBSERVE_KEY]) || {};
+        all[tier] = record;
+        const patch = {};
+        patch[THINKING_OBSERVE_KEY] = all;
+        chrome.storage.local.set(patch, function () { void chrome.runtime.lastError; });
+      });
+    } catch (e) {
+      // 记账失败不影响答题，也不该影响答题 —— 观察是旁证，不是链路。
     }
   }
 
@@ -771,25 +837,30 @@
     // OpenAI 兼容协议里**没有独立的"思考预算"** —— 思考和答案共用 max_tokens。
     // 所以"高"档如果只发 reasoning 参数、不抬输出上限，思考本身就把预算吃光：
     // 答案写到一半被截断 → 上层拆批重问 → 反复花钱却一题没答上（"越高越没用"的根因）。
-    // 这里按档位把 max_tokens 抬到最小值（off 不抬；low ≥12288 / high ≥16384），
+    // 这里按**区间上限**那一格抬（`off-off` 与固定 `off` 都是 0 = 不抬；low ≥12288 / high ≥16384），
     // 只抬不降 —— 用户自己设的更大预算照旧生效。
-    const thinkingMinTokens = THINKING ? THINKING.minMaxTokens(config.thinkingLevel) : 0;
+    // 为什么按上限而不是按下限：区间放开时我们不知道模型自己会挑多高，
+    // 预算必须按**这段区间里最贵的那一格**备好，否则"允许它想"反而变成"想一半被截断"。
+    const thinkingBuilt = thinkingSnapshot(config);
+    const thinkingMinTokens = thinkingBuilt && thinkingBuilt.maxTokensFloor > 0
+      ? Number(thinkingBuilt.maxTokensFloor) : 0;
     if (thinkingMinTokens > maxTokens) {
-      appendRuntimeLog('info', 'llm max_tokens raised for thinking level', {
+      appendRuntimeLog('info', 'llm max_tokens raised for thinking range', {
         from: maxTokens,
         to: thinkingMinTokens,
-        level: String(config.thinkingLevel || 'off')
+        tier: thinkingBuilt.tier,
+        range: thinkingBuilt.range
       });
       maxTokens = thinkingMinTokens;
     }
     let tokenField = 'max_tokens';
 
-    // 思考参数：按渠道白名单算一次（见 libs/thinking.js）。
+    // 思考参数：按渠道白名单 × 场景区间算一次（见 libs/thinking.js）。
     // 升级前这段写死成"只对 DeepSeek 加 thinking:{type:disabled}"，
-    // 所以旧行为 = 现在的 'off' 档，老用户升级后没有任何变化。
-    let thinkingParams = buildThinkingParams(config);
+    // 所以旧行为 = 现在的 `off-off`，老用户升级后一个字节都没变。
+    let thinkingParams = thinkingBuilt ? (thinkingBuilt.params || {}) : {};
     let thinkingStripped = false;
-    const thinkingSummary = THINKING ? THINKING.describe(config) : 'thinking module missing';
+    const thinkingSummary = thinkingDescribe(config);
 
     for (let attempt = 0; attempt < 4; attempt++) {
       const body = { model: config.model, messages, temperature: 0.1 };
@@ -820,6 +891,10 @@
         // 命中率长期恒为 0，而界面上看不出任何异常。
         logCacheUsage((response.data || {}).usage);
         logTokenUsage((response.data || {}).usage, 'text');
+        // 「模型自己想到哪一档」只能从回包的推理 token 数反推 —— 这一发它带了我们的思考参数，
+        // 所以这笔账才归因得清楚。**摘掉参数重试那一路不记账**：
+        // 那一次的 token 数是服务商自己的默认值，把它写成"用户放开的区间里它选了高"是假话。
+        if (!thinkingStripped) noteThinkingObservation(response.data, thinkingBuilt);
 
         // 输出被 max_tokens 截断 —— 这**不是解析问题，而是答案根本没写完**。
         // 不单独识别它的代价（实测）：截断的文本解析必然失败 →
@@ -986,24 +1061,37 @@
   async function handleLLMRequestDirect(payload) {
     const questions = payload && payload.questions ? payload.questions : [];
     const kind = String((payload && payload.kind) || '');
+    const paperKind = String((payload && payload.paperKind) || '');
     const config = await loadConfig();
-    // 整卷可以单独设思考档位（thinkingPaperLevel，'' = 跟随全局）。
-    // 折进 effConfig 后，下游（参数映射 / max_tokens 抬升 / 日志 describe）都自动用这一档；
-    // 弹题等其他请求 kind 为空或 'popup'，跟随全局 —— 刷课量默认 off 最省。
-    const effConfig = Object.assign({}, config, {
-      thinkingLevel: effectiveThinkingLevel(config, kind)
-    });
+    // 把这次请求归进三个场景之一（刷课 / 测试 / 考试），再把它那段区间**临时挂**到 effConfig 上。
+    // 为什么要挂住而不是就地算参数：下游三处（参数映射 / max_tokens 抬升 / 日志 describe）
+    // 都从同一个 config 算，只有把区间放进配置副本，三者才不会各说各话。
+    // `thinkingRange` 这个键只活在本次请求里 —— 它不落盘、不投影给页面（不在
+    // libs/runtime-policy.js 的 runtimeFields 里），所以不会被任何一次保存写回存储。
+    // 弹题、验证码、老调用方（不带 paperKind）都落刷课档 —— 刷课是量，默认 off-off 最省。
+    const tier = THINKING ? THINKING.resolveTier(kind, paperKind) : 'course';
+    const effConfig = Object.assign({}, config, THINKING ? {
+      thinkingTier: tier,
+      thinkingRange: (function () {
+        try {
+          const r = THINKING.rangeForTier(config, tier);
+          return r.min + '-' + r.max;
+        } catch (e) {
+          return 'off-off';
+        }
+      })()
+    } : {});
     // effConfig 是派生副本，指纹 WeakMap 里没有它 —— 把快照原本的指纹随行过来。
-    // 不能按 effConfig 重算：thinkingLevel 被整卷档覆盖过，重算出的指纹与后台存的
+    // 不能按 effConfig 重算：思考区间被本次请求覆盖过，重算出的指纹与后台存的
     // 配置对不上，失败回写会被竞争闸拒掉（退避永远写不上）。
     const effFingerprint = requestFingerprints.get(config);
     if (effFingerprint) requestFingerprints.set(effConfig, effFingerprint);
     appendRuntimeLog('info', 'llm_request direct', {
       questionCount: questions.length,
       kind: kind || 'popup-or-legacy',
-      // 把"这次用的是哪家、什么思考强度、发了什么参数"记下来。
+      // 把"这次算哪个场景、哪段区间、哪家渠道、发了什么参数"记下来。
       // 换渠道出问题时，第一个要问的就是这个 —— 否则只能靠猜。
-      thinking: THINKING ? THINKING.describe(effConfig) : 'thinking module missing'
+      thinking: thinkingDescribe(effConfig)
     });
 
     const missing = missingModuleError();

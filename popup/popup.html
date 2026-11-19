@@ -321,6 +321,13 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 }
 .hint{ margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
 .hint b{ color:var(--fg-2); font-weight:600; }
+/* 思考强度那一组：场景 + 下限 + 上限 三列。
+   select 在上面的全局规则里是 width:100%，落进 1fr 两列正好各占一半；
+   label 用 display:block 单独占一行（.field label 已经写了）。 */
+.think-grid{ display:grid; grid-template-columns:auto 1fr 1fr; gap:6px 8px; align-items:center; }
+.think-grid .think-th{ color:var(--muted); font-size:11.5px; }
+.think-grid .think-name{ font-size:12px; color:var(--fg-2); font-weight:600; white-space:nowrap; }
+.think-grid select{ padding:6px 8px; }
 /* 外链只有一处用途：去 DeepSeek 官网注册、充值、拿 Key。
    rel 必须带 noreferrer —— 弹窗带着扩展身份，不该把来源泄给外部站点。 */
 a.ext{ color:var(--accent); font-weight:500; text-decoration:none; }
@@ -768,32 +775,32 @@ body.has-bg::after{
         换别家时，地址和模型名要跟着改；表里没有的服务商选<b>自定义 OpenAI 兼容</b>。
       </p>
       <div class="field">
-        <label for="thinkingLevel">思考强度</label>
-        <select id="thinkingLevel">
-          <option value="off">关闭（默认 · 最省最快 · 推荐）</option>
-          <option value="low">低（会多花推理 token）</option>
-          <option value="high">高（最贵 · 仅难题才需要）</option>
-        </select>
-        <p class="hint" id="thinkingHint">
-          <b>「关闭」是唯一实测过的档位</b>，也是本项目一直以来的行为 ——
-          答题是模式化任务，实测关掉后一次请求从 361 token 降到 133。
-          另外两档照厂商文档填写，<b>未在真实题库验证</b>，个别服务商会直接拒绝；
-          真被拒绝时程序会自动摘掉参数重试一次，并把原因写进日志，不会把整次答题判死。
-        </p>
-      </div>
-      <div class="field">
-        <label for="thinkingPaperLevel">整卷思考强度</label>
-        <select id="thinkingPaperLevel">
-          <option value="">跟随全局（默认）</option>
-          <option value="off">关闭</option>
-          <option value="low">低（会多花推理 token）</option>
-          <option value="high">高（最贵 · 选了就不乱猜）</option>
-        </select>
-        <p class="hint" id="thinkingPaperHint">
-          只管<b>作业 / 考试卷</b>，弹题等其他请求仍按上面的「思考强度」走。
-          整卷选「高」时模型没答上的题会<b>停下来等（重问模型或你手动作答）</b>，
-          不再拿猜测占位交卷。
-        </p>
+        <label>思考强度（按场景给上下限，中间交给模型自己定）</label>
+        <div class="think-grid" id="thinkGrid">
+          <span class="think-th"></span><span class="think-th">下限</span><span class="think-th">上限</span>
+          <span class="think-name">刷课</span>
+          <select id="thinkingMinCourse">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+          <select id="thinkingMaxCourse">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+          <span class="think-name">测试</span>
+          <select id="thinkingMinQuiz">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+          <select id="thinkingMaxQuiz">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+          <span class="think-name">考试</span>
+          <select id="thinkingMinExam">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+          <select id="thinkingMaxExam">
+            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+          </select>
+        </div>
+        <p class="hint" id="thinkingHint"></p>
       </div>
       <div class="field">
         <label for="apiType">协议类型</label>

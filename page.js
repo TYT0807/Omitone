@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '392e26710e';
+var OMITONE_CODE_REV = '0b01542ec8';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -187,7 +187,18 @@ var OMITONE_CODE_REV = '392e26710e';
     // 'off' / 'low' / 'high' = 整卷强制用这一档，弹题等其他请求不受影响。
     // 为什么分开：整卷一次问十几题、单题更难，开思考收益比弹题高；
     // 而弹题刷课量大、默认 off 最省。两边混用一个开关时，要么整卷吃亏、要么弹题烧钱。
+    // ⚠️ 上面这两个键从 2026-11-19 起是**迁移用的老键**（弹窗不再写它们）：
+    //    现行真源是下面三个场景区间，老键只在"新键从没写过"时参与推导。
     thinkingPaperLevel: '',
+    // 三个场景各自的思考区间 `'min-max'`（真源 libs/thinking.js）。
+    // 页面侧只读 `thinkingRangeExam`（「不乱猜」闸要看考试档的**下限**），
+    // 但三格都放默认值：缺格会读成 undefined，`check.js` 的默认值守卫要拦。
+    // ⚠️ 默认是**空串**而不是 `off-off` —— 空串代表"这一格从没写过"，
+    // `_examThinkingMin` 与 `libs/thinking.js` 都据此回落到上面那两个老键推导；
+    // 写死 `off-off` 会把"把整卷档调到高"的老用户**悄悄降回关闭**，而且一句报错都没有。
+    thinkingRangeCourse: '',
+    thinkingRangeQuiz: '',
+    thinkingRangeExam: '',
     systemPrompt: '',
     videoCheckInterval: 1500,
     // 慢机自适应：auto=按实测帧率/核心数放大所有等待上限，on=固定 2 倍，off=完全不放大。
@@ -13801,9 +13812,10 @@ var OMITONE_CODE_REV = '392e26710e';
           bestEffort: skippedBestEffort
         });
         if (skippedBestEffort > 0) {
-          // 「不乱猜」闸（批次 121）：整卷思考强度=高的作业/考试卷，本地猜测是
-          // 对这份明确意愿的违背 —— 宁可停在这里等人，也不拿猜测占位交卷。
-          // 没有这道闸的话，下面三步补填会瞬间把猜测糊满整卷、直接交出去。
+          // 「不乱猜」闸（批次 121，档位口径见批次 123-b）：考试档思考**下限=高**的
+          // 作业/考试卷，本地猜测是对这份明确意愿的违背 —— 宁可停在这里等人，
+          // 也不拿猜测占位交卷。区间放开（off-high）**不算**这个意愿：那是给了余地，
+          // 不是要求每次都花到最高。没有这道闸的话，下面三步补填会瞬间把猜测糊满整卷、直接交出去。
           if (this._isNoGuessPaper()) {
             this._quizInProgress = false;
             this._noteNoGuessPaperHold(quizDoc, questions);
@@ -13833,7 +13845,12 @@ var OMITONE_CODE_REV = '392e26710e';
           this._logRandomAnswers(questions);
           result = { success: true, data: this._buildRandomQuizAnswers(questions) };
         } else {
-          result = await bridgeSend('llm_request', { questions: payload, kind: 'paper' });
+          // `paperKind` 只带一个信息：这一卷算考试还是测试。
+          // 后台/内容侧看不见卷面标题，三个场景的区间必须由知道标题的这一侧报过去 ——
+          // 少了它，考试卷会一路降级成"测试"档，用户给考试单独放开的那点上限就白设了。
+          result = await bridgeSend('llm_request', {
+            questions: payload, kind: 'paper', paperKind: this._paperTierFromTitle()
+          });
         }
         if (!result || !result.success) {
           console.error('quiz llm request failed:', result && result.error ? result.error : 'unknown');
@@ -14012,22 +14029,63 @@ var OMITONE_CODE_REV = '392e26710e';
     },
 
     /**
-     * 「不乱猜」闸（批次 121）对这一卷是否生效 —— 两个条件同时成立：
-     *   ① 标题含「作业」或「考试」。章节测验**不拦**：它是平时分小卷，
-     *      猜错几道代价低，卡住一卷等人的代价反而高；
-     *   ② 整卷思考档位落在 'high'（thinkingPaperLevel，'' = 跟随全局 thinkingLevel）。
+     * 这一卷算「考试」还是「测试」。
      *
-     * 为什么只认 'high'：'high' 是用户明确说「这一卷值得花大钱慢慢想」——
+     * 口径与批次 121 的不乱猜闸**同一句**：标题含「作业」或「考试」才是考试档，
+     * 章节测验算测试档（平时分小卷，卡住一卷等人的代价比猜错几道高）。
+     * 页面把这一格判出来，是为了让 content.js 那一侧能按场景取区间 ——
+     * 只有这里知道卷面标题，后台只看见 `kind:'paper'` 那一个字。
+     */
+    _paperTierFromTitle: function () {
+      var title = this._getCurrentTitle();
+      return title.indexOf('作业') !== -1 || title.indexOf('考试') !== -1 ? 'exam' : 'quiz';
+    },
+
+    /**
+     * 考试档这次允许的思考**下限**。
+     *
+     * ⚠️ 这段字符串解析在页面世界里**没有 libs/thinking.js 可用**（page.js 跑在页面主世界，
+     *    思考真源注入在隔离世界），所以只能在这里重抄一小口 —— 但它是**有闸的**：
+     *    集成 [10] 拿一张配置表把这句与 `THINKING.rangeForTier(cfg,'exam').min` 逐个对齐，
+     *    两处口径分叉当场红（含**倒着写**、**单值**、**半截认不出**三种形状）。
+     *    认不出的形状一律落 `off`（最省那一格），不猜。
+     */
+    _examThinkingMin: function () {
+      var cfg = this.configs || {};
+      // 与 libs/thinking.js 的 LEVELS **同一顺序**（越靠前越省），所以区间取小 = 取下限。
+      var ORDER = ['off', 'low', 'high'];
+      var stored = String(cfg.thinkingRangeExam == null ? '' : cfg.thinkingRangeExam).trim().toLowerCase();
+      if (stored) {
+        var parts = stored.split('-');
+        var first = ORDER.indexOf(parts[0]);
+        // 单值形状（'high'）＝上下限相等，与真源 parseRange 同一读法
+        if (parts.length === 1) return first === -1 ? 'off' : ORDER[first];
+        var second = parts.length === 2 ? ORDER.indexOf(parts[1]) : -1;
+        // 任何一格认不出来都落最省，**不许拿另一格猜**（真源此时交 ok:false → off-off）
+        if (first === -1 || second === -1) return 'off';
+        return ORDER[Math.min(first, second)];
+      }
+      // 新键没写过 → 由改造前的那两个键推导（与 libs/thinking.js 的 legacyRange 同一口径）
+      var paper = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
+      if (paper === 'off' || paper === 'low' || paper === 'high') return paper;
+      var global = String(cfg.thinkingLevel == null ? '' : cfg.thinkingLevel).trim().toLowerCase();
+      return global === 'low' || global === 'high' ? global : 'off';
+    },
+
+    /**
+     * 「不乱猜」闸（批次 121）对这一卷是否生效 —— 两个条件同时成立：
+     *   ① 卷面是「作业」或「考试」（`_paperTierFromTitle`，章节测验不拦）；
+     *   ② 考试档思考区间的**下限**就是 'high'。
+     *
+     * 为什么只认下限：'high' 是用户明确说「这一卷值得花大钱慢慢想」，
      * 拿本地猜测把表单糊满直接交出去，违背的正是这份明确意愿。
-     * low / off 保持原行为：猜测填满是既有兜底，改它等于把所有用户都架上"等人"。
+     * 而 `off-high` 那种**放开上限**的区间不算 —— 那是"允许它想"，
+     * 不是"要求它想"，为它把整卷停下等人的理由不成立。
+     * 下限 off / low 保持原行为：猜测填满是既有兜底，改它等于把所有用户都架上"等人"。
      */
     _isNoGuessPaper: function () {
-      var title = this._getCurrentTitle();
-      if (title.indexOf('作业') === -1 && title.indexOf('考试') === -1) return false;
-      var cfg = this.configs || {};
-      var level = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
-      if (!level) level = String(cfg.thinkingLevel || 'off');
-      return level === 'high';
+      if (this._paperTierFromTitle() !== 'exam') return false;
+      return this._examThinkingMin() === 'high';
     },
 
     /**
@@ -14053,7 +14111,9 @@ var OMITONE_CODE_REV = '392e26710e';
         title: String(this._getCurrentTitle() || '').slice(0, 60),
         total: (questions || []).length,
         unfilled: unfilled,
-        reason: '整卷思考强度=高，不拿猜测占位交卷；缺的题下一拍重问模型，或你手动作答后自动提交'
+        // 把"哪一格在拦"读回来：现场只看这句分不清是用户设了高、还是我们算错了档
+        thinkingMin: this._examThinkingMin(),
+        reason: '考试档思考下限=高，不拿猜测占位交卷；缺的题下一拍重问模型，或你手动作答后自动提交'
       });
     },
 

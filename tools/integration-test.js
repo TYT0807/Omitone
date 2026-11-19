@@ -1556,6 +1556,316 @@ async function testThinkingLevels() {
       leaked.length ? '多发了：' + leaked.join(',') : '干净');
   }
 
+  // ---------------------------------------------------------------------------
+  // 批次 123-b：三场景「上下限 + 模型自选」，从**页面发请求那一发**一直走到真实请求体。
+  //
+  // 为什么还要跑一遍全链路而不是只测 libs/thinking.js：这一族真正会坏的地方在**链路上** ——
+  // 页面没带 paperKind → 整卷落回刷课档 → 用户放开了考试档却一个参数都没发（钱没多花、
+  // 思考也没多出来，而且一句报错都没有）。函数级断言看不见这一格。
+  // ---------------------------------------------------------------------------
+  var DS = { apiUrl: 'https://api.deepseek.com', model: 'deepseek-v4-flash' };
+  var RANGE_CASES = [
+    { name: '刷课档 off-off（默认＝升级前，一字不差）', cfg: { thinkingRangeCourse: 'off-off' },
+      payload: {}, expect: { thinking: { type: 'disabled' } }, forbid: ['reasoning_effort'], maxTokens: 8192 },
+    { name: '刷课档放开 off-high：DeepSeek 出厂就开思考，于是**一个参数都不发**',
+      cfg: { thinkingRangeCourse: 'off-high' }, payload: {}, expect: {},
+      forbid: ['reasoning_effort', 'thinking'], maxTokens: 16384 },
+    { name: '刷课档 low-high（下限不是 off）：只保证思考开着，不替它钉强度',
+      cfg: { thinkingRangeCourse: 'low-high' }, payload: {}, expect: { thinking: { type: 'enabled' } },
+      forbid: ['reasoning_effort'], maxTokens: 16384 },
+    { name: '考试档放开、整卷按考试档发（paperKind=exam 必须走到 exam 档）',
+      cfg: { thinkingRangeCourse: 'off-off', thinkingRangeExam: 'low-high' },
+      payload: { kind: 'paper', paperKind: 'exam' }, expect: { thinking: { type: 'enabled' } },
+      forbid: ['reasoning_effort'], maxTokens: 16384 },
+    { name: '同一份配置：章节测验算测试档，不跟考试档混（paperKind 缺省）',
+      cfg: { thinkingRangeQuiz: 'off-off', thinkingRangeExam: 'low-high' }, payload: { kind: 'paper' },
+      expect: { thinking: { type: 'disabled' } }, forbid: ['reasoning_effort'], maxTokens: 8192 },
+    { name: '弹题永远跟刷课档：考试档调到再高也管不着弹题',
+      cfg: { thinkingRangeCourse: 'off-off', thinkingRangeExam: 'high-high' }, payload: { kind: 'popup' },
+      expect: { thinking: { type: 'disabled' } }, forbid: ['reasoning_effort'], maxTokens: 8192 },
+    { name: '只有老键的老用户：整卷 high 照旧按 high 发（新键没写 ≠ 新键写了 off）',
+      cfg: { thinkingLevel: 'off', thinkingPaperLevel: 'high' }, payload: { kind: 'paper' },
+      expect: { thinking: { type: 'enabled' }, reasoning_effort: 'high' }, maxTokens: 16384 },
+    { name: '非法形状（mid-high）落最省的一格，不猜',
+      cfg: { thinkingRangeCourse: 'mid-high' }, payload: {}, expect: { thinking: { type: 'disabled' } }, maxTokens: 8192 },
+    { name: '区间反着写（high-off）按省→重排：等于 off-high，不会变成「要求高」',
+      cfg: { thinkingRangeCourse: 'high-off' }, payload: {}, expect: {},
+      forbid: ['reasoning_effort', 'thinking'], maxTokens: 16384 }
+  ];
+  var rangeBad = [];
+  for (var ri = 0; ri < RANGE_CASES.length; ri++) {
+    var rc = RANGE_CASES[ri];
+    var rHarness = createHarness({ config: Object.assign({}, DS, rc.cfg) });
+    var rId = 300 + ri;
+    rHarness.sendFromPage({
+      source: 'xxt_app', id: rId, type: 'llm_request',
+      payload: Object.assign({ questions: [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }] }, rc.payload)
+    });
+    await rHarness.waitForResponse(rId);
+    var rBody = rHarness.sandbox.__sentRequests[0]
+      ? JSON.parse(rHarness.sandbox.__sentRequests[0].body) : null;
+    if (!rBody) { rangeBad.push(rc.name + '：没有发出请求'); continue; }
+    var rMiss = Object.keys(rc.expect).filter(function (k) {
+      return JSON.stringify(rBody[k]) !== JSON.stringify(rc.expect[k]);
+    });
+    var rLeak = (rc.forbid || []).filter(function (k) { return k in rBody; });
+    if (rBody.max_tokens !== rc.maxTokens) {
+      rangeBad.push(rc.name + '：max_tokens 期望 ' + rc.maxTokens + '，实际 ' + rBody.max_tokens);
+    }
+    if (rMiss.length || rLeak.length) {
+      rangeBad.push(rc.name + '：该带 ' + JSON.stringify(rc.expect) + ' 缺 ' + rMiss.join(',')
+        + '；不该带 ' + (rc.forbid || []).join(',') + ' 实际多了 ' + rLeak.join(',')
+        + '；请求体 thinking=' + JSON.stringify(rBody.thinking)
+        + ' reasoning_effort=' + JSON.stringify(rBody.reasoning_effort)
+        + ' enable_thinking=' + JSON.stringify(rBody.enable_thinking));
+    }
+  }
+  check('三场景区间走完整链路（9 格：默认不变 / 放开只钉上限 / 测试与考试分档 / 老键迁移 / 非法与倒序落最省）',
+    rangeBad.length === 0, rangeBad.join(' || ') || '9 格全部对上');
+
+  // ---- 区间解析本身：认不出来**不猜**，一律落最省的那一格 ----
+  var PARSE = [
+    ['off-off', true, 'off', 'off'], ['off-high', true, 'off', 'high'],
+    ['low-high', true, 'low', 'high'], ['high-off', true, 'off', 'high'],
+    ['high-low', true, 'low', 'high'], ['high', true, 'high', 'high'],
+    [' OFF-HIGH ', true, 'off', 'high'], ['mid-high', false, 'off', 'off'],
+    ['off-mid', false, 'off', 'off'], ['bogus', false, 'off', 'off'],
+    ['', false, 'off', 'off'], ['a-b-c', false, 'off', 'off'], ['off-', false, 'off', 'off']
+  ];
+  var parseBad = PARSE.filter(function (p) {
+    var r = THINKING.parseRange(p[0]);
+    return r.ok !== p[1] || r.min !== p[2] || r.max !== p[3];
+  }).map(function (p) {
+    var r = THINKING.parseRange(p[0]);
+    return JSON.stringify(p[0]) + '→ ok=' + r.ok + ' ' + r.min + '/' + r.max + '（期望 ' + p[1] + ' ' + p[2] + '/' + p[3] + '）';
+  });
+  check('parseRange 十三格：认得的倒序也按省→重排，认不出的一律 ok:false 落 off-off',
+    parseBad.length === 0, parseBad.join(' || ') || '13 格全对');
+
+  // ---- 三级来源的**优先级**，出处要能报出来（现场"我明明设过"全靠这一格）----
+  check('区间三级来源：单次覆盖 > 场景键 > 老键推导，且 source 点名从哪来',
+    THINKING.rangeForTier({ thinkingRangeExam: '', thinkingLevel: 'high' }, 'exam').source === 'legacy'
+    && THINKING.rangeForTier({ thinkingRangeExam: '', thinkingLevel: 'high' }, 'exam').min === 'high'
+    && THINKING.rangeForTier({ thinkingRangeQuiz: 'low-high', thinkingLevel: 'high' }, 'quiz').source === 'thinkingRangeQuiz'
+    && THINKING.rangeForTier({ thinkingRange: 'high-high', thinkingRangeQuiz: 'off-off' }, 'quiz').min === 'high'
+    && THINKING.rangeForTier({ thinkingRange: 'high-high', thinkingRangeQuiz: 'off-off' }, 'quiz').source === 'override',
+    JSON.stringify([
+      THINKING.rangeForTier({ thinkingRangeExam: 'low-low', thinkingLevel: 'high' }, 'exam'),
+      THINKING.rangeForTier({ thinkingRangeQuiz: 'low-high', thinkingLevel: 'high' }, 'quiz'),
+      THINKING.rangeForTier({ thinkingRange: 'high-high', thinkingRangeQuiz: 'off-off' }, 'quiz')
+    ]));
+  check('单次覆盖写成认不出的形状也落最省（覆盖那一格同样不许猜）',
+    THINKING.rangeForTier({ thinkingRange: 'mid-mid', thinkingLevel: 'high' }, 'course').min === 'off'
+    && THINKING.rangeForTier({ thinkingRange: 'mid-mid', thinkingLevel: 'high' }, 'course').ok === false,
+    JSON.stringify(THINKING.rangeForTier({ thinkingRange: 'mid-mid', thinkingLevel: 'high' }, 'course')));
+
+  // ---- 老用户迁移：新键**没写过**时三格各推什么（写死 off-off 会在这里悄悄把人降级）----
+  var MIGRATE = [
+    [{ thinkingLevel: 'high' }, 'course', 'high'],
+    [{ thinkingLevel: 'high' }, 'quiz', 'high'],
+    [{ thinkingLevel: 'high' }, 'exam', 'high'],
+    [{ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'course', 'low'],
+    [{ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'quiz', 'high'],
+    [{ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'exam', 'high'],
+    [{ thinkingLevel: 'high', thinkingPaperLevel: '' }, 'exam', 'high'],
+    [{ thinkingLevel: 'high', thinkingPaperLevel: 'bogus' }, 'exam', 'high'],
+    [{}, 'exam', 'off'],
+    [{ thinkingRangeExam: 'off-off', thinkingLevel: 'high' }, 'exam', 'off']
+  ];
+  var migrateBad = MIGRATE.filter(function (p) {
+    var r = THINKING.rangeForTier(p[0], p[1]);
+    // 上下限相等才等于改造前（固定档），否则就不是"迁移"而是"改了行为"
+    return r.min !== p[2] || r.max !== p[2];
+  }).map(function (p) {
+    var r = THINKING.rangeForTier(p[0], p[1]);
+    return JSON.stringify(p[0]) + ' / ' + p[1] + '→ ' + r.min + '-' + r.max + '（期望 ' + p[2] + '-' + p[2] + '）';
+  });
+  check('老键迁移十格：推出来的区间**上下限相等**（= 走固定档 = 与改造前逐字节等价）',
+    migrateBad.length === 0, migrateBad.join(' || ') || '10 格全对');
+  // 三处出厂默认必须是「这一格从没写过」，一处都不能写 off-off。
+  // 为什么弹窗也在内（批次 123-b 实测踩过一次自己埋的坑）：popup 的 load() 写的是
+  // `config = {...DEFAULTS, ...存储}`，DEFAULTS 里只要非空，`rangeForTier` 就**永远**拿不到
+  // 老键那一支 —— 存量把全局档调到"高"的用户（盘上只有 thinkingLevel:'high'）
+  // 打开弹窗看到的是"关闭"，他动任何一个开关触发保存就把 off-off 写回盘。
+  // 症状是"答案变差了但一句报错都没有"，而且上面那十格迁移全等于没测。
+  var EMPTY_DEFAULT_CELLS = [
+    ['content.js', 'thinkingRangeCourse', /thinkingRangeCourse:\s*''/],
+    ['content.js', 'thinkingRangeQuiz', /thinkingRangeQuiz:\s*''/],
+    ['content.js', 'thinkingRangeExam', /thinkingRangeExam:\s*''/],
+    ['src/page/00-shell-constants.js', 'thinkingRangeCourse', /thinkingRangeCourse:\s*''/],
+    ['src/page/00-shell-constants.js', 'thinkingRangeQuiz', /thinkingRangeQuiz:\s*''/],
+    ['src/page/00-shell-constants.js', 'thinkingRangeExam', /thinkingRangeExam:\s*''/],
+    ['popup/popup.js', 'thinkingRangeCourse', /thinkingRangeCourse:\s*""/],
+    ['popup/popup.js', 'thinkingRangeQuiz', /thinkingRangeQuiz:\s*""/],
+    ['popup/popup.js', 'thinkingRangeExam', /thinkingRangeExam:\s*""/]
+  ];
+  var shadowed = EMPTY_DEFAULT_CELLS.filter(function (cell) {
+    return !cell[2].test(fs.readFileSync(path.join(ROOT, cell[0]), 'utf8'));
+  }).map(function (cell) { return cell[0] + ' 的 ' + cell[1]; });
+  check('三处出厂默认的三格区间全是空串（写成 off-off 就等于把上面那十格迁移全部作废）',
+    shadowed.length === 0,
+    shadowed.length ? '这几格带着非空默认值，会永久盖住老键推导：' + shadowed.join(' | ')
+      : EMPTY_DEFAULT_CELLS.length + ' 格全是空串');
+
+  // ---- auto 只钉上限：每家能表达"上限"的字段不同，认不出的字段一个都不发 ----
+  var AUTO = [
+    ['deepseek', 'off-high', {}, 0],
+    ['deepseek', 'low-high', { thinking: { type: 'enabled' } }, 0],
+    ['qwen', 'low-high', { enable_thinking: true, thinking_budget: 16384 }, 16384],
+    ['qwen', 'low-low', { enable_thinking: true, thinking_budget: 1024 }, 1024],
+    ['kimi', 'low-high', {}, 0],
+    ['unknown', 'off-high', {}, 0]
+  ];
+  var AUTO_URL = { deepseek: 'https://api.deepseek.com', qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    kimi: 'https://api.moonshot.ai/v1', unknown: 'https://my-proxy.example.com/v1' };
+  var AUTO_MODEL = { deepseek: 'deepseek-v4-flash', qwen: 'qwen3.8-flash', kimi: 'kimi-k3', unknown: 'whatever' };
+  // 写成函数：下面「摘掉某家的 auto」那一格还回去以后要**再算一遍**才能证明恢复了 ——
+  // 拿摘之前算好的旧数组去比，等于断言"我还没动手时是对的"。
+  var evalAuto = function () {
+    return AUTO.map(function (p) {
+      var built = THINKING.buildThinkingParams({ apiUrl: AUTO_URL[p[0]], model: AUTO_MODEL[p[0]], thinkingRangeCourse: p[1] });
+      var same = JSON.stringify(built.params) === JSON.stringify(p[2]) && built.ceiling === p[3];
+      return same ? '' : p[0] + ' ' + p[1] + '→ 发 ' + JSON.stringify(built.params)
+        + ' 钉预算 ' + built.ceiling + '（期望 ' + JSON.stringify(p[2]) + ' / ' + p[3] + '）';
+    }).filter(function (s) { return s; });
+  };
+  var autoBad = evalAuto();
+  check('auto 六格按渠道只钉上限（DeepSeek 不替它定强度；Kimi 与认不出的渠道一个字段都不发）',
+    autoBad.length === 0, autoBad.join(' || ') || '6 格全对');
+  check('auto 一律算「未验证」，固定档才认实测（Kimi 恒思考，off 也说关不掉）',
+    THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-high' }).verified === false
+    && THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-off' }).verified === true
+    && THINKING.buildThinkingParams({ apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingRangeCourse: 'off-off' }).canDisable === false,
+    JSON.stringify({ offHigh: THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-high' }).verified,
+      offOff: THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-off' }).verified }));
+
+  // ---- 预算下限按**上限**取：auto 时不知道模型会想多高，钱要按最贵那一格备好 ----
+  check('maxTokensFloor 按区间上限取（off-off 不抬 / off-high 抬到 16384，防"越高越没用"）',
+    THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-off' }).maxTokensFloor === 0
+    && THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-high' }).maxTokensFloor === 16384
+    && THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'low-high' }).maxTokensFloor === 16384
+    && THINKING.minMaxTokensForRange({ max: 'mid' }) === 0,
+    JSON.stringify([
+      THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-off' }).maxTokensFloor,
+      THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingRangeCourse: 'off-high' }).maxTokensFloor,
+      THINKING.minMaxTokensForRange({ max: 'mid' })
+    ]));
+
+  // ---- 读模型自选的那一档：读不出必须是 -1，不许压成 0（0 是"真没想"）----
+  check('readReasoningTokens 三家回包形状都读得回来，并报出命中哪条字段',
+    THINKING.readReasoningTokens({ usage: { completion_tokens_details: { reasoning_tokens: 126 } } }).tokens === 126
+    && THINKING.readReasoningTokens({ content: [], usage: { output_tokens_details: { thinking_tokens: 940 } } }).tokens === 940
+    && THINKING.readReasoningTokens({ usageMetadata: { thoughtsTokenCount: 320 } }).tokens === 320
+    && /thoughtsTokenCount/.test(THINKING.readReasoningTokens({ usageMetadata: { thoughtsTokenCount: 320 } }).field),
+    JSON.stringify([
+      THINKING.readReasoningTokens({ usage: { completion_tokens_details: { reasoning_tokens: 126 } } }),
+      THINKING.readReasoningTokens({ usageMetadata: { thoughtsTokenCount: 320 } })
+    ]));
+  var unreadable = [[null], [{}], [{ usage: null }], [{ usage: {} }],
+    [{ usage: { completion_tokens_details: { reasoning_tokens: '1200' } } }],
+    [{ usage: { completion_tokens_details: { reasoning_tokens: -5 } } }]];
+  check('读不出交 -1（字符串形状、负数、没有 usage 都算读不出，绝不当成"没花钱"）',
+    unreadable.every(function (p) { return THINKING.readReasoningTokens(p[0]).tokens === -1; }),
+    JSON.stringify(unreadable.map(function (p) { return THINKING.readReasoningTokens(p[0]); })));
+  check('levelFromTokens 只是"按我们自己的预算表估"，读不出交空串',
+    THINKING.levelFromTokens(0) === 'off' && THINKING.levelFromTokens(900) === 'low'
+    && THINKING.levelFromTokens(5000) === 'high' && THINKING.levelFromTokens(-1) === ''
+    && THINKING.levelFromTokens('1200') === '',
+    JSON.stringify([0, 900, 5000, -1, '1200'].map(THINKING.levelFromTokens)));
+
+  // ---- 一句话说明：界面与日志共用它，别两处各写一套措辞 ----
+  check('describe 把场景、区间、发没发参数、实测与否写进同一句；关不掉的渠道要当场说明',
+    /考试思考=\[off,high\] 交给模型自选/.test(THINKING.describe({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-high' }, { tier: 'exam' }))
+    && /固定档 off · \{"thinking":\{"type":"disabled"\}\} · 已实测/.test(THINKING.describe({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-off' }, { tier: 'exam' }))
+    && /该渠道关不掉思考，实际仍会推理/.test(THINKING.describe({ apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingRangeCourse: 'off-off' })),
+    [
+      THINKING.describe({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-high' }, { tier: 'exam' }),
+      THINKING.describe({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-off' }, { tier: 'exam' }),
+      THINKING.describe({ apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingRangeCourse: 'off-off' })
+    ].join(' / '));
+  // 渠道表里若某家**没有**自选写法（只有固定档那一列），auto 只能退化成"按下限发"。
+  // 今天四家都有 auto，所以这一支平时走不到 —— 摘掉它就是那条话，测完必须还回去。
+  var kimiAuto = THINKING.PROVIDERS.kimi.auto;
+  var degraded = '';
+  try {
+    delete THINKING.PROVIDERS.kimi.auto;
+    degraded = THINKING.describe({ apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingRangeCourse: 'low-high' });
+  } finally {
+    THINKING.PROVIDERS.kimi.auto = kimiAuto;
+  }
+  check('渠道没有自选写法时，describe 说实话「按下限 low 发」而不是「交给模型自选」（摘掉 auto 才走到这一支）',
+    /该渠道没有自选写法，按下限 low 发/.test(degraded), JSON.stringify(degraded));
+  var autoRestored = evalAuto();
+  check('摘掉的 auto 必须真还回去（还完再算一遍六格，别拿摘之前的旧数组当证据）',
+    typeof THINKING.PROVIDERS.kimi.auto === 'function' && autoRestored.length === 0,
+    autoRestored.join(' || ') || '还回去后 6 格照旧全对');
+
+  // ---- 验证码那一发不跟区间走：它是"看图认字"，想再多也不会认得更准 ----
+  var CAPTCHA = require('../libs/captcha.js');
+  var capBody = null, capErr = '';
+  try {
+    capBody = JSON.parse(CAPTCHA.buildRequest({
+      apiType: 'openai', apiUrl: 'https://api.deepseek.com', apiKey: 'sk-test-synthetic',
+      model: 'deepseek-v4-flash', captchaModel: 'deepseek-v4-flash',
+      thinkingRangeCourse: 'high-high', thinkingRangeExam: 'high-high'
+    }, 'data:image/png;base64,iVBORw0KGgo=').body);
+  } catch (eCap) {
+    capErr = String(eCap && eCap.message).slice(0, 160);
+  }
+  check('验证码请求体自己钉死 off-off：用户放开答题思考不许顺手把识图也调贵',
+    !!capBody && JSON.stringify(capBody.thinking) === JSON.stringify({ type: 'disabled' })
+    && !('reasoning_effort' in capBody) && capBody.max_tokens === 2048,
+    capBody ? ('thinking=' + JSON.stringify(capBody.thinking) + ' effort=' + JSON.stringify(capBody.reasoning_effort)
+      + ' max_tokens=' + capBody.max_tokens) : '没拼出请求体：' + capErr);
+
+  // ---- 三个新键必须在 runtime-policy 登记齐：认值 · 投影到页面 · 进摘要 ----
+  // 为什么这一格要自己钉，而不是靠 npm run check 第 12 项：那一项判"页面读得到"靠的是
+  // `var X = ….configs;` 那种紧贴分号的别名写法，而 70-quiz-flow.js 的 _examThinkingMin 写的是
+  // `var cfg = this.configs || {};` —— 它的正则看不见这一处，于是"没投影"在那一项里**恒绿**。
+  // 没投影的后果一句报错都没有：弹窗改了、页面读不到，用户只看见"改了没生效"。
+  var POLICY = require('../libs/runtime-policy.js');
+  var RANGE_KEYS = THINKING.TIERS.map(function (t) { return THINKING.TIER_RANGE_KEYS[t]; });
+  var pairBad = [];
+  ['off', 'low', 'high'].forEach(function (a) {
+    ['off', 'low', 'high'].forEach(function (b) {
+      var lo = THINKING.levelRank(a) <= THINKING.levelRank(b) ? a : b;
+      var hi = THINKING.levelRank(a) <= THINKING.levelRank(b) ? b : a;
+      var patch = { playbackRate: 1.5, enableQuiz: true, thinkingRangeExam: lo + '-' + hi };
+      var r = POLICY.validatePatch(patch, 'popup');
+      // 反序也要收：界面永远从小到大写，但存储可能被手改，真源取小当下限 ——
+      // 这里比它严就会把「真源读得懂」的串顶成 invalid_patch，而它拒的是**整张补丁**。
+      var rev = POLICY.validatePatch({ thinkingRangeExam: hi + '-' + lo }, 'popup');
+      if (!r.success) pairBad.push(lo + '-' + hi + ' → ' + r.code + (r.field ? '/' + r.field : ''));
+      if (!rev.success) pairBad.push('(反序)' + hi + '-' + lo + ' → ' + rev.code);
+    });
+  });
+  check('弹窗能拼出的六格区间（含反序）必须被 validatePatch 收下，且不连坐同批其它字段',
+    pairBad.length === 0 && POLICY.validatePatch({ thinkingRangeCourse: '', thinkingRangeQuiz: 'low-high',
+      thinkingRangeExam: 'high-high', enableVote: true }, 'popup').success,
+    pairBad.join(' || ') || '六格正反序 + 空串全部收下');
+  check('区间写成认不出的形状要被当场拒（不许带着脏值落进存储，再由页面默默落最省那格）',
+    POLICY.validatePatch({ thinkingRangeQuiz: 'mid-high' }, 'popup').code === 'invalid_patch'
+    && POLICY.validatePatch({ thinkingRangeQuiz: 'low-high-off' }, 'popup').code === 'invalid_patch'
+    && POLICY.validatePatch({ thinkingRangeQuiz: 7 }, 'popup').code === 'invalid_patch'
+    && POLICY.validatePatch({ thinkingRangeQuiz: 'off' }, 'popup').success,
+    ['mid-high', 'low-high-off', '数字', '单值 off'].map(function (v) {
+      return v + ' → ' + JSON.stringify(POLICY.validatePatch({ thinkingRangeQuiz: v }, 'popup'));
+    }).join(' || '));
+  var projCfg = { apiUrl: 'https://api.deepseek.com', apiKey: 'sk-synthetic', model: 'deepseek-v4-flash',
+    thinkingRangeCourse: 'off-low', thinkingRangeQuiz: 'off-high', thinkingRangeExam: 'high-high' };
+  var projected = POLICY.publicConfig(projCfg, 'study');
+  var missing = RANGE_KEYS.filter(function (k) { return !(k in projected); });
+  check('三个区间键必须投影给刷课页面（publicConfig 的 study 面）—— 不投影就是「弹窗改了、页面读不到」',
+    missing.length === 0 && projected.thinkingRangeQuiz === 'off-high',
+    missing.length ? '页面拿不到：' + missing.join(',') : JSON.stringify(RANGE_KEYS.map(function (k) { return projected[k]; })));
+  // 摘要管的是"这一家收不收这个参数"的旧结论何时作废：区间换了 = 发出去的字段换了。
+  var fpOff = POLICY.configFingerprint({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-off' });
+  var fpAuto = POLICY.configFingerprint({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-high' });
+  var fpFixed = POLICY.configFingerprint({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'high-high' });
+  check('区间换了必须让 API 摘要跟着变（off-off / off-high / high-high 三格互不相同），否则"这家收不收这参数"的旧结论永不过期',
+    fpOff !== fpAuto && fpAuto !== fpFixed && fpOff !== fpFixed,
+    JSON.stringify([fpOff, fpAuto, fpFixed]));
+
   // 反向验证 ①：档位写成非法值必须回落 'off'（而不是让 undefined 混进请求体）
   check('非法档位回落 off', THINKING.normalizeLevel('bogus') === 'off'
     && Object.keys(THINKING.buildThinkingParams({ apiUrl: 'https://api.deepseek.com', thinkingLevel: 'bogus' }).params).length === 1,
@@ -1665,18 +1975,27 @@ async function testThinkingLevels() {
     var made = Reflect.construct(Function, names.concat(['return (' + quizSrc.slice(start, end) + '\n    })']));
     return made.apply(null, names.map(function (k) { return inj[k]; }));
   };
+  var tierFn = buildSlice('_paperTierFromTitle');
+  var minFn = buildSlice('_examThinkingMin');
   var gate = buildSlice('_isNoGuessPaper');
   var holds = [];
   var hold = buildSlice('_noteNoGuessPaperHold', {
-    emitRuntimeLog: function (level, msg) { holds.push(level + ' ' + msg); }
+    emitRuntimeLog: function (level, msg, meta) { holds.push({ line: level + ' ' + msg, meta: meta }); }
   });
-  check('「不乱猜」闸两件真源都能从 70-quiz-flow.js 取到（拿桩等于把闸放过去）',
-    typeof gate === 'function' && typeof hold === 'function',
-    JSON.stringify({ gate: typeof gate, hold: typeof hold }));
-  if (gate && hold) {
+  check('「不乱猜」闸四件真源都能从 70-quiz-flow.js 取到（拿桩等于把闸放过去）',
+    typeof gate === 'function' && typeof hold === 'function'
+    && typeof tierFn === 'function' && typeof minFn === 'function',
+    JSON.stringify({ gate: typeof gate, hold: typeof hold, tier: typeof tierFn, min: typeof minFn }));
+  if (gate && hold && tierFn && minFn) {
     var mkGateApp = function (title, cfg) {
-      return { _getCurrentTitle: function () { return title; }, configs: cfg || {} };
+      // 两个判据都用**页面自己那份函数**（真从片段里取出来的），不许在这儿写等价逻辑 ——
+      // 在这儿重写一遍，页面那句改坏了这七格照样全绿，闸就只剩测试台在保护测试台。
+      var gateApp = { _getCurrentTitle: function () { return title; }, configs: cfg || {} };
+      gateApp._paperTierFromTitle = tierFn;
+      gateApp._examThinkingMin = minFn;
+      return gateApp;
     };
+    // 改造前后**同一份老配置**必须给出同一个答案（老键还在，只是接管方式为推导）
     check('作业卷、整卷高档时拦下（不拿猜测占位交卷）',
       gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: 'high' })) === true, '应判 true');
     check('考试卷、整卷高档时同样拦下',
@@ -1691,21 +2010,85 @@ async function testThinkingLevels() {
       gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: '', thinkingLevel: 'high' })) === true, '应判 true');
     check('整卷空串跟随全局：全局 off 时作业卷不拦',
       gate.call(mkGateApp('第3章 作业', { thinkingPaperLevel: '', thinkingLevel: 'off' })) === false, '应判 false');
+    // ↓ 批次 123-b 的新语义：**只有下限钉到 high 才算"这一卷值得慢慢想"**
+    check('考试档钉死 high-high 才拦（新键这一格是唯一的贵档承诺）',
+      gate.call(mkGateApp('期末考试', { thinkingRangeExam: 'high-high' })) === true, '应判 true');
+    check('考试档放开上限（off-high）**不拦**：那是"允许它想"，不是"要求它想"',
+      gate.call(mkGateApp('期末考试', { thinkingRangeExam: 'off-high' })) === false, '应判 false');
+    check('考试档下限 low 不拦（下限才是承诺）',
+      gate.call(mkGateApp('期末考试', { thinkingRangeExam: 'low-high' })) === false, '应判 false');
+    check('新键写过就不看老键：老键 high 而新键 off-off 时不拦',
+      gate.call(mkGateApp('期末考试', { thinkingLevel: 'high', thinkingRangeExam: 'off-off' })) === false, '应判 false');
+    check('认不出的区间落最省，不许把它读成"用户要求高"',
+      gate.call(mkGateApp('期末考试', { thinkingRangeExam: 'mid-high' })) === false, '应判 false');
+    check('测试档再高也管不着作业卷（考试档与测试档各算各的）',
+      gate.call(mkGateApp('第3章 作业', { thinkingRangeQuiz: 'high-high', thinkingRangeExam: 'off-off' })) === false, '应判 false');
+    // ---- 反分叉闸：页面重抄的那一小口解析，必须与 libs/thinking.js 逐个对齐 ----
+    // 页面跑在主世界，`libs/thinking.js` 注入在隔离世界，**page.js 调不到真源**，
+    // 所以 `_examThinkingMin` 只能本地再解析一遍字符串。两处一旦分叉，
+    // 症状是「弹窗上显示的是这一档，页面按另一档决定要不要停下等人」——
+    // 不报错、不留日志，只有用户觉得"我明明没让它慢慢想，它怎么卡住了"。
+    var AGREE = [
+      ['老键：全局 high（新键从没写过）', { thinkingLevel: 'high' }, 'high'],
+      ['老键：整卷 high、全局 off', { thinkingLevel: 'off', thinkingPaperLevel: 'high' }, 'high'],
+      ['老键：整卷空串跟随全局 low', { thinkingLevel: 'low', thinkingPaperLevel: '' }, 'low'],
+      ['老键：两个都没写过 → 最省', {}, 'off'],
+      ['新键写过就以它为准（压过老键）', { thinkingLevel: 'high', thinkingRangeExam: 'off-off' }, 'off'],
+      ['下限 off', { thinkingRangeExam: 'off-high' }, 'off'],
+      ['下限 low', { thinkingRangeExam: 'low-high' }, 'low'],
+      ['钉死 high', { thinkingRangeExam: 'high-high' }, 'high'],
+      ['倒着写要按省→重排（不是取下限字面）', { thinkingRangeExam: 'high-low' }, 'low'],
+      ['单值形状＝上下限相等', { thinkingRangeExam: 'high' }, 'high'],
+      ['半截认不出 → 落最省（不许拿认得那一格猜）', { thinkingRangeExam: 'mid-high' }, 'off'],
+      ['整个认不出 → 落最省', { thinkingRangeExam: 'bogus' }, 'off'],
+      ['大小写与空白容忍', { thinkingRangeExam: ' HIGH-LOW ' }, 'low'],
+      ['空串是「没写过」，不是「写了 off」', { thinkingRangeExam: '', thinkingLevel: 'high' }, 'high']
+    ];
+    var fork = [];
+    AGREE.forEach(function (p) {
+      var bySource = THINKING.rangeForTier(p[1], 'exam').min;
+      var byPage = minFn.call({ configs: p[1] });
+      if (bySource !== byPage || bySource !== p[2]) {
+        fork.push(p[0] + '：真源=' + bySource + '，页面=' + byPage + '，预期=' + p[2]);
+      }
+    });
+    check('页面那句「考试档下限」与 libs/thinking.js 逐形状对齐（14 格，含倒序/单值/半截认不出）',
+      fork.length === 0, fork.join(' || ') || '14 格三处读数全等');
+
+    // ---- 场景归属：只有页面知道卷面标题，后台只看见 kind:'paper' 那一个字 ----
+    var tierFork = [];
+    [['第3章 作业', 'exam'], ['期末考试', 'exam'], ['第2章 章节测验', 'quiz'],
+      ['目录', 'quiz'], ['作业：第5章 考试要点', 'exam']].forEach(function (p) {
+      var byPage = tierFn.call({ _getCurrentTitle: function () { return p[0]; } });
+      // 与真源 resolveTier 同一口径：paper + exam 才算考试档，其余整卷算测试档
+      var bySource = THINKING.resolveTier('paper', byPage);
+      if (byPage !== p[1] || bySource !== p[1]) tierFork.push(p[0] + '：页面=' + byPage + '，真源=' + bySource);
+    });
+    check('卷面标题→场景归属两处一致（5 格：作业/考试算考试档，测验与无名卷算测试档）',
+      tierFork.length === 0, tierFork.join(' || ') || '5 格全部一致');
+
     var holdDoc = { quizKey: 'k1' };
     var holdApp = {
       _getQuizWorkKey: function (d) { return d.quizKey; },
       _isQuizQuestionFilled: function () { return false; },
-      _getCurrentTitle: function () { return '第3章 作业'; }
+      _getCurrentTitle: function () { return '第3章 作业'; },
+      configs: { thinkingRangeExam: 'high-high' },
+      // 这句话现在要**把拦它的那一格读回来**写进日志，所以取证的这份也得有真函数
+      _examThinkingMin: minFn
     };
     hold.call(holdApp, holdDoc, [{}, {}]);
     var firstCount = holds.length;
     hold.call(holdApp, holdDoc, [{}, {}]);
     check('同一卷子只说一次（否则 200 条日志环被它冲成复读机）',
-      firstCount === 1 && holds.length === 1 && String(holds[0]).indexOf('quiz hold') >= 0,
+      firstCount === 1 && holds.length === 1 && String(holds[0].line).indexOf('quiz hold') >= 0,
       '说的话语数=' + holds.length + '，首条=' + JSON.stringify(holds[0] || ''));
     hold.call(holdApp, { quizKey: 'k2' }, [{}]);
     check('换一份卷子要再说一次（warn-once 按 workKey 记账，不跨卷）',
       holds.length === 2, '说的话语数=' + holds.length);
+    check('拦下的那句要把「哪一格在拦」读回来（thinkingMin 从配置算，不许写死）',
+      !!holds[0] && holds[0].meta && holds[0].meta.thinkingMin === 'high'
+      && holds[0].meta.unfilled === 2 && String(holds[0].meta.reason).indexOf('考试档') >= 0,
+      JSON.stringify((holds[0] || {}).meta || null));
   }
 }
 

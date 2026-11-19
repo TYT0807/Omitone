@@ -3448,6 +3448,25 @@ async function clearAutoResumeFlag() {
   } catch (e) {}
 }
 
+// 刷课页伴侣的「精简」是 chrome.storage 里的独立键（不在 config 里），界面上它是一个 .toggle。
+// 混沌猴逢 toggle 就点，最后停在哪儿由种子决定 —— 停在精简时，后面每一个 /quiz 场景里
+// content.js 压根不建伴侣宿主，红的是「前提：伴侣已挂载」，原因却在三个场景之前（批次 62-D 同一族）。
+// 谁依赖谁钉住：带 `pagePetOn:true` 的场景在开页前把这一格按回"显示"。
+async function setPagePetMinimal(flag) {
+  if (!cfgClient) return;
+  try {
+    await cfgClient.evaluate('new Promise(function (res) { chrome.storage.local.set(' +
+      '{ omitonePagePetMinimal: ' + (flag ? 'true' : 'false') + ' }, function () { res(true); }); })');
+  } catch (e) {}
+}
+
+/** 把对象比成"排序后的 k=v 清单" —— chrome.storage 回读的键序不保证，直接比 JSON 会假红。 */
+function kvSorted(obj) {
+  var out = [];
+  Object.keys(obj || {}).sort().forEach(function (k) { out.push(k + '=' + JSON.stringify(obj[k])); });
+  return out.join('&');
+}
+
 async function writeConfig(extensionId, cfg) {
   var c = await initConfigWriter(extensionId);
   await c.evaluate('new Promise(function (res) { chrome.storage.local.set({ config: ' +
@@ -4591,6 +4610,19 @@ SCENARIOS.push({
   run: async function (ctx) {
     ctx.mock.setStatus(402);
     try {
+      // 前提钉住"老键从没写过"这一族形状：批次 123-b 起表单不再发 thinkingLevel，于是
+      // 「弹窗侧 DEFAULTS 兜成 off、后台侧读到空」的指纹错配只在全新档案才暴露 ——
+      // 全量跑里只要前一场写过它，这条回归就变成零覆盖。先删干净，再把"真删了"读回来钉住。
+      var legacyCleared = await ctx.client.evaluate(
+        'new Promise(function (res) { chrome.storage.local.get("config", function (r) {' +
+        'var c = r.config || {}; delete c.thinkingLevel; delete c.thinkingPaperLevel;' +
+        'chrome.storage.local.set({ config: c }, function () {' +
+        'res({ level: Object.prototype.hasOwnProperty.call(c, "thinkingLevel"), ' +
+        'paper: Object.prototype.hasOwnProperty.call(c, "thinkingPaperLevel") }); }); }); })'
+      );
+      check('前提：存储里两个思考老键都没写过（新用户那一族）',
+        !!legacyCleared && legacyCleared.level === false && legacyCleared.paper === false,
+        JSON.stringify(legacyCleared));
       // ⚠️ 「检测 API」读的是**表单**（getApiFormConfig），不是 storage ——
       // 表单也不随 storage.onChanged 刷新（那个监听只管运行状态）。
       // 所以必须直接填表单字段；写 storage 不仅没用，还会让请求打到真实服务商。
@@ -5791,6 +5823,15 @@ SCENARIOS.push({
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
+    // 进门先记下弹窗会写的那两格（config 与伴侣精简键）：逢 toggle 就点的混沌猴把开关状态
+    // 留在盘上，停在哪儿由种子决定 —— 后面每一个场景拿到的是上一场的随机态（批次 62-D 同一族）。
+    // 收尾交回进门那份，随机点击的证据留在本场，脏数据不外溢。
+    var storageBefore = await ctx.client.evaluate(
+      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
+      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
+      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
+      'pet: r.omitonePagePetMinimal }); }); })'
+    );
     var chaos = await ctx.client.evaluate(
       '(function(){' +
       'var errs = [];' +
@@ -5821,12 +5862,38 @@ SCENARIOS.push({
       'return {errs:errs,alive:!!m};})()'
     );
     check('混沌之后摸头仍无异常', !!still && still.alive === true && still.errs.length === 0, JSON.stringify(still));
+    // 收尾：把这一场点出来的随机态交回去，并读回来证明真交回去了（不是打了句话就算）
+    await ctx.client.evaluate(
+      'new Promise(function (res) {' +
+      'var before = ' + JSON.stringify(storageBefore) + ';' +
+      'var del = []; var set = {};' +
+      'if (before.hasConfig) { set.config = before.config; } else { del.push("config"); }' +
+      'if (before.hasPet) { set.omitonePagePetMinimal = before.pet; } else { del.push("omitonePagePetMinimal"); }' +
+      'chrome.storage.local.remove(del, function () {' +
+      'if (Object.keys(set).length === 0) { res(true); return; }' +
+      'chrome.storage.local.set(set, function () { res(true); }); }); })'
+    );
+    var restored = await ctx.client.evaluate(
+      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
+      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
+      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
+      'pet: r.omitonePagePetMinimal }); }); })'
+    );
+    check('混沌收尾把 config 与伴侣精简键交回进门那份（随机态不外溢到后面的场景）',
+      !!restored && kvSorted(restored.config) === kvSorted(storageBefore.config)
+      && restored.hasPet === storageBefore.hasPet && String(restored.pet) === String(storageBefore.pet),
+      JSON.stringify({ sameConfig: kvSorted(restored.config) === kvSorted(storageBefore.config),
+        petBefore: storageBefore.pet, petAfter: restored.pet,
+        hasBefore: storageBefore.hasPet, hasAfter: restored.hasPet }).slice(0, 240));
   }
 });
 
 SCENARIOS.push({
   name: '上课页伴侣暴力：连点 30 次不崩、收起唤回仍正常',
   path: '/quiz',
+  // 前提钉住「这一格没人按过」：伴侣宿主建不建由 chrome.storage 的精简键决定，
+  // 而混沌猴会点到它。见 `setPagePetMinimal` 头上那段。
+  pagePetOn: true,
   run: async function (ctx) {
     var mounted = null;
     // 24s 窗口（48×500ms）：满载机器上整轮跑数小时时，挂载会迟到 —— 6 秒窗在批次 123 的
@@ -12355,17 +12422,26 @@ SCENARIOS.push({
     check('密钥清洗：Bearer + 引号同时剥掉', keys.both === 'sk-abc', JSON.stringify(keys.both));
 
     // popup 自身的初始化（load()）必须跑完并把表单填上
+    // 六格采集器：初始态、清键重绘后、"只有老键"的用户回填后都要读同一份形状，
+    // 每处各拼一遍字符串迟早分叉（这一族在 §5 被点过名）。
+    await ctx.client.evaluate(
+      '(function(){window.__thinkCells=function(){var out=[];' +
+      '["course","quiz","exam"].forEach(function(t){var T=t.charAt(0).toUpperCase()+t.slice(1);' +
+      'var mn=document.getElementById("thinkingMin"+T),mx=document.getElementById("thinkingMax"+T);' +
+      'out.push({tier:t,min:mn?mn.value:null,max:mx?mx.value:null,' +
+      'minOpts:mn?Array.prototype.map.call(mn.options,function(o){return o.value;}):null,' +
+      'maxOpts:mx?Array.prototype.map.call(mx.options,function(o){return o.value;}):null});});' +
+      'return out;};return 1;})()'
+    );
     var ui = await ctx.client.evaluate(
       '(function(){return {' +
       'rateVal: document.getElementById("rateVal") ? document.getElementById("rateVal").textContent : null,' +
       'presetValues: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return o.value;}),' +
       'presetLabels: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return String(o.textContent);}),' +
       'presetSelected: document.getElementById("providerPreset").value,' +
-      'thinkingValues: Array.prototype.map.call(document.getElementById("thinkingLevel").options, function(o){return o.value;}),' +
-      'thinkingSelected: document.getElementById("thinkingLevel").value,' +
+      // 六格（三场景 × 下限/上限）用一个小采集器读回来，下面几步"清键重绘"还要再读一次。
+      'thinkCells: window.__thinkCells ? window.__thinkCells() : null,' +
       'thinkingHint: document.getElementById("thinkingHint") ? document.getElementById("thinkingHint").textContent : null,' +
-      'paperValues: Array.prototype.map.call(document.getElementById("thinkingPaperLevel").options, function(o){return o.value;}),' +
-      'paperSelected: document.getElementById("thinkingPaperLevel").value,' +
       'apiUrl: document.getElementById("apiUrl").value,' +
       'model: document.getElementById("model").value,' +
       'toggleCount: document.querySelectorAll(".toggle").length,' +
@@ -12387,97 +12463,133 @@ SCENARIOS.push({
       }),
       JSON.stringify(ui.presetLabels));
 
-    // ---- 思考强度：三档 + 默认关闭 + 说明跟着渠道变 ----
-    // 这一段盯的是"用户看到的"和"实际发出去的"必须一致：
-    // 同一个"关闭"，DeepSeek 会发 thinking:{type:disabled}、Kimi 什么都不发（K3 关不掉）。
-    // 不把这个差别摊开给用户看，他会以为"我关了思考它却没关"是 bug。
-    check('思考强度只有三档，顺序是 关闭/低/高',
-      JSON.stringify(ui.thinkingValues) === JSON.stringify(['off', 'low', 'high']),
-      JSON.stringify(ui.thinkingValues));
-    check('思考强度默认是「关闭」（升级前的行为）', ui.thinkingSelected === 'off', String(ui.thinkingSelected));
-    // ---- 整卷思考强度：四档（多一个"跟随全局"）+ 默认空串 ----
-    // 它是 #160 的页面侧开关：只有作业/考试卷读它，空串 = 按上面的全局档走。
-    check('整卷思考强度四档，顺序是 跟随全局/关闭/低/高',
-      JSON.stringify(ui.paperValues) === JSON.stringify(['', 'off', 'low', 'high']),
-      JSON.stringify(ui.paperValues));
-    check('整卷思考强度默认是「跟随全局」（空串原样保存，不许被归一成 off）',
-      ui.paperSelected === '', String(ui.paperSelected));
-    // ⚠️ 不能直接断言"说明里是 DeepSeek 的参数"：这个场景与其它场景共用 chrome.storage，
-    // 前面答过题的场景已经把 apiUrl 写成 mock 地址了，那时渠道是"认不出"→ 说明是"不发参数"。
-    // 所以这里**显式**把表单设成 DeepSeek 再刷新说明（只改表单、不派发 input，
-    // 免得多写一次 storage 影响后面的场景）。
-    var deepseekHint = await ctx.client.evaluate(
+    // ---- 思考强度：三场景 × 上下限六格（批次 123-b 的界面侧）----
+    // 这一段盯的是"用户看到的"和"实际发出去的"必须一致，而且这一族比改造前更绕：
+    // 同一个"关闭"，DeepSeek 发 thinking:{type:disabled}、Kimi 什么都不发（K3 关不掉）；
+    // 两格**拉开**之后 DeepSeek 反而什么都不发了 —— 那是"交给模型自己定"，不是"关了"。
+    // 不把这层摊开讲，用户会把"我拉开它却没反应"当成 bug，或者反过来以为拉开在多花钱。
+    // ⚠️ 每一步都自己把存储钉成想要的形状再重绘，不依赖"上一个场景没写过"（存储整轮共用）。
+    var THINK_KEYS = ['thinkingRangeCourse', 'thinkingRangeQuiz', 'thinkingRangeExam',
+      'thinkingLevel', 'thinkingPaperLevel'];
+    // 清成指定形状 → 走一遍 popup 自己的 load() → 读回六格与说明。
+    // 写成 node 侧的串生成器：三处形状各拼一遍字符串迟早分叉（AGENTS §5）。
+    function setThinkingStorage(patchObj) {
+      var src = '(function(){return new Promise(function(res){' +
+        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+        JSON.stringify(THINK_KEYS) + '.forEach(function(k){delete c[k];});' +
+        'var add=' + JSON.stringify(patchObj || {}) + ';' +
+        'Object.keys(add).forEach(function(k){c[k]=add[k];});' +
+        'chrome.storage.local.set({config:c},function(){' +
+        'var done=function(o){try{res(o);}catch(e){res({error:String(e&&e.message)});}};' +
+        'Promise.resolve(load()).then(function(){done({cells:window.__thinkCells(),' +
+        'hint:document.getElementById("thinkingHint").textContent});},' +
+        'function(e){done({error:String(e&&e.message)});});});});});})()';
+      // 拼出来的串第 28 项看不见（含变量一律计入 skipped），所以当场折一次语法：
+      // 断了就在这一步抛，而不是等浏览器回一句没有行号的「页面抛异常」。
+      new Function('return ' + src);
+      return src;
+    }
+    check('思考强度是 3 行 × 上下限 6 格，每格选项恒为 关闭/低/高（采集器也要自证，否则整段读的是 null）',
+      !!ui.thinkCells && ui.thinkCells.length === 3
+      && JSON.stringify(ui.thinkCells.map(function (c) { return c.tier; })) === JSON.stringify(['course', 'quiz', 'exam'])
+      && ui.thinkCells.every(function (c) {
+        return JSON.stringify(c.minOpts) === JSON.stringify(['off', 'low', 'high'])
+          && JSON.stringify(c.maxOpts) === JSON.stringify(['off', 'low', 'high'])
+          && c.min !== null && c.max !== null;
+      }),
+      JSON.stringify(ui.thinkCells));
+    var fresh = await ctx.client.evaluate(setThinkingStorage({}));
+    check('全新安装（新老键都没写过）六格全落在「关闭—关闭」= 升级前行为，一个请求都不该变',
+      !fresh.error && !!fresh.cells && fresh.cells.length === 3
+      && fresh.cells.every(function (c) { return c.min === 'off' && c.max === 'off'; }),
+      JSON.stringify(fresh));
+    // 这条是影子 bug 的正面判据：弹窗 DEFAULTS 里只要给这三格写了非空默认值，
+    // load() 的 `{...DEFAULTS, ...存储}` 就永远盖住"由老键推导"那一支，
+    // 下面这位老用户看到的是"关闭"，他动任何一个开关还会把 off-off 写回盘 —— 一句报错都没有。
+    var legacy = await ctx.client.evaluate(setThinkingStorage({ thinkingLevel: 'high' }));
+    check('只写过老键 thinkingLevel=高 的用户，回填必须是「高—高」（不许被出厂默认悄悄按回关闭）',
+      !legacy.error && legacy.cells.every(function (c) { return c.min === 'high' && c.max === 'high'; }),
+      JSON.stringify(legacy));
+    var legacyPaper = await ctx.client.evaluate(
+      setThinkingStorage({ thinkingLevel: 'off', thinkingPaperLevel: 'high' }));
+    check('老键「全局=关闭 / 整卷=高」要按场景拆开回填：刷课 off-off，测试与考试 high-high',
+      !legacyPaper.error && legacyPaper.cells[0].min === 'off' && legacyPaper.cells[0].max === 'off'
+      && legacyPaper.cells[1].min === 'high' && legacyPaper.cells[1].max === 'high'
+      && legacyPaper.cells[2].min === 'high' && legacyPaper.cells[2].max === 'high',
+      JSON.stringify(legacyPaper));
+
+    // 说明文字跟着**表单上此刻**的选择走：先全部收回 off-off，再只拉开刷课那一行。
+    await ctx.client.evaluate(setThinkingStorage({}));
+    var dsHint = await ctx.client.evaluate(
       '(function(){' +
       'document.getElementById("apiUrl").value="https://api.deepseek.com";' +
       'document.getElementById("model").value="deepseek-flash";' +
-      'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
-      'updateThinkingHint();' +
-      'var h=document.getElementById("thinkingHint").textContent;' +
-      'tl.value="low";updateThinkingHint();' +
-      'var h2=document.getElementById("thinkingHint").textContent;' +
-      'tl.value="off";updateThinkingHint();' +
-      'return {off:h,low:h2};})()'
+      'var mn=document.getElementById("thinkingMinCourse"),mx=document.getElementById("thinkingMaxCourse");' +
+      'mn.value="off";mx.value="off";updateThinkingHint();' +
+      'var fixed=document.getElementById("thinkingHint").textContent;' +
+      'mx.value="high";updateThinkingHint();' +
+      'var auto=document.getElementById("thinkingHint").textContent;' +
+      'mx.value="off";return {fixed:fixed,auto:auto};})()'
     );
-    check('说明里摊开了 DeepSeek 关闭档**实际会发**的参数（不是只说"关了"）',
-      !!deepseekHint.off && deepseekHint.off.indexOf('当前实际发送') !== -1 &&
-      deepseekHint.off.indexOf('"type":"disabled"') !== -1 &&
-      deepseekHint.off.indexOf('已实测') !== -1,
-      String(deepseekHint.off).slice(-140));
-    check('切到"低"档后说明随之变化（含 reasoning_effort，且标为未验证）',
-      !!deepseekHint.low && deepseekHint.low.indexOf('reasoning_effort') !== -1 &&
-      deepseekHint.low.indexOf('未验证') !== -1,
-      String(deepseekHint.low).slice(-140));
+    check('说明摊开 DeepSeek 固定关闭档**实际会发**的参数（不是只说"关了"）',
+      /当前实际发送/.test(dsHint.fixed) && /"type":"disabled"/.test(dsHint.fixed)
+      && /已实测/.test(dsHint.fixed), String(dsHint.fixed).slice(-220));
+    check('两格一拉开就改口「交给模型自选」，并当场说实话：这一家自选 = 什么都不发、且未验证',
+      /交给模型自选/.test(dsHint.auto) && /不发参数/.test(dsHint.auto) && /未验证/.test(dsHint.auto),
+      String(dsHint.auto).slice(-220));
 
-    // 换渠道 → 说明必须跟着换（Kimi 关闭档"不发参数"）
+    // 真走 change：收齐与落盘都得经界面那条链路，不然测的是我自己手搓的 rangeFromForm。
+    var clamp = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var mn=document.getElementById("thinkingMinCourse"),mx=document.getElementById("thinkingMaxCourse");' +
+      'mx.value="low";mn.value="high";mn.dispatchEvent(new Event("change"));' +
+      'setTimeout(function(){chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+      'res({stored:c.thinkingRangeCourse,min:mn.value,max:mx.value});});},700);});})()'
+    );
+    check('下限高于上限时当场把两格收齐并落盘 high-high（不许写出 high-low 那种空区间，也不许默默按下限花钱）',
+      clamp.stored === 'high-high' && clamp.min === 'high' && clamp.max === 'high', JSON.stringify(clamp));
+    var autoPersist = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var mn=document.getElementById("thinkingMinCourse"),mx=document.getElementById("thinkingMaxCourse");' +
+      'mn.value="off";mx.value="high";mx.dispatchEvent(new Event("change"));' +
+      'setTimeout(function(){chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+      'res({course:c.thinkingRangeCourse,quiz:c.thinkingRangeQuiz,exam:c.thinkingRangeExam});});},700);});})()'
+    );
+    check('拉开刷课那一行落盘的是 off-high（下限没被当成"这一档"写死）',
+      autoPersist.course === 'off-high', JSON.stringify(autoPersist));
+    check('保存时三行一起显式落盘（没动过的测试/考试也要写出 off-off）—— 留空串页面会退回老键，与界面显示不一致',
+      autoPersist.quiz === 'off-off' && autoPersist.exam === 'off-off', JSON.stringify(autoPersist));
+
+    // 换渠道 → 说明必须跟着换（先把刷课那行收回 off-off，Kimi 那一格才该说"关不掉"）
     var kimi = await ctx.client.evaluate(
       '(function(){return new Promise(function(res){' +
+      'var mn=document.getElementById("thinkingMinCourse"),mx=document.getElementById("thinkingMaxCourse");' +
+      'mn.value="off";mx.value="off";' +
       'var sel=document.getElementById("providerPreset");sel.value="kimi";' +
       'sel.dispatchEvent(new Event("change"));' +
-      'setTimeout(function(){' +
-      'var h=document.getElementById("thinkingHint");' +
+      'setTimeout(function(){var h=document.getElementById("thinkingHint");' +
       'res({hint:h?h.textContent:null,url:document.getElementById("apiUrl").value,' +
-      'model:document.getElementById("model").value});},400);});})()'
+      'model:document.getElementById("model").value});},600);});})()'
     );
     check('切到 Kimi 后预设地址/模型名被填入',
       kimi.url.indexOf('moonshot') !== -1 && kimi.model === 'kimi-k3', JSON.stringify(kimi));
-    check('切到 Kimi 后说明变成"不发参数"（渠道表真的联动了）',
-      !!kimi.hint && kimi.hint.indexOf('不发参数') !== -1, String(kimi.hint).slice(-160));
+    check('切到 Kimi 后说明摊开「关不掉思考，实际仍会推理」+「不发参数」（渠道表真的联动，且不谎称关掉了）',
+      /该渠道关不掉思考/.test(kimi.hint) && /不发参数/.test(kimi.hint), String(kimi.hint).slice(-220));
 
-    // 切换必须落盘，否则下次打开弹窗又跳回默认值
-    var persisted = await ctx.client.evaluate(
+    // 收尾：五格键**整个清掉**而不是写 off-off —— 后面的答题场景要读到"从没写过"那一支，
+    // 留着 off-high 等于把每一发请求的思考参数改掉，而日志说不清是谁改的。
+    var teardown = await ctx.client.evaluate(
       '(function(){return new Promise(function(res){' +
-      'var sel=document.getElementById("providerPreset");sel.value="deepseek";' +
-      'sel.dispatchEvent(new Event("change"));' +
-      'var tl=document.getElementById("thinkingLevel");tl.value="high";' +
-      'tl.dispatchEvent(new Event("change"));' +
-      'setTimeout(function(){chrome.storage.local.get("config",function(r){' +
-      'var c=(r&&r.config)||{};' +
-      'res({level:c.thinkingLevel,preset:c.providerPreset,' +
-      'hint:document.getElementById("thinkingHint").textContent});});},600);});})()'
+      'var want=' + JSON.stringify(THINK_KEYS) + ';' +
+      'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+      'want.forEach(function(k){delete c[k];});' +
+      'chrome.storage.local.set({config:c},function(){chrome.storage.local.get("config",function(q){' +
+      'var z=(q&&q.config)||{};' +
+      'res({left:want.filter(function(k){return k in z;}),cells:window.__thinkCells()});});});});});})()'
     );
-    check('思考强度切换后落盘', persisted.level === 'high', JSON.stringify(persisted.level));
-    check('切换后说明跟着更新为高（含 reasoning_effort）',
-      !!persisted.hint && persisted.hint.indexOf('reasoning_effort') !== -1,
-      String(persisted.hint).slice(-160));
-    // 整卷档单独落盘一次（两次 change 的保存是并发的，合在一个 evaluate 里读会有写序竞态）
-    var paperPersisted = await ctx.client.evaluate(
-      '(function(){return new Promise(function(res){' +
-      'var tp=document.getElementById("thinkingPaperLevel");tp.value="high";' +
-      'tp.dispatchEvent(new Event("change"));' +
-      'setTimeout(function(){chrome.storage.local.get("config",function(r){' +
-      'var c=(r&&r.config)||{};' +
-      'res({paper:c.thinkingPaperLevel,level:c.thinkingLevel});});},600);});})()'
-    );
-    check('整卷思考强度切换后落盘', paperPersisted.paper === 'high', JSON.stringify(paperPersisted));
-    // 收尾：把思考强度改回默认，避免影响后面的场景读到 high
-    await ctx.client.evaluate(
-      '(function(){return new Promise(function(res){' +
-      'var tl=document.getElementById("thinkingLevel");tl.value="off";' +
-      'tl.dispatchEvent(new Event("change"));' +
-      'var tp=document.getElementById("thinkingPaperLevel");tp.value="";' +
-      'tp.dispatchEvent(new Event("change"));' +
-      'setTimeout(res,300);});})()'
-    );
+    check('收尾把五格思考键清干净并回到 off-off（脏存储会毒化后面的答题场景）',
+      teardown.left.length === 0 && teardown.cells.every(function (c) { return c.min === 'off' && c.max === 'off'; }),
+      JSON.stringify(teardown));
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
 
     // 开关**清单**守卫：上面那条 `>= 8` 是弱下限，抓不住"某个开关被误删"。
@@ -22797,6 +22909,7 @@ async function main() {
       try {
         if (scenario.inject === false) await clearExtLocalStorage();
         if (scenario.noAutoResume) await clearAutoResumeFlag();
+        if (scenario.pagePetOn) await setPagePetMinimal(false);
         ctx = await openScenarioPage(extensionId, scenario);
         ctx.mock = mock;
         ctx.extensionId = extensionId;
