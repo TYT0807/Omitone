@@ -3299,6 +3299,49 @@ async function waitForPortFree(timeoutMs) {
   }
 }
 
+/**
+ * 跑完收临时 profile ——「可手动删除」这句话活了很久，从来没人执行，
+ * 实测在 %TEMP% 里攒到 106 枚 / 10.2 GB（AGENTS §7.8）。
+ * 清理动作本身在 tools/clean-e2e-profiles.js（四道闸：在跑的不碰、只认临时目录直属的
+ * omitone-e2e-*、删前查有没有登录态、候选路径不许长成登录态形状）。
+ * ⚠️ 本函数**任何情况下都不抛**：它在收尾的 finally 里被调用，清理失败只能变成一句话，
+ *    不许把本次的验收结论顶掉（那族症状是"测试跑出个跟被测无关的红"）。
+ */
+function sweepE2eProfiles() {
+  return new Promise(function (resolve) {
+    if (DEBUG) { resolve('跳过自动清理（OMITONE_E2E_DEBUG：调试时要留着这枚 profile 复现）'); return; }
+    var child;
+    try {
+      child = spawn(process.execPath, [path.join(__dirname, 'clean-e2e-profiles.js'), '--apply', '--quiet'], {
+        cwd: ROOT, windowsHide: true
+      });
+    } catch (e) { resolve('临时 profile 清理没跑成（' + e.message + '）—— 手工可跑 npm run clean:profiles'); return; }
+    var out = '';
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      try { child.kill(); } catch (e) {}
+      resolve('临时 profile 清理超时（90 秒）—— 手工可跑 npm run clean:profiles');
+    }, 90000);
+    child.stdout.on('data', function (b) { out += String(b); });
+    child.stderr.on('data', function (b) { out += String(b); });
+    child.on('error', function (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve('临时 profile 清理没跑成（' + e.message + '）—— 手工可跑 npm run clean:profiles');
+    });
+    child.on('close', function (code) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      var line = String(out).split(/\r?\n/).filter(function (s) { return s.trim(); }).pop() || '(清理没有输出)';
+      resolve((code === 0 ? '' : '（退出码 ' + code + '）') + line);
+    });
+  });
+}
+
 /** 打开新标签（CDP 的 /json/new 只接受 PUT） */
 function openTab(url) {
   return requestJson('http://127.0.0.1:' + CDP_PORT + '/json/new?' + encodeURIComponent(url), 'PUT');
@@ -12643,6 +12686,30 @@ SCENARIOS.push({
       runSync.text === '已开启' && runSync.dotOn === true, JSON.stringify(runSync));
 
     check('「开始运行」按钮存在', ui.hasStart === true);
+    // ---- 开场那一段（任务 #164：文案精简）----
+    // 这里钉的是「两句口径都在场 + 顶部字数收得住」，不是具体措辞。
+    // ⚠️ 批次 68 说过「别把『没 Key 就跳过』那一半删回去换简洁」，而本轮干的正是"换简洁" ——
+    //    两条要求撞在一起，只能靠断言钉边界：可以短，短到看不见那一半就不行。
+    //    上界 150 是量出来的：旧那份可见 199 字、新这份 119 字（node 剥标签数过）。
+    //    ⚠️ 正则跑在原文上，去空白那份只用来数长度：否则「API Key」被压成「APIKey」，红的是尺不是界面。
+    var opener = await ctx.client.evaluate(
+      '(function(){var p=document.getElementById("introHint");' +
+      'var d=document.getElementById("introMore");' +
+      'var s=d?d.querySelector("summary"):null;' +
+      'var raw=p?p.textContent:"",t=raw.replace(/\\s+/g,"");' +
+      'var sRaw=s?s.textContent:"",sText=sRaw.replace(/\\s+/g,"");' +
+      'return {hasP:!!p,hasD:!!d,open:d?d.open:null,sum:sText,vis:t.length,' +
+      'noCost:/不花钱/.test(raw),skip:/跳过不答/.test(raw),needKey:/API\\s*Key/.test(raw),' +
+      'free:/永久免费/.test(raw),foldOnly:/^\\s*不填\\s*Key/.test(sRaw)};})()'
+    );
+    check('开场可见那一段把两句口径说全了：哪几族不花钱、要 Key 没填就跳过不答，外加永久免费',
+      opener.hasP === true && opener.noCost === true && opener.skip === true &&
+      opener.needKey === true && opener.free === true, JSON.stringify(opener));
+    check('开场其余细节折进一行小字：元素存在、默认是关的、小标题自己有话、且点明讲的是 Key 与乱选',
+      opener.hasD === true && opener.open === false && opener.sum.length > 0 &&
+      opener.foldOnly === true, JSON.stringify(opener));
+    check('开场可见字数收在 150 字以内（旧版实测 199 字，超界就是把话又堆回顶部）',
+      opener.vis > 0 && opener.vis <= 150, '可见 ' + opener.vis + ' 字');
 
     // ---- 全新安装的默认值 ----
     // ⚠️ 各场景共用同一个 chrome.storage，前面答过题的场景会把 apiUrl 写成 mock 地址，
@@ -22947,7 +23014,8 @@ async function main() {
     // 等端口真正释放再退出，否则紧接着的下一次运行会连到正在退出的旧实例上
     await waitForPortFree(12000);
     try { mock.server.close(); } catch (e) {}
-    console.log('\n  临时 profile: ' + tmpRoot + '（可手动删除）');
+    console.log('\n  临时 profile: ' + tmpRoot + '（跑完自动清理，不再等人手动删）');
+    console.log('  ' + await sweepE2eProfiles());
   }
 
   // 把本次真实项数落盘，供 tools/check.js 校验文档里的数字。

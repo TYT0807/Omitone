@@ -22,6 +22,8 @@
 | `github-release.js` | `npm run release -- …` | 走 REST API 发版：提交 / 打 tag / 建 Release / 传附件 / 核验 |
 | `audit-safedoc.js` | `node tools/audit-safedoc.js` | **按需跑**：审计"裸读跨域 `.document`"有没有被 `try` 包住（见下方专节） |
 | `audit-fields.js` | `node tools/audit-fields.js` | **按需跑**：列出私有字段全量，标出哪些不在 `10-config-state.js` 的声明表里（见下方专节） |
+| `clean-e2e-profiles.js` | `npm run clean:profiles`（真删）/ `npm run clean:profiles:dry`（先看名单与体积）/ `npm run clean-e2e-profiles.js --selftest`（逐闸对照）；`browser-e2e.js` 收尾自动调那一发 | 收掉**临时目录**里我们自起的 Edge profile（`omitone-e2e-` / `omitone-sandbox-` / `omitone-manual-` 三族，只认临时目录直属层）。四道闸各带对照格：在跑的不碰、有登录态的留、判据写歪（候选路径自己带 `Cookies` 字样）整轮不删。**不碰** `.workbuddy/` 那三台命名 profile 与现场那台（CDP 9334）—— 那里有学习通登录态（AGENTS §7.8 / §7.9） |
+| `list-edge-user-data-dirs.ps1` | `powershell -NoProfile -ExecutionPolicy Bypass -File tools/list-edge-user-data-dirs.ps1` | 上面那一把尺的第 1 道闸的探针：列出正在跑的 msedge / chrome 进程的 `--user-data-dir`。**读不到进程列表退出 2** —— 清理工具把"不知道"当 FATAL 而不是"没在跑"（判据写反一次就是一次不可逆的删） |
 | `fix-bom.js` | `node tools/fix-bom.js --write` | 清除被编辑器写回的 UTF-8 BOM |
 | `ext-id.js` | `node tools/ext-id.js <目录> [已知ID]` | 反推未打包扩展的确定性 ID 编码 |
 | `debug-live.js` | `node tools/debug-live.js [起始URL]` | 起一个**独立 profile、不自动关**的真实 Edge（端口 9333），加载本仓库扩展，等用户扫码登录 |
@@ -279,6 +281,21 @@
     `check.js` 第 30 条另存一份期望数字跑五格对照（数字全写对 / 文档退回 8 门要点名文件 /
     README 单独写歪 / 整套一句都不提要响 / 代码侧没读到要响）＋ 两格掩码形状自证；
     真注入的验收记录在 CHANGELOG「批次 94」段。
+31. **换课前"问一轮课程首页进度"承诺的那几个数字必须等于代码里的常量** —— `audit-course-probe.js`
+    从代码读那 10 个常量（一轮 40 门 / 整轮 20 秒 / 桥 34 秒 / 页面 36 秒 / 为它等 24 秒），
+    逐个核 README / HANDOVER / 说明书 / Release 说明里那一族读数（口径同第 30 条，历史数按史实不扫）。
+32. **说明书 §7「日志里的字样」那张表教的字样 == 代码真发得出来的那一句** —— `audit-manual-log-names.js`
+    真源 = 代码里作为 `emitRuntimeLog` / `appendRuntimeLog` **名字那一格**出现的字面量（+ `console.*` 那一族，
+    各自记面别）；**比整句而不是比前缀**，表找不到就 FATAL（批次 117 立的，抓到三条教错的字样）。
+33. **临时测试浏览器的 profile 跑完就清** —— `clean-e2e-profiles.js`
+    **为什么要单独守**：`%LOCALAPPDATA%\Temp` 里实测积了 **106 枚** Edge 临时 profile / **10.2 GB**，
+    而 `browser-e2e.js` 每次只打印一句「可手动删除」—— 一句**没有任何东西执行**的承诺。
+    现在三层缺一不可：runner 收尾自动清（`sweepE2eProfiles()`）+ 手工入口 `npm run clean:profiles` +
+    这一项闸。闸钉四格：工具自带的 **8 格逐闸对照**全绿且**格数不许掉**（掉一格 = 有一道闸坏了也没人响）、
+    runner 真的**调用**了它并带 `--apply`（**剥注释后比**，AGENTS §5「注释也照样进证据」）、
+    npm 入口指向真源、`AGENTS.md` §7.9 那条规矩还在。
+    反向验证五刀各红 1 条（I1 摘调用点 / I2 改成干跑 / I3 入口指向别处 / I4 摘掉 AGENTS 那句 /
+    I5 删一格对照），记录在 CHANGELOG「批次 125」段。
 
 失败时退出码为 1，可直接用于 CI。
 

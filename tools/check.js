@@ -3545,8 +3545,127 @@ function checkManualLogNames() {
 }
 
 // ---------------------------------------------------------------------------
+// 33. 临时测试浏览器的 profile 跑完就清（真源 tools/clean-e2e-profiles.js）
+//     实测 %TEMP% 里攒了 106 枚 Edge 用户目录 / 10.2 GB，而 runner 只打印一句
+//     「可手动删除」—— 那句话从来没有东西替人执行（AGENTS §7.8）。
+//     四格各自承重，摘掉任意一格都要红：
+//       a 工具自带的逐闸自证还在跑，而且对照格数没被人删
+//       b runner 的收尾**真的调用**了清理，且那一发带 --apply（干跑等于没清理）
+//       c npm 入口存在并指向这份真源（留在链外的工具会无声腐烂，口径同第 22 项）
+//       d AGENTS.md 把「每次跑完都要清理」写成规矩并指到真源
+//         —— 行为改了而文档没改，是这一族唯一的失败形状
+// ---------------------------------------------------------------------------
+function fnBodyAt(src, name) {
+  var i = src.indexOf('function ' + name + '(');
+  if (i === -1) return null;
+  var j = src.indexOf('\n}', i);          // 顶层函数的收尾花括号是唯一顶格的那个
+  return j === -1 ? null : src.slice(i, j);
+}
+
+function checkProfileSweep() {
+  var bad = [];
+  var cells = null;
+
+  // ---- a. 逐闸自证 ----
+  // 本轮实测 8 格（闸 1 的两半各一格），只钉下限：有人删对照格就红，加格不会碍事
+  var CELLS_MIN = 8;
+  var script = path.join(__dirname, 'clean-e2e-profiles.js');
+  if (!exists('tools/clean-e2e-profiles.js')) {
+    fail('临时 profile 清理的真源不存在：tools/clean-e2e-profiles.js');
+    return;
+  }
+  var stOut = '';
+  var stStatus = null;
+  var stErr = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var r = spawnSync(process.execPath, [script, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    stErr = r.error || null;
+    stOut = String(r.stdout || '') + String(r.stderr || '');
+    stStatus = r.status;
+    if (!r.error || r.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  if (stErr) {
+    bad.push('清理工具的逐闸自证没跑成' + (stErr.code === 'ETIMEDOUT' ? '（60 秒没返回）' : '（已重试一次）') +
+      '：' + String(stErr));
+  } else {
+    var m = stOut.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (stStatus !== 0 || !m) {
+      bad.push('逐闸自证退出码 ' + stStatus + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(stOut.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push('逐闸自证自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等，却退出 ' + stStatus +
+        ' —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < CELLS_MIN) {
+      bad.push('对照格数从下限 ' + CELLS_MIN + ' 掉到 ' + m[2] + ' —— 删掉的那格不会自己喊，' +
+        '四道闸里少一格对照，闸坏了也照样绿');
+    } else {
+      cells = Number(m[2]);
+    }
+  }
+
+  // ---- b. runner 真的收尾调它 ----
+  // ⚠️ 先剥注释再比：runner 里大段说明写着「跑完自动清理」「sweepE2eProfiles」，
+  //    拿原文数会把散文当调用（AGENTS §5 批次 98 同一族）。
+  var e2eCode = stripComments(read('tools/browser-e2e.js'));
+  var sweep = fnBodyAt(e2eCode, 'sweepE2eProfiles');
+  if (!sweep) {
+    bad.push('runner 里找不到 sweepE2eProfiles 的函数体 —— 清理这一发没接进 npm run e2e');
+  } else {
+    if (sweep.indexOf('--apply') === -1) {
+      bad.push('runner 那一发没带 --apply：干跑一枚都不删，表现与没接清理完全一样（这一格就是那句"看起来在跑、就是不删"）');
+    }
+    if (!/setTimeout\s*\(/.test(sweep)) {
+      bad.push('runner 那一发没有超时：清理挂住会把整轮 e2e 的收尾一起挂住（AGENTS §2 第 2 条）');
+    }
+  }
+  if (!/await\s+sweepE2eProfiles\s*\(\s*\)/.test(e2eCode)) {
+    bad.push('runner 里没有任何一处**调用** sweepE2eProfiles() —— 函数留着不叫，等于还是「可手动删除」');
+  }
+
+  // ---- c. npm 入口 ----
+  var pkg;
+  try { pkg = JSON.parse(read('package.json')); }
+  catch (e) { pkg = null; bad.push('package.json 读不出 JSON：' + e.message); }
+  var sc = (pkg && pkg.scripts) || {};
+  ['clean:profiles', 'clean:profiles:selftest'].forEach(function (key) {
+    var v = String(sc[key] || '');
+    if (!v) { bad.push('package.json 少了脚本 ' + key + ' —— 现场想手工清理没有入口'); return; }
+    if (v.indexOf('clean-e2e-profiles.js') === -1) {
+      bad.push(key + ' 没指向真源 tools/clean-e2e-profiles.js（写的是 ' + v + '）');
+    }
+  });
+  if (sc['clean:profiles'] && sc['clean:profiles'].indexOf('--apply') === -1) {
+    bad.push('npm run clean:profiles 是干跑 —— 用户要的是"把盘子腾出来"，干跑要另开一个 key');
+  }
+  if (sc['clean:profiles:selftest'] && sc['clean:profiles:selftest'].indexOf('--selftest') === -1) {
+    bad.push('npm run clean:profiles:selftest 没带 --selftest —— 那一格会去真删盘上的 profile');
+  }
+
+  // ---- d. AGENTS.md 的规矩 ----
+  var agents = read('AGENTS.md');
+  if (agents.indexOf('tools/clean-e2e-profiles.js') === -1) {
+    bad.push('AGENTS.md §7.8 没把这份真源写进去 —— 下一轮接手的人只会照着"可手动删除"那句话办');
+  }
+  if (agents.indexOf('npm run clean:profiles') === -1) {
+    bad.push('AGENTS.md 没写手工入口 npm run clean:profiles（规矩要能一条命令执行，不然还是没人跑）');
+  }
+  if (!/跑完.{0,12}清|每次跑完/.test(agents)) {
+    bad.push('AGENTS.md 里没有"每次跑完都要清理"这一句 —— 这条规矩是用户点名要写进去的');
+  }
+
+  if (bad.length) {
+    fail('临时 profile 自动清理没接牢（这族 bug 的表现是"C 盘又被堆满"，而一条测试都不会红）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('临时 profile 跑完即清（逐闸自证 ' + cells + ' 格全对；runner 收尾带 --apply 那一发已接进 e2e，' +
+    'npm 入口与 AGENTS §7.9 规矩同真源）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
-// ---------------------------------------------------------------------------console.log('\nOmitone 工程自检\n');
+// ---------------------------------------------------------------------------
+console.log('\nOmitone 工程自检\n');
 
 var jsFiles = checkSyntax();
 var manifest = checkManifest();
@@ -3580,6 +3699,7 @@ checkBrowserOnlyClaim();
 checkSwitchBudgetClaim();
 checkCourseProbeClaims();
 checkManualLogNames();
+checkProfileSweep();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
