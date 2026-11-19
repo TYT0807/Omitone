@@ -2791,10 +2791,14 @@ function checkSliceStatsDoc() {
 // 界面照常工作，只有新手照说明书去认界面时被引到错方向。
 //
 // ⚠️ 期望在**这里**各写一份，不照抄 `audit.selfTestCases()` 的 want（同第 24 / 25 / 26 项的规矩：
-// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十一格里「要报」占八格，因为本项最危险的
+// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十四格里「要报」占十一格，因为本项最危险的
 // 坏法是**读不出来却装作核过了**：锚点失效 → 0 个取值 → "全部命中"。
 // 三格「不报」是防误报的对照（干净正文、被 `<b>` 加粗切开的字样）——
 // 会误报的守卫和没有守卫一样害人。
+//
+// 批次 129 接进第四份真源（弹窗里 20 枚开关的名字）时，同批加了两格：
+// 「开关名漏教一枚」抓文档漂移，「开关配对只读出几枚」抓**口径失效后静默缩范围**
+// —— 后者是这一族唯一会"读成核过了"的坏法（配对口径一坏，20 枚变 3 枚，文档照样一条不红）。
 function checkManualUiLabels() {
   var audit;
   try {
@@ -2815,6 +2819,9 @@ function checkManualUiLabels() {
     'script 里的字样不算教给用户': { want: 1, needle: '未开启' },
     '少写一个任务种类词': { want: 1, needle: '测验答题' },
     '种类表漏一个键': { want: 1, needle: '没有中文取值' },
+    '开关名漏教一枚': { want: 1, needle: '已完成任务重学' },
+    '开关配对只读出几枚': { want: 1, needle: '取值真源读不出来' },
+    '分段开关只教了一半': { want: 1, needle: '精简' },
     '真说明书对真代码': { want: 0, needle: '' }
   };
 
@@ -2827,7 +2834,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 审计读的是不是那三份真源（锚点写错时它会安静地交出一份空清单）----
+  // ---- 审计读的是不是那**四**份真源（锚点写错时它会安静地交出一份空清单）----
   if (!info.labels.length && !info.readErrors.length) {
     fail('界面字样审计交出「0 个取值 + 0 条读取错误」—— 这条闸等于不存在，报的「一致」不可信');
     return;
@@ -2837,9 +2844,11 @@ function checkManualUiLabels() {
   }).length;
   var fromPopup = info.labels.filter(function (l) { return l.from.indexOf('popup/popup.js') === 0; }).length;
   var fromKind = info.labels.filter(function (l) { return l.from.indexOf('jobKindLabel') !== -1; }).length;
-  if (info.labels.length && (!fromContent || !fromPopup || !fromKind)) {
+  var fromSwitch = info.labels.filter(function (l) { return !!l.switchKey; }).length;
+  if (info.labels.length && (!fromContent || !fromPopup || !fromKind || !fromSwitch)) {
     fail('界面字样审计只读出 徽标 ' + fromContent + ' 个 / popup 顶部 ' + fromPopup +
-      ' 个 / 任务种类 ' + fromKind + ' 个取值 —— 三份真源必须各出一半，否则「核过了」是假的');
+      ' 个 / 任务种类 ' + fromKind + ' 个 / 弹窗开关 ' + fromSwitch +
+      ' 个取值 —— 四份真源必须各出一半，否则「核过了」是假的');
     return;
   }
   if (!info.kinds || info.kinds.length < 2) {
@@ -2847,8 +2856,45 @@ function checkManualUiLabels() {
       '键清单空了等于「种类表漏键」那一格从来没跑过');
     return;
   }
+  // 开关这一族的"一枚都没漏"要单独对：配对口径（label for ↔ id + role="switch"）若认不出
+  // 某枚没有 label 的开关，上面那几个计数照样非 0，而漏掉的那一枚**永远不会被要求进说明书**。
+  var switchTags = 0, popupHtmlTxt = '';
+  try {
+    popupHtmlTxt = fs.readFileSync(path.join(ROOT, 'popup', 'popup.html'), 'utf8');
+    switchTags = (popupHtmlTxt.match(/role="switch"/g) || []).length;
+  } catch (e5) {
+    fail('界面字样审计读不到 popup/popup.html 的开关总数：' + String((e5 && e5.message) || e5));
+    return;
+  }
+  if (!switchTags) {
+    fail('popup/popup.html 里一个 role="switch" 都数不到 —— 弹窗改成别的控件形状了，' +
+      '第 27 项的开关这一族要跟着改口径，不许静默当"没有开关要核"');
+    return;
+  }
+  if (switchTags !== (info.switchIds || []).length) {
+    fail('弹窗开关数对不上：popup/popup.html 里 role="switch" 有 ' + switchTags + ' 处，' +
+      '而审计只数出 ' + (info.switchIds || []).length + ' 枚带 id 的开关 —— ' +
+      '多出来的那些要么没有 id（对不上界面字样），要么控件形状换了（批次 129 的量是 21 处 = 21 枚）');
+    return;
+  }
+  if (!info.labels.some(function (l) { return l.switchKey === 'modeSwitch'; })) {
+    fail('审计没读出顶部那枚「精简 / 精美」分段开关身上的字 —— 它没有 label，' +
+      '字在自己那两个 span 里；这一族漏掉 = 界面上有的字说明书永远不必教，闸少一族');
+    return;
+  }
+  // 反向的那半：**输入框 / 下拉的 label 不许混进开关这一族**，否则这一条闸会要求
+  // 说明书逐个教到"API URL""模型名"那一族字段名 —— 那不是会显示的状态字，是一片误报。
+  var notSwitch = ['discussionReply', 'apiUrl', 'model'].filter(function (k) {
+    return (popupHtmlTxt.match(new RegExp('<label\\s[^>]*for="' + k + '"', 'g')) || []).length > 0;
+  });
+  var leaked = (info.switches || []).filter(function (s) { return notSwitch.indexOf(s.key) !== -1; });
+  if (leaked.length) {
+    fail('界面字样审计把非开关的 label 当成开关了：' + leaked.map(function (s) { return s.key; }).join(' / ') +
+      '（它们是输入框 / 下拉，不是 role="switch"）—— 这一族放宽就等于开始误报');
+    return;
+  }
 
-  // ---- 真文档先点名（放在十一格之前）----
+  // ---- 真文档先点名（放在十四格之前）----
   // 文档漂移是这一项最常见的坏法，人看到的应当是「哪个字样在说明书里不见了」，
   // 而不是「第几格期望数字不符」—— 后者把真正的原因塞在括号里第三句。
   var manualTxt;
@@ -2865,7 +2911,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 十一格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
+  // ---- 十四格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
   var names = Object.keys(WANT);
   cases.forEach(function (c) {
     if (names.indexOf(c.pin) < 0) bad.push('多出一格没登记在 check.js 的期望表里：' + c.pin);
@@ -2894,48 +2940,65 @@ function checkManualUiLabels() {
     }
   });
   if (bad.length) {
-    fail('界面字样审计的十一格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
+    fail('界面字样审计的十四格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
       bad.join('\n      '));
     return;
   }
 
-  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**两份取值表各摘一次** ----
+  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**三份取值表各摘一次** ----
   // 只测合成夹具的话，"审计只对短夹具有效、对几千行的真说明书失效"照样报 0 条。
-  // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）。
+  // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）；
+  // 批次 129 接的弹窗开关这一族同理 —— 三族各自承重，少一族就少一条路。
   var vtext = audit.visibleText(manualTxt);
   var before = audit.audit(info, manualTxt).length;
   var AXES = [
-    { name: '状态徽标 / 弹窗字样', pool: info.labels.filter(function (l) { return !l.kindKey; }) },
-    { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) }
+    { name: '状态徽标 / 弹窗顶部字样', pool: info.labels.filter(function (l) { return !l.kindKey && !l.switchKey; }) },
+    { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) },
+    { name: '弹窗里每一枚开关的名字', pool: info.labels.filter(function (l) { return !!l.switchKey; }) }
   ];
   var poisonedNames = [];
   for (var ai = 0; ai < AXES.length; ai++) {
     var ax = AXES[ai];
-    var target = ax.pool.filter(function (l) { return vtext.indexOf(l.text) !== -1; })[0];
-    if (!target) {
-      fail('界面字样审计的反向验证没跑成：' + ax.name + ' 这一族的取值在真说明书里一个都没命中，' +
-        '而上面那条真文档检查却报「一致」—— 两条判据打架，怀疑扫描口径与真实文档脱节');
+    var skipped = [];
+    var hit = null;
+    for (var pi = 0; pi < ax.pool.length; pi++) {
+      var cand = ax.pool[pi];
+      if (vtext.indexOf(cand.text) === -1) continue;
+      // 摘一条不许连带摘掉别的取值：两个词互相包含时一次注入会多报一条，看着像"注入越界"
+      var collide = info.labels.some(function (o) {
+        return o !== cand && (o.text.indexOf(cand.text) !== -1 || cand.text.indexOf(o.text) !== -1);
+      });
+      if (collide) { skipped.push('「' + cand.text + '」与别的取值互相包含'); continue; }
+      var poisoned = manualTxt.split(cand.text).join('〔字样被摘掉〕');
+      if (poisoned === manualTxt) { skipped.push('「' + cand.text + '」摘不动（字面没变）'); continue; }
+      // ⚠️ 批次 57 踩过的那族假绿：原文摘干净了，可见正文里**别处**又拼出同一个词。
+      if (audit.visibleText(poisoned).indexOf(cand.text) !== -1) {
+        skipped.push('「' + cand.text + '」摘完可见正文里还剩（别处拼得出来）');
+        continue;
+      }
+      var afterIssues = audit.audit(info, poisoned);
+      if (afterIssues.length !== before + 1 ||
+          !afterIssues.some(function (x) { return x.indexOf('「' + cand.text + '」') !== -1; })) {
+        skipped.push('「' + cand.text + '」摘完报 ' + afterIssues.length + ' 条（要 ' + (before + 1) + '）');
+        continue;
+      }
+      hit = cand;
+      break;
+    }
+    if (!hit) {
+      fail('界面字样审计的反向验证没过（' + ax.name + '）：这一族 ' + ax.pool.length +
+        ' 个取值里没有任何一个能"摘掉后恰好多报 1 条并点名它"（原本 ' + before + ' 条）。' +
+        '逐条原因：' + (skipped.slice(0, 4).join('；') || '这一族在真说明书里一个都没命中') +
+        ' —— 要么这条闸对该族失效，要么说明书里这一族的字样全互相包着；两种都得改文档/口径，别改判据');
       return;
     }
-    var poisoned = manualTxt.split(target.text).join('〔字样被摘掉〕');
-    if (poisoned === manualTxt) {
-      fail('界面字样审计的反向验证没跑成：把「' + target.text + '」全部摘掉后说明书字面没变，注入等于没注入');
-      return;
-    }
-    var afterIssues = audit.audit(info, poisoned);
-    if (afterIssues.length !== before + 1 ||
-        !afterIssues.some(function (x) { return x.indexOf('「' + target.text + '」') !== -1; })) {
-      fail('界面字样审计的反向验证没过（' + ax.name + '）：在真说明书里把「' + target.text +
-        '」（真源 ' + target.from + '）全部摘掉，应在原本的 ' + before + ' 条之上多报恰好 1 条并点名它，' +
-        '实际共报 ' + afterIssues.length + ' 条 —— 这条闸对真实文档失效，它报的「一致」不可信');
-      return;
-    }
-    poisonedNames.push('「' + target.text + '」');
+    poisonedNames.push('「' + hit.text + '」');
   }
   pass('docs/manual.html 教的界面字样与代码一致（' + info.labels.length + ' 个真实取值：' +
     'content.js 徽标 ' + fromContent + ' 个 + popup 顶部 ' + fromPopup + ' 个 + 任务种类 ' + fromKind +
-    ' 个；键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
-    '十一格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' 与 ') +
+    ' 个 + 弹窗开关 ' + fromSwitch + ' 个（与 role="switch" 计数逐枚对上）；' +
+    '键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
+    '十四格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' / ') +
     ' 全部摘掉各恰好多报 1 条）');
 }
 
