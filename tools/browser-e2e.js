@@ -12711,6 +12711,49 @@ SCENARIOS.push({
     check('开场可见字数收在 150 字以内（旧版实测 199 字，超界就是把话又堆回顶部）',
       opener.vis > 0 && opener.vis <= 150, '可见 ' + opener.vis + ' 字');
 
+    // 上一组只钉了 d.open 这一个**属性**，而「精简」这件事真正的承诺是几何与交互：
+    // 折进去的那段要**当下不占地方**，点标题要**真撑得开**、再点要收回原位。
+    // 只读 open 的话，CSS 里任何一条把 [open] 之外也 display:block 的规则、
+    // 或 summary 的 marker/指针被做坏，都照样绿 —— 用户看到的就是"字还是那么多，还多了一行假的开关"。
+    // ⚠️ 第一版把"不占地方"写成 p.getClientRects().length===0 && p.offsetHeight===0，实测**恒假**
+    //    （h0 17.5 / h1 117.5 / h2 17.5 都对，可折叠时 p 仍报 rc:1、oh:96、cs:"block"、cvs:"visible"）——
+    //    这一族 Chrome 把 ::details-content 收成 content-visibility，**子元素的盒还在**，
+    //    只是不进容器高度、也不参与绘制。所以尺只能落在两件事上：
+    //    ① 容器高度（实测 17.5 → 117.5 → 17.5，撑开增量 99.99 ≥ p 自己的 96；
+    //       ⚠️ 别拿"增量==p.offsetHeight"当尺 —— 段落上下 margin 也在增量里，第一版 ±20% 容差就是这样恒假的）；
+    //    ② 那个位置**画的是谁**（实测折叠时命中邻居 updateMsg、展开时命中 p）。
+    //    两个信号各管一半：只看高度，"内容还在但被叠在下面"抓不到；只看命中点，位置算歪就是一次假红。
+    //    ⚠️ 还有一坑：open 必须**每一拍当场读**（o0/o1/o2）。第一版把 d.open 写在 return 里，
+    //    读到的是第二次点击**之后**的状态 —— 高度 17.5/117.5/17.5 全对，只有 unfolded 恒假，
+    //    红的是尺不是界面（同 §5「断言里出现的每一个数，都要说得出它是从页面读回来的」）。
+    var foldBox = await ctx.client.evaluate(
+      '(function(){var d=document.getElementById("introMore");' +
+      'var p=d?d.querySelector("p"):null;var s=d?d.querySelector("summary"):null;' +
+      'if(!d||!p||!s) return {missing:true};' +
+      'function who(){var r=p.getBoundingClientRect();' +
+      'var x=Math.min(r.left+Math.min(r.width/2,40),window.innerWidth-2);' +
+      'var y=Math.min(r.top+Math.min(r.height/2,20),window.innerHeight-2);' +
+      'var e=document.elementFromPoint(x,y);' +
+      'if(!e) return "none";' +
+      'if(e===p||p.contains(e)) return "p";' +
+      'return e.id?e.id:e.tagName;}' +
+      'var h0=d.getBoundingClientRect().height,k0=who(),o0=d.open;' +
+      'var pOh=p.offsetHeight;' +
+      's.click();' +
+      'var h1=d.getBoundingClientRect().height,k1=who(),o1=d.open;' +
+      's.click();' +
+      'var h2=d.getBoundingClientRect().height,k2=who(),o2=d.open;' +
+      'var delta=h1-h0;' +
+      'return {h0:h0,h1:h1,h2:h2,pOh:pOh,k0:k0,k1:k1,k2:k2,delta:delta,under:delta<pOh-2,' +
+      'o:[o0,o1,o2],' +
+      'folded:o0===false&&h0<pOh&&k0!=="p",' +
+      'unfolded:o1===true&&h1>h0&&delta>=pOh-2&&k1==="p",' +
+      'again:o2===false&&Math.abs(h2-h0)<1&&k2!=="p"};})()'
+    );
+    check('折起来的那段当下不占地方（容器矮过它自己、那个位置画的是邻居），点标题撑得开（增高不小于那段自己、命中点变成它），再点收回原位',
+      foldBox.folded === true && foldBox.unfolded === true && foldBox.again === true,
+      JSON.stringify(foldBox));
+
     // ---- 全新安装的默认值 ----
     // ⚠️ 各场景共用同一个 chrome.storage，前面答过题的场景会把 apiUrl 写成 mock 地址，
     // 直接读表单只会读到那份残留。所以先清空 config 再重新加载弹窗，

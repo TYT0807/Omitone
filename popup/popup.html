@@ -321,6 +321,16 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 }
 .hint{ margin:6px 0 0; color:var(--muted); font-size:12px; line-height:1.6; }
 .hint b{ color:var(--fg-2); font-weight:600; }
+/* 开场只留「必须看」的那两句，其余折进这一条小字。
+   ⚠️ 折进去的不许包括「哪几族不花钱」和「没 Key 时题会被跳过」这两半 ——
+   少任何一半就回到"说半句真话"，见 CHANGELOG 批次 68（用户就是冲着这一条来纠正的）。 */
+.hint-more{ margin:6px 0 0; }
+.hint-more > summary{ cursor:pointer; list-style:none; color:var(--muted); font-size:11.5px; }
+.hint-more > summary::-webkit-details-marker{ display:none; }
+.hint-more > summary:hover,
+.hint-more[open] > summary{ color:var(--fg-2); }
+.hint-more > summary:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
+.hint-more .hint{ margin-top:4px; }
 /* 思考强度那一组：场景 + 下限 + 上限 三列。
    select 在上面的全局规则里是 width:100%，落进 1fr 两列正好各占一半；
    label 用 display:block 单独占一行（.field label 已经写了）。 */
@@ -589,13 +599,19 @@ body.has-bg::after{
       <button type="button" id="grantCaptcha">仅授权当前页验证码</button>
       <button type="button" id="revokeCaptcha">撤销当前页授权</button>
     </div>
-    <p class="hint" style="margin-top:8px;">
-      <b>1.3.0 稳定版。</b>这个插件是公益项目，<b>永久免费</b>，没有任何收费功能、也没有会员。<br>
-      <b>刷课不是「不用 API Key」。</b>视频、文档、PPT、讨论、投票确实<b>不接大模型</b>；
-      但课里的 <b>AI 答题</b> 和 <b>验证码识别</b> 要用 Key，在下面的「AI 接入」里填。<br>
-      <b>不填 Key 也能刷</b>：没开「乱选」时，<b>遇到测验会跳过不答</b>（这一节会先按住，不会把没做的题说成做完），
-      其余照常；开了「乱选」则本地随机作答、不保证正确率。<b>想连题一起做完，就得填 Key。</b>
+    <p class="hint" id="introHint" style="margin-top:8px;">
+      <b>1.3.0 稳定版 · 公益项目，永久免费</b>，没有收费功能、也没有会员。<br>
+      视频 / 文档 / PPT / 讨论 / 投票<b>不接大模型、不花钱</b>；<b>AI 答题与验证码识别要 API Key</b>（在下面「AI 接入」里填），
+      没填时<b>遇到测验会跳过不答</b>，这一节先按住、不把没做的题说成做完。
     </p>
+    <details class="hint-more" id="introMore">
+      <summary>不填 Key 会怎样 ·「乱选」是什么</summary>
+      <p class="hint">
+        <b>跳过的具体走法</b>：先按住这一节约 3 分钟，到点放手并记一条「这些题<b>没做过</b>」，
+        配好 Key 后开「已完成任务重学」把这节补回来。<br>
+        <b>「乱选」</b>是不用 Key 的本地随机作答，只求把卷交上去、不保证对错。<b>想连题一起做完，就得填 Key。</b>
+      </p>
+    </details>
     <div class="update-row" id="updateRow">
       <span class="update-msg" id="updateMsg">当前版本 1.3.0</span>
       <button class="link-btn" id="checkUpdate">检测更新</button>
