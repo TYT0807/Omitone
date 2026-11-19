@@ -4284,6 +4284,328 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify(hintMsgs));
 }
 
+/** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
+ * 形状来自 2026-11-19 现场只读实测（`top > iframe#iframe > f0` 的
+ * `/ananas/modules/video/index.html`，播放器 video.js v7）：
+ * 「开始」有两枚 —— 中央层 `button.vjs-big-play-button`（文字「播放视频」，**在播时 display:none**）
+ * 与控制条 `button.vjs-play-control`（**在播时带 `vjs-playing` 类、文字「暂停」**）。
+ * 同一个容器里还躺着 `vjs-default-button`（「重启 恢复全部设定至预设值」）与 `vjs-playback-rate`（倍速菜单）——
+ * 误点前者会把用户的播放器设定清掉，误点在播的切换键等于按停视频。
+ *
+ * ⚠️ 本段的 `visible` 是**注入的替身**（`__vis !== false`），它只钉「选中哪一枚 + 有界 + 说话」；
+ *    `display:none` 在真引擎里到底读不读得出来，由 e2e `/media-start` 那一场景钉
+ *    （名字里不许承诺它没测的东西 —— AGENTS §5）。
+ */
+async function testStartStuckSiteClickSelfHeal() {
+  console.log('\n[22b] 开头卡住自愈：有界点一下站点的开始键，认不出与烧完都要说话（批次 178）');
+
+  var media = fs.readFileSync(path.join(ROOT, 'src/page/40-media.js'), 'utf8').replace(/\r\n/g, '\n');
+  var state = fs.readFileSync(path.join(ROOT, 'src/page/10-config-state.js'), 'utf8').replace(/\r\n/g, '\n');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var m = src.match(re);
+    return m ? Number(m[1]) : null;
+  };
+
+  var nudgeBody = bodyOf(media, '_nudgeSiteStartControl');
+  var siteBody = bodyOf(media, '_siteStartControlOf');
+  var resumeBody = bodyOf(media, '_tryResumePlayback');
+  // 四个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言照旧 = 假绿）
+  var capClicks = firstNum(nudgeBody, /done >= (\d+)/);
+  var spacingMs = firstNum(nudgeBody, /- \(Number\(prev\.at\) \|\| 0\) < (\d+)/);
+  var ctHard = firstNum(nudgeBody, /if \(ct > ([\d.]+)\) return false/);
+  var ctRatio = firstNum(nudgeBody, /dur \* ([\d.]+)\)\) return false/);
+  var rungAt = firstNum(resumeBody, /_resumeAttemptCount >= (\d+)/);
+
+  check('⓪ 三件都能从 40-media.js 原样取出来真跑，四个预算与接进的档位也读得回来' +
+    '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    capClicks > 0 && spacingMs > 0 && ctHard > 0 && ctRatio > 0 && rungAt > 0,
+    JSON.stringify({ cap: capClicks, spacing: spacingMs, ctHard: ctHard, ctRatio: ctRatio, rungAt: rungAt }));
+  if (!(capClicks > 0 && spacingMs > 0 && ctHard > 0 && ctRatio > 0 && rungAt > 0)) return;
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var nowMs = 1700000000000;
+  var FakeDate = { now: function () { return nowMs; } };
+  var fakeVisible = function (el) { return !!el && el.__vis !== false; };
+  var inj = { emitRuntimeLog: say, Date: FakeDate, visible: fakeVisible };
+
+  var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  var siteOf = buildFrom(media, '_siteStartControlOf', { visible: fakeVisible });
+  var nudge = buildFrom(media, '_nudgeSiteStartControl', inj);
+  check('⓪ `_getMediaSeekKey` / `_siteStartControlOf` / `_nudgeSiteStartControl` 三件本体都取成了函数',
+    [getKey, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
+    JSON.stringify({ key: typeof getKey, siteOf: typeof siteOf, nudge: typeof nudge }));
+  if (!getKey || !siteOf || !nudge) return;
+
+  // 现场那副容器：开始键 + 三枚绝不能碰的邻居，一起放在同一个 host 里
+  function mkShape(opt) {
+    opt = opt || {};
+    var rec = { clicks: [] };
+    function b(cls, label, vis) {
+      return {
+        className: cls, textContent: label, __vis: vis !== false,
+        click: function () { rec.clicks.push(cls.split(' ')[0]); }
+      };
+    }
+    rec.big = b('vjs-big-play-button', '播放视频', opt.bigVisible !== false);
+    rec.toggle = b(opt.togglePlaying === false
+      ? 'vjs-play-control vjs-control vjs-button'
+      : 'vjs-play-control vjs-control vjs-button vjs-playing',
+      opt.togglePlaying === false ? '播放' : '暂停', opt.toggleVisible !== false);
+    rec.restart = b('vjs-default-button', '重启 恢复全部设定至预设值', true);
+    rec.rate = b('vjs-playback-rate', '倍速', true);
+    var host = {
+      querySelector: function (sel) {
+        if (sel === '.vjs-big-play-button') return opt.noBig ? null : rec.big;
+        if (sel === '.vjs-play-control') return opt.noToggle ? null : rec.toggle;
+        return null;
+      }
+    };
+    rec.video = {
+      tagName: opt.tagName || 'VIDEO',
+      currentSrc: opt.src === '' ? '' : 'https://ananas.chaoxing.com/video/910000001/at_1700000000000.mp4',
+      currentTime: opt.ct == null ? 0 : opt.ct,
+      duration: opt.dur == null ? 1200 : opt.dur,
+      readyState: opt.ready == null ? 0 : opt.ready,
+      paused: opt.paused !== false,
+      error: null,
+      closest: function () { return opt.noHost ? null : host; },
+      ownerDocument: { querySelector: function () { return null; } }
+    };
+    return rec;
+  }
+  function mkApp(shape) {
+    var app = {
+      configs: {}, _isPlaying: true, _startNudgeKeys: null, _activeJobId: '',
+      __quizBlocks: false
+    };
+    app._getMediaSeekKey = function (v) { return getKey.call(app, v); };
+    app._popupQuizBlocksPlayback = function () { return app.__quizBlocks === true; };
+    app._siteStartControlOf = function (v) { return siteOf.call(app, v); };
+    app._nudgeSiteStartControl = function (v, r) { return nudge.call(app, v, r); };
+    return app;
+  }
+  function spoke(prefix) {
+    return logs.filter(function (m) { return m.message.indexOf(prefix) === 0; });
+  }
+
+  var s1 = mkShape({});
+  var a1 = mkApp(s1);
+  var pick = a1._siteStartControlOf(s1.video);
+  check('① 认得出的只有那两枚：中央层在（未开播）就点它，绝不点同一容器里的「重启 恢复全部设定至预设值」与倍速菜单',
+    !!pick && pick.rung === 'big-play' && pick.el === s1.big,
+    JSON.stringify({ rung: pick && pick.rung, isBig: !!(pick && pick.el === s1.big) }));
+
+  var s2 = mkShape({ bigVisible: false, togglePlaying: true });
+  var a2 = mkApp(s2);
+  var pickPlaying = a2._siteStartControlOf(s2.video);
+  logs.length = 0;
+  var nudgePlaying = a2._nudgeSiteStartControl(s2.video, 'paused');
+  check('② 正在播的时候一枚都不许点 —— 控制条那枚此刻带 `vjs-playing`、文字是「暂停」，' +
+    '点下去就是替人把视频按停；中央层已经收起来了也不许当成"还能点"',
+    pickPlaying === null && nudgePlaying === false && s2.clicks.length === 0,
+    JSON.stringify({ pick: pickPlaying, ret: nudgePlaying, clicks: s2.clicks }));
+
+  var s3 = mkShape({ bigVisible: false, togglePlaying: false });
+  var a3 = mkApp(s3);
+  var pickToggle = a3._siteStartControlOf(s3.video);
+  check('③ 中央层收起、控制条写「播放」（暂停态）时改点它 —— 这一族是"人工点控制条那枚也能救回来"的等价路径',
+    !!pickToggle && pickToggle.rung === 'play-toggle' && pickToggle.el === s3.toggle,
+    JSON.stringify({ rung: pickToggle && pickToggle.rung }));
+
+  // ④ 只在「还停在开头」那一形状上动手：两档阈值各钉两侧
+  // 挑 60 秒是为了让第二道闸**单独**承重：60 * ctRatio = 1.2 秒 < 固定那档 ctHard，
+  // 于是 ct=1.5 这一格第一道闸放行、只有比例闸能挡 —— 拿 1200 秒那档时第二道闸永远轮不到。
+  var shortDur = 60;
+  var edges = [
+    { ct: 0, dur: 1200, want: true },
+    { ct: ctHard, dur: 1200, want: true },
+    { ct: ctHard + 0.5, dur: 1200, want: false },
+    { ct: 1, dur: shortDur, want: true },
+    { ct: 1.5, dur: shortDur, want: false },
+    { ct: ctHard, dur: 0, want: true }
+  ];
+  var edgeOut = edges.map(function (e) {
+    var sh = mkShape({ ct: e.ct, dur: e.dur });
+    var ap = mkApp(sh);
+    var got = ap._nudgeSiteStartControl(sh.video, 'no-progress');
+    return { ct: e.ct, dur: e.dur, got: got === true, want: e.want, clicked: sh.clicks.length };
+  });
+  check('④ 两道位置闸各钉两侧（' + shortDur + ' 秒那种短视频按比例算出的上限 ' + (shortDur * ctRatio) +
+    ' 秒比固定的 ' + ctHard + ' 秒更严，所以第二道闸必须自己承重，不能指望第一道）：' +
+    '已经播出去一段的停滞不许点开始键 —— 那等于替人把看过的部分重播；时长读不出时不许拿 0 当"已经播完"',
+    edgeOut.every(function (r) { return r.got === r.want && r.clicked === (r.want ? 1 : 0); }),
+    JSON.stringify(edgeOut));
+
+  // ⑤ 有界：最多 capClicks 发、间隔不低于 spacingMs，烧完只说一次并交回人
+  var sh5 = mkShape({});
+  var ap5 = mkApp(sh5);
+  var seq5 = [];
+  logs.length = 0;   // 取证窗口单独开：④ 那几发的日志混进来会把"每一发都说话"数成 6 条
+  function step5(label) {
+    seq5.push({
+      step: label,
+      ret: ap5._nudgeSiteStartControl(sh5.video, 'paused') === true,
+      clicks: sh5.clicks.length,
+      warn: spoke('media start stuck').length,
+      gaveUp: spoke('media start stuck, left to human').length
+    });
+  }
+  step5('第 1 发');
+  nowMs += spacingMs - 1; step5('间隔差 1 毫秒');
+  nowMs += 2; step5('间隔够了 → 第 2 发');
+  nowMs += spacingMs * 3; step5('烧完再问 → 只许说话');
+  nowMs += spacingMs * 3; step5('说过之后不再重复');
+  check('⑤ 有界：最多 ' + capClicks + ' 发、相邻两发间隔不低于 ' + spacingMs + ' 毫秒；' +
+    '差 1 毫秒不许点（否则每拍一次正好绕过间隔闸）',
+    seq5[0].ret === true && seq5[0].clicks === 1 &&
+    seq5[1].ret === false && seq5[1].clicks === 1 &&
+    seq5[2].ret === true && seq5[2].clicks === 2 &&
+    seq5[3].ret === false && seq5[3].clicks === 2 &&
+    seq5[4].ret === false && seq5[4].clicks === 2,
+    JSON.stringify(seq5));
+  check('⑥ 烧完必须留一句话把人请进来（AGENTS §2 #7 静默跳过不可接受），而且**只说一次**、' +
+    'hint 照用户自己的话说"亲手点一下开始"、取证带点过几回与页面读数',
+    seq5[3].gaveUp === 1 && seq5[4].gaveUp === 1 &&
+    spoke('media start stuck, left to human').every(function (m) { return m.level === 'warn'; }) &&
+    (function () {
+      var m = spoke('media start stuck, left to human')[0];
+      return !!m && !!m.meta && /开始/.test(String(m.meta.hint || '')) &&
+        Number(m.meta.nudges) === capClicks && Number(m.meta.ct) === 0 && Number(m.meta.dur) === 1200;
+    })(),
+    JSON.stringify(spoke('media start stuck, left to human')));
+  check('⑦ 中间每一发也要留话（点了什么、第几回、位置/时长/readyState/paused 全从页面读回），' +
+    '否则现场只能看见"它又白点了两下"',
+    (function () {
+      var picked = spoke('media start stuck, clicked site start control');
+      return picked.length === capClicks && picked.every(function (m) {
+        return m.level === 'warn' && !!m.meta && m.meta.rung === 'big-play' &&
+          Number(m.meta.ct) === 0 && Number(m.meta.dur) === 1200 &&
+          Number(m.meta.ready) === 0 && m.meta.paused === true;
+      }) && Number(picked[1].meta.attempt) === 2;
+    })(),
+    JSON.stringify(spoke('media start stuck, clicked site start control')));
+
+  // ⑧ 「认不出开始键」单独占一格，不许塌成"点过了"
+  var sh8 = mkShape({ noBig: true, noToggle: true });
+  var ap8 = mkApp(sh8);
+  logs.length = 0;
+  var r8a = ap8._nudgeSiteStartControl(sh8.video, 'paused');
+  var ledger8 = ap8._startNudgeKeys && ap8._startNudgeKeys[String(getKey.call(ap8, sh8.video))];
+  var none8 = spoke('media start stuck, no site start control');
+  var sh8b = mkShape({ noHost: true });
+  var ap8b = mkApp(sh8b);
+  logs.length = 0;
+  var r8b = ap8b._nudgeSiteStartControl(sh8b.video, 'paused');
+  var none8b = spoke('media start stuck, no site start control');
+  check('⑧ 这一族里没有开始键（两个类名都扫不到 / 压根不在 .video-js 里）单独占一格：' +
+    '出一句「没认出来」的 warn，绝不冒充"已经点过了"，也不许因为返回 false 就不记账',
+    r8a === false && r8b === false && sh8.clicks.length === 0 && sh8b.clicks.length === 0 &&
+    none8.length === 1 && none8b.length === 1 &&
+    !!none8[0].meta && none8[0].meta.rung === 'none' && none8[0].message.indexOf('clicked') < 0 &&
+    !!ledger8 && Number(ledger8.n) === 1 && ledger8.rung === 'none',
+    JSON.stringify({ a: none8.map(function (m) { return m.message; }), b: none8b.map(function (m) { return m.message; }), n: ledger8 && ledger8.n, rung: ledger8 && ledger8.rung }));
+
+  // ⑨ 站点为弹题有意暂停 → 一发射都不许放，也不烧预算
+  var sh9 = mkShape({});
+  var ap9 = mkApp(sh9);
+  ap9.__quizBlocks = true;
+  logs.length = 0;
+  var r9 = ap9._nudgeSiteStartControl(sh9.video, 'paused');
+  check('⑨ 弹题盖着的时候不抢（与 `_handleVideoPause` 同一口径）：不点、不出声、' +
+    '账也不记 —— 挡住不是我们的错，凭什么烧掉那一节仅有的两发',
+    r9 === false && sh9.clicks.length === 0 && logs.length === 0 &&
+    (ap9._startNudgeKeys === null || Object.keys(ap9._startNudgeKeys).length === 0),
+    JSON.stringify({ clicks: sh9.clicks, logs: logs.map(function (m) { return m.message; }), keys: ap9._startNudgeKeys }));
+
+  // ⑩ 音频不做 / 拿不到键不做（没量过的形状就不动手）
+  var sh10 = mkShape({ tagName: 'AUDIO' });
+  var ap10 = mkApp(sh10);
+  var sh11 = mkShape({ src: '' });
+  var ap11 = mkApp(sh11);
+  ap11._isPlaying = true;
+  logs.length = 0;
+  var r10 = ap10._nudgeSiteStartControl(sh10.video, 'paused');
+  var r11 = ap11._nudgeSiteStartControl(sh11.video, 'paused');
+  check('⑩ 音频（现场只量过视频那一族）与「连这一源是谁都说不清」两格一律不动手：' +
+    '不点、不出声，认不出交 false 让老流程接管',
+    r10 === false && r11 === false && sh10.clicks.length === 0 && sh11.clicks.length === 0 && logs.length === 0,
+    JSON.stringify({ audio: sh10.clicks, noKey: sh11.clicks, logs: logs.length }));
+
+  check('⑪ `_isPlaying` 为假（用户自己按了暂停 / 还没认领这一节）时不许替他点开始',
+    (function () {
+      var sh = mkShape({});
+      var ap = mkApp(sh);
+      ap._isPlaying = false;
+      var got = ap._nudgeSiteStartControl(sh.video, 'paused');
+      return got === false && sh.clicks.length === 0;
+    })(),
+    JSON.stringify({ clicked: (function () { return '见谓词'; })() }));
+
+  // ⑫ 接线：档位要真的挂在生产那条自愈链上，而且点着之后这一拍不许再补一发 play()
+  var atHook = resumeBody.indexOf('this._resumeAttemptCount >= ' + rungAt);
+  var beforePlay = resumeBody.indexOf('video.play()');
+  check('⑫ 这一档接在 `_tryResumePlayback` 里第 ' + rungAt + ' 发之后（不是另起一条无人走的支路），' +
+    '且点着了当拍就 return —— 不再补一发我们自己的 play()',
+    atHook >= 0 && beforePlay >= 0 && atHook < beforePlay &&
+    resumeBody.slice(atHook, atHook + 160).indexOf('_nudgeSiteStartControl') >= 0 &&
+    /if \(this\._resumeAttemptCount >= \d+ && this\._nudgeSiteStartControl\([^)]*\)\) return;/.test(resumeBody),
+    JSON.stringify({ atHook: atHook, beforePlay: beforePlay }));
+
+  check('⑬ 记账不随换节清零（AGENTS §2 #13）：`_startNudgeKeys` 在声明表里，' +
+    '而 `_clearMediaPendingState` 与 `_resetRuntimeState` 都不许抹它 —— 抹了就等于同一节反复点',
+    /_startNudgeKeys: null,/.test(state) &&
+    bodyOf(media, '_clearMediaPendingState').indexOf('_startNudgeKeys') < 0 &&
+    (function () {
+      var r = boundsOf(state, '_resetRuntimeState');
+      var seg = r.start < 0 ? '' : state.slice(r.start, state.indexOf('\n    },', r.start));
+      return seg.length > 0 && seg.indexOf('_startNudgeKeys') < 0;
+    })(),
+    JSON.stringify({
+      declared: /_startNudgeKeys: null,/.test(state),
+      inClear: bodyOf(media, '_clearMediaPendingState').indexOf('_startNudgeKeys') >= 0,
+      resetBodyFound: boundsOf(state, '_resetRuntimeState').start >= 0
+    }));
+
+  check('⑭ 键名只用现场量到的那两枚写死的类名，而且必须先 `closest` 到这一枚视频自己的容器' +
+    '（模糊的 `[class*=play]` 会把「重启」和倍速菜单扫进来）',
+    siteBody.indexOf("closest('.video-js") >= 0 &&
+    siteBody.indexOf(".vjs-big-play-button") >= 0 && siteBody.indexOf(".vjs-play-control") >= 0 &&
+    siteBody.indexOf('[class*=') < 0 && /vjs-playing/.test(siteBody),
+    JSON.stringify({
+      closest: siteBody.indexOf("closest('.video-js") >= 0,
+      fuzzy: siteBody.indexOf('[class*='),
+      antiPlaying: /vjs-playing/.test(siteBody)
+    }));
+
+  // ⑮ 反向自查：这一段自己得真的动过站点元素（防止整段变成空测）
+  check('⑮ 夹具自证：以上每一发的"点过了"都是**站点元素自己的 click 被真的调到**（记的是类名，不是我们自报的布尔）',
+    sh5.clicks.length === capClicks && sh5.clicks.every(function (c) { return c === 'vjs-big-play-button'; }) &&
+    s1.clicks.length === 0 && s3.clicks.length === 0 && sh9.clicks.length === 0,
+    JSON.stringify({ ladder: sh5.clicks, untouched: [s1.clicks, s3.clicks, sh9.clicks] }));
+
+  logs.length = 0;
+}
+
 /** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */
 async function testCanonicalMultipleAnswerOrEmpty() {
   console.log('\n[23] 多选答案规范化：认不出来交空串，但连写、乱序、重复这些合法形状一个不许变（批次 98）');
@@ -5878,6 +6200,7 @@ async function main() {
   await testJobRejectLogThrottle();
   await testDisplacedStudyPageRescue();
   await testSeekDeferUntilSeekable();
+  await testStartStuckSiteClickSelfHeal();
   await testCanonicalMultipleAnswerOrEmpty();
   await testPopupQuizLocalComboGroup();
   await testCourseHomeProbeSignals();

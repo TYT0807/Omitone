@@ -14,7 +14,7 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（49 个）：
+ * 本段的方法（51 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
@@ -26,7 +26,7 @@
  *   _stopAudioKeepalive、_syncAudioKeepalive、_checkVideoStatus、
  *   _finishCurrentMedia、_isRateLockedAtOne、_isNinetyPercentVideo、
  *   _shouldAdvanceAtNinetyPercent、_mediaErrorCode、_reloadMediaInPlace、
- *   _tryResumePlayback、_getVideoEl、
+ *   _tryResumePlayback、_siteStartControlOf、_nudgeSiteStartControl、_getVideoEl、
  *   _videoEventHandle、_handleMediaError、_guessMediaMime、
  *   _maybeRepairMediaSource、_handleVideoEnded、_handleVideoLoaded、
  *   _handleVideoPlay、_handleVideoPause、_handleVideoRateChange、
@@ -1282,6 +1282,121 @@
     },
 
 
+    /**
+     * 站点播放器自己的「开始」键 —— 只认现场量到的那两枚（批次 178，2026-11-19 只读实测）。
+     *
+     * 现场形状：视频在 `top>iframe>f0` 的 `/ananas/modules/video/index.html` 里，
+     * 播放器是 video.js v7，根节点 `div.video-js` 用 `vjs-has-started` / `vjs-playing` 表态。
+     *
+     * ⚠️ 必须在**这一枚视频自己的** `.video-js` 容器里找，而且只用下面两个写死的类名：
+     *    同一个容器里还躺着 `vjs-default-button`（「重启 恢复全部设定至预设值」）、
+     *    `vjs-playback-rate`（倍速菜单）、`vjs-mute-control` —— 任何 `[class*=play]`
+     *    式的模糊匹配都会把它们扫进来，而点到「重启」那枚等于把用户的播放器设定清掉。
+     *  - `vjs-big-play-button`：未开播时的中央覆盖层，文字「播放视频」；在播时
+     *    `display:none`（现场实测矩形 0×0），所以"看得见"就是"还没开始"。
+     *  - `vjs-play-control`：控制条上的播放/暂停切换键，**在播时带 `vjs-playing` 类、
+     *    文字是「暂停」** —— 那种状态下点它等于按停，所以必须反着认。
+     */
+    _siteStartControlOf: function (video) {
+      var doc = video && (video.ownerDocument || document);
+      if (!doc) return null;
+      var scope = doc;
+      try {
+        if (video.closest) {
+          var host = video.closest('.video-js, .vjs-player');
+          if (host) scope = host;
+        }
+      } catch (e0) {}
+      try {
+        var big = scope.querySelector('.vjs-big-play-button');
+        if (big && visible(big)) return { el: big, rung: 'big-play' };
+        var toggle = scope.querySelector('.vjs-play-control');
+        if (toggle && visible(toggle) && !/vjs-playing/i.test(String(toggle.className || ''))) {
+          return { el: toggle, rung: 'play-toggle' };
+        }
+      } catch (e1) {}
+      return null;
+    },
+
+
+    /**
+     * 「开头一直卡住」的最后一档：去点站点自己的开始键。
+     *
+     * 用户口径是「点一下开始就正常了，否则一直黑屏不动或者抽搐」。上面 `_tryResumePlayback`
+     * 直调 `video.play()` 那一族**绕过了站点播放器自己的状态机**：它拿不到 play 事件时
+     * `_resumeAttemptCount` 每 15 秒换窗归零，于是整局都在原地重复同一发 play()，
+     * 而那两枚按钮背后的 handler 一次都没被走到 —— 人工点一下走的恰恰是那条路。
+     *
+     * 有界：一节最多 2 发、间隔 45 秒，键同 `_getMediaSeekKey`（与 `_mediaReloadKeys`
+     * 一样**不随换节清理**，清了就会在同一节里反复点）。点成功之后由站点自己派发的
+     * play 事件复位整套计数（`_handleVideoPlay`）。烧完还没起来只说**一次**交回人 ——
+     * 静默放手是不可接受的（AGENTS §2 #7），hint 里照用户的话告诉他亲手点一下。
+     *
+     * 只在「还停在开头」那一形状上动手：已经播出去一段的停滞交给 no-progress 与 90% 兜底，
+     * 那种情况点开始键等于替人把看过的两分钟重播一遍。音频不做 —— 现场只量过视频那一族，
+     * 音频播放器是另一个形状，没量过就不动手。
+     */
+    _nudgeSiteStartControl: function (video, reason) {
+      try {
+        if (!video || !this._isPlaying) return false;
+        if (String(video.tagName || '').toLowerCase() !== 'video') return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        var ct = Number(video.currentTime || 0);
+        var dur = Number(video.duration || 0);
+        if (ct > 2) return false;
+        if (dur > 0 && ct > Math.min(30, dur * 0.02)) return false;
+
+        if (!this._startNudgeKeys) this._startNudgeKeys = Object.create(null);
+        var prev = this._startNudgeKeys[key];
+        var done = Number(prev && prev.n) || 0;
+        var now = Date.now();
+        var detail = {
+          ct: Math.round(ct * 100) / 100,
+          dur: Math.round(dur * 100) / 100,
+          ready: Number(video.readyState || 0),
+          paused: !!video.paused,
+          reason: reason || ''
+        };
+
+        if (done >= 2) {
+          if (!prev.gaveUp) {
+            prev.gaveUp = true;
+            detail.nudges = done;
+            detail.hint = '这一节从头就没起来，插件已经点过两回站点自己的开始键。' +
+              '这一族人工点一下「开始」通常就好了 —— 请在这页上亲手点一次，或者刷新这一页（F5）再让它刷';
+            emitRuntimeLog('warn', 'media start stuck, left to human', detail);
+          }
+          return false;
+        }
+        if (prev && now - (Number(prev.at) || 0) < 45000) return false;
+
+        // 站点为弹题有意把视频按下时不许抢（与 `_handleVideoPause` 同一口径）。
+        // 这个谓词会扫 DOM，本来只在 pause 事件里调；这里一次任务最多走到两回，
+        // 不按拍调，所以不引缓存 —— 别把它挪回每拍都问的位置。
+        if (this._popupQuizBlocksPlayback && this._popupQuizBlocksPlayback()) return false;
+
+        var found = this._siteStartControlOf(video);
+        if (Object.keys(this._startNudgeKeys).length > 300) this._startNudgeKeys = Object.create(null);
+        if (!found) {
+          // 「认不出开始键」单独占一格，不许塌成"点过了"（AGENTS §2 #12）。
+          this._startNudgeKeys[key] = { n: done + 1, at: now, rung: 'none' };
+          detail.rung = 'none';
+          emitRuntimeLog('warn', 'media start stuck, no site start control', detail);
+          return false;
+        }
+        this._startNudgeKeys[key] = { n: done + 1, at: now, rung: found.rung };
+        detail.rung = found.rung;
+        detail.attempt = done + 1;
+        emitRuntimeLog('warn', 'media start stuck, clicked site start control', detail);
+        try { found.el.click(); } catch (eClick) { return false; }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
     _tryResumePlayback: function (reason) {
       var now = Date.now();
       var video = this._getVideoEl();
@@ -1305,6 +1420,10 @@
 
       this._resumeAttemptCount++;
       this._guardLastResumeTs = now;
+
+      // 第 3 发 play() 之后照旧起不来，就换成点站点自己的开始键（批次 178）。
+      // 点着了我们这一拍就不再补一发 play() —— 让站点那条路先把状态机走起来。
+      if (this._resumeAttemptCount >= 3 && this._nudgeSiteStartControl(video, reason || 'resume')) return;
 
       this._ensurePlaybackRate(video, reason || 'resume');
       video.play().catch(function () {

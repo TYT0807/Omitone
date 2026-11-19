@@ -60,6 +60,12 @@
       advice: '重新加载这一页；还不行就手动点一下播放键，让浏览器认一次用户手势'
     },
     {
+      code: 'start-stuck', severity: 2, action: 'reload',
+      needles: ['media start stuck, no site start control', 'media start stuck, left to human'],
+      title: '视频开头点不亮，要人工搭把手',
+      advice: '亲手点一下「开始」或按 F5；反复出现就关掉 Edge 的「效率模式」（edge://settings/system）'
+    },
+    {
       code: 'stuck', severity: 3, action: 'reload',
       needles: ['study stuck:'],
       title: '这一节卡住了，她已停止空转',
@@ -316,6 +322,8 @@
       want: 'issue', code: 'bridge-lost' },
     { id: 'media', logs: [{ time: 3000, level: 'warn', message: 'media pipeline dead, reload in place' }],
       want: 'issue', code: 'media-dead' },
+    { id: 'startstuck', logs: [{ time: 3000, level: 'warn', message: 'media start stuck, left to human' }],
+      want: 'issue', code: 'start-stuck' },
     { id: 'stuck', logs: [{ time: 3000, level: 'error', message: 'study stuck: 下一节点了没反应，已停止空转' }],
       want: 'issue', code: 'stuck' },
     { id: 'captcha', logs: [{ time: 3000, level: 'error', message: 'standalone captcha stopped, needs a human' }],

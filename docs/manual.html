@@ -1702,6 +1702,15 @@
           —— 浏览器要的就是这一下 —— 再看那条记录还出不出。</td>
     </tr>
     <tr>
+      <td><b>视频开头黑屏 / 画面抽搐不动</b></td>
+      <td>很多人反映「自己点一下开始就好了」—— 现在插件会代点：<b>自动唤醒连续 3 次都点不亮</b>时，
+          帮你按下播放器自带的「开始」键（同一节最多试 2 次、间隔约 45 秒，且只在还停在开头时才动手）。
+          点过了日志会出 <code>media start stuck, clicked site start control</code>；
+          试完仍不行会出 <code>media start stuck, left to human</code> —— 这时请亲手点一下「开始」或按 F5。
+          反复出现的话，顺手去 <code>edge://settings/system</code> 看一眼<b>效率模式</b>：
+          它给后台页面省资源，最容易被卡的正是开头这一段。</td>
+    </tr>
+    <tr>
       <td><b>某个任务点一直做不完</b></td>
       <td>多看日志：遇到老师设成防拖拽 / 不可翻页的点，连续几次做不完会被记入「放弃名单」。</td>
     </tr>
@@ -1761,6 +1770,12 @@
       <td>这一页被你切到了后台，<b>网站自己</b>把视频按住不让走。连着三次抢回播放都没能让进度动一下，
           所以扩展<b>五分钟内不再和它对着干</b> —— 对打的后果是画面在"播放/暂停"之间反复闪，进度还是不动。
           <b>把这一页切回前台，下一拍就继续播。</b></td>
+    </tr>
+    <tr>
+      <td><code>media start stuck, clicked site start control</code> /<br>
+          <code>media start stuck, left to human</code></td>
+      <td>视频在开头黑屏 / 画面抽搐、自动唤醒点不亮 —— 前者：扩展代你按下了播放器自带的「开始」键；
+          后者：试完仍不行（同一节最多两次），已停下请你<b>亲手点一下「开始」或按 F5</b>。</td>
     </tr>
     <tr>
       <td><code>popup quiz unanswerable</code></td>

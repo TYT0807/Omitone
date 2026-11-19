@@ -773,6 +773,55 @@ function buildNinetyPercentHtml() {
 }
 
 /**
+ * 「一直停在开头」的视频页 —— 复现用户那句「点一下开始就正常了，否则一直黑屏不动／抽搐」。
+ *
+ * 形状按 2026-11-19 现场**只读**实测复刻（`top > iframe#iframe > f0` 里那套 video.js v7）：
+ * 开始键有两枚，而**同一个容器里还躺着两枚绝不能碰的邻居** —— 这页的全部价值就在这四处，
+ * 因为只有真引擎才量得到「一开播中央层就 `display:none`」在 `visible()` 里读回来是 false，
+ * 也只有真页面里 `el.click()` 才走得到站点自己挂的那个监听器（集成层的假 DOM 两样都证不了）。
+ *   - `button.vjs-big-play-button`：中央层，未开播时可见，**进入 started 态就被 CSS 收成 0×0**
+ *   - `button.vjs-play-control.vjs-playing`：控制条切换键，在播时文字是「暂停」—— 点下去等于替人按停
+ *   - `button.vjs-default-button`：「重启 恢复全部设定至预设值」—— 误点会把用户的播放器设定清掉
+ *   - `button.vjs-playback-rate`：倍速菜单
+ * 四枚各自把点击记进 `window.__b178Clicks`，断言读的是**站点元素自己的监听器有没有被走到**
+ * （桩打在动作上，不是把生产方法换成计数器 —— AGENTS §5）。
+ */
+function buildMediaStartStuckHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title>' +
+    // 中央层收起那一条**必须走 CSS**：这一格要量的正是真引擎对 display:none 的读数，
+    // 用 visibility / 移除元素都会把要证的东西预先替测试做好。收起条件按现场实测写成 compound：
+    // 「已开播 且 正在播」才藏 —— 真 video.js 在开播后暂停时中央层是会回来的。
+    '<style>.video-js{position:relative;width:640px;height:360px}' +
+    '.vjs-big-play-button{position:absolute;left:290px;top:150px;width:60px;height:40px}' +
+    '.vjs-has-started.vjs-playing .vjs-big-play-button{display:none}' +
+    '.vjs-control-bar{position:absolute;left:0;bottom:0;width:640px;height:40px}' +
+    '</style></head><body>' +
+    '<div id="iframe">' +
+    '  <div class="video-js vjs-player" id="b178-host">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '    <button class="vjs-big-play-button" id="b178-big" type="button" title="播放视频">播放视频</button>' +
+    '    <div class="vjs-control-bar">' +
+    '      <button class="vjs-play-control vjs-control vjs-button vjs-playing" id="b178-toggle" type="button">暂停</button>' +
+    '      <button class="vjs-default-button" id="b178-restart" type="button">重启 恢复全部设定至预设值</button>' +
+    '      <button class="vjs-playback-rate" id="b178-rate" type="button">倍速</button>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>' +
+    '<script>' +
+    'window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+    'window.__b178Started=false;' +
+    '["big","toggle","restart","rate"].forEach(function(k){' +
+    '  document.getElementById("b178-"+k).addEventListener("click",function(){' +
+    '    window.__b178Clicks[k]++;' +
+    '    if(k==="big"){window.__b178Started=true;' +
+    '      document.getElementById("b178-host").className="video-js vjs-player vjs-has-started vjs-playing";}' +
+    '  });});' +
+    '</script>' +
+    '</body></html>';
+}
+
+/**
  * 多讨论任务点页面 —— 复现"多沟通任务"的坑。
  *
  * A 组：3 张讨论卡片挤在**同一个共用容器**里，容器内只有**一个** #isFinished。
@@ -2472,6 +2521,7 @@ var MOCK_PAGES = {
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
   '/media-90': buildNinetyPercentHtml,
+  '/media-start': buildMediaStartStuckHtml,
   '/blank': buildBlankHtml,
   // 批次 35：主内容帧跨域的三页（两种跨域 + 被换走的那一页本身）
   '/blocked-inner': buildBlockedInnerHtml,
@@ -23168,6 +23218,227 @@ SCENARIOS.push({
       JSON.stringify(restoreRemove) + ',function(){res(true)})})');
     if (Object.keys(restoreSet).length) await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
       JSON.stringify(restoreSet) + ',function(){res(true)})})');
+  }
+});
+
+SCENARIOS.push({
+  name: '开头一直卡住时，有界点一下站点自己的开始键',
+  path: '/media-start',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 现场那副样子（2026-11-19 只读实测的「黑屏不动 / 抽搐」那一族）：位置恒 0、paused 恒 true、
+      // error 是 null、play() 不报错但画面不动。**error 必须钉成空** —— 批次 50 量过这页的
+      // <video src> 从没被 serve，MediaError.code=4 会让 `_tryResumePlayback` 第一道就走死管线重载，
+      // 于是下面整条自愈链一次都轮不到（假绿的标准形状）。
+      '  window.__b178T = 0;',
+      '  window.__b178DUR = 1355.9;',
+      '  window.__b178Err = null;',
+      '  window.__b178Seeks = []; window.__b178Loads = 0; window.__b178Plays = 0;',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error",',
+      '    { configurable: true, get: function(){ return window.__b178Err || null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return 0; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b178DUR; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused",',
+      '    { configurable: true, get: function(){ return true; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true,',
+      '    get: function(){ return window.__b178T; },',
+      '    set: function(v){ window.__b178Seeks.push(Number(v)); } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
+      '    configurable: true, get: function(){ return 1; }, set: function(){ window.__b178RateSets = 1; } });',
+      // play() 只记账、**不派 play 事件** —— 现场就是这一族：事件不来，`_resumeAttemptCount`
+      // 永远不清零，自愈必须自己攒到第 3 发。
+      '  HTMLMediaElement.prototype.play = function(){ window.__b178Plays++; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){ window.__b178Loads++; };',
+      '  window.__b178Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b178Patched === true');
+    check('178 夹具自证：媒体原型打桩生效（error 空 / readyState 0 / duration / paused / currentTime / play / load）',
+      patched === true, String(patched));
+
+    // ① 前提 —— 自动续跑那两个循环先按掉（批次 69 那一族：上一支场景把 xxtRunning 写进了整轮共用的存储），
+    //    否则第 3 发什么时候到、点了什么全是随机的。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,autoMaxPlaybackRate:false});' +
+      'app._detectedMaxRate=0;app._rateProbing=false;app._captchaActive=false;' +
+      'window.__b178i=[];' +
+      'if(!window.__b178Bound){window.__b178Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b178i.push(m);}});}' +
+      'var v=document.getElementById("omitone-video");var f=null;var key=null;var err=-1;' +
+      'try{f=app._siteStartControlOf(v);}catch(e){f="throw";}' +
+      'try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{err=Number(app._mediaErrorCode(v));}catch(e){err=-1;}' +
+      'var big=document.getElementById("b178-big");var br=big.getBoundingClientRect();' +
+      'return {hasEl:!!v,loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      '  quiz:app._popupQuizBlocksPlayback()===false,key:key,err:err,' +
+      '  cd:Number(app.configs.guardResumeCooldownMs),win:Number(app.configs.guardMaxResumeWindow),' +
+      '  max:Number(app.configs.guardMaxResumes),btns:4,' +
+      '  bigW:br.width,bigOp:big.offsetParent!==null,found:f==="throw"?"throw":(f?f.rung:"null"),' +
+      // rung 只是"走了哪一分支"的标签，认不出「分支里 querySelector 拿回来的到底是哪一枚」——
+      // 所以这里额外把**元素身份**读回来钉（反向验证 E6「认错键」那一刀只有靠这一格才会红）。
+      '  foundId:(f && f.el && f.el.id) ? String(f.el.id) : ""};})()'
+    );
+    check('178 前提：这一页只剩本场景在动、弹题没按住播放、键非空、且死管线那一支读回 0' +
+      '（err 不等于 0 整段断言都是空测）；预算三格从页面读回来，窗口须装得下三发',
+      !!setup && setup.hasEl === true && setup.loop === false && setup.checkInterval === false &&
+      setup.quiz === true && !!setup.key && setup.key.length > 0 && setup.err === 0 &&
+      setup.cd > 0 && setup.max >= 3 && setup.win > setup.cd * 3,
+      JSON.stringify(setup));
+    check('178 夹具自证：四枚按钮齐（含三枚绝不该点的邻居），未开播时中央层在真页面里看得见，' +
+      '且 `_siteStartControlOf()` 挑中的是中央那一枚（**按元素身份认**，不是按 rung 那个分支标签）',
+      !!setup && setup.btns === 4 && setup.bigOp === true && setup.bigW > 0 &&
+      setup.found === 'big-play' && setup.foundId === 'b178-big',
+      JSON.stringify(setup));
+
+    var cdMs = Number(setup.cd) + 250;
+    // ② 三发续播：第 1、2 发走 play()，第 3 发（attempts>=3）换点站点自己的开始键。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178Plays=0;window.__b178Loads=0;window.__b178Started=false;window.__b178i=[];' +
+      'window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'app._videoEl=v;app._isPlaying=true;app._startNudgeKeys=null;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._resumeWindowStart=Date.now();' +
+      'app._tryResumePlayback("b178-at-start");return true;})()');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-at-start")');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-at-start")');
+    await sleep(400);
+    var p2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={clicks:JSON.parse(JSON.stringify(window.__b178Clicks)),' +
+      'started:window.__b178Started,plays:window.__b178Plays,attempts:Number(app._resumeAttemptCount),' +
+      'clicked:[],none:[],human:[]};' +
+      '(window.__b178i||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s==="media start stuck, clicked site start control")out.clicked.push(m);' +
+      '  if(s==="media start stuck, no site start control")out.none.push(m);' +
+      '  if(s==="media start stuck, left to human")out.human.push(m);});' +
+      'return out;})()');
+    var hit = (p2 && p2.clicked && p2.clicked.length === 1) ? p2.clicked[0] : null;
+    var hitMeta = hit && hit.meta ? hit.meta : {};
+    check('178-A：第 3 发烧完之后**真页面里站点中央那枚开始键被点着了**，且 `__b178Started` 是' +
+      '站点自己的监听器翻起来的（不是我们写的）—— 用户那句「点一下开始就正常了」现在有真浏览器证据',
+      !!p2 && p2.clicks.big === 1 && p2.started === true, JSON.stringify(p2));
+    check('178-B：三枚邻居一次都没被点 —— 「重启」（点了等于把用户的播放器设定清空）、倍速菜单、' +
+      '以及控制条那枚在播时会**把视频按停**的切换键，全须 0',
+      !!p2 && p2.clicks.restart === 0 && p2.clicks.rate === 0 && p2.clicks.toggle === 0,
+      JSON.stringify(p2 && p2.clicks));
+    check('178-C：点着那一拍**不再补一发 play()**（plays 恒 2 = 第 1、2 发，attempts 停在 3）—— ' +
+      '让站点那条路先把状态机走起来，直调 play() 绕过状态机正是这一族的病根',
+      !!p2 && p2.plays === 2 && p2.attempts === 3,
+      JSON.stringify(p2 && { plays: p2.plays, attempts: p2.attempts }));
+    check('178-D：clicked 日志恰好一条，rung=big-play、attempt=1、reason 带调用方原话；' +
+      '另两格（no site start control / left to human）这一窗一条不许有',
+      !!hit && String(hitMeta.rung) === 'big-play' && Number(hitMeta.attempt) === 1 &&
+      String(hitMeta.reason) === 'b178-at-start' && !!p2 &&
+      p2.none.length === 0 && p2.human.length === 0, JSON.stringify(hitMeta));
+
+    // ③ 真引擎那一格：started 之后中央层被 CSS 收成 0×0 —— 集成层喂的是假 `visible`，
+    //    这条只能在这里量；而「不再点第二下」必须是这个真形状的后果。
+    var p3shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var big=document.getElementById("b178-big");var r=big.getBoundingClientRect();' +
+      'var f=null;try{f=app._siteStartControlOf(v);}catch(e){f="throw";}' +
+      'return {op:big.offsetParent===null,w:r.width,h:r.height,' +
+      '  hostClass:String(document.getElementById("b178-host").className),' +
+      '  ctrl:f==="throw"?"throw":(f?f.rung:"null")};})()');
+    check('178-E：站点起来之后中央层在**真引擎**里就是看不见（offsetParent 空 + 矩形 0×0），' +
+      '于是 `_siteStartControlOf()` 读回 null —— "看得见就是还没开始"这条判据拿真实 CSS 量到了',
+      !!p3shape && p3shape.op === true && p3shape.w === 0 && p3shape.h === 0 &&
+      p3shape.ctrl === 'null' && /vjs-has-started/.test(String(p3shape.hostClass)) &&
+      /vjs-playing/.test(String(p3shape.hostClass)), JSON.stringify(p3shape));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178Plays=0;window.__b178i=[];window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'app._videoEl=v;app._isPlaying=true;app._startNudgeKeys=null;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._resumeWindowStart=Date.now();' +
+      'app._tryResumePlayback("b178-after-start");return true;})()');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-after-start")');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-after-start")');
+    await sleep(400);
+    var p3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));var led=app._startNudgeKeys&&app._startNudgeKeys[key];' +
+      'var out={clicks:JSON.parse(JSON.stringify(window.__b178Clicks)),plays:window.__b178Plays,' +
+      '  none:[],clicked:[],led:led?{n:Number(led.n),rung:String(led.rung||"")}:null};' +
+      '(window.__b178i||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s==="media start stuck, no site start control")out.none.push(m);' +
+      '  if(s==="media start stuck, clicked site start control")out.clicked.push(m);});' +
+      'return out;})()');
+    var noneMeta = (p3 && p3.none && p3.none.length === 1) ? (p3.none[0].meta || {}) : null;
+    check('178-F：认不出开始键那一族**只说一次**（none 日志恰好一条、rung=none），账本单独记一格 ' +
+      'rung:none/n:1 —— "认不出键"不许塌成"已经点过了"（AGENTS §2 #12 的四态口径）',
+      !!p3 && p3.none.length === 1 && p3.clicked.length === 0 && !!noneMeta &&
+      String(noneMeta.rung) === 'none' && !!p3.led && p3.led.n === 1 && p3.led.rung === 'none',
+      JSON.stringify(p3));
+    check('178-G：认不出键那一拍**一发都不点**（四枚全 0），且照旧回到 play() 老路（plays 恒 3）—— ' +
+      '自愈是加一档，不是替换掉原来那档',
+      !!p3 && p3.clicks.big === 0 && p3.clicks.toggle === 0 && p3.clicks.restart === 0 &&
+      p3.clicks.rate === 0 && p3.plays === 3, JSON.stringify(p3 && { clicks: p3.clicks, plays: p3.plays }));
+
+    // ④ 间隔闸：紧接着再问一次，冷却没到就该**一个字都不说、一下都不点**。
+    //    ⚠️ 日志缓冲要**等一拍再读** —— `emitRuntimeLog` 走 postMessage 异步送达，
+    //    在同一个 evaluate 里同步读 `__b178i`，"没说话"和"没送到"长得一模一样（批次 9 实测过）。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178i=[];' +
+      'window.__b178Spacing=(function(){var key=String(app._getMediaSeekKey(v));' +
+      // ⚠️ 这本账要**防御性读**：把 `_tryResumePlayback` 里那一档接线整个摘掉时，
+      //    `_startNudgeKeys` 压根没被建起来（恒为 null），裸读 `null[key]` 会让 runner
+      //    抛成一条「场景执行未抛异常」—— 那是把"生产坏了"实现成崩溃而不是红，
+      //    等于替生产删掉 178-H/I 两条断言（AGENTS §5）。读不到就交 span=-1，
+      //    由下面 `p4.span >= 0` 那一格把它红出来。
+      '  var before=(app._startNudgeKeys||Object.create(null))[key];var span=before?Date.now()-Number(before.at||0):-1;' +
+      '  var ret=app._nudgeSiteStartControl(v,"b178-spacing");var after=app._startNudgeKeys[key];' +
+      '  return {ret:!!ret,span:span,beforeN:Number(before&&before.n),afterN:Number(after&&after.n)};})();' +
+      'return true;})()');
+    await sleep(400);
+    var p4 = await ctx.client.evaluate(
+      '(function(){var r=window.__b178Spacing||(window._xxtApp&&window._xxtApp._lastB178Spacing)||null;' +
+      'var spoke=(window.__b178i||[]).filter(function(m){' +
+      '  return String(m.message||"").indexOf("media start stuck")===0;}).length;' +
+      'if(!r)return {missing:true};' +
+      'r.spoke=spoke;r.clicks=JSON.parse(JSON.stringify(window.__b178Clicks));return r;})()');
+    check('178-H：45 秒间隔闸 —— 同一节冷却没到就**沉默返回 false**（等一拍之后 0 条日志、0 次点击、计数仍是 1）；' +
+      '取证里 span 必须真落在 45 秒以内，否则这条是空测',
+      !!p4 && p4.missing !== true && p4.ret === false && p4.span >= 0 && p4.span < 45000 &&
+      p4.spoke === 0 && p4.beforeN === 1 && p4.afterN === 1 && p4.clicks.big === 0 &&
+      p4.clicks.toggle === 0 && p4.clicks.restart === 0 && p4.clicks.rate === 0, JSON.stringify(p4));
+
+    // ⑤ 烧完两发交回人：把账本时钟拨回 46 秒前（= 冷却已过，不真等），只许说**一次**。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));' +
+      'if(!app._startNudgeKeys)app._startNudgeKeys=Object.create(null);' +
+      'app._startNudgeKeys[key]={n:2,at:Date.now()-46000,rung:"big-play"};' +
+      'window.__b178i=[];window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'var a=app._nudgeSiteStartControl(v,"b178-cap");var b=app._nudgeSiteStartControl(v,"b178-cap");' +
+      'var led=app._startNudgeKeys[key];' +
+      'window.__b178Cap={a:!!a,b:!!b,gaveUp:!!(led&&led.gaveUp),' +
+      '  clicks:JSON.parse(JSON.stringify(window.__b178Clicks))};return true;})()');
+    await sleep(400);
+    var p5 = await ctx.client.evaluate(
+      '(function(){var r=window.__b178Cap||null;if(!r)return {missing:true};' +
+      'var human=(window.__b178i||[]).filter(function(m){' +
+      '  return String(m.message||"")==="media start stuck, left to human";});' +
+      'r.humanN=human.length;r.n=human.length;' +
+      'r.hint=human.length?String((human[0].meta&&human[0].meta.hint)||""):"";' +
+      'r.all=(window.__b178i||[]).map(function(m){return String(m.message||"");});return r;})()');
+    check('178-I：两发用尽之后交回人 —— left to human 恰好**一条**（第二次被 gaveUp 闩住），' +
+      'hint 里带着用户那句「开始」，返回 false 让老路继续、一发点击都不烧（静默放手不可接受）',
+      !!p5 && p5.a === false && p5.b === false && p5.humanN === 1 && p5.n === 1 &&
+      p5.gaveUp === true && p5.hint.indexOf('开始') >= 0 &&
+      p5.clicks.big === 0 && p5.clicks.toggle === 0 && p5.clicks.restart === 0, JSON.stringify(p5));
   }
 });
 // ===========================================================================
