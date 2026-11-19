@@ -725,6 +725,97 @@
       });
     }
 
+    // ── 和她聊天（点工具条的「聊」；默认关，开关在设置「吉祥物」组）────────────
+    // 发请求统一走 popup.js 挂的 window.omitonePetChatSend（复用答题那条 api_fetch 链路，
+    // 用户自己的 Key 按量计费）。这里只管界面：开关门、收发、渲染。历史只留内存
+    // （弹窗一关就散），发给模型前由 popup.js 再截到最近 8 条。错误行**不进**历史 ——
+    // 不是她说的话，别让下一轮以为她说过。渲染全走 textContent，用户打什么字都只是字。
+    var chatPanel = document.getElementById("petChat");
+    var chatLog = document.getElementById("petChatLog");
+    var chatInput = document.getElementById("petChatInput");
+    var chatSendBtn = document.getElementById("petChatSend");
+    var chatOpen = false;
+    var chatBusy = false;
+    var chatHistory = [];
+
+    function addChatRow(kind, text) {
+      if (!chatLog) return;
+      var row = document.createElement("div");
+      row.className = "pet-chat-row " + kind;
+      row.textContent = text;
+      chatLog.appendChild(row);
+      while (chatLog.children.length > 30) chatLog.removeChild(chatLog.firstChild);
+      chatLog.scrollTop = chatLog.scrollHeight;
+    }
+    function openChat() {
+      if (!chatPanel || chatOpen) return;
+      setPose("sit");
+      chatPanel.classList.add("show");
+      chatPanel.setAttribute("aria-hidden", "false");
+      chatOpen = true;
+      if (chatInput) chatInput.focus();
+    }
+    function closeChat() {
+      if (!chatPanel || !chatOpen) return;
+      chatPanel.classList.remove("show");
+      chatPanel.setAttribute("aria-hidden", "true");
+      chatOpen = false;
+      if (chatInput) chatInput.blur();
+    }
+    async function sendChat() {
+      if (!chatOpen || chatBusy || !chatInput) return;
+      var text = (chatInput.value || "").trim();
+      if (!text) return;
+      chatInput.value = "";
+      chatHistory.push({ role: "user", text: text });
+      addChatRow("user", text);
+      chatBusy = true;
+      if (chatSendBtn) { chatSendBtn.disabled = true; chatSendBtn.textContent = "…"; }
+      var res = null;
+      try {
+        res = typeof window.omitonePetChatSend === "function"
+          ? await window.omitonePetChatSend(chatHistory)
+          : { ok: false, error: "界面没接上请求层" };
+      } catch (eChat) {
+        res = { ok: false, error: "" };
+      }
+      if (res && res.ok && res.text) {
+        var reply = String(res.text).trim().slice(0, 160);
+        chatHistory.push({ role: "assistant", text: reply });
+        addChatRow("assistant", reply);
+        setPose("happy", 1100);
+      } else {
+        var line = (res && res.noKey) ? "还没填 API Key 呢 —— 先去上面 API 设置配好再来找我聊呀"
+          : (res && res.error ? "（" + String(res.error).slice(0, 80) + "）" : "（这会儿没联系上，等会儿再试？）");
+        addChatRow("err", line);
+      }
+      chatBusy = false;
+      if (chatSendBtn) { chatSendBtn.disabled = false; chatSendBtn.textContent = "发"; }
+      if (chatInput) chatInput.focus();
+    }
+    if (chatPanel) {
+      if (chatSendBtn) chatSendBtn.addEventListener("click", function (ev) { ev.stopPropagation(); sendChat(); });
+      if (chatInput) chatInput.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter") { ev.preventDefault(); sendChat(); }
+      });
+      var chatCloseBtn = document.getElementById("petChatClose");
+      if (chatCloseBtn) chatCloseBtn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        closeChat();
+      });
+      // 与册子/翻牌同一族的三样关法：× / 点外面 / Esc。
+      // 点外面要排除工具条 —— 否则点「聊」会被判成点外面，先关再开等于打不开。
+      document.addEventListener("mousedown", function (ev) {
+        if (!chatOpen) return;
+        if (chatPanel.contains(ev.target)) return;
+        if (ev.target && ev.target.closest && ev.target.closest(".pet-tools")) return;
+        closeChat();
+      });
+      document.addEventListener("keydown", function (ev) {
+        if (chatOpen && (ev.key === "Escape" || ev.keyCode === 27)) closeChat();
+      });
+    }
+
     // 上次按了"藏"就一直藏着，直到在弹窗底部点「显示小人」
     try {
       if (localStorage.getItem(HIDE_KEY) === "1") mascot.style.display = "none";
@@ -742,6 +833,10 @@
           if (bookOpen) closeBook(); else openBook();
         } else if (act === "game") {
           if (gameOpen) closeGame(); else openGame();
+        } else if (act === "chat") {
+          // 「聊」只在开关打开时认（按钮本身也是开关开着才显示，这里是对形状的第二次把关）
+          if (!document.body.classList.contains("pet-chat-on")) return;
+          if (chatOpen) closeChat(); else openChat();
         } else if (act === "pose") {
           var poseSeq = newSeq(1450, true);
           var pa = mascot.querySelector(".pet-art");
@@ -788,6 +883,7 @@
           newSeq(0, true);
           closeBook();
           closeGame();
+          closeChat();
           try { localStorage.setItem(HIDE_KEY, "1"); } catch (e) {}
           mascot.style.display = "none";
         }

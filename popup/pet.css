@@ -576,3 +576,50 @@ html[data-ui="lite"] .pet-mood{ display:none; }
   background:linear-gradient(90deg,#ffb6c1,#ff7d9c); transition:width .45s var(--ease-out); }
 html[data-ui="lite"] .pet-bond, html[data-ui="lite"] .pet-level{ display:none; }
 [data-motion="eco"] .pet-bond i{ animation:none !important; transition:none !important; }
+
+/* ── 和她聊天（批次 122）────────────────────────────────────────────────────
+   形状照抄 .pet-book（实底、居中、三样关法），只是把身体换成了对话流 + 一条输入行。
+   「聊」默认藏起：设置 → 吉祥物 → 吉祥物聊天 打开后才入列 —— 聊天要花 Key 的钱，
+   绝不许"升级即默认花钱"。 */
+.pet-tools button[data-act="chat"]{ display:none; }
+body.pet-chat-on .pet-tools button[data-act="chat"]{ display:block; }
+/* 「聊」入列后一排 7 枚：压按钮宽与间距（14px + 1px 缝 = 104px），
+   不越过弹窗 .brand 让出的 110px —— 与上面「16px 而不是 18px」那条注释同一族约束。 */
+body.pet-chat-on .pet-tools{ gap:1px; }
+body.pet-chat-on .pet-tools button{ width:14px; }
+.pet-chat{
+  position:fixed; left:50%; top:50%; z-index:10001;
+  width:min(300px, calc(100vw - 24px)); height:min(400px, calc(100vh - 24px));
+  display:flex; flex-direction:column; overflow:hidden;
+  /* 与 .pet-book 同一族的实底：明暗各给一份 */
+  background:rgba(255,255,255,.96);
+  border:1px solid var(--hairline); border-radius:12px;
+  box-shadow:0 14px 34px rgba(16,24,40,.22);
+  opacity:0; pointer-events:none; transform:translate(-50%,-48%) scale(.97);
+  transition:opacity .18s linear, transform .22s var(--ease-spring);
+}
+@media (prefers-color-scheme:dark){
+  .pet-chat{ background:rgba(26,30,38,.97); }
+}
+.pet-chat.show{ opacity:1; pointer-events:auto; transform:translate(-50%,-50%) scale(1); }
+.pet-chat-log{
+  flex:1; min-height:0; overflow:auto; overscroll-behavior:contain;
+  padding:8px 10px; display:flex; flex-direction:column; gap:6px;
+}
+.pet-chat-row{
+  max-width:86%; padding:6px 9px; border-radius:10px;
+  font-size:12px; line-height:1.5; white-space:pre-wrap; word-break:break-word;
+  color:var(--fg); background:var(--accent-soft); align-self:flex-start;
+}
+.pet-chat-row.user{ align-self:flex-end; background:var(--accent); color:#fff; }
+.pet-chat-row.err{ opacity:.75; }
+.pet-chat-foot{
+  flex-shrink:0; display:flex; gap:6px; padding:8px 10px;
+  border-top:1px solid var(--hairline);
+}
+.pet-chat-foot input{
+  flex:1; min-width:0; font-size:12px; padding:6px 8px;
+  border:1px solid var(--hairline); border-radius:8px;
+  background:transparent; color:var(--fg); font-family:inherit;
+}
+.pet-chat-foot button{ padding:6px 12px; font-size:12px; flex-shrink:0; }

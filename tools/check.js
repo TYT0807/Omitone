@@ -1083,7 +1083,20 @@ function checkConfigDefaults() {
     if (!ids.length) {
       problems.push('popup/popup.html 里没找到开关 —— 守卫失效，请同步这段正则');
     }
-    var PET_LOCAL_TOGGLES = { pagePetEnabled: 'omitonePagePetMinimal' };
+    var PET_LOCAL_TOGGLES = {
+      pagePetEnabled: {
+        key: 'omitonePagePetMinimal',
+        clickNeedle: 'els.pagePetEnabled.addEventListener("click", togglePagePetEnabled)',
+        saveNeedle: '{ omitonePagePetMinimal: value ? 0 : 1 }',
+        loadNeedle: 'pagePetEnabledVal = !(r && r.omitonePagePetMinimal)'
+      },
+      petChatEnabled: {
+        key: 'omitonePetChatOn',
+        clickNeedle: 'els.petChatEnabled.addEventListener("click", togglePetChatEnabled)',
+        saveNeedle: '{ omitonePetChatOn: value ? 1 : 0 }',
+        loadNeedle: 'petChatEnabledVal = !!(r && r.omitonePetChatOn === 1)'
+      }
+    };
     // 白名单的 id 不走下面的 bindToggle 尺（放在 forEach **之前**——先前放后面，flag 完才过滤，等于没豁免）
     ids = ids.filter(function (id) { return !PET_LOCAL_TOGGLES[id]; });
     ids.forEach(function (id) {
@@ -1108,23 +1121,26 @@ function checkConfigDefaults() {
       }
     });
 
-    // 吉祥物开关不走主配置：她的存档一族（收起/位置/好感度）全在 storage.local 的独立键上，
+    // 吉祥物本地开关不走主配置：存档一族（收起/聊天）全在 storage.local 的独立键上，
     // 与调度零耦合，页面端有独立监听器即时生效。白名单不是免检 —— 换一把尺按「真接线」核对：
     // 点击/键盘两路都挂上、落盘写的就是她自己的键、打开弹窗从她的键读回。
-    // 三条 needle 都按 popup.js 的现形写死，少任何一条当场红；开关从 HTML 里摘掉时
-    // ids 里不再出现，这三条照旧对 popup.js 核 —— 界面没了代码还在，同样算失配。
+    // ⚠️ 三个 needle 必须**每个开关各带一份**，不许共用 pagePetEnabled 的形状 ——
+    // 两枚开关语义相反：收起是「存 1 = 关」（pagePetEnabled），聊天是「存 1 = 开」（petChatEnabled，
+    // 付费功能出厂关）。照抄同一把尺会把第二枚的接线判死；每份 needle 按 popup.js 的现形写死，
+    // 少任何一条当场红。开关从 HTML 里摘掉时 ids 里不再出现，这些条照旧对 popup.js 核 ——
+    // 界面没了代码还在，同样算失配。
     Object.keys(PET_LOCAL_TOGGLES).forEach(function (id) {
-      var key = PET_LOCAL_TOGGLES[id];
-      if (popupJs.indexOf('els.' + id + '.addEventListener("click", togglePagePetEnabled)') < 0 ||
+      var t = PET_LOCAL_TOGGLES[id];
+      if (popupJs.indexOf(t.clickNeedle) < 0 ||
           popupJs.indexOf('els.' + id + '.addEventListener("keydown"') < 0) {
         problems.push('开关 ' + id + ' 没有接上点击/键盘两路 —— 点了不会有反应');
       }
-      if (popupJs.indexOf('{ ' + key + ': value ? 0 : 1 }') < 0) {
-        problems.push('开关 ' + id + ' 落盘没有写她自己的键 ' + key + ' —— 改了存不住');
+      if (popupJs.indexOf(t.saveNeedle) < 0) {
+        problems.push('开关 ' + id + ' 落盘没有写她自己的键 ' + t.key + ' —— 改了存不住');
       }
-      if (popupJs.indexOf(key + '", (r)') < 0 ||
-          popupJs.indexOf('pagePetEnabledVal = !(r && r.' + key + ')') < 0) {
-        problems.push('开关 ' + id + ' 打开弹窗没有从 ' + key + ' 读回 —— 重开会显示错的状态');
+      if (popupJs.indexOf(t.key + '", (r)') < 0 ||
+          popupJs.indexOf(t.loadNeedle) < 0) {
+        problems.push('开关 ' + id + ' 打开弹窗没有从 ' + t.key + ' 读回 —— 重开会显示错的状态');
       }
     });
   } catch (e) {

@@ -153,6 +153,19 @@
    */
   var FORMAT_HINT = '输出:["A",["A","C"],true,"填空1|||填空2"]';
 
+  /**
+   * 宠物聊天（批次 122）的人设提示词 —— 弹窗里「聊」那枚按钮的唯一真源。
+   * 与答题提示词同住一个文件：提示词不许内联在调用方（AGENTS §2 #4）。
+   * 这份不参与 buildUserPrompt / 答题基线那一族，改它不影响 bench 的答题口径。
+   * 刻意压得很短：聊天是按量计费的对话，人设每发都全文重送。
+   */
+  var PET_CHAT_SYSTEM = [
+    '你是浏览器扩展 Omitone 里的吉祥物，一个陪主人等网课的小家伙，性格元气、爱用颜文字。',
+    '用中文聊天，每次只回一两句话（不超过 40 个字），不列清单、不写长段。',
+    '你看不到任何页面内容，也不知道答题进度 —— 被问到就说自己只陪着主人，操作帮不上。',
+    '别的闲聊可以轻松接，但一样保持简短。'
+  ].join('\n');
+
   /** 题目标注里使用的"历史错误答案"前缀，短且不会出现在正常题干中。 */
   var BANNED_PREFIX = '禁:';
 
@@ -300,6 +313,7 @@
     buildBannedText: buildBannedText,
     buildUserPrompt: buildUserPrompt,
     buildSystemPrompt: buildSystemPrompt,
+    PET_CHAT_SYSTEM: PET_CHAT_SYSTEM,
     normalizeItem: normalizeItem
   };
 });

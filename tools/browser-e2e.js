@@ -5829,8 +5829,10 @@ SCENARIOS.push({
   path: '/quiz',
   run: async function (ctx) {
     var mounted = null;
-    for (var i = 0; i < 24; i++) {
-      await sleep(250);
+    // 24s 窗口（48×500ms）：满载机器上整轮跑数小时时，挂载会迟到 —— 6 秒窗在批次 123 的
+    // 全量跑里实测翻过一次车（前提红 + 下一段裸读 shadowRoot 抛 TypeError，整场景被记成没跑完）。
+    for (var i = 0; i < 48; i++) {
+      await sleep(500);
       mounted = await ctx.client.evaluate(
         '(function(){var h=document.getElementById("omitone-page-pet-host");' +
         'return !!(h&&h.shadowRoot&&h.shadowRoot.getElementById("petImg"));})()'
@@ -5838,6 +5840,7 @@ SCENARIOS.push({
       if (mounted) break;
     }
     check('前提：伴侣已挂载', mounted === true, String(mounted));
+    if (mounted !== true) return; // 前提没成立就别往下读 —— 裸读只会把「没挂上」变成「页面抛异常」
     var brute = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");' +
       'var img=h.shadowRoot.getElementById("petImg");' +
@@ -22604,6 +22607,105 @@ SCENARIOS.push({
     check('这一族里没点名的新 decline 仍落「注意」，但那两行不是出厂值、也不猜原因（只说去看日志）',
       panel.unseen.task !== '运行中' && panel.unseen.detail !== '状态更新中' &&
       /日志/.test(String(panel.unseen.detail || '')), JSON.stringify(panel.unseen));
+  }
+});
+
+/** ---- 批次 122：吉祥物聊天 —— 这是插件第一个「按量计费」的宠物功能，钱安全三格必须全链路成立 ----
+ * ① 出厂（开关没开）工具条上**根本没有**「聊」这枚按钮（CSS display:none），面板也收着；
+ * ② 开关打开后按钮才出现 —— 走设置里那枚真实开关，不手工改 body 类；
+ * ③ 开了、面板开了、但没填 Key：说话那一刻 popup.js 的 petChatSend 第一格就折返 noKey，
+ *    **一发网络请求都不该有**。本场景全程不带任何网络桩 —— 若有代码真发了请求，fetch
+ *    会打在扩展自己身上，错误行就不会是那句「先去配 Key」，当场红。
+ * 另断 Esc 关门（与册子同一族的三样关法）。收尾把用户的 config 与开关原样放回。
+ * ⚠️ 断言里没有写死任何「请求成功」的形状 —— 这里只验不花钱的那条路；请求构造本身
+ * （三厂商形状 / 裁历史 / 截长度）由集成层 [26] 负责，两层各管各的。 */
+SCENARIOS.push({
+  name: '吉祥物聊天：出厂不可见；开了也没 Key 时一句话都不发，界面教人去配 Key',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    // 先抄走用户当前 config 与聊天开关，收尾原样放回 —— 场景不许留下状态。
+    var saved = JSON.parse(await client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get(["config","omitonePetChatOn"],' +
+      'function(r){res(JSON.stringify(r||{}))})})'));
+    var cfg = saved.config;
+    await client.evaluate('new Promise(function(res){chrome.storage.local.set(' + JSON.stringify({
+      config: Object.assign({}, cfg || {}, { apiKey: '' }), omitonePetChatOn: 0
+    }) + ',function(){res(true)})})');
+    await reloadPet(ctx, { width: 420, height: 640 });
+
+    var off = await petEval(client, function () {
+      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      var panel = document.getElementById('petChat');
+      return { on: document.body.classList.contains('pet-chat-on'),
+        display: btn ? getComputedStyle(btn).display : '(no button)',
+        panel: panel ? panel.getAttribute('aria-hidden') : '(no panel)' };
+    });
+    check('出厂：聊天开关关，body 没有 pet-chat-on、「聊」display:none、面板 aria-hidden=true',
+      off.on === false && off.display === 'none' && off.panel === 'true', JSON.stringify(off));
+
+    await petEval(client, function () { document.getElementById('petChatEnabled').click(); });
+    var toggled = await petEval(client, function () {
+      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      return { on: document.body.classList.contains('pet-chat-on'),
+        display: btn ? getComputedStyle(btn).display : '(no button)',
+        aria: document.getElementById('petChatEnabled').getAttribute('aria-checked') };
+    });
+    check('点开设置里的「吉祥物聊天」，body 挂上 pet-chat-on、「聊」真实可见、开关 aria 翻到 true',
+      toggled.on === true && toggled.display === 'block' && toggled.aria === 'true', JSON.stringify(toggled));
+
+    await petEval(client, function () {
+      document.querySelector('.pet-tools button[data-act="chat"]').click();
+    });
+    var opened = await petEval(client, function () {
+      var panel = document.getElementById('petChat');
+      return { show: panel.classList.contains('show'), aria: panel.getAttribute('aria-hidden') };
+    });
+    check('点「聊」面板开门（.show 加上、aria-hidden=false）',
+      opened.show === true && opened.aria === 'false', JSON.stringify(opened));
+
+    await petEval(client, function () {
+      document.getElementById('petChatInput').value = '你好';
+      document.getElementById('petChatSend').click();
+    });
+    var sent = null;
+    for (var wait = 0; wait < 40 && !sent; wait++) {
+      await sleep(100);
+      sent = await petEval(client, function () {
+        var user = document.querySelector('#petChatLog .pet-chat-row.user');
+        var err = document.querySelector('#petChatLog .pet-chat-row.err');
+        var btn = document.getElementById('petChatSend');
+        return { rows: document.querySelectorAll('#petChatLog .pet-chat-row').length,
+          user: user ? user.textContent : '', err: err ? err.textContent : '',
+          busy: btn ? btn.disabled : null };
+      });
+      if (sent.err) break;
+    }
+    check('没 Key 说话：用户那句进日志、回的是「先去 API 设置配好」那句提示、按钮已回到可按状态，' +
+      '日志里只有两行（错误行不进历史，所以没有第三行）',
+      sent.user === '你好' && /API Key/.test(sent.err) && sent.busy === false && sent.rows === 2,
+      JSON.stringify(sent));
+
+    await petEval(client, function () {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+    });
+    var closed = await petEval(client, function () {
+      var panel = document.getElementById('petChat');
+      return { show: panel.classList.contains('show'), aria: panel.getAttribute('aria-hidden') };
+    });
+    check('Esc 关门（与册子同一族的三样关法之一）',
+      closed.show === false && closed.aria === 'true', JSON.stringify(closed));
+
+    // 收尾：原样放回。config / 开关哪个原来就不存在，哪个就摘掉，不许写 undefined 进去。
+    var restoreSet = {};
+    if (cfg !== undefined) restoreSet.config = cfg;
+    if (saved.omitonePetChatOn !== undefined) restoreSet.omitonePetChatOn = saved.omitonePetChatOn;
+    var restoreRemove = ['config', 'omitonePetChatOn'].filter(function (k) { return !(k in restoreSet); });
+    if (restoreRemove.length) await client.evaluate('new Promise(function(res){chrome.storage.local.remove(' +
+      JSON.stringify(restoreRemove) + ',function(){res(true)})})');
+    if (Object.keys(restoreSet).length) await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
+      JSON.stringify(restoreSet) + ',function(){res(true)})})');
   }
 });
 // ===========================================================================

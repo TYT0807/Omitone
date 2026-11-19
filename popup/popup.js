@@ -95,6 +95,7 @@ const els = {
   systemPrompt: $("systemPrompt"),
   restudy: $("restudy"),
   pagePetEnabled: $("pagePetEnabled"),
+  petChatEnabled: $("petChatEnabled"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
   apiUrl: $("apiUrl"),
@@ -372,6 +373,90 @@ async function testApiConnectionDirect(cfg) {
   return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
 }
 
+// ── 宠物聊天（批次 122）────────────────────────────────────────────────────
+// 弹窗里「聊」那枚按钮的唯一请求出口。复用答题同一条 api_fetch 链路（后台代理 +
+// 用户自己配置的 Key/模型），不接任何第三方中转。三个 apiType 分支与
+// testApiConnectionDirect 的三胞胎同族 —— 改一处必须三处一起改的规矩在这里同样适用。
+// 构造与发送分开：buildPetChatRequest 是纯函数（集成测试从本文件抽出来直接构造验证形状）。
+function buildPetChatRequest(cfg, history, sys, urls) {
+  const trimmed = (history || [])
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") &&
+      typeof m.text === "string" && m.text.trim() !== "")
+    .slice(-8)
+    .map((m) => ({ role: m.role, content: m.text.trim().slice(0, 400) }));
+  // 最后一发必须是用户说的话：界面忙乱时不会拿半截历史去发请求
+  if (!trimmed.length || trimmed[trimmed.length - 1].role !== "user") return null;
+  const h = urls || { openai: buildOpenAICompatibleUrl, claude: buildClaudeApiUrl, gemini: buildGeminiApiUrl };
+  if (cfg.apiType === "claude") {
+    return {
+      apiType: "claude",
+      url: h.claude(cfg.apiUrl),
+      headers: { "Content-Type": "application/json", "x-api-key": cfg.apiKey, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model: cfg.model, max_tokens: 384, temperature: 0.8, system: sys, messages: trimmed })
+    };
+  }
+  if (cfg.apiType === "gemini") {
+    return {
+      apiType: "gemini",
+      url: h.gemini(cfg.apiUrl, cfg.model, cfg.apiKey),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: sys }] },
+        contents: trimmed.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
+        generationConfig: { temperature: 0.8, maxOutputTokens: 384 }
+      })
+    };
+  }
+  return {
+    apiType: "openai",
+    url: h.openai(cfg.apiUrl),
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify({
+      model: cfg.model,
+      messages: [{ role: "system", content: sys }].concat(trimmed),
+      max_tokens: 384,
+      temperature: 0.8
+    })
+  };
+}
+
+async function petChatSend(history) {
+  const cfg = { ...config, apiKey: normalizeApiKey(config.apiKey) };
+  if (!cfg.apiKey) return { ok: false, noKey: true };
+  const sys = (typeof self !== "undefined" && self.OmitonePrompt && self.OmitonePrompt.PET_CHAT_SYSTEM) || "";
+  const req = buildPetChatRequest(cfg, history, sys);
+  if (!req) return { ok: false, error: "" };
+  let response;
+  try {
+    response = await fetchWithTimeout(req.url, { method: "POST", headers: req.headers, body: req.body }, 20000);
+  } catch (e) {
+    return { ok: false, error: "没连上（可能是网络，也可能是地址填错了）" };
+  }
+  if (!response.ok) {
+    const bodyText = await response.text().catch(() => "");
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(response.status, bodyText)
+      : { category: "unknown", human: `请求失败 (${response.status})` };
+    return { ok: false, error: String(described.human || "").slice(0, 80) };
+  }
+  let data = null;
+  try { data = await response.json(); } catch (e) { return { ok: false, error: "回包读不懂" }; }
+  let text = "";
+  if (req.apiType === "claude") {
+    text = ((data.content || [])[0] || {}).text || "";
+  } else if (req.apiType === "gemini") {
+    const parts = ((((data.candidates || [])[0] || {}).content || {}).parts) || [];
+    text = parts.map((part) => part && part.text ? part.text : "").join(" ");
+  } else {
+    text = (((data.choices || [])[0] || {}).message || {}).content || "";
+  }
+  text = String(text).trim().replace(/\s+/g, " ");
+  if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试" };
+  return { ok: true, text: text.slice(0, 160) };
+}
+// pet.js 只管界面；发请求统一走这个钩子（经典脚本按加载顺序共享全局作用域）
+window.omitonePetChatSend = petChatSend;
+
 async function appendPopupLog(level, message, meta) {
   try {
     await sendRuntimeMessageWithTimeout({ type: "runtime_log_append", payload: {
@@ -628,6 +713,47 @@ if (pagePetEnabledLabel) {
   });
 }
 
+// 吉祥物聊天开关：与上面的吉祥物开关同一族（纯外观存档、独立键、不走主配置），
+// 但语义相反——**默认关**：聊天要走用户自己的 Key 按量计费，不许"升级即默认花钱"。
+// 它只决定弹窗里「聊」按钮要不要出现（pet.js 认 body 上的 pet-chat-on，键是 omitonePetChatOn）。
+let petChatEnabledVal = false;
+const updatePetChatEnabled = (on) => {
+  els.petChatEnabled.className = "toggle" + (on ? " on" : "");
+  els.petChatEnabled.setAttribute("aria-checked", on ? "true" : "false");
+  document.body.classList.toggle("pet-chat-on", on);
+};
+const togglePetChatEnabled = async () => {
+  const value = !petChatEnabledVal;
+  const prev = petChatEnabledVal;
+  petChatEnabledVal = value;
+  updatePetChatEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePetChatOn: value ? 1 : 0 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    petChatEnabledVal = prev;
+    updatePetChatEnabled(prev);
+    reportSaveError(error);
+  }
+};
+els.petChatEnabled.addEventListener("click", togglePetChatEnabled);
+els.petChatEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePetChatEnabled();
+  }
+});
+const petChatEnabledLabel = document.querySelector("label[for=\"petChatEnabled\"]");
+if (petChatEnabledLabel) {
+  petChatEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePetChatEnabled();
+  });
+}
+
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。
  *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
  *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
@@ -713,6 +839,14 @@ async function load() {
       updatePagePetEnabled(pagePetEnabledVal);
     });
   } catch (e) { /* storage 不可用就当开着 */ }
+  // 聊天开关也读她自己的键（键缺席 = 关 —— 默认不开，聊天要花 Key 的钱）
+  try {
+    chrome.storage.local.get("omitonePetChatOn", (r) => {
+      if (chrome.runtime.lastError) return;
+      petChatEnabledVal = !!(r && r.omitonePetChatOn === 1);
+      updatePetChatEnabled(petChatEnabledVal);
+    });
+  } catch (e) { /* storage 不可用就当关着 */ }
   renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
@@ -772,6 +906,8 @@ async function resetDefault() {
     await patchConfig({ ...DEFAULTS, apiConnectionError: "" });
     // 吉祥物开关也回默认（精致 = 出现）。她的好感度/位置/收起那几格是用户存档，不动。
     try { chrome.storage.local.set({ omitonePagePetMinimal: 0 }); } catch (e) {}
+    // 聊天开关也回默认（默认关 —— 用户主动开的付费功能，恢复默认就该收回去）
+    try { chrome.storage.local.set({ omitonePetChatOn: 0 }); } catch (e) {}
     await load();
     toast("已恢复默认");
   } catch (error) { reportSaveError(error); }

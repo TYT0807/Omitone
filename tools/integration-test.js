@@ -4670,6 +4670,164 @@ async function testCourseHomeProbeSignals() {
   }
 }
 
+async function testPetChatRequest() {
+  console.log('\n[26] 宠物聊天：请求构造纯函数 + 发送层接线（批次 122）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var pop = read('popup/popup.js');
+  var promptSrc = read('libs/prompt.js');
+
+  // 顶层 function 抓取器：从 `function 名字(` 起、按花括号配对收尾（popup.js 是 0 缩进顶层，
+  // 函数体里没有会骗过配对的字符串花括号 —— 有就说明这段被改坏，取不出整段按零覆盖处理）
+  var topFn = function (src, name) {
+    var at = src.indexOf('function ' + name + '(');
+    if (at < 0) return null;
+    // `async function petChatSend(` 这种声明要从 async 起 —— 只截 function 就把
+    // await 留在一个非 async 的函数体里，构造时 SyntaxError（整段「没跑到」）
+    if (src.slice(Math.max(0, at - 6), at) === 'async ') at -= 6;
+    var depth = 0;
+    for (var i = src.indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+  var builderText = topFn(pop, 'buildPetChatRequest');
+  var sendText = topFn(pop, 'petChatSend');
+  check('① 构造（buildPetChatRequest）与发送（petChatSend）两件都从 popup/popup.js 原样取出真跑 —— 取不出就整段不跑，那种「没执行」和「通过」在报告里长得一模一样（AGENTS §5）',
+    !!builderText && !!sendText,
+    JSON.stringify({ builder: !!builderText, send: !!sendText }));
+  if (!builderText || !sendText) return;
+
+  var made = new Function('return (' + builderText + ')')();
+  // 地址构造注入成桩：url 是拼出来的字符串，断言它**收到了哪几个实参**（gemini 的 key 在 URL 里）
+  var H = {
+    openai: function (a) { return 'OPENAI|' + a; },
+    claude: function (a) { return 'CLAUDE|' + a; },
+    gemini: function (a, m, k) { return 'GEMINI|' + a + '|' + m + '|' + k; }
+  };
+  var hist = function () { return [
+    { role: 'user', text: '你好' }, { role: 'assistant', text: '嗯嗯' }, { role: 'user', text: '在么' }]; };
+
+  // ---- ② OpenAI 兼容形：system 打头、Bearer 头、max_tokens 384 ----
+  var rOpen = made({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, hist(), 'SYS', H);
+  var bOpen = rOpen ? JSON.parse(rOpen.body) : null;
+  check('② openai 形：system 那条打头、最后一条是用户刚说的话（`在么`）、`max_tokens` 封顶 384（聊天的钱有上限）、Authorization 用 `Bearer ` 前缀、地址来自真源构造器',
+    rOpen && rOpen.apiType === 'openai' && rOpen.url === 'OPENAI|https://api.example/v1' &&
+      rOpen.headers.Authorization === 'Bearer sk-test' && bOpen &&
+      bOpen.messages[0].role === 'system' && bOpen.messages[0].content === 'SYS' &&
+      bOpen.messages[bOpen.messages.length - 1].role === 'user' &&
+      bOpen.messages[bOpen.messages.length - 1].content === '在么' && bOpen.max_tokens === 384,
+    JSON.stringify({ url: rOpen && rOpen.url, auth: rOpen && rOpen.headers.Authorization,
+      first: bOpen && bOpen.messages[0], last: bOpen && bOpen.messages[bOpen.messages.length - 1], max: bOpen && bOpen.max_tokens }));
+
+  // ---- ③ Claude 形：system 是**顶层字段**、x-api-key 头 ----
+  var rClaude = made({ apiType: 'claude', apiUrl: 'https://api.example', model: 'm2', apiKey: 'sk-c' }, hist(), 'SYS', H);
+  var bClaude = rClaude ? JSON.parse(rClaude.body) : null;
+  check('③ claude 形：system 在 body 顶层（不是 messages 里）、`x-api-key` 头带 anthropic-version、地址收到的是 apiUrl 本身',
+    rClaude && rClaude.apiType === 'claude' && rClaude.url === 'CLAUDE|https://api.example' &&
+      rClaude.headers['x-api-key'] === 'sk-c' && !!rClaude.headers['anthropic-version'] && bClaude &&
+      bClaude.system === 'SYS' && bClaude.messages[bClaude.messages.length - 1].content === '在么',
+    JSON.stringify({ url: rClaude && rClaude.url, sys: bClaude && bClaude.system, hdrs: rClaude && Object.keys(rClaude.headers) }));
+
+  // ---- ④ Gemini 形：systemInstruction 包着、assistant→model 改名、key 进 URL ----
+  var rGem = made({ apiType: 'gemini', apiUrl: 'https://g.example', model: 'm3', apiKey: 'sk-g' }, hist(), 'SYS', H);
+  var bGem = rGem ? JSON.parse(rGem.body) : null;
+  var roles = bGem ? bGem.contents.map(function (c) { return c.role; }).join(',') : '';
+  check('④ gemini 形：systemInstruction 包着 SYS、assistant 一条改名叫 `model`（gemini 没有 assistant 角色，不改名整个请求 400）、地址把 **apiUrl+model+key 三个实参都收走**（key 只许在 URL，不许混进头）',
+    rGem && rGem.apiType === 'gemini' && rGem.url === 'GEMINI|https://g.example|m3|sk-g' &&
+      !rGem.headers.Authorization && bGem &&
+      bGem.systemInstruction.parts[0].text === 'SYS' && roles === 'user,model,user' &&
+      bGem.generationConfig.maxOutputTokens === 384,
+    JSON.stringify({ url: rGem && rGem.url, roles: roles, sys: bGem && bGem.systemInstruction.parts[0].text }));
+
+  // ---- ⑤ 截断两把尺：只留最近 8 条 + 单条压到 400 字 ----
+  var long12 = [];
+  for (var ti = 0; ti < 12; ti++) long12.push({ role: ti % 2 ? 'assistant' : 'user', text: 'msg' + ti });
+  long12.push({ role: 'user', text: '长'.repeat(500) });
+  var rTrim = made({ apiType: 'openai', apiUrl: 'u', model: 'm', apiKey: 'k' }, long12, 'SYS', H);
+  var bTrim = rTrim ? JSON.parse(rTrim.body) : null;
+  var lastContent = bTrim ? bTrim.messages[bTrim.messages.length - 1].content : '';
+  check('⑤ 十二条历史进来只留**最近 8 条**（连 system 共 9 条 —— 历史无上限等于每发都把整本账重送一遍，钱翻倍）；单条 500 字压到 400（上限就是那把尺，不是测试抄的数）',
+    bTrim && bTrim.messages.length === 9 && bTrim.messages[1].content === 'msg5' && lastContent.length === 400,
+    JSON.stringify({ kept: bTrim && bTrim.messages.length, first: bTrim && bTrim.messages[1].content, lastLen: lastContent.length }));
+
+  // ---- ⑥ 半截历史不发货：最后一发必须是用户的话 ----
+  var nEmpty = made({ apiType: 'openai', apiUrl: 'u', model: 'm', apiKey: 'k' }, [], 'SYS', H);
+  var nAssistant = made({ apiType: 'openai', apiUrl: 'u', model: 'm', apiKey: 'k' },
+    [{ role: 'user', text: '你好' }, { role: 'assistant', text: '嗯' }], 'SYS', H);
+  var nBlank = made({ apiType: 'openai', apiUrl: 'u', model: 'm', apiKey: 'k' },
+    [{ role: 'user', text: '你好' }, { role: 'assistant', text: '嗯' }, { role: 'user', text: '   ' }], 'SYS', H);
+  check('⑥ 三种半截历史一律交 null（**一个请求都不构造**）：空历史、最后一条是她说的、最后一条是纯空白（trim 完等于没说）—— 界面忙乱时不会把没问出口的话拿去花钱',
+    nEmpty === null && nAssistant === null && nBlank === null,
+    JSON.stringify({ empty: nEmpty, assistantLast: nAssistant, blankLast: nBlank }));
+
+  // ---- ⑦ 人设提示词：libs/prompt.js 声明 + 导出 + 内容非空（提示词唯一真源，AGENTS §2 #4）----
+  var petSysM = promptSrc.match(/var PET_CHAT_SYSTEM = (\[[\s\S]*?\])\.join/);
+  var petSys = petSysM ? new Function('return ' + petSysM[1])().join('\n') : '';
+  check('⑦ 人设 PET_CHAT_SYSTEM 在 libs/prompt.js 里**声明且导出**（两处都认），内容非空并点明身份（吉祥物）与限额（40 字）—— 提示词内联进调用方就分叉了',
+    /PET_CHAT_SYSTEM: PET_CHAT_SYSTEM/.test(promptSrc) && petSys.length > 40 &&
+      petSys.indexOf('吉祥物') >= 0 && petSys.indexOf('40') >= 0,
+    JSON.stringify({ exported: /PET_CHAT_SYSTEM: PET_CHAT_SYSTEM/.test(promptSrc), len: petSys.length, head: petSys.slice(0, 24) }));
+
+  // ---- ⑧ 发送层静态接线：超时、归一化、错误分类、人设、挂到 window ----
+  check('⑧ petChatSend 体内五处接线都在：`fetchWithTimeout(`（⚠️ try/catch 拦不住挂起，只有超时能 —— AGENTS §2 #2）、`normalizeApiKey(`、`OmitoneApiError`（不再把业务拒绝叫「连接失败」）、`PET_CHAT_SYSTEM`（人设从这里来）、`window.omitonePetChatSend =`（界面钩子真的挂上）',
+    sendText.indexOf('fetchWithTimeout(') >= 0 && sendText.indexOf('normalizeApiKey(') >= 0 &&
+      sendText.indexOf('OmitoneApiError') >= 0 && sendText.indexOf('PET_CHAT_SYSTEM') >= 0 &&
+      pop.indexOf('window.omitonePetChatSend = petChatSend;') >= 0,
+    JSON.stringify({ fetch: sendText.indexOf('fetchWithTimeout(') >= 0, norm: sendText.indexOf('normalizeApiKey(') >= 0,
+      apiErr: sendText.indexOf('OmitoneApiError') >= 0, hook: pop.indexOf('window.omitonePetChatSend = petChatSend;') >= 0 }));
+
+  // ---- ⑨-⑬ 发送层动态：五个分支各说各的话，不许静默 ----
+  // petChatSend 在生产里只带 3 参调 buildPetChatRequest（第 4 参 urls 默认取 popup.js
+  // 模块作用域的三个地址构造器 —— Node 里那三个名字不存在，默认值一求值就 ReferenceError），
+  // 所以这里包一层补上 H，与 ②-④ 显式传 H 是同一手法。
+  var mkSend = function (cfgOver, fetchStub, selfStub) {
+    var names = ['config', 'normalizeApiKey', 'buildPetChatRequest', 'fetchWithTimeout', 'self'];
+    var inj = {
+      config: Object.assign({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, cfgOver),
+      normalizeApiKey: function (k) { return k; },
+      buildPetChatRequest: function (cfg, history, sys) { return made(cfg, history, sys, H); },
+      fetchWithTimeout: fetchStub,
+      self: selfStub || {}
+    };
+    var fn = Reflect.construct(Function, names.concat(['return (' + sendText + ')']));
+    var send = fn.apply(null, names.map(function (k) { return inj[k]; }));
+    // fn.apply 交回的是 petChatSend 函数本身 —— 不调用它，五个断言拿到的全是函数，
+    // await 一个函数只会原样resolve，症状是 fetchCalls:0（本轮实测踩过）。
+    return send(hist());
+  };
+  var fetchCalls = 0;
+
+  var noKey = await mkSend({ apiKey: '' }, function () { fetchCalls++; return null; }, {});
+  check('⑨ 没填 Key：**一个请求都不发**（fetch 一次都没被调）就交回 `noKey:true` —— 「能接受用不了，不能接受花了钱」的底线格',
+    noKey && noKey.noKey === true && noKey.ok === false && fetchCalls === 0,
+    JSON.stringify({ res: noKey, fetchCalls: fetchCalls }));
+
+  var netErr = await mkSend({}, function () { fetchCalls++; throw new Error('boom'); }, {});
+  check('⑩ 网络抛错：交回 `ok:false` 且**带一句人话**（点「没连上」），绝不静默装作成功',
+    netErr && netErr.ok === false && !netErr.noKey && String(netErr.error).indexOf('没连上') >= 0,
+    JSON.stringify({ error: netErr && netErr.error, fetchCalls: fetchCalls }));
+
+  var http401 = await mkSend({}, function () { fetchCalls++; return { ok: false, status: 401, text: async function () { return 'bad key'; } }; },
+    { OmitoneApiError: { describe: function (s, b) { return { category: 'auth', human: 'Key 无效:' + b }; } } });
+  check('⑪ HTTP 401：文案走 OmitoneApiError 分类（Key 无效那一句带回包原文），不是笼统的「连接失败」',
+    http401 && http401.ok === false && http401.error === 'Key 无效:bad key',
+    JSON.stringify({ error: http401 && http401.error, status: 401 }));
+
+  var okRes = await mkSend({}, function () { fetchCalls++; return { ok: true, json: async function () { return { choices: [{ message: { content: '  好\n呀  ' } }] }; } }; }, {});
+  check('⑫ 成功：回包按 apiType 拆出 content，空白收敛成单空格（换行/首尾空格不原样进对话流）',
+    okRes && okRes.ok === true && okRes.text === '好 呀',
+    JSON.stringify({ text: okRes && okRes.text, fetchCalls: fetchCalls }));
+
+  var silent = await mkSend({}, function () { fetchCalls++; return { ok: true, json: async function () { return { choices: [{ message: { content: '   ' } }] }; } }; }, {});
+  check('⑬ 「只想了没说话」那一格单独说话（点给用户「换个普通模型」），不许被当成成功、也不许静默',
+    silent && silent.ok === false && String(silent.error).indexOf('只想了') >= 0,
+    JSON.stringify({ error: silent && silent.error }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -4708,6 +4866,7 @@ async function main() {
   await testCanonicalMultipleAnswerOrEmpty();
   await testPopupQuizLocalComboGroup();
   await testCourseHomeProbeSignals();
+  await testPetChatRequest();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
