@@ -3604,17 +3604,65 @@ async function testDisplacedStudyPageRescue() {
     var varsBlock = (varsAt >= 0 && varsEnd > varsAt)
       ? bg.slice(varsAt, varsEnd + 'Object.create(null);'.length) : '';
     var fPrune = topFnText(bg, 'pruneTabStudyMemory');
+    var fPruneCore = topFnText(bg, 'pruneStudyMemory');
     var fNote = topFnText(bg, 'noteTabStudyUrl');
     var fVerdict = topFnText(bg, 'studyRescueVerdict');
-    if (!varsBlock || !fPrune || !fNote || !fVerdict) return;
+    if (!varsBlock || !fPrune || !fPruneCore || !fNote || !fVerdict) return;
     try {
-      harness = new Function('Date', 'return (function () {\n' + varsBlock + '\n' + fPrune + '\n' + fNote + '\n' + fVerdict +
+      // 批次 134：`noteTabStudyUrl` 现在写完内存还要落一次盘，这里给一个空壳 ——
+      // 落盘那条链在下面的 membox 里用**真函数**跑（㉖㉗㉘），别在这里假装有覆盖。
+      harness = new Function('Date', 'return (function () {\n' + varsBlock +
+        '\nfunction persistTabStudyMemory() {}\n' + fPruneCore + '\n' + fPrune + '\n' + fNote + '\n' + fVerdict +
         '\nreturn { note: noteTabStudyUrl, verdict: studyRescueVerdict,' +
         ' mem: function () { return tabStudyMemory; },' +
         ' reset: function () { tabStudyMemory = Object.create(null); } };\n})()')(
         { now: function () { return fakeNow; } });
     } catch (eBuild) { harness = null; }
   })();
+
+  // ── 批次 134：整条持久化链都用**盘上真函数**跑，一次 build = 一整个 SW 生命周期 ──────
+  // 为什么非要自己造一个盒子：#176 的根因就是「账只活在内存里，而 MV3 的 SW 会被回收」。
+  // 用假对象替掉 `persistTabStudyMemory` 就只能证明"它被调用了"，证明不了"下一轮醒来还在" ——
+  // 而只有后者才是那个死循环的解药。`sessions` 在两次 build 之间共享，正相当于
+  // `chrome.storage.session`：跨 SW 休眠活着、跨浏览器重启死掉。
+  var memFns = ['pruneStudyMemory', 'mergeStudyMemory', 'studyMemoryThen', 'hydrateStudyMemoryNow',
+    'hydrateStudyMemory', 'persistStudyMemoryNow', 'persistTabStudyMemory', 'readTabStudyMemory',
+    'studyMemoryOutcome', 'queueTabStudyNote'];
+  var memText = memFns.map(function (n) { return topFnText(bg, n); });
+  var keyM = bg.match(/var STUDY_MEMORY_KEY = '([^']+)'/);
+  var MEM_KEY = keyM ? keyM[1] : null;
+  var memBroken = !MEM_KEY || memText.some(function (t) { return !t; });
+  var memLog = { sets: [], areas: [] };
+  /** @param over.storageGet 可以换成一条会挂的读，用来量「问不到存储」那一格 */
+  var buildMemBox = function (sessions, over) {
+    var o = over || {};
+    var varsAt = bg.indexOf('var STUDY_URL_RE');
+    var varsEnd = bg.indexOf('Object.create(null);', varsAt);
+    var varsBlock = (varsAt >= 0 && varsEnd > varsAt) ? bg.slice(varsAt, varsEnd + 'Object.create(null);'.length) : '';
+    var prelude = varsBlock + '\nvar STUDY_MEMORY_KEY = ' + JSON.stringify(MEM_KEY) +
+      ';\nvar studyMemoryLoaded = false;\nvar studyMemoryQueue = Promise.resolve();\n' + memText.join('\n') +
+      '\nfunction pruneTabStudyMemory() { tabStudyMemory = pruneStudyMemory(tabStudyMemory, STUDY_MEMORY_MAX); }\n' +
+      topFnText(bg, 'noteTabStudyUrl') + '\n' + topFnText(bg, 'studyRescueVerdict') +
+      '\nreturn { note: noteTabStudyUrl, queue: queueTabStudyNote, merge: mergeStudyMemory,' +
+      ' read: readTabStudyMemory, verdict: studyRescueVerdict, outcome: studyMemoryOutcome,' +
+      ' mem: function () { return tabStudyMemory; }, loaded: function () { return studyMemoryLoaded; } };';
+    return new Function('Date', 'storageGet', 'storageSet', 'return (function () {\n' + prelude + '\n})()')(
+      { now: function () { return fakeNow; } },
+      o.storageGet || function (area, key) {
+        memLog.areas.push(area);
+        var out = {};
+        out[key] = sessions[area] && sessions[area][key];
+        return Promise.resolve(out);
+      },
+      o.storageSet || function (area, patch) {
+        memLog.areas.push(area);
+        memLog.sets.push({ area: area, keys: Object.keys(patch), snap: JSON.parse(JSON.stringify(patch)) });
+        if (!sessions[area]) sessions[area] = {};
+        Object.keys(patch).forEach(function (k) { sessions[area][k] = patch[k]; });
+        return Promise.resolve();
+      });
+  };
+  var settle = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
 
   // 三个地板住在 00 那片（同一个 IIFE 作用域），被单独取出来跑时看不见，只能按名字注进去；
   // 生产里改了名而测试还注旧名，ReferenceError 会当场响，不会静默当成没回归。
@@ -3644,11 +3692,11 @@ async function testDisplacedStudyPageRescue() {
     Date: { now: function () { return askNow; } }
   }, floors));
 
-  check('①′ 四件套都能从盘上取出来真跑，三个地板也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+  check('①′ 四件套都能从盘上取出来真跑，三个地板也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）；批次 134 起持久化那一族七个函数与那个存储键也各要各取出来，缺一个 ㉖㉗㉘ 就是空转',
     !!harness && typeof plan === 'function' && typeof speak === 'function' && typeof ask === 'function' &&
-    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH,
+    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH && memBroken === false,
     'harness=' + !!harness + ' plan=' + typeof plan + ' speak=' + typeof speak + ' ask=' + typeof ask +
-      ' floors=' + JSON.stringify([PENDING, FRESH, SILENCE]));
+      ' floors=' + JSON.stringify([PENDING, FRESH, SILENCE]) + ' memBroken=' + memBroken + ' memKey=' + MEM_KEY);
   if (!harness || typeof plan !== 'function' || typeof speak !== 'function' || typeof ask !== 'function') return;
   if (!(PENDING > 0 && FRESH > PENDING && SILENCE > FRESH)) return;
   var verdict = harness.verdict;
@@ -3981,6 +4029,122 @@ async function testDisplacedStudyPageRescue() {
     routeBand.indexOf('invalid_payload') >= 0 && routeBand.indexOf('t.id !== selfTab.id') >= 0 &&
     routeBand.indexOf('STUDY_URL_RE.test(') >= 0,
     JSON.stringify({ contentMs: msC && msC[1], pageMs: pMs && pMs[1], routeAt: routeAt }));
+
+  // ── 批次 134（会话任务 #176）：这本账要扛得住 SW 被回收 ─────────────────────────
+  // 现场那份 200 条日志里被推到用户中心的那一枚停了 105 分钟（`emptyForMs` 6,166,238 → 6,310,000），
+  // 而 MV3 的 service worker 闲几十秒就回收 —— 旧实现把账只写在内存，于是每一轮醒来都是「全新账号」：
+  //   ① `never-study` → 页面判成「这页不是插件带来的」，每份页面只说一次 → 再也没人送它回去；
+  //   ② `rescues` 归零 → 「回去→被顶→再回去」的上限**永远数不满** → 死循环。
+  // 这两条都在下面真跑：`buildMemBox` 换一次盒子 = SW 被回收又起来一次，`sessions` 跨盒子共享。
+  var loopSess = {};
+  fakeNow = N;
+  var boxA = buildMemBox(loopSess);
+  boxA.queue(41, STUDY_URL);
+  await settle();
+  var setsAfterFirstNote = memLog.sets.length;
+  var areasUsed = memLog.areas.slice();
+  fakeNow = N + 8000;
+  var boxB = buildMemBox(loopSess);                       // SW 睡了又醒：内存账是空的
+  var memEmptyBefore = Object.keys(boxB.mem()).length;   // ⚠️ 必须在记这一笔之前取，否则合并完就量不到「本来就空」
+  boxB.queue(41, PORTAL_URL);                             // 被站点顶到用户中心
+  await settle();
+  var woke = await boxB.read(41);
+  var wokeVerdict = boxB.outcome(boxB.verdict(woke.memory, 0, N + 20000), woke.known);
+  check('㉖ 账落在 chrome.storage.session：SW 被回收又醒来时，那一枚"刚才在刷课"的账还在（内存空着也能从存储补回来），回去的靶地址与被顶走的时刻都读得回来 —— 不再一醒来就说「这页不是插件带来的」。⚠️ 走的是事件那条 queue 而不是裸 note：不先补账，"被顶走"那一发读不到旧账、压根不落 awayAt',
+    setsAfterFirstNote >= 1 && memLog.sets[0].keys.indexOf(MEM_KEY) >= 0 &&
+    areasUsed.every(function (a) { return a === 'session'; }) &&
+    memEmptyBefore === 0 && woke.known === true && !!woke.memory &&
+    woke.memory.studyHref === STUDY_URL && woke.memory.awayAt === N + 8000 &&
+    wokeVerdict.reason === 'go-back' && wokeVerdict.mayRescue === true && wokeVerdict.wasStudy === true &&
+    wokeVerdict.awayMs === 12000,
+    JSON.stringify({ sets: setsAfterFirstNote, areas: areasUsed, emptyBefore: memEmptyBefore, known: woke.known, mem: woke.memory, verdict: wokeVerdict }));
+
+  // 上限要跨休眠也还在涨：这是「重载有界」真正承重的那一格
+  var sessLoop = {};
+  fakeNow = N;
+  var boot = buildMemBox(sessLoop);
+  boot.queue(51, STUDY_URL);
+  await settle();
+  var seq = [];
+  var navTotal = 0;
+  var tLoop = N;
+  for (var ci = 0; ci < 3; ci += 1) {
+    tLoop += 30000;
+    fakeNow = tLoop;
+    var cycBox = buildMemBox(sessLoop);            // 每一次被顶都换一整个 SW 生命周期
+    cycBox.queue(51, PORTAL_URL);
+    await settle();
+    var rd = await cycBox.read(51);
+    var vd = cycBox.outcome(cycBox.verdict(rd.memory, 0, tLoop), rd.known);
+    seq.push({ reason: vd.reason, rescues: vd.rescues, may: vd.mayRescue });
+    var stLoop = runSpeak(mkCtx(), cacheOf({
+      reason: vd.reason, mayRescue: vd.mayRescue, studyHref: vd.studyHref,
+      studyAgeMs: vd.studyAgeMs, awayMs: vd.awayMs, otherStudyTabs: vd.otherStudyTabs, rescues: vd.rescues
+    }), tLoop);
+    navTotal += stLoop.navs.length;
+    if (vd.mayRescue === true) {
+      tLoop += 20000;                              // 回去路上花的十几秒
+      fakeNow = tLoop;
+      cycBox.queue(51, vd.studyHref);              // 同一枚标签页内导航回来
+      await settle();
+    }
+  }
+  check('㉗ 「回去→被顶→再回去」的上限跨 SW 休眠也算数：三次被顶的格子是 go-back / go-back / rescue-cap（第三格才交给人的），整场最多只导航 CAP 次 —— 旧实现每一轮醒来都从 0 数起，那就是那个死循环',
+    seq.length === 3 && seq[0].reason === 'go-back' && seq[0].rescues === 0 &&
+    seq[1].reason === 'go-back' && seq[1].rescues === 1 &&
+    seq[2].reason === 'rescue-cap' && seq[2].may === false && seq[2].rescues === CAP &&
+    navTotal === CAP,
+    JSON.stringify({ seq: seq, navTotal: navTotal, cap: CAP }));
+
+  var deadGet = function () { return Promise.reject(new Error('存储问不到')); };
+  var boxDead = buildMemBox({}, { storageGet: deadGet });
+  var deadRead = await boxDead.read(77);
+  var deadVerdict = boxDead.outcome(boxDead.verdict(deadRead.memory, 0, N), deadRead.known);
+  var deadCache = cacheOf({
+    reason: deadVerdict.reason, mayRescue: deadVerdict.mayRescue,
+    otherStudyTabs: deadVerdict.otherStudyTabs, studyAgeMs: deadVerdict.studyAgeMs
+  });
+  var deadPlan = plan(deadCache, N, '__没说过过的另一种说法__', 0);
+  var rDead = runSpeak(mkCtx(), deadCache, N);
+  var heldVerdict = boxDead.outcome(boxDead.verdict(mkMem(), 0, N), false);
+  check('㉘ 存储问不到 = **「读不出」单独占一格**，不许塌进 never-study：后台交回 memory-unreadable，页面落进 unknown（不是 not-ours）、一次都不导航、返回 false 把话交回老那句（⑮ 钉过 not-ours 每份页面只说一次，塌进那一格就是永久闭嘴）；反面：账上已经有证据时"这一发问不到"不许盖掉它',
+    deadRead.known === false && deadRead.memory === null &&
+    deadVerdict.reason === 'memory-unreadable' && deadVerdict.mayRescue === false &&
+    deadPlan === 'unknown' && rDead.ret === false && rDead.navs.length === 0 && rDead.logs.length === 0 &&
+    heldVerdict.reason === 'go-back' && heldVerdict.mayRescue === true,
+    JSON.stringify({ read: deadRead, verdict: deadVerdict, planAct: deadPlan, spoke: { ret: rDead.ret, navs: rDead.navs.length, logs: rDead.logs.length }, held: heldVerdict }));
+
+  var persistTxt = memText[memFns.indexOf('persistTabStudyMemory')];
+  var persistNowTxt = memText[memFns.indexOf('persistStudyMemoryNow')];
+  var hydrateNowTxt = memText[memFns.indexOf('hydrateStudyMemoryNow')];
+  // 「写之前先补账」这一道闸要**取得到才许算数**：只比 indexOf 的大小，把整句删掉会让
+  // -1 < 正数 照样成立（§5「不会失败的检查等于没有检查」）。
+  var gateAt = persistTxt.indexOf('hydrateStudyMemoryNow');
+  var writeAt = persistTxt.indexOf('persistStudyMemoryNow');
+  var setsBeforeBlind = memLog.sets.length;
+  var boxBlind = buildMemBox(loopSess, { storageGet: deadGet });   // 账补不上，却又进来一次导航
+  boxBlind.queue(41, STUDY_URL + '&back=9');
+  await settle();
+  var mA = boxA.merge({ 5: { studyHref: STUDY_URL, studyAt: N, awayAt: 0, rescues: CAP } },
+    { 5: { studyHref: STUDY_URL, studyAt: N - 1000, awayAt: 0, rescues: 0 } }, 8);
+  var mB = boxA.merge({ 5: { studyHref: STUDY_URL, studyAt: N - 1000, awayAt: 0, rescues: CAP } },
+    { 5: { studyHref: STUDY_URL, studyAt: N, awayAt: 0, rescues: 0 } }, 8);
+  var mDirty = boxA.merge({
+    a: null, b: '字符串', c: { studyHref: 42, studyAt: 5 }, d: { studyHref: STUDY_URL, studyAt: 'abc' },
+    e: { studyHref: '', studyAt: 5 }, f: { studyHref: STUDY_URL, studyAt: 0 }, g: { studyHref: STUDY_URL, studyAt: 5 }
+  }, {}, 8);
+  var mMany = {};
+  for (var mj = 0; mj < MEM_MAX + 6; mj += 1) mMany['t' + mj] = { studyHref: STUDY_URL, studyAt: N + mj * 1000 };
+  var mCap = boxA.merge(mMany, {}, MEM_MAX);
+  check('㉙ 落盘的四条卫生：① 补不上账时**这一发干脆不写**（一写就把睡过去之前那本整抹掉，比不持久化更坏）；② 合并按「谁新听谁」而不是「谁后到听谁」（旧账覆盖新账会把 rescues 打回 0，同一族第二号死法）；③ 脏形状一律丢掉（脏 studyHref 会被拼成一条假导航地址）；④ 读与写都只碰 session 不碰 local（把刷课地址写进磁盘档案既过期又涉隐私），且写之前先过补账那一道闸',
+    memLog.sets.length === setsBeforeBlind &&
+    mA[5].rescues === CAP && mB[5].rescues === 0 &&
+    Object.keys(mDirty).length === 1 && !!mDirty.g &&
+    Object.keys(mCap).length === MEM_MAX && !!mCap['t' + (MEM_MAX + 5)] && !mCap.t0 &&
+    persistNowTxt.indexOf("storageSet('session'") >= 0 && persistNowTxt.indexOf("'local'") < 0 &&
+    hydrateNowTxt.indexOf("storageGet('session'") >= 0 && hydrateNowTxt.indexOf("'local'") < 0 &&
+    gateAt >= 0 && writeAt > gateAt,
+    JSON.stringify({ setsDelta: memLog.sets.length - setsBeforeBlind, mA: mA[5], mB: mB[5], dirty: Object.keys(mDirty), capped: Object.keys(mCap).length, gateAt: gateAt, writeAt: writeAt }));
 }
 
 /** ---- [22] 批次 95：可拖区间还服务不了目标时，不许把一次性机会花在它身上 ---- */

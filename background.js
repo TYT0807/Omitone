@@ -66,7 +66,12 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   }
   chrome.tabs.onRemoved.addListener(function (tabId) {
     revokeTab(tabId);
-    delete tabStudyMemory[tabId];   // 批次 93：标签页没了，它那一枚的「上次在哪刷课」也就没意义了
+    // 批次 93：标签页没了，它那一枚的「上次在哪刷课」也就没意义了
+    // 批次 134：这一发也要落盘 —— 只删内存的话，SW 一醒又从 session 把死标签页那格捞回来，
+    //   而标签页 id 在浏览器重启后**可能复用**，那就会被读成「这一枚刚才在刷课」。
+    //   ⚠️ 先判有再删：`delete` 对不存在的键照样返回 true，写成 `if (delete ...)` 等于
+    //      每关一枚无关标签页就补一次整本账。
+    if (tabStudyMemory[tabId]) { delete tabStudyMemory[tabId]; persistTabStudyMemory(); }
   });
 
   // ── 从学习通页面打开的验证码窗口：自动授一个限时、绑定网址的权限 ──────
@@ -99,7 +104,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   chrome.tabs.onUpdated.addListener(function (tabId, changeInfo, tab) {
     if (typeof changeInfo.url !== 'string') return;
     revokeTab(tabId);
-    noteTabStudyUrl(tabId, changeInfo.url);
+    queueTabStudyNote(tabId, changeInfo.url);   // 批次 134：先补齐账再记（见 queueTabStudyNote 上那段）
     autoGrantTab(tab);
   });
 
@@ -118,16 +123,144 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
   var STUDY_MEMORY_MAX = 32;                    // 台账封个底，别让开过很多标签页的会话无限涨
   var tabStudyMemory = Object.create(null);
 
-  function pruneTabStudyMemory() {
-    var ids = Object.keys(tabStudyMemory);
-    if (ids.length <= STUDY_MEMORY_MAX) return;
-    ids.sort(function (a, b) { return (Number(tabStudyMemory[a].studyAt) || 0) - (Number(tabStudyMemory[b].studyAt) || 0); });
-    for (var i = 0; i < ids.length - STUDY_MEMORY_MAX; i++) delete tabStudyMemory[ids[i]];
+  // ── 批次 134：这本账要扛得住 SW 休眠（会话任务 #176 的根因）───────────────────
+  // MV3 的 service worker 闲几十秒就被回收，而「被顶走」这一族恰恰发生在**页面自己不再动**
+  // 的那段 —— 现场那份 200 条日志里，被推到用户中心的那一枚停了 105 分钟
+  // （`emptyForMs` 6,166,238 → 6,310,000），SW 早就睡过去好几轮。
+  // 只写在内存时它一醒 `tabStudyMemory` 是空的，页面问到的就是 `never-study`，
+  // 于是落成「这一页压根不是插件带来的」那一格（每份页面只说一次）——
+  // **那一枚再也不会被送回去，也不出一条异常**，用户看到的就成了「被推到用户中心后只能反复手动刷新」。
+  // `chrome.storage.session` 是这一族唯一合适的落点：只在内存里、浏览器重启即清
+  // （那时「刚才在刷课」的 30 分钟窗本来就过期了），而且**不需要新权限**。
+  var STUDY_MEMORY_KEY = 'omitoneStudyTabs';
+  var studyMemoryLoaded = false;                    // 每个 SW 生命周期只向存储补一次
+  var studyMemoryQueue = Promise.resolve();         // 串行写，避免两份快照互相盖
+
+  function pruneStudyMemory(map, max) {
+    var ids = Object.keys(map);
+    if (ids.length <= max) return map;
+    ids.sort(function (a, b) { return (Number(map[a].studyAt) || 0) - (Number(map[b].studyAt) || 0); });
+    for (var i = 0; i < ids.length - max; i += 1) delete map[ids[i]];
+    return map;
   }
 
   /**
-   * 只从 `tabs.onUpdated` 的 `changeInfo.url` 喂进来 —— SW 睡着时漏掉的导航不会补记，
-   * 那属于「读不出」那一格，调用方拿不到账时必须保守（既不导航也不闭嘴）。
+   * 存储里那份 + 内存里那份收敛成一本账（纯函数，`tools/integration-test.js` 取出去真跑）。
+   * ⚠️ 「谁新听谁」而不是「谁后到听谁」：SW 醒来时内存里可能已经有**这一轮**刚写的导航，
+   *    而存储里是睡过去之前那一轮的旧账 —— 拿旧账覆盖新账会把 `rescues` 打回 0，
+   *    「回去→被顶→再回去」的上限就此失效（AGENTS §2 #13 同一族）。
+   * 形状不对的条目一律丢掉：脏值喂进 `studyRescueVerdict` 会拼出一条假的导航地址。
+   */
+  function mergeStudyMemory(stored, live, max) {
+    var out = Object.create(null);
+    var maps = [stored, live];
+    for (var m = 0; m < maps.length; m += 1) {
+      var src = maps[m];
+      if (!src || typeof src !== 'object') continue;
+      var ids = Object.keys(src);
+      for (var i = 0; i < ids.length; i += 1) {
+        var id = ids[i];
+        var rec = src[id];
+        if (!rec || typeof rec !== 'object') continue;
+        var href = typeof rec.studyHref === 'string' ? rec.studyHref : '';
+        var at = Number(rec.studyAt);
+        if (!href || !Number.isFinite(at) || at <= 0) continue;
+        var away = Number(rec.awayAt);
+        var rescues = Number(rec.rescues);
+        var next = {
+          studyHref: href, studyAt: at,
+          awayAt: Number.isFinite(away) && away > 0 ? away : 0,
+          rescues: Number.isFinite(rescues) && rescues > 0 ? Math.floor(rescues) : 0
+        };
+        var had = out[id];
+        if (!had || next.studyAt >= had.studyAt) out[id] = next;
+      }
+    }
+    return pruneStudyMemory(out, Number(max) > 0 ? Number(max) : STUDY_MEMORY_MAX);
+  }
+
+  /** 把一件事排到这本账的串行队列后面：读要合并、写要整本快照，两边并发会互相盖 */
+  function studyMemoryThen(work) {
+    var task = studyMemoryQueue.then(work);
+    studyMemoryQueue = task.catch(function () {});   // 队列本身不许被一次失败毒死（§5：护栏不能写成永久失效）
+    return task;
+  }
+
+  /** 排队补账（不排队）：只有排在 `studyMemoryThen` 里才许调它 */
+  function hydrateStudyMemoryNow() {
+    if (studyMemoryLoaded) return Promise.resolve(true);
+    // `storageGet` 走 `chromeCall`，自带 5 秒超时（AGENTS §2 #2：新增 await 必须可超时）
+    return storageGet('session', STUDY_MEMORY_KEY).then(function (stored) {
+      tabStudyMemory = mergeStudyMemory(stored && stored[STUDY_MEMORY_KEY], tabStudyMemory, STUDY_MEMORY_MAX);
+      studyMemoryLoaded = true;
+      return true;
+    });
+  }
+
+  /** 向 session 补一次账（每个 SW 生命周期只成功跑一次）；问不到就交回 false，由调用方说「读不出」 */
+  function hydrateStudyMemory() {
+    return studyMemoryThen(hydrateStudyMemoryNow).catch(function () { return false; });
+  }
+
+  function persistStudyMemoryNow() {
+    var patch = {};
+    // 排队期间内存还会变，落盘的是一份复制的快照，不是活对象
+    patch[STUDY_MEMORY_KEY] = JSON.parse(JSON.stringify(tabStudyMemory));
+    return storageSet('session', patch);
+  }
+
+  /**
+   * 写穿到 session：整本快照一次落，失败只当没写成功（下次读还是内存那一本），不许拖住事件回调。
+   * ⚠️ **落笔前必须先补账，补不上就这一发干脆不写** —— SW 刚醒时内存里只有「这一轮」见过的那一两枚，
+   *    直接写等于把睡过去之前那一本（含 `rescues` 计数）整本抹掉：症状与不持久化一样，还更难查。
+   */
+  function persistTabStudyMemory() {
+    studyMemoryThen(function () {
+      return studyMemoryLoaded ? true : hydrateStudyMemoryNow().catch(function () { return false; });
+    }).then(function (ready) {
+      if (ready !== true) return undefined;
+      return studyMemoryThen(persistStudyMemoryNow);
+    }).catch(function () {});
+  }
+
+  /**
+   * 事件回调走这一条：先把账补齐，再记这一笔（批次 134）。
+   * ⚠️ 顺序不能反 —— SW 刚醒时内存是空的，直接 `noteTabStudyUrl` 会：
+   *    ①「被顶走」那一发因为读不到 `old` 而**不落 awayAt**（于是"刚被顶走"说不成，回来也不算自愈）；
+   *    ② 更贵的一族：学习页那一发把 `rescues` 当 0 重写，合并时「谁新听谁」又让它盖掉存储里那格 ——
+   *      「回去→被顶→再回去」的上限照样数不满（那就是 #176 死循环的另一半）。
+   */
+  function queueTabStudyNote(tabId, url) {
+    hydrateStudyMemory().then(function () {
+      noteTabStudyUrl(tabId, url);   // 记账自己会落盘（账已补齐，落的才是整本）
+    }).catch(function () {
+      noteTabStudyUrl(tabId, url);   // 存储问不到也要记进内存，那一发落盘会自己跳过（不许写坏旧账）
+    });
+  }
+
+  /**
+   * 取这一枚标签页的账；内存没有就去 session 补一次（SW 刚醒那一族）。
+   * @returns {Promise<{memory:(Object|null), known:boolean}>}
+   *   ⚠️ `known:false` = **存储问不到**，调用方不许把它读成「这一枚从来没刷课」
+   *      （AGENTS §2 #12：读不出单独占一格，压成两态迟早变成"我有一科一直没刷"）
+   */
+  function readTabStudyMemory(tabId) {
+    if (tabStudyMemory[tabId]) return Promise.resolve({ memory: tabStudyMemory[tabId], known: true });
+    if (studyMemoryLoaded) return Promise.resolve({ memory: null, known: true });
+    return hydrateStudyMemory().then(function (ok) {
+      return { memory: tabStudyMemory[tabId] || null, known: ok === true };
+    });
+  }
+
+  function pruneTabStudyMemory() {
+    tabStudyMemory = pruneStudyMemory(tabStudyMemory, STUDY_MEMORY_MAX);
+  }
+
+  /**
+   * 只从 `tabs.onUpdated` 的 `changeInfo.url` 喂进来。
+   * ✅ 批次 134 更正了原注释里那句「SW 睡着时漏掉的导航不会补记」：账现在写在
+   *    `chrome.storage.session`，睡着**丢的只是导航事件**，不是整本账 ——
+   *    真漏掉的那一发（睡过去期间发生的导航）仍属「读不出」，调用方拿不到账时保守。
    */
   function noteTabStudyUrl(tabId, url) {
     if (!Number.isInteger(tabId) || typeof url !== 'string') return;
@@ -140,9 +273,13 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
       var cameBack = !!(old && old.awayAt && old.studyHref && (now - (Number(old.studyAt) || 0)) <= STUDY_AWAY_WINDOW_MS);
       tabStudyMemory[tabId] = { studyHref: url, studyAt: now, awayAt: 0, rescues: before + (cameBack ? 1 : 0) };
       pruneTabStudyMemory();
+      persistTabStudyMemory();
       return;
     }
-    if (old && old.studyHref && !old.awayAt) old.awayAt = now;   // 第一次被顶走才记时刻
+    if (old && old.studyHref && !old.awayAt) {
+      old.awayAt = now;   // 第一次被顶走才记时刻
+      persistTabStudyMemory();
+    }
   }
 
   /**
@@ -188,6 +325,21 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     if (rescues >= STUDY_RESCUE_CAP) { out.reason = 'rescue-cap'; return out; }
     out.mayRescue = true;
     out.reason = 'go-back';
+    return out;
+  }
+
+  /**
+   * 账本问不到时把结论改写成「读不出」那一格（纯函数，集成层取出去真跑）。
+   * ⚠️ 不许让它留在 `never-study`（AGENTS §2 #12）：页面拿 `never-study` 判成
+   *    「这一页压根不是插件带来的」（`_displacedStudyPagePlan` 里的 `not-ours`），
+   *    而那一格**每份页面只说一次** —— SW 一睡就把人钉死在「只能自己反复手动刷新」，
+   *    这正是会话任务 #176 那个死循环的形状。`memory-unreadable` 页面认不出，
+   *    会落进 `unknown`：不导航，但把老地板日志留着，到点还会再问一次。
+   * 已经有账（`wasStudy`）就照账说 —— 别让"这一发问不到"盖掉已经拿到的真证据。
+   */
+  function studyMemoryOutcome(verdict, known) {
+    var out = verdict || {};
+    if (known !== true && out.wasStudy !== true) out.reason = 'memory-unreadable';
     return out;
   }
 
@@ -630,9 +782,11 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
           (tabs || []).forEach(function (t) {
             if (t && t.id !== selfTab.id && STUDY_URL_RE.test(String(t.url || ''))) others++;
           });
-          var state = studyRescueVerdict(tabStudyMemory[selfTab.id], others, Date.now());
-          state.success = true;
-          return state;
+          return readTabStudyMemory(selfTab.id).then(function (held) {
+            var state = studyMemoryOutcome(studyRescueVerdict(held.memory, others, Date.now()), held.known);
+            state.success = true;
+            return state;
+          });
         });
       }
       if (message.type === 'course_home_probe') {
