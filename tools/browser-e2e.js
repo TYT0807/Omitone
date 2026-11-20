@@ -13067,12 +13067,13 @@ SCENARIOS.push({
     check('说明元素与两枚开关都在，且 load() 之后两枚都亮着（采集器先自证，否则下面读的全是 null）',
       !bothOn.error && bothOn.hint !== null && bothOn.seekAria === 'true' && bothOn.ninetyAria === 'true',
       JSON.stringify(bothOn));
-    check('两枚都开着时，说明把**判据本身**讲出来：认的是「试过拖到结尾、被弹回两次」这个信号，且不谎称"不会生效"',
-      /靠上面那枚给的信号/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
-      /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
+    check('两枚都开着时，说明把**判据本身**讲出来：两个来源都点名（站点写的「不可拖拽」与真被弹回两次），且不谎称"不会生效"',
+      /两个各自独立的来源/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
+      /不可拖拽/.test(bothOn.hint) && /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
     var offSeek = await ctx.client.evaluate(seekClick('enableSeek'));
-    check('点掉上面那枚，下面那句**当场改口**说它现在不会生效，并指回该打开哪一枚',
-      /现在不会生效/.test(offSeek.hint) && /把上面那枚打开/.test(offSeek.hint) &&
+    check('点掉上面那枚，那句**当场改口**：只剩站点标语这一个来源（不再谎称"现在不会生效"），并指回该打开哪一枚',
+      /只剩一个来源/.test(offSeek.hint) && /不可拖拽/.test(offSeek.hint) &&
+      /把上面那枚打开/.test(offSeek.hint) && /现在不会生效/.test(offSeek.hint) === false &&
       offSeek.seekAria === 'false' && offSeek.ninetyAria === 'true', JSON.stringify(offSeek));
     check('反向不许写：点掉「直接拖到结尾」时，`advanceAtNinetyPercent` 存储照旧是 true' +
       '（悄悄替用户关掉另一枚=把他下次打开时的选择也换掉了）',
@@ -13080,17 +13081,19 @@ SCENARIOS.push({
       JSON.stringify({ s: offSeek.storedSeek, n: offSeek.storedNinety }));
     var onSeek = await ctx.client.evaluate(seekClick('enableSeek'));
     check('再点回来那句立刻回到判据本身（两个方向都刷新，不是只在关的时候改一次口）',
-      /靠上面那枚给的信号/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
+      /两个各自独立的来源/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
       onSeek.seekAria === 'true', JSON.stringify(onSeek));
     var offNinety = await ctx.client.evaluate(seekClick('advanceAtNinetyPercent'));
     check('是用户自己关掉「90% 提前收尾」时，那句改成讲后果、**不再劝他打开上面那枚**',
       /原速播完整支/.test(offNinety.hint) && /不会生效/.test(offNinety.hint) === false &&
+      /这一枚已关闭/.test(offNinety.hint) && /只剩一个来源/.test(offNinety.hint) === false &&
+      /两个各自独立的来源/.test(offNinety.hint) === false &&
       offNinety.ninetyAria === 'false' && offNinety.storedSeek === true, JSON.stringify(offNinety));
     var loadOnly = await ctx.client.evaluate(
       seekPinAndLoad({ enableSeek: false, advanceAtNinetyPercent: true }));
     check('只走 load() 那一路（一次都不点）也要说真话 —— 这一格钉的是 `load()` 尾部那一发，' +
       '少了它重开弹窗看到的是出厂那句旧话，而 setter 路径测不到',
-      /现在不会生效/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
+      /只剩一个来源/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
       loadOnly.ninetyAria === 'true', JSON.stringify(loadOnly));
     // 收尾：两格原样交回（原本没写过的删掉，让后面的场景读到"从没写过"那一支）
     var seekBack = await ctx.client.evaluate(
