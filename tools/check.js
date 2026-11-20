@@ -3920,6 +3920,10 @@ function checkProfileSweep() {
 //       f AGENTS §3.8 那条规矩还指着这份真源
 //       g 支线上从 `git show main:README.md` 把门面取回来 —— **读不出单独占一格**，
 //         且它与工作树那份逐字节相同时也红（两份一样就没法分清这一格读的是哪一边）
+//       h 文档里手抄的「闸自带 N 格」必须等于 a 格从闸自己嘴里读回来的 N ——
+//         断的方向是文档不是闸：a 格只比代码里的 CELLS_MIN 下限，量不到散文里那几处手抄的数，
+//         于是 AGENTS 与 HANDOVER 一起停在「15 格」三个批次没人发现（批次 142 补的这把尺）；
+//         0 命中单独报红，口径同 §2 #21：措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿
 // ---------------------------------------------------------------------------
 function checkChannelGate() {
   var bad = [];
@@ -4104,6 +4108,33 @@ function checkChannelGate() {
     bad.push('AGENTS.md §3.8 没把 tools/channel-gate.js 写成真源 —— 下一轮接手的人只会去找那句文字规矩');
   }
 
+  // ---- h. 文档手抄的「闸自带 N 格」对着闸实测格数逐处比 ----
+  //     尺的形状照 §2 #21：**只认「闸自带 …数字… 格」这一族写法**（数字必须紧跟在那三个字之后），
+  //     于是 CHANGELOG 里那句「那个 **20 格**（闸自带对照格数）手抄在 AGENTS §3.8 与 HANDOVER」天然出界 ——
+  //     数字写在前面就匹配不到，不用给历史句贴豁免标记，也不用把尺放宽（§3.7：CHANGELOG 的历史数按史实不回改）。
+  //     每处命中都必须等于 a 格跑 selftest 读回来的 cells；一处都扫不到单独报红，别打印通过。
+  var DOC_CELLS_FILES = ['AGENTS.md', 'HANDOVER.md', 'tools/README.md'];
+  var docHits = [], docWrong = [];
+  DOC_CELLS_FILES.forEach(function (f) {
+    if (!exists(f)) { docWrong.push(f + ' 读不到文件'); return; }
+    var re = /闸自带(?:的)?\s*\**\s*(\d+)\s*格/g;
+    var m;
+    while ((m = re.exec(read(f)))) {
+      docHits.push(f + '(' + m[1] + ')');
+      if (cells !== null && Number(m[1]) !== cells) docWrong.push(f + ' 写 ' + m[1] + ' 格');
+    }
+  });
+  if (docHits.length === 0) {
+    bad.push('AGENTS.md / HANDOVER.md / tools/README.md 三处里一处「闸自带 N 格」都没扫到（闸实测 ' + cells +
+      ' 格）—— 命中 0 不是通过：那句手抄被整句改写掉，就等于从此没有任何东西要求人核这个数；' +
+      '上一版 AGENTS 与 HANDOVER 一起停在「15 格」三个批次，正因为没人读过这两处');
+  } else if (docWrong.length) {
+    bad.push('文档手抄的闸格数与闸自己报回来的不等（闸实测 ' + cells + ' 格，扫到 ' + docHits.length +
+      ' 处：' + docHits.join('、') + '）—— 断在：' + docWrong.join('；') +
+      '。改的永远是文档那几处，不是 CELLS_MIN、也不是闸里的对照格数（AGENTS §3「行为改了而文档没改，' +
+      '是这一族唯一的失败形状」）');
+  }
+
   if (bad.length) {
     fail('实验支线发布闸没接牢（这族事故的表现是「下载的人装到了实验版」，而每条命令都打印成功）：\n      ' +
       bad.join('\n      '));
@@ -4111,6 +4142,7 @@ function checkChannelGate() {
   }
   pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
     'release / replace-asset / preview 问在联网之前，verify 照旧放行，' +
+    '文档手抄 ' + docHits.length + ' 处逐处同闸的 ' + cells + ' 格（' + docHits.join('、') + '），' +
     '预览附件名与 prerelease 与发布后回读三格齐，' +
     '门面按通道分边：工作树=' + (isExp ? '工作笔记（指针已带，未抄门面）' : '门面') +
     '、门面那一份（' + facadeFrom + '，' + facade.length + ' 字）带实验版入口且不撞稳定名字）');
