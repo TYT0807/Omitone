@@ -6329,6 +6329,263 @@ async function testLocalDoctor() {
       line: hNoKey.says[0] && hNoKey.says[0].line }));
 }
 
+async function testPreviewChannelNotice() {
+  console.log('\n[28] 预览版下载口：previewPlan 六格各说各话，接线一律不许落在正式版那两个地址上（批次 135）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var popSrc = read('popup/popup.js');
+  var htmlSrc = read('popup/popup.html');
+  var relSrc = read('tools/github-release.js');
+
+  // 花括号配对取整段（函数体 / if 块两种都行）；坏了交空串，后面自证会响
+  var fnText = function (src, decl) {
+    var at = src.indexOf(decl);
+    if (at < 0) return '';
+    var start = src.indexOf('{', at);
+    if (start < 0) return '';
+    var depth = 0;
+    for (var i = start; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (!depth) return src.slice(at, i + 1); }
+    }
+    return '';
+  };
+  // 那三条地址是模板串（里面带 `${UPDATE_REPO}`），所以 eval 时把仓库名当参数喂进去
+  var repoM = popSrc.match(/(?:var|let|const)\s+UPDATE_REPO\s*=\s*["']([^"']+)["']/);
+  var REPO = repoM ? repoM[1] : '';
+  var constOf = function (src, name) {
+    var m = src.match(new RegExp('(?:var|let|const)\\s+' + name + '\\s*=\\s*([^;\\n]+);'));
+    if (!m) return NaN;
+    try { return new Function('UPDATE_REPO', 'return (' + m[1] + ')')(REPO); } catch (e) { return NaN; }
+  };
+  var arrOf = function (src, name) {
+    var m = src.match(new RegExp('var\\s+' + name + '\\s*=\\s*(\\[[\\s\\S]*?\\])\\s*;'));
+    if (!m) return null;
+    try { return new Function('return (' + m[1].replace(/\/\/[^\n]*/g, '') + ')')(); } catch (e) { return null; }
+  };
+
+  var planSrc = fnText(popSrc, 'function previewPlan(');
+  var cmpSrc = fnText(popSrc, 'function cmpVersion(');
+  var chkSrc = fnText(popSrc, 'function checkPreviewChannel(');
+  var hideSrc = fnText(popSrc, 'function hidePreviewChannel(');
+  var updSrc = fnText(popSrc, 'async function checkUpdate(');
+  // 锚点紧到只命中那一处：`if (els.doPreview)` 带花括号才是处理器，光秃秃那句在
+  // hidePreviewChannel 里也有一枚（少一个 `{` 就会切到别人的身上，AGENTS §5「锚点被定义本身命中」同族）
+  var DL_ANCHOR = 'if (els.doPreview) {';
+  var dlHits = popSrc.split(DL_ANCHOR).length - 1;
+  var dlSrc = fnText(popSrc, DL_ANCHOR);
+  var PV_ASSET = constOf(popSrc, 'UPDATE_PREVIEW_ASSET');
+  var PV_API = constOf(popSrc, 'UPDATE_PREVIEW_API');
+  var PV_ZIP = constOf(popSrc, 'UPDATE_PREVIEW_ZIP');
+  var pvAssets = arrOf(relSrc, 'PREVIEW_ASSETS');
+  var stableOnly = arrOf(relSrc, 'STABLE_ONLY_NAMES');
+  var pvTag = constOf(relSrc, 'PREVIEW_TAG');
+
+  var cmpV = null, plan = null;
+  try { cmpV = new Function('return (' + cmpSrc + ')')(); } catch (e) { cmpV = null; }
+  try {
+    // 把弹窗里那一份**真函数**取出来，喂它自己文件里的真常量 —— 探针另写一份口径就等于没测
+    plan = new Function('UPDATE_PREVIEW_ASSET', 'cmpVersion', 'return (' + planSrc + ')')(PV_ASSET, cmpV);
+  } catch (e) { plan = null; }
+
+  check('⓪ 真函数与真常量都取得到（判断层在弹窗文件顶层、可单独 eval）—— 取不到时后面每一条都是「没执行」，' +
+    '而「没执行」和「通过」在报告里长得一模一样',
+    typeof cmpV === 'function' && typeof plan === 'function' &&
+      typeof PV_ASSET === 'string' && PV_ASSET.length > 4 &&
+      typeof PV_API === 'string' && typeof PV_ZIP === 'string' &&
+      !!chkSrc && !!hideSrc && !!updSrc && !!dlSrc &&
+      Array.isArray(pvAssets) && pvAssets.length === 2 && Array.isArray(stableOnly) && stableOnly.length === 2,
+    JSON.stringify({ plan: typeof plan, cmp: typeof cmpV, asset: PV_ASSET, chk: chkSrc.length,
+      hide: hideSrc.length, upd: updSrc.length, dl: dlSrc.length, pv: pvAssets && pvAssets.length }));
+  if (typeof plan !== 'function' || typeof cmpV !== 'function' ||
+      typeof PV_API !== 'string' || typeof PV_ZIP !== 'string' || typeof PV_ASSET !== 'string' ||
+      !Array.isArray(pvAssets) || !Array.isArray(stableOnly)) return;
+
+  var STAMP = '2026-11-20T00:12:34Z';
+  // 真包发出去那一发的回包形状（tag 恒为 'preview'、版本号只写在标题上 —— cmdPreview 就是这么 POST 的）
+  var mkRel = function (over) {
+    var r = {
+      tag_name: 'preview',
+      name: '预览版 1.3.1 experimental b20261120-0812',
+      prerelease: true,
+      assets: [{ name: 'omitone-preview.zip', updated_at: STAMP }]
+    };
+    for (var k in over) r[k] = over[k];
+    return r;
+  };
+  var STABLE = '1.3.0';
+  var W = function (rel, fetched, local, stable) { return plan(rel, fetched, local, stable); };
+
+  // ---- ① 正常说话 ----
+  var shown = W(mkRel(), true, { version: '1.3.0' }, STABLE);
+  check('① 包真在、号比正式版新、还没装这一支 —— 这一格要说话，号从**标题**里读（`preview` 那个 tag 本身不带版本号），' +
+    '包的 `updated_at` 原样带出（弹窗那句「上次打包」用它，不许拿正式版的时间）',
+    shown.speak === true && shown.why === 'show' && shown.version === '1.3.1' && shown.stamp === STAMP,
+    JSON.stringify(shown));
+
+  // ---- ② 号的两处来源：tag 优先、标题兜底 ----
+  var fromTag = W(mkRel({ tag_name: 'v1.3.2' }), true, { version: '1.3.0' }, STABLE);
+  check('② 号先读 `tag_name`、读不到才退到标题 —— 两处都有号时以 tag 为准（只留一份口径，别让两个字段各说一个版本）',
+    fromTag.speak === true && fromTag.version === '1.3.2', JSON.stringify(fromTag));
+
+  // ---- ③ 没问到（404 与断网同形） ----
+  var askOff = W(mkRel(), false, { version: '1.3.0' }, STABLE);
+  var askNil = W(null, true, { version: '1.3.0' }, STABLE);
+  check('③ 没问到一律落 `ask-failed`：`res.ok` 为假（预览口还没发，这是常态）与回包读不出都算这一格 —— ' +
+    '它**不许**顺手说一句像"你网络坏了"的话，那句是正式版那一路的活儿',
+    askOff.speak === false && askOff.why === 'ask-failed' &&
+      askNil.speak === false && askNil.why === 'ask-failed',
+    JSON.stringify({ notOk: askOff, noBody: askNil }));
+
+  // ---- ④ 读不出号：绝不猜 ----
+  var noVer = W(mkRel({ name: '预览版（还没写版本号）' }), true, { version: '1.3.0' }, STABLE);
+  check('④ tag 与标题都没有版本号时落 `no-version`，**绝不猜一个号出来** —— 猜出来的号让同学以为线上真有这一版，' +
+    '点下去拿到的却不知是哪一份包（AGENTS §2 #18「认不出来就交空串，绝不猜」同一族）',
+    noVer.speak === false && noVer.why === 'no-version', JSON.stringify(noVer));
+
+  // ---- ⑤ 包不在：三种形状都闭嘴 ----
+  var emptyAssets = W(mkRel({ assets: [] }), true, { version: '1.3.0' }, STABLE);
+  var nulAssets = W({ tag_name: 'preview', name: '预览版 1.3.1 experimental', assets: null }, true, { version: '1.3.0' }, STABLE);
+  var otherAsset = W(mkRel({ assets: [{ name: 'omitone.zip', updated_at: STAMP }] }), true, { version: '1.3.0' }, STABLE);
+  check('⑤ 没得下载就闭嘴（`assets` 是空数组 / 不是数组 / 里面只有正式版那个名字）三格都落 `no-asset` —— ' +
+    '亮着按钮点下去是 GitHub 的 404 页，而它看起来像"预览版撤掉了"，不是"我们这边判错了"',
+    emptyAssets.why === 'no-asset' && nulAssets.why === 'no-asset' && otherAsset.why === 'no-asset' &&
+      emptyAssets.speak === false,
+    JSON.stringify({ empty: emptyAssets.why, nul: nulAssets.why, other: otherAsset.why }));
+
+  // ---- ⑥ 转正忘撤口 + 分格顺序 ----
+  var stale = W(mkRel({ name: '预览版 1.3.0 experimental b20260101-0000' }), true, { version: '1.3.0' }, '1.3.0');
+  var staleNewerLocal = W(mkRel({ name: '预览版 1.3.0 experimental b20260101-0000' }), true, { version: '1.2.9' }, '1.3.0');
+  check('⑥ 预览号不比正式版新（**转正之后忘了撤口**）落 `same-as-stable`，即使本地比预览号还旧也不算"有更新的可以装" —— ' +
+    '那份是旧实验包，装上只会让人一直被告知自己在用预览版。判据顺序也必须排在"已装过"之前，' +
+    '倒了就把两格合成一格，「线上口过期」与「你已经装了」从此分不开',
+    stale.why === 'same-as-stable' && staleNewerLocal.why === 'same-as-stable' && stale.speak === false,
+    JSON.stringify({ same: stale, olderLocal: staleNewerLocal }));
+
+  // ---- ⑦ 已经装了这一支 ----
+  var hasIt = W(mkRel(), true, { version: '1.3.1' }, STABLE);
+  var ahead = W(mkRel(), true, { version: '1.3.2' }, STABLE);
+  var noLocal = W(mkRel(), true, null, STABLE);
+  check('⑦ 同号与更高版本都落 `not-newer`（装了这一支的人不必再被预告一次）；读不到本地版本时不塞这一格、放行到说话 —— ' +
+    '`cmpVersion` 把 `1.3` 与 `1.3.0` 视为相同，这一族只许用那一把尺',
+    hasIt.why === 'not-newer' && ahead.why === 'not-newer' && noLocal.speak === true && noLocal.why === 'show',
+    JSON.stringify({ same: hasIt.why, higher: ahead.why, unknownLocal: noLocal.why }));
+
+  // ---- ⑧ 六格名字两两不等 ----
+  var whyList = [shown.why, askOff.why, noVer.why, emptyAssets.why, stale.why, hasIt.why];
+  var dup = whyList.filter(function (w, i) { return whyList.indexOf(w) !== i; });
+  check('⑧ 上面六格的名字两两不等（AGENTS §2 #12）—— 五格都"不说话"，但只有分开写才测得出哪一格坏了；' +
+    '压成两态时"预览口还没发"必然被划进"你装的就是最新"',
+    dup.length === 0 && new Set(whyList).size === 6, JSON.stringify({ whys: whyList, dup: dup }));
+
+  // ---- ⑨ 判断层不碰 DOM ----
+  check('⑨ 判断层一个字 DOM 都不碰（`previewPlan` 体内没有 `els` / `document` / `style`）—— 分成这样上面那些格子才能' +
+    '在 Node 里跑真函数；它一旦自己写界面，这一层就退化成"只有起浏览器才测得到"（AGENTS §5「端到端发现的问题下沉到集成层」反着走）',
+    planSrc.indexOf('els') < 0 && planSrc.indexOf('document') < 0 && planSrc.indexOf('style') < 0,
+    JSON.stringify({ els: planSrc.indexOf('els'), doc: planSrc.indexOf('document'), style: planSrc.indexOf('style') }));
+
+  // ---- ⑩ 收那一格：话与按钮一起收 ----
+  check('⑩ 收掉预览那一格时**两枚一起收**（`previewMsg` + `doPreview`，各自 `display = "none"`）—— 只收一枚就是' +
+    '「话没了、按钮还在」，点下去落到一个包里根本没东西的地址',
+    /els\.previewMsg[\s\S]{0,60}display\s*=\s*"none"/.test(hideSrc) &&
+      /els\.doPreview[\s\S]{0,60}display\s*=\s*"none"/.test(hideSrc) &&
+      hideSrc.indexOf('updateMsg') < 0,
+    JSON.stringify({ msg: hideSrc.indexOf('previewMsg'), btn: hideSrc.indexOf('doPreview'), len: hideSrc.length }));
+
+  // ---- ⑪ 落地层不越界 + 带超时 ----
+  check('⑪ 预览那一格的落地只写 `previewMsg` / `doPreview`，**一个 `updateMsg` 都不碰**（共享正式版那句等于把「预览口还没发」' +
+    '盖到刚说出口的正式版结论上，AGENTS §2 #14「谁先说话是要紧事」）；而那一发 `fetch` 外面包了 `withTimeout`' +
+    '（挂起比报错贵，`try/catch` 拦不住，AGENTS §2 #2）；不说话那一支确实调了 `hidePreviewChannel(`',
+    chkSrc.indexOf('updateMsg') < 0 && chkSrc.indexOf('previewMsg') >= 0 && chkSrc.indexOf('doPreview') >= 0 &&
+      chkSrc.indexOf('withTimeout') >= 0 && chkSrc.indexOf('hidePreviewChannel(') >= 0 &&
+      chkSrc.indexOf('plan.version') >= 0,
+    JSON.stringify({ updateMsg: chkSrc.indexOf('updateMsg'), timeout: chkSrc.indexOf('withTimeout'),
+      hide: chkSrc.indexOf('hidePreviewChannel('), ver: chkSrc.indexOf('plan.version') }));
+
+  // ---- ⑫ 两条地址都钉在 preview 那一支 ----
+  check('⑫ 查询与下载两条地址都钉在预览支上：查询走 `releases/tags/preview`、下载走 ' +
+    '`releases/download/preview/omitone-preview.zip`，两条里都不出现 `/releases/latest` —— 那一条是正式版永久直链，' +
+    '预览口挂上去就等于给所有人发实验包（1.2.9 那次「下载变成 1.2.8」的同一种形状，只是方向相反）；' +
+    '地址里那枚文件名还必须等于判「包里有没有东西」用的那个常量，两处不同名就是"判据说有包、点下去 404"',
+    PV_API.indexOf('/releases/tags/preview') >= 0 &&
+      PV_ZIP.indexOf('/releases/download/preview/omitone-preview.zip') >= 0 &&
+      PV_API.indexOf('releases/latest') < 0 && PV_ZIP.indexOf('releases/latest') < 0 &&
+      PV_ZIP.slice(PV_ZIP.lastIndexOf('/') + 1) === PV_ASSET,
+    JSON.stringify({ api: PV_API, zip: PV_ZIP, asset: PV_ASSET }));
+
+  // ---- ⑬ 与发版侧同一把尺 ----
+  check('⑬ 弹窗里那个预览附件名**逐字等于**发版工具写上去的那一个（`PREVIEW_ASSETS[0].name`），tag 也对得上 —— ' +
+    '两侧各写一份迟早分叉，分叉的表现是「包发出去了、弹窗说没有」或反过来「弹窗说有、点下去 404」',
+    pvAssets[0].name === PV_ASSET && pvTag === 'preview' &&
+      PV_API.indexOf('/' + pvTag) >= 0 && PV_ZIP.indexOf('/' + pvTag + '/') >= 0,
+    JSON.stringify({ popup: PV_ASSET, release: pvAssets[0].name, tag: pvTag, api: PV_API, zip: PV_ZIP }));
+
+  // ---- ⑭ 两族附件名不许重合 ----
+  var pvNames = pvAssets.map(function (a) { return a.name; });
+  var collide = pvNames.filter(function (n) { return stableOnly.indexOf(n) >= 0; });
+  check('⑭ 预览那两枚名字与稳定通道那两枚**一个都不重合** —— `omitone.zip` / `Omitone-manual.pdf` 出现在预览口里，' +
+    '等于把实验包挂到正式版那条永久直链上（AGENTS §7.5：附件名一改，恰好是"只会点这一个链接"的那批用户拿到 404 或错包）',
+    collide.length === 0 && pvNames.indexOf('omitone.zip') < 0 && stableOnly.indexOf('omitone-preview.zip') < 0,
+    JSON.stringify({ pv: pvNames, stable: stableOnly, collide: collide }));
+
+  // ---- ⑮ 预览按钮的处理体 ----
+  check('⑮ 预览按钮点下去用的地址只有 `UPDATE_PREVIEW_ZIP` 一个 —— 处理体内 `UPDATE_ZIP`（正式版那条）一次都不出现，' +
+    '`chrome.downloads.download` 那一发与它失败的兜底（新开标签）都指向预览包；两条地址混用就是「以为是预览、下到的是正式版」',
+    dlHits === 1 && dlSrc.indexOf('UPDATE_PREVIEW_ZIP') >= 0 && dlSrc.indexOf('UPDATE_ZIP') < 0 &&
+      dlSrc.indexOf('downloads.download') >= 0 && dlSrc.indexOf('tabs.create') >= 0,
+    JSON.stringify({ hits: dlHits, prev: dlSrc.indexOf('UPDATE_PREVIEW_ZIP'), stable: dlSrc.indexOf('UPDATE_ZIP'),
+      dl: dlSrc.indexOf('downloads.download'), tab: dlSrc.indexOf('tabs.create'), len: dlSrc.length }));
+
+  // ---- ⑯ 页面出厂状态与 els 登记 ----
+  check('⑯ 弹窗页面里那两枚（`previewMsg` / `doPreview`）**出厂就 `display:none`**，且 `els` 两枚都登记 —— ' +
+    '默认亮着的话每个打开弹窗的人都被预告一句「有预览版」，而 `previewPlan` 那一层根本没走到（AGENTS §5「断言绿有两种：' +
+    '走到了、和根本没走到那一层」）；登记漏一枚，`els.xxx` 是 undefined，说话那一支静默什么都不画',
+    /id="previewMsg"[^>]*style="display:none"/.test(htmlSrc) &&
+      /id="doPreview"[^>]*style="display:none"/.test(htmlSrc) &&
+      popSrc.indexOf('previewMsg: $("previewMsg")') >= 0 &&
+      popSrc.indexOf('doPreview: $("doPreview")') >= 0,
+    JSON.stringify({ msg: htmlSrc.indexOf('id="previewMsg"'), btn: htmlSrc.indexOf('id="doPreview"') }));
+
+  // ---- ⑰ checkUpdate 的先后 ----
+  var hideAt = updSrc.indexOf('hidePreviewChannel();');
+  var stableSetAt = updSrc.indexOf('stableRemote = remoteVersion;');
+  var finallyAt = updSrc.indexOf('} finally {');
+  var callAt = updSrc.indexOf('await checkPreviewChannel(local, stableRemote)');
+  check('⑰ 检测更新这一轮的先后：开头先 `hidePreviewChannel()`（上一轮的预览话不许留在这一轮屏幕上）；' +
+    '`let stableRemote = ""` 只在真读到线上号时赋值（查不到就写空串，不许拿上一轮的号冒充这一轮）；' +
+    '`checkPreviewChannel` 调在 `} finally {` **之后**、自己套一个 try —— 预览口挂了不许把正式版那句改口',
+    hideAt >= 0 && hideAt < stableSetAt && stableSetAt >= 0 && finallyAt >= 0 && callAt > finallyAt &&
+      updSrc.indexOf('let stableRemote = "";') >= 0 &&
+      updSrc.indexOf('checkPreviewChannel(local, stableRemote)') >= 0,
+    JSON.stringify({ hideAt: hideAt, stableSetAt: stableSetAt, finallyAt: finallyAt, callAt: callAt }));
+
+  // ---- ⑱ 稳定版那两条地址不许被顺手改掉 ----
+  var ST_API = constOf(popSrc, 'UPDATE_API');
+  var ST_ZIP = constOf(popSrc, 'UPDATE_ZIP');
+  check('⑱ 稳定版那两条地址本轮一个字没动：查询仍是 `releases/latest`、下载仍是那条永久直链 `.../latest/download/omitone.zip`，' +
+    '且与预览两条**互不相同** —— 预览这一族加进来最贵的失误就是顺手把正式版指向 preview，' +
+    '那等于从此 README 那条入口给所有人发实验包（AGENTS §7.5）',
+    typeof ST_API === 'string' && typeof ST_ZIP === 'string' &&
+      ST_API.indexOf('/releases/latest') >= 0 &&
+      ST_ZIP.indexOf('/releases/latest/download/omitone.zip') >= 0 &&
+      ST_API !== PV_API && ST_ZIP !== PV_ZIP &&
+      ST_API.indexOf('tags/preview') < 0 && ST_ZIP.indexOf('preview') < 0,
+    JSON.stringify({ stApi: ST_API, stZip: ST_ZIP, pvApi: PV_API, pvZip: PV_ZIP }));
+
+  // ---- ⑲ 说出口的那句要让人掂量，不是"有新版快点" ----
+  check('⑲ 预览那一格说出口的话必须让人**掂量**：版本号取自判据（`plan.version`，不是又拼一次），句子写清代价（可能把正在刷的课弄坏）、' +
+    '性质（实验支线）、出问题要报的三样（哪门课 · 哪一节 · 什么现象）、以及退回正式版怎么走；按钮那枚字也写明是「先掂量」—— ' +
+    '只写「有预览版可以更新」等于把实验包推给正在赶作业的人',
+    chkSrc.indexOf('plan.version') >= 0 && chkSrc.indexOf('弄坏') >= 0 && chkSrc.indexOf('实验支线') >= 0 &&
+      chkSrc.indexOf('哪门课') >= 0 && chkSrc.indexOf('哪一节') >= 0 && chkSrc.indexOf('什么现象') >= 0 &&
+      chkSrc.indexOf('重装 omitone.zip') >= 0 && htmlSrc.indexOf('先掂量') >= 0,
+    JSON.stringify({ ver: chkSrc.indexOf('plan.version'), risk: chkSrc.indexOf('弄坏'),
+      nature: chkSrc.indexOf('实验支线'), rollback: chkSrc.indexOf('重装 omitone.zip'),
+      btn: htmlSrc.indexOf('先掂量') }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -6370,6 +6627,7 @@ async function main() {
   await testCourseHomeProbeSignals();
   await testPetChatRequest();
   await testLocalDoctor();
+  await testPreviewChannelNotice();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

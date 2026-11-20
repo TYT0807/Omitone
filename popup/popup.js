@@ -134,6 +134,8 @@ const els = {
   checkUpdate: $("checkUpdate"),
   doUpdate: $("doUpdate"),
   doLater: $("doLater"),
+  previewMsg: $("previewMsg"),
+  doPreview: $("doPreview"),
   updateMute: $("updateMute"),
   doUntil: $("doUntil"),
   start: $("start"),
@@ -1403,6 +1405,18 @@ const UPDATE_REPO = "TYT0807/Omitone";
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 const UPDATE_ZIP = `https://github.com/${UPDATE_REPO}/releases/latest/download/omitone.zip`;
 
+// 预览版（实验支线）那一格，2026-11-20 用户口径：「实验班也可以加入 readme 的正常下载的旁边，
+// 特别标明就行」＋「更新提示那边也可以展示预览版，显示存在预览版，可以更新，但是需要多斟酌考虑」。
+// ⚠️ 三条硬规矩，每条都对应一次「命令都打印成功、结果不对」的事故形状：
+//   1) 查询走 `releases/tags/preview` 这条**独立地址**，绝不并进上面那条 ——
+//      预览口还没发时它 404，而 404 必须只让这一格闭嘴，不许把正式版已经说出口的结论顶掉；
+//   2) 下载走 `releases/download/preview/omitone-preview.zip` 这个**独立文件名**，
+//      绝不复用 `UPDATE_ZIP` —— 那条按名字取件，复用等于把装预览的人悄悄退回正式版；
+//   3) 这一格只在「预览号 > 本地号」时才说话；号读不出就**当作没有**，不猜（AGENTS §2 #1）。
+const UPDATE_PREVIEW_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/tags/preview`;
+const UPDATE_PREVIEW_ZIP = `https://github.com/${UPDATE_REPO}/releases/download/preview/omitone-preview.zip`;
+const UPDATE_PREVIEW_ASSET = "omitone-preview.zip";
+
 // ⚠️ 限流是**功能**，不是防抖。
 // 查询用的是 GitHub 的**匿名额度**（作者不放令牌，也不能放）。有人狂点就会把额度用光，
 // 那时**所有人都查不了** —— "你查得勤"和"别人查不到"其实是同一件事的两面。
@@ -1478,6 +1492,11 @@ async function checkUpdate(opts) {
   els.doLater.style.display = "none";
   els.doUntil.style.display = "none";
   els.updateRow.classList.remove("hot");
+  // 预览那一格每轮先收掉再问：上一轮亮着的话，这一轮查不到却还挂着按钮，
+  // 点下去就是一个已经不存在的预览包（AGENTS §2 #12 ——「没结论」不许借用「有结论」的界面）
+  hidePreviewChannel();
+  // 正式版号：预览那一格要拿它比一比，防止「转正之后预览口没撤」把同学引到一份旧实验包上
+  let stableRemote = "";
   if (manual) {
     els.updateMsg.textContent = "正在检测…";
     els.checkUpdate.disabled = true;
@@ -1501,6 +1520,7 @@ async function checkUpdate(opts) {
     try { localStorage.setItem(UPDATE_SEEN_KEY, String(Date.now())); } catch (e) {}
 
     const remoteVersion = String(rel.tag_name || "").replace(/^v/i, "");
+    stableRemote = remoteVersion;
     const asset = (rel.assets || []).find((a) => a && a.name === "omitone.zip");
     const remoteAt = asset && asset.updated_at ? new Date(asset.updated_at).getTime() : 0;
 
@@ -1541,6 +1561,14 @@ async function checkUpdate(opts) {
   } finally {
     els.checkUpdate.disabled = false;
   }
+
+  // 预览版那一格排在正式版之后，而且**自己一个 try**：
+  // 预览口 404（没发过）与断网在这里是同一种表现 —— 都只许让这一格闭嘴。
+  // 要是让它共享上面那个 catch，「预览口还没发」就会被说成「网络或名额在睡大觉」，
+  // 那句假话还会顺手把刚说出口的正式版结论盖掉（AGENTS §2 #14：谁先说话是要紧事）。
+  try {
+    await checkPreviewChannel(local, stableRemote);
+  } catch (e) {}
 }
 
 /** 有更新（或查不出来）时，把"是/否"两个选项亮出来 */
@@ -1548,6 +1576,72 @@ function showUpdateChoices() {
   els.doUpdate.style.display = "";
   els.doLater.style.display = "";
   els.updateRow.classList.add("hot");
+}
+
+/** 收掉预览那一格（每轮检测开头、以及所有「不说话」的分支） */
+function hidePreviewChannel() {
+  if (els.previewMsg) els.previewMsg.style.display = "none";
+  if (els.doPreview) els.doPreview.style.display = "none";
+}
+
+/** 把「这一格该不该说话」判完，只回一个值，一个字 DOM 都不碰。
+ *  分成这样是因为集成层能把真函数取出来直接喂形状（AGENTS §5「桩打在动作上」），
+ *  `why` 那几格**谁都不许合并**：404、读不出号、不比本地新、和正式版同号，
+ *  四格都说"闭嘴"，但只有分开写才测得出某一格坏了（AGENTS §2 #12）。 */
+function previewPlan(rel, fetched, local, stableVersion) {
+  if (!fetched || !rel) return { speak: false, why: "ask-failed" };
+  const name = String(rel.name || "");
+  const tag = String(rel.tag_name || "");
+  // 号从 tag 里找，找不到再从标题里找 —— `preview` 那个 tag 本身没有版本号，
+  // 号写在发布标题「预览版 1.3.1 experimental b…」上（tools/github-release.js 的 cmdPreview 写的就是它）
+  const found = (tag.match(/\d+\.\d+(?:\.\d+)?/) || name.match(/\d+\.\d+(?:\.\d+)?/) || [])[0] || "";
+  if (!found) return { speak: false, why: "no-version" };
+  // 包必须真在（点了才下得到东西）。`assets` 不是数组或没这个名字 → 这一格不说话，
+  // 也不许"照旧亮按钮"：那样点下去是 GitHub 的 404 页，而它看起来像"预览版没了"
+  const assets = Array.isArray(rel.assets) ? rel.assets : [];
+  const asset = assets.find((a) => a && a.name === UPDATE_PREVIEW_ASSET);
+  if (!asset) return { speak: false, why: "no-asset" };
+  // 转正之后预览口若忘了撤：预览号已经不比正式版新 → 那是**一份旧实验包**，
+  // 同学装上会一直被告知自己在用预览版；不说话，等维护者收口
+  if (stableVersion && cmpVersion(found, stableVersion) <= 0) {
+    return { speak: false, why: "same-as-stable" };
+  }
+  // 已经装了这一支（或更高）的人不用再告诉他"有预览版"
+  if (local && local.version && cmpVersion(found, String(local.version)) <= 0) {
+    return { speak: false, why: "not-newer" };
+  }
+  return { speak: true, why: "show", version: found, stamp: asset.updated_at || "" };
+}
+
+/** 问一次预览口并落地那一格。回 `previewPlan` 的值，测试与日志都要靠它归因。 */
+async function checkPreviewChannel(local, stableVersion) {
+  let rel = null;
+  let fetched = false;
+  try {
+    // withTimeout 是这里唯一的悬挂防线：预览口挂在半空不许把整次检测拖死
+    const res = await withTimeout(
+      fetch(UPDATE_PREVIEW_API, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } }),
+      12000, "预览版查询超时");
+    fetched = !!(res && res.ok);            // 404 = 还没发预览口，这是常态，不是错误
+    if (fetched) rel = await res.json();
+  } catch (e) {
+    rel = null;
+    fetched = false;
+  }
+  const plan = previewPlan(rel, fetched, local, stableVersion);
+  if (!plan.speak) {
+    hidePreviewChannel();
+    return plan;
+  }
+  if (els.previewMsg) {
+    els.previewMsg.textContent =
+      `🧪 另有预览版 ${plan.version}（实验支线，比正式版新）—— 它可能把你正在刷的课弄坏。` +
+      `手上没有正在赶的课、出问题说得清症状（哪门课 · 哪一节 · 什么现象），再装；` +
+      `想退回正式版：移除这一枚，重装 omitone.zip 就行。`;
+    els.previewMsg.style.display = "";
+  }
+  if (els.doPreview) els.doPreview.style.display = "";
+  return plan;
 }
 
 if (els.checkUpdate) {
@@ -1602,6 +1696,32 @@ if (els.doLater) {
     els.doUpdate.style.display = "none";
     els.doLater.style.display = "none";
     els.updateMsg.textContent = "好，先不更新";
+  });
+}
+
+// 预览版那一枚按钮：**地址只用 UPDATE_PREVIEW_ZIP，一个字的 UPDATE_ZIP 都不许出现在这里**。
+// 复用上面那个下载口 = 装预览的人在不知情下退回正式版，而两条通道各自的说法全乱了。
+if (els.doPreview) {
+  els.doPreview.addEventListener("click", () => {
+    els.doPreview.style.display = "none";
+    els.updateMsg.textContent = "正在下载预览包…";
+    const fallback = () => {
+      els.updateMsg.textContent = "下载没成功 —— 点这里手动下：omitone-preview.zip";
+      chrome.tabs.create({ url: UPDATE_PREVIEW_ZIP });
+    };
+    try {
+      chrome.downloads.download({
+        url: UPDATE_PREVIEW_ZIP, saveAs: false, conflictAction: "uniquify"
+      }, (id) => {
+        if (chrome.runtime.lastError || !id) { fallback(); return; }
+        els.updateMsg.textContent =
+          "预览包已下载 —— 解压覆盖到扩展目录，再点「重新加载」，最后 F5。" +
+          "想退回正式版：移除这一枚，重装 omitone.zip。";
+        els.doUntil.style.display = "";
+      });
+    } catch (e) {
+      fallback();
+    }
   });
 }
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * 通道闸：实验版支线不许动「同学点下载拿到的那一份字节」。
+ * 通道闸：实验版支线与发布线各自只能碰自己那一条下载口。
  *
- * 背景（用户口径，2026-11-19）：1.3.1 从稳定版切出来作实验支线，
- * **「实验版不提供直接下载」**，要等现场把课刷完、进度复账没被收回，才考虑转正。
+ * 用户口径的变化（两条方向相反，都要守住）：
+ *   2026-11-19「实验版不提供直接下载」→ `release` / `replace-asset` 在支线上挡下；
+ *   2026-11-20「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」
+ *            → 开一条**只给支线用**的 `preview` 口（移动 tag `preview` + `omitone-preview.zip`），
+ *              它永远碰不到 `releases/latest/download/omitone.zip` 那条稳定直链。
  *
  * ⚠️ 为什么要有这个闸，而不是只在 AGENTS §3.8 写一句「别跑那条命令」：
  *   这一族事故的形状不是报错，是**发版命令自己会把实验版推成用户下载的官方版** ——
@@ -36,6 +39,13 @@ var EXP_RE = /experimental|实验/i;
 // 只有这两条会改「同学点下载拿到的东西」
 var DOWNLOAD_CMDS = ['release', 'replace-asset'];
 
+// 预览通道：只动移动的 tag `preview` 与 `omitone-preview.zip`，永远碰不到
+// `releases/latest/download/omitone.zip` 那条稳定直链（用户口径 2026-11-20：
+// 「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」）。
+// ⚠️ 这一枚**不许并进 DOWNLOAD_CMDS**：那一族是「实验版不许动」，预览恰恰相反 ——
+//    它就是给实验版用的口。并进同一张表，这一支自己就发不出预览了。
+var PREVIEW_CMDS = ['preview'];
+
 function isExperimental(versionName) {
   return EXP_RE.test(String(versionName || ''));
 }
@@ -65,21 +75,45 @@ function readChannelNames(rootDir) {
  *
  * 纯函数（只吃 version_name 与 cmd）—— 这样逐格自证不必碰磁盘，
  * 也给「认不出来就放行」留了一格可测的位置。
+ *
+ * 两个方向各自的事故形状不一样，别混成一句：
+ *   · 实验支线 + `release` / `replace-asset` → **同学下载的正式版被换成实验版**（旧那一族，仍挡）；
+ *   · 发布线 + `preview` → 线上多出一个和正式版一模一样的「预览包」，
+ *     而它对应的版本号已经是稳定版 —— 装了它的人会一直被告知自己在用预览版。
  */
 function blockReason(versionName, cmd) {
-  if (DOWNLOAD_CMDS.indexOf(cmd) < 0) return null;
-  if (!isExperimental(versionName)) return null;
+  var exp = isExperimental(versionName);
+  if (DOWNLOAD_CMDS.indexOf(cmd) >= 0) return exp ? reasonForStableCmd(versionName, cmd) : null;
+  if (PREVIEW_CMDS.indexOf(cmd) >= 0) return exp ? null : reasonForPreviewCmd(versionName, cmd);
+  return null;
+}
+
+function reasonForStableCmd(versionName, cmd) {
   var lines = [
     '✗ ' + cmd + ' 被通道闸挡下：这一份工作树是实验版（version_name「' + versionName + '」）。',
-    '  本闸只管一件事：**实验版不公开发布、不提供直接下载**（AGENTS §3.8）。',
+    '  本闸只管一件事：**实验版不进稳定通道**（AGENTS §3.8）。',
     '  被挡的是「改同学点下载拿到的那一份字节」那两条 ——',
     '    · release        会新建一版公开 Release，直链立刻指向它；',
     '    · replace-asset  会把 dist 里按当前版本号构建出的**实验版那份**覆盖到线上稳定版的同名附件上。',
     '  两种都**不报错、每条命令都打印成功**，只有几周后发现「下载的人装的是实验版」才看得见。',
     '→ 要发稳定版：切回发布线（那一份 manifest 的 version_name 不带 experimental），再跑同一条命令。',
+    '→ 要让同学装上这一支：跑 `preview` —— 它只动移动的 tag `preview` 与 `omitone-preview.zip`，',
+    '   不碰 `releases/latest/download/omitone.zip` 那条永久直链。',
     '→ 要转正这一支：先满足转正条件（现场串行把课刷完 + 同口径复账确认进度没被事后收回），',
-    '   再去掉 version_name 里的 experimental、把 README 与说明书那三处实验口径改回正式，最后发版。',
+    '   再去掉 version_name 里的 experimental、把 README 与说明书那几处实验口径改回正式，最后发版。',
     '  只读核验 verify、改说明 notes、提交 push 三条不受本闸影响，照旧能跑。'
+  ];
+  return lines.join('\n');
+}
+
+function reasonForPreviewCmd(versionName, cmd) {
+  var lines = [
+    '✗ ' + cmd + ' 被通道闸挡下：这一份工作树是**发布线**（version_name「' + versionName + '」，不带 experimental）。',
+    '  预览口只给实验支线用。在发布线上发预览，线上会多出一份与正式版同字节的「预览包」，',
+    '  而装了它的人从此一直看到「你在用预览版」—— 这一族不报错，只有人去对照版本号才发现不对。',
+    '→ 要发这一支的预览：切到 exp/x.y.z 支线（manifest 的 version_name 带 experimental），再跑 `preview`。',
+    '→ 这一支已经转正：走 release 那条正路（切回发布线 → 去掉 experimental → 发版 → 撤掉 README 的预览入口），',
+    '   不要在发布线上补一发 preview。'
   ];
   return lines.join('\n');
 }
@@ -125,7 +159,18 @@ function selfTest() {
     { name: '放行时真的交回 null，不是一句空话',
       want: 'null', got: nullCheck(blockReason('1.3.0', 'release')) },
     { name: '当前工作树读回的 channel 与 version_name 自己一致',
-      want: 'consistent', got: liveCheck() }
+      want: 'consistent', got: liveCheck() },
+    // ---- 预览通道（用户口径 2026-11-20：实验版可以在 README 旁边开一个标明的下载口）----
+    { name: '实验版 + preview 放行（预览口就是给这一支用的）',
+      want: 'open', got: verdict(blockReason('1.3.1 experimental', 'preview')) },
+    { name: '发布线 + preview 挡下（正式版不该多出一份同字节的「预览包」）',
+      want: 'blocked', got: verdict(blockReason('1.3.0', 'preview')) },
+    { name: '挡下 preview 的那句话也点名命令、也给出口',
+      want: 'has-exit', got: namedExit(blockReason('1.3.0', 'preview'), 'preview') },
+    { name: 'preview 没被并进稳定通道那张表（并进去，这一支就发不出预览了）',
+      want: 'separate', got: tableCheck() },
+    { name: '开了预览口之后，实验版跑 release / replace-asset 照样挡（新口不豁旧口）',
+      want: 'both-blocked', got: stableStillBlocked() }
   ];
   var bad = 0;
   cases.forEach(function (c, i) {
@@ -151,6 +196,22 @@ function exitCheck(reason) {
 
 function nullCheck(reason) { return reason === null ? 'null' : 'not-null'; }
 
+function namedExit(reason, cmd) {
+  if (!reason) return 'not-blocked';
+  if (reason.indexOf(cmd) < 0) return 'missing-name';
+  return /转正|正路/.test(reason) && /支线|发布线/.test(reason) ? 'has-exit' : 'no-exit';
+}
+
+function tableCheck() {
+  if (DOWNLOAD_CMDS.indexOf('preview') >= 0) return 'merged';
+  return PREVIEW_CMDS.indexOf('preview') >= 0 ? 'separate' : 'missing';
+}
+
+function stableStillBlocked() {
+  var both = blockReason('1.3.1 experimental', 'release') && blockReason('1.3.1 experimental', 'replace-asset');
+  return both ? 'both-blocked' : 'leaked';
+}
+
 function liveCheck() {
   try {
     var names = readChannelNames();
@@ -159,6 +220,9 @@ function liveCheck() {
     // 自证：实验通道的工作树，release 一定挡得住（这是这一闸存在的理由）
     if (exp && !blockReason(names.version_name, 'release')) return 'exp-not-blocked';
     if (!exp && blockReason(names.version_name, 'release')) return 'stable-blocked';
+    // 另一半：预览口只在这条线上打得开
+    if (exp && blockReason(names.version_name, 'preview')) return 'exp-preview-blocked';
+    if (!exp && !blockReason(names.version_name, 'preview')) return 'stable-preview-open';
     return 'consistent';
   } catch (e) {
     // manifest 读不出时**不许**报成一致：那是"闸自己失效"，与"没配 manifest"同形
@@ -183,6 +247,7 @@ if (require.main === module) {
 module.exports = {
   EXP_RE: EXP_RE,
   DOWNLOAD_CMDS: DOWNLOAD_CMDS,
+  PREVIEW_CMDS: PREVIEW_CMDS,
   isExperimental: isExperimental,
   channelOf: channelOf,
   readChannelNames: readChannelNames,

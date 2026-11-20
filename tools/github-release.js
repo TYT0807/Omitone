@@ -19,6 +19,7 @@
  * 子命令：
  *   push    --message-file <文件> <文件...>   把改动提交到 main（走 API；备选方案，见上）
  *   release <tag> --notes-file <文件>         打 tag + 建 Release + 传两个附件
+ *   preview                                   把**实验支线**那份构建发到独立的预览口（见下方通道闸）
  *   notes   <tag> --notes-file <文件>         **只改 Release 那一页的说明**，不动 tag、不动附件
  *   verify  <tag>                             核验远端状态（**发完必须跑一次**）
  *   replace-asset <tag>                       附件过期时按同名替换，不必重发整版
@@ -588,6 +589,218 @@ async function cmdReplaceAsset(tag) {
   if (!changed) console.log('\n没有需要替换的附件。');
   else console.log('\n下一步必须核验：node tools/github-release.js verify ' + tag);
 }
+
+// ---------------------------------------------------------------------------
+// preview：把**当前实验支线**那份构建挂到一条独立的预览口上
+//
+// 用户口径（2026-11-20）：「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」
+// 「更新提示那边也可以展示预览版……需要多斟酌考虑」。所以实验版不再是"没有下载口"，
+// 而是**有口，但和正式版是两个东西**。这一条命令就是把那一格实现出来。
+//
+// ⚠️ 三条不许越过的线（每条都有实测的事故形状垫着）：
+//   1) **附件名不与稳定版共用**。`releases/latest/download/omitone.zip` 是按**名字**取件的，
+//      预览包要是也叫 `omitone.zip`，README 那条永久直链就会给所有人发实验版 ——
+//      而命令照样打印成功（1.2.9 那次「下载到的其实是 1.2.8」就是同一族的形状）。
+//   2) **`prerelease: true`**。GitHub 的 `/releases/latest` 只认「最近创建的、非草稿、非预发布」那一版，
+//      这一个字段就是预览口抢不走正式直链的**唯一**保证；漏写一次，直链当场换人。
+//      所以发布后**必须**回读一次并把它当判据（见 assertStableChannelIntact）。
+//   3) **tag `preview` 指在远端已有的那个提交上**，不指本地没推的 HEAD ——
+//      否则线上包与仓库里的源码对不上，事后没人能复现同学装的是哪一份字节。
+//
+// 用法：node tools/github-release.js preview
+// ---------------------------------------------------------------------------
+var PREVIEW_TAG = 'preview';
+var PREVIEW_NOTES = 'release-notes-preview.md';
+var PREVIEW_ASSETS = [
+  { src: null, name: 'omitone-preview.zip' },                 // src 在运行时按 manifest.version 推出
+  { src: '使用说明.pdf', name: 'Omitone-manual-preview.pdf' }
+];
+// 稳定通道那两个名字 —— 预览这一发**一个都不许碰**
+var STABLE_ONLY_NAMES = ['omitone.zip', 'Omitone-manual.pdf'];
+// 「工作树脏不脏」只按**进包的那批**判：dist/ 与 notes/ 里的残留不该挡发版
+var PACKAGED_FOR_DIRTY_CHECK = ['manifest.json', 'page.js', 'content.js', 'background.js',
+  'libs', 'popup', 'resources', 'src'];
+
+async function cmdPreview() {
+  // 通道闸：预览口只给实验支线用（问在联网与读令牌之前，§3.8）
+  var gatePreview = channelGate.blockReasonForRepo('preview');
+  if (gatePreview) { console.log(gatePreview); process.exitCode = 1; return; }
+
+  var version = manifestVersion();
+  var names = channelGate.readChannelNames();
+
+  // ---- 本地四道前置（全部联网之前，一道不过就一个字都不动）----
+  var notesFile = path.join(ROOT, PREVIEW_NOTES);
+  if (!fs.existsSync(notesFile)) {
+    throw new Error('缺预览说明源文件 ' + PREVIEW_NOTES +
+      '（正文只从它读，不接受手写 —— 与 notes 子命令同一规矩）');
+  }
+  var body = fs.readFileSync(notesFile, 'utf8').replace(/\s+$/, '');
+  if (body.indexOf(version) === -1) {
+    throw new Error(PREVIEW_NOTES + ' 里没出现当前版本号 ' + version +
+      ' —— 说明还停在上一版，发出去就是「包是新的、那一页写的是旧的」');
+  }
+
+  var wanted = PREVIEW_ASSETS.map(function (a) {
+    return { file: a.src || path.join('dist', 'omitone-' + version + '.zip'), name: a.name };
+  });
+  wanted.forEach(function (w) {
+    if (!fs.existsSync(path.join(ROOT, w.file))) {
+      throw new Error('缺附件源文件 ' + w.file + '（跑 `npm run build` 或 `npm run manual` 生成）');
+    }
+  });
+
+  var fresh = distFreshness(version);
+  if (fresh.includeBroken) {
+    throw new Error('读不出 tools/build.js 的 INCLUDE 清单 —— 「包是不是新的」这一格判不了就别发');
+  }
+  if (fresh.stale) {
+    throw new Error('dist/omitone-' + version + '.zip 比 ' + fresh.newest.file + ' 还旧 —— 先 npm run build，' +
+      '否则预览口给的是改动之前的字节');
+  }
+
+  var branch = String(git(['rev-parse', '--abbrev-ref', 'HEAD'], true)).trim();
+  var localHead = String(git(['rev-parse', 'HEAD'], true)).trim();
+  var dirty = String(git(['status', '--porcelain', '--'].concat(PACKAGED_FOR_DIRTY_CHECK), true)).trim();
+  if (dirty) {
+    throw new Error('进包的那批文件里有未提交的改动：\n      ' + dirty.split(/\r?\n/).join('\n      ') +
+      '\n  → 预览包会带着仓库里查不到的字节上线；先提交（或还原）再发');
+  }
+
+  // ---- 远端必须已经有这一支的同一个提交 ----
+  var ref;
+  try {
+    ref = await api('GET', base + '/git/ref/heads/' + branch);
+  } catch (e) {
+    throw new Error('远端没有分支 ' + branch + '（' + e.message.slice(0, 120) +
+      '）—— 预览包的源码要能在仓库里找到，先把这一支推上去');
+  }
+  var remoteHead = ref.object.sha;
+  if (remoteHead !== localHead) {
+    throw new Error('本地 HEAD ' + localHead.slice(0, 7) + ' ≠ 远端 ' + branch + ' ' + remoteHead.slice(0, 7) +
+      ' —— 先把这一支 push 上去（tag 只能指在推上去的那份代码上）');
+  }
+  console.log('通道         预览（' + names.version_name + '）');
+  console.log('远端 ' + branch + ' = ' + remoteHead.slice(0, 7));
+
+  // ---- tag preview 指向远端当前 head（移动 tag，不是版本 tag）----
+  var tagObj = await api('POST', base + '/git/tags', {
+    tag: PREVIEW_TAG, message: 'preview — ' + names.version_name, object: remoteHead, type: 'commit'
+  });
+  var existing = null;
+  try {
+    existing = await api('GET', base + '/git/ref/tags/' + PREVIEW_TAG);
+  } catch (e) { /* 第一次发，正常 */ }
+  if (existing) {
+    await api('PATCH', base + '/git/refs/tags/' + PREVIEW_TAG, { sha: tagObj.sha, force: true });
+    console.log('  tag ' + PREVIEW_TAG + ' 已移动 → ' + remoteHead.slice(0, 7));
+  } else {
+    await api('POST', base + '/git/refs', { ref: 'refs/tags/' + PREVIEW_TAG, sha: tagObj.sha });
+    console.log('  tag ' + PREVIEW_TAG + ' 已创建 → ' + remoteHead.slice(0, 7));
+  }
+
+  // ---- Release（prerelease:true 是不抢 /releases/latest 的唯一保证）----
+  var payload = {
+    tag_name: PREVIEW_TAG, name: '预览版 ' + names.version_name, body: body,
+    draft: false, prerelease: true, target_commitish: branch
+  };
+  var rel;
+  try {
+    rel = await api('POST', base + '/releases', payload);
+    console.log('  预览 Release 已创建：' + rel.html_url);
+  } catch (e) {
+    if (!/already_exists/i.test(e.message)) throw e;
+    var found = await api('GET', base + '/releases/tags/' + PREVIEW_TAG);
+    rel = await api('PATCH', base + '/releases/' + found.id, payload);
+    console.log('  预览 Release 已存在 → 已更新：' + rel.html_url);
+  }
+
+  // ---- 附件（按 sha256 判重，与 replace-asset 同一把尺）----
+  for (var i = 0; i < wanted.length; i++) {
+    var w = wanted[i];
+    var localPath = path.join(ROOT, w.file);
+    var data = fs.readFileSync(localPath);
+    var localSha = crypto.createHash('sha256').update(data).digest('hex');
+    var current = await api('GET', base + '/releases/' + rel.id + '/assets');
+    var old = current.filter(function (a) { return a.name === w.name; })[0];
+    if (old && old.digest && String(old.digest).replace(/^sha256:/, '') === localSha) {
+      console.log('  ' + w.name + ' 已是最新（sha256 ' + localSha.slice(0, 12) + '…）—— 跳过');
+      continue;
+    }
+    if (old) {
+      await api('DELETE', base + '/releases/assets/' + old.id);
+      console.log('  删除旧预览附件 ' + w.name + '（' + (old.size / 1024).toFixed(1) + ' KB）');
+    }
+    var res = await fetch('https://uploads.github.com' + base + '/releases/' + rel.id +
+      '/assets?name=' + encodeURIComponent(w.name), {
+      method: 'POST',
+      headers: Object.assign({}, headers(), { 'Content-Type': 'application/octet-stream' }),
+      body: data
+    });
+    var text = await res.text();
+    if (!res.ok) throw new Error('附件上传失败 ' + res.status + ' ' + text.slice(0, 300));
+    console.log('  上传 ' + w.name + ' (' + (data.length / 1024).toFixed(1) + ' KB) sha256 ' + localSha.slice(0, 12) + '…');
+  }
+
+  // ---- 发布后自证：稳定通道那一条直链没有被这一发顶掉 ----
+  var okIntact = await assertStableChannelIntact(rel.id, wanted);
+  console.log('\n预览入口：https://github.com/' + OWNER + '/' + REPO +
+    '/releases/download/' + PREVIEW_TAG + '/' + PREVIEW_ASSETS[0].name);
+  if (!okIntact) process.exitCode = 1;
+}
+
+/**
+ * **这一发预览有没有把正式版直链抢走** —— 回读，不靠"我记得写了 prerelease"。
+ *
+ * 为什么单独成一格：`releases/latest` 的行为由 `prerelease` / `draft` 两个字段决定，
+ * 而这两个字段**写错了接口照样返回 200**，README 那条永久直链却当场换人。
+ * 判据全部从线上读回来（本地不猜）：任何一条不成立就退出非零并说清怎么手工处置。
+ */
+async function assertStableChannelIntact(previewRelId, wanted) {
+  var problems = [];
+  var latest = await api('GET', base + '/releases/latest');
+  var latestAssets = await api('GET', base + '/releases/' + latest.id + '/assets');
+  var latestNames = latestAssets.map(function (a) { return a.name; });
+  console.log('\n线上正式通道 /releases/latest → ' + latest.tag_name +
+    '（prerelease=' + latest.prerelease + '，附件 ' + latestNames.join(' / ') + '）');
+
+  if (latest.tag_name === PREVIEW_TAG) {
+    problems.push('/releases/latest 指向了 preview —— 同学点「下载插件」拿到的会是实验版');
+  }
+  if (latest.prerelease) problems.push('/releases/latest 那一版 prerelease=true，它不是稳定版');
+  if (latestNames.indexOf(STABLE_ONLY_NAMES[0]) < 0) {
+    problems.push('/releases/latest 里没有 ' + STABLE_ONLY_NAMES[0] + ' —— README 那条永久直链是死链');
+  }
+
+  var prevAssets = await api('GET', base + '/releases/' + previewRelId + '/assets');
+  var prevNames = prevAssets.map(function (a) { return a.name; });
+  console.log('预览通道 /releases/tags/preview → 附件 ' + prevNames.join(' / '));
+  wanted.forEach(function (w) {
+    var a = prevAssets.filter(function (x) { return x.name === w.name; })[0];
+    if (!a) { problems.push('预览 Release 里没有 ' + w.name); return; }
+    if (a.state && a.state !== 'uploaded') problems.push(w.name + ' 的 state=' + a.state + '（不是 uploaded）');
+    var localSize = fs.statSync(path.join(ROOT, w.file)).size;
+    if (a.size !== localSize) {
+      problems.push(w.name + ' 线上 ' + a.size + ' 字节 ≠ 本地 ' + localSize + ' 字节 —— 传坏了或没传完');
+    }
+  });
+  // 最硬的一格：两个通道的附件名不许有任何交集
+  var shared = prevNames.filter(function (n) { return STABLE_ONLY_NAMES.indexOf(n) >= 0; });
+  if (shared.length) {
+    problems.push('预览 Release 里混进了稳定通道的附件名 ' + shared.join(' / ') +
+      ' —— 按名字取件的那条永久直链会被实验版顶掉');
+  }
+
+  if (problems.length) {
+    console.error('\n✗ 预览发布后自证没通过：\n      ' + problems.join('\n      '));
+    console.error('  → 这一族不是"少个附件"，是**同学下载到的那一份变了**。请立刻到 ' +
+      'https://github.com/' + OWNER + '/' + REPO + '/releases 上人工确认，必要时删掉那一版 Release。');
+    return false;
+  }
+  console.log('  ✓ 两条通道没有交集：正式版直链照旧给 ' + latest.tag_name + ' 的 ' + STABLE_ONLY_NAMES[0]);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // verify：核验远端（**只看接口返 200 不算数**，要确认附件状态与 tag 指向）
 // ---------------------------------------------------------------------------
@@ -855,6 +1068,7 @@ async function cmdVerify(tag) {
     await cmdPush(rest.positional, rest.flags['message-file'], dels);
   }
   else if (cmd === 'release') await cmdRelease(rest.positional[0], rest.flags['notes-file']);
+  else if (cmd === 'preview') await cmdPreview();
   else if (cmd === 'notes') await cmdNotes(rest.positional[0], rest.flags['notes-file']);
   else if (cmd === 'verify') await cmdVerify(rest.positional[0]);
   else if (cmd === 'replace-asset') await cmdReplaceAsset(rest.positional[0]);
@@ -863,11 +1077,12 @@ async function cmdVerify(tag) {
     console.log('用法:');
     console.log('  node tools/github-release.js push --message-file <文件> [--delete a,b] <文件...>');
     console.log('  node tools/github-release.js release <tag> --notes-file <文件>');
+    console.log('  node tools/github-release.js preview             # 实验支线发预览包（只动 tag preview / omitone-preview.zip）');
     console.log('  node tools/github-release.js notes <tag> [--notes-file <文件>]   # 只改那一页的说明（默认读 release-notes-<版本>.md）');
     console.log('  node tools/github-release.js verify <tag>');
     console.log('  node tools/github-release.js replace-asset <tag>   # 附件过期时按同名替换，不必重发整版');
     console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');
-    console.log('  （实验支线上 release / replace-asset 会被 tools/channel-gate.js 挡下：见 AGENTS §3.8）');
+    console.log('  （通道闸 tools/channel-gate.js：实验支线上 release / replace-asset 被挡，发布线上 preview 被挡 —— 见 AGENTS §3.8）');
     process.exitCode = 1;
   }
 })().catch(function (e) {

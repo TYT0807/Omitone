@@ -445,6 +445,55 @@ function checkUserEntryPoints() {
       '附件名必须固定为 ' + ZIP_ASSET + '，否则每发一版直链就失效一次');
   }
 
+  // 2b) 预览直链的形状（实验支线的第二个入口）
+  //
+  // ⚠️ 这里只钉**形状**，不钉"该不该有"（那归第 34 项按通道判）。理由：
+  //    这一条一旦写错，两种错法都不报错 —— 挂到 `/releases/latest` 下面就是 404
+  //    （预览附件不在正式版那一版里），复用 `omitone.zip` 这个名字就是把实验版
+  //    发到正式口上（`releases/latest/download/omitone.zip` 按**名字**取件）。
+  //    前者同学骂作者链接坏了，后者是**所有人静悄悄地换上实验版**，都只有人来反馈才知道。
+  if (/releases\/download\/preview\/omitone\.zip/.test(readme)) {
+    problemsHere.push('README 的预览直链写成 releases/download/preview/omitone.zip —— 那是稳定通道的附件名，' +
+      '两条通道共用一个名字，正式版那条永久直链就变成给实验版发件');
+  }
+  if (/releases\/latest\/download\/omitone-preview/.test(readme)) {
+    problemsHere.push('README 的预览直链挂在 /releases/latest 下面 —— 预览附件不在正式版那一版里，点开就是 404');
+  }
+  var PV_OK = ['omitone-preview.zip', 'Omitone-manual-preview.pdf'];
+  // ⚠️ 提取只取**文件名那一截**的合法字符。上一版的字符类是「除空白和括号引号之外都吃」，
+  //    而 README 除了完整直链，还把路径写进反引号小字（`…/preview/omitone-preview.zip`）——
+  //    闭引号和全角括号一起进了匹配，切出的尾巴带着那两个字符，**干净文档也报红**。
+  //    会误报的守卫和没有守卫一样害人（AGENTS §5），所以这一格配三条对照自己钉住提取器。
+  var pvNamesOf = function (text) {
+    var out = [], mm, re = /releases\/download\/preview\/([A-Za-z0-9._\-]+)/g;
+    while ((mm = re.exec(text))) out.push(mm[1]);
+    return out;
+  };
+  var pvSelf = [
+    ['名字写错的完整直链必须被逮住', pvNamesOf('https://git.io/x/releases/download/preview/omitone.zip').join() === 'omitone.zip'],
+    ['反引号里的相对路径不许读成名字对不上', pvNamesOf('写在 `releases/download/preview/omitone-preview.zip`）里').join() === 'omitone-preview.zip'],
+    ['说明书附件名照旧在许可名单里', pvNamesOf('releases/download/preview/Omitone-manual-preview.pdf').join() === 'Omitone-manual-preview.pdf']
+  ];
+  var pvSelfBad = pvSelf.filter(function (c) { return c[1] === false; });
+  if (pvSelfBad.length) {
+    problemsHere.push('预览直链提取器自己的对照格没过：' + pvSelfBad.map(function (c) { return c[0]; }).join(' / ') +
+      ' —— 这一闸现在要么抓不住写错的名字，要么会误报');
+  }
+  var pvLinks = pvNamesOf(readme);
+  var pvBad = pvLinks.filter(function (u) { return PV_OK.indexOf(u) === -1; });
+  if (pvBad.length) {
+    problemsHere.push('预览直链里有对不上预览附件名的地址：' + pvBad.join(' / ') +
+      '（只许 ' + PV_OK.join(' / ') + '）—— 名字写错就是 404，而 README 那一页看不出来');
+  }
+  // 卫生格：实验支线上扫到 0 处不许打印通过 —— 措辞被整体改写时这条会静默变成空命中。
+  // ⚠️ 只在实验支线要求（通道判定复用闸那一把尺）：转正后 README 本来就该一个预览口都没有，
+  //    在那边要求 ≥1 是一条恒红的守卫，而第 34 项正管着"不许留着"。
+  var pvGate = require('./channel-gate.js');
+  if (pvGate.isExperimental(pvGate.readChannelNames().version_name) && !pvLinks.length) {
+    problemsHere.push('工作树是实验版，README 里却一处预览直链都没扫到 —— 「预览附件名对不对」这一闸这一轮根本没跑，' +
+      '别把这条读成通过（该不该有预览口归第 34 项判）');
+  }
+
   // 3) 给人读的文档里的相对链接必须真实存在
   //
   // 只查 README 是不够的：HANDOVER / AGENTS / ARCHITECTURE 之间互相引用很多，
@@ -3759,24 +3808,29 @@ function checkProfileSweep() {
 
 // ---------------------------------------------------------------------------
 // 34. 实验支线的发布闸（真源 tools/channel-gate.js）
-//     用户口径（2026-11-19）：1.3.1 是**实验版支线**，「不提供直接下载」，
-//     要等现场把课刷完、进度复账没被收回才考虑转正。
+//     用户口径有两条，方向相反，都要落到命令上：
+//       2026-11-19「实验版不提供直接下载」→ 支线不许跑 release / replace-asset；
+//       2026-11-20「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」
+//                                       → 支线有自己的预览口，但发布线不许发预览。
 //     ⚠️ 这一族事故不报错：在实验支线上跑 `replace-asset`，它会按**当前工作树的版本号**
 //     取 dist 里那个包（实验版那份），却挂到线上固定的附件名 `omitone.zip` 上 ——
 //     每条命令都打印成功，而 README 那条永久直链从此给所有人发实验版。
-//     五格各自承重，摘掉任意一格都要红：
+//     反过来那一族更隐蔽：预览包若复用 `omitone.zip` 这个名字，或漏写 `prerelease:true`，
+//     **线上没有任何东西会红**，只有几周后发现「同学装的一直是实验版」才看得见（1.2.9 那次同形）。
+//     各格各自承重，摘掉任意一格都要红：
 //       a 闸自己的逐格对照全绿，且格数没被人删（口径同第 33 项）
-//       b release 与 replace-asset 两条**真的问了闸**，且问在联网之前
+//       b release / replace-asset / preview 三条**真的问了闸**，且问在联网之前
 //       c 只读的 verify 不许被挡（§3.7 要求发版必跑它，挡死=造一条恒红的守卫）
-//       d 门面那句「不提供直接下载」在实验通道要在、转正之后要没 —— 两格反向各红一次
-//       e AGENTS §3.8 那条规矩还指着这份真源
+//       d 预览那一发不许借用稳定通道的附件名，且必须写 prerelease:true，且发完必须回读自证
+//       e 门面（README + 说明书）的实验口径与 version_name 同进同退 —— 两向各红一次
+//       f AGENTS §3.8 那条规矩还指着这份真源
 // ---------------------------------------------------------------------------
 function checkChannelGate() {
   var bad = [];
   var cells = null;
 
   // ---- a. 闸自带的逐格对照 ----
-  var CELLS_MIN = 15;
+  var CELLS_MIN = 20;
   if (!exists('tools/channel-gate.js')) {
     fail('实验支线的发布闸真源不存在：tools/channel-gate.js（AGENTS §3.8 那条规矩落不到命令上）');
     return;
@@ -3811,12 +3865,12 @@ function checkChannelGate() {
     }
   }
 
-  // ---- b + c. 发版工具那两半（先剥注释：头部大段散文写着 release / replace-asset，拿原文数就是把散文当调用） ----
+  // ---- b + c + d. 发版工具那几半（先剥注释：头部大段散文写着 release / replace-asset，拿原文数就是把散文当调用） ----
   var relCode = stripComments(read('tools/github-release.js'));
   if (relCode.indexOf("require('./channel-gate.js')") === -1) {
     bad.push("tools/github-release.js 没有 require 通道闸 —— 闸写着却没人问，等于还是那句「别跑这条命令」");
   }
-  [['cmdRelease', 'release'], ['cmdReplaceAsset', 'replace-asset']].forEach(function (pair) {
+  [['cmdRelease', 'release'], ['cmdReplaceAsset', 'replace-asset'], ['cmdPreview', 'preview']].forEach(function (pair) {
     var body = fnBodyAt(relCode, pair[0]);
     if (!body) { bad.push('发版工具里找不到 ' + pair[0] + ' 的函数体 —— 那一发没法确认它问了闸'); return; }
     var ask = body.indexOf("blockReasonForRepo('" + pair[1] + "')");
@@ -3839,24 +3893,63 @@ function checkChannelGate() {
     bad.push('cmdVerify 被接进了通道闸 —— verify 是 §3.7 要求**发版必跑**的只读核验，' +
       '把它挡死就得到一条恒红的发版流程（会误报的守卫和没有守卫一样害人）');
   }
+  // d. 预览那一发的三条命门（名字、prerelease、发完回读）—— 任何一条漏了，线上都不会红
+  var prevBody = fnBodyAt(relCode, 'cmdPreview');
+  if (!prevBody) {
+    bad.push('发版工具里没有 cmdPreview —— 用户要的「预览版可以下载」落不到命令上');
+  } else {
+    if (prevBody.indexOf("'omitone-preview.zip'") === -1 && relCode.indexOf("name: 'omitone-preview.zip'") === -1) {
+      bad.push("预览那一发的附件名不是 omitone-preview.zip —— 一旦它与稳定通道的 omitone.zip 同名，" +
+        'README 那条按名字取件的永久直链就会被实验版顶掉');
+    }
+    if (!/prerelease:\s*true/.test(prevBody)) {
+      bad.push('预览那一发没写 prerelease:true —— /releases/latest 只认「非预发布」那一版，' +
+        '漏这一个字段等于把预览版推成同学下载的官方版，而命令照样返回 200');
+    }
+    if (prevBody.indexOf('assertStableChannelIntact') === -1) {
+      bad.push('cmdPreview 发布完没有回读自证 —— 「prerelease 写没写对」不能靠我记得，得从线上读回来');
+    }
+  }
+  var intactBody = fnBodyAt(relCode, 'assertStableChannelIntact');
+  if (!intactBody) {
+    bad.push('发版工具里找不到 assertStableChannelIntact 的函数体 —— 那一发「直链没被抢走」的自证没处可查');
+  } else if (intactBody.indexOf('/releases/latest') === -1) {
+    bad.push('assertStableChannelIntact 没有问 /releases/latest —— 预览口会不会顶掉正式版，只有读它才知道');
+  } else if (intactBody.indexOf('STABLE_ONLY_NAMES') === -1) {
+    bad.push('assertStableChannelIntact 没有比附件名交集（STABLE_ONLY_NAMES）—— 两个通道共用名字是最贵的那一种漏');
+  }
 
-  // ---- d. 门面那句实验口径：在的时候必须有，转正之后必须没 ----
+  // ---- e. 门面的实验口径：有预览口就得写得出来，转正之后要收回去 ----
   // ⚠️ 通道判定**用闸那一把尺**，不在这里再写一遍 /experimental/ ——
   //    两份口径各判各的，正是「写入口与读出口两侧都要过同一把尺」那一族（AGENTS §2 #18）
   var gate = require('./channel-gate.js');
   var isExp = gate.isExperimental(gate.readChannelNames().version_name);
   var readme = read('README.md');
-  var hasNoDownload = readme.indexOf('不提供直接下载') >= 0;
-  if (isExp && !hasNoDownload) {
-    bad.push('工作树是实验版（version_name 带 experimental），README 却没有那句「不提供直接下载」—— ' +
-      '同学点开这一页会以为那条直链给的就是这一版');
+  var manual = exists('docs/manual.html') ? read('docs/manual.html') : '';
+  var PREVIEW_LINK = 'releases/download/preview/omitone-preview.zip';
+  var hasPreviewLink = readme.indexOf(PREVIEW_LINK) >= 0;
+  var hasOldNoDownload = readme.indexOf('不提供直接下载') >= 0;
+  if (isExp && !hasPreviewLink) {
+    bad.push('工作树是实验版（version_name 带 experimental），README 却没有预览直链 ' + PREVIEW_LINK +
+      ' —— 同学点开这一页根本找不到这一支从哪儿装');
   }
-  if (!isExp && hasNoDownload) {
-    bad.push('README 还写着「不提供直接下载」，但 version_name 已经没有 experimental 了 —— ' +
-      '转正之后这句变成假话，而且它正好把用户挡在能下载的那一步外面');
+  if (!isExp && hasPreviewLink) {
+    bad.push('README 还挂着预览直链，但 version_name 已经没有 experimental 了 —— ' +
+      '转正之后这句变成"正式版之外还有个预览版"，而那个预览包已经不存在或对得上别的字节');
+  }
+  if (hasOldNoDownload) {
+    bad.push('README 里还有那句「不提供直接下载」—— 那是 2026-11-19 的旧口径（当时预览口还没有）。' +
+      '现在实验版有预览下载口，这句会把人挡在能下载的那一步外面');
+  }
+  if (isExp && manual.indexOf('预览版下载') === -1) {
+    bad.push('说明书没教「预览版下载」这一格（工作树是实验版）—— 界面与门面会装实验版，' +
+      '照着 pdf 装机的人只看得到正式版那一步');
+  }
+  if (!isExp && manual.indexOf('预览版下载') !== -1) {
+    bad.push('转正之后说明书还留着「预览版下载」那一段 —— 那一版没有预览口，这段话会让人白找');
   }
 
-  // ---- e. AGENTS 那条规矩指着这份真源 ----
+  // ---- f. AGENTS 那条规矩指着这份真源 ----
   var agents = read('AGENTS.md');
   if (agents.indexOf('tools/channel-gate.js') === -1) {
     bad.push('AGENTS.md §3.8 没把 tools/channel-gate.js 写成真源 —— 下一轮接手的人只会去找那句文字规矩');
@@ -3868,7 +3961,8 @@ function checkChannelGate() {
     return;
   }
   pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
-    'release / replace-asset 问在联网之前，verify 照旧放行，README 实验口径与 version_name 同进同退）');
+    'release / replace-asset / preview 问在联网之前，verify 照旧放行，' +
+    '预览附件名与 prerelease 与发布后回读三格齐，README/说明书实验口径与 version_name 同进同退）');
 }
 
 // ---------------------------------------------------------------------------

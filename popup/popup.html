@@ -347,6 +347,10 @@ a.ext:hover{ text-decoration:underline; }
 .update-row{ position:relative; display:flex; align-items:center; gap:10px; margin-top:8px; flex-wrap:wrap; }
 .update-msg{ color:var(--muted); font-size:12px; }
 .update-row.hot .update-msg{ color:var(--fg); font-weight:600; }
+/* 预览版（实验支线）那一格：单独占一行、字号比正式版那行小半档，但**整句摊开写** ——
+   "要多斟酌"的那三件事不许折进标题里，也不许靠悬停才看得见（看不见就等于没警告）。 */
+.preview-msg{ flex:1 1 100%; color:var(--muted); font-size:11.5px; line-height:1.55; }
+.link-btn#doPreview{ color:var(--warn); }
 .link-btn{
   background:none; border:0; padding:0; cursor:pointer;
   color:var(--accent); font-size:12px; font-weight:500; text-decoration:none;
@@ -641,6 +645,8 @@ body.has-bg::after{
       <button class="link-btn" id="doUpdate" style="display:none">是，覆盖更新</button>
       <button class="link-btn" id="doLater" style="display:none">不是现在</button>
       <button class="link-btn" id="doUntil" style="display:none">打开扩展页</button>
+      <span class="preview-msg" id="previewMsg" style="display:none"></span>
+      <button class="link-btn" id="doPreview" style="display:none">🧪 装预览版（实验性质，先掂量上面那句）</button>
       <label class="mute-pick" title="在一段时间内不再提醒更新（不影响手动检查）">
         <span>更新提醒</span>
         <select id="updateMute">

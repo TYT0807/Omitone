@@ -7,7 +7,7 @@
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
 ![版本](https://img.shields.io/badge/版本-1.3.1-orange)
-![通道](https://img.shields.io/badge/通道-实验版%20·%20未发布-yellow)
+![通道](https://img.shields.io/badge/通道-实验版%20·%20预览可装-yellow)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 
@@ -17,10 +17,22 @@
 
 [**📖 在线看图解说明书**](https://tyt0807.github.io/Omitone/docs/manual.html) &nbsp;·&nbsp; [**下载 PDF 版**](https://github.com/TYT0807/Omitone/releases/latest/download/Omitone-manual.pdf)
 
-> 🧪 **这一页属于 `exp/1.3.1` 实验分支，上面那条链接下载的仍然是 1.3.0 正式版。**
-> 实验版**不公开发布、不提供直接下载**：这一支线的改动要先在真课上跑到「刷课确定没有问题」，
-> 才并回稳定版、发出去给同学。要装插件就照下面三步装稳定版；
-> 想帮着测重度改动，再从这个分支 `npm run build` 之后加载 `dist/omitone-1.3.1/` 那一份。
+<sub>👆 这两条是 **1.3.0 正式版**的入口 —— 绝大多数人装这个就对了，它也是本页往下所有说明所依据的那一版。</sub>
+
+### [🧪 **装预览版（omitone-preview.zip · 1.3.1 实验版）**](https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip)
+
+[**预览版的说明书 PDF**](https://github.com/TYT0807/Omitone/releases/download/preview/Omitone-manual-preview.pdf)
+
+<sub>🧪 这一条是**实验支线那一份**：这一轮的新东西都在里面，但它也可能把你正在刷的课弄坏。
+装之前先掂量三件事 —— **① 手上有没有正在赶的课**（有就别换，正式版完全够用）；
+**② 万一不对你会不会退回正式版**（把预览那枚扩展移除，再照上面正式版那三步重装，五分钟的事）；
+**③ 出问题能不能把症状说清楚**（右下角面板能看日志，去 issue 里贴一句「哪门课 · 哪一节 · 什么现象」就有用）。
+三条都愿意，装它确实能推进这一版；只想安静把课刷完，请留在正式版。</sub>
+
+> 🧪 **这一页属于 `exp/1.3.1` 实验分支。** 第一条链接下载的**仍然是 1.3.0 正式版**（那条永久直链只会给稳定版）；
+> 预览版走的是另一条地址、另一个附件名（`releases/download/preview/omitone-preview.zip`），
+> **两条通道互不顶替**，装预览版不会影响正式版那条链接给别人的东西。
+> 这一支的改动要先在真课上跑到「刷课确定没有问题」，才并回稳定版、正式发给同学。
 
 <sub>**不懂 GitHub 也没关系** —— 第一个链接点下去，浏览器会自己开始下载：
 不用注册、不用登录、不用点绿色的 Code 按钮、不用装 Git。<br>
@@ -60,10 +72,13 @@
 </div>
 
 <details>
-<summary><strong>1.3.1 实验版（未发布）· 这一支在动什么 · 怎么才算转正</strong> —— 只有切到这一条分支才看得见</summary>
+<summary><strong>1.3.1 实验版（预览可装）· 这一支在动什么 · 怎么才算转正</strong> —— 只有切到这一条分支才看得见</summary>
 
-**这一版没有下载口。** `exp/1.3.1` 是从稳定版切出来的实验支线，线上 Releases 那一页仍然只有 1.3.0；
-上面那两个下载链接（插件包与说明书 PDF）拿到的都还是 1.3.0。
+**这一支有下载口，但和正式版是两个东西。** `exp/1.3.1` 是从稳定版切出来的实验支线，
+上面**不带版本号**那两条链接（插件包与说明书 PDF）拿到的仍是 **1.3.0 正式版**；
+想装这一支，用**页面最上面**「🧪 装预览版」那两条 —— 它们走的是单独的 `preview` 标签与
+`omitone-preview.zip` 这个文件名，**永远覆盖不到正式版那条直链**。
+预览版属于「装了就得自己盯着」的性质，慎重点，判断标准写在下面。
 
 **切出来之后落在这条支线上的**（一句话一条，都是「没遇到过就感觉不到变化」的那一类）：
 
@@ -78,7 +93,8 @@
 - 「页面被推到用户中心后一直重载、就是不接着刷」的人：后台重启也记得住刚才在刷哪一门，会自己把这一页送回去；送回去两次还被顶就停手并点名说这件事要人接手，不再原地无限重载
 
 **转正条件**：现场把剩下的课按串行刷完，用同一口径复账过一轮进度、确认没有被事后收回，
-才把这一支并回稳定版、发版、换附件。在那之前**不发 Release、不换附件、不推 GitHub**。
+才把这一支并回稳定版、发版、换附件。**转正之前**：预览口可以发（它不动正式版那两个附件名），
+但正式版的 `omitone.zip` 与说明书 PDF 一个字都不换 —— 这一条由 `tools/channel-gate.js` 挡住，不靠人记得。
 
 逐条来龙去脉在 [CHANGELOG.md](CHANGELOG.md) 的 1.3.1 段。
 
