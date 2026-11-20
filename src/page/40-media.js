@@ -14,9 +14,10 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（53 个）：
+ * 本段的方法（57 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
+ *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
  *   _playChaoxingMediaJob、_startSlideMedia、_waitSlideAudioDone、
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
@@ -419,6 +420,108 @@
     },
 
 
+    // ==== 站点自己写的「完成条件」标语（会话任务 #193）================================
+    // 现场实测形状（2026-11-20，只读探针）：`<video>` 在 `ananas/modules/video/index.html`
+    // （顶层下第 2 层），而那一行标语写在**它上一层**的 `mooc-ans/knowledge/cards?…knowledgeid=<这一节>`
+    // 文档里，每一张视频任务卡一枚：
+    //   `span.task-condition-text` ← 「观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、…)」
+    //   往上第 4 层是这张卡的分界容器 `div.ans-attach-ct.videoContainer`（同层放着承载播放器的那枚 iframe）
+    // 那句话不是写死的文案：站点自己的 `ueditor/ueditor.parse.js` 按**这一支视频的字段**现拼 ——
+    // `data.fastforward` 为真才追加「不可拖拽、」，`data.rt` 会替换那个 90，`data.switchwindow` 追加「不可离开…」。
+    // ⚠️ 所以只许朝"少动手"的方向用它：**站点说了才算证据，它没说 ≠ 允许拖**（英文界面、老版本、
+    //    卡片晚半拍才渲染出来，都会长成"没说"）—— 于是五格分开占位，任何一格都不许塌进别的格（AGENTS §2 #12）。
+    // ⚠️ 「不可倍速」那一格不许看标语：现场这支视频被站点锁在 1x，标语里却没有那三个字
+    //    （`doublespeed` 字段和播放器实际限速不是一回事）—— 倍速仍然只认 `_detectedMaxRate`。
+    _siteConditionNoDrag: function (text) {
+      return String(text || '').replace(/\s+/g, ' ').indexOf('不可拖拽') >= 0;
+    },
+
+
+    // 从这一支媒体所在的文档往上爬（最多 4 层），取**属于它那张卡**的标语。
+    // 每一层的 `querySelectorAll` 与 `frameElement` / `ownerDocument` 全部包在 try 里：
+    // 跨域那一下裸读抛的 SecurityError 会把整轮 tick 打断（AGENTS §2 #1，本项目最难查的一类 bug）。
+    // 返回 `{ state: forbidden | silent | ambiguous | absent | unreadable, text, marks, hop }`
+    _readSiteSeekCondition: function (video) {
+      var res = { state: 'unreadable', text: '', marks: 0, hop: -1 };
+      var doc = null, node = video;
+      try { doc = video && video.ownerDocument; } catch (eDoc) { return res; }
+      if (!doc) { res.state = 'absent'; res.marks = -1; return res; } // 没有文档上下文：测试台里的假媒体 / 元素已被摘出
+      for (var hop = 0; hop <= 4 && doc; hop++) {
+        res.hop = hop;
+        var marks = null;
+        try { marks = doc.querySelectorAll('.task-condition-text'); } catch (eQ) { return res; } // 这一层读不下去 = 读不出，不猜
+        if (marks && marks.length) {
+          res.marks = marks.length;
+          var texts = [];
+          for (var i = 0; i < marks.length; i++) {
+            var el = marks[i], card = null, owns = false;
+            try { card = el.closest ? el.closest('.ans-attach-ct, .videoContainer') : null; } catch (eC) { card = null; }
+            try { owns = !!card && !!node && !!card.contains(node); } catch (eO) { owns = false; }
+            if (!card && marks.length === 1) owns = true; // 只有一枚标语时不要求那层容器（老形状）
+            if (!owns) continue;
+            var t = '';
+            try { t = String(el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (eT) { t = ''; }
+            if (t) texts.push(t);
+          }
+          if (!texts.length) { res.state = marks.length === 1 ? 'unreadable' : 'ambiguous'; return res; }
+          res.text = texts[0].slice(0, 180);
+          var same = true;
+          for (var j = 1; j < texts.length; j++) {
+            if (this._siteConditionNoDrag(texts[j]) !== this._siteConditionNoDrag(texts[0])) { same = false; break; }
+          }
+          if (!same) { res.state = 'ambiguous'; return res; } // 同屏几枚标语意见不一致，认不出归这一支的是哪一张卡
+          res.state = this._siteConditionNoDrag(texts[0]) ? 'forbidden' : 'silent';
+          return res;
+        }
+        // 这一层没有标语 —— 往上跳一层。`frameElement` 在顶层是 null、跨域会抛，两种都算"到顶了"
+        var frame = null;
+        try { frame = doc.defaultView ? doc.defaultView.frameElement : null; } catch (eF) { frame = null; }
+        if (!frame) { res.state = 'absent'; return res; }
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eU) { return res; }
+        if (!up || up === doc) { res.state = 'absent'; return res; }
+        doc = up;
+        node = frame; // 上一层里要拿去对卡片的那枚元素变成这枚 iframe（`contains` 不跨文档，别拿 video 比）
+      }
+      res.state = 'absent';
+      return res;
+    },
+
+
+    // 每支媒体只问一次：这一族每 1500 毫秒就来一拍，爬文档不该变成热路径。
+    // `forbidden` 长期有效（此后每一拍都靠它免掉那一发拖动）；其余四格 30 秒后重问 ——
+    // 标语是站点 JS 现拼的，卡片晚半拍才长出来是常态，一次读不出不许永久当成"这一支没有标语"。
+    _siteSeekCondition: function (video) {
+      var key = '';
+      try { key = this._getMediaSeekKey(video) || ''; } catch (e) { key = ''; }
+      if (!this._seekSiteKeys) this._seekSiteKeys = Object.create(null);
+      var now = Date.now();
+      var hit = key ? this._seekSiteKeys[key] : null;
+      if (hit && (hit.state === 'forbidden' || now - (hit.at || 0) < 30000)) return hit;
+      var res = this._readSiteSeekCondition(video);
+      res.at = now;
+      if (key) {
+        if (Object.keys(this._seekSiteKeys).length > 300) this._seekSiteKeys = Object.create(null);
+        this._seekSiteKeys[key] = res;
+        if (res.state === 'forbidden' && !(hit && hit.state === 'forbidden')) {
+          // 被挡下一定要出日志（AGENTS §2 #14），而且点名是谁判的：站点自己那句话，不是我们猜的
+          emitRuntimeLog('info', 'site condition says not draggable, skip seek to end', {
+            condition: res.text, marks: res.marks, hop: res.hop,
+            reason: '', jobid: this._activeJobId || ''
+          });
+        }
+      }
+      return res;
+    },
+
+
+    // 只有 `forbidden` 这一格算证据；`silent` / `ambiguous` / `absent` / `unreadable` 一律"没证据"，
+    // 照旧走今天那"试拖一次"的路 —— 标语只许**减少**动手，不许由它多出一次动手。
+    _siteSaysNoDrag: function (video) {
+      try { return this._siteSeekCondition(video).state === 'forbidden'; } catch (e) { return false; }
+    },
+
+
     // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
     // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
@@ -447,6 +550,12 @@
 
       var current = Number(video.currentTime || 0);
       if (current >= duration - 8) { this._noteSeekSkip('near-end', video, key); return false; } // 已在结尾附近，无需拖动
+
+      // 站点在这一张卡上自己写了「不可拖拽」⇒ 连"试一下"都不必（会话任务 #193）。
+      // 用户报的就是那一发：站点明明不让拖，我们还在每一次巡检里拽进度条，把人机验证的风险抬起来。
+      // ⚠️ 这一格**不登记 `_seekTriedKeys`** —— 那本是"我们真写过一次、结论来自那一次"的账（AGENTS §2 #17），
+      //    把标语当成那次写入的替身写进去，等于替站点宣布"防拖拽"。
+      if (this._siteSaysNoDrag(video)) { this._noteSeekSkip('site-no-drag', video, key); return false; }
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 
@@ -1147,10 +1256,13 @@
     /**
      * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
      *
-     * 判据是两个"平台不让我们加速"的信号**同时**成立：
-     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
-     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
-     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
+     * 「不可拖拽」这一格现在有**两条各自独立**的证据，任一条成立即可：
+     *   1) 拖到结尾被播放器两次弹回（旧那格，结论来自站点真的按住过进度条）
+     *   2) 站点在这一张任务卡上自己写了「不可拖拽」（`_siteSaysNoDrag`，见上面那三格口径）
+     * 第二条不是"猜"：那句话就是站点按这一支视频的 `data.fastforward` 字段拼出来的原话，
+     * 而它的存在正是本次改动要去掉的代价 —— 为了拿第一条证据，我们必须真的动手拖两次。
+     * ⚠️ 两条都不许合并成一格：第一条是行为证据、第二条是声明证据，读回来要能分开归因（AGENTS §2 #12）。
+     * 倍速那一格仍然必须单独成立（标语里没有「不可倍速」并不等于没锁，见上面 `_detectedMaxRate` 那句）。
      */
     _isNinetyPercentVideo: function (video) {
       if (!video) return false;
@@ -1159,7 +1271,8 @@
       if (!this._isRateLockedAtOne()) return false;
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
-      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
+      if (this._seekRevertedKeys && this._seekRevertedKeys[key]) return true;
+      return this._siteSaysNoDrag(video);
     },
 
 
@@ -1216,11 +1329,13 @@
     _shouldAdvanceAtNinetyPercent: function (video) {
       try {
         if (this.configs.advanceAtNinetyPercent === false) return false;
-        // 单向绑定（会话任务 #185）：这一条兜底吃的证据「拖到结尾两次都被弹回」只有
-        // `_trySeekToEnd` 会写，而它第一行就被 `enableSeek` 挡下 —— 所以「可拖动」关上时
+        // 单向绑定（会话任务 #185）：这一条兜底原先只吃「拖到结尾两次都被弹回」那一格证据，
+        // 而它只有 `_trySeekToEnd` 会写、该方法第一行就被 `enableSeek` 挡下 —— 所以「可拖动」关上时
         // `_isNinetyPercentVideo` 恒为 false，这一条开关**结构上永远走不到**（死键）。
-        // 与其让它悄悄失灵，不如在真会走到 90% 那一支上明说一次「这条路被放弃了」。
-        if (!this.configs.enableSeek) {
+        // 现在的修法不是把闸放宽：站点自己写了「不可拖拽」时，证据来自站点那句话，
+        // 本来就不需要先动手拖一次，于是「可拖动」关上也能说真话；
+        // 拿不到这句声明时**照旧按住并明说一次「这条路被放弃了」**，别让它悄悄失灵。
+        if (!this.configs.enableSeek && !this._siteSaysNoDrag(video)) {
           this._noteNinetyHeldBack(video);
           return false;
         }

@@ -13708,6 +13708,184 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 批次 144（会话任务 #193）：拖不拖先问站点自己写的那句完成条件 ----
+ *  现场形状（2026-11-20 只读探针）：`<video>` 在 `ananas/modules/video/index.html` 那一层文档里，
+ *  而 `span.task-condition-text` 那句「完成条件 / …当前视频不可拖拽…」写在**它上一层**的卡片文档，
+ *  卡片 `div.ans-attach-ct.videoContainer` 里同时放着承载播放器的那枚 iframe。
+ *  ⚠️ `contains()` 不跨文档 —— 拿 video 去问卡片**恒为 false**，所以夹具必须照现场那样
+ *     「标语在上层、播放器在 iframe 里」来造，否则这一族在沙盒里根本测不到（AGENTS §5「夹具要长得像现场」）。
+ *  集成层 [22]⑱–㉔ / [30]⑪–⑭ 用假文档对象覆盖了五格口径；这一场要的是**真实跨文档 DOM 走一遍**。 */
+SCENARIOS.push({
+  name: '站点标语说不让拖就不试拖',
+  path: '/media-90',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 卡片文档 = 顶层这一份（现场那一层是 cards?...knowledgeid=<这一节>，同源性与顶层一致）
+      '  window.__mk193 = function (tag, text) {',
+      '    var box = document.createElement("div");',
+      '    box.className = "ans-attach-ct videoContainer"; box.id = "b193-" + tag;',
+      '    var sp = document.createElement("span");',
+      '    sp.className = "task-condition-text"; sp.textContent = text; box.appendChild(sp);',
+      // 平台完成标记：现场写在卡片上（`_isDocumentFrameFinished` 靠 frameElement.parentElement 那一半走到它）
+      '    var mk = document.createElement("span");',
+      '    mk.className = "ans-job-finished"; mk.textContent = "任务点已完成"; box.appendChild(mk);',
+      '    var fr = document.createElement("iframe"); fr.style.display = "none"; box.appendChild(fr);',
+      '    document.body.appendChild(box);',
+      '    var fw = fr.contentWindow, fd = fr.contentDocument;',
+      // ⚠️ 内层 iframe 是**另一个 realm**，顶层那份 prototype 补丁对它无效 —— 这三件要各自钉一遍
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '      get: function(){ return this.__ct == null ? 90 : this.__ct; },',
+      '      set: function(n){ (this.__w = this.__w || []).push(n); } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '      return { length: 1, start: function(){ return 0; }, end: function(){ return 100; } }; } });',
+      '    fd.body.innerHTML = \'<video id="v193" src="https://ananas.chaoxing.com/video/b193-\' + tag + \'.mp4"></video>\';',
+      '    window["__b193_" + tag] = { card: box, frame: fr, v: fd.getElementById("v193"), doc: fd };',
+      '    return { built: true };',
+      '  };',
+      '  window.__patched193 = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+    var FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+
+    var built = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b193=[];' +
+      'if(!window.__b193on){window.__b193on=1;window.addEventListener("message",function(ev){' +
+      'var m=ev&&ev.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b193.push({level:m.level,message:m.message,meta:m.meta});});}' +
+      'window.__mk193("forbid",' + JSON.stringify(NO) + ');' +
+      'window.__mk193("free",' + JSON.stringify(FREE) + ');' +
+      'var f=window.__b193_forbid;var r={};' +
+      // ===== 夹具自证：形状必须像现场，否则这一族测的是"代码和自己一致" =====
+      'r.ok=!!window.__patched193;' +
+      'r.videoInFrame=f.doc.querySelectorAll("video").length;' +
+      'r.marksInPlayerDoc=f.doc.querySelectorAll(".task-condition-text").length;' +
+      'r.marksInCardDoc=document.querySelectorAll("#b193-forbid .task-condition-text").length;' +
+      'r.cardHasFrame=f.card.contains(f.frame);r.cardHasVideo=f.card.contains(f.v);' +
+      'r.hopToCardDoc=!!(f.doc.defaultView&&f.doc.defaultView.frameElement===f.frame);' +
+      'r.markerReachable=app._isDocumentFrameFinished(f.doc);' +
+      'var c=app._readSiteSeekCondition(f.v);' +
+      'r.state=c.state;r.hop=c.hop;r.marks=c.marks;r.quote=c.text;return r;})()'
+    );
+    check('夹具自证：标语在**上一层**文档的卡片里、播放器在自己那枚 iframe 里，' +
+      '而 `contains()` 跨不了文档（卡片含 iframe 为真、含 video 为假）—— ' +
+      '这一页同屏有**两张**视频卡（一支持有这一支、一支不支持），生产谓词在这份真 DOM 上' +
+      '仍按"归属这一支的那句"判出 forbidden（marks 是文档级计数 2，不是归属枚数），并把站点原话带回来',
+      built.ok === true && built.videoInFrame === 1 &&
+        built.marksInPlayerDoc === 0 && built.marksInCardDoc === 1 &&
+        built.cardHasFrame === true && built.cardHasVideo === false &&
+        built.hopToCardDoc === true && built.markerReachable === true &&
+        built.state === 'forbidden' &&
+        built.hop === 1 && built.marks === 2 &&
+        String(built.quote || '').indexOf('不可拖拽') >= 0,
+      JSON.stringify(built));
+
+    // ---- 用户要的那一半（一）：`enableSeek` 关上时，站点那句话就是证据，不必先动手拖 ----
+    var gate = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,advanceAtNinetyPercent:true});' +
+      'app._detectedMaxRate=1;app._rateProbing=false;app._captchaActive=false;' +
+      'app._seekRevertedKeys={};app._ninetyHeldBackKeys=null;app._seekSiteKeys=null;' +
+      'var k=app._getMediaSeekKey(f.v);f.v.__ct=90;' +
+      'return {key:!!k,ret:app._shouldAdvanceAtNinetyPercent(f.v),fin:app._isDocumentFrameFinished(f.doc)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });   // postMessage 是异步送达
+
+    var gateRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'var k=app._getMediaSeekKey(f.v);' +
+      'function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'var site=cnt("site condition says not draggable, skip seek to end");' +
+      'var adv=cnt("advance at 90% (locked 1x + not seekable)");' +
+      'var held=cnt("advance at 90% held back: seek disabled");' +
+      'var meta=site[0]&&site[0].meta;' +
+      'app._shouldAdvanceAtNinetyPercent(f.v);' +   // 重复巡检那一发要等下一发才数得到
+      'return {n0:site.length,adv:adv.length,held:held.length,keys:site.length,' +
+      // ⚠️ `cond` 只是**取证摘要**（截 20 字方便看），断言读的是页面里对完整原话算出来的 `condHas` ——
+      //    拿截断后的字符串去 indexOf 全站原话，得到的是永远为假的证据（实测红过一次）
+      'condHas:meta&&String(meta.condition||"").indexOf("不可拖拽")>=0,' +
+      'cond:meta&&String(meta.condition||"").slice(0,20),hop:meta&&meta.hop,marks:meta&&meta.marks,' +
+      'reverted:!!(app._seekRevertedKeys&&app._seekRevertedKeys[k]),' +
+      'writes:(f.v.__w||[]).length};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var gateRepeat = await ctx.client.evaluate(
+      '(function(){var N="site condition says not draggable, skip seek to end";' +
+      'return {n:window.__b193.filter(function(l){return l.message===N;}).length};})()'
+    );
+    check('站点写了「不可拖拽」时，「90% 提前收尾」在**没拖过一次**的前提下照旧生效：' +
+      '提前收尾为真、一句「这条路被放弃了」都不出、`_seekRevertedKeys` 一个字没写、`currentTime` 一次没写',
+      gate.ret === true && gate.fin === true && gateRead.adv >= 1 && gateRead.held === 0 &&
+        gateRead.reverted === false && gateRead.writes === 0,
+      JSON.stringify({ gate: gate, read: gateRead }));
+    check('那句证据**只说一次**并照抄站点原话（级别 info、带 condition/hop/marks），' +
+      '重复巡检不再重播（每 1500 毫秒就来一拍，说个不停会把 200 条证据窗吃光）',
+      gateRead.n0 === 1 && gateRead.hop === 1 && gateRead.marks === 2 &&
+        gateRead.condHas === true && gateRepeat.n === 1,
+      JSON.stringify({ first: gateRead.n0, hop: gateRead.hop, marks: gateRead.marks, cond: gateRead.cond, repeat: gateRepeat.n }));
+
+    // ---- 用户要的那一半（二）：标语说不让拖，连"试一下"都不必 ----
+    var tried = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;f.v.__w=[];f.v.__ct=20;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-193");var k=app._getMediaSeekKey(f.v);' +
+      'var rec=app._seekSkipLedger&&app._seekSkipLedger[k];' +
+      'return {ok:ok,writes:(f.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys&&app._seekTriedKeys[k])};})()'
+    );
+    check('「可拖动」开着也不动手拖：站点这句话就是**免掉那一发**的证据（用户报的正是这一族风险）' +
+      '—— `currentTime` 一次都没写、skip 账记的是 `site-no-drag`，' +
+      '而 `_seekTriedKeys` **不登记**（那本是"我们真写过一次"的账，替站点宣布禁令就等于写脏）',
+      tried.ok === false && tried.writes === 0 && tried.last === 'site-no-drag' && tried.tried === false,
+      JSON.stringify(tried));
+
+    // ---- 反向那一半：站点没说那三个字，就不许由它宣布禁令 ----
+    // ⚠️ 这一格的取证**必须两半各钉一次**：只钉"全场景累计恰好 1 句"，那是**前面那一格**说的话，
+    //    这一格自己新增了几句它数不出来（断言名里那句"都不出"就成了空承诺）；只钉"增量 0"，
+    //    则话筒被整个掐掉时它照样绿。所以先在这一格动手之前把累计读一回（`silentBase`），
+    //    跑完之后**增量与累计同表**：增量 = 0 证"这一格没说过"，累计 = 1 证"全场只剩那一句"。
+    var silentBase = await ctx.client.evaluate(
+      '(function(){function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'return {site:cnt("site condition says not draggable, skip seek to end").length,' +
+      'held:cnt("advance at 90% held back: seek disabled").length};})()'
+    );
+    var silent = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_free;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekDeferKeys=null;' +
+      'app._ninetyHeldBackKeys=null;f.v.__w=[];f.v.__ct=90;' +
+      'var st=app._readSiteSeekCondition(f.v).state;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-193-free");' +
+      'var k=app._getMediaSeekKey(f.v);' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false});' +
+      'var gate=app._shouldAdvanceAtNinetyPercent(f.v);' +
+      'return {state:st,seek:ok,writes:(f.v.__w||[]).length,tried:!!(app._seekTriedKeys&&app._seekTriedKeys[k]),' +
+      'gate:gate,fin:app._isDocumentFrameFinished(f.doc)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var silentRead = await ctx.client.evaluate(
+      '(function(){function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'return {site:cnt("site condition says not draggable, skip seek to end").length,' +
+      'held:cnt("advance at 90% held back: seek disabled").length};})()'
+    );
+    check('标语在场但**没有那三个字**（站点按这一支给了 95%、没写不可拖拽）→ 一律照旧：' +
+      '那一发拖动照做（拿到今天那"试一次"的语义）、90% 兜底照旧被按住并明说一次，' +
+      '而且这一格**新增 0 句**「站点说不让拖」（同时全场景累计仍只剩前面那一格的那一条） ' +
+      '—— 没证据时替站点宣布禁令，等于把"少动手"实现成"永不试拖"',
+      silent.state === 'silent' && silent.seek === true && silent.writes === 1 && silent.tried === true &&
+        silent.gate === false &&
+        silentBase.site === 1 && silentBase.held === 0 &&
+        silentRead.site - silentBase.site === 0 && silentRead.site === 1 &&
+        silentRead.held - silentBase.held === 1 && silentRead.held === 1,
+      JSON.stringify({ cell: silent, base: silentBase, read: silentRead }));
+  }
+});
+
 /** ---- 1d. 作业页提交：提交后必须认出"已完成"，不能一直等下去 ---- */
 SCENARIOS.push({
   name: '作业页提交后认出已完成',

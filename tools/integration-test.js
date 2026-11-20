@@ -4192,17 +4192,27 @@ async function testSeekDeferUntilSeekable() {
   var trySeek = buildFrom(media, '_trySeekToEnd', inj);
   var noteSkip = buildFrom(media, '_noteSeekSkip', inj);
   var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
+  // 站点「完成条件」标语那四件（任务 #193）—— `_siteSaysNoDrag` 经 `this._siteSeekCondition`
+  // 再经 `this._readSiteSeekCondition`，三件都得挂上 app，缺任何一件就是 TypeError 而不是红
+  var condNoDrag = buildFrom(media, '_siteConditionNoDrag', {});
+  var readCond = buildFrom(media, '_readSiteSeekCondition', {});
+  var siteCond = buildFrom(media, '_siteSeekCondition', inj);
+  var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
 
   // 两个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言还按旧数跑 = 假绿）
   var deferBody = bodyOf(media, '_deferSeekUntilSeekable');
   var windowMs = firstNum(deferBody, /Date\.now\(\) \+ (\d+)/);
   var capTries = firstNum(deferBody, /st\.tries >= (\d+)/);
+  // 标语缓存的 TTL 也从源码读，别在这里写死 30000
+  var siteBody = bodyOf(media, '_siteSeekCondition');
+  var condTtlMs = firstNum(siteBody, /now - \(hit\.at \|\| 0\) < (\d+)/);
 
-  check('① 六件都能从 40-media.js 原样取出来真跑，两个预算也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+  check('① 六件都能从 40-media.js 原样取出来真跑，标语那四件也取得出来，两个预算与 TTL 也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
     [getKey, covers, defer, trySeek, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
-    windowMs > 0 && capTries > 1,
-    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, windowMs: windowMs, capTries: capTries }));
-  if (!trySeek || !covers || !defer || !isNinety || !noteSkip) return;
+    [condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; }) &&
+    windowMs > 0 && capTries > 1 && condTtlMs > 0,
+    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs }));
+  if (!trySeek || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag) return;
 
   function mkRanges(list) {
     return {
@@ -4249,7 +4259,11 @@ async function testSeekDeferUntilSeekable() {
       _deferSeekUntilSeekable: defer,
       _trySeekToEnd: trySeek,
       _noteSeekSkip: noteSkip,
-      _isNinetyPercentVideo: isNinety
+      _isNinetyPercentVideo: isNinety,
+      _siteConditionNoDrag: condNoDrag,
+      _readSiteSeekCondition: readCond,
+      _siteSeekCondition: siteCond,
+      _siteSaysNoDrag: siteNoDrag
     };
     return { app: app, delays: delays };
   }
@@ -4409,11 +4423,11 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ keys: keys13.length, a: L13[k13] || null, b: L13[k13b] || null }));
 
   // ---- ⑭ 出口清单与接线一一对应（§2 #18 那一族：新增一格忘了接线，什么都不红，只在现场少说一句话）----
-  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end'];
+  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end', 'site-no-drag'];
   var body14 = bodyOf(media, '_trySeekToEnd');
   var calls14 = (body14.match(/this\._noteSeekSkip\(/g) || []).length;
   var wired14 = exits14.filter(function (r) { return body14.indexOf("_noteSeekSkip('" + r + "'") >= 0; });
-  check('⑭ 「不试拖」六格出口全部接上账，且方法体里恰好六处调用（多一格没进清单、少一格没接线，都在这条上红）',
+  check('⑭ 「不试拖」七格出口全部接上账，且方法体里恰好七处调用（多一格没进清单、少一格没接线，都在这条上红）',
     wired14.length === exits14.length && calls14 === exits14.length,
     JSON.stringify({ need: exits14.length, wired: wired14, calls: calls14 }));
 
@@ -4446,6 +4460,181 @@ async function testSeekDeferUntilSeekable() {
     !!hintMsgs[0].meta && String(hintMsgs[0].meta.ids) === 'ext_a,ext_b' &&
     Number(hintMsgs[0].meta.count) === 3 && String(hintMsgs[0].level) === 'warn',
     JSON.stringify(hintMsgs));
+
+  // ---- ⑱–㉔ 站点自己写的「完成条件」标语（会话任务 #193）----
+  // 假 DOM 的形状按 2026-11-20 现场只读实测搭：`<video>` 在播放器文档（`ananas/modules/video/index.html`）里，
+  // 标语 `span.task-condition-text` 写在**上一层** cards 文档的那张任务卡里，而卡片 contains 的是
+  // **承载播放器的那枚 iframe**（`contains` 不跨文档，拿 video 去比恒 false → 每一枚标语都会被判成"不是这一节的"）。
+  var NO_DRAG_TEXT = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+  var FREE_TEXT = '观看时长需 ≥ 总时长的 95% (未完成任务点前)';
+  var L_FORBID = [[], [{ text: NO_DRAG_TEXT, owns: true }]];
+  // opt.levels：从内到外每一层的标语数组（默认两层 = 播放器 + cards）；opt.throwsAt = 第几层一读就抛
+  function mkBannerVideo(opt) {
+    opt = opt || {};
+    var stat = { scans: 0 };
+    var card = { contains: function (n) { return !!n && n.__card === card; } };
+    var docs = (opt.levels || [[], []]).map(function (list, i) {
+      var d = {};
+      d.querySelectorAll = function (sel) {
+        stat.scans++;
+        if (opt.throwsAt === i) throw new Error('这一层读不下去');
+        return sel === '.task-condition-text' ? list.map(function (c) {
+          return { textContent: c.text, closest: function () { return c.owns ? card : null; } };
+        }) : [];
+      };
+      return d;
+    });
+    for (var i = 0; i < docs.length; i++) {
+      // 最外层那枚的 `defaultView.frameElement` 恒为 null（那就是顶层帧）—— 爬到它还没标语才算 absent
+      docs[i].defaultView = docs[i + 1] ? { frameElement: { __card: card, ownerDocument: docs[i + 1] } } : null;
+    }
+    var v = mkVideo({
+      duration: opt.duration || DUR,
+      ranges: opt.ranges || [[0, DUR]],
+      current: opt.current == null ? 600 : opt.current
+    });
+    v.currentSrc = 'https://ananas.chaoxing.com/video/' + (opt.src || 'banner') + '.mp4';
+    if (!opt.noDoc) v.ownerDocument = docs[0];
+    return { video: v, stat: stat, docs: docs };
+  }
+  var readApp = { _siteConditionNoDrag: condNoDrag };
+
+  var st18 = {
+    forbid: readCond.call(readApp, mkBannerVideo({ levels: L_FORBID }).video),
+    free: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
+    mix: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT, owns: true }, { text: FREE_TEXT, owns: true }]] }).video),
+    empty: readCond.call(readApp, mkBannerVideo({ levels: [[], [], []] }).video),
+    notOurs: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT }, { text: NO_DRAG_TEXT }]] }).video),
+    oldShape: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT }]] }).video),
+    sameDoc: readCond.call(readApp, mkBannerVideo({ levels: [[{ text: NO_DRAG_TEXT }]] }).video),
+    noDoc: readCond.call(readApp, mkBannerVideo({ noDoc: true }).video),
+    throws: readCond.call(readApp, mkBannerVideo({ levels: L_FORBID, throwsAt: 1 }).video)
+  };
+  check('⑱ 标语口径五格分得开、每格交得出自己的读数：卡片里那句带「不可拖拽」= forbidden（hop1、marks1、text 是站点原话），'
+    + '同位置没有那三个字 = silent，两枚意见不一致 = ambiguous，爬到顶层一枚都没找到 = absent（hop2 说明真爬到头了），'
+    + '某一层一读就抛 = unreadable（不猜）；另三格是形状边界：两枚标语都不属于这一节**不许**当成 forbidden、'
+    + '只有一枚时卡片认不出来照旧用它（老形状）、标语就在播放器自己那一层也要读到（hop0）；'
+    + '压根没有文档上下文 = absent 且 marks 交 -1 —— 「数到 0 枚」与「压根没文档」是两件事',
+    st18.forbid.state === 'forbidden' && st18.forbid.hop === 1 && st18.forbid.marks === 1 &&
+    String(st18.forbid.text).indexOf('不可拖拽') >= 0 &&
+    st18.free.state === 'silent' && st18.mix.state === 'ambiguous' &&
+    st18.empty.state === 'absent' && st18.empty.hop === 2 &&
+    st18.notOurs.state === 'ambiguous' && st18.oldShape.state === 'forbidden' &&
+    st18.sameDoc.state === 'forbidden' && st18.sameDoc.hop === 0 &&
+    st18.throws.state === 'unreadable' &&
+    st18.noDoc.state === 'absent' && st18.noDoc.marks === -1,
+    JSON.stringify(st18));
+
+  // ⑲ 站点说了不可拖拽 → 一整下发都不许写，而且不许花掉那次"试拖"的机会
+  logs.length = 0;
+  var a19 = mkApp(), b19 = mkBannerVideo({ src: 'gate-forbid', levels: L_FORBID });
+  var v19 = b19.video, k19 = keyOf(v19);
+  var r19 = seekTo(a19.app, v19, 'loadedmetadata');
+  var led19 = (a19.app._seekSkipLedger || {})[k19];
+  var condLogs19 = logs.filter(function (l) {
+    return String(l.message || '').indexOf('site condition says not draggable') === 0;
+  });
+  check('⑲ 站点自己写了「不可拖拽」：`_trySeekToEnd` 当场退回、一次 `currentTime` 都不写，'
+    + '而且**不登记 `_seekTriedKeys`**（那一格的意思是"我们真写过一次"，在这里花掉就等于下一轮卡片换成允许拖也不再试）、'
+    + '更**不写 `_seekRevertedKeys`**（标语只许减少动手，替站点宣布"防拖拽"就是拿别人的话给自己作证，AGENTS §2 #17），'
+    + '账本记 `site-no-drag`，并出一句 info **照抄站点那句话**（`reason` 留空 = 不是我们判的）',
+    r19 === false && v19.__rec.writes.length === 0 &&
+    !(a19.app._seekTriedKeys && a19.app._seekTriedKeys[k19]) &&
+    !(a19.app._seekRevertedKeys && a19.app._seekRevertedKeys[k19]) &&
+    !!led19 && led19.last === 'site-no-drag' && led19.n === 1 &&
+    condLogs19.length === 1 && condLogs19[0].level === 'info' &&
+    String(condLogs19[0].meta.condition).indexOf('不可拖拽') >= 0 &&
+    condLogs19[0].meta.hop === 1 && condLogs19[0].meta.marks === 1 &&
+    condLogs19[0].meta.reason === '',
+    JSON.stringify({ ret: r19, writes: v19.__rec.writes.length, tried: !!(a19.app._seekTriedKeys || {})[k19], reverted: !!(a19.app._seekRevertedKeys || {})[k19], led: led19, logs: condLogs19 }));
+
+  // ⑳ 其余四格 + 无上下文那一格：一律照旧拖一次，而且一句"站点说不可拖"都不许说
+  logs.length = 0;
+  var a20 = mkApp();
+  var cases20 = [
+    ['silent', mkBannerVideo({ src: 'c-silent', levels: [[], [{ text: FREE_TEXT, owns: true }]] })],
+    ['ambiguous', mkBannerVideo({ src: 'c-mix', levels: [[], [{ text: NO_DRAG_TEXT, owns: true }, { text: FREE_TEXT, owns: true }]] })],
+    ['absent', mkBannerVideo({ src: 'c-empty', levels: [[], [], []] })],
+    ['not-ours', mkBannerVideo({ src: 'c-notours', levels: [[], [{ text: NO_DRAG_TEXT }, { text: NO_DRAG_TEXT }]] })],
+    ['unreadable', mkBannerVideo({ src: 'c-throw', levels: L_FORBID, throwsAt: 1 })],
+    ['no-doc', mkBannerVideo({ src: 'c-nodoc', noDoc: true })]
+  ];
+  var gone20 = {};
+  cases20.forEach(function (c) {
+    var v = c[1].video, k = keyOf(v);
+    seekTo(a20.app, v, 'itest-193');
+    var L = (a20.app._seekSkipLedger || {})[k];
+    gone20[c[0]] = { writes: v.__rec.writes.length, tried: !!(a20.app._seekTriedKeys || {})[k], ledLast: L ? L.last : '(无)' };
+  });
+  var noisy20 = logs.filter(function (l) {
+    return String(l.message || '').indexOf('site condition says not draggable') === 0;
+  });
+  check('⑳ 「读不出 / 没读到 / 不属于这一节 / 意见不一致」这四格（外加没有文档上下文那一格）一律照旧试拖一次：'
+    + '写进 `currentTime`、一次性机会照旧花掉，而且**一句"站点说不可拖拽"都不许出** —— '
+    + '把"没证据"实现成"站点不让拖"就是拿缺数据放行（AGENTS §2 #12/#17），'
+    + '把"没证据"实现成当场下结论同样是 §2 #14 那一族',
+    Object.keys(gone20).length === 6 &&
+    Object.keys(gone20).every(function (n) {
+      return gone20[n].writes >= 1 && gone20[n].tried === true && gone20[n].ledLast !== 'site-no-drag';
+    }) && noisy20.length === 0,
+    JSON.stringify({ cells: gone20, noisy: noisy20.map(function (l) { return l.message; }) }));
+
+  // ㉑ 缓存：主循环每 1500 毫秒就进来问一次，爬文档不许变成热路径
+  var a21 = mkApp(), b21 = mkBannerVideo({ src: 'c-cache', levels: L_FORBID });
+  var scan1 = (siteNoDrag.call(a21.app, b21.video), b21.stat.scans);
+  siteNoDrag.call(a21.app, b21.video);
+  siteNoDrag.call(a21.app, b21.video);
+  var scan2 = b21.stat.scans;
+  nowMs += 3600000;                                  // 一小时后再问：forbidden 长期有效
+  siteNoDrag.call(a21.app, b21.video);
+  var scan3 = b21.stat.scans;
+  var b21other = mkBannerVideo({ src: 'c-cache-2', levels: L_FORBID });
+  siteNoDrag.call(a21.app, b21other.video);
+  var scanOther = b21other.stat.scans;               // 换一枚另开一格，不许吃上一枚的结论
+  check('㉑ 同一支媒体只爬一次文档：第二、第三次问都复用缓存（每 1500 毫秒一拍，全页扫会把这一族变成热路径）；'
+    + '`forbidden` 过了 TTL 也照旧复用（站点给这一支的字段不会自己变），'
+    + '但换一枚（不同 src）必须另问一次 —— 两把钥匙并成一格就是拿上一节的结论替这一节说话',
+    scan1 > 0 && scan2 === scan1 && scan3 === scan1 && scanOther === scan1,
+    JSON.stringify({ first: scan1, repeat: scan2, hourLater: scan3, otherMedia: scanOther }));
+
+  // ㉒ 非 forbidden 那几格过 TTL 要重问（卡片晚半拍才长出来是常态）
+  var a22 = mkApp(), b22 = mkBannerVideo({ src: 'c-ttl', levels: [[], [{ text: FREE_TEXT, owns: true }]] });
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl1 = b22.stat.scans;
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl2 = b22.stat.scans;
+  nowMs += condTtlMs + 1;
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl3 = b22.stat.scans;
+  check('㉒ 「没证据」那一格 TTL（' + condTtlMs + ' 毫秒，从源码读回来，别抄成字面量）一过要重新问一次 —— '
+    + '标语是站点 JS 现拼的，卡片晚半拍才长出来是常态；一次读不出就永久当成"这一支没有标语"，'
+    + '等于把这一支唯一那条省流量的捷径悄悄关掉，而且一条日志都不留',
+    ttl2 === ttl1 && ttl1 > 0 && ttl3 === ttl1 * 2,
+    JSON.stringify({ ttlMs: condTtlMs, first: ttl1, within: ttl2, afterTtl: ttl3 }));
+
+  // ㉓ 「看到 90% 就收」的第二条证据来源：站点说了不可拖拽，不必先白拖一次
+  var a23 = mkApp();
+  var n23 = {
+    forbid: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety', levels: L_FORBID }).video),
+    free: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety-free', levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
+    none: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety-none', noDoc: true }).video)
+  };
+  check('㉓ 「看到 90% 就收」现在有两处**独立**证据：弹回过（旧那把尺）或站点自己写了不可拖拽 —— 后者不必先白拖一次'
+    + '（死键那一族：`enableSeek` 关着就永远拿不到弹回证据）；反面两格照旧 false：'
+    + '标语没写那三个字、压根读不到文档，都不算证据（两格都不许替用户宣布"这一支拖不动"）',
+    n23.forbid === true && n23.free === false && n23.none === false &&
+    Object.keys(a23.app._seekRevertedKeys || {}).length === 0,
+    JSON.stringify({ cells: n23, reverted: Object.keys(a23.app._seekRevertedKeys || {}) }));
+
+  // ㉔ 跨轮的记账不许被"换章节 / 换一门"的复位抹掉（批次 86 那一族）
+  var stateSrc = read('src/page/10-config-state.js');
+  var resetBody = bodyOf(stateSrc, '_resetRuntimeState');
+  var wiped24 = ['_seekTriedKeys', '_seekRevertedKeys', '_seekSiteKeys', '_seekSkipLedger', '_seekDeferKeys']
+    .filter(function (n) { return resetBody.indexOf(n) >= 0; });
+  check('㉔ 五本拖拽账都不在 `_resetRuntimeState` 里：它们是**跨拍累积**才生效的（复位一次就把"这一支已经试过了"忘掉，'
+    + '下一拍又去拽一遍，正是批次 86 那一族"看起来在勤快地跑、其实永远数不到阈值"）',
+    resetBody.length > 200 && wiped24.length === 0,
+    JSON.stringify({ resetLen: resetBody.length, wiped: wiped24 }));
 }
 
 /** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
@@ -6798,6 +6987,13 @@ async function testNinetyAdvanceBoundToSeek() {
   var trySeek = buildFrom(media, '_trySeekToEnd', { emitRuntimeLog: say });
   var noteHeld = buildFrom(media, '_noteNinetyHeldBack', { emitRuntimeLog: say });
   var shouldAdvance = buildFrom(media, '_shouldAdvanceAtNinetyPercent', { emitRuntimeLog: say });
+  // 站点标语那一族（会话任务 #193）：这一段的 app 必须把它们挂上 —— 少了任何一件，
+  // `shouldAdvance` 里那一下调用就是 TypeError，而**整个方法体套在 try/catch 里**，
+  // 于是返回 false、一句日志都不出：症状与"生产把这句话删了"一模一样（AGENTS §5「断言绿有两种」）
+  var condNoDrag = buildFrom(media, '_siteConditionNoDrag', {});
+  var readCond = buildFrom(media, '_readSiteSeekCondition', {});
+  var siteCond = buildFrom(media, '_siteSeekCondition', { emitRuntimeLog: say });
+  var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
   var isFinished = buildFrom(tasks, '_isDocumentFrameFinished', {
     textOf: function (el) { return String((el && el.textContent) || ''); }
   });
@@ -6806,19 +7002,22 @@ async function testNinetyAdvanceBoundToSeek() {
   var heldBody = bodyOf(media, '_noteNinetyHeldBack');
   var seekBody = bodyOf(media, '_trySeekToEnd');
 
-  check('① 十件都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished]
+  check('① 十四件都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
+    + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句站点自己有没有写「不可拖拽」（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished,
+      condNoDrag, readCond, siteCond, siteNoDrag]
       .every(function (f) { return typeof f === 'function'; }) &&
-      gateBody.indexOf('if (!this.configs.enableSeek)') >= 0 &&
+      gateBody.indexOf('if (!this.configs.enableSeek && !this._siteSaysNoDrag(video))') >= 0 &&
       gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
     JSON.stringify({
       key: typeof getKey, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
       covers: typeof seekCovers, defer: typeof deferSeek,
       seek: typeof trySeek, held: typeof noteHeld, gate: typeof shouldAdvance, fin: typeof isFinished,
+      cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'),
       gateBody: gateBody.length, heldBody: heldBody.length
     }));
-  if (![getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished]
-    .every(function (f) { return typeof f === 'function'; })) return;
+  if (![getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished,
+    condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; })) return;
 
   // ---- 死键的成因先钉住：那份证据只有一个写入口，而写入口第一道闸就是 enableSeek ----
   // ⚠️ 按**字符偏移**判"这处赋值在不在 _trySeekToEnd 体内"，别按行算（AGENTS §2 #1 那条同一族：
@@ -6904,6 +7103,10 @@ async function testNinetyAdvanceBoundToSeek() {
       _isNinetyPercentVideo: isNinety,
       _noteNinetyHeldBack: noteHeld,
       _isDocumentFrameFinished: isFinished,
+      _siteConditionNoDrag: condNoDrag,
+      _readSiteSeekCondition: readCond,
+      _siteSeekCondition: siteCond,
+      _siteSaysNoDrag: siteNoDrag,
       _shouldAdvanceAtNinetyPercent: shouldAdvance
     };
   }
@@ -7012,6 +7215,99 @@ async function testNinetyAdvanceBoundToSeek() {
     + '且这把尺自己先过一遍对照 —— 两种真赋值逮得住，`===` / `==` / `!=` / `>=` 四种比较一律不误报',
     probes && gateHits === 0 && heldHits === 0 && gateBody.indexOf('configs.enableSeek') >= 0,
     JSON.stringify({ probesOk: probes, gateHits: gateHits, heldHits: heldHits, readsSeek: gateBody.indexOf('configs.enableSeek') >= 0 }));
+
+  // ==== 绑定的另一半证据：站点自己写的那句完成条件（会话任务 #193）====
+  // 现场形状（只读探针，2026-11-20）：`<video>` 在第 2 层文档，标语 `span.task-condition-text`
+  // 写在**它上一层**的卡片文档里，卡片那一层放着承载播放器的那枚 iframe ——
+  // `contains()` 不跨文档，所以卡片对的是**那枚 iframe**，不是 video。夹具照这个形状造。
+  var BANNER_NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+  var BANNER_FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+  function mkBannerMedia(opt) {
+    opt = opt || {};
+    var card = { contains: function (n) { return !!n && n.__inCard === true; } };
+    var spans = (opt.texts || []).map(function (t) {
+      return { textContent: t, closest: function () { return card; } };
+    });
+    var topDoc = { querySelectorAll: function () { return []; }, defaultView: null };
+    var frameToCards = { ownerDocument: topDoc };            // 卡片文档在顶层里那枚 iframe
+    var cardsDoc = {
+      querySelectorAll: function (sel) { return sel === '.task-condition-text' ? spans : []; },
+      defaultView: { frameElement: frameToCards }
+    };
+    var frameToPlayer = { ownerDocument: cardsDoc, __inCard: true };  // 卡片里承载播放器那枚
+    var playerDoc = {
+      querySelector: function (sel) {
+        return opt.marker === false || sel.indexOf('ans-job-finished') < 0 ? null : { className: 'ans-job-finished' };
+      },
+      querySelectorAll: function () { return []; },
+      defaultView: { frameElement: frameToPlayer }
+    };
+    var v = {
+      tagName: 'VIDEO', duration: 100,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + (opt.src || 'banner') + '.mp4',
+      ownerDocument: playerDoc
+    };
+    Object.defineProperty(v, 'currentTime', { get: function () { return 90; } });
+    return v;
+  }
+  var bannerMsgs = function () {
+    return logs.filter(function (l) { return l.message === 'site condition says not draggable, skip seek to end'; });
+  };
+
+  // ⑪ 用户要的那一条：站点自己写了「不可拖拽」，就不必先动手拖一次才拿到证据
+  logs.length = 0;
+  var appBan = mkGateApp(OFF);
+  var vBan = mkBannerMedia({ src: 'ban-forbid', texts: [BANNER_NO] });
+  var retBan = shouldAdvance.call(appBan, vBan);
+  var banMeta = bannerMsgs()[0] && bannerMsgs()[0].meta;
+  check('⑪ `enableSeek` 关上 + 站点在卡片上写了「当前视频不可拖拽」→ 90% 提前收尾**照旧生效**，'
+    + '而且 `_seekRevertedKeys` 一个字没写（一次都没动手拖，风险为零）、一句「被放弃」都不出、'
+    + '那句证据只说一次并**照抄站点原话**（带 `condition`/`marks`/`hop`）',
+    retBan === true && heldCount() === 0 && bannerMsgs().length === 1 &&
+      Object.keys(appBan._seekRevertedKeys).length === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }) &&
+      !!banMeta && banMeta.condition.indexOf('不可拖拽') >= 0 && banMeta.marks === 1 && banMeta.hop === 1,
+    JSON.stringify({ ret: retBan, held: heldCount(), banner: bannerMsgs().length, reverted: Object.keys(appBan._seekRevertedKeys).length, meta: banMeta }));
+
+  // ⑫ 三格「站点没这么说」一律不许当成证据 —— 压进上一格就是替站点宣布它禁止过
+  var bailRows = [
+    { name: 'silent', texts: [BANNER_FREE] },
+    { name: 'absent', texts: [] },
+    { name: 'ambiguous', texts: [BANNER_NO, BANNER_FREE] }
+  ];
+  var bailOut = bailRows.map(function (r) {
+    logs.length = 0;
+    var app = mkGateApp(OFF);
+    var ret = shouldAdvance.call(app, mkBannerMedia({ src: 'bail-' + r.name, texts: r.texts }));
+    return { name: r.name, ret: ret, held: heldCount(), banner: bannerMsgs().length };
+  });
+  check('⑫ 反过来三格各问一遍：标语在场但没那三个字（silent）、爬到顶也没有标语（absent）、'
+    + '同屏两枚意见不一致（ambiguous）→ 一律**照旧按住并明说一次「这条路被放弃了」**，'
+    + '而且一句「站点说不让拖」都不许说（没证据时替站点宣布禁令，等于把"少动手"实现成"永不试拖"）',
+    bailOut.every(function (o) { return o.ret === false && o.held === 1 && o.banner === 0; }),
+    JSON.stringify(bailOut));
+
+  // ⑬ 上面那枚开着时，标语只许减少动手、不许多挡一次
+  logs.length = 0;
+  var appBoth = mkGateApp(ON);
+  var retBoth = shouldAdvance.call(appBoth, mkBannerMedia({ src: 'both-forbid', texts: [BANNER_NO] }));
+  check('⑬ 两枚都成立时**不许由标语多挡一次**：`enableSeek:true` + 站点写了不可拖拽 → 照旧提前收尾、'
+    + '一句「被放弃」都不出（这条兜底本来就在走，标语只是多一条免拖的理由）',
+    retBoth === true && heldCount() === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }),
+    JSON.stringify({ ret: retBoth, held: heldCount(), msgs: logs.map(function (l) { return l.message; }) }));
+
+  // ⑭ 现场那枚「老形状」：标语只有一枚、没有卡片容器 —— 单枚时不要求那层容器
+  logs.length = 0;
+  var appOld = mkGateApp(OFF);
+  var vOld = mkBannerMedia({ src: 'old-shape', texts: [BANNER_NO] });
+  vOld.ownerDocument.defaultView.frameElement.ownerDocument.querySelectorAll = function () {
+    return [{ textContent: BANNER_NO, closest: function () { return null; } }];   // 容器还没长出来
+  };
+  check('⑭ 卡片晚半拍才渲染（标语在、分界容器 `closest` 认不出来）时，**只有一枚标语就照它说**：'
+    + '这一格照样提前收尾（多枚时才要求对得上卡片，否则永远等不到那句证据）',
+    shouldAdvance.call(appOld, vOld) === true && heldCount() === 0 && bannerMsgs().length === 1,
+    JSON.stringify({ held: heldCount(), banner: bannerMsgs().length }));
 }
 
 
