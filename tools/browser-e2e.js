@@ -14499,6 +14499,134 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 弹窗里「另有预览版」那一格（2026-11-20 开的实验版下载口）----
+ *
+ * 最贵的不是按钮没亮，而是**预览口自己的失败把正式版已经说出口的那句盖掉**：
+ * `preview` 这个 tag 在没发过预览口时是 404，而 404 是常态。共享正式版那个 catch 的话，
+ * 「你已经是最新版了」会被顶成「网络或者匿名名额在睡大觉」—— 后者会推着人去反复点、
+ * 去查自己根本没坏的网络（AGENTS §2 #14：谁先说话是要紧事）。
+ * 所以四格 why 各占一格、谁都不许合并（§2 #12），下载的两条路径都只许走预览包名。
+ *
+ * 地址分派靠 `fetch` 的**入参**，不是靠调用次序 —— 次序那条会被自动检测插队打断
+ * （上一场景同一手法：先把 autoAt 写成「刚刚查过」再 reload，源头掐掉）。
+ */
+SCENARIOS.push({
+  name: '弹窗预览版那一格：404 不许顶掉正式版那句，点下去装的是预览包',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    await ctx.client.evaluate(
+      'try{localStorage.setItem("omitone.update.autoAt",String(Date.now()));' +
+      'localStorage.setItem("omitone.update.manualAt","0");}catch(e){};1');
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 8000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!document.getElementById("doPreview")'))) await sleep(200);
+    var out = await ctx.client.evaluate(
+      '(async function(){' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof self.checkUpdate==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,fn:typeof self.checkUpdate};' +
+      'if(o.fn!=="function")return o;' +
+      'var read=function(id){return String((document.getElementById(id)||{}).textContent||"");};' +
+      'var shown=function(id){var b=document.getElementById(id);return !!b&&getComputedStyle(b).display!=="none";};' +
+      // 出厂状态两个元素都得藏着：亮着等于「一个字还没查就告诉用户有个不确定能不能装的东西」
+      'o.factory=[shown("previewMsg"),shown("doPreview")];' +
+      'var BUILD=new Date(2026,10,12,20,37,0).getTime();' +
+      'var realManifest=chrome.runtime.getManifest;' +
+      'var M30=function(){return {version:"1.3.0",version_name:"1.3.0 b20261112-2037"};};' +
+      'chrome.runtime.getManifest=M30;' +
+      // 正式版那条地址回「与本地同号、包也只晚 3 分钟」—— 稳定落在「你已经是最新版了」这一格
+      // 线上号做成按轮可改：第③轮要抬到 1.3.1（转正后的形状）。否则「不比正式版新」那一格
+      // 会被「不比本地新」顺带兜住 —— 摘掉它测试照样绿，等于没有检查
+      'var stableTag="1.3.0";' +
+      'var STABLE={ok:true,json:function(){return Promise.resolve({tag_name:"v"+stableTag,name:"v"+stableTag,' +
+      '  assets:[{name:"omitone.zip",updated_at:new Date(BUILD+180000).toISOString()}]});}};' +
+      'var hits={stable:0,preview:0,other:[]};' +
+      'var previewResp=null;' +
+      'var realFetch=self.fetch;' +
+      'self.fetch=function(u){var s=String((u&&u.url)?u.url:u);' +
+      '  if(s.indexOf("releases/tags/preview")!==-1){hits.preview++;return Promise.resolve(previewResp);}' +
+      '  if(s.indexOf("releases/latest")!==-1){hits.stable++;return Promise.resolve(STABLE);}' +
+      '  hits.other.push(s);return Promise.reject(new Error("问到了第三条地址"));' +
+      '};' +
+      'var PK={name:"omitone-preview.zip",updated_at:"2026-11-19T14:00:00Z"};' +
+      'var mk=function(nm){return {ok:true,json:function(){' +
+      '  return Promise.resolve({tag_name:"preview",name:nm,assets:[PK]});}};};' +
+      'var run=async function(){try{localStorage.setItem("omitone.update.manualAt","0");}catch(e){}' +
+      '  await self.checkUpdate({manual:true});};' +
+      // ① 预览比正式版新 —— 这一格要说话，而且说的得是让人掂量的那句
+      'previewResp=mk("预览版 1.3.1 experimental b20261119-2200");' +
+      'await run();' +
+      'o.a=[shown("previewMsg"),shown("doPreview"),read("previewMsg"),read("updateMsg"),' +
+      '  hits.stable,hits.preview,hits.other.length];' +
+      // ② 预览口 404（还没发过）—— 这一格闭嘴，正式版那句原话一个字不许被盖掉
+      'previewResp={ok:false,status:404,json:function(){return Promise.resolve({});}};' +
+      'await run();' +
+      'o.b=[shown("previewMsg"),shown("doPreview"),read("updateMsg")];' +
+      // ③ 转正之后预览口忘了撤 —— 线上已经 1.3.1，预览 tag 还停在 1.3.1，那是一份旧实验包
+      'stableTag="1.3.1";previewResp=mk("预览版 1.3.1 experimental b20261110-0900");' +
+      'await run();' +
+      'o.c=[shown("previewMsg"),shown("doPreview")];' +
+      // ④ 用户装的本来就是这一支（本地号与预览同号）—— 不必再告诉他「有预览版」
+      'stableTag="1.3.0";' +
+      'previewResp=mk("预览版 1.3.1 experimental b20261119-2200");' +
+      'chrome.runtime.getManifest=function(){' +
+      '  return {version:"1.3.1",version_name:"1.3.1 experimental b20261119-2200"};};' +
+      'await run();' +
+      'o.d=[shown("previewMsg"),shown("doPreview")];' +
+      // ⑤ 点「装预览版」：桩只打在**动作**（下载 / 开标签）上，判据读它递出去的地址
+      'chrome.runtime.getManifest=M30;await run();' +
+      'var dl=[],tabs=[];' +
+      'var realDl=self.chrome.downloads,realTabs=self.chrome.tabs.create;' +
+      'self.chrome.downloads={download:function(opt,cb){dl.push(String(opt&&opt.url||""));if(cb)cb(7);},' +
+      '  onChanged:{addListener:function(){},removeListener:function(){}},show:function(){}};' +
+      'self.chrome.tabs.create=function(t){tabs.push(String(t&&t.url||""));};' +
+      'o.shownBeforeClick=shown("doPreview");' +
+      'document.getElementById("doPreview").click();await nap(120);' +
+      'o.e={dl:dl,tabs:tabs,msg:read("updateMsg"),btn:shown("doPreview")};' +
+      // ⑥ 下载接口整个接不上 —— 兜底那条手动链接也必须还是预览直链
+      'dl=[];tabs=[];' +
+      'self.chrome.downloads={get download(){throw new Error("下载接口没接上");}};' +
+      'document.getElementById("doPreview").style.display="";' +
+      'document.getElementById("doPreview").click();await nap(120);' +
+      'o.f={dl:dl,tabs:tabs,msg:read("updateMsg")};' +
+      'self.chrome.downloads=realDl;self.chrome.tabs.create=realTabs;' +
+      'self.fetch=realFetch;chrome.runtime.getManifest=realManifest;' +
+      'return o;})()'
+    );
+    var PREVIEW_ZIP = 'https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip';
+    var a = out && out.a, b = out && out.b, e = out && out.e, f = out && out.f;
+    var sayWhat = String((a && a[2]) || '');
+    check('前提：弹窗脚本已接管，且预览那一格出厂时两个元素都藏着',
+      !!out && out.fn === 'function' && out.ready === 'complete' &&
+      !!out.factory && out.factory[0] === false && out.factory[1] === false, JSON.stringify(out));
+    check('预览比正式版新，那句话连按钮一起亮，版本号写在话里',
+      !!a && a[0] === true && a[1] === true && /1\.3\.1/.test(sayWhat) && /预览版/.test(sayWhat),
+      JSON.stringify(a));
+    check('那句话把「斟酌」说足六处：实验支线、可能弄坏、哪门课、哪一节、什么现象、怎么退回正式版',
+      !!a && ['实验支线', '弄坏', '哪门课', '哪一节', '什么现象', '重装 omitone.zip'].every(function (w) {
+        return sayWhat.indexOf(w) !== -1;
+      }), JSON.stringify({ say: sayWhat }));
+    check('只问预览 tag 与正式版 latest 这两条地址，第三条一条都不问',
+      !!a && a[4] === 1 && a[5] === 1 && a[6] === 0, JSON.stringify(a));
+    check('预览口 404 时那一格收起来，正式版那句「你已经是最新版了」原样留着没被顶掉',
+      !!b && b[0] === false && b[1] === false && /你已经是最新版了/.test(String(b[2])), JSON.stringify(b));
+    check('预览号不比正式版新（转正后忘了撤），那一格不说话',
+      !!out.c && out.c[0] === false && out.c[1] === false, JSON.stringify(out.c));
+    check('本地已经装着这一支（同号），那一格不说话',
+      !!out.d && out.d[0] === false && out.d[1] === false, JSON.stringify(out.d));
+    check('点「装预览版」下到的是预览包名，正式版那条直链一个字都没进下载参数',
+      !!out.shownBeforeClick && !!e && e.dl.length === 1 && e.dl[0] === PREVIEW_ZIP &&
+      String(e.dl[0]).indexOf('releases/latest') === -1 && e.tabs.length === 0, JSON.stringify(e));
+    check('下载接口接不上时，兜底开的手动链接也必须还是预览直链（不许把人退回正式版）',
+      !!f && f.dl.length === 0 && f.tabs.length === 1 && f.tabs[0] === PREVIEW_ZIP &&
+      String(f.msg).indexOf('omitone-preview.zip') !== -1 &&
+      String(f.msg).indexOf('omitone.zip') === -1, JSON.stringify(f));
+  }
+});
+
+/**
  * ---- 旧版本留下的"已发过"标记，不能把讨论永久挡住 ----
  *
  * 现场（2026-10-17）：旧逻辑发失败也记"已发"，标记 24 小时才过期，
