@@ -6586,6 +6586,168 @@ async function testPreviewChannelNotice() {
       btn: htmlSrc.indexOf('先掂量') }));
 }
 
+/** ---- [29] 批次 137：多空填空的分隔符容错（GitHub issue #2） ---- */
+/**
+ * 为什么这一段要从盘上把方法取出来真跑：`_splitFillAnswerParts` 的判据是**段数 == 格子数**，
+ * 而"切错了"这件事在页面上不留任何异常 —— 四格填了同一串、隐藏域拼了一次，
+ * 站点照样判错，只有把形状摆到方法面前才知道它切不切。
+ * ⚠️ ① 那条是闸门：拿不出方法时后面每一格都会"红 0 条"而不是"没执行"（AGENTS §5）。
+ */
+async function testFillAnswerSeparatorTolerance() {
+  console.log('\n[29] 多空填空：模型自己发明分隔符时按空切开，段数对不上照旧整串并单独说一声（批次 137）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var dom = read('src/page/75-quiz-dom.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+
+  var split = buildFrom(dom, '_splitFillAnswerParts', {});
+  var note = buildFrom(dom, '_noteFillSplitMismatch', { emitRuntimeLog: say });
+  var fillBody = bodyOf(dom, '_fillText');
+
+  check('① 两件方法都能从 75 片段原样取出来真跑，`_fillText` 里三处接线也没被删（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    typeof split === 'function' && typeof note === 'function' &&
+    fillBody.indexOf('this._splitFillAnswerParts(raw, inputs.length)') >= 0 &&
+    fillBody.indexOf('this._noteFillSplitMismatch(el, inputs.length, values, splitMode)') >= 0 &&
+    fillBody.indexOf('inputs.length >= 2 && values.length !== inputs.length') >= 0,
+    JSON.stringify({ split: typeof split, note: typeof note, body: fillBody.length }));
+  if (typeof split !== 'function' || typeof note !== 'function') return;
+
+  // 段数对上才切，是这一族唯一的闸；顺序与候选表本身也要钉住
+  var normalFirst = dom.indexOf("text.indexOf('|||')");
+  // ⚠️ 锚点必须**紧到只认那张候选表**：本片段里 `var loose` 有三处，
+  // 宽松式 `/var loose = \[([^\]]*)\]/` 先撞上第 237 行那个 `var loose = [];`，
+  // 于是读出空表、断言当场红 —— 报的是"验证没抓到"，真相是 needle 挑错了行。
+  var looseMatch = dom.match(/var loose = \[((?:\s*'[^']*'\s*,?)+)\]/);
+  var looseAt = looseMatch ? dom.indexOf(looseMatch[0]) : -1;
+  var candidates = looseMatch
+    ? (looseMatch[1].match(/'([^']*)'/g) || []).map(function (s2) { return s2.slice(1, -1); })
+    : null;
+  check('② 约定分隔符 `|||` 那把尺排在候选表之前，且候选表没有单字符分隔符（顺序反了 `甲///乙|||丙` 会先撞上 `///` 只切两段；单枚 `/` 会让 `2024/07` 被切开）',
+    normalFirst >= 0 && looseAt > normalFirst &&
+    !!candidates && candidates.length === 3 &&
+    candidates.every(function (c) { return c.length >= 2; }) &&
+    candidates.indexOf('/') < 0 && candidates.indexOf('|') < 0 && candidates.indexOf('｜') < 0 &&
+    candidates.indexOf('、') < 0 && candidates.indexOf('；') < 0,
+    JSON.stringify({ normalFirst: normalFirst, looseAt: looseAt, candidates: candidates }));
+
+  var s = function (raw, boxes) { return split(raw, boxes); };
+  var shapes = [
+    { in: '历史|||人民', boxes: 2, parts: ['历史', '人民'], mode: 'normal' },
+    { in: '甲 ||| 乙 ||| 丙 ||| 丁', boxes: 4, parts: ['甲', '乙', '丙', '丁'], mode: 'normal' },
+    { in: '1|||1|||1|||1', boxes: 4, parts: ['1', '1', '1', '1'], mode: 'normal' },
+    { in: 'A///B///C///D', boxes: 4, parts: ['A', 'B', 'C', 'D'], mode: 'loose:///' },
+    { in: 'A//B//C//D', boxes: 4, parts: ['A', 'B', 'C', 'D'], mode: 'loose://' },
+    { in: '甲｜｜｜乙｜｜｜丙｜｜｜丁', boxes: 4, parts: ['甲', '乙', '丙', '丁'], mode: 'loose:｜｜｜' }
+  ];
+  var okShapes = shapes.every(function (c) {
+    var r = s(c.in, c.boxes);
+    return r.mode === c.mode && JSON.stringify(r.parts) === JSON.stringify(c.parts);
+  });
+  check('③ 段数正好等于答题框数的四种分隔符（`|||` 含带空格、`///`、`//`、全角 `｜｜｜`）都按空切开，mode 点名是哪一种',
+    okShapes,
+    JSON.stringify(shapes.map(function (c) { var r = s(c.in, c.boxes); return { in: c.in, got: r.parts, mode: r.mode }; })));
+
+  var mixed = s('甲///乙|||丙', 2);
+  check('④ 两种分隔符混在一串里时按约定的那把尺切（`|||` 优先，不被 `///` 抢先判成「段数对不上」）',
+    mixed.mode === 'normal' && JSON.stringify(mixed.parts) === JSON.stringify(['甲///乙', '丙']),
+    JSON.stringify(mixed));
+
+  var off3 = s('A///B///C', 4);
+  var offSlash = s('A//B', 4);
+  check('⑤ 认出了非常规分隔符但段数对不上：整串原样交回，mode 单独是 `loose-count-off:<分隔符>`（这一格就是日志里那句"是哪一种"的真源）',
+    off3.mode === 'loose-count-off:///' && JSON.stringify(off3.parts) === JSON.stringify(['A///B///C']) &&
+    offSlash.mode === 'loose-count-off://' && JSON.stringify(offSlash.parts) === JSON.stringify(['A//B']),
+    JSON.stringify({ three: off3, two: offSlash }));
+
+  var verbatimIn = ['2024/07', '3/4', '甲、乙、丙、丁', 'A/B/C/D'];
+  var verbatimOut = verbatimIn.map(function (raw) { return s(raw, 4); });
+  var verbatim = verbatimOut.every(function (r, i) {
+    return r.mode === 'none' && r.parts.length === 1 && r.parts[0] === verbatimIn[i];
+  });
+  check('⑥ 答案内部的单枚 `/` 与顿号压根不是分隔符：`2024/07`、`3/4`、`甲、乙、丙、丁` 一律整串（mode `none`），不许切出四段',
+    verbatim,
+    JSON.stringify(verbatimOut));
+
+  var oneBox = s('甲///乙', 1);
+  var empty = s('', 3);
+  check('⑦ 只有一个答题框的题不许被切开（单空的答案本来就常带斜杠）；空答案是 `empty` 那一格，与「读不出」分开',
+    oneBox.mode === 'none' && JSON.stringify(oneBox.parts) === JSON.stringify(['甲///乙']) &&
+    empty.mode === 'empty' && empty.parts.length === 1 && empty.parts[0] === '',
+    JSON.stringify({ oneBox: oneBox, empty: empty }));
+
+  // 日志那一侧：三种成因各说各话 + 同一形状只说一次
+  var ctx = { _getQuestionIdFromElement: function () { return '9401'; } };
+  logs.length = 0;
+  note.call(ctx, {}, 4, ['甲///乙///丙'], 'loose-count-off:///');
+  note.call(ctx, {}, 4, ['甲///乙///丙'], 'loose-count-off:///');
+  var oncePerKey = logs.length;
+  note.call(ctx, {}, 3, ['甲///乙///丙'], 'loose-count-off:///');
+  note.call(ctx, {}, 4, ['甲'], 'none');
+  var lastTwo = logs.slice(1);
+  check('⑧「拆不出来」按「题号 + 框数 + 段数 + 分隔符」记账：同一形状第二轮复读一条都不许出，换个形状才算新事（200 条环被同一句话吃满是真事）',
+    oncePerKey === 1 && logs.length === 3,
+    JSON.stringify({ afterTwice: oncePerKey, total: logs.length }));
+  // ⚠️ 三格都先 `logs[i] &&` 再读 `.meta`：直接 `lastTwo[1].meta` 在生产被改坏、日志少一条时
+  //    会抛 TypeError 把整套件打死在半路（批次 137 注入 I 实测撞上），报出来的是"没跑到"而不是红 ——
+  //    测试台把"生产坏了"实现成崩溃，等于替生产删掉了一条断言。
+  var firstLog = logs[0] && logs[0].meta;
+  var repeatLog = lastTwo[0] && lastTwo[0].meta;
+  var shapeLog = lastTwo[1] && lastTwo[1].meta;
+  check('⑨ 日志那一格把话说全：warn 级、名字固定、`separator`/`boxes`/`parts` 三样齐，且「只有一串」与「段数不对」是两句不同的 hint（压成一句下次还得重查）',
+    !!logs[0] && logs[0].level === 'warn' && logs[0].message === 'fill answers not splittable per blank' &&
+      !!firstLog && firstLog.separator === 'loose-count-off:///' && firstLog.boxes === 4 && firstLog.parts === 1 &&
+      String(firstLog.hint).indexOf('每一格') >= 0 &&
+      !!repeatLog && repeatLog.parts === 1 && String(repeatLog.hint).indexOf('每一格') >= 0 &&
+      !!shapeLog && shapeLog.boxes === 4 && shapeLog.parts === 1,
+    JSON.stringify(logs));
+
+  logs.length = 0;
+  note.call(ctx, {}, 3, ['甲', '乙'], 'normal');
+  note.call(ctx, {}, 2, ['', '  '], 'normal');
+  var twoParts = logs[0] && logs[0].meta;
+  var blank = logs[1] && logs[1].meta;
+  check('⑩ 段数比框数少（`|||` 只给两段、三格）走的是另一句 hint「多出来的格子重复最后一格」，且全空答案要单独标 `emptyAnswer:true`',
+    !!twoParts && twoParts.hint.indexOf('重复最后一格') >= 0 && twoParts.emptyAnswer === false &&
+      !!blank && blank.emptyAnswer === true,
+    JSON.stringify({ two: twoParts, blank: blank }));
+
+  logs.length = 0;
+  var badCtx = { _getQuestionIdFromElement: function () { throw new Error('没有 qid'); } };
+  var threw = null;
+  try { note.call(badCtx, {}, 4, ['甲'], 'none'); } catch (e) { threw = String(e && e.message); }
+  check('⑪ 题号拿不到（读 DOM 抛了）不许把这一发变成异常 —— 日志照打、那一格叫 `anon`；回填路径上任何一处抛错都会把这一题悄悄丢掉',
+    threw === null && logs.length === 1 && logs[0].meta.qid === '' &&
+      String(logs[0].message) === 'fill answers not splittable per blank',
+    JSON.stringify({ threw: threw, logs: logs }));
+
+  check('⑫ 批次 16 的「不留白」口径没被这次改动带走：段数对不上时仍是**重复最后一格**而不是留空，隐藏域也仍是 `values.join(\'\')`',
+    fillBody.indexOf('values[values.length - 1]') >= 0 && fillBody.indexOf("hidden.value = values.join('')") >= 0,
+    JSON.stringify({ repeat: fillBody.indexOf('values[values.length - 1]'), join: fillBody.indexOf("hidden.value = values.join('')") }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -6628,6 +6790,7 @@ async function main() {
   await testPetChatRequest();
   await testLocalDoctor();
   await testPreviewChannelNotice();
+  await testFillAnswerSeparatorTolerance();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

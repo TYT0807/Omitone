@@ -18483,6 +18483,162 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 批次 137：多空填空的分隔符容错（GitHub issue #2，2026-11-19）----
+ *
+ * 用户原话：「多个空的答题，ai把四个空都回答的全部答案以///分开填了四个一样的错误答案」。
+ * 根因两层：`_splitFillAnswerParts` 先前只认提示词约定的 `|||`，模型自己改用 `///` 时
+ * 整串被当成**一个**答案；接着 `_fillText` 那条"分不到就重复最后一格"的兜底把同一串写进每一格。
+ * 修法按"段数==格子数才认非常规分隔符"，对不上就照旧整串（批次 16 的不留白口径）+ 单独一格日志。
+ *
+ * ⚠️ 六个形状**各钉一格**，是因为"四格一样"这个症状有三种完全不同的成因：
+ * 分隔符根本不认（`none`）、认出来了但段数不对（`loose-count-off`）、`|||` 本身就少一段。
+ * 压成一句话下次还得重新查（AGENTS §2 #12）。
+ */
+SCENARIOS.push({
+  name: '多空填空的答案用 /// 或全角竖线时也按空切开，对不上空数要单独说',
+  path: '/quiz',
+  run: async function (ctx) {
+    var html =
+      '<div class="TiMu" qid="9401" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">41.</span>【填空题】四格，答案用三斜杠分隔</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9401b1">，' +
+      '乙格<input type="text" class="answerText" id="q9401b2">，' +
+      '丙格<input type="text" class="answerText" id="q9401b3">，' +
+      '丁格<input type="text" class="answerText" id="q9401b4">。</div>' +
+      '<input type="hidden" id="answer9401" value=""></div>' +
+      '<div class="TiMu" qid="9402" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">42.</span>【填空题】四格，答案里只有单斜杠</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9402b1">，' +
+      '乙格<input type="text" class="answerText" id="q9402b2">，' +
+      '丙格<input type="text" class="answerText" id="q9402b3">，' +
+      '丁格<input type="text" class="answerText" id="q9402b4">。</div>' +
+      '<input type="hidden" id="answer9402" value=""></div>' +
+      '<div class="TiMu" qid="9403" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">43.</span>【填空题】四格，三斜杠只给三段</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9403b1">，' +
+      '乙格<input type="text" class="answerText" id="q9403b2">，' +
+      '丙格<input type="text" class="answerText" id="q9403b3">，' +
+      '丁格<input type="text" class="answerText" id="q9403b4">。</div>' +
+      '<input type="hidden" id="answer9403" value=""></div>' +
+      '<div class="TiMu" qid="9404" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">44.</span>【填空题】只有一格，答案自带三斜杠</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9404b1">。</div>' +
+      '<input type="hidden" id="answer9404" value=""></div>' +
+      '<div class="TiMu" qid="9405" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">45.</span>【填空题】四格，答案用全角竖线分隔</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9405b1">，' +
+      '乙格<input type="text" class="answerText" id="q9405b2">，' +
+      '丙格<input type="text" class="answerText" id="q9405b3">，' +
+      '丁格<input type="text" class="answerText" id="q9405b4">。</div>' +
+      '<input type="hidden" id="answer9405" value=""></div>' +
+      '<div class="TiMu" qid="9406" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">46.</span>【填空题】三格，约定分隔符只给两段</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9406b1">，' +
+      '乙格<input type="text" class="answerText" id="q9406b2">，' +
+      '丙格<input type="text" class="answerText" id="q9406b3">。</div>' +
+      '<input type="hidden" id="answer9406" value=""></div>';
+
+    var out = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      // 日志缓冲挂在这个全局上，本场景自己认领；记账字典也自己清 ——
+      // 它是页内存里的"同一形状只说一次"，前一个场景写过就会把这一场的取证吞掉。
+      'var logs=window.__b137=(window.__b137||[]);' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")logs.push(m);});' +
+      'app._fillSplitNotified=Object.create(null);' +
+      'var f=document.createElement("iframe");f.style.width="900px";f.style.height="700px";' +
+      'document.body.appendChild(f);' +
+      'var d=f.contentDocument;d.body.innerHTML=' + JSON.stringify(html) + ';' +
+      'window.__b137Frame=f;' +
+      'var qs=app._extractFromDocument(d);' +
+      // 夹具自证：六个形状必须都被真解析器认成填空题、框数分别是 4/4/4/1/4/3 ——
+      // 红了就是夹具被改过，后面所有断言测的都是一个不存在的形状。
+      'var types=qs.map(function(q){return String(q.type);});' +
+      'var boxes=qs.map(function(q){' +
+      '  return q._element.querySelectorAll("input[type=text], input:not([type])").length;});' +
+      'var answers=["甲///乙///丙///丁","甲/乙/丙/丁","甲///乙///丙","甲///乙",' +
+      '"甲｜｜｜乙｜｜｜丙｜｜｜丁","甲|||乙"];' +
+      'var val=function(id){var e=d.getElementById(id);return e?String(e.value):"<无>";};' +
+      'var hid=function(q){return val("answer"+q);};' +
+      'var grid=function(q,n){var a=[];for(var i=1;i<=n;i++)a.push(val("q"+q+"b"+i));return a;};' +
+      'var round=function(){' +
+      '  app._quizCurrentAnsweredKeys={};app._quizCurrentAnswerValues={};' +
+      '  app._fillAnswers(answers,qs,d);};' +
+      'round();' +
+      'var r1={9401:grid(9401,4),9402:grid(9402,4),9403:grid(9403,4),9404:grid(9404,1),' +
+      '  9405:grid(9405,4),9406:grid(9406,3),' +
+      '  h1:hid(9401),h2:hid(9402),h4:hid(9404),h6:hid(9406)};' +
+      'var notes1=logs.filter(function(m){' +
+      '  return String(m.message||"")==="fill answers not splittable per blank";}).length;' +
+      // 第二轮：同一份答案再来一次，格子内容不许变，"拆不出来"也不许每轮复读
+      'round();' +
+      'var r2={9401:grid(9401,4),9402:grid(9402,4),9406:grid(9406,3)};' +
+      'return {n:qs.length,types:types.join(","),boxes:boxes.join(","),r1:r1,r2:r2,notes1:notes1};})()'
+    );
+    check('夹具自证：六道题都是填空题，答题框数依次 4/4/4/1/4/3',
+      out && out.n === 6 && out.types === 'fill,fill,fill,fill,fill,fill' && out.boxes === '4,4,4,1,4,3',
+      JSON.stringify(out && { n: out.n, types: out.types, boxes: out.boxes }));
+    check('模型用三斜杠分隔的四段答案，四格各得一段（不再是四格一样）',
+      out && JSON.stringify(out.r1 && out.r1['9401']) === JSON.stringify(['甲', '乙', '丙', '丁']) &&
+      out.r1 && out.r1.h1 === '甲乙丙丁',
+      JSON.stringify(out && { b: out.r1 && out.r1['9401'], hidden: out.r1 && out.r1.h1 }));
+    check('模型用全角竖线分隔的四段答案同样切开',
+      out && JSON.stringify(out.r1 && out.r1['9405']) === JSON.stringify(['甲', '乙', '丙', '丁']),
+      JSON.stringify(out && out.r1 && out.r1['9405']));
+    check('单枚斜杠不算分隔符：四格仍是同一整串（答案里 2024/07 这种会被切错）',
+      out && JSON.stringify(out.r1 && out.r1['9402']) === JSON.stringify(['甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁']) &&
+      out.r1 && out.r1.h2 === '甲/乙/丙/丁',
+      JSON.stringify(out && { b: out.r1 && out.r1['9402'], hidden: out.r1 && out.r1.h2 }));
+    check('三斜杠只有三段而格子有四个：段数对不上就不切，四格同一整串',
+      out && JSON.stringify(out.r1 && out.r1['9403']) === JSON.stringify(['甲///乙///丙', '甲///乙///丙', '甲///乙///丙', '甲///乙///丙']),
+      JSON.stringify(out && out.r1 && out.r1['9403']));
+    check('只有一格的题不许被切开（单空的答案本来就常带斜杠）',
+      out && JSON.stringify(out.r1 && out.r1['9404']) === JSON.stringify(['甲///乙']) &&
+      out.r1 && out.r1.h4 === '甲///乙',
+      JSON.stringify(out && { b: out.r1 && out.r1['9404'], hidden: out.r1 && out.r1.h4 }));
+    check('约定分隔符 ||| 少一段时照旧切两段、第三格重复最后一格（批次 16 不留白口径没变）',
+      out && JSON.stringify(out.r1 && out.r1['9406']) === JSON.stringify(['甲', '乙', '乙']) &&
+      out.r1 && out.r1.h6 === '甲乙',
+      JSON.stringify(out && { b: out.r1 && out.r1['9406'], hidden: out.r1 && out.r1.h6 }));
+    check('第二轮同样答案：格子内容与第一轮一致（幂等，不重切不错位）',
+      out && JSON.stringify(out.r2) === JSON.stringify({
+        '9401': ['甲', '乙', '丙', '丁'],
+        '9402': ['甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁'],
+        '9406': ['甲', '乙', '乙']
+      }),
+      JSON.stringify(out && out.r2));
+
+    // emitRuntimeLog 走 postMessage，异步送达：等一拍再读缓冲，
+    // 否则"该发的没发"与"没送到"同形（AGENTS §5）。
+    await sleep(400);
+    var logged = await ctx.client.evaluate(
+      '(function(){' +
+      'var logs=(window.__b137||[]).filter(function(m){' +
+      '  return String(m.message||"")==="fill answers not splittable per blank";});' +
+      'var byQ={};logs.forEach(function(m){var q=String((m.meta&&m.meta.qid)||"");' +
+      '  if(!byQ[q])byQ[q]={separator:String(m.meta.separator),parts:m.meta.parts,boxes:m.meta.boxes,empty:m.meta.emptyAnswer};});' +
+      'var f=window.__b137Frame;if(f&&f.parentNode)f.parentNode.removeChild(f);' +
+      'window.__b137=[];' +
+      'return {count:logs.length,qids:Object.keys(byQ).sort().join(","),cells:byQ};})()'
+    );
+    check('「拆不出来」逐格点名：9402 是压根没分隔符、9403 是认出来但段数不对、9406 是约定分隔符少一段',
+      logged && logged.qids === '9402,9403,9406' &&
+      logged.cells['9402'] && logged.cells['9402'].separator === 'none' &&
+      logged.cells['9402'].parts === 1 && logged.cells['9402'].boxes === 4 && logged.cells['9402'].empty === false &&
+      logged.cells['9403'] && logged.cells['9403'].separator === 'loose-count-off:///' &&
+      logged.cells['9403'].parts === 1 && logged.cells['9403'].boxes === 4 &&
+      logged.cells['9406'] && logged.cells['9406'].separator === 'normal' &&
+      logged.cells['9406'].parts === 2 && logged.cells['9406'].boxes === 3,
+      JSON.stringify(logged && { qids: logged.qids, cells: logged.cells }));
+    check('切开成功的那三题（4/4/1 格各对上门数）一条都不许说，且同一形状只说一次（两轮共 3 条）',
+      logged && logged.count === 3 && logged.qids === '9402,9403,9406' &&
+      (!logged.cells['9401'] && !logged.cells['9404'] && !logged.cells['9405']),
+      JSON.stringify(logged && { count: logged.count, qids: logged.qids }));
+  }
+});
+
+/**
  * ---- 批次 21：投票任务点（insertvote）----
  *
  * 现场（2026-11-11 真页实测，章节 9000049220）：那一节只剩一个未完成的任务盒，

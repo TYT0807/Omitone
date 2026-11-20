@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（52 个）：
+ * 本段的方法（54 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -19,6 +19,7 @@
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
  *   _expandMultiChoiceLetters、_normalizeChoiceAnswerValues、_applyChoiceAnswer、
  *   _fillChoice、_clearMultiChoiceSelection、_fillMultiChoice、_fillText、
+ *   _splitFillAnswerParts、_noteFillSplitMismatch、
  *   _fillTextarea、_resolveQuizAnswerDocument、_docHasQuizPaperShape、_findQuizPaperDocumentBelow、_readRichEditorValue、
  *   _isAnswerTextControl、_answerToHtml、_writeAnswerText、_collectAnswerEditableNodes、
  *   _readVisibleAnswerText、_logMissingAnswerBox、_hasVisibleChoiceSelection、
@@ -1126,7 +1127,9 @@
 
 
     /**
-     * 填空题：把答案按 `|||` 分段写进题目容器里的**每一个文本框**，并同步隐藏答案域。
+     * 填空题：把答案分段写进题目容器里的**每一个文本框**，并同步隐藏答案域。
+     *
+     * 分段口径见 `_splitFillAnswerParts`（真源 `|||`，非常规分隔符要段数对上才认）。
      *
      * 返回真正写到的可见答题控件数（0 = 这道题在我们眼里一个答题框都没有）。
      * 这个返回值是给 `_fillAnswers` 的：只写进隐藏域、可见框却空着，
@@ -1160,17 +1163,19 @@
       }
 
       var values = [];
+      var splitMode = 'llm-array';
       if (Array.isArray(value)) {
         values = value.map(function (item) {
           return String(this._normalizeAnswerValue(item) == null ? '' : this._normalizeAnswerValue(item)).trim();
         }.bind(this));
       } else {
         var raw = String(value == null ? '' : value).trim();
-        if (raw.indexOf('|||') !== -1) {
-          values = raw.split('|||').map(function (part) { return part.trim(); });
-        } else {
-          values = [raw];
-        }
+        var split = this._splitFillAnswerParts(raw, inputs.length);
+        values = split.parts;
+        splitMode = split.mode;
+      }
+      if (inputs.length >= 2 && values.length !== inputs.length) {
+        this._noteFillSplitMismatch(el, inputs.length, values, splitMode);
       }
 
       var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
@@ -1201,6 +1206,71 @@
         }
       } catch (e) {}
       return inputs.length;
+    },
+
+
+    /**
+     * 一字符串的填空答案切成「每空一段」。
+     *
+     * 真源约定是 `|||`（`libs/prompt.js` 的 FORMAT_HINT），**无条件按它切**。
+     * 但模型会自己发明分隔符：现场实测（GitHub issue #2，2026-11-19，四个空的填空）
+     * 回的是 `答案A///答案B///答案C///答案D` —— 我们认不出来就当**一整串答案**，
+     * 于是 `_fillText` 那条"分不到就重复最后一格"的兜底把**同一串**写进四格，
+     * 正是用户那句「四个空都填了一样的错误答案」。
+     *
+     * 所以非常规分隔符只认**切出来的非空段数正好等于答题框数**：段数对不上说明这串
+     * 本来就不是按空写的（答案里常有 `2024/07`、`3/4` 这种），照旧整串交出去，
+     * 由 `_noteFillSplitMismatch` 单独说一声「拆不出来」，不许悄悄当切好了。
+     * 候选只放**三枚同形**与**两枚同形**的符号：单枚 `/`、`|`、`、` 在答案内部太常见，
+     * 有段数这道闸也照样会切错，宁可不切。
+     *
+     * @returns {{parts: string[], mode: string}} mode 是给日志的那一格，不参与判定
+     */
+    _splitFillAnswerParts: function (raw, boxCount) {
+      var text = String(raw == null ? '' : raw);
+      if (text.indexOf('|||') !== -1) {
+        return { parts: text.split('|||').map(function (part) { return part.trim(); }), mode: 'normal' };
+      }
+      if (boxCount >= 2) {
+        var loose = ['///', '｜｜｜', '//'];
+        for (var i = 0; i < loose.length; i++) {
+          if (text.indexOf(loose[i]) === -1) continue;
+          var trial = text.split(loose[i])
+            .map(function (part) { return String(part).trim(); })
+            .filter(function (part) { return part.length > 0; });
+          if (trial.length === boxCount) return { parts: trial, mode: 'loose:' + loose[i] };
+          // 认出了分隔符却对不上空数：交回整串，但把这一型留给日志
+          return { parts: [text.trim()], mode: 'loose-count-off:' + loose[i] };
+        }
+      }
+      return { parts: [text.trim()], mode: text.trim() ? 'none' : 'empty' };
+    },
+
+
+    /**
+     * 「答案段数和答题框数对不上」单独占一格 —— 同一道题的同一形状只说一次。
+     *
+     * 必须分格：现场只看到「四格一样的答案」这一句症状，而**三种成因修法完全不同** ——
+     * 模型只给了一串（`none`）、给了 `///` 却只有两段（`loose-count-off`）、
+     * `|||` 本身就切出三段（`normal`）。压成一句话就等于下次还得重查（AGENTS §2 #12）。
+     */
+    _noteFillSplitMismatch: function (el, boxes, parts, mode) {
+      var qid = '';
+      try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+      var key = (qid || 'anon') + '|' + boxes + '|' + parts.length + '|' + mode;
+      this._fillSplitNotified = this._fillSplitNotified || Object.create(null);
+      if (this._fillSplitNotified[key]) return;
+      this._fillSplitNotified[key] = true;
+      emitRuntimeLog('warn', 'fill answers not splittable per blank', {
+        qid: qid.slice(0, 24),
+        boxes: boxes,
+        parts: parts.length,
+        separator: mode,
+        emptyAnswer: !parts.some(function (part) { return String(part).trim(); }),
+        hint: parts.length === 1
+          ? '整串答案写进了每一格（不留白是批次 16 的口径），所以这几格内容相同'
+          : '段数与格子数不一致，多出来的格子重复最后一格'
+      });
     },
 
 

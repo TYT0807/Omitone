@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 142 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 95 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 143 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 95 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
 | `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
 | `e2e-expr-guard.js` | `node tools/e2e-expr-guard.js [文件]`；被 `check.js` 第 28 条调用 | 页面脚本串守卫：把测试台里那些**拼成字符串、再交给页面执行**的纯字面串折出来，逐条 `vm.Script` 试解析。**零依赖、不起浏览器** —— 这一族的错在字符串**内容**，`node --check` 与夹具守卫都量不到（见下方第 28 条）。覆盖面自己报数：认到几处入口、折叠解析几条、几条因含变量而跳过 |
 | `audit-browser-only.js` | `node tools/audit-browser-only.js`（`--report` 逐处打印每一族字样在不在、`--selftest` 跑九格自证）；被 `check.js` 第 29 条调用 | 装机口径审计：按**位置**逐个点名（说明书封面红框 / §7 那一行 / §9.2 那一行 / README 封面警示），每处都要求传达齐「电脑浏览器」「客户端」「手机」「装不了」「地址栏」「chaoxing.com」这几件事。**只认可见正文**（注释与 `script` 里的出现不算）、**别处出现不能替这一处交差**、**锚点认不出算一条问题**（位置数恒钉 4，不许缩成 3 还打印「0 条问题」）。要拦的是第 27 条管不到的**方向性断言**：删掉封面那句，集成、真实浏览器、界面字样三项全绿，只有拿去装客户端的新用户会发现装不了 |
@@ -521,7 +521,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 142 个场景 / 1611 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 143 个场景 / 1622 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
