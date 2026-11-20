@@ -16,6 +16,23 @@
 
 [**📖 在线看图解说明书**](https://tyt0807.github.io/Omitone/docs/manual.html) &nbsp;·&nbsp; [**下载 PDF 版**](https://github.com/TYT0807/Omitone/releases/latest/download/Omitone-manual.pdf)
 
+<sub>👆 这两条是 **1.3.0 正式版**的入口 —— 绝大多数人装这个就对了，本页往下所有说明也都按这一版写。</sub>
+
+### [🧪 **装预览版（omitone-preview.zip · 1.3.1 实验版）**](https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip)
+
+[**预览版的说明书 PDF**](https://github.com/TYT0807/Omitone/releases/download/preview/Omitone-manual-preview.pdf)
+
+<sub>🧪 这一条是**实验预览版**，不是正式版：下一版要加的东西都在里面，但它也可能把你正在刷的课弄坏。
+装之前先掂量三件事 —— **① 手上有没有正在赶的课**（有就别换，上面的正式版完全够用）；
+**② 万一不对你会不会退回正式版**（把预览那枚扩展移除，再照上面正式版的三步重装，五分钟的事）；
+**③ 出问题能不能把症状说清楚**（右下角面板能看日志，去 issue 里贴一句「哪门课 · 哪一节 · 什么现象」就有用）。
+三条都愿意，装它确实能推进这一版；只想安静把课刷完，请留在正式版。</sub>
+
+> 🧪 **预览版和正式版是两个东西，互不顶替。** 第一条链接下载的**永远是最新的正式版**
+> （那条永久直链只给稳定版）；预览版走单独一条地址、单独两个文件名
+> （`releases/download/preview/…`），**装不装预览版都不影响正式版那条链接给别人的东西**。
+> 预览版会在真课上跑一段时间，确认刷课没问题，才并回正式版正式发出来。
+
 <sub>**不懂 GitHub 也没关系** —— 第一个链接点下去，浏览器会自己开始下载：
 不用注册、不用登录、不用点绿色的 Code 按钮、不用装 Git。<br>
 说明书的在线版和 PDF 版是同一份内容，每个要动手的地方都配了四问 ——
