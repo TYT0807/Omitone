@@ -12927,8 +12927,10 @@ SCENARIOS.push({
 
     // 开关**清单**守卫：上面那条 `>= 8` 是弱下限，抓不住"某个开关被误删"。
     // 这里逐个点名 —— 少一个就红。**新增开关时要同步加进这个列表。**
+    // ⚠️ 批次 138 补进 `advanceAtNinetyPercent`：它和 `enableSeek` 现在是一对有先后关系的开关，
+    //    只点名上面那一枚的话，被人摘掉下面那枚（连带那句依赖说明成了孤儿）照样绿。
     var wantToggleIds = ['enableQuiz', 'randomAnswer', 'enableCaptcha', 'enableDiscussion',
-                         'autoNext', 'restudy', 'muted', 'enableSeek'];
+                         'autoNext', 'restudy', 'muted', 'enableSeek', 'advanceAtNinetyPercent'];
     var uiToggles = await ctx.client.evaluate(
       '(function(){var ids=' + JSON.stringify(wantToggleIds) + ';var miss=[];' +
       'for(var i=0;i<ids.length;i++){if(!document.getElementById(ids[i])) miss.push(ids[i]);}' +
@@ -12951,6 +12953,92 @@ SCENARIOS.push({
     );
     check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
       a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
+
+    // ---- 批次 138（会话任务 #185）：这两枚开关有先后关系，界面上要当场说出口 ----
+    // 为什么必须从**点击**走：那句说明的全部价值在于"用户真动了开关它跟着改口"。
+    // 手搓 innerHTML 只能证明函数存在，证不了 setter 里那两条接线；只测点击又证不了
+    // `load()` 尾部那一发 —— 少了它，重开弹窗看到的是出厂那句旧话（AGENTS §5「谁在读这一栏」）。
+    // ⚠️ 存储整轮共用：两格每步都先钉成想要的形状再读，收尾**原样交回**（原本没写过就删掉）。
+    var SEEK_CHAIN_KEYS = ['enableSeek', 'advanceAtNinetyPercent'];
+    var seekSaved = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
+      '.forEach(function(k){o[k]=(k in c)?c[k]:null;});res(o);});});})()');
+    // 钉存储 → 走 popup 自己的 load() → 读回说明与两枚开关的无障碍状态。
+    function seekPinAndLoad(pin) {
+      var src = '(function(){return new Promise(function(res){' +
+        'var pin=' + JSON.stringify(pin) + ';' +
+        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+        'Object.keys(pin).forEach(function(k){if(pin[k]===null)delete c[k];else c[k]=pin[k];});' +
+        'chrome.storage.local.set({config:c},function(){' +
+        'var done=function(o){try{res(o);}catch(e){res({error:String(e&&e.message)});}};' +
+        'Promise.resolve(load()).then(function(){' +
+        'var h=document.getElementById("seekChainHint");' +
+        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
+        'done({hint:h?String(h.textContent):null,hintHtml:h?String(h.innerHTML):null,' +
+        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null});' +
+        '},function(e){done({error:String(e&&e.message)});});' +
+        '});});});})()';
+      new Function('return ' + src);
+      return src;
+    }
+    // 真点那一枚开关（经 popup 自己的 click → setter → saveToggleConfig 那条链）
+    function seekClick(id) {
+      var src = '(function(){return new Promise(function(res){' +
+        'var id=' + JSON.stringify(id) + ';' +
+        'var el=document.getElementById(id);' +
+        'if(!el){res({missing:id});return;}' +
+        'el.click();' +
+        'setTimeout(function(){' +
+        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+        'var h=document.getElementById("seekChainHint");' +
+        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
+        'res({hint:h?String(h.textContent):null,' +
+        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null,' +
+        'storedSeek:c.enableSeek,storedNinety:c.advanceAtNinetyPercent});});},700);});})()';
+      new Function('return ' + src);
+      return src;
+    }
+    var bothOn = await ctx.client.evaluate(seekPinAndLoad({ enableSeek: true, advanceAtNinetyPercent: true }));
+    check('说明元素与两枚开关都在，且 load() 之后两枚都亮着（采集器先自证，否则下面读的全是 null）',
+      !bothOn.error && bothOn.hint !== null && bothOn.seekAria === 'true' && bothOn.ninetyAria === 'true',
+      JSON.stringify(bothOn));
+    check('两枚都开着时，说明把**判据本身**讲出来：认的是「试过拖到结尾、被弹回两次」这个信号，且不谎称"不会生效"',
+      /靠上面那枚给的信号/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
+      /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
+    var offSeek = await ctx.client.evaluate(seekClick('enableSeek'));
+    check('点掉上面那枚，下面那句**当场改口**说它现在不会生效，并指回该打开哪一枚',
+      /现在不会生效/.test(offSeek.hint) && /把上面那枚打开/.test(offSeek.hint) &&
+      offSeek.seekAria === 'false' && offSeek.ninetyAria === 'true', JSON.stringify(offSeek));
+    check('反向不许写：点掉「直接拖到结尾」时，`advanceAtNinetyPercent` 存储照旧是 true' +
+      '（悄悄替用户关掉另一枚=把他下次打开时的选择也换掉了）',
+      offSeek.storedSeek === false && offSeek.storedNinety === true,
+      JSON.stringify({ s: offSeek.storedSeek, n: offSeek.storedNinety }));
+    var onSeek = await ctx.client.evaluate(seekClick('enableSeek'));
+    check('再点回来那句立刻回到判据本身（两个方向都刷新，不是只在关的时候改一次口）',
+      /靠上面那枚给的信号/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
+      onSeek.seekAria === 'true', JSON.stringify(onSeek));
+    var offNinety = await ctx.client.evaluate(seekClick('advanceAtNinetyPercent'));
+    check('是用户自己关掉「90% 提前收尾」时，那句改成讲后果、**不再劝他打开上面那枚**',
+      /原速播完整支/.test(offNinety.hint) && /不会生效/.test(offNinety.hint) === false &&
+      offNinety.ninetyAria === 'false' && offNinety.storedSeek === true, JSON.stringify(offNinety));
+    var loadOnly = await ctx.client.evaluate(
+      seekPinAndLoad({ enableSeek: false, advanceAtNinetyPercent: true }));
+    check('只走 load() 那一路（一次都不点）也要说真话 —— 这一格钉的是 `load()` 尾部那一发，' +
+      '少了它重开弹窗看到的是出厂那句旧话，而 setter 路径测不到',
+      /现在不会生效/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
+      loadOnly.ninetyAria === 'true', JSON.stringify(loadOnly));
+    // 收尾：两格原样交回（原本没写过的删掉，让后面的场景读到"从没写过"那一支）
+    var seekBack = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var want=' + JSON.stringify(seekSaved) + ';' +
+      'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+      'Object.keys(want).forEach(function(k){if(want[k]===null)delete c[k];else c[k]=want[k];});' +
+      'chrome.storage.local.set({config:c},function(){chrome.storage.local.get("config",function(q){' +
+      'var s=(q&&q.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
+      '.forEach(function(k){o[k]=(k in s)?s[k]:null;});res(o);});});});});})()');
+    check('收尾把这两格原样交回（脏存储会毒化后面的场景，而日志说不清是谁改的）',
+      JSON.stringify(seekBack) === JSON.stringify(seekSaved),
+      JSON.stringify({ back: seekBack, saved: seekSaved }));
 
     // 运行状态指示：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——
     // 打开后完全看不出是不是已开启。这里不只查「有没有这个元素」，
@@ -13478,6 +13566,81 @@ SCENARIOS.push({
       'return {gate:app._shouldAdvanceAtNinetyPercent(v)};})()'
     );
     check('开关关闭后不提前结束', off.gate === false, JSON.stringify(off));
+
+    // ---- 批次 138（会话任务 #185）：上面那枚「直接拖到结尾」关掉时，这一枚不再无声失灵 ----
+    // 死键的**成因**在集成层 [30] 已经钉住（那份弹回证据只有 `_trySeekToEnd` 会写，
+    // 而它第一道闸就是 enableSeek）。这里要的是真实浏览器那一半：
+    // 那句「被谁挡的」必须**真的进得了 200 条的日志环**，而且同一支只说一次。
+    // ⚠️ 前提自己钉：`_seekRevertedKeys` 里塞的是"上一拍还开着时留下的旧证据"，
+    //    这一族不能依赖前一个场景写过什么（AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+    var boundInject = await ctx.client.evaluate(
+      '(function(){window.__b138=[];' +
+      'if(!window.__b138on){window.__b138on=1;window.addEventListener("message",function(ev){' +
+      'var m=ev&&ev.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b138.push({level:m.level,message:m.message,meta:m.meta});});}' +
+      'var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var k=app._getMediaSeekKey(v);' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,advanceAtNinetyPercent:true});' +
+      'app._detectedMaxRate=1;app._seekRevertedKeys={};app._seekRevertedKeys[k]=true;' +
+      'app._ninetyHeldBackKeys=null;' +
+      'window.__setProgress(0.9);' +
+      'return {key:!!k,g1:app._shouldAdvanceAtNinetyPercent(v)};})()'
+    );
+    check('绑定前提自证：这一支拿得到媒体钥匙，且「可拖动」关上后确实不提前收尾',
+      boundInject.key === true && boundInject.g1 === false, JSON.stringify(boundInject));
+
+    // ⚠️ 必须等一拍再读缓冲：`emitRuntimeLog` 走 postMessage 是**异步**送达的，
+    //    判据一跑完就读一定读到空 —— 那时"没发"与"没送到"长得一模一样（AGENTS §5）。
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'function cnt(){return window.__b138.filter(function(l){return l.message===NAME;});}' +
+      'var first=cnt(),meta=first[0]&&first[0].meta;' +
+      'var seekBefore=app.configs.enableSeek,ninetyBefore=app.configs.advanceAtNinetyPercent;' +
+      'app._shouldAdvanceAtNinetyPercent(v);app._shouldAdvanceAtNinetyPercent(v);' +
+      'var keys=Object.keys(app._ninetyHeldBackKeys||{}).length;' +
+      'return {n0:first.length,level:first[0]&&first[0].level,ratio:meta&&meta.ratio,' +
+      'dur:meta&&meta.duration,keys:keys,' +
+      'seekBefore:seekBefore,ninetyBefore:ninetyBefore};})()'
+    );
+    // ⚠️ 重复巡检那两发的结果**必须在下一发 evaluate 里数**：同一次 evaluate 是同步跑完的，
+    //    而 `postMessage` 的送达要等这一发交回去之后 —— 在这一发里数，摘掉去重那道闸也照样读到 1，
+    //    那条断言就成了永远不会红的空尺（反向验证 C 轮实测「预期红的没红」抓出来的就是这里）。
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'var afterRepeat=window.__b138.filter(function(l){return l.message===NAME;}).length;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'return {afterRepeat:afterRepeat,back:app._shouldAdvanceAtNinetyPercent(v)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'var k=app._getMediaSeekKey(v);' +
+      'var afterBack=window.__b138.filter(function(l){return l.message===NAME;}).length;' +
+      'return {afterBack:afterBack,' +
+      'reverted:!!(app._seekRevertedKeys&&app._seekRevertedKeys[k]),total:window.__b138.length};})()'
+    );
+    var held = Object.assign({}, held1, held2, held3);
+    check('被放弃那一发**不是原地什么都不说**：日志点名「seek disabled」、info 级、带 ratio/duration 两格读数',
+      held.n0 === 1 && held.level === 'info' && Math.abs(held.ratio - 0.9) < 1e-6 && held.dur === 100,
+      JSON.stringify(held));
+    check('同一支重复巡检只说一次（每 1500 毫秒就来一拍，说个不停会把证据窗吃光）',
+      held.afterRepeat === 1 && held.keys === 1, JSON.stringify({ afterRepeat: held.afterRepeat, keys: held.keys }));
+    // ⚠️ 这一格读的是**放弃那一刻**的两个值，不是事后重新写回去的那两个 ——
+    //    拿改完之后的读数断"没被改过"是一次自证式假绿（AGENTS §5 第四类）。
+    check('绑定只改判定、**不替用户翻开关**：走到「被放弃」那一刻，`enableSeek` 仍是 false、`advanceAtNinetyPercent` 仍是 true',
+      held.seekBefore === false && held.ninetyBefore === true,
+      JSON.stringify({ seekBefore: held.seekBefore, ninetyBefore: held.ninetyBefore }));
+    check('把上面那枚打开后照旧提前收尾，而且没有多出一句「被放弃」',
+      held.back === true && held.afterBack === 1, JSON.stringify({ back: held.back, afterBack: held.afterBack }));
   }
 });
 

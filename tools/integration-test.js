@@ -6748,6 +6748,273 @@ async function testFillAnswerSeparatorTolerance() {
     JSON.stringify({ repeat: fillBody.indexOf('values[values.length - 1]'), join: fillBody.indexOf("hidden.value = values.join('')") }));
 }
 
+/** ---- [30] 会话任务 #185：「看到 90% 就进下一个」被「直接拖到结尾」单向绑定，且不再无声 —— */
+/**
+ * 为什么这一段要从盘上把方法取出来真跑：这一族**不报错、不留日志**，只是永远走不到 ——
+ * 「90% 提前收尾」的证据（拖到结尾两次被弹回）只有 `_trySeekToEnd` 会写，而它第一道闸就是
+ * `enableSeek`。关上上面那枚，下面那枚就成了死键，而界面一个字都不提（用户原话：
+ * 「那不就是死键了？」）。这种"声明覆盖的范围与实际走的分支之间的差"不会自己喊出来
+ *（AGENTS §2 #18 / §5），只能把方法摆到形状面前判。
+ *
+ * ⚠️ ① 那条是闸门：拿不出方法时后面每一格都会"红 0 条"而不是"没执行"（AGENTS §5）。
+ */
+async function testNinetyAdvanceBoundToSeek() {
+  console.log('\n[30] 90% 提前收尾：单向绑上「直接拖到结尾」，被放弃时点名说一次（会话任务 #185）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var media = read('src/page/40-media.js');
+  var tasks = read('src/page/62-tasks-run.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+
+  var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  var rateLocked = buildFrom(media, '_isRateLockedAtOne', {});
+  var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
+  var noteSkip = buildFrom(media, '_noteSeekSkip', { emitRuntimeLog: say });
+  var seekCovers = buildFrom(media, '_seekableCovers', {});
+  var deferSeek = buildFrom(media, '_deferSeekUntilSeekable', { emitRuntimeLog: say });
+  var trySeek = buildFrom(media, '_trySeekToEnd', { emitRuntimeLog: say });
+  var noteHeld = buildFrom(media, '_noteNinetyHeldBack', { emitRuntimeLog: say });
+  var shouldAdvance = buildFrom(media, '_shouldAdvanceAtNinetyPercent', { emitRuntimeLog: say });
+  var isFinished = buildFrom(tasks, '_isDocumentFrameFinished', {
+    textOf: function (el) { return String((el && el.textContent) || ''); }
+  });
+
+  var gateBody = bodyOf(media, '_shouldAdvanceAtNinetyPercent');
+  var heldBody = bodyOf(media, '_noteNinetyHeldBack');
+  var seekBody = bodyOf(media, '_trySeekToEnd');
+
+  check('① 十件都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished]
+      .every(function (f) { return typeof f === 'function'; }) &&
+      gateBody.indexOf('if (!this.configs.enableSeek)') >= 0 &&
+      gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
+    JSON.stringify({
+      key: typeof getKey, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
+      covers: typeof seekCovers, defer: typeof deferSeek,
+      seek: typeof trySeek, held: typeof noteHeld, gate: typeof shouldAdvance, fin: typeof isFinished,
+      gateBody: gateBody.length, heldBody: heldBody.length
+    }));
+  if (![getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished]
+    .every(function (f) { return typeof f === 'function'; })) return;
+
+  // ---- 死键的成因先钉住：那份证据只有一个写入口，而写入口第一道闸就是 enableSeek ----
+  // ⚠️ 按**字符偏移**判"这处赋值在不在 _trySeekToEnd 体内"，别按行算（AGENTS §2 #1 那条同一族：
+  //    按行算会在同行闭合的形状上出错）。剥注释也不需要 —— 这里要的是赋值，注释里没有 `=`。
+  var writes = [];
+  var wRe = /_seekRevertedKeys\s*(\[[^\]]*\])?\s*=\s*[^=]/g;
+  var wm;
+  while ((wm = wRe.exec(media)) !== null) writes.push(wm.index);
+  var seekBounds = boundsOf(media, '_trySeekToEnd');
+  var allInside = writes.length > 0 && writes.every(function (at) {
+    return at >= seekBounds.start && at < seekBounds.end;
+  });
+  var enableGateAt = seekBody.indexOf('this.configs.enableSeek');
+  var firstWriteRel = seekBody.indexOf('_seekRevertedKeys');
+  check('②「拖到结尾两次被弹回」这份证据**只有一个写入口**（`_trySeekToEnd`），而它第一道闸就是 `enableSeek`，且闸排在任何写入之前 —— 关上那枚就永远拿不到证据，这就是死键的成因',
+    allInside && enableGateAt >= 0 && firstWriteRel > enableGateAt,
+    JSON.stringify({ writes: writes.length, allInside: allInside, gateAt: enableGateAt, firstWrite: firstWriteRel }));
+
+  // ---- 同一个成因的行为侧：关上那枚时，_trySeekToEnd 连账本都不新建，只把「为什么没试」记一笔 ----
+  var mkSeekVideo = function (src) {
+    var rec = { writes: [], cur: 20 };
+    var v = {
+      tagName: 'VIDEO', isConnected: true, duration: 1401.4,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + src + '.mp4', __rec: rec
+    };
+    Object.defineProperty(v, 'currentTime', {
+      get: function () { return rec.cur; },
+      set: function (n) { rec.writes.push(n); }
+    });
+    v.seekable = { length: 1, start: function () { return 0; }, end: function () { return 1401.4; } };
+    return v;
+  };
+  var seekApp = {
+    configs: { enableSeek: false, advanceAtNinetyPercent: true },
+    _rateProbing: false, _captchaActive: false, _activeJobId: '',
+    _workerDelay: function () {}, _isRateLockedAtOne: function () { return true; },
+    _getMediaSeekKey: getKey, _noteSeekSkip: noteSkip,
+    // ⚠️ 区间闸那两件也必须挂上来 —— 反向验证 G 轮把 `enableSeek` 那道闸改成"记一笔不退回"，
+    //    执行流就走到 `_deferSeekUntilSeekable`， harness 里没有它 → TypeError 把整套件打死在半路，
+    //    报出来的是"集成层没交出总账"而不是 ③ 红。**测试台把"生产坏了"实现成崩溃，等于替生产删掉一条断言。**
+    //    挂真方法而不是桩：桩要打在"那个会把页面带走的动作"上，而这里 return false 是个**决定**，
+    //    写了它就不测区间那一格了（AGENTS §5「桩要打在动作上」）。夹具的 `seekable` 恒含整支，
+    //    所以干净树上它照旧 return false、③ 的行为一个字没变。
+    _seekableCovers: seekCovers, _deferSeekUntilSeekable: deferSeek,
+    _trySeekToEnd: trySeek
+  };
+  var sv = mkSeekVideo('deadkey');
+  var svKey = getKey.call({}, sv);
+  var seekRet = trySeek.call(seekApp, sv, 'itest-185');
+  var skipRec = seekApp._seekSkipLedger && seekApp._seekSkipLedger[svKey];
+  check('③ `enableSeek:false` 时 `_trySeekToEnd` 当场退回：不写 currentTime、不新建 `_seekRevertedKeys`，只把「disabled」记进 skip 账（这一族以前在盘上是零证据）',
+    seekRet === false && sv.__rec.writes.length === 0 && !seekApp._seekRevertedKeys &&
+      !!skipRec && skipRec.last === 'disabled' && skipRec.n === 1,
+    JSON.stringify({ ret: seekRet, writes: sv.__rec.writes.length, reverted: !!seekApp._seekRevertedKeys, skip: skipRec }));
+
+  // ---- 判据矩阵的夹具：一支"除了拖拽证据，其余全都成立"的视频 ----
+  var mkDoc = function (marker) {
+    return {
+      querySelector: function () { return marker ? { className: 'ans-job-finished' } : null; },
+      defaultView: null
+    };
+  };
+  var mkMedia = function (opt) {
+    opt = opt || {};
+    var v = {
+      tagName: opt.tagName || 'VIDEO',
+      duration: opt.duration == null ? 100 : opt.duration,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + (opt.src || 'a1') + '.mp4',
+      ownerDocument: mkDoc(opt.marker !== false)
+    };
+    Object.defineProperty(v, 'currentTime', { get: function () { return opt.current == null ? 90 : opt.current; } });
+    return v;
+  };
+  function mkGateApp(cfg) {
+    return {
+      configs: cfg,
+      _detectedMaxRate: 1,
+      _seekRevertedKeys: Object.create(null),
+      _ninetyHeldBackKeys: null,
+      _activeJobId: 'job-910000001',
+      _getMediaSeekKey: getKey,
+      _isRateLockedAtOne: rateLocked,
+      _isNinetyPercentVideo: isNinety,
+      _noteNinetyHeldBack: noteHeld,
+      _isDocumentFrameFinished: isFinished,
+      _shouldAdvanceAtNinetyPercent: shouldAdvance
+    };
+  }
+  var ON = { enableSeek: true, advanceAtNinetyPercent: true };
+  var OFF = { enableSeek: false, advanceAtNinetyPercent: true };
+  var heldCount = function () {
+    return logs.filter(function (l) { return l.message === 'advance at 90% held back: seek disabled'; }).length;
+  };
+
+  // 旧行为那一支：证据齐了就提前收尾，而且一句"被放弃"都不许说
+  var appOn = mkGateApp(ON);
+  var vOn = mkMedia({ src: 'bound-on' });
+  appOn._seekRevertedKeys[getKey.call({}, vOn)] = true;
+  logs.length = 0;
+  var retOn = shouldAdvance.call(appOn, vOn);
+  check('④ `enableSeek:true` + 弹回过 + 锁 1x + 到 90% + 平台已标记，照旧提前收尾，且**一句"被放弃"都不多说**（绑定不许把顺利那一条拖下水；成功那句 `advance at 90%` 照旧在）',
+    retOn === true && heldCount() === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }),
+    JSON.stringify({ ret: retOn, msgs: logs.map(function (l) { return l.message; }) }));
+
+  // 新的那一格：证据被人硬塞进账本，但上面那枚是关的 → 不提前收尾
+  var appOff = mkGateApp(OFF);
+  var vOff = mkMedia({ src: 'bound-off' });
+  appOff._seekRevertedKeys[getKey.call({}, vOff)] = true;  // 上一拍开着时留下的旧证据
+  logs.length = 0;
+  var retOff = shouldAdvance.call(appOff, vOff);
+  check('⑤ 单向绑定的正半截：`enableSeek` 关上后**即使账本里躺着旧的弹回证据也不提前收尾**（用户中途关掉就该立刻失效，而不是继续吃上一轮的结论）',
+    retOff === false,
+    JSON.stringify({ ret: retOff, reverted: appOff._seekRevertedKeys[getKey.call({}, vOff)] }));
+
+  // 被放弃要说一次，而且要指名道姓
+  var heldLogs = logs.filter(function (l) { return l.message === 'advance at 90% held back: seek disabled'; });
+  var heldMeta = heldLogs[0] && heldLogs[0].meta;
+  check('⑥ 负半截：这一发**不是原地什么都不说**（AGENTS §2 #14），日志点名是被谁挡的、级别 info、带 `ratio`/`duration`/`jobid` 三格读数',
+    heldLogs.length === 1 && heldLogs[0].level === 'info' &&
+      !!heldMeta && Math.abs(heldMeta.ratio - 0.9) < 1e-6 && heldMeta.duration === 100 &&
+      heldMeta.jobid === 'job-910000001',
+    JSON.stringify({ count: heldLogs.length, meta: heldMeta }));
+
+  // 同一支重复问只许说一次，换一支才算新事
+  shouldAdvance.call(appOff, vOff);
+  shouldAdvance.call(appOff, vOff);
+  var afterRepeat = logs.length;
+  var vOff2 = mkMedia({ src: 'bound-off-2' });
+  shouldAdvance.call(appOff, vOff2);
+  var heldKeysOff = appOff._ninetyHeldBackKeys ? Object.keys(appOff._ninetyHeldBackKeys).length : 'none';
+  check('⑦ 同一支媒体重复巡检只说一次（每 1500 毫秒就来一拍，说个不停会把 200 条证据窗吃光，AGENTS §2 #16(b)）；换一支才算新事',
+    afterRepeat === 1 && logs.length === 2 && heldKeysOff === 2,
+    JSON.stringify({ afterRepeat: afterRepeat, total: logs.length, keys: heldKeysOff }));
+
+  // 三格"其实没放弃捷径"的形状一句都不许说
+  logs.length = 0;
+  var appQuiet = mkGateApp(OFF);
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-half', current: 50 }));      // 还没到 90%
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-tail', current: 99.9 }));    // 让给 ended 那条路
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-nomark', marker: false }));  // 平台没认可
+  appQuiet._detectedMaxRate = 2;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-fast' }));                   // 倍速能加速
+  appQuiet._detectedMaxRate = 0;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-unknown' }));                // 探测没结果，宁可多播
+  var quietCount = logs.length;
+  logs.length = 0;
+  appQuiet._detectedMaxRate = 1;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-audio', tagName: 'AUDIO' }));
+  var audioUntouched = logs.length;   // AUDIO 也适用（不是只放宽给视频）
+  logs.length = 0;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-embed', tagName: 'EMBED' }));
+  var nonMedia = logs.length;         // 不是音视频的那一枚根本不配说话
+  check('⑧ 只有"真被放弃了一趟捷径"才说话：不到 90%、接近结尾、平台没标记、倍速能加速、探测没结果这五格各问一遍，**一条都不许出**（放宽成"关上就每拍抱怨"是一次新的日志洪水）；同一格换成音频照旧要说（音频本来也适用），换成非音视频的元素又不说',
+    quietCount === 0 && audioUntouched === 1 && nonMedia === 0,
+    JSON.stringify({ quiet: quietCount, audio: audioUntouched, nonMedia: nonMedia }));
+
+  // 用户自己关了下面那枚时，不许再劝
+  logs.length = 0;
+  var appSelfOff = mkGateApp({ enableSeek: false, advanceAtNinetyPercent: false });
+  var retSelfOff = shouldAdvance.call(appSelfOff, mkMedia({ src: 'self-off' }));
+  check('⑨ 是用户自己关掉「90% 提前收尾」时，绑定那一格**一句都不说**（第一道闸就退回，不拿"你上面那枚没开"去劝一个已经不要这一枚的人）',
+    retSelfOff === false && logs.length === 0 && Object.keys(appSelfOff._ninetyHeldBackKeys || {}).length === 0,
+    JSON.stringify({ ret: retSelfOff, logs: logs.length, keys: Object.keys(appSelfOff._ninetyHeldBackKeys || {}).length }));
+
+  // 只读不写：不许为了凑齐条件替用户改存储
+  // ⚠️ 尺必须分得开"赋值"和"比较" —— 第一版拿 `indexOf('configs.X =')` 当赋值，
+  //    结果把 1192 行那句 `configs.advanceAtNinetyPercent === false` 读成赋值，当场红。
+  //    所以这里要补两格对照：真的赋值必须逮住，三种比较形状一律不许误报。
+  var assignRe = function (body, key) {
+    var re = new RegExp('configs\\.' + key + '\\s*=[^=]', 'g');
+    var hits = 0;
+    while (re.exec(body) !== null) hits++;
+    return hits;
+  };
+  var probes = [
+    { make: function (k) { return 'this.configs.' + k + ' = false;'; }, want: 1 },
+    { make: function (k) { return 'this.configs.' + k + '=true;'; }, want: 1 },
+    { make: function (k) { return 'if (this.configs.' + k + ' === false) return false;'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' == null) {}'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' != 1) {}'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' >= 1) {}'; }, want: 0 }
+  ];
+  var probeKeys = ['enableSeek', 'advanceAtNinetyPercent'];
+  var probesOk = probes.every(function (p) {
+    return probeKeys.every(function (k) { return assignRe(p.make(k), k) === p.want; });
+  });
+  var gateHits = assignRe(gateBody, 'enableSeek') + assignRe(gateBody, 'advanceAtNinetyPercent');
+  var heldHits = assignRe(heldBody, 'enableSeek') + assignRe(heldBody, 'advanceAtNinetyPercent');
+  check('⑩ 绑定只改判定、**绝不改写用户存的那个值**：两段方法体里都不许出现对 `configs.enableSeek` / `configs.advanceAtNinetyPercent` 的赋值（替他翻开关=把选择悄悄换掉）；'
+    + '且这把尺自己先过一遍对照 —— 两种真赋值逮得住，`===` / `==` / `!=` / `>=` 四种比较一律不误报',
+    probes && gateHits === 0 && heldHits === 0 && gateBody.indexOf('configs.enableSeek') >= 0,
+    JSON.stringify({ probesOk: probes, gateHits: gateHits, heldHits: heldHits, readsSeek: gateBody.indexOf('configs.enableSeek') >= 0 }));
+}
+
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -6791,6 +7058,7 @@ async function main() {
   await testLocalDoctor();
   await testPreviewChannelNotice();
   await testFillAnswerSeparatorTolerance();
+  await testNinetyAdvanceBoundToSeek();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

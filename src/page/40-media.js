@@ -14,7 +14,7 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（51 个）：
+ * 本段的方法（52 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
@@ -25,7 +25,7 @@
  *   _startVideoMonitoring、_clearCheckInterval、_startAudioKeepalive、
  *   _stopAudioKeepalive、_syncAudioKeepalive、_checkVideoStatus、
  *   _finishCurrentMedia、_isRateLockedAtOne、_isNinetyPercentVideo、
- *   _shouldAdvanceAtNinetyPercent、_mediaErrorCode、_reloadMediaInPlace、
+ *   _shouldAdvanceAtNinetyPercent、_noteNinetyHeldBack、_mediaErrorCode、_reloadMediaInPlace、
  *   _tryResumePlayback、_siteStartControlOf、_nudgeSiteStartControl、_getVideoEl、
  *   _videoEventHandle、_handleMediaError、_guessMediaMime、
  *   _maybeRepairMediaSource、_handleVideoEnded、_handleVideoLoaded、
@@ -1138,6 +1138,49 @@
 
 
     /**
+     * 「可拖动」关上时，90% 提前收尾这条路被放弃了 —— 每支媒体只点名一次。
+     *
+     * 为什么要有这一发：这一族以前**一条日志都不留**（AGENTS §2 #14：判据不许停在"决定不做"）。
+     * 现场表现是"倍速锁在 1x、平台已标记完成、进度都过 90% 了还在原速播"，而弹窗里
+     * 那枚「看到 90% 就进下一个」明明亮着 —— 人只能猜。说清是被上面那枚开关挡的，
+     * 用户才知道该去开哪个（这一条的证据来自用户 2026-11-20 那句「用户可观看到界面不知道要成立」）。
+     *
+     * ⚠️ 判据取的是「除了拖拽证据，其余条件全都成立」，所以每 1500 毫秒进来一次的
+     *    巡检在"还没到 90%""平台没确认完成"那几拍**一句都不说** —— 200 条的证据窗不会被吃光（§2 #16(b)）。
+     *    账本 `_ninetyHeldBackKeys` 与 `_seekSkipLedger` 同一族：**不许被 `_resetRuntimeState` 抹掉**（§2 #13）。
+     */
+    _noteNinetyHeldBack: function (video) {
+      try {
+        if (!video) return false;
+        var mediaTag = String(video.tagName || '').toLowerCase();
+        if (mediaTag !== 'video' && mediaTag !== 'audio') return false;
+        var duration = Number(video.duration);
+        if (!isFinite(duration) || duration <= 0) return false;
+        var ratio = Number(video.currentTime || 0) / duration;
+        if (!(ratio >= 0.9) || ratio >= 0.995) return false;
+        if (!this._isRateLockedAtOne()) return false;
+        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        if (!this._ninetyHeldBackKeys) this._ninetyHeldBackKeys = Object.create(null);
+        if (this._ninetyHeldBackKeys[key]) return true;
+        if (Object.keys(this._ninetyHeldBackKeys).length > 300) {
+          this._ninetyHeldBackKeys = Object.create(null);
+        }
+        this._ninetyHeldBackKeys[key] = true;
+        emitRuntimeLog('info', 'advance at 90% held back: seek disabled', {
+          ratio: Number(ratio.toFixed(3)),
+          duration: Number(duration.toFixed(1)),
+          jobid: this._activeJobId || ''
+        });
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
+    /**
      * 该不该在播到 90% 时提前收尾。
      *
      * 最关键的一条：**必须由平台自己给出"任务点已完成"的标记**。
@@ -1147,6 +1190,14 @@
     _shouldAdvanceAtNinetyPercent: function (video) {
       try {
         if (this.configs.advanceAtNinetyPercent === false) return false;
+        // 单向绑定（会话任务 #185）：这一条兜底吃的证据「拖到结尾两次都被弹回」只有
+        // `_trySeekToEnd` 会写，而它第一行就被 `enableSeek` 挡下 —— 所以「可拖动」关上时
+        // `_isNinetyPercentVideo` 恒为 false，这一条开关**结构上永远走不到**（死键）。
+        // 与其让它悄悄失灵，不如在真会走到 90% 那一支上明说一次「这条路被放弃了」。
+        if (!this.configs.enableSeek) {
+          this._noteNinetyHeldBack(video);
+          return false;
+        }
         if (!this._isNinetyPercentVideo(video)) return false;
 
         var duration = Number(video.duration);
