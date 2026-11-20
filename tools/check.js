@@ -416,6 +416,26 @@ function checkFontTable() {
 var MANUAL_FILE = '使用说明.pdf';
 var ZIP_ASSET = 'omitone.zip';
 
+// 门面那一份 README —— 用户口径 2026-11-20「稳定版是我们的门面，树枝那边只为 AI 做事服务」：
+// 稳定线上门面 = 工作树这一份（**不许**改成读 HEAD，否则未提交的门面改动量不到，
+// 那是一条只会读旧账的尺）；支线上工作树那份是工作笔记，门面只能从 `git show main:README.md` 取。
+// 第 5c 项（预览直链附件名形状）与第 34 项（门面该不该有入口）共用这一把尺，免得两处各判各的通道。
+function facadeReadme(isExp) {
+  if (!isExp) return { text: read('README.md'), from: 'README.md（工作树 = 门面）', why: '' };
+  try {
+    var gres = spawnSync('git', ['show', 'main:README.md'], {
+      encoding: 'utf8', timeout: 15000, cwd: ROOT
+    });
+    if (gres.error) return { text: null, from: 'main:README.md', why: String(gres.error.code || gres.error.message) };
+    if (gres.status !== 0) {
+      return { text: null, from: 'main:README.md', why: '退出码 ' + gres.status + '（' +
+        String(gres.stderr || '').trim().split(/\r?\n/)[0] + '）' };
+    }
+    if (!String(gres.stdout || '').trim()) return { text: null, from: 'main:README.md', why: '回包是空的' };
+    return { text: String(gres.stdout).replace(/\r\n/g, '\n'), from: 'main:README.md', why: '' };
+  } catch (e) { return { text: null, from: 'main:README.md', why: String((e && e.message) || e) }; }
+}
+
 function checkUserEntryPoints() {
   var problemsHere = [];
 
@@ -445,20 +465,21 @@ function checkUserEntryPoints() {
       '附件名必须固定为 ' + ZIP_ASSET + '，否则每发一版直链就失效一次');
   }
 
-  // 2b) 预览直链的形状（实验支线的第二个入口）
+  // 2b) 预览直链的形状（**门面**上的第二个入口，不管当前在哪条线工作）
   //
   // ⚠️ 这里只钉**形状**，不钉"该不该有"（那归第 34 项按通道判）。理由：
   //    这一条一旦写错，两种错法都不报错 —— 挂到 `/releases/latest` 下面就是 404
   //    （预览附件不在正式版那一版里），复用 `omitone.zip` 这个名字就是把实验版
   //    发到正式口上（`releases/latest/download/omitone.zip` 按**名字**取件）。
   //    前者同学骂作者链接坏了，后者是**所有人静悄悄地换上实验版**，都只有人来反馈才知道。
-  if (/releases\/download\/preview\/omitone\.zip/.test(readme)) {
-    problemsHere.push('README 的预览直链写成 releases/download/preview/omitone.zip —— 那是稳定通道的附件名，' +
-      '两条通道共用一个名字，正式版那条永久直链就变成给实验版发件');
-  }
-  if (/releases\/latest\/download\/omitone-preview/.test(readme)) {
-    problemsHere.push('README 的预览直链挂在 /releases/latest 下面 —— 预览附件不在正式版那一版里，点开就是 404');
-  }
+  // ⚠️ 这一族**两页都要扫**：工作树那份与门面那一份。只扫工作树，在支线上等于
+  //    给草稿本查门面的错（main 上写错形状没人管）；只扫门面，支线工作树上真写错了又抓不住。
+  var pvShapes = [
+    [/releases\/download\/preview\/omitone\.zip/, '写成 releases/download/preview/omitone.zip —— 那是稳定通道的附件名，' +
+      '两条通道共用一个名字，正式版那条永久直链就变成给实验版发件'],
+    [/releases\/latest\/download\/omitone-preview/, '挂在 /releases/latest 下面 —— 预览附件不在正式版那一版里，点开就是 404']
+  ];
+  var pvScanTexts = [{ from: 'README.md（工作树）', text: readme }];
   var PV_OK = ['omitone-preview.zip', 'Omitone-manual-preview.pdf'];
   // ⚠️ 提取只取**文件名那一截**的合法字符。上一版的字符类是「除空白和括号引号之外都吃」，
   //    而 README 除了完整直链，还把路径写进反引号小字（`…/preview/omitone-preview.zip`）——
@@ -479,18 +500,30 @@ function checkUserEntryPoints() {
     problemsHere.push('预览直链提取器自己的对照格没过：' + pvSelfBad.map(function (c) { return c[0]; }).join(' / ') +
       ' —— 这一闸现在要么抓不住写错的名字，要么会误报');
   }
-  var pvLinks = pvNamesOf(readme);
-  var pvBad = pvLinks.filter(function (u) { return PV_OK.indexOf(u) === -1; });
+  // 门面那一页才有人类看得见的下载入口 —— 支线上工作树是工作笔记，只扫它会得到"0 处命中"这种
+  // **最坏的绿**（闸没跑却像跑过）。所以这一格与第 34 项同一把尺：按通道取门面文本，两页各扫一遍。
+  var pvGate = require('./channel-gate.js');
+  var pvIsExp = pvGate.isExperimental(pvGate.readChannelNames().version_name);
+  var pvFacade = facadeReadme(pvIsExp);
+  if (pvFacade.text && pvFacade.text !== readme) pvScanTexts.push({ from: pvFacade.from, text: pvFacade.text });
+  pvScanTexts.forEach(function (t) {
+    pvShapes.forEach(function (p) {
+      if (p[0].test(t.text)) problemsHere.push(t.from + ' 的预览直链' + p[1]);
+    });
+  });
+  var pvLinks = pvFacade.text ? pvNamesOf(pvFacade.text) : [];
+  var pvBad = pvFacade.text ? pvLinks.filter(function (u) { return PV_OK.indexOf(u) === -1; }) : [];
   if (pvBad.length) {
-    problemsHere.push('预览直链里有对不上预览附件名的地址：' + pvBad.join(' / ') +
+    problemsHere.push('门面（' + pvFacade.from + '）的预览直链里有对不上预览附件名的地址：' + pvBad.join(' / ') +
       '（只许 ' + PV_OK.join(' / ') + '）—— 名字写错就是 404，而 README 那一页看不出来');
   }
-  // 卫生格：实验支线上扫到 0 处不许打印通过 —— 措辞被整体改写时这条会静默变成空命中。
-  // ⚠️ 只在实验支线要求（通道判定复用闸那一把尺）：转正后 README 本来就该一个预览口都没有，
-  //    在那边要求 ≥1 是一条恒红的守卫，而第 34 项正管着"不许留着"。
-  var pvGate = require('./channel-gate.js');
-  if (pvGate.isExperimental(pvGate.readChannelNames().version_name) && !pvLinks.length) {
-    problemsHere.push('工作树是实验版，README 里却一处预览直链都没扫到 —— 「预览附件名对不对」这一闸这一轮根本没跑，' +
+  if (!pvFacade.text) {
+    problemsHere.push('取不回门面那一页（' + pvFacade.why + '）—— 「预览附件名对不对」这一格本轮**根本没跑**，' +
+      '别把没跑读成通过（支线上门面只能从 git 取，第 34 项 g 同一发）');
+  } else if (!pvLinks.length) {
+    // 卫生格：门面里一处预览直链都扫不到 = 提取器整体空命中，措辞被改写时这条会静默变绿。
+    // 通道无关（预览入口是门面的固定组成部分，转正也不撤 —— 用户 2026-11-20）。
+    problemsHere.push('门面（' + pvFacade.from + '）里一处预览直链都没扫到 —— 「预览附件名对不对」这一闸这一轮根本没跑，' +
       '别把这条读成通过（该不该有预览口归第 34 项判）');
   }
 
@@ -3852,23 +3885,41 @@ function checkProfileSweep() {
 }
 
 // ---------------------------------------------------------------------------
-// 34. 实验支线的发布闸（真源 tools/channel-gate.js）
-//     用户口径有两条，方向相反，都要落到命令上：
-//       2026-11-19「实验版不提供直接下载」→ 支线不许跑 release / replace-asset；
+// 34. 实验支线的发布闸（真源 tools/channel-gate.js）+ 门面的归属
+//     用户口径累计四条，方向各不相同，都要落到命令或尺上：
+//       2026-11-19「实验版要与稳定版隔离开」→ 支线不许跑 release / replace-asset
+//         （⚠️ 当时被我缩成「不提供直接下载」当成作者原话，作者 11-20 更正过，见 CHANGELOG 1.3.1 段）；
 //       2026-11-20「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」
-//                                       → 支线有自己的预览口，但发布线不许发预览。
+//                                       → 支线有自己的预览口，但发布线不许发预览；
+//       2026-11-20「门面是我们的正常 main 啊…这不是舍本逐末嘛？」
+//                                       → **给人看的那一页在 main**，支线只是工作台；
+//                                         实验版入口是门面的固定组成部分，不再随通道同进同退。
+//       2026-11-20「树枝那边的 readme…一切都是为了 AI 做事服务，不需要考虑人类阅读」
+//                                       → 门面**只**在 main 养一份：支线那一份 README 改成工作笔记
+//                                         + 指回 main 的一句话，两处都不许再多一份门面。
 //     ⚠️ 这一族事故不报错：在实验支线上跑 `replace-asset`，它会按**当前工作树的版本号**
 //     取 dist 里那个包（实验版那份），却挂到线上固定的附件名 `omitone.zip` 上 ——
 //     每条命令都打印成功，而 README 那条永久直链从此给所有人发实验版。
 //     反过来那一族更隐蔽：预览包若复用 `omitone.zip` 这个名字，或漏写 `prerelease:true`，
 //     **线上没有任何东西会红**，只有几周后发现「同学装的一直是实验版」才看得见（1.2.9 那次同形）。
+//     第三族是上一轮踩的：**门面那几格读的是工作树那份 README**，于是门面被写在支线工作树上时
+//     通道两侧各自自洽、默认那一页一个字没有 —— 加 g 格直接从 git 读 main 才量得到（§2 #18 同一族）。
+//     第四族是这一轮踩的、方向刚好相反：支线工作树里**留着完整的一份门面**，改人类向文案就改在草稿上，
+//     而两份内容相同的 README 让上面那把尺读哪边都"对" —— 所以 e 现在**按通道分边取文本**：
+//     支线上门面从 `git show main:README.md` 取、工作树那份只许是指针；稳定线上门面就是工作树那一份
+//     （不许也改成读 HEAD，那会把未提交的门面改动量成看不见 —— 一条只会读旧账的尺）。
 //     各格各自承重，摘掉任意一格都要红：
 //       a 闸自己的逐格对照全绿，且格数没被人删（口径同第 33 项）
 //       b release / replace-asset / preview 三条**真的问了闸**，且问在联网之前
 //       c 只读的 verify 不许被挡（§3.7 要求发版必跑它，挡死=造一条恒红的守卫）
 //       d 预览那一发不许借用稳定通道的附件名，且必须写 prerelease:true，且发完必须回读自证
-//       e 门面（README + 说明书）的实验口径与 version_name 同进同退 —— 两向各红一次
+//       e 门面按通道分边：**main 那一份**才给人看（预览入口、不撞稳定名字、旧口径两句都不许留）；
+//         支线工作树那一份只许写「这页是工作笔记」的指针，**再抄一遍门面就红**
+//         （两份门面必然分叉，并回 main 时互相覆盖 —— 用户 2026-11-20 第二次口径）；
+//         说明书教预览版下载这一格落在**发预览包的那条线**（预览 pdf 由它构建）
 //       f AGENTS §3.8 那条规矩还指着这份真源
+//       g 支线上从 `git show main:README.md` 把门面取回来 —— **读不出单独占一格**，
+//         且它与工作树那份逐字节相同时也红（两份一样就没法分清这一格读的是哪一边）
 // ---------------------------------------------------------------------------
 function checkChannelGate() {
   var bad = [];
@@ -3964,34 +4015,87 @@ function checkChannelGate() {
     bad.push('assertStableChannelIntact 没有比附件名交集（STABLE_ONLY_NAMES）—— 两个通道共用名字是最贵的那一种漏');
   }
 
-  // ---- e. 门面的实验口径：有预览口就得写得出来，转正之后要收回去 ----
-  // ⚠️ 通道判定**用闸那一把尺**，不在这里再写一遍 /experimental/ ——
-  //    两份口径各判各的，正是「写入口与读出口两侧都要过同一把尺」那一族（AGENTS §2 #18）
+  // ---- e. 门面只养一份，且养在 main ----
+  //     用户口径 2026-11-20（原话「树枝那边的 readme 那些什么东西，一切都是为了 AI 做事服务，
+  //     不需要考虑人类阅读之类的，稳定版是我们的门面，那边才需要考虑写好 readme 那些」）：
+  //     **门面归 main，支线那一份是工作笔记。** 两侧各查各的形状，因为两种错法都不报错：
+  //       · 稳定页缺预览入口 → 同学从默认页看不见预览口，只能靠人来问（上一轮的事故）；
+  //       · 支线又抄一份门面 → 两份各自漂移，并回 main 时**这一份覆盖那一份**，
+  //         改了半天人类向文案改在草稿上，默认页一个字没动（同一族的第二次，方向相反）。
+  //     通道判定继续用闸那一把尺（不在这里再写一遍 /experimental/，AGENTS §2 #18）。
   var gate = require('./channel-gate.js');
   var isExp = gate.isExperimental(gate.readChannelNames().version_name);
   var readme = read('README.md');
   var manual = exists('docs/manual.html') ? read('docs/manual.html') : '';
   var PREVIEW_LINK = 'releases/download/preview/omitone-preview.zip';
+  var BRANCH_ONLY = '只有切到这一条分支才看得见';
+  var POINTER = '这一页是支线的工作笔记';
   var hasPreviewLink = readme.indexOf(PREVIEW_LINK) >= 0;
-  var hasOldNoDownload = readme.indexOf('不提供直接下载') >= 0;
-  if (isExp && !hasPreviewLink) {
-    bad.push('工作树是实验版（version_name 带 experimental），README 却没有预览直链 ' + PREVIEW_LINK +
-      ' —— 同学点开这一页根本找不到这一支从哪儿装');
+  if (isExp) {
+    if (!readme || readme.indexOf(POINTER) === -1) {
+      bad.push('支线那份 README 没有「' + POINTER + '」这句指针 —— 下一轮接手的人和 AI 都会以为' +
+        '人类向文案改在这里，实际上门面在 main（用户 2026-11-20：这一支的文档只为做事服务）');
+    }
+    if (hasPreviewLink) {
+      bad.push('支线那份 README 又抄了一遍门面的预览入口（' + PREVIEW_LINK + '）—— ' +
+        '两份门面必然分叉，并回 main 时是这一份覆盖那一份；入口只写在 main 那一页');
+    }
   }
-  if (!isExp && hasPreviewLink) {
-    bad.push('README 还挂着预览直链，但 version_name 已经没有 experimental 了 —— ' +
-      '转正之后这句变成"正式版之外还有个预览版"，而那个预览包已经不存在或对得上别的字节');
+  // ---- g. 先把门面那一页取回来（facadeReadme，与第 5c 项预览附件名那一格共用同一把尺）----
+  //     ⚠️ 在支线上，工作树那份是工作笔记，**不是**给人看的那一页 —— 门面那几格若读工作树，
+  //     在支线上测的是草稿本，main 缺入口照样绿（这一轮之前就是这样，用户报的正是这一族）。
+  //     反过来在稳定线上，门面就是工作树这一份，**不许**改去读 `git show main:` 的 HEAD ——
+  //     那样未提交的门面改动会量不到，是一条只会读旧账的尺。
+  //     所以：facade 的来源按通道分边；支线上这一发读不出**单独占一格**（§2 #12）。
+  var facadeRes = facadeReadme(isExp);
+  var facade = facadeRes.text;                      // 支线上取不回来时是 null，下面整段跳过
+  var facadeFrom = facadeRes.from;
+  if (isExp && !facade) {
+    bad.push('读不出门面那一页 main:README.md（' + facadeRes.why + '）—— 支线上门面那几格**读不出就是没落实**，' +
+      '不许当成通过；也别去怀疑 main 上没有实验版入口，先修这一发的读取');
+  } else if (isExp && facade === readme) {
+    bad.push('门面（main:README.md）与支线工作树那份**逐字节相同** —— 这一格读的是工作树还是 main 就分不清了，' +
+      '而两份一样意味着门面还没跟草稿分开（工作树那份顶部该是指针那一句，不是第二份门面）');
   }
-  if (hasOldNoDownload) {
-    bad.push('README 里还有那句「不提供直接下载」—— 那是 2026-11-19 的旧口径（当时预览口还没有）。' +
-      '现在实验版有预览下载口，这句会把人挡在能下载的那一步外面');
+
+  // e2a 门面必须真的带着预览入口 —— 这一格是整条链的落点：包发出去了、命令与闸都对，
+  //     只有门面缺这一句时，同学看不见 = 预览口等于不存在，而且**没有任何别的东西会红**。
+  if (facade && facade.indexOf(PREVIEW_LINK) === -1) {
+    bad.push('门面（' + facadeFrom + '）里没有实验版入口 ' + PREVIEW_LINK + ' —— ' +
+      '同学只会看默认那一页，缺了这句就是"预览包真发上去了但没人找得到"（不报错、不留日志）');
   }
-  if (isExp && manual.indexOf('预览版下载') === -1) {
-    bad.push('说明书没教「预览版下载」这一格（工作树是实验版）—— 界面与门面会装实验版，' +
-      '照着 pdf 装机的人只看得到正式版那一步');
+
+  // e2 门面那几行里的**链接地址**不许撞稳定通道 —— 只比 URL，不比整行散文，
+  //    否则「退回正式版就重装 omitone.zip」这种正常说明会被报成越界（会误报的守卫和没有守卫一样害人）
+  var leaked = [];
+  if (facade) {
+    facade.split(/\r?\n/).forEach(function (l) {
+      if (l.indexOf('预览') === -1) return;
+      var urls = String(l).match(/https?:\/\/[^\s)\]]+/g) || [];
+      urls.forEach(function (u) {
+        if (u.indexOf('/releases/latest') >= 0 || /\/omitone\.zip$/.test(u)) leaked.push(u);
+      });
+    });
   }
-  if (!isExp && manual.indexOf('预览版下载') !== -1) {
-    bad.push('转正之后说明书还留着「预览版下载」那一段 —— 那一版没有预览口，这段话会让人白找');
+  if (leaked.length) {
+    bad.push('门面（' + facadeFrom + '）实验版那几行里出现了稳定通道的地址（' + leaked.length + ' 条，第一条=' +
+      JSON.stringify(leaked[0]) + '）—— 两个通道共用名字，' +
+      'README 那条按名字取件的永久直链迟早被预览包顶掉（1.2.9 那次同形）');
+  }
+  if (facade && facade.indexOf('不提供直接下载') >= 0) {
+    bad.push('门面（' + facadeFrom + '）里还有那句「不提供直接下载」—— 那是 2026-11-19 的旧口径' +
+      '（当时预览口还没有）。现在实验版有预览下载口，这句会把人挡在能下载的那一步外面');
+  }
+  if (facade && facade.indexOf(BRANCH_ONLY) >= 0) {
+    bad.push('门面（' + facadeFrom + '）还写着「' + BRANCH_ONLY + '」—— 那正是把门面放到支线工作树上的那版说法。' +
+      '门面归 main，这一支只是草稿；留着这句，读默认页的人会以为预览口压根不存在');
+  }
+  // e3 说明书那一格只在**发预览包的这条线**上承重：预览那份 pdf 由这条线构建。
+  //    稳定线的 pdf 描述的是 1.3.0 正式版，等转正时这条线那份并回去，天然带上这一格 ——
+  //    把它写成通道无关，就会在 main 上得到一条恒红、只能靠放宽判据消掉的守卫。
+  if (isExp && (!manual || manual.indexOf('预览版下载') === -1)) {
+    bad.push('支线说明书没教「预览版下载」这一格 —— 预览版的 pdf 就是从这条线出的，' +
+      '照着那份 pdf 装机的人只看得到正式版那一步，实验版那一条他根本不知道能装');
   }
 
   // ---- f. AGENTS 那条规矩指着这份真源 ----
@@ -4007,7 +4111,9 @@ function checkChannelGate() {
   }
   pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
     'release / replace-asset / preview 问在联网之前，verify 照旧放行，' +
-    '预览附件名与 prerelease 与发布后回读三格齐，README/说明书实验口径与 version_name 同进同退）');
+    '预览附件名与 prerelease 与发布后回读三格齐，' +
+    '门面按通道分边：工作树=' + (isExp ? '工作笔记（指针已带，未抄门面）' : '门面') +
+    '、门面那一份（' + facadeFrom + '，' + facade.length + ' 字）带实验版入口且不撞稳定名字）');
 }
 
 // ---------------------------------------------------------------------------
