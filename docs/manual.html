@@ -1943,6 +1943,17 @@
           <b>同一支只说一次</b>，不会每几秒钟刷一条。括号里的 <code>ratio</code> / <code>duration</code>
           是当时的播放位置和总长。</td>
     </tr>
+    <tr>
+      <td><code>media guard rearmed</code></td>
+      <td>插件<b>盯着播放进度的那个工作定时器掉了</b>，它自己发现并<b>补了回来</b>。
+          掉的那一段里，视频还在播，但<b>倍速、「看到 90% 就进下一个」、卡住自愈这三件事都不起作用</b>
+          —— 表现就是那几分钟只能按原速放过去。<br>
+          看到这一句说明<b>已经自愈，不用你动手</b>。括号里 <code>reason</code> 说它是从哪条链路补的
+          （<code>ocs-runner-active-job</code> = 正常的章节页；<code>ocs-style-active-job</code> =
+          页面结构换过、任务点直接挂在外面那一类课），<code>currentTime</code> / <code>duration</code>
+          是补回来那一刻的位置和总长。<b>偶尔一条是正常现象</b>；要是<b>同一节课里一条接一条地出</b>，
+          说明有什么在反复掐掉它，把这一句连同「哪门课 · 哪一节」一起反馈。</td>
+    </tr>
   </tbody>
 </table>
 

@@ -169,7 +169,7 @@
      **改完重跑才是那条断言的第一次真验收**：`C-e2e 红 2 = 声明 2`、越界 0。
      ⚠️ 这一条提醒：**"预期红的没红"要先怀疑验证自己有没有生效**，本轮四处里三处都落在预期表／测试台上。
 - **验收数字都是量回来的**：集成 `[30]` 段净 +10 → **579**（`.workbuddy/itest-counts.json`）；
-  e2e 净 +13 → **143 场景 / 1635 项**，四页文档计数照这一发回填。
+  e2e 净 +13 → **143 场景 / 1635 项**，四页文档计数照这一发回填。 <!-- 历史计数:start --><!-- 历史计数:end -->
 - **回填时另抓到一处没人量的数**：`node tools/browser-e2e.js --validate-fixtures` 实测打印 **96 页**夹具，
   而 `tools/README.md:11` 与 `:158` 两处还写 95 页 —— 已按实测改成 96。这一族**至今没有任何尺**：
   `npm run check` 第 18 项每次都已经 spawn 那个入口并拿到这个数，却只用它做证据、不拿它核文档
@@ -305,6 +305,67 @@ AI 做事，不再维护人类向门面（用户 2026-11-20 的原话：「树�
 - **本轮验收**（只改文档，未动 `src/page/` 与构建输入，故不跑 `npm run concat` / `e2e`）：
   `node tools/audit-md-tables.js` 十二格对照全过 + 列数全对；`npm test` 全绿 ——
   工程自检通过、集成 **579 / 579 项**、worker 单测 **126 项**、秒级套件与验收 **46 例**全过。
+
+### 批次 141 · 2026-11-20 · 视频在播却没人巡检：捡回访量装错格子，整支 22 分钟按 1x 白播（会话任务 #190）
+
+**用户能看见的症状**：一支 22 分钟的视频从头到尾按 1x 白播。倍速、「看到 90% 就进下一个」、
+停滞识别这三件事全挂在同一枚定时器巡检上（`_checkInterval`），句柄没了它们**一步都不走，
+而日志一条异常都不打** —— 右下角照常显示"运行中"，主循环看起来非常勤快。
+现场只读量回（`notes/field-190-checkid-null.md`，2026-11-20 三发）：
+`_checkInterval` **恒 null**、`tickEpoch` 30166 → 30213 → 30304（在涨）、`loopId:44`、
+`note:"ocs study loop"`、`isPlaying:true`、`readyState:4`、`paused:false`、`ct` 393.1 → 404.9 → 427.6、
+`dur:1351.8`。同一支的成对采样给的是 `dWall:1.51 / dCt:1.50~1.53` ⇒ **正好 1x：在走，但没加速**，
+`seekable` 恒整支、`maxRate:1 / rateLocked:true`、`tried:true / reverted:false`。
+⚠️ 那个 `reverted:false` 与 `notes/field-101-revert.md` 里「站点真按住进度条」那一份读数**不同形**
+（那是 `reverted:true`）—— 逐支视频有差别，两份互不作废，别拿其中一份替另一份下结论。
+
+- **根因是上一轮把修复装进了现场走不到的那一格**。上一轮"巡检掉了要捡回来"写在
+  `_runTick()` 的 `if (this._isPlaying)` 分支里，而 `_isPlaying` 为真时**更上游先认领并 `return`**：
+  有可读 `#iframe` 的页走 `_ensureOcsStudyRunner()` 的循环（`60-tasks-detect.js`），
+  没有 `#iframe` 的页走 `_runOcsStyleStudy()` 的 `_isActiveStudyJobPending()`（`62-tasks-run.js`，
+  它是 `_isActiveMediaPending` 的**超集**）。于是那一行结构上永远到不了 ——
+  语法正常、集成与真实浏览器测试全绿，**只有现场看得见**。已升成 AGENTS §2 #26：
+  装点要由现场读数选中，不许由方法名的直觉选。
+- **修复是一个真源 + 两处调用点**：`src/page/40-media.js` 新增 `_rearmMediaGuardIfLost(reason)`
+  （只在「句柄空 + 状态说在播 + 拿得到媒体 + 没 `ended`」时重建，并写一条
+  `warn / media guard rearmed` 带 `reason` 与 `currentTime/duration`），
+  OCS 循环那一格传 `ocs-runner-active-job`、style 那一格传 `ocs-style-active-job`。
+  两种页形各要一处，共用同一份判定 —— 别把两处写成两份逻辑。
+- **助手自带"已经有句柄就不动"那道门，而且这道门承重**：`_startVideoMonitoring()` 一跑就把
+  `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，无条件重建等于**每拍把"没进展"的账抹平**，
+  自愈判据永远攒不满（AGENTS §2 #13 同一族）。反向验证的 C 刀摘掉这道门之后，红的**不是**"没挂回来"那一格，
+  而是"挂回来的巡检真在跑"那一格 —— 取证是 `handle:76`（句柄号每拍在换）而 `seeks:0 / tried:0`
+  （回调一次都没跑过），即**补了一枚假句柄**，抽搐那一族现场就长这样。
+- **`64-tasks-loop.js` 里补了"为什么不能装在 `_isPlaying` 那一格"的注释**，出处写成现场读数
+  （`_checkInterval` 恒 null 而 `tickEpoch` 照涨，这一行一次都没执行过）—— 否则下一轮照着方法名又会搬回去。
+- **两个新场景 / 15 条断言**：`/media-tick-outer`（190-A…H，现场那种有可读帧的页）与
+  `/media-tick-style`（190-I…O，没有可读帧的页）。这一族场景是**手动驱动** `_runTick()` 的，
+  三条测试台规矩本轮现场踩出来并已升进 AGENTS §5：
+  ① 必须先补 `run()` 开头那一发 `_resetRuntimeState()`，否则 `_runtimeVersion` 是 `undefined`、
+     版本闸把整条循环作废且**不留日志**（190-L 第一次就红在这里，比 `_chapterChangedAt` 那一半更早）；
+  ② 取证读数不许用 `Number(x || 0)` 把"未初始化"洗成合法值 —— `rv:0` 与 `rvTick:0` 看着相等，
+     原始值其实是 `undefined`（AGENTS §2 #2 那族在测试台里的同形版）；
+  ③ 前提里的时间戳钉不住时要**先 burn 一次章节识别再钉回 60 秒之前**，
+     单写 `0` 不够，`_runTick` 会在走到 style 分支之前先把那一格写成"现在"。
+- **反向验证三刀（`.workbuddy/reverse190*.log`）**：A 摘 OCS 调用点 → 场景 2 / 红 4 条
+  `190-E F G H`；B 摘 style 调用点 → 场景 2 / 红 4 条 `190-L M N O`；
+  C 摘判据门 → 场景 2 / 红 5 条 `190-F G H N O`，缺 0 / 越界 0。三刀各证明一件不同的事在承重。
+  C 刀第一版报的是「预期红的没红：190-E, 190-L」+「越界红了：190-F」—— **是预期表写错，不是尺写错**：
+  E/L 那两格只证"挂回来了"，摘门这一刀并没有把"挂回来"这件事弄坏；M 走的是 style 那一路的同步路径，
+  两拍之间句柄没被换到饿死，所以照旧绿。按实测改预期表后单独复跑 C 才是那一刀的验收
+  （AGENTS §5「条数对不上先怀疑预期怎么写，不是怀疑被验的那把尺」）。
+- **现场部署验收**（提交前跑，只认读数不认"日志没报错"）：`expr/reload-extension.expr` +
+  每一枚 chaoxing 标签 `expr/reload-page.expr`，然后要求 `rev` 逐字等于磁盘 `OMITONE_CODE_REV`、
+  `_checkInterval` **不再是 null**、日志里出现一条点名 `ocs-runner-active-job` 或 `ocs-style-active-job`
+  的 `media guard rearmed`。
+- **验收数字**：`npm run e2e` 全量 **145 场景 / 1652 项** 全绿 —— 读数取自 20:35:22 那一趟
+  （`.workbuddy/e2e190-full.log`，末尾自己打印「功能交叉检验全部通过：1652 / 1652 项」，
+  `e2e-counts.json` 的 `at` 是同一刻 12:35:22.619Z）；`page.js` 与 `content.js` 的 mtime 是 20:23:21，
+  比那本日志早 12 分钟 ⇒ 这一趟跑在三刀注入全部还原之后，证的才是收口时盘上那份产物。
+  四页文档计数（AGENTS / README / tools/README / HANDOVER）照这一发回填，净 +17 = 15 条主张 + 2 发加载自证。
+- **没做的事照实记**：这一轮只修"没人巡检"这一件事。**「1x 是站点上限」并没有被推翻** ——
+  `maxRate:1 / rateLocked:true` 是站点侧的，巡检捡回来之后倍速能不能真的生效，
+  要等部署后同一口径再量一轮（会话任务 #177 的复账那一步）。
 
 ### 批次 133 · 2026-11-19 · 视频开头黑屏／抽搐不再干等：自动唤醒点不亮时代点一下「开始」（会话任务 #178）
 

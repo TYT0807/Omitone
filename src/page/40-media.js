@@ -14,7 +14,7 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（52 个）：
+ * 本段的方法（53 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
@@ -22,7 +22,7 @@
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
  *   _resetRateDetection、_scheduleMaxRateDetection、_detectMaxPlaybackRate、
  *   _readRateMenuMax、_probeMaxPlaybackRate、_waitRateSettle、
- *   _startVideoMonitoring、_clearCheckInterval、_startAudioKeepalive、
+ *   _startVideoMonitoring、_clearCheckInterval、_rearmMediaGuardIfLost、_startAudioKeepalive、
  *   _stopAudioKeepalive、_syncAudioKeepalive、_checkVideoStatus、
  *   _finishCurrentMedia、_isRateLockedAtOne、_isNinetyPercentVideo、
  *   _shouldAdvanceAtNinetyPercent、_noteNinetyHeldBack、_mediaErrorCode、_reloadMediaInPlace、
@@ -971,6 +971,32 @@
         this._checkInterval = null;
       }
       this._syncAudioKeepalive();
+    },
+
+
+    // 「这一支还在播，可巡检的间隔没了」= 自锁：拖结尾、90% 提前收尾、「没进展就自愈」三件事
+    // 一起失效，现场表现成整支只能按 1x 白播（会话任务 #190 现场实测：`_checkInterval` 恒 null
+    // 而 `tickEpoch` 照涨、`_guardLastWallTs` 越老越久）。
+    // ⚠️ **只在真的没有句柄时动手** —— `_startVideoMonitoring()` 一跑就把
+    //   `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，无条件调它
+    //   等于每拍把「没进展」的账抹平，自愈判据永远攒不满（AGENTS §2 #13 同一族）。
+    // ⚠️ 两个调用方都要在，而且**必须是这两处**：`60-tasks-detect.js` 的
+    //   `ocs-runner-active-job`（有可读 `#iframe` 的学习页 = 现场真正待着的地方）与
+    //   `62-tasks-run.js` 的 `ocs-style-active-job`（`#iframe` 读不到、attachment 直挂顶层那类页）。
+    //   `_runTick` 下面那一格 `_isPlaying` **走不到** —— `_isPlaying` 为真时上面两发之一
+    //   必定先认领这一拍（`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集），
+    //   只装在那里等于装了一条现场永不执行的代码（上一轮就栽在这格，2026-11-20 现场只读量回）。
+    _rearmMediaGuardIfLost: function (reason) {
+      if (this._checkInterval || !this._isPlaying) return false;
+      var media = this._videoEl || this._getVideoEl();
+      if (!media || media.ended) return false;
+      this._startVideoMonitoring();
+      emitRuntimeLog('warn', 'media guard rearmed', {
+        reason: reason || '',
+        currentTime: Math.round(Number(media.currentTime) * 10) / 10,
+        duration: Math.round(Number(media.duration) * 10) / 10
+      });
+      return true;
     },
 
 

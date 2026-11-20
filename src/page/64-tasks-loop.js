@@ -203,6 +203,14 @@
           var playingVideo = this._getVideoEl();
           if (playingVideo && !playingVideo.ended) {
             this._ensurePlaybackRate(playingVideo, "tick");
+            // ⚠️ 这一格在"视频还活着"时**走不到**：`_isPlaying` 为真 → 上面
+            //   `_ensureOcsStudyRunner()`（有可读 `#iframe` 的学习页）或
+            //   `_runOcsStyleStudy()` 的 `_isActiveStudyJobPending()`（没 `#iframe` 的页，
+            //   它是 `_isActiveMediaPending` 的超集）先认领了这一拍。
+            //   所以"巡检掉了要捡回来"装在**那两处**（`60-tasks-detect.js` 的
+            //   `ocs-runner-active-job` 与 `62-tasks-run.js` 的 `ocs-style-active-job`），
+            //   别装在这里 —— 现场量回过：`_checkInterval` 恒 null 而 `tickEpoch` 照涨，
+            //   这一行一次都没执行过（会话任务 #190，2026-11-20）。
             return;
           }
           if (playingVideo && playingVideo.ended) {

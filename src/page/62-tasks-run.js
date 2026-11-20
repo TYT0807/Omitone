@@ -538,6 +538,9 @@
       }
 
       if (this._isActiveStudyJobPending('ocs-style-active-job')) {
+        // 没有可读 `#iframe` 的那一类页面（attachment 直挂顶层文档）真正待着的格子。
+        // 巡检掉了要在这里捡回来，判据与 OCS 循环那一格共用真源 `_rearmMediaGuardIfLost`。
+        this._rearmMediaGuardIfLost('ocs-style-active-job');
         this._studyCompleteAt = 0;
         return true;
       }

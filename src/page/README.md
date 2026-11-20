@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **527 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 537 个方法；状态字段 166 个。
+（跑出来大致是：14 个域片段合计 **528 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 538 个方法；状态字段 166 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1814 行 / 52 方法*
+*1840 行 / 53 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
@@ -150,7 +150,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `60-tasks-detect.js`
 
-*2351 行 / 48 方法*
+*2359 行 / 48 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
@@ -161,7 +161,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*1755 行 / 42 方法*
+*1758 行 / 42 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -171,7 +171,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1550 行 / 48 方法*
+*1558 行 / 48 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、

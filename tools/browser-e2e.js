@@ -822,6 +822,67 @@ function buildMediaStartStuckHtml() {
 }
 
 /**
+ * 「视频在播、巡检句柄却是空的」这一格的夹具 —— **现场形状：视频在真 iframe 里**（批次 190）。
+ *
+ * ⚠️ 为什么不能沿用上面那几份 `<div id="iframe">` 的媒体夹具：
+ * `_checkBlockedByCrossOrigin()` 第一行拿 `_getMainFrame()` = `document.querySelector('#iframe')`，
+ * 命中那枚 DIV 之后走 `_isFrameSameOrigin()` —— DIV 没有 `contentWindow`，判成"内容帧读不到"，
+ * 而 `_frameOriginOf(DIV)` 读出空串 → 连"同源"都不成立 → **当场 `return true` 把这一拍整拍拒掉**。
+ * 于是 `_runTick` 永远走不到 `if (this._isPlaying)` 那一格，本轮修的分支变成零覆盖，
+ * 而夹具自证与别的断言全绿（AGENTS §5「断言"绿"有两种：走到了、和根本没走到那一层」）。
+ * 现场 `studentstudy` 的顶层文档里 `#iframe` 是**真的 `<iframe>`**，同源、读得到 ——
+ * 所以这一族必须换成真帧夹具才测得到。
+ *
+ * 两份一起用：顶层只放那枚 iframe，视频长在**里面**那一份（和现场同构）。
+ * 媒体原型的打桩由场景自己在**子帧**上做 —— 每个帧各有一份 `HTMLMediaElement.prototype`，
+ * 顶层打了桩对子帧里的视频无效。
+ */
+function buildMediaTickFrameTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body class="course_main">' +
+    '<iframe id="iframe" src="/media-tick-inner" style="width:100%;height:760px;border:0"></iframe>' +
+    '</body></html>';
+}
+
+/** 上面那枚 `#iframe` 里的那一份：video.js 形状 + 一枚被站点按住进度条的视频 */
+function buildMediaTickInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title>' +
+    '<style>.video-js{position:relative;width:640px;height:360px}</style>' +
+    '</head><body>' +
+    '  <div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '  </div>' +
+    '</body></html>';
+}
+
+/**
+ * 「巡检掉了」的**第二种现场形状** —— 视频长在顶层文档里，整页**没有 `#iframe` 这个元素**（批次 190）。
+ *
+ * 为什么必须有第二份夹具：`_runTick` 在两处认领「这一拍还在播媒体」，走的是两条完全不同的路 ——
+ *   ① `_ensureOcsStudyRunner()`（`60-tasks-detect.js`）第一行之后要 `_getMainWindow()` 非空，
+ *      也就是**顶层有可读的 `#iframe`** 才算认领；它认领后把活儿交给那个 3 秒起步的异步循环。
+ *   ② `_runOcsStyleStudy()`（`62-tasks-run.js`）排在①之后，没有可读帧的页面才走到这里，
+ *      它在**同一拍内**同步判 `_isActiveStudyJobPending('ocs-style-active-job')`。
+ * 上面 `/media-tick-outer` 那份真帧夹具只会命中①，`/media` 那族 `<div id="iframe">` 夹具
+ * 则被 `_checkBlockedByCrossOrigin()`（`if (!frame) return false` 之后按 DIV 判"读不到"）
+ * **整拍拒掉**，②也走不到。所以②这一支**必须有一枚压根没有 `#iframe` 的页面**才测得到 ——
+ * 否则把 `62-tasks-run.js` 那一行删掉，全量 e2e 一条都不会红（AGENTS §5「根本没走到那一层」）。
+ *
+ * ⚠️ 这里**不许**放 `<div id="iframe">`，也不许放任何 `<iframe>`：放了①或那堵墙就会先把这一拍接走。
+ */
+function buildMediaTickStyleTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>音视频学习 - 学习通</title>' +
+    '<style>.video-js{position:relative;width:640px;height:360px}</style>' +
+    '</head><body class="course_main">' +
+    '  <div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '  </div>' +
+    '</body></html>';
+}
+
+/**
  * 多讨论任务点页面 —— 复现"多沟通任务"的坑。
  *
  * A 组：3 张讨论卡片挤在**同一个共用容器**里，容器内只有**一个** #isFinished。
@@ -2522,6 +2583,9 @@ var MOCK_PAGES = {
   '/media': buildMediaHtml,
   '/media-90': buildNinetyPercentHtml,
   '/media-start': buildMediaStartStuckHtml,
+  '/media-tick-outer': buildMediaTickFrameTopHtml,
+  '/media-tick-inner': buildMediaTickInnerHtml,
+  '/media-tick-style': buildMediaTickStyleTopHtml,
   '/blank': buildBlankHtml,
   // 批次 35：主内容帧跨域的三页（两种跨域 + 被换走的那一页本身）
   '/blocked-inner': buildBlockedInnerHtml,
@@ -23888,6 +23952,611 @@ SCENARIOS.push({
       p5.clicks.big === 0 && p5.clicks.toggle === 0 && p5.clicks.restart === 0, JSON.stringify(p5));
   }
 });
+
+SCENARIOS.push({
+  name: '视频在播却没人巡检：现场那种帧里由 OCS 循环捡回来',
+  // ⚠️ 这一条**不能**用那几份 `<div id="iframe">` 的媒体夹具 —— DIV 没有 `contentWindow`，
+  //    `_checkBlockedByCrossOrigin()` 会按「内容帧读不到」把整拍拒掉，两处捡回一步都走不到。
+  //    现场 `studentstudy` 的 `#iframe` 是**真 `<iframe>`、同源** —— 而在那种页面上，
+  //    认领「这一拍还在播媒体」的是 `_runTick` 里 `_ensureOcsStudyRunner()` 那一格，
+  //    **不是**下面 `if (this._isPlaying)` 那一格。
+  //    现场只读量回（2026-11-20，会话任务 #190）：`_checkInterval` 恒 null 而 `tickEpoch` 照涨、
+  //    `_isPlaying` 与 `_activeMediaJobPending` 都是真 —— 一支 22 分钟的视频就这么按 1x 白播。
+  //    所以这一场钉两件事：① `_isPlaying` 那一格**真的走不到**（`rateTick` 增 0 是机器证，
+  //    不是「我以为」）；② 捡回装在 OCS 循环里（`60-tasks-detect.js` 的 `ocs-runner-active-job`）。
+  path: '/media-tick-outer',
+  noAutoResume: true,
+  run: async function (ctx) {
+    // ① 夹具自证 + 打桩。打桩必须打在**子帧那一份** `HTMLMediaElement.prototype` 上 ——
+    //    每个帧各有一套原型，顶层打了桩对帧里的视频无效（现场那支视频本来就长在帧里）。
+    //    桩函数由顶层 realm 创建，所以它们读的 `window.__b190*` 仍是顶层那一份，取证只问顶层。
+    //    ⚠️ error 必须钉成空（批次 50 量过这页的 <video src> 从没被 serve，code=4 会让巡检
+    //       第一道就走死管线重载，整段断言变成空测）。
+    var self = JSON.parse(await ctx.client.evaluate(
+      '(function(){' +
+      'var f=document.getElementById("iframe");' +
+      'return new Promise(function(res){' +
+      '  var tries=0;' +
+      '  function go(){' +
+      '    var ok=false;try{ok=!!(f&&f.contentWindow&&f.contentWindow.document&&' +
+      '      f.contentWindow.document.readyState==="complete");}catch(e){ok=false;}' +
+      '    if(!ok){if(++tries>30){res(JSON.stringify({frameReady:false,tries:tries}));return;}' +
+      '      setTimeout(go,200);return;}' +
+      '    var iw=f.contentWindow,PM=iw.HTMLMediaElement&&iw.HTMLMediaElement.prototype;' +
+      '    if(!PM){res(JSON.stringify({frameReady:true,proto:false}));return;}' +
+      '    window.__b190T=792.4;window.__b190DUR=1345.8;' +
+      '    window.__b190Paused=false;window.__b190Ended=false;window.__b190Seeks=[];' +
+      '    Object.defineProperty(PM,"error",{configurable:true,get:function(){return null;}});' +
+      '    Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+      '    Object.defineProperty(PM,"duration",{configurable:true,get:function(){return window.__b190DUR;}});' +
+      '    Object.defineProperty(PM,"paused",{configurable:true,get:function(){return window.__b190Paused;}});' +
+      '    Object.defineProperty(PM,"ended",{configurable:true,get:function(){return window.__b190Ended;}});' +
+      '    Object.defineProperty(PM,"currentTime",{configurable:true,' +
+      '      get:function(){return window.__b190T;},' +
+      '      set:function(v){window.__b190Seeks.push(Number(v));}});' +
+      '    Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+      '      var d=window.__b190DUR;' +
+      '      return {length:1,start:function(){return 0;},end:function(){return d;}};}});' +
+      '    Object.defineProperty(PM,"playbackRate",{configurable:true,' +
+      '      get:function(){return 1;},set:function(){}});' +
+      '    PM.play=function(){return Promise.resolve();};' +
+      '    PM.load=function(){};' +
+      '    var app=window._xxtApp;' +
+      // ⚠️ **手动驱动 `_runTick()` 的场次必须先跑这一句**，它不是可有可无的清扫：
+      //    `_runtimeVersion` 全仓库只有 `_resetRuntimeState()` 会写成数字（`10-config-state.js:541`），
+      //    而现场能跑到 `_runTick()` 的唯一入口是 `run()`，它在 `10-config-state.js:488` 就调了这一句。
+      //    少了它，两处版本闸 `62-tasks-run.js:508` 与 `60-tasks-detect.js:1829` 拿 `!==` 比一个
+      //    `undefined`，**把所有活儿当场吞掉、一条日志都不留**（本轮 190-E / 190-L 第一次就红在这里，
+      //    取证里 `logs:[]`、`started` 却已为真，看着像"循环起了却不干活"，其实是版本闸）。
+      //    它顺带把上一场留下的记账一起清掉，所以 `_videoEl` 要在它之后重新取。
+      '    app._resetRuntimeState();' +
+      // 三个「走到哪儿」的证人：包住生产方法**并照旧交回原件**（桩打在动作上，不是把整段
+      // 判据换成计数器 —— AGENTS §5「桩要打在动作上」）。倍速那一发按 reason 分格数：
+      // 「tick 那一格一次都没走到」与「巡检真在跑」是两件事，混在一个计数器里就分不开。
+      '    window.__b190N={rateTick:0,rateGuard:0,arm:0,collect:0,next:0};' +
+      '    var pr=app._ensurePlaybackRate,sm=app._startVideoMonitoring,cf=app._collectVisibleTaskFrames;' +
+      '    app._ensurePlaybackRate=function(){var r=String(arguments[1]);' +
+      '      if(r==="tick"){window.__b190N.rateTick++;}' +
+      '      else if(r==="guard"){window.__b190N.rateGuard++;}' +
+      '      return pr.apply(this,arguments);};' +
+      '    app._startVideoMonitoring=function(){window.__b190N.arm++;return sm.apply(this,arguments);};' +
+      '    app._collectVisibleTaskFrames=function(){window.__b190N.collect++;return cf.apply(this,arguments);};' +
+      '    app.nextUnit=function(){window.__b190N.next++;};' +
+      '    window.__b190i=[];' +
+      '    if(!window.__b190Bound){window.__b190Bound=true;window.addEventListener("message",function(e){' +
+      '      var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b190i.push(m);}});}' +
+      '    window.__b190diag=function(a){var d={};' +
+      // ⚠️ 这两格**不许**用 `Number(x||0)`：那会把"根本没初始化"洗成一个合法读数 0
+      //    （AGENTS §2 #2 同一族）。版本闸比的就是"是不是同一个原始值"，取证必须显出原形。
+      '      d.rv=typeof a._runtimeVersion==="number"?a._runtimeVersion:"(未初始化)";' +
+      '      d.rvTick=typeof window.__b190RV==="number"?window.__b190RV:"(未抓)";' +
+      '      d.chg=Number(a._chapterChangedAt||0);d.trans=Number(a._jobTransitionUntil||0);' +
+      '      d.deadline=Number(a._ocsSearchDeadline||0);d.now=Date.now();' +
+      '      d.amp=a._activeMediaJobPending===true;d.managed=a._activeMediaJobManaged===true;' +
+      '      d.vid=!!a._videoEl;d.vidCount=Number(a._videoCount);d.playing=a._isPlaying===true;' +
+      '      d.started=String(a._ocsStudyStarted);d.checkNull=a._checkInterval===null;' +
+      '      d.seeks=(window.__b190Seeks||[]).length;' +
+      '      d.logs=(window.__b190i||[]).map(function(m){return m.level+":"+m.message;}).slice(-12);' +
+      '      return d;};' +
+      '    var v=iw.document.getElementById("omitone-video");' +
+      '    var mainTag="",sameOk=false,blocked=false,foundByProd=null,mainWin=false,ocsBefore=false;' +
+      '    try{mainTag=String(f.tagName).toUpperCase();}catch(e){}' +
+      '    try{sameOk=!!(app&&app._isFrameSameOrigin(app._getMainFrame()));}catch(e){}' +
+      '    try{blocked=!!(app&&app._checkBlockedByCrossOrigin());}catch(e){}' +
+      '    try{mainWin=!!(app&&app._getMainWindow());}catch(e){}' +
+      '    try{ocsBefore=app._ocsStudyStarted===true;}catch(e){}' +
+      // 让**生产**自己去找那枚视频（不手塞 `_videoEl`）—— 「现场形状下拿得到帧里的视频吗」一并量到；
+      // 拿不到就是夹具形状不对，前提那一格会点名，不许改断言迁就它。
+      '    try{if(app){app._videoEl=null;foundByProd=app._getVideoEl();}}catch(e){foundByProd=null;}' +
+      '    res(JSON.stringify({frameReady:true,proto:true,hasV:!!v,' +
+      '      vidTag:v?String(v.tagName).toUpperCase():"",mainTag:mainTag,sameOk:sameOk,blocked:blocked,' +
+      '      mainWin:mainWin,ocsBefore:ocsBefore,' +
+      '      foundSame:foundByProd===v,foundId:foundByProd?String(foundByProd.id||""):"",' +
+      '      errNull:v?v.error===null:false,ct:v?Number(v.currentTime):-1,dur:v?Number(v.duration):-1,' +
+      '      paused:v?v.paused:null,ended:v?v.ended:null}));' +
+      '  }' +
+      '  go();' +
+      '});})()'));
+    check('190-A 夹具自证：`#iframe` 是真帧、同源、`_checkBlockedByCrossOrigin()` 说没挡住，' +
+      '子帧原型打桩生效（在播、未结束、error 空、位置 792.4、时长 1345.8），' +
+      '**生产 `_getVideoEl()` 自己就在帧里拿到那枚视频**；而 `_getMainWindow()` 非空' +
+      '（＝这一页的形状就是现场 `studentstudy` 那一种：`_runTick` 会在 OCS 那一格认领这一拍），' +
+      '并且 OCS 循环此前还没起过（起过就证明不了下面那一拍是它起来的）',
+      !!self && self.frameReady === true && self.proto === true && self.hasV === true &&
+      self.vidTag === 'VIDEO' && self.mainTag === 'IFRAME' && self.sameOk === true &&
+      self.blocked === false && self.mainWin === true && self.ocsBefore === false &&
+      self.foundSame === true && self.foundId === 'omitone-video' &&
+      self.errNull === true && self.ct === 792.4 && self.dur === 1345.8 &&
+      self.paused === false && self.ended === false, JSON.stringify(self));
+
+    // ② 前提：把现场那一格造出来 —— 状态说「在播」、巡检句柄却是空的，而且**媒体这一支确实被认领**
+    //    （`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集，它说真话 OCS 循环才进那一格）。
+    //    同时把上一场留下的记账与循环全停掉，并把证人基线抓在动手之前（比的是增量，不是绝对数）。
+    var pre = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,' +
+      '  {enableSeek:true,autoMaxPlaybackRate:false,advanceAtNinetyPercent:false});' +
+      'var v=app._videoEl;' +
+      'app._isPlaying=true;app._currentVideoIndex=0;' +
+      'app._activeJobId="b190-job";app._captchaActive=false;app._rateProbing=false;app._detectedMaxRate=0;' +
+      'app._seekTriedKeys=Object.create(null);app._seekRevertedKeys=Object.create(null);' +
+      'app._seekDeferKeys=Object.create(null);app._ninetyHeldBackKeys=Object.create(null);' +
+      'app._activeMediaJobPending=true;app._activeMediaJobManaged=true;' +
+      // 这两个时间戳会让 `_runOcsStyleStudy` 在捡回**之前**就 return true（认领这一拍却不挂巡检），
+      // 现场刚跳完章节那几十秒正是这一族 —— 这里先钉成 0，让这一拍走的是「稳态」那一条。
+      'app._ocsStudyStarted=false;app._chapterChangedAt=0;app._jobTransitionUntil=0;app._studyCompleteAt=0;' +
+      'app._guardLastWallTs=0;app._guardLastTime=0;' +
+      'window.__b190Base={arm:window.__b190N.arm,collect:window.__b190N.collect,' +
+      '  rateTick:window.__b190N.rateTick,rateGuard:window.__b190N.rateGuard,next:window.__b190N.next};' +
+      'var key="",pending=false;try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{pending=app._isActiveStudyJobPending("b190-pre")===true;}catch(e){pending=false;}' +
+      'return {hasEl:!!v,vidCount:Number(app._videoCount),playing:app._isPlaying===true,' +
+      '  checkNull:app._checkInterval===null,loopOff:!app._tickLoopInterval,' +
+      // 版本闸的前提：`_runtimeVersion` 必须是**数字**（见 ① 里那句 `_resetRuntimeState()`）——
+      // 它是 `60-tasks-detect.js:1829` 那一道退出条件的左半边，没初始化就等于整条循环当场作废。
+      '  rvNum:typeof app._runtimeVersion==="number",' +
+      // 不许让 `undefined` 走进 `JSON.stringify` 的取证 —— 那一格会被整个丢掉，
+      // 读的人以为"没这格"，而它恰恰是本轮最贵的那一条线索。
+      '  rv:(typeof app._runtimeVersion==="number"?app._runtimeVersion:"(未初始化)"),' +
+      '  ocsOff:app._ocsStudyStarted===false,pending:pending,' +
+      '  key:key,seekOn:app.configs.enableSeek===true,' +
+      '  notProbing:app._rateProbing===false,dur:v?Number(v.duration):0,ct:v?Number(v.currentTime):0,' +
+      '  notPaused:v?v.paused===false:false,notEnded:v?v.ended===false:false,' +
+      '  errNull:v?v.error===null:false,' +
+      '  cover:v?Number(v.seekable.end(0))>=Number(v.duration)-3:false};})()'
+    );
+    check('190-B 前提：现场那一格真造出来了 —— 状态说在播、巡检句柄确实是空的、目录循环也停了、' +
+      'OCS 循环也还没起、运行版本号已经是数字（`run()` 之后现场必然如此，少了它版本闸把整条循环作废），' +
+      '而 `_isActiveStudyJobPending()` 说这一支正在被认领（它说假话循环就不去捡）；' +
+      '拖结尾的资格也齐（键非空、拖动开着、没在探测倍速、区间含目标、error 空），缺任何一条下面整段都是空测',
+      !!pre && pre.hasEl === true && pre.vidCount === 1 && pre.playing === true &&
+      pre.checkNull === true && pre.loopOff === true && pre.rvNum === true &&
+      pre.ocsOff === true &&
+      pre.pending === true && !!pre.key && pre.seekOn === true && pre.notProbing === true &&
+      pre.dur > 20 && pre.ct < pre.dur - 8 && pre.notPaused === true && pre.notEnded === true &&
+      pre.errNull === true && pre.cover === true, JSON.stringify(pre));
+
+    // ③ 认领那一格**前面**那些门，一格都不许挡住：挡住了 190-D 就成了「没走到」而不是「改坏了」。
+    //    ⚠️ 这里**不许**把 `_ensureOcsStudyRunner()` 也问一遍 —— 它一被叫到就把循环起起来、
+    //    把 `_ocsStudyStarted` 写真，于是「这一拍把它起来的」那句话变成测试台自己说的（自证式假绿）。
+    var gates = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var o={};' +
+      'function g(k,fn){try{o[k]=!!fn.call(app);}catch(e){o[k+"_err"]=String((e&&e.message)||e);}}' +
+      'g("disc",app._isDiscussionContext);g("cap",app._isStandaloneCaptchaPage);' +
+      'g("blocked",app._checkBlockedByCrossOrigin);g("dwait",app._handleDiscussionWait);' +
+      'g("home",app._enterChapterFromCourseHome);g("skip",app._skipIfCompleted);' +
+      'g("sub",app._checkSubmitConfirmDialog);g("mon",app._monitorQuizSubmit);' +
+      'g("popup",app._activePopupBlock);g("cont",app._tryContinueStudyPrompt);' +
+      'return o;})()');
+    var gateKeys = Object.keys(gates || {});
+    var gateHit = gateKeys.filter(function (k) { return gates[k] === true; });
+    var gateErr = gateKeys.filter(function (k) { return k.indexOf('_err') > 0; });
+    check('190-C 前面那些门（讨论、独立验证码、内容帧读不到、等讨论、首页进章、已完成、交卷确认、' +
+      '盯提交、弹题、继续学习）十格全是 false 且一格都没抛 —— 这一拍才真走得到 OCS 那一格，' +
+      '点名是哪一格挡的，别让人猜「没走到」还是「改坏了」',
+      gateKeys.length === 10 && gateHit.length === 0 && gateErr.length === 0, JSON.stringify(gates));
+
+    // ④ 真 `_runTick()` 一拍：它必须在 OCS 那一格认领（`_ocsStudyStarted` 由假转真），
+    //    而且**一次都不许走到** `if (this._isPlaying)` 那一格（`rateTick` 增 0 = 机器证）。
+    //    此刻句柄照旧为空是**对的** —— 那个循环起手先睡 3 秒，下一格才去捡。
+    // ⚠️ `__b190RV` 必须在 `_runTick()` **之前**抓 —— 那一拍里任何一格调了
+    //     `_resetRuntimeState()`，版本号就跳走，而 OCS 循环和 style 分支都拿它当退出条件。
+    var a1 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190i=[];' +
+      'window.__b190RV=app._runtimeVersion;' +
+      'return new Promise(function(res){Promise.resolve(app._runTick()).then(function(){' +
+      '  setTimeout(function(){var dg={};try{dg=window.__b190diag(app);}catch(e){dg={err:String(e)};}' +
+      '    res(JSON.stringify({handle:app._checkInterval,' +
+      '    ocs:app._ocsStudyStarted===true,playing:app._isPlaying===true,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect,diag:dg}));},300);' +
+      '  },function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});});})()'));
+    check('190-D 这一拍由 OCS 那一格认领、`_isPlaying` 那一格一次都没走到：`_ocsStudyStarted` 由假转真' +
+      '（证明是这一拍 `_runTick()` 起的循环，不是测试台替它起的）、`_ensurePlaybackRate` 以 `tick` ' +
+      '为由的那一格增 0（上一轮把补丁就装在那一行，现场量回它一次都没执行过）、' +
+      '照旧早退（`_collectVisibleTaskFrames` 增 0 = 仲裁顺序一个字没动）、此刻句柄仍为空（循环还在睡 3 秒）',
+      !a1.tickError && a1.ocs === true && a1.rateTick === 0 && a1.collect === 0 &&
+      a1.arm === 0 && a1.handle === null && a1.playing === true, JSON.stringify(a1));
+
+    // ⑤ 那一格真的把巡检捡回来了：日志原话点名 reason，而不是「句柄不知被谁挂上的」。
+    var a2 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){var tries=0;' +
+      '  function look(){' +
+      '    var hit=null,n=0;(window.__b190i||[]).forEach(function(m){' +
+      '      if(String(m.message||"")==="media guard rearmed"){n++;if(!hit){var t=(m&&m.meta)||{};' +
+      '        hit={reason:String(t.reason||""),level:String(m.level||""),' +
+      '          ct:t.currentTime,dur:t.duration};}}});' +
+      '    if(hit||app._checkInterval!==null||++tries>34){var dg={};' +
+      '      try{dg=window.__b190diag(app);}catch(e2){dg={err:String(e2)};}' +
+      '      res(JSON.stringify({hit:hit,handle:app._checkInterval,tries:tries,rearmed:n,' +
+      '        arm:window.__b190N.arm-window.__b190Base.arm,diag:dg}));return;}' +
+      '    setTimeout(look,150);}' +
+      '  look();});})()'));
+    var handle1 = a2.handle;
+    check('190-E OCS 循环自己把巡检挂回来了（≤5 秒）：生产日志原话 `media guard rearmed` 点名 ' +
+      '`reason` 是 `ocs-runner-active-job`、级别 warn、取证里的位置与时长就是那一支（792.4 与 1345.8），' +
+      '`_checkInterval` 非空、`_startVideoMonitoring` 恰好一次、这句话本轮也只说一次',
+      !!a2.hit && a2.hit.reason === 'ocs-runner-active-job' && a2.hit.level === 'warn' &&
+      a2.hit.ct === 792.4 && a2.hit.dur === 1345.8 &&
+      handle1 !== null && handle1 !== undefined && a2.arm === 1 && a2.rearmed === 1,
+      JSON.stringify(a2));
+
+    // ⑥ 捡回来的巡检必须**真的在跑**，而不是只多了一枚句柄（等两个周期：1500 毫秒 × 2）。
+    await sleep(3200);
+    var g1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={handle:app._checkInterval,wall:app._guardLastWallTs,' +
+      '  seeks:(window.__b190Seeks||[]).length,tried:0,seeked:[],' +
+      '  rateGuard:window.__b190N.rateGuard-window.__b190Base.rateGuard};' +
+      'try{var k=String(app._getMediaSeekKey(app._videoEl));' +
+      '  if(app._seekTriedKeys&&app._seekTriedKeys[k])out.tried=1;}catch(e){}' +
+      '(window.__b190i||[]).forEach(function(m){if(String(m.message||"")==="seekable video: seek to end"){' +
+      '  var t=(m&&m.meta)||{};out.seeked.push(String(t.reason||"")+"|"+Number(t.from)+"|"+Number(t.to));}});' +
+      'return out;})()'
+    );
+    var guardSeeks = (g1.seeked || []).filter(function (s) { return s.indexOf('guard|') === 0; });
+    check('190-F 捡回来的巡检真在跑：`seekable video: seek to end` 里 `reason` 是 `guard` 的恰好一条、' +
+      '「这一支已经试过」那本账被填上（tried=1）、位置确实写过一次，而 `_ensurePlaybackRate` 以 `guard` ' +
+      '为由那一格也至少跑过一拍 —— 句柄非空但一次都没回调，等于只补了一枚假句柄',
+      !!g1 && guardSeeks.length === 1 && g1.tried === 1 && g1.seeks >= 1 &&
+      g1.rateGuard >= 1 && g1.handle === handle1 && g1.wall > 0, JSON.stringify(g1));
+
+    // ⑦ 句柄已经在时**不许重建**：`_startVideoMonitoring()` 一进门就把
+    //    `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，
+    //    每轮都重建等于把「没进展就自愈」的基准天天擦掉（AGENTS §2 #13 同一族）。
+    var a3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){' +
+      '  Promise.resolve(app._runTick()).then(function(){return Promise.resolve(app._runTick());})' +
+      '  .then(function(){setTimeout(function(){res(JSON.stringify({handle:app._checkInterval,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,wall:app._guardLastWallTs,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect}));},1400);})' +
+      '  .catch(function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});' +
+      '});})()'));
+    check('190-G 句柄还在时再走两拍一次都不重建（`arm` 仍是 1、句柄 id 与上一格逐字相同），' +
+      '停滞基准 `_guardLastWallTs` 没被抹回 0（它一归零，「没进展就自愈」那一格就永远数不满 6 秒）；' +
+      '这一拍照旧由 OCS 认领、照旧早退（`rateTick` 与 `collect` 都增 0）',
+      !a3.tickError && a3.arm === 1 && a3.handle === handle1 && a3.wall > 0 &&
+      a3.wall === g1.wall && a3.rateTick === 0 && a3.collect === 0,
+      JSON.stringify({ a3: a3, wall1: g1.wall }));
+
+    // ⑧ 判据的四格，**每格只在它自己身上红**：句柄非空、`_isPlaying` 为假、媒体已结束 —— 三格都该拒绝；
+    //    再补第四格「句柄为空 + 在播 + 没结束」必须真挂回来（正向对照）。
+    //    ⚠️ 顺序要紧：先问「已经挂着」那一格（此时句柄非空），**再把句柄清掉**逐格隔离 ——
+    //    生产那一行是 `if (this._checkInterval || !this._isPlaying) return false;`，
+    //    句柄还挂着时后两格会被它一起挡成 false，三条拒绝里其实只有一条在承重
+    //    （AGENTS §5「一处注入最好只对应一条断言」同一族）。
+    //    整块同步跑完、中间不许 await —— 那个 OCS 循环是异步的，一让出就把状态改了。
+    var a4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={armedCell:-1,noPlayCell:-1,endedCell:-1,liveCell:-1,armDelta:-1,handle:-1,handleBefore:-1};' +
+      // 前提自己钉住：问「已经挂着」那一格**之前**句柄必须真的挂着 ——
+      // 上游没捡回来时这里会被迫自己挂一次，`armedCell` 就变成 1，
+      // 报出来的是"判据不会拒绝"，真相是"上一格根本没捡"（AGENTS §5「绿有两种」）。
+      'out.handleBefore=app._checkInterval!==null?1:0;' +
+      'out.armedCell=app._rearmMediaGuardIfLost("b190-already-armed")?1:0;' +
+      'var a0=window.__b190N.arm;' +
+      'app._clearCheckInterval();' +
+      'app._isPlaying=false;out.noPlayCell=app._rearmMediaGuardIfLost("b190-not-playing")?1:0;' +
+      'app._isPlaying=true;' +
+      'window.__b190Ended=true;out.endedCell=app._rearmMediaGuardIfLost("b190-ended")?1:0;' +
+      'window.__b190Ended=false;' +
+      'out.liveCell=app._rearmMediaGuardIfLost("b190-live-media")?1:0;' +
+      'out.armDelta=window.__b190N.arm-a0;out.handle=app._checkInterval!==null?1:0;' +
+      'return out;})()'
+    );
+    check('190-H `_rearmMediaGuardIfLost` 四格逐格对上：句柄还在时拒绝、没在播时拒绝、这一支已结束时' +
+      '拒绝，而「句柄空、在播、没结束」那一格必须真挂回来（正向对照，少了它三条拒绝可能全是空函数给的）；' +
+      '四格里只有最后一格动过 `_startVideoMonitoring`（armDelta 恰 1）并留下了句柄；' +
+      '`handleBefore` 必须为 1 —— 问第一格之前句柄真是上游挂上的，不是这一格自己挂的',
+      !!a4 && a4.handleBefore === 1 && a4.armedCell === 0 && a4.noPlayCell === 0 &&
+      a4.endedCell === 0 && a4.liveCell === 1 && a4.armDelta === 1 && a4.handle === 1,
+      JSON.stringify(a4));
+
+    // 收尾：把本轮起的循环停掉（运行时版本号 +1，那个**开放条件**循环下一轮 `while` 自己判掉，
+    //       别让它把「找下一个任务点」的动作漏进下一个场景 —— 扩展存储与页面那本账是整轮共用的），
+    //       再拆证人、停巡检、把状态交回出厂形状。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190Ended=false;window.__b190T=0;' +
+      'app._runtimeVersion=Number(app._runtimeVersion||0)+1;' +
+      'app._clearCheckInterval();app._clearTickLoop();' +
+      'delete app._ensurePlaybackRate;delete app._startVideoMonitoring;' +
+      'delete app._collectVisibleTaskFrames;delete app.nextUnit;' +
+      'app._videoEl=null;app._isPlaying=false;app._videoCount=0;' +
+      'app._currentVideoIndex=0;app._activeJobId="";app._ocsStudyStarted=false;' +
+      'var f=document.getElementById("iframe");' +
+      'var v=f&&f.contentWindow?f.contentWindow.document.getElementById("omitone-video"):null;' +
+      'try{if(v)v.pause();}catch(e){}return true;})()');
+  }
+});
+
+SCENARIOS.push({
+  name: '视频在播却没人巡检：没有可读帧的页面由 style 分支捡回来',
+  // 同一处 bug 的**第二种现场形状**。`_runTick` 里认领「这一拍还在播媒体」的有两格，走两条不同的路：
+  //   ① `_ensureOcsStudyRunner()` —— 要 `_getMainWindow()` 非空（顶层有可读的 `#iframe`），
+  //      由它那个异步循环过 3 秒后捡（`60-tasks-detect.js` 的 `ocs-runner-active-job`）；上面那场测的就是它。
+  //   ② `_runOcsStyleStudy()` —— 没有可读帧的那一类页面（attachment 直挂顶层文档）才会走到，
+  //      在**同一拍内**判 `_isActiveStudyJobPending("ocs-style-active-job")` 并捡回来；**这一场测这一格**。
+  // ⚠️ 这一场的夹具必须整页**没有** `#iframe`：放了 `<iframe>` 就走 ①，放了 `<div id="iframe">`
+  //    会被 `_checkBlockedByCrossOrigin()` 整拍拒掉、①②都走不到。
+  //    少了这一场，把 `62-tasks-run.js` 那一行删掉，全量 e2e 一条都不会红
+  //    （AGENTS §5「断言绿有两种：走到了、和根本没走到那一层」）。
+  path: '/media-tick-style',
+  noAutoResume: true,
+  run: async function (ctx) {
+    // ① 夹具自证 + 打桩 —— 这一场视频长在**顶层文档**里，桩就打在顶层 realm 上。
+    //    ⚠️ `play()` 必须交回一个 Promise（批次 50 那族：桩成 `undefined` 会让调用方 `await` 到
+    //       一个非 Promise，而 `Promise.resolve(undefined)` 与真抛错在日志上同形）。
+    var self = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp,PM=window.HTMLMediaElement&&HTMLMediaElement.prototype;' +
+      'if(!app||!PM){return {proto:false,hasApp:!!app};}' +
+      // ⚠️ 与上一场同一条规矩：手动驱动 `_runTick()` 的场次必须先跑 `run()` 里那一发
+      //    `_resetRuntimeState()`（`10-config-state.js:488`），否则 `_runtimeVersion` 是 `undefined`，
+      //    `62-tasks-run.js:508` 那道版本闸在同一拍**最前面**就 return true —— 认领了这一拍却
+      //    一步活不干、一条日志不留（本轮 190-L 第一次就红在这里，比 `_chapterChangedAt` 那一半更早）。
+      'app._resetRuntimeState();' +
+      'window.__b190T=792.4;window.__b190DUR=1345.8;' +
+      'window.__b190Paused=false;window.__b190Ended=false;window.__b190Seeks=[];' +
+      'Object.defineProperty(PM,"error",{configurable:true,get:function(){return null;}});' +
+      'Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+      'Object.defineProperty(PM,"duration",{configurable:true,get:function(){return window.__b190DUR;}});' +
+      'Object.defineProperty(PM,"paused",{configurable:true,get:function(){return window.__b190Paused;}});' +
+      'Object.defineProperty(PM,"ended",{configurable:true,get:function(){return window.__b190Ended;}});' +
+      'Object.defineProperty(PM,"currentTime",{configurable:true,' +
+      '  get:function(){return window.__b190T;},set:function(v){window.__b190Seeks.push(Number(v));}});' +
+      'Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+      '  var d=window.__b190DUR;' +
+      '  return {length:1,start:function(){return 0;},end:function(){return d;}};}});' +
+      'Object.defineProperty(PM,"playbackRate",{configurable:true,get:function(){return 1;},set:function(){}});' +
+      'PM.play=function(){return Promise.resolve();};PM.load=function(){};' +
+      'window.__b190N={rateTick:0,rateGuard:0,arm:0,collect:0,next:0};' +
+      'var pr=app._ensurePlaybackRate,sm=app._startVideoMonitoring,cf=app._collectVisibleTaskFrames;' +
+      'app._ensurePlaybackRate=function(){var r=String(arguments[1]);' +
+      '  if(r==="tick"){window.__b190N.rateTick++;}else if(r==="guard"){window.__b190N.rateGuard++;}' +
+      '  return pr.apply(this,arguments);};' +
+      'app._startVideoMonitoring=function(){window.__b190N.arm++;return sm.apply(this,arguments);};' +
+      'app._collectVisibleTaskFrames=function(){window.__b190N.collect++;return cf.apply(this,arguments);};' +
+      'app.nextUnit=function(){window.__b190N.next++;};' +
+      'window.__b190i=[];' +
+      'if(!window.__b190Bound){window.__b190Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b190i.push(m);}});}' +
+      'var v=document.getElementById("omitone-video");' +
+      'var frame=null,mainDoc=false,mainWin=false,blocked=false,foundByProd=null;' +
+      'window.__b190diag=function(a){var d={};' +
+      // ⚠️ 不许 `Number(x||0)` —— 那会把"根本没初始化"洗成合法读数 0（AGENTS §2 #2 同一族），
+      //    而本轮 190-E 的取证就被这一手骗了过去：`rv:0` 与 `rvTick:0` 看着相等，真相是原始值 `undefined`。
+      '  d.rv=typeof a._runtimeVersion==="number"?a._runtimeVersion:"(未初始化)";' +
+      '  d.rvTick=typeof window.__b190RV==="number"?window.__b190RV:"(未抓)";' +
+      '  d.chg=Number(a._chapterChangedAt||0);d.trans=Number(a._jobTransitionUntil||0);' +
+      '  d.deadline=Number(a._ocsSearchDeadline||0);d.now=Date.now();' +
+      '  d.amp=a._activeMediaJobPending===true;d.managed=a._activeMediaJobManaged===true;' +
+      '  d.vid=!!a._videoEl;d.vidCount=Number(a._videoCount);d.playing=a._isPlaying===true;' +
+      '  d.started=String(a._ocsStudyStarted);d.checkNull=a._checkInterval===null;' +
+      '  d.seeks=(window.__b190Seeks||[]).length;' +
+      '  d.logs=(window.__b190i||[]).map(function(m){return m.level+":"+m.message;}).slice(-12);' +
+      '  return d;};' +
+      'try{frame=document.querySelector("#iframe");}catch(e){}' +
+      'try{mainDoc=!!app._getMainDocument();}catch(e){}' +
+      'try{mainWin=!!app._getMainWindow();}catch(e){}' +
+      'try{blocked=!!app._checkBlockedByCrossOrigin();}catch(e){}' +
+      // 让**生产**自己去找那枚视频（不手塞 `_videoEl`）—— 顶层文档里那枚算不算「可见媒体」
+      // 是这一族能不能走到 `_runOcsStyleStudy` 的前提，量回来比推可靠。
+      'try{app._videoEl=null;foundByProd=app._getVideoEl();}catch(e){foundByProd=null;}' +
+      'return {proto:true,hasApp:true,hasV:!!v,vidTag:v?String(v.tagName).toUpperCase():"",' +
+      '  noFrameEl:frame===null,mainDoc:mainDoc,mainWin:mainWin,blocked:blocked,' +
+      '  foundSame:foundByProd===v,foundId:foundByProd?String(foundByProd.id||""):"",visible:!!v&&(v.getClientRects().length>0),' +
+      '  errNull:v?v.error===null:false,ct:v?Number(v.currentTime):-1,dur:v?Number(v.duration):-1,' +
+      '  paused:v?v.paused:null,ended:v?v.ended:null};})()');
+    check('190-I 夹具自证（另一种现场形状）：整页确实没有 `#iframe`，所以 `_getMainFrame()` 那三条' +
+      '（`_getMainDocument()`、`_getMainWindow()`）全读不出、`_checkBlockedByCrossOrigin()` 说没挡住' +
+      '（＝这一拍**不会**被 OCS 那一格认领，只会走到 style 分支）；顶层原型打桩生效，' +
+      '而**生产 `_getVideoEl()` 自己在顶层文档里拿到那枚可见视频**（拿不到 = 夹具形状不对，不许改断言迁就它）',
+      !!self && self.proto === true && self.hasApp === true && self.hasV === true &&
+      self.vidTag === 'VIDEO' && self.noFrameEl === true && self.mainDoc === false &&
+      self.mainWin === false && self.blocked === false && self.visible === true &&
+      self.foundSame === true && self.foundId === 'omitone-video' &&
+      self.errNull === true && self.ct === 792.4 && self.dur === 1345.8 &&
+      self.paused === false && self.ended === false, JSON.stringify(self));
+
+    // ② 前提 + 证人基线（比的是增量，不是绝对数 —— 上一场留下的计数不能替这一场说话）。
+    var pre = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,' +
+      '  {enableSeek:true,autoMaxPlaybackRate:false,advanceAtNinetyPercent:false});' +
+      'var v=app._videoEl;' +
+      'app._isPlaying=true;app._currentVideoIndex=0;' +
+      'app._activeJobId="b191-job";app._captchaActive=false;app._rateProbing=false;app._detectedMaxRate=0;' +
+      'app._seekTriedKeys=Object.create(null);app._seekRevertedKeys=Object.create(null);' +
+      'app._seekDeferKeys=Object.create(null);app._ninetyHeldBackKeys=Object.create(null);' +
+      'app._activeMediaJobPending=true;app._activeMediaJobManaged=true;' +
+      // 这两个时间戳会让 `_runOcsStyleStudy` 在捡回**之前**就 return true（认领这一拍却不挂巡检）；
+      // 把这一支的搜索记账也归零，让 `study begin` 与那一格都在本轮重新长出来。
+      'app._jobTransitionUntil=0;app._studyCompleteAt=0;' +
+      'app._ocsSearchDeadline=0;app._ocsSearchedJobs=[];app._attachmentFingerprint="";' +
+      // ⚠️ `_chapterChangedAt` 单钉成 0 是**不够**的：`_runTick` 在走到 style 分支之前先跑
+      //    `_detectPageChange()`（`64-tasks-loop.js:159`），而 `60-tasks-detect.js:57` 把
+      //    **首次认出章节号**也算一次变更（批次 20-I）—— 于是被测的那一拍自己把它写回 `Date.now()`，
+      //    3 秒稳定窗口当场重新关上，`62-tasks-run.js:512` 又在捡回之前 return
+      //    （本轮 190-L 的第二个死法，取证里 `chg` 比 `now` 只早 304 毫秒就是这么来的）。
+      //    现场的稳态是「这一节早就认出来、窗口早过了」，所以这里先真跑一次识别（现场第一拍本来就要跑它），
+      //    再把那一刻钉回 60 秒之前。识别没 burn 掉的话，下面 `lastKey` 那一格会当场说前提不成立。
+      'try{app._detectPageChange();}catch(ePage){}' +
+      'app._chapterChangedAt=Date.now()-60000;' +
+      'app._guardLastWallTs=0;app._guardLastTime=0;' +
+      'window.__b190Base={arm:window.__b190N.arm,collect:window.__b190N.collect,' +
+      '  rateTick:window.__b190N.rateTick,rateGuard:window.__b190N.rateGuard,next:window.__b190N.next};' +
+      'var key="",pending=false;try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{pending=app._isActiveStudyJobPending("b191-pre")===true;}catch(e){pending=false;}' +
+      'return {hasEl:!!v,vidCount:Number(app._videoCount),playing:app._isPlaying===true,' +
+      '  checkNull:app._checkInterval===null,loopOff:!app._tickLoopInterval,' +
+      // 两道让 style 分支提前 return 的闸，各自单独钉一格（压成一格就分不清"版本闸"与"稳定窗口"）：
+      // `rvNum` = `_runtimeVersion` 是数字（`62-tasks-run.js:508` 那一半），
+      // `chgOld` = 章节识别已经过了 3 秒稳定窗口（`:512` 那一半），
+      // `lastKey` = 被测那一拍不会再把它认成新章节重写（`60-tasks-detect.js:57` 那一族）。
+      '  rvNum:typeof app._runtimeVersion==="number",' +
+      '  rv:(typeof app._runtimeVersion==="number"?app._runtimeVersion:"(未初始化)"),' +
+      '  lastKey:String(app._lastChapterKey||""),chgOld:(Date.now()-Number(app._chapterChangedAt||0))>3000,' +
+      // ⚠️ 这一格按「假」判，不按 `=== false` 判：`_ocsStudyStarted` 没起过时可能是 `false`
+      //    （跑过 `_resetRuntimeState()` 之后），也可能是**压根没初始化**的 `undefined` ——
+      //    拿 `=== false` 比会把后一种读成"循环已经起过"这句假话，而 190-L 要证的正是
+      //    "认领这一拍的不是 OCS 那一格"。（`JSON.stringify` 会把 `undefined` 那格整个丢掉，
+      //    所以取证里凡是"没有这一格"的，都是这个形状，别当成没写。）
+      '  ocsOff:!app._ocsStudyStarted,pending:pending,' +
+      '  key:key,seekOn:app.configs.enableSeek===true,notProbing:app._rateProbing===false,' +
+      '  dur:v?Number(v.duration):0,ct:v?Number(v.currentTime):0,' +
+      '  notPaused:v?v.paused===false:false,notEnded:v?v.ended===false:false,' +
+      '  errNull:v?v.error===null:false,' +
+      '  cover:v?Number(v.seekable.end(0))>=Number(v.duration)-3:false};})()'
+    );
+    check('190-J 前提：现场那一格真造出来了 —— 状态说在播、巡检句柄确实是空的、目录循环也停了、' +
+      'OCS 循环也没起、两道会提前 return 的闸都确实是开的（运行版本号是数字、章节识别过了 3 秒稳定窗口），' +
+      '而 `_isActiveStudyJobPending()` 说这一支正在被认领（它说假话 style 分支就不去捡）；' +
+      '拖结尾的资格也齐（键非空、拖动开着、没在探测倍速、区间含目标、error 空），缺任何一条下面整段都是空测',
+      !!pre && pre.hasEl === true && pre.vidCount === 1 && pre.playing === true &&
+      pre.checkNull === true && pre.loopOff === true && pre.ocsOff === true &&
+      pre.rvNum === true && pre.lastKey !== '' && pre.chgOld === true &&
+      pre.pending === true && !!pre.key && pre.seekOn === true && pre.notProbing === true &&
+      pre.dur > 20 && pre.ct < pre.dur - 8 && pre.notPaused === true && pre.notEnded === true &&
+      pre.errNull === true && pre.cover === true, JSON.stringify(pre));
+
+    // ③ 走到底之前那些门一格都不许挡住（挡住了 190-L 就成了「没走到」而不是「改坏了」）；
+    //    OCS 那一格**不能**问 —— 它一被叫到就把循环起起来，「这一拍是它捡的」就变成测试台自己说的。
+    var gates = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var o={};' +
+      'function g(k,fn){try{o[k]=!!fn.call(app);}catch(e){o[k+"_err"]=String((e&&e.message)||e);}}' +
+      'g("disc",app._isDiscussionContext);g("cap",app._isStandaloneCaptchaPage);' +
+      'g("blocked",app._checkBlockedByCrossOrigin);g("dwait",app._handleDiscussionWait);' +
+      'g("home",app._enterChapterFromCourseHome);g("skip",app._skipIfCompleted);' +
+      'g("sub",app._checkSubmitConfirmDialog);g("mon",app._monitorQuizSubmit);' +
+      'g("popup",app._activePopupBlock);g("cont",app._tryContinueStudyPrompt);' +
+      'return o;})()');
+    var gateKeys = Object.keys(gates || {});
+    var gateHit = gateKeys.filter(function (k) { return gates[k] === true; });
+    var gateErr = gateKeys.filter(function (k) { return k.indexOf('_err') > 0; });
+    check('190-K 前面那些门（讨论、独立验证码、内容帧读不到、等讨论、首页进章、已完成、交卷确认、' +
+      '盯提交、弹题、继续学习）十格全是 false 且一格都没抛 —— 这一拍才真走得到 `_runOcsStyleStudy`，' +
+      '点名是哪一格挡的，别让人猜「没走到」还是「改坏了」',
+      gateKeys.length === 10 && gateHit.length === 0 && gateErr.length === 0, JSON.stringify(gates));
+
+    // ④ 真 `_runTick()` 一拍：与上一场最大的分别是**这一场在同一拍内就挂回来**（那一格不是异步循环），
+    //    而 `_ocsStudyStarted` 必须**照旧为假** —— 它是「认领这一拍的不是 OCS 那一格」的机器证；
+    //    `rateTick` 增 0 则是「补丁不能装在 `_isPlaying` 那一格」的机器证（现场量回它一次都没执行过）。
+    var a1 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190i=[];' +
+      'window.__b190RV=app._runtimeVersion;' +
+      'return new Promise(function(res){Promise.resolve(app._runTick()).then(function(){' +
+      '  setTimeout(function(){' +
+      '    var hit=null;(window.__b190i||[]).forEach(function(m){' +
+      '      if(String(m.message||"")==="media guard rearmed"&&!hit){var t=(m&&m.meta)||{};' +
+      '        hit={reason:String(t.reason||""),level:String(m.level||""),' +
+      '          ct:t.currentTime,dur:t.duration};}});' +
+      '    var dg={};try{dg=window.__b190diag(app);}catch(e2){dg={err:String(e2)};}' +
+      '    res(JSON.stringify({hit:hit,handle:app._checkInterval,' +
+      '      ocs:app._ocsStudyStarted===true,playing:app._isPlaying===true,' +
+      '      arm:window.__b190N.arm-window.__b190Base.arm,' +
+      '      rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '      collect:window.__b190N.collect-window.__b190Base.collect,diag:dg}));},300);' +
+      '  },function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});});})()'));
+    var handle1 = a1.handle;
+    check('190-L 同一拍内 style 分支就把巡检挂回来了：`_checkInterval` 非空、`_startVideoMonitoring` 增 1、' +
+      '日志原话 `media guard rearmed` 点名 `reason` 是 `ocs-style-active-job`（不是 `ocs-runner-active-job`，' +
+      '两格各管一种页面形状）；而 `_ocsStudyStarted` 照旧为假（证明认领这一拍的不是 OCS 那一格）、' +
+      '`_ensurePlaybackRate` 以 `tick` 为由那一格增 0、照旧早退（`_collectVisibleTaskFrames` 增 0 = 仲裁顺序一个字没动）',
+      !a1.tickError && a1.ocs === false && a1.handle !== null && a1.handle !== undefined &&
+      a1.arm === 1 && a1.rateTick === 0 && a1.collect === 0 && a1.playing === true &&
+      !!a1.hit && a1.hit.reason === 'ocs-style-active-job' && a1.hit.level === 'warn' &&
+      a1.hit.ct === 792.4 && a1.hit.dur === 1345.8, JSON.stringify(a1));
+
+    // ⑤ 挂回来的巡检必须**真的在跑**，而不是只多了一枚句柄（等两个周期：1500 毫秒 × 2）。
+    await sleep(3200);
+    var g1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={handle:app._checkInterval,wall:app._guardLastWallTs,' +
+      '  seeks:(window.__b190Seeks||[]).length,tried:0,seeked:[],' +
+      '  rateGuard:window.__b190N.rateGuard-window.__b190Base.rateGuard};' +
+      'try{var k=String(app._getMediaSeekKey(app._videoEl));' +
+      '  if(app._seekTriedKeys&&app._seekTriedKeys[k])out.tried=1;}catch(e){}' +
+      '(window.__b190i||[]).forEach(function(m){if(String(m.message||"")==="seekable video: seek to end"){' +
+      '  var t=(m&&m.meta)||{};out.seeked.push(String(t.reason||"")+"|"+Number(t.from)+"|"+Number(t.to));}});' +
+      'return out;})()'
+    );
+    var guardSeeks = (g1.seeked || []).filter(function (s) { return s.indexOf('guard|') === 0; });
+    check('190-M 挂回来的巡检真在跑：`seekable video: seek to end` 里 `reason` 是 `guard` 的恰好一条、' +
+      '「这一支已经试过」那本账被填上（tried=1）、位置确实写过一次，而 `_ensurePlaybackRate` 以 `guard` ' +
+      '为由那一格也至少跑过一拍 —— 句柄非空但一次都没回调，等于只补了一枚假句柄',
+      !!g1 && guardSeeks.length === 1 && g1.tried === 1 && g1.seeks >= 1 &&
+      g1.rateGuard >= 1 && g1.handle === handle1 && g1.wall > 0, JSON.stringify(g1));
+
+    // ⑥ 句柄已经在时**不许重建**：`_startVideoMonitoring()` 一进门就把 `_guardLastTime /
+    //    _guardLastWallTs / _guardLastResumeTs` 三格清零，每一拍都重建等于把「没进展就自愈」的基准天天擦掉
+    //    （AGENTS §2 #13 同一族：跨拍累积的记账不许被同一轮动作清零）。
+    var a3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){' +
+      '  Promise.resolve(app._runTick()).then(function(){return Promise.resolve(app._runTick());})' +
+      '  .then(function(){setTimeout(function(){res(JSON.stringify({handle:app._checkInterval,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,wall:app._guardLastWallTs,' +
+      '    ocs:app._ocsStudyStarted===true,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect}));},1400);})' +
+      '  .catch(function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});' +
+      '});})()'));
+    check('190-N 句柄还在时再走两拍一次都不重建（`arm` 仍是 1、句柄 id 与上一格逐字相同），' +
+      '停滞基准 `_guardLastWallTs` 没被抹回 0（它一归零，「没进展就自愈」那一格就永远数不满 6 秒）；' +
+      '这一拍仍由 style 分支认领（`_ocsStudyStarted` 照旧为假）、照旧早退（`rateTick` 与 `collect` 都增 0）',
+      !a3.tickError && a3.arm === 1 && a3.handle === handle1 && a3.wall > 0 &&
+      a3.wall === g1.wall && a3.ocs === false && a3.rateTick === 0 && a3.collect === 0,
+      JSON.stringify({ a3: a3, wall1: g1.wall }));
+
+    // ⑦ 判据的四格，每格只在它自己身上红 —— 与上一场同一张表（两处调用共用 `_rearmMediaGuardIfLost`
+    //    这一个真源，所以这里点的是**判据本身**，不是调用点；调用点由 190-L 的 reason 点名）。
+    //    ⚠️ 顺序要紧：先问「已经挂着」那一格，再把句柄清掉逐格隔离 —— 生产那一行是
+    //    `if (this._checkInterval || !this._isPlaying) return false;`，句柄还挂着时后两格会被它
+    //    一起挡成 false，三条拒绝里其实只有一条在承重。整块同步跑完、中间不许 await。
+    var a4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={armedCell:-1,noPlayCell:-1,endedCell:-1,liveCell:-1,armDelta:-1,handle:-1,handleBefore:-1};' +
+      // 同上一场：问「已经挂着」之前句柄必须真挂着（上游捡回来留下的），否则第一格是自己挂的。
+      'out.handleBefore=app._checkInterval!==null?1:0;' +
+      'out.armedCell=app._rearmMediaGuardIfLost("b191-already-armed")?1:0;' +
+      'var a0=window.__b190N.arm;' +
+      'app._clearCheckInterval();' +
+      'app._isPlaying=false;out.noPlayCell=app._rearmMediaGuardIfLost("b191-not-playing")?1:0;' +
+      'app._isPlaying=true;' +
+      'window.__b190Ended=true;out.endedCell=app._rearmMediaGuardIfLost("b191-ended")?1:0;' +
+      'window.__b190Ended=false;' +
+      'out.liveCell=app._rearmMediaGuardIfLost("b191-live-media")?1:0;' +
+      'out.armDelta=window.__b190N.arm-a0;out.handle=app._checkInterval!==null?1:0;' +
+      'return out;})()'
+    );
+    check('190-O `_rearmMediaGuardIfLost` 四格逐格对上：句柄还在时拒绝、没在播时拒绝、这一支已结束时' +
+      '拒绝，而「句柄空、在播、没结束」那一格必须真挂回来（正向对照，少了它三条拒绝可能全是空函数给的）；' +
+      '四格里只有最后一格动过 `_startVideoMonitoring`（armDelta 恰 1）并留下了句柄；' +
+      '`handleBefore` 必须为 1 —— 问第一格之前句柄真是上游挂上的，不是这一格自己挂的',
+      !!a4 && a4.handleBefore === 1 && a4.armedCell === 0 && a4.noPlayCell === 0 &&
+      a4.endedCell === 0 && a4.liveCell === 1 && a4.armDelta === 1 && a4.handle === 1,
+      JSON.stringify(a4));
+
+    // 收尾：拆证人、停巡检、把状态交回出厂形状（页面那本账是整轮共用的，AGENTS §5）。
+    //       这一场没有异步循环要停 —— `_ocsStudyStarted` 本轮一直是假，正是 190-L 证的那件事。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190Ended=false;window.__b190T=0;' +
+      'app._clearCheckInterval();app._clearTickLoop();' +
+      'delete app._ensurePlaybackRate;delete app._startVideoMonitoring;' +
+      'delete app._collectVisibleTaskFrames;delete app.nextUnit;' +
+      'app._videoEl=null;app._isPlaying=false;app._videoCount=0;' +
+      'app._currentVideoIndex=0;app._activeJobId="";' +
+      'var v=document.getElementById("omitone-video");' +
+      'try{if(v)v.pause();}catch(e){}return true;})()');
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

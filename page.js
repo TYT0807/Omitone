@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '8407e715ce';
+var OMITONE_CODE_REV = 'f52f5b0c68';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -3122,6 +3122,32 @@ var OMITONE_CODE_REV = '8407e715ce';
         this._checkInterval = null;
       }
       this._syncAudioKeepalive();
+    },
+
+
+    // 「这一支还在播，可巡检的间隔没了」= 自锁：拖结尾、90% 提前收尾、「没进展就自愈」三件事
+    // 一起失效，现场表现成整支只能按 1x 白播（会话任务 #190 现场实测：`_checkInterval` 恒 null
+    // 而 `tickEpoch` 照涨、`_guardLastWallTs` 越老越久）。
+    // ⚠️ **只在真的没有句柄时动手** —— `_startVideoMonitoring()` 一跑就把
+    //   `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，无条件调它
+    //   等于每拍把「没进展」的账抹平，自愈判据永远攒不满（AGENTS §2 #13 同一族）。
+    // ⚠️ 两个调用方都要在，而且**必须是这两处**：`60-tasks-detect.js` 的
+    //   `ocs-runner-active-job`（有可读 `#iframe` 的学习页 = 现场真正待着的地方）与
+    //   `62-tasks-run.js` 的 `ocs-style-active-job`（`#iframe` 读不到、attachment 直挂顶层那类页）。
+    //   `_runTick` 下面那一格 `_isPlaying` **走不到** —— `_isPlaying` 为真时上面两发之一
+    //   必定先认领这一拍（`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集），
+    //   只装在那里等于装了一条现场永不执行的代码（上一轮就栽在这格，2026-11-20 现场只读量回）。
+    _rearmMediaGuardIfLost: function (reason) {
+      if (this._checkInterval || !this._isPlaying) return false;
+      var media = this._videoEl || this._getVideoEl();
+      if (!media || media.ended) return false;
+      this._startVideoMonitoring();
+      emitRuntimeLog('warn', 'media guard rearmed', {
+        reason: reason || '',
+        currentTime: Math.round(Number(media.currentTime) * 10) / 10,
+        duration: Math.round(Number(media.duration) * 10) / 10
+      });
+      return true;
     },
 
 
@@ -6761,6 +6787,14 @@ var OMITONE_CODE_REV = '8407e715ce';
             //    不刷心跳会让"正常在推进的一轮"被看门狗当成卡死。
             self._tickProgress('ocs study loop');
             if (self._isActiveStudyJobPending('ocs-runner-active-job')) {
+              // ⚠️ **现场学习页真正待着的就是这一格**（2026-11-20 现场只读量回：`_ocsStudyStarted`
+              // 为真 → `_runTick` 每拍在 `_ensureOcsStudyRunner()` 那一格 return，走不到下面
+              // `_isPlaying` 那一格；而同一刻 `_checkInterval` 是 null、`_isPlaying` 与
+              // `_activeMediaJobPending` 都是真 —— 一支 22 分钟的视频就这么按 1x 白播）。
+              // 所以巡检掉了要在这里捡回来。⚠️ 别去 `_runTick` 的 `if (this._isPlaying)` 那一格装 ——
+              // 现场量回那一行一次都没执行过（就是上面那两句）；另一格形状（没有可读 `#iframe` 的页面）
+              // 由 `62-tasks-run.js` 的 `ocs-style-active-job` 管，两处共用真源 `_rearmMediaGuardIfLost`。
+              self._rearmMediaGuardIfLost('ocs-runner-active-job');
               await sleep(1000);
               continue;
             }
@@ -7768,6 +7802,9 @@ var OMITONE_CODE_REV = '8407e715ce';
       }
 
       if (this._isActiveStudyJobPending('ocs-style-active-job')) {
+        // 没有可读 `#iframe` 的那一类页面（attachment 直挂顶层文档）真正待着的格子。
+        // 巡检掉了要在这里捡回来，判据与 OCS 循环那一格共用真源 `_rearmMediaGuardIfLost`。
+        this._rearmMediaGuardIfLost('ocs-style-active-job');
         this._studyCompleteAt = 0;
         return true;
       }
@@ -9158,6 +9195,14 @@ var OMITONE_CODE_REV = '8407e715ce';
           var playingVideo = this._getVideoEl();
           if (playingVideo && !playingVideo.ended) {
             this._ensurePlaybackRate(playingVideo, "tick");
+            // ⚠️ 这一格在"视频还活着"时**走不到**：`_isPlaying` 为真 → 上面
+            //   `_ensureOcsStudyRunner()`（有可读 `#iframe` 的学习页）或
+            //   `_runOcsStyleStudy()` 的 `_isActiveStudyJobPending()`（没 `#iframe` 的页，
+            //   它是 `_isActiveMediaPending` 的超集）先认领了这一拍。
+            //   所以"巡检掉了要捡回来"装在**那两处**（`60-tasks-detect.js` 的
+            //   `ocs-runner-active-job` 与 `62-tasks-run.js` 的 `ocs-style-active-job`），
+            //   别装在这里 —— 现场量回过：`_checkInterval` 恒 null 而 `tickEpoch` 照涨，
+            //   这一行一次都没执行过（会话任务 #190，2026-11-20）。
             return;
           }
           if (playingVideo && playingVideo.ended) {
