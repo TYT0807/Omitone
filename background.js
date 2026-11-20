@@ -625,6 +625,7 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
         }
         var next = Object.assign({}, current, payload.patch);
         delete next.forceLearn;
+        delete next.playbackRate;
         if (payload.patch.apiConnectionFailed === false && !Object.prototype.hasOwnProperty.call(payload.patch, 'apiConnectionError')) {
           delete next.apiConnectionError;
         }

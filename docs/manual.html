@@ -354,11 +354,36 @@
   </p>
 </div>
 
+<div class="box warn">
+  <div class="t">装完必做的一步：把它的图标<b>钉在工具栏上</b></div>
+  <p>
+    Edge / Chrome 默认把新装的扩展<b>收进地址栏右边那枚拼图（⋯）菜单里</b>，
+    图标本身不显示出来。<b>请把它钉出来</b>：点那枚拼图 → 在列表里找到
+    <b>Omitone</b> → 点它右边的<b>图钉／「固定到工具栏」</b>，
+    让 Omitone 的图标<b>常驻在地址栏右边</b>。
+  </p>
+  <p>
+    <b>为什么要专门做这一步：</b>刷课的入口<b>只有</b>弹窗里那枚蓝色的<b>「开始运行」</b>。
+    学习通页面上原来还有一张浮在正中间的卡片，带它自己的两个开关（自动连播 / 自动答题）——
+    那两个开关<b>只改这一页内存里的设置，不会存下来</b>：刷新一次、跳到下一节，
+    页面重新读的是弹窗里那一份，卡片上的选择就丢了。两处各说各话，已经整张删掉，
+    页面里不再有第二个能改设置的地方。
+    入口只剩弹窗一个，就得保证它<b>随时点得到</b>：图标没钉出来时每次都要先翻拼图菜单，
+    而页面正在自动翻页、弹验证码的时候，人往往找不到那枚图标，
+    看起来就成了「插件没反应」。<b>钉在旁边才行。</b>
+  </p>
+</div>
+
 <div class="box ok">
   <div class="t">到这里就装完了。现在去做什么？</div>
   <p>
-    打开任意一门学习通课程页面，<b>右下角会出现一个 Omitone 面板</b>。
-    看到它 = 装对了。接下来点「开始运行」就能刷课 ——
+    打开任意一门学习通课程页面，<b>右下角会出现 Omitone 的吉祥物</b>（弹窗里
+    「刷课页显示吉祥物」默认开着；关掉她这一页就没有她的影子）。
+    <b>看到她 = 这一页被扩展认出来了。</b>
+  </p>
+  <p>
+    接着点工具栏那枚图标 → 弹窗顶部那枚蓝色的<b>「开始运行」</b>，页面右下角才会再冒出
+    <b>一块状态浮窗</b>，视频自己开始播 —— 到这一步它就在干活了。
     <b>视频、文档、PPT、讨论、投票这些不接大模型，不填 Key 也能跑</b>；
     但<b>课里的测验 / 作业和验证码是要 Key 的</b>（见第 3 章）。
     <b>没填 Key 时遇到测验会跳过不答</b>（这一节会先按住，不会把没做的题说成做完），其余照常。
@@ -383,7 +408,7 @@
   <thead><tr><th style="width:30%">功能</th><th>说明</th><th style="width:20%">需要 API Key</th></tr></thead>
   <tbody>
     <tr><td>视频 / 音频自动播放</td><td>自动开播、被暂停自动抢回、播完自动翻节</td><td>不需要</td></tr>
-    <tr><td>自动最大倍速</td><td>读播放器菜单取速度上限；读不到就逐档试探</td><td>不需要</td></tr>
+    <tr><td>自动最大倍速</td><td>读播放器菜单取速度上限；问不到最多连问三发，仍问不到就按原速播完这一支</td><td>不需要</td></tr>
     <tr><td>拖到结尾</td><td>可拖动的视频/音频直接跳到片尾，每一支只判断一次（没跳成最多再补两次）</td><td>不需要</td></tr>
     <tr><td>PPT / 文档 / 图片</td><td>自动翻页并上报完成</td><td>不需要</td></tr>
     <tr><td>讨论任务点</td><td>进话题页留一句言 → 自动返回 → 继续刷课；平台<b>已经记成完成</b>的那条不再重复发</td><td>不需要</td></tr>
@@ -582,16 +607,12 @@
     <text x="128" y="130" font-size="11" fill="#16181d" font-family="sans-serif" font-weight="600">播放</text>
     <text x="164" y="130" font-size="8.5" fill="#767d8a" font-family="sans-serif">不需 Key</text>
     <text x="494" y="130" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">▾</text>
-    <text x="128" y="150" font-size="10" fill="#444a55" font-family="sans-serif">播放速度</text>
-    <text x="494" y="150" font-size="10" fill="#767d8a" text-anchor="end" font-family="sans-serif">1.0x</text>
-    <rect x="128" y="156" width="366" height="4" rx="2" fill="#e3e6ec"/>
-    <circle cx="132" cy="158" r="6" fill="#1f6feb"/>
-    <text x="128" y="178" font-size="10" fill="#444a55" font-family="sans-serif">自动倍速（跟随视频最大倍速）</text>
-    <rect x="462" y="169" width="32" height="16" rx="8" fill="#1f6feb"/>
-    <circle cx="486" cy="177" r="6" fill="#fff"/>
-    <text x="128" y="198" font-size="10" fill="#444a55" font-family="sans-serif">可拖动的视频/音频直接拖到结尾</text>
-    <rect x="462" y="189" width="32" height="16" rx="8" fill="#1f6feb"/>
-    <circle cx="486" cy="197" r="6" fill="#fff"/>
+    <text x="128" y="156" font-size="10" fill="#444a55" font-family="sans-serif">自动倍速（跟随视频最大倍速）</text>
+    <rect x="462" y="147" width="32" height="16" rx="8" fill="#1f6feb"/>
+    <circle cx="486" cy="155" r="6" fill="#fff"/>
+    <text x="128" y="184" font-size="10" fill="#444a55" font-family="sans-serif">可拖动的视频/音频直接拖到结尾</text>
+    <rect x="462" y="175" width="32" height="16" rx="8" fill="#1f6feb"/>
+    <circle cx="486" cy="183" r="6" fill="#fff"/>
 
     <!-- 折叠的分组 -->
     <line x1="110" y1="206" x2="510" y2="206" stroke="#e3e6ec"/>
@@ -1048,7 +1069,10 @@
   <thead><tr><th style="width:31%">界面上那一行</th><th style="width:8%">出厂</th><th>它管什么 · 什么时候动它</th></tr></thead>
   <tbody>
     <tr><td><b>自动倍速（跟随视频最大倍速）</b></td><td>开</td>
-      <td>读播放器自己的倍速档位，取它能支持的最快那一档；读不到就逐档试探。<br>
+      <td>读播放器自己的倍速档位，取它能支持的最快那一档。<b>没有手动的「播放速度」档了</b> ——
+      往播放器上写倍速这个动作本身，在被站点按住的视频上就会抽搐、黑屏，所以只能跟着播放器能给的走。<br>
+      读不到上限时<b>最多连问三发</b>，还问不出就这一支按原速播完（换下一支再问），
+      不会每 1.5 秒反复试一遍。<br>
       <b>什么时候关：</b>你怀疑倍速把站点惹毛了（它把你按回 1x、或者记不上进度），
       关掉它就只按正常速度播 —— 慢，但最不像作弊。</td></tr>
     <tr><td><b>兼容慢机（低配 / CPU 高负载时放宽等待）</b></td><td>自动</td>
@@ -1759,6 +1783,14 @@
       <td>扩展开始工作了。<b>看到它就说明「接上页面了」</b>，是最好的第一信号。</td>
     </tr>
     <tr>
+      <td><code>config reloaded (manual)</code></td>
+      <td>有人在页面控制台里手动敲了 <code>xxtAI.reload()</code> —— 它<b>只把弹窗里那份配置重新读进内存</b>，
+          括号里是读到的三格（<code>autoNext</code> / <code>enableQuiz</code> / <code>hasApiKey</code>）。
+          <b>它不会开始刷课</b>：要开始还是点弹窗顶部那枚「开始运行」。
+          页面上原来那张浮在正中间、带自己两个开关的「开始」卡片<b>已经整张删掉了</b>
+          （那两个开关只改这一页内存、不存下来，刷新就丢，与弹窗各说各话）。</td>
+    </tr>
+    <tr>
       <td><code>llm prefix cache hit:… miss:…</code></td>
       <td>这次请求花掉多少 token、其中多少走了便宜的缓存。属于正常记录。</td>
     </tr>
@@ -1796,6 +1828,20 @@
           <code>media start stuck, left to human</code></td>
       <td>视频在开头黑屏 / 画面抽搐、自动唤醒点不亮 —— 前者：扩展代你按下了播放器自带的「开始」键；
           后者：试完仍不行（同一节最多两次），已停下请你<b>亲手点一下「开始」或按 F5</b>。</td>
+    </tr>
+    <tr>
+      <td><code>rate held back by player</code><br><code>rate max unreadable, keep native speed</code></td>
+      <td>两句都在说<b>倍速是谁定的</b>。前者：播放器把最高那一档<b>按回了低一档</b>，扩展就照它接住的那一档走
+          （<code>tried</code> 是试的那一档、<code>held</code> 是它真接住的那一档），<b>不是故障</b>；
+          后者：这一支<b>连问三发都没问出上限</b>，于是这一支<b>按原速播完</b>，换下一支再问 ——
+          它不会每 1.5 秒反复试一遍，因为「反复往播放器上写倍速」这个动作本身，在被按住的视频上
+          就是<b>画面抽搐、黑屏</b>的成因。</td>
+    </tr>
+    <tr>
+      <td><code>site condition says not draggable, skip seek to end</code></td>
+      <td>站点在卡片上自己写了<b>「当前视频不可拖拽」</b>，所以扩展<b>不去划那根进度条</b>，
+          这一支按正常速度播完。这句话是<b>站点说的，不是扩展判的</b>，
+          括号里带着站点那句原话；它<b>不是故障</b>，也不影响「看到 90% 就进下一个」那一枚。</td>
     </tr>
     <tr>
       <td><code>popup quiz unanswerable</code></td>
@@ -1880,6 +1926,16 @@
       <td><code>study idle declined: …不点前进</code></td>
       <td>当前这一页<b>认不出课程结构</b>（多半不在章节页上），所以插件<b>停手不乱点</b>。
           请你手动回到章节页。它每 2 分钟会说一次，不会只说一次就永久静默。</td>
+    </tr>
+    <tr>
+      <td><code>study stuck: 本节没有可识别的任务，点了前进也没反应</code><br><code>study stuck: 下一节点了没反应，已停止空转</code></td>
+      <td>这两句都是<b>这一节真的走不动了</b>，两句都会<b>亮「注意」</b>，区别在断在哪一环：
+          前者 —— 这一节<b>读不出任何任务点</b>，插件<b>替点过「下一节」也没让页面动</b>，
+          它<b>每 2 分钟重播一次</b>并带上当前地址；
+          后者 —— 进度连着几轮<b>一格没变</b>、点了前进还是不动，插件已<b>停止在这一节空转</b>。
+          看到这两句请人工看一眼那一节（多半是页面结构变了、或那一节要你先做点别的），
+          <b>不会自己恢复</b>。
+          后一句若同时还说了「这一门刷完了 / 已换下一门」，那前面的空转已经由换课接手，不用管。</td>
     </tr>
     <tr>
       <td><code>study displaced, going back</code><br><code>study displaced, held back</code><br><code>study displaced, gave up</code><br><code>study idle: not our page</code></td>

@@ -1893,7 +1893,7 @@ function checkPagePartHeaders() {
 //
 // 只盯**已知会挂起的原生调用**（网络 / 读响应体 / 媒体 play），并要求同一行出现
 // `_withTimeout(`。不写"名字里带 play/load 就算"那种宽泛规则 —— 实测会把
-// `_probeMaxPlaybackRate()`（内部自带超时）误报，误报多了守卫就没人信了。
+// `_detectMaxPlaybackRate()`（内部各发都自带超时或有限轮询）误报，误报多了守卫就没人信了。
 // ---------------------------------------------------------------------------
 function checkAwaitTimeouts() {
   var partsDir = path.join(ROOT, 'src', 'page');

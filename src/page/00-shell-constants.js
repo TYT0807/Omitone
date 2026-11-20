@@ -106,7 +106,6 @@
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
-    playbackRate: 1.0,
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,

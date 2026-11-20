@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **532 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 542 个方法；状态字段 166 个。
+（跑出来大致是：14 个域片段合计 **533 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 543 个方法；状态字段 168 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*440 行*
+*439 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*774 行 / 4 方法 + 166 状态字段*
+*778 行 / 4 方法 + 168 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -136,10 +136,10 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1955 行 / 57 方法*
+*1975 行 / 58 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
-倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
+倍速只试一发与钳制（`_ensurePlaybackRate` / `_detectMaxPlaybackRate` / `_tryRateOnce`）、seek 到结尾 `_trySeekToEnd`、
 90% 提前结束、防拖拽、音频保活、PPT 内音频等待。
 「拖不拖」先问站点自己在任务卡上写的那句完成条件（`_readSiteSeekCondition` 五格口径）。
 
@@ -261,7 +261,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `90-console-api-startup.js`
 
-*358 行*
+*262 行*
 
 **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 `window.xxtAI` 控制台入口与启动逻辑。
 

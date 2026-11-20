@@ -18,96 +18,6 @@
 // @omitone-part-header-end
   };
 
-  function removeStartPanel() {
-    var panel = document.getElementById('xxt-panel');
-    if (panel) panel.remove();
-  }
-
-  function showStartPanel(config) {
-    removeStartPanel();
-
-    var currentConfig = mergeConfig(config);
-    var hasApiKey = !!(currentConfig.hasApiKey || currentConfig.randomAnswer);
-    var playOn = currentConfig.autoNext !== false;
-    var quizOn = !!(currentConfig.enableQuiz && hasApiKey);
-
-    var panel = document.createElement('div');
-    panel.id = 'xxt-panel';
-    panel.style.cssText = [
-      'position:fixed',
-      'top:50%',
-      'left:50%',
-      'transform:translate(-50%,-50%)',
-      'z-index:999999',
-      'background:#fff',
-      'border:1px solid #ddd',
-      'border-radius:10px',
-      'padding:24px',
-      'min-width:280px',
-      'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
-      'box-shadow:0 10px 30px rgba(0,0,0,.12)',
-      'color:#111'
-    ].join(';');
-
-    function renderToggle(on) {
-      return '<span style="display:inline-flex;width:36px;height:20px;background:' + (on ? '#111' : '#ddd') + ';border-radius:20px;position:relative;">' +
-        '<span style="position:absolute;top:2px;left:' + (on ? '18px' : '2px') + ';width:16px;height:16px;border-radius:50%;background:#fff;"></span>' +
-        '</span>';
-    }
-
-      panel.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">' +
-        '<strong style="font-size:15px;">' + APP_NAME + '</strong>' +
-        '<span style="font-size:11px;color:#999;">page runtime</span>' +
-      '</div>' +
-      '<div id="xxt-row-play" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;">' +
-        '<span>自动连播</span>' +
-        '<span id="xxt-toggle-play">' + renderToggle(playOn) + '</span>' +
-      '</div>' +
-      '<div id="xxt-row-quiz" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;' + (hasApiKey ? 'cursor:pointer;' : 'opacity:.45;') + '">' +
-        '<span>自动答题</span>' +
-        '<span id="xxt-toggle-quiz">' + (hasApiKey ? renderToggle(quizOn) : '<span style="font-size:11px;color:#999;">需 API Key</span>') + '</span>' +
-      '</div>' +
-      '<button id="xxt-btn-start" style="width:100%;margin-top:16px;padding:10px 0;border:none;border-radius:6px;background:#111;color:#fff;font-weight:600;cursor:pointer;">开始</button>' +
-      '<button id="xxt-btn-close" style="width:100%;margin-top:8px;padding:9px 0;border:1px solid #e6e6e6;border-radius:6px;background:#fff;color:#666;cursor:pointer;">关闭</button>';
-
-    document.body.appendChild(panel);
-
-    function updatePlay() {
-      var slot = document.getElementById('xxt-toggle-play');
-      if (slot) slot.innerHTML = renderToggle(playOn);
-    }
-
-    function updateQuiz() {
-      var slot = document.getElementById('xxt-toggle-quiz');
-      if (slot && hasApiKey) slot.innerHTML = renderToggle(quizOn);
-    }
-
-    document.getElementById('xxt-row-play').addEventListener('click', function () {
-      playOn = !playOn;
-      updatePlay();
-    });
-
-    if (hasApiKey) {
-      document.getElementById('xxt-row-quiz').addEventListener('click', function () {
-        quizOn = !quizOn;
-        updateQuiz();
-      });
-    }
-
-    document.getElementById('xxt-btn-start').addEventListener('click', function () {
-      panel.remove();
-      app.configs = mergeConfig(Object.assign({}, currentConfig, { autoNext: playOn, enableQuiz: quizOn && hasApiKey }));
-      app.run();
-      window._xxtApp = app;
-    });
-
-    document.getElementById('xxt-btn-close').addEventListener('click', function () {
-      panel.remove();
-      window._xxtApp = app;
-    });
-  }
-
   function shouldAutoStart() {
     var root = document.documentElement;
     if (!root) return false;
@@ -120,25 +30,16 @@
   app.configs = defaultConfig;
   window._xxtApp = app;
 
-  bridgeSend('get_config').then(function (config) {
+  // ⚠️ 这里**不再**弹那张居中的「开始 / 关闭」卡片（批次 146）。
+  // 启动入口只留插件弹窗的「开始运行」：它先写 xxtRunning、再带续跑标记重新注入，
+  // 走的就是下面 shouldAutoStart() 那一条。两处都能启动而状态只有一处更新，
+  // 用户看到的是「页面弹的卡片和插件弹窗说的话不一样」。
+  function startIfMarked(config) {
     app.configs = mergeConfig(config || defaultConfig);
-    // 只有"刷课进行中"（有续跑标记）时才自动开始——讨论页/验证码页也一样，
-    // 避免没在刷课时打开讨论区就被自动发评论
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    // 未刷课时进入讨论页/独立验证码页：保持静默，不显示面板、不做任何操作
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(app.configs);
-  }).catch(function () {
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(defaultConfig);
-  });
+    if (shouldAutoStart()) app.run();
+  }
+
+  bridgeSend('get_config').then(startIfMarked, function () { startIfMarked(null); });
 
   var preventPause = function (event) {
     event.stopPropagation();
@@ -159,10 +60,13 @@
   });
 
   window.xxtAI = {
+    // 手动入口：只把弹窗里改过的配置重新读进内存（批次 146 之后不再弹卡片，
+    // 启动一律走弹窗的「开始运行」）。返回配置本身，方便在控制台直接看。
     reload: function () {
-      bridgeSend('get_config').then(function (config) {
+      return bridgeSend('get_config').then(function (config) {
         app.configs = mergeConfig(config || defaultConfig);
-        showStartPanel(app.configs);
+        emitRuntimeLog('info', 'config reloaded (manual)', { autoNext: app.configs.autoNext !== false, enableQuiz: !!app.configs.enableQuiz, hasApiKey: !!app.configs.hasApiKey });
+        return app.configs;
       });
     },
     next: function () {

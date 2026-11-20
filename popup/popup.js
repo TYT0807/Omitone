@@ -1,5 +1,4 @@
 const DEFAULTS = {
-  playbackRate: 1.0,
   autoMaxPlaybackRate: true,
   // auto=按实测帧率自适应；on=强制 2 倍（弹窗开关打开时写入）
   slowMachineMode: "auto",
@@ -83,8 +82,6 @@ const PROVIDER_PRESETS = {
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  rate: $("rate"),
-  rateVal: $("rateVal"),
   autoMaxRate: $("autoMaxRate"),
   slowMachineMode: $("slowMachineMode"),
   enableMedia: $("enableMedia"),
@@ -260,6 +257,10 @@ function toast(msg, ms) {
 function withoutRemovedConfigFields(rawConfig) {
   const next = { ...(rawConfig || {}) };
   delete next.forceLearn;
+  // 「播放速度」滑条在批次 146 删了，`libs/runtime-policy.js` 里也不再登记这个键。
+  // 老用户存储里那条 `playbackRate` 得在**读回来的这一刻**摘掉：`validatePatch` 认不出
+  // 任何一个键就顶回整张补丁，症状是「所有开关都存不住」（批次 34 那一族），不是「这一根滑条坏了」。
+  delete next.playbackRate;
   return next;
 }
 
@@ -763,7 +764,6 @@ function escapeHtml(text) {
 
 async function saveToggleConfig(showToast = true) {
   const patch = withoutRemovedConfigFields({
-    playbackRate: parseFloat(els.rate.value),
     autoMaxPlaybackRate: autoMaxRateVal,
     slowMachineMode: slowMachineVal ? "on" : "auto",
     enableMedia: enableMediaVal,
@@ -1028,8 +1028,6 @@ async function load() {
   storedConfig = withoutRemovedConfigFields(result.config || {});
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 
-  els.rate.value = config.playbackRate;
-  els.rateVal.textContent = config.playbackRate + "x";
   mutedVal = !!config.muted;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
   slowMachineVal = config.slowMachineMode === "on";
@@ -1314,12 +1312,6 @@ window.addEventListener("pagehide", () => popupLogView.dispose());
 [els.systemPrompt, els.discussionReply, els.visionBudgetPerChapter, els.randomAnswerReviewSec].forEach((el) => {
   el.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
 });
-
-els.rate.addEventListener("input", () => {
-  els.rateVal.textContent = els.rate.value + "x";
-});
-
-els.rate.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
 
 els.providerPreset.addEventListener("change", async () => {
   apiTestGeneration++;

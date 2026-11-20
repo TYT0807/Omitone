@@ -14,7 +14,7 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（57 个）：
+ * 本段的方法（58 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
@@ -22,7 +22,7 @@
  *   _playChaoxingMediaJob、_startSlideMedia、_waitSlideAudioDone、
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
  *   _resetRateDetection、_scheduleMaxRateDetection、_detectMaxPlaybackRate、
- *   _readRateMenuMax、_probeMaxPlaybackRate、_waitRateSettle、
+ *   _readRateMenuMax、_tryRateOnce、_noteRateUnreadable、_waitRateSettle、
  *   _startVideoMonitoring、_clearCheckInterval、_rearmMediaGuardIfLost、_startAudioKeepalive、
  *   _stopAudioKeepalive、_syncAudioKeepalive、_checkVideoStatus、
  *   _finishCurrentMedia、_isRateLockedAtOne、_isNinetyPercentVideo、
@@ -884,8 +884,8 @@
       if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
         return this._clampAutoRate(this._detectedMaxRate);
       }
-      var target = Number(this.configs.playbackRate || 1);
-      return isFinite(target) && target > 0 ? target : 1;
+      // 弹窗里的「播放速度」滑条已删（批次 146）—— 没有量到的上限就按原速，不替用户猜一个倍速。
+      return 1;
     },
 
 
@@ -902,6 +902,24 @@
     _resetRateDetection: function () {
       this._detectedMaxRate = 0;
       this._rateDetectVideo = null;
+      this._rateUnknownVideo = null;
+      this._rateUnknownTries = 0;
+    },
+
+
+    // 「问不出上限」单独占一格，而且**不许变成每 1.5 秒问一次**：
+    // 问的方式是真往播放器上写倍速，写得勤 = 用户报的「抽搐 + 黑屏」那个动作本身。
+    // 连三发问不出就认这一支「问不到」，按原速播完，换了媒体再问（AGENTS §2 #12/#17 那一族：
+    // 读不出不等于结论，但也不许把"再试一次"实现成"永远在试"）。
+    _noteRateUnreadable: function (video) {
+      var self = this;
+      if (this._rateUnknownVideo !== video) {
+        this._rateUnknownVideo = video;
+        this._rateUnknownTries = 0;
+      }
+      this._rateUnknownTries = Number(this._rateUnknownTries || 0) + 1;
+      if (this._rateUnknownTries < 3) { this._rateDetectVideo = null; return; }
+      emitRuntimeLog('warn', 'rate max unreadable, keep native speed', { tries: this._rateUnknownTries });
     },
 
 
@@ -922,12 +940,12 @@
             emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
             self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
           } else {
-            self._rateDetectVideo = null;
+            self._noteRateUnreadable(video);
           }
         }).catch(function () {
           self._rateDetectBusy = false;
           if ((self._rateEpoch || 0) !== epoch) return;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         });
       };
 
@@ -952,7 +970,7 @@
         if (tries >= 60) {
           clearInterval(timer);
           self._rateDetectBusy = false;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         }
       }, 500);
     },
@@ -966,14 +984,41 @@
         emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
         return this._clampAutoRate(menuMax);
       }
-      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
-      var probed = await this._probeMaxPlaybackRate(video);
-      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
-      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
-      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
-      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
-      if (!probed) return 0;
-      return this._clampAutoRate(probed);
+      // 菜单没列档位时**只试一发**（批次 146；旧版是从 4x 往下试八档、每档等 700 毫秒）。
+      return await this._tryRateOnce(video);
+    },
+
+
+    // 一次受控尝试：写「上限档」，读回播放器真正接住的那一档。
+    // ⚠️ 必须与 defaultPlaybackRate **同写**：HTML 媒体在换源 / 站点重挂播放器时把 playbackRate
+    //   复位到 defaultPlaybackRate。旧版八档阶梯只写 playbackRate，于是每一档都被复位成 1，
+    //   「上限就是 1 倍」是我们自己写出来的答案（现场 2026-11-20 学到：菜单恒读不出、
+    //   detectedMaxRate 却是探测给的 1 —— 全程 1x 就是这么来的）。
+    // ⚠️ 被拉回也要交回一个**非 0** 的读数：0 在调用方那一格是「不知道」，会清空
+    //   `_rateDetectVideo` → 下一拍再试一遍 → 每 1.5 秒和站点对打一次倍速，
+    //   用户看到的就是「抽搐 + 黑屏」。量到 1 就是量到了 1。
+    _tryRateOnce: async function (video) {
+      var cap = this._clampAutoRate(this.configs.playbackRateCap || 4);
+      if (!(cap > 1)) return 0;
+      var before = Number(video.playbackRate || 1);
+      if (Math.abs(before - cap) <= 0.01) return this._clampAutoRate(before); // 播放器自己就在这个档
+      this._rateProbing = true;
+      var held = 0;
+      var denied = false;
+      try {
+        try { video.defaultPlaybackRate = cap; } catch (e1) {}
+        try { video.playbackRate = cap; } catch (e2) { denied = true; }
+        if (!denied) held = await this._waitRateSettle(video, 700);
+      } finally {
+        this._rateProbing = false;
+      }
+      if (denied || !(held > 0)) return 0; // 写不进去 / 压根读不回 = 不知道，别替站点宣布上限
+      if (Math.abs(held - cap) > 0.05) {
+        // 被拉回：把 default 一起落到站点认的那一档，否则站点每次复位都会再触发一次写入
+        try { video.defaultPlaybackRate = held; } catch (e3) {}
+        emitRuntimeLog('info', 'rate held back by player', { tried: cap, held: held });
+      }
+      return this._clampAutoRate(held);
     },
 
 
@@ -1011,31 +1056,6 @@
         if (maxRate > 0) break;
       }
       return maxRate;
-    },
-
-
-    _probeMaxPlaybackRate: async function (video) {
-      var self = this;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
-      var best = 0;
-      this._rateProbing = true;
-      try {
-        for (var i = 0; i < candidates.length; i++) {
-          var candidate = candidates[i];
-          try { video.playbackRate = candidate; } catch (e) { continue; }
-          var settled = await self._waitRateSettle(video, 700);
-          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
-            best = candidate;
-            break;
-          }
-          if (settled > best) best = settled;
-        }
-      } finally {
-        this._rateProbing = false;
-      }
-      return best;
     },
 
 

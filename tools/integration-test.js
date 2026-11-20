@@ -1830,7 +1830,7 @@ async function testThinkingLevels() {
     ['off', 'low', 'high'].forEach(function (b) {
       var lo = THINKING.levelRank(a) <= THINKING.levelRank(b) ? a : b;
       var hi = THINKING.levelRank(a) <= THINKING.levelRank(b) ? b : a;
-      var patch = { playbackRate: 1.5, enableQuiz: true, thinkingRangeExam: lo + '-' + hi };
+      var patch = { playbackRateCap: 1.5, enableQuiz: true, thinkingRangeExam: lo + '-' + hi };
       var r = POLICY.validatePatch(patch, 'popup');
       // 反序也要收：界面永远从小到大写，但存储可能被手改，真源取小当下限 ——
       // 这里比它严就会把「真源读得懂」的串顶成 invalid_patch，而它拒的是**整张补丁**。

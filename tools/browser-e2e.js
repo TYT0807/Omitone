@@ -5235,8 +5235,9 @@ SCENARIOS.push({
       drag.dx === -120 && drag.dy === 90 && drag.clampedLeft === drag.clampExpect && drag.errs.length === 0,
       JSON.stringify(drag).slice(0, 220));
 
-    // ③ 她不再压在右下角那两块东西上。沙盒里状态面板**不会出现**（它只在点了「开始刷课」
-    //    之后挂），所以这里断的是现场量出来的两条"让位带"，而不是去比一个不存在的矩形：
+    // ③ 她不再压在右下角那两块东西上。沙盒里状态面板**不会出现**（批次 146 起页面里那张
+    //    「开始」卡片已删，状态面板只由弹窗「开始运行」那条启动链路挂上；吉祥物则随页面加载挂载），
+    //    所以这里断的是现场量出来的两条"让位带"，而不是去比一个不存在的矩形：
     //      · 状态面板 bottom:18 + 高约 120 → 视口底部 138px 是它的带子
     //      · 学习通自己的右侧竖条 .iconBox 宽 40、左边缘在 vw-70
     //    实测默认锚点 right:84 / bottom:176 → 右边缘留 84、底边留 176，两条都过。
@@ -8472,21 +8473,27 @@ SCENARIOS.push({
 
     var rate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:1.5,autoMaxPlaybackRate:false,muted:true,enableSeek:true});' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:false,muted:true,enableSeek:true});' +
       'var v=document.getElementById("omitone-video");' +
+      // 关掉自动倍速 + 没有量到上限 = 唯一剩下的形状：原速。这里把量到的上限也清掉，
+      // 否则前一个场景留的 `_detectedMaxRate` 会让这一发测不到"原速"那一支。
+      'app._detectedMaxRate=0; app._rateDetectVideo=v; app._rateProbing=false;' +
+      'v.__rate=2;' +
       'app._ensurePlaybackRate(v,"e2e");' +
       'return {rateApplied:v.playbackRate, muted:v.muted};})()'
     );
-    check('倍速按配置应用（1.5x）', rate.rateApplied === 1.5, JSON.stringify(rate));
+    // 批次 146：弹窗那根「播放速度」滑条删了 —— 没有量到的上限就按原速，不替用户猜一个倍速。
+    // 断言反过来写才有牙：**先把播放器摁在 2x**，插件必须把它拉回 1x（旧写法在这一步会写成 1.5）。
+    check('关掉自动倍速后回到原速（滑条已删，不再有人为倍速）', rate.rateApplied === 1, JSON.stringify(rate));
     check('静音按配置应用', rate.muted === true, JSON.stringify(rate.muted));
 
     // 自动最大倍速的**夹紧**这一支以前是零覆盖：打桩播放器探测不到倍速菜单，
-    // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到配置值"，
-    // 而那句 `capped: r <= 2` 对着 1.5 恒为真 —— `_clampAutoRate` 的上限与 0.5 下限没有一条断言碰过。
+    // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到原速"，
+    // 而那句 `capped: r <= 2` 对着回落值恒为真 —— `_clampAutoRate` 的上限与 0.5 下限没有一条断言碰过。
     // 现在把探测结果直接钉成 6x / 0.2x，逼它走进夹紧那一支。
     var autoResult = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2,playbackRate:1.5});' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2});' +
       'var v=document.getElementById("omitone-video");' +
       // 钉住"已经探测过这台播放器"，否则这里会再排一次异步探测、把刚设的值改回去
       'app._rateProbing=false; app._rateDetectVideo=v;' +
@@ -8500,12 +8507,14 @@ SCENARIOS.push({
       autoResult && autoResult.over === 2 && autoResult.applied === 2, JSON.stringify(autoResult));
     check('自动倍速：夹紧的下限也在 —— 探测出 0.2x 这种荒值不许真按 0.2x 播',
       autoResult && autoResult.floor === 0.5, String(autoResult && autoResult.floor));
-    check('探测不到倍速时回落到配置值（不是 0、不是 NaN）',
-      autoResult && autoResult.fallback === 1.5, String(autoResult && autoResult.fallback));
+    // 批次 146：探测不到上限时**回落到原速**，不再是"回落到滑条值"（滑条与那个配置键一起删了）。
+    // 这一格是用户报「抽搐 + 黑屏」的那条路径的地板：猜不出来就别动播放器。
+    check('探测不到上限时回落到原速 1x（滑条已删，不许替用户猜一个倍速）',
+      autoResult && autoResult.fallback === 1, String(autoResult && autoResult.fallback));
 
     var seek = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       // 上一步的自动倍速测试可能把倍速探测置为进行中，而 _trySeekToEnd 在探测期间会主动让路
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
       'app._seekTriedKeys=null;' +
@@ -8521,7 +8530,7 @@ SCENARIOS.push({
     // 同样可拖到底、平台照常计完成。这里断言音频也被 seek 到 duration-3。
     var audioSeek = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
       'app._seekTriedKeys=null; app._seekRevertedKeys=null; app._activeJobId="e2e-audio";' +
       'var a=document.getElementById("omitone-audio");' +
@@ -8543,7 +8552,7 @@ SCENARIOS.push({
     );
     var waitOnce = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false; app._activeJobId="e2e-wait";' +
       // 倍速先钉成"锁在 1x"：否则 ninety 那一格是因为倍速而 false，测不到"等区间不算不可拖"这半截
       'app._detectedMaxRate=1;' +
@@ -8649,22 +8658,24 @@ SCENARIOS.push({
     check('_findMediaInDocument 能在文档里找到媒体元素（返回单个元素）',
       audio.foundInDoc === 'omitone-video', JSON.stringify(audio));
 
-    // 音频任务点应走配置倍速（不看自动最大倍速菜单）；
-    // 静音开关已删：插件不再替用户静音音频，要静音直接静音标签页。
     // ⚠️ 这条以前把 `muted:false` 写进配置再去断 `audio.muted===false` —— 那个判据在
     // `_ensurePlaybackRate` 里是 `video.muted = !isAudio && !!configs.muted`，把 `!isAudio` 整段删掉
     // 它也照样绿。**要钉住"音频不被插件静音"，必须先把用户的静音开关打开。**
+    // 倍速那一半在批次 146 换了形状：音频原先"跟配置倍速走"，而那个配置键（弹窗滑条）删了 ——
+    // 现在音频与视频同一条尺：没有量到的上限就按原速。先把两枚元素摁在 3x，再让守护跑一次。
     var audioRate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:2,autoMaxPlaybackRate:false,muted:true});' +
-      'app._rateProbing=false;' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:false,muted:true});' +
+      'app._rateProbing=false; app._rateDetectBusy=false; app._detectedMaxRate=0;' +
       'var a=document.getElementById("omitone-audio");' +
       'var v=document.getElementById("omitone-video");' +
+      'a.__rate=3; v.__rate=3;' +
       'app._ensurePlaybackRate(a,"e2e-audio");' +
       'app._ensurePlaybackRate(v,"e2e-video");' +
-      'return {rate:a.playbackRate, audioMuted:a.muted, videoMuted:v.muted};})()'
+      'return {rate:a.playbackRate, videoRate:v.playbackRate, audioMuted:a.muted, videoMuted:v.muted};})()'
     );
-    check('音频应用配置倍速（2x）', audioRate.rate === 2, JSON.stringify(audioRate));
+    check('没有量到上限时音频与视频都被拉回原速（滑条已删，倍速只有一个来源）',
+      audioRate.rate === 1 && audioRate.videoRate === 1, JSON.stringify(audioRate));
     check('用户开了静音时：音频仍不归插件管（只有视频被静音）—— 旧写法把 muted 设成 false，这条恒真',
       audioRate.audioMuted === false && audioRate.videoMuted === true, JSON.stringify(audioRate));
 
@@ -12833,6 +12844,8 @@ SCENARIOS.push({
     var ui = await ctx.client.evaluate(
       '(function(){return {' +
       'rateVal: document.getElementById("rateVal") ? document.getElementById("rateVal").textContent : null,' +
+      'rateInput: !!document.getElementById("rate"),' +
+      'rateText: (document.body.textContent || "").indexOf("播放速度") !== -1,' +
       'presetValues: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return o.value;}),' +
       'presetLabels: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return String(o.textContent);}),' +
       'presetSelected: document.getElementById("providerPreset").value,' +
@@ -12844,7 +12857,18 @@ SCENARIOS.push({
       'toggleCount: document.querySelectorAll(".toggle").length,' +
       'hasStart: !!document.getElementById("start")};})()'
     );
-    check('弹窗初始化完成（速度档显示已填充）', !!(ui.rateVal && ui.rateVal.indexOf('x') !== -1), JSON.stringify(ui.rateVal));
+    // ⚠️ 这一句以前拿 `rateVal`（「播放速度」滑条旁边那个「1.0x」）当"load() 跑完了"的证人。
+    // 批次 146 把那根滑条整个删了，证人跟着没了 —— 换成 `thinkingHint`：它在静态 HTML 里是**空的**
+    // （`popup.html:846` 那对空标签），只有 `load() → loadThinkingObserved() → updateThinkingHint()`
+    // 这一串才会填上话，所以它跟速度档一样能作证"初始化跑完"，而且不依赖任何会被删的界面件。
+    check('弹窗初始化完成（滑条删了，改由思考强度说明那一格作证：它在 HTML 里出厂是空的）',
+      !!ui.thinkingHint && ui.thinkingHint.length > 10, JSON.stringify(ui.thinkingHint && ui.thinkingHint.slice(0, 40)));
+    // 「播放速度」滑条删干净了：弹窗里既没有那根条，也没有它旁边的档位读数。
+    // 这条是**设计断言** —— 谁哪天把滑条加回来，它当场红，逼着那轮重新回答
+    // 「不能倍速的视频被硬按倍速会抽搐加黑屏」这个用户报上来的成因。
+    check('弹窗里不再有「播放速度」滑条（用户报的抽搐加黑屏来自硬按倍速，批次 146 删的）',
+      ui.rateVal === null && ui.rateInput === false && ui.rateText === false,
+      JSON.stringify({ rateVal: ui.rateVal, rateInput: ui.rateInput, rateText: ui.rateText }));
     // 预置清单：1.1.5 起按需求加了 Kimi 与通义，所以这里不再要求"只剩 4 个"，
     // 改成钉住**这一份确定的白名单** —— 目的是防止以后又悄悄塞回一堆没实测的厂商
     // （历史上内置过 9 家，模型名全是钉死的快照，用户照着填完发现用不了）。
@@ -13131,6 +13155,67 @@ SCENARIOS.push({
       runSync.text === '已开启' && runSync.dotOn === true, JSON.stringify(runSync));
 
     check('「开始运行」按钮存在', ui.hasStart === true);
+
+    // ---- 批次 146：页面中间那张「开始」卡片删掉之后，这枚键是唯一的启动入口 ----
+    // 为什么现在要钉：卡片在的时候，"弹窗那枚键其实没接上"这种坏法有人兜着（用户还能从页面上点），
+    // 现场只会表现为"两处状态不一样"；卡片一删，它要是发不出那一发，**刷课就彻底没有入口了**。
+    // ⚠️ 桩只打在两个"动作"上：`chrome.tabs.query/sendMessage`（发出去的那一发）与
+    //    `saveApiConfig/saveToggleConfig`（点开始时先存设置）。这四发都会写共享存储，
+    //    而本场景前面几段已经在输入框里试过脏值 —— 让它们真跑会把 junk 存进 config，
+    //    毒化后面的场景（§5「夹具必须自己钉住它依赖的共享状态」）。桩记下"被调了几次"，
+    //    判据读的是**消息内容**与**顶部状态**，不是桩自己。
+    var startChain = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var realQuery=self.chrome.tabs.query, realSend=self.chrome.tabs.sendMessage;' +
+      'var realSaveApi=self.saveApiConfig, realSaveToggle=self.saveToggleConfig;' +
+      'var sent=[], saved=0;' +
+      'function read(){var s=document.getElementById("runState"),d=document.getElementById("runDot");' +
+      '  return {text:s?s.textContent:null,on:!!(d&&d.className.indexOf("on")!==-1)};}' +
+      'function nap(ms){return new Promise(function(r){setTimeout(r,ms);});}' +
+      'function setRun(v){return new Promise(function(r){chrome.storage.local.set({xxtRunning:v},r);});}' +
+      'self.chrome.tabs.query=function(){return Promise.resolve([{id:4242}]);};' +
+      'self.chrome.tabs.sendMessage=function(id,msg){sent.push({id:id,type:String(msg&&msg.type||"")});' +
+      '  return Promise.resolve(self.__omitoneStartReply);};' +
+      'self.saveApiConfig=function(){saved++;return Promise.resolve();};' +
+      'self.saveToggleConfig=function(){saved++;return Promise.resolve();};' +
+      '(async function(){var o={hadFns:typeof realSaveApi==="function"&&typeof realSaveToggle==="function"};' +
+      '  await setRun(false);await load();o.before=read();' +
+      // ① 受理成功：这一发真发出去了，而且顶部自己变绿
+      '  self.__omitoneStartReply={success:true};sent=[];saved=0;' +
+      '  document.getElementById("start").click();await nap(500);' +
+      '  o.sent=sent.slice();o.saved=saved;o.after=read();' +
+      // ② 被拒（这一页不是学习通）：不许自己变绿，还要把原因说出来
+      '  await setRun(false);await load();' +
+      '  self.__omitoneStartReply={success:false,code:"unsupported_page"};sent=[];' +
+      '  document.getElementById("start").click();await nap(500);' +
+      '  var t=document.getElementById("toast");' +
+      '  o.sent2=sent.slice();o.afterDenied=read();' +
+      '  o.toastShown=!!t&&t.className.indexOf("show")!==-1;' +
+      '  o.toast=String(t&&t.textContent||"");' +
+      '  self.chrome.tabs.query=realQuery;self.chrome.tabs.sendMessage=realSend;' +
+      '  self.saveApiConfig=realSaveApi;self.saveToggleConfig=realSaveToggle;' +
+      '  await setRun(false);' +
+      '  o.restored=self.saveApiConfig===realSaveApi&&self.saveToggleConfig===realSaveToggle&&' +
+      '    self.chrome.tabs.sendMessage===realSend&&self.chrome.tabs.query===realQuery;' +
+      '  res(o);})();});})()'
+    );
+    check('前提：被桩掉的确实是两枚真函数与真接口，且收尾逐把交回（桩打在空位上等于没测）',
+      !!startChain && startChain.hadFns === true && startChain.restored === true && startChain.saved === 2,
+      JSON.stringify(startChain && { hadFns: startChain.hadFns, restored: startChain.restored, saved: startChain.saved }));
+    check('进来时顶部写着「未开启」且圆点是灰的（这一发是"从没开始"起步，不是接着上一格的状态）',
+      startChain && startChain.before.text === '未开启' && startChain.before.on === false,
+      JSON.stringify(startChain && startChain.before));
+    check('点「开始运行」真的向当前标签页发出 xxt_start（卡片删了之后它是唯一入口，不能只是改了改界面）',
+      startChain && startChain.sent.length === 1 && startChain.sent[0].type === 'xxt_start' &&
+      startChain.sent[0].id === 4242, JSON.stringify(startChain && startChain.sent));
+    check('页面受理之后顶部自己就变「已开启」并点亮圆点（不等下一次打开弹窗才同步）',
+      startChain && startChain.after.text === '已开启' && startChain.after.on === true,
+      JSON.stringify(startChain && startChain.after));
+    check('被拒那一格不给自己变绿，且反馈里点名是页面不对（红的是状态而不是措辞）',
+      startChain && startChain.afterDenied.text === '未开启' && startChain.afterDenied.on === false &&
+      startChain.toastShown === true && /学习通/.test(startChain.toast),
+      JSON.stringify(startChain && { afterDenied: startChain.afterDenied, toast: startChain.toast }));
+
     // ---- 开场那一段（任务 #164：文案精简）----
     // 这里钉的是「两句口径都在场 + 顶部字数收得住」，不是具体措辞。
     // ⚠️ 批次 68 说过「别把『没 Key 就跳过』那一半删回去换简洁」，而本轮干的正是"换简洁" ——
@@ -16516,10 +16601,12 @@ SCENARIOS.push({
       JSON.stringify({ hold: panel.displacedHold, cap: panel.displacedCap, notOurs: panel.notOurs }));
   }
 });/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
- * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
+ * 为什么单列这条：历史上启动入口不止一枚，而页面中间那张卡片（批次 146 整张删了）点【开始】
+ * 只调 app.run()、**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
  * 讨论任务 window.open 出来的窗口里插件静默不跑（用户报的「讨论新窗口默认关闭、插件失灵」）。
- * 修法是让 run()（所有启动入口的汇合点）落一次 storage_set{xxtRunning:true}。 */
+ * 修法是让 run()（所有启动入口的汇合点）落一次 storage_set{xxtRunning:true}。
+ * ⚠️ 卡片删了以后这一格更要紧：弹窗那枚键现在是唯一入口，而它走的仍是 run()。 */
 SCENARIOS.push({
   name: 'run() 落续跑标记（讨论新窗口才会自动跑）',
   path: '/blank',
@@ -16543,6 +16630,56 @@ SCENARIOS.push({
     check('run() 确实启动了（_runtimeVersion 前进，前置条件）', res.ran === true, JSON.stringify(res));
     check('run() 落一次 xxtRunning=true（否则讨论新窗口静默不跑）', res.persisted === true, JSON.stringify(res));
     check('续跑标记只写 xxtRunning 一个键（不顺手污染别的存储）', res.cleanKey === true, JSON.stringify(res));
+  }
+});
+
+/** ---- 批次 146：学习页不许有第二枚启动入口（页面正中间那张「开始」卡片整个删掉） ----
+ * 卡片为什么该删：它那两个开关（自动连播 / 自动答题）只改这一页内存里的 app.configs，**从不写回存储**
+ * （删掉前 `src/page/90-console-api-startup.js` 里那一发是 mergeConfig 进 currentConfig + app.run()，
+ * 整段没有任何 chrome.storage 写入，git 历史可查）—— 刷新一次或跳到下一节，页面重新读的是弹窗那一份，
+ * 卡片上的选择当场丢掉；而它一进来就浮在屏幕正中，把这一页挡住。
+ * 删掉后「开始」只剩弹窗那一枚，由「设置弹窗」场景里那条断言钉它真发得出那一发 xxt_start。
+ * ⚠️ 断的是**形状**（居中 + 固定定位 + 一枚写着「开始」的键 + 卡片独有的字样），不是「某个方法没了」；
+ *    而且必须带一条阳性对照：自己种一张卡片形状，同一把尺当场要数到 1 ——
+ *    否则"没有卡片"可能只是因为这一页压根没被接管，或尺本身看不见这种东西。 */
+SCENARIOS.push({
+  name: '学习页里没有浮在正中的启动卡片',
+  path: '/mycourse/studentstudy',
+  run: async function (ctx) {
+    var shape = await ctx.client.evaluate(
+      '(function(){' +
+      'function findCard(){var vw=self.innerWidth,vh=self.innerHeight,out=[];' +
+      '  var all=document.querySelectorAll("body *");' +
+      '  for(var i=0;i<all.length;i++){var el=all[i];var cs=getComputedStyle(el);' +
+      '    if(cs.position!=="fixed")continue;var r=el.getBoundingClientRect();' +
+      '    if(r.width<200||r.height<120)continue;' +
+      '    var cx=r.left+r.width/2,cy=r.top+r.height/2;' +
+      '    if(Math.abs(cx-vw/2)>vw*0.25||Math.abs(cy-vh/2)>vh*0.25)continue;' +
+      '    var btns=el.querySelectorAll("button,[role=button],a"),hit=false;' +
+      '    for(var j=0;j<btns.length;j++){' +
+      '      if(String(btns[j].textContent||"").replace(/\\s+/g,"")==="开始"){hit=true;break;}}' +
+      '    if(!hit)continue;' +
+      '    out.push({id:el.id||"",w:Math.round(r.width),h:Math.round(r.height)});}' +
+      '  return out;}' +
+      ' var app=window._xxtApp;' +
+      ' var txt=String(document.body.innerText||"");' +
+      ' var o={href:String(self.location.href||""),app:!!app&&typeof app._runTick==="function",' +
+      '   cards:findCard().length,oldId:!!document.getElementById("xxt-panel"),' +
+      '   words:/(自动连播|自动答题)/.test(txt)};' +
+      // 阳性对照：现场种一张卡片（居中固定 + 「开始」键 + 卡片字样），同一把尺必须数到 1，
+      // 而且它种进去的字样要让 words 那一格也翻过去 —— 证明尺真认得这种东西。
+      ' var f=document.createElement("div");' +
+      ' f.style.cssText="position:fixed;left:50%;top:45%;width:300px;height:220px;transform:translate(-50%,-50%)";' +
+      ' f.innerHTML="<label>自动连播</label><button>开 始</button>";document.body.appendChild(f);' +
+      ' o.control=findCard().length;o.controlWords=/(自动连播|自动答题)/.test(String(document.body.innerText||""));' +
+      ' f.remove();o.afterControl=findCard().length;' +
+      ' return o;})()'
+    );
+    check('前提：这一页真的被 page.js 接管了（否则"没有卡片"只是脚本没跑）', shape.app === true, JSON.stringify(shape));
+    check('对照：自己种一张居中的卡片，同一把尺当场数到 1、摘掉后归 0',
+      shape.control === 1 && shape.afterControl === 0, JSON.stringify(shape));
+    check('没有第二枚启动入口（卡片 0 块、老 id 0 处、卡片独有的两个开关字样也 0 处）',
+      shape.cards === 0 && shape.oldId === false && shape.words === false, JSON.stringify(shape));
   }
 });
 
@@ -19536,7 +19673,7 @@ SCENARIOS.push({
       'var f=document.getElementById("voteIframe");var vc=document.querySelector(".voteContainer");' +
       // 覆盖层有没有**压在正文上** —— 现场量的那层 1691x828 白纸一直挂着，「下一节」就点在它身上。
       // ⚠️ 采样点取容器自己的左上角内侧，**不取视口中心**：沙盒里视口中心被扩展自己那台
-      //    日志面板（`#xxt-panel`，z-index 比覆盖层高）占着，元素命中判定量到的永远是面板，
+      //    日志面板（`#omitone-status-panel-host`，z-index 比覆盖层高）占着，元素命中判定量到的永远是面板，
       //    于是"覆盖层压没压住"读不出来（批次 80 上一轮 `openedHit:"other"` 就是这么来的）。
       //    面板那一格仍然回读进 `centerChain`，一眼分得开是面板还是别的东西。
       'function hitAt(px,py){var el=document.elementFromPoint(px,py);var chain="";var hop=0,n=el;' +
@@ -20132,7 +20269,7 @@ SCENARIOS.push({
     var stored = await ctx.client.evaluate(
       'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
       'var c=(r&&r.config)||{};res({slow:String(c.slowMachineMode),' +
-      'reviewSec:c.randomAnswerReviewSec,rate:c.playbackRate,muted:c.muted});});})');
+      'reviewSec:c.randomAnswerReviewSec,cap:c.playbackRateCap,muted:c.muted});});})');
     check('点一下开关：界面翻过去且**没被回滚**（回滚就等于保存被拒）',
       !!s1 && s1.on === !wasOn && s1.aria === String(!wasOn),
       JSON.stringify({ wasOn: wasOn, now: s1 && s1.on, toast: toast.slice(0, 80) }));

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd91fc947ff';
+var OMITONE_CODE_REV = '9666ee877c';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -93,7 +93,6 @@ var OMITONE_CODE_REV = 'd91fc947ff';
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
-    playbackRate: 1.0,
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,
@@ -655,6 +654,10 @@ var OMITONE_CODE_REV = 'd91fc947ff';
 
     _rateProbing: false,
 
+    _rateUnknownVideo: null,
+
+    _rateUnknownTries: 0,
+
     _bgWorker: null,
 
     _bgWorkerUrl: null,
@@ -885,10 +888,10 @@ var OMITONE_CODE_REV = 'd91fc947ff';
         return;
       }
       // 「已开启」持久化到 chrome.storage（经 content 桥接）。run() 是所有启动入口的汇合点
-      //（页面中间面板【开始】/ 弹窗【开始】/ 刷新后自动续跑都会走到这里），在这里落一次标记，
+      //（弹窗【开始运行】/ 验证码页授权 / 刷新后自动续跑都会走到这里），在这里落一次标记，
       // 才能保证页面跳转、以及讨论任务 window.open 新开的标签页里，content.js 的
       // maybeMarkAutoResume 读到 xxtRunning → shouldAutoStart() 为真 → 自动续跑。
-      // 否则从页面面板点【开始】时 xxtRunning 恒为 false，新开的讨论窗口 shouldAutoStart() 为假、
+      // 否则点【开始运行】时 xxtRunning 恒为 false，新开的讨论窗口 shouldAutoStart() 为假、
       // 命中「是讨论页且没开启 → 静默 return」→ 插件在新窗口里一动不动（用户报的「讨论新窗口失灵」）。
       // storage_set 桥接不回消息，直接投递、不 await，避免 bridgeSend 的 promise 空挂到超时。
       try { window.postMessage({ source: 'xxt_app', type: 'storage_set', payload: { xxtRunning: true } }, '*'); } catch (ePersist) {}
@@ -3034,8 +3037,8 @@ var OMITONE_CODE_REV = 'd91fc947ff';
       if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
         return this._clampAutoRate(this._detectedMaxRate);
       }
-      var target = Number(this.configs.playbackRate || 1);
-      return isFinite(target) && target > 0 ? target : 1;
+      // 弹窗里的「播放速度」滑条已删（批次 146）—— 没有量到的上限就按原速，不替用户猜一个倍速。
+      return 1;
     },
 
 
@@ -3052,6 +3055,24 @@ var OMITONE_CODE_REV = 'd91fc947ff';
     _resetRateDetection: function () {
       this._detectedMaxRate = 0;
       this._rateDetectVideo = null;
+      this._rateUnknownVideo = null;
+      this._rateUnknownTries = 0;
+    },
+
+
+    // 「问不出上限」单独占一格，而且**不许变成每 1.5 秒问一次**：
+    // 问的方式是真往播放器上写倍速，写得勤 = 用户报的「抽搐 + 黑屏」那个动作本身。
+    // 连三发问不出就认这一支「问不到」，按原速播完，换了媒体再问（AGENTS §2 #12/#17 那一族：
+    // 读不出不等于结论，但也不许把"再试一次"实现成"永远在试"）。
+    _noteRateUnreadable: function (video) {
+      var self = this;
+      if (this._rateUnknownVideo !== video) {
+        this._rateUnknownVideo = video;
+        this._rateUnknownTries = 0;
+      }
+      this._rateUnknownTries = Number(this._rateUnknownTries || 0) + 1;
+      if (this._rateUnknownTries < 3) { this._rateDetectVideo = null; return; }
+      emitRuntimeLog('warn', 'rate max unreadable, keep native speed', { tries: this._rateUnknownTries });
     },
 
 
@@ -3072,12 +3093,12 @@ var OMITONE_CODE_REV = 'd91fc947ff';
             emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
             self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
           } else {
-            self._rateDetectVideo = null;
+            self._noteRateUnreadable(video);
           }
         }).catch(function () {
           self._rateDetectBusy = false;
           if ((self._rateEpoch || 0) !== epoch) return;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         });
       };
 
@@ -3102,7 +3123,7 @@ var OMITONE_CODE_REV = 'd91fc947ff';
         if (tries >= 60) {
           clearInterval(timer);
           self._rateDetectBusy = false;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         }
       }, 500);
     },
@@ -3116,14 +3137,41 @@ var OMITONE_CODE_REV = 'd91fc947ff';
         emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
         return this._clampAutoRate(menuMax);
       }
-      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
-      var probed = await this._probeMaxPlaybackRate(video);
-      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
-      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
-      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
-      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
-      if (!probed) return 0;
-      return this._clampAutoRate(probed);
+      // 菜单没列档位时**只试一发**（批次 146；旧版是从 4x 往下试八档、每档等 700 毫秒）。
+      return await this._tryRateOnce(video);
+    },
+
+
+    // 一次受控尝试：写「上限档」，读回播放器真正接住的那一档。
+    // ⚠️ 必须与 defaultPlaybackRate **同写**：HTML 媒体在换源 / 站点重挂播放器时把 playbackRate
+    //   复位到 defaultPlaybackRate。旧版八档阶梯只写 playbackRate，于是每一档都被复位成 1，
+    //   「上限就是 1 倍」是我们自己写出来的答案（现场 2026-11-20 学到：菜单恒读不出、
+    //   detectedMaxRate 却是探测给的 1 —— 全程 1x 就是这么来的）。
+    // ⚠️ 被拉回也要交回一个**非 0** 的读数：0 在调用方那一格是「不知道」，会清空
+    //   `_rateDetectVideo` → 下一拍再试一遍 → 每 1.5 秒和站点对打一次倍速，
+    //   用户看到的就是「抽搐 + 黑屏」。量到 1 就是量到了 1。
+    _tryRateOnce: async function (video) {
+      var cap = this._clampAutoRate(this.configs.playbackRateCap || 4);
+      if (!(cap > 1)) return 0;
+      var before = Number(video.playbackRate || 1);
+      if (Math.abs(before - cap) <= 0.01) return this._clampAutoRate(before); // 播放器自己就在这个档
+      this._rateProbing = true;
+      var held = 0;
+      var denied = false;
+      try {
+        try { video.defaultPlaybackRate = cap; } catch (e1) {}
+        try { video.playbackRate = cap; } catch (e2) { denied = true; }
+        if (!denied) held = await this._waitRateSettle(video, 700);
+      } finally {
+        this._rateProbing = false;
+      }
+      if (denied || !(held > 0)) return 0; // 写不进去 / 压根读不回 = 不知道，别替站点宣布上限
+      if (Math.abs(held - cap) > 0.05) {
+        // 被拉回：把 default 一起落到站点认的那一档，否则站点每次复位都会再触发一次写入
+        try { video.defaultPlaybackRate = held; } catch (e3) {}
+        emitRuntimeLog('info', 'rate held back by player', { tried: cap, held: held });
+      }
+      return this._clampAutoRate(held);
     },
 
 
@@ -3161,31 +3209,6 @@ var OMITONE_CODE_REV = 'd91fc947ff';
         if (maxRate > 0) break;
       }
       return maxRate;
-    },
-
-
-    _probeMaxPlaybackRate: async function (video) {
-      var self = this;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
-      var best = 0;
-      this._rateProbing = true;
-      try {
-        for (var i = 0; i < candidates.length; i++) {
-          var candidate = candidates[i];
-          try { video.playbackRate = candidate; } catch (e) { continue; }
-          var settled = await self._waitRateSettle(video, 700);
-          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
-            best = candidate;
-            break;
-          }
-          if (settled > best) best = settled;
-        }
-      } finally {
-        this._rateProbing = false;
-      }
-      return best;
     },
 
 
@@ -20349,96 +20372,6 @@ var OMITONE_CODE_REV = 'd91fc947ff';
     },
   };
 
-  function removeStartPanel() {
-    var panel = document.getElementById('xxt-panel');
-    if (panel) panel.remove();
-  }
-
-  function showStartPanel(config) {
-    removeStartPanel();
-
-    var currentConfig = mergeConfig(config);
-    var hasApiKey = !!(currentConfig.hasApiKey || currentConfig.randomAnswer);
-    var playOn = currentConfig.autoNext !== false;
-    var quizOn = !!(currentConfig.enableQuiz && hasApiKey);
-
-    var panel = document.createElement('div');
-    panel.id = 'xxt-panel';
-    panel.style.cssText = [
-      'position:fixed',
-      'top:50%',
-      'left:50%',
-      'transform:translate(-50%,-50%)',
-      'z-index:999999',
-      'background:#fff',
-      'border:1px solid #ddd',
-      'border-radius:10px',
-      'padding:24px',
-      'min-width:280px',
-      'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
-      'box-shadow:0 10px 30px rgba(0,0,0,.12)',
-      'color:#111'
-    ].join(';');
-
-    function renderToggle(on) {
-      return '<span style="display:inline-flex;width:36px;height:20px;background:' + (on ? '#111' : '#ddd') + ';border-radius:20px;position:relative;">' +
-        '<span style="position:absolute;top:2px;left:' + (on ? '18px' : '2px') + ';width:16px;height:16px;border-radius:50%;background:#fff;"></span>' +
-        '</span>';
-    }
-
-      panel.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">' +
-        '<strong style="font-size:15px;">' + APP_NAME + '</strong>' +
-        '<span style="font-size:11px;color:#999;">page runtime</span>' +
-      '</div>' +
-      '<div id="xxt-row-play" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;">' +
-        '<span>自动连播</span>' +
-        '<span id="xxt-toggle-play">' + renderToggle(playOn) + '</span>' +
-      '</div>' +
-      '<div id="xxt-row-quiz" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;' + (hasApiKey ? 'cursor:pointer;' : 'opacity:.45;') + '">' +
-        '<span>自动答题</span>' +
-        '<span id="xxt-toggle-quiz">' + (hasApiKey ? renderToggle(quizOn) : '<span style="font-size:11px;color:#999;">需 API Key</span>') + '</span>' +
-      '</div>' +
-      '<button id="xxt-btn-start" style="width:100%;margin-top:16px;padding:10px 0;border:none;border-radius:6px;background:#111;color:#fff;font-weight:600;cursor:pointer;">开始</button>' +
-      '<button id="xxt-btn-close" style="width:100%;margin-top:8px;padding:9px 0;border:1px solid #e6e6e6;border-radius:6px;background:#fff;color:#666;cursor:pointer;">关闭</button>';
-
-    document.body.appendChild(panel);
-
-    function updatePlay() {
-      var slot = document.getElementById('xxt-toggle-play');
-      if (slot) slot.innerHTML = renderToggle(playOn);
-    }
-
-    function updateQuiz() {
-      var slot = document.getElementById('xxt-toggle-quiz');
-      if (slot && hasApiKey) slot.innerHTML = renderToggle(quizOn);
-    }
-
-    document.getElementById('xxt-row-play').addEventListener('click', function () {
-      playOn = !playOn;
-      updatePlay();
-    });
-
-    if (hasApiKey) {
-      document.getElementById('xxt-row-quiz').addEventListener('click', function () {
-        quizOn = !quizOn;
-        updateQuiz();
-      });
-    }
-
-    document.getElementById('xxt-btn-start').addEventListener('click', function () {
-      panel.remove();
-      app.configs = mergeConfig(Object.assign({}, currentConfig, { autoNext: playOn, enableQuiz: quizOn && hasApiKey }));
-      app.run();
-      window._xxtApp = app;
-    });
-
-    document.getElementById('xxt-btn-close').addEventListener('click', function () {
-      panel.remove();
-      window._xxtApp = app;
-    });
-  }
-
   function shouldAutoStart() {
     var root = document.documentElement;
     if (!root) return false;
@@ -20451,25 +20384,16 @@ var OMITONE_CODE_REV = 'd91fc947ff';
   app.configs = defaultConfig;
   window._xxtApp = app;
 
-  bridgeSend('get_config').then(function (config) {
+  // ⚠️ 这里**不再**弹那张居中的「开始 / 关闭」卡片（批次 146）。
+  // 启动入口只留插件弹窗的「开始运行」：它先写 xxtRunning、再带续跑标记重新注入，
+  // 走的就是下面 shouldAutoStart() 那一条。两处都能启动而状态只有一处更新，
+  // 用户看到的是「页面弹的卡片和插件弹窗说的话不一样」。
+  function startIfMarked(config) {
     app.configs = mergeConfig(config || defaultConfig);
-    // 只有"刷课进行中"（有续跑标记）时才自动开始——讨论页/验证码页也一样，
-    // 避免没在刷课时打开讨论区就被自动发评论
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    // 未刷课时进入讨论页/独立验证码页：保持静默，不显示面板、不做任何操作
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(app.configs);
-  }).catch(function () {
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(defaultConfig);
-  });
+    if (shouldAutoStart()) app.run();
+  }
+
+  bridgeSend('get_config').then(startIfMarked, function () { startIfMarked(null); });
 
   var preventPause = function (event) {
     event.stopPropagation();
@@ -20490,10 +20414,13 @@ var OMITONE_CODE_REV = 'd91fc947ff';
   });
 
   window.xxtAI = {
+    // 手动入口：只把弹窗里改过的配置重新读进内存（批次 146 之后不再弹卡片，
+    // 启动一律走弹窗的「开始运行」）。返回配置本身，方便在控制台直接看。
     reload: function () {
-      bridgeSend('get_config').then(function (config) {
+      return bridgeSend('get_config').then(function (config) {
         app.configs = mergeConfig(config || defaultConfig);
-        showStartPanel(app.configs);
+        emitRuntimeLog('info', 'config reloaded (manual)', { autoNext: app.configs.autoNext !== false, enableQuiz: !!app.configs.enableQuiz, hasApiKey: !!app.configs.hasApiKey });
+        return app.configs;
       });
     },
     next: function () {

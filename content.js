@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '79f895935f';
+var OMITONE_CODE_REV_BRIDGE = '9cf289f19a';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -70,7 +70,6 @@ var OMITONE_CODE_REV_BRIDGE = '79f895935f';
   }
 
   let configs = {
-    playbackRate: 1.0,
     muted: false,
     autoNext: true,
     autoNextCourse: true,
@@ -3450,6 +3449,7 @@ var OMITONE_CODE_REV_BRIDGE = '79f895935f';
       const loaded = { ...response.config };
       const fingerprint = POLICY.configFingerprint(loaded);
       delete loaded.forceLearn;
+      delete loaded.playbackRate;
       configs = { ...CONFIG_DEFAULTS, ...loaded };
       const snapshot = { ...configs };
       requestFingerprints.set(snapshot, fingerprint);
@@ -3630,7 +3630,6 @@ var OMITONE_CODE_REV_BRIDGE = '79f895935f';
   }
 
   function hasPageRuntimeEvidence() {
-    if (document.getElementById('xxt-panel')) return true;
     if (!pageRuntimeActivityAt) return false;
     // ① 这次注入之后**有过任意一条运行日志** —— 就说明 page.js 活着。
     // ⚠️ 不能要求「最近 4 秒内」：空闲时 `_ensureOcsStudyRunner` 的循环
