@@ -97,12 +97,28 @@ var READ_EXPR = [
 ].join('\n');
 
 async function readLogs() {
-  var targets = await getJson('/json/list');
-  var sws = targets.filter(function (t) {
-    return t.type === 'service_worker' && /^chrome-extension:\/\//.test(String(t.url || '')) && t.webSocketDebuggerUrl;
-  });
+  // ⚠️ 裸 `/json/list` 在 Edg/157 上**不返回 service_worker**（实测同刻 2 条 vs 带参数 3 条），
+  //   老报法会把它说成「扩展没装/被禁用了」—— 那是探针自己瞎，不是现场没装。
+  var asked = ['/json/list?includeServiceWorkers=true', '/json/list'];
+  var sws = [];
+  // ⚠️ MV3 的后台约 30 秒空闲就被回收，而**回收后这条目标整个从 /json/list 消失**
+  //   （实测：唤醒后第 1 次 3 条含 SW，25 秒后第 2 次只剩 2 条）。所以「问不到」的第一嫌疑人
+  //   是后台在睡，不是扩展没装 —— 有界重试几轮，等它被页面消息或闹钟叫起来。
+  var tries = 0;
+  for (var round = 0; round < 5 && !sws.length; round++) {
+    tries++;
+    for (var i = 0; i < asked.length && !sws.length; i++) {
+      sws = (await getJson(asked[i])).filter(function (t) {
+        return t.type === 'service_worker' && /^chrome-extension:\/\//.test(String(t.url || '')) && t.webSocketDebuggerUrl;
+      });
+    }
+    if (!sws.length && round < 4) await new Promise(function (r) { setTimeout(r, 6000); });
+  }
   if (!sws.length) {
-    throw new Error('端口 ' + PORT + ' 上没有扩展的 service_worker 目标 —— 现场那台浏览器里扩展没装/被禁用了？');
+    throw new Error('端口 ' + PORT + ' 上重试 ' + tries + ' 轮（约 30 秒）仍问不到扩展的 service_worker（试过 ' +
+      asked.join(' , ') + '）—— 这一格是**读不出**，不是「没在刷」也不是「没装」：' +
+      '可能是后台一直在睡（现场没打开任何学习通页面），也可能扩展真被禁用。' +
+      '先跑 node <技能目录>/sw-eval.js --targets 复核，别据此断定。');
   }
   var r = await cdp(sws[0].webSocketDebuggerUrl, 'Runtime.evaluate', {
     expression: READ_EXPR, awaitPromise: true, returnByValue: true
