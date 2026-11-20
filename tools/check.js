@@ -751,8 +751,73 @@ function checkUserEntryPoints() {
     }
   }
 
+  // 8) 体积账本：README 里那些「约 N MB (P%)」必须对着构建出来的 zip 逐条目对得上
+  //
+  // 这一族以前只能靠人肉 `wc -c` 加心算，实测一批就漂了五格（文档写 3.3 / 2.02 / 1.75 MB，
+  // zip 里实际是 3.50 / 2.25 / 1.80）—— 文件语法正常、集成与 e2e 全绿，
+  // 只有用户在 GitHub 那一页看得见（§2 #9 那一族"只有人眼能看见"的失败形状）。
+  // ⚠️ 真源是 **`dist/*.zip` 的中央目录**，不是磁盘目录：磁盘上躺着不打包的件
+  //    （`resources/table.json` 347 KB、各处 README、`src/`），拿磁盘合计会得出另一套"错"数。
+  // ⚠️ 缺 zip / 量不出来 / 门面读不到 / 一行表格都没扫到，各自单独占一格（§2 #12），不许压成通过。
+  var sizeReadout = '';
+  try {
+    // 先跑这把尺自己的逐格对照，再拿它量文档 —— 尺坏了，量出来的"对"没有内容
+    var sizePath = path.join(__dirname, 'audit-readme-size.js');
+    var stRes = spawnSync(process.execPath, [sizePath, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    var stTxt = String(stRes.stdout || '') + String(stRes.stderr || '');
+    var stM = stTxt.match(/自检\s*(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (stRes.error) {
+      problemsHere.push('体积账本的逐格对照没跑成：' + String(stRes.error.code || stRes.error.message));
+    } else if (!stM) {
+      problemsHere.push('体积账本的逐格对照没打印那句「自检 N / M 格」（末行=' +
+        JSON.stringify(stTxt.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (stRes.status !== 0) {
+      // 退出码非 0 的两种成因分开说：某一格红了要点名是哪一格（要修尺），
+      // 中途崩了连格子名单都没交出来才是读不出（§2 #12，不许压成同一格）
+      var stFails = stTxt.split(/\r?\n/).filter(function (l) { return /^\[FAIL\]/.test(l); })
+        .map(function (l) { return l.split('[FAIL]')[1].split(' → ')[0].trim(); });
+      problemsHere.push(stFails.length ?
+        '体积账本的逐格对照红在 ' + stFails.join(' / ') + '（绿 ' + stM[1] + ' / ' + stM[2] + ' 格）—— 尺自己坏了，' +
+          '它量出来的「对」没有内容（摘掉任意一格，红就点那一格的名）' :
+        '体积账本的逐格对照退出码 ' + stRes.status + ' 却没交回任何格子名（末行=' +
+          JSON.stringify(stTxt.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不许当通过');
+    } else if (Number(stM[1]) !== Number(stM[2]) || Number(stM[2]) < 18) {
+      problemsHere.push('体积账本的逐格对照只绿 ' + stM[1] + ' / ' + stM[2] + ' 格（下限 18）—— ' +
+        '有格被跳过或被删时，"全绿"这两个字就没有内容');
+    } else {
+      var sizeAudit = require('./audit-readme-size.js');
+      var sizeAct = sizeAudit.measure();
+      if (sizeAct.verdict === 'missing-zip') {
+        problemsHere.push('体积账本这一格本轮没跑：没有 ' + sizeAct.zipName +
+          ' —— 先 `npm run build`，没有包就没有"用户下载到的字节"这份真源，不许拿磁盘目录顶上');
+      } else if (sizeAct.verdict !== 'ok') {
+        problemsHere.push('体积账本量不出来：' + sizeAct.verdict + '（读不出单独占一格，不许当成通过）');
+      } else {
+        var sizeGate = require('./channel-gate.js');
+        var sizeExp = sizeGate.isExperimental(sizeGate.readChannelNames().version_name);
+        var sizePages = [{ text: readme, from: 'README.md（工作树）' }];
+        if (sizeExp) {
+          var sizeFacade = facadeReadme(true);
+          if (sizeFacade.text === null) {
+            problemsHere.push('体积账本没量到门面那一份（' + sizeFacade.why + '）—— 门面是用户默认看到的' +
+              '那一页，读不到就单独占一格，不许只量工作树那一份就打印通过');
+          } else {
+            sizePages.push({ text: sizeFacade.text, from: sizeFacade.from });
+          }
+        }
+        var sizeRes = sizeAudit.auditPages(sizePages, sizeAct);
+        sizeRes.problems.forEach(function (p) { problemsHere.push(p); });
+        // 扫到几行、几处承诺必须印出来：措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿（§2 #21）
+        sizeReadout = '，体积账本对着 ' + sizeAct.zipName + '（' + sizeAct.entries + ' 个条目 / ' +
+          Math.round(sizeAct.zipBytes / 1048576 * 100) / 100 + ' MB）逐格比过 ' + sizeRes.readouts.join(' + ');
+      }
+    }
+  } catch (sizeErr) {
+    problemsHere.push('体积账本这一格跑挂了：' + String((sizeErr && sizeErr.message) || sizeErr));
+  }
+
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
-  else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
+  else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + sizeReadout + '）');
 }
 
 // ---------------------------------------------------------------------------
