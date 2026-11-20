@@ -1,3 +1,4 @@
+var OMITONE_CODE_REV_BRIDGE = '79f895935f';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -3938,6 +3939,10 @@
   appendRuntimeLog('info', 'content bridge ready', {
     version: String((manifestInfo && manifestInfo.version) || ''),
     build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)'),
+    // 桥自己的内容指纹（`npm run concat` 按 manifest 的注入清单烘进本文件首行）。
+    // ⚠️ 用 typeof 而不是裸读：戳行没落上时读一个未声明的标识符会抛 ReferenceError，
+    //    而这一发跑在 `appendRuntimeLog` 的参数里 —— 抛出等于把这条日志整个吃掉（§2 #1 同族）。
+    bridgeCode: (typeof OMITONE_CODE_REV_BRIDGE === 'string' ? OMITONE_CODE_REV_BRIDGE : '(未拼接)'),
     // ⚠️ content.js 这一侧的"带哪些修复"标记，与 page.js 那个 `start` 里的 build 同一用途：
     // **日志里缺哪个 = 那份改动还没被加载**。批次 17 就是被这一格坑的：磁盘上已经修好，
     // 页面跑的还是旧 content.js，两边都以为生效了，用户看到的是「还是卡住的」。

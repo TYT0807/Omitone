@@ -1570,7 +1570,7 @@ function checkDeadMethods(jsFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// 14. page.js 与 src/page/ 片段一致
+// 14. page.js 与 src/page/ 片段一致 + content.js 的桥戳
 //
 // 根目录的 `page.js` 现在是**构建产物** —— 由 tools/concat-page.js 从
 // src/page/*.js 拼出来，而扩展真正加载的正是根目录那一份（content.js 注入它、
@@ -1598,6 +1598,7 @@ function checkPageConcat() {
   }
   if (actual.equals(expected)) {
     pass('page.js 与 src/page/ 一致（' + built.files.length + ' 个片段，' + expected.length + ' 字节）');
+    checkBridgeStamp(concat);
     return;
   }
   fail(
@@ -1605,6 +1606,42 @@ function checkPageConcat() {
     '      扩展加载的是根目录那份，所以现在跑的东西和源码对不上。\n' +
     '      改的是片段 → 跑 `npm run concat`；改的是根目录 page.js → 那份会被下次拼接覆盖，请改到片段里。'
   );
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * 第 14 项的第二半：`content.js` 首行的桥戳对不对得上「manifest 说这一枚注入要跑的那些字节」。
+ *
+ * 尺**从 tools/concat-page.js 要回来**（`buildBridgeStamp`），这里不另写一份 ——
+ * 两份口径写在一起才有意义：拼接写的是 A、校验算的是 B，这道闸就只是稳定地报假话。
+ *
+ * ⚠️ 「首行不是戳行」单独占一格并报**读不出**（AGENTS §2 #12/#18）：
+ * 把它并进「不一致」会让人去跑 concat（以为能修好），而真原因可能是戳行被并发写坏了。
+ */
+function checkBridgeStamp(concat) {
+  var stamp;
+  try {
+    stamp = concat.buildBridgeStamp();
+  } catch (error) {
+    fail('桥戳检查自身出错（清单来源在 manifest）: ' + (error && error.message ? error.message : error));
+    return;
+  }
+  if (!fs.existsSync(concat.CONTENT_FILE)) {
+    fail('没有 content.js —— 桥戳没处比，这一格读不出');
+    return;
+  }
+  var raw = fs.readFileSync(concat.CONTENT_FILE, 'utf8');
+  var m = raw.match(concat.BRIDGE_STAMP_RE);
+  if (!m) {
+    fail('content.js 首行读不出桥戳（应形如 var OMITONE_CODE_REV_BRIDGE = \'…\';）—— 不许当成「没戳也算一致」');
+    return;
+  }
+  if (m[1] !== stamp.rev) {
+    fail('content.js 首行的桥戳过期（首行 ' + m[1] + '，按 manifest 的 ' + stamp.files.length +
+      ' 个注入文件重算是 ' + stamp.rev + '）\n      注入的桥不随重载扩展而换：跑 `npm run concat` 再 F5 学习页。');
+    return;
+  }
+  pass('content.js 桥戳与注入清单一致（' + stamp.rev + '，' + stamp.files.length + ' 个文件）');
 }
 
 // ---------------------------------------------------------------------------
