@@ -805,6 +805,7 @@ function checkTestCounts() {
   // 症状是明明跑过 itest、守卫却说「集成条数未校验」。
   var assertionsChecked = false;
   var itestChecked = false;
+  var itestPairHits = 0;
   var selfCheckChecked = false;
   // ⚠️ 同上一条教训：这两格也必须声明在所有用到它的代码块之前（下面「N 场景 / M 项」那一段才置位）。
   var scenePairChecked = false;
@@ -932,12 +933,18 @@ function checkTestCounts() {
             // 拆成"间隔吃掉了 10、数字只匹配到 6"（实测报出「集成 6 项」）。
             var m2 = line.match(/集成[^。\n\d]{0,6}(\d+)\**\s*项/);
             if (!m2) return;
+            itestPairHits++;
             var n2 = Number(m2[1]);
             if (n2 !== actualItest) {
               problems.push(file + ' 写的是「集成 ' + n2 + ' 项」，实测是 ' + actualItest + ' 项');
             }
           });
         });
+        if (itestPairHits === 0) {
+          problems.push('「集成 N 项」这一族一条都没扫到（当前 ' + actualItest + ' 项）—— ' +
+            '要么基线写法被整体改写、这条尺已等于不存在，要么数字与「集成」二字被拆到两句说话；' +
+            '请把它俩写回同一处且间隔不超过 6 字符（AGENTS §2 #21：会误报的守卫和没有守卫一样害人）');
+        }
       }
     } catch (e) {}
   }
@@ -1069,7 +1076,8 @@ function checkTestCounts() {
     //    是完全不同的覆盖面 —— 数字印出来，下一次改措辞的人才有东西可对照。
     (scenePairChecked ? '；「N 场景 / M 项」并排承诺 ' + scenePairHits + ' 处逐个与代码同数'
                       : '（并排的场景数未校验：还没跑过 e2e 交账）') +
-    (itestChecked ? '；集成条数与实测一致' : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
+    (itestChecked ? '；集成条数与实测一致（在检 ' + itestPairHits + ' 处）'
+                      : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
     (selfCheckChecked ? '；自检项数与实际一致' : '（自检项数未校验：守卫失效）') +
     '（CHANGELOG 只查最新一段，历史记录不查）';
 
