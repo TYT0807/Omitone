@@ -1376,6 +1376,21 @@ CHANGELOG 那 5 处是**历史句**，立尺时必须排掉，HANDOVER :1106 / :
   ⚠️ 上面那两处**活规矩**直接改了；`HANDOVER.md` 里 1.1.6 与 1.2.1 两段**历史快照**里同样的旧句子**按史实不回改**（§3.7 同口径），只在旁边指路到新规矩。
 - **没做的**：**现场还没部署** —— 磁盘 `rev` 已是 `710637d4c8`，学习页与用户中心两枚仍读回 `9666ee877c`（批次 158 之前那一份）；部署要在预览包发出去之后按 §0b 三条命令做，做完用同一把尺复账环占比（`study idle declined` 应当从 14/200 掉下来，而 displaced 那一族仍要认得出）。#196「退役两枚拖拽开关」仍等用户拍板。
 
+### 批次 159 · 2026-11-21 · 每轮起手那句「日志环读不出」终于量出成因：那一枚学习页的桥断了，而代码是新的（现场排查，证据 `notes/field-159-orphaned-bridge.md`）
+
+- **门面**：不用补（本轮用户看得见的行为、界面、门面三页一个字没改 —— 做的全是现场取证与排查技能里的常驻件；`git show main:README.md` 里也没有本轮该引的话）
+- **这一族每轮都被当噪声读过去**：`tools/field-logs.js` 起手报「日志环读不出」已经活了好几轮。AGENTS §2 #12 要求「读不出」单独占一格是对的，但**停在单独占一格**就变成新的黑洞 —— 本轮第一次去归因，结论是**那一枚学习页的 content script 与扩展断连**，不是没装、也不是后台在睡。
+- **19:47 / 19:53 两发的读数**（`node scripts/bridge-check.js --wake`，只读、不点、不写配置、不导航）：`/json/list` 里 worker 目标 **0 枚**、`chrome-extension://` 目标 **0 枚**；同一枚页面里 18 个执行上下文、其中 **8 枚**挂着 `Omitone-1.3.1`（origin `chrome-extension://…`）的世界，`chrome.runtime.id` **八枚全读回空串**，而 `typeof chrome.runtime.sendMessage` 只有 **1 枚**还是 `function` —— 对那一枚发 `ping` 当场抛 `Extension context invalidated.` → `verdict:"invalidated"`、`via:"ping-throw"`。⚠️ `wake.pollTries:0` 要说清：ping 没答上来时**根本没进轮询**，所以 `workerBackAfterMs:-1` 读的是「这一枚页面叫不醒后台」这件事本身，**不是**「轮询 20 秒没等到」。
+- **代码是新的、桥是断的，两件事同时成立**：同一发里 `OMITONE_CODE_REV` = `710637d4c8` 与磁盘逐字相等、`tools/page-rev-commit.js` 归因**落后 0 个提交**（尺子 sha `63e135e5c24e`）。于是批次 158 台账那句「学习页还读回 `9666ee877c`、部署没做」在本轮被现场推翻 —— 部署做过，**只是重载扩展之后没 F5**（AGENTS §3.3 第 3 步）。这两格必须一起报：只报 `rev` 会得出「都部署了那就没这回事」，只报日志空会得出「构建没上去」，**两个方向都错**。
+- **对进度的实际影响**：页面自己的循环照跑、`_nextUnitNoop.memo.rounds` 照涨（19:33 → 19:39 实测 **28 → 32**，键没换，`unfinished` 恒 21），但走后台的活儿（AI 答题、日志环）**一件都不落地、也不留一句异常**；断连世界里 `chrome.runtime.id` 为空 ⇒ `sendMessage` 一调即抛。这一族**不会自愈** —— 页面上没有任何东西能把桥重新接上，只有整页 F5 或重载扩展 + F5。
+- **工具升格**：一次性探针 `.workbuddy/swctx199.js` → 技能常驻件 `scripts/bridge-check.js`（223 行）。判据两半各承重：**命名世界在不在**（排除「压根没注入」＝没装／不在这一页）+ **那一条 `ping` 抛不抛**（排除「后台只是没被叫起来」）。`verdict` 主名六格：`alive` / `alive-but-worker-not-listed`（桥能用、只是那一发没把睡中的 worker 叫进列表）/ `invalidated`（`via` 再分 `ping-throw` 与 `namespace-stripped`）/ `no-world` / `no-page` / `unreadable`，另加 `invalidated-suspect`／`alive-suspect` 两格 —— **没加 `--wake` 时只许给嫌疑，不许给结论**。现场对照：学习页与用户中心两枚各 `invalidated / ping-throw`，`edge://newtab` 那一枚出 `no-page`（这一格证明 verdict 不是硬编码）。⚠️ `alive` 与 `no-world` 两格本轮**现场取不到**（浏览器里此刻没有任何一枚连着桥的页），照实登记为未覆盖，不算测过。
+- **自家工具第一版假绿过一次，写进判据**：verdict 那一段原本写 `String(out.wake.ping)` 去 needle `invalidated`，而 `ping` 是**对象** —— `String(对象)` 得到 `[object Object]`，于是真断连被报成 `unreadable`。改成读 `out.wake.ping.err` 并补 `namespace-stripped` 那一支，再拿三枚页各跑一遍才认下来。这是 AGENTS §2 #22「needle 要落在字段上，不许落在装着字段的容器上」在**自己工具里**的第二次现场复现。
+- **顺带量到、但明确不当证据的一格**：`expr/site-condition-text.expr` 在这一页读回 `topVideos:0`、`conditionMarks:0` —— 这一发落在**章节测验**单元上，此刻没有视频卡，所以 #199「课程级免拖／免倍速账」的跨视频样本**本轮仍拿不到**；「0 处」不等于「这门课可拖」（§2 #12：缺席的证据不能当证据），要多视频样本得导航，超出只读探针授权。
+- **枚数从 3 涨到 8 这一格留着不定性**：19:35 那发数到 3 枚 `Omitone` 世界、19:53 数到 8 枚（18 个上下文两发都一样）。**本发分不开**「并发反复重载累积的孤儿世界」与「同源 iframe 各自一枚世界」这两种成因 —— 要分开得看每枚世界的 `frameId`，探针没读那一格。两发的**结论一致**（只有 1 枚还剩 `function`、那一枚一调就抛、`id` 全空），所以这一格只记账、不上结论。
+- **`§0b` 是个悬空引用**：批次 158 台账里「按 §0b 三条命令做」指的 AGENTS 小节**盘上不存在**（`grep "### 0b" AGENTS.md` 0 处），而它引的那次提交 `63c4485` 在当前分支上也读不到（`git cat-file -t` → Not a valid object）。那三条命令的真身在技能里：`scripts/expr/reload-extension.expr` + 每枚 chaoxing 标签各一发 `scripts/expr/reload-page.expr`，做完要求 `rev` 逐字等于磁盘、再用同一把尺复账环占比。本轮**不替并发会话回填** AGENTS（§1.0：不替别人补在飞的收口件），只把出处指到实文件。
+- **待用户裁**：要不要 F5 那一枚 `studentstudy` —— 这是**导航类动作**，红线里归他拍板（§2 #15：账号下同时两枚学习页会被站点顶掉；#154 剩余课程要串行）。裁下来之后复账三格：① `bridge-check` 转 `alive`（`ping` 答得出 `startedAt`）；② `field-logs` 那 200 行里重新出现**今天时间戳**的条目；③ 那一节 `memo.key` **换格**、`unfinished` 往下掉 —— **只有第 ③ 格证明接上之后真在往前走**，前两格只证明连上了。⚠️ 在这一发之前，「AI 答题一直没动静」不许报成 bug。
+- **没做的**：① `tools/field-logs.js` 应把「桥断」做成**独立一格**（直接复用 `bridge-check` 的判据），而不是停在「日志环读不出」—— 本轮只在仓库**之外**的技能里落了常驻件，仓库侧那条要等一个能跑全套绿的轮次（今日 `npm run itest` 被并发那句 `petWebSearchVal is not defined` 挡在门口：`popup/popup.js` 新引的自由变量还没进测试台注入表，那是**别人在飞的缺陷**，按 §1.0 不替他修、也不改判据）；② 反向验证那一刀（把 `_siteConditionNoDrag` 的匹配词注歪）仍挂在 #198 / 任务 #50，同样等并发提交完再动 `tools/integration-test.js`。
+
 ### 批次 133 · 2026-11-19 · 视频开头黑屏／抽搐不再干等：自动唤醒点不亮时代点一下「开始」（会话任务 #178）
 
 **用户能看见的改动**：「视频开头一直黑屏或者抽搐不动，自己点一下开始就正常」这一族
