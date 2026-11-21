@@ -4148,6 +4148,9 @@ function checkProfileSweep() {
 //         判据落在每一轮往 CHANGELOG 自己那一节写下的 `**门面**：` 那一行，两种形状缺一不可：
 //         引片段的（片段要能在用户看得见的那几页里取到）／写明「不用补（理由）」的；
 //         一节都扫不到单独报红，口径同 h —— 那句要求被整段删掉时不许静默变成通过
+//       j verify 的期望表**按通道**取（#203）：期望自测要跑绿且格数不掉，且 cmdVerify 的函数体
+//         真的用那张表（名字那一族写死回 ASSETS 也单独红）—— 否则 `verify preview` 恒红三条
+//         结构上不可能成立的断言，而每轮收口第 ⑥ 件都要跑它
 // ---------------------------------------------------------------------------
 function checkChannelGate() {
   var bad = [];
@@ -4441,13 +4444,70 @@ function checkChannelGate() {
     }
   }
 
+  // ---- j. verify 的期望必须**按通道**取（#203）----
+  //     这一族的形状与 c 格刚好配对：c 管"不许把只读核验挡死"，j 管"核验问的话得问在对的通道上"。
+  //     批次 149–153 实测：`verify preview` 拿**正式通道**的期望问预览那一发
+  //     （要 omitone.zip 与 Omitone-manual.pdf 这两个名字、要 latest/download/omitone.zip 那条直链、
+  //     要 tag 不落后 main），三条**结构上不可能成立**，退出码恒 1 ——
+  //     而六件套第 ⑥ 件每轮收口都要跑它，恒红的验收等于没有验收（人会开始跳过这一步）。
+  //     所以两边都要钉：**(1)** 期望表自己的逐格自测要跑绿且格数不掉；
+  //     **(2)** `cmdVerify` 的函数体真的从那张表取期望（否则自测绿而核验仍写死，是最坏的一种绿）。
+  var VERIFY_EXPECT_MIN = 10;
+  var veOut = '', veStatus = null, veErr = null;
+  for (var veAttempt = 0; veAttempt < 2; veAttempt++) {
+    var vres = spawnSync(process.execPath,
+      [path.join(__dirname, 'github-release.js'), 'verify-expect'],
+      { encoding: 'utf8', timeout: 30000 });
+    veErr = vres.error || null;
+    veOut = String(vres.stdout || '') + String(vres.stderr || '');
+    veStatus = vres.status;
+    if (!vres.error || vres.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  var veGrid = veOut.match(/自测通过（共 (\d+) 格）/);
+  if (veErr) {
+    bad.push('verify 通道期望的逐格自证没跑成' + (veErr.code === 'ETIMEDOUT' ? '（30 秒没返回）' : '（已重试一次）') +
+      '：' + String(veErr));
+  } else if (veStatus !== 0 || !veGrid) {
+    bad.push('verify 通道期望自测退出 ' + veStatus + '，或那句「自测通过（共 N 格）」根本没打印（末行=' +
+      JSON.stringify(String(veOut).split(/\r?\n/).filter(Boolean).slice(-1)[0] || '') +
+      '）—— 退出码 0 而读不出格数就是"没跑到"，不是通过（口径同 a 格）');
+  } else if (Number(veGrid[1]) < VERIFY_EXPECT_MIN) {
+    bad.push('verify 通道期望自测格数从下限 ' + VERIFY_EXPECT_MIN + ' 掉到 ' + veGrid[1] +
+      ' —— 删掉的那一格不会自己喊，而这一族每一格各挡一种假绿（缺额／越界／prerelease／空清单／认不出的 tag）');
+  }
+  // (2) 真接线：cmdVerify 里不许再出现写死正式通道的那几处
+  var veWire = [
+    ['期望表按通道取（verifyExpectations(tag)）', /verifyExpectations\(\s*tag\s*\)/],
+    ['缺额／直链／越界／prerelease 四格由 verifyChannelReadout 交回', /verifyChannelReadout\(\s*want\s*,\s*gotNames/],
+    ['比对基准是 baseBranch 而不是写死的 main', /'\/git\/ref\/heads\/' \+ baseBranch/],
+    ['基准分支读不出单独红（不许塌进"一致"）', /baseBranch\s*\|\|\s*String\(\s*rel\.target_commitish/],
+    ['新增两格进退出码', /read\.foundForbidden\.length\s*\|\|\s*!read\.prereleaseOk/],
+    ['按内容核对附件时用通道那张表（#203 的第四条：预览比到正式说明书）', /want\.assetTable\.filter/]
+  ];
+  if (!verifyBody) {
+    bad.push('发版工具里找不到 cmdVerify 的函数体 —— j 格「期望表有没有真被用上」没处可查');
+  } else {
+    veWire.forEach(function (w) {
+      if (!w[1].test(verifyBody)) {
+        bad.push('cmdVerify 里没找到「' + w[0] + '」那一句 —— 期望表改了而核验没用它，自测照样绿（§2 #18 那一族）');
+      }
+    });
+    if (/ASSETS\.map\(/.test(verifyBody)) {
+      bad.push('cmdVerify 里还有 `ASSETS.map(` —— 期望附件名又回到写死正式通道，预览那一发的假红①回来');
+    }
+    if (/===\s*'omitone\.zip'/.test(verifyBody)) {
+      bad.push('cmdVerify 里还有那句按 `omitone.zip` 判直链 —— 预览通道永远拿不到绿灯，假红②回来');
+    }
+  }
+
   if (bad.length) {
     fail('实验支线发布闸没接牢（这族事故的表现是「下载的人装到了实验版」，而每条命令都打印成功）：\n      ' +
       bad.join('\n      '));
     return;
   }
   pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
-    'release / replace-asset / preview 问在联网之前，verify 照旧放行，' +
+    'release / replace-asset / preview 问在联网之前，verify 照旧放行且期望按通道自测 ' +
+    (veGrid ? veGrid[1] : '?') + ' 格全绿，' +
     '文档手抄 ' + docHits.length + ' 处逐处同闸的 ' + cells + ' 格（' + docHits.join('、') + '），' +
     '预览附件名与 prerelease 与发布后回读三格齐，' +
     '门面逐轮登记：批次 ≥' + FACADE_FROM + ' 共 ' + ledger.total + ' 节，引门面 ' + ledger.cited +

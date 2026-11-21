@@ -24,6 +24,14 @@
  *   verify  <tag>                             核验远端状态（**发完必须跑一次**）
  *   replace-asset <tag>                       附件过期时按同名替换，不必重发整版
  *   check-msg <文件>                          只校验提交信息，不联网
+ *   verify-expect                             只核对 verify 的**通道期望表**，不联网（#203）
+ *
+ * ⚠️ **`verify` 的期望按通道取**（`verifyExpectations()`）：预览那一发的附件名、下载直链、
+ *   "tag 落后于哪一条分支"都不是正式通道那一套。以前写死按正式通道问，于是
+ *   `verify preview` **恒红三条结构上不可能成立的断言**（要 `omitone.zip` 与
+ *   `Omitone-manual.pdf` 这两个正式名字、要 `latest/download/omitone.zip` 能用、
+ *   要 tag 不落后 `main`）—— 而六件套第 ⑥ 件每轮都要跑它，恒红的验收等于没有验收。
+ *   判据全在 `verify-expect` 那 10 格里离线跑，改期望表不必真发一次版才测得到。
  *
  * ⚠️ `notes` 这个子命令是**为了堵一类漂移**才加的：以前"合并说明"都是临时 curl 直接
  *   PATCH 线上那一页，**从没回写 `release-notes-<版本>.md`**（2026-11-14 实测两边各缺半 ——
@@ -804,22 +812,204 @@ async function assertStableChannelIntact(previewRelId, wanted) {
 // ---------------------------------------------------------------------------
 // verify：核验远端（**只看接口返 200 不算数**，要确认附件状态与 tag 指向）
 // ---------------------------------------------------------------------------
+
+/**
+ * verify 的**通道期望表** —— #203 的落点。
+ *
+ * 为什么必须有这一张表：`verify preview` 原先把**正式通道**的期望（要 `omitone.zip`
+ * 与 `Omitone-manual.pdf` 这两个名字、要那条 `latest/download/omitone.zip` 直链能用、
+ * 要 tag 不落后 `main`）套在预览那一发上问。预览天生不带那两个名字、也不该带
+ * （带上了就等于抢走 `/releases/latest`，见 `assertStableChannelIntact`），
+ * 于是**每轮发完预览包都必须跑的那条验收命令恒红**，红的还是三条结构上不可能成立的断言 ——
+ * 「不会失败的检查等于没有检查」（AGENTS §5），而反过来「恒红的检查等于没有检查」同样成立：
+ * 人会开始跳过这一步，六件套的第 ⑥ 件就没人真在验收。
+ *
+ * ⚠️ 这一族有**第四条**同一根因的缺陷，比那三条更隐蔽：下面按内容核对附件是否过期时，
+ *   原先拿 `ASSETS` 找"改了 使用说明.pdf 该比哪一个附件"，在预览通道上它比的是
+ *   **正式说明书** `Omitone-manual.pdf`，而不是 `Omitone-manual-preview.pdf` ——
+ *   症状与"附件已经换过"同形，而且报的是**另一个通道的字节**。
+ *   所以 `assetTable` / `zipName` / `permalink` / `forbiddenNames` 必须一起从这张表取，
+ *   不许只把名字那一处改对。
+ *
+ * ⚠️ 稳定通道那一支的期望**一位都没松**（`wantNames` 仍是 `ASSETS`、直链仍查 `omitone.zip`、
+ *   比对基准仍是 `main`）。判据不许为了预览那一发变绿而放宽正式版（AGENTS §2 #23 同一族）。
+ */
+function verifyExpectations(tag) {
+  var isPreview = String(tag) === PREVIEW_TAG;
+  var table = isPreview ? PREVIEW_ASSETS : ASSETS;
+  var zipName = pickZipAssetName(table);
+  return {
+    channel: isPreview ? 'preview' : 'stable',
+    assetTable: table,
+    wantNames: table.map(function (a) { return a.name; }),
+    zipName: zipName,
+    // 预览入口是固定 tag 那一族的永久直链（与 latest 互不顶替，见 cmdPreview 末尾打印的那一条）
+    permalink: 'https://github.com/' + OWNER + '/' + REPO + '/releases/' +
+      (isPreview ? 'download/' + PREVIEW_TAG + '/' : 'latest/download/') + zipName,
+    forbiddenNames: isPreview ? STABLE_ONLY_NAMES.slice() : [],
+    requirePrerelease: isPreview,
+    // 比对基准：稳定通道写死 main；预览通道的"有没有落后"要对着**这一发自己发布到的那一条分支**
+    baseBranch: isPreview ? '' : BRANCH
+  };
+}
+
+/** 从附件表里挑 zip —— 按下标 0 取会在表换序时把 pdf 当成包，按结尾认则不会。 */
+function pickZipAssetName(table) {
+  var z = (table || []).filter(function (a) { return /\.zip$/i.test(String(a.name)); })[0];
+  return z ? z.name : '';
+}
+
+/**
+ * 纯判定：线上读回来的附件名 + `prerelease` ↔ 通道期望。
+ *
+ * 抽成不联网的函数是为了**离线自测**（`verify-expect`，与 `check-msg` 同一先例）——
+ * 这一族的判定要能对着假读数跑，否则每次改期望表都要真发一次版才测得到。
+ */
+function verifyChannelReadout(want, gotNames, prerelease) {
+  var out = { wrongNames: [], foundForbidden: [], linkOk: false, prereleaseOk: true };
+  out.wrongNames = want.wantNames.filter(function (n) { return gotNames.indexOf(n) === -1; });
+  out.foundForbidden = (want.forbiddenNames || []).filter(function (n) {
+    return gotNames.indexOf(n) >= 0;
+  });
+  out.linkOk = String(want.zipName || '') !== '' && gotNames.indexOf(want.zipName) >= 0;
+  if (want.requirePrerelease && prerelease !== true) out.prereleaseOk = false;
+  return out;
+}
+
+/**
+ * 离线自测：`node tools/github-release.js verify-expect`
+ * —— 不发请求、不要令牌，把上面两个函数对着已知读数跑一遍。
+ * 每一格都要**独立承重**：既有"预览该绿"，也要有"预览拿正式名字必须红"那几格。
+ */
+function cmdVerifyExpect() {
+  var prev = verifyExpectations(PREVIEW_TAG);
+  var stable = verifyExpectations('v1.3.0');
+  var prevNames = prev.wantNames.slice();
+  var stableNames = stable.wantNames.slice();
+  var readPrevOk = verifyChannelReadout(prev, prevNames, true);
+  var readPrevWithStableNames = verifyChannelReadout(prev, stableNames, true);
+  var readStableOk = verifyChannelReadout(stable, stableNames, true);
+  var readPrevNotPrerelease = verifyChannelReadout(prev, prevNames, false);
+  var readEmptyPrev = verifyChannelReadout(prev, [], true);
+  var readEmptyStable = verifyChannelReadout(stable, [], true);
+  var readUnknownTag = verifyChannelReadout(verifyExpectations('v9.9.9'), stableNames, true);
+  var zipReordered = pickZipAssetName([
+    { src: '使用说明.pdf', name: 'Omitone-manual-preview.pdf' },
+    { src: null, name: 'omitone-preview.zip' }
+  ]);
+
+  var cells = [
+    {
+      name: '预览通道的期望附件名取自 PREVIEW_ASSETS，不写死',
+      ok: prev.channel === 'preview' && prevNames.join(',') === PREVIEW_ASSETS.map(function (a) { return a.name; }).join(','),
+      detail: 'channel=' + prev.channel + ' names=' + prevNames.join(',')
+    },
+    {
+      name: '预览的 zip 名与直链走 download/preview 那一族（不查 latest）',
+      ok: prev.zipName === 'omitone-preview.zip' &&
+        prev.permalink.indexOf('/releases/download/preview/omitone-preview.zip') >= 0 &&
+        prev.permalink.indexOf('latest') === -1,
+      detail: prev.permalink
+    },
+    {
+      name: '预览线上只有预览那两个名字 → 三条假红全消（#203 的正格）',
+      ok: !readPrevOk.wrongNames.length && readPrevOk.linkOk &&
+        !readPrevOk.foundForbidden.length && readPrevOk.prereleaseOk,
+      detail: JSON.stringify(readPrevOk)
+    },
+    {
+      name: '预览线上摆着正式那两个名字 → 缺额与越界各自都红（反向对照，尺不是恒绿）',
+      ok: readPrevWithStableNames.wrongNames.length === prevNames.length &&
+        readPrevWithStableNames.foundForbidden.length === STABLE_ONLY_NAMES.length &&
+        readPrevWithStableNames.linkOk === false,
+      detail: JSON.stringify(readPrevWithStableNames)
+    },
+    {
+      name: '稳定通道期望一位没松：仍要正式那两个名字与 omitone.zip 直链',
+      ok: stable.channel === 'stable' &&
+        stableNames.join(',') === ASSETS.map(function (a) { return a.name; }).join(',') &&
+        stable.zipName === 'omitone.zip' &&
+        stable.permalink.indexOf('/releases/latest/download/omitone.zip') >= 0 &&
+        stable.baseBranch === BRANCH && !stable.forbiddenNames.length &&
+        !readStableOk.wrongNames.length && readStableOk.linkOk && readStableOk.prereleaseOk,
+      detail: 'names=' + stableNames.join(',') + ' base=' + stable.baseBranch
+    },
+    {
+      name: '预览那一发没标 prerelease 单独红（它一抢 latest 就顶掉正式直链）',
+      ok: readPrevNotPrerelease.prereleaseOk === false &&
+        verifyChannelReadout(stable, stableNames, false).prereleaseOk === true,
+      detail: '预览 prerelease=false → ' + readPrevNotPrerelease.prereleaseOk
+    },
+    {
+      name: '空附件清单两个通道都报缺额，不许读成「没什么问题」',
+      ok: readEmptyPrev.wrongNames.length === prevNames.length && !readEmptyPrev.linkOk &&
+        readEmptyStable.wrongNames.length === stableNames.length && !readEmptyStable.linkOk,
+      detail: '预览缺 ' + readEmptyPrev.wrongNames.length + ' / 正式缺 ' + readEmptyStable.wrongNames.length
+    },
+    {
+      name: '认不出的 tag 按稳定通道走，不许猜成预览（猜错就把正式直链的核验跳过）',
+      ok: verifyExpectations('v9.9.9').channel === 'stable' && !readUnknownTag.wrongNames.length &&
+        verifyExpectations('').channel === 'stable' &&
+        verifyExpectations(PREVIEW_TAG + '-x').channel === 'stable',
+      detail: 'v9.9.9 → ' + verifyExpectations('v9.9.9').channel
+    },
+    {
+      name: '附件表换序后 zip 仍按 .zip 结尾认出（按下标取会把 pdf 当成包）',
+      ok: zipReordered === 'omitone-preview.zip' && pickZipAssetName([]) === '',
+      detail: '换序 → ' + zipReordered
+    },
+    {
+      name: '预览的禁止名就是 STABLE_ONLY_NAMES 那份引用（改表就跟着改，不另写一份）',
+      ok: prev.forbiddenNames.join(',') === STABLE_ONLY_NAMES.join(',') &&
+        prev.assetTable === PREVIEW_ASSETS && stable.assetTable === ASSETS,
+      detail: 'forbidden=' + prev.forbiddenNames.join(',')
+    }
+  ];
+
+  var fails = cells.filter(function (c) { return !c.ok; });
+  fails.forEach(function (c) { console.log('  [FAIL] ' + c.name + ' → ' + c.detail); });
+  if (fails.length) {
+    console.log('\nverify 通道期望自测未通过：' + fails.length + ' / ' + cells.length + ' 格红');
+    process.exitCode = 1;
+    return;
+  }
+  console.log('自测通过（共 ' + cells.length + ' 格）—— 通道期望不联网即可核对');
+}
+
 async function cmdVerify(tag) {
   if (!tag) throw new Error('verify 需要 tag');
 
-  var ref = await api('GET', base + '/git/ref/heads/' + BRANCH);
-  var head = ref.object.sha;
-  console.log('远端 ' + BRANCH + '   ' + head);
+  // ⚠️ 期望按通道取（#203）—— 预览那一发的附件名、直链、"落后于哪一条分支"都不是正式通道那套
+  var want = verifyExpectations(tag);
 
   var tagRef = await api('GET', base + '/git/ref/tags/' + tag);
   var tagObj = await api('GET', base + '/git/tags/' + tagRef.object.sha);
   var tagTarget = tagObj.object.sha;
-  // tag 与 main 的关系用 compare 接口判定（见下方 compareAfterTag）
+  // tag 与基准分支的关系用 compare 接口判定（见下方 compareAfterTag）
   console.log('tag ' + tag + '     ' + tagTarget);
 
   var rel = await api('GET', base + '/releases/tags/' + tag);
   console.log('release        ' + rel.html_url);
+  console.log('通道           ' + want.channel + '（期望附件 ' + want.wantNames.join(' / ') + '）');
   console.log('draft          ' + rel.draft + ' / prerelease ' + rel.prerelease + ' / 说明 ' + rel.body.length + ' 字');
+
+  // 基准分支：稳定通道照旧是 main；预览通道要比的是**这一发自己发布到的那一条**（读线上，不猜）。
+  // 读不到就单独红 —— 不许把"比不了"实现成"跳过比较然后打印一致"（§2 #12/#14 同一族）。
+  var baseBranch = want.baseBranch || String(rel.target_commitish || '').trim();
+  var head = '';
+  if (!baseBranch) {
+    console.log('\n  ✗ 这一发预览的 release 没写 target_commitish —— 无法判断 tag 有没有落后于分支，' +
+      '不能拿"没比"当"比过且一致"');
+  } else {
+    try {
+      var ref = await api('GET', base + '/git/ref/heads/' + baseBranch);
+      head = ref.object.sha;
+      console.log('远端 ' + baseBranch + '   ' + head);
+    } catch (eBranch) {
+      console.log('\n  ✗ 远端读不到基准分支 ' + baseBranch + '（' + eBranch.message.slice(0, 120) +
+        '）—— 「tag 有没有落后」这一格判不了');
+    }
+  }
 
   // ⚠️ 附件列表必须走 `/releases/{id}/assets` 这个**子端点**，
   //    不能读 release 响应里内嵌的 `assets` 字段 —— **那个字段可能是空的**。
@@ -840,23 +1030,34 @@ async function cmdVerify(tag) {
     console.log('  附件 ' + a.name + '  ' + (a.size / 1024).toFixed(1) + ' KB  state=' + a.state);
   });
 
-  // 附件名必须与 ASSETS 声明的**逐字一致**。
+  // 附件名必须与**这一通道**声明的逐字一致（表见 verifyExpectations）。
   // GitHub 会把非 ASCII 名字洗成 `default.pdf` 并照常返回 201 ——
   // 只看 state=uploaded 会放过这种"名字错了、其余全正常"的情况（v1.1.2 真踩过）。
-  var wantNames = ASSETS.map(function (a) { return a.name; });
   var gotNames = relAssets.map(function (a) { return a.name; });
-  var wrongNames = wantNames.filter(function (n) { return gotNames.indexOf(n) === -1; });
+  var read = verifyChannelReadout(want, gotNames, rel.prerelease);
+  var wrongNames = read.wrongNames;
 
-  // README 依赖的永久直链必须真的能用（用 HEAD 探一下最终地址，不下载全文）
-  var linkOk = relAssets.some(function (a) { return a.name === 'omitone.zip'; });
-  console.log('\n下载直链      https://github.com/' + OWNER + '/' + REPO + '/releases/latest/download/omitone.zip');
-  console.log('               ' + (linkOk ? '✓ 该 Release 里有同名附件，链接可用' : '✗ 缺 omitone.zip，README 的下载入口是死链！'));
+  // 这一通道依赖的那条永久直链必须真的能用（用 HEAD 探一下最终地址，不下载全文）
+  var linkOk = read.linkOk;
+  console.log('\n下载直链      ' + want.permalink);
+  console.log('               ' + (linkOk
+    ? '✓ 该 Release 里有 ' + want.zipName + '，这一通道的下载入口可用'
+    : '✗ 缺 ' + want.zipName + '，' + want.channel + ' 通道的下载入口是死链！'));
 
   if (bad.length) console.log('\n未上传完成的附件: ' + bad.join(', '));
   if (wrongNames.length) {
-    console.log('\n附件名与 ASSETS 声明不符 —— 实际: ' + gotNames.join(', '));
+    console.log('\n' + want.channel + ' 通道的附件名与声明不符 —— 实际: ' + gotNames.join(', '));
     console.log('  缺少: ' + wrongNames.join(', '));
     console.log('  原因：非 ASCII 附件名会被 GitHub 洗成 default.pdf，附件名必须纯 ASCII');
+  }
+  // 预览那一发摆着正式通道的名字 = 它把 `/releases/latest` 抢走了（与 cmdPreview 末尾
+  // 那条 assertStableChannelIntact 同一个判据，只是这里是**核验时**再说一遍）。
+  if (read.foundForbidden.length) {
+    console.log('\n  ✗ 预览这一发带着正式通道的附件名: ' + read.foundForbidden.join(' / ') +
+      ' —— 两条通道必须互不顶替（AGENTS §3.8）');
+  }
+  if (!read.prereleaseOk) {
+    console.log('\n  ✗ 预览这一发的 prerelease 不是 true —— /releases/latest 会被它抢走');
   }
   // tag 之后有没有新提交？有的话**必须都不能影响用户下载到的东西**。
   //
@@ -898,8 +1099,8 @@ async function cmdVerify(tag) {
     console.log('\n  ✗ 读不到 tools/build.js 的 INCLUDE 白名单 —— 校验器失效，无法判断改动会不会进包。');
     console.log('    （这一刻的绿灯是假的：不再往下打印"完全一致"，请先修 tools/build.js 或本文件）');
   }
-  // 附件名也来自 ASSETS，不写死
-  var assetSrcs = ASSETS.map(function (a) { return a.src || 'omitone.zip'; });
+  // 附件名也来自**这一通道的表**，不写死
+  var assetSrcs = want.assetTable.map(function (a) { return a.src || want.zipName; });
   var affectsUser = function (p) {
     if (!INCLUDE) return false;
     if (assetSrcs.indexOf(p) !== -1) return true;          // 直接就是附件源文件
@@ -907,13 +1108,13 @@ async function cmdVerify(tag) {
     return INCLUDE.indexOf(top) !== -1;                     // 落在白名单目录/文件里
   };
   var clean = true;
-  if (includeBroken) {
+  if (includeBroken || !head) {
     clean = false;
   } else if (tagTarget !== head) {
     var cmp = await api('GET', base + '/compare/' + tagTarget + '...' + head);
     var files = (cmp.files || []).map(function (f) { return f.filename; });
     var shipped = files.filter(affectsUser);
-    console.log('tag 之后 main 多了 ' + cmp.ahead_by + ' 个提交，改动 ' + files.length + ' 个文件：');
+    console.log('tag 之后 ' + baseBranch + ' 多了 ' + cmp.ahead_by + ' 个提交，改动 ' + files.length + ' 个文件：');
     files.forEach(function (p) { console.log('    ' + p + (affectsUser(p) ? '  ← 影响用户下载' : '  [不影响]')); });
     if (cmp.behind_by > 0) {
       console.log('  ✗ tag 落后 main ' + cmp.behind_by + ' 个提交 —— tag 分叉了，发布点不对');
@@ -932,10 +1133,13 @@ async function cmdVerify(tag) {
       //    一律被判成「Release 上没有对应附件」→ 报红。而校验器自己又建议
       //    「直接替换该附件即可」—— 自己给的建议自己认不出来。
       //    （实测踩过：用 replace-asset 换完 zip，verify 仍然报旧包。）
+      //    ⚠️ #203 的第四条：这一处原先也写死 `ASSETS`，于是在预览通道上改了 使用说明.pdf
+      //    会比到**正式说明书** `Omitone-manual.pdf` 的字节上去 —— 报的是另一个通道的内容。
+      //    现在两边都从 `want.assetTable` 取（`ZIP_ASSET` 同理走 `want.zipName`）。
       //
       // 比对优先用 **sha256 摘要**（GitHub 附件接口会给 digest），拿不到再退回比字节数。
       // 字节数相等不等于内容相等 —— 能比摘要就别只比大小。
-      var ZIP_ASSET = 'omitone.zip';
+      var ZIP_ASSET = want.zipName;
       var localZip = path.join(ROOT, 'dist', 'omitone-' + manifestVersion() + '.zip');
       var sha256 = function (p) {
         return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
@@ -945,7 +1149,7 @@ async function cmdVerify(tag) {
       for (var i2 = 0; i2 < shipped.length; i2++) {
         var p2 = shipped[i2].replace(/\\/g, '/');
         var localPath = path.join(ROOT, p2);
-        var direct = ASSETS.filter(function (d) { return d.src === p2; })[0];
+        var direct = want.assetTable.filter(function (d) { return d.src === p2; })[0];
         var assetName = direct ? direct.name : ZIP_ASSET;
         // zip 这一路：所有打进包的文件共用同一个附件，核对一次就够
         if (seenAsset[assetName]) continue;
@@ -988,8 +1192,16 @@ async function cmdVerify(tag) {
         console.log('  ✗ tag 之后有会**影响用户下载**的改动，且线上附件还是旧的：');
         stale.forEach(function (s2) { console.log('      ' + s2); });
         console.log('    → 先 npm run build（或 npm run manual）重出产物，再跑：');
-        console.log('        node tools/github-release.js replace-asset ' + tag);
-        console.log('        （按同名替换附件，不必重发整版；附件名绝不能改，见 AGENTS.md §7.5）');
+        // ⚠️ 建议的修法也要按通道：预览那一条支线上 `replace-asset` 会被通道闸当场挡下
+        //     （AGENTS §3.8 —— 那条命令会把实验版字节挂到线上的 omitone.zip 上），
+        //     预览包的更新口是 `preview` 自己。给一条被挡死的建议等于没给。
+        if (want.channel === 'preview') {
+          console.log('        node tools/github-release.js preview');
+          console.log('        （预览附件走 preview 那一发；这条支线上 replace-asset 是被挡的）');
+        } else {
+          console.log('        node tools/github-release.js replace-asset ' + tag);
+          console.log('        （按同名替换附件，不必重发整版；附件名绝不能改，见 AGENTS.md §7.5）');
+        }
         clean = false;
       } else {
         console.log('  ✓ 改动涉及的附件都已换成最新内容，用户下载到的东西是对的');
@@ -998,7 +1210,7 @@ async function cmdVerify(tag) {
       console.log('  ✓ 改动都不进包（文档 / 开发期文件），用户下载到的东西与 tag 一致');
     }
   } else {
-    console.log('tag 与 ' + BRANCH + ' 完全一致 ✓');
+    console.log('tag 与 ' + baseBranch + ' 完全一致 ✓');
   }
 
   // ---- 本地构建产物有没有过期 ----
@@ -1012,7 +1224,8 @@ async function cmdVerify(tag) {
     console.log('\n  ⚠ 本地没有 dist/omitone-' + manifestVersion() + '.zip —— 先 npm run build，否则上面那条"附件已换过"没有本地依据');
   } else if (fresh.stale) {
     console.log('\n  ✗ 本地构建产物**比源码旧**：dist 打包之后 `' + fresh.newest.file + '` 又改过 ——');
-    console.log('    线上附件与这个旧 dist 一致也没用，用户拿到的还是修复前的代码。先 npm run build，再 replace-asset');
+    console.log('    线上附件与这个旧 dist 一致也没用，用户拿到的还是修复前的代码。先 npm run build，再' +
+      (want.channel === 'preview' ? '跑 preview（这条支线上 replace-asset 被通道闸挡着）' : ' replace-asset ' + tag));
     clean = false;
   } else {
     console.log('\n  ✓ 本地 dist 不早于任何进包源文件（最新的是 ' + fresh.newest.file + '）');
@@ -1052,7 +1265,8 @@ async function cmdVerify(tag) {
     }
   }
 
-  if (bad.length || wrongNames.length || !linkOk || !clean) process.exitCode = 1;
+  if (bad.length || wrongNames.length || read.foundForbidden.length || !read.prereleaseOk ||
+      !linkOk || !clean) process.exitCode = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,6 +1287,7 @@ async function cmdVerify(tag) {
   else if (cmd === 'verify') await cmdVerify(rest.positional[0]);
   else if (cmd === 'replace-asset') await cmdReplaceAsset(rest.positional[0]);
   else if (cmd === 'check-msg') cmdCheckMsg(rest.positional[0]);
+  else if (cmd === 'verify-expect') cmdVerifyExpect();
   else {
     console.log('用法:');
     console.log('  node tools/github-release.js push --message-file <文件> [--delete a,b] <文件...>');
@@ -1082,6 +1297,7 @@ async function cmdVerify(tag) {
     console.log('  node tools/github-release.js verify <tag>');
     console.log('  node tools/github-release.js replace-asset <tag>   # 附件过期时按同名替换，不必重发整版');
     console.log('  node tools/github-release.js check-msg <文件>   # 只校验提交信息，不联网');
+    console.log('  node tools/github-release.js verify-expect      # 只核对 verify 的通道期望表（不联网、不要令牌，#203）');
     console.log('  （通道闸 tools/channel-gate.js：实验支线上 release / replace-asset 被挡，发布线上 preview 被挡 —— 见 AGENTS §3.8）');
     process.exitCode = 1;
   }
