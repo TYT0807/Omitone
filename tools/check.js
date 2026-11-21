@@ -3694,6 +3694,202 @@ function checkSwitchBudgetClaim() {
     '分布在 ' + new Set(rreal.claims.map(function (c) { return c.file; })).size + ' 份；' +
     '含 7 格夹具对照（其中两格是跨族不许误报：弹题的「道…发」与探针的「问…门」）+ 1 格掩码形状自证；' +
     '工具自带 ' + rateSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第三把尺**：弹题问价「放手 3 次 / 预算 6 发」（会话任务 #205 剩下的那半 / 批次 157）----
+  //   第二把尺的头注里欠着这一句：「⚠️ 弹题那一族到现在也还没有尺……要立就走第 30/31 项那一套"两把尺各自排除对头"」——
+  //   同一族漂移第三次出现：批次 85/86 换课上限、批次 146/150 倍速问价、这一族。
+  //   与倍速那把**不同真源**（`popupQuizMaxAttempts` 与 `_getPopupQuizMaxAttempts()) * 2`），所以两把尺互斥而不是合并：
+  //   合并的结果是每一句都被另一族的数顶红（第一版真的这样咬过 README:113，见第二把尺头注那条实测假红）。
+  //   **仍然不新增第 36 项**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  var quiz, quizA, quizMult;
+  try {
+    quiz = require('./audit-quiz-ask-claims.js');
+  } catch (q1) {
+    fail('弹题问价对账加载失败：' + String((q1 && q1.message) || q1) +
+      '\n      真源是 tools/audit-quiz-ask-claims.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  if (quiz.maskInvisible !== audit.maskInvisible || quiz.maskInvisible !== rate.maskInvisible) {
+    fail('弹题问价与前两把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '三处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    quizA = quiz.giveupFromSource();
+    quizMult = quiz.multiplierFromSource();
+  } catch (q2) {
+    fail('弹题问价对账读不出代码真源：' + String((q2 && q2.message) || q2) +
+      '\n      真源是 ' + quiz.GIVEUP_SOURCE + ' 的 `popupQuizMaxAttempts: <整数>,` 与 '
+      + quiz.BUDGET_SOURCE + ' 的 `_getPopupQuizMaxAttempts()) * <整数>`；常量改名要连这条闸一起改');
+    return;
+  }
+  var qclean = quiz.cleanFixture();
+  // 「凡是写 6 的句子全部要红」那一格的预期条数**从夹具自己读回来**，不在这里手抄
+  // （§5：断言里出现的每一个数都要说得出它是从哪儿量回来的 —— 手拍的条数正是批次 111 那一族）
+  var qCleanRes = quiz.audit({ docs: qclean, giveup: quizA, multiplier: quizMult });
+  var qSix = qCleanRes.claims.filter(function (c) { return c.value === 6; }).length;
+  var QCASES = [
+    {
+      // 八句夹具**逐字抄自只读探针量回来的真文档形状**（README×4 / HANDOVER×1 / Release 说明×2 / 说明书×1）
+      name: '干净夹具（八句真形状 + 围栏与注释与 script 里的错数不算）',
+      files: qclean, problems: 0, claims: 8
+    },
+    {
+      name: '放手档那句写成预算档的数要红，并点名「次数与真源不一致」',
+      files: quiz.mutate(qclean, '认不出的最多问 3 次', '认不出的最多问 6 次'),
+      problems: 1, needle: '次数与真源不一致'
+    },
+    {
+      name: '预算档那句写成放手档的数要红，并说出 `3 × 2 = 6`',
+      files: quiz.mutate(qclean, '同一道最多 6 发，到顶本地选', '同一道最多 3 发，到顶本地选'),
+      problems: 1, needle: '3 × 2 = 6'
+    },
+    {
+      // 这一格钉的是**两档各自由不同常数承重**：倍率一旦漂，全部写 6 的句子过期；
+      // 条数不写死 —— 期望等于夹具里写 6 的处数（§5：那个数不许是我拍的，要从盘上读回来）
+      name: '倍率由 2 改成 3（预算档=9）时，凡是写 6 的句子全部要红，写 3 的一处不许误报',
+      files: qclean, giveupOverride: 3, multOverride: 3,
+      problems: qSix,
+      needle: '3 × 3 = 9'
+    },
+    {
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提发数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧两档没读到要响，且不许"只比另一个"',
+      files: qclean, giveupOverride: 0, multOverride: 2, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照第一格：**这一格正是第二把尺头注里那条实测假红的镜像** ——
+      // 少了弹题引导词，倍速那句「一支最多问三发」会被这一族抓成弹题承诺（反之亦然）
+      name: '倍速那一族「一支最多问三发」不许被抓成弹题问价（跨族不许误报）', xfamily: true,
+      files: {
+        'README.md': '| **自动倍速** | 一支最多问三发，仍问不到就按原速播完这一支 |\n'
+          + '- 同一道最多问 6 发，到顶之后本地选。\n',
+        'HANDOVER.md': '倍速问不到连问三发才按原速播完。\n- 这一道最多 6 发，到顶本地选。\n'
+      },
+      problems: 0, claims: 2, allValue: 6
+    },
+    {
+      name: '探针那一族「一轮最多问 40 门」与倍速那一族都不许被抓（与第 31 项互不越界）', xfamily: true,
+      files: {
+        'README.md': '- 换课前那一读一轮最多问 40 门、单页最多 12 秒。\n- 这一道最多问 3 次就放手。\n',
+        'HANDOVER.md': '那一读最多问 40 门（第 31 项的账）。\n- 同一道最多 6 发，到顶之后本地选。\n'
+      },
+      problems: 0, claims: 2
+    },
+    {
+      // 这一格钉的是"引导词 + 算符紧贴数字"**两半各自**挡掉的 41 处宽口径命中（实测 49 宽 / 8 窄）——
+      // 最后那句「这一道问明白是 3 次」只有**算符不许隔字**那一半能排掉，前几句只有**引导词距离**那一半能排掉
+      name: '量词与别的预算族「重问一次模型」「问了不止一遍」「付了两次」「最多三次」「问明白是 3 次」不许被读成数字承诺',
+      files: {
+        'README.md': '- 弹题请求没有去重，每 250ms 一轮就重问一次模型；同一道最多问 6 发，到顶之后本地选。\n',
+        'HANDOVER.md': '问了不止一遍，钱付了两次；这一道最多问 3 次就放手。\n'
+          + '还是救不回来才最多等 2 分钟放手，试过最多三次。\n'
+          + '这一道问明白是 3 次就放手。\n'
+      },
+      problems: 0, claims: 2
+    },
+    {
+      // 反向的另一半：**没有引导词**的那两句也不许抓 —— 这一格一旦红，说明尺被放宽成"什么都抓"的会误报的守卫
+      name: '脱离弹题语境的「最多问 6 发」「最多问 3 次」不许被抓（引导词那一半单独承重）',
+      files: { 'README.md': '- 最多问 6 发，到顶之后本地选。\n', 'HANDOVER.md': '- 最多问 3 次就放手。\n' },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var qbad = [];
+  QCASES.forEach(function (t) {
+    var res;
+    try {
+      res = quiz.audit({
+        docs: t.files,
+        giveup: ('giveupOverride' in t) ? t.giveupOverride : quizA,
+        multiplier: ('multOverride' in t) ? t.multOverride : quizMult
+      });
+    } catch (q3) {
+      qbad.push(t.name + '：审计本身抛了 ' + String((q3 && q3.message) || q3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      qbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      // 「0 条问题」有两种：都对上了，与**压根没扫到**；「没越界」也有两种：排掉了，与正则坏了
+      qbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.allValue && !res.claims.every(function (c) { return c.value === t.allValue; })) {
+      qbad.push(t.name + '：命中里混进了不是 ' + t.allValue + ' 的句子 —— 跨族那句被抓进来了：'
+        + JSON.stringify(res.claims.map(function (c) { return c.text; })));
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      qbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  checkMaskShape('弹题问价 - HTML 注释与 script',
+    '<p>同一道最多问 3 次</p>\n<!-- 同一道最多问 8 次，就放手 -->\n'
+    + '<script>a="这一道最多问 7 次，就放手";</script>\n', true, 0, qbad);
+  if (qbad.length) {
+    fail('弹题问价对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + qbad.join('\n      '));
+    return;
+  }
+  var qdocs = {};
+  var qmissing = [];
+  quiz.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) qdocs[f] = fs.readFileSync(p, 'utf8');
+    else qmissing.push(f);
+  });
+  var qreal = quiz.audit({ docs: qdocs, giveup: quizA, multiplier: quizMult });
+  if (qmissing.length) {
+    fail('弹题问价对账有 ' + qmissing.length + ' 份文档没读进来：' + qmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (qreal.problems.length) {
+    fail('弹题问价对账有 ' + qreal.problems.length + ' 条要说：\n      ' + qreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成代码现在的数（放手 ' + quizA + ' 次、预算 ' + quizA * quizMult
+      + ' 发），别改判据迁就现状；倍速那一族「一支最多问 N 发」是上面那把尺，真源不同，别合并');
+    return;
+  }
+  var quizSelfCells = null;
+  var quizSelfErr = null;
+  for (var qattempt = 0; qattempt < 2; qattempt++) {
+    var qr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-quiz-ask-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    quizSelfErr = qr.error || null;
+    if (!qr.error || qr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (qr.status !== 0) {
+        quizSelfErr = new Error('退出码 ' + qr.status + '，末行=' +
+          JSON.stringify(String(qr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var qmc = String(qr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!qmc) {
+          quizSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(qr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else quizSelfCells = Number(qmc[1]);
+      }
+      break;
+    }
+  }
+  if (quizSelfErr) {
+    fail('弹题问价的逐格对照没跑成或本身是红的：' + String(quizSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 8 处都对上了"就打印通过');
+    return;
+  }
+  if (quizSelfCells < 14) {
+    fail('弹题问价的逐格对照只报了 ' + quizSelfCells + ' 格（下限 14）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；三格跨族阴性对照（倍速的「支…发」、探针的「问…门」、量词的「一次／两次」）' +
+      '与两格"真源各读不出"尤其承重');
+    return;
+  }
+  pass('弹题问价发数文档对账（代码放手 ' + quizA + ' 次 × 倍率 ' + quizMult + ' = 预算 ' + quizA * quizMult +
+    ' 发；文档 ' + qreal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(qreal.claims.map(function (c) { return c.file; })).size + ' 份，其中分不出档的 ' + qreal.unclassified +
+    ' 处按两档之一核；含 ' + QCASES.length + ' 格夹具对照（其中 '
+    + QCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）+ 1 格掩码形状自证；' +
+    '工具自带 ' + quizSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
 }
 
 // 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
