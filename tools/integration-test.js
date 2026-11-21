@@ -7311,6 +7311,291 @@ async function testNinetyAdvanceBoundToSeek() {
 }
 
 
+async function testRateAskBound() {
+  console.log('\n[31] 倍速问不到那一格：一支最多受控地问 N 发，到点只说一次、按原速播完（批次 146）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var media = read('src/page/40-media.js');
+
+  // ⚠️ 探测链里 `_detectMaxPlaybackRate` / `_tryRateOnce` / `_waitRateSettle` 声明成 `async function`，
+  //   老那句锚点 `name + ': function'` 对它们一个都取不出来 —— 少这一支，下面全部是「没执行」。
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    // ⚠️ `async` 必须一起带走：切出来只从 `function` 起，重建出来的就是普通函数，
+    //   而 `_detectMaxPlaybackRate` / `_tryRateOnce` 体里有 `await` —— 当场 SyntaxError（实测）
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var m = src.match(re);
+    return m ? Number(m[1]) : null;
+  };
+
+  // 三个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言照旧 = 假绿）
+  var askBound = firstNum(bodyOf(media, '_noteRateUnreadable'), /this\._rateUnknownTries < (\d+)/);
+  var pausedBound = firstNum(bodyOf(media, '_scheduleMaxRateDetection'), /tries >= (\d+)/);
+  var settleMs = firstNum(bodyOf(media, '_tryRateOnce'), /_waitRateSettle\(video, (\d+)\)/);
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var spoke = function (prefix) {
+    return logs.filter(function (m) { return m.message.indexOf(prefix) === 0; });
+  };
+
+  var ensureFn = buildFrom(media, '_ensurePlaybackRate', { console: { log: function () {} } });
+  var targetFn = buildFrom(media, '_getTargetPlaybackRate', {});
+  var clampFn = buildFrom(media, '_clampAutoRate', {});
+  var resetFn = buildFrom(media, '_resetRateDetection', {});
+  var noteFn = buildFrom(media, '_noteRateUnreadable', { emitRuntimeLog: say });
+  var schedFn = buildFrom(media, '_scheduleMaxRateDetection', { emitRuntimeLog: say });
+  var detectFn = buildFrom(media, '_detectMaxPlaybackRate', { emitRuntimeLog: say });
+  var tryFn = buildFrom(media, '_tryRateOnce', { emitRuntimeLog: say });
+  // `sleep` 换成立即兑现：稳态窗口照样跑满三轮，但不必让集成测试真等 700 毫秒
+  var waitFn = buildFrom(media, '_waitRateSettle', { sleep: function () { return Promise.resolve(); } });
+  var menuFn = buildFrom(media, '_readRateMenuMax', {
+    textOf: function (el) { return String((el && (el.textContent || el.innerText)) || ''); }
+  });
+  var parts = [ensureFn, targetFn, clampFn, resetFn, noteFn, schedFn, detectFn, tryFn, waitFn, menuFn];
+  var gotCount = parts.filter(function (f) { return typeof f === 'function'; }).length;
+
+  check('⓪ 十件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到），'
+    + '问不出的预算、暂停那一族的等待上限、写入后的稳态窗口也从源码读回来'
+    + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0,
+    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs }));
+  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0)) return;
+
+  // 夹具只桩到「播放器接不接这一档」那一层：写入次数就是问了几发，判据读的数来自这里。
+  // 站点拒写 = 问不出（`_tryRateOnce` 交回 0）；站点按住某一档 = 量到了，交回非 0。
+  // ⚠️ 写入分「探测那一发」与「量到之后落档那一发」两栏记：`_tryRateOnce` 在 `_rateProbing`
+  //   为真时写，收尾的守卫在后一拍写。混成一栏，⑦「菜单读得出就不许动手试档」那条就恒红 ——
+  //   它要排掉的正是探测那几发，而不是量到之后本来就该落的那一发。
+  function mkVideo(opt) {
+    opt = opt || {};
+    var rec = { writes: [], defWrites: [], probeWrites: 0, probeDefWrites: 0,
+      rate: opt.startRate == null ? 1 : opt.startRate, def: 1, probing: function () { return false; } };
+    var video = {
+      tagName: 'VIDEO',
+      paused: opt.paused === true,
+      closest: function () { return null; },                       // 没有播放器容器，菜单只能整文档扫
+      ownerDocument: { querySelectorAll: function () { return opt.menuCells || []; } }
+    };
+    Object.defineProperty(video, 'playbackRate', {
+      get: function () { return rec.rate; },
+      set: function (x) {
+        rec.writes.push(Number(x));                                // 每一发「问」都落在这里
+        if (rec.probing()) rec.probeWrites++;
+        if (opt.deny) throw new Error('player refuses playbackRate');
+        rec.rate = opt.held == null ? Number(x) : Number(opt.held);
+      }
+    });
+    Object.defineProperty(video, 'defaultPlaybackRate', {
+      get: function () { return rec.def; },
+      set: function (x) {
+        rec.defWrites.push(Number(x));                             // 只有真去探测才会写这一格
+        if (rec.probing()) rec.probeDefWrites++;
+        if (!opt.deny) rec.def = Number(x);
+      }
+    });
+    return { video: video, rec: rec };
+  }
+  function mkApp(cfg) {
+    var app = {
+      configs: cfg || {}, _detectedMaxRate: 0, _rateDetectVideo: null, _rateUnknownVideo: null,
+      _rateUnknownTries: 0, _rateDetectBusy: false, _rateProbing: false, _rateEpoch: 0, _videoEl: null
+    };
+    app._ensurePlaybackRate = function (v, r) { return ensureFn.call(app, v, r); };
+    app._getTargetPlaybackRate = function () { return targetFn.call(app); };
+    app._clampAutoRate = function (r) { return clampFn.call(app, r); };
+    app._resetRateDetection = function () { return resetFn.call(app); };
+    app._noteRateUnreadable = function (v) { return noteFn.call(app, v); };
+    app._scheduleMaxRateDetection = function (v) { return schedFn.call(app, v); };
+    app._detectMaxPlaybackRate = function (v) { return detectFn.call(app, v); };
+    app._tryRateOnce = function (v) { return tryFn.call(app, v); };
+    app._waitRateSettle = function (v, ms) { return waitFn.call(app, v, ms); };
+    app._readRateMenuMax = function (v) { return menuFn.call(app, v); };
+    app._getVideoEl = function () { return app._videoEl; };
+    // 把「这一发写在探测里还是落档里」接到这个 app 的真实旗标上 —— 判据读的是生产那格 `_rateProbing`
+    // ⚠️ 参数收的是**夹具那一整件**（`{ video, rec }`）：`rec` 挂在包装件上、不在元素上，
+    //   传 `attach(x.video)` 会让那道旗标接不上线，探测栏恒读 0（实测撞过，症状像"生产没探测"）
+    app.attach = function (v) {
+      app._videoEl = v.video || v;
+      if (v.rec) v.rec.probing = function () { return !!app._rateProbing; };
+      return v;
+    };
+    return app;
+  }
+  async function flush() {
+    for (var i = 0; i < 8; i++) await new Promise(function (r) { setTimeout(r, 0); });
+  }
+
+  // ① 前提：这一副形状真走的是「往播放器上写倍速」那一支，而不是一眼就报「问不出」
+  var a = mkVideo({ deny: true, startRate: 0 });
+  var appA = mkApp({});
+  appA.attach(a);
+  var roundWrites = [];
+  var roundOwner = [];
+  var roundWarns = [];
+  for (var i = 0; i < askBound + 3; i++) {
+    appA._ensurePlaybackRate(a.video, 'tick' + i);
+    await flush();
+    roundWrites.push(a.rec.writes.length);
+    roundOwner.push(appA._rateDetectVideo === a.video ? 'held'
+      : (appA._rateDetectVideo === null ? 'free' : 'other'));
+    roundWarns.push(spoke('rate max unreadable').length);
+  }
+  var menuFirst = menuFn.call(appA, a.video);
+  var detectFirst = await detectFn.call(appA, a.video);
+  check('① 前提钉住形状：菜单读出 0 档、`_detectMaxPlaybackRate` 交回 0（不知道）而非某一档，'
+    + '而每一拍真往 `playbackRate` 上写恰好一发（少了这一格，后面几条读的可能是菜单那一支，与写入无关）',
+    menuFirst === 0 && detectFirst === 0 && roundWrites[1] - roundWrites[0] === 1,
+    JSON.stringify({ menu: menuFirst, detect: detectFirst, w0: roundWrites[0], w1: roundWrites[1] }));
+
+  // ② 到点就收手：这是这一族唯一承重的数 —— 问的方式就是动播放器，写得勤正是用户报的「抽搐 + 黑屏」
+  var asksMade = roundWrites[roundWrites.length - 1];
+  var writesPastBound = roundWrites.slice(askBound).map(function (n) { return n - roundWrites[askBound - 1]; });
+  check('② 连问 ' + askBound + ' 发问不出之后**一次都不再写播放器**，而 warn 恰好一句'
+    + '（不许退化成每 1.5 秒和站点对打一次，也不许三发各说一句把 200 条环吃空）',
+    asksMade === askBound && writesPastBound.every(function (d) { return d === 0; })
+      && roundWarns[roundWarns.length - 1] === 1,
+    JSON.stringify({ asks: asksMade, past: writesPastBound, warns: roundWarns[roundWarns.length - 1], bound: askBound }));
+
+  // ③ 上限前后是两半，各占一格：前 ' + (askBound - 1) + ' 轮要把问权交回 null（还能问），
+  //   最后一轮必须**留着**指向这一支（这才叫收手）—— 摘掉任何一半，「永远在试」和「永不试」都能过
+  var freeBefore = roundOwner.slice(0, askBound - 1);
+  check('③ 上限两侧各钉一格：前 ' + (askBound - 1) + ' 轮把 `_rateDetectVideo` 交回 null（下一拍照旧能问），'
+    + '第 ' + askBound + ' 轮把它留给这一支（从此不再问）',
+    freeBefore.every(function (s) { return s === 'free'; }) && roundOwner[askBound - 1] === 'held',
+    JSON.stringify({ owners: roundOwner, bound: askBound }));
+
+  var metaWarn = spoke('rate max unreadable')[0] || {};
+  check('④ 「问不到」那一格说的是真话：warn 的 `tries` 等于源码读回来的预算，级别是 warn 而非把异常咽掉',
+    metaWarn.level === 'warn' && Number(metaWarn.meta && metaWarn.meta.tries) === askBound,
+    JSON.stringify({ level: metaWarn.level, tries: metaWarn.meta && metaWarn.meta.tries, bound: askBound }));
+
+  check('⑤ 问不到就按原速：`_getTargetPlaybackRate()` 必须回落到 1 —— '
+    + '弹窗那根「播放速度」滑条已删（批次 146），没有量到的上限就许按原速，不许替用户猜一档',
+    appA._getTargetPlaybackRate() === 1 && Number(appA._detectedMaxRate) === 0,
+    JSON.stringify({ target: appA._getTargetPlaybackRate(), detected: appA._detectedMaxRate }));
+
+  // ⑥ 换一支媒体重新起账（阳性对照：第二支真被问了 ' + askBound + ' 发；
+  //   阴性那一半是第一支从此不再被打扰 —— 只断后者就测不出「计数压根没按媒体分开」）
+  var x = mkVideo({ deny: true, startRate: 0 });
+  var y = mkVideo({ deny: true, startRate: 0 });
+  var appXY = mkApp({});
+  appXY.attach(x);
+  for (var k = 0; k < askBound; k++) { appXY._ensurePlaybackRate(x.video, 'x' + k); await flush(); }
+  var xWritesAtSwitch = x.rec.writes.length;
+  var warnsAtSwitch = spoke('rate max unreadable').length;
+  appXY.attach(y);
+  for (var k2 = 0; k2 < askBound + 2; k2++) { appXY._ensurePlaybackRate(y.video, 'y' + k2); await flush(); }
+  check('⑥ 换一支媒体重新起账：第二支同样被问 ' + askBound + ' 发（不是接着上一支的账直接收手），'
+    + '而已经放弃的第一支在这期间一次都没再被动过、每一支各说一句',
+    y.rec.writes.length === askBound && x.rec.writes.length === xWritesAtSwitch
+      && spoke('rate max unreadable').length === warnsAtSwitch + 1,
+    JSON.stringify({ xWrites: x.rec.writes.length, xAtSwitch: xWritesAtSwitch, yWrites: y.rec.writes.length,
+      warnsBefore: warnsAtSwitch, warnsAfter: spoke('rate max unreadable').length }));
+
+  // ⑦ 菜单读得出档位时，一次都不许动手写倍速 —— 探测的代价只该在菜单读不出时才付
+  var m = mkVideo({ menuCells: [{ textContent: '2.0x' }, { textContent: '1.0x' }] });
+  var appM = mkApp({});
+  appM.attach(m);
+  var warnsBeforeMenu = spoke('rate max unreadable').length;
+  appM._ensurePlaybackRate(m.video, 'menu');
+  await flush();
+  check('⑦ 播放器自己把档位列在菜单里时，上限直接取菜单那一档：**一次都没往播放器上探测**'
+    + '（探测栏零写入 = 没试档，只落了量到的那一档），而这一支一句「问不到」都不该说',
+    m.rec.probeWrites === 0 && m.rec.probeDefWrites === 0 && spoke('rate menu max found').length === 1
+      && Number(appM._detectedMaxRate) === 2 && appM._getTargetPlaybackRate() === 2
+      && spoke('rate max unreadable').length === warnsBeforeMenu,
+    JSON.stringify({ probeWrites: m.rec.probeWrites, probeDefWrites: m.rec.probeDefWrites,
+      writes: m.rec.writes, defWrites: m.rec.defWrites, detected: appM._detectedMaxRate,
+      target: appM._getTargetPlaybackRate(), menuLogs: spoke('rate menu max found').length,
+      warns: spoke('rate max unreadable').length - warnsBeforeMenu }));
+
+  // ⑧ 站点按住 2x：量到的就是 2，而不是被复位出来的 1（批次 146 根因那一族）
+  var h = mkVideo({ held: 2 });
+  var appH = mkApp({});
+  appH.attach(h);
+  appH._ensurePlaybackRate(h.video, 'held');
+  await flush();
+  var warnsBeforeHeld = spoke('rate max unreadable').length;
+  for (var kh = 0; kh < 3; kh++) { appH._ensurePlaybackRate(h.video, 'held' + kh); await flush(); }
+  check('⑧ 站点把最高档按回 2x 时交回的是**非 0 的读数**：`_detectedMaxRate` 2、落上去的倍速 2，'
+    + '而且之后三拍一次都不再问（交回 0 就会被当成「不知道」而每拍重问，那正是抽搐）；'
+    + '站点认的那一档要一起落到 `defaultPlaybackRate`，否则换源时被复位成 1',
+    Number(appH._detectedMaxRate) === 2 && h.rec.rate === 2 && h.rec.probeWrites === 1
+      && h.rec.writes.length === 1 && h.rec.defWrites[h.rec.defWrites.length - 1] === 2
+      && spoke('rate max unreadable').length === warnsBeforeHeld,
+    JSON.stringify({ detected: appH._detectedMaxRate, rate: h.rec.rate, probeWrites: h.rec.probeWrites,
+      writes: h.rec.writes, defWrites: h.rec.defWrites, extraWarns: spoke('rate max unreadable').length - warnsBeforeHeld }));
+
+  // ⑨ 关掉自动倍速：一次都不问，也不写（阳性对照是 ② —— 开着时确实问了 ' + askBound + ' 发）
+  var off = mkVideo({ deny: true, startRate: 0 });
+  var appOff = mkApp({ autoMaxPlaybackRate: false });
+  appOff.attach(off);
+  var warnsBeforeOff = spoke('rate max unreadable').length;
+  for (var k3 = 0; k3 < askBound + 2; k3++) { appOff._ensurePlaybackRate(off.video, 'off' + k3); await flush(); }
+  check('⑨ 关掉「自动倍速」那一格：一次都不去问、一次都不写播放器，回落值仍是 1'
+    + '（开着的那一半由 ② 作证，两半都钉住才不是"这道闸压根没接到"）',
+    off.rec.writes.length === 0 && off.rec.defWrites.length === 0
+      && appOff._rateDetectVideo === null && appOff._getTargetPlaybackRate() === 1
+      && spoke('rate max unreadable').length === warnsBeforeOff,
+    JSON.stringify({ writes: off.rec.writes.length, detectVideo: String(appOff._rateDetectVideo),
+      target: appOff._getTargetPlaybackRate(), warns: spoke('rate max unreadable').length - warnsBeforeOff }));
+
+  // ⑩ 用户把上限压到 1x：这一档压根没得试，于是问 ' + askBound + ' 发而零次写入 —— 有尽头，也不抽搐
+  var capVideo = mkVideo({});
+  var appCap = mkApp({ playbackRateCap: 1 });
+  appCap.attach(capVideo);
+  var warnsBeforeCap = spoke('rate max unreadable').length;
+  for (var k4 = 0; k4 < askBound + 2; k4++) { appCap._ensurePlaybackRate(capVideo.video, 'cap' + k4); await flush(); }
+  check('⑩ 上限压到 1x 那一格：一次都不往播放器上写（没档可试，`_tryRateOnce` 在动手之前就退出），'
+    + '但这一族仍是**有尽头**的 —— 问不出的账停在 ' + askBound + ' 而不是接着涨，只说一句、随后收手',
+    capVideo.rec.defWrites.length === 0 && capVideo.rec.writes.length === 0
+      && capVideo.rec.probeWrites === 0 && Number(appCap._rateUnknownTries) === askBound
+      && appCap._rateDetectVideo === capVideo.video
+      && spoke('rate max unreadable').length === warnsBeforeCap + 1,
+    JSON.stringify({ defWrites: capVideo.rec.defWrites.length, writes: capVideo.rec.writes,
+      probeWrites: capVideo.rec.probeWrites, tries: appCap._rateUnknownTries, bound: askBound,
+      held: appCap._rateDetectVideo === capVideo.video,
+      warns: spoke('rate max unreadable').length - warnsBeforeCap }));
+
+  // ⑪ 收手不等于永久按住：换任务点与 `loadedmetadata` 都会调 `_resetRateDetection`（`40-media.js:719`、`:1829`）
+  var warnsBeforeReset = spoke('rate max unreadable').length;
+  var writesBeforeReset = a.rec.writes.length;
+  appA._resetRateDetection();
+  appA._ensurePlaybackRate(a.video, 'after-reset');
+  await flush();
+  var asksAfterReset = 0;
+  for (var k5 = 0; k5 < askBound - 1; k5++) { appA._ensurePlaybackRate(a.video, 'after-reset2' + k5); await flush(); }
+  for (var k6 = 0; k6 < 3; k6++) { appA._ensurePlaybackRate(a.video, 'after-reset3' + k6); await flush(); }
+  asksAfterReset = a.rec.writes.length - writesBeforeReset;
+  check('⑪ 已放弃的那一支，在 `_resetRateDetection` 之后重新问得到：又问满 ' + askBound
+    + ' 发并再说一句（AGENTS §2 #7「静默永久跳过不可接受」—— 收手是一轮的收手，不是把这支永久按住）',
+    asksAfterReset === askBound && spoke('rate max unreadable').length === warnsBeforeReset + 1,
+    JSON.stringify({ extraAsks: asksAfterReset, bound: askBound,
+      extraWarns: spoke('rate max unreadable').length - warnsBeforeReset }));
+}
+
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -7355,6 +7640,7 @@ async function main() {
   await testPreviewChannelNotice();
   await testFillAnswerSeparatorTolerance();
   await testNinetyAdvanceBoundToSeek();
+  await testRateAskBound();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
