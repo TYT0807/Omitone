@@ -3989,6 +3989,12 @@ function checkProfileSweep() {
 //         断的方向是文档不是闸：a 格只比代码里的 CELLS_MIN 下限，量不到散文里那几处手抄的数，
 //         于是 AGENTS 与 HANDOVER 一起停在「15 格」三个批次没人发现（批次 142 补的这把尺）；
 //         0 命中单独报红，口径同 §2 #21：措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿
+//       i 预览版**逐轮登记**：批次 140 起的口径是「预览版每做完一轮就往门面补一两句」，
+//         而这一族以前**一条尺都没有** —— 门面停在上一轮时现场一片安静（批次 147 实测撞上：
+//         146 那三条用户看得见的改动欠了一整天，没有任何东西替人记这笔账）。
+//         判据落在每一轮往 CHANGELOG 自己那一节写下的 `**门面**：` 那一行，两种形状缺一不可：
+//         引片段的（片段要能在用户看得见的那几页里取到）／写明「不用补（理由）」的；
+//         一节都扫不到单独报红，口径同 h —— 那句要求被整段删掉时不许静默变成通过
 // ---------------------------------------------------------------------------
 function checkChannelGate() {
   var bad = [];
@@ -4200,6 +4206,88 @@ function checkChannelGate() {
       '是这一族唯一的失败形状」）');
   }
 
+  // ---- i. 预览版逐轮登记：每一轮都要在 CHANGELOG 自己那一节里对门面表态 ----
+  //     ⚠️ 判据的形状照 §2 #21：断的是**这一轮自己写下的那一行**，不是门面里有没有某句话 ——
+  //     门面是散文，"字样在不在"那种尺会在下一轮改写措辞时静默失效；而"每轮必须表态"没有豁免面：
+  //     要么引用一段门面里真取得到的原话，要么写清为什么这轮不用补（批次 143 那种只改 README 账目的就是后者）。
+  //     ⚠️ 三种"没跑到"各自单独占一格（§2 #12）：一节都扫不到／门面读不出／比对的三份全空。
+  var FACADE_FROM = 141;   // 批次 140 定了「预览版每做完一轮就往门面补一两句」，从下一轮起要求逐轮表态
+  function wsOf(s) { return String(s || '').replace(/\s+/g, ''); }   // 门面那一行是折行的，比之前两侧都去空白
+  var ledgerCorpus = [];
+  if (facade) ledgerCorpus.push({ name: facadeFrom, text: wsOf(facade) });
+  var curVer = '';
+  try { curVer = String(JSON.parse(read('manifest.json')).version || ''); } catch (eV) { curVer = ''; }
+  ['release-notes-preview.md'].concat(curVer ? ['release-notes-' + curVer + '.md'] : []).forEach(function (f) {
+    if (!exists(f)) return;
+    var t = wsOf(read(f));
+    if (t) ledgerCorpus.push({ name: f, text: t });
+  });
+  var ledger = { total: 0, cited: 0, waived: 0, missing: [], weak: [], notFound: [] };
+  var sections = [];
+  String(read('CHANGELOG.md') || '').split(/\r?\n/).forEach(function (ln) {
+    var h = ln.match(/^### 批次\s+(\d+)/);
+    if (h) sections.push({ no: Number(h[1]), mark: null });
+    if (!sections.length) return;
+    var s = sections[sections.length - 1];
+    var m = ln.match(/^\s*[-*+]?\s*\*\*门面\*\*\s*[:：]\s*(.+)$/);
+    if (m && s.mark === null) s.mark = m[1].trim();
+  });
+  var inRange = sections.filter(function (s) { return s.no >= FACADE_FROM; });
+  ledger.total = inRange.length;
+  inRange.forEach(function (s) {
+    if (s.mark === null) { ledger.missing.push(s.no); return; }
+    var q = s.mark.match(/^`([^`]+)`/);
+    var w = s.mark.match(/^不用补[（(]([^）)]+)[）)]/);
+    if (q) {
+      var frag = wsOf(q[1]);
+      if (frag.length < 8) {
+        ledger.weak.push('批次 ' + s.no + '：引的片段去掉空白只有 ' + frag.length + ' 字 —— 太短的片段谁都能凑上，不算证据');
+        return;
+      }
+      if (/[*_]/.test(q[1])) {
+        ledger.weak.push('批次 ' + s.no + '：片段里带了 markdown 的 `*` 或 `_` —— 门面那句是加粗的，照抄星号必定取不到（要摘掉加粗再截一截）');
+        return;
+      }
+      ledger.cited++;
+      if (!facade) return;   // 门面读不出时这一格由下面单独说话，不拿"取不到"糊过去
+      var where = ledgerCorpus.filter(function (c) { return c.text.indexOf(frag) >= 0; });
+      if (!where.length) ledger.notFound.push('批次 ' + s.no + '「' + String(q[1]).slice(0, 26) + '」');
+    } else if (w) {
+      if (wsOf(w[1]).length < 6) {
+        ledger.weak.push('批次 ' + s.no + '：「不用补」的理由去掉空白只有 ' + wsOf(w[1]).length + ' 字，等于没写');
+        return;
+      }
+      ledger.waived++;
+    } else {
+      ledger.weak.push('批次 ' + s.no + '：那一行既不是 `反引号片段` 也不是「不用补（理由）」（读到：' +
+        JSON.stringify(String(s.mark).slice(0, 30)) + '）');
+    }
+  });
+  if (ledger.total === 0) {
+    bad.push('CHANGELOG 里扫不到批次号 ≥ ' + FACADE_FROM + ' 的段落（读到 ' + sections.length +
+      ' 段，全在范围外）—— 0 命中不是通过：那段标题的形状被改了，这把尺就从此扫不到任何东西（口径同 h）');
+  } else if (facade && ledgerCorpus.length === 0) {
+    bad.push('i 格三份比对文本全空（门面 + release-notes-preview.md + release-notes-' + curVer + '.md）—— ' +
+      '拿不到比对面就没有任何片段能被判"取不到"，这是读不出，不是通过');
+  } else {
+    if (ledger.missing.length) {
+      bad.push('批次 ' + ledger.missing.join('、') + ' 的 CHANGELOG 段里没有「**门面**：」那一行 —— ' +
+        '预览版每做完一轮要在门面（' + facadeFrom + ' 的「预览版最近改了什么」）补一两句，这条口径以前**一条尺都没有**，' +
+        '于是欠记录时现场一片安静（批次 147 实测：146 那三条用户看得见的改动欠了一整天）。' +
+        '两种合法写法：`**门面**：` + 反引号包住门面里真有的那一段原话；或 `**门面**：不用补（一句说得出口的理由）`');
+    }
+    if (ledger.notFound.length) {
+      bad.push(ledger.notFound.join('；') + ' 引的片段在用户看得见的那几页里取不到（比过：' +
+        ledgerCorpus.map(function (c) { return c.name; }).join(' / ') + '）—— ' +
+        '写了标记不等于补了门面：门面那句话被改写、被整段删掉、或当初根本没写，这一格都该红');
+    }
+    if (ledger.weak.length) bad.push('「**门面**：」那一行不承重：' + ledger.weak.join('；'));
+    if (!facade && ledger.cited > 0) {
+      bad.push('i 格没能比：门面那一页读不出（' + facadeRes.why + '），而这一轮有 ' + ledger.cited +
+        ' 条片段要对着它比 —— g 那条已经为这句话红过一回，这里再记一笔是别让"少了一段比较"被读成通过');
+    }
+  }
+
   if (bad.length) {
     fail('实验支线发布闸没接牢（这族事故的表现是「下载的人装到了实验版」，而每条命令都打印成功）：\n      ' +
       bad.join('\n      '));
@@ -4209,6 +4297,8 @@ function checkChannelGate() {
     'release / replace-asset / preview 问在联网之前，verify 照旧放行，' +
     '文档手抄 ' + docHits.length + ' 处逐处同闸的 ' + cells + ' 格（' + docHits.join('、') + '），' +
     '预览附件名与 prerelease 与发布后回读三格齐，' +
+    '门面逐轮登记：批次 ≥' + FACADE_FROM + ' 共 ' + ledger.total + ' 节，引门面 ' + ledger.cited +
+    ' 条、写明不用补 ' + ledger.waived + ' 条（比对面 ' + ledgerCorpus.length + ' 份），' +
     '门面按通道分边：工作树=' + (isExp ? '工作笔记（指针已带，未抄门面）' : '门面') +
     '、门面那一份（' + facadeFrom + '，' + facade.length + ' 字）带实验版入口且不撞稳定名字）');
 }
