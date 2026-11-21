@@ -776,7 +776,7 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="visionModel">看图模型</label>
-        <input type="text" id="visionModel" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
+        <input type="text" id="visionModel" list="modelOptions" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
         <p class="hint"><b>开着</b>：先把题里的图交给看图模型<b>转成文字</b>，再把这段描述并回题干去答题 ——
         不是把图片本身直接发给答题模型。<b>更贵、更慢</b>（一张图通常是纯文本的十几到几十倍花费），能救「看图选择 / 图形题」。<br>
         <b>关着（默认）</b>：图<b>一个字都不读</b> —— 没有本地识别这一说，只按题干文字答，带图的题会答不准。<br>
@@ -790,7 +790,7 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
-        <input type="text" id="captchaModel" placeholder="如 deepseek-flash / qwen-vl-max" />
+        <input type="text" id="captchaModel" list="modelOptions" placeholder="如 deepseek-flash / qwen-vl-max" />
         <p class="hint"><b>留空就用上面的主模型识别</b>，DeepSeek 留空即可。<br>
         只有把主模型换成纯文本模型时，这里才<b>必须</b>另填一个会看图的型号 ——
         否则验证码墙只试一次就停手，日志会明说「这个模型看不懂图」，那一张请亲手输一次。</p>
@@ -864,7 +864,10 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="model">模型名</label>
-        <input type="text" id="model">
+        <input type="text" id="model" list="modelOptions">
+        <!-- 下面「获取模型列表」那一条填进来的是这一枚 datalist；
+             三处模型名（主模型 / 看图 / 验证码）都指向它，按 id 全局认，放哪一栏都行 -->
+        <datalist id="modelOptions"></datalist>
       </div>
       <div class="field">
         <label for="systemPrompt">自定义 system 提示词（高级）</label>
@@ -880,6 +883,12 @@ body.has-bg::after{
              结果行也跟着走（原先混在日志按钮排里，归组是错的） -->
         <button class="btn" id="testApi" style="width:100%">检测 API 连接</button>
         <p class="api-conn-state" id="apiConnState" hidden></p>
+      </div>
+      <div class="field">
+        <button class="btn" id="listModels" style="width:100%">获取模型列表</button>
+        <p class="api-conn-state" id="modelListState" hidden></p>
+        <p class="hint">问一句「这家有哪些型号」（不花 token），把型号名填进上面三处模型名那几格的候选里 ——
+        <b>点一下输入框就能选</b>，不用再手抄。预置的模型名过期了（报「模型不存在」）也用这一条。</p>
       </div>
     </div>
   </details>

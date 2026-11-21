@@ -7642,6 +7642,424 @@ async function testRateAskBound() {
 }
 
 
+// 批次 154 / 会话任务 #181：「获取模型列表」（issue #2 第 3 条）
+// 为什么这一族要测得这么厚：三处模型名一直是**手抄**，抄错就是 400/404，而报错说的是
+// 「模型不存在」，人往网络方向查。新增的这一条走的是同一根 api_fetch 桥，
+// 于是它同时踩在三个已有规矩上：§2 #4（地址唯一真源，不许内联）、§2 #2（新增 await 要能超时，
+// `.text()` 也算）、§2 #12（六格各占一格，「读不出」不许塌进「没有型号」）。
+async function testModelListFetch() {
+  console.log('\n[32] 获取模型列表：三型构造、六格说话、响应体超时、竞态不采用（批次 154）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var pop = read('popup/popup.js');
+  var popHtml = read('popup/popup.html');
+  var API = require('../libs/api-url.js');
+
+  var topFn = function (src, name) {
+    var at = src.indexOf('function ' + name + '(');
+    if (at < 0) return null;
+    if (src.slice(Math.max(0, at - 6), at) === 'async ') at -= 6;
+    var depth = 0;
+    for (var i = src.indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+  var count = function (hay, needle) {
+    var n = 0, at = hay.indexOf(needle);
+    while (at >= 0) { n++; at = hay.indexOf(needle, at + needle.length); }
+    return n;
+  };
+
+  var FN_NAMES = ['buildModelsRequest', 'readTextWithTimeout', 'fetchModelIds', 'modelListSentence',
+    'renderModelOptions', 'setModelListState', 'modelsFormKey', 'listModelsFromProvider', 'fetchWithTimeout'];
+  var texts = {};
+  FN_NAMES.forEach(function (n) { texts[n] = topFn(pop, n); });
+  var msLine = (pop.match(/const MODELS_FETCH_TIMEOUT_MS = (\d+);/) || [])[1];
+  var genLine = (pop.match(/^let modelsFetchGeneration = 0;$/m) || [])[0];
+  var missing = FN_NAMES.filter(function (n) { return !texts[n]; });
+  check('⓪ 九件（八个模型列表函数 + 借来真跑的 fetchWithTimeout）都从 popup/popup.js 原样取出，超时数与代号声明也在盘上 —— ' +
+    '取不出就整段不跑，那种「没执行」和「通过」在报告里长得一模一样（AGENTS §5）',
+    missing.length === 0 && !!msLine && !!genLine,
+    JSON.stringify({ missing: missing, msLine: msLine || null, genLine: !!genLine }));
+  if (missing.length || !msLine || !genLine) return;
+
+  // ── 模块台：把取出的函数拼进**同一个作用域**跑，注入依赖 ──────────────────
+  // 拼一份而不是各跑各的，是为了 modelsFetchGeneration 这一格真的跨调用共享
+  // （⑬ 的竞态那一格只有同作用域才测得出来）。
+  var DEPS_NAMES = ['API_URL', 'normalizeApiKey', 'self', 'document', 'els', 'config',
+    'getApiFormConfig', 'withoutRemovedConfigFields', 'appendPopupLog', 'apiConfigSummary',
+    'sendRuntimeMessageWithTimeout', 'MODELS_FETCH_TIMEOUT_MS', 'fetch'];
+  var buildModule = function (deps) {
+    var body = FN_NAMES.map(function (n) { return texts[n]; }).join('\n') +
+      '\n' + genLine +
+      '\nreturn { buildModelsRequest: buildModelsRequest, fetchModelIds: fetchModelIds,' +
+      ' modelListSentence: modelListSentence, renderModelOptions: renderModelOptions,' +
+      ' modelsFormKey: modelsFormKey, list: listModelsFromProvider,' +
+      ' fetchWithTimeout: fetchWithTimeout, readTextWithTimeout: readTextWithTimeout };';
+    var prelude = DEPS_NAMES.map(function (n) { return 'var ' + n + ' = __deps.' + n + ';'; }).join('\n');
+    return new Function('__deps', prelude + '\n' + body)(deps);
+  };
+
+  var mkEl = function () {
+    var el = { hidden: true, children: [], disabled: false };
+    var text = '';
+    Object.defineProperty(el, 'textContent', {
+      get: function () { return text; },
+      set: function (v) { text = String(v); if (v === '') el.children.length = 0; },
+      configurable: true
+    });
+    el.appendChild = function (o) { el.children.push(o); return o; };
+    return el;
+  };
+  // form 是**可变**的：⑬ 要在两发之间改它
+  var mkHarness = function (over) {
+    over = over || {};
+    var h = {
+      form: Object.assign({ apiType: 'openai', apiUrl: 'https://a.example/v1', apiKey: 'sk-1' }, over.form || {}),
+      logs: [], payloads: [], textCalls: 0
+    };
+    h.dl = mkEl();
+    h.btn = mkEl();
+    h.line = mkEl();
+    h.deps = {
+      API_URL: over.API_URL || API,
+      // 用 libs 那份**真**清洗函数：断言里再写一份规则，测的就是"测试和自己的桩一致"而不是代码
+      normalizeApiKey: API.normalizeApiKey,
+      self: 'self' in over ? over.self : { OmitoneApiError: { describe: function (s, b) { return { category: 'auth', human: '分类:' + s + '|' + String(b).slice(0, 40) }; } } },
+      document: { createElement: function (tag) { return { tag: tag, value: '' }; } },
+      els: { listModels: h.btn, modelListState: h.line, modelOptions: h.dl },
+      config: over.config || {},
+      getApiFormConfig: function () { return Object.assign({}, h.form); },
+      withoutRemovedConfigFields: function (c) { return c; },
+      appendPopupLog: function (level, name, extra) { h.logs.push({ level: level, name: name, extra: extra }); return Promise.resolve(); },
+      apiConfigSummary: function (c) { return { apiType: c.apiType, apiUrl: c.apiUrl, keyLength: String(c.apiKey || '').length }; },
+      sendRuntimeMessageWithTimeout: over.send || function (msg) {
+        h.payloads.push(msg && msg.payload);
+        h.textCalls++;
+        return Promise.resolve(over.respond ? over.respond(msg) : { success: false, error: 'no stub' });
+      },
+      // 超时数在盘上是 20000（⑭ 单独钉），这里换小只为让 ⑨ 那一格在毫秒级走到
+      MODELS_FETCH_TIMEOUT_MS: over.ms || 50,
+      fetch: over.localFetch || function () { h.localFetch = (h.localFetch || 0) + 1; throw new Error('不该掉进本地 fetch 兜底'); }
+    };
+    h.mod = buildModule(h.deps);
+    return h;
+  };
+
+  // ---- ①-③ 三胞胎：三种 apiType 各占一格 ----
+  var hArgArgs = null;
+  var hArg = mkHarness({ API_URL: { buildModelsUrl: function (a, t) { hArgArgs = [a, t]; return 'URL|' + t; } } });
+  var mA = hArg.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'https://x.example/v1', apiKey: 'sk-1' });
+  check('① openai 形：走 GET、地址来自真源构造器（收到的实参**逐字**是 apiUrl 与 apiType，不是拼出来的字符串）、Key 进 Authorization 头',
+    mA.ok === true && mA.state === 'ready' && mA.method === 'GET' && mA.url === 'URL|openai' &&
+      hArgArgs && hArgArgs[0] === 'https://x.example/v1' && hArgArgs[1] === 'openai' &&
+      mA.headers.Authorization === 'Bearer sk-1' && !mA.headers['x-api-key'] && !mA.headers['x-goog-api-key'],
+    JSON.stringify({ m: mA, args: hArgArgs }));
+
+  var mC = hArg.mod.buildModelsRequest({ apiType: 'claude', apiUrl: 'https://c.example', apiKey: 'sk-2' });
+  check('② claude 形：`x-api-key` + `anthropic-version` 两头都在，**没有** Authorization（ anthropic 不认 Bearer，串台就 401）',
+    mC.ok === true && mC.url === 'URL|claude' && mC.headers['x-api-key'] === 'sk-2' &&
+      !!mC.headers['anthropic-version'] && !mC.headers.Authorization && !mC.headers['x-goog-api-key'],
+    JSON.stringify({ hdrs: Object.keys(mC.headers || {}) }));
+
+  var mG = hArg.mod.buildModelsRequest({ apiType: 'gemini', apiUrl: 'https://g.example', apiKey: 'sk-3' });
+  check('③ gemini 形：Key 走 `x-goog-api-key` 头，**不进地址**（chat 那条链把 key 拼进 URL，而地址会进日志与「复制日志」的导出面 —— 只读列表没必要再添一处）',
+    mG.ok === true && mG.url === 'URL|gemini' && mG.headers['x-goog-api-key'] === 'sk-3' &&
+      !mG.headers.Authorization && !mG.headers['x-api-key'] && String(mG.url).indexOf('sk-3') < 0,
+    JSON.stringify({ url: mG.url, hdrs: Object.keys(mG.headers || {}) }));
+
+  // ---- ④ 资格先于请求：三格「压根没发出去」----
+  var hNo = mkHarness();
+  var nKey = hNo.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'https://x', apiKey: '' });
+  var nAddrO = hNo.mod.buildModelsRequest({ apiType: 'openai', apiUrl: '   ', apiKey: 'sk-1' });
+  var nAddrG = hNo.mod.buildModelsRequest({ apiType: 'gemini', apiUrl: '', apiKey: 'sk-1' });
+  var okAddrC = hNo.mod.buildModelsRequest({ apiType: 'claude', apiUrl: '', apiKey: 'sk-1' });
+  check('④ 没资格就不发请求，四格分开：没 Key → nokey；openai 空地址 → noaddr；gemini 空地址 → noaddr；' +
+    '**claude 空地址照旧放行**（它有自己的默认地址，叫用户去填是假坎 —— 与 testApiConnectionNoBackground 同一口径）',
+    nKey.state === 'nokey' && nAddrO.state === 'noaddr' && nAddrG.state === 'noaddr' &&
+      okAddrC.ok === true && okAddrC.state === 'ready',
+    JSON.stringify({ nokey: nKey.state, oai: nAddrO.state, gem: nAddrG.state, cla: okAddrC.state }));
+
+  var hNoSend = mkHarness({ form: { apiKey: '' } });
+  var outNoKey = await hNoSend.mod.fetchModelIds(hNoSend.form);
+  check('⑤ 「没填 Key」那一发**一个请求都不发**（sendRuntimeMessageWithTimeout 计数为 0）—— 先问资格再拼地址不是措辞，是不花钱、也不让界面把「你没填」说成「这家未授权」',
+    outNoKey.state === 'nokey' && hNoSend.textCalls === 0,
+    JSON.stringify({ state: outNoKey.state, calls: hNoSend.textCalls }));
+
+  var hBlankUrl = mkHarness({ API_URL: { buildModelsUrl: function () { return ''; } } });
+  var outBlankUrl = await hBlankUrl.mod.fetchModelIds(hBlankUrl.form);
+  check('⑥ 真源构造器交回空串时同样不发请求（noaddr 那一格不许被跳过）—— 少了这道门，空地址会带着 `undefined/v1/models` 出门，回包是一句看不懂的 404',
+    outBlankUrl.state === 'noaddr' && hBlankUrl.textCalls === 0,
+    JSON.stringify({ state: outBlankUrl.state, calls: hBlankUrl.textCalls }));
+
+  var hQuote = mkHarness({ API_URL: { buildModelsUrl: function () { return 'URL'; } } });
+  var mQuote = hQuote.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'u', apiKey: '"Bearer sk-5" ' });
+  check('⑦ Key 先进清洗（normalizeApiKey）再进头：`"Bearer sk-5"` 抄进去的样子出去的是 `Bearer sk-5`（与答题同一条口径，AGENTS §2 #4 的那个唯一真源）',
+    mQuote.ok === true && mQuote.headers.Authorization === 'Bearer sk-5',
+    JSON.stringify({ auth: mQuote.headers && mQuote.headers.Authorization }));
+
+  // ---- ⑧-⑨ 发送层：HTTP 分类 + 响应体挂住 ----
+  var h401 = mkHarness({
+    respond: function () { return { success: false, status: 401, text: 'bad key' }; }
+  });
+  var out401 = await h401.mod.fetchModelIds(h401.form);
+  check('⑧ HTTP 401：state 落 http 且文案**走 OmitoneApiError 分类**（带回 status 与包体），不是笼统一句「连接失败」',
+    out401.ok === false && out401.state === 'http' && out401.status === 401 &&
+      out401.category === 'auth' && String(out401.why).indexOf('分类:401|bad key') === 0,
+    JSON.stringify({ s: out401.state, st: out401.status, why: out401.why, cat: out401.category }));
+
+  // 代理交回 `{success:true, status:200, text:''}` —— 这一形在生产里真会出现（8 MB 读上限、
+  // 空体、或后台把 body 截干净），它必须落 unreadable（body-empty），不许落进 ok/empty 任何一格。
+  var hEmpty = mkHarness({ respond: function () { return { success: true, status: 200, text: '' }; } });
+  var emptyText = await hEmpty.mod.fetchModelIds(hEmpty.form);
+  check('⑧-b 连上了但回包是空体：落 unreadable（why 是 body-empty），**不是** ok 也不是 empty —— ' +
+    '"empty" 那一格留给服务商自己说「我名下没有型号」（回包里有清单、只是空数组），两者对用户是两件不同的事',
+    emptyText.state === 'unreadable' && emptyText.ok === false && emptyText.why === 'body-empty',
+    JSON.stringify({ state: emptyText.state, why: emptyText.why }));
+
+  var hEmptyList = mkHarness({ respond: function () { return { success: true, status: 200, text: '{"data":[]}' }; } });
+  var emptyList = await hEmptyList.mod.fetchModelIds(hEmptyList.form);
+  var noCandidates = hEmptyList.dl.children.length;
+  check('⑧-c 回包是空数组：落 empty 单独一格，且**不清空已有候选**（renderModelOptions 没被叫到，' +
+    '用户上一次问到的清单还在 —— 把"这家说没有"实现成"把界面擦干净"是最气人的一种退化）',
+    emptyList.state === 'empty' && emptyList.ok === false && noCandidates === 0,
+    JSON.stringify({ state: emptyList.state, dl: noCandidates }));
+
+  var hTrueHang = mkHarness();
+  // 直接把 response.text() 换成永不 resolve：§2 #2 说 try/catch 拦不住挂起，只有超时能 —— 这一格就是那条规矩的尺
+  var hungRead = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return new Promise(function () {}); } }, 40);
+  check('⑨ 响应体永远不 resolve 时，readTextWithTimeout 在超时那一路交回 null（**单独一格**，不是空串）—— ' +
+    '少了这一手，那一发会永远悬着：按钮停在「获取中…」、代号闸永远等不到回话，而没有任何异常可捕',
+    hungRead === null,
+    JSON.stringify({ got: String(hungRead), type: typeof hungRead }));
+
+  // 整条链走到那一格（不只测助手）：代理没交出可用的字符串体 → 落本地 fetch 兜底 → 那一份的
+  // text() 挂住 → fetchModelIds 必须说的是「响应体没读到」，而不是 parseModelIds 的某个 why。
+  var hBodyLost = mkHarness({
+    send: function (msg) { hBodyLost.payloads.push(msg && msg.payload); hBodyLost.textCalls++; return Promise.resolve({ success: true, status: 200, text: 42 }); },
+    localFetch: function () { return Promise.resolve({ ok: true, status: 200, text: function () { return new Promise(function () {}); } }); }
+  });
+  var bodyLost = await hBodyLost.mod.fetchModelIds(hBodyLost.form);
+  var bodyLostLine = hBodyLost.mod.modelListSentence(bodyLost);
+  check('⑨-b 挂住的响应体走过整条链：state 是 unreadable、why 点名「响应体没读到」，句子也跟着说这一句 —— ' +
+    '少了这一格，那一发会以 parseModelIds 的 why（no-list / not-json）交回，界面把「连接断了」说成「这家回包的形状认不出来」',
+    bodyLost.state === 'unreadable' && bodyLost.ok === false &&
+      String(bodyLost.why).indexOf('没读到') >= 0 && String(bodyLostLine).indexOf('没读到') >= 0,
+    JSON.stringify({ state: bodyLost.state, why: bodyLost.why, line: bodyLostLine }));
+
+  var emptyRead = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return Promise.resolve(''); } }, 40);  var threwSync = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { throw new Error('连接断了'); } }, 40);
+  var threwAsync = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return Promise.reject(new Error('连接断了')); } }, 40);
+  var noTextFn = await hTrueHang.mod.readTextWithTimeout.call(null, {}, 40);
+  var noResponse = await hTrueHang.mod.readTextWithTimeout.call(null, null, 40);
+  check('⑩ 「读到空」与「没读到」分成两格：空体 → 空串（真读到，只是空）；text() 当场抛 / 拒绝 / 压根没有 text() / ' +
+    '连 response 都没有 → null（没读到）—— 把 null 压成空串，「连接断了」就会冒充「这家回了个空体」，' +
+    '而这两句用户听完要做的事相反（同一格同步抛与异步拒绝各测一次：它们走的是 catch 与 then 两条路）',
+    emptyRead === '' && threwSync === null && threwAsync === null && noTextFn === null && noResponse === null,
+    JSON.stringify({ empty: emptyRead, threwSync: threwSync, threwAsync: threwAsync, noTextFn: noTextFn, noResponse: noResponse }));
+
+  // ---- ⑪ 六格句子各说各话 ----
+  var sixStates = ['ok', 'empty', 'unreadable', 'http', 'nokey', 'noaddr'];
+  var sixOuts = {
+    ok: { state: 'ok', ids: ['deepseek-chat', 'deepseek-reasoner', 'm-a', 'm-b', 'm-c', 'm-d', 'm-e', 'm-f'] },
+    empty: { state: 'empty', ids: [] },
+    unreadable: { state: 'unreadable', ids: [], why: 'no-list' },
+    http: { state: 'http', ids: [], why: '分类:429|限流' },
+    nokey: { state: 'nokey', ids: [] },
+    noaddr: { state: 'noaddr', ids: [] }
+  };
+  var sixSent = sixStates.map(function (s) { return hNo.mod.modelListSentence(sixOuts[s]); });
+  var uniq = sixSent.filter(function (x, i) { return sixSent.indexOf(x) === i; });
+  check('⑪ 六格句子**互不相同且都不为空**（ok / empty / unreadable / http / nokey / noaddr 各一句），' +
+    '而 ok 那句带**实际条数**（8 个型号是从回包读回来的，不是写死的）—— 压成「成功/失败」两格时，' +
+    '「形状认不出来」会被读成「这家没有型号」，用户接下来做的事（换 Key、充值、查网络）一件都不对（AGENTS §2 #12）',
+    uniq.length === 6 && sixSent.every(function (s) { return String(s).trim().length > 6; }) &&
+      sixSent[0].indexOf('8 个型号') >= 0 && sixSent[0].indexOf('deepseek-chat') >= 0,
+    JSON.stringify({ uniq: uniq.length, first: sixSent[0], unreadable: sixSent[2] }));
+
+  var nullSent = hNo.mod.modelListSentence(null);
+  check('⑪-b 「一句话都没读到」不许塌进上面任何一格：单独一句「再点一次试试」',
+    !!nullSent && nullSent.indexOf('再点一次') >= 0,
+    JSON.stringify({ nullSent: nullSent }));
+
+  // ---- ⑫ libs 真源形状：认得出就剥前缀去重，认不出交 unreadable，绝不猜 ----
+  var shapes = [
+    [JSON.stringify({ data: [{ id: 'a' }, { id: 'b' }, { id: 'a' }] }), 'ok', 2],
+    [JSON.stringify({ models: ['x', 'y'] }), 'ok', 2],
+    [JSON.stringify({ data: [{ name: 'models/gemini-2.5-pro' }] }), 'ok', 1],
+    [JSON.stringify({ data: [] }), 'empty', 0],
+    [JSON.stringify({ foo: 1 }), 'unreadable', 0],
+    [JSON.stringify({ data: [{ id: 'ok' }, 42] }), 'unreadable', 0],
+    ['这不是 JSON', 'unreadable', 0],
+    ['', 'unreadable', 0]
+  ];
+  var shapeGot = shapes.map(function (row) {
+    var r = API.parseModelIds(row[0]);
+    return { state: r.state, n: r.ids.length, why: r.why };
+  });
+  var shapeOk = shapes.every(function (row, i) {
+    return shapeGot[i].state === row[1] && shapeGot[i].n === row[2];
+  });
+  check('⑫ parseModelIds 八种形状逐格对账（data[] / models[] / name 带 `models/` 前缀要剥 / 空数组=empty / ' +
+    '没有清单=unreadable / 混进非对象元素=**整份**unreadable / 非 JSON / 空体）—— ' +
+    '「认不出交 unreadable，绝不猜」：拆 display_name 或按字符摊开会凭空造出发不出去的型号（AGENTS §2 #18 那一族）',
+    shapeOk && API.parseModelIds(shapes[2][0]).ids[0] === 'gemini-2.5-pro' &&
+      API.parseModelIds(shapes[0][0]).ids.join(',') === 'a,b',
+    JSON.stringify(shapeGot));
+
+  // ---- ⑬ 竞态：改过地址就不采用旧批次 ----
+  var hRace = mkHarness();
+  var raceMod = hRace.mod;
+  var raceN = 0;
+  hRace.deps.sendRuntimeMessageWithTimeout = function (msg) {
+    raceN++;
+    var body = raceN === 1
+      ? JSON.stringify({ data: [{ id: 'old-a' }, { id: 'old-b' }] })
+      : JSON.stringify({ data: [{ id: 'new-1' }] });
+    return new Promise(function (resolve) {
+      setTimeout(function () { resolve({ success: true, status: 200, text: body }); }, raceN === 1 ? 120 : 5);
+    });
+  };
+  raceMod = buildModule(hRace.deps);
+  var p1 = raceMod.list();
+  hRace.form.apiUrl = 'https://b.example/v1';   // 等待期间换了地址
+  var p2 = raceMod.list();
+  await Promise.all([p1, p2]);
+  var raceValues = hRace.dl.children.map(function (o) { return o.value; }).join(',');
+  var discLogs = hRace.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬ 两发并发、期间换了 API URL：**旧批次不采用**（候选里只有 new-1，没有 old-a/old-b），' +
+    '状态行点名「改过了」，日志单独有一格 discarded —— ⚠️ 这一发**代号与表单键同时开火**，' +
+    '单独承重各由 ⑬-b / ⑬-c 测（AGENTS §5「两层保护不许一起摘」），' +
+    '少了它们用户会拿到「按旧 Key 问回来的清单」却以为是自己刚填那家（AGENTS §2 #13/#23 同一族，但这里刻意不用 apiFormFingerprint：开关不该挡型号清单）',
+    raceValues === 'new-1' && discLogs === 1 && String(hRace.line.textContent).indexOf('改过') >= 0 &&
+      hRace.logs.some(function (l) { return l.name === 'models list result'; }),
+    JSON.stringify({ values: raceValues, discLogs: discLogs, line: hRace.line.textContent, logs: hRace.logs.map(function (l) { return l.name; }) }));
+
+  // ---- ⑬-b / ⑬-c：把上面那两道闸**各拆一道**单独测 ----
+  // ⑬ 那一发代号和表单键同时开火：摘掉任何一道，另一道照样拦下旧批次，于是两道都等于没测。
+  // 这里 ⑬-b 只留代号（并发但配置一个字没改），⑬-c 只留表单键（只改地址、没有第二发）。
+  var hRaceGen = mkHarness();
+  var raceGenN = 0;
+  hRaceGen.deps.sendRuntimeMessageWithTimeout = function () {
+    raceGenN++;
+    var body = raceGenN === 1
+      ? JSON.stringify({ data: [{ id: 'old-a' }, { id: 'old-b' }] })
+      : JSON.stringify({ data: [{ id: 'new-1' }] });
+    return new Promise(function (resolve) {
+      setTimeout(function () { resolve({ success: true, status: 200, text: body }); }, raceGenN === 1 ? 120 : 5);
+    });
+  };
+  var modGen = buildModule(hRaceGen.deps);
+  var g1 = modGen.list();   // 慢的那发先按下
+  var g2 = modGen.list();   // 快的第二发：apiType / apiUrl / apiKey 一个字没改
+  await Promise.all([g1, g2]);
+  var genValues = hRaceGen.dl.children.map(function (o) { return o.value; }).join(',');
+  var genDisc = hRaceGen.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬-b 并发但**配置一个字没改**：只有代号拦下旧批次（候选只有 new-1，discarded 恰一格）—— ' +
+    '少了代号这一格，慢的那发会把「上一秒点出来的清单」盖到候选里，而界面看不出任何异常',
+    genValues === 'new-1' && genDisc === 1 && raceGenN === 2 &&
+      hRaceGen.logs.some(function (l) { return l.name === 'models list result'; }),
+    JSON.stringify({ values: genValues, disc: genDisc, sends: raceGenN }));
+
+  var hRaceKey = mkHarness();
+  hRaceKey.deps.sendRuntimeMessageWithTimeout = function () {
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        resolve({ success: true, status: 200, text: JSON.stringify({ data: [{ id: 'late-1' }] }) });
+      }, 20);
+    });
+  };
+  var modKey = buildModule(hRaceKey.deps);
+  var k1 = modKey.list();                 // 只有一发在飞：代号永远相等，拦得住的只剩表单键
+  hRaceKey.form.apiUrl = 'https://c.example/v1';
+  await k1;
+  var keyValues = hRaceKey.dl.children.map(function (o) { return o.value; }).join(',');
+  var keyDisc = hRaceKey.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬-c 只换地址、**没有第二发**：表单键单独拦下（候选保持空，discarded 恰一格，状态行点名「改过」）—— ' +
+    '这一格与 ⑬-b 各拆一道闸，摘掉任何一道只有对应那一格红',
+    keyDisc === 1 && keyValues === '' && String(hRaceKey.line.textContent).indexOf('改过') >= 0,
+    JSON.stringify({ values: keyValues, disc: keyDisc, line: hRaceKey.line.textContent }));
+
+  // ---- ⑭ 候选渲染不叠加 ----
+  var hDl = mkHarness();
+  hDl.mod.renderModelOptions(['a', 'b', 'c']);
+  var firstN = hDl.dl.children.length;
+  hDl.mod.renderModelOptions(['x']);
+  var secondValues = hDl.dl.children.map(function (o) { return o.value; }).join(',');
+  var secondTags = hDl.dl.children.map(function (o) { return o.tag; }).join(',');
+  check('⑭ 第二次点「获取模型列表」时旧候选先清空（3 → 1，值逐字是 x），并且建出来的是 `<option value=型号名>` —— ' +
+    '少了那句清空，用户点开候选看到的是两批叠在一起、还带重复',
+    firstN === 3 && secondValues === 'x' && secondTags === 'option',
+    JSON.stringify({ firstN: firstN, second: secondValues, tags: secondTags }));
+
+  hDl.mod.renderModelOptions(['k1', 'k2']);
+  hDl.mod.renderModelOptions(null);
+  check('⑭-b 交回 null / 空清单时清空候选（不许留上一批的残影，也不许报错）',
+    hDl.dl.children.length === 0,
+    JSON.stringify({ after: hDl.dl.children.length }));
+
+  // ---- ⑮ GET 不带 body（fetchWithTimeout 那处真 bug 的尺）----
+  var hBody = mkHarness({ respond: function () { return { success: true, status: 200, text: '{"data":[{"id":"m1"}]}' }; } });
+  var outBody = await hBody.mod.fetchModelIds(hBody.form);
+  check('⑮ 走代理的那一发 payload：**method 是 GET 且 body 是 null** —— ' +
+    '后台那边是 `body == null ? undefined : String(body)`，空串也算「有 body」，浏览器对 GET 带 body 当场抛 TypeError；' +
+    '而 fetchWithTimeout 把代理失败吞成「改走本地 fetch」，症状只是慢半拍、不是错（本轮实测撞在动手之前）',
+    outBody.ok === true && hBody.payloads.length === 1 &&
+      hBody.payloads[0].method === 'GET' && hBody.payloads[0].body === null &&
+      hBody.localFetch === undefined,
+    JSON.stringify({ payload: hBody.payloads[0], localFetch: hBody.localFetch, state: outBody.state }));
+
+  var postPayload = null;
+  var hPost = mkHarness({
+    send: function (msg) { postPayload = msg.payload; return Promise.resolve({ success: true, status: 200, text: '{}' }); }
+  });
+  await hPost.mod.fetchWithTimeout('https://x/v1/chat/completions', { method: 'POST' }, 30);
+  check('⑮-b 反向对照：**POST 不带 body 时仍然补空串**（老口径不许跟着这次修改一起松掉，否则答题/聊天那两条链路会少一样东西）',
+    postPayload && postPayload.method === 'POST' && postPayload.body === '',
+    JSON.stringify({ post: postPayload }));
+
+  // ---- ⑯ 静态接线：界面三处都指向同一份候选，地址不内联 ----
+  var listHits = count(popHtml, 'list="modelOptions"');
+  var dlHits = count(popHtml, '<datalist id="modelOptions">');
+  var btnHits = count(popHtml, 'id="listModels"');
+  var stateHits = count(popHtml, 'id="modelListState"');
+  check('⑯ 界面上四处接线都在且**不多不少**：三处模型名（主模型 / 看图 / 验证码）都挂同一份 datalist（少挂一处，那一处就还是手抄 —— 三胞胎的界面版）、' +
+    'datalist 1 枚、按钮 1 枚、状态行 1 枚；popup.js 里按钮真绑到 listModelsFromProvider',
+    listHits === 3 && dlHits === 1 && btnHits === 1 && stateHits === 1 &&
+      count(pop, 'addEventListener("click", listModelsFromProvider)') === 1,
+    JSON.stringify({ list: listHits, dl: dlHits, btn: btnHits, state: stateHits, hook: count(pop, 'addEventListener("click", listModelsFromProvider)') }));
+
+  var inlined = count(pop, "'/models'") + count(pop, '"/models"') + count(pop, '`/models`') + count(pop, '") + "/models');
+  var builderCalls = count(pop, 'buildModelsUrl(');
+  var parserCalls = count(pop, 'parseModelIds(');
+  check('⑰ 地址与解析都**只在 libs 那一份**里：popup.js 里 `/models` 字面量拼接 0 处、`buildModelsUrl(` 恰好 1 处（在 buildModelsRequest 体内）、' +
+    '`parseModelIds(` 恰好 1 处（AGENTS §2 #4 —— 内联一份就会和答题那三条链路分叉，同样的 Key 这边通那边不通）',
+    inlined === 0 && builderCalls === 1 && parserCalls === 1 &&
+      texts.buildModelsRequest.indexOf('buildModelsUrl(') >= 0 &&
+      texts.fetchModelIds.indexOf('parseModelIds(') >= 0,
+    JSON.stringify({ inlined: inlined, builder: builderCalls, parser: parserCalls }));
+
+  var msNum = Number(msLine);
+  var msUses = count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS') + count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS');
+  check('⑱ 超时数从盘上读回来比（断言里不写死）：`const MODELS_FETCH_TIMEOUT_MS = ' + msLine + '` 是正数，' +
+    '且发送层与读体层都真的用它（合计 ' + msUses + ' 处）—— 只包 fetch 不包 `.text()` 的那一半，挂起照样拦不住（AGENTS §2 #2）',
+    msNum > 0 && Number.isFinite(msNum) && msUses >= 3 &&
+      count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS') === 3 &&
+      count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS') >= 1,
+    JSON.stringify({ msLine: msLine, msUses: msUses, send: count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS'), read: count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS') }));
+
+  var libsHas = count(read('libs/api-url.js'), 'function buildModelsUrl(') + count(read('libs/api-url.js'), 'function parseModelIds(');
+  var libsExport = /buildModelsUrl: buildModelsUrl/.test(read('libs/api-url.js')) &&
+    /parseModelIds: parseModelIds/.test(read('libs/api-url.js'));
+  check('⑱-b libs/api-url.js 里两件**各自只声明一处且都导出**（导出漏了 popup 那侧拿到 undefined，' +
+    '一调用就抛 —— 而那正被 ⑥ 的空串格盖住，会读成「这家地址不对」）',
+    libsHas === 2 && libsExport && typeof API.buildModelsUrl === 'function' && typeof API.parseModelIds === 'function',
+    JSON.stringify({ decl: libsHas, export: libsExport }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -7687,6 +8105,7 @@ async function main() {
   await testFillAnswerSeparatorTolerance();
   await testNinetyAdvanceBoundToSeek();
   await testRateAskBound();
+  await testModelListFetch();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

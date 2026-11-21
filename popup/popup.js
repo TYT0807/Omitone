@@ -127,6 +127,9 @@ const els = {
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
+  listModels: $("listModels"),
+  modelListState: $("modelListState"),
+  modelOptions: $("modelOptions"),
   updateRow: $("updateRow"),
   updateMsg: $("updateMsg"),
   checkUpdate: $("checkUpdate"),
@@ -286,14 +289,20 @@ function buildGeminiApiUrl(apiUrl, model, apiKey) {
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
+  const method = (options && options.method) || "POST";
+  // GET/HEAD 不许带 body：后台 apiFetch 那侧是 `body == null ? undefined : String(body)`，
+  // 空串也算"有 body"，浏览器按 Fetch 规范对 GET 带 body 当场抛 TypeError。
+  // 于是这一发**在本地就死了**，而下面那个 catch 把代理失败吞成"改走本地 fetch" ——
+  // 症状只是慢半拍，不是错，等发现时已经查不到是这一行造成的（批次 154 加「获取模型列表」时量到）。
+  const allowBody = !/^(get|head)$/i.test(method);
   try {
     const proxy = await sendRuntimeMessageWithTimeout({
       type: "api_fetch",
       payload: {
         url,
-        method: (options && options.method) || "POST",
+        method,
         headers: (options && options.headers) || {},
-        body: (options && options.body) || "",
+        body: allowBody ? ((options && options.body) || "") : null,
         timeoutMs: timeoutMs || 25000
       }
     }, timeoutMs || 25000, "background api fetch timeout");
@@ -402,6 +411,195 @@ async function testApiConnectionDirect(cfg) {
   const data = await response.json();
   const message = (data.choices?.[0]?.message?.content || "OK").trim().replace(/\s+/g, " ");
   return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
+}
+
+// ── 模型列表（批次 154，issue #2 第 3 条）────────────────────────────────────
+// 存在的理由：三处模型名一直是**手抄**，抄错就是 400/404 那一族，而那句报错说的是
+// 「模型不存在」，人会往网络方向查。这一条发一句「这家有哪些型号」（不花 token），
+// 把型号名灌进三处模型名那几格的候选里。
+// 三个 apiType 分支与 testApiConnectionDirect / petChatSend 同族的三胞胎规矩 ——
+// 改一处必须三处一起改；新增一型也要同步进这里（AGENTS §2 #18）。
+// 拆成纯函数是为了集成层能从本文件原样抽出来直接跑（AGENTS §5）。
+const MODELS_FETCH_TIMEOUT_MS = 20000;
+
+function buildModelsRequest(cfg) {
+  const key = normalizeApiKey(cfg && cfg.apiKey);
+  // 先问资格再拼地址：没 Key 就发请求，回包是 401，而界面会把「你没填 Key」翻译成
+  // 「这家返回未授权」—— 用户会去重新生成一枚 Key，方向完全错。
+  if (!key) return { ok: false, state: "nokey", why: "还没填 API Key" };
+  const type = (cfg && cfg.apiType) || "openai";
+  // claude 与 gemini 各有默认地址，只有这两型必须自己填（与 testApiConnectionNoBackground 同一口径）
+  if ((type === "openai" || type === "gemini") && !String((cfg && cfg.apiUrl) || "").trim()) {
+    return { ok: false, state: "noaddr", why: "还没填 API URL" };
+  }
+  // 地址只许从 libs/api-url.js 那一份拼（AGENTS §2 #4），这里不许内联字符串拼接
+  let url = "";
+  try {
+    url = API_URL.buildModelsUrl(cfg && cfg.apiUrl, type);
+  } catch (e) {
+    return { ok: false, state: "unreadable", why: "地址构造那一跳抛了：" + String((e && e.message) || e).slice(0, 120) };
+  }
+  if (!url) return { ok: false, state: "noaddr", why: "API URL 没拼出可用的地址" };
+  const headers = type === "claude"
+    ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
+    : type === "gemini"
+      // gemini 的 Key 走请求头，不学 chat 那条链拼进地址：地址会进日志（`api test result` 打印 endpoint），
+      // 而日志是用户会「复制」出去的东西。这一条是只读列表，没必要再添一处 Key 落到导出面。
+      ? { "x-goog-api-key": key }
+      : { "Authorization": `Bearer ${key}` };
+  return { ok: true, state: "ready", method: "GET", url, headers };
+}
+
+// 读响应体也要能超时（AGENTS §2 #2：`.text()` 同样可能永远不 resolve，try/catch 拦不住挂起）。
+// 返回 null = 这一发**没读到**（单独一格），"" = 真读到一个空体 —— 两者不许合并。
+function readTextWithTimeout(response, timeoutMs) {
+  if (!response || typeof response.text !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(null), timeoutMs || MODELS_FETCH_TIMEOUT_MS);
+    Promise.resolve()
+      .then(() => response.text())
+      .then((t) => finish(String(t || "")))
+      // text() 自己抛 = 这一发**没读到**，和超时同一格；把它写成空串会让「连接断了」
+      // 冒充「服务商回了个空体」，而这两句用户听完要做的事相反。
+      .catch(() => finish(null));
+  });
+}
+
+async function fetchModelIds(cfg) {
+  const made = buildModelsRequest(cfg);
+  if (!made.ok) return made;
+  const response = await fetchWithTimeout(made.url, { method: "GET", headers: made.headers }, MODELS_FETCH_TIMEOUT_MS);
+  const status = Number(response && response.status) || 0;
+  if (!response || !response.ok) {
+    const bodyText = await readTextWithTimeout(response, MODELS_FETCH_TIMEOUT_MS);
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(status, bodyText || "")
+      : { category: "unknown", human: `问型号列表没成功（HTTP ${status}）` };
+    return { ok: false, state: "http", status, category: described.category, why: described.human, ids: [] };
+  }
+  const text = await readTextWithTimeout(response, MODELS_FETCH_TIMEOUT_MS);
+  if (text === null) {
+    return { ok: false, state: "unreadable", why: "响应体没读到（超时或连接断了）", source: "", ids: [] };
+  }
+  const parsed = API_URL.parseModelIds(text);
+  return {
+    ok: parsed.state === "ok",
+    state: parsed.state,
+    ids: parsed.ids || [],
+    why: parsed.why || "",
+    source: parsed.source || ""
+  };
+}
+
+// 六格各说各话，谁都不许压进谁（AGENTS §2 #12）：nokey / noaddr / http / unreadable / empty / ok。
+// 压成「成功 / 失败」两格时，「回包形状认不出来」会被读成「这家没有型号」，
+// 而用户接下来做的事（换 Key、充值、查网络）一件都不对。
+function modelListSentence(out) {
+  if (!out || !out.state) return "没读到结果，再点一次试试。";
+  const ids = out.ids || [];
+  if (out.state === "ok") {
+    const head = ids.slice(0, 5).join("、");
+    return `已拿到 ${ids.length} 个型号：${head}${ids.length > 5 ? " …" : ""} —— 点上面三处模型名那几格就能选，也可以继续手打。`;
+  }
+  if (out.state === "empty") return "这家说自己名下没有可用型号（回包是空的）—— 不是网络问题，也不等于 Key 没用。";
+  if (out.state === "unreadable") return `回包读不出型号名（${out.why || "形状认不出来"}）—— 照旧手填模型名。`;
+  if (out.state === "http") return out.why || "问型号列表没成功。";
+  if (out.state === "nokey") return "还没填 API Key —— 这一步要用它。";
+  if (out.state === "noaddr") return "还没填 API URL —— 补上再点。";
+  return out.why || `没认出来的结果（${String(out.state)}）。`;
+}
+
+function renderModelOptions(ids) {
+  const dl = els.modelOptions;
+  if (!dl) return;
+  // 先清空：append 会叠加，第二次点就会在候选里出现重复型号
+  dl.textContent = "";
+  (ids || []).forEach((id) => {
+    const opt = document.createElement("option");
+    opt.value = String(id);
+    dl.appendChild(opt);
+  });
+}
+
+function setModelListState(message) {
+  const el = els.modelListState;
+  if (!el) return;
+  if (!message) { el.hidden = true; el.textContent = ""; return; }
+  el.textContent = message;
+  el.hidden = false;
+}
+
+// 「这批发回来的型号还是不是刚才那一套配置要的」—— 只看真正决定结果的三处输入：
+// apiType / apiUrl / apiKey。故意**不**用 apiFormFingerprint()：那一把尺含所有开关，
+// 用户在等待期间动一下「讨论」开关就会得到一句「配置已变化，结果没采用」，
+// 而型号清单跟开关毫无关系 —— 那是把保护写成误报（§5「会误报的守卫和没有守卫一样害人」）。
+function modelsFormKey(cfg) {
+  return [
+    String((cfg && cfg.apiType) || ""),
+    String((cfg && cfg.apiUrl) || "").trim(),
+    normalizeApiKey(cfg && cfg.apiKey)
+  ].join("|");
+}
+
+let modelsFetchGeneration = 0;
+
+async function listModelsFromProvider() {
+  const cfg = withoutRemovedConfigFields({ ...config, ...getApiFormConfig() });
+  const generation = ++modelsFetchGeneration;
+  const formKey = modelsFormKey(cfg);
+  const isCurrent = () =>
+    generation === modelsFetchGeneration &&
+    modelsFormKey(withoutRemovedConfigFields({ ...config, ...getApiFormConfig() })) === formKey;
+  const btn = els.listModels;
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "获取中…";
+    }
+    setModelListState("正在问这一家有哪些型号（这一步不花 token）…");
+    await appendPopupLog("info", "models list begin", apiConfigSummary(cfg));
+
+    const out = await fetchModelIds(cfg);
+    if (!isCurrent()) {
+      // 不采用，也不清空已有候选 —— 旧那一批同样是用户自己点出来的
+      setModelListState("地址或 Key 在这期间改过了，这一批结果没有采用 —— 再点一次。");
+      await appendPopupLog("warn", "models list discarded: form changed", apiConfigSummary(cfg));
+      return;
+    }
+    if (out.ok) renderModelOptions(out.ids);
+    setModelListState(modelListSentence(out));
+    await appendPopupLog(out.ok ? "info" : "warn", "models list result", {
+      state: out.state,
+      count: (out.ids || []).length,
+      source: out.source || "",
+      why: String(out.why || "").slice(0, 300),
+      category: out.category || "",
+      config: apiConfigSummary(cfg)
+    });
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    if (!isCurrent()) { setModelListState("地址或 Key 在这期间改过了，这一批结果没有采用 —— 再点一次。"); return; }
+    // 走到这里才是请求真发不出去（fetch 抛异常）—— 也要翻译成人话，
+    // "Failed to fetch" 对用户没有信息量（与 testApiConnectionNoBackground 同一口径）
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(0, message)
+      : { category: "network", human: message };
+    setModelListState(described.human);
+    await appendPopupLog("error", "models list failed", { error: described.human.slice(0, 300), category: described.category });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "获取模型列表";
+    }
+  }
 }
 
 // ── 宠物聊天（批次 123）────────────────────────────────────────────────────
@@ -1379,6 +1577,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (cfgChange) renderApiConnState(cfgChange.newValue);
 });
 els.testApi.addEventListener("click", testApiConnectionNoBackground);
+// 「获取模型列表」与「检测 API 连接」是两件事：那一发要花钱（发一条消息），这一发只问清单。
+// 守卫：els 里这一枚取自 popup.html 的 #listModels —— 没有它启动就当场抛，
+// 比"按钮存在但点了没反应"好查（与上面 testApi 同一口径）。
+els.listModels.addEventListener("click", listModelsFromProvider);
 els.start.addEventListener("click", startRun);
 els.stop.addEventListener("click", async () => {
   ++runOperation;
