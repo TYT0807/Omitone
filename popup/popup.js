@@ -106,6 +106,8 @@ const els = {
   pagePetEnabled: $("pagePetEnabled"),
   petChatEnabled: $("petChatEnabled"),
   petDoctorEnabled: $("petDoctorEnabled"),
+  petWebSearchEnabled: $("petWebSearchEnabled"),
+  petWebSearchHint: $("petWebSearchHint"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
   apiUrl: $("apiUrl"),
@@ -607,7 +609,12 @@ async function listModelsFromProvider() {
 // 用户自己配置的 Key/模型），不接任何第三方中转。三个 apiType 分支与
 // testApiConnectionDirect 的三胞胎同族 —— 改一处必须三处一起改的规矩在这里同样适用。
 // 构造与发送分开：buildPetChatRequest 是纯函数（集成测试从本文件抽出来直接构造验证形状）。
-function buildPetChatRequest(cfg, history, sys, urls) {
+// ⚠️ 第 5 个参数 webSearchOn 是**三态**：`null` / `undefined` = 还没从存储读回来。
+// 不许写成 `!!webSearchOn` 把"还没读到"压成"用户没开" —— 那两句在界面上的表现相同（都不搜），
+// 但说的话完全不同，而且压成一态之后「存储读得慢半拍」这一族会变成永久沉默（AGENTS §2 #12）。
+// 「能不能带搜索工具」的判定不在这里，唯一真源是 libs/web-search.js 的 decisionOf ——
+// 弹窗聊天、弹窗解释、上课页医生三处出口必须问同一把尺。
+function buildPetChatRequest(cfg, history, sys, urls, webSearchOn) {
   const trimmed = (history || [])
     .filter((m) => m && (m.role === "user" || m.role === "assistant") &&
       typeof m.text === "string" && m.text.trim() !== "")
@@ -616,12 +623,23 @@ function buildPetChatRequest(cfg, history, sys, urls) {
   // 最后一发必须是用户说的话：界面忙乱时不会拿半截历史去发请求
   if (!trimmed.length || trimmed[trimmed.length - 1].role !== "user") return null;
   const h = urls || { openai: buildOpenAICompatibleUrl, claude: buildClaudeApiUrl, gemini: buildGeminiApiUrl };
+  // 「这一发到底带不带搜索」只问 libs/web-search.js（三处出口同一把尺）。
+  // 模块没加载是**单独一格**（no-lib）：那说明 manifest / popup.html 的登记漏了一处，
+  // 症状与"用户没开"一模一样、一条异常都不留（AGENTS §2 #18）—— 所以不许塌进 off。
+  const webSearch = (typeof OmitoneWebSearch !== "undefined" && OmitoneWebSearch.decisionOf)
+    ? OmitoneWebSearch.decisionOf(cfg, webSearchOn)
+    : { cell: "no-lib", on: false, why: "联网搜索模块没加载（登记漏了一处）", host: "" };
+  // max_tokens **不因联网而变**：现网那一档 384 实测够（`.workbuddy/probe162` K 档：
+  // flash + tools + max_tokens=384 → finish=stop、正文 63 字，completion 410 也没被截断）。
+  // 会被推理吃空的是探针故意设的 48 那一档（probe160），不是现实这一档 ——
+  // 照着它把上限抬高就是凭空多一个要对文档的数字（AGENTS §5「断言里的数要说得出从哪读回来」）。
   if (cfg.apiType === "claude") {
     return {
       apiType: "claude",
       url: h.claude(cfg.apiUrl),
       headers: { "Content-Type": "application/json", "x-api-key": cfg.apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: cfg.model, max_tokens: 384, temperature: 0.8, system: sys, messages: trimmed })
+      body: JSON.stringify({ model: cfg.model, max_tokens: 384, temperature: 0.8, system: sys, messages: trimmed }),
+      search: webSearch
     };
   }
   if (cfg.apiType === "gemini") {
@@ -633,20 +651,55 @@ function buildPetChatRequest(cfg, history, sys, urls) {
         systemInstruction: { parts: [{ text: sys }] },
         contents: trimmed.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
         generationConfig: { temperature: 0.8, maxOutputTokens: 384 }
-      })
+      }),
+      search: webSearch
     };
+  }
+  // 带搜索那一发**不发 temperature**：量过的那一发就是 `{model, messages, max_tokens, tools}` 四格
+  // （探针 probe161 E / probe162 H–L，六发全 200 且真搜，没有一发带着 temperature）。
+  // **"带 tools 时服务端怎么对待 temperature" 这一组合没测过** —— 没测过的参数不许照发，
+  // 多一格就多一条没人验过的路径；带不动时回到改动前那个形状，一个键都不多。
+  const openaiBody = {
+    model: cfg.model,
+    messages: [{ role: "system", content: sys }].concat(trimmed),
+    max_tokens: 384
+  };
+  if (webSearch.on) {
+    // 声明形状也从 libs 读：`webSearch.on` 只可能由那把尺判出来（no-lib 那一格 on 恒 false），
+    // 所以这里必然拿得到模块 —— 抄一份字面量就是第二把尺，将来改字段只改一处会分叉（AGENTS §2 #18）。
+    openaiBody.tools = OmitoneWebSearch.toolsFor(webSearch);
+  } else {
+    openaiBody.temperature = 0.8;
   }
   return {
     apiType: "openai",
     url: h.openai(cfg.apiUrl),
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages: [{ role: "system", content: sys }].concat(trimmed),
-      max_tokens: 384,
-      temperature: 0.8
-    })
+    body: JSON.stringify(openaiBody),
+    search: webSearch
   };
+}
+
+/**
+ * 把"这一发到底搜没搜 / 搜了几次 / 花了多少 token"收成界面上那一行小字。
+ *
+ * ⚠️ 两句话都要说，缺一不可：
+ *   - 开关**开着**却带不动（中转站、协议形状不对、模块没登记）必须当场说一句"没联网 + 为什么"，
+ *     否则用户听到的那句模型回答就**听起来像**刚查过 —— 任务 #183 里用户明确要的那一格。
+ *   - 开关没开时**一个字都不说**：那行小字出现只会让人以为刚才那句话是搜出来的。
+ * @param {{cell:string,on:boolean,why:string}} decision
+ * @param {object} data 回包（只在 decision.on 时读它的 usage）
+ */
+function petSearchMeta(decision, data) {
+  const lib = (typeof OmitoneWebSearch !== "undefined") ? OmitoneWebSearch : null;
+  if (!decision) return null;
+  if (decision.on) {
+    return { on: true, cell: decision.cell, sentence: lib ? lib.sentenceOf(lib.usageOf(data)) : "这一回没读到用量数据。" };
+  }
+  // 开关没开（off）与压根没这一枚开关的调用方 → 不出声。
+  // 只有"用户明明开着"的那些格子才需要解释为什么没搜。
+  if (decision.cell === "off") return null;
+  return { on: false, cell: decision.cell, sentence: "这次没有联网：" + (decision.why || "原因读不出") };
 }
 
 async function petChatSend(history, opts) {
@@ -656,7 +709,8 @@ async function petChatSend(history, opts) {
   const promptLib = (typeof self !== "undefined" && self.OmitonePrompt) || {};
   // 提示词唯一真源在 libs/prompt.js（AGENTS §2 #4）；这里只按名字取，不许内联。
   const sys = o.sysKey ? promptLib[o.sysKey] || "" : promptLib.PET_CHAT_SYSTEM || "";
-  const req = buildPetChatRequest(cfg, history, sys);
+  // 三态原样交下去：还没从存储读回来时是 null，**不许在这里 !! 一下**（AGENTS §2 #12）
+  const req = buildPetChatRequest(cfg, history, sys, null, petWebSearchVal);
   if (!req) return { ok: false, error: "" };
   let response;
   try {
@@ -669,10 +723,14 @@ async function petChatSend(history, opts) {
     const described = (typeof self !== "undefined" && self.OmitoneApiError)
       ? self.OmitoneApiError.describe(response.status, bodyText)
       : { category: "unknown", human: `请求失败 (${response.status})` };
-    return { ok: false, error: String(described.human || "").slice(0, 80) };
+    return {
+      ok: false,
+      error: String(described.human || "").slice(0, 80),
+      meta: petSearchMeta(req.search, null)
+    };
   }
   let data = null;
-  try { data = await response.json(); } catch (e) { return { ok: false, error: "回包读不懂" }; }
+  try { data = await response.json(); } catch (e) { return { ok: false, error: "回包读不懂", meta: petSearchMeta(req.search, null) }; }
   let text = "";
   if (req.apiType === "claude") {
     text = ((data.content || [])[0] || {}).text || "";
@@ -683,14 +741,23 @@ async function petChatSend(history, opts) {
     text = (((data.choices || [])[0] || {}).message || {}).content || "";
   }
   text = String(text).trim().replace(/\s+/g, " ");
-  if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试" };
+  if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试", meta: petSearchMeta(req.search, data) };
   // 上限默认 160（聊天气泡那一格）；体检解释要长一点，但**天花板 400 写死在这里** ——
   // 面板装不下是判据层的责任，不能靠调用方自觉（AGENTS §2「输出必须有界」）。
   const want = Number(o.maxChars) > 0 ? Number(o.maxChars) : 160;
-  return { ok: true, text: text.slice(0, Math.min(want, 400)) };
+  return { ok: true, text: text.slice(0, Math.min(want, 400)), meta: petSearchMeta(req.search, data) };
 }
 // pet.js 只管界面；发请求统一走这个钩子（经典脚本按加载顺序共享全局作用域）
 window.omitonePetChatSend = petChatSend;
+
+/**
+ * 联网搜索开关的真值（弹窗「聊」与弹窗「让她解释」两处出口共用这一格，
+ * 上课页医生那一支在 content.js 里读同一个键）。
+ * ⚠️ **null = 还没从存储读回来**，与 false（用户没开）是两格：压成 false 之后，
+ * 首屏那一发会被界面说成「开关没开」—— 而那正是用户刚刚亲手打开的那一枚
+ * （AGENTS §2 #12 在开关读取上的同族）。
+ */
+let petWebSearchVal = null;
 
 // ── 本地体检「医生」（批次 130）────────────────────────────────────────────
 // 判断层在 libs/diagnose.js（弹窗 / 上课页 / 集成测试三处共用同一份规则），
@@ -1186,6 +1253,92 @@ if (petDoctorEnabledLabel) {
   });
 }
 
+// 「联网搜索」开关（任务 #183）：独立键、默认关 —— 与聊天那一枚同一族规矩（批次 34 教训：
+// 主配置里没登记的键会让 validatePatch 把整份保存拒掉；会花钱的功能不许默认开着）。
+// ⚠️ 这一枚和上面两枚**多了一层**：它只在"接入的是 DeepSeek 官方域"时才可能生效，
+// 所以地址/协议一改就要重新判一次灰不灰、并把**为什么不灰**写进那一行提示 ——
+// 判定唯一真源是 libs/web-search.js（弹窗两处出口 + 上课页医生问的都是它），
+// 界面上不许再写第二份"是不是 deepseek"的正则（AGENTS §2 #4 同一族）。
+// ⚠️ 状态只有 **petWebSearchVal** 这一份（三态：null = 还没从存储读回来）。
+// 再开一个 boolean 给界面用，就是§2 #23 那一族：写入口与读出口各有各的基准，
+// 首屏那一发会被说成"你没开"，而用户刚刚才开过。
+const PET_WEB_SEARCH_HINT_OFF = "默认关。开了她回答前先自己查一次网页，按量计费。";
+/** 用当前表单里的地址/协议/Key 问一次资格 —— 用户改哪格都能当场看到灰不灰。 */
+function petWebSearchDecision() {
+  const lib = (typeof OmitoneWebSearch !== "undefined" && OmitoneWebSearch.decisionOf) ? OmitoneWebSearch : null;
+  if (!lib) return { cell: "no-lib", on: false, why: "联网搜索模块没加载（登记漏了一处）", host: "" };
+  const cfg = {
+    apiType: els.apiType.value,
+    apiUrl: els.apiUrl.value.trim(),
+    apiKey: normalizeApiKey(els.apiKey.value),
+    model: els.model.value.trim()
+  };
+  return lib.decisionOf(cfg, true);
+}
+function updatePetWebSearchEnabled(on) {
+  els.petWebSearchEnabled.className = "toggle" + (on ? " on" : "");
+  els.petWebSearchEnabled.setAttribute("aria-checked", on ? "true" : "false");
+  refreshWebSearchGate();
+}
+/** 那一行提示的唯一写入口：灰不灰、说什么，都由 libs 那一格决定，界面只翻译。 */
+function refreshWebSearchGate() {
+  if (!els.petWebSearchHint) return;
+  if (petWebSearchVal === null) {
+    // 「还没读到」单独占一格（§2 #12）：这句既不许写成"你没开"，也不许写成"已生效"
+    els.petWebSearchHint.textContent = "正在读你的设置…";
+    els.petWebSearchHint.dataset.cell = "unknown";
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    return;
+  }
+  if (petWebSearchVal !== true) {
+    els.petWebSearchHint.textContent = PET_WEB_SEARCH_HINT_OFF;
+    els.petWebSearchHint.dataset.cell = "off";
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    return;
+  }
+  const d = petWebSearchDecision();
+  els.petWebSearchHint.dataset.cell = d.cell;
+  if (d.on) {
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    els.petWebSearchHint.textContent = "已生效：她回答前先自己查一次网页（" + d.host + "）。搜回来的内容按输入 token 计费，比平时贵；查到的日期不一定准，别拿它当今天。";
+  } else {
+    // 灰掉 = 存储里的选择**保留**（用户换回官方域就自动接上），但界面当场说清为什么没生效
+    els.petWebSearchEnabled.setAttribute("data-greyed", d.cell);
+    els.petWebSearchHint.textContent = "这一枚暂时用不了：" + d.why + "（开关我留着，换回官方渠道就接上）";
+  }
+}
+const togglePetWebSearchEnabled = async () => {
+  const prev = petWebSearchVal;
+  const value = prev !== true;
+  petWebSearchVal = value;
+  updatePetWebSearchEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePetWebSearchOn: value ? 1 : 0 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    petWebSearchVal = prev;
+    updatePetWebSearchEnabled(prev === true);
+    reportSaveError(error);
+  }
+};
+els.petWebSearchEnabled.addEventListener("click", togglePetWebSearchEnabled);
+els.petWebSearchEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePetWebSearchEnabled();
+  }
+});
+const petWebSearchEnabledLabel = document.querySelector("label[for=\"petWebSearchEnabled\"]");
+if (petWebSearchEnabledLabel) {
+  petWebSearchEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePetWebSearchEnabled();
+  });
+}
+
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。
  *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
  *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
@@ -1289,6 +1442,17 @@ async function load() {
       updatePetDoctorEnabled(petDoctorEnabledVal);
     });
   } catch (e) { /* storage 不可用就当关着 */ }
+  // 联网搜索开关：键缺席 = 关（会花钱）。⚠️ 读失败时**保持 null**（还没读到），
+  // 不许在这里写 false —— 那一格会让界面把"存储暂时不可用"说成"你没开这枚开关"（AGENTS §2 #12）。
+  // 谓词与 content.js 那一支同一把尺：只认 1 / true 算开。
+  try {
+    chrome.storage.local.get("omitonePetWebSearchOn", (r) => {
+      if (chrome.runtime.lastError) return;
+      var raw = r && r.omitonePetWebSearchOn;
+      petWebSearchVal = raw === 1 || raw === true;
+      updatePetWebSearchEnabled(petWebSearchVal);
+    });
+  } catch (e) { /* 读不出就留在 null：提示那一行会说"正在读你的设置" */ }
   renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
@@ -1320,6 +1484,9 @@ async function load() {
   // 再等一眼「模型上次自己想到哪一档」那本账 —— content.js 从回包 token 反推后按场景写进存储，
   // 不 await 的话首屏那三行少了后缀，要等用户动一下选择器才补齐（症状是"提示闪一下才全"）。
   await loadThinkingObserved();
+  // 联网搜索那一行的灰条依赖刚填好的 apiUrl / apiType，而上面那次存储回调可能比这里先到 ——
+  // 那时地址还是空的，会被判成「no-addr」那一格（AGENTS §2 #12：读不出与确实是空，两格）。
+  refreshWebSearchGate();
 }
 
 function applyProviderPreset(presetId) {
@@ -1335,6 +1502,8 @@ function applyProviderPreset(presetId) {
   // 换渠道会改变"实际发送什么参数"（DeepSeek 发 thinking、Kimi 不发、自定义发别的），
   // 所以说明文字必须跟着刷新，否则用户会照着上一家的说明理解当前渠道。
   updateThinkingHint();
+  // 同一族：联网搜索的资格也完全由这两格决定，切渠道时必须当场重判一次灰条
+  refreshWebSearchGate();
 }
 
 async function resetDefault() {
@@ -1348,6 +1517,9 @@ async function resetDefault() {
     try { chrome.storage.local.set({ omitonePetChatOn: 0 }); } catch (e) {}
     // 医生提醒回默认（默认关：会花钱的功能不许默认开着）
     try { chrome.storage.local.set({ omitonePetDoctorOn: 0 }); } catch (e) {}
+    // 联网搜索回默认（同样默认关 —— 它比聊天更贵：搜回来的正文按输入 token 计费）
+    try { chrome.storage.local.set({ omitonePetWebSearchOn: 0 }); } catch (e) {}
+    petWebSearchVal = false;
     await load();
     toast("已恢复默认");
   } catch (error) { reportSaveError(error); }
@@ -1538,6 +1710,14 @@ function scheduleApiAutoSave() {
   el.addEventListener("input", updateThinkingHint);
 });
 els.apiType.addEventListener("change", scheduleApiAutoSave);
+
+// 联网搜索的灰条要跟着**这四格**动：地址、协议、Key（缺一格就是一格不同的原因）。
+// ⚠️ 少监听任何一格，症状都是"用户改了地址、那一行还在说旧渠道的话" ——
+// 不报错、不留日志（AGENTS §2 #18：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来）。
+[els.apiUrl, els.apiType, els.apiKey].forEach((el) => {
+  el.addEventListener("input", refreshWebSearchGate);
+  el.addEventListener("change", refreshWebSearchGate);
+});
 
 // 思考强度：六格上下限，任一格改动 = 同一行另一头不许越界（选倒时以刚动的这一头为准），
 // 再整组落盘 + 刷新"当前实际发送"。

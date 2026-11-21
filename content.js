@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
+var OMITONE_CODE_REV_BRIDGE = '774ee3f43e';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -2060,6 +2060,9 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
   // 这里只留**这一页自己**那份环：跨标签页的全局环里混着别门课的旧账，
   // 拿它答"这一页怎么了"会答出别人的故事（AGENTS §2 #19 同一族：口径不同的读数不许比）。
   const PAGE_DOCTOR_KEY = 'omitonePetDoctorOn';   // 独立外观键，与精简/位置/好感度同一族
+  // 「联网搜索」是另一枚独立开关（弹窗 API 区那一枚），与「医生主动提醒」分开：
+  // 前者管**这一发问模型带不带搜索工具**，后者管**她要不要主动开口**。
+  const PAGE_WEB_SEARCH_KEY = 'omitonePetWebSearchOn';
   const DOCTOR_RING_MAX = 120;          // 只留最近 120 条：环满丢最旧，不许无限长
   const DOCTOR_ANALYZE_MS = 20000;      // 两次判断的最小间隔（一条 warn 就判一次 = 每拍都在体检）
   const DOCTOR_GAP_MS = 5 * 60 * 1000;  // 同一个结论 5 分钟内最多打扰一次
@@ -2070,6 +2073,8 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
   // null = 开关真值还没读到（**不许抢在真值前面说话**，同精简模式那条竞态）；
   // true = 用户明确打开（这一档开口前会花 Key）；false = 关掉或缺席 —— 三态分开，别把"还不知道"压成别的。
   let doctorOn = null;
+  // 联网搜索的三态，与上面同一把尺：null = 存储回调还没回来（**不许抢在真值前面决定花不花钱**）。
+  let webSearchOn = null;
   let doctorAnalyzeAt = 0;
   let doctorLastCode = '';
   let doctorLastCodeAt = 0;
@@ -2079,6 +2084,38 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
 
   function diagnoseModule() {
     return (typeof self !== 'undefined' && self.OmitoneDiagnose) || null;
+  }
+
+  function webSearchModule() {
+    return (typeof self !== 'undefined' && self.OmitoneWebSearch) || null;
+  }
+
+  /**
+   * 这一发问模型到底带不带联网搜索。**资格判定只在 [`libs/web-search.js`](libs/web-search.js) 那一份** ——
+   * 弹窗聊天、让她解释、页面她自己体检三处出口共用同一把尺（同 diagnose.js 那条教训：
+   * 抄到调用方必然分叉，而分叉的形状是不报错、只是某一处从来没带上 tools）。
+   * ⚠️ 认不出来（模块没登记 → `no-lib`；判定本身抛了或形状不认 → `lib-shape`）一律**不带 tools、也不停下**：
+   *   「读不出」不许变成多花一次钱，也不许变成替用户宣布"这功能不能用"（AGENTS §2 #12）。
+   *   而它和"用户没开"必须分格说话 —— 前者是 manifest 漏登记，症状一模一样却一条异常都不留（§2 #18）。
+   */
+  function doctorWebSearch() {
+    const ws = webSearchModule();
+    if (!ws || typeof ws.decisionOf !== 'function') {
+      return { cell: 'no-lib', on: false, why: '联网搜索模块没加载（manifest 或 popup.html 登记漏了一处）', host: '' };
+    }
+    let d = null;
+    try { d = ws.decisionOf(configs || {}, webSearchOn); } catch (e) { d = null; }
+    if (!d || typeof d.cell !== 'string') {
+      return { cell: 'lib-shape', on: false, why: '联网搜索判定读不出（decisionOf 交回来的形状不认）', host: '' };
+    }
+    return d;
+  }
+
+  /** 把「联网那一发落在哪一格」写成页面读得回来的一格。
+   *  ⚠️ 只留布尔的话，"用户没开这枚开关"与"模块压根没登记"（manifest 漏一行）在 e2e 与现场里
+   *    长得一模一样，而修复方向完全相反（AGENTS §2 #18 / #12；同 `doctorMark` 那条规矩）。 */
+  function doctorWebSearchMark(cell) {
+    try { if (pagePet && pagePet.host) pagePet.host.dataset.webSearch = String(cell || 'unreadable'); } catch (e) {}
   }
 
   /** 把「医生这一拍到底为什么没说话」写成页面读得回来的一格。
@@ -2132,6 +2169,11 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
     // 没填 Key 就一步都不发（连请求体都不拼）：承诺过「不填 Key 只照本地规矩说」
     if (!apiKey || !cfg.model || !cfg.apiUrl) return Promise.resolve({ ok: false, reason: 'no-key' });
     const sys = (PROMPT && PROMPT.PET_DOCTOR_SYSTEM) || '';
+    // 三处花钱的出口（弹窗聊天 / 让她解释 / 她自己体检）问同一把尺：资格只在 libs/web-search.js 判一次。
+    // 这里**只决定带不带 tools**，不复制"能不能搜"的判据 —— 抄一份出来迟早和弹窗那两份分叉，
+    // 而分叉的形状是不报错、只是这一发从来没带上搜索（AGENTS §2 #18）。
+    const ws = doctorWebSearch();
+    doctorWebSearchMark(ws.cell);
     const user = '下面是本地体检给出的结论，请用人话告诉主人下一步怎么办，只说结论里提到的事：\n' +
       '结论：' + String(f.title || '') + '\n依据：' + String(f.evidence || '') + '\n建议：' + String(f.advice || '');
     let req;
@@ -2153,11 +2195,18 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
           }
         };
       } else {
+        // 带搜索那一发照**量过的那一发**拼：`{model, messages, max_tokens, tools}` 四格
+        // （探针 probe161 E / probe162 H–L，六发都是 200 且真搜，一个都没带 temperature）。
+        // "带 tools 时服务端怎么对待 temperature" 这一组合**没测过** —— 没测过的参数不许照发，
+        // 多一格就多一条没人验过的路径；带不动时回到改动前那三个键的字节形状，一个都不多。
+        const openaiBody = { model: cfg.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] };
+        if (ws.on) openaiBody.tools = webSearchModule().toolsFor(ws);
+        else openaiBody.temperature = 0.6;
+        openaiBody.max_tokens = 320;
         req = {
           url: buildOpenAICompatibleUrl(cfg.apiUrl),
           headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
-          body: { model: cfg.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
-            temperature: 0.6, max_tokens: 320 }
+          body: openaiBody
         };
       }
     } catch (e) { return Promise.resolve({ ok: false, reason: 'request-build' }); }
@@ -2293,23 +2342,33 @@ var OMITONE_CODE_REV_BRIDGE = '2c66c3feed';
   /** 开关"算开"的那一格。⚠️ 弹窗那侧写的是 1 / 0（与 omitonePetChatOn 同一族），
    *  **键缺席 = 关**：这一功能开口前会花用户的 Key，不许默认烧钱（用户原话「默认开只会一直烧钱，用户又看不到」）。
    *  1 与 true 都认（测试台可能直接写布尔）；0、false、缺席都算关。 */
-  function isDoctorOn(v) { return v === 1 || v === true; }
+  function isPetSwitchOn(v) { return v === 1 || v === true; }
+  /** 医生「主动提醒」那一枚 —— 历史名字，测试台与 ⑰ 那把尺都认它，别改。 */
+  function isDoctorOn(v) { return isPetSwitchOn(v); }
 
   function applyPageDoctorSwitch() {
     if (doctorOn === false && pagePet) pagePetRoleOff();   // 关掉时把挂着的行头一起收了
   }
   try {
-    chrome.storage.local.get([PAGE_DOCTOR_KEY], function (r) {
+    // **两枚开关一次读**：分开发两次 get，就有两个"真值还没回来"的窗口，
+    // 而「联网搜索」那一发要在这一次问模型上决定花不花额外的钱 —— 读得慢半拍的那一支
+    // 会被当成"用户没开"（三态里最不该塌的一格，AGENTS §2 #12）。
+    chrome.storage.local.get([PAGE_DOCTOR_KEY, PAGE_WEB_SEARCH_KEY], function (r) {
       // 键缺席 = 关着（花钱的功能默认不开）；弹窗那枚「诊」不受这枚开关管，随时能手动查
       doctorOn = !!(r && isDoctorOn(r[PAGE_DOCTOR_KEY]));
+      webSearchOn = !!(r && isPetSwitchOn(r[PAGE_WEB_SEARCH_KEY]));
       if (doctorOn === false) applyPageDoctorSwitch();
     });
-  } catch (e) { /* 读不到就不主动说话，卡片那一路照旧能查 */ }
+  } catch (e) { /* 读不到就不主动说话，卡片那一路照旧能查；搜索那一格留在 null = 不带 tools */ }
   try {
     chrome.storage.onChanged.addListener(function (changes, area) {
-      if (area !== 'local' || !changes || !changes[PAGE_DOCTOR_KEY]) return;
-      doctorOn = isDoctorOn(changes[PAGE_DOCTOR_KEY].newValue);
-      applyPageDoctorSwitch();
+      if (area !== 'local' || !changes) return;
+      if (changes[PAGE_DOCTOR_KEY]) {
+        doctorOn = isDoctorOn(changes[PAGE_DOCTOR_KEY].newValue);
+        applyPageDoctorSwitch();
+      }
+      // 联网那一枚只管"下一发带不带 tools"，不改任何演出，所以不需要 applyPageDoctorSwitch 那样的收尾
+      if (changes[PAGE_WEB_SEARCH_KEY]) webSearchOn = isPetSwitchOn(changes[PAGE_WEB_SEARCH_KEY].newValue);
     });
   } catch (e) { /* 同上 */ }
 

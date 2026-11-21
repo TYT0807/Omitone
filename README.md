@@ -709,7 +709,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
 | [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、分阶段方案、硬性约束、验收清单、已知陷阱。**三个阶段都已完成，别再重做** |
 | [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：16 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
-| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（38 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
+| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（39 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：**源码布局与构建产物**、消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
@@ -1282,7 +1282,7 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致 / 独立套件挂载
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试（632 项）：真实 content.js 的答题往返
+npm run itest    # 集成测试（656 项）：真实 content.js 的答题往返
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
 npm run e2e      # 真实 Edge 功能交叉检验（147 个场景 / 1668 项）

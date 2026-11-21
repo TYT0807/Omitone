@@ -5859,6 +5859,21 @@ async function testPetChatRequest() {
   var hist = function () { return [
     { role: 'user', text: '你好' }, { role: 'assistant', text: '嗯嗯' }, { role: 'user', text: '在么' }]; };
 
+  // ── 联网搜索那把尺（任务 #183）：提前到发送层之前声明 ──────────────────────
+  // builder 与 petSearchMeta 两个纯函数都从 popup/popup.js 原样取出，把 `OmitoneWebSearch`
+  // 当**参数**喂进去 —— 这样 ⑨-㉒ 走的是判据真身，而不是测试台自己另写的一份口径。
+  // ⚠️ 不许改成往 globalThis 上挂 —— 那是整轮共用的状态，前一个场景挂上、后一个场景就永远
+  //    测不到「模块压根没登记」那一格（AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+  var WS = require(path.join(ROOT, 'libs', 'web-search.js'));
+  var madeWs = new Function('OmitoneWebSearch', 'return (' + builderText + ')')(WS);
+  var madeNoLib = new Function('OmitoneWebSearch', 'return (' + builderText + ')')(undefined);
+  // 官方域那个字面量从 libs 读回来，不在测试里抄第二份（改了真源这边跟着走）
+  var CFG_OFFICIAL = { apiType: 'openai', apiUrl: 'https://' + WS.OFFICIAL_HOST, model: 'deepseek-flash', apiKey: 'sk-test' };
+  var CFG_RELAY = { apiType: 'openai', apiUrl: 'https://relay.example.com/v1', model: 'deepseek-flash', apiKey: 'sk-test' };
+  var metaText = topFn(pop, 'petSearchMeta');
+  var metaWs = metaText ? new Function('OmitoneWebSearch', 'return (' + metaText + ')')(WS) : null;
+  var metaNoLib = metaText ? new Function('OmitoneWebSearch', 'return (' + metaText + ')')(undefined) : null;
+
   // ---- ② OpenAI 兼容形：system 打头、Bearer 头、max_tokens 384 ----
   var rOpen = made({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, hist(), 'SYS', H);
   var bOpen = rOpen ? JSON.parse(rOpen.body) : null;
@@ -5929,17 +5944,25 @@ async function testPetChatRequest() {
       apiErr: sendText.indexOf('OmitoneApiError') >= 0, hook: pop.indexOf('window.omitonePetChatSend = petChatSend;') >= 0 }));
 
   // ---- ⑨-⑬ 发送层动态：五个分支各说各的话，不许静默 ----
-  // petChatSend 在生产里只带 3 参调 buildPetChatRequest（第 4 参 urls 默认取 popup.js
-  // 模块作用域的三个地址构造器 —— Node 里那三个名字不存在，默认值一求值就 ReferenceError），
-  // 所以这里包一层补上 H，与 ②-④ 显式传 H 是同一手法。
+  // petChatSend 在生产里带 5 参调 buildPetChatRequest（第 4 参 urls 传 null 走默认，
+  // 默认值取 popup.js 模块作用域的三个地址构造器 —— Node 里那三个名字不存在，一求值就 ReferenceError；
+  // 第 5 参是模块作用域那枚三态开关、petSearchMeta 也在模块作用域 —— 三样都得当参数交进来，
+  // 少任何一样 ⑨-⑬ 全体「没执行」，而报告里那种「没执行」和「通过」长得一模一样（AGENTS §5）。
+  var wsVal = null;
+  var wsArgs = [];
   var mkSend = function (cfgOver, fetchStub, selfStub) {
-    var names = ['config', 'normalizeApiKey', 'buildPetChatRequest', 'fetchWithTimeout', 'self'];
+    var names = ['config', 'normalizeApiKey', 'buildPetChatRequest', 'fetchWithTimeout', 'self',
+      'petWebSearchVal', 'petSearchMeta'];
     var inj = {
       config: Object.assign({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, cfgOver),
       normalizeApiKey: function (k) { return k; },
-      buildPetChatRequest: function (cfg, history, sys) { return made(cfg, history, sys, H); },
+      // 第 5 参原样记下来（㉒ 钉的就是它有没有被 !! 压平），再交给**带真模块**的那份构造器，
+      // 于是发送层往下走的判据是 libs/web-search.js 那把尺，不是测试台自己另写的一份。
+      buildPetChatRequest: function (cfg, history, sys, urls, wsArg) { wsArgs.push(wsArg); return madeWs(cfg, history, sys, H, wsArg); },
       fetchWithTimeout: fetchStub,
-      self: selfStub || {}
+      self: selfStub || {},
+      petWebSearchVal: wsVal,
+      petSearchMeta: metaWs
     };
     var fn = Reflect.construct(Function, names.concat(['return (' + sendText + ')']));
     var send = fn.apply(null, names.map(function (k) { return inj[k]; }));
@@ -5974,10 +5997,135 @@ async function testPetChatRequest() {
   check('⑬ 「只想了没说话」那一格单独说话（点给用户「换个普通模型」），不许被当成成功、也不许静默',
     silent && silent.ok === false && String(silent.error).indexOf('只想了') >= 0,
     JSON.stringify({ error: silent && silent.error }));
+
+  // ── ⑭-㉒ 联网搜索那一发（任务 #183）──────────────────────────────────────
+  // WS / madeWs / madeNoLib / CFG_OFFICIAL / CFG_RELAY / metaWs / metaNoLib 都在本节开头、
+  // 发送层之前声明好（⑨-⑬ 也要用 madeWs 与 metaWs，所以不能留在这里才建）。
+  // builder 与 meta 都是从 popup/popup.js 抽出来 eval 的**纯函数**，里面的自由名字
+  // `OmitoneWebSearch` 在生产里落到 popup.html 加载的那份模块上；测试台把它当**参数**喂进去，
+  // 这样两种成因分得开：喂真模块 = 判据走 libs 那一份；压根不喂 = 「登记漏了一处」那一格（no-lib）。
+
+  var rOn = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, true);
+  var bOn = rOn ? JSON.parse(rOn.body) : null;
+  check('⑭ 开关开着 + 地址确实是官方域：那一发**真带上** tools，声明形状就是量过的那一条（`[{type:"deepseek_web_search"}]`，' +
+    '多一格都没有），并且**不发 temperature** —— "带 tools 时服务端怎么对待 temperature" 没测过，' +
+    '没测过的参数不许照发（探针 probe161 E / probe162 H–L 六发都是四格、全 200 且真搜）',
+    rOn && rOn.search && rOn.search.cell === 'on' && rOn.search.on === true &&
+      !!bOn && Array.isArray(bOn.tools) && bOn.tools.length === 1 &&
+      Object.keys(bOn.tools[0]).length === 1 && bOn.tools[0].type === 'deepseek_web_search' &&
+      !('temperature' in bOn) && bOn.max_tokens === 384,
+    JSON.stringify({ cell: rOn && rOn.search && rOn.search.cell, tools: bOn && bOn.tools,
+      keys: bOn && Object.keys(bOn) }));
+
+  var rOff = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, false);
+  var bOff = rOff ? JSON.parse(rOff.body) : null;
+  check('⑮ 开关**没开**时那一发与改动前**逐字节同形**：四个键按 model,messages,max_tokens,temperature 原序、' +
+    '一个都不许多（`tools` 整个字段不写，不是写空数组），max_tokens 仍是 384 —— ' +
+    '这格钉的是「加了这枚开关之后，没开它的用户那发请求一个字都没变」',
+    rOff && rOff.search.cell === 'off' && rOff.search.on === false && !!bOff &&
+      Object.keys(bOff).join(',') === 'model,messages,max_tokens,temperature' &&
+      bOff.temperature === 0.8 && bOff.max_tokens === 384 && !('tools' in bOff),
+    JSON.stringify({ cell: rOff && rOff.search.cell, keys: bOff && Object.keys(bOff) }));
+
+  var rUnk = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, null);
+  var bUnk = rUnk ? JSON.parse(rUnk.body) : null;
+  var rUndef = madeWs(CFG_OFFICIAL, hist(), 'SYS', H);
+  check('⑯ 开关真值**还没从存储读回来**（null 与压根不传两格）：那一格叫 `unknown`、**不许塌进 `off`** —— ' +
+    '两句在请求上一样（都不带 tools），但话完全不同：这时候对用户说"你没开联网搜索"是替他做了一个他没做过的决定。' +
+    '同时也不许因为"看起来可能是开"就抢着带 tools —— 那正是"消耗余额"最不该发生的那一拍（AGENTS §2 #12）',
+    rUnk && rUnk.search.cell === 'unknown' && rUnk.search.on === false && bUnk && !('tools' in bUnk) &&
+      rUndef && rUndef.search.cell === 'unknown' && rUndef.search.on === false,
+    JSON.stringify({ nullCell: rUnk && rUnk.search.cell, absentCell: rUndef && rUndef.search.cell,
+      keys: bUnk && Object.keys(bUnk) }));
+
+  var rRly = madeWs(CFG_RELAY, hist(), 'SYS', H, true);
+  var bRly = rRly ? JSON.parse(rRly.body) : null;
+  check('⑰ 用户开着开关、但接的是**中转站**：当场判 `not-official`、那一发**不带 tools**，并把读回来的域名交出去' +
+    '（灰条要说的是这一句）—— 别人家的服务器替我们搜索，费用与内容都不受我们约束，' +
+    '静默当成"已经搜过了"就是假话；地址后缀伪装（`api.deepseek.com.ru`）也走这一格，不做后缀匹配',
+    rRly && rRly.search.cell === 'not-official' && rRly.search.on === false &&
+      rRly.search.host === 'relay.example.com' && !!bRly && !('tools' in bRly) && bRly.temperature === 0.8,
+    JSON.stringify({ cell: rRly && rRly.search.cell, host: rRly && rRly.search.host,
+      why: rRly && rRly.search.why, keys: bRly && Object.keys(bRly) }));
+
+  // ⚠️ 变量名带 Ws 后缀：`rClaude` / `rGem` 这一族在 ③④ 已经用过，`var` 重复声明不报错、
+  // 只是把上面的读数悄悄覆盖掉 —— 后面若有人再拿它们做取证，读到的是这一档的 cfg 而不是 ③④ 那份。
+  var rClaudeWs = madeWs({ apiType: 'claude', apiUrl: 'https://api.deepseek.com', model: 'm', apiKey: 'k' }, hist(), 'SYS', H, true);
+  var rGemWs = madeWs({ apiType: 'gemini', apiUrl: 'https://api.deepseek.com', model: 'm', apiKey: 'k' }, hist(), 'SYS', H, true);
+  check('⑱ 协议形状不是 OpenAI 兼容（claude / gemini）时那一格叫 `type`，两个分支的 body **都不许多出 tools** —— ' +
+    '那两家没有这个字段，发过去是 400 或被忽略；判据先看开关再看协议再看地址，' +
+    '顺序反过来"用户没开"就会被说成"你填的地址不对"（AGENTS §2 #5 同一族）',
+    rClaudeWs && rClaudeWs.search.cell === 'type' && !('tools' in JSON.parse(rClaudeWs.body)) &&
+      rGemWs && rGemWs.search.cell === 'type' && !('tools' in JSON.parse(rGemWs.body)),
+    JSON.stringify({ claude: rClaudeWs && rClaudeWs.search.cell, gemini: rGemWs && rGemWs.search.cell }));
+
+  var rNoLib = madeNoLib(CFG_OFFICIAL, hist(), 'SYS', H, true);
+  check('⑲ 模块**压根没登记**（popup.html 少一行 script）：那一格叫 `no-lib`、不许塌进 `off`，' +
+    '也不许当场抛 —— 这一族的失败形状是"不报错、只是那一发从来没带上搜索"，' +
+    '而用户听到的那句话听起来像刚查过（AGENTS §2 #18）。格子内含量够调用方照原样发货',
+    rNoLib && rNoLib.search.cell === 'no-lib' && rNoLib.search.on === false &&
+      !('tools' in JSON.parse(rNoLib.body)),
+    JSON.stringify({ cell: rNoLib && rNoLib.search.cell, why: rNoLib && rNoLib.search.why }));
+
+  // metaText / metaWs / metaNoLib 由本节开头那一段建好（发送层要用同一份，不许在这里重建）
+  check('⑳ 界面那一行小字的三格各说各话（petSearchMeta 抽出来真跑）：' +
+    '搜到了 → 句子由 libs 按回包 usage 拼（含实际次数与 token，不是写死的）；' +
+    '开关没开 → **交回 null 一个字都不说**（那行字出现只会让人以为刚才那句是搜出来的）；' +
+    '开着但带不动 → 当场说"这次没有联网"并把原因带上。取不出这个函数就整段零覆盖（AGENTS §5）',
+    !!metaText && !!metaWs &&
+      metaWs({ cell: 'off', on: false, why: '联网搜索这枚开关没开' }, null) === null &&
+      /^这次没有联网：/.test(String(metaWs(rRly && rRly.search, null).sentence)) &&
+      metaWs(rRly && rRly.search, null).on === false &&
+      /联网查了 2 次/.test(String(metaWs({ cell: 'on', on: true, why: '', host: 'api.deepseek.com' },
+        { usage: { prompt_tokens: 4653, completion_tokens: 12, server_tool_use: { tool_search: 2, tool_fetch: 1 } } }).sentence)),
+    JSON.stringify({ taken: !!metaText, off: String(metaWs && metaWs({ cell: 'off', on: false }, null)),
+      blocked: metaWs && metaWs(rRly && rRly.search, null).sentence,
+      searched: metaWs && metaWs({ cell: 'on', on: true, host: 'api.deepseek.com' },
+        { usage: { prompt_tokens: 4653, completion_tokens: 12, server_tool_use: { tool_search: 2, tool_fetch: 1 } } }).sentence }));
+
+  var sentNoLib = metaNoLib && metaNoLib({ cell: 'on', on: true, why: '', host: 'api.deepseek.com' },
+    { usage: { prompt_tokens: 12, server_tool_use: { tool_search: 1 } } });
+  check('㉑ 模块没登记时**连那句"花了多少"也不猜**：petSearchMeta 在 lib 缺席的那一路交一句' +
+    '"这一回没读到用量数据"，而不是把回包里的数字自己乘一遍 —— 读不出单独占一格（AGENTS §2 #12）',
+    !!metaNoLib && !!sentNoLib && String(sentNoLib.sentence).indexOf('没读到用量') >= 0 &&
+    sentNoLib.on === true && sentNoLib.cell === 'on',
+    JSON.stringify({ sentence: sentNoLib && sentNoLib.sentence, cell: sentNoLib && sentNoLib.cell }));
+
+  // ㉒ 发送层（petChatSend 真身）把那枚三态**原样**递给第 5 参，并且"还没读到"与"用户没开"
+  //     在界面那一行小字上说的话不同。这一格只能由**真跑发送层**证 ——
+  //     ⑭-㉑ 测的是纯函数，把 `buildPetChatRequest(cfg, history, sys, null, petWebSearchVal)`
+  //     改成 `!!petWebSearchVal` 时那五格一条都不会红（症状与改之前一模一样：都不搜），
+  //     变的只有"这一行小字有没有说错原因"（AGENTS §2 #12 在调用点上的同族）。
+  wsArgs.length = 0;
+  var sentVals = [undefined, null, false, 0, 1, true];
+  var sentMeta = [];
+  for (var wi = 0; wi < sentVals.length; wi++) {
+    wsVal = sentVals[wi];
+    var rSent = await mkSend(CFG_OFFICIAL, function () {
+      fetchCalls++;
+      return { ok: true, json: async function () { return { choices: [{ message: { content: '嗯' } }] }; } };
+    }, {});
+    sentMeta.push(rSent ? rSent.meta : { cell: '(没走到)' });
+  }
+  wsVal = null;
+  var verbatim = sentVals.every(function (v, i) { return Object.is(wsArgs[i], v); });
+  var metaCells = sentMeta.map(function (m) { return m === null ? 'null' : (m && m.cell) || '(没格子)'; });
+  check('㉒ 发送层把三态**原样**交进第 5 参（六种输入逐格 Object.is 比，!! / Number 压平当场红），' +
+    '而且界面上「还没读到」与「用户没开」各占一格：null 与压根没读到 → 说一句"这次没有联网：还没读到…"，' +
+    'false / 0 / 压根没这一枚 → **交回 null 一个字都不说**，true + 官方域 → 说"搜过"，' +
+    '但回包没有 usage 时那句只能是"读不出"，不许把 0 当成没花（AGENTS §2 #2 / #12）',
+    wsArgs.length === sentVals.length && verbatim &&
+      sentMeta[0].cell === 'unknown' && sentMeta[0].on === false &&
+      /^这次没有联网：/.test(String(sentMeta[0].sentence)) &&
+      sentMeta[1].cell === 'unknown' &&
+      sentMeta[2] === null && sentMeta[3] === null && sentMeta[4] === null &&
+      sentMeta[5].on === true && /没读到用量/.test(String(sentMeta[5].sentence)),
+    JSON.stringify({ got: wsArgs.map(function (v) { return String(v); }), want: sentVals.map(function (v) { return String(v); }),
+      verbatim: verbatim, cells: metaCells, said: sentMeta.map(function (m) { return m === null ? '(不说话)' : String(m.sentence).slice(0, 18); }) }));
 }
 
 async function testLocalDoctor() {
-  console.log('\n[27] 本地自愈「医生」：判断层四态与有界 + 页面/弹窗两侧接线（批次 130）');
+  console.log('\n[27] 本地自愈「医生」：判断层四态与有界 + 页面/弹窗两侧接线 + 联网搜索那一发带不带（批次 130 / 任务 #183）');
 
   var read = function (rel) {
     return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
@@ -6020,6 +6168,10 @@ async function testLocalDoctor() {
   if (!D || typeof D.analyze !== 'function') return;
 
   var L = D.LIMITS;
+  // 联网搜索那把尺（任务 #183）：医生问模型那一发的「带不带 tools」也只问 libs/web-search.js，
+  // 与弹窗两处出口问的是同一份。取不到时下面 ㉛-㉞ 全成「没执行」，所以那一格自己也要说话。
+  var WS = null;
+  try { WS = require(path.join(ROOT, 'libs/web-search.js')); } catch (e) { WS = null; }
   var DEFAULT_WINDOW = constOf(diagSrc, 'DEFAULT_WINDOW_MS');
   var MIN_IDLE = constOf(diagSrc, 'MIN_IDLE_WINDOW_MS');
   var T0 = Date.now();
@@ -6222,17 +6374,27 @@ async function testLocalDoctor() {
       'roleOff: pagePetRoleOff, on: isDoctorOn, asks: function () { return doctorAskCount; }, ' +
       'ring: function () { return doctorRing.slice(); }, ' +
       'skip: function () { return pagePet && pagePet.host ? pagePet.host.dataset.doctorSkip : undefined; }, ' +
-      'flag: function () { return doctorOn; }, stamps: function () { return { analyzeAt: doctorAnalyzeAt, ' +
+      'flag: function () { return doctorOn; }, ' +
+      'wsFlag: function () { return webSearchOn; }, ' +
+      'wsCell: function () { return pagePet && pagePet.host ? pagePet.host.dataset.webSearch : undefined; }, ' +
+      'stamps: function () { return { analyzeAt: doctorAnalyzeAt, ' +
       'lastCode: doctorLastCode, lastCodeAt: doctorLastCodeAt }; } };']));
   } catch (e) { DoctorFactory = null; }
   check('⑭ 页面那一整块医生代码切出来构造成功（doctorMark / doctorNote / doctorDeliver / 问模型两件 / ' +
-    'isDoctorOn / 换装两件事都在这一格里）—— 切不出来的话 ⑮-㉚ 全部「没执行」，症状与「都通过」一模一样',
+    'isDoctorOn / 换装两件事 / 联网那四件都在这一格里）—— 切不出来的话 ⑮-㉟ 全部「没执行」，症状与「都通过」一模一样',
     !!DoctorFactory && dBlock.indexOf('function doctorMark') >= 0 &&
       dBlock.indexOf('function doctorNote') >= 0 &&
       dBlock.indexOf('function doctorDeliver') >= 0 && dBlock.indexOf('function isDoctorOn') >= 0 &&
       dBlock.indexOf('function doctorAskModel') >= 0 && dBlock.indexOf('function doctorAskBounded') >= 0 &&
-      dBlock.indexOf('function pagePetRoleOn') >= 0 && dBlock.indexOf('function pagePetRoleOff') >= 0,
-    JSON.stringify({ blockLen: dBlock.length, factory: !!DoctorFactory }));
+      dBlock.indexOf('function pagePetRoleOn') >= 0 && dBlock.indexOf('function pagePetRoleOff') >= 0 &&
+      dBlock.indexOf('const PAGE_WEB_SEARCH_KEY') >= 0 &&
+      dBlock.indexOf('function doctorWebSearch') >= 0 && dBlock.indexOf('function doctorWebSearchMark') >= 0 &&
+      dBlock.indexOf('function isPetSwitchOn') >= 0,
+    JSON.stringify({ blockLen: dBlock.length, factory: !!DoctorFactory,
+      wsKey: dBlock.indexOf('const PAGE_WEB_SEARCH_KEY') >= 0,
+      wsJudge: dBlock.indexOf('function doctorWebSearch') >= 0,
+      wsMark: dBlock.indexOf('function doctorWebSearchMark') >= 0,
+      scale: dBlock.indexOf('function isPetSwitchOn') >= 0 }));
   if (!DoctorFactory) return;
 
   var RING_MAX = constOf(contentSrc, 'DOCTOR_RING_MAX');
@@ -6240,6 +6402,8 @@ async function testLocalDoctor() {
   var GAP = constOf(contentSrc, 'DOCTOR_GAP_MS');
   var MIN_SEV = constOf(contentSrc, 'DOCTOR_MIN_SEVERITY');
   var KEY_NAME = (contentSrc.match(/PAGE_DOCTOR_KEY = '([^']+)'/) || [])[1];
+  // 联网搜索那枚开关的键名同样**从页面读回来**（测试台不许自己写死第二个键名，AGENTS §5）
+  var WS_KEY_NAME = (contentSrc.match(/PAGE_WEB_SEARCH_KEY = '([^']+)'/) || [])[1];
   // 弹窗那两条语句**用页面读回来的键名去定位**：键名一旦两边不同，这里直接匹配不到，
   // popupOn 变成 null，下面那一格当场红 —— 比拿两个写死的字面量互比少一处会说谎的地方
   var popupReadSpan = KEY_NAME
@@ -6255,7 +6419,25 @@ async function testLocalDoctor() {
       : null;
   } catch (e) { popupOn = null; }
   // 测试台里所有"这一格存档"都按页面读回来的那枚键名拼，避免测试自己写死第二个键名
-  var storeOf = function (v) { var o = {}; o[KEY_NAME] = v; return o; };
+  var storeOf = function (v, wv) {
+    var o = {};
+    o[KEY_NAME] = v;
+    if (wv !== undefined) o[WS_KEY_NAME] = wv;
+    return o;
+  };
+  // 联网搜索开关在弹窗那一侧的读回与写成，同样**按页面读回来的键名定位**（同一手法，AGENTS §2 #23）
+  var popWsReadSpan = WS_KEY_NAME
+    ? popSrc.match(new RegExp('var raw = r && r\\.' + WS_KEY_NAME + ';\\s+petWebSearchVal = ([^;]+);'))
+    : null;
+  var popWsWriteSpan = WS_KEY_NAME
+    ? popSrc.match(new RegExp('chrome\\.storage\\.local\\.set\\(\\{ ' + WS_KEY_NAME + ': value \\? 1 : 0'))
+    : null;
+  var popWsOn = null;
+  try {
+    popWsOn = popWsReadSpan
+      ? new Function('r', 'var petWebSearchVal;' + popWsReadSpan[0] + 'return petWebSearchVal;')
+      : null;
+  } catch (e) { popWsOn = null; }
 
   // 问模型那一发是异步的（`void doctorDeliver(res)`）：凡要断言"她说了/换了装"的格子
   // 都要先 flush 一拍（真实宏任务）把派发落完再读 —— 不然「没说」和「没等到」同形
@@ -6268,6 +6450,7 @@ async function testLocalDoctor() {
     var clock = { t: T0 };
     var says = [];
     var writes = [];
+    var gets = [];
     var listeners = [];
     var timers = [];
     var baseSrc = o.baseSrc || 'popup/pet-03.png';
@@ -6286,8 +6469,12 @@ async function testLocalDoctor() {
       storage: {
         local: {
           get: function (keys, cb) {
+            gets.push(keys);                          // 「几发问存储、问了哪几枚键」要读得回来，不能由测试宣称
             if (o.hang) return;                       // 回调不回来 = 真值还没读到，这一格要单独测
-            cb(o.storeVal === undefined ? {} : storeOf(o.storeVal));
+            // 页面那一支一次问**两枚键**（医生开关 + 联网搜索开关）；两格各自由调用方给值，
+            // 都没给时交空对象 = 两枚键都缺席（老用户的真实存档）
+            cb(o.storeVal === undefined && o.wsVal === undefined
+              ? {} : storeOf(o.storeVal, o.wsVal));
           },
           set: function (obj, cb) { writes.push(obj); if (cb) cb(); }
         },
@@ -6304,12 +6491,19 @@ async function testLocalDoctor() {
     var cfg = o.cfg || { apiType: 'openai', apiKey: '', model: '', apiUrl: '' };
     var fetchCalls = [];
     // 记账必须无条件发生：桩由调用方换掉时，「一步都没发」那格就变成没人数的假账
+    // body 也要记下 —— 「这一发到底带没带 tools」只能从发出去的字节里读，不能由测试自己宣称
     var apiFetchStub = function (url, opts) {
-      fetchCalls.push({ url: String(url), method: opts && opts.method });
+      fetchCalls.push({ url: String(url), method: opts && opts.method,
+        body: opts && typeof opts.body === 'string' ? opts.body : '' });
       if (o.apiFetch) return o.apiFetch(url, opts);
       return Promise.resolve({ success: false, error: 'stub-fetch' });
     };
-    var api = DoctorFactory.call(null, chrome, o.noDx ? {} : { OmitoneDiagnose: D }, pagePet,
+    // 判断层与联网那把尺**各占一格缺席**：no-diagnose（体检没尺）与 no-lib（搜索没登记）
+    // 症状都是"她不说/不搜"，修复方向一个在 libs/diagnose.js、一个在 manifest —— 合并注入就测不出来
+    var selfStub = {};
+    if (!o.noDx) selfStub.OmitoneDiagnose = D;
+    if (!o.noWs) selfStub.OmitoneWebSearch = o.wsFake ? o.wsFake : WS;
+    var api = DoctorFactory.call(null, chrome, selfStub, pagePet,
       function () { return { ART: { ROLES: roles } }; },
       function (nme, line) { says.push({ name: nme, line: String(line) }); return o.blockSay ? '' : String(line); },
       { now: function () { return clock.t; } },
@@ -6322,7 +6516,7 @@ async function testLocalDoctor() {
       function (u) { return String(u || '') + '/claude'; },
       function (u, m, k) { return String(u || '') + '/gemini'; });
     return { api: api, says: says, clock: clock, img: img, pagePet: pagePet, roleProp: roleProp,
-      timers: timers, listeners: listeners, writes: writes, baseSrc: baseSrc, wrap: wrap, doc: doc,
+      timers: timers, listeners: listeners, writes: writes, gets: gets, baseSrc: baseSrc, wrap: wrap, doc: doc,
       cfg: cfg, fetchCalls: fetchCalls };
   };
   var hardNeedle = sev3.needles[0];
@@ -6606,6 +6800,119 @@ async function testLocalDoctor() {
       hNoKey.says[0].line === localLine,
     JSON.stringify({ asks: hNoKey.api.asks(), calls: hNoKey.fetchCalls.length,
       line: hNoKey.says[0] && hNoKey.says[0].line }));
+
+  // ==================== 联网搜索接进「她自己体检」（任务 #183）====================
+  // 三处花钱的出口（弹窗聊天 / 让她解释 / 医生）里，**只有弹窗在 [26] 测到**的话，
+  // manifest 漏登记 `libs/web-search.js` 这一族就永远没人报警：症状是"她从来不搜"，
+  // 一条异常都不打（AGENTS §2 #18）。下面 ㉛-㉟ 把页面那一处也钉上同一把尺。
+  var WS_HOST = WS ? WS.OFFICIAL_HOST : '';
+  var TOOL_TYPE = WS && WS.toolsFor ? (WS.toolsFor({ on: true })[0] || {}).type : '';
+  var CFG_WS_OPEN = { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://' + WS_HOST };
+  var CFG_WS_RELAY = { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://relay.example.com/v1' };
+  var CFG_WS_CLAUDE = { apiType: 'claude', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://' + WS_HOST };
+  // 发出去的字节才算证据：这一发到底带没带 tools，只能从 body 里读（测试台不许自己宣称）
+  var wsBody = function (h) {
+    if (!h.fetchCalls.length) return null;
+    try { return JSON.parse(h.fetchCalls[0].body); } catch (e) { return null; }
+  };
+  var wsHasTools = function (h) { var b = wsBody(h); return b ? Array.isArray(b.tools) : null; };
+  var wsBodyKeys = function (h) { var b = wsBody(h); return b ? Object.keys(b).join(',') : '(没发出去)'; };
+
+  // ---- ㉛ 两侧同一枚键、同一把三态尺 ----
+  var wsVals = [undefined, 0, 1, false, true];
+  var wsPopupSide = wsVals.map(function (v) { return popWsOn ? popWsOn(storeOf(1, v)) : null; });
+  var wsPageSide = wsVals.map(function (v) { return mkDoctor({ storeVal: 1, wsVal: v }).api.wsFlag(); });
+  check('㉛ 「联网搜索」这枚开关在弹窗与页面两侧是**同一枚键名、同一把三态尺**（键名从页面首行读回 = ' + WS_KEY_NAME +
+    '，弹窗那两句读写都按这一枚键定位 —— 两边一旦分叉，这里根本匹配不到，当场红）：' +
+    '存档里 缺席 / 0 / 1 / false / true 五格，弹窗判出来的布尔与页面 `webSearchOn` 逐格相等，' +
+    '且只有 1 与 true 两格算开。各写一把尺的下场是弹窗显示"已开启"、页面那一发从来不搜，' +
+    '而且不报错、不留日志（AGENTS §2 #23 / #18 同族）',
+    !!WS && !!WS_KEY_NAME && !!popWsReadSpan && !!popWsWriteSpan &&
+      wsVals.every(function (v, i) {
+        return typeof wsPopupSide[i] === 'boolean' && wsPopupSide[i] === wsPageSide[i];
+      }) && wsPageSide[0] === false && wsPageSide[1] === false && wsPageSide[3] === false &&
+      wsPageSide[2] === true && wsPageSide[4] === true,
+    JSON.stringify({ key: WS_KEY_NAME, lib: !!WS, popRead: !!popWsReadSpan, popWrite: !!popWsWriteSpan,
+      vals: wsVals.map(function (v) { return String(v); }), popup: wsPopupSide, page: wsPageSide }));
+
+  // ---- ㉜ 两枚键一次读回；读不回来时不许猜 ----
+  var hWsOne = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN,
+    apiFetch: function () {
+      return Promise.resolve({ success: true, data: { choices: [{ message: { content: '刷新一下这一页就好' } }] } });
+    } });
+  hWsOne.api.note('error', hardNeedle);
+  await flush();
+  var hWsNoRead = mkDoctor({ hang: true, wsVal: 1, cfg: CFG_WS_OPEN });
+  hWsNoRead.api.note('error', hardNeedle);
+  await flush();
+  var askedKeys = (hWsOne.gets[0] || []).map(String);
+  check('㉜ 医生启动时**一发 `storage.get` 问两枚键**（体检开关 + 联网搜索开关，读回来 = ' + askedKeys.join(' / ') +
+    '）：分两次读就多两个"真值还没回来"的窗口，而联网那一发要在**同一次问模型**上决定花不花额外的钱，' +
+    '慢半拍那一支会被当成"用户没开"（三态里最不该塌的一格）。对照格：回调没进来时 `webSearchOn` 停在 **null**、' +
+    '一步都不问、一个请求都不发，说的还是老那句"开关真值还没读到" —— 「还不知道」不许塌进"开着"，' +
+    '也不许实现成这一拍什么都不说（AGENTS §2 #12 / #14）',
+    hWsOne.gets.length === 1 && askedKeys.length === 2 && askedKeys.indexOf(KEY_NAME) >= 0 &&
+      askedKeys.indexOf(WS_KEY_NAME) >= 0 && hWsOne.api.asks() === 1 &&
+      hWsNoRead.gets.length === 1 && hWsNoRead.api.wsFlag() === null && hWsNoRead.api.asks() === 0 &&
+      hWsNoRead.fetchCalls.length === 0 && hWsNoRead.api.skip() === 'switch-unknown',
+    JSON.stringify({ gets: hWsOne.gets.length, keys: askedKeys, asks: hWsOne.api.asks(),
+      hangFlag: hWsNoRead.api.wsFlag(), hangAsks: hWsNoRead.api.asks(),
+      hangCalls: hWsNoRead.fetchCalls.length, hangSkip: hWsNoRead.api.skip() }));
+
+  // ---- ㉝ 开关开着 + 官方域：那一份 tools 真进了请求体 ----
+  var bodyWsOn = wsBody(hWsOne);
+  check('㉝ 页面里的医生**真把联网搜索带出去了**：开关开着 + 官方域 + OpenAI 形状时，发出去的请求体里恰好一枚工具声明' +
+    '（type = ' + TOOL_TYPE + '，从 `libs/web-search.js` 的 `toolsFor` 读回来，测试台不写第二份），' +
+    '`temperature` 这一格整个不写（"带 tools 时服务端怎么对待它"没测过，没测过的参数不许照发），' +
+    '`max_tokens` 保持改动前那个数，归因格 `dataset.webSearch` 落成 on —— ' +
+    '只测弹窗那一处，manifest 漏登记这一族就是零覆盖（AGENTS §2 #18）',
+    TOOL_TYPE === 'deepseek_web_search' && !!bodyWsOn && Array.isArray(bodyWsOn.tools) &&
+      bodyWsOn.tools.length === 1 && bodyWsOn.tools[0].type === TOOL_TYPE &&
+      Object.keys(bodyWsOn.tools[0]).length === 1 && bodyWsOn.temperature === undefined &&
+      bodyWsOn.max_tokens === 320 && hWsOne.api.wsCell() === 'on' && hWsOne.fetchCalls.length === 1,
+    JSON.stringify({ cell: hWsOne.api.wsCell(), keys: wsBodyKeys(hWsOne), tools: bodyWsOn && bodyWsOn.tools,
+      max: bodyWsOn && bodyWsOn.max_tokens, url: hWsOne.fetchCalls[0] && hWsOne.fetchCalls[0].url }));
+
+  // ---- ㉞ 「带不动」的成因各占一格，互不相同，且都不许多花一次钱 ----
+  var cOff = mkDoctor({ storeVal: 1, wsVal: 0, cfg: CFG_WS_OPEN });
+  var cRelay = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_RELAY });
+  var cType = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_CLAUDE });
+  var cNoLib = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN, noWs: true });
+  var cShape = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN,
+    wsFake: { decisionOf: function () { throw new Error('stub-throw'); } } });
+  [cOff, cRelay, cType, cNoLib, cShape].forEach(function (h) { h.api.note('error', hardNeedle); });
+  await flush();
+  var cCells = [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return String(h.api.wsCell()); });
+  var cTools = [cOff, cRelay, cType, cNoLib, cShape].map(wsHasTools);
+  check('㉞ 医生「这一发带不动联网搜索」的成因有**五格各占一名**（' + cCells.join(' / ') +
+    '），逐格读回来互不相同，并且五格**一个都没把 tools 拼进请求体**：' +
+    '用户没开开关（off）/ 地址是别人的服务器（not-official）/ 协议形状不对（type）/ ' +
+    '模块没登记（no-lib，该红的是 manifest 那一行）/ 判定本身读不出（lib-shape）—— ' +
+    '压成一格的代价是"漏登记"被说成"你没开开关"，用户听完去点开关而修不好（AGENTS §2 #12 / #18）',
+    cCells.filter(function (n, i) { return cCells.indexOf(n) === i; }).length === 5 &&
+      cCells.join('|') === 'off|not-official|type|no-lib|lib-shape' &&
+      cTools.every(function (t) { return t === false; }) &&
+      [cOff, cRelay, cType, cNoLib, cShape].every(function (h) { return h.fetchCalls.length === 1; }) &&
+      [cOff, cRelay, cType, cNoLib, cShape].every(function (h) { return h.says.length === 1; }),
+    JSON.stringify({ cells: cCells, tools: cTools, calls: [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return h.fetchCalls.length; }),
+      says: [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return h.says.length; }),
+      keys: [cOff, cRelay, cType, cNoLib, cShape].map(wsBodyKeys) }));
+
+  // ---- ㉟ 没开开关：那一发的字节形状与改动前逐字相同 ----
+  var hWsOff = mkDoctor({ storeVal: 1, wsVal: 0, cfg: CFG_WS_OPEN,
+    apiFetch: function () {
+      return Promise.resolve({ success: true, data: { choices: [{ message: { content: '刷新一下这一页就好' } }] } });
+    } });
+  hWsOff.api.note('error', hardNeedle);
+  await flush();
+  var bodyWsOffKeys = wsBodyKeys(hWsOff);
+  check('㉟ 开关没开时，医生那一发请求体的**键顺序与改动前逐字相同**（' + bodyWsOffKeys +
+    ' = model,messages,temperature,max_tokens）：新参数只许在用户明确开了那枚开关之后才出现，' +
+    '没开的人下载的字节变了、行为却没变，就是把"默认不烧钱"这句话实现成了"多带一格没人验过的参数"。' +
+    '对照 ㉝：开了以后 `temperature` 让位给 `tools`，`max_tokens` 一格不动',
+    bodyWsOffKeys === 'model,messages,temperature,max_tokens' &&
+      hWsOff.api.wsCell() === 'off' && wsHasTools(hWsOff) === false && hWsOff.api.asks() === 1,
+    JSON.stringify({ keys: bodyWsOffKeys, cell: hWsOff.api.wsCell(), asks: hWsOff.api.asks() }));
 }
 
 async function testPreviewChannelNotice() {
@@ -8150,6 +8457,306 @@ async function testModelListFetch() {
     JSON.stringify({ decl: libsHas, export: libsExport }));
 }
 
+// ==================== 联网搜索那把尺（任务 #183）====================
+// 为什么单开一段：libs/web-search.js 是「这一发到底带不带搜索」的唯一真源，而**登记漏一处
+// 不会有任何异常**（AGENTS §2 #18）—— 弹窗与上课页各自退回本地那份"没搜"，用户听到的那句
+// 模型回答照样听起来像刚查过。所以这一段测的是**尺本身**与**只有一份尺**，
+// 三处出口真带没带 tools 在 [26]/[27] 里逐格钉。
+async function testWebSearchGate() {
+  console.log('\n[33] 联网搜索那把尺：libs 八格自证 + 两处登记 + 全仓只有一份判定（任务 #183）');
+
+  var read = function (rel) {
+    try { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n'); } catch (e) { return ''; }
+  };
+  var countStr = function (hay, needle) {
+    var s = String(hay || ''), n = 0, at = s.indexOf(needle);
+    while (at >= 0) { n++; at = s.indexOf(needle, at + needle.length); }
+    return n;
+  };
+  // 剥注释必须**等长**、而且**不许把字符串里的 `//`（https://）当注释**（AGENTS §5：
+  // 剥完行数不变、几句真代码仍在原处，才算"剥"这一手自己在承重）。
+  var stripComments = function (src) {
+    var s = String(src || ''), out = '', i = 0;
+    while (i < s.length) {
+      var c = s.charAt(i), d = s.charAt(i + 1);
+      if (c === '/' && d === '/') {
+        while (i < s.length && s.charAt(i) !== '\n') { out += ' '; i++; }
+      } else if (c === '/' && d === '*') {
+        out += '  '; i += 2;
+        while (i < s.length && !(s.charAt(i) === '*' && s.charAt(i + 1) === '/')) { out += s.charAt(i) === '\n' ? '\n' : ' '; i++; }
+        out += '  '; i += 2;
+      } else if (c === '"' || c === "'" || c === '`') {
+        out += c; i++;
+        while (i < s.length && s.charAt(i) !== c) {
+          if (s.charAt(i) === '\\') { out += s.charAt(i); i++; }
+          out += s.charAt(i); i++;
+        }
+        if (i < s.length) { out += s.charAt(i); i++; }
+      } else { out += c; i++; }
+    }
+    return out;
+  };
+  var topFn = function (src, name) {
+    var at = String(src || '').indexOf('function ' + name + '(');
+    if (at < 0) return null;
+    var depth = 0;
+    for (var i = String(src).indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+
+  var WS = null;
+  try { WS = require('../libs/web-search.js'); } catch (e) { WS = null; }
+  var libSrc = read('libs/web-search.js');
+  var popSrc = read('popup/popup.js');
+  var conSrc = read('content.js');
+  var htmlSrc = read('popup/popup.html');
+  var manSrc = read('manifest.json');
+  var OFFICIAL = WS && WS.OFFICIAL_HOST ? String(WS.OFFICIAL_HOST) : '';
+  var OK_CFG = { apiKey: 'sk-test', apiType: 'openai', apiUrl: 'https://' + OFFICIAL + '/chat/completions' };
+
+  var seven = ['OFFICIAL_HOST', 'hostOf', 'isOfficialHost', 'decisionOf', 'toolsFor', 'usageOf', 'sentenceOf'];
+  var missing = seven.filter(function (k) { return !WS || WS[k] === undefined; });
+  check('⓪ libs/web-search.js  require 得到、七件导出齐全，五份生产文本都从盘上读回来 —— ' +
+    '取不出就整段不跑（那种「没执行」和「通过」在报告里长得一模一样，AGENTS §5）',
+    !missing.length && seven.every(function (k) { return k === 'OFFICIAL_HOST' || typeof WS[k] === 'function'; }) &&
+      libSrc.length > 2000 && popSrc.length > 2000 && conSrc.length > 2000 && htmlSrc.length > 2000 && manSrc.length > 200,
+    JSON.stringify({ missing: missing, libBytes: libSrc.length, official: OFFICIAL }));
+  if (!WS || missing.length || !OFFICIAL) return;
+
+  // ── ① 八格各占一格，判定顺序冻结在「开关 → Key → 协议 → 地址」────────────────
+  var dUnknown = WS.decisionOf(OK_CFG, null);
+  var dOff = WS.decisionOf(OK_CFG, false);
+  var dKey = WS.decisionOf({ apiKey: '  ', apiType: 'claude', apiUrl: 'https://relay.example.com/v1' }, true);
+  var dType = WS.decisionOf({ apiKey: 'sk-test', apiType: 'claude', apiUrl: OK_CFG.apiUrl }, true);
+  var dNoAddr = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: '' }, true);
+  var dUnread = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: '/v1/chat/completions' }, true);
+  var dRelay = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: 'https://relay.example.com/v1' }, true);
+  var dOn = WS.decisionOf(OK_CFG, true);
+  var cells8 = [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay, dOn].map(function (d) { return d.cell; });
+  // 同一份坏配置（没 Key + 协议不对 + 中转站）按开关三态各说一句话：
+  // 把地址那一格排在前面的话，「用户压根没开」会被说成「你填的地址不是官方域」。
+  var BAD_CFG = { apiKey: '', apiType: 'claude', apiUrl: 'https://relay.example.com/v1' };
+  var bySwitch = [WS.decisionOf(BAD_CFG, null).cell, WS.decisionOf(BAD_CFG, false).cell, WS.decisionOf(BAD_CFG, true).cell];
+  check('① decisionOf 八格各占一格（' + cells8.join(',') + '）且只有 on 那一格 on:true —— ' +
+    '再钉同一份坏配置按开关三态说出三个不同的格子（' + bySwitch.join('/') + '），' +
+    '顺序一旦把地址挪到开关之前，「还没读到」与「没开」就塌进「你地址不对」（AGENTS §2 #5 / #12）',
+    cells8.join(',') === 'unknown,off,no-key,type,no-addr,unreadable,not-official,on' &&
+      cells8.filter(function (v, i) { return cells8.indexOf(v) === i; }).length === 8 &&
+      [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay].every(function (d) { return d.on === false; }) &&
+      dOn.on === true && bySwitch.join(',') === 'unknown,off,no-key' &&
+      dRelay.host === 'relay.example.com' && dOn.host === OFFICIAL,
+    JSON.stringify({ cells: cells8, bySwitch: bySwitch, onlyOn: [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay, dOn].filter(function (d) { return d.on; }).length }));
+
+  // ── ② hostOf 的十三种形状；isOfficialHost 与 decisionOf 必须是同一把尺 ────────
+  var hostCases = [
+    'HTTPS://API.DeepSeek.COM:443/v1?x=1', 'https://user:pw@api.deepseek.com/v1',
+    'https://api.deepseek.com.ru/v1', 'http://127.0.0.1:8787/v1', '/v1/chat/completions',
+    '//api.deepseek.com/v1', '   https://api.deepseek.com   ', '', null, 123, {}, 'api.deepseek.com',
+    'https://api.deepseek.com'
+  ];
+  var hostRows = hostCases.map(function (u) {
+    var d = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: u }, true);
+    return { u: String(u), host: WS.hostOf(u), same: WS.isOfficialHost(u) === (d.cell === 'on'), cell: d.cell };
+  });
+  check('② hostOf 十三种地址形状逐个量回（大写／端口／userinfo／query／前后空格／相对路径／协议缺失／空／非字符串），' +
+    '后缀陷阱 `api.deepseek.com.ru` 读出的是它自己而不是官方域，且 isOfficialHost 与 decisionOf 对每一行结论一致 —— ' +
+    '两处不一致就是两把尺，将来只改一处会分叉（AGENTS §2 #18）',
+    hostRows.every(function (r) { return r.same; }) &&
+      WS.hostOf(hostCases[0]) === OFFICIAL && WS.hostOf(hostCases[1]) === OFFICIAL &&
+      WS.hostOf(hostCases[6]) === OFFICIAL && WS.hostOf(hostCases[12]) === OFFICIAL &&
+      WS.hostOf(hostCases[2]) === 'api.deepseek.com.ru' && WS.isOfficialHost(hostCases[2]) === false &&
+      WS.hostOf(hostCases[3]) === '127.0.0.1' &&
+      [4, 5, 7, 8, 9, 10, 11].every(function (i) { return WS.hostOf(hostCases[i]) === ''; }),
+    JSON.stringify(hostRows));
+
+  // ── ③ 那一发 tools 的形状：字面量从 libs 源码读回来比，不在断言里抄第二份 ────────
+  var toolLine = (libSrc.match(/var SEARCH_TOOL = \{ type: ["']([^"']+)["'] \};/) || [])[1] || '';
+  var tOn = WS.toolsFor(dOn);
+  var tOthers = [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay].map(function (d) { return WS.toolsFor(d); });
+  check('③ toolsFor 只在 on 那一格交出一份，形状是「只有一个字段的那一格」，字段值与 libs 里声明的那个字面量逐字相同' +
+    '（值从 `var SEARCH_TOOL = …` 那行读回来，断言里没有第二份）；带不动的七格一律交**空数组**（不是 undefined），' +
+    '调用方据此整个字段都不写 —— 写 `tools: []` 是让服务端猜',
+    !!toolLine && tOn.length === 1 && Object.keys(tOn[0]).length === 1 && tOn[0].type === toolLine &&
+      tOthers.every(function (t) { return Array.isArray(t) && t.length === 0; }) &&
+      Array.isArray(WS.toolsFor(null)) && WS.toolsFor(null).length === 0,
+    JSON.stringify({ decl: toolLine, on: tOn, emptyCells: tOthers.length }));
+
+  // ── ④ usageOf 四格；读不出恒 -1，不许被压成 0（AGENTS §2 #2）───────────────────
+  var uBadNull = WS.usageOf(null);
+  var uBadStr = WS.usageOf('x');
+  var uNoUsage = WS.usageOf({});
+  var uNoTool = WS.usageOf({ usage: { prompt_tokens: 63, completion_tokens: 10 } });
+  var uHalf = WS.usageOf({ usage: { server_tool_use: { tool_fetch: 1 }, prompt_tokens: 4653 } });
+  var uOk = WS.usageOf({ usage: { server_tool_use: { tool_search: 2, tool_fetch: 1 }, prompt_tokens: 4653, completion_tokens: 410, prompt_tokens_details: { cached_tokens: 896 } } });
+  var uNeg = WS.usageOf({ usage: { prompt_tokens: -5, completion_tokens: 'abc' } });
+  var numFields = ['search', 'fetch', 'prompt', 'completion', 'cached'];
+  check('④ usageOf 四格（bad-shape / no-usage / no-tool-cell / ok）各占一格，且「拿不到」一律 -1 而不是 0：' +
+    '整份没有 usage、server_tool_use 在但 tool_search 缺、数字是负数或字符串 —— 三族都被压成 0 时，' +
+    '取证里就凭空多出一条方向为「放行」的断言（AGENTS §2 #2）',
+    uBadNull.cell === 'bad-shape' && uBadStr.cell === 'bad-shape' && uNoUsage.cell === 'no-usage' &&
+      uNoTool.cell === 'no-tool-cell' && uHalf.cell === 'ok' && uOk.cell === 'ok' &&
+      numFields.every(function (k) { return uBadNull[k] === -1 && uNoUsage[k] === -1; }) &&
+      uNoTool.search === -1 && uNoTool.fetch === -1 && uNoTool.prompt === 63 &&
+      uHalf.search === -1 && uHalf.fetch === 1 && uHalf.prompt === 4653 &&
+      uOk.search === 2 && uOk.fetch === 1 && uOk.prompt === 4653 && uOk.completion === 410 && uOk.cached === 896 &&
+      uNeg.prompt === -1 && uNeg.completion === -1,
+    JSON.stringify({ cells: [uBadNull.cell, uNoUsage.cell, uNoTool.cell, uHalf.cell, uOk.cell, uNeg.cell], negPrompt: uNeg.prompt }));
+
+  // ── ⑤ 对用户说话的那几句：各格不同，而且不许承诺「今天／最新／实时」─────────────
+  // 实测（任务 #183，五发探针）：搜回来的答案分别说成 5月18日 / 7月6日 / 7月8日 / 7月14日 / 7月15日，
+  // 而当天是 11 月 21 日 —— 所以任何一句界面话都不许把「刚查的」说成「今天的」。
+  var sayDateBreak = function (s) {
+    if (/实时|最新/.test(s)) return '承诺了「最新／实时」';
+    if (/\d+月\d+日/.test(s)) return '写死了具体日期';
+    if (/今天/.test(s) && !/不一定准|别拿它当/.test(s)) return '说了「今天」却没带更正';
+    return '';
+  };
+  var spoken = [
+    { k: 'bad-shape', t: WS.sentenceOf(uBadNull) },
+    { k: 'no-usage', t: WS.sentenceOf(uNoUsage) },
+    { k: 'no-tool-cell', t: WS.sentenceOf(uNoTool) },
+    { k: '数字读不出', t: WS.sentenceOf(uNeg) },
+    { k: 'ok', t: WS.sentenceOf(uOk) },
+    { k: '半格', t: WS.sentenceOf(uHalf) }
+  ];
+  var popHintOff = (popSrc.match(/const PET_WEB_SEARCH_HINT_OFF = ["']([^"']*)["'];/) || [])[1] || '';
+  var popHintUnknown = (popSrc.match(/textContent = ["']([^"']*)["'];\s*\n\s*els\.petWebSearchHint\.dataset\.cell = "unknown"/) || [])[1] || '';
+  var popHintOn = (popSrc.match(/dataset\.cell = d\.cell;[\s\S]{0,240}?已生效[^;]*/) || [''])[0].replace(/^[\s\S]*?(?=已生效)/, '').replace(/;$/, '');
+  var popHintBlocked = (popSrc.match(/dataset\.cell = d\.cell;[\s\S]{0,600}?这一枚暂时用不了[^;]*/) || [''])[0].replace(/^[\s\S]*?(?=这一枚)/, '').replace(/;$/, '');
+  var htmlHint = (htmlSrc.match(/id="petWebSearchHint">([^<]*)</) || [])[1] || '';
+  var spokenAll = spoken.concat([
+    { k: 'popup off', t: popHintOff }, { k: 'popup unknown', t: popHintUnknown },
+    { k: 'popup on', t: popHintOn }, { k: 'popup 灰掉', t: popHintBlocked }, { k: 'html 出厂', t: htmlHint }
+  ]);
+  var breakers = spokenAll.filter(function (r) { return sayDateBreak(r.t); })
+    .map(function (r) { return r.k + '：' + sayDateBreak(r.t); });
+  var distinctSpoken = spoken.map(function (r) { return r.t; }).filter(function (t, i, a) { return a.indexOf(t) === i; });
+  // 「开着、也确实问了，但服务端回包里没有搜索那一项」那句：口径是 libs 自己拼的
+  // 「这次没有联网（…），按 N 个输入 token 计的」—— N 从 usageOf 读回来比，不在断言里抄第二个 63。
+  var noToolSay = WS.sentenceOf(uNoTool);
+  check('⑤ 说给用户的那 ' + spokenAll.length + ' 句里没有一句承诺日期或「最新／实时」（越界：' +
+    (breakers.length ? breakers.join(' / ') : '0 处') + '），「今天」只许出现在带「不一定准」更正的那一句；' +
+    'usage 那六句里读不出那两格（bad-shape 与 no-usage）**故意同一句**，其余各不相同，' +
+    '而两句都明说「不代表没花钱」—— 不许把读不出说成没花；' +
+    '「服务端没走搜索工具」那一格开头就说「这次没有联网」，并把读回来的输入 token 数原样带上',
+    breakers.length === 0 && distinctSpoken.length === 5 &&
+      WS.sentenceOf(uBadNull) === WS.sentenceOf(uNoUsage) &&
+      /不代表没花钱/.test(WS.sentenceOf(uNoUsage)) && /不代表没花钱/.test(WS.sentenceOf(uNeg)) &&
+      /^这次没有联网/.test(noToolSay) && noToolSay.indexOf('按 ' + uNoTool.prompt + ' 个输入 token') >= 0 &&
+      /4653/.test(WS.sentenceOf(uOk)) &&
+      /没数出查了几次/.test(WS.sentenceOf(uHalf)) && /比平时贵/.test(WS.sentenceOf(uOk)),
+    JSON.stringify({ breakers: breakers, distinct: distinctSpoken.length,
+      texts: spokenAll.map(function (r) { return r.k + '=' + String(r.t).slice(0, 30); }) }));
+
+  // ── ⑥ 两处登记 + UMD 两条出口（漏一处不报错、不留日志，只是那一发压根没带搜索）────
+  var man = null;
+  try { man = JSON.parse(manSrc); } catch (e) { man = null; }
+  var jsList = man && man.content_scripts && man.content_scripts[0] ? man.content_scripts[0].js : [];
+  var libAt = htmlSrc.indexOf('../libs/web-search.js');
+  var popAt = htmlSrc.indexOf('<script src="popup.js"');
+  check('⑥ 两处登记都在，而且顺序对：manifest 的 content_scripts[0].js 里 libs/web-search.js 排在 content.js 之前' +
+    '（下标 ' + jsList.indexOf('libs/web-search.js') + ' 对 ' + jsList.indexOf('content.js') + '），' +
+    'popup.html 的 <script> 排在 popup.js 之前（字符位 ' + libAt + ' 对 ' + popAt + '）；' +
+    'UMD 两条出口（node 的 module.exports 与浏览器全局 root.OmitoneWebSearch）各一条 —— 少一条就有一侧拿到 undefined',
+    !!man && jsList.indexOf('libs/web-search.js') >= 0 &&
+      jsList.indexOf('libs/web-search.js') < jsList.indexOf('content.js') &&
+      jsList.indexOf('libs/diagnose.js') < jsList.indexOf('libs/web-search.js') &&
+      libAt >= 0 && popAt >= 0 && libAt < popAt &&
+      countStr(libSrc, 'module.exports = api') === 1 && countStr(libSrc, 'root.OmitoneWebSearch = api') === 1,
+    JSON.stringify({ jsList: jsList, htmlLibAt: libAt, htmlPopAt: popAt }));
+
+  // ── ⑦ 全仓只有一份判定：五个 needle 在生产文件里恒 0，在 libs 里（剥注释后）各 1 ────
+  var prodFiles = ['popup/popup.js', 'content.js', 'background.js', 'popup/pet.js', 'popup/pet-game.js',
+    'popup/popup.html', 'manifest.json'];
+  try {
+    prodFiles = prodFiles.concat(fs.readdirSync(path.join(ROOT, 'src', 'page'))
+      .filter(function (f) { return /\.js$/.test(f); }).map(function (f) { return 'src/page/' + f; }));
+  } catch (e) { /* 读不到目录就在下面那一格里红出来 */ }
+  var needles = ['deepseek_web_search', 'function decisionOf', 'tools:', "'" + OFFICIAL + "'", '"' + OFFICIAL + '"'];
+  var libCode = stripComments(libSrc);
+  var hits = [];
+  prodFiles.forEach(function (rel) {
+    var src = read(rel);
+    if (!src) { hits.push(rel + ' 读不到'); return; }
+    needles.forEach(function (n) { if (countStr(src, n) > 0) hits.push(rel + ' 含 ' + n); });
+  });
+  // 「剥」这一手自己的自证：等长、且确实把文档注释里那一处摘掉了（原文 2 处，剥后 1 处）
+  var libDecls = {
+    tool: countStr(libCode, 'deepseek_web_search'),
+    ruler: countStr(libCode, 'function decisionOf'),
+    host: countStr(libCode, "'" + OFFICIAL + "'"),
+    rawTool: countStr(libSrc, 'deepseek_web_search')
+  };
+  check('⑦ 全仓只有一份判定：' + prodFiles.length + ' 个生产文件（含 src/page 那 ' +
+    (prodFiles.length - 7) + ' 段）里五个字面量命中 ' + hits.length + ' 处；libs 剥注释后 tools 声明、decisionOf 声明、' +
+    '官方域字面量各恰好 1 份 —— 并钉「剥」自己在承重（等长 ' + (libSrc.length === libCode.length) +
+    '，原文 ' + libDecls.rawTool + ' 处对剥后 ' + libDecls.tool + ' 处，摘掉的正是文档表格里那一处）',
+    hits.length === 0 && prodFiles.length >= 20 &&
+      libDecls.tool === 1 && libDecls.ruler === 1 && libDecls.host === 1 &&
+      libSrc.length === libCode.length && libDecls.rawTool === libDecls.tool + 1,
+    JSON.stringify({ files: prodFiles.length, hits: hits, lib: libDecls, len: [libSrc.length, libCode.length] }));
+
+  // ── ⑧ 三处出口都问同一把尺（而不是各自再写一份域名判定）───────────────────────
+  var exits = [
+    { n: 'popup buildPetChatRequest', b: topFn(popSrc, 'buildPetChatRequest') },
+    { n: 'popup petWebSearchDecision', b: topFn(popSrc, 'petWebSearchDecision') },
+    { n: 'content doctorWebSearch', b: topFn(conSrc, 'doctorWebSearch') },
+    { n: 'content doctorAskModel', b: topFn(conSrc, 'doctorAskModel') }
+  ];
+  var exitMiss = exits.filter(function (x) { return !x.b; }).map(function (x) { return x.n; });
+  var exitBad = exits.filter(function (x) {
+    return !!x.b && !(countStr(x.b, 'decisionOf(') + countStr(x.b, 'toolsFor(') > 0);
+  }).map(function (x) { return x.n; });
+  var exitOwnRuler = exits.filter(function (x) {
+    return !!x.b && countStr(x.b, OFFICIAL) > 0;
+  }).map(function (x) { return x.n; });
+  check('⑧ 三处花钱出口（弹窗聊天／弹窗解释共用 buildPetChatRequest、界面灰不灰走 petWebSearchDecision、' +
+    '上课页医生走 doctorWebSearch + doctorAskModel）四个函数体都从盘上取出、都真问 libs 的 decisionOf 或 toolsFor，' +
+    '而且体内**没有一份自己的官方域字面量**（自己写一份就是第二把尺，AGENTS §2 #4 / #18）；' +
+    '取不出函数体的话这一格只报「没取到」，不许当「通过」',
+    exitMiss.length === 0 && exitBad.length === 0 && exitOwnRuler.length === 0 &&
+      countStr(exits[3].b, 'doctorWebSearch(') >= 1,
+    JSON.stringify({ missing: exitMiss, noAsk: exitBad, ownRuler: exitOwnRuler }));
+
+  // ── ⑨ 键名只有一份、默认关四处齐、三态不许被 !! 压平 ───────────────────────
+  var conKey = (conSrc.match(/const PAGE_WEB_SEARCH_KEY = ["']([^"']+)["']/) || [])[1] || '';
+  var defaultsAt = popSrc.indexOf('const DEFAULTS = {');
+  var defaultsEnd = popSrc.indexOf('\n};', defaultsAt);
+  var defaultsSeg = defaultsAt < 0 || defaultsEnd < 0 ? '' : popSrc.slice(defaultsAt, defaultsEnd);
+  var readAt = popSrc.indexOf('chrome.storage.local.get("' + conKey + '"');
+  var readSeg = readAt < 0 ? '' : popSrc.slice(readAt, readAt + 260);
+  // 出厂那一格钉在**开关自己那一个标签**上：按固定字符窗往两侧扩会量不稳（第一版扩到 +120
+  // 就正好把 id="petWebSearchEnabled" 切在窗外，红成「没有 aria-checked=false」，真相是尺没够长）
+  var swId = 'id="petWebSearchEnabled"';
+  var swAt = htmlSrc.indexOf(swId);
+  var swTag = swAt < 0 ? '' : htmlSrc.slice(htmlSrc.lastIndexOf('<', swAt), htmlSrc.indexOf('>', swAt));
+  var c9 = {
+    keyOk: conKey === 'omitonePetWebSearchOn',
+    inContent: countStr(conSrc, conKey),
+    declareContent: countStr(conSrc, 'const PAGE_WEB_SEARCH_KEY'),
+    inPopup: countStr(popSrc, conKey),
+    defaultsRead: defaultsAt >= 0 && defaultsEnd > defaultsAt,
+    inDefaults: countStr(defaultsSeg, conKey),
+    idCells: countStr(htmlSrc, swId),
+    ariaOff: /aria-checked="false"/.test(swTag),
+    resetZero: countStr(popSrc, 'chrome.storage.local.set({ ' + conKey + ': 0 })'),
+    writeOneZero: countStr(popSrc, 'chrome.storage.local.set({ ' + conKey + ': value ? 1 : 0 }'),
+    triState: readSeg.indexOf('raw === 1 || raw === true') >= 0,
+    noFlatten: countStr(popSrc, 'petWebSearchVal = !!')
+  };
+  check('⑨ 存储键 `' + conKey + '` 全仓只有一份写法（content.js 声明 1 处、popup.js 引用 ' + c9.inPopup +
+    ' 处、两边逐字相同），而且四处「默认关」都在：DEFAULTS 段里根本没有这一枚（' + c9.inDefaults +
+    '）、开关自己那一个标签里 aria-checked=false、恢复默认显式写 0、写入口只落 1/0 —— ' +
+    '会花钱的功能不许被默认值补成开（AGENTS §2 #23 同族：两侧基准不同就恒对不上）',
+    c9.keyOk && c9.inContent >= 1 && c9.declareContent === 1 && c9.inPopup === 4 &&
+      c9.defaultsRead && c9.inDefaults === 0 && c9.idCells === 1 && c9.ariaOff &&
+      c9.resetZero === 1 && c9.writeOneZero === 1 && readAt >= 0 && c9.triState && c9.noFlatten === 0,
+    JSON.stringify({ key: conKey, cells: c9, swTag: swTag.slice(0, 120), readSeg: readSeg.slice(0, 120) }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -8196,6 +8803,7 @@ async function main() {
   await testNinetyAdvanceBoundToSeek();
   await testRateAskBound();
   await testModelListFetch();
+  await testWebSearchGate();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

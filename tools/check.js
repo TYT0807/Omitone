@@ -1265,7 +1265,26 @@ function checkConfigDefaults() {
         // ⚠️ 这一格只钉"弹窗那一行长成这样"；**两侧是不是真的同一把尺**由集成层 [27] ⑰
         // 拿五个值（缺席/0/false/1/'0'）分别喂两份读回来的代码比出来，别只靠这里的字面串。
         loadNeedle: 'petDoctorEnabledVal = raw === 1 || raw === true',
-        pageNeedle: "function isDoctorOn(v) { return v === 1 || v === true; }"
+        // 批次 183 把这条尺钉的三个字面量搬进了一枚共用助手 `isPetSwitchOn`（同一件事三种来源
+        // 只许一种写法，AGENTS §2 #18）。字面串尺跟着改**不许变松**：委派与助手本体两句都要在，
+        // 助手哪天被改成 `!!v`（把 0/'0' 也算开）当场红 —— 只认委派那一行就是一次恒绿的尺。
+        pageNeedle: [
+          'function isDoctorOn(v) { return isPetSwitchOn(v); }',
+          'function isPetSwitchOn(v) { return v === 1 || v === true; }'
+        ]
+      },
+      // 联网搜索（批次 183）：付费那一枚，出厂关，且**页面侧那一路（刷课页医生问模型）也要读它**。
+      // 缺这一条会怎样：弹窗照旧打勾、开关照旧存盘，而注入页里那一发永远按"没开"拼请求 ——
+      // 用户点了开关、钱没多花、话也没搜，一条日志都不留（§2 #12「读不出/没读到」不许塌成"关"）。
+      petWebSearchEnabled: {
+        key: 'omitonePetWebSearchOn',
+        clickNeedle: 'els.petWebSearchEnabled.addEventListener("click", togglePetWebSearchEnabled)',
+        saveNeedle: '{ omitonePetWebSearchOn: value ? 1 : 0 }',
+        loadNeedle: 'petWebSearchVal = raw === 1 || raw === true',
+        pageNeedle: [
+          'function isPetSwitchOn(v) { return v === 1 || v === true; }',
+          'isPetSwitchOn(r[PAGE_WEB_SEARCH_KEY])'
+        ]
       }
     };
     // 白名单的 id 不走下面的 bindToggle 尺（放在 forEach **之前**——先前放后面，flag 完才过滤，等于没豁免）
@@ -1320,13 +1339,19 @@ function checkConfigDefaults() {
       if (t.pageNeedle) {
         var contentJs = '';
         try { contentJs = read('content.js'); } catch (eRead) { contentJs = ''; }
+        // 数组 = 这一枚的页面侧写法由**几句共同**成立（委派 + 助手本体那种）；少任何一句都点名，
+        // 不许"其中一句在就算过"—— 只认委派那一句，助手被改成 `!!v` 时这把尺恒绿。
+        var pnList = Array.isArray(t.pageNeedle) ? t.pageNeedle : [t.pageNeedle];
         if (!contentJs) {
           problems.push('开关 ' + id + ' 声明了页面侧判据，但 content.js 读不到 —— 这一格没验到');
         } else if (contentJs.indexOf(t.key) < 0) {
           problems.push('开关 ' + id + ' 页面侧根本没读 ' + t.key + ' —— 关掉了她照样提醒');
-        } else if (contentJs.indexOf(t.pageNeedle) < 0) {
-          problems.push('开关 ' + id + ' 页面侧读回的基准和弹窗写出去的不是一套（' + t.pageNeedle +
-            ' 在 content.js 里找不到）—— 关掉开关可能没反应');
+        } else {
+          var pnMiss = pnList.filter(function (one) { return contentJs.indexOf(one) < 0; });
+          if (pnMiss.length) {
+            problems.push('开关 ' + id + ' 页面侧读回的基准和弹窗写出去的不是一套（content.js 里缺 ' +
+              pnMiss.length + '/' + pnList.length + ' 句：' + pnMiss.join(' ;; ') + '）—— 关掉开关可能没反应');
+          }
         }
       }
     });
@@ -3546,8 +3571,10 @@ function checkSwitchBudgetClaim() {
   // ---- 第 30 项的**第二把尺**：倍速问价「一支最多问三发」（会话任务 #209 / 批次 151）----
   //   同一族漂移的形状在 2026-11-21 实测到"文档 7 处、代码 1 处、**尺 0 条**"：批次 146 改了那一族的行为、
   //   批次 150 给它补了十三格集成断言，而那十三格核的是代码内部，用户看得见的那句「三发」没人对着真源比。
-  //   **不新增第 36 项**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档，
+  //   **这一族不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档，
   //   而这一族本来就该和"承诺的数字要有尺"那一条闸住在一起。
+  //   ⚠️ 当年那句「不新增第 36 项」里的 36 号**已被批次 160 用掉**（联网搜索开关对账，另一族），
+  //   本条尺照旧并在这第 30 项里，不因此挪窝。
   var rate, rateLimit;
   try {
     rate = require('./audit-rate-ask-claims.js');
@@ -3700,7 +3727,9 @@ function checkSwitchBudgetClaim() {
   //   同一族漂移第三次出现：批次 85/86 换课上限、批次 146/150 倍速问价、这一族。
   //   与倍速那把**不同真源**（`popupQuizMaxAttempts` 与 `_getPopupQuizMaxAttempts()) * 2`），所以两把尺互斥而不是合并：
   //   合并的结果是每一句都被另一族的数顶红（第一版真的这样咬过 README:113，见第二把尺头注那条实测假红）。
-  //   **仍然不新增第 36 项**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  //   **这一族同样不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  //   ⚠️ 当年那句「仍然不新增第 36 项」里的 36 号**已被批次 160 用掉**（联网搜索开关对账，另一族），
+  //   本条尺照旧并在这第 30 项里。
   var quiz, quizA, quizMult;
   try {
     quiz = require('./audit-quiz-ask-claims.js');
@@ -4869,6 +4898,211 @@ function checkDiagnoseRuleTable(manifest) {
 }
 
 // ---------------------------------------------------------------------------
+// 第 36 项：联网搜索那枚「会花钱的开关」有没有接牢（会话任务 #183 / 批次 160）
+//   为什么单独占一项：这一族坏了的表现是「用户没点开关、余额却在往下掉」，
+//   而它一次日志都不会留 —— 与第 35 项（医生规则表）同一形状：行为断言在集成层 [33] 里，
+//   静态那一半（登记、出厂状态、第二把尺、对用户说的那句话）历来零尺覆盖。
+//   六格各独立承重（摘掉任何一格都要红，反向验证见 .workbuddy/reverse214.js）：
+//     a 两处登记：manifest 的 content_scripts 逐字有 libs/web-search.js（上课页那一路），
+//       popup.html 也 `<script src="../libs/web-search.js">`（弹窗那一路）—— 少一处就是
+//       「那一处压根没问判定层」，而集成层 [33] ⑥ 只测行为，静态这一格要在拼接之前就响
+//     b 官方域真源读得回来（`var OFFICIAL_HOST = '…'`）—— 读不出单独占一格，不许塌进通过
+//     c 判定层「读不出」不许被当成开着：unknown 那一格必须 `on: false`，而且整个判定层
+//       `on: true` 只许出现在 'on' 那一格（多一处放行 = 某一格被抬进"会花钱"那边）
+//     d 界面出厂状态：那枚开关的 `aria-checked` 出厂必须是 false（默认开着就是把用户的余额
+//       当默认值花，用户 2026-11-21 的硬口径「能用就配，但不能消耗我们的余额」）
+//     e 花钱的每一处都问判定层，且不许在调用点自己写一份官方域（第二把尺，§2 #4 / #18）
+//     f 对用户说话的那几页都教了它、并说了「默认关着」与「会花钱」；门面读不出单独一格；
+//       三处都扫不到就红（措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿，§2 #21）
+//   另带一格反误报卫生：**写在「联网搜索」那一句身边**出现「默认开着 / 自动开启 / 保证是最新 /
+//   任何地址都能搜」这一族句子就红（整页扫会误报：别的开关真就是默认开着的）。
+// ---------------------------------------------------------------------------
+function checkWebSearchGate(manifest) {
+  var bad = [];
+  var LIB = 'libs/web-search.js';
+  var POP_JS = 'popup/popup.js';
+  var POP_HTML = 'popup/popup.html';
+  var SWITCH_ID = 'petWebSearchEnabled';
+
+  if (!exists(LIB)) {
+    fail('联网搜索那把尺整个不见了：' + LIB + ' 读不到 —— 判定层（哪些格该带 tools、哪些不该）' +
+      '没有真源了，三处花钱出口会各自退回本地猜，而且一条异常都不留');
+    return;
+  }
+  var lib = read(LIB);
+  var libCode = stripComments(lib);
+
+  // ---- a. 两处登记 ----
+  var inManifest = false;
+  ((manifest && manifest.content_scripts) || []).forEach(function (cs) {
+    (cs.js || []).forEach(function (p) { if (p === 'libs/web-search.js') inManifest = true; });
+  });
+  var popHtml = read(POP_HTML);
+  var inPopup = /<script[^>]+src="\.\.\/libs\/web-search\.js"/.test(popHtml);
+  if (!inManifest) {
+    bad.push('manifest.json 的 content_scripts 没逐字列出 libs/web-search.js —— 上课页上的医生' +
+      '拿不到判定层，只会说一句听起来像"你没开开关"的话（该红的是这一行，不是那句文案）');
+  }
+  if (!inPopup) {
+    bad.push(POP_HTML + ' 没加载 libs/web-search.js —— 弹窗里「和她聊天」「让她解释」两条都问不到' +
+      '该不该带搜索参数，灰条与请求体就此各说各的');
+  }
+
+  // ---- b. 官方域真源读得回来 ----
+  var mHost = lib.match(/var OFFICIAL_HOST = ['"]([^'"]+)['"]/);
+  if (!mHost) {
+    bad.push('读不出官方域：' + LIB + ' 里那句 `var OFFICIAL_HOST = …` 不见了或改了写法 —— ' +
+      '这一格单独说话，不许当成"没有这一族漂移"（读不出 ≠ 没问题）');
+  }
+  var officialHost = mHost ? mHost[1] : '(读不出)';
+
+  // ---- c. 「读不出」不许塌成"开着"，放行格只许有一处 ----
+  if (!/cell:\s*'unknown',\s*on:\s*false/.test(libCode)) {
+    bad.push('判定层「还没读到开关真值」那一格不再是 `on: false` —— 存储里那两个键还没写过的人' +
+      '会在不知情的情况下被服务端搜索扣费（AGENTS §2 #12：读不出必须单独占一格）');
+  }
+  var allowCells = (libCode.match(/cell:\s*'[a-z-]+',\s*on:\s*true/g) || []).length;
+  if (allowCells !== 1) {
+    bad.push('判定层里 `on: true` 有 ' + allowCells + ' 处（只许 1 处 = ' +
+      JSON.stringify((libCode.match(/cell:\s*'([a-z-]+)',\s*on:\s*true/) || [])[1] || '(没有)') +
+      ' 那一格）—— 多一处放行就是凭空把某一格抬进"会花钱"那边，少一处则搜索永远不会生效而界面照旧说"已生效"');
+  }
+
+  // ---- d. 界面出厂状态 ----
+  var swLine = (popHtml.split(/\r?\n/).filter(function (l) {
+    return l.indexOf('id="' + SWITCH_ID + '"') >= 0;
+  })[0] || '');
+  if (!swLine) {
+    bad.push(POP_HTML + ' 里找不到那枚开关（id=' + SWITCH_ID + '）—— 出厂状态读不出，' +
+      '这一格不许静默通过');
+  } else if (/aria-checked="true"/.test(swLine)) {
+    bad.push('「联网搜索」出厂就是开着的（' + SWITCH_ID + ' 那一行带 aria-checked="true"）—— ' +
+      '这一枚是按量计费的，默认开着等于替用户决定要花他的余额');
+  }
+  var lblLine = (popHtml.split(/\r?\n/).filter(function (l) {
+    return l.indexOf('for="' + SWITCH_ID + '"') >= 0;
+  })[0] || '');
+  var swLabel = ((lblLine.match(/>([^<]+)<\/label>/) || [])[1] || '').trim();
+  if (!swLabel) {
+    bad.push('读不出那枚开关在界面上的字样（label for=' + SWITCH_ID + '）—— 说明书要用的是界面真会显示的那几个字，' +
+      '不是我们随手起的名（第 27 项那一族的根因就在这）');
+  }
+
+  // ---- e. 花钱的每一处都问判定层，且不许第二把尺 ----
+  var popCode = stripComments(read(POP_JS));
+  var conCode = stripComments(read('content.js'));
+  var asks = {
+    popupDecision: (popCode.match(/OmitoneWebSearch\.decisionOf\(/g) || []).length,
+    popupTools: (popCode.match(/OmitoneWebSearch\.toolsFor\(/g) || []).length,
+    pageDecision: (conCode.match(/\.decisionOf\(/g) || []).length,
+    pageTools: (conCode.match(/\.toolsFor\(/g) || []).length
+  };
+  if (!asks.popupDecision || !asks.popupTools) {
+    bad.push('弹窗那两条出口（和她聊天 / 让她解释）没有各自问到判定层：decisionOf ' +
+      asks.popupDecision + ' 处、toolsFor ' + asks.popupTools + ' 处（两样都至少要 1 处）—— ' +
+      '少 toolsFor 就是开关开着也不带搜索，白发一次钱；少 decisionOf 就是自己猜该不该带');
+  }
+  if (!asks.pageDecision || !asks.pageTools) {
+    bad.push('上课页医生那条出口没问到判定层：decisionOf ' + asks.pageDecision + ' 处、toolsFor ' +
+      asks.pageTools + ' 处 —— 只测弹窗那一处，这一族就是零覆盖（AGENTS §2 #18）');
+  }
+  var mMod = conCode.match(/function webSearchModule\(\)\s*\{[\s\S]{0,400}?\n\s{2,4}\}/);
+  if (!mMod) {
+    bad.push('读不出 content.js 里取判定层的那个函数（webSearchModule）—— 尺对它失效，不许当成"没有第二把尺"');
+  } else if (mMod[0].indexOf('OFFICIAL_HOST') >= 0) {
+    bad.push('content.js 取模块那一句自己写了一份官方域（' + officialHost + '）—— 同一件事两种口径，' +
+      'lib 改了域名页面照旧按旧域名放行，症状与改之前一模一样');
+  }
+
+  // ---- f. 对用户说话的那几页 ----
+  var visibleText;
+  try {
+    visibleText = require('./audit-manual-ui-labels.js').visibleText(read('docs/manual.html'));
+  } catch (e2) {
+    bad.push('说明书可见正文取不出来（' + String((e2 && e2.message) || e2) + '）—— 这一格读不出，不许通过');
+    visibleText = '';
+  }
+  var gate = require('./channel-gate.js');
+  var isExp = gate.isExperimental(gate.readChannelNames().version_name);
+  var facadeRes = facadeReadme(isExp);
+  var pages = [
+    { 名: '说明书（可见正文）', 文: visibleText },
+    { 名: '预览说明 release-notes-preview.md', 文: exists('release-notes-preview.md') ? read('release-notes-preview.md') : '' },
+    { 名: '门面 README（' + facadeRes.from + '）', 文: facadeRes.text === null ? '' : facadeRes.text,
+      原话: facadeRes.text === null ? facadeRes.why : '' }
+  ];
+  // ⚠️ **「说默认关着」「说会花钱」两格落在「联网搜索」那句话自己的邻接窗里，不许整页扫。**
+  //    说明书整页有 5 处「默认关着」，其中三处说的**是别的开关**（docs/manual.html:753 聊天回复、
+  //    :769 医生主动提醒、:1022 那枚按需的）—— 原先按整页 `indexOf` 扫时，P6 那一刀把讲这枚开关的
+  //    两句摘干净，尺照样绿（实测「红 0 条」），因为别的开关那句话替它兜着。那就是
+  //    「一条不会失败的检查」（AGENTS §5）。反误报那一族现在共用同一个窗与同一个半径，不写第二把尺。
+  var WIN = 160;
+  function windowsOf(text) {
+    var out = [];
+    if (!swLabel || !text) return out;
+    var at = -1;
+    while ((at = text.indexOf(swLabel, at + 1)) >= 0) {
+      out.push(String(text).slice(Math.max(0, at - WIN), at + WIN));
+    }
+    return out;
+  }
+  var hits = { 教这枚: 0, 说默认关: 0, 说会花钱: 0, 撒谎词: 0 };
+  pages.forEach(function (pg) {
+    var t = pg.文;
+    if (!t) {
+      bad.push(pg.名 + ' 读不出内容' + (pg.原话 ? '（' + pg.原话 + '）' : '') +
+        ' —— 这一格单独说话，不许塌进"不用核"，更不许塌进"这枚开关没承诺"（AGENTS §2 #12）');
+      return;
+    }
+    var wins = windowsOf(t);
+    if (!wins.length) {
+      bad.push(pg.名 + ' 没教界面上那三个字「' + (swLabel || '(读不出)') + '」—— 装了的人只会靠猜');
+      return;
+    }
+    hits.教这枚++;
+    var off = wins.some(function (w) { return w.indexOf('默认关着') >= 0; });
+    var cost = wins.some(function (w) { return /余额|按量/.test(w); });
+    if (off) hits.说默认关++;
+    if (cost) hits.说会花钱++;
+    if (!off || !cost) {
+      bad.push(pg.名 + ' 说这枚开关时没说清它' + (!off ? '默认关着' : '') +
+        (!off && !cost ? '、而且' : '') + (!cost ? '是要花用户余额的' : '') +
+        ' —— 只讲功能不讲代价，等于把它写成免费的（半径 ' + WIN + ' 字内没有这句话，就不算对它说的）');
+    }
+    // ---- 反误报：这几句话都被实测推翻过，写在「联网搜索」身边就红 ----
+    // ⚠️ 只扫那一句话的邻接窗，不许扫整页：「默认开着」在这一族文档里还有**别的合法用途**
+    //    （「刷课页显示吉祥物」默认开着 / 「刷完自动换下一门」默认开着 / 投票开关默认开着 —— 实测
+    //    说明书:381 与 main:README 两处都这么写着）。整页扫会得到三条假红，而**会误报的守卫
+    //    和没有守卫一样害人**（AGENTS §5）；窗口半径 160 字是照着那三页里最长的一句量出来的。
+    var LIES = ['默认开着', '自动开启', '保证是最新', '任何地址都能搜'];
+    wins.forEach(function (w) {
+      LIES.forEach(function (s) {
+        if (w.indexOf(s) >= 0) {
+          hits.撒谎词++;
+          bad.push(pg.名 + ' 讲「' + swLabel + '」那一句里出现了「' + s + '」—— 实测都不成立：' +
+            '出厂是关的、开关不会自己开、查回来的日期几次都没对上、接别人的服务器时这一枚会灰掉');
+        }
+      });
+    });
+  });
+  if (!hits.教这枚) {
+    bad.push('三页里一处都没扫到「' + (swLabel || '(读不出)') + '」那三个字 —— 措辞被整体改写时这把尺会静默变成 0 命中，那是最坏的一种绿');
+  }
+
+  if (bad.length) {
+    fail('联网搜索那把尺没接牢（这一族坏了的表现是"用户没点开关、余额却在掉"，而且一条日志都不留）：\n      ' +
+      bad.join('\n      ') +
+      '\n      改法：动 libs/web-search.js 与三处出口，别改这把尺；行为那一半在集成层 [33]');
+    return;
+  }
+  pass('联网搜索开关对账（官方域 ' + officialHost + '，放行格 1 处，出厂 ' + SWITCH_ID +
+    '=关，界面字样「' + swLabel + '」；出口命中 弹窗 ' + asks.popupDecision + '/' + asks.popupTools +
+    ' · 页面 ' + asks.pageDecision + '/' + asks.pageTools + '，两处登记都在；三页里教这枚 ' +
+    hits.教这枚 + ' 页、说默认关 ' + hits.说默认关 + ' 页、说会花钱 ' + hits.说会花钱 +
+    ' 页（都按「' + swLabel + '」那一句的 ' + WIN + ' 字邻接窗读，不是整页扫），撒谎词 ' + hits.撒谎词 + ' 处）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -4908,6 +5142,7 @@ checkManualLogNames();
 checkProfileSweep();
 checkChannelGate();
 checkDiagnoseRuleTable(manifest);
+checkWebSearchGate(manifest);
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
