@@ -3496,20 +3496,21 @@ function checkSwitchBudgetClaim() {
   });
   // 掩码不许是空操作，也不许改变行数／列宽：围栏与 HTML 注释里的错数必须真被挖掉，
   // 而报出来的行号与原文对得上（否则夹具第一条就是假绿）
-  function checkMaskShape(label, raw, isHtml, visibleLine) {
+  function checkMaskShape(label, raw, isHtml, visibleLine, sink) {
+    var bad2 = sink || bad;
     var masked = audit.maskInvisible(raw, isHtml);
     var a = raw.split('\n');
     var b = masked.split('\n');
     if (a.length !== b.length) {
-      bad.push(label + '：掩码后行数变了（' + a.length + ' → ' + b.length + '），报出来的行号会对不上原文');
+      bad2.push(label + '：掩码后行数变了（' + a.length + ' → ' + b.length + '），报出来的行号会对不上原文');
       return;
     }
     for (var i = 0; i < a.length; i++) {
       if (a[i].length !== b[i].length) {
-        bad.push(label + '：第 ' + (i + 1) + ' 行掩码后长度 ' + b[i].length + '，原文 ' + a[i].length + '（列位置要保住）');
+        bad2.push(label + '：第 ' + (i + 1) + ' 行掩码后长度 ' + b[i].length + '，原文 ' + a[i].length + '（列位置要保住）');
       }
       if (i === visibleLine) continue;
-      if (/[0-9]/.test(b[i])) bad.push(label + '：第 ' + (i + 1) + ' 行的数字没被挖掉 —— 掩码没生效，那是用户看不见的地方');
+      if (/[0-9]/.test(b[i])) bad2.push(label + '：第 ' + (i + 1) + ' 行的数字没被挖掉 —— 掩码没生效，那是用户看不见的地方');
     }
   }
   checkMaskShape('围栏代码块', '```\n最多 8 门\n```\n', false, 3);
@@ -3541,6 +3542,158 @@ function checkSwitchBudgetClaim() {
   }
   pass('换课上限文档对账（代码 ' + limit + ' 门；文档 ' + real.claims.length + ' 处逐个相等，' +
     '分布在 ' + new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 6 格阴性对照（其中一格是跨族不许误报）+ 2 格掩码形状自证）');
+
+  // ---- 第 30 项的**第二把尺**：倍速问价「一支最多问三发」（会话任务 #209 / 批次 151）----
+  //   同一族漂移的形状在 2026-11-21 实测到"文档 7 处、代码 1 处、**尺 0 条**"：批次 146 改了那一族的行为、
+  //   批次 150 给它补了十三格集成断言，而那十三格核的是代码内部，用户看得见的那句「三发」没人对着真源比。
+  //   **不新增第 36 项**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档，
+  //   而这一族本来就该和"承诺的数字要有尺"那一条闸住在一起。
+  var rate, rateLimit;
+  try {
+    rate = require('./audit-rate-ask-claims.js');
+  } catch (e3) {
+    fail('倍速问价对账加载失败：' + String((e3 && e3.message) || e3) +
+      '\n      真源是 tools/audit-rate-ask-claims.js —— 它被改名或删除时，这一半闸会**静默消失**');
+    return;
+  }
+  if (rate.maskInvisible !== audit.maskInvisible) {
+    fail('倍速问价与换课上限**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '两处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    rateLimit = rate.askBudgetFromSource();
+  } catch (e4) {
+    fail('倍速问价对账读不出代码真源：' + String((e4 && e4.message) || e4) +
+      '\n      真源是 ' + rate.SOURCE + ' 里 `this._rateUnknownTries < <整数>` 那一行；那一族改名要连这条闸一起改');
+    return;
+  }
+  var rclean = rate.cleanFixture();
+  var RCASES = [
+    { name: '干净夹具（数字全对 + 围栏与注释与 script 里的错数不算）', files: rclean, problems: 0, claims: 7 },
+    {
+      name: '说明书与台账退成「二发」要红，且只有那几处红',
+      files: rate.mutate(rclean, '连问三发', '连问二发'),
+      problems: 5, needle: '不一致'
+    },
+    {
+      name: 'README 那两处改成「四发」要红并点名文件',
+      files: rate.mutate(rclean, '最多问三发', '最多问四发'),
+      problems: 2, needle: 'README.md'
+    },
+    {
+      // 这一格防的是"正则被改坏 → 一条扫不到 → 打印全绿"
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提发数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到数字要响（不许当成没东西要核）',
+      files: rclean, budgetOverride: 0, problems: 1, needle: '代码侧的问价上限没读到'
+    },
+    {
+      // 这一格钉的是**引导词那一半在承重**：本尺第一版只要求「问 + 数字 + 发」，
+      // 当场把 README:113「同一道最多问 6 发」（弹题预算，真源是 2×「最多问几次」）抓成一条**根本不存在的**假红。
+      // 夹具里故意写 9（≠ 代码的 3）：引导词那一半一旦松开，命中数与红条数会**同时**越界，这一格当场红。
+      name: '弹题那一族「同一道最多问 9 发」不许被抓成倍速问价（跨族阴性对照，实测的那条假红）',
+      files: {
+        'README.md': '- 同一道最多问 9 发（= 3×「最多问几次」，弹题的账）。\n- 一支最多问三发。\n',
+        'HANDOVER.md': '弹题那一族：同一节里同一道最多问 9 发，到顶就本地选。\n倍速问不到连问三发才收手。\n'
+      },
+      problems: 0, claims: 2, needle: ''
+    },
+    {
+      name: '探针那一族「一轮最多问 40 门」不许被抓（与第 31 项互不越界）',
+      files: {
+        'README.md': '- 换课前那一读一轮最多问 40 门；一支最多问三发。\n',
+        'HANDOVER.md': '那一读最多问 40 门；倍速问不到连问三发才收手。\n'
+      },
+      problems: 0, claims: 2, needle: ''
+    }
+  ];
+  var rbad = [];
+  RCASES.forEach(function (t) {
+    var res;
+    try {
+      res = rate.audit({ docs: t.files, budget: ('budgetOverride' in t) ? t.budgetOverride : rateLimit });
+    } catch (e5) {
+      rbad.push(t.name + '：审计本身抛了 ' + String((e5 && e5.message) || e5));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      rbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      // 「0 条问题」有两种：都对上了，与**压根没扫到**；「没越界」也有两种：排掉了，与正则坏了
+      rbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      rbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  checkMaskShape('倍速问价 - HTML 注释与 script',
+    '<p>一支最多问三发</p>\n<!-- 一支最多问八发 -->\n<script>a="连问 5 发";</script>\n', true, 0, rbad);
+  if (rbad.length) {
+    fail('倍速问价对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + rbad.join('\n      '));
+    return;
+  }
+  var rdocs = {};
+  var rmissing = [];
+  rate.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) rdocs[f] = fs.readFileSync(p, 'utf8');
+    else rmissing.push(f);
+  });
+  var rreal = rate.audit({ docs: rdocs, budget: rateLimit });
+  if (rmissing.length) {
+    fail('倍速问价对账有 ' + rmissing.length + ' 份文档没读进来：' + rmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (rreal.problems.length) {
+    fail('倍速问价对账有 ' + rreal.problems.length + ' 条要说：\n      ' + rreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成 `_rateUnknownTries <` 现在写的数（' + rateLimit + '），别改判据迁就现状；' +
+      '\n      弹题那一族「同一道最多问 N 发」是**另一把尺**（真源不同），别把它塞进这一族');
+    return;
+  }
+  // 工具自带的那批逐格对照**在这里真跑一次**，不当"另由人手跑"的承诺：
+  // 那批格子改坏了、被删了，只靠"`node tools/xxx.js --selftest` 记得跑"就等于没有（口径同第 33 / 34 项）。
+  // 格数从它自己打印的那一行读回来 —— 不许在 check.js 或文档里手抄一个数当判据（批次 142 那一族）。
+  var rateSelfCells = null;
+  var rateSelfErr = null;
+  for (var rattempt = 0; rattempt < 2; rattempt++) {
+    var rr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-rate-ask-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    rateSelfErr = rr.error || null;
+    if (!rr.error || rr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (rr.status !== 0) {
+        rateSelfErr = new Error('退出码 ' + rr.status + '，末行=' +
+          JSON.stringify(String(rr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var rmc = String(rr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!rmc) {
+          rateSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(rr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else rateSelfCells = Number(rmc[1]);
+      }
+      break;
+    }
+  }
+  if (rateSelfErr) {
+    fail('倍速问价的逐格对照没跑成或本身是红的：' + String(rateSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 7 处都对上了"就打印通过');
+    return;
+  }
+  if (rateSelfCells < 13) {
+    fail('倍速问价的逐格对照只报了 ' + rateSelfCells + ' 格（下限 13）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；跨族阴性对照那两格（弹题的「道…发」、探针的「问…门」）尤其承重');
+    return;
+  }
+  pass('倍速问价发数文档对账（代码 ' + rateLimit + ' 发；文档 ' + rreal.claims.length + ' 处逐个相等，' +
+    '分布在 ' + new Set(rreal.claims.map(function (c) { return c.file; })).size + ' 份；' +
+    '含 7 格夹具对照（其中两格是跨族不许误报：弹题的「道…发」与探针的「问…门」）+ 1 格掩码形状自证；' +
+    '工具自带 ' + rateSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
 }
 
 // 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
