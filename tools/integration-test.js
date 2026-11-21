@@ -4556,7 +4556,7 @@ async function testSeekDeferUntilSeekable() {
   // 标语 `span.task-condition-text` 写在**上一层** cards 文档的那张任务卡里，而卡片 contains 的是
   // **承载播放器的那枚 iframe**（`contains` 不跨文档，拿 video 去比恒 false → 每一枚标语都会被判成"不是这一节的"）。
   var NO_DRAG_TEXT = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
-  var FREE_TEXT = '观看时长需 ≥ 总时长的 95% (未完成任务点前)';
+  var FREE_TEXT = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
   var L_FORBID = [[], [{ text: NO_DRAG_TEXT, owns: true }]];
   // opt.levels：从内到外每一层的标语数组（默认两层 = 播放器 + cards）；opt.throwsAt = 第几层一读就抛
   function mkBannerVideo(opt) {
@@ -4614,6 +4614,17 @@ async function testSeekDeferUntilSeekable() {
     st18.throws.state === 'unreadable' &&
     st18.noDoc.state === 'absent' && st18.noDoc.marks === -1,
     JSON.stringify(st18));
+
+  // ⑱b 站点那句由两个**独立开关**现拼：fastforward 决定「不可拖拽」在不在、switchwindow 决定「不可离开…」在不在
+  //     （真源 src/page/40-media.js:427-430 的注释）。夹具原先只把后半句写在 NO_DRAG_TEXT 里 ——
+  //     silent 那一格**压根不含「不可离开」**，于是"把后半句也认成禁令"这类改法一步都不会红（会话任务 #198）。
+  check('⑱b 站点的两个开关各管半句：`fastforward` 决定「不可拖拽」在不在、`switchwindow` 决定「不可离开…」在不在 —— '
+    + '夹具自证钉住两串文本**只差前一半**（FREE_TEXT 带「不可离开」且不带「不可拖拽」、NO_DRAG_TEXT 两半都带），'
+    + '行为钉住后半句**不算**拖拽禁令的证据（silent），两枚意见不一致照旧 ambiguous',
+    String(FREE_TEXT).indexOf('不可离开') >= 0 && String(FREE_TEXT).indexOf('不可拖拽') < 0 &&
+    String(NO_DRAG_TEXT).indexOf('不可拖拽') >= 0 && String(NO_DRAG_TEXT).indexOf('不可离开') >= 0 &&
+    st18.free.state === 'silent' && st18.mix.state === 'ambiguous',
+    JSON.stringify({ freeText: FREE_TEXT, forbidText: NO_DRAG_TEXT, free: st18.free.state, mix: st18.mix.state }));
 
   // ⑲ 站点说了不可拖拽 → 一整下发都不许写，而且不许花掉那次"试拖"的机会
   logs.length = 0;
