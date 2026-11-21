@@ -5099,6 +5099,116 @@ SCENARIOS.push({
 // 弹窗合上角色就没了 —— 现在她跟到学习页（Shadow DOM 注入）。
 // 主世界读不到 chrome.storage，所以断言全落在 Shadow DOM 的 UI 表现上：
 // 立绘真的加载了（web_accessible 生效）、摸头后好感条真的动了、收起/唤回真的切状态。
+// ── 批次 162：徽章那四个字一个都不许掉 ──────────────────────────────────────
+// 用户 2026-11-21 现场：「我这里是"心有......"就没了，一共两个字」。
+// 全仓**只有一处** CSS 会生成省略号：content.js 的 `.level{…text-overflow:ellipsis}`；
+// 它原先挂在写死 `width:158px` 的 `.wrap` 里 → 可用宽度一旦小于文字宽度就把档名剪成"两字 + …"。
+// 现场那台复现不出来（技能探针 `expr/pet-geom.expr` 读回：10px 字号、4 字徽章盒宽 54、槽位 75.67），
+// 所以**成因不写死**：
+// 任何把字变宽的环境（浏览器「最小字号」顶大那 10px 是最像的一族）都该被同一条尺挡住 ——
+// 判据落在行为上：卡片随内容让位，徽章在任何字号下都不掉字、也不越过卡片右缘。
+// ⚠️ 档名从真源 popup/pet-game.js 读回来，本文件不抄第二份（§5「断言里出现的每一个数，
+//   都要说得出它是从哪读回来的」）；5136 行那份硬编码 LEVELS 副本是**另一把尺**，
+//   改真源不会同步它 —— 本轮只保证不再新增副本，动那份要单独一轮对账。
+var PET_LEVEL_NAMES = (function () {
+  var src = String(fs.readFileSync(path.join(ROOT, 'popup/pet-game.js'), 'utf8'));
+  var from = src.indexOf('var LEVELS = [');
+  var to = from < 0 ? -1 : src.indexOf('];', from);
+  var seg = from < 0 || to < 0 ? '' : src.slice(from, to);
+  var out = [], re = /min:\s*(\d+)\s*,\s*name:\s*'([^']+)'/g, m;
+  while ((m = re.exec(seg))) out.push(m[2]);
+  return out;
+})();
+
+SCENARIOS.push({
+  name: '上课页角色伴侣：等级徽章在任何字号下都不掉字（卡片随内容让位）',
+  path: '/quiz',
+  pagePetOn: true,
+  noAutoResume: true,
+  run: async function (ctx) {
+    var longest = 0;
+    PET_LEVEL_NAMES.forEach(function (n) { if (n.length > longest) longest = n.length; });
+    // 前提自证：真源那份表要读得到，否则下面 30 格是零覆盖而不是"通过"（§5「红 0 条先怀疑没跑到」）
+    check('前提：等级档名从真源 popup/pet-game.js 读回来 ' + PET_LEVEL_NAMES.length +
+      ' 档、最长 ' + longest + ' 字（读空了这一场根本什么都没测）',
+      PET_LEVEL_NAMES.length >= 8 && longest >= 4 &&
+      PET_LEVEL_NAMES.every(function (n) { return n.length > 0 && n.length <= 4; }),
+      JSON.stringify(PET_LEVEL_NAMES));
+
+    var mounted = null;
+    for (var i = 0; i < 24; i++) {
+      await sleep(250);
+      mounted = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot)return null;' +
+        'var lv=h.shadowRoot.getElementById("level");' +
+        'return {lv:!!lv,text:String(lv.textContent||"")};})()');
+      if (mounted && mounted.lv) break;
+    }
+    check('前提：徽章那一格真在 Shadow DOM 里（挂载失败时"没掉字"会变成一句假绿）',
+      !!mounted && mounted.lv === true && mounted.text.length > 0, JSON.stringify(mounted));
+
+    var cellCount = PET_LEVEL_NAMES.length * 3;
+    var cells = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var lv=sr.getElementById("level"),wrap=sr.getElementById("wrap"),card=sr.getElementById("card");' +
+      'var names=' + JSON.stringify(PET_LEVEL_NAMES) + ';var fonts=[10,24,32];' +
+      'var savedText=String(lv.textContent||""),savedStyle=lv.getAttribute("style")||"";' +
+      // 每格读**两把独立的尺**：scrollWidth 对 clientWidth（省略号那把），
+      // 以及 Range 量到的文字实宽 + 计算样式读回来的左右内边距 对 盒子宽（"字真的整个在药丸里"）。
+      'function measure(){var cs=getComputedStyle(lv);' +
+      'var pl=Number(parseFloat(cs.paddingLeft))||0,pr=Number(parseFloat(cs.paddingRight))||0;' +
+      'var rg=document.createRange();rg.selectNodeContents(lv);var rr=rg.getBoundingClientRect();' +
+      'if(rg.detach){rg.detach();}' +
+      'var lr=lv.getBoundingClientRect(),cr=card.getBoundingClientRect();' +
+      'return {sw:Math.ceil(lv.scrollWidth),cw:Math.floor(lv.clientWidth),pl:pl,pr:pr,' +
+      'txt:Math.ceil(rr.width),box:Math.round(lr.width),spill:Math.round(lr.right-cr.right),' +
+      'wrap:Math.round(wrap.getBoundingClientRect().width)};}' +
+      'var base=measure(),out=[];' +
+      'for(var f=0;f<fonts.length;f++){for(var n=0;n<names.length;n++){' +
+      'lv.style.fontSize=fonts[f]+"px";lv.textContent=names[n];' +
+      'var m=measure();m.font=fonts[f];m.name=names[n];out.push(m);}}' +
+      // 收尾把页面交回来：这一格是渲染出来的，留着注入样式会毒化后面的场景（§5 共享状态）
+      'if(savedStyle){lv.setAttribute("style",savedStyle);}else{lv.removeAttribute("style");}' +
+      'lv.textContent=savedText;' +
+      'return {base:base,cells:out,to:String(getComputedStyle(lv).textOverflow||""),restored:String(lv.textContent||"")};})()');
+
+    var restored = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var lv=h.shadowRoot.getElementById("level");' +
+      'return {style:lv.getAttribute("style")||"",text:String(lv.textContent||""),' +
+      'fs:String(getComputedStyle(lv).fontSize)};})()');
+
+    var bad = [];
+    (cells && cells.cells || []).forEach(function (m) {
+      if (m.sw > m.cw + 1) bad.push({ why: 'scrollWidth 溢出（省略号那一族）', name: m.name, font: m.font, sw: m.sw, cw: m.cw });
+      else if (m.txt + m.pl + m.pr > m.box + 1) bad.push({ why: '文字比药丸还宽', name: m.name, font: m.font, txt: m.txt, box: m.box, pl: m.pl, pr: m.pr });
+      if (m.spill > 1) bad.push({ why: '徽章越过卡片右缘', name: m.name, font: m.font, spill: m.spill });
+    });
+    var w10 = (cells && cells.cells || []).filter(function (m) { return m.font === 10; });
+    var w32 = (cells && cells.cells || []).filter(function (m) { return m.font === 32; });
+    var minW32 = 1e9;
+    w32.forEach(function (m) { if (m.wrap < minW32) minW32 = m.wrap; });
+    var maxW10 = -1;
+    w10.forEach(function (m) { if (m.wrap > maxW10) maxW10 = m.wrap; });
+
+    check('每一档 × 每一字号共 ' + cellCount + ' 格：徽章都不掉字（scrollWidth 与 Range 两把尺各测一遍），也不越过卡片右缘',
+      !!cells && cells.cells.length === cellCount && cells.to === 'ellipsis' && bad.length === 0,
+      JSON.stringify({ cells: cells ? cells.cells.length : -1, textOverflow: cells && cells.to, bad: bad.slice(0, 4) }));
+    // 这一格是"机制真的在起作用"的对照：卡片没让位时下面两条**同时**成立才算修好 ——
+    // 大字号下宽度必须**大于**默认宽度（让位了），默认字号下又必须**等于**默认宽度（观感没变）。
+    check('卡片确实让出了位置，而不是恰好没超：32 像素字号下每一格都比默认宽度更宽；' +
+      '而默认 10 像素下最长那档也不把卡片撑大（今天观感不变）· 读回卡片宽 ' +
+      (cells && cells.base ? cells.base.wrap : -1) + '，大字号最窄 ' + minW32 +
+      '，默认字号最宽 ' + maxW10,
+      !!cells && cells.base.wrap > 100 && minW32 > cells.base.wrap && maxW10 === cells.base.wrap,
+      JSON.stringify({ base: cells && cells.base, minW32: minW32, maxW10: maxW10 }));
+    check('收尾把徽章交回原样（探针注入的字号与档名不许留给后面的场景）',
+      !!cells && !!restored && restored.style === '' && restored.text === cells.restored,
+      JSON.stringify({ probe: cells && cells.restored, now: restored }));
+  }
+});
+
 SCENARIOS.push({
   name: '上课页角色伴侣：出现在学习页、摸头涨好感、收起与唤回',
   path: '/quiz',

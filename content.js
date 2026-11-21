@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '774ee3f43e';
+var OMITONE_CODE_REV_BRIDGE = '0cfaf9bc56';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -2775,7 +2775,11 @@ var OMITONE_CODE_REV_BRIDGE = '774ee3f43e';
         '*{box-sizing:border-box;margin:0;padding:0}',
         // 整只宠物=一张卡。原先是 5 个零散元素直接坐在页面上（立绘/徽章/进度条/按钮各一块），
         // 叠在学习通自己的右侧条与我们的状态面板上，看着就是"右下角乱七八糟"。
-        '.wrap{position:relative;width:158px;pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
+        // ⚠️ 宽度**随内容长**，158 只当下限（原先写死 `width:158px`）：`.level` 那枚等级徽章带
+        //   `text-overflow:ellipsis`，可用宽度一小于文字宽度就把字剪掉 —— 用户现场读到「心有……」一共两个字
+        //   （2026-11-21）。e2e 那 30 格（十档 × 三档字号）实测：默认与 10 像素下最长那档仍让卡片保持
+        //   158（观感一个字没变），32 像素下每一格都把它顶过 158（最窄 160）；省略号只在超过 320 上限后才当兜底。
+        '.wrap{position:relative;width:max-content;min-width:158px;max-width:min(320px,calc(100vw - 28px));pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
         '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16);cursor:grab}',
         '.card.dragging{cursor:grabbing;box-shadow:0 14px 30px rgba(15,23,42,.22)}',
         // 悬停必须有反应 —— 用户原话「交互也基本上不会动」。
