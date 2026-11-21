@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '0cfaf9bc56';
+var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.

@@ -303,6 +303,41 @@ var dupAll = allLines.length - Object.keys(allLines.reduce(function (m, s) { m[s
 check('同一份池子里不许有重复句子（重复=抽到两次同句的元凶）', dupAll === 0,
   JSON.stringify(allLines.filter(function (s, i) { return allLines.indexOf(s) !== i; })));
 
+// ②′ 说出口的那句不许带省略号（任务 #215，2026-11-21 用户：「吉祥物的成就怎么还出现了省略的"......"，这很不合理」）
+//   她本人的气泡**不截断**（批次 162 之后卡片宽度随内容让位），所以盘上那句「…」就是**她自己写的**，
+//   而用户读到的是「这句话被剪了」—— 两种成因在界面上长得一模一样，只能从源头禁止。
+//   尺扫**五族全部字符串叶子**（含 name / desc，成就面板那一格用户同样看得见），不止 line：
+//   只扫 line 会漏 desc，而「省略号在句子里」和「以省略号收尾」同形，都读成截断。
+//   ⚠️ 每一族**各自**有下限：合并成一格"总共 ≥ N 句"时，一整族被改名／搬走字段
+//     只让总数掉一截，报出来的是"少了 40 句"，而不是"哪一族不见了"（AGENTS §2 #12）。
+var SPOKEN_KEYS = ['LEVELS', 'PAT_LINES', 'PAT_CAP_LINES', 'SAY', 'ACHIEVEMENTS'];
+// 下限取**实测**（2026-11-21 数回来的：LEVELS 20 / PAT_LINES 40 / PAT_CAP_LINES 5 / SAY 114 / ACHIEVEMENTS 64，共 243）
+// 再留一成余量给"合法合并两句"那种改写；掉到下限以下 = 少扫一整族，必须点名。
+var SPOKEN_MIN = { LEVELS: 16, PAT_LINES: 32, PAT_CAP_LINES: 5, SAY: 96, ACHIEVEMENTS: 52 };
+function collectStrings(node, at, out) {
+  if (typeof node === 'string') { out.push({ at: at, s: node }); return; }
+  if (Array.isArray(node)) { node.forEach(function (v, i) { collectStrings(v, at + '[' + i + ']', out); }); return; }
+  if (node && typeof node === 'object') {
+    Object.keys(node).forEach(function (k) { collectStrings(node[k], at + '.' + k, out); });
+  }
+}
+var spokenBy = {};
+SPOKEN_KEYS.forEach(function (k) { spokenBy[k] = []; collectStrings(GAME[k], k, spokenBy[k]); });
+var spoken = SPOKEN_KEYS.reduce(function (acc, k) { return acc.concat(spokenBy[k]); }, []);
+var thinFam = SPOKEN_KEYS.filter(function (k) { return spokenBy[k].length < SPOKEN_MIN[k]; });
+check('五族说出口的话各自扫得到（' + SPOKEN_KEYS.map(function (k) {
+  return k + ':' + spokenBy[k].length;
+}).join(' / ') + '，共 ' + spoken.length + ' 句）—— 哪一族掉到下限（' +
+  SPOKEN_KEYS.map(function (k) { return SPOKEN_MIN[k]; }).join('/') +
+  '）以下就单独点名，"少扫一整族"和"这一族本来就干净"不许混成一格',
+  thinFam.length === 0,
+  JSON.stringify(thinFam.map(function (k) { return k + ' 只扫到 ' + spokenBy[k].length + ' 句（下限 ' + SPOKEN_MIN[k] + '）'; })));
+var ELL = /…|\.{3,}/;
+var withEll = spoken.filter(function (o) { return ELL.test(o.s) || ELL.test(filledOf(o.s)); });
+check('说出口的 ' + spoken.length + ' 句里没有一句带省略号（收尾与句中都不许；要停顿就写逗号，说完就写句号）',
+  withEll.length === 0,
+  JSON.stringify(withEll.map(function (o) { return o.at + ' = ' + o.s; })));
+
 // ③ IDLE_LINES 只是 SAY.idle 的展平，不是第二份真源
 check('IDLE_LINES 恰好等于六个时段桶的并（不是另抄一份）',
   GAME.IDLE_LINES.join('\u0001') === GAME.PERIODS.reduce(function (acc, p) {
