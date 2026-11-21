@@ -7364,7 +7364,21 @@ async function testRateAskBound() {
   var clampFn = buildFrom(media, '_clampAutoRate', {});
   var resetFn = buildFrom(media, '_resetRateDetection', {});
   var noteFn = buildFrom(media, '_noteRateUnreadable', { emitRuntimeLog: say });
-  var schedFn = buildFrom(media, '_scheduleMaxRateDetection', { emitRuntimeLog: say });
+  // 暂停那一族的等待是真 `setInterval`，集成层不能真等 60×500 毫秒 —— 桩到「排了 timer」这一手，
+  //   由测试自己把那些拍数**同步**驱动完，于是等待上限、到点那一发记不记账，都读得回来。
+  //   ⚠️ 不跑暂停那一支的场景碰不到这两个桩（`if (!video.paused) { runDetect(); return; }` 在前），
+  //   所以下面 ①–⑪ 的行为与打桩前逐字相同。
+  var pausedTimers = [];
+  var fakeSetInterval = function (fn, ms) {
+    var id = pausedTimers.length + 1;
+    pausedTimers.push({ id: id, fn: fn, ms: ms, cleared: false });
+    return id;
+  };
+  var fakeClearInterval = function (id) {
+    for (var z = 0; z < pausedTimers.length; z++) if (pausedTimers[z].id === id) pausedTimers[z].cleared = true;
+  };
+  var schedFn = buildFrom(media, '_scheduleMaxRateDetection',
+    { emitRuntimeLog: say, setInterval: fakeSetInterval, clearInterval: fakeClearInterval });
   var detectFn = buildFrom(media, '_detectMaxPlaybackRate', { emitRuntimeLog: say });
   var tryFn = buildFrom(media, '_tryRateOnce', { emitRuntimeLog: say });
   // `sleep` 换成立即兑现：稳态窗口照样跑满三轮，但不必让集成测试真等 700 毫秒
@@ -7593,6 +7607,38 @@ async function testRateAskBound() {
     asksAfterReset === askBound && spoke('rate max unreadable').length === warnsBeforeReset + 1,
     JSON.stringify({ extraAsks: asksAfterReset, bound: askBound,
       extraWarns: spoke('rate max unreadable').length - warnsBeforeReset }));
+
+  // ⑫ 暂停那一族（`video.paused` 为真）：这一支的「问」不是当场写播放器，而是排一枚 timer 等它开播。
+  //   这一族以前**一条都不覆盖** —— `pausedBound` 那个数只在 ⓪ 里证明"源码里有"，
+  //   而它到点那一发到底记不记进「问不出」的账，没人问过（夹具的 `paused` 选项一直没人用）。
+  var pz = mkVideo({ deny: true, startRate: 0, paused: true });
+  var appP = mkApp({});
+  appP.attach(pz);
+  var warnsBeforePaused = spoke('rate max unreadable').length;
+  var timersBeforePaused = pausedTimers.length;
+  var waitsDone = 0;
+  for (var wp = 0; wp < askBound + 1; wp++) {
+    appP._ensurePlaybackRate(pz.video, 'paused' + wp);
+    await flush();
+    var openTimer = null;
+    for (var tp = pausedTimers.length - 1; tp >= 0; tp--) if (!pausedTimers[tp].cleared) { openTimer = pausedTimers[tp]; break; }
+    if (!openTimer) break;                       // 收手之后不该再排新的等待 —— 这一格由 break 数出来
+    for (var dp = 0; dp < pausedBound; dp++) openTimer.fn();
+    waitsDone++;
+  }
+  check('⑫ 暂停那一族：等满 ' + pausedBound + ' 拍之前一次都不碰播放器、也不报「问不出」，'
+    + '到点把这一发记进账里；等满 ' + askBound + ' 次才说那一句，随后连新的等待都不再排',
+    waitsDone === askBound
+      && pz.rec.writes.length === 0 && pz.rec.defWrites.length === 0 && pz.rec.probeWrites === 0
+      && pausedTimers.length === timersBeforePaused + askBound
+      && pausedTimers.slice(timersBeforePaused).every(function (t) { return t.cleared; })
+      && spoke('rate max unreadable').length === warnsBeforePaused + 1
+      && Number(appP._rateUnknownTries) === askBound && appP._rateDetectVideo === pz.video,
+    JSON.stringify({ waits: waitsDone, askBound: askBound, pausedBound: pausedBound,
+      writes: pz.rec.writes.length, defWrites: pz.rec.defWrites.length,
+      timers: pausedTimers.length - timersBeforePaused, tries: appP._rateUnknownTries,
+      held: appP._rateDetectVideo === pz.video,
+      warns: spoke('rate max unreadable').length - warnsBeforePaused }));
 }
 
 
