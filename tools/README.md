@@ -34,6 +34,7 @@
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
 | `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
+| `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页 |
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
 留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
@@ -314,7 +315,8 @@
     ③ `CHANGELOG.md` **按史实不扫**（口径同 `checkTestCounts()` 的 `liveOnly()`），
     `Math.max(N, …)` 里那个 N 也不扫 —— 它是代码的转述、不是对用户的承诺。
     **第二半：倍速问价那一族「一支最多问三发」** —— `audit-rate-ask-claims.js`，同一项、不占新项号
-    （项号一旦 +1，`HANDOVER.md` 里那两处手抄的「自检 36 项」就要跟着改，而**没有任何尺对着散文数项号**，
+    （项号一旦 +1，`HANDOVER.md` 里那两处手抄的自检项数就要跟着改 —— 那句话的形状是「自检」紧挨着
+    「数字 + 项」，第 9 项正向匹配它、逐处对着执行段里数出来的调用比；**没有任何尺对着散文数项号**，
     口径同批次 148 把「预览附件名」并进第 34 项）。真值从 `src/page/40-media.js` 的
     `this._rateUnknownTries < N` 那一行读回来，要求 README / AGENTS / HANDOVER / 两页 Release 说明 /
     说明书逐个等于它。**这一半多三条自己的规矩**：
@@ -769,6 +771,7 @@ node tools/debug-probe.js --port=9334 --match=studentstudy                      
 npm run field-shape                                                                        # 形状测绘：夹具与现场有分歧时定谁对
 npm run field-space                                                                        # 用户中心那一页的形状（批次 82 挑课要靠它）
 npm run field-logs                                                                         # 直读现场那份日志环（不用人去点「复制日志」）
+npm run field-bridge                                                                       # 问不到后台时：这一格到底是哪一种（只读，一条都不发）
 ```
 
 `npm run field-logs` 补的是这条路的一半盲区：`debug-probe.js` 量得到**页面**（DOM、`_xxtApp`、
@@ -785,6 +788,39 @@ npm run field-logs                                                              
 于是四条互不相干的 needle 报出**同一个数**（实测 22 秒），而 0 条匹配时它照样给一句像结论的话。
 现在环尾与命中各自成行，命中 0 条会明说**这不等于「没发生过」**：环只留最后 200 条，
 且 needle 必须是源码 `emitRuntimeLog` 里的原句（`--grep` 是子串不是正则，写 `a|b` 恒 0）—— 口径见仓库 `AGENTS.md` §2 #22。
+
+#### 「问不到后台」那一格，现在是五格而不是一句话（真源 `tools/field-bridge.js`）
+
+2026-11-21 那一夜（`notes/field-159-orphaned-bridge.md`）现场学页的桥随旧 `content.js` 一起作废
+（`Extension context invalidated.`），而 `npm run field-logs` 当时只会说一句
+「可能是后台一直在睡，也可能扩展真被禁用」—— **三种形状的处置完全不同：等 / 重载扩展后 F5 / 重装**。
+压成一句的后果是整夜把"没 F5"读成"扩展坏了"，同时日志环看着像死了
+（`notes/field-159-logring-dead.md`：环从 18:36 起不再涨，而 `tickEpoch` 3911→4009 照走）。
+
+| 那一格 | `verdict` | 出口码 | 处置那句话 |
+| --- | --- | --- | --- |
+| 桥能用、SW 已被 MV3 回收 | `alive-worker-unlisted` | 0 | 不用管 worker 列表，约 30 秒空闲就回收；读环走扩展页面那一枚目标 |
+| 桥能用 | `alive` | 0 | —— |
+| 只读轮看着像能用（未发 ping） | `alive-suspect` | 0 | 要给证据才加 `--wake`，**final=false** |
+| 桥断了（ping 当场抛 / 命名空间被剥） | `invalidated` | 1 | **重载扩展之后必须 F5 这一枚页面**（AGENTS §3.3 第 3 步） |
+| 只读轮的桥断嫌疑 | `invalidated-suspect` | 1 | 同上，但**final=false**，只给嫌疑不下终审 |
+| 页面里一枚 Omitone 世界都没有 | `no-world` | 1 | 先看 `edge://extensions`，处置是换页/重开这一页，**不是重装** |
+| 没有命中的页面目标 | `no-page` | 2 | 读不出：既不等于桥断，也不等于没在刷 |
+| 发了 ping 却回来个不认识的东西 | `unreadable` | 2 | 读不出：重试或换一枚页量，别当阴性 |
+| 端口上问不到 CDP | `port-down` | 2 | 只说"量不到"，不说"没在刷" |
+
+判据层是**纯函数**（`classify(读数) → 格子`），现场那一发与 `--selftest` 的合成读数走同一把尺；
+`node tools/field-bridge.js --selftest` 逐格对照（格数以它自己打印的那一行为准，不抄进文档，
+口径同 AGENTS §3.8 那条"手抄的格数正是批次 142 那一族"）。`npm run check` 第 37 项钉的是：
+两份对照都真跑、三份**台账里记回来的现场读数**各占一格（桥断 / MV3 正常回收 / 来错页，
+拿判定层真跑一遍比出口码），处置那句 F5 **只有一份真源**（读取层再写一份就红），
+以及**默认路径仍然只读** —— `Target.createTarget` 只许待在 `--open-popup` 那一支里
+（新开一枚标签属于动现场，要先跟人确认），`worker` 那一格**单独永不**给出 `invalidated`。
+
+顺带两条 `field-logs.js` 同轮补的：SW 目标不在列表时它先**换一条读得到的路**
+（任一已开着的扩展页面读同一个键，只读；要它自己开一枚才加 `--open-popup`），
+并会明说「**这不证明后台醒着**」；环超过 180 秒（地板那两发 120×2）没有新条目时单独报一句
+「环像冻住了」并把桥的判定贴出来 —— 环是空的与环冻住是两句话，读不出永远不许当"环没事"。
 
 `npm run field-shape` 就是上面那条命令换成 `--file=tools/field-shape.expr`。**什么时候跑它**：
 一条 e2e 断言在沙盒里绿、在真页面上却不生效（或反过来），第一件事不是改判据，

@@ -5103,6 +5103,235 @@ function checkWebSearchGate(manifest) {
 }
 
 // ---------------------------------------------------------------------------
+// 37. 现场桥的判定层（真源 tools/field-bridge.js）+ 日志环读取的出口分家
+//     用户 2026-11-21 那句「为什么不能直接读标语，非要疯狂划到最后」之后，另一路更贵的现场
+//     （notes/field-159-orphaned-bridge.md）：学习页的桥随旧 content.js 一起作废
+//     （`Extension context invalidated.`），而 `npm run field-logs` 只会说一句
+//     「可能是后台一直在睡（现场没打开任何学习通页面），也可能扩展真被禁用」——
+//     **三种形状的处置完全不同：等 / 重载扩展+F5 / 重装**。一句话把三种压成一种，
+//     于是那一夜把"只重载了扩展、页面没 F5"读成"扩展坏了"（AGENTS §2 第 12 条同一族）。
+//     ⚠️ 这一族不报错、也没有任何一把尺量得到：环冻住时 field-logs 与技能
+//     sw-eval.js --in=sw 同时瞎，盘上只有那句猜出来的话。所以本项要红的是：
+//       ① 判定层或读取层的逐格对照掉了格；② 读取层又开始自己猜／自己写处置句（两份口径）；
+//       ③ 现场那三份读数不再各占一格（桥断 / MV3 正常回收 / 来错页）；
+//       ④ 默认路径开始动现场（createTarget 跑出 --open-popup 那一支）；
+//       ⑤ 出口码、npm 入口、AGENTS §3.3 与 tools/README.md 那几句登记断了。
+// ---------------------------------------------------------------------------
+function checkBridgeVerdictGrids() {
+  var bad = [];
+  var cells = {};
+  var fieldCells = 0;   // 现场读数那一栏实际有几格（pass 那句不许手抄）
+
+  // ---- a. 两份逐格对照都真跑（只钉下限：加格不碍事，删格要响） ----
+  var MIN = { bridge: 17, logs: 23 };
+  [['bridge', 'tools/field-bridge.js'], ['logs', 'tools/field-logs.js']].forEach(function (pair) {
+    var name = pair[0], file = pair[1];
+    if (!exists(file)) { bad.push('判定层的真源不存在：' + file); return; }
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(file)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    if (r.error) {
+      bad.push(file + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不当通过');
+      return;
+    }
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.status !== 0 || !m) {
+      bad.push(file + ' 的逐格对照退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(file + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < MIN[name]) {
+      bad.push(file + ' 的对照格数从下限 ' + MIN[name] + ' 掉到 ' + m[2] +
+        ' —— 删掉的那一格不会自己喊，桥判定少一格对照就回到"三种形状压成一句"');
+    } else {
+      cells[name] = Number(m[2]);
+    }
+  });
+
+  // ---- b. 判定层只有一份，读取层不许再猜、也不许自己写处置句 ----
+  var logsCode = stripComments(read('tools/field-logs.js'));
+  var bridgeCode = stripComments(read('tools/field-bridge.js'));
+  if (!/require\(['"]\.\/field-bridge\.js['"]\)/.test(logsCode)) {
+    bad.push('tools/field-logs.js 没 require 判定层 —— "问不到 SW"那一格就又由读取层自己猜（两份口径必然各自漂移）');
+  } else if (!/bridge\.probe\(/.test(logsCode)) {
+    bad.push('tools/field-logs.js 里没有任何一处调用 bridge.probe() —— 判定层挂着不叫，等于还是那句猜话');
+  }
+  // 那句猜话现在只许活在注释里当历史；一旦回到代码，就是"把三种压成一种"复活
+  if (logsCode.indexOf('可能是后台一直在睡') >= 0) {
+    bad.push('tools/field-logs.js 的代码里又出现了那句「可能是后台一直在睡…」—— 这一句把"等 / F5 / 重装"三格压成一格（AGENTS §2 #12）');
+  }
+  var fixOwn = (bridgeCode.match(/out\.fix = '重载扩展之后必须 F5/g) || []).length;
+  if (fixOwn !== 1) {
+    bad.push('那句「重载扩展之后必须 F5 这一枚页面」在判定层里数到 ' + fixOwn + ' 处（要恰好 1 处赋值）—— ' +
+      '0 处＝桥断那一格交不出处置；2 处＝同一句话两份真源');
+  }
+  if (logsCode.indexOf('重载扩展之后必须 F5') >= 0) {
+    bad.push('tools/field-logs.js 里也写了一份「重载扩展之后必须 F5」—— 处置那句话只许由判定层交出去');
+  }
+
+  // ---- c. 三份现场读数各占一格（拿 notes/field-159 记回来的读数喂真判定层） ----
+  // ⚠️ 判据不许 import 判定层的 CELLS 表来比它自己：那是一次自证。
+  //     下面三份读数的出处写在每一格的 why 里，全部来自盘上台账。
+  var bridgeMod = null;
+  try { bridgeMod = require('./field-bridge.js'); }
+  catch (e) { bad.push('判定层 require 不进来：' + e.message); }
+  if (bridgeMod && typeof bridgeMod.classify === 'function') {
+    var FIELD = [
+      { why: '159 那一夜（notes/field-159-orphaned-bridge.md 第 8 条：8 枚世界、ping 当场抛）',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 0, worldCount: 8,
+               worldsHaveFn: 8, worldsHaveId: 8, wakeAllowed: true, pingTried: 1, pingOk: 0,
+               pingErr: 'Extension context invalidated.', workerListedAfter: 0 },
+        verdict: 'invalidated', via: 'ping-throw', exit: 1, final: true, fixHas: 'F5' },
+      { why: 'MV3 正常回收（约 30 秒空闲就把 SW 从列表里抹掉，桥却答得上来）—— 这一格最容易被读成桥断',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 1, worldCount: 1,
+               worldsHaveFn: 1, worldsHaveId: 1, wakeAllowed: true, pingTried: 1, pingOk: 1,
+               pingErr: '', workerListedAfter: 0 },
+        verdict: 'alive-worker-unlisted', exit: 0, final: true, fixHas: '不用管 worker 列表' },
+      { why: '纯只读轮（没加 --wake）撞上"id 全读回空串"—— 只许给嫌疑，final 必须是 false',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 0, worldCount: 3,
+               worldsHaveFn: 1, worldsHaveId: 0, wakeAllowed: false },
+        verdict: 'invalidated-suspect', via: 'id-empty', exit: 1, final: false, fixHas: 'F5' },
+      { why: '来错页 / 压根没有学习通页面 —— 读不出单独一个码，不许和"坏了"共用出口',
+        raw: { portOk: 1, pageFound: 0, workerListed: 0, extensionPageListed: 0, worldCount: 0,
+               worldsHaveFn: 0, worldsHaveId: 0, wakeAllowed: false },
+        verdict: 'no-page', exit: 2 }
+    ];
+    fieldCells = FIELD.length;
+    FIELD.forEach(function (c) {
+      var v = bridgeMod.classify(c.raw);
+      if (v.verdict !== c.verdict) {
+        bad.push('现场读数「' + c.why + '」被判成 ' + v.verdict + '（要 ' + c.verdict + '）—— ' +
+          '三格压回一格的形状就是这么回到盘上的');
+        return;
+      }
+      if (c.via && v.via !== c.via) bad.push('那一格走的路径是 ' + v.via + '（要 ' + c.via + '）');
+      if (Number(v.exit) !== c.exit) {
+        bad.push('现场读数「' + c.why + '」的出口码是 ' + v.exit + '（要 ' + c.exit + '）—— ' +
+          '脚本调用方（技能 / 下一轮）分不开"等 / 动手 / 读不出"');
+      }
+      if (c.final !== undefined && !!v.final !== c.final) {
+        bad.push('现场读数「' + c.why + '」的 final=' + v.final + '（要 ' + c.final + '）—— 纯只读轮不许下终审');
+      }
+      if (c.fixHas && String(v.fix || '').indexOf(c.fixHas) === -1) {
+        bad.push('现场读数「' + c.why + '」没交出处置那句话（要含「' + c.fixHas + '」，实读 ' +
+          JSON.stringify(String(v.fix || '').slice(0, 40)) + '）');
+      }
+    });
+    var E = bridgeMod.EXIT || {};
+    if (!(E.ok === 0 && E.action === 1 && E.unreadable === 2)) {
+      bad.push('出口码三格没分开（读到 ' + JSON.stringify(E) + '，要 ok=0 / action=1 / unreadable=2）');
+    }
+    // 反向对照：worker 列表那一格单独**永不**给出"桥断"（第 3 项 b 格的同族：把"读不出"当故障）
+    var onlyWorker = bridgeMod.classify({ portOk: 1, pageFound: 1, workerListed: 0, worldCount: 1,
+      worldsHaveFn: 1, worldsHaveId: 1, wakeAllowed: false });
+    if (String(onlyWorker.verdict).indexOf('invalidated') >= 0) {
+      bad.push('只把"worker 不在列表"当证据就判成桥断（读到 ' + onlyWorker.verdict + '）—— ' +
+        'MV3 每 30 秒空闲就回收，这一格会天天误报，代价是人去重装扩展');
+    }
+  }
+
+  // ---- d. 默认路径仍然只读：开标签那一发必须钉在 --open-popup 那一支里 ----
+  var opIdx = logsCode.indexOf('if (!hit && openIfMissing)');
+  var createIdx = logsCode.indexOf('Target.createTarget');
+  var closeIdx = logsCode.indexOf('Target.closeTarget');
+  if (createIdx >= 0 && !(opIdx >= 0 && opIdx < createIdx && createIdx < closeIdx)) {
+    bad.push('tools/field-logs.js 里 Target.createTarget 没夹在「if (!hit && openIfMissing)」与它的 ' +
+      'Target.closeTarget 之间（守卫 @' + opIdx + '，开标签 @' + createIdx + '，关标签 @' + closeIdx + '）—— ' +
+      '默认轮会自己去动现场（AGENTS §3.3：导航要先确认）');
+  }
+  if ((logsCode.match(/Target\.createTarget/g) || []).length !== 1) {
+    bad.push('Target.createTarget 在读取层里数到 ' + (logsCode.match(/Target\.createTarget/g) || []).length +
+      ' 处（要恰好 1 处）—— 第二处一定没带那道守卫');
+  }
+
+  // ---- e. 环像冻住那一格：阈值与"空环"各说各话 ----
+  var logsMod = null;
+  try { logsMod = require('./field-logs.js'); }
+  catch (e) { bad.push('读取层 require 不进来：' + e.message); }
+  if (logsMod && typeof logsMod.isRingStale === 'function') {
+    var stale = [
+      [200, false, true, '环 200 秒没新条目 —— 比地板那两发（120×2）还久，要报冻'],
+      [100, false, false, '环 100 秒前还在写 —— 地板节流本来就允许这一档沉默'],
+      [0, true, true, '空环 + forced —— 一条都没有是另一种话，不许靠阈值蒙']
+    ];
+    stale.forEach(function (c) {
+      var got = logsMod.isRingStale(c[0], c[1]);
+      if (!!got !== c[2]) bad.push('环那一格读数错了：' + c[3] + '（实得 ' + got + '，要 ' + c[2] + '）');
+    });
+    if (!logsMod.EXIT_BY_VERDICT || logsMod.EXIT_BY_VERDICT['no-page'] !== 2 ||
+        logsMod.EXIT_BY_VERDICT['invalidated'] !== 1) {
+      bad.push('field-logs 的出口码表没把"桥断（要动手）"与"读不出（别动手）"分开（读到 ' +
+        JSON.stringify(logsMod.EXIT_BY_VERDICT || null) + '）—— 调用方只看退出码时三种形状又是一格');
+    }
+  }
+
+  // ---- f. npm 入口 ----
+  var pkg;
+  try { pkg = JSON.parse(read('package.json')); }
+  catch (e) { pkg = null; bad.push('package.json 读不出 JSON：' + e.message); }
+  var sc = (pkg && pkg.scripts) || {};
+  var ENTRIES = [
+    ['field-bridge', 'tools/field-bridge.js', { ban: ['--wake', '--selftest'] }],
+    ['field-bridge:selftest', 'tools/field-bridge.js', { need: ['--selftest'], ban: ['--wake'] }],
+    ['field-logs:selftest', 'tools/field-logs.js', { need: ['--selftest'], ban: ['--wake'] }]
+  ];
+  ENTRIES.forEach(function (e) {
+    var key = e[0], src = e[1], rule = e[2] || {};
+    var v = String(sc[key] || '');
+    if (!v) { bad.push('package.json 少了脚本 ' + key + ' —— 现场想问这一格没有入口，规矩就又落回"记得跑一下"'); return; }
+    if (v.indexOf(src) === -1) bad.push(key + ' 没指向真源 ' + src + '（写的是 ' + v + '）');
+    (rule.need || []).forEach(function (n) {
+      if (v.indexOf(n) === -1) bad.push(key + ' 没带 ' + n + ' —— 那一格会去连现场浏览器，不是逐格对照');
+    });
+    (rule.ban || []).forEach(function (b) {
+      if (v.indexOf(b) !== -1) bad.push(key + ' 带了 ' + b + ' —— 默认口径是多发一条 ping（动现场），要人另加参数才对');
+    });
+  });
+  if (sc['field-logs'] && sc['field-logs'].indexOf('--open-popup') !== -1) {
+    bad.push('npm run field-logs 默认就带 --open-popup —— 探针授权里"新开一枚标签"是要先确认的动作');
+  }
+
+  // ---- g. 文档：§3.3 第 3 步那句要能一条命令量回来；tools/README.md 要有这两份真源 ----
+  var agents = read('AGENTS.md');
+  var step3 = agents.indexOf('重新加载 + **刷新学习通页面（F5）**');
+  if (step3 === -1) {
+    bad.push('AGENTS.md §3.3 第 3 步那句「重新加载 + 刷新学习通页面（F5）」不见了 —— 桥断那一格的处置话没了底稿');
+  } else if (agents.indexOf('npm run field-bridge', step3) === -1 ||
+             agents.indexOf('npm run field-bridge', step3) - step3 > 1200) {
+    bad.push('AGENTS.md §3.3 第 3 步没把「npm run field-bridge」写成这一步的验收命令 —— ' +
+      '"重载后必须 F5"这条规矩只能靠人自觉（行为改了而文档没改，是这一族唯一的失败形状）');
+  }
+  var treadme = read('tools/README.md');
+  // ⚠️ 「登记了真源」要问**两件事**，各占一格（§5「接线类判据的锚点要紧到会红」）。
+  //    旧那一句只问 `treadme.indexOf('tools/field-bridge.js')`，而 K11 实测把它证伪了：
+  //    只把专节标题里那句真源改名成 `tools/field-bridge-x.js` 时，下面 812 行那句
+  //    `node tools/field-bridge.js --selftest` 照旧命中 —— 文件名在文档里出现过 ≠ 真源有人指过。
+  ['field-logs.js', 'field-bridge.js'].forEach(function (n) {
+    var row = new RegExp('^\\|\\s*`' + n.split('.').join('\\.') + '`\\s*\\|', 'm');
+    if (!row.test(treadme)) {
+      bad.push('tools/README.md 那张工具表里没有 `' + n + '` 那一行（行首竖线 + 反引号名字）—— ' +
+        '下一轮接手的人找不到入口，只会重新发明那句猜话');
+    }
+  });
+  if (treadme.indexOf('真源 `tools/field-bridge.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/field-bridge.js —— ' +
+      '判定层写在哪一份文件里又变成要靠人猜（文件名在别处出现过不算登记）');
+  }
+  if (!/invalidated|桥断/.test(treadme) || !/F5/.test(treadme)) {
+    bad.push('tools/README.md 里没说清"桥断那一格要 F5"—— 现场看到 verdict=invalidated 的人会去重装扩展');
+  }
+
+  if (bad.length) {
+    fail('现场桥的判定没分成格（这族 bug 的表现是"整夜把没 F5 读成扩展坏了，日志环看着像死"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('现场"问不到后台"分成五格（桥判定 ' + cells.bridge + ' 格 + 读环 ' + cells.logs +
+    ' 格逐格对照全对；' + fieldCells + ' 份现场读数各占一格、出口码 0/1/2 分家；处置那句 F5 只有一份真源，' +
+    'AGENTS §3.3 第 3 步与 npm 入口同真源；默认路径仍只读）');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -5143,6 +5372,7 @@ checkProfileSweep();
 checkChannelGate();
 checkDiagnoseRuleTable(manifest);
 checkWebSearchGate(manifest);
+checkBridgeVerdictGrids();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
