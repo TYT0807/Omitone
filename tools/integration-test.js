@@ -4145,6 +4145,96 @@ async function testDisplacedStudyPageRescue() {
     hydrateNowTxt.indexOf("storageGet('session'") >= 0 && hydrateNowTxt.indexOf("'local'") < 0 &&
     gateAt >= 0 && writeAt > gateAt,
     JSON.stringify({ setsDelta: memLog.sets.length - setsBeforeBlind, mA: mA[5], mB: mB[5], dirty: Object.keys(mDirty), capped: Object.keys(mCap).length, gateAt: gateAt, writeAt: writeAt }));
+
+  // ── 批次 158：每 60 秒那次刷新**不许**把已经答对的那一份抹成空白 ──────────────
+  // 现场实测（1.3.1 预览版，用户中心那一枚，2026-11-21，只读）：后台明确答 `never-study`
+  // （这页压根不是插件带来的，插件也按这一格只说过一次「不催你回章节页」），可 `tab-cache-probe` 同时读回
+  // `plan:"silent"` 与地板那句 `study idle declined` 的年龄 `idleDeclineLogAge:"11s"` ——
+  // 两句同时成立只有一种解释：刷新把答案抹成了「还在问」，于是每 120 秒又把「请手动回到章节页」说回去。
+  // 这一族不报错、不留异常，只有用户那句"我有一科一直没刷"会留下来（AGENTS §2 #12）。
+  var stCarry = { _withTimeout: function (p, ms) { askMs.push(ms); return p; } };
+  var baseSends = sends.length;
+  askAnswer = { success: true, reason: 'never-study', mayRescue: false, studyHref: '', studyAgeMs: 7200000, awayMs: 0, otherStudyTabs: 1, rescues: 0 };
+  askNow = N;
+  ask.call(stCarry, N);
+  await flushMicro();
+  var answeredOnce = Object.assign({}, stCarry._studyTabStateCache);
+  // 刷新窗口内（后台这一发还没回话）：借旧答案继续说话，而不是退回「还在问」
+  askAnswer = null;
+  var refreshAt = N + FRESH + 2000;
+  askNow = refreshAt;
+  ask.call(stCarry, refreshAt);
+  var gapCache = Object.assign({}, stCarry._studyTabStateCache);
+  var sentRefresh = sends.length - baseSends;   // 首发 + 刷新那一发 = 2（多一发就是刷新窗口里重复敲）
+  // ⚠️ 借答案之后「在问」这一格仍然是真，地板那把尺若还要求 `!answered`，这 8 秒里每一拍（2 秒）
+  //    都会再敲一次后台 —— 批次 37/51 那族"自己造轮询"换了个入口进来。
+  askNow = refreshAt + 2000;
+  ask.call(stCarry, refreshAt + 2000);
+  askNow = refreshAt + 4000;
+  ask.call(stCarry, refreshAt + 4000);
+  var sentInGap = sends.length - baseSends;     // 与上面相等才叫"地板挡住了"；多一发就是每拍重敲
+  // 「每份页面只说一次」要**先说过一次**才谈不重播：同一个 ctx 连着走两拍，
+  // 第一拍说（否则用户不知道我们看见了他开的页），刷新窗口里那一拍不许再说（这一发就是现场那句重播）。
+  var stGap = mkCtx();
+  var rFirst = runSpeak(stGap, answeredOnce, N);
+  var rGap = runSpeak(stGap, gapCache, refreshAt + 1000);
+  var planGap = plan(gapCache, refreshAt + 1000, 'not-ours', N);
+  // 桥一直不回话：借期只有一个刷新窗口，超出就必须退回「还在问」= 老地板重新有声音（§2 #16(c)）
+  askNow = refreshAt + PENDING + 1000;
+  var borrowEnd = askNow;
+  ask.call(stCarry, borrowEnd);
+  var expiredCache = Object.assign({}, stCarry._studyTabStateCache);
+  var sentExpired = sends.length - baseSends;
+  var rExpired = runSpeak(mkCtx(), expiredCache, borrowEnd);
+  var planExpired = plan(expiredCache, borrowEnd, 'not-ours', N);
+  // 「答过、但那条没用」（ok 假）那一格不许借 —— 借过去就等于把「读不出」洗成「有结论」
+  var stUseless = { _withTimeout: function (p, ms) { return p; } };
+  askAnswer = null;
+  askNow = N;
+  ask.call(stUseless, N);
+  await flushMicro();
+  var uselessAnswered = Object.assign({}, stUseless._studyTabStateCache);
+  askAnswer = { success: true, reason: 'never-study', mayRescue: false, studyHref: '', studyAgeMs: 7200000, awayMs: 0, otherStudyTabs: 1, rescues: 0 };
+  askNow = N + FRESH + 1000;
+  ask.call(stUseless, N + FRESH + 1000);
+  var uselessGap = Object.assign({}, stUseless._studyTabStateCache);
+  var rUselessGap = runSpeak(mkCtx(), uselessGap, N + FRESH + 1000);
+  // 借来的那一份要能在日志里认出来（现场只看 reason 分不开"刚问到的"与"60 秒前那份"）
+  var carriedAnother = Object.assign(cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2 }), { carried: true, at: N });
+  var rCarried = runSpeak(mkCtx(), carriedAnother, N + FRESH + SILENCE + 1000);
+  var plainCache = cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2 });
+  var rPlain = runSpeak(mkCtx(), plainCache, N);
+  var carriedMeta = rCarried.logs[0] && rCarried.logs[0].meta;
+  var plainMeta = rPlain.logs[0] && rPlain.logs[0].meta;
+  check('㉚ 刷新只敲门、不清账：① 后台明确答过「这页不是插件带来的」时，60 秒刷新那几秒里判据仍是 silent（每份页面只说一次），地板那句「请手动回到章节页」不许重播；' +
+    '② 借期只有一个刷新窗口（新鲜地板 + 待问地板），桥真死了就退回「还在问」= 老地板照旧有声音，不许把借来的答案变成永久静音；' +
+    '③ 只借**可用**的答案（ok 假那份不许借，否则「读不出」被洗成「有结论」）；④ 借的时候字段逐个保住（reason/mayRescue/枚数/靶地址），' +
+    '把「另一枚占着」借成「能自己回去」就是把那一门顶下线（§2 #15）；⑤ 借答案时「在问」仍是真，待问地板照旧挡住，一刷新就每拍重敲 = 自己造轮询；' +
+    '⑥ 借来的答案在日志里认得出来（carried 与答案年龄两格都要从缓存读回来，不是测试自己拍的常量）',
+    answeredOnce.ok === true && answeredOnce.reason === 'never-study' && sentRefresh === 2 &&
+    gapCache.carried === true && gapCache.answered === true && gapCache.ok === true &&
+    gapCache.reason === 'never-study' && gapCache.otherStudyTabs === 1 && gapCache.mayRescue === false &&
+    gapCache.studyAgeMs === 7200000 && gapCache.at === N && gapCache.pendingAt === refreshAt &&
+    planGap === 'silent' &&
+    rFirst.logs.length === 1 && /not our page/.test(rFirst.logs[0].message) &&
+    rGap.ret === true && rGap.logs.length === 0 && rGap.navs.length === 0 &&
+    sentInGap === sentRefresh &&
+    expiredCache.carried === false && expiredCache.answered === false && expiredCache.ok === false &&
+    expiredCache.pendingAt === borrowEnd &&
+    planExpired === 'asking' && rExpired.ret === false && rExpired.logs.length === 0 && sentExpired === 3 &&
+    uselessAnswered.ok === false && uselessGap.carried === false && uselessGap.answered === false &&
+    uselessGap.ok === false && uselessGap.reason === '' && rUselessGap.ret === false &&
+    carriedMeta && carriedMeta.carried === true &&
+    carriedMeta.answerAgeMs === (N + FRESH + SILENCE + 1000) - N &&
+    plainMeta && plainMeta.carried === false && plainMeta.answerAgeMs === 0,
+    JSON.stringify({
+      sent: [sentRefresh, sentInGap, sentExpired], gap: gapCache, planGap: planGap,
+      gapSpoke: { ret: rGap.ret, logs: rGap.logs.length },
+      expired: { carried: expiredCache.carried, answered: expiredCache.answered, plan: planExpired, ret: rExpired.ret },
+      uselessGap: { carried: uselessGap.carried, ok: uselessGap.ok, ret: rUselessGap.ret },
+      carriedMeta: { carried: carriedMeta && carriedMeta.carried, age: carriedMeta && carriedMeta.answerAgeMs },
+      plainMeta: { carried: plainMeta && plainMeta.carried, age: plainMeta && plainMeta.answerAgeMs }
+    }));
 }
 
 /** ---- [22] 批次 95：可拖区间还服务不了目标时，不许把一次性机会花在它身上 ---- */

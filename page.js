@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '9666ee877c';
+var OMITONE_CODE_REV = '710637d4c8';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -10004,12 +10004,27 @@ var OMITONE_CODE_REV = '9666ee877c';
       // 「还在问」与「问过、答案没用」是两格，各用各的地板；两格都不许**永久**哑掉。
       // ⚠️ 问出来的失败答案也必须有个地板：停在门户页时每拍（2 秒）都会走到这里，
       //    没有地板就等于每 2 秒敲一次后台，而下一拍判出来的还是同一格（批次 37/51 那一族的查询版）。
-      if (cache && !cache.answered && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return;
+      // ⚠️ 这一把尺**不许**再看 `answered`：批次 158 起刷新窗口里旧答案可以带着走（下面 carry），
+      //    那时 `answered` 是真、而「这一发还在问」也是真 —— 要求 `!answered` 会让刷新那 8 秒
+      //    每一拍（2 秒）都再敲一次后台，正是上面那句"自己造轮询"换了个入口。
+      if (cache && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return;
       if (cache && cache.answered && now - cache.at < DISPLACED_ASK_FRESH_MS) return;
-      this._studyTabStateCache = {
-        pendingAt: now, at: 0, answered: false, ok: false, reason: '', studyHref: '',
-        studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
-      };
+      // 批次 158：刷新时把**已经答过的那一份**借过来，别拿一张空白把它抹掉。
+      // 现场实测（1.3.1 预览版，用户中心那一枚，2026-11-21）：后台明确答 `never-study`（这页压根不是
+      // 插件带来的），插件也按这一格只说过一次「不催你回章节页」；可每 60 秒刷新把答案抹成「还在问」，
+      // 于是每 120 秒又把那句「请手动回到章节页」说回去 —— AGENTS §2 #12 说的正是这一族：
+      // 「不用管」和「这一门一直没刷」在用户眼里长得一模一样。
+      // ⚠️ 只借**一个刷新窗口**（答案可用 + 距今不超过 新鲜地板 + 待问地板）：
+      //    桥要是真死了，超出这一格就退回空白 stub = 「还在问」= 老地板照旧说话，
+      //    不许把"借来的答案"变成永久静音（§2 #16(c)：地板那句是"被顶下线"现场仅剩的证据）。
+      var carryMax = DISPLACED_ASK_FRESH_MS + DISPLACED_ASK_PENDING_MS;
+      var carry = (cache && cache.answered && cache.ok === true && now - cache.at < carryMax) ? cache : null;
+      this._studyTabStateCache = carry
+        ? Object.assign({}, carry, { pendingAt: now, carried: true })
+        : {
+            pendingAt: now, at: 0, answered: false, carried: false, ok: false, reason: '', studyHref: '',
+            studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
+          };
       var self = this;
       // ⚠️ `_withTimeout` 超时是 `resolve(undefined)`（AGENTS §2 #2），所以下面必须先认 `!data`
       Promise.resolve(this._withTimeout(bridgeSend('study_tab_state'), 8000)).then(function (data) {
@@ -10023,6 +10038,7 @@ var OMITONE_CODE_REV = '9666ee877c';
           pendingAt: 0,
           at: Date.now(),
           answered: true,
+          carried: false,           // 新答案落地，「借来的那一份」到此结束
           ok: ok,
           reason: ok ? String(data.reason) : 'unreadable',
           why: ok ? '' : String((data && data.error) || '后台没给答案').slice(0, 80),
@@ -10035,7 +10051,7 @@ var OMITONE_CODE_REV = '9666ee877c';
         };
       }).catch(function () {
         self._studyTabStateCache = {
-          pendingAt: 0, at: Date.now(), answered: true, ok: false, reason: 'unreadable', why: '问后台这条路本身抛了',
+          pendingAt: 0, at: Date.now(), answered: true, carried: false, ok: false, reason: 'unreadable', why: '问后台这条路本身抛了',
           studyHref: '', studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
         };
       });
@@ -10052,6 +10068,9 @@ var OMITONE_CODE_REV = '9666ee877c';
      *
      * @returns {string} 'asking' 还没问到答案（交回调用方说老话）· 'silent' 答案有了但这条刚说过
      *                   'go-back' · 'another-page' · 'gave-up' · 'not-ours' · 'unknown'
+     * ⚠️ 批次 158：刷新窗口里 `_askStudyTabState` 会**借**上一份可用答案过来，所以那一族
+     *    落的是下面四格（由 `ok === true` 决定），不会再落回 'asking'；'asking' 现在只剩
+     *    「压根没答过」与「借无可借（桥死了、答案超出一个刷新窗口）」两种真形状。
      */
     _displacedStudyPagePlan: function (cache, now, lastAct, lastAt) {
       if (!cache) return 'asking';
@@ -10099,6 +10118,10 @@ var OMITONE_CODE_REV = '9666ee877c';
         otherStudyTabs: Number(c.otherStudyTabs),
         rescues: Number(c.rescues),
         href: String(location.href || '').slice(0, 90),
+        // 批次 158：说出这一句依据的是**刚问到的**还是**借来的**答案，以及那份答案距今多久 ——
+        // 现场只看 `reason` 分不开这两种，而"借来的答案说话"正是刷新窗口那几秒的形状。
+        carried: c.carried === true,
+        answerAgeMs: c.at ? Math.max(0, now - Number(c.at)) : -1,
         everyMs: act === 'not-ours' ? 0 : DISPLACED_SILENCE_MS
       };
       if (act === 'silent') return true;

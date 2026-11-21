@@ -1334,6 +1334,29 @@ CHANGELOG 那 5 处是**历史句**，立尺时必须排掉，HANDOVER :1106 / :
 - **现场（只读，顺带）**：`studentstudy` 恰好一枚（§2 #15 满足），串行推进没断；负载低，用户在同机打游戏。
 - **没做的**：`verify preview` 里「附件摘要与磁盘对上」那一格仍要靠真跑；#203 剩下的那半（转正）按 §3.8 归用户点头，本轮不碰。
 
+### 批次 158 · 2026-11-21 · 页面停在用户中心时那句「请手动回到章节页」不再每两分钟重播 —— 刷新只敲门、不清账（会话任务 #179 现场查出来的）
+
+- **门面**：`真问不到、或者答案过期了，仍然照旧说那句老话`（落在 `main` 提交 `1fddeae` 的「预览版最近改了什么」那一条，`release-notes-preview.md` 同句镜像）
+- **症状（用户看得见的）**：用户自己开的那枚用户中心标签，右下角每两分钟重复一句「这一页认不出课程结构，请手动回到章节页」，而插件**其实认得这一页** —— 后台明确答过 `never-study`（这一页压根没刷过课）与 `not-ours`（不是插件带来的）。
+- **量回来的现场（尺子 `tab-cache-probe.expr` sha=e5a005d79c97，18:12 那一发）**：`cache.answered:true / ok:true / reason:"never-study" / otherStudyTabs:1 / mayRescue:false`、`ageMs:44859`（在 60 秒新鲜窗里）→ 生产谓词 `_displacedStudyPagePlan` 当场答 `plan:"silent"`；**可同一发里 `idleDeclineLogAge:"45s"`** —— 地板句 45 秒前刚说过。环那边同一把尺：**`study idle declined` 14/200 条**，全部带 `href=…/space/index?ws=1`、取证 `everyMs:120000`。`spoke.act:"not-ours"` 的下一次点名是 **5.9 小时前**（`ageMs:21346076`）—— 它认得，只是每两分钟轮到老那句去说话。
+- **根因（不是探针坏，是判据顺序）**：`_askStudyTabState` 里那两道地板（20 秒「在问」+ 60 秒「新鲜」）**过期那一拍先把已答的 cache 覆盖成一张空白 stub**，于是"问到过"这件事在刷新那一拍被自己抹掉，判据落回 `asking`，而 `asking` 与 `unknown` 在日志上同形、都只说地板（AGENTS §2 #12 那一族：把"不用管"和"这一门一直没刷"说成同一件事）。
+- **落点**：`src/page/64-tasks-loop.js:891` 新增 `carryMax = DISPLACED_ASK_FRESH_MS + DISPLACED_ASK_PENDING_MS`；`:894` 刷新时**借**上一份可用答案（`Object.assign({}, carry, { pendingAt: now, carried: true })`）继续敲后台；`:912` 与 `:925` 新答案落地／问不到时把 `carried` 归位；`:974` `_speakDisplacedStudyPage` 的取证补 `href / carried / answerAgeMs / everyMs` 四格 —— **说话的那一格要能自证它读的是借来的还是新问的**。
+- **四条边界（都写在代码注释里，不是口头承诺）**：① **只借一个刷新窗口**（80 秒），到期照旧 `asking` 说地板 —— 「等不到证据」不许实现成"永远有答案"；② **只借可用的答案**（`ok === true`），`unreadable` 那一格**永不借**（借了就等于把"问不到"说成"问过"）；③ 借过来的那一拍仍然**重新敲后台**，不缓存成永久；④ **地板句仍留在 `asking` 与 `unknown` 两格上**（§2 #16(c)：那是"被站点顶下线"现场仅剩的证据，降噪轮不许把它关掉）—— 这一条由反向验证的刀 D 单独承重。
+- **新断言**：集成层 `[21]` 尾部 **㉚**（`tools/integration-test.js:4209`）—— 六格前提各钉一格（`sentRefresh:2` 问两发、借账那一拍 `carried:true` 且 `reason/otherStudyTabs/mayRescue/studyAgeMs` 逐格对回上一发、`planGap === 'silent'`、`rGap.logs.length === 0` 且**一次都不导航**、`sentInGap === sentRefresh` 证明桥没有被多敲），外加**过期档**（`carried:false / answered:false / plan:'asking'`，红的是"借过头"那一族）与**无用答案档**（`ok:false` 永不借）。
+- **反向验证**：`.workbuddy/reverse158.js` 四刀，只注入 `src/page/64-tasks-loop.js`，基线含 `page.js`／`content.js`／`.workbuddy/itest-counts.json`，pid 锁 + 开局扫进程表。**实测表回填的预期**：A 摘掉借账本身 → 只红 ㉚；B 摘掉「在问」地板 → 红 **㉑ 问后台有两把地板 + ㉚**（那一条读的是同一把地板，合法邻居，漏列会报成"注入越界"）；C 摘掉「只借可用答案」→ 只红 ㉚；D 摘掉「过期就交回地板」→ 只红 ㉚。**四刀各破一层，判定趟 REVERSE-OK。**
+- **驱动自己撞的两格，写进判据而不是删掉**：① 前置检查用 `execSync('... ; echo EXIT_DONE')`，**cmd.exe 不认 `;`**，退出码被 `echo` 顶掉 → 改成 `spawnSync` 并要求 runner **自己交出总账那一句**（§5「看输出里有没有注入那一步的日志」）；② needle 原本写成裸 `㉚`，而 `itest-158b.log` 里**同名编号有两条**（另一条是 `[24]` 的「㉚ 没填 Key：一步都不发」）—— 本轮四刀实测里另一条一次都没红，但那是运气不是尺，已收紧成 `㉚ 刷新只敲门` 并重跑判定趟。
+- **顺带更正 #179 那条旧前提**：台账里「现场跑的是旧构建、代码没部署上去」**已被实测推翻** —— 学习页 `rev` 与磁盘 `page.js` 逐字相等、`background.js` 摘要与磁盘相同、`deployed-sha.expr` 四份产物全对上（AGENTS §7.7 的两产物各自证明）。`study displaced, going back` / `gave up` 两格**仍 0 条**，但成因是**事件没发生过**，不是没部署；主动复现要开第二枚学习页 = 红线（§2 #15），所以改成**只读监视器被动等**：`.workbuddy/watch177d.js`（→ `notes/field-177-watch4.jsonl`）每 60 秒做一次巡更，一发子进程同时喂 #177 的「当时在刷哪一枚任务点」指纹与 #179 的四条 displaced needle（名字全部按 `grep emitRuntimeLog(` 从源码读回来，§2 #22）。细则见 `notes/field-179-displaced-verify.md`。
+- **验收**：`npm test` 退出 **0**（`.workbuddy/test-158b.log:829` → `集成测试通过：632 / 632 项`）；`npm run e2e` 退出 **0**（`.workbuddy/e2e-158.log`，**147 场景 / 1668 项全绿**，收尾自动清掉 1 枚临时 profile）；反向验证判定趟 REVERSE-OK。文档计数四处回填：`AGENTS.md:35`、`README.md:1285`、`HANDOVER.md:1074`、`HANDOVER.md:1106`（632 = 631 + 本批 1 条）；`src/page/README.md:175` 的片段统计改成 `*1581 行 / 48 方法*`。
+- **口径变更（用户 2026-11-21 明确要求，同一轮并进来、不升版本）**：**不再催用户 revoke 发版令牌**。
+  催我的正是我们自己写的句子 —— `AGENTS.md` §7.5「令牌本身按用户偏好应当是**一次性、最短有效期**，用完提醒他去 revoke」、
+  `HANDOVER.md` §0.5「**有效期选 1 天** / 用完**主动提醒他去 revoke**」、`tools/github-release.js` 找不到令牌时打印的
+  「用完请立刻 revoke 并删除该文件」。**三处都在替用户排一道他没说过的活儿**，于是每一轮收尾都白催一次。
+  现在的口径：当前那枚 PAT **有效期一个月**，写进 `~/.omitone-release.ghtoken` 后**有效期内每轮直接复用**；
+  不许催 revoke、不许每轮要新令牌、不许主动删那份文件（只有他明确说了之后才动）。
+  保留的两条硬纪律没变：**令牌值一个字都不许进日志／命令输出／提交**（要出现就打码），以及**发版没核验完之前不许动它**（那才是本节标题原来的那条事故）。
+  ⚠️ 上面那两处**活规矩**直接改了；`HANDOVER.md` 里 1.1.6 与 1.2.1 两段**历史快照**里同样的旧句子**按史实不回改**（§3.7 同口径），只在旁边指路到新规矩。
+- **没做的**：**现场还没部署** —— 磁盘 `rev` 已是 `710637d4c8`，学习页与用户中心两枚仍读回 `9666ee877c`（批次 158 之前那一份）；部署要在预览包发出去之后按 §0b 三条命令做，做完用同一把尺复账环占比（`study idle declined` 应当从 14/200 掉下来，而 displaced 那一族仍要认得出）。#196「退役两枚拖拽开关」仍等用户拍板。
+
 ### 批次 133 · 2026-11-19 · 视频开头黑屏／抽搐不再干等：自动唤醒点不亮时代点一下「开始」（会话任务 #178）
 
 **用户能看见的改动**：「视频开头一直黑屏或者抽搐不动，自己点一下开始就正常」这一族
