@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '710637d4c8';
+var OMITONE_CODE_REV = '786cee036b';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -49,8 +49,11 @@ var OMITONE_CODE_REV = '710637d4c8';
    * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
    * 新增 await 必须可超时是硬规矩（AGENTS §2.2）。
    *
-   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
-   * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次。
+   * 失败形状（`overlay` / `no-check` 那些）冷却到期照旧重试，不写放弃；
+   * **但"平台自己说这场已结束"那一类不在此列** —— 它数满 `VOTE_MAX_TRIES` 发之后
+   * 交给已有的持久放弃账（24 小时、扛刷新、两个恢复出口），因为这一族**点一万次封面也不会长出选项**，
+   * 而内存里那本账活不过一次刷新，不落盘就永远走不完一轮预算（`62-tasks-run.js` 的 ended 分支）。
    *
    * `VOTE_ENDED_COOLDOWN_MS` 单独放宽到 30 分钟：认出一张**已被手动结束**的问卷之后，
    * 每 5 分钟再点一次封面除了把全屏覆盖层重新撑起来之外没有任何收益（现场 2026-11-16），
@@ -8547,6 +8550,8 @@ var OMITONE_CODE_REV = '710637d4c8';
      * 每一步都可超时、都留证据；连续 VOTE_MAX_TRIES 次没翻旗就进 VOTE_COOLDOWN_MS
      * 冷却（到期自动再试，是"能解释、可恢复"的出口，不是永久跳过），
      * 免得把同一个投票的提交打成刷屏。
+     * ⚠️ 唯一例外是"平台判这场已结束"那一类：它在第 4 发把证据交给 24 小时跳过名单 ——
+     * 见下面 ended 分支那一段（不落盘就永远数不到第 4 发）。
      */
     _runChaoxingVoteJob: async function (job) {
       if (!job) return false;
@@ -8590,7 +8595,19 @@ var OMITONE_CODE_REV = '710637d4c8';
       // 否则一场还能投的投票会被一句题干里的"本课程已结束"误判死。
       if (!form.firsts.length && this._voteOverlayEnded(form.text)) {
         this._closeVoteOverlay(voteDoc);
-        this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        var endedRec = this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        // 数到第 4 发，把证据交给**已有的**持久放弃账（`localStorage['omitone_task_giveup']`，24 小时、
+        // 扛刷新，`xxtAI.clearTaskGiveUp()` 与弹窗「已完成任务重学」都能恢复）。
+        // 为什么必须落盘：`_voteTryMap` 只在页面内存里，整页刷新即清零 —— 于是"4 发预算 + 冷却"
+        // **结构上永远走不完一轮**（用完 → 刷新 → 归零 → 再用完），而投票交不出任何"放弃"证据，
+        // 读取侧那道 `skip task point in give-up list` 对投票型形同不存在，
+        // 这一节就永远撞同一份问卷、进度键每轮换格、`noop.rounds` 永远攒不满 → **刷完一门不换下一门**。
+        // ⚠️ 不新造一本账：键走 `_taskPointKey`，与读取侧那道闸**同一个收敛式**（`job:<jobid>`）。
+        var parkedKey = '';
+        if (endedRec && Number(endedRec.n) >= VOTE_MAX_TRIES) {
+          parkedKey = this._taskPointKey(job) || '';
+          if (parkedKey) this._markTaskGivenUp(parkedKey, { name: job.name, reason: 'vote-ended', attempts: endedRec.n });
+        }
         emitRuntimeLog('warn', 'vote survey closed', {
           jobid: job.jobid, text: form.text, last: 'ended',
           retryInMs: VOTE_ENDED_COOLDOWN_MS,
@@ -8598,6 +8615,14 @@ var OMITONE_CODE_REV = '710637d4c8';
             '不是永久跳过 —— ' + Math.round(VOTE_ENDED_COOLDOWN_MS / 60000) +
             ' 分钟后还会再点开一次，重新开放就投得进去。'
         });
+        if (parkedKey) {
+          emitRuntimeLog('warn', 'vote survey closed, parked 24h', {
+            jobid: job.jobid, key: parkedKey, tries: Number(endedRec.n || 0),
+            hint: '这一份问卷已按平台的"已结束"判满 ' + VOTE_MAX_TRIES + ' 发，记入 24 小时跳过名单' +
+              '（同一份卷子不再点开封面，这一节接着往下走）。老师中途重新开放时：' +
+              '弹窗「已完成任务重学」或控制台 xxtAI.clearTaskGiveUp() 立刻恢复。'
+          });
+        }
         return true;
       }
       if (!form.firsts.length && !form.submit) {
@@ -9123,12 +9148,19 @@ var OMITONE_CODE_REV = '710637d4c8';
     _noteVoteTry: function (job, reason, coolOverride) {
       if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
       var key = this._voteTryKeyOf(job);
-      var prev = this._voteTryMap[key] || { n: 0, at: 0 };
+      var prev = this._voteTryMap[key] || { n: 0, at: 0, cool: 0 };
       var cool = Number(coolOverride || 0);
+      var own = Number(prev.cool || 0);
+      // ⚠️ `cool` 取**两侧较大者**，不是"这一发带没带 override"。
+      // 现场（2026-11-21 那一门）认成"已结束"之后，同一份问卷下一拍换了个失败形状
+      // （`no-check` / `overlay` 不带 override），旧写法把 30 分钟那一格**覆盖成 0** →
+      // `_voteTryCooledDown` 读 0 就退回默认的 5 分钟，于是日志那句「30 分钟后还会再点开」
+      // 在同一份问卷的两种形状交替时是假话 —— 而两种形状交替恰是现场实测到的形状。
       this._voteTryMap[key] = {
         n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || ''),
-        cool: cool > 0 ? cool : 0
+        cool: cool > own ? cool : own
       };
+      return this._voteTryMap[key];
     },
 
     _clearVoteTry: function (job) {

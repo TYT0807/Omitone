@@ -8768,6 +8768,347 @@ async function testWebSearchGate() {
     JSON.stringify({ key: conKey, cells: c9, swTag: swTag.slice(0, 120), readSeg: readSeg.slice(0, 120) }));
 }
 
+/**
+ * 会话任务 #184（批次 165）：被平台判「已结束」的问卷，那本记账以前活不过一次刷新。
+ *
+ * 现场症状是「刷完一门不换下一门」，链条是三件事叠出来的：
+ *   ① 次数账 `_voteTryMap` 只在页面内存里 → 整页刷新归零 → 「4 发预算 + 30 分钟冷却」
+ *      结构上永远走不完一轮（用完→刷新→归零→再用完）；
+ *   ② 投票交不出任何「放弃」证据 → 读取侧那道 `skip task point in give-up list` 对它形同不存在；
+ *   ③ 于是每一轮撞同一份问卷、进度键每轮换格 → `noop.rounds` 永远攒不满 → 换课判据永久进不来。
+ * 修法是把**数满那一发的证据交给已有的 24 小时跳过名单**（不新造一本账），
+ * 并让 `cool` 取两侧较大者（现场同一份问卷的两种失败形状会交替出现）。
+ *
+ * 三条成因各占一格，反向验证一刀只摘一层。
+ */
+async function testVoteEndedParkPersistent() {
+  console.log('\n[34] 已结束问卷的记账：数满预算那一发交给 24 小时跳过名单，扛得住一次刷新（会话任务 #184）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var run = read('src/page/62-tasks-run.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var dom = read('src/page/20-dom.js');
+  var cons = read('src/page/00-shell-constants.js');
+  var state = read('src/page/10-config-state.js');
+  var detect = read('src/page/60-tasks-detect.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    // ⚠️ `async` 必须一起带走：从 `function` 起切出来重建的是普通函数，
+    //   而 `_runChaoxingVoteJob` 体里有 `await` —— 当场 SyntaxError（实测）
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  // 三个数从真源读回来，不在测试里抄一遍（AGENTS §5「断言里出现的每一个数，都要说得出它是从哪读回来的」）
+  var constNum = function (src, name) {
+    var m = new RegExp('var ' + name + '\\s*=\\s*([^;]+);').exec(src);
+    if (!m) return -1;
+    var v = -1;
+    try { v = Number(Function('return (' + m[1] + ');')()); } catch (e) { v = -1; }
+    return (isFinite(v) && v > 0) ? v : -1;
+  };
+  var countStr = function (hay, needle) {
+    var n = 0, at = 0;
+    while ((at = hay.indexOf(needle, at)) >= 0) { n++; at += needle.length; }
+    return n;
+  };
+  var indexes = function (hay, needle) {
+    var out = [], at = 0;
+    while ((at = hay.indexOf(needle, at)) >= 0) { out.push(at); at += needle.length; }
+    return out;
+  };
+
+  var MAX = constNum(cons, 'VOTE_MAX_TRIES');
+  var COOL = constNum(cons, 'VOTE_COOLDOWN_MS');
+  var ENDED = constNum(cons, 'VOTE_ENDED_COOLDOWN_MS');
+  var skm = /_taskGiveUpStoreKey:\s*'([^']+)'/.exec(state);
+  var STORE_KEY = skm ? skm[1] : '';
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var resetLogs = function () { logs.length = 0; };
+  var saidOf = function (msg) {
+    return logs.filter(function (l) { return l.message === msg; }).length;
+  };
+  var lastSaid = function (msg) {
+    var hit = logs.filter(function (l) { return l.message === msg; });
+    return hit.length ? hit[hit.length - 1] : null;
+  };
+
+  var injVote = {
+    emitRuntimeLog: say,
+    VOTE_MAX_TRIES: MAX,
+    VOTE_COOLDOWN_MS: COOL,
+    VOTE_ENDED_COOLDOWN_MS: ENDED
+  };
+
+  var voteJob = buildFrom(run, '_runChaoxingVoteJob', injVote);
+  var noteTry = buildFrom(run, '_noteVoteTry', injVote);
+  var clearTry = buildFrom(run, '_clearVoteTry', injVote);
+  var cooledDown = buildFrom(run, '_voteTryCooledDown', injVote);
+  var tryKeyOf = buildFrom(run, '_voteTryKeyOf', {});
+  var overlayForm = buildFrom(run, '_voteOverlayForm', {});
+  var overlayEnded = buildFrom(run, '_voteOverlayEnded', {});
+  var pickOptions = buildFrom(run, '_pickVoteOptions', {});
+  var safeParse = buildFrom(dom, '_safeJsonParse', {});
+  var pointKey = buildFrom(loop, '_taskPointKey', {});
+
+  // 「盘」那一格：MV3 页面里的 localStorage 在 node 里没有，`_taskGiveUpMap` 的 try/catch
+  // 会把"没有盘"读成"名单是空的"（症状与"确实没落盘"一模一样）。所以这里给一枚真的假盘，
+  // 并且**每一场自己换一枚** —— 「刷新之后」= 新 app 实例 + 同一枚盘。
+  var current = null;
+  var ls = {
+    getItem: function (k) { return current && current.data[k] !== undefined ? current.data[k] : null; },
+    setItem: function (k, v) { if (current) current.data[k] = String(v); },
+    removeItem: function (k) { if (current) delete current.data[k]; }
+  };
+  var giveUpMap = buildFrom(loop, '_taskGiveUpMap', { localStorage: ls });
+  var isGivenUp = buildFrom(loop, '_isTaskGivenUp', { localStorage: ls });
+  var markGivenUp = buildFrom(loop, '_markTaskGivenUp', { localStorage: ls });
+
+  var mkStore = function () {
+    var box = { data: Object.create(null) };
+    current = box;
+    return box;
+  };
+
+  var mkNoCheckInput = function () {
+    var el = {
+      name: 'answer8000083064', type: 'radio', disabled: false, value: 'A',
+      click: function () {}, closest: function () { return { tagName: 'LI' }; }
+    };
+    // 点了也不勾：站点那种被禁用作答的选项就是这个形状
+    Object.defineProperty(el, 'checked', { get: function () { return false; }, set: function () {} });
+    return el;
+  };
+  var mkDoc = function (inputs, cands) {
+    return {
+      querySelectorAll: function (sel) {
+        var s = String(sel || '');
+        if (s.indexOf('radio') >= 0 || s.indexOf('checkbox') >= 0) return inputs.slice();
+        if (s.indexOf('btn-submit') >= 0) return cands.slice();
+        return [];
+      }
+    };
+  };
+  var SHAPES = {
+    ended: { text: '本次问卷调查已被手动结束，无法作答。', inputs: [], cands: [] },
+    'no-form': { text: '本次问卷暂无可选项。', inputs: [], cands: [] },
+    'no-check': { text: '请选择一个选项后提交。', inputs: [mkNoCheckInput], cands: [{ innerText: '提交', className: 'btn-submit', value: '' }] },
+    overlay: { text: '', doc: null }
+  };
+
+  var mkApp = function (box, kind) {
+    current = box;
+    var spec = SHAPES[kind];
+    var app = {
+      configs: { enableVote: true },
+      _voteTryMap: {},
+      _taskGiveUpStoreKey: STORE_KEY,
+      _safeJsonParse: safeParse,
+      _taskPointKey: pointKey,
+      _taskGiveUpMap: giveUpMap,
+      _isTaskGivenUp: isGivenUp,
+      _markTaskGivenUp: markGivenUp,
+      _voteTryKeyOf: tryKeyOf,
+      _noteVoteTry: noteTry,
+      _clearVoteTry: clearTry,
+      _voteTryCooledDown: cooledDown,
+      _voteOverlayForm: overlayForm,
+      _voteOverlayEnded: overlayEnded,
+      _pickVoteOptions: pickOptions,
+      _voteBoxFinished: function () { return false; },
+      _closeVoteOverlay: function () { app.__closed++; },
+      __closed: 0,
+      // 桩打在「那个会把覆盖层收掉的动作」与「那份文档」上，判定谓词（ended / form / pick）全是生产代码
+      _voteOverlayText: function () { return spec.text; },
+      _openVoteOverlay: function () {
+        if (kind === 'overlay') return Promise.resolve(null);
+        if (!app.__doc) {
+          var ins = spec.inputs.map(function (f) { return typeof f === 'function' ? f() : f; });
+          app.__doc = mkDoc(ins, spec.cands);
+        }
+        return Promise.resolve(app.__doc);
+      }
+    };
+    return app;
+  };
+
+  // 合成夹具号（AGENTS §28-B：真实课程痕迹不进公开面）
+  var JOB = {
+    kind: 'vote', workType: 'job', jobid: '9000123456',
+    attachment: { property: {} }, name: '问卷 A（合成夹具）'
+  };
+  var EXPECT_KEY = 'job:' + JOB.jobid;
+  var GATE_SHAPE = { jobid: JOB.jobid, attachment: JOB.attachment, name: JOB.name };
+
+  var parts = [voteJob, noteTry, clearTry, cooledDown, tryKeyOf, overlayForm, overlayEnded, pickOptions,
+    safeParse, pointKey, giveUpMap, isGivenUp, markGivenUp];
+  var extracted = parts.every(function (f) { return typeof f === 'function'; }) &&
+    MAX > 0 && COOL > 0 && ENDED > 0 && !!STORE_KEY;
+  check('① 十三件都能从盘上原样取出来真跑，三个数与那枚存储键也从真源读回来（不是抄进测试）—— '
+    + '取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样',
+    extracted,
+    JSON.stringify({
+      fns: parts.map(function (f) { return typeof f; }).join('/'),
+      max: MAX, cool: COOL, ended: ENDED, storeKey: STORE_KEY
+    }));
+  if (!extracted) return;
+
+  // ---- 成因②：同一份问卷的两种失败形状交替时，30 分钟那一格不能被覆盖成 0 ----
+  var box2 = mkStore();
+  var app2 = mkApp(box2, 'ended');
+  resetLogs();
+  var firstRec = noteTry.call(app2, JOB, 'ended', ENDED);
+  var secondRec = noteTry.call(app2, JOB, 'no-check');
+  for (var i2 = 2; i2 < MAX; i2++) noteTry.call(app2, JOB, 'no-check');
+  var mixedCooled = cooledDown.call(app2, JOB);
+
+  var app2b = mkApp(mkStore(), 'no-check');
+  for (var j2 = 0; j2 < MAX; j2++) noteTry.call(app2b, JOB, 'no-check');
+  var plainCooled = cooledDown.call(app2b, JOB);
+
+  check('② `cool` 取**两侧较大者**：认成「已结束」之后下一拍换成不带 override 的失败形状，'
+    + '30 分钟那一格照旧在 —— 旧写法把它覆盖成 0，日志那句「30 分钟后还会再点开」就成了假话'
+    + '（两种形状交替恰是现场实测到的形状）',
+    firstRec.cool === ENDED && secondRec.cool === ENDED && secondRec.n === 2 &&
+      !!mixedCooled && mixedCooled.coolMs === ENDED && mixedCooled.retryInMs <= ENDED &&
+      mixedCooled.tries === MAX,
+    JSON.stringify({
+      firstCool: firstRec.cool, secondCool: secondRec.cool, secondN: secondRec.n,
+      mixed: mixedCooled && { tries: mixedCooled.tries, coolMs: mixedCooled.coolMs, retryInMs: mixedCooled.retryInMs },
+      ENDED: ENDED
+    }));
+
+  check('②b 反过来也钉住：**从没认出「已结束」的问卷仍是默认那一档** —— '
+    + '把 max 写成「永远取长的」等于给每种失败形状都放 30 分钟假冷却（AGENTS §5「会误报的守卫和没有守卫一样害人」）',
+    !!plainCooled && plainCooled.coolMs === COOL,
+    JSON.stringify({ plain: plainCooled && { coolMs: plainCooled.coolMs, tries: plainCooled.tries }, COOL: COOL }));
+
+  // ---- 成因①：落盘排在数满那一发，不是第一发 ----
+  var box3 = mkStore();
+  var app3 = mkApp(box3, 'ended');
+  resetLogs();
+  for (var i3 = 0; i3 < MAX - 1; i3++) await voteJob.call(app3, JOB);
+  var map3 = giveUpMap.call(app3);
+  check('③ 前 ' + (MAX - 1) + ' 发只记在页面内存里、盘上那本名单**一个键都没有** —— '
+    + '第一发就落盘会把「老师过会儿重新开放」那一族永久挡在门外（24 小时投不进去）',
+    Object.keys(map3).length === 0 && saidOf('vote survey closed') === MAX - 1 &&
+      saidOf('vote survey closed, parked 24h') === 0,
+    JSON.stringify({
+      mapKeys: Object.keys(map3), closed: saidOf('vote survey closed'),
+      parked: saidOf('vote survey closed, parked 24h'), memN: (function () {
+        var rec = app3._voteTryMap[tryKeyOf.call(app3, JOB)];
+        return rec ? rec.n : 0;
+      })()
+    }));
+
+  // ---- 成因①+③：数满那一发把证据交给已有的持久名单，并说清怎么恢复 ----
+  var box4 = mkStore();
+  var app4 = mkApp(box4, 'ended');
+  resetLogs();
+  for (var i4 = 0; i4 < MAX; i4++) await voteJob.call(app4, JOB);
+  var map4 = giveUpMap.call(app4);
+  var park4 = map4[EXPECT_KEY] || null;
+  var parkedSaid = lastSaid('vote survey closed, parked 24h');
+  var closedSaid = lastSaid('vote survey closed');
+  check('④ 第 ' + MAX + ' 发认成「已结束」时，证据交给**已有的** 24 小时跳过名单：键是 `job:<jobid>`、'
+    + 'reason 点名 vote-ended、attempts 等于预算，而且两句话并存 —— 30 分钟那句照旧说（还没落盘之前它是真话），'
+    + '新那句必须讲清 24 小时 + 两个恢复出口（AGENTS §2 #7：跳过必须留日志且可恢复）',
+    Object.keys(map4).length === 1 && !!park4 && park4.reason === 'vote-ended' &&
+      Number(park4.attempts) === MAX && String(park4.name || '').length > 0 &&
+      saidOf('vote survey closed, parked 24h') === 1 && saidOf('vote survey closed') === MAX &&
+      !!parkedSaid && parkedSaid.meta.key === EXPECT_KEY && Number(parkedSaid.meta.tries) === MAX &&
+      /24 小时/.test(parkedSaid.meta.hint) && /clearTaskGiveUp/.test(parkedSaid.meta.hint) &&
+      /已完成任务重学/.test(parkedSaid.meta.hint) &&
+      !!closedSaid && closedSaid.meta.retryInMs === ENDED,
+    JSON.stringify({
+      keys: Object.keys(map4), rec: park4, closedCount: saidOf('vote survey closed'),
+      parkedMeta: parkedSaid && parkedSaid.meta, retryInMs: closedSaid && closedSaid.meta.retryInMs
+    }));
+
+  // ---- 键必须与读取侧那道闸同源，而且扛得住一次刷新 ----
+  var fresh4 = mkApp(box4, 'ended');          // 新实例 = 整页刷新之后
+  var gateKey = pointKey.call(fresh4, GATE_SHAPE);
+  var gateKeyRenamed = pointKey.call(fresh4, { jobid: JOB.jobid, attachment: JOB.attachment, name: '换了个卷名' });
+  var bareKey = tryKeyOf.call(fresh4, JOB);
+  var survived = isGivenUp.call(fresh4, gateKey);
+  var bareHit = isGivenUp.call(fresh4, bareKey);
+  var memAfterReload = Object.keys(fresh4._voteTryMap).length;
+  check('⑤ 写入口与读出口过**同一把尺**：读取侧那句原样（`_taskPointKey({jobid, attachment, name})`）算出的键，'
+    + '与新实例（= 刷新之后，内存那本账是空的）读回的名单对上；卷名换了也不改键（键认 jobid 不认文案）；'
+    + '而投票次数账那个裸 `jobid` **不算**键 —— 新造一本账或两套键，这道闸就永远走不到',
+    gateKey === EXPECT_KEY && gateKey === gateKeyRenamed && gateKey === Object.keys(map4)[0] &&
+      survived === true && memAfterReload === 0 && bareHit === false && bareKey !== EXPECT_KEY,
+    JSON.stringify({
+      gateKey: gateKey, gateKeyRenamed: gateKeyRenamed, bareKey: bareKey,
+      survived: survived, bareHit: bareHit, memKeysAfterReload: memAfterReload, stored: Object.keys(map4)
+    }));
+
+  // ---- 阴性对照：三种"投不出去"的形状都不许落盘，冷却到期照旧再试 ----
+  var controlCells = {};
+  var controlKinds = ['no-form', 'no-check', 'overlay'];
+  for (var c4 = 0; c4 < controlKinds.length; c4++) {
+    var kindC = controlKinds[c4];
+    var boxC = mkStore();
+    var appC = mkApp(boxC, kindC);
+    resetLogs();
+    for (var i5 = 0; i5 < MAX; i5++) await voteJob.call(appC, JOB);
+    var mapC = giveUpMap.call(appC);
+    var cooledC = cooledDown.call(appC, JOB);
+    // 把「上一次」往前拨过冷却：到期必须放行，不许实现成永久跳过
+    var recC = appC._voteTryMap[tryKeyOf.call(appC, JOB)];
+    if (recC) recC.at = Date.now() - COOL - 1000;
+    var afterC = cooledDown.call(appC, JOB);
+    controlCells[kindC] = {
+      keys: Object.keys(mapC).length,
+      parked: saidOf('vote survey closed, parked 24h'),
+      gateHit: isGivenUp.call(appC, GATE_SHAPE),
+      coolMs: cooledC ? cooledC.coolMs : -1,
+      retryAfterCool: afterC === null
+    };
+  }
+  check('⑥ 三种失败形状（没选项也没提交键 / 点了不勾 / 覆盖层压根开不出来）数满预算**都不落盘**，'
+    + '拿到的仍是默认那一档冷却、到期就放行 —— 落盘只认「平台自己说这场已结束」那一句，'
+    + '把别的形状一起永久跳过就是把还能投的问卷判死',
+    controlKinds.every(function (k) {
+      var cell = controlCells[k];
+      return cell.keys === 0 && cell.parked === 0 && cell.gateHit === false &&
+        cell.coolMs === COOL && cell.retryAfterCool === true;
+    }),
+    JSON.stringify({ cells: controlCells, COOL: COOL }));
+
+  // ---- 不新造一本账 + 只有一处写入口（按字符偏移判，别按行算）----
+  var directLs = countStr(run, 'localStorage.getItem') + countStr(run, 'localStorage.setItem') +
+    countStr(run, 'localStorage.removeItem');
+  var markSites = indexes(run, 'this._markTaskGivenUp(');
+  var endedAt = run.indexOf('if (!form.firsts.length && this._voteOverlayEnded(form.text))');
+  var nextAt = run.indexOf('if (!form.firsts.length && !form.submit)');
+  var insideEnded = markSites.length === 1 && endedAt >= 0 && nextAt > endedAt &&
+    markSites[0] > endedAt && markSites[0] < nextAt;
+  var newLedger = countStr(run, 'omitone_vote') + countStr(cons, 'omitone_vote');
+  var readGate = countStr(detect, 'this._isTaskGivenUp(this._taskPointKey(');
+  check('⑦ 记账只走已有的那本账：62 片段里对 localStorage 直接动手 0 处、没有任何 `omitone_vote` 那样的新存储键、'
+    + '`_markTaskGivenUp` 在投票这一族只有一个调用点且落在 ended 那一支之内（按字符偏移判），'
+    + '而读取侧那道闸仍然是 `_isTaskGivenUp(this._taskPointKey(...))` 这一句原样 —— '
+    + '写入口改了、读出口没改，症状与改之前一模一样，而且一条报错都不留（AGENTS §2 #18）',
+    directLs === 0 && newLedger === 0 && insideEnded && readGate === 1,
+    JSON.stringify({ directLs: directLs, markSites: markSites, endedAt: endedAt, nextAt: nextAt, newLedger: newLedger, readGate: readGate }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -8815,6 +9156,7 @@ async function main() {
   await testRateAskBound();
   await testModelListFetch();
   await testWebSearchGate();
+  await testVoteEndedParkPersistent();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
