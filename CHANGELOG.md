@@ -774,6 +774,53 @@ worker 层 fail-fast，红名正是 `patch removes retired playbackRate`。
   本轮这 6 条是人工按字样补的。
 - `popup/popup.html:302-304` 那条 `.range-head` 样式随着滑条一起成了死规则，本轮没删（挂着待裁）。
 
+### 批次 147 · 2026-11-21 · 同口径复账一轮：需刷 13 → 12，**没有一门被站点收回**；顺手把「`len` 恒 16566」那句过期正典改对
+
+**本轮一行生产代码没动、一个套件都没重跑**（只跑文档相关闸门）。做的是什么：
+AGENTS §2 #19 给"刷课必须继续"那两条可执行纪律里的第二条 —— **每轮同口径复账**，
+"再被改判要一小时内发现，而不是第二天早上"。距上一份全量普查（`census-r32`，11-19 18:34）已 38 小时。
+
+**跑法**（技能 `omitone-chaoxing-field-triage`，只读、串行、不碰正在刷那一枚标签页）：
+
+```bash
+node .../scripts/sw-eval.js --expr=course-entry.expr --roster=notes/roster-125.json \
+  --from=0 --count=38 --in=sw --save=notes/census-147-full.json
+node .../scripts/census-diff.js --old=notes/census-129-full.json --new=notes/census-147-full.json
+node .../scripts/census-diff.js --old=notes/census-r32-full.json --new=notes/census-147-full.json   # 拿最新基线再比一次
+```
+
+- **可比性先钉死**：尺子 `course-entry.expr` sha=**b9d5ff554bab**（与两份旧基线同一把，
+  `census-diff` 打印 `[尺子] same`、24 格可比）、名册 `roster-125.json` 38 门（同一份）、
+  `probeFailed` **0**（批次 120 那一族"探针自己抛错被说成进不去"没有复发）。
+
+**读数（38 门，一次跑全，六格各自占位）**：`need 13 → 12`、`done 22 → 23`、`nopoints 1`、`empty 2`、
+`unreadable 0`、`blocked 0`；站点自己写的任务点合计 **2115/2669 → 2241/2676**（对 r32 那份是 2119/2669 → 2241/2676）。
+动的只有两门，方向都是往前：**戏剧鉴赏 36/88 → 88/88**（`need → done`、`catalog_jindu` 29 → 1、`yi` 2 → 0）、
+**书法鉴赏 0/148 → 74/148**（仍 `need`，现场那一枚学习页正压在它身上）。
+**`done → need` 与 `needsWork no → yes` 都是 0 门** —— 11-19 那次化学/书法被站点整体收回的形状（
+`icon_yiwanc` −20 配 `catalog_jindu` +20 对冲）这一窗口**没有再来**，而这一句是拿**两份基线各自独立**比出来的，
+不是单基线阴性。并发那一格照量：`studentstudy` **恰好一枚**。
+
+**本轮最值钱的一条是量出来的，不是推出来的**：那句写了三天的「暂无章节内容 ⇒ `len` 恒 16566」**是假正典**。
+同一把尺、同两门空目录课，`len` 从 16566 变成 **17409**（+843），其余 33 门首页**普遍 +1052** ——
+站点模板自己在长，而四处文档把它当成了定性判据（AGENTS §2 #12、技能 `SKILL.md` §4d 表、
+`rules.md` R15、`site-shapes.md` §3c）。四处已按实测改成**"`len` 只配当'这一发 fetch 拿到东西了吗'的粗体检，
+定性只许用站点原话 + `emptyCatalog` 那一格"**，技能新立 **R48** 把这条与排位口径一起钉住。
+
+⚠️ **尺子本体 `course-entry.expr` 里那句注释是故意没改的** —— 改它 `sha256` 就换，
+`census-diff.js` 立刻把 `verdict` / `needsWork` 那一族踢出可比列，整个复账系列当场失去可比性（R33）。
+"过期的一句话留在尺子里"比"为了文档好看把尺子换了"便宜得多；要换尺就明说"从这一份起换新尺"。
+
+**顺带把现场那一版钉到提交**（`page-rev-commit.js f52f5b0c68` → `c6ab0c6`，11-20 21:57，
+落后 HEAD **4 个提交**，缺的正是 `77d7414` 防拖拽闸与 `9d1a724` 倍速那族）——
+所以这一轮现场的读数**是改动前的旧行为**，不能拿来验收批次 144/146（R47 同一条口径）。
+
+**闸门**：`node tools/audit-md-tables.js` ✅ + `npm run check` ✅ + `npm test` ✅（本轮没动代码，未起浏览器）。
+台账与产物：`notes/census-147-recheck.md`、`notes/census-147-full.json`、`.workbuddy/census-147-diff.log`。
+
+- ⚠️ **本轮没做的**：#39 的现场那一半（标语闸出不出话）仍等用户重载扩展 + F5；
+  不 push、不发版、不 `npm run build`；待裁的 #22 / #26 / #27 / #30 / #33 一条没动。
+
 ### 批次 133 · 2026-11-19 · 视频开头黑屏／抽搐不再干等：自动唤醒点不亮时代点一下「开始」（会话任务 #178）
 
 **用户能看见的改动**：「视频开头一直黑屏或者抽搐不动，自己点一下开始就正常」这一族
