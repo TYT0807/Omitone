@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '786cee036b';
+var OMITONE_CODE_REV = 'c7a2a8b846';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -770,6 +770,10 @@ var OMITONE_CODE_REV = '786cee036b';
     _quizApiFailUntil: 0,
 
     _quizApiLastError: '',
+
+    // 「失败的是哪家哪个模型」由扩展侧算好随回包带过来（页面配置投影里没有渠道字段）。
+    // ⚠️ 它是**取证**不是**记账**：换节/复位都不抹它，否则 45 秒退避一过就没证据了。
+    _quizApiLastWho: '',
 
     _stepNavigationBound: false,
 
@@ -13159,12 +13163,24 @@ var OMITONE_CODE_REV = '786cee036b';
       this._quizBatchSentAt = 0;
     },
 
-    _markQuizApiConnectionFailed: function (error) {
+    _markQuizApiConnectionFailed: function (error, who) {
       var message = error && error.message ? error.message : String(error || 'LLM 请求失败');
       // 不再永久写入 storage：改为 45 秒退避，期间跳过答题，之后自动重试并自愈
       this._quizApiFailUntil = Date.now() + 45000;
       this._quizApiLastError = String(message).slice(0, 300);
-      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000 });
+      // 「哪家哪个模型」由扩展侧算好随回包带过来（页面那份配置投影里没有渠道字段）。
+      // ⚠️ 拿不到时单独占一格，不许压成空串 —— 空串在日志里读起来像"没有渠道这回事"。
+      this._quizApiLastWho = String(who || '(这一发没带渠道：请求没走到服务商，或异常在半路抛出)').slice(0, 200);
+      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000, who: this._quizApiLastWho });
+    },
+
+    /**
+     * 读出「失败的是哪家哪个模型」，两处跳过日志共用这一把尺（写入口与读出口同形）。
+     * 还没问过模型就没这一格 —— 单独说清楚，不许留空串（空串读起来像"渠道是空的"，
+     * 而真相是"这一轮压根没发出请求"，两者修复方向完全相反）。
+     */
+    _quizApiWhoForLog: function () {
+      return String(this._quizApiLastWho || '(这一轮还没问过模型，渠道没读过)').slice(0, 200);
     },
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
@@ -13180,6 +13196,7 @@ var OMITONE_CODE_REV = '786cee036b';
           emitRuntimeLog('warn', 'quiz blocked by api, holding unit', {
             reason: skipReason,
             heldMs: heldMs,
+            who: this._quizApiWhoForLog(),
             hint: '这一节压着没做的题，但答题链路现在用不了 —— 已**停在本节不翻页**（不是已完成）。' +
               '填好 API Key 或等网络恢复就会自动继续；按住超过 3 分钟才会跳过这一节'
           });
@@ -13198,6 +13215,7 @@ var OMITONE_CODE_REV = '786cee036b';
         emitRuntimeLog('warn', 'quiz blocked too long, giving up unit', {
           reason: skipReason,
           heldMs: Date.now() - blockedSince,
+          who: this._quizApiWhoForLog(),
           hint: '按住整节超过 3 分钟仍未恢复，改判跳过 —— 这些题**没做过**，配好链路后请开重学把这节补回来'
         });
       }
@@ -13208,7 +13226,8 @@ var OMITONE_CODE_REV = '786cee036b';
         this._quizApiSkipLogAt = now;
         emitRuntimeLog('warn', 'skip quiz because api unavailable', {
           reason: skipReason,
-          error: String(this._quizApiLastError || '').slice(0, 160)
+          error: String(this._quizApiLastError || '').slice(0, 160),
+          who: this._quizApiWhoForLog()
         });
       }
       if (this._switchToNextLearningCard(skipReason)) return true;
@@ -14269,7 +14288,8 @@ var OMITONE_CODE_REV = '786cee036b';
           if (result && result.parseError) {
             // API 连接正常，仅答案解析失败：保留测验稍后重试，不标记连接失败
             emitRuntimeLog('warn', 'quiz llm parse failed, keep quiz for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -14284,13 +14304,15 @@ var OMITONE_CODE_REV = '786cee036b';
             // 所以这里只跳过本轮、把原话留给用户，改好配置后自动恢复。
             emitRuntimeLog('error', 'quiz llm rejected permanently, no retry', {
               error: String(result.error || '').slice(0, 200),
-              skipMs: PERMANENT_LLM_ERROR_SKIP_MS
+              skipMs: PERMANENT_LLM_ERROR_SKIP_MS,
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._setQuizForceSkip(PERMANENT_LLM_ERROR_SKIP_MS);
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败', result && result.who);
           this._skipQuizForApiUnavailable('llm-request-failed', quizDoc);
           return;
         }
@@ -20271,7 +20293,8 @@ var OMITONE_CODE_REV = '786cee036b';
           }
           if (result && result.parseError) {
             emitRuntimeLog('warn', 'popup quiz llm parse failed, keep popup for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -20282,19 +20305,24 @@ var OMITONE_CODE_REV = '786cee036b';
             // 这里改走"放弃这道弹题"：关掉弹窗 + 冷却 60 秒，
             // 既不会拿坏 Key 反复去撞接口，也不把课程卡在这里。
             emitRuntimeLog('error', 'popup quiz llm rejected permanently, no retry', {
-              error: String(result.error || '').slice(0, 200)
+              error: String(result.error || '').slice(0, 200),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._giveUpPopupQuiz(popup, 'llm-permanent-error');
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败', result && result.who);
         } catch (e) {
           this._markQuizApiConnectionFailed(e);
         }
       }
 
-      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', { reason: this._getQuizApiUnavailableReason() || 'llm-request-failed' });
+      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', {
+        reason: this._getQuizApiUnavailableReason() || 'llm-request-failed',
+        who: this._quizApiWhoForLog()
+      });
       var closeButton = this._findDialogButtonByText(popup, ['跳过', '关闭', '取消', '知道了']);
       if (closeButton) {
         try { closeButton.click(); } catch (e2) {}

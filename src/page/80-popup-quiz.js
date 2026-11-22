@@ -2078,7 +2078,8 @@
           }
           if (result && result.parseError) {
             emitRuntimeLog('warn', 'popup quiz llm parse failed, keep popup for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -2089,19 +2090,24 @@
             // 这里改走"放弃这道弹题"：关掉弹窗 + 冷却 60 秒，
             // 既不会拿坏 Key 反复去撞接口，也不把课程卡在这里。
             emitRuntimeLog('error', 'popup quiz llm rejected permanently, no retry', {
-              error: String(result.error || '').slice(0, 200)
+              error: String(result.error || '').slice(0, 200),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._giveUpPopupQuiz(popup, 'llm-permanent-error');
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败', result && result.who);
         } catch (e) {
           this._markQuizApiConnectionFailed(e);
         }
       }
 
-      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', { reason: this._getQuizApiUnavailableReason() || 'llm-request-failed' });
+      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', {
+        reason: this._getQuizApiUnavailableReason() || 'llm-request-failed',
+        who: this._quizApiWhoForLog()
+      });
       var closeButton = this._findDialogButtonByText(popup, ['跳过', '关闭', '取消', '知道了']);
       if (closeButton) {
         try { closeButton.click(); } catch (e2) {}

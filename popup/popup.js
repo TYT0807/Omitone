@@ -832,15 +832,66 @@ async function appendPopupLog(level, message, meta) {
  * API 连接状态行：apiConnectionError 是「检测 API 连接」与页面答题链路共写的
  * 分类后人话（libs/api-error.js）—— 此前只在 toast 与日志里出现，弹窗没有常驻展示位。
  * 失败时显示该文案（照着做即可），成功/清空后隐藏。
+ *
+ * 批次 166 在这一行下面补了两格：
+ *  ① 「刚才问的是哪家哪个模型」—— 分类只说**哪一类错**，没说**是谁家的错**，
+ *     而换一家是用户唯一的自救路径（issue #2 第 3 条）。
+ *  ② 「这一轮改用乱选继续 / 变回问 AI」—— 用户裁的是**一键决定退不退**，
+ *     ⚠️ 插件自己永远不许把「乱选」打开：它随机填满整卷就交卷，而交卷不可逆。
+ *     这一发只由人点，且只在有失败记录时才出现（没坏就别劝人退）。
  */
 function renderApiConnState(config) {
   const el = document.getElementById("apiConnState");
   if (!el) return;
+  const whoEl = document.getElementById("apiConnWho");
+  const retreatEl = document.getElementById("apiRetreat");
   const failed = !!(config && config.apiConnectionFailed);
   const message = failed ? String(config.apiConnectionError || "").trim() : "";
-  if (!failed || !message) { el.hidden = true; el.textContent = ""; return; }
+  if (!failed || !message) {
+    el.hidden = true;
+    el.textContent = "";
+    if (whoEl) { whoEl.hidden = true; whoEl.textContent = ""; }
+    if (retreatEl) retreatEl.hidden = true;
+    return;
+  }
   el.textContent = message;
   el.hidden = false;
+  // 渠道身份**从整份配置算**，不掺进上面那句分类文案里：
+  // - 页面那一侧拿不到 providerPreset / apiUrl / model（libs/runtime-policy.js 的
+  //   runtimeFields 不投影这三格），所以「是谁家的错」只有扩展侧与弹窗说得出；
+  // - 上面那句有 300 字的存储预算（apiConnectionError），前缀会把**服务商原话**挤掉，
+  //   而原话才是排查的唯一线索 —— 所以它是独立的一行，不是那句话的开头。
+  // ⚠️ 基准必须与「实际发出去那发用的那份」相同：content.js 的 loadConfig('study')
+  //    算的是 `{ ...CONFIG_DEFAULTS, ...存储 }`，这里也得补默认值（新用户存储里
+  //    providerPreset 压根没写过，不补就读出 (渠道读不出)）。与 §2 #23 那条**相反**
+  //    的基准要求并存是有意的：竞争闸要比的是原始存档字节，展示要比的是渲染出来的值。
+  const merged = Object.assign({}, DEFAULTS, config || {});
+  const who = (typeof self !== "undefined" && self.OmitoneApiError)
+    ? self.OmitoneApiError.channelOf(merged)
+    : { text: "(渠道读不出) · (模型名没填)（libs/api-error.js 没加载）" };
+  if (whoEl) {
+    whoEl.textContent = "刚才问的是：" + String(who.text || "");
+    whoEl.hidden = false;
+  }
+  if (retreatEl) {
+    // 「现在是不是乱选」读**存储里那一份**（传进来的 config），不读内存里那枚开关镜像 ——
+    // 保存被拒时内存已经翻了、盘上没翻，跟着内存说就成了谎话。
+    renderApiRetreat(retreatEl, merged.randomAnswer === true);
+    retreatEl.hidden = false;
+  }
+}
+
+/** 那一发的按钮与说明：只说这一格现在是什么、点下去会变成什么。 */
+function renderApiRetreat(row, randomOn) {
+  const btn = row.querySelector("#apiRetreatBtn");
+  const hint = row.querySelector("#apiRetreatHint");
+  if (btn) btn.textContent = randomOn ? "变回问 AI（关掉乱选）" : "这一轮改用「乱选」继续";
+  if (hint) {
+    hint.innerHTML = randomOn
+      ? "现在<b>不问模型</b>：题目随机填满后按「乱选交卷前留几秒检查」那一格交卷。"
+      : "乱选 = 不问模型、<b>随机填满整卷再交卷</b>，交卷不可逆。<b>插件不会自己打开它</b>，这一发只由你点。<br>"
+        + "⚠️ 不是每张卷子都会填满：作业 / 考试那档把下限调到「高」时仍然<b>不猜、停下来等</b>。";
+  }
 }
 
 function apiConfigSummary(cfg) {
@@ -1757,6 +1808,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (cfgChange) renderApiConnState(cfgChange.newValue);
 });
 els.testApi.addEventListener("click", testApiConnectionNoBackground);
+// 「这一轮退不退」那一发：把点击**转交给那枚真开关**，不在这里再写一份翻格 + 保存 + 失败回滚。
+// 为什么走 click 而不是自己 patchConfig：那枚开关的链路（翻内存 → saveToggleConfig →
+// 保存被拒就把内存翻回去并 reportSaveError）是盘上唯一一份、也是已经测过的那一份，
+// 复制第二份就会各自漂移；更糟的是漏了回滚那一半时，界面说「在乱选」而盘上没写。
+// ⚠️ 这一族**没有任何自动路径**：全仓库只有这里和那枚开关本身会翻 randomAnswer，
+// 页面侧只读它（_isRandomAnswerMode），答题失败链路一条都不许写它。
+(() => {
+  const btn = document.getElementById("apiRetreatBtn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const sw = document.getElementById("randomAnswer");
+    // 找不到开关时说明弹窗结构被改坏了：说一句就收，不许静默什么都不发生
+    if (!sw) { toast("找不到「乱选」那枚开关，请重装扩展或到「答题」那一栏手动翻它"); return; }
+    sw.click();
+  });
+})();
 // 「获取模型列表」与「检测 API 连接」是两件事：那一发要花钱（发一条消息），这一发只问清单。
 // 守卫：els 里这一枚取自 popup.html 的 #listModels —— 没有它启动就当场抛，
 // 比"按钮存在但点了没反应"好查（与上面 testApi 同一口径）。

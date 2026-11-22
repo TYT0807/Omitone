@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
+var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -283,6 +283,15 @@ var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
   const THINKING = (typeof self !== 'undefined' && self.OmitoneThinking) || null;
   const API_ERROR = (typeof self !== 'undefined' && self.OmitoneApiError) || null;
   const STUDY_STATS = (typeof self !== 'undefined' && self.OmitoneStudyStats) || null;
+
+  /**
+   * 「这一发问的是哪家哪个模型」—— 只在**拿得到完整配置**的这一侧算（页面那份投影里没有
+   * providerPreset / apiUrl / model）。真源在 libs/api-error.js 的 channelOf；
+   * 这里只包一层，让模块缺失那一格也说得出口，而不是抛 TypeError 把整拍打断。
+   */
+  function llmWhoText(config) {
+    return API_ERROR ? API_ERROR.channelText(config) : '(渠道读不出) · (模型名没填)（libs/api-error.js 没加载）';
+  }
 
   /**
    * 扩展自带资源缺失时的统一报错。
@@ -1017,6 +1026,10 @@ var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
   async function requestAnswersWithRetry(config, questions) {
     let lastError = '';
     let lastWasNetwork = false;
+    // 「失败的是哪家哪个模型」在这一发就算好，随每条失败日志与回包一起交出去 ——
+    // 页面侧那份投影里没有 providerPreset / apiUrl / model（libs/runtime-policy.js 的
+    // runtimeFields 不投它们），所以只有这里说得出真话；页面只负责转述，不再自己猜。
+    const who = llmWhoText(config);
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await callLLMProvider(config, questions);
@@ -1027,7 +1040,7 @@ var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
         if (result && result.truncated) return result;
         lastError = (result && result.error) || 'AI response parse failed';
         lastWasNetwork = false;
-        appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200) });
+        appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200), who });
       } catch (error) {
         lastError = error && error.message ? error.message : String(error);
 
@@ -1044,22 +1057,23 @@ var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
           appendRuntimeLog('error', 'llm_request rejected (permanent)', {
             status: error.httpStatus,
             category: error.apiCategory || '',
-            error: lastError.slice(0, 300)
+            error: lastError.slice(0, 300),
+            who
           });
-          return { success: false, error: lastError, permanentError: true, errorCategory: error.apiCategory || '' };
+          return { success: false, error: lastError, permanentError: true, errorCategory: error.apiCategory || '', who };
         }
 
         lastWasNetwork = true;
-        appendRuntimeLog('warn', 'llm request error' + (attempt === 0 ? ', retrying' : ''), { error: lastError.slice(0, 300) });
+        appendRuntimeLog('warn', 'llm request error' + (attempt === 0 ? ', retrying' : ''), { error: lastError.slice(0, 300), who });
       }
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     if (lastWasNetwork) {
       await updateApiConnectionState(true, lastError, config);
-      appendRuntimeLog('error', 'llm_request direct failed', { error: lastError.slice(0, 300) });
-      return { success: false, error: lastError };
+      appendRuntimeLog('error', 'llm_request direct failed', { error: lastError.slice(0, 300), who });
+      return { success: false, error: lastError, who };
     }
-    return { success: false, error: lastError, parseError: true };
+    return { success: false, error: lastError, parseError: true, who };
   }
 
   async function handleLLMRequestDirect(payload) {
@@ -1100,8 +1114,8 @@ var OMITONE_CODE_REV_BRIDGE = '5a958d4847';
 
     const missing = missingModuleError();
     if (missing) {
-      appendRuntimeLog('error', 'llm_request aborted', { error: missing });
-      return { success: false, error: missing };
+      appendRuntimeLog('error', 'llm_request aborted', { error: missing, who: llmWhoText(effConfig) });
+      return { success: false, error: missing, who: llmWhoText(effConfig) };
     }
     if (!effConfig.apiKey) return { success: false, error: 'Please configure API Key first' };
     if (!questions.length) return { success: false, error: 'no questions to answer' };

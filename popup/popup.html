@@ -140,6 +140,20 @@ html[data-ui="fancy"] .brand{ padding-right:110px; }
   .api-conn-state{ background:rgba(217,119,6,.16); color:#fcd34d; }
 }
 .api-conn-state[hidden]{ display:none; }
+/* 「问的是哪家哪个模型」单独一行：它是**身份**不是错误分类，压进上面那句里
+   就会被用户读成错误说明的一部分（服务商原话本来就在上面那句里）。 */
+.api-conn-who{
+  margin:6px 2px 0; padding:6px 10px; border-radius:10px; font-size:11.5px; line-height:1.5;
+  border:1px dashed rgba(217,119,6,.5); background:transparent; color:var(--fg-2);
+  word-break:break-word;
+}
+.api-conn-who[hidden]{ display:none; }
+/* 「这一轮退不退」那一发：只在有失败记录时出现，且**只有按钮会改这一格** ——
+   插件自己永远不动「乱选」（交卷不可逆，见 popup.js 的 renderApiConnState 注释）。 */
+.api-retreat{ margin:8px 2px 0; }
+.api-retreat[hidden]{ display:none; }
+.api-retreat .btn{ width:100%; }
+.api-retreat .hint{ margin:6px 2px 0; }
 .minor button{
   flex:1 1 auto; padding:7px 10px; border:1px solid var(--hairline-strong); border-radius:10px;
   background:var(--field); color:var(--fg-2); cursor:pointer; font-size:12px; font-weight:500;
@@ -889,6 +903,11 @@ body.has-bg::after{
              结果行也跟着走（原先混在日志按钮排里，归组是错的） -->
         <button class="btn" id="testApi" style="width:100%">检测 API 连接</button>
         <p class="api-conn-state" id="apiConnState" hidden></p>
+        <p class="api-conn-who" id="apiConnWho" hidden></p>
+        <div class="api-retreat" id="apiRetreat" hidden>
+          <button class="btn secondary" id="apiRetreatBtn">这一轮改用「乱选」继续</button>
+          <p class="hint" id="apiRetreatHint"></p>
+        </div>
       </div>
       <div class="field">
         <button class="btn" id="listModels" style="width:100%">获取模型列表</button>

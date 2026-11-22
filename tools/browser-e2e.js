@@ -15230,6 +15230,213 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 弹窗里「刚才问的是哪家哪个模型」与「这一轮退不退」（批次 166，issue #2 第 3 条）----
+ *
+ * 用户裁定：「先做成『点名是哪一家哪个模型失败的』+『一键决定退不退』，不做全自动退到乱填」。
+ * 这一族**只能在真浏览器里量**，集成层替不了，原因有两条都是盘上的事实：
+ *   ① 那句话是 `chrome.storage.onChanged` 与 `load()` **两条入口**各自渲染的（popup.js:1507 / :1808）。
+ *      集成沙盒里弹窗脚本根本不加载，两条入口只要有一条漏了传配置，症状就是
+ *      「打开弹窗时那行是空的，改了设置才冒出来」—— 只有真弹窗分得开。
+ *   ② 「点一下」走的是那枚真开关的完整链路（翻内存 → `saveToggleConfig` → 后台 → **盘上**），
+ *      而这一串里任何一跳挂掉，界面都可以照样说「在乱选」。集成层只能验委托写法，
+ *      验不了「盘上真翻了」—— 那正是「交卷不可逆」这件事唯一让人放心的证据。
+ *
+ * ⚠️ 新用户那一格（AGENTS §2 #23 同族）：存储里 `providerPreset` / `model` **压根没写过**时，
+ *    展示侧必须自己补 DEFAULTS 再算渠道。不补就当场读出「(渠道读不出)」，而它是一句假话
+ *    —— 请求实际发给了默认那家。前提要钉「存储里真的没这个键」，否则夹具里那个键一直被
+ *    前一个场景写着，两边都一致，测试结构上看不见这个 bug。
+ *
+ * 收尾交回原配置并**比回来**（存储是整轮共用的，见 §5 那条纪律）。
+ */
+SCENARIOS.push({
+  name: '弹窗失败那一格点名是哪家哪个模型，退到乱选只能由人点（点下去盘上真翻）',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    var PRELUDE =
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'var shown=function(id){var b=document.getElementById(id);return !!b&&getComputedStyle(b).display!=="none";};' +
+      'var read=function(id){return String((document.getElementById(id)||{}).textContent||"");};' +
+      'var getCfg=function(){return new Promise(function(res){' +
+      '  chrome.storage.local.get("config",function(q){res(q&&q.config);});});};' +
+      'var setCfg=function(c){return new Promise(function(res){' +
+      '  chrome.storage.local.set({config:c},function(){res(true);});});};' +
+      // 按键排序序列化：同一份配置在两条入口、两个时刻比得出"是不是同一份"，不受写入顺序影响
+      'var canon=function(v){if(!v||typeof v!=="object")return String(v);' +
+      '  return Object.keys(v).sort().map(function(k){return k+"="+JSON.stringify(v[k]);}).join("&");};' +
+      'var waitRow=function(on){var t=Date.now()+4000;return new Promise(function(res){' +
+      '  (function step(){var v=shown("apiConnWho");' +
+      '    if(v===on||Date.now()>t)return res(v);setTimeout(step,80);})();});};' +
+      'var waitStored=function(want){var t=Date.now()+4000;return new Promise(function(res){' +
+      '  (function step(){return getCfg().then(function(c){var v=!!(c&&c.randomAnswer===true);' +
+      '    if(v===want||Date.now()>t)return res(v);setTimeout(step,80);});})();});};';
+
+    // ①②③ 三条入口与两格渠道话（不刷新那一路 = onChanged；下面 reload 那一路 = load()）
+    var s1 = '(async function(){' + PRELUDE +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof renderApiConnState==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,render:typeof renderApiConnState,lib:typeof self.OmitoneApiError,' +
+      '  hasLib:!!(self.OmitoneApiError&&self.OmitoneApiError.channelText)};' +
+      'if(o.render!=="function"||!o.hasLib)return o;' +
+      'var orig=await getCfg();o.origCanon=canon(orig);o.origWasNull=orig===undefined||orig===null;' +
+      // 原配置先钉在 localStorage 里（同源、跨 reload 还在）：收尾要交回**这一轮进来时那一份**，
+      // 不能拿"上一个场景留下的那份被我们改过的形状"当原始值
+      'try{localStorage.setItem("omitone166orig",JSON.stringify(orig===undefined?null:orig));}catch(e){}' +
+      // 先落一份"没有失败记录"的配置：没坏时三行都不许出现（没坏就别劝人退）
+      'await setCfg({enableQuiz:true,apiKey:"sk-166-synthetic"});' +
+      'o.preHidden=await waitRow(false);' +
+      'o.preAll=[shown("apiConnState"),shown("apiConnWho"),shown("apiRetreat")];' +
+      // 现场取证用：渲染那句话是在 onChanged 的事件回调里跑的，抛了异常不会回到我这里，
+      // 只会留下"who 说了、说明那一格空着"这种半成品形状 —— 先把异常收进一只篮子
+      'var e166=[];window.addEventListener("error",function(ev){e166.push(String(ev.message));});' +
+      'window.addEventListener("unhandledrejection",function(ev){e166.push("promise:"+String(ev.reason));});' +
+      // A：存过 kimi，失败那一格要点名到厂牌与模型
+      'var kimi={enableQuiz:true,apiKey:"sk-166-synthetic",providerPreset:"kimi",' +
+      '  apiUrl:"https://api.moonshot.cn/v1",model:"kimi-k2",' +
+      '  apiConnectionFailed:true,apiConnectionError:"【连接不上服务商】401 这一发被服务商拒了"};' +
+      'await setCfg(kimi);o.aShown=await waitRow(true);' +
+      'o.aState=read("apiConnState");o.aWho=read("apiConnWho");' +
+      'o.aRuler="刚才问的是："+self.OmitoneApiError.channelText(kimi);' +
+      'o.aRetreatShown=shown("apiRetreat");' +
+      'o.aBtn=String((document.getElementById("apiRetreatBtn")||{}).textContent||"");' +
+      // 说明那句是 `innerHTML` 写进去的：这里**实测** innerText 读回空串、textContent 读回全文
+      //（弹窗这一页在测试台里没走完排版），所以断言钉 textContent，两种读法各留一份进取证 ——
+      // 将来"说明其实写了但读回来是空"那一族能一眼分开是谁的锅
+      'o.aHint=String((document.getElementById("apiRetreatHint")||{}).textContent||"");' +
+      'o.aHintInner=String((document.getElementById("apiRetreatHint")||{}).innerText||"");' +
+      'o.aHintHtml=String((document.getElementById("apiRetreatHint")||{}).innerHTML||"").slice(0,40);' +
+      'o.aRetreatHiddenFlag=!!(document.getElementById("apiRetreat")||{}).hidden;' +
+      // 存储里那句仍是服务商原话，没被渠道前缀挤掉（300 字预算是留给原话的）
+      'o.aStoredErr=String(((await getCfg())||{}).apiConnectionError||"");' +
+      // B：新用户那一格 —— 存储里 providerPreset / model 压根没写过
+      'var fresh={enableQuiz:true,apiKey:"sk-166-synthetic",' +
+      '  apiConnectionFailed:true,apiConnectionError:"【连接不上服务商】网络不通"};' +
+      'await setCfg(fresh);o.bShown=await waitRow(true);' +
+      'o.bWho=read("apiConnWho");' +
+      'var gotB=await getCfg();' +
+      'o.bNoPresetKey=!("providerPreset" in (gotB||{}));o.bNoModelKey=!("model" in (gotB||{}));' +
+      // 同一把尺的两种喂法：不补默认值会说什么、补了会说什么 —— 差一句才是"补"在承重
+      'o.bNoMerge=String(self.OmitoneApiError.channelText(fresh));' +
+      // DEFAULTS 是弹窗脚本顶层的 const（全局词法作用域），取不到就是测试台的问题，
+      // 单独说一句，别让"补了默认值还是读不出渠道"混进断言里被读成生产坏了
+      'o.bMerged=(function(){var d;' +
+      'try{d=DEFAULTS;}catch(e){return "(测试台取不到 DEFAULTS：" + String(e) + ")";}' +
+      'return "刚才问的是："+String(self.OmitoneApiError.channelText(Object.assign({},d,fresh)));})();' +
+      'o.errs=e166;' +
+      'return o;})()';
+    var r1 = await ctx.client.evaluate(s1);
+
+    // ④ reload：换一条入口（load()），同一份存储要说同一句话
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 9000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!document.getElementById("apiRetreatBtn")'))) await sleep(200);
+    var s2 = '(async function(){' + PRELUDE +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof renderApiConnState==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,render:typeof renderApiConnState};' +
+      'if(o.render!=="function")return o;' +
+      // 打开弹窗就该直接看见（不依赖有人改动存储）—— 等一拍再看，别读渲染前的空壳
+      'await nap(400);' +
+      'o.shown=await waitRow(true);o.who=read("apiConnWho");o.state=read("apiConnState");' +
+      'var c=await getCfg();o.presetKeyInStored=("providerPreset" in (c||{}));' +
+      'return o;})()';
+    var r2 = await ctx.client.evaluate(s2);
+
+    // ⑤⑥⑦ 那一键：点一下 → 盘上真翻；再点 → 翻回去；开关节点没了也不许静默
+    var s3 = '(async function(){' + PRELUDE +
+      'var btn=document.getElementById("apiRetreatBtn");' +
+      'var sw=document.getElementById("randomAnswer");' +
+      'var o={btn:!!btn,sw:!!sw};if(!btn||!sw)return o;' +
+      'var btxt=function(){return String(btn.textContent||"");};' +
+      'o.before={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,' +
+      '  stored:((await getCfg())||{}).randomAnswer===true,txt:btxt()};' +
+      'btn.click();' +
+      'o.storedTrue=await waitStored(true);' +
+      'o.afterOn={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,txt:btxt(),' +
+      '  rowShown:shown("apiRetreat")};' +
+      'btn.click();' +
+      'o.storedFalse=await waitStored(false);' +
+      'o.afterOff={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,txt:btxt()};' +
+      // 弹窗结构被改坏那一格：说一句就走，不许静默什么都不发生
+      'sw.parentNode.removeChild(sw);' +
+      'btn.click();await nap(200);' +
+      'var tt=document.getElementById("toast");' +
+      'o.toast={show:!!tt&&tt.classList.contains("show"),text:String((tt||{}).textContent||"")};' +
+      'o.stillNotOn=((await getCfg())||{}).randomAnswer!==true;' +
+      'return o;})()';
+    var r3 = await ctx.client.evaluate(s3);
+    // 收尾那一发：把这一轮进来时那份存储原样交回（逐键比回来），再单独验一次"撤掉失败记录三行一起收起"
+    var s4 = '(async function(){' + PRELUDE +
+      'var RAW=null,err="";' +
+      'try{var s=localStorage.getItem("omitone166orig");RAW=s===null?null:JSON.parse(s);}catch(e){err=String(e);}' +
+      'var done;' +
+      // 读不出原始配置那一格：宁可不写盘，也不拿"没有"当"本来就是空的"（§2 #12 同一族）
+      'if(err){done="读不出这轮进来时那份，故意没动盘：" + err;}' +
+      'else if(RAW===null){done=await new Promise(function(res){chrome.storage.local.remove("config",function(){res("removed");});});}' +
+      'else{done=await setCfg(RAW);}' +
+      'var now=await getCfg();' +
+      'var back=canon(now);' +
+      'try{localStorage.removeItem("omitone166orig");}catch(e){}' +
+      // 撤掉失败记录那一格：三行一起收起（不许留下一个没有上下文的名字）
+      'await setCfg({enableQuiz:true,apiKey:"sk-166-synthetic"});' +
+      'var hidden=await waitRow(false);' +
+      'var all=[shown("apiConnState"),shown("apiConnWho"),shown("apiRetreat")];' +
+      'return {done:done,canon:back,hidden:hidden,all:all};})()';
+    var r4 = await ctx.client.evaluate(s4);
+
+    var a = r1 || {}, b = r2 || {}, c = r3 || {};
+    check('前提：弹窗脚本已接管、渠道那把尺（`libs/api-error.js`）在弹窗里真加载到了',
+      !!a && a.render === 'function' && a.hasLib === true && a.ready === 'complete', JSON.stringify(a));
+    check('没有失败记录时三行都藏着（apiConnState / apiConnWho / apiRetreat 各一格）' +
+      '—— 没坏就劝人退，等于把一次正常刷课说成"你用的是备用的"',
+      a.preHidden === false && !!a.preAll && a.preAll[0] === false && a.preAll[1] === false && a.preAll[2] === false,
+      JSON.stringify({ preHidden: a.preHidden, preAll: a.preAll }));
+    check('存过 Kimi 且记录到失败：那一行写的是「刚才问的是：Kimi（Moonshot） · kimi-k2」，' +
+      '且与页面里同一把尺算出来的那一句逐字相同（不是弹窗另写一份口径）',
+      a.aShown === true && a.aRetreatShown === true && String(a.aWho).indexOf('Kimi（Moonshot）') >= 0 &&
+      String(a.aWho).indexOf('kimi-k2') >= 0 && /^刚才问的是：/.test(String(a.aWho)) &&
+      String(a.aWho) === String(a.aRuler), JSON.stringify({ who: a.aWho, ruler: a.aRuler }));
+    check('上面那行仍是服务商原话、**不含**厂牌名（渠道没被塞进那 300 字预算里，原话才留得住）',
+      /服务商/.test(String(a.aState)) && String(a.aState).indexOf('Kimi') < 0 &&
+      String(a.aStoredErr).indexOf('Kimi') < 0 && String(a.aStoredErr).indexOf('刚才问的是') < 0,
+      JSON.stringify({ state: a.aState, storedErr: a.aStoredErr }));
+    check('新用户那一格：存储里 providerPreset 与 model 两个键都没写过（前提自证），' +
+      '那一行仍点名默认那家、不说「渠道读不出」',
+      a.bNoPresetKey === true && a.bNoModelKey === true && a.bShown === true &&
+      String(a.bWho).indexOf('渠道读不出') < 0 && String(a.bWho) === String(a.bMerged),
+      JSON.stringify({ who: a.bWho, 不补默认值会说: a.bNoMerge, 键在不在: [a.bNoPresetKey, a.bNoModelKey] }));
+    check('补不补默认值确实差一句（不补那把尺读出「渠道读不出」）—— 这一格证明"补 DEFAULTS"在承重，不是多余的写法',
+      String(a.bNoMerge).indexOf('渠道读不出') >= 0 && String(a.bMerged).indexOf('渠道读不出') < 0,
+      JSON.stringify({ noMerge: a.bNoMerge, merged: a.bMerged }));
+    check('重新打开弹窗（走 load() 那条入口，没人改动存储）同一份配置说出同一句话',
+      b.render === 'function' && b.shown === true && b.presetKeyInStored === false &&
+      String(b.who) === String(a.bWho), JSON.stringify({ reloaded: b.who, first: a.bWho }));
+    check('退的那一键点下去：那枚真开关翻了（aria 与 class），且**盘上** config.randomAnswer 真变成 true',
+      !!c && !!c.before && c.before.stored === false && c.storedTrue === true &&
+      c.afterOn && c.afterOn.aria === 'true' && c.afterOn.cls === true, JSON.stringify(c));
+    check('按钮那句话跟着翻转（「这一轮改用「乱选」继续」/「变回问 AI（关掉乱选）」），' +
+      '再点一次盘上翻回去 —— 说的是这一格现在是什么、点下去会变成什么',
+      /改用「乱选」/.test(String(c.before && c.before.txt)) &&
+      /变回问 AI/.test(String(c.afterOn && c.afterOn.txt)) &&
+      /改用「乱选」/.test(String(c.afterOff && c.afterOff.txt)) && c.storedFalse === false &&
+      c.afterOff && c.afterOff.aria === 'false' && c.afterOff.cls === false,
+      JSON.stringify({ before: c.before, on: c.afterOn, off: c.afterOff }));
+    check('「乱选」那枚开关节点不在时：toast 说一句出口（重装 / 手动到「答题」那一栏翻），盘上一个字节都没动',
+      c.toast && c.toast.show === true && /找不到「乱选」那枚开关/.test(String(c.toast.text)) &&
+      /重装|答题/.test(String(c.toast.text)) && c.stillNotOn === true, JSON.stringify(c.toast));
+    check('说明那三句真话在弹窗里真读得出来（交卷不可逆 / 插件不会自己打开它 / 下限「高」那一档不猜、停下来等）',
+      ['交卷不可逆', '插件不会自己打开它', '不猜', '停下来等'].every(function (w) {
+        return String(a.aHint).indexOf(w) >= 0;
+      }), JSON.stringify({ textContent: String(a.aHint).slice(0, 120),
+        innerText: String(a.aHintInner).slice(0, 60), html: a.aHintHtml,
+        retreatHidden: a.aRetreatHiddenFlag, rowShown: a.aRetreatShown, errs: a.errs }));
+    check('收尾：本轮开始前的那份存储原样交回（逐键比回来），撤掉失败记录后三行一起收起',
+      !!r4 && String(r4.canon) === String(a.origCanon) && r4.hidden === false &&
+      !!r4.all && r4.all[0] === false && r4.all[1] === false && r4.all[2] === false,
+      JSON.stringify({ canon: r4 && r4.canon, orig: a.origCanon, all: r4 && r4.all }));
+  }
+});
+
+/**
  * ---- 旧版本留下的"已发过"标记，不能把讨论永久挡住 ----
  *
  * 现场（2026-10-17）：旧逻辑发失败也记"已发"，标记 24 小时才过期，

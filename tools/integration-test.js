@@ -955,6 +955,336 @@ async function testErrorContractFuzz() {
     JSON.stringify({ error: dNet && String(dNet.error).slice(0, 60) }));
 }
 
+/**
+ * [3c0] 批次 166：失败要点名「哪家哪个模型」，而**退不退由人点**。
+ *
+ * 用户裁定（issue #2 第 3 条）：
+ *   「先做成『点名是哪一家哪个模型失败的』+『一键决定退不退』，不做全自动退到乱填」
+ *
+ * 为什么渠道只能由扩展侧说（整段断言的地基）：`libs/runtime-policy.js` 的投影里
+ * 没有 providerPreset / apiUrl / model，所以页面那份 configs **天生读不到渠道身份**。
+ * 让页面自己拼就只能猜，而猜出来的那一句会指着错的那家让用户去充值 —— 比不点名更贵。
+ * 链路因此是单向的：整份配置 → channelOf（唯一那把尺）→ 回包 who → 页面存 _quizApiLastWho → 日志与弹窗转述。
+ *
+ * ⚠️ 每段先自证"东西真取出来了"，取不出来就 return（AGENTS §5「走到了 vs 根本没走到」）。
+ */
+async function testChannelNamingAndManualRetreat() {
+  console.log('\n[3c0] 批次 166：失败点名哪家哪个模型，退不退由人点（不自动退到乱填）');
+
+  var API_ERROR = require('../libs/api-error.js');
+  var POLICY = require('../libs/runtime-policy.js');
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var popupJs = read('popup/popup.js');
+  var popupHtml = read('popup/popup.html');
+  var quizSrc = read('src/page/70-quiz-flow.js');
+  var popupQuizSrc = read('src/page/80-popup-quiz.js');
+  var stateSrc = read('src/page/10-config-state.js');
+  var contentSrc = read('content.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  // ================= ① 三张表必须逐枚相等 =================
+  var labelKeys = Object.keys(API_ERROR.CHANNEL_LABELS).sort();
+  var presetBlock = (function () {
+    var at = popupJs.indexOf('const PROVIDER_PRESETS = {');
+    var end = popupJs.indexOf('\n};', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  var presetKeys = [];
+  presetBlock.replace(/^ {2}"?([A-Za-z0-9_.-]+)"?:\s*\{/gm, function (m, k) { presetKeys.push(k); return m; });
+  presetKeys.sort();
+  var optionKeys = (function () {
+    var at = popupHtml.indexOf('<select id="providerPreset">');
+    var end = at < 0 ? -1 : popupHtml.indexOf('</select>', at);
+    if (at < 0 || end <= at) return [];
+    var out = [], re = /<option value="([^"]+)"/g, m;
+    while ((m = re.exec(popupHtml.slice(at, end)))) out.push(m[1]);
+    return out.sort();
+  })();
+  var setDiff = [];
+  if (JSON.stringify(labelKeys) !== JSON.stringify(presetKeys)) setDiff.push('CHANNEL_LABELS ⇔ PROVIDER_PRESETS');
+  if (JSON.stringify(labelKeys) !== JSON.stringify(optionKeys)) setDiff.push('CHANNEL_LABELS ⇔ popup.html option');
+
+  check('① 三张表逐枚相等（`libs/api-error.js` 的 CHANNEL_LABELS ⇔ 弹窗 PROVIDER_PRESETS ⇔ popup.html 那一排 `<option value>`）'
+    + '—— 加了一家而忘了在尺里登记，失败日志就点名成「(渠道读不出)」：用户被告知"认不出是谁家的错"，'
+    + '而真相只是我们少写一行，排查方向整个反了（这一族不报错、不留异常，只有那一句误导人）',
+    labelKeys.length >= 5 && presetBlock.length > 200 && optionKeys.length >= 5 && setDiff.length === 0,
+    JSON.stringify({ labels: labelKeys, presets: presetKeys, options: optionKeys, diff: setDiff }));
+  if (setDiff.length || labelKeys.length < 5) return;
+
+  // ================= ② 尺本体：四格各占一格，谁都不许压进谁 =================
+  var cPreset = API_ERROR.channelOf({ providerPreset: 'deepseek', apiUrl: 'https://api.deepseek.com', model: 'deepseek-chat' });
+  check('② 选过 DeepSeek 时 source 是 preset、一句话里厂牌与模型都在；两句"退路话"都不许出现'
+    + '（认得出家还写「按接入地址认」，等于把已经拿到的证据扔掉）',
+    cPreset.source === 'preset' && cPreset.vendor === 'DeepSeek' &&
+    cPreset.text.indexOf('DeepSeek') === 0 && cPreset.text.indexOf('deepseek-chat') > 0 &&
+    cPreset.text.indexOf('渠道读不出') < 0 && cPreset.text.indexOf('按接入地址认') < 0,
+    JSON.stringify(cPreset));
+
+  var cHost = API_ERROR.channelOf({ apiUrl: 'https://API.Test.com/v1', model: 'm1' });
+  var borrowedLabel = labelKeys.filter(function (k) { return cHost.text.indexOf(API_ERROR.CHANNEL_LABELS[k]) >= 0; });
+  check('② 没记录选过哪家、只有接入地址时 source 是 host，且**明写这是退回**（「按接入地址认」+ 域名小写）；'
+    + '不许冒充成 CHANNEL_LABELS 里的任何一家 —— 冒充就是凭域名编厂牌，用户会去问错那家的客服',
+    cHost.source === 'host' && cHost.vendor === 'api.test.com' &&
+    cHost.text.indexOf('按接入地址认') > 0 &&
+    cHost.text.indexOf('api.test.com') >= 0 && borrowedLabel.length === 0,
+    JSON.stringify({ cell: cHost, borrowed: borrowedLabel }));
+
+  var cStale = API_ERROR.channelOf({ providerPreset: 'minimax', apiUrl: 'https://api.minimax.test/v1', model: 'm' });
+  check('② 老存档里那个 providerPreset 指向已经删掉的一家时，落回 host 那一格，'
+    + '不许凭那串标识符凭空造出一个厂牌（弹窗那侧本来就会把它归一成 custom-openai，两边同形）',
+    cStale.source === 'host' && cStale.text.indexOf('按接入地址认') > 0,
+    JSON.stringify(cStale));
+
+  var cNone = API_ERROR.channelOf({});
+  check('② 渠道与模型双双读不出时，「(渠道读不出)」与「(模型名没填)」两格都在同一句里各说各的；'
+    + '压成空串读起来像"没有渠道这回事"，而真相是"我们没读到"（AGENTS §2 #12）',
+    cNone.source === 'none' && cNone.text.indexOf('(渠道读不出)') >= 0 &&
+    cNone.text.indexOf('(模型名没填)') >= 0, JSON.stringify(cNone));
+
+  var cProto = API_ERROR.channelOf({ apiType: 'claude' });
+  var cBogus = API_ERROR.channelOf({ apiType: 'weird-proto' });
+  check('② 认不出家时协议是唯一留着的身分线索：claude 那一发要点名「协议 claude」，'
+    + '而协议本身是野值时不许编出一句"协议 weird-proto"（把脏数据说成线索 = 替用户指错方向）',
+    cProto.text.indexOf('协议 claude') > 0 && cBogus.text.indexOf('协议') < 0,
+    JSON.stringify({ claude: cProto.text, bogus: cBogus.text }));
+
+  var junkInputs = [undefined, null, {}, '不是对象', { providerPreset: 123 }, { apiUrl: '不是网址' },
+    { apiUrl: 'file:///C:/x' }, { apiUrl: 42, model: null }];
+  var junkBad = junkInputs.filter(function (v) {
+    var t = API_ERROR.channelText(v);
+    return !(typeof t === 'string' && t.length > 0 && t.indexOf('渠道') >= 0);
+  }).length;
+  check('② channelText 对 ' + junkInputs.length + ' 种垃圾输入都交回**非空**且含「渠道」二字（含传进字符串、数字这种根本不该传的形状）'
+    + ' —— 空串进日志就是"这一发没渠道"，而它只是形状怪',
+    junkBad === 0, JSON.stringify({ 坏格数: junkBad, 样本: junkInputs.map(function (v) { return API_ERROR.channelText(v).slice(0, 40); }) }));
+
+  // ================= ③ 页面天生说不出渠道（不是口头承诺，是投影里真没有） =================
+  var pageView = POLICY.publicConfig({
+    providerPreset: 'deepseek', apiUrl: 'https://api.deepseek.com', apiType: 'openai',
+    model: 'deepseek-chat', apiKey: 'sk-should-not-leak', enableQuiz: true
+  }, 'study');
+  var leaked = ['providerPreset', 'apiUrl', 'apiType', 'model', 'apiKey'].filter(function (k) { return k in pageView; });
+  var pageNamesPreset = ['src/page/70-quiz-flow.js', 'src/page/80-popup-quiz.js'];
+  check('③ 渠道身份**只有扩展侧说得出**：整份配置过一遍投影，providerPreset / apiUrl / apiType / model / apiKey '
+    + '一格都不落到页面手里（apiKey 泄漏是另一族，见 #210），所以页面只转述、不自己算；'
+    + '静态那半：答题那两个片段里 0 处出现 providerPreset 这个键名',
+    leaked.length === 0 && pageNamesPreset.every(function (f) { return read(f).indexOf('providerPreset') < 0 }),
+    JSON.stringify({ leaked: leaked, 投影格数: Object.keys(pageView).length }));
+
+  // ================= ④ 真跑请求链：who 随回包与日志一起出去 =================
+  var questions = [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }];
+  var netFail = function () {
+    return { success: false, error: '后台请求失败 —— 无法把请求转发给服务商（网络不通或扩展刚被重载）' };
+  };
+
+  var hKimi = createHarness({
+    config: { providerPreset: 'kimi', apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3' },
+    apiResponder: netFail
+  });
+  hKimi.sendFromPage({ source: 'xxt_app', id: 1661, type: 'llm_request', payload: { questions: questions } });
+  var dKimi = await hKimi.waitForResponse(1661);
+  check('④ 网络失败那一发的回包带 who，且逐字等于同一把尺算出来的那一句（`channelText(整份配置)`）'
+    + ' —— 两处各写一份口径就必然漂移；这一格把「谁家的错」钉在请求链上，而不是钉在日志文本里',
+    !!dKimi && typeof dKimi.who === 'string' &&
+    dKimi.who === API_ERROR.channelText(hKimi.sandbox.__store.config) &&
+    dKimi.who.indexOf('Kimi（Moonshot）') >= 0 && dKimi.who.indexOf('kimi-k3') >= 0,
+    JSON.stringify({ who: dKimi && dKimi.who, error: dKimi && String(dKimi.error).slice(0, 40) }));
+
+  var hDeep = createHarness({ apiResponder: netFail });
+  hDeep.sendFromPage({ source: 'xxt_app', id: 1662, type: 'llm_request', payload: { questions: questions } });
+  var dDeep = await hDeep.waitForResponse(1662);
+  check('④ 换一家，who 跟着换（kimi 与默认那两发读出不一样了两句，各自含自己那家）'
+    + ' —— 证明它是**从配置算出来的**，不是 content.js 里写死的一个字符串',
+    !!dDeep && typeof dDeep.who === 'string' && dDeep.who !== dKimi.who &&
+    dDeep.who.indexOf('DeepSeek') >= 0 && dKimi.who.indexOf('DeepSeek') < 0,
+    JSON.stringify({ kimi: dKimi && dKimi.who, deep: dDeep && dDeep.who }));
+
+  var directLogs = (hKimi.sandbox.__store.runtimeLogs || []).filter(function (x) {
+    return x && x.message === 'llm_request direct failed';
+  });
+  check('④ 那句 `llm_request direct failed` 的 meta 带 who，且与回包那一格逐字相同'
+    + ' —— 现场只导得出日志、导不出回包；两边不同形就等于日志在说另一件事',
+    directLogs.length > 0 && directLogs.every(function (x) { return x.meta && x.meta.who === dKimi.who; }),
+    JSON.stringify({ 条数: directLogs.length, meta: directLogs.map(function (x) { return x.meta; }).slice(0, 2) }));
+
+  var storedErr = String((hKimi.sandbox.__store.config || {}).apiConnectionError || '');
+  check('④ 存储里 `apiConnectionError` 仍是服务商那一句人话，**没有**被渠道前缀挤掉；退避照旧写 '
+    + '—— 那格只有 300 字预算，前缀会把「原话」顶出去，而原话才是排查的唯一线索；'
+    + '所以渠道落在弹窗独立的一行，不是那句话的开头',
+    (hKimi.sandbox.__store.config || {}).apiConnectionFailed === true &&
+    storedErr.indexOf('连接不上') >= 0 && storedErr.indexOf('Kimi') < 0 &&
+    storedErr.indexOf('刚才问的是') < 0,
+    JSON.stringify({ failed: (hKimi.sandbox.__store.config || {}).apiConnectionFailed, err: storedErr.slice(0, 80) }));
+
+  // ================= ⑤ 页面侧的存与读：三格各有其话 =================
+  var logs166 = [];
+  var say166 = function (level, message, meta) { logs166.push({ level: level, message: String(message || ''), meta: meta }); };
+  var markFn = buildFrom(quizSrc, '_markQuizApiConnectionFailed', { emitRuntimeLog: say166 });
+  var whoFn = buildFrom(quizSrc, '_quizApiWhoForLog', {});
+  check('⑤ 两个方法都能从 70-quiz-flow.js 原样取出来真跑（取不出来时后面每一格都是「没执行」，'
+    + '而「没执行」和「通过」在报告里长得一模一样）',
+    typeof markFn === 'function' && typeof whoFn === 'function',
+    JSON.stringify({ mark: typeof markFn, who: typeof whoFn }));
+  if (typeof markFn !== 'function' || typeof whoFn !== 'function') return;
+
+  var app166 = {};
+  var whoText166 = 'Kimi（Moonshot） · kimi-k3';
+  markFn.call(app166, new Error('【连接不上服务商】网络不通'), whoText166);
+  var logged166 = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; })[0];
+  check('⑤ 写入带 who 时 `_quizApiLastWho` 存下那一串，且 `api connection failed, skip quiz` 的 meta.who '
+    + '**逐字等于**存下来那一格（写入口与读出口同形；只改一侧就是"存储说了 A、日志说了 B"）',
+    app166._quizApiLastWho === whoText166 && !!logged166 && logged166.meta &&
+    logged166.meta.who === app166._quizApiLastWho && logged166.meta.retryInMs > 0,
+    JSON.stringify({ stored: app166._quizApiLastWho, meta: logged166 && logged166.meta }));
+
+  var app166b = {};
+  markFn.call(app166b, 'LLM 请求失败');
+  var logged166b = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; }).pop();
+  check('⑤ 写入**不带** who（catch 那一支：异常在半路抛出，压根没走到服务商）→ 单独一格说清'
+    + '「这一发没带渠道」，不许留空串；空串在日志里读起来像"没有渠道这回事"，'
+    + '而真相是"请求没发出去" —— 两者的修复方向完全相反',
+    app166b._quizApiLastWho.indexOf('这一发没带渠道') >= 0 && app166b._quizApiLastWho.length > 0 &&
+    !!logged166b && logged166b.meta.who === app166b._quizApiLastWho,
+    JSON.stringify({ stored: app166b._quizApiLastWho }));
+
+  var appFresh = {};
+  var freshWho = whoFn.call(appFresh);
+  var appEmptyStr = { _quizApiLastWho: '' };
+  var emptyWho = whoFn.call(appEmptyStr);
+  check('⑤ 这一轮还没问过模型就去读，说的是「(这一轮还没问过模型，渠道没读过)」，不是空串；'
+    + '而它必须与「这一发没带渠道」那一格**内容不同** —— 同一句话会把"没问过"与"问过但没带身份"混成一件，'
+    + '那正是本轮要消掉的那种歧义',
+    freshWho.indexOf('还没问过模型') >= 0 && emptyWho === freshWho && freshWho !== app166b._quizApiLastWho &&
+    freshWho.length > 0,
+    JSON.stringify({ fresh: freshWho, 没带渠道: app166b._quizApiLastWho }));
+
+  var declAt = stateSrc.indexOf('_quizApiLastWho:');
+  var resetSkip = bodyOf(quizSrc, '_resetQuizStateForSkip');
+  var resetRuntime = bodyOf(stateSrc, '_resetRuntimeState');
+  check('⑤ 它在 10-config-state.js 有自己的声明（默认空串，与 `_quizApiLastError` 并列），'
+    + '且**不在**两处复位里被抹掉 —— 它是取证不是记账：45 秒退避一过、换了一节再看日志时，'
+    + '这一格是唯一还能说"刚才是哪一家失败"的东西（AGENTS §2 #13 那一族：跨拍才生效的账不许被自己清零）',
+    declAt > 0 && resetSkip.length > 100 && resetRuntime.length > 200 &&
+    resetSkip.indexOf('_quizApiLastWho') < 0 && resetRuntime.indexOf('_quizApiLastWho') < 0,
+    JSON.stringify({ 声明在: declAt > 0, 跳过复位长度: resetSkip.length, 复位长度: resetRuntime.length }));
+
+  // ================= ⑥ 说话点覆盖：谁说了这句话，就得带上渠道 =================
+  var speakSites = [
+    ['src/page/70-quiz-flow.js', 'api connection failed, skip quiz'],
+    ['src/page/70-quiz-flow.js', 'quiz blocked by api, holding unit'],
+    ['src/page/70-quiz-flow.js', 'quiz blocked too long, giving up unit'],
+    ['src/page/70-quiz-flow.js', 'skip quiz because api unavailable'],
+    ['src/page/80-popup-quiz.js', 'popup quiz llm parse failed, keep popup for retry'],
+    ['src/page/80-popup-quiz.js', 'popup quiz llm rejected permanently, no retry'],
+    ['src/page/80-popup-quiz.js', 'skip popup quiz because api unavailable'],
+    ['content.js', 'llm response parse failed'],
+    ['content.js', 'llm_request rejected (permanent)'],
+    ['content.js', 'llm request error'],
+    ['content.js', 'llm_request direct failed'],
+    ['content.js', 'llm_request aborted']
+  ];
+  var silentSites = [];
+  var srcCache166 = {};
+  speakSites.forEach(function (pair) {
+    var srcText = srcCache166[pair[0]] || (srcCache166[pair[0]] = read(pair[0]));
+    var at = srcText.indexOf("'" + pair[1] + "'");
+    if (at < 0) { silentSites.push(pair[1] + '（这句在当前源码里找不到）'); return; }
+    var next = srcText.indexOf('emitRuntimeLog(', at + 1);
+    var block = srcText.slice(at, next < 0 ? at + 600 : next);
+    if (!/\bwho\b/.test(block)) silentSites.push(pair[1] + '（' + pair[0] + ' 那一发没带 who）');
+  });
+  check('⑥ ' + speakSites.length + ' 个"答题用不了"的说话点**每一句**都带上渠道（按名字点名，缺哪句报哪句）'
+    + ' —— 漏掉的那一句在现场就是一句"看起来正常"的 warn；下一轮接手的人只能看到"跳过了"，'
+    + '看不到"为了什么跳过"（AGENTS §2 #22：needle 要从源码 grep 回来，不许照中文语义猜）',
+    silentSites.length === 0, JSON.stringify({ 没带渠道的: silentSites }));
+
+  // ================= ⑦ 退不退由人点：没有任何一条自动路径 =================
+  var scanList = ['src/page/00-shell-constants.js', 'src/page/10-config-state.js', 'src/page/30-log.js',
+    'src/page/70-quiz-flow.js', 'src/page/75-quiz-dom.js', 'src/page/80-popup-quiz.js',
+    'content.js', 'background.js'];
+  var randomHits = [];
+  scanList.forEach(function (f) {
+    var srcText = f.indexOf('80-popup-quiz') >= 0 ? popupQuizSrc : read(f);
+    srcText.split('\n').forEach(function (line, i) {
+      if (line.indexOf('randomAnswer') < 0) return;
+      if (/^\s*[/*]/.test(line)) return;
+      randomHits.push({ file: f, line: i + 1, text: line.trim().slice(0, 70) });
+    });
+  });
+  var autoWrites = randomHits.filter(function (h) {
+    return /randomAnswer["']?\s*[:=]\s*true/.test(h.text) || /\.randomAnswer\s*=[^=]/.test(h.text) ||
+      /randomAnswer\s*\+\+/.test(h.text);
+  });
+  check('⑦ 页面与扩展侧**没有任何一处**能把乱选打开：' + randomHits.length +
+    ' 处命中全部分是默认值 false 与读取（`configs.randomAnswer`），写 true 的那形 0 处 '
+    + '—— 「退到乱填」只能由人点；一做成自动，交卷不可逆这件事就没有人负责了（用户原话：不做全自动退到乱填）',
+    randomHits.length > 0 && autoWrites.length === 0,
+    JSON.stringify({ 命中: randomHits.length, 自动写真的: autoWrites.slice(0, 3) }));
+
+  var retreatWire = (function () {
+    var at = popupJs.indexOf('const btn = document.getElementById("apiRetreatBtn");');
+    var end = at < 0 ? -1 : popupJs.indexOf('\n})();', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  check('⑦ 那一键**只委托**给既有那枚「乱选」开关（找到节点就 `sw.click()`），'
+    + '自己不另写一份保存/回滚 —— 复制一份就出现"内存翻了、盘上没翻"那族谎话；'
+    + '找不到开关时把出口说清楚（重装 / 手动到「答题」那一栏翻），不许静默什么都不发生',
+    retreatWire.indexOf('getElementById("randomAnswer")') >= 0 &&
+    retreatWire.indexOf('sw.click()') >= 0 &&
+    retreatWire.indexOf('patchConfig(') < 0 && retreatWire.indexOf('saveToggleConfig(') < 0 &&
+    /找不到/.test(retreatWire),
+    JSON.stringify({ 片段长度: retreatWire.length, 自己保存: retreatWire.indexOf('patchConfig(') >= 0 }));
+
+  var renderBody = (function () {
+    var at = popupJs.indexOf('function renderApiConnState');
+    var end = popupJs.indexOf('\nfunction apiConfigSummary', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  check('⑦ 那一行「现在是不是乱选」从**存储**那份算：`Object.assign({}, DEFAULTS, config)` 之后读 `merged.randomAnswer === true`，'
+    + '不读内存里那枚开关镜像 —— 保存被拒时内存已经翻了、盘上没翻，跟着内存说就是一句谎话。'
+    + '补默认值也是必需的：新用户存储里 providerPreset 压根没写过，不补就当场读出「(渠道读不出)」'
+    + '（AGENTS §2 #23 同族，基准与竞争闸**相反**是有意为之：那个比原始字节，这个比渲染出来的值）',
+    renderBody.indexOf('Object.assign({}, DEFAULTS, config') >= 0 &&
+    renderBody.indexOf('merged.randomAnswer === true') >= 0 &&
+    renderBody.indexOf('randomAnswerVal') < 0,
+    JSON.stringify({ 长度: renderBody.length, 读内存镜像: renderBody.indexOf('randomAnswerVal') >= 0 }));
+
+  var hintBody = (function () {
+    var at = popupJs.indexOf('function renderApiRetreat');
+    var end = popupJs.indexOf('\nfunction ', at + 10);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  var noGuessReal = bodyOf(quizSrc, '_isNoGuessPaper').length > 100 &&
+    quizSrc.indexOf('this._isNoGuessPaper()') >= 0;
+  check('⑦ 说明那三句真话都在（交卷不可逆 / 插件不会自己打开它 / 下限「高」那一档仍不猜、停下来等），'
+    + '而最后那句**有真判据撑着**（`_isNoGuessPaper` 存在且被答题链路调用）'
+    + ' —— 少一句就成了"以为退得掉、其实这一张卷子照样不填"，那是比不退更贵的误会',
+    hintBody.length > 200 && hintBody.indexOf('交卷不可逆') >= 0 &&
+    hintBody.indexOf('插件不会自己打开它') >= 0 && hintBody.indexOf('不猜') >= 0 &&
+    hintBody.indexOf('停下来等') >= 0 && noGuessReal,
+    JSON.stringify({ 说明长度: hintBody.length, 不猜判据: noGuessReal }));
+}
+
 /** 与 omitone-fuzz-test.cjs 同款的种子随机（两处各留一份，避免为测试建共享模块） */
 function mulberry32Fixed(seed) {
   var a = seed >>> 0;
@@ -9121,6 +9451,7 @@ async function main() {
   await testPermanentHttpError();
   await testApiErrorClassification();
   await testErrorContractFuzz();
+  await testChannelNamingAndManualRetreat();
   await testPermanentRoundStopAndConfigRace();
   await testMissingApiKey();
   await testClaudeProtocol();
