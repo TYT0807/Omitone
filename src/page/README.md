@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **534 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 544 个方法；状态字段 169 个。
+（跑出来大致是：14 个域片段合计 **543 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 553 个方法；状态字段 169 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*1975 行 / 58 方法*
+*2211 行 / 67 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速只试一发与钳制（`_ensurePlaybackRate` / `_detectMaxPlaybackRate` / `_tryRateOnce`）、seek 到结尾 `_trySeekToEnd`、
@@ -327,8 +327,8 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ## 还没做的
 
-- 剩下最大的三个片段（2026-11-10 实测）是 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1887 行）、
-  `60-tasks-detect.js`（1424 行）。还能再分，但收益已经明显变小 ——
+- 剩下最大的三个片段（2026-11-22 实测）是 `60-tasks-detect.js`（2359 行）、`80-popup-quiz.js`（2240 行）、
+  `70-quiz-flow.js`（2224 行）。还能再分，但收益已经明显变小 ——
   真正"一个域横跨上千行"的问题已经解决了。
   真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 - 原始执行说明见 [`docs/pagejs-拆分提示词.md`](../../docs/pagejs-拆分提示词.md)（三个阶段都已完成，别再重做）。

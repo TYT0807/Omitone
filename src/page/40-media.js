@@ -14,10 +14,12 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（58 个）：
+ * 本段的方法（67 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
+ *   _courseGuardId、_courseGuardCell、_persistCourseGuard、_courseGuardHit、_noteCourseGuard、
+ *   _clearCourseGuard、_sayCourseGuard、_noteCourseGuardRateSkipped、_seekNoDragSource、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
  *   _playChaoxingMediaJob、_startSlideMedia、_waitSlideAudioDone、
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
@@ -509,6 +511,9 @@
             condition: res.text, marks: res.marks, hop: res.hop,
             reason: '', jobid: this._activeJobId || ''
           });
+          // 站点在这一枚上自己说了「不可拖拽」⇒ 同一门课后面那些枚没必要各爬一次文档、各挨一次试拖。
+          // ⚠️ 这一发只在「这一枚第一次被判 forbidden」时走，不在每一拍上（§2 #17 不许变热路径）。
+          this._noteCourseGuard('seek', 'banner');
         }
       }
       return res;
@@ -519,6 +524,199 @@
     // 照旧走今天那"试拖一次"的路 —— 标语只许**减少**动手，不许由它多出一次动手。
     _siteSaysNoDrag: function (video) {
       try { return this._siteSeekCondition(video).state === 'forbidden'; } catch (e) { return false; }
+    },
+
+
+    // ==== 课程级「少动手」那一格（批次 173 / issue #2 现场建议「试过一回就整门课别再试」）================
+    // 现场证据（同口径跨单元）：`notes/field-105-b.md` 同一门课三枚单元**全部** tried+reverted 且按住 1x；
+    // `notes/census-153-recheck.md` 同课里前一枚走「90% 提前收尾」、后一枚走「标语说不可拖」；
+    // 2026-11-22 20:0x 又量到第四枚、**换了一门课**（`notes/ledger-173-draft.md` 补一节）。
+    // 而那两本账今天只按**每支媒体**记（`_seekRevertedKeys` / `_detectedMaxRate`），
+    // 于是同一门课的每一枚都要重新挨一次「真往播放器上写」—— 用户报的正是这个动作的人机验证风险。
+    //
+    // ⚠️ 三条硬边界，后续改动一条都不许松：
+    //   1) **只许减少动手**：命中课程格 = 不试拖、不写倍速。永远不许由它多出一次动作（AGENTS §2 #17 原文在此成立）。
+    //   2) **不许当许可**：站点那句标语是按**这一支**的 `data.fastforward` 现拼的，「另一支说了」推不出
+    //      「这支也说了」；反过来「另一支没说过」更推不出「这支可以乱动」。这一格是**策略**，不是站点的新声明。
+    //   3) **不许伪造读数**：`_detectedMaxRate` 保持 `0`（「不知道」）。把 `1` 写进去等于替这支视频伪造一次测量。
+    //   认不出是哪门课（两个 id 都空）⇒ 恒不命中，**单独占一格**并出一句 warn（§2 #12）。
+    _COURSE_GUARD_NEED: 1,            // 用户原话「一回」。⚠️ 断言从源码把这两个数读回来比，不许在测试里写死
+    _COURSE_GUARD_TTL_MS: 21600000,   // 6 小时，与 'omitone:course-switch' 同族；到点允许再问一枚（见上面第 2 条）
+    _COURSE_GUARD_KEY: 'omitone:course-guard',
+
+    // 这一门课是谁 —— `courseid|clazzid`（身份取自 `_currentStudyParams`：主框架 src + location.href）。
+    // ⚠️ 整段包 try：集成层 `[22]`／`[24]` 那批假 app **没有 `location`、也没有 `_currentStudyParams`**，
+    //    少这一层兜底就是拿「测试台自己崩掉」顶掉一整段断言（§5「红 0 条的第一嫌疑人是根本没跑到」）。
+    _courseGuardId: function () {
+      try {
+        var p = this._currentStudyParams ? this._currentStudyParams() : null;
+        var cid = String((p && p.courseid) || '');
+        var zid = String((p && p.clazzid) || '');
+        if (!cid && !zid) return '';
+        return cid + '|' + zid;
+      } catch (e) { return ''; }
+    },
+
+
+    // 本页内存里挂一枚 `{ course, cell, said, warnAt }`：`course` 没变就**不重读存储** ——
+    // 这一族每 1500 毫秒就来一拍，读存储不许变成热路径（§2 #17 同一句警告）。
+    // 换课（id 变了）⇒ 整格归零：旧课的账不许带进新课（口径同 `_readBlockedReloadBudget` 那句「href 变了 = 换了一面墙」）。
+    _courseGuardCell: function (id) {
+      if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+      var mem = this._courseGuard;
+      if (mem.course !== id) { mem.course = id; mem.cell = null; mem.said = {}; mem.warnAt = 0; }
+      if (mem.cell) return mem.cell;
+      var stored = null;
+      try { stored = this._readSessionLedger(this._COURSE_GUARD_KEY); } catch (e) { stored = null; }
+      var cell = { seek: null, speed: null };
+      // 读回来要**归一**：存储是用户机上可改的字节，n 只认非负整数、srcs 只认短名单
+      var norm = function (raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        var n = Number(raw.n);
+        if (!isFinite(n) || n < 0) n = 0;
+        var at = Number(raw.at);
+        if (!isFinite(at) || at < 0) at = 0;
+        var srcs = [];
+        if (Array.isArray(raw.srcs)) {
+          for (var i = 0; i < raw.srcs.length && srcs.length < 8; i++) srcs.push(String(raw.srcs[i]).slice(0, 24));
+        }
+        return { n: Math.floor(n), at: at, srcs: srcs };
+      };
+      if (stored && typeof stored === 'object' && stored.course === id) {
+        cell.seek = norm(stored.seek);
+        cell.speed = norm(stored.speed);
+      }
+      mem.cell = cell;
+      return cell;
+    },
+
+
+    _persistCourseGuard: function (id) {
+      var cell = this._courseGuardCell(id);
+      // 两本格**整份**写回：另一格是同一门课的账，只写改过的那一格等于把它抹掉（§2 #25「不补账就盖」同族）
+      this._writeSessionLedger(this._COURSE_GUARD_KEY, {
+        course: id, seek: cell.seek, speed: cell.speed, ttl: Number(this._COURSE_GUARD_TTL_MS) || 0
+      });
+    },
+
+
+    // 命中 = 这一格已经认出过、且没过 TTL。`which` 取 'seek' | 'speed'，**两格分开**（免拖 ≠ 免倍速）。
+    _courseGuardHit: function (which) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) {
+          // 「认不出是哪门课」单独占一格：不许塌进「这门课可以乱动」，也不许塌进「已经免掉了」
+          if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+          var mem = this._courseGuard;
+          if (!mem.warnAt || Date.now() - mem.warnAt > 3600000) {
+            mem.warnAt = Date.now();
+            emitRuntimeLog('warn', 'course guard off, cannot tell which course this page is', {
+              hint: '认不出课程号（courseid / clazzid 都读不到）—— 课程级的免拖与免倍速一律不启用，照旧每枚各试一次'
+            });
+          }
+          return false;
+        }
+        var cell = this._courseGuardCell(id);
+        var rec = cell[which === 'speed' ? 'speed' : 'seek'];
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !(rec && Number(rec.n) >= need)) return false;
+        var at = rec ? Number(rec.at) : 0;
+        var ttl = Number(this._COURSE_GUARD_TTL_MS);
+        // 没有时间戳 = 不信（交回今天的行为：照旧试一次）；TTL 到点同样再问一枚（§3 第 3 条：少动手 ≠ 永不试）
+        if (!at || (isFinite(ttl) && ttl > 0 && Date.now() - at > ttl)) return false;
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 记一笔证据。`src` 是来源短标签（banner / reverted / measured-1x）—— 三条来源在 `srcs` 里要分得开（§2 #12）。
+    _noteCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;                     // 认不出课 ⇒ 这格账压根不记（不记 = 不免动手）
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key] || (cell[key] = { n: 0, at: 0, srcs: [] });
+        rec.n = (Number(rec.n) || 0) + 1;
+        rec.at = Date.now();
+        var label = String(src || 'unknown').slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        this._persistCourseGuard(id);
+        this._sayCourseGuard(which, id, rec, label);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 撤销 = 拿到**反证**（这一门课其实拖得动 / 其实能倍速）。`n` 归零、`srcs` 留历史：
+    // 谁攒到的、被谁撤掉的，现场都要读得回来 —— 只报「现在没账」等于把机制藏起来。
+    _clearCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key];
+        if (!rec || !(Number(rec.n) > 0)) return false;
+        rec.n = 0;
+        rec.at = 0;
+        var label = ('clear:' + String(src || 'unknown')).slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        if (this._courseGuard) this._courseGuard.said[key] = ''; // 撤销后又攒满，要能再喊一次
+        this._persistCourseGuard(id);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 跨过阈值那一发出**一句**话，每门课每格只喊一次（§2 #16(a)：降噪不许把该留的声音一起关掉）。
+    _sayCourseGuard: function (which, id, rec, src) {
+      try {
+        var mem = this._courseGuard;
+        if (!mem || !mem.said) return false;
+        var key = which === 'speed' ? 'speed' : 'seek';
+        if (mem.said[key]) return false;
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !rec || !(Number(rec.n) >= need)) return false;
+        mem.said[key] = String(src || '');
+        var speed = key === 'speed';
+        emitRuntimeLog('info', speed
+          ? 'course says rate locked at 1x, stop probing player speed'
+          : 'course says not draggable, stop trying to seek to end', {
+          course: id,
+          evidence: Number(rec.n) || 0,
+          from: String(src || ''),
+          sources: (rec.srcs || []).join(','),
+          hint: speed ? '这一门课里已经量到过倍速被锁在 1x，后面每一枚不再往播放器上写倍速'
+            : '这一门课里已经认出来不可拖拽，后面每一枚不再试拖进度条'
+        });
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 这一枚因为课程格而**一个字节都没往播放器上写** —— 说话，但每门课每格只说一次。
+    _noteCourseGuardRateSkipped: function () {
+      try {
+        var mem = this._courseGuard;
+        var rec = (mem && mem.cell && mem.cell.speed) || { n: 0, srcs: [] };
+        return this._sayCourseGuard('speed', this._courseGuardId(), rec, 'menu-unreadable');
+      } catch (e) { return false; }
+    },
+
+
+    // 「这一枚为什么不再试拖」是**哪一条证据**给的 —— 三条各占一格，不许压成一格（§2 #12）。
+    // 顺序＝行为证据 → 声明证据 → 课程策略：越靠前越硬（前两条是这一支自己的，第三条来自同一门课的别枚）。
+    _seekNoDragSource: function (video) {
+      try {
+        var key = video ? this._getMediaSeekKey(video) : '';
+        if (key && this._seekRevertedKeys && this._seekRevertedKeys[key]) return 'reverted';
+        if (video && this._siteSaysNoDrag(video)) return 'banner';
+        if (this._courseGuardHit('seek')) return 'course';
+        return '';
+      } catch (e) { return ''; }
     },
 
 
@@ -557,6 +755,11 @@
       //    把标语当成那次写入的替身写进去，等于替站点宣布"防拖拽"。
       if (this._siteSaysNoDrag(video)) { this._noteSeekSkip('site-no-drag', video, key); return false; }
 
+      // 同一门课里已经认出来过一次 ⇒ 这一枚连"试一下"都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 这一格与上面标语那一格同两条纪律：**不登记 `_seekTriedKeys`**（那本是"我们真写过一次"的账）、
+      //    **更不写 `_seekRevertedKeys`**（那一格是站点的地盘，我们写进去就是拿别枚的账给自己作证）。
+      if (this._courseGuardHit('seek')) { this._noteSeekSkip('course-no-drag', video, key); return false; }
+
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 
       // ⚠️ 这一发"只做一次"的机会不许花在**区间还服务不了它**的时刻上，见下面两个新方法
@@ -590,6 +793,8 @@
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
             self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
+            // 这是「这一门课拖得动」的**正面**证据（不是"没说"）⇒ 当场撤销课程格（批次 173 §3 第 1 条）
+            self._clearCourseGuard('seek', 'drag-ok');
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
             return;
           }
@@ -604,6 +809,8 @@
             return;
           }
           self._seekRevertedKeys[key] = true;  // 两次都弹回 → 不可拖拽
+          // 我们自己真拖过、被站点拽回来 = 正面证据 ⇒ 记进课程格（批次 173 §3 第 1 条）
+          self._noteCourseGuard('seek', 'reverted');
           console.log('[Omitone] seek reverted by site player, continue normal playback');
           emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
         } catch (e) {}
@@ -904,6 +1111,9 @@
       this._rateDetectVideo = null;
       this._rateUnknownVideo = null;
       this._rateUnknownTries = 0;
+      // 上一支是「谁判的按不住」要跟着这一支重问一遍（批次 173）；课程格本身**不在这里清**，
+      // 它是跨媒体、按门课记账的那一本，换课时由 `course` 那一格自己作废。
+      this._rateLockedBy = '';
     },
 
 
@@ -938,7 +1148,14 @@
           if (Number(rate) > 0) {
             self._detectedMaxRate = rate;
             emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
+            // 真读回了一档 ⇒ 量到 1x 就是「这一门课倍速按住」的正面证据，量到更高就是反面证据（批次 173 §3 第 2 条）。
+            // `measured-1x` 与 `menu-1x` 两条来源在 `srcs` 里要分得开（§2 #12）—— 前者真写过播放器，后者只是菜单自己列出来的。
+            if (rate <= 1.001) self._noteCourseGuard('speed', self._rateLockedBy === 'menu' ? 'menu-1x' : 'measured-1x');
+            else self._clearCourseGuard('speed', 'measured-above-1');
             self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
+          } else if (self._rateLockedBy === 'course') {
+            // 这一格不是「问不出」，是「同一门课问过、不用再问」—— 单独说话，别去拨 `_rateUnknownTries` 那本一次性的账
+            self._noteCourseGuardRateSkipped();
           } else {
             self._noteRateUnreadable(video);
           }
@@ -981,9 +1198,18 @@
       // 首选：播放器倍速菜单里暴露的档位（老师设置的上限会体现在菜单中）
       var menuMax = this._readRateMenuMax(video);
       if (menuMax > 0) {
+        // 菜单列出 >1x 的档 = 「这一门课的倍速动得」的正面证据 ⇒ 撤销课程格（批次 173 §3 第 2 条）。
+        // 读菜单是纯 DOM、不写播放器，所以这一路**永远照走**，不受课程格影响。
+        this._rateLockedBy = menuMax > 1 ? '' : 'menu';
+        if (menuMax > 1) this._clearCourseGuard('speed', 'menu');
         emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
         return this._clampAutoRate(menuMax);
       }
+      // 同一门课里已经认出来过一次「按不住」⇒ 这一枚连问都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 交回 `0` 是「不知道」那一格，**不是**替站点宣布 1x：既不往播放器写那一发（省下的就是用户嫌的那 700 毫秒
+      //   与一次黑屏风险），也不动 `_rateUnknownTries` 那本一次性的账（AGENTS §2 #17「只许减少动手，不许由它多出一次动手」）。
+      if (this._courseGuardHit('speed')) { this._rateLockedBy = 'course'; return 0; }
+      this._rateLockedBy = '';
       // 菜单没列档位时**只试一发**（批次 146；旧版是从 4x 往下试八档、每档等 700 毫秒）。
       return await this._tryRateOnce(video);
     },
@@ -1288,11 +1514,14 @@
       if (!video) return false;
       var mediaTag = String(video.tagName || '').toLowerCase();
       if (mediaTag !== 'video' && mediaTag !== 'audio') return false; // 视频/音频都适用（拖不动+锁1x 时到 90% 提前收尾）
-      if (!this._isRateLockedAtOne()) return false;
+      if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
       if (this._seekRevertedKeys && this._seekRevertedKeys[key]) return true;
-      return this._siteSaysNoDrag(video);
+      if (this._siteSaysNoDrag(video)) return true;
+      // 第三条：同一门课里已经认出来过一次（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // 它是三条里最弱的一格，所以放在最后，而且**只许减少动手**：命中只是不再试拖，绝不凭空多拖一次。
+      return this._courseGuardHit('seek');
     },
 
 
@@ -1317,7 +1546,7 @@
         if (!isFinite(duration) || duration <= 0) return false;
         var ratio = Number(video.currentTime || 0) / duration;
         if (!(ratio >= 0.9) || ratio >= 0.995) return false;
-        if (!this._isRateLockedAtOne()) return false;
+        if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
         if (!this._isDocumentFrameFinished(video.ownerDocument)) return false;
         var key = this._getMediaSeekKey(video);
         if (!key) return false;
@@ -1355,7 +1584,12 @@
         // 现在的修法不是把闸放宽：站点自己写了「不可拖拽」时，证据来自站点那句话，
         // 本来就不需要先动手拖一次，于是「可拖动」关上也能说真话；
         // 拿不到这句声明时**照旧按住并明说一次「这条路被放弃了」**，别让它悄悄失灵。
-        if (!this.configs.enableSeek && !this._siteSaysNoDrag(video)) {
+        // 三源各占一格（批次 173）：`reverted` 真拖过被拽回 / `banner` 卡片原话 / `course` 同一门课认过一次。
+        // ⚠️ 这一道闸只认**不依赖我们动手拖过**的那两条（banner / course）：`reverted` 只有
+        //    `_trySeekToEnd` 会写，而它第一行就被 `enableSeek` 挡下 —— 让用户中途关掉之后立刻失效，
+        //    而不是继续吃上一轮翻开关时留下的旧账（会话任务 #185 的"单向"那半截，⑤ 钉的就是它）。
+        //    日志里那一格（`dragSource`）仍走 `_seekNoDragSource`，三源不许在日志里塌成一格（§2 #12）。
+        if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek')) {
           this._noteNinetyHeldBack(video);
           return false;
         }
@@ -1372,7 +1606,9 @@
         emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
           ratio: Number(ratio.toFixed(3)),
           duration: Number(duration.toFixed(1)),
-          jobid: this._activeJobId || ''
+          jobid: this._activeJobId || '',
+          // 「是哪一条证据说不可拖的」要读得回来，三源不许在日志里塌成一格（§2 #12）
+          dragSource: this._seekNoDragSource(video)
         });
         console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
           '%，平台已标记完成，直接进下一个', 'color:#4CAF50');

@@ -4576,10 +4576,16 @@ async function testSeekDeferUntilSeekable() {
   };
   var media = read('src/page/40-media.js');
 
+  // ⚠️ `async` 必须一起认：`_detectMaxPlaybackRate` 声明成 `async function`，只锚 `name + ': function'`
+  //   对它取不出本体，于是 ㉝ 那根**静态接线尺**量的是空串 —— 看着像"生产里没这一句"，
+  //   真相是这一段从来没看见那一句（AGENTS §5「红 0 条的第一嫌疑人是根本没跑到」，本轮实测撞过）。
   var boundsOf = function (src, name) {
     var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
     if (at < 0) return { start: -1, end: -1 };
-    var start = src.indexOf('function', at);
+    var fnAt = src.indexOf('function', at);
+    // 切本体时把 `async ` 一起带走：只从 `function` 起重建出来的是普通函数，而体里有 `await` —— 当场 SyntaxError
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
     var end = src.indexOf('\n    },', start);
     return { start: start, end: end };
   };
@@ -4618,6 +4624,24 @@ async function testSeekDeferUntilSeekable() {
   var readCond = buildFrom(media, '_readSiteSeekCondition', {});
   var siteCond = buildFrom(media, '_siteSeekCondition', inj);
   var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
+  // 批次 173 / #199：课程级那一格（免拖 ≠ 免倍速，两格各记各的）。九件都要能取出来真跑 ——
+  // 取不出来时后面每一条都是「没执行」，而「没执行」在报告里和「通过」长得一模一样（AGENTS §5）。
+  var guardId = buildFrom(media, '_courseGuardId', {});
+  var guardCell = buildFrom(media, '_courseGuardCell', inj);
+  var guardPersist = buildFrom(media, '_persistCourseGuard', inj);
+  var guardHit = buildFrom(media, '_courseGuardHit', inj);
+  var guardNote = buildFrom(media, '_noteCourseGuard', inj);
+  var guardClear = buildFrom(media, '_clearCourseGuard', inj);
+  var guardSay = buildFrom(media, '_sayCourseGuard', inj);
+  var guardRateSkip = buildFrom(media, '_noteCourseGuardRateSkipped', inj);
+  var guardSource = buildFrom(media, '_seekNoDragSource', inj);
+  // 「这条路被放弃了」那一句现在也吃课程账（倍速那一侧），所以它得和上面几件一起取出来 ——
+  // 取不出来时 ㉛ 新增的那两格会当场抛出来把整段打死（AGENTS §5「红 0 条的第一嫌疑人是没跑到」）。
+  var noteHeld22 = buildFrom(media, '_noteNinetyHeldBack', inj);
+  // NEED / TTL / 存储键三枚常数从源码读回来，测试里一份都不许写死（生产改了数而断言照旧跑 = 假绿）
+  var guardNeed = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
+  var guardTtl = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
+  var guardLedgerKey = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
 
   // 两个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言还按旧数跑 = 假绿）
   var deferBody = bodyOf(media, '_deferSeekUntilSeekable');
@@ -4627,12 +4651,16 @@ async function testSeekDeferUntilSeekable() {
   var siteBody = bodyOf(media, '_siteSeekCondition');
   var condTtlMs = firstNum(siteBody, /now - \(hit\.at \|\| 0\) < (\d+)/);
 
-  check('① 六件都能从 40-media.js 原样取出来真跑，标语那四件也取得出来，两个预算与 TTL 也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+  check('① 六件都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
     [getKey, covers, defer, trySeek, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
     [condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; }) &&
-    windowMs > 0 && capTries > 1 && condTtlMs > 0,
-    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs }));
-  if (!trySeek || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag) return;
+    [guardId, guardCell, guardPersist, guardHit, guardNote, guardClear, guardSay, guardRateSkip, guardSource].every(function (f) { return typeof f === 'function'; }) &&
+    typeof noteHeld22 === 'function' &&
+    windowMs > 0 && capTries > 1 && condTtlMs > 0 &&
+    guardNeed > 0 && guardTtl > 0 && guardLedgerKey.length > 0,
+    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), guard: [typeof guardId, typeof guardCell, typeof guardPersist, typeof guardHit, typeof guardNote, typeof guardClear, typeof guardSay, typeof guardRateSkip, typeof guardSource].join('/'), held: typeof noteHeld22, windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs, guardNeed: guardNeed, guardTtl: guardTtl, guardKey: guardLedgerKey }));
+  if (!trySeek || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 ||
+    !guardId || !guardCell || !guardPersist || !guardHit || !guardNote || !guardClear || !guardSay || !guardRateSkip || !guardSource) return;
 
   function mkRanges(list) {
     return {
@@ -4665,8 +4693,12 @@ async function testSeekDeferUntilSeekable() {
     v.seekable = mkRanges(opt.ranges || []);
     return v;
   }
-  function mkApp() {
+  // shape.store：换页那一格用同一份存储重建一枚 app（账要活着）；shape.noCourse：认不出是哪门课；
+  // shape.course：故意换一门课（旧课的账不许带进新课）。
+  function mkApp(shape) {
+    shape = shape || {};
     var delays = [];
+    var store = shape.store || {};
     var app = {
       configs: { enableSeek: true },
       _rateProbing: false,
@@ -4683,9 +4715,30 @@ async function testSeekDeferUntilSeekable() {
       _siteConditionNoDrag: condNoDrag,
       _readSiteSeekCondition: readCond,
       _siteSeekCondition: siteCond,
-      _siteSaysNoDrag: siteNoDrag
+      _siteSaysNoDrag: siteNoDrag,
+      // ㉛ 新增的两格要真跑 `_noteNinetyHeldBack`，它中间问一句「平台标记完成没有」——
+      // 这一族钉的是**证据来源**，平台标记那一格由 [30] ⑥⑧ 各自钉，这里钉成"成立"就好。
+      _isDocumentFrameFinished: function () { return true; },
+      _COURSE_GUARD_NEED: guardNeed,
+      _COURSE_GUARD_TTL_MS: guardTtl,
+      _COURSE_GUARD_KEY: guardLedgerKey,
+      _readSessionLedger: function (k) { return store[k] ? JSON.parse(store[k]) : null; },
+      _writeSessionLedger: function (k, v) { store[k] = JSON.stringify(v); },
+      _courseGuardId: guardId,
+      _courseGuardCell: guardCell,
+      _persistCourseGuard: guardPersist,
+      _courseGuardHit: guardHit,
+      _noteCourseGuard: guardNote,
+      _clearCourseGuard: guardClear,
+      _sayCourseGuard: guardSay,
+      _noteCourseGuardRateSkipped: guardRateSkip,
+      _seekNoDragSource: guardSource
     };
-    return { app: app, delays: delays };
+    if (!shape.noCourse) {
+      var cid = shape.course || 'COURSE_A';
+      app._currentStudyParams = function () { return { courseid: cid, clazzid: shape.clazz || 'CLASS_A' }; };
+    }
+    return { app: app, delays: delays, store: store };
   }
   var seekTo = function (app, v, reason) { return app._trySeekToEnd(v, reason); };
   var keyOf = function (v) { return getKey.call({}, v); };
@@ -4843,11 +4896,11 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ keys: keys13.length, a: L13[k13] || null, b: L13[k13b] || null }));
 
   // ---- ⑭ 出口清单与接线一一对应（§2 #18 那一族：新增一格忘了接线，什么都不红，只在现场少说一句话）----
-  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end', 'site-no-drag'];
+  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end', 'site-no-drag', 'course-no-drag'];
   var body14 = bodyOf(media, '_trySeekToEnd');
   var calls14 = (body14.match(/this\._noteSeekSkip\(/g) || []).length;
   var wired14 = exits14.filter(function (r) { return body14.indexOf("_noteSeekSkip('" + r + "'") >= 0; });
-  check('⑭ 「不试拖」七格出口全部接上账，且方法体里恰好七处调用（多一格没进清单、少一格没接线，都在这条上红）',
+  check('⑭ 「不试拖」八格出口全部接上账，且方法体里恰好八处调用（多一格没进清单、少一格没接线，都在这条上红）',
     wired14.length === exits14.length && calls14 === exits14.length,
     JSON.stringify({ need: exits14.length, wired: wired14, calls: calls14 }));
 
@@ -5044,28 +5097,246 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ ttlMs: condTtlMs, first: ttl1, within: ttl2, afterTtl: ttl3 }));
 
   // ㉓ 「看到 90% 就收」的第二条证据来源：站点说了不可拖拽，不必先白拖一次
-  var a23 = mkApp();
+  // ⚠️ 三格各用**一枚新的 app**：批次 173 起，读到 `forbidden` 那一手会顺手把课程格记上，
+  //   共用一本账时后两格读到的是第一格留下的课程证据 —— 那不是"这一支自己的标语"，是串了格。
+  var a23f = mkApp(), a23g = mkApp(), a23h = mkApp();
   var n23 = {
-    forbid: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety', levels: L_FORBID }).video),
-    free: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety-free', levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
-    none: isNinety.call(a23.app, mkBannerVideo({ src: 'c-ninety-none', noDoc: true }).video)
+    forbid: isNinety.call(a23f.app, mkBannerVideo({ src: 'c-ninety', levels: L_FORBID }).video),
+    free: isNinety.call(a23g.app, mkBannerVideo({ src: 'c-ninety-free', levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
+    none: isNinety.call(a23h.app, mkBannerVideo({ src: 'c-ninety-none', noDoc: true }).video)
   };
+  var reverted23 = [a23f.app, a23g.app, a23h.app].reduce(function (n, app) {
+    return n + Object.keys(app._seekRevertedKeys || {}).length;
+  }, 0);
+  var guardSeen23 = [a23f.app, a23g.app, a23h.app].map(function (app) {
+    return String((app._courseGuard && app._courseGuard.cell && app._courseGuard.cell.seek && app._courseGuard.cell.seek.n) || 0);
+  }).join('/');
   check('㉓ 「看到 90% 就收」现在有两处**独立**证据：弹回过（旧那把尺）或站点自己写了不可拖拽 —— 后者不必先白拖一次'
     + '（死键那一族：`enableSeek` 关着就永远拿不到弹回证据）；反面两格照旧 false：'
-    + '标语没写那三个字、压根读不到文档，都不算证据（两格都不许替用户宣布"这一支拖不动"）',
-    n23.forbid === true && n23.free === false && n23.none === false &&
-    Object.keys(a23.app._seekRevertedKeys || {}).length === 0,
-    JSON.stringify({ cells: n23, reverted: Object.keys(a23.app._seekRevertedKeys || {}) }));
+    + '标语没写那三个字、压根读不到文档，都不算证据（两格都不许替用户宣布"这一支拖不动"）。'
+    + '而三枚 app 的课程格要各归各：只有第一枚攒到证据，后两枚必须是 0'
+    + '（"另一枚说了"推不出"这一枚也说了" —— 课程账只在同一枚 app 内跨媒体，不许跨夹具串）',
+    n23.forbid === true && n23.free === false && n23.none === false && reverted23 === 0
+      && guardSeen23 === '1/0/0',
+    JSON.stringify({ cells: n23, reverted: reverted23, guardSeekN: guardSeen23 }));
 
   // ㉔ 跨轮的记账不许被"换章节 / 换一门"的复位抹掉（批次 86 那一族）
   var stateSrc = read('src/page/10-config-state.js');
   var resetBody = bodyOf(stateSrc, '_resetRuntimeState');
-  var wiped24 = ['_seekTriedKeys', '_seekRevertedKeys', '_seekSiteKeys', '_seekSkipLedger', '_seekDeferKeys']
+  var wiped24 = ['_seekTriedKeys', '_seekRevertedKeys', '_seekSiteKeys', '_seekSkipLedger', '_seekDeferKeys', '_courseGuard']
     .filter(function (n) { return resetBody.indexOf(n) >= 0; });
-  check('㉔ 五本拖拽账都不在 `_resetRuntimeState` 里：它们是**跨拍累积**才生效的（复位一次就把"这一支已经试过了"忘掉，'
+  check('㉔ 六本拖拽账（含批次 173 新加的课程格）都不在 `_resetRuntimeState` 里：它们是**跨拍累积**才生效的（复位一次就把"这一支已经试过了"忘掉，'
     + '下一拍又去拽一遍，正是批次 86 那一族"看起来在勤快地跑、其实永远数不到阈值"）',
     resetBody.length > 200 && wiped24.length === 0,
     JSON.stringify({ resetLen: resetBody.length, wiped: wiped24 }));
+
+  // ==================== ㉕–㉜ 课程级那一格（批次 173 / issue #199）====================
+  // 现场要省的那一发是「真往播放器上写」：同一门课里已经认出来一次，后面每一枚就别再试。
+  // 三条硬边界各有独立承重的格子：**只许减少动手**＝㉚、**不许当许可**＝㉛＋㉖ 的另一格、
+  // **不许伪造读数**＝㉝ 的静态接线格；身份认不出单独占一格＝㉕（AGENTS §2 #12）。
+  var COURSE_ID = 'COURSE_A|CLASS_A';
+  var SAY_SEEK = 'course says not draggable, stop trying to seek to end';
+  var SAY_SPEED = 'course says rate locked at 1x, stop probing player speed';
+  var onlySay = function (list, msg) {
+    return list.filter(function (m) { return String(m.message) === msg; });
+  };
+
+  // ㉕ 认不出是哪门课 ⇒ 恒不命中（照旧每枚各试一次）+ 单独说一句话，且这一族一个字都不写进存储
+  logs.length = 0;
+  var a25 = mkApp({ noCourse: true });
+  var hit25 = [guardHit.call(a25.app, 'seek'), guardHit.call(a25.app, 'speed')];
+  var note25 = guardNote.call(a25.app, 'seek', 'reverted');
+  var warns25 = logs.filter(function (m) { return String(m.message).indexOf('course guard off') === 0; });
+  guardHit.call(a25.app, 'seek'); guardHit.call(a25.app, 'speed'); guardHit.call(a25.app, 'seek');
+  check('㉕ 认不出课程号（courseid／clazzid 都读不到）那一格单独占：两格恒 false、证据记不上、存储一个字节都不写，'
+    + '但要说一句「课程级免拖免倍速不启用」且每小时只说一次（绝不许塌成「已经免掉了」——那是替用户宣布可以乱动）',
+    guardId.call(a25.app) === '' && hit25[0] === false && hit25[1] === false && note25 === false &&
+    warns25.length === 1 && String(warns25[0].level) === 'warn' &&
+    Object.keys(a25.store).length === 0 && !(a25.app._courseGuard || {}).cell,
+    JSON.stringify({ id: guardId.call(a25.app), hit: hit25, note: note25, warns: warns25.length, stored: Object.keys(a25.store).length }));
+
+  // ㉖ 记满 NEED（从源码读回来）才命中；**免拖 ≠ 免倍速**，两格各算各的；TTL 一过重新允许试一枚
+  logs.length = 0;
+  var a26 = mkApp();
+  var before26 = [guardHit.call(a26.app, 'seek'), guardHit.call(a26.app, 'speed')];
+  var noted26 = guardNote.call(a26.app, 'seek', 'reverted');
+  var seek26 = guardHit.call(a26.app, 'seek');
+  var speed26 = guardHit.call(a26.app, 'speed');
+  var says26 = onlySay(logs, SAY_SEEK).length + onlySay(logs, SAY_SPEED).length;
+  var keep26 = nowMs; nowMs += guardTtl + 1;
+  var expired26 = [guardHit.call(a26.app, 'seek'), guardHit.call(a26.app, 'speed')];
+  nowMs = keep26;
+  check('㉖ 没记过两格都 false；记一笔 seek（NEED=' + guardNeed + '，从源码读回来）只有 seek 命中，'
+    + 'speed 照旧不命中（「这一门课拖不动」推不出「这一门课锁 1x」，同一门课别枚说的也不是这一枚）；'
+    + '攒满那一格只喊一句话；TTL（' + guardTtl + ' 毫秒，同样从源码读回来）一过两格都回到 false —— 少动手不等于永不试',
+    guardId.call(a26.app) === COURSE_ID && before26[0] === false && before26[1] === false &&
+    noted26 === true && seek26 === true && speed26 === false && says26 === 1 &&
+    expired26[0] === false && expired26[1] === false,
+    JSON.stringify({ id: guardId.call(a26.app), before: before26, seek: seek26, speed: speed26, says: says26, afterTtl: expired26 }));
+
+  // ㉗ 拿到反证（这一门课其实拖得动）要当场撤销，且「喊过没有」那本账一起归零 —— 下次再攒满还得再喊
+  logs.length = 0;
+  var a27 = mkApp();
+  guardNote.call(a27.app, 'seek', 'reverted');
+  var cleared27 = guardClear.call(a27.app, 'seek', 'drag-ok');
+  var hit27 = guardHit.call(a27.app, 'seek');
+  var clearEmpty27 = guardClear.call(a27.app, 'seek', 'drag-ok');
+  guardNote.call(a27.app, 'seek', 'reverted');
+  var says27 = onlySay(logs, SAY_SEEK);
+  var cell27 = ((a27.app._courseGuard || {}).cell || {}).seek || {};
+  check('㉗ 真拖成功 = 正面证据 ⇒ 当场撤销（n 归零、命中回到 false、没账时撤销本身返回 false），'
+    + '来源历史留着（谁攒到的、被谁撤掉的都要读得回来）；撤销后 said 那本账归零，再攒满要能**再喊一次**'
+    + '（喊过就不说 = 第二枚起现场又变哑）',
+    cleared27 === true && hit27 === false && clearEmpty27 === false &&
+    says27.length === 2 && Number(cell27.n) === 1 &&
+    String((cell27.srcs || []).join(',')) === 'reverted,clear:drag-ok',
+    JSON.stringify({ cleared: cleared27, hit: hit27, clearEmpty: clearEmpty27, says: says27.length, n: cell27.n, srcs: (cell27.srcs || []).join(',') }));
+
+  // ㉘ 存储：**整份**写回（只写改过那一格 = 把另一格抹掉）＋ 跨页存活 ＋ 换课不带旧账（AGENTS §2 #25）
+  logs.length = 0;
+  var a28 = mkApp();
+  guardNote.call(a28.app, 'seek', 'reverted');
+  guardNote.call(a28.app, 'speed', 'measured-1x');
+  var raw28 = a28.store[guardLedgerKey] ? JSON.parse(a28.store[guardLedgerKey]) : null;
+  var a28b = mkApp({ store: a28.store });
+  var reloaded28 = [guardHit.call(a28b.app, 'seek'), guardHit.call(a28b.app, 'speed')];
+  var a28c = mkApp({ store: a28.store, course: 'COURSE_B' });
+  var other28 = [guardHit.call(a28c.app, 'seek'), guardHit.call(a28c.app, 'speed')];
+  check('㉘ 写存储的是**整份** {course,seek,speed,ttl}：第二笔记进去时第一格还在（不补账就盖 = 拿内存里的空账删掉盘上的旧账）；'
+    + '换页（内存账是空的、存储同一枚）两格都读得回来；换一门课两格都读不到（旧课的账不许带进新课）',
+    !!raw28 && raw28.course === COURSE_ID && Number((raw28.seek || {}).n) === 1 && Number((raw28.speed || {}).n) === 1 &&
+    Number(raw28.ttl) === guardTtl && reloaded28[0] === true && reloaded28[1] === true &&
+    other28[0] === false && other28[1] === false,
+    JSON.stringify({ raw: raw28 && { c: raw28.course, s: raw28.seek && raw28.seek.n, p: raw28.speed && raw28.speed.n, t: raw28.ttl }, reloaded: reloaded28, other: other28 }));
+
+  // ㉙ 「这一枚为什么不再试拖」三条来源各占一格，顺序＝行为证据 → 声明证据 → 课程策略（压成两态就归错因）
+  var a29 = mkApp();
+  var v29 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k29 = keyOf(v29);
+  var s29none = guardSource.call(a29.app, v29);
+  a29.app._seekRevertedKeys = {}; a29.app._seekRevertedKeys[k29] = true;
+  guardNote.call(a29.app, 'seek', 'reverted');
+  var s29rev = guardSource.call(a29.app, v29);
+  delete a29.app._seekRevertedKeys[k29];
+  var s29course = guardSource.call(a29.app, v29);
+  var s29novideo = guardSource.call(a29.app, null);
+  var v29b = mkBannerVideo({ src: 'c-banner-29', levels: L_FORBID }).video;
+  var s29banner = guardSource.call(mkApp().app, v29b);
+  check('㉙ `_seekNoDragSource` 四格分得开：无证据交空串、弹回过＝reverted（同一枚既弹回又有课程账时点名**行为**那一条，'
+    + '别把最硬的那条让给策略）、只有课程账＝course、站点写了不可拖拽＝banner；没有元素时只剩课程那一格可读',
+    s29none === '' && s29rev === 'reverted' && s29course === 'course' && s29novideo === 'course' && s29banner === 'banner',
+    JSON.stringify({ none: s29none, reverted: s29rev, course: s29course, noVideo: s29novideo, banner: s29banner }));
+
+  // ㉚ 只许减少动手：命中课程格那一拍，进度条一个字节都不写、一次性机会不花，但要落进 skip 账并说话
+  var a30 = mkApp();
+  guardNote.call(a30.app, 'seek', 'reverted');
+  var v30 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k30 = keyOf(v30);
+  logs.length = 0;
+  var r30 = seekTo(a30.app, v30, 'guard');
+  var s30 = a30.app._seekSkipLedger && a30.app._seekSkipLedger[k30];
+  var a30b = mkApp();
+  var v30b = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k30b = keyOf(v30b);
+  logs.length = 0;
+  seekTo(a30b.app, v30b, 'guard');
+  var writes30b = v30b.__rec.writes.length;
+  check('㉚ 命中课程格 = 这一拍**一个字节都不写**（currentTime 没被碰）、一次性机会不花掉（tried 不登记）、更不替站点宣布弹回（reverted 不写），'
+    + '但按这一支的钥匙落进 skip 账（reason 点名 course-no-drag）且出一句话；反面格：没有课程账的同一形状照旧真拖一次',
+    r30 === false && v30.__rec.writes.length === 0 && !a30.app._seekTriedKeys[k30] &&
+    !(a30.app._seekRevertedKeys || {})[k30] &&
+    !!s30 && s30.last === 'course-no-drag' && s30.reasons['course-no-drag'] === 1 && logs.length > 0 &&
+    writes30b === 1,
+    JSON.stringify({ ret: r30, writes: v30.__rec.writes.length, tried: !!(a30.app._seekTriedKeys || {})[k30],
+      reverted: !!(a30.app._seekRevertedKeys || {})[k30], skip: s30 || null, logs: logs.length, writesNoGuard: writes30b }));
+
+  // ㉛ 「看到 90% 就收」的倍速前提现在也认课程格，而两格各管各的（只有倍速账 → 仍不收）
+  var a31 = mkApp();
+  a31.app._isRateLockedAtOne = function () { return false; };  // 前提钉住：这一枚自己没量到 1x
+  var v31 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k31 = keyOf(v31);
+  var n31none = isNinety.call(a31.app, v31);
+  guardNote.call(a31.app, 'speed', 'measured-1x');
+  var n31speedOnly = isNinety.call(a31.app, v31);
+  guardNote.call(a31.app, 'seek', 'reverted');
+  var n31both = isNinety.call(a31.app, v31);
+  var n31seekOnlyApp = mkApp();
+  n31seekOnlyApp.app._isRateLockedAtOne = function () { return false; };
+  guardNote.call(n31seekOnlyApp.app, 'seek', 'reverted');
+  var n31seekOnly = isNinety.call(n31seekOnlyApp.app, mkVideo({ duration: DUR, ranges: [[0, DUR]] }));
+  // 同一问法要落到「这条路被放弃了」那一句上：倍速那一侧只有课程账时这句话仍要说得出口，
+  // 只有拖账（倍速没证据）时一声不出 —— 少了这两格，`_noteNinetyHeldBack` 里那一问就没有证人。
+  var v31c = mkVideo({ duration: DUR, current: Math.round(DUR * 0.93), ranges: [[0, DUR]] });
+  var held31speed = noteHeld22.call(a31.app, v31c);
+  var v31d = mkVideo({ duration: DUR, current: Math.round(DUR * 0.93), ranges: [[0, DUR]] });
+  var held31seekOnly = noteHeld22.call(n31seekOnlyApp.app, v31d);
+  check('㉛ 提前收尾要「倍速锁 1x」+「拖不动」两条都有证据：课程格可以分别顶上这两处（同一门课别枚量到的），'
+    + '但**两格不许互相顶** —— 只有倍速账、拖那一侧三条证据都没有 → false；只有拖账、倍速那条没证据 → 照旧 false；'
+    + '而「这条路被放弃了」那一句同样认课程账（只有倍速账时说得出口，只有拖账时一声不出）',
+    n31none === false && n31speedOnly === false && n31both === true && n31seekOnly === false &&
+    !((n31seekOnlyApp.app._courseGuard || {}).cell || {}).speed &&
+    held31speed === true && held31seekOnly === false,
+    JSON.stringify({ none: n31none, speedOnly: n31speedOnly, both: n31both, seekOnly: n31seekOnly,
+      heldSpeed: held31speed, heldSeekOnly: held31seekOnly }));
+
+  // ㉜ 因为课程格而没问倍速的那一枚：每门课每格只说一次，且**不许**抢「问不出」那句
+  // ⚠️ 「有账」那一格用**换页后的第二枚 app**（同一本存储、新的内存）：
+  //   在刚记上账的那枚 app 上问，`said.speed` 已被 `_noteCourseGuard` 自己喊掉了，
+  //   那一格量到的是「说过就不再说是纪律」，而不是「换一枚媒体还说不说得出这句」—— 现场要的是后者。
+  logs.length = 0;
+  var a32 = mkApp();
+  var hit32none = guardHit.call(a32.app, 'speed');           // 生产里先问这一句（`_detectMaxPlaybackRate` 那一发）
+  var said32none = guardRateSkip.call(a32.app);
+  var logsAfterNone = logs.length;
+  var h32 = mkApp();
+  guardNote.call(h32.app, 'speed', 'measured-1x');
+  var p32 = mkApp({ store: h32.store });
+  logs.length = 0;
+  var hit32 = guardHit.call(p32.app, 'speed');
+  var said32 = guardRateSkip.call(p32.app);
+  var said32again = guardRateSkip.call(p32.app);
+  var says32 = onlySay(logs, SAY_SPEED);
+  var said32onHome = (function () {
+    logs.length = 0;
+    var again = guardRateSkip.call(h32.app);       // 记账那一枚自己：已经喊过，第二次不许再喊
+    var n = onlySay(logs, SAY_SPEED).length;
+    logs.length = 0;
+    return { again: again, says: n };
+  })();
+  check('㉜ 没有课程账时 `_noteCourseGuardRateSkipped` 一句不出、一个字节都不写（「问不出」与「同一门课不必再问」是两格，后者不许冒领前者）；'
+    + '换一枚媒体（新内存、同一本存储）时先问得到命中，再说出课程那句、点名 from=menu-unreadable 与课程号；'
+    + '而同一门课同一格**只喊一次** —— 第二枚问第二次、以及记账那一枚自己再问，都必须返回 false 且一个字不出',
+    hit32none === false && said32none === false && logsAfterNone === 0
+      && hit32 === true && said32 === true && said32again === false &&
+    says32.length === 1 && says32[0].meta && says32[0].meta.from === 'menu-unreadable' &&
+    says32[0].meta.course === COURSE_ID && said32onHome.again === false && said32onHome.says === 0,
+    JSON.stringify({ hitNone: hit32none, none: said32none, logsNone: logsAfterNone, hit: hit32,
+      said: said32, again: said32again, says: says32, home: said32onHome }));
+
+  // ㉝ 接线与「不伪造读数」（静态格）：问价那一族命中课程格要**早于**真写播放器那一发，且交回的是 0（不知道）不是 1
+  var rateBody = bodyOf(media, '_detectMaxPlaybackRate');
+  var guardAt = rateBody.indexOf("this._courseGuardHit('speed')");
+  var tryAt = rateBody.indexOf('this._tryRateOnce(');
+  // ⚠️ 从**那一问之后**找：方法体开头的 `if (!video) return 0;` 也在同一句里，从头找会先撞上它，
+  //   于是 `zeroAt < guardAt` 把一次合法的接线读成"没接线"（本轮实测撞过：zeroAt:43 / guardAt:778）。
+  var zeroAt = guardAt < 0 ? -1 : rateBody.indexOf('return 0;', guardAt);
+  var seekBack = bodyOf(media, '_trySeekToEnd');
+  // ⚠️ 那两发在 `verifySeek` 里，而 `verifySeek` 是闭包、拿的是外层 `self`（不是 `this`）——
+  //   按 `this.` 去锚两处都取不到，报出来像"生产里忘了接线"（本轮实测撞过）。
+  var clearOkAt = seekBack.indexOf("self._clearCourseGuard('seek', 'drag-ok')");
+  var noteRevAt = seekBack.indexOf("self._noteCourseGuard('seek', 'reverted')");
+  // 「不许伪造读数」那一半的尺：真正把倍速落到播放器上的那两把，只认 `_detectedMaxRate`（量到的读数），
+  // 不读课程格 —— 课程格是「别再问」的策略，写成这里的一问就等于替这一支伪造一次测量。
+  var targetBody = bodyOf(media, '_getTargetPlaybackRate');
+  var ensureBody = bodyOf(media, '_ensurePlaybackRate');
+  var rateCheck = targetBody + ensureBody;
+  check('㉝ 接线（声明覆盖的范围与实际走的分支之间的差不会自己喊出来 —— §2 #18）：课程格那一问排在**真写播放器**那一发之前，'
+    + '命中时交回的是 0=「不知道」（写 1 就是替这支视频伪造一次测量，`_detectedMaxRate` 必须保持诚实）；'
+    + '弹回记 course / 拖成功撤 course 两处都在 `verifySeek` 里（那一族在闭包里，只能经 `self.`）；'
+    + '而落档那两把尺（`_getTargetPlaybackRate` + `_ensurePlaybackRate`）一个字都不读课程格',
+    rateBody.length > 200 && seekBack.length > 400 && targetBody.length > 100 && ensureBody.length > 100 &&
+    guardAt > 0 && tryAt > 0 && guardAt < tryAt &&
+    zeroAt > guardAt && zeroAt < tryAt && /return\s+0\s*;/.test(rateBody.slice(guardAt, tryAt)) &&
+    clearOkAt > 0 && noteRevAt > 0 && rateCheck.indexOf('_courseGuardHit') < 0,
+    JSON.stringify({ rateLen: rateBody.length, seekLen: seekBack.length, targetLen: targetBody.length,
+      ensureLen: ensureBody.length, guardAt: guardAt, tryAt: tryAt, zeroAt: zeroAt,
+      clearOkAt: clearOkAt, noteRevAt: noteRevAt, checkHasGuard: rateCheck.indexOf('_courseGuardHit') >= 0 }));
 }
 
 /** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
@@ -7732,6 +8003,38 @@ async function testNinetyAdvanceBoundToSeek() {
   var readCond = buildFrom(media, '_readSiteSeekCondition', {});
   var siteCond = buildFrom(media, '_siteSeekCondition', { emitRuntimeLog: say });
   var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
+  // 批次 173 / #199：`_shouldAdvanceAtNinetyPercent` 绑的那一句从「只问站点卡片原话」扩成
+  //   **再问一句课程格**（同一门课里已经认出来过一次），而日志里的 `dragSource` 换成三源合成的
+  //   `_seekNoDragSource`（弹回过 / 卡片原话 / 同一门课认过一次）—— 三条都不许在日志里塌成一格（§2 #12）。
+  //   ⚠️ 绑定那一格**故意不含 `reverted`**：那份账只有 `_trySeekToEnd` 会写，而它第一行就被 `enableSeek`
+  //     挡下 —— 用户中途关掉就该立刻失效，不许继续吃上一轮翻开关留下的旧证据（#185 的"单向"那半截，⑤ 钉的就是它）。
+  //   这一族整套挂在 try/catch 里，少挂一件就是 TypeError → 返回 false → 与"生产删了这句话"同形（AGENTS §5）。
+  var gNeedR = Number((media.match(/_COURSE_GUARD_NEED:\s*(\d+)/) || [])[1] || 0);
+  var gTtlR = Number((media.match(/_COURSE_GUARD_TTL_MS:\s*(\d+)/) || [])[1] || 0);
+  var gKeyR = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
+  var gId = buildFrom(media, '_courseGuardId', {});
+  var gCell = buildFrom(media, '_courseGuardCell', { emitRuntimeLog: say });
+  var gPersist = buildFrom(media, '_persistCourseGuard', { emitRuntimeLog: say });
+  var gHit = buildFrom(media, '_courseGuardHit', { emitRuntimeLog: say });
+  var gNote = buildFrom(media, '_noteCourseGuard', { emitRuntimeLog: say });
+  var gClear = buildFrom(media, '_clearCourseGuard', { emitRuntimeLog: say });
+  var gSay = buildFrom(media, '_sayCourseGuard', { emitRuntimeLog: say });
+  var gSkip = buildFrom(media, '_noteCourseGuardRateSkipped', { emitRuntimeLog: say });
+  var gSource = buildFrom(media, '_seekNoDragSource', {});
+  // 门课号要给：认不出课的那一格会**单独说一句 warn**（㉕ 钉的就是它），留空会把这一段的
+  // `logs.length` 类断言顶成"多出一条与本轮无关的话"。每枚 app 各带一本自己的存储。
+  var guardKit = function () {
+    return {
+      _COURSE_GUARD_NEED: gNeedR, _COURSE_GUARD_TTL_MS: gTtlR, _COURSE_GUARD_KEY: gKeyR,
+      _courseGuard: null, _guardStore: Object.create(null),
+      _readSessionLedger: function (k) { var v = this._guardStore[String(k || '')]; return v ? JSON.parse(v) : null; },
+      _writeSessionLedger: function (k, v) { this._guardStore[String(k || '')] = JSON.stringify(v); },
+      _currentStudyParams: function () { return { courseid: 'COURSE_30', clazzid: 'CLASS_30' }; },
+      _courseGuardId: gId, _courseGuardCell: gCell, _persistCourseGuard: gPersist,
+      _courseGuardHit: gHit, _noteCourseGuard: gNote, _clearCourseGuard: gClear,
+      _sayCourseGuard: gSay, _noteCourseGuardRateSkipped: gSkip, _seekNoDragSource: gSource
+    };
+  };
   var isFinished = buildFrom(tasks, '_isDocumentFrameFinished', {
     textOf: function (el) { return String((el && el.textContent) || ''); }
   });
@@ -7740,22 +8043,26 @@ async function testNinetyAdvanceBoundToSeek() {
   var heldBody = bodyOf(media, '_noteNinetyHeldBack');
   var seekBody = bodyOf(media, '_trySeekToEnd');
 
-  check('① 十四件都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
-    + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句站点自己有没有写「不可拖拽」（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished,
-      condNoDrag, readCond, siteCond, siteNoDrag]
-      .every(function (f) { return typeof f === 'function'; }) &&
-      gateBody.indexOf('if (!this.configs.enableSeek && !this._siteSaysNoDrag(video))') >= 0 &&
+  var allFns14 = [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld,
+    shouldAdvance, isFinished, condNoDrag, readCond, siteCond, siteNoDrag,
+    gId, gCell, gPersist, gHit, gNote, gClear, gSay, gSkip, gSource];
+  check('① 廿四件（原十四件 + 批次 173 的课程格九件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
+    + '都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
+    + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句「有没有**不必动手拖**的证据」（站点卡片原话 / 同一门课认过一次）'
+    + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    allFns14.every(function (f) { return typeof f === 'function'; }) && gNeedR > 0 && gTtlR > 0 && gKeyR.length > 0 &&
+      gateBody.indexOf("if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek'))") >= 0 &&
       gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
     JSON.stringify({
       key: typeof getKey, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
       covers: typeof seekCovers, defer: typeof deferSeek,
       seek: typeof trySeek, held: typeof noteHeld, gate: typeof shouldAdvance, fin: typeof isFinished,
       cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'),
+      guard: [typeof gId, typeof gCell, typeof gPersist, typeof gHit, typeof gNote,
+        typeof gClear, typeof gSay, typeof gSkip, typeof gSource].join('/'),
       gateBody: gateBody.length, heldBody: heldBody.length
     }));
-  if (![getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld, shouldAdvance, isFinished,
-    condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; })) return;
+  if (!allFns14.every(function (f) { return typeof f === 'function'; })) return;
 
   // ---- 死键的成因先钉住：那份证据只有一个写入口，而写入口第一道闸就是 enableSeek ----
   // ⚠️ 按**字符偏移**判"这处赋值在不在 _trySeekToEnd 体内"，别按行算（AGENTS §2 #1 那条同一族：
@@ -7830,7 +8137,7 @@ async function testNinetyAdvanceBoundToSeek() {
     return v;
   };
   function mkGateApp(cfg) {
-    return {
+    return Object.assign({
       configs: cfg,
       _detectedMaxRate: 1,
       _seekRevertedKeys: Object.create(null),
@@ -7846,7 +8153,7 @@ async function testNinetyAdvanceBoundToSeek() {
       _siteSeekCondition: siteCond,
       _siteSaysNoDrag: siteNoDrag,
       _shouldAdvanceAtNinetyPercent: shouldAdvance
-    };
+    }, guardKit());
   }
   var ON = { enableSeek: true, advanceAtNinetyPercent: true };
   var OFF = { enableSeek: false, advanceAtNinetyPercent: true };
@@ -8124,15 +8431,35 @@ async function testRateAskBound() {
   var menuFn = buildFrom(media, '_readRateMenuMax', {
     textOf: function (el) { return String((el && (el.textContent || el.innerText)) || ''); }
   });
-  var parts = [ensureFn, targetFn, clampFn, resetFn, noteFn, schedFn, detectFn, tryFn, waitFn, menuFn];
+  // 批次 173 / #199：问价那一族的**前置**是课程格，八件都要真取出来挂上假 app ——
+  // 挂不上就是 `TypeError` 顶掉整段（§5「红 0 条的第一嫌疑人是根本没跑到」，本轮实测撞过）。
+  // ⚠️ 课程格那八件的话**另开一本账**（`guardLogs`）：① – ⑫ 数的是 `logs` 里按前缀筛出的句子，
+  //   把「认不出是哪门课」那句 warn 混进同一本，会让它们读到本不属于问价那一族的条数。
+  var guardLogs = [];
+  var sayGuard = function (level, message, meta) { guardLogs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var guardIdFn = buildFrom(media, '_courseGuardId', {});
+  var guardCellFn = buildFrom(media, '_courseGuardCell', { emitRuntimeLog: sayGuard });
+  var guardPersistFn = buildFrom(media, '_persistCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardHitFn = buildFrom(media, '_courseGuardHit', { emitRuntimeLog: sayGuard });
+  var guardNoteFn = buildFrom(media, '_noteCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardClearFn = buildFrom(media, '_clearCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardSayFn = buildFrom(media, '_sayCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardSkipFn = buildFrom(media, '_noteCourseGuardRateSkipped', { emitRuntimeLog: sayGuard });
+  var guardNeedR = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
+  var guardTtlR = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
+  var guardKeyR = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
+  var parts = [ensureFn, targetFn, clampFn, resetFn, noteFn, schedFn, detectFn, tryFn, waitFn, menuFn,
+    guardIdFn, guardCellFn, guardPersistFn, guardHitFn, guardNoteFn, guardClearFn, guardSayFn, guardSkipFn];
   var gotCount = parts.filter(function (f) { return typeof f === 'function'; }).length;
 
-  check('⓪ 十件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到），'
+  check('⓪ 十八件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到，课程格那八件也算在内），'
     + '问不出的预算、暂停那一族的等待上限、写入后的稳态窗口也从源码读回来'
     + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0,
-    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs }));
-  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0)) return;
+    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 &&
+    guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0,
+    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs, guardNeed: guardNeedR, guardTtl: guardTtlR, guardKey: guardKeyR }));
+  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0
+    && guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0)) return;
 
   // 夹具只桩到「播放器接不接这一档」那一层：写入次数就是问了几发，判据读的数来自这里。
   // 站点拒写 = 问不出（`_tryRateOnce` 交回 0）；站点按住某一档 = 量到了，交回非 0。
@@ -8171,8 +8498,26 @@ async function testRateAskBound() {
   function mkApp(cfg) {
     var app = {
       configs: cfg || {}, _detectedMaxRate: 0, _rateDetectVideo: null, _rateUnknownVideo: null,
-      _rateUnknownTries: 0, _rateDetectBusy: false, _rateProbing: false, _rateEpoch: 0, _videoEl: null
+      _rateUnknownTries: 0, _rateDetectBusy: false, _rateProbing: false, _rateEpoch: 0, _videoEl: null,
+      _rateLockedBy: '', _courseGuard: null, _courseGuardStore: Object.create(null),
+      _COURSE_GUARD_NEED: guardNeedR, _COURSE_GUARD_TTL_MS: guardTtlR, _COURSE_GUARD_KEY: guardKeyR
     };
+    // 课程格默认**认不出课**（没有 `_currentStudyParams`）⇒ `_courseGuardHit` 恒 false，
+    // 于是 ① – ⑫ 走的与批次 173 之前逐字相同；只有 ⑬ 自己把课号装上。
+    // 存储桩按 app 各一份（同一轮多个 app 不许共用一本账，否则前一个的课格会毒化后一个）
+    app._readSessionLedger = function (key) {
+      var v = app._courseGuardStore[String(key || '')];
+      return (v && typeof v === 'object') ? v : null;
+    };
+    app._writeSessionLedger = function (key, value) { app._courseGuardStore[String(key || '')] = value; };
+    app._courseGuardId = function () { return guardIdFn.call(app); };
+    app._courseGuardCell = function (id) { return guardCellFn.call(app, id); };
+    app._persistCourseGuard = function (id) { return guardPersistFn.call(app, id); };
+    app._courseGuardHit = function (which) { return guardHitFn.call(app, which); };
+    app._noteCourseGuard = function (which, src) { return guardNoteFn.call(app, which, src); };
+    app._clearCourseGuard = function (which, src) { return guardClearFn.call(app, which, src); };
+    app._sayCourseGuard = function (which, id, rec, src) { return guardSayFn.call(app, which, id, rec, src); };
+    app._noteCourseGuardRateSkipped = function () { return guardSkipFn.call(app); };
     app._ensurePlaybackRate = function (v, r) { return ensureFn.call(app, v, r); };
     app._getTargetPlaybackRate = function () { return targetFn.call(app); };
     app._clampAutoRate = function (r) { return clampFn.call(app, r); };
@@ -8377,6 +8722,75 @@ async function testRateAskBound() {
       timers: pausedTimers.length - timersBeforePaused, tries: appP._rateUnknownTries,
       held: appP._rateDetectVideo === pz.video,
       warns: spoke('rate max unreadable').length - warnsBeforePaused }));
+
+  // ⑬ 批次 173 / #199 边界一 + 边界三：同一门课里已经量到过「倍速按住在 1x」⇒ 这一枚**连问都不问**。
+  //   「问」在这里不是抽象动作，就是往 `playbackRate` / `defaultPlaybackRate` 上各写一发（用户嫌的正是这一发）。
+  //   ⚠️ 第二枚用的是**同一本存储、新的一个 app**（换单元 / 换页就是新的一份内存），
+  //   所以这一格证的正是「账跨得过那一枚」，而不是「同一个对象上顺手没写」。
+  var gFirst = mkApp({});
+  gFirst._currentStudyParams = function () { return { courseid: 'C173', clazzid: 'Z173' }; };
+  var armed13 = gFirst._noteCourseGuard('speed', 'measured-1x');
+  var saidFirst13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0
+      && String((m.meta || {}).from) === 'measured-1x';
+  }).length;
+  var gSecond = mkApp({});
+  gSecond._currentStudyParams = function () { return { courseid: 'C173', clazzid: 'Z173' }; };
+  gSecond._courseGuardStore = gFirst._courseGuardStore;      // 同一门课，另一枚媒体（另一份内存）
+  var v13 = mkVideo({ deny: true, startRate: 0 });
+  gSecond.attach(v13);
+  var warnsBefore13 = spoke('rate max unreadable').length;
+  var guardSaysBefore13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0;
+  }).length;
+  for (var k13 = 0; k13 < askBound + 2; k13++) { gSecond._ensurePlaybackRate(v13.video, 'g' + k13); await flush(); }
+  var says13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0;
+  });
+  var skipSays13 = says13.slice(guardSaysBefore13).filter(function (m) { return String((m.meta || {}).from) === 'menu-unreadable'; });
+  // 对照组：同样的形状，只是**认不出是哪门课**（今天的行为）—— 必须照旧写播放器，否则 ⑬ 证的可能是「夹具坏了」
+  var c13 = mkVideo({ deny: true, startRate: 0 });
+  var appC13 = mkApp({});
+  appC13.attach(c13);
+  appC13._ensurePlaybackRate(c13.video, 'ctl13');
+  await flush();
+  check('⑬ 课程格命中那一枚：**一个字节都不往播放器上写**（`playbackRate` 与 `defaultPlaybackRate` 都零次），'
+    + '交回的是「不知道」而不是伪造的 1x（`_detectedMaxRate` 仍 0），一次性的「问不出」账一下都不拨、'
+    + '那一句 warn 也一个字不出，改由课程格单独说一句（`from:menu-unreadable`）；'
+    + '同一形状换成「认不出是哪门课」的对照组照旧写 —— 少动手只许来自这一本账',
+    armed13 === true && saidFirst13 === 1 && guardSaysBefore13 === 1
+      && v13.rec.writes.length === 0 && v13.rec.defWrites.length === 0 && v13.rec.probeWrites === 0
+      && gSecond._rateLockedBy === 'course' && Number(gSecond._detectedMaxRate) === 0
+      && Number(gSecond._rateUnknownTries) === 0
+      && spoke('rate max unreadable').length === warnsBefore13
+      && skipSays13.length === 1 && Number(skipSays13[0].meta && skipSays13[0].meta.evidence) >= guardNeedR
+      && c13.rec.writes.length === 1 && appC13._rateLockedBy === '',
+    JSON.stringify({ armed: armed13, saidFirst: saidFirst13, writes: v13.rec.writes.length,
+      defWrites: v13.rec.defWrites.length, lockedBy: gSecond._rateLockedBy,
+      detected: gSecond._detectedMaxRate, tries: gSecond._rateUnknownTries,
+      unreadableWarns: spoke('rate max unreadable').length - warnsBefore13,
+      skipSays: skipSays13.length, evidence: skipSays13[0] && skipSays13[0].meta && skipSays13[0].meta.evidence,
+      need: guardNeedR, ctlWrites: c13.rec.writes.length, ctlLockedBy: appC13._rateLockedBy }));
+
+  // ⑭ 边界二：课程格是**策略**，不是许可，也不是不可撤销的判决。
+  //   站点自己把档位列在菜单里（纯 DOM，一个字都不写播放器）= 反证 ⇒ 撤销这一门课的账，
+  //   于是后面那一枚重新问得到。摘掉这一手，「少动手」就变成「这门课永不试倍速」。
+  var g14 = mkApp({});
+  g14._currentStudyParams = function () { return { courseid: 'C174', clazzid: 'Z174' }; };   // 另一门课，账是空的
+  var armed14 = g14._noteCourseGuard('speed', 'measured-1x');
+  var hitBefore14 = g14._courseGuardHit('speed');
+  var v14 = mkVideo({ deny: true, startRate: 0, menuCells: [{ textContent: '2.0x' }] });
+  g14.attach(v14);
+  var menuRate14 = await g14._detectMaxPlaybackRate(v14.video);
+  var cell14 = (g14._readSessionLedger(g14._COURSE_GUARD_KEY) || {}).speed || {};
+  check('⑭ 菜单列出高于 1x 的档 = 反证：纯 DOM 那一支照旧走（不为课程格跳过），'
+    + '并把这一门课的「免倍速」账**撤销**（`n` 归零、来源里留着 `clear:menu` 这一笔），随后又问得到',
+    armed14 === true && hitBefore14 === true && menuRate14 === 2
+      && g14._courseGuardHit('speed') === false && Number(cell14.n) === 0
+      && (cell14.srcs || []).indexOf('clear:menu') >= 0 && g14._rateLockedBy === '',
+    JSON.stringify({ armed: armed14, hitBefore: hitBefore14, menuRate: menuRate14,
+      hitAfter: g14._courseGuardHit('speed'), n: cell14.n, srcs: (cell14.srcs || []).join(','),
+      lockedBy: g14._rateLockedBy }));
 }
 
 

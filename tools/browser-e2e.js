@@ -13205,12 +13205,16 @@ SCENARIOS.push({
     check('说明元素与两枚开关都在，且 load() 之后两枚都亮着（采集器先自证，否则下面读的全是 null）',
       !bothOn.error && bothOn.hint !== null && bothOn.seekAria === 'true' && bothOn.ninetyAria === 'true',
       JSON.stringify(bothOn));
-    check('两枚都开着时，说明把**判据本身**讲出来：两个来源都点名（站点写的「不可拖拽」与真被弹回两次），且不谎称"不会生效"',
-      /两个各自独立的来源/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
+    check('两枚都开着时，说明把**判据本身**讲出来：三条来源都点名（站点写的「不可拖拽」、真被弹回两次、' +
+      '同一门课认过一回），且不谎称"不会生效"',
+      /三个各自独立的来源/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
+      /同一门课里已经认过一回/.test(bothOn.hint) &&
       /不可拖拽/.test(bothOn.hint) && /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
     var offSeek = await ctx.client.evaluate(seekClick('enableSeek'));
-    check('点掉上面那枚，那句**当场改口**：只剩站点标语这一个来源（不再谎称"现在不会生效"），并指回该打开哪一枚',
-      /只剩一个来源/.test(offSeek.hint) && /不可拖拽/.test(offSeek.hint) &&
+    check('点掉上面那枚，那句**当场改口**：动手试那一路没了，只剩站点标语与同一门课那一本账' +
+      '（不再谎称"现在不会生效"），并指回该打开哪一枚',
+      /只剩两个来源/.test(offSeek.hint) && /不可拖拽/.test(offSeek.hint) &&
+      /同一门课里已经认过一回/.test(offSeek.hint) &&
       /把上面那枚打开/.test(offSeek.hint) && /现在不会生效/.test(offSeek.hint) === false &&
       offSeek.seekAria === 'false' && offSeek.ninetyAria === 'true', JSON.stringify(offSeek));
     check('反向不许写：点掉「直接拖到结尾」时，`advanceAtNinetyPercent` 存储照旧是 true' +
@@ -13219,19 +13223,19 @@ SCENARIOS.push({
       JSON.stringify({ s: offSeek.storedSeek, n: offSeek.storedNinety }));
     var onSeek = await ctx.client.evaluate(seekClick('enableSeek'));
     check('再点回来那句立刻回到判据本身（两个方向都刷新，不是只在关的时候改一次口）',
-      /两个各自独立的来源/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
+      /三个各自独立的来源/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
       onSeek.seekAria === 'true', JSON.stringify(onSeek));
     var offNinety = await ctx.client.evaluate(seekClick('advanceAtNinetyPercent'));
     check('是用户自己关掉「90% 提前收尾」时，那句改成讲后果、**不再劝他打开上面那枚**',
       /原速播完整支/.test(offNinety.hint) && /不会生效/.test(offNinety.hint) === false &&
-      /这一枚已关闭/.test(offNinety.hint) && /只剩一个来源/.test(offNinety.hint) === false &&
-      /两个各自独立的来源/.test(offNinety.hint) === false &&
+      /这一枚已关闭/.test(offNinety.hint) && /只剩两个来源/.test(offNinety.hint) === false &&
+      /三个各自独立的来源/.test(offNinety.hint) === false &&
       offNinety.ninetyAria === 'false' && offNinety.storedSeek === true, JSON.stringify(offNinety));
     var loadOnly = await ctx.client.evaluate(
       seekPinAndLoad({ enableSeek: false, advanceAtNinetyPercent: true }));
     check('只走 load() 那一路（一次都不点）也要说真话 —— 这一格钉的是 `load()` 尾部那一发，' +
       '少了它重开弹窗看到的是出厂那句旧话，而 setter 路径测不到',
-      /只剩一个来源/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
+      /只剩两个来源/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
       loadOnly.ninetyAria === 'true', JSON.stringify(loadOnly));
     // 收尾：两格原样交回（原本没写过的删掉，让后面的场景读到"从没写过"那一支）
     var seekBack = await ctx.client.evaluate(
@@ -14085,6 +14089,202 @@ SCENARIOS.push({
         silentRead.site - silentBase.site === 0 && silentRead.site === 1 &&
         silentRead.held - silentBase.held === 1 && silentRead.held === 1,
       JSON.stringify({ cell: silent, base: silentBase, read: silentRead }));
+  }
+});
+
+/** ---- 批次 173（会话任务 #199）：「试过一回就整门课别再试」这账要活过一次整页导航 ----
+ *  集成层那一段用**假存储**覆盖了账的口径，这一场要的是真实浏览器里那一族跨导航的字节：
+ *  `sessionStorage` 在同源同一枚标签页里活得过一次整页刷新，而内存里那枚 `app._courseGuard` 必死 ——
+ *  少了这一场，「活过一次整页导航才成立」（AGENTS §2 #25）在真实链路上就只有假存储那一个证人。
+ *  ⚠️ 课身份要**自己造**：`/media-90` 那枚夹具不带 query ⇒ `courseid`／`clazzid` 恒空 ⇒ 课程格天生惰性，
+ *     所以上面那一场「另一支说可以就照旧试拖」结构上不受影响；这一场先把身份写进 URL。 */
+SCENARIOS.push({
+  name: '同一门课的免拖账活过一次整页刷新',
+  path: '/media-90',
+  noAutoResume: true,
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  window.__mk199 = function (tag, text) {',
+      '    var box = document.createElement("div");',
+      '    box.className = "ans-attach-ct videoContainer"; box.id = "b199-" + tag;',
+      '    var sp = document.createElement("span");',
+      '    sp.className = "task-condition-text"; sp.textContent = text; box.appendChild(sp);',
+      '    var mk = document.createElement("span");',
+      '    mk.className = "ans-job-finished"; mk.textContent = "任务点已完成"; box.appendChild(mk);',
+      '    var fr = document.createElement("iframe"); fr.style.display = "none"; box.appendChild(fr);',
+      '    document.body.appendChild(box);',
+      '    var fw = fr.contentWindow, fd = fr.contentDocument;',
+      // 内层 iframe 是另一个 realm，顶层那份 prototype 补丁对它无效 —— 这三件要各自钉一遍
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '      get: function(){ return this.__ct == null ? 90 : this.__ct; },',
+      '      set: function(n){ (this.__w = this.__w || []).push(n); } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '      return { length: 1, start: function(){ return 0; }, end: function(){ return 100; } }; } });',
+      '    fd.body.innerHTML = \'<video id="v199" src="https://ananas.chaoxing.com/video/b199-\' + tag + \'.mp4"></video>\';',
+      '    window["__b199_" + tag] = { card: box, frame: fr, v: fd.getElementById("v199"), doc: fd };',
+      '    return { built: true };',
+      '  };',
+      '  window.__patched199 = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+    var FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+    var SAY = 'course says not draggable, stop trying to seek to end';
+    var ID_A = '777001|888002';
+    var ID_B = '999002|888002';
+
+    // ===== ① 钉起点：身份、空账、只剩我这一个驱动 =====
+    var start = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b199=[];if(!window.__b199Bound){window.__b199Bound=1;' +
+      'window.addEventListener("message",function(ev){var m=ev&&ev.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b199.push({level:String(m.level||""),message:String(m.message||""),meta:m.meta});});}' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,advanceAtNinetyPercent:true,' +
+      'enableCaptcha:false,enableDiscussion:false,autoNext:false});' +
+      'var key=String(app._COURSE_GUARD_KEY||"");' +
+      // sessionStorage 同 origin 整轮共用（AGENTS §5）：上一场留没留过账都当未知，自己清干净再钉
+      'sessionStorage.removeItem(key);app._courseGuard=null;' +
+      'window.__mk199("forbid",' + JSON.stringify(NO) + ');' +
+      'window.__mk199("free",' + JSON.stringify(FREE) + ');' +
+      'var mem0=app._courseGuard||null,raw0=sessionStorage.getItem(key);' +
+      'history.replaceState(null,"",location.pathname+"?courseid=777001&clazzid=888002");' +
+      'var hits0=[app._courseGuardHit("seek"),app._courseGuardHit("speed")];' +
+      'return {patched:!!window.__patched199,key:key,id:app._courseGuardId(),mem0:mem0,raw0:raw0,' +
+      'hitSeek:hits0[0],hitSpeed:hits0[1],loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      'need:app._COURSE_GUARD_NEED,ttl:app._COURSE_GUARD_TTL_MS,' +
+      'cond:app._readSiteSeekCondition(window.__b199_forbid.v).state};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });   // postMessage 是异步送达
+
+    check('199 前提：这一页只剩我这一个驱动、课身份从 URL 读得回来（' +
+      '同一枚存储里没有旧账、内存账也是空的，于是两格进来都不命中）',
+      start.patched === true && start.key !== '' && start.id === ID_A &&
+      start.mem0 === null && start.raw0 === null &&
+      start.hitSeek === false && start.hitSpeed === false &&
+      start.loop === false && start.checkInterval === false &&
+      Number(start.need) >= 1 && Number(start.ttl) > 0 && start.cond === 'forbidden',
+      JSON.stringify(start));
+
+    // ===== ② 第一枚：站点标语挡下 ⇒ 账要**整份**落到 sessionStorage，且只记 seek 那一格 =====
+    var first = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b199_forbid;' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;' +
+      'app._seekDeferKeys=null;app._seekSiteKeys=null;' +
+      'f.v.__w=[];f.v.__ct=20;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-199-a");' +
+      'var k=app._getMediaSeekKey(f.v),rec=(app._seekSkipLedger||{})[k];' +
+      'var raw=JSON.parse(sessionStorage.getItem(app._COURSE_GUARD_KEY)||"null");' +
+      'return {ok:ok,writes:(f.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys||{})[k],reverted:!!(app._seekRevertedKeys||{})[k],' +
+      'rawCourse:raw&&raw.course,rawSeekN:raw&&raw.seek&&raw.seek.n,' +
+      'rawSeekSrcs:raw&&raw.seek&&String((raw.seek.srcs||[]).join(",")),' +
+      'hasSpeed:!!(raw&&raw.speed),ttl:raw&&raw.ttl};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    check('第一枚被站点那句「不可拖拽」挡下时，同一门课那本账**当场写进 sessionStorage**：' +
+      'course 是这一门、seek 记到 NEED（从页面读回来的那个数）、来源里有 banner、' +
+      '而 speed 那一格仍是空的（免拖 ≠ 免倍速，两格不许互相顶）；' +
+      '这一发一个字节都没往播放器上写，也没替站点宣布「弹回过」',
+      first.ok === false && first.writes === 0 && first.last === 'site-no-drag' &&
+        first.tried === false && first.reverted === false &&
+        first.rawCourse === ID_A && Number(first.rawSeekN) >= Number(start.need) &&
+        String(first.rawSeekSrcs).indexOf('banner') >= 0 &&
+        first.hasSpeed === false && Number(first.ttl) === Number(start.ttl),
+      JSON.stringify({ cell: first, need: start.need, ttl: start.ttl }));
+
+    var say1 = await ctx.client.evaluate(
+      '(function(){var g=window.__b199.filter(function(l){return l.message===' + JSON.stringify(SAY) + ';});' +
+      'var m=g[0]&&g[0].meta;return {n:g.length,level:g[0]&&g[0].level,course:m&&m.course,' +
+      'from:m&&m.from,sources:m&&String(m.sources||""),evidence:m&&m.evidence};})()'
+    );
+    check('跨过阈值那一发**只出一句**话，且点得出是哪门课、第几枚、来源是谁（静默=用户不知道为什么不再试拖）',
+      say1.n === 1 && say1.level === 'info' && say1.course === ID_A && say1.from === 'banner' &&
+        String(say1.sources).indexOf('banner') >= 0 && Number(say1.evidence) >= Number(start.need),
+      JSON.stringify(say1));
+
+    // ===== ③ 第二枚（站点**没说**不可拖拽）：由课程账挡下，且不许补一句同样的话 =====
+    var second = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,g=window.__b199_free;' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;app._seekDeferKeys=null;' +
+      'g.v.__w=[];g.v.__ct=20;' +
+      'var st=app._readSiteSeekCondition(g.v).state;' +
+      'var hit=app._courseGuardHit("seek");' +
+      'var ok=app._trySeekToEnd(g.v,"e2e-199-b");' +
+      'var k=app._getMediaSeekKey(g.v),rec=(app._seekSkipLedger||{})[k];' +
+      'return {st:st,hit:hit,ok:ok,writes:(g.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys||{})[k],reverted:!!(app._seekRevertedKeys||{})[k],' +
+      'srcOf:app._seekNoDragSource(g.v)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var say2 = await ctx.client.evaluate(
+      '(function(){return {n:window.__b199.filter(function(l){return l.message===' +
+      JSON.stringify(SAY) + ';}).length};})()'
+    );
+    check('同一门课的第二枚（站点**没说**那三个字，这一支自己没有任何证据）不再试拖：' +
+      '课程格命中、返回 false、`currentTime` 一次没写、skip 账记的是 course-no-drag、' +
+      '`_seekTriedKeys` 与 `_seekRevertedKeys` 都一个字没写、归因点得出是 course，' +
+      '而那句话本页只说过一次（每门课每格只喊一次）',
+      second.st === 'silent' && second.hit === true && second.ok === false &&
+        second.writes === 0 && second.last === 'course-no-drag' &&
+        second.tried === false && second.reverted === false && second.srcOf === 'course' &&
+        say2.n === 1,
+      JSON.stringify({ cell: second, say: say2 }));
+
+    // ===== ④ 换一门课：两格都读不到，旧账也不许被抹掉；换回来照旧读得到 =====
+    var swap = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'history.replaceState(null,"",location.pathname+"?courseid=999002&clazzid=888002");' +
+      'var bId=app._courseGuardId(),bSeek=app._courseGuardHit("seek"),bSpeed=app._courseGuardHit("speed");' +
+      'var rawB=JSON.parse(sessionStorage.getItem(app._COURSE_GUARD_KEY)||"null");' +
+      'history.replaceState(null,"",location.pathname+"?courseid=777001&clazzid=888002");' +
+      'var aId=app._courseGuardId(),aSeek=app._courseGuardHit("seek");' +
+      'return {bId:bId,bSeek:bSeek,bSpeed:bSpeed,bCourse:rawB&&rawB.course,aId:aId,aSeek:aSeek};})()'
+    );
+    check('换课那一发：新课两格都读不到（旧课的账不许带进新课），而存储里那一本的归属仍是旧课' +
+      '（归零只发生在内存，不是把别人的账盖成空的），换回旧课又读得回来',
+      swap.bId === ID_B && swap.bSeek === false && swap.bSpeed === false &&
+        swap.bCourse === ID_A && swap.aId === ID_A && swap.aSeek === true,
+      JSON.stringify(swap));
+
+    // ===== ⑤ 整页刷新：内存账必死，免拖要活下来，免倍速不许跟着活 =====
+    await clearAutoResumeFlag();
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 15000;
+    var alive = false;
+    while (Date.now() < readyBy) {
+      alive = await ctx.client.evaluate('document.readyState==="complete" && !!window._xxtApp')
+        .catch(function () { return false; });
+      if (alive === true) break;
+      await sleep(200);
+    }
+    var reload = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var key=String(app._COURSE_GUARD_KEY||"");' +
+      // 先读**没被自己动过**的那几格：清理之后再断"没有循环"是自证式的空断言（AGENTS §5）
+      'var mem0=app._courseGuard||null,raw0=sessionStorage.getItem(key);' +
+      'var id=app._courseGuardId();' +
+      'var hitSeek=app._courseGuardHit("seek"),hitSpeed=app._courseGuardHit("speed");' +
+      'return {id:id,mem0:mem0,hadRaw:!!raw0,hitSeek:hitSeek,hitSpeed:hitSpeed,' +
+      'loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval};})()'
+    );
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._clearTickLoop();app._clearCheckInterval();return true;})()'
+    );
+    check('活过一次**整页刷新**（这一族最难替代的那一格：内存里那本账必死）：' +
+      '新的 app 实例内存是空的、课身份仍从 URL 读得回来、免拖那一格照样命中，' +
+      '而免倍速那一格照旧不命中（两格各算各的，刷新不会把 seek 的账顶成 speed 的）',
+      alive === true && reload.loop === false && reload.checkInterval === false &&
+        reload.id === ID_A && reload.mem0 === null && reload.hadRaw === true &&
+        reload.hitSeek === true && reload.hitSpeed === false,
+      JSON.stringify({ alive: alive, reload: reload }));
   }
 });
 

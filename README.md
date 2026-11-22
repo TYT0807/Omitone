@@ -462,7 +462,7 @@
 | **自动倍速** | 跟随播放器**量得到**的最大倍速：先读它的倍速菜单，读不出就受控试写一次最高档、读回播放器真正接住的那一档；一支最多问三发，仍问不到就**按原速播完**（批次 146 删了弹窗那根「播放速度」滑条 —— 没量到上限时不再替用户猜一个倍速，硬按上去就是抽搐加黑屏） |
 | **静音** | 视频可选静音；音频不静音（要静音直接静音标签页，更可靠） |
 | **拖到结尾** | 可拖动的视频/音频直接 seek 到片尾，每一支只判断一次（第一次没跳成最多再补两次） |
-| **防拖拽视频看到 90% 就进下一个** | 拖不动 **且** 倍速被锁在 1x 的视频，平台只要求看满 90%；**平台一标记完成就立刻进下一个**，不再白等最后 10%。**「拖不动」有两个各自独立的来源**：① 站点写在任务卡上的那句「当前视频不可拖拽」（`_siteSaysNoDrag`，读到就**不用动手试**，「拖到结尾」关着也生效）；② 真拖一次被播放器两次弹回（`_seekRevertedKeys`，只有「拖到结尾」开着才试得出来）。**标语只许减少动手、不许多出一次动手**；两个来源都拿不到时这一枚不生效，日志出一句 `advance at 90% held back: seek disabled` 点名是谁放弃的，插件**不会替你把你的开关改掉** |
+| **防拖拽视频看到 90% 就进下一个** | 拖不动 **且** 倍速被锁在 1x 的视频，平台只要求看满 90%；**平台一标记完成就立刻进下一个**，不再白等最后 10%。**「拖不动」有三条来源，各占一格不许塌成一条**：① 站点写在任务卡上的那句「当前视频不可拖拽」（`_siteSaysNoDrag`，读到就**不用动手试**，「拖到结尾」关着也生效）；② 真拖一次被播放器两次弹回（`_seekRevertedKeys`，只有「拖到结尾」开着才试得出来）；③ **同一门课里已经认过一回**（`_courseGuardHit('seek')`，账在 `sessionStorage['omitone:course-guard']`，批次 173；①③ 这两条是"不用这一支亲自动手"的那两条，② 天生要开着那枚开关才拿得到）。**标语与课程账都只许减少动手、不许多出一次动手**；三条都拿不到时这一枚不生效，日志出一句 `advance at 90% held back: seek disabled` 点名是谁放弃的，插件**不会替你把你的开关改掉** |
 | **「继续学习」提示** | 弹题答完 / 挂机判定后，播放器右下角的「继续学习」自动点掉，回到正常播放 |
 | **文档 / PPT / 图片** | 自动翻页、上报完成、等页内音频播完 |
 | **超链接任务点** | 自动点开 |
@@ -709,7 +709,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
 | [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、分阶段方案、硬性约束、验收清单、已知陷阱。**三个阶段都已完成，别再重做** |
 | [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：16 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
-| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（40 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
+| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（41 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：**源码布局与构建产物**、消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
@@ -728,7 +728,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 149 个场景，1687 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 150 个场景，1694 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1205,7 +1205,7 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | 「等不等解码 / 解码为什么没成」 | 判据在 `src/page/70-quiz-flow.js`：`_probeFontDecrypt(题目文档)`（一次遍历收 `secret` / `miss` / `terminal` / `state` / `sweepAgoMs`）；**证据由解密层写**：`content.js` 的 `decryptSecretFontsInDocument` → 每份文档的 `data-om-font-state`（clean / plain / nodecl / nomap / partial / done）+ `data-om-font-sweep` 时间戳 + `font decrypt verdict` 日志。扫描节奏在 `content.js` 的 `scheduleDecryptSweep`（有界防抖：300ms 防抖 / 最长 2 秒必跑 / 至少隔 400ms）与 `runFontDecryptSweep`（`decryptSweepRunning` 防并发）。⚠️ 见 §6 #47 |
 | 答案缓存（交卷后记答案） | `src/page/72-quiz-answers.js`：`_rememberCorrectQuizAnswers` / `_isQuizQuestionMarkedCorrect` / `_extractDisplayedCorrectAnswer` |
 | 候选答案 / 避开已知错答 | `src/page/72-quiz-answers.js`：`_getChoiceCandidateAnswers` / `_generateChoiceCombinations` / `_avoidKnownWrongAnswer` |
-| 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` |
+| 视频、倍速、seek | `src/page/40-media.js`：`_playChaoxingMediaJob` / `_ensurePlaybackRate` / `_trySeekToEnd` / 课程级免拖免倍速 `_courseGuardHit` |
 | 验证码 | `src/page/50-captcha.js`：`_checkCaptchaDialog` / `_handleCaptchaDialog` / `_runStandaloneCaptchaMode`；弹窗刷新那一下单独抽成 `_reloadCaptchaDialogPage`（最贵的动作要能被测试盯住），轮次账在 `_readCaptchaDialogBudget` / `_writeCaptchaDialogBudget` / `_healCaptchaDialogBudget` |
 | 讨论任务点 | `src/page/65-discussion.js`：`_discussionModuleName`（两代模块名）/ `_collectDiscussionTargets` / `_findDiscussionModuleFrames`（第 2 步找模块 iframe，按节点去重）/ `_findDiscussionTask` / `_logDiscussionResolveFail`（四个出口点名）/ `_tryDiscussionTask` / `_runDiscussionMode` |
 | 弹题（视频内嵌题） | `src/page/80-popup-quiz.js`：`_checkPopupQuiz` / `_handlePopupQuiz` / `_fillPopupAnswer` |
@@ -1245,8 +1245,8 @@ CDP `Runtime.evaluate` 里包 async 脚本必须写成 `return (async function()
 | `90-console-api-startup.js` | app 收尾、`window.xxtAI` 控制台入口、启动 |
 
 > 任务点与答题各占三个文件，顺序就是 `识别 → 执行 → 循环` 与 `流程 → 答案 → 读图`。
-> 剩下最大的三个是 `75-quiz-dom.js`（1365 行）、`40-media.js`（1095 行）、
-> `70-quiz-flow.js`（1042 行）—— 还能再分，但收益已明显变小；
+> 剩下最大的三个是 `60-tasks-detect.js`（2359 行）、`80-popup-quiz.js`（2240 行）、
+> `70-quiz-flow.js`（2224 行）（2026-11-22 实测）—— 还能再分，但收益已明显变小；
 > 真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 
 需要方法清单时（不用通读）：
@@ -1282,10 +1282,10 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致 / 独立套件挂载
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试（687 项）：真实 content.js 的答题往返
+npm run itest    # 集成测试（698 项）：真实 content.js 的答题往返
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
-npm run e2e      # 真实 Edge 功能交叉检验（149 个场景 / 1687 项）
+npm run e2e      # 真实 Edge 功能交叉检验（150 个场景 / 1694 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
