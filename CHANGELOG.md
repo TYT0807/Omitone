@@ -2522,6 +2522,10 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
 - `npm run check`（第 38 项六种 verdict 全在场、第 25 项表格审计含在本轮 `AGENTS.md` /
   `HANDOVER.md` / `tools/README.md` 改动上复跑）与 `npm test` 全绿 ——
   台账草稿 §"还欠"那一格（对端在写 `tools/check.js` 时跑不了）就此销账。
+- 同口径复账一轮（census-172 对 census-157）：`census-diff.js` 打印 `[尺子] same`、可比 24 格、
+  移动 15 处只在两门（音乐鉴赏 0→24 正在刷、书法鉴赏 need→done），两门 `stateDone` 与 `stateProg`
+  逐门对消、无任何一门 `jobsDone` 往下走、新增"读不出"0 —— 约 51 小时窗口是 §2 #19 长窗口那一格的
+  **第二份**独立差分承重（第一份是 153 的 45.7 小时）。详见 `notes/census-172-recheck.md`。
 - 只提交本轮账上的文件（`AGENTS.md` / `CHANGELOG.md` / `HANDOVER.md` / `tools/README.md` /
   `tools/check-concurrency.js` / `tools/check.js`），逐个点名、绝不 `-A`。
 - ⚠️ **本轮不 push、不 build、不发预览包** —— 接管卡片的「先把还没落实的全落实了再考虑上传，
