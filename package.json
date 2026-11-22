@@ -31,6 +31,8 @@
     "field-logs:selftest": "node tools/field-logs.js --selftest",
     "field-bridge": "node tools/field-bridge.js",
     "field-bridge:selftest": "node tools/field-bridge.js --selftest",
+    "concurrency": "node tools/check-concurrency.js",
+    "concurrency:selftest": "node tools/check-concurrency.js --selftest",
     "test:all": "npm test && npm run e2e",
     "build": "node tools/build.js",
     "manual": "node tools/manual-pdf.js",

@@ -35,6 +35,7 @@
 | `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 | `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页 |
+| `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；五种 verdict 各占一格、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己（见下方专节）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
 留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
@@ -788,6 +789,27 @@ npm run field-bridge                                                            
 于是四条互不相干的 needle 报出**同一个数**（实测 22 秒），而 0 条匹配时它照样给一句像结论的话。
 现在环尾与命中各自成行，命中 0 条会明说**这不等于「没发生过」**：环只留最后 200 条，
 且 needle 必须是源码 `emitRuntimeLog` 里的原句（`--grep` 是子串不是正则，写 `a|b` 恒 0）—— 口径见仓库 `AGENTS.md` §2 #22。
+
+#### 起手先问两道：那张自报的条子只能证明"写过它的人在"（真源 `tools/check-concurrency.js`）
+
+用法与五格口径见上面那一行与 HANDOVER §0.45；规矩本体在 AGENTS §1.05。
+
+⚠️ **为什么一张条子不够**：`main-active.stamp` 是**自愿**的。现场两次并行编辑它都写着 `idle, shell only`，
+而盘上 18 个脏文件正压在 `tools/` + `src/page/` + `page.js`/`content.js` 上；另一次并发会话改完素材原档
+与 `README.md`、跑了 `npm run concat`、还提交了，条子一个字没动。**只按条子缩量 = 对不守约的那一类人永久失明**，
+后果是 §3.4「工具都报成功、只有最后一个生效」，以及更贵的那一种：**把别人没提交的在飞改动一起
+`git add` 进我这轮的提交信息**。
+
+⚠️ **腿 2 的两个半截都不许单独用**：mtime 会被 `git checkout`／构建／自己跑测试推到窗口内 —— 那样这一族
+变成常红的守卫，而**会误报的守卫和没有守卫一样害人**；`git status` 单独用会把躺了两小时的孤儿脏当成正在写，
+**顺手把所有人锁在门外**。**两者同时成立**才是"有人正在写"的形状。
+⚠️ **`unreadable` 走最保守那一格**：git 没装／不是仓库／`spawnSync` 超时给的是"什么都读不出"，
+这一族不报错，只会让我把盘上那份别人的改动当成"我上一轮留下的"（§2 #12：读不出单独占一格，不许塌进放行）。
+⚠️ **腿 2 分不清"我这轮刚改的"**：自己的条子新鲜且命中腿 2 时，要用 `git status --porcelain` 的脏名单
+逐一对上自己这一轮的账（AGENTS §1.05 那半句），才对得起"闸门红"这三个字。
+
+`--selftest` **纯内存、一个字节都不落盘**（不碰条子、不碰构建产物），所以并发窗口里也能安全跑；
+格数从代码里的 `CELLS.length` 读回来 —— 第 38 项自证时读的也是这一格，不抄文档。
 
 #### 「问不到后台」那一格，现在是五格而不是一句话（真源 `tools/field-bridge.js`）
 

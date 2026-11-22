@@ -5332,6 +5332,194 @@ function checkBridgeVerdictGrids() {
 }
 
 // ---------------------------------------------------------------------------
+// 第 38 项 —— 「起手先问两道」这把闸自己有没有坏
+//
+// 为什么单独立一项：接手卡的第 2 步只问 `.workbuddy/main-active.stamp`，而 2026-11-22
+// 现场量过（`notes/ledger-166-draft.md` §一）：12:14 那一次条子已经 57 分钟没续期，
+// 窗口里却躺着 **5 份又脏又新的构建输入** —— 照旧口径判"安静"、直接 `npm run concat`，
+// 就把别人的半成品烘进 `page.js`。**条子只能证明写过它的人在，不能证明没写过它的人不在。**
+// 判据落成 `tools/check-concurrency.js` 之后，这一族必须有人守着：谁挡下的、
+// 读不出算哪一格、格数有没有被人删掉一格 —— 缺一样，下一次就是"闸门在、但恒绿"。
+// ---------------------------------------------------------------------------
+function checkConcurrencyGate() {
+  var bad = [];
+  var SRC = 'tools/check-concurrency.js';
+  var CELL_FLOOR = 20;   // 只钉下限：加格不碍事，删格要响（同第 37 项那一族）
+  var mod = null;
+
+  // ---- a. 逐格对照真跑，且打印的格数与代码里 CELLS 的真长度相等 ----
+  //
+  // ⚠️ 两个数各读各的、只比"打印够不够下限"是不够的：手抄的格数正是批次 142 那一族，
+  //    而"打印那句与代码不符"是 selftest 自己被改坏时唯一的暴露口。
+  if (!exists(SRC)) {
+    bad.push('起手判据的真源不存在：' + SRC + ' —— 读不出当失败，不许当通过');
+  } else {
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(SRC)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.error) {
+      bad.push(SRC + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不许当通过');
+    } else if (r.status !== 0 || !m) {
+      bad.push(SRC + ' --selftest 退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(SRC + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < CELL_FLOOR) {
+      bad.push(SRC + ' 的对照格数从下限 ' + CELL_FLOOR + ' 掉到 ' + m[2] +
+        ' —— 被删掉的那一格不会自己喊，"腿 2 命中"与"读不出"就是这样静默没的');
+    }
+    try {
+      mod = require(path.join(ROOT, SRC));
+    } catch (e) {
+      mod = null;
+      bad.push('require 不回 ' + SRC + '（' + String(e.message || e).slice(0, 80) +
+        '）—— 判定层已经不能被别人复用，第 38 项只能看它自己那张表');
+    }
+    if (mod && m) {
+      var nCells = (mod.CELLS || []).length;
+      if (!nCells) {
+        bad.push(SRC + ' 导出的 CELLS 是空的 —— 打印那句有格数而代码里没有对照表，两处必然各自漂移');
+      } else if (nCells !== Number(m[2])) {
+        bad.push(SRC + ' 打印 ' + m[2] + ' 格，而代码里 CELLS 有 ' + nCells + ' 格 —— 自报的数与实际走的不是一回事');
+      }
+    }
+  }
+
+  // ---- b. 那张表必须覆盖五种 verdict 与三个出口码（新增一型忘了同步进来 = 那一型一步都走不到） ----
+  //
+  // AGENTS §2 #18 同族：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来。
+  if (mod && (mod.CELLS || []).length) {
+    var verdicts = {};
+    var exits = {};
+    (mod.CELLS || []).forEach(function (c) {
+      verdicts[c.verdict] = (verdicts[c.verdict] || 0) + 1;
+      if (typeof c.exit === 'number') exits[c.exit] = (exits[c.exit] || 0) + 1;
+    });
+    ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable'].forEach(function (v) {
+      if (!verdicts[v]) {
+        bad.push('对照表里没有 verdict=' + v + ' 那一格 —— 这一型现在没有任何东西守着，改坏了不会红');
+      }
+    });
+    [0, 1, 2].forEach(function (e) {
+      if (!exits[e]) {
+        bad.push('对照表里没有要求出口码 ' + e + ' 的格子 —— 三种码一旦压成两种，"读不出"就混进放行那一支');
+      }
+    });
+    var viaWant = ['stamp-fresh', 'dirty-fresh-build', 'mtime-fresh-clean', 'dirty-stale', 'git-status', 'clean'];
+    var haveVia = {};
+    (mod.CELLS || []).forEach(function (c) { if (c.via) haveVia[c.via] = 1; });
+    var viaMissing = viaWant.filter(function (w) { return !haveVia[w]; });
+    if (viaMissing.length) {
+      bad.push('对照表里点名不到的 via：' + viaMissing.join(' / ') +
+        ' —— via 是"谁挡下的"那一格，少了它就只能报一句"本轮收窄"，等于没有取证');
+    }
+  }
+
+  // ---- c. 合成读数真跑 classify()：读不出**必须**算阻塞，绝不许塌进放行 ----
+  //
+  // 这一格是整个工具最贵的一条性质（§2 #2 + §2 #12）：`git status` 跑不动时
+  // 若被当成"干净"，下一轮就是拿着坏构建做验收。
+  if (mod && typeof mod.classify === 'function') {
+    var u = mod.classify({ gitErr: 'probe-only' });
+    if (u.verdict !== 'unreadable') {
+      bad.push('gitErr 的读数被判成 ' + u.verdict + '（该是 unreadable）—— 读不出被压进了某一格');
+    }
+    if (!u.blocked) {
+      bad.push('unreadable 那一格的 blocked 是假 —— 读不出却放行，等于把"数不清"当成"确认没人写"');
+    }
+    if (typeof mod.EXIT === 'object' && u.exit !== mod.EXIT.unreadable) {
+      bad.push('unreadable 的出口码是 ' + u.exit + '，而 EXIT.unreadable = ' + mod.EXIT.unreadable + ' —— 两把尺不一致');
+    }
+    var q = mod.classify({});
+    if (q.verdict !== 'quiet' || q.blocked) {
+      bad.push('什么都没有的那一格应该是 quiet 且放行，实读 verdict=' + q.verdict + ' blocked=' + q.blocked +
+        ' —— 恒阻塞的闸和没有闸一样害人（会误报的守卫等于没有守卫）');
+    }
+    if (typeof mod.EXIT === 'object' &&
+      !(mod.EXIT.open === 0 && mod.EXIT.blocked === 1 && mod.EXIT.unreadable === 2)) {
+      bad.push('EXIT 不再是 0/1/2 分家（实读 ' + JSON.stringify(mod.EXIT) +
+        '）—— 上一轮把放行／阻塞／读不出压成两种码，就是这么静默掉的');
+    }
+  } else if (mod) {
+    bad.push(SRC + ' 没有导出 classify（只导出了那张表）—— 第 38 项只能读文本，判定层不能被人复用');
+  }
+
+  // ---- d. 四处登记都要取回（只在一处出现名字 ≠ 登记） ----
+  //
+  // ⚠️ 判据**分两半各承重**（第 37 项 K11 那条教训就在上面几十行）：
+  //    表行那一格与「真源」那一句是两件事，工具名在别处出现过不算登记。
+  var agents = read('AGENTS.md');
+  var s10 = agents.indexOf('### 1.0');
+  var s11 = agents.indexOf('### 1.1');
+  if (s10 < 0 || s11 < 0 || s11 <= s10) {
+    bad.push('AGENTS.md 里取不到 §1.0~§1.1 那一段（读到 ' + s10 + '/' + s11 +
+      '）—— 读不出单独占一格，不许因为扫不到就当这条规矩没事');
+  } else {
+    var seg = agents.slice(s10, s11);
+    if (seg.indexOf('main-active.stamp') < 0) {
+      bad.push('AGENTS.md §1.0 里没有 `main-active.stamp` —— 腿 1 的落点没人指，下一轮还会只问那一张条子');
+    }
+    if (seg.indexOf('check-concurrency') < 0) {
+      bad.push('AGENTS.md §1.0 里没有 `tools/check-concurrency.js` —— 两道一起问这条规矩只活在代码里');
+    }
+    if (!/腿\s*2/.test(seg)) {
+      bad.push('AGENTS.md §1.0 没点名「腿 2」—— 只说"两道"不说第二道读什么，就会被读成"再看一遍同一张条子"');
+    }
+  }
+
+  var hand = read('HANDOVER.md');
+  var hAt = hand.indexOf('起手工序');
+  if (hAt < 0) {
+    bad.push('HANDOVER.md 里没有「起手工序」那节 —— 接手的人只会在 AGENTS 里读到规矩、不知道命令怎么敲');
+  } else if (hand.slice(hAt, hAt + 4000).indexOf('check-concurrency') < 0) {
+    bad.push('HANDOVER.md 的「起手工序」那一节里没写 `tools/check-concurrency.js` —— 节在了但没说用哪件');
+  }
+
+  var treadme = read('tools/README.md');
+  var rowRe = new RegExp('^\\|\\s*`check-concurrency\\.js`\\s*\\|', 'm');
+  if (!rowRe.test(treadme)) {
+    bad.push('tools/README.md 那张工具表里没有 `check-concurrency.js` 那一行（行首竖线 + 反引号名字）—— ' +
+      '下一轮接手的人找不到入口，只会重新发明那句猜话');
+  }
+  if (treadme.indexOf('真源 `tools/check-concurrency.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/check-concurrency.js —— ' +
+      '文件名在别处出现过不算登记（同上面第 37 项 K11 那一格）');
+  }
+
+  // ---- e. npm 入口两条指向真源，且 selftest 那条真带 --selftest ----
+  var pkg;
+  try {
+    pkg = JSON.parse(read('package.json'));
+  } catch (e) {
+    pkg = null;
+    bad.push('package.json 读不成 JSON（' + String(e.message || e).slice(0, 60) + '）—— 读不出当失败');
+  }
+  if (pkg && pkg.scripts) {
+    var wantScript = { 'concurrency': 'node ' + SRC, 'concurrency:selftest': 'node ' + SRC + ' --selftest' };
+    Object.keys(wantScript).forEach(function (k) {
+      if (!pkg.scripts[k]) {
+        bad.push('package.json 的 scripts 里没有 `' + k + '` —— 规矩写成"要问两道"，可手上没有那一件工具');
+      } else if (pkg.scripts[k].indexOf(SRC) < 0) {
+        bad.push('npm 入口 `' + k + '` 不指向 ' + SRC + '（实读 ' + pkg.scripts[k] + '）');
+      } else if (k === 'concurrency:selftest' && pkg.scripts[k].indexOf('--selftest') < 0) {
+        bad.push('npm 入口 `concurrency:selftest` 没带 --selftest —— 手工入口与闸读的是两件事，那张表坏了没人知道');
+      }
+    });
+  }
+
+  if (bad.length) {
+    fail('起手闸门还是只问那一张条子（这族 bug 的表现是"窗口明明被人占着却判安静，一次 concat 把别人的半成品烘进构建产物"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('起手先问两道（腿 1 自报条 + 腿 2 盘上 mtime∧脏 同时成立）：' + SRC + ' 对照表 ' +
+    ((mod && mod.CELLS) || []).length + ' 格逐格全对、五种 verdict 与出口码 0/1/2 分家都有格守着；' +
+    '读不出那一格真算阻塞（classify 合成读数实跑）；AGENTS §1.0、HANDOVER 起手工序、' +
+    'tools/README 表行与专节四处登记齐、npm 两条入口同真源');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -5373,6 +5561,7 @@ checkChannelGate();
 checkDiagnoseRuleTable(manifest);
 checkWebSearchGate(manifest);
 checkBridgeVerdictGrids();
+checkConcurrencyGate();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
