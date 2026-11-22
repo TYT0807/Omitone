@@ -1795,6 +1795,14 @@ CHANGELOG 那 5 处是**历史句**，立尺时必须排掉，HANDOVER :1106 / :
   账本 `.workbuddy/e2e-counts.json` = `{"scenarios":149,"assertions":1687,"passed":true}`；
   集成 **687 / 687**；`node tools/check.js` 全绿；`node tools/audit-md-tables.js` 扫 25 份 .md 十二格对照全过；
   收尾自动清掉 1 枚临时 profile（盘上可用 320442.7 → 320896.9 MB，失败 / 在跑没动 / 带登录态留 各 0 枚）。
+- **发预览包与核验**（§1.1 ⑥，每条都各自退出码 0）：`node tools/build.js` →
+  `node tools/github-release.js preview` → `node tools/github-release.js verify preview`。
+  预览通道两个附件都换成当前构建：`omitone-preview.zip` 2333.8 KB、`Omitone-manual-preview.pdf` 2223.0 KB，
+  `verify` 打印 `state=uploaded` 且**没有**「附件已过期」那一句 —— 即线上摘要与磁盘那份逐字对上；
+  `verify` 另两条照旧成立：本地 dist 不早于任何进包源文件、线上说明与 `release-notes-preview.md` 逐字一致。
+  ⚠️ **这一次 `preview` 头一发被挡下**：`dist/omitone-1.3.1.zip 比 content.js 还旧` ——
+  拦人的是发版工具自己那道 mtime 判据（§3.7「`npm run build` 不能被跳过，也不能指望 `verify` 替你发现」），
+  重跑 `build` 后才是当前字节；台账里留着这句是因为**它报得对，而"忘了构建"这一族以前只能靠人自觉**。
 - **门面**：`没有失败记录时这三行整个藏着`（main 那一页「预览版最近改了什么」新增一条 2026-11-22，
   `release-notes-preview.md` 同段一并写 —— 本轮动的是用户看得见的弹窗那一格，属于必须补的那一类）。
 - ⚠️ **本轮故意不承诺的数字**：那句话里没有任何数量承诺；渠道词表那三家、退避档位，
