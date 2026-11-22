@@ -32,6 +32,8 @@
     "field-bridge": "node tools/field-bridge.js",
     "field-bridge:selftest": "node tools/field-bridge.js --selftest",
     "concurrency": "node tools/check-concurrency.js",
+    "theme": "node tools/audit-dark-theme.js",
+    "theme:selftest": "node tools/audit-dark-theme.js --selftest",
     "concurrency:selftest": "node tools/check-concurrency.js --selftest",
     "test:all": "npm test && npm run e2e",
     "build": "node tools/build.js",

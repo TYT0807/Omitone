@@ -5697,6 +5697,169 @@ function checkConcurrencyGate() {
 }
 
 // ---------------------------------------------------------------------------
+// 第 39 项 —— 白天／黑夜 × 四季那套主题变量，底色与文字色必须**成对**且**算得清**（会话任务 #191）
+//
+//   这一族红了的表现不在测试里，在人眼里：`popup/pet.css` 舞台那五条底色以前只有白天那一版，
+//   而暗色档把 `--fg` 翻成近白 —— 真实 Edge 里逐格量到「🩺」道具 **1.05**、六枚舞台键 **2.84**
+//   （合格线 4.5），弹窗本体却全绿。**语法正常、集成与真实浏览器全绿**，一条测试都不会红。
+//   判据与量法留下的那几格盲区（`:hover` 量不到 / 渐变只取一色标 / 兄弟层刷底 /
+//   `--bg-image` 要 has-bg / 聊天面板在新 profile 里量不到）
+//   写在 `docs/theme-191-dark-audit.md`（**跟踪内** —— `notes/` 在 .gitignore 里，
+//   台账放那儿等于给下一台机器留一条恒红的尺），强调色一族故意不核对（一枚色相兼字色与按钮底，
+//   两个方向互相冲突，要动先得由用户裁"拆不拆成两枚"）。
+// ---------------------------------------------------------------------------
+function checkDarkThemePairing() {
+  var bad = [];
+  var SRC = 'tools/audit-dark-theme.js';
+  var PIN_FLOOR = 12;     // 只钉下限：加格不碍事，删格要响（口径同第 38 项）
+  var CELL_IDS = ['sky-twin', 'ramp-pair', 'ramp-contrast', 'sky-contrast', 'token-bare', 'token-fallback', 'unreadable'];
+  var mod = null;
+
+  // ---- a. 真源在不在、逐格对照真跑、打印的两数与代码里的表对上 ----
+  if (!exists(SRC)) {
+    bad.push('主题对账的真源不存在：' + SRC + ' —— 读不出当失败，不许当通过');
+  } else {
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(SRC)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.error) {
+      bad.push(SRC + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不许当通过');
+    } else if (r.status !== 0 || !m) {
+      bad.push(SRC + ' --selftest 退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(SRC + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < PIN_FLOOR) {
+      bad.push(SRC + ' 的对照格数从下限 ' + PIN_FLOOR + ' 掉到 ' + m[2] +
+        ' —— 被删掉的那一格不会自己喊，"摘错靶照样全绿"那一族就是这样静默没的');
+    }
+    try {
+      mod = require(path.join(ROOT, SRC));
+    } catch (e) {
+      mod = null;
+      bad.push('require 不回 ' + SRC + '（' + String(e.message || e).slice(0, 80) + '）—— 判定层不能被人复用，这一项只能看它自己那张表');
+    }
+  }
+
+  // ---- b. 那张表要与 evaluate() 真跑出来的格子**双向**相等（新增一格忘了进表 = 那一格没人对账） ----
+  var live = null;
+  if (mod) {
+    if (typeof mod.evaluate !== 'function' || !Array.isArray(mod.CELLS) || !mod.CELLS.length) {
+      bad.push(SRC + ' 没同时导出 evaluate 与那张 CELLS 表 —— 表与实际走的分支之间的差不会自己喊（AGENTS §2 #18）');
+    } else {
+      var idsOfTable = mod.CELLS.map(function (c) { return c.id; });
+      if (idsOfTable.slice().sort().join(',') !== CELL_IDS.slice().sort().join(',')) {
+        bad.push(SRC + ' 的 CELLS 与本项点名的七格不是一回事：表里 ' + idsOfTable.join(',') +
+          '，本项要求 ' + CELL_IDS.join(',') + ' —— 加一格要同时改两处，否则那格没人守着');
+      }
+      try {
+        live = mod.evaluate(read('popup/popup.html'), read('popup/pet.css'), mod.runtimeTokens());
+      } catch (e) {
+        live = null;
+        bad.push('在进程内跑不回主题对账（' + String(e.message || e).slice(0, 90) + '）—— 读不出当失败');
+      }
+      if (live) {
+        var idsOfLive = live.cells.map(function (c) { return c.id; });
+        if (idsOfLive.join(',') !== idsOfTable.join(',')) {
+          bad.push(SRC + ' 表里写 ' + idsOfTable.length + ' 格，evaluate() 真跑出 ' + idsOfLive.length +
+            ' 格（实际=' + idsOfLive.join(',') + '）—— 自报的表与实际走的不是一回事');
+        }
+        // 每一格都要**真的走到并给出读数**：空 info 等于那一格什么都没判
+        live.cells.forEach(function (c) {
+          if (!c.info || String(c.info).trim() === '') {
+            bad.push('格子 ' + c.id + ' 没交取证读数 —— 空断言与没有断言等价');
+          }
+        });
+      }
+    }
+  }
+
+  // ---- c. 真核对：红了要逐格点名，不许只说"没过" ----
+  if (live) {
+    var reds = live.cells.filter(function (c) { return !c.ok; });
+    if (reds.length) {
+      bad.push('白天／黑夜 × 四季对账未通过（' + reds.length + ' 格）：\n      ' +
+        reds.map(function (c) { return '[' + c.id + '] ' + c.name + ' —— ' + c.info; }).join('\n      ') +
+        '\n      这一族红了就是"黑夜里有人看不清字"；台账与量法见 docs/theme-191-dark-audit.md');
+    }
+  }
+
+  // ---- d. 盲区不许被读成"已经测干净"：台账文件要在**跟踪内**，且要点名那几格 ----
+  var NOTES = 'docs/theme-191-dark-audit.md';
+  // git 答不出时单独占一格（红），不许塌进"没被忽略"：口径同 AGENTS §1.05 的 unreadable 与 §2 #12
+  function ignoredState(file) {
+    var g = spawnSync('git', ['check-ignore', '-q', file], { cwd: ROOT, encoding: 'utf8', timeout: 15000 });
+    if (g.error || g.status === null) return 'unreadable';
+    if (g.status === 0) return 'ignored';
+    if (g.status === 1) return 'tracked-ok';
+    return 'unreadable';
+  }
+  var noteState = exists(NOTES) ? ignoredState(NOTES) : 'missing';
+  if (noteState === 'missing') {
+    bad.push('现场读数台账 ' + NOTES + ' 不在 —— 量回来的数只活在一次会话里，下一轮会重问一遍或干脆猜');
+  } else if (noteState === 'ignored') {
+    bad.push(NOTES + ' 落在 gitignore 区里 —— 闸门的台账必须**进仓库**，否则下一台机器 clone 出来这条恒红，' +
+      '而红的是"台账不在"这种与主题毫无关系的句子（`notes/` 就是那一族：它专门装真实课程号，不许当台账家）');
+  } else if (noteState === 'unreadable') {
+    bad.push('问不出 ' + NOTES + ' 有没有被 .gitignore 挡掉（git 答不出）—— 读不出不许当成"没被忽略"');
+  } else {
+    var note = read(NOTES);
+    ['hover', '渐变', 'has-bg', '读不出'].forEach(function (k) {
+      if (note.indexOf(k) < 0) {
+        bad.push(NOTES + ' 里没有「' + k + '」那一格 —— 盲区不写下来就会被读成"全测过了"');
+      }
+    });
+    if (note.indexOf('1.05') < 0 || note.indexOf('2.84') < 0) {
+      bad.push(NOTES + ' 里找不到修复前那两个现场读数（1.05 / 2.84）—— 没有原始读数，"修好了"这句话没有对照');
+    }
+  }
+
+  // ---- e. npm 入口两条指向真源（手工入口与闸不许读的是两件事） ----
+  var pkg;
+  try {
+    pkg = JSON.parse(read('package.json'));
+  } catch (e) {
+    pkg = null;
+    bad.push('package.json 读不成 JSON（' + String(e.message || e).slice(0, 60) + '）—— 读不出当失败');
+  }
+  if (pkg && pkg.scripts) {
+    var want = { 'theme': 'node ' + SRC, 'theme:selftest': 'node ' + SRC + ' --selftest' };
+    Object.keys(want).forEach(function (k) {
+      if (!pkg.scripts[k]) {
+        bad.push('package.json 的 scripts 里没有 `' + k + '` —— 下一轮想手工复量只能猜命令');
+      } else if (pkg.scripts[k].indexOf(SRC) < 0) {
+        bad.push('npm 入口 `' + k + '` 不指向 ' + SRC + '（实读 ' + pkg.scripts[k] + '）');
+      } else if (k === 'theme:selftest' && pkg.scripts[k].indexOf('--selftest') < 0) {
+        bad.push('npm 入口 `theme:selftest` 没带 --selftest —— 手工入口与闸读的是两件事，那张表坏了没人知道');
+      }
+    });
+  }
+
+  // ---- f. tools/README.md 表行 + 专节分开承重（K11 同一族：文件名在别处出现过不算登记） ----
+  var treadme = read('tools/README.md');
+  if (!new RegExp('^\\|\\s*`audit-dark-theme\\.js`\\s*\\|', 'm').test(treadme)) {
+    bad.push('tools/README.md 那张工具表里没有 `audit-dark-theme.js` 那一行（行首竖线 + 反引号名字）');
+  }
+  if (treadme.indexOf('真源 `tools/audit-dark-theme.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/audit-dark-theme.js —— 只在表里出现过不算登记');
+  }
+
+  if (bad.length) {
+    fail('白天／黑夜 × 四季主题对账不成套（这族 bug 的表现是"夜里近白字压在浅天光上，只有用户看得见"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  var pairs = live.detail.rampRows.concat(live.detail.skyRows);
+  var minRatio = Math.min.apply(null, pairs.map(function (x) { return x.ratio; }));
+  pass('白天／黑夜 × 四季底色成对（' + SRC + ' 对照表 ' + mod.CELLS.length +
+    ' 格逐格全对、' + PIN_FLOOR + ' 刀注入各红各的）：舞台底色 5×2 齐、中性五枚 token 两档不照抄、' +
+    pairs.length + ' 对「文字 × 实际落底」逐对 ≥ 4.5（最低 ' + minRatio + '，其中舞台 ' +
+    live.detail.skyRows.length + ' 对）；引用普查 ' + live.detail.refs +
+    ' 枚全有出处；台账与 npm 两条入口、tools/README 表行与专节登记齐');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -5739,6 +5902,7 @@ checkDiagnoseRuleTable(manifest);
 checkWebSearchGate(manifest);
 checkBridgeVerdictGrids();
 checkConcurrencyGate();
+checkDarkThemePairing();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });
