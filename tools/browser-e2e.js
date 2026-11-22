@@ -2627,7 +2627,11 @@ var MOCK_PAGES = {
   // `/blank` 那条网址不像课程页，用它测「课程页刚加载、标记还没长出来」是错的形状，
   // 所以下面那一格也挂上真实路径（同一份 HTML，只换网址）。
   '/space/index': buildUserCenterTopHtml,
-  '/mycourse/studentstudy': buildBlankHtml,
+  // ⚠️ 批次 89 把这页挂成了 `'/mycourse/studentstudy'`，可**同一个键批次 9-A 先占了**（MOCK_PAGES 末尾那份讨论诱饵），
+  //    对象字面量里后写的静默覆盖先写的 —— 于是「网址像课程页、DOM 还空着」那一格从写下那天起就没真被端上来过，
+  //    而它的前提断言在诱饵形状上恰好也成立，所以一条测试都不红（第 30 项第四把尺的「重复键」那一格数的就是这一族）。
+  //    换名不动判据：`_isStudyCourseHref` 认的是 `/mycourse/studentstudy` 这一段前缀，`-blank` 尾巴照旧算课程页。
+  '/mycourse/studentstudy-blank': buildBlankHtml,
   // 批次 87：换课真正的落点 —— 课程首页（章节点在 + 站点自己的 toOld），还有两枚残缺形状
   '/mooc2-ans/mycourse/studentcourse': buildCourseHomeHtml,
   '/mooc2-ans/mycourse/studentcourse-nofn': buildCourseHomeNoFnHtml,
@@ -22514,7 +22518,7 @@ SCENARIOS.push({
  *    同理每个数（附件数 / 等级 / emptyForMs）都从**发出来的日志**里读回来，不拿夹具常量比。 */
 SCENARIOS.push({
   name: '空章节的等待不再顶成「注意」（问一句的那一路闭嘴）',
-  path: '/mycourse/studentstudy',
+  path: '/mycourse/studentstudy-blank',
   run: async function (ctx) {
     function readSearchLogs() {
       return ctx.client.evaluate(

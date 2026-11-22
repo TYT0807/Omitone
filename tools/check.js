@@ -3919,6 +3919,166 @@ function checkSwitchBudgetClaim() {
     ' 处按两档之一核；含 ' + QCASES.length + ' 格夹具对照（其中 '
     + QCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）+ 1 格掩码形状自证；' +
     '工具自带 ' + quizSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第四把尺**：夹具表那句「全表 N 页」（会话任务 #187）----
+  //   同一族漂移第四次：批次 85/86 换课上限、批次 146/150 倍速问价、批次 157 弹题问价、这一族。
+  //   本轮立尺当场量到两处真漂移：① `HANDOVER.md:1586` 还停在批次 48 那一刻的「71 页」（现 100），
+  //   ② `MOCK_PAGES` 里 `/mycourse/studentstudy` **被写了两遍**（批次 89 那份空白页 vs 批次 9-A 那份讨论诱饵），
+  //   对象字面量后写的静默覆盖先写的 —— 文本键数 100、运行时 99，而批次 89 那一场的前提断言在诱饵形状上
+  //   恰好也成立，所以**一条测试都不红**：它自 11-17 起就没真被端上来过。这一格数的是这一族。
+  //   **同样不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  // ⚠️ 下限写在常数里，**句子里那句「下限 N」也从同一个常数读** ——
+  //    以前这里比较用 14、散文里也手写 14，抬下限时漏改散文就得到一句自相矛盾的红话。
+  var FX_SELF_MIN_CELLS = 14;
+  var fx, fxSrc;
+  try {
+    fx = require('./audit-fixture-pages.js');
+  } catch (f1) {
+    fail('夹具页数对账加载失败：' + String((f1 && f1.message) || f1) +
+      '\n      真源是 tools/audit-fixture-pages.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  if (fx.maskInvisible !== audit.maskInvisible || fx.maskInvisible !== rate.maskInvisible
+    || fx.maskInvisible !== quiz.maskInvisible) {
+    fail('夹具页数与前三把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '四处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    fxSrc = fx.pagesFromSource();
+  } catch (f2) {
+    fail('夹具页数对账读不出代码真源：' + String((f2 && f2.message) || f2) +
+      '\n      真源是 ' + fx.SOURCE + ' 里顶格的 `var MOCK_PAGES = { … };` 那一段；那一段换名或缩进要连这条闸一起改');
+    return;
+  }
+  var fclean = fx.cleanFixture();
+  var FCASES = [
+    { name: '干净夹具（四句真形状 + 说明书页数／N 页面／中文数字／场景数四族诱饵都不算）', files: fclean, problems: 0, claims: 4 },
+    {
+      name: '台账那句退成「71 页夹具」（本轮实测的真漂移）要红，并点名「不一致」',
+      files: fx.mutate(fclean, '全表扫（99 页夹具，不起浏览器', '全表扫（71 页夹具，不起浏览器'),
+      problems: 1, needle: '不一致'
+    },
+    {
+      name: '另一形状「全表 120 页」要红 —— 两种句式各自承重',
+      files: fx.mutate(fclean, '全表 99 页', '全表 120 页'),
+      problems: 1, needle: '全表 120 页'
+    },
+    {
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提页数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到页数要响，且不许"只比文档"',
+      files: fclean, pagesOverride: 0, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照：说明书页数那一族真句子（README.md:712 实测形状）
+      name: '说明书 PDF 的「40 页」「31 页」与「5 页面」「一页夹具」不许被抓成夹具页数', xfamily: true,
+      files: {
+        'README.md': '| `使用说明.pdf` | 40 页，含界面示意 |\n- 覆盖了 5 页面；两代各自一页夹具。\n',
+        'HANDOVER.md': '本机已 `npm run manual` 重出（31 页，新表体里旧句 0 处）。\n'
+      },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var fbad = [];
+  FCASES.forEach(function (t) {
+    var res;
+    try {
+      res = fx.audit({
+        docs: t.files,
+        // 对照表用**夹具自己那份常数**（夹具句子与它自洽），真文档那一轮才用盘上的真读数 ——
+        // 否则夹具涨一页，这张表会整张变成"预期红几条"对不上，而红的是尺自己。
+        pages: ('pagesOverride' in t) ? t.pagesOverride : fx.CLEAN_PAGES
+      });
+    } catch (f3) {
+      fbad.push(t.name + '：审计本身抛了 ' + String((f3 && f3.message) || f3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      fbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      fbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      fbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  // 第 4 个实参是**允许留数字的那一行行号**（可见正文那一行），不是"预期几条"：
+  // 这一段全在围栏里，所以传 -1 —— 一旦围栏没被挖干净，数字会当场把它点名。
+  checkMaskShape('夹具页数 - 围栏代码块里的错数不算',
+    '正文一句都不提。\n```\n全表 99 页\n99 页夹具\n```\n', false, -1, fbad);
+  if (fbad.length) {
+    fail('夹具页数对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + fbad.join('\n      '));
+    return;
+  }
+  if (fxSrc.dups.length) {
+    fail('夹具表里有被静默覆盖的重复键：\n      ' + fxSrc.dups.map(function (d) {
+      return '「' + d.key + '」写了 ' + d.lines.length + ' 次（第 ' + d.lines.join(' / ') + ' 行）';
+    }).join('\n      ') + '\n      文本键数 ' + fxSrc.textual + '、运行时只有 ' + fxSrc.pages +
+      ' 页 —— 后一份盖掉前一份，改前一份的人会得到一句"夹具改了"而盘上一个字没变；' +
+      '\n      两份形状都要能端上来时**给其中一份换一个路径名**（`_isStudyCourseHref` 认的是前缀，尾巴可以加），别共键');
+    return;
+  }
+  var fdocs = {};
+  var fmissing = [];
+  fx.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) fdocs[f] = fs.readFileSync(p, 'utf8');
+    else fmissing.push(f);
+  });
+  if (fmissing.length) {
+    fail('夹具页数对账有 ' + fmissing.length + ' 份文档没读进来：' + fmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var freal = fx.audit({ docs: fdocs, pages: fxSrc.pages });
+  if (freal.problems.length) {
+    fail('夹具页数对账有 ' + freal.problems.length + ' 条要说：\n      ' + freal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成 MOCK_PAGES 现在的去重键数（' + fxSrc.pages + ' 页），别改判据迁就现状；' +
+      '\n      历史那句要留就照「现数 + 当时是几页」写，引述旧数不带「页夹具／全表 N 页」的形状才出得了界');
+    return;
+  }
+  var fxSelfCells = null;
+  var fxSelfErr = null;
+  for (var fattempt = 0; fattempt < 2; fattempt++) {
+    var fr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-fixture-pages.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    fxSelfErr = fr.error || null;
+    if (!fr.error || fr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (fr.status !== 0) {
+        fxSelfErr = new Error('退出码 ' + fr.status + '，末行=' +
+          JSON.stringify(String(fr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var fmc = String(fr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!fmc) {
+          fxSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(fr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else fxSelfCells = Number(fmc[1]);
+      }
+      break;
+    }
+  }
+  if (fxSelfErr) {
+    fail('夹具页数的逐格对照没跑成或本身是红的：' + String(fxSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 4 处都对上了"就打印通过');
+    return;
+  }
+  if (fxSelfCells < FX_SELF_MIN_CELLS) {
+    fail('夹具页数的逐格对照只报了 ' + fxSelfCells + ' 格（下限 ' + FX_SELF_MIN_CELLS + '）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；四格里"解析器契约"（重复键点名、块读不到要抛、' +
+      '自报接线断了两格）尤其承重 —— 真源读错时整套对账都是空的');
+    return;
+  }
+  pass('夹具页数文档对账（代码 MOCK_PAGES 去重 ' + fxSrc.pages + ' 页、文本键数 ' + fxSrc.textual +
+    ' 无重复；文档 ' + freal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(freal.claims.map(function (c) { return c.file; })).size + ' 份；含 ' + FCASES.length +
+    ' 格夹具对照（其中 ' + FCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）' +
+    ' + 1 格掩码形状自证；工具自带 ' + fxSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
 }
 
 // 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
