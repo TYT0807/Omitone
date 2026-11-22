@@ -27,6 +27,8 @@
  * ## 所以判据是两条一起问，缺一不算「有人在写」
  *
  *   腿 1  自报层（`main-active.stamp`）：新鲜**且归因得到是别人**才阻塞。
+ *         条子里 `mode=read`（协议补丁 #224）→ 语义是"这一轮只读"，放行由腿 2 给，落 `other-reading` 单独说话；
+ *         `mode=write` 或没有这一枚照旧阻塞（向后兼容），认不出的值按最保守的 write 处置。
  *         stamp 陈旧**永远不能**用来证明没人写 —— 它只记录"谁最后自觉登记过一次"。
  *   腿 2  盘上层：**mtime 落在窗口内** 与 **`git status` 里带改动** 两条同时成立才算活跃写入者。
  *         只有 mtime 新（树干净）= 刚有人还原过 → `restored-not-writing`，明说"可以动"。
@@ -100,18 +102,29 @@ function classify(g) {
   // ---- 腿 1：自报层。只有"新鲜 + 归因得到是别人"才阻塞 ----
   // 顺序要紧：这一发在 git 能不能读之前判（§selftest 第 16 格）—— 别人自报在写的时候，
   // 不管我们量不量得动盘都要先把这一轮收窄，两条证据不存在"谁读不到就当没有"。
+  // mode= 一枚（协议补丁 #224，对端会话 1fd1c8df 2026-11-22 提）：条子的语义是"我要写"，
+  // 只读轮拿它当"告知"会把 12 分钟窗口对全场重开。`mode=read` 不阻塞、只登记"有人在只读"；
+  // `mode=write` 或**没有这一枚**照旧阻塞（向后兼容旧格式）；认不出的值按最保守的 write 处置 ——
+  // 不许把"读不出"塌进放行那一格（AGENTS §2 #12）。
   var stampForeign = stamp === 'fresh' && g.stampMine !== true &&
     (!g.stampSession || !g.selfSession || g.stampSession !== g.selfSession);
+  var stampReadAnnounce = false;
   if (stampForeign) {
-    var noSess = !g.stampSession;
-    return out('writing', noSess ? 'stamp-fresh-nosession' : 'stamp-fresh', EXIT.blocked,
-      '腿 1 命中：`main-active.stamp` 距今 ' + mins(g.stampAgeMs) + '，' +
-      (noSess ? '**里面没写 `session=`，归因不到是谁登记的**' : '登记的是 `session=' + g.stampSession + '`，不是本会话（' + (g.selfSession || '(未带 --session)') + '）') +
-      ' —— 保守按"有人在写"处置。',
-      true,
-      noSess
-        ? '如果那一行就是本会话自己写的，带 `--stamp-mine` 再问一次；否则按只读轮走。往后进 stamp 要写成 `<ISO 带时区>  session=<会话号>`，归因就不用猜。'
-        : '等它过期（窗口 ' + Math.round(windowMs / 60000) + ' 分钟），或确认那一轮已经收尾。');
+    var sMode = String(g.stampMode || 'write');
+    if (sMode === 'read') {
+      stampReadAnnounce = true;   // 放行由腿 2 给；活跃写入者照样被 dirty-fresh 逮住
+    } else {
+      var noSess = !g.stampSession;
+      return out('writing', noSess ? 'stamp-fresh-nosession' : 'stamp-fresh', EXIT.blocked,
+        '腿 1 命中：`main-active.stamp` 距今 ' + mins(g.stampAgeMs) + '，' +
+        (noSess ? '**里面没写 `session=`，归因不到是谁登记的**' : '登记的是 `session=' + g.stampSession + '`，不是本会话（' + (g.selfSession || '(未带 --session)') + '）') +
+        ' —— 保守按"有人在写"处置。' +
+        (sMode !== 'write' ? ' 另：条子里 `mode=' + sMode + '` 这一枚认不出来（只认 `read` / `write` / 无字段），按最保守的 `write` 算。' : ''),
+        true,
+        noSess
+          ? '如果那一行就是本会话自己写的，带 `--stamp-mine` 再问一次；否则按只读轮走。往后进 stamp 要写成 `<ISO 带时区>  session=<会话号>  mode=write`，归因就不用猜。'
+          : '等它过期（窗口 ' + Math.round(windowMs / 60000) + ' 分钟），或确认那一轮已经收尾。');
+    }
   }
 
   // ---- 两条盘上证据都读不出 → 单独占一格 ----
@@ -173,12 +186,22 @@ function classify(g) {
       '照常干活；开工前把 stamp 写成 `<ISO 带时区>  session=<会话号>`。');
   }
 
+  // ---- 别人只登记了一条 mode=read 的条子，腿 2 又干净 → 放行，但那一格单独说话 ----
+  if (stampReadAnnounce) {
+    return out('other-reading', 'stamp-fresh-read', EXIT.open,
+      '腿 1 有一条新鲜的外部条子写着 `mode=read`（距今 ' + mins(g.stampAgeMs) + '，`session=' + g.stampSession + '`）—— ' +
+      '语义是"这一轮只读"，**不阻塞**；放行由腿 2 给（树里没改动、构建输入都在窗口之外）。',
+      false,
+      '可以动、可以跑套件；自己这一轮要写，照旧先认领条子（`mode=write`），并给对方发一句「已认领，预计 N 分钟内推提交」。');
+  }
+
   // ---- 安静 ----
   var quiet = out('quiet', 'clean', EXIT.open,
     '腿 2 干净：树里没有未提交的跟踪改动，构建输入 mtime 都在窗口之外。' +
     (stamp === 'stale' ? ' 腿 1 那条 stamp 距今 ' + mins(g.stampAgeMs) + ' —— **注意这句话不是"没人写"的证据**，只是"最近没人在这一格里登记过"；放行靠的是腿 2。' : '') +
     (stamp === 'absent' ? ' 腿 1 没有 stamp 文件（同样的：不构成任何一边的证据）。' : '') +
-    (stamp === 'unparsed' || stamp === 'unreadable' ? ' 腿 1 读不出（' + stamp + '）：既不算有人在写，也不算安静，放行是腿 2 给的。' : '') +
+    (stamp === 'blank' ? ' 腿 1 那**个文件在、里面是空的**（`blank`）：谁碰过条子却没写内容，这既不算有人在写也不算安静，放行只能由腿 2 给。' : '') +
+    (stamp === 'unparsed' || stamp === 'unreadable' ? ' 腿 1 读不出（' + stamp + '，' + (g.stampNote || '格式不认／文件读不出') + '）：既不算有人在写，也不算安静，放行是腿 2 给的。' : '') +
     (typeof g.commitAgeMs === 'number' && g.commitAgeMs <= windowMs
       ? ' 参考：最近一次提交距今 ' + mins(g.commitAgeMs) + ' —— 上一轮刚交过卷，这本身**不阻塞**（否则任何一轮自己的提交都会锁死下一轮）。'
       : ''),
@@ -228,6 +251,34 @@ function buildInputs() {
   return set;
 }
 
+/**
+ * 把条子那一行解析成读数 —— 纯函数，`--selftest` 喂合成文本走的就是这一发（批次 170）。
+ *
+ * ⚠️ 毫秒必须带小数点拼回去。上一版把捕到的 `563` 直接接在秒后面，拼出
+ *   `16:30:43563+08:00` 这种没人写得出的格式，`Date.parse` 回 NaN，于是**任何带毫秒的条子**
+ *   都判成 unparsed、归因印成 `session=(无)`：腿 1 那天正好是瞎的，而 verdict 照旧打印。
+ */
+function parseStamp(rawText) {
+  var text = String(rawText === undefined || rawText === null ? '' : rawText);
+  // blank 的成因是「整个文件没有一处非空白」—— 谁 touch 出来却没写内容。
+  // 有字但对不上日期（英文速记、只剩注释）那是 unparsed，两格不许混：混了就把
+  // 「碰过条子却没登记」读成「格式不认」，而放行/dispatch 说的根本不是同一件事。
+  if (!text.trim()) return { state: 'blank', line: '' };
+  var line = text.split(/\r?\n/).filter(function (s) { return s.trim(); })[0] || '';
+  if (!line) return { state: 'blank', line: '' };
+  var m = line.match(/^\s*(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*(Z|[+-]\d{2}:?\d{2})?/);
+  if (!m) return { state: 'unparsed', line: line.slice(0, 120) };
+  var iso = m[1] + 'T' + m[2] + (m[3] ? '.' + m[3] : '') + (m[4] || '');
+  var t = Date.parse(m[4] ? iso : iso + 'Z');   // 没带时区的按 UTC 读（宁可判旧，也不凭空判新）
+  if (!isFinite(t)) return { state: 'unparsed', line: line.slice(0, 120) };
+  var sess = line.match(/session=([^\s]+)/);
+  var mode = line.match(/mode=([^\s]+)/);
+  return {
+    state: 'parsed', atMs: t, session: sess ? sess[1] : '',
+    mode: mode ? mode[1] : '', line: line.slice(0, 160), iso: iso
+  };
+}
+
 function readStamp() {
   var raw;
   try {
@@ -235,14 +286,28 @@ function readStamp() {
   } catch (e) {
     return { state: e && e.code === 'ENOENT' ? 'absent' : 'unreadable', err: String((e && e.message) || e) };
   }
-  var line = String(raw).split(/\r?\n/).filter(function (s) { return s.trim(); })[0] || '';
-  var m = line.match(/^\s*(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.(\d+))?\s*(Z|[+-]\d{2}:?\d{2})?/);
-  if (!m) return { state: 'unparsed', line: line.slice(0, 120) };
-  var iso = m[1] + 'T' + m[2] + (m[3] || '') + (m[4] || '');
-  var t = Date.parse(m[4] ? iso : iso + 'Z');   // 没带时区的按 UTC 读（宁可判旧，也不凭空判新）
-  if (!isFinite(t)) return { state: 'unparsed', line: line.slice(0, 120) };
-  var sess = line.match(/session=([^\s]+)/);
-  return { state: 'parsed', atMs: t, session: sess ? sess[1] : '', line: line.slice(0, 160) };
+  return parseStamp(raw);
+}
+
+/**
+ * 解析结果 → 判定层那一格 stampState。**probe() 与 selftest() 共用这一发**，
+ * 否则对照表测的是另一条路径、真盘那一条坏了没人知道（批次 170 立的口径）。
+ * 'blank'（文件在、里面没内容）单独占一格：它既不是「没有条子」，也不是「读不出格式」。
+ */
+function applyStamp(g, s, now) {
+  g.stampSession = s.session || '';
+  g.stampLine = s.line || '';
+  g.stampMode = s.mode || '';
+  if (s.state === 'absent') g.stampState = 'absent';
+  else if (s.state === 'unreadable' || s.state === 'unparsed') g.stampState = s.state;
+  else if (s.state === 'blank') g.stampState = 'blank';
+  else {
+    g.stampAgeMs = now - s.atMs;
+    // 未来的时间戳（时钟跳了 / 抄错）单独按 unparsed 说话：它既不该当"新鲜"阻塞，也不该当"陈旧"放行
+    g.stampState = g.stampAgeMs < -g.windowMs ? 'unparsed' : (g.stampAgeMs <= g.windowMs ? 'fresh' : 'stale');
+    if (g.stampState === 'unparsed') g.stampNote = 'stamp 里的时间在未来';
+  }
+  return g;
 }
 
 function gitJsonish(args) {
@@ -275,18 +340,9 @@ function probe(opts) {
   var g = { windowMs: windowMs, stampState: 'absent', dirty: [], freshCleanBuild: 0 };
 
   var s = readStamp();
-  g.stampSession = s.session || '';
-  g.stampLine = s.line || '';
   g.stampMine = opts.stampMine === true;
   g.selfSession = opts.session ? String(opts.session) : (process.env.OMITONE_SESSION ? String(process.env.OMITONE_SESSION) : '');
-  if (s.state === 'absent') g.stampState = 'absent';
-  else if (s.state === 'unreadable' || s.state === 'unparsed') g.stampState = s.state;
-  else {
-    g.stampAgeMs = now - s.atMs;
-    // 未来的时间戳（时钟跳了 / 抄错）单独按 unparsed 说话：它既不该当"新鲜"阻塞，也不该当"陈旧"放行
-    g.stampState = g.stampAgeMs < -windowMs ? 'unparsed' : (g.stampAgeMs <= windowMs ? 'fresh' : 'stale');
-    if (g.stampState === 'unparsed') g.stampNote = 'stamp 里的时间在未来';
-  }
+  applyStamp(g, s, now);
 
   var st = gitJsonish(['status', '--porcelain']);
   if (st.err) g.gitErr = st.err;
@@ -444,13 +500,111 @@ var CELLS = [
       dirty: [{ path: 'src/page/70-quiz-flow.js', isBuild: true, isDoc: false, ageMs: 30000 }]
     },
     verdict: 'writing', via: 'dirty-fresh-build', exit: 1, noteHas: 'takeover-7', noteBan: ['--stamp-mine']
+  },
+  // ---- 批次 170：下面五格喂**条子原文**，第一次把 parseStamp 这一层拉进对照表 ----
+  //      旧 20 格全喂合成 g，读盘那一层坏了也照样 20 / 20 通过（AGENTS §5「根本没走到那一层」）。
+  {
+    tag: '21带毫秒的真条子（现场形状）→ 解析得出、session 认得出，腿 1 单独就阻塞',
+    raw: '2026-11-22T16:30:43.563+08:00  session=other-9  note=probe  window=12',
+    nowMs: Date.parse('2026-11-22T08:30:43.563Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'writing', via: 'stamp-fresh', exit: 1, expectStamp: 'fresh', expectSession: 'other-9',
+  },
+  {
+    tag: '22同一条不带毫秒 → 与上一格同判（治的就是拼 ISO 时把小数点丢了那一族）',
+    raw: '2026-11-22T16:30:43+08:00  session=other-9  note=probe  window=12',
+    nowMs: Date.parse('2026-11-22T08:30:43.000Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'writing', via: 'stamp-fresh', exit: 1, expectStamp: 'fresh', expectSession: 'other-9',
+  },
+  {
+    tag: '23带 Z 的条子 → 按 UTC 读出来仍算新鲜（毫秒与 Z 两处都要过）',
+    raw: '2026-11-22T08:30:43.500Z  session=zeta  window=12',
+    nowMs: Date.parse('2026-11-22T08:35:00Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'writing', via: 'stamp-fresh', exit: 1, expectStamp: 'fresh', expectSession: 'zeta',
+  },
+  {
+    tag: '24条子时间在未来 20 分钟 → 落 unparsed 那一格，不许当新鲜阻塞、也不许当陈旧放行',
+    raw: '2026-11-22T16:50:00.000+08:00  session=early-bird',
+    nowMs: Date.parse('2026-11-22T08:30:00Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'quiet', via: 'clean', exit: 0, expectStamp: 'unparsed', noteHas: '在未来'
+  },
+  {
+    tag: '25文件在、里面只有空白（谁 touch 出来却没写内容）→ blank 单独占一格，不许塌进「没有条子」那句话',
+    raw: '   ' + String.fromCharCode(10) + '        ',
+    nowMs: Date.parse('2026-11-22T08:30:00Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'quiet', via: 'clean', exit: 0, expectStamp: 'blank', noteHas: '里面是空的', noteBan: ['没有 stamp 文件', '格式不认']
+  },
+  {
+    tag: '26条子里是一句英文速记（不是日期）→ 读盘这一层落 unparsed，既不许读成「没有条子」也不许读成 blank',
+    raw: 'idle, shell only' + String.fromCharCode(10) + '   session=who-knows',
+    nowMs: Date.parse('2026-11-22T08:30:00Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-9' },
+    verdict: 'quiet', via: 'clean', exit: 0, expectStamp: 'unparsed', noteHas: '格式不认',
+    noteBan: ['没有 stamp 文件', '里面是空的'],
+  },
+  // ---- 协议补丁 #224（批次 172）：mode= 一枚把「只读轮不许拿条子当告知」从约定升成尺 ----
+  {
+    tag: '27真条子写 mode=read → 只读放行：verdict=other-reading、exit 0，句子必须说出"只读"，不许说成有人在写',
+    raw: '2026-11-22T19:10:00.000+08:00  session=other-r  mode=read  note=只读分析  window=12',
+    nowMs: Date.parse('2026-11-22T11:12:00Z'),
+    base: { windowMs: 720000, dirty: [], freshCleanBuild: 0, selfSession: 'me-r' },
+    verdict: 'other-reading', via: 'stamp-fresh-read', exit: 0, blocked: false,
+    expectStamp: 'fresh', expectSession: 'other-r', noteHas: 'mode=read', noteBan: ['有人在写'],
+  },
+  {
+    tag: '28mode=read 但腿 2 抓到脏且新 → 照旧 writing（只读条子不许把活跃写入者也放掉）',
+    g: {
+      windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'other-r', selfSession: 'me-r', stampMode: 'read',
+      dirty: [{ path: 'src/page/40-media.js', isBuild: true, isDoc: false, ageMs: 30000 }]
+    },
+    verdict: 'writing', via: 'dirty-fresh-build', exit: 1
+  },
+  {
+    tag: '29外部条子明写 mode=write → 与无字段同判（向后兼容不许反过来）',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'other-r', selfSession: 'me-r', stampMode: 'write', dirty: [] },
+    verdict: 'writing', via: 'stamp-fresh', exit: 1
+  },
+  {
+    tag: '30mode= 是认不出的自造词（idle 这种）→ 按最保守的 write 阻塞，句子里必须点名那枚值',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'other-r', selfSession: 'me-r', stampMode: 'idle', dirty: [] },
+    verdict: 'writing', via: 'stamp-fresh', exit: 1, noteHas: 'mode=idle'
   }
 ];
+
+/**
+ * 对照表的一格 → 判定层那个读数。**主循环与通用卫生循环共用这一发**：
+ * 真文本格（`raw`）在这里过 parseStamp → applyStamp，与 probe() 走同一把映射，
+ * 读盘那一层的两条期望（stampState / session）也在这里点名；合成格（`g`）原样交回。
+ * 卫生那一趟若自己去 `classify(c.g)`，真文本格拿到的是 `undefined` —— 于是「调用方
+ * 连读数都没给」那一格被当成对照表里的真形状，报出一批根本不存在的红（批次 170 实测：
+ * 新增 5 个真文本格 → 5 句「verdict=unreadable 的某一格没交出下一步怎么问」）。
+ */
+function cellG(c, i, bad) {
+  var sink = Array.isArray(bad) ? bad : [];
+  if (c.g !== undefined) return c.g;
+  if (typeof c.raw !== 'string') return c.g;
+  var g = applyStamp(Object.assign({ windowMs: 720000 }, c.base || {}), parseStamp(c.raw), c.nowMs || Date.now());
+  var tag = '第 ' + (typeof i === 'number' && i >= 0 ? i + 1 : '?') + ' 格[' + c.tag + ']';
+  if (c.expectStamp && g.stampState !== c.expectStamp) {
+    sink.push(tag + ' 解析读出 stampState=' + g.stampState + '，期望 ' + c.expectStamp +
+      '（条子首行=' + JSON.stringify(String(g.stampLine).slice(0, 48)) + '）—— 读盘这一层坏了，判定层再怎么对也不叫覆盖');
+  }
+  if (c.expectSession && g.stampSession !== c.expectSession) {
+    sink.push(tag + ' session 归因成 ' + JSON.stringify(g.stampSession) + '，期望 ' + JSON.stringify(c.expectSession) +
+      ' —— 归因读不出时腿 1 就是瞎的');
+  }
+  return g;
+}
 
 function selftest() {
   var bad = [];
   CELLS.forEach(function (c, i) {
-    var v = classify(c.g);
+    var g = cellG(c, i, bad);
+    var v = classify(g);
     var tag = '第 ' + (i + 1) + ' 格[' + c.tag + ']';
     if (v.verdict !== c.verdict) bad.push(tag + ' 期望 verdict=' + c.verdict + '，实际 ' + v.verdict + '（via=' + v.via + '）');
     if (c.via && v.via !== c.via) bad.push(tag + ' 期望 via=' + c.via + '，实际 ' + v.via);
@@ -475,7 +629,7 @@ function selftest() {
   // 通用卫生
   var seen = {};
   CELLS.forEach(function (c) {
-    var v = classify(c.g);
+    var v = classify(cellG(c, -1, []));
     seen[v.verdict] = 1;
     if (typeof v.exit !== 'number') bad.push('verdict=' + v.verdict + ' 没有出口码');
     // exit 与 blocked 必须同向：CLI 按 exit 拦、被 require 的调用方按 blocked 拦，
@@ -486,9 +640,35 @@ function selftest() {
     if (v.verdict === 'writing' && !v.fix) bad.push('verdict=writing 的某一格没交出处置那句话');
     if (v.verdict === 'unreadable' && !v.fix) bad.push('verdict=unreadable 的某一格没交出"下一步怎么问"那句话');
   });
-  ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable'].forEach(function (k) {
+  ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable', 'other-reading'].forEach(function (k) {
     if (!seen[k]) bad.push('verdict ' + k + ' 在对照表里一格都没有 —— 那一格坏了也不会有人知道');
   });
+  // 「--quiet 只看退出码」这句承诺（AGENTS §1.05）以前没有任何东西执行它 —— 下面四格分别钉
+  // 打印函数的三格形状 + CLI 那一发接线，缺一格就回到"文档里有、盘上没有"。
+  var sampleQ = classify(cellG(CELLS[0], -1, []));
+  if (reportLines(sampleQ, { quiet: true }).length !== 0) {
+    bad.push('--quiet 那一路打印了 ' + reportLines(sampleQ, { quiet: true }).length +
+      ' 行 —— §1.05 说的是「只看退出码」，打印了就等于这一族从来没有 --quiet');
+  }
+  var plain = reportLines(sampleQ, {});
+  if (plain.length < 4 || plain[0].indexOf('verdict=') !== 0 || plain.join('\n').indexOf('读数') < 0) {
+    bad.push('不加 --quiet 时打印 ' + plain.length + ' 行（要 ≥4 且首行 verdict=、含「读数」）—— ' +
+      '这一格是 --quiet 那一格的对照：没有它，"少打印"与"没打印"分不开');
+  }
+  var asJson = reportLines(sampleQ, { json: true });
+  var parsedJson = null;
+  try { parsedJson = asJson.length === 1 ? JSON.parse(asJson[0]) : null; } catch (e) { parsedJson = null; }
+  if (!parsedJson || parsedJson.verdict !== sampleQ.verdict || parsedJson.exit !== sampleQ.exit) {
+    bad.push('--json 那一路要交出**一行**能 parse 回 verdict / exit 的 json（实际行数 ' + asJson.length + '）');
+  }
+  // 接线：格式化函数自己正确没用，CLI 必须真把 --quiet 传进去（锚点紧到只认那一发赋值）
+  var src = fs.readFileSync(__filename, 'utf8').split(/\r?\n/).filter(function (l) {
+    return l.replace(/^\s+/, '').indexOf('//') !== 0;
+  }).join('\n');
+  if (src.indexOf('quiet: hasFlag(\'quiet\')') < 0) {
+    bad.push('CLI 里没有 `quiet: hasFlag(\'quiet\')` 那一发接线 —— 打印函数支持 --quiet 而调用方不传，' +
+      '等于文档承诺了一条谁都不执行的开关（剥注释后比，注释里本来就写着这句话）');
+  }
   if (bad.length) {
     var failed = {};
     bad.forEach(function (b) { failed[b.split(' 格[')[0]] = 1; });
@@ -496,7 +676,7 @@ function selftest() {
     bad.forEach(function (b) { console.log('  [FAIL] ' + b); });
     return 1;
   }
-  console.log('并发判定逐格对照：' + CELLS.length + ' 格，覆盖 verdict 5 种（quiet / writing / orphan-dirty / restored-not-writing / unreadable），出口码 0/1/2 分家');
+  console.log('并发判定逐格对照：' + CELLS.length + ' 格，覆盖 verdict 6 种（quiet / other-reading / writing / orphan-dirty / restored-not-writing / unreadable），出口码 0/1/2 分家');
   console.log('对照格数: ' + CELLS.length);
   console.log('自检：' + CELLS.length + ' / ' + CELLS.length + ' 格通过');
   return 0;
@@ -505,6 +685,33 @@ function selftest() {
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
+
+// 打印单独折成一个函数，是因为 AGENTS §1.05 那句「加 --quiet 只看退出码」以前**没有任何东西执行它** ——
+// 写在 console.log 串里的话没法被自检问一次，"承诺了却没实现"与"根本没承诺"在盘上长得一模一样。
+function reportLines(v, opts) {
+  opts = opts || {};
+  var raw = v.raw || {};
+  if (opts.quiet) return [];
+  if (opts.json) {
+    return [JSON.stringify({
+      verdict: v.verdict, via: v.via, exit: v.exit, blocked: v.blocked, note: v.note, fix: v.fix || '',
+      windowMs: raw.windowMs, stampState: raw.stampState, stampAgeMs: raw.stampAgeMs,
+      stampSession: raw.stampSession, stampMode: raw.stampMode || '', dirty: raw.dirty, freshCleanBuild: raw.freshCleanBuild,
+      commitAgeMs: raw.commitAgeMs, concatAgeMs: raw.concatAgeMs, gitErr: raw.gitErr || '', statErr: raw.statErr || ''
+    }, null, 1)];
+  }
+  return [
+    'verdict=' + v.verdict + '  via=' + v.via + (v.blocked ? '  （本轮收窄）' : '  （可以动）'),
+    '  ' + v.note,
+    v.fix ? '  处置：' + v.fix : '',
+    '  读数：stamp ' + raw.stampState + (typeof raw.stampAgeMs === 'number' ? '（距今 ' + mins(raw.stampAgeMs) + '）' : '') +
+      ' session=' + (raw.stampSession || '(无)') + ' mode=' + (raw.stampMode || '(无)') + ' / 脏 ' + ((raw.dirty || []).length) + ' 份 / ' +
+      '窗口内新且脏 ' + ((raw.dirty || []).filter(function (d) { return typeof d.ageMs === 'number' && d.ageMs <= (raw.windowMs || DEFAULT_WINDOW_MS); }).length) + ' 份 / ' +
+      '干净但新鲜 ' + (raw.freshCleanBuild || 0) + ' 份 / 最近提交 ' + mins(raw.commitAgeMs) +
+      ' / page.js ' + mins(raw.concatAgeMs),
+    '  窗口 ' + Math.round((raw.windowMs || DEFAULT_WINDOW_MS) / 60000) + ' 分钟（--window=<秒> 可换）；这一件只读，一个字节都没写。'
+  ].filter(function (l) { return l !== ''; });
+}
 
 if (require.main === module) {
   if (process.argv.indexOf('--selftest') !== -1) {
@@ -515,30 +722,13 @@ if (require.main === module) {
       session: argStr('session', ''),
       stampMine: hasFlag('stamp-mine')
     });
-    var raw = v.raw || {};
-    if (process.argv.indexOf('--json') !== -1) {
-      console.log(JSON.stringify({
-        verdict: v.verdict, via: v.via, exit: v.exit, blocked: v.blocked, note: v.note, fix: v.fix || '',
-        windowMs: raw.windowMs, stampState: raw.stampState, stampAgeMs: raw.stampAgeMs,
-        stampSession: raw.stampSession, dirty: raw.dirty, freshCleanBuild: raw.freshCleanBuild,
-        commitAgeMs: raw.commitAgeMs, concatAgeMs: raw.concatAgeMs, gitErr: raw.gitErr || '', statErr: raw.statErr || ''
-      }, null, 1));
-    } else {
-      console.log('verdict=' + v.verdict + '  via=' + v.via + (v.blocked ? '  （本轮收窄）' : '  （可以动）'));
-      console.log('  ' + v.note);
-      if (v.fix) console.log('  处置：' + v.fix);
-      console.log('  读数：stamp ' + raw.stampState + (typeof raw.stampAgeMs === 'number' ? '（距今 ' + mins(raw.stampAgeMs) + '）' : '') +
-        ' session=' + (raw.stampSession || '(无)') + ' / 脏 ' + ((raw.dirty || []).length) + ' 份 / ' +
-        '窗口内新且脏 ' + ((raw.dirty || []).filter(function (d) { return typeof d.ageMs === 'number' && d.ageMs <= (raw.windowMs || DEFAULT_WINDOW_MS); }).length) + ' 份 / ' +
-        '干净但新鲜 ' + (raw.freshCleanBuild || 0) + ' 份 / 最近提交 ' + mins(raw.commitAgeMs) +
-        ' / page.js ' + mins(raw.concatAgeMs));
-      console.log('  窗口 ' + Math.round((raw.windowMs || DEFAULT_WINDOW_MS) / 60000) + ' 分钟（--window=<秒> 可换）；这一件只读，一个字节都没写。');
-    }
+    reportLines(v, { json: hasFlag('json'), quiet: hasFlag('quiet') }).forEach(function (l) { console.log(l); });
     process.exitCode = v.exit;
   }
 }
 
 module.exports = {
-  classify: classify, probe: probe, selftest: selftest, readStamp: readStamp, parsePorcelain: parsePorcelain,
+  classify: classify, probe: probe, selftest: selftest, readStamp: readStamp, parseStamp: parseStamp,
+  applyStamp: applyStamp, parsePorcelain: parsePorcelain, reportLines: reportLines,
   buildInputs: buildInputs, DEFAULT_WINDOW_MS: DEFAULT_WINDOW_MS, EXIT: EXIT, CELLS: CELLS
 };

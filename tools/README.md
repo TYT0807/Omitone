@@ -37,7 +37,7 @@
 | `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 | `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页 |
-| `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；五种 verdict 各占一格、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己（见下方专节）|
+| `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；六种 verdict 各占一格（外部条子写 `mode=read` → `other-reading` 放行但单独说话；无 `mode=` 按 `write` 保守阻塞，认不出的值也按 `write` 并点名）、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己（见下方专节）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
 留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
@@ -859,7 +859,7 @@ npm run field-bridge                                                            
 
 #### 起手先问两道：那张自报的条子只能证明"写过它的人在"（真源 `tools/check-concurrency.js`）
 
-用法与五格口径见上面那一行与 HANDOVER §0.45；规矩本体在 AGENTS §1.05。
+用法与六格口径见上面那一行与 HANDOVER §0.45；规矩本体在 AGENTS §1.05。
 
 ⚠️ **为什么一张条子不够**：`main-active.stamp` 是**自愿**的。现场两次并行编辑它都写着 `idle, shell only`，
 而盘上 18 个脏文件正压在 `tools/` + `src/page/` + `page.js`/`content.js` 上；另一次并发会话改完素材原档

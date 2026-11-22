@@ -1044,10 +1044,10 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 腿 | 读什么 | 单独用会错在哪 |
 | --- | --- | --- |
-| 1 自报条 | `.workbuddy\main-active.stamp`（`<ISO 带时区>  session=…  note=…`）新鲜 ≤12 分钟 | 只证明**写过它的人**在；现场两次并发编辑它都写 `idle`，一次 18 个脏文件正压在 `tools/`+`src/page/`+构建产物上 |
+| 1 自报条 | `.workbuddy\main-active.stamp`（`<ISO 带时区>  session=…  mode=write  note=…`）新鲜 ≤12 分钟 | 只证明**写过它的人**在；现场两次并发编辑它都写 `idle`，一次 18 个脏文件正压在 `tools/`+`src/page/`+构建产物上 |
 | 2 盘上证据 | `git status --porcelain` **有脏** ∧ 那些文件 **mtime 也在窗口内** | 只看 mtime 会一直红（`git checkout`／构建／自己跑测试都碰时间）；只看脏会把躺了两小时的孤儿改动当成正在写 |
 
-五种 `verdict` 各占一格：`quiet` / `writing` / `orphan-dirty`（**只禁连带提交，不禁改、不禁跑**）/ `restored-not-writing` / `unreadable`（**git 读不出 → 当有人在写**，最保守）。
+六种 `verdict` 各占一格：`quiet` / `other-reading`（外部条子新鲜但写着 `mode=read` → **放行**，那一格单独说话；无 `mode=` 或不认得的值按 `write` 保守阻塞）/ `writing` / `orphan-dirty`（**只禁连带提交，不禁改、不禁跑**）/ `restored-not-writing` / `unreadable`（**git 读不出 → 当有人在写**，最保守）。
 ⚠️ **`orphan-dirty` 那一格是本仓库最贵的一族**：把别人没提交的在飞改动跟我这轮的一起 `git add`，等于替人提交、还把提交信息写成我的症状（§7.1「勤提交是唯一兜底」的反面）。
 取证用非 `--quiet` 那一份输出，**取 EXIT 不要接 `&&`**（工具自己红会把后面的取证整条链断掉，读起来像「盘上没线索」，真相是探针断在第一步）。
 自证：`node tools/check-concurrency.js --selftest`（格数以它自己打印的那一行为准，不在文档手抄；纯内存不落盘，所以**并发窗口里也能安全跑**）。
@@ -1194,6 +1194,21 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   而放进 `$( … )` 里跑，**纯 LF 的 3 行输入也会返回 3**（两者都实测过）。
   判据只有两个：`git ls-files --eol <文件>`（看 `i/lf` 与 `w/crlf`），
   或直接用 node 数字节。**用错方法会让你把 LF 仓库"修"成 CRLF** —— 正是 §0.3-B 要避免的事。
+
+### 0.49 起手条子长出 `mode=` 一枚：只读轮不再替所有人重关 12 分钟窗口（批次 172 立的尺，会话任务 #224）
+
+**一句话**：本轮两次"门可开"转述与条子新鲜互相矛盾，根因不是谁违约，是**条子没有表达意图** ——
+只读分析轮照旧 touch 写语义的条子，把窗口对所有人重新关满。修法是把约定升成尺。
+
+- 条子格式：`<ISO 带时区>  session=<会话号>  mode=write  note=<一句话>`；
+  `mode=read` 的新鲜外部条子 → 第六种 verdict **`other-reading`**（EXIT=0、放行，但单独说话 ——
+  放行实际由腿 2 给，真在写的脏文件照旧被 `dirty-fresh` 挡）；**无 `mode=` 按 `write` 保守阻塞**（向后兼容），
+  认不出的值也按 `write` 并把那个值点名出来（§2 #12：读不出不许塌进放行）。
+- 三点握手（AGENTS §1.05）：只读轮**不许**填条子 / 认领完立即发一句「已认领，预计 N 分钟内推提交」/
+  门可开后**不再 touch**。
+- 同步点（§2 #18 那一族，新增一型必须同轮步进清单）：`--selftest` 30 格（27–30 是 mode 族，
+  其中 27 吃**条子原文**、覆盖 `parseStamp`）；`tools/check.js` 第 38 项 verdict 清单六种、
+  `viaWant` 含 `stamp-fresh-read`；本文件 §0.45 与 `tools/README.md` 表行的"六种"是同一本账。
 
 ---
 

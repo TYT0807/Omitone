@@ -5563,7 +5563,7 @@ function checkConcurrencyGate() {
     }
   }
 
-  // ---- b. 那张表必须覆盖五种 verdict 与三个出口码（新增一型忘了同步进来 = 那一型一步都走不到） ----
+  // ---- b. 那张表必须覆盖六种 verdict 与三个出口码（新增一型忘了同步进来 = 那一型一步都走不到） ----
   //
   // AGENTS §2 #18 同族：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来。
   if (mod && (mod.CELLS || []).length) {
@@ -5573,7 +5573,7 @@ function checkConcurrencyGate() {
       verdicts[c.verdict] = (verdicts[c.verdict] || 0) + 1;
       if (typeof c.exit === 'number') exits[c.exit] = (exits[c.exit] || 0) + 1;
     });
-    ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable'].forEach(function (v) {
+    ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable', 'other-reading'].forEach(function (v) {
       if (!verdicts[v]) {
         bad.push('对照表里没有 verdict=' + v + ' 那一格 —— 这一型现在没有任何东西守着，改坏了不会红');
       }
@@ -5583,7 +5583,7 @@ function checkConcurrencyGate() {
         bad.push('对照表里没有要求出口码 ' + e + ' 的格子 —— 三种码一旦压成两种，"读不出"就混进放行那一支');
       }
     });
-    var viaWant = ['stamp-fresh', 'dirty-fresh-build', 'mtime-fresh-clean', 'dirty-stale', 'git-status', 'clean'];
+    var viaWant = ['stamp-fresh', 'dirty-fresh-build', 'mtime-fresh-clean', 'dirty-stale', 'git-status', 'clean', 'stamp-fresh-read'];
     var haveVia = {};
     (mod.CELLS || []).forEach(function (c) { if (c.via) haveVia[c.via] = 1; });
     var viaMissing = viaWant.filter(function (w) { return !haveVia[w]; });
@@ -5691,7 +5691,7 @@ function checkConcurrencyGate() {
     return;
   }
   pass('起手先问两道（腿 1 自报条 + 腿 2 盘上 mtime∧脏 同时成立）：' + SRC + ' 对照表 ' +
-    ((mod && mod.CELLS) || []).length + ' 格逐格全对、五种 verdict 与出口码 0/1/2 分家都有格守着；' +
+    ((mod && mod.CELLS) || []).length + ' 格逐格全对、六种 verdict（含 mode=read 的 other-reading）与出口码 0/1/2 分家都有格守着；' +
     '读不出那一格真算阻塞（classify 合成读数实跑）；AGENTS §1.0、HANDOVER 起手工序、' +
     'tools/README 表行与专节四处登记齐、npm 两条入口同真源');
 }
