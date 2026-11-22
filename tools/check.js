@@ -3040,7 +3040,7 @@ function checkSliceStatsDoc() {
 // 界面照常工作，只有新手照说明书去认界面时被引到错方向。
 //
 // ⚠️ 期望在**这里**各写一份，不照抄 `audit.selfTestCases()` 的 want（同第 24 / 25 / 26 项的规矩：
-// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十四格里「要报」占十一格，因为本项最危险的
+// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十七格里「要报」占十四格，因为本项最危险的
 // 坏法是**读不出来却装作核过了**：锚点失效 → 0 个取值 → "全部命中"。
 // 三格「不报」是防误报的对照（干净正文、被 `<b>` 加粗切开的字样）——
 // 会误报的守卫和没有守卫一样害人。
@@ -3071,6 +3071,9 @@ function checkManualUiLabels() {
     '开关名漏教一枚': { want: 1, needle: '已完成任务重学' },
     '开关配对只读出几枚': { want: 1, needle: '取值真源读不出来' },
     '分段开关只教了一半': { want: 1, needle: '精简' },
+    '按钮名漏教一枚': { want: 1, needle: '拿一份型号清单' },
+    '按钮字样只活在 script 里': { want: 1, needle: '拿一份型号清单' },
+    '白名单里的按钮读不出': { want: 1, needle: '取值真源读不出来' },
     '真说明书对真代码': { want: 0, needle: '' }
   };
 
@@ -3094,10 +3097,20 @@ function checkManualUiLabels() {
   var fromPopup = info.labels.filter(function (l) { return l.from.indexOf('popup/popup.js') === 0; }).length;
   var fromKind = info.labels.filter(function (l) { return l.from.indexOf('jobKindLabel') !== -1; }).length;
   var fromSwitch = info.labels.filter(function (l) { return !!l.switchKey; }).length;
+  // 按钮那一族（#211）：白名单里每一枚都要真读出字来 —— 只数 labels 不够，
+  // 白名单过期时那一格会安静地交出 0 条要求，看起来像"全核过了"（口径同开关那一段）。
+  var fromButton = info.labels.filter(function (l) { return !!l.buttonKey; }).length;
+  var wantButtons = (audit.TAUGHT_BUTTON_IDS || []).length;
   if (info.labels.length && (!fromContent || !fromPopup || !fromKind || !fromSwitch)) {
     fail('界面字样审计只读出 徽标 ' + fromContent + ' 个 / popup 顶部 ' + fromPopup +
       ' 个 / 任务种类 ' + fromKind + ' 个 / 弹窗开关 ' + fromSwitch +
       ' 个取值 —— 四份真源必须各出一半，否则「核过了」是假的');
+    return;
+  }
+  if (wantButtons && fromButton !== wantButtons) {
+    fail('界面字样审计：按钮那一族白名单有 ' + wantButtons + ' 枚，却读出 ' + fromButton +
+      ' 个界面字样（真源 popup/popup.html 的 TAUGHT_BUTTON_IDS 那一族）—— ' +
+      '少读出的那几枚从来没被要求进说明书，白名单过期或按钮改了形状都要当场响，不许静默缩清单');
     return;
   }
   if (!info.kinds || info.kinds.length < 2) {
@@ -3143,7 +3156,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 真文档先点名（放在十四格之前）----
+  // ---- 真文档先点名（放在十七格之前）----
   // 文档漂移是这一项最常见的坏法，人看到的应当是「哪个字样在说明书里不见了」，
   // 而不是「第几格期望数字不符」—— 后者把真正的原因塞在括号里第三句。
   var manualTxt;
@@ -3160,7 +3173,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 十四格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
+  // ---- 十七格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
   var names = Object.keys(WANT);
   cases.forEach(function (c) {
     if (names.indexOf(c.pin) < 0) bad.push('多出一格没登记在 check.js 的期望表里：' + c.pin);
@@ -3189,21 +3202,24 @@ function checkManualUiLabels() {
     }
   });
   if (bad.length) {
-    fail('界面字样审计的十四格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
+    fail('界面字样审计的十七格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
       bad.join('\n      '));
     return;
   }
 
-  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**三份取值表各摘一次** ----
+  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**四份取值表各摘一次** ----
   // 只测合成夹具的话，"审计只对短夹具有效、对几千行的真说明书失效"照样报 0 条。
   // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）；
-  // 批次 129 接的弹窗开关这一族同理 —— 三族各自承重，少一族就少一条路。
+  // 批次 129 接的弹窗开关这一族同理 —— 四族各自承重，少一族就少一条路（#211 接的是按钮那一族）。
   var vtext = audit.visibleText(manualTxt);
   var before = audit.audit(info, manualTxt).length;
   var AXES = [
-    { name: '状态徽标 / 弹窗顶部字样', pool: info.labels.filter(function (l) { return !l.kindKey && !l.switchKey; }) },
+    { name: '状态徽标 / 弹窗顶部字样', pool: info.labels.filter(function (l) { return !l.kindKey && !l.switchKey && !l.buttonKey; }) },
     { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) },
-    { name: '弹窗里每一枚开关的名字', pool: info.labels.filter(function (l) { return !!l.switchKey; }) }
+    { name: '弹窗里每一枚开关的名字', pool: info.labels.filter(function (l) { return !!l.switchKey; }) },
+    // 按钮那一族必须单独占一个轴：并徽标那一轴的话，摘的是徽标字样，
+    // 「按钮那一族对真说明书失效」这一格就没有证人（口径同上那句"少一族就少一条路"）。
+    { name: '白名单里那枚按钮的名字', pool: info.labels.filter(function (l) { return !!l.buttonKey; }) }
   ];
   var poisonedNames = [];
   for (var ai = 0; ai < AXES.length; ai++) {
@@ -3245,9 +3261,10 @@ function checkManualUiLabels() {
   }
   pass('docs/manual.html 教的界面字样与代码一致（' + info.labels.length + ' 个真实取值：' +
     'content.js 徽标 ' + fromContent + ' 个 + popup 顶部 ' + fromPopup + ' 个 + 任务种类 ' + fromKind +
-    ' 个 + 弹窗开关 ' + fromSwitch + ' 个（与 role="switch" 计数逐枚对上）；' +
+    ' 个 + 弹窗开关 ' + fromSwitch + ' 个（与 role="switch" 计数逐枚对上）+ 按钮 ' + fromButton +
+    ' 个（真源 popup/popup.html 的白名单 ' + wantButtons + ' 枚）；' +
     '键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
-    '十四格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' / ') +
+    '十七格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' / ') +
     ' 全部摘掉各恰好多报 1 条）');
 }
 
