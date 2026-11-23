@@ -39,6 +39,9 @@
 
 var http = require('http');
 var bridge = require('./field-bridge.js');
+// 掩码只许有一份（AGENTS §4 第 30 项）：这一族原本这里按**键名**掩、
+// 弹窗「复制日志」一个字符都不掩，两份口径各走各的。真源在 `libs/log-redact.js`。
+var LOG_REDACT = require('../libs/log-redact.js');
 
 function arg(name, dflt) {
   var pre = '--' + name + '=';
@@ -74,13 +77,9 @@ function safeNum(raw, dflt) {
 var WIDTH = safeNum(arg('width', 240), 240);
 // ⚠️ 非数字必须落回默认，不许留 NaN：`json.length > NaN` 恒 false，
 // 写成 `--width=abc` 会让这道闸**静默取消**、把整份 meta 原样倒进终端。
-// ⚠️ 深度闸必须跟着行宽一起松。`rejects[].sig.answer` 落在第 4 层，
-// 原来写死 `depth > 3` 就把批次 9-D / 10-A 争来的帧签名**全部打成 `…`** ——
-// 存储侧费了三批改好的取证，在读它的这个工具里又看不见，而且无声无息。
-var MAX_DEPTH = WIDTH > 240 ? 8 : 3;
-
-// meta 里可能带页面文字，也可能带看起来像凭据的东西 —— 键名一撞就当敏感，值整个打掉。
-var SENSITIVE_KEY = /(key|token|secret|password|passwd|pwd|authorization|cookie|credential|apikey)/i;
+// ⚠️ 深度闸跟着行宽一起松（`rejects[].sig.answer` 落在第 4 层，写死 `depth > 3`
+// 会把批次 9-D / 10-A 争来的帧签名全部打成 `…`，而且无声无息）——
+// 那把尺如今由 `LOG_REDACT.maxDepthFromWidth()` 自己带，调用方不许再各配一份。
 
 function getJson(p) {
   return new Promise(function (resolve, reject) {
@@ -298,17 +297,9 @@ async function readLogs(quick) {
   throw await whyNoSw(wakeResult);
 }
 
-function redact(obj, depth) {
-  if (depth > MAX_DEPTH) return '…';
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') return obj.length > 300 ? obj.slice(0, 300) + '…' : obj;
-  if (typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.slice(0, 8).map(function (x) { return redact(x, depth + 1); });
-  var out = {};
-  Object.keys(obj).forEach(function (k) {
-    out[k] = SENSITIVE_KEY.test(k) ? '(已屏蔽)' : redact(obj[k], depth + 1);
-  });
-  return out;
+// 深度、行宽、数组封顶都由共用那份带着；这里只交进行宽这一把尺。
+function redact(obj) {
+  return LOG_REDACT.redactMeta(obj, { width: WIDTH });
 }
 
 function line(item, nowMs) {
@@ -484,12 +475,33 @@ function selftest() {
     findExtensionPageTarget([]), null);
   eq('列表读不出（undefined）同样回 null', findExtensionPageTarget(null), null);
 
-  // 3. 敏感键屏蔽：环里可能带页面文字，也可能带看起来像凭据的东西
-  eq('apiKey 这个键的值整个打掉', JSON.stringify(redact({ apiKey: 'sk-live-123', qid: '9' }, 0)),
-    JSON.stringify({ apiKey: '(已屏蔽)', qid: '9' }));
-  eq('token / cookie 同族', [redact({ token: 't' }, 0).token, redact({ Cookie: 'c' }, 0).Cookie],
-    ['(已屏蔽)', '(已屏蔽)']);
-  eq('普通键不许打掉（打掉就等于取证看不见）', redact({ answer: 'A' }, 0).answer, 'A');
+  // 3. 掩码：真源在 `libs/log-redact.js`，键名与**值形状**两把尺各占一格（队列 #210）
+  eq('apiKey 这个键的值整个打掉', JSON.stringify(redact({ apiKey: 'sk-live-123', qid: '9' })),
+    JSON.stringify({ apiKey: LOG_REDACT.MASKED, qid: '9' }));
+  eq('token / cookie 同族', [redact({ token: 't' }).token, redact({ Cookie: 'c' }).Cookie],
+    [LOG_REDACT.MASKED, LOG_REDACT.MASKED]);
+  eq('普通键不许打掉（打掉就等于取证看不见）', redact({ answer: 'A' }).answer, 'A');
+  // 只按键名掩 = `{url:"…?key=<KEY>"}` 过闸。这一格是本轮新增的那半截尺。
+  eq('值里的 ?key= 也要打掉（键名是 url，键名那把尺量不到）',
+    redact({ url: 'https://generativelanguage.googleapis.com/v1beta/models?key=AIzaSyDEADBEEF' }).url
+      .indexOf('AIzaSyDEADBEEF'), -1);
+  eq('打掉之后仍要说得出是哪一发（留住 ?key= 这一形状）',
+    /\?key=\(/.test(redact({ url: 'https://x/v1/models?key=AIzaSyDEADBEEF' }).url), true);
+  eq('认不出的凭据参数名整段打掉（宁可少说，不可多说）',
+    redact({ url: 'https://x/?authToken=zzz111222' }).url, LOG_REDACT.SUSPECT);
+  eq('认得出的连写名也掩得住，且留住形状（apiKey → api_key）',
+    redact({ url: 'https://x/?apiKey=zzz111222' }).url, 'https://x/?apiKey=' + LOG_REDACT.MASKED);
+  eq('已掩过的形状不许被头一族改写成冒号（二段重打）',
+    redact({ url: 'https://x/?x-api-key=zzz111222' }).url, 'https://x/?x-api-key=' + LOG_REDACT.MASKED);
+  eq('学习页那些参数不许误伤（chapterId/courseid/clazzid/cpi/enc 全得留）', (function () {
+    var u = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=916003690' +
+      '&courseId=926158933&clazzid=881245&cpi=94120681&enc=3ab5f9';
+    return redact({ href: u }).href === u;
+  })(), true);
+  eq('深度闸的两侧各钉一格（边界由共用那份带，不在这边重打数）', [
+    LOG_REDACT.maxDepthFromWidth(LOG_REDACT.WIDE_WIDTH),
+    LOG_REDACT.maxDepthFromWidth(LOG_REDACT.WIDE_WIDTH + 1)
+  ], [LOG_REDACT.DEPTH_NORMAL, LOG_REDACT.DEPTH_WIDE]);
 
   // 4. 截断必须自己说出口（否则"被切一半"与"本来就这么短"同形）
   var wide = WIDTH; WIDTH = 40;
