@@ -5392,8 +5392,8 @@ SCENARIOS.push({
     //    Runtime.evaluate 派发不出真·悬停态，纯 CSS 写法等于没测试。
     var hover = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");' +
-      'var c=h.shadowRoot.getElementById("card");' +
-      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'var c=h.shadowRoot.getElementById("card");var im=h.shadowRoot.getElementById("petImg");' +
+      'function pe(t){im.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:7,pointerType:"mouse",clientX:0,clientY:0}));}' +
       'var base=getComputedStyle(c).boxShadow;' +
       'pe("pointerenter");var on=c.classList.contains("peek");' +
@@ -5405,6 +5405,44 @@ SCENARIOS.push({
     check('鼠标移上去她真的有反应（peek 挂上、阴影/边框换了色），移开就收回',
       !!hover && hover.on === true && hover.off === false && hover.changed === true && hover.back === true,
       JSON.stringify(hover).slice(0, 240));
+
+    // ⑤b 批次 176 的两条落点：#230「卡片身体不许吃掉页面」与 #206「收成小入口后还拖得动」。
+    //     真·悬停派发不出（见上），但 elementFromPoint 与合成指针事件都跑得动 —— 断言只认这两个读数。
+    var passthru = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card"),img=sr.getElementById("petImg"),hide=sr.getElementById("hideBtn");' +
+      'function hit(el){var r=el.getBoundingClientRect();var p=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);' +
+      'return (p===h)||(!!(p&&p.id==="omitone-page-pet-host"));}' +
+      'return {body:hit(c),bodyW:Math.round(c.getBoundingClientRect().width),img:hit(img),hide:hit(hide),' +
+      'wrapPe:getComputedStyle(sr.getElementById("wrap")).pointerEvents};})()'
+    );
+    check('卡片身体不再吃掉页面（中间点穿透回页面，立绘与「收」按钮仍然归她）',
+      !!passthru && passthru.bodyW > 120 && passthru.body === false
+      && passthru.img === true && passthru.hide === true && passthru.wrapPe === 'none',
+      JSON.stringify(passthru).slice(0, 220));
+
+    var dragPill = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var w=sr.getElementById("wrap"),c=sr.getElementById("card"),pill=sr.getElementById("pillBtn");' +
+      'w.classList.add("mode-hidden");' +
+      'var rp=pill.getBoundingClientRect();' +
+      'var wrapW=Math.round(w.getBoundingClientRect().width),pillW=Math.round(rp.width);' +
+      'var x=rp.left+rp.width/2,y=rp.top+rp.height/2;' +
+      'function pe(t){pill.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,composed:true,' +
+      'pointerId:23,pointerType:"mouse",button:0,clientX:x,clientY:y}));}' +
+      'pe("pointerdown");' +
+      'var on=c.classList.contains("dragging");' +
+      'pe("pointerup");' +
+      'var off=c.classList.contains("dragging");' +
+      'w.classList.remove("mode-hidden");' +
+      'return {on:on,off:off,wrapW:wrapW,pillW:pillW,hid:/mode-hidden/.test(w.className)};})()'
+    );
+    // 只测"按下那一下有没有人接"—— 不派 pointermove，所以不会真搬她、也不会写脏位置。
+    // 改之前这一格必然红：pointerdown 的监听长在 card 上，而收起态 card 是 display:none。
+    check('收成小入口后按下她就被接住了（拖拽把手活着），且隐形死区没了（wrap 宽等于小入口宽）',
+      !!dragPill && dragPill.on === true && dragPill.off === false
+      && dragPill.wrapW <= dragPill.pillW + 2 && dragPill.hid === false,
+      JSON.stringify(dragPill).slice(0, 220));
 
     // ⑥ 她自己偶尔开口：四条"别说"各挡各的（第四条「标签页在后台」只能切真后台，见 ⑥-b）。
     //    ⚠️ 每个"闭嘴"断言前都要先把**别的**门槛拨到"该说话"（quiet() 把上次开口推到 200 秒前），
@@ -6072,7 +6110,7 @@ SCENARIOS.push({
     var hoverPat = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
       'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
-      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'function pe(t){img.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:11,pointerType:"mouse",clientX:0,clientY:0}));}' +
       'img.classList.remove("pat");void img.offsetWidth;img.click();' +
       'var bare=getComputedStyle(img).animationName;' +
@@ -6090,13 +6128,13 @@ SCENARIOS.push({
     var peekMotion = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
       'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
-      'c.dispatchEvent(new PointerEvent("pointerenter",{bubbles:false,cancelable:true,composed:true,' +
+      'img.dispatchEvent(new PointerEvent("pointerenter",{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
       'var peekOn=c.classList.contains("peek");' +
       'h.dataset.motion="";img.classList.remove("mv-tilt","mv-hop","mv-spin","mv-wiggle","mv-stretch");' +
       'h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
       'var name=String(h.dataset.motion||"");var anim=name?getComputedStyle(img).animationName:"";' +
-      'c.dispatchEvent(new PointerEvent("pointerleave",{bubbles:false,cancelable:true,composed:true,' +
+      'img.dispatchEvent(new PointerEvent("pointerleave",{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
       'return {peekOn:peekOn,name:name,anim:anim};})()');
     check('悬停期她自己动也不被 peek 吃掉（动画名 = om-pet-<这一拍的动作>）',

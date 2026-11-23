@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
+var OMITONE_CODE_REV_BRIDGE = '17fe7581bb';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -2793,9 +2793,9 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
         //   `text-overflow:ellipsis`，可用宽度一小于文字宽度就把字剪掉 —— 用户现场读到「心有……」一共两个字
         //   （2026-11-21）。e2e 那 30 格（十档 × 三档字号）实测：默认与 10 像素下最长那档仍让卡片保持
         //   158（观感一个字没变），32 像素下每一格都把它顶过 158（最窄 160）；省略号只在超过 320 上限后才当兜底。
-        '.wrap{position:relative;width:max-content;min-width:158px;max-width:min(320px,calc(100vw - 28px));pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
-        '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16);cursor:grab}',
-        '.card.dragging{cursor:grabbing;box-shadow:0 14px 30px rgba(15,23,42,.22)}',
+        '.wrap{position:relative;width:max-content;max-width:min(320px,calc(100vw - 28px));pointer-events:none;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
+        '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;min-width:158px;pointer-events:none;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16)}',
+        '.card.dragging{box-shadow:0 14px 30px rgba(15,23,42,.22)}',
         // 悬停必须有反应 —— 用户原话「交互也基本上不会动」。
         // ⚠️ 只用**不改几何**的属性（边框/阴影）+ 让立绘歪一下头：卡片自己一旦带 transform，
         //   getBoundingClientRect 就和 style.left/top 差几像素，拖动每一拍都按差值漂一次
@@ -2811,7 +2811,7 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
         // 立绘**盒**必须定死：100 张图全部高 240，宽却从 107 到 217（纵横比 0.45~0.90），
         // 原先 `width:52px;height:auto` 让高度跟着图走 —— 换装时卡片上下抖十几像素，
         // 还会把拖动用的 getBoundingClientRect 一起改了。`contain` + 底对齐 = 换装零位移。
-        '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
+        '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;pointer-events:auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
         '@keyframes om-pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}',
         // 摸头必须有**立刻看得见**的反应 —— 原先只有升级才动一下，用户读成"点了没反应"。
         '.card .pet.pat{animation:om-pet-pat .44s ease}',
@@ -2839,7 +2839,7 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
         '.level{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 7px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700}',
         '.bond{width:100%;height:4px;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
         '.bond i{display:block;height:100%;width:0;border-radius:2px;background:linear-gradient(90deg,#ffb6c1,#ff7d9c);transition:width .4s}',
-        '.hide{border:0;background:rgba(241,245,249,.9);border-radius:6px;font-size:10px;padding:2px 8px;cursor:pointer;color:#64748b;font-family:inherit}',
+        '.hide{border:0;background:rgba(241,245,249,.9);border-radius:6px;font-size:10px;padding:2px 8px;pointer-events:auto;cursor:pointer;color:#64748b;font-family:inherit}',
         '.hide:hover{background:#e2e8f0;color:#334155}',
         // 气泡：原先 `left:66px` 挂在 92px 宽的 wrap 里 → 可用宽度只剩 26px，
         // `max-width:200px` 只是上限、不会把盒子撑开，于是每行一个字，量到 31×215 的**竖排一大坨**。
@@ -2939,11 +2939,12 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
 
     try {
       const card = pagePet.els.card;
-      card.addEventListener('pointerdown', function (ev) {
+      pagePet.els.wrap.addEventListener('pointerdown', function (ev) {
         try {
           if (ev.button !== 0) return;
-          // 按钮上的按下不接管：那是"收起/唤回"，不是搬她
-          if (ev.target === pagePet.els.hideBtn || ev.target === pagePet.els.pillBtn) return;
+          // 「收」按钮上的按下不接管：那是"收起"，不是搬她。
+          // 小入口（pill）**不在**这一族 —— 它既是"唤回"也是唯一的拖拽把手，卡片在收起态是 display:none。
+          if (ev.target === pagePet.els.hideBtn) return;
           const r = pagePet.host.getBoundingClientRect();
           dragState = { ox: ev.clientX - r.left, oy: ev.clientY - r.top, sx: ev.clientX, sy: ev.clientY, moved: false, pid: ev.pointerId };
           card.classList.add('dragging');
@@ -2954,14 +2955,14 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
           // 改成下面 pointermove 越过 6px 阈值再捕获 —— 拖动照样跟手，点击照样归她。
         } catch (e) {}
       });
-      card.addEventListener('pointermove', function (ev) {
+      pagePet.els.wrap.addEventListener('pointermove', function (ev) {
         try {
           if (!dragState) return;
           // 6px 以内当"点"，不动她 —— 否则每次摸头都会把她挪一两个像素
           if (!dragState.moved && Math.abs(ev.clientX - dragState.sx) + Math.abs(ev.clientY - dragState.sy) < 6) return;
           // 真要搬她了才捕获：此后指针飞出卡片也能继续跟手、pointerup 也一定回到这张卡
-          if (!dragState.moved && card.setPointerCapture && dragState.pid != null) {
-            try { card.setPointerCapture(dragState.pid); } catch (e) {}
+          if (!dragState.moved && pagePet.els.wrap.setPointerCapture && dragState.pid != null) {
+            try { pagePet.els.wrap.setPointerCapture(dragState.pid); } catch (e) {}
           }
           dragState.moved = true;
           applyPagePetPos(ev.clientX - dragState.ox, ev.clientY - dragState.oy);
@@ -2981,17 +2982,17 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
           }
         } catch (e) {}
       };
-      card.addEventListener('pointerup', endDrag);
-      card.addEventListener('pointercancel', function () {
+      pagePet.els.wrap.addEventListener('pointerup', endDrag);
+      pagePet.els.wrap.addEventListener('pointercancel', function () {
         try { dragState = null; pagePet.els.card.classList.remove('dragging'); } catch (e) {}
       });
       // 悬停反应。走 JS 挂 class 而不是纯 CSS `:hover`：
       // e2e 派发得出 pointerenter，派不出"真·悬停状态"（那要 CDP Input 域），
       // 于是 CSS 写法等于**没测试**——而这条正是用户说"不会动"的两处之一。
-      card.addEventListener('pointerenter', function () {
+      pagePet.els.img.addEventListener('pointerenter', function () {
         try { pagePet.els.card.classList.add('peek'); } catch (e) {}
       });
-      card.addEventListener('pointerleave', function () {
+      pagePet.els.img.addEventListener('pointerleave', function () {
         try { pagePet.els.card.classList.remove('peek'); } catch (e) {}
       });
       // 窗口变小/切全屏：把她拉回可视范围，别留在屏幕外（进不来就只能重装扩展）
@@ -3043,6 +3044,7 @@ var OMITONE_CODE_REV_BRIDGE = '6e2b688712';
       } catch (e) {}
     });
     pagePet.els.pillBtn.addEventListener('click', function () {
+      if (Date.now() < suppressPatUntil) return;
       try {
         pagePet.els.wrap.classList.remove('mode-hidden');
         const patch = {};
