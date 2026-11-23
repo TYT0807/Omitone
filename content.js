@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '17fe7581bb';
+var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -2984,7 +2984,18 @@ var OMITONE_CODE_REV_BRIDGE = '17fe7581bb';
       };
       pagePet.els.wrap.addEventListener('pointerup', endDrag);
       pagePet.els.wrap.addEventListener('pointercancel', function () {
-        try { dragState = null; pagePet.els.card.classList.remove('dragging'); } catch (e) {}
+        try {
+          if (!dragState) return;
+          const moved = dragState.moved;
+          dragState = null;
+          pagePet.els.card.classList.remove('dragging');
+          // cancel 也要把存档跟上：pointermove 里 `applyPagePetPos` 已经把视觉与 `pagePet.pos` 挪走了，
+          // 只漏这一发就是「这一页她在新的地方、刷新一次弹回老地方」。真实路径量过（2026-11-23 探针、G 组）：
+          // 原生拖拽接管时浏览器派的是 dragstart → pointercancel，**之后不再有 pointerup** ——
+          // 眼下挡住它的是 `<img draggable="false">` 那一枚属性，一道属性远不是一处保障。
+          // 不说话、不设 suppressPatUntil：那两样是给 pointerup 连带的那发 click 用的，cancel 后面不跟 click。
+          if (moved) persistPagePetPos();
+        } catch (e) {}
       });
       // 悬停反应。走 JS 挂 class 而不是纯 CSS `:hover`：
       // e2e 派发得出 pointerenter，派不出"真·悬停状态"（那要 CDP Input 域），

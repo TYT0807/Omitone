@@ -5420,7 +5420,8 @@ SCENARIOS.push({
     //    ⚠️ 这条是本轮真正的回归闸：拖动 handler 里曾引用了块级作用域外的裸 `host`
     //    （`const host` 只在构建那个 try 块里存在），ReferenceError 被 handler 自己的
     //    catch 吞掉 → 现场表现为"拖不动、日志一条没有"，而沙盒四条全绿。
-    //    收尾用 pointercancel（不写存档），再把 inline 位置清回默认锚点。
+    //    收尾用 pointercancel —— 批次 178 起它**会**把落点写进存档（见下面 ⑨ 那六格），
+    //    所以这里只把 inline 位置清回默认锚点，存档那一格留给 ⑨ 之后统一收干净。
     var drag = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");' +
       'var c=h.shadowRoot.getElementById("card");var errs=[];' +
@@ -6037,6 +6038,123 @@ SCENARIOS.push({
       'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";' +
       'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});return true;})()'
     );
+
+    // ⑨ 拖动被中途打断（pointercancel）那一发到底算不算一次真收尾 —— 批次 178 / 队 #62。
+    //    成因不是推的：真实鼠标探针量到「原生拖拽接管」那一族派的是 dragstart → pointercancel，
+    //    **之后不再有 pointerup**（`.workbuddy/probe62.log` 的 G 组：把 img 的 draggable=false 摘掉）；
+    //    而 pointermove 早就把视觉与 `pagePet.pos` 挪走了（content.js:2927）——
+    //    存档不跟上就是「这一页她在新地方，刷新一次弹回老地方」。
+    //    六格各钉这个裁决的一面，摘掉任一半都只红该红那一格：
+    //      ⑨-a 位置跟手、dragging 摘掉（打断不等于把她丢在半路）
+    //      ⑨-b 不说话，而 pointerup 那一路照旧说话（同一发里的正控，不许把 endDrag 整条搬过来）
+    //      ⑨-c 存档里那一格 == 屏幕上那一点（不许什么都不写；也不许只写内存）
+    //      ⑨-d 打断之后摸头仍然响应（不许顺手把 suppressPatUntil 拨上——那是给 click 用的）
+    //      ⑨-e 刷新一次不再弹回默认锚点（用户看得见的那一下，也是 ⑨-c 的症状面）
+    //      ⑨-f 场景自己把写过的落点存档收干净
+    //    接点按现场形状打在**立绘**上（notes/field-pet-shape-1123.md：host/.wrap/.card/.level
+    //    全是 pointer-events:none，唯一 auto 的是 img），事件冒泡到 wrap 的那三个 handler。
+    var POS_KEY = 'omitonePagePetPos';
+    var pointerStep = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h.shadowRoot,i=sr.getElementById("petImg");' +
+      'window.__pe62=function(t,px,py){i.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,composed:true,' +
+      'pointerId:41,pointerType:"mouse",isPrimary:true,button:0,' +
+      'buttons:(t==="pointercancel"||t==="pointerup")?0:1,clientX:px,clientY:py}));};return true;})()';
+    await ctx.client.evaluate(pointerStep);
+    // 先做正控：pointerup 那一路必须照旧说话，否则 ⑨-b 的"cancel 不说话"就只是"没人说话"
+    var upControl = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var b=sr.getElementById("bubble");b.textContent="";b.classList.remove("show");' +
+      'var r=h.getBoundingClientRect(),x=r.left+30,y=r.top+30;' +
+      'window.__pe62("pointerdown",x,y);window.__pe62("pointermove",x-60,y);window.__pe62("pointerup",x-60,y);' +
+      'return {spoke:/show/.test(String(b.className||"")),txt:String(b.textContent||"").slice(0,14)};})()'
+    );
+    // pointerup 那一发把 suppressPatUntil 拨到 now+260；等它过期，下面 cancel 后的摸头才归 cancel 自己负责
+    await sleep(500);
+    var patBeforeCancel = await ctx.client.evaluate('window.__pat|0');
+    var cancelCase = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card"),b=sr.getElementById("bubble");' +
+      'b.textContent="";b.classList.remove("show");' +
+      'var r=h.getBoundingClientRect(),x=r.left+30,y=r.top+30;' +
+      'window.__pe62("pointerdown",x,y);window.__pe62("pointermove",x-150,y-110);' +
+      'var rM=h.getBoundingClientRect();' +
+      'window.__pe62("pointercancel",x-150,y-110);' +
+      'return {driftX:Math.round(rM.left-r.left),driftY:Math.round(rM.top-r.top),' +
+      'dragClassAfter:String(c.className||""),' +
+      'spokeAfterCancel:/show/.test(String(b.className||"")),txtAfterCancel:String(b.textContent||"").slice(0,14)};})()'
+    );
+    // 打断之后立刻点她一下：cancel 若把 suppressPatUntil 也拨上，这一下就被吞掉
+    // （计数靠 MutationObserver，回调是异步的 —— 派发那一发里读不到，要等一拍）
+    await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'sr.getElementById("petImg").dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true,view:window}));' +
+      'return true;})()'
+    );
+    await sleep(120);
+    var patAfterCancel = await ctx.client.evaluate('window.__pat|0');
+    var styleAfterCancel = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return {left:Math.round(parseFloat(h.style.left)||0),top:Math.round(parseFloat(h.style.top)||0),' +
+      'right:String(h.style.right||""),bottom:String(h.style.bottom||"")};})()'
+    );
+    check('⑨-a 拖到一半被打断：位置跟着走、dragging 当场摘掉（不许把她丢成"永远在拖"）',
+      !!cancelCase && Math.abs(cancelCase.driftX) >= 30 && Math.abs(cancelCase.driftY) >= 20 &&
+      !/dragging/.test(cancelCase.dragClassAfter),
+      JSON.stringify(cancelCase).slice(0, 240));
+    check('⑨-b 打断那一下不说话，而 pointerup 那一路照旧说话（两格各自承重，摘掉任何一半都只红该红那格）',
+      !!upControl && upControl.spoke === true && cancelCase.spokeAfterCancel === false,
+      JSON.stringify({ up: upControl, cancel: cancelCase }).slice(0, 240));
+    // chrome.storage.local.set 是异步的；等它落盘只等"这一发写没写"，不比结果（结果由下面那格判）。
+    // 上一发 pointerup 正控也写过一次落点，坐标与这一发不同 —— 等不到就是没写，红给它自己，不会假绿。
+    var posStore = null, storedPos = null;
+    for (var st62 = 0; st62 < 12; st62++) {
+      posStore = await readPopupStore(await initConfigWriter(ctx.extensionId), [POS_KEY]);
+      storedPos = (posStore && posStore.val && posStore.val[POS_KEY]) || null;
+      if (storedPos && Math.round(storedPos.x) === styleAfterCancel.left &&
+          Math.round(storedPos.y) === styleAfterCancel.top) break;
+      await sleep(150);
+    }
+    check('⑨-c 打断那一次的落点进了存档，且存的正是屏幕上那一点（内存／视觉／存档三份读数对得上）',
+      !!storedPos && posStore.has[POS_KEY] === true &&
+      Math.round(storedPos.x) === styleAfterCancel.left &&
+      Math.round(storedPos.y) === styleAfterCancel.top,
+      JSON.stringify({ stored: storedPos, style: styleAfterCancel, waited: st62 }).slice(0, 240));
+    check('⑨-d 打断不等于"刚拖完"：这一下之后摸头仍然要响应（suppressPatUntil 只归 pointerup 连带的那发 click）',
+      patAfterCancel > patBeforeCancel,
+      JSON.stringify({ before: patBeforeCancel, after: patAfterCancel }).slice(0, 200));
+
+    // 刷新一次才是用户看得见的那一下：重载时内容脚本按存档落点（content.js:3073 那一族）
+    await ctx.client.send('Page.reload', { ignoreCache: false });
+    var reloaded = null;
+    for (var rw62 = 0; rw62 < 24; rw62++) {
+      await sleep(250);
+      reloaded = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot||!h.shadowRoot.getElementById("card"))return null;' +
+        'var r=h.getBoundingClientRect();' +
+        'return {left:Math.round(r.left),top:Math.round(r.top),anchored:(h.style.left||"")===""};})()'
+      );
+      if (reloaded) break;
+    }
+    check('⑨-e 刷新一次她不再弹回默认锚点：重载后的落点就是存档那一点（±2px）',
+      !!reloaded && !!storedPos && reloaded.anchored === false &&
+      Math.abs(reloaded.left - Math.round(storedPos.x)) <= 2 &&
+      Math.abs(reloaded.top - Math.round(storedPos.y)) <= 2,
+      JSON.stringify({ after: reloaded, stored: storedPos, drift: cancelCase.driftX }).slice(0, 240));
+
+    // 存档与 inline 落点都是本场景自己写的，跑完收干净，别把位置脏留给后面的宠物场景（§5 共享状态）
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";return true;})()'
+    );
+    await (await initConfigWriter(ctx.extensionId)).evaluate(
+      'new Promise(function (res) { chrome.storage.local.remove(' + JSON.stringify([POS_KEY]) +
+      ', function () { res(true); }); })'
+    );
+    var posCleared = await readPopupStore(await initConfigWriter(ctx.extensionId), [POS_KEY]);
+    check('⑨-f 场景自己把写过的落点存档收干净（下一枚宠物页回到默认锚点）',
+      !!posCleared && posCleared.has[POS_KEY] === false,
+      JSON.stringify(posCleared).slice(0, 200));
   }
 });
 
