@@ -2794,8 +2794,8 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
 
 #### 五、计数与未做
 
-- 计数：集成 **707 项**（本轮没加集成断言）、e2e **151 场景 / 1703 项**（`1703 = 1701 + ⑤b 的 2 条`，
-  场景数不变）；`.workbuddy/e2e176-full4.log` 打印 `1703 / 1703 项` 全过、全日志 `[FAIL]` 0 条。
+- 计数：集成 **707 项**（本轮没加集成断言）、e2e **151 场景 / 1703 项**（`1703 = 1701 + ⑤b 的 2 条`， <!-- 历史计数:start --><!-- 历史计数:end -->
+  场景数不变）；`.workbuddy/e2e176-full4.log` 打印 `1703 / 1703 项` 全过、全日志 `[FAIL]` 0 条。 <!-- 历史计数:start --><!-- 历史计数:end -->
   ⚠️ 上一发全量（`full3`）红的三条 `/quiz-real` **在这一发自己消失了** —— 坐实那是测试台竞态
   （reload 后不等 `get_config` 回包就手写 `app.configs`，回包落地时把 `randomAnswerReviewSec` 盖回存储那份），
   不是本轮回归，已按队 #35 立项（对端同号 #63），修法是把回包落地钉成前提、**不加 sleep**。
@@ -2870,6 +2870,94 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
   `tools/README.md` 那一行加 `--done` 与专节六格表、HANDOVER §0.52。
 - 只读现场探针（15:00）：`studentstudy` **恰 1 枚**（章 916003716，比 14:3x 的 916003689 往前走过两节），
   另一枚是 `i.mooc/space/index` 用户中心，不构成并发学习页（§2 #15）。
+
+---
+
+### 批次 177 · 2026-11-23 · 混沌猴收尾不再把随机态漏给后面的场景，乱选那一场的窗口钉的是存储那一份（会话任务 #61 / #63）
+
+- **门面**：不用补（这一轮只改测试台 `tools/browser-e2e.js`，`content.js` 与 `src/page/` 一个字节没动，用户看得见的每一页与下载到的字节都没变）
+
+**这一轮只改 `tools/browser-e2e.js`**（测试台）⇒ 不需要 `npm run concat`。两项都是「定向跑绿、全量跑偶尔红」的共享状态类缺陷，根因都在测试台自己，不在生产代码。
+
+#### 甲 · #61 混沌猴的存储外溢
+
+症状：随机点击 400 次之后，弹窗里那 5 枚键（`config` / `omitonePagePetMinimal` / `omitonePetChatOn` /
+`omitonePetDoctorOn` / `omitonePetWebSearchOn`）被点成随机态，**而这场一个字都没交回**，
+于是后面每一场读到的是上一场的残留。这不是「随机点脏」的错，是**收尾没有把盘上那份擦回去**。
+
+- ⚠️ 成因里最贵的一格：**「把页面导航走／关掉」不等于「队列排干」**。每一发 `.toggle` 点击都是
+  fire-and-forget：`config` 走后台 `config_patch` 队列（`patchConfig` → `sendRuntimeMessageWithTimeout`，8 秒），
+  另外 4 枚是弹窗页面里直接 `await chrome.storage.local.set`。页面死了，**队尾那几发照旧会落盘**，
+  所以"场景结束时读一次"读到的是还没写完的中间态。
+- 落成的三层（缺一层就回到"漏给下一场"）：
+  ① **进门快照** `readPopupStore()` 逐枚记「有没有 + 值」；
+  ② **只听不写** `armStoreWatcher()` 挂 `chrome.storage.onChanged` 计数器 —— MV3 里每个扩展上下文都收得到，
+     所以它是"真发生过写"的行为证据，不是自报；
+  ③ **按排干收口** `waitStoreQuiet()` 要求**连续 3 次同计数**才算排干（不是 sleep），
+     然后 `handBackPopupStore()` 逐枚交回（进门有的 set 回去、进门没有的 remove 掉）。
+- 三格各自说话，谁都不许压成"通过"：
+  「真点脏了」（`dirty.length > 0` **且** 排干为真 —— 否则交回比对是空转）/
+  「逐枚交回进门那份」（`differ.length === 0`）/
+  「交回之后没有迟到写」（再等再读，`late.length === 0` —— **排干不许自证**）。
+- ⚠️ 比较器自己差点是空的：`kvSorted(Object.keys(true))` → `[]` → `''`，布尔值两边都相等。
+  补了 `storeCanon()` 的类型分派（对象走 kvSorted，标量走 JSON.stringify），
+  并要求 `ha && hb`（两边都在存储里）才进比较 —— **读不出不许塌进"相等"**（§2 #12）。
+
+#### 乙 · #63 乱选那一场的检查窗口
+
+症状：`/quiz-real` 报的「窗口设 0 = 不自动交卷」那几格偶尔红。量出来的机制（不是推的）：
+
+- `startIfMarked` 里那一发 `app.configs = mergeConfig(config || defaultConfig)`，
+  而 `mergeConfig` = `Object.assign({}, DEFAULT_CONFIG, nextConfig)`（`src/page/00-shell-constants.js:256`）——
+  **整份替换**，不是逐字段合并；
+- 桥的回包是 `publicConfig(config)`（`content.js:3564` → `libs/runtime-policy.js:103`），
+  它只投影 `runtimeFields` 并派生 `hasApiKey` ⇒ **`apiKey` 结构上就到不了页面**；
+- `XXT_CONFIG_UPDATED`（`src/page/00-shell-constants.js:433`）才是逐字段合并。
+
+所以正解不是"把事件排序排对"，而是**让存储里那一份和想要的值一致**：
+⑤ 在 `location.reload()` **之前**把 `pinCfg`（`randomAnswerReviewSec: 0`）写进存储，
+①–④ 进门时也钉一次，前提断言**两个来源各读一次**（存储那份 + 页面内存那份），
+收尾把存储里的 `config` 交回进门那份（钉 0 那一发不许外溢）。
+
+- ⚠️ 第一版把前提写成「刷新后页面里的 `apiKey === ""`」，实测 1/16 红：
+  `{"stored":{"storedSec":0,...},"mem":{...,"blankKey":false},"agreed":true}` ——
+  量的是一把**结构上不可能成立**的承诺（回包根本不投影 `apiKey`）。
+  改法是换成读得回来的两格：页面侧 `noKeyField === true && hasApiKey === false`、
+  存储侧 `storedKeyBlank === true`。**放宽判据那条路没走**（§3 口径）。
+
+#### 丙 · 反向验证（`.workbuddy/reverse177.js`，七刀，`.workbuddy/reverse177.log`）
+
+- 计数：五刀确定性各红 1 条（A2 / B / C / D 均「符合预期」，`miss:[]` `bled:[]` `extra:[]`），两刀观测刀绿（A / E）。
+- **A 绿不等于排干没用**：那一刀摘掉交回前的排干，本机队尾没赶上，所以迟到写没发生 ——
+  检测器在场由 **A2** 证（强行补一发迟到写 → 「没有迟到写」那一格点名 `config` 红）。
+- **E 绿说清了依赖**：摘掉进门那发钉（①–④ 的 10 秒窗口），①–④ 照旧绿 ——
+  因为它们读的是页面内存那份（`XXT_CONFIG_UPDATED` 逐字段合并），**存储那一发只在 reload 时承重**（由 C 证）。
+- M 刀量到这一种子**五枚键全部真被点脏**（`config` + 四枚宠物键），B 刀据此挑 `config` 下手，不是空刀。
+- 每一刀各起一趟定向 e2e（`OMITONE_E2E_FILTER`），一次只起一轮，脚本自己占 pid 锁（`.workbuddy/rev177.lock`）。
+- 基线落盘 `.workbuddy/rev177-base.txt`，还原以盘上基线为准并先验形状（长度 ≥ 20000 字、
+  含本轮新落的 `POPUP_STORAGE_KEYS`），每刀收尾 `RESTORED: 长度 1418661 / 标记残留 0 处 / 与基线逐字节一致`。
+- 观测刀（A / E）**不设预期**：本机队尾没赶上就是绿，只报"没赶上"，不许据此说断言抓不住。
+- ⚠️ 第一版 A2 的 `to` 把 `from` 那一行原样含在里面（在锚点行**前面**插一句），撞上 §5
+  「`from` 与 `to` 必须互不包含」那道自证闸，当场 `FAIL-CUT` 作废 —— 这一族错法第三次踩到，
+  改成**单行改写**（`await (async function () { ... })()`）后 `from` 不再是子串。
+
+#### 丁 · 收口读数
+
+- `npm test` EXIT=0（`.workbuddy/npmtest-177.log`，17:12:30）：闸门全绿、集成 **707 / 707**、
+  worker 单测 126 项、那批秒级套件照旧，全日志 `[FAIL]` **0 条**。
+- 全量 e2e 交叉检验 **151 场景 / 1707 项** 全过（`.workbuddy/e2e177-full.log`，17:24:03；末行打印
+  「功能交叉检验全部通过：1707 / 1707 项」，全日志 `[FAIL]` 0 条），扩展 ID 走的是运行时发现的那枚（§7.2 未犯），
+  收尾临时 profile 自动清（删 1 枚 / 失败 0 枚 / 在跑没动 0 枚 / 带登录态留 0 枚）。
+- 计数账 `.workbuddy/e2e-counts.json` = `151 / 1707 / passed:true`。**静态与计数账这次逐字相等**：
+  `check(` 调用点净 **+4**（5 增 / 1 删 —— 旧那句「混沌收尾把 config 与伴侣精简键交回」被拆成三格），
+  与 1703 → 1707 的 **+4** 一致；本轮没有新增场景，所以**不需要**「新场景把公用自证多跑一趟」那一档解释（AGENTS §5）。
+- 文档回填四处 `1703 → 1707`：`AGENTS.md` §1.0、`README.md`（测试段两处）、`tools/README.md`、
+  `HANDOVER.md` §1 测试基线那一行（含「1707 = 1703 + 批次 177 的 4 条」那一档换算）。
+- ⚠️ **本轮不 push、不 build、不发预览包** —— 对端会话 1fd1c8df 的 HOLD 仍生效，且用户那句
+  「先把还没落实的全落实了再考虑上传」还没被点头替掉；收口第⑥件这一轮只剩本地提交。
+- 现场监测（只读，19:46）：`field-bridge` 回 `verdict=port-down`（worker 0 / 扩展页面 0 / Omitone 世界 0），
+  `tasklist` 里 msedge 进程 **0 个** —— 现场那台调试浏览器已经关了。按 §2 #12 这一格是**读不出**，
+  不是「这一阵没刷课」；本轮**不自行把它重开**（§2 #15：新开一枚可能挤出现场正在刷的那门，重开要与对端错开）。
 
 ---
 

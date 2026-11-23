@@ -3635,6 +3635,103 @@ async function writeConfig(extensionId, cfg) {
   await sleep(150);
 }
 
+// ── 弹窗那 5 枚 storage 键的「进门捕获 → 排干 → 交回 → 二次回读」（批次 177 / 任务 #61）────
+// 为什么这一族要独立出来：混沌猴逢 `.toggle` 就点，而弹窗每一发点都是 fire-and-forget ——
+// `config` 那一枚先进后台的 `config_patch` 队列（popup.js 的 patchConfig →
+// sendRuntimeMessageWithTimeout，8 秒超时），四枚吉祥物键（精简／聊天／寻医／网搜）是页面
+// 自己 await 的 `chrome.storage.local.set`。上一版收尾只交回 `config` 与
+// `omitonePagePetMinimal` 两格，另外三枚点出来就永久留在盘上；而且「立刻写、立刻读」撞上
+// 队尾还没排干，随机态在我们写完才落回来 —— 红不红取决于机器快慢（AGENTS §5
+// 「拉长等待在快机器恒绿、慢机器恒红」）。
+// 所以排干不用等待，用**只听不写的 `chrome.storage.onChanged` 计数器**：数不再涨才算排干，
+// 到点还在涨就单独占一格（§2 #12「读不出」不许塌进通过）。
+// ⚠️ 取证件只印**键名**，不印值 —— `config` 里有 apiKey（§5「取证不许把配置值印进日志」）。
+// 键名清单的真源是 popup.js：saveToggleConfig() 写 `config`，四枚吉祥物开关各写一枚
+// （togglePagePetEnabled → omitonePagePetMinimal，petChat/Doctor/WebSearch → 另三枚），
+// resetDefault() 落的也正是这 5 枚。新增弹窗可写键要同步这里，否则混沌猴点脏了没人收。
+var POPUP_STORAGE_KEYS = ['config', 'omitonePagePetMinimal', 'omitonePetChatOn',
+  'omitonePetDoctorOn', 'omitonePetWebSearchOn'];
+
+// 回读统一成 {has:{键:布尔}, val:{键:值}} —— has 单独记：「没写过」与「写了个 null」是两格。
+async function readPopupStore(client, keys) {
+  return await client.evaluate('new Promise(function (res) {' +
+    'var K = ' + JSON.stringify(keys) + ';' +
+    'chrome.storage.local.get(K, function (r) {' +
+    'var out = { has: {}, val: {} };' +
+    'for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    'out.has[k] = Object.prototype.hasOwnProperty.call(r, k); out.val[k] = r[k]; }' +
+    'res(out); }); })');
+}
+
+// 装一个只听不写的观察者（重复装不叠加监听，只把计数清零）。
+async function armStoreWatcher(client, keys) {
+  await client.evaluate('(function () {' +
+    'var K = ' + JSON.stringify(keys) + ';' +
+    'if (!window.__e2eStoreWatch) window.__e2eStoreWatch = { n: 0, cnt: {}, bound: false };' +
+    'var w = window.__e2eStoreWatch; w.n = 0; w.cnt = {};' +
+    'if (!w.bound) { w.bound = true;' +
+    '  chrome.storage.onChanged.addListener(function (ch, area) {' +
+    '    if (area !== "local") return;' +
+    '    var s = window.__e2eStoreWatch;' +
+    '    for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    '      if (Object.prototype.hasOwnProperty.call(ch, k)) { s.n++; s.cnt[k] = (s.cnt[k] || 0) + 1; } }' +
+    '  }); }' +
+    'return true; })()');
+}
+
+async function readStoreWatch(client) {
+  return await client.evaluate('(function () { var w = window.__e2eStoreWatch;' +
+    'return w ? { n: w.n, cnt: w.cnt } : { n: -1, cnt: null }; })()');
+}
+
+// 等"写入者停了"：连续 stableSamples 个采样读回同一个计数才算排干；capMs 到点还没停就交回
+// drained:false —— 那一格单独说话，不许当"排干了"。
+async function waitStoreQuiet(client, capMs, stableSamples) {
+  var start = Date.now(), last = null, same = 0, n = -1;
+  while (Date.now() - start < capMs) {
+    var w = await readStoreWatch(client);
+    n = w.n;
+    if (n < 0) return { drained: false, n: n, waitedMs: Date.now() - start, unreadable: true };
+    if (last !== null && n === last) {
+      same++;
+      if (same >= stableSamples) return { drained: true, n: n, waitedMs: Date.now() - start };
+    } else { same = 0; last = n; }
+    await sleep(200);
+  }
+  return { drained: false, n: n, waitedMs: Date.now() - start };
+}
+
+// 交回进门那份：present 的 set、absent 的 remove。交回后还在被谁写，由二次回读那一格说。
+async function handBackPopupStore(client, snap, keys) {
+  return await client.evaluate('new Promise(function (res) {' +
+    'var before = ' + JSON.stringify(snap) + '; var K = ' + JSON.stringify(keys) + ';' +
+    'var del = [], set = {};' +
+    'for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    'if (before.has && before.has[k]) set[k] = before.val[k]; else del.push(k); }' +
+    'function done() { res({ del: del, setKeys: Object.keys(set) }); }' +
+    'function doSet() { if (Object.keys(set).length === 0) { done(); return; }' +
+    '  chrome.storage.local.set(set, done); }' +
+    'if (del.length === 0) { doSet(); return; }' +
+    'chrome.storage.local.remove(del, doSet); })');
+}
+
+// 逐枚比两份读数，只交**不相等的键名**（值不进日志）。
+// ⚠️ 不能直接拿 kvSorted 比：它对 `true`／`false` 这种标量都返回空串（Object.keys 数不出东西），
+// 四枚吉祥物键于是恒相等 —— 先按类型分一格，标量走 JSON.stringify。
+function storeCanon(v) {
+  if (v && typeof v === 'object') return kvSorted(v);
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+function diffStoreKeys(a, b, keys) {
+  var bad = [];
+  (keys || POPUP_STORAGE_KEYS).forEach(function (k) {
+    var ha = !!(a && a.has && a.has[k]), hb = !!(b && b.has && b.has[k]);
+    if (ha !== hb || (ha && hb && storeCanon(a.val[k]) !== storeCanon(b.val[k]))) bad.push(k);
+  });
+  return bad;
+}
+
 async function openScenarioPage(extensionId, scenario) {
   var target = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
   // 场景页必须挂在 chaoxing.com 域下：新版 content.js 只认「后台按标签页 URL 判定为学习通」
@@ -6152,15 +6249,14 @@ SCENARIOS.push({
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
-    // 进门先记下弹窗会写的那两格（config 与伴侣精简键）：逢 toggle 就点的混沌猴把开关状态
-    // 留在盘上，停在哪儿由种子决定 —— 后面每一个场景拿到的是上一场的随机态（批次 62-D 同一族）。
-    // 收尾交回进门那份，随机点击的证据留在本场，脏数据不外溢。
-    var storageBefore = await ctx.client.evaluate(
-      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
-      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
-      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
-      'pet: r.omitonePagePetMinimal }); }); })'
-    );
+    // 进门先记下弹窗会写的 5 枚键（present／absent 各记一格）：逢 toggle 就点的混沌猴把开关
+    // 状态留在盘上，停在哪儿由种子决定 —— 后面每一个场景拿到的是上一场的随机态（批次 62-D 同一族）。
+    // 上一版只记 `config` 与 `omitonePagePetMinimal` 两枚，另外三枚吉祥物开关（聊天／寻医／
+    // 网搜）点脏了没人收（批次 177 / 任务 #61）。
+    var storageBefore = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    // 观察者只听不写：把「还有谁在往盘上写这 5 枚」读成一个能涨的数。拉长等待不算尺
+    // （快机器恒绿、慢机器恒红，AGENTS §5），这里要的是"写入者停了"这个事件层面的证据。
+    await armStoreWatcher(ctx.client, POPUP_STORAGE_KEYS);
     var chaos = await ctx.client.evaluate(
       '(function(){' +
       'var errs = [];' +
@@ -6191,29 +6287,37 @@ SCENARIOS.push({
       'return {errs:errs,alive:!!m};})()'
     );
     check('混沌之后摸头仍无异常', !!still && still.alive === true && still.errs.length === 0, JSON.stringify(still));
-    // 收尾：把这一场点出来的随机态交回去，并读回来证明真交回去了（不是打了句话就算）
-    await ctx.client.evaluate(
-      'new Promise(function (res) {' +
-      'var before = ' + JSON.stringify(storageBefore) + ';' +
-      'var del = []; var set = {};' +
-      'if (before.hasConfig) { set.config = before.config; } else { del.push("config"); }' +
-      'if (before.hasPet) { set.omitonePagePetMinimal = before.pet; } else { del.push("omitonePagePetMinimal"); }' +
-      'chrome.storage.local.remove(del, function () {' +
-      'if (Object.keys(set).length === 0) { res(true); return; }' +
-      'chrome.storage.local.set(set, function () { res(true); }); }); })'
-    );
-    var restored = await ctx.client.evaluate(
-      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
-      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
-      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
-      'pet: r.omitonePagePetMinimal }); }); })'
-    );
-    check('混沌收尾把 config 与伴侣精简键交回进门那份（随机态不外溢到后面的场景）',
-      !!restored && kvSorted(restored.config) === kvSorted(storageBefore.config)
-      && restored.hasPet === storageBefore.hasPet && String(restored.pet) === String(storageBefore.pet),
-      JSON.stringify({ sameConfig: kvSorted(restored.config) === kvSorted(storageBefore.config),
-        petBefore: storageBefore.pet, petAfter: restored.pet,
-        hasBefore: storageBefore.hasPet, hasAfter: restored.hasPet }).slice(0, 240));
+    // 收尾：把这一场点出来的随机态交回去，并读回来证明真交回去了（不是打了句话就算）。
+    // ⚠️ 顺序是「先排干 → 再交回 → 再排干 → 再回读」，不是「写完立刻读」：400 发点击里
+    // `config` 那一枚走的是后台 `config_patch` 队列（fire-and-forget，8 秒超时），队尾在我们
+    // 交回之后才落回来的话，读到的就是随机态 —— 上一版红/不稳就出在这一族（任务 #61）。
+    var drainIn = await waitStoreQuiet(ctx.client, 15000, 3);
+    var afterChaos = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var dirty = diffStoreKeys(storageBefore, afterChaos, POPUP_STORAGE_KEYS);
+    // 前提格：这一场真把某枚键点脏了。0 枚脏 = 下面那句比对是空转（断言"绿"有两种）。
+    check('混沌这一场真点脏了弹窗会写的键（交回比对不是空转）',
+      dirty.length > 0 && drainIn.drained === true,
+      JSON.stringify({ dirty: dirty, drained: drainIn.drained, events: drainIn.n,
+        waitedMs: drainIn.waitedMs }).slice(0, 240));
+    var handed = await handBackPopupStore(ctx.client, storageBefore, POPUP_STORAGE_KEYS);
+    var drainOut = await waitStoreQuiet(ctx.client, 12000, 3);
+    var restored = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var differ = diffStoreKeys(storageBefore, restored, POPUP_STORAGE_KEYS);
+    check('混沌收尾把弹窗会写的 5 枚键逐枚交回进门那份（随机态不外溢到后面的场景）',
+      differ.length === 0 && drainOut.drained === true,
+      JSON.stringify({ differ: differ, drainedOut: drainOut.drained, outEvents: drainOut.n,
+        del: handed.del, setKeys: handed.setKeys,
+        hasBefore: POPUP_STORAGE_KEYS.map(function (k) { return !!storageBefore.has[k]; }),
+        hasAfter: POPUP_STORAGE_KEYS.map(function (k) { return !!restored.has[k]; }) }).slice(0, 260));
+    // 迟到写单独占一格：交回之后又等了一次排干再读，读数若被队尾改回去，这里说得出是哪一枚。
+    // 「排干了」和「读回来还是那份」是两件事，压成一句就会把"我们没等到"读成"没被写"（§2 #12）。
+    var drainAgain = await waitStoreQuiet(ctx.client, 6000, 3);
+    var recheck = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var late = diffStoreKeys(restored, recheck, POPUP_STORAGE_KEYS);
+    check('混沌交回之后没有迟到写把随机态又落回来（排干不是自证）',
+      late.length === 0 && drainAgain.drained === true,
+      JSON.stringify({ late: late, drainedAgain: drainAgain.drained, againEvents: drainAgain.n,
+        afterHandback: drainAgain.n > 0 ? 'events-after-handback' : 'quiet' }).slice(0, 240));
   }
 });
 
@@ -20569,6 +20673,18 @@ SCENARIOS.push({
   path: '/quiz-real',
   run: async function (ctx) {
     var before = ctx.mock.requests.length;
+    // 进门先记存储里那一份 `config`：本场要把它钉成自己需要的那张（①–④ 要 10 秒窗口、⑤ 要 0），
+    // 收尾再交回 —— 不交回就是"本场改掉了后面每一个场景的模型配置"（§5 夹具要钉住共享状态）。
+    var cfgStoreBefore = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    // ⚠️ 钉存储不是多余的一发（任务 #63）：页面这一侧的 `app.configs` 有两个来源 ——
+    // 刷新后 `startIfMarked` 拿回包做的是**整份替换**，而运行中 `XXT_CONFIG_UPDATED` 是逐字段合并
+    // （`00-shell-constants.js:434`）。两条都只认**存储那一份**，所以只在内存里赋值的那一发
+    // 会被顶掉，顶掉之后用的是**上一场留在盘上的数** —— 表现成"同一把尺今天绿、明天红三条"。
+    // 从进门就钉，①–④ 那 10 秒窗口才不再靠"上一个场景恰好没改过它"。
+    await writeConfig(ctx.extensionId, Object.assign({}, cfgStoreBefore.val.config || {}, {
+      enableQuiz: true, randomAnswer: true, apiKey: '', hasApiKey: false,
+      autoNext: false, enableCaptcha: false, enableDiscussion: false, randomAnswerReviewSec: 10
+    }));
 
     // 夹具自证（AGENTS §5：夹具要长得像现场，否则测的是"代码和自己一致"）：
     // 现场那三样提交入口 + 填空题两个可见输入框，缺一样这条测的就不是这件事。
@@ -20685,10 +20801,49 @@ SCENARIOS.push({
       JSON.stringify(sim && sim.done));
 
     // ===== ⑤ 窗口设成 0：完全不自动交卷，且不许把用户的答案反复随机冲掉 =====
+    // ⚠️ 这一段的"钉"要先落到**存储**，再刷新（批次 177 / 任务 #63）。刷新后 page.js 走的是
+    // `startIfMarked` → `app.configs = mergeConfig(config || defaultConfig)` —— **整份替换**，
+    // 不是逐字段合并。只在内存里赋值那一发会被随后到达的 `get_config` 回包整个顶掉，顶掉之后
+    // `randomAnswerReviewSec` 用的是**上一场留在盘上的那枚数**：于是"窗内不交 / 到点才交"量的
+    // 其实是上一个场景点了哪几枚开关（现场表现 = 同一把尺今天绿、明天红三条）。
+    // 内存那一发照旧留着（它把"不靠回包先后"钉成两条来源相等），但真源是存储那一份。
+    var pinCfg = { enableQuiz: true, randomAnswer: true, apiKey: '', hasApiKey: false,
+      autoNext: false, enableCaptcha: false, enableDiscussion: false, randomAnswerReviewSec: 0 };
+    await writeConfig(ctx.extensionId, Object.assign({}, cfgStoreBefore.val.config || {}, pinCfg));
     await ctx.client.evaluate('location.reload()').catch(function () {});
     var readyBy = Date.now() + 10000;
     while (Date.now() < readyBy && !(await ctx.client.evaluate(
       'document.readyState==="complete" && !!window._xxtApp && !!document.getElementById("submitBtn")'))) await sleep(200);
+    // 夹具自证，两把尺各读一次：**盘上那一份**与**页面自己读到的那一份**都得是那一枚 0。
+    // 只断"我们写了"不算数 —— 这一族的失败形状恰恰是"写对了却被回包顶掉"，所以页面那一侧要
+    // 按**状态**轮询（不是拉长等待：快机器恒绿、慢机器恒红，AGENTS §5），到点还不同就单独占一格。
+    var storePin = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    var pinRead = { storedSec: (storePin.val.config || {}).randomAnswerReviewSec,
+      storedRandom: (storePin.val.config || {}).randomAnswer === true,
+      storedKeyBlank: (storePin.val.config || {}).apiKey === '' };
+    var memPin = null;
+    var pinBy = Date.now() + 8000;
+    while (Date.now() < pinBy) {
+      // ⚠️ 页面读到的那一份是 content.js `loadConfig()` 过完 `publicConfig` 之后的**投影**：
+      // `apiKey` 结构性地不在这张表里（只在隔离世界留给 SW 发请求用），页面拿到的只有
+      // `hasApiKey` 那一格。所以"钉成没有凭据"在页面侧的长相是 **没有 apiKey 字段 + hasApiKey:false**，
+      // 断 `apiKey === ""` 量的是一句永远不成立的事（本轮第一版就红在这里）。
+      memPin = await ctx.client.evaluate(
+        '(function(){var c=(window._xxtApp||{}).configs||{};' +
+        'return { hasKey:Object.prototype.hasOwnProperty.call(c,"randomAnswerReviewSec"),' +
+        '  sec:c.randomAnswerReviewSec, random:c.randomAnswer===true, quiz:c.enableQuiz===true,' +
+        '  noKeyField:!Object.prototype.hasOwnProperty.call(c,"apiKey"),' +
+        '  hasApiKey:Object.prototype.hasOwnProperty.call(c,"hasApiKey") ? c.hasApiKey : "(缺)" };})()');
+      if (memPin && memPin.sec === 0 && memPin.random === true && memPin.quiz === true &&
+          memPin.noKeyField === true && memPin.hasApiKey === false) break;
+      await sleep(200);
+    }
+    // 取证只印这几格布尔与那枚秒数，不印整张 config（里面有 apiKey）。
+    check('前提：刷新后存储与页面内存两处读到的都是钉住的那份（回包顶不掉 —— 两处同源，不是靠先后）',
+      pinRead.storedSec === 0 && pinRead.storedRandom === true && pinRead.storedKeyBlank === true &&
+      !!memPin && memPin.hasKey === true && memPin.sec === 0 && memPin.random === true &&
+      memPin.quiz === true && memPin.noKeyField === true && memPin.hasApiKey === false,
+      JSON.stringify({ stored: pinRead, mem: memPin, agreed: !!memPin && memPin.sec === pinRead.storedSec }).slice(0, 240));
     await ctx.client.evaluate(
       '(function(){window.__b24=[];if(!window.__b24Bound){window.__b24Bound=true;' +
       'window.addEventListener("message",function(e){var m=e.data;' +
@@ -20755,6 +20910,14 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{randomAnswer:false});return true;})()'
     );
+    // 交回进门那一份存储 config（⑤ 为了钉 0 整张写过盘，apiKey 也在里面）。
+    // 交完读回来比一次 —— "打了句话"不算交回（同一场混沌猴那条的纪律）。
+    await handBackPopupStore(await initConfigWriter(ctx.extensionId), cfgStoreBefore, ['config']);
+    var cfgBack = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    check('乱选这一场把存储里的 config 交回进门那份（钉 0 那一发不外溢）',
+      diffStoreKeys(cfgStoreBefore, cfgBack, ['config']).length === 0,
+      JSON.stringify({ differ: diffStoreKeys(cfgStoreBefore, cfgBack, ['config']),
+        hasBefore: cfgStoreBefore.has.config, hasAfter: cfgBack.has.config }).slice(0, 200));
   }
 });
 
