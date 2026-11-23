@@ -24579,6 +24579,154 @@ SCENARIOS.push({
       String(picked7[1].probeWhy || '').indexOf('403') !== -1,
       JSON.stringify({ key: s7c.key, cases: c7, metas: picked7, base: s7c.base, names: l7c.names.slice(s7c.base) }));
 
+    // ⑧ 队列 #26 取证（批次 179）：被站点退回的课**不靠"优先"也不会永久饿死** —— 把这句量成读数。
+    //    唯一那扇门是 `src/page/64-tasks-loop.js` 里「账本 `at` 早于 N 小时就重新起账」那一发，
+    //    而它以前**一条断言都没有**（全仓没有一处把 ledger 的 `at` 写成 6 小时之前，只有一律 `Date.now()`）。
+    //    ⚠️ 那一发用的 6 小时**从方法源码里读回来**，不在测试里写死（§5「断言里出现的每一个数都要说得出从哪读回来」）。
+    //    ⚠️ 两发各起一次 evaluate、各自取日志基线：三段挤在同一发里时 logA 与 logB 读到的是**同一个数**
+    //       （那一拍的消息还没送达），⑧-a 的切片会把 ⑧-b 那句「挑中了」一起算进去 —— 批次 179 实测红在这里。
+    //    ⚠️ 地址要钉成「带 omitonePick、不带 omitoneDone」：`omitonePick` 是「这一页是我们自己导航来的」那枚闸
+    //       （方法头一句 `_coursePickRequested()` 就认它，少了它整段直接 return false、一个字不说 —— 本格第一次就红在这里，
+    //       症状与"6 小时那一发没生效"逐字相同）；而留着 `omitoneDone` 会让刚报完那门被重新登记进账，
+    //       ⑧-b 量到的就不是「归零」而是「归零后又长了一枚」—— 那是 ③ 那一格该测的事，不许混进来。
+    var s8a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var src=String(app._pickNextCourseFromUserCenter);' +
+      'var m=src.match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'out.windowH=Number(m?m[1]:0);' +
+      'var W=out.windowH*3600*1000;' +
+      // 探针缓存钉成 ⑥ 那一族（答过了、沙盒里没人答）——「还在问」那一格由 ⑦ 单独测，这里不许轮到它
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      // ⑧-a 还差 5 分钟到点 → 账本一个字都不许动
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:7,tried:["900000011","900000012","900000013","900000014"],at:Date.now()-W+300000}));' +
+      'out.aClaimed=app._pickNextCourseFromUserCenter();out.aNav=window.__b83nav.length;' +
+      'var la=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.aSw=Number(la.sw||0);out.aTried=(la.tried||[]).length;' +
+      'out.aTriedIds=(la.tried||[]).join(",");' +
+      'out.aAgeMin=Math.round((Date.now()-Number(la.at||0))/60000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8a = await snap();
+    var l8aNew = { names: l8a.names.slice(s8a.logBase), metas: l8a.metas.slice(s8a.logBase) };
+    var declineA = null;
+    for (var z8 = 0; z8 < l8aNew.names.length; z8++) {
+      if (String(l8aNew.names[z8]).indexOf('course switch declined: no course') === 0) declineA = l8aNew.metas[z8];
+    }
+    check('批次 179 ⑧a「还没到重新起账那一点，账本一个字都不许动」：差 5 分钟到点时 tried 仍是那 4 枚（一枚不增也不减）、sw 仍是 7、' +
+      '账本的年龄仍是那 5 分钟之前（没被刷成"刚刚"），一步都不跳、说的仍是「没有还有任务点的门」。' +
+      '前提三格都从页面读回来：这一页带着「是我们自己导航来的」那枚闸、不带「刚报完哪门」那枚标记（带着时"tried 不变"里混着"又登记一枚"，两件事分不开）。' +
+      '这一格挡的是把"提前归零"当成 #26 的修复：那等于拆掉「6 小时内不重复进同一门」的防空转（§2 #13 同一族），' +
+      '现场会读成"插件在勤快地换课"而一门也没往前走',
+      s8a.requested === true && s8a.hasPick === true && s8a.hasDone === false && s8a.windowH > 0 &&
+      s8a.aClaimed === true && s8a.aNav === 0 &&
+      s8a.aSw === 7 && s8a.aTried === 4 && s8a.aTriedIds === '900000011,900000012,900000013,900000014' &&
+      s8a.aAgeMin >= s8a.windowH * 60 - 6 && s8a.aAgeMin <= s8a.windowH * 60 - 4 &&
+      cnt(l8aNew, 'course switch declined: no course with unfinished task points') === 1 &&
+      cnt(l8aNew, 'course switch picked next') === 0 &&
+      cnt(l8aNew, 'course switch probing course homes') === 0,
+      JSON.stringify({ s8a: s8a, newNames: l8aNew.names }));
+    var s8b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var m=String(app._pickNextCourseFromUserCenter).match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'var W=Number(m?m[1]:0)*3600*1000;' +
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'var h12=String(d.getElementById("c_900000012").querySelector("a[href*=stucoursemiddle]").getAttribute("href")||"");' +
+      'out.k12=(h12.match(/clazzid=(\\d+)/i)||[])[1]||"";' +
+      // ⑧-b 同一份账，只把 `at` 回拨到点外一分钟 → 归零重新起账，刚才被 tried 挡住的门重新可选
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:7,tried:["900000011","900000012","900000013","900000014"],at:Date.now()-W-60000}));' +
+      'out.bClaimed=app._pickNextCourseFromUserCenter();out.bNavCount=window.__b83nav.length;' +
+      'out.bNav=String(window.__b83nav[0]||"");' +
+      'var lb=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.bSw=Number(lb.sw||0);out.bTried=(lb.tried||[]).length;' +
+      'out.bTriedIds=(lb.tried||[]).join(",");' +
+      'out.bAgeSec=Math.round((Date.now()-Number(lb.at||0))/1000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8b = await snap();
+    var l8bNew = { names: l8b.names.slice(s8b.logBase), metas: l8b.metas.slice(s8b.logBase) };
+    check('批次 179 ⑧b「到点就重新起账 —— 这就是被退回的课唯一那扇门」：同一份账**只**把 `at` 回拨到 N 小时之外，' +
+      '刚才被 tried 挡住的门必须重新可选（真跳一次，落点是课程乙自己的课号 + 卡片上那一张自己的班号），' +
+      '跳完这一发账读回来是 sw=1、tried 一枚不剩、`at` 刚刚。' +
+      '⚠️ 最后那一发**单独不承重**：归零那一句与跳成功那一句在这一格里各写同一个值，' +
+      '反向验证 K2／K6 一手摘一半，两刀在这一格都红 0 条（实测）—— ' +
+      '"跳成功之后写回 `at`"由第四格（窗口内第二发）单独量，没量过的因果句不许写进这一格的名字（§5「断言实现细节会把你绑死」）。' +
+      '#26 那句「不会饿死，但最长要等满一个 N 小时窗口」的读数就是这一格',
+      s8b.requested === true && s8b.hasPick === true && s8b.hasDone === false &&
+      s8b.bClaimed === true && s8b.bNavCount === 1 &&
+      String(s8b.bNav || '').indexOf('courseid=900000012') !== -1 &&
+      !!s8b.k12 && String(s8b.bNav || '').indexOf('clazzid=' + s8b.k12) !== -1 &&
+      s8b.bSw === 1 && s8b.bTried === 0 && s8b.bTriedIds === '' && s8b.bAgeSec >= 0 && s8b.bAgeSec < 120 &&
+      cnt(l8bNew, 'course switch picked next') === 1 &&
+      cnt(l8bNew, 'course switch declined') === 0,
+      JSON.stringify({ s8b: s8b, newNames: l8bNew.names }));
+    check('批次 179 ⑧c 那扇门的宽度是从源码读回来的、不是拍的：`at` 归零窗口 = 6 小时' +
+      '（由方法体里那句 `N * 3600 * 1000` 取回），而且**给用户的那句 decline 里要留有"重新起账"的说法** —— ' +
+      '改窗口的人必须连带改那句话，测试不许只跟着源码走（§3.7「行为改了而文档没改是这一族唯一的失败形状」）。' +
+      '前两发（没到点那一发与到点那一发）的回拨量都由这个读数换算。两条腿各自量过：把窗口常数改成 5 只红这一格（反向验证 K5）；' +
+      '把归零改成恒发，那句 decline 根本没机会说、取证读回的是空 hint，于是这一格跟着红（K4 实测三格之一）—— ' +
+      '「单独红在这里」以前是没量过的句子，已按实测改掉（§5「没量过的因果句不许写进这一格的名字」）',
+      s8a.windowH === 6 && !!declineA &&
+      String(declineA.hint || '').indexOf('重新起账') !== -1,
+      JSON.stringify({ windowH: s8a.windowH, hint: declineA ? String(declineA.hint || '').slice(0, 160) : '' }));
+
+    // ⑧-d 「重新起账」那句话到底从哪一格算起（批次 179 补的第四格，K2 逼出来的）：
+    //     ⑧-b 里 `at` 那一发**结构性测不到** —— 归零那一句（`at` 早于窗口）与跳成功那一句（`sw` 自增旁）**各写一次同一个值**，
+    //     摘掉任何一发另一发都盖得住，所以 K2／K6 两刀在 ⑧-a/⑧-b/⑧-c 三格上各红 0 条（实测，不是推的）。
+    //     真要把「六小时」当成"距上次换课"来量，只能造一格**归零没武装**的账：`at` 是半个窗口之前、窗口内跳成一发，
+    //     然后读 `at` 有没有随这一发走 —— 那一发坏了，只有这一格会红。
+    var s8d = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var m=String(app._pickNextCourseFromUserCenter).match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'var W=Number(m?m[1]:0)*3600*1000;' +
+      'out.windowH=Number(m?m[1]:0);out.halfSec=Math.round(W/2/1000);' +
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      // 窗口内（半个窗口之前跳过一次），sw=1 表示这一窗口的第二发；tried 空 —— 归零那一支在这发里压根不该走到
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'var at0=Date.now()-Math.round(W/2);out.at0=at0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:1,tried:[],at:at0}));' +
+      'out.dClaimed=app._pickNextCourseFromUserCenter();out.dNavCount=window.__b83nav.length;' +
+      'out.dNav=String(window.__b83nav[0]||"");' +
+      'var ld=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.dSw=Number(ld.sw||0);out.dTried=(ld.tried||[]).length;' +
+      'out.dAt=Number(ld.at||0);' +
+      'out.dAgeSec=Math.round((Date.now()-out.dAt)/1000);' +
+      'out.dMovedSec=Math.round((out.dAt-at0)/1000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8d = await snap();
+    var l8dNew = { names: l8d.names.slice(s8d.logBase), metas: l8d.metas.slice(s8d.logBase) };
+    check('批次 179 ⑧d「六小时是从上一次换课那一发起算的」：账本 `at` 回拨成**半个窗口**之前（归零那一支没走到，' +
+      '窗口内第二发），跳成一发之后 sw 变成 2、`at` 随这一发走到"刚刚"（移动量按源码读回的窗口换算，不由测试写死）。' +
+      '这一格是 K2 逼出来的：第二格里"跳成功写回 `at`"那一发被归零句盖住，摘掉它前面三格都不红，历来零覆盖。' +
+      '坏了而没人红的症状是「一个窗口只换得了一轮预算」变成「同一窗口反复起两轮」—— 防空转的账被自己稀释（§2 #13 同一族）。' +
+      '`tried` 读回来是空：换课那一发不登记，只有那门自己报完（URL 带着 `omitoneDone`）才登记 —— 这一格也是那句的证人',
+      s8d.requested === true && s8d.hasPick === true && s8d.hasDone === false &&
+      s8d.dClaimed === true && s8d.dNavCount === 1 &&
+      cnt(l8dNew, 'course switch picked next') === 1 &&
+      s8d.dSw === 2 && s8d.dTried === 0 &&
+      s8d.dAt > s8d.at0 && s8d.dMovedSec >= s8d.halfSec - 120 &&
+      s8d.dAgeSec >= 0 && s8d.dAgeSec < 120 &&
+      cnt(l8dNew, 'course switch declined') === 0,
+      JSON.stringify({ s8d: s8d, newNames: l8dNew.names }));
+
     // 收尾：把地址恢复成打开时那样，别把标记留给下一个场景（整轮共用同一个标签）
     await ctx.client.evaluate('(function(){history.replaceState(null,"",location.pathname);return 1;})()');
     check('整条「挑下一门」零模型请求（换课这一步不花钱，进去之后才轮到原来那套管线）',
