@@ -37,7 +37,7 @@
 | `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
 | `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页 |
-| `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；六种 verdict 各占一格（外部条子写 `mode=read` → `other-reading` 放行但单独说话；无 `mode=` 按 `write` 保守阻塞，认不出的值也按 `write` 并点名）、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己（见下方专节）|
+| `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；六种 verdict 各占一格（外部条子写 `mode=read` → `other-reading` 放行但单独说话；无 `mode=` 按 `write` 保守阻塞，认不出的值也按 `write` 并点名）、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己、收尾交回走 `--done --session=`（**只删自己认领的那一发**，归因不到一律不删；见下方专节）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
 留在链外的只有两个 —— `sandbox`（约 297 秒的伞形件，内部另跑 baseline 与 browser-e2e 场景）
@@ -877,6 +877,23 @@ npm run field-bridge                                                            
 
 `--selftest` **纯内存、一个字节都不落盘**（不碰条子、不碰构建产物），所以并发窗口里也能安全跑；
 格数从代码里的 `CELLS.length` 读回来 —— 第 38 项自证时读的也是这一格，不抄文档。
+
+**全场唯一会动盘的那一发是 `--done`**（批次 175，会话任务 #60）：`node tools/check-concurrency.js --done --session=<本会话号>`。
+它读的是起手那一发同一份读数（`probe()` 交回的 `raw`），所以"这一发归谁"在两处不会长成两种说法。六格：
+
+| 盘上的条子 | 结果 | 出口码 |
+| --- | --- | --- |
+| 本会话自己认领的（新鲜或过期都算） | `release` —— 删，**删完再读回来**确认盘上真没了 | 0 |
+| 压根没有条子 | `noop` —— 无事可交回，幂等，第二回跑也不报错 | 0 |
+| 登记的是别的会话号 | `keep` —— 不删，句子点名那枚 `session` | 1 |
+| 没带 `--session=` | `keep` —— 自己的与别人的在盘上长得一模一样，不许猜 | 1 |
+| 格式认不出（`unparsed` / `blank`） | `keep` —— 归因不到就不删，单独占一格 | 2 |
+| 调用方连读数都没交进来 | `keep` —— 读不出，不许读成"没有条子" | 2 |
+
+⚠️ **`--done` 只在两种时刻用**：提交之后交回自己那一发，或确认那一轮已经不等任何人了。
+**它在"提交之前"用等于自己把门打开让对端进来** —— 起手那一道就再也读不到这一家的认领。
+⚠️ 这一族**不许**被读成"条子=收口证据"：收口的凭证是盘上三样（`git log -1` / `git show --stat HEAD` /
+`git status --porcelain` 空），谁都能自己跑；条子只证明"写过它的人在"（AGENTS §1.05 那一族原话）。
 
 #### 「问不到后台」那一格，现在是五格而不是一句话（真源 `tools/field-bridge.js`）
 

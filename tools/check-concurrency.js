@@ -8,6 +8,7 @@
  *   node tools/check-concurrency.js --window=600        换窗口（秒），默认 720（=12 分钟）
  *   node tools/check-concurrency.js --json              机器读的那份
  *   node tools/check-concurrency.js --selftest          逐格对照，不碰盘
+ *   node tools/check-concurrency.js --done --session=abc 收尾交回：**只删自己那一发**认领条子
  *
  * ## 为什么仓库里要有这一件（2026-11-22 现场，`notes/ledger-165-draft.md`）
  *
@@ -39,8 +40,9 @@
  * 构建产物 `page.js` 的 mtime 只说「跑过一次 concat」，**不单独当写者证据** ——
  * 要问的是它的输入：`src/page/*.js` 与 `manifest.content_scripts[0].js` 那 15 份。
  *
- * ⚠️ 这一件**一个字都不写**：只 `stat` 与跑 `git status` / `git log` 两条只读命令，
- * 带超时。登记活跃度（touch stamp）是调用方的事，用 Write 落，不在这把尺里。
+ * ⚠️ 除 `--done` 那一发之外**一个字都不写**：只 `stat` 与跑 `git status` / `git log` 两条只读命令，
+ * 带超时。`--done` 是全场唯一的动盘出口，而它删的只可能是**本会话自己写的那一发条子**
+ * （归因不到、是别人的、读不出的，一律不删并单独说话）；往后进 stamp 用 Write 落，不在这把尺里。
  */
 'use strict';
 
@@ -92,7 +94,8 @@ function hasFlag(name) {
  * }
  */
 function classify(g) {
-  if (!g) return out('unreadable', 'no-input', EXIT.unreadable, '没有读数进来（调用方连 `probe()` 都没跑到）—— 这一格是读不出，不许读成"安静"。', true);
+  if (!g) return out('unreadable', 'no-input', EXIT.unreadable, '没有读数进来（调用方连 `probe()` 都没跑到）—— 这一格是读不出，不许读成"安静"。', true,
+    '先问通不通：`node tools/check-concurrency.js --session=<本会话号>` 手跑一次；require 进来的调用方检查它喂 classify 的读数不是空的。');
 
   var windowMs = Number(g.windowMs) > 0 ? Number(g.windowMs) : DEFAULT_WINDOW_MS;
   var stamp = String(g.stampState || 'absent');
@@ -214,6 +217,88 @@ function out(verdict, via, exit, note, blocked, fix) {
   if (fix) v.fix = fix;
   return v;
 }
+
+// ---------------------------------------------------------------------------
+// 收尾交回层（`--done`，批次 175）
+//
+// 这一发回答的**不是**「现在能不能改文件」（那是 classify() 那六格），而是
+// 「我能不能把手上那一发认领交回」。两件事不许共用一张判定表：同一个盘上状态，
+// 起手要"保守当有人在写"，交回却只认"是不是我自己的条子"。
+// 唯一允许动盘的那一格是 `release`，而且它删完必须读回来证明**没了**（releaseRun）。
+// 保守方向写死：**归因不到是谁的一律不删** —— 删掉别人正认领的条子 = 替对方把门打开，
+// 那比"条子多躺一会儿"贵得多（AGENTS §1.05 腿 1 的语义：这张条子证明的是"我要写"）。
+// ---------------------------------------------------------------------------
+
+function plan(action, via, exit, blocked, note, fix) {
+  var p = { action: action, via: via, exit: exit, blocked: blocked === true, note: note };
+  if (fix) p.fix = fix;
+  return p;
+}
+
+/** g = classify() 吃的同一份读数（stampState / stampSession / selfSession / stampMine）—— 纯函数，不碰盘 */
+function releasePlan(g) {
+  if (!g) {
+    return plan('keep', 'no-reading', EXIT.unreadable, true,
+      '没有读数进来 —— 交回这一发在没有读数时**不动盘**，这一格是读不出，不许读成"没有条子"。',
+      '带 `--session=<本会话号>` 重跑 `--done`；跑不动就照 §1.05 手工 Write 那行条子。');
+  }
+  var stamp = String(g.stampState || 'absent');
+  var sess = String(g.selfSession || '');
+
+  // 幂等那一格：盘上本来没有条子，交回无事可做 —— 这既不阻塞也不证明什么。
+  if (stamp === 'absent') {
+    return plan('noop', 'stamp-absent', EXIT.open, false,
+      '盘上没有认领条子 —— 无事可交回（多半已经交过一回，或这一轮压根没认领）。');
+  }
+  if (stamp === 'unreadable' || stamp === 'unparsed' || stamp === 'blank') {
+    return plan('keep', 'stamp-' + stamp, EXIT.unreadable, true,
+      '条子读不出这一发是谁认领的（stampState=' + stamp + '）—— **归因不到就不删**：那可能是别人正认领着的一条。' +
+      (stamp === 'blank' ? ' 文件在、里面没内容 —— 谁 touch 过却没登记，这一格谁都不该替谁收尾。' : ''),
+      '要交回自己那一发，先用 Write 把整行补全（`<ISO 带时区>  session=<会话号>  mode=write  note=…`）再跑 `--done --session=`；不是自己的就等它过期。');
+  }
+  // fresh / stale：先问"我"是谁。没带 --session 时，自己的条子与别人的条子在盘上长得一模一样。
+  if (!sess) {
+    return plan('keep', 'no-session', EXIT.blocked, true,
+      '`--done` 没带 `--session=<本会话号>` —— 分不出这一发是不是我认领的那一发，不动盘。',
+      '重跑：`node tools/check-concurrency.js --done --session=<本会话号>`。');
+  }
+  var mine = g.stampMine === true || (!!g.stampSession && String(g.stampSession) === sess);
+  if (!mine) {
+    return plan('keep', 'stamp-foreign', EXIT.blocked, true,
+      '这一发认领登记的是 `session=' + (g.stampSession || '(没写，也没带 --stamp-mine)') + '`，不是本会话（' + sess + '）—— **只交回自己的**，替别人删条子等于替别人开门。',
+      g.stampSession ? '等对方交回或条子过期；起手照旧问不带 --done 的那一发。'
+                     : '如果那一行就是本会话自己写的（旧格式没带 session=），加 `--stamp-mine` 再交回。');
+  }
+  return plan('release', 'stamp-' + stamp, EXIT.open, false,
+    '条子归本会话（`session=' + sess + '`，状态 ' + stamp + '）—— 可以交回；删完会读回来确认盘上真没了。');
+}
+
+/** 唯一动盘的出口：releasePlan 判成 `release` 才碰文件，删完**读回来**验没了才算交回。 */
+function releaseRun(opts) {
+  opts = opts || {};
+  var p = releasePlan(opts.g);
+  if (p.action !== 'release') {
+    return { action: p.action, exit: p.exit, lines: ['交回：' + p.note].concat(p.fix ? ['  处置：' + p.fix] : []),
+      json: { action: p.action, exit: p.exit, blocked: p.blocked, via: p.via, note: p.note, fix: p.fix || '', removed: false, verified: false } };
+  }
+  var rmErr = '';
+  try {
+    fs.rmSync(STAMP, { force: true });
+  } catch (e) {
+    rmErr = String((e && e.code) || '') + ': ' + String((e && e.message) || e);
+  }
+  var after = readStamp().state;
+  var verified = after === 'absent';
+  var lines = ['交回：' + p.note, '  删除：' + (rmErr ? '报错 ' + rmErr.slice(0, 100) : '已执行') +
+    ' / 复查：' + (verified ? '盘上已经没有那一发认领 ✅' : '条子还在（stampState=' + after + '）❌')];
+  var exit = verified ? EXIT.open : EXIT.unreadable;
+  if (!verified) {
+    lines.push('  处置：这一发**没有**当成收口证据 —— 读不回"没了"就当交回没发生（AGENTS §2 #12：读不出单独占一格），先看是不是别人刚认领过。');
+  }
+  return { action: 'release', exit: exit, lines: lines,
+    json: { action: 'release', exit: exit, blocked: !verified, via: p.via, note: p.note, removed: !rmErr || verified, verified: verified, rmErr: rmErr } };
+}
+
 function mins(ms) {
   if (typeof ms !== 'number' || !isFinite(ms)) return '(读不出)';
   var m = Math.max(0, Math.round(ms / 60000));
@@ -572,6 +657,74 @@ var CELLS = [
     tag: '30mode= 是认不出的自造词（idle 这种）→ 按最保守的 write 阻塞，句子里必须点名那枚值',
     g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'other-r', selfSession: 'me-r', stampMode: 'idle', dirty: [] },
     verdict: 'writing', via: 'stamp-fresh', exit: 1, noteHas: 'mode=idle'
+  },
+  // ---- 批次 175：收尾交回（`--done`）那族格子。kind:'plan' 走 releasePlan，不是 classify ----
+  // 判据只有一句：**归因不到是谁的一律不删**。删掉别人正认领的条子 = 替对方开门，
+  // 比"条子多躺 12 分钟"贵；所以 absent 之外每一格 keep 都必须非 0 出口且单独说话。
+  {
+    kind: 'plan',
+    tag: '31盘上没有条子 → noop 放行退出 0，幂等（交回第二回不许报错）',
+    g: { windowMs: 720000, stampState: 'absent', dirty: [], freshCleanBuild: 0 },
+    action: 'noop', via: 'stamp-absent', exit: 0, blocked: false, noteHas: '无事可交回', noteBan: ['已删除', '有人在写']
+  },
+  {
+    kind: 'plan',
+    tag: '32条子是自己认领的且新鲜 → release，唯一允许动盘的那一格',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'me-7', selfSession: 'me-7', dirty: [] },
+    action: 'release', exit: 0, blocked: false, noteHas: '归本会话'
+  },
+  {
+    kind: 'plan',
+    tag: '33条子是自己的但早过期 → 照旧 release（自清理不受新鲜度门管，留着反而继续挡别人）',
+    g: { windowMs: 720000, stampState: 'stale', stampAgeMs: 40 * 60000, stampSession: 'me-7', selfSession: 'me-7', dirty: [] },
+    action: 'release', exit: 0, noteHas: 'stale'
+  },
+  {
+    kind: 'plan',
+    tag: '34条子是别人正认领的 → keep、阻塞，句子点名那枚 session，**绝不许出现"已删除"字样**',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'other-9', selfSession: 'me-7', dirty: [] },
+    action: 'keep', via: 'stamp-foreign', exit: 1, blocked: true, noteHas: '只交回自己的', noteBan: ['已删除', '无事可交回']
+  },
+  {
+    kind: 'plan',
+    tag: '35旧格式条子（没写 session=）但调用方声明 --stamp-mine → release（与起手第 06 格同一条归因通道）',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: '', stampMine: true, selfSession: 'me-7', dirty: [] },
+    action: 'release', exit: 0, noteHas: '归本会话'
+  },
+  {
+    kind: 'plan',
+    tag: '36没带 --session 就 --done → keep 阻塞：自己的与别人的条子在盘上长得一模一样，不许猜',
+    g: { windowMs: 720000, stampState: 'fresh', stampAgeMs: 60000, stampSession: 'me-7', selfSession: '', dirty: [] },
+    action: 'keep', via: 'no-session', exit: 1, blocked: true, noteHas: '--session=<本会话号>'
+  },
+  {
+    kind: 'plan',
+    tag: '37条子格式认不出（unparsed）→ 出口码 2 单独占一格，不许塌进"没有条子"更不许删',
+    g: { windowMs: 720000, stampState: 'unparsed', dirty: [], freshCleanBuild: 0 },
+    action: 'keep', exit: 2, blocked: true, noteHas: '归因不到就不删', noteBan: ['无事可交回', '已删除']
+  },
+  {
+    kind: 'plan',
+    tag: '38条子是 blank（touch 过没登记内容）→ 同样不删，并说出"谁都不该替谁收尾"',
+    g: { windowMs: 720000, stampState: 'blank', dirty: [], freshCleanBuild: 0 },
+    action: 'keep', exit: 2, blocked: true, noteHas: '里面没内容'
+  },
+  {
+    kind: 'plan',
+    tag: '39连读数都没有（调用方 probe 之前就 --done）→ 读不出当不删，不许读成"没有条子"（§2 #12）',
+    g: null,
+    action: 'keep', via: 'no-reading', exit: 2, blocked: true, noteHas: '没有读数进来'
+  },
+  {
+    kind: 'out',
+    tag: '40默认出口那四行逐字节钉住：--done 是接在同一 CLI 上的旁路，它不许动任何人起手看到的字',
+    g: { windowMs: 720000, stampState: 'absent', dirty: [], freshCleanBuild: 0 },
+    wantLines: [
+      'verdict=quiet  via=clean  （可以动）',
+      '  腿 2 干净：树里没有未提交的跟踪改动，构建输入 mtime 都在窗口之外。 腿 1 没有 stamp 文件（同样的：不构成任何一边的证据）。',
+      '  读数：stamp undefined session=(无) mode=(无) / 脏 0 份 / 窗口内新且脏 0 份 / 干净但新鲜 0 份 / 最近提交 (读不出) / page.js (读不出)',
+      '  窗口 12 分钟（--window=<秒> 可换）；这一件只读，一个字节都没写。'
+    ]
   }
 ];
 
@@ -600,12 +753,40 @@ function cellG(c, i, bad) {
   return g;
 }
 
+function checkPlan(c, g, tag, bad) {
+  var p = releasePlan(g);
+  var why = [];
+  if (c.action && p.action !== c.action) why.push('期望 action=' + c.action + '，实际 ' + p.action);
+  if (typeof c.exit === 'number' && p.exit !== c.exit) why.push('期望出口码 ' + c.exit + '，实际 ' + p.exit);
+  if (c.via && p.via !== c.via) why.push('期望 via=' + c.via + '，实际 ' + p.via);
+  if (typeof c.blocked === 'boolean' && p.blocked !== c.blocked) why.push('期望 blocked=' + c.blocked + '，实际 ' + p.blocked);
+  if (p.exit !== 0 && p.blocked !== true) why.push('出口码非 0 却把 blocked 写成 ' + p.blocked +
+    ' —— CLI 按 exit 拦、调用方按 blocked 拦，两边不同向其中一边永远不响');
+  if (p.exit === 0 && p.action === 'keep') why.push('keep（一个字都没动盘）却退出 0 —— 调用方会把"没交回"读成"已收口"');
+  if (c.noteHas && String(p.note || '').indexOf(c.noteHas) === -1) why.push('话里找不到「' + c.noteHas + '」');
+  if (c.noteBan) {
+    var hb = c.noteBan.filter(function (s) { return String(p.note || '').indexOf(s) >= 0; });
+    if (hb.length) why.push('说了不该说的话：' + hb.join(' / ') + '（那是别的格的形状——"删了别人的条子"就藏在这种句子里）');
+  }
+  if (why.length) bad.push(tag + ' 交回格走岔：' + why.join('；'));
+}
+
+function checkOut(c, tag, bad) {
+  var got = reportLines(classify(cellG(c, -1, [])), c.opts || {});
+  if (JSON.stringify(got) !== JSON.stringify(c.wantLines)) {
+    bad.push(tag + ' 默认出口的句子变了：期望 ' + JSON.stringify(c.wantLines) + '，实际 ' + JSON.stringify(got) +
+      ' —— 起手那一发对每一轮都是这几行字；若这是**有意**改口径，就来这一格同步钉句，别改判据迁就红项');
+  }
+}
+
 function selftest() {
   var bad = [];
   CELLS.forEach(function (c, i) {
     var g = cellG(c, i, bad);
-    var v = classify(g);
     var tag = '第 ' + (i + 1) + ' 格[' + c.tag + ']';
+    if (c.kind === 'plan') { checkPlan(c, g, tag, bad); return; }
+    if (c.kind === 'out') { checkOut(c, tag, bad); return; }
+    var v = classify(g);
     if (v.verdict !== c.verdict) bad.push(tag + ' 期望 verdict=' + c.verdict + '，实际 ' + v.verdict + '（via=' + v.via + '）');
     if (c.via && v.via !== c.via) bad.push(tag + ' 期望 via=' + c.via + '，实际 ' + v.via);
     if (typeof c.exit === 'number' && v.exit !== c.exit) bad.push(tag + ' 期望出口码 ' + c.exit + '，实际 ' + v.exit);
@@ -629,6 +810,7 @@ function selftest() {
   // 通用卫生
   var seen = {};
   CELLS.forEach(function (c) {
+    if (c.kind === 'plan' || c.kind === 'out') return;   // 交回格与出口钉格各自有自己的卫生（checkPlan / checkOut），classify 的尺量不到它们的判据
     var v = classify(cellG(c, -1, []));
     seen[v.verdict] = 1;
     if (typeof v.exit !== 'number') bad.push('verdict=' + v.verdict + ' 没有出口码');
@@ -676,7 +858,9 @@ function selftest() {
     bad.forEach(function (b) { console.log('  [FAIL] ' + b); });
     return 1;
   }
-  console.log('并发判定逐格对照：' + CELLS.length + ' 格，覆盖 verdict 6 种（quiet / other-reading / writing / orphan-dirty / restored-not-writing / unreadable），出口码 0/1/2 分家');
+  console.log('并发判定逐格对照：' + CELLS.filter(function (c) { return !c.kind || c.kind === 'classify'; }).length + ' 格（classify） + ' +
+    CELLS.filter(function (c) { return c.kind === 'plan'; }).length + ' 格（收尾交回 --done） + ' +
+    CELLS.filter(function (c) { return c.kind === 'out'; }).length + ' 格（默认出口逐字节），覆盖 verdict 6 种（quiet / other-reading / writing / orphan-dirty / restored-not-writing / unreadable），出口码 0/1/2 分家');
   console.log('对照格数: ' + CELLS.length);
   console.log('自检：' + CELLS.length + ' / ' + CELLS.length + ' 格通过');
   return 0;
@@ -716,6 +900,17 @@ function reportLines(v, opts) {
 if (require.main === module) {
   if (process.argv.indexOf('--selftest') !== -1) {
     process.exitCode = selftest();
+  } else if (hasFlag('done')) {
+    // 收尾交回（批次 175）：全场唯一动盘的出口。读数走的是 probe() 同一把尺，判据全在 releasePlan 那张表里。
+    var pv = probe({
+      windowMs: argNum('window', 0) ? argNum('window', 0) * 1000 : DEFAULT_WINDOW_MS,
+      session: argStr('session', ''),
+      stampMine: hasFlag('stamp-mine')
+    });
+    var rr = releaseRun({ g: pv.raw });
+    if (hasFlag('json')) console.log(JSON.stringify(rr.json));
+    else if (!hasFlag('quiet')) rr.lines.forEach(function (l) { console.log(l); });
+    process.exitCode = rr.exit;
   } else {
     var v = probe({
       windowMs: argNum('window', 0) ? argNum('window', 0) * 1000 : DEFAULT_WINDOW_MS,
@@ -730,5 +925,6 @@ if (require.main === module) {
 module.exports = {
   classify: classify, probe: probe, selftest: selftest, readStamp: readStamp, parseStamp: parseStamp,
   applyStamp: applyStamp, parsePorcelain: parsePorcelain, reportLines: reportLines,
+  releasePlan: releasePlan, releaseRun: releaseRun,
   buildInputs: buildInputs, DEFAULT_WINDOW_MS: DEFAULT_WINDOW_MS, EXIT: EXIT, CELLS: CELLS
 };
