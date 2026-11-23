@@ -21835,23 +21835,41 @@ SCENARIOS.push({
     var arm = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
       'app.configs=Object.assign({},app.configs,{documentSkipTimeoutMs:1000});' +
+      // 批次 174：站点那句「外部视频…不支持播放」**现在就写在页面上**，而这一节有媒体节点 ——
+      // 新加的那一格结构上不该被走到（残留的那句话可能属于同一文档里另一支媒体，#17 同一族：
+      // 只有「压根拿不到元素」那一形才许由它提前收手）。
+      'if(!document.getElementById("b174-site")){var d174=document.createElement("div");' +
+      'd174.id="b174-site";d174.className="play-status";' +
+      'd174.textContent="非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。";' +
+      'document.getElementById("iframe").appendChild(d174);}' +
       'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
       'app._mediaNoSourceSince=0;app._mediaWaitLogAt=0;window.__b40i=[];' +
       'var p1=app._isActiveMediaPending("completion-check")===true;' +
       'var armed=Number(app._mediaNoSourceSince)||0;' +
       'var p2=app._isActiveMediaPending("ocs-runner-active-job")===true;' +
       'return {p1:p1,p2:p2,armed:armed,armedFresh:armed>0&&(Date.now()-armed)<5000,' +
+      '  hasSite:!!document.getElementById("b174-site"),' +
+      '  siteSaid:(function(){try{var r=app._siteSaysUnplayable(document);return r.state;}catch(e){return "throw";}})(),' +
       '  stillPending:!!app._activeMediaJobPending,holds:app._videoEl===v};})()'
     );
+    check('40-A 前提（批次 174 补）：站点那句话确实长在**这一页**上、而且我们的读取器在真页面里读得到（`said`）—— ' +
+      '这句话不在场，下面那句"提前收手一次都没走"就是空测（§5「注入落盘 ≠ 注入生效」的反面：前提没钉住的红与绿都不算证据）',
+      !!arm && arm.hasSite === true && arm.siteSaid === 'said' && arm.p1 === true && arm.holds === true,
+      JSON.stringify(arm));
     await sleep(400);
     var earlyLogs = await ctx.client.evaluate(
-      '(function(){var n=0;(window.__b40i||[]).forEach(function(m){' +
-      'if(String(m.message||"").indexOf("media has no source")===0)n++;});' +
-      'window.__b40i=[];return n;})()');
+      '(function(){var n=0,u=0;(window.__b40i||[]).forEach(function(m){' +
+      'var s=String(m.message||"");' +
+      'if(s.indexOf("media has no source")===0)n++;' +
+      'if(s.indexOf("media unplayable by site player")===0)u++;});' +
+      'window.__b40i=[];return {n:n,u:u};})()');
     check('40-A：窗口没到就**仍然占住**（首帧慢的视频不能被当成死源扔掉）—— ' +
-      '第 1 次调用把计时武装起来，第 2 次还在窗口内，两条都返回 true、一条放手日志都不许有',
+      '第 1 次调用把计时武装起来，第 2 次还在窗口内，两条都返回 true、一条放手日志都不许有。' +
+      '批次 174 加的第二半：站点那句话在场时也**不许**冒出「media unplayable by site player」—— ' +
+      '那一格只管"页面里压根没有媒体节点"，有 `<video>` 时提前收手就是把还能播的视频判死',
       !!arm && arm.p1 === true && arm.p2 === true && arm.armedFresh === true &&
-      arm.stillPending === true && arm.holds === true && earlyLogs === 0,
+      arm.stillPending === true && arm.holds === true &&
+      !!earlyLogs && earlyLogs.n === 0 && earlyLogs.u === 0,
       JSON.stringify({ arm: arm, earlyLogs: earlyLogs }));
 
     var release = await ctx.client.evaluate(
@@ -21864,9 +21882,11 @@ SCENARIOS.push({
     );
     await sleep(400);
     var relLog = await ctx.client.evaluate(
-      '(function(){var out={n:0,first:null,levels:{}};' +
+      '(function(){var out={n:0,unplayable:0,first:null,levels:{}};' +
       '(window.__b40i||[]).forEach(function(m){' +
-      '  if(String(m.message||"").indexOf("media has no source")===0){' +
+      '  var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.unplayable++;return;}' +
+      '  if(s.indexOf("media has no source")===0){' +
       '    out.n++;out.levels[m.level]=(out.levels[m.level]||0)+1;if(!out.first)out.first=m;}});' +
       'window.__b40i=[];return out;})()');
     check('40-A：超过窗口就**有界放手**（返回 false、pending / 播放标志 / 抓着的元素全部复位，' +
@@ -21875,12 +21895,18 @@ SCENARIOS.push({
       release.playing === false && release.el === false && release.counter === 0,
       JSON.stringify(release));
     check('40-A：放手必须留话（warn 一条，带 readyState / networkState / heldMs / src 和 reason）—— ' +
-      '静默跳过用户的任务点是这个项目不许的事，而且"视频没播成"和"这节压根没视频"得分得开',
-      !!relLog && relLog.n === 1 && relLog.levels && relLog.levels.warn === 1 &&
+      '静默跳过用户的任务点是这个项目不许的事，而且"视频没播成"和"这节压根没视频"得分得开。' +
+      '批次 174 加的两半：这一格的取证现在**捎上站点自己那句话**（`siteText` + `siteQuote`，' +
+      '用户照着「没有源」往网络方向查是错的，站点早就把原因写在页面上了），' +
+      '而到点放手这一族**仍然只由 120 秒那一格说话**（提前收手那一格 0 条 —— 新格是更早的出口，不是旧格的替换品）',
+      !!relLog && relLog.n === 1 && relLog.unplayable === 0 &&
+      relLog.levels && relLog.levels.warn === 1 &&
       !!relLog.first && !!relLog.first.meta &&
       Number(relLog.first.meta.readyState) === 0 && Number(relLog.first.meta.networkState) === 3 &&
       Number(relLog.first.meta.heldMs) >= 1500 && typeof relLog.first.meta.src === 'string' &&
-      String(relLog.first.meta.reason) === 'completion-check',
+      String(relLog.first.meta.reason) === 'completion-check' &&
+      String(relLog.first.meta.siteText) === 'said' &&
+      String(relLog.first.meta.siteQuote).indexOf('外部视频') >= 0,
       JSON.stringify(relLog && relLog.first));
 
     var recover = await ctx.client.evaluate(
@@ -21908,6 +21934,142 @@ SCENARIOS.push({
     check('40-A：放手后这个判据**自己不会重新占住** —— 要再占住必须有人重新登记媒体任务；' +
       '计时留着旧值也不许让它直接返回 true（否则只是把停摆往后推 120 秒，这一节照样翻不过去）',
       !!repeat && repeat.p === false, JSON.stringify(repeat));
+  }
+});
+
+/** ---- 55c. 站点自己写「该视频为外部视频…不支持播放」时不许白等（批次 174 / issue #225）----
+ * 用户报的现场形状（截图在 `notes/field-225-unplayable.md`）：站点把播放器**整块换成一句话**，
+ * 页面里既没有 `<video>` 也没有 `<audio>`。改动前这一发照旧空等满 8 秒，而且只在控制台说一声
+ * （日志环一个字都没有）—— 用户看见的就是「扩展在跑、就是不做这一节、且不说为什么」。
+ *
+ * ⚠️ 为什么集成层九格全绿还要在真浏览器里再跑一遍：集成层的假 DOM 证不到**这三样** ——
+ *    真页面里 `querySelectorAll('video, audio')` 确实为空、真 `body.textContent` 确实读得到站点那句话、
+ *    真 `emitRuntimeLog` 确实发到父窗口（AGENTS §2 #14：不许停在"决定不做"，且要留得回话的日志）。
+ * ⚠️ C 段那一发**故意花满 8 秒**：它是这一族唯一能证「新格不是把整条等待都短路掉了」的对照
+ *    （摘掉新格必须仍由旧格兜住 —— 边界二）。D 段只补「读不出」那一格，因为顶层文档有 body 时
+ *    现场结构性读不出来的只有裸读抛异常/压根没有文档上下文，那两形在页面上造不出来，只能直调。
+ */
+SCENARIOS.push({
+  name: '站点写「外部视频不支持播放」时不再白等且不冒领完成',
+  path: '/media',
+  run: async function (ctx) {
+    var SITE_SENTENCE = '非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。';
+
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}try{app._clearCheckInterval();}catch(e){}' +
+      'app._isPlaying=false;app._activeMediaJobPending=false;app._videoEl=null;' +
+      'app.configs=Object.assign({},app.configs,{enableMedia:true});' +
+      'window.__b174=[];' +
+      'if(!window.__b174Bound){window.__b174Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b174.push(m);});}' +
+      // 现场那一屏：播放器没了，只剩站点自己拼的那句话；平台那枚完成标记仍写着"未完成"
+      'var box=document.getElementById("iframe")||document.body;' +
+      '["omitone-video","omitone-audio"].forEach(function(id){var el=document.getElementById(id);if(el&&el.parentNode)el.parentNode.removeChild(el);});' +
+      'var d=document.createElement("div");d.id="b174-site";d.className="play-status";' +
+      'd.textContent=' + JSON.stringify(SITE_SENTENCE) + ';box.appendChild(d);' +
+      'var f=document.createElement("input");f.type="hidden";f.id="isFinished";f.value="false";box.appendChild(f);' +
+      'var found=null;try{found=app._findMediaInDocument(document);}catch(e){found="throw";}' +
+      'var probe=null;try{probe=app._siteSaysUnplayable(document);}catch(e){probe={state:"throw"};}' +
+      'return {mediaNodes:document.querySelectorAll("video, audio").length,found:typeof found,' +
+      '  inDom:document.body.textContent.indexOf("外部视频")>=0&&document.body.textContent.indexOf("不支持播放")>=0,' +
+      '  mediaOn:app.configs.enableMedia===true,state:probe&&probe.state,hop:probe&&probe.hop,' +
+      '  group:probe&&probe.group,quote:probe&&probe.quote,fin:document.getElementById("isFinished").value};})()'
+    );
+    check('174 夹具自证：这一页被改成**现场那一屏的形状**（真 DOM 里既没有 video 也没有 audio、' +
+      '`_findMediaInDocument` 当场读出 null、站点那句话在 `body.textContent` 里读得回来、读取器给出 `said`）—— ' +
+      '这几样只要有一样不成立，下面"提前收手"就是空测（§5「注入落盘 ≠ 注入生效」：前提没钉住的绿不算绿）',
+      !!shape && shape.mediaNodes === 0 && shape.found === 'object' && shape.inDom === true &&
+      shape.mediaOn === true && shape.state === 'said' && shape.hop === 0 &&
+      String(shape.quote || '').indexOf('该视频为外部视频') >= 0 && shape.fin === 'false',
+      JSON.stringify(shape));
+
+    var early = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;window.__b174=[];' +
+      'var t0=Date.now();' +
+      'var ret=await app._playChaoxingMediaJob({doc:document,name:"外部视频那一节",jobid:"b174"});' +
+      'return {ret:ret,ms:Date.now()-t0,pend:!!app._activeMediaJobPending,playing:!!app._isPlaying,' +
+      '  el:!!app._videoEl,fin:document.getElementById("isFinished").value,' +
+      '  boxes:document.querySelectorAll(".ans-job-finished").length};})()'
+    );
+    await sleep(400);
+    var earlyLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,silent:0,done:0,names:[],first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  out.names.push(s);' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;if(!out.first)out.first=m;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0)out.silent++;' +
+      '  if(s.indexOf("finished")>=0||s.indexOf("completed")>=0||s.indexOf("report")>=0)out.done++;});' +
+      'window.__b174=[];return out;})()');
+    check('174-A：站点说了这句话就**提前收手**（不再空等满 8 秒）且交回 `false` 让本节重新派发 —— ' +
+      '放行那一格必须有名字、有站点原话、有"等了多久"（同 #220 的口径：照抄站点那句话给用户，别自己发明），' +
+      '而 pending / 播放标志 / 抓着的元素都要复位（不清就等于把这一节钉死在"正在等媒体"上）',
+      !!early && early.ret === false && early.ms < 2000 && early.pend === false &&
+      early.playing === false && early.el === false &&
+      !!earlyLogs && earlyLogs.said === 1 && earlyLogs.silent === 0 &&
+      !!earlyLogs.first && String(earlyLogs.first.level) === 'warn' &&
+      String(earlyLogs.first.message) === 'media unplayable by site player' &&
+      !!earlyLogs.first.meta && String(earlyLogs.first.meta.siteText) === 'said' &&
+      String(earlyLogs.first.meta.name) === '外部视频那一节' &&
+      String(earlyLogs.first.meta.quote).indexOf('该视频为外部视频') >= 0 &&
+      Number(earlyLogs.first.meta.hop) === 0 && Number(earlyLogs.first.meta.waitedMs) >= 0 &&
+      Number(earlyLogs.first.meta.waitedMs) < 2000,
+      JSON.stringify({ early: early, logs: earlyLogs }));
+    check('174-A 边界一（只许减少等待，不许标记完成）：这一趟**一个完成写入口都没碰** —— ' +
+      '平台那枚 `#isFinished` 照旧是 `false`、任务盒上没有多出 `.ans-job-finished`、' +
+      '日志环里没有任何 finished/completed/report 字样。「站点说不支持」不是「这一节做完了」，' +
+      '把话说清楚之后仍然要交回派发（反复重派由 `_countTaskIncomplete` 的 4 次 / 24 小时收住）',
+      !!early && early.fin === 'false' && early.boxes === 0 && !!earlyLogs && earlyLogs.done === 0,
+      JSON.stringify({ fin: early && early.fin, boxes: early && early.boxes, names: earlyLogs && earlyLogs.names }));
+
+    // C 段：站点**没说**这句话时照旧花满整窗 —— 新格不许把整条等待短路掉（边界二）
+    var full = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;var d=document.getElementById("b174-site");' +
+      'if(d&&d.parentNode)d.parentNode.removeChild(d);window.__b174=[];' +
+      'var st=app._siteSaysUnplayable(document);' +
+      'var t0=Date.now();' +
+      'var ret=await app._playChaoxingMediaJob({doc:document,name:"没写外部视频的那一节",jobid:"b174c"});' +
+      'return {ret:ret,ms:Date.now()-t0,state:st&&st.state};})()'
+    );
+    await sleep(400);
+    var fullLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,pending:0,first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0){out.pending++;if(!out.first)out.first=m;}});' +
+      'window.__b174=[];return out;})()');
+    check('174-C：站点**没说**这句话时不许由它编出一个"不支持"—— 照旧花满整个窗口（这一发真的要等满 8 秒，' +
+      '它是这一族唯一能证"新格是更早的出口、不是替换品"的对照），放手说的是另一句有名字的话，' +
+      '并且取证里 `siteText` 老实写着 `silent`（= 整条链读得下去而站点没说过）',
+      !!full && full.ret === false && full.state === 'silent' && full.ms >= 7500 &&
+      !!fullLogs && fullLogs.said === 0 && fullLogs.pending === 1 &&
+      !!fullLogs.first && String(fullLogs.first.meta.siteText) === 'silent' &&
+      String(fullLogs.first.meta.name) === '没写外部视频的那一节' &&
+      Number(fullLogs.first.meta.waitedMs) >= 7500,
+      JSON.stringify({ full: full, logs: fullLogs }));
+
+    // D 段：「读不出」单独占一格 —— 现场造不出这形（顶层文档有 body 时只有裸读抛异常才会读不出），故直调
+    var third = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b174=[];' +
+      'app._activeMediaJobPending=true;' +
+      'var r=app._releaseMediaNotFound("读不出的那一节",null,120);' +
+      'return {r:r,pend:!!app._activeMediaJobPending};})()'
+    );
+    await sleep(400);
+    var thirdLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,pending:0,first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0){out.pending++;if(!out.first)out.first=m;}});' +
+      'window.__b174=[];return out;})()');
+    check('174-D：「读不出」不许塌进「站点没说」，更不许冒领「站点说了」—— 三格各有各的名字与读数' +
+      '（`said` / `silent` / `unreadable`），这一格交回读不出时日志照旧要出、pending 照旧要清、' +
+      '返回值照旧是 false（§2 #12：压成两态时"读不出"那一支必然被误划成"已完成"，而且一条日志都不留）',
+      !!third && third.r === false && third.pend === false &&
+      !!thirdLogs && thirdLogs.said === 0 && thirdLogs.pending === 1 &&
+      !!thirdLogs.first && String(thirdLogs.first.meta.siteText) === 'unreadable' &&
+      Number(thirdLogs.first.meta.waitedMs) === 120 && Number(thirdLogs.first.meta.hop) === -1,
+      JSON.stringify({ third: third, logs: thirdLogs }));
   }
 });
 

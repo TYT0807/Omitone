@@ -5661,6 +5661,223 @@ async function testStartStuckSiteClickSelfHeal() {
   logs.length = 0;
 }
 
+/** ---- [22c] 批次 174：站点自己说「这一支放不出来」时别再白等，而且必须说话（会话任务 #24 / issue #225）
+ * 现场取证 `notes/field-225-unplayable.md`：站点遇到**外部视频**时把播放器整块换成一句正文
+ * （「非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频…」），那一族页面里**压根没有 `<video>`**（形状 1）。
+ * 改动前：等满 8 秒 → 只落一句 `console.warn` → 日志环一个字都没有（AGENTS §2 #14「不许停在决定不做」）。
+ * 三条边界各有独立承重的格子：**只许减少等待、不许标记完成**＝㊵（静态扫方法体）＋㊶ 的接线格、
+ * **120 秒那一格原样保留**＝㊶ 的另一半、**认不出交「读不出」单独占一格**＝㉟＋㊀（AGENTS §2 #12）。
+ */
+async function testSiteSaysUnplayable() {
+  console.log('\n[22c] 站点写「外部视频不支持播放」那一格：提前收手、照抄原话、三格不许互塌（批次 174）');
+
+  var media = fs.readFileSync(path.join(ROOT, 'src/page/40-media.js'), 'utf8').replace(/\r\n/g, '\n');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  // 现场那句话照抄取证件（形状 1 的真身），断言里的输入全部**由源码词表拼出来**，只有这一句是现场锚点
+  var SITE_SENTENCE = '非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。';
+
+  // 词组表从源码读回来 —— ⚠️ 不许在测试里另抄一份（改了生产词表而断言照旧 = 假绿，AGENTS §5「断言里出现的每一个数都要说得出它是从哪读回来的」）
+  var tableRaw = (media.match(/_SITE_UNPLAYABLE_GROUPS:\s*\[([\s\S]*?)\n {4}\],/) || [])[1] || '';
+  var table = [];
+  tableRaw.replace(/\[([^\]]*)\]/g, function (_m, inner) {
+    var toks = [];
+    inner.replace(/'([^']*)'/g, function (_q, t) { toks.push(t); return t; });
+    if (toks.length) table.push(toks);
+    return inner;
+  });
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var hitFn = buildFrom(media, '_siteUnplayableHit', {});
+  var saidFn = buildFrom(media, '_siteSaysUnplayable', {});
+  var waitFn = buildFrom(media, '_waitForMediaInDocument', {});
+  var releaseFn = buildFrom(media, '_releaseMediaNotFound', { emitRuntimeLog: say });
+  check('⓪ 四件都能从 40-media.js 原样取出来真跑，站点词组表也读得回来（取不出来时后面每一条都是「没执行」，'
+    + '而「没执行」和「通过」在报告里长得一模一样 —— AGENTS §5「红 0 条的第一嫌疑人是没跑到」）',
+    [hitFn, saidFn, waitFn, releaseFn].every(function (f) { return typeof f === 'function'; }) &&
+    table.length >= 2 && table.every(function (g) { return g.length >= 2 && g[0].length >= 2; }),
+    JSON.stringify({ fns: [typeof hitFn, typeof saidFn, typeof waitFn, typeof releaseFn], table: table }));
+  if (!hitFn || !saidFn || !waitFn || !releaseFn || table.length < 2) return;
+
+  var G1 = table[0], G2 = table[1];
+  var appOf = function () {
+    return { _SITE_UNPLAYABLE_GROUPS: table, _siteUnplayableHit: hitFn, _siteSaysUnplayable: saidFn };
+  };
+  var app = appOf();
+
+  // ㉞ 词组尺：齐全才算、只有一半不算、换措辞走第二组、认不到交空串
+  var r34both = hitFn.call(app, '前言' + G1.join('，') + '后语');
+  var r34half = hitFn.call(app, '只有' + G1[0] + '没有后半句');
+  var r34g2 = hitFn.call(app, G2.join('，'));
+  var r34split = hitFn.call(app, G1[0] + '\n\t ' + G1[1].split('').join(' '));   // 第二个词被拆开 ⇒ 不算（不许猜措辞）
+  var r34site = hitFn.call(app, SITE_SENTENCE);
+  var chromeInTable = table.join('|').toLowerCase().indexOf('chrome') >= 0;
+  check('㉞ 只认站点那两句的**稳定前缀**：两句齐全才命中并点名是哪个词组（站点换措辞时看得出来走的哪一条）、'
+    + '只有一半不算、被拆开的也不算、空串与 null 不算，现场那句原话命中第一组；'
+    + '词表里不许出现浏览器名（chrome／Edge 会随版本换，「外部视频」＋「不支持播放」才是这件事的本体）',
+    r34both === G1.join('+') && r34half === '' && r34g2 === G2.join('+') &&
+    r34split === '' && hitFn.call(app, '') === '' && hitFn.call(app, null) === '' &&
+    r34site === G1.join('+') && chromeInTable === false,
+    JSON.stringify({ both: r34both, half: r34half, g2: r34g2, split: r34split, site: r34site, chrome: chromeInTable }));
+
+  // ㉟ 三格各占一格：said（带原话与词组）／silent（读得下去而没说）／unreadable（压根没读到）
+  var r35said = saidFn.call(app, { body: { textContent: '章节导航 作业 讨论 ' + SITE_SENTENCE } });
+  var r35silent = saidFn.call(app, { body: { textContent: '这一节是普通课件，站点没有说一句不支持。' } });
+  var r35nil = saidFn.call(app, null);
+  var r35nobody = saidFn.call(app, {});
+  var r35boom = saidFn.call(app, {
+    get body() { throw new Error('SecurityError: 跨域'); }
+  });
+  var quoteHasBoth = r35said.quote.indexOf(G1[0]) >= 0 && r35said.quote.indexOf(G1[1]) >= 0;
+  check('㉟ 三格互不塌：`said` 交回词组与站点原话（命中在正文**中段**也算 —— 判的是全文，截断只用于展示，'
+    + '先截断再比对就等于把被砍掉那一截变成断言的盲区 §5）、`silent` 是"整条链读得下去而没这句话"、'
+    + '`null`／没有 body／取 body 抛异常都是 `unreadable`（**不许塌成 silent**，'
+    + '那等于替站点说"我没说过"，下一轮就会拿它当"这一格可以删掉"的依据）',
+    r35said.state === 'said' && r35said.group === G1.join('+') && r35said.hop === 0 && quoteHasBoth &&
+    r35said.quote.length <= 180 && r35silent.state === 'silent' && r35silent.quote === '' &&
+    r35nil.state === 'unreadable' && r35nobody.state === 'unreadable' && r35boom.state === 'unreadable',
+    JSON.stringify({ said: { s: r35said.state, g: r35said.group, hop: r35said.hop, len: r35said.quote.length },
+      silent: r35silent.state, nil: r35nil.state, nobody: r35nobody.state, boom: r35boom.state }));
+
+  // ㊀ 往上爬（标语常在承载播放器那一层的**上一层**）：第 2 层命中要报出 hop；爬到一半抛 = unreadable，不许把已读的 silent 交出去
+  var deepDoc = { body: { textContent: '知识卡片 ' + SITE_SENTENCE } };
+  var midDoc = { body: { textContent: '空壳一层' }, defaultView: { frameElement: { ownerDocument: deepDoc } } };
+  var topDoc = { body: { textContent: '空壳两层' }, defaultView: { frameElement: { ownerDocument: midDoc } } };
+  var r36deep = saidFn.call(app, topDoc);
+  var brokenParent = { body: { textContent: '这一层读得下去，没有那句话' }, defaultView: { get frameElement() { throw new Error('SecurityError'); } } };
+  var r36broken = saidFn.call(app, brokenParent);
+  var upSelf = { body: { textContent: '自指一层' } };
+  upSelf.defaultView = { frameElement: { ownerDocument: upSelf } };
+  var r36self = saidFn.call(app, upSelf);
+  check('㊀ 文档链：第 3 层（hop=2）那句原话读得回来并**报出爬到第几层**（归因用）；'
+    + '而爬到一半裸读抛异常交回的是 `unreadable` 而不是这一层已经读到的 `silent`（半条链不能当整条链说话），'
+    + '`ownerDocument` 自指时当场停住、不许无限爬（停在已读到的那一格）',
+    r36deep.state === 'said' && r36deep.hop === 2 && r36deep.quote.indexOf(G1[0]) >= 0 &&
+    r36broken.state === 'unreadable' && r36self.state === 'silent',
+    JSON.stringify({ deep: { s: r36deep.state, hop: r36deep.hop }, broken: r36broken.state, self: r36self.state }));
+
+  // ㊁ 等元素那一族现在每一轮可以顺手问一句：命中就**提前**交回，没命中照旧花满窗口，没有问句时行为一字不变
+  var W37 = 600;                       // 本段自用的窗口（不是生产那个 8000）：只钉 onTick 这一纸合同
+  var mkWaiter = function (foundAfter, hook) {
+    var host = { __n: 0, _findMediaInDocument: function () { return host.__n++ >= foundAfter ? media35 : null; } };
+    var media35 = { tagName: 'VIDEO' };
+    return { host: host, p: waitFn.call(host, {}, W37, hook) };
+  };
+  var asks = 0, w37a = mkWaiter(999, function () { asks++; return false; });
+  var t37a = Date.now();
+  var v37a = await w37a.p;
+  var spent37a = Date.now() - t37a;
+  var hits = 0, w37b = mkWaiter(999, function () { hits++; return true; });
+  var t37b = Date.now();
+  var v37b = await w37b.p;
+  var spent37b = Date.now() - t37b;
+  var w37c = mkWaiter(999, undefined);
+  var t37c = Date.now();
+  var v37c = await w37c.p;
+  var spent37c = Date.now() - t37c;
+  var asked37d = 0, w37d = mkWaiter(1, function () { asked37d++; return false; });
+  var v37d = await w37d.p;
+  var asked37dAfter = asked37d;
+  check('㊁ `onTick` 只在**拿不到元素**之后问：问出结论立刻提前交回 null（窗口 600 毫秒只花了不到一半，'
+    + '不花满 8 秒那一窗）、没问出来照旧花满窗口才交回 null（且至少问了两发）、'
+    + '不传问句时与改动前逐字同形（旧调用方不许被这次改动牵动）、元素一拿到就交回元素本身并且**之后不再多问一发**',
+    v37a === null && spent37a >= W37 - 20 && asks >= 2 &&
+    v37b === null && hits === 1 && spent37b < W37 / 2 &&
+    v37c === null && spent37c >= W37 - 20 &&
+    v37d && v37d.tagName === 'VIDEO' && asked37dAfter === 1,
+    JSON.stringify({ window: W37, noHit: { v: String(v37a), ms: spent37a, asks: asks },
+      hit: { v: String(v37b), ms: spent37b, hits: hits },
+      noHook: { v: String(v37c), ms: spent37c }, found: { tag: v37d && v37d.tagName, asked: asked37dAfter } }));
+
+  // ㊂ 问句自己炸了不算结论，也不许把"等元素"这条主路弄死（取证助手不许顶掉正事）
+  var threw38 = 0, w38 = mkWaiter(999, function () { threw38++; throw new Error('探针坏了'); });
+  var t38 = Date.now();
+  var v38 = await w38.p;
+  var spent38 = Date.now() - t38;
+  check('㊂ 问句抛异常 ⇒ 这一发只当"没问到"：照旧等到窗口结束、交回 null、后续每一轮还在问（≥2 发）—— '
+    + '一次取证崩掉不许变成"永远等不到结果"（§2 #2），也不许变成"这一拍什么都不说"',
+    v38 === null && spent38 >= 240 && threw38 >= 2,
+    JSON.stringify({ v: String(v38), ms: spent38, threw: threw38 }));
+
+  // ㊳ 三格各一个出口名字，谁都不许冒领谁；放手都要清 pending 并交回 false
+  var host39a = { _activeMediaJobPending: true }, host39b = { _activeMediaJobPending: true };
+  var host39c = { _activeMediaJobPending: true }, host39d = { _activeMediaJobPending: true };
+  var out39said = releaseFn.call(host39a, '外部视频', { state: 'said', quote: SITE_SENTENCE, group: G1.join('+'), hop: 1 }, 180);
+  var out39silent = releaseFn.call(host39b, '没等到', { state: 'silent', hop: 0 }, 8000);
+  var out39nil = releaseFn.call(host39c, '读不出', null, 8000);
+  var out39unread = releaseFn.call(host39d, '读不出2', { state: 'unreadable', hop: -1 }, 8000);
+  var byName = function (n) { return logs.filter(function (m) { return m.message === n; }); };
+  var saidLogs = byName('media unplayable by site player');
+  var notReadyLogs = byName('media not ready, release pending');
+  check('㊳ 放手说话分三格且各占各的名字：`said` → `media unplayable by site player`（照抄站点原话 + 词组 + 层号 + 等了多久），'
+    + '`silent` / `unreadable` / 压根没有读数 → `media not ready, release pending` 并各带自己的 `siteText`'
+    + '（**「读不出」不许塌成「站点没说」**，也不许由「站点没说」冒领「站点说了」那句）；'
+    + '四格一律交回 false 并把 pending 清掉 —— 交回 false 才会重新派发，标完成是平台的事',
+    out39said === false && out39silent === false && out39nil === false && out39unread === false &&
+    [host39a, host39b, host39c, host39d].every(function (h) { return h._activeMediaJobPending === false; }) &&
+    saidLogs.length === 1 && saidLogs[0].level === 'warn' &&
+    String(saidLogs[0].meta.quote).indexOf(G1[0]) >= 0 && saidLogs[0].meta.siteText === 'said' &&
+    Number(saidLogs[0].meta.hop) === 1 && Number(saidLogs[0].meta.waitedMs) === 180 &&
+    notReadyLogs.length === 3 &&
+    String(notReadyLogs[0].meta.siteText) === 'silent' && String(notReadyLogs[1].meta.siteText) === 'unreadable' &&
+    String(notReadyLogs[2].meta.siteText) === 'unreadable',
+    JSON.stringify({ said: saidLogs.length, notReady: notReadyLogs.map(function (m) { return m.meta.siteText; }),
+      pending: [host39a._activeMediaJobPending, host39b._activeMediaJobPending,
+        host39c._activeMediaJobPending, host39d._activeMediaJobPending] }));
+
+  // ㊴ 只许减少等待，不许标记完成（静态格：整个出口里不许出现任何"完成"写入口，也不许碰一次性登记那两族）
+  var relBody = bodyOf(media, '_releaseMediaNotFound');
+  var saidBody = bodyOf(media, '_siteSaysUnplayable');
+  var forbidden = ['isFinished', '_markMediaFinished', '_reportJobCompleted', '_seekTriedKeys', '_seekRevertedKeys', '_detectedMaxRate', 'localStorage'];
+  var foundInRel = forbidden.filter(function (k) { return relBody.indexOf(k) >= 0; });
+  var foundInSaid = forbidden.filter(function (k) { return saidBody.indexOf(k) >= 0; });
+  check('㊴ 边界一（只许减少等待）：新出口与读取器两个方法体里**一个完成写入口都没有**'
+    + '（`isFinished`／上报完成／一次性登记那两族／倍速读数／磁盘存储都在排除名单里）—— '
+    + '「站点说不支持」不是"这一节做完了"，把话说清楚之后仍然要交回派发，反复重派由 `_countTaskIncomplete` 收住',
+    relBody.length > 200 && saidBody.length > 400 && foundInRel.length === 0 && foundInSaid.length === 0,
+    JSON.stringify({ relLen: relBody.length, saidLen: saidBody.length, inRel: foundInRel, inSaid: foundInSaid }));
+
+  // ㊵ 接线（声明覆盖的范围与实际走的分支之间的差不会自己喊出来 —— §2 #18）
+  var playAt = media.indexOf('_playChaoxingMediaJob: async function');
+  var playBody = playAt < 0 ? '' : media.slice(playAt, media.indexOf('\n    },', playAt));
+  var noSourceBody = bodyOf(media, '_isActiveMediaPending');
+  var askAt = playBody.indexOf('this._siteSaysUnplayable(job.doc)');
+  var waitAt = playBody.indexOf('this._waitForMediaInDocument(job.doc');
+  var relAt = playBody.indexOf('this._releaseMediaNotFound(');
+  var oldConsoleAt = playBody.indexOf("chaoxing media not ready");
+  var throttleAt = playBody.indexOf('lastSiteAsk < 1000');   // 问话按 1 秒节流：这一族每 200 毫秒就来一发，不许变成热路径
+  check('㊵ 接线：进门先问一次、等元素每一轮按节流再问、拿不到才走**有名字**的出口（顺序错了就等于新格永远走不到）；'
+    + '旧那句只在控制台的 `chaoxing media not ready` 已经从派发路径上摘掉（日志环必须有记录，§2 #14）；'
+    + '边界二：120 秒有界放手那一格**一个字没删**（`noSourceShape` 与它的 warn 都还在），'
+    + '并且那一格的取证现在捎上站点原话（`siteText` + `siteQuote`）—— 新格是更早的出口，不是旧格的替换品',
+    playBody.length > 800 && askAt > 0 && waitAt > askAt && relAt > waitAt && oldConsoleAt < 0 &&
+    throttleAt > waitAt && /noSourceShape/.test(noSourceBody) &&
+    /media has no source, release pending/.test(noSourceBody) &&
+    /siteText:\s*noSrcSite\.state/.test(noSourceBody) && /siteQuote:\s*noSrcSite\.quote/.test(noSourceBody),
+    JSON.stringify({ playLen: playBody.length, askAt: askAt, waitAt: waitAt, relAt: relAt,
+      oldConsoleAt: oldConsoleAt, throttleAt: throttleAt, noSourceLen: noSourceBody.length }));
+
+  logs.length = 0;
+}
+
 /** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */
 async function testCanonicalMultipleAnswerOrEmpty() {
   console.log('\n[23] 多选答案规范化：认不出来交空串，但连写、乱序、重复这些合法形状一个不许变（批次 98）');
@@ -9890,6 +10107,7 @@ async function main() {
   await testDisplacedStudyPageRescue();
   await testSeekDeferUntilSeekable();
   await testStartStuckSiteClickSelfHeal();
+  await testSiteSaysUnplayable();
   await testCanonicalMultipleAnswerOrEmpty();
   await testPopupQuizLocalComboGroup();
   await testCourseHomeProbeSignals();

@@ -14,10 +14,11 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（67 个）：
+ * 本段的方法（70 个）：
  *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
  *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
  *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
+ *   _siteUnplayableHit、_siteSaysUnplayable、_releaseMediaNotFound、
  *   _courseGuardId、_courseGuardCell、_persistCourseGuard、_courseGuardHit、_noteCourseGuard、
  *   _clearCourseGuard、_sayCourseGuard、_noteCourseGuardRateSkipped、_seekNoDragSource、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
@@ -159,11 +160,19 @@
         // 任务 #157：放手这一刻顺手问一句「页面里有没有别的扩展注入的资源」——
         // 证据跟着放手日志走（foreign / foreignIds），found 时另出一句用户向提醒。
         var noSrcForeign = this._scanForeignExtensionArtifacts(media);
+        // 取证 §三.2：这一格放手说的是「没有源」，而站点常常**早就把真因写在正文里**（「外部视频…不支持播放」），
+        // 用户照着「没有源」往网络/播放器方向查是错的。这里**不改时间、不改出口**（120 秒那一格照旧是兜底），
+        // 只把站点那句原话捎进同一条日志当证据 —— 有 `<video>` 节点时**不许**由它提前收手：
+        // 页面上残留的这句话可能属于同一文档里**另一支**媒体，提前放手等于替用户扔掉一个播得动的任务点。
+        var noSrcDoc = null;
+        try { noSrcDoc = media.ownerDocument; } catch (eNoSrcDoc) { noSrcDoc = null; }
+        var noSrcSite = this._siteSaysUnplayable(noSrcDoc);
         this._mediaNoSourceSince = 0;
         emitRuntimeLog('warn', 'media has no source, release pending', {
           reason: reason || '', readyState: Number(media.readyState),
           networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc,
-          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(','))
+          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(',')),
+          siteText: noSrcSite.state, siteQuote: noSrcSite.quote
         });
         this._noteForeignExtensionHint(noSrcForeign);
         this._clearMediaPendingState('media-no-source');
@@ -363,7 +372,10 @@
     },
 
 
-    _waitForMediaInDocument: function (doc, timeoutMs) {
+    // `onTick`（批次 174 加的第三枚参数）让调用方在**每一轮拿不到元素之后**顺手问一句页面自己说了什么：
+    // 问出结论就立刻交回 null（不花满整个窗口）。它抛了不算结论 —— 只当这一轮没问到，照旧继续等，
+    // 否则一个取证助手能把"等元素"这条主路弄死（§2 #2「挂起比报错贵」的反面：不许因问话而中断正事）。
+    _waitForMediaInDocument: function (doc, timeoutMs, onTick) {
       var self = this;
       return new Promise(function (resolve) {
         var deadline = Date.now() + (timeoutMs || 8000);
@@ -373,6 +385,15 @@
             clearInterval(timer);
             resolve(media);
             return;
+          }
+          if (onTick) {
+            var stop = false;
+            try { stop = !!onTick(); } catch (eTick) { stop = false; }
+            if (stop) {
+              clearInterval(timer);
+              resolve(null);
+              return;
+            }
           }
           if (Date.now() >= deadline) {
             clearInterval(timer);
@@ -524,6 +545,116 @@
     // 照旧走今天那"试拖一次"的路 —— 标语只许**减少**动手，不许由它多出一次动手。
     _siteSaysNoDrag: function (video) {
       try { return this._siteSeekCondition(video).state === 'forbidden'; } catch (e) { return false; }
+    },
+
+
+    // ==== 站点自己写的「这一支放不出来」（批次 174 / 会话任务 #24 · issue #225）====================
+    // 现场取证见 `notes/field-225-unplayable.md`：站点遇到**外部视频**时会把播放器整块换成一句正文 ——
+    //   「非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。」
+    // 这一族页面里**压根没有 `<video>` 节点**（取证里那格叫"形状 1"）。改动前的行为：等满 8 秒 →
+    // 只落一句 `console.warn` → **日志环一个字都没有**，于是用户在现场看见的就是「扩展在跑、
+    // 就是不做这一节、且不说为什么」（AGENTS §2 #14「不许停在决定不做」那一族）。
+    // ⚠️ 匹配串只取站点那两句的**稳定前缀**（整句照抄会随措辞失效），认不到一律交空串，**绝不猜**（§2 #18）。
+    // ⚠️ 这一族**只许减少等待**：命中就提前走一格有名字的出口，永远不许由它标记完成（`#isFinished` 仍由平台说话），
+    //    也不许顶掉 120 秒有界放手那一格（它是这一格读不出时的兜底，反向验证要各摘一刀）。
+    // ⚠️ 词表里没有「chrome」：站点那句话的浏览器名会随版本变（chrome / Edge / 内核），
+    //    而「外部视频」＋「不支持播放」这两个词是那件事的**本体**。
+    _SITE_UNPLAYABLE_GROUPS: [
+      ['外部视频', '不支持播放'],
+      ['浏览器版本不支持', '播放']
+    ],
+
+
+    // 命中返回**是哪一个词组**（站点换措辞时能看出走的是哪一条），认不到返回空串。
+    _siteUnplayableHit: function (text) {
+      var s = '';
+      try { s = String(text || '').replace(/\s+/g, ' '); } catch (eNorm) { return ''; }
+      if (!s) return '';
+      var groups = this._SITE_UNPLAYABLE_GROUPS || [];
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (!g || !g.length) continue;
+        var ok = true;
+        for (var j = 0; j < g.length; j++) {
+          if (s.indexOf(g[j]) < 0) { ok = false; break; }
+        }
+        if (ok) return g.join('+');
+      }
+      return '';
+    },
+
+
+    // 返回 `{ state: said | silent | unreadable, quote, group, hop }`，三格各占一格（AGENTS §2 #12）：
+    //   `said`       = 读到了站点那句原话（唯一算证据的一格）
+    //   `silent`     = 整条文档链都读得下去，而里面没这句话
+    //   `unreadable` = 压根没读到正文（没有文档、取 body 抛、爬到一半抛）
+    // ⚠️ 后两格**不许互塌**：把"读不出"说成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据；
+    //    把"站点没说"说成"读不出"，则是白留一条永远查不清的日志。
+    // 走法与 `_readSiteSeekCondition` 同一族：从媒体所在文档**往上爬 ≤4 层**（`contains()` 不跨文档，
+    // 所以上一层要拿去继续的是那枚 iframe），每一步裸读全部包 try（§2 #1：跨域 SecurityError 会静默打断整轮 tick）。
+    _siteSaysUnplayable: function (doc) {
+      var res = { state: 'unreadable', quote: '', group: '', hop: -1 };
+      var sawBody = false;
+      var cur = null;
+      try { cur = doc || null; } catch (eTop) { return res; }
+      for (var hop = 0; hop <= 4 && cur; hop++) {
+        res.hop = hop;
+        var body = null;
+        try { body = cur.body || (cur.document ? cur.document.body : null); } catch (eBody) { return res; }
+        if (body) {
+          var text = '';
+          try { text = String(body.textContent || ''); } catch (eText) { return res; }
+          var group = this._siteUnplayableHit(text);
+          if (group) {
+            var first = group.split('+')[0] || '';
+            var at = first ? text.indexOf(first) : -1;
+            var from = at > 40 ? at - 40 : 0;
+            res.state = 'said';
+            res.group = group;
+            res.quote = text.slice(from, from + 180).trim();   // 截断只用于展示，命中判的是全文（§5「加工过的证据就是断言的盲区」）
+            return res;
+          }
+          sawBody = true;   // 这一层读得下去、且没有这句话
+        }
+        var frame = null;
+        try { frame = cur.defaultView ? cur.defaultView.frameElement : null; } catch (eFrame) { return res; }
+        if (!frame) break;        // 到顶了
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eUp) { return res; }
+        if (!up || up === cur) break;
+        cur = up;
+      }
+      // ⚠️ 只有**整条链都读下去了**才许说 `silent`；中途任何一下裸读抛异常都停在上面的 `return res` 上，
+      //    那一格就是 `unreadable` —— 把"读不出"塌成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据（§2 #12）。
+      res.state = sawBody ? 'silent' : 'unreadable';
+      return res;
+    },
+
+
+    // 形状 1 放手这一刻**必须说话**，而且三个出口谁都不许塌进谁（AGENTS §2 #14 + §2 #12）：
+    //   `said`       → `media unplayable by site player`，照抄站点原话（用户照着查的方向才是对的）
+    //   `silent`     → `media not ready, release pending` + `siteText:'silent'`（就是没等到元素）
+    //   `unreadable` → `media not ready, release pending` + `siteText:'unreadable'`（连正文都没读到）
+    // ⚠️ 三格**只改说的方式，不改做的边界**：一律交回 false 让本节重新派发，进度仍由平台 `#isFinished`
+    //    说话，反复重派由 `_countTaskIncomplete`（进度快照恒等 → 4 次就放弃 24 小时）收住。
+    _releaseMediaNotFound: function (jobName, site, waitedMs) {
+      var state = (site && site.state) || 'unreadable';
+      var hop = (site && site.hop >= 0) ? Number(site.hop) : -1;
+      var ms = Number(waitedMs) || 0;
+      this._activeMediaJobPending = false;
+      if (state === 'said') {
+        emitRuntimeLog('warn', 'media unplayable by site player', {
+          name: String(jobName || ''), siteText: 'said',
+          quote: String((site && site.quote) || '').slice(0, 180),
+          group: String((site && site.group) || ''), hop: hop, waitedMs: ms
+        });
+        return false;
+      }
+      emitRuntimeLog('warn', 'media not ready, release pending', {
+        name: String(jobName || ''), siteText: state === 'silent' ? 'silent' : 'unreadable',
+        hop: hop, waitedMs: ms
+      });
+      return false;
     },
 
 
@@ -897,9 +1028,24 @@
         return true;
       }
 
+      // 等元素这一族现在**顺手问一句站点自己写了什么**（批次 174 / issue #225）：
+      // 站点把播放器整块换成「外部视频…不支持播放」那一族页面里根本没有 `<video>`，
+      // 改动前照旧花满 8 秒、且只在控制台说一声（日志环一个字都没有）。
+      // ⚠️ 问话**按 1 秒节流**：这一族每 200 毫秒就来一发，`body.textContent`（最多爬 4 层文档）
+      //    不许变成热路径（§2 #17 同一句警告）。命中就提前收 —— 但**只减少等待，不标记完成**。
+      var waitStart = Date.now();
+      var siteSelf = this;
       var video = this._findMediaInDocument(job.doc);
-      if (!video) {
-        video = await this._waitForMediaInDocument(job.doc, 8000);
+      var siteSaid = video ? null : this._siteSaysUnplayable(job.doc);
+      var lastSiteAsk = Date.now();
+      if (!video && (!siteSaid || siteSaid.state !== 'said')) {
+        video = await this._waitForMediaInDocument(job.doc, 8000, function () {
+          var now = Date.now();
+          if (now - lastSiteAsk < 1000) return false;
+          lastSiteAsk = now;
+          siteSaid = siteSelf._siteSaysUnplayable(job.doc);
+          return !!siteSaid && siteSaid.state === 'said';
+        });
       }
 
       if (video) {
@@ -909,9 +1055,7 @@
       }
 
       if (!video) {
-        this._activeMediaJobPending = false;
-        console.warn('[Omitone] chaoxing media not ready:', job.name);
-        return false;
+        return this._releaseMediaNotFound(job.name, siteSaid, Date.now() - waitStart);
       }
 
       var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
