@@ -3383,6 +3383,48 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
 - **门面**：不用补（本轮动的是 `AGENTS.md` 的登记工序与两本台账，代码与用户可见行为一个字没改）
 - 本轮**不 push、不 `npm run build`、不发预览包、不动线上附件** —— 用户口径照旧（本地提交为止）。
 
+### 批次 187 · 2026-11-24 · 探针说"顶层帧覆盖到了全部"，从此要拿分母读回来（队列 #69）
+
+**这一轮做了什么**：把两份指针探针里那句**从空分母推出来的肯定话**拆成多格读数，并把判据立进技能。
+
+- **原话（已改掉）**：`.workbuddy/vp-live-check.expr` 旧 `pwCoverage.meaning` 的 else 分支写的是
+  「现场没有"活在子文档里的播放器"这一格，顶层帧那份监听覆盖到当前所有在播媒体。」
+  17:36 那一发 `playingNow` 是 `[]` —— 一枚在播的媒体都没数到，它却打印了"覆盖到全部"。
+  §2 #12 那一族：**「没找到」与「读不出」都不许写成肯定**。
+- **判据本身**：DOM 事件与 `Node.contains()` 都不跨文档边界 ⇒ 听在顶层帧 `document` 的那把尺
+  **结构上收不到**嵌套 iframe 文档里的 `pointer*`。所以"按下 0 次"能不能当频率证据，
+  只取决于**在播的媒体在哪一枚文档里** —— 这一格现在是一枚读回来的数，不是推论。
+- **六格**（技能 `pointer-watch-read.expr` 的 `mediaCoverage()`）：
+  `playing-in-subdocument` / `frames-unreadable` / `walk-capped` / `no-media-anywhere` /
+  `media-but-none-playing` / `playing-all-in-top-doc` —— **只有最后一格**才配说"顶层帧覆盖到了全部"；
+  `zeroCauses` 新增两格（`media-playing-in-subdocument` / `coverage-not-fully-walked`），
+  `presses === 0` 那句 `meaning` 现在把覆盖面一起说话。
+- **`contentDocument` 返回 `null` 而不是抛**（§2 #1／#11 那一族里没人数的另一半）：
+  老代码只在**抛**时计数，于是"读不出的子帧"被静默跳过，「子帧里没有播放器」正是从这一族空分母长出来的。
+  现在 `walkStops.framesUnreadable` 单独数、单独印。
+- **播放器所在深度不是常数**（现场实测：对端 11-23 22:28 在 `d2`，本轮 11-24 17:36 在 `d1`）
+  ⇒ 规矩里禁止把任何结论写成"播放器在 d 几"，只许说「在不在顶层帧」（`ownerDocument === document`）。
+- **离线验收**：`.workbuddy/reverse-pw-c.js` **共 78 格、红 0 格**（新增格 8 四案 + 反面对照
+  「把空分母当覆盖到了，格 8(c) 必须失守」）；`.workbuddy/reverse-vp-cov.js` **共 17 格、红 0 格** ——
+  它跑的是 `.expr` 原文，断言肯定句 `覆盖到当前所有在播媒体` **只**出现在 `playing-all-in-top-doc` 那一格，
+  并注入旧的两分支形状复现那句假话，收尾自证注入标记没留在盘上。
+- **现场只读复账**（`.workbuddy/field187-pwread.log` / `field187-vpcov.log`）：`__pw` 侧
+  `docsWalked 10 / framesUnreadable 0 / mediaNodes 1 / playing 0` → `media-but-none-playing`；
+  vp 侧 `framesTotal 9 / framesUnreadable 0` → `no-media-playing-anywhere`「读不出（没有可比对象）」——
+  两份此刻都**不再**打印"覆盖到全部"。
+- **落点**：技能 `scripts/expr/pointer-watch-read.expr`（判据真源）+ `references/rules.md` 新增 **R51**
+  与 R50 验收行（61→78 格、两刀→三刀）+ `references/probes.md` 覆盖面那一行；仓库侧 `.workbuddy/` 两份探针
+  （gitignore 区，`pointer-watch-read.expr` 与技能那份只差跑法那一行）。跟踪文件只有这两本台账。
+- **为什么不跑 `npm test` / `npm run e2e`**：本轮**没有一行代码、没有一个构建输入**因它改变
+  （`src/page/` 与 `page.js` 一个字没动，因此不涉及 `npm run concat`）。
+  跑的是 `node tools/audit-md-tables.js`（台账表格卫生）与 `node tools/check.js`。
+  那 2 条红**与本轮无关**、照 §1.05 `orphan-dirty` 口径分开说：① 文档承诺集成 707 而实测 725；
+  ② `content.js` 首行桥戳过期 —— 同因于队列 #71 那批未提交的孤儿半成品；本轮**不并**那两份、
+  **不跑** `npm run concat`、**不改**那两把尺。
+- **现场串行照旧**：`studentstudy` 标签页**恰好一枚**（探针只读，不点、不写配置、不导航）。
+- **门面**：不用补（本轮动的是 gitignore 区的两份探针、技能目录与这两本台账，代码与用户可见行为一个字没改）
+- 本轮**不 push、不 `npm run build`、不发预览包、不动线上附件** —— 用户口径照旧（本地提交为止）。
+
 ---
 
 ## 1.3.0 — 正式版：字体恢复、日志单写入与七轮实战加固（2026-11-01 发布）
