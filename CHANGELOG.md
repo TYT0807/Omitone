@@ -3294,6 +3294,59 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
 - **门面**：不用补（本轮只往闸门与工具侧加第五把尺；门面那句「连续换课最多 30 门、六小时重新起账」量的就是代码里的 6 小时，本来就是句真话，没有一个字要改）
 - 本轮**不 push、不 `npm run build`、不发预览包、不动线上附件** —— 用户口径照旧（本地提交为止）。
 
+### 批次 185 · 2026-11-24 · 指针计数器读出 0，从此先说清是"没人拖"还是"听的人不在了"（队列 #67 · 探针案 C）
+
+**这一轮做了什么**：把「拖动中途浏览器会不会派 `pointercancel`」那一族**案 C 的频率尺**（顶层帧
+`__pw` 指针事件计数器）补成能自己解释 0 的形状 —— 装侧加**换代记账**，读侧把"0"拆成**四格**分开说话，
+并把两份探针与判据**升格进现场排查技能**（`scripts/expr/pointer-watch-install.expr` /
+`pointer-watch-read.expr` + `references/rules.md` **R50** + `probes.md` 常驻件一行）。
+
+- **先量回来的那条根因，与对端的猜测不是同一个**：`__vp`（媒体寿命尺）把监听挂在 **video 节点自己**上，
+  节点换代＝监听器一起消失；而 `__pw` 挂在**顶层帧 `document`** 上，**监听器不会随宠物卡片换代而死** ——
+  会过期的是它**比较用的那枚 host 引用**：`content.js:2808-2812` 每一回 `ensurePagePet()` 都
+  `stale.remove()` 再 `createElement` 一枚**新** div。于是"落在宠物身上 0 次"完全可能是
+  **探针拿着一枚已脱离的旧 div 在比**，而不是没人拖 —— 这一格不补，下一步就会去数 `pointercancel` 的频率，
+  而那份账的分母是错的。
+- **落点（三格各留，不压成一格）**：每一发事件重新 `getElementById` 认 host，换代就
+  `hostGenerations++` 并记一条 `hostGenLog`（带 `fromConnected` / `installStillConnected` / `via`）；
+  分子按代分开累计 `onHostOldGen` / `onHostCurGen` / `onHostEither`，**id 查不到时不许把持有的引用清成
+  `null`**（清了就把"卡片暂时不在"读成"从来没出现过"）；历史结论只读**永不清理的累加器**，
+  `log` 上限 40 条只配打印。旧版仪器（装表时没有换代那一格）读回来是字符串 `'(旧仪器未记)'`
+  而不是 0（§2 #12「读不出单独占一格」）。
+- **读侧四格「0 的成因」**：`listener-on-detached-document`（这一页整枚换过）／
+  `legacy-instrument`（仪器比尺子老）／`no-pet-since-install` 与 `host-absent-right-now`（卡片没出现过／
+  这一拍不在）／`no-press-in-top-frame` 与 `pressed-but-never-on-pet`（没人按／按了但没落在宠物上）。
+  边界一并写死在 `meaning` 里：**顶层帧 `document` 听不见 iframe 内的指针事件**（队列 #69 那一族），
+  所以"0 次按下"**永远不等于**「浏览器不派 `cancel`」。
+- **顺手排掉一个"结构上永远 0"的怀疑**：宿主 `#omitone-page-pet-host` 自己带 `pointer-events:none`
+  （`content.js:2819`），而真正挨打的是 `.pet`（`content.js:2851` 是 `auto`）—— 命中的是子元素，
+  **祖先链照旧带着 host**，所以按 `composedPath()` 认这一族是成立的，不是天生空转。
+- **反向验证 `node .workbuddy/reverse-pw-c.js`：离线 61 格、红 0 格**（假 DOM 复刻 remove + createElement
+  那一手，两代之间实测 `onHostOldGen:2` 对 `onHostEither:4` —— 只留当前代就是**差一倍的系统性低计**，
+  这一比直接钉进断言）。两刀反向对照各红各的：摘掉跨代累计 → 换代那一格失守；把 `resolve` 写成
+  "取不到就清引用" → 卡片暂时不在那一格失守。
+  - ⚠️ 首跑 6 条红里**只有 1 条是仪器的**（`hostGenerations===0` 那一支仍把 `cancel` 数当频率证据 ——
+    补了专用分格，宠物那一格在那里明写"读不出"）；其余 5 条是**我自己台的预期拍错了**
+    （`indexOf` 拿全等去比对带括号的字符串、格 2 数事件时忘了装表前那两发、格 3 前提写反、格 4 是一条空断言）——
+    按 AGENTS 一律改预期与台的形状，**没动尺**。
+  - ⚠️ 另一条测试台卫生：删掉变量声明却留下 `void 那变量;`，`ReferenceError` 把整个台在半路顶死
+    （§5「红 0 条的第一嫌疑人是根本没跑到」在一次性脚本里的同形版）。
+- **现场读数（只读，不点、不写配置、不导航）**：上一轮的旧表在**两节之间导航后**读回 `absent` ——
+  那正是①那一格的实例；换代记账那一版重新装表后 `shapeAtInstall.hostGenerations:1`、
+  `installNodeConnected:true`、`hostShadowRootOpen:true`，读回 `instrument:"with-generation-accounting"`、
+  `docSameObject:true`、各计数 0、`zeroCauses:["no-press-in-top-frame"]`。
+  **所以本轮仍不出频率结论** —— 要它，得先在真人手上攒出 `presses > 0`。
+- **为什么不跑 `npm test` / `npm run e2e`**：本轮**没有一个被跟踪的仓库代码文件**因它改变行为 ——
+  两份探针与离线台在 gitignore 区（`.workbuddy/`），判据落在**技能目录**（仓库之外，没有任何闸门扫它）；
+  跟踪侧只动本文件与 `HANDOVER.md`。跑的是 `node tools/audit-md-tables.js`（台账表格卫生）与
+  `node tools/check.js`（确认本轮**没新增**红项）。
+  `check.js` 那 2 条红**与本轮无关**、照 §1.05 `orphan-dirty` 口径如实分开说：① 文档承诺集成 707 而实测 725；
+  ② `content.js` 首行桥戳过期 —— 同因于队列 #71 那批**未提交的孤儿半成品**（脏 17.7 小时，非活跃写入者）。
+  本轮**不并**那两份、**不跑** `npm run concat`（构建输入脏着，那会把别人的半成品烘进 `page.js`）、**不起** e2e。
+- **现场串行照旧**：`studentstudy` 标签页**恰好一枚**。
+- **门面**：不用补（本轮动的是 gitignore 区的探针、技能目录与两本台账；对用户可见的行为一个字没改，预览说明那两句讲的是既有能力）
+- 本轮**不 push、不 `npm run build`、不发预览包、不动线上附件** —— 用户口径照旧（本地提交为止）。
+
 ---
 
 ## 1.3.0 — 正式版：字体恢复、日志单写入与七轮实战加固（2026-11-01 发布）
