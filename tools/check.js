@@ -4096,6 +4096,198 @@ function checkSwitchBudgetClaim() {
     new Set(freal.claims.map(function (c) { return c.file; })).size + ' 份；含 ' + FCASES.length +
     ' 格夹具对照（其中 ' + FCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）' +
     ' + 1 格掩码形状自证；工具自带 ' + fxSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第五把尺**：换课起账窗口那句「六小时重新起账」（会话任务 #226 / 队列 #65）----
+  //   同一族漂移第五次：批次 85/86 换课上限、批次 146/150 倍速问价、批次 157 弹题问价、批次 168 夹具页数、这一族。
+  //   立尺前量回来的底（2026-11-23）：代码真源 `src/page/64-tasks-loop.js` 的 `N * 3600 * 1000` 是 6，
+  //   而对用户说话的那 9 处散在 4 份文档里**全是手抄**（README 1 / 说明书 2 / Release 页 2 / HANDOVER 4），
+  //   没有一把尺对着真源比过 —— 与上一族同样的形状：改了行为而文档没改，一条测试都不会红，只有照文档理解现场的人被引偏。
+  //   ⚠️ 这一族的**第二半比前四把贵**：真源那行的旁边就是运行时写给用户的那句原话
+  //       （「…要么等六小时换课名单重新起账再试」），所以除文档以外还把**那句原话与常数钉成同一个数** ——
+  //       常量改了而日志没说，用户对"被退回的课还要等多久"听到的就是一个假窗口，而文档对账照样全绿。
+  //   **仍然不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  var W_SELF_MIN_CELLS = 22;
+  var wa, waSrc;
+  try {
+    wa = require('./audit-recount-window-claims.js');
+  } catch (w1) {
+    fail('换课起账窗口对账加载失败：' + String((w1 && w1.message) || w1) +
+      '\n      真源是 tools/audit-recount-window-claims.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  // 五把尺共用**同一份**掩码：五路各写一份，"围栏／注释／script 里用户看不见"这个口径就会静默分叉（第 31 项同一族）。
+  if (wa.maskInvisible !== audit.maskInvisible || wa.maskInvisible !== rate.maskInvisible
+    || wa.maskInvisible !== quiz.maskInvisible || wa.maskInvisible !== fx.maskInvisible) {
+    fail('起账窗口与前四把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '五处各一份，改一处另一处会静默过期 —— 掩码函数只许有一份真源');
+    return;
+  }
+  try {
+    waSrc = wa.recountFromSource();
+  } catch (w2) {
+    fail('起账窗口对账读不出代码真源：' + String((w2 && w2.message) || w2) +
+      '\n      真源是 ' + wa.SOURCE + ' 里「`Number(ledger.at …)` 比 `N * 3600 * 1000`」那一行，' +
+      '以及紧挨着它的那句对用户说的原话；那一行换成裸毫秒也要连这条闸一起改');
+    return;
+  }
+  var wclean = wa.cleanFixture();
+  var WCASES = [
+    { name: '干净夹具（七句真形状 + 跳过名单／更新检查／TTL／探针问价／换课上限五族诱饵都不算）', files: wclean, problems: 0, claims: 7 },
+    {
+      name: '文档凡是退成「两小时」的那几处全部红，且只有它们红（预期按"谁被改"写，不写死条数）',
+      files: wa.mutate(wclean, '六小时内只进一次', '两小时内只进一次'),
+      problems: 2, needle: '不一致'
+    },
+    {
+      name: 'README 那一处改成「八小时」要红，并只点名 README.md',
+      files: wa.mutate(wclean, '、六小时重新起账', '、八小时重新起账'),
+      problems: 1, needle: 'README.md'
+    },
+    {
+      name: '整套文档一句都不提时要响（防正则失效，不许打印"没有东西要核"式全绿）',
+      files: { 'README.md': '这里不提窗口。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到小时数要响，且不许"只比文档"',
+      files: wclean, hoursOverride: 0, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照：真句子形状（README 的 24 小时跳过名单 + 更新检查那两档；AGENTS 的 TTL 与"跨 30 分钟重新起账"）
+      name: '「24 小时跳过名单」「手动 6 小时一次自动 24 小时一次」「TTL（6 小时）」「跨 30 分钟…重新起账」都不许当起账窗口',
+      xfamily: true,
+      files: {
+        'README.md': '- 反复做不完的任务点记入 **24 小时跳过名单**。\n- 自动更新检查每 24 小时一次，手动每 6 小时一次。\n',
+        'HANDOVER.md': '- 检查更新那一发隔 6 小时不算承诺；TTL（6 小时）到点允许再问一枚。\n'
+      },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var wbad = [];
+  WCASES.forEach(function (t) {
+    var res;
+    try {
+      res = wa.audit({
+        docs: t.files,
+        // 对照表用**夹具自己那份常数**（夹具句子与它自洽），真文档那一轮才用盘上的真读数 ——
+        // 否则夹具里加一句，这张表会整张变成"预期红几条"对不上，而红的是尺自己。
+        hours: ('hoursOverride' in t) ? t.hoursOverride : wa.CLEAN_HOURS
+      });
+    } catch (w3) {
+      wbad.push(t.name + '：审计本身抛了 ' + String((w3 && w3.message) || w3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      wbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      wbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      wbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  // ⚠️ 这两格必须用 **ASCII 数字**写：checkMaskShape 只测 `/[0-9]/`，写成「六小时」它压根没有数字可查，
+  //    于是"掩码没生效"也照样绿 —— 那是一格空守卫（§5「接线类判据的锚点要紧到会红」同族）。
+  // 第 4 个实参是**允许留数字的那一行行号**（可见正文那一行），不是"预期几条"：
+  // 这一段全在围栏里，所以传 -1 —— 一旦围栏没被挖干净，数字会当场把它点名。
+  checkMaskShape('起账窗口 - 围栏代码块里的错数不算',
+    '正文一句都不提。\n```\n6 小时重新起账\n21600000 毫秒起账\n```\n', false, -1, wbad);
+  checkMaskShape('起账窗口 - HTML 注释与 script 里的错数不算',
+    '<p>6 小时重新起账</p>\n<!-- 6 小时重新起账 -->\n<script>x="6 小时起账";</script>\n', true, 0, wbad);
+  // ⚠️ 上面两格只查"掩码把数字挖没挖掉"，那是尺的**卫生**。真正承重的是下面四格：它们问的是
+  //   "围栏／注释里那枚错数会不会被当成一句用户承诺"，并且**每道防误报的闸各配一格摘掉它当场就会红的对照**
+  //   （§2 #9 那一族 —— 只有"整段全绿"的对照，量不到掩码这一手究竟有没有在挡东西）。
+  var wbase = wa.audit({ docs: wclean, hours: wa.CLEAN_HOURS });
+  function withTail(file, tail) {
+    var clone = {};
+    Object.keys(wclean).forEach(function (k) { clone[k] = wclean[k]; });
+    clone[file] = wclean[file] + tail;
+    return wa.audit({ docs: clone, hours: wa.CLEAN_HOURS });
+  }
+  var wFence = [
+    { name: 'markdown 围栏里的「8 小时重新起账」不算承诺（不许把代码块当用户看得见的话）',
+      r: withTail('README.md', '\n```\n8 小时重新起账\n```\n'), claims: wbase.claims.length, problems: wbase.problems.length },
+    { name: '同一枚数字搬到围栏**外面**就要红 —— 摘掉掩码这一手，该红的没红说明它没在承重',
+      r: withTail('README.md', '\n8 小时重新起账\n'), problems: wbase.problems.length + 1, needle: '8 小时' },
+    { name: '说明书里 HTML 注释与 script 里的「8 小时重新起账」不算承诺',
+      r: withTail('docs/manual.html', '\n<!-- 8 小时重新起账 -->\n<script>x("8 小时起账");</script>\n'),
+      claims: wbase.claims.length, problems: wbase.problems.length },
+    { name: '同一枚数字落在说明书**可见正文**里就要红',
+      r: withTail('docs/manual.html', '\n<p>8 小时重新起账</p>\n'), problems: wbase.problems.length + 1, needle: '8 小时' }
+  ];
+  wFence.forEach(function (t) {
+    if (t.r.problems.length !== t.problems) {
+      wbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + t.r.problems.length + ' 条 ' +
+        JSON.stringify(t.r.problems.slice(0, 2)));
+    } else if ('claims' in t && t.r.claims.length !== t.claims) {
+      wbad.push(t.name + '：命中 ' + t.r.claims.length + ' 处（期望 ' + t.claims + ' 处）—— 不等就是围栏被当成正文读了');
+    } else if (t.needle && !t.r.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      wbad.push(t.name + '：报了 ' + t.r.problems.length + ' 条，但没有一条含「' + t.needle + '」');
+    }
+  });
+  if (wbad.length) {
+    fail('起账窗口对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + wbad.join('\n      '));
+    return;
+  }
+  var wdocs = {};
+  var wmissing = [];
+  wa.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) wdocs[f] = fs.readFileSync(p, 'utf8');
+    else wmissing.push(f);
+  });
+  if (wmissing.length) {
+    fail('起账窗口对账有 ' + wmissing.length + ' 份文档没读进来：' + wmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var wreal = wa.audit({ docs: wdocs, hours: waSrc.hours });
+  if (wreal.problems.length) {
+    fail('起账窗口对账有 ' + wreal.problems.length + ' 条要说：\n      ' + wreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成代码里的窗口（' + waSrc.hours + ' 小时，' + wa.SOURCE + ':' + waSrc.line + '），别改判据迁就现状；' +
+      '\n      历史那句要留就照「现数 + 当时是几小时」写，引述旧数不带「小时…重新起账」的形状才出得了界');
+    return;
+  }
+  var wSelfCells = null;
+  var wSelfErr = null;
+  for (var wattempt = 0; wattempt < 2; wattempt++) {
+    var wr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-recount-window-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    wSelfErr = wr.error || null;
+    if (!wr.error || wr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (wr.status !== 0) {
+        wSelfErr = new Error('退出码 ' + wr.status + '，末行=' +
+          JSON.stringify(String(wr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var wmc = String(wr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!wmc) {
+          wSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(wr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else wSelfCells = Number(wmc[1]);
+      }
+      break;
+    }
+  }
+  if (wSelfErr) {
+    fail('起账窗口的逐格对照没跑成或本身是红的：' + String(wSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 ' + wreal.claims.length + ' 处都对上了"就打印通过');
+    return;
+  }
+  if (wSelfCells < W_SELF_MIN_CELLS) {
+    fail('起账窗口的逐格对照只报了 ' + wSelfCells + ' 格（下限 ' + W_SELF_MIN_CELLS + '）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；三格里"真源契约"（裸毫秒要抛并点名行、' +
+      '多处窗口要抛、那句原话与常数不同档要抛）尤其承重 —— 真源读错时整套对账都是空的');
+    return;
+  }
+  pass('换课起账窗口文档对账（代码 ' + wa.SOURCE + ':' + waSrc.line + ' = ' + waSrc.hours +
+    ' 小时，运行时原话「' + waSrc.sentence + '」同数；文档 ' + wreal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(wreal.claims.map(function (c) { return c.file; })).size + ' 份、认不出 ' + wreal.unknown.length +
+    ' 处；含 ' + WCASES.length + ' 格夹具对照（其中 ' +
+    WCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）+ 2 格掩码形状自证 + ' +
+    wFence.length + ' 格围栏／注释对照（其中两格是"摘掉掩码这一手当场就会红"的反面证人）；' +
+    '工具自带 ' + wSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
 }
 
 // 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
