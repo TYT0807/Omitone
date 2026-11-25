@@ -4967,7 +4967,16 @@ function checkChannelGate() {
   if (facade) ledgerCorpus.push({ name: facadeFrom, text: wsOf(facade) });
   var curVer = '';
   try { curVer = String(JSON.parse(read('manifest.json')).version || ''); } catch (eV) { curVer = ''; }
-  ['release-notes-preview.md'].concat(curVer ? ['release-notes-' + curVer + '.md'] : []).forEach(function (f) {
+  // 历史 Release 页也算「用户看得见的那几页」：转正后门面会精简，前几轮引的片段
+  // 迁到 release-notes-<版本>.md 的折叠清单里；只认当前版本的话，一精简就会把
+  // 历史轮次的登记全部判成「取不到」（本意是防门面被偷偷删句，不是逼门面永远留着长清单）。
+  var histNotes = [];
+  try {
+    histNotes = fs.readdirSync(ROOT).filter(function (f) {
+      return /^release-notes-1\.\d+\.\d+\.md$/.test(f) && f !== 'release-notes-' + curVer + '.md';
+    });
+  } catch (eHist) {}
+  ['release-notes-preview.md'].concat(histNotes).concat(curVer ? ['release-notes-' + curVer + '.md'] : []).forEach(function (f) {
     if (!exists(f)) return;
     var t = wsOf(read(f));
     if (t) ledgerCorpus.push({ name: f, text: t });
