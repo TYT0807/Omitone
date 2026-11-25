@@ -8635,6 +8635,21 @@ async function testNinetyAdvanceBoundToSeek() {
   };
   var media = read('src/page/40-media.js');
   var tasks = read('src/page/62-tasks-run.js');
+  var shellSrc = read('src/page/00-shell-constants.js');
+  var popupHtml = read('popup/popup.html');
+  var mergeBody = shellSrc.slice(shellSrc.indexOf('function mergeConfig(config)'), shellSrc.indexOf('function visible(el)'));
+  check('#196 两枚拖拽开关已退役：`mergeConfig` 是唯一口径，把两个旧键强制回 true（老存档的 false 不许再关掉自动策略）',
+    mergeBody.length > 50 && mergeBody.indexOf('merged.enableSeek = true') >= 0 &&
+      mergeBody.indexOf('merged.advanceAtNinetyPercent = true') >= 0,
+    JSON.stringify({ len: mergeBody.length }));
+  check('#196 弹窗不再暴露两枚拖拽开关，联动说明也一起撤掉',
+    popupHtml.indexOf('id="enableSeek"') === -1 && popupHtml.indexOf('id="advanceAtNinetyPercent"') === -1 &&
+      popupHtml.indexOf('seekChainHint') === -1,
+    JSON.stringify({
+      seek: popupHtml.indexOf('id="enableSeek"'),
+      ninety: popupHtml.indexOf('id="advanceAtNinetyPercent"'),
+      hint: popupHtml.indexOf('seekChainHint')
+    }));
 
   var boundsOf = function (src, name) {
     var at = src.indexOf(name + ': function');

@@ -13427,10 +13427,10 @@ SCENARIOS.push({
 
     // 开关**清单**守卫：上面那条 `>= 8` 是弱下限，抓不住"某个开关被误删"。
     // 这里逐个点名 —— 少一个就红。**新增开关时要同步加进这个列表。**
-    // ⚠️ 批次 138 补进 `advanceAtNinetyPercent`：它和 `enableSeek` 现在是一对有先后关系的开关，
-    //    只点名上面那一枚的话，被人摘掉下面那枚（连带那句依赖说明成了孤儿）照样绿。
+    // ⚠️ #196（1.3.2 预览线）：`enableSeek` / `advanceAtNinetyPercent` 已退役，从清单移除；
+    //    下面另有 `retiredSeekUi` 一条要求弹窗里**没有**这两枚。
     var wantToggleIds = ['enableQuiz', 'randomAnswer', 'enableCaptcha', 'enableDiscussion',
-                         'autoNext', 'restudy', 'muted', 'enableSeek', 'advanceAtNinetyPercent'];
+                         'autoNext', 'restudy', 'muted'];
     var uiToggles = await ctx.client.evaluate(
       '(function(){var ids=' + JSON.stringify(wantToggleIds) + ';var miss=[];' +
       'for(var i=0;i<ids.length;i++){if(!document.getElementById(ids[i])) miss.push(ids[i]);}' +
@@ -13454,98 +13454,15 @@ SCENARIOS.push({
     check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
       a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
 
-    // ---- 批次 138（会话任务 #185）：这两枚开关有先后关系，界面上要当场说出口 ----
-    // 为什么必须从**点击**走：那句说明的全部价值在于"用户真动了开关它跟着改口"。
-    // 手搓 innerHTML 只能证明函数存在，证不了 setter 里那两条接线；只测点击又证不了
-    // `load()` 尾部那一发 —— 少了它，重开弹窗看到的是出厂那句旧话（AGENTS §5「谁在读这一栏」）。
-    // ⚠️ 存储整轮共用：两格每步都先钉成想要的形状再读，收尾**原样交回**（原本没写过就删掉）。
-    var SEEK_CHAIN_KEYS = ['enableSeek', 'advanceAtNinetyPercent'];
-    var seekSaved = await ctx.client.evaluate(
-      '(function(){return new Promise(function(res){chrome.storage.local.get("config",function(r){' +
-      'var c=(r&&r.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
-      '.forEach(function(k){o[k]=(k in c)?c[k]:null;});res(o);});});})()');
-    // 钉存储 → 走 popup 自己的 load() → 读回说明与两枚开关的无障碍状态。
-    function seekPinAndLoad(pin) {
-      var src = '(function(){return new Promise(function(res){' +
-        'var pin=' + JSON.stringify(pin) + ';' +
-        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
-        'Object.keys(pin).forEach(function(k){if(pin[k]===null)delete c[k];else c[k]=pin[k];});' +
-        'chrome.storage.local.set({config:c},function(){' +
-        'var done=function(o){try{res(o);}catch(e){res({error:String(e&&e.message)});}};' +
-        'Promise.resolve(load()).then(function(){' +
-        'var h=document.getElementById("seekChainHint");' +
-        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
-        'done({hint:h?String(h.textContent):null,hintHtml:h?String(h.innerHTML):null,' +
-        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null});' +
-        '},function(e){done({error:String(e&&e.message)});});' +
-        '});});});})()';
-      new Function('return ' + src);
-      return src;
-    }
-    // 真点那一枚开关（经 popup 自己的 click → setter → saveToggleConfig 那条链）
-    function seekClick(id) {
-      var src = '(function(){return new Promise(function(res){' +
-        'var id=' + JSON.stringify(id) + ';' +
-        'var el=document.getElementById(id);' +
-        'if(!el){res({missing:id});return;}' +
-        'el.click();' +
-        'setTimeout(function(){' +
-        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
-        'var h=document.getElementById("seekChainHint");' +
-        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
-        'res({hint:h?String(h.textContent):null,' +
-        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null,' +
-        'storedSeek:c.enableSeek,storedNinety:c.advanceAtNinetyPercent});});},700);});})()';
-      new Function('return ' + src);
-      return src;
-    }
-    var bothOn = await ctx.client.evaluate(seekPinAndLoad({ enableSeek: true, advanceAtNinetyPercent: true }));
-    check('说明元素与两枚开关都在，且 load() 之后两枚都亮着（采集器先自证，否则下面读的全是 null）',
-      !bothOn.error && bothOn.hint !== null && bothOn.seekAria === 'true' && bothOn.ninetyAria === 'true',
-      JSON.stringify(bothOn));
-    check('两枚都开着时，说明把**判据本身**讲出来：三条来源都点名（站点写的「不可拖拽」、真被弹回两次、' +
-      '同一门课认过一回），且不谎称"不会生效"',
-      /三个各自独立的来源/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
-      /同一门课里已经认过一回/.test(bothOn.hint) &&
-      /不可拖拽/.test(bothOn.hint) && /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
-    var offSeek = await ctx.client.evaluate(seekClick('enableSeek'));
-    check('点掉上面那枚，那句**当场改口**：动手试那一路没了，只剩站点标语与同一门课那一本账' +
-      '（不再谎称"现在不会生效"），并指回该打开哪一枚',
-      /只剩两个来源/.test(offSeek.hint) && /不可拖拽/.test(offSeek.hint) &&
-      /同一门课里已经认过一回/.test(offSeek.hint) &&
-      /把上面那枚打开/.test(offSeek.hint) && /现在不会生效/.test(offSeek.hint) === false &&
-      offSeek.seekAria === 'false' && offSeek.ninetyAria === 'true', JSON.stringify(offSeek));
-    check('反向不许写：点掉「直接拖到结尾」时，`advanceAtNinetyPercent` 存储照旧是 true' +
-      '（悄悄替用户关掉另一枚=把他下次打开时的选择也换掉了）',
-      offSeek.storedSeek === false && offSeek.storedNinety === true,
-      JSON.stringify({ s: offSeek.storedSeek, n: offSeek.storedNinety }));
-    var onSeek = await ctx.client.evaluate(seekClick('enableSeek'));
-    check('再点回来那句立刻回到判据本身（两个方向都刷新，不是只在关的时候改一次口）',
-      /三个各自独立的来源/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
-      onSeek.seekAria === 'true', JSON.stringify(onSeek));
-    var offNinety = await ctx.client.evaluate(seekClick('advanceAtNinetyPercent'));
-    check('是用户自己关掉「90% 提前收尾」时，那句改成讲后果、**不再劝他打开上面那枚**',
-      /原速播完整支/.test(offNinety.hint) && /不会生效/.test(offNinety.hint) === false &&
-      /这一枚已关闭/.test(offNinety.hint) && /只剩两个来源/.test(offNinety.hint) === false &&
-      /三个各自独立的来源/.test(offNinety.hint) === false &&
-      offNinety.ninetyAria === 'false' && offNinety.storedSeek === true, JSON.stringify(offNinety));
-    var loadOnly = await ctx.client.evaluate(
-      seekPinAndLoad({ enableSeek: false, advanceAtNinetyPercent: true }));
-    check('只走 load() 那一路（一次都不点）也要说真话 —— 这一格钉的是 `load()` 尾部那一发，' +
-      '少了它重开弹窗看到的是出厂那句旧话，而 setter 路径测不到',
-      /只剩两个来源/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
-      loadOnly.ninetyAria === 'true', JSON.stringify(loadOnly));
-    // 收尾：两格原样交回（原本没写过的删掉，让后面的场景读到"从没写过"那一支）
-    var seekBack = await ctx.client.evaluate(
-      '(function(){return new Promise(function(res){var want=' + JSON.stringify(seekSaved) + ';' +
-      'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
-      'Object.keys(want).forEach(function(k){if(want[k]===null)delete c[k];else c[k]=want[k];});' +
-      'chrome.storage.local.set({config:c},function(){chrome.storage.local.get("config",function(q){' +
-      'var s=(q&&q.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
-      '.forEach(function(k){o[k]=(k in s)?s[k]:null;});res(o);});});});});})()');
-    check('收尾把这两格原样交回（脏存储会毒化后面的场景，而日志说不清是谁改的）',
-      JSON.stringify(seekBack) === JSON.stringify(seekSaved),
-      JSON.stringify({ back: seekBack, saved: seekSaved }));
+    // ---- #196：两枚拖拽开关已退役（1.3.2 预览线）----
+    var retiredSeekUi = await ctx.client.evaluate(
+      '(function(){return {seek:!!document.getElementById("enableSeek"),' +
+      'ninety:!!document.getElementById("advanceAtNinetyPercent"),' +
+      'hint:!!document.getElementById("seekChainHint")};})()'
+    );
+    check('两枚拖拽开关已退役：弹窗里没有这两个开关，也没有那条联动说明',
+      retiredSeekUi.seek === false && retiredSeekUi.ninety === false && retiredSeekUi.hint === false,
+      JSON.stringify(retiredSeekUi));
 
     // 运行状态指示：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——
     // 打开后完全看不出是不是已开启。这里不只查「有没有这个元素」，

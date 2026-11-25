@@ -147,11 +147,9 @@
     // 主内容区被换成跨域页面（验证码/反作弊）且持续 20 秒无法访问时自动刷新恢复（3 分钟冷却）
     blockedReload: true,
     enableMedia: true,
+    // #196：两枚拖拽开关已退役（界面不再暴露）。默认值只为「读到的配置项必须有默认值」的接线闸保留；
+    // mergeConfig 会把它们强制回 true，老存档里的 false 不生效。
     enableSeek: true,
-    // 防拖拽 + 倍速锁 1x 的视频：老师要求的只是「观看时长 ≥ 总时长的 90%」，
-    // 拖不动、也加不了速，最后那 10% 纯粹是白等。
-    // 这类视频在**平台自己标记任务点已完成**之后立刻进下一个（判据见 _isNinetyPercentVideo）。
-    // 关键安全阀：只认平台给出的完成标记，不靠"播够 90% 就自己认定完成"。
     advanceAtNinetyPercent: true,
     enablePPT: true,
     enableHyperlink: true,
@@ -264,7 +262,12 @@
   function mergeConfig(config) {
     var nextConfig = Object.assign({}, config || {});
     delete nextConfig.forceLearn;
-    return Object.assign({}, DEFAULT_CONFIG, nextConfig);
+    var merged = Object.assign({}, DEFAULT_CONFIG, nextConfig);
+    // #196（2026-11-25）：两枚拖拽开关已退役 —— 界面不再暴露，运行时恒 true。
+    // 老存档里存的 false 在这里被忽略；这两行是唯一的口径，别在消费点再写第二份。
+    merged.enableSeek = true;
+    merged.advanceAtNinetyPercent = true;
+    return merged;
   }
 
   function visible(el) {

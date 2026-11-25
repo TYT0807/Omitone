@@ -8,8 +8,6 @@ const DEFAULTS = {
   enablePPT: true,
   enableHyperlink: true,
   blockedReload: true,
-  enableSeek: true,
-  advanceAtNinetyPercent: true,
   muted: false,
   autoNext: true,
   autoNextCourse: true,
@@ -88,9 +86,6 @@ const els = {
   enablePPT: $("enablePPT"),
   enableHyperlink: $("enableHyperlink"),
   blockedReload: $("blockedReload"),
-  enableSeek: $("enableSeek"),
-  advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
-  seekChainHint: $("seekChainHint"),
   muted: $("muted"),
   autoNext: $("autoNext"),
   autoNextCourse: $("autoNextCourse"),
@@ -168,8 +163,6 @@ let enableMediaVal = true;
 let enablePPTVal = true;
 let enableHyperlinkVal = true;
 let blockedReloadVal = true;
-let enableSeekVal = true;
-let advanceAtNinetyPercentVal = true;
 let autoNextVal = true;
 let autoNextCourseVal = true;
 let enableQuizVal = true;
@@ -1008,40 +1001,6 @@ async function loadThinkingObserved() {
 }
 
 /**
- * 刷新「防拖拽视频看到 90% 就进下一个」下面那句说明（会话任务 #185，口径随 #193 / 批次 144 更正）。
- *
- * 为什么这句要动态写：判「拖不动」现在有**三条各自独立的来源**（`src/page/40-media.js` 的
- * `_isNinetyPercentVideo` 与 `_shouldAdvanceAtNinetyPercent`）—— ① 站点在那张任务卡上自己写了
- * 「当前视频不可拖拽」（不用动手），② 真试过拖到结尾、被播放器弹回两次（只有「直接拖到结尾」开着才试得出来），
- * ③ **同一门课里已经认过一回**（批次 173，账在 `sessionStorage['omitone:course-guard']`，
- * 刷新那一页不丢、关掉那枚标签页才重新学）。
- * 上面那枚关掉后，来源②拿不到、只剩①③，所以这句以前那句「这一枚现在不会生效」**说过头了**：
- * 站点写了标语时它照样生效。反过来也不能说成"照样生效"—— 站点没写那句话、这一门也没认过时它确实走不到。
- * ⚠️ 两种情形都不许被压成一句含糊话（AGENTS §2 #12），也不许为了凑齐条件去替用户翻开关。
- *
- * ⚠️ 这里**只改说明，不改存储**：绝不为凑齐条件去替用户翻上面那枚开关，也不把他的
- *    `advanceAtNinetyPercent` 写成 false —— 他下次打开「直接拖到结尾」时，自己的选择还在原处。
- */
-function updateSeekChainHint() {
-  if (!els.seekChainHint) return;
-  if (!advanceAtNinetyPercentVal) {
-    els.seekChainHint.innerHTML =
-      '这一枚已关闭：拖不动的视频会<b>原速播完整支</b>（能拖动的照旧直接拖到结尾）。';
-  } else if (!enableSeekVal) {
-    els.seekChainHint.innerHTML =
-      '<b>这一枚现在只剩两个来源</b>：站点在那张卡片上自己写了「当前视频不可拖拽」，'
-      + '或者<b>同一门课里已经认过一回</b>；两样都没有时不会生效，拖不动的视频只能<b>原速播完整支</b>。'
-      + '要省这 10%，把上面那枚打开。';
-  } else {
-    els.seekChainHint.innerHTML =
-      '这一枚靠<b>三个各自独立的来源</b>判断：站点在卡片上写了「当前视频不可拖拽」，'
-      + '或者<b>试过拖到结尾、被弹回两次</b>，或者<b>同一门课里已经认过一回</b>；'
-      + '并且<b>倍速被锁在 1 倍</b>、平台已标记这一节看完时，才在 90% 进下一个。'
-      + '能拖动的视频早就拖到结尾了，用不到它。';
-  }
-}
-
-/**
  * 刷新「思考强度」下面那三行说明。
  *
  * 为什么值得逐场景写：同一句"上限=高"，DeepSeek 是什么思考参数都不发（让它自己定）、
@@ -1088,8 +1047,6 @@ async function saveToggleConfig(showToast = true) {
     enablePPT: enablePPTVal,
     enableHyperlink: enableHyperlinkVal,
     blockedReload: blockedReloadVal,
-    enableSeek: enableSeekVal,
-    advanceAtNinetyPercent: advanceAtNinetyPercentVal,
     muted: mutedVal,
     autoNext: autoNextVal,
     autoNextCourse: autoNextCourseVal,
@@ -1168,8 +1125,6 @@ const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) =>
 const updatePpt = bindToggle(els.enablePPT, () => enablePPTVal, (value) => { enablePPTVal = value; });
 const updateHyperlink = bindToggle(els.enableHyperlink, () => enableHyperlinkVal, (value) => { enableHyperlinkVal = value; });
 const updateBlockedReload = bindToggle(els.blockedReload, () => blockedReloadVal, (value) => { blockedReloadVal = value; });
-const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; updateSeekChainHint(); });
-const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; updateSeekChainHint(); });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
 const updateAutoNextCourse = bindToggle(els.autoNextCourse, () => autoNextCourseVal, (value) => { autoNextCourseVal = value; });
 const updateRandomAnswer = bindToggle(els.randomAnswer, () => randomAnswerVal, (value) => { randomAnswerVal = value; });
@@ -1439,8 +1394,6 @@ async function load() {
   enablePPTVal = config.enablePPT !== false;
   enableHyperlinkVal = config.enableHyperlink !== false;
   blockedReloadVal = config.blockedReload !== false;
-  enableSeekVal = config.enableSeek !== false;
-  advanceAtNinetyPercentVal = config.advanceAtNinetyPercent !== false;
   autoNextVal = config.autoNext !== false;
   autoNextCourseVal = config.autoNextCourse !== false;
   enableQuizVal = config.enableQuiz !== false;
@@ -1457,9 +1410,6 @@ async function load() {
   updatePpt(enablePPTVal);
   updateHyperlink(enableHyperlinkVal);
   updateBlockedReload(blockedReloadVal);
-  updateSeek(enableSeekVal);
-  updateNinety(advanceAtNinetyPercentVal);
-  updateSeekChainHint();  // 上面两行走的是 update，不经过 setter —— 说明要自己刷一次
   updateAutoNext(autoNextVal);
   updateAutoNextCourse(autoNextCourseVal);
   updateQuiz(enableQuizVal);
