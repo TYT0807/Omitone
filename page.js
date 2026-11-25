@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '5298703caa';
+var OMITONE_CODE_REV = '4fad89c01c';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -19279,6 +19279,25 @@ var OMITONE_CODE_REV = '5298703caa';
     },
 
 
+    // #232b · 站点把「这一发被拒了」说在告知层里，而我们以前只把它静默点掉 ——
+    // 日志环里读不到原话，事后只能靠"提交次数在涨、进度不动"反推。两处入口（本函数与
+    // `_handleSubmitConfirmDialog` 的告知层分支）必须共用这一份口径（§2 #18），
+    // 否则早晚会漂成"只有一处说话"。同一句原话 6 秒内只报一次：这一层会连着来好几拍，
+    // 不加这一格就会把日志环冲空（那 200 条里全是同一句「作业提交失败！」）。
+    _noteQuizSubmitAlert: function (text) {
+      try {
+        var clean = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!clean) return false;
+        var last = this._quizAlertNote || null;
+        if (last && last.text === clean && Date.now() - Number(last.at || 0) < 6000) return false;
+        this._quizAlertNote = { text: clean, at: Date.now() };
+        emitRuntimeLog('warn', 'quiz submit alert', { text: clean.slice(0, 200), layer: 'alert' });
+        return true;
+      } catch (eNote) {
+        return false;
+      }
+    },
+
     _dismissQuizSubmitAlerts: function (verify) {
       try {
         var doc = verify.win.ownerDocument;
@@ -19287,6 +19306,7 @@ var OMITONE_CODE_REV = '5298703caa';
           var layer = layers[i];
           if (layer === verify.win || !visible(layer)) continue;
           if (String(layer.innerText || '').indexOf('失败') < 0) continue;
+          this._noteQuizSubmitAlert(layer.innerText);
           var btns = layer.querySelectorAll('a, button');
           for (var j = 0; j < btns.length; j++) {
             if (String(btns[j].textContent || '').trim() === '知道了') {
@@ -19425,6 +19445,7 @@ var OMITONE_CODE_REV = '5298703caa';
       if (!verify && /作业提交失败|提交失败|无效的参数|验证码不正确/.test(textOf(dialog)) &&
           /知道了/.test(textOf(dialog))) {
         this._submitConfirmLastClickAt = now;
+        this._noteQuizSubmitAlert(textOf(dialog));
         try { submitBtn.click(); } catch (eKnow) {}
         return true;
       }

@@ -11439,24 +11439,93 @@ async function testQuizSubmitNeverAccepted() {
   };
   fakeWin.ownerDocument = fakeDocAlerts;
   var dismissFn = buildFrom(domSrc, '_dismissQuizSubmitAlerts', { visible: function (el) { return !!el.__visible; } });
-  dismissFn.call({}, { win: fakeWin, input: fakeInput, img: fakeImg });
+  // #232b · 生产里这两处入口都调 `this._noteQuizSubmitAlert(...)`，所以夹具必须带上**真助手**：
+  // 少这一格就是 `this._noteQuizSubmitAlert is not a function` —— 外层 try 把它吞掉，
+  // H6 会红成「没点到知道了」，报的是被验行为、真相是测试台少给了一样东西。
+  var noteAlertFn = buildFrom(domSrc, '_noteQuizSubmitAlert', { emitRuntimeLog: say });
+  var mkNoteApp = function (extra) {
+    var app = extra || {};
+    app._noteQuizSubmitAlert = function (t) { return noteAlertFn.call(this, t); };
+    return app;
+  };
+  var ALERT_CAP = Number((domSrc.match(/clean\.slice\(0,\s*(\d+)\)/) || [])[1] || 0);
+  var ALERT_DUP_MS = Number((domSrc.match(/Number\(last\.at \|\| 0\) < (\d+)/) || [])[1] || 0);
+  var alertLogs = function () {
+    return logs.filter(function (l) { return l.message === 'quiz submit alert'; });
+  };
+  dismissFn.call(mkNoteApp(), { win: fakeWin, input: fakeInput, img: fakeImg });
   check('232-H6：等码时顺手关掉「作业提交失败/知道了」的旧告警层（验证码窗本身与其他层都不动）',
     knowClicks === 1, JSON.stringify({ clicks: knowClicks }));
-
   var h7Click = 0, h7Pending = 0;
   var h7Btn = { click: function () { h7Click++; } };
   var confirmAlertFn = buildFrom(domSrc, '_handleSubmitConfirmDialog', {
     emitRuntimeLog: say, textOf: function () { return '作业提交失败！ 知道了'; }
   });
-  var h7 = confirmAlertFn.call({
+  var h7 = confirmAlertFn.call(mkNoteApp({
     _submitConfirmLastClickAt: 0,
     _findWorkVerifyWindow: function () { return null; },
     _findDialogButtonByText: function () { return h7Btn; },
     _markQuizSubmitPending: function () { h7Pending++; }
-  }, { id: 'workFailAlert' });
+  }), { id: 'workFailAlert' });
   check('232-H7：失败告知层只收尾、不记成一轮提交（否则三次停滞额度会被空耗，真提交还没发就被判放手）',
     h7 === true && h7Click === 1 && h7Pending === 0,
     JSON.stringify({ ret: h7, click: h7Click, pending: h7Pending }));
+
+  // ---- H8/H9/H10：告知层的**原话**进日志环（#232b：以前只静默点掉，事后无从知道平台说了什么） ----
+  var h8KnowClicks = 0, h8Pending = 0;
+  var h8KnowBtn = { textContent: '知道了', click: function () { h8KnowClicks++; } };
+  var h8AlertApp = mkNoteApp({
+    _submitConfirmLastClickAt: 0,
+    _quizSubmitPending: false,
+    _findWorkVerifyWindow: function () { return null; },
+    _findDialogButtonByText: function () { return h8KnowBtn; },
+    _markQuizSubmitPending: function () { h8Pending++; }
+  });
+  var h8Base = alertLogs().length;
+  var h8Ret = confirmAlertFn.call(h8AlertApp, { id: 'workFailAlert' });
+  // 入口二：等码时那支关旧告警层的路径（层文本与 textOf(dialog) 不同，分得开是谁说的）
+  var h8DismissClicks = 0;
+  var h8DismissBtn = { textContent: '知道了', click: function () { h8DismissClicks++; } };
+  var h8FailLayer = {
+    __visible: true, innerText: '作业提交失败！平台说这一发无效',
+    querySelectorAll: function () { return [h8DismissBtn]; }
+  };
+  var h8OtherWin = { id: 'verifyCodeWin', querySelector: function () { return null; } };
+  h8OtherWin.ownerDocument = {
+    querySelectorAll: function (sel) { return sel === '.AlertCon02' ? [h8FailLayer] : []; }
+  };
+  dismissFn.call(mkNoteApp(), { win: h8OtherWin, input: fakeInput, img: fakeImg });
+  var h8Logs = alertLogs().slice(h8Base);
+  check('232-H8：交卷被拒的原话两处入口都进环，且点了「知道了」仍不算一次提交' +
+    '（warn 名 quiz submit alert，meta 带 text 原话与 layer:alert；漏掉任何一处入口都算这条红）',
+    h8Ret === true && h8KnowClicks === 1 && h8Pending === 0 && h8AlertApp._quizSubmitPending === false &&
+    h8DismissClicks === 1 && h8Logs.length === 2 &&
+    h8Logs.every(function (l) { return l.level === 'warn' && l.meta && l.meta.layer === 'alert' && /作业提交失败/.test(l.meta.text); }) &&
+    h8Logs[0].meta.text !== h8Logs[1].meta.text,
+    JSON.stringify({ ret: h8Ret, knowClicks: h8KnowClicks, pending: h8Pending,
+      stillPending: h8AlertApp._quizSubmitPending, dismissClicks: h8DismissClicks,
+      said: h8Logs.map(function (l) { return l.level + ':' + l.meta.text.slice(0, 12); }) }));
+
+  var h9App = mkNoteApp();
+  var h9Before = alertLogs().length;
+  h9App._noteQuizSubmitAlert('作业提交失败！' + new Array(ALERT_CAP + 200).join('拖'));
+  var h9Logs = alertLogs().slice(h9Before);
+  check('232-H9：原话按源码里那把尺截断进环（尺读回来的长度就是它，不在测试里写死），空文本一个字都不发',
+    ALERT_CAP > 0 && h9Logs.length === 1 && h9Logs[0].meta.text.length === ALERT_CAP &&
+    h9App._noteQuizSubmitAlert('') === false && h9App._noteQuizSubmitAlert(null) === false &&
+    alertLogs().length === h9Before + 1,
+    JSON.stringify({ cap: ALERT_CAP, got: h9Logs.length && h9Logs[0].meta.text.length, rows: alertLogs().length - h9Before }));
+
+  var h10App = mkNoteApp();
+  var h10Before = alertLogs().length;
+  h10App._noteQuizSubmitAlert('验证码不正确');
+  h10App._noteQuizSubmitAlert('验证码不正确');
+  var h10Dup = alertLogs().length - h10Before;
+  h10App._noteQuizSubmitAlert('作业提交失败！');
+  var h10All = alertLogs().length - h10Before;
+  check('232-H10：同一句原话在节流窗口内只报一次、换一句立刻再说（这一层每拍都来，不设节流会把日志环冲空）',
+    ALERT_DUP_MS > 0 && h10Dup === 1 && h10All === 2,
+    JSON.stringify({ dupMs: ALERT_DUP_MS, afterSame: h10Dup, afterOther: h10All }));
 
   // ---- J：randomOptions 下「位置字母」与「平台 data 字母」分道 ----
   var answersSrc = read('src/page/72-quiz-answers.js');
