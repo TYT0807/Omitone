@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.3.0-orange)
+![版本](https://img.shields.io/badge/版本-1.3.1-orange)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
 
@@ -16,9 +16,9 @@
 
 [**📖 在线看图解说明书**](https://tyt0807.github.io/Omitone/docs/manual.html) &nbsp;·&nbsp; [**下载 PDF 版**](https://github.com/TYT0807/Omitone/releases/latest/download/Omitone-manual.pdf)
 
-<sub>👆 这两条是 **1.3.0 正式版**的入口 —— 绝大多数人装这个就对了，本页往下所有说明也都按这一版写。</sub>
+<sub>👆 这两条是 **1.3.1 正式版**的入口 —— 绝大多数人装这个就对了，本页往下所有说明也都按这一版写。</sub>
 
-### [🧪 **装预览版（omitone-preview.zip · 1.3.1 实验版）**](https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip)
+### [🧪 **装预览版（omitone-preview.zip · 1.3.2 实验版）**](https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip)
 
 [**预览版的说明书 PDF**](https://github.com/TYT0807/Omitone/releases/download/preview/Omitone-manual-preview.pdf)
 
@@ -111,6 +111,7 @@
   （已拿到 N 个型号 / 还没填 API URL / 还没填 API Key / 这家说自己名下没有可用型号 / 回包读不出型号名）
   一起照原话教了一遍。**刷课行为一个字没改**，改的是说明书；要照着说明书找那枚按钮的话，
   连那一份 PDF 一起换成新的（预览版那一栏里的「预览版的说明书 PDF」）。
+- **2026-11-25** · 1.3.1 的答题与视频修复已经进正式版；预览版升到 1.3.2，从队列继续修下一批。
 
 
 </details>
@@ -155,7 +156,11 @@
 </div>
 
 <details>
-<summary><strong>1.3.0 稳定版（2026-11-12）动了什么 · 怎么升级</strong> —— 明细不堆在门面，点开看</summary>
+<summary><strong>1.3.1 稳定版（2026-11-25）动了什么 · 怎么升级</strong> —— 明细不堆在门面，点开看</summary>
+
+**1.3.1 稳定版**：把答题与视频两条主线整条修了一遍 —— 选项顺序被平台打乱时不再点错、多选题按字母序交卷、交卷长时间不判分会有界放手、验证码窗空着绝不点确定；视频开头黑屏会自动点「开始」、倍速问不到就按原速播完、坏包恢复三次仍无进展就隔离；一门刷完能自己换下一门。弹窗里还有**本地自愈「医生」**：出问题时先读本机日志，给你一句能照着做的建议。完整说明见 [Releases 页面](https://github.com/TYT0807/Omitone/releases/latest)。
+
+#### 更早：1.3.0 稳定版（2026-11-12）的明细
 
 **这一版是收口版。** 前面那一路都是实验版：一天修一处、说明越写越长。
 1.3.0 把那些改动收在一起，作为**可以放心推荐给同学的那一版**。刷课与答题该有的能力都齐了，后续主要是修 bug、跟随平台改版做适配；界面和装饰（比如小角色的养成玩法）还会有小更新，但不再加会影响刷课流程的新能力。
@@ -802,7 +807,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 | [`HANDOVER.md`](HANDOVER.md) | **接手索引**：当前状态、按症状找文件的速查表、常见任务的固定动作、待办清单 |
 | [`docs/pagejs-拆分提示词.md`](docs/pagejs-拆分提示词.md) | **`page.js` 拆分任务的执行说明**（自包含，可直接交给另一个 AI）：现状勘明、分阶段方案、硬性约束、验收清单、已知陷阱。**三个阶段都已完成，别再重做** |
 | [`src/page/README.md`](src/page/README.md) | **`page.js` 的模块地图**：16 个按域片段各自负责什么、拼接机制（`npm run concat`）、改片段的三条注意、这次拆分是怎么验证的 |
-| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（33 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
+| **`使用说明.pdf`** | **给使用者的图文说明书 · PDF 版**（41 页，含界面示意图）。放在仓库根目录方便一眼找到；适合离线看、转发给同学。**在线看请直接用下面那份 HTML**（PDF 在 GitHub 上会「赌运气」渲染，见下方说明） |
 | [`docs/manual.html`](docs/manual.html) | **给使用者的图文说明书 · 在线版**（README 顶部「在线看图解说明书」指向 GitHub Pages 上的它），同时也是上面那份 PDF 的**排版源文件**（内联 SVG、A4 打印 CSS，零外部依赖）。改内容改这个，再跑 `npm run manual` 重新出 PDF。**每个动手处都配一张四问表**（看到什么 / 点哪里 / 怎样才算对 / 不对怎么办），改版时这份「四问结构」要保持 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 更深的协议细节：**源码布局与构建产物**、消息协议全表、storage 键、index 语义、失败分类、各条链路的实现要点、已知限制 |
 | [`AGENTS.md`](AGENTS.md) | 给 AI 的做事守则（不重复技术细节，只规定流程与硬性约束） |
@@ -821,7 +826,7 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 ## 1. 功能与验证状态
 
-「自动化验证」列指 `npm run e2e`（真实 Edge + 138 个场景，1580 项断言）覆盖到哪一步。
+「自动化验证」列指 `npm run e2e`（真实 Edge + 152 个场景，1725 项断言）覆盖到哪一步。
 **标 ⚠️ 的部分必须到真实课程页人工确认** —— mock 页面无法替代真实平台的编解码、加密字体与任务点结构。
 
 | 功能 | 做什么 | 验证环节 | 自动化验证 |
@@ -1378,7 +1383,7 @@ npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检
 npm run itest    # 集成测试：真实 content.js 的答题往返（400 项）
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
-npm run e2e      # 真实 Edge 功能交叉检验（138 个场景 / 1580 项）
+npm run e2e      # 真实 Edge 功能交叉检验（152 个场景 / 1725 项）
 npm run test:all # npm test + e2e
 npm run regression  # 1.3.0 字体/恢复/日志正确性闸门
 npm run regression:self-test  # 检查闸门与内存故障注入
@@ -1524,20 +1529,20 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么「软件这么大」——体积账本
 
-扩展**解压后约 3.59 MB**（对着构建出来的 `dist/*.zip` 逐条目合计，不是磁盘目录 —— 2026-11-21 随批次 157 重算、批次 160 再算、2026-11-22 批次 167 再算、2026-11-23 批次 181 随构建再算），`dist/*.zip` 约 2.29 MB。构成如下
+扩展**解压后约 3.64 MB**（对着构建出来的 `dist/*.zip` 逐条目合计，不是磁盘目录 —— 2026-11-21 随批次 157 重算、批次 160 再算、2026-11-22 批次 167 再算、2026-11-23 批次 181 随构建再算、2026-11-25 批次 194 随 1.3.1 正式构建再算），`dist/*.zip` 约 2.31 MB。构成如下
 （`node tools/build.js` 会把 `resources/table.json` 排除掉，改由 122 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `popup/`（100 张立绘 + 界面） | 约 1.83 MB (51.0%) | 立绘是主体：48 套服装 / 25 表情 / 28 姿势，每张 8~24 KB |
-| `page.js` | 1.09 MB (30.3%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
-| `libs/` | 217 KB (5.9%) | 字体解析 Typr 96 KB + 报错分类 / 提示词 / 地址构造 / 字形表 / 联网搜索那把尺 |
-| `content.js` | 218 KB (5.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
-| `resources/`（装的是 `table.bin`） | 123 KB (3.4%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
-| `LICENSE` | 35 KB (1.0%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `popup/`（100 张立绘 + 界面） | 约 1.83 MB (50.4%) | 立绘是主体：48 套服装 / 25 表情 / 28 姿势，每张 8~24 KB |
+| `page.js` | 1.13 MB (30.9%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
+| `libs/` | 226 KB (6.1%) | 字体解析 Typr 96 KB + 报错分类 / 提示词 / 地址构造 / 字形表 / 联网搜索那把尺 |
+| `content.js` | 221 KB (5.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
+| `resources/`（装的是 `table.bin`） | 123 KB (3.3%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `LICENSE` | 35 KB (0.9%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
 | `icons/` | 28 KB (0.8%) | 三个尺寸的图标 |
-| `background.js` | 50 KB (1.4%) | service worker：跨域 fetch 代理 |
-| `runtime-log-store.js` + `popup-log-view.js` | 13 KB (0.3%) | 日志 Worker 工厂 + 前端日志视图 |
+| `background.js` | 50 KB (1.3%) | service worker：跨域 fetch 代理 |
+| `runtime-log-store.js` + `popup-log-view.js` | 14 KB (0.4%) | 日志 Worker 工厂 + 前端日志视图 |
 | `manifest.json` | 2 KB (0.0%) | 扩展清单 |
 
 > **为什么这么大**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），
