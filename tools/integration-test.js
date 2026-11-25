@@ -157,6 +157,10 @@ function createHarness(options) {
   // Trusted study URL; DOMContentLoaded is deliberately held by the harness.
   // This tests actual scope enforcement without starting injection/font work as a side effect.
   sandbox.location = { href: options.url || 'https://mooc1.chaoxing.com/mycourse/studentstudy' };
+  // #223：`performance` **只在调用方给了 timeOrigin 时才挂**。默认不挂，于是「页面读不到 timeOrigin」
+  // 那一格由全场其它场景天然覆盖（桥就绪日志里 `doc.at` 必须是 -1，不是 0），
+  // 而给了已知时刻的那一发才证得到那个数真是**读回来的**、不是写死的兜底。
+  if (options.timeOrigin) sandbox.performance = { timeOrigin: options.timeOrigin };
   sandbox.__storageReads = [];
   sandbox.__runtimeMessages = [];
   sandbox.__injected = [];
@@ -3344,6 +3348,43 @@ async function testScopeReconnectAfterPageChange() {
       Array.isArray(readyOnChaoxing[0].payload.meta.marks) &&
       readyOnChaoxing[0].payload.meta.marks.indexOf('scope-retry') >= 0),
     JSON.stringify(readyOnChaoxing[0] && readyOnChaoxing[0].payload.meta || null));
+
+  // ---- ④ #223：这一发还得说清「哪一份文档、哪一次加载」
+  // 三格各钉一个方向，缺任何一格都有一段真实成因没人证：
+  //   1 = 地址在场 + 身份在场 + **没有 performance 时读不出（-1，不许塌进 0）**
+  //   2 = 那个 at 是**从页面读回来的**（夹具给已知时刻，对得上才算读过）
+  //   3 = 同一网址两次执行分得开（href/at 逐字相同、只有 id 变 —— 这正是立项要的那把尺）
+  var KNOWN_ORIGIN = 1764000000000;
+  function readyMetaOf(h) {
+    var got = h.sandbox.__runtimeMessages.filter(function (m) {
+      return m.type === 'runtime_log_append' && m.payload && m.payload.message === 'content bridge ready';
+    });
+    return (got[0] && got[0].payload.meta) || null;
+  }
+  var metaNoPerf = readyMetaOf(k);
+  check('④content bridge ready 报出 href 与文档身份，且没有 performance 时 at 落在「读不出」那一格（-1，不是 0）',
+    !!metaNoPerf && metaNoPerf.href === CH1 && !!metaNoPerf.doc &&
+      typeof metaNoPerf.doc.id === 'string' && metaNoPerf.doc.id.length > 0 &&
+      metaNoPerf.doc.at === -1,
+    JSON.stringify(metaNoPerf && { href: metaNoPerf.href, doc: metaNoPerf.doc } || null));
+  var n1 = createHarness({ url: CH1, timeOrigin: KNOWN_ORIGIN });
+  n1.forceScopeNone(true);
+  n1.startContent();
+  await new Promise(function (r) { setTimeout(r, 80); });
+  var metaTimed = readyMetaOf(n1);
+  check('④那个 at 是真从页面读回来的（夹具给了已知时刻就对得上，写死 -1 或抄 URL 都过不了这一格）',
+    !!metaTimed && !!metaTimed.doc && metaTimed.doc.at === KNOWN_ORIGIN,
+    JSON.stringify(metaTimed && { href: metaTimed.href, doc: metaTimed.doc } || null));
+  var n2 = createHarness({ url: CH1, timeOrigin: KNOWN_ORIGIN });
+  n2.forceScopeNone(true);
+  n2.startContent();
+  await new Promise(function (r) { setTimeout(r, 80); });
+  var metaAgain = readyMetaOf(n2);
+  check('④同一网址再加载一次，两条 ready 分得开（href 与 at 照旧相同，只有 doc.id 必不同）',
+    !!metaAgain && !!metaAgain.doc && !!metaTimed && !!metaTimed.doc &&
+      metaAgain.href === metaTimed.href && metaAgain.doc.at === metaTimed.doc.at &&
+      metaAgain.doc.id !== metaTimed.doc.id,
+    JSON.stringify({ first: metaTimed && metaTimed.doc, again: metaAgain && metaAgain.doc }));
 
   var outside = createHarness({ url: 'https://example.com/blank' });
   outside.startContent();

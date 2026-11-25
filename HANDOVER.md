@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 793 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 796 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1761,6 +1761,32 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   ⑩ 那格写死的 >300 清零名单）；#72 与 #74 仍在队尾排队。
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
+
+### 0.67 #223 收口：`content bridge ready` 现在报得出「是哪一份文档」（2026-11-25，定时搭档按 brief 领）
+
+- **动盘**：`content.js:4097` 那一发前面多两格 —— `href`（`:4081`，截 300 字）与 `doc { at, id }`（`:4085`）。
+  `at` = 页面自己的 `performance.timeOrigin`，读不到写 `-1`；`id` = 本次执行的一次性短串（同一次加载不变、重载必不同）。
+  `version` / `build` / `bridgeCode` / `marks` 四格**一个字未动**，`marks` 也**没加新标记**（brief 写死）——
+  本轮"装的是这一份"由 `bridgeCode` 自己说：`ad1f0dc7fa` → `5029ef4035`（`content.js` 在拼接哈希清单里，变是预期）。
+- **夹具那一格（下次改 ④ 族要先读）**：`createHarness`（`tools/integration-test.js:159`）**只在传了 `timeOrigin` 时**才挂
+  `performance` —— 默认不挂，所以「读不出 → `doc.at === -1`」由全场其余 795 条天然承重；
+  **哪天给 harness 无条件补上 `performance`，① 那一格会静默变成"永远绿的桩"**（§5「根本没走到」同族）。
+- **机检 3 条**（`:3365` / `:3375` / `:3383`，brief 点两条、按"三个方向各自独立承重"拆成三条）：
+  ① href 等于夹具 URL + `id` 非空 + 无 performance 时 `at === -1`；② 给已知时刻 → `at` 逐字对上（证明数是读回来的）；
+  ③ 同一网址第二个 harness → `href`/`at` 相同而 `doc.id` 不同。③ 的 `at` **故意相同** ——
+  断成"也不同"就是在测夹具而不是测生产。
+- **读数**：集成 **796 / 796** 红 0（改前 793；`.workbuddy/itest223.log` 第 398–400 行 `[ok]`）、
+  `node tools/check.js` **EXIT=0**（首跑只红第 9 项点名的三页计数，已回填 793 → 796）、
+  `node --check page.js` / `content.js` 均过。反向三刀在隔离 worktree（`.workbuddy/rev223.js`，跑完已 remove）：
+  **A** 摘两格 → 恰好红 ①②③、总账 `3 / 796`、旧邻居两格照旧绿；**B** `at` 恒 `-1` → 恰好红 ②；
+  **C** id 变常数 → 恰好红 ③；**Z** 还原复跑 **796 / 796 红 0**、三刀各「逐字不一致 0 份」、主工作树 marker 0 处。
+- **仍欠（归主会话 / 收口轮）**：⚠️ **沙盒只证"分得开"，现场那一格还没量** —— 真学习通重载后两条 `doc.id` 是否不同，
+  要只读跑 `node tools/field-logs.js --grep='content bridge ready'` 看同一 `href` 的两条记录；
+  这一发同时对上 §2 #19 欠的那枚正控（"同址重载在 `visits` 里留不留行"）与任务 #72 的 `navType` 格。
+  另：全量 `npm test` / 全量 e2e / build / push / 发预览包本轮按 §1.06 一律 UNEXECUTED。
+- **还有一笔账欠着**（非本轮成因，登记在此免得再丢）：**#231 第 3b 档（`287abf9`）没写 CHANGELOG 一节**
+  —— 3b 只回填了三页计数与 `src/page/README.md`，§3.8 i 格的「门面」那一行因此在那一节上不存在
+  （第 34 项只查**已存在**的批次节，所以不红）。收口轮补一节即可，别改判据。
 
 ### 0.66 #231 第 3a 档收口：媒体重载账裁到 300 条且只清最旧（2026-11-25，定时搭档按 brief 领）
 

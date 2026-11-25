@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = 'ad1f0dc7fa';
+var OMITONE_CODE_REV_BRIDGE = '5029ef4035';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -4074,7 +4074,31 @@ var OMITONE_CODE_REV_BRIDGE = 'ad1f0dc7fa';
   //（源码的 manifest 不动），所以从 dist 装出去的包都能自报家门。
   var manifestInfo = null;
   try { manifestInfo = chrome.runtime.getManifest(); } catch (eManifest) { manifestInfo = null; }
+  // ⚠️ 这一发过去只说「哪一版」，同一网址重载后两条记录逐字相同，于是「日志里那条到底是哪一次加载」
+  // 永远读不出来 —— 盘外的浏览器历史在这一族是哑的（整页刷新不留专属行），唯一还读得回来的
+  // 就是**页面自己的** `performance.timeOrigin`（每份文档各读各的）。`id` 是本次执行生成的一次性短串：
+  // 同一次加载不变、重载必不同，不需要持久。两格都必须包 try：抛出等于把这条日志整个吃掉（§2 #1 同族）。
+  var bridgeHref = '';
+  try {
+    bridgeHref = (typeof location !== 'undefined' && location) ? String(location.href || '').slice(0, 300) : '';
+  } catch (eHref) { bridgeHref = ''; }
+  var bridgeDoc = (function () {
+    var at = -1;
+    try {
+      if (typeof performance !== 'undefined' && performance) {
+        var raw = Number(performance.timeOrigin);
+        if (isFinite(raw) && raw > 0) at = raw;
+      }
+    } catch (ePerf) { at = -1; }
+    var id = '';
+    try { id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); } catch (eId) { id = ''; }
+    return { at: at, id: id };
+  })();
   appendRuntimeLog('info', 'content bridge ready', {
+    // #223 两格放在最前，为的是让下面四格一个字节都不动。`doc.at === -1` 是「读不出」那一格，
+    // 不许塌进 0（§2 #12 同一族）；`href` 超 300 字截断，只用来分辨哪一次加载，不当地址用。
+    href: bridgeHref,
+    doc: bridgeDoc,
     version: String((manifestInfo && manifestInfo.version) || ''),
     build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)'),
     // 桥自己的内容指纹（`npm run concat` 按 manifest 的注入清单烘进本文件首行）。
