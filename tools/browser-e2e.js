@@ -8897,7 +8897,7 @@ SCENARIOS.push({
     // 批次 146：弹窗那根「播放速度」滑条删了 —— 没有量到的上限就按原速，不替用户猜一个倍速。
     // 断言反过来写才有牙：**先把播放器摁在 2x**，插件必须把它拉回 1x（旧写法在这一步会写成 1.5）。
     check('关掉自动倍速后回到原速（滑条已删，不再有人为倍速）', rate.rateApplied === 1, JSON.stringify(rate));
-    check('静音按配置应用', rate.muted === true, JSON.stringify(rate.muted));
+    check('静音开关退役：旧配置 muted:true 也不再让插件改媒体静音', rate.muted === false, JSON.stringify(rate.muted));
 
     // 自动最大倍速的**夹紧**这一支以前是零覆盖：打桩播放器探测不到倍速菜单，
     // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到原速"，
@@ -9088,8 +9088,8 @@ SCENARIOS.push({
     );
     check('没有量到上限时音频与视频都被拉回原速（滑条已删，倍速只有一个来源）',
       audioRate.rate === 1 && audioRate.videoRate === 1, JSON.stringify(audioRate));
-    check('用户开了静音时：音频仍不归插件管（只有视频被静音）—— 旧写法把 muted 设成 false，这条恒真',
-      audioRate.audioMuted === false && audioRate.videoMuted === true, JSON.stringify(audioRate));
+    check('静音开关退役后：音频和视频都不由插件静音（旧配置 true 也不碰媒体）',
+      audioRate.audioMuted === false && audioRate.videoMuted === false, JSON.stringify(audioRate));
 
     // ---- 进度快照：整个"做不完就放弃"机制的安全阀
     // 静止的媒体 → 快照恒定 → 才允许判"卡住"；推进中的媒体 → 快照变化 → 绝不判卡住
@@ -13430,7 +13430,7 @@ SCENARIOS.push({
     // ⚠️ #196（1.3.2 预览线）：`enableSeek` / `advanceAtNinetyPercent` 已退役，从清单移除；
     //    下面另有 `retiredSeekUi` 一条要求弹窗里**没有**这两枚。
     var wantToggleIds = ['enableQuiz', 'randomAnswer', 'enableCaptcha', 'enableDiscussion',
-                         'autoNext', 'restudy', 'muted'];
+                         'autoNext', 'restudy'];
     var uiToggles = await ctx.client.evaluate(
       '(function(){var ids=' + JSON.stringify(wantToggleIds) + ';var miss=[];' +
       'for(var i=0;i<ids.length;i++){if(!document.getElementById(ids[i])) miss.push(ids[i]);}' +
@@ -13458,10 +13458,11 @@ SCENARIOS.push({
     var retiredSeekUi = await ctx.client.evaluate(
       '(function(){return {seek:!!document.getElementById("enableSeek"),' +
       'ninety:!!document.getElementById("advanceAtNinetyPercent"),' +
-      'hint:!!document.getElementById("seekChainHint")};})()'
+      'hint:!!document.getElementById("seekChainHint"),mute:!!document.getElementById("muted")};})()'
     );
-    check('两枚拖拽开关已退役：弹窗里没有这两个开关，也没有那条联动说明',
-      retiredSeekUi.seek === false && retiredSeekUi.ninety === false && retiredSeekUi.hint === false,
+    check('三枚开关已退役：弹窗里没有两枚拖拽开关与那个联动说明，也没有 #muted（页面本身能静音）',
+      retiredSeekUi.seek === false && retiredSeekUi.ninety === false &&
+      retiredSeekUi.hint === false && retiredSeekUi.mute === false,
       JSON.stringify(retiredSeekUi));
 
     // 运行状态指示：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——

@@ -116,6 +116,8 @@
   var DEFAULT_CONFIG = {
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
+    // #47（2026-11-25）：静音开关已退役 —— 页面本身能静音，插件不再代劳。
+    // 默认值只为「读到的配置项必须有默认值」的接线闸保留；mergeConfig 强制 false，老存档里的 true 不生效。
     muted: false,
     // 讨论任务点：自动打开讨论页并发布评论（内容见 discussionReply），完成后自动返回继续刷课
     enableDiscussion: true,
@@ -267,6 +269,8 @@
     // 老存档里存的 false 在这里被忽略；这两行是唯一的口径，别在消费点再写第二份。
     merged.enableSeek = true;
     merged.advanceAtNinetyPercent = true;
+    // #47：静音开关已退役，旧存档里的 true 在这里被忽略。
+    merged.muted = false;
     return merged;
   }
 

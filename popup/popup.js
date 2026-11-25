@@ -8,7 +8,6 @@ const DEFAULTS = {
   enablePPT: true,
   enableHyperlink: true,
   blockedReload: true,
-  muted: false,
   autoNext: true,
   autoNextCourse: true,
   enableQuiz: true,
@@ -86,7 +85,6 @@ const els = {
   enablePPT: $("enablePPT"),
   enableHyperlink: $("enableHyperlink"),
   blockedReload: $("blockedReload"),
-  muted: $("muted"),
   autoNext: $("autoNext"),
   autoNextCourse: $("autoNextCourse"),
   enableQuiz: $("enableQuiz"),
@@ -156,7 +154,6 @@ let config = { ...DEFAULTS };
 // 用户点「检测 API 连接」只看见「配置已变化，请重新检测」，连接结果一句不给。
 // 批次 123-b 把 thinkingLevel 从表单里撤掉之后这条才暴露，不是那时才坏的。
 let storedConfig = {};
-let mutedVal = false;
 let autoMaxRateVal = true;
 let slowMachineVal = false;
 let enableMediaVal = true;
@@ -1127,7 +1124,6 @@ async function saveToggleConfig(showToast = true) {
     enablePPT: enablePPTVal,
     enableHyperlink: enableHyperlinkVal,
     blockedReload: blockedReloadVal,
-    muted: mutedVal,
     autoNext: autoNextVal,
     autoNextCourse: autoNextCourseVal,
     enableQuiz: enableQuizVal,
@@ -1198,7 +1194,6 @@ function bindToggle(el, getter, setter) {
   return update;
 }
 
-const updateMuted = bindToggle(els.muted, () => mutedVal, (value) => { mutedVal = value; });
 const updateAutoMaxRate = bindToggle(els.autoMaxRate, () => autoMaxRateVal, (value) => { autoMaxRateVal = value; });
 const updateSlowMachine = bindToggle(els.slowMachineMode, () => slowMachineVal, (value) => { slowMachineVal = value; });
 const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) => { enableMediaVal = value; });
@@ -1467,7 +1462,6 @@ async function load() {
   storedConfig = withoutRemovedConfigFields(result.config || {});
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 
-  mutedVal = !!config.muted;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
   slowMachineVal = config.slowMachineMode === "on";
   enableMediaVal = config.enableMedia !== false;
@@ -1483,7 +1477,6 @@ async function load() {
   enableDiscussionVal = config.enableDiscussion !== false;
   enableVoteVal = config.enableVote !== false;
   restudyVal = !!config.restudy;
-  updateMuted(mutedVal);
   updateAutoMaxRate(autoMaxRateVal);
   updateSlowMachine(slowMachineVal);
   updateMedia(enableMediaVal);

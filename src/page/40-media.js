@@ -1296,9 +1296,7 @@
         });
       }
       medias.forEach(function (media) {
-        try {
-          media.muted = !!self.configs.muted;
-        } catch (e1) {}
+        // #47：静音开关退役 —— 插件不再改 media.muted，用户可在页面/标签页自己静音。
         if (media.paused) {
           try {
             var p = media.play();
@@ -1380,12 +1378,8 @@
 
     _ensurePlaybackRate: function (video, reason) {
       if (!video || this._isMediaQuarantined(video)) return;
-      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 音频不再由插件静音（旧的 audioMuted 开关已删）。
-      // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
-      try {
-        video.muted = !isAudio && !!this.configs.muted;
-      } catch (e0) {}
+      // #47：静音开关退役 —— 这里不再碰 `video.muted`，否则会把用户自己
+      // 在页面/标签页上按下的静音又改回来。自动播放被挡时的静音重试仍在播放兜底里。
       if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
         this._scheduleMaxRateDetection(video);
       }

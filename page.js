@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '29240ece48';
+var OMITONE_CODE_REV = '948ca1a7c3';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -103,6 +103,8 @@ var OMITONE_CODE_REV = '29240ece48';
   var DEFAULT_CONFIG = {
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
+    // #47（2026-11-25）：静音开关已退役 —— 页面本身能静音，插件不再代劳。
+    // 默认值只为「读到的配置项必须有默认值」的接线闸保留；mergeConfig 强制 false，老存档里的 true 不生效。
     muted: false,
     // 讨论任务点：自动打开讨论页并发布评论（内容见 discussionReply），完成后自动返回继续刷课
     enableDiscussion: true,
@@ -254,6 +256,8 @@ var OMITONE_CODE_REV = '29240ece48';
     // 老存档里存的 false 在这里被忽略；这两行是唯一的口径，别在消费点再写第二份。
     merged.enableSeek = true;
     merged.advanceAtNinetyPercent = true;
+    // #47：静音开关已退役，旧存档里的 true 在这里被忽略。
+    merged.muted = false;
     return merged;
   }
 
@@ -3515,9 +3519,7 @@ var OMITONE_CODE_REV = '29240ece48';
         });
       }
       medias.forEach(function (media) {
-        try {
-          media.muted = !!self.configs.muted;
-        } catch (e1) {}
+        // #47：静音开关退役 —— 插件不再改 media.muted，用户可在页面/标签页自己静音。
         if (media.paused) {
           try {
             var p = media.play();
@@ -3599,12 +3601,8 @@ var OMITONE_CODE_REV = '29240ece48';
 
     _ensurePlaybackRate: function (video, reason) {
       if (!video || this._isMediaQuarantined(video)) return;
-      var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
-      // 音频不再由插件静音（旧的 audioMuted 开关已删）。
-      // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
-      try {
-        video.muted = !isAudio && !!this.configs.muted;
-      } catch (e0) {}
+      // #47：静音开关退役 —— 这里不再碰 `video.muted`，否则会把用户自己
+      // 在页面/标签页上按下的静音又改回来。自动播放被挡时的静音重试仍在播放兜底里。
       if (this.configs.autoMaxPlaybackRate !== false && this._rateDetectVideo !== video) {
         this._scheduleMaxRateDetection(video);
       }

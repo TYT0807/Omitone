@@ -1762,6 +1762,17 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.74 静音开关退役：页面自己静音，插件不再碰 media.muted（2026-11-26，用户点单 #47）
+
+- 弹窗撤 `#muted`（18→17 枚开关）；`popup.js` 的 DEFAULTS / els / 保存 / 绑定 / 加载一起清掉。
+- `00-shell-constants.js` 的 `mergeConfig` 强制 `muted=false`（旧存档 true 失效）；
+  `40-media.js` 删除两处 `configs.muted → media.muted`，**不再把用户自己按下的静音改回去**；
+  自动播放被挡的静音重试、无声音频保活不动。
+- 说明书删静音开关行、开关数 17、补「自己点播放器/标签页静音」；PDF 重出 40 页。
+  ⚠️ 本机无头 Edge `--print-to-pdf` 现在退出 0 但不产 PDF（最小 HTML 也复现）；本轮用现场 CDP
+  `Page.printToPDF` 兜底生成，工具本身的问题另记队列。
+- 读数：集成 811/811、check EXIT=0、定向媒体 e2e 27/27；e2e 退役断言加 `#muted` 不存在。
+
 ### 0.73 issue #2 新评论四点收口：暗色下拉、可滚动模型候选、联网搜索说明、填答取舍（2026-11-25，用户 034714）
 
 - **#49-a**：深色媒体查询补 `color-scheme:dark` + `select` 暗底/自绘箭头 + `option` 暗底；弹窗暗色截图复核。
