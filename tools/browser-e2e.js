@@ -175,6 +175,55 @@ function killTree(proc) {
   });
 }
 
+/**
+ * 收尾先让 Edge 自己退：Edge 的启动器会把真正的浏览器进程派生出去，
+ * 主 PID 一退 `killTree()` 就只看到 exitCode 非空、直接空转，窗口和 9222 留在原地。
+ * Browser.close 走的是浏览器自己的退出路径，不依赖那个已经死掉的启动器 PID。
+ */
+async function closeBrowserByCdp() {
+  var version = null;
+  try { version = await httpGetJson('http://127.0.0.1:' + CDP_PORT + '/json/version'); } catch (e) { return false; }
+  var wsUrl = version && version.webSocketDebuggerUrl;
+  if (!wsUrl) return false;
+  return new Promise(function (resolve) {
+    var ws = null;
+    var done = false;
+    function finish(ok) {
+      if (done) return;
+      done = true;
+      try { if (ws) ws.close(); } catch (e) {}
+      resolve(ok);
+    }
+    try { ws = new WebSocket(wsUrl); } catch (e) { return finish(false); }
+    var timer = setTimeout(function () { finish(false); }, 4000);
+    ws.addEventListener('open', function () {
+      try { ws.send(JSON.stringify({ id: 1, method: 'Browser.close' })); } catch (e) { finish(false); }
+    });
+    ws.addEventListener('close', function () { clearTimeout(timer); finish(true); });
+    ws.addEventListener('error', function () { clearTimeout(timer); finish(false); });
+  });
+}
+
+/**
+ * 兜底清扫：只杀命令行里带**本次临时 profile 绝对路径**的 msedge 进程。
+ * 不用 PID、不用进程名，避免碰到用户自己的 Edge 或现场 9334 那台。
+ */
+function killEdgeByProfile(profileDir) {
+  return new Promise(function (resolve) {
+    if (process.platform !== 'win32') return resolve();
+    var needle = String(profileDir).replace(/'/g, "''");
+    var script = "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | " +
+      "Where-Object { $_.CommandLine -and $_.CommandLine.Contains('" + needle + "') } | " +
+      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }";
+    var killer;
+    try { killer = spawn('powershell', ['-NoProfile', '-Command', script], { stdio: 'ignore', windowsHide: true }); }
+    catch (e) { return resolve(); }
+    var timer = setTimeout(resolve, 5000);
+    killer.on('close', function () { clearTimeout(timer); resolve(); });
+    killer.on('error', function () { clearTimeout(timer); resolve(); });
+  });
+}
+
 // ===========================================================================
 // Mock 页面
 //
@@ -26397,7 +26446,12 @@ async function main() {
       }
     }
   } finally {
+    // 顺序：先让浏览器自己退，再对启动器 PID 补刀，最后按临时 profile 清掉派生进程。
+    // 少最后一层时，Edge 启动器先退 → killTree 空转 → 窗口/9222 留下，Node 也挂着等不到收尾。
+    await closeBrowserByCdp();
+    await sleep(300);
     await killTree(edgeProc);
+    await killEdgeByProfile(profileDir);
     // 等端口真正释放再退出，否则紧接着的下一次运行会连到正在退出的旧实例上
     await waitForPortFree(12000);
     try { mock.server.close(); } catch (e) {}

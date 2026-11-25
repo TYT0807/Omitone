@@ -1762,6 +1762,16 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.75 e2e 收尾不再等用户叉窗口：Browser.close + 临时 profile 精确清扫（2026-11-26，用户现场反馈）
+
+- 现象：测试全绿后 Node 不返回、窗口留着，用户叉掉才收到完成。Edge 启动器退出后 `killTree(edgeProc)`
+  因 `exitCode !== null` 直接空转，真正的派生浏览器仍占着 9222。
+- 修法：finally 顺序改成 `closeBrowserByCdp()`（向 `/json/version` 的
+  `webSocketDebuggerUrl` 发 `Browser.close`）→ `killTree(edgeProc)` → `killEdgeByProfile(profileDir)`
+  （PowerShell 按命令行里本次临时 profile 的绝对路径精确停止 msedge）→ `waitForPortFree`。
+  只认临时 profile，不碰用户 Edge 与现场 9334。
+- 实测：定向弹窗 e2e 7/7、33 秒自动返回；清理删 2 枚 / 0 失败；无临时 msedge、9222 仅 TIME_WAIT。
+
 ### 0.74 静音开关退役：页面自己静音，插件不再碰 media.muted（2026-11-26，用户点单 #47）
 
 - 弹窗撤 `#muted`（18→17 枚开关）；`popup.js` 的 DEFAULTS / els / 保存 / 绑定 / 加载一起清掉。
