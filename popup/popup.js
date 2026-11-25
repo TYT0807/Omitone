@@ -1891,6 +1891,32 @@ function cmpVersion(a, b) {
   return 0;
 }
 
+/** 稳定通道那句话：六格各说各话，返回 `{ text, offer }`。
+ *  `offer` 为真才摊开「是否更新」那两个键 —— 让"说话"与"给按钮"是同一个判定，
+ *  不许调用方再写第二份版本比较（预览版与开发构建压成一句就是这么来的）。
+ *  六格：有新版 / 同号换了包 / 本地是预览版 / 本地是开发构建 / 源码目录安装（无构建戳）/ 已是最新。 */
+function stableUpdateMessage(versionOrder, remoteVersion, local, newerBuild, remoteAt) {
+  const name = String((local && local.name) || "");
+  const version = local && local.version;
+  if (versionOrder > 0) {
+    return { text: `有最新版 ${remoteVersion}（本地 ${version}）—— 可能相对现版本不够稳定，是否更新？`, offer: true };
+  }
+  if (newerBuild) {
+    return { text: `线上的包比本地新（${fmtTime(remoteAt)}）—— 可能相对现版本不够稳定，是否更新？`, offer: true };
+  }
+  if (versionOrder < 0 && /experimental/i.test(name)) {
+    return { text: `你在用预览版 ${version}（实验支线）；最新正式版是 ${remoteVersion}。普通用户请用正式版。`, offer: false };
+  }
+  if (versionOrder < 0) {
+    return { text: `本地 ${version} 高于线上 ${remoteVersion} —— 这是开发构建；普通用户请用正式版。`, offer: false };
+  }
+  if (!(local && local.builtAt)) {
+    // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
+    return { text: `当前 ${version}（本地安装 · 版本号与线上最新一致）`, offer: false };
+  }
+  return { text: "你已经是最新版了", offer: false };
+}
+
 function fmtTime(ms) {
   const d = new Date(ms);
   const p = (n) => String(n).padStart(2, "0");
@@ -1952,7 +1978,6 @@ async function checkUpdate(opts) {
     const remoteAt = asset && asset.updated_at ? new Date(asset.updated_at).getTime() : 0;
 
     const versionOrder = cmpVersion(remoteVersion, local.version);
-    const newerVersion = versionOrder > 0;
     // 同一版本号换了包。容差必须盖过「构建 → 上传」这段固有间隔，否则**每个从 zip 装的人
     // 都会永久看到「线上的包比本地新」**——包就是从那一次构建上传的，上传必然晚于构建：
     //   1.2.8 构建 22:52 / 上传 22:55（3 分钟）
@@ -1963,23 +1988,10 @@ async function checkUpdate(opts) {
     const newerBuild = versionOrder === 0 && local.builtAt > 0 && remoteAt > 0 &&
       remoteAt - local.builtAt > 30 * 60 * 1000;
 
-    // 文案原则：一句话说清"是什么 / 要不要动"。三种结果，三种说法，不多解释。
-    if (newerVersion) {
-      els.updateMsg.textContent =
-        `有最新版 ${remoteVersion}（本地 ${local.version}）—— 可能相对现版本不够稳定，是否更新？`;
-      showUpdateChoices();
-    } else if (newerBuild) {
-      els.updateMsg.textContent =
-        `线上的包比本地新（${fmtTime(remoteAt)}）—— 可能相对现版本不够稳定，是否更新？`;
-      showUpdateChoices();
-    } else if (versionOrder < 0) {
-      els.updateMsg.textContent = `本地 ${local.version} 高于线上 ${remoteVersion}，可能是实验版；普通用户请继续使用稳定版。`;
-    } else if (!local.builtAt) {
-      // 源码目录安装：没有构建戳，只能确认版本号一致，别硬说"最新"
-      els.updateMsg.textContent = `当前 ${local.version}（本地安装 · 版本号与线上最新一致）`;
-    } else {
-      els.updateMsg.textContent = "你已经是最新版了";
-    }
+    // 文案原则：一句话说清"是什么 / 要不要动"。判定只许有 `stableUpdateMessage` 那一份。
+    const verdict = stableUpdateMessage(versionOrder, remoteVersion, local, newerBuild, remoteAt);
+    els.updateMsg.textContent = verdict.text;
+    if (verdict.offer) showUpdateChoices();
   } catch (error) {
     // 查不到就只说查不到：不猜原因、也不给"是不是最新"的结论。
     // 网络、代理、GitHub 匿名额度用光、本机时间偏差……都可能。
@@ -2062,7 +2074,7 @@ async function checkPreviewChannel(local, stableVersion) {
   }
   if (els.previewMsg) {
     els.previewMsg.textContent =
-      `🧪 另有预览版 ${plan.version}（实验支线，比正式版新）—— 它可能把你正在刷的课弄坏。` +
+      `🧪 另有预览版 ${plan.version}（实验支线，比正式版新 · 可选，不影响正式版）—— 它可能把你正在刷的课弄坏。` +
       `手上没有正在赶的课、出问题说得清症状（哪门课 · 哪一节 · 什么现象），再装；` +
       `想退回正式版：移除这一枚，重装 omitone.zip 就行。`;
     els.previewMsg.style.display = "";
