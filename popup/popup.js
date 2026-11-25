@@ -1270,7 +1270,7 @@ if (petDoctorEnabledLabel) {
 // ⚠️ 状态只有 **petWebSearchVal** 这一份（三态：null = 还没从存储读回来）。
 // 再开一个 boolean 给界面用，就是§2 #23 那一族：写入口与读出口各有各的基准，
 // 首屏那一发会被说成"你没开"，而用户刚刚才开过。
-const PET_WEB_SEARCH_HINT_OFF = "默认关。开了她回答前先自己查一次网页，按量计费。";
+const PET_WEB_SEARCH_HINT_OFF = "默认关。目前只有 DeepSeek 官方接口支持（中转站不行）；开了她回答前先自己查一次网页，按量计费。";
 /** 用当前表单里的地址/协议/Key 问一次资格 —— 用户改哪格都能当场看到灰不灰。 */
 function petWebSearchDecision() {
   const lib = (typeof OmitoneWebSearch !== "undefined" && OmitoneWebSearch.decisionOf) ? OmitoneWebSearch : null;
