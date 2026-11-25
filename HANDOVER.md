@@ -1776,7 +1776,8 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   还原后 `popup.js` 逐字节一致、复跑红 0、marker 0 处。日志 `.workbuddy/rev43.log`。
 - **读数**：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）；全量 e2e **152 场景 / 1718 项**绿；
   `node tools/check.js` EXIT=0；说明书补了一格并重出 PDF，**页数仍 41**。
-- **仍欠**：预览包与门面预览行随本轮收口一起更新；现场弹窗属 1.3.1 稳定版，不装预览包就看不到新文案。
+- **收口**：预览包已重发（zip 与 PDF 均 uploaded）、main 门面预览行已推、`verify preview` 通过；
+  现场弹窗属 1.3.1 稳定版，不装预览包就看不到新文案。
 
 ### 0.68 #229 收口：模型「在忙」的 45 秒退避落进 sessionStorage，活过 F5（2026-11-25，定时搭档按 brief 领）
 

@@ -21,6 +21,8 @@
 - 读数：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）、全量 e2e **152 场景 / 1718 项**绿
   （`.workbuddy/e2e-43-full.log`）、`node tools/check.js` EXIT=0。
 - 说明书补一句「预览版 / 本地开发构建」的提示（页数保持 41）。
+- 收口：预览 tag 已重指到本轮提交，`omitone-preview.zip` 与 `Omitone-manual-preview.pdf` 均 uploaded，
+  `verify preview` 通过；main 门面预览行已推。
 - **门面**：`更新提示现在会分清「稳定版」「预览版」和本地开发构建`（main README 的 1.3.2 预览更新段与 `release-notes-preview.md`）
 
 ### 批次 206 · 2026-11-25 · 实验支线改名 exp/1.3.2，旧分支保留归档（用户拍板 #44）
