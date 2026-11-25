@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '1c96527e1d';
+var OMITONE_CODE_REV = '84eddcea58';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2725,6 +2725,17 @@ var OMITONE_CODE_REV = '1c96527e1d';
       // 拿不到稳定段时 `_mediaStablePath` 交回原串而不是空串 —— 空串在所有出口都是「没有钥匙」，
       // 那会把「归一失败」实现成「这一支永远不动手」（§2 #12）。
       var stable = src ? this._mediaStablePath(src) : '';
+      // 补救重载给**同一枚元素**挂一条新的 `blob:` 地址：稳定段治不了它 —— 换的不是查询串，是整条路径。
+      // 按元素记住第一次见到的那把钥匙，换源后交回同一把，否则八本账全部从 0 数（§2 #17 的代价）。
+      // 第一次仍交回 blob 地址本身（不发明新编号）；非 blob、拿不到元素、WeakMap 抛 —— 三种一律走原路。
+      if (stable && stable.indexOf('blob:') === 0) {
+        try {
+          var memo = this._mediaBlobKeys || (this._mediaBlobKeys = new WeakMap());
+          var held = memo.get(media);
+          if (held) return held;
+          memo.set(media, stable);
+        } catch (eMemo) {}
+      }
       if (stable) return stable;
       if (this._activeJobId) return 'job:' + this._activeJobId;
       return '';

@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 789 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 791 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1753,7 +1753,11 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   不是页面印出来的那个字母**；遇到"夹具绿而现场点错项"，先问这一题 `randomOptions` 有没有打乱。
 - **现场**：`studentstudy` **恰好一枚**（共 6 个目标，只读、不点、不写配置、不导航）。
 - **下一轮**：按序领 #231 第 2 档（per-element 稳定 id —— 让 `blob:` 那次补救换源不再挪身份，
-  ㉞ 现在只钉住现状防漂移），再谈第 3 档（两本账加上限与"只清最旧"，会牵动 `tools/integration-test.js`
+  ㉞ 现在只钉住现状防漂移），再谈第 3 档（**`_mediaReloadKeys` 1 本无界 + 7 本会误清（共 8 本）** —— 2026-11-25 14:17
+  `grep -n` 复量：取键 9 处 `src/page/40-media.js:75` / `:274` / `:637` / `:963` / `:982` / `:1851` / `:1884` / `:2006` / `:2128`，
+  >300 整体复位 5 处 `:548`（`_seekSkipLedger`）/ `:645`（`_seekSiteKeys`）/ `:990`（一格清三本 `_seekTriedKeys`+`_seekRevertedKeys`+`_seekDeferKeys`）/
+  `:1888`（`_ninetyHeldBackKeys`）/ `:2165`（`_startNudgeKeys`），而 `_mediaReloadKeys` 只有 `:2008` 懒建与 `:76` 单键 delete、**没有上限**；
+  会牵动 `tools/integration-test.js`
   ⑩ 那格写死的 >300 清零名单）；#72 与 #74 仍在队尾排队。
 
 ### 0.65 队列 #217 结案：已结束问卷三档数已有尺，文档侧不补（2026-11-25）

@@ -5507,6 +5507,26 @@ async function testSeekDeferUntilSeekable() {
       kNoSrc === '' && kJob === 'job:job-7',
     JSON.stringify({ kA: kA, kB: kB, kHash: kHash, kRel: kRel, kBlob: kBlob, kNoSrc: kNoSrc, kJob: kJob }));
 
+  // ㊱ 媒体钥匙 · 按**元素**记 blob 身份（会话任务 #231 第 2 档）：补救重载会给同一枚 `<video>` 挂一条
+  //   新的 `blob:` 地址，第 1 档那把尺治不了它 —— 换的是整条路径，不是查询串。键一换 = 八本账从 0 数 =
+  //   每支的一次性试拖预算按换源次数翻倍花（AGENTS §2 #17）。
+  //   ⚠️ 两条各钉一个方向：㊱ 钉「同一枚不换号」（退回「每次现算」会红在这里），
+  //      ㊲ 钉「不同元素各算各的」（实现成「见过任意 blob 就交回第一把」会红在㊲）—— 少任何一条都是半截尺。
+  var elSame = { currentSrc: 'blob:null/aaaaaaaa-0000-0000-0000-000000000001' };
+  var kBlobFirst = getKey.call(keyCtx, elSame);
+  elSame.currentSrc = 'blob:null/bbbbbbbb-0000-0000-0000-000000000002';
+  var kBlobAfter = getKey.call(keyCtx, elSame);
+  var elOther = { currentSrc: 'blob:null/cccccccc-0000-0000-0000-000000000003' };
+  var kBlobOther = getKey.call(keyCtx, elOther);
+  check('㊱ 媒体钥匙 · 同一枚元素换 `blob:` 源不换号：补救重载后地址变了钥匙仍是第一次那把（否则八本账从 0 数、'
+    + '一次性试拖预算按换源次数翻倍花）；第一次仍交回这条 blob 地址本身，不发明新编号（㉞ 的 blob 格照旧）',
+    kBlobFirst === 'blob:null/aaaaaaaa-0000-0000-0000-000000000001' && kBlobAfter === kBlobFirst,
+    JSON.stringify({ kBlobFirst: kBlobFirst, kBlobAfter: kBlobAfter }));
+  check('㊲ 媒体钥匙 · 不同元素各算各的：两枚元素各喂一条 blob 时两把钥匙不相等（身份按元素、不按 src 前缀；'
+    + '否则两支视频被并成一支，一支试过拖另一支就永不试，而标语与试拖账都读不出是谁的）',
+    kBlobOther === 'blob:null/cccccccc-0000-0000-0000-000000000003' && kBlobOther !== kBlobFirst,
+    JSON.stringify({ kBlobFirst: kBlobFirst, kBlobOther: kBlobOther }));
+
   // ㉟ 反分叉（第 30 项「掩码只许有一份」同一族）：稳定段只许由 `_mediaStablePath` 一处算。
   //   两处各自切一次，就能各自切错一次（少切 `#` / 把 blob 切成空），而**不报错、不留日志**，
   //   只是那六本账又回到按签名起账 —— 与改之前症状逐字相同，最难查的一类。

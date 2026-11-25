@@ -136,7 +136,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `40-media.js`
 
-*2562 行 / 73 方法*
+*2573 行 / 73 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速只试一发与钳制（`_ensurePlaybackRate` / `_detectMaxPlaybackRate` / `_tryRateOnce`）、seek 到结尾 `_trySeekToEnd`、
