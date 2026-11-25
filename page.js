@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '09c0066193';
+var OMITONE_CODE_REV = '7bb7e2d441';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -6040,6 +6040,9 @@ var OMITONE_CODE_REV = '09c0066193';
       // 等提交结束（或 quizSubmitWaitMs 超时）再走正常完成判定。
       if (this._quizSubmitPending) return false;
       if (this._switchToNextLearningCard('skip-completed')) return true;
+      // 最后一节：下一节按钮已经点不动，不能再每秒 `skip completed` 空转。
+      // 交给换课出口（它自己会判 atEnd；没到尽头就返回 false，照旧走下面的 nextUnit）。
+      if (this._leaveFinishedCourse('skip-completed')) return true;
       console.log('%c[Omitone] skip completed: ' + this._getCurrentTitle(), 'color:#FF9800');
       // 批次 11-B：这一句以前只有 `{title, by}` —— 用户问「怎么说已完成了？」时，
       // 日志本身答不上来。现在把**判成完成的当场依据**一起落盘（全部只读取证，判据没动）。
@@ -6347,12 +6350,13 @@ var OMITONE_CODE_REV = '09c0066193';
       // 于是整帧被准入闸拒掉、连 jobid 都不匹配（2026-11-11 真页实测）。
       var vote = !!doc.querySelector('.ans-cmp-iconVote');
       var read = doc.querySelector('#img.imglook, .imglook#img');
+      var readV2 = doc.querySelector('.readInfo');
       var pptWithAudio = doc.querySelector('.swiper-container');
       var hyperlink = doc.querySelector('#hyperlink');
       var timereader = doc.querySelector('iframe[name="bookifame"][src*="timing"]');
       var documentJob = doc.querySelector('#panView, .fileBox, .pageNum, #docContainer, .docBox');
 
-      if (!(videojs || quiz || quizLike || vote || read || pptWithAudio || hyperlink || timereader || documentJob)) return null;
+      if (!(videojs || quiz || quizLike || vote || read || readV2 || pptWithAudio || hyperlink || timereader || documentJob)) return null;
 
       return {
         videojs: videojs,
@@ -6360,6 +6364,7 @@ var OMITONE_CODE_REV = '09c0066193';
         quizLike: quizLike,
         vote: vote,
         read: read,
+        readV2: readV2,
         pptWithAudio: pptWithAudio,
         hyperlink: hyperlink,
         timereader: timereader,
@@ -6425,7 +6430,7 @@ var OMITONE_CODE_REV = '09c0066193';
       // 到这里说明 job 字段缺失（超星部分接口确实不带），才允许按模块名推断。
       // 只列**确定是任务点**的模块，不要把 insertimage 加进来：
       // 图片大多是正文内容而非任务点，推断成任务点会让插件去"处理"一堆纯展示的图片。
-      if (/insertdoc|insertvideo|insertaudio|work|exam|quiz|book|link/.test(module)) return 'job';
+      if (/insertdoc|insertreadv2|insertvideo|insertaudio|work|exam|quiz|book|link/.test(module)) return 'job';
       // 扩展名要允许**不带前导点**：学习通的 property.type 常见写法是 "ppt"/"mp4" 而不是 ".ppt"，
       // 旧正则 `\.(ppt|…)$` 只认带点的写法，这两种任务点会被判成 not-job 直接漏掉。
       if (/(?:^|\.)(?:ppt|pptx|pdf|doc|docx|mp4|m3u8|avi|mp3|m4a|jpg|jpeg|png)$/.test(type)) return 'job';
@@ -6452,6 +6457,11 @@ var OMITONE_CODE_REV = '09c0066193';
       var module = String(property.module || attachment.module || '').toLowerCase();
       var type = String(property.type || attachment.type || '').toLowerCase();
 
+      // 专题阅读 readV2（2026-11-25 现场：最后一节卡了 99 拍）：附件 module 是
+      // `insertreadV2`，DOM 只有一张「点击去阅读」预览卡，没有 #img.imglook / panView。
+      // 它必须单独占一型：完成动作是站点 `.readInfo` 点击后的 `finishJob(jobid)`，
+      // 和普通图片/PDF 阅读器不是同一条翻页链。
+      if (/insertreadv2/.test(module)) return 'readv2';
       if (/insertdoc/.test(module) || /(?:^|\.)(?:ppt|pptx|pdf|doc|docx)$/.test(type)) return 'read';
       // 音频任务点走的是同一套媒体流程（_playChaoxingMediaJob 本身已支持 audio 元素），
       // 早期只认 insertvideo，insertaudio 会掉到「说不出」然后被整条丢弃
@@ -6493,6 +6503,7 @@ var OMITONE_CODE_REV = '09c0066193';
         if (elements.videojs) fromDom = 'video';
         else if (elements.quiz) fromDom = 'quiz';
         else if (elements.vote) fromDom = 'vote';
+        else if (elements.readV2) fromDom = 'readv2';
         else if (elements.read) fromDom = 'read';
         else if (elements.pptWithAudio) fromDom = 'ppt-audio';
         else if (elements.timereader) fromDom = 'timereader';
@@ -7136,6 +7147,9 @@ var OMITONE_CODE_REV = '09c0066193';
           // 判"这是不是投票"只此一处真源（`_isVoteCoverFrame`），两条扫描链共用。
           vote: appRef._isVoteCoverFrame(frame, doc),
           read: doc.querySelector('#img.imglook'),
+          // 专题阅读 readV2：预览帧只有 `.readInfo`（里面那句「点击去阅读」），
+          // 没有 #img.imglook / panView；漏了这一格整节会被判成「没有任务帧」。
+          readV2: doc.querySelector('.readInfo'),
           pptWithAudio: doc.querySelector('.swiper-container'),
           hyperlink: doc.querySelector('#hyperlink'),
           timereader: doc.querySelector('iframe[name="bookifame"][src*="timing"]'),
@@ -7224,6 +7238,15 @@ var OMITONE_CODE_REV = '09c0066193';
           var frameData = this._safeJsonParse(frameDataStr, {});
           var targetJobId = frameData.jobid || frameData._jobid || this._findJobIdInAncestorFrames(win);
           if (!targetJobId) {
+            // readV2 预览帧的 jobid 只写在 src 上（iframe 的 data 属性为空），
+            // 附件清单里对得上的是 `read-219328426` 这一串；从 URL 里原样读回来。
+            try {
+              var srcJob = String(frame.getAttribute('src') || '');
+              var mJob = srcJob.match(/[?&]jobid=([^&]+)/);
+              if (mJob) targetJobId = decodeURIComponent(mJob[1]);
+            } catch (eSrcJob) {}
+          }
+          if (!targetJobId) {
             // 签名在这一支同样要带：「第二份卷子在哪一层」的取证不区分它死在准入闸还是死在 jobid
             noteReject(frame, '取不到 jobid（本层 data 为空，往上找祖先帧也没有）',
               this._frameRejectSignature(doc, found));
@@ -7310,7 +7333,7 @@ var OMITONE_CODE_REV = '09c0066193';
                 await self._handleQuiz(jobDoc);
               };
             }(this, doc, targetJobId);
-          } else if (jobKind === 'read' || jobKind === 'ppt-audio' || jobKind === 'timereader' || jobKind === 'document') {
+          } else if (jobKind === 'read' || jobKind === 'readv2' || jobKind === 'ppt-audio' || jobKind === 'timereader' || jobKind === 'document') {
             if (!this.configs.enablePPT) {
               noteReject(frame, '是阅读/文档任务，但「文档」开关是关的');
               continue;
@@ -8192,7 +8215,7 @@ var OMITONE_CODE_REV = '09c0066193';
         return true;
       }
 
-      if (job.kind === 'read' || job.kind === 'document' || job.kind === 'timereader' || job.kind === 'ppt-audio') {
+      if (job.kind === 'read' || job.kind === 'readv2' || job.kind === 'document' || job.kind === 'timereader' || job.kind === 'ppt-audio') {
         if (!this.configs.enablePPT) {
           console.log('%c[Omitone] document learning disabled, skip: ' + job.name, 'color:#FF9800');
           return true;
@@ -8245,6 +8268,49 @@ var OMITONE_CODE_REV = '09c0066193';
             job.frame.parentElement.scrollIntoView({ block: 'center' });
           }
         } catch (eScroll) {}
+
+        if (job.kind === 'readv2') {
+          // 专题阅读 readV2 的完成动作不在翻页器里：站点预览帧 `.readInfo` 的点击
+          // 只做两件事 —— 父帧 `finishJob(jobid)`（POST /job/readv2）与 `top.window.open(阅读门户)`。
+          // 我们只需要前者；打开门户会多一枚标签页，而任务点已经由站点自己记完成。
+          // ⚠️ 这一支**必须带 jobid**：父帧的 finishJob(jobid) 用它拼 URL，空参会把 undefined 发上去。
+          var readv2Id = '';
+          try {
+            readv2Id = String(job.jobid || (job.attachment && (
+              job.attachment.jobid ||
+              (job.attachment.property && (job.attachment.property.jobid || job.attachment.property._jobid))
+            )) || '');
+          } catch (eRid) {}
+          var finishOwners = [];
+          try { if (job.win) finishOwners.push(job.win); } catch (eOwn) {}
+          try { if (job.win && job.win.parent) finishOwners.push(job.win.parent); } catch (eParent) {}
+          for (var fi = 0; fi < finishOwners.length; fi++) {
+            var owner = finishOwners[fi];
+            if (!owner || typeof owner.finishJob !== 'function' || !readv2Id) continue;
+            try {
+              owner.finishJob(readv2Id);
+              emitRuntimeLog('info', 'readv2 finishJob called', { name: job.name, jobid: readv2Id });
+              this._clearDocumentPendingState('readv2-finishJob');
+              return true;
+            } catch (eFinish) {}
+          }
+          var readInfo = job.doc && job.doc.querySelector ? job.doc.querySelector('.readInfo') : null;
+          if (readInfo) {
+            // 回退：照站点自己的点击动作走；临时屏蔽 top.window.open，避免多开阅读门户。
+            var topWin = null;
+            try { topWin = job.win && job.win.top; } catch (eTop) {}
+            var realOpen = topWin && topWin.open;
+            try { if (topWin) topWin.open = function () { return null; }; } catch (eOpen) {}
+            try { readInfo.click(); } catch (eClick) {}
+            try { if (topWin) topWin.open = realOpen; } catch (eRestore) {}
+            emitRuntimeLog('info', 'readv2 preview clicked', { name: job.name, jobid: readv2Id });
+            this._clearDocumentPendingState('readv2-click');
+            return true;
+          }
+          emitRuntimeLog('warn', 'readv2 finish entry not found', { name: job.name, jobid: readv2Id });
+          this._clearDocumentPendingState('readv2-missing');
+          return true;
+        }
 
         if (job.kind === 'read' && typeof job.win.finishJob === 'function') {
           job.win.finishJob();

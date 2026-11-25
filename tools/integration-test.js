@@ -11706,6 +11706,104 @@ async function testQuizSubmitNeverAccepted() {
     sortHidden.value === 'ABC', JSON.stringify({ value: sortHidden.value }));
 }
 
+async function testReadV2Task() {
+  console.log('\n[36] 专题阅读 readV2：insertreadV2 认得出，完成动作走站点父帧 finishJob(jobid)（2026-11-25 现场卡 99 拍）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var detect = read('src/page/60-tasks-detect.js');
+  var run = read('src/page/62-tasks-run.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var kindAtt = buildFrom(detect, '_kindFromAttachment');
+  var kindEls = buildFrom(detect, '_kindFromChaoxingElements');
+  check('① insertreadV2 附件说得出 readv2（旧映射整帧认不出，现场就卡在这一格）',
+    typeof kindAtt === 'function' && kindAtt({ property: { module: 'insertreadV2' } }) === 'readv2',
+    JSON.stringify({ kind: typeof kindAtt === 'function' ? kindAtt({ property: { module: 'insertreadV2' } }) : '(取不出)' }));
+  var readInfo = { id: 'readInfo' };
+  var kindApp = { _kindFromAttachment: kindAtt };
+  var kindOf = function (elements, attachment) {
+    if (typeof kindEls !== 'function' || typeof kindAtt !== 'function') return '(取不出)';
+    return kindEls.call(kindApp, elements, attachment, null);
+  };
+  check('② DOM 的 .readInfo 信号也仲裁成 readv2（预览帧里没有 imglook / panView）',
+    kindOf({ readV2: readInfo }, null) === 'readv2',
+    JSON.stringify({ kind: kindOf({ readV2: readInfo }, null) }));
+  check('③ 附件与 DOM 都指向 readv2 时仍只有一个答案（不许被 quizLike / 文档兜底抢走）',
+    kindOf({ readV2: readInfo, quizLike: {} }, { property: { module: 'insertreadV2' } }) === 'readv2',
+    JSON.stringify({ kind: kindOf({ readV2: readInfo, quizLike: {} }, { property: { module: 'insertreadV2' } }) }));
+
+  var logs = [];
+  var runner = buildFrom(run, '_runChaoxingReadJob', {
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta || null }); },
+    sleep: async function () {},
+    scaledMs: function (ms) { return ms; }
+  });
+  if (typeof runner !== 'function') {
+    check('④ 取出阅读执行器（取不出是签名/缩进变了，不等于没有回归）', false, 'runner=' + typeof runner);
+    return;
+  }
+  var calls = [];
+  var app = {
+    _clearDocumentPendingState: function (reason) { calls.push('clear:' + reason); },
+    _activeDocumentJobPending: false,
+    _activeDocumentJobManaged: false,
+    _activeDocumentJobDoc: null,
+    _documentWaitLogAt: 0
+  };
+  var job = {
+    kind: 'readv2',
+    name: '辉煌历程：纪念中国共产党成立95周年图文读本',
+    jobid: 'read-219328426',
+    frame: null,
+    win: { parent: { finishJob: function (id) { calls.push('finish:' + id); } } },
+    doc: { querySelector: function () { return null; } },
+    attachment: { property: { module: 'insertreadV2' } }
+  };
+  var ok = await runner.call(app, job);
+  check('④ readv2 的完成动作带 jobid 调父帧 finishJob，并清掉 document pending（不是无参调用）',
+    ok === true && calls.indexOf('finish:read-219328426') >= 0 && calls.indexOf('clear:readv2-finishJob') >= 0,
+    JSON.stringify({ ok: ok, calls: calls, logs: logs }));
+
+  var skip = buildFrom(detect, '_skipIfCompleted');
+  if (typeof skip !== 'function') {
+    check('⑤ 取出 skip completed 判定（取不出是签名/缩进变了，不等于没有回归）', false, 'skip=' + typeof skip);
+    return;
+  }
+  var leaveCalls = [];
+  var nextCalls = 0;
+  var skipApp = {
+    configs: { restudy: false },
+    _quizSubmitPending: false,
+    _isCurrentCompleted: function () { return true; },
+    _switchToNextLearningCard: function () { return false; },
+    _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
+    _getCurrentTitle: function () { return '最后一节'; },
+    nextUnit: function () { nextCalls++; }
+  };
+  skip.call(skipApp);
+  check('⑤ 最后一节完成时走换课出口，不再每秒 skip completed → nextUnit 空转',
+    leaveCalls.length === 1 && leaveCalls[0] === 'skip-completed' && nextCalls === 0,
+    JSON.stringify({ leaveCalls: leaveCalls, nextCalls: nextCalls }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -11758,6 +11856,7 @@ async function main() {
   await testWebSearchGate();
   await testVoteEndedParkPersistent();
   await testQuizSubmitNeverAccepted();
+  await testReadV2Task();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

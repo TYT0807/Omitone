@@ -151,7 +151,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `60-tasks-detect.js`
 
-*2359 行 / 48 方法*
+*2382 行 / 48 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
@@ -162,7 +162,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*1791 行 / 42 方法*
+*1834 行 / 42 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -327,7 +327,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ## 还没做的
 
-- 剩下最大的三个片段（2026-11-22 实测）是 `60-tasks-detect.js`（2359 行）、`80-popup-quiz.js`（2240 行）、
+- 剩下最大的三个片段（2026-11-22 实测）是 `60-tasks-detect.js`（2382 行）、`80-popup-quiz.js`（2240 行）、
   `70-quiz-flow.js`（2224 行）。还能再分，但收益已经明显变小 ——
   真正"一个域横跨上千行"的问题已经解决了。
   真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。

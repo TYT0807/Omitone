@@ -78,7 +78,7 @@
         return true;
       }
 
-      if (job.kind === 'read' || job.kind === 'document' || job.kind === 'timereader' || job.kind === 'ppt-audio') {
+      if (job.kind === 'read' || job.kind === 'readv2' || job.kind === 'document' || job.kind === 'timereader' || job.kind === 'ppt-audio') {
         if (!this.configs.enablePPT) {
           console.log('%c[Omitone] document learning disabled, skip: ' + job.name, 'color:#FF9800');
           return true;
@@ -131,6 +131,49 @@
             job.frame.parentElement.scrollIntoView({ block: 'center' });
           }
         } catch (eScroll) {}
+
+        if (job.kind === 'readv2') {
+          // 专题阅读 readV2 的完成动作不在翻页器里：站点预览帧 `.readInfo` 的点击
+          // 只做两件事 —— 父帧 `finishJob(jobid)`（POST /job/readv2）与 `top.window.open(阅读门户)`。
+          // 我们只需要前者；打开门户会多一枚标签页，而任务点已经由站点自己记完成。
+          // ⚠️ 这一支**必须带 jobid**：父帧的 finishJob(jobid) 用它拼 URL，空参会把 undefined 发上去。
+          var readv2Id = '';
+          try {
+            readv2Id = String(job.jobid || (job.attachment && (
+              job.attachment.jobid ||
+              (job.attachment.property && (job.attachment.property.jobid || job.attachment.property._jobid))
+            )) || '');
+          } catch (eRid) {}
+          var finishOwners = [];
+          try { if (job.win) finishOwners.push(job.win); } catch (eOwn) {}
+          try { if (job.win && job.win.parent) finishOwners.push(job.win.parent); } catch (eParent) {}
+          for (var fi = 0; fi < finishOwners.length; fi++) {
+            var owner = finishOwners[fi];
+            if (!owner || typeof owner.finishJob !== 'function' || !readv2Id) continue;
+            try {
+              owner.finishJob(readv2Id);
+              emitRuntimeLog('info', 'readv2 finishJob called', { name: job.name, jobid: readv2Id });
+              this._clearDocumentPendingState('readv2-finishJob');
+              return true;
+            } catch (eFinish) {}
+          }
+          var readInfo = job.doc && job.doc.querySelector ? job.doc.querySelector('.readInfo') : null;
+          if (readInfo) {
+            // 回退：照站点自己的点击动作走；临时屏蔽 top.window.open，避免多开阅读门户。
+            var topWin = null;
+            try { topWin = job.win && job.win.top; } catch (eTop) {}
+            var realOpen = topWin && topWin.open;
+            try { if (topWin) topWin.open = function () { return null; }; } catch (eOpen) {}
+            try { readInfo.click(); } catch (eClick) {}
+            try { if (topWin) topWin.open = realOpen; } catch (eRestore) {}
+            emitRuntimeLog('info', 'readv2 preview clicked', { name: job.name, jobid: readv2Id });
+            this._clearDocumentPendingState('readv2-click');
+            return true;
+          }
+          emitRuntimeLog('warn', 'readv2 finish entry not found', { name: job.name, jobid: readv2Id });
+          this._clearDocumentPendingState('readv2-missing');
+          return true;
+        }
 
         if (job.kind === 'read' && typeof job.win.finishJob === 'function') {
           job.win.finishJob();
