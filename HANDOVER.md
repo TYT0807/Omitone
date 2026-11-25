@@ -1762,6 +1762,22 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.69 #43 收口：更新提示分清稳定版、预览版与本地开发构建（2026-11-25，定时搭档按 brief 领）
+
+- **一句**：`checkUpdate` 里那段「本地高于线上，可能是实验版」把预览版和开发构建压成同一句；本轮把它收成
+  `stableUpdateMessage(versionOrder, remoteVersion, local, newerBuild, remoteAt)` 一份，六格各说各话：
+  有新版 / 同号换包 / 本地预览版（`local.name` 含 `experimental`）/ 本地开发构建 / 源码目录安装（无 `builtAt`）/
+  已是最新。`offer` 与文案同出一个判定，调用方不再写第二份版本比较。
+- **口径**：源码安装那一格排在「已是最新」之前（`!local.builtAt` 只说「本地安装 · 版本号与线上最新一致」）；
+  `previewPlan` 六格逻辑未动，只在预览通道那句补「可选，不影响正式版」。
+- **机检**：根套件 `omitone-update-plan-test.cjs` 17 项（cmpVersion 3 / previewPlan 6 / stableUpdateMessage 6 / 卫生 2），
+  从 `popup/popup.js` 原文切函数、用 `new Function` 注入附件名，不跑弹窗、不碰 DOM/chrome；挂进 `npm test`。
+- **反向两刀**（隔离 worktree）：A 删 `experimental` 分支 → 预览版那条红；B 删 `previewPlan.same-as-stable` → 对应格红；
+  还原后 `popup.js` 逐字节一致、复跑红 0、marker 0 处。日志 `.workbuddy/rev43.log`。
+- **读数**：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）；全量 e2e **152 场景 / 1718 项**绿；
+  `node tools/check.js` EXIT=0；说明书补了一格并重出 PDF，**页数仍 41**。
+- **仍欠**：预览包与门面预览行随本轮收口一起更新；现场弹窗属 1.3.1 稳定版，不装预览包就看不到新文案。
+
 ### 0.68 #229 收口：模型「在忙」的 45 秒退避落进 sessionStorage，活过 F5（2026-11-25，定时搭档按 brief 领）
 
 - **一句**：那 45 秒以前只在内存（`10-config-state.js:380` 初值 0），刷新即清零 —— 而服务商回「在忙 / 限流」时

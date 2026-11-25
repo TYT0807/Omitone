@@ -6,7 +6,22 @@
 ---
 
 
-## 1.3.2 — 实验版（未发布，`exp/1.3.1` 支线）
+## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
+
+### 批次 207 · 2026-11-25 · 更新提示分清稳定版、预览版与本地开发构建（任务 #43 · 定时搭档按 brief 领）
+
+- 弹窗更新提示的判定收成一份纯函数 `stableUpdateMessage`（`popup/popup.js`）：有新版 / 同号换包 /
+  本地预览版 / 本地开发构建 / 源码目录安装（无构建戳）/ 已是最新，六格各说各话；
+  预览版不再被写成「可能是实验版」，开发构建也不再和预览版共用一句。`previewPlan` 六格逻辑未动。
+- 预览通道那句补「可选，不影响正式版」；「装预览版」按钮与下载地址不变。
+- 新增根套件 `omitone-update-plan-test.cjs`（17 项：cmpVersion 3 / previewPlan 6 / stableUpdateMessage 6 / 卫生 2），
+  挂进 `npm test` 与 `npm run update-plan:test`；从 `popup/popup.js` 原文切函数，不跑整个弹窗、不碰 DOM/chrome。
+- 反向两刀（隔离 worktree，跑完已 remove）：A 删 `experimental` 分支 → 红 1（预览版那条）；B 删
+  `previewPlan` 的 `same-as-stable` 那格 → 红 1；还原后 `popup.js` 与基线逐字节一致、复跑红 0、marker 0 处。
+- 读数：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）、全量 e2e **152 场景 / 1718 项**绿
+  （`.workbuddy/e2e-43-full.log`）、`node tools/check.js` EXIT=0。
+- 说明书补一句「预览版 / 本地开发构建」的提示（页数保持 41）。
+- **门面**：`更新提示现在会分清「稳定版」「预览版」和本地开发构建`（main README 的 1.3.2 预览更新段与 `release-notes-preview.md`）
 
 ### 批次 206 · 2026-11-25 · 实验支线改名 exp/1.3.2，旧分支保留归档（用户拍板 #44）
 
