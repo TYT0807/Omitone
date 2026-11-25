@@ -18416,7 +18416,11 @@ SCENARIOS.push({
       'var g=function(q){return document.querySelector(\'[qid="\'+q+\'"].Cy_TItle\')||document.querySelector(\'.TiMu[qid="\'+q+\'"]\');};' +
       'var elA=g("9201"), elB=g("9202"), elC=g("9203"), elD=g("9204");' +
       // 走真实派发入口：_fillChoice / _fillMultiChoice（与 _fillAnswers 同一层）
-      'app._fillChoice(elA,"B","radio");' +
+      // ⚠️ elA 交「A」而不是「B」：这道题的第 1 个可见项写着「B. 选项乙」（站点按平台字母印，DOM 序被打乱），
+      //    而模型拿到的字母是**按 DOM 序重排**的（`_extractOptionText` 剥掉原字母、提示词按位置重新标 A/B），
+      //    所以模型说的 A = 第 1 行 = 平台字母 B。批次 190（#232 现场「答题点错选项」）之前这里交 B，
+      //    量的正是「按文本字母认项」那条旧路；现在交 A 才测得到新规则，而三条预期一个字都不用改。
+      'app._fillChoice(elA,"A","radio");' +
       'app._fillChoice(elB,"A","radio");' +
       'app._fillChoice(elC,"A","radio");' +
       'app._fillMultiChoice(elD,["A","C"]);' +
@@ -18462,7 +18466,8 @@ SCENARIOS.push({
       'var elA=g("9201"), elB=g("9202");' +
       // 把两道题重走一遍派发层（派发层才会记结构快照，直接调 _fillChoice 不会）
       'var qs=[{_element:elA,type:"single",index:0},{_element:elB,type:"single",index:1}];' +
-      'app._fillAnswers([{index:0,type:"single",answer:"B"},{index:1,type:"single",answer:"A"}], qs, null);' +
+      // 派发层：elA 交「A」= 第 1 个可见项（平台字母 B、`<a>` 带站点选中态），elB 交「A」= 第 1 个可见项（无选中态）
+      'app._fillAnswers([{index:0,type:"single",answer:"A"},{index:1,type:"single",answer:"A"}], qs, null);' +
       // 快照每个元素只记一次：拿哨兵值比，不能比两次 Date.now()（同批同步块里会撞成同一个数）
       'var keptBefore=(elB._omNoCheckDiagAt||0)>0;' +
       'elB._omNoCheckDiagAt=23456;' +

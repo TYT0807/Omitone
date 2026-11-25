@@ -4745,6 +4745,12 @@ async function testSeekDeferUntilSeekable() {
   var inj = { emitRuntimeLog: say, Date: FakeDate };
 
   var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 会话任务 #231 第 1 档：`_getMediaSeekKey` 现在经兄弟方法 `_mediaStablePath` 把签名查询串切掉。
+  // `buildFrom` 只取**单个**方法体，假 app 少挂这一件就是 TypeError → 整段一条断言都不跑，
+  // 而「没执行」在报告里和「通过」长得一模一样（AGENTS §5「红 0 条的第一嫌疑人是根本没跑到」）。
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
+  // 只为「不经假 app、裸算一把钥匙」那几处准备的 `this`：生产里兄弟方法恒在 app 上，测试台得自己补
+  var keyCtx = { _mediaStablePath: stablePath };
   var covers = buildFrom(media, '_seekableCovers', {});
   var defer = buildFrom(media, '_deferSeekUntilSeekable', inj);
   var trySeek = buildFrom(media, '_trySeekToEnd', inj);
@@ -4785,16 +4791,17 @@ async function testSeekDeferUntilSeekable() {
   var siteBody = bodyOf(media, '_siteSeekCondition');
   var condTtlMs = firstNum(siteBody, /now - \(hit\.at \|\| 0\) < (\d+)/);
 
-  check('① 六件与隔离谓词都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+  check('① 六件、钥匙归一那件与隔离谓词都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
     [getKey, covers, defer, trySeek, quarantine, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+    typeof stablePath === 'function' &&
     quarantineTtl > 0 &&
     [condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; }) &&
     [guardId, guardCell, guardPersist, guardHit, guardNote, guardClear, guardSay, guardRateSkip, guardSource].every(function (f) { return typeof f === 'function'; }) &&
     typeof noteHeld22 === 'function' &&
     windowMs > 0 && capTries > 1 && condTtlMs > 0 &&
     guardNeed > 0 && guardTtl > 0 && guardLedgerKey.length > 0,
-    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), guard: [typeof guardId, typeof guardCell, typeof guardPersist, typeof guardHit, typeof guardNote, typeof guardClear, typeof guardSay, typeof guardRateSkip, typeof guardSource].join('/'), held: typeof noteHeld22, windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs, guardNeed: guardNeed, guardTtl: guardTtl, guardKey: guardLedgerKey }));
-  if (!trySeek || !quarantine || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 ||
+    JSON.stringify({ key: typeof getKey, stable: typeof stablePath, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), guard: [typeof guardId, typeof guardCell, typeof guardPersist, typeof guardHit, typeof guardNote, typeof guardClear, typeof guardSay, typeof guardRateSkip, typeof guardSource].join('/'), held: typeof noteHeld22, windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs, guardNeed: guardNeed, guardTtl: guardTtl, guardKey: guardLedgerKey }));
+  if (!trySeek || !quarantine || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 || !stablePath || !getKey ||
     !guardId || !guardCell || !guardPersist || !guardHit || !guardNote || !guardClear || !guardSay || !guardRateSkip || !guardSource) return;
 
   function mkRanges(list) {
@@ -4845,6 +4852,7 @@ async function testSeekDeferUntilSeekable() {
       _workerDelay: function (fn) { delays.push(fn); },
       _isRateLockedAtOne: function () { return true; },
       _getMediaSeekKey: getKey,
+      _mediaStablePath: stablePath,
       _seekableCovers: covers,
       _deferSeekUntilSeekable: defer,
       _trySeekToEnd: trySeek,
@@ -4879,7 +4887,7 @@ async function testSeekDeferUntilSeekable() {
     return { app: app, delays: delays, store: store };
   }
   var seekTo = function (app, v, reason) { return app._trySeekToEnd(v, reason); };
-  var keyOf = function (v) { return getKey.call({}, v); };
+  var keyOf = function (v) { return getKey.call(keyCtx, v); };
 
   var DUR = 1401.4;
   var TARGET = DUR - 3;
@@ -5475,6 +5483,44 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ rateLen: rateBody.length, seekLen: seekBack.length, targetLen: targetBody.length,
       ensureLen: ensureBody.length, guardAt: guardAt, tryAt: tryAt, zeroAt: zeroAt,
       clearOkAt: clearOkAt, noteRevAt: noteRevAt, checkHasGuard: rateCheck.indexOf('_courseGuardHit') >= 0 }));
+
+  // ㉞ 钥匙归一（会话任务 #231 第 1 档）：站点按**播放会话**现签媒体地址（`?at_=<签发毫秒>&ak_=&ad_=`），
+  //   重签名与换清晰度都会换写法，而这把钥匙喂的是「这一支试过没有」那六本账 —— 键一换写法 =
+  //   每支的一次性试拖预算翻倍花，量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。
+  //   ⚠️ 这一族跑在 node 里：`location` 恒不存在，所以「相对地址」那一格量的是**退回原串**这个兜底，
+  //   浏览器的绝对化由 [30] 之外的真实页面负责 —— 别拿 node 的读数冒充浏览器那一格。
+  var sigA = 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4?at_=1790000000000&ak_=aaa&ad_=bbb';
+  var sigB = 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4?at_=1790000099999&ak_=zzz&ad_=yyy';
+  var kA = getKey.call(keyCtx, { currentSrc: sigA });
+  var kB = getKey.call(keyCtx, { currentSrc: sigB });
+  var kHash = getKey.call(keyCtx, { currentSrc: 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4#t=120' });
+  var kRel = getKey.call(keyCtx, { currentSrc: '/ananas/modules/video/index.html' });
+  var kBlob = getKey.call(keyCtx, { currentSrc: 'blob:null/6f6a1c2d-0000-0000-0000-000000000001' });
+  var kNoSrc = getKey.call(keyCtx, { currentSrc: '', src: '' });
+  var kJob = getKey.call({ _mediaStablePath: stablePath, _activeJobId: 'job-7' }, {});
+  check('㉞ 钥匙只认稳定段：同一支视频换签名、换 `#` 片段都必须是同一把钥匙（否则每支的一次性预算翻倍花）；'
+    + '相对地址与 blob 各交回非空（blob 是补救换源留下的身份，切查询串治不了它 —— 那是第 2 档，本轮只钉住现状防漂移）；'
+    + '「读不到地址」与「有作业号」两格各占各的：无地址又无作业号才交空串，有作业号退回 `job:` 而不是塌进空串（§2 #12）',
+    kA === kB && kA === 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4' && kHash === kA &&
+      kRel === '/ananas/modules/video/index.html' &&
+      kBlob === 'blob:null/6f6a1c2d-0000-0000-0000-000000000001' &&
+      kNoSrc === '' && kJob === 'job:job-7',
+    JSON.stringify({ kA: kA, kB: kB, kHash: kHash, kRel: kRel, kBlob: kBlob, kNoSrc: kNoSrc, kJob: kJob }));
+
+  // ㉟ 反分叉（第 30 项「掩码只许有一份」同一族）：稳定段只许由 `_mediaStablePath` 一处算。
+  //   两处各自切一次，就能各自切错一次（少切 `#` / 把 blob 切成空），而**不报错、不留日志**，
+  //   只是那六本账又回到按签名起账 —— 与改之前症状逐字相同，最难查的一类。
+  var keyBody = bodyOf(media, '_getMediaSeekKey');
+  var mimeBody = bodyOf(media, '_guessMediaMime');
+  var pathCallers = ['_getMediaSeekKey', '_guessMediaMime']
+    .filter(function (n) { return bodyOf(media, n).indexOf('this._mediaStablePath(') >= 0; });
+  var rawCuts = [keyBody, mimeBody].filter(function (b) {
+    return /\.split\(\s*['"]\?/.test(b) || /\.indexOf\(\s*['"]\?/.test(b) || /\.slice\([^)]*\?/.test(b) || /search\(\s*['"]\?/.test(b);
+  }).length;
+  check('㉟ 归一只有一份口径：`_getMediaSeekKey` 与 `_guessMediaMime` 两处都真经 `this._mediaStablePath(`，'
+    + '且两个方法体里都留着不下一把自切的切查询串（各自切一次就能各自切错一次，且不报错只让账回到按签名起账）',
+    keyBody.length > 50 && mimeBody.length > 50 && pathCallers.length === 2 && rawCuts === 0,
+    JSON.stringify({ keyLen: keyBody.length, mimeLen: mimeBody.length, callers: pathCallers, rawCuts: rawCuts }));
 }
 
 /** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
@@ -5543,13 +5589,15 @@ async function testStartStuckSiteClickSelfHeal() {
 
   var giveupTtl = readProductConstant(fs.readFileSync(path.join(ROOT, 'src/page/00-shell-constants.js'), 'utf8'), 'TASK_GIVEUP_TTL_MS');
   var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 假 app 少挂这一件，`this._mediaStablePath` 就是 TypeError —— 整段一条断言都不跑（AGENTS §5）
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
   var siteOf = buildFrom(media, '_siteStartControlOf', { visible: fakeVisible });
   var nudge = buildFrom(media, '_nudgeSiteStartControl', inj);
   var quarantined = buildFrom(media, '_isMediaQuarantined', { Date: FakeDate, TASK_GIVEUP_TTL_MS: giveupTtl });
-  check('⓪ `_getMediaSeekKey` / `_siteStartControlOf` / `_nudgeSiteStartControl` 三件本体都取成了函数',
-    [getKey, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
-    JSON.stringify({ key: typeof getKey, siteOf: typeof siteOf, nudge: typeof nudge }));
-  if (!getKey || !siteOf || !nudge) return;
+  check('⓪ `_getMediaSeekKey` / `_mediaStablePath` / `_siteStartControlOf` / `_nudgeSiteStartControl` 四件本体都取成了函数',
+    [getKey, stablePath, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
+    JSON.stringify({ key: typeof getKey, stable: typeof stablePath, siteOf: typeof siteOf, nudge: typeof nudge }));
+  if (!getKey || !stablePath || !siteOf || !nudge) return;
 
   // 现场那副容器：开始键 + 三枚绝不能碰的邻居，一起放在同一个 host 里
   function mkShape(opt) {
@@ -5596,6 +5644,7 @@ async function testStartStuckSiteClickSelfHeal() {
     app._mediaQuarantine = null;
     app._mediaReloadKeys = null;
     app._getMediaSeekKey = function (v) { return getKey.call(app, v); };
+    app._mediaStablePath = function (u) { return stablePath.call(app, u); };
     app._isMediaQuarantined = function (v) { return quarantined.call(app, v); };
     app._popupQuizBlocksPlayback = function () { return app.__quizBlocks === true; };
     app._siteStartControlOf = function (v) { return siteOf.call(app, v); };
@@ -8348,6 +8397,8 @@ async function testNinetyAdvanceBoundToSeek() {
   var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
 
   var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 会话任务 #231 第 1 档：钥匙经兄弟方法归一，假 app 少挂这一件就是 TypeError（AGENTS §5「没跑到」同族）
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
   var rateLocked = buildFrom(media, '_isRateLockedAtOne', {});
   var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
   var noteSkip = buildFrom(media, '_noteSeekSkip', { emitRuntimeLog: say });
@@ -8405,19 +8456,19 @@ async function testNinetyAdvanceBoundToSeek() {
   var heldBody = bodyOf(media, '_noteNinetyHeldBack');
   var seekBody = bodyOf(media, '_trySeekToEnd');
 
-  var allFns14 = [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, quarantine, noteHeld,
+  var allFnsMedia = [getKey, stablePath, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, quarantine, noteHeld,
     shouldAdvance, isFinished, condNoDrag, readCond, siteCond, siteNoDrag,
     gId, gCell, gPersist, gHit, gNote, gClear, gSay, gSkip, gSource];
-  check('① 廿四件（原十四件 + 批次 173 的课程格九件 + 隔离谓词一件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
+  check('① 廿五件（原十四件 + 批次 173 的课程格九件 + 隔离谓词一件 + 钥匙归一一件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
     + '都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
     + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句「有没有**不必动手拖**的证据」（站点卡片原话 / 同一门课认过一次）'
     + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    allFns14.every(function (f) { return typeof f === 'function'; }) && qTtlR > 0 &&
+    allFnsMedia.every(function (f) { return typeof f === 'function'; }) && qTtlR > 0 &&
       gNeedR > 0 && gTtlR > 0 && gKeyR.length > 0 &&
       gateBody.indexOf("if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek'))") >= 0 &&
       gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
     JSON.stringify({
-      key: typeof getKey, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
+      key: typeof getKey, stable: typeof stablePath, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
       covers: typeof seekCovers, defer: typeof deferSeek,
       seek: typeof trySeek, held: typeof noteHeld, gate: typeof shouldAdvance, fin: typeof isFinished,
       cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'),
@@ -8425,7 +8476,7 @@ async function testNinetyAdvanceBoundToSeek() {
         typeof gClear, typeof gSay, typeof gSkip, typeof gSource].join('/'),
       gateBody: gateBody.length, heldBody: heldBody.length
     }));
-  if (!allFns14.every(function (f) { return typeof f === 'function'; })) return;
+  if (!allFnsMedia.every(function (f) { return typeof f === 'function'; })) return;
 
   // ---- 死键的成因先钉住：那份证据只有一个写入口，而写入口第一道闸就是 enableSeek ----
   // ⚠️ 按**字符偏移**判"这处赋值在不在 _trySeekToEnd 体内"，别按行算（AGENTS §2 #1 那条同一族：
@@ -8464,7 +8515,7 @@ async function testNinetyAdvanceBoundToSeek() {
     _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
     _isMediaQuarantined: quarantine,
     _workerDelay: function () {}, _isRateLockedAtOne: function () { return true; },
-    _getMediaSeekKey: getKey, _noteSeekSkip: noteSkip,
+    _getMediaSeekKey: getKey, _mediaStablePath: stablePath, _noteSeekSkip: noteSkip,
     // ⚠️ 区间闸那两件也必须挂上来 —— 反向验证 G 轮把 `enableSeek` 那道闸改成"记一笔不退回"，
     //    执行流就走到 `_deferSeekUntilSeekable`， harness 里没有它 → TypeError 把整套件打死在半路，
     //    报出来的是"集成层没交出总账"而不是 ③ 红。**测试台把"生产坏了"实现成崩溃，等于替生产删掉一条断言。**
@@ -8475,7 +8526,7 @@ async function testNinetyAdvanceBoundToSeek() {
     _trySeekToEnd: trySeek
   };
   var sv = mkSeekVideo('deadkey');
-  var svKey = getKey.call({}, sv);
+  var svKey = seekApp._getMediaSeekKey(sv);
   var seekRet = trySeek.call(seekApp, sv, 'itest-185');
   var skipRec = seekApp._seekSkipLedger && seekApp._seekSkipLedger[svKey];
   check('③ `enableSeek:false` 时 `_trySeekToEnd` 当场退回：不写 currentTime、不新建 `_seekRevertedKeys`，只把「disabled」记进 skip 账（这一族以前在盘上是零证据）',
@@ -8509,6 +8560,7 @@ async function testNinetyAdvanceBoundToSeek() {
       _ninetyHeldBackKeys: null,
       _activeJobId: 'job-910000001',
       _getMediaSeekKey: getKey,
+      _mediaStablePath: stablePath,
       _isRateLockedAtOne: rateLocked,
       _isNinetyPercentVideo: isNinety,
       _noteNinetyHeldBack: noteHeld,
@@ -8529,7 +8581,7 @@ async function testNinetyAdvanceBoundToSeek() {
   // 旧行为那一支：证据齐了就提前收尾，而且一句"被放弃"都不许说
   var appOn = mkGateApp(ON);
   var vOn = mkMedia({ src: 'bound-on' });
-  appOn._seekRevertedKeys[getKey.call({}, vOn)] = true;
+  appOn._seekRevertedKeys[appOn._getMediaSeekKey(vOn)] = true;
   logs.length = 0;
   var retOn = shouldAdvance.call(appOn, vOn);
   check('④ `enableSeek:true` + 弹回过 + 锁 1x + 到 90% + 平台已标记，照旧提前收尾，且**一句"被放弃"都不多说**（绑定不许把顺利那一条拖下水；成功那句 `advance at 90%` 照旧在）',
@@ -8540,12 +8592,12 @@ async function testNinetyAdvanceBoundToSeek() {
   // 新的那一格：证据被人硬塞进账本，但上面那枚是关的 → 不提前收尾
   var appOff = mkGateApp(OFF);
   var vOff = mkMedia({ src: 'bound-off' });
-  appOff._seekRevertedKeys[getKey.call({}, vOff)] = true;  // 上一拍开着时留下的旧证据
+  appOff._seekRevertedKeys[appOff._getMediaSeekKey(vOff)] = true;  // 上一拍开着时留下的旧证据
   logs.length = 0;
   var retOff = shouldAdvance.call(appOff, vOff);
   check('⑤ 单向绑定的正半截：`enableSeek` 关上后**即使账本里躺着旧的弹回证据也不提前收尾**（用户中途关掉就该立刻失效，而不是继续吃上一轮的结论）',
     retOff === false,
-    JSON.stringify({ ret: retOff, reverted: appOff._seekRevertedKeys[getKey.call({}, vOff)] }));
+    JSON.stringify({ ret: retOff, reverted: appOff._seekRevertedKeys[appOff._getMediaSeekKey(vOff)] }));
 
   // 被放弃要说一次，而且要指名道姓
   var heldLogs = logs.filter(function (l) { return l.message === 'advance at 90% held back: seek disabled'; });
@@ -11268,6 +11320,39 @@ async function testQuizSubmitNeverAccepted() {
   var l2 = typeFn.call(typeApp, mkTypeEl('3'));
   check('232-L1：其它信号都没有时用 li[qtype] 兜底判题型（1→多选，3→判断）',
     l1 === 'multiple' && l2 === 'judge', JSON.stringify({ l1: l1, l2: l2 }));
+
+  // ---- M：多选答案写隐藏域前必须按字母序（#232 现场：BAC/CDA 被拒，ABC/ACD 通过） ----
+  var sortHidden = { value: '' };
+  var mkChoice = function (dataLetter) {
+    return {
+      classList: { contains: function (n) { return n === 'check_answer_dx'; } },
+      getAttribute: function (n) { return n === 'data' ? dataLetter : ''; }
+    };
+  };
+  var sortDoc = {
+    querySelectorAll: function (sel) { return sel === '.choice213' ? [mkChoice('B'), mkChoice('A'), mkChoice('C')] : []; },
+    getElementById: function (id) { return id === 'answer213' ? sortHidden : null; }
+  };
+  var sortItem = {
+    ownerDocument: sortDoc,
+    click: function () {},
+    // 有 qid 时生产会给选项宿主写 `aria-checked`（232-K 那两台 qid 恒空所以走不到这一行），
+    // 假元素少这一件就是 TypeError → 整段一条断言都不跑（§5「红 0 条的第一嫌疑人是根本没跑到」）。
+    setAttribute: function () {},
+    getAttribute: function (n) { return n === 'qid' ? '213' : ''; },
+    closest: function (sel) { return /\[qid\]/.test(sel) ? sortItem : null; },
+    querySelector: function (sel) {
+      if (/num_option/.test(sel)) {
+        return { getAttribute: function (n) { return n === 'data' ? 'B' : ''; }, textContent: 'B',
+          classList: { add: function () {}, remove: function () {}, contains: function () { return false; } } };
+      }
+      return null;
+    },
+    querySelectorAll: function () { return []; }
+  };
+  clickFn.call(kApp, sortItem, 'checkbox');
+  check('232-M1：多选写隐藏域前按字母序收敛（DOM 序拼出 BAC 也必须写成 ABC）',
+    sortHidden.value === 'ABC', JSON.stringify({ value: sortHidden.value }));
 }
 
 async function main() {

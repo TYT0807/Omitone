@@ -806,6 +806,10 @@
               picked.sort();
               value = picked.join('');
             }
+            // 平台要求多选答案**按字母序**（#232 现场实测：点击序 BAC/CDA 被回「作业提交失败！」，
+            // 同一份选择按 ABC/ACD 提交即 success）。randomOptions 下徽标 data 与 DOM 次序无关，
+            // 这里必须自己排序 —— 站点自己的 addChoice 也是按它那边的顺序拼，不能指望我们跟它一致。
+            value = String(value || '').replace(/\s+/g, '').split('').sort().join('');
           }
           if (value) {
             hidden.value = value;

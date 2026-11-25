@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'c8d37346e6';
+var OMITONE_CODE_REV = '1c96527e1d';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -2703,11 +2703,29 @@ var OMITONE_CODE_REV = 'c8d37346e6';
     },
 
 
+    // 站点把媒体地址按**播放会话**现签（`?at_=<签发毫秒>&ak_=&ad_=`），重签名、换清晰度都会换写法，
+    // 而这把钥匙喂的是「这一支试过没有」那几本账 —— 键一换写法 = 每支的一次性预算翻倍花，
+    // 量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。稳定身份只有路径那一段。
+    _mediaStablePath: function (url) {
+      var raw = String(url == null ? '' : url);
+      if (!raw) return '';
+      var abs = raw;
+      try {
+        if (typeof location !== 'undefined' && location.href) abs = new URL(raw, location.href).href;
+      } catch (e) { abs = raw; }
+      var cut = abs.search(/[?#]/);
+      return cut >= 0 ? abs.slice(0, cut) : abs;
+    },
+
+
     _getMediaSeekKey: function (media) {
       if (!media) return '';
       var src = '';
       try { src = media.currentSrc || media.src || ''; } catch (e) {}
-      if (src) return src;
+      // 拿不到稳定段时 `_mediaStablePath` 交回原串而不是空串 —— 空串在所有出口都是「没有钥匙」，
+      // 那会把「归一失败」实现成「这一支永远不动手」（§2 #12）。
+      var stable = src ? this._mediaStablePath(src) : '';
+      if (stable) return stable;
       if (this._activeJobId) return 'job:' + this._activeJobId;
       return '';
     },
@@ -4506,7 +4524,8 @@ var OMITONE_CODE_REV = 'c8d37346e6';
 
 
     _guessMediaMime: function (url) {
-      var u = String(url || '').toLowerCase().split('?')[0];
+      // 稳定段只有一份口径（与 `_getMediaSeekKey` 同一把尺），别再各写一遍切查询串的那一手
+      var u = this._mediaStablePath(url).toLowerCase();
       if (/\.m3u8$/.test(u)) return '';
       if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
       if (/\.mp3$/.test(u)) return 'audio/mpeg';
@@ -17769,6 +17788,10 @@ var OMITONE_CODE_REV = 'c8d37346e6';
               picked.sort();
               value = picked.join('');
             }
+            // 平台要求多选答案**按字母序**（#232 现场实测：点击序 BAC/CDA 被回「作业提交失败！」，
+            // 同一份选择按 ABC/ACD 提交即 success）。randomOptions 下徽标 data 与 DOM 次序无关，
+            // 这里必须自己排序 —— 站点自己的 addChoice 也是按它那边的顺序拼，不能指望我们跟它一致。
+            value = String(value || '').replace(/\s+/g, '').split('').sort().join('');
           }
           if (value) {
             hidden.value = value;

@@ -14,9 +14,9 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（72 个）：
+ * 本段的方法（73 个）：
  *   _clearMediaPendingState、_isMediaQuarantined、_quarantineDeadMedia、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
- *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
+ *   _findMediaInDocument、_waitForMediaInDocument、_mediaStablePath、_getMediaSeekKey、_noteSeekSkip、
  *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
  *   _siteUnplayableHit、_siteSaysUnplayable、_releaseMediaNotFound、
  *   _courseGuardId、_courseGuardCell、_persistCourseGuard、_courseGuardHit、_noteCourseGuard、
@@ -493,11 +493,29 @@
     },
 
 
+    // 站点把媒体地址按**播放会话**现签（`?at_=<签发毫秒>&ak_=&ad_=`），重签名、换清晰度都会换写法，
+    // 而这把钥匙喂的是「这一支试过没有」那几本账 —— 键一换写法 = 每支的一次性预算翻倍花，
+    // 量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。稳定身份只有路径那一段。
+    _mediaStablePath: function (url) {
+      var raw = String(url == null ? '' : url);
+      if (!raw) return '';
+      var abs = raw;
+      try {
+        if (typeof location !== 'undefined' && location.href) abs = new URL(raw, location.href).href;
+      } catch (e) { abs = raw; }
+      var cut = abs.search(/[?#]/);
+      return cut >= 0 ? abs.slice(0, cut) : abs;
+    },
+
+
     _getMediaSeekKey: function (media) {
       if (!media) return '';
       var src = '';
       try { src = media.currentSrc || media.src || ''; } catch (e) {}
-      if (src) return src;
+      // 拿不到稳定段时 `_mediaStablePath` 交回原串而不是空串 —— 空串在所有出口都是「没有钥匙」，
+      // 那会把「归一失败」实现成「这一支永远不动手」（§2 #12）。
+      var stable = src ? this._mediaStablePath(src) : '';
+      if (stable) return stable;
       if (this._activeJobId) return 'job:' + this._activeJobId;
       return '';
     },
@@ -2296,7 +2314,8 @@
 
 
     _guessMediaMime: function (url) {
-      var u = String(url || '').toLowerCase().split('?')[0];
+      // 稳定段只有一份口径（与 `_getMediaSeekKey` 同一把尺），别再各写一遍切查询串的那一手
+      var u = this._mediaStablePath(url).toLowerCase();
       if (/\.m3u8$/.test(u)) return '';
       if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
       if (/\.mp3$/.test(u)) return 'audio/mpeg';
