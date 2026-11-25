@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '84eddcea58';
+var OMITONE_CODE_REV = 'b31bd3c0b5';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -4185,6 +4185,38 @@ var OMITONE_CODE_REV = '84eddcea58';
 
 
     /**
+     * 把一本「按媒体钥匙记的账」裁到 `cap` 条，**只删最旧的**（按条目 `at` 升序），返回删掉的条数。
+     *
+     * ⚠️ 为什么不是「超了就整本清空」：这本账是**跨拍累积**才生效的（AGENTS §2 #13）——
+     *    整本抹平等于把所有媒体的「已经重载过几次」归零，`MEDIA_RELOAD_LIMIT` 那道三次闸
+     *    永远数不到顶，坏包的视频就一遍遍重载。只裁最旧那几条，还在播的照旧带着自己的账。
+     * ⚠️ 纯函数：不读 `this`（**更不许顺手清别的账本** —— `_seekRevertedKeys` 那一族是站点的行为证据，
+     *    被连坐抹掉就是 AGENTS §2 #17 那笔预算白花）、不抛。
+     *    没有 `at` 的条目按 0 算（最旧先删）；拿不到 map、`cap` 读不出数、任何异常 —— 一律交回 0，
+     *    让调用方照旧走原路（§2 #12：「读不出」不许实现成"做了点什么"）。
+     */
+    _evictOldestKeys: function (map, cap) {
+      try {
+        if (!map || typeof map !== 'object') return 0;
+        var max = Number(cap);
+        if (!isFinite(max) || max < 0) return 0;
+        var keys = Object.keys(map);
+        if (keys.length <= max) return 0;
+        var atOf = function (k) {
+          var t = Number(map[k] && map[k].at);
+          return isFinite(t) ? t : 0;
+        };
+        keys.sort(function (a, b) { return atOf(a) - atOf(b); });
+        var drop = keys.length - max;
+        for (var i = 0; i < drop; i++) delete map[keys[i]];
+        return drop;
+      } catch (eEvict) {
+        return 0;
+      }
+    },
+
+
+    /**
      * 死流水线的**原地重载**：源不动，`load()` 让浏览器重建解码管线，播放位置等元数据回来再接回去。
      *
      * ⚠️ 为什么不用 `_maybeRepairMediaSource` 那条 blob 补救：那是**整个文件取回来重封 MIME**，
@@ -4238,6 +4270,10 @@ var OMITONE_CODE_REV = '84eddcea58';
           resumeAt = jumpTo;
         }
         this._mediaReloadKeys[key] = { at: Date.now(), n: doneAttempts + 1, resumeAt: resumeAt };
+        // 重载次数有上限（`MEDIA_RELOAD_LIMIT`），**钥匙却没有**：一节课几百支视频，每支换过一次源
+        // 就留一格，这本账只会长。裁到 300 条、只清最旧的（300 远在「同一支的三次重试」之外，
+        // 裁不到正在用的那几枚）—— 整本清空会把还在播的媒体的重试计数抹回 0，等于放开上限。
+        this._evictOldestKeys(this._mediaReloadKeys, 300);
 
         emitRuntimeLog('warn', 'media pipeline dead, reload in place', {
           code: code,

@@ -5541,6 +5541,52 @@ async function testSeekDeferUntilSeekable() {
     + '且两个方法体里都留着不下一把自切的切查询串（各自切一次就能各自切错一次，且不报错只让账回到按签名起账）',
     keyBody.length > 50 && mimeBody.length > 50 && pathCallers.length === 2 && rawCuts === 0,
     JSON.stringify({ keyLen: keyBody.length, mimeLen: mimeBody.length, callers: pathCallers, rawCuts: rawCuts }));
+
+  // ㊷ `_mediaReloadKeys` 加上限（会话任务 #231 第 3a 档）：重载**次数**有上限、**钥匙**没有 ——
+  //   一节课几百支视频，每支换过一次源就留一格，这本账只会长。裁到 300 条且**只清最旧**：
+  //   整本清空等于把所有媒体的重试计数抹回 0，`MEDIA_RELOAD_LIMIT` 那道三次闸结构上永远数不到顶
+  //   （AGENTS §2 #13「跨轮记账不许被同一轮动作清零」）。
+  //   ⚠️ 一次调用只许动被传进来那一本：`_seekRevertedKeys` 是「站点把进度条拽回去」的行为证据，
+  //      被连坐抹掉就等于替每支视频重新发一次一次性试拖预算（§2 #17）—— 邻居账那一格就是钉这一条的。
+  //      圈号跳开 ㊳–㊶：那四个别的段已占着，同名会让反向验证按断言名 needle 时分不清红在哪一段。
+  var evict = buildFrom(media, '_evictOldestKeys', {});
+  var ledgerCtx = {
+    _mediaReloadKeys: {
+      r1: { at: 1, n: 1, resumeAt: 0 },
+      r2: { at: 2, n: 1, resumeAt: 0 },
+      r3: { at: 3, n: 2, resumeAt: 0 },
+      r4: { at: 4, n: 1, resumeAt: 0 },
+      r5: { at: 5, n: 3, resumeAt: 0 }
+    },
+    _seekRevertedKeys: { 'https://s/x/a.mp4': true },
+    _seekTriedKeys: { 'https://s/x/b.mp4': true },
+    _seekSiteKeys: { 'https://s/x/c.mp4': { state: 'silent', at: 9 } }
+  };
+  var dropped = evict ? evict.call(ledgerCtx, ledgerCtx._mediaReloadKeys, 3) : -1;
+  var leftReload = Object.keys(ledgerCtx._mediaReloadKeys).sort();
+  var neighboursKept = ['_seekRevertedKeys', '_seekTriedKeys', '_seekSiteKeys'].every(function (n) {
+    return Object.keys(ledgerCtx[n] || {}).length === 1;
+  });
+  // 「真的接在写入点后面」+「那个上限只有一份」：这两格从**源码文本**读回来，
+  //   否则助手挂在 app 上却没人调、或别处又抄一份 300，运行时那三格照样全绿。
+  var reloadBody = bodyOf(media, '_reloadMediaInPlace');
+  var wiredAt = reloadBody.indexOf('this._evictOldestKeys(this._mediaReloadKeys,');
+  var prodCap = firstNum(reloadBody, /_evictOldestKeys\(\s*this\._mediaReloadKeys\s*,\s*(\d+)\s*\)/);
+  var writeAt = reloadBody.indexOf('this._mediaReloadKeys[key] =');
+  var capSingles = (media.match(/_evictOldestKeys\(\s*this\._mediaReloadKeys\s*,\s*(\d+)/g) || []).length;
+  // 没 `at` 的条目按 0 算（最旧先删），而不是抛、也不是当成最新留下
+  var oddMap = { a: {}, b: { at: 7 }, c: { at: 8 } };
+  var oddDrop = evict ? evict.call({}, oddMap, 2) : -1;
+  check('㊷ 重载账裁到上限且只清最旧：5 条（at=1..5）配 cap=3，交回删除数 2 且留下 at=3/4/5（整本清空会红在这里）；'
+    + '同一次调用之后 `_seekRevertedKeys`/`_seekTriedKeys`/`_seekSiteKeys` 三本邻居各还剩 1 条（连坐清掉会红在这里）；'
+    + '没有 `at` 的条目按 0 算最旧先删（交回 1、只剩 at=7/8）；'
+    + '写入点那一发接在 `_mediaReloadKeys[key] =` **之后**、上限从源码读回来是 300 且全文件只此一处',
+    dropped === 2 && leftReload.join(',') === 'r3,r4,r5' && neighboursKept &&
+      oddDrop === 1 && Object.keys(oddMap).sort().join(',') === 'b,c' &&
+      wiredAt > 0 && writeAt > 0 && wiredAt > writeAt && prodCap === 300 && capSingles === 1,
+    JSON.stringify({ dropped: dropped, leftReload: leftReload, neighboursKept: neighboursKept,
+      oddDrop: oddDrop, oddLeft: Object.keys(oddMap), wiredAt: wiredAt, writeAt: writeAt,
+      prodCap: prodCap, capSingles: capSingles }));
 }
 
 /** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
@@ -10323,7 +10369,8 @@ async function testMediaRecoveryExhaustion() {
   var limitR = firstNum(read('src/page/00-shell-constants.js'), /MEDIA_RELOAD_LIMIT\s*=\s*(\d+)/);
   var ttlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
   var mediaNames = ['_isMediaQuarantined', '_quarantineDeadMedia', '_clearMediaPendingState',
-    '_isActiveMediaPending', '_isVisibleMedia', '_getVideoEl', '_reloadMediaInPlace', '_handleVideoEnded',
+    '_isActiveMediaPending', '_isVisibleMedia', '_getVideoEl', '_reloadMediaInPlace', '_evictOldestKeys',
+    '_handleVideoEnded',
     '_handleVideoLoaded', '_startSlideMedia', '_waitSlideAudioDone', '_ensurePlaybackRate',
     '_scheduleMaxRateDetection', '_rearmMediaGuardIfLost'];
   var loopNames = ['_taskPointKey', '_taskGiveUpMap', '_isTaskGivenUp', '_markTaskGivenUp', '_clearTaskGiveUp'];

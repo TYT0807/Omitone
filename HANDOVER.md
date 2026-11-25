@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 791 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 792 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1759,6 +1759,37 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `:1888`（`_ninetyHeldBackKeys`）/ `:2165`（`_startNudgeKeys`），而 `_mediaReloadKeys` 只有 `:2008` 懒建与 `:76` 单键 delete、**没有上限**；
   会牵动 `tools/integration-test.js`
   ⑩ 那格写死的 >300 清零名单）；#72 与 #74 仍在队尾排队。
+  - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
+    已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
+
+### 0.66 #231 第 3a 档收口：媒体重载账裁到 300 条且只清最旧（2026-11-25，定时搭档按 brief 领）
+
+- **动盘**：`src/page/40-media.js` 新增纯函数 `_evictOldestKeys(map, cap)`（`:1988`，**整段不读 `this`** ——
+  一旦读兄弟账本就是第 3b 档要拆的连坐），写入点后紧跟一发 `this._evictOldestKeys(this._mediaReloadKeys, 300)`
+  （`:2062` 写、`:2066` 裁，那一发是全书**唯一**的 `300` 上限调用点）。
+- **为什么只动这一本**：`MEDIA_RELOAD_LIMIT = 3` 管的是**同一支重试几次**，管不到**账本里有几支** ——
+  旧代码那本连上限都没有；而另外 5 处 `>300` 是「整张换新」，一次清零等于把跨拍攒的证据全抹掉
+  （AGENTS §2 #13 的死形，`:990` 那一处更是连带 `_seekRevertedKeys` —— 那是站点的地盘，§2 #17）。
+  300 远大于「同一支最多 3 发」那个窗口，所以裁旧不会误伤正在补救的那一支。
+- **集成层**：新增 ㊷（[22] 媒体钥匙一族末尾）钉五样 —— 只掉最旧 2 条、留下的顺序、
+  **邻居三本账逐条仍在**、奇数上限那一格、以及「裁旧发生在写入之后 + 上限 300 是 `capSingles === 1` 那一处」。
+  断言里**不写死 300**：那个数是从源码 `:2066` 读回来的。当前读数 **792**（红 0，`.workbuddy/itest231s3a.log`）；
+  `node tools/check.js` 退出 **0**、`[FAIL]` 0 条（`.workbuddy/check231s3a.log`）。
+- ⚠️ **本档第一次跑红 3 条，红的不是新断言**：`177-5/7/8` 那三场的假 app 没挂 `_evictOldestKeys`，
+  生产外层 try 把 `TypeError` 咽掉 → `_reloadMediaInPlace` 静默交回 `false`。修的是测试台夹具
+  （把兄弟方法名加进那批假 app 的清单），**三条预期一个字没改**（§5「红错格的第一嫌疑人是测试台」）。
+- **反向验证在隔离 worktree**（`.workbuddy/rev231s3a`，驱动 `.workbuddy/reverse231s3a.js`）：
+  刀 A 把 `drop = keys.length - max` 改成整本清空 → 恰好红 1 条 = ㊷，总账 `1 / 792` 证明其余 791 条真跑过；
+  刀 B 在纯函数里伸手清 `_seekRevertedKeys` → 同样恰好红 1 条，证人正是「邻居账仍在」那一半；
+  还原后复跑 `792 / 792` 红 0、两次都打印「与基线逐字节一致」、`REV231S3A` 片段与 `page.js` 各 0 处。
+  ⚠️ 刀 B 第一版被驱动自己的「from／to 互不包含」闸挡下（锚点 + 换行 = `from` 成了 `to` 的前缀），
+  改成同行改写才落得动 —— AGENTS §5 那一族第三次在真刀上咬人。
+- **3b 的现场行号（2026-11-25 14:55 `grep -n` 重锚，本档改动之后）**：整体复位 5 处
+  `:548`（`_seekSkipLedger`）／`:645`（`_seekSiteKeys`）／`:990`（一格连清 `_seekTriedKeys`+`_seekRevertedKeys`+`_seekDeferKeys`）／
+  `:1888`（`_ninetyHeldBackKeys`）／`:2201`（`_startNudgeKeys`）—— 共 7 本账；
+  3a 那个助手已可复用，但要动的是「谁该被清」而不是「清不清」。
+- **未跑 / HOLD**：全量 `npm test`、全量 e2e、`npm run build`、发预览包、push、转正、实战浏览器（CDP 9334）——
+  按 §1.06 归收口轮与主会话，本轮一律 UNEXECUTED；⛔ 记 PASS。
 
 ### 0.65 队列 #217 结案：已结束问卷三档数已有尺，文档侧不补（2026-11-25）
 
