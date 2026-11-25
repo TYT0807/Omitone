@@ -18,18 +18,24 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const assert = require('node:assert/strict');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 const { EventEmitter } = require('node:events');
 
 const ROOT = __dirname;
 const UPDATE_URL = 'https://api.github.com/repos/TYT0807/Omitone/releases/latest';
+// 弹窗每次「检测连接」都会顺带问一次预览口（真源 popup/popup.js 的 `UPDATE_PREVIEW_API`）。
+// 这一串只许与那边逐字相同：漂了不会静默 —— 它会以「Unexpected business egress」当场红，
+// 且 `denied` 里打印的就是断掉的那条 path，所以宁可撞红也不要在这里放宽匹配。
+const UPDATE_PREVIEW_URL = 'https://api.github.com/repos/TYT0807/Omitone/releases/tags/preview';
 const COURSE_HOSTS = new Set(['mooc1.chaoxing.com', 'mobilelearn.chaoxing.com', '127.0.0.1']);
 // `.debug-profile` 是 tools/debug-live.js 在**仓库根**建的现场调试浏览器用户目录（已 gitignore）。
 // 它里面有正在被 Edge 独占的文件（EdgeCoupons/coupons_data.db/LOCK），inventory 一旦走进去
 // readFileSync 直接 EBUSY —— 于是这套件从"能跑"变成"根本起不来"，而且它不在 `npm test` 里，
 // 坏了三个批次没人知道。check.js / publish-audit.js 早就排掉了它，这边补齐。
-const OMIT = new Set(['.git', '.workbuddy', 'dist', 'node_modules', '.vscode', '.idea', 'tmp', '.debug-profile']);
+// `.qoder` 同族：Qoder 自己的会话数据，里面躺着**别的工作树副本**（`.qoder/worktrees/rev190/tools/check.js` …），
+// 一旦进快照，check.js 的乱码扫描与死代码警告就整屏报那些副本 —— 沙盒 #46 现场量到的。
+const OMIT = new Set(['.git', '.workbuddy', '.qoder', 'dist', 'node_modules', '.vscode', '.idea', 'tmp', '.debug-profile']);
 const owned = new Set();
 const EVIDENCE_FILE = /^omitone-acceptance-\d{8}T\d{6}Z-[a-f0-9-]{36}\.jsonl?$/;
 const BASELINE_FILES = ['tools/check.js', 'tools/prompt-bench.js', 'tools/integration-test.js',
@@ -125,6 +131,21 @@ function copySnapshot(root, destination, files) {
     assert.equal(digest(fs.readFileSync(target)), entry.hash, 'Snapshot checksum mismatch');
   }
   fs.mkdirSync(path.join(destination, '.workbuddy'));
+}
+
+/** 快照不带 `dist`（见 OMIT），而 `tools/check.js` 的「体积账本」那一格真源是**已构建好的 zip**
+ *  —— 没有包它只能报「这一格本轮没跑」并退 1（红是对的，闸门不许为沙盒放宽，见 §2 #12）。
+ *  所以把仓库里已经构建好的那一份原样搬进快照当真源，**不在这里 build**（HOLD 明令禁止构建）。
+ *  只搬当前版本那一份：版本换了而包没重出，这一格就该红 —— 那正是它存在的理由。 */
+function stageBuiltPackage(snapshot, report) {
+  const version = JSON.parse(fs.readFileSync(path.join(snapshot, 'manifest.json'), 'utf8')).version;
+  const name = 'omitone-' + version + '.zip', source = path.join(ROOT, 'dist', name);
+  if (!fs.existsSync(source)) { report.packageStaged = false; return; }
+  const target = path.join(snapshot, 'dist', name);
+  fs.mkdirSync(path.join(snapshot, 'dist'));
+  fs.copyFileSync(source, target);
+  assert.equal(digest(fs.readFileSync(target)), digest(fs.readFileSync(source)), 'Staged package differs from the repository build');
+  report.packageStaged = true;
 }
 
 async function removeOwned(dir) {
@@ -274,7 +295,7 @@ class NetworkGuard {
     this.cdp = cdp; this.mockPort = mockPort; this.version = version;
     this.targets = new Map(); this.sessions = new Map(); this.pendingSetups = new Set();
     this.errors = []; this.denied = []; this.expected = new Set(); this.expectedHits = new Set();
-    this.localCount = 0; this.updateCount = 0; this.stopping = false;
+    this.localCount = 0; this.updateCount = 0; this.previewCount = 0; this.stopping = false;
     cdp.on('event', event => this.event(event));
   }
   event(event) {
@@ -317,6 +338,15 @@ class NetworkGuard {
       return send('Fetch.fulfillRequest', { responseCode: 200, responseHeaders: [
         { name: 'Content-Type', value: 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }
       ], body: Buffer.from(JSON.stringify({ tag_name: 'v' + this.version, assets: [] })).toString('base64') });
+    }
+    if (request.url === UPDATE_PREVIEW_URL && request.method === 'GET') {
+      // 回 **404** 而不是继续拦：弹窗把「预览口还没发」与「网络不通」写成同一格（popup.js:2064 明说 404 是常态），
+      // 两者都只让那一行闭嘴 —— 所以换成本地合成答复**不改变**页面可见结果，只把它从「业务出网」里摘出去。
+      // 不登记进 `guard.expected`：那一本要求"登记过就必须真拦到一次"，而 `--filter` 只跑非弹窗场景时会恒红。
+      this.previewCount++;
+      return send('Fetch.fulfillRequest', { responseCode: 404, responseHeaders: [
+        { name: 'Content-Type', value: 'application/json' }, { name: 'Access-Control-Allow-Origin', value: '*' }
+      ], body: Buffer.from(JSON.stringify({ message: 'Not Found（沙盒合成：不发任何真网络请求）' })).toString('base64') });
     }
     if (localUrl(request.url, this.mockPort)) { this.localCount++; return send('Fetch.continueRequest', {}); }
     if (this.expected.has(request.url)) this.expectedHits.add(request.url);
@@ -447,11 +477,27 @@ async function stopBrowser(browser, cdp) {
   if (browser.port) await poll(() => portFree(browser.port), 5000, 'Owned debugging port release');
 }
 
+/** 快照故意不带 `.git`（见 OMIT 那行注释），而 `tools/check.js` 有三处只读 git 判据：
+ *  `git show main:README.md`（门面按通道取文本）、`git ls-files`（跟踪文件清单）、
+ *  `git check-ignore -q`（台账落点）。仓库读不出时它们退 128，于是**整条基线在跑浏览器场景之前就死了**
+ *  —— 报告里是 `baseline:[]` + `scenarios=0` + 「tools/check.js exited 1」，长得和产品回归一模一样。
+ *  正解是补快照的环境，不是放宽任何一道闸：把子进程接回**真实对象库**，工作树指向本次快照。
+ *  `GIT_DIR` 从 `rev-parse --git-dir` 读回来（linked worktree 下 `.git` 是个文件而不是目录，写死路径会错）。
+ *  `GIT_OPTIONAL_LOCKS=0` 挡住可选写锁 —— 这三条判据只许读，不许动真仓库的 index。 */
+function gitBridgeEnv(snapshot) {
+  const probe = spawnSync('git', ['-C', ROOT, 'rev-parse', '--git-dir'],
+    { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  const dir = ((probe.status === 0 && probe.stdout) || '').trim();
+  if (!dir) return null;
+  return { GIT_DIR: path.resolve(ROOT, dir), GIT_WORK_TREE: snapshot, GIT_OPTIONAL_LOCKS: '0' };
+}
+
 async function nodeTest(snapshot, file, emit = () => {}) {
   const started = Date.now();
+  const bridge = gitBridgeEnv(snapshot);
   emit('baseline_start', { file });
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [path.join(snapshot, file)], { cwd: snapshot, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [path.join(snapshot, file)], { cwd: snapshot, env: bridge ? Object.assign({}, process.env, bridge) : process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = '';
     const timer = setTimeout(() => { child.kill(); reject(new Error(file + ' timed out')); }, 120000);
     const capture = chunk => { output = (output + chunk.toString('utf8')).slice(-150000); };
@@ -755,8 +801,14 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
     const update = await config.evaluate('(async()=>{' +
       'localStorage.removeItem("omitone.update.manualAt");await checkUpdate({manual:true});' +
       'return {text:document.getElementById("updateMsg").textContent,offer:document.getElementById("doUpdate").style.display};})()');
-    assert.ok(update.text.includes('高于线上 1.2.9') && !update.text.includes('与线上一致') && update.offer === 'none',
-      'Experimental build must not pretend to match or upgrade to older stable release');
+    // #43 把「预览版」与「开发构建」从一句拆成两句之后，这一支（`version_name` 带 `experimental`）
+    // 念的是**预览版那句**，旧的 needle「高于线上」结构上永远等不到了 —— 那是余波，不是回归。
+    // 断言按“句子归属”重钉：必须报出「预览版 + 本地号 + 线上号 + 实验支线」，
+    // 必须**不**认错成开发构建、**不**说"已是最新/与线上一致"、**不**摊开更新键；取证带上原文（§5「失败信息够不够定位」）。
+    assert.ok(update.text.includes('预览版') && update.text.includes(version) && update.text.includes(guard.version) &&
+      update.text.includes('实验支线') && !update.text.includes('这是开发构建') &&
+      !update.text.includes('你已经是最新版') && !update.text.includes('与线上一致') && update.offer === 'none',
+      'Experimental build must not pretend to match or upgrade to older stable release —— 实际念的是: ' + update.text + ' offer=' + update.offer);
     report.probes.push('experimental version is distinguished from older stable release');
   } finally { guard.version = version; }
   await popupLogBrowserProbes(guard, extensionId, report);
@@ -831,7 +883,7 @@ async function runBrowserSuite(snapshot, profile, edge, proxy, mock, suite, opts
   }
   report.assertions = c.checks;
   report.failures = Array.from(c.failures);
-  report.network = { localRequests: guard.localCount, mockedUpdates: guard.updateCount,
+  report.network = { localRequests: guard.localCount, mockedUpdates: guard.updateCount, previewAnswers: guard.previewCount,
     unexpectedRequests: guard.denied, guardErrors: guard.errors,
     expectedDenials: Array.from(guard.expected), expectedHits: guard.expectedHits.size,
     startupProxyDeniedHosts: Object.fromEntries(proxy.blocked) };
@@ -875,12 +927,15 @@ async function execute(opts) {
   console.log('Sandbox temporary root: ' + temp);
   try {
     copySnapshot(ROOT, snapshot, before);
+    stageBuiltPackage(snapshot, report);
     report.baseline = [];
     for (const file of BASELINE_FILES) {
       report.baseline.push(await nodeTest(snapshot, file, emit));
     }
     let extension = snapshot;
     if (opts.built) {
+      // 搬进来的那一份是给「体积账本」当读数的，不是本次构建产物 —— 先挪走，保住下面那句 assert 的语义。
+      if (report.packageStaged) fs.rmSync(path.join(snapshot, 'dist'), { recursive: true, force: true });
       assert.ok(!fs.existsSync(path.join(snapshot, 'dist')), 'Refuse to overwrite an existing build directory');
       report.baseline.push(await nodeTest(snapshot, 'tools/build.js', emit));
       report.build = verifyBuild(snapshot);
@@ -987,6 +1042,11 @@ async function selfTest() {
   ok('unexpected request denied and query redacted', sent.at(-1)[0] === 'Fetch.failRequest' && guard.denied.length === 1 && !JSON.stringify(guard.denied).includes('private'));
   await guard.request({ sessionId: 'fixture', params: { requestId: '3', request: { url: 'http://127.0.0.1:1234/quiz', method: 'GET' } } });
   ok('mock request continued', sent.at(-1)[0] === 'Fetch.continueRequest');
+  // #46：弹窗自己会问预览口。这一格钉的是「它被本地答掉了，而不是记进业务出网」——
+  // `denied.length` 仍等于上一格那一条，多了就说明预览那一问又被当成出网了（沙盒整轮红在 gates 上）。
+  await guard.request({ sessionId: 'fixture', params: { requestId: '4', request: { url: UPDATE_PREVIEW_URL, method: 'GET' } } });
+  ok('preview channel answered locally instead of counted as egress',
+    sent.at(-1)[0] === 'Fetch.fulfillRequest' && guard.previewCount === 1 && guard.denied.length === 1);
   await assert.rejects(strictReady({ evaluate: async () => false }, 10), /STRICT_INJECTION_FAILED/);
   ok('runtime readiness has no manual-injection fallback', true);
 
