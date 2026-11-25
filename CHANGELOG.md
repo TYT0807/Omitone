@@ -13,6 +13,8 @@
 - 1.3.1 已于 2026-11-25 转正：tag `v1.3.1` → `38824c7`，`omitone.zip` 与 `Omitone-manual.pdf` 两个正式附件核验通过。
 - 支线版本号五处升到 **1.3.2**：manifest（`version` / `version_name` / 卡片名）、`popup/popup.html`、`content.js` 品牌位、`package.json`、README 版本徽章；`release-notes-preview.md` 同步改成 1.3.2。
 - 说明书按预览版界面重出 `使用说明.pdf`（1.3.2 实验版），随 `omitone-preview.zip` 一起发到预览通道。
+- 核验：`verify v1.3.1` EXIT=0（tag `38824c7`、两个正式附件 `state=uploaded`、说明 779 字逐字一致、永久直链可用）；
+  `verify preview` EXIT=0（tag `ce8b61f`、两个预览附件 `state=uploaded`、说明 4090 字逐字一致，`/releases/latest` 仍指 v1.3.1）。
 - **门面**：不用补（这一笔只升支线版本号与预览说明；门面那一页已随 1.3.1 转正更新）
 
 ---
