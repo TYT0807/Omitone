@@ -1762,6 +1762,13 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.76 manual-pdf 等无头 Edge 异步落盘，不再把“还没写完”当失败（2026-11-26）
+
+- `npm run manual` 曾退出 1 说没产出，实测 PDF 约 8 秒后才出现：新版 Edge 启动器先把打印任务派给后台，
+  `spawnSync` 返回时文件还没写完。已在 `tools/manual-pdf.js` 加 `waitForPdf(tmpPdf, 30000)`，
+  `main` 改 async + catch；超时才报失败。重出 40 页 / 2248.3 KB，正常返回。
+- 这条同时解释了 2026-11-26 凌晨为什么先用现场 CDP `Page.printToPDF` 兜底；现在两条路都能出 40 页。
+
 ### 0.75 e2e 收尾不再等用户叉窗口：Browser.close + 临时 profile 精确清扫（2026-11-26，用户现场反馈）
 
 - 现象：测试全绿后 Node 不返回、窗口留着，用户叉掉才收到完成。Edge 启动器退出后 `killTree(edgeProc)`

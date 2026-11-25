@@ -108,7 +108,20 @@ function verify(pdfPath) {
   };
 }
 
-function main() {
+function waitForPdf(file, timeoutMs) {
+  return new Promise(function (resolve) {
+    var started = Date.now();
+    (function poll() {
+      try {
+        if (fs.existsSync(file) && fs.statSync(file).size > 0) return resolve(true);
+      } catch (e) {}
+      if (Date.now() - started > timeoutMs) return resolve(false);
+      setTimeout(poll, 200);
+    })();
+  });
+}
+
+async function main() {
   if (!fs.existsSync(SRC)) {
     console.error('找不到源文件 ' + path.relative(ROOT, SRC));
     process.exitCode = 1;
@@ -144,9 +157,12 @@ function main() {
   });
 
   var run = print(browser, tmpHtml, tmpPdf, work);
+  // 新版 Edge 的启动器会把打印任务交给后台后立刻返回，PDF 几秒后才落盘。
+  // 旧脚本 spawnSync 一回来就查文件，于是退 0 却说“没产出”（2026-11-26 实测）。
+  var printed = await waitForPdf(tmpPdf, 30000);
 
-  if (!fs.existsSync(tmpPdf)) {
-    console.error('\n生成失败：没有产出 PDF。');
+  if (!printed) {
+    console.error('\n生成失败：等待 30 秒仍没有产出 PDF。');
     if (run.error) console.error('  ' + run.error.message);
     if (run.stderr) console.error('  ' + String(run.stderr).trim().split('\n').slice(0, 5).join('\n  '));
     fs.rmSync(work, { recursive: true, force: true });
@@ -174,4 +190,7 @@ function main() {
   console.log('完成。改内容请改 ' + path.relative(ROOT, SRC).replace(/\\/g, '/') + ' 再跑一次本命令。\n');
 }
 
-main();
+main().catch(function (error) {
+  console.error('\n生成失败：' + (error && error.message ? error.message : error));
+  process.exitCode = 1;
+});
