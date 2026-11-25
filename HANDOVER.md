@@ -1762,6 +1762,21 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.70 #46 收口：沙盒快照接回真实 git 与已构建包，基线不再在浏览器场景前死掉（2026-11-25，定时搭档按 brief 领）
+
+- **一句**：`omitone-sandbox.cjs` 的临时快照 `OMIT` 里没有 `.git`，而 `tools/check.js` 现在有三处只读 git 判据
+  （门面 `git show main:README.md` / `git ls-files` / `git check-ignore`），于是基线在浏览器场景之前就退 128，
+  报告是 `baseline:[]` + `scenarios=0`，看着像产品回归。
+- **修法**（只动 `omitone-sandbox.cjs`）：`nodeTest()` 给子进程接回真实对象库
+  `GIT_DIR`（由 `rev-parse --git-dir` 读，linked worktree 的 `.git` 是文件不是目录，写死会错）+
+  `GIT_WORK_TREE=<快照>` + `GIT_OPTIONAL_LOCKS=0`（只许读、不许动真仓库 index）；
+  `stageBuiltPackage()` 把仓库已经构建好的 `dist/omitone-<版本>.zip` 搬进快照当体积账本真源（不 build）；
+  `OMIT` 补 `.qoder`；#43 拆句后 probe 的旧 needle 按句子归属重钉；预览口由网络层本地合成 404。
+- **没有放宽任何闸**：仓库没有 `.git`、没有对应版本的 zip 时，基线仍该红；沙盒自证 29 → 30 格。
+- **读数**：`node omitone-sandbox.cjs --filter "弹窗检查更新"` EXIT=0（主会话复跑，
+  `.workbuddy/sandbox46-verify.log`）：baseline 12 条全 0、scenarios 1 / assertions 9 / failed 0 / gates []、
+  `sourceUnchanged:true` / `cleanup:true` / `packageStaged:true`。
+
 ### 0.69 #43 收口：更新提示分清稳定版、预览版与本地开发构建（2026-11-25，定时搭档按 brief 领）
 
 - **一句**：`checkUpdate` 里那段「本地高于线上，可能是实验版」把预览版和开发构建压成同一句；本轮把它收成

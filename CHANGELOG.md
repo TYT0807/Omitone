@@ -8,6 +8,23 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 208 · 2026-11-25 · 沙盒快照接回真实 git 与已构建包，基线不再在浏览器场景前死掉（任务 #46 · 定时搭档按 brief 领）
+
+- **现象**：`node omitone-sandbox.cjs --filter …` 先跑 `BASELINE_FILES`，其中 `tools/check.js` 要
+  `git show main:README.md` / `git ls-files` / `git check-ignore`，而快照 `OMIT` 里没有 `.git` ——
+  于是退 128、`baseline:[]`、`scenarios=0`，报告长得和产品回归一模一样。
+- **修法**（只动 `omitone-sandbox.cjs`）：`nodeTest()` 给子进程接回真实对象库
+  `GIT_DIR`（由 `rev-parse --git-dir` 读，兼容 linked worktree）+ `GIT_WORK_TREE=<快照>` +
+  `GIT_OPTIONAL_LOCKS=0`；`stageBuiltPackage()` 把仓库已构建的 `dist/omitone-<版本>.zip` 原样搬进快照
+  当体积账本真源（**不 build**）；`OMIT` 补 `.qoder`（别的工作树副本会让乱码/死代码扫描整屏误报）；
+  #43 拆句后 probe 的旧 needle「高于线上 1.2.9」按句子归属重钉；预览口 `releases/tags/preview`
+  在沙盒网络层本地合成 404（弹窗每次更新检查都会问它，404 本来就是常态）。
+- **没动 `popup/popup.js`，也没放宽 `tools/check.js` 任何一道闸**；沙盒自证 29 → 30 格。
+- 读数：主会话复跑 `node omitone-sandbox.cjs --filter "弹窗检查更新"` **EXIT=0**，
+  `baseline` 12 条全 exitCode 0、`selectedScenarios:1` / `assertions:9` / `failed:0` / `gates:[]`、
+  `sourceUnchanged:true` / `cleanup:true` / `packageStaged:true`（`.workbuddy/sandbox46-verify.log`）。
+- **门面**：不用补（只改测试沙盒，用户界面与安装包未变）
+
 ### 批次 207 · 2026-11-25 · 更新提示分清稳定版、预览版与本地开发构建（任务 #43 · 定时搭档按 brief 领）
 
 - 弹窗更新提示的判定收成一份纯函数 `stableUpdateMessage`（`popup/popup.js`）：有新版 / 同号换包 /
