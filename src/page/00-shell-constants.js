@@ -441,7 +441,9 @@
     if (msg.type === 'XXT_CONFIG_UPDATED' && window._xxtApp) {
       window._xxtApp.configs = mergeConfig(Object.assign({}, window._xxtApp.configs || {}, msg.data || {}));
       if (window._xxtApp.configs.apiConnectionFailed) {
-        window._xxtApp._quizApiFailUntil = Math.max(window._xxtApp._quizApiFailUntil || 0, Date.now() + 45000);
+        // #229 · 写入只许走那一个助手（§2 #18：两侧各写一份「设字段 + 落存储」的口径，
+        // 早晚会漂成「这一支只设内存」—— 表现就是刷新后退避又没了，而一条日志都不打）。
+        window._xxtApp._setQuizApiFailUntil(Date.now() + 45000);
       }
       console.log('%c[Omitone] config updated', 'color:#2196F3');
     }

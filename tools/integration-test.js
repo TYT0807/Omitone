@@ -1178,7 +1178,38 @@ async function testChannelNamingAndManualRetreat() {
     JSON.stringify({ mark: typeof markFn, who: typeof whoFn }));
   if (typeof markFn !== 'function' || typeof whoFn !== 'function') return;
 
-  var app166 = {};
+  // #229 · 退避现在要落 sessionStorage，所以这两枚假 app 必须带上**真助手**（`buildFrom` 从片段里取）。
+  // 少了它，`_markQuizApiConnectionFailed` 里的 `this._setQuizApiFailUntil` 在裸对象上是 undefined ——
+  // 一抛就把整段 ⑤ 顶掉，红名看着像"断言失效"，真相是"根本没跑到"（AGENTS §5）。
+  // 假盘的写法照 :10200 那枚假 localStorage：每次换 `data` 就等于"换了个标签页"，不换就等于"F5 之后"。
+  var failBox = { data: Object.create(null) };
+  var failStore = {
+    getItem: function (k) { return failBox.data[k] !== undefined ? failBox.data[k] : null; },
+    setItem: function (k, v) { failBox.data[k] = String(v); },
+    removeItem: function (k) { delete failBox.data[k]; }
+  };
+  // 键名从真源读回来，不在测试里抄字面量：抄了 = 生产改了键名而断言照旧绿，
+  // 而那正是"存进去 A、回来找 B"这一族的形状（AGENTS §2 #18）。
+  var failKeyHit = /_QUIZ_API_FAIL_KEY:\s*'([^']+)'/.exec(quizSrc);
+  var FAIL_KEY = failKeyHit ? failKeyHit[1] : '';
+  var setFailFn = buildFrom(quizSrc, '_setQuizApiFailUntil', { sessionStorage: failStore });
+  var restoreFailFn = buildFrom(quizSrc, '_restoreQuizApiFailUntil', { sessionStorage: failStore });
+  var reasonFn = buildFrom(quizSrc, '_getQuizApiUnavailableReason', {});
+  var randomFn = buildFrom(quizSrc, '_isRandomAnswerMode', {});
+  // 退避那一档的秒数同样从真源读，不写死 45000（改了生产而测试照旧绿 = 空守卫）
+  var backoffHit = /_setQuizApiFailUntil\(Date\.now\(\) \+ (\d+)\)/.exec(bodyOf(quizSrc, '_markQuizApiConnectionFailed'));
+  var BACKOFF_MS = backoffHit ? Number(backoffHit[1]) : NaN;
+  var mkBackoffApp = function (failUntil) {
+    return {
+      configs: { enableQuiz: true, hasApiKey: true, randomAnswer: false },
+      _isRandomAnswerMode: randomFn,
+      _QUIZ_API_FAIL_KEY: FAIL_KEY,
+      _setQuizApiFailUntil: setFailFn,
+      _quizApiFailUntil: failUntil || 0
+    };
+  };
+
+  var app166 = mkBackoffApp();
   var whoText166 = 'Kimi（Moonshot） · kimi-k3';
   markFn.call(app166, new Error('【连接不上服务商】网络不通'), whoText166);
   var logged166 = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; })[0];
@@ -1188,7 +1219,7 @@ async function testChannelNamingAndManualRetreat() {
     logged166.meta.who === app166._quizApiLastWho && logged166.meta.retryInMs > 0,
     JSON.stringify({ stored: app166._quizApiLastWho, meta: logged166 && logged166.meta }));
 
-  var app166b = {};
+  var app166b = mkBackoffApp();
   markFn.call(app166b, 'LLM 请求失败');
   var logged166b = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; }).pop();
   check('⑤ 写入**不带** who（catch 那一支：异常在半路抛出，压根没走到服务商）→ 单独一格说清'
@@ -1218,6 +1249,79 @@ async function testChannelNamingAndManualRetreat() {
     declAt > 0 && resetSkip.length > 100 && resetRuntime.length > 200 &&
     resetSkip.indexOf('_quizApiLastWho') < 0 && resetRuntime.indexOf('_quizApiLastWho') < 0,
     JSON.stringify({ 声明在: declAt > 0, 跳过复位长度: resetSkip.length, 复位长度: resetRuntime.length }));
+
+  // ================= ⑤b 退避要活过 F5（#229）=================
+  // 四格各占一格：写进去 / 恢复未来值 / 过期删键 / 读不出与压根没有不动。
+  // 「取大不取新」单独钉 —— 覆盖成存值会把长窗口缩短，覆盖成 now+45s 等于把"恢复"变成"续期"。
+  var app166c = mkBackoffApp();
+  var tBackoff = Date.now();
+  markFn.call(app166c, new Error('【连接不上服务商】网络不通'), whoText166);
+  var landedBackoff = Number(failBox.data[FAIL_KEY]);
+  var shellSrc166 = read('src/page/00-shell-constants.js');
+  check('⑤b 退避·写一次就把**同一个未来时刻**同时落进内存字段与 sessionStorage，且写入只剩这一个口径'
+    + '（只设内存 = 刷新即丢，正是这一轮的成因；只落存储 = 这一拍不生效；'
+    + '而 00-shell-constants 那支若还自己赋字段，就是"存进去 A、回来找 B"那一族）',
+    FAIL_KEY.length > 0 && isFinite(BACKOFF_MS) && typeof setFailFn === 'function' &&
+    app166c._quizApiFailUntil === landedBackoff && landedBackoff > tBackoff &&
+    landedBackoff - tBackoff >= BACKOFF_MS - 300 && landedBackoff - tBackoff <= BACKOFF_MS + 1500 &&
+    shellSrc166.indexOf('_quizApiFailUntil') < 0,
+    JSON.stringify({ key: FAIL_KEY, backoffMs: BACKOFF_MS, field: app166c._quizApiFailUntil, stored: failBox.data[FAIL_KEY],
+      延迟: landedBackoff - tBackoff, 弹窗那支还自己赋字段: shellSrc166.indexOf('_quizApiFailUntil') >= 0 }));
+
+  var appLonger = mkBackoffApp(Date.now() + BACKOFF_MS);
+  var longerBefore = appLonger._quizApiFailUntil;
+  failBox.data[FAIL_KEY] = String(Date.now() + 5000);
+  restoreFailFn.call(appLonger);
+  var appFresh166 = mkBackoffApp(0);
+  var futureStamp = Date.now() + 30000;
+  failBox.data[FAIL_KEY] = String(futureStamp);
+  restoreFailFn.call(appFresh166);
+  var freshReason = reasonFn.call(appFresh166);
+  check('⑤b 退避·新 app（字段 0）读到还没到点的存值 → 恢复成未来时刻，**判据真说得出 api-connection-failed**'
+    + '（不是只把字段填上就完事）；而这一轮已有更长窗口时**取大不取新**，恢复不许把窗口缩短、'
+    + '更不许由它凭空续一个 45 秒',
+    typeof restoreFailFn === 'function' && appFresh166._quizApiFailUntil === futureStamp &&
+    freshReason === 'api-connection-failed' && appLonger._quizApiFailUntil === longerBefore &&
+    /_restoreQuizApiFailUntil\(\)/.test(bodyOf(stateSrc, 'run')) &&
+    bodyOf(stateSrc, 'run').indexOf('_restoreQuizApiFailUntil()') > bodyOf(stateSrc, 'run').indexOf('_resetRuntimeState()'),
+    JSON.stringify({ 存值: futureStamp, 恢复后: appFresh166._quizApiFailUntil, 判据: freshReason,
+      更长窗口进来时: longerBefore, 恢复后还在: appLonger._quizApiFailUntil,
+      run里接上了: /_restoreQuizApiFailUntil\(\)/.test(bodyOf(stateSrc, 'run')) }));
+
+  var appExpired = mkBackoffApp(0);
+  failBox.data[FAIL_KEY] = String(Date.now() - 1000);
+  restoreFailFn.call(appExpired);
+  var expiredReason = reasonFn.call(appExpired);
+  check('⑤b 退避·存值已过期 → 字段留在 0 **且键被删**，判据回到可以说得出话的那一格'
+    + '（键留着，下一次读它的人要多算一格；而"过期"与"没有"在这一族都该是"可以问模型"）',
+    appExpired._quizApiFailUntil === 0 && failBox.data[FAIL_KEY] === undefined &&
+    expiredReason !== 'api-connection-failed',
+    JSON.stringify({ field: appExpired._quizApiFailUntil, 键还在: failBox.data[FAIL_KEY] !== undefined, 判据: expiredReason }));
+
+  var appGarbage = mkBackoffApp(0);
+  failBox.data[FAIL_KEY] = 'not-a-time';
+  restoreFailFn.call(appGarbage);
+  var garbageKept = failBox.data[FAIL_KEY] === 'not-a-time';
+  delete failBox.data[FAIL_KEY];
+  var appAbsent166 = mkBackoffApp(0);
+  appAbsent166._quizApiFailUntil = 777000000000;
+  var absentBefore = appAbsent166._quizApiFailUntil;
+  restoreFailFn.call(appAbsent166);
+  check('⑤b 退避·「读不出」与「压根没有」各自单独占一格：值不是数 → 字段不动**且键不许删**'
+    + '（把读不出实现成清账 = 替用户宣布"刚才没失败过"）；压根没有键 → 内存字段原样不动',
+    appGarbage._quizApiFailUntil === 0 && garbageKept && appAbsent166._quizApiFailUntil === absentBefore,
+    JSON.stringify({ 垃圾值: failBox.data[FAIL_KEY], 垃圾后字段: appGarbage._quizApiFailUntil,
+      无键前: absentBefore, 无键后: appAbsent166._quizApiFailUntil }));
+
+  // 「取大不取新」在**写入口**这一侧单独钉一格：弹窗那支原本就是 `Math.max(现值, now+45s)`，
+  // 把口径并进助手之后若退化成直接赋值，先到的长窗口会被后到的一发**缩短** —— 而存储跟着一起缩短。
+  var appShorter = mkBackoffApp(Date.now() + 60000);
+  var longerField = appShorter._quizApiFailUntil;
+  setFailFn.call(appShorter, Date.now() + 5000);
+  check('⑤b 退避·写入口也**取大不取新**：已有更长窗口时，来一发更短的时刻既不改内存也不改存储'
+    + '（弹窗那支原本的 `Math.max` 就是这个意思，并进口径时丢了它 = 后到的短窗口把在生效的长窗口顶掉）',
+    appShorter._quizApiFailUntil === longerField && Number(failBox.data[FAIL_KEY]) === longerField,
+    JSON.stringify({ 进来时: longerField, 之后: appShorter._quizApiFailUntil, 存储: failBox.data[FAIL_KEY] }));
 
   // ================= ⑥ 说话点覆盖：谁说了这句话，就得带上渠道 =================
   var speakSites = [

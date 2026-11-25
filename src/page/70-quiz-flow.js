@@ -12,7 +12,7 @@
  * 这份卷子属于哪个场景（测试 / 考试）＋该场景的思考档下限（「不乱猜」闸的判据）
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（69 个）：
+ * 本段的方法（71 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -20,6 +20,7 @@
  *   _getQuizAccountDocument、_shouldHoldQuizBeforeFinish、_getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_isQuizBlockedByApi、_noteQuizBlockedByApi、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
+ *   _setQuizApiFailUntil、_restoreQuizApiFailUntil、
  *   _quizApiWhoForLog、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
  *   _setQuizSubmitAttemptCount、_clearQuizSubmitAttemptCount、
@@ -644,10 +645,70 @@
       this._quizBatchSentAt = 0;
     },
 
+    // #229 · 45 秒退避的**唯一写入口**：先设内存字段（判据 `_isQuizApiUnavailable` 读的就是它），
+    // 再把同一个**绝对时刻**落进 sessionStorage —— 那是「同一标签页、活过 F5、关标签即清」的粒度；
+    // `chrome.storage.local` 是用户的存档，一次事务性退避不许写脏（AGENTS §2 #25 同一口径）。
+    // 键只在这一处定义、读写共用它：两侧各写一份字面量 = 「存进去 A、回来找 B」，
+    // 表现为"退避永远活不过刷新"而一条日志都不打（§2 #18 同一族）。
+    _QUIZ_API_FAIL_KEY: 'omitone:quiz-api-fail-until',
+
+    _setQuizApiFailUntil: function (until) {
+      var stamp = Number(until);
+      if (!isFinite(stamp)) return;
+      // `<= 0` 是**显式清账**而不是"传错了"：调用方说"现在没有退避"，内存与 sessionStorage 要一起清。
+      // 只清内存的话，下一个文档的 `_restoreQuizApiFailUntil` 会把旧窗口原样捡回来 ——
+      // 表现与"根本没修"逐字相同（e2e 那批 `app._quizApiFailUntil=0` 的场景卫生就吃这一格）。
+      if (stamp <= 0) {
+        this._quizApiFailUntil = 0;
+        try {
+          if (typeof sessionStorage !== 'undefined' && sessionStorage) sessionStorage.removeItem(this._QUIZ_API_FAIL_KEY);
+        } catch (eClear) {}
+        return;
+      }
+      // 取大不取新：两个入口（连接失败 / 弹窗里勾了「API 连接失败」）各说 45 秒，
+      // 覆盖成后到的那份会把先到的窗口**缩短**，而存储里必须落**同一个数** ——
+      // 落 `stamp` 而不是 `next`，刷新后就把还在生效的长窗口顶成短的。
+      var next = Math.max(Number(this._quizApiFailUntil) || 0, stamp);
+      this._quizApiFailUntil = next;
+      // ⚠️ 存不住**不改变行为**：字段已经在内存里，这一轮照样退避，只是跨不了刷新。
+      // 这里不像 20-dom.js 那对底座要保护"安全阀在最需要它的浏览器上失效"——
+      // 退避本来就只挡 45 秒，降级成"只挡本次加载"是可接受的，所以不再另发一句 warn。
+      try {
+        if (typeof sessionStorage !== 'undefined' && sessionStorage) {
+          sessionStorage.setItem(this._QUIZ_API_FAIL_KEY, String(next));
+        }
+      } catch (eStore) {}
+    },
+
+    /**
+     * 刷新后把还没到点的退避捡回来。四格各占一格，谁都不许塌进谁（§2 #12）：
+     * **未来值** → `Math.max` 合并（**只许延长已有窗口、不许由它凭空造一个窗口** ——
+     * 覆盖成"存值"会把这一轮刚设的更长窗口顶短，覆盖成"now+45s"更是把恢复变成续期）；
+     * **过期值** → 删键（留着只会让下一次读它的人多算一格）；
+     * **读不出**（存储抛异常 / 值不是数）→ 什么都不做，**尤其不许删键**：
+     * 把"读不出"实现成"清账"等于替用户宣布"刚才没失败过"；
+     * **压根没有** → 不动内存字段（首次运行与"没退避过"同形，那是真话）。
+     */
+    _restoreQuizApiFailUntil: function () {
+      var stored;
+      try {
+        if (typeof sessionStorage === 'undefined' || !sessionStorage) return;
+        stored = sessionStorage.getItem(this._QUIZ_API_FAIL_KEY);
+      } catch (eRead) { return; }
+      if (stored === null || stored === undefined || stored === '') return;
+      var stamp = Number(stored);
+      if (!isFinite(stamp) || stamp <= 0) return;
+      if (stamp <= Date.now()) {
+        try { sessionStorage.removeItem(this._QUIZ_API_FAIL_KEY); } catch (eDel) {}
+        return;
+      }
+      this._quizApiFailUntil = Math.max(Number(this._quizApiFailUntil) || 0, stamp);
+    },
+
     _markQuizApiConnectionFailed: function (error, who) {
       var message = error && error.message ? error.message : String(error || 'LLM 请求失败');
       // 不再永久写入 storage：改为 45 秒退避，期间跳过答题，之后自动重试并自愈
-      this._quizApiFailUntil = Date.now() + 45000;
+      this._setQuizApiFailUntil(Date.now() + 45000);
       this._quizApiLastError = String(message).slice(0, 300);
       // 「哪家哪个模型」由扩展侧算好随回包带过来（页面那份配置投影里没有渠道字段）。
       // ⚠️ 拿不到时单独占一格，不许压成空串 —— 空串在日志里读起来像"没有渠道这回事"。

@@ -515,6 +515,10 @@
       this.configs = mergeConfig(this.configs);
       this._initCellData();
       this._resetRuntimeState();
+      // #229 · 45 秒退避要活过 F5：`_resetRuntimeState` 只管"本次加载的账"（它从不碰
+      // `_quizApiFailUntil`），这一行紧跟其后，把跨加载的那一格捡回来。
+      // 放在复位**之后**是有意的 —— 复位是"抹掉运行时状态"的那个入口，在它之前恢复等于让恢复有机会被抹掉。
+      this._restoreQuizApiFailUntil();
       this._clearTickLoop();
       this._bindStepNavigation();
       // 保活音轨要在「切到后台」那一刻就被点起来，而不是等下一拍 tick：

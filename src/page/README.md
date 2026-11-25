@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **557 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 567 个方法；状态字段 177 个。
+（跑出来大致是：14 个域片段合计 **559 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 569 个方法；状态字段 177 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*450 行*
+*452 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*808 行 / 4 方法 + 177 状态字段*
+*812 行 / 4 方法 + 177 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -189,7 +189,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `70-quiz-flow.js`
 
-*2496 行 / 69 方法*
+*2557 行 / 71 方法*
 
 答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
 `_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、

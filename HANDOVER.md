@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 796 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 801 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1761,6 +1761,33 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   ⑩ 那格写死的 >300 清零名单）；#72 与 #74 仍在队尾排队。
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
+
+### 0.68 #229 收口：模型「在忙」的 45 秒退避落进 sessionStorage，活过 F5（2026-11-25，定时搭档按 brief 领）
+
+- **一句**：那 45 秒以前只在内存（`10-config-state.js:380` 初值 0），刷新即清零 —— 而服务商回「在忙 / 限流」时
+  用户的第一反应恰恰是刷新，于是每一枚文档重新烧一轮模型请求。本轮把它落到 `sessionStorage`
+  （同一标签页活过 F5、关标签即清），**明确不用 `chrome.storage.local`**（那是用户存档与 Key 的家，§2 #25 同一口径）。
+- **口径只有一处**：`_setQuizApiFailUntil(until)`（`70-quiz-flow.js:659`）是**唯一写入口** ——
+  设字段 + 落存储 + 取大不取新都在这一个函数里；`00-shell-constants.js:446` 那支原本自己赋字段的第二处口径改成调它
+  （§2 #18：两侧各写一份「设字段 + 落存储」，早晚会漂成"这一支只设内存"，表现就是刷新后退避又没了而一句日志不打）。
+- **恢复四格**（`_restoreQuizApiFailUntil`，`70-quiz-flow.js:690`）：未来值 `Math.max` **不许缩短也不许续期** /
+  过期**删键** / **读不出不动、尤其不许删键**（把读不出实现成清账 = 替用户宣布"刚才没失败过"）/ 压根没有不动。
+  接线在 `run()` 里 `_resetRuntimeState()` **之后**（复位是抹状态那个入口，在它之前恢复等于给恢复安排一次被抹掉的机会，§2 #13）。
+- **夹具那一格先于红**：⑤ 族原本拿裸 `{}` 调 `markFn`，生产开始调助手后**一抛就让整段少跑十几格** ——
+  本轮按 §5「红 0 条的第一嫌疑人是根本没跑到」**读代码读出来先修**（`mkBackoffApp()` + 假 `sessionStorage` 三件套），
+  不是等它红了再改。新增 5 条断言（⑤b，名字全含「退避」），**常数是读回来的**：键从 `_QUIZ_API_FAIL_KEY` 源码读、
+  45 秒从 `_markQuizApiConnectionFailed` 方法体读，`45000` 这个数本轮**一个字没改**。
+- **反向三刀各只动 1 行**（隔离 worktree，跑完已 remove）：A 摘 `setItem` 红 2（C1 + C5，后者也读存储那一格）、
+  B 摘恢复读取红 2（C2 + C3 同因，预先列入 `mustRed`）、C 丢 `Math.max` 红 1（C5）；
+  `mustGreen` 无一被顶红、无意外红 → 五条各自独立承重。还原后 801/801 红 0、marker 主树 0 处。
+- **读数**：集成 **796 → 801**（三页承诺已回填）、`node tools/check.js` **EXIT=0**（仅两条既有 worktree 告警）、
+  桥戳不变 `5029ef4035`（`content.js` 没碰）。HOLD：全量 `npm test` / 全量 e2e / build / 预览包 / push / 转正全 UNEXECUTED。
+- **欠账一笔**：e2e 若干场景的卫生复位写 `app._quizApiFailUntil = 0`，**只清内存不清存储**；
+  生产已有 `_setQuizApiFailUntil(0)` 这条清账口（`<= 0` 单独占一格：内存与键一起清）。
+  `tools/browser-e2e.js` 不在本轮 4 份允许文件里 → 排队列。已证 `openScenarioPage` 每场开新标签，
+  `sessionStorage` 不在场景之间串，所以旧场景不会被新落点毒化（**这一格是"别留半截账"，不是"会红"**）。
+
+
 
 ### 0.67 #223 收口：`content bridge ready` 现在报得出「是哪一份文档」（2026-11-25，定时搭档按 brief 领）
 
