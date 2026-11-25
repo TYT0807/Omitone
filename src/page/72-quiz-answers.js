@@ -82,17 +82,27 @@
         var qid = String((el.getAttribute && (el.getAttribute('qid') || el.getAttribute('data-qid'))) || '').trim();
         if (qid) return qid;
 
-        // mooc2 新版作业页把 qid 放在容器的 data 属性上（容器类名 .singleQuesId）。
-        // 真源 `_quizDetectorSelector`：closest 按并集找最近的题目容器 ——
-        // 真实 TiMu/Cy 容器带的是 qid 属性、没有 data，会正常落到下面的回退，语义不变
-        var wrapper = el.closest ? el.closest(this._quizDetectorSelector) : null;
-        qid = wrapper && wrapper.getAttribute ? String(wrapper.getAttribute('data') || '').trim() : '';
-        if (qid) return qid;
+        // 老引擎把 qid 挂在**每个选项** li[qid] 上，而题目容器 `.TiMu[data]` 只是序号（现场量到 0/1/3）。
+        // 先认后代 [qid]：容器自己就是宿主时也走这一支（等于第 1 步）。
+        var inner = el.querySelector ? el.querySelector('[qid], [data-qid]') : null;
+        var innerQid = String((inner && inner.getAttribute && (inner.getAttribute('qid') || inner.getAttribute('data-qid'))) || '').trim();
+        if (innerQid) return innerQid;
 
+        // 隐藏域是平台提交时读的字段，id 里那段数字是最硬的 qid 来源。
         var hidden = this._findQuizAnswerInput(el, '');
         var id = hidden ? String(hidden.id || hidden.name || '') : '';
         var match = id.match(/^answer(\d+)/);
         if (match) return match[1];
+
+        // mooc2 新版作业页把 qid 放在容器的 data 属性上（容器类名 .singleQuesId）。
+        // ⚠️ 只在**存在对应 #answer{data}** 时才认 —— 否则老引擎的序号 data 会被当成 qid。
+        var wrapper = el.closest ? el.closest(this._quizDetectorSelector) : null;
+        var wrapperData = String((wrapper && wrapper.getAttribute && wrapper.getAttribute('data')) || '').trim();
+        if (wrapperData) {
+          var hasAnswer = false;
+          try { hasAnswer = !!(el.ownerDocument && el.ownerDocument.getElementById && el.ownerDocument.getElementById('answer' + wrapperData)); } catch (eA) {}
+          if (hasAnswer) return wrapperData;
+        }
 
         var badge = el.querySelector ? el.querySelector('.num_option, .num_option_dx') : null;
         var name = badge ? String(badge.getAttribute('name') || '') : '';

@@ -74,7 +74,7 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 `wc -l` 同一把尺），方法数/状态字段数取自片段头部自己声明的清单。
 ⚠️ **这一页是抄来的，抄来的东西必然过期** —— 现在有闸了：`npm run check` 第 26 项
 （真源 `tools/audit-slice-stats.js`）逐段比这一页与片段实际，**这一整页曾经 16 段全过期**
-（最远的 `50-captcha.js` 写 478 行 / 14 方法，实际 1008 行 / 27 方法）。
+（最远的 `50-captcha.js` 写 478 行 / 14 方法，实际 1020 行 / 27 方法）。
 
 三个合计数都是**会变的**，别背 —— 当场跑出来最准：
 
@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **546 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 556 个方法；状态字段 169 个。
+（跑出来大致是：14 个域片段合计 **555 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 565 个方法；状态字段 177 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*442 行*
+*450 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*782 行 / 4 方法 + 169 状态字段*
+*808 行 / 4 方法 + 177 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -129,14 +129,14 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `30-log.js`
 
-*402 行 / 9 方法*
+*421 行 / 9 方法*
 
 把状态转成「给人看的一行字」的辅助方法。规则：**所有 `_log*` / `_describe*` / `_diagnose*` 都在这里**。
 真正的日志出口 `emitRuntimeLog` 在外壳文件。
 
 ### `40-media.js`
 
-*2355 行 / 70 方法*
+*2543 行 / 72 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
 倍速只试一发与钳制（`_ensurePlaybackRate` / `_detectMaxPlaybackRate` / `_tryRateOnce`）、seek 到结尾 `_trySeekToEnd`、
@@ -145,7 +145,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `50-captcha.js`
 
-*1008 行 / 27 方法*
+*1020 行 / 27 方法*
 
 验证码弹窗的检测、取图与识别；整页验证码模式（`_runStandaloneCaptchaMode`）。
 
@@ -162,7 +162,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*1787 行 / 42 方法*
+*1791 行 / 42 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -172,7 +172,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1581 行 / 48 方法*
+*1583 行 / 48 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
@@ -189,7 +189,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `70-quiz-flow.js`
 
-*2224 行 / 65 方法*
+*2496 行 / 69 方法*
 
 答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
 `_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、
@@ -201,7 +201,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `72-quiz-answers.js`
 
-*1189 行 / 42 方法*
+*1199 行 / 42 方法*
 
 **答案本身**的处理（与"流程"分开）：答案缓存的读写（正确答案 / 已知错答 / 已提交答案
 `_loadQuizCorrectAnswerCache` / `_rememberCorrectQuizAnswers` / `_addWrongQuizAnswer`）、
@@ -224,7 +224,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `75-quiz-dom.js`
 
-*2198 行 / 54 方法*
+*2371 行 / 57 方法*
 
 抠题与填答：从 DOM 里抠题干与选项、判定题型、单选 / 多选 / 判断 / 填空的填答实现、
 提交按钮与站点确认弹窗（`#workpop` / `#popok`）的处理。

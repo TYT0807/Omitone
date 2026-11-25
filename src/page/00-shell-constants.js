@@ -55,6 +55,11 @@
    */
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
+  // 同一媒体元素恢复失败三次后隔离，不再把同一个坏元素反复派回来。
+  var MEDIA_RELOAD_LIMIT = 3;
+
+  var TASK_GIVEUP_TTL_MS = 24 * 3600 * 1000;
+
   /**
    * 投票任务点（insertvote）的五个数。
    *
@@ -227,6 +232,9 @@
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 交卷连续三次无进展时是否放手（写 24 小时放弃名单并翻下一节）。
+    // 默认开 = 上线版的兜底；本地调试在 chrome.storage 里置 false，改成死磕并保留每轮诊断。
+    quizRejectGiveUp: true,
     // 一题都填不上时，是否**自动跳过这一卷**（内部调参，不上弹窗）。
     //
     // ⚠️ 默认**关**。原因（2026-11-10 事故）：有卷子的题一题都落不到页面上，

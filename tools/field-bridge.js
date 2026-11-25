@@ -40,6 +40,12 @@ var http = require('http');
 
 var DEFAULT_MATCH = 'mooc1.chaoxing.com/mycourse/studentstudy';
 var FALLBACK_MATCH = 'chaoxing.com';
+var MAX_CONSOLE_WAIT_MS = 30000;
+var BRIDGE_CONSOLE_MESSAGES = [
+  'runtime log unavailable; study continues',
+  'scope not granted after page change',
+  'scope lost, bridge stopped'
+];
 
 // 退出码：0 = 桥能用；1 = 桥断/没注入（要人动手）；2 = 读不出（**不许读成"没事"**，也不许读成"坏了"）
 var EXIT = { ok: 0, action: 1, unreadable: 2 };
@@ -50,6 +56,48 @@ function arg(name, dflt) {
     if (process.argv[i].indexOf(pre) === 0) return process.argv[i].slice(pre.length);
   }
   return dflt;
+}
+
+function normalizeConsoleWaitMs(value) {
+  var n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(MAX_CONSOLE_WAIT_MS, Math.max(0, Math.floor(n)));
+}
+
+function bridgeConsoleRecord(args) {
+  var strings = (args || []).map(function (a) {
+    return a && a.type === 'string' ? String(a.value || '') : '';
+  });
+  var message = '';
+  BRIDGE_CONSOLE_MESSAGES.forEach(function (name) {
+    var prefix = '[Omitone] ' + name;
+    if (!message && strings.some(function (s) {
+      return s.indexOf(prefix) === 0 && /^(?:$|\s|\[)/.test(s.slice(prefix.length));
+    })) message = name;
+  });
+  if (!message) return null;
+  var joined = strings.join(' ');
+  var verdictMatch = joined.match(/(?:^|\s|\[)verdict=([a-z-]+)(?=\s|\]|$)/);
+  var reasonMatch = joined.match(/reason=([^\]]*?)(?=\s+verdict=|\s*\]|$)/);
+  var reason = String((reasonMatch && reasonMatch[1]) || '(未回原因)')
+    .replace(/https?:\/\/\S+/gi, '(url omitted)').replace(/\s+/g, ' ').trim().slice(0, 120);
+  return {
+    message: message,
+    verdict: verdictMatch ? verdictMatch[1] : 'unparsed',
+    reason: reason || '(未回原因)'
+  };
+}
+
+function summarizeConsoleRecords(records) {
+  var seen = (records || []).filter(Boolean);
+  var last = seen[seen.length - 1] || null;
+  return {
+    capture: 'enabled',
+    verdict: last ? last.verdict : 'not-observed',
+    message: last ? last.message : '',
+    reason: last ? last.reason : '',
+    count: seen.length
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -70,17 +118,17 @@ function classify(g) {
   if (!g || g.portOk === false) {
     return grid('port-down', 'unreadable',
       '端口上问不到 CDP —— 现场调试浏览器没开（或没带 --remote-debugging-port）。' +
-      '这一格只说"量不到"，不说"没在刷"。');
+      '这一格只说"量不到"，不说"没在刷"。', g);
   }
   if (g.attachErr) {
     return grid('unreadable', 'unreadable',
       '页面目标找到了，但 attach 求值没成：' + String(g.attachErr).slice(0, 120) +
-      ' —— 目标可能刚被回收，重试即可，别据此定性。');
+      ' —— 目标可能刚被回收，重试即可，别据此定性。', g);
   }
   if (!g.pageFound) {
     return grid('no-page', 'unreadable',
       '没有 url 命中 ' + (g.urlMatch || DEFAULT_MATCH) + ' 的页面目标。' +
-      '这一格**既不等于桥断、也不等于没在刷**：现场可能停在门户、目录页，或那一枚已经被人关掉。');
+      '这一格**既不等于桥断、也不等于没在刷**：现场可能停在门户、目录页，或那一枚已经被人关掉。', g);
   }
 
   // 桥的三格先判，再看 worker —— worker 不在列表**永远不是**桥断的理由（§2 #12）
@@ -138,7 +186,7 @@ function classify(g) {
       '倾向"桥能用"。（这一格存在的意义：只有 id 那一格时，桥断与在睡会被同一句话挡回去。）';
   }
 
-  var out = grid(verdict, bridge, note);
+  var out = grid(verdict, bridge, note, g);
   out.via = via;
   out.final = final;
   out.workerListed = g.workerListed || 0;
@@ -160,8 +208,11 @@ function classify(g) {
   return out;
 }
 
-function grid(verdict, bridge, note) {
-  return { verdict: verdict, bridge: bridge, note: note, exit: exitFor(verdict) };
+function grid(verdict, bridge, note, g) {
+  var evidence = summarizeConsoleRecords(g && g.consoleRecords);
+  evidence.waitMs = normalizeConsoleWaitMs(g && g.consoleWaitMs);
+  evidence.capture = g && g.portOk !== false && g.pageFound && !g.attachErr ? 'enabled' : 'unavailable';
+  return { verdict: verdict, bridge: bridge, note: note, exit: exitFor(verdict), consoleEvidence: evidence };
 }
 
 function exitFor(verdict) {
@@ -222,14 +273,16 @@ var SEND_PING = '(async () => { try { const r = await chrome.runtime.sendMessage
   ' catch (e) { return { ok: 0, err: String((e && e.message) || e) }; } })()';
 
 /**
- * 一次会话：Runtime.enable 收执行上下文事件，再逐枚非默认世界读桥。
+ * 一次会话：Runtime.enable 收执行上下文与控制台事件，再逐枚非默认世界读桥。
  * 这里的 `contexts` 事件收集是必需的 —— 世界枚数（现场实测 3→8 枚）本身就是取证。
+ * console 只留三条已知诊断的 canonical 字段；`consoleWaitMs` 默认 0，显式等待也封顶 30 秒。
  */
-function readWorlds(wsUrl, wakeAllowed, timeoutMs) {
+function readWorlds(wsUrl, wakeAllowed, timeoutMs, consoleWaitMs) {
+  var waitMs = normalizeConsoleWaitMs(consoleWaitMs);
   return new Promise(function (resolve, reject) {
     var ws;
     try { ws = new WebSocket(wsUrl); } catch (e) { return reject(e); }
-    var nextId = 0, pending = {}, contexts = [], settled = false;
+    var nextId = 0, pending = {}, contexts = [], consoleRecords = [], settled = false;
     var timer = setTimeout(function () {
       finish(new Error('会话超时（' + (timeoutMs || 60000) + 'ms）'));
     }, timeoutMs || 60000);
@@ -269,6 +322,9 @@ function readWorlds(wsUrl, wakeAllowed, timeoutMs) {
           var c = m.params.context;
           contexts.push({ id: c.id, name: c.name || '(无名)', origin: c.origin,
             isDefault: !!(c.auxData && c.auxData.isDefault) });
+        } else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warn') {
+          var record = bridgeConsoleRecord(m.params.args);
+          if (record) consoleRecords.push(record);
         }
       };
       ws.onerror = function () { finish(new Error('WebSocket 握手失败')); };
@@ -294,9 +350,13 @@ function readWorlds(wsUrl, wakeAllowed, timeoutMs) {
               });
             });
           });
-          return chain.then(function () { return rows; });
+          return chain.then(function () {
+            if (!waitMs) return rows;
+            return new Promise(function (r) { setTimeout(r, waitMs); }).then(function () { return rows; });
+          });
         })
-        .then(function (rows) { finish(null, rows); }, function (e) { finish(e); });
+        .then(function (rows) { finish(null, { worlds: rows, consoleRecords: consoleRecords }); },
+          function (e) { finish(e); });
     };
     ws.onerror = function () { finish(new Error('WebSocket 握手失败')); };
   });
@@ -304,18 +364,21 @@ function readWorlds(wsUrl, wakeAllowed, timeoutMs) {
 
 /**
  * probe(opts) → { readings, verdict 对象, worlds 行数, raw }
- * opts: { port, urlMatch, wake, timeout }
+ * opts: { port, urlMatch, wake, timeout, consoleWaitMs }
  * ⚠️ 纯只读：默认只读 DOM/全局量，一条消息都不发；`wake:true` 才多发那一条 ping。
+ * consoleWaitMs 默认 0；显式等待只多等新事件，不回填 CDP 连接前的历史。
  */
 function probe(opts) {
   opts = opts || {};
   var port = Number(opts.port || process.env.OMITONE_DEBUG_PORT || 9334);
   var want = String(opts.urlMatch || DEFAULT_MATCH);
   var wake = !!opts.wake;
+  var consoleWaitMs = normalizeConsoleWaitMs(opts.consoleWaitMs);
   var getJson = makeGetJson(port);
   var r = { urlMatch: want, wakeAllowed: wake, portOk: true,
     workerListed: 0, extensionPageListed: 0, pageFound: false, matched: 'none',
-    worldCount: 0, worldsHaveFn: 0, worldsHaveId: 0, pingTried: false, pingOk: false, pingErr: '', worlds: [] };
+    worldCount: 0, worldsHaveFn: 0, worldsHaveId: 0, pingTried: false, pingOk: false, pingErr: '',
+    worlds: [], consoleRecords: [], consoleWaitMs: consoleWaitMs };
 
   function pickPages(list) {
     return list.filter(function (t) {
@@ -344,8 +407,10 @@ function probe(opts) {
       if (!r.pageFound) return null;
       r.pageTitle = String(pages[0].title || '').slice(0, 44);
       r.pageUrl = String(pages[0].url || '').slice(0, 80);
-      return readWorlds(pages[0].webSocketDebuggerUrl, wake, opts.timeout).then(function (rows) {
-        r.worlds = rows;
+      return readWorlds(pages[0].webSocketDebuggerUrl, wake, opts.timeout, consoleWaitMs).then(function (got) {
+        r.worlds = got.worlds;
+        r.consoleRecords = got.consoleRecords;
+        var rows = got.worlds;
         r.worldCount = rows.length;
         rows.forEach(function (x) {
           if (x.read && x.read[0] === 'function') r.worldsHaveFn++;
@@ -393,6 +458,26 @@ function listTargetsOrThrow(getJson) {
 // ---------------------------------------------------------------------------
 // 逐格对照：每格只在它自己身上红（AGENTS §2 #9 / 第 33 项的手法）
 // ---------------------------------------------------------------------------
+
+function consoleRecordCell(why, args, want) {
+  return {
+    why: why,
+    run: function () {
+      var got = bridgeConsoleRecord(args);
+      var bad = [];
+      if (!want) {
+        if (got !== null) bad.push('随机或形似诊断的 console 也被收进来了：' + JSON.stringify(got));
+      } else if (!got) {
+        bad.push('这条已知诊断没被识别');
+      } else {
+        Object.keys(want).forEach(function (k) {
+          if (got[k] !== want[k]) bad.push(k + ' 期望 ' + JSON.stringify(want[k]) + '，实际 ' + JSON.stringify(got[k]));
+        });
+      }
+      return bad;
+    }
+  };
+}
 
 var CELLS = [
   { why: '桥能用：ping 答上、worker 在列表 —— 唯一该给 0 的那格',
@@ -455,14 +540,86 @@ var CELLS = [
     want: 'invalidated', fixHas: '重载扩展之后必须 F5 这一枚页面' },
   { why: '读不出那几格不许给出"没在刷/没装"这种当成结论的话',
     g: { portOk: true, workerListed: 0, pageFound: false },
-    want: 'no-page', exit: 2, noteBan: ['扩展没装'] }
+    want: 'no-page', exit: 2, noteBan: ['扩展没装'] },
+  consoleRecordCell('console 第一条已知诊断：日志桥不可用，保留 unreadable 与真实 reason',
+    [{ type: 'string', value: '[Omitone] runtime log unavailable; study continues' },
+      { type: 'string', value: 'reason=Extension context invalidated.' },
+      { type: 'string', value: 'verdict=unreadable' }],
+    { message: 'runtime log unavailable; study continues', verdict: 'unreadable',
+      reason: 'Extension context invalidated.' }),
+  consoleRecordCell('console 第二条已知诊断：换章节后没问到，denied 与 unreadable 不许混格',
+    [{ type: 'string', value: '[Omitone] scope not granted after page change [verdict=denied reason=scope_denied]' }],
+    { message: 'scope not granted after page change', verdict: 'denied', reason: 'scope_denied' }),
+  consoleRecordCell('console 第三条已知诊断：重连停止，stale 仍单独占一格',
+    [{ type: 'string', value: '[Omitone] scope lost, bridge stopped [verdict=stale]' }],
+    { message: 'scope lost, bridge stopped', verdict: 'stale', reason: '(未回原因)' }),
+  consoleRecordCell('无关 console 不许被收进取证（只认三条精确诊断）',
+    [{ type: 'string', value: '[Omitone] 别的诊断 [verdict=unreadable reason=secret]' }], null),
+  consoleRecordCell('只差一个后缀的形似消息也不许冒充已知诊断',
+    [{ type: 'string', value: '[Omitone] runtime log unavailable; study continuesXYZ' }], null),
+  consoleRecordCell('已知诊断缺 verdict 时交 unparsed，不许猜成 unreadable',
+    [{ type: 'string', value: '[Omitone] runtime log unavailable; study continues reason=timeout' }],
+    { verdict: 'unparsed', reason: 'timeout' }),
+  consoleRecordCell('console reason 里的 URL 必须掩码后再交回，课程标识不进取证',
+    [{ type: 'string', value: '[Omitone] scope lost, bridge stopped [verdict=unreadable reason=failed https://example.test/course?id=42&enc=secret]' }],
+    { verdict: 'unreadable', reason: 'failed (url omitted)' }),
+  { why: '多条 console 取最新一条并计数，主桥 verdict 不被 console 改写',
+    run: function () {
+      var records = [
+        { message: 'runtime log unavailable; study continues', verdict: 'unreadable', reason: 'timeout' },
+        { message: 'scope not granted after page change', verdict: 'denied', reason: 'scope_denied' }
+      ];
+      var e = summarizeConsoleRecords(records);
+      var v = classify({ portOk: true, pageFound: true, worldCount: 1, worldsHaveFn: 1,
+        worldsHaveId: 0, wakeAllowed: true, pingTried: true, pingOk: false,
+        pingErr: 'Extension context invalidated.', consoleRecords: records, consoleWaitMs: 0 });
+      var unavailable = classify({ portOk: true, pageFound: true, attachErr: 'timeout', consoleRecords: records });
+      var bad = [];
+      if (e.count !== 2 || e.verdict !== 'denied' || e.message !== records[1].message) {
+        bad.push('汇总没取最新或没数够：' + JSON.stringify(e));
+      }
+      if (v.verdict !== 'invalidated' || v.consoleEvidence.verdict !== 'denied' || v.consoleEvidence.capture !== 'enabled') {
+        bad.push('主判定与 console 没分格：' + JSON.stringify({ verdict: v.verdict, console: v.consoleEvidence }));
+      }
+      if (unavailable.consoleEvidence.capture !== 'unavailable') bad.push('attach 失败时 console 仍被写成可采集');
+      return bad;
+    } },
+  { why: 'console 采集开但没有匹配诊断时交 not-observed，不许塌成 unavailable',
+    run: function () {
+      var v = classify({ portOk: true, pageFound: true, worldCount: 1, worldsHaveFn: 1,
+        worldsHaveId: 1, wakeAllowed: false, consoleRecords: [], consoleWaitMs: 0 });
+      return v.consoleEvidence.capture === 'enabled' && v.consoleEvidence.verdict === 'not-observed' &&
+        v.consoleEvidence.count === 0 ? [] : ['空取证读成了 ' + JSON.stringify(v.consoleEvidence)];
+    } },
+  { why: 'console 等待默认 0：未传值不许额外等',
+    run: function () {
+      return normalizeConsoleWaitMs(undefined) === 0 ? [] : ['默认等待不是 0'];
+    } },
+  { why: 'console 正常等待值向下取整',
+    run: function () {
+      return normalizeConsoleWaitMs(123.9) === 123 ? [] : ['正常等待值没向下取整'];
+    } },
+  { why: 'console 负数等待归 0，不许变成长时间等待',
+    run: function () {
+      return normalizeConsoleWaitMs(-20) === 0 ? [] : ['负数等待没归 0'];
+    } },
+  { why: 'console 等待封顶 30 秒，超长参数不能挂住巡检',
+    run: function () {
+      var got = normalizeConsoleWaitMs(999999);
+      return MAX_CONSOLE_WAIT_MS === 30000 && got === MAX_CONSOLE_WAIT_MS
+        ? [] : ['上限读到 ' + MAX_CONSOLE_WAIT_MS + '，归一化读到 ' + got];
+    } }
 ];
 
 function selftest() {
   var bad = [];
   CELLS.forEach(function (c, i) {
-    var v = classify(c.g);
     var tag = '第 ' + (i + 1) + ' 格[' + c.why.slice(0, 26) + ']';
+    if (typeof c.run === 'function') {
+      c.run().forEach(function (message) { bad.push(tag + ' ' + message); });
+      return;
+    }
+    var v = classify(c.g);
     if (v.verdict !== c.want) bad.push(tag + ' 期望 verdict=' + c.want + '，实际 ' + v.verdict);
     if (c.via && v.via !== c.via) bad.push(tag + ' 期望 via=' + c.via + '，实际 ' + v.via);
     if (c.exit !== undefined && v.exit !== c.exit) bad.push(tag + ' 期望退出码 ' + c.exit + '，实际 ' + v.exit);
@@ -483,6 +640,7 @@ function selftest() {
   // 通用卫生：任何 verdict 都要有 exit，任何桥断族都要有 fix
   var seen = {};
   CELLS.forEach(function (c) {
+    if (typeof c.run === 'function') return;
     var v = classify(c.g);
     seen[v.verdict] = v;
     if (typeof v.exit !== 'number') bad.push('verdict=' + v.verdict + ' 没有退出码');
@@ -519,7 +677,8 @@ if (require.main === module) {
     probe({
       port: Number(arg('port', process.env.OMITONE_DEBUG_PORT || 9334)),
       urlMatch: arg('url-match', DEFAULT_MATCH),
-      wake: process.argv.indexOf('--wake') !== -1
+      wake: process.argv.indexOf('--wake') !== -1,
+      consoleWaitMs: normalizeConsoleWaitMs(arg('console-wait-ms', 0))
     }).then(function (v) {
       if (json) {
         var raw = v.raw;
@@ -533,6 +692,10 @@ if (require.main === module) {
         console.log('  读数：worker ' + v.raw.workerListed + ' 枚 / 扩展页面 ' + v.raw.extensionPageListed +
           ' 枚 / Omitone 世界 ' + v.raw.worldCount + ' 枚（function ' + v.raw.worldsHaveFn + '、id 非空 ' + v.raw.worldsHaveId + '）' +
           ' / 命中 ' + v.raw.matched + ' 量的是 ' + String(v.raw.pageUrl || '(无页面)').slice(0, 60));
+        var ce = v.consoleEvidence;
+        console.log('  console：capture=' + ce.capture + ' / verdict=' + ce.verdict + ' / count=' + ce.count +
+          ' / waitMs=' + ce.waitMs + (ce.message ? ' / message=' + ce.message : '') +
+          (ce.reason ? ' / reason=' + ce.reason : ''));
       }
       process.exitCode = v.exit;
     }).catch(function (e) {
@@ -544,4 +707,7 @@ if (require.main === module) {
 
 module.exports = { classify: classify, probe: probe, selftest: selftest, readWorlds: readWorlds,
   oneShot: oneShot, makeGetJson: makeGetJson, listTargetsOrThrow: listTargetsOrThrow,
+  normalizeConsoleWaitMs: normalizeConsoleWaitMs, bridgeConsoleRecord: bridgeConsoleRecord,
+  summarizeConsoleRecords: summarizeConsoleRecords, BRIDGE_CONSOLE_MESSAGES: BRIDGE_CONSOLE_MESSAGES,
+  MAX_CONSOLE_WAIT_MS: MAX_CONSOLE_WAIT_MS,
   DEFAULT_MATCH: DEFAULT_MATCH, FALLBACK_MATCH: FALLBACK_MATCH, EXIT: EXIT, CELLS: CELLS };

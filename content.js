@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
+var OMITONE_CODE_REV_BRIDGE = '83fed9f209';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -23,6 +23,28 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
   let scopeExpiresAt = 0;
   let requestFingerprints = new WeakMap();
 
+  // 问权限那一发的三态（AGENTS §2 #12：「问不到」单独占一格，不许塌进「没权限」）。
+  // 现场（队列 #213，2026-11-23 夜）：重载扩展后页面里那份 `content.js` 成了孤儿副本，
+  // 而每条日志、每一次问权限都要过桥 ⇒ 环结构上收不到任何东西。原话把这件事记成
+  // `scope_denied`，于是排查的人去修权限 —— 一条日志也回不来，只有 F5 能。
+  const SCOPE_ASK = { verdict: 'unreadable', reason: '', at: 0 };
+
+  // 为什么读不出：`sendRuntimeMessageWithTimeout` 那四格（同步抛 / lastError / 超时 / 空回包）
+  // 都带着 `error` 字符串，唯独"什么都没带"这一格不许被写成空串（空串读起来像"原因是空的"）。
+  function askReason(response) {
+    const raw = String((response && response.error) || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    return raw || '(未回原因)';
+  }
+
+  // 记一格并交回 'none'。`refreshPageScope()` 的取值契约（study / captcha / none）一个字都不改 ——
+  // 六个调用点拿的是「!== 'none' 就算有权限」，多吐一格会把没授权的页放过去。
+  function noteScopeAsk(verdict, reason) {
+    SCOPE_ASK.verdict = verdict;
+    SCOPE_ASK.reason = reason || '';
+    SCOPE_ASK.at = Date.now();
+    return 'none';
+  }
+
   function scopeIsCurrent(required) {
     return !!POLICY && scopeUrl === location.href &&
       (!scopeExpiresAt || Date.now() < scopeExpiresAt) &&
@@ -32,12 +54,15 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
   async function refreshPageScope() {
     const url = location.href;
     const response = await sendRuntimeMessageWithTimeout({ type: 'get_page_scope' }, 5000, 'scope check timeout');
-    if (location.href !== url) return 'none';
+    // 问的途中换了页：这一发答的是旧网址，既不是"有权限"也不是"没权限"
+    if (location.href !== url) return noteScopeAsk('stale', '');
     const scope = response && response.success ? response.scope : 'none';
     pageScope = POLICY && ((scope === 'study' && POLICY.isChaoxingUrl(url)) ||
       (scope === 'captcha' && !POLICY.isChaoxingUrl(url))) ? scope : 'none';
     scopeUrl = url;
     scopeExpiresAt = Number(response && response.expiresAt) || 0;
+    if (!response || !response.success) return noteScopeAsk('unreadable', askReason(response));
+    noteScopeAsk(scope === 'none' ? 'denied' : 'granted', '');
     return scopeIsCurrent() ? pageScope : 'none';
   }
 
@@ -207,13 +232,25 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
         if (result && result.success) return;
         if (Date.now() - runtimeLogWarningAt > 30000) {
           runtimeLogWarningAt = Date.now();
-          console.warn('[Omitone] runtime log unavailable; study continues');
+          // 桥死的时候 console 是**唯一还活着的出口**（环正是死的那个，`tools/field-logs.js`
+          // 与「复制日志」都读不到它）。旧那句一个字都不带，于是「桥断了 / 后台说不 /
+          // 20 秒没人答 / 回了个空」四格打成同一句话 —— 线索就扔在这一发上。
+          console.warn('[Omitone] runtime log unavailable; study continues',
+            'reason=' + askReason(result), 'verdict=' + SCOPE_ASK.verdict);
         }
       }).catch(() => {});
     // 「医生」吃的是**这一页自己**那一份环，与后台那本全局账各记各的：
     // 后台那本混着别门课/别标签页的旧账，拿它答"这一页怎么了"会答出别人的故事。
     // 这一发必须放在转发**之后** —— 判断层坏了不能把日志转发一起拖死（刷课优先）。
     doctorNote(item.level, item.message);
+  }
+
+  // 「这一族的话不许只落环」：桥已经死了，`appendRuntimeLog` 那一发正是送不出去的，
+  // 而面板那一格只有盯着屏幕的人才看得见。console 这一份是给"当时不在场、事后来看"的人的。
+  // 只说结论与原因，不复述 `href`（那里躺着选课 id）。
+  function announceBridgeDeath(message, verdict, why) {
+    console.warn('[Omitone] ' + message + ' [verdict=' + (verdict || 'unknown') +
+      (why ? ' reason=' + String(why).slice(0, 120) : '') + ']');
   }
 
   function sendRuntimeMessageWithTimeout(message, timeoutMs, timeoutError) {
@@ -3964,11 +4001,18 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
       appendRuntimeLog('warn', 'scope not granted after page change', {
         reason: reason || '',
         round: urlRetryRound + 1,
+        scopeAsk: SCOPE_ASK.verdict,
+        askError: SCOPE_ASK.reason,
         href: String(location.href || '').slice(0, 90)
       });
+      announceBridgeDeath('scope not granted after page change', SCOPE_ASK.verdict, SCOPE_ASK.reason);
       if (urlRetryRound < URL_RETRY_MAX_ROUNDS) {
         urlRetryRound++;
-        showStatusPanel('wait', '正在重连扩展', '切换章节后没问到权限，稍后自动重试；一直不动请按 F5');
+        // 「问不到」与「没权限」是两格（§2 #12）：桥死的时候说"没问到权限"，
+        // 用户会去翻弹窗里的开关，而这一格只有一样能治 —— 把这一页 F5 一次。
+        showStatusPanel('wait', '正在重连扩展', SCOPE_ASK.verdict === 'unreadable'
+          ? '连不上扩展（刚重载过扩展就是这样），请按 F5 刷新学习通页面'
+          : '切换章节后没问到权限，稍后自动重试；一直不动请按 F5');
         if (urlRetryTimer) clearTimeout(urlRetryTimer);
         urlRetryTimer = setTimeout(() => {
           urlRetryTimer = null;
@@ -3981,9 +4025,14 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
       appendRuntimeLog('error', 'scope lost, bridge stopped', {
         reason: reason || '',
         rounds: URL_RETRY_MAX_ROUNDS,
+        scopeAsk: SCOPE_ASK.verdict,
+        askError: SCOPE_ASK.reason,
         href: String(location.href || '').slice(0, 90)
       });
-      showStatusPanel('error', '扩展通道断开', '多次询问权限都没通过，请按 F5 刷新学习通页面');
+      announceBridgeDeath('scope lost, bridge stopped', SCOPE_ASK.verdict, SCOPE_ASK.reason);
+      showStatusPanel('error', '扩展通道断开', SCOPE_ASK.verdict === 'unreadable'
+        ? '多次问不到扩展，请按 F5 刷新学习通页面（只重载扩展不刷新没用）'
+        : '多次询问权限都没通过，请按 F5 刷新学习通页面');
     }
     dropPageRuntime();
   }
@@ -4037,6 +4086,6 @@ var OMITONE_CODE_REV_BRIDGE = 'e012e19b22';
     // 页面跑的还是旧 content.js，两边都以为生效了，用户看到的是「还是卡住的」。
     // page.js 有 `code` 内容指纹兜底，而 content.js 不在 concat 的范围里、没有指纹，
     // 所以这一栏是 content.js 侧唯一的自证 —— 加改动就加标记，别让它空着。
-    marks: ['refill-per-question', 'scope-retry']
+    marks: ['refill-per-question', 'scope-retry', 'bridge-reason-193']
   });
 })();

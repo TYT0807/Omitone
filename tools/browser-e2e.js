@@ -2686,6 +2686,9 @@ var MOCK_PAGES = {
   '/ppt-decoy': buildPptDecoyTopHtml,
   '/ppt-decoy-card': buildPptDecoyCardHtml,
   '/ppt-decoy-inner': buildPptDecoyInnerHtml,
+  '/ppt-decoy-media-177': buildB177PptMediaTopHtml,
+  '/ppt-decoy-media-card-177': buildB177PptMediaCardHtml,
+  '/media-tick-inner-177': buildB177MediaInnerHtml,
   '/submit-key': buildSubmitKeyShellHtml,
   '/submit-key-inner': buildSubmitKeyInnerHtml,
   '/mycourse/studentstudy': buildStudyDiscussionDecoyHtml,
@@ -2942,6 +2945,41 @@ function buildPptDecoyInnerHtml() {
     '<div class="question-content">本讲要点：任务类型只有一份顺序</div>' +
     '<div class="answerOption"><span>A. 仲裁</span><span>B. 路由</span></div>' +
     '<input type="hidden" id="answerTotal" value="3">' +
+    '</body></html>';
+}
+
+function buildB177PptMediaTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>媒体任务点验收 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/ppt-decoy-media-card-177" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div><button id="prevNextFocusNext" type="button">下一节</button>' +
+    '<script>window.attachments=[{jobid:"b177-media",property:{_jobid:"b177-media",' +
+    'jobid:"b177-media",mid:"mid-b177-media",name:"坏包视频",module:"video",type:"video",job:true}}];' +
+    'document.getElementById("prevNextFocusNext").addEventListener("click",function(){' +
+    'window.__b177NextClicks=(window.__b177NextClicks||0)+1;});</script>' +
+    '</body></html>';
+}
+
+function buildB177PptMediaCardHtml() {
+  var payload = { jobid: 'b177-media', _jobid: 'b177-media', mid: 'mid-b177-media', name: '坏包视频' };
+  var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>媒体任务卡片 - 学习通</title></head><body>' +
+    '<div class="card"><div class="ans-attach-ct" id="tp-ppt">' +
+    '<div class="ans-job-icon" aria-label="任务点"></div>' +
+    '<div class="ans-attach-title">坏包视频</div>' +
+    '<iframe jobid="b177-media" data="' + dataAttr + '" src="/media-tick-inner-177" ' +
+    'style="width:100%;height:420px;border:0"></iframe>' +
+    '</div></div></body></html>';
+}
+
+function buildB177MediaInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>坏包视频 - 学习通</title></head><body>' +
+    '<div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '<video id="video" preload="auto" src="/mock-b177-video.mp4"></video></div>' +
+    '<script>window.finishJob=function(){window.__b177FinishJob=(window.__b177FinishJob||0)+1;};</script>' +
     '</body></html>';
 }
 
@@ -26022,6 +26060,294 @@ SCENARIOS.push({
       'app._currentVideoIndex=0;app._activeJobId="";' +
       'var v=document.getElementById("omitone-video");' +
       'try{if(v)v.pause();}catch(e){}return true;})()');
+  }
+});
+
+SCENARIOS.push({
+  name: '177 坏包媒体三次恢复耗尽后隔离并交页',
+  path: '/ppt-decoy-media-177',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var baseConfig = await ctx.client.evaluate('JSON.parse(JSON.stringify(window._xxtApp.configs || {}))');
+    var baseGiveUp = await ctx.client.evaluate(
+      '(function(){try{return localStorage.getItem(window._xxtApp._taskGiveUpStoreKey);}catch(e){return null;}})()'
+    );
+    var cfg = Object.assign({}, baseConfig, {
+      enableMedia: true,
+      autoNext: true,
+      enableSeek: false,
+      autoMaxPlaybackRate: false,
+      advanceAtNinetyPercent: false,
+      restudy: false,
+      enableQuiz: false,
+      enablePPT: false,
+      autoNextCourse: false,
+      documentSkipTimeoutMs: 900
+    });
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(500);
+    try {
+      var setup = await ctx.client.evaluate(
+        '(function(){' +
+        'var app=window._xxtApp;if(!app)return {ok:false,why:"app missing"};' +
+        'app._clearTickLoop();app._clearCheckInterval();' +
+        'try{localStorage.removeItem(app._taskGiveUpStoreKey);}catch(e){}' +
+        'app._resetRuntimeState();app._mediaQuarantine=new WeakMap();app._mediaReloadKeys={};' +
+        'app._taskAttempts={};app._taskProgress=null;app._taskGiveUpLogged=null;' +
+        'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+        'app.configs.enableSeek=false;app.configs.autoMaxPlaybackRate=false;' +
+        'return new Promise(function(res){var tries=0;' +
+        '  function go(){' +
+        '    var f=null,card=null,iw=null,doc=null,v=null;' +
+        '    try{f=document.getElementById("iframe");}catch(e){}' +
+        '    try{card=f&&f.contentDocument?f.contentDocument.querySelector("#tp-ppt iframe"):null;}catch(e){}' +
+        '    try{iw=card&&card.contentWindow;}catch(e){}' +
+        '    try{doc=iw&&iw.document;}catch(e){}' +
+        '    try{v=doc&&doc.querySelector("#video,#audio");}catch(e){}' +
+        '    var ready=!!(f&&card&&iw&&doc&&v&&f.contentDocument.readyState==="complete"&&' +
+        '      doc.readyState==="complete");' +
+        '    if(!ready){if(++tries>50){res({ok:false,why:"frames not ready",tries:tries});return;}' +
+        '      setTimeout(go,100);return;}' +
+        '    var PM=iw.HTMLMediaElement&&iw.HTMLMediaElement.prototype;' +
+        '    if(!PM){res({ok:false,why:"media prototype missing"});return;}' +
+        '    var names=["error","readyState","duration","paused","ended","currentTime","playbackRate","seekable"];' +
+        '    var desc={};names.forEach(function(n){desc[n]=Object.getOwnPropertyDescriptor(PM,n);});' +
+        '    var old={config:Object.assign({},app.configs),quarantine:app._mediaQuarantine,reload:app._mediaReloadKeys,' +
+        '      attempts:app._taskAttempts,progress:app._taskProgress,giveUpLogged:app._taskGiveUpLogged,' +
+        '      finish:app._finishCurrentMedia,next:app.nextUnit,open:window.open,givenUp:app._isTaskGivenUp,' +
+        '      load:PM.load,play:PM.play,desc:desc};' +
+        '    window.__b177Restore=old;' +
+        '    window.__b177Counts={load:0,play:0,seek:0,finish:0,next:0,open:0,nextClicks:0,finishJob:0};' +
+        '    Object.defineProperty(PM,"error",{configurable:true,get:function(){' +
+        '      return {code:3,message:"177 decode pipeline failed"};}});' +
+        '    Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+        '    Object.defineProperty(PM,"duration",{configurable:true,get:function(){return 1345.8;}});' +
+        '    Object.defineProperty(PM,"paused",{configurable:true,get:function(){return false;}});' +
+        '    Object.defineProperty(PM,"ended",{configurable:true,get:function(){return false;}});' +
+        '    Object.defineProperty(PM,"currentTime",{configurable:true,get:function(){return 628.771;},' +
+        '      set:function(x){window.__b177Counts.seek++;}});' +
+        '    Object.defineProperty(PM,"playbackRate",{configurable:true,get:function(){return 1;},set:function(){}});' +
+        '    Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+        '      return {length:1,start:function(){return 0;},end:function(){return 1345.8;}};}});' +
+        '    PM.load=function(){window.__b177Counts.load++;};' +
+        '    PM.play=function(){window.__b177Counts.play++;return Promise.resolve();};' +
+        '    app._finishCurrentMedia=function(){window.__b177Counts.finish++;' +
+        '      return old.finish.apply(this,arguments);};' +
+        '    app.nextUnit=function(){window.__b177Counts.next++;return old.next.apply(this,arguments);};' +
+        '    window.open=function(){window.__b177Counts.open++;return old.open.apply(this,arguments);};' +
+        '    window.__b177i=[];' +
+        '    window.__b177OnLog=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){' +
+        '      window.__b177i.push(m);}};' +
+        '    window.addEventListener("message",window.__b177OnLog);' +
+        '    var methods=["_searchChaoxingJobOcs","_playChaoxingMediaJob","_checkVideoStatus",' +
+        '      "_isActiveMediaPending","_quarantineDeadMedia","_isMediaQuarantined","_taskPointKey",' +
+        '      "_isTaskGivenUp","_markTaskGivenUp","_ensureOcsStudyRunner","_taskDiscoveryWindowMs"];' +
+        '    var missing=methods.filter(function(n){return typeof app[n]!=="function";});' +
+        '    res({ok:missing.length===0,why:missing.join(","),rev:app._codeRev(),missing:missing,' +
+        '      top:document.readyState,main:f.contentDocument.readyState,inner:doc.readyState,' +
+        '      selectorSame:doc.querySelector("#video,#audio")===v,tag:v.tagName,id:v.id,' +
+        '      errCode:Number(v.error&&v.error.code),readyState:Number(v.readyState),' +
+        '      paused:v.paused,ended:v.ended,ct:Number(v.currentTime),dur:Number(v.duration),' +
+        '      nativeGivenUp:app._isTaskGivenUp===old.givenUp,' +
+        '      giveUpKeys:Object.keys(app._taskGiveUpMap()).length,' +
+        '      config:{enableMedia:app.configs.enableMedia===true,autoNext:app.configs.autoNext===true,' +
+        '        enableSeek:app.configs.enableSeek===false,autoMaxPlaybackRate:app.configs.autoMaxPlaybackRate===false,' +
+        '        documentSkipTimeoutMs:Number(app.configs.documentSkipTimeoutMs)}});' +
+        '  }go();' +
+        '});})()'
+      );
+      check('177-A 夹具自证：真实三帧就绪、卡片层 #tp-ppt 的帧里媒体命中生产选择器 #video,#audio，' +
+        '坏媒体四格钉死（error=3、readyState=4、在播、未结束、位置不动），所需生产方法齐全且 _isTaskGivenUp 没被桩掉',
+        !!setup && setup.ok === true && typeof setup.rev === 'string' && setup.rev.length > 0 && setup.top === 'complete' &&
+        setup.main === 'complete' && setup.inner === 'complete' && setup.selectorSame === true &&
+        setup.tag === 'VIDEO' && setup.id === 'video' && setup.errCode === 3 && setup.readyState === 4 &&
+        setup.paused === false && setup.ended === false && setup.ct === 628.771 && setup.dur === 1345.8 &&
+        setup.nativeGivenUp === true && setup.giveUpKeys === 0 && setup.config.enableMedia === true &&
+        setup.config.autoNext === true && setup.config.enableSeek === true &&
+        setup.config.autoMaxPlaybackRate === true && setup.config.documentSkipTimeoutMs === 900,
+        JSON.stringify(setup));
+      if (!setup || !setup.ok) return;
+
+      var bind = await ctx.client.evaluate(
+        '(async function(){var app=window._xxtApp;app.configs.enableSeek=false;' +
+        'app.configs.autoMaxPlaybackRate=false;var job=app._searchChaoxingJobOcs([]);' +
+        'if(!job||typeof job.func!=="function")return {found:false,job:job?{kind:job.kind,jobid:job.jobid}:null};' +
+        'window.__b177Job=job;var played=await job.func();await new Promise(function(r){setTimeout(r,60);});' +
+        'app._clearCheckInterval();var f=document.getElementById("iframe");' +
+        'var card=f.contentDocument.querySelector("#tp-ppt iframe");' +
+        'var v=card.contentWindow.document.querySelector("#video,#audio");' +
+        'return {found:true,kind:job.kind,workType:job.workType,jobid:job.jobid,played:played===true,' +
+        '  same:app._videoEl===v,pending:app._activeMediaJobPending===true,' +
+        '  managed:app._activeMediaJobManaged===true,playing:app._isPlaying===true,' +
+        '  key:app._taskPointKey(job),mediaKey:app._getMediaSeekKey(v),' +
+        '  counts:Object.assign({},window.__b177Counts),' +
+        '  quarantined:app._isMediaQuarantined(v),giveUpKeys:Object.keys(app._taskGiveUpMap()).length};})()'
+      );
+      check('177-B 真实 OCS 搜索把三帧里的 #video 绑成 media job，并调用真实 func 进入 pending；' +
+        '不是手塞 _videoEl，绑定前没有隔离、没有放弃账，初始播放动作恰好一次',
+        !!bind && bind.found === true && bind.kind === 'video' && bind.workType === 'job' &&
+        bind.jobid === 'b177-media' && bind.played === true && bind.same === true &&
+        bind.pending === true && bind.managed === true && bind.playing === true &&
+        bind.key === 'job:b177-media' && bind.counts.load === 0 && bind.counts.play === 1 &&
+        bind.counts.seek === 0 && bind.quarantined === false && bind.giveUpKeys === 0,
+        JSON.stringify(bind));
+      if (!bind || !bind.found || !bind.same) return;
+
+      var rounds = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;app.configs.enableSeek=false;' +
+        'app.configs.autoMaxPlaybackRate=false;' +
+        'var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'var key=app._getMediaSeekKey(v),out={rounds:[],key:key};' +
+        'for(var i=1;i<=3;i++){var rec=app._mediaReloadKeys&&app._mediaReloadKeys[key];' +
+        '  if(rec)rec.at=Date.now()-21000;' +
+        '  app._guardLastTime=Number(v.currentTime);' +
+        '  app._guardLastWallTs=Date.now()-(Number(app.configs.guardNoProgressMs)+100);' +
+        '  app._checkVideoStatus();var pending=app._isActiveMediaPending("completion-check");' +
+        '  out.rounds.push({i:i,n:Number(app._mediaReloadKeys[key]&&app._mediaReloadKeys[key].n),' +
+        '    load:window.__b177Counts.load,play:window.__b177Counts.play,seek:window.__b177Counts.seek,' +
+        '    pending:pending,quarantined:app._isMediaQuarantined(v)});}' +
+        'out.counts=Object.assign({},window.__b177Counts);' +
+        'return new Promise(function(res){setTimeout(function(){' +
+        '  out.reloads=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media pipeline dead, reload in place";}).map(function(m){' +
+        '      return {attempt:Number(m.meta&&m.meta.attempt),code:Number(m.meta&&m.meta.code),' +
+        '        reason:String(m.meta&&m.meta.reason||"")};});' +
+        '  out.exhausted=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";}).length;' +
+        '  out.giveUpKeys=Object.keys(app._taskGiveUpMap()).length;' +
+        '  out.seekOff=app.configs.enableSeek===false;out.rateOff=app.configs.autoMaxPlaybackRate===false;' +
+        '  res(out);},120);});})()'
+      );
+      check('177-C 三次 _checkVideoStatus 都沿真实无进展分支调用原地重载：attempt 依次 1/2/3、' +
+        '20 秒冷却只推进记录年龄，load/play 各真增三次、seek 不增；第三次后 pending 仍在、尚未隔离或写放弃账',
+        !!rounds && rounds.key === bind.mediaKey && rounds.rounds.length === 3 &&
+        rounds.rounds.every(function (r, i) {
+          return r.i === i + 1 && r.n === i + 1 && r.load === i + 1 &&
+            r.play === i + 2 && r.seek === 0 && r.pending === true && r.quarantined === false;
+        }) && rounds.reloads.length === 3 &&
+        rounds.reloads.every(function (r, i) {
+          return r.attempt === i + 1 && r.code === 3 && r.reason === 'no-progress';
+        }) && rounds.exhausted === 0 && rounds.giveUpKeys === 0 &&
+        rounds.seekOff === true && rounds.rateOff === true,
+        JSON.stringify(rounds));
+      if (!rounds || rounds.reloads.length !== 3) return;
+
+      var dead = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'app._mediaBrokenSince=Date.now()-(Number(app.configs.documentSkipTimeoutMs)+200);' +
+        'var pending=app._isActiveMediaPending("completion-check");' +
+        'return new Promise(function(res){setTimeout(function(){var map=app._taskGiveUpMap();' +
+        '  var keys=Object.keys(map);var exhausted=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";});' +
+        '  res({pendingReturn:pending,pending:app._activeMediaJobPending===true,' +
+        '    managed:app._activeMediaJobManaged===true,playing:app._isPlaying===true,' +
+        '    hasVideo:!!app._videoEl,videoCount:Number(app._videoCount),quarantined:app._isMediaQuarantined(v),' +
+        '    keys:keys,record:keys.length===1?map[keys[0]]:null,exhausted:exhausted.length,' +
+        '    exhaustedMeta:exhausted.length===1?exhausted[0].meta:null,' +
+        '    finish:window.__b177Counts.finish,next:window.__b177Counts.next,' +
+        '    finishJob:Number(window.__b177FinishJob||0),open:window.__b177Counts.open});},60);});})()'
+      );
+      check('177-D 第三次耗尽后真实释放 pending、精确元素隔离、24 小时放弃名单只写这一键；' +
+        'media recovery exhausted 恰好一条且 giveUp=written，_finishCurrentMedia、nextUnit、finishJob 与开新页一次都没发生',
+        !!dead && dead.pendingReturn === false && dead.pending === false && dead.managed === false &&
+        dead.playing === false && dead.hasVideo === false && dead.videoCount === 0 &&
+        dead.quarantined === true && dead.keys.length === 1 && dead.keys[0] === bind.key &&
+        dead.record && dead.record.reason === 'media-recovery-exhausted' && dead.record.attempts === 3 &&
+        dead.exhausted === 1 && dead.exhaustedMeta && dead.exhaustedMeta.giveUp === 'written' &&
+        dead.exhaustedMeta.reloadTimes === 3 && dead.exhaustedMeta.code === 3 &&
+        dead.finish === 0 && dead.next === 0 && dead.finishJob === 0 && dead.open === 0,
+        JSON.stringify(dead));
+      if (!dead || !dead.quarantined || dead.keys.length !== 1) return;
+
+      var runnerStart = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;app.configs.autoNext=true;' +
+        'app.configs.enableSeek=false;app.configs.autoMaxPlaybackRate=false;' +
+        'app._clearCheckInterval();app._clearTickLoop();' +
+        'app._resetRuntimeState();var f=document.getElementById("iframe");' +
+        'var card=f.contentDocument.querySelector("#tp-ppt iframe");' +
+        'var v=card.contentWindow.document.querySelector("#video,#audio");' +
+        'var waitMs=app._taskDiscoveryWindowMs(1)+3000+5000+5000;' +
+        'app._ensureOcsStudyRunner();' +
+        'return {started:app._ocsStudyStarted===true,waitMs:waitMs,' +
+        '  preservedQuarantine:app._isMediaQuarantined(v),' +
+        '  preservedGiveUp:app._isTaskGivenUp("job:b177-media")===true,' +
+        '  counts:Object.assign({},window.__b177Counts)};})()'
+      );
+      check('177-E 清掉临时 timer/loop 并复位运行时后，隔离与放弃账仍保留；真实 _ensureOcsStudyRunner 已启动，' +
+        '等待上限由 _taskDiscoveryWindowMs 加 OCS 起步与 autoNext 延时读回，不猜秒数',
+        !!runnerStart && runnerStart.started === true && runnerStart.preservedQuarantine === true &&
+        runnerStart.preservedGiveUp === true && runnerStart.waitMs >= 13000,
+        JSON.stringify(runnerStart));
+      var handoff = null;
+      var deadline = Date.now() + (runnerStart ? runnerStart.waitMs : 18000);
+      while (Date.now() < deadline) {
+        await sleep(250);
+        handoff = await ctx.client.evaluate(
+          '(function(){var app=window._xxtApp;var logs=window.__b177i||[];' +
+          'function n(msg){return logs.filter(function(m){return String(m.message||"")===msg;}).length;}' +
+          'return {next:window.__b177Counts.next,skip:n("skip task point in give-up list"),' +
+          '  finished:n("study finished on page"),nextLog:n("study next unit"),' +
+          '  nextClicks:Number(window.__b177NextClicks||0),open:window.__b177Counts.open,' +
+          '  finish:window.__b177Counts.finish,finishJob:Number(window.__b177FinishJob||0),' +
+          '  path:String(location.pathname),logs:logs.map(function(m){return String(m.message||"");}),' +
+          '  counts:Object.assign({},window.__b177Counts)};})()'
+        );
+        if (handoff && handoff.next >= 1) break;
+      }
+      check('177-F runner 真跳过放弃名单里的坏任务点并交页：skip task point in give-up list、' +
+        'study finished on page、study next unit 各一条，真实 nextUnit 与页面下一节按钮各增一次；' +
+        '没有 _finishCurrentMedia、finishJob 或 window.open，场景页没有另开学习页',
+        !!handoff && handoff.skip === 1 && handoff.finished === 1 && handoff.nextLog === 1 &&
+        handoff.next === 1 && handoff.nextClicks === 1 && handoff.open === 0 &&
+        handoff.finish === 0 && handoff.finishJob === 0 &&
+        handoff.path === '/ppt-decoy-media-177',
+        JSON.stringify(handoff));
+      if (!handoff || handoff.next < 1) return;
+
+      var after = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'var before=Object.assign({},window.__b177Counts);' +
+        'app._reloadMediaInPlace(v,"177-after-handoff");app._checkVideoStatus();' +
+        'app._reloadMediaInPlace(v,"177-after-handoff-2");' +
+        'return {loadDelta:window.__b177Counts.load-before.load,' +
+        '  playDelta:window.__b177Counts.play-before.play,seekDelta:window.__b177Counts.seek-before.seek,' +
+        '  quarantined:app._isMediaQuarantined(v),givenUp:app._isTaskGivenUp("job:b177-media"),' +
+        '  exhausted:(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";}).length,' +
+        '  skip:(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="skip task point in give-up list";}).length,' +
+        '  next:window.__b177Counts.next};})()'
+      );
+      check('177-G 交页后同一坏元素仍是隔离与放弃态，再走真实重载/巡检也不新增 load/play/seek，' +
+        '不会重复写耗尽日志、重复跳过或再次 nextUnit',
+        !!after && after.loadDelta === 0 && after.playDelta === 0 && after.seekDelta === 0 &&
+        after.quarantined === true && after.givenUp === true && after.exhausted === 1 &&
+        after.skip === 1 && after.next === 1,
+        JSON.stringify(after));
+    } finally {
+      await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp,r=window.__b177Restore;' +
+        'app._runtimeVersion=Number(app._runtimeVersion||0)+1;app._clearCheckInterval();app._clearTickLoop();' +
+        'if(r){app.nextUnit=r.next;app._finishCurrentMedia=r.finish;window.open=r.open;' +
+        '  if(window.__b177OnLog)window.removeEventListener("message",window.__b177OnLog);' +
+        '  var f=document.getElementById("iframe"),card=f&&f.contentDocument?' +
+        '    f.contentDocument.querySelector("#tp-ppt iframe"):null;' +
+        '  var PM=card&&card.contentWindow&&card.contentWindow.HTMLMediaElement?' +
+        '    card.contentWindow.HTMLMediaElement.prototype:null;' +
+        '  if(PM){Object.keys(r.desc).forEach(function(n){if(r.desc[n]){' +
+        '      Object.defineProperty(PM,n,r.desc[n]);}else{delete PM[n];}});' +
+        '    PM.load=r.load;PM.play=r.play;}' +
+        '  app._resetRuntimeState();app.configs=' + JSON.stringify(baseConfig) + ';' +
+        '  app._mediaQuarantine=r.quarantine;app._mediaReloadKeys=r.reload;' +
+        '  app._taskAttempts=r.attempts;app._taskProgress=r.progress;app._taskGiveUpLogged=r.giveUpLogged;}' +
+        'try{var raw=' + JSON.stringify(baseGiveUp) + ';if(raw===null){' +
+        '  localStorage.removeItem(app._taskGiveUpStoreKey);}else{' +
+        '  localStorage.setItem(app._taskGiveUpStoreKey,raw);}}catch(e){}' +
+        'delete window.__b177Job;return true;})()'
+      );
+      await writeConfig(ctx.extensionId, baseConfig);
+      await sleep(150);
+    }
   }
 });
 

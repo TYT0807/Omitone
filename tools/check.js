@@ -5492,7 +5492,7 @@ function checkBridgeVerdictGrids() {
   var fieldCells = 0;   // 现场读数那一栏实际有几格（pass 那句不许手抄）
 
   // ---- a. 两份逐格对照都真跑（只钉下限：加格不碍事，删格要响） ----
-  var MIN = { bridge: 17, logs: 23 };
+  var MIN = { bridge: 30, logs: 23 };
   [['bridge', 'tools/field-bridge.js'], ['logs', 'tools/field-logs.js']].forEach(function (pair) {
     var name = pair[0], file = pair[1];
     if (!exists(file)) { bad.push('判定层的真源不存在：' + file); return; }
@@ -5597,6 +5597,45 @@ function checkBridgeVerdictGrids() {
       bad.push('只把"worker 不在列表"当证据就判成桥断（读到 ' + onlyWorker.verdict + '）—— ' +
         'MV3 每 30 秒空闲就回收，这一格会天天误报，代价是人去重装扩展');
     }
+    if (cells.bridge !== undefined && (!Array.isArray(bridgeMod.CELLS) || bridgeMod.CELLS.length !== cells.bridge)) {
+      bad.push('field-bridge 打印了 ' + cells.bridge + ' 格，但模块实际 CELLS 是 ' +
+        (bridgeMod.CELLS && bridgeMod.CELLS.length) + ' 格 —— 打印数与真跑数必须同一份');
+    }
+    var wantConsole = ['runtime log unavailable; study continues',
+      'scope not granted after page change', 'scope lost, bridge stopped'];
+    var gotConsole = bridgeMod.BRIDGE_CONSOLE_MESSAGES || [];
+    if (gotConsole.length !== wantConsole.length || wantConsole.some(function (s, i) { return gotConsole[i] !== s; })) {
+      bad.push('field-bridge 的 console 真名清单漂了（读到 ' + JSON.stringify(gotConsole) + '）—— ' +
+        '少一条或改成模糊匹配都会把死桥证据收错');
+    }
+    if (bridgeCode.indexOf("m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warn'") < 0 ||
+        bridgeCode.indexOf('if (record) consoleRecords.push(record);') < 0) {
+      bad.push('field-bridge 没把 Runtime.consoleAPICalled 的 warn 接进 canonical 记录 —— ' +
+        'selftest 绿也只证明解析函数存在，现场那一发根本没采');
+    }
+    if (!/consoleWaitMs:\s*normalizeConsoleWaitMs\(arg\('console-wait-ms',\s*0\)\)/.test(bridgeCode)) {
+      bad.push('field-bridge 的 --console-wait-ms 默认值不是 0 —— 普通巡检不许额外等控制台');
+    }
+    if (typeof bridgeMod.bridgeConsoleRecord === 'function') {
+      var sample = bridgeMod.bridgeConsoleRecord([
+        { type: 'string', value: '[Omitone] scope lost, bridge stopped [verdict=unreadable reason=failed https://example.test/course?enc=secret]' }
+      ]);
+      if (!sample || sample.reason.indexOf('https://') >= 0 || sample.reason.indexOf('enc=secret') >= 0 ||
+          sample.reason.indexOf('(url omitted)') < 0) {
+        bad.push('field-bridge 的 console reason 没掩掉 URL（读到 ' + JSON.stringify(sample) + '）—— ' +
+          '导出取证会把课程标识带出去');
+      }
+    }
+    if (typeof bridgeMod.classify === 'function') {
+      var split = bridgeMod.classify({ portOk: true, pageFound: true, worldCount: 1, worldsHaveFn: 1,
+        worldsHaveId: 0, wakeAllowed: true, pingTried: true, pingOk: false,
+        pingErr: 'Extension context invalidated.', consoleWaitMs: 0,
+        consoleRecords: [{ message: wantConsole[1], verdict: 'denied', reason: 'scope_denied' }] });
+      if (split.verdict !== 'invalidated' || !split.consoleEvidence || split.consoleEvidence.verdict !== 'denied') {
+        bad.push('主桥判定被 consoleEvidence 覆盖了（读到 ' + JSON.stringify({ verdict: split.verdict,
+          console: split.consoleEvidence }) + '）—— 消息跨没跨过去与页面说了什么必须各占一格');
+      }
+    }
   }
 
   // ---- d. 默认路径仍然只读：开标签那一发必须钉在 --open-popup 那一支里 ----
@@ -5696,8 +5735,8 @@ function checkBridgeVerdictGrids() {
     return;
   }
   pass('现场"问不到后台"分成五格（桥判定 ' + cells.bridge + ' 格 + 读环 ' + cells.logs +
-    ' 格逐格对照全对；' + fieldCells + ' 份现场读数各占一格、出口码 0/1/2 分家；处置那句 F5 只有一份真源，' +
-    'AGENTS §3.3 第 3 步与 npm 入口同真源；默认路径仍只读）');
+    ' 格逐格对照全对；' + fieldCells + ' 份现场读数各占一格、出口码 0/1/2 分家；console 取证独立且默认零等待、URL 掩码；' +
+    '处置那句 F5 只有一份真源，AGENTS §3.3 第 3 步与 npm 入口同真源；默认路径仍只读）');
 }
 
 // ---------------------------------------------------------------------------

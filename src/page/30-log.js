@@ -142,11 +142,30 @@
         var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
         out.controls = ctrls.length;
         var enabled = 0;
-        for (var i = 0; i < ctrls.length; i++) { if (!ctrls[i].disabled) enabled++; }
+        // 全页计数会混进题目区之外的输入框（搜索/备注那类），单看它判不出“题还能不能做”。
+        // 这里再按题目容器分一次账：`_isQuizResultPageFinished` 读的是全页那一格，保留不动。
+        var inQuiz = 0;
+        var inQuizEnabled = 0;
+        var containerSel = this._quizContainerSelector;
+        for (var i = 0; i < ctrls.length; i++) {
+          if (!ctrls[i].disabled) enabled++;
+          var inContainer = false;
+          try {
+            inContainer = !!(ctrls[i].closest && ctrls[i].closest(containerSel));
+          } catch (eC) {}
+          if (inContainer) {
+            inQuiz++;
+            if (!ctrls[i].disabled) inQuizEnabled++;
+          }
+        }
         out.controlsEnabled = enabled;
-        // 正文里跟判分有关的词，便于对照
+        out.controlsInQuiz = inQuiz;
+        out.controlsInQuizEnabled = inQuizEnabled;
+        // 正文里跟判分有关的词，便于对照。
+        // ⚠️ 这一格原先叫 `keywords` —— 日志读取层按 `key` 掩码（API Key 那一族），
+        //    现场读回永远是 `***`，看着像“正文一个判分词都没有”。名字不改正则、只改字段。
         var kw = text.match(/我的答案|正确答案|本题得分|答案解析|任务点已完成|已通过|请重做|未通过|不及格/g);
-        out.keywords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
+        out.gradeWords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
       } catch (e) { out.err = String(e.message || e).slice(0, 60); }
       return out;
     },

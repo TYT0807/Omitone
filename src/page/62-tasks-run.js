@@ -286,8 +286,12 @@
         //    不刷心跳会被误判成"卡死的 tick"，从而放锁并起第二个 tick 并行翻页。
         //    note 里带页号，日志节流后正好成了这个长任务耗时的观测点。
         this._tickProgress('ppt-audio page ' + (i + 1) + '/' + (slides || '?'));
-        this._startSlideMedia(doc);
-        await this._waitSlideAudioDone(doc);
+        this._startSlideMedia(doc, job);
+        var audioDone = await this._waitSlideAudioDone(doc, job);
+        if (!audioDone) {
+          this._clearDocumentPendingState('ppt-audio-media-quarantined');
+          return false;
+        }
         emitRuntimeLog('info', 'document page', {
           currentPage: Math.min(i + 1, slides || i + 1),
           totalPages: slides,

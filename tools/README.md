@@ -8,7 +8,7 @@
 | `prompt-bench.js` | `npm run bench` | 提示词 token 基准 + 兼容性自检 |
 | `integration-test.js` | `npm run itest` | 集成测试：真实 `content.js` 的答题往返链路 |
 | `background-test.js` | `npm run bgtest` | worker 单测：作用域判定 / 配置投影 / 授权 / 抓图护栏，含 4 组负控 |
-| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 151 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 100 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
+| `browser-e2e.js` | `npm run e2e` | 真实 Edge 端到端：加载扩展 + mock 测验页 + mock 模型（含 mooc2 / PDF.js / 字体残留等真实结构场景与**前端混沌猴**，共 152 个场景）。加 `OMITONE_EXT_DIR=dist/omitone-1.3.0` 可改成验**打包产物**（见下方专节）。`--validate-fixtures` 是**离线**入口：不起浏览器，把 103 页夹具逐段试解析 + 自证沙盒切片契约（见下方专节） |
 | `fixture-parse-guard.js` | 被 `check.js` 与 `browser-e2e.js` 调用 | 夹具可解析守卫：把夹具 HTML 里每一段程序（内联 `<script>` 体、`javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段"。**零依赖、不起浏览器** —— 因为这一族**实测没有任何断言抓得住**（批次 47/48） |
 | `e2e-expr-guard.js` | `node tools/e2e-expr-guard.js [文件]`；被 `check.js` 第 28 条调用 | 页面脚本串守卫：把测试台里那些**拼成字符串、再交给页面执行**的纯字面串折出来，逐条 `vm.Script` 试解析。**零依赖、不起浏览器** —— 这一族的错在字符串**内容**，`node --check` 与夹具守卫都量不到（见下方第 28 条）。覆盖面自己报数：认到几处入口、折叠解析几条、几条因含变量而跳过 |
 | `audit-browser-only.js` | `node tools/audit-browser-only.js`（`--report` 逐处打印每一族字样在不在、`--selftest` 跑九格自证）；被 `check.js` 第 29 条调用 | 装机口径审计：按**位置**逐个点名（说明书封面红框 / §7 那一行 / §9.2 那一行 / README 封面警示），每处都要求传达齐「电脑浏览器」「客户端」「手机」「装不了」「地址栏」「chaoxing.com」这几件事。**只认可见正文**（注释与 `script` 里的出现不算）、**别处出现不能替这一处交差**、**锚点认不出算一条问题**（位置数恒钉 4，不许缩成 3 还打印「0 条问题」）。要拦的是第 27 条管不到的**方向性断言**：删掉封面那句，集成、真实浏览器、界面字样三项全绿，只有拿去装客户端的新用户会发现装不了 |
@@ -37,7 +37,7 @@
 | `field-shape.expr` | `npm run field-shape` | 同一条 CDP 通道上的**形状测绘**表达式：逐文档打印任务盒 class、`#isFinished` 原值、讨论卡所在层级、投票覆盖层的出厂状态、`window.attachments` 与 `_kindFromAttachment` 的实跑结果。**用来定"夹具 vs 现场谁对"**（AGENTS §5）；只读，不点、不写、不读 `chrome.storage` |
 | `field-space-index.expr` | `npm run field-space` | **用户中心那一页**（`space/index`）的形状测绘：课程卡片挂在哪一份文档（实测在 `visit/interaction` 那个**可读** iframe 里，外层 `body` 只有 91 字）、一张卡的 `id=c_课程号` 与 class 里的 `stu_班级号`、写着 `任务点进度: 0/88` 的那一格在哪个元素上、进课那一跳的 `stucoursemiddle?courseid=…&clazzid=…&cpi=…` 原样 href，以及插件在这一页能不能认出任务点（`plugin.jobNow`）。批次 82「跑完一门回中心挑还有没完成的课」的**唯一实地依据**；只读，不点、不写、不读 `chrome.storage` |
 | `field-logs.js` | `npm run field-logs` | 直读**现场**（调试浏览器里扩展的 service worker）`chrome.storage.local` 里**那一个键** `runtimeLogs` —— 不用人去点「复制日志」就能看到插件当场怎么判的。`--grep=` / `--level=` / `--tail=` / `--watch=秒` / `--width=字`（默认 240；放宽它才打得开被拒帧的 `sig`，同时会一起松深度闸 —— 二者原本错开一层，签名会被打成省略号；截断时行尾会明说掉了多少字）；只读，键名撞上 key/token/secret 一类一律打码，**绝不整份 dump 存储**（同一份存储里躺着 API Key）|
-| `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页 |
+| `field-bridge.js` | `npm run field-bridge` | **现场那枚桥的判定层**（`tools/field-logs.js` 问不到后台时靠它说话，见下方专节）。`--selftest` 逐格对照、`--json` 机器读、`--wake` 才多发那**一条** `ping`、`--url-match=` 换页、`--console-wait-ms=` 有界等新控制台证据（默认 0，最多 30 秒） |
 | `check-concurrency.js` | `npm run concurrency` | **起手问两道**：腿 1 自报条新鲜 ∧ 腿 2（盘上有脏 ∧ 脏文件 mtime 也新鲜）；六种 verdict 各占一格（外部条子写 `mode=read` → `other-reading` 放行但单独说话；无 `mode=` 按 `write` 保守阻塞，认不出的值也按 `write` 并点名）、`git` 读不出当有人在写，EXIT 0／1／2 分家；`--selftest` 纯内存逐格对照、`--quiet` 只看码、`--window-min=` 换窗口、`--session=` 让条子认出是不是自己、收尾交回走 `--done --session=`（**只删自己认领的那一发**，归因不到一律不删；见下方专节）|
 
 `npm test` = `check` + `bench` + `itest` + `bgtest` + 下面那张表里**除沙盒与产物验收驱动之外**的全部秒级独立套件；`npm run test:all` 再加上 `e2e`。
@@ -183,7 +183,7 @@
     拦的是批次 46 那种腐烂：三个秒级套件在链外坏了三个批次没人发现
 23. **夹具 HTML 可解析** —— `fixture-parse-guard.js` 把夹具里每一段程序（内联 `<script>` 体、
     `javascript:` 协议的 `src` / `href`）用 `vm.Script` 试解析，解析不了就点名到"第几段 + 错误首行 + 程序开头"。
-    两条路径：`browser-e2e.js --validate-fixtures` 全表扫（100 页夹具，本项 spawn 一次做证据）+
+    两条路径：`browser-e2e.js --validate-fixtures` 全表扫（103 页夹具，本项 spawn 一次做证据）+
     服务端每次发页前扫**正要发出去的那一份**。自带 3 格阴性对照（两类坏形状各报一条、
     干净夹具必须 0 条 —— **"不许误报"也是判据**）与 4 道接线自证（守卫被 require / 发页处真调
     `scanFixture(urlPath, fixtureHtml)` / 收尾真读那份问题清单 / 全表入口存在）。
@@ -709,7 +709,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 ## browser-e2e.js
 
 在**独立临时 profile** 里启动 Edge（绝不碰用户正在使用的实例），加载本仓库扩展，
-逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 151 个场景 / 1717 项断言。
+逐个访问本地 mock 页面，**逐功能交叉检验实际行为**。当前 152 个场景 / 1725 项断言。
 `OMITONE_E2E_FILTER=子串1,子串2` 可只跑其中几条（逗号 / 分号 / 竖线分隔，**定向跑不写全套计数**）。
 
 本轮补充角色动作相关覆盖：11 种 CSS 动作与立绘册入口、手动打断漫游/待机、
@@ -740,7 +740,7 @@ message 监听器驱动完整答题往返。跑完会把实测条数落盘到 `.
 > **为什么要静态**：批次 47 把"少一个右括号"的 `javascript:` 帧注回真实浏览器，
 > **那一条场景全绿**（`pageErrors:0`），异常压根不抛 —— 这一族等浏览器回报会漏。
 > 夹具现在两条路径都扫：发页前扫**正要发出去的那一份**（问题进报告并置退出码），
-> 离线入口扫**全表 100 页**（定向跑只覆盖访问过的那几页）。
+> 离线入口扫**全表 103 页**（定向跑只覆盖访问过的那几页）。
 
 ### 要造「这一页在后台」：`openTab` **不够**，必须 `activateTab` + 轮询自证
 
@@ -938,6 +938,14 @@ npm run field-bridge                                                            
 （任一已开着的扩展页面读同一个键，只读；要它自己开一枚才加 `--open-popup`），
 并会明说「**这不证明后台醒着**」；环超过 180 秒（地板那两发 120×2）没有新条目时单独报一句
 「环像冻住了」并把桥的判定贴出来 —— 环是空的与环冻住是两句话，读不出永远不许当"环没事"。
+
+**桥死与权限拒绝不能混成一句**：`consoleEvidence` 独立于主 `verdict`，只收三条精确 Omitone 控制台诊断
+（`runtime log unavailable; study continues`、`scope not granted after page change`、`scope lost, bridge stopped`），
+逐条留下 canonical 消息、`verdict`、`reason` 与次数；reason 里的 URL 一律掩成 `(url omitted)`，不存原始参数。
+**`--console-wait-ms=` 默认 0**（仍含接线与世界读取的约 400ms），显式等待最多 30 秒；需要看重连现场时再给窗口。
+`Runtime.consoleAPICalled` 只能收 CDP 接上以后的新事件，连接前的历史控制台补不回来，所以 `not-observed` 不等于
+「没有告警」；`capture=unavailable` 是端口/附着失败，与桥判定也各占一格。要采一条只在重连时出现的诊断，
+先启动 `field-bridge --console-wait-ms=...`，在它采样期间重载扩展，别等告警已经过去再读。
 
 `npm run field-shape` 就是上面那条命令换成 `--file=tools/field-shape.expr`。**什么时候跑它**：
 一条 e2e 断言在沙盒里绿、在真页面上却不生效（或反过来），第一件事不是改判据，

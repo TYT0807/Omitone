@@ -11,7 +11,7 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（54 个）：
+ * 本段的方法（57 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
  *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
@@ -30,6 +30,7 @@
  *   _resolveQuizSubmitDocument、_shouldAutoSubmitQuiz、_auditQuizFillBeforeSubmit、
  *   _maybeSubmitQuiz、
  *   _isSubmitConfirmDialog、_findDialogButtonByText、_checkSubmitConfirmDialog、
+ *   _findWorkVerifyWindow、_dismissQuizSubmitAlerts、_solveWorkVerifyCaptcha、
  *   _handleSubmitConfirmDialog
  * ========================================================================== */
 // @omitone-part-header-end
@@ -199,6 +200,13 @@
       if (text.indexOf('判断') !== -1 || text.indexOf('对错') !== -1) return 'judge';
       if (text.indexOf('填空') !== -1) return 'fill';
       if (/简答|问答|论述|名词解释/.test(text)) return 'short';
+      // 老引擎把题型挂在选项 li[qtype] 上（现场：li.before-after[qid][qtype]）。
+      // 其余信号都没有时才用它 —— 顺序不抢前面那几道判据（§2 #5）。
+      try {
+        var typedOpt = el.querySelector ? el.querySelector('[qtype]') : null;
+        var qtValue = typedOpt ? String(typedOpt.getAttribute('qtype') || '').trim() : '';
+        if (qtValue) return this._mapQuizTypeValue(qtValue);
+      } catch (eQt) {}
       return 'single';
     },
 
@@ -542,6 +550,8 @@
       }
       var usePositionFallback = !anyKnownLetter && items.length >= 2 && items.length <= 6;
 
+      var positionHit = null;
+      var dataHit = null;
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
         var letter = '';
@@ -558,10 +568,18 @@
 
         var optionText = this._extractOptionText(item);
         if (questionType === 'judge' && this._isJudgeOptionMatch(item, answer, optionText, dataValue, letter)) return item;
-        if (isLetterOnly && letter === answerUpper) return item;
-        if (!isLetterOnly && optionText && (optionText === answerStr || optionText.indexOf(answerStr) !== -1 || answerStr.indexOf(optionText) !== -1)) return item;
+        if (isLetterOnly) {
+          // 模型/本地答案的字母是**位置字母**（提示词按 DOM 顺序标 A/B/C）；
+          // 徽标 data 是平台认的值（randomOptions 下两者不同），只负责最终写入，不负责认选项。
+          // 先收位置命中；整圈都没位置命中时才退回 data（兼容确实按 data 字母给的调用方）。
+          var posLetter = String.fromCharCode(65 + i);
+          if (!positionHit && posLetter === answerUpper) positionHit = item;
+          if (!dataHit && letter === answerUpper) dataHit = item;
+          continue;
+        }
+        if (optionText && (optionText === answerStr || optionText.indexOf(answerStr) !== -1 || answerStr.indexOf(optionText) !== -1)) return item;
       }
-      return null;
+      return positionHit || dataHit || null;
     },
 
 
@@ -653,8 +671,14 @@
       }
 
       if (!item._optionInput) {
+        // 老引擎把 addChoice(this) / addMultipleChoice(this) 挂在选项宿主（li）上：
+        // 点 item 已经触发一次，再点子徽标会冒泡回同一个宿主 —— 同一发切两次 = 复选又取消。
+        var clickOnceHost = null;
+        try {
+          clickOnceHost = item.closest ? item.closest('[onclick*="addChoice"], [onclick*="addMultipleChoice"]') : null;
+        } catch (eHost) {}
         try { item.click(); } catch (e) {}
-        if (item.querySelector) {
+        if (!clickOnceHost && item.querySelector) {
           var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
           // 徽标可能就在 item 自身这一层，重复点同一个元素只会多点一次（复选上就是再取消）
           if (clickTarget && clickTarget !== item) {
@@ -2121,6 +2145,13 @@
 
       function searchAll(doc, depth) {
         if (!doc || depth > 3) return null;
+        // #232 现场：交卷被拒后页面会先留下「作业提交失败/知道了」的告警层，它们同样是
+        // `.AlertCon02` 且带 `.bluebtn`，会抢在验证码窗前被选中 —— 于是确认流程去点「知道了」，
+        // 真正的 `#verifyCodeWin` 一次都没被认领。可见的验证码窗必须优先。
+        try {
+          var vw = doc.getElementById && doc.getElementById('verifyCodeWin');
+          if (vw && visible(vw) && vw.querySelector('#inputCode')) return vw;
+        } catch (eVw) {}
         for (var i = 0; i < selectors.length; i++) {
           var nodes = doc.querySelectorAll(selectors[i]);
           for (var j = 0; j < nodes.length; j++) {
@@ -2148,13 +2179,155 @@
     },
 
 
+    _dismissQuizSubmitAlerts: function (verify) {
+      try {
+        var doc = verify.win.ownerDocument;
+        var layers = doc.querySelectorAll('.AlertCon02');
+        for (var i = 0; i < layers.length; i++) {
+          var layer = layers[i];
+          if (layer === verify.win || !visible(layer)) continue;
+          if (String(layer.innerText || '').indexOf('失败') < 0) continue;
+          var btns = layer.querySelectorAll('a, button');
+          for (var j = 0; j < btns.length; j++) {
+            if (String(btns[j].textContent || '').trim() === '知道了') {
+              try { btns[j].click(); } catch (eBtn) {}
+              break;
+            }
+          }
+        }
+      } catch (eAll) {}
+    },
+
+    _findWorkVerifyWindow: function (dialog) {
+      var win = null;
+      try {
+        win = dialog && dialog.id === 'verifyCodeWin' ? dialog
+          : (dialog && dialog.querySelector ? dialog.querySelector('#verifyCodeWin') : null);
+      } catch (e0) { win = null; }
+      if (!win) {
+        // 传进来的可能是「作业提交失败/知道了」那一层：验证码窗在它后面。只认**可见**的那一枚，
+        // 隐藏的旧窗（上一次失败后被站点藏起来）不许打断告警的收尾点击。
+        var roots = [];
+        try { roots.push(this._resolveQuizSubmitDocument(null)); } catch (eR1) {}
+        try { roots.push(this._getMainDocument()); } catch (eR2) {}
+        for (var r = 0; r < roots.length && !win; r++) {
+          try {
+            var cand = roots[r] && roots[r].getElementById ? roots[r].getElementById('verifyCodeWin') : null;
+            if (cand && visible(cand) && cand.querySelector('#inputCode')) win = cand;
+          } catch (eR3) {}
+        }
+      }
+      if (!win) return null;
+      var input = null, img = null;
+      try { input = win.querySelector('#inputCode, input[name="inputCode"]'); } catch (e1) { input = null; }
+      try { img = win.querySelector('#workVerifyImg, img[src*="verifyCode"]'); } catch (e2) { img = null; }
+      if (!input) return null;
+      return { win: win, input: input, img: img };
+    },
+
+    _solveWorkVerifyCaptcha: function (verify) {
+      var self = this;
+      var img = verify && verify.img;
+      if (!img) {
+        emitRuntimeLog('warn', 'quiz submit captcha window has no image', {});
+        return;
+      }
+      var winTries = Number(verify.win && verify.win.__omitoneSolveTries) || 0;
+      if (winTries >= 4) return;
+      var src = String(img.src || '');
+      if (img.__omitoneVerifySrc !== src) {
+        img.__omitoneVerifySrc = src;
+        img.__omitoneVerifyTries = 0;
+      }
+      if ((Number(img.__omitoneVerifyTries) || 0) >= 2) return;
+      if (this._captchaBusy) return;
+      if (verify.win) verify.win.__omitoneSolveTries = winTries + 1;
+      img.__omitoneVerifyTries = (Number(img.__omitoneVerifyTries) || 0) + 1;
+      this._captchaBusy = true;
+      emitRuntimeLog('info', 'quiz submit captcha required, solving', {
+        attempt: img.__omitoneVerifyTries
+      });
+      return this._recognizeCaptchaImage(img).then(function (r) {
+        self._captchaBusy = false;
+        if (!r || !r.ok) {
+          emitRuntimeLog('warn', 'quiz submit captcha unsolved, waiting for manual code', {
+            attempt: img.__omitoneVerifyTries,
+            reason: String((r && r.error) || '').slice(0, 160)
+          });
+          return;
+        }
+        var wrote = false;
+        try {
+          if (verify.input.isConnected === false) throw new Error('input detached');
+          var view = verify.input.ownerDocument && verify.input.ownerDocument.defaultView;
+          var Ev = (view && view.Event) || Event;
+          verify.input.value = r.code;
+          verify.input.dispatchEvent(new Ev('input', { bubbles: true }));
+          verify.input.dispatchEvent(new Ev('change', { bubbles: true }));
+          wrote = true;
+        } catch (eFill) {}
+        if (wrote) emitRuntimeLog('info', 'quiz submit captcha filled', { len: String(r.code || '').length });
+        else emitRuntimeLog('warn', 'quiz submit captcha fill failed, waiting for manual code', { real: 'unwritable' });
+      }).catch(function (e) {
+        self._captchaBusy = false;
+        emitRuntimeLog('warn', 'quiz submit captcha unsolved, waiting for manual code', {
+          attempt: img.__omitoneVerifyTries,
+          reason: String(e && e.message || e).slice(0, 160)
+        });
+      });
+    },
+
     _handleSubmitConfirmDialog: function (dialog) {
       if (!dialog) return false;
       var now = Date.now();
       if (now - this._submitConfirmLastClickAt < 400) return true;
 
+      // #232 现场抓包：交卷前的人机验证窗 `#verifyCodeWin` 就在这一类弹层里（`.AlertCon02`），
+      // 空着 `#inputCode` 点「确定」= 拿空 `pyFlag` 去提交，平台必定回「作业提交失败！」
+      // 并重新发一张验证码图 —— 于是同一份卷子被无限重交、页面永远停在「待完成」。
+      // 空码时先识别填码；识别不了就把窗留着等人工输入，**这一拍绝不点确定**。
+      var verify = this._findWorkVerifyWindow(dialog);
+      if (verify) {
+        this._dismissQuizSubmitAlerts(verify);
+        if (!String(verify.input.value || '').trim()) {
+          this._solveWorkVerifyCaptcha(verify);
+          // 识别不出来时的两条出口：调试档（quizRejectGiveUp=false）把窗留在页面上等人输；
+          // 上线版把窗关掉、交回「三次无进展就放手」那条有界路径 —— 两边都不许拿空 pyFlag 去提交。
+          var tries = Number(verify.img && verify.img.__omitoneVerifyTries) || 0;
+          var debugHold = this.configs && this.configs.quizRejectGiveUp === false;
+          if (!debugHold && (!verify.img || (tries >= 2 && !this._captchaBusy))) {
+            var hidAt = Number(verify.win.__omitoneHideLogAt) || 0;
+            var canSay = Date.now() - hidAt > 5000;
+            try {
+              var view = verify.win.ownerDocument && verify.win.ownerDocument.defaultView;
+              if (view && typeof view.hideWorkVerify === 'function') view.hideWorkVerify();
+              else verify.win.style.display = 'none';
+            } catch (eHide) {}
+            var stillShown = false;
+            try { stillShown = visible(verify.win); } catch (eVis) {}
+            if (canSay) {
+              verify.win.__omitoneHideLogAt = Date.now();
+              emitRuntimeLog('warn', stillShown
+                ? 'quiz submit captcha window still shown after hide'
+                : 'quiz submit captcha unsolved, closing window for bounded retry', { tries: tries });
+            }
+          }
+          return true;
+        }
+      }
+
       var submitBtn = this._findDialogButtonByText(dialog, ['提交', '确定', '确认', '交卷', '完成']);
       if (!submitBtn) return false;
+
+      // 「作业提交失败 / 验证码不正确 / 无效的参数」这类**告知层**只是把上一发的失败说给我们听，
+      // 点「知道了」是收尾、不是一次提交：记成 confirm-dialog 会让三次停滞额度被白白用光，
+      // 真正的那一发还没交出去就先被判了放手（#232 现场：连续四条 confirm-dialog 全是它在响）。
+      if (!verify && /作业提交失败|提交失败|无效的参数|验证码不正确/.test(textOf(dialog)) &&
+          /知道了/.test(textOf(dialog))) {
+        this._submitConfirmLastClickAt = now;
+        try { submitBtn.click(); } catch (eKnow) {}
+        return true;
+      }
 
       this._submitConfirmLastClickAt = now;
       console.log('[Omitone] confirm final submit');

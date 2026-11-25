@@ -387,7 +387,7 @@
       if (!key) return false;
       var record = this._taskGiveUpMap()[key];
       if (!record || !record.at) return false;
-      return Date.now() - Number(record.at) < 24 * 3600 * 1000;
+      return Date.now() - Number(record.at) < TASK_GIVEUP_TTL_MS;
     },
 
     _markTaskGivenUp: function (key, info) {
@@ -409,6 +409,8 @@
       try { localStorage.removeItem(this._taskGiveUpStoreKey); } catch (e) {}
       this._taskAttempts = {};
       this._taskProgress = null;
+      this._mediaQuarantine = new WeakMap();
+      this._mediaReloadKeys = {};
     },
 
     _taskGiveUpList: function () {
@@ -422,7 +424,7 @@
           reason: record.reason || '',
           attempts: record.attempts || 0,
           ageMinutes: Math.round((now - Number(record.at || 0)) / 60000),
-          expired: now - Number(record.at || 0) >= 24 * 3600 * 1000
+          expired: now - Number(record.at || 0) >= TASK_GIVEUP_TTL_MS
         };
       });
     },

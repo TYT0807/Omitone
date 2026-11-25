@@ -23,6 +23,14 @@ var vm = require('vm');
 
 var ROOT = path.join(__dirname, '..');
 
+function readProductConstant(src, name) {
+  var hit = src.match(new RegExp('\\b' + name + '\\s*=\\s*([\\d\\s*]+)\\s*;'));
+  if (!hit) return NaN;
+  var parts = hit[1].trim().split(/\s*\*\s*/);
+  if (!parts.every(function (part) { return /^\d+$/.test(part); })) return NaN;
+  return parts.reduce(function (value, part) { return value * Number(part); }, 1);
+}
+
 var failures = [];
 var checks = 0;
 
@@ -127,7 +135,14 @@ function createHarness(options) {
   sandbox.top = sandbox;
   sandbox.parent = sandbox;
   sandbox.frames = sandbox;
-  sandbox.console = { log: function () {}, error: function () {}, warn: function () {}, info: function () {} };
+  // ⚠️ console 不再是黑洞（队列 #213）：桥死的时候 console 是页面侧**唯一还活着的出口**
+  //   （环正是死的那个），桩把它吞掉等于把这一族唯一的证人删了。留数组、不外印，别淹了控制台。
+  sandbox.__consoleWarns = [];
+  sandbox.console = {
+    log: function () {}, info: function () {},
+    warn: function () { sandbox.__consoleWarns.push('warn ' + Array.prototype.join.call(arguments, ' ')); },
+    error: function () { sandbox.__consoleWarns.push('error ' + Array.prototype.join.call(arguments, ' ')); }
+  };
   sandbox.URL = URL;
   sandbox.setTimeout = setTimeout;
   sandbox.clearTimeout = clearTimeout;
@@ -242,6 +257,11 @@ function createHarness(options) {
   //   连日志一起拒 —— 用来钉「本地闸不许把唯一的自证据吞掉」。
   var denyWindow = null;
   var forceScopeNone = false;
+  // 队列 #213：重载扩展之后，页面里那份 content.js 是**孤儿副本** —— 它调
+  // `chrome.runtime.sendMessage` 会**同步抛出** `Extension context invalidated.`，
+  // 而不是安静地回 `{success:false}`。原先的桩永远答得上话，所以"桥死"这一族
+  // 在集成层从来没有形状（AGENTS §5「断言'绿'有两种：走到了、和根本没走到那一层」）。
+  var bridgeDead = null;
 
   function storageGet(keys, cb) {
     sandbox.__storageReads.push(keys);
@@ -264,6 +284,7 @@ function createHarness(options) {
       getURL: function (p) { return 'chrome-extension://test/' + p; },
       onMessage: { addListener: function (fn) { runtimeListener = fn; } },
       sendMessage: function (message, cb) {
+        if (bridgeDead) throw new Error(bridgeDead);
         sandbox.__runtimeMessages.push(message);
         var policy = sandbox.OmitonePolicy;
         var scope = policy && policy.isChaoxingUrl(sandbox.location.href) ? 'study' : (options.captchaAuthorized ? 'captcha' : 'none');
@@ -416,6 +437,12 @@ function createHarness(options) {
       denyWindow = { from: now + startMs, to: now + endMs };
     },
     forceScopeNone: function (on) { forceScopeNone = !!on; },
+    /** 让桥**当场死掉**：`sendMessage` 同步抛出（重载扩展后页面里那份孤儿副本的真实形状）。
+     *  传空串复活。⚠️ 它和 `forceScopeNone` 不是一回事：后者是"后台答得上来说没权限"，
+     *  前者是"根本没人接话" —— 混用的话，#213 那三格断言测的就不是死桥而是拒绝。 */
+    killBridge: function (reason) { bridgeDead = reason === undefined || reason ? (reason || 'Extension context invalidated.') : null; },
+    /** 这一页自己 console 里说出去的话（队列 #213：桥死时这是唯一还活着的出口） */
+    consoleWarns: function () { return sandbox.__consoleWarns.slice(); },
     /** 页面运行时那枚 `<script>` 此刻还挂在文档上吗（被摘 = 那份 page.js 已判死） */
     pageScriptAlive: function () {
       return !!(pageScriptTag && pageScriptTag.isConnected);
@@ -3197,6 +3224,9 @@ async function testQuizPaperDepthAndApiBlock() {
     ['_quizBlockedByApiAt', '_quizBlockedSinceAt', '_quizBlockedHoldLogAt', '_quizBlockedGiveUpLogAt']
       .every(function (k) { return resetBody.indexOf('this.' + k + ' = 0;') >= 0; }),
     resetBody.replace(/\s+/g, ' ').slice(0, 200));
+  check('232-E5：复位运行时**不许**抹掉交卷停滞的跨轮记账（#232 现场：stalls 轮轮回到 1，三次上限永远攒不满）',
+    !/this\._quizSubmitStall(?:Key|Count|At)\s*=/.test(resetBody),
+    resetBody.replace(/\s+/g, ' ').slice(0, 240));
 
   var stateBody = state.slice(0, state.indexOf('_resetRuntimeState: function'));
   check('四个按住时刻都在状态段声明过（没声明的字段 = 每轮 undefined，判据第一秒就误判）',
@@ -3374,6 +3404,108 @@ async function testScopeReconnectAfterPageChange() {
   var marksLine = (src.match(/marks:\s*\[[^\]]*\]/) || [''])[0];
   check('⑤content.js 的自证标记栏非空，且批次 17 / 18 两个标记都在',
     marksLine.indexOf('refill-per-question') >= 0 && marksLine.indexOf('scope-retry') >= 0, marksLine);
+
+  // ---- ⑥ 桥**真死**（重载扩展后那份孤儿副本）：console 是唯一的出口，它必须说得出为什么
+  //
+  // 现场（队列 #213，2026-11-23 夜）：`notes/field-213-bridge-dead-log.md` §二 量到四格死法
+  // （同步抛 / lastError / 20 秒超时 / 空回包）各自都带着可归因的字符串，可旧那句 `console.warn`
+  // 一个字都不带，于是四格打成同一句话；而台账把整件事记成 `scope_denied`，排查方向就此跑偏。
+  // 测试台原先的桩**永远答得上话**（`runtime_log_append` 顶多回 `{success:false}`），
+  // 所以"桥死"这一族在集成层从来没有形状 —— `killBridge` 就是为了补上这一格。
+  var b = createHarness({ url: CH1 });
+  b.startContent();
+  await waitFor(function () { return b.sandbox.__injected.length > 0; }, 3000);
+  b.killBridge('Extension context invalidated.');
+  var bridgedBefore = b.sandbox.__runtimeMessages.length;
+  b.navigateTo(CH2);
+  await waitFor(function () {
+    return b.consoleWarns().some(function (l) { return l.indexOf('runtime log unavailable') >= 0; });
+  }, 9000);
+  var deadWarns = b.consoleWarns();
+  var logWarn = deadWarns.filter(function (l) { return l.indexOf('runtime log unavailable') >= 0; })[0] || '';
+  check('⑥桥同步抛死时，console 那句带得出**原因**（旧那句只说"日志不可用"，四格死法打成一句话）',
+    logWarn.indexOf('reason=Extension context invalidated.') >= 0, logWarn.slice(0, 200));
+  check('⑥同一发还带出三态 verdict，学习通页权限过期这一格是 `unreadable`',
+    logWarn.indexOf('verdict=unreadable') >= 0, logWarn.slice(0, 200));
+  var deadTell = deadWarns.filter(function (l) { return l.indexOf('scope not granted after page change') >= 0; })[0] || '';
+  check('⑥换章节问不到时 console 另说一句，点名"问不到"而不是"被拒"（面板那句的同源证据）',
+    deadTell.indexOf('[verdict=unreadable') >= 0 && deadTell.indexOf('reason=Extension context invalidated.') >= 0,
+    deadTell.slice(0, 220));
+  // Y3 的那一格证人：这一发**本来就会被本地闸吞掉**（导航后 `scopeIsCurrent()` 已假），
+  // 它现在还能出现在 console 里，靠的是 `POLICY.isChaoxingUrl` 那半截。摘掉那半截，本格当场红。
+  check('⑥学习通页在本地权限过期时日志这一发**仍走到桥**（旧本地闸把它吞了 = 排查时一条都没有）',
+    logWarn.length > 0 && b.sandbox.__injected.length >= 1,
+    JSON.stringify({ warns: deadWarns.length, injected: b.sandbox.__injected.length }));
+  check('⑥死桥期间一条消息都没上过桥（这才是"日志不进"的成因，不是权限被后台拒了）',
+    b.sandbox.__runtimeMessages.length === bridgedBefore &&
+    (b.sandbox.__store.runtimeLogs || []).every(function (l) {
+      return String(l.message || '') !== 'scope not granted after page change';
+    }),
+    JSON.stringify({ before: bridgedBefore, after: b.sandbox.__runtimeMessages.length }));
+  check('⑥桥死不等于把页面判死：这一页的运行时尚在，只等重连',
+    b.pageScriptAlive() === true, 'alive: ' + b.pageScriptAlive());
+
+  // 「问到了但被说不」单独占一格（§2 #12 那一族，与上面 `unreadable` 必须不同形）
+  var c = createHarness({ url: CH1 });
+  c.startContent();
+  await waitFor(function () { return c.sandbox.__injected.length > 0; }, 3000);
+  c.forceScopeNone(true);
+  c.navigateTo(CH2);
+  await waitFor(function () {
+    return c.consoleWarns().some(function (l) { return l.indexOf('runtime log unavailable') >= 0; });
+  }, 9000);
+  var denyWarn = c.consoleWarns().filter(function (l) { return l.indexOf('runtime log unavailable') >= 0; })[0] || '';
+  check('⑥「后台答得上来说没权限」那一格读得出来：`reason=scope_denied` + `verdict=denied`',
+    denyWarn.indexOf('reason=scope_denied') >= 0 && denyWarn.indexOf('verdict=denied') >= 0, denyWarn.slice(0, 200));
+  var healthy = createHarness({ url: CH1 });
+  healthy.startContent();
+  await new Promise(function (r) { setTimeout(r, 300); });
+  check('⑥正常页一句"日志不可用"都不许多说（三态的第三格 `granted` 是沉默的）',
+    healthy.consoleWarns().every(function (l) { return l.indexOf('runtime log unavailable') < 0; }),
+    JSON.stringify(healthy.consoleWarns()));
+  check('⑥普通域权限过期时依旧一条都不发：放宽只给学习通，别把那道闸顺手拆掉',
+    outside.consoleWarns().every(function (l) { return l.indexOf('runtime log unavailable') < 0; }),
+    JSON.stringify(outside.sandbox.__runtimeMessages.map(function (m) { return m.type; })));
+
+  // ---- ⑦ 接线守卫：三态走的是旁路，取值契约一个字都不许多
+  var askBody = bodyOf('function noteScopeAsk(verdict, reason) {');
+  check('⑦`noteScopeAsk` 只交回 `none`：三态记在旁路上，`refreshPageScope` 的取值契约没多出第四格',
+    /return\s*'none';/.test(askBody) && (askBody.match(/return\s/g) || []).length === 1,
+    askBody.replace(/\s+/g, ' ').slice(0, 180));
+  var scopeBody = bodyOf('async function refreshPageScope() {');
+  check('⑦四格各自记名：`unreadable` / `denied` / `granted` / `stale`，一都没被压掉',
+    ['unreadable', 'denied', 'granted', 'stale'].every(function (cell) {
+      return scopeBody.indexOf("'" + cell + "'") >= 0;
+    }), scopeBody.replace(/\s+/g, ' ').slice(0, 220));
+  check('⑦`refreshPageScope` 仍只交 study / captcha / none 那一族，没把三态漏给调用点',
+    /return\s+scopeIsCurrent\(\)\s*\?\s*pageScope\s*:\s*'none'/.test(scopeBody) &&
+    /return\s+noteScopeAsk\(/.test(scopeBody), scopeBody.replace(/\s+/g, ' ').slice(-160));
+  var reasonBody = bodyOf('function askReason(response) {');
+  check('⑦取不到原因时交 `(未回原因)`，空串不许当成"原因就是空的"（读不出单独占一格）',
+    reasonBody.indexOf("'(未回原因)'") >= 0 && reasonBody.indexOf('.slice(0, 120)') >= 0,
+    reasonBody.replace(/\s+/g, ' ').slice(0, 180));
+  check('⑦console 那句的原因取自回包本身（`askReason(result)`），不是写死的一串字',
+    logGate.indexOf("'reason=' + askReason(result)") >= 0 &&
+    logGate.indexOf("'verdict=' + SCOPE_ASK.verdict") >= 0,
+    logGate.replace(/\s+/g, ' ').slice(0, 200));
+  check('⑦两处出口都把 verdict 与 reason 同时带进 meta 与 console（各两发，少一处就是半截话）',
+    (restartBody.match(/scopeAsk: SCOPE_ASK\.verdict/g) || []).length === 2 &&
+    (restartBody.match(/askError: SCOPE_ASK\.reason/g) || []).length === 2 &&
+    (restartBody.match(/announceBridgeDeath\(/g) || []).length === 2,
+    JSON.stringify({ meta: (restartBody.match(/scopeAsk:/g) || []).length, tell: (restartBody.match(/announceBridgeDeath\(/g) || []).length }));
+  check('⑦面板两处文字都按 `unreadable` 分格，且旧那句「没问到权限」「没通过」都留着',
+    (restartBody.match(/SCOPE_ASK\.verdict === 'unreadable'/g) || []).length === 2 &&
+    restartBody.indexOf('连不上扩展（刚重载过扩展就是这样）') >= 0 &&
+    restartBody.indexOf('多次问不到扩展') >= 0 &&
+    restartBody.indexOf('切换章节后没问到权限') >= 0 &&
+    restartBody.indexOf('多次询问权限都没通过') >= 0,
+    restartBody.replace(/\s+/g, ' ').slice(0, 200));
+  var announceBody = bodyOf('function announceBridgeDeath(message, verdict, why) {');
+  check('⑦console 那一句不复述 `href`（那里躺着选课 id，日志是要导出给人看的）',
+    announceBody.length > 0 && announceBody.indexOf('href') < 0 && announceBody.indexOf('[verdict=') >= 0,
+    announceBody.replace(/\s+/g, ' ').slice(0, 180));
+  check('⑦自证标记栏带上本轮那一枚 `bridge-reason-193`（缺标记 = 磁盘改了页面没加载，批次 17 的坑）',
+    marksLine.indexOf('bridge-reason-193') >= 0, marksLine);
 }
 
 // ---------------------------------------------------------------------------
@@ -4616,6 +4748,8 @@ async function testSeekDeferUntilSeekable() {
   var covers = buildFrom(media, '_seekableCovers', {});
   var defer = buildFrom(media, '_deferSeekUntilSeekable', inj);
   var trySeek = buildFrom(media, '_trySeekToEnd', inj);
+  var quarantineTtl = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantine = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: quarantineTtl });
   var noteSkip = buildFrom(media, '_noteSeekSkip', inj);
   var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
   // 站点「完成条件」标语那四件（任务 #193）—— `_siteSaysNoDrag` 经 `this._siteSeekCondition`
@@ -4651,15 +4785,16 @@ async function testSeekDeferUntilSeekable() {
   var siteBody = bodyOf(media, '_siteSeekCondition');
   var condTtlMs = firstNum(siteBody, /now - \(hit\.at \|\| 0\) < (\d+)/);
 
-  check('① 六件都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    [getKey, covers, defer, trySeek, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+  check('① 六件与隔离谓词都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, covers, defer, trySeek, quarantine, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+    quarantineTtl > 0 &&
     [condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; }) &&
     [guardId, guardCell, guardPersist, guardHit, guardNote, guardClear, guardSay, guardRateSkip, guardSource].every(function (f) { return typeof f === 'function'; }) &&
     typeof noteHeld22 === 'function' &&
     windowMs > 0 && capTries > 1 && condTtlMs > 0 &&
     guardNeed > 0 && guardTtl > 0 && guardLedgerKey.length > 0,
     JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), guard: [typeof guardId, typeof guardCell, typeof guardPersist, typeof guardHit, typeof guardNote, typeof guardClear, typeof guardSay, typeof guardRateSkip, typeof guardSource].join('/'), held: typeof noteHeld22, windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs, guardNeed: guardNeed, guardTtl: guardTtl, guardKey: guardLedgerKey }));
-  if (!trySeek || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 ||
+  if (!trySeek || !quarantine || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 ||
     !guardId || !guardCell || !guardPersist || !guardHit || !guardNote || !guardClear || !guardSay || !guardRateSkip || !guardSource) return;
 
   function mkRanges(list) {
@@ -4704,6 +4839,9 @@ async function testSeekDeferUntilSeekable() {
       _rateProbing: false,
       _captchaActive: false,
       _activeJobId: '',
+      _mediaQuarantine: new WeakMap(),
+      _mediaReloadKeys: Object.create(null),
+      _isMediaQuarantined: quarantine,
       _workerDelay: function (fn) { delays.push(fn); },
       _isRateLockedAtOne: function () { return true; },
       _getMediaSeekKey: getKey,
@@ -5403,9 +5541,11 @@ async function testStartStuckSiteClickSelfHeal() {
   var fakeVisible = function (el) { return !!el && el.__vis !== false; };
   var inj = { emitRuntimeLog: say, Date: FakeDate, visible: fakeVisible };
 
+  var giveupTtl = readProductConstant(fs.readFileSync(path.join(ROOT, 'src/page/00-shell-constants.js'), 'utf8'), 'TASK_GIVEUP_TTL_MS');
   var getKey = buildFrom(media, '_getMediaSeekKey', {});
   var siteOf = buildFrom(media, '_siteStartControlOf', { visible: fakeVisible });
   var nudge = buildFrom(media, '_nudgeSiteStartControl', inj);
+  var quarantined = buildFrom(media, '_isMediaQuarantined', { Date: FakeDate, TASK_GIVEUP_TTL_MS: giveupTtl });
   check('⓪ `_getMediaSeekKey` / `_siteStartControlOf` / `_nudgeSiteStartControl` 三件本体都取成了函数',
     [getKey, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
     JSON.stringify({ key: typeof getKey, siteOf: typeof siteOf, nudge: typeof nudge }));
@@ -5453,7 +5593,10 @@ async function testStartStuckSiteClickSelfHeal() {
       configs: {}, _isPlaying: true, _startNudgeKeys: null, _activeJobId: '',
       __quizBlocks: false
     };
+    app._mediaQuarantine = null;
+    app._mediaReloadKeys = null;
     app._getMediaSeekKey = function (v) { return getKey.call(app, v); };
+    app._isMediaQuarantined = function (v) { return quarantined.call(app, v); };
     app._popupQuizBlocksPlayback = function () { return app.__quizBlocks === true; };
     app._siteStartControlOf = function (v) { return siteOf.call(app, v); };
     app._nudgeSiteStartControl = function (v, r) { return nudge.call(app, v, r); };
@@ -8211,6 +8354,8 @@ async function testNinetyAdvanceBoundToSeek() {
   var seekCovers = buildFrom(media, '_seekableCovers', {});
   var deferSeek = buildFrom(media, '_deferSeekUntilSeekable', { emitRuntimeLog: say });
   var trySeek = buildFrom(media, '_trySeekToEnd', { emitRuntimeLog: say });
+  var qTtlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantine = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: qTtlR });
   var noteHeld = buildFrom(media, '_noteNinetyHeldBack', { emitRuntimeLog: say });
   var shouldAdvance = buildFrom(media, '_shouldAdvanceAtNinetyPercent', { emitRuntimeLog: say });
   // 站点标语那一族（会话任务 #193）：这一段的 app 必须把它们挂上 —— 少了任何一件，
@@ -8260,14 +8405,15 @@ async function testNinetyAdvanceBoundToSeek() {
   var heldBody = bodyOf(media, '_noteNinetyHeldBack');
   var seekBody = bodyOf(media, '_trySeekToEnd');
 
-  var allFns14 = [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, noteHeld,
+  var allFns14 = [getKey, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, quarantine, noteHeld,
     shouldAdvance, isFinished, condNoDrag, readCond, siteCond, siteNoDrag,
     gId, gCell, gPersist, gHit, gNote, gClear, gSay, gSkip, gSource];
-  check('① 廿四件（原十四件 + 批次 173 的课程格九件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
+  check('① 廿四件（原十四件 + 批次 173 的课程格九件 + 隔离谓词一件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
     + '都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
     + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句「有没有**不必动手拖**的证据」（站点卡片原话 / 同一门课认过一次）'
     + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    allFns14.every(function (f) { return typeof f === 'function'; }) && gNeedR > 0 && gTtlR > 0 && gKeyR.length > 0 &&
+    allFns14.every(function (f) { return typeof f === 'function'; }) && qTtlR > 0 &&
+      gNeedR > 0 && gTtlR > 0 && gKeyR.length > 0 &&
       gateBody.indexOf("if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek'))") >= 0 &&
       gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
     JSON.stringify({
@@ -8315,6 +8461,8 @@ async function testNinetyAdvanceBoundToSeek() {
   var seekApp = {
     configs: { enableSeek: false, advanceAtNinetyPercent: true },
     _rateProbing: false, _captchaActive: false, _activeJobId: '',
+    _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
+    _isMediaQuarantined: quarantine,
     _workerDelay: function () {}, _isRateLockedAtOne: function () { return true; },
     _getMediaSeekKey: getKey, _noteSeekSkip: noteSkip,
     // ⚠️ 区间闸那两件也必须挂上来 —— 反向验证 G 轮把 `enableSeek` 那道闸改成"记一笔不退回"，
@@ -8665,17 +8813,19 @@ async function testRateAskBound() {
   var guardNeedR = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
   var guardTtlR = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
   var guardKeyR = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
+  var quarantineTtlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantineFn = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: quarantineTtlR });
   var parts = [ensureFn, targetFn, clampFn, resetFn, noteFn, schedFn, detectFn, tryFn, waitFn, menuFn,
-    guardIdFn, guardCellFn, guardPersistFn, guardHitFn, guardNoteFn, guardClearFn, guardSayFn, guardSkipFn];
+    guardIdFn, guardCellFn, guardPersistFn, guardHitFn, guardNoteFn, guardClearFn, guardSayFn, guardSkipFn, quarantineFn];
   var gotCount = parts.filter(function (f) { return typeof f === 'function'; }).length;
 
-  check('⓪ 十八件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到，课程格那八件也算在内），'
-    + '问不出的预算、暂停那一族的等待上限、写入后的稳态窗口也从源码读回来'
+  check('⓪ 十九件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到，课程格那八件与隔离谓词也算在内），'
+    + '问不出的预算、暂停那一族的等待上限、写入后的稳态窗口与隔离窗口也从源码读回来'
     + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 &&
+    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 && quarantineTtlR > 0 &&
     guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0,
-    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs, guardNeed: guardNeedR, guardTtl: guardTtlR, guardKey: guardKeyR }));
-  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0
+    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs, quarantineTtl: quarantineTtlR, guardNeed: guardNeedR, guardTtl: guardTtlR, guardKey: guardKeyR }));
+  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 && quarantineTtlR > 0
     && guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0)) return;
 
   // 夹具只桩到「播放器接不接这一档」那一层：写入次数就是问了几发，判据读的数来自这里。
@@ -8717,6 +8867,7 @@ async function testRateAskBound() {
       configs: cfg || {}, _detectedMaxRate: 0, _rateDetectVideo: null, _rateUnknownVideo: null,
       _rateUnknownTries: 0, _rateDetectBusy: false, _rateProbing: false, _rateEpoch: 0, _videoEl: null,
       _rateLockedBy: '', _courseGuard: null, _courseGuardStore: Object.create(null),
+      _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
       _COURSE_GUARD_NEED: guardNeedR, _COURSE_GUARD_TTL_MS: guardTtlR, _COURSE_GUARD_KEY: guardKeyR
     };
     // 课程格默认**认不出课**（没有 `_currentStudyParams`）⇒ `_courseGuardHit` 恒 false，
@@ -8735,6 +8886,8 @@ async function testRateAskBound() {
     app._clearCourseGuard = function (which, src) { return guardClearFn.call(app, which, src); };
     app._sayCourseGuard = function (which, id, rec, src) { return guardSayFn.call(app, which, id, rec, src); };
     app._noteCourseGuardRateSkipped = function () { return guardSkipFn.call(app); };
+    app._isMediaQuarantined = function (v) { return quarantineFn.call(app, v); };
+    app._getMediaSeekKey = function () { return ''; };
     app._ensurePlaybackRate = function (v, r) { return ensureFn.call(app, v, r); };
     app._getTargetPlaybackRate = function () { return targetFn.call(app); };
     app._clampAutoRate = function (r) { return clampFn.call(app, r); };
@@ -9837,7 +9990,8 @@ async function testVoteEndedParkPersistent() {
     removeItem: function (k) { if (current) delete current.data[k]; }
   };
   var giveUpMap = buildFrom(loop, '_taskGiveUpMap', { localStorage: ls });
-  var isGivenUp = buildFrom(loop, '_isTaskGivenUp', { localStorage: ls });
+  var giveUpTtl = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var isGivenUp = buildFrom(loop, '_isTaskGivenUp', { localStorage: ls, TASK_GIVEUP_TTL_MS: giveUpTtl });
   var markGivenUp = buildFrom(loop, '_markTaskGivenUp', { localStorage: ls });
 
   var mkStore = function () {
@@ -10070,6 +10224,1052 @@ async function testVoteEndedParkPersistent() {
     JSON.stringify({ directLs: directLs, markSites: markSites, endedAt: endedAt, nextAt: nextAt, newLedger: newLedger, readGate: readGate }));
 }
 
+async function testMediaRecoveryExhaustion() {
+  var read = function (file) { return fs.readFileSync(path.join(ROOT, file), 'utf8'); };
+  var media = read('src/page/40-media.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var tasks = read('src/page/62-tasks-run.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    return { start: start, end: src.indexOf('\n    },', start) };
+  };
+  var buildFrom = function (src, name, env) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(env || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return env[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var hit = src.match(re);
+    return hit ? Number(hit[1]) : NaN;
+  };
+  var limitR = firstNum(read('src/page/00-shell-constants.js'), /MEDIA_RELOAD_LIMIT\s*=\s*(\d+)/);
+  var ttlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var mediaNames = ['_isMediaQuarantined', '_quarantineDeadMedia', '_clearMediaPendingState',
+    '_isActiveMediaPending', '_isVisibleMedia', '_getVideoEl', '_reloadMediaInPlace', '_handleVideoEnded',
+    '_handleVideoLoaded', '_startSlideMedia', '_waitSlideAudioDone', '_ensurePlaybackRate',
+    '_scheduleMaxRateDetection', '_rearmMediaGuardIfLost'];
+  var loopNames = ['_taskPointKey', '_taskGiveUpMap', '_isTaskGivenUp', '_markTaskGivenUp', '_clearTaskGiveUp'];
+  var missing = mediaNames.concat(loopNames, ['_runPptAudioJob']).filter(function (name) {
+    var src = name === '_runPptAudioJob' ? tasks : (loopNames.indexOf(name) >= 0 ? loop : media);
+    return boundsOf(src, name).start < 0;
+  });
+  check('177-0：生产方法、三次上限与 24 小时窗口都从源码取到',
+    !missing.length && limitR === 3 && ttlR === 24 * 3600 * 1000,
+    JSON.stringify({ missing: missing, limit: limitR, ttl: ttlR }));
+  if (missing.length || limitR !== 3 || ttlR !== 24 * 3600 * 1000) return;
+
+  var storage = {};
+  var localStorage = {
+    getItem: function (key) { return storage[key] === undefined ? null : storage[key]; },
+    setItem: function (key, value) { storage[key] = String(value); },
+    removeItem: function (key) { delete storage[key]; }
+  };
+  var logs = [];
+  var env = {
+    MEDIA_RELOAD_LIMIT: limitR,
+    TASK_GIVEUP_TTL_MS: ttlR,
+    localStorage: localStorage,
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta || {} }); },
+    visible: function (el) { return !!(el && el._visible !== false); },
+    document: {},
+    window: {},
+    sleep: function () { return Promise.resolve(); }
+  };
+  var fns = {};
+  mediaNames.forEach(function (name) { fns[name] = buildFrom(media, name, env); });
+  loopNames.forEach(function (name) { fns[name] = buildFrom(loop, name, env); });
+  fns._runPptAudioJob = buildFrom(tasks, '_runPptAudioJob', env);
+
+  var mkMedia = function (key, tag, code) {
+    var listeners = Object.create(null);
+    var media = {
+      key: key, tagName: tag || 'VIDEO', isConnected: true, paused: false, ended: false,
+      readyState: 4, networkState: 1, duration: 100, currentTime: 42, currentSrc: '',
+      src: '', playbackRate: 1, defaultPlaybackRate: 1, muted: false,
+      error: code ? { code: code, message: 'FFmpegDemuxer: data source error' } : null,
+      loads: 0, plays: 0, pauses: 0, rateCalls: 0, listeners: listeners,
+      addEventListener: function (type, fn) { (listeners[type] || (listeners[type] = [])).push(fn); },
+      removeEventListener: function () {},
+      load: function () { this.loads++; },
+      play: function () { this.plays++; return Promise.resolve(); },
+      pause: function () { this.pauses++; this.paused = true; }
+    };
+    return media;
+  };
+  var mkDoc = function (medias) {
+    return {
+      body: {},
+      querySelectorAll: function (selector) {
+        if (selector === 'video, audio' || selector === 'audio, video') return medias;
+        return [];
+      },
+      querySelector: function (selector) { return selector === '.swiper-container' ? {} : null; }
+    };
+  };
+  var mkApp = function (doc) {
+    var app = {
+      configs: { documentSkipTimeoutMs: 120000, muted: false, autoMaxPlaybackRate: false,
+        playbackRateCap: 4, pptFlipIntervalMs: 1 },
+      _taskGiveUpStoreKey: 'omitone_task_giveup', _taskAttempts: {}, _taskProgress: null,
+      _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
+      _videoEl: null, _videoCount: 0, _currentVideoIndex: 0, _isPlaying: false,
+      _activeMediaJobPending: false, _activeMediaJobManaged: false, _activeDocumentJobPending: false,
+      _activeDocumentJobManaged: false, _checkInterval: null, _mediaWaitLogAt: 0,
+      _mediaNoSourceSince: 0, _mediaBrokenSince: 0, _guardLastTime: 0, _guardLastWallTs: 0,
+      _guardLastResumeTs: 0, _resumeWindowStart: 0, _resumeAttemptCount: 0,
+      _detectedMaxRate: 0, _rateDetectVideo: null, _rateDetectBusy: false, _rateProbing: false,
+      _rateUnknownVideo: null, _rateUnknownTries: 0, _rateLockedBy: '', _rateEpoch: 0,
+      finishCalls: 0, nextCalls: 0, clearChecks: 0, guardStarts: 0, resumeCalls: 0,
+      rateCalls: 0, unreadableCalls: 0, resetRateCalls: 0, seekCalls: 0,
+      doc: doc,
+      _safeJsonParse: function (raw) { try { return JSON.parse(raw); } catch (e) { return null; } },
+      _getMainDocument: function () { return this.doc; },
+      _getMediaSeekKey: function (el) { return el && el.key || ''; },
+      _mediaErrorCode: function (el) { return Number(el && el.error && el.error.code || 0); },
+      _clearCheckInterval: function () { this.clearChecks++; this._checkInterval = null; },
+      _shouldReleaseMediaPendingForCurrentCompletion: function () { return false; },
+      _scanForeignExtensionArtifacts: function () { return { state: 'none', ids: [] }; },
+      _siteSaysUnplayable: function () { return { state: 'absent', quote: '' }; },
+      _noteForeignExtensionHint: function () {},
+      _ensurePlaybackRate: function () { this.rateCalls++; },
+      _tryResumePlayback: function () { this.resumeCalls++; },
+      _startVideoMonitoring: function () { this.guardStarts++; },
+      _finishCurrentMedia: function () { this.finishCalls++; },
+      nextUnit: function () { this.nextCalls++; },
+      _tickProgress: function () {},
+      _assertActive: function () { return true; },
+      _clearDocumentPendingState: function (reason) { this.documentClearReason = reason; },
+      _resetRateDetection: function () { this.resetRateCalls++; },
+      _trySeekToEnd: function () { this.seekCalls++; },
+      _noteCourseGuard: function () {}, _clearCourseGuard: function () {},
+      _noteRateUnreadable: function () { this.unreadableCalls++; }
+    };
+    mediaNames.concat(loopNames, ['_runPptAudioJob']).forEach(function (name) { app[name] = fns[name]; });
+    return app;
+  };
+  var flush = async function () {
+    for (var i = 0; i < 8; i++) await new Promise(function (resolve) { setTimeout(resolve, 0); });
+  };
+
+  var bad = mkMedia('bad-177', 'VIDEO', 2);
+  var healthy = mkMedia('healthy-177', 'VIDEO', 2);
+  var job = { jobid: 'job-177', attachment: { property: { module: 'video' } }, name: '坏媒体任务点' };
+  var doc = mkDoc([bad, healthy]);
+  var app = mkApp(doc);
+  app._videoEl = bad;
+  app._activeMediaJobPending = true;
+  app._isPlaying = true;
+  app._mediaBrokenSince = Date.now() - 120001;
+  app._mediaReloadKeys[bad.key] = { n: 3, at: Date.now() - 20001 };
+  app._mediaQuarantine.set(bad, { job: job });
+  var pending = app._isActiveMediaPending('media-pending');
+  var writeKey = app._taskPointKey(job);
+  var readerKey = app._taskPointKey({ jobid: job.jobid, attachment: job.attachment, name: job.name });
+  var givenUp = app._isTaskGivenUp(readerKey);
+  check('177-1：三次耗尽后 pending 松开、精确元素隔离、任务键与读侧逐字相等',
+    pending === false && app._activeMediaJobPending === false && app._isPlaying === false &&
+    app._videoEl === null && app._isMediaQuarantined(bad) && writeKey === readerKey && givenUp === true,
+    JSON.stringify({ pending: pending, active: app._activeMediaJobPending, playing: app._isPlaying,
+      cached: !!app._videoEl, quarantined: app._isMediaQuarantined(bad), writeKey: writeKey,
+      readerKey: readerKey, givenUp: givenUp }));
+  check('177-2：放手不伪造平台完成，也不自行翻到下一节',
+    app.finishCalls === 0 && app.nextCalls === 0,
+    JSON.stringify({ finishCalls: app.finishCalls, nextCalls: app.nextCalls }));
+
+  var picked = app._getVideoEl();
+  check('177-3：释放后重扫不再拿回同一坏视频，健康媒体仍可选中',
+    picked === healthy && app._videoEl === healthy,
+    JSON.stringify({ picked: picked && picked.key, cached: app._videoEl && app._videoEl.key }));
+  var hiddenBad = mkMedia('hidden-bad-177', 'AUDIO', 2);
+  var hiddenHealthy = mkMedia('hidden-healthy-177', 'AUDIO', 0);
+  hiddenBad._visible = false;
+  hiddenHealthy._visible = false;
+  var hiddenApp = mkApp(mkDoc([hiddenBad, hiddenHealthy]));
+  hiddenApp._mediaQuarantine.set(hiddenBad, { job: job, quarantined: Date.now() });
+  var hiddenPicked = hiddenApp._getVideoEl();
+  check('177-4：隐藏音频兜底也排除已隔离元素',
+    hiddenPicked === hiddenHealthy && hiddenApp._videoEl === hiddenHealthy,
+    JSON.stringify({ picked: hiddenPicked && hiddenPicked.key }));
+
+  app._mediaReloadKeys[healthy.key] = { n: 2, at: Date.now() - 20001 };
+  var healthyReload = app._reloadMediaInPlace(healthy, 'case');
+  var healthyLoads = healthy.loads;
+  app._mediaReloadKeys[healthy.key].at = Date.now() - 20001;
+  var fourthHealthy = app._reloadMediaInPlace(healthy, 'case');
+  var badReload = app._reloadMediaInPlace(bad, 'case');
+  check('177-5：健康元素保留独立三次预算，两枚都不产生第四次恢复',
+    healthyReload === true && app._mediaReloadKeys[healthy.key].n === 3 &&
+    fourthHealthy === false && healthy.loads === healthyLoads && badReload === false,
+    JSON.stringify({ healthyReload: healthyReload, n: app._mediaReloadKeys[healthy.key].n,
+      fourthHealthy: fourthHealthy, badReload: badReload, healthyLoads: healthy.loads }));
+
+  var firstAt = app._taskGiveUpMap()[readerKey].at;
+  var warnCount = logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).length;
+  app._quarantineDeadMedia(bad, { job: job, reloadTimes: 3, currentTime: 99 });
+  var secondAt = app._taskGiveUpMap()[readerKey].at;
+  var noKey = mkMedia('no-key-177', 'VIDEO', 2);
+  app._quarantineDeadMedia(noKey, { reloadTimes: 3 });
+  var noKeyLog = logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).pop();
+  check('177-6：重复耗尽不刷新放弃时刻、不重复说话，空任务键单独报 no-key',
+    firstAt === secondAt &&
+    logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).length === warnCount + 1 &&
+    noKeyLog && noKeyLog.meta.giveUp === 'no-key' && !app._taskGiveUpMap()[''],
+    JSON.stringify({ firstAt: firstAt, secondAt: secondAt, noKey: noKeyLog && noKeyLog.meta.giveUp }));
+
+  app._clearTaskGiveUp();
+  var resetReload = app._reloadMediaInPlace(bad, 'reset');
+  check('177-7：用户清除放弃名单时，当前页隔离与三次恢复预算一起恢复',
+    !app._isMediaQuarantined(bad) && !app._isTaskGivenUp(readerKey) &&
+    resetReload === true && app._mediaReloadKeys[bad.key].n === 1,
+    JSON.stringify({ quarantined: app._isMediaQuarantined(bad), givenUp: app._isTaskGivenUp(readerKey),
+      resetReload: resetReload, n: app._mediaReloadKeys[bad.key] && app._mediaReloadKeys[bad.key].n }));
+
+  var late = mkMedia('late-177', 'VIDEO', 2);
+  late.currentTime = 10;
+  late.play = function () {
+    this.plays++;
+    return this.plays === 1 ? Promise.reject(new Error('autoplay blocked')) : Promise.resolve();
+  };
+  var lateApp = mkApp(mkDoc([late]));
+  lateApp._mediaReloadKeys[late.key] = { n: 2, at: Date.now() - 20001 };
+  lateApp._reloadMediaInPlace(late, 'late');
+  lateApp._quarantineDeadMedia(late, { job: job, reloadTimes: 3 });
+  (late.listeners.loadedmetadata || []).forEach(function (fn) { fn(); });
+  lateApp._handleVideoEnded({ target: late });
+  lateApp._handleVideoLoaded({ target: late });
+  await flush();
+  check('177-8：隔离后的 loadedmetadata、播放拒绝与 ended 迟到回调不再重启或收尾',
+    late.currentTime === 10 && late.plays === 1 && lateApp.rateCalls === 0 &&
+    lateApp.finishCalls === 0 && lateApp.nextCalls === 0 && lateApp.resetRateCalls === 0 && lateApp.seekCalls === 0,
+    JSON.stringify({ currentTime: late.currentTime, plays: late.plays, rateCalls: lateApp.rateCalls,
+      finishCalls: lateApp.finishCalls, nextCalls: lateApp.nextCalls, resetRateCalls: lateApp.resetRateCalls,
+      seekCalls: lateApp.seekCalls }));
+
+  var pptAudio = mkMedia('ppt-audio-177', 'AUDIO', 2);
+  var pptDoc = mkDoc([pptAudio]);
+  var pptApp = mkApp(pptDoc);
+  var pptJob = { jobid: 'ppt-177', name: '隔离音频课件', doc: pptDoc, win: {
+    swiperNext: function () { pptApp.nextCalls++; },
+    finishJob: function () { pptApp.finishCalls++; }
+  } };
+  pptApp._mediaQuarantine.set(pptAudio, { job: pptJob, quarantined: Date.now() });
+  var pptStart = pptApp._startSlideMedia(pptDoc, pptJob);
+  var pptWait = await pptApp._waitSlideAudioDone(pptDoc, pptJob);
+  var pptRun = await pptApp._runPptAudioJob(pptJob);
+  check('177-9：课件只剩隔离音频时不假报播完、不翻页、不调用平台完成',
+    pptStart === 0 && pptWait === false && pptRun === false && pptApp.nextCalls === 0 &&
+    pptApp.finishCalls === 0 && pptApp.documentClearReason === 'ppt-audio-media-quarantined',
+    JSON.stringify({ pptStart: pptStart, pptWait: pptWait, pptRun: pptRun,
+      nextCalls: pptApp.nextCalls, finishCalls: pptApp.finishCalls,
+      clearReason: pptApp.documentClearReason }));
+
+  var guardApp = mkApp(mkDoc([bad]));
+  guardApp._videoEl = bad;
+  guardApp._isPlaying = true;
+  guardApp._mediaQuarantine.set(bad, { job: job, quarantined: Date.now() });
+  var rearmed = guardApp._rearmMediaGuardIfLost('test');
+  check('177-10：隔离缓存不会补回媒体看护句柄',
+    rearmed === false && guardApp._videoEl === null && guardApp.guardStarts === 0,
+    JSON.stringify({ rearmed: rearmed, cached: !!guardApp._videoEl, guardStarts: guardApp.guardStarts }));
+
+  var rateVideo = mkMedia('rate-late-177', 'VIDEO', 0);
+  var rateWrites = 0;
+  var rateValue = 1;
+  Object.defineProperty(rateVideo, 'playbackRate', {
+    configurable: true, get: function () { return rateValue; },
+    set: function (value) { rateWrites++; rateValue = value; }
+  });
+  var defaultWrites = 0;
+  var defaultRateValue = 1;
+  Object.defineProperty(rateVideo, 'defaultPlaybackRate', {
+    configurable: true, get: function () { return defaultRateValue; },
+    set: function (value) { defaultWrites++; defaultRateValue = value; }
+  });
+  var rateApp = mkApp(mkDoc([rateVideo]));
+  var rateTargetFn = buildFrom(media, '_getTargetPlaybackRate', env);
+  var rateClampFn = buildFrom(media, '_clampAutoRate', env);
+  rateApp._getTargetPlaybackRate = function () { return rateTargetFn.call(rateApp); };
+  rateApp._clampAutoRate = function (rate) { return rateClampFn.call(rateApp, rate); };
+  rateApp.configs.autoMaxPlaybackRate = true;
+  rateApp._videoEl = rateVideo;
+  rateApp._getVideoEl = function () { return rateVideo; };
+  rateApp._detectMaxPlaybackRate = function () { return rateDeferred; };
+  var resolveRate;
+  var rateDeferred = new Promise(function (resolve) { resolveRate = resolve; });
+  rateApp._scheduleMaxRateDetection(rateVideo);
+  rateApp._quarantineDeadMedia(rateVideo, { job: job, reloadTimes: 3 });
+  resolveRate(4);
+  await flush();
+  var rateQuarantine = rateApp._isMediaQuarantined(rateVideo);
+  check('177-11：倍速探测在隔离后作废，迟到结果不再写播放器',
+    rateQuarantine === true && rateWrites === 0 && defaultWrites === 0 && rateApp._detectedMaxRate === 0 &&
+    rateApp._rateDetectBusy === false && rateApp._rateDetectVideo === null && rateApp.unreadableCalls === 0,
+    JSON.stringify({ quarantined: rateQuarantine, rateWrites: rateWrites, defaultWrites: defaultWrites,
+      detected: rateApp._detectedMaxRate,
+      busy: rateApp._rateDetectBusy, detectVideo: !!rateApp._rateDetectVideo,
+      unreadableCalls: rateApp.unreadableCalls }));
+  var quarantinedRateWrites = rateWrites;
+  rateApp._ensurePlaybackRate(rateVideo, 'quarantined');
+  rateApp._scheduleMaxRateDetection(rateVideo);
+  check('177-12：已隔离媒体不进入倍速写入或探测入口',
+    rateWrites === quarantinedRateWrites && rateApp._rateDetectVideo === null && rateApp._rateDetectBusy === false,
+    JSON.stringify({ rateWrites: rateWrites, detectVideo: !!rateApp._rateDetectVideo, busy: rateApp._rateDetectBusy }));
+}
+
+async function testQuizSubmitNeverAccepted() {
+  console.log('\n[35] 交卷被平台静默拒收：旁路取证进环 + 攒满三次有界放手（会话任务 #232）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var quiz = read('src/page/70-quiz-flow.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var cons = read('src/page/00-shell-constants.js');
+  var state = read('src/page/10-config-state.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var logsOf = function (msg) { return logs.filter(function (l) { return l.message === msg; }); };
+
+  var fakeDoc = function (ids) {
+    var map = ids || {};
+    return {
+      URL: 'https://mooc1.chaoxing.com/work/doHomeWork?courseId=SECRET_COURSE',
+      getElementById: function (id) {
+        return Object.prototype.hasOwnProperty.call(map, id) ? { value: map[id] } : null;
+      }
+    };
+  };
+  var topDoc = fakeDoc({});
+  var fakeLocation = { href: 'https://mooc1.chaoxing.com/work/doHomeWork' };
+  var localConsole = { log: function () {}, warn: function () {}, error: function () {} };
+
+  // ---- A：超时记账按卷子键起算，换卷子才清零 ----
+  var fieldFn = buildFrom(quiz, '_getQuizFieldValue', {});
+  var workKeyFn = buildFrom(quiz, '_getQuizWorkKey', { document: topDoc, location: fakeLocation });
+  var stallFn = buildFrom(quiz, '_noteQuizSubmitStall', {});
+  check('232-A0：切出了超时记账要用的三个方法（切不出来下面全是空转）',
+    typeof fieldFn === 'function' && typeof workKeyFn === 'function' && typeof stallFn === 'function',
+    JSON.stringify({ field: typeof fieldFn, workKey: typeof workKeyFn, stall: typeof stallFn }));
+
+  var appA = {
+    _quizSubmitStallKey: '',
+    _quizSubmitStallCount: 0,
+    _quizSubmitStallAt: 0,
+    _resolveQuizSubmitDocument: function (d) { return d || topDoc; },
+    _getMainDocument: function () { return topDoc; },
+    _getCurrentChapterId: function () { return 'chap1'; },
+    _getQuizAccountDocument: function (d) { return d || topDoc; }
+  };
+  appA._getQuizFieldValue = fieldFn;
+  appA._getQuizWorkKey = function (d) { return workKeyFn.call(appA, d); };
+  appA._noteQuizSubmitStall = function (d) { return stallFn.call(appA, d); };
+
+  var docA = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '404', knowledgeid: 'n1' });
+  var docB = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '405', knowledgeid: 'n2' });
+  var a1 = appA._noteQuizSubmitStall(docA);
+  var a2 = appA._noteQuizSubmitStall(docA);
+  var keyA = appA._quizSubmitStallKey;
+  var a3 = appA._noteQuizSubmitStall(docB);
+  var a4 = appA._noteQuizSubmitStall(docA);
+  check('232-A1：同一份卷子连攒是 1→2，换一份卷子重新起算（回来也是新账）',
+    a1 === 1 && a2 === 2 && a3 === 1 && a4 === 1 && appA._quizSubmitStallCount === 1 && appA._quizSubmitStallAt > 0,
+    JSON.stringify({ a1: a1, a2: a2, a3: a3, a4: a4, count: appA._quizSubmitStallCount }));
+  check('232-A2：账记在卷子身份上（含 jobid），不是页面地址',
+    keyA.indexOf(encodeURIComponent('c1|k1|w1|404|n1')) >= 0 && keyA.indexOf('SECRET_COURSE') < 0,
+    keyA);
+
+  // ---- B：超时那一发把「为什么没认出结果页」与旁路账一起进环 ----
+  var monitorFn = buildFrom(quiz, '_monitorQuizSubmit', {
+    emitRuntimeLog: say,
+    scaledMs: function (n) { return n; },
+    console: localConsole
+  });
+  check('232-B0：切出了 _monitorQuizSubmit', typeof monitorFn === 'function', typeof monitorFn);
+
+  var makeMonitorApp = function (net) {
+    return {
+      configs: { quizSubmitWaitMs: 25000 },
+      _quizSubmitPending: true,
+      _quizSubmitStartedAt: Date.now() - 26000,
+      _quizSubmitLogAt: 0,
+      _quizSubmitNet: net,
+      _submitSnifferCoverage: 'xhr+fetch',
+      _quizSubmitStallCount: 0,
+      _prepareQuizRedoIfNeeded: function () { return false; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizAnswersCleared: function () { return false; },
+      _describeQuizResultPage: function () { return { containers: 10, controls: 1, gradeSelector: 'Py_tk' }; },
+      _noteQuizSubmitStall: function () { return 2; },
+      _clearQuizSubmitAttemptCount: function () {}
+    };
+  };
+
+  var bBefore = logs.length;
+  var appB = makeMonitorApp({ xhr: 2, fetch: 1, done: 2, failed: 0, statuses: [200], words: ['提交'] });
+  var bRet = monitorFn.call(appB);
+  var bLogs = logs.slice(bBefore).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var bMeta = bLogs.length ? bLogs[0].meta : {};
+  check('232-B1：超时诊断里带 stalls / observer / net 计数与状态码',
+    bRet === false && appB._quizSubmitPending === false && bLogs.length === 1 &&
+    bMeta.waitMs === 25000 && bMeta.stalls === 2 && bMeta.observer === 'xhr+fetch' &&
+    bMeta.containers === 10 && bMeta.net && bMeta.net.xhr === 2 && bMeta.net.fetch === 1 &&
+    bMeta.net.statuses[0] === 200 && String(bMeta.netHint || '').indexOf('net.statuses') >= 0,
+    JSON.stringify({ ret: bRet, pending: appB._quizSubmitPending, logs: bLogs.length, meta: bMeta }));
+  check('232-B2：net 这一格只有计数与判分词，没有任何地址或回包原文的字段',
+    bMeta.net && Object.keys(bMeta.net).sort().join(',') === 'done,failed,fetch,statuses,words,xhr',
+    JSON.stringify(Object.keys(bMeta.net || {})));
+
+  var b2Before = logs.length;
+  var appB2 = makeMonitorApp({ xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] });
+  monitorFn.call(appB2);
+  var b2Logs = logs.slice(b2Before).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var b2Meta = b2Logs.length ? b2Logs[0].meta : {};
+  check('232-B3：一条请求都没观察到时单独说「0 条不等于没发」，不许当成没发',
+    b2Logs.length === 1 && b2Meta.net && b2Meta.net.xhr === 0 && String(b2Meta.netHint || '').indexOf('0 条不等于没发') >= 0,
+    JSON.stringify(b2Meta.netHint || ''));
+
+  var b3Before = logs.length;
+  var appB3 = makeMonitorApp(null);
+  monitorFn.call(appB3);
+  var b3Logs = logs.slice(b3Before).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var b3Meta = b3Logs.length ? b3Logs[0].meta : {};
+  check('232-B4：账本压根没建时 net 交 null，netHint 仍说清「没观察到」',
+    b3Logs.length === 1 && b3Meta.net === null && String(b3Meta.netHint || '').indexOf('0 条不等于没发') >= 0,
+    JSON.stringify({ net: b3Meta.net, hint: b3Meta.netHint }));
+
+  // ---- C：旁路观测器只记计数/状态码/判分词，绝不把地址与回包原文带进环 ----
+  var FakeXHR = function () { this.listeners = []; };
+  FakeXHR.prototype.open = function (method, url) { this.__openMethod = method; this.__openUrl = url; };
+  FakeXHR.prototype.send = function () { this.__sent = true; };
+  FakeXHR.prototype.addEventListener = function (ev, fn) { if (ev === 'loadend') this.listeners.push(fn); };
+
+  var fetchHits = 0;
+  var fakeWindow = {
+    XMLHttpRequest: FakeXHR,
+    fetch: function () {
+      fetchHits++;
+      return Promise.resolve({
+        status: 201,
+        clone: function () { return this; },
+        text: function () { return Promise.resolve('已提交成功'); }
+      });
+    }
+  };
+  var snifferFn = buildFrom(quiz, '_installSubmitSniffer', {
+    window: fakeWindow,
+    emitRuntimeLog: say,
+    console: localConsole
+  });
+  check('232-C0：切出了 _installSubmitSniffer', typeof snifferFn === 'function', typeof snifferFn);
+
+  var appC = {
+    _submitSnifferInstalled: false,
+    _submitSnifferFetch: false,
+    _submitSnifferCoverage: '',
+    _quizSubmitPending: true,
+    _quizSubmitNet: { xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] }
+  };
+  var cBefore = logs.length;
+  snifferFn.call(appC);
+  var firstWrappedFetch = fakeWindow.fetch;
+  snifferFn.call(appC);
+  check('232-C1：观测器只装一次，能力格如实报 xhr+fetch',
+    appC._submitSnifferInstalled === true && appC._submitSnifferFetch === true &&
+    appC._submitSnifferCoverage === 'xhr+fetch' && fakeWindow.fetch === firstWrappedFetch,
+    JSON.stringify({ installed: appC._submitSnifferInstalled, fetch: appC._submitSnifferFetch, coverage: appC._submitSnifferCoverage }));
+
+  var xhr1 = new FakeXHR();
+  xhr1.open('POST', 'https://secret.example/work/submit?enc=TOKEN123');
+  xhr1.send('answer=1');
+  xhr1.status = 200;
+  xhr1.responseText = '提交失败：重复提交';
+  check('232-C2：相关地址的请求挂上了旁路回调', xhr1.listeners.length === 1, String(xhr1.listeners.length));
+  xhr1.listeners.forEach(function (fn) { fn.call(xhr1); });
+
+  var xhr2 = new FakeXHR();
+  xhr2.open('GET', '/static/app.js');
+  xhr2.send();
+  check('232-C3：不相关地址不挂回调、不计数', xhr2.listeners.length === 0 && appC._quizSubmitNet.xhr === 1,
+    JSON.stringify({ listeners: xhr2.listeners.length, xhr: appC._quizSubmitNet.xhr }));
+
+  await fakeWindow.fetch('https://secret.example/work/submit?enc=TOKEN123');
+  await new Promise(function (r) { setTimeout(r, 10); });
+
+  var cLogs = logs.slice(cBefore).filter(function (l) { return l.message === 'quiz submit network'; });
+  var cText = JSON.stringify(cLogs);
+  var cMeta = cLogs.length ? cLogs[0].meta : {};
+  check('232-C4：XHR 与 fetch 两条都在记账，回包里的判分词落进 words',
+    appC._quizSubmitNet.xhr === 1 && appC._quizSubmitNet.fetch === 1 && appC._quizSubmitNet.done === 2 &&
+    appC._quizSubmitNet.words.indexOf('重复') >= 0 && appC._quizSubmitNet.words.indexOf('提交') >= 0 &&
+    appC._quizSubmitNet.words.indexOf('已提交') >= 0 && fetchHits === 1,
+    JSON.stringify({ net: appC._quizSubmitNet, fetchHits: fetchHits }));
+  check('232-C5：进环的那一条只有计数/状态/判分词，地址与回包原文一个字都不许出现',
+    cLogs.length === 2 && Object.keys(cMeta).sort().join(',') === 'kind,ok,pendingAtSend,respLen,status,words' &&
+    cText.indexOf('secret.example') < 0 && cText.indexOf('TOKEN123') < 0 &&
+    cText.indexOf('提交失败：重复提交') < 0 && cText.indexOf('已提交成功') < 0,
+    JSON.stringify({ count: cLogs.length, keys: Object.keys(cMeta), text: cText.slice(0, 300) }));
+
+  // ---- D：攒满三次 → 写 24 小时放弃名单 + 放开这一节，不冒充平台完成 ----
+  var storeMatch = /_taskGiveUpStoreKey:\s*'([^']+)'/.exec(state);
+  var STORE_KEY = storeMatch ? storeMatch[1] : '';
+  var TTL = readProductConstant(cons, 'TASK_GIVEUP_TTL_MS');
+  check('232-D0：放弃名单的存储键与 TTL 都从源码读回来了',
+    !!STORE_KEY && isFinite(TTL) && TTL > 0,
+    JSON.stringify({ key: STORE_KEY, ttl: TTL }));
+
+  var store = {};
+  var fakeLS = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+    setItem: function (k, v) { store[k] = String(v); },
+    removeItem: function (k) { delete store[k]; }
+  };
+  var giveUpMapFn = buildFrom(loop, '_taskGiveUpMap', { localStorage: fakeLS });
+  var isGivenUpFn = buildFrom(loop, '_isTaskGivenUp', { TASK_GIVEUP_TTL_MS: TTL });
+  var markGivenUpFn = buildFrom(loop, '_markTaskGivenUp', { localStorage: fakeLS });
+  var forceSkipFn = buildFrom(quiz, '_setQuizForceSkip', {});
+  var givenUpJobIdFn = buildFrom(quiz, '_getQuizGiveUpJobId', {});
+  var domCtl = { sel: [], button: { clicked: 0, click: function () { this.clicked++; } } };
+  var fakeGlobalDoc = {
+    querySelector: function (sel) {
+      domCtl.sel.push(sel);
+      if (sel !== '#prevNextFocusNext') return null;
+      return domCtl.button || null;
+    }
+  };
+  var giveUpFn = buildFrom(quiz, '_giveUpQuizSubmitAfterStalls', {
+    emitRuntimeLog: say,
+    document: fakeGlobalDoc
+  });
+  check('232-D1a：切出了放弃出口与它依赖的四个方法',
+    typeof giveUpFn === 'function' && typeof giveUpMapFn === 'function' && typeof isGivenUpFn === 'function' &&
+    typeof markGivenUpFn === 'function' && typeof forceSkipFn === 'function' && typeof givenUpJobIdFn === 'function',
+    JSON.stringify({ giveUp: typeof giveUpFn, map: typeof giveUpMapFn, mark: typeof markGivenUpFn }));
+
+  var makeGiveUpApp = function (doc, opts) {
+    var app = {
+      _quizSubmitStallCount: 3,
+      _quizSubmitPending: true,
+      _quizAnswered: false,
+      _quizSubmitStartedAt: Date.now(),
+      _quizSubmitNet: { xhr: 1, fetch: 0, done: 0, failed: 1, statuses: [0], words: [] },
+      _submitSnifferCoverage: 'xhr',
+      _quizInProgress: true,
+      _quizForceSkipUntil: 0,
+      _quizForceSkipPaperKey: '',
+      _quizReadyToSubmit: true,
+      _quizReadyWorkKey: 'x',
+      _quizCurrentAnsweredKeys: { q1: true },
+      _quizCurrentAnswerValues: { q1: 'A' },
+      _quizCurrentQuestions: [{ title: 'q1' }],
+      _taskGiveUpStoreKey: STORE_KEY,
+      _resetCalls: 0,
+      _nextUnitCalls: 0,
+      _switchCalls: [],
+      _resolveQuizSubmitDocument: function (d) { return d || doc; },
+      _getMainDocument: function () { return doc; },
+      _getCurrentChapterId: function () { return 'chap1'; },
+      _getQuizAccountDocument: function (d) { return d || doc; },
+      _getQuizSubmitAttemptCount: function () { return opts.attempts; },
+      _getQuizMaxSubmitAttempts: function () { return 20; },
+      _collectVisibleTaskFrames: function () { return opts.tasks || []; },
+      _getQuizPaperKeyFromTask: function (t) { return String((t && t.paperId) || ''); },
+      _safeJsonParse: function (text, dflt) { try { return JSON.parse(text); } catch (e) { return dflt; } },
+      _switchToNextLearningCard: function (reason) { app._switchCalls.push(reason); return !!opts.switchOk; },
+      _resetRuntimeState: function () {
+        app._resetCalls++;
+        app._quizForceSkipUntil = 0;
+        app._quizForceSkipPaperKey = '';
+      },
+      nextUnit: function () { app._nextUnitCalls++; }
+    };
+    return app;
+  };
+  var wireGiveUp = function (app) {
+    app._getQuizFieldValue = fieldFn;
+    app._taskGiveUpMap = function () { return giveUpMapFn.call(app); };
+    app._isTaskGivenUp = function (k) { return isGivenUpFn.call(app, k); };
+    app._markTaskGivenUp = function (k, info) { return markGivenUpFn.call(app, k, info); };
+    app._setQuizForceSkip = function (ms, pk) { return forceSkipFn.call(app, ms, pk); };
+    app._getQuizWorkKey = function (d) { return workKeyFn.call(app, d); };
+    app._getQuizGiveUpJobId = function (d, scan) { return givenUpJobIdFn.call(app, d, scan); };
+    app._giveUp = function (d, reason) { return giveUpFn.call(app, d, reason); };
+  };
+
+  var docD = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '404', knowledgeid: 'n1' });
+  var appD = makeGiveUpApp(docD, { attempts: 2 });
+  wireGiveUp(appD);
+  var dBefore = logs.length;
+  var dRet = appD._giveUp(docD, 'next-unit');
+  var dLogs = logs.slice(dBefore).filter(function (l) { return l.message === 'quiz submit never accepted, giving up unit'; });
+  var dMeta = dLogs.length ? dLogs[0].meta : {};
+  var dRecord = {};
+  try { dRecord = JSON.parse(fakeLS.getItem(STORE_KEY))['job:404'] || {}; } catch (eRec) { dRecord = {}; }
+  check('232-D1b：这一枚任务点真写进了 24 小时放弃名单，理由与次数逐字可查',
+    dRet === true && appD._isTaskGivenUp('job:404') === true &&
+    dRecord.reason === 'quiz-submit-never-accepted' && dRecord.name === '404' && dRecord.attempts === 2,
+    JSON.stringify({ ret: dRet, record: dRecord, store: fakeLS.getItem(STORE_KEY) }));
+  check('232-D1c：日志点名是谁判的，并给出可恢复的出口',
+    dLogs.length === 1 && dMeta.reason === 'next-unit' && dMeta.stalls === 3 && dMeta.attempts === 2 &&
+    dMeta.maxAttempts === 20 && dMeta.jobid === '404' && dMeta.gaveUp === true &&
+    String(dMeta.hint || '').indexOf('clearTaskGiveUp') >= 0 && dMeta.observer === 'xhr',
+    JSON.stringify(dMeta));
+
+  check('232-D2：交卷状态清空、点了下一节、暂停窗口带着卷子键重新写上',
+    appD._quizSubmitPending === false && appD._quizAnswered === true &&
+    appD._quizSubmitStallCount === 0 && appD._quizCurrentQuestions === null &&
+    appD._quizInProgress === false && appD._quizReadyToSubmit === false &&
+    domCtl.button.clicked === 1 && appD._resetCalls === 1 &&
+    appD._quizForceSkipUntil > Date.now() &&
+    appD._quizForceSkipPaperKey.indexOf(encodeURIComponent('c1|k1|w1|404|n1')) >= 0 &&
+    appD._nextUnitCalls === 0,
+    JSON.stringify({ pending: appD._quizSubmitPending, answered: appD._quizAnswered, stalls: appD._quizSubmitStallCount,
+      clicked: domCtl.button.clicked, resets: appD._resetCalls, until: appD._quizForceSkipUntil,
+      paper: appD._quizForceSkipPaperKey, nextUnit: appD._nextUnitCalls }));
+  check('232-D3：只认「下一节」那一枚按钮，不碰任何完成标记',
+    domCtl.sel.length >= 1 && domCtl.sel.every(function (s) { return s === '#prevNextFocusNext'; }) &&
+    domCtl.sel.join(',').indexOf('isFinished') < 0,
+    JSON.stringify(domCtl.sel));
+
+  domCtl.button.clicked = 0;
+  var appD2 = makeGiveUpApp(docD, { attempts: 2, switchOk: true });
+  wireGiveUp(appD2);
+  var d2Ret = appD2._giveUp(docD, 'next-unit');
+  check('232-D4：卡片切换那条出口优先，成功时不再点按钮、也不走到 nextUnit',
+    d2Ret === true && appD2._switchCalls.length === 1 && appD2._switchCalls[0] === 'quiz-submit-given-up' &&
+    domCtl.button.clicked === 0 && appD2._nextUnitCalls === 0,
+    JSON.stringify({ calls: appD2._switchCalls, clicked: domCtl.button.clicked, nextUnit: appD2._nextUnitCalls }));
+
+  var docNoId = fakeDoc({ courseId: 'c2', classId: 'k2', workRelationId: 'w2' });
+  var appD3 = makeGiveUpApp(docNoId, { attempts: 1, tasks: [] });
+  wireGiveUp(appD3);
+  domCtl.button = null;
+  var d3Before = logs.length;
+  var d3Ret = appD3._giveUp(docNoId, 'next-unit');
+  var d3Logs = logs.slice(d3Before).filter(function (l) { return l.message === 'quiz submit never accepted, giving up unit'; });
+  var d3Meta = d3Logs.length ? d3Logs[0].meta : {};
+  var storeKeys = [];
+  try { storeKeys = Object.keys(JSON.parse(fakeLS.getItem(STORE_KEY)) || {}); } catch (eKeys) { storeKeys = []; }
+  check('232-D5：认不出 jobid 时明说「没写放弃名单」，但这一节照样放开',
+    d3Ret === true && d3Meta.gaveUp === false && d3Meta.jobid === '' &&
+    String(d3Meta.hint || '').indexOf('没写放弃名单') >= 0 &&
+    storeKeys.length === 1 && storeKeys[0] === 'job:404' && appD3._nextUnitCalls === 1,
+    JSON.stringify({ meta: d3Meta, storeKeys: storeKeys, nextUnit: appD3._nextUnitCalls }));
+
+  // ---- E：攒满三次才放手，没攒满照旧按住 ----
+  var holdFn = buildFrom(quiz, '_shouldHoldQuizBeforeNext', { emitRuntimeLog: say });
+  check('232-E0：切出了 _shouldHoldQuizBeforeNext', typeof holdFn === 'function', typeof holdFn);
+
+  var giveUpSentinel = { calls: 0, reason: '' };
+  var makeHoldApp = function (stalls) {
+    return {
+      _quizSubmitStallCount: stalls,
+      _quizHoldLogAt: 0,
+      _isQuizSkipWindowLive: function () { return false; },
+      _isQuizApiUnavailable: function () { return false; },
+      _isQuizBlockedByApi: function () { return false; },
+      _monitorQuizSubmit: function () { return false; },
+      _resolveQuizSubmitDocument: function () { return docD; },
+      _getMainDocument: function () { return docD; },
+      _detectQuiz: function () { return true; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizRedoRequired: function () { return false; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _shouldSkipQuizBySubmitAttempts: function () { return false; },
+      _giveUpQuizSubmitAfterStalls: function (doc, reason) {
+        giveUpSentinel.calls++;
+        giveUpSentinel.reason = reason;
+        return 'GAVEUP';
+      }
+    };
+  };
+  var eBefore = logs.length;
+  var e0 = holdFn.call(makeHoldApp(0), 'next-unit');
+  var e1 = holdFn.call(makeHoldApp(1), 'next-unit');
+  var e2 = holdFn.call(makeHoldApp(2), 'next-unit');
+  var e3 = holdFn.call(makeHoldApp(3), 'next-unit');
+  var eLogs = logs.slice(eBefore).filter(function (l) { return l.message === 'hold unsubmitted quiz before next'; });
+  check('232-E1：没攒满三次照旧按住，日志带当前次数',
+    e0 === true && e1 === true && e2 === true && eLogs.length === 3 &&
+    eLogs[0].meta.stalls === 0 && eLogs[1].meta.stalls === 1 && eLogs[2].meta.stalls === 2,
+    JSON.stringify({ e0: e0, e1: e1, e2: e2, stalls: eLogs.map(function (l) { return l.meta.stalls; }) }));
+  check('232-E2：第三次交给放手出口（有界），不再原地按住',
+    e3 === 'GAVEUP' && giveUpSentinel.calls === 1 && giveUpSentinel.reason === 'next-unit',
+    JSON.stringify({ e3: e3, calls: giveUpSentinel.calls, reason: giveUpSentinel.reason }));
+
+  var appDebug = makeHoldApp(3);
+  appDebug.configs = { quizRejectGiveUp: false };
+  var dbgBefore = logs.length;
+  var dbgHold = holdFn.call(appDebug, 'next-unit');
+  var dbgLogs = logs.slice(dbgBefore).filter(function (l) {
+    return l.message === 'quiz submit rejected, holding in debug mode';
+  });
+  check('232-E3：调试档（quizRejectGiveUp=false）第三次也不放手，单独点名「死磕」而不是静默按住',
+    dbgHold === true && giveUpSentinel.calls === 1 && dbgLogs.length === 1 &&
+    dbgLogs[0].meta.stalls === 3 && dbgLogs[0].meta.reason === 'next-unit',
+    JSON.stringify({ hold: dbgHold, calls: giveUpSentinel.calls, logs: dbgLogs.length,
+      meta: dbgLogs.length ? dbgLogs[0].meta : null }));
+
+  var skipFn = buildFrom(quiz, '_shouldSkipQuizBySubmitAttempts', {});
+  var appSkip = {
+    configs: { quizRejectGiveUp: false },
+    _getQuizSubmitAttemptCount: function () { return 20; },
+    _getQuizMaxSubmitAttempts: function () { return 20; }
+  };
+  var dbgSkip = skipFn.call(appSkip);
+  appSkip.configs = {};
+  var defaultSkip = skipFn.call(appSkip);
+  check('232-E4：调试档下交卷次数到顶也不跳过；默认档仍按上限跳过（两半各钉一格）',
+    dbgSkip === false && defaultSkip === true,
+    JSON.stringify({ debug: dbgSkip, normal: defaultSkip }));
+
+  // ---- F：放弃名单里那一枚不再算 pending，但正在飞的提交不许被截断 ----
+  var pendingFn = buildFrom(quiz, '_isQuizLearningPending', {});
+  check('232-F0：切出了 _isQuizLearningPending', typeof pendingFn === 'function', typeof pendingFn);
+
+  var makePendingApp = function (o) {
+    return {
+      _quizForceSkipUntil: 0,
+      _isQuizForceSkipping: function () { return false; },
+      _isQuizApiUnavailable: function () { return false; },
+      _isQuizBlockedByApi: function () { return false; },
+      _monitorQuizSubmit: function () { return !!o.monitor; },
+      _isQuizGivenUpInDom: function () { return !!o.givenUp; },
+      _quizInProgress: false,
+      _quizSubmitPending: false,
+      _quizAnswered: false,
+      _resolveQuizSubmitDocument: function () { return docD; },
+      _getMainDocument: function () { return docD; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizRedoRequired: function () { return false; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _detectQuiz: function () { return true; }
+    };
+  };
+  var f1 = pendingFn.call(makePendingApp({ givenUp: true, monitor: false }));
+  var f2 = pendingFn.call(makePendingApp({ givenUp: true, monitor: true }));
+  var f3 = pendingFn.call(makePendingApp({ givenUp: false, monitor: false }));
+  check('232-F1：放弃名单里那一枚不再算 pending；提交还在飞时不许被它截断；对照组仍算 pending',
+    f1 === false && f2 === true && f3 === true,
+    JSON.stringify({ givenUp: f1, inFlight: f2, control: f3 }));
+
+  // ---- G：确认弹窗那一发不清账，只有新的一轮才换新账本 ----
+  var markFn = buildFrom(quiz, '_markQuizSubmitPending', { emitRuntimeLog: say });
+  check('232-G0：切出了 _markQuizSubmitPending', typeof markFn === 'function', typeof markFn);
+
+  var attemptCounter = { value: 0, increments: 0 };
+  var appG = {
+    configs: {},
+    _quizSubmitPending: false,
+    _quizSubmitStartedAt: 0,
+    _quizSubmitLogAt: 0,
+    _quizLastSubmitAttemptAt: 0,
+    _quizSubmitNet: null,
+    _quizCurrentQuestions: [],
+    _quizReadyWorkKey: 'rk',
+    _getQuizSubmitAttemptCount: function () { return attemptCounter.value; },
+    _incrementQuizSubmitAttemptCount: function () { attemptCounter.value++; attemptCounter.increments++; return attemptCounter.value; },
+    _getQuizMaxSubmitAttempts: function () { return 20; },
+    _getQuizWorkKey: function () { return 'k'; },
+    _getQuizAccountDocument: function () { return docD; },
+    _getQuizDocumentFromQuestions: function () { return null; }
+  };
+  markFn.call(appG, docD, 'btnBlueSubmit');
+  var gNet1 = appG._quizSubmitNet;
+  if (gNet1) gNet1.xhr = 3;
+  markFn.call(appG, docD, 'confirm-dialog');
+  var gKept = appG._quizSubmitNet === gNet1 && appG._quizSubmitNet && appG._quizSubmitNet.xhr === 3 && attemptCounter.increments === 1;
+  appG._quizSubmitPending = false;
+  markFn.call(appG, docD, 'again');
+  var gReset = appG._quizSubmitNet !== gNet1 && appG._quizSubmitNet && appG._quizSubmitNet.xhr === 0 && attemptCounter.increments === 2;
+  check('232-G1：确认弹窗那一发不清账、不重复计次；只有新的一轮才换新账本',
+    !!gNet1 && gKept === true && gReset === true,
+    JSON.stringify({ kept: gKept, reset: gReset, increments: attemptCounter.increments }));
+
+  // ---- H：交卷前的人机验证窗（#232 现场抓包：空 pyFlag 提交必被平台拒绝） ----
+  var domSrc = read('src/page/75-quiz-dom.js');
+  var findVerifyFn = buildFrom(domSrc, '_findWorkVerifyWindow', {});
+  var solveFn = buildFrom(domSrc, '_solveWorkVerifyCaptcha', { emitRuntimeLog: say });
+  var confirmFn = buildFrom(domSrc, '_handleSubmitConfirmDialog', { emitRuntimeLog: say, textOf: function () { return ''; } });
+
+  var fakeInput = { value: '', dispatchEvent: function () { fakeInput.events = (fakeInput.events || 0) + 1; } };
+  var fakeImg = { src: 'https://mooc1.chaoxing.com/verifyCode/stuWork?123' };
+  var fakeWin = {
+    id: 'verifyCodeWin',
+    querySelector: function (sel) {
+      if (sel.indexOf('#inputCode') >= 0) return fakeInput;
+      if (sel.indexOf('#workVerifyImg') >= 0) return fakeImg;
+      return null;
+    }
+  };
+  var found = findVerifyFn.call({}, fakeWin);
+  check('232-H0：验证码窗能认出输入框与验证码图（#verifyCodeWin / #inputCode / #workVerifyImg）',
+    !!found && found.input === fakeInput && found.img === fakeImg, JSON.stringify(!!found));
+
+  var hClick = 0, hSolve = 0, hPending = 0;
+  var hButton = { click: function () { hClick++; } };
+  var makeConfirmApp = function (inputValue) {
+    fakeInput.value = inputValue;
+    return {
+      _submitConfirmLastClickAt: 0,
+      _quizReadyToSubmit: true,
+      _quizAnswered: false,
+      _quizSubmitPending: false,
+      _quizReadyWorkKey: 'rk',
+      _findWorkVerifyWindow: function () { return { win: fakeWin, input: fakeInput, img: fakeImg }; },
+      _dismissQuizSubmitAlerts: function () {},
+      _solveWorkVerifyCaptcha: function () { hSolve++; },
+      _findDialogButtonByText: function () { return hButton; },
+      _getQuizAccountDocument: function () { return docD; },
+      _getQuizWorkKey: function () { return 'rk'; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _markQuizSubmitPending: function () { hPending++; }
+    };
+  };
+  var h1 = confirmFn.call(makeConfirmApp(''), fakeWin);
+  check('232-H1：验证码没填时**绝不许点确定**（空 pyFlag 必被拒），而是去识别填码',
+    h1 === true && hClick === 0 && hSolve === 1 && hPending === 0,
+    JSON.stringify({ ret: h1, click: hClick, solve: hSolve, pending: hPending }));
+
+  hClick = 0; hSolve = 0; hPending = 0;
+  var h2 = confirmFn.call(makeConfirmApp('AB12'), fakeWin);
+  check('232-H2：码已就位时才点「确定」并记一轮提交（原来那条确认出口照旧）',
+    h2 === true && hClick === 1 && hSolve === 0 && hPending === 1,
+    JSON.stringify({ ret: h2, click: hClick, solve: hSolve, pending: hPending }));
+
+  var h3Input = { value: '', events: 0, ownerDocument: null, dispatchEvent: function () { h3Input.events++; } };
+  var h3Img = { src: 'https://mooc1.chaoxing.com/verifyCode/stuWork?9' };
+  var h3App = {
+    configs: { model: 'm' },
+    _captchaBusy: false,
+    _recognizeCaptchaImage: function () { return Promise.resolve({ ok: true, code: '7X2K' }); }
+  };
+  await solveFn.call(h3App, { input: h3Input, img: h3Img });
+  check('232-H3：识别成功后把码写进 #inputCode 并派发 input/change（等下一拍由确认出口点确定）',
+    h3Input.value === '7X2K' && h3Input.events === 2 && h3App._captchaBusy === false &&
+    h3Img.__omitoneVerifyTries === 1,
+    JSON.stringify({ value: h3Input.value, events: h3Input.events, busy: h3App._captchaBusy,
+      tries: h3Img.__omitoneVerifyTries }));
+
+  var h4Hidden = 0;
+  fakeWin.ownerDocument = { defaultView: { hideWorkVerify: function () { h4Hidden++; } } };
+  fakeWin.style = {};
+  fakeImg.__omitoneVerifyTries = 2;
+  hClick = 0; hPending = 0;
+  var h4 = confirmFn.call(makeConfirmApp(''), fakeWin);
+  fakeImg.__omitoneVerifyTries = 0;
+  check('232-H4：上线版识别两次仍空码时关掉验证码窗（交回三次停滞放手），绝不用空码提交',
+    h4 === true && h4Hidden === 1 && hClick === 0 && hPending === 0,
+    JSON.stringify({ ret: h4, hidden: h4Hidden, click: hClick, pending: hPending }));
+
+  var findVerifyDocFn = buildFrom(domSrc, '_findWorkVerifyWindow', { visible: function (el) { return !!el.__visible; } });
+  fakeWin.__visible = true;
+  var fakeDocVerify = {
+    getElementById: function (id) { return id === 'verifyCodeWin' ? fakeWin : null; }
+  };
+  var alertDialog = { id: 'workFailAlert', querySelector: function () { return null; } };
+  var appV5 = {
+    _resolveQuizSubmitDocument: function () { return fakeDocVerify; },
+    _getMainDocument: function () { return fakeDocVerify; }
+  };
+  var fallback = findVerifyDocFn.call(appV5, alertDialog);
+  fakeWin.__visible = false;
+  var hiddenFallback = findVerifyDocFn.call(appV5, alertDialog);
+  fakeWin.__visible = true;
+  check('232-H5：告警层当弹层传进来时，回落到文档里**可见**的验证码窗；隐藏的旧窗不许认领',
+    !!fallback && fallback.input === fakeInput && fallback.img === fakeImg && hiddenFallback === null,
+    JSON.stringify({ fallback: !!fallback, hidden: hiddenFallback }));
+
+  var knowClicks = 0;
+  var alertBtn = { textContent: '知道了', click: function () { knowClicks++; } };
+  var failLayer = {
+    __visible: true,
+    innerText: '作业提交失败！',
+    querySelectorAll: function () { return [alertBtn]; }
+  };
+  var otherLayer = {
+    __visible: true,
+    innerText: '别的东西',
+    querySelectorAll: function () { return [{ textContent: '知道了', click: function () { knowClicks += 999; } }]; }
+  };
+  var fakeDocAlerts = {
+    querySelectorAll: function (sel) { return sel === '.AlertCon02' ? [fakeWin, failLayer, otherLayer] : []; }
+  };
+  fakeWin.ownerDocument = fakeDocAlerts;
+  var dismissFn = buildFrom(domSrc, '_dismissQuizSubmitAlerts', { visible: function (el) { return !!el.__visible; } });
+  dismissFn.call({}, { win: fakeWin, input: fakeInput, img: fakeImg });
+  check('232-H6：等码时顺手关掉「作业提交失败/知道了」的旧告警层（验证码窗本身与其他层都不动）',
+    knowClicks === 1, JSON.stringify({ clicks: knowClicks }));
+
+  var h7Click = 0, h7Pending = 0;
+  var h7Btn = { click: function () { h7Click++; } };
+  var confirmAlertFn = buildFrom(domSrc, '_handleSubmitConfirmDialog', {
+    emitRuntimeLog: say, textOf: function () { return '作业提交失败！ 知道了'; }
+  });
+  var h7 = confirmAlertFn.call({
+    _submitConfirmLastClickAt: 0,
+    _findWorkVerifyWindow: function () { return null; },
+    _findDialogButtonByText: function () { return h7Btn; },
+    _markQuizSubmitPending: function () { h7Pending++; }
+  }, { id: 'workFailAlert' });
+  check('232-H7：失败告知层只收尾、不记成一轮提交（否则三次停滞额度会被空耗，真提交还没发就被判放手）',
+    h7 === true && h7Click === 1 && h7Pending === 0,
+    JSON.stringify({ ret: h7, click: h7Click, pending: h7Pending }));
+
+  // ---- J：randomOptions 下「位置字母」与「平台 data 字母」分道 ----
+  var answersSrc = read('src/page/72-quiz-answers.js');
+  var matchFn = buildFrom(domSrc, '_matchOptionItem', { textOf: function (el) { return String(el && el.textContent || ''); } });
+  var mkOpt = function (dataLetter, visibleLabel, idx) {
+    var badge = {
+      getAttribute: function (n) { return n === 'data' ? dataLetter : ''; },
+      textContent: visibleLabel
+    };
+    return {
+      _idx: idx,
+      querySelector: function (sel) { return /num_option/.test(sel) ? badge : null; },
+      getAttribute: function () { return ''; }
+    };
+  };
+  var optA = mkOpt('C', 'A', 0);
+  var optB = mkOpt('A', 'B', 1);
+  var optC = mkOpt('B', 'C', 2);
+  var matchApp = {
+    _getOptionItems: function () { return [optA, optB, optC]; },
+    _normalizeAnswerValue: function (v) { return String(v || ''); },
+    _detectQuestionType: function () { return 'single'; },
+    _inferOptionLetter: function (it) {
+      var b = it.querySelector('.num_option');
+      return b && /^[A-F]$/i.test(b.getAttribute('data')) ? String(b.getAttribute('data')).toUpperCase() : '';
+    },
+    _extractOptionText: function (it) { return 'text' + it._idx; },
+    _isJudgeOptionMatch: function () { return false; }
+  };
+  var j1 = matchFn.call(matchApp, {}, 'A', 'single');
+  var j2 = matchFn.call(matchApp, {}, 'C', 'single');
+  check('232-J1：模型的位置字母按 DOM 次序命中（A=第 1 个可见项），不按徽标 data 认项',
+    j1 === optA, JSON.stringify({ hit: j1 && j1._idx }));
+  check('232-J2：位置字母 C 命中第 3 个可见项（它的 data 是 B）',
+    j2 === optC, JSON.stringify({ hit: j2 && j2._idx }));
+
+  // ---- K：addChoice 宿主只许被触发一次 ----
+  var clickFn = buildFrom(domSrc, '_clickOptionItem', { textOf: function (el) { return String(el && el.textContent || ''); }, document: {} });
+  var kCounts = { host: 0, inner: 0 };
+  var mkClickItem = function (hasHost) {
+    var badge = {
+      getAttribute: function (n) { return n === 'data' ? 'C' : ''; },
+      textContent: 'A',
+      classList: { add: function () {}, remove: function () {}, contains: function () { return false; } },
+      click: function () { kCounts.inner++; }
+    };
+    var innerSpan = { click: function () { kCounts.inner++; } };
+    var item = {
+      ownerDocument: {},
+      classList: { add: function () {}, remove: function () {}, contains: function () { return false; } },
+      click: function () { kCounts.host++; },
+      getAttribute: function () { return ''; },
+      closest: function (sel) { return hasHost && /addChoice|addMultipleChoice/.test(sel) ? item : null; },
+      querySelector: function (sel) {
+        if (/num_option/.test(sel)) return badge;
+        if (/input\[type=/.test(sel)) return null;
+        return innerSpan;
+      },
+      querySelectorAll: function () { return []; }
+    };
+    return item;
+  };
+  var kApp = {
+    _getQuestionIdFromElement: function () { return ''; },
+    _inferOptionLetter: function () { return 'C'; },
+    _dispatchQuizInputEvents: function () {}
+  };
+  kCounts.host = 0; kCounts.inner = 0;
+  clickFn.call(kApp, mkClickItem(true), 'radio');
+  check('232-K1：选项宿主带 addChoice 时整发只触发一次（不再补点内层徽标 → 不复选反选）',
+    kCounts.host === 1 && kCounts.inner === 0, JSON.stringify(kCounts));
+  kCounts.host = 0; kCounts.inner = 0;
+  clickFn.call(kApp, mkClickItem(false), 'radio');
+  check('232-K2：普通形状照旧补点内层（旧行为不丢）', kCounts.host === 1 && kCounts.inner === 1, JSON.stringify(kCounts));
+
+  // ---- I：qid 三源仲裁（老引擎 li[qid] / 隐藏域 / 容器 data 序号） ----
+  var qidFn = buildFrom(answersSrc, '_getQuestionIdFromElement', {});
+  var docWith = function (ids) {
+    return { getElementById: function (id) { return ids.indexOf(id) >= 0 ? { id: id } : null; } };
+  };
+  var iApp = {
+    _quizDetectorSelector: '.TiMu',
+    _findQuizAnswerInput: function () { return null; }
+  };
+  var i1El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith(['answer213']),
+    querySelector: function (sel) { return /\[qid\]/.test(sel) ? { getAttribute: function (n) { return n === 'qid' ? '213' : ''; } } : null; },
+    closest: function () { return { getAttribute: function () { return '1'; } }; }
+  };
+  var i2El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith(['answer213']),
+    querySelector: function () { return null; },
+    closest: function () { return { getAttribute: function () { return '213'; } }; }
+  };
+  var i3El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith([]),
+    querySelector: function () { return null; },
+    closest: function () { return { getAttribute: function () { return '1'; } }; }
+  };
+  var i1 = qidFn.call(iApp, i1El);
+  var i2 = qidFn.call(iApp, i2El);
+  var i3 = qidFn.call(iApp, i3El);
+  check('232-I1：老引擎从子项 li[qid] 取号（容器 data 只是序号，不许当代号）',
+    i1 === '213', JSON.stringify({ qid: i1 }));
+  check('232-I2：新版容器 data 且存在 #answer{data} 时照旧认它', i2 === '213', JSON.stringify({ qid: i2 }));
+  check('232-I3：容器 data 缺对应 #answer 时不认（否则序号 1 会被当成 qid）', i3 === '', JSON.stringify({ qid: i3 }));
+
+  // ---- L：qtype 题型兜底 ----
+  var typeFn = buildFrom(domSrc, '_detectQuestionType', { textOf: function () { return '题干'; } });
+  var mkTypeEl = function (qt) {
+    return {
+      getAttribute: function () { return ''; },
+      querySelector: function (sel) {
+        if (/newZy_TItle/.test(sel)) return null;
+        if (/\[qtype\]/.test(sel)) return { getAttribute: function (n) { return n === 'qtype' ? qt : ''; } };
+        return null;
+      },
+      querySelectorAll: function () { return []; }
+    };
+  };
+  var typeApp = {
+    _mapQuizTypeValue: function (v) { return v === '1' ? 'multiple' : v === '3' ? 'judge' : 'single'; }
+  };
+  var l1 = typeFn.call(typeApp, mkTypeEl('1'));
+  var l2 = typeFn.call(typeApp, mkTypeEl('3'));
+  check('232-L1：其它信号都没有时用 li[qtype] 兜底判题型（1→多选，3→判断）',
+    l1 === 'multiple' && l2 === 'judge', JSON.stringify({ l1: l1, l2: l2 }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -10117,9 +11317,11 @@ async function main() {
   await testFillAnswerSeparatorTolerance();
   await testNinetyAdvanceBoundToSeek();
   await testRateAskBound();
+  await testMediaRecoveryExhaustion();
   await testModelListFetch();
   await testWebSearchGate();
   await testVoteEndedParkPersistent();
+  await testQuizSubmitNeverAccepted();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

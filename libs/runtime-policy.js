@@ -10,7 +10,7 @@
     'enableVote',
     'randomAnswer', 'enableCaptcha', 'blockedReload', 'enableMedia', 'enableSeek',
     'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled',
-    'quizZeroFillSkip'];
+    'quizZeroFillSkip', 'quizRejectGiveUp'];
   var numbers = {
     // ⚠️ `playbackRate`（弹窗那根「播放速度」滑条）在批次 146 整条删掉了 —— 站点按不住倍速的视频
     // 被我们硬按上去会抽搐加黑屏。现在倍速只有一个来源：量到的播放器上限（`playbackRateCap` 只做封顶）。
