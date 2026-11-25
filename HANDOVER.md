@@ -1762,6 +1762,20 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.73 issue #2 新评论四点收口：暗色下拉、可滚动模型候选、联网搜索说明、填答取舍（2026-11-25，用户 034714）
+
+- **#49-a**：深色媒体查询补 `color-scheme:dark` + `select` 暗底/自绘箭头 + `option` 暗底；弹窗暗色截图复核。
+- **#49-b**：原生 `datalist` 在 Windows 弹层不可滚（用户原话「模型选项不能划动」）→ 改自定义
+  `.model-menu`（`max-height:220px; overflow-y:auto`），三处模型输入共用；候选层**挂到 body**
+  —— 祖先玻璃分组带 `backdrop-filter`，会把 `position:fixed` 的参照系改到分组上，实测弹层会被画到屏幕外。
+  输入过滤/点击选中/Esc/外部点击关闭都接上；集成 [32] ⑭/⑯ 改成按钮候选与滚动样式。
+- **#49-c**：联网搜索提示明确「只有 DeepSeek 官方接口支持（中转站不行）」，判定仍在 `libs/web-search.js`，未扩渠道。
+- **#49-d**：当前是 `_fillAnswers` 同一拍同步写 DOM；逐题慢填没有证据能降低检测，反而增加等待/超时风险，
+  暂不改，等用户确认是否要公开回 issue。
+- **#223 现场闭环**：同一学习页两次刷新，`href` 相同、`doc.id` 不同（`dmww9xsztn7l261` / `dmww9yecxn8gd7m`）；
+  现场新构建 `rev=29240ece48` 与磁盘一致。
+- 读数：集成 811/811、check EXIT=0、定向弹窗 e2e 7/7；预览包随后重建。
+
 ### 0.72 专题阅读 readV2：认得出「点击去阅读」，完成走站点 finishJob，尽头不再空转（2026-11-25 现场）
 
 - **现场形状**：最后一节的预览帧 `/mooc-ans/readv2job/preview?jobid=read-…` 只有 `.readInfo` 与一句

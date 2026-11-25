@@ -8,6 +8,23 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 211 · 2026-11-25 · issue #2 新评论四点：暗色下拉、模型候选滚动、联网搜索说明、填答取舍（用户 034714）
+
+- **#49-a 暗色下拉发白**：`popup.html` 的深色媒体查询补 `color-scheme:dark`、`select` 暗底与自绘箭头；
+  原生 `option` 在 Edge 深色下仍画浅色底，补 `option` 暗底规则。现场弹窗截图复核（`.workbuddy/popup-dark-top2.png`）。
+- **#49-b 模型候选不能滚动**：把原生 `datalist` 换成自定义 `.model-menu`（`max-height:220px` +
+  `overflow-y:auto`，挂到 body 避开玻璃分组的 `backdrop-filter` 固定定位陷阱）；三处模型输入共用一个候选层，
+  支持输入过滤、点击选中、Esc/外部点击关闭。集成 [32] ⑭/⑯ 同步改成按钮候选与滚动样式断言；
+  暗色现场截图 30 条候选可见滚动条（`.workbuddy/popup-dark-menu3.png`）。
+- **#49-c 联网搜索范围**：弹窗提示补「目前只有 DeepSeek 官方接口支持（中转站不行）」；
+  `libs/web-search.js` 的判定不变（只认 `api.deepseek.com`）。
+- **#49-d 填答方式**：现为 `_fillAnswers` 同一拍把整卷写进 DOM；没有证据表明逐题慢填能降低平台检测，
+  反而增加等待与超时风险，暂不改，留作问答说明。公开回复 issue 前先经用户确认。
+- **现场 #223 闭环**：同一学习页连续两次刷新后 `href` 逐字相同，
+  `doc.id` 分别为 `dmww9xsztn7l261` / `dmww9yecxn8gd7m`（`doc.at` 也不同）—— 同址重载可分。
+- 读数：集成 **811 / 811**、`node tools/check.js` EXIT=0；定向弹窗 e2e 7/7 绿。
+- **门面**：`暗色模式下下拉不再发白，模型候选列表可以滚动`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 210 · 2026-11-25 · 专题阅读 readV2 任务点：认得出、点得完、到尽头会换课（现场卡住 99 拍）
 
 - **现场**：最后一节是「专题阅读」，预览帧只写「点击去阅读，可完成」；插件把两个 read 帧都判成
