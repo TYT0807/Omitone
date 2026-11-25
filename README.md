@@ -650,3 +650,5 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 ## 开发者与维护者
 
 开发命令、运行机制、代码易纠缠点与配置清单见 [docs/DEVELOPER.md](docs/DEVELOPER.md)。
+
+> 自动化验证：真实 Edge 全量 **152 场景 / 1718 项**、集成 **806 项**；怎么跑见上面那份开发文档。
