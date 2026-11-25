@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '7bb7e2d441';
+var OMITONE_CODE_REV = '29240ece48';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -6040,9 +6040,6 @@ var OMITONE_CODE_REV = '7bb7e2d441';
       // 等提交结束（或 quizSubmitWaitMs 超时）再走正常完成判定。
       if (this._quizSubmitPending) return false;
       if (this._switchToNextLearningCard('skip-completed')) return true;
-      // 最后一节：下一节按钮已经点不动，不能再每秒 `skip completed` 空转。
-      // 交给换课出口（它自己会判 atEnd；没到尽头就返回 false，照旧走下面的 nextUnit）。
-      if (this._leaveFinishedCourse('skip-completed')) return true;
       console.log('%c[Omitone] skip completed: ' + this._getCurrentTitle(), 'color:#FF9800');
       // 批次 11-B：这一句以前只有 `{title, by}` —— 用户问「怎么说已完成了？」时，
       // 日志本身答不上来。现在把**判成完成的当场依据**一起落盘（全部只读取证，判据没动）。
@@ -10665,6 +10662,9 @@ var OMITONE_CODE_REV = '7bb7e2d441';
         var nextButton = document.querySelector('#prevNextFocusNext');
         if (nextButton) nextButton.click();
       } catch (e) {}
+      // 最后一节：下一节按钮可能存在但点不动，点完再看目录是否已到尽头。
+      // 到尽头就直接回用户中心挑下一门，不在这里每秒空点；没到尽头才照旧复位。
+      if (this._leaveFinishedCourse('next-unit')) return;
       this._resetRuntimeState();
     },
 

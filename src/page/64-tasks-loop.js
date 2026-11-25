@@ -724,6 +724,9 @@
         var nextButton = document.querySelector('#prevNextFocusNext');
         if (nextButton) nextButton.click();
       } catch (e) {}
+      // 最后一节：下一节按钮可能存在但点不动，点完再看目录是否已到尽头。
+      // 到尽头就直接回用户中心挑下一门，不在这里每秒空点；没到尽头才照旧复位。
+      if (this._leaveFinishedCourse('next-unit')) return;
       this._resetRuntimeState();
     },
 

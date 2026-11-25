@@ -8,6 +8,23 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 210 · 2026-11-25 · 专题阅读 readV2 任务点：认得出、点得完、到尽头会换课（现场卡住 99 拍）
+
+- **现场**：最后一节是「专题阅读」，预览帧只写「点击去阅读，可完成」；插件把两个 read 帧都判成
+  「认不出任务类型」，每 8 秒 `study begin → study finished on page`，目录剩 1 个未完成、`memo.rounds` 99，
+  日志环被 `skip completed` 刷满。
+- **识别**：`insertreadV2` 归 `readv2` —— 附件映射、DOM `.readInfo` 信号、OCS 搜索各补一格；
+  预览帧的 jobid 只在 `src` 上（iframe 的 `data` 为空），从 URL 原样读回。
+- **完成**：`_runChaoxingReadJob` 调站点父帧 `finishJob(jobid)`（回退点击 `.readInfo` 并临时屏蔽
+  `top.window.open`），不再多开阅读门户；不再把这类任务判成「没有任务帧」。
+- **尽头**：`nextUnit()` 点完下一节（可能按钮在但点不动）后若目录已到尽头，走
+  `_leaveFinishedCourse('next-unit')` 回用户中心，不再复位后干等。
+- **机检**：集成新增 [36] 五条（①②③ 识别，④ 带 jobid 完成，⑤ 尽头换课）；反向三刀各红 1 条，
+  还原后 **811 / 811** 红 0。`node tools/check.js` EXIT=0；`src/page/README.md` 片段行数回填
+  （60-tasks-detect 2382 / 62-tasks-run 1834）。
+- **门面**：`阅读任务点（预览卡里那种「点击去阅读」）现在会自动完成`（`release-notes-preview.md` 与
+  main README 的 1.3.2 预览更新段）
+
 ### 批次 209 · 2026-11-25 · e2e 场景卫生复位改走生产清账口（会话任务 #48）
 
 - `tools/browser-e2e.js` 13 处 `app._quizApiFailUntil=0;` 改成 `app._setQuizApiFailUntil(0);`：

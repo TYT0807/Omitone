@@ -1762,6 +1762,22 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.72 专题阅读 readV2：认得出「点击去阅读」，完成走站点 finishJob，尽头不再空转（2026-11-25 现场）
+
+- **现场形状**：最后一节的预览帧 `/mooc-ans/readv2job/preview?jobid=read-…` 只有 `.readInfo` 与一句
+  「点击去阅读，可完成」，没有 `#img.imglook` / `#panView`；旧检测两帧都认不出，`study finished` 每 8 秒
+  重来，`memo.rounds` 99，日志环被 `skip completed` 刷满。附件 module 是 `insertreadV2`。
+- **代码**：`_kindFromAttachment` 认 `insertreadV2` → `readv2`；`_detectChaoxingJobElements` 与 OCS 的
+  `searchJobElement` 各加 `.readInfo` 信号；OCS 在 `data` 为空时从预览帧 `src` 的 `jobid=` 读回；
+  `_runChaoxingReadJob` 对 `readv2` 调父帧 `finishJob(jobid)`，失败才回退点击 `.readInfo`（临时把
+  `top.window.open` 置空，避免多开阅读门户）。`nextUnit()` 点完下一节后（按钮可能存在但点不动）
+  再问 `_leaveFinishedCourse('next-unit')`，到尽头直接回用户中心；**没有**放在 `_skipIfCompleted` 里
+  —— 那里会被 e2e 的「下一节桩」误触发，全量 e2e 当场抓到两条 `/catalog` 回归。
+- **机检**：集成 [36] 五条（`insertreadV2` 映射、`.readInfo` 仲裁、两路同答、带 jobid 调 finishJob、
+  `nextUnit` 到尽头走换课），集成 **811 / 811**；反向三刀 A/B/C 各红 1 条，还原复跑红 0、worktree 已 remove。
+- **现场收口**：旧课程那一节已由站点动作完成并换到下一门；下一门正在刷视频。代码部署后还需下一次
+  遇到 readV2 时用日志确认 `readv2 finishJob called`（本条待观察）。
+
 ### 0.71 e2e 场景卫生复位改走生产清账口（2026-11-25，会话任务 #48）
 
 - `tools/browser-e2e.js` 里 13 处 `app._quizApiFailUntil=0;` 只清内存，不清 `sessionStorage` 的 45 秒退避键；

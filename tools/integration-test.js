@@ -11714,6 +11714,7 @@ async function testReadV2Task() {
   };
   var detect = read('src/page/60-tasks-detect.js');
   var run = read('src/page/62-tasks-run.js');
+  var loop = read('src/page/64-tasks-loop.js');
 
   var boundsOf = function (src, name) {
     var at = src.indexOf(name + ': function');
@@ -11782,28 +11783,31 @@ async function testReadV2Task() {
     ok === true && calls.indexOf('finish:read-219328426') >= 0 && calls.indexOf('clear:readv2-finishJob') >= 0,
     JSON.stringify({ ok: ok, calls: calls, logs: logs }));
 
-  var skip = buildFrom(detect, '_skipIfCompleted', { emitRuntimeLog: function () {} });
-  if (typeof skip !== 'function') {
-    check('⑤ 取出 skip completed 判定（取不出是签名/缩进变了，不等于没有回归）', false, 'skip=' + typeof skip);
+  var leaveCalls = [];
+  var resetCalls = 0;
+  var nextClicks = 0;
+  var nextUnit = buildFrom(loop, 'nextUnit', {
+    document: { querySelector: function (sel) { return sel === '#prevNextFocusNext' ? { click: function () { nextClicks++; } } : null; } }
+  });
+  if (typeof nextUnit !== 'function') {
+    check('⑤ 取出 nextUnit（取不出是签名/缩进变了，不等于没有回归）', false, 'nextUnit=' + typeof nextUnit);
     return;
   }
-  var leaveCalls = [];
-  var nextCalls = 0;
-  var skipApp = {
-    configs: { restudy: false },
-    _quizSubmitPending: false,
-    _isCurrentCompleted: function () { return true; },
+  var nextApp = {
+    _assertActive: function () { return true; },
+    configs: { autoNext: true },
+    _isActiveMediaPending: function () { return false; },
+    _isQuizSkipWindowLive: function () { return false; },
+    _shouldHoldQuizBeforeNext: function () { return false; },
     _switchToNextLearningCard: function () { return false; },
-    _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
-    _getCurrentTitle: function () { return '最后一节'; },
-    _skipCompletedEvidence: function () { return {}; },
     _dismissPopups: function () {},
-    nextUnit: function () { nextCalls++; }
+    _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
+    _resetRuntimeState: function () { resetCalls++; }
   };
-  skip.call(skipApp);
-  check('⑤ 最后一节完成时走换课出口，不再每秒 skip completed → nextUnit 空转',
-    leaveCalls.length === 1 && leaveCalls[0] === 'skip-completed' && nextCalls === 0,
-    JSON.stringify({ leaveCalls: leaveCalls, nextCalls: nextCalls }));
+  nextUnit.call(nextApp);
+  check('⑤ 下一节点了、目录又到尽头时走换课出口；不走完复位后干等（现场最后一节的空转就是它）',
+    leaveCalls.length === 1 && leaveCalls[0] === 'next-unit' && nextClicks === 1 && resetCalls === 0,
+    JSON.stringify({ leaveCalls: leaveCalls, nextClicks: nextClicks, resetCalls: resetCalls }));
 }
 
 async function main() {
