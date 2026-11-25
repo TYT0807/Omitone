@@ -54,6 +54,18 @@
   归主会话在 CDP 9334 只读跑一发 `tools/field-logs.js --grep='content bridge ready'`，
   与 §2 #19 欠的那枚正控（"同址重载留不留 `visits` 行"）一起收。
 
+### 批次 197b · 2026-11-25 · 媒体记账满了只清最旧（#231 第 3b 档 · 定时搭档按 brief 领）
+
+- 五处 `>300` 整体复位（共 **7 本账**）改成复用 `_evictOldestKeys(map, 300)`：
+  `:548 _seekSkipLedger` / `:645 _seekSiteKeys` / `:990 _seekTriedKeys+_seekRevertedKeys+_seekDeferKeys` /
+  `:1888 _ninetyHeldBackKeys` / `:2201 _startNudgeKeys`；**`_seekRevertedKeys` 不再被连坐整本清掉**（§2 #17 的行为证据保住）。
+  助手时间键扩 `at/first/ts`，全 0 按插入序删最前；3a 的 `_mediaReloadKeys` 那一发一个字没动。
+- 集成 **793 / 793**（⑩ 那条写死的「>300 复位清单」按新行为改写、新增 ㊸），`node tools/check.js` EXIT=0。
+- 反向（隔离 worktree `rev231b`）：A 改回整体复位 → 恰好红 ⑩（总账 `1 / 793`）；B 助手连坐清 `_seekRevertedKeys`
+  → ㊷ + ㊸ + 合法邻居 ②「拖到结尾两次被弹回」共 3 条；还原后复跑红 0、marker 0 处。
+- 门面的 zip 体积数由主会话按构建改成 2.31（主 `f603982`、门面 `4ab1ddf`）。
+- **门面**：不用补（媒体记账上限是内部行为，用户可见行为未变；体积数已随构建修正）
+
 ### 批次 197 · 2026-11-25 · 媒体重载账裁到 300 条且只清最旧（#231 第 3a 档 · 定时搭档按 brief 领）
 
 - **门面**：不用补（这一笔只给一本运行期账本加上限，界面零新字样、对用户没有可感症状）
