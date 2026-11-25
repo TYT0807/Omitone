@@ -23,6 +23,14 @@ var vm = require('vm');
 
 var ROOT = path.join(__dirname, '..');
 
+function readProductConstant(src, name) {
+  var hit = src.match(new RegExp('\\b' + name + '\\s*=\\s*([\\d\\s*]+)\\s*;'));
+  if (!hit) return NaN;
+  var parts = hit[1].trim().split(/\s*\*\s*/);
+  if (!parts.every(function (part) { return /^\d+$/.test(part); })) return NaN;
+  return parts.reduce(function (value, part) { return value * Number(part); }, 1);
+}
+
 var failures = [];
 var checks = 0;
 
@@ -127,7 +135,14 @@ function createHarness(options) {
   sandbox.top = sandbox;
   sandbox.parent = sandbox;
   sandbox.frames = sandbox;
-  sandbox.console = { log: function () {}, error: function () {}, warn: function () {}, info: function () {} };
+  // ⚠️ console 不再是黑洞（队列 #213）：桥死的时候 console 是页面侧**唯一还活着的出口**
+  //   （环正是死的那个），桩把它吞掉等于把这一族唯一的证人删了。留数组、不外印，别淹了控制台。
+  sandbox.__consoleWarns = [];
+  sandbox.console = {
+    log: function () {}, info: function () {},
+    warn: function () { sandbox.__consoleWarns.push('warn ' + Array.prototype.join.call(arguments, ' ')); },
+    error: function () { sandbox.__consoleWarns.push('error ' + Array.prototype.join.call(arguments, ' ')); }
+  };
   sandbox.URL = URL;
   sandbox.setTimeout = setTimeout;
   sandbox.clearTimeout = clearTimeout;
@@ -242,6 +257,11 @@ function createHarness(options) {
   //   连日志一起拒 —— 用来钉「本地闸不许把唯一的自证据吞掉」。
   var denyWindow = null;
   var forceScopeNone = false;
+  // 队列 #213：重载扩展之后，页面里那份 content.js 是**孤儿副本** —— 它调
+  // `chrome.runtime.sendMessage` 会**同步抛出** `Extension context invalidated.`，
+  // 而不是安静地回 `{success:false}`。原先的桩永远答得上话，所以"桥死"这一族
+  // 在集成层从来没有形状（AGENTS §5「断言'绿'有两种：走到了、和根本没走到那一层」）。
+  var bridgeDead = null;
 
   function storageGet(keys, cb) {
     sandbox.__storageReads.push(keys);
@@ -264,6 +284,7 @@ function createHarness(options) {
       getURL: function (p) { return 'chrome-extension://test/' + p; },
       onMessage: { addListener: function (fn) { runtimeListener = fn; } },
       sendMessage: function (message, cb) {
+        if (bridgeDead) throw new Error(bridgeDead);
         sandbox.__runtimeMessages.push(message);
         var policy = sandbox.OmitonePolicy;
         var scope = policy && policy.isChaoxingUrl(sandbox.location.href) ? 'study' : (options.captchaAuthorized ? 'captcha' : 'none');
@@ -416,6 +437,12 @@ function createHarness(options) {
       denyWindow = { from: now + startMs, to: now + endMs };
     },
     forceScopeNone: function (on) { forceScopeNone = !!on; },
+    /** 让桥**当场死掉**：`sendMessage` 同步抛出（重载扩展后页面里那份孤儿副本的真实形状）。
+     *  传空串复活。⚠️ 它和 `forceScopeNone` 不是一回事：后者是"后台答得上来说没权限"，
+     *  前者是"根本没人接话" —— 混用的话，#213 那三格断言测的就不是死桥而是拒绝。 */
+    killBridge: function (reason) { bridgeDead = reason === undefined || reason ? (reason || 'Extension context invalidated.') : null; },
+    /** 这一页自己 console 里说出去的话（队列 #213：桥死时这是唯一还活着的出口） */
+    consoleWarns: function () { return sandbox.__consoleWarns.slice(); },
     /** 页面运行时那枚 `<script>` 此刻还挂在文档上吗（被摘 = 那份 page.js 已判死） */
     pageScriptAlive: function () {
       return !!(pageScriptTag && pageScriptTag.isConnected);
@@ -953,6 +980,336 @@ async function testErrorContractFuzz() {
     /连接不上/.test(String(dNet.error)) &&
     (hNet.sandbox.__store.config || {}).apiConnectionFailed === true,
     JSON.stringify({ error: dNet && String(dNet.error).slice(0, 60) }));
+}
+
+/**
+ * [3c0] 批次 166：失败要点名「哪家哪个模型」，而**退不退由人点**。
+ *
+ * 用户裁定（issue #2 第 3 条）：
+ *   「先做成『点名是哪一家哪个模型失败的』+『一键决定退不退』，不做全自动退到乱填」
+ *
+ * 为什么渠道只能由扩展侧说（整段断言的地基）：`libs/runtime-policy.js` 的投影里
+ * 没有 providerPreset / apiUrl / model，所以页面那份 configs **天生读不到渠道身份**。
+ * 让页面自己拼就只能猜，而猜出来的那一句会指着错的那家让用户去充值 —— 比不点名更贵。
+ * 链路因此是单向的：整份配置 → channelOf（唯一那把尺）→ 回包 who → 页面存 _quizApiLastWho → 日志与弹窗转述。
+ *
+ * ⚠️ 每段先自证"东西真取出来了"，取不出来就 return（AGENTS §5「走到了 vs 根本没走到」）。
+ */
+async function testChannelNamingAndManualRetreat() {
+  console.log('\n[3c0] 批次 166：失败点名哪家哪个模型，退不退由人点（不自动退到乱填）');
+
+  var API_ERROR = require('../libs/api-error.js');
+  var POLICY = require('../libs/runtime-policy.js');
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var popupJs = read('popup/popup.js');
+  var popupHtml = read('popup/popup.html');
+  var quizSrc = read('src/page/70-quiz-flow.js');
+  var popupQuizSrc = read('src/page/80-popup-quiz.js');
+  var stateSrc = read('src/page/10-config-state.js');
+  var contentSrc = read('content.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  // ================= ① 三张表必须逐枚相等 =================
+  var labelKeys = Object.keys(API_ERROR.CHANNEL_LABELS).sort();
+  var presetBlock = (function () {
+    var at = popupJs.indexOf('const PROVIDER_PRESETS = {');
+    var end = popupJs.indexOf('\n};', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  var presetKeys = [];
+  presetBlock.replace(/^ {2}"?([A-Za-z0-9_.-]+)"?:\s*\{/gm, function (m, k) { presetKeys.push(k); return m; });
+  presetKeys.sort();
+  var optionKeys = (function () {
+    var at = popupHtml.indexOf('<select id="providerPreset">');
+    var end = at < 0 ? -1 : popupHtml.indexOf('</select>', at);
+    if (at < 0 || end <= at) return [];
+    var out = [], re = /<option value="([^"]+)"/g, m;
+    while ((m = re.exec(popupHtml.slice(at, end)))) out.push(m[1]);
+    return out.sort();
+  })();
+  var setDiff = [];
+  if (JSON.stringify(labelKeys) !== JSON.stringify(presetKeys)) setDiff.push('CHANNEL_LABELS ⇔ PROVIDER_PRESETS');
+  if (JSON.stringify(labelKeys) !== JSON.stringify(optionKeys)) setDiff.push('CHANNEL_LABELS ⇔ popup.html option');
+
+  check('① 三张表逐枚相等（`libs/api-error.js` 的 CHANNEL_LABELS ⇔ 弹窗 PROVIDER_PRESETS ⇔ popup.html 那一排 `<option value>`）'
+    + '—— 加了一家而忘了在尺里登记，失败日志就点名成「(渠道读不出)」：用户被告知"认不出是谁家的错"，'
+    + '而真相只是我们少写一行，排查方向整个反了（这一族不报错、不留异常，只有那一句误导人）',
+    labelKeys.length >= 5 && presetBlock.length > 200 && optionKeys.length >= 5 && setDiff.length === 0,
+    JSON.stringify({ labels: labelKeys, presets: presetKeys, options: optionKeys, diff: setDiff }));
+  if (setDiff.length || labelKeys.length < 5) return;
+
+  // ================= ② 尺本体：四格各占一格，谁都不许压进谁 =================
+  var cPreset = API_ERROR.channelOf({ providerPreset: 'deepseek', apiUrl: 'https://api.deepseek.com', model: 'deepseek-chat' });
+  check('② 选过 DeepSeek 时 source 是 preset、一句话里厂牌与模型都在；两句"退路话"都不许出现'
+    + '（认得出家还写「按接入地址认」，等于把已经拿到的证据扔掉）',
+    cPreset.source === 'preset' && cPreset.vendor === 'DeepSeek' &&
+    cPreset.text.indexOf('DeepSeek') === 0 && cPreset.text.indexOf('deepseek-chat') > 0 &&
+    cPreset.text.indexOf('渠道读不出') < 0 && cPreset.text.indexOf('按接入地址认') < 0,
+    JSON.stringify(cPreset));
+
+  var cHost = API_ERROR.channelOf({ apiUrl: 'https://API.Test.com/v1', model: 'm1' });
+  var borrowedLabel = labelKeys.filter(function (k) { return cHost.text.indexOf(API_ERROR.CHANNEL_LABELS[k]) >= 0; });
+  check('② 没记录选过哪家、只有接入地址时 source 是 host，且**明写这是退回**（「按接入地址认」+ 域名小写）；'
+    + '不许冒充成 CHANNEL_LABELS 里的任何一家 —— 冒充就是凭域名编厂牌，用户会去问错那家的客服',
+    cHost.source === 'host' && cHost.vendor === 'api.test.com' &&
+    cHost.text.indexOf('按接入地址认') > 0 &&
+    cHost.text.indexOf('api.test.com') >= 0 && borrowedLabel.length === 0,
+    JSON.stringify({ cell: cHost, borrowed: borrowedLabel }));
+
+  var cStale = API_ERROR.channelOf({ providerPreset: 'minimax', apiUrl: 'https://api.minimax.test/v1', model: 'm' });
+  check('② 老存档里那个 providerPreset 指向已经删掉的一家时，落回 host 那一格，'
+    + '不许凭那串标识符凭空造出一个厂牌（弹窗那侧本来就会把它归一成 custom-openai，两边同形）',
+    cStale.source === 'host' && cStale.text.indexOf('按接入地址认') > 0,
+    JSON.stringify(cStale));
+
+  var cNone = API_ERROR.channelOf({});
+  check('② 渠道与模型双双读不出时，「(渠道读不出)」与「(模型名没填)」两格都在同一句里各说各的；'
+    + '压成空串读起来像"没有渠道这回事"，而真相是"我们没读到"（AGENTS §2 #12）',
+    cNone.source === 'none' && cNone.text.indexOf('(渠道读不出)') >= 0 &&
+    cNone.text.indexOf('(模型名没填)') >= 0, JSON.stringify(cNone));
+
+  var cProto = API_ERROR.channelOf({ apiType: 'claude' });
+  var cBogus = API_ERROR.channelOf({ apiType: 'weird-proto' });
+  check('② 认不出家时协议是唯一留着的身分线索：claude 那一发要点名「协议 claude」，'
+    + '而协议本身是野值时不许编出一句"协议 weird-proto"（把脏数据说成线索 = 替用户指错方向）',
+    cProto.text.indexOf('协议 claude') > 0 && cBogus.text.indexOf('协议') < 0,
+    JSON.stringify({ claude: cProto.text, bogus: cBogus.text }));
+
+  var junkInputs = [undefined, null, {}, '不是对象', { providerPreset: 123 }, { apiUrl: '不是网址' },
+    { apiUrl: 'file:///C:/x' }, { apiUrl: 42, model: null }];
+  var junkBad = junkInputs.filter(function (v) {
+    var t = API_ERROR.channelText(v);
+    return !(typeof t === 'string' && t.length > 0 && t.indexOf('渠道') >= 0);
+  }).length;
+  check('② channelText 对 ' + junkInputs.length + ' 种垃圾输入都交回**非空**且含「渠道」二字（含传进字符串、数字这种根本不该传的形状）'
+    + ' —— 空串进日志就是"这一发没渠道"，而它只是形状怪',
+    junkBad === 0, JSON.stringify({ 坏格数: junkBad, 样本: junkInputs.map(function (v) { return API_ERROR.channelText(v).slice(0, 40); }) }));
+
+  // ================= ③ 页面天生说不出渠道（不是口头承诺，是投影里真没有） =================
+  var pageView = POLICY.publicConfig({
+    providerPreset: 'deepseek', apiUrl: 'https://api.deepseek.com', apiType: 'openai',
+    model: 'deepseek-chat', apiKey: 'sk-should-not-leak', enableQuiz: true
+  }, 'study');
+  var leaked = ['providerPreset', 'apiUrl', 'apiType', 'model', 'apiKey'].filter(function (k) { return k in pageView; });
+  var pageNamesPreset = ['src/page/70-quiz-flow.js', 'src/page/80-popup-quiz.js'];
+  check('③ 渠道身份**只有扩展侧说得出**：整份配置过一遍投影，providerPreset / apiUrl / apiType / model / apiKey '
+    + '一格都不落到页面手里（apiKey 泄漏是另一族，见 #210），所以页面只转述、不自己算；'
+    + '静态那半：答题那两个片段里 0 处出现 providerPreset 这个键名',
+    leaked.length === 0 && pageNamesPreset.every(function (f) { return read(f).indexOf('providerPreset') < 0 }),
+    JSON.stringify({ leaked: leaked, 投影格数: Object.keys(pageView).length }));
+
+  // ================= ④ 真跑请求链：who 随回包与日志一起出去 =================
+  var questions = [{ index: 0, type: 'single', title: '题干', options: ['甲', '乙'], previousWrongAnswers: [] }];
+  var netFail = function () {
+    return { success: false, error: '后台请求失败 —— 无法把请求转发给服务商（网络不通或扩展刚被重载）' };
+  };
+
+  var hKimi = createHarness({
+    config: { providerPreset: 'kimi', apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3' },
+    apiResponder: netFail
+  });
+  hKimi.sendFromPage({ source: 'xxt_app', id: 1661, type: 'llm_request', payload: { questions: questions } });
+  var dKimi = await hKimi.waitForResponse(1661);
+  check('④ 网络失败那一发的回包带 who，且逐字等于同一把尺算出来的那一句（`channelText(整份配置)`）'
+    + ' —— 两处各写一份口径就必然漂移；这一格把「谁家的错」钉在请求链上，而不是钉在日志文本里',
+    !!dKimi && typeof dKimi.who === 'string' &&
+    dKimi.who === API_ERROR.channelText(hKimi.sandbox.__store.config) &&
+    dKimi.who.indexOf('Kimi（Moonshot）') >= 0 && dKimi.who.indexOf('kimi-k3') >= 0,
+    JSON.stringify({ who: dKimi && dKimi.who, error: dKimi && String(dKimi.error).slice(0, 40) }));
+
+  var hDeep = createHarness({ apiResponder: netFail });
+  hDeep.sendFromPage({ source: 'xxt_app', id: 1662, type: 'llm_request', payload: { questions: questions } });
+  var dDeep = await hDeep.waitForResponse(1662);
+  check('④ 换一家，who 跟着换（kimi 与默认那两发读出不一样了两句，各自含自己那家）'
+    + ' —— 证明它是**从配置算出来的**，不是 content.js 里写死的一个字符串',
+    !!dDeep && typeof dDeep.who === 'string' && dDeep.who !== dKimi.who &&
+    dDeep.who.indexOf('DeepSeek') >= 0 && dKimi.who.indexOf('DeepSeek') < 0,
+    JSON.stringify({ kimi: dKimi && dKimi.who, deep: dDeep && dDeep.who }));
+
+  var directLogs = (hKimi.sandbox.__store.runtimeLogs || []).filter(function (x) {
+    return x && x.message === 'llm_request direct failed';
+  });
+  check('④ 那句 `llm_request direct failed` 的 meta 带 who，且与回包那一格逐字相同'
+    + ' —— 现场只导得出日志、导不出回包；两边不同形就等于日志在说另一件事',
+    directLogs.length > 0 && directLogs.every(function (x) { return x.meta && x.meta.who === dKimi.who; }),
+    JSON.stringify({ 条数: directLogs.length, meta: directLogs.map(function (x) { return x.meta; }).slice(0, 2) }));
+
+  var storedErr = String((hKimi.sandbox.__store.config || {}).apiConnectionError || '');
+  check('④ 存储里 `apiConnectionError` 仍是服务商那一句人话，**没有**被渠道前缀挤掉；退避照旧写 '
+    + '—— 那格只有 300 字预算，前缀会把「原话」顶出去，而原话才是排查的唯一线索；'
+    + '所以渠道落在弹窗独立的一行，不是那句话的开头',
+    (hKimi.sandbox.__store.config || {}).apiConnectionFailed === true &&
+    storedErr.indexOf('连接不上') >= 0 && storedErr.indexOf('Kimi') < 0 &&
+    storedErr.indexOf('刚才问的是') < 0,
+    JSON.stringify({ failed: (hKimi.sandbox.__store.config || {}).apiConnectionFailed, err: storedErr.slice(0, 80) }));
+
+  // ================= ⑤ 页面侧的存与读：三格各有其话 =================
+  var logs166 = [];
+  var say166 = function (level, message, meta) { logs166.push({ level: level, message: String(message || ''), meta: meta }); };
+  var markFn = buildFrom(quizSrc, '_markQuizApiConnectionFailed', { emitRuntimeLog: say166 });
+  var whoFn = buildFrom(quizSrc, '_quizApiWhoForLog', {});
+  check('⑤ 两个方法都能从 70-quiz-flow.js 原样取出来真跑（取不出来时后面每一格都是「没执行」，'
+    + '而「没执行」和「通过」在报告里长得一模一样）',
+    typeof markFn === 'function' && typeof whoFn === 'function',
+    JSON.stringify({ mark: typeof markFn, who: typeof whoFn }));
+  if (typeof markFn !== 'function' || typeof whoFn !== 'function') return;
+
+  var app166 = {};
+  var whoText166 = 'Kimi（Moonshot） · kimi-k3';
+  markFn.call(app166, new Error('【连接不上服务商】网络不通'), whoText166);
+  var logged166 = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; })[0];
+  check('⑤ 写入带 who 时 `_quizApiLastWho` 存下那一串，且 `api connection failed, skip quiz` 的 meta.who '
+    + '**逐字等于**存下来那一格（写入口与读出口同形；只改一侧就是"存储说了 A、日志说了 B"）',
+    app166._quizApiLastWho === whoText166 && !!logged166 && logged166.meta &&
+    logged166.meta.who === app166._quizApiLastWho && logged166.meta.retryInMs > 0,
+    JSON.stringify({ stored: app166._quizApiLastWho, meta: logged166 && logged166.meta }));
+
+  var app166b = {};
+  markFn.call(app166b, 'LLM 请求失败');
+  var logged166b = logs166.filter(function (x) { return x.message === 'api connection failed, skip quiz'; }).pop();
+  check('⑤ 写入**不带** who（catch 那一支：异常在半路抛出，压根没走到服务商）→ 单独一格说清'
+    + '「这一发没带渠道」，不许留空串；空串在日志里读起来像"没有渠道这回事"，'
+    + '而真相是"请求没发出去" —— 两者的修复方向完全相反',
+    app166b._quizApiLastWho.indexOf('这一发没带渠道') >= 0 && app166b._quizApiLastWho.length > 0 &&
+    !!logged166b && logged166b.meta.who === app166b._quizApiLastWho,
+    JSON.stringify({ stored: app166b._quizApiLastWho }));
+
+  var appFresh = {};
+  var freshWho = whoFn.call(appFresh);
+  var appEmptyStr = { _quizApiLastWho: '' };
+  var emptyWho = whoFn.call(appEmptyStr);
+  check('⑤ 这一轮还没问过模型就去读，说的是「(这一轮还没问过模型，渠道没读过)」，不是空串；'
+    + '而它必须与「这一发没带渠道」那一格**内容不同** —— 同一句话会把"没问过"与"问过但没带身份"混成一件，'
+    + '那正是本轮要消掉的那种歧义',
+    freshWho.indexOf('还没问过模型') >= 0 && emptyWho === freshWho && freshWho !== app166b._quizApiLastWho &&
+    freshWho.length > 0,
+    JSON.stringify({ fresh: freshWho, 没带渠道: app166b._quizApiLastWho }));
+
+  var declAt = stateSrc.indexOf('_quizApiLastWho:');
+  var resetSkip = bodyOf(quizSrc, '_resetQuizStateForSkip');
+  var resetRuntime = bodyOf(stateSrc, '_resetRuntimeState');
+  check('⑤ 它在 10-config-state.js 有自己的声明（默认空串，与 `_quizApiLastError` 并列），'
+    + '且**不在**两处复位里被抹掉 —— 它是取证不是记账：45 秒退避一过、换了一节再看日志时，'
+    + '这一格是唯一还能说"刚才是哪一家失败"的东西（AGENTS §2 #13 那一族：跨拍才生效的账不许被自己清零）',
+    declAt > 0 && resetSkip.length > 100 && resetRuntime.length > 200 &&
+    resetSkip.indexOf('_quizApiLastWho') < 0 && resetRuntime.indexOf('_quizApiLastWho') < 0,
+    JSON.stringify({ 声明在: declAt > 0, 跳过复位长度: resetSkip.length, 复位长度: resetRuntime.length }));
+
+  // ================= ⑥ 说话点覆盖：谁说了这句话，就得带上渠道 =================
+  var speakSites = [
+    ['src/page/70-quiz-flow.js', 'api connection failed, skip quiz'],
+    ['src/page/70-quiz-flow.js', 'quiz blocked by api, holding unit'],
+    ['src/page/70-quiz-flow.js', 'quiz blocked too long, giving up unit'],
+    ['src/page/70-quiz-flow.js', 'skip quiz because api unavailable'],
+    ['src/page/80-popup-quiz.js', 'popup quiz llm parse failed, keep popup for retry'],
+    ['src/page/80-popup-quiz.js', 'popup quiz llm rejected permanently, no retry'],
+    ['src/page/80-popup-quiz.js', 'skip popup quiz because api unavailable'],
+    ['content.js', 'llm response parse failed'],
+    ['content.js', 'llm_request rejected (permanent)'],
+    ['content.js', 'llm request error'],
+    ['content.js', 'llm_request direct failed'],
+    ['content.js', 'llm_request aborted']
+  ];
+  var silentSites = [];
+  var srcCache166 = {};
+  speakSites.forEach(function (pair) {
+    var srcText = srcCache166[pair[0]] || (srcCache166[pair[0]] = read(pair[0]));
+    var at = srcText.indexOf("'" + pair[1] + "'");
+    if (at < 0) { silentSites.push(pair[1] + '（这句在当前源码里找不到）'); return; }
+    var next = srcText.indexOf('emitRuntimeLog(', at + 1);
+    var block = srcText.slice(at, next < 0 ? at + 600 : next);
+    if (!/\bwho\b/.test(block)) silentSites.push(pair[1] + '（' + pair[0] + ' 那一发没带 who）');
+  });
+  check('⑥ ' + speakSites.length + ' 个"答题用不了"的说话点**每一句**都带上渠道（按名字点名，缺哪句报哪句）'
+    + ' —— 漏掉的那一句在现场就是一句"看起来正常"的 warn；下一轮接手的人只能看到"跳过了"，'
+    + '看不到"为了什么跳过"（AGENTS §2 #22：needle 要从源码 grep 回来，不许照中文语义猜）',
+    silentSites.length === 0, JSON.stringify({ 没带渠道的: silentSites }));
+
+  // ================= ⑦ 退不退由人点：没有任何一条自动路径 =================
+  var scanList = ['src/page/00-shell-constants.js', 'src/page/10-config-state.js', 'src/page/30-log.js',
+    'src/page/70-quiz-flow.js', 'src/page/75-quiz-dom.js', 'src/page/80-popup-quiz.js',
+    'content.js', 'background.js'];
+  var randomHits = [];
+  scanList.forEach(function (f) {
+    var srcText = f.indexOf('80-popup-quiz') >= 0 ? popupQuizSrc : read(f);
+    srcText.split('\n').forEach(function (line, i) {
+      if (line.indexOf('randomAnswer') < 0) return;
+      if (/^\s*[/*]/.test(line)) return;
+      randomHits.push({ file: f, line: i + 1, text: line.trim().slice(0, 70) });
+    });
+  });
+  var autoWrites = randomHits.filter(function (h) {
+    return /randomAnswer["']?\s*[:=]\s*true/.test(h.text) || /\.randomAnswer\s*=[^=]/.test(h.text) ||
+      /randomAnswer\s*\+\+/.test(h.text);
+  });
+  check('⑦ 页面与扩展侧**没有任何一处**能把乱选打开：' + randomHits.length +
+    ' 处命中全部分是默认值 false 与读取（`configs.randomAnswer`），写 true 的那形 0 处 '
+    + '—— 「退到乱填」只能由人点；一做成自动，交卷不可逆这件事就没有人负责了（用户原话：不做全自动退到乱填）',
+    randomHits.length > 0 && autoWrites.length === 0,
+    JSON.stringify({ 命中: randomHits.length, 自动写真的: autoWrites.slice(0, 3) }));
+
+  var retreatWire = (function () {
+    var at = popupJs.indexOf('const btn = document.getElementById("apiRetreatBtn");');
+    var end = at < 0 ? -1 : popupJs.indexOf('\n})();', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  check('⑦ 那一键**只委托**给既有那枚「乱选」开关（找到节点就 `sw.click()`），'
+    + '自己不另写一份保存/回滚 —— 复制一份就出现"内存翻了、盘上没翻"那族谎话；'
+    + '找不到开关时把出口说清楚（重装 / 手动到「答题」那一栏翻），不许静默什么都不发生',
+    retreatWire.indexOf('getElementById("randomAnswer")') >= 0 &&
+    retreatWire.indexOf('sw.click()') >= 0 &&
+    retreatWire.indexOf('patchConfig(') < 0 && retreatWire.indexOf('saveToggleConfig(') < 0 &&
+    /找不到/.test(retreatWire),
+    JSON.stringify({ 片段长度: retreatWire.length, 自己保存: retreatWire.indexOf('patchConfig(') >= 0 }));
+
+  var renderBody = (function () {
+    var at = popupJs.indexOf('function renderApiConnState');
+    var end = popupJs.indexOf('\nfunction apiConfigSummary', at);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  check('⑦ 那一行「现在是不是乱选」从**存储**那份算：`Object.assign({}, DEFAULTS, config)` 之后读 `merged.randomAnswer === true`，'
+    + '不读内存里那枚开关镜像 —— 保存被拒时内存已经翻了、盘上没翻，跟着内存说就是一句谎话。'
+    + '补默认值也是必需的：新用户存储里 providerPreset 压根没写过，不补就当场读出「(渠道读不出)」'
+    + '（AGENTS §2 #23 同族，基准与竞争闸**相反**是有意为之：那个比原始字节，这个比渲染出来的值）',
+    renderBody.indexOf('Object.assign({}, DEFAULTS, config') >= 0 &&
+    renderBody.indexOf('merged.randomAnswer === true') >= 0 &&
+    renderBody.indexOf('randomAnswerVal') < 0,
+    JSON.stringify({ 长度: renderBody.length, 读内存镜像: renderBody.indexOf('randomAnswerVal') >= 0 }));
+
+  var hintBody = (function () {
+    var at = popupJs.indexOf('function renderApiRetreat');
+    var end = popupJs.indexOf('\nfunction ', at + 10);
+    return (at < 0 || end <= at) ? '' : popupJs.slice(at, end);
+  })();
+  var noGuessReal = bodyOf(quizSrc, '_isNoGuessPaper').length > 100 &&
+    quizSrc.indexOf('this._isNoGuessPaper()') >= 0;
+  check('⑦ 说明那三句真话都在（交卷不可逆 / 插件不会自己打开它 / 下限「高」那一档仍不猜、停下来等），'
+    + '而最后那句**有真判据撑着**（`_isNoGuessPaper` 存在且被答题链路调用）'
+    + ' —— 少一句就成了"以为退得掉、其实这一张卷子照样不填"，那是比不退更贵的误会',
+    hintBody.length > 200 && hintBody.indexOf('交卷不可逆') >= 0 &&
+    hintBody.indexOf('插件不会自己打开它') >= 0 && hintBody.indexOf('不猜') >= 0 &&
+    hintBody.indexOf('停下来等') >= 0 && noGuessReal,
+    JSON.stringify({ 说明长度: hintBody.length, 不猜判据: noGuessReal }));
 }
 
 /** 与 omitone-fuzz-test.cjs 同款的种子随机（两处各留一份，避免为测试建共享模块） */
@@ -1830,7 +2187,7 @@ async function testThinkingLevels() {
     ['off', 'low', 'high'].forEach(function (b) {
       var lo = THINKING.levelRank(a) <= THINKING.levelRank(b) ? a : b;
       var hi = THINKING.levelRank(a) <= THINKING.levelRank(b) ? b : a;
-      var patch = { playbackRate: 1.5, enableQuiz: true, thinkingRangeExam: lo + '-' + hi };
+      var patch = { playbackRateCap: 1.5, enableQuiz: true, thinkingRangeExam: lo + '-' + hi };
       var r = POLICY.validatePatch(patch, 'popup');
       // 反序也要收：界面永远从小到大写，但存储可能被手改，真源取小当下限 ——
       // 这里比它严就会把「真源读得懂」的串顶成 invalid_patch，而它拒的是**整张补丁**。
@@ -2867,6 +3224,9 @@ async function testQuizPaperDepthAndApiBlock() {
     ['_quizBlockedByApiAt', '_quizBlockedSinceAt', '_quizBlockedHoldLogAt', '_quizBlockedGiveUpLogAt']
       .every(function (k) { return resetBody.indexOf('this.' + k + ' = 0;') >= 0; }),
     resetBody.replace(/\s+/g, ' ').slice(0, 200));
+  check('232-E5：复位运行时**不许**抹掉交卷停滞的跨轮记账（#232 现场：stalls 轮轮回到 1，三次上限永远攒不满）',
+    !/this\._quizSubmitStall(?:Key|Count|At)\s*=/.test(resetBody),
+    resetBody.replace(/\s+/g, ' ').slice(0, 240));
 
   var stateBody = state.slice(0, state.indexOf('_resetRuntimeState: function'));
   check('四个按住时刻都在状态段声明过（没声明的字段 = 每轮 undefined，判据第一秒就误判）',
@@ -3044,6 +3404,108 @@ async function testScopeReconnectAfterPageChange() {
   var marksLine = (src.match(/marks:\s*\[[^\]]*\]/) || [''])[0];
   check('⑤content.js 的自证标记栏非空，且批次 17 / 18 两个标记都在',
     marksLine.indexOf('refill-per-question') >= 0 && marksLine.indexOf('scope-retry') >= 0, marksLine);
+
+  // ---- ⑥ 桥**真死**（重载扩展后那份孤儿副本）：console 是唯一的出口，它必须说得出为什么
+  //
+  // 现场（队列 #213，2026-11-23 夜）：`notes/field-213-bridge-dead-log.md` §二 量到四格死法
+  // （同步抛 / lastError / 20 秒超时 / 空回包）各自都带着可归因的字符串，可旧那句 `console.warn`
+  // 一个字都不带，于是四格打成同一句话；而台账把整件事记成 `scope_denied`，排查方向就此跑偏。
+  // 测试台原先的桩**永远答得上话**（`runtime_log_append` 顶多回 `{success:false}`），
+  // 所以"桥死"这一族在集成层从来没有形状 —— `killBridge` 就是为了补上这一格。
+  var b = createHarness({ url: CH1 });
+  b.startContent();
+  await waitFor(function () { return b.sandbox.__injected.length > 0; }, 3000);
+  b.killBridge('Extension context invalidated.');
+  var bridgedBefore = b.sandbox.__runtimeMessages.length;
+  b.navigateTo(CH2);
+  await waitFor(function () {
+    return b.consoleWarns().some(function (l) { return l.indexOf('runtime log unavailable') >= 0; });
+  }, 9000);
+  var deadWarns = b.consoleWarns();
+  var logWarn = deadWarns.filter(function (l) { return l.indexOf('runtime log unavailable') >= 0; })[0] || '';
+  check('⑥桥同步抛死时，console 那句带得出**原因**（旧那句只说"日志不可用"，四格死法打成一句话）',
+    logWarn.indexOf('reason=Extension context invalidated.') >= 0, logWarn.slice(0, 200));
+  check('⑥同一发还带出三态 verdict，学习通页权限过期这一格是 `unreadable`',
+    logWarn.indexOf('verdict=unreadable') >= 0, logWarn.slice(0, 200));
+  var deadTell = deadWarns.filter(function (l) { return l.indexOf('scope not granted after page change') >= 0; })[0] || '';
+  check('⑥换章节问不到时 console 另说一句，点名"问不到"而不是"被拒"（面板那句的同源证据）',
+    deadTell.indexOf('[verdict=unreadable') >= 0 && deadTell.indexOf('reason=Extension context invalidated.') >= 0,
+    deadTell.slice(0, 220));
+  // Y3 的那一格证人：这一发**本来就会被本地闸吞掉**（导航后 `scopeIsCurrent()` 已假），
+  // 它现在还能出现在 console 里，靠的是 `POLICY.isChaoxingUrl` 那半截。摘掉那半截，本格当场红。
+  check('⑥学习通页在本地权限过期时日志这一发**仍走到桥**（旧本地闸把它吞了 = 排查时一条都没有）',
+    logWarn.length > 0 && b.sandbox.__injected.length >= 1,
+    JSON.stringify({ warns: deadWarns.length, injected: b.sandbox.__injected.length }));
+  check('⑥死桥期间一条消息都没上过桥（这才是"日志不进"的成因，不是权限被后台拒了）',
+    b.sandbox.__runtimeMessages.length === bridgedBefore &&
+    (b.sandbox.__store.runtimeLogs || []).every(function (l) {
+      return String(l.message || '') !== 'scope not granted after page change';
+    }),
+    JSON.stringify({ before: bridgedBefore, after: b.sandbox.__runtimeMessages.length }));
+  check('⑥桥死不等于把页面判死：这一页的运行时尚在，只等重连',
+    b.pageScriptAlive() === true, 'alive: ' + b.pageScriptAlive());
+
+  // 「问到了但被说不」单独占一格（§2 #12 那一族，与上面 `unreadable` 必须不同形）
+  var c = createHarness({ url: CH1 });
+  c.startContent();
+  await waitFor(function () { return c.sandbox.__injected.length > 0; }, 3000);
+  c.forceScopeNone(true);
+  c.navigateTo(CH2);
+  await waitFor(function () {
+    return c.consoleWarns().some(function (l) { return l.indexOf('runtime log unavailable') >= 0; });
+  }, 9000);
+  var denyWarn = c.consoleWarns().filter(function (l) { return l.indexOf('runtime log unavailable') >= 0; })[0] || '';
+  check('⑥「后台答得上来说没权限」那一格读得出来：`reason=scope_denied` + `verdict=denied`',
+    denyWarn.indexOf('reason=scope_denied') >= 0 && denyWarn.indexOf('verdict=denied') >= 0, denyWarn.slice(0, 200));
+  var healthy = createHarness({ url: CH1 });
+  healthy.startContent();
+  await new Promise(function (r) { setTimeout(r, 300); });
+  check('⑥正常页一句"日志不可用"都不许多说（三态的第三格 `granted` 是沉默的）',
+    healthy.consoleWarns().every(function (l) { return l.indexOf('runtime log unavailable') < 0; }),
+    JSON.stringify(healthy.consoleWarns()));
+  check('⑥普通域权限过期时依旧一条都不发：放宽只给学习通，别把那道闸顺手拆掉',
+    outside.consoleWarns().every(function (l) { return l.indexOf('runtime log unavailable') < 0; }),
+    JSON.stringify(outside.sandbox.__runtimeMessages.map(function (m) { return m.type; })));
+
+  // ---- ⑦ 接线守卫：三态走的是旁路，取值契约一个字都不许多
+  var askBody = bodyOf('function noteScopeAsk(verdict, reason) {');
+  check('⑦`noteScopeAsk` 只交回 `none`：三态记在旁路上，`refreshPageScope` 的取值契约没多出第四格',
+    /return\s*'none';/.test(askBody) && (askBody.match(/return\s/g) || []).length === 1,
+    askBody.replace(/\s+/g, ' ').slice(0, 180));
+  var scopeBody = bodyOf('async function refreshPageScope() {');
+  check('⑦四格各自记名：`unreadable` / `denied` / `granted` / `stale`，一都没被压掉',
+    ['unreadable', 'denied', 'granted', 'stale'].every(function (cell) {
+      return scopeBody.indexOf("'" + cell + "'") >= 0;
+    }), scopeBody.replace(/\s+/g, ' ').slice(0, 220));
+  check('⑦`refreshPageScope` 仍只交 study / captcha / none 那一族，没把三态漏给调用点',
+    /return\s+scopeIsCurrent\(\)\s*\?\s*pageScope\s*:\s*'none'/.test(scopeBody) &&
+    /return\s+noteScopeAsk\(/.test(scopeBody), scopeBody.replace(/\s+/g, ' ').slice(-160));
+  var reasonBody = bodyOf('function askReason(response) {');
+  check('⑦取不到原因时交 `(未回原因)`，空串不许当成"原因就是空的"（读不出单独占一格）',
+    reasonBody.indexOf("'(未回原因)'") >= 0 && reasonBody.indexOf('.slice(0, 120)') >= 0,
+    reasonBody.replace(/\s+/g, ' ').slice(0, 180));
+  check('⑦console 那句的原因取自回包本身（`askReason(result)`），不是写死的一串字',
+    logGate.indexOf("'reason=' + askReason(result)") >= 0 &&
+    logGate.indexOf("'verdict=' + SCOPE_ASK.verdict") >= 0,
+    logGate.replace(/\s+/g, ' ').slice(0, 200));
+  check('⑦两处出口都把 verdict 与 reason 同时带进 meta 与 console（各两发，少一处就是半截话）',
+    (restartBody.match(/scopeAsk: SCOPE_ASK\.verdict/g) || []).length === 2 &&
+    (restartBody.match(/askError: SCOPE_ASK\.reason/g) || []).length === 2 &&
+    (restartBody.match(/announceBridgeDeath\(/g) || []).length === 2,
+    JSON.stringify({ meta: (restartBody.match(/scopeAsk:/g) || []).length, tell: (restartBody.match(/announceBridgeDeath\(/g) || []).length }));
+  check('⑦面板两处文字都按 `unreadable` 分格，且旧那句「没问到权限」「没通过」都留着',
+    (restartBody.match(/SCOPE_ASK\.verdict === 'unreadable'/g) || []).length === 2 &&
+    restartBody.indexOf('连不上扩展（刚重载过扩展就是这样）') >= 0 &&
+    restartBody.indexOf('多次问不到扩展') >= 0 &&
+    restartBody.indexOf('切换章节后没问到权限') >= 0 &&
+    restartBody.indexOf('多次询问权限都没通过') >= 0,
+    restartBody.replace(/\s+/g, ' ').slice(0, 200));
+  var announceBody = bodyOf('function announceBridgeDeath(message, verdict, why) {');
+  check('⑦console 那一句不复述 `href`（那里躺着选课 id，日志是要导出给人看的）',
+    announceBody.length > 0 && announceBody.indexOf('href') < 0 && announceBody.indexOf('[verdict=') >= 0,
+    announceBody.replace(/\s+/g, ' ').slice(0, 180));
+  check('⑦自证标记栏带上本轮那一枚 `bridge-reason-193`（缺标记 = 磁盘改了页面没加载，批次 17 的坑）',
+    marksLine.indexOf('bridge-reason-193') >= 0, marksLine);
 }
 
 // ---------------------------------------------------------------------------
@@ -3604,17 +4066,65 @@ async function testDisplacedStudyPageRescue() {
     var varsBlock = (varsAt >= 0 && varsEnd > varsAt)
       ? bg.slice(varsAt, varsEnd + 'Object.create(null);'.length) : '';
     var fPrune = topFnText(bg, 'pruneTabStudyMemory');
+    var fPruneCore = topFnText(bg, 'pruneStudyMemory');
     var fNote = topFnText(bg, 'noteTabStudyUrl');
     var fVerdict = topFnText(bg, 'studyRescueVerdict');
-    if (!varsBlock || !fPrune || !fNote || !fVerdict) return;
+    if (!varsBlock || !fPrune || !fPruneCore || !fNote || !fVerdict) return;
     try {
-      harness = new Function('Date', 'return (function () {\n' + varsBlock + '\n' + fPrune + '\n' + fNote + '\n' + fVerdict +
+      // 批次 134：`noteTabStudyUrl` 现在写完内存还要落一次盘，这里给一个空壳 ——
+      // 落盘那条链在下面的 membox 里用**真函数**跑（㉖㉗㉘），别在这里假装有覆盖。
+      harness = new Function('Date', 'return (function () {\n' + varsBlock +
+        '\nfunction persistTabStudyMemory() {}\n' + fPruneCore + '\n' + fPrune + '\n' + fNote + '\n' + fVerdict +
         '\nreturn { note: noteTabStudyUrl, verdict: studyRescueVerdict,' +
         ' mem: function () { return tabStudyMemory; },' +
         ' reset: function () { tabStudyMemory = Object.create(null); } };\n})()')(
         { now: function () { return fakeNow; } });
     } catch (eBuild) { harness = null; }
   })();
+
+  // ── 批次 134：整条持久化链都用**盘上真函数**跑，一次 build = 一整个 SW 生命周期 ──────
+  // 为什么非要自己造一个盒子：#176 的根因就是「账只活在内存里，而 MV3 的 SW 会被回收」。
+  // 用假对象替掉 `persistTabStudyMemory` 就只能证明"它被调用了"，证明不了"下一轮醒来还在" ——
+  // 而只有后者才是那个死循环的解药。`sessions` 在两次 build 之间共享，正相当于
+  // `chrome.storage.session`：跨 SW 休眠活着、跨浏览器重启死掉。
+  var memFns = ['pruneStudyMemory', 'mergeStudyMemory', 'studyMemoryThen', 'hydrateStudyMemoryNow',
+    'hydrateStudyMemory', 'persistStudyMemoryNow', 'persistTabStudyMemory', 'readTabStudyMemory',
+    'studyMemoryOutcome', 'queueTabStudyNote'];
+  var memText = memFns.map(function (n) { return topFnText(bg, n); });
+  var keyM = bg.match(/var STUDY_MEMORY_KEY = '([^']+)'/);
+  var MEM_KEY = keyM ? keyM[1] : null;
+  var memBroken = !MEM_KEY || memText.some(function (t) { return !t; });
+  var memLog = { sets: [], areas: [] };
+  /** @param over.storageGet 可以换成一条会挂的读，用来量「问不到存储」那一格 */
+  var buildMemBox = function (sessions, over) {
+    var o = over || {};
+    var varsAt = bg.indexOf('var STUDY_URL_RE');
+    var varsEnd = bg.indexOf('Object.create(null);', varsAt);
+    var varsBlock = (varsAt >= 0 && varsEnd > varsAt) ? bg.slice(varsAt, varsEnd + 'Object.create(null);'.length) : '';
+    var prelude = varsBlock + '\nvar STUDY_MEMORY_KEY = ' + JSON.stringify(MEM_KEY) +
+      ';\nvar studyMemoryLoaded = false;\nvar studyMemoryQueue = Promise.resolve();\n' + memText.join('\n') +
+      '\nfunction pruneTabStudyMemory() { tabStudyMemory = pruneStudyMemory(tabStudyMemory, STUDY_MEMORY_MAX); }\n' +
+      topFnText(bg, 'noteTabStudyUrl') + '\n' + topFnText(bg, 'studyRescueVerdict') +
+      '\nreturn { note: noteTabStudyUrl, queue: queueTabStudyNote, merge: mergeStudyMemory,' +
+      ' read: readTabStudyMemory, verdict: studyRescueVerdict, outcome: studyMemoryOutcome,' +
+      ' mem: function () { return tabStudyMemory; }, loaded: function () { return studyMemoryLoaded; } };';
+    return new Function('Date', 'storageGet', 'storageSet', 'return (function () {\n' + prelude + '\n})()')(
+      { now: function () { return fakeNow; } },
+      o.storageGet || function (area, key) {
+        memLog.areas.push(area);
+        var out = {};
+        out[key] = sessions[area] && sessions[area][key];
+        return Promise.resolve(out);
+      },
+      o.storageSet || function (area, patch) {
+        memLog.areas.push(area);
+        memLog.sets.push({ area: area, keys: Object.keys(patch), snap: JSON.parse(JSON.stringify(patch)) });
+        if (!sessions[area]) sessions[area] = {};
+        Object.keys(patch).forEach(function (k) { sessions[area][k] = patch[k]; });
+        return Promise.resolve();
+      });
+  };
+  var settle = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
 
   // 三个地板住在 00 那片（同一个 IIFE 作用域），被单独取出来跑时看不见，只能按名字注进去；
   // 生产里改了名而测试还注旧名，ReferenceError 会当场响，不会静默当成没回归。
@@ -3644,11 +4154,11 @@ async function testDisplacedStudyPageRescue() {
     Date: { now: function () { return askNow; } }
   }, floors));
 
-  check('①′ 四件套都能从盘上取出来真跑，三个地板也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+  check('①′ 四件套都能从盘上取出来真跑，三个地板也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）；批次 134 起持久化那一族七个函数与那个存储键也各要各取出来，缺一个 ㉖㉗㉘ 就是空转',
     !!harness && typeof plan === 'function' && typeof speak === 'function' && typeof ask === 'function' &&
-    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH,
+    PENDING > 0 && FRESH > PENDING && SILENCE > FRESH && memBroken === false,
     'harness=' + !!harness + ' plan=' + typeof plan + ' speak=' + typeof speak + ' ask=' + typeof ask +
-      ' floors=' + JSON.stringify([PENDING, FRESH, SILENCE]));
+      ' floors=' + JSON.stringify([PENDING, FRESH, SILENCE]) + ' memBroken=' + memBroken + ' memKey=' + MEM_KEY);
   if (!harness || typeof plan !== 'function' || typeof speak !== 'function' || typeof ask !== 'function') return;
   if (!(PENDING > 0 && FRESH > PENDING && SILENCE > FRESH)) return;
   var verdict = harness.verdict;
@@ -3981,6 +4491,212 @@ async function testDisplacedStudyPageRescue() {
     routeBand.indexOf('invalid_payload') >= 0 && routeBand.indexOf('t.id !== selfTab.id') >= 0 &&
     routeBand.indexOf('STUDY_URL_RE.test(') >= 0,
     JSON.stringify({ contentMs: msC && msC[1], pageMs: pMs && pMs[1], routeAt: routeAt }));
+
+  // ── 批次 134（会话任务 #176）：这本账要扛得住 SW 被回收 ─────────────────────────
+  // 现场那份 200 条日志里被推到用户中心的那一枚停了 105 分钟（`emptyForMs` 6,166,238 → 6,310,000），
+  // 而 MV3 的 service worker 闲几十秒就回收 —— 旧实现把账只写在内存，于是每一轮醒来都是「全新账号」：
+  //   ① `never-study` → 页面判成「这页不是插件带来的」，每份页面只说一次 → 再也没人送它回去；
+  //   ② `rescues` 归零 → 「回去→被顶→再回去」的上限**永远数不满** → 死循环。
+  // 这两条都在下面真跑：`buildMemBox` 换一次盒子 = SW 被回收又起来一次，`sessions` 跨盒子共享。
+  var loopSess = {};
+  fakeNow = N;
+  var boxA = buildMemBox(loopSess);
+  boxA.queue(41, STUDY_URL);
+  await settle();
+  var setsAfterFirstNote = memLog.sets.length;
+  var areasUsed = memLog.areas.slice();
+  fakeNow = N + 8000;
+  var boxB = buildMemBox(loopSess);                       // SW 睡了又醒：内存账是空的
+  var memEmptyBefore = Object.keys(boxB.mem()).length;   // ⚠️ 必须在记这一笔之前取，否则合并完就量不到「本来就空」
+  boxB.queue(41, PORTAL_URL);                             // 被站点顶到用户中心
+  await settle();
+  var woke = await boxB.read(41);
+  var wokeVerdict = boxB.outcome(boxB.verdict(woke.memory, 0, N + 20000), woke.known);
+  check('㉖ 账落在 chrome.storage.session：SW 被回收又醒来时，那一枚"刚才在刷课"的账还在（内存空着也能从存储补回来），回去的靶地址与被顶走的时刻都读得回来 —— 不再一醒来就说「这页不是插件带来的」。⚠️ 走的是事件那条 queue 而不是裸 note：不先补账，"被顶走"那一发读不到旧账、压根不落 awayAt',
+    setsAfterFirstNote >= 1 && memLog.sets[0].keys.indexOf(MEM_KEY) >= 0 &&
+    areasUsed.every(function (a) { return a === 'session'; }) &&
+    memEmptyBefore === 0 && woke.known === true && !!woke.memory &&
+    woke.memory.studyHref === STUDY_URL && woke.memory.awayAt === N + 8000 &&
+    wokeVerdict.reason === 'go-back' && wokeVerdict.mayRescue === true && wokeVerdict.wasStudy === true &&
+    wokeVerdict.awayMs === 12000,
+    JSON.stringify({ sets: setsAfterFirstNote, areas: areasUsed, emptyBefore: memEmptyBefore, known: woke.known, mem: woke.memory, verdict: wokeVerdict }));
+
+  // 上限要跨休眠也还在涨：这是「重载有界」真正承重的那一格
+  var sessLoop = {};
+  fakeNow = N;
+  var boot = buildMemBox(sessLoop);
+  boot.queue(51, STUDY_URL);
+  await settle();
+  var seq = [];
+  var navTotal = 0;
+  var tLoop = N;
+  for (var ci = 0; ci < 3; ci += 1) {
+    tLoop += 30000;
+    fakeNow = tLoop;
+    var cycBox = buildMemBox(sessLoop);            // 每一次被顶都换一整个 SW 生命周期
+    cycBox.queue(51, PORTAL_URL);
+    await settle();
+    var rd = await cycBox.read(51);
+    var vd = cycBox.outcome(cycBox.verdict(rd.memory, 0, tLoop), rd.known);
+    seq.push({ reason: vd.reason, rescues: vd.rescues, may: vd.mayRescue });
+    var stLoop = runSpeak(mkCtx(), cacheOf({
+      reason: vd.reason, mayRescue: vd.mayRescue, studyHref: vd.studyHref,
+      studyAgeMs: vd.studyAgeMs, awayMs: vd.awayMs, otherStudyTabs: vd.otherStudyTabs, rescues: vd.rescues
+    }), tLoop);
+    navTotal += stLoop.navs.length;
+    if (vd.mayRescue === true) {
+      tLoop += 20000;                              // 回去路上花的十几秒
+      fakeNow = tLoop;
+      cycBox.queue(51, vd.studyHref);              // 同一枚标签页内导航回来
+      await settle();
+    }
+  }
+  check('㉗ 「回去→被顶→再回去」的上限跨 SW 休眠也算数：三次被顶的格子是 go-back / go-back / rescue-cap（第三格才交给人的），整场最多只导航 CAP 次 —— 旧实现每一轮醒来都从 0 数起，那就是那个死循环',
+    seq.length === 3 && seq[0].reason === 'go-back' && seq[0].rescues === 0 &&
+    seq[1].reason === 'go-back' && seq[1].rescues === 1 &&
+    seq[2].reason === 'rescue-cap' && seq[2].may === false && seq[2].rescues === CAP &&
+    navTotal === CAP,
+    JSON.stringify({ seq: seq, navTotal: navTotal, cap: CAP }));
+
+  var deadGet = function () { return Promise.reject(new Error('存储问不到')); };
+  var boxDead = buildMemBox({}, { storageGet: deadGet });
+  var deadRead = await boxDead.read(77);
+  var deadVerdict = boxDead.outcome(boxDead.verdict(deadRead.memory, 0, N), deadRead.known);
+  var deadCache = cacheOf({
+    reason: deadVerdict.reason, mayRescue: deadVerdict.mayRescue,
+    otherStudyTabs: deadVerdict.otherStudyTabs, studyAgeMs: deadVerdict.studyAgeMs
+  });
+  var deadPlan = plan(deadCache, N, '__没说过过的另一种说法__', 0);
+  var rDead = runSpeak(mkCtx(), deadCache, N);
+  var heldVerdict = boxDead.outcome(boxDead.verdict(mkMem(), 0, N), false);
+  check('㉘ 存储问不到 = **「读不出」单独占一格**，不许塌进 never-study：后台交回 memory-unreadable，页面落进 unknown（不是 not-ours）、一次都不导航、返回 false 把话交回老那句（⑮ 钉过 not-ours 每份页面只说一次，塌进那一格就是永久闭嘴）；反面：账上已经有证据时"这一发问不到"不许盖掉它',
+    deadRead.known === false && deadRead.memory === null &&
+    deadVerdict.reason === 'memory-unreadable' && deadVerdict.mayRescue === false &&
+    deadPlan === 'unknown' && rDead.ret === false && rDead.navs.length === 0 && rDead.logs.length === 0 &&
+    heldVerdict.reason === 'go-back' && heldVerdict.mayRescue === true,
+    JSON.stringify({ read: deadRead, verdict: deadVerdict, planAct: deadPlan, spoke: { ret: rDead.ret, navs: rDead.navs.length, logs: rDead.logs.length }, held: heldVerdict }));
+
+  var persistTxt = memText[memFns.indexOf('persistTabStudyMemory')];
+  var persistNowTxt = memText[memFns.indexOf('persistStudyMemoryNow')];
+  var hydrateNowTxt = memText[memFns.indexOf('hydrateStudyMemoryNow')];
+  // 「写之前先补账」这一道闸要**取得到才许算数**：只比 indexOf 的大小，把整句删掉会让
+  // -1 < 正数 照样成立（§5「不会失败的检查等于没有检查」）。
+  var gateAt = persistTxt.indexOf('hydrateStudyMemoryNow');
+  var writeAt = persistTxt.indexOf('persistStudyMemoryNow');
+  var setsBeforeBlind = memLog.sets.length;
+  var boxBlind = buildMemBox(loopSess, { storageGet: deadGet });   // 账补不上，却又进来一次导航
+  boxBlind.queue(41, STUDY_URL + '&back=9');
+  await settle();
+  var mA = boxA.merge({ 5: { studyHref: STUDY_URL, studyAt: N, awayAt: 0, rescues: CAP } },
+    { 5: { studyHref: STUDY_URL, studyAt: N - 1000, awayAt: 0, rescues: 0 } }, 8);
+  var mB = boxA.merge({ 5: { studyHref: STUDY_URL, studyAt: N - 1000, awayAt: 0, rescues: CAP } },
+    { 5: { studyHref: STUDY_URL, studyAt: N, awayAt: 0, rescues: 0 } }, 8);
+  var mDirty = boxA.merge({
+    a: null, b: '字符串', c: { studyHref: 42, studyAt: 5 }, d: { studyHref: STUDY_URL, studyAt: 'abc' },
+    e: { studyHref: '', studyAt: 5 }, f: { studyHref: STUDY_URL, studyAt: 0 }, g: { studyHref: STUDY_URL, studyAt: 5 }
+  }, {}, 8);
+  var mMany = {};
+  for (var mj = 0; mj < MEM_MAX + 6; mj += 1) mMany['t' + mj] = { studyHref: STUDY_URL, studyAt: N + mj * 1000 };
+  var mCap = boxA.merge(mMany, {}, MEM_MAX);
+  check('㉙ 落盘的四条卫生：① 补不上账时**这一发干脆不写**（一写就把睡过去之前那本整抹掉，比不持久化更坏）；② 合并按「谁新听谁」而不是「谁后到听谁」（旧账覆盖新账会把 rescues 打回 0，同一族第二号死法）；③ 脏形状一律丢掉（脏 studyHref 会被拼成一条假导航地址）；④ 读与写都只碰 session 不碰 local（把刷课地址写进磁盘档案既过期又涉隐私），且写之前先过补账那一道闸',
+    memLog.sets.length === setsBeforeBlind &&
+    mA[5].rescues === CAP && mB[5].rescues === 0 &&
+    Object.keys(mDirty).length === 1 && !!mDirty.g &&
+    Object.keys(mCap).length === MEM_MAX && !!mCap['t' + (MEM_MAX + 5)] && !mCap.t0 &&
+    persistNowTxt.indexOf("storageSet('session'") >= 0 && persistNowTxt.indexOf("'local'") < 0 &&
+    hydrateNowTxt.indexOf("storageGet('session'") >= 0 && hydrateNowTxt.indexOf("'local'") < 0 &&
+    gateAt >= 0 && writeAt > gateAt,
+    JSON.stringify({ setsDelta: memLog.sets.length - setsBeforeBlind, mA: mA[5], mB: mB[5], dirty: Object.keys(mDirty), capped: Object.keys(mCap).length, gateAt: gateAt, writeAt: writeAt }));
+
+  // ── 批次 158：每 60 秒那次刷新**不许**把已经答对的那一份抹成空白 ──────────────
+  // 现场实测（1.3.1 预览版，用户中心那一枚，2026-11-21，只读）：后台明确答 `never-study`
+  // （这页压根不是插件带来的，插件也按这一格只说过一次「不催你回章节页」），可 `tab-cache-probe` 同时读回
+  // `plan:"silent"` 与地板那句 `study idle declined` 的年龄 `idleDeclineLogAge:"11s"` ——
+  // 两句同时成立只有一种解释：刷新把答案抹成了「还在问」，于是每 120 秒又把「请手动回到章节页」说回去。
+  // 这一族不报错、不留异常，只有用户那句"我有一科一直没刷"会留下来（AGENTS §2 #12）。
+  var stCarry = { _withTimeout: function (p, ms) { askMs.push(ms); return p; } };
+  var baseSends = sends.length;
+  askAnswer = { success: true, reason: 'never-study', mayRescue: false, studyHref: '', studyAgeMs: 7200000, awayMs: 0, otherStudyTabs: 1, rescues: 0 };
+  askNow = N;
+  ask.call(stCarry, N);
+  await flushMicro();
+  var answeredOnce = Object.assign({}, stCarry._studyTabStateCache);
+  // 刷新窗口内（后台这一发还没回话）：借旧答案继续说话，而不是退回「还在问」
+  askAnswer = null;
+  var refreshAt = N + FRESH + 2000;
+  askNow = refreshAt;
+  ask.call(stCarry, refreshAt);
+  var gapCache = Object.assign({}, stCarry._studyTabStateCache);
+  var sentRefresh = sends.length - baseSends;   // 首发 + 刷新那一发 = 2（多一发就是刷新窗口里重复敲）
+  // ⚠️ 借答案之后「在问」这一格仍然是真，地板那把尺若还要求 `!answered`，这 8 秒里每一拍（2 秒）
+  //    都会再敲一次后台 —— 批次 37/51 那族"自己造轮询"换了个入口进来。
+  askNow = refreshAt + 2000;
+  ask.call(stCarry, refreshAt + 2000);
+  askNow = refreshAt + 4000;
+  ask.call(stCarry, refreshAt + 4000);
+  var sentInGap = sends.length - baseSends;     // 与上面相等才叫"地板挡住了"；多一发就是每拍重敲
+  // 「每份页面只说一次」要**先说过一次**才谈不重播：同一个 ctx 连着走两拍，
+  // 第一拍说（否则用户不知道我们看见了他开的页），刷新窗口里那一拍不许再说（这一发就是现场那句重播）。
+  var stGap = mkCtx();
+  var rFirst = runSpeak(stGap, answeredOnce, N);
+  var rGap = runSpeak(stGap, gapCache, refreshAt + 1000);
+  var planGap = plan(gapCache, refreshAt + 1000, 'not-ours', N);
+  // 桥一直不回话：借期只有一个刷新窗口，超出就必须退回「还在问」= 老地板重新有声音（§2 #16(c)）
+  askNow = refreshAt + PENDING + 1000;
+  var borrowEnd = askNow;
+  ask.call(stCarry, borrowEnd);
+  var expiredCache = Object.assign({}, stCarry._studyTabStateCache);
+  var sentExpired = sends.length - baseSends;
+  var rExpired = runSpeak(mkCtx(), expiredCache, borrowEnd);
+  var planExpired = plan(expiredCache, borrowEnd, 'not-ours', N);
+  // 「答过、但那条没用」（ok 假）那一格不许借 —— 借过去就等于把「读不出」洗成「有结论」
+  var stUseless = { _withTimeout: function (p, ms) { return p; } };
+  askAnswer = null;
+  askNow = N;
+  ask.call(stUseless, N);
+  await flushMicro();
+  var uselessAnswered = Object.assign({}, stUseless._studyTabStateCache);
+  askAnswer = { success: true, reason: 'never-study', mayRescue: false, studyHref: '', studyAgeMs: 7200000, awayMs: 0, otherStudyTabs: 1, rescues: 0 };
+  askNow = N + FRESH + 1000;
+  ask.call(stUseless, N + FRESH + 1000);
+  var uselessGap = Object.assign({}, stUseless._studyTabStateCache);
+  var rUselessGap = runSpeak(mkCtx(), uselessGap, N + FRESH + 1000);
+  // 借来的那一份要能在日志里认出来（现场只看 reason 分不开"刚问到的"与"60 秒前那份"）
+  var carriedAnother = Object.assign(cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2 }), { carried: true, at: N });
+  var rCarried = runSpeak(mkCtx(), carriedAnother, N + FRESH + SILENCE + 1000);
+  var plainCache = cacheOf({ reason: 'another-study-tab', otherStudyTabs: 2 });
+  var rPlain = runSpeak(mkCtx(), plainCache, N);
+  var carriedMeta = rCarried.logs[0] && rCarried.logs[0].meta;
+  var plainMeta = rPlain.logs[0] && rPlain.logs[0].meta;
+  check('㉚ 刷新只敲门、不清账：① 后台明确答过「这页不是插件带来的」时，60 秒刷新那几秒里判据仍是 silent（每份页面只说一次），地板那句「请手动回到章节页」不许重播；' +
+    '② 借期只有一个刷新窗口（新鲜地板 + 待问地板），桥真死了就退回「还在问」= 老地板照旧有声音，不许把借来的答案变成永久静音；' +
+    '③ 只借**可用**的答案（ok 假那份不许借，否则「读不出」被洗成「有结论」）；④ 借的时候字段逐个保住（reason/mayRescue/枚数/靶地址），' +
+    '把「另一枚占着」借成「能自己回去」就是把那一门顶下线（§2 #15）；⑤ 借答案时「在问」仍是真，待问地板照旧挡住，一刷新就每拍重敲 = 自己造轮询；' +
+    '⑥ 借来的答案在日志里认得出来（carried 与答案年龄两格都要从缓存读回来，不是测试自己拍的常量）',
+    answeredOnce.ok === true && answeredOnce.reason === 'never-study' && sentRefresh === 2 &&
+    gapCache.carried === true && gapCache.answered === true && gapCache.ok === true &&
+    gapCache.reason === 'never-study' && gapCache.otherStudyTabs === 1 && gapCache.mayRescue === false &&
+    gapCache.studyAgeMs === 7200000 && gapCache.at === N && gapCache.pendingAt === refreshAt &&
+    planGap === 'silent' &&
+    rFirst.logs.length === 1 && /not our page/.test(rFirst.logs[0].message) &&
+    rGap.ret === true && rGap.logs.length === 0 && rGap.navs.length === 0 &&
+    sentInGap === sentRefresh &&
+    expiredCache.carried === false && expiredCache.answered === false && expiredCache.ok === false &&
+    expiredCache.pendingAt === borrowEnd &&
+    planExpired === 'asking' && rExpired.ret === false && rExpired.logs.length === 0 && sentExpired === 3 &&
+    uselessAnswered.ok === false && uselessGap.carried === false && uselessGap.answered === false &&
+    uselessGap.ok === false && uselessGap.reason === '' && rUselessGap.ret === false &&
+    carriedMeta && carriedMeta.carried === true &&
+    carriedMeta.answerAgeMs === (N + FRESH + SILENCE + 1000) - N &&
+    plainMeta && plainMeta.carried === false && plainMeta.answerAgeMs === 0,
+    JSON.stringify({
+      sent: [sentRefresh, sentInGap, sentExpired], gap: gapCache, planGap: planGap,
+      gapSpoke: { ret: rGap.ret, logs: rGap.logs.length },
+      expired: { carried: expiredCache.carried, answered: expiredCache.answered, plan: planExpired, ret: rExpired.ret },
+      uselessGap: { carried: uselessGap.carried, ok: uselessGap.ok, ret: rUselessGap.ret },
+      carriedMeta: { carried: carriedMeta && carriedMeta.carried, age: carriedMeta && carriedMeta.answerAgeMs },
+      plainMeta: { carried: plainMeta && plainMeta.carried, age: plainMeta && plainMeta.answerAgeMs }
+    }));
 }
 
 /** ---- [22] 批次 95：可拖区间还服务不了目标时，不许把一次性机会花在它身上 ---- */
@@ -3992,10 +4708,16 @@ async function testSeekDeferUntilSeekable() {
   };
   var media = read('src/page/40-media.js');
 
+  // ⚠️ `async` 必须一起认：`_detectMaxPlaybackRate` 声明成 `async function`，只锚 `name + ': function'`
+  //   对它取不出本体，于是 ㉝ 那根**静态接线尺**量的是空串 —— 看着像"生产里没这一句"，
+  //   真相是这一段从来没看见那一句（AGENTS §5「红 0 条的第一嫌疑人是根本没跑到」，本轮实测撞过）。
   var boundsOf = function (src, name) {
     var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
     if (at < 0) return { start: -1, end: -1 };
-    var start = src.indexOf('function', at);
+    var fnAt = src.indexOf('function', at);
+    // 切本体时把 `async ` 一起带走：只从 `function` 起重建出来的是普通函数，而体里有 `await` —— 当场 SyntaxError
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
     var end = src.indexOf('\n    },', start);
     return { start: start, end: end };
   };
@@ -4023,22 +4745,64 @@ async function testSeekDeferUntilSeekable() {
   var inj = { emitRuntimeLog: say, Date: FakeDate };
 
   var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 会话任务 #231 第 1 档：`_getMediaSeekKey` 现在经兄弟方法 `_mediaStablePath` 把签名查询串切掉。
+  // `buildFrom` 只取**单个**方法体，假 app 少挂这一件就是 TypeError → 整段一条断言都不跑，
+  // 而「没执行」在报告里和「通过」长得一模一样（AGENTS §5「红 0 条的第一嫌疑人是根本没跑到」）。
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
+  // 只为「不经假 app、裸算一把钥匙」那几处准备的 `this`：生产里兄弟方法恒在 app 上，测试台得自己补
+  var keyCtx = { _mediaStablePath: stablePath };
   var covers = buildFrom(media, '_seekableCovers', {});
   var defer = buildFrom(media, '_deferSeekUntilSeekable', inj);
   var trySeek = buildFrom(media, '_trySeekToEnd', inj);
+  var quarantineTtl = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantine = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: quarantineTtl });
   var noteSkip = buildFrom(media, '_noteSeekSkip', inj);
   var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
+  // 站点「完成条件」标语那四件（任务 #193）—— `_siteSaysNoDrag` 经 `this._siteSeekCondition`
+  // 再经 `this._readSiteSeekCondition`，三件都得挂上 app，缺任何一件就是 TypeError 而不是红
+  var condNoDrag = buildFrom(media, '_siteConditionNoDrag', {});
+  var readCond = buildFrom(media, '_readSiteSeekCondition', {});
+  var siteCond = buildFrom(media, '_siteSeekCondition', inj);
+  var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
+  // 批次 173 / #199：课程级那一格（免拖 ≠ 免倍速，两格各记各的）。九件都要能取出来真跑 ——
+  // 取不出来时后面每一条都是「没执行」，而「没执行」在报告里和「通过」长得一模一样（AGENTS §5）。
+  var guardId = buildFrom(media, '_courseGuardId', {});
+  var guardCell = buildFrom(media, '_courseGuardCell', inj);
+  var guardPersist = buildFrom(media, '_persistCourseGuard', inj);
+  var guardHit = buildFrom(media, '_courseGuardHit', inj);
+  var guardNote = buildFrom(media, '_noteCourseGuard', inj);
+  var guardClear = buildFrom(media, '_clearCourseGuard', inj);
+  var guardSay = buildFrom(media, '_sayCourseGuard', inj);
+  var guardRateSkip = buildFrom(media, '_noteCourseGuardRateSkipped', inj);
+  var guardSource = buildFrom(media, '_seekNoDragSource', inj);
+  // 「这条路被放弃了」那一句现在也吃课程账（倍速那一侧），所以它得和上面几件一起取出来 ——
+  // 取不出来时 ㉛ 新增的那两格会当场抛出来把整段打死（AGENTS §5「红 0 条的第一嫌疑人是没跑到」）。
+  var noteHeld22 = buildFrom(media, '_noteNinetyHeldBack', inj);
+  // NEED / TTL / 存储键三枚常数从源码读回来，测试里一份都不许写死（生产改了数而断言照旧跑 = 假绿）
+  var guardNeed = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
+  var guardTtl = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
+  var guardLedgerKey = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
 
   // 两个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言还按旧数跑 = 假绿）
   var deferBody = bodyOf(media, '_deferSeekUntilSeekable');
   var windowMs = firstNum(deferBody, /Date\.now\(\) \+ (\d+)/);
   var capTries = firstNum(deferBody, /st\.tries >= (\d+)/);
+  // 标语缓存的 TTL 也从源码读，别在这里写死 30000
+  var siteBody = bodyOf(media, '_siteSeekCondition');
+  var condTtlMs = firstNum(siteBody, /now - \(hit\.at \|\| 0\) < (\d+)/);
 
-  check('① 六件都能从 40-media.js 原样取出来真跑，两个预算也读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
-    [getKey, covers, defer, trySeek, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
-    windowMs > 0 && capTries > 1,
-    JSON.stringify({ key: typeof getKey, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, windowMs: windowMs, capTries: capTries }));
-  if (!trySeek || !covers || !defer || !isNinety || !noteSkip) return;
+  check('① 六件、钥匙归一那件与隔离谓词都能从 40-media.js 原样取出来真跑，标语那四件、课程格那九件与「这条路被放弃了」那一句也取得出来，两个预算、标语 TTL 与课程的 NEED／TTL／存储键都读得回来（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    [getKey, covers, defer, trySeek, quarantine, noteSkip, isNinety].every(function (f) { return typeof f === 'function'; }) &&
+    typeof stablePath === 'function' &&
+    quarantineTtl > 0 &&
+    [condNoDrag, readCond, siteCond, siteNoDrag].every(function (f) { return typeof f === 'function'; }) &&
+    [guardId, guardCell, guardPersist, guardHit, guardNote, guardClear, guardSay, guardRateSkip, guardSource].every(function (f) { return typeof f === 'function'; }) &&
+    typeof noteHeld22 === 'function' &&
+    windowMs > 0 && capTries > 1 && condTtlMs > 0 &&
+    guardNeed > 0 && guardTtl > 0 && guardLedgerKey.length > 0,
+    JSON.stringify({ key: typeof getKey, stable: typeof stablePath, covers: typeof covers, defer: typeof defer, seek: typeof trySeek, note: typeof noteSkip, ninety: typeof isNinety, cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'), guard: [typeof guardId, typeof guardCell, typeof guardPersist, typeof guardHit, typeof guardNote, typeof guardClear, typeof guardSay, typeof guardRateSkip, typeof guardSource].join('/'), held: typeof noteHeld22, windowMs: windowMs, capTries: capTries, condTtlMs: condTtlMs, guardNeed: guardNeed, guardTtl: guardTtl, guardKey: guardLedgerKey }));
+  if (!trySeek || !quarantine || !covers || !defer || !isNinety || !noteSkip || !readCond || !siteCond || !siteNoDrag || !noteHeld22 || !stablePath || !getKey ||
+    !guardId || !guardCell || !guardPersist || !guardHit || !guardNote || !guardClear || !guardSay || !guardRateSkip || !guardSource) return;
 
   function mkRanges(list) {
     return {
@@ -4071,26 +4835,59 @@ async function testSeekDeferUntilSeekable() {
     v.seekable = mkRanges(opt.ranges || []);
     return v;
   }
-  function mkApp() {
+  // shape.store：换页那一格用同一份存储重建一枚 app（账要活着）；shape.noCourse：认不出是哪门课；
+  // shape.course：故意换一门课（旧课的账不许带进新课）。
+  function mkApp(shape) {
+    shape = shape || {};
     var delays = [];
+    var store = shape.store || {};
     var app = {
       configs: { enableSeek: true },
       _rateProbing: false,
       _captchaActive: false,
       _activeJobId: '',
+      _mediaQuarantine: new WeakMap(),
+      _mediaReloadKeys: Object.create(null),
+      _isMediaQuarantined: quarantine,
       _workerDelay: function (fn) { delays.push(fn); },
       _isRateLockedAtOne: function () { return true; },
       _getMediaSeekKey: getKey,
+      _mediaStablePath: stablePath,
       _seekableCovers: covers,
       _deferSeekUntilSeekable: defer,
       _trySeekToEnd: trySeek,
       _noteSeekSkip: noteSkip,
-      _isNinetyPercentVideo: isNinety
+      _isNinetyPercentVideo: isNinety,
+      _siteConditionNoDrag: condNoDrag,
+      _readSiteSeekCondition: readCond,
+      _siteSeekCondition: siteCond,
+      _siteSaysNoDrag: siteNoDrag,
+      // ㉛ 新增的两格要真跑 `_noteNinetyHeldBack`，它中间问一句「平台标记完成没有」——
+      // 这一族钉的是**证据来源**，平台标记那一格由 [30] ⑥⑧ 各自钉，这里钉成"成立"就好。
+      _isDocumentFrameFinished: function () { return true; },
+      _COURSE_GUARD_NEED: guardNeed,
+      _COURSE_GUARD_TTL_MS: guardTtl,
+      _COURSE_GUARD_KEY: guardLedgerKey,
+      _readSessionLedger: function (k) { return store[k] ? JSON.parse(store[k]) : null; },
+      _writeSessionLedger: function (k, v) { store[k] = JSON.stringify(v); },
+      _courseGuardId: guardId,
+      _courseGuardCell: guardCell,
+      _persistCourseGuard: guardPersist,
+      _courseGuardHit: guardHit,
+      _noteCourseGuard: guardNote,
+      _clearCourseGuard: guardClear,
+      _sayCourseGuard: guardSay,
+      _noteCourseGuardRateSkipped: guardRateSkip,
+      _seekNoDragSource: guardSource
     };
-    return { app: app, delays: delays };
+    if (!shape.noCourse) {
+      var cid = shape.course || 'COURSE_A';
+      app._currentStudyParams = function () { return { courseid: cid, clazzid: shape.clazz || 'CLASS_A' }; };
+    }
+    return { app: app, delays: delays, store: store };
   }
   var seekTo = function (app, v, reason) { return app._trySeekToEnd(v, reason); };
-  var keyOf = function (v) { return getKey.call({}, v); };
+  var keyOf = function (v) { return getKey.call(keyCtx, v); };
 
   var DUR = 1401.4;
   var TARGET = DUR - 3;
@@ -4245,11 +5042,11 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ keys: keys13.length, a: L13[k13] || null, b: L13[k13b] || null }));
 
   // ---- ⑭ 出口清单与接线一一对应（§2 #18 那一族：新增一格忘了接线，什么都不红，只在现场少说一句话）----
-  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end'];
+  var exits14 = ['disabled', 'probing', 'captcha', 'no-key', 'no-meta', 'near-end', 'site-no-drag', 'course-no-drag'];
   var body14 = bodyOf(media, '_trySeekToEnd');
   var calls14 = (body14.match(/this\._noteSeekSkip\(/g) || []).length;
   var wired14 = exits14.filter(function (r) { return body14.indexOf("_noteSeekSkip('" + r + "'") >= 0; });
-  check('⑭ 「不试拖」六格出口全部接上账，且方法体里恰好六处调用（多一格没进清单、少一格没接线，都在这条上红）',
+  check('⑭ 「不试拖」八格出口全部接上账，且方法体里恰好八处调用（多一格没进清单、少一格没接线，都在这条上红）',
     wired14.length === exits14.length && calls14 === exits14.length,
     JSON.stringify({ need: exits14.length, wired: wired14, calls: calls14 }));
 
@@ -4282,6 +5079,995 @@ async function testSeekDeferUntilSeekable() {
     !!hintMsgs[0].meta && String(hintMsgs[0].meta.ids) === 'ext_a,ext_b' &&
     Number(hintMsgs[0].meta.count) === 3 && String(hintMsgs[0].level) === 'warn',
     JSON.stringify(hintMsgs));
+
+  // ---- ⑱–㉔ 站点自己写的「完成条件」标语（会话任务 #193）----
+  // 假 DOM 的形状按 2026-11-20 现场只读实测搭：`<video>` 在播放器文档（`ananas/modules/video/index.html`）里，
+  // 标语 `span.task-condition-text` 写在**上一层** cards 文档的那张任务卡里，而卡片 contains 的是
+  // **承载播放器的那枚 iframe**（`contains` 不跨文档，拿 video 去比恒 false → 每一枚标语都会被判成"不是这一节的"）。
+  var NO_DRAG_TEXT = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+  var FREE_TEXT = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+  var L_FORBID = [[], [{ text: NO_DRAG_TEXT, owns: true }]];
+  // opt.levels：从内到外每一层的标语数组（默认两层 = 播放器 + cards）；opt.throwsAt = 第几层一读就抛
+  function mkBannerVideo(opt) {
+    opt = opt || {};
+    var stat = { scans: 0 };
+    var card = { contains: function (n) { return !!n && n.__card === card; } };
+    var docs = (opt.levels || [[], []]).map(function (list, i) {
+      var d = {};
+      d.querySelectorAll = function (sel) {
+        stat.scans++;
+        if (opt.throwsAt === i) throw new Error('这一层读不下去');
+        return sel === '.task-condition-text' ? list.map(function (c) {
+          return { textContent: c.text, closest: function () { return c.owns ? card : null; } };
+        }) : [];
+      };
+      return d;
+    });
+    for (var i = 0; i < docs.length; i++) {
+      // 最外层那枚的 `defaultView.frameElement` 恒为 null（那就是顶层帧）—— 爬到它还没标语才算 absent
+      docs[i].defaultView = docs[i + 1] ? { frameElement: { __card: card, ownerDocument: docs[i + 1] } } : null;
+    }
+    var v = mkVideo({
+      duration: opt.duration || DUR,
+      ranges: opt.ranges || [[0, DUR]],
+      current: opt.current == null ? 600 : opt.current
+    });
+    v.currentSrc = 'https://ananas.chaoxing.com/video/' + (opt.src || 'banner') + '.mp4';
+    if (!opt.noDoc) v.ownerDocument = docs[0];
+    return { video: v, stat: stat, docs: docs };
+  }
+  var readApp = { _siteConditionNoDrag: condNoDrag };
+
+  var st18 = {
+    forbid: readCond.call(readApp, mkBannerVideo({ levels: L_FORBID }).video),
+    free: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
+    mix: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT, owns: true }, { text: FREE_TEXT, owns: true }]] }).video),
+    empty: readCond.call(readApp, mkBannerVideo({ levels: [[], [], []] }).video),
+    notOurs: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT }, { text: NO_DRAG_TEXT }]] }).video),
+    oldShape: readCond.call(readApp, mkBannerVideo({ levels: [[], [{ text: NO_DRAG_TEXT }]] }).video),
+    sameDoc: readCond.call(readApp, mkBannerVideo({ levels: [[{ text: NO_DRAG_TEXT }]] }).video),
+    noDoc: readCond.call(readApp, mkBannerVideo({ noDoc: true }).video),
+    throws: readCond.call(readApp, mkBannerVideo({ levels: L_FORBID, throwsAt: 1 }).video)
+  };
+  check('⑱ 标语口径五格分得开、每格交得出自己的读数：卡片里那句带「不可拖拽」= forbidden（hop1、marks1、text 是站点原话），'
+    + '同位置没有那三个字 = silent，两枚意见不一致 = ambiguous，爬到顶层一枚都没找到 = absent（hop2 说明真爬到头了），'
+    + '某一层一读就抛 = unreadable（不猜）；另三格是形状边界：两枚标语都不属于这一节**不许**当成 forbidden、'
+    + '只有一枚时卡片认不出来照旧用它（老形状）、标语就在播放器自己那一层也要读到（hop0）；'
+    + '压根没有文档上下文 = absent 且 marks 交 -1 —— 「数到 0 枚」与「压根没文档」是两件事',
+    st18.forbid.state === 'forbidden' && st18.forbid.hop === 1 && st18.forbid.marks === 1 &&
+    String(st18.forbid.text).indexOf('不可拖拽') >= 0 &&
+    st18.free.state === 'silent' && st18.mix.state === 'ambiguous' &&
+    st18.empty.state === 'absent' && st18.empty.hop === 2 &&
+    st18.notOurs.state === 'ambiguous' && st18.oldShape.state === 'forbidden' &&
+    st18.sameDoc.state === 'forbidden' && st18.sameDoc.hop === 0 &&
+    st18.throws.state === 'unreadable' &&
+    st18.noDoc.state === 'absent' && st18.noDoc.marks === -1,
+    JSON.stringify(st18));
+
+  // ⑱b 站点那句由两个**独立开关**现拼：fastforward 决定「不可拖拽」在不在、switchwindow 决定「不可离开…」在不在
+  //     （真源 src/page/40-media.js:427-430 的注释）。夹具原先只把后半句写在 NO_DRAG_TEXT 里 ——
+  //     silent 那一格**压根不含「不可离开」**，于是"把后半句也认成禁令"这类改法一步都不会红（会话任务 #198）。
+  check('⑱b 站点的两个开关各管半句：`fastforward` 决定「不可拖拽」在不在、`switchwindow` 决定「不可离开…」在不在 —— '
+    + '夹具自证钉住两串文本**只差前一半**（FREE_TEXT 带「不可离开」且不带「不可拖拽」、NO_DRAG_TEXT 两半都带），'
+    + '行为钉住后半句**不算**拖拽禁令的证据（silent），两枚意见不一致照旧 ambiguous',
+    String(FREE_TEXT).indexOf('不可离开') >= 0 && String(FREE_TEXT).indexOf('不可拖拽') < 0 &&
+    String(NO_DRAG_TEXT).indexOf('不可拖拽') >= 0 && String(NO_DRAG_TEXT).indexOf('不可离开') >= 0 &&
+    st18.free.state === 'silent' && st18.mix.state === 'ambiguous',
+    JSON.stringify({ freeText: FREE_TEXT, forbidText: NO_DRAG_TEXT, free: st18.free.state, mix: st18.mix.state }));
+
+  // ⑲ 站点说了不可拖拽 → 一整下发都不许写，而且不许花掉那次"试拖"的机会
+  logs.length = 0;
+  var a19 = mkApp(), b19 = mkBannerVideo({ src: 'gate-forbid', levels: L_FORBID });
+  var v19 = b19.video, k19 = keyOf(v19);
+  var r19 = seekTo(a19.app, v19, 'loadedmetadata');
+  var led19 = (a19.app._seekSkipLedger || {})[k19];
+  var condLogs19 = logs.filter(function (l) {
+    return String(l.message || '').indexOf('site condition says not draggable') === 0;
+  });
+  check('⑲ 站点自己写了「不可拖拽」：`_trySeekToEnd` 当场退回、一次 `currentTime` 都不写，'
+    + '而且**不登记 `_seekTriedKeys`**（那一格的意思是"我们真写过一次"，在这里花掉就等于下一轮卡片换成允许拖也不再试）、'
+    + '更**不写 `_seekRevertedKeys`**（标语只许减少动手，替站点宣布"防拖拽"就是拿别人的话给自己作证，AGENTS §2 #17），'
+    + '账本记 `site-no-drag`，并出一句 info **照抄站点那句话**（`reason` 留空 = 不是我们判的）',
+    r19 === false && v19.__rec.writes.length === 0 &&
+    !(a19.app._seekTriedKeys && a19.app._seekTriedKeys[k19]) &&
+    !(a19.app._seekRevertedKeys && a19.app._seekRevertedKeys[k19]) &&
+    !!led19 && led19.last === 'site-no-drag' && led19.n === 1 &&
+    condLogs19.length === 1 && condLogs19[0].level === 'info' &&
+    String(condLogs19[0].meta.condition).indexOf('不可拖拽') >= 0 &&
+    condLogs19[0].meta.hop === 1 && condLogs19[0].meta.marks === 1 &&
+    condLogs19[0].meta.reason === '',
+    JSON.stringify({ ret: r19, writes: v19.__rec.writes.length, tried: !!(a19.app._seekTriedKeys || {})[k19], reverted: !!(a19.app._seekRevertedKeys || {})[k19], led: led19, logs: condLogs19 }));
+
+  // ⑳ 其余四格 + 无上下文那一格：一律照旧拖一次，而且一句"站点说不可拖"都不许说
+  logs.length = 0;
+  var a20 = mkApp();
+  var cases20 = [
+    ['silent', mkBannerVideo({ src: 'c-silent', levels: [[], [{ text: FREE_TEXT, owns: true }]] })],
+    ['ambiguous', mkBannerVideo({ src: 'c-mix', levels: [[], [{ text: NO_DRAG_TEXT, owns: true }, { text: FREE_TEXT, owns: true }]] })],
+    ['absent', mkBannerVideo({ src: 'c-empty', levels: [[], [], []] })],
+    ['not-ours', mkBannerVideo({ src: 'c-notours', levels: [[], [{ text: NO_DRAG_TEXT }, { text: NO_DRAG_TEXT }]] })],
+    ['unreadable', mkBannerVideo({ src: 'c-throw', levels: L_FORBID, throwsAt: 1 })],
+    ['no-doc', mkBannerVideo({ src: 'c-nodoc', noDoc: true })]
+  ];
+  var gone20 = {};
+  cases20.forEach(function (c) {
+    var v = c[1].video, k = keyOf(v);
+    seekTo(a20.app, v, 'itest-193');
+    var L = (a20.app._seekSkipLedger || {})[k];
+    gone20[c[0]] = { writes: v.__rec.writes.length, tried: !!(a20.app._seekTriedKeys || {})[k], ledLast: L ? L.last : '(无)' };
+  });
+  var noisy20 = logs.filter(function (l) {
+    return String(l.message || '').indexOf('site condition says not draggable') === 0;
+  });
+  check('⑳ 「读不出 / 没读到 / 不属于这一节 / 意见不一致」这四格（外加没有文档上下文那一格）一律照旧试拖一次：'
+    + '写进 `currentTime`、一次性机会照旧花掉，而且**一句"站点说不可拖拽"都不许出** —— '
+    + '把"没证据"实现成"站点不让拖"就是拿缺数据放行（AGENTS §2 #12/#17），'
+    + '把"没证据"实现成当场下结论同样是 §2 #14 那一族',
+    Object.keys(gone20).length === 6 &&
+    Object.keys(gone20).every(function (n) {
+      return gone20[n].writes >= 1 && gone20[n].tried === true && gone20[n].ledLast !== 'site-no-drag';
+    }) && noisy20.length === 0,
+    JSON.stringify({ cells: gone20, noisy: noisy20.map(function (l) { return l.message; }) }));
+
+  // ㉑ 缓存：主循环每 1500 毫秒就进来问一次，爬文档不许变成热路径
+  var a21 = mkApp(), b21 = mkBannerVideo({ src: 'c-cache', levels: L_FORBID });
+  var scan1 = (siteNoDrag.call(a21.app, b21.video), b21.stat.scans);
+  siteNoDrag.call(a21.app, b21.video);
+  siteNoDrag.call(a21.app, b21.video);
+  var scan2 = b21.stat.scans;
+  nowMs += 3600000;                                  // 一小时后再问：forbidden 长期有效
+  siteNoDrag.call(a21.app, b21.video);
+  var scan3 = b21.stat.scans;
+  var b21other = mkBannerVideo({ src: 'c-cache-2', levels: L_FORBID });
+  siteNoDrag.call(a21.app, b21other.video);
+  var scanOther = b21other.stat.scans;               // 换一枚另开一格，不许吃上一枚的结论
+  check('㉑ 同一支媒体只爬一次文档：第二、第三次问都复用缓存（每 1500 毫秒一拍，全页扫会把这一族变成热路径）；'
+    + '`forbidden` 过了 TTL 也照旧复用（站点给这一支的字段不会自己变），'
+    + '但换一枚（不同 src）必须另问一次 —— 两把钥匙并成一格就是拿上一节的结论替这一节说话',
+    scan1 > 0 && scan2 === scan1 && scan3 === scan1 && scanOther === scan1,
+    JSON.stringify({ first: scan1, repeat: scan2, hourLater: scan3, otherMedia: scanOther }));
+
+  // ㉒ 非 forbidden 那几格过 TTL 要重问（卡片晚半拍才长出来是常态）
+  var a22 = mkApp(), b22 = mkBannerVideo({ src: 'c-ttl', levels: [[], [{ text: FREE_TEXT, owns: true }]] });
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl1 = b22.stat.scans;
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl2 = b22.stat.scans;
+  nowMs += condTtlMs + 1;
+  siteNoDrag.call(a22.app, b22.video);
+  var ttl3 = b22.stat.scans;
+  check('㉒ 「没证据」那一格 TTL（' + condTtlMs + ' 毫秒，从源码读回来，别抄成字面量）一过要重新问一次 —— '
+    + '标语是站点 JS 现拼的，卡片晚半拍才长出来是常态；一次读不出就永久当成"这一支没有标语"，'
+    + '等于把这一支唯一那条省流量的捷径悄悄关掉，而且一条日志都不留',
+    ttl2 === ttl1 && ttl1 > 0 && ttl3 === ttl1 * 2,
+    JSON.stringify({ ttlMs: condTtlMs, first: ttl1, within: ttl2, afterTtl: ttl3 }));
+
+  // ㉓ 「看到 90% 就收」的第二条证据来源：站点说了不可拖拽，不必先白拖一次
+  // ⚠️ 三格各用**一枚新的 app**：批次 173 起，读到 `forbidden` 那一手会顺手把课程格记上，
+  //   共用一本账时后两格读到的是第一格留下的课程证据 —— 那不是"这一支自己的标语"，是串了格。
+  var a23f = mkApp(), a23g = mkApp(), a23h = mkApp();
+  var n23 = {
+    forbid: isNinety.call(a23f.app, mkBannerVideo({ src: 'c-ninety', levels: L_FORBID }).video),
+    free: isNinety.call(a23g.app, mkBannerVideo({ src: 'c-ninety-free', levels: [[], [{ text: FREE_TEXT, owns: true }]] }).video),
+    none: isNinety.call(a23h.app, mkBannerVideo({ src: 'c-ninety-none', noDoc: true }).video)
+  };
+  var reverted23 = [a23f.app, a23g.app, a23h.app].reduce(function (n, app) {
+    return n + Object.keys(app._seekRevertedKeys || {}).length;
+  }, 0);
+  var guardSeen23 = [a23f.app, a23g.app, a23h.app].map(function (app) {
+    return String((app._courseGuard && app._courseGuard.cell && app._courseGuard.cell.seek && app._courseGuard.cell.seek.n) || 0);
+  }).join('/');
+  check('㉓ 「看到 90% 就收」现在有两处**独立**证据：弹回过（旧那把尺）或站点自己写了不可拖拽 —— 后者不必先白拖一次'
+    + '（死键那一族：`enableSeek` 关着就永远拿不到弹回证据）；反面两格照旧 false：'
+    + '标语没写那三个字、压根读不到文档，都不算证据（两格都不许替用户宣布"这一支拖不动"）。'
+    + '而三枚 app 的课程格要各归各：只有第一枚攒到证据，后两枚必须是 0'
+    + '（"另一枚说了"推不出"这一枚也说了" —— 课程账只在同一枚 app 内跨媒体，不许跨夹具串）',
+    n23.forbid === true && n23.free === false && n23.none === false && reverted23 === 0
+      && guardSeen23 === '1/0/0',
+    JSON.stringify({ cells: n23, reverted: reverted23, guardSeekN: guardSeen23 }));
+
+  // ㉔ 跨轮的记账不许被"换章节 / 换一门"的复位抹掉（批次 86 那一族）
+  var stateSrc = read('src/page/10-config-state.js');
+  var resetBody = bodyOf(stateSrc, '_resetRuntimeState');
+  var wiped24 = ['_seekTriedKeys', '_seekRevertedKeys', '_seekSiteKeys', '_seekSkipLedger', '_seekDeferKeys', '_courseGuard']
+    .filter(function (n) { return resetBody.indexOf(n) >= 0; });
+  check('㉔ 六本拖拽账（含批次 173 新加的课程格）都不在 `_resetRuntimeState` 里：它们是**跨拍累积**才生效的（复位一次就把"这一支已经试过了"忘掉，'
+    + '下一拍又去拽一遍，正是批次 86 那一族"看起来在勤快地跑、其实永远数不到阈值"）',
+    resetBody.length > 200 && wiped24.length === 0,
+    JSON.stringify({ resetLen: resetBody.length, wiped: wiped24 }));
+
+  // ==================== ㉕–㉜ 课程级那一格（批次 173 / issue #199）====================
+  // 现场要省的那一发是「真往播放器上写」：同一门课里已经认出来一次，后面每一枚就别再试。
+  // 三条硬边界各有独立承重的格子：**只许减少动手**＝㉚、**不许当许可**＝㉛＋㉖ 的另一格、
+  // **不许伪造读数**＝㉝ 的静态接线格；身份认不出单独占一格＝㉕（AGENTS §2 #12）。
+  var COURSE_ID = 'COURSE_A|CLASS_A';
+  var SAY_SEEK = 'course says not draggable, stop trying to seek to end';
+  var SAY_SPEED = 'course says rate locked at 1x, stop probing player speed';
+  var onlySay = function (list, msg) {
+    return list.filter(function (m) { return String(m.message) === msg; });
+  };
+
+  // ㉕ 认不出是哪门课 ⇒ 恒不命中（照旧每枚各试一次）+ 单独说一句话，且这一族一个字都不写进存储
+  logs.length = 0;
+  var a25 = mkApp({ noCourse: true });
+  var hit25 = [guardHit.call(a25.app, 'seek'), guardHit.call(a25.app, 'speed')];
+  var note25 = guardNote.call(a25.app, 'seek', 'reverted');
+  var warns25 = logs.filter(function (m) { return String(m.message).indexOf('course guard off') === 0; });
+  guardHit.call(a25.app, 'seek'); guardHit.call(a25.app, 'speed'); guardHit.call(a25.app, 'seek');
+  check('㉕ 认不出课程号（courseid／clazzid 都读不到）那一格单独占：两格恒 false、证据记不上、存储一个字节都不写，'
+    + '但要说一句「课程级免拖免倍速不启用」且每小时只说一次（绝不许塌成「已经免掉了」——那是替用户宣布可以乱动）',
+    guardId.call(a25.app) === '' && hit25[0] === false && hit25[1] === false && note25 === false &&
+    warns25.length === 1 && String(warns25[0].level) === 'warn' &&
+    Object.keys(a25.store).length === 0 && !(a25.app._courseGuard || {}).cell,
+    JSON.stringify({ id: guardId.call(a25.app), hit: hit25, note: note25, warns: warns25.length, stored: Object.keys(a25.store).length }));
+
+  // ㉖ 记满 NEED（从源码读回来）才命中；**免拖 ≠ 免倍速**，两格各算各的；TTL 一过重新允许试一枚
+  logs.length = 0;
+  var a26 = mkApp();
+  var before26 = [guardHit.call(a26.app, 'seek'), guardHit.call(a26.app, 'speed')];
+  var noted26 = guardNote.call(a26.app, 'seek', 'reverted');
+  var seek26 = guardHit.call(a26.app, 'seek');
+  var speed26 = guardHit.call(a26.app, 'speed');
+  var says26 = onlySay(logs, SAY_SEEK).length + onlySay(logs, SAY_SPEED).length;
+  var keep26 = nowMs; nowMs += guardTtl + 1;
+  var expired26 = [guardHit.call(a26.app, 'seek'), guardHit.call(a26.app, 'speed')];
+  nowMs = keep26;
+  check('㉖ 没记过两格都 false；记一笔 seek（NEED=' + guardNeed + '，从源码读回来）只有 seek 命中，'
+    + 'speed 照旧不命中（「这一门课拖不动」推不出「这一门课锁 1x」，同一门课别枚说的也不是这一枚）；'
+    + '攒满那一格只喊一句话；TTL（' + guardTtl + ' 毫秒，同样从源码读回来）一过两格都回到 false —— 少动手不等于永不试',
+    guardId.call(a26.app) === COURSE_ID && before26[0] === false && before26[1] === false &&
+    noted26 === true && seek26 === true && speed26 === false && says26 === 1 &&
+    expired26[0] === false && expired26[1] === false,
+    JSON.stringify({ id: guardId.call(a26.app), before: before26, seek: seek26, speed: speed26, says: says26, afterTtl: expired26 }));
+
+  // ㉗ 拿到反证（这一门课其实拖得动）要当场撤销，且「喊过没有」那本账一起归零 —— 下次再攒满还得再喊
+  logs.length = 0;
+  var a27 = mkApp();
+  guardNote.call(a27.app, 'seek', 'reverted');
+  var cleared27 = guardClear.call(a27.app, 'seek', 'drag-ok');
+  var hit27 = guardHit.call(a27.app, 'seek');
+  var clearEmpty27 = guardClear.call(a27.app, 'seek', 'drag-ok');
+  guardNote.call(a27.app, 'seek', 'reverted');
+  var says27 = onlySay(logs, SAY_SEEK);
+  var cell27 = ((a27.app._courseGuard || {}).cell || {}).seek || {};
+  check('㉗ 真拖成功 = 正面证据 ⇒ 当场撤销（n 归零、命中回到 false、没账时撤销本身返回 false），'
+    + '来源历史留着（谁攒到的、被谁撤掉的都要读得回来）；撤销后 said 那本账归零，再攒满要能**再喊一次**'
+    + '（喊过就不说 = 第二枚起现场又变哑）',
+    cleared27 === true && hit27 === false && clearEmpty27 === false &&
+    says27.length === 2 && Number(cell27.n) === 1 &&
+    String((cell27.srcs || []).join(',')) === 'reverted,clear:drag-ok',
+    JSON.stringify({ cleared: cleared27, hit: hit27, clearEmpty: clearEmpty27, says: says27.length, n: cell27.n, srcs: (cell27.srcs || []).join(',') }));
+
+  // ㉘ 存储：**整份**写回（只写改过那一格 = 把另一格抹掉）＋ 跨页存活 ＋ 换课不带旧账（AGENTS §2 #25）
+  logs.length = 0;
+  var a28 = mkApp();
+  guardNote.call(a28.app, 'seek', 'reverted');
+  guardNote.call(a28.app, 'speed', 'measured-1x');
+  var raw28 = a28.store[guardLedgerKey] ? JSON.parse(a28.store[guardLedgerKey]) : null;
+  var a28b = mkApp({ store: a28.store });
+  var reloaded28 = [guardHit.call(a28b.app, 'seek'), guardHit.call(a28b.app, 'speed')];
+  var a28c = mkApp({ store: a28.store, course: 'COURSE_B' });
+  var other28 = [guardHit.call(a28c.app, 'seek'), guardHit.call(a28c.app, 'speed')];
+  check('㉘ 写存储的是**整份** {course,seek,speed,ttl}：第二笔记进去时第一格还在（不补账就盖 = 拿内存里的空账删掉盘上的旧账）；'
+    + '换页（内存账是空的、存储同一枚）两格都读得回来；换一门课两格都读不到（旧课的账不许带进新课）',
+    !!raw28 && raw28.course === COURSE_ID && Number((raw28.seek || {}).n) === 1 && Number((raw28.speed || {}).n) === 1 &&
+    Number(raw28.ttl) === guardTtl && reloaded28[0] === true && reloaded28[1] === true &&
+    other28[0] === false && other28[1] === false,
+    JSON.stringify({ raw: raw28 && { c: raw28.course, s: raw28.seek && raw28.seek.n, p: raw28.speed && raw28.speed.n, t: raw28.ttl }, reloaded: reloaded28, other: other28 }));
+
+  // ㉙ 「这一枚为什么不再试拖」三条来源各占一格，顺序＝行为证据 → 声明证据 → 课程策略（压成两态就归错因）
+  var a29 = mkApp();
+  var v29 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k29 = keyOf(v29);
+  var s29none = guardSource.call(a29.app, v29);
+  a29.app._seekRevertedKeys = {}; a29.app._seekRevertedKeys[k29] = true;
+  guardNote.call(a29.app, 'seek', 'reverted');
+  var s29rev = guardSource.call(a29.app, v29);
+  delete a29.app._seekRevertedKeys[k29];
+  var s29course = guardSource.call(a29.app, v29);
+  var s29novideo = guardSource.call(a29.app, null);
+  var v29b = mkBannerVideo({ src: 'c-banner-29', levels: L_FORBID }).video;
+  var s29banner = guardSource.call(mkApp().app, v29b);
+  check('㉙ `_seekNoDragSource` 四格分得开：无证据交空串、弹回过＝reverted（同一枚既弹回又有课程账时点名**行为**那一条，'
+    + '别把最硬的那条让给策略）、只有课程账＝course、站点写了不可拖拽＝banner；没有元素时只剩课程那一格可读',
+    s29none === '' && s29rev === 'reverted' && s29course === 'course' && s29novideo === 'course' && s29banner === 'banner',
+    JSON.stringify({ none: s29none, reverted: s29rev, course: s29course, noVideo: s29novideo, banner: s29banner }));
+
+  // ㉚ 只许减少动手：命中课程格那一拍，进度条一个字节都不写、一次性机会不花，但要落进 skip 账并说话
+  var a30 = mkApp();
+  guardNote.call(a30.app, 'seek', 'reverted');
+  var v30 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k30 = keyOf(v30);
+  logs.length = 0;
+  var r30 = seekTo(a30.app, v30, 'guard');
+  var s30 = a30.app._seekSkipLedger && a30.app._seekSkipLedger[k30];
+  var a30b = mkApp();
+  var v30b = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k30b = keyOf(v30b);
+  logs.length = 0;
+  seekTo(a30b.app, v30b, 'guard');
+  var writes30b = v30b.__rec.writes.length;
+  check('㉚ 命中课程格 = 这一拍**一个字节都不写**（currentTime 没被碰）、一次性机会不花掉（tried 不登记）、更不替站点宣布弹回（reverted 不写），'
+    + '但按这一支的钥匙落进 skip 账（reason 点名 course-no-drag）且出一句话；反面格：没有课程账的同一形状照旧真拖一次',
+    r30 === false && v30.__rec.writes.length === 0 && !a30.app._seekTriedKeys[k30] &&
+    !(a30.app._seekRevertedKeys || {})[k30] &&
+    !!s30 && s30.last === 'course-no-drag' && s30.reasons['course-no-drag'] === 1 && logs.length > 0 &&
+    writes30b === 1,
+    JSON.stringify({ ret: r30, writes: v30.__rec.writes.length, tried: !!(a30.app._seekTriedKeys || {})[k30],
+      reverted: !!(a30.app._seekRevertedKeys || {})[k30], skip: s30 || null, logs: logs.length, writesNoGuard: writes30b }));
+
+  // ㉛ 「看到 90% 就收」的倍速前提现在也认课程格，而两格各管各的（只有倍速账 → 仍不收）
+  var a31 = mkApp();
+  a31.app._isRateLockedAtOne = function () { return false; };  // 前提钉住：这一枚自己没量到 1x
+  var v31 = mkVideo({ duration: DUR, ranges: [[0, DUR]] }), k31 = keyOf(v31);
+  var n31none = isNinety.call(a31.app, v31);
+  guardNote.call(a31.app, 'speed', 'measured-1x');
+  var n31speedOnly = isNinety.call(a31.app, v31);
+  guardNote.call(a31.app, 'seek', 'reverted');
+  var n31both = isNinety.call(a31.app, v31);
+  var n31seekOnlyApp = mkApp();
+  n31seekOnlyApp.app._isRateLockedAtOne = function () { return false; };
+  guardNote.call(n31seekOnlyApp.app, 'seek', 'reverted');
+  var n31seekOnly = isNinety.call(n31seekOnlyApp.app, mkVideo({ duration: DUR, ranges: [[0, DUR]] }));
+  // 同一问法要落到「这条路被放弃了」那一句上：倍速那一侧只有课程账时这句话仍要说得出口，
+  // 只有拖账（倍速没证据）时一声不出 —— 少了这两格，`_noteNinetyHeldBack` 里那一问就没有证人。
+  var v31c = mkVideo({ duration: DUR, current: Math.round(DUR * 0.93), ranges: [[0, DUR]] });
+  var held31speed = noteHeld22.call(a31.app, v31c);
+  var v31d = mkVideo({ duration: DUR, current: Math.round(DUR * 0.93), ranges: [[0, DUR]] });
+  var held31seekOnly = noteHeld22.call(n31seekOnlyApp.app, v31d);
+  check('㉛ 提前收尾要「倍速锁 1x」+「拖不动」两条都有证据：课程格可以分别顶上这两处（同一门课别枚量到的），'
+    + '但**两格不许互相顶** —— 只有倍速账、拖那一侧三条证据都没有 → false；只有拖账、倍速那条没证据 → 照旧 false；'
+    + '而「这条路被放弃了」那一句同样认课程账（只有倍速账时说得出口，只有拖账时一声不出）',
+    n31none === false && n31speedOnly === false && n31both === true && n31seekOnly === false &&
+    !((n31seekOnlyApp.app._courseGuard || {}).cell || {}).speed &&
+    held31speed === true && held31seekOnly === false,
+    JSON.stringify({ none: n31none, speedOnly: n31speedOnly, both: n31both, seekOnly: n31seekOnly,
+      heldSpeed: held31speed, heldSeekOnly: held31seekOnly }));
+
+  // ㉜ 因为课程格而没问倍速的那一枚：每门课每格只说一次，且**不许**抢「问不出」那句
+  // ⚠️ 「有账」那一格用**换页后的第二枚 app**（同一本存储、新的内存）：
+  //   在刚记上账的那枚 app 上问，`said.speed` 已被 `_noteCourseGuard` 自己喊掉了，
+  //   那一格量到的是「说过就不再说是纪律」，而不是「换一枚媒体还说不说得出这句」—— 现场要的是后者。
+  logs.length = 0;
+  var a32 = mkApp();
+  var hit32none = guardHit.call(a32.app, 'speed');           // 生产里先问这一句（`_detectMaxPlaybackRate` 那一发）
+  var said32none = guardRateSkip.call(a32.app);
+  var logsAfterNone = logs.length;
+  var h32 = mkApp();
+  guardNote.call(h32.app, 'speed', 'measured-1x');
+  var p32 = mkApp({ store: h32.store });
+  logs.length = 0;
+  var hit32 = guardHit.call(p32.app, 'speed');
+  var said32 = guardRateSkip.call(p32.app);
+  var said32again = guardRateSkip.call(p32.app);
+  var says32 = onlySay(logs, SAY_SPEED);
+  var said32onHome = (function () {
+    logs.length = 0;
+    var again = guardRateSkip.call(h32.app);       // 记账那一枚自己：已经喊过，第二次不许再喊
+    var n = onlySay(logs, SAY_SPEED).length;
+    logs.length = 0;
+    return { again: again, says: n };
+  })();
+  check('㉜ 没有课程账时 `_noteCourseGuardRateSkipped` 一句不出、一个字节都不写（「问不出」与「同一门课不必再问」是两格，后者不许冒领前者）；'
+    + '换一枚媒体（新内存、同一本存储）时先问得到命中，再说出课程那句、点名 from=menu-unreadable 与课程号；'
+    + '而同一门课同一格**只喊一次** —— 第二枚问第二次、以及记账那一枚自己再问，都必须返回 false 且一个字不出',
+    hit32none === false && said32none === false && logsAfterNone === 0
+      && hit32 === true && said32 === true && said32again === false &&
+    says32.length === 1 && says32[0].meta && says32[0].meta.from === 'menu-unreadable' &&
+    says32[0].meta.course === COURSE_ID && said32onHome.again === false && said32onHome.says === 0,
+    JSON.stringify({ hitNone: hit32none, none: said32none, logsNone: logsAfterNone, hit: hit32,
+      said: said32, again: said32again, says: says32, home: said32onHome }));
+
+  // ㉝ 接线与「不伪造读数」（静态格）：问价那一族命中课程格要**早于**真写播放器那一发，且交回的是 0（不知道）不是 1
+  var rateBody = bodyOf(media, '_detectMaxPlaybackRate');
+  var guardAt = rateBody.indexOf("this._courseGuardHit('speed')");
+  var tryAt = rateBody.indexOf('this._tryRateOnce(');
+  // ⚠️ 从**那一问之后**找：方法体开头的 `if (!video) return 0;` 也在同一句里，从头找会先撞上它，
+  //   于是 `zeroAt < guardAt` 把一次合法的接线读成"没接线"（本轮实测撞过：zeroAt:43 / guardAt:778）。
+  var zeroAt = guardAt < 0 ? -1 : rateBody.indexOf('return 0;', guardAt);
+  var seekBack = bodyOf(media, '_trySeekToEnd');
+  // ⚠️ 那两发在 `verifySeek` 里，而 `verifySeek` 是闭包、拿的是外层 `self`（不是 `this`）——
+  //   按 `this.` 去锚两处都取不到，报出来像"生产里忘了接线"（本轮实测撞过）。
+  var clearOkAt = seekBack.indexOf("self._clearCourseGuard('seek', 'drag-ok')");
+  var noteRevAt = seekBack.indexOf("self._noteCourseGuard('seek', 'reverted')");
+  // 「不许伪造读数」那一半的尺：真正把倍速落到播放器上的那两把，只认 `_detectedMaxRate`（量到的读数），
+  // 不读课程格 —— 课程格是「别再问」的策略，写成这里的一问就等于替这一支伪造一次测量。
+  var targetBody = bodyOf(media, '_getTargetPlaybackRate');
+  var ensureBody = bodyOf(media, '_ensurePlaybackRate');
+  var rateCheck = targetBody + ensureBody;
+  check('㉝ 接线（声明覆盖的范围与实际走的分支之间的差不会自己喊出来 —— §2 #18）：课程格那一问排在**真写播放器**那一发之前，'
+    + '命中时交回的是 0=「不知道」（写 1 就是替这支视频伪造一次测量，`_detectedMaxRate` 必须保持诚实）；'
+    + '弹回记 course / 拖成功撤 course 两处都在 `verifySeek` 里（那一族在闭包里，只能经 `self.`）；'
+    + '而落档那两把尺（`_getTargetPlaybackRate` + `_ensurePlaybackRate`）一个字都不读课程格',
+    rateBody.length > 200 && seekBack.length > 400 && targetBody.length > 100 && ensureBody.length > 100 &&
+    guardAt > 0 && tryAt > 0 && guardAt < tryAt &&
+    zeroAt > guardAt && zeroAt < tryAt && /return\s+0\s*;/.test(rateBody.slice(guardAt, tryAt)) &&
+    clearOkAt > 0 && noteRevAt > 0 && rateCheck.indexOf('_courseGuardHit') < 0,
+    JSON.stringify({ rateLen: rateBody.length, seekLen: seekBack.length, targetLen: targetBody.length,
+      ensureLen: ensureBody.length, guardAt: guardAt, tryAt: tryAt, zeroAt: zeroAt,
+      clearOkAt: clearOkAt, noteRevAt: noteRevAt, checkHasGuard: rateCheck.indexOf('_courseGuardHit') >= 0 }));
+
+  // ㉞ 钥匙归一（会话任务 #231 第 1 档）：站点按**播放会话**现签媒体地址（`?at_=<签发毫秒>&ak_=&ad_=`），
+  //   重签名与换清晰度都会换写法，而这把钥匙喂的是「这一支试过没有」那六本账 —— 键一换写法 =
+  //   每支的一次性试拖预算翻倍花，量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。
+  //   ⚠️ 这一族跑在 node 里：`location` 恒不存在，所以「相对地址」那一格量的是**退回原串**这个兜底，
+  //   浏览器的绝对化由 [30] 之外的真实页面负责 —— 别拿 node 的读数冒充浏览器那一格。
+  var sigA = 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4?at_=1790000000000&ak_=aaa&ad_=bbb';
+  var sigB = 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4?at_=1790000099999&ak_=zzz&ad_=yyy';
+  var kA = getKey.call(keyCtx, { currentSrc: sigA });
+  var kB = getKey.call(keyCtx, { currentSrc: sigB });
+  var kHash = getKey.call(keyCtx, { currentSrc: 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4#t=120' });
+  var kRel = getKey.call(keyCtx, { currentSrc: '/ananas/modules/video/index.html' });
+  var kBlob = getKey.call(keyCtx, { currentSrc: 'blob:null/6f6a1c2d-0000-0000-0000-000000000001' });
+  var kNoSrc = getKey.call(keyCtx, { currentSrc: '', src: '' });
+  var kJob = getKey.call({ _mediaStablePath: stablePath, _activeJobId: 'job-7' }, {});
+  check('㉞ 钥匙只认稳定段：同一支视频换签名、换 `#` 片段都必须是同一把钥匙（否则每支的一次性预算翻倍花）；'
+    + '相对地址与 blob 各交回非空（blob 是补救换源留下的身份，切查询串治不了它 —— 那是第 2 档，本轮只钉住现状防漂移）；'
+    + '「读不到地址」与「有作业号」两格各占各的：无地址又无作业号才交空串，有作业号退回 `job:` 而不是塌进空串（§2 #12）',
+    kA === kB && kA === 'https://s2.cldisk.com/sv-1/video/abcd1234/sd.mp4' && kHash === kA &&
+      kRel === '/ananas/modules/video/index.html' &&
+      kBlob === 'blob:null/6f6a1c2d-0000-0000-0000-000000000001' &&
+      kNoSrc === '' && kJob === 'job:job-7',
+    JSON.stringify({ kA: kA, kB: kB, kHash: kHash, kRel: kRel, kBlob: kBlob, kNoSrc: kNoSrc, kJob: kJob }));
+
+  // ㉟ 反分叉（第 30 项「掩码只许有一份」同一族）：稳定段只许由 `_mediaStablePath` 一处算。
+  //   两处各自切一次，就能各自切错一次（少切 `#` / 把 blob 切成空），而**不报错、不留日志**，
+  //   只是那六本账又回到按签名起账 —— 与改之前症状逐字相同，最难查的一类。
+  var keyBody = bodyOf(media, '_getMediaSeekKey');
+  var mimeBody = bodyOf(media, '_guessMediaMime');
+  var pathCallers = ['_getMediaSeekKey', '_guessMediaMime']
+    .filter(function (n) { return bodyOf(media, n).indexOf('this._mediaStablePath(') >= 0; });
+  var rawCuts = [keyBody, mimeBody].filter(function (b) {
+    return /\.split\(\s*['"]\?/.test(b) || /\.indexOf\(\s*['"]\?/.test(b) || /\.slice\([^)]*\?/.test(b) || /search\(\s*['"]\?/.test(b);
+  }).length;
+  check('㉟ 归一只有一份口径：`_getMediaSeekKey` 与 `_guessMediaMime` 两处都真经 `this._mediaStablePath(`，'
+    + '且两个方法体里都留着不下一把自切的切查询串（各自切一次就能各自切错一次，且不报错只让账回到按签名起账）',
+    keyBody.length > 50 && mimeBody.length > 50 && pathCallers.length === 2 && rawCuts === 0,
+    JSON.stringify({ keyLen: keyBody.length, mimeLen: mimeBody.length, callers: pathCallers, rawCuts: rawCuts }));
+}
+
+/** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
+ * 形状来自 2026-11-19 现场只读实测（`top > iframe#iframe > f0` 的
+ * `/ananas/modules/video/index.html`，播放器 video.js v7）：
+ * 「开始」有两枚 —— 中央层 `button.vjs-big-play-button`（文字「播放视频」，**在播时 display:none**）
+ * 与控制条 `button.vjs-play-control`（**在播时带 `vjs-playing` 类、文字「暂停」**）。
+ * 同一个容器里还躺着 `vjs-default-button`（「重启 恢复全部设定至预设值」）与 `vjs-playback-rate`（倍速菜单）——
+ * 误点前者会把用户的播放器设定清掉，误点在播的切换键等于按停视频。
+ *
+ * ⚠️ 本段的 `visible` 是**注入的替身**（`__vis !== false`），它只钉「选中哪一枚 + 有界 + 说话」；
+ *    `display:none` 在真引擎里到底读不读得出来，由 e2e `/media-start` 那一场景钉
+ *    （名字里不许承诺它没测的东西 —— AGENTS §5）。
+ */
+async function testStartStuckSiteClickSelfHeal() {
+  console.log('\n[22b] 开头卡住自愈：有界点一下站点的开始键，认不出与烧完都要说话（批次 178）');
+
+  var media = fs.readFileSync(path.join(ROOT, 'src/page/40-media.js'), 'utf8').replace(/\r\n/g, '\n');
+  var state = fs.readFileSync(path.join(ROOT, 'src/page/10-config-state.js'), 'utf8').replace(/\r\n/g, '\n');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var m = src.match(re);
+    return m ? Number(m[1]) : null;
+  };
+
+  var nudgeBody = bodyOf(media, '_nudgeSiteStartControl');
+  var siteBody = bodyOf(media, '_siteStartControlOf');
+  var resumeBody = bodyOf(media, '_tryResumePlayback');
+  // 四个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言照旧 = 假绿）
+  var capClicks = firstNum(nudgeBody, /done >= (\d+)/);
+  var spacingMs = firstNum(nudgeBody, /- \(Number\(prev\.at\) \|\| 0\) < (\d+)/);
+  var ctHard = firstNum(nudgeBody, /if \(ct > ([\d.]+)\) return false/);
+  var ctRatio = firstNum(nudgeBody, /dur \* ([\d.]+)\)\) return false/);
+  var rungAt = firstNum(resumeBody, /_resumeAttemptCount >= (\d+)/);
+
+  check('⓪ 三件都能从 40-media.js 原样取出来真跑，四个预算与接进的档位也读得回来' +
+    '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    capClicks > 0 && spacingMs > 0 && ctHard > 0 && ctRatio > 0 && rungAt > 0,
+    JSON.stringify({ cap: capClicks, spacing: spacingMs, ctHard: ctHard, ctRatio: ctRatio, rungAt: rungAt }));
+  if (!(capClicks > 0 && spacingMs > 0 && ctHard > 0 && ctRatio > 0 && rungAt > 0)) return;
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var nowMs = 1700000000000;
+  var FakeDate = { now: function () { return nowMs; } };
+  var fakeVisible = function (el) { return !!el && el.__vis !== false; };
+  var inj = { emitRuntimeLog: say, Date: FakeDate, visible: fakeVisible };
+
+  var giveupTtl = readProductConstant(fs.readFileSync(path.join(ROOT, 'src/page/00-shell-constants.js'), 'utf8'), 'TASK_GIVEUP_TTL_MS');
+  var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 假 app 少挂这一件，`this._mediaStablePath` 就是 TypeError —— 整段一条断言都不跑（AGENTS §5）
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
+  var siteOf = buildFrom(media, '_siteStartControlOf', { visible: fakeVisible });
+  var nudge = buildFrom(media, '_nudgeSiteStartControl', inj);
+  var quarantined = buildFrom(media, '_isMediaQuarantined', { Date: FakeDate, TASK_GIVEUP_TTL_MS: giveupTtl });
+  check('⓪ `_getMediaSeekKey` / `_mediaStablePath` / `_siteStartControlOf` / `_nudgeSiteStartControl` 四件本体都取成了函数',
+    [getKey, stablePath, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
+    JSON.stringify({ key: typeof getKey, stable: typeof stablePath, siteOf: typeof siteOf, nudge: typeof nudge }));
+  if (!getKey || !stablePath || !siteOf || !nudge) return;
+
+  // 现场那副容器：开始键 + 三枚绝不能碰的邻居，一起放在同一个 host 里
+  function mkShape(opt) {
+    opt = opt || {};
+    var rec = { clicks: [] };
+    function b(cls, label, vis) {
+      return {
+        className: cls, textContent: label, __vis: vis !== false,
+        click: function () { rec.clicks.push(cls.split(' ')[0]); }
+      };
+    }
+    rec.big = b('vjs-big-play-button', '播放视频', opt.bigVisible !== false);
+    rec.toggle = b(opt.togglePlaying === false
+      ? 'vjs-play-control vjs-control vjs-button'
+      : 'vjs-play-control vjs-control vjs-button vjs-playing',
+      opt.togglePlaying === false ? '播放' : '暂停', opt.toggleVisible !== false);
+    rec.restart = b('vjs-default-button', '重启 恢复全部设定至预设值', true);
+    rec.rate = b('vjs-playback-rate', '倍速', true);
+    var host = {
+      querySelector: function (sel) {
+        if (sel === '.vjs-big-play-button') return opt.noBig ? null : rec.big;
+        if (sel === '.vjs-play-control') return opt.noToggle ? null : rec.toggle;
+        return null;
+      }
+    };
+    rec.video = {
+      tagName: opt.tagName || 'VIDEO',
+      currentSrc: opt.src === '' ? '' : 'https://ananas.chaoxing.com/video/910000001/at_1700000000000.mp4',
+      currentTime: opt.ct == null ? 0 : opt.ct,
+      duration: opt.dur == null ? 1200 : opt.dur,
+      readyState: opt.ready == null ? 0 : opt.ready,
+      paused: opt.paused !== false,
+      error: null,
+      closest: function () { return opt.noHost ? null : host; },
+      ownerDocument: { querySelector: function () { return null; } }
+    };
+    return rec;
+  }
+  function mkApp(shape) {
+    var app = {
+      configs: {}, _isPlaying: true, _startNudgeKeys: null, _activeJobId: '',
+      __quizBlocks: false
+    };
+    app._mediaQuarantine = null;
+    app._mediaReloadKeys = null;
+    app._getMediaSeekKey = function (v) { return getKey.call(app, v); };
+    app._mediaStablePath = function (u) { return stablePath.call(app, u); };
+    app._isMediaQuarantined = function (v) { return quarantined.call(app, v); };
+    app._popupQuizBlocksPlayback = function () { return app.__quizBlocks === true; };
+    app._siteStartControlOf = function (v) { return siteOf.call(app, v); };
+    app._nudgeSiteStartControl = function (v, r) { return nudge.call(app, v, r); };
+    return app;
+  }
+  function spoke(prefix) {
+    return logs.filter(function (m) { return m.message.indexOf(prefix) === 0; });
+  }
+
+  var s1 = mkShape({});
+  var a1 = mkApp(s1);
+  var pick = a1._siteStartControlOf(s1.video);
+  check('① 认得出的只有那两枚：中央层在（未开播）就点它，绝不点同一容器里的「重启 恢复全部设定至预设值」与倍速菜单',
+    !!pick && pick.rung === 'big-play' && pick.el === s1.big,
+    JSON.stringify({ rung: pick && pick.rung, isBig: !!(pick && pick.el === s1.big) }));
+
+  var s2 = mkShape({ bigVisible: false, togglePlaying: true });
+  var a2 = mkApp(s2);
+  var pickPlaying = a2._siteStartControlOf(s2.video);
+  logs.length = 0;
+  var nudgePlaying = a2._nudgeSiteStartControl(s2.video, 'paused');
+  check('② 正在播的时候一枚都不许点 —— 控制条那枚此刻带 `vjs-playing`、文字是「暂停」，' +
+    '点下去就是替人把视频按停；中央层已经收起来了也不许当成"还能点"',
+    pickPlaying === null && nudgePlaying === false && s2.clicks.length === 0,
+    JSON.stringify({ pick: pickPlaying, ret: nudgePlaying, clicks: s2.clicks }));
+
+  var s3 = mkShape({ bigVisible: false, togglePlaying: false });
+  var a3 = mkApp(s3);
+  var pickToggle = a3._siteStartControlOf(s3.video);
+  check('③ 中央层收起、控制条写「播放」（暂停态）时改点它 —— 这一族是"人工点控制条那枚也能救回来"的等价路径',
+    !!pickToggle && pickToggle.rung === 'play-toggle' && pickToggle.el === s3.toggle,
+    JSON.stringify({ rung: pickToggle && pickToggle.rung }));
+
+  // ④ 只在「还停在开头」那一形状上动手：两档阈值各钉两侧
+  // 挑 60 秒是为了让第二道闸**单独**承重：60 * ctRatio = 1.2 秒 < 固定那档 ctHard，
+  // 于是 ct=1.5 这一格第一道闸放行、只有比例闸能挡 —— 拿 1200 秒那档时第二道闸永远轮不到。
+  var shortDur = 60;
+  var edges = [
+    { ct: 0, dur: 1200, want: true },
+    { ct: ctHard, dur: 1200, want: true },
+    { ct: ctHard + 0.5, dur: 1200, want: false },
+    { ct: 1, dur: shortDur, want: true },
+    { ct: 1.5, dur: shortDur, want: false },
+    { ct: ctHard, dur: 0, want: true }
+  ];
+  var edgeOut = edges.map(function (e) {
+    var sh = mkShape({ ct: e.ct, dur: e.dur });
+    var ap = mkApp(sh);
+    var got = ap._nudgeSiteStartControl(sh.video, 'no-progress');
+    return { ct: e.ct, dur: e.dur, got: got === true, want: e.want, clicked: sh.clicks.length };
+  });
+  check('④ 两道位置闸各钉两侧（' + shortDur + ' 秒那种短视频按比例算出的上限 ' + (shortDur * ctRatio) +
+    ' 秒比固定的 ' + ctHard + ' 秒更严，所以第二道闸必须自己承重，不能指望第一道）：' +
+    '已经播出去一段的停滞不许点开始键 —— 那等于替人把看过的部分重播；时长读不出时不许拿 0 当"已经播完"',
+    edgeOut.every(function (r) { return r.got === r.want && r.clicked === (r.want ? 1 : 0); }),
+    JSON.stringify(edgeOut));
+
+  // ⑤ 有界：最多 capClicks 发、间隔不低于 spacingMs，烧完只说一次并交回人
+  var sh5 = mkShape({});
+  var ap5 = mkApp(sh5);
+  var seq5 = [];
+  logs.length = 0;   // 取证窗口单独开：④ 那几发的日志混进来会把"每一发都说话"数成 6 条
+  function step5(label) {
+    seq5.push({
+      step: label,
+      ret: ap5._nudgeSiteStartControl(sh5.video, 'paused') === true,
+      clicks: sh5.clicks.length,
+      warn: spoke('media start stuck').length,
+      gaveUp: spoke('media start stuck, left to human').length
+    });
+  }
+  step5('第 1 发');
+  nowMs += spacingMs - 1; step5('间隔差 1 毫秒');
+  nowMs += 2; step5('间隔够了 → 第 2 发');
+  nowMs += spacingMs * 3; step5('烧完再问 → 只许说话');
+  nowMs += spacingMs * 3; step5('说过之后不再重复');
+  check('⑤ 有界：最多 ' + capClicks + ' 发、相邻两发间隔不低于 ' + spacingMs + ' 毫秒；' +
+    '差 1 毫秒不许点（否则每拍一次正好绕过间隔闸）',
+    seq5[0].ret === true && seq5[0].clicks === 1 &&
+    seq5[1].ret === false && seq5[1].clicks === 1 &&
+    seq5[2].ret === true && seq5[2].clicks === 2 &&
+    seq5[3].ret === false && seq5[3].clicks === 2 &&
+    seq5[4].ret === false && seq5[4].clicks === 2,
+    JSON.stringify(seq5));
+  check('⑥ 烧完必须留一句话把人请进来（AGENTS §2 #7 静默跳过不可接受），而且**只说一次**、' +
+    'hint 照用户自己的话说"亲手点一下开始"、取证带点过几回与页面读数',
+    seq5[3].gaveUp === 1 && seq5[4].gaveUp === 1 &&
+    spoke('media start stuck, left to human').every(function (m) { return m.level === 'warn'; }) &&
+    (function () {
+      var m = spoke('media start stuck, left to human')[0];
+      return !!m && !!m.meta && /开始/.test(String(m.meta.hint || '')) &&
+        Number(m.meta.nudges) === capClicks && Number(m.meta.ct) === 0 && Number(m.meta.dur) === 1200;
+    })(),
+    JSON.stringify(spoke('media start stuck, left to human')));
+  check('⑦ 中间每一发也要留话（点了什么、第几回、位置/时长/readyState/paused 全从页面读回），' +
+    '否则现场只能看见"它又白点了两下"',
+    (function () {
+      var picked = spoke('media start stuck, clicked site start control');
+      return picked.length === capClicks && picked.every(function (m) {
+        return m.level === 'warn' && !!m.meta && m.meta.rung === 'big-play' &&
+          Number(m.meta.ct) === 0 && Number(m.meta.dur) === 1200 &&
+          Number(m.meta.ready) === 0 && m.meta.paused === true;
+      }) && Number(picked[1].meta.attempt) === 2;
+    })(),
+    JSON.stringify(spoke('media start stuck, clicked site start control')));
+
+  // ⑧ 「认不出开始键」单独占一格，不许塌成"点过了"
+  var sh8 = mkShape({ noBig: true, noToggle: true });
+  var ap8 = mkApp(sh8);
+  logs.length = 0;
+  var r8a = ap8._nudgeSiteStartControl(sh8.video, 'paused');
+  var ledger8 = ap8._startNudgeKeys && ap8._startNudgeKeys[String(getKey.call(ap8, sh8.video))];
+  var none8 = spoke('media start stuck, no site start control');
+  var sh8b = mkShape({ noHost: true });
+  var ap8b = mkApp(sh8b);
+  logs.length = 0;
+  var r8b = ap8b._nudgeSiteStartControl(sh8b.video, 'paused');
+  var none8b = spoke('media start stuck, no site start control');
+  check('⑧ 这一族里没有开始键（两个类名都扫不到 / 压根不在 .video-js 里）单独占一格：' +
+    '出一句「没认出来」的 warn，绝不冒充"已经点过了"，也不许因为返回 false 就不记账',
+    r8a === false && r8b === false && sh8.clicks.length === 0 && sh8b.clicks.length === 0 &&
+    none8.length === 1 && none8b.length === 1 &&
+    !!none8[0].meta && none8[0].meta.rung === 'none' && none8[0].message.indexOf('clicked') < 0 &&
+    !!ledger8 && Number(ledger8.n) === 1 && ledger8.rung === 'none',
+    JSON.stringify({ a: none8.map(function (m) { return m.message; }), b: none8b.map(function (m) { return m.message; }), n: ledger8 && ledger8.n, rung: ledger8 && ledger8.rung }));
+
+  // ⑨ 站点为弹题有意暂停 → 一发射都不许放，也不烧预算
+  var sh9 = mkShape({});
+  var ap9 = mkApp(sh9);
+  ap9.__quizBlocks = true;
+  logs.length = 0;
+  var r9 = ap9._nudgeSiteStartControl(sh9.video, 'paused');
+  check('⑨ 弹题盖着的时候不抢（与 `_handleVideoPause` 同一口径）：不点、不出声、' +
+    '账也不记 —— 挡住不是我们的错，凭什么烧掉那一节仅有的两发',
+    r9 === false && sh9.clicks.length === 0 && logs.length === 0 &&
+    (ap9._startNudgeKeys === null || Object.keys(ap9._startNudgeKeys).length === 0),
+    JSON.stringify({ clicks: sh9.clicks, logs: logs.map(function (m) { return m.message; }), keys: ap9._startNudgeKeys }));
+
+  // ⑩ 音频不做 / 拿不到键不做（没量过的形状就不动手）
+  var sh10 = mkShape({ tagName: 'AUDIO' });
+  var ap10 = mkApp(sh10);
+  var sh11 = mkShape({ src: '' });
+  var ap11 = mkApp(sh11);
+  ap11._isPlaying = true;
+  logs.length = 0;
+  var r10 = ap10._nudgeSiteStartControl(sh10.video, 'paused');
+  var r11 = ap11._nudgeSiteStartControl(sh11.video, 'paused');
+  check('⑩ 音频（现场只量过视频那一族）与「连这一源是谁都说不清」两格一律不动手：' +
+    '不点、不出声，认不出交 false 让老流程接管',
+    r10 === false && r11 === false && sh10.clicks.length === 0 && sh11.clicks.length === 0 && logs.length === 0,
+    JSON.stringify({ audio: sh10.clicks, noKey: sh11.clicks, logs: logs.length }));
+
+  check('⑪ `_isPlaying` 为假（用户自己按了暂停 / 还没认领这一节）时不许替他点开始',
+    (function () {
+      var sh = mkShape({});
+      var ap = mkApp(sh);
+      ap._isPlaying = false;
+      var got = ap._nudgeSiteStartControl(sh.video, 'paused');
+      return got === false && sh.clicks.length === 0;
+    })(),
+    JSON.stringify({ clicked: (function () { return '见谓词'; })() }));
+
+  // ⑫ 接线：档位要真的挂在生产那条自愈链上，而且点着之后这一拍不许再补一发 play()
+  var atHook = resumeBody.indexOf('this._resumeAttemptCount >= ' + rungAt);
+  var beforePlay = resumeBody.indexOf('video.play()');
+  check('⑫ 这一档接在 `_tryResumePlayback` 里第 ' + rungAt + ' 发之后（不是另起一条无人走的支路），' +
+    '且点着了当拍就 return —— 不再补一发我们自己的 play()',
+    atHook >= 0 && beforePlay >= 0 && atHook < beforePlay &&
+    resumeBody.slice(atHook, atHook + 160).indexOf('_nudgeSiteStartControl') >= 0 &&
+    /if \(this\._resumeAttemptCount >= \d+ && this\._nudgeSiteStartControl\([^)]*\)\) return;/.test(resumeBody),
+    JSON.stringify({ atHook: atHook, beforePlay: beforePlay }));
+
+  check('⑬ 记账不随换节清零（AGENTS §2 #13）：`_startNudgeKeys` 在声明表里，' +
+    '而 `_clearMediaPendingState` 与 `_resetRuntimeState` 都不许抹它 —— 抹了就等于同一节反复点',
+    /_startNudgeKeys: null,/.test(state) &&
+    bodyOf(media, '_clearMediaPendingState').indexOf('_startNudgeKeys') < 0 &&
+    (function () {
+      var r = boundsOf(state, '_resetRuntimeState');
+      var seg = r.start < 0 ? '' : state.slice(r.start, state.indexOf('\n    },', r.start));
+      return seg.length > 0 && seg.indexOf('_startNudgeKeys') < 0;
+    })(),
+    JSON.stringify({
+      declared: /_startNudgeKeys: null,/.test(state),
+      inClear: bodyOf(media, '_clearMediaPendingState').indexOf('_startNudgeKeys') >= 0,
+      resetBodyFound: boundsOf(state, '_resetRuntimeState').start >= 0
+    }));
+
+  check('⑭ 键名只用现场量到的那两枚写死的类名，而且必须先 `closest` 到这一枚视频自己的容器' +
+    '（模糊的 `[class*=play]` 会把「重启」和倍速菜单扫进来）',
+    siteBody.indexOf("closest('.video-js") >= 0 &&
+    siteBody.indexOf(".vjs-big-play-button") >= 0 && siteBody.indexOf(".vjs-play-control") >= 0 &&
+    siteBody.indexOf('[class*=') < 0 && /vjs-playing/.test(siteBody),
+    JSON.stringify({
+      closest: siteBody.indexOf("closest('.video-js") >= 0,
+      fuzzy: siteBody.indexOf('[class*='),
+      antiPlaying: /vjs-playing/.test(siteBody)
+    }));
+
+  // ⑮ 反向自查：这一段自己得真的动过站点元素（防止整段变成空测）
+  check('⑮ 夹具自证：以上每一发的"点过了"都是**站点元素自己的 click 被真的调到**（记的是类名，不是我们自报的布尔）',
+    sh5.clicks.length === capClicks && sh5.clicks.every(function (c) { return c === 'vjs-big-play-button'; }) &&
+    s1.clicks.length === 0 && s3.clicks.length === 0 && sh9.clicks.length === 0,
+    JSON.stringify({ ladder: sh5.clicks, untouched: [s1.clicks, s3.clicks, sh9.clicks] }));
+
+  logs.length = 0;
+}
+
+/** ---- [22c] 批次 174：站点自己说「这一支放不出来」时别再白等，而且必须说话（会话任务 #24 / issue #225）
+ * 现场取证 `notes/field-225-unplayable.md`：站点遇到**外部视频**时把播放器整块换成一句正文
+ * （「非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频…」），那一族页面里**压根没有 `<video>`**（形状 1）。
+ * 改动前：等满 8 秒 → 只落一句 `console.warn` → 日志环一个字都没有（AGENTS §2 #14「不许停在决定不做」）。
+ * 三条边界各有独立承重的格子：**只许减少等待、不许标记完成**＝㊵（静态扫方法体）＋㊶ 的接线格、
+ * **120 秒那一格原样保留**＝㊶ 的另一半、**认不出交「读不出」单独占一格**＝㉟＋㊀（AGENTS §2 #12）。
+ */
+async function testSiteSaysUnplayable() {
+  console.log('\n[22c] 站点写「外部视频不支持播放」那一格：提前收手、照抄原话、三格不许互塌（批次 174）');
+
+  var media = fs.readFileSync(path.join(ROOT, 'src/page/40-media.js'), 'utf8').replace(/\r\n/g, '\n');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  // 现场那句话照抄取证件（形状 1 的真身），断言里的输入全部**由源码词表拼出来**，只有这一句是现场锚点
+  var SITE_SENTENCE = '非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。';
+
+  // 词组表从源码读回来 —— ⚠️ 不许在测试里另抄一份（改了生产词表而断言照旧 = 假绿，AGENTS §5「断言里出现的每一个数都要说得出它是从哪读回来的」）
+  var tableRaw = (media.match(/_SITE_UNPLAYABLE_GROUPS:\s*\[([\s\S]*?)\n {4}\],/) || [])[1] || '';
+  var table = [];
+  tableRaw.replace(/\[([^\]]*)\]/g, function (_m, inner) {
+    var toks = [];
+    inner.replace(/'([^']*)'/g, function (_q, t) { toks.push(t); return t; });
+    if (toks.length) table.push(toks);
+    return inner;
+  });
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var hitFn = buildFrom(media, '_siteUnplayableHit', {});
+  var saidFn = buildFrom(media, '_siteSaysUnplayable', {});
+  var waitFn = buildFrom(media, '_waitForMediaInDocument', {});
+  var releaseFn = buildFrom(media, '_releaseMediaNotFound', { emitRuntimeLog: say });
+  check('⓪ 四件都能从 40-media.js 原样取出来真跑，站点词组表也读得回来（取不出来时后面每一条都是「没执行」，'
+    + '而「没执行」和「通过」在报告里长得一模一样 —— AGENTS §5「红 0 条的第一嫌疑人是没跑到」）',
+    [hitFn, saidFn, waitFn, releaseFn].every(function (f) { return typeof f === 'function'; }) &&
+    table.length >= 2 && table.every(function (g) { return g.length >= 2 && g[0].length >= 2; }),
+    JSON.stringify({ fns: [typeof hitFn, typeof saidFn, typeof waitFn, typeof releaseFn], table: table }));
+  if (!hitFn || !saidFn || !waitFn || !releaseFn || table.length < 2) return;
+
+  var G1 = table[0], G2 = table[1];
+  var appOf = function () {
+    return { _SITE_UNPLAYABLE_GROUPS: table, _siteUnplayableHit: hitFn, _siteSaysUnplayable: saidFn };
+  };
+  var app = appOf();
+
+  // ㉞ 词组尺：齐全才算、只有一半不算、换措辞走第二组、认不到交空串
+  var r34both = hitFn.call(app, '前言' + G1.join('，') + '后语');
+  var r34half = hitFn.call(app, '只有' + G1[0] + '没有后半句');
+  var r34g2 = hitFn.call(app, G2.join('，'));
+  var r34split = hitFn.call(app, G1[0] + '\n\t ' + G1[1].split('').join(' '));   // 第二个词被拆开 ⇒ 不算（不许猜措辞）
+  var r34site = hitFn.call(app, SITE_SENTENCE);
+  var chromeInTable = table.join('|').toLowerCase().indexOf('chrome') >= 0;
+  check('㉞ 只认站点那两句的**稳定前缀**：两句齐全才命中并点名是哪个词组（站点换措辞时看得出来走的哪一条）、'
+    + '只有一半不算、被拆开的也不算、空串与 null 不算，现场那句原话命中第一组；'
+    + '词表里不许出现浏览器名（chrome／Edge 会随版本换，「外部视频」＋「不支持播放」才是这件事的本体）',
+    r34both === G1.join('+') && r34half === '' && r34g2 === G2.join('+') &&
+    r34split === '' && hitFn.call(app, '') === '' && hitFn.call(app, null) === '' &&
+    r34site === G1.join('+') && chromeInTable === false,
+    JSON.stringify({ both: r34both, half: r34half, g2: r34g2, split: r34split, site: r34site, chrome: chromeInTable }));
+
+  // ㉟ 三格各占一格：said（带原话与词组）／silent（读得下去而没说）／unreadable（压根没读到）
+  var r35said = saidFn.call(app, { body: { textContent: '章节导航 作业 讨论 ' + SITE_SENTENCE } });
+  var r35silent = saidFn.call(app, { body: { textContent: '这一节是普通课件，站点没有说一句不支持。' } });
+  var r35nil = saidFn.call(app, null);
+  var r35nobody = saidFn.call(app, {});
+  var r35boom = saidFn.call(app, {
+    get body() { throw new Error('SecurityError: 跨域'); }
+  });
+  var quoteHasBoth = r35said.quote.indexOf(G1[0]) >= 0 && r35said.quote.indexOf(G1[1]) >= 0;
+  check('㉟ 三格互不塌：`said` 交回词组与站点原话（命中在正文**中段**也算 —— 判的是全文，截断只用于展示，'
+    + '先截断再比对就等于把被砍掉那一截变成断言的盲区 §5）、`silent` 是"整条链读得下去而没这句话"、'
+    + '`null`／没有 body／取 body 抛异常都是 `unreadable`（**不许塌成 silent**，'
+    + '那等于替站点说"我没说过"，下一轮就会拿它当"这一格可以删掉"的依据）',
+    r35said.state === 'said' && r35said.group === G1.join('+') && r35said.hop === 0 && quoteHasBoth &&
+    r35said.quote.length <= 180 && r35silent.state === 'silent' && r35silent.quote === '' &&
+    r35nil.state === 'unreadable' && r35nobody.state === 'unreadable' && r35boom.state === 'unreadable',
+    JSON.stringify({ said: { s: r35said.state, g: r35said.group, hop: r35said.hop, len: r35said.quote.length },
+      silent: r35silent.state, nil: r35nil.state, nobody: r35nobody.state, boom: r35boom.state }));
+
+  // ㊀ 往上爬（标语常在承载播放器那一层的**上一层**）：第 2 层命中要报出 hop；爬到一半抛 = unreadable，不许把已读的 silent 交出去
+  var deepDoc = { body: { textContent: '知识卡片 ' + SITE_SENTENCE } };
+  var midDoc = { body: { textContent: '空壳一层' }, defaultView: { frameElement: { ownerDocument: deepDoc } } };
+  var topDoc = { body: { textContent: '空壳两层' }, defaultView: { frameElement: { ownerDocument: midDoc } } };
+  var r36deep = saidFn.call(app, topDoc);
+  var brokenParent = { body: { textContent: '这一层读得下去，没有那句话' }, defaultView: { get frameElement() { throw new Error('SecurityError'); } } };
+  var r36broken = saidFn.call(app, brokenParent);
+  var upSelf = { body: { textContent: '自指一层' } };
+  upSelf.defaultView = { frameElement: { ownerDocument: upSelf } };
+  var r36self = saidFn.call(app, upSelf);
+  check('㊀ 文档链：第 3 层（hop=2）那句原话读得回来并**报出爬到第几层**（归因用）；'
+    + '而爬到一半裸读抛异常交回的是 `unreadable` 而不是这一层已经读到的 `silent`（半条链不能当整条链说话），'
+    + '`ownerDocument` 自指时当场停住、不许无限爬（停在已读到的那一格）',
+    r36deep.state === 'said' && r36deep.hop === 2 && r36deep.quote.indexOf(G1[0]) >= 0 &&
+    r36broken.state === 'unreadable' && r36self.state === 'silent',
+    JSON.stringify({ deep: { s: r36deep.state, hop: r36deep.hop }, broken: r36broken.state, self: r36self.state }));
+
+  // ㊁ 等元素那一族现在每一轮可以顺手问一句：命中就**提前**交回，没命中照旧花满窗口，没有问句时行为一字不变
+  var W37 = 600;                       // 本段自用的窗口（不是生产那个 8000）：只钉 onTick 这一纸合同
+  var mkWaiter = function (foundAfter, hook) {
+    var host = { __n: 0, _findMediaInDocument: function () { return host.__n++ >= foundAfter ? media35 : null; } };
+    var media35 = { tagName: 'VIDEO' };
+    return { host: host, p: waitFn.call(host, {}, W37, hook) };
+  };
+  var asks = 0, w37a = mkWaiter(999, function () { asks++; return false; });
+  var t37a = Date.now();
+  var v37a = await w37a.p;
+  var spent37a = Date.now() - t37a;
+  var hits = 0, w37b = mkWaiter(999, function () { hits++; return true; });
+  var t37b = Date.now();
+  var v37b = await w37b.p;
+  var spent37b = Date.now() - t37b;
+  var w37c = mkWaiter(999, undefined);
+  var t37c = Date.now();
+  var v37c = await w37c.p;
+  var spent37c = Date.now() - t37c;
+  var asked37d = 0, w37d = mkWaiter(1, function () { asked37d++; return false; });
+  var v37d = await w37d.p;
+  var asked37dAfter = asked37d;
+  check('㊁ `onTick` 只在**拿不到元素**之后问：问出结论立刻提前交回 null（窗口 600 毫秒只花了不到一半，'
+    + '不花满 8 秒那一窗）、没问出来照旧花满窗口才交回 null（且至少问了两发）、'
+    + '不传问句时与改动前逐字同形（旧调用方不许被这次改动牵动）、元素一拿到就交回元素本身并且**之后不再多问一发**',
+    v37a === null && spent37a >= W37 - 20 && asks >= 2 &&
+    v37b === null && hits === 1 && spent37b < W37 / 2 &&
+    v37c === null && spent37c >= W37 - 20 &&
+    v37d && v37d.tagName === 'VIDEO' && asked37dAfter === 1,
+    JSON.stringify({ window: W37, noHit: { v: String(v37a), ms: spent37a, asks: asks },
+      hit: { v: String(v37b), ms: spent37b, hits: hits },
+      noHook: { v: String(v37c), ms: spent37c }, found: { tag: v37d && v37d.tagName, asked: asked37dAfter } }));
+
+  // ㊂ 问句自己炸了不算结论，也不许把"等元素"这条主路弄死（取证助手不许顶掉正事）
+  var threw38 = 0, w38 = mkWaiter(999, function () { threw38++; throw new Error('探针坏了'); });
+  var t38 = Date.now();
+  var v38 = await w38.p;
+  var spent38 = Date.now() - t38;
+  check('㊂ 问句抛异常 ⇒ 这一发只当"没问到"：照旧等到窗口结束、交回 null、后续每一轮还在问（≥2 发）—— '
+    + '一次取证崩掉不许变成"永远等不到结果"（§2 #2），也不许变成"这一拍什么都不说"',
+    v38 === null && spent38 >= 240 && threw38 >= 2,
+    JSON.stringify({ v: String(v38), ms: spent38, threw: threw38 }));
+
+  // ㊳ 三格各一个出口名字，谁都不许冒领谁；放手都要清 pending 并交回 false
+  var host39a = { _activeMediaJobPending: true }, host39b = { _activeMediaJobPending: true };
+  var host39c = { _activeMediaJobPending: true }, host39d = { _activeMediaJobPending: true };
+  var out39said = releaseFn.call(host39a, '外部视频', { state: 'said', quote: SITE_SENTENCE, group: G1.join('+'), hop: 1 }, 180);
+  var out39silent = releaseFn.call(host39b, '没等到', { state: 'silent', hop: 0 }, 8000);
+  var out39nil = releaseFn.call(host39c, '读不出', null, 8000);
+  var out39unread = releaseFn.call(host39d, '读不出2', { state: 'unreadable', hop: -1 }, 8000);
+  var byName = function (n) { return logs.filter(function (m) { return m.message === n; }); };
+  var saidLogs = byName('media unplayable by site player');
+  var notReadyLogs = byName('media not ready, release pending');
+  check('㊳ 放手说话分三格且各占各的名字：`said` → `media unplayable by site player`（照抄站点原话 + 词组 + 层号 + 等了多久），'
+    + '`silent` / `unreadable` / 压根没有读数 → `media not ready, release pending` 并各带自己的 `siteText`'
+    + '（**「读不出」不许塌成「站点没说」**，也不许由「站点没说」冒领「站点说了」那句）；'
+    + '四格一律交回 false 并把 pending 清掉 —— 交回 false 才会重新派发，标完成是平台的事',
+    out39said === false && out39silent === false && out39nil === false && out39unread === false &&
+    [host39a, host39b, host39c, host39d].every(function (h) { return h._activeMediaJobPending === false; }) &&
+    saidLogs.length === 1 && saidLogs[0].level === 'warn' &&
+    String(saidLogs[0].meta.quote).indexOf(G1[0]) >= 0 && saidLogs[0].meta.siteText === 'said' &&
+    Number(saidLogs[0].meta.hop) === 1 && Number(saidLogs[0].meta.waitedMs) === 180 &&
+    notReadyLogs.length === 3 &&
+    String(notReadyLogs[0].meta.siteText) === 'silent' && String(notReadyLogs[1].meta.siteText) === 'unreadable' &&
+    String(notReadyLogs[2].meta.siteText) === 'unreadable',
+    JSON.stringify({ said: saidLogs.length, notReady: notReadyLogs.map(function (m) { return m.meta.siteText; }),
+      pending: [host39a._activeMediaJobPending, host39b._activeMediaJobPending,
+        host39c._activeMediaJobPending, host39d._activeMediaJobPending] }));
+
+  // ㊴ 只许减少等待，不许标记完成（静态格：整个出口里不许出现任何"完成"写入口，也不许碰一次性登记那两族）
+  var relBody = bodyOf(media, '_releaseMediaNotFound');
+  var saidBody = bodyOf(media, '_siteSaysUnplayable');
+  var forbidden = ['isFinished', '_markMediaFinished', '_reportJobCompleted', '_seekTriedKeys', '_seekRevertedKeys', '_detectedMaxRate', 'localStorage'];
+  var foundInRel = forbidden.filter(function (k) { return relBody.indexOf(k) >= 0; });
+  var foundInSaid = forbidden.filter(function (k) { return saidBody.indexOf(k) >= 0; });
+  check('㊴ 边界一（只许减少等待）：新出口与读取器两个方法体里**一个完成写入口都没有**'
+    + '（`isFinished`／上报完成／一次性登记那两族／倍速读数／磁盘存储都在排除名单里）—— '
+    + '「站点说不支持」不是"这一节做完了"，把话说清楚之后仍然要交回派发，反复重派由 `_countTaskIncomplete` 收住',
+    relBody.length > 200 && saidBody.length > 400 && foundInRel.length === 0 && foundInSaid.length === 0,
+    JSON.stringify({ relLen: relBody.length, saidLen: saidBody.length, inRel: foundInRel, inSaid: foundInSaid }));
+
+  // ㊵ 接线（声明覆盖的范围与实际走的分支之间的差不会自己喊出来 —— §2 #18）
+  var playAt = media.indexOf('_playChaoxingMediaJob: async function');
+  var playBody = playAt < 0 ? '' : media.slice(playAt, media.indexOf('\n    },', playAt));
+  var noSourceBody = bodyOf(media, '_isActiveMediaPending');
+  var askAt = playBody.indexOf('this._siteSaysUnplayable(job.doc)');
+  var waitAt = playBody.indexOf('this._waitForMediaInDocument(job.doc');
+  var relAt = playBody.indexOf('this._releaseMediaNotFound(');
+  var oldConsoleAt = playBody.indexOf("chaoxing media not ready");
+  var throttleAt = playBody.indexOf('lastSiteAsk < 1000');   // 问话按 1 秒节流：这一族每 200 毫秒就来一发，不许变成热路径
+  check('㊵ 接线：进门先问一次、等元素每一轮按节流再问、拿不到才走**有名字**的出口（顺序错了就等于新格永远走不到）；'
+    + '旧那句只在控制台的 `chaoxing media not ready` 已经从派发路径上摘掉（日志环必须有记录，§2 #14）；'
+    + '边界二：120 秒有界放手那一格**一个字没删**（`noSourceShape` 与它的 warn 都还在），'
+    + '并且那一格的取证现在捎上站点原话（`siteText` + `siteQuote`）—— 新格是更早的出口，不是旧格的替换品',
+    playBody.length > 800 && askAt > 0 && waitAt > askAt && relAt > waitAt && oldConsoleAt < 0 &&
+    throttleAt > waitAt && /noSourceShape/.test(noSourceBody) &&
+    /media has no source, release pending/.test(noSourceBody) &&
+    /siteText:\s*noSrcSite\.state/.test(noSourceBody) && /siteQuote:\s*noSrcSite\.quote/.test(noSourceBody),
+    JSON.stringify({ playLen: playBody.length, askAt: askAt, waitAt: waitAt, relAt: relAt,
+      oldConsoleAt: oldConsoleAt, throttleAt: throttleAt, noSourceLen: noSourceBody.length }));
+
+  logs.length = 0;
 }
 
 /** ---- [23] 批次 98：多选答案规范化「认不出来交空串」，合法形状一个都不许多拒 ---- */
@@ -5054,7 +6840,7 @@ async function testCourseHomeProbeSignals() {
 }
 
 async function testPetChatRequest() {
-  console.log('\n[26] 宠物聊天：请求构造纯函数 + 发送层接线（批次 122）');
+  console.log('\n[26] 宠物聊天：请求构造纯函数 + 发送层接线（批次 123）');
 
   var read = function (rel) {
     return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
@@ -5093,6 +6879,21 @@ async function testPetChatRequest() {
   };
   var hist = function () { return [
     { role: 'user', text: '你好' }, { role: 'assistant', text: '嗯嗯' }, { role: 'user', text: '在么' }]; };
+
+  // ── 联网搜索那把尺（任务 #183）：提前到发送层之前声明 ──────────────────────
+  // builder 与 petSearchMeta 两个纯函数都从 popup/popup.js 原样取出，把 `OmitoneWebSearch`
+  // 当**参数**喂进去 —— 这样 ⑨-㉒ 走的是判据真身，而不是测试台自己另写的一份口径。
+  // ⚠️ 不许改成往 globalThis 上挂 —— 那是整轮共用的状态，前一个场景挂上、后一个场景就永远
+  //    测不到「模块压根没登记」那一格（AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+  var WS = require(path.join(ROOT, 'libs', 'web-search.js'));
+  var madeWs = new Function('OmitoneWebSearch', 'return (' + builderText + ')')(WS);
+  var madeNoLib = new Function('OmitoneWebSearch', 'return (' + builderText + ')')(undefined);
+  // 官方域那个字面量从 libs 读回来，不在测试里抄第二份（改了真源这边跟着走）
+  var CFG_OFFICIAL = { apiType: 'openai', apiUrl: 'https://' + WS.OFFICIAL_HOST, model: 'deepseek-flash', apiKey: 'sk-test' };
+  var CFG_RELAY = { apiType: 'openai', apiUrl: 'https://relay.example.com/v1', model: 'deepseek-flash', apiKey: 'sk-test' };
+  var metaText = topFn(pop, 'petSearchMeta');
+  var metaWs = metaText ? new Function('OmitoneWebSearch', 'return (' + metaText + ')')(WS) : null;
+  var metaNoLib = metaText ? new Function('OmitoneWebSearch', 'return (' + metaText + ')')(undefined) : null;
 
   // ---- ② OpenAI 兼容形：system 打头、Bearer 头、max_tokens 384 ----
   var rOpen = made({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, hist(), 'SYS', H);
@@ -5164,17 +6965,25 @@ async function testPetChatRequest() {
       apiErr: sendText.indexOf('OmitoneApiError') >= 0, hook: pop.indexOf('window.omitonePetChatSend = petChatSend;') >= 0 }));
 
   // ---- ⑨-⑬ 发送层动态：五个分支各说各的话，不许静默 ----
-  // petChatSend 在生产里只带 3 参调 buildPetChatRequest（第 4 参 urls 默认取 popup.js
-  // 模块作用域的三个地址构造器 —— Node 里那三个名字不存在，默认值一求值就 ReferenceError），
-  // 所以这里包一层补上 H，与 ②-④ 显式传 H 是同一手法。
+  // petChatSend 在生产里带 5 参调 buildPetChatRequest（第 4 参 urls 传 null 走默认，
+  // 默认值取 popup.js 模块作用域的三个地址构造器 —— Node 里那三个名字不存在，一求值就 ReferenceError；
+  // 第 5 参是模块作用域那枚三态开关、petSearchMeta 也在模块作用域 —— 三样都得当参数交进来，
+  // 少任何一样 ⑨-⑬ 全体「没执行」，而报告里那种「没执行」和「通过」长得一模一样（AGENTS §5）。
+  var wsVal = null;
+  var wsArgs = [];
   var mkSend = function (cfgOver, fetchStub, selfStub) {
-    var names = ['config', 'normalizeApiKey', 'buildPetChatRequest', 'fetchWithTimeout', 'self'];
+    var names = ['config', 'normalizeApiKey', 'buildPetChatRequest', 'fetchWithTimeout', 'self',
+      'petWebSearchVal', 'petSearchMeta'];
     var inj = {
       config: Object.assign({ apiType: 'openai', apiUrl: 'https://api.example/v1', model: 'm1', apiKey: 'sk-test' }, cfgOver),
       normalizeApiKey: function (k) { return k; },
-      buildPetChatRequest: function (cfg, history, sys) { return made(cfg, history, sys, H); },
+      // 第 5 参原样记下来（㉒ 钉的就是它有没有被 !! 压平），再交给**带真模块**的那份构造器，
+      // 于是发送层往下走的判据是 libs/web-search.js 那把尺，不是测试台自己另写的一份。
+      buildPetChatRequest: function (cfg, history, sys, urls, wsArg) { wsArgs.push(wsArg); return madeWs(cfg, history, sys, H, wsArg); },
       fetchWithTimeout: fetchStub,
-      self: selfStub || {}
+      self: selfStub || {},
+      petWebSearchVal: wsVal,
+      petSearchMeta: metaWs
     };
     var fn = Reflect.construct(Function, names.concat(['return (' + sendText + ')']));
     var send = fn.apply(null, names.map(function (k) { return inj[k]; }));
@@ -5209,6 +7018,4341 @@ async function testPetChatRequest() {
   check('⑬ 「只想了没说话」那一格单独说话（点给用户「换个普通模型」），不许被当成成功、也不许静默',
     silent && silent.ok === false && String(silent.error).indexOf('只想了') >= 0,
     JSON.stringify({ error: silent && silent.error }));
+
+  // ── ⑭-㉒ 联网搜索那一发（任务 #183）──────────────────────────────────────
+  // WS / madeWs / madeNoLib / CFG_OFFICIAL / CFG_RELAY / metaWs / metaNoLib 都在本节开头、
+  // 发送层之前声明好（⑨-⑬ 也要用 madeWs 与 metaWs，所以不能留在这里才建）。
+  // builder 与 meta 都是从 popup/popup.js 抽出来 eval 的**纯函数**，里面的自由名字
+  // `OmitoneWebSearch` 在生产里落到 popup.html 加载的那份模块上；测试台把它当**参数**喂进去，
+  // 这样两种成因分得开：喂真模块 = 判据走 libs 那一份；压根不喂 = 「登记漏了一处」那一格（no-lib）。
+
+  var rOn = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, true);
+  var bOn = rOn ? JSON.parse(rOn.body) : null;
+  check('⑭ 开关开着 + 地址确实是官方域：那一发**真带上** tools，声明形状就是量过的那一条（`[{type:"deepseek_web_search"}]`，' +
+    '多一格都没有），并且**不发 temperature** —— "带 tools 时服务端怎么对待 temperature" 没测过，' +
+    '没测过的参数不许照发（探针 probe161 E / probe162 H–L 六发都是四格、全 200 且真搜）',
+    rOn && rOn.search && rOn.search.cell === 'on' && rOn.search.on === true &&
+      !!bOn && Array.isArray(bOn.tools) && bOn.tools.length === 1 &&
+      Object.keys(bOn.tools[0]).length === 1 && bOn.tools[0].type === 'deepseek_web_search' &&
+      !('temperature' in bOn) && bOn.max_tokens === 384,
+    JSON.stringify({ cell: rOn && rOn.search && rOn.search.cell, tools: bOn && bOn.tools,
+      keys: bOn && Object.keys(bOn) }));
+
+  var rOff = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, false);
+  var bOff = rOff ? JSON.parse(rOff.body) : null;
+  check('⑮ 开关**没开**时那一发与改动前**逐字节同形**：四个键按 model,messages,max_tokens,temperature 原序、' +
+    '一个都不许多（`tools` 整个字段不写，不是写空数组），max_tokens 仍是 384 —— ' +
+    '这格钉的是「加了这枚开关之后，没开它的用户那发请求一个字都没变」',
+    rOff && rOff.search.cell === 'off' && rOff.search.on === false && !!bOff &&
+      Object.keys(bOff).join(',') === 'model,messages,max_tokens,temperature' &&
+      bOff.temperature === 0.8 && bOff.max_tokens === 384 && !('tools' in bOff),
+    JSON.stringify({ cell: rOff && rOff.search.cell, keys: bOff && Object.keys(bOff) }));
+
+  var rUnk = madeWs(CFG_OFFICIAL, hist(), 'SYS', H, null);
+  var bUnk = rUnk ? JSON.parse(rUnk.body) : null;
+  var rUndef = madeWs(CFG_OFFICIAL, hist(), 'SYS', H);
+  check('⑯ 开关真值**还没从存储读回来**（null 与压根不传两格）：那一格叫 `unknown`、**不许塌进 `off`** —— ' +
+    '两句在请求上一样（都不带 tools），但话完全不同：这时候对用户说"你没开联网搜索"是替他做了一个他没做过的决定。' +
+    '同时也不许因为"看起来可能是开"就抢着带 tools —— 那正是"消耗余额"最不该发生的那一拍（AGENTS §2 #12）',
+    rUnk && rUnk.search.cell === 'unknown' && rUnk.search.on === false && bUnk && !('tools' in bUnk) &&
+      rUndef && rUndef.search.cell === 'unknown' && rUndef.search.on === false,
+    JSON.stringify({ nullCell: rUnk && rUnk.search.cell, absentCell: rUndef && rUndef.search.cell,
+      keys: bUnk && Object.keys(bUnk) }));
+
+  var rRly = madeWs(CFG_RELAY, hist(), 'SYS', H, true);
+  var bRly = rRly ? JSON.parse(rRly.body) : null;
+  check('⑰ 用户开着开关、但接的是**中转站**：当场判 `not-official`、那一发**不带 tools**，并把读回来的域名交出去' +
+    '（灰条要说的是这一句）—— 别人家的服务器替我们搜索，费用与内容都不受我们约束，' +
+    '静默当成"已经搜过了"就是假话；地址后缀伪装（`api.deepseek.com.ru`）也走这一格，不做后缀匹配',
+    rRly && rRly.search.cell === 'not-official' && rRly.search.on === false &&
+      rRly.search.host === 'relay.example.com' && !!bRly && !('tools' in bRly) && bRly.temperature === 0.8,
+    JSON.stringify({ cell: rRly && rRly.search.cell, host: rRly && rRly.search.host,
+      why: rRly && rRly.search.why, keys: bRly && Object.keys(bRly) }));
+
+  // ⚠️ 变量名带 Ws 后缀：`rClaude` / `rGem` 这一族在 ③④ 已经用过，`var` 重复声明不报错、
+  // 只是把上面的读数悄悄覆盖掉 —— 后面若有人再拿它们做取证，读到的是这一档的 cfg 而不是 ③④ 那份。
+  var rClaudeWs = madeWs({ apiType: 'claude', apiUrl: 'https://api.deepseek.com', model: 'm', apiKey: 'k' }, hist(), 'SYS', H, true);
+  var rGemWs = madeWs({ apiType: 'gemini', apiUrl: 'https://api.deepseek.com', model: 'm', apiKey: 'k' }, hist(), 'SYS', H, true);
+  check('⑱ 协议形状不是 OpenAI 兼容（claude / gemini）时那一格叫 `type`，两个分支的 body **都不许多出 tools** —— ' +
+    '那两家没有这个字段，发过去是 400 或被忽略；判据先看开关再看协议再看地址，' +
+    '顺序反过来"用户没开"就会被说成"你填的地址不对"（AGENTS §2 #5 同一族）',
+    rClaudeWs && rClaudeWs.search.cell === 'type' && !('tools' in JSON.parse(rClaudeWs.body)) &&
+      rGemWs && rGemWs.search.cell === 'type' && !('tools' in JSON.parse(rGemWs.body)),
+    JSON.stringify({ claude: rClaudeWs && rClaudeWs.search.cell, gemini: rGemWs && rGemWs.search.cell }));
+
+  var rNoLib = madeNoLib(CFG_OFFICIAL, hist(), 'SYS', H, true);
+  check('⑲ 模块**压根没登记**（popup.html 少一行 script）：那一格叫 `no-lib`、不许塌进 `off`，' +
+    '也不许当场抛 —— 这一族的失败形状是"不报错、只是那一发从来没带上搜索"，' +
+    '而用户听到的那句话听起来像刚查过（AGENTS §2 #18）。格子内含量够调用方照原样发货',
+    rNoLib && rNoLib.search.cell === 'no-lib' && rNoLib.search.on === false &&
+      !('tools' in JSON.parse(rNoLib.body)),
+    JSON.stringify({ cell: rNoLib && rNoLib.search.cell, why: rNoLib && rNoLib.search.why }));
+
+  // metaText / metaWs / metaNoLib 由本节开头那一段建好（发送层要用同一份，不许在这里重建）
+  check('⑳ 界面那一行小字的三格各说各话（petSearchMeta 抽出来真跑）：' +
+    '搜到了 → 句子由 libs 按回包 usage 拼（含实际次数与 token，不是写死的）；' +
+    '开关没开 → **交回 null 一个字都不说**（那行字出现只会让人以为刚才那句是搜出来的）；' +
+    '开着但带不动 → 当场说"这次没有联网"并把原因带上。取不出这个函数就整段零覆盖（AGENTS §5）',
+    !!metaText && !!metaWs &&
+      metaWs({ cell: 'off', on: false, why: '联网搜索这枚开关没开' }, null) === null &&
+      /^这次没有联网：/.test(String(metaWs(rRly && rRly.search, null).sentence)) &&
+      metaWs(rRly && rRly.search, null).on === false &&
+      /联网查了 2 次/.test(String(metaWs({ cell: 'on', on: true, why: '', host: 'api.deepseek.com' },
+        { usage: { prompt_tokens: 4653, completion_tokens: 12, server_tool_use: { tool_search: 2, tool_fetch: 1 } } }).sentence)),
+    JSON.stringify({ taken: !!metaText, off: String(metaWs && metaWs({ cell: 'off', on: false }, null)),
+      blocked: metaWs && metaWs(rRly && rRly.search, null).sentence,
+      searched: metaWs && metaWs({ cell: 'on', on: true, host: 'api.deepseek.com' },
+        { usage: { prompt_tokens: 4653, completion_tokens: 12, server_tool_use: { tool_search: 2, tool_fetch: 1 } } }).sentence }));
+
+  var sentNoLib = metaNoLib && metaNoLib({ cell: 'on', on: true, why: '', host: 'api.deepseek.com' },
+    { usage: { prompt_tokens: 12, server_tool_use: { tool_search: 1 } } });
+  check('㉑ 模块没登记时**连那句"花了多少"也不猜**：petSearchMeta 在 lib 缺席的那一路交一句' +
+    '"这一回没读到用量数据"，而不是把回包里的数字自己乘一遍 —— 读不出单独占一格（AGENTS §2 #12）',
+    !!metaNoLib && !!sentNoLib && String(sentNoLib.sentence).indexOf('没读到用量') >= 0 &&
+    sentNoLib.on === true && sentNoLib.cell === 'on',
+    JSON.stringify({ sentence: sentNoLib && sentNoLib.sentence, cell: sentNoLib && sentNoLib.cell }));
+
+  // ㉒ 发送层（petChatSend 真身）把那枚三态**原样**递给第 5 参，并且"还没读到"与"用户没开"
+  //     在界面那一行小字上说的话不同。这一格只能由**真跑发送层**证 ——
+  //     ⑭-㉑ 测的是纯函数，把 `buildPetChatRequest(cfg, history, sys, null, petWebSearchVal)`
+  //     改成 `!!petWebSearchVal` 时那五格一条都不会红（症状与改之前一模一样：都不搜），
+  //     变的只有"这一行小字有没有说错原因"（AGENTS §2 #12 在调用点上的同族）。
+  wsArgs.length = 0;
+  var sentVals = [undefined, null, false, 0, 1, true];
+  var sentMeta = [];
+  for (var wi = 0; wi < sentVals.length; wi++) {
+    wsVal = sentVals[wi];
+    var rSent = await mkSend(CFG_OFFICIAL, function () {
+      fetchCalls++;
+      return { ok: true, json: async function () { return { choices: [{ message: { content: '嗯' } }] }; } };
+    }, {});
+    sentMeta.push(rSent ? rSent.meta : { cell: '(没走到)' });
+  }
+  wsVal = null;
+  var verbatim = sentVals.every(function (v, i) { return Object.is(wsArgs[i], v); });
+  var metaCells = sentMeta.map(function (m) { return m === null ? 'null' : (m && m.cell) || '(没格子)'; });
+  check('㉒ 发送层把三态**原样**交进第 5 参（六种输入逐格 Object.is 比，!! / Number 压平当场红），' +
+    '而且界面上「还没读到」与「用户没开」各占一格：null 与压根没读到 → 说一句"这次没有联网：还没读到…"，' +
+    'false / 0 / 压根没这一枚 → **交回 null 一个字都不说**，true + 官方域 → 说"搜过"，' +
+    '但回包没有 usage 时那句只能是"读不出"，不许把 0 当成没花（AGENTS §2 #2 / #12）',
+    wsArgs.length === sentVals.length && verbatim &&
+      sentMeta[0].cell === 'unknown' && sentMeta[0].on === false &&
+      /^这次没有联网：/.test(String(sentMeta[0].sentence)) &&
+      sentMeta[1].cell === 'unknown' &&
+      sentMeta[2] === null && sentMeta[3] === null && sentMeta[4] === null &&
+      sentMeta[5].on === true && /没读到用量/.test(String(sentMeta[5].sentence)),
+    JSON.stringify({ got: wsArgs.map(function (v) { return String(v); }), want: sentVals.map(function (v) { return String(v); }),
+      verbatim: verbatim, cells: metaCells, said: sentMeta.map(function (m) { return m === null ? '(不说话)' : String(m.sentence).slice(0, 18); }) }));
+}
+
+async function testLocalDoctor() {
+  console.log('\n[27] 本地自愈「医生」：判断层四态与有界 + 页面/弹窗两侧接线 + 联网搜索那一发带不带（批次 130 / 任务 #183）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var diagSrc = read('libs/diagnose.js');
+  var contentSrc = read('content.js');
+  var popSrc = read('popup/popup.js');
+  var petSrc = read('popup/pet.js');
+  var gameSrc = read('popup/pet-game.js');
+  var promptSrc = read('libs/prompt.js');
+  var bgSrc = read('background.js');
+
+  // 花括号配对取整段（顶层与缩进两种都行）；串里没有会骗过配对的裸花括号，坏了就交空串
+  var fnText = function (src, decl) {
+    var at = src.indexOf(decl);
+    if (at < 0) return '';
+    var start = src.indexOf('{', at);
+    if (start < 0) return '';
+    var depth = 0;
+    for (var i = start; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (!depth) return src.slice(at, i + 1); }
+    }
+    return '';
+  };
+  var constOf = function (src, name) {
+    var m = src.match(new RegExp('(?:var|let|const)\\s+' + name + '\\s*=\\s*([^;\\n]+);'));
+    if (!m) return NaN;
+    try { return new Function('return (' + m[1] + ')')(); } catch (e) { return NaN; }
+  };
+
+  var D = null;
+  try { D = require(path.join(ROOT, 'libs/diagnose.js')); } catch (e) { D = null; }
+  check('⓪ 判断层在 Node 里取得到（弹窗卡片、上课页她本人、集成测试三处共用同一份的前提是它自己可 require）——' +
+    '取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样',
+    !!D && typeof D.analyze === 'function' && typeof D.buildDigest === 'function' &&
+      typeof D.selfCheck === 'function' && Array.isArray(D.RULES) && D.RULES.length > 0 &&
+      Array.isArray(D.PROGRESS_NEEDLES) && !!D.LIMITS,
+    'typeof analyze=' + (D ? typeof D.analyze : '模块没取到') + ' 规则条数=' + (D && D.RULES ? D.RULES.length : 0));
+  if (!D || typeof D.analyze !== 'function') return;
+
+  var L = D.LIMITS;
+  // 联网搜索那把尺（任务 #183）：医生问模型那一发的「带不带 tools」也只问 libs/web-search.js，
+  // 与弹窗两处出口问的是同一份。取不到时下面 ㉛-㉞ 全成「没执行」，所以那一格自己也要说话。
+  var WS = null;
+  try { WS = require(path.join(ROOT, 'libs/web-search.js')); } catch (e) { WS = null; }
+  var DEFAULT_WINDOW = constOf(diagSrc, 'DEFAULT_WINDOW_MS');
+  var MIN_IDLE = constOf(diagSrc, 'MIN_IDLE_WINDOW_MS');
+  var T0 = Date.now();
+  var log = function (msg, level, time) {
+    return { time: time || T0, level: level || 'warn', message: msg };
+  };
+  // 用例只按 severity 从**真规则表**里挑，不写死 needle —— needle 换了名这里跟着换
+  var sev3 = D.RULES.filter(function (r) { return r.severity >= 3; })[0];
+  var sev1 = D.RULES.filter(function (r) { return r.severity === 1; })[0];
+  var sev0 = D.RULES.filter(function (r) { return r.severity === 0; })[0];
+  var altHard = D.RULES.filter(function (r) { return r.severity >= 2 && r.code !== sev3.code; })[0];
+  var sameHard = D.RULES.filter(function (r) { return r.severity === sev3.severity && r.code !== sev3.code; })[0];
+  check('⓪′ 规则表里四档 severity 各有真规则可挑（挑不到时下面那些格子会集体「没跑到」）',
+    !!sev3 && !!sev1 && !!sev0 && !!altHard && !!sameHard &&
+      Number.isFinite(DEFAULT_WINDOW) && Number.isFinite(MIN_IDLE),
+    JSON.stringify({ sev3: sev3 && sev3.code, sev1: sev1 && sev1.code, sev0: sev0 && sev0.code,
+      alt: altHard && altHard.code, same: sameHard && sameHard.code,
+      window: DEFAULT_WINDOW, idle: MIN_IDLE }));
+
+  // ---- ① 四态 ----
+  var vEmpty = D.analyze([], { now: T0 }).verdict;
+  var vNull = D.analyze(null, { now: T0 }).verdict;
+  var vMalformed = D.analyze([{ x: 1 }, '一串', null], { now: T0 }).verdict;
+  var vHealthy = D.analyze([log(D.PROGRESS_NEEDLES[0], 'info'), log('performance profile', 'info')], { now: T0 }).verdict;
+  var vIssue = D.analyze([log(sev3.needles[0], 'error')], { now: T0 }).verdict;
+  var vNote = D.analyze([log(sev0.needles[0], 'warn')], { now: T0 }).verdict;
+  check('① 四态各占一格：读不出 / 没问题 / 有要处理的 / 只是提醒。**「读不出」与「没问题」是两个词** —— ' +
+    '压成两态迟早变成用户那句「我有一科一直没刷」；把提醒级压成警报则会把「这门刷完了」渲染成一条异常（AGENTS §2 #12）',
+    vEmpty === 'unknown' && vNull === 'unknown' && vMalformed === 'unknown' &&
+      vHealthy === 'healthy' && vIssue === 'issue' && vNote === 'note',
+    JSON.stringify({ empty: vEmpty, nul: vNull, malformed: vMalformed,
+      healthy: vHealthy, issue: vIssue, note: vNote }));
+
+  // ---- ②③ 有界输出 ----
+  var allHit = D.RULES.map(function (r, i) { return log(r.needles[0], 'error', T0 + i); });
+  var bounded = D.analyze(allHit, { now: T0 + 1000 });
+  var overLong = (bounded.findings || []).filter(function (f) {
+    return f.title.length > L.TITLE_MAX || f.advice.length > L.ADVICE_MAX || f.evidence.length > L.EVIDENCE_MAX;
+  });
+  check('① 命中数确实**超过了**上限（' + bounded.totalRules + ' > ' + L.MAX_FINDINGS + '），这一格才真测到了截断；' +
+    '否则「只交 4 条」是恒真的废话',
+    bounded.totalRules > L.MAX_FINDINGS && bounded.findings.length === L.MAX_FINDINGS,
+    JSON.stringify({ totalRules: bounded.totalRules, given: bounded.findings.length, cap: L.MAX_FINDINGS }));
+  check('② 每条的标题/建议/取证都不超各自的上限（三个数从 `LIMITS` 读回来，不是测试里抄的字面量）',
+    overLong.length === 0,
+    JSON.stringify({ limits: L, over: overLong.map(function (f) { return f.code + ':' + f.title.length + '/' + f.advice.length + '/' + f.evidence.length; }) }));
+  var fatMsg = sev3.needles[0] + '，' + '详'.repeat(L.EVIDENCE_MAX + 210);
+  var fat = D.analyze([log(fatMsg, 'error')], { now: T0 });
+  check('③ 取证是被**压过**的，不是「这条本来就短」：300 多字的原话进来，交回的 evidence 恰好等于上限长并以省略号收尾 —— ' +
+    '面板那一格挤爆之前只有这一手挡着',
+    fat.findings[0].evidence.length === L.EVIDENCE_MAX &&
+      fat.findings[0].evidence.slice(-1) === '…' &&
+      fat.findings[0].count === 1 && fat.findings[0].lastAt === T0,
+    JSON.stringify({ len: fat.findings[0].evidence.length, tail: fat.findings[0].evidence.slice(-3),
+      count: fat.findings[0].count, lastAt: fat.findings[0].lastAt }));
+
+  // ---- ④ 排序：先按有多硬，同级再按新 ----
+  var noisy = [];
+  for (var ni = 0; ni < 6; ni++) noisy.push(log(sev1.needles[0], 'warn', T0 + ni));
+  noisy.push(log(sev3.needles[0], 'error', T0));
+  var sorted = D.analyze(noisy, { now: T0 + 9000 });
+  var twoSame = D.analyze([log(sev3.needles[0], 'error', T0), log(sameHard.needles[0], 'error', T0 + 5000)], { now: T0 + 6000 });
+  check('④ 排序按「有多硬」而不是「有几条」：软的那型命中 6 次、硬伤只 1 次，第一条必须是硬伤；' +
+    '同等级时新的一条在前 —— 最该先做的事不许排在噪声后面',
+    sorted.findings[0].code === sev3.code && sorted.findings[1].code === sev1.code &&
+      twoSame.findings[0].code === sameHard.code,
+    JSON.stringify({ top1: sorted.findings[0].code, top2: (sorted.findings[1] || {}).code,
+      softHits: sorted.findings[1] && sorted.findings[1].count, sameTop: twoSame.findings[0].code }));
+
+  // ---- ⑤ 窗口真的在筛 ----
+  var staleOne = [log(sev3.needles[0], 'error', T0 - 2 * 3600 * 1000)];
+  var wShort = D.analyze(staleOne, { now: T0, windowMs: DEFAULT_WINDOW });
+  var wLong = D.analyze(staleOne, { now: T0, windowMs: 3 * 3600 * 1000 });
+  check('⑤ 两小时前的旧账在默认窗口（从源码读回来 = ' + Math.round(DEFAULT_WINDOW / 60000) + ' 分钟）里不许算成现在的结论；' +
+    '把窗口放宽到三小时它又出现 —— 这一格证明的是「窗口真在筛」，不是「那条规则命中不到」',
+    Number.isFinite(DEFAULT_WINDOW) && wShort.verdict === 'healthy' && !wShort.findings.length &&
+      wLong.verdict === 'issue' && wLong.findings[0].code === sev3.code,
+    JSON.stringify({ short: wShort.verdict, shortFindings: wShort.findings.length,
+      long: wLong.verdict, longCode: (wLong.findings[0] || {}).code, windowMs: wShort.stats.windowMs }));
+
+  // ---- ⑥ 「没看到推进」那三把闸各独立承重 ----
+  var idle3 = [log('performance profile', 'info', T0), log('page idle', 'info', T0 + 1), log('page idle', 'info', T0 + 2)];
+  var npShortWindow = D.analyze(idle3, { now: T0 + 3, windowMs: MIN_IDLE - 1 });
+  var npTwoLines = D.analyze(idle3.slice(0, 2), { now: T0 + 3, windowMs: MIN_IDLE });
+  var npHasProgress = D.analyze(idle3.concat([log(D.PROGRESS_NEEDLES[0], 'info', T0 + 1)]), { now: T0 + 3, windowMs: MIN_IDLE });
+  var npFired = D.analyze(idle3, { now: T0 + 3, windowMs: MIN_IDLE });
+  check('⑥ 「这段时间没看到刷课推进」要三把闸同时过：窗口不够长 / 日志不足 3 条 / 环里有任一推进事件 —— 摘掉任何一把，' +
+    '她就变成「一有空就报没干活」（progress 词表从 `PROGRESS_NEEDLES` 读回来，不抄字面量）',
+    npShortWindow.verdict === 'healthy' && npTwoLines.verdict === 'healthy' &&
+      npHasProgress.verdict === 'healthy' && npFired.verdict === 'issue' &&
+      npFired.findings[0].code === 'no-progress',
+    JSON.stringify({ shortWindow: npShortWindow.verdict, twoLines: npTwoLines.verdict,
+      hasProgress: npHasProgress.verdict, fired: npFired.findings[0].code, idleFloor: MIN_IDLE }));
+
+  // ---- ⑦ 摘要 ----
+  var threeFindings = { verdict: 'issue', findings: [
+    { title: '甲题', count: 2, lastAt: T0, advice: '办法甲' },
+    { title: '乙题', count: 3, lastAt: T0, advice: '办法乙' },
+    { title: '丙题', count: 4, lastAt: T0, advice: '办法丙' }
+  ] };
+  var dgFull = D.buildDigest(threeFindings);
+  var dgLines = dgFull.split('\n');
+  var capTwo = dgLines[0].length + 1 + dgLines[1].length + 1 + dgLines[2].length;
+  var dgCut = D.buildDigest(threeFindings, capTwo);
+  var dgUnknown = D.buildDigest({ verdict: 'unknown', findings: [] });
+  check('⑦ 交给模型的那份摘要：装不下的那条**整条丢掉**，不许截半句留一句断话 —— 截短版里第三条的标题与办法一个字都不出现，' +
+    '行数正好少一；上限默认取 `DIGEST_MAX`（读回来 = ' + L.DIGEST_MAX + '），且「读不出」那一格照原话说读不出',
+    dgLines.length === 4 && dgCut.split('\n').length === 3 && dgCut.indexOf('丙题') === -1 &&
+      dgCut.indexOf('办法丙') === -1 && dgCut.indexOf('甲题') >= 0 && dgCut.length <= capTwo &&
+      dgFull.length <= L.DIGEST_MAX && dgUnknown.indexOf('读不出') >= 0 && D.buildDigest(null) === '',
+    JSON.stringify({ full: dgLines.length, cut: dgCut.split('\n').length, capTwo: capTwo,
+      cutLen: dgCut.length, fullLen: dgFull.length, unknown: dgUnknown, nul: D.buildDigest(null) }));
+
+  // ---- ⑧ 判断层自带的自证 ----
+  var caseCount = (diagSrc.match(/\{ id: '/g) || []).length;
+  var sc = D.selfCheck();
+  check('⑧ 判断层自带的自证全绿，且条数**等于源码里真有的用例数 + 摘要那 2 格**（写死一个数会随用例增减说谎）',
+    sc.ok === true && sc.total === caseCount + 2,
+    JSON.stringify({ ok: sc.ok, total: sc.total, casesInSource: caseCount, problems: sc.problems }));
+
+  // ---- ⑨ action 清单两侧对齐 ----
+  var acts = [];
+  D.RULES.forEach(function (r) { if (r.action && acts.indexOf(r.action) < 0) acts.push(r.action); });
+  var actionBody = fnText(popSrc, 'async function petDiagAction(kind)');
+  var kinds = [];
+  (actionBody.match(/kind === "([a-z-]+)"/g) || []).forEach(function (s) {
+    kinds.push(s.replace(/.*"([a-z-]+)".*/, '$1'));
+  });
+  var actMissing = acts.filter(function (a) { return kinds.indexOf(a) < 0; });
+  var actExtra = kinds.filter(function (k) { return acts.indexOf(k) < 0; });
+  var dupCode = [];
+  var seenCode = {};
+  D.RULES.forEach(function (r) { if (seenCode[r.code]) dupCode.push(r.code); seenCode[r.code] = 1; });
+  check('⑨ 规则表里出现的每一型 action，弹窗那个出口都认识，**且反过来也相等**（' + acts.join(',') + ' 对 ' +
+    kinds.join(',') + '）—— 规则新增一型而界面没接，卡片上就是一枚点了没反应的按钮；界面多认一型则是没有来源的死码' +
+    '（AGENTS §2 #18：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来）',
+    !!actionBody && !!acts.length && actMissing.length === 0 && actExtra.length === 0 && dupCode.length === 0,
+    JSON.stringify({ acts: acts, kinds: kinds, missing: actMissing, extra: actExtra, dup: dupCode }));
+
+  // ---- ⑩ 规则只有一份 ----
+  check('⑩ 规则表全盘只有一份：content.js 与 popup/pet.js 里 `var RULES =` 各 0 处，两处都经 `OmitoneDiagnose` 取 —— ' +
+    '抄到界面上必然分叉（同台词池那条教训）',
+    contentSrc.indexOf('var RULES =') < 0 && petSrc.indexOf('var RULES =') < 0 &&
+      petSrc.indexOf('OmitoneDiagnose') >= 0 && contentSrc.indexOf('OmitoneDiagnose') >= 0,
+    JSON.stringify({ contentHasRules: contentSrc.indexOf('var RULES =') >= 0,
+      petHasRules: petSrc.indexOf('var RULES =') >= 0,
+      petUsesLib: petSrc.indexOf('OmitoneDiagnose') >= 0, contentUsesLib: contentSrc.indexOf('OmitoneDiagnose') >= 0 }));
+
+  // ---- ⑪⑫ 账本键与解释链路 ----
+  var popLogKey = (popSrc.match(/const RUNTIME_LOGS_KEY = "([^"]+)"/) || [])[1];
+  var bgLogKey = (bgSrc.match(/var RUNTIME_LOGS_KEY = '([^']+)'/) || [])[1];
+  var explainBody = fnText(popSrc, 'async function petDiagExplain(digest)');
+  var sliceCap = Number((explainBody.match(/\.slice\(0, (\d+)\)/) || [])[1]);
+  check('⑪ 卡片读的那本账就是后台写的那本（`RUNTIME_LOGS_KEY` 两处逐字相等），且「让她解释」送出去之前的截断与摘要上限' +
+    '**同一把尺**（slice 的数 = DIGEST_MAX = ' + L.DIGEST_MAX + '）—— 两侧各写一个数，迟早有一边把摘要拦腰截断',
+    !!popLogKey && popLogKey === bgLogKey && sliceCap === L.DIGEST_MAX,
+    JSON.stringify({ popupKey: popLogKey, bgKey: bgLogKey, sliceCap: sliceCap, digestMax: L.DIGEST_MAX }));
+  check('⑫ 解释走的是 #161 那条聊天链路：`petChatSend(` + 人设键 `PET_DOCTOR_SYSTEM`（在 libs/prompt.js 里**声明且导出**，' +
+    '提示词不许内联进调用方），全程不自己拼地址 —— 绝不接中转站（用户原话）',
+    explainBody.indexOf('petChatSend(') >= 0 && /sysKey: "PET_DOCTOR_SYSTEM"/.test(explainBody) &&
+      /var PET_DOCTOR_SYSTEM = \[/.test(promptSrc) && /PET_DOCTOR_SYSTEM: PET_DOCTOR_SYSTEM/.test(promptSrc) &&
+      explainBody.indexOf('fetch(') < 0,
+    JSON.stringify({ viaSend: explainBody.indexOf('petChatSend(') >= 0,
+      sysKey: /sysKey: "PET_DOCTOR_SYSTEM"/.test(explainBody), declared: /var PET_DOCTOR_SYSTEM = \[/.test(promptSrc),
+      exported: /PET_DOCTOR_SYSTEM: PET_DOCTOR_SYSTEM/.test(promptSrc), ownFetch: explainBody.indexOf('fetch(') >= 0 }));
+
+  // ---- ⑬ 两套装束 + 换装不写存档 ----
+  var rolesText = (gameSrc.match(/var ROLES = \{/) ? fnText(gameSrc, 'var ROLES = {') : '');
+  var roles = null;
+  try { roles = rolesText ? new Function('return (' + rolesText.slice(rolesText.indexOf('{')) + ')')() : null; } catch (e) { roles = null; }
+  var roleOnText = fnText(contentSrc, 'function pagePetRoleOn(roleKey, msOverride)');
+  var roleOffText = fnText(contentSrc, 'function pagePetRoleOff()');
+  var writesOutfit = [roleOnText, roleOffText].join('\n');
+  var outfitLeaks = ['setItem', 'OUT_KEY', 'SRC_KEY'].filter(function (k) { return writesOutfit.indexOf(k) >= 0; });
+  var roleFiles = roles ? [roles.doctor, roles.detective].filter(function (r) {
+    return r && fs.existsSync(path.join(ROOT, 'popup', String(r.file)));
+  }) : [];
+  check('⑬ 换装巧思的两套行头都真在池子里、图在盘上（医生=诊断、侦探=修复中，各带收尾 ms）；' +
+    '且页面那一族**只临时改图** —— 两个函数体里 `setItem` / `OUT_KEY` / `SRC_KEY` 各 0 处：' +
+    '体检把人自己挑好的衣服悄悄存掉，比不换更害人（批次 61 同形）',
+    !!roles && !!roles.doctor && !!roles.detective && roleFiles.length === 2 &&
+      Number(roles.doctor.ms) > 0 && Number(roles.detective.ms) > 0 &&
+      !!roleOnText && !!roleOffText && outfitLeaks.length === 0,
+    JSON.stringify({ doctor: roles && roles.doctor, detective: roles && roles.detective,
+      filesOnDisk: roleFiles.length, leaks: outfitLeaks,
+      onBody: !!roleOnText, offBody: !!roleOffText }));
+
+  // ---- 页面那一整块：取出来真跑 ----
+  var dStart = contentSrc.indexOf('const PAGE_DOCTOR_KEY');
+  var dEnd = contentSrc.indexOf('// ── 她自己动');
+  var dBlock = dStart >= 0 && dEnd > dStart ? contentSrc.slice(dStart, dEnd) : '';
+  var DoctorFactory = null;
+  // 医生块里引用到块外的名字：问模型那一发要 configs / apiFetch / normalizeApiKey /
+  // PROMPT（提示词唯一真源）与三家渠道的 URL 构造器 —— 桩在 mkDoctor 里给。
+  var names = ['chrome', 'self', 'pagePet', 'petGameModule', 'pagePetSayFrom', 'Date', 'setTimeout', 'clearTimeout', 'document',
+    'configs', 'apiFetch', 'normalizeApiKey', 'PROMPT', 'buildOpenAICompatibleUrl', 'buildClaudeApiUrl', 'buildGeminiApiUrl'];
+  try {
+    DoctorFactory = Reflect.construct(Function, names.concat([dBlock +
+      '\n    return { note: doctorNote, speak: doctorDeliver, analyzeNow: doctorAnalyze, roleOn: pagePetRoleOn, ' +
+      'roleOff: pagePetRoleOff, on: isDoctorOn, asks: function () { return doctorAskCount; }, ' +
+      'ring: function () { return doctorRing.slice(); }, ' +
+      'skip: function () { return pagePet && pagePet.host ? pagePet.host.dataset.doctorSkip : undefined; }, ' +
+      'flag: function () { return doctorOn; }, ' +
+      'wsFlag: function () { return webSearchOn; }, ' +
+      'wsCell: function () { return pagePet && pagePet.host ? pagePet.host.dataset.webSearch : undefined; }, ' +
+      'stamps: function () { return { analyzeAt: doctorAnalyzeAt, ' +
+      'lastCode: doctorLastCode, lastCodeAt: doctorLastCodeAt }; } };']));
+  } catch (e) { DoctorFactory = null; }
+  check('⑭ 页面那一整块医生代码切出来构造成功（doctorMark / doctorNote / doctorDeliver / 问模型两件 / ' +
+    'isDoctorOn / 换装两件事 / 联网那四件都在这一格里）—— 切不出来的话 ⑮-㉟ 全部「没执行」，症状与「都通过」一模一样',
+    !!DoctorFactory && dBlock.indexOf('function doctorMark') >= 0 &&
+      dBlock.indexOf('function doctorNote') >= 0 &&
+      dBlock.indexOf('function doctorDeliver') >= 0 && dBlock.indexOf('function isDoctorOn') >= 0 &&
+      dBlock.indexOf('function doctorAskModel') >= 0 && dBlock.indexOf('function doctorAskBounded') >= 0 &&
+      dBlock.indexOf('function pagePetRoleOn') >= 0 && dBlock.indexOf('function pagePetRoleOff') >= 0 &&
+      dBlock.indexOf('const PAGE_WEB_SEARCH_KEY') >= 0 &&
+      dBlock.indexOf('function doctorWebSearch') >= 0 && dBlock.indexOf('function doctorWebSearchMark') >= 0 &&
+      dBlock.indexOf('function isPetSwitchOn') >= 0,
+    JSON.stringify({ blockLen: dBlock.length, factory: !!DoctorFactory,
+      wsKey: dBlock.indexOf('const PAGE_WEB_SEARCH_KEY') >= 0,
+      wsJudge: dBlock.indexOf('function doctorWebSearch') >= 0,
+      wsMark: dBlock.indexOf('function doctorWebSearchMark') >= 0,
+      scale: dBlock.indexOf('function isPetSwitchOn') >= 0 }));
+  if (!DoctorFactory) return;
+
+  var RING_MAX = constOf(contentSrc, 'DOCTOR_RING_MAX');
+  var THROTTLE = constOf(contentSrc, 'DOCTOR_ANALYZE_MS');
+  var GAP = constOf(contentSrc, 'DOCTOR_GAP_MS');
+  var MIN_SEV = constOf(contentSrc, 'DOCTOR_MIN_SEVERITY');
+  var KEY_NAME = (contentSrc.match(/PAGE_DOCTOR_KEY = '([^']+)'/) || [])[1];
+  // 联网搜索那枚开关的键名同样**从页面读回来**（测试台不许自己写死第二个键名，AGENTS §5）
+  var WS_KEY_NAME = (contentSrc.match(/PAGE_WEB_SEARCH_KEY = '([^']+)'/) || [])[1];
+  // 弹窗那两条语句**用页面读回来的键名去定位**：键名一旦两边不同，这里直接匹配不到，
+  // popupOn 变成 null，下面那一格当场红 —— 比拿两个写死的字面量互比少一处会说谎的地方
+  var popupReadSpan = KEY_NAME
+    ? popSrc.match(new RegExp('var raw = r && r\\.' + KEY_NAME + ';\\s+petDoctorEnabledVal = ([^;]+);'))
+    : null;
+  var popupWriteSpan = KEY_NAME
+    ? popSrc.match(new RegExp('chrome\\.storage\\.local\\.set\\(\\{ ' + KEY_NAME + ': value \\? 1 : 0'))
+    : null;
+  var popupOn = null;
+  try {
+    popupOn = popupReadSpan
+      ? new Function('r', 'var petDoctorEnabledVal;' + popupReadSpan[0] + 'return petDoctorEnabledVal;')
+      : null;
+  } catch (e) { popupOn = null; }
+  // 测试台里所有"这一格存档"都按页面读回来的那枚键名拼，避免测试自己写死第二个键名
+  var storeOf = function (v, wv) {
+    var o = {};
+    o[KEY_NAME] = v;
+    if (wv !== undefined) o[WS_KEY_NAME] = wv;
+    return o;
+  };
+  // 联网搜索开关在弹窗那一侧的读回与写成，同样**按页面读回来的键名定位**（同一手法，AGENTS §2 #23）
+  var popWsReadSpan = WS_KEY_NAME
+    ? popSrc.match(new RegExp('var raw = r && r\\.' + WS_KEY_NAME + ';\\s+petWebSearchVal = ([^;]+);'))
+    : null;
+  var popWsWriteSpan = WS_KEY_NAME
+    ? popSrc.match(new RegExp('chrome\\.storage\\.local\\.set\\(\\{ ' + WS_KEY_NAME + ': value \\? 1 : 0'))
+    : null;
+  var popWsOn = null;
+  try {
+    popWsOn = popWsReadSpan
+      ? new Function('r', 'var petWebSearchVal;' + popWsReadSpan[0] + 'return petWebSearchVal;')
+      : null;
+  } catch (e) { popWsOn = null; }
+
+  // 问模型那一发是异步的（`void doctorDeliver(res)`）：凡要断言"她说了/换了装"的格子
+  // 都要先 flush 一拍（真实宏任务）把派发落完再读 —— 不然「没说」和「没等到」同形
+  var flush = function () { return new Promise(function (r) { setTimeout(r, 0); }); };
+  // 永不 resolve 的 apiFetch 桩：挂起那一族专用（硬超时由测试手动把注入的 setTimeout 拨响）
+  var neverFetch = function () { return new Promise(function () {}); };
+
+  var mkDoctor = function (o) {
+    o = o || {};
+    var clock = { t: T0 };
+    var says = [];
+    var writes = [];
+    var gets = [];
+    var listeners = [];
+    var timers = [];
+    var baseSrc = o.baseSrc || 'popup/pet-03.png';
+    var img = {
+      src: baseSrc,
+      getAttribute: function (k) { return k === 'src' ? this.src : null; },
+      setAttribute: function (k, v) { if (k === 'src') this.src = String(v); }
+    };
+    var roleProp = { textContent: '', shown: false };
+    roleProp.classList = { add: function () { roleProp.shown = true; }, remove: function () { roleProp.shown = false; } };
+    // 「被收起」在页面里就是 wrap 上那一枚 class —— 医生那一族要认它（看不见就别换装）
+    var wrap = { tucked: !!o.tucked };
+    wrap.classList = { contains: function (c) { return c === 'mode-hidden' ? wrap.tucked : false; } };
+    var chrome = {
+      runtime: { getURL: function (p) { return 'chrome-extension://omitone/' + p; } },
+      storage: {
+        local: {
+          get: function (keys, cb) {
+            gets.push(keys);                          // 「几发问存储、问了哪几枚键」要读得回来，不能由测试宣称
+            if (o.hang) return;                       // 回调不回来 = 真值还没读到，这一格要单独测
+            // 页面那一支一次问**两枚键**（医生开关 + 联网搜索开关）；两格各自由调用方给值，
+            // 都没给时交空对象 = 两枚键都缺席（老用户的真实存档）
+            cb(o.storeVal === undefined && o.wsVal === undefined
+              ? {} : storeOf(o.storeVal, o.wsVal));
+          },
+          set: function (obj, cb) { writes.push(obj); if (cb) cb(); }
+        },
+        onChanged: { addListener: function (fn) { listeners.push(fn); } }
+      }
+    };
+    var pagePet = {
+      roleBase: '', els: { img: img, roleProp: roleProp, wrap: wrap },
+      host: { isConnected: !o.disconnected, dataset: {} }
+    };
+    var doc = { hidden: !!o.bg };
+    // 问模型桩：默认配置没 Key（→ no-key，连请求体都不拼）；带 cfg 的格子自选 apiFetch 行为。
+    // fetchCalls 记账，让「没填 Key 一步都不发」有账可查
+    var cfg = o.cfg || { apiType: 'openai', apiKey: '', model: '', apiUrl: '' };
+    var fetchCalls = [];
+    // 记账必须无条件发生：桩由调用方换掉时，「一步都没发」那格就变成没人数的假账
+    // body 也要记下 —— 「这一发到底带没带 tools」只能从发出去的字节里读，不能由测试自己宣称
+    var apiFetchStub = function (url, opts) {
+      fetchCalls.push({ url: String(url), method: opts && opts.method,
+        body: opts && typeof opts.body === 'string' ? opts.body : '' });
+      if (o.apiFetch) return o.apiFetch(url, opts);
+      return Promise.resolve({ success: false, error: 'stub-fetch' });
+    };
+    // 判断层与联网那把尺**各占一格缺席**：no-diagnose（体检没尺）与 no-lib（搜索没登记）
+    // 症状都是"她不说/不搜"，修复方向一个在 libs/diagnose.js、一个在 manifest —— 合并注入就测不出来
+    var selfStub = {};
+    if (!o.noDx) selfStub.OmitoneDiagnose = D;
+    if (!o.noWs) selfStub.OmitoneWebSearch = o.wsFake ? o.wsFake : WS;
+    var api = DoctorFactory.call(null, chrome, selfStub, pagePet,
+      function () { return { ART: { ROLES: roles } }; },
+      function (nme, line) { says.push({ name: nme, line: String(line) }); return o.blockSay ? '' : String(line); },
+      { now: function () { return clock.t; } },
+      function (fn, ms) { timers.push({ fn: fn, ms: ms }); return timers.length; },
+      function (id) { if (id) timers[id - 1] = null; }, doc,
+      cfg, apiFetchStub,
+      function (k) { return String(k || '').trim(); },
+      { PET_DOCTOR_SYSTEM: 'stub-system' },
+      function (u) { return String(u || '') + '/openai'; },
+      function (u) { return String(u || '') + '/claude'; },
+      function (u, m, k) { return String(u || '') + '/gemini'; });
+    return { api: api, says: says, clock: clock, img: img, pagePet: pagePet, roleProp: roleProp,
+      timers: timers, listeners: listeners, writes: writes, gets: gets, baseSrc: baseSrc, wrap: wrap, doc: doc,
+      cfg: cfg, fetchCalls: fetchCalls };
+  };
+  var hardNeedle = sev3.needles[0];
+  // 换码那几格必须挑**同一等级**的另一条：等级低一格的结论在排序里永远排到第二，
+  // 说出来的还是上一条硬伤，测到的就不是「换码」而是「冷却」（AGENTS §5「注入只破那一格」）
+  var altNeedle = sameHard.needles[0];
+
+  // ---- ⑮ 三态：真值还没读到那一格 ----
+  var hAng = mkDoctor({ hang: true });
+  hAng.api.note('error', hardNeedle);
+  check('⑮ 开关真值**还没读回来**（storage 回调没进来）时不许抢在开关前面说话：`doctorOn` 停在 null、气泡一次都没弹，' +
+    '但日志照旧记进环 —— 「还不知道」既不当成开着、也不当成关着，记账更不被一起圈掉（AGENTS §2 #16(b)）',
+    hAng.api.flag() === null && hAng.says.length === 0 && hAng.api.ring().length === 1,
+    JSON.stringify({ flag: hAng.api.flag(), says: hAng.says.length, ring: hAng.api.ring().length }));
+
+  // ---- ⑯ 「关」的三格与默认关 ----
+  var hZero = mkDoctor({ storeVal: 0 });
+  var hFalse = mkDoctor({ storeVal: false });
+  var hDefault = mkDoctor({});
+  var hOne = mkDoctor({ storeVal: 1 });
+  hZero.api.note('error', hardNeedle);
+  hFalse.api.note('error', hardNeedle);
+  hOne.api.note('error', hardNeedle);
+  hDefault.api.note('error', hardNeedle);
+  await flush();
+  check('⑯ 「关」认**三格**：`0`（弹窗真写出去的值）、`false`、以及**键缺席** —— 医生改成默认关之后' +
+    '（开口前会花 Key，不许用户看不见时默认烧钱），没写过这枚键的用户就是关；只有 `1`/`true` 算开。' +
+    '无论开还是关，warn 都先进环 —— 静音不等于忘记',
+    hZero.api.flag() === false && hFalse.api.flag() === false && hDefault.api.flag() === false &&
+      hZero.says.length === 0 && hFalse.says.length === 0 && hDefault.says.length === 0 &&
+      hZero.api.ring().length === 1 && hOne.api.flag() === true && hOne.says.length === 1,
+    JSON.stringify({ zero: [hZero.api.flag(), hZero.says.length, hZero.api.ring().length],
+      falseVal: [hFalse.api.flag(), hFalse.says.length, hFalse.api.ring().length],
+      absent: [hDefault.api.flag(), hDefault.says.length], one: [hOne.api.flag(), hOne.says.length] }));
+
+  // ---- ⑰ 两侧同一把尺 ----
+  var scaleVals = [undefined, 0, 1, false, true];
+  var scaleDiff = scaleVals.filter(function (v) {
+    var contentSide = mkDoctor({ storeVal: v }).api.flag();
+    var popupSide = popupOn ? popupOn(storeOf(v)) : null;
+    return contentSide !== popupSide;
+  });
+  check('⑰ 弹窗回读那一条谓词与页面 `isDoctorOn` 对同一批存档值判出**同一个开/关**（逐个试 ' +
+    scaleVals.map(function (v) { return String(v); }).join(' / ') + '）—— 基准不同就出现「界面显示开着、她一句话不说」，' +
+    '两边都不报错（AGENTS §2 #23）。键名两侧也得是同一枚：弹窗的读回与写成都用**页面读回来的那个键**定位，定位不到就是分叉',
+    !!popupOn && !!popupWriteSpan && scaleDiff.length === 0,
+    JSON.stringify({ mismatch: scaleDiff, readFound: !!popupReadSpan, writeFound: !!popupWriteSpan,
+      contentKey: KEY_NAME, popupTrue: popupOn ? popupOn(storeOf(1)) : null,
+      popupFalse: popupOn ? popupOn(storeOf(false)) : null }));
+
+  // ---- ⑱ info 只攒证据 ----
+  var hInfo = mkDoctor({ storeVal: 1 });
+  hInfo.api.note('info', hardNeedle);
+  check('⑱ info 级只攒证据、不触发判断（一条 warn 就判一次 = 每拍都在体检）；环里那条还在',
+    hInfo.says.length === 0 && hInfo.api.ring().length === 1,
+    JSON.stringify({ says: hInfo.says.length, ring: hInfo.api.ring().length }));
+
+  // ---- ⑲ 环有界，丢的是最旧 ----
+  var hRing = mkDoctor({});
+  var ringExtra = 50;
+  for (var ri = 0; ri < RING_MAX + ringExtra; ri++) hRing.api.note('info', 'msg' + ri);
+  var ringNow = hRing.api.ring();
+  check('⑲ 环满丢**最旧**：灌进 ' + (RING_MAX + ringExtra) + ' 条只剩 `DOCTOR_RING_MAX`（从源码读回来 = ' + RING_MAX +
+    '）条，第一条正好是第 ' + ringExtra + ' 号 —— 环无限长是内存漏洞，丢错方向则把刚出的事挤掉',
+    Number.isFinite(RING_MAX) && ringNow.length === RING_MAX && ringNow[0].message === 'msg' + ringExtra &&
+      ringNow[ringNow.length - 1].message === 'msg' + (RING_MAX + ringExtra - 1),
+    JSON.stringify({ cap: RING_MAX, len: ringNow.length, first: ringNow[0] && ringNow[0].message,
+      last: ringNow[ringNow.length - 1] && ringNow[ringNow.length - 1].message }));
+
+  // ---- ⑳ 体检节流 ----
+  var hTh = mkDoctor({ storeVal: 1 });
+  hTh.api.note('error', hardNeedle);
+  await flush();                             // 第一发真说完（派发是异步的）
+  hTh.clock.t += 1000;                       // 没到地板
+  hTh.api.note('error', altNeedle);
+  var thBlocked = hTh.says.length;           // 节流闸在 doctorNote 同步段，这一读不用等
+  hTh.clock.t += THROTTLE + 1;
+  hTh.api.note('error', altNeedle);
+  await flush();
+  check('⑳ 两次体检之间有 `DOCTOR_ANALYZE_MS`（读回来 = ' + THROTTLE + ' 毫秒）的地板：抖动日志只判一次，过点才判第二次。' +
+    '这一格特意**换一枚同等级、不同码**的结论来测，免得被下面那把冷却闸挡住、报成「节流真生效了」（自证式假绿）',
+    Number.isFinite(THROTTLE) && thBlocked === 1 && hTh.says.length === 2,
+    JSON.stringify({ throttle: THROTTLE, blocked: thBlocked, after: hTh.says.length, stamps: hTh.api.stamps() }));
+
+  // ---- ㉑ 同一结论的冷却 ----
+  var hCd = mkDoctor({ storeVal: 1 });
+  hCd.api.note('error', hardNeedle);            // A 说出（异步落话）
+  await flush();
+  hCd.clock.t += THROTTLE + 1;
+  hCd.api.note('error', altNeedle);             // B 同等级、时间更新 → 顶上；冷却不该拦别的码
+  await flush();
+  var cdOtherCode = hCd.says.length;
+  hCd.clock.t += THROTTLE + 1;
+  hCd.api.note('error', altNeedle);             // 还是 B：过了节流地板、没过 5 分钟冷却 → 收声（同步格）
+  var cdBlocked = hCd.says.length;
+  hCd.clock.t += GAP + THROTTLE + 1;
+  hCd.api.note('error', altNeedle);             // 过冷却 → 又能说
+  await flush();
+  check('㉑ 同一个结论码在 `DOCTOR_GAP_MS`（读回来 = ' + GAP + ' 毫秒）内最多打扰一次；换一枚结论码立刻能说；' +
+    '过了冷却又能再说 —— 三把少任何一把，要么变成刷屏、要么变成哑药。' +
+    '故意不 wipe 环：wipe 会把 lastCode 一起抹掉，「过冷却又能说」就变成一条恒真的自证',
+    Number.isFinite(GAP) && cdOtherCode === 2 && cdBlocked === 2 && hCd.says.length === 3,
+    JSON.stringify({ gap: GAP, otherCode: cdOtherCode, blockedWithinGap: cdBlocked, afterGap: hCd.says.length }));
+
+  // ---- ㉒ 她开口的等级地板 ----
+  var hSoft = mkDoctor({ storeVal: 1 });
+  hSoft.api.note('warn', sev0.needles[0]);
+  check('㉒ 她本人只替「这一路走不通」以上说话（地板 `DOCTOR_MIN_SEVERITY` 读回来 = ' + MIN_SEV + '）：提醒级' +
+    '（比如「这门刷完了」）交给卡片，不许为一句报平安打断刷课；但那条结论照旧进了环',
+    Number.isFinite(MIN_SEV) && hSoft.says.length === 0 && hSoft.api.ring().length === 1 &&
+      hSoft.api.stamps().lastCode === '',
+    JSON.stringify({ floor: MIN_SEV, says: hSoft.says.length, ring: hSoft.api.ring().length, stamps: hSoft.api.stamps() }));
+
+  // ---- ㉓ 换装与卸装 ----
+  var doctorFile = 'chrome-extension://omitone/popup/' + roles.doctor.file;
+  var hD = mkDoctor({ storeVal: 1 });
+  hD.api.note('error', hardNeedle);
+  await flush();                             // 换装发生在问模型之后（异步落地）
+  var dressedSrc = hD.img.src;
+  var dressedRole = hD.pagePet.host.dataset.role;
+  var dressedProp = hD.roleProp.shown;
+  var baseKept = hD.pagePet.roleBase === hD.baseSrc;
+  hD.api.roleOff();
+  check('㉓ 说话之前先换上医生装：图临时换成 `ROLES.doctor.file`（文件名从池子里读回来 = ' + roles.doctor.file +
+    '）、dataset.role 记名、道具显影，换之前那身在穿的 original 留在 roleBase 里；卸装后回到那一身、dataset 清干净 —— ' +
+    '「修完换回原来的衣服」是用户点名的巧思，全程一次 `storage.set` 都没发生',
+    dressedSrc === doctorFile && dressedRole === 'doctor' && dressedProp === true && baseKept &&
+      hD.img.src === hD.baseSrc && hD.pagePet.host.dataset.role === undefined &&
+      hD.roleProp.shown === false && hD.writes.length === 0,
+    JSON.stringify({ want: doctorFile, dressed: dressedSrc, role: dressedRole, prop: dressedProp,
+      baseKept: baseKept, afterOff: hD.img.src, writes: hD.writes.length }));
+
+  // ---- ㉔ 说不成/不在场/问的那一会儿被关掉，三处都要把行头收干净 ----
+  var hNoSay = mkDoctor({ storeVal: 1, blockSay: true });
+  hNoSay.api.note('error', hardNeedle);
+  var hAway = mkDoctor({ storeVal: 1, disconnected: true });
+  hAway.api.note('error', hardNeedle);
+  var hSwitch = mkDoctor({ storeVal: 1 });
+  hSwitch.api.note('error', hardNeedle);        // 过了闸、正在问模型（话还没落）
+  hSwitch.listeners.forEach(function (fn) { fn(storeOf({ newValue: 0 }), 'local'); });   // 这一拍把开关关掉
+  await flush();
+  check('㉔ 气泡没弹成（`pagePetSayFrom` 交回空串，尝试那一次仍数得到）时行头当场收回、不许一个人挂着；' +
+    '她不在场（宿主没连着）时既不说话也不换装；**问模型的那一会儿开关被关掉**：回话到手也要重过一遍闸 —— ' +
+    '收到也不说（late 格单独点名 `switch-off-late`），行头从没挂上 —— ' +
+    '三处「说了/没说」与「穿/没穿」必须成对，否则界面留着一身白大褂做着一件没做的事',
+    hNoSay.says.length === 1 && hNoSay.img.src === hNoSay.baseSrc &&
+      hNoSay.pagePet.host.dataset.role === undefined && hAway.says.length === 0 &&
+      hAway.img.src === hAway.baseSrc && hAway.pagePet.host.dataset.role === undefined &&
+      hSwitch.says.length === 0 && hSwitch.img.src === hSwitch.baseSrc &&
+      hSwitch.api.flag() === false && hSwitch.api.skip() === 'switch-off-late',
+    JSON.stringify({ noSay: { says: hNoSay.says.length, src: hNoSay.img.src, role: hNoSay.pagePet.host.dataset.role },
+      away: { says: hAway.says.length, src: hAway.img.src, role: hAway.pagePet.host.dataset.role },
+      switchOff: { says: hSwitch.says.length, flag: hSwitch.api.flag(), src: hSwitch.img.src, skip: hSwitch.api.skip() } }));
+
+  // ---- ㉕ 她**看不见**的时候不换装（后台 / 被收起）----
+  var hBg = mkDoctor({ storeVal: 1, bg: true });
+  hBg.api.note('error', hardNeedle);
+  var hTuck = mkDoctor({ storeVal: 1, tucked: true });
+  hTuck.api.note('error', hardNeedle);
+  var hShown = mkDoctor({ storeVal: 1 });
+  hShown.api.note('error', hardNeedle);
+  await flush();
+  check('㉕ 标签页在后台、她被收起时，医生**既不换装也不说话**，并且点名是哪一道闸挡的（bg / hidden）；' +
+    '对照格：同一条硬伤、她在场 → 换装 + 开口 + 归因格擦干净。两格被挡时那条日志照旧留在环里（静音不等于忘记）。' +
+    '⚠️ 只取「看不见」那两道，不许顺手把 busy／减少动态一起抄进来 —— 体检是一句话不是动画，被它们压掉就变成有硬伤也不吭声',
+    hBg.says.length === 0 && hBg.img.src === hBg.baseSrc && hBg.api.skip() === 'bg' &&
+      hBg.api.ring().length === 1 && hTuck.says.length === 0 && hTuck.img.src === hTuck.baseSrc &&
+      hTuck.api.skip() === 'hidden' && hTuck.api.ring().length === 1 &&
+      hShown.says.length === 1 && hShown.img.src === doctorFile && hShown.api.skip() === '',
+    JSON.stringify({ bg: [hBg.says.length, hBg.api.skip(), hBg.api.ring().length],
+      tucked: [hTuck.says.length, hTuck.api.skip(), hTuck.api.ring().length],
+      shown: [hShown.says.length, hShown.api.skip(), hShown.img.src === doctorFile] }));
+
+  // ---- ㉖ 「这一拍为什么没说」八格各占一名 ----
+  var dUnknown = mkDoctor({ hang: true });
+  dUnknown.api.note('error', hardNeedle);
+  var dOff = mkDoctor({ storeVal: 0 });
+  dOff.api.note('error', hardNeedle);
+  // dTh 的第一发**故意让问模型挂起**（neverFetch）：不然收尾给 dNoSay 的那一发 flush
+  // 会把它叫醒、让它把话说出去，throttle 那一格就被自己擦掉了（AGENTS §5「先钉住共享状态」）
+  var dTh = mkDoctor({ storeVal: 1, cfg: { apiKey: 'k', model: 'm', apiUrl: 'u' }, apiFetch: neverFetch });
+  dTh.api.note('error', hardNeedle);
+  dTh.api.note('error', altNeedle);                 // 第二发没过地板 → throttle
+  var dQuiet = mkDoctor({ storeVal: 1 });
+  dQuiet.api.note('warn', sev0.needles[0]);         // 提醒级 → quiet（同步格）
+  var dNoPet = mkDoctor({ storeVal: 1, disconnected: true });
+  dNoPet.api.note('error', hardNeedle);
+  var dCd = mkDoctor({ storeVal: 1 });
+  dCd.api.note('error', hardNeedle);
+  await flush();                                    // A 说出 → lastCode 落档
+  dCd.clock.t += THROTTLE + 1;                      // 过了地板、没过 5 分钟冷却 → cooldown（同步格）
+  dCd.api.note('error', hardNeedle);
+  var dNoSay = mkDoctor({ storeVal: 1, blockSay: true });
+  dNoSay.api.note('error', hardNeedle);
+  var dNoDx = mkDoctor({ storeVal: 1, noDx: true });
+  dNoDx.api.note('error', hardNeedle);
+  await flush();                                    // dNoSay 的「气泡没弹成」是异步落地的
+  var dCells = [dUnknown, dOff, dTh, dQuiet, dNoPet, dCd, dNoSay, dNoDx];
+  var skipNames = dCells.map(function (h) { return String(h.api.skip()); });
+  check('㉖ 医生「这一拍为什么没说话」八格各有一个名字，逐格读回来必须互不相同（' + skipNames.join(' / ') + '）—— ' +
+    '只回空串时这八种成因在 e2e 与现场里长得一模一样，摘掉任何一道闸都不会有人报警' +
+    '（批次 61 给自动小动作立过的 `motionSkip` 规矩，体检这一族照抄）。' +
+    '⚠️ 名单与 doctorDeliver/doctorNote 里的出口一一对应：新增一格不登记，这一条当场红',
+    skipNames.join('|') === 'switch-unknown|switch-off|throttle|quiet|no-pet|cooldown|bubble-blocked|no-diagnose' &&
+      skipNames.filter(function (n, i) { return skipNames.indexOf(n) === i; }).length === 8,
+    JSON.stringify({ names: skipNames, says: dCells.map(function (h) { return h.says.length; }),
+      dressed: dCells.map(function (h) { return h.img.src !== h.baseSrc; }) }));
+
+  // ---- ㉗ 问模型那一发：问到了就照模型那句说 ----
+  var hAskOk = mkDoctor({
+    storeVal: 1,
+    cfg: { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://api.example.com' },
+    apiFetch: function (url, opts) {
+      return Promise.resolve({ success: true, data: { choices: [{ message: { content: ' 先把这一页刷新一下，再开一次扩展 ' } }] } });
+    }
+  });
+  hAskOk.api.note('error', hardNeedle);
+  await flush();
+  var askOkLine = hAskOk.says.length ? hAskOk.says[0].line : '';
+  check('㉗ 开关开着、Key 也在：开口**之前**先用你的 Key 问一句模型（走 `apiFetch`，POST），问到了就照模型那句说、' +
+    '不是本地标题，回话头尾空白裁掉 —— 这是弹窗里「有事用你的 Key 问一句模型」那句承诺的执行',
+    hAskOk.api.asks() === 1 && hAskOk.fetchCalls.length === 1 && hAskOk.fetchCalls[0].method === 'POST' &&
+      askOkLine === '体检：先把这一页刷新一下，再开一次扩展' &&
+      hAskOk.says.length === 1 && hAskOk.api.skip() === '',
+    JSON.stringify({ asks: hAskOk.api.asks(), calls: hAskOk.fetchCalls, line: askOkLine, skip: hAskOk.api.skip() }));
+
+  // ---- ㉘ 问失败 → 照本地结论说 ----
+  var hAskFail = mkDoctor({
+    storeVal: 1,
+    cfg: { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://api.example.com' }
+  });   // 默认 apiFetch 交 { success:false } —— 网络/服务挂掉的那一格
+  hAskFail.api.note('error', hardNeedle);
+  await flush();
+  var localLine = hShown.says.length ? hShown.says[0].line : '';   // hShown（㉕）就是没 Key 的本地对照
+  check('㉘ 问模型不通（HTTP 失败那一格）不许哑：退回本地结论照样开口，且**没 Key 的对照格说的话一模一样** —— ' +
+    '「网络坏了她也永远有话说」，只是少了模型润色那一步',
+    hAskFail.api.asks() === 1 && hAskFail.fetchCalls.length === 1 && hAskFail.says.length === 1 &&
+      hAskFail.says[0].line === localLine && localLine.indexOf('体检：') === 0,
+    JSON.stringify({ asks: hAskFail.api.asks(), line: hAskFail.says[0] && hAskFail.says[0].line, local: localLine }));
+
+  // ---- ㉙ 问挂起有硬超时，等的那一会儿并发的另一拍不跟着花钱 ----
+  var hHang = mkDoctor({
+    storeVal: 1,
+    cfg: { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://api.example.com' },
+    apiFetch: neverFetch
+  });
+  hHang.api.note('error', hardNeedle);
+  await flush();
+  var hangPending = hHang.says.length === 0 && hHang.api.asks() === 1;
+  hHang.clock.t += THROTTLE + 1;
+  hHang.api.note('error', altNeedle);        // 并发那一拍：她在问 → 不再花钱，直接照本地说
+  await flush();
+  var reentry = hHang.says.length === 1 && hHang.api.asks() === 1;
+  var ASK_TIMEOUT = constOf(contentSrc, 'DOCTOR_ASK_TIMEOUT_MS');
+  var askTimer = hHang.timers.filter(function (t) { return t && t.ms === ASK_TIMEOUT + 2000; })[0];
+  if (askTimer) askTimer.fn();               // 手动把硬超时拨响（注入的 setTimeout 是记录桩）
+  await flush();
+  var hAltCtl = mkDoctor({ storeVal: 1 });   // alt 码的本地对照（她说的第二句应与它一致）
+  hAltCtl.api.note('error', altNeedle);
+  await flush();
+  var altLocalLine = hAltCtl.says.length ? hAltCtl.says[0].line : '';
+  check('㉙ 问模型那一发带**硬超时**（`DOCTOR_ASK_TIMEOUT_MS` + 2 秒余量，读回来 = ' + (ASK_TIMEOUT + 2000) +
+    ' 毫秒）：`await` 只有超时能拦住挂起（try/catch 拦不住，AGENTS §2 #2）—— 超时拨响后退回本地结论照样开口。' +
+    '同一时刻最多一发在问：等回话的那一会儿并发的另一拍直接照本地说，`asks()` 恒 1 —— 否则一次体检烧两次钱',
+    Number.isFinite(ASK_TIMEOUT) && hangPending && reentry && !!askTimer &&
+      hHang.says.length === 2 && hHang.api.asks() === 1 &&
+      hHang.says[0].line === altLocalLine && hHang.says[1].line === localLine,
+    JSON.stringify({ askTimeout: ASK_TIMEOUT, hangPending: hangPending, reentry: reentry, timer: !!askTimer,
+      says: hHang.says.map(function (s) { return s.line; }), asks: hHang.api.asks() }));
+
+  // ---- ㉚ 没填 Key：一步都不发 ----
+  var hNoKey = mkDoctor({
+    storeVal: 1,
+    apiFetch: function () { return Promise.resolve({ success: false, error: 'must-not-be-called' }); }
+  });   // 默认 cfg 没填 Key
+  hNoKey.api.note('error', hardNeedle);
+  await flush();
+  check('㉚ 没填 Key：一步都不发 —— `asks()` 与真发出去的请求数都是 0（连请求体都不拼），' +
+    '然后照本地规矩开口 —— 弹窗里「不填 Key 只照本地规矩说」那句承诺钉在这里',
+    hNoKey.api.asks() === 0 && hNoKey.fetchCalls.length === 0 && hNoKey.says.length === 1 &&
+      hNoKey.says[0].line === localLine,
+    JSON.stringify({ asks: hNoKey.api.asks(), calls: hNoKey.fetchCalls.length,
+      line: hNoKey.says[0] && hNoKey.says[0].line }));
+
+  // ==================== 联网搜索接进「她自己体检」（任务 #183）====================
+  // 三处花钱的出口（弹窗聊天 / 让她解释 / 医生）里，**只有弹窗在 [26] 测到**的话，
+  // manifest 漏登记 `libs/web-search.js` 这一族就永远没人报警：症状是"她从来不搜"，
+  // 一条异常都不打（AGENTS §2 #18）。下面 ㉛-㉟ 把页面那一处也钉上同一把尺。
+  var WS_HOST = WS ? WS.OFFICIAL_HOST : '';
+  var TOOL_TYPE = WS && WS.toolsFor ? (WS.toolsFor({ on: true })[0] || {}).type : '';
+  var CFG_WS_OPEN = { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://' + WS_HOST };
+  var CFG_WS_RELAY = { apiType: 'openai', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://relay.example.com/v1' };
+  var CFG_WS_CLAUDE = { apiType: 'claude', apiKey: 'sk-test', model: 'stub-model', apiUrl: 'https://' + WS_HOST };
+  // 发出去的字节才算证据：这一发到底带没带 tools，只能从 body 里读（测试台不许自己宣称）
+  var wsBody = function (h) {
+    if (!h.fetchCalls.length) return null;
+    try { return JSON.parse(h.fetchCalls[0].body); } catch (e) { return null; }
+  };
+  var wsHasTools = function (h) { var b = wsBody(h); return b ? Array.isArray(b.tools) : null; };
+  var wsBodyKeys = function (h) { var b = wsBody(h); return b ? Object.keys(b).join(',') : '(没发出去)'; };
+
+  // ---- ㉛ 两侧同一枚键、同一把三态尺 ----
+  var wsVals = [undefined, 0, 1, false, true];
+  var wsPopupSide = wsVals.map(function (v) { return popWsOn ? popWsOn(storeOf(1, v)) : null; });
+  var wsPageSide = wsVals.map(function (v) { return mkDoctor({ storeVal: 1, wsVal: v }).api.wsFlag(); });
+  check('㉛ 「联网搜索」这枚开关在弹窗与页面两侧是**同一枚键名、同一把三态尺**（键名从页面首行读回 = ' + WS_KEY_NAME +
+    '，弹窗那两句读写都按这一枚键定位 —— 两边一旦分叉，这里根本匹配不到，当场红）：' +
+    '存档里 缺席 / 0 / 1 / false / true 五格，弹窗判出来的布尔与页面 `webSearchOn` 逐格相等，' +
+    '且只有 1 与 true 两格算开。各写一把尺的下场是弹窗显示"已开启"、页面那一发从来不搜，' +
+    '而且不报错、不留日志（AGENTS §2 #23 / #18 同族）',
+    !!WS && !!WS_KEY_NAME && !!popWsReadSpan && !!popWsWriteSpan &&
+      wsVals.every(function (v, i) {
+        return typeof wsPopupSide[i] === 'boolean' && wsPopupSide[i] === wsPageSide[i];
+      }) && wsPageSide[0] === false && wsPageSide[1] === false && wsPageSide[3] === false &&
+      wsPageSide[2] === true && wsPageSide[4] === true,
+    JSON.stringify({ key: WS_KEY_NAME, lib: !!WS, popRead: !!popWsReadSpan, popWrite: !!popWsWriteSpan,
+      vals: wsVals.map(function (v) { return String(v); }), popup: wsPopupSide, page: wsPageSide }));
+
+  // ---- ㉜ 两枚键一次读回；读不回来时不许猜 ----
+  var hWsOne = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN,
+    apiFetch: function () {
+      return Promise.resolve({ success: true, data: { choices: [{ message: { content: '刷新一下这一页就好' } }] } });
+    } });
+  hWsOne.api.note('error', hardNeedle);
+  await flush();
+  var hWsNoRead = mkDoctor({ hang: true, wsVal: 1, cfg: CFG_WS_OPEN });
+  hWsNoRead.api.note('error', hardNeedle);
+  await flush();
+  var askedKeys = (hWsOne.gets[0] || []).map(String);
+  check('㉜ 医生启动时**一发 `storage.get` 问两枚键**（体检开关 + 联网搜索开关，读回来 = ' + askedKeys.join(' / ') +
+    '）：分两次读就多两个"真值还没回来"的窗口，而联网那一发要在**同一次问模型**上决定花不花额外的钱，' +
+    '慢半拍那一支会被当成"用户没开"（三态里最不该塌的一格）。对照格：回调没进来时 `webSearchOn` 停在 **null**、' +
+    '一步都不问、一个请求都不发，说的还是老那句"开关真值还没读到" —— 「还不知道」不许塌进"开着"，' +
+    '也不许实现成这一拍什么都不说（AGENTS §2 #12 / #14）',
+    hWsOne.gets.length === 1 && askedKeys.length === 2 && askedKeys.indexOf(KEY_NAME) >= 0 &&
+      askedKeys.indexOf(WS_KEY_NAME) >= 0 && hWsOne.api.asks() === 1 &&
+      hWsNoRead.gets.length === 1 && hWsNoRead.api.wsFlag() === null && hWsNoRead.api.asks() === 0 &&
+      hWsNoRead.fetchCalls.length === 0 && hWsNoRead.api.skip() === 'switch-unknown',
+    JSON.stringify({ gets: hWsOne.gets.length, keys: askedKeys, asks: hWsOne.api.asks(),
+      hangFlag: hWsNoRead.api.wsFlag(), hangAsks: hWsNoRead.api.asks(),
+      hangCalls: hWsNoRead.fetchCalls.length, hangSkip: hWsNoRead.api.skip() }));
+
+  // ---- ㉝ 开关开着 + 官方域：那一份 tools 真进了请求体 ----
+  var bodyWsOn = wsBody(hWsOne);
+  check('㉝ 页面里的医生**真把联网搜索带出去了**：开关开着 + 官方域 + OpenAI 形状时，发出去的请求体里恰好一枚工具声明' +
+    '（type = ' + TOOL_TYPE + '，从 `libs/web-search.js` 的 `toolsFor` 读回来，测试台不写第二份），' +
+    '`temperature` 这一格整个不写（"带 tools 时服务端怎么对待它"没测过，没测过的参数不许照发），' +
+    '`max_tokens` 保持改动前那个数，归因格 `dataset.webSearch` 落成 on —— ' +
+    '只测弹窗那一处，manifest 漏登记这一族就是零覆盖（AGENTS §2 #18）',
+    TOOL_TYPE === 'deepseek_web_search' && !!bodyWsOn && Array.isArray(bodyWsOn.tools) &&
+      bodyWsOn.tools.length === 1 && bodyWsOn.tools[0].type === TOOL_TYPE &&
+      Object.keys(bodyWsOn.tools[0]).length === 1 && bodyWsOn.temperature === undefined &&
+      bodyWsOn.max_tokens === 320 && hWsOne.api.wsCell() === 'on' && hWsOne.fetchCalls.length === 1,
+    JSON.stringify({ cell: hWsOne.api.wsCell(), keys: wsBodyKeys(hWsOne), tools: bodyWsOn && bodyWsOn.tools,
+      max: bodyWsOn && bodyWsOn.max_tokens, url: hWsOne.fetchCalls[0] && hWsOne.fetchCalls[0].url }));
+
+  // ---- ㉞ 「带不动」的成因各占一格，互不相同，且都不许多花一次钱 ----
+  var cOff = mkDoctor({ storeVal: 1, wsVal: 0, cfg: CFG_WS_OPEN });
+  var cRelay = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_RELAY });
+  var cType = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_CLAUDE });
+  var cNoLib = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN, noWs: true });
+  var cShape = mkDoctor({ storeVal: 1, wsVal: 1, cfg: CFG_WS_OPEN,
+    wsFake: { decisionOf: function () { throw new Error('stub-throw'); } } });
+  [cOff, cRelay, cType, cNoLib, cShape].forEach(function (h) { h.api.note('error', hardNeedle); });
+  await flush();
+  var cCells = [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return String(h.api.wsCell()); });
+  var cTools = [cOff, cRelay, cType, cNoLib, cShape].map(wsHasTools);
+  check('㉞ 医生「这一发带不动联网搜索」的成因有**五格各占一名**（' + cCells.join(' / ') +
+    '），逐格读回来互不相同，并且五格**一个都没把 tools 拼进请求体**：' +
+    '用户没开开关（off）/ 地址是别人的服务器（not-official）/ 协议形状不对（type）/ ' +
+    '模块没登记（no-lib，该红的是 manifest 那一行）/ 判定本身读不出（lib-shape）—— ' +
+    '压成一格的代价是"漏登记"被说成"你没开开关"，用户听完去点开关而修不好（AGENTS §2 #12 / #18）',
+    cCells.filter(function (n, i) { return cCells.indexOf(n) === i; }).length === 5 &&
+      cCells.join('|') === 'off|not-official|type|no-lib|lib-shape' &&
+      cTools.every(function (t) { return t === false; }) &&
+      [cOff, cRelay, cType, cNoLib, cShape].every(function (h) { return h.fetchCalls.length === 1; }) &&
+      [cOff, cRelay, cType, cNoLib, cShape].every(function (h) { return h.says.length === 1; }),
+    JSON.stringify({ cells: cCells, tools: cTools, calls: [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return h.fetchCalls.length; }),
+      says: [cOff, cRelay, cType, cNoLib, cShape].map(function (h) { return h.says.length; }),
+      keys: [cOff, cRelay, cType, cNoLib, cShape].map(wsBodyKeys) }));
+
+  // ---- ㉟ 没开开关：那一发的字节形状与改动前逐字相同 ----
+  var hWsOff = mkDoctor({ storeVal: 1, wsVal: 0, cfg: CFG_WS_OPEN,
+    apiFetch: function () {
+      return Promise.resolve({ success: true, data: { choices: [{ message: { content: '刷新一下这一页就好' } }] } });
+    } });
+  hWsOff.api.note('error', hardNeedle);
+  await flush();
+  var bodyWsOffKeys = wsBodyKeys(hWsOff);
+  check('㉟ 开关没开时，医生那一发请求体的**键顺序与改动前逐字相同**（' + bodyWsOffKeys +
+    ' = model,messages,temperature,max_tokens）：新参数只许在用户明确开了那枚开关之后才出现，' +
+    '没开的人下载的字节变了、行为却没变，就是把"默认不烧钱"这句话实现成了"多带一格没人验过的参数"。' +
+    '对照 ㉝：开了以后 `temperature` 让位给 `tools`，`max_tokens` 一格不动',
+    bodyWsOffKeys === 'model,messages,temperature,max_tokens' &&
+      hWsOff.api.wsCell() === 'off' && wsHasTools(hWsOff) === false && hWsOff.api.asks() === 1,
+    JSON.stringify({ keys: bodyWsOffKeys, cell: hWsOff.api.wsCell(), asks: hWsOff.api.asks() }));
+}
+
+async function testPreviewChannelNotice() {
+  console.log('\n[28] 预览版下载口：previewPlan 六格各说各话，接线一律不许落在正式版那两个地址上（批次 135）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var popSrc = read('popup/popup.js');
+  var htmlSrc = read('popup/popup.html');
+  var relSrc = read('tools/github-release.js');
+
+  // 花括号配对取整段（函数体 / if 块两种都行）；坏了交空串，后面自证会响
+  var fnText = function (src, decl) {
+    var at = src.indexOf(decl);
+    if (at < 0) return '';
+    var start = src.indexOf('{', at);
+    if (start < 0) return '';
+    var depth = 0;
+    for (var i = start; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (!depth) return src.slice(at, i + 1); }
+    }
+    return '';
+  };
+  // 那三条地址是模板串（里面带 `${UPDATE_REPO}`），所以 eval 时把仓库名当参数喂进去
+  var repoM = popSrc.match(/(?:var|let|const)\s+UPDATE_REPO\s*=\s*["']([^"']+)["']/);
+  var REPO = repoM ? repoM[1] : '';
+  var constOf = function (src, name) {
+    var m = src.match(new RegExp('(?:var|let|const)\\s+' + name + '\\s*=\\s*([^;\\n]+);'));
+    if (!m) return NaN;
+    try { return new Function('UPDATE_REPO', 'return (' + m[1] + ')')(REPO); } catch (e) { return NaN; }
+  };
+  var arrOf = function (src, name) {
+    var m = src.match(new RegExp('var\\s+' + name + '\\s*=\\s*(\\[[\\s\\S]*?\\])\\s*;'));
+    if (!m) return null;
+    try { return new Function('return (' + m[1].replace(/\/\/[^\n]*/g, '') + ')')(); } catch (e) { return null; }
+  };
+
+  var planSrc = fnText(popSrc, 'function previewPlan(');
+  var cmpSrc = fnText(popSrc, 'function cmpVersion(');
+  var chkSrc = fnText(popSrc, 'function checkPreviewChannel(');
+  var hideSrc = fnText(popSrc, 'function hidePreviewChannel(');
+  var updSrc = fnText(popSrc, 'async function checkUpdate(');
+  // 锚点紧到只命中那一处：`if (els.doPreview)` 带花括号才是处理器，光秃秃那句在
+  // hidePreviewChannel 里也有一枚（少一个 `{` 就会切到别人的身上，AGENTS §5「锚点被定义本身命中」同族）
+  var DL_ANCHOR = 'if (els.doPreview) {';
+  var dlHits = popSrc.split(DL_ANCHOR).length - 1;
+  var dlSrc = fnText(popSrc, DL_ANCHOR);
+  var PV_ASSET = constOf(popSrc, 'UPDATE_PREVIEW_ASSET');
+  var PV_API = constOf(popSrc, 'UPDATE_PREVIEW_API');
+  var PV_ZIP = constOf(popSrc, 'UPDATE_PREVIEW_ZIP');
+  var pvAssets = arrOf(relSrc, 'PREVIEW_ASSETS');
+  var stableOnly = arrOf(relSrc, 'STABLE_ONLY_NAMES');
+  var pvTag = constOf(relSrc, 'PREVIEW_TAG');
+
+  var cmpV = null, plan = null;
+  try { cmpV = new Function('return (' + cmpSrc + ')')(); } catch (e) { cmpV = null; }
+  try {
+    // 把弹窗里那一份**真函数**取出来，喂它自己文件里的真常量 —— 探针另写一份口径就等于没测
+    plan = new Function('UPDATE_PREVIEW_ASSET', 'cmpVersion', 'return (' + planSrc + ')')(PV_ASSET, cmpV);
+  } catch (e) { plan = null; }
+
+  check('⓪ 真函数与真常量都取得到（判断层在弹窗文件顶层、可单独 eval）—— 取不到时后面每一条都是「没执行」，' +
+    '而「没执行」和「通过」在报告里长得一模一样',
+    typeof cmpV === 'function' && typeof plan === 'function' &&
+      typeof PV_ASSET === 'string' && PV_ASSET.length > 4 &&
+      typeof PV_API === 'string' && typeof PV_ZIP === 'string' &&
+      !!chkSrc && !!hideSrc && !!updSrc && !!dlSrc &&
+      Array.isArray(pvAssets) && pvAssets.length === 2 && Array.isArray(stableOnly) && stableOnly.length === 2,
+    JSON.stringify({ plan: typeof plan, cmp: typeof cmpV, asset: PV_ASSET, chk: chkSrc.length,
+      hide: hideSrc.length, upd: updSrc.length, dl: dlSrc.length, pv: pvAssets && pvAssets.length }));
+  if (typeof plan !== 'function' || typeof cmpV !== 'function' ||
+      typeof PV_API !== 'string' || typeof PV_ZIP !== 'string' || typeof PV_ASSET !== 'string' ||
+      !Array.isArray(pvAssets) || !Array.isArray(stableOnly)) return;
+
+  var STAMP = '2026-11-20T00:12:34Z';
+  // 真包发出去那一发的回包形状（tag 恒为 'preview'、版本号只写在标题上 —— cmdPreview 就是这么 POST 的）
+  var mkRel = function (over) {
+    var r = {
+      tag_name: 'preview',
+      name: '预览版 1.3.1 experimental b20261120-0812',
+      prerelease: true,
+      assets: [{ name: 'omitone-preview.zip', updated_at: STAMP }]
+    };
+    for (var k in over) r[k] = over[k];
+    return r;
+  };
+  var STABLE = '1.3.0';
+  var W = function (rel, fetched, local, stable) { return plan(rel, fetched, local, stable); };
+
+  // ---- ① 正常说话 ----
+  var shown = W(mkRel(), true, { version: '1.3.0' }, STABLE);
+  check('① 包真在、号比正式版新、还没装这一支 —— 这一格要说话，号从**标题**里读（`preview` 那个 tag 本身不带版本号），' +
+    '包的 `updated_at` 原样带出（弹窗那句「上次打包」用它，不许拿正式版的时间）',
+    shown.speak === true && shown.why === 'show' && shown.version === '1.3.1' && shown.stamp === STAMP,
+    JSON.stringify(shown));
+
+  // ---- ② 号的两处来源：tag 优先、标题兜底 ----
+  var fromTag = W(mkRel({ tag_name: 'v1.3.2' }), true, { version: '1.3.0' }, STABLE);
+  check('② 号先读 `tag_name`、读不到才退到标题 —— 两处都有号时以 tag 为准（只留一份口径，别让两个字段各说一个版本）',
+    fromTag.speak === true && fromTag.version === '1.3.2', JSON.stringify(fromTag));
+
+  // ---- ③ 没问到（404 与断网同形） ----
+  var askOff = W(mkRel(), false, { version: '1.3.0' }, STABLE);
+  var askNil = W(null, true, { version: '1.3.0' }, STABLE);
+  check('③ 没问到一律落 `ask-failed`：`res.ok` 为假（预览口还没发，这是常态）与回包读不出都算这一格 —— ' +
+    '它**不许**顺手说一句像"你网络坏了"的话，那句是正式版那一路的活儿',
+    askOff.speak === false && askOff.why === 'ask-failed' &&
+      askNil.speak === false && askNil.why === 'ask-failed',
+    JSON.stringify({ notOk: askOff, noBody: askNil }));
+
+  // ---- ④ 读不出号：绝不猜 ----
+  var noVer = W(mkRel({ name: '预览版（还没写版本号）' }), true, { version: '1.3.0' }, STABLE);
+  check('④ tag 与标题都没有版本号时落 `no-version`，**绝不猜一个号出来** —— 猜出来的号让同学以为线上真有这一版，' +
+    '点下去拿到的却不知是哪一份包（AGENTS §2 #18「认不出来就交空串，绝不猜」同一族）',
+    noVer.speak === false && noVer.why === 'no-version', JSON.stringify(noVer));
+
+  // ---- ⑤ 包不在：三种形状都闭嘴 ----
+  var emptyAssets = W(mkRel({ assets: [] }), true, { version: '1.3.0' }, STABLE);
+  var nulAssets = W({ tag_name: 'preview', name: '预览版 1.3.1 experimental', assets: null }, true, { version: '1.3.0' }, STABLE);
+  var otherAsset = W(mkRel({ assets: [{ name: 'omitone.zip', updated_at: STAMP }] }), true, { version: '1.3.0' }, STABLE);
+  check('⑤ 没得下载就闭嘴（`assets` 是空数组 / 不是数组 / 里面只有正式版那个名字）三格都落 `no-asset` —— ' +
+    '亮着按钮点下去是 GitHub 的 404 页，而它看起来像"预览版撤掉了"，不是"我们这边判错了"',
+    emptyAssets.why === 'no-asset' && nulAssets.why === 'no-asset' && otherAsset.why === 'no-asset' &&
+      emptyAssets.speak === false,
+    JSON.stringify({ empty: emptyAssets.why, nul: nulAssets.why, other: otherAsset.why }));
+
+  // ---- ⑥ 转正忘撤口 + 分格顺序 ----
+  var stale = W(mkRel({ name: '预览版 1.3.0 experimental b20260101-0000' }), true, { version: '1.3.0' }, '1.3.0');
+  var staleNewerLocal = W(mkRel({ name: '预览版 1.3.0 experimental b20260101-0000' }), true, { version: '1.2.9' }, '1.3.0');
+  check('⑥ 预览号不比正式版新（**转正之后忘了撤口**）落 `same-as-stable`，即使本地比预览号还旧也不算"有更新的可以装" —— ' +
+    '那份是旧实验包，装上只会让人一直被告知自己在用预览版。判据顺序也必须排在"已装过"之前，' +
+    '倒了就把两格合成一格，「线上口过期」与「你已经装了」从此分不开',
+    stale.why === 'same-as-stable' && staleNewerLocal.why === 'same-as-stable' && stale.speak === false,
+    JSON.stringify({ same: stale, olderLocal: staleNewerLocal }));
+
+  // ---- ⑦ 已经装了这一支 ----
+  var hasIt = W(mkRel(), true, { version: '1.3.1' }, STABLE);
+  var ahead = W(mkRel(), true, { version: '1.3.2' }, STABLE);
+  var noLocal = W(mkRel(), true, null, STABLE);
+  check('⑦ 同号与更高版本都落 `not-newer`（装了这一支的人不必再被预告一次）；读不到本地版本时不塞这一格、放行到说话 —— ' +
+    '`cmpVersion` 把 `1.3` 与 `1.3.0` 视为相同，这一族只许用那一把尺',
+    hasIt.why === 'not-newer' && ahead.why === 'not-newer' && noLocal.speak === true && noLocal.why === 'show',
+    JSON.stringify({ same: hasIt.why, higher: ahead.why, unknownLocal: noLocal.why }));
+
+  // ---- ⑧ 六格名字两两不等 ----
+  var whyList = [shown.why, askOff.why, noVer.why, emptyAssets.why, stale.why, hasIt.why];
+  var dup = whyList.filter(function (w, i) { return whyList.indexOf(w) !== i; });
+  check('⑧ 上面六格的名字两两不等（AGENTS §2 #12）—— 五格都"不说话"，但只有分开写才测得出哪一格坏了；' +
+    '压成两态时"预览口还没发"必然被划进"你装的就是最新"',
+    dup.length === 0 && new Set(whyList).size === 6, JSON.stringify({ whys: whyList, dup: dup }));
+
+  // ---- ⑨ 判断层不碰 DOM ----
+  check('⑨ 判断层一个字 DOM 都不碰（`previewPlan` 体内没有 `els` / `document` / `style`）—— 分成这样上面那些格子才能' +
+    '在 Node 里跑真函数；它一旦自己写界面，这一层就退化成"只有起浏览器才测得到"（AGENTS §5「端到端发现的问题下沉到集成层」反着走）',
+    planSrc.indexOf('els') < 0 && planSrc.indexOf('document') < 0 && planSrc.indexOf('style') < 0,
+    JSON.stringify({ els: planSrc.indexOf('els'), doc: planSrc.indexOf('document'), style: planSrc.indexOf('style') }));
+
+  // ---- ⑩ 收那一格：话与按钮一起收 ----
+  check('⑩ 收掉预览那一格时**两枚一起收**（`previewMsg` + `doPreview`，各自 `display = "none"`）—— 只收一枚就是' +
+    '「话没了、按钮还在」，点下去落到一个包里根本没东西的地址',
+    /els\.previewMsg[\s\S]{0,60}display\s*=\s*"none"/.test(hideSrc) &&
+      /els\.doPreview[\s\S]{0,60}display\s*=\s*"none"/.test(hideSrc) &&
+      hideSrc.indexOf('updateMsg') < 0,
+    JSON.stringify({ msg: hideSrc.indexOf('previewMsg'), btn: hideSrc.indexOf('doPreview'), len: hideSrc.length }));
+
+  // ---- ⑪ 落地层不越界 + 带超时 ----
+  check('⑪ 预览那一格的落地只写 `previewMsg` / `doPreview`，**一个 `updateMsg` 都不碰**（共享正式版那句等于把「预览口还没发」' +
+    '盖到刚说出口的正式版结论上，AGENTS §2 #14「谁先说话是要紧事」）；而那一发 `fetch` 外面包了 `withTimeout`' +
+    '（挂起比报错贵，`try/catch` 拦不住，AGENTS §2 #2）；不说话那一支确实调了 `hidePreviewChannel(`',
+    chkSrc.indexOf('updateMsg') < 0 && chkSrc.indexOf('previewMsg') >= 0 && chkSrc.indexOf('doPreview') >= 0 &&
+      chkSrc.indexOf('withTimeout') >= 0 && chkSrc.indexOf('hidePreviewChannel(') >= 0 &&
+      chkSrc.indexOf('plan.version') >= 0,
+    JSON.stringify({ updateMsg: chkSrc.indexOf('updateMsg'), timeout: chkSrc.indexOf('withTimeout'),
+      hide: chkSrc.indexOf('hidePreviewChannel('), ver: chkSrc.indexOf('plan.version') }));
+
+  // ---- ⑫ 两条地址都钉在 preview 那一支 ----
+  check('⑫ 查询与下载两条地址都钉在预览支上：查询走 `releases/tags/preview`、下载走 ' +
+    '`releases/download/preview/omitone-preview.zip`，两条里都不出现 `/releases/latest` —— 那一条是正式版永久直链，' +
+    '预览口挂上去就等于给所有人发实验包（1.2.9 那次「下载变成 1.2.8」的同一种形状，只是方向相反）；' +
+    '地址里那枚文件名还必须等于判「包里有没有东西」用的那个常量，两处不同名就是"判据说有包、点下去 404"',
+    PV_API.indexOf('/releases/tags/preview') >= 0 &&
+      PV_ZIP.indexOf('/releases/download/preview/omitone-preview.zip') >= 0 &&
+      PV_API.indexOf('releases/latest') < 0 && PV_ZIP.indexOf('releases/latest') < 0 &&
+      PV_ZIP.slice(PV_ZIP.lastIndexOf('/') + 1) === PV_ASSET,
+    JSON.stringify({ api: PV_API, zip: PV_ZIP, asset: PV_ASSET }));
+
+  // ---- ⑬ 与发版侧同一把尺 ----
+  check('⑬ 弹窗里那个预览附件名**逐字等于**发版工具写上去的那一个（`PREVIEW_ASSETS[0].name`），tag 也对得上 —— ' +
+    '两侧各写一份迟早分叉，分叉的表现是「包发出去了、弹窗说没有」或反过来「弹窗说有、点下去 404」',
+    pvAssets[0].name === PV_ASSET && pvTag === 'preview' &&
+      PV_API.indexOf('/' + pvTag) >= 0 && PV_ZIP.indexOf('/' + pvTag + '/') >= 0,
+    JSON.stringify({ popup: PV_ASSET, release: pvAssets[0].name, tag: pvTag, api: PV_API, zip: PV_ZIP }));
+
+  // ---- ⑭ 两族附件名不许重合 ----
+  var pvNames = pvAssets.map(function (a) { return a.name; });
+  var collide = pvNames.filter(function (n) { return stableOnly.indexOf(n) >= 0; });
+  check('⑭ 预览那两枚名字与稳定通道那两枚**一个都不重合** —— `omitone.zip` / `Omitone-manual.pdf` 出现在预览口里，' +
+    '等于把实验包挂到正式版那条永久直链上（AGENTS §7.5：附件名一改，恰好是"只会点这一个链接"的那批用户拿到 404 或错包）',
+    collide.length === 0 && pvNames.indexOf('omitone.zip') < 0 && stableOnly.indexOf('omitone-preview.zip') < 0,
+    JSON.stringify({ pv: pvNames, stable: stableOnly, collide: collide }));
+
+  // ---- ⑮ 预览按钮的处理体 ----
+  check('⑮ 预览按钮点下去用的地址只有 `UPDATE_PREVIEW_ZIP` 一个 —— 处理体内 `UPDATE_ZIP`（正式版那条）一次都不出现，' +
+    '`chrome.downloads.download` 那一发与它失败的兜底（新开标签）都指向预览包；两条地址混用就是「以为是预览、下到的是正式版」',
+    dlHits === 1 && dlSrc.indexOf('UPDATE_PREVIEW_ZIP') >= 0 && dlSrc.indexOf('UPDATE_ZIP') < 0 &&
+      dlSrc.indexOf('downloads.download') >= 0 && dlSrc.indexOf('tabs.create') >= 0,
+    JSON.stringify({ hits: dlHits, prev: dlSrc.indexOf('UPDATE_PREVIEW_ZIP'), stable: dlSrc.indexOf('UPDATE_ZIP'),
+      dl: dlSrc.indexOf('downloads.download'), tab: dlSrc.indexOf('tabs.create'), len: dlSrc.length }));
+
+  // ---- ⑯ 页面出厂状态与 els 登记 ----
+  check('⑯ 弹窗页面里那两枚（`previewMsg` / `doPreview`）**出厂就 `display:none`**，且 `els` 两枚都登记 —— ' +
+    '默认亮着的话每个打开弹窗的人都被预告一句「有预览版」，而 `previewPlan` 那一层根本没走到（AGENTS §5「断言绿有两种：' +
+    '走到了、和根本没走到那一层」）；登记漏一枚，`els.xxx` 是 undefined，说话那一支静默什么都不画',
+    /id="previewMsg"[^>]*style="display:none"/.test(htmlSrc) &&
+      /id="doPreview"[^>]*style="display:none"/.test(htmlSrc) &&
+      popSrc.indexOf('previewMsg: $("previewMsg")') >= 0 &&
+      popSrc.indexOf('doPreview: $("doPreview")') >= 0,
+    JSON.stringify({ msg: htmlSrc.indexOf('id="previewMsg"'), btn: htmlSrc.indexOf('id="doPreview"') }));
+
+  // ---- ⑰ checkUpdate 的先后 ----
+  var hideAt = updSrc.indexOf('hidePreviewChannel();');
+  var stableSetAt = updSrc.indexOf('stableRemote = remoteVersion;');
+  var finallyAt = updSrc.indexOf('} finally {');
+  var callAt = updSrc.indexOf('await checkPreviewChannel(local, stableRemote)');
+  check('⑰ 检测更新这一轮的先后：开头先 `hidePreviewChannel()`（上一轮的预览话不许留在这一轮屏幕上）；' +
+    '`let stableRemote = ""` 只在真读到线上号时赋值（查不到就写空串，不许拿上一轮的号冒充这一轮）；' +
+    '`checkPreviewChannel` 调在 `} finally {` **之后**、自己套一个 try —— 预览口挂了不许把正式版那句改口',
+    hideAt >= 0 && hideAt < stableSetAt && stableSetAt >= 0 && finallyAt >= 0 && callAt > finallyAt &&
+      updSrc.indexOf('let stableRemote = "";') >= 0 &&
+      updSrc.indexOf('checkPreviewChannel(local, stableRemote)') >= 0,
+    JSON.stringify({ hideAt: hideAt, stableSetAt: stableSetAt, finallyAt: finallyAt, callAt: callAt }));
+
+  // ---- ⑱ 稳定版那两条地址不许被顺手改掉 ----
+  var ST_API = constOf(popSrc, 'UPDATE_API');
+  var ST_ZIP = constOf(popSrc, 'UPDATE_ZIP');
+  check('⑱ 稳定版那两条地址本轮一个字没动：查询仍是 `releases/latest`、下载仍是那条永久直链 `.../latest/download/omitone.zip`，' +
+    '且与预览两条**互不相同** —— 预览这一族加进来最贵的失误就是顺手把正式版指向 preview，' +
+    '那等于从此 README 那条入口给所有人发实验包（AGENTS §7.5）',
+    typeof ST_API === 'string' && typeof ST_ZIP === 'string' &&
+      ST_API.indexOf('/releases/latest') >= 0 &&
+      ST_ZIP.indexOf('/releases/latest/download/omitone.zip') >= 0 &&
+      ST_API !== PV_API && ST_ZIP !== PV_ZIP &&
+      ST_API.indexOf('tags/preview') < 0 && ST_ZIP.indexOf('preview') < 0,
+    JSON.stringify({ stApi: ST_API, stZip: ST_ZIP, pvApi: PV_API, pvZip: PV_ZIP }));
+
+  // ---- ⑲ 说出口的那句要让人掂量，不是"有新版快点" ----
+  check('⑲ 预览那一格说出口的话必须让人**掂量**：版本号取自判据（`plan.version`，不是又拼一次），句子写清代价（可能把正在刷的课弄坏）、' +
+    '性质（实验支线）、出问题要报的三样（哪门课 · 哪一节 · 什么现象）、以及退回正式版怎么走；按钮那枚字也写明是「先掂量」—— ' +
+    '只写「有预览版可以更新」等于把实验包推给正在赶作业的人',
+    chkSrc.indexOf('plan.version') >= 0 && chkSrc.indexOf('弄坏') >= 0 && chkSrc.indexOf('实验支线') >= 0 &&
+      chkSrc.indexOf('哪门课') >= 0 && chkSrc.indexOf('哪一节') >= 0 && chkSrc.indexOf('什么现象') >= 0 &&
+      chkSrc.indexOf('重装 omitone.zip') >= 0 && htmlSrc.indexOf('先掂量') >= 0,
+    JSON.stringify({ ver: chkSrc.indexOf('plan.version'), risk: chkSrc.indexOf('弄坏'),
+      nature: chkSrc.indexOf('实验支线'), rollback: chkSrc.indexOf('重装 omitone.zip'),
+      btn: htmlSrc.indexOf('先掂量') }));
+}
+
+/** ---- [29] 批次 137：多空填空的分隔符容错（GitHub issue #2） ---- */
+/**
+ * 为什么这一段要从盘上把方法取出来真跑：`_splitFillAnswerParts` 的判据是**段数 == 格子数**，
+ * 而"切错了"这件事在页面上不留任何异常 —— 四格填了同一串、隐藏域拼了一次，
+ * 站点照样判错，只有把形状摆到方法面前才知道它切不切。
+ * ⚠️ ① 那条是闸门：拿不出方法时后面每一格都会"红 0 条"而不是"没执行"（AGENTS §5）。
+ */
+async function testFillAnswerSeparatorTolerance() {
+  console.log('\n[29] 多空填空：模型自己发明分隔符时按空切开，段数对不上照旧整串并单独说一声（批次 137）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var dom = read('src/page/75-quiz-dom.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+
+  var split = buildFrom(dom, '_splitFillAnswerParts', {});
+  var note = buildFrom(dom, '_noteFillSplitMismatch', { emitRuntimeLog: say });
+  var fillBody = bodyOf(dom, '_fillText');
+
+  check('① 两件方法都能从 75 片段原样取出来真跑，`_fillText` 里三处接线也没被删（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    typeof split === 'function' && typeof note === 'function' &&
+    fillBody.indexOf('this._splitFillAnswerParts(raw, inputs.length)') >= 0 &&
+    fillBody.indexOf('this._noteFillSplitMismatch(el, inputs.length, values, splitMode)') >= 0 &&
+    fillBody.indexOf('inputs.length >= 2 && values.length !== inputs.length') >= 0,
+    JSON.stringify({ split: typeof split, note: typeof note, body: fillBody.length }));
+  if (typeof split !== 'function' || typeof note !== 'function') return;
+
+  // 段数对上才切，是这一族唯一的闸；顺序与候选表本身也要钉住
+  var normalFirst = dom.indexOf("text.indexOf('|||')");
+  // ⚠️ 锚点必须**紧到只认那张候选表**：本片段里 `var loose` 有三处，
+  // 宽松式 `/var loose = \[([^\]]*)\]/` 先撞上第 237 行那个 `var loose = [];`，
+  // 于是读出空表、断言当场红 —— 报的是"验证没抓到"，真相是 needle 挑错了行。
+  var looseMatch = dom.match(/var loose = \[((?:\s*'[^']*'\s*,?)+)\]/);
+  var looseAt = looseMatch ? dom.indexOf(looseMatch[0]) : -1;
+  var candidates = looseMatch
+    ? (looseMatch[1].match(/'([^']*)'/g) || []).map(function (s2) { return s2.slice(1, -1); })
+    : null;
+  check('② 约定分隔符 `|||` 那把尺排在候选表之前，且候选表没有单字符分隔符（顺序反了 `甲///乙|||丙` 会先撞上 `///` 只切两段；单枚 `/` 会让 `2024/07` 被切开）',
+    normalFirst >= 0 && looseAt > normalFirst &&
+    !!candidates && candidates.length === 3 &&
+    candidates.every(function (c) { return c.length >= 2; }) &&
+    candidates.indexOf('/') < 0 && candidates.indexOf('|') < 0 && candidates.indexOf('｜') < 0 &&
+    candidates.indexOf('、') < 0 && candidates.indexOf('；') < 0,
+    JSON.stringify({ normalFirst: normalFirst, looseAt: looseAt, candidates: candidates }));
+
+  var s = function (raw, boxes) { return split(raw, boxes); };
+  var shapes = [
+    { in: '历史|||人民', boxes: 2, parts: ['历史', '人民'], mode: 'normal' },
+    { in: '甲 ||| 乙 ||| 丙 ||| 丁', boxes: 4, parts: ['甲', '乙', '丙', '丁'], mode: 'normal' },
+    { in: '1|||1|||1|||1', boxes: 4, parts: ['1', '1', '1', '1'], mode: 'normal' },
+    { in: 'A///B///C///D', boxes: 4, parts: ['A', 'B', 'C', 'D'], mode: 'loose:///' },
+    { in: 'A//B//C//D', boxes: 4, parts: ['A', 'B', 'C', 'D'], mode: 'loose://' },
+    { in: '甲｜｜｜乙｜｜｜丙｜｜｜丁', boxes: 4, parts: ['甲', '乙', '丙', '丁'], mode: 'loose:｜｜｜' }
+  ];
+  var okShapes = shapes.every(function (c) {
+    var r = s(c.in, c.boxes);
+    return r.mode === c.mode && JSON.stringify(r.parts) === JSON.stringify(c.parts);
+  });
+  check('③ 段数正好等于答题框数的四种分隔符（`|||` 含带空格、`///`、`//`、全角 `｜｜｜`）都按空切开，mode 点名是哪一种',
+    okShapes,
+    JSON.stringify(shapes.map(function (c) { var r = s(c.in, c.boxes); return { in: c.in, got: r.parts, mode: r.mode }; })));
+
+  var mixed = s('甲///乙|||丙', 2);
+  check('④ 两种分隔符混在一串里时按约定的那把尺切（`|||` 优先，不被 `///` 抢先判成「段数对不上」）',
+    mixed.mode === 'normal' && JSON.stringify(mixed.parts) === JSON.stringify(['甲///乙', '丙']),
+    JSON.stringify(mixed));
+
+  var off3 = s('A///B///C', 4);
+  var offSlash = s('A//B', 4);
+  check('⑤ 认出了非常规分隔符但段数对不上：整串原样交回，mode 单独是 `loose-count-off:<分隔符>`（这一格就是日志里那句"是哪一种"的真源）',
+    off3.mode === 'loose-count-off:///' && JSON.stringify(off3.parts) === JSON.stringify(['A///B///C']) &&
+    offSlash.mode === 'loose-count-off://' && JSON.stringify(offSlash.parts) === JSON.stringify(['A//B']),
+    JSON.stringify({ three: off3, two: offSlash }));
+
+  var verbatimIn = ['2024/07', '3/4', '甲、乙、丙、丁', 'A/B/C/D'];
+  var verbatimOut = verbatimIn.map(function (raw) { return s(raw, 4); });
+  var verbatim = verbatimOut.every(function (r, i) {
+    return r.mode === 'none' && r.parts.length === 1 && r.parts[0] === verbatimIn[i];
+  });
+  check('⑥ 答案内部的单枚 `/` 与顿号压根不是分隔符：`2024/07`、`3/4`、`甲、乙、丙、丁` 一律整串（mode `none`），不许切出四段',
+    verbatim,
+    JSON.stringify(verbatimOut));
+
+  var oneBox = s('甲///乙', 1);
+  var empty = s('', 3);
+  check('⑦ 只有一个答题框的题不许被切开（单空的答案本来就常带斜杠）；空答案是 `empty` 那一格，与「读不出」分开',
+    oneBox.mode === 'none' && JSON.stringify(oneBox.parts) === JSON.stringify(['甲///乙']) &&
+    empty.mode === 'empty' && empty.parts.length === 1 && empty.parts[0] === '',
+    JSON.stringify({ oneBox: oneBox, empty: empty }));
+
+  // 日志那一侧：三种成因各说各话 + 同一形状只说一次
+  var ctx = { _getQuestionIdFromElement: function () { return '9401'; } };
+  logs.length = 0;
+  note.call(ctx, {}, 4, ['甲///乙///丙'], 'loose-count-off:///');
+  note.call(ctx, {}, 4, ['甲///乙///丙'], 'loose-count-off:///');
+  var oncePerKey = logs.length;
+  note.call(ctx, {}, 3, ['甲///乙///丙'], 'loose-count-off:///');
+  note.call(ctx, {}, 4, ['甲'], 'none');
+  var lastTwo = logs.slice(1);
+  check('⑧「拆不出来」按「题号 + 框数 + 段数 + 分隔符」记账：同一形状第二轮复读一条都不许出，换个形状才算新事（200 条环被同一句话吃满是真事）',
+    oncePerKey === 1 && logs.length === 3,
+    JSON.stringify({ afterTwice: oncePerKey, total: logs.length }));
+  // ⚠️ 三格都先 `logs[i] &&` 再读 `.meta`：直接 `lastTwo[1].meta` 在生产被改坏、日志少一条时
+  //    会抛 TypeError 把整套件打死在半路（批次 137 注入 I 实测撞上），报出来的是"没跑到"而不是红 ——
+  //    测试台把"生产坏了"实现成崩溃，等于替生产删掉了一条断言。
+  var firstLog = logs[0] && logs[0].meta;
+  var repeatLog = lastTwo[0] && lastTwo[0].meta;
+  var shapeLog = lastTwo[1] && lastTwo[1].meta;
+  check('⑨ 日志那一格把话说全：warn 级、名字固定、`separator`/`boxes`/`parts` 三样齐，且「只有一串」与「段数不对」是两句不同的 hint（压成一句下次还得重查）',
+    !!logs[0] && logs[0].level === 'warn' && logs[0].message === 'fill answers not splittable per blank' &&
+      !!firstLog && firstLog.separator === 'loose-count-off:///' && firstLog.boxes === 4 && firstLog.parts === 1 &&
+      String(firstLog.hint).indexOf('每一格') >= 0 &&
+      !!repeatLog && repeatLog.parts === 1 && String(repeatLog.hint).indexOf('每一格') >= 0 &&
+      !!shapeLog && shapeLog.boxes === 4 && shapeLog.parts === 1,
+    JSON.stringify(logs));
+
+  logs.length = 0;
+  note.call(ctx, {}, 3, ['甲', '乙'], 'normal');
+  note.call(ctx, {}, 2, ['', '  '], 'normal');
+  var twoParts = logs[0] && logs[0].meta;
+  var blank = logs[1] && logs[1].meta;
+  check('⑩ 段数比框数少（`|||` 只给两段、三格）走的是另一句 hint「多出来的格子重复最后一格」，且全空答案要单独标 `emptyAnswer:true`',
+    !!twoParts && twoParts.hint.indexOf('重复最后一格') >= 0 && twoParts.emptyAnswer === false &&
+      !!blank && blank.emptyAnswer === true,
+    JSON.stringify({ two: twoParts, blank: blank }));
+
+  logs.length = 0;
+  var badCtx = { _getQuestionIdFromElement: function () { throw new Error('没有 qid'); } };
+  var threw = null;
+  try { note.call(badCtx, {}, 4, ['甲'], 'none'); } catch (e) { threw = String(e && e.message); }
+  check('⑪ 题号拿不到（读 DOM 抛了）不许把这一发变成异常 —— 日志照打、那一格叫 `anon`；回填路径上任何一处抛错都会把这一题悄悄丢掉',
+    threw === null && logs.length === 1 && logs[0].meta.qid === '' &&
+      String(logs[0].message) === 'fill answers not splittable per blank',
+    JSON.stringify({ threw: threw, logs: logs }));
+
+  check('⑫ 批次 16 的「不留白」口径没被这次改动带走：段数对不上时仍是**重复最后一格**而不是留空，隐藏域也仍是 `values.join(\'\')`',
+    fillBody.indexOf('values[values.length - 1]') >= 0 && fillBody.indexOf("hidden.value = values.join('')") >= 0,
+    JSON.stringify({ repeat: fillBody.indexOf('values[values.length - 1]'), join: fillBody.indexOf("hidden.value = values.join('')") }));
+}
+
+/** ---- [30] 会话任务 #185：「看到 90% 就进下一个」被「直接拖到结尾」单向绑定，且不再无声 —— */
+/**
+ * 为什么这一段要从盘上把方法取出来真跑：这一族**不报错、不留日志**，只是永远走不到 ——
+ * 「90% 提前收尾」的证据（拖到结尾两次被弹回）只有 `_trySeekToEnd` 会写，而它第一道闸就是
+ * `enableSeek`。关上上面那枚，下面那枚就成了死键，而界面一个字都不提（用户原话：
+ * 「那不就是死键了？」）。这种"声明覆盖的范围与实际走的分支之间的差"不会自己喊出来
+ *（AGENTS §2 #18 / §5），只能把方法摆到形状面前判。
+ *
+ * ⚠️ ① 那条是闸门：拿不出方法时后面每一格都会"红 0 条"而不是"没执行"（AGENTS §5）。
+ */
+async function testNinetyAdvanceBoundToSeek() {
+  console.log('\n[30] 90% 提前收尾：单向绑上「直接拖到结尾」，被放弃时点名说一次（会话任务 #185）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var media = read('src/page/40-media.js');
+  var tasks = read('src/page/62-tasks-run.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+
+  var getKey = buildFrom(media, '_getMediaSeekKey', {});
+  // 会话任务 #231 第 1 档：钥匙经兄弟方法归一，假 app 少挂这一件就是 TypeError（AGENTS §5「没跑到」同族）
+  var stablePath = buildFrom(media, '_mediaStablePath', {});
+  var rateLocked = buildFrom(media, '_isRateLockedAtOne', {});
+  var isNinety = buildFrom(media, '_isNinetyPercentVideo', {});
+  var noteSkip = buildFrom(media, '_noteSeekSkip', { emitRuntimeLog: say });
+  var seekCovers = buildFrom(media, '_seekableCovers', {});
+  var deferSeek = buildFrom(media, '_deferSeekUntilSeekable', { emitRuntimeLog: say });
+  var trySeek = buildFrom(media, '_trySeekToEnd', { emitRuntimeLog: say });
+  var qTtlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantine = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: qTtlR });
+  var noteHeld = buildFrom(media, '_noteNinetyHeldBack', { emitRuntimeLog: say });
+  var shouldAdvance = buildFrom(media, '_shouldAdvanceAtNinetyPercent', { emitRuntimeLog: say });
+  // 站点标语那一族（会话任务 #193）：这一段的 app 必须把它们挂上 —— 少了任何一件，
+  // `shouldAdvance` 里那一下调用就是 TypeError，而**整个方法体套在 try/catch 里**，
+  // 于是返回 false、一句日志都不出：症状与"生产把这句话删了"一模一样（AGENTS §5「断言绿有两种」）
+  var condNoDrag = buildFrom(media, '_siteConditionNoDrag', {});
+  var readCond = buildFrom(media, '_readSiteSeekCondition', {});
+  var siteCond = buildFrom(media, '_siteSeekCondition', { emitRuntimeLog: say });
+  var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
+  // 批次 173 / #199：`_shouldAdvanceAtNinetyPercent` 绑的那一句从「只问站点卡片原话」扩成
+  //   **再问一句课程格**（同一门课里已经认出来过一次），而日志里的 `dragSource` 换成三源合成的
+  //   `_seekNoDragSource`（弹回过 / 卡片原话 / 同一门课认过一次）—— 三条都不许在日志里塌成一格（§2 #12）。
+  //   ⚠️ 绑定那一格**故意不含 `reverted`**：那份账只有 `_trySeekToEnd` 会写，而它第一行就被 `enableSeek`
+  //     挡下 —— 用户中途关掉就该立刻失效，不许继续吃上一轮翻开关留下的旧证据（#185 的"单向"那半截，⑤ 钉的就是它）。
+  //   这一族整套挂在 try/catch 里，少挂一件就是 TypeError → 返回 false → 与"生产删了这句话"同形（AGENTS §5）。
+  var gNeedR = Number((media.match(/_COURSE_GUARD_NEED:\s*(\d+)/) || [])[1] || 0);
+  var gTtlR = Number((media.match(/_COURSE_GUARD_TTL_MS:\s*(\d+)/) || [])[1] || 0);
+  var gKeyR = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
+  var gId = buildFrom(media, '_courseGuardId', {});
+  var gCell = buildFrom(media, '_courseGuardCell', { emitRuntimeLog: say });
+  var gPersist = buildFrom(media, '_persistCourseGuard', { emitRuntimeLog: say });
+  var gHit = buildFrom(media, '_courseGuardHit', { emitRuntimeLog: say });
+  var gNote = buildFrom(media, '_noteCourseGuard', { emitRuntimeLog: say });
+  var gClear = buildFrom(media, '_clearCourseGuard', { emitRuntimeLog: say });
+  var gSay = buildFrom(media, '_sayCourseGuard', { emitRuntimeLog: say });
+  var gSkip = buildFrom(media, '_noteCourseGuardRateSkipped', { emitRuntimeLog: say });
+  var gSource = buildFrom(media, '_seekNoDragSource', {});
+  // 门课号要给：认不出课的那一格会**单独说一句 warn**（㉕ 钉的就是它），留空会把这一段的
+  // `logs.length` 类断言顶成"多出一条与本轮无关的话"。每枚 app 各带一本自己的存储。
+  var guardKit = function () {
+    return {
+      _COURSE_GUARD_NEED: gNeedR, _COURSE_GUARD_TTL_MS: gTtlR, _COURSE_GUARD_KEY: gKeyR,
+      _courseGuard: null, _guardStore: Object.create(null),
+      _readSessionLedger: function (k) { var v = this._guardStore[String(k || '')]; return v ? JSON.parse(v) : null; },
+      _writeSessionLedger: function (k, v) { this._guardStore[String(k || '')] = JSON.stringify(v); },
+      _currentStudyParams: function () { return { courseid: 'COURSE_30', clazzid: 'CLASS_30' }; },
+      _courseGuardId: gId, _courseGuardCell: gCell, _persistCourseGuard: gPersist,
+      _courseGuardHit: gHit, _noteCourseGuard: gNote, _clearCourseGuard: gClear,
+      _sayCourseGuard: gSay, _noteCourseGuardRateSkipped: gSkip, _seekNoDragSource: gSource
+    };
+  };
+  var isFinished = buildFrom(tasks, '_isDocumentFrameFinished', {
+    textOf: function (el) { return String((el && el.textContent) || ''); }
+  });
+
+  var gateBody = bodyOf(media, '_shouldAdvanceAtNinetyPercent');
+  var heldBody = bodyOf(media, '_noteNinetyHeldBack');
+  var seekBody = bodyOf(media, '_trySeekToEnd');
+
+  var allFnsMedia = [getKey, stablePath, rateLocked, isNinety, noteSkip, seekCovers, deferSeek, trySeek, quarantine, noteHeld,
+    shouldAdvance, isFinished, condNoDrag, readCond, siteCond, siteNoDrag,
+    gId, gCell, gPersist, gHit, gNote, gClear, gSay, gSkip, gSource];
+  check('① 廿五件（原十四件 + 批次 173 的课程格九件 + 隔离谓词一件 + 钥匙归一一件，其中 `_seekNoDragSource` 是日志里点名归因的那一句）'
+    + '都能从盘上原样取出来真跑，绑定那一格也确实写进 `_shouldAdvanceAtNinetyPercent`，'
+    + '而且绑的是**两半**：`enableSeek` 关上时还要再问一句「有没有**不必动手拖**的证据」（站点卡片原话 / 同一门课认过一次）'
+    + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    allFnsMedia.every(function (f) { return typeof f === 'function'; }) && qTtlR > 0 &&
+      gNeedR > 0 && gTtlR > 0 && gKeyR.length > 0 &&
+      gateBody.indexOf("if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek'))") >= 0 &&
+      gateBody.indexOf('this._noteNinetyHeldBack(video)') >= 0,
+    JSON.stringify({
+      key: typeof getKey, stable: typeof stablePath, rate: typeof rateLocked, ninety: typeof isNinety, skip: typeof noteSkip,
+      covers: typeof seekCovers, defer: typeof deferSeek,
+      seek: typeof trySeek, held: typeof noteHeld, gate: typeof shouldAdvance, fin: typeof isFinished,
+      cond: [typeof condNoDrag, typeof readCond, typeof siteCond, typeof siteNoDrag].join('/'),
+      guard: [typeof gId, typeof gCell, typeof gPersist, typeof gHit, typeof gNote,
+        typeof gClear, typeof gSay, typeof gSkip, typeof gSource].join('/'),
+      gateBody: gateBody.length, heldBody: heldBody.length
+    }));
+  if (!allFnsMedia.every(function (f) { return typeof f === 'function'; })) return;
+
+  // ---- 死键的成因先钉住：那份证据只有一个写入口，而写入口第一道闸就是 enableSeek ----
+  // ⚠️ 按**字符偏移**判"这处赋值在不在 _trySeekToEnd 体内"，别按行算（AGENTS §2 #1 那条同一族：
+  //    按行算会在同行闭合的形状上出错）。剥注释也不需要 —— 这里要的是赋值，注释里没有 `=`。
+  var writes = [];
+  var wRe = /_seekRevertedKeys\s*(\[[^\]]*\])?\s*=\s*[^=]/g;
+  var wm;
+  while ((wm = wRe.exec(media)) !== null) writes.push(wm.index);
+  var seekBounds = boundsOf(media, '_trySeekToEnd');
+  var allInside = writes.length > 0 && writes.every(function (at) {
+    return at >= seekBounds.start && at < seekBounds.end;
+  });
+  var enableGateAt = seekBody.indexOf('this.configs.enableSeek');
+  var firstWriteRel = seekBody.indexOf('_seekRevertedKeys');
+  check('②「拖到结尾两次被弹回」这份证据**只有一个写入口**（`_trySeekToEnd`），而它第一道闸就是 `enableSeek`，且闸排在任何写入之前 —— 关上那枚就永远拿不到证据，这就是死键的成因',
+    allInside && enableGateAt >= 0 && firstWriteRel > enableGateAt,
+    JSON.stringify({ writes: writes.length, allInside: allInside, gateAt: enableGateAt, firstWrite: firstWriteRel }));
+
+  // ---- 同一个成因的行为侧：关上那枚时，_trySeekToEnd 连账本都不新建，只把「为什么没试」记一笔 ----
+  var mkSeekVideo = function (src) {
+    var rec = { writes: [], cur: 20 };
+    var v = {
+      tagName: 'VIDEO', isConnected: true, duration: 1401.4,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + src + '.mp4', __rec: rec
+    };
+    Object.defineProperty(v, 'currentTime', {
+      get: function () { return rec.cur; },
+      set: function (n) { rec.writes.push(n); }
+    });
+    v.seekable = { length: 1, start: function () { return 0; }, end: function () { return 1401.4; } };
+    return v;
+  };
+  var seekApp = {
+    configs: { enableSeek: false, advanceAtNinetyPercent: true },
+    _rateProbing: false, _captchaActive: false, _activeJobId: '',
+    _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
+    _isMediaQuarantined: quarantine,
+    _workerDelay: function () {}, _isRateLockedAtOne: function () { return true; },
+    _getMediaSeekKey: getKey, _mediaStablePath: stablePath, _noteSeekSkip: noteSkip,
+    // ⚠️ 区间闸那两件也必须挂上来 —— 反向验证 G 轮把 `enableSeek` 那道闸改成"记一笔不退回"，
+    //    执行流就走到 `_deferSeekUntilSeekable`， harness 里没有它 → TypeError 把整套件打死在半路，
+    //    报出来的是"集成层没交出总账"而不是 ③ 红。**测试台把"生产坏了"实现成崩溃，等于替生产删掉一条断言。**
+    //    挂真方法而不是桩：桩要打在"那个会把页面带走的动作"上，而这里 return false 是个**决定**，
+    //    写了它就不测区间那一格了（AGENTS §5「桩要打在动作上」）。夹具的 `seekable` 恒含整支，
+    //    所以干净树上它照旧 return false、③ 的行为一个字没变。
+    _seekableCovers: seekCovers, _deferSeekUntilSeekable: deferSeek,
+    _trySeekToEnd: trySeek
+  };
+  var sv = mkSeekVideo('deadkey');
+  var svKey = seekApp._getMediaSeekKey(sv);
+  var seekRet = trySeek.call(seekApp, sv, 'itest-185');
+  var skipRec = seekApp._seekSkipLedger && seekApp._seekSkipLedger[svKey];
+  check('③ `enableSeek:false` 时 `_trySeekToEnd` 当场退回：不写 currentTime、不新建 `_seekRevertedKeys`，只把「disabled」记进 skip 账（这一族以前在盘上是零证据）',
+    seekRet === false && sv.__rec.writes.length === 0 && !seekApp._seekRevertedKeys &&
+      !!skipRec && skipRec.last === 'disabled' && skipRec.n === 1,
+    JSON.stringify({ ret: seekRet, writes: sv.__rec.writes.length, reverted: !!seekApp._seekRevertedKeys, skip: skipRec }));
+
+  // ---- 判据矩阵的夹具：一支"除了拖拽证据，其余全都成立"的视频 ----
+  var mkDoc = function (marker) {
+    return {
+      querySelector: function () { return marker ? { className: 'ans-job-finished' } : null; },
+      defaultView: null
+    };
+  };
+  var mkMedia = function (opt) {
+    opt = opt || {};
+    var v = {
+      tagName: opt.tagName || 'VIDEO',
+      duration: opt.duration == null ? 100 : opt.duration,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + (opt.src || 'a1') + '.mp4',
+      ownerDocument: mkDoc(opt.marker !== false)
+    };
+    Object.defineProperty(v, 'currentTime', { get: function () { return opt.current == null ? 90 : opt.current; } });
+    return v;
+  };
+  function mkGateApp(cfg) {
+    return Object.assign({
+      configs: cfg,
+      _detectedMaxRate: 1,
+      _seekRevertedKeys: Object.create(null),
+      _ninetyHeldBackKeys: null,
+      _activeJobId: 'job-910000001',
+      _getMediaSeekKey: getKey,
+      _mediaStablePath: stablePath,
+      _isRateLockedAtOne: rateLocked,
+      _isNinetyPercentVideo: isNinety,
+      _noteNinetyHeldBack: noteHeld,
+      _isDocumentFrameFinished: isFinished,
+      _siteConditionNoDrag: condNoDrag,
+      _readSiteSeekCondition: readCond,
+      _siteSeekCondition: siteCond,
+      _siteSaysNoDrag: siteNoDrag,
+      _shouldAdvanceAtNinetyPercent: shouldAdvance
+    }, guardKit());
+  }
+  var ON = { enableSeek: true, advanceAtNinetyPercent: true };
+  var OFF = { enableSeek: false, advanceAtNinetyPercent: true };
+  var heldCount = function () {
+    return logs.filter(function (l) { return l.message === 'advance at 90% held back: seek disabled'; }).length;
+  };
+
+  // 旧行为那一支：证据齐了就提前收尾，而且一句"被放弃"都不许说
+  var appOn = mkGateApp(ON);
+  var vOn = mkMedia({ src: 'bound-on' });
+  appOn._seekRevertedKeys[appOn._getMediaSeekKey(vOn)] = true;
+  logs.length = 0;
+  var retOn = shouldAdvance.call(appOn, vOn);
+  check('④ `enableSeek:true` + 弹回过 + 锁 1x + 到 90% + 平台已标记，照旧提前收尾，且**一句"被放弃"都不多说**（绑定不许把顺利那一条拖下水；成功那句 `advance at 90%` 照旧在）',
+    retOn === true && heldCount() === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }),
+    JSON.stringify({ ret: retOn, msgs: logs.map(function (l) { return l.message; }) }));
+
+  // 新的那一格：证据被人硬塞进账本，但上面那枚是关的 → 不提前收尾
+  var appOff = mkGateApp(OFF);
+  var vOff = mkMedia({ src: 'bound-off' });
+  appOff._seekRevertedKeys[appOff._getMediaSeekKey(vOff)] = true;  // 上一拍开着时留下的旧证据
+  logs.length = 0;
+  var retOff = shouldAdvance.call(appOff, vOff);
+  check('⑤ 单向绑定的正半截：`enableSeek` 关上后**即使账本里躺着旧的弹回证据也不提前收尾**（用户中途关掉就该立刻失效，而不是继续吃上一轮的结论）',
+    retOff === false,
+    JSON.stringify({ ret: retOff, reverted: appOff._seekRevertedKeys[appOff._getMediaSeekKey(vOff)] }));
+
+  // 被放弃要说一次，而且要指名道姓
+  var heldLogs = logs.filter(function (l) { return l.message === 'advance at 90% held back: seek disabled'; });
+  var heldMeta = heldLogs[0] && heldLogs[0].meta;
+  check('⑥ 负半截：这一发**不是原地什么都不说**（AGENTS §2 #14），日志点名是被谁挡的、级别 info、带 `ratio`/`duration`/`jobid` 三格读数',
+    heldLogs.length === 1 && heldLogs[0].level === 'info' &&
+      !!heldMeta && Math.abs(heldMeta.ratio - 0.9) < 1e-6 && heldMeta.duration === 100 &&
+      heldMeta.jobid === 'job-910000001',
+    JSON.stringify({ count: heldLogs.length, meta: heldMeta }));
+
+  // 同一支重复问只许说一次，换一支才算新事
+  shouldAdvance.call(appOff, vOff);
+  shouldAdvance.call(appOff, vOff);
+  var afterRepeat = logs.length;
+  var vOff2 = mkMedia({ src: 'bound-off-2' });
+  shouldAdvance.call(appOff, vOff2);
+  var heldKeysOff = appOff._ninetyHeldBackKeys ? Object.keys(appOff._ninetyHeldBackKeys).length : 'none';
+  check('⑦ 同一支媒体重复巡检只说一次（每 1500 毫秒就来一拍，说个不停会把 200 条证据窗吃光，AGENTS §2 #16(b)）；换一支才算新事',
+    afterRepeat === 1 && logs.length === 2 && heldKeysOff === 2,
+    JSON.stringify({ afterRepeat: afterRepeat, total: logs.length, keys: heldKeysOff }));
+
+  // 三格"其实没放弃捷径"的形状一句都不许说
+  logs.length = 0;
+  var appQuiet = mkGateApp(OFF);
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-half', current: 50 }));      // 还没到 90%
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-tail', current: 99.9 }));    // 让给 ended 那条路
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-nomark', marker: false }));  // 平台没认可
+  appQuiet._detectedMaxRate = 2;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-fast' }));                   // 倍速能加速
+  appQuiet._detectedMaxRate = 0;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-unknown' }));                // 探测没结果，宁可多播
+  var quietCount = logs.length;
+  logs.length = 0;
+  appQuiet._detectedMaxRate = 1;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-audio', tagName: 'AUDIO' }));
+  var audioUntouched = logs.length;   // AUDIO 也适用（不是只放宽给视频）
+  logs.length = 0;
+  shouldAdvance.call(appQuiet, mkMedia({ src: 'q-embed', tagName: 'EMBED' }));
+  var nonMedia = logs.length;         // 不是音视频的那一枚根本不配说话
+  check('⑧ 只有"真被放弃了一趟捷径"才说话：不到 90%、接近结尾、平台没标记、倍速能加速、探测没结果这五格各问一遍，**一条都不许出**（放宽成"关上就每拍抱怨"是一次新的日志洪水）；同一格换成音频照旧要说（音频本来也适用），换成非音视频的元素又不说',
+    quietCount === 0 && audioUntouched === 1 && nonMedia === 0,
+    JSON.stringify({ quiet: quietCount, audio: audioUntouched, nonMedia: nonMedia }));
+
+  // 用户自己关了下面那枚时，不许再劝
+  logs.length = 0;
+  var appSelfOff = mkGateApp({ enableSeek: false, advanceAtNinetyPercent: false });
+  var retSelfOff = shouldAdvance.call(appSelfOff, mkMedia({ src: 'self-off' }));
+  check('⑨ 是用户自己关掉「90% 提前收尾」时，绑定那一格**一句都不说**（第一道闸就退回，不拿"你上面那枚没开"去劝一个已经不要这一枚的人）',
+    retSelfOff === false && logs.length === 0 && Object.keys(appSelfOff._ninetyHeldBackKeys || {}).length === 0,
+    JSON.stringify({ ret: retSelfOff, logs: logs.length, keys: Object.keys(appSelfOff._ninetyHeldBackKeys || {}).length }));
+
+  // 只读不写：不许为了凑齐条件替用户改存储
+  // ⚠️ 尺必须分得开"赋值"和"比较" —— 第一版拿 `indexOf('configs.X =')` 当赋值，
+  //    结果把 1192 行那句 `configs.advanceAtNinetyPercent === false` 读成赋值，当场红。
+  //    所以这里要补两格对照：真的赋值必须逮住，三种比较形状一律不许误报。
+  var assignRe = function (body, key) {
+    var re = new RegExp('configs\\.' + key + '\\s*=[^=]', 'g');
+    var hits = 0;
+    while (re.exec(body) !== null) hits++;
+    return hits;
+  };
+  var probes = [
+    { make: function (k) { return 'this.configs.' + k + ' = false;'; }, want: 1 },
+    { make: function (k) { return 'this.configs.' + k + '=true;'; }, want: 1 },
+    { make: function (k) { return 'if (this.configs.' + k + ' === false) return false;'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' == null) {}'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' != 1) {}'; }, want: 0 },
+    { make: function (k) { return 'if (this.configs.' + k + ' >= 1) {}'; }, want: 0 }
+  ];
+  var probeKeys = ['enableSeek', 'advanceAtNinetyPercent'];
+  var probesOk = probes.every(function (p) {
+    return probeKeys.every(function (k) { return assignRe(p.make(k), k) === p.want; });
+  });
+  var gateHits = assignRe(gateBody, 'enableSeek') + assignRe(gateBody, 'advanceAtNinetyPercent');
+  var heldHits = assignRe(heldBody, 'enableSeek') + assignRe(heldBody, 'advanceAtNinetyPercent');
+  check('⑩ 绑定只改判定、**绝不改写用户存的那个值**：两段方法体里都不许出现对 `configs.enableSeek` / `configs.advanceAtNinetyPercent` 的赋值（替他翻开关=把选择悄悄换掉）；'
+    + '且这把尺自己先过一遍对照 —— 两种真赋值逮得住，`===` / `==` / `!=` / `>=` 四种比较一律不误报',
+    probes && gateHits === 0 && heldHits === 0 && gateBody.indexOf('configs.enableSeek') >= 0,
+    JSON.stringify({ probesOk: probes, gateHits: gateHits, heldHits: heldHits, readsSeek: gateBody.indexOf('configs.enableSeek') >= 0 }));
+
+  // ==== 绑定的另一半证据：站点自己写的那句完成条件（会话任务 #193）====
+  // 现场形状（只读探针，2026-11-20）：`<video>` 在第 2 层文档，标语 `span.task-condition-text`
+  // 写在**它上一层**的卡片文档里，卡片那一层放着承载播放器的那枚 iframe ——
+  // `contains()` 不跨文档，所以卡片对的是**那枚 iframe**，不是 video。夹具照这个形状造。
+  var BANNER_NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+  var BANNER_FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+  function mkBannerMedia(opt) {
+    opt = opt || {};
+    var card = { contains: function (n) { return !!n && n.__inCard === true; } };
+    var spans = (opt.texts || []).map(function (t) {
+      return { textContent: t, closest: function () { return card; } };
+    });
+    var topDoc = { querySelectorAll: function () { return []; }, defaultView: null };
+    var frameToCards = { ownerDocument: topDoc };            // 卡片文档在顶层里那枚 iframe
+    var cardsDoc = {
+      querySelectorAll: function (sel) { return sel === '.task-condition-text' ? spans : []; },
+      defaultView: { frameElement: frameToCards }
+    };
+    var frameToPlayer = { ownerDocument: cardsDoc, __inCard: true };  // 卡片里承载播放器那枚
+    var playerDoc = {
+      querySelector: function (sel) {
+        return opt.marker === false || sel.indexOf('ans-job-finished') < 0 ? null : { className: 'ans-job-finished' };
+      },
+      querySelectorAll: function () { return []; },
+      defaultView: { frameElement: frameToPlayer }
+    };
+    var v = {
+      tagName: 'VIDEO', duration: 100,
+      currentSrc: 'https://ananas.chaoxing.com/video/' + (opt.src || 'banner') + '.mp4',
+      ownerDocument: playerDoc
+    };
+    Object.defineProperty(v, 'currentTime', { get: function () { return 90; } });
+    return v;
+  }
+  var bannerMsgs = function () {
+    return logs.filter(function (l) { return l.message === 'site condition says not draggable, skip seek to end'; });
+  };
+
+  // ⑪ 用户要的那一条：站点自己写了「不可拖拽」，就不必先动手拖一次才拿到证据
+  logs.length = 0;
+  var appBan = mkGateApp(OFF);
+  var vBan = mkBannerMedia({ src: 'ban-forbid', texts: [BANNER_NO] });
+  var retBan = shouldAdvance.call(appBan, vBan);
+  var banMeta = bannerMsgs()[0] && bannerMsgs()[0].meta;
+  check('⑪ `enableSeek` 关上 + 站点在卡片上写了「当前视频不可拖拽」→ 90% 提前收尾**照旧生效**，'
+    + '而且 `_seekRevertedKeys` 一个字没写（一次都没动手拖，风险为零）、一句「被放弃」都不出、'
+    + '那句证据只说一次并**照抄站点原话**（带 `condition`/`marks`/`hop`）',
+    retBan === true && heldCount() === 0 && bannerMsgs().length === 1 &&
+      Object.keys(appBan._seekRevertedKeys).length === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }) &&
+      !!banMeta && banMeta.condition.indexOf('不可拖拽') >= 0 && banMeta.marks === 1 && banMeta.hop === 1,
+    JSON.stringify({ ret: retBan, held: heldCount(), banner: bannerMsgs().length, reverted: Object.keys(appBan._seekRevertedKeys).length, meta: banMeta }));
+
+  // ⑫ 三格「站点没这么说」一律不许当成证据 —— 压进上一格就是替站点宣布它禁止过
+  var bailRows = [
+    { name: 'silent', texts: [BANNER_FREE] },
+    { name: 'absent', texts: [] },
+    { name: 'ambiguous', texts: [BANNER_NO, BANNER_FREE] }
+  ];
+  var bailOut = bailRows.map(function (r) {
+    logs.length = 0;
+    var app = mkGateApp(OFF);
+    var ret = shouldAdvance.call(app, mkBannerMedia({ src: 'bail-' + r.name, texts: r.texts }));
+    return { name: r.name, ret: ret, held: heldCount(), banner: bannerMsgs().length };
+  });
+  check('⑫ 反过来三格各问一遍：标语在场但没那三个字（silent）、爬到顶也没有标语（absent）、'
+    + '同屏两枚意见不一致（ambiguous）→ 一律**照旧按住并明说一次「这条路被放弃了」**，'
+    + '而且一句「站点说不让拖」都不许说（没证据时替站点宣布禁令，等于把"少动手"实现成"永不试拖"）',
+    bailOut.every(function (o) { return o.ret === false && o.held === 1 && o.banner === 0; }),
+    JSON.stringify(bailOut));
+
+  // ⑬ 上面那枚开着时，标语只许减少动手、不许多挡一次
+  logs.length = 0;
+  var appBoth = mkGateApp(ON);
+  var retBoth = shouldAdvance.call(appBoth, mkBannerMedia({ src: 'both-forbid', texts: [BANNER_NO] }));
+  check('⑬ 两枚都成立时**不许由标语多挡一次**：`enableSeek:true` + 站点写了不可拖拽 → 照旧提前收尾、'
+    + '一句「被放弃」都不出（这条兜底本来就在走，标语只是多一条免拖的理由）',
+    retBoth === true && heldCount() === 0 &&
+      logs.some(function (l) { return l.message === 'advance at 90% (locked 1x + not seekable)'; }),
+    JSON.stringify({ ret: retBoth, held: heldCount(), msgs: logs.map(function (l) { return l.message; }) }));
+
+  // ⑭ 现场那枚「老形状」：标语只有一枚、没有卡片容器 —— 单枚时不要求那层容器
+  logs.length = 0;
+  var appOld = mkGateApp(OFF);
+  var vOld = mkBannerMedia({ src: 'old-shape', texts: [BANNER_NO] });
+  vOld.ownerDocument.defaultView.frameElement.ownerDocument.querySelectorAll = function () {
+    return [{ textContent: BANNER_NO, closest: function () { return null; } }];   // 容器还没长出来
+  };
+  check('⑭ 卡片晚半拍才渲染（标语在、分界容器 `closest` 认不出来）时，**只有一枚标语就照它说**：'
+    + '这一格照样提前收尾（多枚时才要求对得上卡片，否则永远等不到那句证据）',
+    shouldAdvance.call(appOld, vOld) === true && heldCount() === 0 && bannerMsgs().length === 1,
+    JSON.stringify({ held: heldCount(), banner: bannerMsgs().length }));
+}
+
+
+async function testRateAskBound() {
+  console.log('\n[31] 倍速问不到那一格：一支最多受控地问 N 发，到点只说一次、按原速播完（批次 146）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var media = read('src/page/40-media.js');
+
+  // ⚠️ 探测链里 `_detectMaxPlaybackRate` / `_tryRateOnce` / `_waitRateSettle` 声明成 `async function`，
+  //   老那句锚点 `name + ': function'` 对它们一个都取不出来 —— 少这一支，下面全部是「没执行」。
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    // ⚠️ `async` 必须一起带走：切出来只从 `function` 起，重建出来的就是普通函数，
+    //   而 `_detectMaxPlaybackRate` / `_tryRateOnce` 体里有 `await` —— 当场 SyntaxError（实测）
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var bodyOf = function (src, name) {
+    var r = boundsOf(src, name);
+    return (r.start < 0 || r.end <= r.start) ? '' : src.slice(r.start, r.end);
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var m = src.match(re);
+    return m ? Number(m[1]) : null;
+  };
+
+  // 三个预算从源码读回来，别抄成测试里的字面量（改了生产数而断言照旧 = 假绿）
+  var askBound = firstNum(bodyOf(media, '_noteRateUnreadable'), /this\._rateUnknownTries < (\d+)/);
+  var pausedBound = firstNum(bodyOf(media, '_scheduleMaxRateDetection'), /tries >= (\d+)/);
+  var settleMs = firstNum(bodyOf(media, '_tryRateOnce'), /_waitRateSettle\(video, (\d+)\)/);
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var spoke = function (prefix) {
+    return logs.filter(function (m) { return m.message.indexOf(prefix) === 0; });
+  };
+
+  var ensureFn = buildFrom(media, '_ensurePlaybackRate', { console: { log: function () {} } });
+  var targetFn = buildFrom(media, '_getTargetPlaybackRate', {});
+  var clampFn = buildFrom(media, '_clampAutoRate', {});
+  var resetFn = buildFrom(media, '_resetRateDetection', {});
+  var noteFn = buildFrom(media, '_noteRateUnreadable', { emitRuntimeLog: say });
+  // 暂停那一族的等待是真 `setInterval`，集成层不能真等 60×500 毫秒 —— 桩到「排了 timer」这一手，
+  //   由测试自己把那些拍数**同步**驱动完，于是等待上限、到点那一发记不记账，都读得回来。
+  //   ⚠️ 不跑暂停那一支的场景碰不到这两个桩（`if (!video.paused) { runDetect(); return; }` 在前），
+  //   所以下面 ①–⑪ 的行为与打桩前逐字相同。
+  var pausedTimers = [];
+  var fakeSetInterval = function (fn, ms) {
+    var id = pausedTimers.length + 1;
+    pausedTimers.push({ id: id, fn: fn, ms: ms, cleared: false });
+    return id;
+  };
+  var fakeClearInterval = function (id) {
+    for (var z = 0; z < pausedTimers.length; z++) if (pausedTimers[z].id === id) pausedTimers[z].cleared = true;
+  };
+  var schedFn = buildFrom(media, '_scheduleMaxRateDetection',
+    { emitRuntimeLog: say, setInterval: fakeSetInterval, clearInterval: fakeClearInterval });
+  var detectFn = buildFrom(media, '_detectMaxPlaybackRate', { emitRuntimeLog: say });
+  var tryFn = buildFrom(media, '_tryRateOnce', { emitRuntimeLog: say });
+  // `sleep` 换成立即兑现：稳态窗口照样跑满三轮，但不必让集成测试真等 700 毫秒
+  var waitFn = buildFrom(media, '_waitRateSettle', { sleep: function () { return Promise.resolve(); } });
+  var menuFn = buildFrom(media, '_readRateMenuMax', {
+    textOf: function (el) { return String((el && (el.textContent || el.innerText)) || ''); }
+  });
+  // 批次 173 / #199：问价那一族的**前置**是课程格，八件都要真取出来挂上假 app ——
+  // 挂不上就是 `TypeError` 顶掉整段（§5「红 0 条的第一嫌疑人是根本没跑到」，本轮实测撞过）。
+  // ⚠️ 课程格那八件的话**另开一本账**（`guardLogs`）：① – ⑫ 数的是 `logs` 里按前缀筛出的句子，
+  //   把「认不出是哪门课」那句 warn 混进同一本，会让它们读到本不属于问价那一族的条数。
+  var guardLogs = [];
+  var sayGuard = function (level, message, meta) { guardLogs.push({ level: level, message: String(message || ''), meta: meta }); };
+  var guardIdFn = buildFrom(media, '_courseGuardId', {});
+  var guardCellFn = buildFrom(media, '_courseGuardCell', { emitRuntimeLog: sayGuard });
+  var guardPersistFn = buildFrom(media, '_persistCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardHitFn = buildFrom(media, '_courseGuardHit', { emitRuntimeLog: sayGuard });
+  var guardNoteFn = buildFrom(media, '_noteCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardClearFn = buildFrom(media, '_clearCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardSayFn = buildFrom(media, '_sayCourseGuard', { emitRuntimeLog: sayGuard });
+  var guardSkipFn = buildFrom(media, '_noteCourseGuardRateSkipped', { emitRuntimeLog: sayGuard });
+  var guardNeedR = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
+  var guardTtlR = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
+  var guardKeyR = (media.match(/_COURSE_GUARD_KEY:\s*'([^']+)'/) || [])[1] || '';
+  var quarantineTtlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var quarantineFn = buildFrom(media, '_isMediaQuarantined', { TASK_GIVEUP_TTL_MS: quarantineTtlR });
+  var parts = [ensureFn, targetFn, clampFn, resetFn, noteFn, schedFn, detectFn, tryFn, waitFn, menuFn,
+    guardIdFn, guardCellFn, guardPersistFn, guardHitFn, guardNoteFn, guardClearFn, guardSayFn, guardSkipFn, quarantineFn];
+  var gotCount = parts.filter(function (f) { return typeof f === 'function'; }).length;
+
+  check('⓪ 十九件本体都能从 `40-media.js` 原样取出来真跑（三件 `async` 的那一支也取得到，课程格那八件与隔离谓词也算在内），'
+    + '问不出的预算、暂停那一族的等待上限、写入后的稳态窗口与隔离窗口也从源码读回来'
+    + '（取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样）',
+    gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 && quarantineTtlR > 0 &&
+    guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0,
+    JSON.stringify({ got: gotCount, need: parts.length, ask: askBound, paused: pausedBound, settle: settleMs, quarantineTtl: quarantineTtlR, guardNeed: guardNeedR, guardTtl: guardTtlR, guardKey: guardKeyR }));
+  if (!(gotCount === parts.length && askBound > 0 && pausedBound > 0 && settleMs > 0 && quarantineTtlR > 0
+    && guardNeedR > 0 && guardTtlR > 0 && guardKeyR.length > 0)) return;
+
+  // 夹具只桩到「播放器接不接这一档」那一层：写入次数就是问了几发，判据读的数来自这里。
+  // 站点拒写 = 问不出（`_tryRateOnce` 交回 0）；站点按住某一档 = 量到了，交回非 0。
+  // ⚠️ 写入分「探测那一发」与「量到之后落档那一发」两栏记：`_tryRateOnce` 在 `_rateProbing`
+  //   为真时写，收尾的守卫在后一拍写。混成一栏，⑦「菜单读得出就不许动手试档」那条就恒红 ——
+  //   它要排掉的正是探测那几发，而不是量到之后本来就该落的那一发。
+  function mkVideo(opt) {
+    opt = opt || {};
+    var rec = { writes: [], defWrites: [], probeWrites: 0, probeDefWrites: 0,
+      rate: opt.startRate == null ? 1 : opt.startRate, def: 1, probing: function () { return false; } };
+    var video = {
+      tagName: 'VIDEO',
+      paused: opt.paused === true,
+      closest: function () { return null; },                       // 没有播放器容器，菜单只能整文档扫
+      ownerDocument: { querySelectorAll: function () { return opt.menuCells || []; } }
+    };
+    Object.defineProperty(video, 'playbackRate', {
+      get: function () { return rec.rate; },
+      set: function (x) {
+        rec.writes.push(Number(x));                                // 每一发「问」都落在这里
+        if (rec.probing()) rec.probeWrites++;
+        if (opt.deny) throw new Error('player refuses playbackRate');
+        rec.rate = opt.held == null ? Number(x) : Number(opt.held);
+      }
+    });
+    Object.defineProperty(video, 'defaultPlaybackRate', {
+      get: function () { return rec.def; },
+      set: function (x) {
+        rec.defWrites.push(Number(x));                             // 只有真去探测才会写这一格
+        if (rec.probing()) rec.probeDefWrites++;
+        if (!opt.deny) rec.def = Number(x);
+      }
+    });
+    return { video: video, rec: rec };
+  }
+  function mkApp(cfg) {
+    var app = {
+      configs: cfg || {}, _detectedMaxRate: 0, _rateDetectVideo: null, _rateUnknownVideo: null,
+      _rateUnknownTries: 0, _rateDetectBusy: false, _rateProbing: false, _rateEpoch: 0, _videoEl: null,
+      _rateLockedBy: '', _courseGuard: null, _courseGuardStore: Object.create(null),
+      _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
+      _COURSE_GUARD_NEED: guardNeedR, _COURSE_GUARD_TTL_MS: guardTtlR, _COURSE_GUARD_KEY: guardKeyR
+    };
+    // 课程格默认**认不出课**（没有 `_currentStudyParams`）⇒ `_courseGuardHit` 恒 false，
+    // 于是 ① – ⑫ 走的与批次 173 之前逐字相同；只有 ⑬ 自己把课号装上。
+    // 存储桩按 app 各一份（同一轮多个 app 不许共用一本账，否则前一个的课格会毒化后一个）
+    app._readSessionLedger = function (key) {
+      var v = app._courseGuardStore[String(key || '')];
+      return (v && typeof v === 'object') ? v : null;
+    };
+    app._writeSessionLedger = function (key, value) { app._courseGuardStore[String(key || '')] = value; };
+    app._courseGuardId = function () { return guardIdFn.call(app); };
+    app._courseGuardCell = function (id) { return guardCellFn.call(app, id); };
+    app._persistCourseGuard = function (id) { return guardPersistFn.call(app, id); };
+    app._courseGuardHit = function (which) { return guardHitFn.call(app, which); };
+    app._noteCourseGuard = function (which, src) { return guardNoteFn.call(app, which, src); };
+    app._clearCourseGuard = function (which, src) { return guardClearFn.call(app, which, src); };
+    app._sayCourseGuard = function (which, id, rec, src) { return guardSayFn.call(app, which, id, rec, src); };
+    app._noteCourseGuardRateSkipped = function () { return guardSkipFn.call(app); };
+    app._isMediaQuarantined = function (v) { return quarantineFn.call(app, v); };
+    app._getMediaSeekKey = function () { return ''; };
+    app._ensurePlaybackRate = function (v, r) { return ensureFn.call(app, v, r); };
+    app._getTargetPlaybackRate = function () { return targetFn.call(app); };
+    app._clampAutoRate = function (r) { return clampFn.call(app, r); };
+    app._resetRateDetection = function () { return resetFn.call(app); };
+    app._noteRateUnreadable = function (v) { return noteFn.call(app, v); };
+    app._scheduleMaxRateDetection = function (v) { return schedFn.call(app, v); };
+    app._detectMaxPlaybackRate = function (v) { return detectFn.call(app, v); };
+    app._tryRateOnce = function (v) { return tryFn.call(app, v); };
+    app._waitRateSettle = function (v, ms) { return waitFn.call(app, v, ms); };
+    app._readRateMenuMax = function (v) { return menuFn.call(app, v); };
+    app._getVideoEl = function () { return app._videoEl; };
+    // 把「这一发写在探测里还是落档里」接到这个 app 的真实旗标上 —— 判据读的是生产那格 `_rateProbing`
+    // ⚠️ 参数收的是**夹具那一整件**（`{ video, rec }`）：`rec` 挂在包装件上、不在元素上，
+    //   传 `attach(x.video)` 会让那道旗标接不上线，探测栏恒读 0（实测撞过，症状像"生产没探测"）
+    app.attach = function (v) {
+      app._videoEl = v.video || v;
+      if (v.rec) v.rec.probing = function () { return !!app._rateProbing; };
+      return v;
+    };
+    return app;
+  }
+  async function flush() {
+    for (var i = 0; i < 8; i++) await new Promise(function (r) { setTimeout(r, 0); });
+  }
+
+  // ① 前提：这一副形状真走的是「往播放器上写倍速」那一支，而不是一眼就报「问不出」
+  var a = mkVideo({ deny: true, startRate: 0 });
+  var appA = mkApp({});
+  appA.attach(a);
+  var roundWrites = [];
+  var roundOwner = [];
+  var roundWarns = [];
+  for (var i = 0; i < askBound + 3; i++) {
+    appA._ensurePlaybackRate(a.video, 'tick' + i);
+    await flush();
+    roundWrites.push(a.rec.writes.length);
+    roundOwner.push(appA._rateDetectVideo === a.video ? 'held'
+      : (appA._rateDetectVideo === null ? 'free' : 'other'));
+    roundWarns.push(spoke('rate max unreadable').length);
+  }
+  var menuFirst = menuFn.call(appA, a.video);
+  var detectFirst = await detectFn.call(appA, a.video);
+  check('① 前提钉住形状：菜单读出 0 档、`_detectMaxPlaybackRate` 交回 0（不知道）而非某一档，'
+    + '而每一拍真往 `playbackRate` 上写恰好一发（少了这一格，后面几条读的可能是菜单那一支，与写入无关）',
+    menuFirst === 0 && detectFirst === 0 && roundWrites[1] - roundWrites[0] === 1,
+    JSON.stringify({ menu: menuFirst, detect: detectFirst, w0: roundWrites[0], w1: roundWrites[1] }));
+
+  // ② 到点就收手：这是这一族唯一承重的数 —— 问的方式就是动播放器，写得勤正是用户报的「抽搐 + 黑屏」
+  var asksMade = roundWrites[roundWrites.length - 1];
+  var writesPastBound = roundWrites.slice(askBound).map(function (n) { return n - roundWrites[askBound - 1]; });
+  check('② 连问 ' + askBound + ' 发问不出之后**一次都不再写播放器**，而 warn 恰好一句'
+    + '（不许退化成每 1.5 秒和站点对打一次，也不许三发各说一句把 200 条环吃空）',
+    asksMade === askBound && writesPastBound.every(function (d) { return d === 0; })
+      && roundWarns[roundWarns.length - 1] === 1,
+    JSON.stringify({ asks: asksMade, past: writesPastBound, warns: roundWarns[roundWarns.length - 1], bound: askBound }));
+
+  // ③ 上限前后是两半，各占一格：前 ' + (askBound - 1) + ' 轮要把问权交回 null（还能问），
+  //   最后一轮必须**留着**指向这一支（这才叫收手）—— 摘掉任何一半，「永远在试」和「永不试」都能过
+  var freeBefore = roundOwner.slice(0, askBound - 1);
+  check('③ 上限两侧各钉一格：前 ' + (askBound - 1) + ' 轮把 `_rateDetectVideo` 交回 null（下一拍照旧能问），'
+    + '第 ' + askBound + ' 轮把它留给这一支（从此不再问）',
+    freeBefore.every(function (s) { return s === 'free'; }) && roundOwner[askBound - 1] === 'held',
+    JSON.stringify({ owners: roundOwner, bound: askBound }));
+
+  var metaWarn = spoke('rate max unreadable')[0] || {};
+  check('④ 「问不到」那一格说的是真话：warn 的 `tries` 等于源码读回来的预算，级别是 warn 而非把异常咽掉',
+    metaWarn.level === 'warn' && Number(metaWarn.meta && metaWarn.meta.tries) === askBound,
+    JSON.stringify({ level: metaWarn.level, tries: metaWarn.meta && metaWarn.meta.tries, bound: askBound }));
+
+  check('⑤ 问不到就按原速：`_getTargetPlaybackRate()` 必须回落到 1 —— '
+    + '弹窗那根「播放速度」滑条已删（批次 146），没有量到的上限就许按原速，不许替用户猜一档',
+    appA._getTargetPlaybackRate() === 1 && Number(appA._detectedMaxRate) === 0,
+    JSON.stringify({ target: appA._getTargetPlaybackRate(), detected: appA._detectedMaxRate }));
+
+  // ⑥ 换一支媒体重新起账（阳性对照：第二支真被问了 ' + askBound + ' 发；
+  //   阴性那一半是第一支从此不再被打扰 —— 只断后者就测不出「计数压根没按媒体分开」）
+  var x = mkVideo({ deny: true, startRate: 0 });
+  var y = mkVideo({ deny: true, startRate: 0 });
+  var appXY = mkApp({});
+  appXY.attach(x);
+  for (var k = 0; k < askBound; k++) { appXY._ensurePlaybackRate(x.video, 'x' + k); await flush(); }
+  var xWritesAtSwitch = x.rec.writes.length;
+  var warnsAtSwitch = spoke('rate max unreadable').length;
+  appXY.attach(y);
+  for (var k2 = 0; k2 < askBound + 2; k2++) { appXY._ensurePlaybackRate(y.video, 'y' + k2); await flush(); }
+  check('⑥ 换一支媒体重新起账：第二支同样被问 ' + askBound + ' 发（不是接着上一支的账直接收手），'
+    + '而已经放弃的第一支在这期间一次都没再被动过、每一支各说一句',
+    y.rec.writes.length === askBound && x.rec.writes.length === xWritesAtSwitch
+      && spoke('rate max unreadable').length === warnsAtSwitch + 1,
+    JSON.stringify({ xWrites: x.rec.writes.length, xAtSwitch: xWritesAtSwitch, yWrites: y.rec.writes.length,
+      warnsBefore: warnsAtSwitch, warnsAfter: spoke('rate max unreadable').length }));
+
+  // ⑦ 菜单读得出档位时，一次都不许动手写倍速 —— 探测的代价只该在菜单读不出时才付
+  var m = mkVideo({ menuCells: [{ textContent: '2.0x' }, { textContent: '1.0x' }] });
+  var appM = mkApp({});
+  appM.attach(m);
+  var warnsBeforeMenu = spoke('rate max unreadable').length;
+  appM._ensurePlaybackRate(m.video, 'menu');
+  await flush();
+  check('⑦ 播放器自己把档位列在菜单里时，上限直接取菜单那一档：**一次都没往播放器上探测**'
+    + '（探测栏零写入 = 没试档，只落了量到的那一档），而这一支一句「问不到」都不该说',
+    m.rec.probeWrites === 0 && m.rec.probeDefWrites === 0 && spoke('rate menu max found').length === 1
+      && Number(appM._detectedMaxRate) === 2 && appM._getTargetPlaybackRate() === 2
+      && spoke('rate max unreadable').length === warnsBeforeMenu,
+    JSON.stringify({ probeWrites: m.rec.probeWrites, probeDefWrites: m.rec.probeDefWrites,
+      writes: m.rec.writes, defWrites: m.rec.defWrites, detected: appM._detectedMaxRate,
+      target: appM._getTargetPlaybackRate(), menuLogs: spoke('rate menu max found').length,
+      warns: spoke('rate max unreadable').length - warnsBeforeMenu }));
+
+  // ⑧ 站点按住 2x：量到的就是 2，而不是被复位出来的 1（批次 146 根因那一族）
+  var h = mkVideo({ held: 2 });
+  var appH = mkApp({});
+  appH.attach(h);
+  appH._ensurePlaybackRate(h.video, 'held');
+  await flush();
+  var warnsBeforeHeld = spoke('rate max unreadable').length;
+  for (var kh = 0; kh < 3; kh++) { appH._ensurePlaybackRate(h.video, 'held' + kh); await flush(); }
+  check('⑧ 站点把最高档按回 2x 时交回的是**非 0 的读数**：`_detectedMaxRate` 2、落上去的倍速 2，'
+    + '而且之后三拍一次都不再问（交回 0 就会被当成「不知道」而每拍重问，那正是抽搐）；'
+    + '站点认的那一档要一起落到 `defaultPlaybackRate`，否则换源时被复位成 1',
+    Number(appH._detectedMaxRate) === 2 && h.rec.rate === 2 && h.rec.probeWrites === 1
+      && h.rec.writes.length === 1 && h.rec.defWrites[h.rec.defWrites.length - 1] === 2
+      && spoke('rate max unreadable').length === warnsBeforeHeld,
+    JSON.stringify({ detected: appH._detectedMaxRate, rate: h.rec.rate, probeWrites: h.rec.probeWrites,
+      writes: h.rec.writes, defWrites: h.rec.defWrites, extraWarns: spoke('rate max unreadable').length - warnsBeforeHeld }));
+
+  // ⑨ 关掉自动倍速：一次都不问，也不写（阳性对照是 ② —— 开着时确实问了 ' + askBound + ' 发）
+  var off = mkVideo({ deny: true, startRate: 0 });
+  var appOff = mkApp({ autoMaxPlaybackRate: false });
+  appOff.attach(off);
+  var warnsBeforeOff = spoke('rate max unreadable').length;
+  for (var k3 = 0; k3 < askBound + 2; k3++) { appOff._ensurePlaybackRate(off.video, 'off' + k3); await flush(); }
+  check('⑨ 关掉「自动倍速」那一格：一次都不去问、一次都不写播放器，回落值仍是 1'
+    + '（开着的那一半由 ② 作证，两半都钉住才不是"这道闸压根没接到"）',
+    off.rec.writes.length === 0 && off.rec.defWrites.length === 0
+      && appOff._rateDetectVideo === null && appOff._getTargetPlaybackRate() === 1
+      && spoke('rate max unreadable').length === warnsBeforeOff,
+    JSON.stringify({ writes: off.rec.writes.length, detectVideo: String(appOff._rateDetectVideo),
+      target: appOff._getTargetPlaybackRate(), warns: spoke('rate max unreadable').length - warnsBeforeOff }));
+
+  // ⑩ 用户把上限压到 1x：这一档压根没得试，于是问 ' + askBound + ' 发而零次写入 —— 有尽头，也不抽搐
+  var capVideo = mkVideo({});
+  var appCap = mkApp({ playbackRateCap: 1 });
+  appCap.attach(capVideo);
+  var warnsBeforeCap = spoke('rate max unreadable').length;
+  for (var k4 = 0; k4 < askBound + 2; k4++) { appCap._ensurePlaybackRate(capVideo.video, 'cap' + k4); await flush(); }
+  check('⑩ 上限压到 1x 那一格：一次都不往播放器上写（没档可试，`_tryRateOnce` 在动手之前就退出），'
+    + '但这一族仍是**有尽头**的 —— 问不出的账停在 ' + askBound + ' 而不是接着涨，只说一句、随后收手',
+    capVideo.rec.defWrites.length === 0 && capVideo.rec.writes.length === 0
+      && capVideo.rec.probeWrites === 0 && Number(appCap._rateUnknownTries) === askBound
+      && appCap._rateDetectVideo === capVideo.video
+      && spoke('rate max unreadable').length === warnsBeforeCap + 1,
+    JSON.stringify({ defWrites: capVideo.rec.defWrites.length, writes: capVideo.rec.writes,
+      probeWrites: capVideo.rec.probeWrites, tries: appCap._rateUnknownTries, bound: askBound,
+      held: appCap._rateDetectVideo === capVideo.video,
+      warns: spoke('rate max unreadable').length - warnsBeforeCap }));
+
+  // ⑪ 收手不等于永久按住：换任务点与 `loadedmetadata` 都会调 `_resetRateDetection`（`40-media.js:719`、`:1829`）
+  var warnsBeforeReset = spoke('rate max unreadable').length;
+  var writesBeforeReset = a.rec.writes.length;
+  appA._resetRateDetection();
+  appA._ensurePlaybackRate(a.video, 'after-reset');
+  await flush();
+  var asksAfterReset = 0;
+  for (var k5 = 0; k5 < askBound - 1; k5++) { appA._ensurePlaybackRate(a.video, 'after-reset2' + k5); await flush(); }
+  for (var k6 = 0; k6 < 3; k6++) { appA._ensurePlaybackRate(a.video, 'after-reset3' + k6); await flush(); }
+  asksAfterReset = a.rec.writes.length - writesBeforeReset;
+  check('⑪ 已放弃的那一支，在 `_resetRateDetection` 之后重新问得到：又问满 ' + askBound
+    + ' 发并再说一句（AGENTS §2 #7「静默永久跳过不可接受」—— 收手是一轮的收手，不是把这支永久按住）',
+    asksAfterReset === askBound && spoke('rate max unreadable').length === warnsBeforeReset + 1,
+    JSON.stringify({ extraAsks: asksAfterReset, bound: askBound,
+      extraWarns: spoke('rate max unreadable').length - warnsBeforeReset }));
+
+  // ⑫ 暂停那一族（`video.paused` 为真）：这一支的「问」不是当场写播放器，而是排一枚 timer 等它开播。
+  //   这一族以前**一条都不覆盖** —— `pausedBound` 那个数只在 ⓪ 里证明"源码里有"，
+  //   而它到点那一发到底记不记进「问不出」的账，没人问过（夹具的 `paused` 选项一直没人用）。
+  var pz = mkVideo({ deny: true, startRate: 0, paused: true });
+  var appP = mkApp({});
+  appP.attach(pz);
+  var warnsBeforePaused = spoke('rate max unreadable').length;
+  var timersBeforePaused = pausedTimers.length;
+  var waitsDone = 0;
+  for (var wp = 0; wp < askBound + 1; wp++) {
+    appP._ensurePlaybackRate(pz.video, 'paused' + wp);
+    await flush();
+    var openTimer = null;
+    for (var tp = pausedTimers.length - 1; tp >= 0; tp--) if (!pausedTimers[tp].cleared) { openTimer = pausedTimers[tp]; break; }
+    if (!openTimer) break;                       // 收手之后不该再排新的等待 —— 这一格由 break 数出来
+    for (var dp = 0; dp < pausedBound; dp++) openTimer.fn();
+    waitsDone++;
+  }
+  check('⑫ 暂停那一族：等满 ' + pausedBound + ' 拍之前一次都不碰播放器、也不报「问不出」，'
+    + '到点把这一发记进账里；等满 ' + askBound + ' 次才说那一句，随后连新的等待都不再排',
+    waitsDone === askBound
+      && pz.rec.writes.length === 0 && pz.rec.defWrites.length === 0 && pz.rec.probeWrites === 0
+      && pausedTimers.length === timersBeforePaused + askBound
+      && pausedTimers.slice(timersBeforePaused).every(function (t) { return t.cleared; })
+      && spoke('rate max unreadable').length === warnsBeforePaused + 1
+      && Number(appP._rateUnknownTries) === askBound && appP._rateDetectVideo === pz.video,
+    JSON.stringify({ waits: waitsDone, askBound: askBound, pausedBound: pausedBound,
+      writes: pz.rec.writes.length, defWrites: pz.rec.defWrites.length,
+      timers: pausedTimers.length - timersBeforePaused, tries: appP._rateUnknownTries,
+      held: appP._rateDetectVideo === pz.video,
+      warns: spoke('rate max unreadable').length - warnsBeforePaused }));
+
+  // ⑬ 批次 173 / #199 边界一 + 边界三：同一门课里已经量到过「倍速按住在 1x」⇒ 这一枚**连问都不问**。
+  //   「问」在这里不是抽象动作，就是往 `playbackRate` / `defaultPlaybackRate` 上各写一发（用户嫌的正是这一发）。
+  //   ⚠️ 第二枚用的是**同一本存储、新的一个 app**（换单元 / 换页就是新的一份内存），
+  //   所以这一格证的正是「账跨得过那一枚」，而不是「同一个对象上顺手没写」。
+  var gFirst = mkApp({});
+  gFirst._currentStudyParams = function () { return { courseid: 'C173', clazzid: 'Z173' }; };
+  var armed13 = gFirst._noteCourseGuard('speed', 'measured-1x');
+  var saidFirst13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0
+      && String((m.meta || {}).from) === 'measured-1x';
+  }).length;
+  var gSecond = mkApp({});
+  gSecond._currentStudyParams = function () { return { courseid: 'C173', clazzid: 'Z173' }; };
+  gSecond._courseGuardStore = gFirst._courseGuardStore;      // 同一门课，另一枚媒体（另一份内存）
+  var v13 = mkVideo({ deny: true, startRate: 0 });
+  gSecond.attach(v13);
+  var warnsBefore13 = spoke('rate max unreadable').length;
+  var guardSaysBefore13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0;
+  }).length;
+  for (var k13 = 0; k13 < askBound + 2; k13++) { gSecond._ensurePlaybackRate(v13.video, 'g' + k13); await flush(); }
+  var says13 = guardLogs.filter(function (m) {
+    return m.message.indexOf('course says rate locked at 1x') === 0;
+  });
+  var skipSays13 = says13.slice(guardSaysBefore13).filter(function (m) { return String((m.meta || {}).from) === 'menu-unreadable'; });
+  // 对照组：同样的形状，只是**认不出是哪门课**（今天的行为）—— 必须照旧写播放器，否则 ⑬ 证的可能是「夹具坏了」
+  var c13 = mkVideo({ deny: true, startRate: 0 });
+  var appC13 = mkApp({});
+  appC13.attach(c13);
+  appC13._ensurePlaybackRate(c13.video, 'ctl13');
+  await flush();
+  check('⑬ 课程格命中那一枚：**一个字节都不往播放器上写**（`playbackRate` 与 `defaultPlaybackRate` 都零次），'
+    + '交回的是「不知道」而不是伪造的 1x（`_detectedMaxRate` 仍 0），一次性的「问不出」账一下都不拨、'
+    + '那一句 warn 也一个字不出，改由课程格单独说一句（`from:menu-unreadable`）；'
+    + '同一形状换成「认不出是哪门课」的对照组照旧写 —— 少动手只许来自这一本账',
+    armed13 === true && saidFirst13 === 1 && guardSaysBefore13 === 1
+      && v13.rec.writes.length === 0 && v13.rec.defWrites.length === 0 && v13.rec.probeWrites === 0
+      && gSecond._rateLockedBy === 'course' && Number(gSecond._detectedMaxRate) === 0
+      && Number(gSecond._rateUnknownTries) === 0
+      && spoke('rate max unreadable').length === warnsBefore13
+      && skipSays13.length === 1 && Number(skipSays13[0].meta && skipSays13[0].meta.evidence) >= guardNeedR
+      && c13.rec.writes.length === 1 && appC13._rateLockedBy === '',
+    JSON.stringify({ armed: armed13, saidFirst: saidFirst13, writes: v13.rec.writes.length,
+      defWrites: v13.rec.defWrites.length, lockedBy: gSecond._rateLockedBy,
+      detected: gSecond._detectedMaxRate, tries: gSecond._rateUnknownTries,
+      unreadableWarns: spoke('rate max unreadable').length - warnsBefore13,
+      skipSays: skipSays13.length, evidence: skipSays13[0] && skipSays13[0].meta && skipSays13[0].meta.evidence,
+      need: guardNeedR, ctlWrites: c13.rec.writes.length, ctlLockedBy: appC13._rateLockedBy }));
+
+  // ⑭ 边界二：课程格是**策略**，不是许可，也不是不可撤销的判决。
+  //   站点自己把档位列在菜单里（纯 DOM，一个字都不写播放器）= 反证 ⇒ 撤销这一门课的账，
+  //   于是后面那一枚重新问得到。摘掉这一手，「少动手」就变成「这门课永不试倍速」。
+  var g14 = mkApp({});
+  g14._currentStudyParams = function () { return { courseid: 'C174', clazzid: 'Z174' }; };   // 另一门课，账是空的
+  var armed14 = g14._noteCourseGuard('speed', 'measured-1x');
+  var hitBefore14 = g14._courseGuardHit('speed');
+  var v14 = mkVideo({ deny: true, startRate: 0, menuCells: [{ textContent: '2.0x' }] });
+  g14.attach(v14);
+  var menuRate14 = await g14._detectMaxPlaybackRate(v14.video);
+  var cell14 = (g14._readSessionLedger(g14._COURSE_GUARD_KEY) || {}).speed || {};
+  check('⑭ 菜单列出高于 1x 的档 = 反证：纯 DOM 那一支照旧走（不为课程格跳过），'
+    + '并把这一门课的「免倍速」账**撤销**（`n` 归零、来源里留着 `clear:menu` 这一笔），随后又问得到',
+    armed14 === true && hitBefore14 === true && menuRate14 === 2
+      && g14._courseGuardHit('speed') === false && Number(cell14.n) === 0
+      && (cell14.srcs || []).indexOf('clear:menu') >= 0 && g14._rateLockedBy === '',
+    JSON.stringify({ armed: armed14, hitBefore: hitBefore14, menuRate: menuRate14,
+      hitAfter: g14._courseGuardHit('speed'), n: cell14.n, srcs: (cell14.srcs || []).join(','),
+      lockedBy: g14._rateLockedBy }));
+}
+
+
+// 批次 154 / 会话任务 #181：「获取模型列表」（issue #2 第 3 条）
+// 为什么这一族要测得这么厚：三处模型名一直是**手抄**，抄错就是 400/404，而报错说的是
+// 「模型不存在」，人往网络方向查。新增的这一条走的是同一根 api_fetch 桥，
+// 于是它同时踩在三个已有规矩上：§2 #4（地址唯一真源，不许内联）、§2 #2（新增 await 要能超时，
+// `.text()` 也算）、§2 #12（六格各占一格，「读不出」不许塌进「没有型号」）。
+async function testModelListFetch() {
+  console.log('\n[32] 获取模型列表：三型构造、六格说话、响应体超时、竞态不采用（批次 154）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var pop = read('popup/popup.js');
+  var popHtml = read('popup/popup.html');
+  var API = require('../libs/api-url.js');
+
+  var topFn = function (src, name) {
+    var at = src.indexOf('function ' + name + '(');
+    if (at < 0) return null;
+    if (src.slice(Math.max(0, at - 6), at) === 'async ') at -= 6;
+    var depth = 0;
+    for (var i = src.indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+  var count = function (hay, needle) {
+    var n = 0, at = hay.indexOf(needle);
+    while (at >= 0) { n++; at = hay.indexOf(needle, at + needle.length); }
+    return n;
+  };
+
+  var FN_NAMES = ['buildModelsRequest', 'readTextWithTimeout', 'fetchModelIds', 'modelListSentence',
+    'renderModelOptions', 'setModelListState', 'modelsFormKey', 'listModelsFromProvider', 'fetchWithTimeout'];
+  var texts = {};
+  FN_NAMES.forEach(function (n) { texts[n] = topFn(pop, n); });
+  var msLine = (pop.match(/const MODELS_FETCH_TIMEOUT_MS = (\d+);/) || [])[1];
+  var genLine = (pop.match(/^let modelsFetchGeneration = 0;$/m) || [])[0];
+  var missing = FN_NAMES.filter(function (n) { return !texts[n]; });
+  check('⓪ 九件（八个模型列表函数 + 借来真跑的 fetchWithTimeout）都从 popup/popup.js 原样取出，超时数与代号声明也在盘上 —— ' +
+    '取不出就整段不跑，那种「没执行」和「通过」在报告里长得一模一样（AGENTS §5）',
+    missing.length === 0 && !!msLine && !!genLine,
+    JSON.stringify({ missing: missing, msLine: msLine || null, genLine: !!genLine }));
+  if (missing.length || !msLine || !genLine) return;
+
+  // ── 模块台：把取出的函数拼进**同一个作用域**跑，注入依赖 ──────────────────
+  // 拼一份而不是各跑各的，是为了 modelsFetchGeneration 这一格真的跨调用共享
+  // （⑬ 的竞态那一格只有同作用域才测得出来）。
+  var DEPS_NAMES = ['API_URL', 'normalizeApiKey', 'self', 'document', 'els', 'config',
+    'getApiFormConfig', 'withoutRemovedConfigFields', 'appendPopupLog', 'apiConfigSummary',
+    'sendRuntimeMessageWithTimeout', 'MODELS_FETCH_TIMEOUT_MS', 'fetch'];
+  var buildModule = function (deps) {
+    var body = FN_NAMES.map(function (n) { return texts[n]; }).join('\n') +
+      '\n' + genLine +
+      '\nreturn { buildModelsRequest: buildModelsRequest, fetchModelIds: fetchModelIds,' +
+      ' modelListSentence: modelListSentence, renderModelOptions: renderModelOptions,' +
+      ' modelsFormKey: modelsFormKey, list: listModelsFromProvider,' +
+      ' fetchWithTimeout: fetchWithTimeout, readTextWithTimeout: readTextWithTimeout };';
+    var prelude = DEPS_NAMES.map(function (n) { return 'var ' + n + ' = __deps.' + n + ';'; }).join('\n');
+    return new Function('__deps', prelude + '\n' + body)(deps);
+  };
+
+  var mkEl = function () {
+    var el = { hidden: true, children: [], disabled: false };
+    var text = '';
+    Object.defineProperty(el, 'textContent', {
+      get: function () { return text; },
+      set: function (v) { text = String(v); if (v === '') el.children.length = 0; },
+      configurable: true
+    });
+    el.appendChild = function (o) { el.children.push(o); return o; };
+    return el;
+  };
+  // form 是**可变**的：⑬ 要在两发之间改它
+  var mkHarness = function (over) {
+    over = over || {};
+    var h = {
+      form: Object.assign({ apiType: 'openai', apiUrl: 'https://a.example/v1', apiKey: 'sk-1' }, over.form || {}),
+      logs: [], payloads: [], textCalls: 0
+    };
+    h.dl = mkEl();
+    h.btn = mkEl();
+    h.line = mkEl();
+    h.deps = {
+      API_URL: over.API_URL || API,
+      // 用 libs 那份**真**清洗函数：断言里再写一份规则，测的就是"测试和自己的桩一致"而不是代码
+      normalizeApiKey: API.normalizeApiKey,
+      self: 'self' in over ? over.self : { OmitoneApiError: { describe: function (s, b) { return { category: 'auth', human: '分类:' + s + '|' + String(b).slice(0, 40) }; } } },
+      document: { createElement: function (tag) { return { tag: tag, value: '' }; } },
+      els: { listModels: h.btn, modelListState: h.line, modelOptions: h.dl },
+      config: over.config || {},
+      getApiFormConfig: function () { return Object.assign({}, h.form); },
+      withoutRemovedConfigFields: function (c) { return c; },
+      appendPopupLog: function (level, name, extra) { h.logs.push({ level: level, name: name, extra: extra }); return Promise.resolve(); },
+      apiConfigSummary: function (c) { return { apiType: c.apiType, apiUrl: c.apiUrl, keyLength: String(c.apiKey || '').length }; },
+      sendRuntimeMessageWithTimeout: over.send || function (msg) {
+        h.payloads.push(msg && msg.payload);
+        h.textCalls++;
+        return Promise.resolve(over.respond ? over.respond(msg) : { success: false, error: 'no stub' });
+      },
+      // 超时数在盘上是 20000（⑭ 单独钉），这里换小只为让 ⑨ 那一格在毫秒级走到
+      MODELS_FETCH_TIMEOUT_MS: over.ms || 50,
+      fetch: over.localFetch || function () { h.localFetch = (h.localFetch || 0) + 1; throw new Error('不该掉进本地 fetch 兜底'); }
+    };
+    h.mod = buildModule(h.deps);
+    return h;
+  };
+
+  // ---- ①-③ 三胞胎：三种 apiType 各占一格 ----
+  var hArgArgs = null;
+  var hArg = mkHarness({ API_URL: { buildModelsUrl: function (a, t) { hArgArgs = [a, t]; return 'URL|' + t; } } });
+  var mA = hArg.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'https://x.example/v1', apiKey: 'sk-1' });
+  check('① openai 形：走 GET、地址来自真源构造器（收到的实参**逐字**是 apiUrl 与 apiType，不是拼出来的字符串）、Key 进 Authorization 头',
+    mA.ok === true && mA.state === 'ready' && mA.method === 'GET' && mA.url === 'URL|openai' &&
+      hArgArgs && hArgArgs[0] === 'https://x.example/v1' && hArgArgs[1] === 'openai' &&
+      mA.headers.Authorization === 'Bearer sk-1' && !mA.headers['x-api-key'] && !mA.headers['x-goog-api-key'],
+    JSON.stringify({ m: mA, args: hArgArgs }));
+
+  var mC = hArg.mod.buildModelsRequest({ apiType: 'claude', apiUrl: 'https://c.example', apiKey: 'sk-2' });
+  check('② claude 形：`x-api-key` + `anthropic-version` 两头都在，**没有** Authorization（ anthropic 不认 Bearer，串台就 401）',
+    mC.ok === true && mC.url === 'URL|claude' && mC.headers['x-api-key'] === 'sk-2' &&
+      !!mC.headers['anthropic-version'] && !mC.headers.Authorization && !mC.headers['x-goog-api-key'],
+    JSON.stringify({ hdrs: Object.keys(mC.headers || {}) }));
+
+  var mG = hArg.mod.buildModelsRequest({ apiType: 'gemini', apiUrl: 'https://g.example', apiKey: 'sk-3' });
+  check('③ gemini 形：Key 走 `x-goog-api-key` 头，**不进地址**（chat 那条链把 key 拼进 URL，而地址会进日志与「复制日志」的导出面 —— 只读列表没必要再添一处）',
+    mG.ok === true && mG.url === 'URL|gemini' && mG.headers['x-goog-api-key'] === 'sk-3' &&
+      !mG.headers.Authorization && !mG.headers['x-api-key'] && String(mG.url).indexOf('sk-3') < 0,
+    JSON.stringify({ url: mG.url, hdrs: Object.keys(mG.headers || {}) }));
+
+  // ---- ④ 资格先于请求：三格「压根没发出去」----
+  var hNo = mkHarness();
+  var nKey = hNo.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'https://x', apiKey: '' });
+  var nAddrO = hNo.mod.buildModelsRequest({ apiType: 'openai', apiUrl: '   ', apiKey: 'sk-1' });
+  var nAddrG = hNo.mod.buildModelsRequest({ apiType: 'gemini', apiUrl: '', apiKey: 'sk-1' });
+  var okAddrC = hNo.mod.buildModelsRequest({ apiType: 'claude', apiUrl: '', apiKey: 'sk-1' });
+  check('④ 没资格就不发请求，四格分开：没 Key → nokey；openai 空地址 → noaddr；gemini 空地址 → noaddr；' +
+    '**claude 空地址照旧放行**（它有自己的默认地址，叫用户去填是假坎 —— 与 testApiConnectionNoBackground 同一口径）',
+    nKey.state === 'nokey' && nAddrO.state === 'noaddr' && nAddrG.state === 'noaddr' &&
+      okAddrC.ok === true && okAddrC.state === 'ready',
+    JSON.stringify({ nokey: nKey.state, oai: nAddrO.state, gem: nAddrG.state, cla: okAddrC.state }));
+
+  var hNoSend = mkHarness({ form: { apiKey: '' } });
+  var outNoKey = await hNoSend.mod.fetchModelIds(hNoSend.form);
+  check('⑤ 「没填 Key」那一发**一个请求都不发**（sendRuntimeMessageWithTimeout 计数为 0）—— 先问资格再拼地址不是措辞，是不花钱、也不让界面把「你没填」说成「这家未授权」',
+    outNoKey.state === 'nokey' && hNoSend.textCalls === 0,
+    JSON.stringify({ state: outNoKey.state, calls: hNoSend.textCalls }));
+
+  var hBlankUrl = mkHarness({ API_URL: { buildModelsUrl: function () { return ''; } } });
+  var outBlankUrl = await hBlankUrl.mod.fetchModelIds(hBlankUrl.form);
+  check('⑥ 真源构造器交回空串时同样不发请求（noaddr 那一格不许被跳过）—— 少了这道门，空地址会带着 `undefined/v1/models` 出门，回包是一句看不懂的 404',
+    outBlankUrl.state === 'noaddr' && hBlankUrl.textCalls === 0,
+    JSON.stringify({ state: outBlankUrl.state, calls: hBlankUrl.textCalls }));
+
+  var hQuote = mkHarness({ API_URL: { buildModelsUrl: function () { return 'URL'; } } });
+  var mQuote = hQuote.mod.buildModelsRequest({ apiType: 'openai', apiUrl: 'u', apiKey: '"Bearer sk-5" ' });
+  check('⑦ Key 先进清洗（normalizeApiKey）再进头：`"Bearer sk-5"` 抄进去的样子出去的是 `Bearer sk-5`（与答题同一条口径，AGENTS §2 #4 的那个唯一真源）',
+    mQuote.ok === true && mQuote.headers.Authorization === 'Bearer sk-5',
+    JSON.stringify({ auth: mQuote.headers && mQuote.headers.Authorization }));
+
+  // ---- ⑧-⑨ 发送层：HTTP 分类 + 响应体挂住 ----
+  var h401 = mkHarness({
+    respond: function () { return { success: false, status: 401, text: 'bad key' }; }
+  });
+  var out401 = await h401.mod.fetchModelIds(h401.form);
+  check('⑧ HTTP 401：state 落 http 且文案**走 OmitoneApiError 分类**（带回 status 与包体），不是笼统一句「连接失败」',
+    out401.ok === false && out401.state === 'http' && out401.status === 401 &&
+      out401.category === 'auth' && String(out401.why).indexOf('分类:401|bad key') === 0,
+    JSON.stringify({ s: out401.state, st: out401.status, why: out401.why, cat: out401.category }));
+
+  // 代理交回 `{success:true, status:200, text:''}` —— 这一形在生产里真会出现（8 MB 读上限、
+  // 空体、或后台把 body 截干净），它必须落 unreadable（body-empty），不许落进 ok/empty 任何一格。
+  var hEmpty = mkHarness({ respond: function () { return { success: true, status: 200, text: '' }; } });
+  var emptyText = await hEmpty.mod.fetchModelIds(hEmpty.form);
+  check('⑧-b 连上了但回包是空体：落 unreadable（why 是 body-empty），**不是** ok 也不是 empty —— ' +
+    '"empty" 那一格留给服务商自己说「我名下没有型号」（回包里有清单、只是空数组），两者对用户是两件不同的事',
+    emptyText.state === 'unreadable' && emptyText.ok === false && emptyText.why === 'body-empty',
+    JSON.stringify({ state: emptyText.state, why: emptyText.why }));
+
+  var hEmptyList = mkHarness({ respond: function () { return { success: true, status: 200, text: '{"data":[]}' }; } });
+  var emptyList = await hEmptyList.mod.fetchModelIds(hEmptyList.form);
+  var noCandidates = hEmptyList.dl.children.length;
+  check('⑧-c 回包是空数组：落 empty 单独一格，且**不清空已有候选**（renderModelOptions 没被叫到，' +
+    '用户上一次问到的清单还在 —— 把"这家说没有"实现成"把界面擦干净"是最气人的一种退化）',
+    emptyList.state === 'empty' && emptyList.ok === false && noCandidates === 0,
+    JSON.stringify({ state: emptyList.state, dl: noCandidates }));
+
+  var hTrueHang = mkHarness();
+  // 直接把 response.text() 换成永不 resolve：§2 #2 说 try/catch 拦不住挂起，只有超时能 —— 这一格就是那条规矩的尺
+  var hungRead = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return new Promise(function () {}); } }, 40);
+  check('⑨ 响应体永远不 resolve 时，readTextWithTimeout 在超时那一路交回 null（**单独一格**，不是空串）—— ' +
+    '少了这一手，那一发会永远悬着：按钮停在「获取中…」、代号闸永远等不到回话，而没有任何异常可捕',
+    hungRead === null,
+    JSON.stringify({ got: String(hungRead), type: typeof hungRead }));
+
+  // 整条链走到那一格（不只测助手）：代理没交出可用的字符串体 → 落本地 fetch 兜底 → 那一份的
+  // text() 挂住 → fetchModelIds 必须说的是「响应体没读到」，而不是 parseModelIds 的某个 why。
+  var hBodyLost = mkHarness({
+    send: function (msg) { hBodyLost.payloads.push(msg && msg.payload); hBodyLost.textCalls++; return Promise.resolve({ success: true, status: 200, text: 42 }); },
+    localFetch: function () { return Promise.resolve({ ok: true, status: 200, text: function () { return new Promise(function () {}); } }); }
+  });
+  var bodyLost = await hBodyLost.mod.fetchModelIds(hBodyLost.form);
+  var bodyLostLine = hBodyLost.mod.modelListSentence(bodyLost);
+  check('⑨-b 挂住的响应体走过整条链：state 是 unreadable、why 点名「响应体没读到」，句子也跟着说这一句 —— ' +
+    '少了这一格，那一发会以 parseModelIds 的 why（no-list / not-json）交回，界面把「连接断了」说成「这家回包的形状认不出来」',
+    bodyLost.state === 'unreadable' && bodyLost.ok === false &&
+      String(bodyLost.why).indexOf('没读到') >= 0 && String(bodyLostLine).indexOf('没读到') >= 0,
+    JSON.stringify({ state: bodyLost.state, why: bodyLost.why, line: bodyLostLine }));
+
+  var emptyRead = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return Promise.resolve(''); } }, 40);  var threwSync = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { throw new Error('连接断了'); } }, 40);
+  var threwAsync = await hTrueHang.mod.readTextWithTimeout.call(null, { text: function () { return Promise.reject(new Error('连接断了')); } }, 40);
+  var noTextFn = await hTrueHang.mod.readTextWithTimeout.call(null, {}, 40);
+  var noResponse = await hTrueHang.mod.readTextWithTimeout.call(null, null, 40);
+  check('⑩ 「读到空」与「没读到」分成两格：空体 → 空串（真读到，只是空）；text() 当场抛 / 拒绝 / 压根没有 text() / ' +
+    '连 response 都没有 → null（没读到）—— 把 null 压成空串，「连接断了」就会冒充「这家回了个空体」，' +
+    '而这两句用户听完要做的事相反（同一格同步抛与异步拒绝各测一次：它们走的是 catch 与 then 两条路）',
+    emptyRead === '' && threwSync === null && threwAsync === null && noTextFn === null && noResponse === null,
+    JSON.stringify({ empty: emptyRead, threwSync: threwSync, threwAsync: threwAsync, noTextFn: noTextFn, noResponse: noResponse }));
+
+  // ---- ⑪ 六格句子各说各话 ----
+  var sixStates = ['ok', 'empty', 'unreadable', 'http', 'nokey', 'noaddr'];
+  var sixOuts = {
+    ok: { state: 'ok', ids: ['deepseek-chat', 'deepseek-reasoner', 'm-a', 'm-b', 'm-c', 'm-d', 'm-e', 'm-f'] },
+    empty: { state: 'empty', ids: [] },
+    unreadable: { state: 'unreadable', ids: [], why: 'no-list' },
+    http: { state: 'http', ids: [], why: '分类:429|限流' },
+    nokey: { state: 'nokey', ids: [] },
+    noaddr: { state: 'noaddr', ids: [] }
+  };
+  var sixSent = sixStates.map(function (s) { return hNo.mod.modelListSentence(sixOuts[s]); });
+  var uniq = sixSent.filter(function (x, i) { return sixSent.indexOf(x) === i; });
+  check('⑪ 六格句子**互不相同且都不为空**（ok / empty / unreadable / http / nokey / noaddr 各一句），' +
+    '而 ok 那句带**实际条数**（8 个型号是从回包读回来的，不是写死的）—— 压成「成功/失败」两格时，' +
+    '「形状认不出来」会被读成「这家没有型号」，用户接下来做的事（换 Key、充值、查网络）一件都不对（AGENTS §2 #12）',
+    uniq.length === 6 && sixSent.every(function (s) { return String(s).trim().length > 6; }) &&
+      sixSent[0].indexOf('8 个型号') >= 0 && sixSent[0].indexOf('deepseek-chat') >= 0,
+    JSON.stringify({ uniq: uniq.length, first: sixSent[0], unreadable: sixSent[2] }));
+
+  var nullSent = hNo.mod.modelListSentence(null);
+  check('⑪-b 「一句话都没读到」不许塌进上面任何一格：单独一句「再点一次试试」',
+    !!nullSent && nullSent.indexOf('再点一次') >= 0,
+    JSON.stringify({ nullSent: nullSent }));
+
+  // ---- ⑫ libs 真源形状：认得出就剥前缀去重，认不出交 unreadable，绝不猜 ----
+  var shapes = [
+    [JSON.stringify({ data: [{ id: 'a' }, { id: 'b' }, { id: 'a' }] }), 'ok', 2],
+    [JSON.stringify({ models: ['x', 'y'] }), 'ok', 2],
+    [JSON.stringify({ data: [{ name: 'models/gemini-2.5-pro' }] }), 'ok', 1],
+    [JSON.stringify({ data: [] }), 'empty', 0],
+    [JSON.stringify({ foo: 1 }), 'unreadable', 0],
+    [JSON.stringify({ data: [{ id: 'ok' }, 42] }), 'unreadable', 0],
+    ['这不是 JSON', 'unreadable', 0],
+    ['', 'unreadable', 0]
+  ];
+  var shapeGot = shapes.map(function (row) {
+    var r = API.parseModelIds(row[0]);
+    return { state: r.state, n: r.ids.length, why: r.why };
+  });
+  var shapeOk = shapes.every(function (row, i) {
+    return shapeGot[i].state === row[1] && shapeGot[i].n === row[2];
+  });
+  check('⑫ parseModelIds 八种形状逐格对账（data[] / models[] / name 带 `models/` 前缀要剥 / 空数组=empty / ' +
+    '没有清单=unreadable / 混进非对象元素=**整份**unreadable / 非 JSON / 空体）—— ' +
+    '「认不出交 unreadable，绝不猜」：拆 display_name 或按字符摊开会凭空造出发不出去的型号（AGENTS §2 #18 那一族）',
+    shapeOk && API.parseModelIds(shapes[2][0]).ids[0] === 'gemini-2.5-pro' &&
+      API.parseModelIds(shapes[0][0]).ids.join(',') === 'a,b',
+    JSON.stringify(shapeGot));
+
+  // ---- ⑬ 竞态：改过地址就不采用旧批次 ----
+  var hRace = mkHarness();
+  var raceMod = hRace.mod;
+  var raceN = 0;
+  hRace.deps.sendRuntimeMessageWithTimeout = function (msg) {
+    raceN++;
+    var body = raceN === 1
+      ? JSON.stringify({ data: [{ id: 'old-a' }, { id: 'old-b' }] })
+      : JSON.stringify({ data: [{ id: 'new-1' }] });
+    return new Promise(function (resolve) {
+      setTimeout(function () { resolve({ success: true, status: 200, text: body }); }, raceN === 1 ? 120 : 5);
+    });
+  };
+  raceMod = buildModule(hRace.deps);
+  var p1 = raceMod.list();
+  hRace.form.apiUrl = 'https://b.example/v1';   // 等待期间换了地址
+  var p2 = raceMod.list();
+  await Promise.all([p1, p2]);
+  var raceValues = hRace.dl.children.map(function (o) { return o.value; }).join(',');
+  var discLogs = hRace.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬ 两发并发、期间换了 API URL：**旧批次不采用**（候选里只有 new-1，没有 old-a/old-b），' +
+    '状态行点名「改过了」，日志单独有一格 discarded —— ⚠️ 这一发**代号与表单键同时开火**，' +
+    '单独承重各由 ⑬-b / ⑬-c 测（AGENTS §5「两层保护不许一起摘」），' +
+    '少了它们用户会拿到「按旧 Key 问回来的清单」却以为是自己刚填那家（AGENTS §2 #13/#23 同一族，但这里刻意不用 apiFormFingerprint：开关不该挡型号清单）',
+    raceValues === 'new-1' && discLogs === 1 && String(hRace.line.textContent).indexOf('改过') >= 0 &&
+      hRace.logs.some(function (l) { return l.name === 'models list result'; }),
+    JSON.stringify({ values: raceValues, discLogs: discLogs, line: hRace.line.textContent, logs: hRace.logs.map(function (l) { return l.name; }) }));
+
+  // ---- ⑬-b / ⑬-c：把上面那两道闸**各拆一道**单独测 ----
+  // ⑬ 那一发代号和表单键同时开火：摘掉任何一道，另一道照样拦下旧批次，于是两道都等于没测。
+  // 这里 ⑬-b 只留代号（并发但配置一个字没改），⑬-c 只留表单键（只改地址、没有第二发）。
+  var hRaceGen = mkHarness();
+  var raceGenN = 0;
+  hRaceGen.deps.sendRuntimeMessageWithTimeout = function () {
+    raceGenN++;
+    var body = raceGenN === 1
+      ? JSON.stringify({ data: [{ id: 'old-a' }, { id: 'old-b' }] })
+      : JSON.stringify({ data: [{ id: 'new-1' }] });
+    return new Promise(function (resolve) {
+      setTimeout(function () { resolve({ success: true, status: 200, text: body }); }, raceGenN === 1 ? 120 : 5);
+    });
+  };
+  var modGen = buildModule(hRaceGen.deps);
+  var g1 = modGen.list();   // 慢的那发先按下
+  var g2 = modGen.list();   // 快的第二发：apiType / apiUrl / apiKey 一个字没改
+  await Promise.all([g1, g2]);
+  var genValues = hRaceGen.dl.children.map(function (o) { return o.value; }).join(',');
+  var genDisc = hRaceGen.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬-b 并发但**配置一个字没改**：只有代号拦下旧批次（候选只有 new-1，discarded 恰一格）—— ' +
+    '少了代号这一格，慢的那发会把「上一秒点出来的清单」盖到候选里，而界面看不出任何异常',
+    genValues === 'new-1' && genDisc === 1 && raceGenN === 2 &&
+      hRaceGen.logs.some(function (l) { return l.name === 'models list result'; }),
+    JSON.stringify({ values: genValues, disc: genDisc, sends: raceGenN }));
+
+  var hRaceKey = mkHarness();
+  hRaceKey.deps.sendRuntimeMessageWithTimeout = function () {
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        resolve({ success: true, status: 200, text: JSON.stringify({ data: [{ id: 'late-1' }] }) });
+      }, 20);
+    });
+  };
+  var modKey = buildModule(hRaceKey.deps);
+  var k1 = modKey.list();                 // 只有一发在飞：代号永远相等，拦得住的只剩表单键
+  hRaceKey.form.apiUrl = 'https://c.example/v1';
+  await k1;
+  var keyValues = hRaceKey.dl.children.map(function (o) { return o.value; }).join(',');
+  var keyDisc = hRaceKey.logs.filter(function (l) { return l.name.indexOf('discarded') >= 0; }).length;
+  check('⑬-c 只换地址、**没有第二发**：表单键单独拦下（候选保持空，discarded 恰一格，状态行点名「改过」）—— ' +
+    '这一格与 ⑬-b 各拆一道闸，摘掉任何一道只有对应那一格红',
+    keyDisc === 1 && keyValues === '' && String(hRaceKey.line.textContent).indexOf('改过') >= 0,
+    JSON.stringify({ values: keyValues, disc: keyDisc, line: hRaceKey.line.textContent }));
+
+  // ---- ⑭ 候选渲染不叠加 ----
+  var hDl = mkHarness();
+  hDl.mod.renderModelOptions(['a', 'b', 'c']);
+  var firstN = hDl.dl.children.length;
+  hDl.mod.renderModelOptions(['x']);
+  var secondValues = hDl.dl.children.map(function (o) { return o.value; }).join(',');
+  var secondTags = hDl.dl.children.map(function (o) { return o.tag; }).join(',');
+  check('⑭ 第二次点「获取模型列表」时旧候选先清空（3 → 1，值逐字是 x），并且建出来的是 `<option value=型号名>` —— ' +
+    '少了那句清空，用户点开候选看到的是两批叠在一起、还带重复',
+    firstN === 3 && secondValues === 'x' && secondTags === 'option',
+    JSON.stringify({ firstN: firstN, second: secondValues, tags: secondTags }));
+
+  hDl.mod.renderModelOptions(['k1', 'k2']);
+  hDl.mod.renderModelOptions(null);
+  check('⑭-b 交回 null / 空清单时清空候选（不许留上一批的残影，也不许报错）',
+    hDl.dl.children.length === 0,
+    JSON.stringify({ after: hDl.dl.children.length }));
+
+  // ---- ⑮ GET 不带 body（fetchWithTimeout 那处真 bug 的尺）----
+  var hBody = mkHarness({ respond: function () { return { success: true, status: 200, text: '{"data":[{"id":"m1"}]}' }; } });
+  var outBody = await hBody.mod.fetchModelIds(hBody.form);
+  check('⑮ 走代理的那一发 payload：**method 是 GET 且 body 是 null** —— ' +
+    '后台那边是 `body == null ? undefined : String(body)`，空串也算「有 body」，浏览器对 GET 带 body 当场抛 TypeError；' +
+    '而 fetchWithTimeout 把代理失败吞成「改走本地 fetch」，症状只是慢半拍、不是错（本轮实测撞在动手之前）',
+    outBody.ok === true && hBody.payloads.length === 1 &&
+      hBody.payloads[0].method === 'GET' && hBody.payloads[0].body === null &&
+      hBody.localFetch === undefined,
+    JSON.stringify({ payload: hBody.payloads[0], localFetch: hBody.localFetch, state: outBody.state }));
+
+  var postPayload = null;
+  var hPost = mkHarness({
+    send: function (msg) { postPayload = msg.payload; return Promise.resolve({ success: true, status: 200, text: '{}' }); }
+  });
+  await hPost.mod.fetchWithTimeout('https://x/v1/chat/completions', { method: 'POST' }, 30);
+  check('⑮-b 反向对照：**POST 不带 body 时仍然补空串**（老口径不许跟着这次修改一起松掉，否则答题/聊天那两条链路会少一样东西）',
+    postPayload && postPayload.method === 'POST' && postPayload.body === '',
+    JSON.stringify({ post: postPayload }));
+
+  // ---- ⑯ 静态接线：界面三处都指向同一份候选，地址不内联 ----
+  var listHits = count(popHtml, 'list="modelOptions"');
+  var dlHits = count(popHtml, '<datalist id="modelOptions">');
+  var btnHits = count(popHtml, 'id="listModels"');
+  var stateHits = count(popHtml, 'id="modelListState"');
+  check('⑯ 界面上四处接线都在且**不多不少**：三处模型名（主模型 / 看图 / 验证码）都挂同一份 datalist（少挂一处，那一处就还是手抄 —— 三胞胎的界面版）、' +
+    'datalist 1 枚、按钮 1 枚、状态行 1 枚；popup.js 里按钮真绑到 listModelsFromProvider',
+    listHits === 3 && dlHits === 1 && btnHits === 1 && stateHits === 1 &&
+      count(pop, 'addEventListener("click", listModelsFromProvider)') === 1,
+    JSON.stringify({ list: listHits, dl: dlHits, btn: btnHits, state: stateHits, hook: count(pop, 'addEventListener("click", listModelsFromProvider)') }));
+
+  var inlined = count(pop, "'/models'") + count(pop, '"/models"') + count(pop, '`/models`') + count(pop, '") + "/models');
+  var builderCalls = count(pop, 'buildModelsUrl(');
+  var parserCalls = count(pop, 'parseModelIds(');
+  check('⑰ 地址与解析都**只在 libs 那一份**里：popup.js 里 `/models` 字面量拼接 0 处、`buildModelsUrl(` 恰好 1 处（在 buildModelsRequest 体内）、' +
+    '`parseModelIds(` 恰好 1 处（AGENTS §2 #4 —— 内联一份就会和答题那三条链路分叉，同样的 Key 这边通那边不通）',
+    inlined === 0 && builderCalls === 1 && parserCalls === 1 &&
+      texts.buildModelsRequest.indexOf('buildModelsUrl(') >= 0 &&
+      texts.fetchModelIds.indexOf('parseModelIds(') >= 0,
+    JSON.stringify({ inlined: inlined, builder: builderCalls, parser: parserCalls }));
+
+  var msNum = Number(msLine);
+  var msUses = count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS') + count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS');
+  check('⑱ 超时数从盘上读回来比（断言里不写死）：`const MODELS_FETCH_TIMEOUT_MS = ' + msLine + '` 是正数，' +
+    '且发送层与读体层都真的用它（合计 ' + msUses + ' 处）—— 只包 fetch 不包 `.text()` 的那一半，挂起照样拦不住（AGENTS §2 #2）',
+    msNum > 0 && Number.isFinite(msNum) && msUses >= 3 &&
+      count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS') === 3 &&
+      count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS') >= 1,
+    JSON.stringify({ msLine: msLine, msUses: msUses, send: count(texts.fetchModelIds, 'MODELS_FETCH_TIMEOUT_MS'), read: count(texts.readTextWithTimeout, 'MODELS_FETCH_TIMEOUT_MS') }));
+
+  var libsHas = count(read('libs/api-url.js'), 'function buildModelsUrl(') + count(read('libs/api-url.js'), 'function parseModelIds(');
+  var libsExport = /buildModelsUrl: buildModelsUrl/.test(read('libs/api-url.js')) &&
+    /parseModelIds: parseModelIds/.test(read('libs/api-url.js'));
+  check('⑱-b libs/api-url.js 里两件**各自只声明一处且都导出**（导出漏了 popup 那侧拿到 undefined，' +
+    '一调用就抛 —— 而那正被 ⑥ 的空串格盖住，会读成「这家地址不对」）',
+    libsHas === 2 && libsExport && typeof API.buildModelsUrl === 'function' && typeof API.parseModelIds === 'function',
+    JSON.stringify({ decl: libsHas, export: libsExport }));
+}
+
+// ==================== 联网搜索那把尺（任务 #183）====================
+// 为什么单开一段：libs/web-search.js 是「这一发到底带不带搜索」的唯一真源，而**登记漏一处
+// 不会有任何异常**（AGENTS §2 #18）—— 弹窗与上课页各自退回本地那份"没搜"，用户听到的那句
+// 模型回答照样听起来像刚查过。所以这一段测的是**尺本身**与**只有一份尺**，
+// 三处出口真带没带 tools 在 [26]/[27] 里逐格钉。
+async function testWebSearchGate() {
+  console.log('\n[33] 联网搜索那把尺：libs 八格自证 + 两处登记 + 全仓只有一份判定（任务 #183）');
+
+  var read = function (rel) {
+    try { return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n'); } catch (e) { return ''; }
+  };
+  var countStr = function (hay, needle) {
+    var s = String(hay || ''), n = 0, at = s.indexOf(needle);
+    while (at >= 0) { n++; at = s.indexOf(needle, at + needle.length); }
+    return n;
+  };
+  // 剥注释必须**等长**、而且**不许把字符串里的 `//`（https://）当注释**（AGENTS §5：
+  // 剥完行数不变、几句真代码仍在原处，才算"剥"这一手自己在承重）。
+  var stripComments = function (src) {
+    var s = String(src || ''), out = '', i = 0;
+    while (i < s.length) {
+      var c = s.charAt(i), d = s.charAt(i + 1);
+      if (c === '/' && d === '/') {
+        while (i < s.length && s.charAt(i) !== '\n') { out += ' '; i++; }
+      } else if (c === '/' && d === '*') {
+        out += '  '; i += 2;
+        while (i < s.length && !(s.charAt(i) === '*' && s.charAt(i + 1) === '/')) { out += s.charAt(i) === '\n' ? '\n' : ' '; i++; }
+        out += '  '; i += 2;
+      } else if (c === '"' || c === "'" || c === '`') {
+        out += c; i++;
+        while (i < s.length && s.charAt(i) !== c) {
+          if (s.charAt(i) === '\\') { out += s.charAt(i); i++; }
+          out += s.charAt(i); i++;
+        }
+        if (i < s.length) { out += s.charAt(i); i++; }
+      } else { out += c; i++; }
+    }
+    return out;
+  };
+  var topFn = function (src, name) {
+    var at = String(src || '').indexOf('function ' + name + '(');
+    if (at < 0) return null;
+    var depth = 0;
+    for (var i = String(src).indexOf('{', at); i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(at, i + 1); }
+    }
+    return null;
+  };
+
+  var WS = null;
+  try { WS = require('../libs/web-search.js'); } catch (e) { WS = null; }
+  var libSrc = read('libs/web-search.js');
+  var popSrc = read('popup/popup.js');
+  var conSrc = read('content.js');
+  var htmlSrc = read('popup/popup.html');
+  var manSrc = read('manifest.json');
+  var OFFICIAL = WS && WS.OFFICIAL_HOST ? String(WS.OFFICIAL_HOST) : '';
+  var OK_CFG = { apiKey: 'sk-test', apiType: 'openai', apiUrl: 'https://' + OFFICIAL + '/chat/completions' };
+
+  var seven = ['OFFICIAL_HOST', 'hostOf', 'isOfficialHost', 'decisionOf', 'toolsFor', 'usageOf', 'sentenceOf'];
+  var missing = seven.filter(function (k) { return !WS || WS[k] === undefined; });
+  check('⓪ libs/web-search.js  require 得到、七件导出齐全，五份生产文本都从盘上读回来 —— ' +
+    '取不出就整段不跑（那种「没执行」和「通过」在报告里长得一模一样，AGENTS §5）',
+    !missing.length && seven.every(function (k) { return k === 'OFFICIAL_HOST' || typeof WS[k] === 'function'; }) &&
+      libSrc.length > 2000 && popSrc.length > 2000 && conSrc.length > 2000 && htmlSrc.length > 2000 && manSrc.length > 200,
+    JSON.stringify({ missing: missing, libBytes: libSrc.length, official: OFFICIAL }));
+  if (!WS || missing.length || !OFFICIAL) return;
+
+  // ── ① 八格各占一格，判定顺序冻结在「开关 → Key → 协议 → 地址」────────────────
+  var dUnknown = WS.decisionOf(OK_CFG, null);
+  var dOff = WS.decisionOf(OK_CFG, false);
+  var dKey = WS.decisionOf({ apiKey: '  ', apiType: 'claude', apiUrl: 'https://relay.example.com/v1' }, true);
+  var dType = WS.decisionOf({ apiKey: 'sk-test', apiType: 'claude', apiUrl: OK_CFG.apiUrl }, true);
+  var dNoAddr = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: '' }, true);
+  var dUnread = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: '/v1/chat/completions' }, true);
+  var dRelay = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: 'https://relay.example.com/v1' }, true);
+  var dOn = WS.decisionOf(OK_CFG, true);
+  var cells8 = [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay, dOn].map(function (d) { return d.cell; });
+  // 同一份坏配置（没 Key + 协议不对 + 中转站）按开关三态各说一句话：
+  // 把地址那一格排在前面的话，「用户压根没开」会被说成「你填的地址不是官方域」。
+  var BAD_CFG = { apiKey: '', apiType: 'claude', apiUrl: 'https://relay.example.com/v1' };
+  var bySwitch = [WS.decisionOf(BAD_CFG, null).cell, WS.decisionOf(BAD_CFG, false).cell, WS.decisionOf(BAD_CFG, true).cell];
+  check('① decisionOf 八格各占一格（' + cells8.join(',') + '）且只有 on 那一格 on:true —— ' +
+    '再钉同一份坏配置按开关三态说出三个不同的格子（' + bySwitch.join('/') + '），' +
+    '顺序一旦把地址挪到开关之前，「还没读到」与「没开」就塌进「你地址不对」（AGENTS §2 #5 / #12）',
+    cells8.join(',') === 'unknown,off,no-key,type,no-addr,unreadable,not-official,on' &&
+      cells8.filter(function (v, i) { return cells8.indexOf(v) === i; }).length === 8 &&
+      [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay].every(function (d) { return d.on === false; }) &&
+      dOn.on === true && bySwitch.join(',') === 'unknown,off,no-key' &&
+      dRelay.host === 'relay.example.com' && dOn.host === OFFICIAL,
+    JSON.stringify({ cells: cells8, bySwitch: bySwitch, onlyOn: [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay, dOn].filter(function (d) { return d.on; }).length }));
+
+  // ── ② hostOf 的十三种形状；isOfficialHost 与 decisionOf 必须是同一把尺 ────────
+  var hostCases = [
+    'HTTPS://API.DeepSeek.COM:443/v1?x=1', 'https://user:pw@api.deepseek.com/v1',
+    'https://api.deepseek.com.ru/v1', 'http://127.0.0.1:8787/v1', '/v1/chat/completions',
+    '//api.deepseek.com/v1', '   https://api.deepseek.com   ', '', null, 123, {}, 'api.deepseek.com',
+    'https://api.deepseek.com'
+  ];
+  var hostRows = hostCases.map(function (u) {
+    var d = WS.decisionOf({ apiKey: 'sk-test', apiType: 'openai', apiUrl: u }, true);
+    return { u: String(u), host: WS.hostOf(u), same: WS.isOfficialHost(u) === (d.cell === 'on'), cell: d.cell };
+  });
+  check('② hostOf 十三种地址形状逐个量回（大写／端口／userinfo／query／前后空格／相对路径／协议缺失／空／非字符串），' +
+    '后缀陷阱 `api.deepseek.com.ru` 读出的是它自己而不是官方域，且 isOfficialHost 与 decisionOf 对每一行结论一致 —— ' +
+    '两处不一致就是两把尺，将来只改一处会分叉（AGENTS §2 #18）',
+    hostRows.every(function (r) { return r.same; }) &&
+      WS.hostOf(hostCases[0]) === OFFICIAL && WS.hostOf(hostCases[1]) === OFFICIAL &&
+      WS.hostOf(hostCases[6]) === OFFICIAL && WS.hostOf(hostCases[12]) === OFFICIAL &&
+      WS.hostOf(hostCases[2]) === 'api.deepseek.com.ru' && WS.isOfficialHost(hostCases[2]) === false &&
+      WS.hostOf(hostCases[3]) === '127.0.0.1' &&
+      [4, 5, 7, 8, 9, 10, 11].every(function (i) { return WS.hostOf(hostCases[i]) === ''; }),
+    JSON.stringify(hostRows));
+
+  // ── ③ 那一发 tools 的形状：字面量从 libs 源码读回来比，不在断言里抄第二份 ────────
+  var toolLine = (libSrc.match(/var SEARCH_TOOL = \{ type: ["']([^"']+)["'] \};/) || [])[1] || '';
+  var tOn = WS.toolsFor(dOn);
+  var tOthers = [dUnknown, dOff, dKey, dType, dNoAddr, dUnread, dRelay].map(function (d) { return WS.toolsFor(d); });
+  check('③ toolsFor 只在 on 那一格交出一份，形状是「只有一个字段的那一格」，字段值与 libs 里声明的那个字面量逐字相同' +
+    '（值从 `var SEARCH_TOOL = …` 那行读回来，断言里没有第二份）；带不动的七格一律交**空数组**（不是 undefined），' +
+    '调用方据此整个字段都不写 —— 写 `tools: []` 是让服务端猜',
+    !!toolLine && tOn.length === 1 && Object.keys(tOn[0]).length === 1 && tOn[0].type === toolLine &&
+      tOthers.every(function (t) { return Array.isArray(t) && t.length === 0; }) &&
+      Array.isArray(WS.toolsFor(null)) && WS.toolsFor(null).length === 0,
+    JSON.stringify({ decl: toolLine, on: tOn, emptyCells: tOthers.length }));
+
+  // ── ④ usageOf 四格；读不出恒 -1，不许被压成 0（AGENTS §2 #2）───────────────────
+  var uBadNull = WS.usageOf(null);
+  var uBadStr = WS.usageOf('x');
+  var uNoUsage = WS.usageOf({});
+  var uNoTool = WS.usageOf({ usage: { prompt_tokens: 63, completion_tokens: 10 } });
+  var uHalf = WS.usageOf({ usage: { server_tool_use: { tool_fetch: 1 }, prompt_tokens: 4653 } });
+  var uOk = WS.usageOf({ usage: { server_tool_use: { tool_search: 2, tool_fetch: 1 }, prompt_tokens: 4653, completion_tokens: 410, prompt_tokens_details: { cached_tokens: 896 } } });
+  var uNeg = WS.usageOf({ usage: { prompt_tokens: -5, completion_tokens: 'abc' } });
+  var numFields = ['search', 'fetch', 'prompt', 'completion', 'cached'];
+  check('④ usageOf 四格（bad-shape / no-usage / no-tool-cell / ok）各占一格，且「拿不到」一律 -1 而不是 0：' +
+    '整份没有 usage、server_tool_use 在但 tool_search 缺、数字是负数或字符串 —— 三族都被压成 0 时，' +
+    '取证里就凭空多出一条方向为「放行」的断言（AGENTS §2 #2）',
+    uBadNull.cell === 'bad-shape' && uBadStr.cell === 'bad-shape' && uNoUsage.cell === 'no-usage' &&
+      uNoTool.cell === 'no-tool-cell' && uHalf.cell === 'ok' && uOk.cell === 'ok' &&
+      numFields.every(function (k) { return uBadNull[k] === -1 && uNoUsage[k] === -1; }) &&
+      uNoTool.search === -1 && uNoTool.fetch === -1 && uNoTool.prompt === 63 &&
+      uHalf.search === -1 && uHalf.fetch === 1 && uHalf.prompt === 4653 &&
+      uOk.search === 2 && uOk.fetch === 1 && uOk.prompt === 4653 && uOk.completion === 410 && uOk.cached === 896 &&
+      uNeg.prompt === -1 && uNeg.completion === -1,
+    JSON.stringify({ cells: [uBadNull.cell, uNoUsage.cell, uNoTool.cell, uHalf.cell, uOk.cell, uNeg.cell], negPrompt: uNeg.prompt }));
+
+  // ── ⑤ 对用户说话的那几句：各格不同，而且不许承诺「今天／最新／实时」─────────────
+  // 实测（任务 #183，五发探针）：搜回来的答案分别说成 5月18日 / 7月6日 / 7月8日 / 7月14日 / 7月15日，
+  // 而当天是 11 月 21 日 —— 所以任何一句界面话都不许把「刚查的」说成「今天的」。
+  var sayDateBreak = function (s) {
+    if (/实时|最新/.test(s)) return '承诺了「最新／实时」';
+    if (/\d+月\d+日/.test(s)) return '写死了具体日期';
+    if (/今天/.test(s) && !/不一定准|别拿它当/.test(s)) return '说了「今天」却没带更正';
+    return '';
+  };
+  var spoken = [
+    { k: 'bad-shape', t: WS.sentenceOf(uBadNull) },
+    { k: 'no-usage', t: WS.sentenceOf(uNoUsage) },
+    { k: 'no-tool-cell', t: WS.sentenceOf(uNoTool) },
+    { k: '数字读不出', t: WS.sentenceOf(uNeg) },
+    { k: 'ok', t: WS.sentenceOf(uOk) },
+    { k: '半格', t: WS.sentenceOf(uHalf) }
+  ];
+  var popHintOff = (popSrc.match(/const PET_WEB_SEARCH_HINT_OFF = ["']([^"']*)["'];/) || [])[1] || '';
+  var popHintUnknown = (popSrc.match(/textContent = ["']([^"']*)["'];\s*\n\s*els\.petWebSearchHint\.dataset\.cell = "unknown"/) || [])[1] || '';
+  var popHintOn = (popSrc.match(/dataset\.cell = d\.cell;[\s\S]{0,240}?已生效[^;]*/) || [''])[0].replace(/^[\s\S]*?(?=已生效)/, '').replace(/;$/, '');
+  var popHintBlocked = (popSrc.match(/dataset\.cell = d\.cell;[\s\S]{0,600}?这一枚暂时用不了[^;]*/) || [''])[0].replace(/^[\s\S]*?(?=这一枚)/, '').replace(/;$/, '');
+  var htmlHint = (htmlSrc.match(/id="petWebSearchHint">([^<]*)</) || [])[1] || '';
+  var spokenAll = spoken.concat([
+    { k: 'popup off', t: popHintOff }, { k: 'popup unknown', t: popHintUnknown },
+    { k: 'popup on', t: popHintOn }, { k: 'popup 灰掉', t: popHintBlocked }, { k: 'html 出厂', t: htmlHint }
+  ]);
+  var breakers = spokenAll.filter(function (r) { return sayDateBreak(r.t); })
+    .map(function (r) { return r.k + '：' + sayDateBreak(r.t); });
+  var distinctSpoken = spoken.map(function (r) { return r.t; }).filter(function (t, i, a) { return a.indexOf(t) === i; });
+  // 「开着、也确实问了，但服务端回包里没有搜索那一项」那句：口径是 libs 自己拼的
+  // 「这次没有联网（…），按 N 个输入 token 计的」—— N 从 usageOf 读回来比，不在断言里抄第二个 63。
+  var noToolSay = WS.sentenceOf(uNoTool);
+  check('⑤ 说给用户的那 ' + spokenAll.length + ' 句里没有一句承诺日期或「最新／实时」（越界：' +
+    (breakers.length ? breakers.join(' / ') : '0 处') + '），「今天」只许出现在带「不一定准」更正的那一句；' +
+    'usage 那六句里读不出那两格（bad-shape 与 no-usage）**故意同一句**，其余各不相同，' +
+    '而两句都明说「不代表没花钱」—— 不许把读不出说成没花；' +
+    '「服务端没走搜索工具」那一格开头就说「这次没有联网」，并把读回来的输入 token 数原样带上',
+    breakers.length === 0 && distinctSpoken.length === 5 &&
+      WS.sentenceOf(uBadNull) === WS.sentenceOf(uNoUsage) &&
+      /不代表没花钱/.test(WS.sentenceOf(uNoUsage)) && /不代表没花钱/.test(WS.sentenceOf(uNeg)) &&
+      /^这次没有联网/.test(noToolSay) && noToolSay.indexOf('按 ' + uNoTool.prompt + ' 个输入 token') >= 0 &&
+      /4653/.test(WS.sentenceOf(uOk)) &&
+      /没数出查了几次/.test(WS.sentenceOf(uHalf)) && /比平时贵/.test(WS.sentenceOf(uOk)),
+    JSON.stringify({ breakers: breakers, distinct: distinctSpoken.length,
+      texts: spokenAll.map(function (r) { return r.k + '=' + String(r.t).slice(0, 30); }) }));
+
+  // ── ⑥ 两处登记 + UMD 两条出口（漏一处不报错、不留日志，只是那一发压根没带搜索）────
+  var man = null;
+  try { man = JSON.parse(manSrc); } catch (e) { man = null; }
+  var jsList = man && man.content_scripts && man.content_scripts[0] ? man.content_scripts[0].js : [];
+  var libAt = htmlSrc.indexOf('../libs/web-search.js');
+  var popAt = htmlSrc.indexOf('<script src="popup.js"');
+  check('⑥ 两处登记都在，而且顺序对：manifest 的 content_scripts[0].js 里 libs/web-search.js 排在 content.js 之前' +
+    '（下标 ' + jsList.indexOf('libs/web-search.js') + ' 对 ' + jsList.indexOf('content.js') + '），' +
+    'popup.html 的 <script> 排在 popup.js 之前（字符位 ' + libAt + ' 对 ' + popAt + '）；' +
+    'UMD 两条出口（node 的 module.exports 与浏览器全局 root.OmitoneWebSearch）各一条 —— 少一条就有一侧拿到 undefined',
+    !!man && jsList.indexOf('libs/web-search.js') >= 0 &&
+      jsList.indexOf('libs/web-search.js') < jsList.indexOf('content.js') &&
+      jsList.indexOf('libs/diagnose.js') < jsList.indexOf('libs/web-search.js') &&
+      libAt >= 0 && popAt >= 0 && libAt < popAt &&
+      countStr(libSrc, 'module.exports = api') === 1 && countStr(libSrc, 'root.OmitoneWebSearch = api') === 1,
+    JSON.stringify({ jsList: jsList, htmlLibAt: libAt, htmlPopAt: popAt }));
+
+  // ── ⑦ 全仓只有一份判定：五个 needle 在生产文件里恒 0，在 libs 里（剥注释后）各 1 ────
+  var prodFiles = ['popup/popup.js', 'content.js', 'background.js', 'popup/pet.js', 'popup/pet-game.js',
+    'popup/popup.html', 'manifest.json'];
+  try {
+    prodFiles = prodFiles.concat(fs.readdirSync(path.join(ROOT, 'src', 'page'))
+      .filter(function (f) { return /\.js$/.test(f); }).map(function (f) { return 'src/page/' + f; }));
+  } catch (e) { /* 读不到目录就在下面那一格里红出来 */ }
+  var needles = ['deepseek_web_search', 'function decisionOf', 'tools:', "'" + OFFICIAL + "'", '"' + OFFICIAL + '"'];
+  var libCode = stripComments(libSrc);
+  var hits = [];
+  prodFiles.forEach(function (rel) {
+    var src = read(rel);
+    if (!src) { hits.push(rel + ' 读不到'); return; }
+    needles.forEach(function (n) { if (countStr(src, n) > 0) hits.push(rel + ' 含 ' + n); });
+  });
+  // 「剥」这一手自己的自证：等长、且确实把文档注释里那一处摘掉了（原文 2 处，剥后 1 处）
+  var libDecls = {
+    tool: countStr(libCode, 'deepseek_web_search'),
+    ruler: countStr(libCode, 'function decisionOf'),
+    host: countStr(libCode, "'" + OFFICIAL + "'"),
+    rawTool: countStr(libSrc, 'deepseek_web_search')
+  };
+  check('⑦ 全仓只有一份判定：' + prodFiles.length + ' 个生产文件（含 src/page 那 ' +
+    (prodFiles.length - 7) + ' 段）里五个字面量命中 ' + hits.length + ' 处；libs 剥注释后 tools 声明、decisionOf 声明、' +
+    '官方域字面量各恰好 1 份 —— 并钉「剥」自己在承重（等长 ' + (libSrc.length === libCode.length) +
+    '，原文 ' + libDecls.rawTool + ' 处对剥后 ' + libDecls.tool + ' 处，摘掉的正是文档表格里那一处）',
+    hits.length === 0 && prodFiles.length >= 20 &&
+      libDecls.tool === 1 && libDecls.ruler === 1 && libDecls.host === 1 &&
+      libSrc.length === libCode.length && libDecls.rawTool === libDecls.tool + 1,
+    JSON.stringify({ files: prodFiles.length, hits: hits, lib: libDecls, len: [libSrc.length, libCode.length] }));
+
+  // ── ⑧ 三处出口都问同一把尺（而不是各自再写一份域名判定）───────────────────────
+  var exits = [
+    { n: 'popup buildPetChatRequest', b: topFn(popSrc, 'buildPetChatRequest') },
+    { n: 'popup petWebSearchDecision', b: topFn(popSrc, 'petWebSearchDecision') },
+    { n: 'content doctorWebSearch', b: topFn(conSrc, 'doctorWebSearch') },
+    { n: 'content doctorAskModel', b: topFn(conSrc, 'doctorAskModel') }
+  ];
+  var exitMiss = exits.filter(function (x) { return !x.b; }).map(function (x) { return x.n; });
+  var exitBad = exits.filter(function (x) {
+    return !!x.b && !(countStr(x.b, 'decisionOf(') + countStr(x.b, 'toolsFor(') > 0);
+  }).map(function (x) { return x.n; });
+  var exitOwnRuler = exits.filter(function (x) {
+    return !!x.b && countStr(x.b, OFFICIAL) > 0;
+  }).map(function (x) { return x.n; });
+  check('⑧ 三处花钱出口（弹窗聊天／弹窗解释共用 buildPetChatRequest、界面灰不灰走 petWebSearchDecision、' +
+    '上课页医生走 doctorWebSearch + doctorAskModel）四个函数体都从盘上取出、都真问 libs 的 decisionOf 或 toolsFor，' +
+    '而且体内**没有一份自己的官方域字面量**（自己写一份就是第二把尺，AGENTS §2 #4 / #18）；' +
+    '取不出函数体的话这一格只报「没取到」，不许当「通过」',
+    exitMiss.length === 0 && exitBad.length === 0 && exitOwnRuler.length === 0 &&
+      countStr(exits[3].b, 'doctorWebSearch(') >= 1,
+    JSON.stringify({ missing: exitMiss, noAsk: exitBad, ownRuler: exitOwnRuler }));
+
+  // ── ⑨ 键名只有一份、默认关四处齐、三态不许被 !! 压平 ───────────────────────
+  var conKey = (conSrc.match(/const PAGE_WEB_SEARCH_KEY = ["']([^"']+)["']/) || [])[1] || '';
+  var defaultsAt = popSrc.indexOf('const DEFAULTS = {');
+  var defaultsEnd = popSrc.indexOf('\n};', defaultsAt);
+  var defaultsSeg = defaultsAt < 0 || defaultsEnd < 0 ? '' : popSrc.slice(defaultsAt, defaultsEnd);
+  var readAt = popSrc.indexOf('chrome.storage.local.get("' + conKey + '"');
+  var readSeg = readAt < 0 ? '' : popSrc.slice(readAt, readAt + 260);
+  // 出厂那一格钉在**开关自己那一个标签**上：按固定字符窗往两侧扩会量不稳（第一版扩到 +120
+  // 就正好把 id="petWebSearchEnabled" 切在窗外，红成「没有 aria-checked=false」，真相是尺没够长）
+  var swId = 'id="petWebSearchEnabled"';
+  var swAt = htmlSrc.indexOf(swId);
+  var swTag = swAt < 0 ? '' : htmlSrc.slice(htmlSrc.lastIndexOf('<', swAt), htmlSrc.indexOf('>', swAt));
+  var c9 = {
+    keyOk: conKey === 'omitonePetWebSearchOn',
+    inContent: countStr(conSrc, conKey),
+    declareContent: countStr(conSrc, 'const PAGE_WEB_SEARCH_KEY'),
+    inPopup: countStr(popSrc, conKey),
+    defaultsRead: defaultsAt >= 0 && defaultsEnd > defaultsAt,
+    inDefaults: countStr(defaultsSeg, conKey),
+    idCells: countStr(htmlSrc, swId),
+    ariaOff: /aria-checked="false"/.test(swTag),
+    resetZero: countStr(popSrc, 'chrome.storage.local.set({ ' + conKey + ': 0 })'),
+    writeOneZero: countStr(popSrc, 'chrome.storage.local.set({ ' + conKey + ': value ? 1 : 0 }'),
+    triState: readSeg.indexOf('raw === 1 || raw === true') >= 0,
+    noFlatten: countStr(popSrc, 'petWebSearchVal = !!')
+  };
+  check('⑨ 存储键 `' + conKey + '` 全仓只有一份写法（content.js 声明 1 处、popup.js 引用 ' + c9.inPopup +
+    ' 处、两边逐字相同），而且四处「默认关」都在：DEFAULTS 段里根本没有这一枚（' + c9.inDefaults +
+    '）、开关自己那一个标签里 aria-checked=false、恢复默认显式写 0、写入口只落 1/0 —— ' +
+    '会花钱的功能不许被默认值补成开（AGENTS §2 #23 同族：两侧基准不同就恒对不上）',
+    c9.keyOk && c9.inContent >= 1 && c9.declareContent === 1 && c9.inPopup === 4 &&
+      c9.defaultsRead && c9.inDefaults === 0 && c9.idCells === 1 && c9.ariaOff &&
+      c9.resetZero === 1 && c9.writeOneZero === 1 && readAt >= 0 && c9.triState && c9.noFlatten === 0,
+    JSON.stringify({ key: conKey, cells: c9, swTag: swTag.slice(0, 120), readSeg: readSeg.slice(0, 120) }));
+}
+
+/**
+ * 会话任务 #184（批次 165）：被平台判「已结束」的问卷，那本记账以前活不过一次刷新。
+ *
+ * 现场症状是「刷完一门不换下一门」，链条是三件事叠出来的：
+ *   ① 次数账 `_voteTryMap` 只在页面内存里 → 整页刷新归零 → 「4 发预算 + 30 分钟冷却」
+ *      结构上永远走不完一轮（用完→刷新→归零→再用完）；
+ *   ② 投票交不出任何「放弃」证据 → 读取侧那道 `skip task point in give-up list` 对它形同不存在；
+ *   ③ 于是每一轮撞同一份问卷、进度键每轮换格 → `noop.rounds` 永远攒不满 → 换课判据永久进不来。
+ * 修法是把**数满那一发的证据交给已有的 24 小时跳过名单**（不新造一本账），
+ * 并让 `cool` 取两侧较大者（现场同一份问卷的两种失败形状会交替出现）。
+ *
+ * 三条成因各占一格，反向验证一刀只摘一层。
+ */
+async function testVoteEndedParkPersistent() {
+  console.log('\n[34] 已结束问卷的记账：数满预算那一发交给 24 小时跳过名单，扛得住一次刷新（会话任务 #184）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var run = read('src/page/62-tasks-run.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var dom = read('src/page/20-dom.js');
+  var cons = read('src/page/00-shell-constants.js');
+  var state = read('src/page/10-config-state.js');
+  var detect = read('src/page/60-tasks-detect.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    // ⚠️ `async` 必须一起带走：从 `function` 起切出来重建的是普通函数，
+    //   而 `_runChaoxingVoteJob` 体里有 `await` —— 当场 SyntaxError（实测）
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+  // 三个数从真源读回来，不在测试里抄一遍（AGENTS §5「断言里出现的每一个数，都要说得出它是从哪读回来的」）
+  var constNum = function (src, name) {
+    var m = new RegExp('var ' + name + '\\s*=\\s*([^;]+);').exec(src);
+    if (!m) return -1;
+    var v = -1;
+    try { v = Number(Function('return (' + m[1] + ');')()); } catch (e) { v = -1; }
+    return (isFinite(v) && v > 0) ? v : -1;
+  };
+  var countStr = function (hay, needle) {
+    var n = 0, at = 0;
+    while ((at = hay.indexOf(needle, at)) >= 0) { n++; at += needle.length; }
+    return n;
+  };
+  var indexes = function (hay, needle) {
+    var out = [], at = 0;
+    while ((at = hay.indexOf(needle, at)) >= 0) { out.push(at); at += needle.length; }
+    return out;
+  };
+
+  var MAX = constNum(cons, 'VOTE_MAX_TRIES');
+  var COOL = constNum(cons, 'VOTE_COOLDOWN_MS');
+  var ENDED = constNum(cons, 'VOTE_ENDED_COOLDOWN_MS');
+  var skm = /_taskGiveUpStoreKey:\s*'([^']+)'/.exec(state);
+  var STORE_KEY = skm ? skm[1] : '';
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var resetLogs = function () { logs.length = 0; };
+  var saidOf = function (msg) {
+    return logs.filter(function (l) { return l.message === msg; }).length;
+  };
+  var lastSaid = function (msg) {
+    var hit = logs.filter(function (l) { return l.message === msg; });
+    return hit.length ? hit[hit.length - 1] : null;
+  };
+
+  var injVote = {
+    emitRuntimeLog: say,
+    VOTE_MAX_TRIES: MAX,
+    VOTE_COOLDOWN_MS: COOL,
+    VOTE_ENDED_COOLDOWN_MS: ENDED
+  };
+
+  var voteJob = buildFrom(run, '_runChaoxingVoteJob', injVote);
+  var noteTry = buildFrom(run, '_noteVoteTry', injVote);
+  var clearTry = buildFrom(run, '_clearVoteTry', injVote);
+  var cooledDown = buildFrom(run, '_voteTryCooledDown', injVote);
+  var tryKeyOf = buildFrom(run, '_voteTryKeyOf', {});
+  var overlayForm = buildFrom(run, '_voteOverlayForm', {});
+  var overlayEnded = buildFrom(run, '_voteOverlayEnded', {});
+  var pickOptions = buildFrom(run, '_pickVoteOptions', {});
+  var safeParse = buildFrom(dom, '_safeJsonParse', {});
+  var pointKey = buildFrom(loop, '_taskPointKey', {});
+
+  // 「盘」那一格：MV3 页面里的 localStorage 在 node 里没有，`_taskGiveUpMap` 的 try/catch
+  // 会把"没有盘"读成"名单是空的"（症状与"确实没落盘"一模一样）。所以这里给一枚真的假盘，
+  // 并且**每一场自己换一枚** —— 「刷新之后」= 新 app 实例 + 同一枚盘。
+  var current = null;
+  var ls = {
+    getItem: function (k) { return current && current.data[k] !== undefined ? current.data[k] : null; },
+    setItem: function (k, v) { if (current) current.data[k] = String(v); },
+    removeItem: function (k) { if (current) delete current.data[k]; }
+  };
+  var giveUpMap = buildFrom(loop, '_taskGiveUpMap', { localStorage: ls });
+  var giveUpTtl = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var isGivenUp = buildFrom(loop, '_isTaskGivenUp', { localStorage: ls, TASK_GIVEUP_TTL_MS: giveUpTtl });
+  var markGivenUp = buildFrom(loop, '_markTaskGivenUp', { localStorage: ls });
+
+  var mkStore = function () {
+    var box = { data: Object.create(null) };
+    current = box;
+    return box;
+  };
+
+  var mkNoCheckInput = function () {
+    var el = {
+      name: 'answer8000083064', type: 'radio', disabled: false, value: 'A',
+      click: function () {}, closest: function () { return { tagName: 'LI' }; }
+    };
+    // 点了也不勾：站点那种被禁用作答的选项就是这个形状
+    Object.defineProperty(el, 'checked', { get: function () { return false; }, set: function () {} });
+    return el;
+  };
+  var mkDoc = function (inputs, cands) {
+    return {
+      querySelectorAll: function (sel) {
+        var s = String(sel || '');
+        if (s.indexOf('radio') >= 0 || s.indexOf('checkbox') >= 0) return inputs.slice();
+        if (s.indexOf('btn-submit') >= 0) return cands.slice();
+        return [];
+      }
+    };
+  };
+  var SHAPES = {
+    ended: { text: '本次问卷调查已被手动结束，无法作答。', inputs: [], cands: [] },
+    'no-form': { text: '本次问卷暂无可选项。', inputs: [], cands: [] },
+    'no-check': { text: '请选择一个选项后提交。', inputs: [mkNoCheckInput], cands: [{ innerText: '提交', className: 'btn-submit', value: '' }] },
+    overlay: { text: '', doc: null }
+  };
+
+  var mkApp = function (box, kind) {
+    current = box;
+    var spec = SHAPES[kind];
+    var app = {
+      configs: { enableVote: true },
+      _voteTryMap: {},
+      _taskGiveUpStoreKey: STORE_KEY,
+      _safeJsonParse: safeParse,
+      _taskPointKey: pointKey,
+      _taskGiveUpMap: giveUpMap,
+      _isTaskGivenUp: isGivenUp,
+      _markTaskGivenUp: markGivenUp,
+      _voteTryKeyOf: tryKeyOf,
+      _noteVoteTry: noteTry,
+      _clearVoteTry: clearTry,
+      _voteTryCooledDown: cooledDown,
+      _voteOverlayForm: overlayForm,
+      _voteOverlayEnded: overlayEnded,
+      _pickVoteOptions: pickOptions,
+      _voteBoxFinished: function () { return false; },
+      _closeVoteOverlay: function () { app.__closed++; },
+      __closed: 0,
+      // 桩打在「那个会把覆盖层收掉的动作」与「那份文档」上，判定谓词（ended / form / pick）全是生产代码
+      _voteOverlayText: function () { return spec.text; },
+      _openVoteOverlay: function () {
+        if (kind === 'overlay') return Promise.resolve(null);
+        if (!app.__doc) {
+          var ins = spec.inputs.map(function (f) { return typeof f === 'function' ? f() : f; });
+          app.__doc = mkDoc(ins, spec.cands);
+        }
+        return Promise.resolve(app.__doc);
+      }
+    };
+    return app;
+  };
+
+  // 合成夹具号（AGENTS §28-B：真实课程痕迹不进公开面）
+  var JOB = {
+    kind: 'vote', workType: 'job', jobid: '9000123456',
+    attachment: { property: {} }, name: '问卷 A（合成夹具）'
+  };
+  var EXPECT_KEY = 'job:' + JOB.jobid;
+  var GATE_SHAPE = { jobid: JOB.jobid, attachment: JOB.attachment, name: JOB.name };
+
+  var parts = [voteJob, noteTry, clearTry, cooledDown, tryKeyOf, overlayForm, overlayEnded, pickOptions,
+    safeParse, pointKey, giveUpMap, isGivenUp, markGivenUp];
+  var extracted = parts.every(function (f) { return typeof f === 'function'; }) &&
+    MAX > 0 && COOL > 0 && ENDED > 0 && !!STORE_KEY;
+  check('① 十三件都能从盘上原样取出来真跑，三个数与那枚存储键也从真源读回来（不是抄进测试）—— '
+    + '取不出来时后面每一条都是「没执行」，而「没执行」和「通过」在报告里长得一模一样',
+    extracted,
+    JSON.stringify({
+      fns: parts.map(function (f) { return typeof f; }).join('/'),
+      max: MAX, cool: COOL, ended: ENDED, storeKey: STORE_KEY
+    }));
+  if (!extracted) return;
+
+  // ---- 成因②：同一份问卷的两种失败形状交替时，30 分钟那一格不能被覆盖成 0 ----
+  var box2 = mkStore();
+  var app2 = mkApp(box2, 'ended');
+  resetLogs();
+  var firstRec = noteTry.call(app2, JOB, 'ended', ENDED);
+  var secondRec = noteTry.call(app2, JOB, 'no-check');
+  for (var i2 = 2; i2 < MAX; i2++) noteTry.call(app2, JOB, 'no-check');
+  var mixedCooled = cooledDown.call(app2, JOB);
+
+  var app2b = mkApp(mkStore(), 'no-check');
+  for (var j2 = 0; j2 < MAX; j2++) noteTry.call(app2b, JOB, 'no-check');
+  var plainCooled = cooledDown.call(app2b, JOB);
+
+  check('② `cool` 取**两侧较大者**：认成「已结束」之后下一拍换成不带 override 的失败形状，'
+    + '30 分钟那一格照旧在 —— 旧写法把它覆盖成 0，日志那句「30 分钟后还会再点开」就成了假话'
+    + '（两种形状交替恰是现场实测到的形状）',
+    firstRec.cool === ENDED && secondRec.cool === ENDED && secondRec.n === 2 &&
+      !!mixedCooled && mixedCooled.coolMs === ENDED && mixedCooled.retryInMs <= ENDED &&
+      mixedCooled.tries === MAX,
+    JSON.stringify({
+      firstCool: firstRec.cool, secondCool: secondRec.cool, secondN: secondRec.n,
+      mixed: mixedCooled && { tries: mixedCooled.tries, coolMs: mixedCooled.coolMs, retryInMs: mixedCooled.retryInMs },
+      ENDED: ENDED
+    }));
+
+  check('②b 反过来也钉住：**从没认出「已结束」的问卷仍是默认那一档** —— '
+    + '把 max 写成「永远取长的」等于给每种失败形状都放 30 分钟假冷却（AGENTS §5「会误报的守卫和没有守卫一样害人」）',
+    !!plainCooled && plainCooled.coolMs === COOL,
+    JSON.stringify({ plain: plainCooled && { coolMs: plainCooled.coolMs, tries: plainCooled.tries }, COOL: COOL }));
+
+  // ---- 成因①：落盘排在数满那一发，不是第一发 ----
+  var box3 = mkStore();
+  var app3 = mkApp(box3, 'ended');
+  resetLogs();
+  for (var i3 = 0; i3 < MAX - 1; i3++) await voteJob.call(app3, JOB);
+  var map3 = giveUpMap.call(app3);
+  check('③ 前 ' + (MAX - 1) + ' 发只记在页面内存里、盘上那本名单**一个键都没有** —— '
+    + '第一发就落盘会把「老师过会儿重新开放」那一族永久挡在门外（24 小时投不进去）',
+    Object.keys(map3).length === 0 && saidOf('vote survey closed') === MAX - 1 &&
+      saidOf('vote survey closed, parked 24h') === 0,
+    JSON.stringify({
+      mapKeys: Object.keys(map3), closed: saidOf('vote survey closed'),
+      parked: saidOf('vote survey closed, parked 24h'), memN: (function () {
+        var rec = app3._voteTryMap[tryKeyOf.call(app3, JOB)];
+        return rec ? rec.n : 0;
+      })()
+    }));
+
+  // ---- 成因①+③：数满那一发把证据交给已有的持久名单，并说清怎么恢复 ----
+  var box4 = mkStore();
+  var app4 = mkApp(box4, 'ended');
+  resetLogs();
+  for (var i4 = 0; i4 < MAX; i4++) await voteJob.call(app4, JOB);
+  var map4 = giveUpMap.call(app4);
+  var park4 = map4[EXPECT_KEY] || null;
+  var parkedSaid = lastSaid('vote survey closed, parked 24h');
+  var closedSaid = lastSaid('vote survey closed');
+  check('④ 第 ' + MAX + ' 发认成「已结束」时，证据交给**已有的** 24 小时跳过名单：键是 `job:<jobid>`、'
+    + 'reason 点名 vote-ended、attempts 等于预算，而且两句话并存 —— 30 分钟那句照旧说（还没落盘之前它是真话），'
+    + '新那句必须讲清 24 小时 + 两个恢复出口（AGENTS §2 #7：跳过必须留日志且可恢复）',
+    Object.keys(map4).length === 1 && !!park4 && park4.reason === 'vote-ended' &&
+      Number(park4.attempts) === MAX && String(park4.name || '').length > 0 &&
+      saidOf('vote survey closed, parked 24h') === 1 && saidOf('vote survey closed') === MAX &&
+      !!parkedSaid && parkedSaid.meta.key === EXPECT_KEY && Number(parkedSaid.meta.tries) === MAX &&
+      /24 小时/.test(parkedSaid.meta.hint) && /clearTaskGiveUp/.test(parkedSaid.meta.hint) &&
+      /已完成任务重学/.test(parkedSaid.meta.hint) &&
+      !!closedSaid && closedSaid.meta.retryInMs === ENDED,
+    JSON.stringify({
+      keys: Object.keys(map4), rec: park4, closedCount: saidOf('vote survey closed'),
+      parkedMeta: parkedSaid && parkedSaid.meta, retryInMs: closedSaid && closedSaid.meta.retryInMs
+    }));
+
+  // ---- 键必须与读取侧那道闸同源，而且扛得住一次刷新 ----
+  var fresh4 = mkApp(box4, 'ended');          // 新实例 = 整页刷新之后
+  var gateKey = pointKey.call(fresh4, GATE_SHAPE);
+  var gateKeyRenamed = pointKey.call(fresh4, { jobid: JOB.jobid, attachment: JOB.attachment, name: '换了个卷名' });
+  var bareKey = tryKeyOf.call(fresh4, JOB);
+  var survived = isGivenUp.call(fresh4, gateKey);
+  var bareHit = isGivenUp.call(fresh4, bareKey);
+  var memAfterReload = Object.keys(fresh4._voteTryMap).length;
+  check('⑤ 写入口与读出口过**同一把尺**：读取侧那句原样（`_taskPointKey({jobid, attachment, name})`）算出的键，'
+    + '与新实例（= 刷新之后，内存那本账是空的）读回的名单对上；卷名换了也不改键（键认 jobid 不认文案）；'
+    + '而投票次数账那个裸 `jobid` **不算**键 —— 新造一本账或两套键，这道闸就永远走不到',
+    gateKey === EXPECT_KEY && gateKey === gateKeyRenamed && gateKey === Object.keys(map4)[0] &&
+      survived === true && memAfterReload === 0 && bareHit === false && bareKey !== EXPECT_KEY,
+    JSON.stringify({
+      gateKey: gateKey, gateKeyRenamed: gateKeyRenamed, bareKey: bareKey,
+      survived: survived, bareHit: bareHit, memKeysAfterReload: memAfterReload, stored: Object.keys(map4)
+    }));
+
+  // ---- 阴性对照：三种"投不出去"的形状都不许落盘，冷却到期照旧再试 ----
+  var controlCells = {};
+  var controlKinds = ['no-form', 'no-check', 'overlay'];
+  for (var c4 = 0; c4 < controlKinds.length; c4++) {
+    var kindC = controlKinds[c4];
+    var boxC = mkStore();
+    var appC = mkApp(boxC, kindC);
+    resetLogs();
+    for (var i5 = 0; i5 < MAX; i5++) await voteJob.call(appC, JOB);
+    var mapC = giveUpMap.call(appC);
+    var cooledC = cooledDown.call(appC, JOB);
+    // 把「上一次」往前拨过冷却：到期必须放行，不许实现成永久跳过
+    var recC = appC._voteTryMap[tryKeyOf.call(appC, JOB)];
+    if (recC) recC.at = Date.now() - COOL - 1000;
+    var afterC = cooledDown.call(appC, JOB);
+    controlCells[kindC] = {
+      keys: Object.keys(mapC).length,
+      parked: saidOf('vote survey closed, parked 24h'),
+      gateHit: isGivenUp.call(appC, GATE_SHAPE),
+      coolMs: cooledC ? cooledC.coolMs : -1,
+      retryAfterCool: afterC === null
+    };
+  }
+  check('⑥ 三种失败形状（没选项也没提交键 / 点了不勾 / 覆盖层压根开不出来）数满预算**都不落盘**，'
+    + '拿到的仍是默认那一档冷却、到期就放行 —— 落盘只认「平台自己说这场已结束」那一句，'
+    + '把别的形状一起永久跳过就是把还能投的问卷判死',
+    controlKinds.every(function (k) {
+      var cell = controlCells[k];
+      return cell.keys === 0 && cell.parked === 0 && cell.gateHit === false &&
+        cell.coolMs === COOL && cell.retryAfterCool === true;
+    }),
+    JSON.stringify({ cells: controlCells, COOL: COOL }));
+
+  // ---- 不新造一本账 + 只有一处写入口（按字符偏移判，别按行算）----
+  var directLs = countStr(run, 'localStorage.getItem') + countStr(run, 'localStorage.setItem') +
+    countStr(run, 'localStorage.removeItem');
+  var markSites = indexes(run, 'this._markTaskGivenUp(');
+  var endedAt = run.indexOf('if (!form.firsts.length && this._voteOverlayEnded(form.text))');
+  var nextAt = run.indexOf('if (!form.firsts.length && !form.submit)');
+  var insideEnded = markSites.length === 1 && endedAt >= 0 && nextAt > endedAt &&
+    markSites[0] > endedAt && markSites[0] < nextAt;
+  var newLedger = countStr(run, 'omitone_vote') + countStr(cons, 'omitone_vote');
+  var readGate = countStr(detect, 'this._isTaskGivenUp(this._taskPointKey(');
+  check('⑦ 记账只走已有的那本账：62 片段里对 localStorage 直接动手 0 处、没有任何 `omitone_vote` 那样的新存储键、'
+    + '`_markTaskGivenUp` 在投票这一族只有一个调用点且落在 ended 那一支之内（按字符偏移判），'
+    + '而读取侧那道闸仍然是 `_isTaskGivenUp(this._taskPointKey(...))` 这一句原样 —— '
+    + '写入口改了、读出口没改，症状与改之前一模一样，而且一条报错都不留（AGENTS §2 #18）',
+    directLs === 0 && newLedger === 0 && insideEnded && readGate === 1,
+    JSON.stringify({ directLs: directLs, markSites: markSites, endedAt: endedAt, nextAt: nextAt, newLedger: newLedger, readGate: readGate }));
+}
+
+async function testMediaRecoveryExhaustion() {
+  var read = function (file) { return fs.readFileSync(path.join(ROOT, file), 'utf8'); };
+  var media = read('src/page/40-media.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var tasks = read('src/page/62-tasks-run.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    return { start: start, end: src.indexOf('\n    },', start) };
+  };
+  var buildFrom = function (src, name, env) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(env || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return env[k]; }));
+  };
+  var firstNum = function (src, re) {
+    var hit = src.match(re);
+    return hit ? Number(hit[1]) : NaN;
+  };
+  var limitR = firstNum(read('src/page/00-shell-constants.js'), /MEDIA_RELOAD_LIMIT\s*=\s*(\d+)/);
+  var ttlR = readProductConstant(read('src/page/00-shell-constants.js'), 'TASK_GIVEUP_TTL_MS');
+  var mediaNames = ['_isMediaQuarantined', '_quarantineDeadMedia', '_clearMediaPendingState',
+    '_isActiveMediaPending', '_isVisibleMedia', '_getVideoEl', '_reloadMediaInPlace', '_handleVideoEnded',
+    '_handleVideoLoaded', '_startSlideMedia', '_waitSlideAudioDone', '_ensurePlaybackRate',
+    '_scheduleMaxRateDetection', '_rearmMediaGuardIfLost'];
+  var loopNames = ['_taskPointKey', '_taskGiveUpMap', '_isTaskGivenUp', '_markTaskGivenUp', '_clearTaskGiveUp'];
+  var missing = mediaNames.concat(loopNames, ['_runPptAudioJob']).filter(function (name) {
+    var src = name === '_runPptAudioJob' ? tasks : (loopNames.indexOf(name) >= 0 ? loop : media);
+    return boundsOf(src, name).start < 0;
+  });
+  check('177-0：生产方法、三次上限与 24 小时窗口都从源码取到',
+    !missing.length && limitR === 3 && ttlR === 24 * 3600 * 1000,
+    JSON.stringify({ missing: missing, limit: limitR, ttl: ttlR }));
+  if (missing.length || limitR !== 3 || ttlR !== 24 * 3600 * 1000) return;
+
+  var storage = {};
+  var localStorage = {
+    getItem: function (key) { return storage[key] === undefined ? null : storage[key]; },
+    setItem: function (key, value) { storage[key] = String(value); },
+    removeItem: function (key) { delete storage[key]; }
+  };
+  var logs = [];
+  var env = {
+    MEDIA_RELOAD_LIMIT: limitR,
+    TASK_GIVEUP_TTL_MS: ttlR,
+    localStorage: localStorage,
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta || {} }); },
+    visible: function (el) { return !!(el && el._visible !== false); },
+    document: {},
+    window: {},
+    sleep: function () { return Promise.resolve(); }
+  };
+  var fns = {};
+  mediaNames.forEach(function (name) { fns[name] = buildFrom(media, name, env); });
+  loopNames.forEach(function (name) { fns[name] = buildFrom(loop, name, env); });
+  fns._runPptAudioJob = buildFrom(tasks, '_runPptAudioJob', env);
+
+  var mkMedia = function (key, tag, code) {
+    var listeners = Object.create(null);
+    var media = {
+      key: key, tagName: tag || 'VIDEO', isConnected: true, paused: false, ended: false,
+      readyState: 4, networkState: 1, duration: 100, currentTime: 42, currentSrc: '',
+      src: '', playbackRate: 1, defaultPlaybackRate: 1, muted: false,
+      error: code ? { code: code, message: 'FFmpegDemuxer: data source error' } : null,
+      loads: 0, plays: 0, pauses: 0, rateCalls: 0, listeners: listeners,
+      addEventListener: function (type, fn) { (listeners[type] || (listeners[type] = [])).push(fn); },
+      removeEventListener: function () {},
+      load: function () { this.loads++; },
+      play: function () { this.plays++; return Promise.resolve(); },
+      pause: function () { this.pauses++; this.paused = true; }
+    };
+    return media;
+  };
+  var mkDoc = function (medias) {
+    return {
+      body: {},
+      querySelectorAll: function (selector) {
+        if (selector === 'video, audio' || selector === 'audio, video') return medias;
+        return [];
+      },
+      querySelector: function (selector) { return selector === '.swiper-container' ? {} : null; }
+    };
+  };
+  var mkApp = function (doc) {
+    var app = {
+      configs: { documentSkipTimeoutMs: 120000, muted: false, autoMaxPlaybackRate: false,
+        playbackRateCap: 4, pptFlipIntervalMs: 1 },
+      _taskGiveUpStoreKey: 'omitone_task_giveup', _taskAttempts: {}, _taskProgress: null,
+      _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
+      _videoEl: null, _videoCount: 0, _currentVideoIndex: 0, _isPlaying: false,
+      _activeMediaJobPending: false, _activeMediaJobManaged: false, _activeDocumentJobPending: false,
+      _activeDocumentJobManaged: false, _checkInterval: null, _mediaWaitLogAt: 0,
+      _mediaNoSourceSince: 0, _mediaBrokenSince: 0, _guardLastTime: 0, _guardLastWallTs: 0,
+      _guardLastResumeTs: 0, _resumeWindowStart: 0, _resumeAttemptCount: 0,
+      _detectedMaxRate: 0, _rateDetectVideo: null, _rateDetectBusy: false, _rateProbing: false,
+      _rateUnknownVideo: null, _rateUnknownTries: 0, _rateLockedBy: '', _rateEpoch: 0,
+      finishCalls: 0, nextCalls: 0, clearChecks: 0, guardStarts: 0, resumeCalls: 0,
+      rateCalls: 0, unreadableCalls: 0, resetRateCalls: 0, seekCalls: 0,
+      doc: doc,
+      _safeJsonParse: function (raw) { try { return JSON.parse(raw); } catch (e) { return null; } },
+      _getMainDocument: function () { return this.doc; },
+      _getMediaSeekKey: function (el) { return el && el.key || ''; },
+      _mediaErrorCode: function (el) { return Number(el && el.error && el.error.code || 0); },
+      _clearCheckInterval: function () { this.clearChecks++; this._checkInterval = null; },
+      _shouldReleaseMediaPendingForCurrentCompletion: function () { return false; },
+      _scanForeignExtensionArtifacts: function () { return { state: 'none', ids: [] }; },
+      _siteSaysUnplayable: function () { return { state: 'absent', quote: '' }; },
+      _noteForeignExtensionHint: function () {},
+      _ensurePlaybackRate: function () { this.rateCalls++; },
+      _tryResumePlayback: function () { this.resumeCalls++; },
+      _startVideoMonitoring: function () { this.guardStarts++; },
+      _finishCurrentMedia: function () { this.finishCalls++; },
+      nextUnit: function () { this.nextCalls++; },
+      _tickProgress: function () {},
+      _assertActive: function () { return true; },
+      _clearDocumentPendingState: function (reason) { this.documentClearReason = reason; },
+      _resetRateDetection: function () { this.resetRateCalls++; },
+      _trySeekToEnd: function () { this.seekCalls++; },
+      _noteCourseGuard: function () {}, _clearCourseGuard: function () {},
+      _noteRateUnreadable: function () { this.unreadableCalls++; }
+    };
+    mediaNames.concat(loopNames, ['_runPptAudioJob']).forEach(function (name) { app[name] = fns[name]; });
+    return app;
+  };
+  var flush = async function () {
+    for (var i = 0; i < 8; i++) await new Promise(function (resolve) { setTimeout(resolve, 0); });
+  };
+
+  var bad = mkMedia('bad-177', 'VIDEO', 2);
+  var healthy = mkMedia('healthy-177', 'VIDEO', 2);
+  var job = { jobid: 'job-177', attachment: { property: { module: 'video' } }, name: '坏媒体任务点' };
+  var doc = mkDoc([bad, healthy]);
+  var app = mkApp(doc);
+  app._videoEl = bad;
+  app._activeMediaJobPending = true;
+  app._isPlaying = true;
+  app._mediaBrokenSince = Date.now() - 120001;
+  app._mediaReloadKeys[bad.key] = { n: 3, at: Date.now() - 20001 };
+  app._mediaQuarantine.set(bad, { job: job });
+  var pending = app._isActiveMediaPending('media-pending');
+  var writeKey = app._taskPointKey(job);
+  var readerKey = app._taskPointKey({ jobid: job.jobid, attachment: job.attachment, name: job.name });
+  var givenUp = app._isTaskGivenUp(readerKey);
+  check('177-1：三次耗尽后 pending 松开、精确元素隔离、任务键与读侧逐字相等',
+    pending === false && app._activeMediaJobPending === false && app._isPlaying === false &&
+    app._videoEl === null && app._isMediaQuarantined(bad) && writeKey === readerKey && givenUp === true,
+    JSON.stringify({ pending: pending, active: app._activeMediaJobPending, playing: app._isPlaying,
+      cached: !!app._videoEl, quarantined: app._isMediaQuarantined(bad), writeKey: writeKey,
+      readerKey: readerKey, givenUp: givenUp }));
+  check('177-2：放手不伪造平台完成，也不自行翻到下一节',
+    app.finishCalls === 0 && app.nextCalls === 0,
+    JSON.stringify({ finishCalls: app.finishCalls, nextCalls: app.nextCalls }));
+
+  var picked = app._getVideoEl();
+  check('177-3：释放后重扫不再拿回同一坏视频，健康媒体仍可选中',
+    picked === healthy && app._videoEl === healthy,
+    JSON.stringify({ picked: picked && picked.key, cached: app._videoEl && app._videoEl.key }));
+  var hiddenBad = mkMedia('hidden-bad-177', 'AUDIO', 2);
+  var hiddenHealthy = mkMedia('hidden-healthy-177', 'AUDIO', 0);
+  hiddenBad._visible = false;
+  hiddenHealthy._visible = false;
+  var hiddenApp = mkApp(mkDoc([hiddenBad, hiddenHealthy]));
+  hiddenApp._mediaQuarantine.set(hiddenBad, { job: job, quarantined: Date.now() });
+  var hiddenPicked = hiddenApp._getVideoEl();
+  check('177-4：隐藏音频兜底也排除已隔离元素',
+    hiddenPicked === hiddenHealthy && hiddenApp._videoEl === hiddenHealthy,
+    JSON.stringify({ picked: hiddenPicked && hiddenPicked.key }));
+
+  app._mediaReloadKeys[healthy.key] = { n: 2, at: Date.now() - 20001 };
+  var healthyReload = app._reloadMediaInPlace(healthy, 'case');
+  var healthyLoads = healthy.loads;
+  app._mediaReloadKeys[healthy.key].at = Date.now() - 20001;
+  var fourthHealthy = app._reloadMediaInPlace(healthy, 'case');
+  var badReload = app._reloadMediaInPlace(bad, 'case');
+  check('177-5：健康元素保留独立三次预算，两枚都不产生第四次恢复',
+    healthyReload === true && app._mediaReloadKeys[healthy.key].n === 3 &&
+    fourthHealthy === false && healthy.loads === healthyLoads && badReload === false,
+    JSON.stringify({ healthyReload: healthyReload, n: app._mediaReloadKeys[healthy.key].n,
+      fourthHealthy: fourthHealthy, badReload: badReload, healthyLoads: healthy.loads }));
+
+  var firstAt = app._taskGiveUpMap()[readerKey].at;
+  var warnCount = logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).length;
+  app._quarantineDeadMedia(bad, { job: job, reloadTimes: 3, currentTime: 99 });
+  var secondAt = app._taskGiveUpMap()[readerKey].at;
+  var noKey = mkMedia('no-key-177', 'VIDEO', 2);
+  app._quarantineDeadMedia(noKey, { reloadTimes: 3 });
+  var noKeyLog = logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).pop();
+  check('177-6：重复耗尽不刷新放弃时刻、不重复说话，空任务键单独报 no-key',
+    firstAt === secondAt &&
+    logs.filter(function (line) { return line.message === 'media recovery exhausted, element quarantined'; }).length === warnCount + 1 &&
+    noKeyLog && noKeyLog.meta.giveUp === 'no-key' && !app._taskGiveUpMap()[''],
+    JSON.stringify({ firstAt: firstAt, secondAt: secondAt, noKey: noKeyLog && noKeyLog.meta.giveUp }));
+
+  app._clearTaskGiveUp();
+  var resetReload = app._reloadMediaInPlace(bad, 'reset');
+  check('177-7：用户清除放弃名单时，当前页隔离与三次恢复预算一起恢复',
+    !app._isMediaQuarantined(bad) && !app._isTaskGivenUp(readerKey) &&
+    resetReload === true && app._mediaReloadKeys[bad.key].n === 1,
+    JSON.stringify({ quarantined: app._isMediaQuarantined(bad), givenUp: app._isTaskGivenUp(readerKey),
+      resetReload: resetReload, n: app._mediaReloadKeys[bad.key] && app._mediaReloadKeys[bad.key].n }));
+
+  var late = mkMedia('late-177', 'VIDEO', 2);
+  late.currentTime = 10;
+  late.play = function () {
+    this.plays++;
+    return this.plays === 1 ? Promise.reject(new Error('autoplay blocked')) : Promise.resolve();
+  };
+  var lateApp = mkApp(mkDoc([late]));
+  lateApp._mediaReloadKeys[late.key] = { n: 2, at: Date.now() - 20001 };
+  lateApp._reloadMediaInPlace(late, 'late');
+  lateApp._quarantineDeadMedia(late, { job: job, reloadTimes: 3 });
+  (late.listeners.loadedmetadata || []).forEach(function (fn) { fn(); });
+  lateApp._handleVideoEnded({ target: late });
+  lateApp._handleVideoLoaded({ target: late });
+  await flush();
+  check('177-8：隔离后的 loadedmetadata、播放拒绝与 ended 迟到回调不再重启或收尾',
+    late.currentTime === 10 && late.plays === 1 && lateApp.rateCalls === 0 &&
+    lateApp.finishCalls === 0 && lateApp.nextCalls === 0 && lateApp.resetRateCalls === 0 && lateApp.seekCalls === 0,
+    JSON.stringify({ currentTime: late.currentTime, plays: late.plays, rateCalls: lateApp.rateCalls,
+      finishCalls: lateApp.finishCalls, nextCalls: lateApp.nextCalls, resetRateCalls: lateApp.resetRateCalls,
+      seekCalls: lateApp.seekCalls }));
+
+  var pptAudio = mkMedia('ppt-audio-177', 'AUDIO', 2);
+  var pptDoc = mkDoc([pptAudio]);
+  var pptApp = mkApp(pptDoc);
+  var pptJob = { jobid: 'ppt-177', name: '隔离音频课件', doc: pptDoc, win: {
+    swiperNext: function () { pptApp.nextCalls++; },
+    finishJob: function () { pptApp.finishCalls++; }
+  } };
+  pptApp._mediaQuarantine.set(pptAudio, { job: pptJob, quarantined: Date.now() });
+  var pptStart = pptApp._startSlideMedia(pptDoc, pptJob);
+  var pptWait = await pptApp._waitSlideAudioDone(pptDoc, pptJob);
+  var pptRun = await pptApp._runPptAudioJob(pptJob);
+  check('177-9：课件只剩隔离音频时不假报播完、不翻页、不调用平台完成',
+    pptStart === 0 && pptWait === false && pptRun === false && pptApp.nextCalls === 0 &&
+    pptApp.finishCalls === 0 && pptApp.documentClearReason === 'ppt-audio-media-quarantined',
+    JSON.stringify({ pptStart: pptStart, pptWait: pptWait, pptRun: pptRun,
+      nextCalls: pptApp.nextCalls, finishCalls: pptApp.finishCalls,
+      clearReason: pptApp.documentClearReason }));
+
+  var guardApp = mkApp(mkDoc([bad]));
+  guardApp._videoEl = bad;
+  guardApp._isPlaying = true;
+  guardApp._mediaQuarantine.set(bad, { job: job, quarantined: Date.now() });
+  var rearmed = guardApp._rearmMediaGuardIfLost('test');
+  check('177-10：隔离缓存不会补回媒体看护句柄',
+    rearmed === false && guardApp._videoEl === null && guardApp.guardStarts === 0,
+    JSON.stringify({ rearmed: rearmed, cached: !!guardApp._videoEl, guardStarts: guardApp.guardStarts }));
+
+  var rateVideo = mkMedia('rate-late-177', 'VIDEO', 0);
+  var rateWrites = 0;
+  var rateValue = 1;
+  Object.defineProperty(rateVideo, 'playbackRate', {
+    configurable: true, get: function () { return rateValue; },
+    set: function (value) { rateWrites++; rateValue = value; }
+  });
+  var defaultWrites = 0;
+  var defaultRateValue = 1;
+  Object.defineProperty(rateVideo, 'defaultPlaybackRate', {
+    configurable: true, get: function () { return defaultRateValue; },
+    set: function (value) { defaultWrites++; defaultRateValue = value; }
+  });
+  var rateApp = mkApp(mkDoc([rateVideo]));
+  var rateTargetFn = buildFrom(media, '_getTargetPlaybackRate', env);
+  var rateClampFn = buildFrom(media, '_clampAutoRate', env);
+  rateApp._getTargetPlaybackRate = function () { return rateTargetFn.call(rateApp); };
+  rateApp._clampAutoRate = function (rate) { return rateClampFn.call(rateApp, rate); };
+  rateApp.configs.autoMaxPlaybackRate = true;
+  rateApp._videoEl = rateVideo;
+  rateApp._getVideoEl = function () { return rateVideo; };
+  rateApp._detectMaxPlaybackRate = function () { return rateDeferred; };
+  var resolveRate;
+  var rateDeferred = new Promise(function (resolve) { resolveRate = resolve; });
+  rateApp._scheduleMaxRateDetection(rateVideo);
+  rateApp._quarantineDeadMedia(rateVideo, { job: job, reloadTimes: 3 });
+  resolveRate(4);
+  await flush();
+  var rateQuarantine = rateApp._isMediaQuarantined(rateVideo);
+  check('177-11：倍速探测在隔离后作废，迟到结果不再写播放器',
+    rateQuarantine === true && rateWrites === 0 && defaultWrites === 0 && rateApp._detectedMaxRate === 0 &&
+    rateApp._rateDetectBusy === false && rateApp._rateDetectVideo === null && rateApp.unreadableCalls === 0,
+    JSON.stringify({ quarantined: rateQuarantine, rateWrites: rateWrites, defaultWrites: defaultWrites,
+      detected: rateApp._detectedMaxRate,
+      busy: rateApp._rateDetectBusy, detectVideo: !!rateApp._rateDetectVideo,
+      unreadableCalls: rateApp.unreadableCalls }));
+  var quarantinedRateWrites = rateWrites;
+  rateApp._ensurePlaybackRate(rateVideo, 'quarantined');
+  rateApp._scheduleMaxRateDetection(rateVideo);
+  check('177-12：已隔离媒体不进入倍速写入或探测入口',
+    rateWrites === quarantinedRateWrites && rateApp._rateDetectVideo === null && rateApp._rateDetectBusy === false,
+    JSON.stringify({ rateWrites: rateWrites, detectVideo: !!rateApp._rateDetectVideo, busy: rateApp._rateDetectBusy }));
+}
+
+async function testQuizSubmitNeverAccepted() {
+  console.log('\n[35] 交卷被平台静默拒收：旁路取证进环 + 攒满三次有界放手（会话任务 #232）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var quiz = read('src/page/70-quiz-flow.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var cons = read('src/page/00-shell-constants.js');
+  var state = read('src/page/10-config-state.js');
+
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) at = src.indexOf(name + ': async function');
+    if (at < 0) return { start: -1, end: -1 };
+    var fnAt = src.indexOf('function', at);
+    var start = src.slice(fnAt - 6, fnAt) === 'async ' ? fnAt - 6 : fnAt;
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var say = function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); };
+  var logsOf = function (msg) { return logs.filter(function (l) { return l.message === msg; }); };
+
+  var fakeDoc = function (ids) {
+    var map = ids || {};
+    return {
+      URL: 'https://mooc1.chaoxing.com/work/doHomeWork?courseId=SECRET_COURSE',
+      getElementById: function (id) {
+        return Object.prototype.hasOwnProperty.call(map, id) ? { value: map[id] } : null;
+      }
+    };
+  };
+  var topDoc = fakeDoc({});
+  var fakeLocation = { href: 'https://mooc1.chaoxing.com/work/doHomeWork' };
+  var localConsole = { log: function () {}, warn: function () {}, error: function () {} };
+
+  // ---- A：超时记账按卷子键起算，换卷子才清零 ----
+  var fieldFn = buildFrom(quiz, '_getQuizFieldValue', {});
+  var workKeyFn = buildFrom(quiz, '_getQuizWorkKey', { document: topDoc, location: fakeLocation });
+  var stallFn = buildFrom(quiz, '_noteQuizSubmitStall', {});
+  check('232-A0：切出了超时记账要用的三个方法（切不出来下面全是空转）',
+    typeof fieldFn === 'function' && typeof workKeyFn === 'function' && typeof stallFn === 'function',
+    JSON.stringify({ field: typeof fieldFn, workKey: typeof workKeyFn, stall: typeof stallFn }));
+
+  var appA = {
+    _quizSubmitStallKey: '',
+    _quizSubmitStallCount: 0,
+    _quizSubmitStallAt: 0,
+    _resolveQuizSubmitDocument: function (d) { return d || topDoc; },
+    _getMainDocument: function () { return topDoc; },
+    _getCurrentChapterId: function () { return 'chap1'; },
+    _getQuizAccountDocument: function (d) { return d || topDoc; }
+  };
+  appA._getQuizFieldValue = fieldFn;
+  appA._getQuizWorkKey = function (d) { return workKeyFn.call(appA, d); };
+  appA._noteQuizSubmitStall = function (d) { return stallFn.call(appA, d); };
+
+  var docA = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '404', knowledgeid: 'n1' });
+  var docB = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '405', knowledgeid: 'n2' });
+  var a1 = appA._noteQuizSubmitStall(docA);
+  var a2 = appA._noteQuizSubmitStall(docA);
+  var keyA = appA._quizSubmitStallKey;
+  var a3 = appA._noteQuizSubmitStall(docB);
+  var a4 = appA._noteQuizSubmitStall(docA);
+  check('232-A1：同一份卷子连攒是 1→2，换一份卷子重新起算（回来也是新账）',
+    a1 === 1 && a2 === 2 && a3 === 1 && a4 === 1 && appA._quizSubmitStallCount === 1 && appA._quizSubmitStallAt > 0,
+    JSON.stringify({ a1: a1, a2: a2, a3: a3, a4: a4, count: appA._quizSubmitStallCount }));
+  check('232-A2：账记在卷子身份上（含 jobid），不是页面地址',
+    keyA.indexOf(encodeURIComponent('c1|k1|w1|404|n1')) >= 0 && keyA.indexOf('SECRET_COURSE') < 0,
+    keyA);
+
+  // ---- B：超时那一发把「为什么没认出结果页」与旁路账一起进环 ----
+  var monitorFn = buildFrom(quiz, '_monitorQuizSubmit', {
+    emitRuntimeLog: say,
+    scaledMs: function (n) { return n; },
+    console: localConsole
+  });
+  check('232-B0：切出了 _monitorQuizSubmit', typeof monitorFn === 'function', typeof monitorFn);
+
+  var makeMonitorApp = function (net) {
+    return {
+      configs: { quizSubmitWaitMs: 25000 },
+      _quizSubmitPending: true,
+      _quizSubmitStartedAt: Date.now() - 26000,
+      _quizSubmitLogAt: 0,
+      _quizSubmitNet: net,
+      _submitSnifferCoverage: 'xhr+fetch',
+      _quizSubmitStallCount: 0,
+      _prepareQuizRedoIfNeeded: function () { return false; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizAnswersCleared: function () { return false; },
+      _describeQuizResultPage: function () { return { containers: 10, controls: 1, gradeSelector: 'Py_tk' }; },
+      _noteQuizSubmitStall: function () { return 2; },
+      _clearQuizSubmitAttemptCount: function () {}
+    };
+  };
+
+  var bBefore = logs.length;
+  var appB = makeMonitorApp({ xhr: 2, fetch: 1, done: 2, failed: 0, statuses: [200], words: ['提交'] });
+  var bRet = monitorFn.call(appB);
+  var bLogs = logs.slice(bBefore).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var bMeta = bLogs.length ? bLogs[0].meta : {};
+  check('232-B1：超时诊断里带 stalls / observer / net 计数与状态码',
+    bRet === false && appB._quizSubmitPending === false && bLogs.length === 1 &&
+    bMeta.waitMs === 25000 && bMeta.stalls === 2 && bMeta.observer === 'xhr+fetch' &&
+    bMeta.containers === 10 && bMeta.net && bMeta.net.xhr === 2 && bMeta.net.fetch === 1 &&
+    bMeta.net.statuses[0] === 200 && String(bMeta.netHint || '').indexOf('net.statuses') >= 0,
+    JSON.stringify({ ret: bRet, pending: appB._quizSubmitPending, logs: bLogs.length, meta: bMeta }));
+  check('232-B2：net 这一格只有计数与判分词，没有任何地址或回包原文的字段',
+    bMeta.net && Object.keys(bMeta.net).sort().join(',') === 'done,failed,fetch,statuses,words,xhr',
+    JSON.stringify(Object.keys(bMeta.net || {})));
+
+  var b2Before = logs.length;
+  var appB2 = makeMonitorApp({ xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] });
+  monitorFn.call(appB2);
+  var b2Logs = logs.slice(b2Before).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var b2Meta = b2Logs.length ? b2Logs[0].meta : {};
+  check('232-B3：一条请求都没观察到时单独说「0 条不等于没发」，不许当成没发',
+    b2Logs.length === 1 && b2Meta.net && b2Meta.net.xhr === 0 && String(b2Meta.netHint || '').indexOf('0 条不等于没发') >= 0,
+    JSON.stringify(b2Meta.netHint || ''));
+
+  var b3Before = logs.length;
+  var appB3 = makeMonitorApp(null);
+  monitorFn.call(appB3);
+  var b3Logs = logs.slice(b3Before).filter(function (l) { return l.message === 'quiz submit wait timeout'; });
+  var b3Meta = b3Logs.length ? b3Logs[0].meta : {};
+  check('232-B4：账本压根没建时 net 交 null，netHint 仍说清「没观察到」',
+    b3Logs.length === 1 && b3Meta.net === null && String(b3Meta.netHint || '').indexOf('0 条不等于没发') >= 0,
+    JSON.stringify({ net: b3Meta.net, hint: b3Meta.netHint }));
+
+  // ---- C：旁路观测器只记计数/状态码/判分词，绝不把地址与回包原文带进环 ----
+  var FakeXHR = function () { this.listeners = []; };
+  FakeXHR.prototype.open = function (method, url) { this.__openMethod = method; this.__openUrl = url; };
+  FakeXHR.prototype.send = function () { this.__sent = true; };
+  FakeXHR.prototype.addEventListener = function (ev, fn) { if (ev === 'loadend') this.listeners.push(fn); };
+
+  var fetchHits = 0;
+  var fakeWindow = {
+    XMLHttpRequest: FakeXHR,
+    fetch: function () {
+      fetchHits++;
+      return Promise.resolve({
+        status: 201,
+        clone: function () { return this; },
+        text: function () { return Promise.resolve('已提交成功'); }
+      });
+    }
+  };
+  var snifferFn = buildFrom(quiz, '_installSubmitSniffer', {
+    window: fakeWindow,
+    emitRuntimeLog: say,
+    console: localConsole
+  });
+  check('232-C0：切出了 _installSubmitSniffer', typeof snifferFn === 'function', typeof snifferFn);
+
+  var appC = {
+    _submitSnifferInstalled: false,
+    _submitSnifferFetch: false,
+    _submitSnifferCoverage: '',
+    _quizSubmitPending: true,
+    _quizSubmitNet: { xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] }
+  };
+  var cBefore = logs.length;
+  snifferFn.call(appC);
+  var firstWrappedFetch = fakeWindow.fetch;
+  snifferFn.call(appC);
+  check('232-C1：观测器只装一次，能力格如实报 xhr+fetch',
+    appC._submitSnifferInstalled === true && appC._submitSnifferFetch === true &&
+    appC._submitSnifferCoverage === 'xhr+fetch' && fakeWindow.fetch === firstWrappedFetch,
+    JSON.stringify({ installed: appC._submitSnifferInstalled, fetch: appC._submitSnifferFetch, coverage: appC._submitSnifferCoverage }));
+
+  var xhr1 = new FakeXHR();
+  xhr1.open('POST', 'https://secret.example/work/submit?enc=TOKEN123');
+  xhr1.send('answer=1');
+  xhr1.status = 200;
+  xhr1.responseText = '提交失败：重复提交';
+  check('232-C2：相关地址的请求挂上了旁路回调', xhr1.listeners.length === 1, String(xhr1.listeners.length));
+  xhr1.listeners.forEach(function (fn) { fn.call(xhr1); });
+
+  var xhr2 = new FakeXHR();
+  xhr2.open('GET', '/static/app.js');
+  xhr2.send();
+  check('232-C3：不相关地址不挂回调、不计数', xhr2.listeners.length === 0 && appC._quizSubmitNet.xhr === 1,
+    JSON.stringify({ listeners: xhr2.listeners.length, xhr: appC._quizSubmitNet.xhr }));
+
+  await fakeWindow.fetch('https://secret.example/work/submit?enc=TOKEN123');
+  await new Promise(function (r) { setTimeout(r, 10); });
+
+  var cLogs = logs.slice(cBefore).filter(function (l) { return l.message === 'quiz submit network'; });
+  var cText = JSON.stringify(cLogs);
+  var cMeta = cLogs.length ? cLogs[0].meta : {};
+  check('232-C4：XHR 与 fetch 两条都在记账，回包里的判分词落进 words',
+    appC._quizSubmitNet.xhr === 1 && appC._quizSubmitNet.fetch === 1 && appC._quizSubmitNet.done === 2 &&
+    appC._quizSubmitNet.words.indexOf('重复') >= 0 && appC._quizSubmitNet.words.indexOf('提交') >= 0 &&
+    appC._quizSubmitNet.words.indexOf('已提交') >= 0 && fetchHits === 1,
+    JSON.stringify({ net: appC._quizSubmitNet, fetchHits: fetchHits }));
+  check('232-C5：进环的那一条只有计数/状态/判分词，地址与回包原文一个字都不许出现',
+    cLogs.length === 2 && Object.keys(cMeta).sort().join(',') === 'kind,ok,pendingAtSend,respLen,status,words' &&
+    cText.indexOf('secret.example') < 0 && cText.indexOf('TOKEN123') < 0 &&
+    cText.indexOf('提交失败：重复提交') < 0 && cText.indexOf('已提交成功') < 0,
+    JSON.stringify({ count: cLogs.length, keys: Object.keys(cMeta), text: cText.slice(0, 300) }));
+
+  // ---- D：攒满三次 → 写 24 小时放弃名单 + 放开这一节，不冒充平台完成 ----
+  var storeMatch = /_taskGiveUpStoreKey:\s*'([^']+)'/.exec(state);
+  var STORE_KEY = storeMatch ? storeMatch[1] : '';
+  var TTL = readProductConstant(cons, 'TASK_GIVEUP_TTL_MS');
+  check('232-D0：放弃名单的存储键与 TTL 都从源码读回来了',
+    !!STORE_KEY && isFinite(TTL) && TTL > 0,
+    JSON.stringify({ key: STORE_KEY, ttl: TTL }));
+
+  var store = {};
+  var fakeLS = {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
+    setItem: function (k, v) { store[k] = String(v); },
+    removeItem: function (k) { delete store[k]; }
+  };
+  var giveUpMapFn = buildFrom(loop, '_taskGiveUpMap', { localStorage: fakeLS });
+  var isGivenUpFn = buildFrom(loop, '_isTaskGivenUp', { TASK_GIVEUP_TTL_MS: TTL });
+  var markGivenUpFn = buildFrom(loop, '_markTaskGivenUp', { localStorage: fakeLS });
+  var forceSkipFn = buildFrom(quiz, '_setQuizForceSkip', {});
+  var givenUpJobIdFn = buildFrom(quiz, '_getQuizGiveUpJobId', {});
+  var domCtl = { sel: [], button: { clicked: 0, click: function () { this.clicked++; } } };
+  var fakeGlobalDoc = {
+    querySelector: function (sel) {
+      domCtl.sel.push(sel);
+      if (sel !== '#prevNextFocusNext') return null;
+      return domCtl.button || null;
+    }
+  };
+  var giveUpFn = buildFrom(quiz, '_giveUpQuizSubmitAfterStalls', {
+    emitRuntimeLog: say,
+    document: fakeGlobalDoc
+  });
+  check('232-D1a：切出了放弃出口与它依赖的四个方法',
+    typeof giveUpFn === 'function' && typeof giveUpMapFn === 'function' && typeof isGivenUpFn === 'function' &&
+    typeof markGivenUpFn === 'function' && typeof forceSkipFn === 'function' && typeof givenUpJobIdFn === 'function',
+    JSON.stringify({ giveUp: typeof giveUpFn, map: typeof giveUpMapFn, mark: typeof markGivenUpFn }));
+
+  var makeGiveUpApp = function (doc, opts) {
+    var app = {
+      _quizSubmitStallCount: 3,
+      _quizSubmitPending: true,
+      _quizAnswered: false,
+      _quizSubmitStartedAt: Date.now(),
+      _quizSubmitNet: { xhr: 1, fetch: 0, done: 0, failed: 1, statuses: [0], words: [] },
+      _submitSnifferCoverage: 'xhr',
+      _quizInProgress: true,
+      _quizForceSkipUntil: 0,
+      _quizForceSkipPaperKey: '',
+      _quizReadyToSubmit: true,
+      _quizReadyWorkKey: 'x',
+      _quizCurrentAnsweredKeys: { q1: true },
+      _quizCurrentAnswerValues: { q1: 'A' },
+      _quizCurrentQuestions: [{ title: 'q1' }],
+      _taskGiveUpStoreKey: STORE_KEY,
+      _resetCalls: 0,
+      _nextUnitCalls: 0,
+      _switchCalls: [],
+      _resolveQuizSubmitDocument: function (d) { return d || doc; },
+      _getMainDocument: function () { return doc; },
+      _getCurrentChapterId: function () { return 'chap1'; },
+      _getQuizAccountDocument: function (d) { return d || doc; },
+      _getQuizSubmitAttemptCount: function () { return opts.attempts; },
+      _getQuizMaxSubmitAttempts: function () { return 20; },
+      _collectVisibleTaskFrames: function () { return opts.tasks || []; },
+      _getQuizPaperKeyFromTask: function (t) { return String((t && t.paperId) || ''); },
+      _safeJsonParse: function (text, dflt) { try { return JSON.parse(text); } catch (e) { return dflt; } },
+      _switchToNextLearningCard: function (reason) { app._switchCalls.push(reason); return !!opts.switchOk; },
+      _resetRuntimeState: function () {
+        app._resetCalls++;
+        app._quizForceSkipUntil = 0;
+        app._quizForceSkipPaperKey = '';
+      },
+      nextUnit: function () { app._nextUnitCalls++; }
+    };
+    return app;
+  };
+  var wireGiveUp = function (app) {
+    app._getQuizFieldValue = fieldFn;
+    app._taskGiveUpMap = function () { return giveUpMapFn.call(app); };
+    app._isTaskGivenUp = function (k) { return isGivenUpFn.call(app, k); };
+    app._markTaskGivenUp = function (k, info) { return markGivenUpFn.call(app, k, info); };
+    app._setQuizForceSkip = function (ms, pk) { return forceSkipFn.call(app, ms, pk); };
+    app._getQuizWorkKey = function (d) { return workKeyFn.call(app, d); };
+    app._getQuizGiveUpJobId = function (d, scan) { return givenUpJobIdFn.call(app, d, scan); };
+    app._giveUp = function (d, reason) { return giveUpFn.call(app, d, reason); };
+  };
+
+  var docD = fakeDoc({ courseId: 'c1', classId: 'k1', workRelationId: 'w1', jobid: '404', knowledgeid: 'n1' });
+  var appD = makeGiveUpApp(docD, { attempts: 2 });
+  wireGiveUp(appD);
+  var dBefore = logs.length;
+  var dRet = appD._giveUp(docD, 'next-unit');
+  var dLogs = logs.slice(dBefore).filter(function (l) { return l.message === 'quiz submit never accepted, giving up unit'; });
+  var dMeta = dLogs.length ? dLogs[0].meta : {};
+  var dRecord = {};
+  try { dRecord = JSON.parse(fakeLS.getItem(STORE_KEY))['job:404'] || {}; } catch (eRec) { dRecord = {}; }
+  check('232-D1b：这一枚任务点真写进了 24 小时放弃名单，理由与次数逐字可查',
+    dRet === true && appD._isTaskGivenUp('job:404') === true &&
+    dRecord.reason === 'quiz-submit-never-accepted' && dRecord.name === '404' && dRecord.attempts === 2,
+    JSON.stringify({ ret: dRet, record: dRecord, store: fakeLS.getItem(STORE_KEY) }));
+  check('232-D1c：日志点名是谁判的，并给出可恢复的出口',
+    dLogs.length === 1 && dMeta.reason === 'next-unit' && dMeta.stalls === 3 && dMeta.attempts === 2 &&
+    dMeta.maxAttempts === 20 && dMeta.jobid === '404' && dMeta.gaveUp === true &&
+    String(dMeta.hint || '').indexOf('clearTaskGiveUp') >= 0 && dMeta.observer === 'xhr',
+    JSON.stringify(dMeta));
+
+  check('232-D2：交卷状态清空、点了下一节、暂停窗口带着卷子键重新写上',
+    appD._quizSubmitPending === false && appD._quizAnswered === true &&
+    appD._quizSubmitStallCount === 0 && appD._quizCurrentQuestions === null &&
+    appD._quizInProgress === false && appD._quizReadyToSubmit === false &&
+    domCtl.button.clicked === 1 && appD._resetCalls === 1 &&
+    appD._quizForceSkipUntil > Date.now() &&
+    appD._quizForceSkipPaperKey.indexOf(encodeURIComponent('c1|k1|w1|404|n1')) >= 0 &&
+    appD._nextUnitCalls === 0,
+    JSON.stringify({ pending: appD._quizSubmitPending, answered: appD._quizAnswered, stalls: appD._quizSubmitStallCount,
+      clicked: domCtl.button.clicked, resets: appD._resetCalls, until: appD._quizForceSkipUntil,
+      paper: appD._quizForceSkipPaperKey, nextUnit: appD._nextUnitCalls }));
+  check('232-D3：只认「下一节」那一枚按钮，不碰任何完成标记',
+    domCtl.sel.length >= 1 && domCtl.sel.every(function (s) { return s === '#prevNextFocusNext'; }) &&
+    domCtl.sel.join(',').indexOf('isFinished') < 0,
+    JSON.stringify(domCtl.sel));
+
+  domCtl.button.clicked = 0;
+  var appD2 = makeGiveUpApp(docD, { attempts: 2, switchOk: true });
+  wireGiveUp(appD2);
+  var d2Ret = appD2._giveUp(docD, 'next-unit');
+  check('232-D4：卡片切换那条出口优先，成功时不再点按钮、也不走到 nextUnit',
+    d2Ret === true && appD2._switchCalls.length === 1 && appD2._switchCalls[0] === 'quiz-submit-given-up' &&
+    domCtl.button.clicked === 0 && appD2._nextUnitCalls === 0,
+    JSON.stringify({ calls: appD2._switchCalls, clicked: domCtl.button.clicked, nextUnit: appD2._nextUnitCalls }));
+
+  var docNoId = fakeDoc({ courseId: 'c2', classId: 'k2', workRelationId: 'w2' });
+  var appD3 = makeGiveUpApp(docNoId, { attempts: 1, tasks: [] });
+  wireGiveUp(appD3);
+  domCtl.button = null;
+  var d3Before = logs.length;
+  var d3Ret = appD3._giveUp(docNoId, 'next-unit');
+  var d3Logs = logs.slice(d3Before).filter(function (l) { return l.message === 'quiz submit never accepted, giving up unit'; });
+  var d3Meta = d3Logs.length ? d3Logs[0].meta : {};
+  var storeKeys = [];
+  try { storeKeys = Object.keys(JSON.parse(fakeLS.getItem(STORE_KEY)) || {}); } catch (eKeys) { storeKeys = []; }
+  check('232-D5：认不出 jobid 时明说「没写放弃名单」，但这一节照样放开',
+    d3Ret === true && d3Meta.gaveUp === false && d3Meta.jobid === '' &&
+    String(d3Meta.hint || '').indexOf('没写放弃名单') >= 0 &&
+    storeKeys.length === 1 && storeKeys[0] === 'job:404' && appD3._nextUnitCalls === 1,
+    JSON.stringify({ meta: d3Meta, storeKeys: storeKeys, nextUnit: appD3._nextUnitCalls }));
+
+  // ---- E：攒满三次才放手，没攒满照旧按住 ----
+  var holdFn = buildFrom(quiz, '_shouldHoldQuizBeforeNext', { emitRuntimeLog: say });
+  check('232-E0：切出了 _shouldHoldQuizBeforeNext', typeof holdFn === 'function', typeof holdFn);
+
+  var giveUpSentinel = { calls: 0, reason: '' };
+  var makeHoldApp = function (stalls) {
+    return {
+      _quizSubmitStallCount: stalls,
+      _quizHoldLogAt: 0,
+      _isQuizSkipWindowLive: function () { return false; },
+      _isQuizApiUnavailable: function () { return false; },
+      _isQuizBlockedByApi: function () { return false; },
+      _monitorQuizSubmit: function () { return false; },
+      _resolveQuizSubmitDocument: function () { return docD; },
+      _getMainDocument: function () { return docD; },
+      _detectQuiz: function () { return true; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizRedoRequired: function () { return false; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _shouldSkipQuizBySubmitAttempts: function () { return false; },
+      _giveUpQuizSubmitAfterStalls: function (doc, reason) {
+        giveUpSentinel.calls++;
+        giveUpSentinel.reason = reason;
+        return 'GAVEUP';
+      }
+    };
+  };
+  var eBefore = logs.length;
+  var e0 = holdFn.call(makeHoldApp(0), 'next-unit');
+  var e1 = holdFn.call(makeHoldApp(1), 'next-unit');
+  var e2 = holdFn.call(makeHoldApp(2), 'next-unit');
+  var e3 = holdFn.call(makeHoldApp(3), 'next-unit');
+  var eLogs = logs.slice(eBefore).filter(function (l) { return l.message === 'hold unsubmitted quiz before next'; });
+  check('232-E1：没攒满三次照旧按住，日志带当前次数',
+    e0 === true && e1 === true && e2 === true && eLogs.length === 3 &&
+    eLogs[0].meta.stalls === 0 && eLogs[1].meta.stalls === 1 && eLogs[2].meta.stalls === 2,
+    JSON.stringify({ e0: e0, e1: e1, e2: e2, stalls: eLogs.map(function (l) { return l.meta.stalls; }) }));
+  check('232-E2：第三次交给放手出口（有界），不再原地按住',
+    e3 === 'GAVEUP' && giveUpSentinel.calls === 1 && giveUpSentinel.reason === 'next-unit',
+    JSON.stringify({ e3: e3, calls: giveUpSentinel.calls, reason: giveUpSentinel.reason }));
+
+  var appDebug = makeHoldApp(3);
+  appDebug.configs = { quizRejectGiveUp: false };
+  var dbgBefore = logs.length;
+  var dbgHold = holdFn.call(appDebug, 'next-unit');
+  var dbgLogs = logs.slice(dbgBefore).filter(function (l) {
+    return l.message === 'quiz submit rejected, holding in debug mode';
+  });
+  check('232-E3：调试档（quizRejectGiveUp=false）第三次也不放手，单独点名「死磕」而不是静默按住',
+    dbgHold === true && giveUpSentinel.calls === 1 && dbgLogs.length === 1 &&
+    dbgLogs[0].meta.stalls === 3 && dbgLogs[0].meta.reason === 'next-unit',
+    JSON.stringify({ hold: dbgHold, calls: giveUpSentinel.calls, logs: dbgLogs.length,
+      meta: dbgLogs.length ? dbgLogs[0].meta : null }));
+
+  var skipFn = buildFrom(quiz, '_shouldSkipQuizBySubmitAttempts', {});
+  var appSkip = {
+    configs: { quizRejectGiveUp: false },
+    _getQuizSubmitAttemptCount: function () { return 20; },
+    _getQuizMaxSubmitAttempts: function () { return 20; }
+  };
+  var dbgSkip = skipFn.call(appSkip);
+  appSkip.configs = {};
+  var defaultSkip = skipFn.call(appSkip);
+  check('232-E4：调试档下交卷次数到顶也不跳过；默认档仍按上限跳过（两半各钉一格）',
+    dbgSkip === false && defaultSkip === true,
+    JSON.stringify({ debug: dbgSkip, normal: defaultSkip }));
+
+  // ---- F：放弃名单里那一枚不再算 pending，但正在飞的提交不许被截断 ----
+  var pendingFn = buildFrom(quiz, '_isQuizLearningPending', {});
+  check('232-F0：切出了 _isQuizLearningPending', typeof pendingFn === 'function', typeof pendingFn);
+
+  var makePendingApp = function (o) {
+    return {
+      _quizForceSkipUntil: 0,
+      _isQuizForceSkipping: function () { return false; },
+      _isQuizApiUnavailable: function () { return false; },
+      _isQuizBlockedByApi: function () { return false; },
+      _monitorQuizSubmit: function () { return !!o.monitor; },
+      _isQuizGivenUpInDom: function () { return !!o.givenUp; },
+      _quizInProgress: false,
+      _quizSubmitPending: false,
+      _quizAnswered: false,
+      _resolveQuizSubmitDocument: function () { return docD; },
+      _getMainDocument: function () { return docD; },
+      _isQuizPassedOrFinished: function () { return false; },
+      _isQuizRedoRequired: function () { return false; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _detectQuiz: function () { return true; }
+    };
+  };
+  var f1 = pendingFn.call(makePendingApp({ givenUp: true, monitor: false }));
+  var f2 = pendingFn.call(makePendingApp({ givenUp: true, monitor: true }));
+  var f3 = pendingFn.call(makePendingApp({ givenUp: false, monitor: false }));
+  check('232-F1：放弃名单里那一枚不再算 pending；提交还在飞时不许被它截断；对照组仍算 pending',
+    f1 === false && f2 === true && f3 === true,
+    JSON.stringify({ givenUp: f1, inFlight: f2, control: f3 }));
+
+  // ---- G：确认弹窗那一发不清账，只有新的一轮才换新账本 ----
+  var markFn = buildFrom(quiz, '_markQuizSubmitPending', { emitRuntimeLog: say });
+  check('232-G0：切出了 _markQuizSubmitPending', typeof markFn === 'function', typeof markFn);
+
+  var attemptCounter = { value: 0, increments: 0 };
+  var appG = {
+    configs: {},
+    _quizSubmitPending: false,
+    _quizSubmitStartedAt: 0,
+    _quizSubmitLogAt: 0,
+    _quizLastSubmitAttemptAt: 0,
+    _quizSubmitNet: null,
+    _quizCurrentQuestions: [],
+    _quizReadyWorkKey: 'rk',
+    _getQuizSubmitAttemptCount: function () { return attemptCounter.value; },
+    _incrementQuizSubmitAttemptCount: function () { attemptCounter.value++; attemptCounter.increments++; return attemptCounter.value; },
+    _getQuizMaxSubmitAttempts: function () { return 20; },
+    _getQuizWorkKey: function () { return 'k'; },
+    _getQuizAccountDocument: function () { return docD; },
+    _getQuizDocumentFromQuestions: function () { return null; }
+  };
+  markFn.call(appG, docD, 'btnBlueSubmit');
+  var gNet1 = appG._quizSubmitNet;
+  if (gNet1) gNet1.xhr = 3;
+  markFn.call(appG, docD, 'confirm-dialog');
+  var gKept = appG._quizSubmitNet === gNet1 && appG._quizSubmitNet && appG._quizSubmitNet.xhr === 3 && attemptCounter.increments === 1;
+  appG._quizSubmitPending = false;
+  markFn.call(appG, docD, 'again');
+  var gReset = appG._quizSubmitNet !== gNet1 && appG._quizSubmitNet && appG._quizSubmitNet.xhr === 0 && attemptCounter.increments === 2;
+  check('232-G1：确认弹窗那一发不清账、不重复计次；只有新的一轮才换新账本',
+    !!gNet1 && gKept === true && gReset === true,
+    JSON.stringify({ kept: gKept, reset: gReset, increments: attemptCounter.increments }));
+
+  // ---- H：交卷前的人机验证窗（#232 现场抓包：空 pyFlag 提交必被平台拒绝） ----
+  var domSrc = read('src/page/75-quiz-dom.js');
+  var findVerifyFn = buildFrom(domSrc, '_findWorkVerifyWindow', {});
+  var solveFn = buildFrom(domSrc, '_solveWorkVerifyCaptcha', { emitRuntimeLog: say });
+  var confirmFn = buildFrom(domSrc, '_handleSubmitConfirmDialog', { emitRuntimeLog: say, textOf: function () { return ''; } });
+
+  var fakeInput = { value: '', dispatchEvent: function () { fakeInput.events = (fakeInput.events || 0) + 1; } };
+  var fakeImg = { src: 'https://mooc1.chaoxing.com/verifyCode/stuWork?123' };
+  var fakeWin = {
+    id: 'verifyCodeWin',
+    querySelector: function (sel) {
+      if (sel.indexOf('#inputCode') >= 0) return fakeInput;
+      if (sel.indexOf('#workVerifyImg') >= 0) return fakeImg;
+      return null;
+    }
+  };
+  var found = findVerifyFn.call({}, fakeWin);
+  check('232-H0：验证码窗能认出输入框与验证码图（#verifyCodeWin / #inputCode / #workVerifyImg）',
+    !!found && found.input === fakeInput && found.img === fakeImg, JSON.stringify(!!found));
+
+  var hClick = 0, hSolve = 0, hPending = 0;
+  var hButton = { click: function () { hClick++; } };
+  var makeConfirmApp = function (inputValue) {
+    fakeInput.value = inputValue;
+    return {
+      _submitConfirmLastClickAt: 0,
+      _quizReadyToSubmit: true,
+      _quizAnswered: false,
+      _quizSubmitPending: false,
+      _quizReadyWorkKey: 'rk',
+      _findWorkVerifyWindow: function () { return { win: fakeWin, input: fakeInput, img: fakeImg }; },
+      _dismissQuizSubmitAlerts: function () {},
+      _solveWorkVerifyCaptcha: function () { hSolve++; },
+      _findDialogButtonByText: function () { return hButton; },
+      _getQuizAccountDocument: function () { return docD; },
+      _getQuizWorkKey: function () { return 'rk'; },
+      _hasActiveQuizSubmitForm: function () { return true; },
+      _markQuizSubmitPending: function () { hPending++; }
+    };
+  };
+  var h1 = confirmFn.call(makeConfirmApp(''), fakeWin);
+  check('232-H1：验证码没填时**绝不许点确定**（空 pyFlag 必被拒），而是去识别填码',
+    h1 === true && hClick === 0 && hSolve === 1 && hPending === 0,
+    JSON.stringify({ ret: h1, click: hClick, solve: hSolve, pending: hPending }));
+
+  hClick = 0; hSolve = 0; hPending = 0;
+  var h2 = confirmFn.call(makeConfirmApp('AB12'), fakeWin);
+  check('232-H2：码已就位时才点「确定」并记一轮提交（原来那条确认出口照旧）',
+    h2 === true && hClick === 1 && hSolve === 0 && hPending === 1,
+    JSON.stringify({ ret: h2, click: hClick, solve: hSolve, pending: hPending }));
+
+  var h3Input = { value: '', events: 0, ownerDocument: null, dispatchEvent: function () { h3Input.events++; } };
+  var h3Img = { src: 'https://mooc1.chaoxing.com/verifyCode/stuWork?9' };
+  var h3App = {
+    configs: { model: 'm' },
+    _captchaBusy: false,
+    _recognizeCaptchaImage: function () { return Promise.resolve({ ok: true, code: '7X2K' }); }
+  };
+  await solveFn.call(h3App, { input: h3Input, img: h3Img });
+  check('232-H3：识别成功后把码写进 #inputCode 并派发 input/change（等下一拍由确认出口点确定）',
+    h3Input.value === '7X2K' && h3Input.events === 2 && h3App._captchaBusy === false &&
+    h3Img.__omitoneVerifyTries === 1,
+    JSON.stringify({ value: h3Input.value, events: h3Input.events, busy: h3App._captchaBusy,
+      tries: h3Img.__omitoneVerifyTries }));
+
+  var h4Hidden = 0;
+  fakeWin.ownerDocument = { defaultView: { hideWorkVerify: function () { h4Hidden++; } } };
+  fakeWin.style = {};
+  fakeImg.__omitoneVerifyTries = 2;
+  hClick = 0; hPending = 0;
+  var h4 = confirmFn.call(makeConfirmApp(''), fakeWin);
+  fakeImg.__omitoneVerifyTries = 0;
+  check('232-H4：上线版识别两次仍空码时关掉验证码窗（交回三次停滞放手），绝不用空码提交',
+    h4 === true && h4Hidden === 1 && hClick === 0 && hPending === 0,
+    JSON.stringify({ ret: h4, hidden: h4Hidden, click: hClick, pending: hPending }));
+
+  var findVerifyDocFn = buildFrom(domSrc, '_findWorkVerifyWindow', { visible: function (el) { return !!el.__visible; } });
+  fakeWin.__visible = true;
+  var fakeDocVerify = {
+    getElementById: function (id) { return id === 'verifyCodeWin' ? fakeWin : null; }
+  };
+  var alertDialog = { id: 'workFailAlert', querySelector: function () { return null; } };
+  var appV5 = {
+    _resolveQuizSubmitDocument: function () { return fakeDocVerify; },
+    _getMainDocument: function () { return fakeDocVerify; }
+  };
+  var fallback = findVerifyDocFn.call(appV5, alertDialog);
+  fakeWin.__visible = false;
+  var hiddenFallback = findVerifyDocFn.call(appV5, alertDialog);
+  fakeWin.__visible = true;
+  check('232-H5：告警层当弹层传进来时，回落到文档里**可见**的验证码窗；隐藏的旧窗不许认领',
+    !!fallback && fallback.input === fakeInput && fallback.img === fakeImg && hiddenFallback === null,
+    JSON.stringify({ fallback: !!fallback, hidden: hiddenFallback }));
+
+  var knowClicks = 0;
+  var alertBtn = { textContent: '知道了', click: function () { knowClicks++; } };
+  var failLayer = {
+    __visible: true,
+    innerText: '作业提交失败！',
+    querySelectorAll: function () { return [alertBtn]; }
+  };
+  var otherLayer = {
+    __visible: true,
+    innerText: '别的东西',
+    querySelectorAll: function () { return [{ textContent: '知道了', click: function () { knowClicks += 999; } }]; }
+  };
+  var fakeDocAlerts = {
+    querySelectorAll: function (sel) { return sel === '.AlertCon02' ? [fakeWin, failLayer, otherLayer] : []; }
+  };
+  fakeWin.ownerDocument = fakeDocAlerts;
+  var dismissFn = buildFrom(domSrc, '_dismissQuizSubmitAlerts', { visible: function (el) { return !!el.__visible; } });
+  dismissFn.call({}, { win: fakeWin, input: fakeInput, img: fakeImg });
+  check('232-H6：等码时顺手关掉「作业提交失败/知道了」的旧告警层（验证码窗本身与其他层都不动）',
+    knowClicks === 1, JSON.stringify({ clicks: knowClicks }));
+
+  var h7Click = 0, h7Pending = 0;
+  var h7Btn = { click: function () { h7Click++; } };
+  var confirmAlertFn = buildFrom(domSrc, '_handleSubmitConfirmDialog', {
+    emitRuntimeLog: say, textOf: function () { return '作业提交失败！ 知道了'; }
+  });
+  var h7 = confirmAlertFn.call({
+    _submitConfirmLastClickAt: 0,
+    _findWorkVerifyWindow: function () { return null; },
+    _findDialogButtonByText: function () { return h7Btn; },
+    _markQuizSubmitPending: function () { h7Pending++; }
+  }, { id: 'workFailAlert' });
+  check('232-H7：失败告知层只收尾、不记成一轮提交（否则三次停滞额度会被空耗，真提交还没发就被判放手）',
+    h7 === true && h7Click === 1 && h7Pending === 0,
+    JSON.stringify({ ret: h7, click: h7Click, pending: h7Pending }));
+
+  // ---- J：randomOptions 下「位置字母」与「平台 data 字母」分道 ----
+  var answersSrc = read('src/page/72-quiz-answers.js');
+  var matchFn = buildFrom(domSrc, '_matchOptionItem', { textOf: function (el) { return String(el && el.textContent || ''); } });
+  var mkOpt = function (dataLetter, visibleLabel, idx) {
+    var badge = {
+      getAttribute: function (n) { return n === 'data' ? dataLetter : ''; },
+      textContent: visibleLabel
+    };
+    return {
+      _idx: idx,
+      querySelector: function (sel) { return /num_option/.test(sel) ? badge : null; },
+      getAttribute: function () { return ''; }
+    };
+  };
+  var optA = mkOpt('C', 'A', 0);
+  var optB = mkOpt('A', 'B', 1);
+  var optC = mkOpt('B', 'C', 2);
+  var matchApp = {
+    _getOptionItems: function () { return [optA, optB, optC]; },
+    _normalizeAnswerValue: function (v) { return String(v || ''); },
+    _detectQuestionType: function () { return 'single'; },
+    _inferOptionLetter: function (it) {
+      var b = it.querySelector('.num_option');
+      return b && /^[A-F]$/i.test(b.getAttribute('data')) ? String(b.getAttribute('data')).toUpperCase() : '';
+    },
+    _extractOptionText: function (it) { return 'text' + it._idx; },
+    _isJudgeOptionMatch: function () { return false; }
+  };
+  var j1 = matchFn.call(matchApp, {}, 'A', 'single');
+  var j2 = matchFn.call(matchApp, {}, 'C', 'single');
+  check('232-J1：模型的位置字母按 DOM 次序命中（A=第 1 个可见项），不按徽标 data 认项',
+    j1 === optA, JSON.stringify({ hit: j1 && j1._idx }));
+  check('232-J2：位置字母 C 命中第 3 个可见项（它的 data 是 B）',
+    j2 === optC, JSON.stringify({ hit: j2 && j2._idx }));
+
+  // ---- K：addChoice 宿主只许被触发一次 ----
+  var clickFn = buildFrom(domSrc, '_clickOptionItem', { textOf: function (el) { return String(el && el.textContent || ''); }, document: {} });
+  var kCounts = { host: 0, inner: 0 };
+  var mkClickItem = function (hasHost) {
+    var badge = {
+      getAttribute: function (n) { return n === 'data' ? 'C' : ''; },
+      textContent: 'A',
+      classList: { add: function () {}, remove: function () {}, contains: function () { return false; } },
+      click: function () { kCounts.inner++; }
+    };
+    var innerSpan = { click: function () { kCounts.inner++; } };
+    var item = {
+      ownerDocument: {},
+      classList: { add: function () {}, remove: function () {}, contains: function () { return false; } },
+      click: function () { kCounts.host++; },
+      getAttribute: function () { return ''; },
+      closest: function (sel) { return hasHost && /addChoice|addMultipleChoice/.test(sel) ? item : null; },
+      querySelector: function (sel) {
+        if (/num_option/.test(sel)) return badge;
+        if (/input\[type=/.test(sel)) return null;
+        return innerSpan;
+      },
+      querySelectorAll: function () { return []; }
+    };
+    return item;
+  };
+  var kApp = {
+    _getQuestionIdFromElement: function () { return ''; },
+    _inferOptionLetter: function () { return 'C'; },
+    _dispatchQuizInputEvents: function () {}
+  };
+  kCounts.host = 0; kCounts.inner = 0;
+  clickFn.call(kApp, mkClickItem(true), 'radio');
+  check('232-K1：选项宿主带 addChoice 时整发只触发一次（不再补点内层徽标 → 不复选反选）',
+    kCounts.host === 1 && kCounts.inner === 0, JSON.stringify(kCounts));
+  kCounts.host = 0; kCounts.inner = 0;
+  clickFn.call(kApp, mkClickItem(false), 'radio');
+  check('232-K2：普通形状照旧补点内层（旧行为不丢）', kCounts.host === 1 && kCounts.inner === 1, JSON.stringify(kCounts));
+
+  // ---- I：qid 三源仲裁（老引擎 li[qid] / 隐藏域 / 容器 data 序号） ----
+  var qidFn = buildFrom(answersSrc, '_getQuestionIdFromElement', {});
+  var docWith = function (ids) {
+    return { getElementById: function (id) { return ids.indexOf(id) >= 0 ? { id: id } : null; } };
+  };
+  var iApp = {
+    _quizDetectorSelector: '.TiMu',
+    _findQuizAnswerInput: function () { return null; }
+  };
+  var i1El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith(['answer213']),
+    querySelector: function (sel) { return /\[qid\]/.test(sel) ? { getAttribute: function (n) { return n === 'qid' ? '213' : ''; } } : null; },
+    closest: function () { return { getAttribute: function () { return '1'; } }; }
+  };
+  var i2El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith(['answer213']),
+    querySelector: function () { return null; },
+    closest: function () { return { getAttribute: function () { return '213'; } }; }
+  };
+  var i3El = {
+    getAttribute: function () { return ''; },
+    ownerDocument: docWith([]),
+    querySelector: function () { return null; },
+    closest: function () { return { getAttribute: function () { return '1'; } }; }
+  };
+  var i1 = qidFn.call(iApp, i1El);
+  var i2 = qidFn.call(iApp, i2El);
+  var i3 = qidFn.call(iApp, i3El);
+  check('232-I1：老引擎从子项 li[qid] 取号（容器 data 只是序号，不许当代号）',
+    i1 === '213', JSON.stringify({ qid: i1 }));
+  check('232-I2：新版容器 data 且存在 #answer{data} 时照旧认它', i2 === '213', JSON.stringify({ qid: i2 }));
+  check('232-I3：容器 data 缺对应 #answer 时不认（否则序号 1 会被当成 qid）', i3 === '', JSON.stringify({ qid: i3 }));
+
+  // ---- L：qtype 题型兜底 ----
+  var typeFn = buildFrom(domSrc, '_detectQuestionType', { textOf: function () { return '题干'; } });
+  var mkTypeEl = function (qt) {
+    return {
+      getAttribute: function () { return ''; },
+      querySelector: function (sel) {
+        if (/newZy_TItle/.test(sel)) return null;
+        if (/\[qtype\]/.test(sel)) return { getAttribute: function (n) { return n === 'qtype' ? qt : ''; } };
+        return null;
+      },
+      querySelectorAll: function () { return []; }
+    };
+  };
+  var typeApp = {
+    _mapQuizTypeValue: function (v) { return v === '1' ? 'multiple' : v === '3' ? 'judge' : 'single'; }
+  };
+  var l1 = typeFn.call(typeApp, mkTypeEl('1'));
+  var l2 = typeFn.call(typeApp, mkTypeEl('3'));
+  check('232-L1：其它信号都没有时用 li[qtype] 兜底判题型（1→多选，3→判断）',
+    l1 === 'multiple' && l2 === 'judge', JSON.stringify({ l1: l1, l2: l2 }));
+
+  // ---- M：多选答案写隐藏域前必须按字母序（#232 现场：BAC/CDA 被拒，ABC/ACD 通过） ----
+  var sortHidden = { value: '' };
+  var mkChoice = function (dataLetter) {
+    return {
+      classList: { contains: function (n) { return n === 'check_answer_dx'; } },
+      getAttribute: function (n) { return n === 'data' ? dataLetter : ''; }
+    };
+  };
+  var sortDoc = {
+    querySelectorAll: function (sel) { return sel === '.choice213' ? [mkChoice('B'), mkChoice('A'), mkChoice('C')] : []; },
+    getElementById: function (id) { return id === 'answer213' ? sortHidden : null; }
+  };
+  var sortItem = {
+    ownerDocument: sortDoc,
+    click: function () {},
+    // 有 qid 时生产会给选项宿主写 `aria-checked`（232-K 那两台 qid 恒空所以走不到这一行），
+    // 假元素少这一件就是 TypeError → 整段一条断言都不跑（§5「红 0 条的第一嫌疑人是根本没跑到」）。
+    setAttribute: function () {},
+    getAttribute: function (n) { return n === 'qid' ? '213' : ''; },
+    closest: function (sel) { return /\[qid\]/.test(sel) ? sortItem : null; },
+    querySelector: function (sel) {
+      if (/num_option/.test(sel)) {
+        return { getAttribute: function (n) { return n === 'data' ? 'B' : ''; }, textContent: 'B',
+          classList: { add: function () {}, remove: function () {}, contains: function () { return false; } } };
+      }
+      return null;
+    },
+    querySelectorAll: function () { return []; }
+  };
+  clickFn.call(kApp, sortItem, 'checkbox');
+  check('232-M1：多选写隐藏域前按字母序收敛（DOM 序拼出 BAC 也必须写成 ABC）',
+    sortHidden.value === 'ABC', JSON.stringify({ value: sortHidden.value }));
 }
 
 async function main() {
@@ -5223,6 +11367,7 @@ async function main() {
   await testPermanentHttpError();
   await testApiErrorClassification();
   await testErrorContractFuzz();
+  await testChannelNamingAndManualRetreat();
   await testPermanentRoundStopAndConfigRace();
   await testMissingApiKey();
   await testClaudeProtocol();
@@ -5246,10 +11391,22 @@ async function main() {
   await testJobRejectLogThrottle();
   await testDisplacedStudyPageRescue();
   await testSeekDeferUntilSeekable();
+  await testStartStuckSiteClickSelfHeal();
+  await testSiteSaysUnplayable();
   await testCanonicalMultipleAnswerOrEmpty();
   await testPopupQuizLocalComboGroup();
   await testCourseHomeProbeSignals();
   await testPetChatRequest();
+  await testLocalDoctor();
+  await testPreviewChannelNotice();
+  await testFillAnswerSeparatorTolerance();
+  await testNinetyAdvanceBoundToSeek();
+  await testRateAskBound();
+  await testMediaRecoveryExhaustion();
+  await testModelListFetch();
+  await testWebSearchGate();
+  await testVoteEndedParkPersistent();
+  await testQuizSubmitNeverAccepted();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

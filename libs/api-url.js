@@ -78,11 +78,87 @@
     return root + '/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
   }
 
+  /**
+   * 「这家有哪些型号」那一条地址 —— 与上面三个 chat 地址同一把尺，唯一真源。
+   *
+   * 为什么要在库里而不是弹窗里就地拼：弹窗原先只有钉死的预置模型名（批次 124 之前
+   * 连自定义渠道都只能手抄），抄错一个字符就是 400/404 那一族。
+   *
+   * ⚠️ 用户粘进「API URL」那格的常常是**完整的 chat 地址**
+   * （`https://xxx/v1/chat/completions`），所以这一族必须先把尾巴摘掉再换 `/models`，
+   * 照抄 `buildOpenAICompatibleUrl` 的四种形状，别另立一套。
+   */
+  function buildModelsUrl(apiUrl, apiType) {
+    if (apiType === 'claude') {
+      var cbase = trimBase(apiUrl) || DEFAULT_CLAUDE_BASE;
+      if (/\/v1\/models$/i.test(cbase) || /\/models$/i.test(cbase)) return cbase;
+      if (/\/v1$/i.test(cbase)) return cbase + '/models';
+      return cbase + '/v1/models';
+    }
+    if (apiType === 'gemini') {
+      var gbase = trimBase(apiUrl) || DEFAULT_GEMINI_BASE;
+      if (/\/models$/i.test(gbase)) return gbase;
+      var groot = /\/v1beta$/i.test(gbase) ? gbase : gbase + '/v1beta';
+      return groot + '/models';
+    }
+    var obase = trimBase(apiUrl);
+    if (!obase) return DEFAULT_OPENAI_BASE + '/v1/models';
+    // 摘掉 chat 那一截尾巴：`/v1/chat/completions` → `/v1`，`/chat/completions` → 空
+    var stripped = obase.replace(/\/chat\/completions$/i, '');
+    if (/\/v1\/models$/i.test(stripped) || /\/models$/i.test(stripped)) return stripped;
+    if (/\/v1$/i.test(stripped)) return stripped + '/models';
+    return stripped + '/v1/models';
+  }
+
+  /**
+   * 把 `/models` 的回包收成一份型号名清单。
+   *
+   * 三家的形状不一样（OpenAI 兼容与 Claude 都是 `data: [{id}]`，Gemini 是
+   * `models: [{name: "models/xxx"}]`），所以这里**只认这两把键**；
+   * 认不出来一律回 `unreadable`，**绝不猜**。
+   *
+   * ⚠️ 「猜」在这里比「没有结论」危险（AGENTS §2 #18）：把 `display_name`
+   * 或整条 `object` 当成型号名交出去，界面会显示一个**发不出去**的名字，
+   * 用户拿它去答题只会收到「模型不存在」。
+   * 清单里**任何**一个元素取不出合法型号名 → 整份按 `unreadable` 交回，
+   * 而不是「取到几个算几个」—— 半份清单会让人以为这家只有这几个型号。
+   *
+   * 返回 `{ state: 'ok' | 'empty' | 'unreadable', ids, source, why }`：
+   * `empty` 与 `unreadable` **各占一格**（§2 #12），不许压成同一句「没有型号」。
+   */
+  function parseModelIds(raw) {
+    var data = raw;
+    if (typeof raw === 'string') {
+      if (!raw.trim()) return { state: 'unreadable', ids: [], source: '', why: 'body-empty' };
+      try { data = JSON.parse(raw); } catch (e) { return { state: 'unreadable', ids: [], source: '', why: 'not-json' }; }
+    }
+    if (!data || typeof data !== 'object') {
+      return { state: 'unreadable', ids: [], source: '', why: 'not-object' };
+    }
+    var list = null, source = '';
+    if (Array.isArray(data.data)) { list = data.data; source = 'data'; }
+    else if (Array.isArray(data.models)) { list = data.models; source = 'models'; }
+    else return { state: 'unreadable', ids: [], source: '', why: 'no-list' };
+
+    var out = [], seen = {};
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i], id = '';
+      if (typeof item === 'string') id = item;
+      else if (item && typeof item === 'object') id = String(item.id || item.name || '');
+      id = id.replace(/^models\//, '').trim();      // gemini 的 name 带 `models/` 前缀
+      if (!id) return { state: 'unreadable', ids: [], source: source, why: 'bad-element' };
+      if (!seen[id]) { seen[id] = 1; out.push(id); }
+    }
+    return { state: out.length ? 'ok' : 'empty', ids: out, source: source, why: '' };
+  }
+
   return {
     DEFAULT_OPENAI_BASE: DEFAULT_OPENAI_BASE,
     normalizeApiKey: normalizeApiKey,
     buildOpenAICompatibleUrl: buildOpenAICompatibleUrl,
     buildClaudeApiUrl: buildClaudeApiUrl,
-    buildGeminiApiUrl: buildGeminiApiUrl
+    buildGeminiApiUrl: buildGeminiApiUrl,
+    buildModelsUrl: buildModelsUrl,
+    parseModelIds: parseModelIds
   };
 });

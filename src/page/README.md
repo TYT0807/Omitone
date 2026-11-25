@@ -74,7 +74,7 @@ grep -nE '^    _?[A-Za-z][A-Za-z0-9_]*: (async )?function' src/page/*.js
 `wc -l` 同一把尺），方法数/状态字段数取自片段头部自己声明的清单。
 ⚠️ **这一页是抄来的，抄来的东西必然过期** —— 现在有闸了：`npm run check` 第 26 项
 （真源 `tools/audit-slice-stats.js`）逐段比这一页与片段实际，**这一整页曾经 16 段全过期**
-（最远的 `50-captcha.js` 写 478 行 / 14 方法，实际 1008 行 / 27 方法）。
+（最远的 `50-captcha.js` 写 478 行 / 14 方法，实际 1020 行 / 27 方法）。
 
 三个合计数都是**会变的**，别背 —— 当场跑出来最准：
 
@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大致是：14 个域片段合计 **522 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 532 个方法；状态字段 165 个。
+（跑出来大致是：14 个域片段合计 **556 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 566 个方法；状态字段 177 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*440 行*
+*450 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -110,7 +110,7 @@ IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各
 
 ### `10-config-state.js`
 
-*770 行 / 4 方法 + 165 状态字段*
+*808 行 / 4 方法 + 177 状态字段*
 
 app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntimeState`。
 **以及绝大部分非方法属性** —— `configs`、161 个 `_xxx` 运行期状态、`_cellData`、`_questionSelectors`。
@@ -129,28 +129,29 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `30-log.js`
 
-*402 行 / 9 方法*
+*421 行 / 9 方法*
 
 把状态转成「给人看的一行字」的辅助方法。规则：**所有 `_log*` / `_describe*` / `_diagnose*` 都在这里**。
 真正的日志出口 `emitRuntimeLog` 在外壳文件。
 
 ### `40-media.js`
 
-*1644 行 / 49 方法*
+*2562 行 / 73 方法*
 
 视频元素查找与事件处理（播放 / 暂停 / 结束 / 出错修复 `_maybeRepairMediaSource`）、
-倍速探测与钳制（`_ensurePlaybackRate` / `_probeMaxPlaybackRate`）、seek 到结尾 `_trySeekToEnd`、
+倍速只试一发与钳制（`_ensurePlaybackRate` / `_detectMaxPlaybackRate` / `_tryRateOnce`）、seek 到结尾 `_trySeekToEnd`、
 90% 提前结束、防拖拽、音频保活、PPT 内音频等待。
+「拖不拖」先问站点自己在任务卡上写的那句完成条件（`_readSiteSeekCondition` 五格口径）。
 
 ### `50-captcha.js`
 
-*1008 行 / 27 方法*
+*1020 行 / 27 方法*
 
 验证码弹窗的检测、取图与识别；整页验证码模式（`_runStandaloneCaptchaMode`）。
 
 ### `60-tasks-detect.js`
 
-*2351 行 / 48 方法*
+*2359 行 / 48 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
@@ -161,7 +162,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `62-tasks-run.js`
 
-*1755 行 / 42 方法*
+*1791 行 / 42 方法*
 
 任务点的**执行与等待**：把识别出的 job 真正跑起来（视频 / 阅读 / PPT 音频 / OCS 式学习
 `_runChaoxingJob` / `_runChaoxingReadJob` / `_runPptAudioJob` / `_runOcsStyleStudy`）、
@@ -171,7 +172,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1550 行 / 48 方法*
+*1583 行 / 48 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、
@@ -188,7 +189,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `70-quiz-flow.js`
 
-*2205 行 / 64 方法*
+*2496 行 / 69 方法*
 
 答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
 `_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、
@@ -200,7 +201,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `72-quiz-answers.js`
 
-*1189 行 / 42 方法*
+*1199 行 / 42 方法*
 
 **答案本身**的处理（与"流程"分开）：答案缓存的读写（正确答案 / 已知错答 / 已提交答案
 `_loadQuizCorrectAnswerCache` / `_rememberCorrectQuizAnswers` / `_addWrongQuizAnswer`）、
@@ -223,7 +224,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `75-quiz-dom.js`
 
-*2128 行 / 52 方法*
+*2375 行 / 57 方法*
 
 抠题与填答：从 DOM 里抠题干与选项、判定题型、单选 / 多选 / 判断 / 填空的填答实现、
 提交按钮与站点确认弹窗（`#workpop` / `#popok`）的处理。
@@ -234,7 +235,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `80-popup-quiz.js`
 
-*2234 行 / 46 方法*
+*2240 行 / 46 方法*
 
 视频内嵌弹题（弹窗题）的检测、填答、失败计数与放弃；
 「继续学习」提示按钮（不点它进不去正常播放页）。
@@ -260,7 +261,7 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ### `90-console-api-startup.js`
 
-*358 行*
+*262 行*
 
 **本文件以 `};` 开头**（闭合 app 对象字面量），随后是 `window.xxtAI` 控制台入口与启动逻辑。
 
@@ -326,8 +327,8 @@ API 不可用时的退避与跳过、乱选模式（`_isRandomAnswerMode` / `_bu
 
 ## 还没做的
 
-- 剩下最大的三个片段（2026-11-10 实测）是 `70-quiz-flow.js`（1916 行）、`75-quiz-dom.js`（1887 行）、
-  `60-tasks-detect.js`（1424 行）。还能再分，但收益已经明显变小 ——
+- 剩下最大的三个片段（2026-11-22 实测）是 `60-tasks-detect.js`（2359 行）、`80-popup-quiz.js`（2240 行）、
+  `70-quiz-flow.js`（2224 行）。还能再分，但收益已经明显变小 ——
   真正"一个域横跨上千行"的问题已经解决了。
   真要分就**一次只搬一个子域、搬完立刻跑 `npm run e2e`**。
 - 原始执行说明见 [`docs/pagejs-拆分提示词.md`](../../docs/pagejs-拆分提示词.md)（三个阶段都已完成，别再重做）。

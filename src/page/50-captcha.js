@@ -81,6 +81,15 @@
         for (var i = 0; i < imgs.length && !result; i++) {
           var img = imgs[i];
           if (!visible(img)) continue;
+          // 交卷前的人机验证窗（#verifyCodeWin / #workVerifyImg）由提交确认链路自己处理（#232）：
+          // 那是**一次提交的一部分**，码要写进 #inputCode 再点「确定」。让通用扫描认领它会走
+          // 「3 次识别失败就整页刷新」那条路 —— 刷掉的是正在交的卷子，且永远跳不出循环。
+          var inWorkVerify = false;
+          try {
+            inWorkVerify = String(img.id || '') === 'workVerifyImg' ||
+              !!(img.closest && img.closest('#verifyCodeWin'));
+          } catch (eWv) { inWorkVerify = false; }
+          if (inWorkVerify) continue;
           var src = String(img.currentSrc || img.src || '');
           var idName = String(
             (img.id || '') + ' ' + (img.getAttribute('name') || '') + ' ' + (img.className || '')
@@ -114,6 +123,9 @@
             for (var n = 0; n < boxImgs.length && !result; n++) {
               var bimg = boxImgs[n];
               if (!visible(bimg)) continue;
+              var bInWorkVerify = false;
+              try { bInWorkVerify = !!(bimg.closest && bimg.closest('#verifyCodeWin')); } catch (eBwv) { bInWorkVerify = false; }
+              if (bInWorkVerify) continue;
               if (!hitImgSize(bimg)) continue;
               // 弹窗文案里已含“验证码”，直接信任该图片
               var binput = findInputNear(doc, bimg);

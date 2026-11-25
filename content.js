@@ -1,3 +1,4 @@
+var OMITONE_CODE_REV_BRIDGE = '83fed9f209';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -22,6 +23,28 @@
   let scopeExpiresAt = 0;
   let requestFingerprints = new WeakMap();
 
+  // 问权限那一发的三态（AGENTS §2 #12：「问不到」单独占一格，不许塌进「没权限」）。
+  // 现场（队列 #213，2026-11-23 夜）：重载扩展后页面里那份 `content.js` 成了孤儿副本，
+  // 而每条日志、每一次问权限都要过桥 ⇒ 环结构上收不到任何东西。原话把这件事记成
+  // `scope_denied`，于是排查的人去修权限 —— 一条日志也回不来，只有 F5 能。
+  const SCOPE_ASK = { verdict: 'unreadable', reason: '', at: 0 };
+
+  // 为什么读不出：`sendRuntimeMessageWithTimeout` 那四格（同步抛 / lastError / 超时 / 空回包）
+  // 都带着 `error` 字符串，唯独"什么都没带"这一格不许被写成空串（空串读起来像"原因是空的"）。
+  function askReason(response) {
+    const raw = String((response && response.error) || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    return raw || '(未回原因)';
+  }
+
+  // 记一格并交回 'none'。`refreshPageScope()` 的取值契约（study / captcha / none）一个字都不改 ——
+  // 六个调用点拿的是「!== 'none' 就算有权限」，多吐一格会把没授权的页放过去。
+  function noteScopeAsk(verdict, reason) {
+    SCOPE_ASK.verdict = verdict;
+    SCOPE_ASK.reason = reason || '';
+    SCOPE_ASK.at = Date.now();
+    return 'none';
+  }
+
   function scopeIsCurrent(required) {
     return !!POLICY && scopeUrl === location.href &&
       (!scopeExpiresAt || Date.now() < scopeExpiresAt) &&
@@ -31,12 +54,15 @@
   async function refreshPageScope() {
     const url = location.href;
     const response = await sendRuntimeMessageWithTimeout({ type: 'get_page_scope' }, 5000, 'scope check timeout');
-    if (location.href !== url) return 'none';
+    // 问的途中换了页：这一发答的是旧网址，既不是"有权限"也不是"没权限"
+    if (location.href !== url) return noteScopeAsk('stale', '');
     const scope = response && response.success ? response.scope : 'none';
     pageScope = POLICY && ((scope === 'study' && POLICY.isChaoxingUrl(url)) ||
       (scope === 'captcha' && !POLICY.isChaoxingUrl(url))) ? scope : 'none';
     scopeUrl = url;
     scopeExpiresAt = Number(response && response.expiresAt) || 0;
+    if (!response || !response.success) return noteScopeAsk('unreadable', askReason(response));
+    noteScopeAsk(scope === 'none' ? 'denied' : 'granted', '');
     return scopeIsCurrent() ? pageScope : 'none';
   }
 
@@ -69,7 +95,6 @@
   }
 
   let configs = {
-    playbackRate: 1.0,
     muted: false,
     autoNext: true,
     autoNextCourse: true,
@@ -207,9 +232,25 @@
         if (result && result.success) return;
         if (Date.now() - runtimeLogWarningAt > 30000) {
           runtimeLogWarningAt = Date.now();
-          console.warn('[Omitone] runtime log unavailable; study continues');
+          // 桥死的时候 console 是**唯一还活着的出口**（环正是死的那个，`tools/field-logs.js`
+          // 与「复制日志」都读不到它）。旧那句一个字都不带，于是「桥断了 / 后台说不 /
+          // 20 秒没人答 / 回了个空」四格打成同一句话 —— 线索就扔在这一发上。
+          console.warn('[Omitone] runtime log unavailable; study continues',
+            'reason=' + askReason(result), 'verdict=' + SCOPE_ASK.verdict);
         }
       }).catch(() => {});
+    // 「医生」吃的是**这一页自己**那一份环，与后台那本全局账各记各的：
+    // 后台那本混着别门课/别标签页的旧账，拿它答"这一页怎么了"会答出别人的故事。
+    // 这一发必须放在转发**之后** —— 判断层坏了不能把日志转发一起拖死（刷课优先）。
+    doctorNote(item.level, item.message);
+  }
+
+  // 「这一族的话不许只落环」：桥已经死了，`appendRuntimeLog` 那一发正是送不出去的，
+  // 而面板那一格只有盯着屏幕的人才看得见。console 这一份是给"当时不在场、事后来看"的人的。
+  // 只说结论与原因，不复述 `href`（那里躺着选课 id）。
+  function announceBridgeDeath(message, verdict, why) {
+    console.warn('[Omitone] ' + message + ' [verdict=' + (verdict || 'unknown') +
+      (why ? ' reason=' + String(why).slice(0, 120) : '') + ']');
   }
 
   function sendRuntimeMessageWithTimeout(message, timeoutMs, timeoutError) {
@@ -279,6 +320,15 @@
   const THINKING = (typeof self !== 'undefined' && self.OmitoneThinking) || null;
   const API_ERROR = (typeof self !== 'undefined' && self.OmitoneApiError) || null;
   const STUDY_STATS = (typeof self !== 'undefined' && self.OmitoneStudyStats) || null;
+
+  /**
+   * 「这一发问的是哪家哪个模型」—— 只在**拿得到完整配置**的这一侧算（页面那份投影里没有
+   * providerPreset / apiUrl / model）。真源在 libs/api-error.js 的 channelOf；
+   * 这里只包一层，让模块缺失那一格也说得出口，而不是抛 TypeError 把整拍打断。
+   */
+  function llmWhoText(config) {
+    return API_ERROR ? API_ERROR.channelText(config) : '(渠道读不出) · (模型名没填)（libs/api-error.js 没加载）';
+  }
 
   /**
    * 扩展自带资源缺失时的统一报错。
@@ -1013,6 +1063,10 @@
   async function requestAnswersWithRetry(config, questions) {
     let lastError = '';
     let lastWasNetwork = false;
+    // 「失败的是哪家哪个模型」在这一发就算好，随每条失败日志与回包一起交出去 ——
+    // 页面侧那份投影里没有 providerPreset / apiUrl / model（libs/runtime-policy.js 的
+    // runtimeFields 不投它们），所以只有这里说得出真话；页面只负责转述，不再自己猜。
+    const who = llmWhoText(config);
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const result = await callLLMProvider(config, questions);
@@ -1023,7 +1077,7 @@
         if (result && result.truncated) return result;
         lastError = (result && result.error) || 'AI response parse failed';
         lastWasNetwork = false;
-        appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200) });
+        appendRuntimeLog('warn', 'llm response parse failed' + (attempt === 0 ? ', retrying' : ''), { error: String(lastError).slice(0, 200), who });
       } catch (error) {
         lastError = error && error.message ? error.message : String(error);
 
@@ -1040,22 +1094,23 @@
           appendRuntimeLog('error', 'llm_request rejected (permanent)', {
             status: error.httpStatus,
             category: error.apiCategory || '',
-            error: lastError.slice(0, 300)
+            error: lastError.slice(0, 300),
+            who
           });
-          return { success: false, error: lastError, permanentError: true, errorCategory: error.apiCategory || '' };
+          return { success: false, error: lastError, permanentError: true, errorCategory: error.apiCategory || '', who };
         }
 
         lastWasNetwork = true;
-        appendRuntimeLog('warn', 'llm request error' + (attempt === 0 ? ', retrying' : ''), { error: lastError.slice(0, 300) });
+        appendRuntimeLog('warn', 'llm request error' + (attempt === 0 ? ', retrying' : ''), { error: lastError.slice(0, 300), who });
       }
       if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1500));
     }
     if (lastWasNetwork) {
       await updateApiConnectionState(true, lastError, config);
-      appendRuntimeLog('error', 'llm_request direct failed', { error: lastError.slice(0, 300) });
-      return { success: false, error: lastError };
+      appendRuntimeLog('error', 'llm_request direct failed', { error: lastError.slice(0, 300), who });
+      return { success: false, error: lastError, who };
     }
-    return { success: false, error: lastError, parseError: true };
+    return { success: false, error: lastError, parseError: true, who };
   }
 
   async function handleLLMRequestDirect(payload) {
@@ -1096,8 +1151,8 @@
 
     const missing = missingModuleError();
     if (missing) {
-      appendRuntimeLog('error', 'llm_request aborted', { error: missing });
-      return { success: false, error: missing };
+      appendRuntimeLog('error', 'llm_request aborted', { error: missing, who: llmWhoText(effConfig) });
+      return { success: false, error: missing, who: llmWhoText(effConfig) };
     }
     if (!effConfig.apiKey) return { success: false, error: 'Please configure API Key first' };
     if (!questions.length) return { success: false, error: 'no questions to answer' };
@@ -1583,7 +1638,7 @@
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.3.0</span>',
+      '    <span class="brand">Omitone 1.3.1</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
@@ -2050,6 +2105,324 @@
   // 因为"刚自言自语完"和"上一句摸头话"是两码事，混在一起会把她自己的话挡掉。
   let pagePetLastPatLine = '';
 
+  // ── 本地自愈「医生」：这一页自己的日志环 → 判断 → 有界说一句 ──────────────
+  // 判断真源只在 [`libs/diagnose.js`](libs/diagnose.js) —— 弹窗卡片、页面她本人、集成测试
+  // 三处共用同一份规则，抄到界面上必然分叉（同 `popup/pet-game.js` 台词池那条教训）。
+  // 这里只留**这一页自己**那份环：跨标签页的全局环里混着别门课的旧账，
+  // 拿它答"这一页怎么了"会答出别人的故事（AGENTS §2 #19 同一族：口径不同的读数不许比）。
+  const PAGE_DOCTOR_KEY = 'omitonePetDoctorOn';   // 独立外观键，与精简/位置/好感度同一族
+  // 「联网搜索」是另一枚独立开关（弹窗 API 区那一枚），与「医生主动提醒」分开：
+  // 前者管**这一发问模型带不带搜索工具**，后者管**她要不要主动开口**。
+  const PAGE_WEB_SEARCH_KEY = 'omitonePetWebSearchOn';
+  const DOCTOR_RING_MAX = 120;          // 只留最近 120 条：环满丢最旧，不许无限长
+  const DOCTOR_ANALYZE_MS = 20000;      // 两次判断的最小间隔（一条 warn 就判一次 = 每拍都在体检）
+  const DOCTOR_GAP_MS = 5 * 60 * 1000;  // 同一个结论 5 分钟内最多打扰一次
+  const DOCTOR_MIN_SEVERITY = 2;        // 她自己开口只在"这一路走不通"以上；提醒级交给卡片
+  const DOCTOR_ASK_TIMEOUT_MS = 15000;  // 问模型那一发的硬超时（不到手就照本地结论说，绝不挂着等）
+  const DOCTOR_ASK_MAX_CHARS = 280;     // 模型回话封顶：气泡是一句话，不是一份报告
+  let doctorRing = [];
+  // null = 开关真值还没读到（**不许抢在真值前面说话**，同精简模式那条竞态）；
+  // true = 用户明确打开（这一档开口前会花 Key）；false = 关掉或缺席 —— 三态分开，别把"还不知道"压成别的。
+  let doctorOn = null;
+  // 联网搜索的三态，与上面同一把尺：null = 存储回调还没回来（**不许抢在真值前面决定花不花钱**）。
+  let webSearchOn = null;
+  let doctorAnalyzeAt = 0;
+  let doctorLastCode = '';
+  let doctorLastCodeAt = 0;
+  let doctorRoleTimer = 0;
+  let doctorAsking = false;   // 同一时刻最多一发在问：并发的那一拍不跟着花钱
+  let doctorAskCount = 0;     // 这一页真发出去几发问（测试与现场对账用）
+
+  function diagnoseModule() {
+    return (typeof self !== 'undefined' && self.OmitoneDiagnose) || null;
+  }
+
+  function webSearchModule() {
+    return (typeof self !== 'undefined' && self.OmitoneWebSearch) || null;
+  }
+
+  /**
+   * 这一发问模型到底带不带联网搜索。**资格判定只在 [`libs/web-search.js`](libs/web-search.js) 那一份** ——
+   * 弹窗聊天、让她解释、页面她自己体检三处出口共用同一把尺（同 diagnose.js 那条教训：
+   * 抄到调用方必然分叉，而分叉的形状是不报错、只是某一处从来没带上 tools）。
+   * ⚠️ 认不出来（模块没登记 → `no-lib`；判定本身抛了或形状不认 → `lib-shape`）一律**不带 tools、也不停下**：
+   *   「读不出」不许变成多花一次钱，也不许变成替用户宣布"这功能不能用"（AGENTS §2 #12）。
+   *   而它和"用户没开"必须分格说话 —— 前者是 manifest 漏登记，症状一模一样却一条异常都不留（§2 #18）。
+   */
+  function doctorWebSearch() {
+    const ws = webSearchModule();
+    if (!ws || typeof ws.decisionOf !== 'function') {
+      return { cell: 'no-lib', on: false, why: '联网搜索模块没加载（manifest 或 popup.html 登记漏了一处）', host: '' };
+    }
+    let d = null;
+    try { d = ws.decisionOf(configs || {}, webSearchOn); } catch (e) { d = null; }
+    if (!d || typeof d.cell !== 'string') {
+      return { cell: 'lib-shape', on: false, why: '联网搜索判定读不出（decisionOf 交回来的形状不认）', host: '' };
+    }
+    return d;
+  }
+
+  /** 把「联网那一发落在哪一格」写成页面读得回来的一格。
+   *  ⚠️ 只留布尔的话，"用户没开这枚开关"与"模块压根没登记"（manifest 漏一行）在 e2e 与现场里
+   *    长得一模一样，而修复方向完全相反（AGENTS §2 #18 / #12；同 `doctorMark` 那条规矩）。 */
+  function doctorWebSearchMark(cell) {
+    try { if (pagePet && pagePet.host) pagePet.host.dataset.webSearch = String(cell || 'unreadable'); } catch (e) {}
+  }
+
+  /** 把「医生这一拍到底为什么没说话」写成页面读得回来的一格。
+   *  ⚠️ 只回空串的话，"被收起来了"与"20 秒内刚判过"在 e2e 与现场里长得一模一样 ——
+   *    摘掉任何一道闸，测试照样全绿（批次 61 给自动小动作立过的规矩，`motionSkip` 同族）。
+   *  @returns {string} 恒为空串，调用方直接 `return doctorMark('…')` 当出口用 */
+  function doctorMark(reason) {
+    try { if (pagePet && pagePet.host) pagePet.host.dataset.doctorSkip = String(reason || ''); } catch (e) {}
+    return '';
+  }
+
+  /** 把一条日志记进本页的环；warn/error 才有机会触发一次判断（info 只攒证据）。 */
+  function doctorNote(level, message) {
+    const now = Date.now();
+    const text = String(message || '').slice(0, 2000);
+    if (!text) return;
+    doctorRing.push({ time: now, level: level || 'info', message: text });
+    if (doctorRing.length > DOCTOR_RING_MAX) doctorRing.splice(0, doctorRing.length - DOCTOR_RING_MAX);
+    if (level !== 'warn' && level !== 'error') return;
+    if (doctorOn !== true) {
+      // 「还不知道」与「用户关了」是两格 —— 压成一句"没开"，现场就分不出是回调没回来还是人关的
+      doctorMark(doctorOn === null ? 'switch-unknown' : 'switch-off');
+      return;
+    }
+    if (now - doctorAnalyzeAt < DOCTOR_ANALYZE_MS) { doctorMark('throttle'); return; }
+    doctorAnalyzeAt = now;
+    const res = doctorAnalyze(now);
+    if (!res) { doctorMark('no-diagnose'); return; }
+    // 说出结论的那一段里有 await（问模型），**不能让它把 doctorNote 拖成异步** ——
+    // 调用方（emitRuntimeLog 链路）同步返回；派发结果靠 doctorMark / 气泡自己落地
+    void doctorDeliver(res);
+  }
+
+  /** 跑一次本地判断。**读不出交 null**，绝不当成"没问题"（AGENTS §2 #12）。 */
+  function doctorAnalyze(now) {
+    const dx = diagnoseModule();
+    if (!dx || typeof dx.analyze !== 'function') return null;
+    try {
+      // 窗口按环里最旧一条到"现在"算：环本来就只有一页的量，切掉一小时前的旧账没意义
+      const first = doctorRing.length ? Number(doctorRing[0].time) : 0;
+      const span = first > 0 && now > first ? now - first : 0;
+      return dx.analyze(doctorRing, { now: now, windowMs: span > 0 ? span : undefined });
+    } catch (e) { return null; }
+  }
+
+  /** 问模型想一遍怎么说（**开口前才花钱**的那一发）。没 Key / 问不通 / 超时都交 {ok:false}，
+   *  调用方退回本地结论 —— 网络坏了她也永远有话说。提示词唯一真源 `libs/prompt.js`。 */
+  function doctorAskModel(f) {
+    const cfg = configs || {};
+    const apiKey = normalizeApiKey(cfg.apiKey || '');
+    // 没填 Key 就一步都不发（连请求体都不拼）：承诺过「不填 Key 只照本地规矩说」
+    if (!apiKey || !cfg.model || !cfg.apiUrl) return Promise.resolve({ ok: false, reason: 'no-key' });
+    const sys = (PROMPT && PROMPT.PET_DOCTOR_SYSTEM) || '';
+    // 三处花钱的出口（弹窗聊天 / 让她解释 / 她自己体检）问同一把尺：资格只在 libs/web-search.js 判一次。
+    // 这里**只决定带不带 tools**，不复制"能不能搜"的判据 —— 抄一份出来迟早和弹窗那两份分叉，
+    // 而分叉的形状是不报错、只是这一发从来没带上搜索（AGENTS §2 #18）。
+    const ws = doctorWebSearch();
+    doctorWebSearchMark(ws.cell);
+    const user = '下面是本地体检给出的结论，请用人话告诉主人下一步怎么办，只说结论里提到的事：\n' +
+      '结论：' + String(f.title || '') + '\n依据：' + String(f.evidence || '') + '\n建议：' + String(f.advice || '');
+    let req;
+    try {
+      if (cfg.apiType === 'claude') {
+        req = {
+          url: buildClaudeApiUrl(cfg.apiUrl),
+          headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+          body: { model: cfg.model, max_tokens: 320, temperature: 0.6, system: sys, messages: [{ role: 'user', content: user }] }
+        };
+      } else if (cfg.apiType === 'gemini') {
+        req = {
+          url: buildGeminiApiUrl(cfg.apiUrl, cfg.model, apiKey),
+          headers: { 'Content-Type': 'application/json' },
+          body: {
+            systemInstruction: { parts: [{ text: sys }] },
+            contents: [{ role: 'user', parts: [{ text: user }] }],
+            generationConfig: { temperature: 0.6, maxOutputTokens: 320 }
+          }
+        };
+      } else {
+        // 带搜索那一发照**量过的那一发**拼：`{model, messages, max_tokens, tools}` 四格
+        // （探针 probe161 E / probe162 H–L，六发都是 200 且真搜，一个都没带 temperature）。
+        // "带 tools 时服务端怎么对待 temperature" 这一组合**没测过** —— 没测过的参数不许照发，
+        // 多一格就多一条没人验过的路径；带不动时回到改动前那三个键的字节形状，一个都不多。
+        const openaiBody = { model: cfg.model, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] };
+        if (ws.on) openaiBody.tools = webSearchModule().toolsFor(ws);
+        else openaiBody.temperature = 0.6;
+        openaiBody.max_tokens = 320;
+        req = {
+          url: buildOpenAICompatibleUrl(cfg.apiUrl),
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey },
+          body: openaiBody
+        };
+      }
+    } catch (e) { return Promise.resolve({ ok: false, reason: 'request-build' }); }
+    doctorAskCount += 1;
+    return apiFetch(req.url, { method: 'POST', headers: req.headers, body: JSON.stringify(req.body) }, DOCTOR_ASK_TIMEOUT_MS)
+      .then(function (res) {
+        // `success:false` 不许被算成"回话为空"以外的假读数：status 单独带出（AGENTS §2 #2 同族）
+        if (!res || res.success !== true) return { ok: false, reason: 'http-' + String((res && res.status) || 'net') };
+        const data = res.data || {};
+        let text = '';
+        if (cfg.apiType === 'claude') text = (((data.content || [])[0] || {}).text || '');
+        else if (cfg.apiType === 'gemini') {
+          const parts = ((((data.candidates || [])[0] || {}).content || {}).parts) || [];
+          text = parts.map(function (p) { return p && p.text ? p.text : ''; }).join(' ');
+        } else text = ((((data.choices || [])[0] || {}).message || {}).content || '');
+        text = String(text || '').trim().slice(0, DOCTOR_ASK_MAX_CHARS);
+        if (!text) return { ok: false, reason: 'empty-reply' };
+        // 回一句 JSON（e2e 实测：假模型对不可解析的提示词回 '[]'）不是人话，照说会把 '[]' 挂上气泡
+        if (/^\s*[\[{]/.test(text)) return { ok: false, reason: 'ask-shape' };
+        return { ok: true, text: text };
+      })
+      .catch(function () { return { ok: false, reason: 'ask-throw' }; });
+  }
+
+  /** 给问模型那一发装**硬超时**：`await` 只有超时能拦住"挂起"（try/catch 拦不住，AGENTS §2 #2）。
+   *  setTimeout 取本闭包注入的那一份（测试台里是记录桩，测试可以手动把超时拨响）。 */
+  function doctorAskBounded(f) {
+    return new Promise(function (resolve) {
+      let done = false;
+      const tid = setTimeout(function () {
+        if (done) return;
+        done = true;
+        resolve({ ok: false, reason: 'ask-timeout' });
+      }, DOCTOR_ASK_TIMEOUT_MS + 2000);
+      Promise.resolve().then(function () { return doctorAskModel(f); }).then(function (v) {
+        if (done) return;
+        done = true;
+        clearTimeout(tid);
+        resolve(v && typeof v === 'object' ? v : { ok: false, reason: 'ask-bad-shape' });
+      }, function () {
+        if (done) return;
+        done = true;
+        clearTimeout(tid);
+        resolve({ ok: false, reason: 'ask-throw' });
+      });
+    });
+  }
+
+  /** 把最硬那一条说出去。先过闸（都在**花钱之前**），过了闸才问模型想一遍怎么说，
+   *  问不出就照本地结论说。@returns {string} 真点名说出去的结论码；空串 = 这一拍没说（原因写进 `dataset.doctorSkip`） */
+  async function doctorDeliver(res) {
+    const f = res && Array.isArray(res.findings) ? res.findings[0] : null;
+    if (!f) return doctorMark('no-finding');
+    if (!(Number(f.severity) >= DOCTOR_MIN_SEVERITY)) return doctorMark('quiet');
+    if (doctorOn === false) return doctorMark('switch-off');
+    const now = Date.now();
+    if (String(f.code) === doctorLastCode && now - doctorLastCodeAt < DOCTOR_GAP_MS) return doctorMark('cooldown');
+    if (!pagePet || !pagePet.host || !pagePet.host.isConnected) return doctorMark('no-pet');
+    // 她**看不见**就别换装、别说：被收起或标签页在后台时气泡根本没人看见，
+    // 而行头一挂就是 12 秒（`pagePetRoleOn` 的定时器），用户唤回她时先撞上一身医生袍。
+    // ⚠️ 只取 `pagePetIdleSay` 那两道"看不见"的闸，不许整把抄 `pagePetActBlock()` ——
+    //   'busy'（上一拍还没演完）与 'reduced'（系统减少动态效果）挡的是**动画**，
+    //   体检是一句话，被它们压掉就变成"有硬伤也不吭声"。
+    if (document.hidden) return doctorMark('bg');
+    if (pagePet.els.wrap && pagePet.els.wrap.classList.contains('mode-hidden')) return doctorMark('hidden');
+    // —— 到这里才花钱。同一时刻最多一发在问：并发的那一拍不跟着花钱，直接照本地结论说。
+    let line = String(f.title || '');
+    if (!doctorAsking) {
+      doctorAsking = true;
+      try {
+        const a = await doctorAskBounded(f);
+        if (a && a.ok === true && a.text) line = String(a.text);
+      } finally { doctorAsking = false; }
+    }
+    // 问的这一会儿世界会变：**收到话也要重过一遍闸** —— 开关可能被关、她可能被收起/进后台
+    if (doctorOn === false) return doctorMark('switch-off-late');
+    const now2 = Date.now();
+    if (String(f.code) === doctorLastCode && now2 - doctorLastCodeAt < DOCTOR_GAP_MS) return doctorMark('cooldown-late');
+    if (!pagePet || !pagePet.host || !pagePet.host.isConnected) return doctorMark('no-pet-late');
+    if (document.hidden) return doctorMark('bg-late');
+    if (pagePet.els.wrap && pagePet.els.wrap.classList.contains('mode-hidden')) return doctorMark('hidden-late');
+    const dressed = pagePetRoleOn('doctor');
+    // ⚠️ `'体检：' +` 这个字面形状别拆 —— e2e 的 DOC_TRUTH 契约按它抓说话前缀（browser-e2e.js）
+    const said = pagePetSayFrom('diagnose', '体检：' + line, 4600, '', '', '');
+    if (!said) {
+      if (dressed) pagePetRoleOff();
+      return doctorMark('bubble-blocked');
+    }
+    doctorLastCode = String(f.code);
+    doctorLastCodeAt = now2;
+    doctorMark('');   // 说了 → 把"为什么没说"那一格擦干净，现场读到的才是这一拍
+    return doctorLastCode;
+  }
+
+  // ── 换装巧思（用户原话：医生装=诊断、侦探装=修复中、修完换回别的衣服）──────
+  // ⚠️ 这一族**只临时改图，绝不写 OUT_KEY/SRC_KEY 存档** ——
+  //   体检把人自己挑好的衣服悄悄换掉，比不换更害人（批次 61「换姿势把衣服一起换了」同形）。
+  // ⚠️ 角色装期间自动换装必须让路（见 pagePetRefreshOutfit 那一格），
+  //   否则两族抢同一张 <img>，表现成"医生穿到一半变回裙子"。
+  function pagePetRoleOn(roleKey, msOverride) {
+    const game = petGameModule();
+    const role = game && game.ART && game.ART.ROLES ? game.ART.ROLES[roleKey] : null;
+    if (!pagePet || !pagePet.els.img || !role) return false;
+    try {
+      clearTimeout(doctorRoleTimer);
+      if (!pagePet.roleBase) pagePet.roleBase = pagePet.els.img.getAttribute('src') || '';
+      pagePet.els.img.setAttribute('src', chrome.runtime.getURL('popup/' + role.file));
+      pagePet.host.dataset.role = String(roleKey);
+      pagePet.host.dataset.roleFile = String(role.file);
+      if (pagePet.els.roleProp) {
+        pagePet.els.roleProp.textContent = String(role.prop || '');
+        pagePet.els.roleProp.classList.add('show');
+      }
+      const hold = Number(msOverride) > 0 ? Number(msOverride) : (Number(role.ms) > 0 ? Number(role.ms) : 12000);
+      doctorRoleTimer = setTimeout(pagePetRoleOff, hold);
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** 卸下行头，回到她**在穿的那一身**；没穿着角色装时是无害的空操作。 */
+  function pagePetRoleOff() {
+    clearTimeout(doctorRoleTimer);
+    if (!pagePet) return;
+    try {
+      if (pagePet.roleBase) pagePet.els.img.setAttribute('src', pagePet.roleBase);
+      if (pagePet.els.roleProp) pagePet.els.roleProp.classList.remove('show');
+      delete pagePet.host.dataset.role;
+      delete pagePet.host.dataset.roleFile;
+    } catch (e) {}
+    pagePet.roleBase = '';
+  }
+
+  /** 开关"算开"的那一格。⚠️ 弹窗那侧写的是 1 / 0（与 omitonePetChatOn 同一族），
+   *  **键缺席 = 关**：这一功能开口前会花用户的 Key，不许默认烧钱（用户原话「默认开只会一直烧钱，用户又看不到」）。
+   *  1 与 true 都认（测试台可能直接写布尔）；0、false、缺席都算关。 */
+  function isPetSwitchOn(v) { return v === 1 || v === true; }
+  /** 医生「主动提醒」那一枚 —— 历史名字，测试台与 ⑰ 那把尺都认它，别改。 */
+  function isDoctorOn(v) { return isPetSwitchOn(v); }
+
+  function applyPageDoctorSwitch() {
+    if (doctorOn === false && pagePet) pagePetRoleOff();   // 关掉时把挂着的行头一起收了
+  }
+  try {
+    // **两枚开关一次读**：分开发两次 get，就有两个"真值还没回来"的窗口，
+    // 而「联网搜索」那一发要在这一次问模型上决定花不花额外的钱 —— 读得慢半拍的那一支
+    // 会被当成"用户没开"（三态里最不该塌的一格，AGENTS §2 #12）。
+    chrome.storage.local.get([PAGE_DOCTOR_KEY, PAGE_WEB_SEARCH_KEY], function (r) {
+      // 键缺席 = 关着（花钱的功能默认不开）；弹窗那枚「诊」不受这枚开关管，随时能手动查
+      doctorOn = !!(r && isDoctorOn(r[PAGE_DOCTOR_KEY]));
+      webSearchOn = !!(r && isPetSwitchOn(r[PAGE_WEB_SEARCH_KEY]));
+      if (doctorOn === false) applyPageDoctorSwitch();
+    });
+  } catch (e) { /* 读不到就不主动说话，卡片那一路照旧能查；搜索那一格留在 null = 不带 tools */ }
+  try {
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes) return;
+      if (changes[PAGE_DOCTOR_KEY]) {
+        doctorOn = isDoctorOn(changes[PAGE_DOCTOR_KEY].newValue);
+        applyPageDoctorSwitch();
+      }
+      // 联网那一枚只管"下一发带不带 tools"，不改任何演出，所以不需要 applyPageDoctorSwitch 那样的收尾
+      if (changes[PAGE_WEB_SEARCH_KEY]) webSearchOn = isPetSwitchOn(changes[PAGE_WEB_SEARCH_KEY].newValue);
+    });
+  } catch (e) { /* 同上 */ }
+
   // ── 她自己动：自动换装 + 自动小动作（纯演出，不碰存档、不碰调度）──────
   // 用户原话「已经不能交互了，还是让她自己动吧」。交互那一半是样式优先级的事
   // （见 Shadow DOM 样式里那三个 `:not()`），"自己动"这一半在下面这几个定时器上。
@@ -2348,6 +2721,10 @@
     const game = petGameModule();
     const pool = (game && game.ART && game.ART.SKINS) || [];
     if (!pagePet || !pagePet.els.img || pool.length < 2) return '';
+    // 角色装（医生／侦探）期间让路：两族抢同一张 <img>，表现成"医生穿到一半变回裙子"；
+    // 更贵的是它会改写 pagePet.outfit，角色装收尾时复原到的就是那次随机的一身 ——
+    // 用户自己挑的衣服就这么被体检换掉了（批次 61「换姿势把衣服一起换了」同形）。
+    if (pagePet.roleBase) return '';
     let idx = Math.floor(Math.random() * pool.length);
     // 连着两拍同一身不算"换了衣服"（44 张里撞车并不稀罕，用户读到的却是"没反应"）
     if (String(pool[idx]) === pagePet.outfit) {
@@ -2449,9 +2826,13 @@
         '*{box-sizing:border-box;margin:0;padding:0}',
         // 整只宠物=一张卡。原先是 5 个零散元素直接坐在页面上（立绘/徽章/进度条/按钮各一块），
         // 叠在学习通自己的右侧条与我们的状态面板上，看着就是"右下角乱七八糟"。
-        '.wrap{position:relative;width:158px;pointer-events:auto;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
-        '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16);cursor:grab}',
-        '.card.dragging{cursor:grabbing;box-shadow:0 14px 30px rgba(15,23,42,.22)}',
+        // ⚠️ 宽度**随内容长**，158 只当下限（原先写死 `width:158px`）：`.level` 那枚等级徽章带
+        //   `text-overflow:ellipsis`，可用宽度一小于文字宽度就把字剪掉 —— 用户现场读到「心有……」一共两个字
+        //   （2026-11-21）。e2e 那 30 格（十档 × 三档字号）实测：默认与 10 像素下最长那档仍让卡片保持
+        //   158（观感一个字没变），32 像素下每一格都把它顶过 158（最窄 160）；省略号只在超过 320 上限后才当兜底。
+        '.wrap{position:relative;width:max-content;max-width:min(320px,calc(100vw - 28px));pointer-events:none;font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:12px;line-height:1.45;color:#334155;-webkit-user-select:none;user-select:none;touch-action:none}',
+        '.card{display:flex;align-items:flex-end;gap:9px;padding:8px 10px 7px;min-width:158px;pointer-events:none;border-radius:16px;background:rgba(255,255,255,.9);backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px);border:1px solid rgba(15,23,42,.09);box-shadow:0 10px 26px rgba(15,23,42,.16)}',
+        '.card.dragging{box-shadow:0 14px 30px rgba(15,23,42,.22)}',
         // 悬停必须有反应 —— 用户原话「交互也基本上不会动」。
         // ⚠️ 只用**不改几何**的属性（边框/阴影）+ 让立绘歪一下头：卡片自己一旦带 transform，
         //   getBoundingClientRect 就和 style.left/top 差几像素，拖动每一拍都按差值漂一次
@@ -2467,13 +2848,17 @@
         // 立绘**盒**必须定死：100 张图全部高 240，宽却从 107 到 217（纵横比 0.45~0.90），
         // 原先 `width:52px;height:auto` 让高度跟着图走 —— 换装时卡片上下抖十几像素，
         // 还会把拖动用的 getBoundingClientRect 一起改了。`contain` + 底对齐 = 换装零位移。
-        '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
+        '.pet{display:block;width:52px;height:90px;object-fit:contain;object-position:50% 100%;flex:0 0 auto;pointer-events:auto;cursor:pointer;filter:drop-shadow(0 3px 8px rgba(15,23,42,.22));transform-origin:50% 92%;animation:om-pet-bob 3.4s ease-in-out infinite}',
         '@keyframes om-pet-bob{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}',
         // 摸头必须有**立刻看得见**的反应 —— 原先只有升级才动一下，用户读成"点了没反应"。
         '.card .pet.pat{animation:om-pet-pat .44s ease}',
         '@keyframes om-pet-pat{0%{transform:translateY(0) scale(1)}32%{transform:translateY(3px) scale(1.07,.9)}66%{transform:translateY(-2px) scale(.96,1.05)}100%{transform:translateY(0) scale(1)}}',
         '.card .pet.cheer{animation:om-pet-cheer .9s ease}',
         '@keyframes om-pet-cheer{0%{transform:scale(1)}30%{transform:scale(1.12) rotate(-4deg)}60%{transform:scale(1.06) rotate(3deg)}100%{transform:scale(1)}}',
+        // 「医生／侦探」那两身行头的道具 —— 立绘是 <img>，伪元素挂不上，只能自己占一格。
+        // 位置钉在头顶偏右（wrap 是 relative），字号与气泡区分开，一眼是"她在_ROLE"而不是"她在说话"。
+        '.roleprop{display:none;position:absolute;left:34px;top:-8px;z-index:2;font-size:15px;line-height:1;pointer-events:none;text-shadow:0 1px 3px rgba(15,23,42,.28)}',
+        '.roleprop.show{display:block}',
         // 她自己动的那一拍：动作名 = `popup/pet-game.js` 的 ART.MOTIONS，
         // 这里每个名字都要有一条同名 `@keyframes om-pet-<名>`（`npm run check` 第 20 项第 ⑤ 条对账）。
         // 全是**不改几何盒**的 transform：卡片宽度、状态面板、拖动用的矩形都不跟着抖。
@@ -2491,7 +2876,7 @@
         '.level{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:1px 7px;border-radius:999px;background:#fde68a;color:#92400e;font-size:10px;font-weight:700}',
         '.bond{width:100%;height:4px;border-radius:2px;background:rgba(100,116,139,.25);overflow:hidden}',
         '.bond i{display:block;height:100%;width:0;border-radius:2px;background:linear-gradient(90deg,#ffb6c1,#ff7d9c);transition:width .4s}',
-        '.hide{border:0;background:rgba(241,245,249,.9);border-radius:6px;font-size:10px;padding:2px 8px;cursor:pointer;color:#64748b;font-family:inherit}',
+        '.hide{border:0;background:rgba(241,245,249,.9);border-radius:6px;font-size:10px;padding:2px 8px;pointer-events:auto;cursor:pointer;color:#64748b;font-family:inherit}',
         '.hide:hover{background:#e2e8f0;color:#334155}',
         // 气泡：原先 `left:66px` 挂在 92px 宽的 wrap 里 → 可用宽度只剩 26px，
         // `max-width:200px` 只是上限、不会把盒子撑开，于是每行一个字，量到 31×215 的**竖排一大坨**。
@@ -2510,6 +2895,7 @@
         '</style>',
         '<div class="wrap" id="wrap">',
         '<div class="card" id="card">',
+        '<i class="roleprop" id="roleProp"></i>',
         '<img class="pet" id="petImg" src="' + chrome.runtime.getURL('popup/pet.png') + '" alt="Omitone" draggable="false">',
         '<div class="col">',
         '<div class="level" id="level">初识</div>',
@@ -2529,6 +2915,7 @@
           wrap: shadow.getElementById('wrap'),
           card: shadow.getElementById('card'),
           img: shadow.getElementById('petImg'),
+          roleProp: shadow.getElementById('roleProp'),
           bubble: shadow.getElementById('bubble'),
           level: shadow.getElementById('level'),
           bondBar: shadow.getElementById('bondBar'),
@@ -2589,11 +2976,12 @@
 
     try {
       const card = pagePet.els.card;
-      card.addEventListener('pointerdown', function (ev) {
+      pagePet.els.wrap.addEventListener('pointerdown', function (ev) {
         try {
           if (ev.button !== 0) return;
-          // 按钮上的按下不接管：那是"收起/唤回"，不是搬她
-          if (ev.target === pagePet.els.hideBtn || ev.target === pagePet.els.pillBtn) return;
+          // 「收」按钮上的按下不接管：那是"收起"，不是搬她。
+          // 小入口（pill）**不在**这一族 —— 它既是"唤回"也是唯一的拖拽把手，卡片在收起态是 display:none。
+          if (ev.target === pagePet.els.hideBtn) return;
           const r = pagePet.host.getBoundingClientRect();
           dragState = { ox: ev.clientX - r.left, oy: ev.clientY - r.top, sx: ev.clientX, sy: ev.clientY, moved: false, pid: ev.pointerId };
           card.classList.add('dragging');
@@ -2604,14 +2992,14 @@
           // 改成下面 pointermove 越过 6px 阈值再捕获 —— 拖动照样跟手，点击照样归她。
         } catch (e) {}
       });
-      card.addEventListener('pointermove', function (ev) {
+      pagePet.els.wrap.addEventListener('pointermove', function (ev) {
         try {
           if (!dragState) return;
           // 6px 以内当"点"，不动她 —— 否则每次摸头都会把她挪一两个像素
           if (!dragState.moved && Math.abs(ev.clientX - dragState.sx) + Math.abs(ev.clientY - dragState.sy) < 6) return;
           // 真要搬她了才捕获：此后指针飞出卡片也能继续跟手、pointerup 也一定回到这张卡
-          if (!dragState.moved && card.setPointerCapture && dragState.pid != null) {
-            try { card.setPointerCapture(dragState.pid); } catch (e) {}
+          if (!dragState.moved && pagePet.els.wrap.setPointerCapture && dragState.pid != null) {
+            try { pagePet.els.wrap.setPointerCapture(dragState.pid); } catch (e) {}
           }
           dragState.moved = true;
           applyPagePetPos(ev.clientX - dragState.ox, ev.clientY - dragState.oy);
@@ -2631,17 +3019,28 @@
           }
         } catch (e) {}
       };
-      card.addEventListener('pointerup', endDrag);
-      card.addEventListener('pointercancel', function () {
-        try { dragState = null; pagePet.els.card.classList.remove('dragging'); } catch (e) {}
+      pagePet.els.wrap.addEventListener('pointerup', endDrag);
+      pagePet.els.wrap.addEventListener('pointercancel', function () {
+        try {
+          if (!dragState) return;
+          const moved = dragState.moved;
+          dragState = null;
+          pagePet.els.card.classList.remove('dragging');
+          // cancel 也要把存档跟上：pointermove 里 `applyPagePetPos` 已经把视觉与 `pagePet.pos` 挪走了，
+          // 只漏这一发就是「这一页她在新的地方、刷新一次弹回老地方」。真实路径量过（2026-11-23 探针、G 组）：
+          // 原生拖拽接管时浏览器派的是 dragstart → pointercancel，**之后不再有 pointerup** ——
+          // 眼下挡住它的是 `<img draggable="false">` 那一枚属性，一道属性远不是一处保障。
+          // 不说话、不设 suppressPatUntil：那两样是给 pointerup 连带的那发 click 用的，cancel 后面不跟 click。
+          if (moved) persistPagePetPos();
+        } catch (e) {}
       });
       // 悬停反应。走 JS 挂 class 而不是纯 CSS `:hover`：
       // e2e 派发得出 pointerenter，派不出"真·悬停状态"（那要 CDP Input 域），
       // 于是 CSS 写法等于**没测试**——而这条正是用户说"不会动"的两处之一。
-      card.addEventListener('pointerenter', function () {
+      pagePet.els.img.addEventListener('pointerenter', function () {
         try { pagePet.els.card.classList.add('peek'); } catch (e) {}
       });
-      card.addEventListener('pointerleave', function () {
+      pagePet.els.img.addEventListener('pointerleave', function () {
         try { pagePet.els.card.classList.remove('peek'); } catch (e) {}
       });
       // 窗口变小/切全屏：把她拉回可视范围，别留在屏幕外（进不来就只能重装扩展）
@@ -2693,6 +3092,7 @@
       } catch (e) {}
     });
     pagePet.els.pillBtn.addEventListener('click', function () {
+      if (Date.now() < suppressPatUntil) return;
       try {
         pagePet.els.wrap.classList.remove('mode-hidden');
         const patch = {};
@@ -3176,6 +3576,7 @@
       const loaded = { ...response.config };
       const fingerprint = POLICY.configFingerprint(loaded);
       delete loaded.forceLearn;
+      delete loaded.playbackRate;
       configs = { ...CONFIG_DEFAULTS, ...loaded };
       const snapshot = { ...configs };
       requestFingerprints.set(snapshot, fingerprint);
@@ -3356,7 +3757,6 @@
   }
 
   function hasPageRuntimeEvidence() {
-    if (document.getElementById('xxt-panel')) return true;
     if (!pageRuntimeActivityAt) return false;
     // ① 这次注入之后**有过任意一条运行日志** —— 就说明 page.js 活着。
     // ⚠️ 不能要求「最近 4 秒内」：空闲时 `_ensureOcsStudyRunner` 的循环
@@ -3601,11 +4001,18 @@
       appendRuntimeLog('warn', 'scope not granted after page change', {
         reason: reason || '',
         round: urlRetryRound + 1,
+        scopeAsk: SCOPE_ASK.verdict,
+        askError: SCOPE_ASK.reason,
         href: String(location.href || '').slice(0, 90)
       });
+      announceBridgeDeath('scope not granted after page change', SCOPE_ASK.verdict, SCOPE_ASK.reason);
       if (urlRetryRound < URL_RETRY_MAX_ROUNDS) {
         urlRetryRound++;
-        showStatusPanel('wait', '正在重连扩展', '切换章节后没问到权限，稍后自动重试；一直不动请按 F5');
+        // 「问不到」与「没权限」是两格（§2 #12）：桥死的时候说"没问到权限"，
+        // 用户会去翻弹窗里的开关，而这一格只有一样能治 —— 把这一页 F5 一次。
+        showStatusPanel('wait', '正在重连扩展', SCOPE_ASK.verdict === 'unreadable'
+          ? '连不上扩展（刚重载过扩展就是这样），请按 F5 刷新学习通页面'
+          : '切换章节后没问到权限，稍后自动重试；一直不动请按 F5');
         if (urlRetryTimer) clearTimeout(urlRetryTimer);
         urlRetryTimer = setTimeout(() => {
           urlRetryTimer = null;
@@ -3618,9 +4025,14 @@
       appendRuntimeLog('error', 'scope lost, bridge stopped', {
         reason: reason || '',
         rounds: URL_RETRY_MAX_ROUNDS,
+        scopeAsk: SCOPE_ASK.verdict,
+        askError: SCOPE_ASK.reason,
         href: String(location.href || '').slice(0, 90)
       });
-      showStatusPanel('error', '扩展通道断开', '多次询问权限都没通过，请按 F5 刷新学习通页面');
+      announceBridgeDeath('scope lost, bridge stopped', SCOPE_ASK.verdict, SCOPE_ASK.reason);
+      showStatusPanel('error', '扩展通道断开', SCOPE_ASK.verdict === 'unreadable'
+        ? '多次问不到扩展，请按 F5 刷新学习通页面（只重载扩展不刷新没用）'
+        : '多次询问权限都没通过，请按 F5 刷新学习通页面');
     }
     dropPageRuntime();
   }
@@ -3665,11 +4077,15 @@
   appendRuntimeLog('info', 'content bridge ready', {
     version: String((manifestInfo && manifestInfo.version) || ''),
     build: String((manifestInfo && manifestInfo.version_name) || '(源码目录，未经 build)'),
+    // 桥自己的内容指纹（`npm run concat` 按 manifest 的注入清单烘进本文件首行）。
+    // ⚠️ 用 typeof 而不是裸读：戳行没落上时读一个未声明的标识符会抛 ReferenceError，
+    //    而这一发跑在 `appendRuntimeLog` 的参数里 —— 抛出等于把这条日志整个吃掉（§2 #1 同族）。
+    bridgeCode: (typeof OMITONE_CODE_REV_BRIDGE === 'string' ? OMITONE_CODE_REV_BRIDGE : '(未拼接)'),
     // ⚠️ content.js 这一侧的"带哪些修复"标记，与 page.js 那个 `start` 里的 build 同一用途：
     // **日志里缺哪个 = 那份改动还没被加载**。批次 17 就是被这一格坑的：磁盘上已经修好，
     // 页面跑的还是旧 content.js，两边都以为生效了，用户看到的是「还是卡住的」。
     // page.js 有 `code` 内容指纹兜底，而 content.js 不在 concat 的范围里、没有指纹，
     // 所以这一栏是 content.js 侧唯一的自证 —— 加改动就加标记，别让它空着。
-    marks: ['refill-per-question', 'scope-retry']
+    marks: ['refill-per-question', 'scope-retry', 'bridge-reason-193']
   });
 })();

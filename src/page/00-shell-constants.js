@@ -55,6 +55,11 @@
    */
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
+  // 同一媒体元素恢复失败三次后隔离，不再把同一个坏元素反复派回来。
+  var MEDIA_RELOAD_LIMIT = 3;
+
+  var TASK_GIVEUP_TTL_MS = 24 * 3600 * 1000;
+
   /**
    * 投票任务点（insertvote）的五个数。
    *
@@ -62,8 +67,11 @@
    * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
    * 新增 await 必须可超时是硬规矩（AGENTS §2.2）。
    *
-   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
-   * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次。
+   * 失败形状（`overlay` / `no-check` 那些）冷却到期照旧重试，不写放弃；
+   * **但"平台自己说这场已结束"那一类不在此列** —— 它数满 `VOTE_MAX_TRIES` 发之后
+   * 交给已有的持久放弃账（24 小时、扛刷新、两个恢复出口），因为这一族**点一万次封面也不会长出选项**，
+   * 而内存里那本账活不过一次刷新，不落盘就永远走不完一轮预算（`62-tasks-run.js` 的 ended 分支）。
    *
    * `VOTE_ENDED_COOLDOWN_MS` 单独放宽到 30 分钟：认出一张**已被手动结束**的问卷之后，
    * 每 5 分钟再点一次封面除了把全屏覆盖层重新撑起来之外没有任何收益（现场 2026-11-16），
@@ -106,7 +114,6 @@
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
-    playbackRate: 1.0,
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,
@@ -225,6 +232,9 @@
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 交卷连续三次无进展时是否放手（写 24 小时放弃名单并翻下一节）。
+    // 默认开 = 上线版的兜底；本地调试在 chrome.storage 里置 false，改成死磕并保留每轮诊断。
+    quizRejectGiveUp: true,
     // 一题都填不上时，是否**自动跳过这一卷**（内部调参，不上弹窗）。
     //
     // ⚠️ 默认**关**。原因（2026-11-10 事故）：有卷子的题一题都落不到页面上，

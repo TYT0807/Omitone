@@ -21,6 +21,17 @@
  *   ③ 面板第二行会出现的**英文种类键**（从仲裁真源 `src/page/60-tasks-detect.js` 读
  *      `fromDom = 'x'` 与兜底 `|| 'other'`）必须在 `jobKindLabel` 里有中文取值。
  *      少一个键 = 那一格直接打英文原词（`vote` 漏了三周，说明书连它长什么样都写不出）。
+ *   ④ 弹窗里**每一枚开关的名字**（2026-11-19 批次 129 新接的一族）：从
+ *      `popup/popup.html` 读「`<label for="K">文案</label>` 且页面里有 `id="K"` 且
+ *      `role="switch"`」的那些配对 —— 只有开关，输入框 / 下拉不在这儿（它们的文案不是
+ *      会显示的状态字）。用户问「哪一枚是不重学已完成的」时，说明书里必须找得到界面那行原话；
+ *      以前只核了 9 枚，另外 11 枚（含 restudy「已完成任务重学」）**说明书一个字都没教**，
+ *      而且这一族的键是"界面有、文档没有"，一条测试都不会红。
+ *   ⑤ **白名单里那几枚按钮的名字**（#211 新接的一族，见 `TAUGHT_BUTTON_IDS`）：
+ *      只核登记过的那几枚 —— **故意不把弹窗里全部按钮都拉进来**：多数按钮（保存、关闭、
+ *      重新加载那一族）不需要说明书教，全拉进来就是一条会误报的尺，而会误报的守卫和没有守卫
+ *      一样害人（AGENTS §5）。代价是"新增要教的按钮要顺手把 id 写进白名单"，
+ *      所以白名单为空 / 那一枚在弹窗里读不出来都**单独报红**，不许静默缩成"没有按钮要核"。
  *
  * 不核什么：面板 `task` / `detail` 那两行的**动态句子**（章节切换中、附件数：N …）——
  *   它们是拼出来的整句，取值表形状一变就会误报，能核住的是「有哪几种字」。
@@ -28,7 +39,7 @@
  * 用法：
  *   node tools/audit-manual-ui-labels.js            # 核真说明书，有问题退出 1
  *   node tools/audit-manual-ui-labels.js --json     # 同上，机器可读
- *   node tools/audit-manual-ui-labels.js --selftest # 十一格自证，不过退出 2
+ *   node tools/audit-manual-ui-labels.js --selftest # 十七格自证，不过退出 2
  */
 'use strict';
 
@@ -38,8 +49,19 @@ var path = require('path');
 var ROOT = path.resolve(__dirname, '..');
 var CONTENT_JS = 'content.js';
 var POPUP_JS = 'popup/popup.js';
+var POPUP_HTML = 'popup/popup.html';
 var DETECT_JS = 'src/page/60-tasks-detect.js';
 var MANUAL = 'docs/manual.html';   // 消息里要出现它，用正斜杠写死，别让 Windows 反斜杠混进人读的那句话
+
+// 弹窗里开关的**最少**数量（批次 129 量到 20 枚，分在五个分组）。
+// 读出来远低于这个数 = 配对那一族认不出东西了，不是"开关变少了"—— 必须响。
+var SWITCH_FLOOR = 8;
+
+// 说明书**必须教到名字**的那几枚按钮（按 `popup/popup.html` 里的 id 点名）。
+// 为什么要白名单而不是"全部按钮"：弹窗里还有 保存 / 关闭 / 重新加载 / 这一轮改用「乱选」继续 那一族，
+// 它们不需要说明书逐枚教 —— 全拉进来会得到一条天天误报的尺，而会误报的守卫和没有守卫一样害人（AGENTS §5）。
+// 新增要教的按钮时把 id 加进来，并在同一轮把名字写进 docs/manual.html（第 27 项会逐枚点名）。
+var TAUGHT_BUTTON_IDS = ['listModels'];
 
 /* ---------------------------------------------------------------- 真值 */
 
@@ -214,11 +236,26 @@ function readUiLabels(root) {
     }
   }
 
-  // ④ 键对账的**期望**从仲裁真源读（读不出来也要留话，不许当成"没键要对"）
+  // ④ 弹窗里每一枚开关的名字（批次 129）—— 界面有、说明书没教的那一族
+  var sw = readPopupSwitches(root);
+  (sw.errors || []).forEach(function (e) { readErrors.push(e); });
+  sw.items.forEach(function (x) {
+    labels.push({ from: POPUP_HTML + ' 开关 ' + x.key, text: x.text, switchKey: x.key });
+  });
+
+  // ⑤ 白名单里那几枚按钮的名字（#211）—— 「界面有这枚按钮、说明书没教它叫什么」那一族
+  var bt = readPopupButtons(root);
+  (bt.errors || []).forEach(function (e) { readErrors.push(e); });
+  bt.items.forEach(function (x) {
+    labels.push({ from: POPUP_HTML + ' 按钮 ' + x.key, text: x.text, buttonKey: x.key });
+  });
+
+  // ⑥ 键对账的**期望**从仲裁真源读（读不出来也要留话，不许当成"没键要对"）
   var kres = readJobKinds(root);
   if (kres.error) readErrors.push(kres.error);
 
-  return { labels: labels, readErrors: readErrors, kinds: kres.kinds };
+  return { labels: labels, readErrors: readErrors, kinds: kres.kinds,
+    switches: sw.items, switchIds: sw.ids, buttons: bt.items };
 }
 
 /**
@@ -246,8 +283,154 @@ function readJobKinds(root) {
   return { kinds: kinds, error: '' };
 }
 
-/* ---------------------------------------------------------------- 说明书可见正文 */
+/* ---------------------------------------------------------------- 弹窗开关名 */
 
+/**
+ * 标签里那截 HTML → 页面上读到的一行字。
+ * ⚠️ 行内标签**剥成空串**而不是空格，与 visibleText 同一口径（`<span>` 在页面上不产生空格）；
+ * 两边口径不一致时，这条闸会把"页面根本连得上的一句话"读成两份字。
+ */
+function inlineTextOf(raw) {
+  return String(raw == null ? '' : raw).replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** 取某个 id 的开关元素**内部**那段 HTML（只处理这两三种控件形状：找不到闭合就交空串）。 */
+function innerHtmlOfId(html, id, tagName) {
+  var esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  var openRe = new RegExp('<' + tagName + '\\s[^>]*\\bid="' + esc + '"[^>]*>', 'i');
+  var m = openRe.exec(html);
+  if (!m) return '';
+  var closeRe = new RegExp('</' + tagName + '>', 'i');
+  var rest = html.slice(m.index + m[0].length);
+  var c = closeRe.exec(rest);
+  return c ? rest.slice(0, c.index) : '';
+}
+
+/**
+ * 弹窗里每一枚开关的**界面上的字**，两种形状都要覆盖（批次 129 实测：只认前一种会漏掉
+ * 顶部那枚「精简 / 精美」分段开关 —— 它是个 `<button role="switch">`，字在自己那两个
+ * `<span>` 里，压根没有 `<label for>`）：
+ *   A. `<label for="K">文案</label>` + 页面上有 `id="K"` 且 `role="switch"`；
+ *   B. 没有 label 的开关：读它自己内部的 `<span>` 文字，一个字都读不出 = 报红。
+ * ⚠️ 只认开关：输入框 / 下拉 / 文本域的 label 不是"会显示的状态字"，混进来就是一片误报。
+ * 返回 `{ items: [{key, text}], ids: [所有开关 id], errors: [字符串] }`。
+ */
+function readPopupSwitches(root) {
+  var txt;
+  try {
+    txt = fs.readFileSync(path.join(root || ROOT, POPUP_HTML), 'utf8');
+  } catch (e) {
+    return { items: [], ids: [], errors: [POPUP_HTML + ' 读不到：' + String((e && e.message) || e)] };
+  }
+  var items = [], errors = [], ids = [], paired = {};
+
+  // ---- 先把所有 role="switch" 的 id 数出来（这一份是"一枚都不许漏"的尺）----
+  var tagRe = /<[a-zA-Z][a-zA-Z0-9-]*\s[^>]*role="switch"[^>]*>/g, tm;
+  while ((tm = tagRe.exec(txt))) {
+    var idm = /\bid="([^"]+)"/.exec(tm[0]);
+    if (!idm) {
+      errors.push(POPUP_HTML + ' 有一枚 role="switch" 没有 id —— 对不上界面字样，' +
+        '第 27 项的开关这一族要跟着改口径：' + tm[0].slice(0, 70));
+      continue;
+    }
+    if (ids.indexOf(idm[1]) === -1) ids.push(idm[1]);
+  }
+  if (ids.length < SWITCH_FLOOR) {
+    errors.push(POPUP_HTML + ' 只数到 ' + ids.length + ' 枚 role="switch"（要求至少 ' + SWITCH_FLOOR +
+      ' 枚）—— 弹窗改成别的控件形状了，这一族要跟着改口径，不许静默当"没有开关要核"');
+  }
+
+  // ---- A. label ↔ 开关 配对 ----
+  var re = /<label\s[^>]*for="([^"]+)"[^>]*>([\s\S]*?)<\/label>/gi;
+  var m;
+  while ((m = re.exec(txt))) {
+    var key = m[1];
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key)) {
+      errors.push(POPUP_HTML + ' 有一处 label 的 for="' + key + '" 不是合法 id —— 配对那一格要跟着改口径');
+      continue;
+    }
+    if (ids.indexOf(key) === -1) continue;
+    var text = inlineTextOf(m[2]);
+    if (!text) {
+      errors.push(POPUP_HTML + ' 的开关「' + key + '」label 文案是空串 —— 值被读丢了');
+      continue;
+    }
+    paired[key] = 1;
+    items.push({ key: key, text: text });
+  }
+
+  // ---- B. 没有 label 的开关：读它自己身上的字（分段开关那一族）----
+  ids.forEach(function (id) {
+    if (paired[id]) return;
+    var openRe = new RegExp('<([a-zA-Z][a-zA-Z0-9-]*)\\s[^>]*\\bid="' +
+      id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '"[^>]*role="switch"', 'g');
+    var om = openRe.exec(txt);
+    if (!om) {
+      errors.push(POPUP_HTML + ' 的开关「' + id + '」找不到开标签 —— 配对口径失效');
+      return;
+    }
+    var inner = innerHtmlOfId(txt, id, om[1]);
+    var spans = [], sm, spRe = /<span[^>]*>([\s\S]*?)<\/span>/gi;
+    while ((sm = spRe.exec(inner))) {
+      var s = inlineTextOf(sm[1]);
+      if (s) spans.push(s);
+    }
+    if (!spans.length) spans = [inlineTextOf(inner)].filter(Boolean);
+    if (!spans.length) {
+      errors.push(POPUP_HTML + ' 的开关「' + id + '」既没有 label、身上也读不出任何字 —— ' +
+        '这一枚说明书教不到，闸必须响，不许静默跳过');
+      return;
+    }
+    spans.forEach(function (s) { items.push({ key: id, text: s }); });
+  });
+
+  if (items.length < SWITCH_FLOOR) {
+    errors.push(POPUP_HTML + ' 只读出 ' + items.length + ' 个开关界面上的字（要求至少 ' + SWITCH_FLOOR +
+      ' 个）—— 配对口径失效，不许静默缩成"只核这几个"');
+  }
+  return { items: items, ids: ids, errors: errors };
+}
+
+/**
+ * 白名单里那几枚按钮**界面上写的那行字**（#211 新接的一族）。
+ * 形状：`<button … id="K" …>文案</button>` —— 只认白名单，别扩成"全部按钮"（会误报）。
+ * 读不出来（id 不见了 / 身上空串）一律进 `errors`：**不许静默缩成"没有按钮要核"**
+ * （AGENTS §2 #12：读不出单独占一格；口径同上面开关那一族）。
+ * 返回 `{ items: [{key, text}], errors: [字符串] }`。
+ */
+function readPopupButtons(root) {
+  var txt;
+  try {
+    txt = fs.readFileSync(path.join(root || ROOT, POPUP_HTML), 'utf8');
+  } catch (e) {
+    return { items: [], errors: [POPUP_HTML + ' 读不到：' + String((e && e.message) || e)] };
+  }
+  var items = [], errors = [];
+  if (!TAUGHT_BUTTON_IDS.length) {
+    return { items: [], errors: [POPUP_HTML + ' 按钮那一族的白名单是空的 —— 这一格等于不存在，' +
+      '要么把要教的按钮 id 写进 TAUGHT_BUTTON_IDS，要么把这一族整条删掉并改第 27 项的口径'] };
+  }
+  TAUGHT_BUTTON_IDS.forEach(function (id) {
+    var esc = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    var openRe = new RegExp('<([a-zA-Z][a-zA-Z0-9-]*)\\s[^>]*\\bid="' + esc + '"', 'i');
+    var om = openRe.exec(txt);
+    if (!om) {
+      errors.push(POPUP_HTML + ' 里找不到 id="' + id + '" 那枚按钮 —— 白名单过期了，' +
+        '按钮那一格从来没在核任何东西，改名字要同时改这里');
+      return;
+    }
+    var text = inlineTextOf(innerHtmlOfId(txt, id, om[1]));
+    if (!text) {
+      errors.push(POPUP_HTML + ' 的按钮「' + id + '」身上读不出任何字（空串）—— ' +
+        '说明书无从教起，这一格不许当"核过了"');
+      return;
+    }
+    items.push({ key: id, text: text });
+  });
+  return { items: items, errors: errors };
+}
+
+/* ---------------------------------------------------------------- 说明书可见正文 */
 // 行内标签：删掉不产生边界（`正常<b>运行</b>` 页面上就是"正常运行"）。
 // 其余标签（含 div / p / td / li / 块级 svg …）一律当一个边界，避免把两块互不相干的
 // 文字拼成一个字样 —— 那种"自己拼出来的命中"会让这条闸只会绿。
@@ -322,7 +505,11 @@ function fixtureLabels() {
     { from: POPUP_JS + ' 顶部状态（开启）', text: '已开启' },
     { from: POPUP_JS + ' 顶部状态（未开启）', text: '未开启' },
     { from: CONTENT_JS + ' jobKindLabel 种类 video', text: '视频播放', kindKey: 'video' },
-    { from: CONTENT_JS + ' jobKindLabel 种类 quiz', text: '测验答题', kindKey: 'quiz' }
+    { from: CONTENT_JS + ' jobKindLabel 种类 quiz', text: '测验答题', kindKey: 'quiz' },
+    { from: POPUP_HTML + ' 开关 restudy', text: '已完成任务重学', switchKey: 'restudy' },
+    { from: POPUP_HTML + ' 开关 autoNext', text: '自动下一节', switchKey: 'autoNext' },
+    { from: POPUP_HTML + ' 开关 modeSwitch', text: '精简', switchKey: 'modeSwitch' },
+    { from: POPUP_HTML + ' 开关 modeSwitch', text: '精美', switchKey: 'modeSwitch' }
   ];
 }
 
@@ -334,7 +521,9 @@ function buildCleanManual() {
   return '<!DOCTYPE html>\n<html>\n<head><title>说明书</title></head>\n<body>\n' +
     '<h1>状态面板</h1>\n<p>徽标只会说这几个词：正常运行 / 等待中。</p>\n' +
     '<p>弹窗顶部那一格是「已开启」或「未开启」。</p>\n' +
-    '<p>面板第二行会说：执行任务：视频播放、执行任务：测验答题。</p>\n</body>\n</html>\n';
+    '<p>面板第二行会说：执行任务：视频播放、执行任务：测验答题。</p>\n' +
+    '<p>弹窗里的开关：已完成任务重学、自动下一节。</p>\n' +
+    '<p>顶部那枚分段开关只会说两个字：精简、精美。</p>\n</body>\n</html>\n';
 }
 
 function replaceOnce(txt, from, to) {
@@ -344,7 +533,7 @@ function replaceOnce(txt, from, to) {
 }
 
 /**
- * 十一格阴性对照。⚠️ `check.js` 第 27 项另存一份按 pin 索引的期望逐格复算 ——
+ * 十七格阴性对照。⚠️ `check.js` 第 27 项另存一份按 pin 索引的期望逐格复算 ——
  * 照抄这里的 want，把 want 改成实际值就能让这条闸永远绿（同第 24 / 25 / 26 项的规矩）。
  * 夹具词表是**自己拼的**，不取真代码读出来的值：真代码加一个徽标词时这些格子不该跟着变。
  */
@@ -392,6 +581,36 @@ function selfTestCases() {
       kinds: fixtureKinds().concat(['vote']) },
       txt: clean, want: 1, needle: '没有中文取值',
       note: '仲裁真源多出一种键而 jobKindLabel 没配中文 → 面板会打英文原词，要报（vote 漏过三周）' },
+    { pin: '开关名漏教一枚', labelInfo: ok,
+      txt: replaceOnce(clean, '弹窗里的开关：已完成任务重学、自动下一节。', '弹窗里的开关：自动下一节。'),
+      want: 1, needle: '已完成任务重学',
+      note: '弹窗里有这枚开关而说明书一个字没教 → 恰好 1 条并点名它（restudy 实测就漂成这样）' },
+    { pin: '开关配对只读出几枚', labelInfo: { labels: labs, readErrors:
+      [POPUP_HTML + ' 只读出 3 个开关界面上的字（要求至少 ' + SWITCH_FLOOR + ' 个）'],
+      kinds: fixtureKinds() },
+      txt: clean, want: 1, needle: '取值真源读不出来',
+      note: '配对口径失效、只读出少数几个 → 要响，不许静默缩成"核了这几个"' },
+    { pin: '分段开关只教了一半', labelInfo: ok,
+      txt: replaceOnce(clean, '顶部那枚分段开关只会说两个字：精简、精美。',
+        '顶部那枚分段开关只会说两个字：精美。'),
+      want: 1, needle: '精简',
+      note: '一枚开关身上两个字、没有 label 的那一族只教一个 → 要报（modeSwitch 实测就是这个形状）' },
+    { pin: '按钮名漏教一枚',
+      labelInfo: { labels: labs.concat([{ from: POPUP_HTML + ' 按钮 someBtn', text: '拿一份型号清单', buttonKey: 'someBtn' }]),
+        readErrors: [], kinds: fixtureKinds() },
+      txt: clean, want: 1, needle: '拿一份型号清单',
+      note: '白名单里那枚按钮说明书一个字没教 → 恰好 1 条并点名它（#211 立的这一族，listModels 就是这么漏的）' },
+    { pin: '按钮字样只活在 script 里',
+      labelInfo: { labels: labs.concat([{ from: POPUP_HTML + ' 按钮 someBtn', text: '拿一份型号清单', buttonKey: 'someBtn' }]),
+        readErrors: [], kinds: fixtureKinds() },
+      txt: replaceOnce(clean, '</body>', '<script>var t = "拿一份型号清单";</script>\n</body>'),
+      want: 1, needle: '拿一份型号清单',
+      note: '唯一一次出现在 <script> 里 = 用户看不见 → 要报（与「script 里的字样不算教给用户」同族，但走的是按钮那一族）' },
+    { pin: '白名单里的按钮读不出', labelInfo: { labels: labs, readErrors:
+      [POPUP_HTML + ' 里找不到 id="listModels" 那枚按钮 —— 白名单过期了'],
+      kinds: fixtureKinds() },
+      txt: clean, want: 1, needle: '取值真源读不出来',
+      note: '按钮改了名/删了而白名单还留着 → 那一格从来没在核东西，必须响，不许静默当"没有按钮要核"' },
     { pin: '真说明书对真代码', labelInfo: readUiLabels(root),
       txt: fs.readFileSync(path.join(root, MANUAL), 'utf8'), want: 0, needle: '',
       note: '真取值 + 真说明书 → 0 条（现场这一格）' }
@@ -455,7 +674,9 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
-  readUiLabels: readUiLabels, readJobKinds: readJobKinds,
+  readUiLabels: readUiLabels, readJobKinds: readJobKinds, readPopupSwitches: readPopupSwitches,
+  readPopupButtons: readPopupButtons, TAUGHT_BUTTON_IDS: TAUGHT_BUTTON_IDS,
   visibleText: visibleText, audit: audit,
-  selfTestCases: selfTestCases, selfTest: selfTest
+  selfTestCases: selfTestCases, selfTest: selfTest,
+  SWITCH_FLOOR: SWITCH_FLOOR
 };

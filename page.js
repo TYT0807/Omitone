@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '0b01542ec8';
+var OMITONE_CODE_REV = '1c96527e1d';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -42,6 +42,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
    */
   var PERMANENT_LLM_ERROR_SKIP_MS = 60000;
 
+  // 同一媒体元素恢复失败三次后隔离，不再把同一个坏元素反复派回来。
+  var MEDIA_RELOAD_LIMIT = 3;
+
+  var TASK_GIVEUP_TTL_MS = 24 * 3600 * 1000;
+
   /**
    * 投票任务点（insertvote）的五个数。
    *
@@ -49,8 +54,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
    * 提交后任务盒翻 `ans-job-finished` 是异步的，也要等。两个等待都有界 ——
    * 新增 await 必须可超时是硬规矩（AGENTS §2.2）。
    *
-   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次，
-   * 但**绝不能永久跳过** —— 冷却到期照旧重试，并把次数留在日志里。
+   * 次数与冷却管的是另一件事：投不出去时不能每 5 秒再交一次。
+   * 失败形状（`overlay` / `no-check` 那些）冷却到期照旧重试，不写放弃；
+   * **但"平台自己说这场已结束"那一类不在此列** —— 它数满 `VOTE_MAX_TRIES` 发之后
+   * 交给已有的持久放弃账（24 小时、扛刷新、两个恢复出口），因为这一族**点一万次封面也不会长出选项**，
+   * 而内存里那本账活不过一次刷新，不落盘就永远走不完一轮预算（`62-tasks-run.js` 的 ended 分支）。
    *
    * `VOTE_ENDED_COOLDOWN_MS` 单独放宽到 30 分钟：认出一张**已被手动结束**的问卷之后，
    * 每 5 分钟再点一次封面除了把全屏覆盖层重新撑起来之外没有任何收益（现场 2026-11-16），
@@ -93,7 +101,6 @@ var OMITONE_CODE_REV = '0b01542ec8';
   var DISPLACED_SILENCE_MS = 5 * 60 * 1000;
 
   var DEFAULT_CONFIG = {
-    playbackRate: 1.0,
     autoMaxPlaybackRate: true,
     playbackRateCap: 4,
     muted: false,
@@ -212,6 +219,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
     taskPendingGraceMs: 7000,
     quizSubmitWaitMs: 25000,
     quizMaxSubmitAttempts: 20,
+    // 交卷连续三次无进展时是否放手（写 24 小时放弃名单并翻下一节）。
+    // 默认开 = 上线版的兜底；本地调试在 chrome.storage 里置 false，改成死磕并保留每轮诊断。
+    quizRejectGiveUp: true,
     // 一题都填不上时，是否**自动跳过这一卷**（内部调参，不上弹窗）。
     //
     // ⚠️ 默认**关**。原因（2026-11-10 事故）：有卷子的题一题都落不到页面上，
@@ -549,6 +559,24 @@ var OMITONE_CODE_REV = '0b01542ec8';
     //   两侧错开时表现不是「没暂停」而是「这一节永久停摆」（日志却写着已暂停）。
     _quizForceSkipPaperKey: '',
 
+    // 交卷的旁路观测账与「连续几次连结果页都等不到」的计数。
+    //   _quizSubmitNet        本次提交期间观察到的请求：计数、状态码、回包里的判分词（**不记 URL 与报文原文**）
+    //   _quizSubmitStallKey   这些超时是记在哪一份卷子上的（键换了就重新起算）
+    // 没有这一组时，平台静默拒收会让 `_shouldHoldQuizBeforeNext` 的
+    // “还有可交互的提交表单”那一支**永远按住**整节（现场实测正是这样）。
+    _quizSubmitNet: null,
+    _quizSubmitStallKey: '',
+    _quizSubmitStallCount: 0,
+    _quizSubmitStallAt: 0,
+
+    // 交卷旁路观测器的安装状态（`_installSubmitSniffer` 里写）：
+    //   _submitSnifferInstalled  这一份顶层页里是否已经包过 XHR/fetch（只许装一次）
+    //   _submitSnifferFetch      这份页里成功包住了 window.fetch（XHR 那一半恒成功）
+    //   _submitSnifferCoverage   给日志读的能力格：`xhr+fetch` / `xhr` / '' = 从没装上
+    _submitSnifferInstalled: false,
+    _submitSnifferFetch: false,
+    _submitSnifferCoverage: '',
+
     // 「乱选填完了，先别交，给用户留几秒改」的窗口（判据见 75-quiz-dom.js `_maybeSubmitQuiz`，
     // 秒数来自配置 `randomAnswerReviewSec`；用户 2026-11-12：交完就不能改了，这太诡异）。
     //   _quizReviewPaperKey   窗口是为**哪一份卷子**arm 的（键变了 = 换卷子，旧窗口作废）
@@ -655,6 +683,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
     _rateProbing: false,
 
+    _rateUnknownVideo: null,
+
+    _rateUnknownTries: 0,
+
     _bgWorker: null,
 
     _bgWorkerUrl: null,
@@ -671,6 +703,13 @@ var OMITONE_CODE_REV = '0b01542ec8';
     // 与 `_mediaRepaired` 一样**不随换节清理**：那是"这个源试过没有"的事实，
     // 清了就会在同一节里反复重载。
     _mediaReloadKeys: null,
+
+    // 媒体元素 → 所属任务点；恢复预算耗尽的元素由弱账隔离，不随换节清掉。
+    _mediaQuarantine: null,
+
+    // 开头卡住时「自己去点站点播放键」按源记账（批次 178，键同 `_getMediaSeekKey`）。
+    // 同样**不随换节清理**：那是"这一源点过几回"的事实，清了会在同一节里反复点。
+    _startNudgeKeys: null,
 
     _pauseResumePending: false,
 
@@ -760,6 +799,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _quizApiFailUntil: 0,
 
     _quizApiLastError: '',
+
+    // 「失败的是哪家哪个模型」由扩展侧算好随回包带过来（页面配置投影里没有渠道字段）。
+    // ⚠️ 它是**取证**不是**记账**：换节/复位都不抹它，否则 45 秒退避一过就没证据了。
+    _quizApiLastWho: '',
 
     _stepNavigationBound: false,
 
@@ -881,10 +924,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
         return;
       }
       // 「已开启」持久化到 chrome.storage（经 content 桥接）。run() 是所有启动入口的汇合点
-      //（页面中间面板【开始】/ 弹窗【开始】/ 刷新后自动续跑都会走到这里），在这里落一次标记，
+      //（弹窗【开始运行】/ 验证码页授权 / 刷新后自动续跑都会走到这里），在这里落一次标记，
       // 才能保证页面跳转、以及讨论任务 window.open 新开的标签页里，content.js 的
       // maybeMarkAutoResume 读到 xxtRunning → shouldAutoStart() 为真 → 自动续跑。
-      // 否则从页面面板点【开始】时 xxtRunning 恒为 false，新开的讨论窗口 shouldAutoStart() 为假、
+      // 否则点【开始运行】时 xxtRunning 恒为 false，新开的讨论窗口 shouldAutoStart() 为假、
       // 命中「是讨论页且没开启 → 静默 return」→ 插件在新窗口里一动不动（用户报的「讨论新窗口失灵」）。
       // storage_set 桥接不回消息，直接投递、不 await，避免 bridgeSend 的 promise 空挂到超时。
       try { window.postMessage({ source: 'xxt_app', type: 'storage_set', payload: { xxtRunning: true } }, '*'); } catch (ePersist) {}
@@ -954,6 +997,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._quizSubmitStartedAt = 0;
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = 0;
+      this._quizSubmitNet = null;
+      // ⚠️ 「交卷几次没进展」（`_quizSubmitStallKey/Count/At`）**不在这里清**（#232 现场）：
+      // `study next unit` 每轮都会调本函数，清了就等于每数一次立刻抹账 ——
+      // 现场读回的是 `stalls:1` 轮轮不变，三次上限结构上永远攒不满（AGENTS §2 #13 同一族）。
+      // 它的清零只有两处：`_noteQuizSubmitStall` 换卷子键时、放手出口里。
       this._quizHoldLogAt = 0;
       this._quizHoldReasonLogAt = 0;
       this._quizCurrentAnsweredKeys = {};
@@ -1923,11 +1971,30 @@ var OMITONE_CODE_REV = '0b01542ec8';
         var ctrls = doc.querySelectorAll('input[type="radio"], input[type="checkbox"], input[type="text"], textarea');
         out.controls = ctrls.length;
         var enabled = 0;
-        for (var i = 0; i < ctrls.length; i++) { if (!ctrls[i].disabled) enabled++; }
+        // 全页计数会混进题目区之外的输入框（搜索/备注那类），单看它判不出“题还能不能做”。
+        // 这里再按题目容器分一次账：`_isQuizResultPageFinished` 读的是全页那一格，保留不动。
+        var inQuiz = 0;
+        var inQuizEnabled = 0;
+        var containerSel = this._quizContainerSelector;
+        for (var i = 0; i < ctrls.length; i++) {
+          if (!ctrls[i].disabled) enabled++;
+          var inContainer = false;
+          try {
+            inContainer = !!(ctrls[i].closest && ctrls[i].closest(containerSel));
+          } catch (eC) {}
+          if (inContainer) {
+            inQuiz++;
+            if (!ctrls[i].disabled) inQuizEnabled++;
+          }
+        }
         out.controlsEnabled = enabled;
-        // 正文里跟判分有关的词，便于对照
+        out.controlsInQuiz = inQuiz;
+        out.controlsInQuizEnabled = inQuizEnabled;
+        // 正文里跟判分有关的词，便于对照。
+        // ⚠️ 这一格原先叫 `keywords` —— 日志读取层按 `key` 掩码（API Key 那一族），
+        //    现场读回永远是 `***`，看着像“正文一个判分词都没有”。名字不改正则、只改字段。
         var kw = text.match(/我的答案|正确答案|本题得分|答案解析|任务点已完成|已通过|请重做|未通过|不及格/g);
-        out.keywords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
+        out.gradeWords = kw ? Array.from(new Set(kw)).slice(0, 8) : [];
       } catch (e) { out.err = String(e.message || e).slice(0, 60); }
       return out;
     },
@@ -2209,12 +2276,79 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
+    _isMediaQuarantined: function (media) {
+      if (!media || !this._mediaQuarantine) return false;
+      var entry = this._mediaQuarantine.get(media);
+      if (!entry || !entry.quarantined) return false;
+      if (Date.now() - Number(entry.quarantined || 0) < TASK_GIVEUP_TTL_MS) return true;
+      this._mediaQuarantine.delete(media);
+      var reloadKey = this._getMediaSeekKey(media);
+      if (reloadKey && this._mediaReloadKeys) delete this._mediaReloadKeys[reloadKey];
+      return false;
+    },
+
+
+    _quarantineDeadMedia: function (media, detail) {
+      if (!media) return false;
+      if (!this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      var info = detail || {};
+      var previous = this._mediaQuarantine.get(media) || {};
+      var already = !!previous.quarantined;
+      if (!already && Number(info.reloadTimes || 0) < MEDIA_RELOAD_LIMIT) return false;
+
+      var job = info.job || previous.job || null;
+      this._mediaQuarantine.set(media, {
+        job: job,
+        quarantined: previous.quarantined || Date.now(),
+        at: Number(info.at) || previous.at || Date.now(),
+        code: Number(info.code || previous.code || 0),
+        message: String(info.message || previous.message || '').slice(0, 140),
+        currentTime: Number(info.currentTime || previous.currentTime || 0),
+        duration: Number(info.duration || previous.duration || 0)
+      });
+      if (!already) {
+        try { media.pause(); } catch (ePause) {}
+        this._clearMediaPendingState('media-recovery-exhausted');
+      }
+
+      var key = this._taskPointKey(job);
+      var giveUp = 'no-key';
+      if (key && !this._isTaskGivenUp(key)) {
+        this._markTaskGivenUp(key, {
+          name: job && job.name,
+          reason: 'media-recovery-exhausted',
+          attempts: Number(info.reloadTimes || 0)
+        });
+      }
+      if (key) giveUp = this._isTaskGivenUp(key) ? 'written' : 'failed';
+
+      if (!already) {
+        emitRuntimeLog('warn', 'media recovery exhausted, element quarantined', {
+          code: Number(info.code || 0),
+          message: String(info.message || '').slice(0, 140),
+          reason: String(info.reason || ''),
+          currentTime: Number(info.currentTime || 0),
+          duration: Number(info.duration || 0),
+          heldMs: Number(info.heldMs || 0),
+          reloadTimes: Number(info.reloadTimes || 0),
+          name: String((job && job.name) || '').slice(0, 60),
+          giveUp: giveUp
+        });
+      }
+      return true;
+    },
+
+
     _isActiveMediaPending: function (reason) {
       // 有些播放器在切换清晰度/广告后会悄悄重置内部状态，把 _isPlaying 清掉，
       // 于是 tick 以为「没有任务」→ 每 5 秒搜一次 → `study no runnable job` 刷屏
       // （2026-10-26 日志：一个视频播放的 6 分钟里刷了 70 多条）。
       // 只要手里那个 video 元素还在播，就应当按「任务进行中」处理。
       var liveVideo = this._videoEl;
+      if (this._isMediaQuarantined(liveVideo)) {
+        this._clearMediaPendingState('media-quarantined');
+        return false;
+      }
       var stillPlaying = !!(liveVideo && liveVideo.isConnected && !liveVideo.paused && !liveVideo.ended);
       if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       // ⚠️ **先解析元素，再问「这一节是不是该放行」**（批次 51）。
@@ -2230,6 +2364,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
       //    **批次 50 那 120 秒的有界放手在这一格里一秒都攒不起来**，正是要它放手的形状。
       //    方向是**只放得更少**：元素还在播就不许因为"框都显示完成"而放行这一节。
       var media = liveVideo || this._getVideoEl();
+      if (this._isMediaQuarantined(media)) {
+        this._clearMediaPendingState('media-quarantined');
+        return false;
+      }
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending', media)) {
         // ⚠️ 批次 55-C：**只有真的武装过一笔媒体任务才走整份复位**。
         //   放行判据如今在"自报全假、元素还在播"那一格也会说放行（那是它对现场的正确回答：
@@ -2303,11 +2441,19 @@ var OMITONE_CODE_REV = '0b01542ec8';
         // 任务 #157：放手这一刻顺手问一句「页面里有没有别的扩展注入的资源」——
         // 证据跟着放手日志走（foreign / foreignIds），found 时另出一句用户向提醒。
         var noSrcForeign = this._scanForeignExtensionArtifacts(media);
+        // 取证 §三.2：这一格放手说的是「没有源」，而站点常常**早就把真因写在正文里**（「外部视频…不支持播放」），
+        // 用户照着「没有源」往网络/播放器方向查是错的。这里**不改时间、不改出口**（120 秒那一格照旧是兜底），
+        // 只把站点那句原话捎进同一条日志当证据 —— 有 `<video>` 节点时**不许**由它提前收手：
+        // 页面上残留的这句话可能属于同一文档里**另一支**媒体，提前放手等于替用户扔掉一个播得动的任务点。
+        var noSrcDoc = null;
+        try { noSrcDoc = media.ownerDocument; } catch (eNoSrcDoc) { noSrcDoc = null; }
+        var noSrcSite = this._siteSaysUnplayable(noSrcDoc);
         this._mediaNoSourceSince = 0;
         emitRuntimeLog('warn', 'media has no source, release pending', {
           reason: reason || '', readyState: Number(media.readyState),
           networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc,
-          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(','))
+          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(',')),
+          siteText: noSrcSite.state, siteQuote: noSrcSite.quote
         });
         this._noteForeignExtensionHint(noSrcForeign);
         this._clearMediaPendingState('media-no-source');
@@ -2322,8 +2468,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
       // 放手窗口沿用 `documentSkipTimeoutMs`（**不加新配置键**：加一个键要动三份默认值 +
       // 界面绑定 + 策略区间，那些都由自检第 12 项守着，能复用就别新开面）。
       // ⚠️ 放手**不等于标记完成** —— `_clearMediaPendingState` 只清状态、不上报完成，
-      //    真正的"这一节做完没"仍由平台的 `#isFinished` 说话；反复重派由外层的
-      //    `_countTaskIncomplete`（进度快照 `media:<秒>` 恒等 → 4 次就放弃 24 小时）收住。
+      //    真正的"这一节做完没"仍由平台的 `#isFinished` 说话。三次恢复耗尽时按精确元素
+      //    隔离并直接写入 24 小时放弃名单；外层四次计数在 pending 为真时结构上到不了。
       //    静默跳过用户的任务点是这个项目不许的事（AGENTS §2.7），所以这里必须留 warn，
       //    并把 code / message / 位置 / 是否重载过一起写进日志。
       var brokenCode = this._mediaErrorCode(media);
@@ -2337,6 +2483,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
         try { brokenMsg = String((media.error && media.error.message) || '').slice(0, 140); } catch (eErr) {}
         var brokenKey = this._getMediaSeekKey(media);
         var deadForeign = this._scanForeignExtensionArtifacts(media);
+        var brokenReload = brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey];
+        var brokenReloadTimes = Number(brokenReload && brokenReload.n) || 0;
+        var brokenJobEntry = this._mediaQuarantine && this._mediaQuarantine.get(media);
         this._mediaBrokenSince = 0;
         emitRuntimeLog('warn', 'media pipeline dead, release pending', {
           code: brokenCode,
@@ -2345,13 +2494,25 @@ var OMITONE_CODE_REV = '0b01542ec8';
           currentTime: Number(media.currentTime || 0),
           duration: Number(media.duration || 0),
           heldMs: brokenHeldMs,
-          reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey]),
-          reloadTimes: Number(brokenKey && this._mediaReloadKeys &&
-            this._mediaReloadKeys[brokenKey] && this._mediaReloadKeys[brokenKey].n) || 0,
+          reloaded: !!brokenReload,
+          reloadTimes: brokenReloadTimes,
           foreign: deadForeign.state, foreignIds: String((deadForeign.ids || []).join(','))
         });
         this._noteForeignExtensionHint(deadForeign);
-        this._clearMediaPendingState('media-pipeline-dead');
+        if (brokenReloadTimes >= MEDIA_RELOAD_LIMIT) {
+          this._quarantineDeadMedia(media, {
+            job: brokenJobEntry && brokenJobEntry.job,
+            code: brokenCode,
+            message: brokenMsg,
+            reason: reason || '',
+            currentTime: Number(media.currentTime || 0),
+            duration: Number(media.duration || 0),
+            heldMs: brokenHeldMs,
+            reloadTimes: brokenReloadTimes
+          });
+        } else {
+          this._clearMediaPendingState('media-pipeline-dead');
+        }
         return false;
       }
 
@@ -2406,8 +2567,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
     // ⚠️ 诚实口径三格分开：found / none / unreadable。「none」只说明**没有 DOM 痕迹**——
     //    content script 可以不落任何元素就改 playbackRate / 暂停视频，所以 none 那一格
     //    绝不许写成「已排除其他插件」；认不出自家 id 就交 unreadable，绝不猜（AGENTS §2 #18 同族）。
-    // ⚠️ 60 秒缓存：give-up 路径（_countTaskIncomplete）在卡住期间**每一拍**都会问，
-    //    不许每拍全页扫。导航后由 _resetRuntimeState 清掉，旧页结论不带进新页。
+    // ⚠️ 60 秒缓存：失败媒体巡检每一拍都会问，不许每拍全页扫。
+    //    导航后由 _resetRuntimeState 清掉，旧页结论不带进新页。
     _scanForeignExtensionArtifacts: function (media) {
       var now = Date.now();
       var cached = this._foreignExtScan;
@@ -2473,9 +2634,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
       var i;
       for (i = 0; i < list.length; i++) {
         var m = list[i];
+        if (this._isMediaQuarantined(m)) continue;
         if (visible(m) || (m.getClientRects && m.getClientRects().length > 0)) return m;
       }
       for (i = 0; i < list.length; i++) {
+        if (this._isMediaQuarantined(list[i])) continue;
         if (String(list[i].tagName || '').toLowerCase() === 'audio') return list[i];
       }
       return null;
@@ -2483,7 +2646,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
 
     _isVisibleMedia: function (media) {
-      return !!media && (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
+      return !!media && !this._isMediaQuarantined(media) &&
+        (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
     },
 
 
@@ -2507,7 +2671,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
-    _waitForMediaInDocument: function (doc, timeoutMs) {
+    // `onTick`（批次 174 加的第三枚参数）让调用方在**每一轮拿不到元素之后**顺手问一句页面自己说了什么：
+    // 问出结论就立刻交回 null（不花满整个窗口）。它抛了不算结论 —— 只当这一轮没问到，照旧继续等，
+    // 否则一个取证助手能把"等元素"这条主路弄死（§2 #2「挂起比报错贵」的反面：不许因问话而中断正事）。
+    _waitForMediaInDocument: function (doc, timeoutMs, onTick) {
       var self = this;
       return new Promise(function (resolve) {
         var deadline = Date.now() + (timeoutMs || 8000);
@@ -2518,6 +2685,15 @@ var OMITONE_CODE_REV = '0b01542ec8';
             resolve(media);
             return;
           }
+          if (onTick) {
+            var stop = false;
+            try { stop = !!onTick(); } catch (eTick) { stop = false; }
+            if (stop) {
+              clearInterval(timer);
+              resolve(null);
+              return;
+            }
+          }
           if (Date.now() >= deadline) {
             clearInterval(timer);
             resolve(null);
@@ -2527,11 +2703,29 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
+    // 站点把媒体地址按**播放会话**现签（`?at_=<签发毫秒>&ak_=&ad_=`），重签名、换清晰度都会换写法，
+    // 而这把钥匙喂的是「这一支试过没有」那几本账 —— 键一换写法 = 每支的一次性预算翻倍花，
+    // 量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。稳定身份只有路径那一段。
+    _mediaStablePath: function (url) {
+      var raw = String(url == null ? '' : url);
+      if (!raw) return '';
+      var abs = raw;
+      try {
+        if (typeof location !== 'undefined' && location.href) abs = new URL(raw, location.href).href;
+      } catch (e) { abs = raw; }
+      var cut = abs.search(/[?#]/);
+      return cut >= 0 ? abs.slice(0, cut) : abs;
+    },
+
+
     _getMediaSeekKey: function (media) {
       if (!media) return '';
       var src = '';
       try { src = media.currentSrc || media.src || ''; } catch (e) {}
-      if (src) return src;
+      // 拿不到稳定段时 `_mediaStablePath` 交回原串而不是空串 —— 空串在所有出口都是「没有钥匙」，
+      // 那会把「归一失败」实现成「这一支永远不动手」（§2 #12）。
+      var stable = src ? this._mediaStablePath(src) : '';
+      if (stable) return stable;
       if (this._activeJobId) return 'job:' + this._activeJobId;
       return '';
     },
@@ -2566,13 +2760,422 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
+    // ==== 站点自己写的「完成条件」标语（会话任务 #193）================================
+    // 现场实测形状（2026-11-20，只读探针）：`<video>` 在 `ananas/modules/video/index.html`
+    // （顶层下第 2 层），而那一行标语写在**它上一层**的 `mooc-ans/knowledge/cards?…knowledgeid=<这一节>`
+    // 文档里，每一张视频任务卡一枚：
+    //   `span.task-condition-text` ← 「观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、…)」
+    //   往上第 4 层是这张卡的分界容器 `div.ans-attach-ct.videoContainer`（同层放着承载播放器的那枚 iframe）
+    // 那句话不是写死的文案：站点自己的 `ueditor/ueditor.parse.js` 按**这一支视频的字段**现拼 ——
+    // `data.fastforward` 为真才追加「不可拖拽、」，`data.rt` 会替换那个 90，`data.switchwindow` 追加「不可离开…」。
+    // ⚠️ 所以只许朝"少动手"的方向用它：**站点说了才算证据，它没说 ≠ 允许拖**（英文界面、老版本、
+    //    卡片晚半拍才渲染出来，都会长成"没说"）—— 于是五格分开占位，任何一格都不许塌进别的格（AGENTS §2 #12）。
+    // ⚠️ 「不可倍速」那一格不许看标语：现场这支视频被站点锁在 1x，标语里却没有那三个字
+    //    （`doublespeed` 字段和播放器实际限速不是一回事）—— 倍速仍然只认 `_detectedMaxRate`。
+    _siteConditionNoDrag: function (text) {
+      return String(text || '').replace(/\s+/g, ' ').indexOf('不可拖拽') >= 0;
+    },
+
+
+    // 从这一支媒体所在的文档往上爬（最多 4 层），取**属于它那张卡**的标语。
+    // 每一层的 `querySelectorAll` 与 `frameElement` / `ownerDocument` 全部包在 try 里：
+    // 跨域那一下裸读抛的 SecurityError 会把整轮 tick 打断（AGENTS §2 #1，本项目最难查的一类 bug）。
+    // 返回 `{ state: forbidden | silent | ambiguous | absent | unreadable, text, marks, hop }`
+    _readSiteSeekCondition: function (video) {
+      var res = { state: 'unreadable', text: '', marks: 0, hop: -1 };
+      var doc = null, node = video;
+      try { doc = video && video.ownerDocument; } catch (eDoc) { return res; }
+      if (!doc) { res.state = 'absent'; res.marks = -1; return res; } // 没有文档上下文：测试台里的假媒体 / 元素已被摘出
+      for (var hop = 0; hop <= 4 && doc; hop++) {
+        res.hop = hop;
+        var marks = null;
+        try { marks = doc.querySelectorAll('.task-condition-text'); } catch (eQ) { return res; } // 这一层读不下去 = 读不出，不猜
+        if (marks && marks.length) {
+          res.marks = marks.length;
+          var texts = [];
+          for (var i = 0; i < marks.length; i++) {
+            var el = marks[i], card = null, owns = false;
+            try { card = el.closest ? el.closest('.ans-attach-ct, .videoContainer') : null; } catch (eC) { card = null; }
+            try { owns = !!card && !!node && !!card.contains(node); } catch (eO) { owns = false; }
+            if (!card && marks.length === 1) owns = true; // 只有一枚标语时不要求那层容器（老形状）
+            if (!owns) continue;
+            var t = '';
+            try { t = String(el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (eT) { t = ''; }
+            if (t) texts.push(t);
+          }
+          if (!texts.length) { res.state = marks.length === 1 ? 'unreadable' : 'ambiguous'; return res; }
+          res.text = texts[0].slice(0, 180);
+          var same = true;
+          for (var j = 1; j < texts.length; j++) {
+            if (this._siteConditionNoDrag(texts[j]) !== this._siteConditionNoDrag(texts[0])) { same = false; break; }
+          }
+          if (!same) { res.state = 'ambiguous'; return res; } // 同屏几枚标语意见不一致，认不出归这一支的是哪一张卡
+          res.state = this._siteConditionNoDrag(texts[0]) ? 'forbidden' : 'silent';
+          return res;
+        }
+        // 这一层没有标语 —— 往上跳一层。`frameElement` 在顶层是 null、跨域会抛，两种都算"到顶了"
+        var frame = null;
+        try { frame = doc.defaultView ? doc.defaultView.frameElement : null; } catch (eF) { frame = null; }
+        if (!frame) { res.state = 'absent'; return res; }
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eU) { return res; }
+        if (!up || up === doc) { res.state = 'absent'; return res; }
+        doc = up;
+        node = frame; // 上一层里要拿去对卡片的那枚元素变成这枚 iframe（`contains` 不跨文档，别拿 video 比）
+      }
+      res.state = 'absent';
+      return res;
+    },
+
+
+    // 每支媒体只问一次：这一族每 1500 毫秒就来一拍，爬文档不该变成热路径。
+    // `forbidden` 长期有效（此后每一拍都靠它免掉那一发拖动）；其余四格 30 秒后重问 ——
+    // 标语是站点 JS 现拼的，卡片晚半拍才长出来是常态，一次读不出不许永久当成"这一支没有标语"。
+    _siteSeekCondition: function (video) {
+      var key = '';
+      try { key = this._getMediaSeekKey(video) || ''; } catch (e) { key = ''; }
+      if (!this._seekSiteKeys) this._seekSiteKeys = Object.create(null);
+      var now = Date.now();
+      var hit = key ? this._seekSiteKeys[key] : null;
+      if (hit && (hit.state === 'forbidden' || now - (hit.at || 0) < 30000)) return hit;
+      var res = this._readSiteSeekCondition(video);
+      res.at = now;
+      if (key) {
+        if (Object.keys(this._seekSiteKeys).length > 300) this._seekSiteKeys = Object.create(null);
+        this._seekSiteKeys[key] = res;
+        if (res.state === 'forbidden' && !(hit && hit.state === 'forbidden')) {
+          // 被挡下一定要出日志（AGENTS §2 #14），而且点名是谁判的：站点自己那句话，不是我们猜的
+          emitRuntimeLog('info', 'site condition says not draggable, skip seek to end', {
+            condition: res.text, marks: res.marks, hop: res.hop,
+            reason: '', jobid: this._activeJobId || ''
+          });
+          // 站点在这一枚上自己说了「不可拖拽」⇒ 同一门课后面那些枚没必要各爬一次文档、各挨一次试拖。
+          // ⚠️ 这一发只在「这一枚第一次被判 forbidden」时走，不在每一拍上（§2 #17 不许变热路径）。
+          this._noteCourseGuard('seek', 'banner');
+        }
+      }
+      return res;
+    },
+
+
+    // 只有 `forbidden` 这一格算证据；`silent` / `ambiguous` / `absent` / `unreadable` 一律"没证据"，
+    // 照旧走今天那"试拖一次"的路 —— 标语只许**减少**动手，不许由它多出一次动手。
+    _siteSaysNoDrag: function (video) {
+      try { return this._siteSeekCondition(video).state === 'forbidden'; } catch (e) { return false; }
+    },
+
+
+    // ==== 站点自己写的「这一支放不出来」（批次 174 / 会话任务 #24 · issue #225）====================
+    // 现场取证见 `notes/field-225-unplayable.md`：站点遇到**外部视频**时会把播放器整块换成一句正文 ——
+    //   「非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。」
+    // 这一族页面里**压根没有 `<video>` 节点**（取证里那格叫"形状 1"）。改动前的行为：等满 8 秒 →
+    // 只落一句 `console.warn` → **日志环一个字都没有**，于是用户在现场看见的就是「扩展在跑、
+    // 就是不做这一节、且不说为什么」（AGENTS §2 #14「不许停在决定不做」那一族）。
+    // ⚠️ 匹配串只取站点那两句的**稳定前缀**（整句照抄会随措辞失效），认不到一律交空串，**绝不猜**（§2 #18）。
+    // ⚠️ 这一族**只许减少等待**：命中就提前走一格有名字的出口，永远不许由它标记完成（`#isFinished` 仍由平台说话），
+    //    也不许顶掉 120 秒有界放手那一格（它是这一格读不出时的兜底，反向验证要各摘一刀）。
+    // ⚠️ 词表里没有「chrome」：站点那句话的浏览器名会随版本变（chrome / Edge / 内核），
+    //    而「外部视频」＋「不支持播放」这两个词是那件事的**本体**。
+    _SITE_UNPLAYABLE_GROUPS: [
+      ['外部视频', '不支持播放'],
+      ['浏览器版本不支持', '播放']
+    ],
+
+
+    // 命中返回**是哪一个词组**（站点换措辞时能看出走的是哪一条），认不到返回空串。
+    _siteUnplayableHit: function (text) {
+      var s = '';
+      try { s = String(text || '').replace(/\s+/g, ' '); } catch (eNorm) { return ''; }
+      if (!s) return '';
+      var groups = this._SITE_UNPLAYABLE_GROUPS || [];
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (!g || !g.length) continue;
+        var ok = true;
+        for (var j = 0; j < g.length; j++) {
+          if (s.indexOf(g[j]) < 0) { ok = false; break; }
+        }
+        if (ok) return g.join('+');
+      }
+      return '';
+    },
+
+
+    // 返回 `{ state: said | silent | unreadable, quote, group, hop }`，三格各占一格（AGENTS §2 #12）：
+    //   `said`       = 读到了站点那句原话（唯一算证据的一格）
+    //   `silent`     = 整条文档链都读得下去，而里面没这句话
+    //   `unreadable` = 压根没读到正文（没有文档、取 body 抛、爬到一半抛）
+    // ⚠️ 后两格**不许互塌**：把"读不出"说成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据；
+    //    把"站点没说"说成"读不出"，则是白留一条永远查不清的日志。
+    // 走法与 `_readSiteSeekCondition` 同一族：从媒体所在文档**往上爬 ≤4 层**（`contains()` 不跨文档，
+    // 所以上一层要拿去继续的是那枚 iframe），每一步裸读全部包 try（§2 #1：跨域 SecurityError 会静默打断整轮 tick）。
+    _siteSaysUnplayable: function (doc) {
+      var res = { state: 'unreadable', quote: '', group: '', hop: -1 };
+      var sawBody = false;
+      var cur = null;
+      try { cur = doc || null; } catch (eTop) { return res; }
+      for (var hop = 0; hop <= 4 && cur; hop++) {
+        res.hop = hop;
+        var body = null;
+        try { body = cur.body || (cur.document ? cur.document.body : null); } catch (eBody) { return res; }
+        if (body) {
+          var text = '';
+          try { text = String(body.textContent || ''); } catch (eText) { return res; }
+          var group = this._siteUnplayableHit(text);
+          if (group) {
+            var first = group.split('+')[0] || '';
+            var at = first ? text.indexOf(first) : -1;
+            var from = at > 40 ? at - 40 : 0;
+            res.state = 'said';
+            res.group = group;
+            res.quote = text.slice(from, from + 180).trim();   // 截断只用于展示，命中判的是全文（§5「加工过的证据就是断言的盲区」）
+            return res;
+          }
+          sawBody = true;   // 这一层读得下去、且没有这句话
+        }
+        var frame = null;
+        try { frame = cur.defaultView ? cur.defaultView.frameElement : null; } catch (eFrame) { return res; }
+        if (!frame) break;        // 到顶了
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eUp) { return res; }
+        if (!up || up === cur) break;
+        cur = up;
+      }
+      // ⚠️ 只有**整条链都读下去了**才许说 `silent`；中途任何一下裸读抛异常都停在上面的 `return res` 上，
+      //    那一格就是 `unreadable` —— 把"读不出"塌成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据（§2 #12）。
+      res.state = sawBody ? 'silent' : 'unreadable';
+      return res;
+    },
+
+
+    // 形状 1 放手这一刻**必须说话**，而且三个出口谁都不许塌进谁（AGENTS §2 #14 + §2 #12）：
+    //   `said`       → `media unplayable by site player`，照抄站点原话（用户照着查的方向才是对的）
+    //   `silent`     → `media not ready, release pending` + `siteText:'silent'`（就是没等到元素）
+    //   `unreadable` → `media not ready, release pending` + `siteText:'unreadable'`（连正文都没读到）
+    // ⚠️ 三格**只改说的方式，不改做的边界**：一律交回 false 让本节重新派发，进度仍由平台 `#isFinished`
+    //    说话，反复重派由 `_countTaskIncomplete`（进度快照恒等 → 4 次就放弃 24 小时）收住。
+    _releaseMediaNotFound: function (jobName, site, waitedMs) {
+      var state = (site && site.state) || 'unreadable';
+      var hop = (site && site.hop >= 0) ? Number(site.hop) : -1;
+      var ms = Number(waitedMs) || 0;
+      this._activeMediaJobPending = false;
+      if (state === 'said') {
+        emitRuntimeLog('warn', 'media unplayable by site player', {
+          name: String(jobName || ''), siteText: 'said',
+          quote: String((site && site.quote) || '').slice(0, 180),
+          group: String((site && site.group) || ''), hop: hop, waitedMs: ms
+        });
+        return false;
+      }
+      emitRuntimeLog('warn', 'media not ready, release pending', {
+        name: String(jobName || ''), siteText: state === 'silent' ? 'silent' : 'unreadable',
+        hop: hop, waitedMs: ms
+      });
+      return false;
+    },
+
+
+    // ==== 课程级「少动手」那一格（批次 173 / issue #2 现场建议「试过一回就整门课别再试」）================
+    // 现场证据（同口径跨单元）：`notes/field-105-b.md` 同一门课三枚单元**全部** tried+reverted 且按住 1x；
+    // `notes/census-153-recheck.md` 同课里前一枚走「90% 提前收尾」、后一枚走「标语说不可拖」；
+    // 2026-11-22 20:0x 又量到第四枚、**换了一门课**（`notes/ledger-173-draft.md` 补一节）。
+    // 而那两本账今天只按**每支媒体**记（`_seekRevertedKeys` / `_detectedMaxRate`），
+    // 于是同一门课的每一枚都要重新挨一次「真往播放器上写」—— 用户报的正是这个动作的人机验证风险。
+    //
+    // ⚠️ 三条硬边界，后续改动一条都不许松：
+    //   1) **只许减少动手**：命中课程格 = 不试拖、不写倍速。永远不许由它多出一次动作（AGENTS §2 #17 原文在此成立）。
+    //   2) **不许当许可**：站点那句标语是按**这一支**的 `data.fastforward` 现拼的，「另一支说了」推不出
+    //      「这支也说了」；反过来「另一支没说过」更推不出「这支可以乱动」。这一格是**策略**，不是站点的新声明。
+    //   3) **不许伪造读数**：`_detectedMaxRate` 保持 `0`（「不知道」）。把 `1` 写进去等于替这支视频伪造一次测量。
+    //   认不出是哪门课（两个 id 都空）⇒ 恒不命中，**单独占一格**并出一句 warn（§2 #12）。
+    _COURSE_GUARD_NEED: 1,            // 用户原话「一回」。⚠️ 断言从源码把这两个数读回来比，不许在测试里写死
+    _COURSE_GUARD_TTL_MS: 21600000,   // 6 小时，与 'omitone:course-switch' 同族；到点允许再问一枚（见上面第 2 条）
+    _COURSE_GUARD_KEY: 'omitone:course-guard',
+
+    // 这一门课是谁 —— `courseid|clazzid`（身份取自 `_currentStudyParams`：主框架 src + location.href）。
+    // ⚠️ 整段包 try：集成层 `[22]`／`[24]` 那批假 app **没有 `location`、也没有 `_currentStudyParams`**，
+    //    少这一层兜底就是拿「测试台自己崩掉」顶掉一整段断言（§5「红 0 条的第一嫌疑人是根本没跑到」）。
+    _courseGuardId: function () {
+      try {
+        var p = this._currentStudyParams ? this._currentStudyParams() : null;
+        var cid = String((p && p.courseid) || '');
+        var zid = String((p && p.clazzid) || '');
+        if (!cid && !zid) return '';
+        return cid + '|' + zid;
+      } catch (e) { return ''; }
+    },
+
+
+    // 本页内存里挂一枚 `{ course, cell, said, warnAt }`：`course` 没变就**不重读存储** ——
+    // 这一族每 1500 毫秒就来一拍，读存储不许变成热路径（§2 #17 同一句警告）。
+    // 换课（id 变了）⇒ 整格归零：旧课的账不许带进新课（口径同 `_readBlockedReloadBudget` 那句「href 变了 = 换了一面墙」）。
+    _courseGuardCell: function (id) {
+      if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+      var mem = this._courseGuard;
+      if (mem.course !== id) { mem.course = id; mem.cell = null; mem.said = {}; mem.warnAt = 0; }
+      if (mem.cell) return mem.cell;
+      var stored = null;
+      try { stored = this._readSessionLedger(this._COURSE_GUARD_KEY); } catch (e) { stored = null; }
+      var cell = { seek: null, speed: null };
+      // 读回来要**归一**：存储是用户机上可改的字节，n 只认非负整数、srcs 只认短名单
+      var norm = function (raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        var n = Number(raw.n);
+        if (!isFinite(n) || n < 0) n = 0;
+        var at = Number(raw.at);
+        if (!isFinite(at) || at < 0) at = 0;
+        var srcs = [];
+        if (Array.isArray(raw.srcs)) {
+          for (var i = 0; i < raw.srcs.length && srcs.length < 8; i++) srcs.push(String(raw.srcs[i]).slice(0, 24));
+        }
+        return { n: Math.floor(n), at: at, srcs: srcs };
+      };
+      if (stored && typeof stored === 'object' && stored.course === id) {
+        cell.seek = norm(stored.seek);
+        cell.speed = norm(stored.speed);
+      }
+      mem.cell = cell;
+      return cell;
+    },
+
+
+    _persistCourseGuard: function (id) {
+      var cell = this._courseGuardCell(id);
+      // 两本格**整份**写回：另一格是同一门课的账，只写改过的那一格等于把它抹掉（§2 #25「不补账就盖」同族）
+      this._writeSessionLedger(this._COURSE_GUARD_KEY, {
+        course: id, seek: cell.seek, speed: cell.speed, ttl: Number(this._COURSE_GUARD_TTL_MS) || 0
+      });
+    },
+
+
+    // 命中 = 这一格已经认出过、且没过 TTL。`which` 取 'seek' | 'speed'，**两格分开**（免拖 ≠ 免倍速）。
+    _courseGuardHit: function (which) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) {
+          // 「认不出是哪门课」单独占一格：不许塌进「这门课可以乱动」，也不许塌进「已经免掉了」
+          if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+          var mem = this._courseGuard;
+          if (!mem.warnAt || Date.now() - mem.warnAt > 3600000) {
+            mem.warnAt = Date.now();
+            emitRuntimeLog('warn', 'course guard off, cannot tell which course this page is', {
+              hint: '认不出课程号（courseid / clazzid 都读不到）—— 课程级的免拖与免倍速一律不启用，照旧每枚各试一次'
+            });
+          }
+          return false;
+        }
+        var cell = this._courseGuardCell(id);
+        var rec = cell[which === 'speed' ? 'speed' : 'seek'];
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !(rec && Number(rec.n) >= need)) return false;
+        var at = rec ? Number(rec.at) : 0;
+        var ttl = Number(this._COURSE_GUARD_TTL_MS);
+        // 没有时间戳 = 不信（交回今天的行为：照旧试一次）；TTL 到点同样再问一枚（§3 第 3 条：少动手 ≠ 永不试）
+        if (!at || (isFinite(ttl) && ttl > 0 && Date.now() - at > ttl)) return false;
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 记一笔证据。`src` 是来源短标签（banner / reverted / measured-1x）—— 三条来源在 `srcs` 里要分得开（§2 #12）。
+    _noteCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;                     // 认不出课 ⇒ 这格账压根不记（不记 = 不免动手）
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key] || (cell[key] = { n: 0, at: 0, srcs: [] });
+        rec.n = (Number(rec.n) || 0) + 1;
+        rec.at = Date.now();
+        var label = String(src || 'unknown').slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        this._persistCourseGuard(id);
+        this._sayCourseGuard(which, id, rec, label);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 撤销 = 拿到**反证**（这一门课其实拖得动 / 其实能倍速）。`n` 归零、`srcs` 留历史：
+    // 谁攒到的、被谁撤掉的，现场都要读得回来 —— 只报「现在没账」等于把机制藏起来。
+    _clearCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key];
+        if (!rec || !(Number(rec.n) > 0)) return false;
+        rec.n = 0;
+        rec.at = 0;
+        var label = ('clear:' + String(src || 'unknown')).slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        if (this._courseGuard) this._courseGuard.said[key] = ''; // 撤销后又攒满，要能再喊一次
+        this._persistCourseGuard(id);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 跨过阈值那一发出**一句**话，每门课每格只喊一次（§2 #16(a)：降噪不许把该留的声音一起关掉）。
+    _sayCourseGuard: function (which, id, rec, src) {
+      try {
+        var mem = this._courseGuard;
+        if (!mem || !mem.said) return false;
+        var key = which === 'speed' ? 'speed' : 'seek';
+        if (mem.said[key]) return false;
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !rec || !(Number(rec.n) >= need)) return false;
+        mem.said[key] = String(src || '');
+        var speed = key === 'speed';
+        emitRuntimeLog('info', speed
+          ? 'course says rate locked at 1x, stop probing player speed'
+          : 'course says not draggable, stop trying to seek to end', {
+          course: id,
+          evidence: Number(rec.n) || 0,
+          from: String(src || ''),
+          sources: (rec.srcs || []).join(','),
+          hint: speed ? '这一门课里已经量到过倍速被锁在 1x，后面每一枚不再往播放器上写倍速'
+            : '这一门课里已经认出来不可拖拽，后面每一枚不再试拖进度条'
+        });
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 这一枚因为课程格而**一个字节都没往播放器上写** —— 说话，但每门课每格只说一次。
+    _noteCourseGuardRateSkipped: function () {
+      try {
+        var mem = this._courseGuard;
+        var rec = (mem && mem.cell && mem.cell.speed) || { n: 0, srcs: [] };
+        return this._sayCourseGuard('speed', this._courseGuardId(), rec, 'menu-unreadable');
+      } catch (e) { return false; }
+    },
+
+
+    // 「这一枚为什么不再试拖」是**哪一条证据**给的 —— 三条各占一格，不许压成一格（§2 #12）。
+    // 顺序＝行为证据 → 声明证据 → 课程策略：越靠前越硬（前两条是这一支自己的，第三条来自同一门课的别枚）。
+    _seekNoDragSource: function (video) {
+      try {
+        var key = video ? this._getMediaSeekKey(video) : '';
+        if (key && this._seekRevertedKeys && this._seekRevertedKeys[key]) return 'reverted';
+        if (video && this._siteSaysNoDrag(video)) return 'banner';
+        if (this._courseGuardHit('seek')) return 'course';
+        return '';
+      } catch (e) { return ''; }
+    },
+
+
     // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
     // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
     //（用户反馈）；拖不动的音频会在下面的「弹回检测」里被标记为不可拖，自动回落到正常播放。
     // 注意：PPT 逐页音频走的是 _runPptAudioJob，不设 _videoEl、不经这条路，所以不受影响。
     _trySeekToEnd: function (video, reason) {
-      var mediaTag = video && String(video.tagName || '').toUpperCase();
+      if (!video || this._isMediaQuarantined(video)) return false;
+      var mediaTag = String(video.tagName || '').toUpperCase();
       if (mediaTag !== 'VIDEO' && mediaTag !== 'AUDIO') return false; // 只拖视频/音频，其它元素不碰
       // 钥匙先算（纯读数，无副作用，判定顺序一格未动）：下面每一格"不试"都要归到这一支上
       var key = this._getMediaSeekKey(video);
@@ -2594,6 +3197,17 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
       var current = Number(video.currentTime || 0);
       if (current >= duration - 8) { this._noteSeekSkip('near-end', video, key); return false; } // 已在结尾附近，无需拖动
+
+      // 站点在这一张卡上自己写了「不可拖拽」⇒ 连"试一下"都不必（会话任务 #193）。
+      // 用户报的就是那一发：站点明明不让拖，我们还在每一次巡检里拽进度条，把人机验证的风险抬起来。
+      // ⚠️ 这一格**不登记 `_seekTriedKeys`** —— 那本是"我们真写过一次、结论来自那一次"的账（AGENTS §2 #17），
+      //    把标语当成那次写入的替身写进去，等于替站点宣布"防拖拽"。
+      if (this._siteSaysNoDrag(video)) { this._noteSeekSkip('site-no-drag', video, key); return false; }
+
+      // 同一门课里已经认出来过一次 ⇒ 这一枚连"试一下"都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 这一格与上面标语那一格同两条纪律：**不登记 `_seekTriedKeys`**（那本是"我们真写过一次"的账）、
+      //    **更不写 `_seekRevertedKeys`**（那一格是站点的地盘，我们写进去就是拿别枚的账给自己作证）。
+      if (this._courseGuardHit('seek')) { this._noteSeekSkip('course-no-drag', video, key); return false; }
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 
@@ -2624,10 +3238,12 @@ var OMITONE_CODE_REV = '0b01542ec8';
       var self = this;
       var verifySeek = function (attempt) {
         try {
-          if (!video.isConnected) return;
+          if (!video.isConnected || self._isMediaQuarantined(video)) return;
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
             self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
+            // 这是「这一门课拖得动」的**正面**证据（不是"没说"）⇒ 当场撤销课程格（批次 173 §3 第 1 条）
+            self._clearCourseGuard('seek', 'drag-ok');
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
             return;
           }
@@ -2642,6 +3258,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
             return;
           }
           self._seekRevertedKeys[key] = true;  // 两次都弹回 → 不可拖拽
+          // 我们自己真拖过、被站点拽回来 = 正面证据 ⇒ 记进课程格（批次 173 §3 第 1 条）
+          self._noteCourseGuard('seek', 'reverted');
           console.log('[Omitone] seek reverted by site player, continue normal playback');
           emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
         } catch (e) {}
@@ -2728,22 +3346,45 @@ var OMITONE_CODE_REV = '0b01542ec8';
         return true;
       }
 
+      // 等元素这一族现在**顺手问一句站点自己写了什么**（批次 174 / issue #225）：
+      // 站点把播放器整块换成「外部视频…不支持播放」那一族页面里根本没有 `<video>`，
+      // 改动前照旧花满 8 秒、且只在控制台说一声（日志环一个字都没有）。
+      // ⚠️ 问话**按 1 秒节流**：这一族每 200 毫秒就来一发，`body.textContent`（最多爬 4 层文档）
+      //    不许变成热路径（§2 #17 同一句警告）。命中就提前收 —— 但**只减少等待，不标记完成**。
+      var waitStart = Date.now();
+      var siteSelf = this;
       var video = this._findMediaInDocument(job.doc);
-      if (!video) {
-        video = await this._waitForMediaInDocument(job.doc, 8000);
+      var siteSaid = video ? null : this._siteSaysUnplayable(job.doc);
+      var lastSiteAsk = Date.now();
+      if (!video && (!siteSaid || siteSaid.state !== 'said')) {
+        video = await this._waitForMediaInDocument(job.doc, 8000, function () {
+          var now = Date.now();
+          if (now - lastSiteAsk < 1000) return false;
+          lastSiteAsk = now;
+          siteSaid = siteSelf._siteSaysUnplayable(job.doc);
+          return !!siteSaid && siteSaid.state === 'said';
+        });
       }
 
-      if (video) {
-        this._videoEl = video;
-        this._videoCount = 1;
-        this._currentVideoIndex = 0;
-      }
-
       if (!video) {
-        this._activeMediaJobPending = false;
-        console.warn('[Omitone] chaoxing media not ready:', job.name);
+        return this._releaseMediaNotFound(job.name, siteSaid, Date.now() - waitStart);
+      }
+      if (this._isMediaQuarantined(video)) {
+        this._quarantineDeadMedia(video, { job: job, reloadTimes: MEDIA_RELOAD_LIMIT });
+        this._clearMediaPendingState('media-quarantined');
         return false;
       }
+
+      if (!this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      var mediaJobEntry = this._mediaQuarantine.get(video) || {};
+      this._mediaQuarantine.set(video, {
+        job: job,
+        quarantined: mediaJobEntry.quarantined || 0,
+        at: mediaJobEntry.at || 0
+      });
+      this._videoEl = video;
+      this._videoCount = 1;
+      this._currentVideoIndex = 0;
 
       var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
 
@@ -2778,11 +3419,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._videoEventHandle();
       try {
         await this._withTimeout(video.play(), 12000);
+        if (this._isMediaQuarantined(video)) return false;
         this._startVideoMonitoring();
       } catch (e) {
+        if (this._isMediaQuarantined(video)) return false;
         try {
           video.muted = true;
           await this._withTimeout(video.play(), 12000);
+          if (this._isMediaQuarantined(video)) return false;
           this._isPlaying = true;
           this._startVideoMonitoring();
           // play() 被拒后浏览器会把 currentTime 打回 0，站点也可能顺手把倍速重置成 1。
@@ -2796,12 +3440,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
           if (/NotSupported/i.test(errText) || (video.error && video.error.code === 4)) {
             var repaired = await this._maybeRepairMediaSource(video);
             if (repaired) {
+              if (this._isMediaQuarantined(video)) return false;
               this._isPlaying = true;
               this._startVideoMonitoring();
               emitRuntimeLog('info', 'media play recovered after source repair', { name: job.name });
               return true;
             }
           }
+          if (this._isMediaQuarantined(video)) return false;
           this._isPlaying = false;
           // 站点的播放器自己在同一刻调 load()/pause() 时，这一发 play() 的 promise 会被它打断。
           // 这**不等于**"这个视频看不了"：下一拍会重新接上（现场实测：打完这两句 currentTime 照走）。
@@ -2828,14 +3474,27 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
-    _startSlideMedia: function (doc) {
+    _startSlideMedia: function (doc, job) {
       var medias = [];
       try {
         medias = Array.from(doc.querySelectorAll('audio, video'));
       } catch (e) {}
       var self = this;
+      medias = medias.filter(function (media) {
+        return !media.ended && !self._isMediaQuarantined(media);
+      });
+      if (job && !this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      if (job) {
+        medias.forEach(function (media) {
+          var entry = self._mediaQuarantine.get(media) || {};
+          self._mediaQuarantine.set(media, {
+            job: job,
+            quarantined: entry.quarantined || 0,
+            at: entry.at || 0
+          });
+        });
+      }
       medias.forEach(function (media) {
-        if (media.ended) return;
         try {
           media.muted = !!self.configs.muted;
         } catch (e1) {}
@@ -2844,6 +3503,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
             var p = media.play();
             if (p && typeof p.catch === 'function') {
               p.catch(function () {
+                if (self._isMediaQuarantined(media)) return;
                 try {
                   media.muted = true;
                   media.play().catch(function () {});
@@ -2857,22 +3517,46 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
-    _waitSlideAudioDone: async function (doc) {
+    _waitSlideAudioDone: async function (doc, job) {
       var waited = 0;
       while (waited < 600000) {
         // ⚠️ 心跳：本循环上限 600 秒，远超看门狗的 150 秒 —— 不刷心跳会被误判成卡死，
         //    导致新一轮 tick 与这次并行操作同一个任务点（见 64-tasks-loop.js 的看门狗）。
         this._tickProgress('ppt-audio wait');
+        var medias = [];
+        var quarantined = [];
         var active = [];
+        var self = this;
         try {
-          active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
-            return !media.ended && (Number(media.currentTime || 0) > 0 || !media.paused);
+          medias = Array.from(doc.querySelectorAll('audio, video'));
+          quarantined = medias.filter(function (media) { return self._isMediaQuarantined(media); });
+          active = medias.filter(function (media) {
+            return !self._isMediaQuarantined(media) && !media.ended &&
+              (Number(media.currentTime || 0) > 0 || !media.paused);
           });
+          if (job && !this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+          if (job) {
+            active.forEach(function (media) {
+              var entry = self._mediaQuarantine.get(media) || {};
+              self._mediaQuarantine.set(media, {
+                job: job,
+                quarantined: entry.quarantined || 0,
+                at: entry.at || 0
+              });
+            });
+          }
         } catch (e) {}
-        if (!active.length) return true;
+        if (!active.length) {
+          if (!quarantined.length) return true;
+          quarantined.forEach(function (media) {
+            self._quarantineDeadMedia(media, { job: job, reloadTimes: MEDIA_RELOAD_LIMIT });
+          });
+          emitRuntimeLog('warn', 'ppt-audio media quarantined, stop flipping', { name: String((job && job.name) || '') });
+          return false;
+        }
 
         active.forEach(function (media) {
-          if (!media.paused) return;
+          if (!media.paused || self._isMediaQuarantined(media)) return;
           try {
             var p = media.play();
             if (p && typeof p.catch === 'function') p.catch(function () {});
@@ -2894,7 +3578,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
 
     _ensurePlaybackRate: function (video, reason) {
-      if (!video) return;
+      if (!video || this._isMediaQuarantined(video)) return;
       var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
       // 音频不再由插件静音（旧的 audioMuted 开关已删）。
       // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
@@ -2922,8 +3606,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
       if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
         return this._clampAutoRate(this._detectedMaxRate);
       }
-      var target = Number(this.configs.playbackRate || 1);
-      return isFinite(target) && target > 0 ? target : 1;
+      // 弹窗里的「播放速度」滑条已删（批次 146）—— 没有量到的上限就按原速，不替用户猜一个倍速。
+      return 1;
     },
 
 
@@ -2940,11 +3624,32 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _resetRateDetection: function () {
       this._detectedMaxRate = 0;
       this._rateDetectVideo = null;
+      this._rateUnknownVideo = null;
+      this._rateUnknownTries = 0;
+      // 上一支是「谁判的按不住」要跟着这一支重问一遍（批次 173）；课程格本身**不在这里清**，
+      // 它是跨媒体、按门课记账的那一本，换课时由 `course` 那一格自己作废。
+      this._rateLockedBy = '';
+    },
+
+
+    // 「问不出上限」单独占一格，而且**不许变成每 1.5 秒问一次**：
+    // 问的方式是真往播放器上写倍速，写得勤 = 用户报的「抽搐 + 黑屏」那个动作本身。
+    // 连三发问不出就认这一支「问不到」，按原速播完，换了媒体再问（AGENTS §2 #12/#17 那一族：
+    // 读不出不等于结论，但也不许把"再试一次"实现成"永远在试"）。
+    _noteRateUnreadable: function (video) {
+      var self = this;
+      if (this._rateUnknownVideo !== video) {
+        this._rateUnknownVideo = video;
+        this._rateUnknownTries = 0;
+      }
+      this._rateUnknownTries = Number(this._rateUnknownTries || 0) + 1;
+      if (this._rateUnknownTries < 3) { this._rateDetectVideo = null; return; }
+      emitRuntimeLog('warn', 'rate max unreadable, keep native speed', { tries: this._rateUnknownTries });
     },
 
 
     _scheduleMaxRateDetection: function (video) {
-      if (!video) return;
+      if (!video || this._isMediaQuarantined(video)) return;
       this._rateDetectVideo = video;
       if (this._rateDetectBusy) return;
       var self = this;
@@ -2952,20 +3657,40 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._rateDetectBusy = true;
 
       var runDetect = function () {
+        if (self._isMediaQuarantined(video)) {
+          self._rateDetectBusy = false;
+          self._rateDetectVideo = null;
+          return;
+        }
         self._detectMaxPlaybackRate(video).then(function (rate) {
           self._rateDetectBusy = false;
-          if ((self._rateEpoch || 0) !== epoch) return; // 任务已切换，探测结果作废
+          if ((self._rateEpoch || 0) !== epoch) return;
+          if (self._isMediaQuarantined(video)) {
+            if (self._rateDetectVideo === video) self._rateDetectVideo = null;
+            return;
+          }
           if (Number(rate) > 0) {
             self._detectedMaxRate = rate;
             emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
+            // 真读回了一档 ⇒ 量到 1x 就是「这一门课倍速按住」的正面证据，量到更高就是反面证据（批次 173 §3 第 2 条）。
+            // `measured-1x` 与 `menu-1x` 两条来源在 `srcs` 里要分得开（§2 #12）—— 前者真写过播放器，后者只是菜单自己列出来的。
+            if (rate <= 1.001) self._noteCourseGuard('speed', self._rateLockedBy === 'menu' ? 'menu-1x' : 'measured-1x');
+            else self._clearCourseGuard('speed', 'measured-above-1');
             self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
+          } else if (self._rateLockedBy === 'course') {
+            // 这一格不是「问不出」，是「同一门课问过、不用再问」—— 单独说话，别去拨 `_rateUnknownTries` 那本一次性的账
+            self._noteCourseGuardRateSkipped();
           } else {
-            self._rateDetectVideo = null;
+            self._noteRateUnreadable(video);
           }
         }).catch(function () {
           self._rateDetectBusy = false;
           if ((self._rateEpoch || 0) !== epoch) return;
-          self._rateDetectVideo = null;
+          if (self._isMediaQuarantined(video)) {
+            if (self._rateDetectVideo === video) self._rateDetectVideo = null;
+            return;
+          }
+          self._noteRateUnreadable(video);
         });
       };
 
@@ -2976,9 +3701,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
       }
       var tries = 0;
       var timer = setInterval(function () {
-        if ((self._rateEpoch || 0) !== epoch) { // 任务已切换，放弃这次探测
+        if ((self._rateEpoch || 0) !== epoch || self._isMediaQuarantined(video)) { // 任务已切换或媒体已隔离，放弃这次探测
           clearInterval(timer);
           self._rateDetectBusy = false;
+          self._rateDetectVideo = null;
           return;
         }
         tries++;
@@ -2990,28 +3716,65 @@ var OMITONE_CODE_REV = '0b01542ec8';
         if (tries >= 60) {
           clearInterval(timer);
           self._rateDetectBusy = false;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         }
       }, 500);
     },
 
 
     _detectMaxPlaybackRate: async function (video) {
-      if (!video) return 0;
+      if (!video || this._isMediaQuarantined(video)) return 0;
       // 首选：播放器倍速菜单里暴露的档位（老师设置的上限会体现在菜单中）
       var menuMax = this._readRateMenuMax(video);
       if (menuMax > 0) {
+        // 菜单列出 >1x 的档 = 「这一门课的倍速动得」的正面证据 ⇒ 撤销课程格（批次 173 §3 第 2 条）。
+        // 读菜单是纯 DOM、不写播放器，所以这一路**永远照走**，不受课程格影响。
+        this._rateLockedBy = menuMax > 1 ? '' : 'menu';
+        if (menuMax > 1) this._clearCourseGuard('speed', 'menu');
         emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
         return this._clampAutoRate(menuMax);
       }
-      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
-      var probed = await this._probeMaxPlaybackRate(video);
-      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
-      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
-      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
-      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
-      if (!probed) return 0;
-      return this._clampAutoRate(probed);
+      // 同一门课里已经认出来过一次「按不住」⇒ 这一枚连问都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 交回 `0` 是「不知道」那一格，**不是**替站点宣布 1x：既不往播放器写那一发（省下的就是用户嫌的那 700 毫秒
+      //   与一次黑屏风险），也不动 `_rateUnknownTries` 那本一次性的账（AGENTS §2 #17「只许减少动手，不许由它多出一次动手」）。
+      if (this._courseGuardHit('speed')) { this._rateLockedBy = 'course'; return 0; }
+      this._rateLockedBy = '';
+      // 菜单没列档位时**只试一发**（批次 146；旧版是从 4x 往下试八档、每档等 700 毫秒）。
+      return await this._tryRateOnce(video);
+    },
+
+
+    // 一次受控尝试：写「上限档」，读回播放器真正接住的那一档。
+    // ⚠️ 必须与 defaultPlaybackRate **同写**：HTML 媒体在换源 / 站点重挂播放器时把 playbackRate
+    //   复位到 defaultPlaybackRate。旧版八档阶梯只写 playbackRate，于是每一档都被复位成 1，
+    //   「上限就是 1 倍」是我们自己写出来的答案（现场 2026-11-20 学到：菜单恒读不出、
+    //   detectedMaxRate 却是探测给的 1 —— 全程 1x 就是这么来的）。
+    // ⚠️ 被拉回也要交回一个**非 0** 的读数：0 在调用方那一格是「不知道」，会清空
+    //   `_rateDetectVideo` → 下一拍再试一遍 → 每 1.5 秒和站点对打一次倍速，
+    //   用户看到的就是「抽搐 + 黑屏」。量到 1 就是量到了 1。
+    _tryRateOnce: async function (video) {
+      if (!video || this._isMediaQuarantined(video)) return 0;
+      var cap = this._clampAutoRate(this.configs.playbackRateCap || 4);
+      if (!(cap > 1)) return 0;
+      var before = Number(video.playbackRate || 1);
+      if (Math.abs(before - cap) <= 0.01) return this._clampAutoRate(before); // 播放器自己就在这个档
+      this._rateProbing = true;
+      var held = 0;
+      var denied = false;
+      try {
+        try { video.defaultPlaybackRate = cap; } catch (e1) {}
+        try { video.playbackRate = cap; } catch (e2) { denied = true; }
+        if (!denied) held = await this._waitRateSettle(video, 700);
+      } finally {
+        this._rateProbing = false;
+      }
+      if (this._isMediaQuarantined(video) || denied || !(held > 0)) return 0; // 写不进去 / 压根读不回 = 不知道，别替站点宣布上限
+      if (Math.abs(held - cap) > 0.05) {
+        // 被拉回：把 default 一起落到站点认的那一档，否则站点每次复位都会再触发一次写入
+        try { video.defaultPlaybackRate = held; } catch (e3) {}
+        emitRuntimeLog('info', 'rate held back by player', { tried: cap, held: held });
+      }
+      return this._clampAutoRate(held);
     },
 
 
@@ -3049,31 +3812,6 @@ var OMITONE_CODE_REV = '0b01542ec8';
         if (maxRate > 0) break;
       }
       return maxRate;
-    },
-
-
-    _probeMaxPlaybackRate: async function (video) {
-      var self = this;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
-      var best = 0;
-      this._rateProbing = true;
-      try {
-        for (var i = 0; i < candidates.length; i++) {
-          var candidate = candidates[i];
-          try { video.playbackRate = candidate; } catch (e) { continue; }
-          var settled = await self._waitRateSettle(video, 700);
-          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
-            best = candidate;
-            break;
-          }
-          if (settled > best) best = settled;
-        }
-      } finally {
-        this._rateProbing = false;
-      }
-      return best;
     },
 
 
@@ -3118,6 +3856,33 @@ var OMITONE_CODE_REV = '0b01542ec8';
         this._checkInterval = null;
       }
       this._syncAudioKeepalive();
+    },
+
+
+    // 「这一支还在播，可巡检的间隔没了」= 自锁：拖结尾、90% 提前收尾、「没进展就自愈」三件事
+    // 一起失效，现场表现成整支只能按 1x 白播（会话任务 #190 现场实测：`_checkInterval` 恒 null
+    // 而 `tickEpoch` 照涨、`_guardLastWallTs` 越老越久）。
+    // ⚠️ **只在真的没有句柄时动手** —— `_startVideoMonitoring()` 一跑就把
+    //   `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，无条件调它
+    //   等于每拍把「没进展」的账抹平，自愈判据永远攒不满（AGENTS §2 #13 同一族）。
+    // ⚠️ 两个调用方都要在，而且**必须是这两处**：`60-tasks-detect.js` 的
+    //   `ocs-runner-active-job`（有可读 `#iframe` 的学习页 = 现场真正待着的地方）与
+    //   `62-tasks-run.js` 的 `ocs-style-active-job`（`#iframe` 读不到、attachment 直挂顶层那类页）。
+    //   `_runTick` 下面那一格 `_isPlaying` **走不到** —— `_isPlaying` 为真时上面两发之一
+    //   必定先认领这一拍（`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集），
+    //   只装在那里等于装了一条现场永不执行的代码（上一轮就栽在这格，2026-11-20 现场只读量回）。
+    _rearmMediaGuardIfLost: function (reason) {
+      if (this._checkInterval || !this._isPlaying) return false;
+      if (this._videoEl && this._isMediaQuarantined(this._videoEl)) this._videoEl = null;
+      var media = this._videoEl || this._getVideoEl();
+      if (!media || media.ended || this._isMediaQuarantined(media)) return false;
+      this._startVideoMonitoring();
+      emitRuntimeLog('warn', 'media guard rearmed', {
+        reason: reason || '',
+        currentTime: Math.round(Number(media.currentTime) * 10) / 10,
+        duration: Math.round(Number(media.duration) * 10) / 10
+      });
+      return true;
     },
 
 
@@ -3212,12 +3977,12 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
         // 防拖拽 + 倍速锁 1x 的视频：平台只要求 ≥90%，平台标记完成后就别再白等最后 10%
         if (!video.ended && this._isPlaying && this._shouldAdvanceAtNinetyPercent(video)) {
-          this._finishCurrentMedia('ninety-percent');
+          this._finishCurrentMedia('ninety-percent', video);
           return;
         }
 
         if (video.ended && this._isPlaying) {
-          this._finishCurrentMedia('guard');
+          this._finishCurrentMedia('guard', video);
         }
       } catch (e) {}
     },
@@ -3230,7 +3995,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
      * 抽出来是为了不让两条路各写一份 —— 收尾漏掉一个字段（比如 `_activeMediaJobManaged`）
      * 会让状态机卡住，而症状是"这个任务点过了但下一个不动"，很难查。
      */
-    _finishCurrentMedia: function (reason) {
+    _finishCurrentMedia: function (reason, media) {
+      if (media && this._isMediaQuarantined(media)) return;
       this._clearCheckInterval();
       if (this._activeMediaJobManaged) {
         this._isPlaying = false;
@@ -3268,19 +4034,69 @@ var OMITONE_CODE_REV = '0b01542ec8';
     /**
      * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
      *
-     * 判据是两个"平台不让我们加速"的信号**同时**成立：
-     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
-     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
-     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
+     * 「不可拖拽」这一格现在有**两条各自独立**的证据，任一条成立即可：
+     *   1) 拖到结尾被播放器两次弹回（旧那格，结论来自站点真的按住过进度条）
+     *   2) 站点在这一张任务卡上自己写了「不可拖拽」（`_siteSaysNoDrag`，见上面那三格口径）
+     * 第二条不是"猜"：那句话就是站点按这一支视频的 `data.fastforward` 字段拼出来的原话，
+     * 而它的存在正是本次改动要去掉的代价 —— 为了拿第一条证据，我们必须真的动手拖两次。
+     * ⚠️ 两条都不许合并成一格：第一条是行为证据、第二条是声明证据，读回来要能分开归因（AGENTS §2 #12）。
+     * 倍速那一格仍然必须单独成立（标语里没有「不可倍速」并不等于没锁，见上面 `_detectedMaxRate` 那句）。
      */
     _isNinetyPercentVideo: function (video) {
       if (!video) return false;
       var mediaTag = String(video.tagName || '').toLowerCase();
       if (mediaTag !== 'video' && mediaTag !== 'audio') return false; // 视频/音频都适用（拖不动+锁1x 时到 90% 提前收尾）
-      if (!this._isRateLockedAtOne()) return false;
+      if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
-      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
+      if (this._seekRevertedKeys && this._seekRevertedKeys[key]) return true;
+      if (this._siteSaysNoDrag(video)) return true;
+      // 第三条：同一门课里已经认出来过一次（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // 它是三条里最弱的一格，所以放在最后，而且**只许减少动手**：命中只是不再试拖，绝不凭空多拖一次。
+      return this._courseGuardHit('seek');
+    },
+
+
+    /**
+     * 「可拖动」关上时，90% 提前收尾这条路被放弃了 —— 每支媒体只点名一次。
+     *
+     * 为什么要有这一发：这一族以前**一条日志都不留**（AGENTS §2 #14：判据不许停在"决定不做"）。
+     * 现场表现是"倍速锁在 1x、平台已标记完成、进度都过 90% 了还在原速播"，而弹窗里
+     * 那枚「看到 90% 就进下一个」明明亮着 —— 人只能猜。说清是被上面那枚开关挡的，
+     * 用户才知道该去开哪个（这一条的证据来自用户 2026-11-20 那句「用户可观看到界面不知道要成立」）。
+     *
+     * ⚠️ 判据取的是「除了拖拽证据，其余条件全都成立」，所以每 1500 毫秒进来一次的
+     *    巡检在"还没到 90%""平台没确认完成"那几拍**一句都不说** —— 200 条的证据窗不会被吃光（§2 #16(b)）。
+     *    账本 `_ninetyHeldBackKeys` 与 `_seekSkipLedger` 同一族：**不许被 `_resetRuntimeState` 抹掉**（§2 #13）。
+     */
+    _noteNinetyHeldBack: function (video) {
+      try {
+        if (!video) return false;
+        var mediaTag = String(video.tagName || '').toLowerCase();
+        if (mediaTag !== 'video' && mediaTag !== 'audio') return false;
+        var duration = Number(video.duration);
+        if (!isFinite(duration) || duration <= 0) return false;
+        var ratio = Number(video.currentTime || 0) / duration;
+        if (!(ratio >= 0.9) || ratio >= 0.995) return false;
+        if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
+        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        if (!this._ninetyHeldBackKeys) this._ninetyHeldBackKeys = Object.create(null);
+        if (this._ninetyHeldBackKeys[key]) return true;
+        if (Object.keys(this._ninetyHeldBackKeys).length > 300) {
+          this._ninetyHeldBackKeys = Object.create(null);
+        }
+        this._ninetyHeldBackKeys[key] = true;
+        emitRuntimeLog('info', 'advance at 90% held back: seek disabled', {
+          ratio: Number(ratio.toFixed(3)),
+          duration: Number(duration.toFixed(1)),
+          jobid: this._activeJobId || ''
+        });
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
 
 
@@ -3294,6 +4110,21 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _shouldAdvanceAtNinetyPercent: function (video) {
       try {
         if (this.configs.advanceAtNinetyPercent === false) return false;
+        // 单向绑定（会话任务 #185）：这一条兜底原先只吃「拖到结尾两次都被弹回」那一格证据，
+        // 而它只有 `_trySeekToEnd` 会写、该方法第一行就被 `enableSeek` 挡下 —— 所以「可拖动」关上时
+        // `_isNinetyPercentVideo` 恒为 false，这一条开关**结构上永远走不到**（死键）。
+        // 现在的修法不是把闸放宽：站点自己写了「不可拖拽」时，证据来自站点那句话，
+        // 本来就不需要先动手拖一次，于是「可拖动」关上也能说真话；
+        // 拿不到这句声明时**照旧按住并明说一次「这条路被放弃了」**，别让它悄悄失灵。
+        // 三源各占一格（批次 173）：`reverted` 真拖过被拽回 / `banner` 卡片原话 / `course` 同一门课认过一次。
+        // ⚠️ 这一道闸只认**不依赖我们动手拖过**的那两条（banner / course）：`reverted` 只有
+        //    `_trySeekToEnd` 会写，而它第一行就被 `enableSeek` 挡下 —— 让用户中途关掉之后立刻失效，
+        //    而不是继续吃上一轮翻开关时留下的旧账（会话任务 #185 的"单向"那半截，⑤ 钉的就是它）。
+        //    日志里那一格（`dragSource`）仍走 `_seekNoDragSource`，三源不许在日志里塌成一格（§2 #12）。
+        if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek')) {
+          this._noteNinetyHeldBack(video);
+          return false;
+        }
         if (!this._isNinetyPercentVideo(video)) return false;
 
         var duration = Number(video.duration);
@@ -3307,7 +4138,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
         emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
           ratio: Number(ratio.toFixed(3)),
           duration: Number(duration.toFixed(1)),
-          jobid: this._activeJobId || ''
+          jobid: this._activeJobId || '',
+          // 「是哪一条证据说不可拖的」要读得回来，三源不许在日志里塌成一格（§2 #12）
+          dragSource: this._seekNoDragSource(video)
         });
         console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
           '%，平台已标记完成，直接进下一个', 'color:#4CAF50');
@@ -3365,6 +4198,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
      */
     _reloadMediaInPlace: function (media, reason) {
       try {
+        var self = this;
+        if (!media || this._isMediaQuarantined(media)) return false;
         var code = this._mediaErrorCode(media);
         if (!code) return false;
         var key = this._getMediaSeekKey(media);
@@ -3372,7 +4207,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
         if (!this._mediaReloadKeys) this._mediaReloadKeys = Object.create(null);
         var prevReload = this._mediaReloadKeys[key];
         var doneAttempts = Number(prevReload && prevReload.n) || 0;
-        if (doneAttempts >= 3) return false;
+        if (doneAttempts >= MEDIA_RELOAD_LIMIT) return false;
         if (doneAttempts > 0 && Date.now() - (Number(prevReload.at) || 0) < 20000) return false;
 
         var diedAt = Number(media.currentTime || 0);
@@ -3402,8 +4237,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
           reason: reason || ''
         });
         if (resumeAt > 0) {
-          var self = this;
           media.addEventListener('loadedmetadata', function () {
+            if (self._isMediaQuarantined(media)) return;
             // `load()` 会把 currentTime 归零，位置必须等元数据回来再补 ——
             // 现在就设会被 readyState 0 的状态吞掉，症状是「重载过了，却从第一秒重新播」。
             try { media.currentTime = resumeAt; } catch (e0) {}
@@ -3411,9 +4246,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
           }, { once: true });
         }
         media.load();
+        if (this._isMediaQuarantined(media)) return true;
         var started = media.play();
         if (started && typeof started.catch === 'function') {
           started.catch(function () {
+            if (self._isMediaQuarantined(media)) return;
             // 自动播放策略挡住了就静音重试一次（与 _tryResumePlayback 同一个兜底）
             try {
               media.muted = true;
@@ -3429,10 +4266,125 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
+    /**
+     * 站点播放器自己的「开始」键 —— 只认现场量到的那两枚（批次 178，2026-11-19 只读实测）。
+     *
+     * 现场形状：视频在 `top>iframe>f0` 的 `/ananas/modules/video/index.html` 里，
+     * 播放器是 video.js v7，根节点 `div.video-js` 用 `vjs-has-started` / `vjs-playing` 表态。
+     *
+     * ⚠️ 必须在**这一枚视频自己的** `.video-js` 容器里找，而且只用下面两个写死的类名：
+     *    同一个容器里还躺着 `vjs-default-button`（「重启 恢复全部设定至预设值」）、
+     *    `vjs-playback-rate`（倍速菜单）、`vjs-mute-control` —— 任何 `[class*=play]`
+     *    式的模糊匹配都会把它们扫进来，而点到「重启」那枚等于把用户的播放器设定清掉。
+     *  - `vjs-big-play-button`：未开播时的中央覆盖层，文字「播放视频」；在播时
+     *    `display:none`（现场实测矩形 0×0），所以"看得见"就是"还没开始"。
+     *  - `vjs-play-control`：控制条上的播放/暂停切换键，**在播时带 `vjs-playing` 类、
+     *    文字是「暂停」** —— 那种状态下点它等于按停，所以必须反着认。
+     */
+    _siteStartControlOf: function (video) {
+      var doc = video && (video.ownerDocument || document);
+      if (!doc) return null;
+      var scope = doc;
+      try {
+        if (video.closest) {
+          var host = video.closest('.video-js, .vjs-player');
+          if (host) scope = host;
+        }
+      } catch (e0) {}
+      try {
+        var big = scope.querySelector('.vjs-big-play-button');
+        if (big && visible(big)) return { el: big, rung: 'big-play' };
+        var toggle = scope.querySelector('.vjs-play-control');
+        if (toggle && visible(toggle) && !/vjs-playing/i.test(String(toggle.className || ''))) {
+          return { el: toggle, rung: 'play-toggle' };
+        }
+      } catch (e1) {}
+      return null;
+    },
+
+
+    /**
+     * 「开头一直卡住」的最后一档：去点站点自己的开始键。
+     *
+     * 用户口径是「点一下开始就正常了，否则一直黑屏不动或者抽搐」。上面 `_tryResumePlayback`
+     * 直调 `video.play()` 那一族**绕过了站点播放器自己的状态机**：它拿不到 play 事件时
+     * `_resumeAttemptCount` 每 15 秒换窗归零，于是整局都在原地重复同一发 play()，
+     * 而那两枚按钮背后的 handler 一次都没被走到 —— 人工点一下走的恰恰是那条路。
+     *
+     * 有界：一节最多 2 发、间隔 45 秒，键同 `_getMediaSeekKey`（与 `_mediaReloadKeys`
+     * 一样**不随换节清理**，清了就会在同一节里反复点）。点成功之后由站点自己派发的
+     * play 事件复位整套计数（`_handleVideoPlay`）。烧完还没起来只说**一次**交回人 ——
+     * 静默放手是不可接受的（AGENTS §2 #7），hint 里照用户的话告诉他亲手点一下。
+     *
+     * 只在「还停在开头」那一形状上动手：已经播出去一段的停滞交给 no-progress 与 90% 兜底，
+     * 那种情况点开始键等于替人把看过的两分钟重播一遍。音频不做 —— 现场只量过视频那一族，
+     * 音频播放器是另一个形状，没量过就不动手。
+     */
+    _nudgeSiteStartControl: function (video, reason) {
+      try {
+        if (!video || !this._isPlaying || this._isMediaQuarantined(video)) return false;
+        if (String(video.tagName || '').toLowerCase() !== 'video') return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        var ct = Number(video.currentTime || 0);
+        var dur = Number(video.duration || 0);
+        if (ct > 2) return false;
+        if (dur > 0 && ct > Math.min(30, dur * 0.02)) return false;
+
+        if (!this._startNudgeKeys) this._startNudgeKeys = Object.create(null);
+        var prev = this._startNudgeKeys[key];
+        var done = Number(prev && prev.n) || 0;
+        var now = Date.now();
+        var detail = {
+          ct: Math.round(ct * 100) / 100,
+          dur: Math.round(dur * 100) / 100,
+          ready: Number(video.readyState || 0),
+          paused: !!video.paused,
+          reason: reason || ''
+        };
+
+        if (done >= 2) {
+          if (!prev.gaveUp) {
+            prev.gaveUp = true;
+            detail.nudges = done;
+            detail.hint = '这一节从头就没起来，插件已经点过两回站点自己的开始键。' +
+              '这一族人工点一下「开始」通常就好了 —— 请在这页上亲手点一次，或者刷新这一页（F5）再让它刷';
+            emitRuntimeLog('warn', 'media start stuck, left to human', detail);
+          }
+          return false;
+        }
+        if (prev && now - (Number(prev.at) || 0) < 45000) return false;
+
+        // 站点为弹题有意把视频按下时不许抢（与 `_handleVideoPause` 同一口径）。
+        // 这个谓词会扫 DOM，本来只在 pause 事件里调；这里一次任务最多走到两回，
+        // 不按拍调，所以不引缓存 —— 别把它挪回每拍都问的位置。
+        if (this._popupQuizBlocksPlayback && this._popupQuizBlocksPlayback()) return false;
+
+        var found = this._siteStartControlOf(video);
+        if (Object.keys(this._startNudgeKeys).length > 300) this._startNudgeKeys = Object.create(null);
+        if (!found) {
+          // 「认不出开始键」单独占一格，不许塌成"点过了"（AGENTS §2 #12）。
+          this._startNudgeKeys[key] = { n: done + 1, at: now, rung: 'none' };
+          detail.rung = 'none';
+          emitRuntimeLog('warn', 'media start stuck, no site start control', detail);
+          return false;
+        }
+        this._startNudgeKeys[key] = { n: done + 1, at: now, rung: found.rung };
+        detail.rung = found.rung;
+        detail.attempt = done + 1;
+        emitRuntimeLog('warn', 'media start stuck, clicked site start control', detail);
+        try { found.el.click(); } catch (eClick) { return false; }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
     _tryResumePlayback: function (reason) {
       var now = Date.now();
       var video = this._getVideoEl();
-      if (!video || !this._isPlaying) return;
+      if (!video || !this._isPlaying || this._isMediaQuarantined(video)) return;
 
       // ⚠️ 死流水线先走重载，而且**必须放在下面三道闸之前**：那三道闸烧完 5 次就永久 return，
       //    而计数器只在 `play` 事件里清零 —— 管线死了 `play` 事件永远不会来，
@@ -3453,24 +4405,32 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._resumeAttemptCount++;
       this._guardLastResumeTs = now;
 
+      // 第 3 发 play() 之后照旧起不来，就换成点站点自己的开始键（批次 178）。
+      // 点着了我们这一拍就不再补一发 play() —— 让站点那条路先把状态机走起来。
+      if (this._resumeAttemptCount >= 3 && this._nudgeSiteStartControl(video, reason || 'resume')) return;
+
       this._ensurePlaybackRate(video, reason || 'resume');
+      if (this._isMediaQuarantined(video)) return;
       video.play().catch(function () {
+        if (this._isMediaQuarantined(video)) return;
         video.muted = true;
         video.play().catch(function () {});
-      });
+      }.bind(this));
     },
 
 
     _getVideoEl: function (index) {
       var idx = typeof index === 'number' ? index : this._currentVideoIndex;
       var self = this;
+      if (this._videoEl && this._isMediaQuarantined(this._videoEl)) this._videoEl = null;
       if (!this._videoEl) {
         function findVideos(doc, depth) {
           if (!doc || depth > 4) return { visible: [], hiddenAudio: [] };
           var all = Array.from(doc.querySelectorAll('video, audio'));
-          var vis = all.filter(self._isVisibleMedia);
+          var vis = all.filter(function (media) { return self._isVisibleMedia(media); });
           var hiddenAudio = all.filter(function (media) {
-            return String(media.tagName || '').toLowerCase() === 'audio' && !self._isVisibleMedia(media);
+            return String(media.tagName || '').toLowerCase() === 'audio' &&
+              !self._isMediaQuarantined(media) && !self._isVisibleMedia(media);
           });
           var frames = Array.from(doc.querySelectorAll('iframe'));
           for (var i = 0; i < frames.length; i++) {
@@ -3496,7 +4456,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
           return null;
         }
       }
-      return this._videoEl;
+      return this._videoEl && !this._isMediaQuarantined(this._videoEl) ? this._videoEl : null;
     },
 
 
@@ -3512,6 +4472,12 @@ var OMITONE_CODE_REV = '0b01542ec8';
         if (this._onVideoRateChange) el.removeEventListener('ratechange', this._onVideoRateChange);
         if (this._onVideoError) el.removeEventListener('error', this._onVideoError);
       } catch (e) {}
+      if (this._isMediaQuarantined(el)) {
+        this._videoEl = null;
+        this._onVideoEnded = this._onVideoLoaded = this._onVideoPlay = null;
+        this._onVideoPause = this._onVideoRateChange = this._onVideoError = null;
+        return;
+      }
 
       this._onVideoEnded = this._handleVideoEnded.bind(this);
       this._onVideoLoaded = this._handleVideoLoaded.bind(this);
@@ -3533,7 +4499,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
     // 之前完全没有这个监听，m4a 之类的格式问题永远不会被发现
     _handleMediaError: function (event) {
       var el = event && event.target ? event.target : this._getVideoEl();
-      if (!el) return;
+      if (!el || this._isMediaQuarantined(el)) return;
       var code = el.error ? el.error.code : 0;
       var message = el.error ? String(el.error.message || '') : '';
       var src = String(el.currentSrc || el.src || '');
@@ -3548,6 +4514,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
       if (code === 4 || code === 3) {
         var self = this;
         this._maybeRepairMediaSource(el).then(function (ok) {
+          if (self._isMediaQuarantined(el)) return;
           emitRuntimeLog(ok ? 'info' : 'error', ok ? 'media source repaired (m4a/mime fallback), replaying' : 'media source repair failed', {
             src: src.slice(-80)
           });
@@ -3557,7 +4524,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
 
     _guessMediaMime: function (url) {
-      var u = String(url || '').toLowerCase().split('?')[0];
+      // 稳定段只有一份口径（与 `_getMediaSeekKey` 同一把尺），别再各写一遍切查询串的那一手
+      var u = this._mediaStablePath(url).toLowerCase();
       if (/\.m3u8$/.test(u)) return '';
       if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
       if (/\.mp3$/.test(u)) return 'audio/mpeg';
@@ -3573,7 +4541,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
     // 全程在页面内完成（不经过扩展消息），避免大文件传输。
     _maybeRepairMediaSource: async function (media) {
       try {
-        if (!media) return false;
+        if (!media || this._isMediaQuarantined(media)) return false;
         var src = String(media.currentSrc || media.src || '');
         if (!src || /^blob:/i.test(src)) return false;
         if (/\.m3u8/i.test(src)) return false; // HLS 由播放器自己处理，不能这样补救
@@ -3588,14 +4556,15 @@ var OMITONE_CODE_REV = '0b01542ec8';
         //    注意 try/catch 拦不住"挂起"，只有超时能。
         //    _withTimeout 超时是 resolve(undefined)，下面两处 `!response` / `!buf` 判断正好接得住。
         var response = await this._withTimeout(fetch(src, { credentials: 'include' }), 20000);
-        if (!response || !response.ok) return false;
+        if (this._isMediaQuarantined(media) || !response || !response.ok) return false;
         var buf = await this._withTimeout(response.arrayBuffer(), 60000);
-        if (!buf || buf.byteLength < 1024) return false;
+        if (this._isMediaQuarantined(media) || !buf || buf.byteLength < 1024) return false;
 
         var type = this._guessMediaMime(src);
         var blob = new Blob([buf], { type: type });
         var objectUrl = URL.createObjectURL(blob);
         var resumeAt = Number(media.currentTime || 0);
+        if (this._isMediaQuarantined(media)) return false;
 
         media.src = objectUrl;
         media.load();
@@ -3608,13 +4577,15 @@ var OMITONE_CODE_REV = '0b01542ec8';
           media.addEventListener('error', finish, { once: true });
           setTimeout(finish, 8000);
         });
+        if (this._isMediaQuarantined(media)) return false;
 
         if (resumeAt > 0) {
           try { media.currentTime = resumeAt; } catch (e0) {}
         }
         this._ensurePlaybackRate(media, 'repair');
+        if (this._isMediaQuarantined(media)) return false;
         await this._withTimeout(media.play(), 12000);
-        return true;
+        return !this._isMediaQuarantined(media);
       } catch (e) {
         return false;
       }
@@ -3636,20 +4607,25 @@ var OMITONE_CODE_REV = '0b01542ec8';
      *      媒体这边同理，只管媒体。
      * 万一真的残留了过期的文档状态，文档那条路自己有 `document stuck timeout` 会兜住。
      */
-    _handleVideoEnded: function () {
-      this._finishCurrentMedia('event');
+    _handleVideoEnded: function (event) {
+      var video = event && event.target ? event.target : this._getVideoEl();
+      if (!video || this._isMediaQuarantined(video)) return;
+      this._finishCurrentMedia('event', video);
     },
 
 
     _handleVideoLoaded: function (event) {
-      this._resetRateDetection();
       var loadedVideo = event && event.target ? event.target : this._getVideoEl();
+      if (loadedVideo && this._isMediaQuarantined(loadedVideo)) return;
+      this._resetRateDetection();
       this._ensurePlaybackRate(loadedVideo, 'loadedmetadata');
       this._trySeekToEnd(loadedVideo, 'loadedmetadata');
     },
 
 
-    _handleVideoPlay: function () {
+    _handleVideoPlay: function (event) {
+      var played = event && event.target ? event.target : this._getVideoEl();
+      if (played && this._isMediaQuarantined(played)) return;
       this._isPlaying = true;
       this._stepSwitchPending = false;
       this._resumeWindowStart = 0;
@@ -3669,7 +4645,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _handleVideoPause: function (event) {
       // pause 事件的派发不受后台定时器节流影响：视频被网站/浏览器在后台暂停时立即安排恢复
       var video = event && event.target ? event.target : this._getVideoEl();
-      if (!video || video.ended || !this._isPlaying) return;
+      if (!video || video.ended || !this._isPlaying || this._isMediaQuarantined(video)) return;
       if (this._rateProbing) return;
       if (this._pauseResumePending) return;
 
@@ -3678,6 +4654,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._workerDelay(function () {
         self._pauseResumePending = false;
         var current = self._getVideoEl() || video;
+        if (self._isMediaQuarantined(video) || self._isMediaQuarantined(current)) return;
         if (!current || current.ended || !self._isPlaying || !current.paused) return;
         // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
         try {
@@ -3722,8 +4699,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
         var resumed = current.play();
         if (resumed && typeof resumed.then === 'function') {
           resumed.then(function () {
+            if (self._isMediaQuarantined(current)) return;
             self._ensurePlaybackRate(current, 'pause-resume');
           }).catch(function () {
+            if (self._isMediaQuarantined(current)) return;
             try {
               current.muted = true;
               current.play().catch(function () {});
@@ -3738,6 +4717,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
           var watched = current;
           setTimeout(function () {
             try {
+              if (self._isMediaQuarantined(watched)) return;
               if (!document.hidden) { self._bgHoldUntil = 0; self._bgStuckCount = 0; return; }
               if ((self._getVideoEl() || current) !== watched) { self._bgStuckCount = 0; return; }
               if (Number(watched.currentTime || 0) > t0 + 0.5) { self._bgStuckCount = 0; return; }
@@ -3760,7 +4740,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
 
     _handleVideoRateChange: function (event) {
-      this._ensurePlaybackRate(event && event.target ? event.target : this._getVideoEl(), 'ratechange');
+      var video = event && event.target ? event.target : this._getVideoEl();
+      if (video && !this._isMediaQuarantined(video)) this._ensurePlaybackRate(video, 'ratechange');
     },
 
 
@@ -3785,7 +4766,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _resumeVideoAfterOverlay: function (reason) {
       if (!this._isPlaying) return;
       var video = this._getVideoEl();
-      if (!video || !video.paused) return;
+      if (!video || !video.paused || this._isMediaQuarantined(video)) return;
       this._ensurePlaybackRate(video, reason || 'overlay');
       try { video.play(); } catch (e) {}
     },
@@ -3848,6 +4829,15 @@ var OMITONE_CODE_REV = '0b01542ec8';
         for (var i = 0; i < imgs.length && !result; i++) {
           var img = imgs[i];
           if (!visible(img)) continue;
+          // 交卷前的人机验证窗（#verifyCodeWin / #workVerifyImg）由提交确认链路自己处理（#232）：
+          // 那是**一次提交的一部分**，码要写进 #inputCode 再点「确定」。让通用扫描认领它会走
+          // 「3 次识别失败就整页刷新」那条路 —— 刷掉的是正在交的卷子，且永远跳不出循环。
+          var inWorkVerify = false;
+          try {
+            inWorkVerify = String(img.id || '') === 'workVerifyImg' ||
+              !!(img.closest && img.closest('#verifyCodeWin'));
+          } catch (eWv) { inWorkVerify = false; }
+          if (inWorkVerify) continue;
           var src = String(img.currentSrc || img.src || '');
           var idName = String(
             (img.id || '') + ' ' + (img.getAttribute('name') || '') + ' ' + (img.className || '')
@@ -3881,6 +4871,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
             for (var n = 0; n < boxImgs.length && !result; n++) {
               var bimg = boxImgs[n];
               if (!visible(bimg)) continue;
+              var bInWorkVerify = false;
+              try { bInWorkVerify = !!(bimg.closest && bimg.closest('#verifyCodeWin')); } catch (eBwv) { bInWorkVerify = false; }
+              if (bInWorkVerify) continue;
               if (!hitImgSize(bimg)) continue;
               // 弹窗文案里已含“验证码”，直接信任该图片
               var binput = findInputNear(doc, bimg);
@@ -6587,6 +7580,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
             //    不刷心跳会让"正常在推进的一轮"被看门狗当成卡死。
             self._tickProgress('ocs study loop');
             if (self._isActiveStudyJobPending('ocs-runner-active-job')) {
+              // ⚠️ **现场学习页真正待着的就是这一格**（2026-11-20 现场只读量回：`_ocsStudyStarted`
+              // 为真 → `_runTick` 每拍在 `_ensureOcsStudyRunner()` 那一格 return，走不到下面
+              // `_isPlaying` 那一格；而同一刻 `_checkInterval` 是 null、`_isPlaying` 与
+              // `_activeMediaJobPending` 都是真 —— 一支 22 分钟的视频就这么按 1x 白播）。
+              // 所以巡检掉了要在这里捡回来。⚠️ 别去 `_runTick` 的 `if (this._isPlaying)` 那一格装 ——
+              // 现场量回那一行一次都没执行过（就是上面那两句）；另一格形状（没有可读 `#iframe` 的页面）
+              // 由 `62-tasks-run.js` 的 `ocs-style-active-job` 管，两处共用真源 `_rearmMediaGuardIfLost`。
+              self._rearmMediaGuardIfLost('ocs-runner-active-job');
               await sleep(1000);
               continue;
             }
@@ -7342,8 +8343,12 @@ var OMITONE_CODE_REV = '0b01542ec8';
         //    不刷心跳会被误判成"卡死的 tick"，从而放锁并起第二个 tick 并行翻页。
         //    note 里带页号，日志节流后正好成了这个长任务耗时的观测点。
         this._tickProgress('ppt-audio page ' + (i + 1) + '/' + (slides || '?'));
-        this._startSlideMedia(doc);
-        await this._waitSlideAudioDone(doc);
+        this._startSlideMedia(doc, job);
+        var audioDone = await this._waitSlideAudioDone(doc, job);
+        if (!audioDone) {
+          this._clearDocumentPendingState('ppt-audio-media-quarantined');
+          return false;
+        }
         emitRuntimeLog('info', 'document page', {
           currentPage: Math.min(i + 1, slides || i + 1),
           totalPages: slides,
@@ -7594,6 +8599,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
       }
 
       if (this._isActiveStudyJobPending('ocs-style-active-job')) {
+        // 没有可读 `#iframe` 的那一类页面（attachment 直挂顶层文档）真正待着的格子。
+        // 巡检掉了要在这里捡回来，判据与 OCS 循环那一格共用真源 `_rearmMediaGuardIfLost`。
+        this._rearmMediaGuardIfLost('ocs-style-active-job');
         this._studyCompleteAt = 0;
         return true;
       }
@@ -8199,6 +9207,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
      * 每一步都可超时、都留证据；连续 VOTE_MAX_TRIES 次没翻旗就进 VOTE_COOLDOWN_MS
      * 冷却（到期自动再试，是"能解释、可恢复"的出口，不是永久跳过），
      * 免得把同一个投票的提交打成刷屏。
+     * ⚠️ 唯一例外是"平台判这场已结束"那一类：它在第 4 发把证据交给 24 小时跳过名单 ——
+     * 见下面 ended 分支那一段（不落盘就永远数不到第 4 发）。
      */
     _runChaoxingVoteJob: async function (job) {
       if (!job) return false;
@@ -8242,7 +9252,19 @@ var OMITONE_CODE_REV = '0b01542ec8';
       // 否则一场还能投的投票会被一句题干里的"本课程已结束"误判死。
       if (!form.firsts.length && this._voteOverlayEnded(form.text)) {
         this._closeVoteOverlay(voteDoc);
-        this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        var endedRec = this._noteVoteTry(job, 'ended', VOTE_ENDED_COOLDOWN_MS);
+        // 数到第 4 发，把证据交给**已有的**持久放弃账（`localStorage['omitone_task_giveup']`，24 小时、
+        // 扛刷新，`xxtAI.clearTaskGiveUp()` 与弹窗「已完成任务重学」都能恢复）。
+        // 为什么必须落盘：`_voteTryMap` 只在页面内存里，整页刷新即清零 —— 于是"4 发预算 + 冷却"
+        // **结构上永远走不完一轮**（用完 → 刷新 → 归零 → 再用完），而投票交不出任何"放弃"证据，
+        // 读取侧那道 `skip task point in give-up list` 对投票型形同不存在，
+        // 这一节就永远撞同一份问卷、进度键每轮换格、`noop.rounds` 永远攒不满 → **刷完一门不换下一门**。
+        // ⚠️ 不新造一本账：键走 `_taskPointKey`，与读取侧那道闸**同一个收敛式**（`job:<jobid>`）。
+        var parkedKey = '';
+        if (endedRec && Number(endedRec.n) >= VOTE_MAX_TRIES) {
+          parkedKey = this._taskPointKey(job) || '';
+          if (parkedKey) this._markTaskGivenUp(parkedKey, { name: job.name, reason: 'vote-ended', attempts: endedRec.n });
+        }
         emitRuntimeLog('warn', 'vote survey closed', {
           jobid: job.jobid, text: form.text, last: 'ended',
           retryInMs: VOTE_ENDED_COOLDOWN_MS,
@@ -8250,6 +9272,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
             '不是永久跳过 —— ' + Math.round(VOTE_ENDED_COOLDOWN_MS / 60000) +
             ' 分钟后还会再点开一次，重新开放就投得进去。'
         });
+        if (parkedKey) {
+          emitRuntimeLog('warn', 'vote survey closed, parked 24h', {
+            jobid: job.jobid, key: parkedKey, tries: Number(endedRec.n || 0),
+            hint: '这一份问卷已按平台的"已结束"判满 ' + VOTE_MAX_TRIES + ' 发，记入 24 小时跳过名单' +
+              '（同一份卷子不再点开封面，这一节接着往下走）。老师中途重新开放时：' +
+              '弹窗「已完成任务重学」或控制台 xxtAI.clearTaskGiveUp() 立刻恢复。'
+          });
+        }
         return true;
       }
       if (!form.firsts.length && !form.submit) {
@@ -8775,12 +9805,19 @@ var OMITONE_CODE_REV = '0b01542ec8';
     _noteVoteTry: function (job, reason, coolOverride) {
       if (!this._voteTryMap || typeof this._voteTryMap !== 'object') this._voteTryMap = {};
       var key = this._voteTryKeyOf(job);
-      var prev = this._voteTryMap[key] || { n: 0, at: 0 };
+      var prev = this._voteTryMap[key] || { n: 0, at: 0, cool: 0 };
       var cool = Number(coolOverride || 0);
+      var own = Number(prev.cool || 0);
+      // ⚠️ `cool` 取**两侧较大者**，不是"这一发带没带 override"。
+      // 现场（2026-11-21 那一门）认成"已结束"之后，同一份问卷下一拍换了个失败形状
+      // （`no-check` / `overlay` 不带 override），旧写法把 30 分钟那一格**覆盖成 0** →
+      // `_voteTryCooledDown` 读 0 就退回默认的 5 分钟，于是日志那句「30 分钟后还会再点开」
+      // 在同一份问卷的两种形状交替时是假话 —— 而两种形状交替恰是现场实测到的形状。
       this._voteTryMap[key] = {
         n: Number(prev.n || 0) + 1, at: Date.now(), last: String(reason || ''),
-        cool: cool > 0 ? cool : 0
+        cool: cool > own ? cool : own
       };
+      return this._voteTryMap[key];
     },
 
     _clearVoteTry: function (job) {
@@ -8984,6 +10021,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
           var playingVideo = this._getVideoEl();
           if (playingVideo && !playingVideo.ended) {
             this._ensurePlaybackRate(playingVideo, "tick");
+            // ⚠️ 这一格在"视频还活着"时**走不到**：`_isPlaying` 为真 → 上面
+            //   `_ensureOcsStudyRunner()`（有可读 `#iframe` 的学习页）或
+            //   `_runOcsStyleStudy()` 的 `_isActiveStudyJobPending()`（没 `#iframe` 的页，
+            //   它是 `_isActiveMediaPending` 的超集）先认领了这一拍。
+            //   所以"巡检掉了要捡回来"装在**那两处**（`60-tasks-detect.js` 的
+            //   `ocs-runner-active-job` 与 `62-tasks-run.js` 的 `ocs-style-active-job`），
+            //   别装在这里 —— 现场量回过：`_checkInterval` 恒 null 而 `tickEpoch` 照涨，
+            //   这一行一次都没执行过（会话任务 #190，2026-11-20）。
             return;
           }
           if (playingVideo && playingVideo.ended) {
@@ -9160,7 +10205,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
       if (!key) return false;
       var record = this._taskGiveUpMap()[key];
       if (!record || !record.at) return false;
-      return Date.now() - Number(record.at) < 24 * 3600 * 1000;
+      return Date.now() - Number(record.at) < TASK_GIVEUP_TTL_MS;
     },
 
     _markTaskGivenUp: function (key, info) {
@@ -9182,6 +10227,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
       try { localStorage.removeItem(this._taskGiveUpStoreKey); } catch (e) {}
       this._taskAttempts = {};
       this._taskProgress = null;
+      this._mediaQuarantine = new WeakMap();
+      this._mediaReloadKeys = {};
     },
 
     _taskGiveUpList: function () {
@@ -9195,7 +10242,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
           reason: record.reason || '',
           attempts: record.attempts || 0,
           ageMinutes: Math.round((now - Number(record.at || 0)) / 60000),
-          expired: now - Number(record.at || 0) >= 24 * 3600 * 1000
+          expired: now - Number(record.at || 0) >= TASK_GIVEUP_TTL_MS
         };
       });
     },
@@ -9648,12 +10695,27 @@ var OMITONE_CODE_REV = '0b01542ec8';
       // 「还在问」与「问过、答案没用」是两格，各用各的地板；两格都不许**永久**哑掉。
       // ⚠️ 问出来的失败答案也必须有个地板：停在门户页时每拍（2 秒）都会走到这里，
       //    没有地板就等于每 2 秒敲一次后台，而下一拍判出来的还是同一格（批次 37/51 那一族的查询版）。
-      if (cache && !cache.answered && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return;
+      // ⚠️ 这一把尺**不许**再看 `answered`：批次 158 起刷新窗口里旧答案可以带着走（下面 carry），
+      //    那时 `answered` 是真、而「这一发还在问」也是真 —— 要求 `!answered` 会让刷新那 8 秒
+      //    每一拍（2 秒）都再敲一次后台，正是上面那句"自己造轮询"换了个入口。
+      if (cache && cache.pendingAt && now - cache.pendingAt < DISPLACED_ASK_PENDING_MS) return;
       if (cache && cache.answered && now - cache.at < DISPLACED_ASK_FRESH_MS) return;
-      this._studyTabStateCache = {
-        pendingAt: now, at: 0, answered: false, ok: false, reason: '', studyHref: '',
-        studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
-      };
+      // 批次 158：刷新时把**已经答过的那一份**借过来，别拿一张空白把它抹掉。
+      // 现场实测（1.3.1 预览版，用户中心那一枚，2026-11-21）：后台明确答 `never-study`（这页压根不是
+      // 插件带来的），插件也按这一格只说过一次「不催你回章节页」；可每 60 秒刷新把答案抹成「还在问」，
+      // 于是每 120 秒又把那句「请手动回到章节页」说回去 —— AGENTS §2 #12 说的正是这一族：
+      // 「不用管」和「这一门一直没刷」在用户眼里长得一模一样。
+      // ⚠️ 只借**一个刷新窗口**（答案可用 + 距今不超过 新鲜地板 + 待问地板）：
+      //    桥要是真死了，超出这一格就退回空白 stub = 「还在问」= 老地板照旧说话，
+      //    不许把"借来的答案"变成永久静音（§2 #16(c)：地板那句是"被顶下线"现场仅剩的证据）。
+      var carryMax = DISPLACED_ASK_FRESH_MS + DISPLACED_ASK_PENDING_MS;
+      var carry = (cache && cache.answered && cache.ok === true && now - cache.at < carryMax) ? cache : null;
+      this._studyTabStateCache = carry
+        ? Object.assign({}, carry, { pendingAt: now, carried: true })
+        : {
+            pendingAt: now, at: 0, answered: false, carried: false, ok: false, reason: '', studyHref: '',
+            studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
+          };
       var self = this;
       // ⚠️ `_withTimeout` 超时是 `resolve(undefined)`（AGENTS §2 #2），所以下面必须先认 `!data`
       Promise.resolve(this._withTimeout(bridgeSend('study_tab_state'), 8000)).then(function (data) {
@@ -9667,6 +10729,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
           pendingAt: 0,
           at: Date.now(),
           answered: true,
+          carried: false,           // 新答案落地，「借来的那一份」到此结束
           ok: ok,
           reason: ok ? String(data.reason) : 'unreadable',
           why: ok ? '' : String((data && data.error) || '后台没给答案').slice(0, 80),
@@ -9679,7 +10742,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
         };
       }).catch(function () {
         self._studyTabStateCache = {
-          pendingAt: 0, at: Date.now(), answered: true, ok: false, reason: 'unreadable', why: '问后台这条路本身抛了',
+          pendingAt: 0, at: Date.now(), answered: true, carried: false, ok: false, reason: 'unreadable', why: '问后台这条路本身抛了',
           studyHref: '', studyAgeMs: -1, awayMs: 0, otherStudyTabs: -1, rescues: -1, mayRescue: false
         };
       });
@@ -9696,6 +10759,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
      *
      * @returns {string} 'asking' 还没问到答案（交回调用方说老话）· 'silent' 答案有了但这条刚说过
      *                   'go-back' · 'another-page' · 'gave-up' · 'not-ours' · 'unknown'
+     * ⚠️ 批次 158：刷新窗口里 `_askStudyTabState` 会**借**上一份可用答案过来，所以那一族
+     *    落的是下面四格（由 `ok === true` 决定），不会再落回 'asking'；'asking' 现在只剩
+     *    「压根没答过」与「借无可借（桥死了、答案超出一个刷新窗口）」两种真形状。
      */
     _displacedStudyPagePlan: function (cache, now, lastAct, lastAt) {
       if (!cache) return 'asking';
@@ -9743,6 +10809,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
         otherStudyTabs: Number(c.otherStudyTabs),
         rescues: Number(c.rescues),
         href: String(location.href || '').slice(0, 90),
+        // 批次 158：说出这一句依据的是**刚问到的**还是**借来的**答案，以及那份答案距今多久 ——
+        // 现场只看 `reason` 分不开这两种，而"借来的答案说话"正是刷新窗口那几秒的形状。
+        carried: c.carried === true,
+        answerAgeMs: c.at ? Math.max(0, now - Number(c.at)) : -1,
         everyMs: act === 'not-ours' ? 0 : DISPLACED_SILENCE_MS
       };
       if (act === 'silent') return true;
@@ -12748,12 +13818,24 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._quizBatchSentAt = 0;
     },
 
-    _markQuizApiConnectionFailed: function (error) {
+    _markQuizApiConnectionFailed: function (error, who) {
       var message = error && error.message ? error.message : String(error || 'LLM 请求失败');
       // 不再永久写入 storage：改为 45 秒退避，期间跳过答题，之后自动重试并自愈
       this._quizApiFailUntil = Date.now() + 45000;
       this._quizApiLastError = String(message).slice(0, 300);
-      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000 });
+      // 「哪家哪个模型」由扩展侧算好随回包带过来（页面那份配置投影里没有渠道字段）。
+      // ⚠️ 拿不到时单独占一格，不许压成空串 —— 空串在日志里读起来像"没有渠道这回事"。
+      this._quizApiLastWho = String(who || '(这一发没带渠道：请求没走到服务商，或异常在半路抛出)').slice(0, 200);
+      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000, who: this._quizApiLastWho });
+    },
+
+    /**
+     * 读出「失败的是哪家哪个模型」，两处跳过日志共用这一把尺（写入口与读出口同形）。
+     * 还没问过模型就没这一格 —— 单独说清楚，不许留空串（空串读起来像"渠道是空的"，
+     * 而真相是"这一轮压根没发出请求"，两者修复方向完全相反）。
+     */
+    _quizApiWhoForLog: function () {
+      return String(this._quizApiLastWho || '(这一轮还没问过模型，渠道没读过)').slice(0, 200);
     },
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
@@ -12769,6 +13851,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
           emitRuntimeLog('warn', 'quiz blocked by api, holding unit', {
             reason: skipReason,
             heldMs: heldMs,
+            who: this._quizApiWhoForLog(),
             hint: '这一节压着没做的题，但答题链路现在用不了 —— 已**停在本节不翻页**（不是已完成）。' +
               '填好 API Key 或等网络恢复就会自动继续；按住超过 3 分钟才会跳过这一节'
           });
@@ -12787,6 +13870,7 @@ var OMITONE_CODE_REV = '0b01542ec8';
         emitRuntimeLog('warn', 'quiz blocked too long, giving up unit', {
           reason: skipReason,
           heldMs: Date.now() - blockedSince,
+          who: this._quizApiWhoForLog(),
           hint: '按住整节超过 3 分钟仍未恢复，改判跳过 —— 这些题**没做过**，配好链路后请开重学把这节补回来'
         });
       }
@@ -12797,7 +13881,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
         this._quizApiSkipLogAt = now;
         emitRuntimeLog('warn', 'skip quiz because api unavailable', {
           reason: skipReason,
-          error: String(this._quizApiLastError || '').slice(0, 160)
+          error: String(this._quizApiLastError || '').slice(0, 160),
+          who: this._quizApiWhoForLog()
         });
       }
       if (this._switchToNextLearningCard(skipReason)) return true;
@@ -12842,6 +13927,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
     _shouldSkipQuizBySubmitAttempts: function (preferredDoc) {
+      // 本地调试档（`quizRejectGiveUp=false`）：交卷次数到顶也不放手，继续重答重交。
+      if (this.configs && this.configs.quizRejectGiveUp === false) return false;
       return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
@@ -13019,6 +14106,11 @@ var OMITONE_CODE_REV = '0b01542ec8';
       this._quizSubmitStartedAt = now;
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
+      // 一次提交可能连着几发（btnBlueSubmit → 确认弹窗），**只有进入新一轮时**才清账：
+      // 在确认那一发上清零会把点击时已经发出的请求从证据里抹掉。
+      if (!wasPending) {
+        this._quizSubmitNet = { xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] };
+      }
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
       var questionsDoc = this._getQuizDocumentFromQuestions(this._quizCurrentQuestions);
       // ⚠️ 三个键**必须同源**（批次 8）：`key` 是这次真正记账的槽位、`accountFrom` 是它的出处、
@@ -13085,6 +14177,41 @@ var OMITONE_CODE_REV = '0b01542ec8';
       try {
         var self = this;
         var interesting = /work|submit|exam|homework|answer/i;
+        // 旁路账：只记**计数、状态码、回包里跟判分有关的词** ——
+        // 不记 URL / 请求体 / 回包原文：环会被导出、跨会话留存，而学习通地址里带着
+        // enc/cpi 这类课程标识。原文仍留在 console（不落环）。
+        var note = function (kind, url, status, text, failed, pendingAtSend) {
+          try {
+            var net = self._quizSubmitNet;
+            if (!net) return;
+            if (!net.statuses) net.statuses = [];
+            if (!net.words) net.words = [];
+            net[kind] = (net[kind] || 0) + 1;
+            if (failed) net.failed = (net.failed || 0) + 1;
+            if (status != null) {
+              net.done = (net.done || 0) + 1;
+              if (net.statuses.indexOf(status) < 0 && net.statuses.length < 6) net.statuses.push(status);
+            }
+            var words = String(text || '').match(/失败|成功|未能|不能|无法|重复|已提交|已交|请勿|错误|异常|超时|提交/g);
+            if (words) {
+              for (var i = 0; i < words.length && net.words.length < 8; i++) {
+                if (net.words.indexOf(words[i]) < 0) net.words.push(words[i]);
+              }
+            }
+            // 进环的时机：**发出去那一刻**正在等交卷结果，或它回来时还在等。
+            // 这样超时之后才回来的响应也留得下证据；平时的 AJAX 不占 200 条环。
+            if ((pendingAtSend || self._quizSubmitPending) && interesting.test(url)) {
+              emitRuntimeLog('info', 'quiz submit network', {
+                kind: kind,
+                status: status == null ? -1 : status,
+                ok: failed ? false : (status == null ? null : (status >= 200 && status < 400)),
+                respLen: String(text || '').length,
+                pendingAtSend: !!pendingAtSend,
+                words: net.words.slice(0)
+              });
+            }
+          } catch (eN) {}
+        };
         var XHR = window.XMLHttpRequest;
         if (XHR && XHR.prototype && XHR.prototype.open && XHR.prototype.send) {
           var origOpen = XHR.prototype.open;
@@ -13107,18 +14234,57 @@ var OMITONE_CODE_REV = '0b01542ec8';
                   try { b = JSON.stringify(b); } catch (e1) { b = String(b); }
                 }
                 console.log('[Omitone] submit sniffer body', String(b || '').slice(0, 800));
+                var xhr = this;
+                var pendingAtSend = !!self._quizSubmitPending;
                 this.addEventListener('loadend', function () {
                   try {
                     console.log('[Omitone] submit sniffer ←', this.status,
                       String(this.responseText || '').slice(0, 800));
+                    // status 0 = 网络层直接失败（断网 / 被拦 / 中止），单独算一种
+                    note('xhr', xhr.__omitoneUrl, this.status || 0, this.responseText, this.status === 0, pendingAtSend);
                   } catch (e2) {}
                 });
               }
             } catch (e3) {}
             return origSend.apply(this, arguments);
           };
-          console.log('[Omitone] submit sniffer installed');
         }
+        if (typeof window.fetch === 'function') {
+          var origFetch = window.fetch;
+          window.fetch = function (input, init) {
+            var url = '';
+            var method = '';
+            try {
+              url = typeof input === 'string' ? input : String((input && input.url) || input || '');
+              method = String((init && init.method) || (input && input.method) || 'GET');
+            } catch (eF0) {}
+            var matched = interesting.test(url);
+            var pendingAtSend = !!self._quizSubmitPending;
+            var p = origFetch.apply(this, arguments);
+            if (!matched) return p;
+            try { console.log('[Omitone] submit sniffer fetch →', method, url); } catch (eF3) {}
+            // 完全穿透：只挂旁路回调，返回的仍是原 Promise（不改结果、不改异常）。
+            p.then(function (res) {
+              try {
+                var status = res ? res.status : 0;
+                try {
+                  var clone = res && res.clone ? res.clone() : res;
+                  clone.text().then(function (t) {
+                    note('fetch', url, status, t, false, pendingAtSend);
+                  }, function () {
+                    note('fetch', url, status, '', false, pendingAtSend);
+                  });
+                } catch (eF4) { note('fetch', url, status, '', false, pendingAtSend); }
+              } catch (eF5) {}
+            }, function () {
+              note('fetch', url, 0, '', true, pendingAtSend);
+            });
+            return p;
+          };
+          self._submitSnifferFetch = true;
+        }
+        self._submitSnifferCoverage = self._submitSnifferFetch ? 'xhr+fetch' : 'xhr';
+        console.log('[Omitone] submit sniffer installed', self._submitSnifferCoverage);
       } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
     },
 
@@ -13164,6 +14330,22 @@ var OMITONE_CODE_REV = '0b01542ec8';
         // 没有这段的话，日志里只剩一句「等超时了」，缺哪道条件完全靠猜。
         var diag = this._describeQuizResultPage(preferredDoc || null);
         diag.waitMs = waitMs;
+        // 这一发超时记在哪一份卷子上，连攒几次由 `_shouldHoldQuizBeforeNext` 放手。
+        diag.stalls = this._noteQuizSubmitStall(preferredDoc || null);
+        // 旁路观测到的提交请求 —— 「平台静默拒收」与「我们根本没发出去」靠这一格分开。
+        diag.observer = this._submitSnifferCoverage || 'none';
+        var net = this._quizSubmitNet || null;
+        diag.net = net ? {
+          xhr: Number(net.xhr) || 0,
+          fetch: Number(net.fetch) || 0,
+          done: Number(net.done) || 0,
+          failed: Number(net.failed) || 0,
+          statuses: (net.statuses || []).slice(0, 8),
+          words: (net.words || []).slice(0, 8)
+        } : null;
+        diag.netHint = (diag.net && (diag.net.xhr + diag.net.fetch) > 0)
+          ? '看 net.statuses / net.words：平台拒收时状态码或回包文案与「没发出去」不同'
+          : '这一页的 XHR/fetch 上没观察到提交请求 —— 0 条不等于没发（观测器只覆盖本页；跨域帧、表单直交、页面跳转都绕得开它）';
         emitRuntimeLog('warn', 'quiz submit wait timeout', diag);
         return false;
       }
@@ -13172,6 +14354,155 @@ var OMITONE_CODE_REV = '0b01542ec8';
         this._quizSubmitLogAt = now;
         console.log('%c[Omitone] waiting quiz submit result', 'color:#9C27B0');
       }
+      return true;
+    },
+
+    /**
+     * 「等结果页等超时」这件事记在哪一份卷子上 —— 返回连攒到第几次。
+     *
+     * ⚠️ 换了卷子就**重新起算**（键变了说明这是另一份卷子的账）；
+     *    同一份卷子连续攒满 3 次没有一次到达结果页，才轮到 `_shouldHoldQuizBeforeNext` 放手。
+     *    这与批次 86 / §2 #13 那条「跨拍记账不许被同一轮动作清零」是同一族：
+     *    计数器只能由「真的换了一份卷子」重置，不能由一次重试清零。
+     */
+    _noteQuizSubmitStall: function (preferredDoc) {
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) { key = ''; }
+      if (!key) {
+        // 五个 id 字段全空时退回「一帧一份卷子」的身份（同一份卷子的键跨拍稳定、换一帧就换键）——
+        // 不用常量 `paper:unknown`，否则上一卷的停滞次数会算到下一卷头上（§2 #13 同一族）。
+        try { key = String(this._getQuizDocumentIdentity(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eId) { key = ''; }
+      }
+      if (!key) key = 'paper:unknown';
+      if (this._quizSubmitStallKey !== key) {
+        this._quizSubmitStallKey = key;
+        this._quizSubmitStallCount = 0;
+      }
+      this._quizSubmitStallCount = (Number(this._quizSubmitStallCount) || 0) + 1;
+      this._quizSubmitStallAt = Date.now();
+      return this._quizSubmitStallCount;
+    },
+
+    /**
+     * 这一份卷子的任务点 id —— 放弃名单要按它记，才能跨轮次按住同一个任务点。
+     *
+     * 三级来源，前一级拿不到才看下一级：① 卷子文档的隐藏字段 `#jobid`；
+     * ② 宿主帧的 `jobid` / `_jobid` 属性（`_classifyTaskFrame` 的 explicitJob 也认这一枚）；
+     * ③ 卡片里**恰好一枚**未完成的 quiz 任务点（多于一枚时认不出是哪一份，宁可返回空串）。
+     *
+     * @param {Document} doc 卷子所在文档
+     * @param {boolean} [allowTaskScan] 是否允许第 ③ 级（它要遍历全部帧，别放进热路径）
+     */
+    _getQuizGiveUpJobId: function (doc, allowTaskScan) {
+      var id = this._getQuizFieldValue(doc || null, 'jobid');
+      if (id) return id;
+      try {
+        var frame = doc && doc.defaultView ? doc.defaultView.frameElement : null;
+        if (frame && frame.getAttribute) {
+          var attr = String(frame.getAttribute('jobid') || frame.getAttribute('_jobid') || '').trim();
+          if (attr) return attr;
+        }
+      } catch (eFrame) {}
+      if (!allowTaskScan) return '';
+      try {
+        var quizTasks = (this._collectVisibleTaskFrames() || []).filter(function (task) {
+          return task && !task.finished && task.type === 'quiz';
+        });
+        if (quizTasks.length === 1) {
+          var taskId = String(this._getQuizPaperKeyFromTask(quizTasks[0]) || '').trim();
+          if (taskId) return taskId;
+        }
+      } catch (eScan) {}
+      return '';
+    },
+
+    /** 页面上这一份卷子的任务点是不是已经在 24 小时放弃名单里。 */
+    _isQuizGivenUpInDom: function (preferredDoc) {
+      try {
+        var doc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
+        var jobid = this._getQuizGiveUpJobId(doc || null, false);
+        return !!(jobid && this._isTaskGivenUp('job:' + jobid));
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
+     * 连续几次「等结果页都等不到」之后放手这一份卷子 —— 有界，但**不冒充平台完成**。
+     *
+     * 现场（2026-11-25，#232）：填答审计说题都填上了、提交流程也走完了，
+     * 平台既不出判分页也不清空表单，于是 `_shouldHoldQuizBeforeNext` 的
+     * 「还有可交互的提交表单」那一支每一轮都按住整节 —— 结构上没有次数上限、也没有时间上限，
+     * 那一门课就永远停在这一节（现场三条 `quiz submit wait timeout` 间隔约 32 分钟）。
+     *
+     * 两件事一起做，缺一半都不算修好：
+     *   ① 把这一枚任务点写进**现有**的 24 小时放弃名单（与视频那一族同一本账），
+     *      于是换节之后调度器不会过一会儿又把它派回来；
+     *   ② 放开这一节往前走（与「提交次数到顶」那条走同一条出口）。
+     * ⚠️ 不写任何「任务点已完成」的标记 —— 平台没判过，这里也不许替它判。
+     */
+    _giveUpQuizSubmitAfterStalls: function (doc, reason) {
+      var stalls = Number(this._quizSubmitStallCount) || 0;
+      var attempts = this._getQuizSubmitAttemptCount(doc || null);
+      var maxAttempts = this._getQuizMaxSubmitAttempts(doc || null);
+      var paperKey = '';
+      try { paperKey = String(this._getQuizWorkKey(this._getQuizAccountDocument(doc || null)) || ''); } catch (eKey) { paperKey = ''; }
+      var jobid = this._getQuizGiveUpJobId(doc || null, true);
+      var gaveUp = false;
+      if (jobid) {
+        this._markTaskGivenUp('job:' + jobid, {
+          name: String(jobid).slice(0, 60),
+          reason: 'quiz-submit-never-accepted',
+          attempts: attempts
+        });
+        gaveUp = true;
+      }
+      var net = this._quizSubmitNet || {};
+      emitRuntimeLog('warn', 'quiz submit never accepted, giving up unit', {
+        reason: reason || '',
+        stalls: stalls,
+        attempts: attempts,
+        maxAttempts: maxAttempts,
+        paperKey: paperKey.slice(0, 90),
+        jobid: String(jobid || '').slice(0, 60),
+        gaveUp: gaveUp,
+        observer: this._submitSnifferCoverage || 'none',
+        xhr: Number(net.xhr) || 0,
+        fetch: Number(net.fetch) || 0,
+        failed: Number(net.failed) || 0,
+        statuses: (net.statuses || []).slice(0, 8),
+        words: (net.words || []).slice(0, 8),
+        hint: gaveUp
+          ? '已写进 24 小时任务点放弃名单；要让它再试，控制台执行 xxtAI.clearTaskGiveUp()'
+          : '认不出这一枚任务点的 jobid，没写放弃名单 —— 下一轮可能还会派回来'
+      });
+
+      this._quizInProgress = false;
+      this._quizAnswered = true;
+      this._quizSubmitPending = false;
+      this._quizSubmitStartedAt = 0;
+      this._quizReadyToSubmit = false;
+      this._quizReadyWorkKey = '';
+      this._quizCurrentAnsweredKeys = {};
+      this._quizCurrentAnswerValues = {};
+      this._quizCurrentQuestions = null;
+      this._quizSubmitStallKey = '';
+      this._quizSubmitStallCount = 0;
+      this._quizSubmitStallAt = 0;
+
+      this._setQuizForceSkip(90000, paperKey || undefined);
+      if (this._switchToNextLearningCard('quiz-submit-given-up')) return true;
+      try {
+        var nextButton = document.querySelector('#prevNextFocusNext');
+        if (nextButton) {
+          nextButton.click();
+          this._resetRuntimeState();
+          // `_resetRuntimeState` 会把暂停窗口一起清掉，点完之后必须重新写一次
+          this._setQuizForceSkip(90000, paperKey || undefined);
+          return true;
+        }
+      } catch (e) {}
+      this.nextUnit();
       return true;
     },
 
@@ -13207,9 +14538,28 @@ var OMITONE_CODE_REV = '0b01542ec8';
         return true;
       }
       if (this._hasActiveQuizSubmitForm(doc)) {
+        // 平台既不出判分页、也不清表单 —— 这一支原先**既没有次数上限也没有时间上限**，
+        // 一按住就是整节停摆（#232：三条超时各自相隔约 32 分钟，课永远停在这一节）。
+        // 攒满 3 次才放手：一次超时可能只是页面慢，连着三次都没有一次到达结果页就是死局。
+        if ((Number(this._quizSubmitStallCount) || 0) >= 3) {
+          if (this.configs && this.configs.quizRejectGiveUp === false) {
+            if (shouldLog) {
+              this._quizHoldLogAt = now;
+              emitRuntimeLog('warn', 'quiz submit rejected, holding in debug mode', {
+                reason: reason || '',
+                stalls: Number(this._quizSubmitStallCount) || 0
+              });
+            }
+            return true;
+          }
+          return this._giveUpQuizSubmitAfterStalls(doc, reason);
+        }
         if (shouldLog) {
           this._quizHoldLogAt = now;
-          emitRuntimeLog('warn', 'hold unsubmitted quiz before next', { reason: reason || '' });
+          emitRuntimeLog('warn', 'hold unsubmitted quiz before next', {
+            reason: reason || '',
+            stalls: Number(this._quizSubmitStallCount) || 0
+          });
         }
         return true;
       }
@@ -13297,6 +14647,12 @@ var OMITONE_CODE_REV = '0b01542ec8';
       if (this._isQuizApiUnavailable()) return this._isQuizBlockedByApi();
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
+
+      // ⚠️ 放弃名单是**跨轮次**的：`_resetRuntimeState()` 会把 `_quizAnswered` 清掉、
+      // 90 秒暂停窗口也早晚过期 —— 只剩这一格能在「不干活也不放手」的原地不复活
+      // （#232：平台静默拒收之后，这一节会被每一轮重新按住）。
+      // 放在在飞动作之后：提交/作答正飞着时不许被它截断。
+      if (this._isQuizGivenUpInDom(preferredDoc || null)) return false;
 
       var doc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
       if (doc && this._isQuizPassedOrFinished(doc)) return false;
@@ -13858,7 +15214,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
           if (result && result.parseError) {
             // API 连接正常，仅答案解析失败：保留测验稍后重试，不标记连接失败
             emitRuntimeLog('warn', 'quiz llm parse failed, keep quiz for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -13873,13 +15230,15 @@ var OMITONE_CODE_REV = '0b01542ec8';
             // 所以这里只跳过本轮、把原话留给用户，改好配置后自动恢复。
             emitRuntimeLog('error', 'quiz llm rejected permanently, no retry', {
               error: String(result.error || '').slice(0, 200),
-              skipMs: PERMANENT_LLM_ERROR_SKIP_MS
+              skipMs: PERMANENT_LLM_ERROR_SKIP_MS,
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._setQuizForceSkip(PERMANENT_LLM_ERROR_SKIP_MS);
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败', result && result.who);
           this._skipQuizForApiUnavailable('llm-request-failed', quizDoc);
           return;
         }
@@ -14360,17 +15719,27 @@ var OMITONE_CODE_REV = '0b01542ec8';
         var qid = String((el.getAttribute && (el.getAttribute('qid') || el.getAttribute('data-qid'))) || '').trim();
         if (qid) return qid;
 
-        // mooc2 新版作业页把 qid 放在容器的 data 属性上（容器类名 .singleQuesId）。
-        // 真源 `_quizDetectorSelector`：closest 按并集找最近的题目容器 ——
-        // 真实 TiMu/Cy 容器带的是 qid 属性、没有 data，会正常落到下面的回退，语义不变
-        var wrapper = el.closest ? el.closest(this._quizDetectorSelector) : null;
-        qid = wrapper && wrapper.getAttribute ? String(wrapper.getAttribute('data') || '').trim() : '';
-        if (qid) return qid;
+        // 老引擎把 qid 挂在**每个选项** li[qid] 上，而题目容器 `.TiMu[data]` 只是序号（现场量到 0/1/3）。
+        // 先认后代 [qid]：容器自己就是宿主时也走这一支（等于第 1 步）。
+        var inner = el.querySelector ? el.querySelector('[qid], [data-qid]') : null;
+        var innerQid = String((inner && inner.getAttribute && (inner.getAttribute('qid') || inner.getAttribute('data-qid'))) || '').trim();
+        if (innerQid) return innerQid;
 
+        // 隐藏域是平台提交时读的字段，id 里那段数字是最硬的 qid 来源。
         var hidden = this._findQuizAnswerInput(el, '');
         var id = hidden ? String(hidden.id || hidden.name || '') : '';
         var match = id.match(/^answer(\d+)/);
         if (match) return match[1];
+
+        // mooc2 新版作业页把 qid 放在容器的 data 属性上（容器类名 .singleQuesId）。
+        // ⚠️ 只在**存在对应 #answer{data}** 时才认 —— 否则老引擎的序号 data 会被当成 qid。
+        var wrapper = el.closest ? el.closest(this._quizDetectorSelector) : null;
+        var wrapperData = String((wrapper && wrapper.getAttribute && wrapper.getAttribute('data')) || '').trim();
+        if (wrapperData) {
+          var hasAnswer = false;
+          try { hasAnswer = !!(el.ownerDocument && el.ownerDocument.getElementById && el.ownerDocument.getElementById('answer' + wrapperData)); } catch (eA) {}
+          if (hasAnswer) return wrapperData;
+        }
 
         var badge = el.querySelector ? el.querySelector('.num_option, .num_option_dx') : null;
         var name = badge ? String(badge.getAttribute('name') || '') : '';
@@ -15813,6 +17182,13 @@ var OMITONE_CODE_REV = '0b01542ec8';
       if (text.indexOf('判断') !== -1 || text.indexOf('对错') !== -1) return 'judge';
       if (text.indexOf('填空') !== -1) return 'fill';
       if (/简答|问答|论述|名词解释/.test(text)) return 'short';
+      // 老引擎把题型挂在选项 li[qtype] 上（现场：li.before-after[qid][qtype]）。
+      // 其余信号都没有时才用它 —— 顺序不抢前面那几道判据（§2 #5）。
+      try {
+        var typedOpt = el.querySelector ? el.querySelector('[qtype]') : null;
+        var qtValue = typedOpt ? String(typedOpt.getAttribute('qtype') || '').trim() : '';
+        if (qtValue) return this._mapQuizTypeValue(qtValue);
+      } catch (eQt) {}
       return 'single';
     },
 
@@ -16156,6 +17532,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
       }
       var usePositionFallback = !anyKnownLetter && items.length >= 2 && items.length <= 6;
 
+      var positionHit = null;
+      var dataHit = null;
       for (var i = 0; i < items.length; i++) {
         var item = items[i];
         var letter = '';
@@ -16172,10 +17550,18 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
         var optionText = this._extractOptionText(item);
         if (questionType === 'judge' && this._isJudgeOptionMatch(item, answer, optionText, dataValue, letter)) return item;
-        if (isLetterOnly && letter === answerUpper) return item;
-        if (!isLetterOnly && optionText && (optionText === answerStr || optionText.indexOf(answerStr) !== -1 || answerStr.indexOf(optionText) !== -1)) return item;
+        if (isLetterOnly) {
+          // 模型/本地答案的字母是**位置字母**（提示词按 DOM 顺序标 A/B/C）；
+          // 徽标 data 是平台认的值（randomOptions 下两者不同），只负责最终写入，不负责认选项。
+          // 先收位置命中；整圈都没位置命中时才退回 data（兼容确实按 data 字母给的调用方）。
+          var posLetter = String.fromCharCode(65 + i);
+          if (!positionHit && posLetter === answerUpper) positionHit = item;
+          if (!dataHit && letter === answerUpper) dataHit = item;
+          continue;
+        }
+        if (optionText && (optionText === answerStr || optionText.indexOf(answerStr) !== -1 || answerStr.indexOf(optionText) !== -1)) return item;
       }
-      return null;
+      return positionHit || dataHit || null;
     },
 
 
@@ -16267,8 +17653,14 @@ var OMITONE_CODE_REV = '0b01542ec8';
       }
 
       if (!item._optionInput) {
+        // 老引擎把 addChoice(this) / addMultipleChoice(this) 挂在选项宿主（li）上：
+        // 点 item 已经触发一次，再点子徽标会冒泡回同一个宿主 —— 同一发切两次 = 复选又取消。
+        var clickOnceHost = null;
+        try {
+          clickOnceHost = item.closest ? item.closest('[onclick*="addChoice"], [onclick*="addMultipleChoice"]') : null;
+        } catch (eHost) {}
         try { item.click(); } catch (e) {}
-        if (item.querySelector) {
+        if (!clickOnceHost && item.querySelector) {
           var clickTarget = item.querySelector('.num_option, .num_option_dx, label, .fl.after');
           // 徽标可能就在 item 自身这一层，重复点同一个元素只会多点一次（复选上就是再取消）
           if (clickTarget && clickTarget !== item) {
@@ -16396,6 +17788,10 @@ var OMITONE_CODE_REV = '0b01542ec8';
               picked.sort();
               value = picked.join('');
             }
+            // 平台要求多选答案**按字母序**（#232 现场实测：点击序 BAC/CDA 被回「作业提交失败！」，
+            // 同一份选择按 ABC/ACD 提交即 success）。randomOptions 下徽标 data 与 DOM 次序无关，
+            // 这里必须自己排序 —— 站点自己的 addChoice 也是按它那边的顺序拼，不能指望我们跟它一致。
+            value = String(value || '').replace(/\s+/g, '').split('').sort().join('');
           }
           if (value) {
             hidden.value = value;
@@ -16741,7 +18137,9 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
 
     /**
-     * 填空题：把答案按 `|||` 分段写进题目容器里的**每一个文本框**，并同步隐藏答案域。
+     * 填空题：把答案分段写进题目容器里的**每一个文本框**，并同步隐藏答案域。
+     *
+     * 分段口径见 `_splitFillAnswerParts`（真源 `|||`，非常规分隔符要段数对上才认）。
      *
      * 返回真正写到的可见答题控件数（0 = 这道题在我们眼里一个答题框都没有）。
      * 这个返回值是给 `_fillAnswers` 的：只写进隐藏域、可见框却空着，
@@ -16775,17 +18173,19 @@ var OMITONE_CODE_REV = '0b01542ec8';
       }
 
       var values = [];
+      var splitMode = 'llm-array';
       if (Array.isArray(value)) {
         values = value.map(function (item) {
           return String(this._normalizeAnswerValue(item) == null ? '' : this._normalizeAnswerValue(item)).trim();
         }.bind(this));
       } else {
         var raw = String(value == null ? '' : value).trim();
-        if (raw.indexOf('|||') !== -1) {
-          values = raw.split('|||').map(function (part) { return part.trim(); });
-        } else {
-          values = [raw];
-        }
+        var split = this._splitFillAnswerParts(raw, inputs.length);
+        values = split.parts;
+        splitMode = split.mode;
+      }
+      if (inputs.length >= 2 && values.length !== inputs.length) {
+        this._noteFillSplitMismatch(el, inputs.length, values, splitMode);
       }
 
       var setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
@@ -16816,6 +18216,71 @@ var OMITONE_CODE_REV = '0b01542ec8';
         }
       } catch (e) {}
       return inputs.length;
+    },
+
+
+    /**
+     * 一字符串的填空答案切成「每空一段」。
+     *
+     * 真源约定是 `|||`（`libs/prompt.js` 的 FORMAT_HINT），**无条件按它切**。
+     * 但模型会自己发明分隔符：现场实测（GitHub issue #2，2026-11-19，四个空的填空）
+     * 回的是 `答案A///答案B///答案C///答案D` —— 我们认不出来就当**一整串答案**，
+     * 于是 `_fillText` 那条"分不到就重复最后一格"的兜底把**同一串**写进四格，
+     * 正是用户那句「四个空都填了一样的错误答案」。
+     *
+     * 所以非常规分隔符只认**切出来的非空段数正好等于答题框数**：段数对不上说明这串
+     * 本来就不是按空写的（答案里常有 `2024/07`、`3/4` 这种），照旧整串交出去，
+     * 由 `_noteFillSplitMismatch` 单独说一声「拆不出来」，不许悄悄当切好了。
+     * 候选只放**三枚同形**与**两枚同形**的符号：单枚 `/`、`|`、`、` 在答案内部太常见，
+     * 有段数这道闸也照样会切错，宁可不切。
+     *
+     * @returns {{parts: string[], mode: string}} mode 是给日志的那一格，不参与判定
+     */
+    _splitFillAnswerParts: function (raw, boxCount) {
+      var text = String(raw == null ? '' : raw);
+      if (text.indexOf('|||') !== -1) {
+        return { parts: text.split('|||').map(function (part) { return part.trim(); }), mode: 'normal' };
+      }
+      if (boxCount >= 2) {
+        var loose = ['///', '｜｜｜', '//'];
+        for (var i = 0; i < loose.length; i++) {
+          if (text.indexOf(loose[i]) === -1) continue;
+          var trial = text.split(loose[i])
+            .map(function (part) { return String(part).trim(); })
+            .filter(function (part) { return part.length > 0; });
+          if (trial.length === boxCount) return { parts: trial, mode: 'loose:' + loose[i] };
+          // 认出了分隔符却对不上空数：交回整串，但把这一型留给日志
+          return { parts: [text.trim()], mode: 'loose-count-off:' + loose[i] };
+        }
+      }
+      return { parts: [text.trim()], mode: text.trim() ? 'none' : 'empty' };
+    },
+
+
+    /**
+     * 「答案段数和答题框数对不上」单独占一格 —— 同一道题的同一形状只说一次。
+     *
+     * 必须分格：现场只看到「四格一样的答案」这一句症状，而**三种成因修法完全不同** ——
+     * 模型只给了一串（`none`）、给了 `///` 却只有两段（`loose-count-off`）、
+     * `|||` 本身就切出三段（`normal`）。压成一句话就等于下次还得重查（AGENTS §2 #12）。
+     */
+    _noteFillSplitMismatch: function (el, boxes, parts, mode) {
+      var qid = '';
+      try { qid = String(this._getQuestionIdFromElement(el) || ''); } catch (eQ) {}
+      var key = (qid || 'anon') + '|' + boxes + '|' + parts.length + '|' + mode;
+      this._fillSplitNotified = this._fillSplitNotified || Object.create(null);
+      if (this._fillSplitNotified[key]) return;
+      this._fillSplitNotified[key] = true;
+      emitRuntimeLog('warn', 'fill answers not splittable per blank', {
+        qid: qid.slice(0, 24),
+        boxes: boxes,
+        parts: parts.length,
+        separator: mode,
+        emptyAnswer: !parts.some(function (part) { return String(part).trim(); }),
+        hint: parts.length === 1
+          ? '整串答案写进了每一格（不留白是批次 16 的口径），所以这几格内容相同'
+          : '段数与格子数不一致，多出来的格子重复最后一格'
+      });
     },
 
 
@@ -17666,6 +19131,13 @@ var OMITONE_CODE_REV = '0b01542ec8';
 
       function searchAll(doc, depth) {
         if (!doc || depth > 3) return null;
+        // #232 现场：交卷被拒后页面会先留下「作业提交失败/知道了」的告警层，它们同样是
+        // `.AlertCon02` 且带 `.bluebtn`，会抢在验证码窗前被选中 —— 于是确认流程去点「知道了」，
+        // 真正的 `#verifyCodeWin` 一次都没被认领。可见的验证码窗必须优先。
+        try {
+          var vw = doc.getElementById && doc.getElementById('verifyCodeWin');
+          if (vw && visible(vw) && vw.querySelector('#inputCode')) return vw;
+        } catch (eVw) {}
         for (var i = 0; i < selectors.length; i++) {
           var nodes = doc.querySelectorAll(selectors[i]);
           for (var j = 0; j < nodes.length; j++) {
@@ -17693,13 +19165,155 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
 
 
+    _dismissQuizSubmitAlerts: function (verify) {
+      try {
+        var doc = verify.win.ownerDocument;
+        var layers = doc.querySelectorAll('.AlertCon02');
+        for (var i = 0; i < layers.length; i++) {
+          var layer = layers[i];
+          if (layer === verify.win || !visible(layer)) continue;
+          if (String(layer.innerText || '').indexOf('失败') < 0) continue;
+          var btns = layer.querySelectorAll('a, button');
+          for (var j = 0; j < btns.length; j++) {
+            if (String(btns[j].textContent || '').trim() === '知道了') {
+              try { btns[j].click(); } catch (eBtn) {}
+              break;
+            }
+          }
+        }
+      } catch (eAll) {}
+    },
+
+    _findWorkVerifyWindow: function (dialog) {
+      var win = null;
+      try {
+        win = dialog && dialog.id === 'verifyCodeWin' ? dialog
+          : (dialog && dialog.querySelector ? dialog.querySelector('#verifyCodeWin') : null);
+      } catch (e0) { win = null; }
+      if (!win) {
+        // 传进来的可能是「作业提交失败/知道了」那一层：验证码窗在它后面。只认**可见**的那一枚，
+        // 隐藏的旧窗（上一次失败后被站点藏起来）不许打断告警的收尾点击。
+        var roots = [];
+        try { roots.push(this._resolveQuizSubmitDocument(null)); } catch (eR1) {}
+        try { roots.push(this._getMainDocument()); } catch (eR2) {}
+        for (var r = 0; r < roots.length && !win; r++) {
+          try {
+            var cand = roots[r] && roots[r].getElementById ? roots[r].getElementById('verifyCodeWin') : null;
+            if (cand && visible(cand) && cand.querySelector('#inputCode')) win = cand;
+          } catch (eR3) {}
+        }
+      }
+      if (!win) return null;
+      var input = null, img = null;
+      try { input = win.querySelector('#inputCode, input[name="inputCode"]'); } catch (e1) { input = null; }
+      try { img = win.querySelector('#workVerifyImg, img[src*="verifyCode"]'); } catch (e2) { img = null; }
+      if (!input) return null;
+      return { win: win, input: input, img: img };
+    },
+
+    _solveWorkVerifyCaptcha: function (verify) {
+      var self = this;
+      var img = verify && verify.img;
+      if (!img) {
+        emitRuntimeLog('warn', 'quiz submit captcha window has no image', {});
+        return;
+      }
+      var winTries = Number(verify.win && verify.win.__omitoneSolveTries) || 0;
+      if (winTries >= 4) return;
+      var src = String(img.src || '');
+      if (img.__omitoneVerifySrc !== src) {
+        img.__omitoneVerifySrc = src;
+        img.__omitoneVerifyTries = 0;
+      }
+      if ((Number(img.__omitoneVerifyTries) || 0) >= 2) return;
+      if (this._captchaBusy) return;
+      if (verify.win) verify.win.__omitoneSolveTries = winTries + 1;
+      img.__omitoneVerifyTries = (Number(img.__omitoneVerifyTries) || 0) + 1;
+      this._captchaBusy = true;
+      emitRuntimeLog('info', 'quiz submit captcha required, solving', {
+        attempt: img.__omitoneVerifyTries
+      });
+      return this._recognizeCaptchaImage(img).then(function (r) {
+        self._captchaBusy = false;
+        if (!r || !r.ok) {
+          emitRuntimeLog('warn', 'quiz submit captcha unsolved, waiting for manual code', {
+            attempt: img.__omitoneVerifyTries,
+            reason: String((r && r.error) || '').slice(0, 160)
+          });
+          return;
+        }
+        var wrote = false;
+        try {
+          if (verify.input.isConnected === false) throw new Error('input detached');
+          var view = verify.input.ownerDocument && verify.input.ownerDocument.defaultView;
+          var Ev = (view && view.Event) || Event;
+          verify.input.value = r.code;
+          verify.input.dispatchEvent(new Ev('input', { bubbles: true }));
+          verify.input.dispatchEvent(new Ev('change', { bubbles: true }));
+          wrote = true;
+        } catch (eFill) {}
+        if (wrote) emitRuntimeLog('info', 'quiz submit captcha filled', { len: String(r.code || '').length });
+        else emitRuntimeLog('warn', 'quiz submit captcha fill failed, waiting for manual code', { real: 'unwritable' });
+      }).catch(function (e) {
+        self._captchaBusy = false;
+        emitRuntimeLog('warn', 'quiz submit captcha unsolved, waiting for manual code', {
+          attempt: img.__omitoneVerifyTries,
+          reason: String(e && e.message || e).slice(0, 160)
+        });
+      });
+    },
+
     _handleSubmitConfirmDialog: function (dialog) {
       if (!dialog) return false;
       var now = Date.now();
       if (now - this._submitConfirmLastClickAt < 400) return true;
 
+      // #232 现场抓包：交卷前的人机验证窗 `#verifyCodeWin` 就在这一类弹层里（`.AlertCon02`），
+      // 空着 `#inputCode` 点「确定」= 拿空 `pyFlag` 去提交，平台必定回「作业提交失败！」
+      // 并重新发一张验证码图 —— 于是同一份卷子被无限重交、页面永远停在「待完成」。
+      // 空码时先识别填码；识别不了就把窗留着等人工输入，**这一拍绝不点确定**。
+      var verify = this._findWorkVerifyWindow(dialog);
+      if (verify) {
+        this._dismissQuizSubmitAlerts(verify);
+        if (!String(verify.input.value || '').trim()) {
+          this._solveWorkVerifyCaptcha(verify);
+          // 识别不出来时的两条出口：调试档（quizRejectGiveUp=false）把窗留在页面上等人输；
+          // 上线版把窗关掉、交回「三次无进展就放手」那条有界路径 —— 两边都不许拿空 pyFlag 去提交。
+          var tries = Number(verify.img && verify.img.__omitoneVerifyTries) || 0;
+          var debugHold = this.configs && this.configs.quizRejectGiveUp === false;
+          if (!debugHold && (!verify.img || (tries >= 2 && !this._captchaBusy))) {
+            var hidAt = Number(verify.win.__omitoneHideLogAt) || 0;
+            var canSay = Date.now() - hidAt > 5000;
+            try {
+              var view = verify.win.ownerDocument && verify.win.ownerDocument.defaultView;
+              if (view && typeof view.hideWorkVerify === 'function') view.hideWorkVerify();
+              else verify.win.style.display = 'none';
+            } catch (eHide) {}
+            var stillShown = false;
+            try { stillShown = visible(verify.win); } catch (eVis) {}
+            if (canSay) {
+              verify.win.__omitoneHideLogAt = Date.now();
+              emitRuntimeLog('warn', stillShown
+                ? 'quiz submit captcha window still shown after hide'
+                : 'quiz submit captcha unsolved, closing window for bounded retry', { tries: tries });
+            }
+          }
+          return true;
+        }
+      }
+
       var submitBtn = this._findDialogButtonByText(dialog, ['提交', '确定', '确认', '交卷', '完成']);
       if (!submitBtn) return false;
+
+      // 「作业提交失败 / 验证码不正确 / 无效的参数」这类**告知层**只是把上一发的失败说给我们听，
+      // 点「知道了」是收尾、不是一次提交：记成 confirm-dialog 会让三次停滞额度被白白用光，
+      // 真正的那一发还没交出去就先被判了放手（#232 现场：连续四条 confirm-dialog 全是它在响）。
+      if (!verify && /作业提交失败|提交失败|无效的参数|验证码不正确/.test(textOf(dialog)) &&
+          /知道了/.test(textOf(dialog))) {
+        this._submitConfirmLastClickAt = now;
+        try { submitBtn.click(); } catch (eKnow) {}
+        return true;
+      }
 
       this._submitConfirmLastClickAt = now;
       console.log('[Omitone] confirm final submit');
@@ -19791,7 +21405,8 @@ var OMITONE_CODE_REV = '0b01542ec8';
           }
           if (result && result.parseError) {
             emitRuntimeLog('warn', 'popup quiz llm parse failed, keep popup for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -19802,19 +21417,24 @@ var OMITONE_CODE_REV = '0b01542ec8';
             // 这里改走"放弃这道弹题"：关掉弹窗 + 冷却 60 秒，
             // 既不会拿坏 Key 反复去撞接口，也不把课程卡在这里。
             emitRuntimeLog('error', 'popup quiz llm rejected permanently, no retry', {
-              error: String(result.error || '').slice(0, 200)
+              error: String(result.error || '').slice(0, 200),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._giveUpPopupQuiz(popup, 'llm-permanent-error');
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : '弹窗题 LLM 请求失败', result && result.who);
         } catch (e) {
           this._markQuizApiConnectionFailed(e);
         }
       }
 
-      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', { reason: this._getQuizApiUnavailableReason() || 'llm-request-failed' });
+      emitRuntimeLog('warn', 'skip popup quiz because api unavailable', {
+        reason: this._getQuizApiUnavailableReason() || 'llm-request-failed',
+        who: this._quizApiWhoForLog()
+      });
       var closeButton = this._findDialogButtonByText(popup, ['跳过', '关闭', '取消', '知道了']);
       if (closeButton) {
         try { closeButton.click(); } catch (e2) {}
@@ -19947,96 +21567,6 @@ var OMITONE_CODE_REV = '0b01542ec8';
     },
   };
 
-  function removeStartPanel() {
-    var panel = document.getElementById('xxt-panel');
-    if (panel) panel.remove();
-  }
-
-  function showStartPanel(config) {
-    removeStartPanel();
-
-    var currentConfig = mergeConfig(config);
-    var hasApiKey = !!(currentConfig.hasApiKey || currentConfig.randomAnswer);
-    var playOn = currentConfig.autoNext !== false;
-    var quizOn = !!(currentConfig.enableQuiz && hasApiKey);
-
-    var panel = document.createElement('div');
-    panel.id = 'xxt-panel';
-    panel.style.cssText = [
-      'position:fixed',
-      'top:50%',
-      'left:50%',
-      'transform:translate(-50%,-50%)',
-      'z-index:999999',
-      'background:#fff',
-      'border:1px solid #ddd',
-      'border-radius:10px',
-      'padding:24px',
-      'min-width:280px',
-      'font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
-      'box-shadow:0 10px 30px rgba(0,0,0,.12)',
-      'color:#111'
-    ].join(';');
-
-    function renderToggle(on) {
-      return '<span style="display:inline-flex;width:36px;height:20px;background:' + (on ? '#111' : '#ddd') + ';border-radius:20px;position:relative;">' +
-        '<span style="position:absolute;top:2px;left:' + (on ? '18px' : '2px') + ';width:16px;height:16px;border-radius:50%;background:#fff;"></span>' +
-        '</span>';
-    }
-
-      panel.innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">' +
-        '<strong style="font-size:15px;">' + APP_NAME + '</strong>' +
-        '<span style="font-size:11px;color:#999;">page runtime</span>' +
-      '</div>' +
-      '<div id="xxt-row-play" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;cursor:pointer;">' +
-        '<span>自动连播</span>' +
-        '<span id="xxt-toggle-play">' + renderToggle(playOn) + '</span>' +
-      '</div>' +
-      '<div id="xxt-row-quiz" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;' + (hasApiKey ? 'cursor:pointer;' : 'opacity:.45;') + '">' +
-        '<span>自动答题</span>' +
-        '<span id="xxt-toggle-quiz">' + (hasApiKey ? renderToggle(quizOn) : '<span style="font-size:11px;color:#999;">需 API Key</span>') + '</span>' +
-      '</div>' +
-      '<button id="xxt-btn-start" style="width:100%;margin-top:16px;padding:10px 0;border:none;border-radius:6px;background:#111;color:#fff;font-weight:600;cursor:pointer;">开始</button>' +
-      '<button id="xxt-btn-close" style="width:100%;margin-top:8px;padding:9px 0;border:1px solid #e6e6e6;border-radius:6px;background:#fff;color:#666;cursor:pointer;">关闭</button>';
-
-    document.body.appendChild(panel);
-
-    function updatePlay() {
-      var slot = document.getElementById('xxt-toggle-play');
-      if (slot) slot.innerHTML = renderToggle(playOn);
-    }
-
-    function updateQuiz() {
-      var slot = document.getElementById('xxt-toggle-quiz');
-      if (slot && hasApiKey) slot.innerHTML = renderToggle(quizOn);
-    }
-
-    document.getElementById('xxt-row-play').addEventListener('click', function () {
-      playOn = !playOn;
-      updatePlay();
-    });
-
-    if (hasApiKey) {
-      document.getElementById('xxt-row-quiz').addEventListener('click', function () {
-        quizOn = !quizOn;
-        updateQuiz();
-      });
-    }
-
-    document.getElementById('xxt-btn-start').addEventListener('click', function () {
-      panel.remove();
-      app.configs = mergeConfig(Object.assign({}, currentConfig, { autoNext: playOn, enableQuiz: quizOn && hasApiKey }));
-      app.run();
-      window._xxtApp = app;
-    });
-
-    document.getElementById('xxt-btn-close').addEventListener('click', function () {
-      panel.remove();
-      window._xxtApp = app;
-    });
-  }
-
   function shouldAutoStart() {
     var root = document.documentElement;
     if (!root) return false;
@@ -20049,25 +21579,16 @@ var OMITONE_CODE_REV = '0b01542ec8';
   app.configs = defaultConfig;
   window._xxtApp = app;
 
-  bridgeSend('get_config').then(function (config) {
+  // ⚠️ 这里**不再**弹那张居中的「开始 / 关闭」卡片（批次 146）。
+  // 启动入口只留插件弹窗的「开始运行」：它先写 xxtRunning、再带续跑标记重新注入，
+  // 走的就是下面 shouldAutoStart() 那一条。两处都能启动而状态只有一处更新，
+  // 用户看到的是「页面弹的卡片和插件弹窗说的话不一样」。
+  function startIfMarked(config) {
     app.configs = mergeConfig(config || defaultConfig);
-    // 只有"刷课进行中"（有续跑标记）时才自动开始——讨论页/验证码页也一样，
-    // 避免没在刷课时打开讨论区就被自动发评论
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    // 未刷课时进入讨论页/独立验证码页：保持静默，不显示面板、不做任何操作
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(app.configs);
-  }).catch(function () {
-    if (shouldAutoStart()) {
-      app.run();
-      return;
-    }
-    if (app._isDiscussionContext() || app._isStandaloneCaptchaPage()) return;
-    if (app._getMainFrame()) showStartPanel(defaultConfig);
-  });
+    if (shouldAutoStart()) app.run();
+  }
+
+  bridgeSend('get_config').then(startIfMarked, function () { startIfMarked(null); });
 
   var preventPause = function (event) {
     event.stopPropagation();
@@ -20088,10 +21609,13 @@ var OMITONE_CODE_REV = '0b01542ec8';
   });
 
   window.xxtAI = {
+    // 手动入口：只把弹窗里改过的配置重新读进内存（批次 146 之后不再弹卡片，
+    // 启动一律走弹窗的「开始运行」）。返回配置本身，方便在控制台直接看。
     reload: function () {
-      bridgeSend('get_config').then(function (config) {
+      return bridgeSend('get_config').then(function (config) {
         app.configs = mergeConfig(config || defaultConfig);
-        showStartPanel(app.configs);
+        emitRuntimeLog('info', 'config reloaded (manual)', { autoNext: app.configs.autoNext !== false, enableQuiz: !!app.configs.enableQuiz, hasApiKey: !!app.configs.hasApiKey });
+        return app.configs;
       });
     },
     next: function () {

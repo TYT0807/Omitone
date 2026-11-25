@@ -13,7 +13,12 @@ popup.js
 pet.js
 ```
 
-这些脚本都在 `DOMContentLoaded` 之前同步加载。`pet.js` 只依赖弹窗页面已经提供的 DOM、`isUpdateMuted`、`toast` 与 `omitone:run` 事件，不参与刷课业务。
+这些脚本都在 `DOMContentLoaded` 之前同步加载。`pet.js` 只依赖弹窗页面已经提供的 DOM、`toast` 与 `omitone:run` 事件，不参与刷课业务。
+
+1.3.1 起 `pet.js` 在设置页（`data-ui="fancy"`）只跑四季底色与点击水纹装饰，**不再画角色本体**；
+角色只在逗玩窗口（`?play=1`，`body.im`）里现身。设置页「吉祥物」栏的等级/好感状态行
+（`#petStatus`）由 `renderBond` 顺带更新，入口按钮（`#btnExpand` / `#btnPetBook` /
+`#btnPetChat` / `#btnPetDiag`）由 `popup.js` 开逗玩窗口并带 `&open=` 深链直达面板。
 
 ## 日志视图
 
@@ -36,8 +41,9 @@ pet.js
 
 - `#mascot`、`.pet-inner`、`.pet-art`
 - `#mascotBubble`、`#petMood`
-- `#petTools`、`#petBook`、`#petBookBody`、`#petBookClose`
-- `#btnPetShow`、`#checkUpdate`
+- `#petTools`（只剩「玩」「藏」两枚）、`#petBook`、`#petBookBody`、`#petBookClose`
+- 逗玩窗口底部那排：`.im-controls` 下的 `#imBack` / `#imBook` / `#imChat` / `#imDiag` / `#imRestorePet`
+- 设置页「吉祥物」栏：`#petStatus` 与 `#btnExpand` / `#btnPetBook` / `#btnPetChat` / `#btnPetDiag`
 
 沉浸式窗口通过 `?play=1` 和 `body.im` 定位角色；角色实际挂在 `body > #mascot`，立绘册在角色外部，避免 fixed 定位受 transform 影响。
 

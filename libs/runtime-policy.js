@@ -10,9 +10,13 @@
     'enableVote',
     'randomAnswer', 'enableCaptcha', 'blockedReload', 'enableMedia', 'enableSeek',
     'advanceAtNinetyPercent', 'enablePPT', 'enableHyperlink', 'restudy', 'apiConnectionFailed', 'visionEnabled',
-    'quizZeroFillSkip'];
+    'quizZeroFillSkip', 'quizRejectGiveUp'];
   var numbers = {
-    playbackRate: [0.25, 16], playbackRateCap: [1, 16], discussionTimeoutMs: [1000, 600000],
+    // ⚠️ `playbackRate`（弹窗那根「播放速度」滑条）在批次 146 整条删掉了 —— 站点按不住倍速的视频
+    // 被我们硬按上去会抽搐加黑屏。现在倍速只有一个来源：量到的播放器上限（`playbackRateCap` 只做封顶）。
+    // 删配置键必须**连写入方一起删**：`validatePatch` 认不出任何一个键就顶回**整张补丁**，
+    // 症状是「所有开关都存不住」（批次 34 那一族），不是「这一根滑条坏了」。
+    playbackRateCap: [1, 16], discussionTimeoutMs: [1000, 600000],
     visionMaxImagesPerQuestion: [1, 10], visionMaxImageBytes: [1024, 2097152],
     visionBudgetPerChapter: [0, 1000], visionImagesPerRequest: [1, 10],
     retryInterval: [100, 600000], maxRetries: [0, 100], videoCheckInterval: [100, 60000],
@@ -72,7 +76,7 @@
     if (booleans.indexOf(key) !== -1) return typeof value === 'boolean';
     if (own.call(numbers, key)) {
       return typeof value === 'number' && Number.isFinite(value) && value >= numbers[key][0] && value <= numbers[key][1]
-        && (key === 'playbackRate' || key === 'playbackRateCap' || Number.isInteger(value));
+        && (key === 'playbackRateCap' || Number.isInteger(value));
     }
     if (own.call(strings, key)) {
       return typeof value === 'string' && value.length <= strings[key]

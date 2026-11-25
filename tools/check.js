@@ -416,6 +416,26 @@ function checkFontTable() {
 var MANUAL_FILE = '使用说明.pdf';
 var ZIP_ASSET = 'omitone.zip';
 
+// 门面那一份 README —— 用户口径 2026-11-20「稳定版是我们的门面，树枝那边只为 AI 做事服务」：
+// 稳定线上门面 = 工作树这一份（**不许**改成读 HEAD，否则未提交的门面改动量不到，
+// 那是一条只会读旧账的尺）；支线上工作树那份是工作笔记，门面只能从 `git show main:README.md` 取。
+// 第 5c 项（预览直链附件名形状）与第 34 项（门面该不该有入口）共用这一把尺，免得两处各判各的通道。
+function facadeReadme(isExp) {
+  if (!isExp) return { text: read('README.md'), from: 'README.md（工作树 = 门面）', why: '' };
+  try {
+    var gres = spawnSync('git', ['show', 'main:README.md'], {
+      encoding: 'utf8', timeout: 15000, cwd: ROOT
+    });
+    if (gres.error) return { text: null, from: 'main:README.md', why: String(gres.error.code || gres.error.message) };
+    if (gres.status !== 0) {
+      return { text: null, from: 'main:README.md', why: '退出码 ' + gres.status + '（' +
+        String(gres.stderr || '').trim().split(/\r?\n/)[0] + '）' };
+    }
+    if (!String(gres.stdout || '').trim()) return { text: null, from: 'main:README.md', why: '回包是空的' };
+    return { text: String(gres.stdout).replace(/\r\n/g, '\n'), from: 'main:README.md', why: '' };
+  } catch (e) { return { text: null, from: 'main:README.md', why: String((e && e.message) || e) }; }
+}
+
 function checkUserEntryPoints() {
   var problemsHere = [];
 
@@ -443,6 +463,68 @@ function checkUserEntryPoints() {
   if (/releases\/latest\/download\/omitone-\d/.test(readme)) {
     problemsHere.push('README.md 的下载直链用了带版本号的附件名 —— ' +
       '附件名必须固定为 ' + ZIP_ASSET + '，否则每发一版直链就失效一次');
+  }
+
+  // 2b) 预览直链的形状（**门面**上的第二个入口，不管当前在哪条线工作）
+  //
+  // ⚠️ 这里只钉**形状**，不钉"该不该有"（那归第 34 项按通道判）。理由：
+  //    这一条一旦写错，两种错法都不报错 —— 挂到 `/releases/latest` 下面就是 404
+  //    （预览附件不在正式版那一版里），复用 `omitone.zip` 这个名字就是把实验版
+  //    发到正式口上（`releases/latest/download/omitone.zip` 按**名字**取件）。
+  //    前者同学骂作者链接坏了，后者是**所有人静悄悄地换上实验版**，都只有人来反馈才知道。
+  // ⚠️ 这一族**两页都要扫**：工作树那份与门面那一份。只扫工作树，在支线上等于
+  //    给草稿本查门面的错（main 上写错形状没人管）；只扫门面，支线工作树上真写错了又抓不住。
+  var pvShapes = [
+    [/releases\/download\/preview\/omitone\.zip/, '写成 releases/download/preview/omitone.zip —— 那是稳定通道的附件名，' +
+      '两条通道共用一个名字，正式版那条永久直链就变成给实验版发件'],
+    [/releases\/latest\/download\/omitone-preview/, '挂在 /releases/latest 下面 —— 预览附件不在正式版那一版里，点开就是 404']
+  ];
+  var pvScanTexts = [{ from: 'README.md（工作树）', text: readme }];
+  var PV_OK = ['omitone-preview.zip', 'Omitone-manual-preview.pdf'];
+  // ⚠️ 提取只取**文件名那一截**的合法字符。上一版的字符类是「除空白和括号引号之外都吃」，
+  //    而 README 除了完整直链，还把路径写进反引号小字（`…/preview/omitone-preview.zip`）——
+  //    闭引号和全角括号一起进了匹配，切出的尾巴带着那两个字符，**干净文档也报红**。
+  //    会误报的守卫和没有守卫一样害人（AGENTS §5），所以这一格配三条对照自己钉住提取器。
+  var pvNamesOf = function (text) {
+    var out = [], mm, re = /releases\/download\/preview\/([A-Za-z0-9._\-]+)/g;
+    while ((mm = re.exec(text))) out.push(mm[1]);
+    return out;
+  };
+  var pvSelf = [
+    ['名字写错的完整直链必须被逮住', pvNamesOf('https://git.io/x/releases/download/preview/omitone.zip').join() === 'omitone.zip'],
+    ['反引号里的相对路径不许读成名字对不上', pvNamesOf('写在 `releases/download/preview/omitone-preview.zip`）里').join() === 'omitone-preview.zip'],
+    ['说明书附件名照旧在许可名单里', pvNamesOf('releases/download/preview/Omitone-manual-preview.pdf').join() === 'Omitone-manual-preview.pdf']
+  ];
+  var pvSelfBad = pvSelf.filter(function (c) { return c[1] === false; });
+  if (pvSelfBad.length) {
+    problemsHere.push('预览直链提取器自己的对照格没过：' + pvSelfBad.map(function (c) { return c[0]; }).join(' / ') +
+      ' —— 这一闸现在要么抓不住写错的名字，要么会误报');
+  }
+  // 门面那一页才有人类看得见的下载入口 —— 支线上工作树是工作笔记，只扫它会得到"0 处命中"这种
+  // **最坏的绿**（闸没跑却像跑过）。所以这一格与第 34 项同一把尺：按通道取门面文本，两页各扫一遍。
+  var pvGate = require('./channel-gate.js');
+  var pvIsExp = pvGate.isExperimental(pvGate.readChannelNames().version_name);
+  var pvFacade = facadeReadme(pvIsExp);
+  if (pvFacade.text && pvFacade.text !== readme) pvScanTexts.push({ from: pvFacade.from, text: pvFacade.text });
+  pvScanTexts.forEach(function (t) {
+    pvShapes.forEach(function (p) {
+      if (p[0].test(t.text)) problemsHere.push(t.from + ' 的预览直链' + p[1]);
+    });
+  });
+  var pvLinks = pvFacade.text ? pvNamesOf(pvFacade.text) : [];
+  var pvBad = pvFacade.text ? pvLinks.filter(function (u) { return PV_OK.indexOf(u) === -1; }) : [];
+  if (pvBad.length) {
+    problemsHere.push('门面（' + pvFacade.from + '）的预览直链里有对不上预览附件名的地址：' + pvBad.join(' / ') +
+      '（只许 ' + PV_OK.join(' / ') + '）—— 名字写错就是 404，而 README 那一页看不出来');
+  }
+  if (!pvFacade.text) {
+    problemsHere.push('取不回门面那一页（' + pvFacade.why + '）—— 「预览附件名对不对」这一格本轮**根本没跑**，' +
+      '别把没跑读成通过（支线上门面只能从 git 取，第 34 项 g 同一发）');
+  } else if (!pvLinks.length) {
+    // 卫生格：门面里一处预览直链都扫不到 = 提取器整体空命中，措辞被改写时这条会静默变绿。
+    // 通道无关（预览入口是门面的固定组成部分，转正也不撤 —— 用户 2026-11-20）。
+    problemsHere.push('门面（' + pvFacade.from + '）里一处预览直链都没扫到 —— 「预览附件名对不对」这一闸这一轮根本没跑，' +
+      '别把这条读成通过（该不该有预览口归第 34 项判）');
   }
 
   // 3) 给人读的文档里的相对链接必须真实存在
@@ -669,8 +751,73 @@ function checkUserEntryPoints() {
     }
   }
 
+  // 8) 体积账本：README 里那些「约 N MB (P%)」必须对着构建出来的 zip 逐条目对得上
+  //
+  // 这一族以前只能靠人肉 `wc -c` 加心算，实测一批就漂了五格（文档写 3.3 / 2.02 / 1.75 MB，
+  // zip 里实际是 3.50 / 2.25 / 1.80）—— 文件语法正常、集成与 e2e 全绿，
+  // 只有用户在 GitHub 那一页看得见（§2 #9 那一族"只有人眼能看见"的失败形状）。
+  // ⚠️ 真源是 **`dist/*.zip` 的中央目录**，不是磁盘目录：磁盘上躺着不打包的件
+  //    （`resources/table.json` 347 KB、各处 README、`src/`），拿磁盘合计会得出另一套"错"数。
+  // ⚠️ 缺 zip / 量不出来 / 门面读不到 / 一行表格都没扫到，各自单独占一格（§2 #12），不许压成通过。
+  var sizeReadout = '';
+  try {
+    // 先跑这把尺自己的逐格对照，再拿它量文档 —— 尺坏了，量出来的"对"没有内容
+    var sizePath = path.join(__dirname, 'audit-readme-size.js');
+    var stRes = spawnSync(process.execPath, [sizePath, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    var stTxt = String(stRes.stdout || '') + String(stRes.stderr || '');
+    var stM = stTxt.match(/自检\s*(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (stRes.error) {
+      problemsHere.push('体积账本的逐格对照没跑成：' + String(stRes.error.code || stRes.error.message));
+    } else if (!stM) {
+      problemsHere.push('体积账本的逐格对照没打印那句「自检 N / M 格」（末行=' +
+        JSON.stringify(stTxt.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (stRes.status !== 0) {
+      // 退出码非 0 的两种成因分开说：某一格红了要点名是哪一格（要修尺），
+      // 中途崩了连格子名单都没交出来才是读不出（§2 #12，不许压成同一格）
+      var stFails = stTxt.split(/\r?\n/).filter(function (l) { return /^\[FAIL\]/.test(l); })
+        .map(function (l) { return l.split('[FAIL]')[1].split(' → ')[0].trim(); });
+      problemsHere.push(stFails.length ?
+        '体积账本的逐格对照红在 ' + stFails.join(' / ') + '（绿 ' + stM[1] + ' / ' + stM[2] + ' 格）—— 尺自己坏了，' +
+          '它量出来的「对」没有内容（摘掉任意一格，红就点那一格的名）' :
+        '体积账本的逐格对照退出码 ' + stRes.status + ' 却没交回任何格子名（末行=' +
+          JSON.stringify(stTxt.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不许当通过');
+    } else if (Number(stM[1]) !== Number(stM[2]) || Number(stM[2]) < 18) {
+      problemsHere.push('体积账本的逐格对照只绿 ' + stM[1] + ' / ' + stM[2] + ' 格（下限 18）—— ' +
+        '有格被跳过或被删时，"全绿"这两个字就没有内容');
+    } else {
+      var sizeAudit = require('./audit-readme-size.js');
+      var sizeAct = sizeAudit.measure();
+      if (sizeAct.verdict === 'missing-zip') {
+        problemsHere.push('体积账本这一格本轮没跑：没有 ' + sizeAct.zipName +
+          ' —— 先 `npm run build`，没有包就没有"用户下载到的字节"这份真源，不许拿磁盘目录顶上');
+      } else if (sizeAct.verdict !== 'ok') {
+        problemsHere.push('体积账本量不出来：' + sizeAct.verdict + '（读不出单独占一格，不许当成通过）');
+      } else {
+        var sizeGate = require('./channel-gate.js');
+        var sizeExp = sizeGate.isExperimental(sizeGate.readChannelNames().version_name);
+        var sizePages = [{ text: readme, from: 'README.md（工作树）' }];
+        if (sizeExp) {
+          var sizeFacade = facadeReadme(true);
+          if (sizeFacade.text === null) {
+            problemsHere.push('体积账本没量到门面那一份（' + sizeFacade.why + '）—— 门面是用户默认看到的' +
+              '那一页，读不到就单独占一格，不许只量工作树那一份就打印通过');
+          } else {
+            sizePages.push({ text: sizeFacade.text, from: sizeFacade.from });
+          }
+        }
+        var sizeRes = sizeAudit.auditPages(sizePages, sizeAct);
+        sizeRes.problems.forEach(function (p) { problemsHere.push(p); });
+        // 扫到几行、几处承诺必须印出来：措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿（§2 #21）
+        sizeReadout = '，体积账本对着 ' + sizeAct.zipName + '（' + sizeAct.entries + ' 个条目 / ' +
+          Math.round(sizeAct.zipBytes / 1048576 * 100) / 100 + ' MB）逐格比过 ' + sizeRes.readouts.join(' + ');
+      }
+    }
+  } catch (sizeErr) {
+    problemsHere.push('体积账本这一格跑挂了：' + String((sizeErr && sizeErr.message) || sizeErr));
+  }
+
   if (problemsHere.length) fail('用户入口检查未通过:\n      ' + problemsHere.join('\n      '));
-  else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + '）');
+  else pass('用户入口完好（根目录 ' + MANUAL_FILE + ' + README 直链 ' + ZIP_ASSET + sizeReadout + '）');
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +903,7 @@ function checkTestCounts() {
   // 症状是明明跑过 itest、守卫却说「集成条数未校验」。
   var assertionsChecked = false;
   var itestChecked = false;
+  var itestPairHits = 0;
   var selfCheckChecked = false;
   // ⚠️ 同上一条教训：这两格也必须声明在所有用到它的代码块之前（下面「N 场景 / M 项」那一段才置位）。
   var scenePairChecked = false;
@@ -883,12 +1031,18 @@ function checkTestCounts() {
             // 拆成"间隔吃掉了 10、数字只匹配到 6"（实测报出「集成 6 项」）。
             var m2 = line.match(/集成[^。\n\d]{0,6}(\d+)\**\s*项/);
             if (!m2) return;
+            itestPairHits++;
             var n2 = Number(m2[1]);
             if (n2 !== actualItest) {
               problems.push(file + ' 写的是「集成 ' + n2 + ' 项」，实测是 ' + actualItest + ' 项');
             }
           });
         });
+        if (itestPairHits === 0) {
+          problems.push('「集成 N 项」这一族一条都没扫到（当前 ' + actualItest + ' 项）—— ' +
+            '要么基线写法被整体改写、这条尺已等于不存在，要么数字与「集成」二字被拆到两句说话；' +
+            '请把它俩写回同一处且间隔不超过 6 字符（AGENTS §2 #21：会误报的守卫和没有守卫一样害人）');
+        }
       }
     } catch (e) {}
   }
@@ -1020,7 +1174,8 @@ function checkTestCounts() {
     //    是完全不同的覆盖面 —— 数字印出来，下一次改措辞的人才有东西可对照。
     (scenePairChecked ? '；「N 场景 / M 项」并排承诺 ' + scenePairHits + ' 处逐个与代码同数'
                       : '（并排的场景数未校验：还没跑过 e2e 交账）') +
-    (itestChecked ? '；集成条数与实测一致' : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
+    (itestChecked ? '；集成条数与实测一致（在检 ' + itestPairHits + ' 处）'
+                      : '（集成条数未校验：还没跑过 itest，跑一次即可）') +
     (selfCheckChecked ? '；自检项数与实际一致' : '（自检项数未校验：守卫失效）') +
     '（CHANGELOG 只查最新一段，历史记录不查）';
 
@@ -1095,6 +1250,41 @@ function checkConfigDefaults() {
         clickNeedle: 'els.petChatEnabled.addEventListener("click", togglePetChatEnabled)',
         saveNeedle: '{ omitonePetChatOn: value ? 1 : 0 }',
         loadNeedle: 'petChatEnabledVal = !!(r && r.omitonePetChatOn === 1)'
+      },
+      // 医生主动提醒：默认**关**（问模型那一发按量计费，不许用户看不见时默认烧钱），
+      // 所以「缺席/0/false 都算关」，只有 1/true 算开 —— 与上面两枚都不一样，
+      // 这正是每个开关各带一份 needle 的理由。
+      // pageNeedle 那一格是这一族最贵的一处（批次 130 实测踩过）：**页面侧读回的基准
+      // 必须和弹窗写出去的是同一种写法**。原先写成 `=== false`，而弹窗写的是 `0`，
+      // `0 === false` 不成立 → 开关关掉、提醒照旧响，界面和日志都不报错。
+      petDoctorEnabled: {
+        key: 'omitonePetDoctorOn',
+        clickNeedle: 'els.petDoctorEnabled.addEventListener("click", togglePetDoctorEnabled)',
+        saveNeedle: '{ omitonePetDoctorOn: value ? 1 : 0 }',
+        // 默认改关之后弹窗那一支只认 1/true —— 缺席 = 关，不许再走"算关"的旧尺。
+        // ⚠️ 这一格只钉"弹窗那一行长成这样"；**两侧是不是真的同一把尺**由集成层 [27] ⑰
+        // 拿五个值（缺席/0/false/1/'0'）分别喂两份读回来的代码比出来，别只靠这里的字面串。
+        loadNeedle: 'petDoctorEnabledVal = raw === 1 || raw === true',
+        // 批次 183 把这条尺钉的三个字面量搬进了一枚共用助手 `isPetSwitchOn`（同一件事三种来源
+        // 只许一种写法，AGENTS §2 #18）。字面串尺跟着改**不许变松**：委派与助手本体两句都要在，
+        // 助手哪天被改成 `!!v`（把 0/'0' 也算开）当场红 —— 只认委派那一行就是一次恒绿的尺。
+        pageNeedle: [
+          'function isDoctorOn(v) { return isPetSwitchOn(v); }',
+          'function isPetSwitchOn(v) { return v === 1 || v === true; }'
+        ]
+      },
+      // 联网搜索（批次 183）：付费那一枚，出厂关，且**页面侧那一路（刷课页医生问模型）也要读它**。
+      // 缺这一条会怎样：弹窗照旧打勾、开关照旧存盘，而注入页里那一发永远按"没开"拼请求 ——
+      // 用户点了开关、钱没多花、话也没搜，一条日志都不留（§2 #12「读不出/没读到」不许塌成"关"）。
+      petWebSearchEnabled: {
+        key: 'omitonePetWebSearchOn',
+        clickNeedle: 'els.petWebSearchEnabled.addEventListener("click", togglePetWebSearchEnabled)',
+        saveNeedle: '{ omitonePetWebSearchOn: value ? 1 : 0 }',
+        loadNeedle: 'petWebSearchVal = raw === 1 || raw === true',
+        pageNeedle: [
+          'function isPetSwitchOn(v) { return v === 1 || v === true; }',
+          'isPetSwitchOn(r[PAGE_WEB_SEARCH_KEY])'
+        ]
       }
     };
     // 白名单的 id 不走下面的 bindToggle 尺（放在 forEach **之前**——先前放后面，flag 完才过滤，等于没豁免）
@@ -1141,6 +1331,28 @@ function checkConfigDefaults() {
       if (popupJs.indexOf(t.key + '", (r)') < 0 ||
           popupJs.indexOf(t.loadNeedle) < 0) {
         problems.push('开关 ' + id + ' 打开弹窗没有从 ' + t.key + ' 读回 —— 重开会显示错的状态');
+      }
+      // pageNeedle：这一枚的存档**页面侧也要读**（弹窗与学习页两份代码各自算一次开关）。
+      // 只核弹窗两路 = 半边覆盖：弹窗写 0/1、页面比 === false，界面照常打勾、日志照常响，
+      // 一条测试都不红（批次 130 实测）。判据只认「读回的基准写死在这一串里」，
+      // 页面源码取不到就当失败 —— 宁可红，不要一声不响地跳过这一格。
+      if (t.pageNeedle) {
+        var contentJs = '';
+        try { contentJs = read('content.js'); } catch (eRead) { contentJs = ''; }
+        // 数组 = 这一枚的页面侧写法由**几句共同**成立（委派 + 助手本体那种）；少任何一句都点名，
+        // 不许"其中一句在就算过"—— 只认委派那一句，助手被改成 `!!v` 时这把尺恒绿。
+        var pnList = Array.isArray(t.pageNeedle) ? t.pageNeedle : [t.pageNeedle];
+        if (!contentJs) {
+          problems.push('开关 ' + id + ' 声明了页面侧判据，但 content.js 读不到 —— 这一格没验到');
+        } else if (contentJs.indexOf(t.key) < 0) {
+          problems.push('开关 ' + id + ' 页面侧根本没读 ' + t.key + ' —— 关掉了她照样提醒');
+        } else {
+          var pnMiss = pnList.filter(function (one) { return contentJs.indexOf(one) < 0; });
+          if (pnMiss.length) {
+            problems.push('开关 ' + id + ' 页面侧读回的基准和弹窗写出去的不是一套（content.js 里缺 ' +
+              pnMiss.length + '/' + pnList.length + ' 句：' + pnMiss.join(' ;; ') + '）—— 关掉开关可能没反应');
+          }
+        }
       }
     });
   } catch (e) {
@@ -1481,7 +1693,7 @@ function checkDeadMethods(jsFiles) {
 }
 
 // ---------------------------------------------------------------------------
-// 14. page.js 与 src/page/ 片段一致
+// 14. page.js 与 src/page/ 片段一致 + content.js 的桥戳
 //
 // 根目录的 `page.js` 现在是**构建产物** —— 由 tools/concat-page.js 从
 // src/page/*.js 拼出来，而扩展真正加载的正是根目录那一份（content.js 注入它、
@@ -1509,6 +1721,7 @@ function checkPageConcat() {
   }
   if (actual.equals(expected)) {
     pass('page.js 与 src/page/ 一致（' + built.files.length + ' 个片段，' + expected.length + ' 字节）');
+    checkBridgeStamp(concat);
     return;
   }
   fail(
@@ -1516,6 +1729,42 @@ function checkPageConcat() {
     '      扩展加载的是根目录那份，所以现在跑的东西和源码对不上。\n' +
     '      改的是片段 → 跑 `npm run concat`；改的是根目录 page.js → 那份会被下次拼接覆盖，请改到片段里。'
   );
+}
+
+// ---------------------------------------------------------------------------
+/**
+ * 第 14 项的第二半：`content.js` 首行的桥戳对不对得上「manifest 说这一枚注入要跑的那些字节」。
+ *
+ * 尺**从 tools/concat-page.js 要回来**（`buildBridgeStamp`），这里不另写一份 ——
+ * 两份口径写在一起才有意义：拼接写的是 A、校验算的是 B，这道闸就只是稳定地报假话。
+ *
+ * ⚠️ 「首行不是戳行」单独占一格并报**读不出**（AGENTS §2 #12/#18）：
+ * 把它并进「不一致」会让人去跑 concat（以为能修好），而真原因可能是戳行被并发写坏了。
+ */
+function checkBridgeStamp(concat) {
+  var stamp;
+  try {
+    stamp = concat.buildBridgeStamp();
+  } catch (error) {
+    fail('桥戳检查自身出错（清单来源在 manifest）: ' + (error && error.message ? error.message : error));
+    return;
+  }
+  if (!fs.existsSync(concat.CONTENT_FILE)) {
+    fail('没有 content.js —— 桥戳没处比，这一格读不出');
+    return;
+  }
+  var raw = fs.readFileSync(concat.CONTENT_FILE, 'utf8');
+  var m = raw.match(concat.BRIDGE_STAMP_RE);
+  if (!m) {
+    fail('content.js 首行读不出桥戳（应形如 var OMITONE_CODE_REV_BRIDGE = \'…\';）—— 不许当成「没戳也算一致」');
+    return;
+  }
+  if (m[1] !== stamp.rev) {
+    fail('content.js 首行的桥戳过期（首行 ' + m[1] + '，按 manifest 的 ' + stamp.files.length +
+      ' 个注入文件重算是 ' + stamp.rev + '）\n      注入的桥不随重载扩展而换：跑 `npm run concat` 再 F5 学习页。');
+    return;
+  }
+  pass('content.js 桥戳与注入清单一致（' + stamp.rev + '，' + stamp.files.length + ' 个文件）');
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,7 +1918,7 @@ function checkPagePartHeaders() {
 //
 // 只盯**已知会挂起的原生调用**（网络 / 读响应体 / 媒体 play），并要求同一行出现
 // `_withTimeout(`。不写"名字里带 play/load 就算"那种宽泛规则 —— 实测会把
-// `_probeMaxPlaybackRate()`（内部自带超时）误报，误报多了守卫就没人信了。
+// `_detectMaxPlaybackRate()`（内部各发都自带超时或有限轮询）误报，误报多了守卫就没人信了。
 // ---------------------------------------------------------------------------
 function checkAwaitTimeouts() {
   var partsDir = path.join(ROOT, 'src', 'page');
@@ -2791,10 +3040,14 @@ function checkSliceStatsDoc() {
 // 界面照常工作，只有新手照说明书去认界面时被引到错方向。
 //
 // ⚠️ 期望在**这里**各写一份，不照抄 `audit.selfTestCases()` 的 want（同第 24 / 25 / 26 项的规矩：
-// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十一格里「要报」占八格，因为本项最危险的
+// 照抄的话，把 want 改成实际值就能让这条闸永远绿）。十七格里「要报」占十四格，因为本项最危险的
 // 坏法是**读不出来却装作核过了**：锚点失效 → 0 个取值 → "全部命中"。
 // 三格「不报」是防误报的对照（干净正文、被 `<b>` 加粗切开的字样）——
 // 会误报的守卫和没有守卫一样害人。
+//
+// 批次 129 接进第四份真源（弹窗里 20 枚开关的名字）时，同批加了两格：
+// 「开关名漏教一枚」抓文档漂移，「开关配对只读出几枚」抓**口径失效后静默缩范围**
+// —— 后者是这一族唯一会"读成核过了"的坏法（配对口径一坏，20 枚变 3 枚，文档照样一条不红）。
 function checkManualUiLabels() {
   var audit;
   try {
@@ -2815,6 +3068,12 @@ function checkManualUiLabels() {
     'script 里的字样不算教给用户': { want: 1, needle: '未开启' },
     '少写一个任务种类词': { want: 1, needle: '测验答题' },
     '种类表漏一个键': { want: 1, needle: '没有中文取值' },
+    '开关名漏教一枚': { want: 1, needle: '已完成任务重学' },
+    '开关配对只读出几枚': { want: 1, needle: '取值真源读不出来' },
+    '分段开关只教了一半': { want: 1, needle: '精简' },
+    '按钮名漏教一枚': { want: 1, needle: '拿一份型号清单' },
+    '按钮字样只活在 script 里': { want: 1, needle: '拿一份型号清单' },
+    '白名单里的按钮读不出': { want: 1, needle: '取值真源读不出来' },
     '真说明书对真代码': { want: 0, needle: '' }
   };
 
@@ -2827,7 +3086,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 审计读的是不是那三份真源（锚点写错时它会安静地交出一份空清单）----
+  // ---- 审计读的是不是那**四**份真源（锚点写错时它会安静地交出一份空清单）----
   if (!info.labels.length && !info.readErrors.length) {
     fail('界面字样审计交出「0 个取值 + 0 条读取错误」—— 这条闸等于不存在，报的「一致」不可信');
     return;
@@ -2837,9 +3096,21 @@ function checkManualUiLabels() {
   }).length;
   var fromPopup = info.labels.filter(function (l) { return l.from.indexOf('popup/popup.js') === 0; }).length;
   var fromKind = info.labels.filter(function (l) { return l.from.indexOf('jobKindLabel') !== -1; }).length;
-  if (info.labels.length && (!fromContent || !fromPopup || !fromKind)) {
+  var fromSwitch = info.labels.filter(function (l) { return !!l.switchKey; }).length;
+  // 按钮那一族（#211）：白名单里每一枚都要真读出字来 —— 只数 labels 不够，
+  // 白名单过期时那一格会安静地交出 0 条要求，看起来像"全核过了"（口径同开关那一段）。
+  var fromButton = info.labels.filter(function (l) { return !!l.buttonKey; }).length;
+  var wantButtons = (audit.TAUGHT_BUTTON_IDS || []).length;
+  if (info.labels.length && (!fromContent || !fromPopup || !fromKind || !fromSwitch)) {
     fail('界面字样审计只读出 徽标 ' + fromContent + ' 个 / popup 顶部 ' + fromPopup +
-      ' 个 / 任务种类 ' + fromKind + ' 个取值 —— 三份真源必须各出一半，否则「核过了」是假的');
+      ' 个 / 任务种类 ' + fromKind + ' 个 / 弹窗开关 ' + fromSwitch +
+      ' 个取值 —— 四份真源必须各出一半，否则「核过了」是假的');
+    return;
+  }
+  if (wantButtons && fromButton !== wantButtons) {
+    fail('界面字样审计：按钮那一族白名单有 ' + wantButtons + ' 枚，却读出 ' + fromButton +
+      ' 个界面字样（真源 popup/popup.html 的 TAUGHT_BUTTON_IDS 那一族）—— ' +
+      '少读出的那几枚从来没被要求进说明书，白名单过期或按钮改了形状都要当场响，不许静默缩清单');
     return;
   }
   if (!info.kinds || info.kinds.length < 2) {
@@ -2847,8 +3118,45 @@ function checkManualUiLabels() {
       '键清单空了等于「种类表漏键」那一格从来没跑过');
     return;
   }
+  // 开关这一族的"一枚都没漏"要单独对：配对口径（label for ↔ id + role="switch"）若认不出
+  // 某枚没有 label 的开关，上面那几个计数照样非 0，而漏掉的那一枚**永远不会被要求进说明书**。
+  var switchTags = 0, popupHtmlTxt = '';
+  try {
+    popupHtmlTxt = fs.readFileSync(path.join(ROOT, 'popup', 'popup.html'), 'utf8');
+    switchTags = (popupHtmlTxt.match(/role="switch"/g) || []).length;
+  } catch (e5) {
+    fail('界面字样审计读不到 popup/popup.html 的开关总数：' + String((e5 && e5.message) || e5));
+    return;
+  }
+  if (!switchTags) {
+    fail('popup/popup.html 里一个 role="switch" 都数不到 —— 弹窗改成别的控件形状了，' +
+      '第 27 项的开关这一族要跟着改口径，不许静默当"没有开关要核"');
+    return;
+  }
+  if (switchTags !== (info.switchIds || []).length) {
+    fail('弹窗开关数对不上：popup/popup.html 里 role="switch" 有 ' + switchTags + ' 处，' +
+      '而审计只数出 ' + (info.switchIds || []).length + ' 枚带 id 的开关 —— ' +
+      '多出来的那些要么没有 id（对不上界面字样），要么控件形状换了（批次 129 的量是 21 处 = 21 枚）');
+    return;
+  }
+  if (!info.labels.some(function (l) { return l.switchKey === 'modeSwitch'; })) {
+    fail('审计没读出顶部那枚「精简 / 精美」分段开关身上的字 —— 它没有 label，' +
+      '字在自己那两个 span 里；这一族漏掉 = 界面上有的字说明书永远不必教，闸少一族');
+    return;
+  }
+  // 反向的那半：**输入框 / 下拉的 label 不许混进开关这一族**，否则这一条闸会要求
+  // 说明书逐个教到"API URL""模型名"那一族字段名 —— 那不是会显示的状态字，是一片误报。
+  var notSwitch = ['discussionReply', 'apiUrl', 'model'].filter(function (k) {
+    return (popupHtmlTxt.match(new RegExp('<label\\s[^>]*for="' + k + '"', 'g')) || []).length > 0;
+  });
+  var leaked = (info.switches || []).filter(function (s) { return notSwitch.indexOf(s.key) !== -1; });
+  if (leaked.length) {
+    fail('界面字样审计把非开关的 label 当成开关了：' + leaked.map(function (s) { return s.key; }).join(' / ') +
+      '（它们是输入框 / 下拉，不是 role="switch"）—— 这一族放宽就等于开始误报');
+    return;
+  }
 
-  // ---- 真文档先点名（放在十一格之前）----
+  // ---- 真文档先点名（放在十七格之前）----
   // 文档漂移是这一项最常见的坏法，人看到的应当是「哪个字样在说明书里不见了」，
   // 而不是「第几格期望数字不符」—— 后者把真正的原因塞在括号里第三句。
   var manualTxt;
@@ -2865,7 +3173,7 @@ function checkManualUiLabels() {
     return;
   }
 
-  // ---- 十一格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
+  // ---- 十七格期望：按 pin 逐格复算，格数本身也要恰好一一对应 ----
   var names = Object.keys(WANT);
   cases.forEach(function (c) {
     if (names.indexOf(c.pin) < 0) bad.push('多出一格没登记在 check.js 的期望表里：' + c.pin);
@@ -2894,48 +3202,69 @@ function checkManualUiLabels() {
     }
   });
   if (bad.length) {
-    fail('界面字样审计的十一格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
+    fail('界面字样审计的十七格阴性对照不成立（会误报或抓不住的守卫比没有守卫更害人）：\n      ' +
       bad.join('\n      '));
     return;
   }
 
-  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**两份取值表各摘一次** ----
+  // ---- 反向验证打在**整份真说明书**上、判据用**增量**，且**四份取值表各摘一次** ----
   // 只测合成夹具的话，"审计只对短夹具有效、对几千行的真说明书失效"照样报 0 条。
-  // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）。
+  // 只摘徽标那一份的话，"任务种类词这一族对真说明书失效"又没人看得见（批次 57 新接的就是这一族）；
+  // 批次 129 接的弹窗开关这一族同理 —— 四族各自承重，少一族就少一条路（#211 接的是按钮那一族）。
   var vtext = audit.visibleText(manualTxt);
   var before = audit.audit(info, manualTxt).length;
   var AXES = [
-    { name: '状态徽标 / 弹窗字样', pool: info.labels.filter(function (l) { return !l.kindKey; }) },
-    { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) }
+    { name: '状态徽标 / 弹窗顶部字样', pool: info.labels.filter(function (l) { return !l.kindKey && !l.switchKey && !l.buttonKey; }) },
+    { name: '面板第二行任务种类词', pool: info.labels.filter(function (l) { return !!l.kindKey; }) },
+    { name: '弹窗里每一枚开关的名字', pool: info.labels.filter(function (l) { return !!l.switchKey; }) },
+    // 按钮那一族必须单独占一个轴：并徽标那一轴的话，摘的是徽标字样，
+    // 「按钮那一族对真说明书失效」这一格就没有证人（口径同上那句"少一族就少一条路"）。
+    { name: '白名单里那枚按钮的名字', pool: info.labels.filter(function (l) { return !!l.buttonKey; }) }
   ];
   var poisonedNames = [];
   for (var ai = 0; ai < AXES.length; ai++) {
     var ax = AXES[ai];
-    var target = ax.pool.filter(function (l) { return vtext.indexOf(l.text) !== -1; })[0];
-    if (!target) {
-      fail('界面字样审计的反向验证没跑成：' + ax.name + ' 这一族的取值在真说明书里一个都没命中，' +
-        '而上面那条真文档检查却报「一致」—— 两条判据打架，怀疑扫描口径与真实文档脱节');
+    var skipped = [];
+    var hit = null;
+    for (var pi = 0; pi < ax.pool.length; pi++) {
+      var cand = ax.pool[pi];
+      if (vtext.indexOf(cand.text) === -1) continue;
+      // 摘一条不许连带摘掉别的取值：两个词互相包含时一次注入会多报一条，看着像"注入越界"
+      var collide = info.labels.some(function (o) {
+        return o !== cand && (o.text.indexOf(cand.text) !== -1 || cand.text.indexOf(o.text) !== -1);
+      });
+      if (collide) { skipped.push('「' + cand.text + '」与别的取值互相包含'); continue; }
+      var poisoned = manualTxt.split(cand.text).join('〔字样被摘掉〕');
+      if (poisoned === manualTxt) { skipped.push('「' + cand.text + '」摘不动（字面没变）'); continue; }
+      // ⚠️ 批次 57 踩过的那族假绿：原文摘干净了，可见正文里**别处**又拼出同一个词。
+      if (audit.visibleText(poisoned).indexOf(cand.text) !== -1) {
+        skipped.push('「' + cand.text + '」摘完可见正文里还剩（别处拼得出来）');
+        continue;
+      }
+      var afterIssues = audit.audit(info, poisoned);
+      if (afterIssues.length !== before + 1 ||
+          !afterIssues.some(function (x) { return x.indexOf('「' + cand.text + '」') !== -1; })) {
+        skipped.push('「' + cand.text + '」摘完报 ' + afterIssues.length + ' 条（要 ' + (before + 1) + '）');
+        continue;
+      }
+      hit = cand;
+      break;
+    }
+    if (!hit) {
+      fail('界面字样审计的反向验证没过（' + ax.name + '）：这一族 ' + ax.pool.length +
+        ' 个取值里没有任何一个能"摘掉后恰好多报 1 条并点名它"（原本 ' + before + ' 条）。' +
+        '逐条原因：' + (skipped.slice(0, 4).join('；') || '这一族在真说明书里一个都没命中') +
+        ' —— 要么这条闸对该族失效，要么说明书里这一族的字样全互相包着；两种都得改文档/口径，别改判据');
       return;
     }
-    var poisoned = manualTxt.split(target.text).join('〔字样被摘掉〕');
-    if (poisoned === manualTxt) {
-      fail('界面字样审计的反向验证没跑成：把「' + target.text + '」全部摘掉后说明书字面没变，注入等于没注入');
-      return;
-    }
-    var afterIssues = audit.audit(info, poisoned);
-    if (afterIssues.length !== before + 1 ||
-        !afterIssues.some(function (x) { return x.indexOf('「' + target.text + '」') !== -1; })) {
-      fail('界面字样审计的反向验证没过（' + ax.name + '）：在真说明书里把「' + target.text +
-        '」（真源 ' + target.from + '）全部摘掉，应在原本的 ' + before + ' 条之上多报恰好 1 条并点名它，' +
-        '实际共报 ' + afterIssues.length + ' 条 —— 这条闸对真实文档失效，它报的「一致」不可信');
-      return;
-    }
-    poisonedNames.push('「' + target.text + '」');
+    poisonedNames.push('「' + hit.text + '」');
   }
   pass('docs/manual.html 教的界面字样与代码一致（' + info.labels.length + ' 个真实取值：' +
     'content.js 徽标 ' + fromContent + ' 个 + popup 顶部 ' + fromPopup + ' 个 + 任务种类 ' + fromKind +
-    ' 个；键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
-    '十一格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' 与 ') +
+    ' 个 + 弹窗开关 ' + fromSwitch + ' 个（与 role="switch" 计数逐枚对上）+ 按钮 ' + fromButton +
+    ' 个（真源 popup/popup.html 的白名单 ' + wantButtons + ' 枚）；' +
+    '键对账覆盖 src/page/60-tasks-detect.js 读出的 ' + info.kinds.length + ' 种；' +
+    '十七格阴性对照按 pin 逐格复算 + 拿真说明书把' + poisonedNames.join(' / ') +
     ' 全部摘掉各恰好多报 1 条）');
 }
 
@@ -3209,20 +3538,21 @@ function checkSwitchBudgetClaim() {
   });
   // 掩码不许是空操作，也不许改变行数／列宽：围栏与 HTML 注释里的错数必须真被挖掉，
   // 而报出来的行号与原文对得上（否则夹具第一条就是假绿）
-  function checkMaskShape(label, raw, isHtml, visibleLine) {
+  function checkMaskShape(label, raw, isHtml, visibleLine, sink) {
+    var bad2 = sink || bad;
     var masked = audit.maskInvisible(raw, isHtml);
     var a = raw.split('\n');
     var b = masked.split('\n');
     if (a.length !== b.length) {
-      bad.push(label + '：掩码后行数变了（' + a.length + ' → ' + b.length + '），报出来的行号会对不上原文');
+      bad2.push(label + '：掩码后行数变了（' + a.length + ' → ' + b.length + '），报出来的行号会对不上原文');
       return;
     }
     for (var i = 0; i < a.length; i++) {
       if (a[i].length !== b[i].length) {
-        bad.push(label + '：第 ' + (i + 1) + ' 行掩码后长度 ' + b[i].length + '，原文 ' + a[i].length + '（列位置要保住）');
+        bad2.push(label + '：第 ' + (i + 1) + ' 行掩码后长度 ' + b[i].length + '，原文 ' + a[i].length + '（列位置要保住）');
       }
       if (i === visibleLine) continue;
-      if (/[0-9]/.test(b[i])) bad.push(label + '：第 ' + (i + 1) + ' 行的数字没被挖掉 —— 掩码没生效，那是用户看不见的地方');
+      if (/[0-9]/.test(b[i])) bad2.push(label + '：第 ' + (i + 1) + ' 行的数字没被挖掉 —— 掩码没生效，那是用户看不见的地方');
     }
   }
   checkMaskShape('围栏代码块', '```\n最多 8 门\n```\n', false, 3);
@@ -3254,6 +3584,710 @@ function checkSwitchBudgetClaim() {
   }
   pass('换课上限文档对账（代码 ' + limit + ' 门；文档 ' + real.claims.length + ' 处逐个相等，' +
     '分布在 ' + new Set(real.claims.map(function (c) { return c.file; })).size + ' 份；含 6 格阴性对照（其中一格是跨族不许误报）+ 2 格掩码形状自证）');
+
+  // ---- 第 30 项的**第二把尺**：倍速问价「一支最多问三发」（会话任务 #209 / 批次 151）----
+  //   同一族漂移的形状在 2026-11-21 实测到"文档 7 处、代码 1 处、**尺 0 条**"：批次 146 改了那一族的行为、
+  //   批次 150 给它补了十三格集成断言，而那十三格核的是代码内部，用户看得见的那句「三发」没人对着真源比。
+  //   **这一族不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档，
+  //   而这一族本来就该和"承诺的数字要有尺"那一条闸住在一起。
+  //   ⚠️ 当年那句「不新增第 36 项」里的 36 号**已被批次 160 用掉**（联网搜索开关对账，另一族），
+  //   本条尺照旧并在这第 30 项里，不因此挪窝。
+  var rate, rateLimit;
+  try {
+    rate = require('./audit-rate-ask-claims.js');
+  } catch (e3) {
+    fail('倍速问价对账加载失败：' + String((e3 && e3.message) || e3) +
+      '\n      真源是 tools/audit-rate-ask-claims.js —— 它被改名或删除时，这一半闸会**静默消失**');
+    return;
+  }
+  if (rate.maskInvisible !== audit.maskInvisible) {
+    fail('倍速问价与换课上限**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '两处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    rateLimit = rate.askBudgetFromSource();
+  } catch (e4) {
+    fail('倍速问价对账读不出代码真源：' + String((e4 && e4.message) || e4) +
+      '\n      真源是 ' + rate.SOURCE + ' 里 `this._rateUnknownTries < <整数>` 那一行；那一族改名要连这条闸一起改');
+    return;
+  }
+  var rclean = rate.cleanFixture();
+  var RCASES = [
+    { name: '干净夹具（数字全对 + 围栏与注释与 script 里的错数不算）', files: rclean, problems: 0, claims: 7 },
+    {
+      name: '说明书与台账退成「二发」要红，且只有那几处红',
+      files: rate.mutate(rclean, '连问三发', '连问二发'),
+      problems: 5, needle: '不一致'
+    },
+    {
+      name: 'README 那两处改成「四发」要红并点名文件',
+      files: rate.mutate(rclean, '最多问三发', '最多问四发'),
+      problems: 2, needle: 'README.md'
+    },
+    {
+      // 这一格防的是"正则被改坏 → 一条扫不到 → 打印全绿"
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提发数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到数字要响（不许当成没东西要核）',
+      files: rclean, budgetOverride: 0, problems: 1, needle: '代码侧的问价上限没读到'
+    },
+    {
+      // 这一格钉的是**引导词那一半在承重**：本尺第一版只要求「问 + 数字 + 发」，
+      // 当场把 README:113「同一道最多问 6 发」（弹题预算，真源是 2×「最多问几次」）抓成一条**根本不存在的**假红。
+      // 夹具里故意写 9（≠ 代码的 3）：引导词那一半一旦松开，命中数与红条数会**同时**越界，这一格当场红。
+      name: '弹题那一族「同一道最多问 9 发」不许被抓成倍速问价（跨族阴性对照，实测的那条假红）',
+      files: {
+        'README.md': '- 同一道最多问 9 发（= 3×「最多问几次」，弹题的账）。\n- 一支最多问三发。\n',
+        'HANDOVER.md': '弹题那一族：同一节里同一道最多问 9 发，到顶就本地选。\n倍速问不到连问三发才收手。\n'
+      },
+      problems: 0, claims: 2, needle: ''
+    },
+    {
+      name: '探针那一族「一轮最多问 40 门」不许被抓（与第 31 项互不越界）',
+      files: {
+        'README.md': '- 换课前那一读一轮最多问 40 门；一支最多问三发。\n',
+        'HANDOVER.md': '那一读最多问 40 门；倍速问不到连问三发才收手。\n'
+      },
+      problems: 0, claims: 2, needle: ''
+    }
+  ];
+  var rbad = [];
+  RCASES.forEach(function (t) {
+    var res;
+    try {
+      res = rate.audit({ docs: t.files, budget: ('budgetOverride' in t) ? t.budgetOverride : rateLimit });
+    } catch (e5) {
+      rbad.push(t.name + '：审计本身抛了 ' + String((e5 && e5.message) || e5));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      rbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      // 「0 条问题」有两种：都对上了，与**压根没扫到**；「没越界」也有两种：排掉了，与正则坏了
+      rbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      rbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  checkMaskShape('倍速问价 - HTML 注释与 script',
+    '<p>一支最多问三发</p>\n<!-- 一支最多问八发 -->\n<script>a="连问 5 发";</script>\n', true, 0, rbad);
+  if (rbad.length) {
+    fail('倍速问价对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + rbad.join('\n      '));
+    return;
+  }
+  var rdocs = {};
+  var rmissing = [];
+  rate.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) rdocs[f] = fs.readFileSync(p, 'utf8');
+    else rmissing.push(f);
+  });
+  var rreal = rate.audit({ docs: rdocs, budget: rateLimit });
+  if (rmissing.length) {
+    fail('倍速问价对账有 ' + rmissing.length + ' 份文档没读进来：' + rmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (rreal.problems.length) {
+    fail('倍速问价对账有 ' + rreal.problems.length + ' 条要说：\n      ' + rreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成 `_rateUnknownTries <` 现在写的数（' + rateLimit + '），别改判据迁就现状；' +
+      '\n      弹题那一族「同一道最多问 N 发」是**另一把尺**（真源不同），别把它塞进这一族');
+    return;
+  }
+  // 工具自带的那批逐格对照**在这里真跑一次**，不当"另由人手跑"的承诺：
+  // 那批格子改坏了、被删了，只靠"`node tools/xxx.js --selftest` 记得跑"就等于没有（口径同第 33 / 34 项）。
+  // 格数从它自己打印的那一行读回来 —— 不许在 check.js 或文档里手抄一个数当判据（批次 142 那一族）。
+  var rateSelfCells = null;
+  var rateSelfErr = null;
+  for (var rattempt = 0; rattempt < 2; rattempt++) {
+    var rr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-rate-ask-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    rateSelfErr = rr.error || null;
+    if (!rr.error || rr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (rr.status !== 0) {
+        rateSelfErr = new Error('退出码 ' + rr.status + '，末行=' +
+          JSON.stringify(String(rr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var rmc = String(rr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!rmc) {
+          rateSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(rr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else rateSelfCells = Number(rmc[1]);
+      }
+      break;
+    }
+  }
+  if (rateSelfErr) {
+    fail('倍速问价的逐格对照没跑成或本身是红的：' + String(rateSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 7 处都对上了"就打印通过');
+    return;
+  }
+  if (rateSelfCells < 13) {
+    fail('倍速问价的逐格对照只报了 ' + rateSelfCells + ' 格（下限 13）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；跨族阴性对照那两格（弹题的「道…发」、探针的「问…门」）尤其承重');
+    return;
+  }
+  pass('倍速问价发数文档对账（代码 ' + rateLimit + ' 发；文档 ' + rreal.claims.length + ' 处逐个相等，' +
+    '分布在 ' + new Set(rreal.claims.map(function (c) { return c.file; })).size + ' 份；' +
+    '含 7 格夹具对照（其中两格是跨族不许误报：弹题的「道…发」与探针的「问…门」）+ 1 格掩码形状自证；' +
+    '工具自带 ' + rateSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第三把尺**：弹题问价「放手 3 次 / 预算 6 发」（会话任务 #205 剩下的那半 / 批次 157）----
+  //   第二把尺的头注里欠着这一句：「⚠️ 弹题那一族到现在也还没有尺……要立就走第 30/31 项那一套"两把尺各自排除对头"」——
+  //   同一族漂移第三次出现：批次 85/86 换课上限、批次 146/150 倍速问价、这一族。
+  //   与倍速那把**不同真源**（`popupQuizMaxAttempts` 与 `_getPopupQuizMaxAttempts()) * 2`），所以两把尺互斥而不是合并：
+  //   合并的结果是每一句都被另一族的数顶红（第一版真的这样咬过 README:113，见第二把尺头注那条实测假红）。
+  //   **这一族同样不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  //   ⚠️ 当年那句「仍然不新增第 36 项」里的 36 号**已被批次 160 用掉**（联网搜索开关对账，另一族），
+  //   本条尺照旧并在这第 30 项里。
+  var quiz, quizA, quizMult;
+  try {
+    quiz = require('./audit-quiz-ask-claims.js');
+  } catch (q1) {
+    fail('弹题问价对账加载失败：' + String((q1 && q1.message) || q1) +
+      '\n      真源是 tools/audit-quiz-ask-claims.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  if (quiz.maskInvisible !== audit.maskInvisible || quiz.maskInvisible !== rate.maskInvisible) {
+    fail('弹题问价与前两把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '三处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    quizA = quiz.giveupFromSource();
+    quizMult = quiz.multiplierFromSource();
+  } catch (q2) {
+    fail('弹题问价对账读不出代码真源：' + String((q2 && q2.message) || q2) +
+      '\n      真源是 ' + quiz.GIVEUP_SOURCE + ' 的 `popupQuizMaxAttempts: <整数>,` 与 '
+      + quiz.BUDGET_SOURCE + ' 的 `_getPopupQuizMaxAttempts()) * <整数>`；常量改名要连这条闸一起改');
+    return;
+  }
+  var qclean = quiz.cleanFixture();
+  // 「凡是写 6 的句子全部要红」那一格的预期条数**从夹具自己读回来**，不在这里手抄
+  // （§5：断言里出现的每一个数都要说得出它是从哪儿量回来的 —— 手拍的条数正是批次 111 那一族）
+  var qCleanRes = quiz.audit({ docs: qclean, giveup: quizA, multiplier: quizMult });
+  var qSix = qCleanRes.claims.filter(function (c) { return c.value === 6; }).length;
+  var QCASES = [
+    {
+      // 八句夹具**逐字抄自只读探针量回来的真文档形状**（README×4 / HANDOVER×1 / Release 说明×2 / 说明书×1）
+      name: '干净夹具（八句真形状 + 围栏与注释与 script 里的错数不算）',
+      files: qclean, problems: 0, claims: 8
+    },
+    {
+      name: '放手档那句写成预算档的数要红，并点名「次数与真源不一致」',
+      files: quiz.mutate(qclean, '认不出的最多问 3 次', '认不出的最多问 6 次'),
+      problems: 1, needle: '次数与真源不一致'
+    },
+    {
+      name: '预算档那句写成放手档的数要红，并说出 `3 × 2 = 6`',
+      files: quiz.mutate(qclean, '同一道最多 6 发，到顶本地选', '同一道最多 3 发，到顶本地选'),
+      problems: 1, needle: '3 × 2 = 6'
+    },
+    {
+      // 这一格钉的是**两档各自由不同常数承重**：倍率一旦漂，全部写 6 的句子过期；
+      // 条数不写死 —— 期望等于夹具里写 6 的处数（§5：那个数不许是我拍的，要从盘上读回来）
+      name: '倍率由 2 改成 3（预算档=9）时，凡是写 6 的句子全部要红，写 3 的一处不许误报',
+      files: qclean, giveupOverride: 3, multOverride: 3,
+      problems: qSix,
+      needle: '3 × 3 = 9'
+    },
+    {
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提发数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧两档没读到要响，且不许"只比另一个"',
+      files: qclean, giveupOverride: 0, multOverride: 2, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照第一格：**这一格正是第二把尺头注里那条实测假红的镜像** ——
+      // 少了弹题引导词，倍速那句「一支最多问三发」会被这一族抓成弹题承诺（反之亦然）
+      name: '倍速那一族「一支最多问三发」不许被抓成弹题问价（跨族不许误报）', xfamily: true,
+      files: {
+        'README.md': '| **自动倍速** | 一支最多问三发，仍问不到就按原速播完这一支 |\n'
+          + '- 同一道最多问 6 发，到顶之后本地选。\n',
+        'HANDOVER.md': '倍速问不到连问三发才按原速播完。\n- 这一道最多 6 发，到顶本地选。\n'
+      },
+      problems: 0, claims: 2, allValue: 6
+    },
+    {
+      name: '探针那一族「一轮最多问 40 门」与倍速那一族都不许被抓（与第 31 项互不越界）', xfamily: true,
+      files: {
+        'README.md': '- 换课前那一读一轮最多问 40 门、单页最多 12 秒。\n- 这一道最多问 3 次就放手。\n',
+        'HANDOVER.md': '那一读最多问 40 门（第 31 项的账）。\n- 同一道最多 6 发，到顶之后本地选。\n'
+      },
+      problems: 0, claims: 2
+    },
+    {
+      // 这一格钉的是"引导词 + 算符紧贴数字"**两半各自**挡掉的 41 处宽口径命中（实测 49 宽 / 8 窄）——
+      // 最后那句「这一道问明白是 3 次」只有**算符不许隔字**那一半能排掉，前几句只有**引导词距离**那一半能排掉
+      name: '量词与别的预算族「重问一次模型」「问了不止一遍」「付了两次」「最多三次」「问明白是 3 次」不许被读成数字承诺',
+      files: {
+        'README.md': '- 弹题请求没有去重，每 250ms 一轮就重问一次模型；同一道最多问 6 发，到顶之后本地选。\n',
+        'HANDOVER.md': '问了不止一遍，钱付了两次；这一道最多问 3 次就放手。\n'
+          + '还是救不回来才最多等 2 分钟放手，试过最多三次。\n'
+          + '这一道问明白是 3 次就放手。\n'
+      },
+      problems: 0, claims: 2
+    },
+    {
+      // 反向的另一半：**没有引导词**的那两句也不许抓 —— 这一格一旦红，说明尺被放宽成"什么都抓"的会误报的守卫
+      name: '脱离弹题语境的「最多问 6 发」「最多问 3 次」不许被抓（引导词那一半单独承重）',
+      files: { 'README.md': '- 最多问 6 发，到顶之后本地选。\n', 'HANDOVER.md': '- 最多问 3 次就放手。\n' },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var qbad = [];
+  QCASES.forEach(function (t) {
+    var res;
+    try {
+      res = quiz.audit({
+        docs: t.files,
+        giveup: ('giveupOverride' in t) ? t.giveupOverride : quizA,
+        multiplier: ('multOverride' in t) ? t.multOverride : quizMult
+      });
+    } catch (q3) {
+      qbad.push(t.name + '：审计本身抛了 ' + String((q3 && q3.message) || q3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      qbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      // 「0 条问题」有两种：都对上了，与**压根没扫到**；「没越界」也有两种：排掉了，与正则坏了
+      qbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.allValue && !res.claims.every(function (c) { return c.value === t.allValue; })) {
+      qbad.push(t.name + '：命中里混进了不是 ' + t.allValue + ' 的句子 —— 跨族那句被抓进来了：'
+        + JSON.stringify(res.claims.map(function (c) { return c.text; })));
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      qbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  checkMaskShape('弹题问价 - HTML 注释与 script',
+    '<p>同一道最多问 3 次</p>\n<!-- 同一道最多问 8 次，就放手 -->\n'
+    + '<script>a="这一道最多问 7 次，就放手";</script>\n', true, 0, qbad);
+  if (qbad.length) {
+    fail('弹题问价对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + qbad.join('\n      '));
+    return;
+  }
+  var qdocs = {};
+  var qmissing = [];
+  quiz.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) qdocs[f] = fs.readFileSync(p, 'utf8');
+    else qmissing.push(f);
+  });
+  var qreal = quiz.audit({ docs: qdocs, giveup: quizA, multiplier: quizMult });
+  if (qmissing.length) {
+    fail('弹题问价对账有 ' + qmissing.length + ' 份文档没读进来：' + qmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  if (qreal.problems.length) {
+    fail('弹题问价对账有 ' + qreal.problems.length + ' 条要说：\n      ' + qreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成代码现在的数（放手 ' + quizA + ' 次、预算 ' + quizA * quizMult
+      + ' 发），别改判据迁就现状；倍速那一族「一支最多问 N 发」是上面那把尺，真源不同，别合并');
+    return;
+  }
+  var quizSelfCells = null;
+  var quizSelfErr = null;
+  for (var qattempt = 0; qattempt < 2; qattempt++) {
+    var qr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-quiz-ask-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    quizSelfErr = qr.error || null;
+    if (!qr.error || qr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (qr.status !== 0) {
+        quizSelfErr = new Error('退出码 ' + qr.status + '，末行=' +
+          JSON.stringify(String(qr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var qmc = String(qr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!qmc) {
+          quizSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(qr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else quizSelfCells = Number(qmc[1]);
+      }
+      break;
+    }
+  }
+  if (quizSelfErr) {
+    fail('弹题问价的逐格对照没跑成或本身是红的：' + String(quizSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 8 处都对上了"就打印通过');
+    return;
+  }
+  if (quizSelfCells < 14) {
+    fail('弹题问价的逐格对照只报了 ' + quizSelfCells + ' 格（下限 14）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；三格跨族阴性对照（倍速的「支…发」、探针的「问…门」、量词的「一次／两次」）' +
+      '与两格"真源各读不出"尤其承重');
+    return;
+  }
+  pass('弹题问价发数文档对账（代码放手 ' + quizA + ' 次 × 倍率 ' + quizMult + ' = 预算 ' + quizA * quizMult +
+    ' 发；文档 ' + qreal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(qreal.claims.map(function (c) { return c.file; })).size + ' 份，其中分不出档的 ' + qreal.unclassified +
+    ' 处按两档之一核；含 ' + QCASES.length + ' 格夹具对照（其中 '
+    + QCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）+ 1 格掩码形状自证；' +
+    '工具自带 ' + quizSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第四把尺**：夹具表那句「全表 N 页」（会话任务 #187）----
+  //   同一族漂移第四次：批次 85/86 换课上限、批次 146/150 倍速问价、批次 157 弹题问价、这一族。
+  //   本轮立尺当场量到两处真漂移：① `HANDOVER.md:1586` 还停在批次 48 那一刻的「71 页」（现 100），
+  //   ② `MOCK_PAGES` 里 `/mycourse/studentstudy` **被写了两遍**（批次 89 那份空白页 vs 批次 9-A 那份讨论诱饵），
+  //   对象字面量后写的静默覆盖先写的 —— 文本键数 100、运行时 99，而批次 89 那一场的前提断言在诱饵形状上
+  //   恰好也成立，所以**一条测试都不红**：它自 11-17 起就没真被端上来过。这一格数的是这一族。
+  //   **同样不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  // ⚠️ 下限写在常数里，**句子里那句「下限 N」也从同一个常数读** ——
+  //    以前这里比较用 14、散文里也手写 14，抬下限时漏改散文就得到一句自相矛盾的红话。
+  var FX_SELF_MIN_CELLS = 14;
+  var fx, fxSrc;
+  try {
+    fx = require('./audit-fixture-pages.js');
+  } catch (f1) {
+    fail('夹具页数对账加载失败：' + String((f1 && f1.message) || f1) +
+      '\n      真源是 tools/audit-fixture-pages.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  if (fx.maskInvisible !== audit.maskInvisible || fx.maskInvisible !== rate.maskInvisible
+    || fx.maskInvisible !== quiz.maskInvisible) {
+    fail('夹具页数与前三把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '四处各一份，改一处另一处会静默过期 —— "围栏／注释／script 里用户看不见"这个口径只许有一个真源');
+    return;
+  }
+  try {
+    fxSrc = fx.pagesFromSource();
+  } catch (f2) {
+    fail('夹具页数对账读不出代码真源：' + String((f2 && f2.message) || f2) +
+      '\n      真源是 ' + fx.SOURCE + ' 里顶格的 `var MOCK_PAGES = { … };` 那一段；那一段换名或缩进要连这条闸一起改');
+    return;
+  }
+  var fclean = fx.cleanFixture();
+  var FCASES = [
+    { name: '干净夹具（四句真形状 + 说明书页数／N 页面／中文数字／场景数四族诱饵都不算）', files: fclean, problems: 0, claims: 4 },
+    {
+      name: '台账那句退成「71 页夹具」（本轮实测的真漂移）要红，并点名「不一致」',
+      files: fx.mutate(fclean, '全表扫（99 页夹具，不起浏览器', '全表扫（71 页夹具，不起浏览器'),
+      problems: 1, needle: '不一致'
+    },
+    {
+      name: '另一形状「全表 120 页」要红 —— 两种句式各自承重',
+      files: fx.mutate(fclean, '全表 99 页', '全表 120 页'),
+      problems: 1, needle: '全表 120 页'
+    },
+    {
+      name: '整套文档一句都不提时要响（不许当成没东西要核）',
+      files: { 'README.md': '这里不提页数。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到页数要响，且不许"只比文档"',
+      files: fclean, pagesOverride: 0, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照：说明书页数那一族真句子（README.md:712 实测形状）
+      name: '说明书 PDF 的「40 页」「31 页」与「5 页面」「一页夹具」不许被抓成夹具页数', xfamily: true,
+      files: {
+        'README.md': '| `使用说明.pdf` | 40 页，含界面示意 |\n- 覆盖了 5 页面；两代各自一页夹具。\n',
+        'HANDOVER.md': '本机已 `npm run manual` 重出（31 页，新表体里旧句 0 处）。\n'
+      },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var fbad = [];
+  FCASES.forEach(function (t) {
+    var res;
+    try {
+      res = fx.audit({
+        docs: t.files,
+        // 对照表用**夹具自己那份常数**（夹具句子与它自洽），真文档那一轮才用盘上的真读数 ——
+        // 否则夹具涨一页，这张表会整张变成"预期红几条"对不上，而红的是尺自己。
+        pages: ('pagesOverride' in t) ? t.pagesOverride : fx.CLEAN_PAGES
+      });
+    } catch (f3) {
+      fbad.push(t.name + '：审计本身抛了 ' + String((f3 && f3.message) || f3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      fbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      fbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      fbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  // 第 4 个实参是**允许留数字的那一行行号**（可见正文那一行），不是"预期几条"：
+  // 这一段全在围栏里，所以传 -1 —— 一旦围栏没被挖干净，数字会当场把它点名。
+  checkMaskShape('夹具页数 - 围栏代码块里的错数不算',
+    '正文一句都不提。\n```\n全表 99 页\n99 页夹具\n```\n', false, -1, fbad);
+  if (fbad.length) {
+    fail('夹具页数对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + fbad.join('\n      '));
+    return;
+  }
+  if (fxSrc.dups.length) {
+    fail('夹具表里有被静默覆盖的重复键：\n      ' + fxSrc.dups.map(function (d) {
+      return '「' + d.key + '」写了 ' + d.lines.length + ' 次（第 ' + d.lines.join(' / ') + ' 行）';
+    }).join('\n      ') + '\n      文本键数 ' + fxSrc.textual + '、运行时只有 ' + fxSrc.pages +
+      ' 页 —— 后一份盖掉前一份，改前一份的人会得到一句"夹具改了"而盘上一个字没变；' +
+      '\n      两份形状都要能端上来时**给其中一份换一个路径名**（`_isStudyCourseHref` 认的是前缀，尾巴可以加），别共键');
+    return;
+  }
+  var fdocs = {};
+  var fmissing = [];
+  fx.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) fdocs[f] = fs.readFileSync(p, 'utf8');
+    else fmissing.push(f);
+  });
+  if (fmissing.length) {
+    fail('夹具页数对账有 ' + fmissing.length + ' 份文档没读进来：' + fmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var freal = fx.audit({ docs: fdocs, pages: fxSrc.pages });
+  if (freal.problems.length) {
+    fail('夹具页数对账有 ' + freal.problems.length + ' 条要说：\n      ' + freal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成 MOCK_PAGES 现在的去重键数（' + fxSrc.pages + ' 页），别改判据迁就现状；' +
+      '\n      历史那句要留就照「现数 + 当时是几页」写，引述旧数不带「页夹具／全表 N 页」的形状才出得了界');
+    return;
+  }
+  var fxSelfCells = null;
+  var fxSelfErr = null;
+  for (var fattempt = 0; fattempt < 2; fattempt++) {
+    var fr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-fixture-pages.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    fxSelfErr = fr.error || null;
+    if (!fr.error || fr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (fr.status !== 0) {
+        fxSelfErr = new Error('退出码 ' + fr.status + '，末行=' +
+          JSON.stringify(String(fr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var fmc = String(fr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!fmc) {
+          fxSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(fr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else fxSelfCells = Number(fmc[1]);
+      }
+      break;
+    }
+  }
+  if (fxSelfErr) {
+    fail('夹具页数的逐格对照没跑成或本身是红的：' + String(fxSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 4 处都对上了"就打印通过');
+    return;
+  }
+  if (fxSelfCells < FX_SELF_MIN_CELLS) {
+    fail('夹具页数的逐格对照只报了 ' + fxSelfCells + ' 格（下限 ' + FX_SELF_MIN_CELLS + '）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；四格里"解析器契约"（重复键点名、块读不到要抛、' +
+      '自报接线断了两格）尤其承重 —— 真源读错时整套对账都是空的');
+    return;
+  }
+  pass('夹具页数文档对账（代码 MOCK_PAGES 去重 ' + fxSrc.pages + ' 页、文本键数 ' + fxSrc.textual +
+    ' 无重复；文档 ' + freal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(freal.claims.map(function (c) { return c.file; })).size + ' 份；含 ' + FCASES.length +
+    ' 格夹具对照（其中 ' + FCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）' +
+    ' + 1 格掩码形状自证；工具自带 ' + fxSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
+
+  // ---- 第 30 项的**第五把尺**：换课起账窗口那句「六小时重新起账」（会话任务 #226 / 队列 #65）----
+  //   同一族漂移第五次：批次 85/86 换课上限、批次 146/150 倍速问价、批次 157 弹题问价、批次 168 夹具页数、这一族。
+  //   立尺前量回来的底（2026-11-23）：代码真源 `src/page/64-tasks-loop.js` 的 `N * 3600 * 1000` 是 6，
+  //   而对用户说话的那 9 处散在 4 份文档里**全是手抄**（README 1 / 说明书 2 / Release 页 2 / HANDOVER 4），
+  //   没有一把尺对着真源比过 —— 与上一族同样的形状：改了行为而文档没改，一条测试都不会红，只有照文档理解现场的人被引偏。
+  //   ⚠️ 这一族的**第二半比前四把贵**：真源那行的旁边就是运行时写给用户的那句原话
+  //       （「…要么等六小时换课名单重新起账再试」），所以除文档以外还把**那句原话与常数钉成同一个数** ——
+  //       常量改了而日志没说，用户对"被退回的课还要等多久"听到的就是一个假窗口，而文档对账照样全绿。
+  //   **仍然不新开项号**（口径同批次 148）：项数是 `tools/README.md` 与台账里手抄的数，多一项要动一串文档。
+  var W_SELF_MIN_CELLS = 22;
+  var wa, waSrc;
+  try {
+    wa = require('./audit-recount-window-claims.js');
+  } catch (w1) {
+    fail('换课起账窗口对账加载失败：' + String((w1 && w1.message) || w1) +
+      '\n      真源是 tools/audit-recount-window-claims.js —— 它被改名或删除时，这半把闸会**静默消失**');
+    return;
+  }
+  // 五把尺共用**同一份**掩码：五路各写一份，"围栏／注释／script 里用户看不见"这个口径就会静默分叉（第 31 项同一族）。
+  if (wa.maskInvisible !== audit.maskInvisible || wa.maskInvisible !== rate.maskInvisible
+    || wa.maskInvisible !== quiz.maskInvisible || wa.maskInvisible !== fx.maskInvisible) {
+    fail('起账窗口与前四把尺**各写了一份掩码**（判据同第 31 项）：\n      ' +
+      '五处各一份，改一处另一处会静默过期 —— 掩码函数只许有一份真源');
+    return;
+  }
+  try {
+    waSrc = wa.recountFromSource();
+  } catch (w2) {
+    fail('起账窗口对账读不出代码真源：' + String((w2 && w2.message) || w2) +
+      '\n      真源是 ' + wa.SOURCE + ' 里「`Number(ledger.at …)` 比 `N * 3600 * 1000`」那一行，' +
+      '以及紧挨着它的那句对用户说的原话；那一行换成裸毫秒也要连这条闸一起改');
+    return;
+  }
+  var wclean = wa.cleanFixture();
+  var WCASES = [
+    { name: '干净夹具（七句真形状 + 跳过名单／更新检查／TTL／探针问价／换课上限五族诱饵都不算）', files: wclean, problems: 0, claims: 7 },
+    {
+      name: '文档凡是退成「两小时」的那几处全部红，且只有它们红（预期按"谁被改"写，不写死条数）',
+      files: wa.mutate(wclean, '六小时内只进一次', '两小时内只进一次'),
+      problems: 2, needle: '不一致'
+    },
+    {
+      name: 'README 那一处改成「八小时」要红，并只点名 README.md',
+      files: wa.mutate(wclean, '、六小时重新起账', '、八小时重新起账'),
+      problems: 1, needle: 'README.md'
+    },
+    {
+      name: '整套文档一句都不提时要响（防正则失效，不许打印"没有东西要核"式全绿）',
+      files: { 'README.md': '这里不提窗口。\n', 'HANDOVER.md': '这里也不提。\n' },
+      problems: 1, needle: '只在 0 个文件'
+    },
+    {
+      name: '代码侧没读到小时数要响，且不许"只比文档"',
+      files: wclean, hoursOverride: 0, problems: 1, needle: '没读到'
+    },
+    {
+      // 跨族阴性对照：真句子形状（README 的 24 小时跳过名单 + 更新检查那两档；AGENTS 的 TTL 与"跨 30 分钟重新起账"）
+      name: '「24 小时跳过名单」「手动 6 小时一次自动 24 小时一次」「TTL（6 小时）」「跨 30 分钟…重新起账」都不许当起账窗口',
+      xfamily: true,
+      files: {
+        'README.md': '- 反复做不完的任务点记入 **24 小时跳过名单**。\n- 自动更新检查每 24 小时一次，手动每 6 小时一次。\n',
+        'HANDOVER.md': '- 检查更新那一发隔 6 小时不算承诺；TTL（6 小时）到点允许再问一枚。\n'
+      },
+      problems: 1, claims: 0, needle: '只在 0 个文件'
+    }
+  ];
+  var wbad = [];
+  WCASES.forEach(function (t) {
+    var res;
+    try {
+      res = wa.audit({
+        docs: t.files,
+        // 对照表用**夹具自己那份常数**（夹具句子与它自洽），真文档那一轮才用盘上的真读数 ——
+        // 否则夹具里加一句，这张表会整张变成"预期红几条"对不上，而红的是尺自己。
+        hours: ('hoursOverride' in t) ? t.hoursOverride : wa.CLEAN_HOURS
+      });
+    } catch (w3) {
+      wbad.push(t.name + '：审计本身抛了 ' + String((w3 && w3.message) || w3));
+      return;
+    }
+    if (res.problems.length !== t.problems) {
+      wbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + res.problems.length + ' 条 ' +
+        JSON.stringify(res.problems.slice(0, 3)));
+    } else if ('claims' in t && res.claims.length !== t.claims) {
+      wbad.push(t.name + '：问题 ' + t.problems + ' 条对得上，但命中 ' + res.claims.length +
+        ' 处（期望 ' + t.claims + ' 处）—— 少了是扫描失效，多了是把别人的句式也抓进来了');
+    } else if (t.needle && !res.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      wbad.push(t.name + '：报了 ' + res.problems.length + ' 条，但没有一条点到「' + t.needle + '」');
+    }
+  });
+  // ⚠️ 这两格必须用 **ASCII 数字**写：checkMaskShape 只测 `/[0-9]/`，写成「六小时」它压根没有数字可查，
+  //    于是"掩码没生效"也照样绿 —— 那是一格空守卫（§5「接线类判据的锚点要紧到会红」同族）。
+  // 第 4 个实参是**允许留数字的那一行行号**（可见正文那一行），不是"预期几条"：
+  // 这一段全在围栏里，所以传 -1 —— 一旦围栏没被挖干净，数字会当场把它点名。
+  checkMaskShape('起账窗口 - 围栏代码块里的错数不算',
+    '正文一句都不提。\n```\n6 小时重新起账\n21600000 毫秒起账\n```\n', false, -1, wbad);
+  checkMaskShape('起账窗口 - HTML 注释与 script 里的错数不算',
+    '<p>6 小时重新起账</p>\n<!-- 6 小时重新起账 -->\n<script>x="6 小时起账";</script>\n', true, 0, wbad);
+  // ⚠️ 上面两格只查"掩码把数字挖没挖掉"，那是尺的**卫生**。真正承重的是下面四格：它们问的是
+  //   "围栏／注释里那枚错数会不会被当成一句用户承诺"，并且**每道防误报的闸各配一格摘掉它当场就会红的对照**
+  //   （§2 #9 那一族 —— 只有"整段全绿"的对照，量不到掩码这一手究竟有没有在挡东西）。
+  var wbase = wa.audit({ docs: wclean, hours: wa.CLEAN_HOURS });
+  function withTail(file, tail) {
+    var clone = {};
+    Object.keys(wclean).forEach(function (k) { clone[k] = wclean[k]; });
+    clone[file] = wclean[file] + tail;
+    return wa.audit({ docs: clone, hours: wa.CLEAN_HOURS });
+  }
+  var wFence = [
+    { name: 'markdown 围栏里的「8 小时重新起账」不算承诺（不许把代码块当用户看得见的话）',
+      r: withTail('README.md', '\n```\n8 小时重新起账\n```\n'), claims: wbase.claims.length, problems: wbase.problems.length },
+    { name: '同一枚数字搬到围栏**外面**就要红 —— 摘掉掩码这一手，该红的没红说明它没在承重',
+      r: withTail('README.md', '\n8 小时重新起账\n'), problems: wbase.problems.length + 1, needle: '8 小时' },
+    { name: '说明书里 HTML 注释与 script 里的「8 小时重新起账」不算承诺',
+      r: withTail('docs/manual.html', '\n<!-- 8 小时重新起账 -->\n<script>x("8 小时起账");</script>\n'),
+      claims: wbase.claims.length, problems: wbase.problems.length },
+    { name: '同一枚数字落在说明书**可见正文**里就要红',
+      r: withTail('docs/manual.html', '\n<p>8 小时重新起账</p>\n'), problems: wbase.problems.length + 1, needle: '8 小时' }
+  ];
+  wFence.forEach(function (t) {
+    if (t.r.problems.length !== t.problems) {
+      wbad.push(t.name + '：应报 ' + t.problems + ' 条，实际 ' + t.r.problems.length + ' 条 ' +
+        JSON.stringify(t.r.problems.slice(0, 2)));
+    } else if ('claims' in t && t.r.claims.length !== t.claims) {
+      wbad.push(t.name + '：命中 ' + t.r.claims.length + ' 处（期望 ' + t.claims + ' 处）—— 不等就是围栏被当成正文读了');
+    } else if (t.needle && !t.r.problems.some(function (x) { return x.indexOf(t.needle) !== -1; })) {
+      wbad.push(t.name + '：报了 ' + t.r.problems.length + ' 条，但没有一条含「' + t.needle + '」');
+    }
+  });
+  if (wbad.length) {
+    fail('起账窗口对账的阴性对照不成立（守卫失效比没有守卫更糟）：\n      ' + wbad.join('\n      '));
+    return;
+  }
+  var wdocs = {};
+  var wmissing = [];
+  wa.DOCS.forEach(function (f) {
+    var p = path.join(ROOT, f);
+    if (fs.existsSync(p)) wdocs[f] = fs.readFileSync(p, 'utf8');
+    else wmissing.push(f);
+  });
+  if (wmissing.length) {
+    fail('起账窗口对账有 ' + wmissing.length + ' 份文档没读进来：' + wmissing.join(' / ') +
+      '\n      文件被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var wreal = wa.audit({ docs: wdocs, hours: waSrc.hours });
+  if (wreal.problems.length) {
+    fail('起账窗口对账有 ' + wreal.problems.length + ' 条要说：\n      ' + wreal.problems.join('\n      ') +
+      '\n      改法：把文档那一处改成代码里的窗口（' + waSrc.hours + ' 小时，' + wa.SOURCE + ':' + waSrc.line + '），别改判据迁就现状；' +
+      '\n      历史那句要留就照「现数 + 当时是几小时」写，引述旧数不带「小时…重新起账」的形状才出得了界');
+    return;
+  }
+  var wSelfCells = null;
+  var wSelfErr = null;
+  for (var wattempt = 0; wattempt < 2; wattempt++) {
+    var wr = spawnSync(process.execPath,
+      [path.join(__dirname, 'audit-recount-window-claims.js'), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    wSelfErr = wr.error || null;
+    if (!wr.error || wr.error.code === 'ETIMEDOUT') {   // 只有"起不来"值得重试
+      if (wr.status !== 0) {
+        wSelfErr = new Error('退出码 ' + wr.status + '，末行=' +
+          JSON.stringify(String(wr.stdout || '').trim().split(/\r?\n/).pop()));
+      } else {
+        var wmc = String(wr.stdout || '').match(/自证通过（共 (\d+) 格）/);
+        if (!wmc) {
+          wSelfErr = new Error('没打印那句「自证通过（共 N 格）」，末行=' +
+            JSON.stringify(String(wr.stdout || '').trim().split(/\r?\n/).pop()));
+        } else wSelfCells = Number(wmc[1]);
+      }
+      break;
+    }
+  }
+  if (wSelfErr) {
+    fail('起账窗口的逐格对照没跑成或本身是红的：' + String(wSelfErr) +
+      '\n      读不出当失败，不许因为"文档那 ' + wreal.claims.length + ' 处都对上了"就打印通过');
+    return;
+  }
+  if (wSelfCells < W_SELF_MIN_CELLS) {
+    fail('起账窗口的逐格对照只报了 ' + wSelfCells + ' 格（下限 ' + W_SELF_MIN_CELLS + '）—— ' +
+      '有格被跳过或删掉时，"全绿"这两个字就没有内容；三格里"真源契约"（裸毫秒要抛并点名行、' +
+      '多处窗口要抛、那句原话与常数不同档要抛）尤其承重 —— 真源读错时整套对账都是空的');
+    return;
+  }
+  pass('换课起账窗口文档对账（代码 ' + wa.SOURCE + ':' + waSrc.line + ' = ' + waSrc.hours +
+    ' 小时，运行时原话「' + waSrc.sentence + '」同数；文档 ' + wreal.claims.length + ' 处逐个对上，分布在 ' +
+    new Set(wreal.claims.map(function (c) { return c.file; })).size + ' 份、认不出 ' + wreal.unknown.length +
+    ' 处；含 ' + WCASES.length + ' 格夹具对照（其中 ' +
+    WCASES.filter(function (t) { return t.xfamily; }).length + ' 格是跨族不许误报）+ 2 格掩码形状自证 + ' +
+    wFence.length + ' 格围栏／注释对照（其中两格是"摘掉掩码这一手当场就会红"的反面证人）；' +
+    '工具自带 ' + wSelfCells + ' 格逐格对照当场真跑过，格数由它自己打印的那一行读回来）');
 }
 
 // 31. 换课前"问一轮课程首页进度"承诺的那几个数字：文档写的必须就是代码里的那九个
@@ -3663,6 +4697,1400 @@ function checkProfileSweep() {
 }
 
 // ---------------------------------------------------------------------------
+// 34. 实验支线的发布闸（真源 tools/channel-gate.js）+ 门面的归属
+//     用户口径累计四条，方向各不相同，都要落到命令或尺上：
+//       2026-11-19「实验版要与稳定版隔离开」→ 支线不许跑 release / replace-asset
+//         （⚠️ 当时被我缩成「不提供直接下载」当成作者原话，作者 11-20 更正过，见 CHANGELOG 1.3.1 段）；
+//       2026-11-20「实验班也可以加入 readme 的正常下载的旁边，特别标明就行」
+//                                       → 支线有自己的预览口，但发布线不许发预览；
+//       2026-11-20「门面是我们的正常 main 啊…这不是舍本逐末嘛？」
+//                                       → **给人看的那一页在 main**，支线只是工作台；
+//                                         实验版入口是门面的固定组成部分，不再随通道同进同退。
+//       2026-11-20「树枝那边的 readme…一切都是为了 AI 做事服务，不需要考虑人类阅读」
+//                                       → 门面**只**在 main 养一份：支线那一份 README 改成工作笔记
+//                                         + 指回 main 的一句话，两处都不许再多一份门面。
+//     ⚠️ 这一族事故不报错：在实验支线上跑 `replace-asset`，它会按**当前工作树的版本号**
+//     取 dist 里那个包（实验版那份），却挂到线上固定的附件名 `omitone.zip` 上 ——
+//     每条命令都打印成功，而 README 那条永久直链从此给所有人发实验版。
+//     反过来那一族更隐蔽：预览包若复用 `omitone.zip` 这个名字，或漏写 `prerelease:true`，
+//     **线上没有任何东西会红**，只有几周后发现「同学装的一直是实验版」才看得见（1.2.9 那次同形）。
+//     第三族是上一轮踩的：**门面那几格读的是工作树那份 README**，于是门面被写在支线工作树上时
+//     通道两侧各自自洽、默认那一页一个字没有 —— 加 g 格直接从 git 读 main 才量得到（§2 #18 同一族）。
+//     第四族是这一轮踩的、方向刚好相反：支线工作树里**留着完整的一份门面**，改人类向文案就改在草稿上，
+//     而两份内容相同的 README 让上面那把尺读哪边都"对" —— 所以 e 现在**按通道分边取文本**：
+//     支线上门面从 `git show main:README.md` 取、工作树那份只许是指针；稳定线上门面就是工作树那一份
+//     （不许也改成读 HEAD，那会把未提交的门面改动量成看不见 —— 一条只会读旧账的尺）。
+//     各格各自承重，摘掉任意一格都要红：
+//       a 闸自己的逐格对照全绿，且格数没被人删（口径同第 33 项）
+//       b release / replace-asset / preview 三条**真的问了闸**，且问在联网之前
+//       c 只读的 verify 不许被挡（§3.7 要求发版必跑它，挡死=造一条恒红的守卫）
+//       d 预览那一发不许借用稳定通道的附件名，且必须写 prerelease:true，且发完必须回读自证
+//       e 门面按通道分边：**main 那一份**才给人看（预览入口、不撞稳定名字、旧口径两句都不许留）；
+//         支线工作树那一份只许写「这页是工作笔记」的指针，**再抄一遍门面就红**
+//         （两份门面必然分叉，并回 main 时互相覆盖 —— 用户 2026-11-20 第二次口径）；
+//         说明书教预览版下载这一格落在**发预览包的那条线**（预览 pdf 由它构建）
+//       f AGENTS §3.8 那条规矩还指着这份真源
+//       g 支线上从 `git show main:README.md` 把门面取回来 —— **读不出单独占一格**，
+//         且它与工作树那份逐字节相同时也红（两份一样就没法分清这一格读的是哪一边）
+//       h 文档里手抄的「闸自带 N 格」必须等于 a 格从闸自己嘴里读回来的 N ——
+//         断的方向是文档不是闸：a 格只比代码里的 CELLS_MIN 下限，量不到散文里那几处手抄的数，
+//         于是 AGENTS 与 HANDOVER 一起停在「15 格」三个批次没人发现（批次 142 补的这把尺）；
+//         0 命中单独报红，口径同 §2 #21：措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿
+//       i 预览版**逐轮登记**：批次 140 起的口径是「预览版每做完一轮就往门面补一两句」，
+//         而这一族以前**一条尺都没有** —— 门面停在上一轮时现场一片安静（批次 147 实测撞上：
+//         146 那三条用户看得见的改动欠了一整天，没有任何东西替人记这笔账）。
+//         判据落在每一轮往 CHANGELOG 自己那一节写下的 `**门面**：` 那一行，两种形状缺一不可：
+//         引片段的（片段要能在用户看得见的那几页里取到）／写明「不用补（理由）」的；
+//         一节都扫不到单独报红，口径同 h —— 那句要求被整段删掉时不许静默变成通过
+//       j verify 的期望表**按通道**取（#203）：期望自测要跑绿且格数不掉，且 cmdVerify 的函数体
+//         真的用那张表（名字那一族写死回 ASSETS 也单独红）—— 否则 `verify preview` 恒红三条
+//         结构上不可能成立的断言，而每轮收口第 ⑥ 件都要跑它
+// ---------------------------------------------------------------------------
+function checkChannelGate() {
+  var bad = [];
+  var cells = null;
+
+  // ---- a. 闸自带的逐格对照 ----
+  var CELLS_MIN = 20;
+  if (!exists('tools/channel-gate.js')) {
+    fail('实验支线的发布闸真源不存在：tools/channel-gate.js（AGENTS §3.8 那条规矩落不到命令上）');
+    return;
+  }
+  var gatePath = path.join(__dirname, 'channel-gate.js');
+  var gOut = '';
+  var gStatus = null;
+  var gErr = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var gr = spawnSync(process.execPath, [gatePath, '--selftest'], { encoding: 'utf8', timeout: 30000 });
+    gErr = gr.error || null;
+    gOut = String(gr.stdout || '') + String(gr.stderr || '');
+    gStatus = gr.status;
+    if (!gr.error || gr.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  if (gErr) {
+    bad.push('通道闸的逐格自证没跑成' + (gErr.code === 'ETIMEDOUT' ? '（30 秒没返回）' : '（已重试一次）') +
+      '：' + String(gErr));
+  } else {
+    var gm = gOut.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (gStatus !== 0 || !gm) {
+      bad.push('通道闸自证退出码 ' + gStatus + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(gOut.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (Number(gm[1]) !== Number(gm[2])) {
+      bad.push('通道闸自证自己报了 ' + gm[1] + ' / ' + gm[2] + ' 两数不等，却退出 ' + gStatus +
+        ' —— 有格没过还被当成通过');
+    } else if (Number(gm[2]) < CELLS_MIN) {
+      bad.push('通道闸对照格数从下限 ' + CELLS_MIN + ' 掉到 ' + gm[2] + ' —— 删掉的那格不会自己喊，' +
+        '少一格「放行」的对照，闸把正式版一起挡死也照样绿');
+    } else {
+      cells = Number(gm[2]);
+    }
+  }
+
+  // ---- b + c + d. 发版工具那几半（先剥注释：头部大段散文写着 release / replace-asset，拿原文数就是把散文当调用） ----
+  var relCode = stripComments(read('tools/github-release.js'));
+  if (relCode.indexOf("require('./channel-gate.js')") === -1) {
+    bad.push("tools/github-release.js 没有 require 通道闸 —— 闸写着却没人问，等于还是那句「别跑这条命令」");
+  }
+  [['cmdRelease', 'release'], ['cmdReplaceAsset', 'replace-asset'], ['cmdPreview', 'preview']].forEach(function (pair) {
+    var body = fnBodyAt(relCode, pair[0]);
+    if (!body) { bad.push('发版工具里找不到 ' + pair[0] + ' 的函数体 —— 那一发没法确认它问了闸'); return; }
+    var ask = body.indexOf("blockReasonForRepo('" + pair[1] + "')");
+    if (ask === -1) {
+      bad.push(pair[0] + ' 没问通道闸（' + pair[1] + '）—— 实验支线上这条命令会照样把包推上线');
+    } else {
+      var netAt = body.indexOf('await api(');
+      if (netAt !== -1 && netAt < ask) {
+        bad.push(pair[0] + ' 的闸问在**第一次联网之后** —— 前面的 GET 已经动过远端了，挡要挡在最前面');
+      }
+      if (body.indexOf('process.exitCode = 1') < ask) {
+        bad.push(pair[0] + ' 挡下之后没有非零退出 —— 打印一句红字却回 0，链式命令会当成成功继续跑');
+      }
+    }
+  });
+  var verifyBody = fnBodyAt(relCode, 'cmdVerify');
+  if (!verifyBody) {
+    bad.push('发版工具里找不到 cmdVerify 的函数体 —— 「只读核验不许被挡」那一格没处可查');
+  } else if (verifyBody.indexOf('blockReasonForRepo') !== -1) {
+    bad.push('cmdVerify 被接进了通道闸 —— verify 是 §3.7 要求**发版必跑**的只读核验，' +
+      '把它挡死就得到一条恒红的发版流程（会误报的守卫和没有守卫一样害人）');
+  }
+  // d. 预览那一发的三条命门（名字、prerelease、发完回读）—— 任何一条漏了，线上都不会红
+  var prevBody = fnBodyAt(relCode, 'cmdPreview');
+  if (!prevBody) {
+    bad.push('发版工具里没有 cmdPreview —— 用户要的「预览版可以下载」落不到命令上');
+  } else {
+    if (prevBody.indexOf("'omitone-preview.zip'") === -1 && relCode.indexOf("name: 'omitone-preview.zip'") === -1) {
+      bad.push("预览那一发的附件名不是 omitone-preview.zip —— 一旦它与稳定通道的 omitone.zip 同名，" +
+        'README 那条按名字取件的永久直链就会被实验版顶掉');
+    }
+    if (!/prerelease:\s*true/.test(prevBody)) {
+      bad.push('预览那一发没写 prerelease:true —— /releases/latest 只认「非预发布」那一版，' +
+        '漏这一个字段等于把预览版推成同学下载的官方版，而命令照样返回 200');
+    }
+    if (prevBody.indexOf('assertStableChannelIntact') === -1) {
+      bad.push('cmdPreview 发布完没有回读自证 —— 「prerelease 写没写对」不能靠我记得，得从线上读回来');
+    }
+  }
+  var intactBody = fnBodyAt(relCode, 'assertStableChannelIntact');
+  if (!intactBody) {
+    bad.push('发版工具里找不到 assertStableChannelIntact 的函数体 —— 那一发「直链没被抢走」的自证没处可查');
+  } else if (intactBody.indexOf('/releases/latest') === -1) {
+    bad.push('assertStableChannelIntact 没有问 /releases/latest —— 预览口会不会顶掉正式版，只有读它才知道');
+  } else if (intactBody.indexOf('STABLE_ONLY_NAMES') === -1) {
+    bad.push('assertStableChannelIntact 没有比附件名交集（STABLE_ONLY_NAMES）—— 两个通道共用名字是最贵的那一种漏');
+  }
+
+  // ---- e. 门面只养一份，且养在 main ----
+  //     用户口径 2026-11-20（原话「树枝那边的 readme 那些什么东西，一切都是为了 AI 做事服务，
+  //     不需要考虑人类阅读之类的，稳定版是我们的门面，那边才需要考虑写好 readme 那些」）：
+  //     **门面归 main，支线那一份是工作笔记。** 两侧各查各的形状，因为两种错法都不报错：
+  //       · 稳定页缺预览入口 → 同学从默认页看不见预览口，只能靠人来问（上一轮的事故）；
+  //       · 支线又抄一份门面 → 两份各自漂移，并回 main 时**这一份覆盖那一份**，
+  //         改了半天人类向文案改在草稿上，默认页一个字没动（同一族的第二次，方向相反）。
+  //     通道判定继续用闸那一把尺（不在这里再写一遍 /experimental/，AGENTS §2 #18）。
+  var gate = require('./channel-gate.js');
+  var isExp = gate.isExperimental(gate.readChannelNames().version_name);
+  var readme = read('README.md');
+  var manual = exists('docs/manual.html') ? read('docs/manual.html') : '';
+  var PREVIEW_LINK = 'releases/download/preview/omitone-preview.zip';
+  var BRANCH_ONLY = '只有切到这一条分支才看得见';
+  var POINTER = '这一页是支线的工作笔记';
+  var hasPreviewLink = readme.indexOf(PREVIEW_LINK) >= 0;
+  if (isExp) {
+    if (!readme || readme.indexOf(POINTER) === -1) {
+      bad.push('支线那份 README 没有「' + POINTER + '」这句指针 —— 下一轮接手的人和 AI 都会以为' +
+        '人类向文案改在这里，实际上门面在 main（用户 2026-11-20：这一支的文档只为做事服务）');
+    }
+    if (hasPreviewLink) {
+      bad.push('支线那份 README 又抄了一遍门面的预览入口（' + PREVIEW_LINK + '）—— ' +
+        '两份门面必然分叉，并回 main 时是这一份覆盖那一份；入口只写在 main 那一页');
+    }
+  }
+  // ---- g. 先把门面那一页取回来（facadeReadme，与第 5c 项预览附件名那一格共用同一把尺）----
+  //     ⚠️ 在支线上，工作树那份是工作笔记，**不是**给人看的那一页 —— 门面那几格若读工作树，
+  //     在支线上测的是草稿本，main 缺入口照样绿（这一轮之前就是这样，用户报的正是这一族）。
+  //     反过来在稳定线上，门面就是工作树这一份，**不许**改去读 `git show main:` 的 HEAD ——
+  //     那样未提交的门面改动会量不到，是一条只会读旧账的尺。
+  //     所以：facade 的来源按通道分边；支线上这一发读不出**单独占一格**（§2 #12）。
+  var facadeRes = facadeReadme(isExp);
+  var facade = facadeRes.text;                      // 支线上取不回来时是 null，下面整段跳过
+  var facadeFrom = facadeRes.from;
+  if (isExp && !facade) {
+    bad.push('读不出门面那一页 main:README.md（' + facadeRes.why + '）—— 支线上门面那几格**读不出就是没落实**，' +
+      '不许当成通过；也别去怀疑 main 上没有实验版入口，先修这一发的读取');
+  } else if (isExp && facade === readme) {
+    bad.push('门面（main:README.md）与支线工作树那份**逐字节相同** —— 这一格读的是工作树还是 main 就分不清了，' +
+      '而两份一样意味着门面还没跟草稿分开（工作树那份顶部该是指针那一句，不是第二份门面）');
+  }
+
+  // e2a 门面必须真的带着预览入口 —— 这一格是整条链的落点：包发出去了、命令与闸都对，
+  //     只有门面缺这一句时，同学看不见 = 预览口等于不存在，而且**没有任何别的东西会红**。
+  if (facade && facade.indexOf(PREVIEW_LINK) === -1) {
+    bad.push('门面（' + facadeFrom + '）里没有实验版入口 ' + PREVIEW_LINK + ' —— ' +
+      '同学只会看默认那一页，缺了这句就是"预览包真发上去了但没人找得到"（不报错、不留日志）');
+  }
+
+  // e2 门面那几行里的**链接地址**不许撞稳定通道 —— 只比 URL，不比整行散文，
+  //    否则「退回正式版就重装 omitone.zip」这种正常说明会被报成越界（会误报的守卫和没有守卫一样害人）
+  var leaked = [];
+  if (facade) {
+    facade.split(/\r?\n/).forEach(function (l) {
+      if (l.indexOf('预览') === -1) return;
+      var urls = String(l).match(/https?:\/\/[^\s)\]]+/g) || [];
+      urls.forEach(function (u) {
+        if (u.indexOf('/releases/latest') >= 0 || /\/omitone\.zip$/.test(u)) leaked.push(u);
+      });
+    });
+  }
+  if (leaked.length) {
+    bad.push('门面（' + facadeFrom + '）实验版那几行里出现了稳定通道的地址（' + leaked.length + ' 条，第一条=' +
+      JSON.stringify(leaked[0]) + '）—— 两个通道共用名字，' +
+      'README 那条按名字取件的永久直链迟早被预览包顶掉（1.2.9 那次同形）');
+  }
+  if (facade && facade.indexOf('不提供直接下载') >= 0) {
+    bad.push('门面（' + facadeFrom + '）里还有那句「不提供直接下载」—— 那是 2026-11-19 的旧口径' +
+      '（当时预览口还没有）。现在实验版有预览下载口，这句会把人挡在能下载的那一步外面');
+  }
+  if (facade && facade.indexOf(BRANCH_ONLY) >= 0) {
+    bad.push('门面（' + facadeFrom + '）还写着「' + BRANCH_ONLY + '」—— 那正是把门面放到支线工作树上的那版说法。' +
+      '门面归 main，这一支只是草稿；留着这句，读默认页的人会以为预览口压根不存在');
+  }
+  // e3 说明书那一格只在**发预览包的这条线**上承重：预览那份 pdf 由这条线构建。
+  //    稳定线的 pdf 描述的是 1.3.0 正式版，等转正时这条线那份并回去，天然带上这一格 ——
+  //    把它写成通道无关，就会在 main 上得到一条恒红、只能靠放宽判据消掉的守卫。
+  if (isExp && (!manual || manual.indexOf('预览版下载') === -1)) {
+    bad.push('支线说明书没教「预览版下载」这一格 —— 预览版的 pdf 就是从这条线出的，' +
+      '照着那份 pdf 装机的人只看得到正式版那一步，实验版那一条他根本不知道能装');
+  }
+
+  // ---- f. AGENTS 那条规矩指着这份真源 ----
+  var agents = read('AGENTS.md');
+  if (agents.indexOf('tools/channel-gate.js') === -1) {
+    bad.push('AGENTS.md §3.8 没把 tools/channel-gate.js 写成真源 —— 下一轮接手的人只会去找那句文字规矩');
+  }
+
+  // ---- h. 文档手抄的「闸自带 N 格」对着闸实测格数逐处比 ----
+  //     尺的形状照 §2 #21：**只认「闸自带 …数字… 格」这一族写法**（数字必须紧跟在那三个字之后），
+  //     于是 CHANGELOG 里那句「那个 **20 格**（闸自带对照格数）手抄在 AGENTS §3.8 与 HANDOVER」天然出界 ——
+  //     数字写在前面就匹配不到，不用给历史句贴豁免标记，也不用把尺放宽（§3.7：CHANGELOG 的历史数按史实不回改）。
+  //     每处命中都必须等于 a 格跑 selftest 读回来的 cells；一处都扫不到单独报红，别打印通过。
+  var DOC_CELLS_FILES = ['AGENTS.md', 'HANDOVER.md', 'tools/README.md'];
+  var docHits = [], docWrong = [];
+  DOC_CELLS_FILES.forEach(function (f) {
+    if (!exists(f)) { docWrong.push(f + ' 读不到文件'); return; }
+    var re = /闸自带(?:的)?\s*\**\s*(\d+)\s*格/g;
+    var m;
+    while ((m = re.exec(read(f)))) {
+      docHits.push(f + '(' + m[1] + ')');
+      if (cells !== null && Number(m[1]) !== cells) docWrong.push(f + ' 写 ' + m[1] + ' 格');
+    }
+  });
+  if (docHits.length === 0) {
+    bad.push('AGENTS.md / HANDOVER.md / tools/README.md 三处里一处「闸自带 N 格」都没扫到（闸实测 ' + cells +
+      ' 格）—— 命中 0 不是通过：那句手抄被整句改写掉，就等于从此没有任何东西要求人核这个数；' +
+      '上一版 AGENTS 与 HANDOVER 一起停在「15 格」三个批次，正因为没人读过这两处');
+  } else if (docWrong.length) {
+    bad.push('文档手抄的闸格数与闸自己报回来的不等（闸实测 ' + cells + ' 格，扫到 ' + docHits.length +
+      ' 处：' + docHits.join('、') + '）—— 断在：' + docWrong.join('；') +
+      '。改的永远是文档那几处，不是 CELLS_MIN、也不是闸里的对照格数（AGENTS §3「行为改了而文档没改，' +
+      '是这一族唯一的失败形状」）');
+  }
+
+  // ---- i. 预览版逐轮登记：每一轮都要在 CHANGELOG 自己那一节里对门面表态 ----
+  //     ⚠️ 判据的形状照 §2 #21：断的是**这一轮自己写下的那一行**，不是门面里有没有某句话 ——
+  //     门面是散文，"字样在不在"那种尺会在下一轮改写措辞时静默失效；而"每轮必须表态"没有豁免面：
+  //     要么引用一段门面里真取得到的原话，要么写清为什么这轮不用补（批次 143 那种只改 README 账目的就是后者）。
+  //     ⚠️ 三种"没跑到"各自单独占一格（§2 #12）：一节都扫不到／门面读不出／比对的三份全空。
+  var FACADE_FROM = 141;   // 批次 140 定了「预览版每做完一轮就往门面补一两句」，从下一轮起要求逐轮表态
+  function wsOf(s) { return String(s || '').replace(/\s+/g, ''); }   // 门面那一行是折行的，比之前两侧都去空白
+  var ledgerCorpus = [];
+  if (facade) ledgerCorpus.push({ name: facadeFrom, text: wsOf(facade) });
+  var curVer = '';
+  try { curVer = String(JSON.parse(read('manifest.json')).version || ''); } catch (eV) { curVer = ''; }
+  ['release-notes-preview.md'].concat(curVer ? ['release-notes-' + curVer + '.md'] : []).forEach(function (f) {
+    if (!exists(f)) return;
+    var t = wsOf(read(f));
+    if (t) ledgerCorpus.push({ name: f, text: t });
+  });
+  var ledger = { total: 0, cited: 0, waived: 0, missing: [], weak: [], notFound: [] };
+  var sections = [];
+  String(read('CHANGELOG.md') || '').split(/\r?\n/).forEach(function (ln) {
+    var h = ln.match(/^### 批次\s+(\d+)/);
+    if (h) sections.push({ no: Number(h[1]), mark: null });
+    if (!sections.length) return;
+    var s = sections[sections.length - 1];
+    var m = ln.match(/^\s*[-*+]?\s*\*\*门面\*\*\s*[:：]\s*(.+)$/);
+    if (m && s.mark === null) s.mark = m[1].trim();
+  });
+  var inRange = sections.filter(function (s) { return s.no >= FACADE_FROM; });
+  ledger.total = inRange.length;
+  inRange.forEach(function (s) {
+    if (s.mark === null) { ledger.missing.push(s.no); return; }
+    var q = s.mark.match(/^`([^`]+)`/);
+    var w = s.mark.match(/^不用补[（(]([^）)]+)[）)]/);
+    if (q) {
+      var frag = wsOf(q[1]);
+      if (frag.length < 8) {
+        ledger.weak.push('批次 ' + s.no + '：引的片段去掉空白只有 ' + frag.length + ' 字 —— 太短的片段谁都能凑上，不算证据');
+        return;
+      }
+      if (/[*_]/.test(q[1])) {
+        ledger.weak.push('批次 ' + s.no + '：片段里带了 markdown 的 `*` 或 `_` —— 门面那句是加粗的，照抄星号必定取不到（要摘掉加粗再截一截）');
+        return;
+      }
+      ledger.cited++;
+      if (!facade) return;   // 门面读不出时这一格由下面单独说话，不拿"取不到"糊过去
+      var where = ledgerCorpus.filter(function (c) { return c.text.indexOf(frag) >= 0; });
+      if (!where.length) ledger.notFound.push('批次 ' + s.no + '「' + String(q[1]).slice(0, 26) + '」');
+    } else if (w) {
+      if (wsOf(w[1]).length < 6) {
+        ledger.weak.push('批次 ' + s.no + '：「不用补」的理由去掉空白只有 ' + wsOf(w[1]).length + ' 字，等于没写');
+        return;
+      }
+      ledger.waived++;
+    } else {
+      ledger.weak.push('批次 ' + s.no + '：那一行既不是 `反引号片段` 也不是「不用补（理由）」（读到：' +
+        JSON.stringify(String(s.mark).slice(0, 30)) + '）');
+    }
+  });
+  if (ledger.total === 0) {
+    bad.push('CHANGELOG 里扫不到批次号 ≥ ' + FACADE_FROM + ' 的段落（读到 ' + sections.length +
+      ' 段，全在范围外）—— 0 命中不是通过：那段标题的形状被改了，这把尺就从此扫不到任何东西（口径同 h）');
+  } else if (facade && ledgerCorpus.length === 0) {
+    bad.push('i 格三份比对文本全空（门面 + release-notes-preview.md + release-notes-' + curVer + '.md）—— ' +
+      '拿不到比对面就没有任何片段能被判"取不到"，这是读不出，不是通过');
+  } else {
+    if (ledger.missing.length) {
+      bad.push('批次 ' + ledger.missing.join('、') + ' 的 CHANGELOG 段里没有「**门面**：」那一行 —— ' +
+        '预览版每做完一轮要在门面（' + facadeFrom + ' 的「预览版最近改了什么」）补一两句，这条口径以前**一条尺都没有**，' +
+        '于是欠记录时现场一片安静（批次 147 实测：146 那三条用户看得见的改动欠了一整天）。' +
+        '两种合法写法：`**门面**：` + 反引号包住门面里真有的那一段原话；或 `**门面**：不用补（一句说得出口的理由）`');
+    }
+    if (ledger.notFound.length) {
+      bad.push(ledger.notFound.join('；') + ' 引的片段在用户看得见的那几页里取不到（比过：' +
+        ledgerCorpus.map(function (c) { return c.name; }).join(' / ') + '）—— ' +
+        '写了标记不等于补了门面：门面那句话被改写、被整段删掉、或当初根本没写，这一格都该红');
+    }
+    if (ledger.weak.length) bad.push('「**门面**：」那一行不承重：' + ledger.weak.join('；'));
+    if (!facade && ledger.cited > 0) {
+      bad.push('i 格没能比：门面那一页读不出（' + facadeRes.why + '），而这一轮有 ' + ledger.cited +
+        ' 条片段要对着它比 —— g 那条已经为这句话红过一回，这里再记一笔是别让"少了一段比较"被读成通过');
+    }
+  }
+
+  // ---- j. verify 的期望必须**按通道**取（#203）----
+  //     这一族的形状与 c 格刚好配对：c 管"不许把只读核验挡死"，j 管"核验问的话得问在对的通道上"。
+  //     批次 149–153 实测：`verify preview` 拿**正式通道**的期望问预览那一发
+  //     （要 omitone.zip 与 Omitone-manual.pdf 这两个名字、要 latest/download/omitone.zip 那条直链、
+  //     要 tag 不落后 main），三条**结构上不可能成立**，退出码恒 1 ——
+  //     而六件套第 ⑥ 件每轮收口都要跑它，恒红的验收等于没有验收（人会开始跳过这一步）。
+  //     所以两边都要钉：**(1)** 期望表自己的逐格自测要跑绿且格数不掉；
+  //     **(2)** `cmdVerify` 的函数体真的从那张表取期望（否则自测绿而核验仍写死，是最坏的一种绿）。
+  var VERIFY_EXPECT_MIN = 10;
+  var veOut = '', veStatus = null, veErr = null;
+  for (var veAttempt = 0; veAttempt < 2; veAttempt++) {
+    var vres = spawnSync(process.execPath,
+      [path.join(__dirname, 'github-release.js'), 'verify-expect'],
+      { encoding: 'utf8', timeout: 30000 });
+    veErr = vres.error || null;
+    veOut = String(vres.stdout || '') + String(vres.stderr || '');
+    veStatus = vres.status;
+    if (!vres.error || vres.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  var veGrid = veOut.match(/自测通过（共 (\d+) 格）/);
+  if (veErr) {
+    bad.push('verify 通道期望的逐格自证没跑成' + (veErr.code === 'ETIMEDOUT' ? '（30 秒没返回）' : '（已重试一次）') +
+      '：' + String(veErr));
+  } else if (veStatus !== 0 || !veGrid) {
+    bad.push('verify 通道期望自测退出 ' + veStatus + '，或那句「自测通过（共 N 格）」根本没打印（末行=' +
+      JSON.stringify(String(veOut).split(/\r?\n/).filter(Boolean).slice(-1)[0] || '') +
+      '）—— 退出码 0 而读不出格数就是"没跑到"，不是通过（口径同 a 格）');
+  } else if (Number(veGrid[1]) < VERIFY_EXPECT_MIN) {
+    bad.push('verify 通道期望自测格数从下限 ' + VERIFY_EXPECT_MIN + ' 掉到 ' + veGrid[1] +
+      ' —— 删掉的那一格不会自己喊，而这一族每一格各挡一种假绿（缺额／越界／prerelease／空清单／认不出的 tag）');
+  }
+  // (2) 真接线：cmdVerify 里不许再出现写死正式通道的那几处
+  var veWire = [
+    ['期望表按通道取（verifyExpectations(tag)）', /verifyExpectations\(\s*tag\s*\)/],
+    ['缺额／直链／越界／prerelease 四格由 verifyChannelReadout 交回', /verifyChannelReadout\(\s*want\s*,\s*gotNames/],
+    ['比对基准是 baseBranch 而不是写死的 main', /'\/git\/ref\/heads\/' \+ baseBranch/],
+    ['基准分支读不出单独红（不许塌进"一致"）', /baseBranch\s*\|\|\s*String\(\s*rel\.target_commitish/],
+    ['新增两格进退出码', /read\.foundForbidden\.length\s*\|\|\s*!read\.prereleaseOk/],
+    ['按内容核对附件时用通道那张表（#203 的第四条：预览比到正式说明书）', /want\.assetTable\.filter/]
+  ];
+  if (!verifyBody) {
+    bad.push('发版工具里找不到 cmdVerify 的函数体 —— j 格「期望表有没有真被用上」没处可查');
+  } else {
+    veWire.forEach(function (w) {
+      if (!w[1].test(verifyBody)) {
+        bad.push('cmdVerify 里没找到「' + w[0] + '」那一句 —— 期望表改了而核验没用它，自测照样绿（§2 #18 那一族）');
+      }
+    });
+    if (/ASSETS\.map\(/.test(verifyBody)) {
+      bad.push('cmdVerify 里还有 `ASSETS.map(` —— 期望附件名又回到写死正式通道，预览那一发的假红①回来');
+    }
+    if (/===\s*'omitone\.zip'/.test(verifyBody)) {
+      bad.push('cmdVerify 里还有那句按 `omitone.zip` 判直链 —— 预览通道永远拿不到绿灯，假红②回来');
+    }
+  }
+
+  if (bad.length) {
+    fail('实验支线发布闸没接牢（这族事故的表现是「下载的人装到了实验版」，而每条命令都打印成功）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('实验支线发布闸（通道 ' + (isExp ? 'exp' : 'stable') + '；闸自带 ' + cells + ' 格对照全对，' +
+    'release / replace-asset / preview 问在联网之前，verify 照旧放行且期望按通道自测 ' +
+    (veGrid ? veGrid[1] : '?') + ' 格全绿，' +
+    '文档手抄 ' + docHits.length + ' 处逐处同闸的 ' + cells + ' 格（' + docHits.join('、') + '），' +
+    '预览附件名与 prerelease 与发布后回读三格齐，' +
+    '门面逐轮登记：批次 ≥' + FACADE_FROM + ' 共 ' + ledger.total + ' 节，引门面 ' + ledger.cited +
+    ' 条、写明不用补 ' + ledger.waived + ' 条（比对面 ' + ledgerCorpus.length + ' 份），' +
+    '门面按通道分边：工作树=' + (isExp ? '工作笔记（指针已带，未抄门面）' : '门面') +
+    '、门面那一份（' + facadeFrom + '，' + facade.length + ' 字）带实验版入口且不撞稳定名字）');
+}
+
+// ---------------------------------------------------------------------------
+// 35. 本地自愈「医生」的规则表，必须对着代码里真发出去过的那句日志
+//     （真源 tools/audit-diagnose-needles.js，判断层在 libs/diagnose.js）
+//
+//     为什么要有这一条：规则靠 `message.indexOf(needle)` 命中日志环，needle 写错
+//     **不抛、不红、不留日志** —— 只会让那一条规则一辈子不触发，用户点开「诊」
+//     永远看到「这次没查出问题」。AGENTS §2 #22 记过同一族现场（按中文语义猜词表，
+//     四格全 0 条），差别是那次是临时探针，**这一条是常驻功能**，猜错就一直错下去。
+//     与第 32 项的分工：那条量**说明书教的字样**，这一条量**判断层自己吃的字样**。
+//     a–f 各独立承重，摘掉任意一格都要红（本轮 reverse130 逐格验过）：
+//       a 逐格对照的**名字清单**钉在这里 —— 只改审计里的期望不能蒙过这道闸（口径同 24/31/32）
+//       b 审计 `--selftest` 退出 0，且那句「对照格数: N」不许掉到下限以下
+//       c 第 32 项那把尺的 `keepShape` 不许被退回（形状筛会把**整句中文**的日志名一起丢掉，
+//         于是 foreign-ext 那一条规则永远命中不了 —— 实测踩过）
+//       d `libs/diagnose.js` 被 manifest 与 popup.html **两处**加载（少一处就是"点了没反应"）
+//       e 判断层保持纯函数（代码里不许出现 `chrome.` / `document.` / `window.`），
+//         否则这条闸在 node 里 `require` 不动，而 `selfCheck()` 也再没人跑得起来
+//       f 「本地自愈」这句用户看得见的提示在 README 与说明书可见正文里都还在（#163 硬要求），
+//         且两份工具索引指得到真源（找不到就会有人重写第二份，AGENTS §2 #4）
+// ---------------------------------------------------------------------------
+function checkDiagnoseRuleTable(manifest) {
+  var audit;
+  try {
+    audit = require('./audit-diagnose-needles.js');
+  } catch (e) {
+    fail('医生规则表对账加载失败：' + String((e && e.message) || e) +
+      '\n      真源是 tools/audit-diagnose-needles.js —— 它被改名或删除时，这条闸正在"少查一处还打印全绿"');
+    return;
+  }
+  var bad = [];
+
+  // ---- a. 对照格的名字清单 ----
+  // ⚠️ 清单写死在这里，不吃审计自己的 CELLS：改了审计里的 pin 文案不能把某一格悄悄换掉。
+  //    （AGENTS §5「断言名字里的清单要和谓词一一对应」——名字承诺了什么，就得要求什么。）
+  var PINS = [
+    'A 干净夹具 → 0 条',
+    'B needle 代码里没有 → 点名那条规则',
+    'C 只在注释里提到 → 两条 needle 都算没发过',
+    'D 名字长在别的调用里（不是 emit 那一发）→ 不算',
+    'E 同一条 needle 属于两条规则 → 点名两条',
+    'F needles 为空 → 恒不触发要响',
+    'G 动作弹窗不认 → 点名那个动作（顺带 reload 变白挂）',
+    'H severity 越界 → 点名那一格',
+    'I title 超上限 → 会被截断要响',
+    'J 推进字样没发过 → 单独点名',
+    'K 规则表空 → FATAL（不许打印通过）',
+    'L 弹窗源码读不到而规则有动作 → FATAL',
+    'M 弹窗白挂一枚没人发的动作 → 点名',
+    'N selfCheck 没通过 → 转述它自己的话',
+    'O 阴性对照：注释与真代码混在一处，真代码那一发必须算发过',
+    'P 整句中文的日志名必须收进真源（承重：不许退回第 32 项那条 `[a-z]` 形状筛）'
+  ];
+  var gotPins = (audit.CELLS || []).map(function (c) { return c.pin; });
+  PINS.forEach(function (p) {
+    if (gotPins.indexOf(p) < 0) bad.push('审计里少了这一格：「' + p + '」—— 删掉的那格不会自己喊');
+  });
+
+  // ---- b. 审计自带的逐格对照真跑一遍（含真仓库那一格）----
+  var CELLS_MIN = 16;
+  var script = path.join(__dirname, 'audit-diagnose-needles.js');
+  var stOut = '', stStatus = null, stErr = null;
+  for (var attempt = 0; attempt < 2; attempt++) {
+    var r = spawnSync(process.execPath, [script, '--selftest'], { encoding: 'utf8', timeout: 60000 });
+    stErr = r.error || null;
+    stOut = String(r.stdout || '') + String(r.stderr || '');
+    stStatus = r.status;
+    if (!r.error || r.error.code === 'ETIMEDOUT') break;   // 只有"起不来"值得重试
+  }
+  var stCells = null;
+  if (stErr) {
+    bad.push('医生的逐格对照没跑成' + (stErr.code === 'ETIMEDOUT' ? '（60 秒没返回）' : '（已重试一次）') +
+      '：' + String(stErr));
+  } else {
+    var m = stOut.match(/对照格数:\s*(\d+)/);
+    if (stStatus !== 0 || !m) {
+      bad.push('医生的逐格对照退出码 ' + stStatus + '，或那句「对照格数: N」根本没打印（末行=' +
+        JSON.stringify(stOut.trim().split(/\r?\n/).pop()) + '）—— 读不出当失败，不当通过');
+    } else if (Number(m[1]) < CELLS_MIN || Number(m[1]) !== gotPins.length) {
+      bad.push('逐格对照报 ' + m[1] + ' 格，与代码里的 ' + gotPins.length + ' 格对不上（下限 ' +
+        CELLS_MIN + '）—— 有格被跳过或被删时，"全绿"这两个字就没有内容');
+    } else stCells = Number(m[1]);
+  }
+
+  // ---- c. keepShape 那一手还在（两侧都要，少一边就等于没有）----
+  var namesCode = stripComments(read('tools/audit-manual-log-names.js'));
+  var needlesCode = stripComments(read('tools/audit-diagnose-needles.js'));
+  if (namesCode.indexOf('keepShape ||') < 0) {
+    bad.push('audit-manual-log-names.js 里那条 `/[a-z]/i` 形状筛又被无条件生效了（keepShape 那一格没了）' +
+      ' —— 整句中文的日志名会被丢掉，医生那一条 foreign-ext 永远命中不了');
+  }
+  if (needlesCode.indexOf("spanLiterals(x.src, afterLevel, ',)', false, true)") < 0) {
+    bad.push('audit-diagnose-needles.js 没把 keepShape 传成 true —— 形状筛照旧吃掉整句中文的日志名');
+  }
+
+  // ---- d. 判断层两处加载 ----
+  var inManifest = false;
+  ((manifest && manifest.content_scripts) || []).forEach(function (cs) {
+    (cs.js || []).forEach(function (p) { if (/libs\/diagnose\.js$/.test(p)) inManifest = true; });
+  });
+  var popupHtml = read('popup/popup.html');
+  var inPopup = /<script[^>]+src="\.\.\/libs\/diagnose\.js"/.test(popupHtml);
+  if (!inManifest) bad.push('manifest.json 的 content_scripts 没注入 libs/diagnose.js —— 学习页上的医生没有脑子');
+  if (!inPopup) bad.push('popup/popup.html 没加载 libs/diagnose.js —— 弹窗里点「诊」会当场报 diagnose 未定义');
+
+  // ---- e. 判断层保持纯函数 ----
+  // 剥注释后比：文件头那句「挂 self.OmitoneDiagnose」是散文，不是代码（AGENTS §5 批次 98 同一族）。
+  var diagCode = stripComments(read('libs/diagnose.js'));
+  var impure = ['chrome.', 'document.', 'window.'].filter(function (k) { return diagCode.indexOf(k) >= 0; });
+  if (impure.length) {
+    bad.push('libs/diagnose.js 的代码里出现了 ' + impure.join(' / ') +
+      ' —— 判断层一旦依赖宿主环境，这条闸（和 selfCheck 那 25 格）在 node 里就跑不起来了');
+  }
+
+  // ---- f. 用户看得见的提示 + 工具索引指得到真源 ----
+  var manualVisible = require('./audit-manual-ui-labels.js').visibleText(read('docs/manual.html'));
+  if (read('README.md').indexOf('本地自愈') < 0) {
+    bad.push('README 里没有「本地自愈」那一句 —— 用户要求过这条提示要放在显眼位置，' +
+      '而第 27 项那把尺只量**界面字样**，量不到这句承诺');
+  }
+  if (manualVisible.indexOf('本地自愈') < 0) {
+    bad.push('说明书的可见正文里没有「本地自愈」那一段（注释与 script 里的不算）—— 装了扩展的人不知道她有这本事');
+  }
+  if (read('tools/README.md').indexOf('audit-diagnose-needles.js') < 0) {
+    bad.push('tools/README.md 没登记 audit-diagnose-needles.js —— 下一轮找不到真源就会重写第二份');
+  }
+  if (read('libs/README.md').indexOf('diagnose.js') < 0) {
+    bad.push('libs/README.md 没登记 diagnose.js —— 同上（判断层与提示词一样，得先说清真源在哪）');
+  }
+
+  var stats = { rules: 0, needles: 0, progress: 0 };
+  try {
+    var real = audit.realInput();
+    var ev = audit.evaluate(real);
+    var s = ev.stats || {};
+    stats.rules = s.rules || real.rules.length;
+    stats.needles = s.needles || 0;
+    stats.progress = s.progress || real.progress.length;
+    if (ev.fatal || (ev.problems || []).length) {
+      bad.push('真仓库这一格没过：' + (ev.problems || []).join('\n        '));
+    }
+  } catch (e2) {
+    bad.push('真仓库那一格跑挂了：' + String((e2 && e2.message) || e2));
+  }
+
+  if (bad.length) {
+    fail('医生的规则表没对着代码接牢（这一族坏了的表现是「点开诊断永远说没问题」，而一条日志都不留）：\n      ' +
+      bad.join('\n      ') +
+      '\n      改法：去 src/page/*.js、content.js、background.js 里 grep `emitRuntimeLog(` 把真名抄回规则表，' +
+      '别改这把尺');
+    return;
+  }
+  pass('医生规则表对账（' + stats.rules + ' 条规则 / ' + stats.needles + ' 条 needle / ' +
+    stats.progress + ' 条推进字样，全部对着代码里真发过的那一句；逐格对照 ' + stCells + ' 格全对，' +
+    'keepShape 两侧都在，判断层两处加载且保持纯函数，README 与说明书都教了「本地自愈」）');
+}
+
+// ---------------------------------------------------------------------------
+// 第 36 项：联网搜索那枚「会花钱的开关」有没有接牢（会话任务 #183 / 批次 160）
+//   为什么单独占一项：这一族坏了的表现是「用户没点开关、余额却在往下掉」，
+//   而它一次日志都不会留 —— 与第 35 项（医生规则表）同一形状：行为断言在集成层 [33] 里，
+//   静态那一半（登记、出厂状态、第二把尺、对用户说的那句话）历来零尺覆盖。
+//   六格各独立承重（摘掉任何一格都要红，反向验证见 .workbuddy/reverse214.js）：
+//     a 两处登记：manifest 的 content_scripts 逐字有 libs/web-search.js（上课页那一路），
+//       popup.html 也 `<script src="../libs/web-search.js">`（弹窗那一路）—— 少一处就是
+//       「那一处压根没问判定层」，而集成层 [33] ⑥ 只测行为，静态这一格要在拼接之前就响
+//     b 官方域真源读得回来（`var OFFICIAL_HOST = '…'`）—— 读不出单独占一格，不许塌进通过
+//     c 判定层「读不出」不许被当成开着：unknown 那一格必须 `on: false`，而且整个判定层
+//       `on: true` 只许出现在 'on' 那一格（多一处放行 = 某一格被抬进"会花钱"那边）
+//     d 界面出厂状态：那枚开关的 `aria-checked` 出厂必须是 false（默认开着就是把用户的余额
+//       当默认值花，用户 2026-11-21 的硬口径「能用就配，但不能消耗我们的余额」）
+//     e 花钱的每一处都问判定层，且不许在调用点自己写一份官方域（第二把尺，§2 #4 / #18）
+//     f 对用户说话的那几页都教了它、并说了「默认关着」与「会花钱」；门面读不出单独一格；
+//       三处都扫不到就红（措辞被整体改写时扫描会静默变成 0 命中，那是最坏的一种绿，§2 #21）
+//   另带一格反误报卫生：**写在「联网搜索」那一句身边**出现「默认开着 / 自动开启 / 保证是最新 /
+//   任何地址都能搜」这一族句子就红（整页扫会误报：别的开关真就是默认开着的）。
+// ---------------------------------------------------------------------------
+function checkWebSearchGate(manifest) {
+  var bad = [];
+  var LIB = 'libs/web-search.js';
+  var POP_JS = 'popup/popup.js';
+  var POP_HTML = 'popup/popup.html';
+  var SWITCH_ID = 'petWebSearchEnabled';
+
+  if (!exists(LIB)) {
+    fail('联网搜索那把尺整个不见了：' + LIB + ' 读不到 —— 判定层（哪些格该带 tools、哪些不该）' +
+      '没有真源了，三处花钱出口会各自退回本地猜，而且一条异常都不留');
+    return;
+  }
+  var lib = read(LIB);
+  var libCode = stripComments(lib);
+
+  // ---- a. 两处登记 ----
+  var inManifest = false;
+  ((manifest && manifest.content_scripts) || []).forEach(function (cs) {
+    (cs.js || []).forEach(function (p) { if (p === 'libs/web-search.js') inManifest = true; });
+  });
+  var popHtml = read(POP_HTML);
+  var inPopup = /<script[^>]+src="\.\.\/libs\/web-search\.js"/.test(popHtml);
+  if (!inManifest) {
+    bad.push('manifest.json 的 content_scripts 没逐字列出 libs/web-search.js —— 上课页上的医生' +
+      '拿不到判定层，只会说一句听起来像"你没开开关"的话（该红的是这一行，不是那句文案）');
+  }
+  if (!inPopup) {
+    bad.push(POP_HTML + ' 没加载 libs/web-search.js —— 弹窗里「和她聊天」「让她解释」两条都问不到' +
+      '该不该带搜索参数，灰条与请求体就此各说各的');
+  }
+
+  // ---- b. 官方域真源读得回来 ----
+  var mHost = lib.match(/var OFFICIAL_HOST = ['"]([^'"]+)['"]/);
+  if (!mHost) {
+    bad.push('读不出官方域：' + LIB + ' 里那句 `var OFFICIAL_HOST = …` 不见了或改了写法 —— ' +
+      '这一格单独说话，不许当成"没有这一族漂移"（读不出 ≠ 没问题）');
+  }
+  var officialHost = mHost ? mHost[1] : '(读不出)';
+
+  // ---- c. 「读不出」不许塌成"开着"，放行格只许有一处 ----
+  if (!/cell:\s*'unknown',\s*on:\s*false/.test(libCode)) {
+    bad.push('判定层「还没读到开关真值」那一格不再是 `on: false` —— 存储里那两个键还没写过的人' +
+      '会在不知情的情况下被服务端搜索扣费（AGENTS §2 #12：读不出必须单独占一格）');
+  }
+  var allowCells = (libCode.match(/cell:\s*'[a-z-]+',\s*on:\s*true/g) || []).length;
+  if (allowCells !== 1) {
+    bad.push('判定层里 `on: true` 有 ' + allowCells + ' 处（只许 1 处 = ' +
+      JSON.stringify((libCode.match(/cell:\s*'([a-z-]+)',\s*on:\s*true/) || [])[1] || '(没有)') +
+      ' 那一格）—— 多一处放行就是凭空把某一格抬进"会花钱"那边，少一处则搜索永远不会生效而界面照旧说"已生效"');
+  }
+
+  // ---- d. 界面出厂状态 ----
+  var swLine = (popHtml.split(/\r?\n/).filter(function (l) {
+    return l.indexOf('id="' + SWITCH_ID + '"') >= 0;
+  })[0] || '');
+  if (!swLine) {
+    bad.push(POP_HTML + ' 里找不到那枚开关（id=' + SWITCH_ID + '）—— 出厂状态读不出，' +
+      '这一格不许静默通过');
+  } else if (/aria-checked="true"/.test(swLine)) {
+    bad.push('「联网搜索」出厂就是开着的（' + SWITCH_ID + ' 那一行带 aria-checked="true"）—— ' +
+      '这一枚是按量计费的，默认开着等于替用户决定要花他的余额');
+  }
+  var lblLine = (popHtml.split(/\r?\n/).filter(function (l) {
+    return l.indexOf('for="' + SWITCH_ID + '"') >= 0;
+  })[0] || '');
+  var swLabel = ((lblLine.match(/>([^<]+)<\/label>/) || [])[1] || '').trim();
+  if (!swLabel) {
+    bad.push('读不出那枚开关在界面上的字样（label for=' + SWITCH_ID + '）—— 说明书要用的是界面真会显示的那几个字，' +
+      '不是我们随手起的名（第 27 项那一族的根因就在这）');
+  }
+
+  // ---- e. 花钱的每一处都问判定层，且不许第二把尺 ----
+  var popCode = stripComments(read(POP_JS));
+  var conCode = stripComments(read('content.js'));
+  var asks = {
+    popupDecision: (popCode.match(/OmitoneWebSearch\.decisionOf\(/g) || []).length,
+    popupTools: (popCode.match(/OmitoneWebSearch\.toolsFor\(/g) || []).length,
+    pageDecision: (conCode.match(/\.decisionOf\(/g) || []).length,
+    pageTools: (conCode.match(/\.toolsFor\(/g) || []).length
+  };
+  if (!asks.popupDecision || !asks.popupTools) {
+    bad.push('弹窗那两条出口（和她聊天 / 让她解释）没有各自问到判定层：decisionOf ' +
+      asks.popupDecision + ' 处、toolsFor ' + asks.popupTools + ' 处（两样都至少要 1 处）—— ' +
+      '少 toolsFor 就是开关开着也不带搜索，白发一次钱；少 decisionOf 就是自己猜该不该带');
+  }
+  if (!asks.pageDecision || !asks.pageTools) {
+    bad.push('上课页医生那条出口没问到判定层：decisionOf ' + asks.pageDecision + ' 处、toolsFor ' +
+      asks.pageTools + ' 处 —— 只测弹窗那一处，这一族就是零覆盖（AGENTS §2 #18）');
+  }
+  var mMod = conCode.match(/function webSearchModule\(\)\s*\{[\s\S]{0,400}?\n\s{2,4}\}/);
+  if (!mMod) {
+    bad.push('读不出 content.js 里取判定层的那个函数（webSearchModule）—— 尺对它失效，不许当成"没有第二把尺"');
+  } else if (mMod[0].indexOf('OFFICIAL_HOST') >= 0) {
+    bad.push('content.js 取模块那一句自己写了一份官方域（' + officialHost + '）—— 同一件事两种口径，' +
+      'lib 改了域名页面照旧按旧域名放行，症状与改之前一模一样');
+  }
+
+  // ---- f. 对用户说话的那几页 ----
+  var visibleText;
+  try {
+    visibleText = require('./audit-manual-ui-labels.js').visibleText(read('docs/manual.html'));
+  } catch (e2) {
+    bad.push('说明书可见正文取不出来（' + String((e2 && e2.message) || e2) + '）—— 这一格读不出，不许通过');
+    visibleText = '';
+  }
+  var gate = require('./channel-gate.js');
+  var isExp = gate.isExperimental(gate.readChannelNames().version_name);
+  var facadeRes = facadeReadme(isExp);
+  var pages = [
+    { 名: '说明书（可见正文）', 文: visibleText },
+    { 名: '预览说明 release-notes-preview.md', 文: exists('release-notes-preview.md') ? read('release-notes-preview.md') : '' },
+    { 名: '门面 README（' + facadeRes.from + '）', 文: facadeRes.text === null ? '' : facadeRes.text,
+      原话: facadeRes.text === null ? facadeRes.why : '' }
+  ];
+  // ⚠️ **「说默认关着」「说会花钱」两格落在「联网搜索」那句话自己的邻接窗里，不许整页扫。**
+  //    说明书整页有 5 处「默认关着」，其中三处说的**是别的开关**（docs/manual.html:753 聊天回复、
+  //    :769 医生主动提醒、:1022 那枚按需的）—— 原先按整页 `indexOf` 扫时，P6 那一刀把讲这枚开关的
+  //    两句摘干净，尺照样绿（实测「红 0 条」），因为别的开关那句话替它兜着。那就是
+  //    「一条不会失败的检查」（AGENTS §5）。反误报那一族现在共用同一个窗与同一个半径，不写第二把尺。
+  var WIN = 160;
+  function windowsOf(text) {
+    var out = [];
+    if (!swLabel || !text) return out;
+    var at = -1;
+    while ((at = text.indexOf(swLabel, at + 1)) >= 0) {
+      out.push(String(text).slice(Math.max(0, at - WIN), at + WIN));
+    }
+    return out;
+  }
+  var hits = { 教这枚: 0, 说默认关: 0, 说会花钱: 0, 撒谎词: 0 };
+  pages.forEach(function (pg) {
+    var t = pg.文;
+    if (!t) {
+      bad.push(pg.名 + ' 读不出内容' + (pg.原话 ? '（' + pg.原话 + '）' : '') +
+        ' —— 这一格单独说话，不许塌进"不用核"，更不许塌进"这枚开关没承诺"（AGENTS §2 #12）');
+      return;
+    }
+    var wins = windowsOf(t);
+    if (!wins.length) {
+      bad.push(pg.名 + ' 没教界面上那三个字「' + (swLabel || '(读不出)') + '」—— 装了的人只会靠猜');
+      return;
+    }
+    hits.教这枚++;
+    var off = wins.some(function (w) { return w.indexOf('默认关着') >= 0; });
+    var cost = wins.some(function (w) { return /余额|按量/.test(w); });
+    if (off) hits.说默认关++;
+    if (cost) hits.说会花钱++;
+    if (!off || !cost) {
+      bad.push(pg.名 + ' 说这枚开关时没说清它' + (!off ? '默认关着' : '') +
+        (!off && !cost ? '、而且' : '') + (!cost ? '是要花用户余额的' : '') +
+        ' —— 只讲功能不讲代价，等于把它写成免费的（半径 ' + WIN + ' 字内没有这句话，就不算对它说的）');
+    }
+    // ---- 反误报：这几句话都被实测推翻过，写在「联网搜索」身边就红 ----
+    // ⚠️ 只扫那一句话的邻接窗，不许扫整页：「默认开着」在这一族文档里还有**别的合法用途**
+    //    （「刷课页显示吉祥物」默认开着 / 「刷完自动换下一门」默认开着 / 投票开关默认开着 —— 实测
+    //    说明书:381 与 main:README 两处都这么写着）。整页扫会得到三条假红，而**会误报的守卫
+    //    和没有守卫一样害人**（AGENTS §5）；窗口半径 160 字是照着那三页里最长的一句量出来的。
+    var LIES = ['默认开着', '自动开启', '保证是最新', '任何地址都能搜'];
+    wins.forEach(function (w) {
+      LIES.forEach(function (s) {
+        if (w.indexOf(s) >= 0) {
+          hits.撒谎词++;
+          bad.push(pg.名 + ' 讲「' + swLabel + '」那一句里出现了「' + s + '」—— 实测都不成立：' +
+            '出厂是关的、开关不会自己开、查回来的日期几次都没对上、接别人的服务器时这一枚会灰掉');
+        }
+      });
+    });
+  });
+  if (!hits.教这枚) {
+    bad.push('三页里一处都没扫到「' + (swLabel || '(读不出)') + '」那三个字 —— 措辞被整体改写时这把尺会静默变成 0 命中，那是最坏的一种绿');
+  }
+
+  if (bad.length) {
+    fail('联网搜索那把尺没接牢（这一族坏了的表现是"用户没点开关、余额却在掉"，而且一条日志都不留）：\n      ' +
+      bad.join('\n      ') +
+      '\n      改法：动 libs/web-search.js 与三处出口，别改这把尺；行为那一半在集成层 [33]');
+    return;
+  }
+  pass('联网搜索开关对账（官方域 ' + officialHost + '，放行格 1 处，出厂 ' + SWITCH_ID +
+    '=关，界面字样「' + swLabel + '」；出口命中 弹窗 ' + asks.popupDecision + '/' + asks.popupTools +
+    ' · 页面 ' + asks.pageDecision + '/' + asks.pageTools + '，两处登记都在；三页里教这枚 ' +
+    hits.教这枚 + ' 页、说默认关 ' + hits.说默认关 + ' 页、说会花钱 ' + hits.说会花钱 +
+    ' 页（都按「' + swLabel + '」那一句的 ' + WIN + ' 字邻接窗读，不是整页扫），撒谎词 ' + hits.撒谎词 + ' 处）');
+}
+
+// ---------------------------------------------------------------------------
+// 37. 现场桥的判定层（真源 tools/field-bridge.js）+ 日志环读取的出口分家
+//     用户 2026-11-21 那句「为什么不能直接读标语，非要疯狂划到最后」之后，另一路更贵的现场
+//     （notes/field-159-orphaned-bridge.md）：学习页的桥随旧 content.js 一起作废
+//     （`Extension context invalidated.`），而 `npm run field-logs` 只会说一句
+//     「可能是后台一直在睡（现场没打开任何学习通页面），也可能扩展真被禁用」——
+//     **三种形状的处置完全不同：等 / 重载扩展+F5 / 重装**。一句话把三种压成一种，
+//     于是那一夜把"只重载了扩展、页面没 F5"读成"扩展坏了"（AGENTS §2 第 12 条同一族）。
+//     ⚠️ 这一族不报错、也没有任何一把尺量得到：环冻住时 field-logs 与技能
+//     sw-eval.js --in=sw 同时瞎，盘上只有那句猜出来的话。所以本项要红的是：
+//       ① 判定层或读取层的逐格对照掉了格；② 读取层又开始自己猜／自己写处置句（两份口径）；
+//       ③ 现场那三份读数不再各占一格（桥断 / MV3 正常回收 / 来错页）；
+//       ④ 默认路径开始动现场（createTarget 跑出 --open-popup 那一支）；
+//       ⑤ 出口码、npm 入口、AGENTS §3.3 与 tools/README.md 那几句登记断了。
+// ---------------------------------------------------------------------------
+function checkBridgeVerdictGrids() {
+  var bad = [];
+  var cells = {};
+  var fieldCells = 0;   // 现场读数那一栏实际有几格（pass 那句不许手抄）
+
+  // ---- a. 两份逐格对照都真跑（只钉下限：加格不碍事，删格要响） ----
+  var MIN = { bridge: 30, logs: 23 };
+  [['bridge', 'tools/field-bridge.js'], ['logs', 'tools/field-logs.js']].forEach(function (pair) {
+    var name = pair[0], file = pair[1];
+    if (!exists(file)) { bad.push('判定层的真源不存在：' + file); return; }
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(file)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    if (r.error) {
+      bad.push(file + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不当通过');
+      return;
+    }
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.status !== 0 || !m) {
+      bad.push(file + ' 的逐格对照退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(file + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < MIN[name]) {
+      bad.push(file + ' 的对照格数从下限 ' + MIN[name] + ' 掉到 ' + m[2] +
+        ' —— 删掉的那一格不会自己喊，桥判定少一格对照就回到"三种形状压成一句"');
+    } else {
+      cells[name] = Number(m[2]);
+    }
+  });
+
+  // ---- b. 判定层只有一份，读取层不许再猜、也不许自己写处置句 ----
+  var logsCode = stripComments(read('tools/field-logs.js'));
+  var bridgeCode = stripComments(read('tools/field-bridge.js'));
+  if (!/require\(['"]\.\/field-bridge\.js['"]\)/.test(logsCode)) {
+    bad.push('tools/field-logs.js 没 require 判定层 —— "问不到 SW"那一格就又由读取层自己猜（两份口径必然各自漂移）');
+  } else if (!/bridge\.probe\(/.test(logsCode)) {
+    bad.push('tools/field-logs.js 里没有任何一处调用 bridge.probe() —— 判定层挂着不叫，等于还是那句猜话');
+  }
+  // 那句猜话现在只许活在注释里当历史；一旦回到代码，就是"把三种压成一种"复活
+  if (logsCode.indexOf('可能是后台一直在睡') >= 0) {
+    bad.push('tools/field-logs.js 的代码里又出现了那句「可能是后台一直在睡…」—— 这一句把"等 / F5 / 重装"三格压成一格（AGENTS §2 #12）');
+  }
+  var fixOwn = (bridgeCode.match(/out\.fix = '重载扩展之后必须 F5/g) || []).length;
+  if (fixOwn !== 1) {
+    bad.push('那句「重载扩展之后必须 F5 这一枚页面」在判定层里数到 ' + fixOwn + ' 处（要恰好 1 处赋值）—— ' +
+      '0 处＝桥断那一格交不出处置；2 处＝同一句话两份真源');
+  }
+  if (logsCode.indexOf('重载扩展之后必须 F5') >= 0) {
+    bad.push('tools/field-logs.js 里也写了一份「重载扩展之后必须 F5」—— 处置那句话只许由判定层交出去');
+  }
+
+  // ---- c. 三份现场读数各占一格（拿 notes/field-159 记回来的读数喂真判定层） ----
+  // ⚠️ 判据不许 import 判定层的 CELLS 表来比它自己：那是一次自证。
+  //     下面三份读数的出处写在每一格的 why 里，全部来自盘上台账。
+  var bridgeMod = null;
+  try { bridgeMod = require('./field-bridge.js'); }
+  catch (e) { bad.push('判定层 require 不进来：' + e.message); }
+  if (bridgeMod && typeof bridgeMod.classify === 'function') {
+    var FIELD = [
+      { why: '159 那一夜（notes/field-159-orphaned-bridge.md 第 8 条：8 枚世界、ping 当场抛）',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 0, worldCount: 8,
+               worldsHaveFn: 8, worldsHaveId: 8, wakeAllowed: true, pingTried: 1, pingOk: 0,
+               pingErr: 'Extension context invalidated.', workerListedAfter: 0 },
+        verdict: 'invalidated', via: 'ping-throw', exit: 1, final: true, fixHas: 'F5' },
+      { why: 'MV3 正常回收（约 30 秒空闲就把 SW 从列表里抹掉，桥却答得上来）—— 这一格最容易被读成桥断',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 1, worldCount: 1,
+               worldsHaveFn: 1, worldsHaveId: 1, wakeAllowed: true, pingTried: 1, pingOk: 1,
+               pingErr: '', workerListedAfter: 0 },
+        verdict: 'alive-worker-unlisted', exit: 0, final: true, fixHas: '不用管 worker 列表' },
+      { why: '纯只读轮（没加 --wake）撞上"id 全读回空串"—— 只许给嫌疑，final 必须是 false',
+        raw: { portOk: 1, pageFound: 1, workerListed: 0, extensionPageListed: 0, worldCount: 3,
+               worldsHaveFn: 1, worldsHaveId: 0, wakeAllowed: false },
+        verdict: 'invalidated-suspect', via: 'id-empty', exit: 1, final: false, fixHas: 'F5' },
+      { why: '来错页 / 压根没有学习通页面 —— 读不出单独一个码，不许和"坏了"共用出口',
+        raw: { portOk: 1, pageFound: 0, workerListed: 0, extensionPageListed: 0, worldCount: 0,
+               worldsHaveFn: 0, worldsHaveId: 0, wakeAllowed: false },
+        verdict: 'no-page', exit: 2 }
+    ];
+    fieldCells = FIELD.length;
+    FIELD.forEach(function (c) {
+      var v = bridgeMod.classify(c.raw);
+      if (v.verdict !== c.verdict) {
+        bad.push('现场读数「' + c.why + '」被判成 ' + v.verdict + '（要 ' + c.verdict + '）—— ' +
+          '三格压回一格的形状就是这么回到盘上的');
+        return;
+      }
+      if (c.via && v.via !== c.via) bad.push('那一格走的路径是 ' + v.via + '（要 ' + c.via + '）');
+      if (Number(v.exit) !== c.exit) {
+        bad.push('现场读数「' + c.why + '」的出口码是 ' + v.exit + '（要 ' + c.exit + '）—— ' +
+          '脚本调用方（技能 / 下一轮）分不开"等 / 动手 / 读不出"');
+      }
+      if (c.final !== undefined && !!v.final !== c.final) {
+        bad.push('现场读数「' + c.why + '」的 final=' + v.final + '（要 ' + c.final + '）—— 纯只读轮不许下终审');
+      }
+      if (c.fixHas && String(v.fix || '').indexOf(c.fixHas) === -1) {
+        bad.push('现场读数「' + c.why + '」没交出处置那句话（要含「' + c.fixHas + '」，实读 ' +
+          JSON.stringify(String(v.fix || '').slice(0, 40)) + '）');
+      }
+    });
+    var E = bridgeMod.EXIT || {};
+    if (!(E.ok === 0 && E.action === 1 && E.unreadable === 2)) {
+      bad.push('出口码三格没分开（读到 ' + JSON.stringify(E) + '，要 ok=0 / action=1 / unreadable=2）');
+    }
+    // 反向对照：worker 列表那一格单独**永不**给出"桥断"（第 3 项 b 格的同族：把"读不出"当故障）
+    var onlyWorker = bridgeMod.classify({ portOk: 1, pageFound: 1, workerListed: 0, worldCount: 1,
+      worldsHaveFn: 1, worldsHaveId: 1, wakeAllowed: false });
+    if (String(onlyWorker.verdict).indexOf('invalidated') >= 0) {
+      bad.push('只把"worker 不在列表"当证据就判成桥断（读到 ' + onlyWorker.verdict + '）—— ' +
+        'MV3 每 30 秒空闲就回收，这一格会天天误报，代价是人去重装扩展');
+    }
+    if (cells.bridge !== undefined && (!Array.isArray(bridgeMod.CELLS) || bridgeMod.CELLS.length !== cells.bridge)) {
+      bad.push('field-bridge 打印了 ' + cells.bridge + ' 格，但模块实际 CELLS 是 ' +
+        (bridgeMod.CELLS && bridgeMod.CELLS.length) + ' 格 —— 打印数与真跑数必须同一份');
+    }
+    var wantConsole = ['runtime log unavailable; study continues',
+      'scope not granted after page change', 'scope lost, bridge stopped'];
+    var gotConsole = bridgeMod.BRIDGE_CONSOLE_MESSAGES || [];
+    if (gotConsole.length !== wantConsole.length || wantConsole.some(function (s, i) { return gotConsole[i] !== s; })) {
+      bad.push('field-bridge 的 console 真名清单漂了（读到 ' + JSON.stringify(gotConsole) + '）—— ' +
+        '少一条或改成模糊匹配都会把死桥证据收错');
+    }
+    if (bridgeCode.indexOf("m.method === 'Runtime.consoleAPICalled' && m.params.type === 'warn'") < 0 ||
+        bridgeCode.indexOf('if (record) consoleRecords.push(record);') < 0) {
+      bad.push('field-bridge 没把 Runtime.consoleAPICalled 的 warn 接进 canonical 记录 —— ' +
+        'selftest 绿也只证明解析函数存在，现场那一发根本没采');
+    }
+    if (!/consoleWaitMs:\s*normalizeConsoleWaitMs\(arg\('console-wait-ms',\s*0\)\)/.test(bridgeCode)) {
+      bad.push('field-bridge 的 --console-wait-ms 默认值不是 0 —— 普通巡检不许额外等控制台');
+    }
+    if (typeof bridgeMod.bridgeConsoleRecord === 'function') {
+      var sample = bridgeMod.bridgeConsoleRecord([
+        { type: 'string', value: '[Omitone] scope lost, bridge stopped [verdict=unreadable reason=failed https://example.test/course?enc=secret]' }
+      ]);
+      if (!sample || sample.reason.indexOf('https://') >= 0 || sample.reason.indexOf('enc=secret') >= 0 ||
+          sample.reason.indexOf('(url omitted)') < 0) {
+        bad.push('field-bridge 的 console reason 没掩掉 URL（读到 ' + JSON.stringify(sample) + '）—— ' +
+          '导出取证会把课程标识带出去');
+      }
+    }
+    if (typeof bridgeMod.classify === 'function') {
+      var split = bridgeMod.classify({ portOk: true, pageFound: true, worldCount: 1, worldsHaveFn: 1,
+        worldsHaveId: 0, wakeAllowed: true, pingTried: true, pingOk: false,
+        pingErr: 'Extension context invalidated.', consoleWaitMs: 0,
+        consoleRecords: [{ message: wantConsole[1], verdict: 'denied', reason: 'scope_denied' }] });
+      if (split.verdict !== 'invalidated' || !split.consoleEvidence || split.consoleEvidence.verdict !== 'denied') {
+        bad.push('主桥判定被 consoleEvidence 覆盖了（读到 ' + JSON.stringify({ verdict: split.verdict,
+          console: split.consoleEvidence }) + '）—— 消息跨没跨过去与页面说了什么必须各占一格');
+      }
+    }
+  }
+
+  // ---- d. 默认路径仍然只读：开标签那一发必须钉在 --open-popup 那一支里 ----
+  var opIdx = logsCode.indexOf('if (!hit && openIfMissing)');
+  var createIdx = logsCode.indexOf('Target.createTarget');
+  var closeIdx = logsCode.indexOf('Target.closeTarget');
+  if (createIdx >= 0 && !(opIdx >= 0 && opIdx < createIdx && createIdx < closeIdx)) {
+    bad.push('tools/field-logs.js 里 Target.createTarget 没夹在「if (!hit && openIfMissing)」与它的 ' +
+      'Target.closeTarget 之间（守卫 @' + opIdx + '，开标签 @' + createIdx + '，关标签 @' + closeIdx + '）—— ' +
+      '默认轮会自己去动现场（AGENTS §3.3：导航要先确认）');
+  }
+  if ((logsCode.match(/Target\.createTarget/g) || []).length !== 1) {
+    bad.push('Target.createTarget 在读取层里数到 ' + (logsCode.match(/Target\.createTarget/g) || []).length +
+      ' 处（要恰好 1 处）—— 第二处一定没带那道守卫');
+  }
+
+  // ---- e. 环像冻住那一格：阈值与"空环"各说各话 ----
+  var logsMod = null;
+  try { logsMod = require('./field-logs.js'); }
+  catch (e) { bad.push('读取层 require 不进来：' + e.message); }
+  if (logsMod && typeof logsMod.isRingStale === 'function') {
+    var stale = [
+      [200, false, true, '环 200 秒没新条目 —— 比地板那两发（120×2）还久，要报冻'],
+      [100, false, false, '环 100 秒前还在写 —— 地板节流本来就允许这一档沉默'],
+      [0, true, true, '空环 + forced —— 一条都没有是另一种话，不许靠阈值蒙']
+    ];
+    stale.forEach(function (c) {
+      var got = logsMod.isRingStale(c[0], c[1]);
+      if (!!got !== c[2]) bad.push('环那一格读数错了：' + c[3] + '（实得 ' + got + '，要 ' + c[2] + '）');
+    });
+    if (!logsMod.EXIT_BY_VERDICT || logsMod.EXIT_BY_VERDICT['no-page'] !== 2 ||
+        logsMod.EXIT_BY_VERDICT['invalidated'] !== 1) {
+      bad.push('field-logs 的出口码表没把"桥断（要动手）"与"读不出（别动手）"分开（读到 ' +
+        JSON.stringify(logsMod.EXIT_BY_VERDICT || null) + '）—— 调用方只看退出码时三种形状又是一格');
+    }
+  }
+
+  // ---- f. npm 入口 ----
+  var pkg;
+  try { pkg = JSON.parse(read('package.json')); }
+  catch (e) { pkg = null; bad.push('package.json 读不出 JSON：' + e.message); }
+  var sc = (pkg && pkg.scripts) || {};
+  var ENTRIES = [
+    ['field-bridge', 'tools/field-bridge.js', { ban: ['--wake', '--selftest'] }],
+    ['field-bridge:selftest', 'tools/field-bridge.js', { need: ['--selftest'], ban: ['--wake'] }],
+    ['field-logs:selftest', 'tools/field-logs.js', { need: ['--selftest'], ban: ['--wake'] }]
+  ];
+  ENTRIES.forEach(function (e) {
+    var key = e[0], src = e[1], rule = e[2] || {};
+    var v = String(sc[key] || '');
+    if (!v) { bad.push('package.json 少了脚本 ' + key + ' —— 现场想问这一格没有入口，规矩就又落回"记得跑一下"'); return; }
+    if (v.indexOf(src) === -1) bad.push(key + ' 没指向真源 ' + src + '（写的是 ' + v + '）');
+    (rule.need || []).forEach(function (n) {
+      if (v.indexOf(n) === -1) bad.push(key + ' 没带 ' + n + ' —— 那一格会去连现场浏览器，不是逐格对照');
+    });
+    (rule.ban || []).forEach(function (b) {
+      if (v.indexOf(b) !== -1) bad.push(key + ' 带了 ' + b + ' —— 默认口径是多发一条 ping（动现场），要人另加参数才对');
+    });
+  });
+  if (sc['field-logs'] && sc['field-logs'].indexOf('--open-popup') !== -1) {
+    bad.push('npm run field-logs 默认就带 --open-popup —— 探针授权里"新开一枚标签"是要先确认的动作');
+  }
+
+  // ---- g. 文档：§3.3 第 3 步那句要能一条命令量回来；tools/README.md 要有这两份真源 ----
+  var agents = read('AGENTS.md');
+  var step3 = agents.indexOf('重新加载 + **刷新学习通页面（F5）**');
+  if (step3 === -1) {
+    bad.push('AGENTS.md §3.3 第 3 步那句「重新加载 + 刷新学习通页面（F5）」不见了 —— 桥断那一格的处置话没了底稿');
+  } else if (agents.indexOf('npm run field-bridge', step3) === -1 ||
+             agents.indexOf('npm run field-bridge', step3) - step3 > 1200) {
+    bad.push('AGENTS.md §3.3 第 3 步没把「npm run field-bridge」写成这一步的验收命令 —— ' +
+      '"重载后必须 F5"这条规矩只能靠人自觉（行为改了而文档没改，是这一族唯一的失败形状）');
+  }
+  var treadme = read('tools/README.md');
+  // ⚠️ 「登记了真源」要问**两件事**，各占一格（§5「接线类判据的锚点要紧到会红」）。
+  //    旧那一句只问 `treadme.indexOf('tools/field-bridge.js')`，而 K11 实测把它证伪了：
+  //    只把专节标题里那句真源改名成 `tools/field-bridge-x.js` 时，下面 812 行那句
+  //    `node tools/field-bridge.js --selftest` 照旧命中 —— 文件名在文档里出现过 ≠ 真源有人指过。
+  ['field-logs.js', 'field-bridge.js'].forEach(function (n) {
+    var row = new RegExp('^\\|\\s*`' + n.split('.').join('\\.') + '`\\s*\\|', 'm');
+    if (!row.test(treadme)) {
+      bad.push('tools/README.md 那张工具表里没有 `' + n + '` 那一行（行首竖线 + 反引号名字）—— ' +
+        '下一轮接手的人找不到入口，只会重新发明那句猜话');
+    }
+  });
+  if (treadme.indexOf('真源 `tools/field-bridge.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/field-bridge.js —— ' +
+      '判定层写在哪一份文件里又变成要靠人猜（文件名在别处出现过不算登记）');
+  }
+  if (!/invalidated|桥断/.test(treadme) || !/F5/.test(treadme)) {
+    bad.push('tools/README.md 里没说清"桥断那一格要 F5"—— 现场看到 verdict=invalidated 的人会去重装扩展');
+  }
+
+  if (bad.length) {
+    fail('现场桥的判定没分成格（这族 bug 的表现是"整夜把没 F5 读成扩展坏了，日志环看着像死"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('现场"问不到后台"分成五格（桥判定 ' + cells.bridge + ' 格 + 读环 ' + cells.logs +
+    ' 格逐格对照全对；' + fieldCells + ' 份现场读数各占一格、出口码 0/1/2 分家；console 取证独立且默认零等待、URL 掩码；' +
+    '处置那句 F5 只有一份真源，AGENTS §3.3 第 3 步与 npm 入口同真源；默认路径仍只读）');
+}
+
+// ---------------------------------------------------------------------------
+// 第 38 项 —— 「起手先问两道」这把闸自己有没有坏
+//
+// 为什么单独立一项：接手卡的第 2 步只问 `.workbuddy/main-active.stamp`，而 2026-11-22
+// 现场量过（`notes/ledger-166-draft.md` §一）：12:14 那一次条子已经 57 分钟没续期，
+// 窗口里却躺着 **5 份又脏又新的构建输入** —— 照旧口径判"安静"、直接 `npm run concat`，
+// 就把别人的半成品烘进 `page.js`。**条子只能证明写过它的人在，不能证明没写过它的人不在。**
+// 判据落成 `tools/check-concurrency.js` 之后，这一族必须有人守着：谁挡下的、
+// 读不出算哪一格、格数有没有被人删掉一格 —— 缺一样，下一次就是"闸门在、但恒绿"。
+// ---------------------------------------------------------------------------
+function checkConcurrencyGate() {
+  var bad = [];
+  var SRC = 'tools/check-concurrency.js';
+  var CELL_FLOOR = 20;   // 只钉下限：加格不碍事，删格要响（同第 37 项那一族）
+  var mod = null;
+
+  // ---- a. 逐格对照真跑，且打印的格数与代码里 CELLS 的真长度相等 ----
+  //
+  // ⚠️ 两个数各读各的、只比"打印够不够下限"是不够的：手抄的格数正是批次 142 那一族，
+  //    而"打印那句与代码不符"是 selftest 自己被改坏时唯一的暴露口。
+  if (!exists(SRC)) {
+    bad.push('起手判据的真源不存在：' + SRC + ' —— 读不出当失败，不许当通过');
+  } else {
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(SRC)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.error) {
+      bad.push(SRC + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不许当通过');
+    } else if (r.status !== 0 || !m) {
+      bad.push(SRC + ' --selftest 退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(SRC + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < CELL_FLOOR) {
+      bad.push(SRC + ' 的对照格数从下限 ' + CELL_FLOOR + ' 掉到 ' + m[2] +
+        ' —— 被删掉的那一格不会自己喊，"腿 2 命中"与"读不出"就是这样静默没的');
+    }
+    try {
+      mod = require(path.join(ROOT, SRC));
+    } catch (e) {
+      mod = null;
+      bad.push('require 不回 ' + SRC + '（' + String(e.message || e).slice(0, 80) +
+        '）—— 判定层已经不能被别人复用，第 38 项只能看它自己那张表');
+    }
+    if (mod && m) {
+      var nCells = (mod.CELLS || []).length;
+      if (!nCells) {
+        bad.push(SRC + ' 导出的 CELLS 是空的 —— 打印那句有格数而代码里没有对照表，两处必然各自漂移');
+      } else if (nCells !== Number(m[2])) {
+        bad.push(SRC + ' 打印 ' + m[2] + ' 格，而代码里 CELLS 有 ' + nCells + ' 格 —— 自报的数与实际走的不是一回事');
+      }
+    }
+  }
+
+  // ---- b. 那张表必须覆盖六种 verdict 与三个出口码（新增一型忘了同步进来 = 那一型一步都走不到） ----
+  //
+  // AGENTS §2 #18 同族：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来。
+  if (mod && (mod.CELLS || []).length) {
+    var verdicts = {};
+    var exits = {};
+    (mod.CELLS || []).forEach(function (c) {
+      verdicts[c.verdict] = (verdicts[c.verdict] || 0) + 1;
+      if (typeof c.exit === 'number') exits[c.exit] = (exits[c.exit] || 0) + 1;
+    });
+    ['quiet', 'writing', 'orphan-dirty', 'restored-not-writing', 'unreadable', 'other-reading'].forEach(function (v) {
+      if (!verdicts[v]) {
+        bad.push('对照表里没有 verdict=' + v + ' 那一格 —— 这一型现在没有任何东西守着，改坏了不会红');
+      }
+    });
+    [0, 1, 2].forEach(function (e) {
+      if (!exits[e]) {
+        bad.push('对照表里没有要求出口码 ' + e + ' 的格子 —— 三种码一旦压成两种，"读不出"就混进放行那一支');
+      }
+    });
+    var viaWant = ['stamp-fresh', 'dirty-fresh-build', 'mtime-fresh-clean', 'dirty-stale', 'git-status', 'clean', 'stamp-fresh-read'];
+    var haveVia = {};
+    (mod.CELLS || []).forEach(function (c) { if (c.via) haveVia[c.via] = 1; });
+    var viaMissing = viaWant.filter(function (w) { return !haveVia[w]; });
+    if (viaMissing.length) {
+      bad.push('对照表里点名不到的 via：' + viaMissing.join(' / ') +
+        ' —— via 是"谁挡下的"那一格，少了它就只能报一句"本轮收窄"，等于没有取证');
+    }
+  }
+
+  // ---- c. 合成读数真跑 classify()：读不出**必须**算阻塞，绝不许塌进放行 ----
+  //
+  // 这一格是整个工具最贵的一条性质（§2 #2 + §2 #12）：`git status` 跑不动时
+  // 若被当成"干净"，下一轮就是拿着坏构建做验收。
+  if (mod && typeof mod.classify === 'function') {
+    var u = mod.classify({ gitErr: 'probe-only' });
+    if (u.verdict !== 'unreadable') {
+      bad.push('gitErr 的读数被判成 ' + u.verdict + '（该是 unreadable）—— 读不出被压进了某一格');
+    }
+    if (!u.blocked) {
+      bad.push('unreadable 那一格的 blocked 是假 —— 读不出却放行，等于把"数不清"当成"确认没人写"');
+    }
+    if (typeof mod.EXIT === 'object' && u.exit !== mod.EXIT.unreadable) {
+      bad.push('unreadable 的出口码是 ' + u.exit + '，而 EXIT.unreadable = ' + mod.EXIT.unreadable + ' —— 两把尺不一致');
+    }
+    var q = mod.classify({});
+    if (q.verdict !== 'quiet' || q.blocked) {
+      bad.push('什么都没有的那一格应该是 quiet 且放行，实读 verdict=' + q.verdict + ' blocked=' + q.blocked +
+        ' —— 恒阻塞的闸和没有闸一样害人（会误报的守卫等于没有守卫）');
+    }
+    if (typeof mod.EXIT === 'object' &&
+      !(mod.EXIT.open === 0 && mod.EXIT.blocked === 1 && mod.EXIT.unreadable === 2)) {
+      bad.push('EXIT 不再是 0/1/2 分家（实读 ' + JSON.stringify(mod.EXIT) +
+        '）—— 上一轮把放行／阻塞／读不出压成两种码，就是这么静默掉的');
+    }
+  } else if (mod) {
+    bad.push(SRC + ' 没有导出 classify（只导出了那张表）—— 第 38 项只能读文本，判定层不能被人复用');
+  }
+
+  // ---- d. 四处登记都要取回（只在一处出现名字 ≠ 登记） ----
+  //
+  // ⚠️ 判据**分两半各承重**（第 37 项 K11 那条教训就在上面几十行）：
+  //    表行那一格与「真源」那一句是两件事，工具名在别处出现过不算登记。
+  var agents = read('AGENTS.md');
+  var s10 = agents.indexOf('### 1.0');
+  var s11 = agents.indexOf('### 1.1');
+  if (s10 < 0 || s11 < 0 || s11 <= s10) {
+    bad.push('AGENTS.md 里取不到 §1.0~§1.1 那一段（读到 ' + s10 + '/' + s11 +
+      '）—— 读不出单独占一格，不许因为扫不到就当这条规矩没事');
+  } else {
+    var seg = agents.slice(s10, s11);
+    if (seg.indexOf('main-active.stamp') < 0) {
+      bad.push('AGENTS.md §1.0 里没有 `main-active.stamp` —— 腿 1 的落点没人指，下一轮还会只问那一张条子');
+    }
+    if (seg.indexOf('check-concurrency') < 0) {
+      bad.push('AGENTS.md §1.0 里没有 `tools/check-concurrency.js` —— 两道一起问这条规矩只活在代码里');
+    }
+    if (!/腿\s*2/.test(seg)) {
+      bad.push('AGENTS.md §1.0 没点名「腿 2」—— 只说"两道"不说第二道读什么，就会被读成"再看一遍同一张条子"');
+    }
+  }
+
+  var hand = read('HANDOVER.md');
+  var hAt = hand.indexOf('起手工序');
+  if (hAt < 0) {
+    bad.push('HANDOVER.md 里没有「起手工序」那节 —— 接手的人只会在 AGENTS 里读到规矩、不知道命令怎么敲');
+  } else if (hand.slice(hAt, hAt + 4000).indexOf('check-concurrency') < 0) {
+    bad.push('HANDOVER.md 的「起手工序」那一节里没写 `tools/check-concurrency.js` —— 节在了但没说用哪件');
+  }
+
+  var treadme = read('tools/README.md');
+  var rowRe = new RegExp('^\\|\\s*`check-concurrency\\.js`\\s*\\|', 'm');
+  if (!rowRe.test(treadme)) {
+    bad.push('tools/README.md 那张工具表里没有 `check-concurrency.js` 那一行（行首竖线 + 反引号名字）—— ' +
+      '下一轮接手的人找不到入口，只会重新发明那句猜话');
+  }
+  if (treadme.indexOf('真源 `tools/check-concurrency.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/check-concurrency.js —— ' +
+      '文件名在别处出现过不算登记（同上面第 37 项 K11 那一格）');
+  }
+
+  // ---- e. npm 入口两条指向真源，且 selftest 那条真带 --selftest ----
+  var pkg;
+  try {
+    pkg = JSON.parse(read('package.json'));
+  } catch (e) {
+    pkg = null;
+    bad.push('package.json 读不成 JSON（' + String(e.message || e).slice(0, 60) + '）—— 读不出当失败');
+  }
+  if (pkg && pkg.scripts) {
+    var wantScript = { 'concurrency': 'node ' + SRC, 'concurrency:selftest': 'node ' + SRC + ' --selftest' };
+    Object.keys(wantScript).forEach(function (k) {
+      if (!pkg.scripts[k]) {
+        bad.push('package.json 的 scripts 里没有 `' + k + '` —— 规矩写成"要问两道"，可手上没有那一件工具');
+      } else if (pkg.scripts[k].indexOf(SRC) < 0) {
+        bad.push('npm 入口 `' + k + '` 不指向 ' + SRC + '（实读 ' + pkg.scripts[k] + '）');
+      } else if (k === 'concurrency:selftest' && pkg.scripts[k].indexOf('--selftest') < 0) {
+        bad.push('npm 入口 `concurrency:selftest` 没带 --selftest —— 手工入口与闸读的是两件事，那张表坏了没人知道');
+      }
+    });
+  }
+
+  if (bad.length) {
+    fail('起手闸门还是只问那一张条子（这族 bug 的表现是"窗口明明被人占着却判安静，一次 concat 把别人的半成品烘进构建产物"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  pass('起手先问两道（腿 1 自报条 + 腿 2 盘上 mtime∧脏 同时成立）：' + SRC + ' 对照表 ' +
+    ((mod && mod.CELLS) || []).length + ' 格逐格全对、六种 verdict（含 mode=read 的 other-reading）与出口码 0/1/2 分家都有格守着；' +
+    '读不出那一格真算阻塞（classify 合成读数实跑）；AGENTS §1.0、HANDOVER 起手工序、' +
+    'tools/README 表行与专节四处登记齐、npm 两条入口同真源');
+}
+
+// ---------------------------------------------------------------------------
+// 第 39 项 —— 白天／黑夜 × 四季那套主题变量，底色与文字色必须**成对**且**算得清**（会话任务 #191）
+//
+//   这一族红了的表现不在测试里，在人眼里：`popup/pet.css` 舞台那五条底色以前只有白天那一版，
+//   而暗色档把 `--fg` 翻成近白 —— 真实 Edge 里逐格量到「🩺」道具 **1.05**、六枚舞台键 **2.84**
+//   （合格线 4.5），弹窗本体却全绿。**语法正常、集成与真实浏览器全绿**，一条测试都不会红。
+//   判据与量法留下的那几格盲区（`:hover` 量不到 / 渐变只取一色标 / 兄弟层刷底 /
+//   `--bg-image` 要 has-bg / 聊天面板在新 profile 里量不到）
+//   写在 `docs/theme-191-dark-audit.md`（**跟踪内** —— `notes/` 在 .gitignore 里，
+//   台账放那儿等于给下一台机器留一条恒红的尺），强调色一族故意不核对（一枚色相兼字色与按钮底，
+//   两个方向互相冲突，要动先得由用户裁"拆不拆成两枚"）。
+// ---------------------------------------------------------------------------
+function checkDarkThemePairing() {
+  var bad = [];
+  var SRC = 'tools/audit-dark-theme.js';
+  var PIN_FLOOR = 12;     // 只钉下限：加格不碍事，删格要响（口径同第 38 项）
+  var CELL_IDS = ['sky-twin', 'ramp-pair', 'ramp-contrast', 'sky-contrast', 'token-bare', 'token-fallback', 'unreadable'];
+  var mod = null;
+
+  // ---- a. 真源在不在、逐格对照真跑、打印的两数与代码里的表对上 ----
+  if (!exists(SRC)) {
+    bad.push('主题对账的真源不存在：' + SRC + ' —— 读不出当失败，不许当通过');
+  } else {
+    var r = spawnSync(process.execPath, [path.join(__dirname, path.basename(SRC)), '--selftest'],
+      { encoding: 'utf8', timeout: 60000 });
+    var out = String(r.stdout || '') + String(r.stderr || '');
+    var m = out.match(/自检：(\d+)\s*\/\s*(\d+)\s*格通过/);
+    if (r.error) {
+      bad.push(SRC + ' 的逐格对照没跑成：' + String(r.error.code || r.error) + ' —— 读不出当失败，不许当通过');
+    } else if (r.status !== 0 || !m) {
+      bad.push(SRC + ' --selftest 退出码 ' + r.status + '，或那句「自检：N / M 格通过」根本没打印（末行=' +
+        JSON.stringify(out.trim().split(/\r?\n/).pop()) + '）');
+    } else if (Number(m[1]) !== Number(m[2])) {
+      bad.push(SRC + ' 自己报了 ' + m[1] + ' / ' + m[2] + ' 两数不等却退出 0 —— 有格没过还被当成通过');
+    } else if (Number(m[2]) < PIN_FLOOR) {
+      bad.push(SRC + ' 的对照格数从下限 ' + PIN_FLOOR + ' 掉到 ' + m[2] +
+        ' —— 被删掉的那一格不会自己喊，"摘错靶照样全绿"那一族就是这样静默没的');
+    }
+    try {
+      mod = require(path.join(ROOT, SRC));
+    } catch (e) {
+      mod = null;
+      bad.push('require 不回 ' + SRC + '（' + String(e.message || e).slice(0, 80) + '）—— 判定层不能被人复用，这一项只能看它自己那张表');
+    }
+  }
+
+  // ---- b. 那张表要与 evaluate() 真跑出来的格子**双向**相等（新增一格忘了进表 = 那一格没人对账） ----
+  var live = null;
+  if (mod) {
+    if (typeof mod.evaluate !== 'function' || !Array.isArray(mod.CELLS) || !mod.CELLS.length) {
+      bad.push(SRC + ' 没同时导出 evaluate 与那张 CELLS 表 —— 表与实际走的分支之间的差不会自己喊（AGENTS §2 #18）');
+    } else {
+      var idsOfTable = mod.CELLS.map(function (c) { return c.id; });
+      if (idsOfTable.slice().sort().join(',') !== CELL_IDS.slice().sort().join(',')) {
+        bad.push(SRC + ' 的 CELLS 与本项点名的七格不是一回事：表里 ' + idsOfTable.join(',') +
+          '，本项要求 ' + CELL_IDS.join(',') + ' —— 加一格要同时改两处，否则那格没人守着');
+      }
+      try {
+        live = mod.evaluate(read('popup/popup.html'), read('popup/pet.css'), mod.runtimeTokens());
+      } catch (e) {
+        live = null;
+        bad.push('在进程内跑不回主题对账（' + String(e.message || e).slice(0, 90) + '）—— 读不出当失败');
+      }
+      if (live) {
+        var idsOfLive = live.cells.map(function (c) { return c.id; });
+        if (idsOfLive.join(',') !== idsOfTable.join(',')) {
+          bad.push(SRC + ' 表里写 ' + idsOfTable.length + ' 格，evaluate() 真跑出 ' + idsOfLive.length +
+            ' 格（实际=' + idsOfLive.join(',') + '）—— 自报的表与实际走的不是一回事');
+        }
+        // 每一格都要**真的走到并给出读数**：空 info 等于那一格什么都没判
+        live.cells.forEach(function (c) {
+          if (!c.info || String(c.info).trim() === '') {
+            bad.push('格子 ' + c.id + ' 没交取证读数 —— 空断言与没有断言等价');
+          }
+        });
+      }
+    }
+  }
+
+  // ---- c. 真核对：红了要逐格点名，不许只说"没过" ----
+  if (live) {
+    var reds = live.cells.filter(function (c) { return !c.ok; });
+    if (reds.length) {
+      bad.push('白天／黑夜 × 四季对账未通过（' + reds.length + ' 格）：\n      ' +
+        reds.map(function (c) { return '[' + c.id + '] ' + c.name + ' —— ' + c.info; }).join('\n      ') +
+        '\n      这一族红了就是"黑夜里有人看不清字"；台账与量法见 docs/theme-191-dark-audit.md');
+    }
+  }
+
+  // ---- d. 盲区不许被读成"已经测干净"：台账文件要在**跟踪内**，且要点名那几格 ----
+  var NOTES = 'docs/theme-191-dark-audit.md';
+  // git 答不出时单独占一格（红），不许塌进"没被忽略"：口径同 AGENTS §1.05 的 unreadable 与 §2 #12
+  function ignoredState(file) {
+    var g = spawnSync('git', ['check-ignore', '-q', file], { cwd: ROOT, encoding: 'utf8', timeout: 15000 });
+    if (g.error || g.status === null) return 'unreadable';
+    if (g.status === 0) return 'ignored';
+    if (g.status === 1) return 'tracked-ok';
+    return 'unreadable';
+  }
+  var noteState = exists(NOTES) ? ignoredState(NOTES) : 'missing';
+  if (noteState === 'missing') {
+    bad.push('现场读数台账 ' + NOTES + ' 不在 —— 量回来的数只活在一次会话里，下一轮会重问一遍或干脆猜');
+  } else if (noteState === 'ignored') {
+    bad.push(NOTES + ' 落在 gitignore 区里 —— 闸门的台账必须**进仓库**，否则下一台机器 clone 出来这条恒红，' +
+      '而红的是"台账不在"这种与主题毫无关系的句子（`notes/` 就是那一族：它专门装真实课程号，不许当台账家）');
+  } else if (noteState === 'unreadable') {
+    bad.push('问不出 ' + NOTES + ' 有没有被 .gitignore 挡掉（git 答不出）—— 读不出不许当成"没被忽略"');
+  } else {
+    var note = read(NOTES);
+    ['hover', '渐变', 'has-bg', '读不出'].forEach(function (k) {
+      if (note.indexOf(k) < 0) {
+        bad.push(NOTES + ' 里没有「' + k + '」那一格 —— 盲区不写下来就会被读成"全测过了"');
+      }
+    });
+    if (note.indexOf('1.05') < 0 || note.indexOf('2.84') < 0) {
+      bad.push(NOTES + ' 里找不到修复前那两个现场读数（1.05 / 2.84）—— 没有原始读数，"修好了"这句话没有对照');
+    }
+  }
+
+  // ---- e. npm 入口两条指向真源（手工入口与闸不许读的是两件事） ----
+  var pkg;
+  try {
+    pkg = JSON.parse(read('package.json'));
+  } catch (e) {
+    pkg = null;
+    bad.push('package.json 读不成 JSON（' + String(e.message || e).slice(0, 60) + '）—— 读不出当失败');
+  }
+  if (pkg && pkg.scripts) {
+    var want = { 'theme': 'node ' + SRC, 'theme:selftest': 'node ' + SRC + ' --selftest' };
+    Object.keys(want).forEach(function (k) {
+      if (!pkg.scripts[k]) {
+        bad.push('package.json 的 scripts 里没有 `' + k + '` —— 下一轮想手工复量只能猜命令');
+      } else if (pkg.scripts[k].indexOf(SRC) < 0) {
+        bad.push('npm 入口 `' + k + '` 不指向 ' + SRC + '（实读 ' + pkg.scripts[k] + '）');
+      } else if (k === 'theme:selftest' && pkg.scripts[k].indexOf('--selftest') < 0) {
+        bad.push('npm 入口 `theme:selftest` 没带 --selftest —— 手工入口与闸读的是两件事，那张表坏了没人知道');
+      }
+    });
+  }
+
+  // ---- f. tools/README.md 表行 + 专节分开承重（K11 同一族：文件名在别处出现过不算登记） ----
+  var treadme = read('tools/README.md');
+  if (!new RegExp('^\\|\\s*`audit-dark-theme\\.js`\\s*\\|', 'm').test(treadme)) {
+    bad.push('tools/README.md 那张工具表里没有 `audit-dark-theme.js` 那一行（行首竖线 + 反引号名字）');
+  }
+  if (treadme.indexOf('真源 `tools/audit-dark-theme.js`') === -1) {
+    bad.push('tools/README.md 的专节没把真源点名叫到 tools/audit-dark-theme.js —— 只在表里出现过不算登记');
+  }
+
+  if (bad.length) {
+    fail('白天／黑夜 × 四季主题对账不成套（这族 bug 的表现是"夜里近白字压在浅天光上，只有用户看得见"）：\n      ' +
+      bad.join('\n      '));
+    return;
+  }
+  var pairs = live.detail.rampRows.concat(live.detail.skyRows);
+  var minRatio = Math.min.apply(null, pairs.map(function (x) { return x.ratio; }));
+  pass('白天／黑夜 × 四季底色成对（' + SRC + ' 对照表 ' + mod.CELLS.length +
+    ' 格逐格全对、' + PIN_FLOOR + ' 刀注入各红各的）：舞台底色 5×2 齐、中性五枚 token 两档不照抄、' +
+    pairs.length + ' 对「文字 × 实际落底」逐对 ≥ 4.5（最低 ' + minRatio + '，其中舞台 ' +
+    live.detail.skyRows.length + ' 对）；引用普查 ' + live.detail.refs +
+    ' 枚全有出处；台账与 npm 两条入口、tools/README 表行与专节登记齐');
+}
+
+// ---------------------------------------------------------------------------
 // 执行
 // ---------------------------------------------------------------------------
 console.log('\nOmitone 工程自检\n');
@@ -3700,6 +6128,12 @@ checkSwitchBudgetClaim();
 checkCourseProbeClaims();
 checkManualLogNames();
 checkProfileSweep();
+checkChannelGate();
+checkDiagnoseRuleTable(manifest);
+checkWebSearchGate(manifest);
+checkBridgeVerdictGrids();
+checkConcurrencyGate();
+checkDarkThemePairing();
 
 passed.forEach(function (m) { console.log('  [ok]   ' + m); });
 warnings.forEach(function (m) { console.log('  [warn] ' + m); });

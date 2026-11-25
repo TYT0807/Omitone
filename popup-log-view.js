@@ -13,9 +13,22 @@
     return [date.getHours(), date.getMinutes(), date.getSeconds()].map(value => String(value).padStart(2, '0')).join(':');
   }
   function logList(logs) { return Array.isArray(logs) ? logs.filter(item => item && typeof item === 'object') : []; }
+  // 掩码只许有一份（AGENTS §4 第 30 项）：真源在 `libs/log-redact.js`，弹窗里由 `<script>` 先挂上
+  // `self.OmitoneLogRedact`，node / vm 台那一路走 require。**这里不再自己写一份键名表** ——
+  // 上一版这一格是零掩码（meta 整份 stringify 原样交给剪贴板），比 node 侧那套还松。
+  function redactLib() {
+    if (typeof self !== 'undefined' && self.OmitoneLogRedact) return self.OmitoneLogRedact;
+    if (typeof globalThis !== 'undefined' && globalThis.OmitoneLogRedact) return globalThis.OmitoneLogRedact;
+    if (typeof require === 'function') { try { return require('./libs/log-redact.js'); } catch (_) { return null; } }
+    return null;
+  }
   function metaText(meta) {
     if (!meta) return '';
-    try { return ' ' + JSON.stringify(meta); } catch (_) { return ' [日志详情无法序列化]'; }
+    const lib = redactLib();
+    // 共用那份没挂上时**不许退回原样打印**：交一句明说的占位，让"这一轮没掩码"读得出来。
+    if (!lib) return ' [日志详情未经掩码，已省略]';
+    // 深度取 lib 自己那档宽尺（剪贴板没有行宽约束），键名/值形状两把尺都由它带。
+    try { return ' ' + JSON.stringify(lib.redactMeta(meta, { maxDepth: lib.DEPTH_WIDE })); } catch (_) { return ' [日志详情无法序列化]'; }
   }
   function levelOf(item) { return LEVELS.includes(item.level) ? item.level : 'info'; }
   function buildLogsText(logs, version, exportedAt = Date.now()) {

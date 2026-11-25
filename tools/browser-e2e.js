@@ -773,6 +773,116 @@ function buildNinetyPercentHtml() {
 }
 
 /**
+ * 「一直停在开头」的视频页 —— 复现用户那句「点一下开始就正常了，否则一直黑屏不动／抽搐」。
+ *
+ * 形状按 2026-11-19 现场**只读**实测复刻（`top > iframe#iframe > f0` 里那套 video.js v7）：
+ * 开始键有两枚，而**同一个容器里还躺着两枚绝不能碰的邻居** —— 这页的全部价值就在这四处，
+ * 因为只有真引擎才量得到「一开播中央层就 `display:none`」在 `visible()` 里读回来是 false，
+ * 也只有真页面里 `el.click()` 才走得到站点自己挂的那个监听器（集成层的假 DOM 两样都证不了）。
+ *   - `button.vjs-big-play-button`：中央层，未开播时可见，**进入 started 态就被 CSS 收成 0×0**
+ *   - `button.vjs-play-control.vjs-playing`：控制条切换键，在播时文字是「暂停」—— 点下去等于替人按停
+ *   - `button.vjs-default-button`：「重启 恢复全部设定至预设值」—— 误点会把用户的播放器设定清掉
+ *   - `button.vjs-playback-rate`：倍速菜单
+ * 四枚各自把点击记进 `window.__b178Clicks`，断言读的是**站点元素自己的监听器有没有被走到**
+ * （桩打在动作上，不是把生产方法换成计数器 —— AGENTS §5）。
+ */
+function buildMediaStartStuckHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title>' +
+    // 中央层收起那一条**必须走 CSS**：这一格要量的正是真引擎对 display:none 的读数，
+    // 用 visibility / 移除元素都会把要证的东西预先替测试做好。收起条件按现场实测写成 compound：
+    // 「已开播 且 正在播」才藏 —— 真 video.js 在开播后暂停时中央层是会回来的。
+    '<style>.video-js{position:relative;width:640px;height:360px}' +
+    '.vjs-big-play-button{position:absolute;left:290px;top:150px;width:60px;height:40px}' +
+    '.vjs-has-started.vjs-playing .vjs-big-play-button{display:none}' +
+    '.vjs-control-bar{position:absolute;left:0;bottom:0;width:640px;height:40px}' +
+    '</style></head><body>' +
+    '<div id="iframe">' +
+    '  <div class="video-js vjs-player" id="b178-host">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '    <button class="vjs-big-play-button" id="b178-big" type="button" title="播放视频">播放视频</button>' +
+    '    <div class="vjs-control-bar">' +
+    '      <button class="vjs-play-control vjs-control vjs-button vjs-playing" id="b178-toggle" type="button">暂停</button>' +
+    '      <button class="vjs-default-button" id="b178-restart" type="button">重启 恢复全部设定至预设值</button>' +
+    '      <button class="vjs-playback-rate" id="b178-rate" type="button">倍速</button>' +
+    '    </div>' +
+    '  </div>' +
+    '</div>' +
+    '<script>' +
+    'window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+    'window.__b178Started=false;' +
+    '["big","toggle","restart","rate"].forEach(function(k){' +
+    '  document.getElementById("b178-"+k).addEventListener("click",function(){' +
+    '    window.__b178Clicks[k]++;' +
+    '    if(k==="big"){window.__b178Started=true;' +
+    '      document.getElementById("b178-host").className="video-js vjs-player vjs-has-started vjs-playing";}' +
+    '  });});' +
+    '</script>' +
+    '</body></html>';
+}
+
+/**
+ * 「视频在播、巡检句柄却是空的」这一格的夹具 —— **现场形状：视频在真 iframe 里**（批次 190）。
+ *
+ * ⚠️ 为什么不能沿用上面那几份 `<div id="iframe">` 的媒体夹具：
+ * `_checkBlockedByCrossOrigin()` 第一行拿 `_getMainFrame()` = `document.querySelector('#iframe')`，
+ * 命中那枚 DIV 之后走 `_isFrameSameOrigin()` —— DIV 没有 `contentWindow`，判成"内容帧读不到"，
+ * 而 `_frameOriginOf(DIV)` 读出空串 → 连"同源"都不成立 → **当场 `return true` 把这一拍整拍拒掉**。
+ * 于是 `_runTick` 永远走不到 `if (this._isPlaying)` 那一格，本轮修的分支变成零覆盖，
+ * 而夹具自证与别的断言全绿（AGENTS §5「断言"绿"有两种：走到了、和根本没走到那一层」）。
+ * 现场 `studentstudy` 的顶层文档里 `#iframe` 是**真的 `<iframe>`**，同源、读得到 ——
+ * 所以这一族必须换成真帧夹具才测得到。
+ *
+ * 两份一起用：顶层只放那枚 iframe，视频长在**里面**那一份（和现场同构）。
+ * 媒体原型的打桩由场景自己在**子帧**上做 —— 每个帧各有一份 `HTMLMediaElement.prototype`，
+ * 顶层打了桩对子帧里的视频无效。
+ */
+function buildMediaTickFrameTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body class="course_main">' +
+    '<iframe id="iframe" src="/media-tick-inner" style="width:100%;height:760px;border:0"></iframe>' +
+    '</body></html>';
+}
+
+/** 上面那枚 `#iframe` 里的那一份：video.js 形状 + 一枚被站点按住进度条的视频 */
+function buildMediaTickInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>视频学习 - 学习通</title>' +
+    '<style>.video-js{position:relative;width:640px;height:360px}</style>' +
+    '</head><body>' +
+    '  <div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '  </div>' +
+    '</body></html>';
+}
+
+/**
+ * 「巡检掉了」的**第二种现场形状** —— 视频长在顶层文档里，整页**没有 `#iframe` 这个元素**（批次 190）。
+ *
+ * 为什么必须有第二份夹具：`_runTick` 在两处认领「这一拍还在播媒体」，走的是两条完全不同的路 ——
+ *   ① `_ensureOcsStudyRunner()`（`60-tasks-detect.js`）第一行之后要 `_getMainWindow()` 非空，
+ *      也就是**顶层有可读的 `#iframe`** 才算认领；它认领后把活儿交给那个 3 秒起步的异步循环。
+ *   ② `_runOcsStyleStudy()`（`62-tasks-run.js`）排在①之后，没有可读帧的页面才走到这里，
+ *      它在**同一拍内**同步判 `_isActiveStudyJobPending('ocs-style-active-job')`。
+ * 上面 `/media-tick-outer` 那份真帧夹具只会命中①，`/media` 那族 `<div id="iframe">` 夹具
+ * 则被 `_checkBlockedByCrossOrigin()`（`if (!frame) return false` 之后按 DIV 判"读不到"）
+ * **整拍拒掉**，②也走不到。所以②这一支**必须有一枚压根没有 `#iframe` 的页面**才测得到 ——
+ * 否则把 `62-tasks-run.js` 那一行删掉，全量 e2e 一条都不会红（AGENTS §5「根本没走到那一层」）。
+ *
+ * ⚠️ 这里**不许**放 `<div id="iframe">`，也不许放任何 `<iframe>`：放了①或那堵墙就会先把这一拍接走。
+ */
+function buildMediaTickStyleTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>音视频学习 - 学习通</title>' +
+    '<style>.video-js{position:relative;width:640px;height:360px}</style>' +
+    '</head><body class="course_main">' +
+    '  <div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '    <video id="omitone-video" preload="auto" src="mock-video.mp4"></video>' +
+    '  </div>' +
+    '</body></html>';
+}
+
+/**
  * 多讨论任务点页面 —— 复现"多沟通任务"的坑。
  *
  * A 组：3 张讨论卡片挤在**同一个共用容器**里，容器内只有**一个** #isFinished。
@@ -2472,6 +2582,10 @@ var MOCK_PAGES = {
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
   '/media-90': buildNinetyPercentHtml,
+  '/media-start': buildMediaStartStuckHtml,
+  '/media-tick-outer': buildMediaTickFrameTopHtml,
+  '/media-tick-inner': buildMediaTickInnerHtml,
+  '/media-tick-style': buildMediaTickStyleTopHtml,
   '/blank': buildBlankHtml,
   // 批次 35：主内容帧跨域的三页（两种跨域 + 被换走的那一页本身）
   '/blocked-inner': buildBlockedInnerHtml,
@@ -2513,7 +2627,11 @@ var MOCK_PAGES = {
   // `/blank` 那条网址不像课程页，用它测「课程页刚加载、标记还没长出来」是错的形状，
   // 所以下面那一格也挂上真实路径（同一份 HTML，只换网址）。
   '/space/index': buildUserCenterTopHtml,
-  '/mycourse/studentstudy': buildBlankHtml,
+  // ⚠️ 批次 89 把这页挂成了 `'/mycourse/studentstudy'`，可**同一个键批次 9-A 先占了**（MOCK_PAGES 末尾那份讨论诱饵），
+  //    对象字面量里后写的静默覆盖先写的 —— 于是「网址像课程页、DOM 还空着」那一格从写下那天起就没真被端上来过，
+  //    而它的前提断言在诱饵形状上恰好也成立，所以一条测试都不红（第 30 项第四把尺的「重复键」那一格数的就是这一族）。
+  //    换名不动判据：`_isStudyCourseHref` 认的是 `/mycourse/studentstudy` 这一段前缀，`-blank` 尾巴照旧算课程页。
+  '/mycourse/studentstudy-blank': buildBlankHtml,
   // 批次 87：换课真正的落点 —— 课程首页（章节点在 + 站点自己的 toOld），还有两枚残缺形状
   '/mooc2-ans/mycourse/studentcourse': buildCourseHomeHtml,
   '/mooc2-ans/mycourse/studentcourse-nofn': buildCourseHomeNoFnHtml,
@@ -2568,6 +2686,9 @@ var MOCK_PAGES = {
   '/ppt-decoy': buildPptDecoyTopHtml,
   '/ppt-decoy-card': buildPptDecoyCardHtml,
   '/ppt-decoy-inner': buildPptDecoyInnerHtml,
+  '/ppt-decoy-media-177': buildB177PptMediaTopHtml,
+  '/ppt-decoy-media-card-177': buildB177PptMediaCardHtml,
+  '/media-tick-inner-177': buildB177MediaInnerHtml,
   '/submit-key': buildSubmitKeyShellHtml,
   '/submit-key-inner': buildSubmitKeyInnerHtml,
   '/mycourse/studentstudy': buildStudyDiscussionDecoyHtml,
@@ -2824,6 +2945,41 @@ function buildPptDecoyInnerHtml() {
     '<div class="question-content">本讲要点：任务类型只有一份顺序</div>' +
     '<div class="answerOption"><span>A. 仲裁</span><span>B. 路由</span></div>' +
     '<input type="hidden" id="answerTotal" value="3">' +
+    '</body></html>';
+}
+
+function buildB177PptMediaTopHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>媒体任务点验收 - 学习通</title></head><body>' +
+    '<div class="course_main">' +
+    '<iframe id="iframe" src="/ppt-decoy-media-card-177" style="width:100%;height:700px;border:0"></iframe>' +
+    '</div><button id="prevNextFocusNext" type="button">下一节</button>' +
+    '<script>window.attachments=[{jobid:"b177-media",property:{_jobid:"b177-media",' +
+    'jobid:"b177-media",mid:"mid-b177-media",name:"坏包视频",module:"video",type:"video",job:true}}];' +
+    'document.getElementById("prevNextFocusNext").addEventListener("click",function(){' +
+    'window.__b177NextClicks=(window.__b177NextClicks||0)+1;});</script>' +
+    '</body></html>';
+}
+
+function buildB177PptMediaCardHtml() {
+  var payload = { jobid: 'b177-media', _jobid: 'b177-media', mid: 'mid-b177-media', name: '坏包视频' };
+  var dataAttr = JSON.stringify(payload).replace(/"/g, '&quot;');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>媒体任务卡片 - 学习通</title></head><body>' +
+    '<div class="card"><div class="ans-attach-ct" id="tp-ppt">' +
+    '<div class="ans-job-icon" aria-label="任务点"></div>' +
+    '<div class="ans-attach-title">坏包视频</div>' +
+    '<iframe jobid="b177-media" data="' + dataAttr + '" src="/media-tick-inner-177" ' +
+    'style="width:100%;height:420px;border:0"></iframe>' +
+    '</div></div></body></html>';
+}
+
+function buildB177MediaInnerHtml() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>坏包视频 - 学习通</title></head><body>' +
+    '<div class="video-js vjs-player vjs-has-started vjs-playing">' +
+    '<video id="video" preload="auto" src="/mock-b177-video.mp4"></video></div>' +
+    '<script>window.finishJob=function(){window.__b177FinishJob=(window.__b177FinishJob||0)+1;};</script>' +
     '</body></html>';
 }
 
@@ -3517,6 +3673,103 @@ async function writeConfig(extensionId, cfg) {
   await sleep(150);
 }
 
+// ── 弹窗那 5 枚 storage 键的「进门捕获 → 排干 → 交回 → 二次回读」（批次 177 / 任务 #61）────
+// 为什么这一族要独立出来：混沌猴逢 `.toggle` 就点，而弹窗每一发点都是 fire-and-forget ——
+// `config` 那一枚先进后台的 `config_patch` 队列（popup.js 的 patchConfig →
+// sendRuntimeMessageWithTimeout，8 秒超时），四枚吉祥物键（精简／聊天／寻医／网搜）是页面
+// 自己 await 的 `chrome.storage.local.set`。上一版收尾只交回 `config` 与
+// `omitonePagePetMinimal` 两格，另外三枚点出来就永久留在盘上；而且「立刻写、立刻读」撞上
+// 队尾还没排干，随机态在我们写完才落回来 —— 红不红取决于机器快慢（AGENTS §5
+// 「拉长等待在快机器恒绿、慢机器恒红」）。
+// 所以排干不用等待，用**只听不写的 `chrome.storage.onChanged` 计数器**：数不再涨才算排干，
+// 到点还在涨就单独占一格（§2 #12「读不出」不许塌进通过）。
+// ⚠️ 取证件只印**键名**，不印值 —— `config` 里有 apiKey（§5「取证不许把配置值印进日志」）。
+// 键名清单的真源是 popup.js：saveToggleConfig() 写 `config`，四枚吉祥物开关各写一枚
+// （togglePagePetEnabled → omitonePagePetMinimal，petChat/Doctor/WebSearch → 另三枚），
+// resetDefault() 落的也正是这 5 枚。新增弹窗可写键要同步这里，否则混沌猴点脏了没人收。
+var POPUP_STORAGE_KEYS = ['config', 'omitonePagePetMinimal', 'omitonePetChatOn',
+  'omitonePetDoctorOn', 'omitonePetWebSearchOn'];
+
+// 回读统一成 {has:{键:布尔}, val:{键:值}} —— has 单独记：「没写过」与「写了个 null」是两格。
+async function readPopupStore(client, keys) {
+  return await client.evaluate('new Promise(function (res) {' +
+    'var K = ' + JSON.stringify(keys) + ';' +
+    'chrome.storage.local.get(K, function (r) {' +
+    'var out = { has: {}, val: {} };' +
+    'for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    'out.has[k] = Object.prototype.hasOwnProperty.call(r, k); out.val[k] = r[k]; }' +
+    'res(out); }); })');
+}
+
+// 装一个只听不写的观察者（重复装不叠加监听，只把计数清零）。
+async function armStoreWatcher(client, keys) {
+  await client.evaluate('(function () {' +
+    'var K = ' + JSON.stringify(keys) + ';' +
+    'if (!window.__e2eStoreWatch) window.__e2eStoreWatch = { n: 0, cnt: {}, bound: false };' +
+    'var w = window.__e2eStoreWatch; w.n = 0; w.cnt = {};' +
+    'if (!w.bound) { w.bound = true;' +
+    '  chrome.storage.onChanged.addListener(function (ch, area) {' +
+    '    if (area !== "local") return;' +
+    '    var s = window.__e2eStoreWatch;' +
+    '    for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    '      if (Object.prototype.hasOwnProperty.call(ch, k)) { s.n++; s.cnt[k] = (s.cnt[k] || 0) + 1; } }' +
+    '  }); }' +
+    'return true; })()');
+}
+
+async function readStoreWatch(client) {
+  return await client.evaluate('(function () { var w = window.__e2eStoreWatch;' +
+    'return w ? { n: w.n, cnt: w.cnt } : { n: -1, cnt: null }; })()');
+}
+
+// 等"写入者停了"：连续 stableSamples 个采样读回同一个计数才算排干；capMs 到点还没停就交回
+// drained:false —— 那一格单独说话，不许当"排干了"。
+async function waitStoreQuiet(client, capMs, stableSamples) {
+  var start = Date.now(), last = null, same = 0, n = -1;
+  while (Date.now() - start < capMs) {
+    var w = await readStoreWatch(client);
+    n = w.n;
+    if (n < 0) return { drained: false, n: n, waitedMs: Date.now() - start, unreadable: true };
+    if (last !== null && n === last) {
+      same++;
+      if (same >= stableSamples) return { drained: true, n: n, waitedMs: Date.now() - start };
+    } else { same = 0; last = n; }
+    await sleep(200);
+  }
+  return { drained: false, n: n, waitedMs: Date.now() - start };
+}
+
+// 交回进门那份：present 的 set、absent 的 remove。交回后还在被谁写，由二次回读那一格说。
+async function handBackPopupStore(client, snap, keys) {
+  return await client.evaluate('new Promise(function (res) {' +
+    'var before = ' + JSON.stringify(snap) + '; var K = ' + JSON.stringify(keys) + ';' +
+    'var del = [], set = {};' +
+    'for (var i = 0; i < K.length; i++) { var k = K[i];' +
+    'if (before.has && before.has[k]) set[k] = before.val[k]; else del.push(k); }' +
+    'function done() { res({ del: del, setKeys: Object.keys(set) }); }' +
+    'function doSet() { if (Object.keys(set).length === 0) { done(); return; }' +
+    '  chrome.storage.local.set(set, done); }' +
+    'if (del.length === 0) { doSet(); return; }' +
+    'chrome.storage.local.remove(del, doSet); })');
+}
+
+// 逐枚比两份读数，只交**不相等的键名**（值不进日志）。
+// ⚠️ 不能直接拿 kvSorted 比：它对 `true`／`false` 这种标量都返回空串（Object.keys 数不出东西），
+// 四枚吉祥物键于是恒相等 —— 先按类型分一格，标量走 JSON.stringify。
+function storeCanon(v) {
+  if (v && typeof v === 'object') return kvSorted(v);
+  return JSON.stringify(v === undefined ? null : v);
+}
+
+function diffStoreKeys(a, b, keys) {
+  var bad = [];
+  (keys || POPUP_STORAGE_KEYS).forEach(function (k) {
+    var ha = !!(a && a.has && a.has[k]), hb = !!(b && b.has && b.has[k]);
+    if (ha !== hb || (ha && hb && storeCanon(a.val[k]) !== storeCanon(b.val[k]))) bad.push(k);
+  });
+  return bad;
+}
+
 async function openScenarioPage(extensionId, scenario) {
   var target = String(scenario.url || scenario.path).replace('{EXT}', extensionId);
   // 场景页必须挂在 chaoxing.com 域下：新版 content.js 只认「后台按标签页 URL 判定为学习通」
@@ -3690,20 +3943,10 @@ async function reloadPet(ctx, options) {
     source: '(' + installPetClock.toString() + ')(' + JSON.stringify(tag) + ',' + JSON.stringify(options) + ');'
   });
   try {
-    if (options.egg !== undefined) {
-      var url = new URL(ctx.url);
-      if (options.egg) url.searchParams.set('egg', '1');
-      else url.searchParams.delete('egg');
-      await client.send('Page.navigate', { url: url.href });
-    } else await client.send('Page.reload', { ignoreCache: true });
+    await client.send('Page.reload', { ignoreCache: true });
     var ready = await waitFor(client,
       'document.readyState === "complete" && !!window.__omE2EClock && window.__omE2EClock.tag === ' + JSON.stringify(tag), 10000);
     if (!ready) throw new Error('角色专项 reload / 新文档时钟未就绪');
-    if (options.entryOnly) {
-      check('前置：egg=1 新文档真实进入彩蛋入场路径',
-        await client.evaluate('window.__omitoneEgg === true && window.__omE2EClock.stats().scheduled > 0') === true);
-      return;
-    }
     if (!options.reduce) {
       // 等真实 rAF 帧率探测结束，再显式选择正常档，避免低速 CI 把正向动画基线自动降级。
       var governed = await waitFor(client, '!!window.__omitoneMotion', 5000);
@@ -3716,11 +3959,11 @@ async function reloadPet(ctx, options) {
       c.advance(1600);
       var pet = document.getElementById('mascot');
       return { before: before, after: c.stats(), shown: !!pet && pet.classList.contains('show'),
-        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches, egg: window.__omitoneEgg };
+        reduce: matchMedia('(prefers-reduced-motion: reduce)').matches };
     });
     check('前置：新文档 timer / 随机确已接管，正常出场回调实际执行',
       initial.before.scheduled > 0 && initial.after.runs > initial.before.runs &&
-      initial.after.randomReads > 0 && initial.shown && initial.egg === false && initial.reduce === !!options.reduce,
+      initial.after.randomReads > 0 && initial.shown && initial.reduce === !!options.reduce,
       JSON.stringify(initial));
   } finally {
     await client.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: script.identifier });
@@ -3733,12 +3976,14 @@ async function advancePet(client, ms) {
 
 async function openPetBook(client) {
   var opened = await petEval(client, function () {
-    var button = document.querySelector('#petTools [data-act="book"]');
+    var book = document.getElementById('petBook');
+    if (book.getAttribute('aria-hidden') === 'false') return true;
+    var button = document.getElementById('imBook');
     if (!button) return false;
     button.click();
     return document.getElementById('petBook').getAttribute('aria-hidden') === 'false';
   });
-  check('前置：通过「册」按钮打开面板（非直接改 DOM）', opened === true);
+  check('前置：通过「立绘册」按钮打开面板（非直接改 DOM）', opened === true);
 }
 
 async function petAction(client, key) {
@@ -3783,12 +4028,18 @@ var SCENARIOS = [];
 // 动作书：真实按钮 / 真实 CSSAnimation，逻辑到期由可控 JS 时钟验证。
 SCENARIOS.push({
   name: '角色动作专项：100 张立绘与 15 动作完整覆盖',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
     await reloadPet(ctx);
     await openPetBook(client);
+    // 1.3.1 起场景走 ?play=1（设置页不再画她），默认落点是沉浸式 homePosition 现场算的
+    // （760 高 ≈275，竖直居中）；旧口径 y=2 是非沉浸（右上角）时代的写法。
+    // 基线从页面读回，断言只管「动作不许把她挪离默认落点」。
+    var homeY = await client.evaluate(
+      'parseFloat(getComputedStyle(document.getElementById("mascot")).translate.split(" ")[1])');
+    check('前置：默认落点基线读得回', typeof homeY === 'number' && isFinite(homeY) && homeY >= 0, String(homeY));
     var book = await petEval(client, function () {
       var body = document.getElementById('petBookBody'), groups = {}, group = '';
       Array.from(body.children).forEach(function (el) {
@@ -3839,7 +4090,7 @@ SCENARIOS.push({
       check(key + '：到期回 sit',
         await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
     }
-    // 默认落点 y=2 不应靠整个人下移来躲裁切；检查符号最终绘制盒，而非只看 content。
+    // 默认落点由 homePosition 现场算（沉浸式竖直居中）；符号不许靠整个人下移躲裁切，检查最终绘制盒。
     for (var glyphKey of ['surprise', 'think', 'sing']) {
       await petAction(client, glyphKey);
       var glyph = await petEval(client, function () {
@@ -3854,10 +4105,10 @@ SCENARIOS.push({
           top: y, bottom: y + parseFloat(p.height), left: x, right: x + parseFloat(p.width),
           pseudoTop: p.top, pseudoLeft: p.left, content: p.content, viewport: [innerWidth, innerHeight] };
       });
-      check(glyphKey + '：默认顶边落点不变，符号绘制盒仍完整在视口内',
-        glyph.translateY === 2 && glyph.top >= -1 && glyph.left >= -1 &&
+      check(glyphKey + '：默认落点未被动作挪走，符号绘制盒仍完整在视口内',
+        glyph.translateY === homeY && glyph.top >= -1 && glyph.left >= -1 &&
         glyph.bottom <= glyph.viewport[1] + 1 && glyph.right <= glyph.viewport[0] + 1,
-        JSON.stringify(glyph));
+        JSON.stringify(glyph) + ' homeY=' + homeY);
     }
     check('动作执行全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
   }
@@ -3865,7 +4116,7 @@ SCENARIOS.push({
 
 SCENARIOS.push({
   name: '角色动作专项：连续动作令牌 / 同动作重播',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -3926,53 +4177,11 @@ SCENARIOS.push({
 });
 
 SCENARIOS.push({
-  name: '角色动作专项：显示小人 crawl 取消 / 图册让闲置让位',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  name: '角色动作专项：图册让闲置让位 / 夏季吃动作 / 摸头跨档补播',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
-    await reloadPet(ctx);
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 901);
-    check('前置：显示小人的延迟 crawl 真实进入 crouch',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crouch');
-    await advancePet(client, 1501);
-    var crawl = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { pose: pet.getAttribute('data-pose'), transition: pet.style.transition, translate: pet.style.translate };
-    });
-    check('前置：已进入 crawl 且真实启动 translate 移动', crawl.pose === 'crawl' &&
-      /translate/.test(crawl.transition) && !!crawl.translate, JSON.stringify(crawl));
-    // 打开册本身会取消，因此先开册再点击「显示小人」重开 crawl，测试动作按钮的取消能力。
-    await openPetBook(client);
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 2401);
-    check('前置：图册已打开时第二次显示仍能真正开始 crawl',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'crawl');
-    await petAction(client, 'sleep');
-    var frozen = await client.evaluate('document.getElementById("mascot").style.translate');
-    check('手动动作取消已开始 crawl 的空间过渡',
-      await client.evaluate('document.getElementById("mascot").style.transition') === '');
-    await advancePet(client, 2301);
-    await advancePet(client, 15000);
-    var cancelled = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { pose: pet.getAttribute('data-pose'), translate: pet.style.translate, transition: pet.style.transition };
-    });
-    check('旧 crawl 后续 point / 回家 timer 均失效', cancelled.pose === 'sit' &&
-      cancelled.translate === frozen && cancelled.transition === '', JSON.stringify(cancelled));
-    await client.evaluate('document.getElementById("btnPetShow").click()');
-    await advancePet(client, 300);
-    var pending = await petAction(client, 'sleep');
-    check('前置：显示后的 900ms 延迟内已手动切 sleep', pending.pose === 'sleep');
-    await advancePet(client, 601);
-    check('手动动作取消尚未开始的延迟 crawl',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sleep');
-    await advancePet(client, 1700);
-    await advancePet(client, 17000);
-    check('被取消的延迟 crawl 不会在后续阶段复活',
-      await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === 'sit');
-
     // 先证明 idle 分支实际能驱动角色，再 reload 验证开册让位；不能靠「没变化」猜前置。
     await reloadPet(ctx);
     await advancePet(client, 16901);
@@ -3994,29 +4203,7 @@ SCENARIOS.push({
     });
     check('开册持续超过两轮 idle 仍不抢姿态', idleBlocked.pose === 'sit' && idleBlocked.open === 'false', JSON.stringify(idleBlocked));
 
-    // 抢占发生在挂边 callback 之前也必须把人显出来，不能只取消原入场序列。
-    await reloadPet(ctx, { egg: true, entryOnly: true });
-    var eggBefore = await client.evaluate('!document.getElementById("mascot").classList.contains("show")');
-    check('前置：egg 入场首拍前角色确实尚未显示', eggBefore === true);
-    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
-    await advancePet(client, 11001);
-    var eggRun = await petEval(client, function () {
-      var pet = document.getElementById('mascot');
-      return { show: pet.classList.contains('show'), transform: pet.style.transform,
-        busy: pet.getAttribute('data-busy'), display: getComputedStyle(pet).display };
-    });
-    check('run 抢占 egg 入场后角色可见，过期入场回调不把它移出视口', eggRun.show &&
-      eggRun.transform === '' && eggRun.busy === '1' && eggRun.display !== 'none', JSON.stringify(eggRun));
-    await reloadPet(ctx, { egg: true, entryOnly: true });
-    await advancePet(client, 1401);
-    var hanging = await client.evaluate('({pose:document.getElementById("mascot").getAttribute("data-pose"),transform:document.getElementById("mascot").style.transform})');
-    check('前置：第二次 egg 真实进入带负向位移的挂边首拍', hanging.pose === 'hang' &&
-      /-96px/.test(hanging.transform), JSON.stringify(hanging));
-    await client.evaluate('document.dispatchEvent(new CustomEvent("omitone:run",{detail:true}))');
-    check('run 抢占已挂边的 egg 会清除旧入场 transform 并保持 show',
-      await client.evaluate('document.getElementById("mascot").classList.contains("show") && document.getElementById("mascot").style.transform === ""') === true);
-
-    await reloadPet(ctx, { egg: false, random: 0.3 });
+    await reloadPet(ctx, { random: 0.3 });
     var eating = await petEval(client, function () {
       // 停止按钮仍走完整真实 click 冒泡链，但不启动刷课，避免和后续场景串存储。
       document.getElementById('stop').click();
@@ -4032,7 +4219,7 @@ SCENARIOS.push({
     check('夏季吃动作期限结束后清掉 data-eat',
       await client.evaluate('!document.getElementById("mascot").hasAttribute("data-eat")') === true);
 
-    await reloadPet(ctx, { egg: false, mood: 79 });
+    await reloadPet(ctx, { mood: 79 });
     // 批次 150 落了四季成就：11 月摸头必解锁「秋叶来信」，它的庆祝演出（setPose 1400ms）
     // 会把 busy 从 1050ms 拉长到 1650ms，moodHigh 补播就迟到 —— 这一族单独测的是跨档补播，
     // 成就有自己的专项。照摸头话场景的手法把成就全点灯（id 从规则层读回，不手抄清单），
@@ -4081,7 +4268,7 @@ SCENARIOS.push({
 
 SCENARIOS.push({
   name: '角色动作专项：380x240 立绘册面板内滚动命中',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -4095,6 +4282,10 @@ SCENARIOS.push({
       var out = { width: innerWidth, height: innerHeight, top: rect.top, bottom: rect.bottom,
         left: rect.left, right: rect.right, overflow: getComputedStyle(body).overflowY,
         scrollable: body.scrollHeight > body.clientHeight, pageY: scrollY };
+      // 底部按钮排不许长高：fixed+left:50% 的收缩适配只看锚点右侧可用宽，窄口会把按钮
+      // 压成一字宽竖排文字塔、整条带长到 88px 盖住面板中部，点击全被它拦走（批次 131）。
+      var band = document.querySelector('.im-controls');
+      if (band) { var bandRect = band.getBoundingClientRect(); out.bandH = Math.round(bandRect.height); out.bandW = Math.round(bandRect.width); }
       // 滚到「最后一个动作按钮」而不是滚动容器的最底 —— 面板末尾现在是成就区
       // （1.3.0 起立绘册末尾挂成就列表），滚到底看到的是成就，不再是动作按钮。
       // 最后一个是谁从 DOM 读回，不手抄键名 —— 动作库一扩充，手抄的那发就指错按钮。
@@ -4111,15 +4302,26 @@ SCENARIOS.push({
     check('短视口整块图册仍在视口内', geometry.top >= -1 && geometry.bottom <= 241 &&
       geometry.left >= -1 && geometry.right <= 381, JSON.stringify(geometry));
     check('内容在面板内部滚动，不靠整页撑高', geometry.scrollable && /auto|scroll/.test(geometry.overflow), JSON.stringify(geometry));
+    check('窄视口底部按钮排保持一行横排，不许压成竖排文字塔',
+      typeof geometry.bandH === 'number' && geometry.bandH > 0 && geometry.bandH <= 40,
+      'band ' + geometry.bandW + 'x' + geometry.bandH);
     var hit = await petEval(client, function () {
       var body = document.getElementById('petBookBody');
       var buttons = body.querySelectorAll('.pet-book-anim:not([data-anim="random"])');
       var last = buttons[buttons.length - 1], r = last.getBoundingClientRect();
       var br = body.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
       var target = document.elementFromPoint(x, y);
+      // 命中被拦时要知道是谁拦的、它自己铺在哪 —— 光看 id 定不了位（批次 131：
+      // imRestorePet 在 y=136 命中而 band 理论 top≈189，两个数对不上，必须量 rect 本身）。
+      var stack = document.elementsFromPoint(x, y).slice(0, 4).map(function (el) {
+        var rc = el.getBoundingClientRect();
+        return (el.id || el.tagName) + '@' + [rc.left, rc.top, rc.right, rc.bottom].map(Math.round).join(',');
+      });
       return { key: last.getAttribute('data-anim'), x: x, y: y, scrollTop: body.scrollTop,
         pageY: scrollY, within: r.top >= br.top - 1 && r.bottom <= br.bottom + 1,
-        hit: !!target && (target === last || last.contains(target)) };
+        hit: !!target && (target === last || last.contains(target)),
+        hitTag: target ? target.tagName : '', hitId: target ? (target.id || target.className || '') : '',
+        stack: stack };
     });
     check('最后一个动作按钮滚入面板后中心点真实命中', hit.key === geometry.lastKey && hit.scrollTop > 0 &&
       hit.within && hit.hit && hit.y >= 0 && hit.y < 240 && hit.pageY === geometry.pageY, JSON.stringify(hit));
@@ -4128,24 +4330,43 @@ SCENARIOS.push({
     await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: hit.x, y: hit.y, button: 'left', clickCount: 1 });
     check('短视口最后按钮真实鼠标点击触发它自己的动作',
       await client.evaluate('document.getElementById("mascot").getAttribute("data-pose")') === hit.key);
+    // 真实下限再量一次：逗玩窗口最小就是 560x440（popup.js immersiveTarget），
+    // 那里带的可用宽只有 280px、仍小于按钮排自然宽，正是现场会撞上的尺寸。
+    await reloadPet(ctx, { width: 560, height: 440 });
+    await openPetBook(client);
+    await sleep(300);
+    var bandMin = await petEval(client, function () {
+      var band = document.querySelector('.im-controls');
+      if (!band) return null;
+      var r = band.getBoundingClientRect();
+      return { w: Math.round(r.width), h: Math.round(r.height), vw: innerWidth, vh: innerHeight };
+    });
+    check('真实最小窗口 560x440 底部按钮排同样保持一行横排',
+      !!bandMin && bandMin.vw === 560 && bandMin.vh === 440 && bandMin.h > 0 && bandMin.h <= 40,
+      JSON.stringify(bandMin));
   }
 });
 
 SCENARIOS.push({
   name: '角色动作专项：动态 eco / 系统减少动态效果',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
     await reloadPet(ctx);
-    await client.evaluate('document.querySelector("#petTools [data-act=outfit]").click()');
+    await openPetBook(client);
+    // 1.3.1 工具条只剩「玩」「藏」，WAAPI 换装改从立绘册挑图进来（pet.js 的 data-src 点击 → playMotion）。
+    await petEval(client, function () {
+      document.querySelector('#petBookBody [data-src]').click();
+    });
     var outfitBaseline = await petEval(client, petMotionSnapshot);
-    check('前置：正常换装确实启动 WAAPI', outfitBaseline.mode !== 'eco' && outfitBaseline.waapi > 0,
+    check('前置：立绘册挑图确实启动 WAAPI', outfitBaseline.mode !== 'eco' && outfitBaseline.waapi > 0,
       JSON.stringify(outfitBaseline));
-    // 新序列会取消旧 WAAPI，先摸头再换装，令降档时 CSS / WAAPI / 粒子同时在场。
+    // 新序列会取消旧 WAAPI，先摸头再挑另一张图，令降档时 CSS / WAAPI / 粒子同时在场。
     await petEval(client, function () {
       document.getElementById('mascot').click();
-      document.querySelector('#petTools [data-act="outfit"]').click();
+      var cells = document.querySelectorAll('#petBookBody [data-src]');
+      cells[Math.min(1, cells.length - 1)].click();
     });
     var baseline = await petEval(client, petMotionSnapshot);
     check('前置：正常模式确有角色 CSS 动画、换装 WAAPI 和摸头粒子', baseline.mode !== 'eco' &&
@@ -4189,14 +4410,10 @@ SCENARIOS.push({
           seen.push([button.getAttribute('data-anim'), pet.getAttribute('data-pose')]);
           record(button.getAttribute('data-anim'));
         });
-        ['outfit', 'face', 'pose'].forEach(function (act) {
-          document.querySelector('#petTools [data-act="' + act + '"]').click(); record(act);
-        });
+        // 换装在低动态下同样走册子（工具条只剩「玩」「藏」）：挑一张图，同样只许静态提示。
+        var srcCell = body.querySelector('[data-src]');
+        if (srcCell) { srcCell.click(); record('outfit'); }
         pet.click(); record('pet');
-        // 底部显示按钮还会走 crawl；低动态模式下只允许静态提示，不允许空间移动。
-        document.getElementById('btnPetShow').click();
-        window.__omE2EClock.advance(2401);
-        record('show');
         observer.takeRecords().forEach(function (mutation) {
           Array.from(mutation.addedNodes).forEach(function (node) {
             if (node.nodeType === 1 && (node.matches('.fx-heart,.fx-ripple,.fx-spark,.fx-snow,.fx-leaf') ||
@@ -4212,7 +4429,7 @@ SCENARIOS.push({
       check(label + '：设置真实生效且 15 动作按钮仍然能切换静态姿态', reduced.mode === 'eco' &&
         reduced.reduce === !!pass && reduced.seen.length === 15 &&
         reduced.seen.every(function (pair) { return pair[0] === pair[1]; }), JSON.stringify(reduced));
-      check(label + '：动作 / 换装 / 摸头 / 显示均无角色 CSS 或 WAAPI 动画',
+      check(label + '：动作 / 换装 / 摸头均无角色 CSS 或 WAAPI 动画',
         reduced.violations.length === 0 && !/translate|transform/.test(reduced.transition), JSON.stringify(reduced));
       check(label + '：同套点击不生成瞬时粒子（包含创建后立即移除）',
         reduced.additions.length === 0 && reduced.particles === 0, JSON.stringify(reduced));
@@ -4223,10 +4440,10 @@ SCENARIOS.push({
   }
 });
 
-// 交互回归：连点换装不能误判为"戳她"；「藏」与「显示小人」必须闭环。
+// 交互回归：连点「玩」不能误判为"戳她"；「藏」与「让她回来」必须闭环。
 SCENARIOS.push({
-  name: '弹窗前端：连点换装不误判 / 显示小人闭环',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  name: '弹窗前端：连点「玩」不误判 / 藏与让她回来闭环',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4236,12 +4453,12 @@ SCENARIOS.push({
       'if(!pet) return {ok:false};' +
       'pet.classList.add("show");' +
       'var out={ok:true};' +
-      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
+      'var b=document.querySelector("#petTools button[data-act=\\"game\\"]");' +
       'if(b){b.click();b.click();b.click();}' +
       'await new Promise(function(r){setTimeout(r,200);});' +
       'out.dodged=pet.classList.contains("dodge");' +
       // ⚠️ 上面那枚 class **生产里从来没往人身上加**（`popup/pet.js` 只有 remove），所以它单独是个空信号。
-      // 真信号是这一族演的那个姿态与那句台词的归因 —— 三个「装」点下去既不该 shake 也不该说 dodge 那一族。
+      // 真信号是这一族演的那个姿态与那句台词的归因 —— 三个「玩」点下去既不该 shake 也不该说 dodge 那一族。
       'out.afterToolsPose=pet.getAttribute("data-pose");' +
       'out.afterToolsFrom=pet.getAttribute("data-say-from");' +
       'if(b){b.dispatchEvent(new PointerEvent("pointerdown",{bubbles:true,pointerId:2,button:0,isPrimary:true,clientX:b.getBoundingClientRect().left+5,clientY:b.getBoundingClientRect().top+5}));}' +
@@ -4254,7 +4471,8 @@ SCENARIOS.push({
       // 而 `hidAfterHide` 这个字段探针从来没写过 —— 左半边是死的，等于只断了"这一下收起来了"。
       // 「下次打开弹窗还藏着」靠的是 localStorage 那个键（popup/pet.js:350 HIDE_KEY）。
       'out.hideStored=localStorage.getItem("omitone.pet.hidden");' +
-      'var sp=document.getElementById("btnPetShow");' +
+      // 1.3.1 起「显示小人」入口在窗口底部那排（#imRestorePet），弹窗里的按钮已拆。
+      'var sp=document.getElementById("imRestorePet");' +
       'out.hasShowBtn=!!sp;' +
       'if(sp)sp.click();' +
       'await new Promise(function(r){setTimeout(r,200);});' +
@@ -4269,7 +4487,7 @@ SCENARIOS.push({
       'show:document.getElementById("mascotBubble").classList.contains("show")};' +
       'return out;})()'
     );
-    check('连点「装」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false &&
+    check('连点「玩」三次不会被当成戳（不躲）', !!r && r.ok && r.dodged === false &&
       r.afterToolsPose !== 'shake' && r.afterToolsFrom !== 'dodge', JSON.stringify(r));
     // 与下面 moodHigh 那一格配对：同一条归因通道在两个族上读出两个不同的名字，
     // 实现里把名字写死成一个常量就当场红一条（只钉一族是拦不住的）。
@@ -4279,7 +4497,7 @@ SCENARIOS.push({
       JSON.stringify(r && r.triple));
     check('「藏」能把人收起来，并把"藏着"写进存档（下次打开弹窗还在藏着的状态）',
       !!r && r.hidden === true && r.hideStored === '1', JSON.stringify(r));
-    check('点「显示小人」能重新出现，并清掉存档里的"藏着"',
+    check('点「让她回来」能重新出现，并清掉存档里的"藏着"',
       !!r && r.shown === true && (r.hideCleared === null || r.hideCleared === '0'), JSON.stringify(r));
     check('按在工具条上不会启动拖动（否则 click 被重定向成"戳"）', !!r && r.dragFromTools === false, JSON.stringify(r));
   }
@@ -4294,7 +4512,7 @@ SCENARIOS.push({
 // ══════════════════════════════════════════════════════════════════════
 SCENARIOS.push({
   name: '弹窗前端：全功能自检（含命中测试）',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4304,14 +4522,15 @@ SCENARIOS.push({
       'var pet=document.getElementById("mascot");' +
       'out.petShown=!!(pet&&pet.classList.contains("show"));' +
       'out.ui=document.documentElement.getAttribute("data-ui");' +
-      // —— 命中测试：三个按钮的中心点，elementFromPoint 必须命中按钮自己 ——
+      // —— 命中测试：按钮的中心点，elementFromPoint 必须命中按钮自己 ——
+      // 1.3.1 起她身上只剩「玩」「藏」两枚（换装/表情/姿势收进立绘册与随机）。
       'var vp={w:innerWidth,h:innerHeight};out.vp=vp;' +
       'var tools=document.getElementById("petTools");' +
       'out.toolsRect=(function(){if(!tools)return "noEl";var t=tools.getBoundingClientRect();' +
       '  return Math.round(t.left)+","+Math.round(t.top)+","+Math.round(t.width)+"x"+Math.round(t.height);})();' +
       'out.petRect=(function(){if(!pet)return "noEl";var p=pet.getBoundingClientRect();' +
       '  return Math.round(p.left)+","+Math.round(p.top)+","+Math.round(p.width)+"x"+Math.round(p.height);})();' +
-      'var hits={},rects={};["pose","outfit","hide"].forEach(function(a){' +
+      'var hits={},rects={};["game","hide"].forEach(function(a){' +
       '  var b=document.querySelector("#petTools button[data-act=\\""+a+"\\"]");' +
       '  if(!b){hits[a]="missing";rects[a]="noEl";return;}' +
       '  var rc=b.getBoundingClientRect();' +
@@ -4333,18 +4552,6 @@ SCENARIOS.push({
       'var d1=pet.getBoundingClientRect();' +
       'out.dragDx=Math.round(d1.left-d0.left);' +
       'out.inView=d1.left>=-1&&d1.right<=innerWidth+1&&d1.top>=-1;' +
-      // —— 换装：这次点击是下面「姿」那条的前提（穿着非默认衣服），
-      //    换装本身的行为断言在「角色控件点一遍都要有反应」那一场 ——
-      'var img=pet.querySelector(".pet-art");' +
-      'var bo=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
-      'if(bo)bo.click();await new Promise(function(r){setTimeout(r,200);});' +
-      // —— 换姿势：当前穿着非默认衣服，只能换身体姿态，不能把衣服换掉 ——
-      'out.pose0=img?img.getAttribute("src"):"";' +
-      'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
-      'var bp=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
-      'if(bp)bp.click();await new Promise(function(r){setTimeout(r,200);});' +
-      'out.pose1=img?img.getAttribute("src"):"";' +
-      'out.poseAttr1=pet?pet.getAttribute("data-pose"):"";' +
       // —— 隐藏（放最后）：这一次点击只为「全程无未捕获异常」走一遍那条路径 ——
       'var bh=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(bh)bh.click();await new Promise(function(r){setTimeout(r,150);});' +
@@ -4353,15 +4560,12 @@ SCENARIOS.push({
     );
     check('角色在精美模式下自动出现', !!r && r.petShown === true, JSON.stringify({shown: r && r.petShown, ui: r && r.ui}));
     var hitInfo = JSON.stringify({hits: r && r.hits, rects: r && r.rects, vp: r && r.vp, toolsRect: r && r.toolsRect, petRect: r && r.petRect});
-    check('「姿」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.pose === true, hitInfo);
-    check('「装」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.outfit === true, hitInfo);
+    check('「玩」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.game === true, hitInfo);
     check('「藏」按钮真的点得到（命中测试）', !!r && r.hits && r.hits.hide === true, hitInfo);
-    // 这一场只测**命中测试 + 拖动 + 装束不被「姿」覆盖**这一层；
-    // 「点「装」换立绘」「点「藏」收起」两条与「弹窗前端：角色控件点一遍都要有反应」
-    // 是同分支、同层、同夹具的重复（谓词逐字相同），行为那一条留在那场里，摘掉这里。
-    // 上面那两次点击仍然保留：它们分别是「姿」那条的前提与「全程无未捕获异常」走过的路径。
-    check('穿着别的衣服时点「姿」不会把衣服换掉', !!r && r.pose0 === r.pose1, r ? r.pose0 + ' → ' + r.pose1 : '');
-    check('「姿」仍然换了身体姿态', !!r && r.poseAttr0 !== r.poseAttr1, r ? r.poseAttr0 + ' → ' + r.poseAttr1 : '');
+    // 这一场只测**命中测试 + 拖动**这一层；「点「玩」开小游戏」「点「藏」收起」
+    // 的行为断言分别在「小游戏摸头涨好感」与「连点「玩」不误判 / 藏与让她回来闭环」
+    // 那两场里（同分支、同层、同夹具的重复这里不再背一份）。
+    // 上面那两次点击仍然保留：「全程无未捕获异常」要各自真走一遍那条路径。
     check('拖动位移 > 30px', !!r && Math.abs(r.dragDx) > 30, r ? String(r.dragDx) : '');
     check('拖完仍在视口内', !!r && r.inView === true, '');
     check('全程无未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
@@ -4399,7 +4603,9 @@ SCENARIOS.push({
       // （.container 整条被藏），子节点自己的 display 照样是 flex/block。
       'var top=document.querySelector(".top");' +
       'out.topPainted=!!(top&&top.getClientRects().length);' +
-      'var keep={fxLayer:1,mascot:1,petBook:1,toast:1};' +
+      // 1.3.1 起小游戏/聊天/体检三块面板也是 body 的直接孩子（display:flex 但 opacity:0 挂着，
+      // .show 才露脸）—— 量得到矩形不算"漏网"，它们与立绘册同属"我们的面板"。
+      'var keep={fxLayer:1,mascot:1,petBook:1,petGame:1,petChat:1,petDiag:1,toast:1};' +
       'out.strays=Array.prototype.slice.call(document.body.children).filter(function(el){' +
       ' var b=el.getBoundingClientRect();' +
       ' return !keep[el.id] && !el.classList.contains("im-controls") && b.width>0 && b.height>0;' +
@@ -4587,12 +4793,77 @@ SCENARIOS.push({
 
 
 
+// ── 前端专项：设置页不再画她（1.3.1 起角色只在逗玩窗口与刷课页现身） ─────────
+// 设置页是"控制中心"：等级/好感状态行 + 四枚入口按钮（深链进逗玩窗口对应面板）。
+// 这里断三层：JS 出场判过 body.im；CSS 兜底 body:not(.im) #mascot 恒藏；
+// lite 模式连状态行与入口一起收。哪天有人在设置页把她画回来，三条至少红一条。
+SCENARIOS.push({
+  name: '设置页不再画她：角色本体隐藏、入口齐全；lite 连状态行一起收',
+  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  inject: false,
+  run: async function (ctx) {
+    var client = ctx.client;
+    // 先抄走好感存档，种一份最小档（affection:5）—— 没存档时 renderBond 直接折返，
+    // 状态行停在出厂占位话，那条断言就会随场景顺序翻红。收尾原样放回。
+    var savedBond = JSON.parse(await client.evaluate(
+      'new Promise(function(res){chrome.storage.local.get("omitonePetBond",' +
+      'function(r){res(JSON.stringify(r||{}))})})'));
+    await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
+      JSON.stringify({ omitonePetBond: { affection: 5 } }) + ',function(){res(true)})})');
+    // 清掉角色自己的 localStorage 键（藏着/坐标/装束），再重载 —— 让「本体恒藏」
+    // 这条断言走的是 CSS 兜底那条路，而不是上一次场景留下的内联 important 藏。
+    await client.evaluate('(function(){["omitone.pet.hidden","omitone.pet.pos","omitone.pet.pos.im",' +
+      '"omitone.pet.src","omitone.pet.outfit","omitone.pet.face","omitone.pet.mood","omitone.pet.night"]' +
+      '.forEach(function(k){localStorage.removeItem(k);});return 1;})()');
+    try { await client.evaluate('location.reload()'); } catch (e) { /* 导航掀掉执行上下文是预期内的 */ }
+    await waitFor(client, 'document.readyState === "complete"', 10000);
+    await sleep(800);
+    var fancy = await client.evaluate(
+      '(function(){var pet=document.getElementById("mascot");' +
+      'var ids=["btnExpand","btnPetBook","btnPetChat","btnPetDiag","petStatus"];' +
+      'var missing=ids.filter(function(id){return !document.getElementById(id);});' +
+      'return {display:pet?getComputedStyle(pet).display:"(no el)",' +
+      'rects:pet?pet.getClientRects().length:-1,' +
+      'status:document.getElementById("petStatus")?document.getElementById("petStatus").textContent:"",'+
+      'missing:missing};})()'
+    );
+    check('设置页（fancy）里她的本体恒藏（JS 出场判 + CSS 兜底各占一半）',
+      fancy.display === 'none' && fancy.rects === 0, JSON.stringify(fancy));
+    check('设置页「吉祥物」栏四枚入口与状态行都在（打开逗玩窗口/看立绘册/和她聊天/本地体检）',
+      fancy.missing.length === 0, JSON.stringify(fancy.missing));
+    check('状态行由 renderBond 填出等级与好感（不再是出厂占位话）',
+      /好感/.test(fancy.status) && fancy.status.indexOf('还没读到她的存档') === -1, fancy.status);
+
+    // lite 模式：pet.js 第一行就折返，入口与状态行由 popup.html 的 lite 规则收掉。
+    try { await client.evaluate('location.search = "ui=lite"'); } catch (e) { /* 预期：导航掀掉上下文 */ }
+    await waitFor(client, 'document.readyState === "complete" && document.documentElement.getAttribute("data-ui") === "lite"', 10000);
+    await sleep(400);
+    var lite = await client.evaluate(
+      '(function(){var g=function(id){var el=document.getElementById(id);return el?getComputedStyle(el).display:"(no el)";};' +
+      'return {expand:g("btnExpand"),book:g("btnPetBook"),chat:g("btnPetChat"),diag:g("btnPetDiag"),' +
+      'status:g("petStatus"),mascot:g("mascot")};})()'
+    );
+    check('lite 模式：四枚入口与状态行 display:none，角色本体也不画',
+      lite.expand === 'none' && lite.book === 'none' && lite.chat === 'none' && lite.diag === 'none' &&
+      lite.status === 'none' && lite.mascot === 'none', JSON.stringify(lite));
+
+    // 收尾：好感存档原样放回（原来就没有就摘掉，不许写 undefined 进去）。
+    if (savedBond.omitonePetBond !== undefined) {
+      await client.evaluate('new Promise(function(res){chrome.storage.local.set(' +
+        JSON.stringify({ omitonePetBond: savedBond.omitonePetBond }) + ',function(){res(true)})})');
+    } else {
+      await client.evaluate('new Promise(function(res){chrome.storage.local.remove("omitonePetBond",function(){res(true)})})');
+    }
+    check('设置页专项全程无未捕获异常', client.errors().length === 0, client.errors().join(' | '));
+  }
+});
+
 // ── 前端专项：角色控件"点了要有反应" ──────────────────────────────────────
 // 这类 bug（点了没反应、装扮没换）**不会抛异常**，只能靠"点完之后状态变了没有"来抓。
 // 以后新增任何角色控件，都在这里补一条断言。
 SCENARIOS.push({
   name: '弹窗前端：角色控件点一遍都要有反应',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var r = await ctx.client.evaluate(
@@ -4603,25 +4874,26 @@ SCENARIOS.push({
       'var pet=document.getElementById("mascot");' +
       'var img=pet&&pet.querySelector(".pet-art");' +
       'out.hasPet=!!pet;out.src0=img?img.getAttribute("src"):"";' +
-      'var b=document.querySelector("#petTools button[data-act=\\"outfit\\"]");' +
-      'if(b){b.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      // 1.3.1 起换装/换姿势的入口是立绘册（imBook 开门，册子里挑图 / 点动作），
+      // 工具条只剩「玩」「藏」两枚。
+      'var ib=document.getElementById("imBook");' +
+      'if(ib){ib.click();await new Promise(function(r){setTimeout(r,180);});}' +
+      'out.bookOpen=document.getElementById("petBook")&&document.getElementById("petBook").getAttribute("aria-hidden")==="false";' +
+      'var cell=null;' +
+      'Array.prototype.forEach.call(document.querySelectorAll("#petBookBody [data-src]"),function(c){' +
+      '  if(!cell&&c.getAttribute("data-src")!==out.src0)cell=c;});' +
+      'if(cell){cell.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.src1=img?img.getAttribute("src"):"";' +
-      'out.pose0=img?img.getAttribute("src"):"";' +
       'out.poseAttr0=pet?pet.getAttribute("data-pose"):"";' +
-      'var pb=document.querySelector("#petTools button[data-act=\\"pose\\"]");' +
-      'if(pb){pb.click();await new Promise(function(r){setTimeout(r,180);});}' +
-      // 旧写法断 `pose0 !== pose1`，可 pose0 取的是 **img 的 src**、pose1 取的是 **pet 的
-      // data-pose** —— 两个值域（"pet.png" 与 "sit"）永远不相等，「姿」整个坏掉它照样绿。
-      // 「姿」有两条分支（popup/pet.js:605）：默认装束下换**姿势立绘**（改 src），
-      // 穿着别的衣服时只换 **CSS 姿态**（改 data-pose，不换图，免得把用户刚挑的衣服换掉）。
-      // 上面点过一次「装」，所以现在走的是第二条 —— 断言写成"两者之一真的变了"，
-      // 不认死某一条，否则以后默认装束的顺序一变就误红。
-      'out.pose1=img?img.getAttribute("src"):"";' +
+      'var ab=document.querySelector("#petBookBody [data-anim]:not([data-anim=\\"random\\"])");' +
+      'out.animKey=ab?ab.getAttribute("data-anim"):"";' +
+      'if(ab){ab.click();await new Promise(function(r){setTimeout(r,180);});}' +
       'out.poseAttr=pet?pet.getAttribute("data-pose"):"";' +
+      'if(ib){ib.click();await new Promise(function(r){setTimeout(r,150);});}' +
       'var h=document.querySelector("#petTools button[data-act=\\"hide\\"]");' +
       'if(h){h.click();await new Promise(function(r){setTimeout(r,140);});}' +
       'out.hidden=pet?pet.style.display==="none":null;' +
-      'var sp=document.getElementById("btnPetShow");' +
+      'var sp=document.getElementById("imRestorePet");' +
       'if(sp){sp.click();await new Promise(function(r){setTimeout(r,140);});}' +
       'out.shown=pet?pet.style.display!=="none":null;' +
       'document.querySelectorAll(".toggle").forEach(function(t){t.click();t.click();});' +
@@ -4630,13 +4902,13 @@ SCENARIOS.push({
       'return out;})()'
     );
     check('前置：弹窗里有角色元件', !!r && r.hasPet === true, JSON.stringify(r));
-    check('点「装」真的换图（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
-    check('点「姿」确有换动作：换姿势立绘或换 CSS 姿态，两者至少变一个（旧写法拿 src 和 data-pose 比，恒不相等）',
-      !!r && (r.pose0 !== r.pose1 || r.poseAttr0 !== r.poseAttr) &&
-      ['sit', 'happy', 'point', 'sad'].indexOf(r.poseAttr) !== -1,
-      r ? r.pose0 + ' → ' + r.pose1 + ' / ' + r.poseAttr0 + ' → ' + r.poseAttr : '');
+    check('前置：立绘册真的开了（imBook 开门，不是直接改 DOM）', !!r && r.bookOpen === true, JSON.stringify(r));
+    check('册子里挑一张图真的换立绘（不是只变色）', !!r && r.src0 !== r.src1, r ? r.src0 + ' → ' + r.src1 : '');
+    check('册子里点一个动作真的换了 CSS 姿态（动作键就是姿态名）',
+      !!r && typeof r.animKey === 'string' && r.animKey !== '' && r.animKey !== 'random' && r.poseAttr === r.animKey,
+      r ? r.poseAttr0 + ' → ' + r.poseAttr + '（点了 ' + r.animKey + '）' : '');
     check('点「藏」会收起来', !!r && r.hidden === true, '');
-    check('「显示小人」能叫回来', !!r && r.shown === true, '');
+    check('「让她回来」能叫回来', !!r && r.shown === true, '');
     check('点完全部开关（来回各一次）没有未捕获异常', !!r && r.errCount === 0, r ? r.errText : '');
   }
 });
@@ -4718,7 +4990,7 @@ SCENARIOS.push({
 //    再点（直接改完立刻点，摸的还是旧内存态）。
 SCENARIOS.push({
   name: '小游戏：摸头涨好感、跨级换徽章、刷课时长折算',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var ui = await ctx.client.evaluate(
@@ -4966,6 +5238,116 @@ SCENARIOS.push({
 // 弹窗合上角色就没了 —— 现在她跟到学习页（Shadow DOM 注入）。
 // 主世界读不到 chrome.storage，所以断言全落在 Shadow DOM 的 UI 表现上：
 // 立绘真的加载了（web_accessible 生效）、摸头后好感条真的动了、收起/唤回真的切状态。
+// ── 批次 162：徽章那四个字一个都不许掉 ──────────────────────────────────────
+// 用户 2026-11-21 现场：「我这里是"心有......"就没了，一共两个字」。
+// 全仓**只有一处** CSS 会生成省略号：content.js 的 `.level{…text-overflow:ellipsis}`；
+// 它原先挂在写死 `width:158px` 的 `.wrap` 里 → 可用宽度一旦小于文字宽度就把档名剪成"两字 + …"。
+// 现场那台复现不出来（技能探针 `expr/pet-geom.expr` 读回：10px 字号、4 字徽章盒宽 54、槽位 75.67），
+// 所以**成因不写死**：
+// 任何把字变宽的环境（浏览器「最小字号」顶大那 10px 是最像的一族）都该被同一条尺挡住 ——
+// 判据落在行为上：卡片随内容让位，徽章在任何字号下都不掉字、也不越过卡片右缘。
+// ⚠️ 档名从真源 popup/pet-game.js 读回来，本文件不抄第二份（§5「断言里出现的每一个数，
+//   都要说得出它是从哪读回来的」）；5136 行那份硬编码 LEVELS 副本是**另一把尺**，
+//   改真源不会同步它 —— 本轮只保证不再新增副本，动那份要单独一轮对账。
+var PET_LEVEL_NAMES = (function () {
+  var src = String(fs.readFileSync(path.join(ROOT, 'popup/pet-game.js'), 'utf8'));
+  var from = src.indexOf('var LEVELS = [');
+  var to = from < 0 ? -1 : src.indexOf('];', from);
+  var seg = from < 0 || to < 0 ? '' : src.slice(from, to);
+  var out = [], re = /min:\s*(\d+)\s*,\s*name:\s*'([^']+)'/g, m;
+  while ((m = re.exec(seg))) out.push(m[2]);
+  return out;
+})();
+
+SCENARIOS.push({
+  name: '上课页角色伴侣：等级徽章在任何字号下都不掉字（卡片随内容让位）',
+  path: '/quiz',
+  pagePetOn: true,
+  noAutoResume: true,
+  run: async function (ctx) {
+    var longest = 0;
+    PET_LEVEL_NAMES.forEach(function (n) { if (n.length > longest) longest = n.length; });
+    // 前提自证：真源那份表要读得到，否则下面 30 格是零覆盖而不是"通过"（§5「红 0 条先怀疑没跑到」）
+    check('前提：等级档名从真源 popup/pet-game.js 读回来 ' + PET_LEVEL_NAMES.length +
+      ' 档、最长 ' + longest + ' 字（读空了这一场根本什么都没测）',
+      PET_LEVEL_NAMES.length >= 8 && longest >= 4 &&
+      PET_LEVEL_NAMES.every(function (n) { return n.length > 0 && n.length <= 4; }),
+      JSON.stringify(PET_LEVEL_NAMES));
+
+    var mounted = null;
+    for (var i = 0; i < 24; i++) {
+      await sleep(250);
+      mounted = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot)return null;' +
+        'var lv=h.shadowRoot.getElementById("level");' +
+        'return {lv:!!lv,text:String(lv.textContent||"")};})()');
+      if (mounted && mounted.lv) break;
+    }
+    check('前提：徽章那一格真在 Shadow DOM 里（挂载失败时"没掉字"会变成一句假绿）',
+      !!mounted && mounted.lv === true && mounted.text.length > 0, JSON.stringify(mounted));
+
+    var cellCount = PET_LEVEL_NAMES.length * 3;
+    var cells = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var lv=sr.getElementById("level"),wrap=sr.getElementById("wrap"),card=sr.getElementById("card");' +
+      'var names=' + JSON.stringify(PET_LEVEL_NAMES) + ';var fonts=[10,24,32];' +
+      'var savedText=String(lv.textContent||""),savedStyle=lv.getAttribute("style")||"";' +
+      // 每格读**两把独立的尺**：scrollWidth 对 clientWidth（省略号那把），
+      // 以及 Range 量到的文字实宽 + 计算样式读回来的左右内边距 对 盒子宽（"字真的整个在药丸里"）。
+      'function measure(){var cs=getComputedStyle(lv);' +
+      'var pl=Number(parseFloat(cs.paddingLeft))||0,pr=Number(parseFloat(cs.paddingRight))||0;' +
+      'var rg=document.createRange();rg.selectNodeContents(lv);var rr=rg.getBoundingClientRect();' +
+      'if(rg.detach){rg.detach();}' +
+      'var lr=lv.getBoundingClientRect(),cr=card.getBoundingClientRect();' +
+      'return {sw:Math.ceil(lv.scrollWidth),cw:Math.floor(lv.clientWidth),pl:pl,pr:pr,' +
+      'txt:Math.ceil(rr.width),box:Math.round(lr.width),spill:Math.round(lr.right-cr.right),' +
+      'wrap:Math.round(wrap.getBoundingClientRect().width)};}' +
+      'var base=measure(),out=[];' +
+      'for(var f=0;f<fonts.length;f++){for(var n=0;n<names.length;n++){' +
+      'lv.style.fontSize=fonts[f]+"px";lv.textContent=names[n];' +
+      'var m=measure();m.font=fonts[f];m.name=names[n];out.push(m);}}' +
+      // 收尾把页面交回来：这一格是渲染出来的，留着注入样式会毒化后面的场景（§5 共享状态）
+      'if(savedStyle){lv.setAttribute("style",savedStyle);}else{lv.removeAttribute("style");}' +
+      'lv.textContent=savedText;' +
+      'return {base:base,cells:out,to:String(getComputedStyle(lv).textOverflow||""),restored:String(lv.textContent||"")};})()');
+
+    var restored = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var lv=h.shadowRoot.getElementById("level");' +
+      'return {style:lv.getAttribute("style")||"",text:String(lv.textContent||""),' +
+      'fs:String(getComputedStyle(lv).fontSize)};})()');
+
+    var bad = [];
+    (cells && cells.cells || []).forEach(function (m) {
+      if (m.sw > m.cw + 1) bad.push({ why: 'scrollWidth 溢出（省略号那一族）', name: m.name, font: m.font, sw: m.sw, cw: m.cw });
+      else if (m.txt + m.pl + m.pr > m.box + 1) bad.push({ why: '文字比药丸还宽', name: m.name, font: m.font, txt: m.txt, box: m.box, pl: m.pl, pr: m.pr });
+      if (m.spill > 1) bad.push({ why: '徽章越过卡片右缘', name: m.name, font: m.font, spill: m.spill });
+    });
+    var w10 = (cells && cells.cells || []).filter(function (m) { return m.font === 10; });
+    var w32 = (cells && cells.cells || []).filter(function (m) { return m.font === 32; });
+    var minW32 = 1e9;
+    w32.forEach(function (m) { if (m.wrap < minW32) minW32 = m.wrap; });
+    var maxW10 = -1;
+    w10.forEach(function (m) { if (m.wrap > maxW10) maxW10 = m.wrap; });
+
+    check('每一档 × 每一字号共 ' + cellCount + ' 格：徽章都不掉字（scrollWidth 与 Range 两把尺各测一遍），也不越过卡片右缘',
+      !!cells && cells.cells.length === cellCount && cells.to === 'ellipsis' && bad.length === 0,
+      JSON.stringify({ cells: cells ? cells.cells.length : -1, textOverflow: cells && cells.to, bad: bad.slice(0, 4) }));
+    // 这一格是"机制真的在起作用"的对照：卡片没让位时下面两条**同时**成立才算修好 ——
+    // 大字号下宽度必须**大于**默认宽度（让位了），默认字号下又必须**等于**默认宽度（观感没变）。
+    check('卡片确实让出了位置，而不是恰好没超：32 像素字号下每一格都比默认宽度更宽；' +
+      '而默认 10 像素下最长那档也不把卡片撑大（今天观感不变）· 读回卡片宽 ' +
+      (cells && cells.base ? cells.base.wrap : -1) + '，大字号最窄 ' + minW32 +
+      '，默认字号最宽 ' + maxW10,
+      !!cells && cells.base.wrap > 100 && minW32 > cells.base.wrap && maxW10 === cells.base.wrap,
+      JSON.stringify({ base: cells && cells.base, minW32: minW32, maxW10: maxW10 }));
+    check('收尾把徽章交回原样（探针注入的字号与档名不许留给后面的场景）',
+      !!cells && !!restored && restored.style === '' && restored.text === cells.restored,
+      JSON.stringify({ probe: cells && cells.restored, now: restored }));
+  }
+});
+
 SCENARIOS.push({
   name: '上课页角色伴侣：出现在学习页、摸头涨好感、收起与唤回',
   path: '/quiz',
@@ -5076,7 +5458,8 @@ SCENARIOS.push({
     //    ⚠️ 这条是本轮真正的回归闸：拖动 handler 里曾引用了块级作用域外的裸 `host`
     //    （`const host` 只在构建那个 try 块里存在），ReferenceError 被 handler 自己的
     //    catch 吞掉 → 现场表现为"拖不动、日志一条没有"，而沙盒四条全绿。
-    //    收尾用 pointercancel（不写存档），再把 inline 位置清回默认锚点。
+    //    收尾用 pointercancel —— 批次 178 起它**会**把落点写进存档（见下面 ⑨ 那六格），
+    //    所以这里只把 inline 位置清回默认锚点，存档那一格留给 ⑨ 之后统一收干净。
     var drag = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");' +
       'var c=h.shadowRoot.getElementById("card");var errs=[];' +
@@ -5102,8 +5485,9 @@ SCENARIOS.push({
       drag.dx === -120 && drag.dy === 90 && drag.clampedLeft === drag.clampExpect && drag.errs.length === 0,
       JSON.stringify(drag).slice(0, 220));
 
-    // ③ 她不再压在右下角那两块东西上。沙盒里状态面板**不会出现**（它只在点了「开始刷课」
-    //    之后挂），所以这里断的是现场量出来的两条"让位带"，而不是去比一个不存在的矩形：
+    // ③ 她不再压在右下角那两块东西上。沙盒里状态面板**不会出现**（批次 146 起页面里那张
+    //    「开始」卡片已删，状态面板只由弹窗「开始运行」那条启动链路挂上；吉祥物则随页面加载挂载），
+    //    所以这里断的是现场量出来的两条"让位带"，而不是去比一个不存在的矩形：
     //      · 状态面板 bottom:18 + 高约 120 → 视口底部 138px 是它的带子
     //      · 学习通自己的右侧竖条 .iconBox 宽 40、左边缘在 vw-70
     //    实测默认锚点 right:84 / bottom:176 → 右边缘留 84、底边留 176，两条都过。
@@ -5144,8 +5528,8 @@ SCENARIOS.push({
     //    Runtime.evaluate 派发不出真·悬停态，纯 CSS 写法等于没测试。
     var hover = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");' +
-      'var c=h.shadowRoot.getElementById("card");' +
-      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'var c=h.shadowRoot.getElementById("card");var im=h.shadowRoot.getElementById("petImg");' +
+      'function pe(t){im.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:7,pointerType:"mouse",clientX:0,clientY:0}));}' +
       'var base=getComputedStyle(c).boxShadow;' +
       'pe("pointerenter");var on=c.classList.contains("peek");' +
@@ -5157,6 +5541,44 @@ SCENARIOS.push({
     check('鼠标移上去她真的有反应（peek 挂上、阴影/边框换了色），移开就收回',
       !!hover && hover.on === true && hover.off === false && hover.changed === true && hover.back === true,
       JSON.stringify(hover).slice(0, 240));
+
+    // ⑤b 批次 176 的两条落点：#230「卡片身体不许吃掉页面」与 #206「收成小入口后还拖得动」。
+    //     真·悬停派发不出（见上），但 elementFromPoint 与合成指针事件都跑得动 —— 断言只认这两个读数。
+    var passthru = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card"),img=sr.getElementById("petImg"),hide=sr.getElementById("hideBtn");' +
+      'function hit(el){var r=el.getBoundingClientRect();var p=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);' +
+      'return (p===h)||(!!(p&&p.id==="omitone-page-pet-host"));}' +
+      'return {body:hit(c),bodyW:Math.round(c.getBoundingClientRect().width),img:hit(img),hide:hit(hide),' +
+      'wrapPe:getComputedStyle(sr.getElementById("wrap")).pointerEvents};})()'
+    );
+    check('卡片身体不再吃掉页面（中间点穿透回页面，立绘与「收」按钮仍然归她）',
+      !!passthru && passthru.bodyW > 120 && passthru.body === false
+      && passthru.img === true && passthru.hide === true && passthru.wrapPe === 'none',
+      JSON.stringify(passthru).slice(0, 220));
+
+    var dragPill = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var w=sr.getElementById("wrap"),c=sr.getElementById("card"),pill=sr.getElementById("pillBtn");' +
+      'w.classList.add("mode-hidden");' +
+      'var rp=pill.getBoundingClientRect();' +
+      'var wrapW=Math.round(w.getBoundingClientRect().width),pillW=Math.round(rp.width);' +
+      'var x=rp.left+rp.width/2,y=rp.top+rp.height/2;' +
+      'function pe(t){pill.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,composed:true,' +
+      'pointerId:23,pointerType:"mouse",button:0,clientX:x,clientY:y}));}' +
+      'pe("pointerdown");' +
+      'var on=c.classList.contains("dragging");' +
+      'pe("pointerup");' +
+      'var off=c.classList.contains("dragging");' +
+      'w.classList.remove("mode-hidden");' +
+      'return {on:on,off:off,wrapW:wrapW,pillW:pillW,hid:/mode-hidden/.test(w.className)};})()'
+    );
+    // 只测"按下那一下有没有人接"—— 不派 pointermove，所以不会真搬她、也不会写脏位置。
+    // 改之前这一格必然红：pointerdown 的监听长在 card 上，而收起态 card 是 display:none。
+    check('收成小入口后按下她就被接住了（拖拽把手活着），且隐形死区没了（wrap 宽等于小入口宽）',
+      !!dragPill && dragPill.on === true && dragPill.off === false
+      && dragPill.wrapW <= dragPill.pillW + 2 && dragPill.hid === false,
+      JSON.stringify(dragPill).slice(0, 220));
 
     // ⑥ 她自己偶尔开口：四条"别说"各挡各的（第四条「标签页在后台」只能切真后台，见 ⑥-b）。
     //    ⚠️ 每个"闭嘴"断言前都要先把**别的**门槛拨到"该说话"（quiet() 把上次开口推到 200 秒前），
@@ -5654,6 +6076,123 @@ SCENARIOS.push({
       'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";' +
       'Array.prototype.forEach.call(h.shadowRoot.querySelectorAll(".heart"),function(x){x.remove();});return true;})()'
     );
+
+    // ⑨ 拖动被中途打断（pointercancel）那一发到底算不算一次真收尾 —— 批次 178 / 队 #62。
+    //    成因不是推的：真实鼠标探针量到「原生拖拽接管」那一族派的是 dragstart → pointercancel，
+    //    **之后不再有 pointerup**（`.workbuddy/probe62.log` 的 G 组：把 img 的 draggable=false 摘掉）；
+    //    而 pointermove 早就把视觉与 `pagePet.pos` 挪走了（content.js:2927）——
+    //    存档不跟上就是「这一页她在新地方，刷新一次弹回老地方」。
+    //    六格各钉这个裁决的一面，摘掉任一半都只红该红那一格：
+    //      ⑨-a 位置跟手、dragging 摘掉（打断不等于把她丢在半路）
+    //      ⑨-b 不说话，而 pointerup 那一路照旧说话（同一发里的正控，不许把 endDrag 整条搬过来）
+    //      ⑨-c 存档里那一格 == 屏幕上那一点（不许什么都不写；也不许只写内存）
+    //      ⑨-d 打断之后摸头仍然响应（不许顺手把 suppressPatUntil 拨上——那是给 click 用的）
+    //      ⑨-e 刷新一次不再弹回默认锚点（用户看得见的那一下，也是 ⑨-c 的症状面）
+    //      ⑨-f 场景自己把写过的落点存档收干净
+    //    接点按现场形状打在**立绘**上（notes/field-pet-shape-1123.md：host/.wrap/.card/.level
+    //    全是 pointer-events:none，唯一 auto 的是 img），事件冒泡到 wrap 的那三个 handler。
+    var POS_KEY = 'omitonePagePetPos';
+    var pointerStep = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h.shadowRoot,i=sr.getElementById("petImg");' +
+      'window.__pe62=function(t,px,py){i.dispatchEvent(new PointerEvent(t,{bubbles:true,cancelable:true,composed:true,' +
+      'pointerId:41,pointerType:"mouse",isPrimary:true,button:0,' +
+      'buttons:(t==="pointercancel"||t==="pointerup")?0:1,clientX:px,clientY:py}));};return true;})()';
+    await ctx.client.evaluate(pointerStep);
+    // 先做正控：pointerup 那一路必须照旧说话，否则 ⑨-b 的"cancel 不说话"就只是"没人说话"
+    var upControl = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var b=sr.getElementById("bubble");b.textContent="";b.classList.remove("show");' +
+      'var r=h.getBoundingClientRect(),x=r.left+30,y=r.top+30;' +
+      'window.__pe62("pointerdown",x,y);window.__pe62("pointermove",x-60,y);window.__pe62("pointerup",x-60,y);' +
+      'return {spoke:/show/.test(String(b.className||"")),txt:String(b.textContent||"").slice(0,14)};})()'
+    );
+    // pointerup 那一发把 suppressPatUntil 拨到 now+260；等它过期，下面 cancel 后的摸头才归 cancel 自己负责
+    await sleep(500);
+    var patBeforeCancel = await ctx.client.evaluate('window.__pat|0');
+    var cancelCase = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
+      'var c=sr.getElementById("card"),b=sr.getElementById("bubble");' +
+      'b.textContent="";b.classList.remove("show");' +
+      'var r=h.getBoundingClientRect(),x=r.left+30,y=r.top+30;' +
+      'window.__pe62("pointerdown",x,y);window.__pe62("pointermove",x-150,y-110);' +
+      'var rM=h.getBoundingClientRect();' +
+      'window.__pe62("pointercancel",x-150,y-110);' +
+      'return {driftX:Math.round(rM.left-r.left),driftY:Math.round(rM.top-r.top),' +
+      'dragClassAfter:String(c.className||""),' +
+      'spokeAfterCancel:/show/.test(String(b.className||"")),txtAfterCancel:String(b.textContent||"").slice(0,14)};})()'
+    );
+    // 打断之后立刻点她一下：cancel 若把 suppressPatUntil 也拨上，这一下就被吞掉
+    // （计数靠 MutationObserver，回调是异步的 —— 派发那一发里读不到，要等一拍）
+    await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'sr.getElementById("petImg").dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true,view:window}));' +
+      'return true;})()'
+    );
+    await sleep(120);
+    var patAfterCancel = await ctx.client.evaluate('window.__pat|0');
+    var styleAfterCancel = await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'return {left:Math.round(parseFloat(h.style.left)||0),top:Math.round(parseFloat(h.style.top)||0),' +
+      'right:String(h.style.right||""),bottom:String(h.style.bottom||"")};})()'
+    );
+    check('⑨-a 拖到一半被打断：位置跟着走、dragging 当场摘掉（不许把她丢成"永远在拖"）',
+      !!cancelCase && Math.abs(cancelCase.driftX) >= 30 && Math.abs(cancelCase.driftY) >= 20 &&
+      !/dragging/.test(cancelCase.dragClassAfter),
+      JSON.stringify(cancelCase).slice(0, 240));
+    check('⑨-b 打断那一下不说话，而 pointerup 那一路照旧说话（两格各自承重，摘掉任何一半都只红该红那格）',
+      !!upControl && upControl.spoke === true && cancelCase.spokeAfterCancel === false,
+      JSON.stringify({ up: upControl, cancel: cancelCase }).slice(0, 240));
+    // chrome.storage.local.set 是异步的；等它落盘只等"这一发写没写"，不比结果（结果由下面那格判）。
+    // 上一发 pointerup 正控也写过一次落点，坐标与这一发不同 —— 等不到就是没写，红给它自己，不会假绿。
+    var posStore = null, storedPos = null;
+    for (var st62 = 0; st62 < 12; st62++) {
+      posStore = await readPopupStore(await initConfigWriter(ctx.extensionId), [POS_KEY]);
+      storedPos = (posStore && posStore.val && posStore.val[POS_KEY]) || null;
+      if (storedPos && Math.round(storedPos.x) === styleAfterCancel.left &&
+          Math.round(storedPos.y) === styleAfterCancel.top) break;
+      await sleep(150);
+    }
+    check('⑨-c 打断那一次的落点进了存档，且存的正是屏幕上那一点（内存／视觉／存档三份读数对得上）',
+      !!storedPos && posStore.has[POS_KEY] === true &&
+      Math.round(storedPos.x) === styleAfterCancel.left &&
+      Math.round(storedPos.y) === styleAfterCancel.top,
+      JSON.stringify({ stored: storedPos, style: styleAfterCancel, waited: st62 }).slice(0, 240));
+    check('⑨-d 打断不等于"刚拖完"：这一下之后摸头仍然要响应（suppressPatUntil 只归 pointerup 连带的那发 click）',
+      patAfterCancel > patBeforeCancel,
+      JSON.stringify({ before: patBeforeCancel, after: patAfterCancel }).slice(0, 200));
+
+    // 刷新一次才是用户看得见的那一下：重载时内容脚本按存档落点（content.js:3073 那一族）
+    await ctx.client.send('Page.reload', { ignoreCache: false });
+    var reloaded = null;
+    for (var rw62 = 0; rw62 < 24; rw62++) {
+      await sleep(250);
+      reloaded = await ctx.client.evaluate(
+        '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+        'if(!h||!h.shadowRoot||!h.shadowRoot.getElementById("card"))return null;' +
+        'var r=h.getBoundingClientRect();' +
+        'return {left:Math.round(r.left),top:Math.round(r.top),anchored:(h.style.left||"")===""};})()'
+      );
+      if (reloaded) break;
+    }
+    check('⑨-e 刷新一次她不再弹回默认锚点：重载后的落点就是存档那一点（±2px）',
+      !!reloaded && !!storedPos && reloaded.anchored === false &&
+      Math.abs(reloaded.left - Math.round(storedPos.x)) <= 2 &&
+      Math.abs(reloaded.top - Math.round(storedPos.y)) <= 2,
+      JSON.stringify({ after: reloaded, stored: storedPos, drift: cancelCase.driftX }).slice(0, 240));
+
+    // 存档与 inline 落点都是本场景自己写的，跑完收干净，别把位置脏留给后面的宠物场景（§5 共享状态）
+    await ctx.client.evaluate(
+      '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'h.style.left="";h.style.top="";h.style.right="84px";h.style.bottom="176px";return true;})()'
+    );
+    await (await initConfigWriter(ctx.extensionId)).evaluate(
+      'new Promise(function (res) { chrome.storage.local.remove(' + JSON.stringify([POS_KEY]) +
+      ', function () { res(true); }); })'
+    );
+    var posCleared = await readPopupStore(await initConfigWriter(ctx.extensionId), [POS_KEY]);
+    check('⑨-f 场景自己把写过的落点存档收干净（下一枚宠物页回到默认锚点）',
+      !!posCleared && posCleared.has[POS_KEY] === false,
+      JSON.stringify(posCleared).slice(0, 200));
   }
 });
 
@@ -5824,7 +6363,7 @@ SCENARIOS.push({
     var hoverPat = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
       'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
-      'function pe(t){c.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
+      'function pe(t){img.dispatchEvent(new PointerEvent(t,{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:11,pointerType:"mouse",clientX:0,clientY:0}));}' +
       'img.classList.remove("pat");void img.offsetWidth;img.click();' +
       'var bare=getComputedStyle(img).animationName;' +
@@ -5842,13 +6381,13 @@ SCENARIOS.push({
     var peekMotion = await ctx.client.evaluate(
       '(function(){var h=document.getElementById("omitone-page-pet-host");var sr=h.shadowRoot;' +
       'var c=sr.getElementById("card");var img=sr.getElementById("petImg");' +
-      'c.dispatchEvent(new PointerEvent("pointerenter",{bubbles:false,cancelable:true,composed:true,' +
+      'img.dispatchEvent(new PointerEvent("pointerenter",{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
       'var peekOn=c.classList.contains("peek");' +
       'h.dataset.motion="";img.classList.remove("mv-tilt","mv-hop","mv-spin","mv-wiggle","mv-stretch");' +
       'h.dispatchEvent(new Event("omitone:pet-motion-tick"));' +
       'var name=String(h.dataset.motion||"");var anim=name?getComputedStyle(img).animationName:"";' +
-      'c.dispatchEvent(new PointerEvent("pointerleave",{bubbles:false,cancelable:true,composed:true,' +
+      'img.dispatchEvent(new PointerEvent("pointerleave",{bubbles:false,cancelable:true,composed:true,' +
       'pointerId:12,pointerType:"mouse",clientX:0,clientY:0}));' +
       'return {peekOn:peekOn,name:name,anim:anim};})()');
     check('悬停期她自己动也不被 peek 吃掉（动画名 = om-pet-<这一拍的动作>）',
@@ -5866,15 +6405,14 @@ SCENARIOS.push({
   url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
   inject: false,
   run: async function (ctx) {
-    // 进门先记下弹窗会写的那两格（config 与伴侣精简键）：逢 toggle 就点的混沌猴把开关状态
-    // 留在盘上，停在哪儿由种子决定 —— 后面每一个场景拿到的是上一场的随机态（批次 62-D 同一族）。
-    // 收尾交回进门那份，随机点击的证据留在本场，脏数据不外溢。
-    var storageBefore = await ctx.client.evaluate(
-      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
-      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
-      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
-      'pet: r.omitonePagePetMinimal }); }); })'
-    );
+    // 进门先记下弹窗会写的 5 枚键（present／absent 各记一格）：逢 toggle 就点的混沌猴把开关
+    // 状态留在盘上，停在哪儿由种子决定 —— 后面每一个场景拿到的是上一场的随机态（批次 62-D 同一族）。
+    // 上一版只记 `config` 与 `omitonePagePetMinimal` 两枚，另外三枚吉祥物开关（聊天／寻医／
+    // 网搜）点脏了没人收（批次 177 / 任务 #61）。
+    var storageBefore = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    // 观察者只听不写：把「还有谁在往盘上写这 5 枚」读成一个能涨的数。拉长等待不算尺
+    // （快机器恒绿、慢机器恒红，AGENTS §5），这里要的是"写入者停了"这个事件层面的证据。
+    await armStoreWatcher(ctx.client, POPUP_STORAGE_KEYS);
     var chaos = await ctx.client.evaluate(
       '(function(){' +
       'var errs = [];' +
@@ -5885,7 +6423,7 @@ SCENARIOS.push({
       'Array.prototype.forEach.call(document.querySelectorAll("#petTools button"), function (b) { targets.push(b); });' +
       'Array.prototype.forEach.call(document.querySelectorAll(".toggle"), function (b) { targets.push(b); });' +
       'targets.push(document.getElementById("petBookClose"));' +
-      'targets.push(document.getElementById("btnPetShow"));' +
+      'targets.push(document.getElementById("imRestorePet"));' +
       'var clicks = 0;' +
       'for (var i = 0; i < 400; i++) {' +
       '  var t = targets[Math.floor(rand() * targets.length)];' +
@@ -5905,29 +6443,37 @@ SCENARIOS.push({
       'return {errs:errs,alive:!!m};})()'
     );
     check('混沌之后摸头仍无异常', !!still && still.alive === true && still.errs.length === 0, JSON.stringify(still));
-    // 收尾：把这一场点出来的随机态交回去，并读回来证明真交回去了（不是打了句话就算）
-    await ctx.client.evaluate(
-      'new Promise(function (res) {' +
-      'var before = ' + JSON.stringify(storageBefore) + ';' +
-      'var del = []; var set = {};' +
-      'if (before.hasConfig) { set.config = before.config; } else { del.push("config"); }' +
-      'if (before.hasPet) { set.omitonePagePetMinimal = before.pet; } else { del.push("omitonePagePetMinimal"); }' +
-      'chrome.storage.local.remove(del, function () {' +
-      'if (Object.keys(set).length === 0) { res(true); return; }' +
-      'chrome.storage.local.set(set, function () { res(true); }); }); })'
-    );
-    var restored = await ctx.client.evaluate(
-      'new Promise(function (res) { chrome.storage.local.get(["config", "omitonePagePetMinimal"], ' +
-      'function (r) { res({ hasConfig: Object.prototype.hasOwnProperty.call(r, "config"), ' +
-      'config: r.config || null, hasPet: Object.prototype.hasOwnProperty.call(r, "omitonePagePetMinimal"), ' +
-      'pet: r.omitonePagePetMinimal }); }); })'
-    );
-    check('混沌收尾把 config 与伴侣精简键交回进门那份（随机态不外溢到后面的场景）',
-      !!restored && kvSorted(restored.config) === kvSorted(storageBefore.config)
-      && restored.hasPet === storageBefore.hasPet && String(restored.pet) === String(storageBefore.pet),
-      JSON.stringify({ sameConfig: kvSorted(restored.config) === kvSorted(storageBefore.config),
-        petBefore: storageBefore.pet, petAfter: restored.pet,
-        hasBefore: storageBefore.hasPet, hasAfter: restored.hasPet }).slice(0, 240));
+    // 收尾：把这一场点出来的随机态交回去，并读回来证明真交回去了（不是打了句话就算）。
+    // ⚠️ 顺序是「先排干 → 再交回 → 再排干 → 再回读」，不是「写完立刻读」：400 发点击里
+    // `config` 那一枚走的是后台 `config_patch` 队列（fire-and-forget，8 秒超时），队尾在我们
+    // 交回之后才落回来的话，读到的就是随机态 —— 上一版红/不稳就出在这一族（任务 #61）。
+    var drainIn = await waitStoreQuiet(ctx.client, 15000, 3);
+    var afterChaos = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var dirty = diffStoreKeys(storageBefore, afterChaos, POPUP_STORAGE_KEYS);
+    // 前提格：这一场真把某枚键点脏了。0 枚脏 = 下面那句比对是空转（断言"绿"有两种）。
+    check('混沌这一场真点脏了弹窗会写的键（交回比对不是空转）',
+      dirty.length > 0 && drainIn.drained === true,
+      JSON.stringify({ dirty: dirty, drained: drainIn.drained, events: drainIn.n,
+        waitedMs: drainIn.waitedMs }).slice(0, 240));
+    var handed = await handBackPopupStore(ctx.client, storageBefore, POPUP_STORAGE_KEYS);
+    var drainOut = await waitStoreQuiet(ctx.client, 12000, 3);
+    var restored = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var differ = diffStoreKeys(storageBefore, restored, POPUP_STORAGE_KEYS);
+    check('混沌收尾把弹窗会写的 5 枚键逐枚交回进门那份（随机态不外溢到后面的场景）',
+      differ.length === 0 && drainOut.drained === true,
+      JSON.stringify({ differ: differ, drainedOut: drainOut.drained, outEvents: drainOut.n,
+        del: handed.del, setKeys: handed.setKeys,
+        hasBefore: POPUP_STORAGE_KEYS.map(function (k) { return !!storageBefore.has[k]; }),
+        hasAfter: POPUP_STORAGE_KEYS.map(function (k) { return !!restored.has[k]; }) }).slice(0, 260));
+    // 迟到写单独占一格：交回之后又等了一次排干再读，读数若被队尾改回去，这里说得出是哪一枚。
+    // 「排干了」和「读回来还是那份」是两件事，压成一句就会把"我们没等到"读成"没被写"（§2 #12）。
+    var drainAgain = await waitStoreQuiet(ctx.client, 6000, 3);
+    var recheck = await readPopupStore(ctx.client, POPUP_STORAGE_KEYS);
+    var late = diffStoreKeys(restored, recheck, POPUP_STORAGE_KEYS);
+    check('混沌交回之后没有迟到写把随机态又落回来（排干不是自证）',
+      late.length === 0 && drainAgain.drained === true,
+      JSON.stringify({ late: late, drainedAgain: drainAgain.drained, againEvents: drainAgain.n,
+        afterHandback: drainAgain.n > 0 ? 'events-after-handback' : 'quiet' }).slice(0, 240));
   }
 });
 
@@ -5967,6 +6513,227 @@ SCENARIOS.push({
     check('伴侣连点 30 次：好感条有值、零异常、收起唤回正常',
       !!brute && brute.alive === true && brute.bar !== '' && brute.hid === true && brute.back === true && brute.errs.length === 0,
       JSON.stringify(brute));
+  }
+});
+
+// ── 上课页本地医生（批次 130）：真实浏览器里才暴露的那三件事 ──────────────────
+// 集成层那 29 格（tools/integration-test.js 的 testLocalDoctor）喂的是**打桩**的伴侣，
+// 它量不到装机时才看得见的东西：
+//   ① `libs/diagnose.js` 真进了 manifest 的 content_scripts —— 漏了的话判断层在页面世界里
+//      根本不存在，医生永远只交一句「no-diagnose」，一条测试都不会红；
+//   ② 医生装那张 png 真在 web_accessible_resources 里 —— 不在的话 <img> 加载失败、
+//      naturalWidth 恒 0，用户看到的是一只空相框；
+//   ③ 弹窗那枚开关写进存储的是 1 / 0，content 侧认的必须是同一族（§2 #23 读写两侧基准不同）。
+// ⚠️ needle、结论标题、装的文件名与道具、存储键、节流窗口**全部从真源读回来**，
+//   这份文件里不抄第二份（§5「断言里出现的每一个数，都要说得出它是从哪儿读回来的」）。
+var DOC_TRUTH = (function () {
+  var dx = String(fs.readFileSync(path.join(ROOT, 'libs/diagnose.js'), 'utf8'));
+  var cg = String(fs.readFileSync(path.join(ROOT, 'content.js'), 'utf8'));
+  var pg = String(fs.readFileSync(path.join(ROOT, 'popup/pet-game.js'), 'utf8'));
+  function rule(code) {
+    var from = dx.indexOf('var RULES = [');
+    var at = from < 0 ? -1 : dx.indexOf("code: '" + code + "'", from);
+    if (at < 0) return null;
+    var seg = dx.slice(at, dx.indexOf('\n    },', at));
+    return {
+      needle: (seg.match(/needles:\s*\[\s*'([^']+)'/) || [])[1] || '',
+      title: (seg.match(/title:\s*'([^']+)'/) || [])[1] || '',
+      severity: Number((seg.match(/severity:\s*(\d+)/) || [])[1])
+    };
+  }
+  return {
+    media: rule('media-dead'),
+    stuck: rule('stuck'),
+    key: (cg.match(/PAGE_DOCTOR_KEY\s*=\s*'([^']+)'/) || [])[1] || '',
+    prefix: (cg.match(/\('diagnose',\s*'([^']+)'\s*\+/) || [])[1] || '',
+    throttle: Number((cg.match(/DOCTOR_ANALYZE_MS\s*=\s*(\d+)/) || [])[1]),
+    file: (pg.match(/doctor:\s*\{\s*name:[^,]+,\s*file:\s*'([^']+)'/) || [])[1] || '',
+    prop: (pg.match(/doctor:\s*\{\s*name:[^,]+,\s*file:[^,]+,\s*prop:\s*'([^']+)'/) || [])[1] || ''
+  };
+})();
+
+SCENARIOS.push({
+  name: '上课页本地医生：开关关掉不吭声、医生装真加载、结论有界一句、20 秒内不判第二次',
+  path: '/quiz',
+  // 伴侣宿主建不建由精简键决定（见 setPagePetMinimal 头上那段）
+  pagePetOn: true,
+  // ⚠️ 这一场吃的是「一页只判一次」那 20 秒窗口：页面自己跑起来会先占掉那一发
+  //   （§5 xxtRunning 那条 —— 跑过 run 的场景会让每页加载都自动续跑），必须先按掉。
+  noAutoResume: true,
+  run: async function (ctx) {
+    var T = DOC_TRUTH;
+    var truthOk = !!T.media && !!T.stuck && T.media.severity >= 2 && T.media.needle.length > 0 &&
+      T.media.title.length > 0 && T.stuck.needle.length > 0 && T.stuck.needle !== T.media.needle &&
+      T.key.length > 0 && T.prefix.length > 0 && T.throttle > 0 && T.file.length > 0 && T.prop.length > 0;
+    check('夹具自证：这一场的 needle、结论标题、医生装文件名与道具、存储键、节流窗口都从真源读回来了，' +
+      '且挑的那条规则够硬（severity 至少 2 才轮到她开口）—— 真源改了名时这条先红，' +
+      '后面任何一条红才只能读成「没跑到」',
+      truthOk, JSON.stringify(T));
+    if (!truthOk) return;
+
+    var DOCTOR_READ = '(function(){var h=document.getElementById("omitone-page-pet-host");' +
+      'var sr=h&&h.shadowRoot,img=sr&&sr.getElementById("petImg"),bub=sr&&sr.getElementById("bubble"),' +
+      'rp=sr&&sr.getElementById("roleProp"),wrap=sr&&sr.getElementById("wrap");' +
+      'if(!img||!bub)return {gone:true};' +
+      'return {gone:false,skip:String(h.dataset.doctorSkip||""),role:String(h.dataset.role||""),' +
+      'roleFile:String(h.dataset.roleFile||""),src:String(img.getAttribute("src")||""),' +
+      'natW:Number(img.naturalWidth||0),shown:bub.classList.contains("show"),' +
+      'bubble:String(bub.textContent||""),sayFrom:String(h.dataset.sayFrom||""),' +
+      'sayLine:String(h.dataset.sayLine||""),prop:String(rp&&rp.textContent||""),' +
+      'tuck:!!(wrap&&wrap.classList.contains("mode-hidden")),hidden:document.hidden,' +
+      'ready:document.readyState};})()';
+    // 挂载 / 重新加载后的等待：沿用伴侣那场 48×500ms 的窗口（满载机器上挂载会迟到）
+    async function waitDoctor() {
+      for (var i = 0; i < 48; i++) {
+        await sleep(500);
+        var r = await ctx.client.evaluate(DOCTOR_READ);
+        if (r && r.gone === false && r.ready === 'complete') return r;
+      }
+      return null;
+    }
+    // 发一条真日志进这一页的环（走的就是 content.js 收 runtime_log 那一路，不是另开一个口子）。
+    // 「还不知道」那一格**不消耗节流**（doctorNote 在按判断地板之前就 return 了），所以可以放心重试。
+    async function emitDoctor(needle) {
+      var last = null;
+      for (var i = 0; i < 4; i++) {
+        await ctx.client.evaluate('(function(){window.postMessage({source:"xxt_app",type:"runtime_log",' +
+          'level:"warn",message:' + JSON.stringify(needle) + ',meta:null},"*");return true;})()');
+        await sleep(220);
+        last = await ctx.client.evaluate(DOCTOR_READ);
+        if (!last || last.skip !== 'switch-unknown') return last;
+      }
+      return last;
+    }
+    // 开关写的是弹窗那侧的字面形状（1 / 0），键名从 content.js 读回来
+    async function setDoctor(value) {
+      var cw = await initConfigWriter(ctx.extensionId);
+      await cw.evaluate('new Promise(function (res) { chrome.storage.local.set(' +
+        JSON.stringify({ k: value }).replace('"k"', JSON.stringify(T.key)) +
+        ', function () { res(true); }); })');
+    }
+
+    // ── ① 开关关掉：一条硬伤进来，她一个字都不多说、一身都不换 ──────────────
+    // ⚠️ ②③ 吃的是「没 Key 走本地结论」那条路 —— 配置整轮共用（quiz 场景留下的
+    //   `config` 对象带着 Key + 假模型地址），医生会真去问假模型，而假模型对不可解析的
+    //   提示词回 '[]'，气泡就成了「体检：[]」（§5 夹具必须自己钉住它依赖的共享状态）。
+    //   配置真源是存储里那一枚 `config` 对象（content.js 经 storage.onChanged 现场重读），
+    //   清成空对象就是"没 Key"的出厂状态 —— 写顶层散键没人读，等于什么都没钉。
+    await writeConfig(ctx.extensionId, {});
+    await setDoctor(0);
+    var b0 = await waitDoctor();
+    check('前提：开关按成关掉之后伴侣照旧挂载（她的出现与这枚开关无关）',
+      !!b0 && b0.gone === false, JSON.stringify(b0));
+    if (!b0) return;
+    await sleep(1200);                       // 让装机期可能自己冒出来的日志先走完
+    var off = await emitDoctor(T.media.needle);
+    check('① 开关关掉时「' + T.media.needle + '」这一条她一个字都没多说：归因格点名 switch-off' +
+      '（弹窗写的 0 必须被认成关掉，认不出的话这句会直接开口）、没换医生装、气泡里没有那一句体检 —— ' +
+      '静音不等于忘记：这一条日志照旧进了这一页的环',
+      off.skip === 'switch-off' && off.role !== 'doctor' && off.roleFile === '' &&
+        off.bubble.indexOf(T.prefix) === -1 && off.sayFrom !== 'diagnose',
+      JSON.stringify({ off: off }));
+
+    // ── ② 开关打开：真判断 → 真换装（图必须真加载）→ 有界一句话 ──────────────
+    await setDoctor(1);
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b1 = await waitDoctor();
+    check('前提：开关打开后重新加载这一页，伴侣回来了（节流是按一页计的，重开一次才拿到干净窗口）',
+      !!b1 && b1.gone === false, JSON.stringify(b1));
+    if (!b1) return;
+    await sleep(1200);
+    var pre = await ctx.client.evaluate(DOCTOR_READ);
+    check('前提：这一页到目前为止医生还没替她说过话、也没被谁先占掉判断窗口' +
+      '（占了的话下面读到的是别人的账，那一格的"没说"根本不是开关造成的）',
+      pre.hidden === false && pre.tuck === false && pre.sayFrom !== 'diagnose' &&
+        pre.skip !== 'throttle',
+      JSON.stringify(pre));
+    if (pre.sayFrom === 'diagnose' || pre.skip === 'throttle') return;
+    var tOn = Date.now();
+    var on = await emitDoctor(T.media.needle);
+    var wantLine = T.prefix + T.media.title;
+    var wantSrc = 'chrome-extension://' + ctx.extensionId + '/popup/' + T.file;
+    check('② 同一句硬伤在开关打开后让她：换上医生装（文件名读自 ROLES.doctor=' + T.file + '）、' +
+      '那张图 naturalWidth>0（png 真在 web_accessible_resources 里，否则这里是一只空相框）、道具显影、' +
+      '气泡正好是「' + wantLine + '」这一句且长度没被 60 字上限咬掉、归因格记到 diagnose、' +
+      '「为什么没说」那一格擦干净',
+      on.skip === '' && on.role === 'doctor' && on.roleFile === T.file && on.src === wantSrc &&
+        on.natW > 0 && on.prop === T.prop && on.shown === true && on.bubble === wantLine &&
+        on.bubble.length === wantLine.length && on.sayFrom === 'diagnose' && on.sayLine === wantLine,
+      JSON.stringify({ want: wantLine, wantSrc: wantSrc, on: on }));
+
+    // ── ③ 20 秒内的第二条：不再判第二次 ──────────────────────────────────
+    var elapsed = Date.now() - tOn;
+    var second = await emitDoctor(T.stuck.needle);
+    check('③ 第二次特意换一枚**同等级、不同码**的硬伤（' + T.stuck.needle + '）来测：' +
+      elapsed + ' 毫秒 < DOCTOR_ANALYZE_MS（读回来 = ' + T.throttle + '）时她不再判第二次，' +
+      '归因格点名 throttle、气泡里还是第一句、行头没动 —— ' +
+      '挑同码会被「同一个结论 5 分钟只打扰一次」那把冷却闸挡住，那一轮就成了自证式假绿',
+      elapsed < T.throttle && second.skip === 'throttle' && second.sayFrom === 'diagnose' &&
+        second.sayLine === wantLine && second.role === 'doctor',
+      JSON.stringify({ elapsed: elapsed, throttle: T.throttle, second: second }));
+
+    // ── ③-bis 模型回的不是人话时退回本地结论（反向验证 content.js 的 ask-shape 闸）──
+    // 假模型对不可解析的提示词回的是字面 '[]'；没有那道闸时气泡会把「体检：[]」原样说出来。
+    // ⚠️ 配置要写进存储里那一枚 `config` 对象（writeConfig 的写法）—— 写顶层散键没人读，
+    //   这一发根本不出门，摘掉闸也照样绿（§5：注入必须改到真实状态，本格由此而来）。
+    await writeConfig(ctx.extensionId, { apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model' });
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b3 = await waitDoctor();
+    check('前提：配了 Key 重新加载后伴侣照旧挂载（③-bis 的开口要走一次真模型请求）',
+      !!b3 && b3.gone === false, JSON.stringify(b3));
+    if (!b3) return;
+    await sleep(1200);
+    var askBefore = ctx.mock.requests.length;
+    var junk = await emitDoctor(T.media.needle);
+    var asked = ctx.mock.requests.length - askBefore;
+    check('前提：③-bis 这一发真去问了模型（mock 台账 +1，实得 ' + asked + ' 发）—— ' +
+      '没出门的话后面的绿全是假的（§5：注入必须改到真实状态）',
+      asked >= 1, JSON.stringify({ asked: asked }));
+    if (asked < 1) return;
+    check('③-bis 模型回了一句 JSON（假模型对医生的摘要回字面 \'[]\'）时她退回本地结论：' +
+      '气泡仍是「' + wantLine + '」而不是「' + T.prefix + '[]」、归因格记 diagnose、「为什么没说」擦干净、' +
+      '医生装没脱 —— 这道闸挡的是「网关回什么就照念什么」那一族，不是把模型的话整个不认',
+      junk.sayFrom === 'diagnose' && junk.bubble === wantLine && junk.sayLine === wantLine &&
+        junk.skip === '' && junk.role === 'doctor',
+      JSON.stringify({ want: wantLine, got: junk }));
+
+    // ── ④ 她被收起来时不换装也不开口（再重开一页拿干净的判断窗口）──────────
+    await ctx.client.evaluate('(function(){location.reload();return true;})()');
+    var b2 = await waitDoctor();
+    check('前提：第二次重新加载后伴侣回来了', !!b2 && b2.gone === false, JSON.stringify(b2));
+    if (!b2) return;
+    var tuck = await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");w.classList.add("mode-hidden");' +
+      'return {on:w.classList.contains("mode-hidden")};})()');
+    await sleep(600);
+    var hid = await emitDoctor(T.media.needle);
+    check('④ 她被收起来时医生**既不换装也不开口**，归因格点名 hidden（不是 throttle、不是 no-pet）；' +
+      '收起这一步真落在 wrap 的 class 上。⚠️ 只取这一道"看不见"的闸：后台那一格由集成层与' +
+      '宠物那场「真后台」一起管，沙盒里标签可见性不稳（§5），把它抄进来只会让这一场恒红',
+      tuck.on === true && hid.tuck === true && hid.skip === 'hidden' && hid.role !== 'doctor' &&
+        hid.roleFile === '' && hid.src.indexOf('/popup/' + T.file) === -1 &&
+        hid.bubble.indexOf(T.prefix) === -1,
+      JSON.stringify({ tuck: tuck, base: b2, hidden: hid }));
+
+    // ── ⑤ 收尾卫生：这一格按回出厂（键缺席=开着），别把状态留给后面的场景 ────
+    await ctx.client.evaluate(
+      '(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");w.classList.remove("mode-hidden");' +
+      'return {off:!w.classList.contains("mode-hidden")};})()');
+    var cwEnd = await initConfigWriter(ctx.extensionId);
+    await cwEnd.evaluate('new Promise(function (res) { chrome.storage.local.remove(' +
+      JSON.stringify([T.key, 'config']) + ', function () { res(true); }); })');
+    await sleep(250);
+    var rest = await ctx.client.evaluate('(function(){var sr=document.getElementById("omitone-page-pet-host").shadowRoot;' +
+      'var w=sr.getElementById("wrap");' +
+      'return {tuck:w.classList.contains("mode-hidden")};})()');
+    var stored = await cwEnd.evaluate('new Promise(function (res) { chrome.storage.local.get(' +
+      JSON.stringify([T.key, 'config']) + ', function (r) { res(Object.keys(r || {}).length); }); })');
+    check('⑤ 收尾：她被放回原样、医生开关按回出厂（存储里那一格整个不存在 = 默认关着，问模型按量计费的功能不许默认烧钱），' +
+      '③-bis 写进去的那枚 `config` 也一起收走 —— 这两枚键是整轮共用的，留着会让后面任何一场读到' +
+      '"有 Key"或"她本来就不该说话"（§5 夹具必须自己钉住共享状态）',
+      rest.tuck === false && stored === 0, JSON.stringify({ rest: rest, stored: stored }));
   }
 });
 
@@ -8118,21 +8885,27 @@ SCENARIOS.push({
 
     var rate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:1.5,autoMaxPlaybackRate:false,muted:true,enableSeek:true});' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:false,muted:true,enableSeek:true});' +
       'var v=document.getElementById("omitone-video");' +
+      // 关掉自动倍速 + 没有量到上限 = 唯一剩下的形状：原速。这里把量到的上限也清掉，
+      // 否则前一个场景留的 `_detectedMaxRate` 会让这一发测不到"原速"那一支。
+      'app._detectedMaxRate=0; app._rateDetectVideo=v; app._rateProbing=false;' +
+      'v.__rate=2;' +
       'app._ensurePlaybackRate(v,"e2e");' +
       'return {rateApplied:v.playbackRate, muted:v.muted};})()'
     );
-    check('倍速按配置应用（1.5x）', rate.rateApplied === 1.5, JSON.stringify(rate));
+    // 批次 146：弹窗那根「播放速度」滑条删了 —— 没有量到的上限就按原速，不替用户猜一个倍速。
+    // 断言反过来写才有牙：**先把播放器摁在 2x**，插件必须把它拉回 1x（旧写法在这一步会写成 1.5）。
+    check('关掉自动倍速后回到原速（滑条已删，不再有人为倍速）', rate.rateApplied === 1, JSON.stringify(rate));
     check('静音按配置应用', rate.muted === true, JSON.stringify(rate.muted));
 
     // 自动最大倍速的**夹紧**这一支以前是零覆盖：打桩播放器探测不到倍速菜单，
-    // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到配置值"，
-    // 而那句 `capped: r <= 2` 对着 1.5 恒为真 —— `_clampAutoRate` 的上限与 0.5 下限没有一条断言碰过。
+    // `_getTargetPlaybackRate` 里 `Number(_detectedMaxRate) > 0` 不成立，于是永远走"回落到原速"，
+    // 而那句 `capped: r <= 2` 对着回落值恒为真 —— `_clampAutoRate` 的上限与 0.5 下限没有一条断言碰过。
     // 现在把探测结果直接钉成 6x / 0.2x，逼它走进夹紧那一支。
     var autoResult = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2,playbackRate:1.5});' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:true,playbackRateCap:2});' +
       'var v=document.getElementById("omitone-video");' +
       // 钉住"已经探测过这台播放器"，否则这里会再排一次异步探测、把刚设的值改回去
       'app._rateProbing=false; app._rateDetectVideo=v;' +
@@ -8146,12 +8919,14 @@ SCENARIOS.push({
       autoResult && autoResult.over === 2 && autoResult.applied === 2, JSON.stringify(autoResult));
     check('自动倍速：夹紧的下限也在 —— 探测出 0.2x 这种荒值不许真按 0.2x 播',
       autoResult && autoResult.floor === 0.5, String(autoResult && autoResult.floor));
-    check('探测不到倍速时回落到配置值（不是 0、不是 NaN）',
-      autoResult && autoResult.fallback === 1.5, String(autoResult && autoResult.fallback));
+    // 批次 146：探测不到上限时**回落到原速**，不再是"回落到滑条值"（滑条与那个配置键一起删了）。
+    // 这一格是用户报「抽搐 + 黑屏」的那条路径的地板：猜不出来就别动播放器。
+    check('探测不到上限时回落到原速 1x（滑条已删，不许替用户猜一个倍速）',
+      autoResult && autoResult.fallback === 1, String(autoResult && autoResult.fallback));
 
     var seek = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       // 上一步的自动倍速测试可能把倍速探测置为进行中，而 _trySeekToEnd 在探测期间会主动让路
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
       'app._seekTriedKeys=null;' +
@@ -8167,7 +8942,7 @@ SCENARIOS.push({
     // 同样可拖到底、平台照常计完成。这里断言音频也被 seek 到 duration-3。
     var audioSeek = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false;' +
       'app._seekTriedKeys=null; app._seekRevertedKeys=null; app._activeJobId="e2e-audio";' +
       'var a=document.getElementById("omitone-audio");' +
@@ -8189,7 +8964,7 @@ SCENARIOS.push({
     );
     var waitOnce = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false,playbackRate:1});' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,autoMaxPlaybackRate:false});' +
       'app._rateProbing=false; app._rateDetectBusy=false; app._captchaActive=false; app._activeJobId="e2e-wait";' +
       // 倍速先钉成"锁在 1x"：否则 ninety 那一格是因为倍速而 false，测不到"等区间不算不可拖"这半截
       'app._detectedMaxRate=1;' +
@@ -8295,22 +9070,24 @@ SCENARIOS.push({
     check('_findMediaInDocument 能在文档里找到媒体元素（返回单个元素）',
       audio.foundInDoc === 'omitone-video', JSON.stringify(audio));
 
-    // 音频任务点应走配置倍速（不看自动最大倍速菜单）；
-    // 静音开关已删：插件不再替用户静音音频，要静音直接静音标签页。
     // ⚠️ 这条以前把 `muted:false` 写进配置再去断 `audio.muted===false` —— 那个判据在
     // `_ensurePlaybackRate` 里是 `video.muted = !isAudio && !!configs.muted`，把 `!isAudio` 整段删掉
     // 它也照样绿。**要钉住"音频不被插件静音"，必须先把用户的静音开关打开。**
+    // 倍速那一半在批次 146 换了形状：音频原先"跟配置倍速走"，而那个配置键（弹窗滑条）删了 ——
+    // 现在音频与视频同一条尺：没有量到的上限就按原速。先把两枚元素摁在 3x，再让守护跑一次。
     var audioRate = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'app.configs=Object.assign({},app.configs,{playbackRate:2,autoMaxPlaybackRate:false,muted:true});' +
-      'app._rateProbing=false;' +
+      'app.configs=Object.assign({},app.configs,{autoMaxPlaybackRate:false,muted:true});' +
+      'app._rateProbing=false; app._rateDetectBusy=false; app._detectedMaxRate=0;' +
       'var a=document.getElementById("omitone-audio");' +
       'var v=document.getElementById("omitone-video");' +
+      'a.__rate=3; v.__rate=3;' +
       'app._ensurePlaybackRate(a,"e2e-audio");' +
       'app._ensurePlaybackRate(v,"e2e-video");' +
-      'return {rate:a.playbackRate, audioMuted:a.muted, videoMuted:v.muted};})()'
+      'return {rate:a.playbackRate, videoRate:v.playbackRate, audioMuted:a.muted, videoMuted:v.muted};})()'
     );
-    check('音频应用配置倍速（2x）', audioRate.rate === 2, JSON.stringify(audioRate));
+    check('没有量到上限时音频与视频都被拉回原速（滑条已删，倍速只有一个来源）',
+      audioRate.rate === 1 && audioRate.videoRate === 1, JSON.stringify(audioRate));
     check('用户开了静音时：音频仍不归插件管（只有视频被静音）—— 旧写法把 muted 设成 false，这条恒真',
       audioRate.audioMuted === false && audioRate.videoMuted === true, JSON.stringify(audioRate));
 
@@ -12479,6 +13256,8 @@ SCENARIOS.push({
     var ui = await ctx.client.evaluate(
       '(function(){return {' +
       'rateVal: document.getElementById("rateVal") ? document.getElementById("rateVal").textContent : null,' +
+      'rateInput: !!document.getElementById("rate"),' +
+      'rateText: (document.body.textContent || "").indexOf("播放速度") !== -1,' +
       'presetValues: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return o.value;}),' +
       'presetLabels: Array.prototype.map.call(document.getElementById("providerPreset").options, function(o){return String(o.textContent);}),' +
       'presetSelected: document.getElementById("providerPreset").value,' +
@@ -12490,7 +13269,18 @@ SCENARIOS.push({
       'toggleCount: document.querySelectorAll(".toggle").length,' +
       'hasStart: !!document.getElementById("start")};})()'
     );
-    check('弹窗初始化完成（速度档显示已填充）', !!(ui.rateVal && ui.rateVal.indexOf('x') !== -1), JSON.stringify(ui.rateVal));
+    // ⚠️ 这一句以前拿 `rateVal`（「播放速度」滑条旁边那个「1.0x」）当"load() 跑完了"的证人。
+    // 批次 146 把那根滑条整个删了，证人跟着没了 —— 换成 `thinkingHint`：它在静态 HTML 里是**空的**
+    // （`popup.html:846` 那对空标签），只有 `load() → loadThinkingObserved() → updateThinkingHint()`
+    // 这一串才会填上话，所以它跟速度档一样能作证"初始化跑完"，而且不依赖任何会被删的界面件。
+    check('弹窗初始化完成（滑条删了，改由思考强度说明那一格作证：它在 HTML 里出厂是空的）',
+      !!ui.thinkingHint && ui.thinkingHint.length > 10, JSON.stringify(ui.thinkingHint && ui.thinkingHint.slice(0, 40)));
+    // 「播放速度」滑条删干净了：弹窗里既没有那根条，也没有它旁边的档位读数。
+    // 这条是**设计断言** —— 谁哪天把滑条加回来，它当场红，逼着那轮重新回答
+    // 「不能倍速的视频被硬按倍速会抽搐加黑屏」这个用户报上来的成因。
+    check('弹窗里不再有「播放速度」滑条（用户报的抽搐加黑屏来自硬按倍速，批次 146 删的）',
+      ui.rateVal === null && ui.rateInput === false && ui.rateText === false,
+      JSON.stringify({ rateVal: ui.rateVal, rateInput: ui.rateInput, rateText: ui.rateText }));
     // 预置清单：1.1.5 起按需求加了 Kimi 与通义，所以这里不再要求"只剩 4 个"，
     // 改成钉住**这一份确定的白名单** —— 目的是防止以后又悄悄塞回一堆没实测的厂商
     // （历史上内置过 9 家，模型名全是钉死的快照，用户照着填完发现用不了）。
@@ -12637,8 +13427,10 @@ SCENARIOS.push({
 
     // 开关**清单**守卫：上面那条 `>= 8` 是弱下限，抓不住"某个开关被误删"。
     // 这里逐个点名 —— 少一个就红。**新增开关时要同步加进这个列表。**
+    // ⚠️ 批次 138 补进 `advanceAtNinetyPercent`：它和 `enableSeek` 现在是一对有先后关系的开关，
+    //    只点名上面那一枚的话，被人摘掉下面那枚（连带那句依赖说明成了孤儿）照样绿。
     var wantToggleIds = ['enableQuiz', 'randomAnswer', 'enableCaptcha', 'enableDiscussion',
-                         'autoNext', 'restudy', 'muted', 'enableSeek'];
+                         'autoNext', 'restudy', 'muted', 'enableSeek', 'advanceAtNinetyPercent'];
     var uiToggles = await ctx.client.evaluate(
       '(function(){var ids=' + JSON.stringify(wantToggleIds) + ';var miss=[];' +
       'for(var i=0;i<ids.length;i++){if(!document.getElementById(ids[i])) miss.push(ids[i]);}' +
@@ -12661,6 +13453,99 @@ SCENARIOS.push({
     );
     check('每个开关都能被键盘聚焦且状态可播报（role/tabindex/aria-checked）',
       a11y.count >= 8 && a11y.bad.length === 0, JSON.stringify(a11y));
+
+    // ---- 批次 138（会话任务 #185）：这两枚开关有先后关系，界面上要当场说出口 ----
+    // 为什么必须从**点击**走：那句说明的全部价值在于"用户真动了开关它跟着改口"。
+    // 手搓 innerHTML 只能证明函数存在，证不了 setter 里那两条接线；只测点击又证不了
+    // `load()` 尾部那一发 —— 少了它，重开弹窗看到的是出厂那句旧话（AGENTS §5「谁在读这一栏」）。
+    // ⚠️ 存储整轮共用：两格每步都先钉成想要的形状再读，收尾**原样交回**（原本没写过就删掉）。
+    var SEEK_CHAIN_KEYS = ['enableSeek', 'advanceAtNinetyPercent'];
+    var seekSaved = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){chrome.storage.local.get("config",function(r){' +
+      'var c=(r&&r.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
+      '.forEach(function(k){o[k]=(k in c)?c[k]:null;});res(o);});});})()');
+    // 钉存储 → 走 popup 自己的 load() → 读回说明与两枚开关的无障碍状态。
+    function seekPinAndLoad(pin) {
+      var src = '(function(){return new Promise(function(res){' +
+        'var pin=' + JSON.stringify(pin) + ';' +
+        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+        'Object.keys(pin).forEach(function(k){if(pin[k]===null)delete c[k];else c[k]=pin[k];});' +
+        'chrome.storage.local.set({config:c},function(){' +
+        'var done=function(o){try{res(o);}catch(e){res({error:String(e&&e.message)});}};' +
+        'Promise.resolve(load()).then(function(){' +
+        'var h=document.getElementById("seekChainHint");' +
+        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
+        'done({hint:h?String(h.textContent):null,hintHtml:h?String(h.innerHTML):null,' +
+        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null});' +
+        '},function(e){done({error:String(e&&e.message)});});' +
+        '});});});})()';
+      new Function('return ' + src);
+      return src;
+    }
+    // 真点那一枚开关（经 popup 自己的 click → setter → saveToggleConfig 那条链）
+    function seekClick(id) {
+      var src = '(function(){return new Promise(function(res){' +
+        'var id=' + JSON.stringify(id) + ';' +
+        'var el=document.getElementById(id);' +
+        'if(!el){res({missing:id});return;}' +
+        'el.click();' +
+        'setTimeout(function(){' +
+        'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+        'var h=document.getElementById("seekChainHint");' +
+        'var a=document.getElementById("enableSeek"),b=document.getElementById("advanceAtNinetyPercent");' +
+        'res({hint:h?String(h.textContent):null,' +
+        'seekAria:a?a.getAttribute("aria-checked"):null,ninetyAria:b?b.getAttribute("aria-checked"):null,' +
+        'storedSeek:c.enableSeek,storedNinety:c.advanceAtNinetyPercent});});},700);});})()';
+      new Function('return ' + src);
+      return src;
+    }
+    var bothOn = await ctx.client.evaluate(seekPinAndLoad({ enableSeek: true, advanceAtNinetyPercent: true }));
+    check('说明元素与两枚开关都在，且 load() 之后两枚都亮着（采集器先自证，否则下面读的全是 null）',
+      !bothOn.error && bothOn.hint !== null && bothOn.seekAria === 'true' && bothOn.ninetyAria === 'true',
+      JSON.stringify(bothOn));
+    check('两枚都开着时，说明把**判据本身**讲出来：三条来源都点名（站点写的「不可拖拽」、真被弹回两次、' +
+      '同一门课认过一回），且不谎称"不会生效"',
+      /三个各自独立的来源/.test(bothOn.hint) && /弹回两次/.test(bothOn.hint) &&
+      /同一门课里已经认过一回/.test(bothOn.hint) &&
+      /不可拖拽/.test(bothOn.hint) && /不会生效/.test(bothOn.hint) === false, String(bothOn.hint));
+    var offSeek = await ctx.client.evaluate(seekClick('enableSeek'));
+    check('点掉上面那枚，那句**当场改口**：动手试那一路没了，只剩站点标语与同一门课那一本账' +
+      '（不再谎称"现在不会生效"），并指回该打开哪一枚',
+      /只剩两个来源/.test(offSeek.hint) && /不可拖拽/.test(offSeek.hint) &&
+      /同一门课里已经认过一回/.test(offSeek.hint) &&
+      /把上面那枚打开/.test(offSeek.hint) && /现在不会生效/.test(offSeek.hint) === false &&
+      offSeek.seekAria === 'false' && offSeek.ninetyAria === 'true', JSON.stringify(offSeek));
+    check('反向不许写：点掉「直接拖到结尾」时，`advanceAtNinetyPercent` 存储照旧是 true' +
+      '（悄悄替用户关掉另一枚=把他下次打开时的选择也换掉了）',
+      offSeek.storedSeek === false && offSeek.storedNinety === true,
+      JSON.stringify({ s: offSeek.storedSeek, n: offSeek.storedNinety }));
+    var onSeek = await ctx.client.evaluate(seekClick('enableSeek'));
+    check('再点回来那句立刻回到判据本身（两个方向都刷新，不是只在关的时候改一次口）',
+      /三个各自独立的来源/.test(onSeek.hint) && /不会生效/.test(onSeek.hint) === false &&
+      onSeek.seekAria === 'true', JSON.stringify(onSeek));
+    var offNinety = await ctx.client.evaluate(seekClick('advanceAtNinetyPercent'));
+    check('是用户自己关掉「90% 提前收尾」时，那句改成讲后果、**不再劝他打开上面那枚**',
+      /原速播完整支/.test(offNinety.hint) && /不会生效/.test(offNinety.hint) === false &&
+      /这一枚已关闭/.test(offNinety.hint) && /只剩两个来源/.test(offNinety.hint) === false &&
+      /三个各自独立的来源/.test(offNinety.hint) === false &&
+      offNinety.ninetyAria === 'false' && offNinety.storedSeek === true, JSON.stringify(offNinety));
+    var loadOnly = await ctx.client.evaluate(
+      seekPinAndLoad({ enableSeek: false, advanceAtNinetyPercent: true }));
+    check('只走 load() 那一路（一次都不点）也要说真话 —— 这一格钉的是 `load()` 尾部那一发，' +
+      '少了它重开弹窗看到的是出厂那句旧话，而 setter 路径测不到',
+      /只剩两个来源/.test(loadOnly.hint) && loadOnly.seekAria === 'false' &&
+      loadOnly.ninetyAria === 'true', JSON.stringify(loadOnly));
+    // 收尾：两格原样交回（原本没写过的删掉，让后面的场景读到"从没写过"那一支）
+    var seekBack = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){var want=' + JSON.stringify(seekSaved) + ';' +
+      'chrome.storage.local.get("config",function(r){var c=(r&&r.config)||{};' +
+      'Object.keys(want).forEach(function(k){if(want[k]===null)delete c[k];else c[k]=want[k];});' +
+      'chrome.storage.local.set({config:c},function(){chrome.storage.local.get("config",function(q){' +
+      'var s=(q&&q.config)||{},o={};' + JSON.stringify(SEEK_CHAIN_KEYS) +
+      '.forEach(function(k){o[k]=(k in s)?s[k]:null;});res(o);});});});});})()');
+    check('收尾把这两格原样交回（脏存储会毒化后面的场景，而日志说不清是谁改的）',
+      JSON.stringify(seekBack) === JSON.stringify(seekSaved),
+      JSON.stringify({ back: seekBack, saved: seekSaved }));
 
     // 运行状态指示：content.js 一直读 xxtRunning 决定要不要自动跑，但弹窗以前**从来不读** ——
     // 打开后完全看不出是不是已开启。这里不只查「有没有这个元素」，
@@ -12686,6 +13571,67 @@ SCENARIOS.push({
       runSync.text === '已开启' && runSync.dotOn === true, JSON.stringify(runSync));
 
     check('「开始运行」按钮存在', ui.hasStart === true);
+
+    // ---- 批次 146：页面中间那张「开始」卡片删掉之后，这枚键是唯一的启动入口 ----
+    // 为什么现在要钉：卡片在的时候，"弹窗那枚键其实没接上"这种坏法有人兜着（用户还能从页面上点），
+    // 现场只会表现为"两处状态不一样"；卡片一删，它要是发不出那一发，**刷课就彻底没有入口了**。
+    // ⚠️ 桩只打在两个"动作"上：`chrome.tabs.query/sendMessage`（发出去的那一发）与
+    //    `saveApiConfig/saveToggleConfig`（点开始时先存设置）。这四发都会写共享存储，
+    //    而本场景前面几段已经在输入框里试过脏值 —— 让它们真跑会把 junk 存进 config，
+    //    毒化后面的场景（§5「夹具必须自己钉住它依赖的共享状态」）。桩记下"被调了几次"，
+    //    判据读的是**消息内容**与**顶部状态**，不是桩自己。
+    var startChain = await ctx.client.evaluate(
+      '(function(){return new Promise(function(res){' +
+      'var realQuery=self.chrome.tabs.query, realSend=self.chrome.tabs.sendMessage;' +
+      'var realSaveApi=self.saveApiConfig, realSaveToggle=self.saveToggleConfig;' +
+      'var sent=[], saved=0;' +
+      'function read(){var s=document.getElementById("runState"),d=document.getElementById("runDot");' +
+      '  return {text:s?s.textContent:null,on:!!(d&&d.className.indexOf("on")!==-1)};}' +
+      'function nap(ms){return new Promise(function(r){setTimeout(r,ms);});}' +
+      'function setRun(v){return new Promise(function(r){chrome.storage.local.set({xxtRunning:v},r);});}' +
+      'self.chrome.tabs.query=function(){return Promise.resolve([{id:4242}]);};' +
+      'self.chrome.tabs.sendMessage=function(id,msg){sent.push({id:id,type:String(msg&&msg.type||"")});' +
+      '  return Promise.resolve(self.__omitoneStartReply);};' +
+      'self.saveApiConfig=function(){saved++;return Promise.resolve();};' +
+      'self.saveToggleConfig=function(){saved++;return Promise.resolve();};' +
+      '(async function(){var o={hadFns:typeof realSaveApi==="function"&&typeof realSaveToggle==="function"};' +
+      '  await setRun(false);await load();o.before=read();' +
+      // ① 受理成功：这一发真发出去了，而且顶部自己变绿
+      '  self.__omitoneStartReply={success:true};sent=[];saved=0;' +
+      '  document.getElementById("start").click();await nap(500);' +
+      '  o.sent=sent.slice();o.saved=saved;o.after=read();' +
+      // ② 被拒（这一页不是学习通）：不许自己变绿，还要把原因说出来
+      '  await setRun(false);await load();' +
+      '  self.__omitoneStartReply={success:false,code:"unsupported_page"};sent=[];' +
+      '  document.getElementById("start").click();await nap(500);' +
+      '  var t=document.getElementById("toast");' +
+      '  o.sent2=sent.slice();o.afterDenied=read();' +
+      '  o.toastShown=!!t&&t.className.indexOf("show")!==-1;' +
+      '  o.toast=String(t&&t.textContent||"");' +
+      '  self.chrome.tabs.query=realQuery;self.chrome.tabs.sendMessage=realSend;' +
+      '  self.saveApiConfig=realSaveApi;self.saveToggleConfig=realSaveToggle;' +
+      '  await setRun(false);' +
+      '  o.restored=self.saveApiConfig===realSaveApi&&self.saveToggleConfig===realSaveToggle&&' +
+      '    self.chrome.tabs.sendMessage===realSend&&self.chrome.tabs.query===realQuery;' +
+      '  res(o);})();});})()'
+    );
+    check('前提：被桩掉的确实是两枚真函数与真接口，且收尾逐把交回（桩打在空位上等于没测）',
+      !!startChain && startChain.hadFns === true && startChain.restored === true && startChain.saved === 2,
+      JSON.stringify(startChain && { hadFns: startChain.hadFns, restored: startChain.restored, saved: startChain.saved }));
+    check('进来时顶部写着「未开启」且圆点是灰的（这一发是"从没开始"起步，不是接着上一格的状态）',
+      startChain && startChain.before.text === '未开启' && startChain.before.on === false,
+      JSON.stringify(startChain && startChain.before));
+    check('点「开始运行」真的向当前标签页发出 xxt_start（卡片删了之后它是唯一入口，不能只是改了改界面）',
+      startChain && startChain.sent.length === 1 && startChain.sent[0].type === 'xxt_start' &&
+      startChain.sent[0].id === 4242, JSON.stringify(startChain && startChain.sent));
+    check('页面受理之后顶部自己就变「已开启」并点亮圆点（不等下一次打开弹窗才同步）',
+      startChain && startChain.after.text === '已开启' && startChain.after.on === true,
+      JSON.stringify(startChain && startChain.after));
+    check('被拒那一格不给自己变绿，且反馈里点名是页面不对（红的是状态而不是措辞）',
+      startChain && startChain.afterDenied.text === '未开启' && startChain.afterDenied.on === false &&
+      startChain.toastShown === true && /学习通/.test(startChain.toast),
+      JSON.stringify(startChain && { afterDenied: startChain.afterDenied, toast: startChain.toast }));
+
     // ---- 开场那一段（任务 #164：文案精简）----
     // 这里钉的是「两句口径都在场 + 顶部字数收得住」，不是具体措辞。
     // ⚠️ 批次 68 说过「别把『没 Key 就跳过』那一半删回去换简洁」，而本轮干的正是"换简洁" ——
@@ -13188,6 +14134,455 @@ SCENARIOS.push({
       'return {gate:app._shouldAdvanceAtNinetyPercent(v)};})()'
     );
     check('开关关闭后不提前结束', off.gate === false, JSON.stringify(off));
+
+    // ---- 批次 138（会话任务 #185）：上面那枚「直接拖到结尾」关掉时，这一枚不再无声失灵 ----
+    // 死键的**成因**在集成层 [30] 已经钉住（那份弹回证据只有 `_trySeekToEnd` 会写，
+    // 而它第一道闸就是 enableSeek）。这里要的是真实浏览器那一半：
+    // 那句「被谁挡的」必须**真的进得了 200 条的日志环**，而且同一支只说一次。
+    // ⚠️ 前提自己钉：`_seekRevertedKeys` 里塞的是"上一拍还开着时留下的旧证据"，
+    //    这一族不能依赖前一个场景写过什么（AGENTS §5「夹具必须自己钉住它依赖的共享状态」）。
+    var boundInject = await ctx.client.evaluate(
+      '(function(){window.__b138=[];' +
+      'if(!window.__b138on){window.__b138on=1;window.addEventListener("message",function(ev){' +
+      'var m=ev&&ev.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b138.push({level:m.level,message:m.message,meta:m.meta});});}' +
+      'var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var k=app._getMediaSeekKey(v);' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,advanceAtNinetyPercent:true});' +
+      'app._detectedMaxRate=1;app._seekRevertedKeys={};app._seekRevertedKeys[k]=true;' +
+      'app._ninetyHeldBackKeys=null;' +
+      'window.__setProgress(0.9);' +
+      'return {key:!!k,g1:app._shouldAdvanceAtNinetyPercent(v)};})()'
+    );
+    check('绑定前提自证：这一支拿得到媒体钥匙，且「可拖动」关上后确实不提前收尾',
+      boundInject.key === true && boundInject.g1 === false, JSON.stringify(boundInject));
+
+    // ⚠️ 必须等一拍再读缓冲：`emitRuntimeLog` 走 postMessage 是**异步**送达的，
+    //    判据一跑完就读一定读到空 —— 那时"没发"与"没送到"长得一模一样（AGENTS §5）。
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'function cnt(){return window.__b138.filter(function(l){return l.message===NAME;});}' +
+      'var first=cnt(),meta=first[0]&&first[0].meta;' +
+      'var seekBefore=app.configs.enableSeek,ninetyBefore=app.configs.advanceAtNinetyPercent;' +
+      'app._shouldAdvanceAtNinetyPercent(v);app._shouldAdvanceAtNinetyPercent(v);' +
+      'var keys=Object.keys(app._ninetyHeldBackKeys||{}).length;' +
+      'return {n0:first.length,level:first[0]&&first[0].level,ratio:meta&&meta.ratio,' +
+      'dur:meta&&meta.duration,keys:keys,' +
+      'seekBefore:seekBefore,ninetyBefore:ninetyBefore};})()'
+    );
+    // ⚠️ 重复巡检那两发的结果**必须在下一发 evaluate 里数**：同一次 evaluate 是同步跑完的，
+    //    而 `postMessage` 的送达要等这一发交回去之后 —— 在这一发里数，摘掉去重那道闸也照样读到 1，
+    //    那条断言就成了永远不会红的空尺（反向验证 C 轮实测「预期红的没红」抓出来的就是这里）。
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'var afterRepeat=window.__b138.filter(function(l){return l.message===NAME;}).length;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'return {afterRepeat:afterRepeat,back:app._shouldAdvanceAtNinetyPercent(v)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var held3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,v=document.getElementById("omitone-video");' +
+      'var NAME="advance at 90% held back: seek disabled";' +
+      'var k=app._getMediaSeekKey(v);' +
+      'var afterBack=window.__b138.filter(function(l){return l.message===NAME;}).length;' +
+      'return {afterBack:afterBack,' +
+      'reverted:!!(app._seekRevertedKeys&&app._seekRevertedKeys[k]),total:window.__b138.length};})()'
+    );
+    var held = Object.assign({}, held1, held2, held3);
+    check('被放弃那一发**不是原地什么都不说**：日志点名「seek disabled」、info 级、带 ratio/duration 两格读数',
+      held.n0 === 1 && held.level === 'info' && Math.abs(held.ratio - 0.9) < 1e-6 && held.dur === 100,
+      JSON.stringify(held));
+    check('同一支重复巡检只说一次（每 1500 毫秒就来一拍，说个不停会把证据窗吃光）',
+      held.afterRepeat === 1 && held.keys === 1, JSON.stringify({ afterRepeat: held.afterRepeat, keys: held.keys }));
+    // ⚠️ 这一格读的是**放弃那一刻**的两个值，不是事后重新写回去的那两个 ——
+    //    拿改完之后的读数断"没被改过"是一次自证式假绿（AGENTS §5 第四类）。
+    check('绑定只改判定、**不替用户翻开关**：走到「被放弃」那一刻，`enableSeek` 仍是 false、`advanceAtNinetyPercent` 仍是 true',
+      held.seekBefore === false && held.ninetyBefore === true,
+      JSON.stringify({ seekBefore: held.seekBefore, ninetyBefore: held.ninetyBefore }));
+    check('把上面那枚打开后照旧提前收尾，而且没有多出一句「被放弃」',
+      held.back === true && held.afterBack === 1, JSON.stringify({ back: held.back, afterBack: held.afterBack }));
+  }
+});
+
+/** ---- 批次 144（会话任务 #193）：拖不拖先问站点自己写的那句完成条件 ----
+ *  现场形状（2026-11-20 只读探针）：`<video>` 在 `ananas/modules/video/index.html` 那一层文档里，
+ *  而 `span.task-condition-text` 那句「完成条件 / …当前视频不可拖拽…」写在**它上一层**的卡片文档，
+ *  卡片 `div.ans-attach-ct.videoContainer` 里同时放着承载播放器的那枚 iframe。
+ *  ⚠️ `contains()` 不跨文档 —— 拿 video 去问卡片**恒为 false**，所以夹具必须照现场那样
+ *     「标语在上层、播放器在 iframe 里」来造，否则这一族在沙盒里根本测不到（AGENTS §5「夹具要长得像现场」）。
+ *  集成层 [22]⑱–㉔ / [30]⑪–⑭ 用假文档对象覆盖了五格口径；这一场要的是**真实跨文档 DOM 走一遍**。 */
+SCENARIOS.push({
+  name: '站点标语说不让拖就不试拖',
+  path: '/media-90',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 卡片文档 = 顶层这一份（现场那一层是 cards?...knowledgeid=<这一节>，同源性与顶层一致）
+      '  window.__mk193 = function (tag, text) {',
+      '    var box = document.createElement("div");',
+      '    box.className = "ans-attach-ct videoContainer"; box.id = "b193-" + tag;',
+      '    var sp = document.createElement("span");',
+      '    sp.className = "task-condition-text"; sp.textContent = text; box.appendChild(sp);',
+      // 平台完成标记：现场写在卡片上（`_isDocumentFrameFinished` 靠 frameElement.parentElement 那一半走到它）
+      '    var mk = document.createElement("span");',
+      '    mk.className = "ans-job-finished"; mk.textContent = "任务点已完成"; box.appendChild(mk);',
+      '    var fr = document.createElement("iframe"); fr.style.display = "none"; box.appendChild(fr);',
+      '    document.body.appendChild(box);',
+      '    var fw = fr.contentWindow, fd = fr.contentDocument;',
+      // ⚠️ 内层 iframe 是**另一个 realm**，顶层那份 prototype 补丁对它无效 —— 这三件要各自钉一遍
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '      get: function(){ return this.__ct == null ? 90 : this.__ct; },',
+      '      set: function(n){ (this.__w = this.__w || []).push(n); } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '      return { length: 1, start: function(){ return 0; }, end: function(){ return 100; } }; } });',
+      '    fd.body.innerHTML = \'<video id="v193" src="https://ananas.chaoxing.com/video/b193-\' + tag + \'.mp4"></video>\';',
+      '    window["__b193_" + tag] = { card: box, frame: fr, v: fd.getElementById("v193"), doc: fd };',
+      '    return { built: true };',
+      '  };',
+      '  window.__patched193 = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+    var FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+
+    var built = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b193=[];' +
+      'if(!window.__b193on){window.__b193on=1;window.addEventListener("message",function(ev){' +
+      'var m=ev&&ev.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b193.push({level:m.level,message:m.message,meta:m.meta});});}' +
+      'window.__mk193("forbid",' + JSON.stringify(NO) + ');' +
+      'window.__mk193("free",' + JSON.stringify(FREE) + ');' +
+      'var f=window.__b193_forbid;var r={};' +
+      // ===== 夹具自证：形状必须像现场，否则这一族测的是"代码和自己一致" =====
+      'r.ok=!!window.__patched193;' +
+      'r.videoInFrame=f.doc.querySelectorAll("video").length;' +
+      'r.marksInPlayerDoc=f.doc.querySelectorAll(".task-condition-text").length;' +
+      'r.marksInCardDoc=document.querySelectorAll("#b193-forbid .task-condition-text").length;' +
+      'r.cardHasFrame=f.card.contains(f.frame);r.cardHasVideo=f.card.contains(f.v);' +
+      'r.hopToCardDoc=!!(f.doc.defaultView&&f.doc.defaultView.frameElement===f.frame);' +
+      'r.markerReachable=app._isDocumentFrameFinished(f.doc);' +
+      'var c=app._readSiteSeekCondition(f.v);' +
+      'r.state=c.state;r.hop=c.hop;r.marks=c.marks;r.quote=c.text;return r;})()'
+    );
+    check('夹具自证：标语在**上一层**文档的卡片里、播放器在自己那枚 iframe 里，' +
+      '而 `contains()` 跨不了文档（卡片含 iframe 为真、含 video 为假）—— ' +
+      '这一页同屏有**两张**视频卡（一支持有这一支、一支不支持），生产谓词在这份真 DOM 上' +
+      '仍按"归属这一支的那句"判出 forbidden（marks 是文档级计数 2，不是归属枚数），并把站点原话带回来',
+      built.ok === true && built.videoInFrame === 1 &&
+        built.marksInPlayerDoc === 0 && built.marksInCardDoc === 1 &&
+        built.cardHasFrame === true && built.cardHasVideo === false &&
+        built.hopToCardDoc === true && built.markerReachable === true &&
+        built.state === 'forbidden' &&
+        built.hop === 1 && built.marks === 2 &&
+        String(built.quote || '').indexOf('不可拖拽') >= 0,
+      JSON.stringify(built));
+
+    // ---- 用户要的那一半（一）：`enableSeek` 关上时，站点那句话就是证据，不必先动手拖 ----
+    var gate = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,advanceAtNinetyPercent:true});' +
+      'app._detectedMaxRate=1;app._rateProbing=false;app._captchaActive=false;' +
+      'app._seekRevertedKeys={};app._ninetyHeldBackKeys=null;app._seekSiteKeys=null;' +
+      'var k=app._getMediaSeekKey(f.v);f.v.__ct=90;' +
+      'return {key:!!k,ret:app._shouldAdvanceAtNinetyPercent(f.v),fin:app._isDocumentFrameFinished(f.doc)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });   // postMessage 是异步送达
+
+    var gateRead = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'var k=app._getMediaSeekKey(f.v);' +
+      'function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'var site=cnt("site condition says not draggable, skip seek to end");' +
+      'var adv=cnt("advance at 90% (locked 1x + not seekable)");' +
+      'var held=cnt("advance at 90% held back: seek disabled");' +
+      'var meta=site[0]&&site[0].meta;' +
+      'app._shouldAdvanceAtNinetyPercent(f.v);' +   // 重复巡检那一发要等下一发才数得到
+      'return {n0:site.length,adv:adv.length,held:held.length,keys:site.length,' +
+      // ⚠️ `cond` 只是**取证摘要**（截 20 字方便看），断言读的是页面里对完整原话算出来的 `condHas` ——
+      //    拿截断后的字符串去 indexOf 全站原话，得到的是永远为假的证据（实测红过一次）
+      'condHas:meta&&String(meta.condition||"").indexOf("不可拖拽")>=0,' +
+      'cond:meta&&String(meta.condition||"").slice(0,20),hop:meta&&meta.hop,marks:meta&&meta.marks,' +
+      'reverted:!!(app._seekRevertedKeys&&app._seekRevertedKeys[k]),' +
+      'writes:(f.v.__w||[]).length};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var gateRepeat = await ctx.client.evaluate(
+      '(function(){var N="site condition says not draggable, skip seek to end";' +
+      'return {n:window.__b193.filter(function(l){return l.message===N;}).length};})()'
+    );
+    check('站点写了「不可拖拽」时，「90% 提前收尾」在**没拖过一次**的前提下照旧生效：' +
+      '提前收尾为真、一句「这条路被放弃了」都不出、`_seekRevertedKeys` 一个字没写、`currentTime` 一次没写',
+      gate.ret === true && gate.fin === true && gateRead.adv >= 1 && gateRead.held === 0 &&
+        gateRead.reverted === false && gateRead.writes === 0,
+      JSON.stringify({ gate: gate, read: gateRead }));
+    check('那句证据**只说一次**并照抄站点原话（级别 info、带 condition/hop/marks），' +
+      '重复巡检不再重播（每 1500 毫秒就来一拍，说个不停会把 200 条证据窗吃光）',
+      gateRead.n0 === 1 && gateRead.hop === 1 && gateRead.marks === 2 &&
+        gateRead.condHas === true && gateRepeat.n === 1,
+      JSON.stringify({ first: gateRead.n0, hop: gateRead.hop, marks: gateRead.marks, cond: gateRead.cond, repeat: gateRepeat.n }));
+
+    // ---- 用户要的那一半（二）：标语说不让拖，连"试一下"都不必 ----
+    var tried = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_forbid;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;f.v.__w=[];f.v.__ct=20;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-193");var k=app._getMediaSeekKey(f.v);' +
+      'var rec=app._seekSkipLedger&&app._seekSkipLedger[k];' +
+      'return {ok:ok,writes:(f.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys&&app._seekTriedKeys[k])};})()'
+    );
+    check('「可拖动」开着也不动手拖：站点这句话就是**免掉那一发**的证据（用户报的正是这一族风险）' +
+      '—— `currentTime` 一次都没写、skip 账记的是 `site-no-drag`，' +
+      '而 `_seekTriedKeys` **不登记**（那本是"我们真写过一次"的账，替站点宣布禁令就等于写脏）',
+      tried.ok === false && tried.writes === 0 && tried.last === 'site-no-drag' && tried.tried === false,
+      JSON.stringify(tried));
+
+    // ---- 反向那一半：站点没说那三个字，就不许由它宣布禁令 ----
+    // ⚠️ 这一格的取证**必须两半各钉一次**：只钉"全场景累计恰好 1 句"，那是**前面那一格**说的话，
+    //    这一格自己新增了几句它数不出来（断言名里那句"都不出"就成了空承诺）；只钉"增量 0"，
+    //    则话筒被整个掐掉时它照样绿。所以先在这一格动手之前把累计读一回（`silentBase`），
+    //    跑完之后**增量与累计同表**：增量 = 0 证"这一格没说过"，累计 = 1 证"全场只剩那一句"。
+    var silentBase = await ctx.client.evaluate(
+      '(function(){function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'return {site:cnt("site condition says not draggable, skip seek to end").length,' +
+      'held:cnt("advance at 90% held back: seek disabled").length};})()'
+    );
+    var silent = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b193_free;' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true});' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekDeferKeys=null;' +
+      'app._ninetyHeldBackKeys=null;f.v.__w=[];f.v.__ct=90;' +
+      'var st=app._readSiteSeekCondition(f.v).state;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-193-free");' +
+      'var k=app._getMediaSeekKey(f.v);' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false});' +
+      'var gate=app._shouldAdvanceAtNinetyPercent(f.v);' +
+      'return {state:st,seek:ok,writes:(f.v.__w||[]).length,tried:!!(app._seekTriedKeys&&app._seekTriedKeys[k]),' +
+      'gate:gate,fin:app._isDocumentFrameFinished(f.doc)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+    var silentRead = await ctx.client.evaluate(
+      '(function(){function cnt(n){return window.__b193.filter(function(l){return l.message===n;});}' +
+      'return {site:cnt("site condition says not draggable, skip seek to end").length,' +
+      'held:cnt("advance at 90% held back: seek disabled").length};})()'
+    );
+    check('标语在场但**没有那三个字**（站点按这一支给了 95%、没写不可拖拽）→ 一律照旧：' +
+      '那一发拖动照做（拿到今天那"试一次"的语义）、90% 兜底照旧被按住并明说一次，' +
+      '而且这一格**新增 0 句**「站点说不让拖」（同时全场景累计仍只剩前面那一格的那一条） ' +
+      '—— 没证据时替站点宣布禁令，等于把"少动手"实现成"永不试拖"',
+      silent.state === 'silent' && silent.seek === true && silent.writes === 1 && silent.tried === true &&
+        silent.gate === false &&
+        silentBase.site === 1 && silentBase.held === 0 &&
+        silentRead.site - silentBase.site === 0 && silentRead.site === 1 &&
+        silentRead.held - silentBase.held === 1 && silentRead.held === 1,
+      JSON.stringify({ cell: silent, base: silentBase, read: silentRead }));
+  }
+});
+
+/** ---- 批次 173（会话任务 #199）：「试过一回就整门课别再试」这账要活过一次整页导航 ----
+ *  集成层那一段用**假存储**覆盖了账的口径，这一场要的是真实浏览器里那一族跨导航的字节：
+ *  `sessionStorage` 在同源同一枚标签页里活得过一次整页刷新，而内存里那枚 `app._courseGuard` 必死 ——
+ *  少了这一场，「活过一次整页导航才成立」（AGENTS §2 #25）在真实链路上就只有假存储那一个证人。
+ *  ⚠️ 课身份要**自己造**：`/media-90` 那枚夹具不带 query ⇒ `courseid`／`clazzid` 恒空 ⇒ 课程格天生惰性，
+ *     所以上面那一场「另一支说可以就照旧试拖」结构上不受影响；这一场先把身份写进 URL。 */
+SCENARIOS.push({
+  name: '同一门课的免拖账活过一次整页刷新',
+  path: '/media-90',
+  noAutoResume: true,
+  beforeInject: function () {
+    return [
+      '(function(){',
+      '  window.__mk199 = function (tag, text) {',
+      '    var box = document.createElement("div");',
+      '    box.className = "ans-attach-ct videoContainer"; box.id = "b199-" + tag;',
+      '    var sp = document.createElement("span");',
+      '    sp.className = "task-condition-text"; sp.textContent = text; box.appendChild(sp);',
+      '    var mk = document.createElement("span");',
+      '    mk.className = "ans-job-finished"; mk.textContent = "任务点已完成"; box.appendChild(mk);',
+      '    var fr = document.createElement("iframe"); fr.style.display = "none"; box.appendChild(fr);',
+      '    document.body.appendChild(box);',
+      '    var fw = fr.contentWindow, fd = fr.contentDocument;',
+      // 内层 iframe 是另一个 realm，顶层那份 prototype 补丁对它无效 —— 这三件要各自钉一遍
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "duration", { configurable: true, get: function(){ return 100; } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "currentTime", { configurable: true,',
+      '      get: function(){ return this.__ct == null ? 90 : this.__ct; },',
+      '      set: function(n){ (this.__w = this.__w || []).push(n); } });',
+      '    Object.defineProperty(fw.HTMLMediaElement.prototype, "seekable", { configurable: true, get: function(){',
+      '      return { length: 1, start: function(){ return 0; }, end: function(){ return 100; } }; } });',
+      '    fd.body.innerHTML = \'<video id="v199" src="https://ananas.chaoxing.com/video/b199-\' + tag + \'.mp4"></video>\';',
+      '    window["__b199_" + tag] = { card: box, frame: fr, v: fd.getElementById("v199"), doc: fd };',
+      '    return { built: true };',
+      '  };',
+      '  window.__patched199 = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var NO = '观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、观看时不可离开或将页面最小化)';
+    var FREE = '观看时长需 ≥ 总时长的 95% (未完成任务点前, 观看时不可离开或将页面最小化)';
+    var SAY = 'course says not draggable, stop trying to seek to end';
+    var ID_A = '777001|888002';
+    var ID_B = '999002|888002';
+
+    // ===== ① 钉起点：身份、空账、只剩我这一个驱动 =====
+    var start = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b199=[];if(!window.__b199Bound){window.__b199Bound=1;' +
+      'window.addEventListener("message",function(ev){var m=ev&&ev.data;' +
+      'if(m&&m.source==="xxt_app"&&m.type==="runtime_log")' +
+      'window.__b199.push({level:String(m.level||""),message:String(m.message||""),meta:m.meta});});}' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:true,advanceAtNinetyPercent:true,' +
+      'enableCaptcha:false,enableDiscussion:false,autoNext:false});' +
+      'var key=String(app._COURSE_GUARD_KEY||"");' +
+      // sessionStorage 同 origin 整轮共用（AGENTS §5）：上一场留没留过账都当未知，自己清干净再钉
+      'sessionStorage.removeItem(key);app._courseGuard=null;' +
+      'window.__mk199("forbid",' + JSON.stringify(NO) + ');' +
+      'window.__mk199("free",' + JSON.stringify(FREE) + ');' +
+      'var mem0=app._courseGuard||null,raw0=sessionStorage.getItem(key);' +
+      'history.replaceState(null,"",location.pathname+"?courseid=777001&clazzid=888002");' +
+      'var hits0=[app._courseGuardHit("seek"),app._courseGuardHit("speed")];' +
+      'return {patched:!!window.__patched199,key:key,id:app._courseGuardId(),mem0:mem0,raw0:raw0,' +
+      'hitSeek:hits0[0],hitSpeed:hits0[1],loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      'need:app._COURSE_GUARD_NEED,ttl:app._COURSE_GUARD_TTL_MS,' +
+      'cond:app._readSiteSeekCondition(window.__b199_forbid.v).state};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });   // postMessage 是异步送达
+
+    check('199 前提：这一页只剩我这一个驱动、课身份从 URL 读得回来（' +
+      '同一枚存储里没有旧账、内存账也是空的，于是两格进来都不命中）',
+      start.patched === true && start.key !== '' && start.id === ID_A &&
+      start.mem0 === null && start.raw0 === null &&
+      start.hitSeek === false && start.hitSpeed === false &&
+      start.loop === false && start.checkInterval === false &&
+      Number(start.need) >= 1 && Number(start.ttl) > 0 && start.cond === 'forbidden',
+      JSON.stringify(start));
+
+    // ===== ② 第一枚：站点标语挡下 ⇒ 账要**整份**落到 sessionStorage，且只记 seek 那一格 =====
+    var first = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,f=window.__b199_forbid;' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;' +
+      'app._seekDeferKeys=null;app._seekSiteKeys=null;' +
+      'f.v.__w=[];f.v.__ct=20;' +
+      'var ok=app._trySeekToEnd(f.v,"e2e-199-a");' +
+      'var k=app._getMediaSeekKey(f.v),rec=(app._seekSkipLedger||{})[k];' +
+      'var raw=JSON.parse(sessionStorage.getItem(app._COURSE_GUARD_KEY)||"null");' +
+      'return {ok:ok,writes:(f.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys||{})[k],reverted:!!(app._seekRevertedKeys||{})[k],' +
+      'rawCourse:raw&&raw.course,rawSeekN:raw&&raw.seek&&raw.seek.n,' +
+      'rawSeekSrcs:raw&&raw.seek&&String((raw.seek.srcs||[]).join(",")),' +
+      'hasSpeed:!!(raw&&raw.speed),ttl:raw&&raw.ttl};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    check('第一枚被站点那句「不可拖拽」挡下时，同一门课那本账**当场写进 sessionStorage**：' +
+      'course 是这一门、seek 记到 NEED（从页面读回来的那个数）、来源里有 banner、' +
+      '而 speed 那一格仍是空的（免拖 ≠ 免倍速，两格不许互相顶）；' +
+      '这一发一个字节都没往播放器上写，也没替站点宣布「弹回过」',
+      first.ok === false && first.writes === 0 && first.last === 'site-no-drag' &&
+        first.tried === false && first.reverted === false &&
+        first.rawCourse === ID_A && Number(first.rawSeekN) >= Number(start.need) &&
+        String(first.rawSeekSrcs).indexOf('banner') >= 0 &&
+        first.hasSpeed === false && Number(first.ttl) === Number(start.ttl),
+      JSON.stringify({ cell: first, need: start.need, ttl: start.ttl }));
+
+    var say1 = await ctx.client.evaluate(
+      '(function(){var g=window.__b199.filter(function(l){return l.message===' + JSON.stringify(SAY) + ';});' +
+      'var m=g[0]&&g[0].meta;return {n:g.length,level:g[0]&&g[0].level,course:m&&m.course,' +
+      'from:m&&m.from,sources:m&&String(m.sources||""),evidence:m&&m.evidence};})()'
+    );
+    check('跨过阈值那一发**只出一句**话，且点得出是哪门课、第几枚、来源是谁（静默=用户不知道为什么不再试拖）',
+      say1.n === 1 && say1.level === 'info' && say1.course === ID_A && say1.from === 'banner' &&
+        String(say1.sources).indexOf('banner') >= 0 && Number(say1.evidence) >= Number(start.need),
+      JSON.stringify(say1));
+
+    // ===== ③ 第二枚（站点**没说**不可拖拽）：由课程账挡下，且不许补一句同样的话 =====
+    var second = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp,g=window.__b199_free;' +
+      'app._seekTriedKeys=null;app._seekRevertedKeys=null;app._seekSkipLedger=null;app._seekDeferKeys=null;' +
+      'g.v.__w=[];g.v.__ct=20;' +
+      'var st=app._readSiteSeekCondition(g.v).state;' +
+      'var hit=app._courseGuardHit("seek");' +
+      'var ok=app._trySeekToEnd(g.v,"e2e-199-b");' +
+      'var k=app._getMediaSeekKey(g.v),rec=(app._seekSkipLedger||{})[k];' +
+      'return {st:st,hit:hit,ok:ok,writes:(g.v.__w||[]).length,last:rec&&rec.last,' +
+      'tried:!!(app._seekTriedKeys||{})[k],reverted:!!(app._seekRevertedKeys||{})[k],' +
+      'srcOf:app._seekNoDragSource(g.v)};})()'
+    );
+    await new Promise(function (r) { setTimeout(r, 400); });
+
+    var say2 = await ctx.client.evaluate(
+      '(function(){return {n:window.__b199.filter(function(l){return l.message===' +
+      JSON.stringify(SAY) + ';}).length};})()'
+    );
+    check('同一门课的第二枚（站点**没说**那三个字，这一支自己没有任何证据）不再试拖：' +
+      '课程格命中、返回 false、`currentTime` 一次没写、skip 账记的是 course-no-drag、' +
+      '`_seekTriedKeys` 与 `_seekRevertedKeys` 都一个字没写、归因点得出是 course，' +
+      '而那句话本页只说过一次（每门课每格只喊一次）',
+      second.st === 'silent' && second.hit === true && second.ok === false &&
+        second.writes === 0 && second.last === 'course-no-drag' &&
+        second.tried === false && second.reverted === false && second.srcOf === 'course' &&
+        say2.n === 1,
+      JSON.stringify({ cell: second, say: say2 }));
+
+    // ===== ④ 换一门课：两格都读不到，旧账也不许被抹掉；换回来照旧读得到 =====
+    var swap = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'history.replaceState(null,"",location.pathname+"?courseid=999002&clazzid=888002");' +
+      'var bId=app._courseGuardId(),bSeek=app._courseGuardHit("seek"),bSpeed=app._courseGuardHit("speed");' +
+      'var rawB=JSON.parse(sessionStorage.getItem(app._COURSE_GUARD_KEY)||"null");' +
+      'history.replaceState(null,"",location.pathname+"?courseid=777001&clazzid=888002");' +
+      'var aId=app._courseGuardId(),aSeek=app._courseGuardHit("seek");' +
+      'return {bId:bId,bSeek:bSeek,bSpeed:bSpeed,bCourse:rawB&&rawB.course,aId:aId,aSeek:aSeek};})()'
+    );
+    check('换课那一发：新课两格都读不到（旧课的账不许带进新课），而存储里那一本的归属仍是旧课' +
+      '（归零只发生在内存，不是把别人的账盖成空的），换回旧课又读得回来',
+      swap.bId === ID_B && swap.bSeek === false && swap.bSpeed === false &&
+        swap.bCourse === ID_A && swap.aId === ID_A && swap.aSeek === true,
+      JSON.stringify(swap));
+
+    // ===== ⑤ 整页刷新：内存账必死，免拖要活下来，免倍速不许跟着活 =====
+    await clearAutoResumeFlag();
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 15000;
+    var alive = false;
+    while (Date.now() < readyBy) {
+      alive = await ctx.client.evaluate('document.readyState==="complete" && !!window._xxtApp')
+        .catch(function () { return false; });
+      if (alive === true) break;
+      await sleep(200);
+    }
+    var reload = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var key=String(app._COURSE_GUARD_KEY||"");' +
+      // 先读**没被自己动过**的那几格：清理之后再断"没有循环"是自证式的空断言（AGENTS §5）
+      'var mem0=app._courseGuard||null,raw0=sessionStorage.getItem(key);' +
+      'var id=app._courseGuardId();' +
+      'var hitSeek=app._courseGuardHit("seek"),hitSpeed=app._courseGuardHit("speed");' +
+      'return {id:id,mem0:mem0,hadRaw:!!raw0,hitSeek:hitSeek,hitSpeed:hitSpeed,' +
+      'loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval};})()'
+    );
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._clearTickLoop();app._clearCheckInterval();return true;})()'
+    );
+    check('活过一次**整页刷新**（这一族最难替代的那一格：内存里那本账必死）：' +
+      '新的 app 实例内存是空的、课身份仍从 URL 读得回来、免拖那一格照样命中，' +
+      '而免倍速那一格照旧不命中（两格各算各的，刷新不会把 seek 的账顶成 speed 的）',
+      alive === true && reload.loop === false && reload.checkInterval === false &&
+        reload.id === ID_A && reload.mem0 === null && reload.hadRaw === true &&
+        reload.hitSeek === true && reload.hitSpeed === false,
+      JSON.stringify({ alive: alive, reload: reload }));
   }
 });
 
@@ -14205,6 +15600,341 @@ SCENARIOS.push({
       !!out && /已经是最新版/.test(String(out.gap3)) && out.gap3Btn === false, JSON.stringify(out));
     check('同版本号、线上包晚两天 → 仍然报「线上的包比本地新」并亮出按钮（容差没把真更新吞掉）',
       !!out && /线上的包比本地新/.test(String(out.gap2d)) && out.gap2dBtn === true, JSON.stringify(out));
+  }
+});
+
+/**
+ * ---- 弹窗里「另有预览版」那一格（2026-11-20 开的实验版下载口）----
+ *
+ * 最贵的不是按钮没亮，而是**预览口自己的失败把正式版已经说出口的那句盖掉**：
+ * `preview` 这个 tag 在没发过预览口时是 404，而 404 是常态。共享正式版那个 catch 的话，
+ * 「你已经是最新版了」会被顶成「网络或者匿名名额在睡大觉」—— 后者会推着人去反复点、
+ * 去查自己根本没坏的网络（AGENTS §2 #14：谁先说话是要紧事）。
+ * 所以四格 why 各占一格、谁都不许合并（§2 #12），下载的两条路径都只许走预览包名。
+ *
+ * 地址分派靠 `fetch` 的**入参**，不是靠调用次序 —— 次序那条会被自动检测插队打断
+ * （上一场景同一手法：先把 autoAt 写成「刚刚查过」再 reload，源头掐掉）。
+ */
+SCENARIOS.push({
+  name: '弹窗预览版那一格：404 不许顶掉正式版那句，点下去装的是预览包',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    await ctx.client.evaluate(
+      'try{localStorage.setItem("omitone.update.autoAt",String(Date.now()));' +
+      'localStorage.setItem("omitone.update.manualAt","0");}catch(e){};1');
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 8000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!document.getElementById("doPreview")'))) await sleep(200);
+    var out = await ctx.client.evaluate(
+      '(async function(){' +
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof self.checkUpdate==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,fn:typeof self.checkUpdate};' +
+      'if(o.fn!=="function")return o;' +
+      'var read=function(id){return String((document.getElementById(id)||{}).textContent||"");};' +
+      'var shown=function(id){var b=document.getElementById(id);return !!b&&getComputedStyle(b).display!=="none";};' +
+      // 出厂状态两个元素都得藏着：亮着等于「一个字还没查就告诉用户有个不确定能不能装的东西」
+      'o.factory=[shown("previewMsg"),shown("doPreview")];' +
+      'var BUILD=new Date(2026,10,12,20,37,0).getTime();' +
+      'var realManifest=chrome.runtime.getManifest;' +
+      'var M30=function(){return {version:"1.3.0",version_name:"1.3.0 b20261112-2037"};};' +
+      'chrome.runtime.getManifest=M30;' +
+      // 正式版那条地址回「与本地同号、包也只晚 3 分钟」—— 稳定落在「你已经是最新版了」这一格
+      // 线上号做成按轮可改：第③轮要抬到 1.3.1（转正后的形状）。否则「不比正式版新」那一格
+      // 会被「不比本地新」顺带兜住 —— 摘掉它测试照样绿，等于没有检查
+      'var stableTag="1.3.0";' +
+      'var STABLE={ok:true,json:function(){return Promise.resolve({tag_name:"v"+stableTag,name:"v"+stableTag,' +
+      '  assets:[{name:"omitone.zip",updated_at:new Date(BUILD+180000).toISOString()}]});}};' +
+      'var hits={stable:0,preview:0,other:[]};' +
+      'var previewResp=null;' +
+      'var realFetch=self.fetch;' +
+      'self.fetch=function(u){var s=String((u&&u.url)?u.url:u);' +
+      '  if(s.indexOf("releases/tags/preview")!==-1){hits.preview++;return Promise.resolve(previewResp);}' +
+      '  if(s.indexOf("releases/latest")!==-1){hits.stable++;return Promise.resolve(STABLE);}' +
+      '  hits.other.push(s);return Promise.reject(new Error("问到了第三条地址"));' +
+      '};' +
+      'var PK={name:"omitone-preview.zip",updated_at:"2026-11-19T14:00:00Z"};' +
+      'var mk=function(nm){return {ok:true,json:function(){' +
+      '  return Promise.resolve({tag_name:"preview",name:nm,assets:[PK]});}};};' +
+      'var run=async function(){try{localStorage.setItem("omitone.update.manualAt","0");}catch(e){}' +
+      '  await self.checkUpdate({manual:true});};' +
+      // ① 预览比正式版新 —— 这一格要说话，而且说的得是让人掂量的那句
+      'previewResp=mk("预览版 1.3.1 experimental b20261119-2200");' +
+      'await run();' +
+      'o.a=[shown("previewMsg"),shown("doPreview"),read("previewMsg"),read("updateMsg"),' +
+      '  hits.stable,hits.preview,hits.other.length];' +
+      // ② 预览口 404（还没发过）—— 这一格闭嘴，正式版那句原话一个字不许被盖掉
+      'previewResp={ok:false,status:404,json:function(){return Promise.resolve({});}};' +
+      'await run();' +
+      'o.b=[shown("previewMsg"),shown("doPreview"),read("updateMsg")];' +
+      // ③ 转正之后预览口忘了撤 —— 线上已经 1.3.1，预览 tag 还停在 1.3.1，那是一份旧实验包
+      'stableTag="1.3.1";previewResp=mk("预览版 1.3.1 experimental b20261110-0900");' +
+      'await run();' +
+      'o.c=[shown("previewMsg"),shown("doPreview")];' +
+      // ④ 用户装的本来就是这一支（本地号与预览同号）—— 不必再告诉他「有预览版」
+      'stableTag="1.3.0";' +
+      'previewResp=mk("预览版 1.3.1 experimental b20261119-2200");' +
+      'chrome.runtime.getManifest=function(){' +
+      '  return {version:"1.3.1",version_name:"1.3.1 experimental b20261119-2200"};};' +
+      'await run();' +
+      'o.d=[shown("previewMsg"),shown("doPreview")];' +
+      // ⑤ 点「装预览版」：桩只打在**动作**（下载 / 开标签）上，判据读它递出去的地址
+      'chrome.runtime.getManifest=M30;await run();' +
+      'var dl=[],tabs=[];' +
+      'var realDl=self.chrome.downloads,realTabs=self.chrome.tabs.create;' +
+      'self.chrome.downloads={download:function(opt,cb){dl.push(String(opt&&opt.url||""));if(cb)cb(7);},' +
+      '  onChanged:{addListener:function(){},removeListener:function(){}},show:function(){}};' +
+      'self.chrome.tabs.create=function(t){tabs.push(String(t&&t.url||""));};' +
+      'o.shownBeforeClick=shown("doPreview");' +
+      'document.getElementById("doPreview").click();await nap(120);' +
+      'o.e={dl:dl,tabs:tabs,msg:read("updateMsg"),btn:shown("doPreview")};' +
+      // ⑥ 下载接口整个接不上 —— 兜底那条手动链接也必须还是预览直链
+      'dl=[];tabs=[];' +
+      'self.chrome.downloads={get download(){throw new Error("下载接口没接上");}};' +
+      'document.getElementById("doPreview").style.display="";' +
+      'document.getElementById("doPreview").click();await nap(120);' +
+      'o.f={dl:dl,tabs:tabs,msg:read("updateMsg")};' +
+      'self.chrome.downloads=realDl;self.chrome.tabs.create=realTabs;' +
+      'self.fetch=realFetch;chrome.runtime.getManifest=realManifest;' +
+      'return o;})()'
+    );
+    var PREVIEW_ZIP = 'https://github.com/TYT0807/Omitone/releases/download/preview/omitone-preview.zip';
+    var a = out && out.a, b = out && out.b, e = out && out.e, f = out && out.f;
+    var sayWhat = String((a && a[2]) || '');
+    check('前提：弹窗脚本已接管，且预览那一格出厂时两个元素都藏着',
+      !!out && out.fn === 'function' && out.ready === 'complete' &&
+      !!out.factory && out.factory[0] === false && out.factory[1] === false, JSON.stringify(out));
+    check('预览比正式版新，那句话连按钮一起亮，版本号写在话里',
+      !!a && a[0] === true && a[1] === true && /1\.3\.1/.test(sayWhat) && /预览版/.test(sayWhat),
+      JSON.stringify(a));
+    check('那句话把「斟酌」说足六处：实验支线、可能弄坏、哪门课、哪一节、什么现象、怎么退回正式版',
+      !!a && ['实验支线', '弄坏', '哪门课', '哪一节', '什么现象', '重装 omitone.zip'].every(function (w) {
+        return sayWhat.indexOf(w) !== -1;
+      }), JSON.stringify({ say: sayWhat }));
+    check('只问预览 tag 与正式版 latest 这两条地址，第三条一条都不问',
+      !!a && a[4] === 1 && a[5] === 1 && a[6] === 0, JSON.stringify(a));
+    check('预览口 404 时那一格收起来，正式版那句「你已经是最新版了」原样留着没被顶掉',
+      !!b && b[0] === false && b[1] === false && /你已经是最新版了/.test(String(b[2])), JSON.stringify(b));
+    check('预览号不比正式版新（转正后忘了撤），那一格不说话',
+      !!out.c && out.c[0] === false && out.c[1] === false, JSON.stringify(out.c));
+    check('本地已经装着这一支（同号），那一格不说话',
+      !!out.d && out.d[0] === false && out.d[1] === false, JSON.stringify(out.d));
+    check('点「装预览版」下到的是预览包名，正式版那条直链一个字都没进下载参数',
+      !!out.shownBeforeClick && !!e && e.dl.length === 1 && e.dl[0] === PREVIEW_ZIP &&
+      String(e.dl[0]).indexOf('releases/latest') === -1 && e.tabs.length === 0, JSON.stringify(e));
+    check('下载接口接不上时，兜底开的手动链接也必须还是预览直链（不许把人退回正式版）',
+      !!f && f.dl.length === 0 && f.tabs.length === 1 && f.tabs[0] === PREVIEW_ZIP &&
+      String(f.msg).indexOf('omitone-preview.zip') !== -1 &&
+      String(f.msg).indexOf('omitone.zip') === -1, JSON.stringify(f));
+  }
+});
+
+/**
+ * ---- 弹窗里「刚才问的是哪家哪个模型」与「这一轮退不退」（批次 166，issue #2 第 3 条）----
+ *
+ * 用户裁定：「先做成『点名是哪一家哪个模型失败的』+『一键决定退不退』，不做全自动退到乱填」。
+ * 这一族**只能在真浏览器里量**，集成层替不了，原因有两条都是盘上的事实：
+ *   ① 那句话是 `chrome.storage.onChanged` 与 `load()` **两条入口**各自渲染的（popup.js:1507 / :1808）。
+ *      集成沙盒里弹窗脚本根本不加载，两条入口只要有一条漏了传配置，症状就是
+ *      「打开弹窗时那行是空的，改了设置才冒出来」—— 只有真弹窗分得开。
+ *   ② 「点一下」走的是那枚真开关的完整链路（翻内存 → `saveToggleConfig` → 后台 → **盘上**），
+ *      而这一串里任何一跳挂掉，界面都可以照样说「在乱选」。集成层只能验委托写法，
+ *      验不了「盘上真翻了」—— 那正是「交卷不可逆」这件事唯一让人放心的证据。
+ *
+ * ⚠️ 新用户那一格（AGENTS §2 #23 同族）：存储里 `providerPreset` / `model` **压根没写过**时，
+ *    展示侧必须自己补 DEFAULTS 再算渠道。不补就当场读出「(渠道读不出)」，而它是一句假话
+ *    —— 请求实际发给了默认那家。前提要钉「存储里真的没这个键」，否则夹具里那个键一直被
+ *    前一个场景写着，两边都一致，测试结构上看不见这个 bug。
+ *
+ * 收尾交回原配置并**比回来**（存储是整轮共用的，见 §5 那条纪律）。
+ */
+SCENARIOS.push({
+  name: '弹窗失败那一格点名是哪家哪个模型，退到乱选只能由人点（点下去盘上真翻）',
+  url: 'chrome-extension://{EXT}/popup/popup.html',
+  inject: false,
+  run: async function (ctx) {
+    var PRELUDE =
+      'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+      'var shown=function(id){var b=document.getElementById(id);return !!b&&getComputedStyle(b).display!=="none";};' +
+      'var read=function(id){return String((document.getElementById(id)||{}).textContent||"");};' +
+      'var getCfg=function(){return new Promise(function(res){' +
+      '  chrome.storage.local.get("config",function(q){res(q&&q.config);});});};' +
+      'var setCfg=function(c){return new Promise(function(res){' +
+      '  chrome.storage.local.set({config:c},function(){res(true);});});};' +
+      // 按键排序序列化：同一份配置在两条入口、两个时刻比得出"是不是同一份"，不受写入顺序影响
+      'var canon=function(v){if(!v||typeof v!=="object")return String(v);' +
+      '  return Object.keys(v).sort().map(function(k){return k+"="+JSON.stringify(v[k]);}).join("&");};' +
+      'var waitRow=function(on){var t=Date.now()+4000;return new Promise(function(res){' +
+      '  (function step(){var v=shown("apiConnWho");' +
+      '    if(v===on||Date.now()>t)return res(v);setTimeout(step,80);})();});};' +
+      'var waitStored=function(want){var t=Date.now()+4000;return new Promise(function(res){' +
+      '  (function step(){return getCfg().then(function(c){var v=!!(c&&c.randomAnswer===true);' +
+      '    if(v===want||Date.now()>t)return res(v);setTimeout(step,80);});})();});};';
+
+    // ①②③ 三条入口与两格渠道话（不刷新那一路 = onChanged；下面 reload 那一路 = load()）
+    var s1 = '(async function(){' + PRELUDE +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof renderApiConnState==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,render:typeof renderApiConnState,lib:typeof self.OmitoneApiError,' +
+      '  hasLib:!!(self.OmitoneApiError&&self.OmitoneApiError.channelText)};' +
+      'if(o.render!=="function"||!o.hasLib)return o;' +
+      'var orig=await getCfg();o.origCanon=canon(orig);o.origWasNull=orig===undefined||orig===null;' +
+      // 原配置先钉在 localStorage 里（同源、跨 reload 还在）：收尾要交回**这一轮进来时那一份**，
+      // 不能拿"上一个场景留下的那份被我们改过的形状"当原始值
+      'try{localStorage.setItem("omitone166orig",JSON.stringify(orig===undefined?null:orig));}catch(e){}' +
+      // 先落一份"没有失败记录"的配置：没坏时三行都不许出现（没坏就别劝人退）
+      'await setCfg({enableQuiz:true,apiKey:"sk-166-synthetic"});' +
+      'o.preHidden=await waitRow(false);' +
+      'o.preAll=[shown("apiConnState"),shown("apiConnWho"),shown("apiRetreat")];' +
+      // 现场取证用：渲染那句话是在 onChanged 的事件回调里跑的，抛了异常不会回到我这里，
+      // 只会留下"who 说了、说明那一格空着"这种半成品形状 —— 先把异常收进一只篮子
+      'var e166=[];window.addEventListener("error",function(ev){e166.push(String(ev.message));});' +
+      'window.addEventListener("unhandledrejection",function(ev){e166.push("promise:"+String(ev.reason));});' +
+      // A：存过 kimi，失败那一格要点名到厂牌与模型
+      'var kimi={enableQuiz:true,apiKey:"sk-166-synthetic",providerPreset:"kimi",' +
+      '  apiUrl:"https://api.moonshot.cn/v1",model:"kimi-k2",' +
+      '  apiConnectionFailed:true,apiConnectionError:"【连接不上服务商】401 这一发被服务商拒了"};' +
+      'await setCfg(kimi);o.aShown=await waitRow(true);' +
+      'o.aState=read("apiConnState");o.aWho=read("apiConnWho");' +
+      'o.aRuler="刚才问的是："+self.OmitoneApiError.channelText(kimi);' +
+      'o.aRetreatShown=shown("apiRetreat");' +
+      'o.aBtn=String((document.getElementById("apiRetreatBtn")||{}).textContent||"");' +
+      // 说明那句是 `innerHTML` 写进去的：这里**实测** innerText 读回空串、textContent 读回全文
+      //（弹窗这一页在测试台里没走完排版），所以断言钉 textContent，两种读法各留一份进取证 ——
+      // 将来"说明其实写了但读回来是空"那一族能一眼分开是谁的锅
+      'o.aHint=String((document.getElementById("apiRetreatHint")||{}).textContent||"");' +
+      'o.aHintInner=String((document.getElementById("apiRetreatHint")||{}).innerText||"");' +
+      'o.aHintHtml=String((document.getElementById("apiRetreatHint")||{}).innerHTML||"").slice(0,40);' +
+      'o.aRetreatHiddenFlag=!!(document.getElementById("apiRetreat")||{}).hidden;' +
+      // 存储里那句仍是服务商原话，没被渠道前缀挤掉（300 字预算是留给原话的）
+      'o.aStoredErr=String(((await getCfg())||{}).apiConnectionError||"");' +
+      // B：新用户那一格 —— 存储里 providerPreset / model 压根没写过
+      'var fresh={enableQuiz:true,apiKey:"sk-166-synthetic",' +
+      '  apiConnectionFailed:true,apiConnectionError:"【连接不上服务商】网络不通"};' +
+      'await setCfg(fresh);o.bShown=await waitRow(true);' +
+      'o.bWho=read("apiConnWho");' +
+      'var gotB=await getCfg();' +
+      'o.bNoPresetKey=!("providerPreset" in (gotB||{}));o.bNoModelKey=!("model" in (gotB||{}));' +
+      // 同一把尺的两种喂法：不补默认值会说什么、补了会说什么 —— 差一句才是"补"在承重
+      'o.bNoMerge=String(self.OmitoneApiError.channelText(fresh));' +
+      // DEFAULTS 是弹窗脚本顶层的 const（全局词法作用域），取不到就是测试台的问题，
+      // 单独说一句，别让"补了默认值还是读不出渠道"混进断言里被读成生产坏了
+      'o.bMerged=(function(){var d;' +
+      'try{d=DEFAULTS;}catch(e){return "(测试台取不到 DEFAULTS：" + String(e) + ")";}' +
+      'return "刚才问的是："+String(self.OmitoneApiError.channelText(Object.assign({},d,fresh)));})();' +
+      'o.errs=e166;' +
+      'return o;})()';
+    var r1 = await ctx.client.evaluate(s1);
+
+    // ④ reload：换一条入口（load()），同一份存储要说同一句话
+    await ctx.client.evaluate('location.reload()').catch(function () {});
+    var readyBy = Date.now() + 9000;
+    while (Date.now() < readyBy && !(await ctx.client.evaluate(
+      'document.readyState==="complete" && !!document.getElementById("apiRetreatBtn")'))) await sleep(200);
+    var s2 = '(async function(){' + PRELUDE +
+      'for(var i=0;i<40;i++){if(document.readyState==="complete"&&typeof renderApiConnState==="function")break;await nap(100);}' +
+      'var o={ready:document.readyState,render:typeof renderApiConnState};' +
+      'if(o.render!=="function")return o;' +
+      // 打开弹窗就该直接看见（不依赖有人改动存储）—— 等一拍再看，别读渲染前的空壳
+      'await nap(400);' +
+      'o.shown=await waitRow(true);o.who=read("apiConnWho");o.state=read("apiConnState");' +
+      'var c=await getCfg();o.presetKeyInStored=("providerPreset" in (c||{}));' +
+      'return o;})()';
+    var r2 = await ctx.client.evaluate(s2);
+
+    // ⑤⑥⑦ 那一键：点一下 → 盘上真翻；再点 → 翻回去；开关节点没了也不许静默
+    var s3 = '(async function(){' + PRELUDE +
+      'var btn=document.getElementById("apiRetreatBtn");' +
+      'var sw=document.getElementById("randomAnswer");' +
+      'var o={btn:!!btn,sw:!!sw};if(!btn||!sw)return o;' +
+      'var btxt=function(){return String(btn.textContent||"");};' +
+      'o.before={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,' +
+      '  stored:((await getCfg())||{}).randomAnswer===true,txt:btxt()};' +
+      'btn.click();' +
+      'o.storedTrue=await waitStored(true);' +
+      'o.afterOn={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,txt:btxt(),' +
+      '  rowShown:shown("apiRetreat")};' +
+      'btn.click();' +
+      'o.storedFalse=await waitStored(false);' +
+      'o.afterOff={aria:sw.getAttribute("aria-checked"),cls:sw.className.indexOf("on")>=0,txt:btxt()};' +
+      // 弹窗结构被改坏那一格：说一句就走，不许静默什么都不发生
+      'sw.parentNode.removeChild(sw);' +
+      'btn.click();await nap(200);' +
+      'var tt=document.getElementById("toast");' +
+      'o.toast={show:!!tt&&tt.classList.contains("show"),text:String((tt||{}).textContent||"")};' +
+      'o.stillNotOn=((await getCfg())||{}).randomAnswer!==true;' +
+      'return o;})()';
+    var r3 = await ctx.client.evaluate(s3);
+    // 收尾那一发：把这一轮进来时那份存储原样交回（逐键比回来），再单独验一次"撤掉失败记录三行一起收起"
+    var s4 = '(async function(){' + PRELUDE +
+      'var RAW=null,err="";' +
+      'try{var s=localStorage.getItem("omitone166orig");RAW=s===null?null:JSON.parse(s);}catch(e){err=String(e);}' +
+      'var done;' +
+      // 读不出原始配置那一格：宁可不写盘，也不拿"没有"当"本来就是空的"（§2 #12 同一族）
+      'if(err){done="读不出这轮进来时那份，故意没动盘：" + err;}' +
+      'else if(RAW===null){done=await new Promise(function(res){chrome.storage.local.remove("config",function(){res("removed");});});}' +
+      'else{done=await setCfg(RAW);}' +
+      'var now=await getCfg();' +
+      'var back=canon(now);' +
+      'try{localStorage.removeItem("omitone166orig");}catch(e){}' +
+      // 撤掉失败记录那一格：三行一起收起（不许留下一个没有上下文的名字）
+      'await setCfg({enableQuiz:true,apiKey:"sk-166-synthetic"});' +
+      'var hidden=await waitRow(false);' +
+      'var all=[shown("apiConnState"),shown("apiConnWho"),shown("apiRetreat")];' +
+      'return {done:done,canon:back,hidden:hidden,all:all};})()';
+    var r4 = await ctx.client.evaluate(s4);
+
+    var a = r1 || {}, b = r2 || {}, c = r3 || {};
+    check('前提：弹窗脚本已接管、渠道那把尺（`libs/api-error.js`）在弹窗里真加载到了',
+      !!a && a.render === 'function' && a.hasLib === true && a.ready === 'complete', JSON.stringify(a));
+    check('没有失败记录时三行都藏着（apiConnState / apiConnWho / apiRetreat 各一格）' +
+      '—— 没坏就劝人退，等于把一次正常刷课说成"你用的是备用的"',
+      a.preHidden === false && !!a.preAll && a.preAll[0] === false && a.preAll[1] === false && a.preAll[2] === false,
+      JSON.stringify({ preHidden: a.preHidden, preAll: a.preAll }));
+    check('存过 Kimi 且记录到失败：那一行写的是「刚才问的是：Kimi（Moonshot） · kimi-k2」，' +
+      '且与页面里同一把尺算出来的那一句逐字相同（不是弹窗另写一份口径）',
+      a.aShown === true && a.aRetreatShown === true && String(a.aWho).indexOf('Kimi（Moonshot）') >= 0 &&
+      String(a.aWho).indexOf('kimi-k2') >= 0 && /^刚才问的是：/.test(String(a.aWho)) &&
+      String(a.aWho) === String(a.aRuler), JSON.stringify({ who: a.aWho, ruler: a.aRuler }));
+    check('上面那行仍是服务商原话、**不含**厂牌名（渠道没被塞进那 300 字预算里，原话才留得住）',
+      /服务商/.test(String(a.aState)) && String(a.aState).indexOf('Kimi') < 0 &&
+      String(a.aStoredErr).indexOf('Kimi') < 0 && String(a.aStoredErr).indexOf('刚才问的是') < 0,
+      JSON.stringify({ state: a.aState, storedErr: a.aStoredErr }));
+    check('新用户那一格：存储里 providerPreset 与 model 两个键都没写过（前提自证），' +
+      '那一行仍点名默认那家、不说「渠道读不出」',
+      a.bNoPresetKey === true && a.bNoModelKey === true && a.bShown === true &&
+      String(a.bWho).indexOf('渠道读不出') < 0 && String(a.bWho) === String(a.bMerged),
+      JSON.stringify({ who: a.bWho, 不补默认值会说: a.bNoMerge, 键在不在: [a.bNoPresetKey, a.bNoModelKey] }));
+    check('补不补默认值确实差一句（不补那把尺读出「渠道读不出」）—— 这一格证明"补 DEFAULTS"在承重，不是多余的写法',
+      String(a.bNoMerge).indexOf('渠道读不出') >= 0 && String(a.bMerged).indexOf('渠道读不出') < 0,
+      JSON.stringify({ noMerge: a.bNoMerge, merged: a.bMerged }));
+    check('重新打开弹窗（走 load() 那条入口，没人改动存储）同一份配置说出同一句话',
+      b.render === 'function' && b.shown === true && b.presetKeyInStored === false &&
+      String(b.who) === String(a.bWho), JSON.stringify({ reloaded: b.who, first: a.bWho }));
+    check('退的那一键点下去：那枚真开关翻了（aria 与 class），且**盘上** config.randomAnswer 真变成 true',
+      !!c && !!c.before && c.before.stored === false && c.storedTrue === true &&
+      c.afterOn && c.afterOn.aria === 'true' && c.afterOn.cls === true, JSON.stringify(c));
+    check('按钮那句话跟着翻转（「这一轮改用「乱选」继续」/「变回问 AI（关掉乱选）」），' +
+      '再点一次盘上翻回去 —— 说的是这一格现在是什么、点下去会变成什么',
+      /改用「乱选」/.test(String(c.before && c.before.txt)) &&
+      /变回问 AI/.test(String(c.afterOn && c.afterOn.txt)) &&
+      /改用「乱选」/.test(String(c.afterOff && c.afterOff.txt)) && c.storedFalse === false &&
+      c.afterOff && c.afterOff.aria === 'false' && c.afterOff.cls === false,
+      JSON.stringify({ before: c.before, on: c.afterOn, off: c.afterOff }));
+    check('「乱选」那枚开关节点不在时：toast 说一句出口（重装 / 手动到「答题」那一栏翻），盘上一个字节都没动',
+      c.toast && c.toast.show === true && /找不到「乱选」那枚开关/.test(String(c.toast.text)) &&
+      /重装|答题/.test(String(c.toast.text)) && c.stillNotOn === true, JSON.stringify(c.toast));
+    check('说明那三句真话在弹窗里真读得出来（交卷不可逆 / 插件不会自己打开它 / 下限「高」那一档不猜、停下来等）',
+      ['交卷不可逆', '插件不会自己打开它', '不猜', '停下来等'].every(function (w) {
+        return String(a.aHint).indexOf(w) >= 0;
+      }), JSON.stringify({ textContent: String(a.aHint).slice(0, 120),
+        innerText: String(a.aHintInner).slice(0, 60), html: a.aHintHtml,
+        retreatHidden: a.aRetreatHiddenFlag, rowShown: a.aRetreatShown, errs: a.errs }));
+    check('收尾：本轮开始前的那份存储原样交回（逐键比回来），撤掉失败记录后三行一起收起',
+      !!r4 && String(r4.canon) === String(a.origCanon) && r4.hidden === false &&
+      !!r4.all && r4.all[0] === false && r4.all[1] === false && r4.all[2] === false,
+      JSON.stringify({ canon: r4 && r4.canon, orig: a.origCanon, all: r4 && r4.all }));
   }
 });
 
@@ -15690,10 +17420,12 @@ SCENARIOS.push({
       JSON.stringify({ hold: panel.displacedHold, cap: panel.displacedCap, notOurs: panel.notOurs }));
   }
 });/** ---- 29. run() 落「续跑标记」：讨论任务 window.open 新开的窗口才会自动跑 ----
- * 为什么单列这条：页面中间那个面板点【开始】只调 app.run()，历史上**不写** xxtRunning，
+ * 为什么单列这条：历史上启动入口不止一枚，而页面中间那张卡片（批次 146 整张删了）点【开始】
+ * 只调 app.run()、**不写** xxtRunning，
  * 于是 content.js 的 maybeMarkAutoResume 读不到标记 → 新标签页 shouldAutoStart() 恒为假 →
  * 讨论任务 window.open 出来的窗口里插件静默不跑（用户报的「讨论新窗口默认关闭、插件失灵」）。
- * 修法是让 run()（所有启动入口的汇合点）落一次 storage_set{xxtRunning:true}。 */
+ * 修法是让 run()（所有启动入口的汇合点）落一次 storage_set{xxtRunning:true}。
+ * ⚠️ 卡片删了以后这一格更要紧：弹窗那枚键现在是唯一入口，而它走的仍是 run()。 */
 SCENARIOS.push({
   name: 'run() 落续跑标记（讨论新窗口才会自动跑）',
   path: '/blank',
@@ -15717,6 +17449,56 @@ SCENARIOS.push({
     check('run() 确实启动了（_runtimeVersion 前进，前置条件）', res.ran === true, JSON.stringify(res));
     check('run() 落一次 xxtRunning=true（否则讨论新窗口静默不跑）', res.persisted === true, JSON.stringify(res));
     check('续跑标记只写 xxtRunning 一个键（不顺手污染别的存储）', res.cleanKey === true, JSON.stringify(res));
+  }
+});
+
+/** ---- 批次 146：学习页不许有第二枚启动入口（页面正中间那张「开始」卡片整个删掉） ----
+ * 卡片为什么该删：它那两个开关（自动连播 / 自动答题）只改这一页内存里的 app.configs，**从不写回存储**
+ * （删掉前 `src/page/90-console-api-startup.js` 里那一发是 mergeConfig 进 currentConfig + app.run()，
+ * 整段没有任何 chrome.storage 写入，git 历史可查）—— 刷新一次或跳到下一节，页面重新读的是弹窗那一份，
+ * 卡片上的选择当场丢掉；而它一进来就浮在屏幕正中，把这一页挡住。
+ * 删掉后「开始」只剩弹窗那一枚，由「设置弹窗」场景里那条断言钉它真发得出那一发 xxt_start。
+ * ⚠️ 断的是**形状**（居中 + 固定定位 + 一枚写着「开始」的键 + 卡片独有的字样），不是「某个方法没了」；
+ *    而且必须带一条阳性对照：自己种一张卡片形状，同一把尺当场要数到 1 ——
+ *    否则"没有卡片"可能只是因为这一页压根没被接管，或尺本身看不见这种东西。 */
+SCENARIOS.push({
+  name: '学习页里没有浮在正中的启动卡片',
+  path: '/mycourse/studentstudy',
+  run: async function (ctx) {
+    var shape = await ctx.client.evaluate(
+      '(function(){' +
+      'function findCard(){var vw=self.innerWidth,vh=self.innerHeight,out=[];' +
+      '  var all=document.querySelectorAll("body *");' +
+      '  for(var i=0;i<all.length;i++){var el=all[i];var cs=getComputedStyle(el);' +
+      '    if(cs.position!=="fixed")continue;var r=el.getBoundingClientRect();' +
+      '    if(r.width<200||r.height<120)continue;' +
+      '    var cx=r.left+r.width/2,cy=r.top+r.height/2;' +
+      '    if(Math.abs(cx-vw/2)>vw*0.25||Math.abs(cy-vh/2)>vh*0.25)continue;' +
+      '    var btns=el.querySelectorAll("button,[role=button],a"),hit=false;' +
+      '    for(var j=0;j<btns.length;j++){' +
+      '      if(String(btns[j].textContent||"").replace(/\\s+/g,"")==="开始"){hit=true;break;}}' +
+      '    if(!hit)continue;' +
+      '    out.push({id:el.id||"",w:Math.round(r.width),h:Math.round(r.height)});}' +
+      '  return out;}' +
+      ' var app=window._xxtApp;' +
+      ' var txt=String(document.body.innerText||"");' +
+      ' var o={href:String(self.location.href||""),app:!!app&&typeof app._runTick==="function",' +
+      '   cards:findCard().length,oldId:!!document.getElementById("xxt-panel"),' +
+      '   words:/(自动连播|自动答题)/.test(txt)};' +
+      // 阳性对照：现场种一张卡片（居中固定 + 「开始」键 + 卡片字样），同一把尺必须数到 1，
+      // 而且它种进去的字样要让 words 那一格也翻过去 —— 证明尺真认得这种东西。
+      ' var f=document.createElement("div");' +
+      ' f.style.cssText="position:fixed;left:50%;top:45%;width:300px;height:220px;transform:translate(-50%,-50%)";' +
+      ' f.innerHTML="<label>自动连播</label><button>开 始</button>";document.body.appendChild(f);' +
+      ' o.control=findCard().length;o.controlWords=/(自动连播|自动答题)/.test(String(document.body.innerText||""));' +
+      ' f.remove();o.afterControl=findCard().length;' +
+      ' return o;})()'
+    );
+    check('前提：这一页真的被 page.js 接管了（否则"没有卡片"只是脚本没跑）', shape.app === true, JSON.stringify(shape));
+    check('对照：自己种一张居中的卡片，同一把尺当场数到 1、摘掉后归 0',
+      shape.control === 1 && shape.afterControl === 0, JSON.stringify(shape));
+    check('没有第二枚启动入口（卡片 0 块、老 id 0 处、卡片独有的两个开关字样也 0 处）',
+      shape.cards === 0 && shape.oldId === false && shape.words === false, JSON.stringify(shape));
   }
 });
 
@@ -16634,7 +18416,11 @@ SCENARIOS.push({
       'var g=function(q){return document.querySelector(\'[qid="\'+q+\'"].Cy_TItle\')||document.querySelector(\'.TiMu[qid="\'+q+\'"]\');};' +
       'var elA=g("9201"), elB=g("9202"), elC=g("9203"), elD=g("9204");' +
       // 走真实派发入口：_fillChoice / _fillMultiChoice（与 _fillAnswers 同一层）
-      'app._fillChoice(elA,"B","radio");' +
+      // ⚠️ elA 交「A」而不是「B」：这道题的第 1 个可见项写着「B. 选项乙」（站点按平台字母印，DOM 序被打乱），
+      //    而模型拿到的字母是**按 DOM 序重排**的（`_extractOptionText` 剥掉原字母、提示词按位置重新标 A/B），
+      //    所以模型说的 A = 第 1 行 = 平台字母 B。批次 190（#232 现场「答题点错选项」）之前这里交 B，
+      //    量的正是「按文本字母认项」那条旧路；现在交 A 才测得到新规则，而三条预期一个字都不用改。
+      'app._fillChoice(elA,"A","radio");' +
       'app._fillChoice(elB,"A","radio");' +
       'app._fillChoice(elC,"A","radio");' +
       'app._fillMultiChoice(elD,["A","C"]);' +
@@ -16680,7 +18466,8 @@ SCENARIOS.push({
       'var elA=g("9201"), elB=g("9202");' +
       // 把两道题重走一遍派发层（派发层才会记结构快照，直接调 _fillChoice 不会）
       'var qs=[{_element:elA,type:"single",index:0},{_element:elB,type:"single",index:1}];' +
-      'app._fillAnswers([{index:0,type:"single",answer:"B"},{index:1,type:"single",answer:"A"}], qs, null);' +
+      // 派发层：elA 交「A」= 第 1 个可见项（平台字母 B、`<a>` 带站点选中态），elB 交「A」= 第 1 个可见项（无选中态）
+      'app._fillAnswers([{index:0,type:"single",answer:"A"},{index:1,type:"single",answer:"A"}], qs, null);' +
       // 快照每个元素只记一次：拿哨兵值比，不能比两次 Date.now()（同批同步块里会撞成同一个数）
       'var keptBefore=(elB._omNoCheckDiagAt||0)>0;' +
       'elB._omNoCheckDiagAt=23456;' +
@@ -18065,6 +19852,162 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 批次 137：多空填空的分隔符容错（GitHub issue #2，2026-11-19）----
+ *
+ * 用户原话：「多个空的答题，ai把四个空都回答的全部答案以///分开填了四个一样的错误答案」。
+ * 根因两层：`_splitFillAnswerParts` 先前只认提示词约定的 `|||`，模型自己改用 `///` 时
+ * 整串被当成**一个**答案；接着 `_fillText` 那条"分不到就重复最后一格"的兜底把同一串写进每一格。
+ * 修法按"段数==格子数才认非常规分隔符"，对不上就照旧整串（批次 16 的不留白口径）+ 单独一格日志。
+ *
+ * ⚠️ 六个形状**各钉一格**，是因为"四格一样"这个症状有三种完全不同的成因：
+ * 分隔符根本不认（`none`）、认出来了但段数不对（`loose-count-off`）、`|||` 本身就少一段。
+ * 压成一句话下次还得重新查（AGENTS §2 #12）。
+ */
+SCENARIOS.push({
+  name: '多空填空的答案用 /// 或全角竖线时也按空切开，对不上空数要单独说',
+  path: '/quiz',
+  run: async function (ctx) {
+    var html =
+      '<div class="TiMu" qid="9401" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">41.</span>【填空题】四格，答案用三斜杠分隔</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9401b1">，' +
+      '乙格<input type="text" class="answerText" id="q9401b2">，' +
+      '丙格<input type="text" class="answerText" id="q9401b3">，' +
+      '丁格<input type="text" class="answerText" id="q9401b4">。</div>' +
+      '<input type="hidden" id="answer9401" value=""></div>' +
+      '<div class="TiMu" qid="9402" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">42.</span>【填空题】四格，答案里只有单斜杠</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9402b1">，' +
+      '乙格<input type="text" class="answerText" id="q9402b2">，' +
+      '丙格<input type="text" class="answerText" id="q9402b3">，' +
+      '丁格<input type="text" class="answerText" id="q9402b4">。</div>' +
+      '<input type="hidden" id="answer9402" value=""></div>' +
+      '<div class="TiMu" qid="9403" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">43.</span>【填空题】四格，三斜杠只给三段</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9403b1">，' +
+      '乙格<input type="text" class="answerText" id="q9403b2">，' +
+      '丙格<input type="text" class="answerText" id="q9403b3">，' +
+      '丁格<input type="text" class="answerText" id="q9403b4">。</div>' +
+      '<input type="hidden" id="answer9403" value=""></div>' +
+      '<div class="TiMu" qid="9404" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">44.</span>【填空题】只有一格，答案自带三斜杠</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9404b1">。</div>' +
+      '<input type="hidden" id="answer9404" value=""></div>' +
+      '<div class="TiMu" qid="9405" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">45.</span>【填空题】四格，答案用全角竖线分隔</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9405b1">，' +
+      '乙格<input type="text" class="answerText" id="q9405b2">，' +
+      '丙格<input type="text" class="answerText" id="q9405b3">，' +
+      '丁格<input type="text" class="answerText" id="q9405b4">。</div>' +
+      '<input type="hidden" id="answer9405" value=""></div>' +
+      '<div class="TiMu" qid="9406" typename="填空题">' +
+      '<div class="Zy_TItle clearfix"><div class="Pt1"><span class="fontLabel">46.</span>【填空题】三格，约定分隔符只给两段</div></div>' +
+      '<div class="Ty_sort_text">甲格<input type="text" class="answerText" id="q9406b1">，' +
+      '乙格<input type="text" class="answerText" id="q9406b2">，' +
+      '丙格<input type="text" class="answerText" id="q9406b3">。</div>' +
+      '<input type="hidden" id="answer9406" value=""></div>';
+
+    var out = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp;' +
+      // 日志缓冲挂在这个全局上，本场景自己认领；记账字典也自己清 ——
+      // 它是页内存里的"同一形状只说一次"，前一个场景写过就会把这一场的取证吞掉。
+      'var logs=window.__b137=(window.__b137||[]);' +
+      'window.addEventListener("message",function(e){var m=e.data;' +
+      '  if(m&&m.source==="xxt_app"&&m.type==="runtime_log")logs.push(m);});' +
+      'app._fillSplitNotified=Object.create(null);' +
+      'var f=document.createElement("iframe");f.style.width="900px";f.style.height="700px";' +
+      'document.body.appendChild(f);' +
+      'var d=f.contentDocument;d.body.innerHTML=' + JSON.stringify(html) + ';' +
+      'window.__b137Frame=f;' +
+      'var qs=app._extractFromDocument(d);' +
+      // 夹具自证：六个形状必须都被真解析器认成填空题、框数分别是 4/4/4/1/4/3 ——
+      // 红了就是夹具被改过，后面所有断言测的都是一个不存在的形状。
+      'var types=qs.map(function(q){return String(q.type);});' +
+      'var boxes=qs.map(function(q){' +
+      '  return q._element.querySelectorAll("input[type=text], input:not([type])").length;});' +
+      'var answers=["甲///乙///丙///丁","甲/乙/丙/丁","甲///乙///丙","甲///乙",' +
+      '"甲｜｜｜乙｜｜｜丙｜｜｜丁","甲|||乙"];' +
+      'var val=function(id){var e=d.getElementById(id);return e?String(e.value):"<无>";};' +
+      'var hid=function(q){return val("answer"+q);};' +
+      'var grid=function(q,n){var a=[];for(var i=1;i<=n;i++)a.push(val("q"+q+"b"+i));return a;};' +
+      'var round=function(){' +
+      '  app._quizCurrentAnsweredKeys={};app._quizCurrentAnswerValues={};' +
+      '  app._fillAnswers(answers,qs,d);};' +
+      'round();' +
+      'var r1={9401:grid(9401,4),9402:grid(9402,4),9403:grid(9403,4),9404:grid(9404,1),' +
+      '  9405:grid(9405,4),9406:grid(9406,3),' +
+      '  h1:hid(9401),h2:hid(9402),h4:hid(9404),h6:hid(9406)};' +
+      'var notes1=logs.filter(function(m){' +
+      '  return String(m.message||"")==="fill answers not splittable per blank";}).length;' +
+      // 第二轮：同一份答案再来一次，格子内容不许变，"拆不出来"也不许每轮复读
+      'round();' +
+      'var r2={9401:grid(9401,4),9402:grid(9402,4),9406:grid(9406,3)};' +
+      'return {n:qs.length,types:types.join(","),boxes:boxes.join(","),r1:r1,r2:r2,notes1:notes1};})()'
+    );
+    check('夹具自证：六道题都是填空题，答题框数依次 4/4/4/1/4/3',
+      out && out.n === 6 && out.types === 'fill,fill,fill,fill,fill,fill' && out.boxes === '4,4,4,1,4,3',
+      JSON.stringify(out && { n: out.n, types: out.types, boxes: out.boxes }));
+    check('模型用三斜杠分隔的四段答案，四格各得一段（不再是四格一样）',
+      out && JSON.stringify(out.r1 && out.r1['9401']) === JSON.stringify(['甲', '乙', '丙', '丁']) &&
+      out.r1 && out.r1.h1 === '甲乙丙丁',
+      JSON.stringify(out && { b: out.r1 && out.r1['9401'], hidden: out.r1 && out.r1.h1 }));
+    check('模型用全角竖线分隔的四段答案同样切开',
+      out && JSON.stringify(out.r1 && out.r1['9405']) === JSON.stringify(['甲', '乙', '丙', '丁']),
+      JSON.stringify(out && out.r1 && out.r1['9405']));
+    check('单枚斜杠不算分隔符：四格仍是同一整串（答案里 2024/07 这种会被切错）',
+      out && JSON.stringify(out.r1 && out.r1['9402']) === JSON.stringify(['甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁']) &&
+      out.r1 && out.r1.h2 === '甲/乙/丙/丁',
+      JSON.stringify(out && { b: out.r1 && out.r1['9402'], hidden: out.r1 && out.r1.h2 }));
+    check('三斜杠只有三段而格子有四个：段数对不上就不切，四格同一整串',
+      out && JSON.stringify(out.r1 && out.r1['9403']) === JSON.stringify(['甲///乙///丙', '甲///乙///丙', '甲///乙///丙', '甲///乙///丙']),
+      JSON.stringify(out && out.r1 && out.r1['9403']));
+    check('只有一格的题不许被切开（单空的答案本来就常带斜杠）',
+      out && JSON.stringify(out.r1 && out.r1['9404']) === JSON.stringify(['甲///乙']) &&
+      out.r1 && out.r1.h4 === '甲///乙',
+      JSON.stringify(out && { b: out.r1 && out.r1['9404'], hidden: out.r1 && out.r1.h4 }));
+    check('约定分隔符 ||| 少一段时照旧切两段、第三格重复最后一格（批次 16 不留白口径没变）',
+      out && JSON.stringify(out.r1 && out.r1['9406']) === JSON.stringify(['甲', '乙', '乙']) &&
+      out.r1 && out.r1.h6 === '甲乙',
+      JSON.stringify(out && { b: out.r1 && out.r1['9406'], hidden: out.r1 && out.r1.h6 }));
+    check('第二轮同样答案：格子内容与第一轮一致（幂等，不重切不错位）',
+      out && JSON.stringify(out.r2) === JSON.stringify({
+        '9401': ['甲', '乙', '丙', '丁'],
+        '9402': ['甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁', '甲/乙/丙/丁'],
+        '9406': ['甲', '乙', '乙']
+      }),
+      JSON.stringify(out && out.r2));
+
+    // emitRuntimeLog 走 postMessage，异步送达：等一拍再读缓冲，
+    // 否则"该发的没发"与"没送到"同形（AGENTS §5）。
+    await sleep(400);
+    var logged = await ctx.client.evaluate(
+      '(function(){' +
+      'var logs=(window.__b137||[]).filter(function(m){' +
+      '  return String(m.message||"")==="fill answers not splittable per blank";});' +
+      'var byQ={};logs.forEach(function(m){var q=String((m.meta&&m.meta.qid)||"");' +
+      '  if(!byQ[q])byQ[q]={separator:String(m.meta.separator),parts:m.meta.parts,boxes:m.meta.boxes,empty:m.meta.emptyAnswer};});' +
+      'var f=window.__b137Frame;if(f&&f.parentNode)f.parentNode.removeChild(f);' +
+      'window.__b137=[];' +
+      'return {count:logs.length,qids:Object.keys(byQ).sort().join(","),cells:byQ};})()'
+    );
+    check('「拆不出来」逐格点名：9402 是压根没分隔符、9403 是认出来但段数不对、9406 是约定分隔符少一段',
+      logged && logged.qids === '9402,9403,9406' &&
+      logged.cells['9402'] && logged.cells['9402'].separator === 'none' &&
+      logged.cells['9402'].parts === 1 && logged.cells['9402'].boxes === 4 && logged.cells['9402'].empty === false &&
+      logged.cells['9403'] && logged.cells['9403'].separator === 'loose-count-off:///' &&
+      logged.cells['9403'].parts === 1 && logged.cells['9403'].boxes === 4 &&
+      logged.cells['9406'] && logged.cells['9406'].separator === 'normal' &&
+      logged.cells['9406'].parts === 2 && logged.cells['9406'].boxes === 3,
+      JSON.stringify(logged && { qids: logged.qids, cells: logged.cells }));
+    check('切开成功的那三题（4/4/1 格各对上门数）一条都不许说，且同一形状只说一次（两轮共 3 条）',
+      logged && logged.count === 3 && logged.qids === '9402,9403,9406' &&
+      (!logged.cells['9401'] && !logged.cells['9404'] && !logged.cells['9405']),
+      JSON.stringify(logged && { count: logged.count, qids: logged.qids }));
+  }
+});
+
+/**
  * ---- 批次 21：投票任务点（insertvote）----
  *
  * 现场（2026-11-11 真页实测，章节 9000049220）：那一节只剩一个未完成的任务盒，
@@ -18554,7 +20497,7 @@ SCENARIOS.push({
       'var f=document.getElementById("voteIframe");var vc=document.querySelector(".voteContainer");' +
       // 覆盖层有没有**压在正文上** —— 现场量的那层 1691x828 白纸一直挂着，「下一节」就点在它身上。
       // ⚠️ 采样点取容器自己的左上角内侧，**不取视口中心**：沙盒里视口中心被扩展自己那台
-      //    日志面板（`#xxt-panel`，z-index 比覆盖层高）占着，元素命中判定量到的永远是面板，
+      //    日志面板（`#omitone-status-panel-host`，z-index 比覆盖层高）占着，元素命中判定量到的永远是面板，
       //    于是"覆盖层压没压住"读不出来（批次 80 上一轮 `openedHit:"other"` 就是这么来的）。
       //    面板那一格仍然回读进 `centerChain`，一眼分得开是面板还是别的东西。
       'function hitAt(px,py){var el=document.elementFromPoint(px,py);var chain="";var hop=0,n=el;' +
@@ -18891,6 +20834,18 @@ SCENARIOS.push({
   path: '/quiz-real',
   run: async function (ctx) {
     var before = ctx.mock.requests.length;
+    // 进门先记存储里那一份 `config`：本场要把它钉成自己需要的那张（①–④ 要 10 秒窗口、⑤ 要 0），
+    // 收尾再交回 —— 不交回就是"本场改掉了后面每一个场景的模型配置"（§5 夹具要钉住共享状态）。
+    var cfgStoreBefore = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    // ⚠️ 钉存储不是多余的一发（任务 #63）：页面这一侧的 `app.configs` 有两个来源 ——
+    // 刷新后 `startIfMarked` 拿回包做的是**整份替换**，而运行中 `XXT_CONFIG_UPDATED` 是逐字段合并
+    // （`00-shell-constants.js:434`）。两条都只认**存储那一份**，所以只在内存里赋值的那一发
+    // 会被顶掉，顶掉之后用的是**上一场留在盘上的数** —— 表现成"同一把尺今天绿、明天红三条"。
+    // 从进门就钉，①–④ 那 10 秒窗口才不再靠"上一个场景恰好没改过它"。
+    await writeConfig(ctx.extensionId, Object.assign({}, cfgStoreBefore.val.config || {}, {
+      enableQuiz: true, randomAnswer: true, apiKey: '', hasApiKey: false,
+      autoNext: false, enableCaptcha: false, enableDiscussion: false, randomAnswerReviewSec: 10
+    }));
 
     // 夹具自证（AGENTS §5：夹具要长得像现场，否则测的是"代码和自己一致"）：
     // 现场那三样提交入口 + 填空题两个可见输入框，缺一样这条测的就不是这件事。
@@ -19007,10 +20962,49 @@ SCENARIOS.push({
       JSON.stringify(sim && sim.done));
 
     // ===== ⑤ 窗口设成 0：完全不自动交卷，且不许把用户的答案反复随机冲掉 =====
+    // ⚠️ 这一段的"钉"要先落到**存储**，再刷新（批次 177 / 任务 #63）。刷新后 page.js 走的是
+    // `startIfMarked` → `app.configs = mergeConfig(config || defaultConfig)` —— **整份替换**，
+    // 不是逐字段合并。只在内存里赋值那一发会被随后到达的 `get_config` 回包整个顶掉，顶掉之后
+    // `randomAnswerReviewSec` 用的是**上一场留在盘上的那枚数**：于是"窗内不交 / 到点才交"量的
+    // 其实是上一个场景点了哪几枚开关（现场表现 = 同一把尺今天绿、明天红三条）。
+    // 内存那一发照旧留着（它把"不靠回包先后"钉成两条来源相等），但真源是存储那一份。
+    var pinCfg = { enableQuiz: true, randomAnswer: true, apiKey: '', hasApiKey: false,
+      autoNext: false, enableCaptcha: false, enableDiscussion: false, randomAnswerReviewSec: 0 };
+    await writeConfig(ctx.extensionId, Object.assign({}, cfgStoreBefore.val.config || {}, pinCfg));
     await ctx.client.evaluate('location.reload()').catch(function () {});
     var readyBy = Date.now() + 10000;
     while (Date.now() < readyBy && !(await ctx.client.evaluate(
       'document.readyState==="complete" && !!window._xxtApp && !!document.getElementById("submitBtn")'))) await sleep(200);
+    // 夹具自证，两把尺各读一次：**盘上那一份**与**页面自己读到的那一份**都得是那一枚 0。
+    // 只断"我们写了"不算数 —— 这一族的失败形状恰恰是"写对了却被回包顶掉"，所以页面那一侧要
+    // 按**状态**轮询（不是拉长等待：快机器恒绿、慢机器恒红，AGENTS §5），到点还不同就单独占一格。
+    var storePin = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    var pinRead = { storedSec: (storePin.val.config || {}).randomAnswerReviewSec,
+      storedRandom: (storePin.val.config || {}).randomAnswer === true,
+      storedKeyBlank: (storePin.val.config || {}).apiKey === '' };
+    var memPin = null;
+    var pinBy = Date.now() + 8000;
+    while (Date.now() < pinBy) {
+      // ⚠️ 页面读到的那一份是 content.js `loadConfig()` 过完 `publicConfig` 之后的**投影**：
+      // `apiKey` 结构性地不在这张表里（只在隔离世界留给 SW 发请求用），页面拿到的只有
+      // `hasApiKey` 那一格。所以"钉成没有凭据"在页面侧的长相是 **没有 apiKey 字段 + hasApiKey:false**，
+      // 断 `apiKey === ""` 量的是一句永远不成立的事（本轮第一版就红在这里）。
+      memPin = await ctx.client.evaluate(
+        '(function(){var c=(window._xxtApp||{}).configs||{};' +
+        'return { hasKey:Object.prototype.hasOwnProperty.call(c,"randomAnswerReviewSec"),' +
+        '  sec:c.randomAnswerReviewSec, random:c.randomAnswer===true, quiz:c.enableQuiz===true,' +
+        '  noKeyField:!Object.prototype.hasOwnProperty.call(c,"apiKey"),' +
+        '  hasApiKey:Object.prototype.hasOwnProperty.call(c,"hasApiKey") ? c.hasApiKey : "(缺)" };})()');
+      if (memPin && memPin.sec === 0 && memPin.random === true && memPin.quiz === true &&
+          memPin.noKeyField === true && memPin.hasApiKey === false) break;
+      await sleep(200);
+    }
+    // 取证只印这几格布尔与那枚秒数，不印整张 config（里面有 apiKey）。
+    check('前提：刷新后存储与页面内存两处读到的都是钉住的那份（回包顶不掉 —— 两处同源，不是靠先后）',
+      pinRead.storedSec === 0 && pinRead.storedRandom === true && pinRead.storedKeyBlank === true &&
+      !!memPin && memPin.hasKey === true && memPin.sec === 0 && memPin.random === true &&
+      memPin.quiz === true && memPin.noKeyField === true && memPin.hasApiKey === false,
+      JSON.stringify({ stored: pinRead, mem: memPin, agreed: !!memPin && memPin.sec === pinRead.storedSec }).slice(0, 240));
     await ctx.client.evaluate(
       '(function(){window.__b24=[];if(!window.__b24Bound){window.__b24Bound=true;' +
       'window.addEventListener("message",function(e){var m=e.data;' +
@@ -19077,6 +21071,14 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{randomAnswer:false});return true;})()'
     );
+    // 交回进门那一份存储 config（⑤ 为了钉 0 整张写过盘，apiKey 也在里面）。
+    // 交完读回来比一次 —— "打了句话"不算交回（同一场混沌猴那条的纪律）。
+    await handBackPopupStore(await initConfigWriter(ctx.extensionId), cfgStoreBefore, ['config']);
+    var cfgBack = await readPopupStore(await initConfigWriter(ctx.extensionId), ['config']);
+    check('乱选这一场把存储里的 config 交回进门那份（钉 0 那一发不外溢）',
+      diffStoreKeys(cfgStoreBefore, cfgBack, ['config']).length === 0,
+      JSON.stringify({ differ: diffStoreKeys(cfgStoreBefore, cfgBack, ['config']),
+        hasBefore: cfgStoreBefore.has.config, hasAfter: cfgBack.has.config }).slice(0, 200));
   }
 });
 
@@ -19150,7 +21152,7 @@ SCENARIOS.push({
     var stored = await ctx.client.evaluate(
       'new Promise(function(res){chrome.storage.local.get("config",function(r){' +
       'var c=(r&&r.config)||{};res({slow:String(c.slowMachineMode),' +
-      'reviewSec:c.randomAnswerReviewSec,rate:c.playbackRate,muted:c.muted});});})');
+      'reviewSec:c.randomAnswerReviewSec,cap:c.playbackRateCap,muted:c.muted});});})');
     check('点一下开关：界面翻过去且**没被回滚**（回滚就等于保存被拒）',
       !!s1 && s1.on === !wasOn && s1.aria === String(!wasOn),
       JSON.stringify({ wasOn: wasOn, now: s1 && s1.on, toast: toast.slice(0, 80) }));
@@ -20195,23 +22197,41 @@ SCENARIOS.push({
     var arm = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
       'app.configs=Object.assign({},app.configs,{documentSkipTimeoutMs:1000});' +
+      // 批次 174：站点那句「外部视频…不支持播放」**现在就写在页面上**，而这一节有媒体节点 ——
+      // 新加的那一格结构上不该被走到（残留的那句话可能属于同一文档里另一支媒体，#17 同一族：
+      // 只有「压根拿不到元素」那一形才许由它提前收手）。
+      'if(!document.getElementById("b174-site")){var d174=document.createElement("div");' +
+      'd174.id="b174-site";d174.className="play-status";' +
+      'd174.textContent="非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。";' +
+      'document.getElementById("iframe").appendChild(d174);}' +
       'app._videoEl=v;app._activeMediaJobPending=true;app._isPlaying=true;' +
       'app._mediaNoSourceSince=0;app._mediaWaitLogAt=0;window.__b40i=[];' +
       'var p1=app._isActiveMediaPending("completion-check")===true;' +
       'var armed=Number(app._mediaNoSourceSince)||0;' +
       'var p2=app._isActiveMediaPending("ocs-runner-active-job")===true;' +
       'return {p1:p1,p2:p2,armed:armed,armedFresh:armed>0&&(Date.now()-armed)<5000,' +
+      '  hasSite:!!document.getElementById("b174-site"),' +
+      '  siteSaid:(function(){try{var r=app._siteSaysUnplayable(document);return r.state;}catch(e){return "throw";}})(),' +
       '  stillPending:!!app._activeMediaJobPending,holds:app._videoEl===v};})()'
     );
+    check('40-A 前提（批次 174 补）：站点那句话确实长在**这一页**上、而且我们的读取器在真页面里读得到（`said`）—— ' +
+      '这句话不在场，下面那句"提前收手一次都没走"就是空测（§5「注入落盘 ≠ 注入生效」的反面：前提没钉住的红与绿都不算证据）',
+      !!arm && arm.hasSite === true && arm.siteSaid === 'said' && arm.p1 === true && arm.holds === true,
+      JSON.stringify(arm));
     await sleep(400);
     var earlyLogs = await ctx.client.evaluate(
-      '(function(){var n=0;(window.__b40i||[]).forEach(function(m){' +
-      'if(String(m.message||"").indexOf("media has no source")===0)n++;});' +
-      'window.__b40i=[];return n;})()');
+      '(function(){var n=0,u=0;(window.__b40i||[]).forEach(function(m){' +
+      'var s=String(m.message||"");' +
+      'if(s.indexOf("media has no source")===0)n++;' +
+      'if(s.indexOf("media unplayable by site player")===0)u++;});' +
+      'window.__b40i=[];return {n:n,u:u};})()');
     check('40-A：窗口没到就**仍然占住**（首帧慢的视频不能被当成死源扔掉）—— ' +
-      '第 1 次调用把计时武装起来，第 2 次还在窗口内，两条都返回 true、一条放手日志都不许有',
+      '第 1 次调用把计时武装起来，第 2 次还在窗口内，两条都返回 true、一条放手日志都不许有。' +
+      '批次 174 加的第二半：站点那句话在场时也**不许**冒出「media unplayable by site player」—— ' +
+      '那一格只管"页面里压根没有媒体节点"，有 `<video>` 时提前收手就是把还能播的视频判死',
       !!arm && arm.p1 === true && arm.p2 === true && arm.armedFresh === true &&
-      arm.stillPending === true && arm.holds === true && earlyLogs === 0,
+      arm.stillPending === true && arm.holds === true &&
+      !!earlyLogs && earlyLogs.n === 0 && earlyLogs.u === 0,
       JSON.stringify({ arm: arm, earlyLogs: earlyLogs }));
 
     var release = await ctx.client.evaluate(
@@ -20224,9 +22244,11 @@ SCENARIOS.push({
     );
     await sleep(400);
     var relLog = await ctx.client.evaluate(
-      '(function(){var out={n:0,first:null,levels:{}};' +
+      '(function(){var out={n:0,unplayable:0,first:null,levels:{}};' +
       '(window.__b40i||[]).forEach(function(m){' +
-      '  if(String(m.message||"").indexOf("media has no source")===0){' +
+      '  var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.unplayable++;return;}' +
+      '  if(s.indexOf("media has no source")===0){' +
       '    out.n++;out.levels[m.level]=(out.levels[m.level]||0)+1;if(!out.first)out.first=m;}});' +
       'window.__b40i=[];return out;})()');
     check('40-A：超过窗口就**有界放手**（返回 false、pending / 播放标志 / 抓着的元素全部复位，' +
@@ -20235,12 +22257,18 @@ SCENARIOS.push({
       release.playing === false && release.el === false && release.counter === 0,
       JSON.stringify(release));
     check('40-A：放手必须留话（warn 一条，带 readyState / networkState / heldMs / src 和 reason）—— ' +
-      '静默跳过用户的任务点是这个项目不许的事，而且"视频没播成"和"这节压根没视频"得分得开',
-      !!relLog && relLog.n === 1 && relLog.levels && relLog.levels.warn === 1 &&
+      '静默跳过用户的任务点是这个项目不许的事，而且"视频没播成"和"这节压根没视频"得分得开。' +
+      '批次 174 加的两半：这一格的取证现在**捎上站点自己那句话**（`siteText` + `siteQuote`，' +
+      '用户照着「没有源」往网络方向查是错的，站点早就把原因写在页面上了），' +
+      '而到点放手这一族**仍然只由 120 秒那一格说话**（提前收手那一格 0 条 —— 新格是更早的出口，不是旧格的替换品）',
+      !!relLog && relLog.n === 1 && relLog.unplayable === 0 &&
+      relLog.levels && relLog.levels.warn === 1 &&
       !!relLog.first && !!relLog.first.meta &&
       Number(relLog.first.meta.readyState) === 0 && Number(relLog.first.meta.networkState) === 3 &&
       Number(relLog.first.meta.heldMs) >= 1500 && typeof relLog.first.meta.src === 'string' &&
-      String(relLog.first.meta.reason) === 'completion-check',
+      String(relLog.first.meta.reason) === 'completion-check' &&
+      String(relLog.first.meta.siteText) === 'said' &&
+      String(relLog.first.meta.siteQuote).indexOf('外部视频') >= 0,
       JSON.stringify(relLog && relLog.first));
 
     var recover = await ctx.client.evaluate(
@@ -20268,6 +22296,142 @@ SCENARIOS.push({
     check('40-A：放手后这个判据**自己不会重新占住** —— 要再占住必须有人重新登记媒体任务；' +
       '计时留着旧值也不许让它直接返回 true（否则只是把停摆往后推 120 秒，这一节照样翻不过去）',
       !!repeat && repeat.p === false, JSON.stringify(repeat));
+  }
+});
+
+/** ---- 55c. 站点自己写「该视频为外部视频…不支持播放」时不许白等（批次 174 / issue #225）----
+ * 用户报的现场形状（截图在 `notes/field-225-unplayable.md`）：站点把播放器**整块换成一句话**，
+ * 页面里既没有 `<video>` 也没有 `<audio>`。改动前这一发照旧空等满 8 秒，而且只在控制台说一声
+ * （日志环一个字都没有）—— 用户看见的就是「扩展在跑、就是不做这一节、且不说为什么」。
+ *
+ * ⚠️ 为什么集成层九格全绿还要在真浏览器里再跑一遍：集成层的假 DOM 证不到**这三样** ——
+ *    真页面里 `querySelectorAll('video, audio')` 确实为空、真 `body.textContent` 确实读得到站点那句话、
+ *    真 `emitRuntimeLog` 确实发到父窗口（AGENTS §2 #14：不许停在"决定不做"，且要留得回话的日志）。
+ * ⚠️ C 段那一发**故意花满 8 秒**：它是这一族唯一能证「新格不是把整条等待都短路掉了」的对照
+ *    （摘掉新格必须仍由旧格兜住 —— 边界二）。D 段只补「读不出」那一格，因为顶层文档有 body 时
+ *    现场结构性读不出来的只有裸读抛异常/压根没有文档上下文，那两形在页面上造不出来，只能直调。
+ */
+SCENARIOS.push({
+  name: '站点写「外部视频不支持播放」时不再白等且不冒领完成',
+  path: '/media',
+  run: async function (ctx) {
+    var SITE_SENTENCE = '非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。';
+
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'try{app._clearTickLoop();}catch(e){}try{app._clearCheckInterval();}catch(e){}' +
+      'app._isPlaying=false;app._activeMediaJobPending=false;app._videoEl=null;' +
+      'app.configs=Object.assign({},app.configs,{enableMedia:true});' +
+      'window.__b174=[];' +
+      'if(!window.__b174Bound){window.__b174Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b174.push(m);});}' +
+      // 现场那一屏：播放器没了，只剩站点自己拼的那句话；平台那枚完成标记仍写着"未完成"
+      'var box=document.getElementById("iframe")||document.body;' +
+      '["omitone-video","omitone-audio"].forEach(function(id){var el=document.getElementById(id);if(el&&el.parentNode)el.parentNode.removeChild(el);});' +
+      'var d=document.createElement("div");d.id="b174-site";d.className="play-status";' +
+      'd.textContent=' + JSON.stringify(SITE_SENTENCE) + ';box.appendChild(d);' +
+      'var f=document.createElement("input");f.type="hidden";f.id="isFinished";f.value="false";box.appendChild(f);' +
+      'var found=null;try{found=app._findMediaInDocument(document);}catch(e){found="throw";}' +
+      'var probe=null;try{probe=app._siteSaysUnplayable(document);}catch(e){probe={state:"throw"};}' +
+      'return {mediaNodes:document.querySelectorAll("video, audio").length,found:typeof found,' +
+      '  inDom:document.body.textContent.indexOf("外部视频")>=0&&document.body.textContent.indexOf("不支持播放")>=0,' +
+      '  mediaOn:app.configs.enableMedia===true,state:probe&&probe.state,hop:probe&&probe.hop,' +
+      '  group:probe&&probe.group,quote:probe&&probe.quote,fin:document.getElementById("isFinished").value};})()'
+    );
+    check('174 夹具自证：这一页被改成**现场那一屏的形状**（真 DOM 里既没有 video 也没有 audio、' +
+      '`_findMediaInDocument` 当场读出 null、站点那句话在 `body.textContent` 里读得回来、读取器给出 `said`）—— ' +
+      '这几样只要有一样不成立，下面"提前收手"就是空测（§5「注入落盘 ≠ 注入生效」：前提没钉住的绿不算绿）',
+      !!shape && shape.mediaNodes === 0 && shape.found === 'object' && shape.inDom === true &&
+      shape.mediaOn === true && shape.state === 'said' && shape.hop === 0 &&
+      String(shape.quote || '').indexOf('该视频为外部视频') >= 0 && shape.fin === 'false',
+      JSON.stringify(shape));
+
+    var early = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;window.__b174=[];' +
+      'var t0=Date.now();' +
+      'var ret=await app._playChaoxingMediaJob({doc:document,name:"外部视频那一节",jobid:"b174"});' +
+      'return {ret:ret,ms:Date.now()-t0,pend:!!app._activeMediaJobPending,playing:!!app._isPlaying,' +
+      '  el:!!app._videoEl,fin:document.getElementById("isFinished").value,' +
+      '  boxes:document.querySelectorAll(".ans-job-finished").length};})()'
+    );
+    await sleep(400);
+    var earlyLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,silent:0,done:0,names:[],first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  out.names.push(s);' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;if(!out.first)out.first=m;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0)out.silent++;' +
+      '  if(s.indexOf("finished")>=0||s.indexOf("completed")>=0||s.indexOf("report")>=0)out.done++;});' +
+      'window.__b174=[];return out;})()');
+    check('174-A：站点说了这句话就**提前收手**（不再空等满 8 秒）且交回 `false` 让本节重新派发 —— ' +
+      '放行那一格必须有名字、有站点原话、有"等了多久"（同 #220 的口径：照抄站点那句话给用户，别自己发明），' +
+      '而 pending / 播放标志 / 抓着的元素都要复位（不清就等于把这一节钉死在"正在等媒体"上）',
+      !!early && early.ret === false && early.ms < 2000 && early.pend === false &&
+      early.playing === false && early.el === false &&
+      !!earlyLogs && earlyLogs.said === 1 && earlyLogs.silent === 0 &&
+      !!earlyLogs.first && String(earlyLogs.first.level) === 'warn' &&
+      String(earlyLogs.first.message) === 'media unplayable by site player' &&
+      !!earlyLogs.first.meta && String(earlyLogs.first.meta.siteText) === 'said' &&
+      String(earlyLogs.first.meta.name) === '外部视频那一节' &&
+      String(earlyLogs.first.meta.quote).indexOf('该视频为外部视频') >= 0 &&
+      Number(earlyLogs.first.meta.hop) === 0 && Number(earlyLogs.first.meta.waitedMs) >= 0 &&
+      Number(earlyLogs.first.meta.waitedMs) < 2000,
+      JSON.stringify({ early: early, logs: earlyLogs }));
+    check('174-A 边界一（只许减少等待，不许标记完成）：这一趟**一个完成写入口都没碰** —— ' +
+      '平台那枚 `#isFinished` 照旧是 `false`、任务盒上没有多出 `.ans-job-finished`、' +
+      '日志环里没有任何 finished/completed/report 字样。「站点说不支持」不是「这一节做完了」，' +
+      '把话说清楚之后仍然要交回派发（反复重派由 `_countTaskIncomplete` 的 4 次 / 24 小时收住）',
+      !!early && early.fin === 'false' && early.boxes === 0 && !!earlyLogs && earlyLogs.done === 0,
+      JSON.stringify({ fin: early && early.fin, boxes: early && early.boxes, names: earlyLogs && earlyLogs.names }));
+
+    // C 段：站点**没说**这句话时照旧花满整窗 —— 新格不许把整条等待短路掉（边界二）
+    var full = await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;var d=document.getElementById("b174-site");' +
+      'if(d&&d.parentNode)d.parentNode.removeChild(d);window.__b174=[];' +
+      'var st=app._siteSaysUnplayable(document);' +
+      'var t0=Date.now();' +
+      'var ret=await app._playChaoxingMediaJob({doc:document,name:"没写外部视频的那一节",jobid:"b174c"});' +
+      'return {ret:ret,ms:Date.now()-t0,state:st&&st.state};})()'
+    );
+    await sleep(400);
+    var fullLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,pending:0,first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0){out.pending++;if(!out.first)out.first=m;}});' +
+      'window.__b174=[];return out;})()');
+    check('174-C：站点**没说**这句话时不许由它编出一个"不支持"—— 照旧花满整个窗口（这一发真的要等满 8 秒，' +
+      '它是这一族唯一能证"新格是更早的出口、不是替换品"的对照），放手说的是另一句有名字的话，' +
+      '并且取证里 `siteText` 老实写着 `silent`（= 整条链读得下去而站点没说过）',
+      !!full && full.ret === false && full.state === 'silent' && full.ms >= 7500 &&
+      !!fullLogs && fullLogs.said === 0 && fullLogs.pending === 1 &&
+      !!fullLogs.first && String(fullLogs.first.meta.siteText) === 'silent' &&
+      String(fullLogs.first.meta.name) === '没写外部视频的那一节' &&
+      Number(fullLogs.first.meta.waitedMs) >= 7500,
+      JSON.stringify({ full: full, logs: fullLogs }));
+
+    // D 段：「读不出」单独占一格 —— 现场造不出这形（顶层文档有 body 时只有裸读抛异常才会读不出），故直调
+    var third = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b174=[];' +
+      'app._activeMediaJobPending=true;' +
+      'var r=app._releaseMediaNotFound("读不出的那一节",null,120);' +
+      'return {r:r,pend:!!app._activeMediaJobPending};})()'
+    );
+    await sleep(400);
+    var thirdLogs = await ctx.client.evaluate(
+      '(function(){var out={said:0,pending:0,first:null};' +
+      '(window.__b174||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s.indexOf("media unplayable by site player")===0){out.said++;return;}' +
+      '  if(s.indexOf("media not ready, release pending")===0){out.pending++;if(!out.first)out.first=m;}});' +
+      'window.__b174=[];return out;})()');
+    check('174-D：「读不出」不许塌进「站点没说」，更不许冒领「站点说了」—— 三格各有各的名字与读数' +
+      '（`said` / `silent` / `unreadable`），这一格交回读不出时日志照旧要出、pending 照旧要清、' +
+      '返回值照旧是 false（§2 #12：压成两态时"读不出"那一支必然被误划成"已完成"，而且一条日志都不留）',
+      !!third && third.r === false && third.pend === false &&
+      !!thirdLogs && thirdLogs.said === 0 && thirdLogs.pending === 1 &&
+      !!thirdLogs.first && String(thirdLogs.first.meta.siteText) === 'unreadable' &&
+      Number(thirdLogs.first.meta.waitedMs) === 120 && Number(thirdLogs.first.meta.hop) === -1,
+      JSON.stringify({ third: third, logs: thirdLogs }));
   }
 });
 
@@ -21078,7 +23242,7 @@ SCENARIOS.push({
  *    同理每个数（附件数 / 等级 / emptyForMs）都从**发出来的日志**里读回来，不拿夹具常量比。 */
 SCENARIOS.push({
   name: '空章节的等待不再顶成「注意」（问一句的那一路闭嘴）',
-  path: '/mycourse/studentstudy',
+  path: '/mycourse/studentstudy-blank',
   run: async function (ctx) {
     function readSearchLogs() {
       return ctx.client.evaluate(
@@ -22458,6 +24622,154 @@ SCENARIOS.push({
       String(picked7[1].probeWhy || '').indexOf('403') !== -1,
       JSON.stringify({ key: s7c.key, cases: c7, metas: picked7, base: s7c.base, names: l7c.names.slice(s7c.base) }));
 
+    // ⑧ 队列 #26 取证（批次 179）：被站点退回的课**不靠"优先"也不会永久饿死** —— 把这句量成读数。
+    //    唯一那扇门是 `src/page/64-tasks-loop.js` 里「账本 `at` 早于 N 小时就重新起账」那一发，
+    //    而它以前**一条断言都没有**（全仓没有一处把 ledger 的 `at` 写成 6 小时之前，只有一律 `Date.now()`）。
+    //    ⚠️ 那一发用的 6 小时**从方法源码里读回来**，不在测试里写死（§5「断言里出现的每一个数都要说得出从哪读回来」）。
+    //    ⚠️ 两发各起一次 evaluate、各自取日志基线：三段挤在同一发里时 logA 与 logB 读到的是**同一个数**
+    //       （那一拍的消息还没送达），⑧-a 的切片会把 ⑧-b 那句「挑中了」一起算进去 —— 批次 179 实测红在这里。
+    //    ⚠️ 地址要钉成「带 omitonePick、不带 omitoneDone」：`omitonePick` 是「这一页是我们自己导航来的」那枚闸
+    //       （方法头一句 `_coursePickRequested()` 就认它，少了它整段直接 return false、一个字不说 —— 本格第一次就红在这里，
+    //       症状与"6 小时那一发没生效"逐字相同）；而留着 `omitoneDone` 会让刚报完那门被重新登记进账，
+    //       ⑧-b 量到的就不是「归零」而是「归零后又长了一枚」—— 那是 ③ 那一格该测的事，不许混进来。
+    var s8a = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var src=String(app._pickNextCourseFromUserCenter);' +
+      'var m=src.match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'out.windowH=Number(m?m[1]:0);' +
+      'var W=out.windowH*3600*1000;' +
+      // 探针缓存钉成 ⑥ 那一族（答过了、沙盒里没人答）——「还在问」那一格由 ⑦ 单独测，这里不许轮到它
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      // ⑧-a 还差 5 分钟到点 → 账本一个字都不许动
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:7,tried:["900000011","900000012","900000013","900000014"],at:Date.now()-W+300000}));' +
+      'out.aClaimed=app._pickNextCourseFromUserCenter();out.aNav=window.__b83nav.length;' +
+      'var la=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.aSw=Number(la.sw||0);out.aTried=(la.tried||[]).length;' +
+      'out.aTriedIds=(la.tried||[]).join(",");' +
+      'out.aAgeMin=Math.round((Date.now()-Number(la.at||0))/60000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8a = await snap();
+    var l8aNew = { names: l8a.names.slice(s8a.logBase), metas: l8a.metas.slice(s8a.logBase) };
+    var declineA = null;
+    for (var z8 = 0; z8 < l8aNew.names.length; z8++) {
+      if (String(l8aNew.names[z8]).indexOf('course switch declined: no course') === 0) declineA = l8aNew.metas[z8];
+    }
+    check('批次 179 ⑧a「还没到重新起账那一点，账本一个字都不许动」：差 5 分钟到点时 tried 仍是那 4 枚（一枚不增也不减）、sw 仍是 7、' +
+      '账本的年龄仍是那 5 分钟之前（没被刷成"刚刚"），一步都不跳、说的仍是「没有还有任务点的门」。' +
+      '前提三格都从页面读回来：这一页带着「是我们自己导航来的」那枚闸、不带「刚报完哪门」那枚标记（带着时"tried 不变"里混着"又登记一枚"，两件事分不开）。' +
+      '这一格挡的是把"提前归零"当成 #26 的修复：那等于拆掉「6 小时内不重复进同一门」的防空转（§2 #13 同一族），' +
+      '现场会读成"插件在勤快地换课"而一门也没往前走',
+      s8a.requested === true && s8a.hasPick === true && s8a.hasDone === false && s8a.windowH > 0 &&
+      s8a.aClaimed === true && s8a.aNav === 0 &&
+      s8a.aSw === 7 && s8a.aTried === 4 && s8a.aTriedIds === '900000011,900000012,900000013,900000014' &&
+      s8a.aAgeMin >= s8a.windowH * 60 - 6 && s8a.aAgeMin <= s8a.windowH * 60 - 4 &&
+      cnt(l8aNew, 'course switch declined: no course with unfinished task points') === 1 &&
+      cnt(l8aNew, 'course switch picked next') === 0 &&
+      cnt(l8aNew, 'course switch probing course homes') === 0,
+      JSON.stringify({ s8a: s8a, newNames: l8aNew.names }));
+    var s8b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var m=String(app._pickNextCourseFromUserCenter).match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'var W=Number(m?m[1]:0)*3600*1000;' +
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'var h12=String(d.getElementById("c_900000012").querySelector("a[href*=stucoursemiddle]").getAttribute("href")||"");' +
+      'out.k12=(h12.match(/clazzid=(\\d+)/i)||[])[1]||"";' +
+      // ⑧-b 同一份账，只把 `at` 回拨到点外一分钟 → 归零重新起账，刚才被 tried 挡住的门重新可选
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:7,tried:["900000011","900000012","900000013","900000014"],at:Date.now()-W-60000}));' +
+      'out.bClaimed=app._pickNextCourseFromUserCenter();out.bNavCount=window.__b83nav.length;' +
+      'out.bNav=String(window.__b83nav[0]||"");' +
+      'var lb=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.bSw=Number(lb.sw||0);out.bTried=(lb.tried||[]).length;' +
+      'out.bTriedIds=(lb.tried||[]).join(",");' +
+      'out.bAgeSec=Math.round((Date.now()-Number(lb.at||0))/1000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8b = await snap();
+    var l8bNew = { names: l8b.names.slice(s8b.logBase), metas: l8b.metas.slice(s8b.logBase) };
+    check('批次 179 ⑧b「到点就重新起账 —— 这就是被退回的课唯一那扇门」：同一份账**只**把 `at` 回拨到 N 小时之外，' +
+      '刚才被 tried 挡住的门必须重新可选（真跳一次，落点是课程乙自己的课号 + 卡片上那一张自己的班号），' +
+      '跳完这一发账读回来是 sw=1、tried 一枚不剩、`at` 刚刚。' +
+      '⚠️ 最后那一发**单独不承重**：归零那一句与跳成功那一句在这一格里各写同一个值，' +
+      '反向验证 K2／K6 一手摘一半，两刀在这一格都红 0 条（实测）—— ' +
+      '"跳成功之后写回 `at`"由第四格（窗口内第二发）单独量，没量过的因果句不许写进这一格的名字（§5「断言实现细节会把你绑死」）。' +
+      '#26 那句「不会饿死，但最长要等满一个 N 小时窗口」的读数就是这一格',
+      s8b.requested === true && s8b.hasPick === true && s8b.hasDone === false &&
+      s8b.bClaimed === true && s8b.bNavCount === 1 &&
+      String(s8b.bNav || '').indexOf('courseid=900000012') !== -1 &&
+      !!s8b.k12 && String(s8b.bNav || '').indexOf('clazzid=' + s8b.k12) !== -1 &&
+      s8b.bSw === 1 && s8b.bTried === 0 && s8b.bTriedIds === '' && s8b.bAgeSec >= 0 && s8b.bAgeSec < 120 &&
+      cnt(l8bNew, 'course switch picked next') === 1 &&
+      cnt(l8bNew, 'course switch declined') === 0,
+      JSON.stringify({ s8b: s8b, newNames: l8bNew.names }));
+    check('批次 179 ⑧c 那扇门的宽度是从源码读回来的、不是拍的：`at` 归零窗口 = 6 小时' +
+      '（由方法体里那句 `N * 3600 * 1000` 取回），而且**给用户的那句 decline 里要留有"重新起账"的说法** —— ' +
+      '改窗口的人必须连带改那句话，测试不许只跟着源码走（§3.7「行为改了而文档没改是这一族唯一的失败形状」）。' +
+      '前两发（没到点那一发与到点那一发）的回拨量都由这个读数换算。两条腿各自量过：把窗口常数改成 5 只红这一格（反向验证 K5）；' +
+      '把归零改成恒发，那句 decline 根本没机会说、取证读回的是空 hint，于是这一格跟着红（K4 实测三格之一）—— ' +
+      '「单独红在这里」以前是没量过的句子，已按实测改掉（§5「没量过的因果句不许写进这一格的名字」）',
+      s8a.windowH === 6 && !!declineA &&
+      String(declineA.hint || '').indexOf('重新起账') !== -1,
+      JSON.stringify({ windowH: s8a.windowH, hint: declineA ? String(declineA.hint || '').slice(0, 160) : '' }));
+
+    // ⑧-d 「重新起账」那句话到底从哪一格算起（批次 179 补的第四格，K2 逼出来的）：
+    //     ⑧-b 里 `at` 那一发**结构性测不到** —— 归零那一句（`at` 早于窗口）与跳成功那一句（`sw` 自增旁）**各写一次同一个值**，
+    //     摘掉任何一发另一发都盖得住，所以 K2／K6 两刀在 ⑧-a/⑧-b/⑧-c 三格上各红 0 条（实测，不是推的）。
+    //     真要把「六小时」当成"距上次换课"来量，只能造一格**归零没武装**的账：`at` 是半个窗口之前、窗口内跳成一发，
+    //     然后读 `at` 有没有随这一发走 —— 那一发坏了，只有这一格会红。
+    var s8d = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1");' +
+      'out.hasPick=/[?&]omitonePick=1/i.test(location.search);' +
+      'out.hasDone=/[?&]omitoneDone=/i.test(location.search);' +
+      'out.requested=app._coursePickRequested();' +
+      'var m=String(app._pickNextCourseFromUserCenter).match(/(\\d+)\\s*\\*\\s*3600\\s*\\*\\s*1000/);' +
+      'var W=Number(m?m[1]:0)*3600*1000;' +
+      'out.windowH=Number(m?m[1]:0);out.halfSec=Math.round(W/2/1000);' +
+      'app._courseProbeCache={pendingAt:0,at:Date.now(),answered:true,ok:false,rows:{},asked:0,ms:-1,why:"沙盒里没人答这一发"};' +
+      // 窗口内（半个窗口之前跳过一次），sw=1 表示这一窗口的第二发；tried 空 —— 归零那一支在这发里压根不该走到
+      'app._coursePickDone=false;window.__b83nav.length=0;out.logBase=(window.__b83||[]).length;' +
+      'var at0=Date.now()-Math.round(W/2);out.at0=at0;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:1,tried:[],at:at0}));' +
+      'out.dClaimed=app._pickNextCourseFromUserCenter();out.dNavCount=window.__b83nav.length;' +
+      'out.dNav=String(window.__b83nav[0]||"");' +
+      'var ld=app._readSessionLedger("omitone:course-switch")||{};' +
+      'out.dSw=Number(ld.sw||0);out.dTried=(ld.tried||[]).length;' +
+      'out.dAt=Number(ld.at||0);' +
+      'out.dAgeSec=Math.round((Date.now()-out.dAt)/1000);' +
+      'out.dMovedSec=Math.round((out.dAt-at0)/1000);' +
+      'return JSON.stringify(out);})()'
+    ));
+    var l8d = await snap();
+    var l8dNew = { names: l8d.names.slice(s8d.logBase), metas: l8d.metas.slice(s8d.logBase) };
+    check('批次 179 ⑧d「六小时是从上一次换课那一发起算的」：账本 `at` 回拨成**半个窗口**之前（归零那一支没走到，' +
+      '窗口内第二发），跳成一发之后 sw 变成 2、`at` 随这一发走到"刚刚"（移动量按源码读回的窗口换算，不由测试写死）。' +
+      '这一格是 K2 逼出来的：第二格里"跳成功写回 `at`"那一发被归零句盖住，摘掉它前面三格都不红，历来零覆盖。' +
+      '坏了而没人红的症状是「一个窗口只换得了一轮预算」变成「同一窗口反复起两轮」—— 防空转的账被自己稀释（§2 #13 同一族）。' +
+      '`tried` 读回来是空：换课那一发不登记，只有那门自己报完（URL 带着 `omitoneDone`）才登记 —— 这一格也是那句的证人',
+      s8d.requested === true && s8d.hasPick === true && s8d.hasDone === false &&
+      s8d.dClaimed === true && s8d.dNavCount === 1 &&
+      cnt(l8dNew, 'course switch picked next') === 1 &&
+      s8d.dSw === 2 && s8d.dTried === 0 &&
+      s8d.dAt > s8d.at0 && s8d.dMovedSec >= s8d.halfSec - 120 &&
+      s8d.dAgeSec >= 0 && s8d.dAgeSec < 120 &&
+      cnt(l8dNew, 'course switch declined') === 0,
+      JSON.stringify({ s8d: s8d, newNames: l8dNew.names }));
+
     // 收尾：把地址恢复成打开时那样，别把标记留给下一个场景（整轮共用同一个标签）
     await ctx.client.evaluate('(function(){history.replaceState(null,"",location.pathname);return 1;})()');
     check('整条「挑下一门」零模型请求（换课这一步不花钱，进去之后才轮到原来那套管线）',
@@ -22832,8 +25144,8 @@ SCENARIOS.push({
   }
 });
 
-/** ---- 批次 122：吉祥物聊天 —— 这是插件第一个「按量计费」的宠物功能，钱安全三格必须全链路成立 ----
- * ① 出厂（开关没开）工具条上**根本没有**「聊」这枚按钮（CSS display:none），面板也收着；
+/** ---- 批次 123：吉祥物聊天 —— 这是插件第一个「按量计费」的宠物功能，钱安全三格必须全链路成立 ----
+ * ① 出厂（开关没开）逗玩窗口底部那排**根本没有**「和她聊天」这枚按钮（CSS display:none），面板也收着；
  * ② 开关打开后按钮才出现 —— 走设置里那枚真实开关，不手工改 body 类；
  * ③ 开了、面板开了、但没填 Key：说话那一刻 popup.js 的 petChatSend 第一格就折返 noKey，
  *    **一发网络请求都不该有**。本场景全程不带任何网络桩 —— 若有代码真发了请求，fetch
@@ -22843,7 +25155,7 @@ SCENARIOS.push({
  * （三厂商形状 / 裁历史 / 截长度）由集成层 [26] 负责，两层各管各的。 */
 SCENARIOS.push({
   name: '吉祥物聊天：出厂不可见；开了也没 Key 时一句话都不发，界面教人去配 Key',
-  url: 'chrome-extension://{EXT}/popup/popup.html?ui=fancy',
+  url: 'chrome-extension://{EXT}/popup/popup.html?play=1&ui=fancy',
   inject: false,
   run: async function (ctx) {
     var client = ctx.client;
@@ -22858,33 +25170,33 @@ SCENARIOS.push({
     await reloadPet(ctx, { width: 420, height: 640 });
 
     var off = await petEval(client, function () {
-      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      var btn = document.getElementById('imChat');
       var panel = document.getElementById('petChat');
       return { on: document.body.classList.contains('pet-chat-on'),
         display: btn ? getComputedStyle(btn).display : '(no button)',
         panel: panel ? panel.getAttribute('aria-hidden') : '(no panel)' };
     });
-    check('出厂：聊天开关关，body 没有 pet-chat-on、「聊」display:none、面板 aria-hidden=true',
+    check('出厂：聊天开关关，body 没有 pet-chat-on、「和她聊天」display:none、面板 aria-hidden=true',
       off.on === false && off.display === 'none' && off.panel === 'true', JSON.stringify(off));
 
     await petEval(client, function () { document.getElementById('petChatEnabled').click(); });
     var toggled = await petEval(client, function () {
-      var btn = document.querySelector('.pet-tools button[data-act="chat"]');
+      var btn = document.getElementById('imChat');
       return { on: document.body.classList.contains('pet-chat-on'),
         display: btn ? getComputedStyle(btn).display : '(no button)',
         aria: document.getElementById('petChatEnabled').getAttribute('aria-checked') };
     });
-    check('点开设置里的「吉祥物聊天」，body 挂上 pet-chat-on、「聊」真实可见、开关 aria 翻到 true',
+    check('点开设置里的「吉祥物聊天」，body 挂上 pet-chat-on、「和她聊天」真实可见、开关 aria 翻到 true',
       toggled.on === true && toggled.display === 'block' && toggled.aria === 'true', JSON.stringify(toggled));
 
     await petEval(client, function () {
-      document.querySelector('.pet-tools button[data-act="chat"]').click();
+      document.getElementById('imChat').click();
     });
     var opened = await petEval(client, function () {
       var panel = document.getElementById('petChat');
       return { show: panel.classList.contains('show'), aria: panel.getAttribute('aria-hidden') };
     });
-    check('点「聊」面板开门（.show 加上、aria-hidden=false）',
+    check('点「和她聊天」面板开门（.show 加上、aria-hidden=false）',
       opened.show === true && opened.aria === 'false', JSON.stringify(opened));
 
     await petEval(client, function () {
@@ -22930,6 +25242,1120 @@ SCENARIOS.push({
       JSON.stringify(restoreSet) + ',function(){res(true)})})');
   }
 });
+
+SCENARIOS.push({
+  name: '开头一直卡住时，有界点一下站点自己的开始键',
+  path: '/media-start',
+  beforeInject: function () {
+    return [
+      '(function(){',
+      // 现场那副样子（2026-11-19 只读实测的「黑屏不动 / 抽搐」那一族）：位置恒 0、paused 恒 true、
+      // error 是 null、play() 不报错但画面不动。**error 必须钉成空** —— 批次 50 量过这页的
+      // <video src> 从没被 serve，MediaError.code=4 会让 `_tryResumePlayback` 第一道就走死管线重载，
+      // 于是下面整条自愈链一次都轮不到（假绿的标准形状）。
+      '  window.__b178T = 0;',
+      '  window.__b178DUR = 1355.9;',
+      '  window.__b178Err = null;',
+      '  window.__b178Seeks = []; window.__b178Loads = 0; window.__b178Plays = 0;',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "error",',
+      '    { configurable: true, get: function(){ return window.__b178Err || null; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "readyState",',
+      '    { configurable: true, get: function(){ return 0; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "duration",',
+      '    { configurable: true, get: function(){ return window.__b178DUR; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "paused",',
+      '    { configurable: true, get: function(){ return true; } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {',
+      '    configurable: true,',
+      '    get: function(){ return window.__b178T; },',
+      '    set: function(v){ window.__b178Seeks.push(Number(v)); } });',
+      '  Object.defineProperty(HTMLMediaElement.prototype, "playbackRate", {',
+      '    configurable: true, get: function(){ return 1; }, set: function(){ window.__b178RateSets = 1; } });',
+      // play() 只记账、**不派 play 事件** —— 现场就是这一族：事件不来，`_resumeAttemptCount`
+      // 永远不清零，自愈必须自己攒到第 3 发。
+      '  HTMLMediaElement.prototype.play = function(){ window.__b178Plays++; return Promise.resolve(); };',
+      '  HTMLMediaElement.prototype.load = function(){ window.__b178Loads++; };',
+      '  window.__b178Patched = true;',
+      '})()'
+    ].join('\n');
+  },
+  run: async function (ctx) {
+    var patched = await ctx.client.evaluate('window.__b178Patched === true');
+    check('178 夹具自证：媒体原型打桩生效（error 空 / readyState 0 / duration / paused / currentTime / play / load）',
+      patched === true, String(patched));
+
+    // ① 前提 —— 自动续跑那两个循环先按掉（批次 69 那一族：上一支场景把 xxtRunning 写进了整轮共用的存储），
+    //    否则第 3 发什么时候到、点了什么全是随机的。
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,{enableSeek:false,autoMaxPlaybackRate:false});' +
+      'app._detectedMaxRate=0;app._rateProbing=false;app._captchaActive=false;' +
+      'window.__b178i=[];' +
+      'if(!window.__b178Bound){window.__b178Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b178i.push(m);}});}' +
+      'var v=document.getElementById("omitone-video");var f=null;var key=null;var err=-1;' +
+      'try{f=app._siteStartControlOf(v);}catch(e){f="throw";}' +
+      'try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{err=Number(app._mediaErrorCode(v));}catch(e){err=-1;}' +
+      'var big=document.getElementById("b178-big");var br=big.getBoundingClientRect();' +
+      'return {hasEl:!!v,loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      '  quiz:app._popupQuizBlocksPlayback()===false,key:key,err:err,' +
+      '  cd:Number(app.configs.guardResumeCooldownMs),win:Number(app.configs.guardMaxResumeWindow),' +
+      '  max:Number(app.configs.guardMaxResumes),btns:4,' +
+      '  bigW:br.width,bigOp:big.offsetParent!==null,found:f==="throw"?"throw":(f?f.rung:"null"),' +
+      // rung 只是"走了哪一分支"的标签，认不出「分支里 querySelector 拿回来的到底是哪一枚」——
+      // 所以这里额外把**元素身份**读回来钉（反向验证 E6「认错键」那一刀只有靠这一格才会红）。
+      '  foundId:(f && f.el && f.el.id) ? String(f.el.id) : ""};})()'
+    );
+    check('178 前提：这一页只剩本场景在动、弹题没按住播放、键非空、且死管线那一支读回 0' +
+      '（err 不等于 0 整段断言都是空测）；预算三格从页面读回来，窗口须装得下三发',
+      !!setup && setup.hasEl === true && setup.loop === false && setup.checkInterval === false &&
+      setup.quiz === true && !!setup.key && setup.key.length > 0 && setup.err === 0 &&
+      setup.cd > 0 && setup.max >= 3 && setup.win > setup.cd * 3,
+      JSON.stringify(setup));
+    check('178 夹具自证：四枚按钮齐（含三枚绝不该点的邻居），未开播时中央层在真页面里看得见，' +
+      '且 `_siteStartControlOf()` 挑中的是中央那一枚（**按元素身份认**，不是按 rung 那个分支标签）',
+      !!setup && setup.btns === 4 && setup.bigOp === true && setup.bigW > 0 &&
+      setup.found === 'big-play' && setup.foundId === 'b178-big',
+      JSON.stringify(setup));
+
+    var cdMs = Number(setup.cd) + 250;
+    // ② 三发续播：第 1、2 发走 play()，第 3 发（attempts>=3）换点站点自己的开始键。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178Plays=0;window.__b178Loads=0;window.__b178Started=false;window.__b178i=[];' +
+      'window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'app._videoEl=v;app._isPlaying=true;app._startNudgeKeys=null;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._resumeWindowStart=Date.now();' +
+      'app._tryResumePlayback("b178-at-start");return true;})()');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-at-start")');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-at-start")');
+    await sleep(400);
+    var p2 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var out={clicks:JSON.parse(JSON.stringify(window.__b178Clicks)),' +
+      'started:window.__b178Started,plays:window.__b178Plays,attempts:Number(app._resumeAttemptCount),' +
+      'clicked:[],none:[],human:[]};' +
+      '(window.__b178i||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s==="media start stuck, clicked site start control")out.clicked.push(m);' +
+      '  if(s==="media start stuck, no site start control")out.none.push(m);' +
+      '  if(s==="media start stuck, left to human")out.human.push(m);});' +
+      'return out;})()');
+    var hit = (p2 && p2.clicked && p2.clicked.length === 1) ? p2.clicked[0] : null;
+    var hitMeta = hit && hit.meta ? hit.meta : {};
+    check('178-A：第 3 发烧完之后**真页面里站点中央那枚开始键被点着了**，且 `__b178Started` 是' +
+      '站点自己的监听器翻起来的（不是我们写的）—— 用户那句「点一下开始就正常了」现在有真浏览器证据',
+      !!p2 && p2.clicks.big === 1 && p2.started === true, JSON.stringify(p2));
+    check('178-B：三枚邻居一次都没被点 —— 「重启」（点了等于把用户的播放器设定清空）、倍速菜单、' +
+      '以及控制条那枚在播时会**把视频按停**的切换键，全须 0',
+      !!p2 && p2.clicks.restart === 0 && p2.clicks.rate === 0 && p2.clicks.toggle === 0,
+      JSON.stringify(p2 && p2.clicks));
+    check('178-C：点着那一拍**不再补一发 play()**（plays 恒 2 = 第 1、2 发，attempts 停在 3）—— ' +
+      '让站点那条路先把状态机走起来，直调 play() 绕过状态机正是这一族的病根',
+      !!p2 && p2.plays === 2 && p2.attempts === 3,
+      JSON.stringify(p2 && { plays: p2.plays, attempts: p2.attempts }));
+    check('178-D：clicked 日志恰好一条，rung=big-play、attempt=1、reason 带调用方原话；' +
+      '另两格（no site start control / left to human）这一窗一条不许有',
+      !!hit && String(hitMeta.rung) === 'big-play' && Number(hitMeta.attempt) === 1 &&
+      String(hitMeta.reason) === 'b178-at-start' && !!p2 &&
+      p2.none.length === 0 && p2.human.length === 0, JSON.stringify(hitMeta));
+
+    // ③ 真引擎那一格：started 之后中央层被 CSS 收成 0×0 —— 集成层喂的是假 `visible`，
+    //    这条只能在这里量；而「不再点第二下」必须是这个真形状的后果。
+    var p3shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var big=document.getElementById("b178-big");var r=big.getBoundingClientRect();' +
+      'var f=null;try{f=app._siteStartControlOf(v);}catch(e){f="throw";}' +
+      'return {op:big.offsetParent===null,w:r.width,h:r.height,' +
+      '  hostClass:String(document.getElementById("b178-host").className),' +
+      '  ctrl:f==="throw"?"throw":(f?f.rung:"null")};})()');
+    check('178-E：站点起来之后中央层在**真引擎**里就是看不见（offsetParent 空 + 矩形 0×0），' +
+      '于是 `_siteStartControlOf()` 读回 null —— "看得见就是还没开始"这条判据拿真实 CSS 量到了',
+      !!p3shape && p3shape.op === true && p3shape.w === 0 && p3shape.h === 0 &&
+      p3shape.ctrl === 'null' && /vjs-has-started/.test(String(p3shape.hostClass)) &&
+      /vjs-playing/.test(String(p3shape.hostClass)), JSON.stringify(p3shape));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178Plays=0;window.__b178i=[];window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'app._videoEl=v;app._isPlaying=true;app._startNudgeKeys=null;' +
+      'app._resumeAttemptCount=0;app._guardLastResumeTs=0;app._resumeWindowStart=Date.now();' +
+      'app._tryResumePlayback("b178-after-start");return true;})()');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-after-start")');
+    await sleep(cdMs);
+    await ctx.client.evaluate('window._xxtApp._tryResumePlayback("b178-after-start")');
+    await sleep(400);
+    var p3 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));var led=app._startNudgeKeys&&app._startNudgeKeys[key];' +
+      'var out={clicks:JSON.parse(JSON.stringify(window.__b178Clicks)),plays:window.__b178Plays,' +
+      '  none:[],clicked:[],led:led?{n:Number(led.n),rung:String(led.rung||"")}:null};' +
+      '(window.__b178i||[]).forEach(function(m){var s=String(m.message||"");' +
+      '  if(s==="media start stuck, no site start control")out.none.push(m);' +
+      '  if(s==="media start stuck, clicked site start control")out.clicked.push(m);});' +
+      'return out;})()');
+    var noneMeta = (p3 && p3.none && p3.none.length === 1) ? (p3.none[0].meta || {}) : null;
+    check('178-F：认不出开始键那一族**只说一次**（none 日志恰好一条、rung=none），账本单独记一格 ' +
+      'rung:none/n:1 —— "认不出键"不许塌成"已经点过了"（AGENTS §2 #12 的四态口径）',
+      !!p3 && p3.none.length === 1 && p3.clicked.length === 0 && !!noneMeta &&
+      String(noneMeta.rung) === 'none' && !!p3.led && p3.led.n === 1 && p3.led.rung === 'none',
+      JSON.stringify(p3));
+    check('178-G：认不出键那一拍**一发都不点**（四枚全 0），且照旧回到 play() 老路（plays 恒 3）—— ' +
+      '自愈是加一档，不是替换掉原来那档',
+      !!p3 && p3.clicks.big === 0 && p3.clicks.toggle === 0 && p3.clicks.restart === 0 &&
+      p3.clicks.rate === 0 && p3.plays === 3, JSON.stringify(p3 && { clicks: p3.clicks, plays: p3.plays }));
+
+    // ④ 间隔闸：紧接着再问一次，冷却没到就该**一个字都不说、一下都不点**。
+    //    ⚠️ 日志缓冲要**等一拍再读** —— `emitRuntimeLog` 走 postMessage 异步送达，
+    //    在同一个 evaluate 里同步读 `__b178i`，"没说话"和"没送到"长得一模一样（批次 9 实测过）。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'window.__b178i=[];' +
+      'window.__b178Spacing=(function(){var key=String(app._getMediaSeekKey(v));' +
+      // ⚠️ 这本账要**防御性读**：把 `_tryResumePlayback` 里那一档接线整个摘掉时，
+      //    `_startNudgeKeys` 压根没被建起来（恒为 null），裸读 `null[key]` 会让 runner
+      //    抛成一条「场景执行未抛异常」—— 那是把"生产坏了"实现成崩溃而不是红，
+      //    等于替生产删掉 178-H/I 两条断言（AGENTS §5）。读不到就交 span=-1，
+      //    由下面 `p4.span >= 0` 那一格把它红出来。
+      '  var before=(app._startNudgeKeys||Object.create(null))[key];var span=before?Date.now()-Number(before.at||0):-1;' +
+      '  var ret=app._nudgeSiteStartControl(v,"b178-spacing");var after=app._startNudgeKeys[key];' +
+      '  return {ret:!!ret,span:span,beforeN:Number(before&&before.n),afterN:Number(after&&after.n)};})();' +
+      'return true;})()');
+    await sleep(400);
+    var p4 = await ctx.client.evaluate(
+      '(function(){var r=window.__b178Spacing||(window._xxtApp&&window._xxtApp._lastB178Spacing)||null;' +
+      'var spoke=(window.__b178i||[]).filter(function(m){' +
+      '  return String(m.message||"").indexOf("media start stuck")===0;}).length;' +
+      'if(!r)return {missing:true};' +
+      'r.spoke=spoke;r.clicks=JSON.parse(JSON.stringify(window.__b178Clicks));return r;})()');
+    check('178-H：45 秒间隔闸 —— 同一节冷却没到就**沉默返回 false**（等一拍之后 0 条日志、0 次点击、计数仍是 1）；' +
+      '取证里 span 必须真落在 45 秒以内，否则这条是空测',
+      !!p4 && p4.missing !== true && p4.ret === false && p4.span >= 0 && p4.span < 45000 &&
+      p4.spoke === 0 && p4.beforeN === 1 && p4.afterN === 1 && p4.clicks.big === 0 &&
+      p4.clicks.toggle === 0 && p4.clicks.restart === 0 && p4.clicks.rate === 0, JSON.stringify(p4));
+
+    // ⑤ 烧完两发交回人：把账本时钟拨回 46 秒前（= 冷却已过，不真等），只许说**一次**。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var v=document.getElementById("omitone-video");' +
+      'var key=String(app._getMediaSeekKey(v));' +
+      'if(!app._startNudgeKeys)app._startNudgeKeys=Object.create(null);' +
+      'app._startNudgeKeys[key]={n:2,at:Date.now()-46000,rung:"big-play"};' +
+      'window.__b178i=[];window.__b178Clicks={big:0,toggle:0,restart:0,rate:0};' +
+      'var a=app._nudgeSiteStartControl(v,"b178-cap");var b=app._nudgeSiteStartControl(v,"b178-cap");' +
+      'var led=app._startNudgeKeys[key];' +
+      'window.__b178Cap={a:!!a,b:!!b,gaveUp:!!(led&&led.gaveUp),' +
+      '  clicks:JSON.parse(JSON.stringify(window.__b178Clicks))};return true;})()');
+    await sleep(400);
+    var p5 = await ctx.client.evaluate(
+      '(function(){var r=window.__b178Cap||null;if(!r)return {missing:true};' +
+      'var human=(window.__b178i||[]).filter(function(m){' +
+      '  return String(m.message||"")==="media start stuck, left to human";});' +
+      'r.humanN=human.length;r.n=human.length;' +
+      'r.hint=human.length?String((human[0].meta&&human[0].meta.hint)||""):"";' +
+      'r.all=(window.__b178i||[]).map(function(m){return String(m.message||"");});return r;})()');
+    check('178-I：两发用尽之后交回人 —— left to human 恰好**一条**（第二次被 gaveUp 闩住），' +
+      'hint 里带着用户那句「开始」，返回 false 让老路继续、一发点击都不烧（静默放手不可接受）',
+      !!p5 && p5.a === false && p5.b === false && p5.humanN === 1 && p5.n === 1 &&
+      p5.gaveUp === true && p5.hint.indexOf('开始') >= 0 &&
+      p5.clicks.big === 0 && p5.clicks.toggle === 0 && p5.clicks.restart === 0, JSON.stringify(p5));
+  }
+});
+
+SCENARIOS.push({
+  name: '视频在播却没人巡检：现场那种帧里由 OCS 循环捡回来',
+  // ⚠️ 这一条**不能**用那几份 `<div id="iframe">` 的媒体夹具 —— DIV 没有 `contentWindow`，
+  //    `_checkBlockedByCrossOrigin()` 会按「内容帧读不到」把整拍拒掉，两处捡回一步都走不到。
+  //    现场 `studentstudy` 的 `#iframe` 是**真 `<iframe>`、同源** —— 而在那种页面上，
+  //    认领「这一拍还在播媒体」的是 `_runTick` 里 `_ensureOcsStudyRunner()` 那一格，
+  //    **不是**下面 `if (this._isPlaying)` 那一格。
+  //    现场只读量回（2026-11-20，会话任务 #190）：`_checkInterval` 恒 null 而 `tickEpoch` 照涨、
+  //    `_isPlaying` 与 `_activeMediaJobPending` 都是真 —— 一支 22 分钟的视频就这么按 1x 白播。
+  //    所以这一场钉两件事：① `_isPlaying` 那一格**真的走不到**（`rateTick` 增 0 是机器证，
+  //    不是「我以为」）；② 捡回装在 OCS 循环里（`60-tasks-detect.js` 的 `ocs-runner-active-job`）。
+  path: '/media-tick-outer',
+  noAutoResume: true,
+  run: async function (ctx) {
+    // ① 夹具自证 + 打桩。打桩必须打在**子帧那一份** `HTMLMediaElement.prototype` 上 ——
+    //    每个帧各有一套原型，顶层打了桩对帧里的视频无效（现场那支视频本来就长在帧里）。
+    //    桩函数由顶层 realm 创建，所以它们读的 `window.__b190*` 仍是顶层那一份，取证只问顶层。
+    //    ⚠️ error 必须钉成空（批次 50 量过这页的 <video src> 从没被 serve，code=4 会让巡检
+    //       第一道就走死管线重载，整段断言变成空测）。
+    var self = JSON.parse(await ctx.client.evaluate(
+      '(function(){' +
+      'var f=document.getElementById("iframe");' +
+      'return new Promise(function(res){' +
+      '  var tries=0;' +
+      '  function go(){' +
+      '    var ok=false;try{ok=!!(f&&f.contentWindow&&f.contentWindow.document&&' +
+      '      f.contentWindow.document.readyState==="complete");}catch(e){ok=false;}' +
+      '    if(!ok){if(++tries>30){res(JSON.stringify({frameReady:false,tries:tries}));return;}' +
+      '      setTimeout(go,200);return;}' +
+      '    var iw=f.contentWindow,PM=iw.HTMLMediaElement&&iw.HTMLMediaElement.prototype;' +
+      '    if(!PM){res(JSON.stringify({frameReady:true,proto:false}));return;}' +
+      '    window.__b190T=792.4;window.__b190DUR=1345.8;' +
+      '    window.__b190Paused=false;window.__b190Ended=false;window.__b190Seeks=[];' +
+      '    Object.defineProperty(PM,"error",{configurable:true,get:function(){return null;}});' +
+      '    Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+      '    Object.defineProperty(PM,"duration",{configurable:true,get:function(){return window.__b190DUR;}});' +
+      '    Object.defineProperty(PM,"paused",{configurable:true,get:function(){return window.__b190Paused;}});' +
+      '    Object.defineProperty(PM,"ended",{configurable:true,get:function(){return window.__b190Ended;}});' +
+      '    Object.defineProperty(PM,"currentTime",{configurable:true,' +
+      '      get:function(){return window.__b190T;},' +
+      '      set:function(v){window.__b190Seeks.push(Number(v));}});' +
+      '    Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+      '      var d=window.__b190DUR;' +
+      '      return {length:1,start:function(){return 0;},end:function(){return d;}};}});' +
+      '    Object.defineProperty(PM,"playbackRate",{configurable:true,' +
+      '      get:function(){return 1;},set:function(){}});' +
+      '    PM.play=function(){return Promise.resolve();};' +
+      '    PM.load=function(){};' +
+      '    var app=window._xxtApp;' +
+      // ⚠️ **手动驱动 `_runTick()` 的场次必须先跑这一句**，它不是可有可无的清扫：
+      //    `_runtimeVersion` 全仓库只有 `_resetRuntimeState()` 会写成数字（`10-config-state.js:541`），
+      //    而现场能跑到 `_runTick()` 的唯一入口是 `run()`，它在 `10-config-state.js:488` 就调了这一句。
+      //    少了它，两处版本闸 `62-tasks-run.js:508` 与 `60-tasks-detect.js:1829` 拿 `!==` 比一个
+      //    `undefined`，**把所有活儿当场吞掉、一条日志都不留**（本轮 190-E / 190-L 第一次就红在这里，
+      //    取证里 `logs:[]`、`started` 却已为真，看着像"循环起了却不干活"，其实是版本闸）。
+      //    它顺带把上一场留下的记账一起清掉，所以 `_videoEl` 要在它之后重新取。
+      '    app._resetRuntimeState();' +
+      // 三个「走到哪儿」的证人：包住生产方法**并照旧交回原件**（桩打在动作上，不是把整段
+      // 判据换成计数器 —— AGENTS §5「桩要打在动作上」）。倍速那一发按 reason 分格数：
+      // 「tick 那一格一次都没走到」与「巡检真在跑」是两件事，混在一个计数器里就分不开。
+      '    window.__b190N={rateTick:0,rateGuard:0,arm:0,collect:0,next:0};' +
+      '    var pr=app._ensurePlaybackRate,sm=app._startVideoMonitoring,cf=app._collectVisibleTaskFrames;' +
+      '    app._ensurePlaybackRate=function(){var r=String(arguments[1]);' +
+      '      if(r==="tick"){window.__b190N.rateTick++;}' +
+      '      else if(r==="guard"){window.__b190N.rateGuard++;}' +
+      '      return pr.apply(this,arguments);};' +
+      '    app._startVideoMonitoring=function(){window.__b190N.arm++;return sm.apply(this,arguments);};' +
+      '    app._collectVisibleTaskFrames=function(){window.__b190N.collect++;return cf.apply(this,arguments);};' +
+      '    app.nextUnit=function(){window.__b190N.next++;};' +
+      '    window.__b190i=[];' +
+      '    if(!window.__b190Bound){window.__b190Bound=true;window.addEventListener("message",function(e){' +
+      '      var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b190i.push(m);}});}' +
+      '    window.__b190diag=function(a){var d={};' +
+      // ⚠️ 这两格**不许**用 `Number(x||0)`：那会把"根本没初始化"洗成一个合法读数 0
+      //    （AGENTS §2 #2 同一族）。版本闸比的就是"是不是同一个原始值"，取证必须显出原形。
+      '      d.rv=typeof a._runtimeVersion==="number"?a._runtimeVersion:"(未初始化)";' +
+      '      d.rvTick=typeof window.__b190RV==="number"?window.__b190RV:"(未抓)";' +
+      '      d.chg=Number(a._chapterChangedAt||0);d.trans=Number(a._jobTransitionUntil||0);' +
+      '      d.deadline=Number(a._ocsSearchDeadline||0);d.now=Date.now();' +
+      '      d.amp=a._activeMediaJobPending===true;d.managed=a._activeMediaJobManaged===true;' +
+      '      d.vid=!!a._videoEl;d.vidCount=Number(a._videoCount);d.playing=a._isPlaying===true;' +
+      '      d.started=String(a._ocsStudyStarted);d.checkNull=a._checkInterval===null;' +
+      '      d.seeks=(window.__b190Seeks||[]).length;' +
+      '      d.logs=(window.__b190i||[]).map(function(m){return m.level+":"+m.message;}).slice(-12);' +
+      '      return d;};' +
+      '    var v=iw.document.getElementById("omitone-video");' +
+      '    var mainTag="",sameOk=false,blocked=false,foundByProd=null,mainWin=false,ocsBefore=false;' +
+      '    try{mainTag=String(f.tagName).toUpperCase();}catch(e){}' +
+      '    try{sameOk=!!(app&&app._isFrameSameOrigin(app._getMainFrame()));}catch(e){}' +
+      '    try{blocked=!!(app&&app._checkBlockedByCrossOrigin());}catch(e){}' +
+      '    try{mainWin=!!(app&&app._getMainWindow());}catch(e){}' +
+      '    try{ocsBefore=app._ocsStudyStarted===true;}catch(e){}' +
+      // 让**生产**自己去找那枚视频（不手塞 `_videoEl`）—— 「现场形状下拿得到帧里的视频吗」一并量到；
+      // 拿不到就是夹具形状不对，前提那一格会点名，不许改断言迁就它。
+      '    try{if(app){app._videoEl=null;foundByProd=app._getVideoEl();}}catch(e){foundByProd=null;}' +
+      '    res(JSON.stringify({frameReady:true,proto:true,hasV:!!v,' +
+      '      vidTag:v?String(v.tagName).toUpperCase():"",mainTag:mainTag,sameOk:sameOk,blocked:blocked,' +
+      '      mainWin:mainWin,ocsBefore:ocsBefore,' +
+      '      foundSame:foundByProd===v,foundId:foundByProd?String(foundByProd.id||""):"",' +
+      '      errNull:v?v.error===null:false,ct:v?Number(v.currentTime):-1,dur:v?Number(v.duration):-1,' +
+      '      paused:v?v.paused:null,ended:v?v.ended:null}));' +
+      '  }' +
+      '  go();' +
+      '});})()'));
+    check('190-A 夹具自证：`#iframe` 是真帧、同源、`_checkBlockedByCrossOrigin()` 说没挡住，' +
+      '子帧原型打桩生效（在播、未结束、error 空、位置 792.4、时长 1345.8），' +
+      '**生产 `_getVideoEl()` 自己就在帧里拿到那枚视频**；而 `_getMainWindow()` 非空' +
+      '（＝这一页的形状就是现场 `studentstudy` 那一种：`_runTick` 会在 OCS 那一格认领这一拍），' +
+      '并且 OCS 循环此前还没起过（起过就证明不了下面那一拍是它起来的）',
+      !!self && self.frameReady === true && self.proto === true && self.hasV === true &&
+      self.vidTag === 'VIDEO' && self.mainTag === 'IFRAME' && self.sameOk === true &&
+      self.blocked === false && self.mainWin === true && self.ocsBefore === false &&
+      self.foundSame === true && self.foundId === 'omitone-video' &&
+      self.errNull === true && self.ct === 792.4 && self.dur === 1345.8 &&
+      self.paused === false && self.ended === false, JSON.stringify(self));
+
+    // ② 前提：把现场那一格造出来 —— 状态说「在播」、巡检句柄却是空的，而且**媒体这一支确实被认领**
+    //    （`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集，它说真话 OCS 循环才进那一格）。
+    //    同时把上一场留下的记账与循环全停掉，并把证人基线抓在动手之前（比的是增量，不是绝对数）。
+    var pre = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,' +
+      '  {enableSeek:true,autoMaxPlaybackRate:false,advanceAtNinetyPercent:false});' +
+      'var v=app._videoEl;' +
+      'app._isPlaying=true;app._currentVideoIndex=0;' +
+      'app._activeJobId="b190-job";app._captchaActive=false;app._rateProbing=false;app._detectedMaxRate=0;' +
+      'app._seekTriedKeys=Object.create(null);app._seekRevertedKeys=Object.create(null);' +
+      'app._seekDeferKeys=Object.create(null);app._ninetyHeldBackKeys=Object.create(null);' +
+      'app._activeMediaJobPending=true;app._activeMediaJobManaged=true;' +
+      // 这两个时间戳会让 `_runOcsStyleStudy` 在捡回**之前**就 return true（认领这一拍却不挂巡检），
+      // 现场刚跳完章节那几十秒正是这一族 —— 这里先钉成 0，让这一拍走的是「稳态」那一条。
+      'app._ocsStudyStarted=false;app._chapterChangedAt=0;app._jobTransitionUntil=0;app._studyCompleteAt=0;' +
+      'app._guardLastWallTs=0;app._guardLastTime=0;' +
+      'window.__b190Base={arm:window.__b190N.arm,collect:window.__b190N.collect,' +
+      '  rateTick:window.__b190N.rateTick,rateGuard:window.__b190N.rateGuard,next:window.__b190N.next};' +
+      'var key="",pending=false;try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{pending=app._isActiveStudyJobPending("b190-pre")===true;}catch(e){pending=false;}' +
+      'return {hasEl:!!v,vidCount:Number(app._videoCount),playing:app._isPlaying===true,' +
+      '  checkNull:app._checkInterval===null,loopOff:!app._tickLoopInterval,' +
+      // 版本闸的前提：`_runtimeVersion` 必须是**数字**（见 ① 里那句 `_resetRuntimeState()`）——
+      // 它是 `60-tasks-detect.js:1829` 那一道退出条件的左半边，没初始化就等于整条循环当场作废。
+      '  rvNum:typeof app._runtimeVersion==="number",' +
+      // 不许让 `undefined` 走进 `JSON.stringify` 的取证 —— 那一格会被整个丢掉，
+      // 读的人以为"没这格"，而它恰恰是本轮最贵的那一条线索。
+      '  rv:(typeof app._runtimeVersion==="number"?app._runtimeVersion:"(未初始化)"),' +
+      '  ocsOff:app._ocsStudyStarted===false,pending:pending,' +
+      '  key:key,seekOn:app.configs.enableSeek===true,' +
+      '  notProbing:app._rateProbing===false,dur:v?Number(v.duration):0,ct:v?Number(v.currentTime):0,' +
+      '  notPaused:v?v.paused===false:false,notEnded:v?v.ended===false:false,' +
+      '  errNull:v?v.error===null:false,' +
+      '  cover:v?Number(v.seekable.end(0))>=Number(v.duration)-3:false};})()'
+    );
+    check('190-B 前提：现场那一格真造出来了 —— 状态说在播、巡检句柄确实是空的、目录循环也停了、' +
+      'OCS 循环也还没起、运行版本号已经是数字（`run()` 之后现场必然如此，少了它版本闸把整条循环作废），' +
+      '而 `_isActiveStudyJobPending()` 说这一支正在被认领（它说假话循环就不去捡）；' +
+      '拖结尾的资格也齐（键非空、拖动开着、没在探测倍速、区间含目标、error 空），缺任何一条下面整段都是空测',
+      !!pre && pre.hasEl === true && pre.vidCount === 1 && pre.playing === true &&
+      pre.checkNull === true && pre.loopOff === true && pre.rvNum === true &&
+      pre.ocsOff === true &&
+      pre.pending === true && !!pre.key && pre.seekOn === true && pre.notProbing === true &&
+      pre.dur > 20 && pre.ct < pre.dur - 8 && pre.notPaused === true && pre.notEnded === true &&
+      pre.errNull === true && pre.cover === true, JSON.stringify(pre));
+
+    // ③ 认领那一格**前面**那些门，一格都不许挡住：挡住了 190-D 就成了「没走到」而不是「改坏了」。
+    //    ⚠️ 这里**不许**把 `_ensureOcsStudyRunner()` 也问一遍 —— 它一被叫到就把循环起起来、
+    //    把 `_ocsStudyStarted` 写真，于是「这一拍把它起来的」那句话变成测试台自己说的（自证式假绿）。
+    var gates = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var o={};' +
+      'function g(k,fn){try{o[k]=!!fn.call(app);}catch(e){o[k+"_err"]=String((e&&e.message)||e);}}' +
+      'g("disc",app._isDiscussionContext);g("cap",app._isStandaloneCaptchaPage);' +
+      'g("blocked",app._checkBlockedByCrossOrigin);g("dwait",app._handleDiscussionWait);' +
+      'g("home",app._enterChapterFromCourseHome);g("skip",app._skipIfCompleted);' +
+      'g("sub",app._checkSubmitConfirmDialog);g("mon",app._monitorQuizSubmit);' +
+      'g("popup",app._activePopupBlock);g("cont",app._tryContinueStudyPrompt);' +
+      'return o;})()');
+    var gateKeys = Object.keys(gates || {});
+    var gateHit = gateKeys.filter(function (k) { return gates[k] === true; });
+    var gateErr = gateKeys.filter(function (k) { return k.indexOf('_err') > 0; });
+    check('190-C 前面那些门（讨论、独立验证码、内容帧读不到、等讨论、首页进章、已完成、交卷确认、' +
+      '盯提交、弹题、继续学习）十格全是 false 且一格都没抛 —— 这一拍才真走得到 OCS 那一格，' +
+      '点名是哪一格挡的，别让人猜「没走到」还是「改坏了」',
+      gateKeys.length === 10 && gateHit.length === 0 && gateErr.length === 0, JSON.stringify(gates));
+
+    // ④ 真 `_runTick()` 一拍：它必须在 OCS 那一格认领（`_ocsStudyStarted` 由假转真），
+    //    而且**一次都不许走到** `if (this._isPlaying)` 那一格（`rateTick` 增 0 = 机器证）。
+    //    此刻句柄照旧为空是**对的** —— 那个循环起手先睡 3 秒，下一格才去捡。
+    // ⚠️ `__b190RV` 必须在 `_runTick()` **之前**抓 —— 那一拍里任何一格调了
+    //     `_resetRuntimeState()`，版本号就跳走，而 OCS 循环和 style 分支都拿它当退出条件。
+    var a1 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190i=[];' +
+      'window.__b190RV=app._runtimeVersion;' +
+      'return new Promise(function(res){Promise.resolve(app._runTick()).then(function(){' +
+      '  setTimeout(function(){var dg={};try{dg=window.__b190diag(app);}catch(e){dg={err:String(e)};}' +
+      '    res(JSON.stringify({handle:app._checkInterval,' +
+      '    ocs:app._ocsStudyStarted===true,playing:app._isPlaying===true,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect,diag:dg}));},300);' +
+      '  },function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});});})()'));
+    check('190-D 这一拍由 OCS 那一格认领、`_isPlaying` 那一格一次都没走到：`_ocsStudyStarted` 由假转真' +
+      '（证明是这一拍 `_runTick()` 起的循环，不是测试台替它起的）、`_ensurePlaybackRate` 以 `tick` ' +
+      '为由的那一格增 0（上一轮把补丁就装在那一行，现场量回它一次都没执行过）、' +
+      '照旧早退（`_collectVisibleTaskFrames` 增 0 = 仲裁顺序一个字没动）、此刻句柄仍为空（循环还在睡 3 秒）',
+      !a1.tickError && a1.ocs === true && a1.rateTick === 0 && a1.collect === 0 &&
+      a1.arm === 0 && a1.handle === null && a1.playing === true, JSON.stringify(a1));
+
+    // ⑤ 那一格真的把巡检捡回来了：日志原话点名 reason，而不是「句柄不知被谁挂上的」。
+    var a2 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){var tries=0;' +
+      '  function look(){' +
+      '    var hit=null,n=0;(window.__b190i||[]).forEach(function(m){' +
+      '      if(String(m.message||"")==="media guard rearmed"){n++;if(!hit){var t=(m&&m.meta)||{};' +
+      '        hit={reason:String(t.reason||""),level:String(m.level||""),' +
+      '          ct:t.currentTime,dur:t.duration};}}});' +
+      '    if(hit||app._checkInterval!==null||++tries>34){var dg={};' +
+      '      try{dg=window.__b190diag(app);}catch(e2){dg={err:String(e2)};}' +
+      '      res(JSON.stringify({hit:hit,handle:app._checkInterval,tries:tries,rearmed:n,' +
+      '        arm:window.__b190N.arm-window.__b190Base.arm,diag:dg}));return;}' +
+      '    setTimeout(look,150);}' +
+      '  look();});})()'));
+    var handle1 = a2.handle;
+    check('190-E OCS 循环自己把巡检挂回来了（≤5 秒）：生产日志原话 `media guard rearmed` 点名 ' +
+      '`reason` 是 `ocs-runner-active-job`、级别 warn、取证里的位置与时长就是那一支（792.4 与 1345.8），' +
+      '`_checkInterval` 非空、`_startVideoMonitoring` 恰好一次、这句话本轮也只说一次',
+      !!a2.hit && a2.hit.reason === 'ocs-runner-active-job' && a2.hit.level === 'warn' &&
+      a2.hit.ct === 792.4 && a2.hit.dur === 1345.8 &&
+      handle1 !== null && handle1 !== undefined && a2.arm === 1 && a2.rearmed === 1,
+      JSON.stringify(a2));
+
+    // ⑥ 捡回来的巡检必须**真的在跑**，而不是只多了一枚句柄（等两个周期：1500 毫秒 × 2）。
+    await sleep(3200);
+    var g1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={handle:app._checkInterval,wall:app._guardLastWallTs,' +
+      '  seeks:(window.__b190Seeks||[]).length,tried:0,seeked:[],' +
+      '  rateGuard:window.__b190N.rateGuard-window.__b190Base.rateGuard};' +
+      'try{var k=String(app._getMediaSeekKey(app._videoEl));' +
+      '  if(app._seekTriedKeys&&app._seekTriedKeys[k])out.tried=1;}catch(e){}' +
+      '(window.__b190i||[]).forEach(function(m){if(String(m.message||"")==="seekable video: seek to end"){' +
+      '  var t=(m&&m.meta)||{};out.seeked.push(String(t.reason||"")+"|"+Number(t.from)+"|"+Number(t.to));}});' +
+      'return out;})()'
+    );
+    var guardSeeks = (g1.seeked || []).filter(function (s) { return s.indexOf('guard|') === 0; });
+    check('190-F 捡回来的巡检真在跑：`seekable video: seek to end` 里 `reason` 是 `guard` 的恰好一条、' +
+      '「这一支已经试过」那本账被填上（tried=1）、位置确实写过一次，而 `_ensurePlaybackRate` 以 `guard` ' +
+      '为由那一格也至少跑过一拍 —— 句柄非空但一次都没回调，等于只补了一枚假句柄',
+      !!g1 && guardSeeks.length === 1 && g1.tried === 1 && g1.seeks >= 1 &&
+      g1.rateGuard >= 1 && g1.handle === handle1 && g1.wall > 0, JSON.stringify(g1));
+
+    // ⑦ 句柄已经在时**不许重建**：`_startVideoMonitoring()` 一进门就把
+    //    `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，
+    //    每轮都重建等于把「没进展就自愈」的基准天天擦掉（AGENTS §2 #13 同一族）。
+    var a3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){' +
+      '  Promise.resolve(app._runTick()).then(function(){return Promise.resolve(app._runTick());})' +
+      '  .then(function(){setTimeout(function(){res(JSON.stringify({handle:app._checkInterval,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,wall:app._guardLastWallTs,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect}));},1400);})' +
+      '  .catch(function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});' +
+      '});})()'));
+    check('190-G 句柄还在时再走两拍一次都不重建（`arm` 仍是 1、句柄 id 与上一格逐字相同），' +
+      '停滞基准 `_guardLastWallTs` 没被抹回 0（它一归零，「没进展就自愈」那一格就永远数不满 6 秒）；' +
+      '这一拍照旧由 OCS 认领、照旧早退（`rateTick` 与 `collect` 都增 0）',
+      !a3.tickError && a3.arm === 1 && a3.handle === handle1 && a3.wall > 0 &&
+      a3.wall === g1.wall && a3.rateTick === 0 && a3.collect === 0,
+      JSON.stringify({ a3: a3, wall1: g1.wall }));
+
+    // ⑧ 判据的四格，**每格只在它自己身上红**：句柄非空、`_isPlaying` 为假、媒体已结束 —— 三格都该拒绝；
+    //    再补第四格「句柄为空 + 在播 + 没结束」必须真挂回来（正向对照）。
+    //    ⚠️ 顺序要紧：先问「已经挂着」那一格（此时句柄非空），**再把句柄清掉**逐格隔离 ——
+    //    生产那一行是 `if (this._checkInterval || !this._isPlaying) return false;`，
+    //    句柄还挂着时后两格会被它一起挡成 false，三条拒绝里其实只有一条在承重
+    //    （AGENTS §5「一处注入最好只对应一条断言」同一族）。
+    //    整块同步跑完、中间不许 await —— 那个 OCS 循环是异步的，一让出就把状态改了。
+    var a4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={armedCell:-1,noPlayCell:-1,endedCell:-1,liveCell:-1,armDelta:-1,handle:-1,handleBefore:-1};' +
+      // 前提自己钉住：问「已经挂着」那一格**之前**句柄必须真的挂着 ——
+      // 上游没捡回来时这里会被迫自己挂一次，`armedCell` 就变成 1，
+      // 报出来的是"判据不会拒绝"，真相是"上一格根本没捡"（AGENTS §5「绿有两种」）。
+      'out.handleBefore=app._checkInterval!==null?1:0;' +
+      'out.armedCell=app._rearmMediaGuardIfLost("b190-already-armed")?1:0;' +
+      'var a0=window.__b190N.arm;' +
+      'app._clearCheckInterval();' +
+      'app._isPlaying=false;out.noPlayCell=app._rearmMediaGuardIfLost("b190-not-playing")?1:0;' +
+      'app._isPlaying=true;' +
+      'window.__b190Ended=true;out.endedCell=app._rearmMediaGuardIfLost("b190-ended")?1:0;' +
+      'window.__b190Ended=false;' +
+      'out.liveCell=app._rearmMediaGuardIfLost("b190-live-media")?1:0;' +
+      'out.armDelta=window.__b190N.arm-a0;out.handle=app._checkInterval!==null?1:0;' +
+      'return out;})()'
+    );
+    check('190-H `_rearmMediaGuardIfLost` 四格逐格对上：句柄还在时拒绝、没在播时拒绝、这一支已结束时' +
+      '拒绝，而「句柄空、在播、没结束」那一格必须真挂回来（正向对照，少了它三条拒绝可能全是空函数给的）；' +
+      '四格里只有最后一格动过 `_startVideoMonitoring`（armDelta 恰 1）并留下了句柄；' +
+      '`handleBefore` 必须为 1 —— 问第一格之前句柄真是上游挂上的，不是这一格自己挂的',
+      !!a4 && a4.handleBefore === 1 && a4.armedCell === 0 && a4.noPlayCell === 0 &&
+      a4.endedCell === 0 && a4.liveCell === 1 && a4.armDelta === 1 && a4.handle === 1,
+      JSON.stringify(a4));
+
+    // 收尾：把本轮起的循环停掉（运行时版本号 +1，那个**开放条件**循环下一轮 `while` 自己判掉，
+    //       别让它把「找下一个任务点」的动作漏进下一个场景 —— 扩展存储与页面那本账是整轮共用的），
+    //       再拆证人、停巡检、把状态交回出厂形状。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190Ended=false;window.__b190T=0;' +
+      'app._runtimeVersion=Number(app._runtimeVersion||0)+1;' +
+      'app._clearCheckInterval();app._clearTickLoop();' +
+      'delete app._ensurePlaybackRate;delete app._startVideoMonitoring;' +
+      'delete app._collectVisibleTaskFrames;delete app.nextUnit;' +
+      'app._videoEl=null;app._isPlaying=false;app._videoCount=0;' +
+      'app._currentVideoIndex=0;app._activeJobId="";app._ocsStudyStarted=false;' +
+      'var f=document.getElementById("iframe");' +
+      'var v=f&&f.contentWindow?f.contentWindow.document.getElementById("omitone-video"):null;' +
+      'try{if(v)v.pause();}catch(e){}return true;})()');
+  }
+});
+
+SCENARIOS.push({
+  name: '视频在播却没人巡检：没有可读帧的页面由 style 分支捡回来',
+  // 同一处 bug 的**第二种现场形状**。`_runTick` 里认领「这一拍还在播媒体」的有两格，走两条不同的路：
+  //   ① `_ensureOcsStudyRunner()` —— 要 `_getMainWindow()` 非空（顶层有可读的 `#iframe`），
+  //      由它那个异步循环过 3 秒后捡（`60-tasks-detect.js` 的 `ocs-runner-active-job`）；上面那场测的就是它。
+  //   ② `_runOcsStyleStudy()` —— 没有可读帧的那一类页面（attachment 直挂顶层文档）才会走到，
+  //      在**同一拍内**判 `_isActiveStudyJobPending("ocs-style-active-job")` 并捡回来；**这一场测这一格**。
+  // ⚠️ 这一场的夹具必须整页**没有** `#iframe`：放了 `<iframe>` 就走 ①，放了 `<div id="iframe">`
+  //    会被 `_checkBlockedByCrossOrigin()` 整拍拒掉、①②都走不到。
+  //    少了这一场，把 `62-tasks-run.js` 那一行删掉，全量 e2e 一条都不会红
+  //    （AGENTS §5「断言绿有两种：走到了、和根本没走到那一层」）。
+  path: '/media-tick-style',
+  noAutoResume: true,
+  run: async function (ctx) {
+    // ① 夹具自证 + 打桩 —— 这一场视频长在**顶层文档**里，桩就打在顶层 realm 上。
+    //    ⚠️ `play()` 必须交回一个 Promise（批次 50 那族：桩成 `undefined` 会让调用方 `await` 到
+    //       一个非 Promise，而 `Promise.resolve(undefined)` 与真抛错在日志上同形）。
+    var self = await ctx.client.evaluate(
+      '(function(){' +
+      'var app=window._xxtApp,PM=window.HTMLMediaElement&&HTMLMediaElement.prototype;' +
+      'if(!app||!PM){return {proto:false,hasApp:!!app};}' +
+      // ⚠️ 与上一场同一条规矩：手动驱动 `_runTick()` 的场次必须先跑 `run()` 里那一发
+      //    `_resetRuntimeState()`（`10-config-state.js:488`），否则 `_runtimeVersion` 是 `undefined`，
+      //    `62-tasks-run.js:508` 那道版本闸在同一拍**最前面**就 return true —— 认领了这一拍却
+      //    一步活不干、一条日志不留（本轮 190-L 第一次就红在这里，比 `_chapterChangedAt` 那一半更早）。
+      'app._resetRuntimeState();' +
+      'window.__b190T=792.4;window.__b190DUR=1345.8;' +
+      'window.__b190Paused=false;window.__b190Ended=false;window.__b190Seeks=[];' +
+      'Object.defineProperty(PM,"error",{configurable:true,get:function(){return null;}});' +
+      'Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+      'Object.defineProperty(PM,"duration",{configurable:true,get:function(){return window.__b190DUR;}});' +
+      'Object.defineProperty(PM,"paused",{configurable:true,get:function(){return window.__b190Paused;}});' +
+      'Object.defineProperty(PM,"ended",{configurable:true,get:function(){return window.__b190Ended;}});' +
+      'Object.defineProperty(PM,"currentTime",{configurable:true,' +
+      '  get:function(){return window.__b190T;},set:function(v){window.__b190Seeks.push(Number(v));}});' +
+      'Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+      '  var d=window.__b190DUR;' +
+      '  return {length:1,start:function(){return 0;},end:function(){return d;}};}});' +
+      'Object.defineProperty(PM,"playbackRate",{configurable:true,get:function(){return 1;},set:function(){}});' +
+      'PM.play=function(){return Promise.resolve();};PM.load=function(){};' +
+      'window.__b190N={rateTick:0,rateGuard:0,arm:0,collect:0,next:0};' +
+      'var pr=app._ensurePlaybackRate,sm=app._startVideoMonitoring,cf=app._collectVisibleTaskFrames;' +
+      'app._ensurePlaybackRate=function(){var r=String(arguments[1]);' +
+      '  if(r==="tick"){window.__b190N.rateTick++;}else if(r==="guard"){window.__b190N.rateGuard++;}' +
+      '  return pr.apply(this,arguments);};' +
+      'app._startVideoMonitoring=function(){window.__b190N.arm++;return sm.apply(this,arguments);};' +
+      'app._collectVisibleTaskFrames=function(){window.__b190N.collect++;return cf.apply(this,arguments);};' +
+      'app.nextUnit=function(){window.__b190N.next++;};' +
+      'window.__b190i=[];' +
+      'if(!window.__b190Bound){window.__b190Bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){window.__b190i.push(m);}});}' +
+      'var v=document.getElementById("omitone-video");' +
+      'var frame=null,mainDoc=false,mainWin=false,blocked=false,foundByProd=null;' +
+      'window.__b190diag=function(a){var d={};' +
+      // ⚠️ 不许 `Number(x||0)` —— 那会把"根本没初始化"洗成合法读数 0（AGENTS §2 #2 同一族），
+      //    而本轮 190-E 的取证就被这一手骗了过去：`rv:0` 与 `rvTick:0` 看着相等，真相是原始值 `undefined`。
+      '  d.rv=typeof a._runtimeVersion==="number"?a._runtimeVersion:"(未初始化)";' +
+      '  d.rvTick=typeof window.__b190RV==="number"?window.__b190RV:"(未抓)";' +
+      '  d.chg=Number(a._chapterChangedAt||0);d.trans=Number(a._jobTransitionUntil||0);' +
+      '  d.deadline=Number(a._ocsSearchDeadline||0);d.now=Date.now();' +
+      '  d.amp=a._activeMediaJobPending===true;d.managed=a._activeMediaJobManaged===true;' +
+      '  d.vid=!!a._videoEl;d.vidCount=Number(a._videoCount);d.playing=a._isPlaying===true;' +
+      '  d.started=String(a._ocsStudyStarted);d.checkNull=a._checkInterval===null;' +
+      '  d.seeks=(window.__b190Seeks||[]).length;' +
+      '  d.logs=(window.__b190i||[]).map(function(m){return m.level+":"+m.message;}).slice(-12);' +
+      '  return d;};' +
+      'try{frame=document.querySelector("#iframe");}catch(e){}' +
+      'try{mainDoc=!!app._getMainDocument();}catch(e){}' +
+      'try{mainWin=!!app._getMainWindow();}catch(e){}' +
+      'try{blocked=!!app._checkBlockedByCrossOrigin();}catch(e){}' +
+      // 让**生产**自己去找那枚视频（不手塞 `_videoEl`）—— 顶层文档里那枚算不算「可见媒体」
+      // 是这一族能不能走到 `_runOcsStyleStudy` 的前提，量回来比推可靠。
+      'try{app._videoEl=null;foundByProd=app._getVideoEl();}catch(e){foundByProd=null;}' +
+      'return {proto:true,hasApp:true,hasV:!!v,vidTag:v?String(v.tagName).toUpperCase():"",' +
+      '  noFrameEl:frame===null,mainDoc:mainDoc,mainWin:mainWin,blocked:blocked,' +
+      '  foundSame:foundByProd===v,foundId:foundByProd?String(foundByProd.id||""):"",visible:!!v&&(v.getClientRects().length>0),' +
+      '  errNull:v?v.error===null:false,ct:v?Number(v.currentTime):-1,dur:v?Number(v.duration):-1,' +
+      '  paused:v?v.paused:null,ended:v?v.ended:null};})()');
+    check('190-I 夹具自证（另一种现场形状）：整页确实没有 `#iframe`，所以 `_getMainFrame()` 那三条' +
+      '（`_getMainDocument()`、`_getMainWindow()`）全读不出、`_checkBlockedByCrossOrigin()` 说没挡住' +
+      '（＝这一拍**不会**被 OCS 那一格认领，只会走到 style 分支）；顶层原型打桩生效，' +
+      '而**生产 `_getVideoEl()` 自己在顶层文档里拿到那枚可见视频**（拿不到 = 夹具形状不对，不许改断言迁就它）',
+      !!self && self.proto === true && self.hasApp === true && self.hasV === true &&
+      self.vidTag === 'VIDEO' && self.noFrameEl === true && self.mainDoc === false &&
+      self.mainWin === false && self.blocked === false && self.visible === true &&
+      self.foundSame === true && self.foundId === 'omitone-video' &&
+      self.errNull === true && self.ct === 792.4 && self.dur === 1345.8 &&
+      self.paused === false && self.ended === false, JSON.stringify(self));
+
+    // ② 前提 + 证人基线（比的是增量，不是绝对数 —— 上一场留下的计数不能替这一场说话）。
+    var pre = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs=Object.assign({},app.configs,' +
+      '  {enableSeek:true,autoMaxPlaybackRate:false,advanceAtNinetyPercent:false});' +
+      'var v=app._videoEl;' +
+      'app._isPlaying=true;app._currentVideoIndex=0;' +
+      'app._activeJobId="b191-job";app._captchaActive=false;app._rateProbing=false;app._detectedMaxRate=0;' +
+      'app._seekTriedKeys=Object.create(null);app._seekRevertedKeys=Object.create(null);' +
+      'app._seekDeferKeys=Object.create(null);app._ninetyHeldBackKeys=Object.create(null);' +
+      'app._activeMediaJobPending=true;app._activeMediaJobManaged=true;' +
+      // 这两个时间戳会让 `_runOcsStyleStudy` 在捡回**之前**就 return true（认领这一拍却不挂巡检）；
+      // 把这一支的搜索记账也归零，让 `study begin` 与那一格都在本轮重新长出来。
+      'app._jobTransitionUntil=0;app._studyCompleteAt=0;' +
+      'app._ocsSearchDeadline=0;app._ocsSearchedJobs=[];app._attachmentFingerprint="";' +
+      // ⚠️ `_chapterChangedAt` 单钉成 0 是**不够**的：`_runTick` 在走到 style 分支之前先跑
+      //    `_detectPageChange()`（`64-tasks-loop.js:159`），而 `60-tasks-detect.js:57` 把
+      //    **首次认出章节号**也算一次变更（批次 20-I）—— 于是被测的那一拍自己把它写回 `Date.now()`，
+      //    3 秒稳定窗口当场重新关上，`62-tasks-run.js:512` 又在捡回之前 return
+      //    （本轮 190-L 的第二个死法，取证里 `chg` 比 `now` 只早 304 毫秒就是这么来的）。
+      //    现场的稳态是「这一节早就认出来、窗口早过了」，所以这里先真跑一次识别（现场第一拍本来就要跑它），
+      //    再把那一刻钉回 60 秒之前。识别没 burn 掉的话，下面 `lastKey` 那一格会当场说前提不成立。
+      'try{app._detectPageChange();}catch(ePage){}' +
+      'app._chapterChangedAt=Date.now()-60000;' +
+      'app._guardLastWallTs=0;app._guardLastTime=0;' +
+      'window.__b190Base={arm:window.__b190N.arm,collect:window.__b190N.collect,' +
+      '  rateTick:window.__b190N.rateTick,rateGuard:window.__b190N.rateGuard,next:window.__b190N.next};' +
+      'var key="",pending=false;try{key=String(app._getMediaSeekKey(v));}catch(e){key="";}' +
+      'try{pending=app._isActiveStudyJobPending("b191-pre")===true;}catch(e){pending=false;}' +
+      'return {hasEl:!!v,vidCount:Number(app._videoCount),playing:app._isPlaying===true,' +
+      '  checkNull:app._checkInterval===null,loopOff:!app._tickLoopInterval,' +
+      // 两道让 style 分支提前 return 的闸，各自单独钉一格（压成一格就分不清"版本闸"与"稳定窗口"）：
+      // `rvNum` = `_runtimeVersion` 是数字（`62-tasks-run.js:508` 那一半），
+      // `chgOld` = 章节识别已经过了 3 秒稳定窗口（`:512` 那一半），
+      // `lastKey` = 被测那一拍不会再把它认成新章节重写（`60-tasks-detect.js:57` 那一族）。
+      '  rvNum:typeof app._runtimeVersion==="number",' +
+      '  rv:(typeof app._runtimeVersion==="number"?app._runtimeVersion:"(未初始化)"),' +
+      '  lastKey:String(app._lastChapterKey||""),chgOld:(Date.now()-Number(app._chapterChangedAt||0))>3000,' +
+      // ⚠️ 这一格按「假」判，不按 `=== false` 判：`_ocsStudyStarted` 没起过时可能是 `false`
+      //    （跑过 `_resetRuntimeState()` 之后），也可能是**压根没初始化**的 `undefined` ——
+      //    拿 `=== false` 比会把后一种读成"循环已经起过"这句假话，而 190-L 要证的正是
+      //    "认领这一拍的不是 OCS 那一格"。（`JSON.stringify` 会把 `undefined` 那格整个丢掉，
+      //    所以取证里凡是"没有这一格"的，都是这个形状，别当成没写。）
+      '  ocsOff:!app._ocsStudyStarted,pending:pending,' +
+      '  key:key,seekOn:app.configs.enableSeek===true,notProbing:app._rateProbing===false,' +
+      '  dur:v?Number(v.duration):0,ct:v?Number(v.currentTime):0,' +
+      '  notPaused:v?v.paused===false:false,notEnded:v?v.ended===false:false,' +
+      '  errNull:v?v.error===null:false,' +
+      '  cover:v?Number(v.seekable.end(0))>=Number(v.duration)-3:false};})()'
+    );
+    check('190-J 前提：现场那一格真造出来了 —— 状态说在播、巡检句柄确实是空的、目录循环也停了、' +
+      'OCS 循环也没起、两道会提前 return 的闸都确实是开的（运行版本号是数字、章节识别过了 3 秒稳定窗口），' +
+      '而 `_isActiveStudyJobPending()` 说这一支正在被认领（它说假话 style 分支就不去捡）；' +
+      '拖结尾的资格也齐（键非空、拖动开着、没在探测倍速、区间含目标、error 空），缺任何一条下面整段都是空测',
+      !!pre && pre.hasEl === true && pre.vidCount === 1 && pre.playing === true &&
+      pre.checkNull === true && pre.loopOff === true && pre.ocsOff === true &&
+      pre.rvNum === true && pre.lastKey !== '' && pre.chgOld === true &&
+      pre.pending === true && !!pre.key && pre.seekOn === true && pre.notProbing === true &&
+      pre.dur > 20 && pre.ct < pre.dur - 8 && pre.notPaused === true && pre.notEnded === true &&
+      pre.errNull === true && pre.cover === true, JSON.stringify(pre));
+
+    // ③ 走到底之前那些门一格都不许挡住（挡住了 190-L 就成了「没走到」而不是「改坏了」）；
+    //    OCS 那一格**不能**问 —— 它一被叫到就把循环起起来，「这一拍是它捡的」就变成测试台自己说的。
+    var gates = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var o={};' +
+      'function g(k,fn){try{o[k]=!!fn.call(app);}catch(e){o[k+"_err"]=String((e&&e.message)||e);}}' +
+      'g("disc",app._isDiscussionContext);g("cap",app._isStandaloneCaptchaPage);' +
+      'g("blocked",app._checkBlockedByCrossOrigin);g("dwait",app._handleDiscussionWait);' +
+      'g("home",app._enterChapterFromCourseHome);g("skip",app._skipIfCompleted);' +
+      'g("sub",app._checkSubmitConfirmDialog);g("mon",app._monitorQuizSubmit);' +
+      'g("popup",app._activePopupBlock);g("cont",app._tryContinueStudyPrompt);' +
+      'return o;})()');
+    var gateKeys = Object.keys(gates || {});
+    var gateHit = gateKeys.filter(function (k) { return gates[k] === true; });
+    var gateErr = gateKeys.filter(function (k) { return k.indexOf('_err') > 0; });
+    check('190-K 前面那些门（讨论、独立验证码、内容帧读不到、等讨论、首页进章、已完成、交卷确认、' +
+      '盯提交、弹题、继续学习）十格全是 false 且一格都没抛 —— 这一拍才真走得到 `_runOcsStyleStudy`，' +
+      '点名是哪一格挡的，别让人猜「没走到」还是「改坏了」',
+      gateKeys.length === 10 && gateHit.length === 0 && gateErr.length === 0, JSON.stringify(gates));
+
+    // ④ 真 `_runTick()` 一拍：与上一场最大的分别是**这一场在同一拍内就挂回来**（那一格不是异步循环），
+    //    而 `_ocsStudyStarted` 必须**照旧为假** —— 它是「认领这一拍的不是 OCS 那一格」的机器证；
+    //    `rateTick` 增 0 则是「补丁不能装在 `_isPlaying` 那一格」的机器证（现场量回它一次都没执行过）。
+    var a1 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190i=[];' +
+      'window.__b190RV=app._runtimeVersion;' +
+      'return new Promise(function(res){Promise.resolve(app._runTick()).then(function(){' +
+      '  setTimeout(function(){' +
+      '    var hit=null;(window.__b190i||[]).forEach(function(m){' +
+      '      if(String(m.message||"")==="media guard rearmed"&&!hit){var t=(m&&m.meta)||{};' +
+      '        hit={reason:String(t.reason||""),level:String(m.level||""),' +
+      '          ct:t.currentTime,dur:t.duration};}});' +
+      '    var dg={};try{dg=window.__b190diag(app);}catch(e2){dg={err:String(e2)};}' +
+      '    res(JSON.stringify({hit:hit,handle:app._checkInterval,' +
+      '      ocs:app._ocsStudyStarted===true,playing:app._isPlaying===true,' +
+      '      arm:window.__b190N.arm-window.__b190Base.arm,' +
+      '      rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '      collect:window.__b190N.collect-window.__b190Base.collect,diag:dg}));},300);' +
+      '  },function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});});})()'));
+    var handle1 = a1.handle;
+    check('190-L 同一拍内 style 分支就把巡检挂回来了：`_checkInterval` 非空、`_startVideoMonitoring` 增 1、' +
+      '日志原话 `media guard rearmed` 点名 `reason` 是 `ocs-style-active-job`（不是 `ocs-runner-active-job`，' +
+      '两格各管一种页面形状）；而 `_ocsStudyStarted` 照旧为假（证明认领这一拍的不是 OCS 那一格）、' +
+      '`_ensurePlaybackRate` 以 `tick` 为由那一格增 0、照旧早退（`_collectVisibleTaskFrames` 增 0 = 仲裁顺序一个字没动）',
+      !a1.tickError && a1.ocs === false && a1.handle !== null && a1.handle !== undefined &&
+      a1.arm === 1 && a1.rateTick === 0 && a1.collect === 0 && a1.playing === true &&
+      !!a1.hit && a1.hit.reason === 'ocs-style-active-job' && a1.hit.level === 'warn' &&
+      a1.hit.ct === 792.4 && a1.hit.dur === 1345.8, JSON.stringify(a1));
+
+    // ⑤ 挂回来的巡检必须**真的在跑**，而不是只多了一枚句柄（等两个周期：1500 毫秒 × 2）。
+    await sleep(3200);
+    var g1 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={handle:app._checkInterval,wall:app._guardLastWallTs,' +
+      '  seeks:(window.__b190Seeks||[]).length,tried:0,seeked:[],' +
+      '  rateGuard:window.__b190N.rateGuard-window.__b190Base.rateGuard};' +
+      'try{var k=String(app._getMediaSeekKey(app._videoEl));' +
+      '  if(app._seekTriedKeys&&app._seekTriedKeys[k])out.tried=1;}catch(e){}' +
+      '(window.__b190i||[]).forEach(function(m){if(String(m.message||"")==="seekable video: seek to end"){' +
+      '  var t=(m&&m.meta)||{};out.seeked.push(String(t.reason||"")+"|"+Number(t.from)+"|"+Number(t.to));}});' +
+      'return out;})()'
+    );
+    var guardSeeks = (g1.seeked || []).filter(function (s) { return s.indexOf('guard|') === 0; });
+    check('190-M 挂回来的巡检真在跑：`seekable video: seek to end` 里 `reason` 是 `guard` 的恰好一条、' +
+      '「这一支已经试过」那本账被填上（tried=1）、位置确实写过一次，而 `_ensurePlaybackRate` 以 `guard` ' +
+      '为由那一格也至少跑过一拍 —— 句柄非空但一次都没回调，等于只补了一枚假句柄',
+      !!g1 && guardSeeks.length === 1 && g1.tried === 1 && g1.seeks >= 1 &&
+      g1.rateGuard >= 1 && g1.handle === handle1 && g1.wall > 0, JSON.stringify(g1));
+
+    // ⑥ 句柄已经在时**不许重建**：`_startVideoMonitoring()` 一进门就把 `_guardLastTime /
+    //    _guardLastWallTs / _guardLastResumeTs` 三格清零，每一拍都重建等于把「没进展就自愈」的基准天天擦掉
+    //    （AGENTS §2 #13 同一族：跨拍累积的记账不许被同一轮动作清零）。
+    var a3 = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'return new Promise(function(res){' +
+      '  Promise.resolve(app._runTick()).then(function(){return Promise.resolve(app._runTick());})' +
+      '  .then(function(){setTimeout(function(){res(JSON.stringify({handle:app._checkInterval,' +
+      '    arm:window.__b190N.arm-window.__b190Base.arm,wall:app._guardLastWallTs,' +
+      '    ocs:app._ocsStudyStarted===true,' +
+      '    rateTick:window.__b190N.rateTick-window.__b190Base.rateTick,' +
+      '    collect:window.__b190N.collect-window.__b190Base.collect}));},1400);})' +
+      '  .catch(function(e){res(JSON.stringify({tickError:String((e&&e.message)||e)}));});' +
+      '});})()'));
+    check('190-N 句柄还在时再走两拍一次都不重建（`arm` 仍是 1、句柄 id 与上一格逐字相同），' +
+      '停滞基准 `_guardLastWallTs` 没被抹回 0（它一归零，「没进展就自愈」那一格就永远数不满 6 秒）；' +
+      '这一拍仍由 style 分支认领（`_ocsStudyStarted` 照旧为假）、照旧早退（`rateTick` 与 `collect` 都增 0）',
+      !a3.tickError && a3.arm === 1 && a3.handle === handle1 && a3.wall > 0 &&
+      a3.wall === g1.wall && a3.ocs === false && a3.rateTick === 0 && a3.collect === 0,
+      JSON.stringify({ a3: a3, wall1: g1.wall }));
+
+    // ⑦ 判据的四格，每格只在它自己身上红 —— 与上一场同一张表（两处调用共用 `_rearmMediaGuardIfLost`
+    //    这一个真源，所以这里点的是**判据本身**，不是调用点；调用点由 190-L 的 reason 点名）。
+    //    ⚠️ 顺序要紧：先问「已经挂着」那一格，再把句柄清掉逐格隔离 —— 生产那一行是
+    //    `if (this._checkInterval || !this._isPlaying) return false;`，句柄还挂着时后两格会被它
+    //    一起挡成 false，三条拒绝里其实只有一条在承重。整块同步跑完、中间不许 await。
+    var a4 = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var out={armedCell:-1,noPlayCell:-1,endedCell:-1,liveCell:-1,armDelta:-1,handle:-1,handleBefore:-1};' +
+      // 同上一场：问「已经挂着」之前句柄必须真挂着（上游捡回来留下的），否则第一格是自己挂的。
+      'out.handleBefore=app._checkInterval!==null?1:0;' +
+      'out.armedCell=app._rearmMediaGuardIfLost("b191-already-armed")?1:0;' +
+      'var a0=window.__b190N.arm;' +
+      'app._clearCheckInterval();' +
+      'app._isPlaying=false;out.noPlayCell=app._rearmMediaGuardIfLost("b191-not-playing")?1:0;' +
+      'app._isPlaying=true;' +
+      'window.__b190Ended=true;out.endedCell=app._rearmMediaGuardIfLost("b191-ended")?1:0;' +
+      'window.__b190Ended=false;' +
+      'out.liveCell=app._rearmMediaGuardIfLost("b191-live-media")?1:0;' +
+      'out.armDelta=window.__b190N.arm-a0;out.handle=app._checkInterval!==null?1:0;' +
+      'return out;})()'
+    );
+    check('190-O `_rearmMediaGuardIfLost` 四格逐格对上：句柄还在时拒绝、没在播时拒绝、这一支已结束时' +
+      '拒绝，而「句柄空、在播、没结束」那一格必须真挂回来（正向对照，少了它三条拒绝可能全是空函数给的）；' +
+      '四格里只有最后一格动过 `_startVideoMonitoring`（armDelta 恰 1）并留下了句柄；' +
+      '`handleBefore` 必须为 1 —— 问第一格之前句柄真是上游挂上的，不是这一格自己挂的',
+      !!a4 && a4.handleBefore === 1 && a4.armedCell === 0 && a4.noPlayCell === 0 &&
+      a4.endedCell === 0 && a4.liveCell === 1 && a4.armDelta === 1 && a4.handle === 1,
+      JSON.stringify(a4));
+
+    // 收尾：拆证人、停巡检、把状态交回出厂形状（页面那本账是整轮共用的，AGENTS §5）。
+    //       这一场没有异步循环要停 —— `_ocsStudyStarted` 本轮一直是假，正是 190-L 证的那件事。
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__b190Ended=false;window.__b190T=0;' +
+      'app._clearCheckInterval();app._clearTickLoop();' +
+      'delete app._ensurePlaybackRate;delete app._startVideoMonitoring;' +
+      'delete app._collectVisibleTaskFrames;delete app.nextUnit;' +
+      'app._videoEl=null;app._isPlaying=false;app._videoCount=0;' +
+      'app._currentVideoIndex=0;app._activeJobId="";' +
+      'var v=document.getElementById("omitone-video");' +
+      'try{if(v)v.pause();}catch(e){}return true;})()');
+  }
+});
+
+SCENARIOS.push({
+  name: '177 坏包媒体三次恢复耗尽后隔离并交页',
+  path: '/ppt-decoy-media-177',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var baseConfig = await ctx.client.evaluate('JSON.parse(JSON.stringify(window._xxtApp.configs || {}))');
+    var baseGiveUp = await ctx.client.evaluate(
+      '(function(){try{return localStorage.getItem(window._xxtApp._taskGiveUpStoreKey);}catch(e){return null;}})()'
+    );
+    var cfg = Object.assign({}, baseConfig, {
+      enableMedia: true,
+      autoNext: true,
+      enableSeek: false,
+      autoMaxPlaybackRate: false,
+      advanceAtNinetyPercent: false,
+      restudy: false,
+      enableQuiz: false,
+      enablePPT: false,
+      autoNextCourse: false,
+      documentSkipTimeoutMs: 900
+    });
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(500);
+    try {
+      var setup = await ctx.client.evaluate(
+        '(function(){' +
+        'var app=window._xxtApp;if(!app)return {ok:false,why:"app missing"};' +
+        'app._clearTickLoop();app._clearCheckInterval();' +
+        'try{localStorage.removeItem(app._taskGiveUpStoreKey);}catch(e){}' +
+        'app._resetRuntimeState();app._mediaQuarantine=new WeakMap();app._mediaReloadKeys={};' +
+        'app._taskAttempts={};app._taskProgress=null;app._taskGiveUpLogged=null;' +
+        'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
+        'app.configs.enableSeek=false;app.configs.autoMaxPlaybackRate=false;' +
+        'return new Promise(function(res){var tries=0;' +
+        '  function go(){' +
+        '    var f=null,card=null,iw=null,doc=null,v=null;' +
+        '    try{f=document.getElementById("iframe");}catch(e){}' +
+        '    try{card=f&&f.contentDocument?f.contentDocument.querySelector("#tp-ppt iframe"):null;}catch(e){}' +
+        '    try{iw=card&&card.contentWindow;}catch(e){}' +
+        '    try{doc=iw&&iw.document;}catch(e){}' +
+        '    try{v=doc&&doc.querySelector("#video,#audio");}catch(e){}' +
+        '    var ready=!!(f&&card&&iw&&doc&&v&&f.contentDocument.readyState==="complete"&&' +
+        '      doc.readyState==="complete");' +
+        '    if(!ready){if(++tries>50){res({ok:false,why:"frames not ready",tries:tries});return;}' +
+        '      setTimeout(go,100);return;}' +
+        '    var PM=iw.HTMLMediaElement&&iw.HTMLMediaElement.prototype;' +
+        '    if(!PM){res({ok:false,why:"media prototype missing"});return;}' +
+        '    var names=["error","readyState","duration","paused","ended","currentTime","playbackRate","seekable"];' +
+        '    var desc={};names.forEach(function(n){desc[n]=Object.getOwnPropertyDescriptor(PM,n);});' +
+        '    var old={config:Object.assign({},app.configs),quarantine:app._mediaQuarantine,reload:app._mediaReloadKeys,' +
+        '      attempts:app._taskAttempts,progress:app._taskProgress,giveUpLogged:app._taskGiveUpLogged,' +
+        '      finish:app._finishCurrentMedia,next:app.nextUnit,open:window.open,givenUp:app._isTaskGivenUp,' +
+        '      load:PM.load,play:PM.play,desc:desc};' +
+        '    window.__b177Restore=old;' +
+        '    window.__b177Counts={load:0,play:0,seek:0,finish:0,next:0,open:0,nextClicks:0,finishJob:0};' +
+        '    Object.defineProperty(PM,"error",{configurable:true,get:function(){' +
+        '      return {code:3,message:"177 decode pipeline failed"};}});' +
+        '    Object.defineProperty(PM,"readyState",{configurable:true,get:function(){return 4;}});' +
+        '    Object.defineProperty(PM,"duration",{configurable:true,get:function(){return 1345.8;}});' +
+        '    Object.defineProperty(PM,"paused",{configurable:true,get:function(){return false;}});' +
+        '    Object.defineProperty(PM,"ended",{configurable:true,get:function(){return false;}});' +
+        '    Object.defineProperty(PM,"currentTime",{configurable:true,get:function(){return 628.771;},' +
+        '      set:function(x){window.__b177Counts.seek++;}});' +
+        '    Object.defineProperty(PM,"playbackRate",{configurable:true,get:function(){return 1;},set:function(){}});' +
+        '    Object.defineProperty(PM,"seekable",{configurable:true,get:function(){' +
+        '      return {length:1,start:function(){return 0;},end:function(){return 1345.8;}};}});' +
+        '    PM.load=function(){window.__b177Counts.load++;};' +
+        '    PM.play=function(){window.__b177Counts.play++;return Promise.resolve();};' +
+        '    app._finishCurrentMedia=function(){window.__b177Counts.finish++;' +
+        '      return old.finish.apply(this,arguments);};' +
+        '    app.nextUnit=function(){window.__b177Counts.next++;return old.next.apply(this,arguments);};' +
+        '    window.open=function(){window.__b177Counts.open++;return old.open.apply(this,arguments);};' +
+        '    window.__b177i=[];' +
+        '    window.__b177OnLog=function(e){var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log"){' +
+        '      window.__b177i.push(m);}};' +
+        '    window.addEventListener("message",window.__b177OnLog);' +
+        '    var methods=["_searchChaoxingJobOcs","_playChaoxingMediaJob","_checkVideoStatus",' +
+        '      "_isActiveMediaPending","_quarantineDeadMedia","_isMediaQuarantined","_taskPointKey",' +
+        '      "_isTaskGivenUp","_markTaskGivenUp","_ensureOcsStudyRunner","_taskDiscoveryWindowMs"];' +
+        '    var missing=methods.filter(function(n){return typeof app[n]!=="function";});' +
+        '    res({ok:missing.length===0,why:missing.join(","),rev:app._codeRev(),missing:missing,' +
+        '      top:document.readyState,main:f.contentDocument.readyState,inner:doc.readyState,' +
+        '      selectorSame:doc.querySelector("#video,#audio")===v,tag:v.tagName,id:v.id,' +
+        '      errCode:Number(v.error&&v.error.code),readyState:Number(v.readyState),' +
+        '      paused:v.paused,ended:v.ended,ct:Number(v.currentTime),dur:Number(v.duration),' +
+        '      nativeGivenUp:app._isTaskGivenUp===old.givenUp,' +
+        '      giveUpKeys:Object.keys(app._taskGiveUpMap()).length,' +
+        '      config:{enableMedia:app.configs.enableMedia===true,autoNext:app.configs.autoNext===true,' +
+        '        enableSeek:app.configs.enableSeek===false,autoMaxPlaybackRate:app.configs.autoMaxPlaybackRate===false,' +
+        '        documentSkipTimeoutMs:Number(app.configs.documentSkipTimeoutMs)}});' +
+        '  }go();' +
+        '});})()'
+      );
+      check('177-A 夹具自证：真实三帧就绪、卡片层 #tp-ppt 的帧里媒体命中生产选择器 #video,#audio，' +
+        '坏媒体四格钉死（error=3、readyState=4、在播、未结束、位置不动），所需生产方法齐全且 _isTaskGivenUp 没被桩掉',
+        !!setup && setup.ok === true && typeof setup.rev === 'string' && setup.rev.length > 0 && setup.top === 'complete' &&
+        setup.main === 'complete' && setup.inner === 'complete' && setup.selectorSame === true &&
+        setup.tag === 'VIDEO' && setup.id === 'video' && setup.errCode === 3 && setup.readyState === 4 &&
+        setup.paused === false && setup.ended === false && setup.ct === 628.771 && setup.dur === 1345.8 &&
+        setup.nativeGivenUp === true && setup.giveUpKeys === 0 && setup.config.enableMedia === true &&
+        setup.config.autoNext === true && setup.config.enableSeek === true &&
+        setup.config.autoMaxPlaybackRate === true && setup.config.documentSkipTimeoutMs === 900,
+        JSON.stringify(setup));
+      if (!setup || !setup.ok) return;
+
+      var bind = await ctx.client.evaluate(
+        '(async function(){var app=window._xxtApp;app.configs.enableSeek=false;' +
+        'app.configs.autoMaxPlaybackRate=false;var job=app._searchChaoxingJobOcs([]);' +
+        'if(!job||typeof job.func!=="function")return {found:false,job:job?{kind:job.kind,jobid:job.jobid}:null};' +
+        'window.__b177Job=job;var played=await job.func();await new Promise(function(r){setTimeout(r,60);});' +
+        'app._clearCheckInterval();var f=document.getElementById("iframe");' +
+        'var card=f.contentDocument.querySelector("#tp-ppt iframe");' +
+        'var v=card.contentWindow.document.querySelector("#video,#audio");' +
+        'return {found:true,kind:job.kind,workType:job.workType,jobid:job.jobid,played:played===true,' +
+        '  same:app._videoEl===v,pending:app._activeMediaJobPending===true,' +
+        '  managed:app._activeMediaJobManaged===true,playing:app._isPlaying===true,' +
+        '  key:app._taskPointKey(job),mediaKey:app._getMediaSeekKey(v),' +
+        '  counts:Object.assign({},window.__b177Counts),' +
+        '  quarantined:app._isMediaQuarantined(v),giveUpKeys:Object.keys(app._taskGiveUpMap()).length};})()'
+      );
+      check('177-B 真实 OCS 搜索把三帧里的 #video 绑成 media job，并调用真实 func 进入 pending；' +
+        '不是手塞 _videoEl，绑定前没有隔离、没有放弃账，初始播放动作恰好一次',
+        !!bind && bind.found === true && bind.kind === 'video' && bind.workType === 'job' &&
+        bind.jobid === 'b177-media' && bind.played === true && bind.same === true &&
+        bind.pending === true && bind.managed === true && bind.playing === true &&
+        bind.key === 'job:b177-media' && bind.counts.load === 0 && bind.counts.play === 1 &&
+        bind.counts.seek === 0 && bind.quarantined === false && bind.giveUpKeys === 0,
+        JSON.stringify(bind));
+      if (!bind || !bind.found || !bind.same) return;
+
+      var rounds = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;app.configs.enableSeek=false;' +
+        'app.configs.autoMaxPlaybackRate=false;' +
+        'var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'var key=app._getMediaSeekKey(v),out={rounds:[],key:key};' +
+        'for(var i=1;i<=3;i++){var rec=app._mediaReloadKeys&&app._mediaReloadKeys[key];' +
+        '  if(rec)rec.at=Date.now()-21000;' +
+        '  app._guardLastTime=Number(v.currentTime);' +
+        '  app._guardLastWallTs=Date.now()-(Number(app.configs.guardNoProgressMs)+100);' +
+        '  app._checkVideoStatus();var pending=app._isActiveMediaPending("completion-check");' +
+        '  out.rounds.push({i:i,n:Number(app._mediaReloadKeys[key]&&app._mediaReloadKeys[key].n),' +
+        '    load:window.__b177Counts.load,play:window.__b177Counts.play,seek:window.__b177Counts.seek,' +
+        '    pending:pending,quarantined:app._isMediaQuarantined(v)});}' +
+        'out.counts=Object.assign({},window.__b177Counts);' +
+        'return new Promise(function(res){setTimeout(function(){' +
+        '  out.reloads=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media pipeline dead, reload in place";}).map(function(m){' +
+        '      return {attempt:Number(m.meta&&m.meta.attempt),code:Number(m.meta&&m.meta.code),' +
+        '        reason:String(m.meta&&m.meta.reason||"")};});' +
+        '  out.exhausted=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";}).length;' +
+        '  out.giveUpKeys=Object.keys(app._taskGiveUpMap()).length;' +
+        '  out.seekOff=app.configs.enableSeek===false;out.rateOff=app.configs.autoMaxPlaybackRate===false;' +
+        '  res(out);},120);});})()'
+      );
+      check('177-C 三次 _checkVideoStatus 都沿真实无进展分支调用原地重载：attempt 依次 1/2/3、' +
+        '20 秒冷却只推进记录年龄，load/play 各真增三次、seek 不增；第三次后 pending 仍在、尚未隔离或写放弃账',
+        !!rounds && rounds.key === bind.mediaKey && rounds.rounds.length === 3 &&
+        rounds.rounds.every(function (r, i) {
+          return r.i === i + 1 && r.n === i + 1 && r.load === i + 1 &&
+            r.play === i + 2 && r.seek === 0 && r.pending === true && r.quarantined === false;
+        }) && rounds.reloads.length === 3 &&
+        rounds.reloads.every(function (r, i) {
+          return r.attempt === i + 1 && r.code === 3 && r.reason === 'no-progress';
+        }) && rounds.exhausted === 0 && rounds.giveUpKeys === 0 &&
+        rounds.seekOff === true && rounds.rateOff === true,
+        JSON.stringify(rounds));
+      if (!rounds || rounds.reloads.length !== 3) return;
+
+      var dead = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'app._mediaBrokenSince=Date.now()-(Number(app.configs.documentSkipTimeoutMs)+200);' +
+        'var pending=app._isActiveMediaPending("completion-check");' +
+        'return new Promise(function(res){setTimeout(function(){var map=app._taskGiveUpMap();' +
+        '  var keys=Object.keys(map);var exhausted=(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";});' +
+        '  res({pendingReturn:pending,pending:app._activeMediaJobPending===true,' +
+        '    managed:app._activeMediaJobManaged===true,playing:app._isPlaying===true,' +
+        '    hasVideo:!!app._videoEl,videoCount:Number(app._videoCount),quarantined:app._isMediaQuarantined(v),' +
+        '    keys:keys,record:keys.length===1?map[keys[0]]:null,exhausted:exhausted.length,' +
+        '    exhaustedMeta:exhausted.length===1?exhausted[0].meta:null,' +
+        '    finish:window.__b177Counts.finish,next:window.__b177Counts.next,' +
+        '    finishJob:Number(window.__b177FinishJob||0),open:window.__b177Counts.open});},60);});})()'
+      );
+      check('177-D 第三次耗尽后真实释放 pending、精确元素隔离、24 小时放弃名单只写这一键；' +
+        'media recovery exhausted 恰好一条且 giveUp=written，_finishCurrentMedia、nextUnit、finishJob 与开新页一次都没发生',
+        !!dead && dead.pendingReturn === false && dead.pending === false && dead.managed === false &&
+        dead.playing === false && dead.hasVideo === false && dead.videoCount === 0 &&
+        dead.quarantined === true && dead.keys.length === 1 && dead.keys[0] === bind.key &&
+        dead.record && dead.record.reason === 'media-recovery-exhausted' && dead.record.attempts === 3 &&
+        dead.exhausted === 1 && dead.exhaustedMeta && dead.exhaustedMeta.giveUp === 'written' &&
+        dead.exhaustedMeta.reloadTimes === 3 && dead.exhaustedMeta.code === 3 &&
+        dead.finish === 0 && dead.next === 0 && dead.finishJob === 0 && dead.open === 0,
+        JSON.stringify(dead));
+      if (!dead || !dead.quarantined || dead.keys.length !== 1) return;
+
+      var runnerStart = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;app.configs.autoNext=true;' +
+        'app.configs.enableSeek=false;app.configs.autoMaxPlaybackRate=false;' +
+        'app._clearCheckInterval();app._clearTickLoop();' +
+        'app._resetRuntimeState();var f=document.getElementById("iframe");' +
+        'var card=f.contentDocument.querySelector("#tp-ppt iframe");' +
+        'var v=card.contentWindow.document.querySelector("#video,#audio");' +
+        'var waitMs=app._taskDiscoveryWindowMs(1)+3000+5000+5000;' +
+        'app._ensureOcsStudyRunner();' +
+        'return {started:app._ocsStudyStarted===true,waitMs:waitMs,' +
+        '  preservedQuarantine:app._isMediaQuarantined(v),' +
+        '  preservedGiveUp:app._isTaskGivenUp("job:b177-media")===true,' +
+        '  counts:Object.assign({},window.__b177Counts)};})()'
+      );
+      check('177-E 清掉临时 timer/loop 并复位运行时后，隔离与放弃账仍保留；真实 _ensureOcsStudyRunner 已启动，' +
+        '等待上限由 _taskDiscoveryWindowMs 加 OCS 起步与 autoNext 延时读回，不猜秒数',
+        !!runnerStart && runnerStart.started === true && runnerStart.preservedQuarantine === true &&
+        runnerStart.preservedGiveUp === true && runnerStart.waitMs >= 13000,
+        JSON.stringify(runnerStart));
+      var handoff = null;
+      var deadline = Date.now() + (runnerStart ? runnerStart.waitMs : 18000);
+      while (Date.now() < deadline) {
+        await sleep(250);
+        handoff = await ctx.client.evaluate(
+          '(function(){var app=window._xxtApp;var logs=window.__b177i||[];' +
+          'function n(msg){return logs.filter(function(m){return String(m.message||"")===msg;}).length;}' +
+          'return {next:window.__b177Counts.next,skip:n("skip task point in give-up list"),' +
+          '  finished:n("study finished on page"),nextLog:n("study next unit"),' +
+          '  nextClicks:Number(window.__b177NextClicks||0),open:window.__b177Counts.open,' +
+          '  finish:window.__b177Counts.finish,finishJob:Number(window.__b177FinishJob||0),' +
+          '  path:String(location.pathname),logs:logs.map(function(m){return String(m.message||"");}),' +
+          '  counts:Object.assign({},window.__b177Counts)};})()'
+        );
+        if (handoff && handoff.next >= 1) break;
+      }
+      check('177-F runner 真跳过放弃名单里的坏任务点并交页：skip task point in give-up list、' +
+        'study finished on page、study next unit 各一条，真实 nextUnit 与页面下一节按钮各增一次；' +
+        '没有 _finishCurrentMedia、finishJob 或 window.open，场景页没有另开学习页',
+        !!handoff && handoff.skip === 1 && handoff.finished === 1 && handoff.nextLog === 1 &&
+        handoff.next === 1 && handoff.nextClicks === 1 && handoff.open === 0 &&
+        handoff.finish === 0 && handoff.finishJob === 0 &&
+        handoff.path === '/ppt-decoy-media-177',
+        JSON.stringify(handoff));
+      if (!handoff || handoff.next < 1) return;
+
+      var after = await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp;var v=window.__b177Job.doc.querySelector("#video,#audio");' +
+        'var before=Object.assign({},window.__b177Counts);' +
+        'app._reloadMediaInPlace(v,"177-after-handoff");app._checkVideoStatus();' +
+        'app._reloadMediaInPlace(v,"177-after-handoff-2");' +
+        'return {loadDelta:window.__b177Counts.load-before.load,' +
+        '  playDelta:window.__b177Counts.play-before.play,seekDelta:window.__b177Counts.seek-before.seek,' +
+        '  quarantined:app._isMediaQuarantined(v),givenUp:app._isTaskGivenUp("job:b177-media"),' +
+        '  exhausted:(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="media recovery exhausted, element quarantined";}).length,' +
+        '  skip:(window.__b177i||[]).filter(function(m){' +
+        '    return String(m.message||"")==="skip task point in give-up list";}).length,' +
+        '  next:window.__b177Counts.next};})()'
+      );
+      check('177-G 交页后同一坏元素仍是隔离与放弃态，再走真实重载/巡检也不新增 load/play/seek，' +
+        '不会重复写耗尽日志、重复跳过或再次 nextUnit',
+        !!after && after.loadDelta === 0 && after.playDelta === 0 && after.seekDelta === 0 &&
+        after.quarantined === true && after.givenUp === true && after.exhausted === 1 &&
+        after.skip === 1 && after.next === 1,
+        JSON.stringify(after));
+    } finally {
+      await ctx.client.evaluate(
+        '(function(){var app=window._xxtApp,r=window.__b177Restore;' +
+        'app._runtimeVersion=Number(app._runtimeVersion||0)+1;app._clearCheckInterval();app._clearTickLoop();' +
+        'if(r){app.nextUnit=r.next;app._finishCurrentMedia=r.finish;window.open=r.open;' +
+        '  if(window.__b177OnLog)window.removeEventListener("message",window.__b177OnLog);' +
+        '  var f=document.getElementById("iframe"),card=f&&f.contentDocument?' +
+        '    f.contentDocument.querySelector("#tp-ppt iframe"):null;' +
+        '  var PM=card&&card.contentWindow&&card.contentWindow.HTMLMediaElement?' +
+        '    card.contentWindow.HTMLMediaElement.prototype:null;' +
+        '  if(PM){Object.keys(r.desc).forEach(function(n){if(r.desc[n]){' +
+        '      Object.defineProperty(PM,n,r.desc[n]);}else{delete PM[n];}});' +
+        '    PM.load=r.load;PM.play=r.play;}' +
+        '  app._resetRuntimeState();app.configs=' + JSON.stringify(baseConfig) + ';' +
+        '  app._mediaQuarantine=r.quarantine;app._mediaReloadKeys=r.reload;' +
+        '  app._taskAttempts=r.attempts;app._taskProgress=r.progress;app._taskGiveUpLogged=r.giveUpLogged;}' +
+        'try{var raw=' + JSON.stringify(baseGiveUp) + ';if(raw===null){' +
+        '  localStorage.removeItem(app._taskGiveUpStoreKey);}else{' +
+        '  localStorage.setItem(app._taskGiveUpStoreKey,raw);}}catch(e){}' +
+        'delete window.__b177Job;return true;})()'
+      );
+      await writeConfig(ctx.extensionId, baseConfig);
+      await sleep(150);
+    }
+  }
+});
+
 // ===========================================================================
 async function main() {
   // 筛选词支持多个（逗号 / 分号 / 竖线分隔）—— 调试同一批新场景时，

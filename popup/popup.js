@@ -1,5 +1,4 @@
 const DEFAULTS = {
-  playbackRate: 1.0,
   autoMaxPlaybackRate: true,
   // auto=按实测帧率自适应；on=强制 2 倍（弹窗开关打开时写入）
   slowMachineMode: "auto",
@@ -83,8 +82,6 @@ const PROVIDER_PRESETS = {
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  rate: $("rate"),
-  rateVal: $("rateVal"),
   autoMaxRate: $("autoMaxRate"),
   slowMachineMode: $("slowMachineMode"),
   enableMedia: $("enableMedia"),
@@ -93,6 +90,7 @@ const els = {
   blockedReload: $("blockedReload"),
   enableSeek: $("enableSeek"),
   advanceAtNinetyPercent: $("advanceAtNinetyPercent"),
+  seekChainHint: $("seekChainHint"),
   muted: $("muted"),
   autoNext: $("autoNext"),
   autoNextCourse: $("autoNextCourse"),
@@ -107,6 +105,9 @@ const els = {
   restudy: $("restudy"),
   pagePetEnabled: $("pagePetEnabled"),
   petChatEnabled: $("petChatEnabled"),
+  petDoctorEnabled: $("petDoctorEnabled"),
+  petWebSearchEnabled: $("petWebSearchEnabled"),
+  petWebSearchHint: $("petWebSearchHint"),
   providerPreset: $("providerPreset"),
   apiType: $("apiType"),
   apiUrl: $("apiUrl"),
@@ -128,11 +129,16 @@ const els = {
   reset: $("reset"),
   saveApi: $("saveApi"),
   testApi: $("testApi"),
+  listModels: $("listModels"),
+  modelListState: $("modelListState"),
+  modelOptions: $("modelOptions"),
   updateRow: $("updateRow"),
   updateMsg: $("updateMsg"),
   checkUpdate: $("checkUpdate"),
   doUpdate: $("doUpdate"),
   doLater: $("doLater"),
+  previewMsg: $("previewMsg"),
+  doPreview: $("doPreview"),
   updateMute: $("updateMute"),
   doUntil: $("doUntil"),
   start: $("start"),
@@ -256,6 +262,10 @@ function toast(msg, ms) {
 function withoutRemovedConfigFields(rawConfig) {
   const next = { ...(rawConfig || {}) };
   delete next.forceLearn;
+  // 「播放速度」滑条在批次 146 删了，`libs/runtime-policy.js` 里也不再登记这个键。
+  // 老用户存储里那条 `playbackRate` 得在**读回来的这一刻**摘掉：`validatePatch` 认不出
+  // 任何一个键就顶回整张补丁，症状是「所有开关都存不住」（批次 34 那一族），不是「这一根滑条坏了」。
+  delete next.playbackRate;
   return next;
 }
 
@@ -281,14 +291,20 @@ function buildGeminiApiUrl(apiUrl, model, apiKey) {
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
+  const method = (options && options.method) || "POST";
+  // GET/HEAD 不许带 body：后台 apiFetch 那侧是 `body == null ? undefined : String(body)`，
+  // 空串也算"有 body"，浏览器按 Fetch 规范对 GET 带 body 当场抛 TypeError。
+  // 于是这一发**在本地就死了**，而下面那个 catch 把代理失败吞成"改走本地 fetch" ——
+  // 症状只是慢半拍，不是错，等发现时已经查不到是这一行造成的（批次 154 加「获取模型列表」时量到）。
+  const allowBody = !/^(get|head)$/i.test(method);
   try {
     const proxy = await sendRuntimeMessageWithTimeout({
       type: "api_fetch",
       payload: {
         url,
-        method: (options && options.method) || "POST",
+        method,
         headers: (options && options.headers) || {},
-        body: (options && options.body) || "",
+        body: allowBody ? ((options && options.body) || "") : null,
         timeoutMs: timeoutMs || 25000
       }
     }, timeoutMs || 25000, "background api fetch timeout");
@@ -399,12 +415,206 @@ async function testApiConnectionDirect(cfg) {
   return { success: true, endpoint: url, message: message.substring(0, 80) || "OK" };
 }
 
-// ── 宠物聊天（批次 122）────────────────────────────────────────────────────
+// ── 模型列表（批次 154，issue #2 第 3 条）────────────────────────────────────
+// 存在的理由：三处模型名一直是**手抄**，抄错就是 400/404 那一族，而那句报错说的是
+// 「模型不存在」，人会往网络方向查。这一条发一句「这家有哪些型号」（不花 token），
+// 把型号名灌进三处模型名那几格的候选里。
+// 三个 apiType 分支与 testApiConnectionDirect / petChatSend 同族的三胞胎规矩 ——
+// 改一处必须三处一起改；新增一型也要同步进这里（AGENTS §2 #18）。
+// 拆成纯函数是为了集成层能从本文件原样抽出来直接跑（AGENTS §5）。
+const MODELS_FETCH_TIMEOUT_MS = 20000;
+
+function buildModelsRequest(cfg) {
+  const key = normalizeApiKey(cfg && cfg.apiKey);
+  // 先问资格再拼地址：没 Key 就发请求，回包是 401，而界面会把「你没填 Key」翻译成
+  // 「这家返回未授权」—— 用户会去重新生成一枚 Key，方向完全错。
+  if (!key) return { ok: false, state: "nokey", why: "还没填 API Key" };
+  const type = (cfg && cfg.apiType) || "openai";
+  // claude 与 gemini 各有默认地址，只有这两型必须自己填（与 testApiConnectionNoBackground 同一口径）
+  if ((type === "openai" || type === "gemini") && !String((cfg && cfg.apiUrl) || "").trim()) {
+    return { ok: false, state: "noaddr", why: "还没填 API URL" };
+  }
+  // 地址只许从 libs/api-url.js 那一份拼（AGENTS §2 #4），这里不许内联字符串拼接
+  let url = "";
+  try {
+    url = API_URL.buildModelsUrl(cfg && cfg.apiUrl, type);
+  } catch (e) {
+    return { ok: false, state: "unreadable", why: "地址构造那一跳抛了：" + String((e && e.message) || e).slice(0, 120) };
+  }
+  if (!url) return { ok: false, state: "noaddr", why: "API URL 没拼出可用的地址" };
+  const headers = type === "claude"
+    ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
+    : type === "gemini"
+      // gemini 的 Key 走请求头，不学 chat 那条链拼进地址：地址会进日志（`api test result` 打印 endpoint），
+      // 而日志是用户会「复制」出去的东西。这一条是只读列表，没必要再添一处 Key 落到导出面。
+      ? { "x-goog-api-key": key }
+      : { "Authorization": `Bearer ${key}` };
+  return { ok: true, state: "ready", method: "GET", url, headers };
+}
+
+// 读响应体也要能超时（AGENTS §2 #2：`.text()` 同样可能永远不 resolve，try/catch 拦不住挂起）。
+// 返回 null = 这一发**没读到**（单独一格），"" = 真读到一个空体 —— 两者不许合并。
+function readTextWithTimeout(response, timeoutMs) {
+  if (!response || typeof response.text !== "function") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = 0;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(null), timeoutMs || MODELS_FETCH_TIMEOUT_MS);
+    Promise.resolve()
+      .then(() => response.text())
+      .then((t) => finish(String(t || "")))
+      // text() 自己抛 = 这一发**没读到**，和超时同一格；把它写成空串会让「连接断了」
+      // 冒充「服务商回了个空体」，而这两句用户听完要做的事相反。
+      .catch(() => finish(null));
+  });
+}
+
+async function fetchModelIds(cfg) {
+  const made = buildModelsRequest(cfg);
+  if (!made.ok) return made;
+  const response = await fetchWithTimeout(made.url, { method: "GET", headers: made.headers }, MODELS_FETCH_TIMEOUT_MS);
+  const status = Number(response && response.status) || 0;
+  if (!response || !response.ok) {
+    const bodyText = await readTextWithTimeout(response, MODELS_FETCH_TIMEOUT_MS);
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(status, bodyText || "")
+      : { category: "unknown", human: `问型号列表没成功（HTTP ${status}）` };
+    return { ok: false, state: "http", status, category: described.category, why: described.human, ids: [] };
+  }
+  const text = await readTextWithTimeout(response, MODELS_FETCH_TIMEOUT_MS);
+  if (text === null) {
+    return { ok: false, state: "unreadable", why: "响应体没读到（超时或连接断了）", source: "", ids: [] };
+  }
+  const parsed = API_URL.parseModelIds(text);
+  return {
+    ok: parsed.state === "ok",
+    state: parsed.state,
+    ids: parsed.ids || [],
+    why: parsed.why || "",
+    source: parsed.source || ""
+  };
+}
+
+// 六格各说各话，谁都不许压进谁（AGENTS §2 #12）：nokey / noaddr / http / unreadable / empty / ok。
+// 压成「成功 / 失败」两格时，「回包形状认不出来」会被读成「这家没有型号」，
+// 而用户接下来做的事（换 Key、充值、查网络）一件都不对。
+function modelListSentence(out) {
+  if (!out || !out.state) return "没读到结果，再点一次试试。";
+  const ids = out.ids || [];
+  if (out.state === "ok") {
+    const head = ids.slice(0, 5).join("、");
+    return `已拿到 ${ids.length} 个型号：${head}${ids.length > 5 ? " …" : ""} —— 点上面三处模型名那几格就能选，也可以继续手打。`;
+  }
+  if (out.state === "empty") return "这家说自己名下没有可用型号（回包是空的）—— 不是网络问题，也不等于 Key 没用。";
+  if (out.state === "unreadable") return `回包读不出型号名（${out.why || "形状认不出来"}）—— 照旧手填模型名。`;
+  if (out.state === "http") return out.why || "问型号列表没成功。";
+  if (out.state === "nokey") return "还没填 API Key —— 这一步要用它。";
+  if (out.state === "noaddr") return "还没填 API URL —— 补上再点。";
+  return out.why || `没认出来的结果（${String(out.state)}）。`;
+}
+
+function renderModelOptions(ids) {
+  const dl = els.modelOptions;
+  if (!dl) return;
+  // 先清空：append 会叠加，第二次点就会在候选里出现重复型号
+  dl.textContent = "";
+  (ids || []).forEach((id) => {
+    const opt = document.createElement("option");
+    opt.value = String(id);
+    dl.appendChild(opt);
+  });
+}
+
+function setModelListState(message) {
+  const el = els.modelListState;
+  if (!el) return;
+  if (!message) { el.hidden = true; el.textContent = ""; return; }
+  el.textContent = message;
+  el.hidden = false;
+}
+
+// 「这批发回来的型号还是不是刚才那一套配置要的」—— 只看真正决定结果的三处输入：
+// apiType / apiUrl / apiKey。故意**不**用 apiFormFingerprint()：那一把尺含所有开关，
+// 用户在等待期间动一下「讨论」开关就会得到一句「配置已变化，结果没采用」，
+// 而型号清单跟开关毫无关系 —— 那是把保护写成误报（§5「会误报的守卫和没有守卫一样害人」）。
+function modelsFormKey(cfg) {
+  return [
+    String((cfg && cfg.apiType) || ""),
+    String((cfg && cfg.apiUrl) || "").trim(),
+    normalizeApiKey(cfg && cfg.apiKey)
+  ].join("|");
+}
+
+let modelsFetchGeneration = 0;
+
+async function listModelsFromProvider() {
+  const cfg = withoutRemovedConfigFields({ ...config, ...getApiFormConfig() });
+  const generation = ++modelsFetchGeneration;
+  const formKey = modelsFormKey(cfg);
+  const isCurrent = () =>
+    generation === modelsFetchGeneration &&
+    modelsFormKey(withoutRemovedConfigFields({ ...config, ...getApiFormConfig() })) === formKey;
+  const btn = els.listModels;
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "获取中…";
+    }
+    setModelListState("正在问这一家有哪些型号（这一步不花 token）…");
+    await appendPopupLog("info", "models list begin", apiConfigSummary(cfg));
+
+    const out = await fetchModelIds(cfg);
+    if (!isCurrent()) {
+      // 不采用，也不清空已有候选 —— 旧那一批同样是用户自己点出来的
+      setModelListState("地址或 Key 在这期间改过了，这一批结果没有采用 —— 再点一次。");
+      await appendPopupLog("warn", "models list discarded: form changed", apiConfigSummary(cfg));
+      return;
+    }
+    if (out.ok) renderModelOptions(out.ids);
+    setModelListState(modelListSentence(out));
+    await appendPopupLog(out.ok ? "info" : "warn", "models list result", {
+      state: out.state,
+      count: (out.ids || []).length,
+      source: out.source || "",
+      why: String(out.why || "").slice(0, 300),
+      category: out.category || "",
+      config: apiConfigSummary(cfg)
+    });
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    if (!isCurrent()) { setModelListState("地址或 Key 在这期间改过了，这一批结果没有采用 —— 再点一次。"); return; }
+    // 走到这里才是请求真发不出去（fetch 抛异常）—— 也要翻译成人话，
+    // "Failed to fetch" 对用户没有信息量（与 testApiConnectionNoBackground 同一口径）
+    const described = (typeof self !== "undefined" && self.OmitoneApiError)
+      ? self.OmitoneApiError.describe(0, message)
+      : { category: "network", human: message };
+    setModelListState(described.human);
+    await appendPopupLog("error", "models list failed", { error: described.human.slice(0, 300), category: described.category });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "获取模型列表";
+    }
+  }
+}
+
+// ── 宠物聊天（批次 123）────────────────────────────────────────────────────
 // 弹窗里「聊」那枚按钮的唯一请求出口。复用答题同一条 api_fetch 链路（后台代理 +
 // 用户自己配置的 Key/模型），不接任何第三方中转。三个 apiType 分支与
 // testApiConnectionDirect 的三胞胎同族 —— 改一处必须三处一起改的规矩在这里同样适用。
 // 构造与发送分开：buildPetChatRequest 是纯函数（集成测试从本文件抽出来直接构造验证形状）。
-function buildPetChatRequest(cfg, history, sys, urls) {
+// ⚠️ 第 5 个参数 webSearchOn 是**三态**：`null` / `undefined` = 还没从存储读回来。
+// 不许写成 `!!webSearchOn` 把"还没读到"压成"用户没开" —— 那两句在界面上的表现相同（都不搜），
+// 但说的话完全不同，而且压成一态之后「存储读得慢半拍」这一族会变成永久沉默（AGENTS §2 #12）。
+// 「能不能带搜索工具」的判定不在这里，唯一真源是 libs/web-search.js 的 decisionOf ——
+// 弹窗聊天、弹窗解释、上课页医生三处出口必须问同一把尺。
+function buildPetChatRequest(cfg, history, sys, urls, webSearchOn) {
   const trimmed = (history || [])
     .filter((m) => m && (m.role === "user" || m.role === "assistant") &&
       typeof m.text === "string" && m.text.trim() !== "")
@@ -413,12 +623,23 @@ function buildPetChatRequest(cfg, history, sys, urls) {
   // 最后一发必须是用户说的话：界面忙乱时不会拿半截历史去发请求
   if (!trimmed.length || trimmed[trimmed.length - 1].role !== "user") return null;
   const h = urls || { openai: buildOpenAICompatibleUrl, claude: buildClaudeApiUrl, gemini: buildGeminiApiUrl };
+  // 「这一发到底带不带搜索」只问 libs/web-search.js（三处出口同一把尺）。
+  // 模块没加载是**单独一格**（no-lib）：那说明 manifest / popup.html 的登记漏了一处，
+  // 症状与"用户没开"一模一样、一条异常都不留（AGENTS §2 #18）—— 所以不许塌进 off。
+  const webSearch = (typeof OmitoneWebSearch !== "undefined" && OmitoneWebSearch.decisionOf)
+    ? OmitoneWebSearch.decisionOf(cfg, webSearchOn)
+    : { cell: "no-lib", on: false, why: "联网搜索模块没加载（登记漏了一处）", host: "" };
+  // max_tokens **不因联网而变**：现网那一档 384 实测够（`.workbuddy/probe162` K 档：
+  // flash + tools + max_tokens=384 → finish=stop、正文 63 字，completion 410 也没被截断）。
+  // 会被推理吃空的是探针故意设的 48 那一档（probe160），不是现实这一档 ——
+  // 照着它把上限抬高就是凭空多一个要对文档的数字（AGENTS §5「断言里的数要说得出从哪读回来」）。
   if (cfg.apiType === "claude") {
     return {
       apiType: "claude",
       url: h.claude(cfg.apiUrl),
       headers: { "Content-Type": "application/json", "x-api-key": cfg.apiKey, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: cfg.model, max_tokens: 384, temperature: 0.8, system: sys, messages: trimmed })
+      body: JSON.stringify({ model: cfg.model, max_tokens: 384, temperature: 0.8, system: sys, messages: trimmed }),
+      search: webSearch
     };
   }
   if (cfg.apiType === "gemini") {
@@ -430,27 +651,66 @@ function buildPetChatRequest(cfg, history, sys, urls) {
         systemInstruction: { parts: [{ text: sys }] },
         contents: trimmed.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })),
         generationConfig: { temperature: 0.8, maxOutputTokens: 384 }
-      })
+      }),
+      search: webSearch
     };
+  }
+  // 带搜索那一发**不发 temperature**：量过的那一发就是 `{model, messages, max_tokens, tools}` 四格
+  // （探针 probe161 E / probe162 H–L，六发全 200 且真搜，没有一发带着 temperature）。
+  // **"带 tools 时服务端怎么对待 temperature" 这一组合没测过** —— 没测过的参数不许照发，
+  // 多一格就多一条没人验过的路径；带不动时回到改动前那个形状，一个键都不多。
+  const openaiBody = {
+    model: cfg.model,
+    messages: [{ role: "system", content: sys }].concat(trimmed),
+    max_tokens: 384
+  };
+  if (webSearch.on) {
+    // 声明形状也从 libs 读：`webSearch.on` 只可能由那把尺判出来（no-lib 那一格 on 恒 false），
+    // 所以这里必然拿得到模块 —— 抄一份字面量就是第二把尺，将来改字段只改一处会分叉（AGENTS §2 #18）。
+    openaiBody.tools = OmitoneWebSearch.toolsFor(webSearch);
+  } else {
+    openaiBody.temperature = 0.8;
   }
   return {
     apiType: "openai",
     url: h.openai(cfg.apiUrl),
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages: [{ role: "system", content: sys }].concat(trimmed),
-      max_tokens: 384,
-      temperature: 0.8
-    })
+    body: JSON.stringify(openaiBody),
+    search: webSearch
   };
 }
 
-async function petChatSend(history) {
+/**
+ * 把"这一发到底搜没搜 / 搜了几次 / 花了多少 token"收成界面上那一行小字。
+ *
+ * ⚠️ 两句话都要说，缺一不可：
+ *   - 开关**开着**却带不动（中转站、协议形状不对、模块没登记）必须当场说一句"没联网 + 为什么"，
+ *     否则用户听到的那句模型回答就**听起来像**刚查过 —— 任务 #183 里用户明确要的那一格。
+ *   - 开关没开时**一个字都不说**：那行小字出现只会让人以为刚才那句话是搜出来的。
+ * @param {{cell:string,on:boolean,why:string}} decision
+ * @param {object} data 回包（只在 decision.on 时读它的 usage）
+ */
+function petSearchMeta(decision, data) {
+  const lib = (typeof OmitoneWebSearch !== "undefined") ? OmitoneWebSearch : null;
+  if (!decision) return null;
+  if (decision.on) {
+    return { on: true, cell: decision.cell, sentence: lib ? lib.sentenceOf(lib.usageOf(data)) : "这一回没读到用量数据。" };
+  }
+  // 开关没开（off）与压根没这一枚开关的调用方 → 不出声。
+  // 只有"用户明明开着"的那些格子才需要解释为什么没搜。
+  if (decision.cell === "off") return null;
+  return { on: false, cell: decision.cell, sentence: "这次没有联网：" + (decision.why || "原因读不出") };
+}
+
+async function petChatSend(history, opts) {
+  const o = opts || {};
   const cfg = { ...config, apiKey: normalizeApiKey(config.apiKey) };
   if (!cfg.apiKey) return { ok: false, noKey: true };
-  const sys = (typeof self !== "undefined" && self.OmitonePrompt && self.OmitonePrompt.PET_CHAT_SYSTEM) || "";
-  const req = buildPetChatRequest(cfg, history, sys);
+  const promptLib = (typeof self !== "undefined" && self.OmitonePrompt) || {};
+  // 提示词唯一真源在 libs/prompt.js（AGENTS §2 #4）；这里只按名字取，不许内联。
+  const sys = o.sysKey ? promptLib[o.sysKey] || "" : promptLib.PET_CHAT_SYSTEM || "";
+  // 三态原样交下去：还没从存储读回来时是 null，**不许在这里 !! 一下**（AGENTS §2 #12）
+  const req = buildPetChatRequest(cfg, history, sys, null, petWebSearchVal);
   if (!req) return { ok: false, error: "" };
   let response;
   try {
@@ -463,10 +723,14 @@ async function petChatSend(history) {
     const described = (typeof self !== "undefined" && self.OmitoneApiError)
       ? self.OmitoneApiError.describe(response.status, bodyText)
       : { category: "unknown", human: `请求失败 (${response.status})` };
-    return { ok: false, error: String(described.human || "").slice(0, 80) };
+    return {
+      ok: false,
+      error: String(described.human || "").slice(0, 80),
+      meta: petSearchMeta(req.search, null)
+    };
   }
   let data = null;
-  try { data = await response.json(); } catch (e) { return { ok: false, error: "回包读不懂" }; }
+  try { data = await response.json(); } catch (e) { return { ok: false, error: "回包读不懂", meta: petSearchMeta(req.search, null) }; }
   let text = "";
   if (req.apiType === "claude") {
     text = ((data.content || [])[0] || {}).text || "";
@@ -477,11 +741,81 @@ async function petChatSend(history) {
     text = (((data.choices || [])[0] || {}).message || {}).content || "";
   }
   text = String(text).trim().replace(/\s+/g, " ");
-  if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试" };
-  return { ok: true, text: text.slice(0, 160) };
+  if (!text) return { ok: false, error: "她只想了没说话 —— 换个普通对话模型试试", meta: petSearchMeta(req.search, data) };
+  // 上限默认 160（聊天气泡那一格）；体检解释要长一点，但**天花板 400 写死在这里** ——
+  // 面板装不下是判据层的责任，不能靠调用方自觉（AGENTS §2「输出必须有界」）。
+  const want = Number(o.maxChars) > 0 ? Number(o.maxChars) : 160;
+  return { ok: true, text: text.slice(0, Math.min(want, 400)), meta: petSearchMeta(req.search, data) };
 }
 // pet.js 只管界面；发请求统一走这个钩子（经典脚本按加载顺序共享全局作用域）
 window.omitonePetChatSend = petChatSend;
+
+/**
+ * 联网搜索开关的真值（弹窗「聊」与弹窗「让她解释」两处出口共用这一格，
+ * 上课页医生那一支在 content.js 里读同一个键）。
+ * ⚠️ **null = 还没从存储读回来**，与 false（用户没开）是两格：压成 false 之后，
+ * 首屏那一发会被界面说成「开关没开」—— 而那正是用户刚刚亲手打开的那一枚
+ * （AGENTS §2 #12 在开关读取上的同族）。
+ */
+let petWebSearchVal = null;
+
+// ── 本地体检「医生」（批次 130）────────────────────────────────────────────
+// 判断层在 libs/diagnose.js（弹窗 / 上课页 / 集成测试三处共用同一份规则），
+// 这里只补界面需要的三件事：**把日志交出去、把结论解释成人话、把动作接回现有按钮**。
+// ⚠️ 全程只读 —— 不许在这里点任何东西、改任何配置；动作一律转交给弹窗里本来就有的入口。
+
+/** 读出这台电脑上的运行日志环（200 条，键 runtimeLogs，与日志视图同一份真源）。 */
+async function petDiagReadLogs() {
+  try {
+    const result = await chrome.storage.local.get(RUNTIME_LOGS_KEY);
+    const arr = result && Array.isArray(result[RUNTIME_LOGS_KEY]) ? result[RUNTIME_LOGS_KEY] : [];
+    return arr;
+  } catch (e) {
+    return { error: "日志读不出来（存储暂时不可用）" };
+  }
+}
+
+/** 「让她解释」：把有界摘要交给模型说一句人话。复用 petChatSend 的整条链路 ——
+ *  也就是 #161 那条 api_fetch + 用户自己配置的 Key，不接任何中转站。 */
+async function petDiagExplain(digest) {
+  const text = String(digest || "").slice(0, 900);
+  if (!text) return { ok: false, error: "没有可解释的结论" };
+  return await petChatSend(
+    [{ role: "user", text: "下面是本地体检给出的结论，请用人话告诉主人下一步怎么办，别编造清单里没有的事：\n" + text }],
+    { sysKey: "PET_DOCTOR_SYSTEM", maxChars: 280 }
+  );
+}
+
+/** 卡片上那一枚按钮的唯一出口：只做「界面里本来就有的那两件事」。
+ *  动作名与 libs/diagnose.js 规则表里的 `action` 一一对应 ——
+ *  ⚠️ **规则新增一型 action 必须同步进这里那一族清单**，否则卡片上会出现
+ *  一枚点了没反应的按钮（AGENTS §2 #18：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来）。
+ *  @param {string} kind 'reload' | 'open-settings'
+ *  @returns {Promise<{ok:boolean, note:string}>} —— note 是要印在卡片上的那一句 */
+async function petDiagAction(kind) {
+  try {
+    if (kind === "reload") {
+      const [tab] = await withTimeout(chrome.tabs.query({ active: true, currentWindow: true }), 3000, "读取标签页超时");
+      if (!tab || !tab.id) return { ok: false, note: "没找到当前标签页" };
+      if (/^chrome-extension:/i.test(tab.url || "")) return { ok: false, note: "这一页不是网页，重新加载请对学习通页面按 F5" };
+      await withTimeout(chrome.tabs.reload(tab.id), 8000, "重新加载超时");
+      return { ok: true, note: "已重新加载这一页" };
+    }
+    if (kind === "open-settings") {
+      const key = document.getElementById("apiKey");
+      const group = key ? key.closest("details") : null;
+      if (group) group.open = true;
+      if (key) { key.scrollIntoView({ block: "center" }); key.focus(); }
+      return { ok: !!key, note: key ? "已跳到 API 那一栏，填好后按「检测连接」" : "没找到 API 那一栏，请在设置里手动打开" };
+    }
+    return { ok: false, note: "这个动作我不认识，只能照上面的话手动做" };
+  } catch (error) {
+    return { ok: false, note: "动作没做成：" + String(error && error.message ? error.message : error).slice(0, 40) };
+  }
+}
+window.omitonePetDiagReadLogs = petDiagReadLogs;
+window.omitonePetDiagExplain = petDiagExplain;
+window.omitonePetDiagAction = petDiagAction;
 
 async function appendPopupLog(level, message, meta) {
   try {
@@ -498,15 +832,66 @@ async function appendPopupLog(level, message, meta) {
  * API 连接状态行：apiConnectionError 是「检测 API 连接」与页面答题链路共写的
  * 分类后人话（libs/api-error.js）—— 此前只在 toast 与日志里出现，弹窗没有常驻展示位。
  * 失败时显示该文案（照着做即可），成功/清空后隐藏。
+ *
+ * 批次 166 在这一行下面补了两格：
+ *  ① 「刚才问的是哪家哪个模型」—— 分类只说**哪一类错**，没说**是谁家的错**，
+ *     而换一家是用户唯一的自救路径（issue #2 第 3 条）。
+ *  ② 「这一轮改用乱选继续 / 变回问 AI」—— 用户裁的是**一键决定退不退**，
+ *     ⚠️ 插件自己永远不许把「乱选」打开：它随机填满整卷就交卷，而交卷不可逆。
+ *     这一发只由人点，且只在有失败记录时才出现（没坏就别劝人退）。
  */
 function renderApiConnState(config) {
   const el = document.getElementById("apiConnState");
   if (!el) return;
+  const whoEl = document.getElementById("apiConnWho");
+  const retreatEl = document.getElementById("apiRetreat");
   const failed = !!(config && config.apiConnectionFailed);
   const message = failed ? String(config.apiConnectionError || "").trim() : "";
-  if (!failed || !message) { el.hidden = true; el.textContent = ""; return; }
+  if (!failed || !message) {
+    el.hidden = true;
+    el.textContent = "";
+    if (whoEl) { whoEl.hidden = true; whoEl.textContent = ""; }
+    if (retreatEl) retreatEl.hidden = true;
+    return;
+  }
   el.textContent = message;
   el.hidden = false;
+  // 渠道身份**从整份配置算**，不掺进上面那句分类文案里：
+  // - 页面那一侧拿不到 providerPreset / apiUrl / model（libs/runtime-policy.js 的
+  //   runtimeFields 不投影这三格），所以「是谁家的错」只有扩展侧与弹窗说得出；
+  // - 上面那句有 300 字的存储预算（apiConnectionError），前缀会把**服务商原话**挤掉，
+  //   而原话才是排查的唯一线索 —— 所以它是独立的一行，不是那句话的开头。
+  // ⚠️ 基准必须与「实际发出去那发用的那份」相同：content.js 的 loadConfig('study')
+  //    算的是 `{ ...CONFIG_DEFAULTS, ...存储 }`，这里也得补默认值（新用户存储里
+  //    providerPreset 压根没写过，不补就读出 (渠道读不出)）。与 §2 #23 那条**相反**
+  //    的基准要求并存是有意的：竞争闸要比的是原始存档字节，展示要比的是渲染出来的值。
+  const merged = Object.assign({}, DEFAULTS, config || {});
+  const who = (typeof self !== "undefined" && self.OmitoneApiError)
+    ? self.OmitoneApiError.channelOf(merged)
+    : { text: "(渠道读不出) · (模型名没填)（libs/api-error.js 没加载）" };
+  if (whoEl) {
+    whoEl.textContent = "刚才问的是：" + String(who.text || "");
+    whoEl.hidden = false;
+  }
+  if (retreatEl) {
+    // 「现在是不是乱选」读**存储里那一份**（传进来的 config），不读内存里那枚开关镜像 ——
+    // 保存被拒时内存已经翻了、盘上没翻，跟着内存说就成了谎话。
+    renderApiRetreat(retreatEl, merged.randomAnswer === true);
+    retreatEl.hidden = false;
+  }
+}
+
+/** 那一发的按钮与说明：只说这一格现在是什么、点下去会变成什么。 */
+function renderApiRetreat(row, randomOn) {
+  const btn = row.querySelector("#apiRetreatBtn");
+  const hint = row.querySelector("#apiRetreatHint");
+  if (btn) btn.textContent = randomOn ? "变回问 AI（关掉乱选）" : "这一轮改用「乱选」继续";
+  if (hint) {
+    hint.innerHTML = randomOn
+      ? "现在<b>不问模型</b>：题目随机填满后按「乱选交卷前留几秒检查」那一格交卷。"
+      : "乱选 = 不问模型、<b>随机填满整卷再交卷</b>，交卷不可逆。<b>插件不会自己打开它</b>，这一发只由你点。<br>"
+        + "⚠️ 不是每张卷子都会填满：作业 / 考试那档把下限调到「高」时仍然<b>不猜、停下来等</b>。";
+  }
 }
 
 function apiConfigSummary(cfg) {
@@ -623,6 +1008,40 @@ async function loadThinkingObserved() {
 }
 
 /**
+ * 刷新「防拖拽视频看到 90% 就进下一个」下面那句说明（会话任务 #185，口径随 #193 / 批次 144 更正）。
+ *
+ * 为什么这句要动态写：判「拖不动」现在有**三条各自独立的来源**（`src/page/40-media.js` 的
+ * `_isNinetyPercentVideo` 与 `_shouldAdvanceAtNinetyPercent`）—— ① 站点在那张任务卡上自己写了
+ * 「当前视频不可拖拽」（不用动手），② 真试过拖到结尾、被播放器弹回两次（只有「直接拖到结尾」开着才试得出来），
+ * ③ **同一门课里已经认过一回**（批次 173，账在 `sessionStorage['omitone:course-guard']`，
+ * 刷新那一页不丢、关掉那枚标签页才重新学）。
+ * 上面那枚关掉后，来源②拿不到、只剩①③，所以这句以前那句「这一枚现在不会生效」**说过头了**：
+ * 站点写了标语时它照样生效。反过来也不能说成"照样生效"—— 站点没写那句话、这一门也没认过时它确实走不到。
+ * ⚠️ 两种情形都不许被压成一句含糊话（AGENTS §2 #12），也不许为了凑齐条件去替用户翻开关。
+ *
+ * ⚠️ 这里**只改说明，不改存储**：绝不为凑齐条件去替用户翻上面那枚开关，也不把他的
+ *    `advanceAtNinetyPercent` 写成 false —— 他下次打开「直接拖到结尾」时，自己的选择还在原处。
+ */
+function updateSeekChainHint() {
+  if (!els.seekChainHint) return;
+  if (!advanceAtNinetyPercentVal) {
+    els.seekChainHint.innerHTML =
+      '这一枚已关闭：拖不动的视频会<b>原速播完整支</b>（能拖动的照旧直接拖到结尾）。';
+  } else if (!enableSeekVal) {
+    els.seekChainHint.innerHTML =
+      '<b>这一枚现在只剩两个来源</b>：站点在那张卡片上自己写了「当前视频不可拖拽」，'
+      + '或者<b>同一门课里已经认过一回</b>；两样都没有时不会生效，拖不动的视频只能<b>原速播完整支</b>。'
+      + '要省这 10%，把上面那枚打开。';
+  } else {
+    els.seekChainHint.innerHTML =
+      '这一枚靠<b>三个各自独立的来源</b>判断：站点在卡片上写了「当前视频不可拖拽」，'
+      + '或者<b>试过拖到结尾、被弹回两次</b>，或者<b>同一门课里已经认过一回</b>；'
+      + '并且<b>倍速被锁在 1 倍</b>、平台已标记这一节看完时，才在 90% 进下一个。'
+      + '能拖动的视频早就拖到结尾了，用不到它。';
+  }
+}
+
+/**
  * 刷新「思考强度」下面那三行说明。
  *
  * 为什么值得逐场景写：同一句"上限=高"，DeepSeek 是什么思考参数都不发（让它自己定）、
@@ -663,7 +1082,6 @@ function escapeHtml(text) {
 
 async function saveToggleConfig(showToast = true) {
   const patch = withoutRemovedConfigFields({
-    playbackRate: parseFloat(els.rate.value),
     autoMaxPlaybackRate: autoMaxRateVal,
     slowMachineMode: slowMachineVal ? "on" : "auto",
     enableMedia: enableMediaVal,
@@ -750,8 +1168,8 @@ const updateMedia = bindToggle(els.enableMedia, () => enableMediaVal, (value) =>
 const updatePpt = bindToggle(els.enablePPT, () => enablePPTVal, (value) => { enablePPTVal = value; });
 const updateHyperlink = bindToggle(els.enableHyperlink, () => enableHyperlinkVal, (value) => { enableHyperlinkVal = value; });
 const updateBlockedReload = bindToggle(els.blockedReload, () => blockedReloadVal, (value) => { blockedReloadVal = value; });
-const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; });
-const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; });
+const updateSeek = bindToggle(els.enableSeek, () => enableSeekVal, (value) => { enableSeekVal = value; updateSeekChainHint(); });
+const updateNinety = bindToggle(els.advanceAtNinetyPercent, () => advanceAtNinetyPercentVal, (value) => { advanceAtNinetyPercentVal = value; updateSeekChainHint(); });
 const updateAutoNext = bindToggle(els.autoNext, () => autoNextVal, (value) => { autoNextVal = value; });
 const updateAutoNextCourse = bindToggle(els.autoNextCourse, () => autoNextCourseVal, (value) => { autoNextCourseVal = value; });
 const updateRandomAnswer = bindToggle(els.randomAnswer, () => randomAnswerVal, (value) => { randomAnswerVal = value; });
@@ -844,6 +1262,136 @@ if (petChatEnabledLabel) {
   });
 }
 
+// 「医生主动提醒」开关：又是独立键、不走主配置（同批次 34 那条教训 —— 主配置里没登记的键
+// 会让 validatePatch 把**整份**保存全部拒掉）。
+// 与聊天那一枚的**默认相反**：聊天开口必花 Key，默认关；体检的结论由本地规则表算出，
+// 只有"开口前让模型想一遍怎么说"那一步花 Key、且有 5 分钟冷却封顶，所以默认开
+// （键缺席 = 开，判据与 content.js 那一支必须同一把尺）。
+// 它只管"上课页上她要不要自己开口体检"，弹窗里那枚「诊」不受它约束 ——
+// 关掉提醒之后用户仍然可以随时主动查一次。
+let petDoctorEnabledVal = false;
+const updatePetDoctorEnabled = (on) => {
+  els.petDoctorEnabled.className = "toggle" + (on ? " on" : "");
+  els.petDoctorEnabled.setAttribute("aria-checked", on ? "true" : "false");
+};
+const togglePetDoctorEnabled = async () => {
+  const value = !petDoctorEnabledVal;
+  const prev = petDoctorEnabledVal;
+  petDoctorEnabledVal = value;
+  updatePetDoctorEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePetDoctorOn: value ? 1 : 0 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    petDoctorEnabledVal = prev;
+    updatePetDoctorEnabled(prev);
+    reportSaveError(error);
+  }
+};
+els.petDoctorEnabled.addEventListener("click", togglePetDoctorEnabled);
+els.petDoctorEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePetDoctorEnabled();
+  }
+});
+const petDoctorEnabledLabel = document.querySelector("label[for=\"petDoctorEnabled\"]");
+if (petDoctorEnabledLabel) {
+  petDoctorEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePetDoctorEnabled();
+  });
+}
+
+// 「联网搜索」开关（任务 #183）：独立键、默认关 —— 与聊天那一枚同一族规矩（批次 34 教训：
+// 主配置里没登记的键会让 validatePatch 把整份保存拒掉；会花钱的功能不许默认开着）。
+// ⚠️ 这一枚和上面两枚**多了一层**：它只在"接入的是 DeepSeek 官方域"时才可能生效，
+// 所以地址/协议一改就要重新判一次灰不灰、并把**为什么不灰**写进那一行提示 ——
+// 判定唯一真源是 libs/web-search.js（弹窗两处出口 + 上课页医生问的都是它），
+// 界面上不许再写第二份"是不是 deepseek"的正则（AGENTS §2 #4 同一族）。
+// ⚠️ 状态只有 **petWebSearchVal** 这一份（三态：null = 还没从存储读回来）。
+// 再开一个 boolean 给界面用，就是§2 #23 那一族：写入口与读出口各有各的基准，
+// 首屏那一发会被说成"你没开"，而用户刚刚才开过。
+const PET_WEB_SEARCH_HINT_OFF = "默认关。开了她回答前先自己查一次网页，按量计费。";
+/** 用当前表单里的地址/协议/Key 问一次资格 —— 用户改哪格都能当场看到灰不灰。 */
+function petWebSearchDecision() {
+  const lib = (typeof OmitoneWebSearch !== "undefined" && OmitoneWebSearch.decisionOf) ? OmitoneWebSearch : null;
+  if (!lib) return { cell: "no-lib", on: false, why: "联网搜索模块没加载（登记漏了一处）", host: "" };
+  const cfg = {
+    apiType: els.apiType.value,
+    apiUrl: els.apiUrl.value.trim(),
+    apiKey: normalizeApiKey(els.apiKey.value),
+    model: els.model.value.trim()
+  };
+  return lib.decisionOf(cfg, true);
+}
+function updatePetWebSearchEnabled(on) {
+  els.petWebSearchEnabled.className = "toggle" + (on ? " on" : "");
+  els.petWebSearchEnabled.setAttribute("aria-checked", on ? "true" : "false");
+  refreshWebSearchGate();
+}
+/** 那一行提示的唯一写入口：灰不灰、说什么，都由 libs 那一格决定，界面只翻译。 */
+function refreshWebSearchGate() {
+  if (!els.petWebSearchHint) return;
+  if (petWebSearchVal === null) {
+    // 「还没读到」单独占一格（§2 #12）：这句既不许写成"你没开"，也不许写成"已生效"
+    els.petWebSearchHint.textContent = "正在读你的设置…";
+    els.petWebSearchHint.dataset.cell = "unknown";
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    return;
+  }
+  if (petWebSearchVal !== true) {
+    els.petWebSearchHint.textContent = PET_WEB_SEARCH_HINT_OFF;
+    els.petWebSearchHint.dataset.cell = "off";
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    return;
+  }
+  const d = petWebSearchDecision();
+  els.petWebSearchHint.dataset.cell = d.cell;
+  if (d.on) {
+    els.petWebSearchEnabled.removeAttribute("data-greyed");
+    els.petWebSearchHint.textContent = "已生效：她回答前先自己查一次网页（" + d.host + "）。搜回来的内容按输入 token 计费，比平时贵；查到的日期不一定准，别拿它当今天。";
+  } else {
+    // 灰掉 = 存储里的选择**保留**（用户换回官方域就自动接上），但界面当场说清为什么没生效
+    els.petWebSearchEnabled.setAttribute("data-greyed", d.cell);
+    els.petWebSearchHint.textContent = "这一枚暂时用不了：" + d.why + "（开关我留着，换回官方渠道就接上）";
+  }
+}
+const togglePetWebSearchEnabled = async () => {
+  const prev = petWebSearchVal;
+  const value = prev !== true;
+  petWebSearchVal = value;
+  updatePetWebSearchEnabled(value);
+  try {
+    await new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ omitonePetWebSearchOn: value ? 1 : 0 }, () => { void chrome.runtime.lastError; resolve(); });
+      } catch (e) { resolve(); }
+    });
+  } catch (error) {
+    petWebSearchVal = prev;
+    updatePetWebSearchEnabled(prev === true);
+    reportSaveError(error);
+  }
+};
+els.petWebSearchEnabled.addEventListener("click", togglePetWebSearchEnabled);
+els.petWebSearchEnabled.addEventListener("keydown", (event) => {
+  if (event.key === " " || event.key === "Enter" || event.key === "Spacebar") {
+    event.preventDefault();
+    togglePetWebSearchEnabled();
+  }
+});
+const petWebSearchEnabledLabel = document.querySelector("label[for=\"petWebSearchEnabled\"]");
+if (petWebSearchEnabledLabel) {
+  petWebSearchEnabledLabel.addEventListener("click", (event) => {
+    event.preventDefault();
+    togglePetWebSearchEnabled();
+  });
+}
+
 /** 更新顶部的运行状态指示：圆点 + 文字徽章。
  *  @param {boolean} [initial] 打开弹窗那一次**同步**现状（不是刚刚发生变化）——
  *    以前这次同步也广播，于是每次打开小窗她都要说一句「收工，歇会儿吧」，
@@ -884,8 +1432,6 @@ async function load() {
   storedConfig = withoutRemovedConfigFields(result.config || {});
   config = withoutRemovedConfigFields({ ...DEFAULTS, ...(result.config || {}) });
 
-  els.rate.value = config.playbackRate;
-  els.rateVal.textContent = config.playbackRate + "x";
   mutedVal = !!config.muted;
   autoMaxRateVal = config.autoMaxPlaybackRate !== false;
   slowMachineVal = config.slowMachineMode === "on";
@@ -913,6 +1459,7 @@ async function load() {
   updateBlockedReload(blockedReloadVal);
   updateSeek(enableSeekVal);
   updateNinety(advanceAtNinetyPercentVal);
+  updateSeekChainHint();  // 上面两行走的是 update，不经过 setter —— 说明要自己刷一次
   updateAutoNext(autoNextVal);
   updateAutoNextCourse(autoNextCourseVal);
   updateQuiz(enableQuizVal);
@@ -938,6 +1485,27 @@ async function load() {
       updatePetChatEnabled(petChatEnabledVal);
     });
   } catch (e) { /* storage 不可用就当关着 */ }
+  // 医生提醒开关：键缺席 = 关（要花 Key 的功能不许默认烧钱）。⚠️ 谓词必须与 content.js 那一支同一把尺
+  // —— 只认 1 / true 算开，0、false、缺席都算关（AGENTS §2 #23：写入口与读出口两侧基准必须相同）。
+  try {
+    chrome.storage.local.get("omitonePetDoctorOn", (r) => {
+      if (chrome.runtime.lastError) return;
+      var raw = r && r.omitonePetDoctorOn;
+      petDoctorEnabledVal = raw === 1 || raw === true;
+      updatePetDoctorEnabled(petDoctorEnabledVal);
+    });
+  } catch (e) { /* storage 不可用就当关着 */ }
+  // 联网搜索开关：键缺席 = 关（会花钱）。⚠️ 读失败时**保持 null**（还没读到），
+  // 不许在这里写 false —— 那一格会让界面把"存储暂时不可用"说成"你没开这枚开关"（AGENTS §2 #12）。
+  // 谓词与 content.js 那一支同一把尺：只认 1 / true 算开。
+  try {
+    chrome.storage.local.get("omitonePetWebSearchOn", (r) => {
+      if (chrome.runtime.lastError) return;
+      var raw = r && r.omitonePetWebSearchOn;
+      petWebSearchVal = raw === 1 || raw === true;
+      updatePetWebSearchEnabled(petWebSearchVal);
+    });
+  } catch (e) { /* 读不出就留在 null：提示那一行会说"正在读你的设置" */ }
   renderApiConnState(config);
 
   // 预置被删掉之后（老版本存的 minimax 等），这里必须归一化：
@@ -969,6 +1537,9 @@ async function load() {
   // 再等一眼「模型上次自己想到哪一档」那本账 —— content.js 从回包 token 反推后按场景写进存储，
   // 不 await 的话首屏那三行少了后缀，要等用户动一下选择器才补齐（症状是"提示闪一下才全"）。
   await loadThinkingObserved();
+  // 联网搜索那一行的灰条依赖刚填好的 apiUrl / apiType，而上面那次存储回调可能比这里先到 ——
+  // 那时地址还是空的，会被判成「no-addr」那一格（AGENTS §2 #12：读不出与确实是空，两格）。
+  refreshWebSearchGate();
 }
 
 function applyProviderPreset(presetId) {
@@ -984,6 +1555,8 @@ function applyProviderPreset(presetId) {
   // 换渠道会改变"实际发送什么参数"（DeepSeek 发 thinking、Kimi 不发、自定义发别的），
   // 所以说明文字必须跟着刷新，否则用户会照着上一家的说明理解当前渠道。
   updateThinkingHint();
+  // 同一族：联网搜索的资格也完全由这两格决定，切渠道时必须当场重判一次灰条
+  refreshWebSearchGate();
 }
 
 async function resetDefault() {
@@ -995,6 +1568,11 @@ async function resetDefault() {
     try { chrome.storage.local.set({ omitonePagePetMinimal: 0 }); } catch (e) {}
     // 聊天开关也回默认（默认关 —— 用户主动开的付费功能，恢复默认就该收回去）
     try { chrome.storage.local.set({ omitonePetChatOn: 0 }); } catch (e) {}
+    // 医生提醒回默认（默认关：会花钱的功能不许默认开着）
+    try { chrome.storage.local.set({ omitonePetDoctorOn: 0 }); } catch (e) {}
+    // 联网搜索回默认（同样默认关 —— 它比聊天更贵：搜回来的正文按输入 token 计费）
+    try { chrome.storage.local.set({ omitonePetWebSearchOn: 0 }); } catch (e) {}
+    petWebSearchVal = false;
     await load();
     toast("已恢复默认");
   } catch (error) { reportSaveError(error); }
@@ -1158,12 +1736,6 @@ window.addEventListener("pagehide", () => popupLogView.dispose());
   el.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
 });
 
-els.rate.addEventListener("input", () => {
-  els.rateVal.textContent = els.rate.value + "x";
-});
-
-els.rate.addEventListener("change", () => { saveToggleConfig().catch(reportSaveError); });
-
 els.providerPreset.addEventListener("change", async () => {
   apiTestGeneration++;
   clearTimeout(apiAutoSaveTimer);
@@ -1191,6 +1763,14 @@ function scheduleApiAutoSave() {
   el.addEventListener("input", updateThinkingHint);
 });
 els.apiType.addEventListener("change", scheduleApiAutoSave);
+
+// 联网搜索的灰条要跟着**这四格**动：地址、协议、Key（缺一格就是一格不同的原因）。
+// ⚠️ 少监听任何一格，症状都是"用户改了地址、那一行还在说旧渠道的话" ——
+// 不报错、不留日志（AGENTS §2 #18：声明覆盖的范围与实际走的分支之间的差，不会自己喊出来）。
+[els.apiUrl, els.apiType, els.apiKey].forEach((el) => {
+  el.addEventListener("input", refreshWebSearchGate);
+  el.addEventListener("change", refreshWebSearchGate);
+});
 
 // 思考强度：六格上下限，任一格改动 = 同一行另一头不许越界（选倒时以刚动的这一头为准），
 // 再整组落盘 + 刷新"当前实际发送"。
@@ -1230,6 +1810,26 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (cfgChange) renderApiConnState(cfgChange.newValue);
 });
 els.testApi.addEventListener("click", testApiConnectionNoBackground);
+// 「这一轮退不退」那一发：把点击**转交给那枚真开关**，不在这里再写一份翻格 + 保存 + 失败回滚。
+// 为什么走 click 而不是自己 patchConfig：那枚开关的链路（翻内存 → saveToggleConfig →
+// 保存被拒就把内存翻回去并 reportSaveError）是盘上唯一一份、也是已经测过的那一份，
+// 复制第二份就会各自漂移；更糟的是漏了回滚那一半时，界面说「在乱选」而盘上没写。
+// ⚠️ 这一族**没有任何自动路径**：全仓库只有这里和那枚开关本身会翻 randomAnswer，
+// 页面侧只读它（_isRandomAnswerMode），答题失败链路一条都不许写它。
+(() => {
+  const btn = document.getElementById("apiRetreatBtn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const sw = document.getElementById("randomAnswer");
+    // 找不到开关时说明弹窗结构被改坏了：说一句就收，不许静默什么都不发生
+    if (!sw) { toast("找不到「乱选」那枚开关，请重装扩展或到「答题」那一栏手动翻它"); return; }
+    sw.click();
+  });
+})();
+// 「获取模型列表」与「检测 API 连接」是两件事：那一发要花钱（发一条消息），这一发只问清单。
+// 守卫：els 里这一枚取自 popup.html 的 #listModels —— 没有它启动就当场抛，
+// 比"按钮存在但点了没反应"好查（与上面 testApi 同一口径）。
+els.listModels.addEventListener("click", listModelsFromProvider);
 els.start.addEventListener("click", startRun);
 els.stop.addEventListener("click", async () => {
   ++runOperation;
@@ -1281,6 +1881,18 @@ els.copyLogs.addEventListener("click", () => { popupLogView.copy().catch(() => t
 const UPDATE_REPO = "TYT0807/Omitone";
 const UPDATE_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/latest`;
 const UPDATE_ZIP = `https://github.com/${UPDATE_REPO}/releases/latest/download/omitone.zip`;
+
+// 预览版（实验支线）那一格，2026-11-20 用户口径：「实验班也可以加入 readme 的正常下载的旁边，
+// 特别标明就行」＋「更新提示那边也可以展示预览版，显示存在预览版，可以更新，但是需要多斟酌考虑」。
+// ⚠️ 三条硬规矩，每条都对应一次「命令都打印成功、结果不对」的事故形状：
+//   1) 查询走 `releases/tags/preview` 这条**独立地址**，绝不并进上面那条 ——
+//      预览口还没发时它 404，而 404 必须只让这一格闭嘴，不许把正式版已经说出口的结论顶掉；
+//   2) 下载走 `releases/download/preview/omitone-preview.zip` 这个**独立文件名**，
+//      绝不复用 `UPDATE_ZIP` —— 那条按名字取件，复用等于把装预览的人悄悄退回正式版；
+//   3) 这一格只在「预览号 > 本地号」时才说话；号读不出就**当作没有**，不猜（AGENTS §2 #1）。
+const UPDATE_PREVIEW_API = `https://api.github.com/repos/${UPDATE_REPO}/releases/tags/preview`;
+const UPDATE_PREVIEW_ZIP = `https://github.com/${UPDATE_REPO}/releases/download/preview/omitone-preview.zip`;
+const UPDATE_PREVIEW_ASSET = "omitone-preview.zip";
 
 // ⚠️ 限流是**功能**，不是防抖。
 // 查询用的是 GitHub 的**匿名额度**（作者不放令牌，也不能放）。有人狂点就会把额度用光，
@@ -1357,6 +1969,11 @@ async function checkUpdate(opts) {
   els.doLater.style.display = "none";
   els.doUntil.style.display = "none";
   els.updateRow.classList.remove("hot");
+  // 预览那一格每轮先收掉再问：上一轮亮着的话，这一轮查不到却还挂着按钮，
+  // 点下去就是一个已经不存在的预览包（AGENTS §2 #12 ——「没结论」不许借用「有结论」的界面）
+  hidePreviewChannel();
+  // 正式版号：预览那一格要拿它比一比，防止「转正之后预览口没撤」把同学引到一份旧实验包上
+  let stableRemote = "";
   if (manual) {
     els.updateMsg.textContent = "正在检测…";
     els.checkUpdate.disabled = true;
@@ -1380,6 +1997,7 @@ async function checkUpdate(opts) {
     try { localStorage.setItem(UPDATE_SEEN_KEY, String(Date.now())); } catch (e) {}
 
     const remoteVersion = String(rel.tag_name || "").replace(/^v/i, "");
+    stableRemote = remoteVersion;
     const asset = (rel.assets || []).find((a) => a && a.name === "omitone.zip");
     const remoteAt = asset && asset.updated_at ? new Date(asset.updated_at).getTime() : 0;
 
@@ -1420,6 +2038,14 @@ async function checkUpdate(opts) {
   } finally {
     els.checkUpdate.disabled = false;
   }
+
+  // 预览版那一格排在正式版之后，而且**自己一个 try**：
+  // 预览口 404（没发过）与断网在这里是同一种表现 —— 都只许让这一格闭嘴。
+  // 要是让它共享上面那个 catch，「预览口还没发」就会被说成「网络或名额在睡大觉」，
+  // 那句假话还会顺手把刚说出口的正式版结论盖掉（AGENTS §2 #14：谁先说话是要紧事）。
+  try {
+    await checkPreviewChannel(local, stableRemote);
+  } catch (e) {}
 }
 
 /** 有更新（或查不出来）时，把"是/否"两个选项亮出来 */
@@ -1427,6 +2053,72 @@ function showUpdateChoices() {
   els.doUpdate.style.display = "";
   els.doLater.style.display = "";
   els.updateRow.classList.add("hot");
+}
+
+/** 收掉预览那一格（每轮检测开头、以及所有「不说话」的分支） */
+function hidePreviewChannel() {
+  if (els.previewMsg) els.previewMsg.style.display = "none";
+  if (els.doPreview) els.doPreview.style.display = "none";
+}
+
+/** 把「这一格该不该说话」判完，只回一个值，一个字 DOM 都不碰。
+ *  分成这样是因为集成层能把真函数取出来直接喂形状（AGENTS §5「桩打在动作上」），
+ *  `why` 那几格**谁都不许合并**：404、读不出号、不比本地新、和正式版同号，
+ *  四格都说"闭嘴"，但只有分开写才测得出某一格坏了（AGENTS §2 #12）。 */
+function previewPlan(rel, fetched, local, stableVersion) {
+  if (!fetched || !rel) return { speak: false, why: "ask-failed" };
+  const name = String(rel.name || "");
+  const tag = String(rel.tag_name || "");
+  // 号从 tag 里找，找不到再从标题里找 —— `preview` 那个 tag 本身没有版本号，
+  // 号写在发布标题「预览版 1.3.1 experimental b…」上（tools/github-release.js 的 cmdPreview 写的就是它）
+  const found = (tag.match(/\d+\.\d+(?:\.\d+)?/) || name.match(/\d+\.\d+(?:\.\d+)?/) || [])[0] || "";
+  if (!found) return { speak: false, why: "no-version" };
+  // 包必须真在（点了才下得到东西）。`assets` 不是数组或没这个名字 → 这一格不说话，
+  // 也不许"照旧亮按钮"：那样点下去是 GitHub 的 404 页，而它看起来像"预览版没了"
+  const assets = Array.isArray(rel.assets) ? rel.assets : [];
+  const asset = assets.find((a) => a && a.name === UPDATE_PREVIEW_ASSET);
+  if (!asset) return { speak: false, why: "no-asset" };
+  // 转正之后预览口若忘了撤：预览号已经不比正式版新 → 那是**一份旧实验包**，
+  // 同学装上会一直被告知自己在用预览版；不说话，等维护者收口
+  if (stableVersion && cmpVersion(found, stableVersion) <= 0) {
+    return { speak: false, why: "same-as-stable" };
+  }
+  // 已经装了这一支（或更高）的人不用再告诉他"有预览版"
+  if (local && local.version && cmpVersion(found, String(local.version)) <= 0) {
+    return { speak: false, why: "not-newer" };
+  }
+  return { speak: true, why: "show", version: found, stamp: asset.updated_at || "" };
+}
+
+/** 问一次预览口并落地那一格。回 `previewPlan` 的值，测试与日志都要靠它归因。 */
+async function checkPreviewChannel(local, stableVersion) {
+  let rel = null;
+  let fetched = false;
+  try {
+    // withTimeout 是这里唯一的悬挂防线：预览口挂在半空不许把整次检测拖死
+    const res = await withTimeout(
+      fetch(UPDATE_PREVIEW_API, { cache: "no-store", headers: { Accept: "application/vnd.github+json" } }),
+      12000, "预览版查询超时");
+    fetched = !!(res && res.ok);            // 404 = 还没发预览口，这是常态，不是错误
+    if (fetched) rel = await res.json();
+  } catch (e) {
+    rel = null;
+    fetched = false;
+  }
+  const plan = previewPlan(rel, fetched, local, stableVersion);
+  if (!plan.speak) {
+    hidePreviewChannel();
+    return plan;
+  }
+  if (els.previewMsg) {
+    els.previewMsg.textContent =
+      `🧪 另有预览版 ${plan.version}（实验支线，比正式版新）—— 它可能把你正在刷的课弄坏。` +
+      `手上没有正在赶的课、出问题说得清症状（哪门课 · 哪一节 · 什么现象），再装；` +
+      `想退回正式版：移除这一枚，重装 omitone.zip 就行。`;
+    els.previewMsg.style.display = "";
+  }
+  if (els.doPreview) els.doPreview.style.display = "";
+  return plan;
 }
 
 if (els.checkUpdate) {
@@ -1481,6 +2173,32 @@ if (els.doLater) {
     els.doUpdate.style.display = "none";
     els.doLater.style.display = "none";
     els.updateMsg.textContent = "好，先不更新";
+  });
+}
+
+// 预览版那一枚按钮：**地址只用 UPDATE_PREVIEW_ZIP，一个字的 UPDATE_ZIP 都不许出现在这里**。
+// 复用上面那个下载口 = 装预览的人在不知情下退回正式版，而两条通道各自的说法全乱了。
+if (els.doPreview) {
+  els.doPreview.addEventListener("click", () => {
+    els.doPreview.style.display = "none";
+    els.updateMsg.textContent = "正在下载预览包…";
+    const fallback = () => {
+      els.updateMsg.textContent = "下载没成功 —— 点这里手动下：omitone-preview.zip";
+      chrome.tabs.create({ url: UPDATE_PREVIEW_ZIP });
+    };
+    try {
+      chrome.downloads.download({
+        url: UPDATE_PREVIEW_ZIP, saveAs: false, conflictAction: "uniquify"
+      }, (id) => {
+        if (chrome.runtime.lastError || !id) { fallback(); return; }
+        els.updateMsg.textContent =
+          "预览包已下载 —— 解压覆盖到扩展目录，再点「重新加载」，最后 F5。" +
+          "想退回正式版：移除这一枚，重装 omitone.zip。";
+        els.doUntil.style.display = "";
+      });
+    } catch (e) {
+      fallback();
+    }
   });
 }
 
@@ -1639,17 +2357,35 @@ document.addEventListener("DOMContentLoaded", () => {
       fitToQuerySize();
     }
 
-    var btnExpand = document.getElementById("btnExpand");
-    if (btnExpand) {
-      btnExpand.addEventListener("click", function () {
-        var t = immersiveTarget();
-        chrome.windows.create({
-          url: chrome.runtime.getURL("popup/popup.html") + "?play=1&w=" + t.w + "&h=" + t.h,
-          type: "popup", width: t.w, height: t.h
-        });
-        try { window.close(); } catch (e) {}
+    // 「打开逗玩窗口」与吉祥物栏的三个入口共用同一发开窗：带 &open= 深链，
+    // 让窗口里的她直接落到立绘册 / 聊天 / 体检（pet.js 读 open 参数开面板）。
+    function openPlay(open) {
+      var t = immersiveTarget();
+      chrome.windows.create({
+        url: chrome.runtime.getURL("popup/popup.html") + "?play=1" +
+          (open ? "&open=" + open : "") + "&w=" + t.w + "&h=" + t.h,
+        type: "popup", width: t.w, height: t.h
       });
+      try { window.close(); } catch (e) {}
     }
+    var btnExpand = document.getElementById("btnExpand");
+    if (btnExpand) btnExpand.addEventListener("click", function () { openPlay(""); });
+
+    // 「和她聊天」开关没开时，窗口里不会出现聊天 —— 别让人点了没反应：
+    // 照样开窗（看得到她），但补一句去哪儿开。
+    [["btnPetBook", "book"], ["btnPetDiag", "diag"]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (el) el.addEventListener("click", function () { openPlay(p[1]); });
+    });
+    var btnPetChat = document.getElementById("btnPetChat");
+    if (btnPetChat) btnPetChat.addEventListener("click", function () {
+      // 开关没开就不开窗：开窗会顺手关掉弹窗，那句提示就没人看得见了。
+      if (!petChatEnabledVal) {
+        toast("聊天还没打开：先在「吉祥物」里点亮「吉祥物聊天」", 4000);
+        return;
+      }
+      openPlay("chat");
+    });
 
     var fileInput = document.getElementById("bgFile");
     var btnBg = document.getElementById("btnBg");

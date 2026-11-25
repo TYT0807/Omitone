@@ -1,5 +1,9 @@
 /* ---------- 四季调色 ----------
-   只替换强调色与光晕；中性色不动，保证文字对比度在各季都合格。 */
+   四季只换强调色与光晕；中性色（--fg / --fg-2 / --muted）不在这里换。
+   ⚠️ 「中性色不动」从来不等于「文字对比度在各季都合格」：舞台底色（body.im + 四季）以前只有白天那一版，
+   暗色档把 --fg 翻成近白之后压在浅天光上实测 1.05（合格线 4.5）。两档的底色×文字配对由
+   `npm run theme`（= `npm run check` 第 39 项）逐对实算 —— 改这一族请连下面那段
+   @media (prefers-color-scheme:dark) 的孪生一起改，只改一边闸门当场点名。 */
 html[data-season="spring"]{ --accent:#e0559b; --accent-2:#c73f83; --accent-soft:rgba(224,85,155,.14); --fx:#f2a7c3; --fx-2:#8fd6a8; }
 html[data-season="summer"]{ --accent:#0a84ff; --accent-2:#0a6fe0; --accent-soft:rgba(10,132,255,.14); --fx:#ffd45e; --fx-2:#5fd3f3; }
 html[data-season="autumn"]{ --accent:#d2691e; --accent-2:#b4551a; --accent-soft:rgba(210,105,30,.15); --fx:#e08a3c; --fx-2:#c9a227; }
@@ -71,26 +75,13 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
   -webkit-user-drag:none; user-select:none;
 }
 
-/* 五种姿态：整体姿态语言 —— 倾斜 / 压缩 / 弹跳 / 前倾 */
-.pet[data-pose="hang"] .pet-art{ transform:translateY(-3px) rotate(3deg); }
-.pet[data-pose="climb"] .pet-art{ transform:rotate(-9deg) scale(1.02, .98); }
+/* 姿态语言：倾斜 / 压缩 / 弹跳 / 前倾（彩蛋专用的 hang/climb/crouch/wave/crawl
+   已随「设置页不再画她」一起拆掉 —— 它们只为更新栏那出戏服务） */
 .pet[data-pose="sit"] .pet-art{ transform:translateY(3px) scale(1.06, .92); }
 .pet[data-pose="happy"] .pet-art{ animation:pet-hop .55s var(--ease-spring) infinite alternate; }
 .pet[data-pose="point"] .pet-art{ transform:rotate(7deg) translateY(-1px); }
 /* 情绪低落：整个人往下沉一点、缩一缩 */
 .pet[data-pose="sad"] .pet-art{ transform:translateY(5px) scale(1.03, .94); }
-/* 彩蛋用的三个过渡姿态：**只改整体形变，不换图** —— 换了图人物就"变个人"了 */
-.pet[data-pose="crouch"] .pet-art{ transform:translateY(7px) scale(1.09, .84); }
-.pet[data-pose="wave"] .pet-art{ animation:pet-wave .42s ease-in-out 3; }
-.pet[data-pose="crawl"] .pet-art{ animation:pet-crawl .48s ease-in-out infinite alternate; }
-@keyframes pet-crawl{
-  from{ transform:rotate(-13deg) translateY(2px) scale(1.04, .94) }
-  to{ transform:rotate(-9deg) translateY(-1px) scale(1.02, .97) }
-}
-@keyframes pet-wave{
-  0%,100%{ transform:rotate(-7deg) translateY(-1px) }
-  50%{ transform:rotate(6deg) translateY(-2px) }
-}
 
 /* ── 动作库 ──────────────────────────────────────────────────────────────
    不新增任何素材：全部靠整体形变 + 一个字符特效。
@@ -218,21 +209,21 @@ html[data-season="winter"]{ --accent:#4a7fb5; --accent-2:#3a6a9c; --accent-soft:
 .pet[data-busy="1"] .pet-inner{ animation-duration:2.4s; }
 
 
-/* ---------- 悬停工具条 / 收起态 / 换装 ---------- */
+/* ---------- 悬停工具条 / 收起态 ---------- */
+/* 1.3.1 起她身上只剩「玩」「藏」两枚：姿/装/表/册/聊/诊全部并进窗口底部那排
+   带汉字的大按钮（.im-controls）与随机换装。圆钮趁只有两枚放大到 20px、字 11px ——
+   之前五枚挤一排只能 16px/9px，用户原话是"看着字更小了"。 */
 .pet-tools{
   position:absolute; right:0; top:100%; margin-top:7px;
-  display:flex; gap:2px; opacity:1;
+  display:flex; gap:3px; opacity:1;
   pointer-events:auto;
 }
 /* margin-top 7（原 2）：心情条也挂在 top:100%+2，同层会互相叠 ——
-   竖排次序是 心情条(60-63) → 工具条(65-81) → 等级徽章 → 好感条，各占一行。
-   16px 而不是 18px：多了「册」之后一排 5 个，
-   18px 会横向长到 102px；横向撞「未开启」由弹窗侧 .brand 的
-   padding-right:110px 让角解决（pet.css 管不到弹窗布局）。 */
+   竖排次序是 心情条 → 工具条 → 等级徽章 → 好感条，各占一行。 */
 .pet-tools button{
-  width:16px; height:16px; padding:0; border:0; border-radius:50%;
+  width:20px; height:20px; padding:0; border:0; border-radius:50%;
   background:var(--card); border:1px solid var(--hairline); color:var(--fg-2);
-  font-size:9px; line-height:14px; cursor:pointer; font-family:inherit;
+  font-size:11px; line-height:18px; cursor:pointer; font-family:inherit;
   backdrop-filter:blur(6px);
 }
 .pet-tools button:hover{ background:var(--accent-soft); color:var(--accent-2); }
@@ -395,6 +386,14 @@ body.im{ width:auto; min-width:0; }
 body.im > *{ display:none !important; }
 body.im > #fxLayer, body.im > #mascot{ display:block !important; }
 body.im > #petBook{ display:flex !important; }
+/* 小游戏 / 聊天 / 体检三块面板同样是 body 的直接孩子 —— 1.3.1 起逗玩窗口是弹窗侧唯一舞台，
+   这三块必须能在这里开门。白名单还给它们出厂那份 display:flex：平时 opacity:0 挂着
+   （.show 才露脸），不会自己冒出来；漏了这条的后果是"点了和她聊天/本地体检，面板永远不开"。 */
+body.im > #petGame, body.im > #petChat, body.im > #petDiag{ display:flex !important; }
+/* 反向那半（1.3.1 起）：设置页（body 不带 .im）永远不画她 —— JS 出场已判 body.im，
+   这条是 CSS 兜底。四季底色与点击水纹照旧在设置页跑，藏的只是角色本体
+   （#mascot 连同她身上的工具条/心情条/徽章/好感条整套）。 */
+body:not(.im) #mascot{ display:none !important; }
 /* 提示条要脱离文档流：它留在流里会在顶端占一条 15px 的隐形空胶囊，把文档又撑高一截。 */
 body.im > #toast{
   display:block !important; position:fixed; left:50%; top:10px; z-index:20;
@@ -413,10 +412,14 @@ body.im .pet-art{ filter:drop-shadow(0 18px 30px rgba(16,40,80,.18)); }
 body.im .pet-tools{ right:50%; transform:translateX(50%); top:100%; }
 
 body.im .pet, body.im #mascot{ opacity:1; visibility:visible; }
-.im-controls{ display:none; position:fixed; left:50%; bottom:18px; z-index:10002; gap:8px; transform:translateX(-50%); }
+.im-controls{ display:none; position:fixed; left:50%; bottom:18px; z-index:10002; gap:8px; transform:translateX(-50%);
+  /* fixed + left:50% 的收缩适配只看锚点右侧的可用宽（380 宽只剩 190px，560 宽也只剩 280px），
+     按钮会被压成一字宽的竖排文字塔、整条带长到 88px 盖住立绘册下半 —— 显式给 max-content，
+     超窗靠 max-width + 整枚换行，按钮文本自身不许按字折行。 */
+  width:max-content; max-width:calc(100vw - 24px); flex-wrap:wrap; justify-content:center; }
 /* 必须带 !important：上面那条 `body.im > *` 是全藏，这一族要露脸就得赢过它。 */
 body.im > .im-controls{ display:flex !important; }
-.im-controls button{ border:1px solid var(--hairline); border-radius:999px; padding:7px 12px; background:var(--card); color:var(--fg-2); font:inherit; font-size:12px; cursor:pointer; box-shadow:0 4px 14px rgba(16,24,40,.12); }
+.im-controls button{ border:1px solid var(--hairline); border-radius:999px; padding:7px 12px; background:var(--card); color:var(--fg-2); font:inherit; font-size:12px; white-space:nowrap; cursor:pointer; box-shadow:0 4px 14px rgba(16,24,40,.12); }
 .im-controls button:hover{ color:var(--accent-2); background:var(--accent-soft); }
 
 /* 沉浸式：按季节给一层场景底色（渐变 + 柔光，不用等生图） */
@@ -426,6 +429,15 @@ html[data-season="autumn"] body.im{ background:radial-gradient(70% 60% at 50% 20
 html[data-season="winter"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #e8f1ff, #f4f8ff 60%, #eef2f8); }
 body.im::before{ content:""; position:fixed; inset:auto 0 0 0; height:38%;
   background:linear-gradient(180deg, transparent, rgba(150,175,215,.16)); pointer-events:none; }
+/* 暗夜同伴：上面那四条四季底色只有白天那一版，暗色下 --fg 翻成近白却仍铺在浅天光上 ——
+   现场量到「🩺」道具 1.05、底部六枚汉字按钮 2.84（<4.5 为不合格）。底色压暗但保留四季色相身份。 */
+@media (prefers-color-scheme:dark){
+  body.im{ background:#0f1218; }
+  html[data-season="spring"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #2b1b26, #241f2c 60%, #171a20); }
+  html[data-season="summer"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #10252f, #14262c 60%, #12181d); }
+  html[data-season="autumn"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #2b1f13, #241c14 60%, #191713); }
+  html[data-season="winter"] body.im{ background:radial-gradient(70% 60% at 50% 20%, #131d2c, #161d27 60%, #12161d); }
+}
 
 /* 情绪条：26×3 的细条，宽度 = 心情值 */
 .pet-mood{
@@ -579,14 +591,11 @@ html[data-ui="lite"] .pet-bond, html[data-ui="lite"] .pet-level{ display:none; }
 
 /* ── 和她聊天（批次 123）────────────────────────────────────────────────────
    形状照抄 .pet-book（实底、居中、三样关法），只是把身体换成了对话流 + 一条输入行。
-   「聊」默认藏起：设置 → 吉祥物 → 吉祥物聊天 打开后才入列 —— 聊天要花 Key 的钱，
-   绝不许"升级即默认花钱"。 */
-.pet-tools button[data-act="chat"]{ display:none; }
-body.pet-chat-on .pet-tools button[data-act="chat"]{ display:block; }
-/* 「聊」入列后一排 7 枚：压按钮宽与间距（14px + 1px 缝 = 104px），
-   不越过弹窗 .brand 让出的 110px —— 与上面「16px 而不是 18px」那条注释同一族约束。 */
-body.pet-chat-on .pet-tools{ gap:1px; }
-body.pet-chat-on .pet-tools button{ width:14px; }
+   「和她聊天」默认藏起：设置 → 吉祥物 → 吉祥物聊天 打开后才在底部大按钮排里出现 ——
+   聊天要花 Key 的钱，绝不许"升级即默认花钱"。（1.3.1 起入口只有 #imChat 一枚，
+   工具条里的「聊」已随工具条瘦身一起拆掉。） */
+#imChat{ display:none; }
+body.pet-chat-on #imChat{ display:block; }
 .pet-chat{
   position:fixed; left:50%; top:50%; z-index:10001;
   width:min(300px, calc(100vw - 24px)); height:min(400px, calc(100vh - 24px));
@@ -613,6 +622,41 @@ body.pet-chat-on .pet-tools button{ width:14px; }
 }
 .pet-chat-row.user{ align-self:flex-end; background:var(--accent); color:#fff; }
 .pet-chat-row.err{ opacity:.75; }
+/* ── 本地体检卡片：复用 .pet-chat 的壳，只把"行"改成整宽的一格结论 ──────────
+   结论条数与每段长度都由 libs/diagnose.js 限死（≤4 条 / 标题 26 / 建议 72 / 取证 96），
+   所以这一族不需要 min-height —— 面板装得下是判据层的责任，不是 CSS 的。 */
+.pet-diag .pet-chat-row{ max-width:100%; align-self:stretch; }
+.pet-diag .pet-diag-sum{
+  background:transparent; padding:0 2px; color:var(--muted,#64748b);
+  font-size:11px; line-height:1.5;
+}
+.pet-diag .pet-diag-item{ display:flex; flex-direction:column; gap:4px; }
+.pet-diag .pet-diag-item b{ font-size:12px; }
+.pet-diag .pet-diag-why{ color:var(--muted,#475569); font-size:11px; }
+.pet-diag .pet-diag-ev{
+  font-family:ui-monospace,Consolas,monospace; font-size:10px; opacity:.72;
+  white-space:pre-wrap; word-break:break-all;
+}
+.pet-diag .pet-diag-item button{
+  align-self:flex-start; margin-top:2px; padding:4px 10px; font-size:11px;
+  border:1px solid var(--hairline); border-radius:8px; cursor:pointer;
+  background:var(--accent-soft); color:var(--fg);
+}
+.pet-diag .sev3{ border-left:3px solid #ef4444; }
+.pet-diag .sev2{ border-left:3px solid #f59e0b; }
+.pet-diag .sev1{ border-left:3px solid #3b82f6; }
+.pet-diag .sev0{ border-left:3px solid #22c55e; }
+.pet-diag .pet-diag-note{ background:rgba(34,197,94,.1); }
+.pet-diag .pet-diag-unknown{ background:rgba(100,116,139,.14); }
+/* 角色装手里那件道具（体检=🩺 / 修复=🕵️）。
+   与四季道具分开一类：季节那族由 html[data-season] 决定显示，这一枚由体检卡片决定，
+   两家共用一个类会被季节闸一起关掉。 */
+.pet-roleprop{
+  position:absolute; left:34px; top:-6px; z-index:2; display:none;
+  font-size:15px; line-height:1; pointer-events:none;
+  text-shadow:0 1px 3px rgba(15,23,42,.28);
+}
+.pet-roleprop.show{ display:block; }
 .pet-chat-foot{
   flex-shrink:0; display:flex; gap:6px; padding:8px 10px;
   border-top:1px solid var(--hairline);
@@ -623,3 +667,6 @@ body.pet-chat-on .pet-tools button{ width:14px; }
   background:transparent; color:var(--fg); font-family:inherit;
 }
 .pet-chat-foot button{ padding:6px 12px; font-size:12px; flex-shrink:0; }
+
+/* 「吉祥物」栏的状态行（设置页 1.3.1 起只报等级与好感，不画她本尊） */
+.pet-status{ margin:2px 0 6px; font-size:12px; color:var(--fg-2); }

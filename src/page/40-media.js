@@ -14,19 +14,23 @@
  *    所以它每轮都调 `this._tickProgress(...)` 刷心跳。**改动这个循环时别把心跳删掉**，
  *    删了会让正常的长任务被误判成卡死的 tick，从而放锁并起第二个 tick 并行操作同一任务点。
  *
- * 本段的方法（49 个）：
- *   _clearMediaPendingState、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
- *   _findMediaInDocument、_waitForMediaInDocument、_getMediaSeekKey、_noteSeekSkip、
+ * 本段的方法（73 个）：
+ *   _clearMediaPendingState、_isMediaQuarantined、_quarantineDeadMedia、_isActiveMediaPending、_pickMedia、_isVisibleMedia、
+ *   _findMediaInDocument、_waitForMediaInDocument、_mediaStablePath、_getMediaSeekKey、_noteSeekSkip、
+ *   _siteConditionNoDrag、_readSiteSeekCondition、_siteSeekCondition、_siteSaysNoDrag、
+ *   _siteUnplayableHit、_siteSaysUnplayable、_releaseMediaNotFound、
+ *   _courseGuardId、_courseGuardCell、_persistCourseGuard、_courseGuardHit、_noteCourseGuard、
+ *   _clearCourseGuard、_sayCourseGuard、_noteCourseGuardRateSkipped、_seekNoDragSource、
  *   _trySeekToEnd、_deferSeekUntilSeekable、_seekableCovers、
  *   _playChaoxingMediaJob、_startSlideMedia、_waitSlideAudioDone、
  *   _ensurePlaybackRate、_getTargetPlaybackRate、_clampAutoRate、
  *   _resetRateDetection、_scheduleMaxRateDetection、_detectMaxPlaybackRate、
- *   _readRateMenuMax、_probeMaxPlaybackRate、_waitRateSettle、
- *   _startVideoMonitoring、_clearCheckInterval、_startAudioKeepalive、
+ *   _readRateMenuMax、_tryRateOnce、_noteRateUnreadable、_waitRateSettle、
+ *   _startVideoMonitoring、_clearCheckInterval、_rearmMediaGuardIfLost、_startAudioKeepalive、
  *   _stopAudioKeepalive、_syncAudioKeepalive、_checkVideoStatus、
  *   _finishCurrentMedia、_isRateLockedAtOne、_isNinetyPercentVideo、
- *   _shouldAdvanceAtNinetyPercent、_mediaErrorCode、_reloadMediaInPlace、
- *   _tryResumePlayback、_getVideoEl、
+ *   _shouldAdvanceAtNinetyPercent、_noteNinetyHeldBack、_mediaErrorCode、_reloadMediaInPlace、
+ *   _tryResumePlayback、_siteStartControlOf、_nudgeSiteStartControl、_getVideoEl、
  *   _videoEventHandle、_handleMediaError、_guessMediaMime、
  *   _maybeRepairMediaSource、_handleVideoEnded、_handleVideoLoaded、
  *   _handleVideoPlay、_handleVideoPause、_handleVideoRateChange、
@@ -62,12 +66,79 @@
     },
 
 
+    _isMediaQuarantined: function (media) {
+      if (!media || !this._mediaQuarantine) return false;
+      var entry = this._mediaQuarantine.get(media);
+      if (!entry || !entry.quarantined) return false;
+      if (Date.now() - Number(entry.quarantined || 0) < TASK_GIVEUP_TTL_MS) return true;
+      this._mediaQuarantine.delete(media);
+      var reloadKey = this._getMediaSeekKey(media);
+      if (reloadKey && this._mediaReloadKeys) delete this._mediaReloadKeys[reloadKey];
+      return false;
+    },
+
+
+    _quarantineDeadMedia: function (media, detail) {
+      if (!media) return false;
+      if (!this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      var info = detail || {};
+      var previous = this._mediaQuarantine.get(media) || {};
+      var already = !!previous.quarantined;
+      if (!already && Number(info.reloadTimes || 0) < MEDIA_RELOAD_LIMIT) return false;
+
+      var job = info.job || previous.job || null;
+      this._mediaQuarantine.set(media, {
+        job: job,
+        quarantined: previous.quarantined || Date.now(),
+        at: Number(info.at) || previous.at || Date.now(),
+        code: Number(info.code || previous.code || 0),
+        message: String(info.message || previous.message || '').slice(0, 140),
+        currentTime: Number(info.currentTime || previous.currentTime || 0),
+        duration: Number(info.duration || previous.duration || 0)
+      });
+      if (!already) {
+        try { media.pause(); } catch (ePause) {}
+        this._clearMediaPendingState('media-recovery-exhausted');
+      }
+
+      var key = this._taskPointKey(job);
+      var giveUp = 'no-key';
+      if (key && !this._isTaskGivenUp(key)) {
+        this._markTaskGivenUp(key, {
+          name: job && job.name,
+          reason: 'media-recovery-exhausted',
+          attempts: Number(info.reloadTimes || 0)
+        });
+      }
+      if (key) giveUp = this._isTaskGivenUp(key) ? 'written' : 'failed';
+
+      if (!already) {
+        emitRuntimeLog('warn', 'media recovery exhausted, element quarantined', {
+          code: Number(info.code || 0),
+          message: String(info.message || '').slice(0, 140),
+          reason: String(info.reason || ''),
+          currentTime: Number(info.currentTime || 0),
+          duration: Number(info.duration || 0),
+          heldMs: Number(info.heldMs || 0),
+          reloadTimes: Number(info.reloadTimes || 0),
+          name: String((job && job.name) || '').slice(0, 60),
+          giveUp: giveUp
+        });
+      }
+      return true;
+    },
+
+
     _isActiveMediaPending: function (reason) {
       // 有些播放器在切换清晰度/广告后会悄悄重置内部状态，把 _isPlaying 清掉，
       // 于是 tick 以为「没有任务」→ 每 5 秒搜一次 → `study no runnable job` 刷屏
       // （2026-10-26 日志：一个视频播放的 6 分钟里刷了 70 多条）。
       // 只要手里那个 video 元素还在播，就应当按「任务进行中」处理。
       var liveVideo = this._videoEl;
+      if (this._isMediaQuarantined(liveVideo)) {
+        this._clearMediaPendingState('media-quarantined');
+        return false;
+      }
       var stillPlaying = !!(liveVideo && liveVideo.isConnected && !liveVideo.paused && !liveVideo.ended);
       if (!this._activeMediaJobPending && !this._isPlaying && !stillPlaying) return false;
       // ⚠️ **先解析元素，再问「这一节是不是该放行」**（批次 51）。
@@ -83,6 +154,10 @@
       //    **批次 50 那 120 秒的有界放手在这一格里一秒都攒不起来**，正是要它放手的形状。
       //    方向是**只放得更少**：元素还在播就不许因为"框都显示完成"而放行这一节。
       var media = liveVideo || this._getVideoEl();
+      if (this._isMediaQuarantined(media)) {
+        this._clearMediaPendingState('media-quarantined');
+        return false;
+      }
       if (this._shouldReleaseMediaPendingForCurrentCompletion(reason || 'media-pending', media)) {
         // ⚠️ 批次 55-C：**只有真的武装过一笔媒体任务才走整份复位**。
         //   放行判据如今在"自报全假、元素还在播"那一格也会说放行（那是它对现场的正确回答：
@@ -156,11 +231,19 @@
         // 任务 #157：放手这一刻顺手问一句「页面里有没有别的扩展注入的资源」——
         // 证据跟着放手日志走（foreign / foreignIds），found 时另出一句用户向提醒。
         var noSrcForeign = this._scanForeignExtensionArtifacts(media);
+        // 取证 §三.2：这一格放手说的是「没有源」，而站点常常**早就把真因写在正文里**（「外部视频…不支持播放」），
+        // 用户照着「没有源」往网络/播放器方向查是错的。这里**不改时间、不改出口**（120 秒那一格照旧是兜底），
+        // 只把站点那句原话捎进同一条日志当证据 —— 有 `<video>` 节点时**不许**由它提前收手：
+        // 页面上残留的这句话可能属于同一文档里**另一支**媒体，提前放手等于替用户扔掉一个播得动的任务点。
+        var noSrcDoc = null;
+        try { noSrcDoc = media.ownerDocument; } catch (eNoSrcDoc) { noSrcDoc = null; }
+        var noSrcSite = this._siteSaysUnplayable(noSrcDoc);
         this._mediaNoSourceSince = 0;
         emitRuntimeLog('warn', 'media has no source, release pending', {
           reason: reason || '', readyState: Number(media.readyState),
           networkState: Number(media.networkState), heldMs: stuckHeldMs, src: stuckSrc,
-          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(','))
+          foreign: noSrcForeign.state, foreignIds: String((noSrcForeign.ids || []).join(',')),
+          siteText: noSrcSite.state, siteQuote: noSrcSite.quote
         });
         this._noteForeignExtensionHint(noSrcForeign);
         this._clearMediaPendingState('media-no-source');
@@ -175,8 +258,8 @@
       // 放手窗口沿用 `documentSkipTimeoutMs`（**不加新配置键**：加一个键要动三份默认值 +
       // 界面绑定 + 策略区间，那些都由自检第 12 项守着，能复用就别新开面）。
       // ⚠️ 放手**不等于标记完成** —— `_clearMediaPendingState` 只清状态、不上报完成，
-      //    真正的"这一节做完没"仍由平台的 `#isFinished` 说话；反复重派由外层的
-      //    `_countTaskIncomplete`（进度快照 `media:<秒>` 恒等 → 4 次就放弃 24 小时）收住。
+      //    真正的"这一节做完没"仍由平台的 `#isFinished` 说话。三次恢复耗尽时按精确元素
+      //    隔离并直接写入 24 小时放弃名单；外层四次计数在 pending 为真时结构上到不了。
       //    静默跳过用户的任务点是这个项目不许的事（AGENTS §2.7），所以这里必须留 warn，
       //    并把 code / message / 位置 / 是否重载过一起写进日志。
       var brokenCode = this._mediaErrorCode(media);
@@ -190,6 +273,9 @@
         try { brokenMsg = String((media.error && media.error.message) || '').slice(0, 140); } catch (eErr) {}
         var brokenKey = this._getMediaSeekKey(media);
         var deadForeign = this._scanForeignExtensionArtifacts(media);
+        var brokenReload = brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey];
+        var brokenReloadTimes = Number(brokenReload && brokenReload.n) || 0;
+        var brokenJobEntry = this._mediaQuarantine && this._mediaQuarantine.get(media);
         this._mediaBrokenSince = 0;
         emitRuntimeLog('warn', 'media pipeline dead, release pending', {
           code: brokenCode,
@@ -198,13 +284,25 @@
           currentTime: Number(media.currentTime || 0),
           duration: Number(media.duration || 0),
           heldMs: brokenHeldMs,
-          reloaded: !!(brokenKey && this._mediaReloadKeys && this._mediaReloadKeys[brokenKey]),
-          reloadTimes: Number(brokenKey && this._mediaReloadKeys &&
-            this._mediaReloadKeys[brokenKey] && this._mediaReloadKeys[brokenKey].n) || 0,
+          reloaded: !!brokenReload,
+          reloadTimes: brokenReloadTimes,
           foreign: deadForeign.state, foreignIds: String((deadForeign.ids || []).join(','))
         });
         this._noteForeignExtensionHint(deadForeign);
-        this._clearMediaPendingState('media-pipeline-dead');
+        if (brokenReloadTimes >= MEDIA_RELOAD_LIMIT) {
+          this._quarantineDeadMedia(media, {
+            job: brokenJobEntry && brokenJobEntry.job,
+            code: brokenCode,
+            message: brokenMsg,
+            reason: reason || '',
+            currentTime: Number(media.currentTime || 0),
+            duration: Number(media.duration || 0),
+            heldMs: brokenHeldMs,
+            reloadTimes: brokenReloadTimes
+          });
+        } else {
+          this._clearMediaPendingState('media-pipeline-dead');
+        }
         return false;
       }
 
@@ -259,8 +357,8 @@
     // ⚠️ 诚实口径三格分开：found / none / unreadable。「none」只说明**没有 DOM 痕迹**——
     //    content script 可以不落任何元素就改 playbackRate / 暂停视频，所以 none 那一格
     //    绝不许写成「已排除其他插件」；认不出自家 id 就交 unreadable，绝不猜（AGENTS §2 #18 同族）。
-    // ⚠️ 60 秒缓存：give-up 路径（_countTaskIncomplete）在卡住期间**每一拍**都会问，
-    //    不许每拍全页扫。导航后由 _resetRuntimeState 清掉，旧页结论不带进新页。
+    // ⚠️ 60 秒缓存：失败媒体巡检每一拍都会问，不许每拍全页扫。
+    //    导航后由 _resetRuntimeState 清掉，旧页结论不带进新页。
     _scanForeignExtensionArtifacts: function (media) {
       var now = Date.now();
       var cached = this._foreignExtScan;
@@ -326,9 +424,11 @@
       var i;
       for (i = 0; i < list.length; i++) {
         var m = list[i];
+        if (this._isMediaQuarantined(m)) continue;
         if (visible(m) || (m.getClientRects && m.getClientRects().length > 0)) return m;
       }
       for (i = 0; i < list.length; i++) {
+        if (this._isMediaQuarantined(list[i])) continue;
         if (String(list[i].tagName || '').toLowerCase() === 'audio') return list[i];
       }
       return null;
@@ -336,7 +436,8 @@
 
 
     _isVisibleMedia: function (media) {
-      return !!media && (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
+      return !!media && !this._isMediaQuarantined(media) &&
+        (visible(media) || (media.getClientRects && media.getClientRects().length > 0));
     },
 
 
@@ -360,7 +461,10 @@
     },
 
 
-    _waitForMediaInDocument: function (doc, timeoutMs) {
+    // `onTick`（批次 174 加的第三枚参数）让调用方在**每一轮拿不到元素之后**顺手问一句页面自己说了什么：
+    // 问出结论就立刻交回 null（不花满整个窗口）。它抛了不算结论 —— 只当这一轮没问到，照旧继续等，
+    // 否则一个取证助手能把"等元素"这条主路弄死（§2 #2「挂起比报错贵」的反面：不许因问话而中断正事）。
+    _waitForMediaInDocument: function (doc, timeoutMs, onTick) {
       var self = this;
       return new Promise(function (resolve) {
         var deadline = Date.now() + (timeoutMs || 8000);
@@ -371,6 +475,15 @@
             resolve(media);
             return;
           }
+          if (onTick) {
+            var stop = false;
+            try { stop = !!onTick(); } catch (eTick) { stop = false; }
+            if (stop) {
+              clearInterval(timer);
+              resolve(null);
+              return;
+            }
+          }
           if (Date.now() >= deadline) {
             clearInterval(timer);
             resolve(null);
@@ -380,11 +493,29 @@
     },
 
 
+    // 站点把媒体地址按**播放会话**现签（`?at_=<签发毫秒>&ak_=&ad_=`），重签名、换清晰度都会换写法，
+    // 而这把钥匙喂的是「这一支试过没有」那几本账 —— 键一换写法 = 每支的一次性预算翻倍花，
+    // 量到的「站点把进度条拽回去」也读不回来（AGENTS §2 #17）。稳定身份只有路径那一段。
+    _mediaStablePath: function (url) {
+      var raw = String(url == null ? '' : url);
+      if (!raw) return '';
+      var abs = raw;
+      try {
+        if (typeof location !== 'undefined' && location.href) abs = new URL(raw, location.href).href;
+      } catch (e) { abs = raw; }
+      var cut = abs.search(/[?#]/);
+      return cut >= 0 ? abs.slice(0, cut) : abs;
+    },
+
+
     _getMediaSeekKey: function (media) {
       if (!media) return '';
       var src = '';
       try { src = media.currentSrc || media.src || ''; } catch (e) {}
-      if (src) return src;
+      // 拿不到稳定段时 `_mediaStablePath` 交回原串而不是空串 —— 空串在所有出口都是「没有钥匙」，
+      // 那会把「归一失败」实现成「这一支永远不动手」（§2 #12）。
+      var stable = src ? this._mediaStablePath(src) : '';
+      if (stable) return stable;
       if (this._activeJobId) return 'job:' + this._activeJobId;
       return '';
     },
@@ -419,13 +550,422 @@
     },
 
 
+    // ==== 站点自己写的「完成条件」标语（会话任务 #193）================================
+    // 现场实测形状（2026-11-20，只读探针）：`<video>` 在 `ananas/modules/video/index.html`
+    // （顶层下第 2 层），而那一行标语写在**它上一层**的 `mooc-ans/knowledge/cards?…knowledgeid=<这一节>`
+    // 文档里，每一张视频任务卡一枚：
+    //   `span.task-condition-text` ← 「观看时长需 ≥ 总时长的 90% (未完成任务点前, 当前视频不可拖拽、…)」
+    //   往上第 4 层是这张卡的分界容器 `div.ans-attach-ct.videoContainer`（同层放着承载播放器的那枚 iframe）
+    // 那句话不是写死的文案：站点自己的 `ueditor/ueditor.parse.js` 按**这一支视频的字段**现拼 ——
+    // `data.fastforward` 为真才追加「不可拖拽、」，`data.rt` 会替换那个 90，`data.switchwindow` 追加「不可离开…」。
+    // ⚠️ 所以只许朝"少动手"的方向用它：**站点说了才算证据，它没说 ≠ 允许拖**（英文界面、老版本、
+    //    卡片晚半拍才渲染出来，都会长成"没说"）—— 于是五格分开占位，任何一格都不许塌进别的格（AGENTS §2 #12）。
+    // ⚠️ 「不可倍速」那一格不许看标语：现场这支视频被站点锁在 1x，标语里却没有那三个字
+    //    （`doublespeed` 字段和播放器实际限速不是一回事）—— 倍速仍然只认 `_detectedMaxRate`。
+    _siteConditionNoDrag: function (text) {
+      return String(text || '').replace(/\s+/g, ' ').indexOf('不可拖拽') >= 0;
+    },
+
+
+    // 从这一支媒体所在的文档往上爬（最多 4 层），取**属于它那张卡**的标语。
+    // 每一层的 `querySelectorAll` 与 `frameElement` / `ownerDocument` 全部包在 try 里：
+    // 跨域那一下裸读抛的 SecurityError 会把整轮 tick 打断（AGENTS §2 #1，本项目最难查的一类 bug）。
+    // 返回 `{ state: forbidden | silent | ambiguous | absent | unreadable, text, marks, hop }`
+    _readSiteSeekCondition: function (video) {
+      var res = { state: 'unreadable', text: '', marks: 0, hop: -1 };
+      var doc = null, node = video;
+      try { doc = video && video.ownerDocument; } catch (eDoc) { return res; }
+      if (!doc) { res.state = 'absent'; res.marks = -1; return res; } // 没有文档上下文：测试台里的假媒体 / 元素已被摘出
+      for (var hop = 0; hop <= 4 && doc; hop++) {
+        res.hop = hop;
+        var marks = null;
+        try { marks = doc.querySelectorAll('.task-condition-text'); } catch (eQ) { return res; } // 这一层读不下去 = 读不出，不猜
+        if (marks && marks.length) {
+          res.marks = marks.length;
+          var texts = [];
+          for (var i = 0; i < marks.length; i++) {
+            var el = marks[i], card = null, owns = false;
+            try { card = el.closest ? el.closest('.ans-attach-ct, .videoContainer') : null; } catch (eC) { card = null; }
+            try { owns = !!card && !!node && !!card.contains(node); } catch (eO) { owns = false; }
+            if (!card && marks.length === 1) owns = true; // 只有一枚标语时不要求那层容器（老形状）
+            if (!owns) continue;
+            var t = '';
+            try { t = String(el.textContent || '').replace(/\s+/g, ' ').trim(); } catch (eT) { t = ''; }
+            if (t) texts.push(t);
+          }
+          if (!texts.length) { res.state = marks.length === 1 ? 'unreadable' : 'ambiguous'; return res; }
+          res.text = texts[0].slice(0, 180);
+          var same = true;
+          for (var j = 1; j < texts.length; j++) {
+            if (this._siteConditionNoDrag(texts[j]) !== this._siteConditionNoDrag(texts[0])) { same = false; break; }
+          }
+          if (!same) { res.state = 'ambiguous'; return res; } // 同屏几枚标语意见不一致，认不出归这一支的是哪一张卡
+          res.state = this._siteConditionNoDrag(texts[0]) ? 'forbidden' : 'silent';
+          return res;
+        }
+        // 这一层没有标语 —— 往上跳一层。`frameElement` 在顶层是 null、跨域会抛，两种都算"到顶了"
+        var frame = null;
+        try { frame = doc.defaultView ? doc.defaultView.frameElement : null; } catch (eF) { frame = null; }
+        if (!frame) { res.state = 'absent'; return res; }
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eU) { return res; }
+        if (!up || up === doc) { res.state = 'absent'; return res; }
+        doc = up;
+        node = frame; // 上一层里要拿去对卡片的那枚元素变成这枚 iframe（`contains` 不跨文档，别拿 video 比）
+      }
+      res.state = 'absent';
+      return res;
+    },
+
+
+    // 每支媒体只问一次：这一族每 1500 毫秒就来一拍，爬文档不该变成热路径。
+    // `forbidden` 长期有效（此后每一拍都靠它免掉那一发拖动）；其余四格 30 秒后重问 ——
+    // 标语是站点 JS 现拼的，卡片晚半拍才长出来是常态，一次读不出不许永久当成"这一支没有标语"。
+    _siteSeekCondition: function (video) {
+      var key = '';
+      try { key = this._getMediaSeekKey(video) || ''; } catch (e) { key = ''; }
+      if (!this._seekSiteKeys) this._seekSiteKeys = Object.create(null);
+      var now = Date.now();
+      var hit = key ? this._seekSiteKeys[key] : null;
+      if (hit && (hit.state === 'forbidden' || now - (hit.at || 0) < 30000)) return hit;
+      var res = this._readSiteSeekCondition(video);
+      res.at = now;
+      if (key) {
+        if (Object.keys(this._seekSiteKeys).length > 300) this._seekSiteKeys = Object.create(null);
+        this._seekSiteKeys[key] = res;
+        if (res.state === 'forbidden' && !(hit && hit.state === 'forbidden')) {
+          // 被挡下一定要出日志（AGENTS §2 #14），而且点名是谁判的：站点自己那句话，不是我们猜的
+          emitRuntimeLog('info', 'site condition says not draggable, skip seek to end', {
+            condition: res.text, marks: res.marks, hop: res.hop,
+            reason: '', jobid: this._activeJobId || ''
+          });
+          // 站点在这一枚上自己说了「不可拖拽」⇒ 同一门课后面那些枚没必要各爬一次文档、各挨一次试拖。
+          // ⚠️ 这一发只在「这一枚第一次被判 forbidden」时走，不在每一拍上（§2 #17 不许变热路径）。
+          this._noteCourseGuard('seek', 'banner');
+        }
+      }
+      return res;
+    },
+
+
+    // 只有 `forbidden` 这一格算证据；`silent` / `ambiguous` / `absent` / `unreadable` 一律"没证据"，
+    // 照旧走今天那"试拖一次"的路 —— 标语只许**减少**动手，不许由它多出一次动手。
+    _siteSaysNoDrag: function (video) {
+      try { return this._siteSeekCondition(video).state === 'forbidden'; } catch (e) { return false; }
+    },
+
+
+    // ==== 站点自己写的「这一支放不出来」（批次 174 / 会话任务 #24 · issue #225）====================
+    // 现场取证见 `notes/field-225-unplayable.md`：站点遇到**外部视频**时会把播放器整块换成一句正文 ——
+    //   「非常抱歉，该视频为外部视频，当前浏览器版本不支持播放该视频，请使用 chrome 内核浏览器或更新浏览器版本后重试。」
+    // 这一族页面里**压根没有 `<video>` 节点**（取证里那格叫"形状 1"）。改动前的行为：等满 8 秒 →
+    // 只落一句 `console.warn` → **日志环一个字都没有**，于是用户在现场看见的就是「扩展在跑、
+    // 就是不做这一节、且不说为什么」（AGENTS §2 #14「不许停在决定不做」那一族）。
+    // ⚠️ 匹配串只取站点那两句的**稳定前缀**（整句照抄会随措辞失效），认不到一律交空串，**绝不猜**（§2 #18）。
+    // ⚠️ 这一族**只许减少等待**：命中就提前走一格有名字的出口，永远不许由它标记完成（`#isFinished` 仍由平台说话），
+    //    也不许顶掉 120 秒有界放手那一格（它是这一格读不出时的兜底，反向验证要各摘一刀）。
+    // ⚠️ 词表里没有「chrome」：站点那句话的浏览器名会随版本变（chrome / Edge / 内核），
+    //    而「外部视频」＋「不支持播放」这两个词是那件事的**本体**。
+    _SITE_UNPLAYABLE_GROUPS: [
+      ['外部视频', '不支持播放'],
+      ['浏览器版本不支持', '播放']
+    ],
+
+
+    // 命中返回**是哪一个词组**（站点换措辞时能看出走的是哪一条），认不到返回空串。
+    _siteUnplayableHit: function (text) {
+      var s = '';
+      try { s = String(text || '').replace(/\s+/g, ' '); } catch (eNorm) { return ''; }
+      if (!s) return '';
+      var groups = this._SITE_UNPLAYABLE_GROUPS || [];
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (!g || !g.length) continue;
+        var ok = true;
+        for (var j = 0; j < g.length; j++) {
+          if (s.indexOf(g[j]) < 0) { ok = false; break; }
+        }
+        if (ok) return g.join('+');
+      }
+      return '';
+    },
+
+
+    // 返回 `{ state: said | silent | unreadable, quote, group, hop }`，三格各占一格（AGENTS §2 #12）：
+    //   `said`       = 读到了站点那句原话（唯一算证据的一格）
+    //   `silent`     = 整条文档链都读得下去，而里面没这句话
+    //   `unreadable` = 压根没读到正文（没有文档、取 body 抛、爬到一半抛）
+    // ⚠️ 后两格**不许互塌**：把"读不出"说成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据；
+    //    把"站点没说"说成"读不出"，则是白留一条永远查不清的日志。
+    // 走法与 `_readSiteSeekCondition` 同一族：从媒体所在文档**往上爬 ≤4 层**（`contains()` 不跨文档，
+    // 所以上一层要拿去继续的是那枚 iframe），每一步裸读全部包 try（§2 #1：跨域 SecurityError 会静默打断整轮 tick）。
+    _siteSaysUnplayable: function (doc) {
+      var res = { state: 'unreadable', quote: '', group: '', hop: -1 };
+      var sawBody = false;
+      var cur = null;
+      try { cur = doc || null; } catch (eTop) { return res; }
+      for (var hop = 0; hop <= 4 && cur; hop++) {
+        res.hop = hop;
+        var body = null;
+        try { body = cur.body || (cur.document ? cur.document.body : null); } catch (eBody) { return res; }
+        if (body) {
+          var text = '';
+          try { text = String(body.textContent || ''); } catch (eText) { return res; }
+          var group = this._siteUnplayableHit(text);
+          if (group) {
+            var first = group.split('+')[0] || '';
+            var at = first ? text.indexOf(first) : -1;
+            var from = at > 40 ? at - 40 : 0;
+            res.state = 'said';
+            res.group = group;
+            res.quote = text.slice(from, from + 180).trim();   // 截断只用于展示，命中判的是全文（§5「加工过的证据就是断言的盲区」）
+            return res;
+          }
+          sawBody = true;   // 这一层读得下去、且没有这句话
+        }
+        var frame = null;
+        try { frame = cur.defaultView ? cur.defaultView.frameElement : null; } catch (eFrame) { return res; }
+        if (!frame) break;        // 到顶了
+        var up = null;
+        try { up = frame.ownerDocument; } catch (eUp) { return res; }
+        if (!up || up === cur) break;
+        cur = up;
+      }
+      // ⚠️ 只有**整条链都读下去了**才许说 `silent`；中途任何一下裸读抛异常都停在上面的 `return res` 上，
+      //    那一格就是 `unreadable` —— 把"读不出"塌成"站点没说"，下一轮就会拿它当"这一格可以删掉"的依据（§2 #12）。
+      res.state = sawBody ? 'silent' : 'unreadable';
+      return res;
+    },
+
+
+    // 形状 1 放手这一刻**必须说话**，而且三个出口谁都不许塌进谁（AGENTS §2 #14 + §2 #12）：
+    //   `said`       → `media unplayable by site player`，照抄站点原话（用户照着查的方向才是对的）
+    //   `silent`     → `media not ready, release pending` + `siteText:'silent'`（就是没等到元素）
+    //   `unreadable` → `media not ready, release pending` + `siteText:'unreadable'`（连正文都没读到）
+    // ⚠️ 三格**只改说的方式，不改做的边界**：一律交回 false 让本节重新派发，进度仍由平台 `#isFinished`
+    //    说话，反复重派由 `_countTaskIncomplete`（进度快照恒等 → 4 次就放弃 24 小时）收住。
+    _releaseMediaNotFound: function (jobName, site, waitedMs) {
+      var state = (site && site.state) || 'unreadable';
+      var hop = (site && site.hop >= 0) ? Number(site.hop) : -1;
+      var ms = Number(waitedMs) || 0;
+      this._activeMediaJobPending = false;
+      if (state === 'said') {
+        emitRuntimeLog('warn', 'media unplayable by site player', {
+          name: String(jobName || ''), siteText: 'said',
+          quote: String((site && site.quote) || '').slice(0, 180),
+          group: String((site && site.group) || ''), hop: hop, waitedMs: ms
+        });
+        return false;
+      }
+      emitRuntimeLog('warn', 'media not ready, release pending', {
+        name: String(jobName || ''), siteText: state === 'silent' ? 'silent' : 'unreadable',
+        hop: hop, waitedMs: ms
+      });
+      return false;
+    },
+
+
+    // ==== 课程级「少动手」那一格（批次 173 / issue #2 现场建议「试过一回就整门课别再试」）================
+    // 现场证据（同口径跨单元）：`notes/field-105-b.md` 同一门课三枚单元**全部** tried+reverted 且按住 1x；
+    // `notes/census-153-recheck.md` 同课里前一枚走「90% 提前收尾」、后一枚走「标语说不可拖」；
+    // 2026-11-22 20:0x 又量到第四枚、**换了一门课**（`notes/ledger-173-draft.md` 补一节）。
+    // 而那两本账今天只按**每支媒体**记（`_seekRevertedKeys` / `_detectedMaxRate`），
+    // 于是同一门课的每一枚都要重新挨一次「真往播放器上写」—— 用户报的正是这个动作的人机验证风险。
+    //
+    // ⚠️ 三条硬边界，后续改动一条都不许松：
+    //   1) **只许减少动手**：命中课程格 = 不试拖、不写倍速。永远不许由它多出一次动作（AGENTS §2 #17 原文在此成立）。
+    //   2) **不许当许可**：站点那句标语是按**这一支**的 `data.fastforward` 现拼的，「另一支说了」推不出
+    //      「这支也说了」；反过来「另一支没说过」更推不出「这支可以乱动」。这一格是**策略**，不是站点的新声明。
+    //   3) **不许伪造读数**：`_detectedMaxRate` 保持 `0`（「不知道」）。把 `1` 写进去等于替这支视频伪造一次测量。
+    //   认不出是哪门课（两个 id 都空）⇒ 恒不命中，**单独占一格**并出一句 warn（§2 #12）。
+    _COURSE_GUARD_NEED: 1,            // 用户原话「一回」。⚠️ 断言从源码把这两个数读回来比，不许在测试里写死
+    _COURSE_GUARD_TTL_MS: 21600000,   // 6 小时，与 'omitone:course-switch' 同族；到点允许再问一枚（见上面第 2 条）
+    _COURSE_GUARD_KEY: 'omitone:course-guard',
+
+    // 这一门课是谁 —— `courseid|clazzid`（身份取自 `_currentStudyParams`：主框架 src + location.href）。
+    // ⚠️ 整段包 try：集成层 `[22]`／`[24]` 那批假 app **没有 `location`、也没有 `_currentStudyParams`**，
+    //    少这一层兜底就是拿「测试台自己崩掉」顶掉一整段断言（§5「红 0 条的第一嫌疑人是根本没跑到」）。
+    _courseGuardId: function () {
+      try {
+        var p = this._currentStudyParams ? this._currentStudyParams() : null;
+        var cid = String((p && p.courseid) || '');
+        var zid = String((p && p.clazzid) || '');
+        if (!cid && !zid) return '';
+        return cid + '|' + zid;
+      } catch (e) { return ''; }
+    },
+
+
+    // 本页内存里挂一枚 `{ course, cell, said, warnAt }`：`course` 没变就**不重读存储** ——
+    // 这一族每 1500 毫秒就来一拍，读存储不许变成热路径（§2 #17 同一句警告）。
+    // 换课（id 变了）⇒ 整格归零：旧课的账不许带进新课（口径同 `_readBlockedReloadBudget` 那句「href 变了 = 换了一面墙」）。
+    _courseGuardCell: function (id) {
+      if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+      var mem = this._courseGuard;
+      if (mem.course !== id) { mem.course = id; mem.cell = null; mem.said = {}; mem.warnAt = 0; }
+      if (mem.cell) return mem.cell;
+      var stored = null;
+      try { stored = this._readSessionLedger(this._COURSE_GUARD_KEY); } catch (e) { stored = null; }
+      var cell = { seek: null, speed: null };
+      // 读回来要**归一**：存储是用户机上可改的字节，n 只认非负整数、srcs 只认短名单
+      var norm = function (raw) {
+        if (!raw || typeof raw !== 'object') return null;
+        var n = Number(raw.n);
+        if (!isFinite(n) || n < 0) n = 0;
+        var at = Number(raw.at);
+        if (!isFinite(at) || at < 0) at = 0;
+        var srcs = [];
+        if (Array.isArray(raw.srcs)) {
+          for (var i = 0; i < raw.srcs.length && srcs.length < 8; i++) srcs.push(String(raw.srcs[i]).slice(0, 24));
+        }
+        return { n: Math.floor(n), at: at, srcs: srcs };
+      };
+      if (stored && typeof stored === 'object' && stored.course === id) {
+        cell.seek = norm(stored.seek);
+        cell.speed = norm(stored.speed);
+      }
+      mem.cell = cell;
+      return cell;
+    },
+
+
+    _persistCourseGuard: function (id) {
+      var cell = this._courseGuardCell(id);
+      // 两本格**整份**写回：另一格是同一门课的账，只写改过的那一格等于把它抹掉（§2 #25「不补账就盖」同族）
+      this._writeSessionLedger(this._COURSE_GUARD_KEY, {
+        course: id, seek: cell.seek, speed: cell.speed, ttl: Number(this._COURSE_GUARD_TTL_MS) || 0
+      });
+    },
+
+
+    // 命中 = 这一格已经认出过、且没过 TTL。`which` 取 'seek' | 'speed'，**两格分开**（免拖 ≠ 免倍速）。
+    _courseGuardHit: function (which) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) {
+          // 「认不出是哪门课」单独占一格：不许塌进「这门课可以乱动」，也不许塌进「已经免掉了」
+          if (!this._courseGuard) this._courseGuard = { course: '', cell: null, said: {}, warnAt: 0 };
+          var mem = this._courseGuard;
+          if (!mem.warnAt || Date.now() - mem.warnAt > 3600000) {
+            mem.warnAt = Date.now();
+            emitRuntimeLog('warn', 'course guard off, cannot tell which course this page is', {
+              hint: '认不出课程号（courseid / clazzid 都读不到）—— 课程级的免拖与免倍速一律不启用，照旧每枚各试一次'
+            });
+          }
+          return false;
+        }
+        var cell = this._courseGuardCell(id);
+        var rec = cell[which === 'speed' ? 'speed' : 'seek'];
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !(rec && Number(rec.n) >= need)) return false;
+        var at = rec ? Number(rec.at) : 0;
+        var ttl = Number(this._COURSE_GUARD_TTL_MS);
+        // 没有时间戳 = 不信（交回今天的行为：照旧试一次）；TTL 到点同样再问一枚（§3 第 3 条：少动手 ≠ 永不试）
+        if (!at || (isFinite(ttl) && ttl > 0 && Date.now() - at > ttl)) return false;
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 记一笔证据。`src` 是来源短标签（banner / reverted / measured-1x）—— 三条来源在 `srcs` 里要分得开（§2 #12）。
+    _noteCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;                     // 认不出课 ⇒ 这格账压根不记（不记 = 不免动手）
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key] || (cell[key] = { n: 0, at: 0, srcs: [] });
+        rec.n = (Number(rec.n) || 0) + 1;
+        rec.at = Date.now();
+        var label = String(src || 'unknown').slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        this._persistCourseGuard(id);
+        this._sayCourseGuard(which, id, rec, label);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 撤销 = 拿到**反证**（这一门课其实拖得动 / 其实能倍速）。`n` 归零、`srcs` 留历史：
+    // 谁攒到的、被谁撤掉的，现场都要读得回来 —— 只报「现在没账」等于把机制藏起来。
+    _clearCourseGuard: function (which, src) {
+      try {
+        var id = this._courseGuardId();
+        if (!id) return false;
+        var cell = this._courseGuardCell(id);
+        var key = which === 'speed' ? 'speed' : 'seek';
+        var rec = cell[key];
+        if (!rec || !(Number(rec.n) > 0)) return false;
+        rec.n = 0;
+        rec.at = 0;
+        var label = ('clear:' + String(src || 'unknown')).slice(0, 24);
+        if (rec.srcs.indexOf(label) < 0) rec.srcs.push(label);
+        if (rec.srcs.length > 8) rec.srcs.shift();
+        if (this._courseGuard) this._courseGuard.said[key] = ''; // 撤销后又攒满，要能再喊一次
+        this._persistCourseGuard(id);
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 跨过阈值那一发出**一句**话，每门课每格只喊一次（§2 #16(a)：降噪不许把该留的声音一起关掉）。
+    _sayCourseGuard: function (which, id, rec, src) {
+      try {
+        var mem = this._courseGuard;
+        if (!mem || !mem.said) return false;
+        var key = which === 'speed' ? 'speed' : 'seek';
+        if (mem.said[key]) return false;
+        var need = Number(this._COURSE_GUARD_NEED);
+        if (!(need > 0) || !rec || !(Number(rec.n) >= need)) return false;
+        mem.said[key] = String(src || '');
+        var speed = key === 'speed';
+        emitRuntimeLog('info', speed
+          ? 'course says rate locked at 1x, stop probing player speed'
+          : 'course says not draggable, stop trying to seek to end', {
+          course: id,
+          evidence: Number(rec.n) || 0,
+          from: String(src || ''),
+          sources: (rec.srcs || []).join(','),
+          hint: speed ? '这一门课里已经量到过倍速被锁在 1x，后面每一枚不再往播放器上写倍速'
+            : '这一门课里已经认出来不可拖拽，后面每一枚不再试拖进度条'
+        });
+        return true;
+      } catch (e) { return false; }
+    },
+
+
+    // 这一枚因为课程格而**一个字节都没往播放器上写** —— 说话，但每门课每格只说一次。
+    _noteCourseGuardRateSkipped: function () {
+      try {
+        var mem = this._courseGuard;
+        var rec = (mem && mem.cell && mem.cell.speed) || { n: 0, srcs: [] };
+        return this._sayCourseGuard('speed', this._courseGuardId(), rec, 'menu-unreadable');
+      } catch (e) { return false; }
+    },
+
+
+    // 「这一枚为什么不再试拖」是**哪一条证据**给的 —— 三条各占一格，不许压成一格（§2 #12）。
+    // 顺序＝行为证据 → 声明证据 → 课程策略：越靠前越硬（前两条是这一支自己的，第三条来自同一门课的别枚）。
+    _seekNoDragSource: function (video) {
+      try {
+        var key = video ? this._getMediaSeekKey(video) : '';
+        if (key && this._seekRevertedKeys && this._seekRevertedKeys[key]) return 'reverted';
+        if (video && this._siteSaysNoDrag(video)) return 'banner';
+        if (this._courseGuardHit('seek')) return 'course';
+        return '';
+      } catch (e) { return ''; }
+    },
+
+
     // 可拖动的视频/音频：直接拖到结尾。每个媒体只检查一次、最多只做一次拖动动作；
     // 网站有防拖拽把进度弹回时也不再重试，避免与播放器对抗。
     // 音频原先被排除（旧注释「只拖视频」），但实测有些音频任务同样能拖到底、平台照常计完成
     //（用户反馈）；拖不动的音频会在下面的「弹回检测」里被标记为不可拖，自动回落到正常播放。
     // 注意：PPT 逐页音频走的是 _runPptAudioJob，不设 _videoEl、不经这条路，所以不受影响。
     _trySeekToEnd: function (video, reason) {
-      var mediaTag = video && String(video.tagName || '').toUpperCase();
+      if (!video || this._isMediaQuarantined(video)) return false;
+      var mediaTag = String(video.tagName || '').toUpperCase();
       if (mediaTag !== 'VIDEO' && mediaTag !== 'AUDIO') return false; // 只拖视频/音频，其它元素不碰
       // 钥匙先算（纯读数，无副作用，判定顺序一格未动）：下面每一格"不试"都要归到这一支上
       var key = this._getMediaSeekKey(video);
@@ -447,6 +987,17 @@
 
       var current = Number(video.currentTime || 0);
       if (current >= duration - 8) { this._noteSeekSkip('near-end', video, key); return false; } // 已在结尾附近，无需拖动
+
+      // 站点在这一张卡上自己写了「不可拖拽」⇒ 连"试一下"都不必（会话任务 #193）。
+      // 用户报的就是那一发：站点明明不让拖，我们还在每一次巡检里拽进度条，把人机验证的风险抬起来。
+      // ⚠️ 这一格**不登记 `_seekTriedKeys`** —— 那本是"我们真写过一次、结论来自那一次"的账（AGENTS §2 #17），
+      //    把标语当成那次写入的替身写进去，等于替站点宣布"防拖拽"。
+      if (this._siteSaysNoDrag(video)) { this._noteSeekSkip('site-no-drag', video, key); return false; }
+
+      // 同一门课里已经认出来过一次 ⇒ 这一枚连"试一下"都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 这一格与上面标语那一格同两条纪律：**不登记 `_seekTriedKeys`**（那本是"我们真写过一次"的账）、
+      //    **更不写 `_seekRevertedKeys`**（那一格是站点的地盘，我们写进去就是拿别枚的账给自己作证）。
+      if (this._courseGuardHit('seek')) { this._noteSeekSkip('course-no-drag', video, key); return false; }
 
       var target = Math.max(0, duration - 3); // 留 3 秒自然播完，让 ended 事件与任务完成正常触发
 
@@ -477,10 +1028,12 @@
       var self = this;
       var verifySeek = function (attempt) {
         try {
-          if (!video.isConnected) return;
+          if (!video.isConnected || self._isMediaQuarantined(video)) return;
           var now = Number(video.currentTime || 0);
           if (now >= duration - 12) {
             self._seekRevertedKeys[key] = false; // 拖成功 → 可拖拽，不走 90% 提前结束
+            // 这是「这一门课拖得动」的**正面**证据（不是"没说"）⇒ 当场撤销课程格（批次 173 §3 第 1 条）
+            self._clearCourseGuard('seek', 'drag-ok');
             console.log('[Omitone] seek to end confirmed, now=' + now.toFixed(1) + 's');
             return;
           }
@@ -495,6 +1048,8 @@
             return;
           }
           self._seekRevertedKeys[key] = true;  // 两次都弹回 → 不可拖拽
+          // 我们自己真拖过、被站点拽回来 = 正面证据 ⇒ 记进课程格（批次 173 §3 第 1 条）
+          self._noteCourseGuard('seek', 'reverted');
           console.log('[Omitone] seek reverted by site player, continue normal playback');
           emitRuntimeLog('info', 'seek reverted by site, keep playing normally');
         } catch (e) {}
@@ -581,22 +1136,45 @@
         return true;
       }
 
+      // 等元素这一族现在**顺手问一句站点自己写了什么**（批次 174 / issue #225）：
+      // 站点把播放器整块换成「外部视频…不支持播放」那一族页面里根本没有 `<video>`，
+      // 改动前照旧花满 8 秒、且只在控制台说一声（日志环一个字都没有）。
+      // ⚠️ 问话**按 1 秒节流**：这一族每 200 毫秒就来一发，`body.textContent`（最多爬 4 层文档）
+      //    不许变成热路径（§2 #17 同一句警告）。命中就提前收 —— 但**只减少等待，不标记完成**。
+      var waitStart = Date.now();
+      var siteSelf = this;
       var video = this._findMediaInDocument(job.doc);
-      if (!video) {
-        video = await this._waitForMediaInDocument(job.doc, 8000);
+      var siteSaid = video ? null : this._siteSaysUnplayable(job.doc);
+      var lastSiteAsk = Date.now();
+      if (!video && (!siteSaid || siteSaid.state !== 'said')) {
+        video = await this._waitForMediaInDocument(job.doc, 8000, function () {
+          var now = Date.now();
+          if (now - lastSiteAsk < 1000) return false;
+          lastSiteAsk = now;
+          siteSaid = siteSelf._siteSaysUnplayable(job.doc);
+          return !!siteSaid && siteSaid.state === 'said';
+        });
       }
 
-      if (video) {
-        this._videoEl = video;
-        this._videoCount = 1;
-        this._currentVideoIndex = 0;
-      }
-
       if (!video) {
-        this._activeMediaJobPending = false;
-        console.warn('[Omitone] chaoxing media not ready:', job.name);
+        return this._releaseMediaNotFound(job.name, siteSaid, Date.now() - waitStart);
+      }
+      if (this._isMediaQuarantined(video)) {
+        this._quarantineDeadMedia(video, { job: job, reloadTimes: MEDIA_RELOAD_LIMIT });
+        this._clearMediaPendingState('media-quarantined');
         return false;
       }
+
+      if (!this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      var mediaJobEntry = this._mediaQuarantine.get(video) || {};
+      this._mediaQuarantine.set(video, {
+        job: job,
+        quarantined: mediaJobEntry.quarantined || 0,
+        at: mediaJobEntry.at || 0
+      });
+      this._videoEl = video;
+      this._videoCount = 1;
+      this._currentVideoIndex = 0;
 
       var isAudioTask = String(video.tagName || '').toLowerCase() === 'audio';
 
@@ -631,11 +1209,14 @@
       this._videoEventHandle();
       try {
         await this._withTimeout(video.play(), 12000);
+        if (this._isMediaQuarantined(video)) return false;
         this._startVideoMonitoring();
       } catch (e) {
+        if (this._isMediaQuarantined(video)) return false;
         try {
           video.muted = true;
           await this._withTimeout(video.play(), 12000);
+          if (this._isMediaQuarantined(video)) return false;
           this._isPlaying = true;
           this._startVideoMonitoring();
           // play() 被拒后浏览器会把 currentTime 打回 0，站点也可能顺手把倍速重置成 1。
@@ -649,12 +1230,14 @@
           if (/NotSupported/i.test(errText) || (video.error && video.error.code === 4)) {
             var repaired = await this._maybeRepairMediaSource(video);
             if (repaired) {
+              if (this._isMediaQuarantined(video)) return false;
               this._isPlaying = true;
               this._startVideoMonitoring();
               emitRuntimeLog('info', 'media play recovered after source repair', { name: job.name });
               return true;
             }
           }
+          if (this._isMediaQuarantined(video)) return false;
           this._isPlaying = false;
           // 站点的播放器自己在同一刻调 load()/pause() 时，这一发 play() 的 promise 会被它打断。
           // 这**不等于**"这个视频看不了"：下一拍会重新接上（现场实测：打完这两句 currentTime 照走）。
@@ -681,14 +1264,27 @@
     },
 
 
-    _startSlideMedia: function (doc) {
+    _startSlideMedia: function (doc, job) {
       var medias = [];
       try {
         medias = Array.from(doc.querySelectorAll('audio, video'));
       } catch (e) {}
       var self = this;
+      medias = medias.filter(function (media) {
+        return !media.ended && !self._isMediaQuarantined(media);
+      });
+      if (job && !this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+      if (job) {
+        medias.forEach(function (media) {
+          var entry = self._mediaQuarantine.get(media) || {};
+          self._mediaQuarantine.set(media, {
+            job: job,
+            quarantined: entry.quarantined || 0,
+            at: entry.at || 0
+          });
+        });
+      }
       medias.forEach(function (media) {
-        if (media.ended) return;
         try {
           media.muted = !!self.configs.muted;
         } catch (e1) {}
@@ -697,6 +1293,7 @@
             var p = media.play();
             if (p && typeof p.catch === 'function') {
               p.catch(function () {
+                if (self._isMediaQuarantined(media)) return;
                 try {
                   media.muted = true;
                   media.play().catch(function () {});
@@ -710,22 +1307,46 @@
     },
 
 
-    _waitSlideAudioDone: async function (doc) {
+    _waitSlideAudioDone: async function (doc, job) {
       var waited = 0;
       while (waited < 600000) {
         // ⚠️ 心跳：本循环上限 600 秒，远超看门狗的 150 秒 —— 不刷心跳会被误判成卡死，
         //    导致新一轮 tick 与这次并行操作同一个任务点（见 64-tasks-loop.js 的看门狗）。
         this._tickProgress('ppt-audio wait');
+        var medias = [];
+        var quarantined = [];
         var active = [];
+        var self = this;
         try {
-          active = Array.from(doc.querySelectorAll('audio, video')).filter(function (media) {
-            return !media.ended && (Number(media.currentTime || 0) > 0 || !media.paused);
+          medias = Array.from(doc.querySelectorAll('audio, video'));
+          quarantined = medias.filter(function (media) { return self._isMediaQuarantined(media); });
+          active = medias.filter(function (media) {
+            return !self._isMediaQuarantined(media) && !media.ended &&
+              (Number(media.currentTime || 0) > 0 || !media.paused);
           });
+          if (job && !this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+          if (job) {
+            active.forEach(function (media) {
+              var entry = self._mediaQuarantine.get(media) || {};
+              self._mediaQuarantine.set(media, {
+                job: job,
+                quarantined: entry.quarantined || 0,
+                at: entry.at || 0
+              });
+            });
+          }
         } catch (e) {}
-        if (!active.length) return true;
+        if (!active.length) {
+          if (!quarantined.length) return true;
+          quarantined.forEach(function (media) {
+            self._quarantineDeadMedia(media, { job: job, reloadTimes: MEDIA_RELOAD_LIMIT });
+          });
+          emitRuntimeLog('warn', 'ppt-audio media quarantined, stop flipping', { name: String((job && job.name) || '') });
+          return false;
+        }
 
         active.forEach(function (media) {
-          if (!media.paused) return;
+          if (!media.paused || self._isMediaQuarantined(media)) return;
           try {
             var p = media.play();
             if (p && typeof p.catch === 'function') p.catch(function () {});
@@ -747,7 +1368,7 @@
 
 
     _ensurePlaybackRate: function (video, reason) {
-      if (!video) return;
+      if (!video || this._isMediaQuarantined(video)) return;
       var isAudio = String(video.tagName || '').toLowerCase() === 'audio';
       // 音频不再由插件静音（旧的 audioMuted 开关已删）。
       // 它反复出现「录不上进度 / 声音忽大忽小」这类问题，而用户随手静音标签页就能解决。
@@ -775,8 +1396,8 @@
       if (this.configs.autoMaxPlaybackRate !== false && Number(this._detectedMaxRate) > 0) {
         return this._clampAutoRate(this._detectedMaxRate);
       }
-      var target = Number(this.configs.playbackRate || 1);
-      return isFinite(target) && target > 0 ? target : 1;
+      // 弹窗里的「播放速度」滑条已删（批次 146）—— 没有量到的上限就按原速，不替用户猜一个倍速。
+      return 1;
     },
 
 
@@ -793,11 +1414,32 @@
     _resetRateDetection: function () {
       this._detectedMaxRate = 0;
       this._rateDetectVideo = null;
+      this._rateUnknownVideo = null;
+      this._rateUnknownTries = 0;
+      // 上一支是「谁判的按不住」要跟着这一支重问一遍（批次 173）；课程格本身**不在这里清**，
+      // 它是跨媒体、按门课记账的那一本，换课时由 `course` 那一格自己作废。
+      this._rateLockedBy = '';
+    },
+
+
+    // 「问不出上限」单独占一格，而且**不许变成每 1.5 秒问一次**：
+    // 问的方式是真往播放器上写倍速，写得勤 = 用户报的「抽搐 + 黑屏」那个动作本身。
+    // 连三发问不出就认这一支「问不到」，按原速播完，换了媒体再问（AGENTS §2 #12/#17 那一族：
+    // 读不出不等于结论，但也不许把"再试一次"实现成"永远在试"）。
+    _noteRateUnreadable: function (video) {
+      var self = this;
+      if (this._rateUnknownVideo !== video) {
+        this._rateUnknownVideo = video;
+        this._rateUnknownTries = 0;
+      }
+      this._rateUnknownTries = Number(this._rateUnknownTries || 0) + 1;
+      if (this._rateUnknownTries < 3) { this._rateDetectVideo = null; return; }
+      emitRuntimeLog('warn', 'rate max unreadable, keep native speed', { tries: this._rateUnknownTries });
     },
 
 
     _scheduleMaxRateDetection: function (video) {
-      if (!video) return;
+      if (!video || this._isMediaQuarantined(video)) return;
       this._rateDetectVideo = video;
       if (this._rateDetectBusy) return;
       var self = this;
@@ -805,20 +1447,40 @@
       this._rateDetectBusy = true;
 
       var runDetect = function () {
+        if (self._isMediaQuarantined(video)) {
+          self._rateDetectBusy = false;
+          self._rateDetectVideo = null;
+          return;
+        }
         self._detectMaxPlaybackRate(video).then(function (rate) {
           self._rateDetectBusy = false;
-          if ((self._rateEpoch || 0) !== epoch) return; // 任务已切换，探测结果作废
+          if ((self._rateEpoch || 0) !== epoch) return;
+          if (self._isMediaQuarantined(video)) {
+            if (self._rateDetectVideo === video) self._rateDetectVideo = null;
+            return;
+          }
           if (Number(rate) > 0) {
             self._detectedMaxRate = rate;
             emitRuntimeLog('info', 'auto playback rate detected', { rate: rate });
+            // 真读回了一档 ⇒ 量到 1x 就是「这一门课倍速按住」的正面证据，量到更高就是反面证据（批次 173 §3 第 2 条）。
+            // `measured-1x` 与 `menu-1x` 两条来源在 `srcs` 里要分得开（§2 #12）—— 前者真写过播放器，后者只是菜单自己列出来的。
+            if (rate <= 1.001) self._noteCourseGuard('speed', self._rateLockedBy === 'menu' ? 'menu-1x' : 'measured-1x');
+            else self._clearCourseGuard('speed', 'measured-above-1');
             self._ensurePlaybackRate(self._getVideoEl() || video, 'auto-rate');
+          } else if (self._rateLockedBy === 'course') {
+            // 这一格不是「问不出」，是「同一门课问过、不用再问」—— 单独说话，别去拨 `_rateUnknownTries` 那本一次性的账
+            self._noteCourseGuardRateSkipped();
           } else {
-            self._rateDetectVideo = null;
+            self._noteRateUnreadable(video);
           }
         }).catch(function () {
           self._rateDetectBusy = false;
           if ((self._rateEpoch || 0) !== epoch) return;
-          self._rateDetectVideo = null;
+          if (self._isMediaQuarantined(video)) {
+            if (self._rateDetectVideo === video) self._rateDetectVideo = null;
+            return;
+          }
+          self._noteRateUnreadable(video);
         });
       };
 
@@ -829,9 +1491,10 @@
       }
       var tries = 0;
       var timer = setInterval(function () {
-        if ((self._rateEpoch || 0) !== epoch) { // 任务已切换，放弃这次探测
+        if ((self._rateEpoch || 0) !== epoch || self._isMediaQuarantined(video)) { // 任务已切换或媒体已隔离，放弃这次探测
           clearInterval(timer);
           self._rateDetectBusy = false;
+          self._rateDetectVideo = null;
           return;
         }
         tries++;
@@ -843,28 +1506,65 @@
         if (tries >= 60) {
           clearInterval(timer);
           self._rateDetectBusy = false;
-          self._rateDetectVideo = null;
+          self._noteRateUnreadable(video);
         }
       }, 500);
     },
 
 
     _detectMaxPlaybackRate: async function (video) {
-      if (!video) return 0;
+      if (!video || this._isMediaQuarantined(video)) return 0;
       // 首选：播放器倍速菜单里暴露的档位（老师设置的上限会体现在菜单中）
       var menuMax = this._readRateMenuMax(video);
       if (menuMax > 0) {
+        // 菜单列出 >1x 的档 = 「这一门课的倍速动得」的正面证据 ⇒ 撤销课程格（批次 173 §3 第 2 条）。
+        // 读菜单是纯 DOM、不写播放器，所以这一路**永远照走**，不受课程格影响。
+        this._rateLockedBy = menuMax > 1 ? '' : 'menu';
+        if (menuMax > 1) this._clearCourseGuard('speed', 'menu');
         emitRuntimeLog('info', 'rate menu max found', { rate: menuMax });
         return this._clampAutoRate(menuMax);
       }
-      // 备选：从高到低试设倍速，观察播放器是否把倍速压回
-      var probed = await this._probeMaxPlaybackRate(video);
-      // ⚠️ 探测不出来 ≠ 上限就是 1 倍。原来这里 `probed || 1` 会把「不知道」当成
-      // 「只能 1 倍」，然后把用户自己设的播放速度也一起压回 1（日志里
-      // `auto playback rate detected {"rate":1}` 之后就是全程 1 倍速）。
-      // 返回 0 表示「没测出上限」，让 _getTargetPlaybackRate 回退到配置里的速度。
-      if (!probed) return 0;
-      return this._clampAutoRate(probed);
+      // 同一门课里已经认出来过一次「按不住」⇒ 这一枚连问都不必（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // ⚠️ 交回 `0` 是「不知道」那一格，**不是**替站点宣布 1x：既不往播放器写那一发（省下的就是用户嫌的那 700 毫秒
+      //   与一次黑屏风险），也不动 `_rateUnknownTries` 那本一次性的账（AGENTS §2 #17「只许减少动手，不许由它多出一次动手」）。
+      if (this._courseGuardHit('speed')) { this._rateLockedBy = 'course'; return 0; }
+      this._rateLockedBy = '';
+      // 菜单没列档位时**只试一发**（批次 146；旧版是从 4x 往下试八档、每档等 700 毫秒）。
+      return await this._tryRateOnce(video);
+    },
+
+
+    // 一次受控尝试：写「上限档」，读回播放器真正接住的那一档。
+    // ⚠️ 必须与 defaultPlaybackRate **同写**：HTML 媒体在换源 / 站点重挂播放器时把 playbackRate
+    //   复位到 defaultPlaybackRate。旧版八档阶梯只写 playbackRate，于是每一档都被复位成 1，
+    //   「上限就是 1 倍」是我们自己写出来的答案（现场 2026-11-20 学到：菜单恒读不出、
+    //   detectedMaxRate 却是探测给的 1 —— 全程 1x 就是这么来的）。
+    // ⚠️ 被拉回也要交回一个**非 0** 的读数：0 在调用方那一格是「不知道」，会清空
+    //   `_rateDetectVideo` → 下一拍再试一遍 → 每 1.5 秒和站点对打一次倍速，
+    //   用户看到的就是「抽搐 + 黑屏」。量到 1 就是量到了 1。
+    _tryRateOnce: async function (video) {
+      if (!video || this._isMediaQuarantined(video)) return 0;
+      var cap = this._clampAutoRate(this.configs.playbackRateCap || 4);
+      if (!(cap > 1)) return 0;
+      var before = Number(video.playbackRate || 1);
+      if (Math.abs(before - cap) <= 0.01) return this._clampAutoRate(before); // 播放器自己就在这个档
+      this._rateProbing = true;
+      var held = 0;
+      var denied = false;
+      try {
+        try { video.defaultPlaybackRate = cap; } catch (e1) {}
+        try { video.playbackRate = cap; } catch (e2) { denied = true; }
+        if (!denied) held = await this._waitRateSettle(video, 700);
+      } finally {
+        this._rateProbing = false;
+      }
+      if (this._isMediaQuarantined(video) || denied || !(held > 0)) return 0; // 写不进去 / 压根读不回 = 不知道，别替站点宣布上限
+      if (Math.abs(held - cap) > 0.05) {
+        // 被拉回：把 default 一起落到站点认的那一档，否则站点每次复位都会再触发一次写入
+        try { video.defaultPlaybackRate = held; } catch (e3) {}
+        emitRuntimeLog('info', 'rate held back by player', { tried: cap, held: held });
+      }
+      return this._clampAutoRate(held);
     },
 
 
@@ -902,31 +1602,6 @@
         if (maxRate > 0) break;
       }
       return maxRate;
-    },
-
-
-    _probeMaxPlaybackRate: async function (video) {
-      var self = this;
-      var cap = Number(this.configs.playbackRateCap || 4);
-      if (!isFinite(cap) || cap <= 0) cap = 4;
-      var candidates = [4, 3, 2.5, 2, 1.75, 1.5, 1.25, 1].filter(function (c) { return c <= cap; });
-      var best = 0;
-      this._rateProbing = true;
-      try {
-        for (var i = 0; i < candidates.length; i++) {
-          var candidate = candidates[i];
-          try { video.playbackRate = candidate; } catch (e) { continue; }
-          var settled = await self._waitRateSettle(video, 700);
-          if (settled > 0 && Math.abs(settled - candidate) <= 0.05) {
-            best = candidate;
-            break;
-          }
-          if (settled > best) best = settled;
-        }
-      } finally {
-        this._rateProbing = false;
-      }
-      return best;
     },
 
 
@@ -971,6 +1646,33 @@
         this._checkInterval = null;
       }
       this._syncAudioKeepalive();
+    },
+
+
+    // 「这一支还在播，可巡检的间隔没了」= 自锁：拖结尾、90% 提前收尾、「没进展就自愈」三件事
+    // 一起失效，现场表现成整支只能按 1x 白播（会话任务 #190 现场实测：`_checkInterval` 恒 null
+    // 而 `tickEpoch` 照涨、`_guardLastWallTs` 越老越久）。
+    // ⚠️ **只在真的没有句柄时动手** —— `_startVideoMonitoring()` 一跑就把
+    //   `_guardLastTime / _guardLastWallTs / _guardLastResumeTs` 三格清零，无条件调它
+    //   等于每拍把「没进展」的账抹平，自愈判据永远攒不满（AGENTS §2 #13 同一族）。
+    // ⚠️ 两个调用方都要在，而且**必须是这两处**：`60-tasks-detect.js` 的
+    //   `ocs-runner-active-job`（有可读 `#iframe` 的学习页 = 现场真正待着的地方）与
+    //   `62-tasks-run.js` 的 `ocs-style-active-job`（`#iframe` 读不到、attachment 直挂顶层那类页）。
+    //   `_runTick` 下面那一格 `_isPlaying` **走不到** —— `_isPlaying` 为真时上面两发之一
+    //   必定先认领这一拍（`_isActiveStudyJobPending` 是 `_isActiveMediaPending` 的超集），
+    //   只装在那里等于装了一条现场永不执行的代码（上一轮就栽在这格，2026-11-20 现场只读量回）。
+    _rearmMediaGuardIfLost: function (reason) {
+      if (this._checkInterval || !this._isPlaying) return false;
+      if (this._videoEl && this._isMediaQuarantined(this._videoEl)) this._videoEl = null;
+      var media = this._videoEl || this._getVideoEl();
+      if (!media || media.ended || this._isMediaQuarantined(media)) return false;
+      this._startVideoMonitoring();
+      emitRuntimeLog('warn', 'media guard rearmed', {
+        reason: reason || '',
+        currentTime: Math.round(Number(media.currentTime) * 10) / 10,
+        duration: Math.round(Number(media.duration) * 10) / 10
+      });
+      return true;
     },
 
 
@@ -1065,12 +1767,12 @@
 
         // 防拖拽 + 倍速锁 1x 的视频：平台只要求 ≥90%，平台标记完成后就别再白等最后 10%
         if (!video.ended && this._isPlaying && this._shouldAdvanceAtNinetyPercent(video)) {
-          this._finishCurrentMedia('ninety-percent');
+          this._finishCurrentMedia('ninety-percent', video);
           return;
         }
 
         if (video.ended && this._isPlaying) {
-          this._finishCurrentMedia('guard');
+          this._finishCurrentMedia('guard', video);
         }
       } catch (e) {}
     },
@@ -1083,7 +1785,8 @@
      * 抽出来是为了不让两条路各写一份 —— 收尾漏掉一个字段（比如 `_activeMediaJobManaged`）
      * 会让状态机卡住，而症状是"这个任务点过了但下一个不动"，很难查。
      */
-    _finishCurrentMedia: function (reason) {
+    _finishCurrentMedia: function (reason, media) {
+      if (media && this._isMediaQuarantined(media)) return;
       this._clearCheckInterval();
       if (this._activeMediaJobManaged) {
         this._isPlaying = false;
@@ -1121,19 +1824,69 @@
     /**
      * 「防拖拽 + 倍速锁 1x」的视频 —— 平台只要求观看时长 ≥ 总时长的 90%。
      *
-     * 判据是两个"平台不让我们加速"的信号**同时**成立：
-     *   1) 拖到结尾被播放器弹回（不可拖拽，见 _trySeekToEnd）
-     *   2) 倍速探测结果就是 1x（老师把倍速也锁了）
-     * 只满足一个都不算：能拖的视频早就拖到结尾了，能加速的视频也不该提前结束。
+     * 「不可拖拽」这一格现在有**两条各自独立**的证据，任一条成立即可：
+     *   1) 拖到结尾被播放器两次弹回（旧那格，结论来自站点真的按住过进度条）
+     *   2) 站点在这一张任务卡上自己写了「不可拖拽」（`_siteSaysNoDrag`，见上面那三格口径）
+     * 第二条不是"猜"：那句话就是站点按这一支视频的 `data.fastforward` 字段拼出来的原话，
+     * 而它的存在正是本次改动要去掉的代价 —— 为了拿第一条证据，我们必须真的动手拖两次。
+     * ⚠️ 两条都不许合并成一格：第一条是行为证据、第二条是声明证据，读回来要能分开归因（AGENTS §2 #12）。
+     * 倍速那一格仍然必须单独成立（标语里没有「不可倍速」并不等于没锁，见上面 `_detectedMaxRate` 那句）。
      */
     _isNinetyPercentVideo: function (video) {
       if (!video) return false;
       var mediaTag = String(video.tagName || '').toLowerCase();
       if (mediaTag !== 'video' && mediaTag !== 'audio') return false; // 视频/音频都适用（拖不动+锁1x 时到 90% 提前收尾）
-      if (!this._isRateLockedAtOne()) return false;
+      if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
       var key = this._getMediaSeekKey(video);
       if (!key) return false;
-      return !!(this._seekRevertedKeys && this._seekRevertedKeys[key]);
+      if (this._seekRevertedKeys && this._seekRevertedKeys[key]) return true;
+      if (this._siteSaysNoDrag(video)) return true;
+      // 第三条：同一门课里已经认出来过一次（批次 173 / issue #2「试过一回就整门课别再试」）。
+      // 它是三条里最弱的一格，所以放在最后，而且**只许减少动手**：命中只是不再试拖，绝不凭空多拖一次。
+      return this._courseGuardHit('seek');
+    },
+
+
+    /**
+     * 「可拖动」关上时，90% 提前收尾这条路被放弃了 —— 每支媒体只点名一次。
+     *
+     * 为什么要有这一发：这一族以前**一条日志都不留**（AGENTS §2 #14：判据不许停在"决定不做"）。
+     * 现场表现是"倍速锁在 1x、平台已标记完成、进度都过 90% 了还在原速播"，而弹窗里
+     * 那枚「看到 90% 就进下一个」明明亮着 —— 人只能猜。说清是被上面那枚开关挡的，
+     * 用户才知道该去开哪个（这一条的证据来自用户 2026-11-20 那句「用户可观看到界面不知道要成立」）。
+     *
+     * ⚠️ 判据取的是「除了拖拽证据，其余条件全都成立」，所以每 1500 毫秒进来一次的
+     *    巡检在"还没到 90%""平台没确认完成"那几拍**一句都不说** —— 200 条的证据窗不会被吃光（§2 #16(b)）。
+     *    账本 `_ninetyHeldBackKeys` 与 `_seekSkipLedger` 同一族：**不许被 `_resetRuntimeState` 抹掉**（§2 #13）。
+     */
+    _noteNinetyHeldBack: function (video) {
+      try {
+        if (!video) return false;
+        var mediaTag = String(video.tagName || '').toLowerCase();
+        if (mediaTag !== 'video' && mediaTag !== 'audio') return false;
+        var duration = Number(video.duration);
+        if (!isFinite(duration) || duration <= 0) return false;
+        var ratio = Number(video.currentTime || 0) / duration;
+        if (!(ratio >= 0.9) || ratio >= 0.995) return false;
+        if (!this._isRateLockedAtOne() && !this._courseGuardHit('speed')) return false;
+        if (!this._isDocumentFrameFinished(video.ownerDocument)) return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        if (!this._ninetyHeldBackKeys) this._ninetyHeldBackKeys = Object.create(null);
+        if (this._ninetyHeldBackKeys[key]) return true;
+        if (Object.keys(this._ninetyHeldBackKeys).length > 300) {
+          this._ninetyHeldBackKeys = Object.create(null);
+        }
+        this._ninetyHeldBackKeys[key] = true;
+        emitRuntimeLog('info', 'advance at 90% held back: seek disabled', {
+          ratio: Number(ratio.toFixed(3)),
+          duration: Number(duration.toFixed(1)),
+          jobid: this._activeJobId || ''
+        });
+        return true;
+      } catch (e) {
+        return false;
+      }
     },
 
 
@@ -1147,6 +1900,21 @@
     _shouldAdvanceAtNinetyPercent: function (video) {
       try {
         if (this.configs.advanceAtNinetyPercent === false) return false;
+        // 单向绑定（会话任务 #185）：这一条兜底原先只吃「拖到结尾两次都被弹回」那一格证据，
+        // 而它只有 `_trySeekToEnd` 会写、该方法第一行就被 `enableSeek` 挡下 —— 所以「可拖动」关上时
+        // `_isNinetyPercentVideo` 恒为 false，这一条开关**结构上永远走不到**（死键）。
+        // 现在的修法不是把闸放宽：站点自己写了「不可拖拽」时，证据来自站点那句话，
+        // 本来就不需要先动手拖一次，于是「可拖动」关上也能说真话；
+        // 拿不到这句声明时**照旧按住并明说一次「这条路被放弃了」**，别让它悄悄失灵。
+        // 三源各占一格（批次 173）：`reverted` 真拖过被拽回 / `banner` 卡片原话 / `course` 同一门课认过一次。
+        // ⚠️ 这一道闸只认**不依赖我们动手拖过**的那两条（banner / course）：`reverted` 只有
+        //    `_trySeekToEnd` 会写，而它第一行就被 `enableSeek` 挡下 —— 让用户中途关掉之后立刻失效，
+        //    而不是继续吃上一轮翻开关时留下的旧账（会话任务 #185 的"单向"那半截，⑤ 钉的就是它）。
+        //    日志里那一格（`dragSource`）仍走 `_seekNoDragSource`，三源不许在日志里塌成一格（§2 #12）。
+        if (!this.configs.enableSeek && !this._siteSaysNoDrag(video) && !this._courseGuardHit('seek')) {
+          this._noteNinetyHeldBack(video);
+          return false;
+        }
         if (!this._isNinetyPercentVideo(video)) return false;
 
         var duration = Number(video.duration);
@@ -1160,7 +1928,9 @@
         emitRuntimeLog('info', 'advance at 90% (locked 1x + not seekable)', {
           ratio: Number(ratio.toFixed(3)),
           duration: Number(duration.toFixed(1)),
-          jobid: this._activeJobId || ''
+          jobid: this._activeJobId || '',
+          // 「是哪一条证据说不可拖的」要读得回来，三源不许在日志里塌成一格（§2 #12）
+          dragSource: this._seekNoDragSource(video)
         });
         console.log('%c[Omitone] 防拖拽+锁1x：已到 ' + (ratio * 100).toFixed(0) +
           '%，平台已标记完成，直接进下一个', 'color:#4CAF50');
@@ -1218,6 +1988,8 @@
      */
     _reloadMediaInPlace: function (media, reason) {
       try {
+        var self = this;
+        if (!media || this._isMediaQuarantined(media)) return false;
         var code = this._mediaErrorCode(media);
         if (!code) return false;
         var key = this._getMediaSeekKey(media);
@@ -1225,7 +1997,7 @@
         if (!this._mediaReloadKeys) this._mediaReloadKeys = Object.create(null);
         var prevReload = this._mediaReloadKeys[key];
         var doneAttempts = Number(prevReload && prevReload.n) || 0;
-        if (doneAttempts >= 3) return false;
+        if (doneAttempts >= MEDIA_RELOAD_LIMIT) return false;
         if (doneAttempts > 0 && Date.now() - (Number(prevReload.at) || 0) < 20000) return false;
 
         var diedAt = Number(media.currentTime || 0);
@@ -1255,8 +2027,8 @@
           reason: reason || ''
         });
         if (resumeAt > 0) {
-          var self = this;
           media.addEventListener('loadedmetadata', function () {
+            if (self._isMediaQuarantined(media)) return;
             // `load()` 会把 currentTime 归零，位置必须等元数据回来再补 ——
             // 现在就设会被 readyState 0 的状态吞掉，症状是「重载过了，却从第一秒重新播」。
             try { media.currentTime = resumeAt; } catch (e0) {}
@@ -1264,9 +2036,11 @@
           }, { once: true });
         }
         media.load();
+        if (this._isMediaQuarantined(media)) return true;
         var started = media.play();
         if (started && typeof started.catch === 'function') {
           started.catch(function () {
+            if (self._isMediaQuarantined(media)) return;
             // 自动播放策略挡住了就静音重试一次（与 _tryResumePlayback 同一个兜底）
             try {
               media.muted = true;
@@ -1282,10 +2056,125 @@
     },
 
 
+    /**
+     * 站点播放器自己的「开始」键 —— 只认现场量到的那两枚（批次 178，2026-11-19 只读实测）。
+     *
+     * 现场形状：视频在 `top>iframe>f0` 的 `/ananas/modules/video/index.html` 里，
+     * 播放器是 video.js v7，根节点 `div.video-js` 用 `vjs-has-started` / `vjs-playing` 表态。
+     *
+     * ⚠️ 必须在**这一枚视频自己的** `.video-js` 容器里找，而且只用下面两个写死的类名：
+     *    同一个容器里还躺着 `vjs-default-button`（「重启 恢复全部设定至预设值」）、
+     *    `vjs-playback-rate`（倍速菜单）、`vjs-mute-control` —— 任何 `[class*=play]`
+     *    式的模糊匹配都会把它们扫进来，而点到「重启」那枚等于把用户的播放器设定清掉。
+     *  - `vjs-big-play-button`：未开播时的中央覆盖层，文字「播放视频」；在播时
+     *    `display:none`（现场实测矩形 0×0），所以"看得见"就是"还没开始"。
+     *  - `vjs-play-control`：控制条上的播放/暂停切换键，**在播时带 `vjs-playing` 类、
+     *    文字是「暂停」** —— 那种状态下点它等于按停，所以必须反着认。
+     */
+    _siteStartControlOf: function (video) {
+      var doc = video && (video.ownerDocument || document);
+      if (!doc) return null;
+      var scope = doc;
+      try {
+        if (video.closest) {
+          var host = video.closest('.video-js, .vjs-player');
+          if (host) scope = host;
+        }
+      } catch (e0) {}
+      try {
+        var big = scope.querySelector('.vjs-big-play-button');
+        if (big && visible(big)) return { el: big, rung: 'big-play' };
+        var toggle = scope.querySelector('.vjs-play-control');
+        if (toggle && visible(toggle) && !/vjs-playing/i.test(String(toggle.className || ''))) {
+          return { el: toggle, rung: 'play-toggle' };
+        }
+      } catch (e1) {}
+      return null;
+    },
+
+
+    /**
+     * 「开头一直卡住」的最后一档：去点站点自己的开始键。
+     *
+     * 用户口径是「点一下开始就正常了，否则一直黑屏不动或者抽搐」。上面 `_tryResumePlayback`
+     * 直调 `video.play()` 那一族**绕过了站点播放器自己的状态机**：它拿不到 play 事件时
+     * `_resumeAttemptCount` 每 15 秒换窗归零，于是整局都在原地重复同一发 play()，
+     * 而那两枚按钮背后的 handler 一次都没被走到 —— 人工点一下走的恰恰是那条路。
+     *
+     * 有界：一节最多 2 发、间隔 45 秒，键同 `_getMediaSeekKey`（与 `_mediaReloadKeys`
+     * 一样**不随换节清理**，清了就会在同一节里反复点）。点成功之后由站点自己派发的
+     * play 事件复位整套计数（`_handleVideoPlay`）。烧完还没起来只说**一次**交回人 ——
+     * 静默放手是不可接受的（AGENTS §2 #7），hint 里照用户的话告诉他亲手点一下。
+     *
+     * 只在「还停在开头」那一形状上动手：已经播出去一段的停滞交给 no-progress 与 90% 兜底，
+     * 那种情况点开始键等于替人把看过的两分钟重播一遍。音频不做 —— 现场只量过视频那一族，
+     * 音频播放器是另一个形状，没量过就不动手。
+     */
+    _nudgeSiteStartControl: function (video, reason) {
+      try {
+        if (!video || !this._isPlaying || this._isMediaQuarantined(video)) return false;
+        if (String(video.tagName || '').toLowerCase() !== 'video') return false;
+        var key = this._getMediaSeekKey(video);
+        if (!key) return false;
+        var ct = Number(video.currentTime || 0);
+        var dur = Number(video.duration || 0);
+        if (ct > 2) return false;
+        if (dur > 0 && ct > Math.min(30, dur * 0.02)) return false;
+
+        if (!this._startNudgeKeys) this._startNudgeKeys = Object.create(null);
+        var prev = this._startNudgeKeys[key];
+        var done = Number(prev && prev.n) || 0;
+        var now = Date.now();
+        var detail = {
+          ct: Math.round(ct * 100) / 100,
+          dur: Math.round(dur * 100) / 100,
+          ready: Number(video.readyState || 0),
+          paused: !!video.paused,
+          reason: reason || ''
+        };
+
+        if (done >= 2) {
+          if (!prev.gaveUp) {
+            prev.gaveUp = true;
+            detail.nudges = done;
+            detail.hint = '这一节从头就没起来，插件已经点过两回站点自己的开始键。' +
+              '这一族人工点一下「开始」通常就好了 —— 请在这页上亲手点一次，或者刷新这一页（F5）再让它刷';
+            emitRuntimeLog('warn', 'media start stuck, left to human', detail);
+          }
+          return false;
+        }
+        if (prev && now - (Number(prev.at) || 0) < 45000) return false;
+
+        // 站点为弹题有意把视频按下时不许抢（与 `_handleVideoPause` 同一口径）。
+        // 这个谓词会扫 DOM，本来只在 pause 事件里调；这里一次任务最多走到两回，
+        // 不按拍调，所以不引缓存 —— 别把它挪回每拍都问的位置。
+        if (this._popupQuizBlocksPlayback && this._popupQuizBlocksPlayback()) return false;
+
+        var found = this._siteStartControlOf(video);
+        if (Object.keys(this._startNudgeKeys).length > 300) this._startNudgeKeys = Object.create(null);
+        if (!found) {
+          // 「认不出开始键」单独占一格，不许塌成"点过了"（AGENTS §2 #12）。
+          this._startNudgeKeys[key] = { n: done + 1, at: now, rung: 'none' };
+          detail.rung = 'none';
+          emitRuntimeLog('warn', 'media start stuck, no site start control', detail);
+          return false;
+        }
+        this._startNudgeKeys[key] = { n: done + 1, at: now, rung: found.rung };
+        detail.rung = found.rung;
+        detail.attempt = done + 1;
+        emitRuntimeLog('warn', 'media start stuck, clicked site start control', detail);
+        try { found.el.click(); } catch (eClick) { return false; }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    },
+
+
     _tryResumePlayback: function (reason) {
       var now = Date.now();
       var video = this._getVideoEl();
-      if (!video || !this._isPlaying) return;
+      if (!video || !this._isPlaying || this._isMediaQuarantined(video)) return;
 
       // ⚠️ 死流水线先走重载，而且**必须放在下面三道闸之前**：那三道闸烧完 5 次就永久 return，
       //    而计数器只在 `play` 事件里清零 —— 管线死了 `play` 事件永远不会来，
@@ -1306,24 +2195,32 @@
       this._resumeAttemptCount++;
       this._guardLastResumeTs = now;
 
+      // 第 3 发 play() 之后照旧起不来，就换成点站点自己的开始键（批次 178）。
+      // 点着了我们这一拍就不再补一发 play() —— 让站点那条路先把状态机走起来。
+      if (this._resumeAttemptCount >= 3 && this._nudgeSiteStartControl(video, reason || 'resume')) return;
+
       this._ensurePlaybackRate(video, reason || 'resume');
+      if (this._isMediaQuarantined(video)) return;
       video.play().catch(function () {
+        if (this._isMediaQuarantined(video)) return;
         video.muted = true;
         video.play().catch(function () {});
-      });
+      }.bind(this));
     },
 
 
     _getVideoEl: function (index) {
       var idx = typeof index === 'number' ? index : this._currentVideoIndex;
       var self = this;
+      if (this._videoEl && this._isMediaQuarantined(this._videoEl)) this._videoEl = null;
       if (!this._videoEl) {
         function findVideos(doc, depth) {
           if (!doc || depth > 4) return { visible: [], hiddenAudio: [] };
           var all = Array.from(doc.querySelectorAll('video, audio'));
-          var vis = all.filter(self._isVisibleMedia);
+          var vis = all.filter(function (media) { return self._isVisibleMedia(media); });
           var hiddenAudio = all.filter(function (media) {
-            return String(media.tagName || '').toLowerCase() === 'audio' && !self._isVisibleMedia(media);
+            return String(media.tagName || '').toLowerCase() === 'audio' &&
+              !self._isMediaQuarantined(media) && !self._isVisibleMedia(media);
           });
           var frames = Array.from(doc.querySelectorAll('iframe'));
           for (var i = 0; i < frames.length; i++) {
@@ -1349,7 +2246,7 @@
           return null;
         }
       }
-      return this._videoEl;
+      return this._videoEl && !this._isMediaQuarantined(this._videoEl) ? this._videoEl : null;
     },
 
 
@@ -1365,6 +2262,12 @@
         if (this._onVideoRateChange) el.removeEventListener('ratechange', this._onVideoRateChange);
         if (this._onVideoError) el.removeEventListener('error', this._onVideoError);
       } catch (e) {}
+      if (this._isMediaQuarantined(el)) {
+        this._videoEl = null;
+        this._onVideoEnded = this._onVideoLoaded = this._onVideoPlay = null;
+        this._onVideoPause = this._onVideoRateChange = this._onVideoError = null;
+        return;
+      }
 
       this._onVideoEnded = this._handleVideoEnded.bind(this);
       this._onVideoLoaded = this._handleVideoLoaded.bind(this);
@@ -1386,7 +2289,7 @@
     // 之前完全没有这个监听，m4a 之类的格式问题永远不会被发现
     _handleMediaError: function (event) {
       var el = event && event.target ? event.target : this._getVideoEl();
-      if (!el) return;
+      if (!el || this._isMediaQuarantined(el)) return;
       var code = el.error ? el.error.code : 0;
       var message = el.error ? String(el.error.message || '') : '';
       var src = String(el.currentSrc || el.src || '');
@@ -1401,6 +2304,7 @@
       if (code === 4 || code === 3) {
         var self = this;
         this._maybeRepairMediaSource(el).then(function (ok) {
+          if (self._isMediaQuarantined(el)) return;
           emitRuntimeLog(ok ? 'info' : 'error', ok ? 'media source repaired (m4a/mime fallback), replaying' : 'media source repair failed', {
             src: src.slice(-80)
           });
@@ -1410,7 +2314,8 @@
 
 
     _guessMediaMime: function (url) {
-      var u = String(url || '').toLowerCase().split('?')[0];
+      // 稳定段只有一份口径（与 `_getMediaSeekKey` 同一把尺），别再各写一遍切查询串的那一手
+      var u = this._mediaStablePath(url).toLowerCase();
       if (/\.m3u8$/.test(u)) return '';
       if (/\.m4a$|\.aac$/.test(u)) return 'audio/mp4';
       if (/\.mp3$/.test(u)) return 'audio/mpeg';
@@ -1426,7 +2331,7 @@
     // 全程在页面内完成（不经过扩展消息），避免大文件传输。
     _maybeRepairMediaSource: async function (media) {
       try {
-        if (!media) return false;
+        if (!media || this._isMediaQuarantined(media)) return false;
         var src = String(media.currentSrc || media.src || '');
         if (!src || /^blob:/i.test(src)) return false;
         if (/\.m3u8/i.test(src)) return false; // HLS 由播放器自己处理，不能这样补救
@@ -1441,14 +2346,15 @@
         //    注意 try/catch 拦不住"挂起"，只有超时能。
         //    _withTimeout 超时是 resolve(undefined)，下面两处 `!response` / `!buf` 判断正好接得住。
         var response = await this._withTimeout(fetch(src, { credentials: 'include' }), 20000);
-        if (!response || !response.ok) return false;
+        if (this._isMediaQuarantined(media) || !response || !response.ok) return false;
         var buf = await this._withTimeout(response.arrayBuffer(), 60000);
-        if (!buf || buf.byteLength < 1024) return false;
+        if (this._isMediaQuarantined(media) || !buf || buf.byteLength < 1024) return false;
 
         var type = this._guessMediaMime(src);
         var blob = new Blob([buf], { type: type });
         var objectUrl = URL.createObjectURL(blob);
         var resumeAt = Number(media.currentTime || 0);
+        if (this._isMediaQuarantined(media)) return false;
 
         media.src = objectUrl;
         media.load();
@@ -1461,13 +2367,15 @@
           media.addEventListener('error', finish, { once: true });
           setTimeout(finish, 8000);
         });
+        if (this._isMediaQuarantined(media)) return false;
 
         if (resumeAt > 0) {
           try { media.currentTime = resumeAt; } catch (e0) {}
         }
         this._ensurePlaybackRate(media, 'repair');
+        if (this._isMediaQuarantined(media)) return false;
         await this._withTimeout(media.play(), 12000);
-        return true;
+        return !this._isMediaQuarantined(media);
       } catch (e) {
         return false;
       }
@@ -1489,20 +2397,25 @@
      *      媒体这边同理，只管媒体。
      * 万一真的残留了过期的文档状态，文档那条路自己有 `document stuck timeout` 会兜住。
      */
-    _handleVideoEnded: function () {
-      this._finishCurrentMedia('event');
+    _handleVideoEnded: function (event) {
+      var video = event && event.target ? event.target : this._getVideoEl();
+      if (!video || this._isMediaQuarantined(video)) return;
+      this._finishCurrentMedia('event', video);
     },
 
 
     _handleVideoLoaded: function (event) {
-      this._resetRateDetection();
       var loadedVideo = event && event.target ? event.target : this._getVideoEl();
+      if (loadedVideo && this._isMediaQuarantined(loadedVideo)) return;
+      this._resetRateDetection();
       this._ensurePlaybackRate(loadedVideo, 'loadedmetadata');
       this._trySeekToEnd(loadedVideo, 'loadedmetadata');
     },
 
 
-    _handleVideoPlay: function () {
+    _handleVideoPlay: function (event) {
+      var played = event && event.target ? event.target : this._getVideoEl();
+      if (played && this._isMediaQuarantined(played)) return;
       this._isPlaying = true;
       this._stepSwitchPending = false;
       this._resumeWindowStart = 0;
@@ -1522,7 +2435,7 @@
     _handleVideoPause: function (event) {
       // pause 事件的派发不受后台定时器节流影响：视频被网站/浏览器在后台暂停时立即安排恢复
       var video = event && event.target ? event.target : this._getVideoEl();
-      if (!video || video.ended || !this._isPlaying) return;
+      if (!video || video.ended || !this._isPlaying || this._isMediaQuarantined(video)) return;
       if (this._rateProbing) return;
       if (this._pauseResumePending) return;
 
@@ -1531,6 +2444,7 @@
       this._workerDelay(function () {
         self._pauseResumePending = false;
         var current = self._getVideoEl() || video;
+        if (self._isMediaQuarantined(video) || self._isMediaQuarantined(current)) return;
         if (!current || current.ended || !self._isPlaying || !current.paused) return;
         // 验证码/弹窗题/提交确认弹窗打开期间视频是被有意暂停的，不要抢恢复
         try {
@@ -1575,8 +2489,10 @@
         var resumed = current.play();
         if (resumed && typeof resumed.then === 'function') {
           resumed.then(function () {
+            if (self._isMediaQuarantined(current)) return;
             self._ensurePlaybackRate(current, 'pause-resume');
           }).catch(function () {
+            if (self._isMediaQuarantined(current)) return;
             try {
               current.muted = true;
               current.play().catch(function () {});
@@ -1591,6 +2507,7 @@
           var watched = current;
           setTimeout(function () {
             try {
+              if (self._isMediaQuarantined(watched)) return;
               if (!document.hidden) { self._bgHoldUntil = 0; self._bgStuckCount = 0; return; }
               if ((self._getVideoEl() || current) !== watched) { self._bgStuckCount = 0; return; }
               if (Number(watched.currentTime || 0) > t0 + 0.5) { self._bgStuckCount = 0; return; }
@@ -1613,7 +2530,8 @@
 
 
     _handleVideoRateChange: function (event) {
-      this._ensurePlaybackRate(event && event.target ? event.target : this._getVideoEl(), 'ratechange');
+      var video = event && event.target ? event.target : this._getVideoEl();
+      if (video && !this._isMediaQuarantined(video)) this._ensurePlaybackRate(video, 'ratechange');
     },
 
 
@@ -1638,7 +2556,7 @@
     _resumeVideoAfterOverlay: function (reason) {
       if (!this._isPlaying) return;
       var video = this._getVideoEl();
-      if (!video || !video.paused) return;
+      if (!video || !video.paused || this._isMediaQuarantined(video)) return;
       this._ensurePlaybackRate(video, reason || 'overlay');
       try { video.play(); } catch (e) {}
     },

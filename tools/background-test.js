@@ -10,8 +10,12 @@ let passed = 0;
 function check(name, condition) { assert.ok(condition, name); passed++; console.log('PASS ' + name); }
 const copy = value => value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 function harness(transformWorker) {
+  // `forceLearn` 与 `playbackRate` 是**已经退役、正典里不再登记**的键，这里故意留着当"老用户那台机器"：
+  // 下面「concurrent patches all accepted」只有在**存储里有不认识的键、正常补丁照样落盘**时才成立。
+  // 删掉这两格里的一格，那一条断言就退化成"什么都没测"（`validatePatch` 认不出任何一个键
+  // 会顶回**整张补丁** —— 批次 34 的症状是"所有开关都存不住"，不是"这一根滑条坏了"）。
   const local = { config: { apiType: 'openai', apiUrl: 'https://api.test', apiKey: 'secret-key', model: 'text-model',
-    captchaModel: 'vision-model', enableCaptcha: true, muted: false, forceLearn: true } };
+    captchaModel: 'vision-model', enableCaptcha: true, muted: false, forceLearn: true, playbackRate: 2 } };
   const session = {};
   const tabs = new Map([[1, { id: 1, active: true, url: 'https://mooc1.chaoxing.com/course' }],
     [2, { id: 2, active: true, url: 'https://captcha.test/check?token=1' }]]);
@@ -146,16 +150,17 @@ async function main() {
   check('reused tab id does not recover old grant', (await h.send('get_page_scope', captcha)).scope === 'none');
   const patches = await Promise.all([h.send('config_patch', popup, { patch: { muted: true } }),
     h.send('config_patch', study, { patch: { apiConnectionFailed: true, apiConnectionError: 'offline' } }),
-    h.send('config_patch', popup, { patch: { playbackRate: 2 } })]);
+    h.send('config_patch', popup, { patch: { playbackRateCap: 2 } })]);
   check('concurrent patches all accepted', patches.every(x => x.success));
-  check('concurrent patches preserve newest fields', h.local.config.muted && h.local.config.apiConnectionFailed && h.local.config.playbackRate === 2 && h.local.config.apiKey === 'secret-key');
+  check('concurrent patches preserve newest fields', h.local.config.muted && h.local.config.apiConnectionFailed && h.local.config.playbackRateCap === 2 && h.local.config.apiKey === 'secret-key');
   check('patch removes obsolete forceLearn', !('forceLearn' in h.local.config));
+  check('patch removes retired playbackRate', !('playbackRate' in h.local.config));
   const fingerprint = p.configFingerprint(h.local.config);
   await h.send('config_patch', popup, { patch: { model: 'new-model' } });
   check('stale status update rejected without overwriting config', (await h.send('config_patch', study, { patch: { apiConnectionFailed: false }, expectedFingerprint: fingerprint })).code === 'stale_config' && h.local.config.apiConnectionFailed);
   check('fresh status patch accepted', (await h.send('config_patch', study, { patch: { apiConnectionFailed: false }, expectedFingerprint: p.configFingerprint(h.local.config) })).success);
   check('clearing API failure removes old error', !('apiConnectionError' in h.local.config));
-  for (const patch of [{ playbackRate: 0 }, { muted: 'yes' }, { apiUrl: 'file:///private' }, { apiType: 'unknown' }, { thinkingLevel: 'max' }, { extraField: true }, { forceLearn: true }, { taskGiveUpAttempts: 0.5 }, { apiKey: 'key\r\nheader' }]) check('invalid popup patch rejected ' + JSON.stringify(patch), !(await h.send('config_patch', popup, { patch })).success);
+  for (const patch of [{ playbackRateCap: 0 }, { playbackRate: 2 }, { muted: 'yes' }, { apiUrl: 'file:///private' }, { apiType: 'unknown' }, { thinkingLevel: 'max' }, { extraField: true }, { forceLearn: true }, { taskGiveUpAttempts: 0.5 }, { apiKey: 'key\r\nheader' }]) check('invalid popup patch rejected ' + JSON.stringify(patch), !(await h.send('config_patch', popup, { patch })).success);
   check('study cannot modify model', (await h.send('config_patch', study, { patch: { model: 'stolen' } })).code === 'forbidden_patch');
   check('storage_set rejects all but boolean running flag', !(await h.send('storage_set', study, { config: {} })).success && !(await h.send('storage_set', study, { xxtRunning: 1 })).success);
   check('storage_set accepts running flag for study', (await h.send('storage_set', study, { xxtRunning: true })).success && h.local.xxtRunning === true);

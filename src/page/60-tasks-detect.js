@@ -1849,6 +1849,14 @@
             //    不刷心跳会让"正常在推进的一轮"被看门狗当成卡死。
             self._tickProgress('ocs study loop');
             if (self._isActiveStudyJobPending('ocs-runner-active-job')) {
+              // ⚠️ **现场学习页真正待着的就是这一格**（2026-11-20 现场只读量回：`_ocsStudyStarted`
+              // 为真 → `_runTick` 每拍在 `_ensureOcsStudyRunner()` 那一格 return，走不到下面
+              // `_isPlaying` 那一格；而同一刻 `_checkInterval` 是 null、`_isPlaying` 与
+              // `_activeMediaJobPending` 都是真 —— 一支 22 分钟的视频就这么按 1x 白播）。
+              // 所以巡检掉了要在这里捡回来。⚠️ 别去 `_runTick` 的 `if (this._isPlaying)` 那一格装 ——
+              // 现场量回那一行一次都没执行过（就是上面那两句）；另一格形状（没有可读 `#iframe` 的页面）
+              // 由 `62-tasks-run.js` 的 `ocs-style-active-job` 管，两处共用真源 `_rearmMediaGuardIfLost`。
+              self._rearmMediaGuardIfLost('ocs-runner-active-job');
               await sleep(1000);
               continue;
             }

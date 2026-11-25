@@ -10,9 +10,15 @@ const crypto = require('node:crypto');
 const { Clock } = require('./omitone-regression.cjs');
 const file = path.join(__dirname, 'popup-log-view.js');
 const source = fs.readFileSync(file, 'utf8');
+// 共用掩码的真源（队列 #210）：测试里凡是断言屏蔽字样的，一律从这里读回来比，不写死字符串。
+const libFile = path.join(__dirname, 'libs', 'log-redact.js');
+const libSource = fs.readFileSync(libFile, 'utf8');
+const REDACT = require(libFile);
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const entry = (message, extra = {}) => ({ time: 1700000000000, level: 'info', message, ...extra });
+// 假凭据：只用来断"它没有出现在导出面里"，本身不是任何真实 key。
+const SECRET = 'AIzaSyDEADBEEFDEADBEEF';
 function deferred() { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; }
 
 class Element {
@@ -33,13 +39,15 @@ class Element {
   appendChild(node) { if (node.tagName === '#fragment') this.children.push(...node.children); else this.children.push(node); return node; }
   replaceChildren(...nodes) { this.children = []; this.value = ''; nodes.forEach(node => this.appendChild(node)); this.replacements++; }
 }
-function standalone(text = source) {
+function standalone(text = source, withLib = true) {
   const globals = {};
   for (const name of ['document', 'window', 'chrome', 'navigator', 'fetch', 'setTimeout', 'clearTimeout']) {
     Object.defineProperty(globals, name, { get() { throw new Error('Undeclared dependency: ' + name); } });
   }
   globals.self = globals;
   const context = vm.createContext(globals);
+  // 与弹窗里的加载顺序一致：先挂共用掩码，再挂视图。`withLib=false` 专门测"没挂上"那一格。
+  if (withLib) vm.runInContext(libSource, context, { filename: libFile, timeout: 1000 });
   vm.runInContext(text, context, { filename: file, timeout: 1000 });
   return context.OmitonePopupLogView;
 }
@@ -254,6 +262,60 @@ test('P27', 'version provider failure does not prevent copying logs', async api 
   finally { await f.dispose(); }
 });
 
+// ---------------------------------------------------------------------------
+// 队列 #210：导出面的凭据掩码只许有一份，且两侧都要过它。
+// P28–P30 测的是**值形状**那一半（键名尺量不到：`{url:"…?key=<KEY>"}` 键名是 url）；
+// P31 测「共用那份没挂上」不许退回原样打印；P32 钉"只有一份"这件事本身；
+// P33 测**键名**那一半 —— 上一版弹窗台对键名尺**一条证人都不许有**，摘掉 `SENSITIVE_KEY`
+// 之后 `npm test` 照旧全绿（只有 `tools/field-logs.js --selftest` 红，而那把尺**不在 npm test 里**）。
+// ---------------------------------------------------------------------------
+test('P28', 'export masks a credential living inside a string value', async api => {
+  const text = api.buildLogsText([entry('ask llm', { meta: { url: 'https://generativelanguage.googleapis.com/v1beta/models?key=' + SECRET } })], '', 0);
+  assert.equal(text.includes(SECRET), false, 'key must never reach the clipboard text');
+  assert.ok(text.includes('?key=' + REDACT.MASKED), 'the masked shape must still name the culprit param');
+});
+test('P29', 'an unrecognized credential-shaped param leaves nothing behind', async api => {
+  const text = api.buildLogsText([entry('probe', { meta: { href: 'https://x/api?authToken=' + SECRET } })], '', 0);
+  assert.equal(text.includes(SECRET), false, 'unknown param shape must not be guessed as safe');
+  assert.ok(text.includes(REDACT.SUSPECT), 'unrecognized shape is reported as suspect, not silently kept');
+});
+test('P30', 'benign study-page params survive the mask untouched', async api => {
+  const href = 'https://mooc1.chaoxing.com/mycourse/studentstudy?chapterId=916003690&courseId=926158933&clazzid=881245&cpi=94120681&enc=3ab5f9';
+  const text = api.buildLogsText([entry('switch course', { meta: { href } })], '', 0);
+  assert.ok(text.includes(href), 'a false-positive mask turns the export into an unreadable ledger');
+  assert.equal(text.includes(REDACT.MASKED) || text.includes(REDACT.SUSPECT), false, 'nothing here is a credential');
+});
+test('P31', 'a missing shared mask omits details instead of printing them raw', async (api, alt) => {
+  const blind = alt(false);
+  const text = blind.buildLogsText([entry('ask llm', { meta: { url: 'https://x/models?key=' + SECRET } })], '', 0);
+  assert.equal(text.includes(SECRET), false, 'no mask library must never mean raw metadata on the clipboard');
+  assert.ok(text.includes('未经掩码'), 'the export must say the mask was absent');
+});
+test('P32', 'the mask has exactly one source and loads before the view', async () => {
+  const strip = text => text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/^\s*\/\/.*$/gm, ' ');
+  const viewCode = strip(fs.readFileSync(file, 'utf8'));
+  const logsCode = strip(fs.readFileSync(path.join(__dirname, 'tools', 'field-logs.js'), 'utf8'));
+  assert.ok(/OmitoneLogRedact/.test(viewCode), 'popup view must go through the shared mask');
+  assert.ok(/require\(['"]\.\.\/libs\/log-redact\.js['"]\)/.test(logsCode), 'the node log reader must go through the shared mask');
+  for (const [name, code] of [['popup-log-view.js', viewCode], ['tools/field-logs.js', logsCode]]) {
+    assert.equal(/(?:SENSITIVE_KEY|KNOWN_PARAM|FAMILY_PARAM)\s*=/.test(code), false, name + ' declares a second mask table');
+    assert.equal(code.includes(REDACT.MASKED) || code.includes('形状可疑'), false, name + ' hardcodes mask wording');
+  }
+  const html = fs.readFileSync(path.join(__dirname, 'popup', 'popup.html'), 'utf8');
+  const libAt = html.indexOf('src="../libs/log-redact.js"');
+  const viewAt = html.indexOf('src="../popup-log-view.js"');
+  assert.ok(libAt >= 0 && viewAt >= 0 && libAt < viewAt, 'the mask lib must be loaded before the view (else every detail reads as unmasked)');
+});
+
+test('P33', 'a credential filed under a sensitive key name is masked even when its value looks harmless', async api => {
+  // 值本身**不撞任何形状尺**（不是查询参数、不带 sk- 前缀）—— 这一格只有键名那一半在承重。
+  const LEAK = 'plainlooking-1234';
+  const text = api.buildLogsText([entry('llm config', { meta: { apiKey: LEAK, note: 'ok' } })], '', 0);
+  assert.equal(text.includes(LEAK), false, 'key-named field must never reach the clipboard');
+  assert.ok(text.includes('"apiKey":"' + REDACT.MASKED + '"'), 'the key name must survive so the ledger still says who leaked it');
+  assert.ok(text.includes('"note":"ok"'), 'masking one field must not blank the whole detail');
+});
+
 async function bounded(promise) {
   let timer;
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Test wall-clock timeout')), 4000); })]); }
@@ -269,13 +331,22 @@ function mutateOnce(text, anchor, replacement) {
   return text.includes('\r\n') ? changed.replace(/\n/g, '\r\n') : changed;
 }
 async function main() {
-  const api = standalone(); assert.equal(typeof require(file).create, 'function');
-  for (const spec of tests) { await bounded(spec.run(api)); console.log('[PASS] ' + spec.id + ' ' + spec.name); }
+  // `alt(withLib)` 让同一段源码在"共用掩码挂上 / 没挂上"两种加载顺序下各跑一次（P31 用）。
+  const apiSet = text => [standalone(text), withLib => standalone(text, withLib)];
+  const [api, alt] = apiSet(source);
+  assert.equal(typeof require(file).create, 'function');
+  for (const spec of tests) { await bounded(spec.run(api, alt)); console.log('[PASS] ' + spec.id + ' ' + spec.name); }
   const controls = [
     ['P06', 'node.textContent = text;', 'node.innerHTML = text;', error => /Unsafe HTML rendering/.test(error.message)],
     ['P09', 'if (nextSignature === signature) return;', 'if (false) return;', error => error.expected === 1 && error.actual === 2],
     ['P13', 'operation(readLogs, 5000); activeRead', 'operation(readLogs, 1000000); activeRead', error => /Read deadline must finish/.test(error.message)],
-    ['P21', "if (!opened) { epoch++; visibility(true); }\n          render(logs);", 'if (!opened) { epoch++; visibility(false); }\n          render(logs);', error => /f\.panel\.classList\.contains/.test(error.message)]
+    ['P21', "if (!opened) { epoch++; visibility(true); }\n          render(logs);", 'if (!opened) { epoch++; visibility(false); }\n          render(logs);', error => /f\.panel\.classList\.contains/.test(error.message)],
+    // 摘掉「导出走共用掩码」这一发 = 回到本轮要修的那张表（用户剪贴板里躺着明文 key）。
+    ['P28', "JSON.stringify(lib.redactMeta(meta, { maxDepth: lib.DEPTH_WIDE }))", 'JSON.stringify(meta)',
+      error => /never reach the clipboard/.test(error.message)],
+    // 「没挂上就退回原样打印」= 加载顺序一错，明文又回到导出面，而且没有任何一句话说明。
+    ['P31', "if (!lib) return ' [日志详情未经掩码，已省略]';", "if (!lib) return ' ' + JSON.stringify(meta);",
+      error => /raw metadata|the mask was absent/.test(error.message)]
   ];
   assert.throws(() => mutateOnce('one', 'missing', 'x'), /unique/);
   assert.throws(() => mutateOnce('one one', 'one', 'x'), /unique/);
@@ -283,11 +354,12 @@ async function main() {
     const original = source.replace(/\r\n/g, '\n').replace(/\n/g, eol);
     for (const [id, anchor, replacement, expectedFailure] of controls) {
       const spec = tests.find(item => item.id === id);
-      await bounded(spec.run(standalone(original))); // Same EOL + real behavior passes first.
+      const [baseApi, baseAlt] = apiSet(original);
+      await bounded(spec.run(baseApi, baseAlt)); // Same EOL + real behavior passes first.
       const changed = mutateOnce(original, anchor, replacement);
       assert.equal(changed.includes('\r\n'), eol === '\r\n', 'VM mutation preserves line-ending style');
-      const mutant = standalone(changed); // Parse/setup failures cannot count as a caught regression.
-      await assert.rejects(bounded(spec.run(mutant)), error => error.code === 'ERR_ASSERTION' && expectedFailure(error));
+      const [mutant, mutantAlt] = apiSet(changed); // Parse/setup failures cannot count as a caught regression.
+      await assert.rejects(bounded(spec.run(mutant, mutantAlt)), error => error.code === 'ERR_ASSERTION' && expectedFailure(error));
       console.log('[NEGATIVE CONTROL] ' + id + ' ' + (eol === '\n' ? 'LF' : 'CRLF'));
     }
   }

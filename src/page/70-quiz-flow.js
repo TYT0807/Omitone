@@ -12,7 +12,7 @@
  * 这份卷子属于哪个场景（测试 / 考试）＋该场景的思考档下限（「不乱猜」闸的判据）
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（64 个）：
+ * 本段的方法（69 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -20,6 +20,7 @@
  *   _getQuizAccountDocument、_shouldHoldQuizBeforeFinish、_getQuizMaxSubmitAttempts、
  *   _getQuizApiUnavailableReason、_isRandomAnswerMode、_buildRandomQuizAnswers、
  *   _isQuizApiUnavailable、_isQuizBlockedByApi、_noteQuizBlockedByApi、_resetQuizStateForSkip、_markQuizApiConnectionFailed、
+ *   _quizApiWhoForLog、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
  *   _setQuizSubmitAttemptCount、_clearQuizSubmitAttemptCount、
  *   _incrementQuizSubmitAttemptCount、_shouldSkipQuizBySubmitAttempts、
@@ -28,6 +29,7 @@
  *   _wasQuizQuestionAnsweredThisRun、_unmarkQuizQuestionAnsweredThisRun、
  *   _isQuizPassedOrFinished、_hasActiveQuizSubmitForm、_markQuizSubmitPending、
  *   _isQuizAnswersCleared、_installSubmitSniffer、_monitorQuizSubmit、
+ *   _noteQuizSubmitStall、_getQuizGiveUpJobId、_isQuizGivenUpInDom、_giveUpQuizSubmitAfterStalls、
  *   _shouldHoldQuizBeforeNext、_isQuizLearningPending、_describePendingQuizQuestions、
  *   _handleQuiz、
  *   _extractQuestions、_getQuizDocumentFromQuestions、_getQuizDocumentsFromQuestions、
@@ -642,12 +644,24 @@
       this._quizBatchSentAt = 0;
     },
 
-    _markQuizApiConnectionFailed: function (error) {
+    _markQuizApiConnectionFailed: function (error, who) {
       var message = error && error.message ? error.message : String(error || 'LLM 请求失败');
       // 不再永久写入 storage：改为 45 秒退避，期间跳过答题，之后自动重试并自愈
       this._quizApiFailUntil = Date.now() + 45000;
       this._quizApiLastError = String(message).slice(0, 300);
-      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000 });
+      // 「哪家哪个模型」由扩展侧算好随回包带过来（页面那份配置投影里没有渠道字段）。
+      // ⚠️ 拿不到时单独占一格，不许压成空串 —— 空串在日志里读起来像"没有渠道这回事"。
+      this._quizApiLastWho = String(who || '(这一发没带渠道：请求没走到服务商，或异常在半路抛出)').slice(0, 200);
+      emitRuntimeLog('warn', 'api connection failed, skip quiz', { error: message.slice(0, 200), retryInMs: 45000, who: this._quizApiLastWho });
+    },
+
+    /**
+     * 读出「失败的是哪家哪个模型」，两处跳过日志共用这一把尺（写入口与读出口同形）。
+     * 还没问过模型就没这一格 —— 单独说清楚，不许留空串（空串读起来像"渠道是空的"，
+     * 而真相是"这一轮压根没发出请求"，两者修复方向完全相反）。
+     */
+    _quizApiWhoForLog: function () {
+      return String(this._quizApiLastWho || '(这一轮还没问过模型，渠道没读过)').slice(0, 200);
     },
 
     _skipQuizForApiUnavailable: function (reason, preferredDoc) {
@@ -663,6 +677,7 @@
           emitRuntimeLog('warn', 'quiz blocked by api, holding unit', {
             reason: skipReason,
             heldMs: heldMs,
+            who: this._quizApiWhoForLog(),
             hint: '这一节压着没做的题，但答题链路现在用不了 —— 已**停在本节不翻页**（不是已完成）。' +
               '填好 API Key 或等网络恢复就会自动继续；按住超过 3 分钟才会跳过这一节'
           });
@@ -681,6 +696,7 @@
         emitRuntimeLog('warn', 'quiz blocked too long, giving up unit', {
           reason: skipReason,
           heldMs: Date.now() - blockedSince,
+          who: this._quizApiWhoForLog(),
           hint: '按住整节超过 3 分钟仍未恢复，改判跳过 —— 这些题**没做过**，配好链路后请开重学把这节补回来'
         });
       }
@@ -691,7 +707,8 @@
         this._quizApiSkipLogAt = now;
         emitRuntimeLog('warn', 'skip quiz because api unavailable', {
           reason: skipReason,
-          error: String(this._quizApiLastError || '').slice(0, 160)
+          error: String(this._quizApiLastError || '').slice(0, 160),
+          who: this._quizApiWhoForLog()
         });
       }
       if (this._switchToNextLearningCard(skipReason)) return true;
@@ -736,6 +753,8 @@
     },
 
     _shouldSkipQuizBySubmitAttempts: function (preferredDoc) {
+      // 本地调试档（`quizRejectGiveUp=false`）：交卷次数到顶也不放手，继续重答重交。
+      if (this.configs && this.configs.quizRejectGiveUp === false) return false;
       return this._getQuizSubmitAttemptCount(preferredDoc) >= this._getQuizMaxSubmitAttempts(preferredDoc);
     },
 
@@ -913,6 +932,11 @@
       this._quizSubmitStartedAt = now;
       this._quizSubmitLogAt = 0;
       this._quizLastSubmitAttemptAt = now;
+      // 一次提交可能连着几发（btnBlueSubmit → 确认弹窗），**只有进入新一轮时**才清账：
+      // 在确认那一发上清零会把点击时已经发出的请求从证据里抹掉。
+      if (!wasPending) {
+        this._quizSubmitNet = { xhr: 0, fetch: 0, done: 0, failed: 0, statuses: [], words: [] };
+      }
       var attemptCount = wasPending ? this._getQuizSubmitAttemptCount(preferredDoc) : this._incrementQuizSubmitAttemptCount(preferredDoc);
       var questionsDoc = this._getQuizDocumentFromQuestions(this._quizCurrentQuestions);
       // ⚠️ 三个键**必须同源**（批次 8）：`key` 是这次真正记账的槽位、`accountFrom` 是它的出处、
@@ -979,6 +1003,41 @@
       try {
         var self = this;
         var interesting = /work|submit|exam|homework|answer/i;
+        // 旁路账：只记**计数、状态码、回包里跟判分有关的词** ——
+        // 不记 URL / 请求体 / 回包原文：环会被导出、跨会话留存，而学习通地址里带着
+        // enc/cpi 这类课程标识。原文仍留在 console（不落环）。
+        var note = function (kind, url, status, text, failed, pendingAtSend) {
+          try {
+            var net = self._quizSubmitNet;
+            if (!net) return;
+            if (!net.statuses) net.statuses = [];
+            if (!net.words) net.words = [];
+            net[kind] = (net[kind] || 0) + 1;
+            if (failed) net.failed = (net.failed || 0) + 1;
+            if (status != null) {
+              net.done = (net.done || 0) + 1;
+              if (net.statuses.indexOf(status) < 0 && net.statuses.length < 6) net.statuses.push(status);
+            }
+            var words = String(text || '').match(/失败|成功|未能|不能|无法|重复|已提交|已交|请勿|错误|异常|超时|提交/g);
+            if (words) {
+              for (var i = 0; i < words.length && net.words.length < 8; i++) {
+                if (net.words.indexOf(words[i]) < 0) net.words.push(words[i]);
+              }
+            }
+            // 进环的时机：**发出去那一刻**正在等交卷结果，或它回来时还在等。
+            // 这样超时之后才回来的响应也留得下证据；平时的 AJAX 不占 200 条环。
+            if ((pendingAtSend || self._quizSubmitPending) && interesting.test(url)) {
+              emitRuntimeLog('info', 'quiz submit network', {
+                kind: kind,
+                status: status == null ? -1 : status,
+                ok: failed ? false : (status == null ? null : (status >= 200 && status < 400)),
+                respLen: String(text || '').length,
+                pendingAtSend: !!pendingAtSend,
+                words: net.words.slice(0)
+              });
+            }
+          } catch (eN) {}
+        };
         var XHR = window.XMLHttpRequest;
         if (XHR && XHR.prototype && XHR.prototype.open && XHR.prototype.send) {
           var origOpen = XHR.prototype.open;
@@ -1001,18 +1060,57 @@
                   try { b = JSON.stringify(b); } catch (e1) { b = String(b); }
                 }
                 console.log('[Omitone] submit sniffer body', String(b || '').slice(0, 800));
+                var xhr = this;
+                var pendingAtSend = !!self._quizSubmitPending;
                 this.addEventListener('loadend', function () {
                   try {
                     console.log('[Omitone] submit sniffer ←', this.status,
                       String(this.responseText || '').slice(0, 800));
+                    // status 0 = 网络层直接失败（断网 / 被拦 / 中止），单独算一种
+                    note('xhr', xhr.__omitoneUrl, this.status || 0, this.responseText, this.status === 0, pendingAtSend);
                   } catch (e2) {}
                 });
               }
             } catch (e3) {}
             return origSend.apply(this, arguments);
           };
-          console.log('[Omitone] submit sniffer installed');
         }
+        if (typeof window.fetch === 'function') {
+          var origFetch = window.fetch;
+          window.fetch = function (input, init) {
+            var url = '';
+            var method = '';
+            try {
+              url = typeof input === 'string' ? input : String((input && input.url) || input || '');
+              method = String((init && init.method) || (input && input.method) || 'GET');
+            } catch (eF0) {}
+            var matched = interesting.test(url);
+            var pendingAtSend = !!self._quizSubmitPending;
+            var p = origFetch.apply(this, arguments);
+            if (!matched) return p;
+            try { console.log('[Omitone] submit sniffer fetch →', method, url); } catch (eF3) {}
+            // 完全穿透：只挂旁路回调，返回的仍是原 Promise（不改结果、不改异常）。
+            p.then(function (res) {
+              try {
+                var status = res ? res.status : 0;
+                try {
+                  var clone = res && res.clone ? res.clone() : res;
+                  clone.text().then(function (t) {
+                    note('fetch', url, status, t, false, pendingAtSend);
+                  }, function () {
+                    note('fetch', url, status, '', false, pendingAtSend);
+                  });
+                } catch (eF4) { note('fetch', url, status, '', false, pendingAtSend); }
+              } catch (eF5) {}
+            }, function () {
+              note('fetch', url, 0, '', true, pendingAtSend);
+            });
+            return p;
+          };
+          self._submitSnifferFetch = true;
+        }
+        self._submitSnifferCoverage = self._submitSnifferFetch ? 'xhr+fetch' : 'xhr';
+        console.log('[Omitone] submit sniffer installed', self._submitSnifferCoverage);
       } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
     },
 
@@ -1058,6 +1156,22 @@
         // 没有这段的话，日志里只剩一句「等超时了」，缺哪道条件完全靠猜。
         var diag = this._describeQuizResultPage(preferredDoc || null);
         diag.waitMs = waitMs;
+        // 这一发超时记在哪一份卷子上，连攒几次由 `_shouldHoldQuizBeforeNext` 放手。
+        diag.stalls = this._noteQuizSubmitStall(preferredDoc || null);
+        // 旁路观测到的提交请求 —— 「平台静默拒收」与「我们根本没发出去」靠这一格分开。
+        diag.observer = this._submitSnifferCoverage || 'none';
+        var net = this._quizSubmitNet || null;
+        diag.net = net ? {
+          xhr: Number(net.xhr) || 0,
+          fetch: Number(net.fetch) || 0,
+          done: Number(net.done) || 0,
+          failed: Number(net.failed) || 0,
+          statuses: (net.statuses || []).slice(0, 8),
+          words: (net.words || []).slice(0, 8)
+        } : null;
+        diag.netHint = (diag.net && (diag.net.xhr + diag.net.fetch) > 0)
+          ? '看 net.statuses / net.words：平台拒收时状态码或回包文案与「没发出去」不同'
+          : '这一页的 XHR/fetch 上没观察到提交请求 —— 0 条不等于没发（观测器只覆盖本页；跨域帧、表单直交、页面跳转都绕得开它）';
         emitRuntimeLog('warn', 'quiz submit wait timeout', diag);
         return false;
       }
@@ -1066,6 +1180,155 @@
         this._quizSubmitLogAt = now;
         console.log('%c[Omitone] waiting quiz submit result', 'color:#9C27B0');
       }
+      return true;
+    },
+
+    /**
+     * 「等结果页等超时」这件事记在哪一份卷子上 —— 返回连攒到第几次。
+     *
+     * ⚠️ 换了卷子就**重新起算**（键变了说明这是另一份卷子的账）；
+     *    同一份卷子连续攒满 3 次没有一次到达结果页，才轮到 `_shouldHoldQuizBeforeNext` 放手。
+     *    这与批次 86 / §2 #13 那条「跨拍记账不许被同一轮动作清零」是同一族：
+     *    计数器只能由「真的换了一份卷子」重置，不能由一次重试清零。
+     */
+    _noteQuizSubmitStall: function (preferredDoc) {
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) { key = ''; }
+      if (!key) {
+        // 五个 id 字段全空时退回「一帧一份卷子」的身份（同一份卷子的键跨拍稳定、换一帧就换键）——
+        // 不用常量 `paper:unknown`，否则上一卷的停滞次数会算到下一卷头上（§2 #13 同一族）。
+        try { key = String(this._getQuizDocumentIdentity(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eId) { key = ''; }
+      }
+      if (!key) key = 'paper:unknown';
+      if (this._quizSubmitStallKey !== key) {
+        this._quizSubmitStallKey = key;
+        this._quizSubmitStallCount = 0;
+      }
+      this._quizSubmitStallCount = (Number(this._quizSubmitStallCount) || 0) + 1;
+      this._quizSubmitStallAt = Date.now();
+      return this._quizSubmitStallCount;
+    },
+
+    /**
+     * 这一份卷子的任务点 id —— 放弃名单要按它记，才能跨轮次按住同一个任务点。
+     *
+     * 三级来源，前一级拿不到才看下一级：① 卷子文档的隐藏字段 `#jobid`；
+     * ② 宿主帧的 `jobid` / `_jobid` 属性（`_classifyTaskFrame` 的 explicitJob 也认这一枚）；
+     * ③ 卡片里**恰好一枚**未完成的 quiz 任务点（多于一枚时认不出是哪一份，宁可返回空串）。
+     *
+     * @param {Document} doc 卷子所在文档
+     * @param {boolean} [allowTaskScan] 是否允许第 ③ 级（它要遍历全部帧，别放进热路径）
+     */
+    _getQuizGiveUpJobId: function (doc, allowTaskScan) {
+      var id = this._getQuizFieldValue(doc || null, 'jobid');
+      if (id) return id;
+      try {
+        var frame = doc && doc.defaultView ? doc.defaultView.frameElement : null;
+        if (frame && frame.getAttribute) {
+          var attr = String(frame.getAttribute('jobid') || frame.getAttribute('_jobid') || '').trim();
+          if (attr) return attr;
+        }
+      } catch (eFrame) {}
+      if (!allowTaskScan) return '';
+      try {
+        var quizTasks = (this._collectVisibleTaskFrames() || []).filter(function (task) {
+          return task && !task.finished && task.type === 'quiz';
+        });
+        if (quizTasks.length === 1) {
+          var taskId = String(this._getQuizPaperKeyFromTask(quizTasks[0]) || '').trim();
+          if (taskId) return taskId;
+        }
+      } catch (eScan) {}
+      return '';
+    },
+
+    /** 页面上这一份卷子的任务点是不是已经在 24 小时放弃名单里。 */
+    _isQuizGivenUpInDom: function (preferredDoc) {
+      try {
+        var doc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
+        var jobid = this._getQuizGiveUpJobId(doc || null, false);
+        return !!(jobid && this._isTaskGivenUp('job:' + jobid));
+      } catch (e) {
+        return false;
+      }
+    },
+
+    /**
+     * 连续几次「等结果页都等不到」之后放手这一份卷子 —— 有界，但**不冒充平台完成**。
+     *
+     * 现场（2026-11-25，#232）：填答审计说题都填上了、提交流程也走完了，
+     * 平台既不出判分页也不清空表单，于是 `_shouldHoldQuizBeforeNext` 的
+     * 「还有可交互的提交表单」那一支每一轮都按住整节 —— 结构上没有次数上限、也没有时间上限，
+     * 那一门课就永远停在这一节（现场三条 `quiz submit wait timeout` 间隔约 32 分钟）。
+     *
+     * 两件事一起做，缺一半都不算修好：
+     *   ① 把这一枚任务点写进**现有**的 24 小时放弃名单（与视频那一族同一本账），
+     *      于是换节之后调度器不会过一会儿又把它派回来；
+     *   ② 放开这一节往前走（与「提交次数到顶」那条走同一条出口）。
+     * ⚠️ 不写任何「任务点已完成」的标记 —— 平台没判过，这里也不许替它判。
+     */
+    _giveUpQuizSubmitAfterStalls: function (doc, reason) {
+      var stalls = Number(this._quizSubmitStallCount) || 0;
+      var attempts = this._getQuizSubmitAttemptCount(doc || null);
+      var maxAttempts = this._getQuizMaxSubmitAttempts(doc || null);
+      var paperKey = '';
+      try { paperKey = String(this._getQuizWorkKey(this._getQuizAccountDocument(doc || null)) || ''); } catch (eKey) { paperKey = ''; }
+      var jobid = this._getQuizGiveUpJobId(doc || null, true);
+      var gaveUp = false;
+      if (jobid) {
+        this._markTaskGivenUp('job:' + jobid, {
+          name: String(jobid).slice(0, 60),
+          reason: 'quiz-submit-never-accepted',
+          attempts: attempts
+        });
+        gaveUp = true;
+      }
+      var net = this._quizSubmitNet || {};
+      emitRuntimeLog('warn', 'quiz submit never accepted, giving up unit', {
+        reason: reason || '',
+        stalls: stalls,
+        attempts: attempts,
+        maxAttempts: maxAttempts,
+        paperKey: paperKey.slice(0, 90),
+        jobid: String(jobid || '').slice(0, 60),
+        gaveUp: gaveUp,
+        observer: this._submitSnifferCoverage || 'none',
+        xhr: Number(net.xhr) || 0,
+        fetch: Number(net.fetch) || 0,
+        failed: Number(net.failed) || 0,
+        statuses: (net.statuses || []).slice(0, 8),
+        words: (net.words || []).slice(0, 8),
+        hint: gaveUp
+          ? '已写进 24 小时任务点放弃名单；要让它再试，控制台执行 xxtAI.clearTaskGiveUp()'
+          : '认不出这一枚任务点的 jobid，没写放弃名单 —— 下一轮可能还会派回来'
+      });
+
+      this._quizInProgress = false;
+      this._quizAnswered = true;
+      this._quizSubmitPending = false;
+      this._quizSubmitStartedAt = 0;
+      this._quizReadyToSubmit = false;
+      this._quizReadyWorkKey = '';
+      this._quizCurrentAnsweredKeys = {};
+      this._quizCurrentAnswerValues = {};
+      this._quizCurrentQuestions = null;
+      this._quizSubmitStallKey = '';
+      this._quizSubmitStallCount = 0;
+      this._quizSubmitStallAt = 0;
+
+      this._setQuizForceSkip(90000, paperKey || undefined);
+      if (this._switchToNextLearningCard('quiz-submit-given-up')) return true;
+      try {
+        var nextButton = document.querySelector('#prevNextFocusNext');
+        if (nextButton) {
+          nextButton.click();
+          this._resetRuntimeState();
+          // `_resetRuntimeState` 会把暂停窗口一起清掉，点完之后必须重新写一次
+          this._setQuizForceSkip(90000, paperKey || undefined);
+          return true;
+        }
+      } catch (e) {}
+      this.nextUnit();
       return true;
     },
 
@@ -1101,9 +1364,28 @@
         return true;
       }
       if (this._hasActiveQuizSubmitForm(doc)) {
+        // 平台既不出判分页、也不清表单 —— 这一支原先**既没有次数上限也没有时间上限**，
+        // 一按住就是整节停摆（#232：三条超时各自相隔约 32 分钟，课永远停在这一节）。
+        // 攒满 3 次才放手：一次超时可能只是页面慢，连着三次都没有一次到达结果页就是死局。
+        if ((Number(this._quizSubmitStallCount) || 0) >= 3) {
+          if (this.configs && this.configs.quizRejectGiveUp === false) {
+            if (shouldLog) {
+              this._quizHoldLogAt = now;
+              emitRuntimeLog('warn', 'quiz submit rejected, holding in debug mode', {
+                reason: reason || '',
+                stalls: Number(this._quizSubmitStallCount) || 0
+              });
+            }
+            return true;
+          }
+          return this._giveUpQuizSubmitAfterStalls(doc, reason);
+        }
         if (shouldLog) {
           this._quizHoldLogAt = now;
-          emitRuntimeLog('warn', 'hold unsubmitted quiz before next', { reason: reason || '' });
+          emitRuntimeLog('warn', 'hold unsubmitted quiz before next', {
+            reason: reason || '',
+            stalls: Number(this._quizSubmitStallCount) || 0
+          });
         }
         return true;
       }
@@ -1191,6 +1473,12 @@
       if (this._isQuizApiUnavailable()) return this._isQuizBlockedByApi();
       if (this._monitorQuizSubmit(preferredDoc || null)) return true;
       if (this._quizInProgress || this._quizSubmitPending) return true;
+
+      // ⚠️ 放弃名单是**跨轮次**的：`_resetRuntimeState()` 会把 `_quizAnswered` 清掉、
+      // 90 秒暂停窗口也早晚过期 —— 只剩这一格能在「不干活也不放手」的原地不复活
+      // （#232：平台静默拒收之后，这一节会被每一轮重新按住）。
+      // 放在在飞动作之后：提交/作答正飞着时不许被它截断。
+      if (this._isQuizGivenUpInDom(preferredDoc || null)) return false;
 
       var doc = this._resolveQuizSubmitDocument(preferredDoc || null) || preferredDoc || this._getMainDocument();
       if (doc && this._isQuizPassedOrFinished(doc)) return false;
@@ -1752,7 +2040,8 @@
           if (result && result.parseError) {
             // API 连接正常，仅答案解析失败：保留测验稍后重试，不标记连接失败
             emitRuntimeLog('warn', 'quiz llm parse failed, keep quiz for retry', {
-              error: String(result.error || '').slice(0, 160)
+              error: String(result.error || '').slice(0, 160),
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._setQuizForceSkip(8000);
             return;
@@ -1767,13 +2056,15 @@
             // 所以这里只跳过本轮、把原话留给用户，改好配置后自动恢复。
             emitRuntimeLog('error', 'quiz llm rejected permanently, no retry', {
               error: String(result.error || '').slice(0, 200),
-              skipMs: PERMANENT_LLM_ERROR_SKIP_MS
+              skipMs: PERMANENT_LLM_ERROR_SKIP_MS,
+              who: String(result.who || '(这一发没带渠道)').slice(0, 200)
             });
             this._quizApiLastError = String(result.error || '').slice(0, 300);
+            this._quizApiLastWho = String(result.who || '').slice(0, 200);
             this._setQuizForceSkip(PERMANENT_LLM_ERROR_SKIP_MS);
             return;
           }
-          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败');
+          this._markQuizApiConnectionFailed(result && result.error ? result.error : 'LLM 请求失败', result && result.who);
           this._skipQuizForApiUnavailable('llm-request-failed', quizDoc);
           return;
         }

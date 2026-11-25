@@ -442,7 +442,7 @@ var winDoc = app._safeWinDoc(frame.contentWindow);
 
 配置项分三类：
 - **行为开关**：`autoNext` / `enableQuiz` / `enableCaptcha` / `enableDiscussion` / `enableSeek` / `restudy` / `blockedReload`
-- **数值参数**：`playbackRate` / `playbackRateCap` / 各类超时与节流（`stepSwitchGraceMs`、`quizSubmitWaitMs`、`pptFlipIntervalMs` …）
+- **数值参数**：`playbackRateCap`（只封顶，倍速没有手动档 —— 批次 146 删了 `playbackRate`）/ 各类超时与节流（`stepSwitchGraceMs`、`quizSubmitWaitMs`、`pptFlipIntervalMs` …）
 - **凭据**：`apiType` / `apiUrl` / `apiKey` / `model` / `captchaModel` / `systemPrompt`
 
 > `systemPrompt` 留空时用 `libs/prompt.js` 的压缩版；填了则**完全覆盖**它。
