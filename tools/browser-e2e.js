@@ -6820,7 +6820,7 @@ SCENARIOS.push({
     var idle = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
-      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0); app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
       'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
       'var doc=app._resolveQuizSubmitDocument(null);' +
       'return {detect:app._detectQuiz(),pending:app._isQuizLearningPending(),' +
@@ -6946,7 +6946,7 @@ SCENARIOS.push({
     var idle = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,hasApiKey:true,randomAnswer:false});' +
-      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0); app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
       'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
       'var doc=app._resolveQuizSubmitDocument(null);' +
       'return {detect:app._detectQuiz(),pending:app._isQuizLearningPending(),' +
@@ -6990,7 +6990,7 @@ SCENARIOS.push({
       '(async function(){' +
       'var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
-      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0); app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
       'app._quizInProgress=false; app._quizInProgressAt=0; app._quizSubmitPending=false;' +
       'app._quizAnswered=false; app._quizRunPaperKey=""; app._quizCurrentQuestions=null;' +
       'app._isTaskGivenUp=function(){return false;};' +
@@ -7065,7 +7065,7 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'window.attachments=[{jobid:"ppt-9002",property:{_jobid:"ppt-9002",jobid:"ppt-9002",' +
       'mid:"mid-ppt-9002",name:"轮盘课件",module:"ppt",type:"ppt",job:true}}];' +
-      'app._quizApiFailUntil=0; app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0); app._quizForceSkipUntil=0; app._quizForceSkipPaperKey="";' +
       'app._quizInProgress=false; app._quizSubmitPending=false; app._quizAnswered=false;' +
       'var doc=app._resolveQuizSubmitDocument(null);' +
       'var mainDoc=app._getMainDocument();' +
@@ -14812,7 +14812,7 @@ SCENARIOS.push({
     var probe = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
-      'app._quizApiFailUntil=0;' +
+      'app._setQuizApiFailUntil(0);' +
       'var reason=app._getQuizApiUnavailableReason();' +
       'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
       'var frames=app._searchIFramesOcs(cardDoc).map(function(f){' +
@@ -14863,7 +14863,7 @@ SCENARIOS.push({
     var switched = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
-      'app._quizApiFailUntil=0;' +
+      'app._setQuizApiFailUntil(0);' +
       'app._quizAnswered=true; app._quizRunPaperKey="work-A";' +
       'app._quizCurrentQuestions=[{title:"上一份卷子的题"}];' +
       'var jobB=app._searchChaoxingJobOcs([]);' +
@@ -15001,7 +15001,7 @@ SCENARIOS.push({
     var probe = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
-      'app._quizApiFailUntil=0;' +
+      'app._setQuizApiFailUntil(0);' +
       'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
       'var frames=app._searchIFramesOcs(cardDoc).map(function(f){' +
       '  var aid="";try{aid=app._findJobIdInAncestorFrames(f.contentWindow);}catch(e){aid="(抛错)";}' +
@@ -15090,7 +15090,7 @@ SCENARIOS.push({
     var probe = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
-      'app._quizApiFailUntil=0;' +
+      'app._setQuizApiFailUntil(0);' +
       'var cardDoc=app._safeWinDoc(app._getMainWindow());' +
       'var frames=app._searchIFramesOcs(cardDoc);' +
       'var paper=null;' +
@@ -16479,7 +16479,7 @@ SCENARIOS.push({
     var probe = await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,apiKey:"e2e-key",randomAnswer:false});' +
-      'app._quizApiFailUntil=0;' +
+      'app._setQuizApiFailUntil(0);' +
       'var doc=app._resolveQuizSubmitDocument(null)||app._getMainDocument();' +
       'app._quizAnswered=false; app._quizInProgress=false; app._quizSubmitPending=false;' +
       'var before=app._isQuizLearningPending(doc);' +
@@ -18614,7 +18614,7 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app.configs.hasApiKey=true;' +
-      'app._quizApiFailUntil=0;app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0);app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
       'app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
       'app._quizCurrentQuestions=null;app._quizReadyWorkKey="";app._quizReadyToSubmit=false;' +
       'app._handleQuiz(null);return true;})()'
@@ -18973,7 +18973,7 @@ SCENARIOS.push({
       'try{app._clearTickLoop();}catch(e){}' +
       'app.configs=Object.assign({},app.configs,' + JSON.stringify(cfg) + ');' +
       'app.configs.hasApiKey=true;' +
-      'app._quizApiFailUntil=0;app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
+      'app._setQuizApiFailUntil(0);app._quizForceSkipUntil=0;app._quizForceSkipPaperKey="";' +
       // 同一台 mock 服务器上，前面场景写下的按卷计数会让 `_shouldSkipQuizBySubmitAttempts`
       // 在解密闸门**之前**就把这一卷跳掉 —— 夹具先把这些账清干净
       'var drop=[];for(var qi=0;qi<sessionStorage.length;qi++){var qk=sessionStorage.key(qi);' +
@@ -20807,7 +20807,7 @@ SCENARIOS.push({
       'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:true,apiKey:"",hasApiKey:false,' +
       'autoNext:false,enableCaptcha:false,enableDiscussion:false,randomAnswerReviewSec:10});' +
-      'app._quizApiFailUntil=0;app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'app._setQuizApiFailUntil(0);app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
       'app._quizReadyToSubmit=false;app._quizReadyWorkKey="";app._quizCurrentQuestions=null;' +
       'app._quizReviewPaperKey="";app._quizReviewUntil=0;' +
       'window.__b24=[];' +
@@ -20933,7 +20933,7 @@ SCENARIOS.push({
       'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
       'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:true,apiKey:"",hasApiKey:false,' +
       'autoNext:false,enableCaptcha:false,enableDiscussion:false,randomAnswerReviewSec:0});' +
-      'app._quizApiFailUntil=0;app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+      'app._setQuizApiFailUntil(0);app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
       'app._quizReadyToSubmit=false;app._quizReadyWorkKey="";app._quizCurrentQuestions=null;' +
       'app._quizReviewPaperKey="";app._quizReviewUntil=0;window.__b24=[];' +
       'var out={};' +

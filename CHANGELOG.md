@@ -8,6 +8,15 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 209 · 2026-11-25 · e2e 场景卫生复位改走生产清账口（会话任务 #48）
+
+- `tools/browser-e2e.js` 13 处 `app._quizApiFailUntil=0;` 改成 `app._setQuizApiFailUntil(0);`：
+  前者只清内存，sessionStorage 里的 45 秒退避键还在，下一份文档会被 `_restoreQuizApiFailUntil` 原样捡回
+  （#229 留下的半截账）。生产方法在 `<=0` 时内存与键一起清。
+- 替换数 **13**、残留直接赋值 **0**（`grep -c` 坐实）；`node tools/check.js` EXIT=0；
+  定向 e2e `OMITONE_E2E_FILTER="PDF.js 文档"` **5 / 5** 绿（该场景含这一发复位调用）。
+- **门面**：不用补（只改测试台卫生，用户界面与安装包未变）
+
 ### 批次 208 · 2026-11-25 · 沙盒快照接回真实 git 与已构建包，基线不再在浏览器场景前死掉（任务 #46 · 定时搭档按 brief 领）
 
 - **现象**：`node omitone-sandbox.cjs --filter …` 先跑 `BASELINE_FILES`，其中 `tools/check.js` 要

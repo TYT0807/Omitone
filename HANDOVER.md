@@ -1762,6 +1762,14 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.71 e2e 场景卫生复位改走生产清账口（2026-11-25，会话任务 #48）
+
+- `tools/browser-e2e.js` 里 13 处 `app._quizApiFailUntil=0;` 只清内存，不清 `sessionStorage` 的 45 秒退避键；
+  下一份文档的 `_restoreQuizApiFailUntil` 会把旧窗口捡回来 —— #229 收口时登记的半截账。
+- 逐处改成 `app._setQuizApiFailUntil(0);`（生产方法在 `<=0` 时内存与键一起清）。替换 13 处、残留 0 处；
+  `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
+- 不改生产代码；只动测试台。
+
 ### 0.70 #46 收口：沙盒快照接回真实 git 与已构建包，基线不再在浏览器场景前死掉（2026-11-25，定时搭档按 brief 领）
 
 - **一句**：`omitone-sandbox.cjs` 的临时快照 `OMIT` 里没有 `.git`，而 `tools/check.js` 现在有三处只读 git 判据
