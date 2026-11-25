@@ -184,7 +184,7 @@
 
 点上面那个 [**点我下载插件（omitone.zip）**](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)。
 
-浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 2 MB，大部分是 100 张立绘）。它通常会出现在你的「下载」文件夹里。
+浏览器会直接开始下载一个叫 `omitone.zip` 的文件（约 2.3 MB，大部分是 100 张立绘）。它通常会出现在你的「下载」文件夹里。
 
 > 点下去如果只是打开了一个网页、没有开始下载，就在那个页面里再找一下
 > `omitone.zip` 这一行，点一下它右边的下载图标。
@@ -552,7 +552,7 @@ npm run build        # 产物：dist/omitone-<版本>/
 | --- | --- | --- |
 | 无自有服务器 | 项目**没有后端**，没有一个字节是你自己处理不了的 | 全仓库没有作者名下任何域名 |
 | 请求直达厂商 | AI 请求由 `background.js` 直接 `fetch` 你在弹窗填的那个地址 —— 填谁的门牌就走谁的网关 | `libs/api-url.js` 全程只做字符串拼接，**唯一的地址来源是你填的配置**（或厂商官方默认地址） |
-| 无遥测 | 不发统计、不发埋点、不上报日志 | 只有你在弹窗里**主动点**「检测更新」时才会访问 GitHub 的公开接口（匿名、只读）；页面侧永远不联网 |
+| 无遥测 | 不发统计、不发埋点、不上报日志 | 只在**打开弹窗时最多 24 小时自动查一次**、或你主动点「检测更新」时访问 GitHub 的公开接口（匿名、只读）；页面侧永远不联网 |
 | 默认域名全是厂商官方 | `api.deepseek.com` / `api.anthropic.com` / `generativelanguage.googleapis.com` | 见 `popup/popup.js` 的 `PROVIDER_PRESETS`（1.1.0 起只剩这三家 + 自定义） |
 | 日志不带密钥 | 请求失败时日志截断**错误信息**，不记录密钥，也不记录请求头 | `content.js` 里所有 `slice(0, 300)` 的报错分支 |
 | 网页拿不到密钥 | 网页里那层脚本只知道「配没配 key」，拿不到 key 本身；验证码页更窄，只拿到「开没开验证码」。真正的请求由后台代发 | `libs/runtime-policy.js` 的 `publicConfig()` 按页型做白名单投影 |
@@ -663,6 +663,9 @@ grep -rhoE "https?://[a-zA-Z0-9.-]+" --include="*.js" --include="*.html" . | sor
 
 <details>
 <summary><b>🛠 点开：开发者 / AI 接手区</b> —— 功能与验证状态 · 运行机制 · 易错点清单 · 调试手册 · 改哪里</summary>
+
+<details>
+<summary>🛠 <b>开发者与维护者：接手必读</b>（点开）</summary>
 
 ## 给接手的人 / AI：先看这里
 
@@ -1485,5 +1488,7 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 ## 许可
 
 见 [LICENSE](LICENSE)。
+
+</details>
 
 </details>
