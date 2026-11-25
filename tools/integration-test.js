@@ -9560,7 +9560,7 @@ async function testModelListFetch() {
   };
 
   var mkEl = function () {
-    var el = { hidden: true, children: [], disabled: false };
+    var el = { hidden: true, children: [], disabled: false, classList: { remove: function () {} } };
     var text = '';
     Object.defineProperty(el, 'textContent', {
       get: function () { return text; },
@@ -9585,7 +9585,9 @@ async function testModelListFetch() {
       // 用 libs 那份**真**清洗函数：断言里再写一份规则，测的就是"测试和自己的桩一致"而不是代码
       normalizeApiKey: API.normalizeApiKey,
       self: 'self' in over ? over.self : { OmitoneApiError: { describe: function (s, b) { return { category: 'auth', human: '分类:' + s + '|' + String(b).slice(0, 40) }; } } },
-      document: { createElement: function (tag) { return { tag: tag, value: '' }; } },
+      document: { createElement: function (tag) {
+        return { tag: tag, value: '', dataset: {}, textContent: '', className: '', type: '', setAttribute: function () {} };
+      } },
       els: { listModels: h.btn, modelListState: h.line, modelOptions: h.dl },
       config: over.config || {},
       getApiFormConfig: function () { return Object.assign({}, h.form); },
@@ -9845,9 +9847,9 @@ async function testModelListFetch() {
   hDl.mod.renderModelOptions(['x']);
   var secondValues = hDl.dl.children.map(function (o) { return o.value; }).join(',');
   var secondTags = hDl.dl.children.map(function (o) { return o.tag; }).join(',');
-  check('⑭ 第二次点「获取模型列表」时旧候选先清空（3 → 1，值逐字是 x），并且建出来的是 `<option value=型号名>` —— ' +
+  check('⑭ 第二次点「获取模型列表」时旧候选先清空（3 → 1，值逐字是 x），并且建出来的是 `<button data-model=型号名>` —— ' +
     '少了那句清空，用户点开候选看到的是两批叠在一起、还带重复',
-    firstN === 3 && secondValues === 'x' && secondTags === 'option',
+    firstN === 3 && secondValues === 'x' && secondTags === 'button',
     JSON.stringify({ firstN: firstN, second: secondValues, tags: secondTags }));
 
   hDl.mod.renderModelOptions(['k1', 'k2']);
@@ -9877,15 +9879,18 @@ async function testModelListFetch() {
     JSON.stringify({ post: postPayload }));
 
   // ---- ⑯ 静态接线：界面三处都指向同一份候选，地址不内联 ----
-  var listHits = count(popHtml, 'list="modelOptions"');
-  var dlHits = count(popHtml, '<datalist id="modelOptions">');
+  var listHits = count(popHtml, 'data-model-input="1"');
+  var menuHits = count(popHtml, '<div class="model-menu" id="modelOptions"');
   var btnHits = count(popHtml, 'id="listModels"');
   var stateHits = count(popHtml, 'id="modelListState"');
-  check('⑯ 界面上四处接线都在且**不多不少**：三处模型名（主模型 / 看图 / 验证码）都挂同一份 datalist（少挂一处，那一处就还是手抄 —— 三胞胎的界面版）、' +
-    'datalist 1 枚、按钮 1 枚、状态行 1 枚；popup.js 里按钮真绑到 listModelsFromProvider',
-    listHits === 3 && dlHits === 1 && btnHits === 1 && stateHits === 1 &&
+  var menuCssAt = popHtml.indexOf('.model-menu{');
+  var menuCss = menuCssAt >= 0 ? popHtml.slice(menuCssAt, menuCssAt + 500) : '';
+  var menuScroll = /max-height\s*:\s*220px/.test(menuCss) && /overflow-y\s*:\s*auto/.test(menuCss);
+  check('⑯ 界面上四处接线都在且**不多不少**：三处模型名（主模型 / 看图 / 验证码）共用同一份自定义候选、' +
+    '候选层 1 枚且带 max-height + overflow-y（原生 datalist 不可滚的回归）、按钮 1 枚、状态行 1 枚；popup.js 里按钮真绑到 listModelsFromProvider',
+    listHits === 3 && menuHits === 1 && menuScroll === true && btnHits === 1 && stateHits === 1 &&
       count(pop, 'addEventListener("click", listModelsFromProvider)') === 1,
-    JSON.stringify({ list: listHits, dl: dlHits, btn: btnHits, state: stateHits, hook: count(pop, 'addEventListener("click", listModelsFromProvider)') }));
+    JSON.stringify({ list: listHits, menu: menuHits, scroll: menuScroll, btn: btnHits, state: stateHits, hook: count(pop, 'addEventListener("click", listModelsFromProvider)') }));
 
   var inlined = count(pop, "'/models'") + count(pop, '"/models"') + count(pop, '`/models`') + count(pop, '") + "/models');
   var builderCalls = count(pop, 'buildModelsUrl(');

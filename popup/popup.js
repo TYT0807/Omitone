@@ -513,16 +513,96 @@ function modelListSentence(out) {
 }
 
 function renderModelOptions(ids) {
-  const dl = els.modelOptions;
-  if (!dl) return;
+  const menu = els.modelOptions;
+  if (!menu) return;
   // 先清空：append 会叠加，第二次点就会在候选里出现重复型号
-  dl.textContent = "";
+  menu.textContent = "";
+  menu.hidden = true;
+  menu.classList.remove("show");
   (ids || []).forEach((id) => {
-    const opt = document.createElement("option");
+    const opt = document.createElement("button");
+    opt.type = "button";
+    opt.className = "model-option";
+    opt.setAttribute("role", "option");
+    opt.dataset.model = String(id);
     opt.value = String(id);
-    dl.appendChild(opt);
+    opt.textContent = String(id);
+    menu.appendChild(opt);
   });
 }
+
+let modelMenuInput = null;
+function hideModelMenu() {
+  const menu = els.modelOptions;
+  if (menu) {
+    menu.hidden = true;
+    menu.classList.remove("show");
+  }
+  modelMenuInput = null;
+}
+function showModelMenu(input) {
+  const menu = els.modelOptions;
+  if (!menu || !input) return;
+  const q = String(input.value || "").trim().toLowerCase();
+  const options = Array.prototype.slice.call(menu.querySelectorAll(".model-option"));
+  let visible = 0;
+  options.forEach((opt) => {
+    const hit = !q || String(opt.dataset.model || "").toLowerCase().indexOf(q) >= 0;
+    opt.hidden = !hit;
+    if (hit) visible++;
+  });
+  if (!visible) { hideModelMenu(); return; }
+  modelMenuInput = input;
+  menu.hidden = false;
+  menu.classList.add("show");
+  const rect = input.getBoundingClientRect();
+  const vw = window.innerWidth || document.documentElement.clientWidth || 356;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 600;
+  const width = Math.max(180, Math.min(rect.width || 240, vw - 16));
+  menu.style.width = width + "px";
+  menu.style.left = Math.max(8, Math.min(rect.left, vw - width - 8)) + "px";
+  let top = rect.bottom + 6;
+  const roomBelow = vh - top - 8;
+  if (roomBelow < 100) top = Math.max(8, rect.top - Math.min(220, rect.top - 8) - 6);
+  menu.style.top = top + "px";
+  menu.style.maxHeight = Math.max(80, Math.min(220, vh - top - 8)) + "px";
+}
+function bindModelMenu(input) {
+  if (!input) return;
+  input.setAttribute("autocomplete", "off");
+  const open = function () { showModelMenu(input); };
+  input.addEventListener("focus", open);
+  input.addEventListener("click", open);
+  input.addEventListener("input", open);
+  input.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") hideModelMenu();
+  });
+}
+if (els.modelOptions && els.modelOptions.parentNode !== document.body) {
+  // 候选层必须挂在 body 上：它祖先的玻璃分组带 backdrop-filter，会把 position:fixed
+  // 的参照系改成那一组，弹层就会按组坐标画到屏幕外（2026-11-25 暗色实测）。
+  document.body.appendChild(els.modelOptions);
+}
+[els.model, els.visionModel, els.captchaModel].forEach(bindModelMenu);
+if (els.modelOptions) {
+  els.modelOptions.addEventListener("click", function (event) {
+    const target = event.target && event.target.closest ? event.target.closest(".model-option") : null;
+    if (!target || !modelMenuInput) return;
+    const picked = modelMenuInput;
+    picked.value = String(target.dataset.model || target.textContent || "");
+    picked.dispatchEvent(new Event("input", { bubbles: true }));
+    picked.dispatchEvent(new Event("change", { bubbles: true }));
+    picked.focus({ preventScroll: true });
+    hideModelMenu();
+  });
+}
+document.addEventListener("click", function (event) {
+  if (!modelMenuInput || !els.modelOptions) return;
+  if (els.modelOptions.contains(event.target) || modelMenuInput.contains(event.target)) return;
+  hideModelMenu();
+});
+window.addEventListener("scroll", hideModelMenu, true);
+window.addEventListener("resize", hideModelMenu);
 
 function setModelListState(message) {
   const el = els.modelListState;

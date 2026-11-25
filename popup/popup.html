@@ -351,6 +351,23 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 .hint-more[open] > summary{ color:var(--fg-2); }
 .hint-more > summary:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; border-radius:6px; }
 .hint-more .hint{ margin-top:4px; }
+/* 模型候选弹层：原生 datalist 的弹层不可控（Windows 上不能滚动），
+   改成挂在 body 上的 fixed 列表；max-height + overflow-y 是这一条的验收点。 */
+.model-menu{
+  position:fixed; z-index:80; display:none; box-sizing:border-box;
+  max-height:220px; overflow-y:auto; overscroll-behavior:contain;
+  padding:4px; border:1px solid var(--hairline-strong); border-radius:10px;
+  background:var(--card); box-shadow:0 14px 34px -14px rgba(0,0,0,.45);
+  backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+}
+.model-menu.show{ display:block; }
+.model-option{
+  display:block; width:100%; border:0; border-radius:7px; background:transparent;
+  color:var(--fg); font:inherit; font-size:12px; line-height:1.5; text-align:left;
+  padding:6px 8px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.model-option:hover,.model-option.active{ background:var(--hover); }
+.model-option[hidden]{ display:none; }
 /* 思考强度那一组：场景 + 下限 + 上限 三列。
    select 在上面的全局规则里是 width:100%，落进 1fr 两列正好各占一半；
    label 用 display:block 单独占一行（.field label 已经写了）。 */
@@ -800,7 +817,7 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="visionModel">看图模型</label>
-        <input type="text" id="visionModel" list="modelOptions" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
+        <input type="text" id="visionModel" data-model-input="1" placeholder="如 deepseek-flash（与主模型相同，可留空）" />
         <p class="hint"><b>开着</b>：先把题里的图交给看图模型<b>转成文字</b>，再把这段描述并回题干去答题 ——
         不是把图片本身直接发给答题模型。<b>更贵、更慢</b>（一张图通常是纯文本的十几到几十倍花费），能救「看图选择 / 图形题」。<br>
         <b>关着（默认）</b>：图<b>一个字都不读</b> —— 没有本地识别这一说，只按题干文字答，带图的题会答不准。<br>
@@ -814,7 +831,7 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
-        <input type="text" id="captchaModel" list="modelOptions" placeholder="如 deepseek-flash / qwen-vl-max" />
+        <input type="text" id="captchaModel" data-model-input="1" placeholder="如 deepseek-flash / qwen-vl-max" />
         <p class="hint"><b>留空就用上面的主模型识别</b>，DeepSeek 留空即可。<br>
         只有把主模型换成纯文本模型时，这里才<b>必须</b>另填一个会看图的型号 ——
         否则验证码墙只试一次就停手，日志会明说「这个模型看不懂图」，那一张请亲手输一次。</p>
@@ -888,10 +905,11 @@ body.has-bg::after{
       </div>
       <div class="field">
         <label for="model">模型名</label>
-        <input type="text" id="model" list="modelOptions">
-        <!-- 下面「获取模型列表」那一条填进来的是这一枚 datalist；
-             三处模型名（主模型 / 看图 / 验证码）都指向它，按 id 全局认，放哪一栏都行 -->
-        <datalist id="modelOptions"></datalist>
+        <input type="text" id="model" data-model-input="1">
+        <!-- 下面「获取模型列表」那一条填进来的是这一枚候选弹层；
+             三处模型名（主模型 / 看图 / 验证码）共用它。原生 datalist 在 Windows 上
+             弹层不可滚动（issue #2 新评论 2026-11-25），这里换成可滚动的自定义列表。 -->
+        <div class="model-menu" id="modelOptions" role="listbox" aria-label="模型候选"></div>
       </div>
       <div class="field">
         <label for="systemPrompt">自定义 system 提示词（高级）</label>
