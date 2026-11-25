@@ -3596,6 +3596,25 @@ JSON（e2e 的假模型对医生那种摘要式提示词就回字面 `[]`），�
 - 现场（只读监测，探针不点、不写配置、不导航）：6 个目标里 `studentstudy` **恰好 1 枚**。
 - **门面**：不用补（HOLD 口径：本轮只做本地提交、不推门面；界面字样、任务种类、弹窗开关都没动，说明书没有新东西要教）
 
+### 批次 192 · 2026-11-25 · 实战页连着两道测验零手点自动交卷；搭档分工与任务板落到盘上（#232 现场收口）
+
+**用户能看见的**：卡住那节的两道测验由扩展**自己填、自己交**，平台都回了完成并翻节 —— 全程没有手点。
+
+- 构建 `1c96527e1d`（= `2d5b39e` 的 `page.js`）刷进实战页：重载扩展 + 两个 chaoxing 标签各 F5，全部由 CDP 完成。
+- 现场两证（同一构建、零手点）：
+  - `cur933072083`「革命洪流中，吾辈当可作何为？」5 题：交卷第 2 发 `quiz submit finished`
+    → `skip completed {catalogMark:"icon_Completed", containers:5}` → `chapter changed`。
+  - `cur933072084`「大浪淘沙时，青年应做何抉择？」4 题：交卷第 1 发 `quiz submit finished`
+    → `skip completed {catalogMark:"icon_Completed", containers:4}` → `chapter changed`。
+- 目录未完成数 **103 → 98**；现场配置 `quizRejectGiveUp=false`（本地死磕档，不静默跳过任务点）。
+- 原始日志环落盘 `.workbuddy/field-191-submit.log`（dump 13:54:04，环内是相对秒）；摘要 `.workbuddy/field-232-auto-submit.md`。
+
+**内部账**：
+- `AGENTS.md` 新增 §1.06「搭档分工与单写者规则」；任务板与 brief 落在 `.workbuddy/partners/`（`board.md` / `brief-217.md`）。
+- 定时搭档 `9b9cc386` 的每轮改成 board-first：40 分钟预算、最多 3 个文件 + 1 个定向套件，不跑全量套件；
+  红或超时先还原注入再交回。
+- **门面**：不用补（这一笔只动分工文档、台账与现场取证，用户可见行为未变）
+
 ---
 
 ## 1.3.0 — 正式版：字体恢复、日志单写入与七轮实战加固（2026-11-01 发布）
