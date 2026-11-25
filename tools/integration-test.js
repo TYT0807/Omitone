@@ -11782,7 +11782,7 @@ async function testReadV2Task() {
     ok === true && calls.indexOf('finish:read-219328426') >= 0 && calls.indexOf('clear:readv2-finishJob') >= 0,
     JSON.stringify({ ok: ok, calls: calls, logs: logs }));
 
-  var skip = buildFrom(detect, '_skipIfCompleted');
+  var skip = buildFrom(detect, '_skipIfCompleted', { emitRuntimeLog: function () {} });
   if (typeof skip !== 'function') {
     check('⑤ 取出 skip completed 判定（取不出是签名/缩进变了，不等于没有回归）', false, 'skip=' + typeof skip);
     return;
@@ -11796,6 +11796,7 @@ async function testReadV2Task() {
     _switchToNextLearningCard: function () { return false; },
     _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
     _getCurrentTitle: function () { return '最后一节'; },
+    _dismissPopups: function () {},
     nextUnit: function () { nextCalls++; }
   };
   skip.call(skipApp);
