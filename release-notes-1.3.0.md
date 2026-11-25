@@ -1,5 +1,9 @@
 # Omitone 1.3.0（稳定版 · 2026-11-12 收口）
 
+> ⚠️ **本页是 1.3.0 的历史说明，已被 [1.3.1 正式版](https://github.com/TYT0807/Omitone/releases/tag/v1.3.1) 取代。**
+> 新装请回 [默认下载页](https://github.com/TYT0807/Omitone/releases/latest/download/omitone.zip)（拿到的就是 1.3.1）。
+> 本页不再回填后续补充说明；逐条来龙去脉以 [CHANGELOG](https://github.com/TYT0807/Omitone/blob/main/CHANGELOG.md) 为准。
+
 这一版从 2026-11-01 发出来之后，又陆续修了一批，现在收成**稳定版**。下面把**你看得见的变化**合并成一页，
 不用一次次重新下载。**这个插件永久免费、公益、不盈利、不引流，没有任何收费功能和会员**；
 **但"刷课不用 API Key"这句话只对一半**：视频、文档、PPT、任务点翻页、讨论和投票确实不接大模型、一分钱不花；

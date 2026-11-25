@@ -167,13 +167,13 @@ function classify(g) {
     var dBuild = dirty.filter(function (d) { return d.isBuild; });
     var dDoc = dirty.filter(function (d) { return d.isDoc; });
     var unknown = dirty.filter(function (d) { return typeof d.ageMs !== 'number'; });
-    return out('orphan-dirty', dBuild.length ? 'dirty-stale-build' : 'dirty-stale', EXIT.blocked,
+    return out('orphan-dirty', dBuild.length ? 'dirty-stale-build' : 'dirty-stale', EXIT.open,
       dirty.length + ' 份未提交的改动，但 mtime 都在窗口之外（最老 ' + mins(oldest(dirty)) + '）—— ' +
       '**这不是活跃写入者**：那是一轮没收尾（或被中断）留下的半成品。' +
       (dBuild.length ? ' 其中构建输入 ' + dBuild.length + ' 份：' + names(dBuild, 4) : '') +
       (dDoc.length ? '；文档 ' + dDoc.length + ' 份：' + names(dDoc, 4) : '') +
       (unknown.length ? '；另有 ' + unknown.length + ' 份拿不到 mtime（多半是被删掉的那一类），拿不到就不算"新"。' : ''),
-      true,
+      false,
       '可以改文件，但**只许 `git add` 自己本轮那几份**，别人的改动一个字都不许提交（AGENTS §3.4「`git status` 里混进别人的改动」那一族）；' +
       (dBuild.length ? '构建输入脏着 → 别跑 `npm run concat`，那会把别人的改动一起烘进 `page.js`；' : '') +
       '先按 AGENTS §1.0 把这条排进队列并记下证据，别拿"没人认领"当"没有"。');
@@ -526,7 +526,7 @@ var CELLS = [
   {
     tag: '10脏但 mtime 陈旧 → orphan-dirty（不是活跃写入者，但那几份不许提交）',
     g: { windowMs: 720000, stampState: 'stale', dirty: [{ path: 'src/page/60-tasks-detect.js', isBuild: true, isDoc: false, ageMs: 50 * 60000 }] },
-    verdict: 'orphan-dirty', via: 'dirty-stale-build', exit: 1, noteHas: '不是活跃写入者', fixHas: 'git add'
+    verdict: 'orphan-dirty', via: 'dirty-stale-build', exit: 0, blocked: false, noteHas: '不是活跃写入者', fixHas: 'git add'
   },
   {
     tag: '11mtime 新但树干净（还原形状）→ restored-not-writing，明说可以动',
@@ -561,12 +561,12 @@ var CELLS = [
   {
     tag: '17脏文件已被删（拿不到 mtime）+ 其余干净 → orphan-dirty，不许把"拿不到"读成"新"',
     g: { windowMs: 720000, stampState: 'absent', dirty: [{ path: 'docs/notes-x.md', isBuild: false, isDoc: false, ageMs: null }] },
-    verdict: 'orphan-dirty', via: 'dirty-stale', exit: 1, noteHas: '拿不到 mtime'
+    verdict: 'orphan-dirty', via: 'dirty-stale', exit: 0, blocked: false, noteHas: '拿不到 mtime'
   },
   {
     tag: '18窗口换算：脏 + mtime 9 分钟，窗口给 5 分钟 → 落 orphan-dirty（窗口不许写死在判定里）',
     g: { windowMs: 5 * 60000, stampState: 'absent', dirty: [{ path: 'README.md', isBuild: false, isDoc: true, ageMs: 9 * 60000 }] },
-    verdict: 'orphan-dirty', via: 'dirty-stale', exit: 1
+    verdict: 'orphan-dirty', via: 'dirty-stale', exit: 0, blocked: false
   },
   {
     // 这一格钉的是**句子对不对**，不是判据：12:14:31 真跑时这句话把 `--stamp-mine` 说成了
