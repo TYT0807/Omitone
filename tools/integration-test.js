@@ -11796,6 +11796,7 @@ async function testReadV2Task() {
     _switchToNextLearningCard: function () { return false; },
     _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
     _getCurrentTitle: function () { return '最后一节'; },
+    _skipCompletedEvidence: function () { return {}; },
     _dismissPopups: function () {},
     nextUnit: function () { nextCalls++; }
   };
