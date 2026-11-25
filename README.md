@@ -6,7 +6,7 @@
 
 ![Edge / Chrome 扩展](https://img.shields.io/badge/扩展-Edge%20%2F%20Chrome-0078d4?logo=microsoftedge&logoColor=white)
 ![Manifest V3](https://img.shields.io/badge/Manifest-V3-orange)
-![版本](https://img.shields.io/badge/版本-1.3.1-orange)
+![版本](https://img.shields.io/badge/版本-1.3.2-orange)
 ![通道](https://img.shields.io/badge/通道-实验版%20·%20预览可装-yellow)
 ![许可](https://img.shields.io/badge/License-GPL--3.0-green)
 ![公益](https://img.shields.io/badge/公益-免费%20·%20不盈利%20·%20不引流-brightgreen)
@@ -61,11 +61,11 @@
 </div>
 
 <details>
-<summary><strong>1.3.1 实验版（预览可装）· 这一支在动什么 · 怎么才算转正</strong> —— 这一段是下一版的草稿，转正时并回默认那一页</summary>
+<summary><strong>1.3.2 实验版（预览可装）· 这一支在动什么 · 怎么才算转正</strong> —— 这一段是下一版的草稿，转正时并回默认那一页</summary>
 
 **这一支有下载口，但和正式版是两个东西。** 预览包走独立的 `preview` 标签与 `omitone-preview.zip`
 这个文件名，**永远覆盖不到正式版那条直链**；不带 🧪 的那两条（插件包与说明书 PDF）拿到的仍是
-**1.3.0 正式版**。给人看的入口写在**默认那一页（`main`）的门面上**，任何人进仓库都看得见，不用切分支
+**1.3.1 正式版**。给人看的入口写在**默认那一页（`main`）的门面上**，任何人进仓库都看得见，不用切分支
 （这一页只留工作记录，见顶部那条 🧭）；这一条分支只是我们频繁更新的草稿本。预览版属于「装了就得自己盯着」
 的性质，慎重点，判断标准写在 `main` 那一页。
 
@@ -87,7 +87,7 @@
 才把这一支并回稳定版、发版、换附件。**转正之前**：预览口可以发（它不动正式版那两个附件名），
 但正式版的 `omitone.zip` 与说明书 PDF 一个字都不换 —— 这一条由 `tools/channel-gate.js` 挡住，不靠人记得。
 
-逐条来龙去脉在 [CHANGELOG.md](CHANGELOG.md) 的 1.3.1 段。
+逐条来龙去脉在 [CHANGELOG.md](CHANGELOG.md) 的 1.3.2 段。
 
 </details>
 
@@ -1431,20 +1431,20 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 
 ### 12.1 为什么「软件这么大」——体积账本
 
-扩展**解压后约 3.59 MB**（对着构建出来的 `dist/*.zip` 逐条目合计，不是磁盘目录 —— 2026-11-21 随批次 157 重算、批次 160 再算、2026-11-22 批次 167 再算、2026-11-23 批次 181 随构建再算），`dist/*.zip` 约 2.29 MB。构成如下
+扩展**解压后约 3.64 MB**（对着构建出来的 `dist/*.zip` 逐条目合计，不是磁盘目录 —— 2026-11-21 随批次 157 重算、批次 160 再算、2026-11-22 批次 167 再算、2026-11-23 批次 181 随构建再算、2026-11-25 批次 195 随 1.3.2 构建再算），`dist/*.zip` 约 2.30 MB。构成如下
 （`node tools/build.js` 会把 `resources/table.json` 排除掉，改由 122 KB 的 `table.bin` 顶上）：
 
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
-| `popup/`（100 张立绘 + 界面） | 约 1.83 MB (51.0%) | 立绘是主体：48 套服装 / 25 表情 / 28 姿势，每张 8~24 KB |
-| `page.js` | 1.09 MB (30.3%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
-| `libs/` | 217 KB (5.9%) | 字体解析 Typr 96 KB + 报错分类 / 提示词 / 地址构造 / 字形表 / 联网搜索那把尺 |
-| `content.js` | 218 KB (5.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
-| `resources/`（装的是 `table.bin`） | 123 KB (3.4%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
-| `LICENSE` | 35 KB (1.0%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
+| `popup/`（100 张立绘 + 界面） | 约 1.83 MB (50.3%) | 立绘是主体：48 套服装 / 25 表情 / 28 姿势，每张 8~24 KB |
+| `page.js` | 1.13 MB (31.0%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
+| `libs/` | 225 KB (6.0%) | 字体解析 Typr 96 KB + 报错分类 / 提示词 / 地址构造 / 字形表 / 联网搜索那把尺 |
+| `content.js` | 221 KB (5.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
+| `resources/`（装的是 `table.bin`） | 123 KB (3.3%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
+| `LICENSE` | 35 KB (0.9%) | GPL-3.0 全文，**分发时必须随附**，不能删 |
 | `icons/` | 28 KB (0.8%) | 三个尺寸的图标 |
-| `background.js` | 50 KB (1.4%) | service worker：跨域 fetch 代理 |
-| `runtime-log-store.js` + `popup-log-view.js` | 13 KB (0.3%) | 日志 Worker 工厂 + 前端日志视图 |
+| `background.js` | 50 KB (1.3%) | service worker：跨域 fetch 代理 |
+| `runtime-log-store.js` + `popup-log-view.js` | 14 KB (0.4%) | 日志 Worker 工厂 + 前端日志视图 |
 | `manifest.json` | 2 KB (0.0%) | 扩展清单 |
 
 > **为什么这么大**：1.2.9 之前线上包只带进来 **5 张立绘**（`pet.png` + `pet-1..4`），

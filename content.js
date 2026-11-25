@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '83fed9f209';
+var OMITONE_CODE_REV_BRIDGE = 'ad1f0dc7fa';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -1638,7 +1638,7 @@ var OMITONE_CODE_REV_BRIDGE = '83fed9f209';
       '<div class="card" data-state="normal">',
       '  <div class="head">',
       '    <span class="dot"></span>',
-      '    <span class="brand">Omitone 1.3.1</span>',
+      '    <span class="brand">Omitone 1.3.2</span>',
       '    <span class="badge" data-role="state">正常运行</span>',
       '    <button class="close" type="button" title="隐藏状态窗">×</button>',
       '  </div>',
