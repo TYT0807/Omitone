@@ -4778,6 +4778,10 @@ async function testSeekDeferUntilSeekable() {
   // 「这条路被放弃了」那一句现在也吃课程账（倍速那一侧），所以它得和上面几件一起取出来 ——
   // 取不出来时 ㉛ 新增的那两格会当场抛出来把整段打死（AGENTS §5「红 0 条的第一嫌疑人是没跑到」）。
   var noteHeld22 = buildFrom(media, '_noteNinetyHeldBack', inj);
+  // #231 第 3b 档：五处整体复位改成「只清最旧」，`_trySeekToEnd`／`_noteSeekSkip`／`_siteSeekCondition`
+  // ／`_noteNinetyHeldBack` 现在都会 `this._evictOldestKeys(...)` —— 假 app 不挂这一件就是 TypeError，
+  // 整段一条断言都不跑（同上面 `stablePath` 那一族的注释）。助手整段不读 `this`，可直接挂。
+  var evictShared = buildFrom(media, '_evictOldestKeys', {});
   // NEED / TTL / 存储键三枚常数从源码读回来，测试里一份都不许写死（生产改了数而断言照旧跑 = 假绿）
   var guardNeed = firstNum(media, /_COURSE_GUARD_NEED:\s*(\d+)/);
   var guardTtl = firstNum(media, /_COURSE_GUARD_TTL_MS:\s*(\d+)/);
@@ -4854,6 +4858,7 @@ async function testSeekDeferUntilSeekable() {
       _getMediaSeekKey: getKey,
       _mediaStablePath: stablePath,
       _seekableCovers: covers,
+      _evictOldestKeys: evictShared,
       _deferSeekUntilSeekable: defer,
       _trySeekToEnd: trySeek,
       _noteSeekSkip: noteSkip,
@@ -4994,14 +4999,35 @@ async function testSeekDeferUntilSeekable() {
     logs.some(function (l) { return l.message === 'seek reverted by site, keep playing normally'; }),
     JSON.stringify({ ret: r9, writes: v9.__rec.writes.length, flushed: flushed, msgs: logs.map(function (l) { return l.message; }) }));
 
-  // ---- ⑩ 记账要有界：>300 复位那一块必须把这一族三本账一起清 ----
+  // ---- ⑩ 记账要有界：五处 `>300` 整体复位全部改成「只清最旧」（会话任务 #231 第 3b 档）----
+  //   旧口径「过 300 就整本重建」有两笔账付不起：`_seekRevertedKeys` 是站点把进度条拽回去的**行为证据**，
+  //   连坐抹平等于替每支视频重发一次性试拖预算（AGENTS §2 #17）；`_startNudgeKeys`／`_seekSkipLedger`
+  //   归零则是 §2 #13 那族「跨拍记账被同一轮动作清零」。现在 8 本媒体钥匙账全走同一个助手。
   var resetBody = bodyOf(media, '_trySeekToEnd');
-  var resetBand = resetBody.slice(resetBody.indexOf('length > 300'));
-  check('⑩ 「只检查一次」那本账过 300 就整体复位，且把新增的 _seekDeferKeys 一起清掉（漏一本就是无界增长的账）',
-    resetBand.indexOf('_seekTriedKeys = Object.create(null)') >= 0 &&
-    resetBand.indexOf('_seekRevertedKeys = Object.create(null)') >= 0 &&
-    resetBand.indexOf('_seekDeferKeys = Object.create(null)') >= 0,
-    resetBand.slice(0, 220).replace(/\s+/g, ' '));
+  var evictLedgers = ['_seekSkipLedger', '_seekSiteKeys', '_seekTriedKeys', '_seekRevertedKeys',
+    '_seekDeferKeys', '_ninetyHeldBackKeys', '_startNudgeKeys', '_mediaReloadKeys'];
+  var evictSeen = {};
+  var evictCaps = {};
+  evictLedgers.forEach(function (n) {
+    var hits = media.match(new RegExp('_evictOldestKeys\\(\\s*this\\.' + n + '\\s*,\\s*(\\d+)\\s*\\)', 'g')) || [];
+    evictSeen[n] = hits.length;
+    evictCaps[n] = hits.map(function (s) { return Number(/(\d+)\s*\)/.exec(s)[1]); });
+  });
+  // 三本 seek 账那一发必须写在 `_trySeekToEnd` 里：写在别的片段里同样能让全书计数对上，却管不到这一族
+  var inTrySeek = ['_seekTriedKeys', '_seekRevertedKeys', '_seekDeferKeys'].filter(function (n) {
+    return resetBody.indexOf('this._evictOldestKeys(this.' + n + ',') >= 0;
+  });
+  var wholeReset = (media.match(/\.length\s*>\s*300/g) || []).length;
+  var revertedRebuild = (media.match(/this\._seekRevertedKeys\s*=\s*Object\.create\(null\)/g) || []).length;
+  var revertedGuarded = (media.match(/if\s*\(\s*!\s*this\._seekRevertedKeys\s*\)\s*this\._seekRevertedKeys\s*=\s*Object\.create\(null\)/g) || []).length;
+  check('⑩ 媒体钥匙那一族 8 本账全部改成 `_evictOldestKeys(…, 300)` 只清最旧：每本恰好一处、上限从源码读回来全是 300，'
+    + 'seek 那三本的一发确实写在 `_trySeekToEnd` 里；slice 内再无 `.length > 300` 整体复位（残留一发就是回到整本抹平）；'
+    + '`_seekRevertedKeys` 的 `Object.create(null)` 只许出现在「没建过才建」那一格（连坐重建会红在这里）',
+    evictLedgers.every(function (n) { return evictSeen[n] === 1 && evictCaps[n][0] === 300; }) &&
+      inTrySeek.length === 3 && wholeReset === 0 &&
+      revertedRebuild === revertedGuarded && revertedGuarded >= 1,
+    JSON.stringify({ perLedger: evictSeen, caps: evictCaps, inTrySeek: inTrySeek.length,
+      wholeReset: wholeReset, revertedRebuild: revertedRebuild, revertedGuarded: revertedGuarded }));
   check('⑪ 一次性标记排在区间闸门之后（写在前面就是本次要修的那个 bug 本身，静态钉住顺序）',
     resetBody.indexOf('_deferSeekUntilSeekable') >= 0 &&
     resetBody.indexOf('_seekTriedKeys[key] = true') > resetBody.indexOf('_deferSeekUntilSeekable'),
@@ -5587,6 +5613,28 @@ async function testSeekDeferUntilSeekable() {
     JSON.stringify({ dropped: dropped, leftReload: leftReload, neighboursKept: neighboursKept,
       oddDrop: oddDrop, oddLeft: Object.keys(oddMap), wiredAt: wiredAt, writeAt: writeAt,
       prodCap: prodCap, capSingles: capSingles }));
+
+  // ㊸ 第 3b 档的**行为面**：真走一次写入点（`_noteSeekSkip`），而不是只调助手 ——
+  //   305 条账塞进去后裁回整 300 条，掉的必须是**最旧那 6 条**（k1..k6）；k7／k305／新钥匙都在，
+  //   「整本抹平」会红在 k7 这一格。同一次调用之后 `_seekRevertedKeys` 那一格不许动（§2 #17）。
+  var noteSeek = buildFrom(media, '_noteSeekSkip', {});
+  var bigLedger = {};
+  for (var bi = 1; bi <= 305; bi++) bigLedger['k' + bi] = { n: 1, at: bi, first: bi, reasons: {} };
+  var bigCtx = { _seekSkipLedger: bigLedger, _seekRevertedKeys: { 'https://s/x/keep.mp4': true }, _evictOldestKeys: evict };
+  var stBig = noteSeek ? noteSeek.call(bigCtx, 'captcha',
+    { duration: 12.34, currentSrc: 'https://s/x/new.mp4' }, 'https://s/x/new.mp4') : null;
+  var bigLeft = Object.keys(bigCtx._seekSkipLedger);
+  var oldestGone = ['k1', 'k2', 'k3', 'k4', 'k5', 'k6'].every(function (n) { return !bigCtx._seekSkipLedger[n]; });
+  var newestKept = !!bigCtx._seekSkipLedger.k7 && !!bigCtx._seekSkipLedger.k305 &&
+    !!bigCtx._seekSkipLedger['https://s/x/new.mp4'];
+  var revKept = Object.keys(bigCtx._seekRevertedKeys).length === 1 &&
+    bigCtx._seekRevertedKeys['https://s/x/keep.mp4'] === true;
+  check('㊸ 真触发一次写入（305 条账过 `_noteSeekSkip`）：裁回整 300 条、最旧 k1..k6 不在，而 k7/k305/新钥匙都在（整本抹平会红在 k7 这一格）；'
+    + '新那格带着自己的账（n=1／last=captcha）；同一次调用之后 `_seekRevertedKeys` 仍是那 1 格 true（助手连坐清邻居会红在这里）',
+    bigLeft.length === 300 && oldestGone && newestKept && revKept &&
+      !!stBig && stBig.n === 1 && stBig.last === 'captcha',
+    JSON.stringify({ left: bigLeft.length, oldestGone: oldestGone, newestKept: newestKept,
+      revKept: revKept, st: stBig ? { n: stBig.n, last: stBig.last } : null }));
 }
 
 /** ---- [22b] 批次 178：开头一直卡住时，有界地去点站点自己的「开始」键 ----
@@ -5659,6 +5707,8 @@ async function testStartStuckSiteClickSelfHeal() {
   var stablePath = buildFrom(media, '_mediaStablePath', {});
   var siteOf = buildFrom(media, '_siteStartControlOf', { visible: fakeVisible });
   var nudge = buildFrom(media, '_nudgeSiteStartControl', inj);
+  // #231 第 3b 档：`_nudgeSiteStartControl` 满了改成只清最旧 → 这一段的假 app 也得带助手本体
+  var evictB = buildFrom(media, '_evictOldestKeys', {});
   var quarantined = buildFrom(media, '_isMediaQuarantined', { Date: FakeDate, TASK_GIVEUP_TTL_MS: giveupTtl });
   check('⓪ `_getMediaSeekKey` / `_mediaStablePath` / `_siteStartControlOf` / `_nudgeSiteStartControl` 四件本体都取成了函数',
     [getKey, stablePath, siteOf, nudge].every(function (f) { return typeof f === 'function'; }),
@@ -5714,6 +5764,7 @@ async function testStartStuckSiteClickSelfHeal() {
     app._isMediaQuarantined = function (v) { return quarantined.call(app, v); };
     app._popupQuizBlocksPlayback = function () { return app.__quizBlocks === true; };
     app._siteStartControlOf = function (v) { return siteOf.call(app, v); };
+    app._evictOldestKeys = function (m, c) { return evictB.call(app, m, c); };
     app._nudgeSiteStartControl = function (v, r) { return nudge.call(app, v, r); };
     return app;
   }
@@ -8482,6 +8533,9 @@ async function testNinetyAdvanceBoundToSeek() {
   var readCond = buildFrom(media, '_readSiteSeekCondition', {});
   var siteCond = buildFrom(media, '_siteSeekCondition', { emitRuntimeLog: say });
   var siteNoDrag = buildFrom(media, '_siteSaysNoDrag', {});
+  // #231 第 3b 档：`_noteSeekSkip`／`_trySeekToEnd`／`_siteSeekCondition`／`_noteNinetyHeldBack` 现在都调
+  // `this._evictOldestKeys` —— 这一段的 `seekApp` 与 `mkGateApp` 少挂这一件就是 TypeError（§5「没跑到」同族）。
+  var evictR = buildFrom(media, '_evictOldestKeys', {});
   // 批次 173 / #199：`_shouldAdvanceAtNinetyPercent` 绑的那一句从「只问站点卡片原话」扩成
   //   **再问一句课程格**（同一门课里已经认出来过一次），而日志里的 `dragSource` 换成三源合成的
   //   `_seekNoDragSource`（弹回过 / 卡片原话 / 同一门课认过一次）—— 三条都不许在日志里塌成一格（§2 #12）。
@@ -8581,7 +8635,7 @@ async function testNinetyAdvanceBoundToSeek() {
     _mediaQuarantine: new WeakMap(), _mediaReloadKeys: Object.create(null),
     _isMediaQuarantined: quarantine,
     _workerDelay: function () {}, _isRateLockedAtOne: function () { return true; },
-    _getMediaSeekKey: getKey, _mediaStablePath: stablePath, _noteSeekSkip: noteSkip,
+    _getMediaSeekKey: getKey, _mediaStablePath: stablePath, _noteSeekSkip: noteSkip, _evictOldestKeys: evictR,
     // ⚠️ 区间闸那两件也必须挂上来 —— 反向验证 G 轮把 `enableSeek` 那道闸改成"记一笔不退回"，
     //    执行流就走到 `_deferSeekUntilSeekable`， harness 里没有它 → TypeError 把整套件打死在半路，
     //    报出来的是"集成层没交出总账"而不是 ③ 红。**测试台把"生产坏了"实现成崩溃，等于替生产删掉一条断言。**
@@ -8627,6 +8681,7 @@ async function testNinetyAdvanceBoundToSeek() {
       _activeJobId: 'job-910000001',
       _getMediaSeekKey: getKey,
       _mediaStablePath: stablePath,
+      _evictOldestKeys: evictR,
       _isRateLockedAtOne: rateLocked,
       _isNinetyPercentVideo: isNinety,
       _noteNinetyHeldBack: noteHeld,

@@ -545,8 +545,8 @@
         var k = String(key || '');
         var st = this._seekSkipLedger[k];
         if (!st) {
-          if (Object.keys(this._seekSkipLedger).length > 300) this._seekSkipLedger = Object.create(null);
           st = this._seekSkipLedger[k] = { n: 0, first: Date.now(), reasons: Object.create(null) };
+          this._evictOldestKeys(this._seekSkipLedger, 300); // 写完再裁：新那格的 `first` 是当下，永远排最后，裁不到自己
         }
         st.n++;
         st.reasons[reason] = (st.reasons[reason] || 0) + 1;
@@ -642,8 +642,8 @@
       var res = this._readSiteSeekCondition(video);
       res.at = now;
       if (key) {
-        if (Object.keys(this._seekSiteKeys).length > 300) this._seekSiteKeys = Object.create(null);
         this._seekSiteKeys[key] = res;
+        this._evictOldestKeys(this._seekSiteKeys, 300); // 只清最旧：新那格 `at` 是当下，`forbidden` 那几条不会被这一发抹掉
         if (res.state === 'forbidden' && !(hit && hit.state === 'forbidden')) {
           // 被挡下一定要出日志（AGENTS §2 #14），而且点名是谁判的：站点自己那句话，不是我们猜的
           emitRuntimeLog('info', 'site condition says not draggable, skip seek to end', {
@@ -987,11 +987,11 @@
       if (!this._seekRevertedKeys) this._seekRevertedKeys = Object.create(null);
       if (!key) { this._noteSeekSkip('no-key', video, key); return false; }
       if (this._seekTriedKeys[key]) return false; // 本视频已检查过，只做一次（这是"试过了"，不进 skip 账）
-      if (Object.keys(this._seekTriedKeys).length > 300) {
-        this._seekTriedKeys = Object.create(null);
-        this._seekRevertedKeys = Object.create(null);
-        this._seekDeferKeys = Object.create(null);
-      }
+      // 三本账各裁各的、各只删自己最旧那几条。⚠️ `_seekRevertedKeys` 绝不与别的一起整本重建 ——
+      // 那一格是「站点把进度条拽回去」的行为证据，连坐抹掉就是替每支视频重发一次性试拖预算（AGENTS §2 #17）。
+      this._evictOldestKeys(this._seekTriedKeys, 300);
+      this._evictOldestKeys(this._seekRevertedKeys, 300);
+      this._evictOldestKeys(this._seekDeferKeys, 300);
 
       var duration = Number(video.duration);
       if (!isFinite(duration) || duration <= 20) { this._noteSeekSkip('no-meta', video, key); return false; } // 元数据未就绪/时长太短：不标记，下次再检查
@@ -1885,10 +1885,8 @@
         if (!key) return false;
         if (!this._ninetyHeldBackKeys) this._ninetyHeldBackKeys = Object.create(null);
         if (this._ninetyHeldBackKeys[key]) return true;
-        if (Object.keys(this._ninetyHeldBackKeys).length > 300) {
-          this._ninetyHeldBackKeys = Object.create(null);
-        }
         this._ninetyHeldBackKeys[key] = true;
+        this._evictOldestKeys(this._ninetyHeldBackKeys, 300); // 值只有 `true`（没有时刻）⇒ 整本同为 0，按插入序删最前面几条
         emitRuntimeLog('info', 'advance at 90% held back: seek disabled', {
           ratio: Number(ratio.toFixed(3)),
           duration: Number(duration.toFixed(1)),
@@ -1975,14 +1973,16 @@
 
 
     /**
-     * 把一本「按媒体钥匙记的账」裁到 `cap` 条，**只删最旧的**（按条目 `at` 升序），返回删掉的条数。
+     * 把一本「按媒体钥匙记的账」裁到 `cap` 条，**只删最旧的**（按条目 `at`／`first`／`ts` 升序），返回删掉的条数。
      *
      * ⚠️ 为什么不是「超了就整本清空」：这本账是**跨拍累积**才生效的（AGENTS §2 #13）——
      *    整本抹平等于把所有媒体的「已经重载过几次」归零，`MEDIA_RELOAD_LIMIT` 那道三次闸
      *    永远数不到顶，坏包的视频就一遍遍重载。只裁最旧那几条，还在播的照旧带着自己的账。
      * ⚠️ 纯函数：不读 `this`（**更不许顺手清别的账本** —— `_seekRevertedKeys` 那一族是站点的行为证据，
      *    被连坐抹掉就是 AGENTS §2 #17 那笔预算白花）、不抛。
-     *    没有 `at` 的条目按 0 算（最旧先删）；拿不到 map、`cap` 读不出数、任何异常 —— 一律交回 0，
+     *    没有 `at`／`first`／`ts` 的条目按 0 算（最旧先删；整本都是 0 时那一发排序是稳定的，
+     *    等于按 `Object.keys` 的插入序删最前面几条 —— 值只写 `true` 的那几本账就落在这一格）；
+     *    拿不到 map、`cap` 读不出数、任何异常 —— 一律交回 0，
      *    让调用方照旧走原路（§2 #12：「读不出」不许实现成"做了点什么"）。
      */
     _evictOldestKeys: function (map, cap) {
@@ -1993,7 +1993,8 @@
         var keys = Object.keys(map);
         if (keys.length <= max) return 0;
         var atOf = function (k) {
-          var t = Number(map[k] && map[k].at);
+          var e = map[k];
+          var t = e ? Number(e.at || e.first || e.ts || 0) : 0;
           return isFinite(t) ? t : 0;
         };
         keys.sort(function (a, b) { return atOf(a) - atOf(b); });
@@ -2198,7 +2199,7 @@
         if (this._popupQuizBlocksPlayback && this._popupQuizBlocksPlayback()) return false;
 
         var found = this._siteStartControlOf(video);
-        if (Object.keys(this._startNudgeKeys).length > 300) this._startNudgeKeys = Object.create(null);
+        this._evictOldestKeys(this._startNudgeKeys, 300); // 只清最旧：整本重建会把「这一支已经 nudged 几次」的计数抹回 0（§2 #13）
         if (!found) {
           // 「认不出开始键」单独占一格，不许塌成"点过了"（AGENTS §2 #12）。
           this._startNudgeKeys[key] = { n: done + 1, at: now, rung: 'none' };
