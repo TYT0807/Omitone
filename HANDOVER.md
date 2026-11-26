@@ -1762,6 +1762,12 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.81 前端第三刀：换背景三件套收进「高级」（2026-11-26，#51 / #55）
+
+- `popup.html` 只动一处：底部背景三件套整块移进 `advancedGroup`，id/accept/hidden 与 `popup.js` 绑定不变。
+- 脚本逐锚点自证（3 个 id 各 1、switch 仍 20、位置在组内）；check EXIT=0，设置弹窗 60/60。
+- lite 模式仍按 id 隐藏这三枚，位置变化不影响。
+
 ### 0.80 提交结果状态机：rejected 记窗口，不原样重交（2026-11-26，#52 P0）
 
 - `_quizSubmitOutcome` 单字段 + `_setQuizSubmitOutcome` / `_quizSubmitRejectedBlocksRetry`。

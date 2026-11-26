@@ -979,6 +979,17 @@ body.has-bg::after{
         </select>
         <p class="hint">在一段时间内不再提醒更新，不影响手动检查。</p>
       </div>
+      <div class="field">
+        <!-- 背景是整扇窗口的装饰，与"她在不在"无关；「打开逗玩窗口」与「显示小人」
+             早已并进上面「吉祥物」那一栏（弹窗里不再画她，也就没有"把小人显示出来"这件事了）。 -->
+        <div class="minor">
+          <button id="btnBg">换背景</button>
+          <button id="btnBgClear">恢复默认背景</button>
+        </div>
+        <input type="file" id="bgFile" accept="image/*" hidden>
+        <p class="hint">整窗背景只影响这一页的样子，精简模式下本来就看不到。
+          选下来的图存在扩展本地，点「恢复默认背景」会把它一起清掉。</p>
+      </div>
     </div>
   </details>
 
@@ -986,15 +997,6 @@ body.has-bg::after{
     <button id="toggleLogs" aria-controls="logPanel" aria-expanded="false">查看日志</button>
     <button id="copyLogs">复制日志</button>
     <button id="clearLogs">清空日志</button>
-  </div>
-
-  <!-- 背景是整扇窗口的装饰，与"她在不在"无关，留在这一排。
-       「打开逗玩窗口」与「显示小人」已经并进上面「吉祥物」那一栏（弹窗里不再画她，
-       也就没有"把小人显示出来"这件事了）。 -->
-  <div class="minor">
-    <button id="btnBg">换背景</button>
-    <button id="btnBgClear">恢复默认背景</button>
-    <input type="file" id="bgFile" accept="image/*" hidden>
   </div>
 
   <div class="log-panel" id="logPanel"></div>

@@ -8,6 +8,14 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 219 · 2026-11-26 · 前端第三刀：换背景三件套收进「高级」（#51 / #55）
+
+- `popup/popup.html` 底部 `btnBg` / `btnBgClear` / `bgFile` 整块移进默认收起的 `details#advancedGroup`；
+  id、accept、hidden 原样，`popup.js` 绑定一行未动，`omitone.bg` 存档继续生效。
+- 施工脚本逐锚点自证：三个 id 各 1 处、`role="switch"` 仍 20、三枚落在 advancedGroup 区间内；
+  check EXIT=0、设置弹窗 e2e 60/60。
+- **门面**：`换背景三件套收进「高级」`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 218 · 2026-11-26 · 提交结果状态机：平台说失败后不再立刻原样重交（#52 P0）
 
 - 新增单字段 `_quizSubmitOutcome`（`accepted / rejected / unknown / redo`）与两个助手
