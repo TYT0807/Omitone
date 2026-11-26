@@ -1862,6 +1862,16 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
 
+### 0.77 前端第四刀：验证码授权两枚按钮收进高级（批次 226，2026-11-26，主会话）
+
+- **一句**：顶部 `.minor` 里那两枚 `grantCaptcha` / `revokeCaptcha` 整块移进 `details#advancedGroup`，
+  两个 id、按钮文字、`popup.js` 绑定一处没动；顶部只剩开始/停止与简介。
+- **读数**：`check.js` EXIT=0；定向「设置弹窗」e2e **60 / 60**；两个 id 各 1 处、`role="switch"` 仍 20；
+  集成 837 / 837、e2e 155 场景 / 1740 项未变（本轮没加删断言，按 UI 移动先例只跑定向）。
+- **顺带**：`tools/github-release.js` 的 `preview` 原本要求本地 HEAD == 远端提交号；git 通道不可用时
+  REST 回退会被 GitHub 重签成同树不同号，仍应视为同一份代码。现在只在**树逐字相同**时放行，树不同照拦。
+- **门面**：`验证码授权两枚按钮收进「高级」`（预览说明与 main 那一页各一行）。
+
 ### 0.76 结果页得分/及格线只读解析（批次 225，2026-11-26，主会话）
 
 - **一句**：结果页的「得分 50 / 及格线 60」以前完全没人读，低分卷只在日志里安静翻过去。

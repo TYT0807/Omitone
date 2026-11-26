@@ -672,10 +672,6 @@ body.has-bg::after{
       <button class="btn" id="start">开始运行</button>
       <button class="btn secondary" id="stop">停止</button>
     </div>
-    <div class="minor">
-      <button type="button" id="grantCaptcha">仅授权当前页验证码</button>
-      <button type="button" id="revokeCaptcha">撤销当前页授权</button>
-    </div>
     <p class="hint" id="introHint" style="margin-top:8px;">
       <b>1.3.2 实验版 · 公益项目，永久免费</b>，没有收费功能、也没有会员。<br>
       视频 / 文档 / PPT / 讨论 / 投票<b>不接大模型、不花钱</b>；<b>AI 答题与验证码识别要 API Key</b>（在下面「AI 接入」里填），
@@ -978,6 +974,13 @@ body.has-bg::after{
           <option value="-1">不再提醒</option>
         </select>
         <p class="hint">在一段时间内不再提醒更新，不影响手动检查。</p>
+      </div>
+      <div class="field">
+        <div class="minor">
+          <button type="button" id="grantCaptcha">仅授权当前页验证码</button>
+          <button type="button" id="revokeCaptcha">撤销当前页授权</button>
+        </div>
+        <p class="hint">只对非学习通页面生效，授权 10 分钟；学习通页面不需要额外授权。</p>
       </div>
       <div class="field">
         <!-- 背景是整扇窗口的装饰，与"她在不在"无关；「打开逗玩窗口」与「显示小人」

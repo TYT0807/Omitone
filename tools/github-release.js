@@ -686,8 +686,16 @@ async function cmdPreview() {
   }
   var remoteHead = ref.object.sha;
   if (remoteHead !== localHead) {
-    throw new Error('本地 HEAD ' + localHead.slice(0, 7) + ' ≠ 远端 ' + branch + ' ' + remoteHead.slice(0, 7) +
-      ' —— 先把这一支 push 上去（tag 只能指在推上去的那份代码上）');
+    // git 通道不可用时走 REST 回退，远端提交会被 GitHub 重新签名（同树不同号）；
+    // 只认「树逐字相同」就仍是同一份代码，不能拿提交号把预览口锁死。
+    var localTree = String(git(['rev-parse', 'HEAD^{tree}'], true)).trim();
+    var remoteCommit = await api('GET', base + '/git/commits/' + remoteHead);
+    var sameTree = !!(remoteCommit && remoteCommit.tree && remoteCommit.tree.sha === localTree);
+    if (!sameTree) {
+      throw new Error('本地 HEAD ' + localHead.slice(0, 7) + ' ≠ 远端 ' + branch + ' ' + remoteHead.slice(0, 7) +
+        ' 且树也不相同 —— 先把这一支 push 上去（tag 只能指在推上去的那份代码上）');
+    }
+    console.log('本地 HEAD 与远端提交号不同，但树逐字相同（API 回退重签）—— 按同一份代码继续');
   }
   console.log('通道         预览（' + names.version_name + '）');
   console.log('远端 ' + branch + ' = ' + remoteHead.slice(0, 7));
