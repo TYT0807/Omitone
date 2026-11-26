@@ -8,6 +8,22 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 221 · 2026-11-26 · 提交次数存储读不到时不再静默归零（#52 P2）
+
+- `_getQuizSubmitAttemptCount` 读 sessionStorage 抛错时旧写法 `return 0` —— 「读不到」被当成「一次都没交过」，
+  20/2 次上限静默消失且一条日志都不留。现在新增 `_quizSubmitAttemptMemo` 内存账：读成功时与存储同步、
+  读失败时用内存兜底；写/清失败也先落内存再报，这一页后面的上限判定仍按真数走。
+- 存储故障单独一格 `quiz submit attempt store unreadable`（`op=read|write|clear`、`fallback=memory`、
+  带卷子键），同一 `key|op` 只报一次，不会每拍刷屏。
+- 新增 `_noteQuizSubmitAttemptStoreIssue`（70 片段 74 方法），`10-config-state.js` 状态字段 180 个；
+  `src/page/README.md` 的片段统计同步。
+- 集成 [39] 五条：正常存储读写/递增/清空不报故障；抛错时内存兜底且上限照样生效；读/写各只报一次；
+  清空失败单独一格。反向一刀把兜底改回 `return 0` → **只红「内存兜底」那一条**，
+  还原后 `src/page/70-quiz-flow.js` / `page.js` / `content.js` 与基线逐字节一致。
+- 读数：`npm test` EXIT=0（集成 **821 / 821**）、全量 e2e **153 场景 / 1727 项**全绿
+  （`.workbuddy/e2e-221-full.log`）、`node tools/check.js` EXIT=0。
+- **门面**：`提交次数统计读不到时，不再被当成「一次都没交过」`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 220 · 2026-11-26 · 同一卡片两份卷子 A→B 完整串行交卷验收（#52 P1）
 
 - 新增 e2e 场景「同一卡片两份卷子 A→B 完整串行交卷」（`/two-quizzes`）：先让 A 卷走**完整生产链**

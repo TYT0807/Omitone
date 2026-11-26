@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 816 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 821 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1861,6 +1861,20 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 - 逐处改成 `app._setQuizApiFailUntil(0);`（生产方法在 `<=0` 时内存与键一起清）。替换 13 处、残留 0 处；
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
+
+### 0.72 #60 收口：提交次数存储读不到时不再静默归零（2026-11-26，主会话）
+
+- **一句**：`_getQuizSubmitAttemptCount` 读 sessionStorage 抛错时旧写法直接 `return 0`，于是
+  「读不到」被当成「一次都没交过」—— 20/2 次提交上限静默消失，而且一条日志都不留。
+- **修法**：新增 `_quizSubmitAttemptMemo` 内存账（读成功时与存储同步；读失败时兜底）与
+  `_noteQuizSubmitAttemptStoreIssue`（`quiz submit attempt store unreadable`，`op=read|write|clear`、
+  `fallback=memory`、带卷子键，同一 `key|op` 只报一次）。写与清都先落内存再试存储，写失败不丢账。
+- **口径**：内存兜底只保这一页；跨刷新仍以存储为准 —— 存储彻底不可用时没有更强的持久化可用，
+  所以日志把 `fallback=memory` 明写出来，不冒充「存储里的真值」。
+- **读数**：集成 [39] 五条（正常/抛错/去重/清空失败）；反向一刀把兜底改回 `return 0` →
+  只红「内存兜底」那一条（`.workbuddy/reverse-attempt-store.log`），还原后三份产物逐字节一致；
+  `npm test` EXIT=0（集成 **821 / 821**）、全量 e2e **153 场景 / 1727 项**全绿、`check.js` EXIT=0。
+- **门面**：`提交次数统计读不到时，不再被当成「一次都没交过」`（预览说明与 main 那一页各一行）。
 
 ### 0.71 #54 收口：同一卡片两份卷子 A→B 完整串行交卷有了真实验收（2026-11-26，主会话）
 

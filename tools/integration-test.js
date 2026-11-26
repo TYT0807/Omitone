@@ -11918,6 +11918,110 @@ async function testQuizSubmitOutcome() {
     JSON.stringify({ key: key, outcomeKey: app._quizSubmitOutcome.key }));
 }
 
+async function testQuizSubmitAttemptStoreFallback() {
+  console.log('\n[39] 提交次数仓储读/写失败：不许静默归零，内存兜底且单独留话（#52 P2）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var quiz = read('src/page/70-quiz-flow.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var makeStorage = function (mode) {
+    var map = Object.create(null);
+    if (mode === 'throw') {
+      var deny = function () { throw new Error('storage-denied'); };
+      return { getItem: deny, setItem: deny, removeItem: deny };
+    }
+    return {
+      getItem: function (k) { return map[k] == null ? null : map[k]; },
+      setItem: function (k, v) { map[k] = String(v); },
+      removeItem: function (k) { delete map[k]; }
+    };
+  };
+  var buildApp = function (storage) {
+    var app = {
+      configs: { quizRejectGiveUp: true },
+      _quizSubmitAttemptMemo: null,
+      _quizSubmitAttemptStoreIssueKeys: null,
+      _getQuizSubmitAttemptKey: function () { return 'paper-A.submitAttempts'; },
+      _getQuizMaxSubmitAttempts: function () { return 2; }
+    };
+    var inj = {
+      sessionStorage: storage,
+      emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); }
+    };
+    ['_getQuizSubmitAttemptCount', '_setQuizSubmitAttemptCount', '_clearQuizSubmitAttemptCount',
+      '_incrementQuizSubmitAttemptCount', '_shouldSkipQuizBySubmitAttempts',
+      '_noteQuizSubmitAttemptStoreIssue'].forEach(function (name) {
+      app[name] = buildFrom(quiz, name, inj);
+    });
+    return app;
+  };
+  var missing = buildApp(makeStorage('ok'));
+  var missingNames = ['_getQuizSubmitAttemptCount', '_setQuizSubmitAttemptCount',
+    '_clearQuizSubmitAttemptCount', '_incrementQuizSubmitAttemptCount',
+    '_shouldSkipQuizBySubmitAttempts', '_noteQuizSubmitAttemptStoreIssue']
+    .filter(function (n) { return typeof missing[n] !== 'function'; });
+  check('六件都能从盘上原样取出来真跑（取不出时后面每一条都是「没执行」）',
+    missingNames.length === 0, JSON.stringify(missingNames));
+  if (missingNames.length) return;
+
+  // 正常存储：写 1 读 1，递增到 2 后上限生效；清空后回 0，且不该有故障日志
+  var okApp = buildApp(makeStorage('ok'));
+  okApp._setQuizSubmitAttemptCount(null, 1);
+  var okRead = okApp._getQuizSubmitAttemptCount(null);
+  var okInc = okApp._incrementQuizSubmitAttemptCount(null);
+  var okSkip = okApp._shouldSkipQuizBySubmitAttempts(null);
+  okApp._clearQuizSubmitAttemptCount(null);
+  var okAfterClear = okApp._getQuizSubmitAttemptCount(null);
+  var okWarns = logs.filter(function (l) { return l.message === 'quiz submit attempt store unreadable'; });
+  check('正常存储：写 1 读 1、递增到 2 后上限生效、清空回 0，且不报故障',
+    okRead === 1 && okInc === 2 && okSkip === true && okAfterClear === 0 && okWarns.length === 0,
+    JSON.stringify({ read: okRead, inc: okInc, skip: okSkip, afterClear: okAfterClear, warns: okWarns.length }));
+
+  // 存储整体抛错：读不许静默归零，必须用本页内存兜底，并单独留话（按 key|op 去重）
+  logs.length = 0;
+  var badApp = buildApp(makeStorage('throw'));
+  var bad0 = badApp._getQuizSubmitAttemptCount(null);
+  badApp._setQuizSubmitAttemptCount(null, 1);
+  var bad1 = badApp._getQuizSubmitAttemptCount(null);
+  var badInc = badApp._incrementQuizSubmitAttemptCount(null);
+  var badSkip = badApp._shouldSkipQuizBySubmitAttempts(null);
+  var badWarns = logs.filter(function (l) { return l.message === 'quiz submit attempt store unreadable'; });
+  var readWarns = badWarns.filter(function (l) { return l.meta && l.meta.op === 'read'; });
+  var writeWarns = badWarns.filter(function (l) { return l.meta && l.meta.op === 'write'; });
+  check('读不到时用内存兜底，不把「读不到」当「没交过」：写 1 读 1、递增到 2 后上限照样生效',
+    bad0 === 0 && bad1 === 1 && badInc === 2 && badSkip === true,
+    JSON.stringify({ first: bad0, read: bad1, inc: badInc, skip: badSkip }));
+  check('存储故障单独报一格（op=read / write、fallback=memory、带 key），同一 key|op 只报一次',
+    readWarns.length === 1 && writeWarns.length === 1 &&
+    readWarns[0].meta.fallback === 'memory' && readWarns[0].meta.key === 'paper-A.submitAttempts' &&
+    writeWarns[0].meta.fallback === 'memory',
+    JSON.stringify(badWarns));
+  badApp._clearQuizSubmitAttemptCount(null);
+  var clearWarns = logs.filter(function (l) {
+    return l.message === 'quiz submit attempt store unreadable' && l.meta && l.meta.op === 'clear';
+  });
+  check('清空写失败也单独占一格，且内存那份一起清掉',
+    clearWarns.length === 1 && badApp._getQuizSubmitAttemptCount(null) === 0,
+    JSON.stringify({ clearWarns: clearWarns.length, after: badApp._getQuizSubmitAttemptCount(null) }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -11973,6 +12077,7 @@ async function main() {
   await testReadV2Task();
   await testExamResultNeutralText();
   await testQuizSubmitOutcome();
+  await testQuizSubmitAttemptStoreFallback();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

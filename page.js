@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '4b9239347d';
+var OMITONE_CODE_REV = '8401626ea4';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -579,6 +579,10 @@ var OMITONE_CODE_REV = '4b9239347d';
     _quizSubmitStallAt: 0,
     // 最近一次提交结果：{ state: accepted|rejected|unknown|redo, key, at, rejectedUntil, text }
     _quizSubmitOutcome: null,
+    // 提交次数的内存兜底：存储读/写失败时仍能按同一份卷子数下去（不能把「读不到」当「没交过」）
+    _quizSubmitAttemptMemo: null,
+    // 提交次数存储故障「这一格已经报过」的账，按 key|op 去重，避免每拍刷一条 warn
+    _quizSubmitAttemptStoreIssueKeys: null,
 
     // 交卷旁路观测器的安装状态（`_installSubmitSniffer` 里写）：
     //   _submitSnifferInstalled  这一份顶层页里是否已经包过 XHR/fetch（只许装一次）
@@ -14083,23 +14087,64 @@ var OMITONE_CODE_REV = '4b9239347d';
     },
 
     _getQuizSubmitAttemptCount: function (preferredDoc) {
+      var key = this._getQuizSubmitAttemptKey(preferredDoc);
+      if (!this._quizSubmitAttemptMemo) this._quizSubmitAttemptMemo = Object.create(null);
       try {
-        return Number(sessionStorage.getItem(this._getQuizSubmitAttemptKey(preferredDoc)) || 0) || 0;
+        var stored = Number(sessionStorage.getItem(key) || 0) || 0;
+        // 读成功时把内存那份同步成存储里的真值（存储才是跨刷新的事实）
+        this._quizSubmitAttemptMemo[key] = stored;
+        return stored;
       } catch (e) {
-        return 0;
+        // 读不到**不等于没交过**：用本页内存里的账兜底，并单独报一格（每个 key 只报一次）
+        this._noteQuizSubmitAttemptStoreIssue(key, 'read', e);
+        return Number(this._quizSubmitAttemptMemo[key] || 0) || 0;
       }
     },
 
     _setQuizSubmitAttemptCount: function (preferredDoc, count) {
+      var key = this._getQuizSubmitAttemptKey(preferredDoc);
+      var next = Math.max(0, Number(count) || 0);
+      if (!this._quizSubmitAttemptMemo) this._quizSubmitAttemptMemo = Object.create(null);
+      // 先落内存再试存储：存储写失败时这一页后面的上限判定仍按真数走
+      this._quizSubmitAttemptMemo[key] = next;
       try {
-        sessionStorage.setItem(this._getQuizSubmitAttemptKey(preferredDoc), String(Math.max(0, count || 0)));
-      } catch (e) {}
+        sessionStorage.setItem(key, String(next));
+      } catch (e) {
+        this._noteQuizSubmitAttemptStoreIssue(key, 'write', e);
+      }
     },
 
     _clearQuizSubmitAttemptCount: function (preferredDoc) {
+      var key = this._getQuizSubmitAttemptKey(preferredDoc);
+      if (this._quizSubmitAttemptMemo) {
+        try { delete this._quizSubmitAttemptMemo[key]; } catch (eMemo) {}
+      }
       try {
-        sessionStorage.removeItem(this._getQuizSubmitAttemptKey(preferredDoc));
-      } catch (e) {}
+        sessionStorage.removeItem(key);
+      } catch (e) {
+        this._noteQuizSubmitAttemptStoreIssue(key, 'clear', e);
+      }
+    },
+
+    /**
+     * 提交次数仓储（sessionStorage）读/写失败时留话，每个 `key|op` 只报一次。
+     *
+     * 为什么要单独一格：旧写法在 catch 里 `return 0`，于是「读不到」被当成「一次都没交过」，
+     * 20/2 次上限静默消失，且一条日志都不留。现在计数在内存里继续走，
+     * `fallback=memory` 说明这一轮的数是内存兜底的，不是存储里的真值。
+     */
+    _noteQuizSubmitAttemptStoreIssue: function (key, op, err) {
+      if (!key) return;
+      if (!this._quizSubmitAttemptStoreIssueKeys) this._quizSubmitAttemptStoreIssueKeys = Object.create(null);
+      var issueKey = String(op) + '|' + String(key);
+      if (this._quizSubmitAttemptStoreIssueKeys[issueKey]) return;
+      this._quizSubmitAttemptStoreIssueKeys[issueKey] = true;
+      emitRuntimeLog('warn', 'quiz submit attempt store unreadable', {
+        op: String(op),
+        key: String(key).slice(0, 60),
+        fallback: 'memory',
+        error: String((err && err.message) || err || '').slice(0, 120)
+      });
     },
 
     _incrementQuizSubmitAttemptCount: function (preferredDoc) {

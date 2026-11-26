@@ -1281,7 +1281,7 @@ npm run concat   # 把 src/page/*.js 拼成根目录的 page.js（改了片段�
 npm run concat:check  # 只校验产物与片段一致（npm test 里已含这一步）
 npm run check    # 工程自检：语法 / manifest / 版本一致性 / 编码损坏 / 幽灵调用 / 死方法 / 死代码 / 唯一真源 / 产物与片段一致 / 片段头部一致 / await 可超时 / 选择器大小写一致 / 独立套件挂载
 npm run bench    # 提示词 token 基准（三代对比 + 信息完整性自检）
-npm run itest    # 集成测试（816 项）：真实 content.js 的答题往返
+npm run itest    # 集成测试（821 项）：真实 content.js 的答题往返
 npm run bgtest   # worker 单测：作用域 / 配置投影 / 授权 / 抓图护栏（126 项）
 npm test         # 上面四步 + 下面那些秒级独立套件（regression / pet-game / fuzz / log-store / popup-log / acceptance:test）
 npm run e2e      # 真实 Edge 功能交叉检验（153 个场景 / 1727 项）
@@ -1436,7 +1436,7 @@ legacy/                 已停用代码，不会被加载（原因见 legacy/REA
 | 文件 | 体积 | 说明 |
 | --- | --- | --- |
 | `popup/`（100 张立绘 + 界面） | 约 1.83 MB (50.1%) | 立绘是主体：48 套服装 / 25 表情 / 28 姿势，每张 8~24 KB |
-| `page.js` | 1.14 MB (31.2%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
+| `page.js` | 1.14 MB (31.3%) | 全部页面侧逻辑（构建产物，源码在 `src/page/` 的 16 个片段里） |
 | `libs/` | 225 KB (6.0%) | 字体解析 Typr 96 KB + 报错分类 / 提示词 / 地址构造 / 字形表 / 联网搜索那把尺 |
 | `content.js` | 222 KB (5.9%) | 桥接层（字体解密 / 日志路由 / 上课页伴侣） |
 | `resources/`（装的是 `table.bin`） | 123 KB (3.3%) | 20902 条「字形哈希 → 字符」映射，字体反爬用 |
