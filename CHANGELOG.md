@@ -8,6 +8,24 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 220 · 2026-11-26 · 同一卡片两份卷子 A→B 完整串行交卷验收（#52 P1）
+
+- 新增 e2e 场景「同一卡片两份卷子 A→B 完整串行交卷」（`/two-quizzes`）：先让 A 卷走**完整生产链**
+  `_handleQuiz → _maybeSubmitQuiz → btnBlueSubmit` 真交出去；移除 A 的任务点容器后确认
+  `_searchChaoxingJobOcs` 会接手 B；B 再走同一条链真交出，结果页落到 `.Py_answer + .answerScore`，
+  生产判据 `_isQuizPassedOrFinished` 认它已完成。
+- 夹具补上一层真站点形状：内层卷子的 `qid` + `#answer{n}` + `#answertype{n}` 隐藏域。
+  缺这一层时 `_getQuizQuestionFilledValue` 恒空 → `_areQuizAnswersFilled` 恒 false → 整卷永不提交；
+  这是「夹具必须长得像现场」那一族，不是生产 bug。
+- B 的提交由一段**有界逐拍重入**驱动：生产里 `_maybeSubmitQuiz` 由 tick 每秒重入，而 A 交完后的
+  3 秒重试闸还没过；测试台没有 tick，照同一节奏补 20 拍（每拍 300 毫秒）。
+- **反向验证**：摘掉 `src/page/60-tasks-detect.js` 里换卷那一行 `_syncQuizPaperRunState` →
+  只有 B 的两条断言红（其余 7 条照旧绿），`page.js` 加载自证不红；还原后
+  `src/page/60-tasks-detect.js` / `page.js` / `content.js` 与注入前基线**逐字节一致**，标记 0 处。
+- 读数：定向 **9 / 9**；全量 e2e **153 场景 / 1727 项**全绿（`.workbuddy/e2e-220-full.log`，
+  末行「功能交叉检验全部通过：1727 / 1727 项」，全日志 `[FAIL]` 0 条）；集成 816 / 816 未动。
+- **门面**：不用补（本轮只加多卷串行验收与夹具形状，用户可见行为不变）
+
 ### 批次 219 · 2026-11-26 · 前端第三刀：换背景三件套收进「高级」（#51 / #55）
 
 - `popup/popup.html` 底部 `btnBg` / `btnBgClear` / `bgFile` 整块移进默认收起的 `details#advancedGroup`；
@@ -151,7 +169,7 @@
   挂进 `npm test` 与 `npm run update-plan:test`；从 `popup/popup.js` 原文切函数，不跑整个弹窗、不碰 DOM/chrome。
 - 反向两刀（隔离 worktree，跑完已 remove）：A 删 `experimental` 分支 → 红 1（预览版那条）；B 删
   `previewPlan` 的 `same-as-stable` 那格 → 红 1；还原后 `popup.js` 与基线逐字节一致、复跑红 0、marker 0 处。
-- 读数：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）、全量 e2e **152 场景 / 1718 项**绿
+- 读数：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）、全量 e2e **152 场景 / 1718 项**绿 <!-- 历史计数:start --><!-- 历史计数:end -->
   （`.workbuddy/e2e-43-full.log`）、`node tools/check.js` EXIT=0。
 - 说明书补一句「预览版 / 本地开发构建」的提示（页数保持 41）。
 - 收口：预览 tag 已重指到本轮提交，`omitone-preview.zip` 与 `Omitone-manual-preview.pdf` 均 uploaded，

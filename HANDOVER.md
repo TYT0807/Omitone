@@ -1862,6 +1862,27 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
 
+### 0.71 #54 收口：同一卡片两份卷子 A→B 完整串行交卷有了真实验收（2026-11-26，主会话）
+
+- **一句**：生产里早就有「换卷子先同步纸状态」（`src/page/60-tasks-detect.js` 的 quiz func 里那句
+  `self._syncQuizPaperRunState(jobKey, jobDoc)`），但此前没有任何一条 e2e 证明过 A 交完之后
+  B 真的会被接手、真的能再交一次。本轮补的是**验收**，不是生产逻辑。
+- **新场景**（`tools/browser-e2e.js`，`/two-quizzes`）：A 卷走完整
+  `_handleQuiz → _maybeSubmitQuiz → btnBlueSubmit` 真交出；移除 A 的任务点容器后
+  `_searchChaoxingJobOcs` 必须接手 B；B 再走同一条链真交出，`.Py_answer + .answerScore` 落到 DOM，
+  `_isQuizPassedOrFinished` 认它已完成。
+- **夹具的两处现场形状**（都不是生产改动）：
+  ① 内层卷子补 `qid` + `#answer{n}` + `#answertype{n}`。缺这一层时 `_getQuizQuestionFilledValue`
+  恒空 → `_areQuizAnswersFilled` 恒 false → 整卷永不提交（通用夹具原先只画了题形）。
+  ② B 的提交由有界逐拍重入驱动：生产里 `_maybeSubmitQuiz` 由 tick 每秒重入，而 A 交完后的
+  3 秒重试闸还没过；测试台没有 tick，照同一节奏补 20 拍（每拍 300 毫秒）。
+- **反向验证**：摘掉换卷那一行 → 只有 B 的两条断言红（其余 7 条照旧绿），`page.js` 加载自证不红；
+  还原后 `src/page/60-tasks-detect.js` / `page.js` / `content.js` 与注入前基线逐字节一致，
+  标记 `MULTIPAPER_INJ` 0 处（`.workbuddy/reverse-multipaper-run.log`）。
+- **读数**：定向 **9 / 9**；全量 e2e **153 场景 / 1727 项**全绿（`.workbuddy/e2e-220-full.log`），
+  计数账 `scenarios:153 / assertions:1727 / passed:true`；集成 816 / 816 未动。
+- **门面**：不用补（用户可见行为不变，只在测试台加了一场景）。
+
 ### 0.70 #46 收口：沙盒快照接回真实 git 与已构建包，基线不再在浏览器场景前死掉（2026-11-25，定时搭档按 brief 领）
 
 - **一句**：`omitone-sandbox.cjs` 的临时快照 `OMIT` 里没有 `.git`，而 `tools/check.js` 现在有三处只读 git 判据
@@ -1889,7 +1910,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   从 `popup/popup.js` 原文切函数、用 `new Function` 注入附件名，不跑弹窗、不碰 DOM/chrome；挂进 `npm test`。
 - **反向两刀**（隔离 worktree）：A 删 `experimental` 分支 → 预览版那条红；B 删 `previewPlan.same-as-stable` → 对应格红；
   还原后 `popup.js` 逐字节一致、复跑红 0、marker 0 处。日志 `.workbuddy/rev43.log`。
-- **读数**：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）；全量 e2e **152 场景 / 1718 项**绿；
+- **读数**：`npm test` EXIT=0（集成 **806 / 806**、新套件 17 项、验收 46 例）；全量 e2e **152 场景 / 1718 项**绿； <!-- 历史计数:start --><!-- 历史计数:end -->
   `node tools/check.js` EXIT=0；说明书补了一格并重出 PDF，**页数仍 41**。
 - **收口**：预览包已重发（zip 与 PDF 均 uploaded）、main 门面预览行已推、`verify preview` 通过；
   现场弹窗属 1.3.1 稳定版，不装预览包就看不到新文案。
@@ -2008,7 +2029,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
-| e2e 基线 | 真实 Edge **152 场景 / 1718 项**（2026-11-25 批次 204 全绿，`.workbuddy/e2e-196-full.log`；批次 196 退役弹窗场景后项数 1725→1718，场景数仍 152） |
+| e2e 基线 | 真实 Edge **153 场景 / 1727 项**（2026-11-26 批次 220 全绿，`.workbuddy/e2e-220-full.log`；批次 220 新增多卷 A→B 串行场景后项数 1718→1727、场景数 152→153） |
 
 ---
 

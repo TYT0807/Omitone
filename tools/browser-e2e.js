@@ -15106,6 +15106,139 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 54. 同一卡片两份卷子 A→B 完整串行交卷（#52 P1）---- */
+SCENARIOS.push({
+  name: '同一卡片两份卷子 A→B 完整串行交卷',
+  path: '/two-quizzes',
+  run: async function (ctx) {
+    var cfg = {
+      apiType: 'openai', apiUrl: 'http://127.0.0.1:' + PORT, apiKey: 'e2e-key', model: 'e2e-model',
+      enableQuiz: true, randomAnswer: false,
+      autoNext: false, autoNextCourse: false, enableCaptcha: false, enableDiscussion: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(400);
+    await ctx.client.evaluate(
+      'window._xxtApp.configs=Object.assign({},window._xxtApp.configs,' + JSON.stringify(cfg) + ');true'
+    );
+
+    var prep = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var docs=[];' +
+      'function walk(win,d){if(!win||d>5)return;var doc=app._safeWinDoc(win);if(!doc)return;' +
+      'if(doc.querySelectorAll(".TiMu").length)docs.push(doc);' +
+      'var fs=doc.querySelectorAll("iframe");for(var i=0;i<fs.length;i++){try{walk(fs[i].contentWindow,d+1);}catch(e){}}}' +
+      'walk(window,0);' +
+      'docs.forEach(function(d){var w=d.defaultView;if(!w)return;w.__omSubmitted=0;' +
+      'var jid="";try{jid=String(app._findJobIdInAncestorFrames(w)||"");}catch(e){}w.__omJob=jid;' +
+      // 真站点的内层卷子带 qid + #answer{n} + #answertype{n}（平台提交读的就是隐藏域；
+      // 插件的「填没填」也认这一族）。这份通用夹具原先只画了题形，补上这一层才算现场形状 ——
+      // 少了它 `_getQuizQuestionFilledValue` 恒空 → `_areQuizAnswersFilled` 恒 false → 整卷永不提交。
+      'var timus=d.querySelectorAll(".TiMu");' +
+      'for(var ti=0;ti<timus.length;ti++){var qid=String(8000+ti);timus[ti].setAttribute("qid",qid);' +
+      'var h=d.createElement("input");h.type="hidden";h.id="answer"+qid;h.value="";timus[ti].appendChild(h);' +
+      'var ht=d.createElement("input");ht.type="hidden";ht.id="answertype"+qid;ht.value="0";timus[ti].appendChild(ht);}' +
+      'w.btnBlueSubmit=function(){w.__omSubmitted=(w.__omSubmitted||0)+1;' +
+      'Array.from(d.querySelectorAll("input,textarea")).forEach(function(i){i.disabled=true;});' +
+      'var p=d.createElement("div");p.className="Py_answer";p.textContent="我的答案：A";d.body.appendChild(p);' +
+      'var s=d.createElement("div");s.className="answerScore";s.textContent="本次作业得分 100 分";d.body.appendChild(s);};' +
+      'var f=d.querySelector(".ans-job-finished");if(f&&f.parentNode)f.parentNode.removeChild(f);});' +
+      'return {docs:docs.length,jobs:docs.map(function(d){return String(d.defaultView&&d.defaultView.__omJob||"");})};})()'
+    );
+    check('夹具自证：找到两份带题目的内层文档，A/B 身份都认得出来',
+      !!prep && prep.docs === 2 && prep.jobs.indexOf('work-A') >= 0 && prep.jobs.indexOf('work-B') >= 0,
+      JSON.stringify(prep));
+
+    // ⚠️ 不要把整条答题链塞进**一次** evaluate：`_handleQuiz` 是 async，
+    //    而 CDP 那一发有 30 秒硬超时（`CdpClient` 3420 行），一旦超时就只报
+    //    「CDP 超时」——「交没交出去」一个字都读不到（本场景第一版就撞在这上面）。
+    //    照 1d「作业页提交后认出已完成」的写法：**起跑不 await**，再用外部的
+    //    `waitFor` 分次轮询；每一次 evaluate 都是秒级返回。
+    var first = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var j=app._searchChaoxingJobOcs([]);' +
+      'return {id:j&&j.jobid,kind:j&&j.kind,hasFunc:!!(j&&j.func)};})()'
+    );
+    check('前置：两份都未完成时，第一个被挑中的是 A',
+      !!first && first.id === 'work-A' && first.kind === 'quiz' && first.hasFunc === true,
+      JSON.stringify(first));
+
+    var startA = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var a=app._searchChaoxingJobOcs([]);' +
+      'window.__omJobErr="";' +
+      'if(a&&a.func){Promise.resolve().then(a.func).catch(function(e){window.__omJobErr=String(e&&e.message||e);});}' +
+      'return {id:a&&a.jobid};})()'
+    );
+    check('A 卷被接上（拿到可执行的答题任务）', !!startA && startA.id === 'work-A', JSON.stringify(startA));
+
+    var countExpr = function (job) {
+      return '(function(){var app=window._xxtApp;var n=0;' +
+        'function walk(w,d){if(!w||d>5)return;var doc=app._safeWinDoc(w);if(!doc)return;' +
+        'if(String(w.__omJob||"")==="' + job + '")n+=Number(w.__omSubmitted||0);' +
+        'var fs=doc.querySelectorAll("iframe");for(var i=0;i<fs.length;i++){try{walk(fs[i].contentWindow,d+1);}catch(e){}}}' +
+        'walk(window,0);return n;})()';
+    };
+    var aSubmitted = await waitFor(ctx.client, countExpr('work-A') + ' >= 1', 25000);
+    var aState = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var j=app._searchChaoxingJobOcs([]);' +
+      'return {err:String(window.__omJobErr||""),nowId:j&&j.jobid,' +
+      '  ready:app._quizReadyToSubmit,answered:app._quizAnswered,inProgress:app._quizInProgress,' +
+      '  qlen:(app._quizCurrentQuestions||[]).length,pending:app._quizSubmitPending,' +
+      '  zeroRounds:app._quizZeroFillRounds,apiFailUntil:app._quizApiFailUntil||0,' +
+      '  apiReason:app._getQuizApiUnavailableReason()};})()'
+    );
+    check('A 卷真实交出（走 _handleQuiz → _maybeSubmitQuiz → btnBlueSubmit，不是只清了 _quizAnswered）',
+      aSubmitted === true,
+      JSON.stringify({ submitted: aSubmitted, state: aState, mockRequests: ctx.mock.requests.length }));
+    check('A 交完后平台侧不再把它当等待中的任务（下一份才有机会被接手）',
+      !!aState && aState.nowId !== 'work-A', JSON.stringify(aState));
+
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var card=app._getMainDocument();' +
+      'var box=card&&card.querySelector("#tp-a");if(box&&box.parentNode)box.parentNode.removeChild(box);return true;})()'
+    );
+
+    var startB = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var b=app._searchChaoxingJobOcs([]);' +
+      'window.__omJobErr="";' +
+      'if(b&&b.func){Promise.resolve().then(b.func).catch(function(e){window.__omJobErr=String(e&&e.message||e);});}' +
+      'return {id:b&&b.jobid,kind:b&&b.kind,hasFunc:!!(b&&b.func)};})()'
+    );
+    check('A 走后 B 被接手（同一卡片里的第二份卷子）',
+      !!startB && startB.id === 'work-B' && startB.kind === 'quiz' && startB.hasFunc === true,
+      JSON.stringify(startB));
+
+    // B 填好之后不一定会当场交：`_maybeSubmitQuiz` 有一道「距上次提交 <3 秒先别动」的闸
+    // （A 刚交完就在这个窗口里）。生产里它由 tick **每秒重入**，窗口过了自然就交了；
+    // 这里没有 tick，所以照那个节奏补一段有界的重入 —— 测的仍是生产同一个方法。
+    var bReady = await waitFor(ctx.client,
+      '(function(){var app=window._xxtApp;return app._quizRunPaperKey==="work-B" && app._quizReadyToSubmit===true;})()',
+      25000);
+    await ctx.client.evaluate(
+      '(async function(){var app=window._xxtApp;' +
+      'function nap(ms){return new Promise(function(r){setTimeout(r,ms);});}' +
+      'for(var i=0;i<20;i++){try{app._maybeSubmitQuiz(null);}catch(e){}await nap(300);}return true;})()'
+    );
+    var bSubmitted = await waitFor(ctx.client, countExpr('work-B') + ' >= 1', 10000);
+    var final = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var bd=null;' +
+      'function walk(w,d){if(!w||d>5)return;var doc=app._safeWinDoc(w);if(!doc)return;' +
+      'if(String(w.__omJob||"")==="work-B")bd=doc;' +
+      'var fs=doc.querySelectorAll("iframe");for(var i=0;i<fs.length;i++){try{walk(fs[i].contentWindow,d+1);}catch(e){}}}walk(window,0);' +
+      'return {err:String(window.__omJobErr||""),' +
+      '  bResult:!!(bd&&bd.querySelector(".Py_answer")&&bd.querySelector(".answerScore")),' +
+      '  bFinished:bd?app._isQuizPassedOrFinished(bd):false,key:app._quizRunPaperKey,' +
+      '  ready:app._quizReadyToSubmit,answered:app._quizAnswered,inProgress:app._quizInProgress,' +
+      '  qlen:(app._quizCurrentQuestions||[]).length,pending:app._quizSubmitPending,' +
+      '  forceSkip:app._isQuizForceSkipping?app._isQuizForceSkipping(bd):"?"};})()'
+    );
+    check('B 也真实交出（换卷子时 _quizAnswered 被清掉，否则第二份永远不答）',
+      bReady === true && bSubmitted === true,
+      JSON.stringify({ ready: bReady, submitted: bSubmitted, final: final, mockRequests: ctx.mock.requests.length }));
+    check('B 的结果页真的落到 DOM，且生产判据认它是已完成',
+      !!final && final.bResult === true && final.bFinished === true && final.key === 'work-B',
+      JSON.stringify(final));
+  }
+});
+
 /**
  * ---- 模块页 <script> 里含「任务点已完成」时，卷子不能被误判成已完成 ----
  *
