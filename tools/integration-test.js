@@ -12076,6 +12076,48 @@ async function testUnknownQuizShape() {
   }
 }
 
+async function testCurrentTitleFallback() {
+  console.log('\n[41] 独立考试页没有 .prev_title 时，<title> 里的卷面词要兜底（批次 224）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var dom = read('src/page/20-dom.js');
+  var at = dom.indexOf('_getCurrentTitle: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('取出 _getCurrentTitle（取不出是签名/缩进变了，不等于没有回归）', false,
+      JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var made = Reflect.construct(Function, ['document', 'textOf',
+    'return (' + dom.slice(start, end) + '\n    })']);
+  var run = function (docTitle, prevText) {
+    var fakeDoc = {
+      title: docTitle,
+      querySelector: function (sel) {
+        return sel === '.prev_title' && prevText != null
+          ? { _text: prevText }
+          : null;
+      }
+    };
+    var fn = made(fakeDoc, function (el) { return String(el && el._text || ''); });
+    return fn.call({});
+  };
+
+  check('① `.prev_title` 在场时仍以它为准（不会因为 title 兜底抢前面那一道）',
+    run('学习通', '第三章 期末考试') === '第三章 期末考试', JSON.stringify({ got: run('学习通', '第三章 期末考试') }));
+  check('② 没有 `.prev_title` 且 <title> 含「考试」时兜底取 title',
+    run('考试 - 学习通', null) === '考试 - 学习通', JSON.stringify({ got: run('考试 - 学习通', null) }));
+  check('③ 没有卷面词时仍交空串（课程名里的普通标题不许被当成卷面）',
+    run('学习通', null) === '' && run('单元测试 - 学习通', null) === '',
+    JSON.stringify({ plain: run('学习通', null), unitTest: run('单元测试 - 学习通', null) }));
+  check('④ 兜底只认卷面词：含「作业」的标题要取，普通课程名不取',
+    run('作业 - 学习通', null) === '作业 - 学习通' && run('高等数学 - 学习通', null) === '',
+    JSON.stringify({ homework: run('作业 - 学习通', null), math: run('高等数学 - 学习通', null) }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12133,6 +12175,7 @@ async function main() {
   await testQuizSubmitOutcome();
   await testQuizSubmitAttemptStoreFallback();
   await testUnknownQuizShape();
+  await testCurrentTitleFallback();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

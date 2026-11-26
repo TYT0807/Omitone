@@ -120,7 +120,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `20-dom.js`
 
-*643 行 / 31 方法*
+*649 行 / 31 方法*
 
 跨域安全访问的**唯一入口**：`_safeDocOf` / `_safeWinDoc` / `_isFrameSameOrigin`
 （⚠️ **永远不要裸读跨域 iframe 的 `.document`** —— 抛出的 `SecurityError` 会静默打断整个 tick 循环，

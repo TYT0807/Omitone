@@ -8,6 +8,17 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 224 · 2026-11-26 · 独立考试页没有标题条时也能认出是考试（#52 P1 尾）
+
+- `_getCurrentTitle` 原先只读 `.prev_title`；独立考试/测试页没有这一条时读回空串，`_detectQuiz` 的标题门
+  永远关着，那条 `exam/test` URL 支路一步都走不到（搭档 brief-58 留下的现场问题）。现在 `.prev_title`
+  不在时用 `<title>` 兜底，且只收带明确卷面词（考试 / 测验 / 答题 / 作业）的标题 —— 普通课程名不取。
+- 集成 [41] 四条：`.prev_title` 优先、`<title>` 兜底、普通标题不取、含「作业」要取；反向一刀摘掉兜底
+  → 只红 [41] ②/④，还原后三份产物逐字节一致。
+- e2e `/exam/test` 的标题门那格改为「没有 `.prev_title` 时 `<title>` 里的考试要兜底」；定向 7 / 7。
+- 读数：`npm test` EXIT=0（集成 **830 / 830**）、全量 e2e **155 场景 / 1740 项**全绿、`node tools/check.js` EXIT=0。
+- **门面**：`独立考试页没有标题条时，也会从页面标题认出是考试`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 223 · 2026-11-26 · 重做弹窗里那枚「重新作答」现在会替你点（#52 P1）
 
 - `_prepareQuizRedoIfNeeded` 在确认重做弹窗后调用新助手 `_clickQuizRedoIfPossible`：只在按钮可见、

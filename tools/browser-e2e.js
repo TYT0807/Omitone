@@ -7719,11 +7719,10 @@ SCENARIOS.push({
     check('/exam/test 上 `_detectQuiz()` 为 true',
       shape.detect === true, JSON.stringify({ detect: shape.detect, boxes: shape.boxes }));
 
-    // ④ 真源格：把「标题门看的是哪一行 DOM」钉下来。独立考试页没有 `.prev_title` → 读回空串 →
-    //    tier 落 quiz。这一格红，说明有人把 `_getCurrentTitle` 改成了读 `document.title`（口径变了，
-    //    下面两格的意义也跟着变），不是"这条测试坏了"。
-    check('卷面标题真源是 `.prev_title` 而不是 document.title：独立页无该元素时 tier 读 quiz',
-      shape.cur === '' && shape.tier === 'quiz',
+    // ④ 批次 224：独立页没有 `.prev_title` 时，`<title>` 里的「考试」要兜底进来 ——
+    //    否则标题门永远关着，上面那条 `/exam/test` 的 URL 支路根本走不到。
+    check('独立页没有 `.prev_title` 时，`<title>` 里的卷面词要兜底（cur 含考试、tier=exam）',
+      shape.cur.indexOf('考试') !== -1 && shape.tier === 'exam',
       JSON.stringify({ currentTitle: shape.cur, docTitle: shape.title, tier: shape.tier }));
 
     // ⑤ 阳性对照：挂上生产认的那枚标题条（同一先例见本文件 20945 那格），标题门必须打开、tier 变 exam。

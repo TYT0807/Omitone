@@ -41,7 +41,13 @@
 
     _getCurrentTitle: function () {
       var el = document.querySelector('.prev_title');
-      return el ? textOf(el).slice(0, 60) : '';
+      if (el) return textOf(el).slice(0, 60);
+      // 独立考试/测试页没有 `.prev_title`，但 `<title>` 里常写着「考试 / 测验 / 作业」——
+      // 不兜底的话标题门永远关着，`_detectQuiz` 里 `exam/test` 那条 URL 支路一步都走不到
+      // （批次 224，搭档 brief-58 留下的现场问题）。只收带明确卷面词的标题，
+      // 课程名里偶尔出现的「作业」不会把整页误判成卷面。
+      var docTitle = String((document.title || '')).trim();
+      return /考试|测验|答题|作业/.test(docTitle) ? docTitle.slice(0, 60) : '';
     },
 
 
