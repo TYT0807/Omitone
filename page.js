@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '948ca1a7c3';
+var OMITONE_CODE_REV = 'b5063f6c56';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -14258,7 +14258,9 @@ var OMITONE_CODE_REV = '948ca1a7c3';
         if (doc && !this._docHasQuizPaperShape(doc)) return false;
         if (doc && this._isDocumentFrameFinished(doc)) return true;
         var text = doc && doc.body ? textOf(doc.body) : '';
-        if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|通过标准|恭喜/.test(text)) return true;
+        // 「通过标准：60 分」是卷面说明，不是平台宣布通过；把它当完成证据会跳过还没交的卷。
+        // 正面证据只认平台明确的「任务点已完成 / 已通过 / 恭喜」。
+        if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|恭喜/.test(text)) return true;
       } catch (e) {}
       return false;
     },

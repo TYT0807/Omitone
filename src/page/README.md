@@ -189,7 +189,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `70-quiz-flow.js`
 
-*2557 行 / 71 方法*
+*2559 行 / 71 方法*
 
 答题的**整卷流程与状态**：`_handleQuiz`（整卷主流程）、抠出题目清单（`_extractQuestions` /
 `_extractFromDocument`）、识别是否在答题页（`_detectQuiz`）、

@@ -11815,6 +11815,50 @@ async function testReadV2Task() {
     JSON.stringify({ leaveCalls: leaveCalls, nextClicks: nextClicks, resetCalls: resetCalls }));
 }
 
+async function testExamResultNeutralText() {
+  console.log('\n[37] 考试/作业结果页：中性「通过标准」不许当通过（#52 P0）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var quiz = read('src/page/70-quiz-flow.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var passed = buildFrom(quiz, '_isQuizPassedOrFinished', {
+    textOf: function (body) { return String((body && body.text) || ''); }
+  });
+  if (typeof passed !== 'function') {
+    check('取出 _isQuizPassedOrFinished（取不出是签名/缩进变了，不等于没有回归）', false, 'fn=' + typeof passed);
+    return;
+  }
+  var current = null;
+  var app = {
+    _resolveQuizSubmitDocument: function () { return current; },
+    _isQuizResultPageFinished: function () { return false; },
+    _docHasQuizPaperShape: function () { return true; },
+    _isDocumentFrameFinished: function () { return false; }
+  };
+  current = { body: { text: '通过标准：60 分' } };
+  check('①「通过标准：60 分」只是卷面说明，不许判成已完成（旧写法会跳过未交/低分卷）',
+    passed.call(app, current) === false, JSON.stringify({ verdict: passed.call(app, current) }));
+  current = { body: { text: '恭喜你，已通过' } };
+  check('②平台明确「恭喜 / 已通过」仍算完成（不是把所有结果页都按未完成处理）',
+    passed.call(app, current) === true, JSON.stringify({ verdict: passed.call(app, current) }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -11868,6 +11912,7 @@ async function main() {
   await testVoteEndedParkPersistent();
   await testQuizSubmitNeverAccepted();
   await testReadV2Task();
+  await testExamResultNeutralText();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
