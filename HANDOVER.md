@@ -1762,6 +1762,13 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.78 考试/作业结果页：中性「通过标准」不再算通过（2026-11-26，#52 P0）
+
+- 来源：`#52` 审计 P0 第一条。`_isQuizPassedOrFinished` 把「通过标准：60 分」这种卷面说明当完成证据，
+  可能跳过未交/低分卷。正面证据收窄为「任务点已完成 / 已通过 / 恭喜」，重做/未通过与否决不变。
+- 集成 [37] 两条（中性 false / 明确 true），反向一刀红 1 条，还原后 813/813；定向作业 e2e 9/9。
+- 下一刀（未做）：提交结果状态机（accepted/rejected/unknown/redo）与多卷 A→B 串行验收，见 `exam-52.md`。
+
 ### 0.77 前端精简第一刀：三枚少用字段折进「高级」组（2026-11-26，#51）
 
 - `popup.html` 新增 `details#advancedGroup`（默认收起），把 `discussionReply` / `randomAnswerReviewSec` /
