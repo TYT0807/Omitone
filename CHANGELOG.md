@@ -8,6 +8,18 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 228 · 2026-11-26 · 作业/考试卷单批请求不再 90 秒被误判超时（现场）
+
+- 现场 22 题作业按 3 题一批共 8 批；单批公式题在思考 low-high 下跑过 90 秒，页面桥在模型仍在回答时
+  判死，日志出现 `api connection failed, skip quiz`。现在整卷 `llm_request` 桥超时单独放宽到 **240 秒**；
+  content 侧整卷（测试/考试）单发 HTTP 超时 **180 秒**（刷课仍 120 秒），避免 90/120 秒把慢回答切死。
+- `thinkingDescribe(effConfig)` 以前不认临时副本上的 `thinkingTier`，把考试请求标成「刷课」；
+  现在 `buildThinkingParams` 认它，日志场景与真实 range 一致（现场日志 `tier":"course"` 那一格）。
+- 集成 [10] 补一格 describe 认 `thinkingTier`（**838 / 838**）；全量 e2e **156 场景 / 1746 项**；
+  `check.js` EXIT=0。
+- 现场留证：第 5 批超时后后续批次又跑完，未自动提交；这一轮只修超时/标签，不夸口“现场已答完”。
+- **门面**：`作业卷 / 考试卷的单批请求不再 90 秒被误判超时`（`release-notes-preview.md` 与 main README）
+
 ### 批次 227 · 2026-11-26 · 现场作业页：外壳内多题与 LaTeX 图片题都能抠出来（实战）
 
 - 现场（2026-11-26 线性代数作业作答页）：外层一个 `#fanyaMarking.TiMu` 壳里装着 22 个 `.questionLi`，

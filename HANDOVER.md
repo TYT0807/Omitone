@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 837 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 838 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1861,6 +1861,17 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 - 逐处改成 `app._setQuizApiFailUntil(0);`（生产方法在 `<=0` 时内存与键一起清）。替换 13 处、残留 0 处；
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
+
+### 0.79 作业卷单批超时与思考档标签修正（批次 228，2026-11-26，主会话）
+
+- **现场**：22 题作业分 8 批，单批公式题在思考 low-high 下跑过 90 秒；页面桥在模型仍回答时判死，
+  出现 `api connection failed, skip quiz`（后续批次又跑完，未自动提交）。
+- **修法**：`bridgeSend` 支持可选超时；整卷 `llm_request` 用 **240 秒**；content 侧整卷单发 HTTP 用
+  **180 秒**（刷课仍 120 秒）。`buildThinkingParams` 认临时副本上的 `thinkingTier`，
+  `describe(effConfig)` 不再把考试请求标成「刷课」（现场 `tier":"course"` 那格）。
+- **读数**：集成 [10] 补一格 describe（838 / 838）；全量 e2e 156 / 1746；`check.js` EXIT=0。
+- **边界**：只放宽整卷请求，不碰刷课与弹题的 90/120 秒；现场这一次的答题/提交结果仍未验证，
+  下一轮再用可修改的测试机会跑。
 
 ### 0.78 现场作业页：`.TiMu` 外壳内多题 + LaTeX 图片选项（批次 227，2026-11-26，主会话）
 

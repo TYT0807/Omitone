@@ -2248,6 +2248,12 @@ async function testThinkingLevels() {
       THINKING.describe({ apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'off-off' }, { tier: 'exam' }),
       THINKING.describe({ apiUrl: 'https://api.moonshot.ai/v1', model: 'kimi-k3', thinkingRangeCourse: 'off-off' })
     ].join(' / '));
+  // content 侧把本次场景挂在临时副本的 thinkingTier 上；describe(effConfig) 只有配置、没有 opts。
+  var describedByTier = THINKING.describe({
+    apiUrl: 'https://api.deepseek.com', thinkingRangeExam: 'low-high', thinkingTier: 'exam'
+  });
+  check('describe 认临时副本上的 thinkingTier（考试请求别被写成「刷课」）',
+    /考试思考=/.test(describedByTier) && !/刷课思考=/.test(describedByTier), describedByTier);
   // 渠道表里若某家**没有**自选写法（只有固定档那一列），auto 只能退化成"按下限发"。
   // 今天四家都有 auto，所以这一支平时走不到 —— 摘掉它就是那条话，测完必须还回去。
   var kimiAuto = THINKING.PROVIDERS.kimi.auto;

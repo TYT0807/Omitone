@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'c8a95bd018';
+var OMITONE_CODE_REV = 'a897213496';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -398,7 +398,8 @@ var OMITONE_CODE_REV = 'c8a95bd018';
 
   var BRIDGE_TIMEOUT_MS = 90000; // content 侧异常不回消息时必须超时释放，否则 _runTick 的 await 永久挂起、整个循环死亡
 
-  function bridgeSend(type, payload) {
+  function bridgeSend(type, payload, timeoutMs) {
+    var waitMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : BRIDGE_TIMEOUT_MS;
     return new Promise(function (resolve) {
       var id = ++bridgeMsgId;
       var settled = false;
@@ -406,8 +407,8 @@ var OMITONE_CODE_REV = 'c8a95bd018';
         if (settled) return;
         settled = true;
         delete bridgeCallbacks[id];
-        resolve({ success: false, error: 'bridge timeout: ' + type + ' no response in ' + BRIDGE_TIMEOUT_MS + 'ms' });
-      }, BRIDGE_TIMEOUT_MS);
+        resolve({ success: false, error: 'bridge timeout: ' + type + ' no response in ' + waitMs + 'ms' });
+      }, waitMs);
       bridgeCallbacks[id] = function (data) {
         if (settled) return;
         settled = true;
@@ -15592,9 +15593,11 @@ var OMITONE_CODE_REV = 'c8a95bd018';
           // `paperKind` 只带一个信息：这一卷算考试还是测试。
           // 后台/内容侧看不见卷面标题，三个场景的区间必须由知道标题的这一侧报过去 ——
           // 少了它，考试卷会一路降级成"测试"档，用户给考试单独放开的那点上限就白设了。
+          // 整卷单批最坏 3 道公式题；拉开思考区间后单批可能跑 2 分钟以上。
+          // 90 秒桥超时会在模型仍在回答时把它判死（现场 22 题作业第 5 批），这里单独放宽到 4 分钟。
           result = await bridgeSend('llm_request', {
             questions: payload, kind: 'paper', paperKind: this._paperTierFromTitle()
-          });
+          }, 240000);
         }
         if (!result || !result.success) {
           console.error('quiz llm request failed:', result && result.error ? result.error : 'unknown');

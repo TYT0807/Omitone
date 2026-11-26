@@ -2279,9 +2279,11 @@
           // `paperKind` 只带一个信息：这一卷算考试还是测试。
           // 后台/内容侧看不见卷面标题，三个场景的区间必须由知道标题的这一侧报过去 ——
           // 少了它，考试卷会一路降级成"测试"档，用户给考试单独放开的那点上限就白设了。
+          // 整卷单批最坏 3 道公式题；拉开思考区间后单批可能跑 2 分钟以上。
+          // 90 秒桥超时会在模型仍在回答时把它判死（现场 22 题作业第 5 批），这里单独放宽到 4 分钟。
           result = await bridgeSend('llm_request', {
             questions: payload, kind: 'paper', paperKind: this._paperTierFromTitle()
-          });
+          }, 240000);
         }
         if (!result || !result.success) {
           console.error('quiz llm request failed:', result && result.error ? result.error : 'unknown');

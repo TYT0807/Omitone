@@ -411,7 +411,8 @@
 
   var BRIDGE_TIMEOUT_MS = 90000; // content 侧异常不回消息时必须超时释放，否则 _runTick 的 await 永久挂起、整个循环死亡
 
-  function bridgeSend(type, payload) {
+  function bridgeSend(type, payload, timeoutMs) {
+    var waitMs = Number(timeoutMs) > 0 ? Number(timeoutMs) : BRIDGE_TIMEOUT_MS;
     return new Promise(function (resolve) {
       var id = ++bridgeMsgId;
       var settled = false;
@@ -419,8 +420,8 @@
         if (settled) return;
         settled = true;
         delete bridgeCallbacks[id];
-        resolve({ success: false, error: 'bridge timeout: ' + type + ' no response in ' + BRIDGE_TIMEOUT_MS + 'ms' });
-      }, BRIDGE_TIMEOUT_MS);
+        resolve({ success: false, error: 'bridge timeout: ' + type + ' no response in ' + waitMs + 'ms' });
+      }, waitMs);
       bridgeCallbacks[id] = function (data) {
         if (settled) return;
         settled = true;

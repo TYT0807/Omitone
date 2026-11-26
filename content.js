@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV_BRIDGE = '5029ef4035';
+var OMITONE_CODE_REV_BRIDGE = 'a65038e3c1';
 /**
  * Content bridge for Omitone.
  * Injects the bundled page runtime and proxies extension APIs into page context.
@@ -926,11 +926,14 @@ var OMITONE_CODE_REV_BRIDGE = '5029ef4035';
       if (body.thinking_budget && body.thinking_budget >= maxTokens) {
         body.thinking_budget = Math.max(512, Math.floor(maxTokens * 0.7));
       }
+      // 整卷（测试/考试）单批公式题在拉开思考区间后可能跑过 2 分钟；
+      // 90 秒/120 秒都会在模型仍在回答时把它判死（现场 22 题作业第 5 批）。刷课仍用短超时。
+      const apiTimeoutMs = thinkingBuilt && thinkingBuilt.tier !== 'course' ? 180000 : 120000;
       const response = await apiFetch(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body)
-      }, 120000);
+      }, apiTimeoutMs);
 
       if (response.success) {
         const firstChoice = (((response.data || {}).choices || [])[0] || {});

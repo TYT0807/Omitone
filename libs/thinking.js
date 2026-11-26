@@ -372,7 +372,9 @@
     var o = opts || {};
     var tier = TIERS.indexOf(o.tier) !== -1
       ? o.tier
-      : resolveTier(o.kind, o.paperKind);
+      // content 侧会把本次场景挂在临时副本的 thinkingTier 上；describe(effConfig) 只有配置、
+      // 没有 opts，不认这一格就会把考试请求的标签误写成「刷课」（批次 228 现场）。
+      : (TIERS.indexOf(cfg.thinkingTier) !== -1 ? cfg.thinkingTier : resolveTier(o.kind, o.paperKind));
     var provider = detectProvider(cfg.apiUrl, cfg.model);
     var info = providerInfo(provider);
     var range = rangeForTier(cfg, tier);
