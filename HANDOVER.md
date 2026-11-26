@@ -1762,6 +1762,14 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.80 提交结果状态机：rejected 记窗口，不原样重交（2026-11-26，#52 P0）
+
+- `_quizSubmitOutcome` 单字段 + `_setQuizSubmitOutcome` / `_quizSubmitRejectedBlocksRetry`。
+  状态 `accepted / rejected / unknown / redo`，按 `_getQuizWorkKey` 记；换卷不借旧账。
+- 告知层「提交失败」→ rejected + 30 秒窗口；`_maybeSubmitQuiz` 同卷窗口内直接返回，
+  窗口过后交回原有 20/2 次预算与三次停滞放手，不新增永久跳过。
+- 集成 [38] 三条，反向一刀红 2 条，还原后 816/816；页面侧调用都带 `typeof` 兜底，老测试台不炸。
+
 ### 0.79 前端精简第二刀：更新提醒移入「高级」（2026-11-26，#51）
 
 - 顶部更新条的 `label.mute-pick` 移到 `details#advancedGroup`，`select#updateMute` 的 id/选项/localStorage

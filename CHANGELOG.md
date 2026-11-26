@@ -8,6 +8,15 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 218 · 2026-11-26 · 提交结果状态机：平台说失败后不再立刻原样重交（#52 P0）
+
+- 新增单字段 `_quizSubmitOutcome`（`accepted / rejected / unknown / redo`）与两个助手
+  `_setQuizSubmitOutcome` / `_quizSubmitRejectedBlocksRetry`；按卷子键记，换卷不借账。
+- 平台告知层出现「提交失败」→ 状态 `rejected`，同卷 **30 秒内**挡住原样重交；
+  窗口过后仍交回原有 20/2 次预算与三次停滞放手。接受/超时/重做各记一格，日志名 `quiz submit outcome`。
+- 集成 [38] 三条（窗口、同卷挡住、换卷放行）；反向一刀红 2 条，还原后 **816 / 816**。
+- **门面**：`平台说「提交失败」后不再立刻原样重交`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 217 · 2026-11-26 · 前端精简第二刀：更新提醒下拉移入「高级」（#51）
 
 - 顶部更新条里的 `label.mute-pick` 整块移除，`select#updateMute` 连同 6 个选项移进 `details#advancedGroup`；
