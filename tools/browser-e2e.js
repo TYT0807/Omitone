@@ -727,6 +727,17 @@ function buildTwoQuizInnerHtml(id, finished) {
     '</body></html>';
 }
 
+/** 重做弹窗夹具：文案是站点那几句，按钮文字由调用方给（用来钉「精确白名单」这一格）。 */
+function buildQuizRedoHtml(buttonText) {
+  var btn = String(buttonText || '重新作答');
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业 - 学习通</title></head><body>' +
+    '<div class="layui-layer" style="display:block;position:fixed;left:40px;top:40px;padding:16px;background:#fff;border:1px solid #999">' +
+    '<div class="layui-layer-content">很遗憾，未达到及格线，请重做</div>' +
+    '<button type="button" onclick="window.__redoClicked=(window.__redoClicked||0)+1">' + btn + '</button>' +
+    '</div></body></html>';
+}
+
 /**
  * ★ 2026-10-17 真实故障复刻：模块页的 `<script>` 里含**「任务点已完成」**这句字符串。
  *
@@ -2707,6 +2718,7 @@ var MOCK_PAGES = {
   '/vote-wid-cards': buildVoteWidCardsHtml,
   '/vote-wid-cover': buildVoteWidCoverHtml,
   '/unfinished-prompt': buildUnfinishedPromptHtml,
+  '/quiz-redo': function () { return buildQuizRedoHtml('重新作答'); },
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
   '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
@@ -15201,6 +15213,54 @@ SCENARIOS.push({
     check('jobid 挂在容器 div 上时，_resolveJobFrame 也能把任务反查回帧（否则匹配上了却跑不起来）',
       !!resolved && resolved.hasFrame === true && resolved.hasDoc === true,
       JSON.stringify(resolved));
+  }
+});
+
+/** ---- 55. 重做弹窗：确认是重做才点白名单按钮；认不出只留候选（#52 P1）---- */
+SCENARIOS.push({
+  name: '重做弹窗：白名单按钮点一次，认不出只记录',
+  path: '/quiz-redo',
+  run: async function (ctx) {
+    var cfg = { enableQuiz: true, autoNext: false, enableCaptcha: false, enableDiscussion: false };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(300);
+
+    var st = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__redoClicked=0;' +
+      'app._setQuizSubmitAttemptCount(null,0);' +
+      'app._quizAnswered=true;app._quizSubmitPending=true;app._quizSubmitStartedAt=Date.now();' +
+      'app._quizCurrentQuestions=[{title:"旧题"}];app._quizReadyToSubmit=true;app._quizReadyWorkKey="old";' +
+      'app._quizRedoClickedKey="";' +
+      'var before=app._getQuizSubmitAttemptCount(null);' +
+      'var ret=app._prepareQuizRedoIfNeeded(null);' +
+      'return {ret:ret,clicked:window.__redoClicked,answered:app._quizAnswered,pending:app._quizSubmitPending,' +
+      'questions:app._quizCurrentQuestions,ready:app._quizReadyToSubmit,key:app._quizRedoClickedKey,' +
+      'attempts:app._getQuizSubmitAttemptCount(null),before:before};})()'
+    );
+    check('确认是重做弹窗后点中「重新作答」一次', !!st && st.ret === true && st.clicked === 1, JSON.stringify(st));
+    check('重做状态被清空（不会拿旧卷子继续交）',
+      !!st && st.answered === false && st.pending === false && st.questions === null && st.ready === false,
+      JSON.stringify(st));
+    check('重做动作不消耗提交次数', !!st && st.attempts === st.before, JSON.stringify(st));
+
+    var again = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;window.__redoClicked=0;app._quizAnswered=true;' +
+      'var ret=app._prepareQuizRedoIfNeeded(null);' +
+      'return {ret:ret,clicked:window.__redoClicked,key:app._quizRedoClickedKey};})()'
+    );
+    check('同一卷同一次不重复点（第二拍不再增加点击）',
+      !!again && again.ret === true && again.clicked === 0, JSON.stringify(again));
+
+    var miss = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var btn=document.querySelector(".layui-layer button");' +
+      'btn.textContent="确定";btn.setAttribute("onclick","");window.__redoClicked=0;' +
+      'app._quizAnswered=true;app._quizRedoClickedKey="";' +
+      'var ret=app._prepareQuizRedoIfNeeded(null);' +
+      'return {ret:ret,clicked:window.__redoClicked,key:app._quizRedoClickedKey};})()'
+    );
+    check('按钮不在白名单时只留候选、不点（key 以 miss| 开头）',
+      !!miss && miss.ret === true && miss.clicked === 0 && String(miss.key).indexOf('miss|') === 0,
+      JSON.stringify(miss));
   }
 });
 

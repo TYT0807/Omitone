@@ -12,7 +12,7 @@
  * 这份卷子属于哪个场景（测试 / 考试）＋该场景的思考档下限（「不乱猜」闸的判据）
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（75 个）：
+ * 本段的方法（76 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -37,7 +37,7 @@
  *   _extractQuestions、_getQuizDocumentFromQuestions、_getQuizDocumentsFromQuestions、
  *   _looksLikeQuizTitle、_paperTierFromTitle、_examThinkingMin、_isNoGuessPaper、_noteNoGuessPaperHold、
  *   _extractFromDocument、_findVisibleQuizRedoDialog、_isQuizRedoRequired、
- *   _prepareQuizRedoIfNeeded、
+ *   _prepareQuizRedoIfNeeded、_clickQuizRedoIfPossible、
  *   _probeFontDecrypt、_hasFontDecryptMiss、_quizTextGarbledRatio
  * ========================================================================== */
 // @omitone-part-header-end
@@ -2686,7 +2686,64 @@
       var dialog = this._findVisibleQuizRedoDialog();
       if (dialog) {
         emitRuntimeLog('warn', 'quiz redo required');
+        this._clickQuizRedoIfPossible(dialog, preferredDoc || null);
         return true;
+      }
+      return false;
+    },
+
+    /**
+     * 重做弹窗里那枚「重新作答」按钮：只在**已经确认是重做弹窗**、且按钮文字精确等于
+     * 白名单（重新作答 / 重新答题 / 再次作答 / 重做）时才点一次。
+     *
+     * 为什么这么窄：现场还没拿到重做弹窗的 DOM（日志环 `quiz redo required` 0 条），
+     * 按想象猜按钮就是 AGENTS §5 那族「夹具和代码自己一致」。所以这里**不猜**：
+     * 认不出按钮就一条 warn 把候选文字交出来，什么都不点；同一卷同一次只记一次。
+     */
+    _clickQuizRedoIfPossible: function (dialog, preferredDoc) {
+      if (!dialog || !dialog.querySelectorAll) return false;
+      var paperKey = '';
+      try { paperKey = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) {}
+      var nodes = [];
+      try {
+        nodes = Array.from(dialog.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"]'));
+      } catch (eNodes) { nodes = []; }
+      var wanted = /^(重新作答|重新答题|再次作答|重做)$/;
+      var target = null;
+      var targetText = '';
+      var texts = [];
+      for (var i = 0; i < nodes.length; i++) {
+        var node = nodes[i];
+        try { if (!visible(node)) continue; } catch (eVis) { continue; }
+        var t = String(node.value || textOf(node) || '').replace(/\s+/g, '').trim();
+        if (!t) continue;
+        if (texts.length < 5) texts.push(t.slice(0, 12));
+        if (!target && wanted.test(t)) { target = node; targetText = t; }
+      }
+      if (target) {
+        var clickKey = paperKey + '|' + targetText;
+        if (this._quizRedoClickedKey === clickKey) return true;
+        this._quizRedoClickedKey = clickKey;
+        try { target.click(); } catch (eClick) {}
+        emitRuntimeLog('warn', 'quiz redo clicked', {
+          text: targetText,
+          tag: String(target.tagName || '').toLowerCase(),
+          paper: paperKey.slice(0, 60),
+          candidates: texts
+        });
+        return true;
+      }
+      var dialogText = '';
+      try { dialogText = textOf(dialog).replace(/\s+/g, ' ').slice(0, 80); } catch (eTxt) {}
+      var missKey = 'miss|' + paperKey + '|' + dialogText;
+      if (this._quizRedoClickedKey !== missKey) {
+        this._quizRedoClickedKey = missKey;
+        emitRuntimeLog('warn', 'quiz redo dialog without recognized button', {
+          paper: paperKey.slice(0, 60),
+          text: dialogText,
+          buttons: texts,
+          hint: '已确认是重做弹窗，但按钮文字不在白名单（重新作答/重新答题/再次作答/重做）里；不猜、不点，请把 buttons 这一格反馈给作者'
+        });
       }
       return false;
     },
