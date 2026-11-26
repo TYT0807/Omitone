@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'b536f3a473';
+var OMITONE_CODE_REV = '8a4fc55882';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -587,6 +587,8 @@ var OMITONE_CODE_REV = 'b536f3a473';
     _quizUnknownShapeLogKey: '',
     // 重做弹窗那一次动作的账（卷子键 + 按钮文字 / 无按钮时的弹窗原文），防重复点击与刷屏
     _quizRedoClickedKey: '',
+    // 结果页得分/及格线读数「这一卷这一种读数已经说过」的账，防每拍重播
+    _quizResultGradeLogKey: '',
 
     // 交卷旁路观测器的安装状态（`_installSubmitSniffer` 里写）：
     //   _submitSnifferInstalled  这一份顶层页里是否已经包过 XHR/fetch（只许装一次）
@@ -14337,7 +14339,13 @@ var OMITONE_CODE_REV = 'b536f3a473';
       try {
         // 判分结果页优先于 frame 标记判断：作业/考试结果页两套标记都没有，
         // 只有 .Py_answer 那一族（见 _isQuizResultPageFinished 的说明）。
-        if (doc && this._isQuizResultPageFinished(doc)) return true;
+        if (doc && this._isQuizResultPageFinished(doc)) {
+          // 只读判分：有明确得分/及格线时单独说一句（低分给 warn），但**不改完成判定** ——
+          // 任务点是否算完成仍由平台那张结果页决定，拿分数去卡重交只会白耗提交次数。
+          var grade = this._readQuizResultGrade(doc);
+          if (grade) this._noteQuizResultGrade(grade, preferredDoc);
+          return true;
+        }
         // ⚠️「这份文档的卷子已完成」只能对**真是一张卷子的文档**说（批次 13-A）。
         // 现场：`_resolveQuizSubmitDocument(null)` 落在知识卡片那份文档上，
         // 而卡片页每条任务点后面都写着「已完成」—— `_isDocumentFrameFinished` 当场为真，
@@ -14353,6 +14361,53 @@ var OMITONE_CODE_REV = 'b536f3a473';
         if (text && !/未达到及格线|未达到通过标准|请重做|很遗憾/.test(text) && /任务点已完成|已通过|恭喜/.test(text)) return true;
       } catch (e) {}
       return false;
+    },
+
+    /**
+     * 结果页的「得分 / 及格线」只读解析（批次 225）。
+     *
+     * 为什么只读：任务点是否算完成由平台那张结果页决定，拿分数去卡重交只会白耗提交次数；
+     * 但「50 / 60 未通过」不该被安静当成通过翻过去。这里只认页面自己写出的标签
+     * （得分 / 分数 / 成绩 / 及格线 / 通过标准 / 明确未通过或恭喜），认不出就交 null。
+     */
+    _readQuizResultGrade: function (preferredDoc) {
+      var doc = this._resolveQuizSubmitDocument(preferredDoc) || preferredDoc || this._getMainDocument();
+      if (!doc || !doc.body) return null;
+      var text = '';
+      try { text = String(textOf(doc.body) || '').replace(/\s+/g, ' ').trim(); } catch (eText) { return null; }
+      if (!text) return null;
+      if (!/已批改|得分|分数|成绩|通过标准|及格线|合格线|未通过|不及格|不合格|恭喜|已通过/.test(text)) return null;
+      var score = null;
+      var pass = null;
+      var ms = text.match(/(?:本次|总|最终)?\s*(?:得分|分数|成绩)\s*[:：]?\s*(\d+(?:\.\d+)?)/);
+      if (ms) score = Number(ms[1]);
+      var mp = text.match(/(?:及格线|通过标准|合格线|及格分)\s*[:：]?\s*(\d+(?:\.\d+)?)/);
+      if (!mp) mp = text.match(/(\d+(?:\.\d+)?)\s*分\s*(?:及格|合格|通过)/);
+      if (mp) pass = Number(mp[1]);
+      var verdict = 'unknown';
+      if (/未达到及格线|未达到通过标准|不及格|不合格|未通过|请重做|很遗憾/.test(text)) verdict = 'fail';
+      else if (/恭喜|已通过|成绩合格/.test(text)) verdict = 'pass';
+      else if (score != null && pass != null) verdict = score >= pass ? 'pass' : 'fail';
+      if (score == null && pass == null && verdict === 'unknown') return null;
+      return { score: score, pass: pass, verdict: verdict, text: text.slice(0, 140) };
+    },
+
+    _noteQuizResultGrade: function (grade, preferredDoc) {
+      if (!grade) return;
+      var paperKey = '';
+      try { paperKey = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) {}
+      var logKey = paperKey + '|' + grade.verdict + '|' + String(grade.score) + '|' + String(grade.pass);
+      if (this._quizResultGradeLogKey === logKey) return;
+      this._quizResultGradeLogKey = logKey;
+      emitRuntimeLog(grade.verdict === 'fail' ? 'warn' : 'info', 'quiz result graded', {
+        verdict: String(grade.verdict),
+        score: grade.score == null ? null : grade.score,
+        pass: grade.pass == null ? null : grade.pass,
+        text: grade.text,
+        hint: grade.verdict === 'fail'
+          ? '平台明说未通过或分数低于及格线；这一卷仍按任务点完成推进，不会自动重交（避免白耗提交次数）'
+          : ''
+      });
     },
 
     _hasActiveQuizSubmitForm: function (preferredDoc) {

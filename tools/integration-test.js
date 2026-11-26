@@ -12118,6 +12118,81 @@ async function testCurrentTitleFallback() {
     JSON.stringify({ homework: run('作业 - 学习通', null), math: run('高等数学 - 学习通', null) }));
 }
 
+async function testQuizResultGrade() {
+  console.log('\n[42] 结果页得分/及格线只读解析：低分给 warn、不改变完成判定（批次 225）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var flow = read('src/page/70-quiz-flow.js');
+  var bounds = function (name) {
+    var at = flow.indexOf(name + ': function');
+    if (at < 0) return null;
+    var start = flow.indexOf('function', at);
+    var end = flow.indexOf('\n    },', start);
+    if (start < 0 || end <= start) return null;
+    return flow.slice(start, end);
+  };
+  var gradeSrc = bounds('_readQuizResultGrade');
+  var noteSrc = bounds('_noteQuizResultGrade');
+  if (!gradeSrc || !noteSrc) {
+    check('取出判分读数两件（取不出是签名/缩进变了，不等于没有回归）', false,
+      JSON.stringify({ grade: !!gradeSrc, note: !!noteSrc }));
+    return;
+  }
+  var logs = [];
+  var makeGrade = Reflect.construct(Function, ['textOf',
+    'return (' + gradeSrc + '\n    })'])(
+    function (el) { return String((el && el._text) || ''); }
+  );
+  var makeNote = Reflect.construct(Function, ['emitRuntimeLog',
+    'return (' + noteSrc + '\n    })'])(
+    function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); }
+  );
+  var runGrade = function (text) {
+    var doc = { body: { _text: text } };
+    var app = {
+      _resolveQuizSubmitDocument: function () { return doc; },
+      _getMainDocument: function () { return doc; }
+    };
+    return makeGrade.call(app);
+  };
+  var fail = runGrade('本次作业得分 50 分 通过标准：60 分');
+  check('① 得分 50 / 及格线 60 → fail（分数与及格线都在页面上）',
+    !!fail && fail.verdict === 'fail' && fail.score === 50 && fail.pass === 60, JSON.stringify(fail));
+  var pass = runGrade('本次得分 80 分 通过标准：60 分');
+  check('② 得分 80 / 及格线 60 → pass',
+    !!pass && pass.verdict === 'pass' && pass.score === 80 && pass.pass === 60, JSON.stringify(pass));
+  var words = runGrade('恭喜你，已通过');
+  check('③ 只有明确「恭喜/已通过」也能判 pass（没有数字时）',
+    !!words && words.verdict === 'pass' && words.score === null && words.pass === null, JSON.stringify(words));
+  check('④ 不是结果页的普通文案交 null（不瞎猜）',
+    runGrade('提交成功') === null && runGrade('今天天气不错') === null,
+    JSON.stringify({ plain: runGrade('提交成功') }));
+
+  var app = {
+    _quizResultGradeLogKey: '',
+    _getQuizWorkKey: function () { return 'paper-grade'; },
+    _getQuizAccountDocument: function () { return {}; }
+  };
+  // 日志那一组用**手写的读数对象**，不借用上面解析出来的 fail/pass ——
+  // 否则解析那一刀会把日志断言一起带红，两条断言就分不开是谁在承重（AGENTS §5）。
+  var failGrade = { verdict: 'fail', score: 50, pass: 60, text: '本次作业得分 50 分 通过标准：60 分' };
+  var passGrade = { verdict: 'pass', score: 80, pass: 60, text: '本次得分 80 分 通过标准：60 分' };
+  makeNote.call(app, failGrade, null);
+  check('⑤ 低分单独 warn，带 verdict/score/pass 与「不自动重交」说明',
+    logs.length === 1 && logs[0].level === 'warn' && logs[0].message === 'quiz result graded' &&
+    logs[0].meta.verdict === 'fail' && logs[0].meta.score === 50 && /不(?:会)?自动重交/.test(logs[0].meta.hint),
+    JSON.stringify(logs));
+  makeNote.call(app, failGrade, null);
+  check('⑥ 同一卷同一种读数只报一次（不每拍重播）',
+    logs.length === 1, JSON.stringify({ logs: logs.length }));
+  makeNote.call(app, passGrade, null);
+  check('⑦ 换一种读数要重新报，且通过是 info 不是 warn',
+    logs.length === 2 && logs[1].level === 'info' && logs[1].meta.verdict === 'pass',
+    JSON.stringify(logs));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12176,6 +12251,7 @@ async function main() {
   await testQuizSubmitAttemptStoreFallback();
   await testUnknownQuizShape();
   await testCurrentTitleFallback();
+  await testQuizResultGrade();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
