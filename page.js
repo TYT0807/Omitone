@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'a897213496';
+var OMITONE_CODE_REV = '0d3650d9bf';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -15819,6 +15819,8 @@ var OMITONE_CODE_REV = 'a897213496';
       var paper = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
       if (paper === 'off' || paper === 'low' || paper === 'high') return paper;
       var global = String(cfg.thinkingLevel == null ? '' : cfg.thinkingLevel).trim().toLowerCase();
+      // 没手动设过（新键空、老键 off/空）→ 自动档是 off-low，下限仍是 off；
+      // “不乱猜”闸不靠自动档生效，靠下面的文本答案质量闸拦住 true/略/不会 这类占位。
       return global === 'low' || global === 'high' ? global : 'off';
     },
 
@@ -16972,6 +16974,12 @@ var OMITONE_CODE_REV = 'a897213496';
         if (type !== 'single' && type !== 'judge' && type !== 'fill' && type !== 'short') return;
         if (self._isQuizQuestionFilled(doc, question)) return;
 
+        // 测试/考试（标题带作业/考试或章节测验）不再用占位答案糊满表单：
+        // 「不会」「1」这类东西交上去既不对也不可读，用户明确要求宁可按住也不乱填。
+        if ((type === 'fill' || type === 'short') && String(self._paperTierFromTitle() || '') === 'exam') {
+          unfillable.push(index);
+          return;
+        }
         var guess = '';
         if (type === 'fill') guess = self._blankFillPlaceholder(question._element);
         else if (type === 'short') guess = '不会';
@@ -17632,7 +17640,7 @@ var OMITONE_CODE_REV = 'a897213496';
       if (/多选|多项|不定项|多重/.test(typeName)) return 'multiple';
       if (typeName.indexOf('判断') !== -1) return 'judge';
       if (typeName.indexOf('填空') !== -1) return 'fill';
-      if (/简答|问答|论述|名词解释|计算|分析|作文/.test(typeName)) return 'short';
+      if (/简答|问答|论述|名词解释|计算|分析|作文|证明/.test(typeName)) return 'short';
 
       if (checkboxes.length >= 2) return 'multiple';
       if (textInputs.length >= 1 && !radios.length && !checkboxes.length) return 'fill';
@@ -17919,6 +17927,20 @@ var OMITONE_CODE_REV = 'a897213496';
     },
 
 
+    /**
+     * 「这段文字能给人类看吗」—— 只拦明确的占位/真假/原始 LaTeX，不做主观判断。
+     * true/false 只对判断题合法；证明/计算/填空里出现它，基本就是模型没理解题型。
+     */
+    _isReadableQuizTextAnswer: function (answer) {
+      var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
+      if (!s) return false;
+      if (/^(true|false|对|错|正确|错误|是|否|略|证明略|不会|暂无|无)$/i.test(s)) return false;
+      if (s.replace(/\s+/g, '').length < 2) return false;
+      // 原始 LaTeX 源码对用户是“乱码”；提示词已要求常用数学符号，这里兜底拦一次。
+      if (/\\[a-zA-Z]+|\\[{}]/.test(s)) return false;
+      return true;
+    },
+
     _fillAnswers: function (answers, questions, preferredDoc) {
       var normalized = [];
       for (var i = 0; i < answers.length; i++) {
@@ -17944,6 +17966,18 @@ var OMITONE_CODE_REV = 'a897213496';
         }
         var finalAnswer = self._avoidKnownWrongAnswer(answerItem.answer, type, question, preferredDoc || null);
         console.log('[Omitone] fill question', answerItem.index, 'type', type, 'answer', finalAnswer);
+        // 考试/测试里的简答、证明、计算与填空：模型回 true/略/不会 或原始 LaTeX 时，
+        // 宁可留空按住，也不把这些“人类一眼看不明白”的东西写到卷面上（现场 2026-11-26）。
+        if ((type === 'short' || type === 'fill') && !self._isRandomAnswerMode() && self._paperTierFromTitle() === 'exam' && !self._isReadableQuizTextAnswer(finalAnswer)) {
+          emitRuntimeLog('warn', 'quiz answer rejected: unreadable text answer', {
+            index: answerItem.index,
+            type: type,
+            raw: String(finalAnswer == null ? '' : finalAnswer).slice(0, 40)
+          });
+          self._clearQuizQuestionAnswer(question);
+          self._unmarkQuizQuestionAnsweredThisRun(question);
+          return;
+        }
         if (finalAnswer === null || finalAnswer === undefined || String(finalAnswer).trim() === '') {
           // 「这一题模型给的是空答案」必须落进日志。它和「填上了但页面没写上」
           // 在用户眼里是同一个症状（答题框空着、卷子却交上去了），
@@ -18680,6 +18714,40 @@ var OMITONE_CODE_REV = 'a897213496';
             emptyAnswer: !String(value == null ? '' : value).trim()
           });
         } catch (eLog) {}
+        // 现场（2026-11-26 线性代数作业）：填空题的每个空是一只富文本 textarea，
+        // 旧兜底把整串 `14|||-14|||-11` 写进了**每一只**框，用户看到的是分隔符垃圾。
+        // 这里先把 `|||` 按空切开，再逐框写一条；分不到才退回旧的一整串。
+        try {
+          var richTargets = this._collectAnswerEditableNodes(el) || [];
+          if (richTargets.length > 1) {
+            var rawRich = String(value == null ? '' : value).trim();
+            var splitRich = this._splitFillAnswerParts(rawRich, richTargets.length);
+            if (splitRich.parts.length === richTargets.length) {
+              var richWritten = 0;
+              for (var rt = 0; rt < richTargets.length; rt++) {
+                if (this._writeAnswerText(richTargets[rt], splitRich.parts[rt])) richWritten++;
+              }
+              try {
+                var docRich = el.ownerDocument || document;
+                var qidRich = this._getQuestionIdFromElement(el);
+                var hiddenRich = (qidRich && docRich.getElementById)
+                  ? docRich.getElementById('answer' + qidRich)
+                  : this._findQuizAnswerInput(el, qidRich);
+                if (hiddenRich) {
+                  hiddenRich.value = splitRich.parts.join('');
+                  hiddenRich.dispatchEvent(new Event('input', { bubbles: true }));
+                  hiddenRich.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+              } catch (eHiddenRich) {}
+              emitRuntimeLog('info', 'fill rich blanks distributed', {
+                count: richTargets.length,
+                mode: splitRich.mode,
+                qid: String(this._getQuestionIdFromElement(el) || '').slice(0, 24)
+              });
+              return richWritten;
+            }
+          }
+        } catch (eRich) {}
         return this._fillTextarea(el, answer);
       }
 

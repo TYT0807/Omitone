@@ -138,6 +138,27 @@
   }
 
   /**
+   * 用户没手动设置过时，按场景自动给：刷课最低、测试/考试最高。
+   * 这不是替用户花钱 —— 是用户在 2026-11-26 现场明确要求的策略：
+   * “统一刷课最低，进测试/考试就是最高，不要全部关闭还要手动设”。
+   */
+  function automaticRange(tier) {
+    // 用户 2026-11-26 的成本口径：可以接受“不作答”，不能接受“又贵又答不对”。
+    // 所以自动档只给到低：刷课关，测试/考试上限低（比全关多一点推理，但成本封顶）。
+    return String(tier || '') === 'course'
+      ? { min: 'off', max: 'off' }
+      : { min: 'off', max: 'low' };
+  }
+
+  function hasExplicitLegacy(config) {
+    var cfg = config || {};
+    var global = String(cfg.thinkingLevel == null ? '' : cfg.thinkingLevel).trim().toLowerCase();
+    var paper = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
+    // 默认值 off / 空串都算“没手动设过”；老用户真的填过 low/high 才沿用。
+    return (global && global !== 'off') || !!paper;
+  }
+
+  /**
    * 这个场景这次该用哪段区间。三级来源，按优先级：
    *   ① `thinkingRange` —— content.js 在**单次请求**里临时挂上的覆盖键，不落盘、不投影；
    *   ② 该场景的键（`thinkingRangeCourse` 等）；写成无法解析的形状 → 落最省的 `off-off`
@@ -161,8 +182,12 @@
         ? { min: parsed.min, max: parsed.max, ok: true, source: key }
         : { min: 'off', max: 'off', ok: false, source: key };
     }
-    var legacy = legacyRange(cfg, tier);
-    return { min: legacy.min, max: legacy.max, ok: true, source: 'legacy' };
+    if (hasExplicitLegacy(cfg)) {
+      var legacy = legacyRange(cfg, tier);
+      return { min: legacy.min, max: legacy.max, ok: true, source: 'legacy' };
+    }
+    var auto = automaticRange(tier);
+    return { min: auto.min, max: auto.max, ok: true, source: 'auto' };
   }
 
   /** 区间是否真的留了余地给模型（上下限不等）。 */

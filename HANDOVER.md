@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 838 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 843 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1861,6 +1861,16 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 - 逐处改成 `app._setQuizApiFailUntil(0);`（生产方法在 `<=0` 时内存与键一起清）。替换 13 处、残留 0 处；
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
+
+### 0.80 自动档按成本封顶 + 文本答案可读性闸（批次 229，2026-11-26，主会话）
+
+- **自动档**：没手动设过时，刷课 `off-off`、测试/考试 `off-low`（成本上限低）；手动设置与老高值优先。
+  用户口径：可以接受不能用，不能接受“又不能用又贵”。
+- **答案质量**：`t` 类题提示词要求可读过程/结论、常见数学符号、不写 LaTeX 源码；证明题 typename 归 `short`；
+  填空富文本按 `|||` 逐框分发；`_isReadableQuizTextAnswer` 拦 true/略/证明略/不会/原始 LaTeX，
+  测试/考试不再用占位答案糊表单。
+- **读数**：集成 843 / 843；全量 e2e 156 / 1746；`check.js` EXIT=0。
+- **门面**：`没手动设置时，刷课关、测试/考试只到低档；简答证明要给可读过程`。
 
 ### 0.79 作业卷单批超时与思考档标签修正（批次 228，2026-11-26，主会话）
 

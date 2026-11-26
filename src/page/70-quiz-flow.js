@@ -2505,6 +2505,8 @@
       var paper = String(cfg.thinkingPaperLevel == null ? '' : cfg.thinkingPaperLevel).trim().toLowerCase();
       if (paper === 'off' || paper === 'low' || paper === 'high') return paper;
       var global = String(cfg.thinkingLevel == null ? '' : cfg.thinkingLevel).trim().toLowerCase();
+      // 没手动设过（新键空、老键 off/空）→ 自动档是 off-low，下限仍是 off；
+      // “不乱猜”闸不靠自动档生效，靠下面的文本答案质量闸拦住 true/略/不会 这类占位。
       return global === 'low' || global === 'high' ? global : 'off';
     },
 

@@ -2134,7 +2134,6 @@ async function testThinkingLevels() {
     [{ thinkingLevel: 'low', thinkingPaperLevel: 'high' }, 'exam', 'high'],
     [{ thinkingLevel: 'high', thinkingPaperLevel: '' }, 'exam', 'high'],
     [{ thinkingLevel: 'high', thinkingPaperLevel: 'bogus' }, 'exam', 'high'],
-    [{}, 'exam', 'off'],
     [{ thinkingRangeExam: 'off-off', thinkingLevel: 'high' }, 'exam', 'off']
   ];
   var migrateBad = MIGRATE.filter(function (p) {
@@ -2145,8 +2144,17 @@ async function testThinkingLevels() {
     var r = THINKING.rangeForTier(p[0], p[1]);
     return JSON.stringify(p[0]) + ' / ' + p[1] + '→ ' + r.min + '-' + r.max + '（期望 ' + p[2] + '-' + p[2] + '）';
   });
-  check('老键迁移十格：推出来的区间**上下限相等**（= 走固定档 = 与改造前逐字节等价）',
-    migrateBad.length === 0, migrateBad.join(' || ') || '10 格全对');
+  check('老键迁移九格：推出来的区间**上下限相等**（= 走固定档 = 与改造前逐字节等价）',
+    migrateBad.length === 0, migrateBad.join(' || ') || '9 格全对');
+  var autoCourse = THINKING.rangeForTier({}, 'course');
+  var autoQuiz = THINKING.rangeForTier({}, 'quiz');
+  var autoExam = THINKING.rangeForTier({}, 'exam');
+  check('没手动设过时自动档：刷课关、测试/考试 off-low（成本封顶，不是全关）',
+    autoCourse.min === 'off' && autoCourse.max === 'off' &&
+    autoQuiz.min === 'off' && autoQuiz.max === 'low' &&
+    autoExam.min === 'off' && autoExam.max === 'low' &&
+    autoExam.source === 'auto',
+    JSON.stringify({ course: autoCourse, quiz: autoQuiz, exam: autoExam }));
   // 三处出厂默认必须是「这一格从没写过」，一处都不能写 off-off。
   // 为什么弹窗也在内（批次 123-b 实测踩过一次自己埋的坑）：popup 的 load() 写的是
   // `config = {...DEFAULTS, ...存储}`，DEFAULTS 里只要非空，`rangeForTier` 就**永远**拿不到
@@ -11693,6 +11701,14 @@ async function testQuizSubmitNeverAccepted() {
   var l4 = typeFn.call(typeAppWithOptions, mkTypeEl(''));
   check('232-L4：认得出选项（即使没有控件）时照旧按单选，别把老结构打成 unknown',
     l4 === 'single', JSON.stringify({ l4: l4 }));
+  var proofEl = {
+    getAttribute: function (n) { return n === 'typename' ? '证明题' : ''; },
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; }
+  };
+  var l5 = typeFn.call(typeApp, proofEl);
+  check('232-L5：typename=证明题归到 short（现场证明题被当单选，模型只回 true）',
+    l5 === 'short', JSON.stringify({ l5: l5 }));
 
   // ---- M：多选答案写隐藏域前必须按字母序（#232 现场：BAC/CDA 被拒，ABC/ACD 通过） ----
   var sortHidden = { value: '' };
@@ -12199,6 +12215,58 @@ async function testQuizResultGrade() {
     JSON.stringify(logs));
 }
 
+async function testFillRichAndReadablePrompt() {
+  console.log('\n[43] 填空富文本按空分发 + 简答/证明要给可读过程（#52 现场）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var promptSrc = read('libs/prompt.js');
+  check('① 提示词点明 t 要给解题过程/可读符号，且不写 LaTeX 源码',
+    /解题过程/.test(promptSrc) && /不写LaTeX/.test(promptSrc) && /常见数学符号/.test(promptSrc),
+    JSON.stringify({ process: /解题过程/.test(promptSrc), noLatex: /不写LaTeX/.test(promptSrc), symbols: /常见数学符号/.test(promptSrc) }));
+
+  var dom = read('src/page/75-quiz-dom.js');
+  var at = dom.indexOf('_fillText: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('取出 _fillText（取不出是签名/缩进变了，不等于没有回归）', false,
+      JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var logs = [];
+  var writes = [];
+  var made = Reflect.construct(Function, ['emitRuntimeLog',
+    'return (' + dom.slice(start, end) + '\n    })'])(
+    function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); }
+  );
+  var el = {
+    querySelectorAll: function () { return []; },
+    querySelector: function () { return null; },
+    ownerDocument: { getElementById: function () { return null; } }
+  };
+  var app = {
+    _normalizeAnswerValue: function (v) { return v; },
+    _collectAnswerEditableNodes: function () { return [{ i: 0 }, { i: 1 }, { i: 2 }, { i: 3 }]; },
+    _splitFillAnswerParts: function (raw) {
+      var parts = String(raw).split('|||');
+      return { parts: parts, mode: 'test-split' };
+    },
+    _writeAnswerText: function (target, val) { writes.push({ i: target.i, val: String(val) }); return true; },
+    _fillTextarea: function () { throw new Error('不该退回整串写入'); },
+    _getQuestionIdFromElement: function () { return 'q1'; },
+    _findQuizAnswerInput: function () { return null; }
+  };
+  var ret = made.call(app, el, '14|||-14|||-11|||-11');
+  check('② 四个富文本空位各写一条，不再把 14|||-14|||… 整串塞进每一只框',
+    writes.length === 4 && writes.map(function (w) { return w.val; }).join('|') === '14|-14|-11|-11' && ret === 4,
+    JSON.stringify({ ret: ret, writes: writes }));
+  check('③ 分发路径单独留一句日志（能分清“没走到”和“走到了但写失败”）',
+    logs.some(function (l) { return l.message === 'fill rich blanks distributed' && l.meta && l.meta.count === 4; }),
+    JSON.stringify(logs));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12258,6 +12326,7 @@ async function main() {
   await testUnknownQuizShape();
   await testCurrentTitleFallback();
   await testQuizResultGrade();
+  await testFillRichAndReadablePrompt();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

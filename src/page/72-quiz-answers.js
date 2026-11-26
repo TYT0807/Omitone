@@ -887,6 +887,12 @@
         if (type !== 'single' && type !== 'judge' && type !== 'fill' && type !== 'short') return;
         if (self._isQuizQuestionFilled(doc, question)) return;
 
+        // 测试/考试（标题带作业/考试或章节测验）不再用占位答案糊满表单：
+        // 「不会」「1」这类东西交上去既不对也不可读，用户明确要求宁可按住也不乱填。
+        if ((type === 'fill' || type === 'short') && String(self._paperTierFromTitle() || '') === 'exam') {
+          unfillable.push(index);
+          return;
+        }
         var guess = '';
         if (type === 'fill') guess = self._blankFillPlaceholder(question._element);
         else if (type === 'short') guess = '不会';

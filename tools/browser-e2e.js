@@ -13519,9 +13519,11 @@ SCENARIOS.push({
       }),
       JSON.stringify(ui.thinkCells));
     var fresh = await ctx.client.evaluate(setThinkingStorage({}));
-    check('全新安装（新老键都没写过）六格全落在「关闭—关闭」= 升级前行为，一个请求都不该变',
+    check('全新安装（新老键都没写过）自动档：刷课 off-off，测试/考试 off-low（成本封顶）',
       !fresh.error && !!fresh.cells && fresh.cells.length === 3
-      && fresh.cells.every(function (c) { return c.min === 'off' && c.max === 'off'; }),
+      && fresh.cells[0].min === 'off' && fresh.cells[0].max === 'off'
+      && fresh.cells[1].min === 'off' && fresh.cells[1].max === 'low'
+      && fresh.cells[2].min === 'off' && fresh.cells[2].max === 'low',
       JSON.stringify(fresh));
     // 这条是影子 bug 的正面判据：弹窗 DEFAULTS 里只要给这三格写了非空默认值，
     // load() 的 `{...DEFAULTS, ...存储}` 就永远盖住"由老键推导"那一支，
@@ -13577,8 +13579,8 @@ SCENARIOS.push({
     );
     check('拉开刷课那一行落盘的是 off-high（下限没被当成"这一档"写死）',
       autoPersist.course === 'off-high', JSON.stringify(autoPersist));
-    check('保存时三行一起显式落盘（没动过的测试/考试也要写出 off-off）—— 留空串页面会退回老键，与界面显示不一致',
-      autoPersist.quiz === 'off-off' && autoPersist.exam === 'off-off', JSON.stringify(autoPersist));
+    check('保存时三行一起显式落盘（没动过的测试/考试写出自动档 off-low）—— 留空串页面会退回老键，与界面显示不一致',
+      autoPersist.quiz === 'off-low' && autoPersist.exam === 'off-low', JSON.stringify(autoPersist));
 
     // 换渠道 → 说明必须跟着换（先把刷课那行收回 off-off，Kimi 那一格才该说"关不掉"）
     var kimi = await ctx.client.evaluate(
@@ -13607,8 +13609,10 @@ SCENARIOS.push({
       'var z=(q&&q.config)||{};' +
       'res({left:want.filter(function(k){return k in z;}),cells:window.__thinkCells()});});});});});})()'
     );
-    check('收尾把五格思考键清干净并回到 off-off（脏存储会毒化后面的答题场景）',
-      teardown.left.length === 0 && teardown.cells.every(function (c) { return c.min === 'off' && c.max === 'off'; }),
+    check('收尾把五格思考键清干净并回到自动档（刷课 off-off，测试/考试 off-low）',
+      teardown.left.length === 0 && teardown.cells[0].min === 'off' && teardown.cells[0].max === 'off'
+      && teardown.cells[1].min === 'off' && teardown.cells[1].max === 'low'
+      && teardown.cells[2].min === 'off' && teardown.cells[2].max === 'low',
       JSON.stringify(teardown));
     check('开关控件已渲染', ui.toggleCount >= 8, 'toggles=' + ui.toggleCount);
 
