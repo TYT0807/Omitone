@@ -718,6 +718,30 @@
       // 所以不比卷子键（`_isQuizForceSkipping()` 无参调用算出来的是另一个文档的键，
       // 会把 nextUnit 拦在 hold 上 —— 见 `_isQuizSkipWindowLive` 的注释）。
       if (!this._isQuizSkipWindowLive() && this._shouldHoldQuizBeforeNext('next-unit')) return;
+      // 讨论 blocked（平台说没做完、本地重试预算用完）必须拦住**所有** nextUnit 入口，
+      // 包括视频播完那一支（40-media.js 的 _finishCurrentMedia 直接调 nextUnit，绕过了两条 runner 的 hold）。
+      // 这里只读 pendingInfo 的 blocked，不调 _shouldHoldDiscussionBeforeFinish（那会按拍烧预算）。
+      try {
+        if (typeof this._discussionPendingInfo === 'function') {
+          var discInfo = this._discussionPendingInfo();
+          if (discInfo && Number(discInfo.blocked || 0) > 0) {
+            var dNow = Date.now();
+            if (!this._discussionBlockedLogAt || dNow - this._discussionBlockedLogAt > 60000) {
+              this._discussionBlockedLogAt = dNow;
+              emitRuntimeLog('warn', 'study hold discussion before next unit', {
+                reason: 'discussion-blocked',
+                blocked: discInfo.blocked,
+                pending: discInfo.pending,
+                total: discInfo.total,
+                source: discInfo.source,
+                hint: '平台仍说这条讨论没做完，而本地已发记录把重试预算用完了；这一节不翻页。' +
+                  '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 再试。'
+              });
+            }
+            return;
+          }
+        }
+      } catch (eDisc) {}
       if (this._switchToNextLearningCard('next-unit')) return;
       this._dismissPopups();
       try {
@@ -820,6 +844,29 @@
      * @returns {boolean} true = 这一拍我认领了（要么已经走人，要么明确决定留下），别再打"卡住"那条 error
      */
     _leaveFinishedCourse: function (reason) {
+      // 讨论 blocked（平台说没做完、本地重试预算用完）时不许换课离开最后一节：
+      // next-noop 这条链直接调本函数，不经过 nextUnit 的那道闸（用户口径：不可跳过）。
+      try {
+        if (typeof this._discussionPendingInfo === 'function') {
+          var discBlocked = this._discussionPendingInfo();
+          if (discBlocked && Number(discBlocked.blocked || 0) > 0) {
+            var dNow = Date.now();
+            if (!this._discussionBlockedLogAt || dNow - this._discussionBlockedLogAt > 60000) {
+              this._discussionBlockedLogAt = dNow;
+              emitRuntimeLog('warn', 'course leave blocked by discussion', {
+                reason: 'discussion-blocked',
+                by: String(reason || ''),
+                blocked: discBlocked.blocked,
+                pending: discBlocked.pending,
+                total: discBlocked.total,
+                hint: '平台仍说这条讨论没做完，本地重试预算已用完；这一门不换走。' +
+                  '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 再试。'
+              });
+            }
+            return false;
+          }
+        }
+      } catch (eDiscLeave) {}
       var scan = this._catalogCourseScan();
       if (!this._isCourseAtEnd(scan)) return false;
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;

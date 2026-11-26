@@ -15665,12 +15665,21 @@ SCENARIOS.push({
       'reset();r.p3=app._discussionPendingInfo();r.h3=app._shouldHoldDiscussionBeforeFinish();' +
       'var task=await app._findDiscussionTask();' +
       'r.taskKey=task?String(task.key):null;' +
-      // ④ 额度烧尽（3 次）后不再无限自愈：这时才允许放走，且理由要说得出口
+      // ④ 额度烧尽（3 次）后不再无限自愈；但平台仍说没做完，这一节按住并点名 blocked（不可跳过）
       'if(todo){try{var mm=app._discussionDoneMap();mm[todo.key]=Date.now()-180000;' +
       '  localStorage.setItem(app._discussionStoreKey,JSON.stringify(mm));}catch(e){}' +
       '  for(var q=0;q<3;q++){app._bumpDiscussionTry(todo.key);}}' +
       'r.healSpent=todo?app._discussionHealEligible(todo):null;' +
-      'reset();r.p4=app._discussionPendingInfo();' +
+      'reset();r.p4=app._discussionPendingInfo();r.h4=app._shouldHoldDiscussionBeforeFinish();' +
+      'try{var sw=0,old=app._switchToNextLearningCard;app.configs=Object.assign({},app.configs,{autoNext:true});' +
+      'app._assertActive=function(){return true;};app._isActiveMediaPending=function(){return false;};' +
+      'app._isQuizSkipWindowLive=function(){return false;};app._shouldHoldQuizBeforeNext=function(){return false;};' +
+      'app._switchToNextLearningCard=function(){sw++;return true;};app.nextUnit();app._switchToNextLearningCard=old;r.nextGate=sw;' +
+      '}catch(eN){r.nextError=String(eN&&eN.message||eN);}' +
+      // 正控：把本地 done/try 清掉、缓存失效后，同一个 nextUnit 必须真翻页；否则 T-A 可能只是“上游早退”
+      'try{if(todo){try{var md=app._discussionDoneMap();delete md[todo.key];delete md["try|"+todo.key];localStorage.setItem(app._discussionStoreKey,JSON.stringify(md));}catch(eD){}' +
+      'app._discussionPendingCache=null;var sw2=0;app._switchToNextLearningCard=function(){sw2++;return true;};' +
+      'app.nextUnit();app._switchToNextLearningCard=old;r.nextRelease=sw2;}}catch(eR){r.nextReleaseError=String(eR&&eR.message||eR);}' +
       'return r;})()'
     );
 
@@ -15691,8 +15700,16 @@ SCENARIOS.push({
     check('"重开发帖"与"按住这一节"同口径：pending=1、hold=true、找到的就是那张卡',
       !!probe && probe.p3 && probe.p3.pending === 1 && probe.h3 && probe.h3.hold === true &&
       probe.taskKey === probe.todoKey, JSON.stringify(probe && [probe.p3, probe.h3, probe.taskKey, probe.todoKey]));
-    check('额度烧尽（3 次）后不再无限自愈，放走时 pending 归 0',
-      !!probe && probe.healSpent === false && probe.p4 && probe.p4.pending === 0, JSON.stringify(probe && [probe.healSpent, probe.p4]));
+    check('额度烧尽（3 次）后不再无限自愈，但也不许跳过：pending 仍为 1、整节按住并点名 blocked',
+      !!probe && probe.healSpent === false && probe.p4 && probe.p4.pending === 1 && probe.p4.blocked === 1
+      && probe.h4 && probe.h4.hold === true && probe.h4.reason === 'discussion-blocked',
+      JSON.stringify(probe && [probe.healSpent, probe.p4, probe.h4]));
+    check('blocked 时直调 nextUnit 不翻页（唯一漏斗挡住）',
+      !!probe && probe.nextGate === 0 && !probe.nextError,
+      JSON.stringify(probe && { nextGate: probe.nextGate, nextError: probe.nextError }));
+    check('正控：解除 blocked（清本地 done/try）后同一个 nextUnit 真的翻页，T-A 不是上游早退造成的假绿',
+      !!probe && probe.nextRelease === 1 && !probe.nextReleaseError,
+      JSON.stringify(probe && { nextRelease: probe.nextRelease, nextReleaseError: probe.nextReleaseError }));
   }
 });
 

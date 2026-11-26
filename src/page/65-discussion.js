@@ -938,6 +938,7 @@
         if (targets.length) {
           value.total = targets.length;
           value.source = 'cards';
+          var blocked = 0;
           var todo = targets.filter(function (t) {
             if (t.finished) return false;
             // 「本地已记过」= 已经发过（或已开过）这个讨论，成败由讨论页那边的回执决定，
@@ -946,8 +947,13 @@
             // 例外（批次 20-G）：本地记过账、但**平台仍说这个盒子没做完**，
             // 而且还在自愈额度内 —— 那就和 `_findDiscussionTask` 一样当作"没做完"，
             // 否则一边准备重开发帖、一边宣布整节完成去点「下一节」。
-            return self._discussionHealEligible(t);
+            if (self._discussionHealEligible(t)) return true;
+            // 平台明确说没做完、自愈额度**确实用完（tries>=3）**：**不许当完成翻过去**
+            // （用户口径：不可跳过）。刚发过 <90 秒但 tries 还没到 3 时不算 blocked，给平台刷新时间。
+            if (t.finishedKnown === true && self._getDiscussionTries(t.key) >= 3) { blocked++; return true; }
+            return false;
           });
+          value.blocked = blocked;
           value.pending = todo.length;
           value.sig = todo.map(function (t) { return String(t.key || ''); }).join(',').slice(0, 200);
         }
@@ -997,6 +1003,23 @@
         this._discussionHoldSinceAt = 0;
         this._discussionHoldKey = '';
         return { hold: false, reason: info.source === 'none' ? 'no-discussion-task' : (info.source === 'disabled' ? 'discussion-off' : 'all-recorded'), pending: 0, total: info.total, source: info.source, heldMs: 0, budgetMs: 0 };
+      }
+      // 平台明说“这条讨论没做完”，而本地重试预算已经耗尽：**不许按预算翻页**。
+      // 用户 2026-11-26 明确要求“不可跳过”；这里按住整节，只留一句可检索的 warn，
+      // 让人来处理或调 xxtAI.clearDiscussionDone() 再试。
+      if (Number(info.blocked || 0) > 0) {
+        if (!this._discussionBlockedLogAt || now - this._discussionBlockedLogAt > 60000) {
+          this._discussionBlockedLogAt = now;
+          emitRuntimeLog('warn', 'discussion blocked, waiting for manual', {
+            source: info.source,
+            pending: info.pending,
+            blocked: info.blocked,
+            total: info.total,
+            hint: '平台仍说这条讨论没做完，但本地“已发”记录已把重试预算用完；这一节按住不翻页。' +
+              '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 让它重试。'
+          });
+        }
+        return { hold: true, reason: 'discussion-blocked', pending: info.pending, total: info.total, source: info.source, blocked: info.blocked, heldMs: 0, budgetMs: 0 };
       }
       var budgetMs = info.source === 'cards' ? 90000 : 20000;
       if (this._discussionHoldKey !== info.sig) {

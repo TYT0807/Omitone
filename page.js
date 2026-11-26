@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '0d3650d9bf';
+var OMITONE_CODE_REV = 'd5e691e591';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -10675,6 +10675,30 @@ var OMITONE_CODE_REV = '0d3650d9bf';
       // 所以不比卷子键（`_isQuizForceSkipping()` 无参调用算出来的是另一个文档的键，
       // 会把 nextUnit 拦在 hold 上 —— 见 `_isQuizSkipWindowLive` 的注释）。
       if (!this._isQuizSkipWindowLive() && this._shouldHoldQuizBeforeNext('next-unit')) return;
+      // 讨论 blocked（平台说没做完、本地重试预算用完）必须拦住**所有** nextUnit 入口，
+      // 包括视频播完那一支（40-media.js 的 _finishCurrentMedia 直接调 nextUnit，绕过了两条 runner 的 hold）。
+      // 这里只读 pendingInfo 的 blocked，不调 _shouldHoldDiscussionBeforeFinish（那会按拍烧预算）。
+      try {
+        if (typeof this._discussionPendingInfo === 'function') {
+          var discInfo = this._discussionPendingInfo();
+          if (discInfo && Number(discInfo.blocked || 0) > 0) {
+            var dNow = Date.now();
+            if (!this._discussionBlockedLogAt || dNow - this._discussionBlockedLogAt > 60000) {
+              this._discussionBlockedLogAt = dNow;
+              emitRuntimeLog('warn', 'study hold discussion before next unit', {
+                reason: 'discussion-blocked',
+                blocked: discInfo.blocked,
+                pending: discInfo.pending,
+                total: discInfo.total,
+                source: discInfo.source,
+                hint: '平台仍说这条讨论没做完，而本地已发记录把重试预算用完了；这一节不翻页。' +
+                  '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 再试。'
+              });
+            }
+            return;
+          }
+        }
+      } catch (eDisc) {}
       if (this._switchToNextLearningCard('next-unit')) return;
       this._dismissPopups();
       try {
@@ -10777,6 +10801,29 @@ var OMITONE_CODE_REV = '0d3650d9bf';
      * @returns {boolean} true = 这一拍我认领了（要么已经走人，要么明确决定留下），别再打"卡住"那条 error
      */
     _leaveFinishedCourse: function (reason) {
+      // 讨论 blocked（平台说没做完、本地重试预算用完）时不许换课离开最后一节：
+      // next-noop 这条链直接调本函数，不经过 nextUnit 的那道闸（用户口径：不可跳过）。
+      try {
+        if (typeof this._discussionPendingInfo === 'function') {
+          var discBlocked = this._discussionPendingInfo();
+          if (discBlocked && Number(discBlocked.blocked || 0) > 0) {
+            var dNow = Date.now();
+            if (!this._discussionBlockedLogAt || dNow - this._discussionBlockedLogAt > 60000) {
+              this._discussionBlockedLogAt = dNow;
+              emitRuntimeLog('warn', 'course leave blocked by discussion', {
+                reason: 'discussion-blocked',
+                by: String(reason || ''),
+                blocked: discBlocked.blocked,
+                pending: discBlocked.pending,
+                total: discBlocked.total,
+                hint: '平台仍说这条讨论没做完，本地重试预算已用完；这一门不换走。' +
+                  '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 再试。'
+              });
+            }
+            return false;
+          }
+        }
+      } catch (eDiscLeave) {}
       var scan = this._catalogCourseScan();
       if (!this._isCourseAtEnd(scan)) return false;
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
@@ -12449,6 +12496,7 @@ var OMITONE_CODE_REV = '0d3650d9bf';
         if (targets.length) {
           value.total = targets.length;
           value.source = 'cards';
+          var blocked = 0;
           var todo = targets.filter(function (t) {
             if (t.finished) return false;
             // 「本地已记过」= 已经发过（或已开过）这个讨论，成败由讨论页那边的回执决定，
@@ -12457,8 +12505,13 @@ var OMITONE_CODE_REV = '0d3650d9bf';
             // 例外（批次 20-G）：本地记过账、但**平台仍说这个盒子没做完**，
             // 而且还在自愈额度内 —— 那就和 `_findDiscussionTask` 一样当作"没做完"，
             // 否则一边准备重开发帖、一边宣布整节完成去点「下一节」。
-            return self._discussionHealEligible(t);
+            if (self._discussionHealEligible(t)) return true;
+            // 平台明确说没做完、自愈额度**确实用完（tries>=3）**：**不许当完成翻过去**
+            // （用户口径：不可跳过）。刚发过 <90 秒但 tries 还没到 3 时不算 blocked，给平台刷新时间。
+            if (t.finishedKnown === true && self._getDiscussionTries(t.key) >= 3) { blocked++; return true; }
+            return false;
           });
+          value.blocked = blocked;
           value.pending = todo.length;
           value.sig = todo.map(function (t) { return String(t.key || ''); }).join(',').slice(0, 200);
         }
@@ -12508,6 +12561,23 @@ var OMITONE_CODE_REV = '0d3650d9bf';
         this._discussionHoldSinceAt = 0;
         this._discussionHoldKey = '';
         return { hold: false, reason: info.source === 'none' ? 'no-discussion-task' : (info.source === 'disabled' ? 'discussion-off' : 'all-recorded'), pending: 0, total: info.total, source: info.source, heldMs: 0, budgetMs: 0 };
+      }
+      // 平台明说“这条讨论没做完”，而本地重试预算已经耗尽：**不许按预算翻页**。
+      // 用户 2026-11-26 明确要求“不可跳过”；这里按住整节，只留一句可检索的 warn，
+      // 让人来处理或调 xxtAI.clearDiscussionDone() 再试。
+      if (Number(info.blocked || 0) > 0) {
+        if (!this._discussionBlockedLogAt || now - this._discussionBlockedLogAt > 60000) {
+          this._discussionBlockedLogAt = now;
+          emitRuntimeLog('warn', 'discussion blocked, waiting for manual', {
+            source: info.source,
+            pending: info.pending,
+            blocked: info.blocked,
+            total: info.total,
+            hint: '平台仍说这条讨论没做完，但本地“已发”记录已把重试预算用完；这一节按住不翻页。' +
+              '手动发一条，或在控制台调 xxtAI.clearDiscussionDone() 让它重试。'
+          });
+        }
+        return { hold: true, reason: 'discussion-blocked', pending: info.pending, total: info.total, source: info.source, blocked: info.blocked, heldMs: 0, budgetMs: 0 };
       }
       var budgetMs = info.source === 'cards' ? 90000 : 20000;
       if (this._discussionHoldKey !== info.sig) {
@@ -17931,11 +18001,89 @@ var OMITONE_CODE_REV = '0d3650d9bf';
      * 「这段文字能给人类看吗」—— 只拦明确的占位/真假/原始 LaTeX，不做主观判断。
      * true/false 只对判断题合法；证明/计算/填空里出现它，基本就是模型没理解题型。
      */
-    _isReadableQuizTextAnswer: function (answer) {
+    /**
+     * 把模型回的常见 LaTeX 转成人类一眼能读的写法（现场 2026-11-26：提示词说了不写 LaTeX，
+     * 模型仍回 `\frac{a^{n+1}-b^{n+1}}{a-b}\quad(a\ne b)`；直接拒绝会让整卷永远填不满）。
+     * 只处理常见结构；认不出的反斜杠命令保留命令名（不带反斜杠），最后由可读性闸决定收不收。
+     */
+    _latexToReadableText: function (answer) {
+      var s = Array.isArray(answer) ? answer.join('|||') : String(answer == null ? '' : answer);
+      if (!s) return '';
+      function readGroup(text, start) {
+        if (text.charAt(start) !== '{') return null;
+        var depth = 0;
+        for (var i = start; i < text.length; i++) {
+          var ch = text.charAt(i);
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) return { inner: text.slice(start + 1, i), raw: text.slice(start, i + 1) };
+          }
+        }
+        return null;
+      }
+      function replaceFrac(text) {
+        for (var guard = 0; guard < 40; guard++) {
+          var at = text.indexOf('\\frac');
+          if (at < 0) return text;
+          var pos = at + 5;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var num = readGroup(text, pos);
+          if (!num) return text;
+          pos += num.raw.length;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var den = readGroup(text, pos);
+          if (!den) return text;
+          var replacement = '(' + replaceFrac(num.inner) + ')/(' + replaceFrac(den.inner) + ')';
+          text = text.slice(0, at) + replacement + text.slice(pos + den.raw.length);
+        }
+        return text;
+      }
+      function replaceSqrt(text) {
+        for (var guard = 0; guard < 40; guard++) {
+          var at = text.indexOf('\\sqrt');
+          if (at < 0) return text;
+          var pos = at + 5;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var group = readGroup(text, pos);
+          if (!group) return text;
+          text = text.slice(0, at) + '√(' + group.inner + ')' + text.slice(pos + group.raw.length);
+        }
+        return text;
+      }
+      s = s.replace(/\\left|\\right/g, '');
+      s = s.replace(/\\begin\{[^}]+\}/g, '[').replace(/\\end\{[^}]+\}/g, ']');
+      s = s.replace(/&/g, ' ');
+      s = s.replace(/\\sqrt\s*\[3\]\s*\{([^{}]*)\}/g, '∛($1)');
+      s = s.replace(/\\sqrt\s*\[([^\]]+)\]\s*\{([^{}]*)\}/g, '√[$1]($2)');
+      s = replaceFrac(s);
+      s = replaceSqrt(s);
+      var map = {
+        prod: '∏', sum: '∑', int: '∫', infty: '∞', cdot: '·', times: '×', div: '÷', pm: '±',
+        neq: '≠', ne: '≠', leq: '≤', le: '≤', geq: '≥', ge: '≥', approx: '≈',
+        alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', theta: 'θ', lambda: 'λ', mu: 'μ', pi: 'π',
+        sigma: 'σ', phi: 'φ', omega: 'ω', to: '→', quad: ' ', qquad: ' ',
+        mathrm: '', mathbf: '', text: '', operatorname: ''
+      };
+      // 矩阵换行是 `\\`；必须在逐命令替换之前吃掉，否则第二根反斜杠会被当成 `\c` 这类命令。
+      s = s.replace(/\\\\/g, '; ');
+      s = s.replace(/\\([a-zA-Z]+)/g, function (_, cmd) {
+        return Object.prototype.hasOwnProperty.call(map, cmd) ? map[cmd] : cmd;
+      });
+      s = s.replace(/\\[,;:!\s]+/g, ' ');
+      s = s.replace(/\^\{([^{}]*)\}/g, '^($1)');
+      s = s.replace(/_\{([^{}]*)\}/g, '_($1)');
+      s = s.replace(/[{}]/g, '');
+      s = s.replace(/\s+/g, ' ').trim();
+      return s;
+    },
+
+    _isReadableQuizTextAnswer: function (answer, type) {
       var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
       if (!s) return false;
       if (/^(true|false|对|错|正确|错误|是|否|略|证明略|不会|暂无|无)$/i.test(s)) return false;
-      if (s.replace(/\s+/g, '').length < 2) return false;
+      // 填空题的合法答案可能就一个字符（0/1/x）；简答/证明才要求至少两个字，避免把单字答案误杀。
+      if (s.replace(/\s+/g, '').length < (String(type || '') === 'fill' ? 1 : 2)) return false;
       // 原始 LaTeX 源码对用户是“乱码”；提示词已要求常用数学符号，这里兜底拦一次。
       if (/\\[a-zA-Z]+|\\[{}]/.test(s)) return false;
       return true;
@@ -17967,16 +18115,27 @@ var OMITONE_CODE_REV = '0d3650d9bf';
         var finalAnswer = self._avoidKnownWrongAnswer(answerItem.answer, type, question, preferredDoc || null);
         console.log('[Omitone] fill question', answerItem.index, 'type', type, 'answer', finalAnswer);
         // 考试/测试里的简答、证明、计算与填空：模型回 true/略/不会 或原始 LaTeX 时，
-        // 宁可留空按住，也不把这些“人类一眼看不明白”的东西写到卷面上（现场 2026-11-26）。
-        if ((type === 'short' || type === 'fill') && !self._isRandomAnswerMode() && self._paperTierFromTitle() === 'exam' && !self._isReadableQuizTextAnswer(finalAnswer)) {
-          emitRuntimeLog('warn', 'quiz answer rejected: unreadable text answer', {
-            index: answerItem.index,
-            type: type,
-            raw: String(finalAnswer == null ? '' : finalAnswer).slice(0, 40)
-          });
-          self._clearQuizQuestionAnswer(question);
-          self._unmarkQuizQuestionAnsweredThisRun(question);
-          return;
+        // 先尝试把常见 LaTeX 转成人类可读写法；转完仍不可读才留空按住（现场 2026-11-26）。
+        if ((type === 'short' || type === 'fill') && !self._isRandomAnswerMode() && self._paperTierFromTitle() !== 'course') {
+          var readableAnswer = self._latexToReadableText(finalAnswer);
+          if (readableAnswer && readableAnswer !== String(finalAnswer == null ? '' : finalAnswer)) {
+            emitRuntimeLog('info', 'quiz answer latex converted to readable text', {
+              index: answerItem.index,
+              from: String(finalAnswer || '').slice(0, 40),
+              to: readableAnswer.slice(0, 60)
+            });
+            finalAnswer = readableAnswer;
+          }
+          if (self._paperTierFromTitle() === 'exam' && !self._isReadableQuizTextAnswer(finalAnswer, type)) {
+            emitRuntimeLog('warn', 'quiz answer rejected: unreadable text answer', {
+              index: answerItem.index,
+              type: type,
+              raw: String(finalAnswer == null ? '' : finalAnswer).slice(0, 40)
+            });
+            self._clearQuizQuestionAnswer(question);
+            self._unmarkQuizQuestionAnsweredThisRun(question);
+            return;
+          }
         }
         if (finalAnswer === null || finalAnswer === undefined || String(finalAnswer).trim() === '') {
           // 「这一题模型给的是空答案」必须落进日志。它和「填上了但页面没写上」
@@ -18748,7 +18907,13 @@ var OMITONE_CODE_REV = '0d3650d9bf';
             }
           }
         } catch (eRich) {}
-        return this._fillTextarea(el, answer);
+        // 只有一只富文本框时，多空答案不能再把 `|||` 原样写进去；用中文分号连成一句人话。
+        var oneBoxValue = String(value == null ? '' : value);
+        try {
+          var oneBoxParts = this._splitFillAnswerParts(oneBoxValue, 2);
+          if (oneBoxParts.parts.length > 1) oneBoxValue = oneBoxParts.parts.join('；');
+        } catch (eOneBox) {}
+        return this._fillTextarea(el, oneBoxValue);
       }
 
       var values = [];

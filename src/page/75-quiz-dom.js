@@ -11,9 +11,9 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（60 个）：
+ * 本段的方法（61 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
- *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_textWithLatex、_isReadableQuizTextAnswer、_extractOptionText、
+ *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_textWithLatex、_latexToReadableText、_isReadableQuizTextAnswer、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
  *   _fillAnswers、_inferOptionLetter、_matchOptionItem、_clickOptionItem、
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
@@ -493,11 +493,89 @@
      * 「这段文字能给人类看吗」—— 只拦明确的占位/真假/原始 LaTeX，不做主观判断。
      * true/false 只对判断题合法；证明/计算/填空里出现它，基本就是模型没理解题型。
      */
-    _isReadableQuizTextAnswer: function (answer) {
+    /**
+     * 把模型回的常见 LaTeX 转成人类一眼能读的写法（现场 2026-11-26：提示词说了不写 LaTeX，
+     * 模型仍回 `\frac{a^{n+1}-b^{n+1}}{a-b}\quad(a\ne b)`；直接拒绝会让整卷永远填不满）。
+     * 只处理常见结构；认不出的反斜杠命令保留命令名（不带反斜杠），最后由可读性闸决定收不收。
+     */
+    _latexToReadableText: function (answer) {
+      var s = Array.isArray(answer) ? answer.join('|||') : String(answer == null ? '' : answer);
+      if (!s) return '';
+      function readGroup(text, start) {
+        if (text.charAt(start) !== '{') return null;
+        var depth = 0;
+        for (var i = start; i < text.length; i++) {
+          var ch = text.charAt(i);
+          if (ch === '{') depth++;
+          else if (ch === '}') {
+            depth--;
+            if (depth === 0) return { inner: text.slice(start + 1, i), raw: text.slice(start, i + 1) };
+          }
+        }
+        return null;
+      }
+      function replaceFrac(text) {
+        for (var guard = 0; guard < 40; guard++) {
+          var at = text.indexOf('\\frac');
+          if (at < 0) return text;
+          var pos = at + 5;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var num = readGroup(text, pos);
+          if (!num) return text;
+          pos += num.raw.length;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var den = readGroup(text, pos);
+          if (!den) return text;
+          var replacement = '(' + replaceFrac(num.inner) + ')/(' + replaceFrac(den.inner) + ')';
+          text = text.slice(0, at) + replacement + text.slice(pos + den.raw.length);
+        }
+        return text;
+      }
+      function replaceSqrt(text) {
+        for (var guard = 0; guard < 40; guard++) {
+          var at = text.indexOf('\\sqrt');
+          if (at < 0) return text;
+          var pos = at + 5;
+          while (/\s/.test(text.charAt(pos))) pos++;
+          var group = readGroup(text, pos);
+          if (!group) return text;
+          text = text.slice(0, at) + '√(' + group.inner + ')' + text.slice(pos + group.raw.length);
+        }
+        return text;
+      }
+      s = s.replace(/\\left|\\right/g, '');
+      s = s.replace(/\\begin\{[^}]+\}/g, '[').replace(/\\end\{[^}]+\}/g, ']');
+      s = s.replace(/&/g, ' ');
+      s = s.replace(/\\sqrt\s*\[3\]\s*\{([^{}]*)\}/g, '∛($1)');
+      s = s.replace(/\\sqrt\s*\[([^\]]+)\]\s*\{([^{}]*)\}/g, '√[$1]($2)');
+      s = replaceFrac(s);
+      s = replaceSqrt(s);
+      var map = {
+        prod: '∏', sum: '∑', int: '∫', infty: '∞', cdot: '·', times: '×', div: '÷', pm: '±',
+        neq: '≠', ne: '≠', leq: '≤', le: '≤', geq: '≥', ge: '≥', approx: '≈',
+        alpha: 'α', beta: 'β', gamma: 'γ', delta: 'δ', theta: 'θ', lambda: 'λ', mu: 'μ', pi: 'π',
+        sigma: 'σ', phi: 'φ', omega: 'ω', to: '→', quad: ' ', qquad: ' ',
+        mathrm: '', mathbf: '', text: '', operatorname: ''
+      };
+      // 矩阵换行是 `\\`；必须在逐命令替换之前吃掉，否则第二根反斜杠会被当成 `\c` 这类命令。
+      s = s.replace(/\\\\/g, '; ');
+      s = s.replace(/\\([a-zA-Z]+)/g, function (_, cmd) {
+        return Object.prototype.hasOwnProperty.call(map, cmd) ? map[cmd] : cmd;
+      });
+      s = s.replace(/\\[,;:!\s]+/g, ' ');
+      s = s.replace(/\^\{([^{}]*)\}/g, '^($1)');
+      s = s.replace(/_\{([^{}]*)\}/g, '_($1)');
+      s = s.replace(/[{}]/g, '');
+      s = s.replace(/\s+/g, ' ').trim();
+      return s;
+    },
+
+    _isReadableQuizTextAnswer: function (answer, type) {
       var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
       if (!s) return false;
       if (/^(true|false|对|错|正确|错误|是|否|略|证明略|不会|暂无|无)$/i.test(s)) return false;
-      if (s.replace(/\s+/g, '').length < 2) return false;
+      // 填空题的合法答案可能就一个字符（0/1/x）；简答/证明才要求至少两个字，避免把单字答案误杀。
+      if (s.replace(/\s+/g, '').length < (String(type || '') === 'fill' ? 1 : 2)) return false;
       // 原始 LaTeX 源码对用户是“乱码”；提示词已要求常用数学符号，这里兜底拦一次。
       if (/\\[a-zA-Z]+|\\[{}]/.test(s)) return false;
       return true;
@@ -529,16 +607,27 @@
         var finalAnswer = self._avoidKnownWrongAnswer(answerItem.answer, type, question, preferredDoc || null);
         console.log('[Omitone] fill question', answerItem.index, 'type', type, 'answer', finalAnswer);
         // 考试/测试里的简答、证明、计算与填空：模型回 true/略/不会 或原始 LaTeX 时，
-        // 宁可留空按住，也不把这些“人类一眼看不明白”的东西写到卷面上（现场 2026-11-26）。
-        if ((type === 'short' || type === 'fill') && !self._isRandomAnswerMode() && self._paperTierFromTitle() === 'exam' && !self._isReadableQuizTextAnswer(finalAnswer)) {
-          emitRuntimeLog('warn', 'quiz answer rejected: unreadable text answer', {
-            index: answerItem.index,
-            type: type,
-            raw: String(finalAnswer == null ? '' : finalAnswer).slice(0, 40)
-          });
-          self._clearQuizQuestionAnswer(question);
-          self._unmarkQuizQuestionAnsweredThisRun(question);
-          return;
+        // 先尝试把常见 LaTeX 转成人类可读写法；转完仍不可读才留空按住（现场 2026-11-26）。
+        if ((type === 'short' || type === 'fill') && !self._isRandomAnswerMode() && self._paperTierFromTitle() !== 'course') {
+          var readableAnswer = self._latexToReadableText(finalAnswer);
+          if (readableAnswer && readableAnswer !== String(finalAnswer == null ? '' : finalAnswer)) {
+            emitRuntimeLog('info', 'quiz answer latex converted to readable text', {
+              index: answerItem.index,
+              from: String(finalAnswer || '').slice(0, 40),
+              to: readableAnswer.slice(0, 60)
+            });
+            finalAnswer = readableAnswer;
+          }
+          if (self._paperTierFromTitle() === 'exam' && !self._isReadableQuizTextAnswer(finalAnswer, type)) {
+            emitRuntimeLog('warn', 'quiz answer rejected: unreadable text answer', {
+              index: answerItem.index,
+              type: type,
+              raw: String(finalAnswer == null ? '' : finalAnswer).slice(0, 40)
+            });
+            self._clearQuizQuestionAnswer(question);
+            self._unmarkQuizQuestionAnsweredThisRun(question);
+            return;
+          }
         }
         if (finalAnswer === null || finalAnswer === undefined || String(finalAnswer).trim() === '') {
           // 「这一题模型给的是空答案」必须落进日志。它和「填上了但页面没写上」
@@ -1310,7 +1399,13 @@
             }
           }
         } catch (eRich) {}
-        return this._fillTextarea(el, answer);
+        // 只有一只富文本框时，多空答案不能再把 `|||` 原样写进去；用中文分号连成一句人话。
+        var oneBoxValue = String(value == null ? '' : value);
+        try {
+          var oneBoxParts = this._splitFillAnswerParts(oneBoxValue, 2);
+          if (oneBoxParts.parts.length > 1) oneBoxValue = oneBoxParts.parts.join('；');
+        } catch (eOneBox) {}
+        return this._fillTextarea(el, oneBoxValue);
       }
 
       var values = [];

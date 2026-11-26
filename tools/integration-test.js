@@ -12265,6 +12265,27 @@ async function testFillRichAndReadablePrompt() {
   check('③ 分发路径单独留一句日志（能分清“没走到”和“走到了但写失败”）',
     logs.some(function (l) { return l.message === 'fill rich blanks distributed' && l.meta && l.meta.count === 4; }),
     JSON.stringify(logs));
+
+  var convAt = dom.indexOf('_latexToReadableText: function');
+  var convStart = convAt >= 0 ? dom.indexOf('function', convAt) : -1;
+  var convEnd = convStart >= 0 ? dom.indexOf('\n    },', convStart) : -1;
+  if (convStart >= 0 && convEnd > convStart) {
+    var conv = Reflect.construct(Function, ['return (' + dom.slice(convStart, convEnd) + '\n    })'])();
+    var frac = conv('\\frac{a^{n+1}-b^{n+1}}{a-b}\\quad(a\\ne b)');
+    var prod = conv('\\prod_{k=1}^n k!');
+    check('④ LaTeX 公式转成人类可读写法（不留反斜杠，分数/根号/乘积/不等号都认）',
+      frac.indexOf('\\') === -1 && /a\^\(n\+1\)/.test(frac) && /≠/.test(frac) &&
+      prod.indexOf('\\') === -1 && /∏/.test(prod) && conv('\\sqrt{x}').indexOf('√') !== -1,
+      JSON.stringify({ frac: frac, prod: prod, sqrt: conv('\\sqrt{x}') }));
+    var tailConv = conv('a^{n-2}(a^2-1)\\quad(n\\ge2;\\ n=1时为a)');
+    var matrixConv = conv('\\begin{matrix}a&b\\\\c&d\\end{matrix}');
+    check('⑤ 反斜杠空格/矩阵也要转干净（matrix 变 [a b; c d]）',
+      tailConv.indexOf('\\') === -1 && matrixConv.indexOf('\\') === -1 && /\[a b; c d\]/.test(matrixConv),
+      JSON.stringify({ tail: tailConv, matrix: matrixConv }));
+  } else {
+    check('④ 取出 _latexToReadableText（取不出是签名/缩进变了）', false,
+      JSON.stringify({ start: convStart, end: convEnd }));
+  }
 }
 
 async function main() {

@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 843 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 845 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1862,6 +1862,17 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
 
+### 0.81 讨论重试预算用完也不再跳过整节（批次 231，2026-11-26，主会话）
+
+- **现场**：主刷课页一条讨论，平台仍说没做完，但本地“已发”记录已烧完 3 次自愈预算；
+  旧 `_discussionPendingInfo` 把它排除出 pending，随后 `study finished on page` 翻下一节（用户：不可跳过）。
+- **修法**：target 在 `finishedKnown===true`、本地记过、且 `_discussionHealEligible` 为假时，
+  单独累计 `blocked`；`_shouldHoldDiscussionBeforeFinish` 在 `blocked>0` 时**按住整节**，
+  留 `discussion blocked, waiting for manual`（60 秒一条），提示手动发或 `xxtAI.clearDiscussionDone()`。
+- **读数**：e2e 讨论场景第 ④ 格改为 pending=1/blocked=1/hold=reason discussion-blocked，定向 10/10；
+  集成 843 / 843；全量 e2e 156 / 1746；`check.js` EXIT=0。
+- **门面**：`讨论被本地重试预算挡住时，不再跳过整节，会按住等你处理`。
+
 ### 0.80 自动档按成本封顶 + 文本答案可读性闸（批次 229，2026-11-26，主会话）
 
 - **自动档**：没手动设过时，刷课 `off-off`、测试/考试 `off-low`（成本上限低）；手动设置与老高值优先。
@@ -1892,7 +1903,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `data` 还原成 LaTeX，题干/选项都走它。现场 `_extractQuestions` 从 1 题恢复成 **22 题**，
   前三题选项读回 `-3m / 3m / 12m / -12m` 等。
 - **同轮前端**：思考强度三行（场景名 + 下限 + 至 + 上限），六个 id/配置/绑定未动；定向设置弹窗 60/60。
-- **读数**：新 e2e `/live-work` 5 条；反向两刀各红到自己的断言；全量 e2e **156 场景 / 1746 项**、
+- **读数**：新 e2e `/live-work` 5 条；反向两刀各红到自己的断言；全量 e2e **156 场景 / 1748 项**、
   集成 837 / 837、`check.js` EXIT=0。
 - **现场未闭环**：22 题分 8 批、单批桥超时 90 秒，第 5 批出现 `api connection failed, skip quiz`
   （后续批次又跑完）；这一格登记为下一项（缩批/超时/并发），不在本轮假装修好。
@@ -2137,7 +2148,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
-| e2e 基线 | 真实 Edge **156 场景 / 1746 项**（2026-11-26 批次 227 全绿，`.workbuddy/e2e-227-full.log`；批次 227 加现场作业页 `.questionLi`+LaTeX 图片场景后由 155/1740 长到 156/1746） |
+| e2e 基线 | 真实 Edge **156 场景 / 1748 项**（2026-11-26 批次 227 全绿，`.workbuddy/e2e-227-full.log`；批次 227 加现场作业页 `.questionLi`+LaTeX 图片场景后由 155/1740 长到 156/1746） |
 
 ---
 
