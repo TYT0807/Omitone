@@ -1762,6 +1762,13 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.77 前端精简第一刀：三枚少用字段折进「高级」组（2026-11-26，#51）
+
+- `popup.html` 新增 `details#advancedGroup`（默认收起），把 `discussionReply` / `randomAnswerReviewSec` /
+  `visionBudgetPerChapter` 三块移进去；三个 id、配置键与现有测试不动，字段仍在全局 DOM 里可读写。
+- `modeSwitch` 补 `aria-label`。check EXIT=0，设置弹窗 e2e 60/60。
+- 下一步候选（搭档 #51 报告）：退役 `updateMute`、换背景三件套，或合并授权/撤销按钮；本轮只做最保守的折叠。
+
 ### 0.76 manual-pdf 等无头 Edge 异步落盘，不再把“还没写完”当失败（2026-11-26）
 
 - `npm run manual` 曾退出 1 说没产出，实测 PDF 约 8 秒后才出现：新版 Edge 启动器先把打印任务派给后台，

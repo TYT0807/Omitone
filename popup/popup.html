@@ -657,7 +657,7 @@ body.has-bg::after{
   <!-- 模式开关：首次安装默认「精简」；切到「精美」会记住，下次打开还是精美 -->
 <div class="top">
   <div class="mode-bar">
-    <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" title="切换精简 / 精美界面（会重新加载）">
+    <button class="mode-switch" id="modeSwitch" role="switch" aria-checked="false" aria-label="界面模式：精简或精美" title="切换精简 / 精美界面（会重新加载）">
       <span>精简</span><span>精美</span><i></i>
     </button>
   </div>
@@ -770,11 +770,6 @@ body.has-bg::after{
         <label for="enableDiscussion">讨论（进话题页发一条就回来）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableDiscussion"></div>
       </div>
-      <div class="field">
-        <label for="discussionReply">讨论回复内容</label>
-        <input id="discussionReply" type="text" placeholder="1" />
-        <p class="hint">默认只有一个 <b>1</b>。建议改成一句正常的话再去发。</p>
-      </div>
       <div class="row">
         <label for="enableVote">投票（随手勾第一项就提交）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableVote"></div>
@@ -797,12 +792,6 @@ body.has-bg::after{
       </div>
       <p class="hint"><b>不需要 Key</b>：本地随机作答，只求把卷交上去，不保证对错。
         它要跟「AI 自动答题」一起开着才生效。</p>
-      <div class="field">
-        <label for="randomAnswerReviewSec">乱选交卷前留几秒检查</label>
-        <input type="number" id="randomAnswerReviewSec" min="0" max="600" step="1" placeholder="30" />
-      </div>
-      <p class="hint">交卷不能撤回，而乱选的答案是猜的。填完整卷后会先停这么多秒让你检查，到点自动交。
-        <b>填 0</b> 就不自动交卷，停在「等你自己点提交」。</p>
       <div class="row">
         <label for="enableCaptcha">自动识别验证码（和答题开关各自独立）</label>
         <div class="toggle on" role="switch" tabindex="0" aria-checked="true" id="enableCaptcha"></div>
@@ -819,11 +808,6 @@ body.has-bg::after{
         <b>关着（默认）</b>：图<b>一个字都不读</b> —— 没有本地识别这一说，只按题干文字答，带图的题会答不准。<br>
         学习通用自定义字体加密题目文字的那层还原<b>一直开着</b>：在本地查表完成、不花钱，<b>与这枚开关无关</b>。<br>
         模型名<b>可以留空</b>：默认模型自带看图，换成纯文本模型才需要在这里另填。</p>
-      </div>
-      <div class="field">
-        <label for="visionBudgetPerChapter">每章看图次数上限</label>
-        <input type="number" id="visionBudgetPerChapter" min="0" max="500" step="1" placeholder="30" />
-        <p class="hint">这是每章的看图花费上限。到顶后本章不再发看图请求，日志会记一条。设 <b>0</b> 等于关闭。</p>
       </div>
       <div class="field">
         <label for="captchaModel">验证码识别模型</label>
@@ -972,6 +956,28 @@ body.has-bg::after{
         <div class="toggle" role="switch" tabindex="0" aria-checked="false" id="petWebSearchEnabled"></div>
       </div>
       <p class="hint" id="petWebSearchHint">默认关。目前只有 DeepSeek 官方接口支持（中转站不行）；开了她回答前先自己查一次网页，按量计费。</p>
+    </div>
+  </details>
+
+  <details class="group" id="advancedGroup">
+    <summary><span>高级</span><i class="rule"></i><span class="tag">少用 · 改错会多花钱</span></summary>
+    <div class="group-body">
+      <div class="field">
+        <label for="discussionReply">讨论回复内容</label>
+        <input id="discussionReply" type="text" placeholder="1" />
+        <p class="hint">默认只有一个 <b>1</b>。建议改成一句正常的话再去发。</p>
+      </div>
+      <div class="field">
+        <label for="randomAnswerReviewSec">乱选交卷前留几秒检查</label>
+        <input type="number" id="randomAnswerReviewSec" min="0" max="600" step="1" placeholder="30" />
+        <p class="hint">交卷不能撤回，而乱选的答案是猜的。填完整卷后会先停这么多秒让你检查，到点自动交。
+          <b>填 0</b> 就不自动交卷，停在「等你自己点提交」。</p>
+      </div>
+      <div class="field">
+        <label for="visionBudgetPerChapter">每章看图次数上限</label>
+        <input type="number" id="visionBudgetPerChapter" min="0" max="500" step="1" placeholder="30" />
+        <p class="hint">这是每章的看图花费上限。到顶后本章不再发看图请求，日志会记一条。设 <b>0</b> 等于关闭。</p>
+      </div>
     </div>
   </details>
 
