@@ -11,9 +11,9 @@
  * 单选 / 多选 / 判断 / 填空的填答实现
  * 提交按钮与站点确认弹窗（#workpop / #popok）的处理
  *
- * 本段的方法（58 个）：
+ * 本段的方法（59 个）：
  *   _collectQuestionContainers、_cleanQuestionTitle、_parseQuestionElement、
- *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_extractOptionText、
+ *   _detectQuestionType、_getOptionItems、_getOptionsFromAncestor、_pairOptionControls、_textWithLatex、_extractOptionText、
  *   _normalizeAnswerValue、_normalizeJudgeAnswerValue、_isJudgeOptionMatch、
  *   _fillAnswers、_inferOptionLetter、_matchOptionItem、_clickOptionItem、
  *   _isChoiceValueSelected、_choiceInputTypeFor、_getMultiChoiceMinSelections、
@@ -76,6 +76,19 @@
           return true;
         });
 
+        // 现场（2026-11-26 作业作答页）：外层是一个 `#fanyaMarking.TiMu` 页面壳，
+        // 里面装着 22 个题单元。若把它当成一道题，整卷只会抠出 1 题 0 选项，
+        // 后面所有题都不会被看见。**壳不是题**：它里面还有多于一个题单元时让给后面的选择器。
+        var unitSel = String(this._questionUnitSelector || '');
+        if (unitSel) {
+          unique = unique.filter(function (item) {
+            try {
+              if (item.matches && item.matches(unitSel)) return true;
+              return item.querySelectorAll(unitSel).length <= 1;
+            } catch (eNested) { return true; }
+          });
+        }
+
         if (unique.length) return unique;
       }
       return [];
@@ -109,7 +122,7 @@
         var titleEl = el.querySelector(titleSelectors[i]);
         if (!titleEl) continue;
 
-        var candidate = this._cleanQuestionTitle(textOf(titleEl));
+        var candidate = this._cleanQuestionTitle(this._textWithLatex(titleEl));
         // 关键：`.fontLabel` 常常只装了题号（"1."），剥掉序号后就是空串。
         // 旧实现拿到第一个命中的选择器就 break，于是题干最终是空的 ——
         // 模型只看到选项、看不到问题，只能瞎猜。所以这里要求候选足够长，
@@ -122,7 +135,7 @@
       if (!title) {
         // 所有选择器都不合格时退回整块容器文本。容器里混着选项，
         // 所以先在第一个选项标记处截断，避免把 A/B/C/D 抄进题干。
-        var raw = textOf(el).slice(0, 200);
+        var raw = this._textWithLatex(el).slice(0, 400);
         var firstOption = raw.search(/(?:^|\s)[A-F][.、．)）]\s/);
         if (firstOption > 0) raw = raw.slice(0, firstOption);
         title = this._cleanQuestionTitle(raw);
@@ -139,7 +152,7 @@
         // 注意 textOf() 已经把换行压成了空格，所以旧写法 `/[A-F][.、．\s]+[^\n]+/g`
         // 里的 `[^\n]+` 会从第一个选项标记一路吞到字符串末尾 —— 结果是只匹配到一次，
         // 把 A~D 全部塞进同一个"选项"里。改为先定位所有选项标记，再按标记区间切分。
-        var rawText = textOf(el);
+        var rawText = this._textWithLatex(el);
         var marks = [];
         var marker = /[A-F][.、．)）]\s*/g;
         var hit;
@@ -366,23 +379,67 @@
     },
 
 
+    /**
+     * 把一块 DOM 读成文字，并把公式图片还原成 LaTeX（批次 227）。
+     *
+     * 现场（2026-11-26 作业作答页，线性代数）：题干与四个选项全是
+     * `<img class="ans-latex-moudle" data="%22...%22">`，`textOf` 读到的是空串 ——
+     * 单选四个选项全被判成空，整卷永远填不满。`data` 属性里就是站点自己存的 LaTeX
+     * （URL 编码的 JSON 字符串），直接还原成文字交给模型，比发图更便宜也更准。
+     */
+    _textWithLatex: function (el) {
+      if (!el) return '';
+      var out = '';
+      function imgLatex(img) {
+        var raw = '';
+        try { raw = String(img.getAttribute('data') || ''); } catch (e) { raw = ''; }
+        if (!raw) return '[图片]';
+        try {
+          var dec = decodeURIComponent(raw);
+          try {
+            var value = JSON.parse(dec);
+            return String(value == null ? '' : value);
+          } catch (eJson) {
+            return dec;
+          }
+        } catch (eDecode) {
+          return raw;
+        }
+      }
+      function walk(node) {
+        if (!node) return;
+        if (node.nodeType === 3) { out += node.nodeValue || ''; return; }
+        if (node.nodeType !== 1) return;
+        var tag = String(node.tagName || '').toUpperCase();
+        if (tag === 'SCRIPT' || tag === 'STYLE') return;
+        if (tag === 'IMG') {
+          var cls = String(node.className || '');
+          out += cls.indexOf('ans-latex-moudle') !== -1 ? ' ' + imgLatex(node) + ' ' : ' [图片] ';
+          return;
+        }
+        for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+      }
+      walk(el);
+      return out.replace(/\s+/g, ' ').trim();
+    },
+
     _extractOptionText: function (node) {
       if (!node) return '';
       var text = '';
 
       if (node.querySelector) {
         var chapterAnswer = node.querySelector('.fl.after');
-        if (chapterAnswer) text = textOf(chapterAnswer);
+        if (chapterAnswer) text = this._textWithLatex(chapterAnswer);
         var answer = node.querySelector('.answer_p');
-        if (answer) text = textOf(answer);
+        if (answer) text = this._textWithLatex(answer);
         // 作业/考试页的选项文本包在 <a> 里（cxmooc-tools 用 `a.fl, a` 取）
         if (!text) {
           var link = node.querySelector('a.fl, a');
-          if (link) text = textOf(link);
+          if (link) text = this._textWithLatex(link);
         }
       }
       if (!text) {
-        text = String((node.getAttribute && node.getAttribute('aria-label')) || textOf(node) || '');
+        text = String((node.getAttribute && node.getAttribute('aria-label')) || this._textWithLatex(node) || '');
       }
 
       // 注意：这里原本写作 /^(选择|閫夐」)\s*/ —— 第二个分支是 "选项" 的 GBK 乱码残留

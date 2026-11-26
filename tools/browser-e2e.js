@@ -738,6 +738,34 @@ function buildQuizRedoHtml(buttonText) {
     '</div></body></html>';
 }
 
+/** 现场作业页形状（2026-11-26 线性代数）：外层 .TiMu 是壳，里面 22 个 .questionLi；
+ *  题干与选项是 ans-latex-moudle 图片，LaTeX 存在 data 属性里。 */
+function buildLiveWorkHtml() {
+  function q(n, stemLatex) {
+    var qid = '90' + n;
+    var textOpts = ['A', 'B', 'C', 'D'].map(function (L, i) {
+      var tex = '\\frac{' + n + '}{' + (i + 1) + '}';
+      var data = encodeURIComponent(JSON.stringify(tex));
+      return '<div class="answerBg" role="radio" qid="' + qid + '" qtype="0">' +
+        '<span class="choice' + qid + ' num_option fl" data="' + L + '">' + L + '</span>' +
+        '<div class="fl answer_p"><p><img class="ans-latex-moudle" data="' + data + '"></p></div>' +
+        '</div>';
+    }).join('');
+    var stemData = encodeURIComponent(JSON.stringify('\\left| ' + stemLatex + ' \\right|'));
+    return '<div class="padBom50 questionLi fontLabel singleQuesId" typename="单选题" id="question' + qid + '" data="' + qid + '">' +
+      '<h3 class="mark_name"><span>' + n + '.</span> <span class="colorShallow">(单选题, 5分)</span> 若 <img class="ans-latex-moudle" data="' + stemData + '"> ，则( )。' +
+      '</h3><div class="clear"></div>' +
+      '<input type="hidden" id="answertype' + qid + '" value="0">' +
+      '<input type="hidden" id="answer' + qid + '" value="">' +
+      '<div class="stem_answer qtDetail">' + textOpts + '</div></div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业 - 学习通</title></head><body>' +
+    '<div class="fanyaMarking TiMu" id="fanyaMarking">' +
+    q(1, 'a_{11} & a_{12}') + q(2, 'b_{21} & b_{22}') + q(3, 'c_{31} & c_{32}') +
+    '</div><a class="completeBtn fl">提交</a></body></html>';
+}
+
 /**
  * ★ 2026-10-17 真实故障复刻：模块页的 `<script>` 里含**「任务点已完成」**这句字符串。
  *
@@ -2719,6 +2747,7 @@ var MOCK_PAGES = {
   '/vote-wid-cover': buildVoteWidCoverHtml,
   '/unfinished-prompt': buildUnfinishedPromptHtml,
   '/quiz-redo': function () { return buildQuizRedoHtml('重新作答'); },
+  '/live-work': buildLiveWorkHtml,
   '/two-quizzes': buildTwoQuizTopHtml,
   '/two-quizzes-divjob': buildTwoQuizzesDivJobIdTopHtml,
   '/wq-card-divjob': buildTwoQuizCardDivJobIdHtml,
@@ -15212,6 +15241,35 @@ SCENARIOS.push({
     check('jobid 挂在容器 div 上时，_resolveJobFrame 也能把任务反查回帧（否则匹配上了却跑不起来）',
       !!resolved && resolved.hasFrame === true && resolved.hasDoc === true,
       JSON.stringify(resolved));
+  }
+});
+
+/** ---- 56. 现场作业页：外层 .TiMu 壳 + 多个 .questionLi + LaTeX 图片选项（2026-11-26 线性代数）---- */
+SCENARIOS.push({
+  name: '现场作业页：外壳内多题与 LaTeX 图片选项都能抠出来',
+  path: '/live-work',
+  run: async function (ctx) {
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var qs=null;try{qs=app._extractQuestions(null)||[];}catch(e){qs="throw:"+e.message;}' +
+      'var arr=Array.isArray(qs)?qs:[];var first=arr[0]||null;' +
+      'return {outer:!!document.querySelector("#fanyaMarking"),' +
+      'questionLi:document.querySelectorAll(".questionLi").length,' +
+      'extracted:Array.isArray(qs)?arr.length:String(qs),' +
+      'firstType:first&&first.type,firstOptions:first?(first.options||[]).length:0,' +
+      'firstOption0:first?String((first.options||[])[0]||""):"",' +
+      'firstTitle:first?String(first.title||"").slice(0,100):"",' +
+      'hidden:document.querySelectorAll("input[id^=answer]").length};})()'
+    );
+    check('夹具自证：外层 .TiMu 壳里装着 3 个 .questionLi',
+      !!shape && shape.outer === true && shape.questionLi === 3, JSON.stringify(shape));
+    check('外壳不再被当成一道题：抠出 3 道（旧实现只会抠出 1 道 0 选项）',
+      !!shape && shape.extracted === 3, JSON.stringify(shape));
+    check('LaTeX 图片选项还原成文字：第一题 4 个选项且含 \\frac',
+      !!shape && shape.firstOptions === 4 && /frac/.test(shape.firstOption0), JSON.stringify(shape));
+    check('题干里的公式图片也还原（title 含 \\left 或 \\frac）',
+      !!shape && /left|frac/.test(shape.firstTitle), JSON.stringify(shape));
+    check('六枚隐藏答案域都在（每题 2 枚）', !!shape && shape.hidden === 6, JSON.stringify(shape));
   }
 });
 

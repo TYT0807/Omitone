@@ -368,13 +368,13 @@ textarea:focus,input[type="text"]:focus,input[type="password"]:focus,input[type=
 }
 .model-option:hover,.model-option.active{ background:var(--hover); }
 .model-option[hidden]{ display:none; }
-/* 思考强度那一组：场景 + 下限 + 上限 三列。
-   select 在上面的全局规则里是 width:100%，落进 1fr 两列正好各占一半；
-   label 用 display:block 单独占一行（.field label 已经写了）。 */
-.think-grid{ display:grid; grid-template-columns:auto 1fr 1fr; gap:6px 8px; align-items:center; }
-.think-grid .think-th{ color:var(--muted); font-size:11.5px; }
-.think-grid .think-name{ font-size:12px; color:var(--fg-2); font-weight:600; white-space:nowrap; }
-.think-grid select{ padding:6px 8px; }
+/* 思考强度：每个场景一行 —— 场景名 + 下限 select + 至 + 上限 select。
+   原来的「表头 + 三列」在小弹窗里读起来像一张挤在一起的表，改成三行更好扫。 */
+.think-grid{ display:flex; flex-direction:column; gap:8px; }
+.think-row{ display:flex; align-items:center; gap:8px; }
+.think-row .think-name{ flex:0 0 32px; font-size:12px; color:var(--fg-2); font-weight:600; white-space:nowrap; }
+.think-row select{ flex:1 1 0; min-width:0; padding:6px 8px; }
+.think-row .think-sep{ flex:0 0 auto; color:var(--muted); font-size:11.5px; }
 /* 外链只有一处用途：去 DeepSeek 官网注册、充值、拿 Key。
    rel 必须带 noreferrer —— 弹窗带着扩展身份，不该把来源泄给外部站点。 */
 a.ext{ color:var(--accent); font-weight:500; text-decoration:none; }
@@ -826,28 +826,36 @@ body.has-bg::after{
       <div class="field">
         <label>思考强度（按场景给上下限，中间交给模型自己定）</label>
         <div class="think-grid" id="thinkGrid">
-          <span class="think-th"></span><span class="think-th">下限</span><span class="think-th">上限</span>
-          <span class="think-name">刷课</span>
-          <select id="thinkingMinCourse">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
-          <select id="thinkingMaxCourse">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
-          <span class="think-name">测试</span>
-          <select id="thinkingMinQuiz">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
-          <select id="thinkingMaxQuiz">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
-          <span class="think-name">考试</span>
-          <select id="thinkingMinExam">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
-          <select id="thinkingMaxExam">
-            <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
-          </select>
+          <div class="think-row">
+            <span class="think-name">刷课</span>
+            <select id="thinkingMinCourse" aria-label="刷课思考下限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+            <span class="think-sep">至</span>
+            <select id="thinkingMaxCourse" aria-label="刷课思考上限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+          </div>
+          <div class="think-row">
+            <span class="think-name">测试</span>
+            <select id="thinkingMinQuiz" aria-label="测试思考下限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+            <span class="think-sep">至</span>
+            <select id="thinkingMaxQuiz" aria-label="测试思考上限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+          </div>
+          <div class="think-row">
+            <span class="think-name">考试</span>
+            <select id="thinkingMinExam" aria-label="考试思考下限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+            <span class="think-sep">至</span>
+            <select id="thinkingMaxExam" aria-label="考试思考上限">
+              <option value="off">关闭</option><option value="low">低</option><option value="high">高</option>
+            </select>
+          </div>
         </div>
         <p class="hint" id="thinkingHint"></p>
       </div>
