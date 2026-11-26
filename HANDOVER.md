@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 821 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 826 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -1862,6 +1862,19 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   `node tools/check.js` EXIT=0；定向 e2e「PDF.js 文档」5/5 绿（该场景含这一发复位调用）。
 - 不改生产代码；只动测试台。
 
+### 0.73 #59 收口：题型认不出时不再默认单选（2026-11-26，主会话）
+
+- **一句**：`_detectQuestionType` 原先在「什么信号都没有」时兜底 `single`，插件会按单选去点一个不存在的选项；
+  现在这一格交 `unknown`，`_handleQuiz` 整卷 unknown 就停在卷面、不发请求，并单独留一句
+  `quiz unknown question shape`（count/total/indexes/samples + 反馈提示，同卷同题号只报一次）。
+- **边界**：有选项但没控件的老结构照旧 `single`（`232-L4` 钉住）；部分 unknown 时认得出的题照旧答，
+  unknown 那几题在填答链路里没有分支可落，表单不会因此被误交。
+- **读数**：集成 [40] 三条 + `232-L3/L4`；反向两刀（unknown→single、摘掉去重）各只红它自己，
+  还原后四份产物逐字节一致；`npm test` EXIT=0（集成 **826 / 826**）、全量 e2e **154 场景 / 1734 项**全绿、
+  `check.js` EXIT=0。第 154 个场景是搭档 brief-58 落下的独立考试页识别场景（`ac0ae2e`，只加测试），
+  本轮全量把项数从 1727 补齐到 1734。
+- **门面**：`题型认不出时不再按单选去点`（预览说明与 main 那一页各一行）。
+
 ### 0.72 #60 收口：提交次数存储读不到时不再静默归零（2026-11-26，主会话）
 
 - **一句**：`_getQuizSubmitAttemptCount` 读 sessionStorage 抛错时旧写法直接 `return 0`，于是
@@ -2043,7 +2056,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
-| e2e 基线 | 真实 Edge **154 场景 / 1727 项**（场景数取自代码静态计数：brief-58 新增独立考试页场景后由 153 长到 154；后面的数字是 `.workbuddy/e2e-counts.json` 当前账本，仍由 2026-11-26 批次 220 那趟全量跑写回（`.workbuddy/e2e-220-full.log`），下一趟全量会连同新增场景的断言一起回填。批次 220 那一趟是把多卷 A→B 串行场景加进来的一轮，它把项数从 1718 写到 1727、场景数从 152 写到 153） |
+| e2e 基线 | 真实 Edge **154 场景 / 1734 项**（2026-11-26 批次 222 全绿，`.workbuddy/e2e-222-full.log`；批次 220 加多卷 A→B 场景 152/1718→153/1727，搭档 brief-58 的 `ac0ae2e` 加独立考试页场景 153→154，批次 222 全量把项数补齐到 1734） |
 
 ---
 

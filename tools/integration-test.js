@@ -11670,12 +11670,23 @@ async function testQuizSubmitNeverAccepted() {
     };
   };
   var typeApp = {
-    _mapQuizTypeValue: function (v) { return v === '1' ? 'multiple' : v === '3' ? 'judge' : 'single'; }
+    _mapQuizTypeValue: function (v) { return v === '1' ? 'multiple' : v === '3' ? 'judge' : 'single'; },
+    _getOptionItems: function () { return []; }
   };
   var l1 = typeFn.call(typeApp, mkTypeEl('1'));
   var l2 = typeFn.call(typeApp, mkTypeEl('3'));
   check('232-L1：其它信号都没有时用 li[qtype] 兜底判题型（1→多选，3→判断）',
     l1 === 'multiple' && l2 === 'judge', JSON.stringify({ l1: l1, l2: l2 }));
+  var l3 = typeFn.call(typeApp, mkTypeEl(''));
+  check('232-L3：连 qtype 都没有、也没有控件/选项时不再默认单选，交 unknown（批次 222）',
+    l3 === 'unknown', JSON.stringify({ l3: l3 }));
+  var typeAppWithOptions = {
+    _mapQuizTypeValue: function (v) { return v === '1' ? 'multiple' : v === '3' ? 'judge' : 'single'; },
+    _getOptionItems: function () { return [{}]; }
+  };
+  var l4 = typeFn.call(typeAppWithOptions, mkTypeEl(''));
+  check('232-L4：认得出选项（即使没有控件）时照旧按单选，别把老结构打成 unknown',
+    l4 === 'single', JSON.stringify({ l4: l4 }));
 
   // ---- M：多选答案写隐藏域前必须按字母序（#232 现场：BAC/CDA 被拒，ABC/ACD 通过） ----
   var sortHidden = { value: '' };
@@ -12022,6 +12033,49 @@ async function testQuizSubmitAttemptStoreFallback() {
     JSON.stringify({ clearWarns: clearWarns.length, after: badApp._getQuizSubmitAttemptCount(null) }));
 }
 
+async function testUnknownQuizShape() {
+  console.log('\n[40] 认不出题型的卷子：单独留话、同形不刷屏（#52 P2 / 批次 222）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var flow = read('src/page/70-quiz-flow.js');
+  var at = flow.indexOf('_noteUnknownQuizShape: function');
+  var start = at >= 0 ? flow.indexOf('function', at) : -1;
+  var end = start >= 0 ? flow.indexOf('\n    },', start) : -1;
+  var fn = null;
+  if (start >= 0 && end > start) {
+    var logs = [];
+    var made = Reflect.construct(Function, ['emitRuntimeLog',
+      'return (' + flow.slice(start, end) + '\n    })']);
+    fn = made(function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); });
+    var app = {
+      _quizUnknownShapeLogKey: '',
+      _getQuizWorkKey: function () { return 'paper-X'; },
+      _getQuizAccountDocument: function () { return {}; }
+    };
+    var all = [
+      { index: 0, type: 'unknown', title: '题一' },
+      { index: 1, type: 'single', title: '题二' }
+    ];
+    fn.call(app, all, [all[0]], null);
+    check('① 认不出题型时单独留一句 warn（带 count/total/indexes 与反馈形状的提示）',
+      logs.length === 1 && logs[0].message === 'quiz unknown question shape' &&
+      logs[0].meta.count === 1 && logs[0].meta.total === 2 &&
+      logs[0].meta.indexes === '0' && /DOM 形状/.test(logs[0].meta.hint),
+      JSON.stringify(logs));
+    fn.call(app, all, [all[0]], null);
+    check('② 同一卷同一组题号只报一次（不会每拍刷屏）',
+      logs.length === 1, JSON.stringify({ logs: logs.length }));
+    fn.call(app, all, [{ index: 1, type: 'unknown', title: '题二' }], null);
+    check('③ 形状变了（题号集合不同）要重新报一格',
+      logs.length === 2 && logs[1].meta.indexes === '1', JSON.stringify(logs));
+  } else {
+    check('取出 _noteUnknownQuizShape（取不出是签名/缩进变了，不等于没有回归）', false,
+      JSON.stringify({ start: start, end: end }));
+  }
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12078,6 +12132,7 @@ async function main() {
   await testExamResultNeutralText();
   await testQuizSubmitOutcome();
   await testQuizSubmitAttemptStoreFallback();
+  await testUnknownQuizShape();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

@@ -12,7 +12,7 @@
  * 这份卷子属于哪个场景（测试 / 考试）＋该场景的思考档下限（「不乱猜」闸的判据）
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（74 个）：
+ * 本段的方法（75 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -24,6 +24,7 @@
  *   _quizApiWhoForLog、
  *   _skipQuizForApiUnavailable、_getQuizSubmitAttemptCount、
  *   _setQuizSubmitAttemptCount、_clearQuizSubmitAttemptCount、_noteQuizSubmitAttemptStoreIssue、
+ *   _noteUnknownQuizShape、
  *   _incrementQuizSubmitAttemptCount、_shouldSkipQuizBySubmitAttempts、
  *   _isQuizForceSkipping、_isQuizSkipWindowLive、_setQuizForceSkip、_forceSkipQuizAfterMaxAttempts、
  *   _getQuizQuestionRuntimeKey、_markQuizQuestionAnsweredThisRun、
@@ -844,6 +845,39 @@
         key: String(key).slice(0, 60),
         fallback: 'memory',
         error: String((err && err.message) || err || '').slice(0, 120)
+      });
+    },
+
+    /**
+     * 认不出题型的卷子单独留话（批次 222）。
+     *
+     * `_detectQuestionType` 只有在「容器里既没有可作答控件、也认不出任何选项」时才交 `unknown`；
+     * 这一格以前落 `single`，于是插件会按单选去点一个根本不存在的东西（或干脆空转），
+     * 而日志里一个字都没有。`_handleQuiz` 现在会把整卷 unknown 的卷子停在卷面、不发请求；
+     * 同一卷同一组题号只报一次（`_quizUnknownShapeLogKey`），不会每拍刷屏。
+     */
+    _noteUnknownQuizShape: function (questions, unknownQuestions, preferredDoc) {
+      var all = questions || [];
+      var unknown = unknownQuestions || [];
+      if (!unknown.length) return;
+      var paperKey = '';
+      try { paperKey = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) {}
+      var indexes = unknown.map(function (q) {
+        var i = q && q.index;
+        return i == null ? '?' : String(i);
+      }).join(',');
+      var logKey = paperKey + '|' + indexes + '|' +
+        String((unknown[0] && unknown[0].title) || '').replace(/\s+/g, ' ').slice(0, 20);
+      if (this._quizUnknownShapeLogKey === logKey) return;
+      this._quizUnknownShapeLogKey = logKey;
+      emitRuntimeLog('warn', 'quiz unknown question shape', {
+        count: unknown.length,
+        total: all.length,
+        indexes: indexes,
+        samples: unknown.slice(0, 3).map(function (q) {
+          return String((q && q.title) || '').replace(/\s+/g, ' ').slice(0, 40);
+        }),
+        hint: '这些题的容器里既没有可作答控件、也认不出选项，插件不会按单选去猜；先停在卷面，请把这几个题的 DOM 形状反馈给作者'
       });
     },
 
@@ -1849,6 +1883,21 @@
       // 先解析本文档：「有没有进展」的判断要用它（后面填答用的是同一个表达式，
       // 这份先算好，避免同一个表达式出现两份）。
       var quizDocForProgress = preferredDoc || this._getQuizDocumentFromQuestions(questions) || null;
+      // 题型一个都认不出时不猜单选（批次 222）：整卷都 unknown 就停在卷面、不发请求；
+      // 只要有一题认得出，照旧往下走 —— unknown 那几题在填答链路里本来就没有分支可落。
+      var unknownQuestions = questions.filter(function (q) {
+        return String((q && q.type) || '') === 'unknown';
+      });
+      if (unknownQuestions.length) {
+        this._noteUnknownQuizShape(questions, unknownQuestions, quizDocForProgress);
+        if (unknownQuestions.length === questions.length) {
+          this._quizInProgress = false;
+          this._quizAnswered = false;
+          this._quizReadyToSubmit = false;
+          this._quizReadyWorkKey = '';
+          return;
+        }
+      }
       if (quizDocForProgress) {
         // 「没进展就别每 30 秒把整卷重问一遍」的闸。
         //

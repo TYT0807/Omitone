@@ -207,6 +207,12 @@
         var qtValue = typedOpt ? String(typedOpt.getAttribute('qtype') || '').trim() : '';
         if (qtValue) return this._mapQuizTypeValue(qtValue);
       } catch (eQt) {}
+      // 「什么信号都没有」不等于单选：容器里既没有可作答控件、也认不出任何选项时，
+      // 按单选去点只会瞎猜（批次 222）。这一格单独交 unknown，由 `_handleQuiz` 停下并留话。
+      var hasAnyControl = (radios.length + checkboxes.length + textInputs.length + textareas.length + richEditors.length) > 0;
+      var optionCount = 0;
+      try { optionCount = this._getOptionItems(el).length; } catch (eOpt) {}
+      if (!hasAnyControl && !optionCount) return 'unknown';
       return 'single';
     },
 
