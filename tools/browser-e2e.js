@@ -553,6 +553,14 @@ function buildExamWorkHtml() {
  *
  * 题目部分直接复用 `buildQuizHtml()`（含填空题两个空），只换提交层 —— 两份夹具不会各长各的。
  */
+/**
+ * 独立考试/测试 URL 的夹具（`/exam/test`）—— 照 `brief-58.md` 复用作业页卷面，**只换标题**，
+ * 不另画一份想象出来的 DOM（同一先例见下面 `buildQuizRealHtml` 也是 `.replace()` 出来的）。
+ */
+function buildExamTestHtml() {
+  return buildExamWorkHtml().replace('<title>作业 - 学习通</title>', '<title>考试 - 学习通</title>');
+}
+
 function buildQuizRealHtml() {
   return buildQuizHtml().replace(
     '<div class="subBtn"><button id="submitBtn" type="button">提交</button></div>',
@@ -2627,6 +2635,7 @@ var MOCK_PAGES = {
   '/chapter-quiz': buildChapterQuizShellHtml,
   '/quiz-inner': buildChapterQuizInnerHtml,
   '/exam-work': buildExamWorkHtml,
+  '/exam/test': buildExamTestHtml,
   '/quiz-result': buildQuizResultHtml,
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
@@ -7645,6 +7654,95 @@ SCENARIOS.push({
     );
     check('作业页诊断能数到 .Cy_TItle 容器（大小写写错会数成 0）',
       diagCy && diagCy.containers > 0, JSON.stringify(diagCy));
+  }
+});
+
+/**
+ * ---- 1c-bis. 独立考试/测试 URL（`/exam/test`）：那条 URL 谓词到底有没有人验收过 ----
+ *
+ * `exam-52.md` 缺口 #5：`src/page/70-quiz-flow.js:212` 认 `exam/test` / `testpaper` /
+ * `reVersionTestStartNew`，而改动之前 `tools/` 全目录对它 **0 命中** —— 正则整条删掉也不会有测试变红。
+ *
+ * ⚠️ 只断 `_detectQuiz() === true` **证不到 URL 那一支**：这一页有真题形，
+ *    走到最后那段 DOM 兜底（`_quizContainerSelector` × `_quizAnswerControlSelector`）同样会判真。
+ *    真正承重的是最后一格：先挂上 `.prev_title`（生产认的标题条）把**标题门**打开，
+ *    再把卷面整块 `display:none` —— 容器**还在**（`querySelectorAll` 数得到）但一枚都没被排版出来，
+ *    DOM 兜底与任务帧那一支都拿不到东西；此时 `detect` 仍为真，才只能是
+ *    「标题命中 → `onWorkPage` 命中 `/exam/test` → 早退 `return true`」那一条路径。
+ *    （`_detectQuiz` 里标题命中本身不算，必须 URL 佐证才 `return true`。）
+ *
+ * ⚠️ **`brief-58.md` 第 3 条断言的前提按实测不成立**（13:22 这一跑量出来的，两条红）：
+ *    `_paperTierFromTitle()` 走的是 `_getCurrentTitle()`，而它读 `document.querySelector('.prev_title')`
+ *    （`src/page/20-dom.js:42`）—— **不是 `document.title`**。本夹具的 `<title>考试 - 学习通</title>`
+ *    在生产判据里读回**空串**，于是 `tier` 是 `quiz`、标题门根本进不去、URL 那一支一步都没走。
+ *    所以这里不迁就那句，而是把「真源是 `.prev_title`」本身钉成一格（④），再拿它做阳性对照（⑤）。
+ *    两枚选择器都从页面里读回真源，不在这里手抄清单（手抄漏 `.Cy_TItle` 那次是既有教训）。
+ */
+SCENARIOS.push({
+  name: '独立考试页 /exam/test 认得出是卷子（URL 那一支单独承重）',
+  path: '/exam/test',
+  run: async function (ctx) {
+    var shape = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var cs=String(app._quizContainerSelector||""),ks=String(app._quizAnswerControlSelector||"");' +
+      'var n=Array.prototype.slice.call(document.querySelectorAll(cs));' +
+      'function laidOut(el){try{var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}catch(e){return false;}}' +
+      'return {title:String(document.title||""),path:String(location.pathname||""),' +
+      'href:String(location.href||""),containerSel:cs,controlSel:ks,' +
+      'containers:n.length,boxes:n.filter(laidOut).length,' +
+      'detect:app._detectQuiz(),cur:String(app._getCurrentTitle()||""),' +
+      'tier:String(app._paperTierFromTitle()||"")};})()'
+    );
+    var urlHit = /exam\/test/i.test(shape.href);
+
+    check('夹具自证：这一页确实挂在 /exam/test（href 命中生产那条 URL 谓词的关键词）',
+      shape.path === '/exam/test' && shape.title.indexOf('考试') !== -1 && urlHit === true,
+      JSON.stringify({ path: shape.path, title: shape.title, href: shape.href }));
+
+    check('形状自证：卷面在场（容器与排版都不是 0，选择器是从页面读回的真源）',
+      shape.containers > 0 && shape.boxes > 0,
+      JSON.stringify({ containers: shape.containers, boxes: shape.boxes,
+        containerSel: shape.containerSel, controlSel: shape.controlSel }));
+
+    check('/exam/test 上 `_detectQuiz()` 为 true',
+      shape.detect === true, JSON.stringify({ detect: shape.detect, boxes: shape.boxes }));
+
+    // ④ 真源格：把「标题门看的是哪一行 DOM」钉下来。独立考试页没有 `.prev_title` → 读回空串 →
+    //    tier 落 quiz。这一格红，说明有人把 `_getCurrentTitle` 改成了读 `document.title`（口径变了，
+    //    下面两格的意义也跟着变），不是"这条测试坏了"。
+    check('卷面标题真源是 `.prev_title` 而不是 document.title：独立页无该元素时 tier 读 quiz',
+      shape.cur === '' && shape.tier === 'quiz',
+      JSON.stringify({ currentTitle: shape.cur, docTitle: shape.title, tier: shape.tier }));
+
+    // ⑤ 阳性对照：挂上生产认的那枚标题条（同一先例见本文件 20945 那格），标题门必须打开、tier 变 exam。
+    var withTitle = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var t=document.createElement("div");t.className="prev_title";t.textContent="第三章 期末考试";' +
+      'document.body.appendChild(t);' +
+      'return {added:!!document.querySelector(".prev_title"),' +
+      'cur:String(app._getCurrentTitle()||""),tier:String(app._paperTierFromTitle()||"")};})()'
+    );
+    check('阳性对照：多一枚含「考试」的 .prev_title，tier 就从 quiz 翻成 exam',
+      withTitle.added === true && withTitle.tier === 'exam' && withTitle.cur.indexOf('考试') !== -1,
+      JSON.stringify(withTitle));
+
+    // ⑥ 承重那一格：卷面整块 display:none 之后 DOM 兜底拿不到东西，detect 仍为真才等于"URL 认得出来"。
+    //    `hidden` / `containers` / `boxes` / `titleStillThere` 全是页面里读回来的，不是测试自己设的常量。
+    var after = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var box=document.getElementById("Zyapl");' +
+      'if(box){box.style.display="none";}' +
+      'var cs=String(app._quizContainerSelector||""),ks=String(app._quizAnswerControlSelector||"");' +
+      'var n=Array.prototype.slice.call(document.querySelectorAll(cs));' +
+      'function laidOut(el){try{var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}catch(e){return false;}}' +
+      'var t=document.querySelector(".prev_title");' +
+      'return {hidden:!!box&&box.style.display==="none",containers:n.length,' +
+      'boxes:n.filter(function(el){return laidOut(el)&&!!el.querySelector(ks);}).length,' +
+      'titleStillThere:!!t&&laidOut(t),detect:app._detectQuiz(),href:String(location.href||"")};})()'
+    );
+    check('挂上标题条再把卷面 display:none 后 `_detectQuiz()` 仍为 true（只有 URL 那一支做得到）',
+      after.hidden === true && after.containers > 0 && after.boxes === 0 &&
+      after.titleStillThere === true && after.detect === true,
+      JSON.stringify(after));
   }
 });
 

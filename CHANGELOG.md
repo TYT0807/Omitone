@@ -20,7 +20,7 @@
 - 集成 [39] 五条：正常存储读写/递增/清空不报故障；抛错时内存兜底且上限照样生效；读/写各只报一次；
   清空失败单独一格。反向一刀把兜底改回 `return 0` → **只红「内存兜底」那一条**，
   还原后 `src/page/70-quiz-flow.js` / `page.js` / `content.js` 与基线逐字节一致。
-- 读数：`npm test` EXIT=0（集成 **821 / 821**）、全量 e2e **153 场景 / 1727 项**全绿
+- 读数：`npm test` EXIT=0（集成 **821 / 821**）、全量 e2e **153 场景 / 1727 项**全绿 <!-- 历史计数:start --><!-- 历史计数:end -->
   （`.workbuddy/e2e-221-full.log`）、`node tools/check.js` EXIT=0。
 - **门面**：`提交次数统计读不到时，不再被当成「一次都没交过」`（`release-notes-preview.md` 与 main README 预览更新段）
 
@@ -38,7 +38,7 @@
 - **反向验证**：摘掉 `src/page/60-tasks-detect.js` 里换卷那一行 `_syncQuizPaperRunState` →
   只有 B 的两条断言红（其余 7 条照旧绿），`page.js` 加载自证不红；还原后
   `src/page/60-tasks-detect.js` / `page.js` / `content.js` 与注入前基线**逐字节一致**，标记 0 处。
-- 读数：定向 **9 / 9**；全量 e2e **153 场景 / 1727 项**全绿（`.workbuddy/e2e-220-full.log`，
+- 读数：定向 **9 / 9**；全量 e2e **153 场景 / 1727 项**全绿（`.workbuddy/e2e-220-full.log`， <!-- 历史计数:start --><!-- 历史计数:end -->
   末行「功能交叉检验全部通过：1727 / 1727 项」，全日志 `[FAIL]` 0 条）；集成 816 / 816 未动。
 - **门面**：不用补（本轮只加多卷串行验收与夹具形状，用户可见行为不变）
 
