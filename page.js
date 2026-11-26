@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'b5063f6c56';
+var OMITONE_CODE_REV = '4b9239347d';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -577,6 +577,8 @@ var OMITONE_CODE_REV = 'b5063f6c56';
     _quizSubmitStallKey: '',
     _quizSubmitStallCount: 0,
     _quizSubmitStallAt: 0,
+    // 最近一次提交结果：{ state: accepted|rejected|unknown|redo, key, at, rejectedUntil, text }
+    _quizSubmitOutcome: null,
 
     // 交卷旁路观测器的安装状态（`_installSubmitSniffer` 里写）：
     //   _submitSnifferInstalled  这一份顶层页里是否已经包过 XHR/fetch（只许装一次）
@@ -14471,6 +14473,46 @@ var OMITONE_CODE_REV = 'b5063f6c56';
       } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
     },
 
+    /**
+     * 提交结果只记一格：accepted / rejected / unknown / redo。
+     * rejected 自带 30 秒窗口，挡住“平台刚说失败、下一拍原样再交”—— 这是 #52 审计 P0 的第二条。
+     * 不在这里改 20/2 次预算与放弃名单：窗口只减少盲目重交，超过窗口仍交给原有停滞预算。
+     */
+    _setQuizSubmitOutcome: function (state, preferredDoc, extra) {
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) {}
+      var now = Date.now();
+      var prev = this._quizSubmitOutcome || null;
+      var next = {
+        state: String(state || ''),
+        key: key,
+        at: now,
+        rejectedUntil: state === 'rejected' ? now + 30000 : 0,
+        text: String((extra && extra.text) || '').slice(0, 120)
+      };
+      this._quizSubmitOutcome = next;
+      if (!prev || prev.state !== next.state || prev.key !== next.key ||
+          (next.state === 'rejected' && prev.text !== next.text)) {
+        emitRuntimeLog(next.state === 'rejected' || next.state === 'unknown' ? 'warn' : 'info',
+          'quiz submit outcome', {
+            state: next.state,
+            key: key.slice(0, 60),
+            text: next.text,
+            rejectedUntil: next.rejectedUntil ? next.rejectedUntil - now : 0
+          });
+      }
+      return next;
+    },
+
+    _quizSubmitRejectedBlocksRetry: function (now, preferredDoc) {
+      var o = this._quizSubmitOutcome;
+      if (!o || o.state !== 'rejected') return false;
+      if (!(Number(o.rejectedUntil) > Number(now))) return false;
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) { key = ''; }
+      return !!key && key === o.key;
+    },
+
     _monitorQuizSubmit: function (preferredDoc) {
       if (this._prepareQuizRedoIfNeeded(preferredDoc || null)) return true;
       if (!this._quizSubmitPending) return false;
@@ -14479,6 +14521,7 @@ var OMITONE_CODE_REV = 'b5063f6c56';
         this._quizSubmitPending = false;
         this._quizAnswered = true;
         this._clearQuizSubmitAttemptCount(preferredDoc || null);
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('accepted', preferredDoc, {});
         emitRuntimeLog('info', 'quiz submit finished');
         return false;
       }
@@ -14509,6 +14552,7 @@ var OMITONE_CODE_REV = 'b5063f6c56';
       var waitMs = scaledMs(Number(this.configs.quizSubmitWaitMs || 25000));
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('unknown', preferredDoc, {});
         // 超时时把「为什么没认出结果页」一并记下来 ——
         // 没有这段的话，日志里只剩一句「等超时了」，缺哪道条件完全靠猜。
         var diag = this._describeQuizResultPage(preferredDoc || null);
@@ -14703,6 +14747,7 @@ var OMITONE_CODE_REV = 'b5063f6c56';
       var now = Date.now();
       var shouldLog = !this._quizHoldLogAt || now - this._quizHoldLogAt > 3000;
       if (this._isQuizRedoRequired(doc)) {
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('redo', doc, {});
         if (this._shouldSkipQuizBySubmitAttempts(doc)) {
           return this._forceSkipQuizAfterMaxAttempts(doc);
         }
@@ -19203,6 +19248,10 @@ var OMITONE_CODE_REV = 'b5063f6c56';
         this._rememberSubmittedQuizAnswers(submitQuestions, effectiveDoc || submitDoc);
       }
       var now = Date.now();
+      // 平台刚说过“提交失败”：30 秒内不再原样重交，先交给 hold/观察；
+      // 窗口过后仍由原有 20/2 次预算与停滞放手接管（不新增永久跳过）。
+      if (typeof this._quizSubmitRejectedBlocksRetry === 'function' &&
+          this._quizSubmitRejectedBlocksRetry(now, effectiveDoc || submitDoc)) return true;
       if (this._quizSubmitPending) return true;
       if (this._quizLastSubmitAttemptAt && now - this._quizLastSubmitAttemptAt < 3000) return true;
 
@@ -19361,6 +19410,9 @@ var OMITONE_CODE_REV = 'b5063f6c56';
         if (last && last.text === clean && Date.now() - Number(last.at || 0) < 6000) return false;
         this._quizAlertNote = { text: clean, at: Date.now() };
         emitRuntimeLog('warn', 'quiz submit alert', { text: clean.slice(0, 200), layer: 'alert' });
+        if (typeof this._setQuizSubmitOutcome === 'function') {
+          this._setQuizSubmitOutcome('rejected', null, { text: clean });
+        }
         return true;
       } catch (eNote) {
         return false;

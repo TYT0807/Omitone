@@ -2038,6 +2038,10 @@
         this._rememberSubmittedQuizAnswers(submitQuestions, effectiveDoc || submitDoc);
       }
       var now = Date.now();
+      // 平台刚说过“提交失败”：30 秒内不再原样重交，先交给 hold/观察；
+      // 窗口过后仍由原有 20/2 次预算与停滞放手接管（不新增永久跳过）。
+      if (typeof this._quizSubmitRejectedBlocksRetry === 'function' &&
+          this._quizSubmitRejectedBlocksRetry(now, effectiveDoc || submitDoc)) return true;
       if (this._quizSubmitPending) return true;
       if (this._quizLastSubmitAttemptAt && now - this._quizLastSubmitAttemptAt < 3000) return true;
 
@@ -2196,6 +2200,9 @@
         if (last && last.text === clean && Date.now() - Number(last.at || 0) < 6000) return false;
         this._quizAlertNote = { text: clean, at: Date.now() };
         emitRuntimeLog('warn', 'quiz submit alert', { text: clean.slice(0, 200), layer: 'alert' });
+        if (typeof this._setQuizSubmitOutcome === 'function') {
+          this._setQuizSubmitOutcome('rejected', null, { text: clean });
+        }
         return true;
       } catch (eNote) {
         return false;

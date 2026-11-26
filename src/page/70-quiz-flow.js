@@ -12,7 +12,7 @@
  * 这份卷子属于哪个场景（测试 / 考试）＋该场景的思考档下限（「不乱猜」闸的判据）
  * 重做（redo）弹窗的处理
  *
- * 本段的方法（71 个）：
+ * 本段的方法（73 个）：
  *   _isQuizResultCompletedPage、_shouldReleaseMediaPendingForCurrentCompletion、
  *   _isQuizResultPageFinished、_documentHasQuiz、_detectQuiz、_skipQuiz、_getQuizFieldValue、
  *   _getQuizWorkKey、_getQuizDocumentIdentity、_syncQuizPaperRunState、_getQuizPaperKeyFromJob、
@@ -31,7 +31,7 @@
  *   _isQuizPassedOrFinished、_hasActiveQuizSubmitForm、_markQuizSubmitPending、
  *   _isQuizAnswersCleared、_installSubmitSniffer、_monitorQuizSubmit、
  *   _noteQuizSubmitStall、_getQuizGiveUpJobId、_isQuizGivenUpInDom、_giveUpQuizSubmitAfterStalls、
- *   _shouldHoldQuizBeforeNext、_isQuizLearningPending、_describePendingQuizQuestions、
+ *   _setQuizSubmitOutcome、_quizSubmitRejectedBlocksRetry、_shouldHoldQuizBeforeNext、_isQuizLearningPending、_describePendingQuizQuestions、
  *   _handleQuiz、
  *   _extractQuestions、_getQuizDocumentFromQuestions、_getQuizDocumentsFromQuestions、
  *   _looksLikeQuizTitle、_paperTierFromTitle、_examThinkingMin、_isNoGuessPaper、_noteNoGuessPaperHold、
@@ -1177,6 +1177,46 @@
       } catch (e) { console.warn('[Omitone] submit sniffer 安装失败（不影响功能）', e); }
     },
 
+    /**
+     * 提交结果只记一格：accepted / rejected / unknown / redo。
+     * rejected 自带 30 秒窗口，挡住“平台刚说失败、下一拍原样再交”—— 这是 #52 审计 P0 的第二条。
+     * 不在这里改 20/2 次预算与放弃名单：窗口只减少盲目重交，超过窗口仍交给原有停滞预算。
+     */
+    _setQuizSubmitOutcome: function (state, preferredDoc, extra) {
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) {}
+      var now = Date.now();
+      var prev = this._quizSubmitOutcome || null;
+      var next = {
+        state: String(state || ''),
+        key: key,
+        at: now,
+        rejectedUntil: state === 'rejected' ? now + 30000 : 0,
+        text: String((extra && extra.text) || '').slice(0, 120)
+      };
+      this._quizSubmitOutcome = next;
+      if (!prev || prev.state !== next.state || prev.key !== next.key ||
+          (next.state === 'rejected' && prev.text !== next.text)) {
+        emitRuntimeLog(next.state === 'rejected' || next.state === 'unknown' ? 'warn' : 'info',
+          'quiz submit outcome', {
+            state: next.state,
+            key: key.slice(0, 60),
+            text: next.text,
+            rejectedUntil: next.rejectedUntil ? next.rejectedUntil - now : 0
+          });
+      }
+      return next;
+    },
+
+    _quizSubmitRejectedBlocksRetry: function (now, preferredDoc) {
+      var o = this._quizSubmitOutcome;
+      if (!o || o.state !== 'rejected') return false;
+      if (!(Number(o.rejectedUntil) > Number(now))) return false;
+      var key = '';
+      try { key = String(this._getQuizWorkKey(this._getQuizAccountDocument(preferredDoc || null)) || ''); } catch (eKey) { key = ''; }
+      return !!key && key === o.key;
+    },
+
     _monitorQuizSubmit: function (preferredDoc) {
       if (this._prepareQuizRedoIfNeeded(preferredDoc || null)) return true;
       if (!this._quizSubmitPending) return false;
@@ -1185,6 +1225,7 @@
         this._quizSubmitPending = false;
         this._quizAnswered = true;
         this._clearQuizSubmitAttemptCount(preferredDoc || null);
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('accepted', preferredDoc, {});
         emitRuntimeLog('info', 'quiz submit finished');
         return false;
       }
@@ -1215,6 +1256,7 @@
       var waitMs = scaledMs(Number(this.configs.quizSubmitWaitMs || 25000));
       if (this._quizSubmitStartedAt && now - this._quizSubmitStartedAt > waitMs) {
         this._quizSubmitPending = false;
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('unknown', preferredDoc, {});
         // 超时时把「为什么没认出结果页」一并记下来 ——
         // 没有这段的话，日志里只剩一句「等超时了」，缺哪道条件完全靠猜。
         var diag = this._describeQuizResultPage(preferredDoc || null);
@@ -1409,6 +1451,7 @@
       var now = Date.now();
       var shouldLog = !this._quizHoldLogAt || now - this._quizHoldLogAt > 3000;
       if (this._isQuizRedoRequired(doc)) {
+        if (typeof this._setQuizSubmitOutcome === 'function') this._setQuizSubmitOutcome('redo', doc, {});
         if (this._shouldSkipQuizBySubmitAttempts(doc)) {
           return this._forceSkipQuizAfterMaxAttempts(doc);
         }

@@ -11859,6 +11859,65 @@ async function testExamResultNeutralText() {
     passed.call(app, current) === true, JSON.stringify({ verdict: passed.call(app, current) }));
 }
 
+async function testQuizSubmitOutcome() {
+  console.log('\n[38] 提交结果状态机：rejected 记窗口、同卷挡住重交、换卷不借旧账（#52 P0）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var quiz = read('src/page/70-quiz-flow.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var logs = [];
+  var set = buildFrom(quiz, '_setQuizSubmitOutcome', {
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); }
+  });
+  var blocks = buildFrom(quiz, '_quizSubmitRejectedBlocksRetry');
+  if (typeof set !== 'function' || typeof blocks !== 'function') {
+    check('取出提交结果状态机（取不出是签名/缩进变了，不等于没有回归）', false,
+      JSON.stringify({ set: typeof set, blocks: typeof blocks }));
+    return;
+  }
+
+  var key = 'paper-A';
+  var app = {
+    _quizSubmitOutcome: null,
+    _getQuizWorkKey: function () { return key; },
+    _getQuizAccountDocument: function () { return {}; },
+    _setQuizSubmitOutcome: set,
+    _quizSubmitRejectedBlocksRetry: blocks
+  };
+  var now = Date.now();
+  set.call(app, 'rejected', null, { text: '作业提交失败' });
+  check('① rejected 落状态与 30 秒窗口，并进日志',
+    app._quizSubmitOutcome && app._quizSubmitOutcome.state === 'rejected' &&
+    Number(app._quizSubmitOutcome.rejectedUntil) > now && app._quizSubmitOutcome.key === key &&
+    logs.some(function (l) { return l.message === 'quiz submit outcome' && l.meta && l.meta.state === 'rejected'; }),
+    JSON.stringify({ outcome: app._quizSubmitOutcome, logs: logs }));
+  check('② 同一份卷子窗口内挡住原样重交，窗口过后放行',
+    blocks.call(app, app._quizSubmitOutcome.at + 1000) === true &&
+    blocks.call(app, app._quizSubmitOutcome.at + 31000) === false,
+    JSON.stringify({ inWindow: blocks.call(app, app._quizSubmitOutcome.at + 1000),
+      after: blocks.call(app, app._quizSubmitOutcome.at + 31000) }));
+  key = 'paper-B';
+  check('③ 换一份卷子不借上一份的 rejected 账',
+    blocks.call(app, app._quizSubmitOutcome.at + 1000) === false,
+    JSON.stringify({ key: key, outcomeKey: app._quizSubmitOutcome.key }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -11913,6 +11972,7 @@ async function main() {
   await testQuizSubmitNeverAccepted();
   await testReadV2Task();
   await testExamResultNeutralText();
+  await testQuizSubmitOutcome();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
