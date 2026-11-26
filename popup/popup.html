@@ -697,17 +697,6 @@ body.has-bg::after{
       <button class="link-btn" id="doUntil" style="display:none">打开扩展页</button>
       <span class="preview-msg" id="previewMsg" style="display:none"></span>
       <button class="link-btn" id="doPreview" style="display:none">🧪 装预览版（实验性质，先掂量上面那句）</button>
-      <label class="mute-pick" title="在一段时间内不再提醒更新（不影响手动检查）">
-        <span>更新提醒</span>
-        <select id="updateMute">
-          <option value="0">正常</option>
-          <option value="1">静默 1 天</option>
-          <option value="3">静默 3 天</option>
-          <option value="7">静默 7 天</option>
-          <option value="30">静默 30 天</option>
-          <option value="-1">不再提醒</option>
-        </select>
-      </label>
     
 
 </div>
@@ -977,6 +966,18 @@ body.has-bg::after{
         <label for="visionBudgetPerChapter">每章看图次数上限</label>
         <input type="number" id="visionBudgetPerChapter" min="0" max="500" step="1" placeholder="30" />
         <p class="hint">这是每章的看图花费上限。到顶后本章不再发看图请求，日志会记一条。设 <b>0</b> 等于关闭。</p>
+      </div>
+      <div class="field">
+        <label for="updateMute">更新提醒</label>
+        <select id="updateMute">
+          <option value="0">正常</option>
+          <option value="1">静默 1 天</option>
+          <option value="3">静默 3 天</option>
+          <option value="7">静默 7 天</option>
+          <option value="30">静默 30 天</option>
+          <option value="-1">不再提醒</option>
+        </select>
+        <p class="hint">在一段时间内不再提醒更新，不影响手动检查。</p>
       </div>
     </div>
   </details>

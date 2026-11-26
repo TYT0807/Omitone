@@ -1762,6 +1762,12 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
   - ✅ 上面那一整段里的**第 3 档已拆成 3a／3b**：3a（只给 `_mediaReloadKeys` 加 300 上限、按 `at` 只清最旧）
     已落地，行号与验收见 §0.66；**剩下的是 3b**（其余 5 处 `>300` 整体复位改成只清最旧，共 7 本账）。
 
+### 0.79 前端精简第二刀：更新提醒移入「高级」（2026-11-26，#51）
+
+- 顶部更新条的 `label.mute-pick` 移到 `details#advancedGroup`，`select#updateMute` 的 id/选项/localStorage
+  键与 `popup.js` 绑定不变；顶部更新条只剩检测/覆盖/推迟/扩展页/预览入口。
+- check EXIT=0，设置弹窗 e2e 60/60；说明书 0 处，无需改。
+
 ### 0.78 考试/作业结果页：中性「通过标准」不再算通过（2026-11-26，#52 P0）
 
 - 来源：`#52` 审计 P0 第一条。`_isQuizPassedOrFinished` 把「通过标准：60 分」这种卷面说明当完成证据，

@@ -8,6 +8,13 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 217 · 2026-11-26 · 前端精简第二刀：更新提醒下拉移入「高级」（#51）
+
+- 顶部更新条里的 `label.mute-pick` 整块移除，`select#updateMute` 连同 6 个选项移进 `details#advancedGroup`；
+  **id、选项值、localStorage 键与 popup.js 绑定一字不动**，旧设置继续生效。
+- `node tools/check.js` EXIT=0；定向「设置弹窗」e2e **60 / 60** 绿；说明书本来没教这枚，无需改。
+- **门面**：`「更新提醒」移入「高级」`（`release-notes-preview.md` 与 main README 预览更新段）
+
 ### 批次 216 · 2026-11-26 · 考试/作业结果页：中性「通过标准」不再算通过（#52 P0）
 
 - `_isQuizPassedOrFinished` 的正面证据去掉裸 `通过标准`：它常是卷面说明（「通过标准：60 分」），
