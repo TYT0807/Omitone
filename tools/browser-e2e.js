@@ -7787,6 +7787,121 @@ SCENARIOS.push({
 });
 
 /**
+ * ---- 1c-ter. 「课程考试」这类章节名：标题命中而网址不匹配佐证正则时**不许**判成卷子 ----
+ *
+ * 1c-bis 只从正面证了那条 URL 谓词（网址对得上就判真），而 `src/page/70-quiz-flow.js:212`
+ * 那句 `if (onWorkPage) return true;` 的**反面**历来零证人。本轮实测（不是推的）：
+ * `tools/browser-e2e.js` 与 `tools/integration-test.js` 里 `课程考试` 各 **0 处**命中、
+ * `onWorkPage` **0 处**命中 —— 把那整行删掉，一条测试都不会红。而它挡的正是那条现场事故：
+ * 课程目录里名为「课程考试」的章节被认成"这一节有测验"→ 完成检查被否决 → 永不跳过 →
+ * study 循环每 5 秒空转刷 "quiz scan found 0 questions"。
+ *
+ * ⚠️ 负向格子要真敏感，得先把**另外两支**按死（§5「断言绿有两种：走到了、根本没走到那一层」）：
+ *    ① 夹具用 `/mycourse/studentstudy-blank`（网址不含任何佐证关键词，页面也没有卷形），
+ *       并声明 `noAutoResume` —— 前提写成「这一页本来没有 X」就得按掉自动续跑（批次 69 那一族）；
+ *    ② **标题门要人为打开**（挂一枚「第三章 课程考试」的 `.prev_title`）：
+ *       否则"判假"可能只是标题门根本没进，量的压根不是佐证闸；
+ *    ③ `containers` / `boxes` / `_collectVisibleTaskFrames()` 里的未完成 quiz 数**全从页面读回并钉成 0**，
+ *       DOM 兜底与任务帧那两支都拿不到东西，此时"判假"才只剩佐证正则这一条出路；
+ *    ④ 镜像阳性对照只改**一件事**：把 `#iframe` 那枚 div 换成 src 命中关键词的真 iframe，
+ *       标题条一个字不动。src 指向**没注册**的 `/ananas/modules/work/index.html`
+ *       （服务端走到本文件 3401 那格回 404 `not found`，里面没有任何可作答形状）——
+ *       同一页、同一标题，只因为网址就从假翻真，才把 ③ 那句"假"归因到佐证正则本身。
+ *       不需要等 iframe 加载：`onWorkPage` 读的是 `#iframe` 的 `src`，而 `quizUnfinished === 0`
+ *       由生产自己的那一趟走帧读回来钉住。
+ *    （`mainTag` / `mainSrc` / `cur` / `containers` / `boxes` / `quizUnfinished` / `detect`
+ *      全部经生产自己的访问器读回，`mainSrc` 还是浏览器解析后的绝对地址，不是测试写的字面量。）
+ */
+SCENARIOS.push({
+  name: '学习页挂着「课程考试」标题：网址不匹配佐证正则就不许判成卷子',
+  path: '/mycourse/studentstudy-blank',
+  noAutoResume: true,
+  run: async function (ctx) {
+    // ① 夹具自证：这一页自己什么都给不出来（标题门关着、没有卷形、没有未完成测验任务）
+    var base = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var cs=String(app._quizContainerSelector||""),ks=String(app._quizAnswerControlSelector||"");' +
+      'var n=Array.prototype.slice.call(document.querySelectorAll(cs));' +
+      'function laidOut(el){try{var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}catch(e){return false;}}' +
+      'var tasks=app._collectVisibleTaskFrames()||[];var mf=app._getMainFrame()||{};' +
+      'return {href:String(location.href||""),hasPrev:!!document.querySelector(".prev_title"),' +
+      'mainTag:String(mf.tagName||""),mainSrc:String(mf.src||""),' +
+      'containers:n.length,boxes:n.filter(function(el){return laidOut(el)&&!!el.querySelector(ks);}).length,' +
+      'quizUnfinished:tasks.filter(function(t){return t&&t.type==="quiz"&&!t.finished;}).length,' +
+      'cur:String(app._getCurrentTitle()||""),detect:app._detectQuiz()};})()'
+    );
+    check('夹具自证：空白学习页没有标题条、没有卷形、任务帧里也没有未完成测验，detect 为 false',
+      base.hasPrev === false && base.cur === '' && base.containers === 0 &&
+      base.mainTag === 'DIV' && base.mainSrc === '' && base.quizUnfinished === 0 &&
+      base.detect === false,
+      JSON.stringify(base));
+
+    // ② 把标题门打开：这一格只证"门开了"，好让 ③ 量的确实是佐证闸而不是标题门
+    var mounted = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var t=document.createElement("div");t.className="prev_title";t.textContent="第三章 课程考试";' +
+      'document.body.appendChild(t);' +
+      'return {added:!!document.querySelector(".prev_title"),' +
+      'cur:String(app._getCurrentTitle()||""),href:String(location.href||"")};})()'
+    );
+    check('打开标题门：挂上「第三章 课程考试」这枚 .prev_title 后 `_getCurrentTitle()` 认得出考试',
+      mounted.added === true && mounted.cur.indexOf('考试') !== -1,
+      JSON.stringify(mounted));
+
+    // ③ 承重那一格：门开着，但网址不匹配佐证正则，且另外两支都拿不到东西 —— 必须仍是 false
+    var titled = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var cs=String(app._quizContainerSelector||""),ks=String(app._quizAnswerControlSelector||"");' +
+      'var n=Array.prototype.slice.call(document.querySelectorAll(cs));' +
+      'function laidOut(el){try{var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}catch(e){return false;}}' +
+      'var tasks=app._collectVisibleTaskFrames()||[];var mf=app._getMainFrame()||{};' +
+      'return {href:String(location.href||""),hasPrev:!!document.querySelector(".prev_title"),' +
+      'mainTag:String(mf.tagName||""),mainSrc:String(mf.src||""),' +
+      'containers:n.length,boxes:n.filter(function(el){return laidOut(el)&&!!el.querySelector(ks);}).length,' +
+      'quizUnfinished:tasks.filter(function(t){return t&&t.type==="quiz"&&!t.finished;}).length,' +
+      'cur:String(app._getCurrentTitle()||""),detect:app._detectQuiz()};})()'
+    );
+    check('标题命中「课程考试」而网址不匹配佐证正则时 `_detectQuiz()` 仍为 false（佐证闸单独承重）',
+      titled.hasPrev === true && titled.cur.indexOf('考试') !== -1 && titled.containers === 0 &&
+      titled.boxes === 0 && titled.quizUnfinished === 0 && titled.mainSrc === '' &&
+      titled.detect === false,
+      JSON.stringify(titled));
+
+    // ④ 镜像阳性对照：只动 `#iframe` 的 src，标题与形状一个字都不改
+    var swapped = await ctx.client.evaluate(
+      '(function(){var old=document.getElementById("iframe");' +
+      'if(old&&old.parentNode){old.parentNode.removeChild(old);}' +
+      'var f=document.createElement("iframe");f.id="iframe";' +
+      'f.setAttribute("src","/ananas/modules/work/index.html");' +
+      'document.body.appendChild(f);' +
+      'var now=document.getElementById("iframe");' +
+      'return {swapped:!!now&&now.tagName==="IFRAME"};})()'
+    );
+    check('对照前提：`#iframe` 已从那枚 div 换成一枚真 iframe',
+      swapped.swapped === true, JSON.stringify(swapped));
+
+    var flipped = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var cs=String(app._quizContainerSelector||""),ks=String(app._quizAnswerControlSelector||"");' +
+      'var n=Array.prototype.slice.call(document.querySelectorAll(cs));' +
+      'function laidOut(el){try{var r=el.getBoundingClientRect();return r.width>0&&r.height>0;}catch(e){return false;}}' +
+      'var tasks=app._collectVisibleTaskFrames()||[];var mf=app._getMainFrame()||{};' +
+      'return {href:String(location.href||""),hasPrev:!!document.querySelector(".prev_title"),' +
+      'mainTag:String(mf.tagName||""),mainSrc:String(mf.src||""),' +
+      'containers:n.length,boxes:n.filter(function(el){return laidOut(el)&&!!el.querySelector(ks);}).length,' +
+      'quizUnfinished:tasks.filter(function(t){return t&&t.type==="quiz"&&!t.finished;}).length,' +
+      'cur:String(app._getCurrentTitle()||""),detect:app._detectQuiz()};})()'
+    );
+    check('同一页只把 `#iframe` 的 src 换成命中佐证正则的地址，`_detectQuiz()` 立刻翻真',
+      flipped.mainTag === 'IFRAME' && flipped.mainSrc.indexOf('ananas/modules/work') !== -1 &&
+      flipped.hasPrev === true && flipped.cur.indexOf('考试') !== -1 &&
+      flipped.containers === 0 && flipped.boxes === 0 && flipped.quizUnfinished === 0 &&
+      flipped.detect === true,
+      JSON.stringify(flipped));
+  }
+});
+
+/**
  * ---- 1d. 作业/考试页：点完选项后 `#answer{qid}` **必须**被写上 ----
  *
  * 这一条盯的是一个曾经静默的洞（现场症状：AI 扫到题、点了选项，然后什么都不发生）：
@@ -15663,6 +15778,20 @@ SCENARIOS.push({
       'reset();r.p3=app._discussionPendingInfo();r.h3=app._shouldHoldDiscussionBeforeFinish();' +
       'var task=await app._findDiscussionTask();' +
       'r.taskKey=task?String(task.key):null;' +
+      // ③-bis 把平台 class 翻成"已完成"，找帖侧必须跟着读不到这张卡；摘回来又找得到。
+      //       必须排在 ④ 之前：65:819 的 `t.finished` 走在 heal/bump 前面，而 ④ 烧满 3 次后
+      //       翻／不翻都是 null（T-B 交接台账量到的"不可判"），那一格区分不出是谁挡的。
+      'r.triedBeforeFlip=todo?app._getDiscussionTries(todo.key):null;' +
+      'r.flipFind=flipBox(true);' +
+      'reset();var tFlip=await app._findDiscussionTask();' +
+      'r.taskKeyFlip=tFlip?String(tFlip.key):null;' +
+      'r.uFlip=app._collectDiscussionTargets().filter(function(t){return !t.finished;}).length;' +
+      'r.triedAfterFlip=todo?app._getDiscussionTries(todo.key):null;' +
+      'r.unflipFind=flipBox(false);' +
+      'reset();var tBack=await app._findDiscussionTask();' +
+      'r.taskKeyBack=tBack?String(tBack.key):null;' +
+      'r.uBack=app._collectDiscussionTargets().filter(function(t){return !t.finished;}).length;' +
+      'r.triedAfterBack=todo?app._getDiscussionTries(todo.key):null;' +
       // ④ 额度烧尽（3 次）后不再无限自愈；但平台仍说没做完，这一节按住并点名 blocked（不可跳过）
       'if(todo){try{var mm=app._discussionDoneMap();mm[todo.key]=Date.now()-180000;' +
       '  localStorage.setItem(app._discussionStoreKey,JSON.stringify(mm));}catch(e){}' +
@@ -15723,6 +15852,15 @@ SCENARIOS.push({
     check('"重开发帖"与"按住这一节"同口径：pending=1、hold=true、找到的就是那张卡',
       !!probe && probe.p3 && probe.p3.pending === 1 && probe.h3 && probe.h3.hold === true &&
       probe.taskKey === probe.todoKey, JSON.stringify(probe && [probe.p3, probe.h3, probe.taskKey, probe.todoKey]));
+    check('平台补上 ans-job-finished 时找帖侧立刻读不到这张卡，摘回 class 又读得到（只动 class、ledger 一字未改）',
+      !!probe && probe.flipFind === 1 && probe.unflipFind === 1 && probe.taskKeyFlip === null &&
+      probe.taskKeyBack === probe.todoKey && probe.uFlip === 0 && probe.uBack === 1,
+      JSON.stringify(probe && { flipFind: probe.flipFind, taskKeyFlip: probe.taskKeyFlip, unflipFind: probe.unflipFind,
+        taskKeyBack: probe.taskKeyBack, todoKey: probe.todoKey, uFlip: probe.uFlip, uBack: probe.uBack }));
+    check('翻转那一支不烧自愈额度（class 先赢），摘回 class 那一次照旧烧一发',
+      !!probe && typeof probe.triedBeforeFlip === 'number' && probe.triedBeforeFlip >= 1 &&
+      probe.triedAfterFlip === probe.triedBeforeFlip && probe.triedAfterBack === probe.triedBeforeFlip + 1,
+      JSON.stringify(probe && [probe.triedBeforeFlip, probe.triedAfterFlip, probe.triedAfterBack]));
     check('额度烧尽（3 次）后不再无限自愈，但也不许跳过：pending 仍为 1、整节按住并点名 blocked',
       !!probe && probe.healSpent === false && probe.p4 && probe.p4.pending === 1 && probe.p4.blocked === 1
       && probe.h4 && probe.h4.hold === true && probe.h4.reason === 'discussion-blocked',
