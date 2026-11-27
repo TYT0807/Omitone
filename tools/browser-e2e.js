@@ -13742,29 +13742,27 @@ SCENARIOS.push({
       JSON.stringify(startChain && { afterDenied: startChain.afterDenied, toast: startChain.toast }));
 
     // ---- 开场那一段（任务 #164：文案精简）----
-    // 这里钉的是「两句口径都在场 + 顶部字数收得住」，不是具体措辞。
-    // ⚠️ 批次 68 说过「别把『没 Key 就跳过』那一半删回去换简洁」，而本轮干的正是"换简洁" ——
-    //    两条要求撞在一起，只能靠断言钉边界：可以短，短到看不见那一半就不行。
-    //    上界 150 是量出来的：旧那份可见 199 字、新这份 119 字（node 剥标签数过）。
-    //    ⚠️ 正则跑在原文上，去空白那份只用来数长度：否则「API Key」被压成「APIKey」，红的是尺不是界面。
+    // 顶部只留「实验版 · 公益免费」一句；哪几族不花钱、没 Key 会跳过，折进下面那行 details。
+    // 两条口径仍必须都在场（批次 68 的边界），但不再要求它挤在开场可见区域。
     var opener = await ctx.client.evaluate(
       '(function(){var p=document.getElementById("introHint");' +
       'var d=document.getElementById("introMore");' +
       'var s=d?d.querySelector("summary"):null;' +
       'var raw=p?p.textContent:"",t=raw.replace(/\\s+/g,"");' +
+      'var more=d?d.textContent:"";' +
       'var sRaw=s?s.textContent:"",sText=sRaw.replace(/\\s+/g,"");' +
       'return {hasP:!!p,hasD:!!d,open:d?d.open:null,sum:sText,vis:t.length,' +
-      'noCost:/不花钱/.test(raw),skip:/跳过不答/.test(raw),needKey:/API\\s*Key/.test(raw),' +
+      'moreNoCost:/不花钱/.test(more),moreSkip:/跳过不答/.test(more),moreNeedKey:/API\\s*Key/.test(more),' +
       'free:/永久免费/.test(raw),foldOnly:/^\\s*不填\\s*Key/.test(sRaw)};})()'
     );
-    check('开场可见那一段把两句口径说全了：哪几族不花钱、要 Key 没填就跳过不答，外加永久免费',
-      opener.hasP === true && opener.noCost === true && opener.skip === true &&
-      opener.needKey === true && opener.free === true, JSON.stringify(opener));
-    check('开场其余细节折进一行小字：元素存在、默认是关的、小标题自己有话、且点明讲的是 Key 与乱选',
+    check('顶部只保留「永久免费」；「哪几族不花钱 / 没 Key 跳过不答」完整折进下面的说明',
+      opener.hasP === true && opener.free === true && opener.moreNoCost === true &&
+      opener.moreSkip === true && opener.moreNeedKey === true, JSON.stringify(opener));
+    check('说明默认收起、小标题自己有话、且点明讲的是 Key / 哪些不花钱 / 乱选',
       opener.hasD === true && opener.open === false && opener.sum.length > 0 &&
       opener.foldOnly === true, JSON.stringify(opener));
-    check('开场可见字数收在 150 字以内（旧版实测 199 字，超界就是把话又堆回顶部）',
-      opener.vis > 0 && opener.vis <= 150, '可见 ' + opener.vis + ' 字');
+    check('开场可见字数收在 80 字以内（详细说明已折进下面，不再堆在顶部）',
+      opener.vis > 0 && opener.vis <= 80, '可见 ' + opener.vis + ' 字');
 
     // 上一组只钉了 d.open 这一个**属性**，而「精简」这件事真正的承诺是几何与交互：
     // 折进去的那段要**当下不占地方**，点标题要**真撑得开**、再点要收回原位。
