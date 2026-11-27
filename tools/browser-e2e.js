@@ -2114,6 +2114,34 @@ function buildPopupQuizNativeHtml() {
     '  </ul>' +
     '  <div class="pop-quiz-footer"><span class="pop-quiz-submit">提交</span></div>' +
     '</div>' +
+    // brief-240 的「弹题晚出现」开关：?late=N 毫秒才把题目长回来。
+    // ⚠️ 不带 query 时这一段完全惰性 —— 老三个场景看到的 DOM 与事件逐字不变。
+    // ⚠️ 骨架那一串（下面 pop-quiz-loading 的文本）是**合成的**，不是现场形状：
+    //   2026-11-27 17:0x 主会话在 9334 只读量过 —— 当前页与同源 iframe 里 `.ans-pop-quiz` **命中 0 个**，
+    //   所以「站点晚到时容器里到底写着什么」现场**未量**（口径见 board 17:1x 段）。
+    //   这一串只负责把生产那一格**钉住**：可见文本 >5 字（过 `_checkPopupQuiz` 的闸）、
+    //   但 `_popupQuizStem` 读回空串（题号被 `_cleanQuestionTitle` 剥掉、A/B 两个标记之间没有文字），
+    //   于是 `_handlePopupQuiz` 走 `no-stem` 那一支 → `_answerPopupQuizLocally` → `_popupQuizEmptyShellPass`。
+    //   换个说法：本场景证的是「容器先到、题干与选项文字后到」这一族**进了等待那一格**，不证站点就这么渲染。
+    '<script>(function(){' +
+    'var parts=String(location.search||"").split("&");var late=0;' +
+    'for(var i=0;i<parts.length;i++){var kv=parts[i].split("=");' +
+    'if(kv[0]==="?late"||kv[0]==="late"){late=Math.max(0,Number(kv[1])||0);}}' +
+    'window.__lateMs=late;window.__filledAt=0;window.__submitClicks=0;window.__closedAt=0;' +
+    'if(late<=0)return;' +
+    'var host=document.querySelector(".ans-pop-quiz");if(!host)return;' +
+    'var kids=[];for(var j=0;j<host.children.length;j++){kids.push(host.children[j].outerHTML);}' +
+    'while(host.firstChild){host.removeChild(host.firstChild);}' +
+    'window.__held=kids.join("");' +
+    'var hint=document.createElement("div");hint.className="pop-quiz-loading";' +
+    'hint.textContent="1. A、 B、";host.appendChild(hint);' +
+    'host.addEventListener("click",function(ev){var t=ev&&ev.target;if(!t)return;' +
+    'var txt=String(t.innerText||t.textContent||"");' +
+    'if(txt!=="提交"&&txt!=="确定"&&txt!=="确认")return;' +
+    'window.__submitClicks++;' +
+    'setTimeout(function(){window.__closedAt=Date.now();if(host.parentNode){host.parentNode.removeChild(host);}},40);},true);' +
+    'setTimeout(function(){host.innerHTML=window.__held;window.__filledAt=Date.now();},late);' +
+    '})();</script>' +
     '</body></html>';
 }
 
@@ -10422,6 +10450,168 @@ SCENARIOS.push({
     check('71 换任务点之后重新给额度：这一发是花钱的（否则上一节的放弃会永久静音后面所有判断题）',
       ctx.mock.requests.length > beforeJobSwitch,
       '请求数 +' + (ctx.mock.requests.length - beforeJobSwitch));
+  }
+});
+
+/** ---- 6c-1a2. 任务 240：站点把弹题**晚**送回来（容器先到、题目后到） ----
+ *
+ * 现场形状见 `_popupQuizEmptyShellPass` 头上那段：「一个选项都没有」有两件不同的事 ——
+ *   · 站点收下答案后把题干与选项那一层摘掉了（这一道**过去了**）；
+ *   · 题目还没长出来（这一道**还没到**）。
+ * 旧写法把两者并成一句 `no-options-*` 的 error + 60 秒静音，于是"晚到几秒"这一族
+ * 在选项真拼回来**之前**就被判死，用户看到的是"弹题卡住、刷新还是它"；
+ * 而另一头的错法（每拍都问模型）更贵：空题干发出去只能瞎猜，**每一发都白花钱**。
+ *
+ * 夹具开关：`?late=N` 毫秒后才把 `.ans-pop-quiz` 里的内容长回来。
+ * ⚠️ 不带 query 时那一段惰性 —— 老三个 `/popup-quiz-native` 场景看到的 DOM 与事件逐字不变，
+ *    所以这里复用现成夹具，不新增 MOCK_PAGES 那一页（夹具表计数另有账）。
+ */
+SCENARIOS.push({
+  name: '视频弹题晚出现（等到选项长回来才问，全程只问一次）',
+  path: '/popup-quiz-native',
+  url: '/popup-quiz-native?late=6000',
+  run: async function (ctx) {
+    var LATE_MS = 6000;
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: false,
+      enableDiscussion: false,
+      autoNext: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+
+    // 读数一律从页面里取回来再比（断言不许把夹具常量当证据）
+    var PROBE_CORE = 'var b=app._popupQuizSpend||{};' +
+      'var es=b.emptyShell||null;var ls=window.__b240||[];var cnt={};' +
+      'for(var i=0;i<ls.length;i++){cnt[ls[i].msg]=(cnt[ls[i].msg]||0)+1;}' +
+      'var ans=null;for(var j=ls.length-1;j>=0;j--){if(ls[j].msg==="popup quiz answered"){ans=ls[j];break;}}' +
+      'return {' +
+      'shell:!!document.querySelector(".ans-pop-quiz"),' +
+      'radios:document.querySelectorAll(".ans-pop-quiz input[type=radio]").length,' +
+      'hint:!!document.querySelector(".ans-pop-quiz .pop-quiz-loading"),' +
+      // 下面三格都是**从生产自己的读数里**取的，不是夹具常量：
+      //   popItems = `_getOptionItems(容器)` 的真实条数（0 → 才走得到空壳那一格）
+      //   popStem  = `_popupQuizStem(...)` 读回的长度（0 → 走的是 `no-stem` 那一支）
+      //   popLen   = 容器可见文本长度（只当取证；「>5 字闸过了」由 beat.found 说话）
+      'popItems:(function(){var pe=document.querySelector(".ans-pop-quiz");if(!pe)return -1;' +
+      'try{var its=app._getOptionItems(pe)||[];return its.length;}catch(e1){return -2;}})(),' +
+      'popStem:(function(){var pe=document.querySelector(".ans-pop-quiz");if(!pe)return -1;' +
+      'var its=[];try{its=app._getOptionItems(pe)||[];}catch(e2){its=[];}' +
+      'try{return String(app._popupQuizStem(pe,its)||"").length;}catch(e3){return -2;}})(),' +
+      'popLen:(function(){var pe=document.querySelector(".ans-pop-quiz");if(!pe)return -1;' +
+      'try{return String(pe.innerText||pe.textContent||"").length;}catch(e4){return -2;}})(),' +
+      'late:Number(window.__lateMs===undefined?-1:window.__lateMs),' +
+      'filledAt:Number(window.__filledAt||0),submitClicks:Number(window.__submitClicks||0),' +
+      'closedAt:Number(window.__closedAt||0),' +
+      'shellAt:(es&&Number(es.at))||0,shellKey:(es?String(es.key||""):""),' +
+      'blocked:(Date.now()<(Number(app._popupQuizBlockedUntil)||0))?1:0,' +
+      'blocks:!!app._popupQuizBlocksPlayback(),' +
+      'waiting:(cnt["popup quiz has no options yet, waiting a beat"]||0),' +
+      'stayed:(cnt["popup quiz shell stayed empty"]||0),' +
+      'giveUp:(cnt["popup quiz unanswerable, stop asking model"]||0),' +
+      // 「等一拍」那条日志自己点名的原因 —— 只有 reason 是 `no-stem` 才说明进的是
+      // 「题目还没长出来」那一格，而不是「站点把那一层摘掉了/这道真答不了」那一族。
+      'waitReason:(function(){for(var k=0;k<ls.length;k++){' +
+      'if(ls[k].msg==="popup quiz has no options yet, waiting a beat")return String(ls[k].reason);}' +
+      'return "";})(),' +
+      // 自动续跑的循环每一拍都会自己去弹字段：它要是活着，下面的请求增量与记账就不是我拨的
+      'loop:!!app._tickLoopInterval,checkInterval:!!app._checkInterval,' +
+      'api:app._isQuizApiUnavailable()===false,max:app._getPopupQuizMaxAttempts(),' +
+      'msgs:ls.map(function(v){return v.msg+(v.optionCount>=0?"/"+v.optionCount:"")+(v.reason?"/"+v.reason:"");}),' +
+      'answered:ans};';
+    var POPUP_READ = '(function(){var app=window._xxtApp;' + PROBE_CORE + '})()';
+    // 走**循环真正用的那个入口**：`_activePopupBlock` 的注释明写"所有『有弹窗就别动』的判断
+    // 都必须走这里，不能直接用 _checkPopupQuiz" —— 绕过它就绕过了 60 秒冷却，
+    // "被判死"那一格根本测不到（静默期与冷却都是它管的）。
+    var DRIVE = '(function(){var app=window._xxtApp;var n=app._activePopupBlock();' +
+      'if(n)app._handlePopupQuiz(n);return {found:!!n};})()';
+
+    var setup = await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'app.configs = Object.assign({}, app.configs, ' + JSON.stringify(cfg) + ');' +
+      // 前提自钉（批次 69 同一族）：上一支场景的 run() 会把 xxtRunning 写进整轮共用的扩展存储，
+      // 这一页一加载就有一个 250ms 的循环在自动弹字段 —— 不清掉的话下面每一拍的
+      // 请求增量与 emptyShell 记账都不再是我这一轮拨的。
+      'app._clearTickLoop();app._clearCheckInterval();' +
+      'window.__b240=[];window.addEventListener("message",function(ev){var d=ev&&ev.data;' +
+      'if(d&&d.source==="xxt_app"&&d.type==="runtime_log"){' +
+      'var m=d.meta||{};' +
+      'window.__b240.push({level:String(d.level||""),msg:String(d.message||""),' +
+      'reason:String(m.reason||""),' +
+      // 拿不到写 -1，不许被 `||0` 洗成"选项数为 0"这一格合法读数
+      'optionCount:(m.optionCount===undefined?-1:Number(m.optionCount)),' +
+      'fromPaid:(m.fromPaidCache===undefined?"":String(m.fromPaidCache)),' +
+      'type:String(m.type||"")});' + '}});' +
+      'app._popupQuizSpend=null;app._popupQuizKey="";app._popupQuizAttempts=0;' +
+      'app._popupQuizWrongAnswers=[];app._popupQuizLastFilled="";app._popupQuizSolvedKey="";' +
+      'app._popupQuizSolvedAt=0;app._popupQuizQuietUntil=0;app._popupQuizBlockedUntil=0;' +
+      'app._popupBlockCheckedAt=0;app._popupBlockCached=null;' +
+      'app._activeJobId="b240-job-a";' + PROBE_CORE + '})()'
+    );
+    check('240 前提：?late 开关真生效（容器在、可见文本过了那句"大于 5 字"的闸、但生产读到 0 个选项与空题干），且这一页只剩我这一个驱动',
+      setup.late === LATE_MS && setup.shell === true && setup.radios === 0 && setup.hint === true &&
+      setup.popItems === 0 && setup.popStem === 0 && setup.popLen > 5 &&
+      setup.filledAt === 0 && setup.loop === false && setup.checkInterval === false && setup.api === true,
+      JSON.stringify(setup));
+
+    var reqStart = ctx.mock.requests.length;
+    var beat1 = await ctx.client.evaluate(DRIVE);
+    await sleep(500);
+    var state1 = await ctx.client.evaluate(POPUP_READ);
+    var req1 = ctx.mock.requests.length - reqStart;
+
+    var beat2 = await ctx.client.evaluate(DRIVE);
+    await sleep(500);
+    var state2 = await ctx.client.evaluate(POPUP_READ);
+    var req2 = ctx.mock.requests.length - reqStart;
+
+    check('240 晚到的第一拍不花钱（一个请求都不发 —— 拿没题干的弹窗问模型只能瞎猜，那一发是纯浪费）',
+      beat1.found === true && req1 === 0,
+      'found=' + beat1.found + ' · 请求 +' + req1 + ' · ' + JSON.stringify(state1));
+    check('240 晚到的第一拍不判死：记的是「等一拍」（原因点名 no-stem），不是「答不了」，也不进 60 秒冷却',
+      state1.waiting === 1 && state1.waitReason === 'no-stem' && state1.shellAt > 0 &&
+      state1.giveUp === 0 &&
+      state1.stayed === 0 && state1.blocked === 0, JSON.stringify(state1));
+    check('240 第二拍仍在等同一次目击（跨拍累积才生效：既没把那一格清零、也没每拍刷一句"再等等"，' +
+      '更没半路判死）',
+      beat2.found === true && state2.waiting === 1 && state2.shellAt === state1.shellAt &&
+      state2.shellAt > 0 && state2.giveUp === 0 && state2.stayed === 0 &&
+      state2.blocked === 0 && req2 === 0,
+      JSON.stringify({first: state1, second: state2, req: req2}));
+
+    // 等夹具自己把题目长回来 —— 6 秒是这一族唯一钉得住的时钟（20 秒那格故意不去够）
+    var arrived = 0;
+    for (var w = 0; w < 30 && !arrived; w++) {
+      var t0 = await ctx.client.evaluate('Number(window.__filledAt||0)');
+      arrived = Number(t0) || 0;
+      if (!arrived) await sleep(400);
+    }
+    var withOpts = await ctx.client.evaluate(POPUP_READ);
+    check('240 晚到的题目真的长回来了（夹具自证：选项数与题干都从生产读数里回来，等的时候一次提交都没点过）',
+      arrived > 0 && withOpts.radios === 3 && withOpts.popItems === withOpts.radios &&
+      withOpts.popStem > 0 && withOpts.submitClicks === 0 &&
+      withOpts.answered === null, JSON.stringify(withOpts));
+
+    await ctx.client.evaluate(DRIVE);
+    await sleep(2500);
+    var done = await ctx.client.evaluate(POPUP_READ);
+    var reqTotal = ctx.mock.requests.length - reqStart;
+
+    check('240 选项长回来之后仍能抠到题（答完那条日志里的选项数，就是生产从这一页读到的那一格）',
+      !!done.answered && done.answered.optionCount === withOpts.popItems &&
+      done.answered.optionCount > 0,
+      JSON.stringify({answered: done.answered, popItems: withOpts.popItems, radios: withOpts.radios}));
+    check('240 从进门到答完只问一次（等待期每拍都问是重复烧钱，判死之后重来是第二发 —— 两种错法都落在这格）',
+      reqTotal === 1, '请求 +' + reqTotal + ' · answered=' + JSON.stringify(done.answered));
+    check('240 答完继续播放（提交点下去了、弹窗被收走，且不再拦住恢复播放）',
+      done.submitClicks === 1 && done.closedAt > 0 && done.blocks === false && done.blocked === 0,
+      JSON.stringify({submit: done.submitClicks, closedAt: done.closedAt,
+        blocks: done.blocks, blocked: done.blocked}));
   }
 });
 
