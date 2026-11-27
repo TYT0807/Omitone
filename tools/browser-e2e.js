@@ -25494,6 +25494,115 @@ SCENARIOS.push({
   }
 });
 
+/** ---- 批次 240b：课程首页探针 ended 不入选，need 阳性对照 ---- */
+SCENARIOS.push({
+  name: '课程首页探针 ended 不入选，need 阳性对照',
+  path: '/course-pick?ws=2',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var reqBefore = ctx.mock.requests.length;
+    await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'window.__b240=[];window.__b240nav=[];' +
+      'if(!window.__b240bound){window.__b240bound=true;window.addEventListener("message",function(e){' +
+      '  var m=e.data;if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__b240.push(m);});}' +
+      'app._gotoUrl=function(u){window.__b240nav.push(String(u||""));};' +
+      'app.configs.autoNextCourse=true;' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1&omitoneDone=900000013");' +
+      'try{sessionStorage.removeItem("omitone:course-switch");}catch(e){}' +
+      'app._coursePickDone=false;app._courseProbeSpokeAt=0;' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'var ended=d.getElementById("c_900000014");' +
+      'ended.querySelector(".l-txt").textContent="课程丁 首页探针 ended";' +
+      'var need=ended.cloneNode(true);need.id="c_900000016";' +
+      'need.querySelector(".courseId").value="900000016";' +
+      'need.querySelector(".clazzId").value="900000026";' +
+      'need.querySelector("a[href*=stucoursemiddle]").setAttribute("href",' +
+      '  "https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=900000016&clazzid=900000026&cpi=900000003&ismooc2=1&v=2");' +
+      'need.querySelector(".l-txt").textContent="课程己 首页探针 need";' +
+      'ended.parentNode.appendChild(need);return true;})()'
+    );
+
+    async function snap() {
+      await sleep(420);
+      return JSON.parse(await ctx.client.evaluate(
+        '(function(){return JSON.stringify({names:(window.__b240||[]).map(function(m){return String(m.message||"");}),' +
+        'metas:(window.__b240||[]).map(function(m){return (m&&m.meta)||{};}),nav:window.__b240nav||[]});})()'
+      ));
+    }
+    function cnt(s, needle) {
+      var n = 0;
+      for (var i = 0; i < s.names.length; i++) if (s.names[i].indexOf(needle) === 0) n++;
+      return n;
+    }
+
+    var shape = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var c=app._readCourseCards();' +
+      'var d=document.getElementById("frame_content").contentDocument;' +
+      'return JSON.stringify({picked:c.picked.length,unknown:c.unknown.length,noClazz:c.noClazz,ended:c.ended,' +
+      'ids:c.unknown.map(function(x){return x.courseId;}).sort(),' +
+      'dateEnded:app._courseCardEndedByText("课程丁 首页探针 ended"),' +
+      'needHasProgress:/任务点进度/.test(d.getElementById("c_900000016").innerText)});})()'
+    ));
+    check('240b-A 夹具自证：两张无进度卡都在子帧，卡片日期 ended=0（不是日期闸），' +
+      '一张探针 ended、一张探针 need，班号各自独立',
+      shape.picked === 3 && shape.unknown === 2 && shape.noClazz === 1 && shape.ended === 0 &&
+      shape.ids.join(',') === '900000014,900000016' && shape.dateEnded === false && shape.needHasProgress === false,
+      JSON.stringify(shape));
+
+    var first = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;var rows={};' +
+      'rows["900000014:900000024"]={verdict:"ended",why:"site-says-course-ended"};' +
+      'rows["900000016:900000026"]={verdict:"need",jobs:"2/3",jobsDone:2,jobsAll:3,why:"jobs"};' +
+      'app._courseProbeCache={scope:"pick",pendingAt:0,at:Date.now(),answered:true,ok:true,rows:rows,asked:2,ms:1,why:""};' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:3,tried:["900000011","900000012","900000013"],at:Date.now()}));' +
+      'app._coursePickDone=false;window.__b240nav.length=0;' +
+      'var ordered=app._orderBlindByProbe(app._readCourseCards().unknown).map(function(x){' +
+      '  return {cid:x.card.courseId,verdict:x.row&&x.row.verdict,weight:x.weight};});' +
+      'var before=(window.__b240||[]).length;var claimed=app._pickNextCourseFromUserCenter();' +
+      'return JSON.stringify({claimed:claimed,nav:window.__b240nav[0]||"",navCount:window.__b240nav.length,' +
+      'ordered:ordered,logBefore:before,counts:app._courseProbeCounts()});})()'
+    ));
+    var l1 = await snap();
+    var l1New = { names: l1.names.slice(first.logBefore), metas: l1.metas.slice(first.logBefore) };
+    check('240b-B ended + need：真实挑课选 need（900000016），不选 ended（900000014）；' +
+      '排序把 need 排前，日志 blind=1 / probeVerdict=need / pEnded=1',
+      first.claimed === true && first.navCount === 1 &&
+      String(first.nav).indexOf('courseid=900000016') !== -1 &&
+      String(first.nav).indexOf('courseid=900000014') === -1 &&
+      first.ordered[0].cid === '900000016' && first.ordered[0].verdict === 'need' &&
+      first.counts.pNeed === 1 && first.counts.pEnded === 1 &&
+      cnt(l1New, 'course switch picked next') === 1 &&
+      l1New.metas.some(function (m) { return Number(m.blind) === 1 && String(m.probeVerdict) === 'need' && Number(m.pEnded) === 1; }),
+      JSON.stringify({ first: first, names: l1New.names, metas: l1New.metas }));
+
+    var second = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'sessionStorage.setItem("omitone:course-switch",JSON.stringify({sw:4,' +
+      'tried:["900000011","900000012","900000013","900000016"],at:Date.now()}));' +
+      'app._coursePickDone=false;window.__b240nav.length=0;' +
+      'var before=(window.__b240||[]).length;var claimed=app._pickNextCourseFromUserCenter();' +
+      'return JSON.stringify({claimed:claimed,navCount:window.__b240nav.length,logBefore:before,counts:app._courseProbeCounts()});})()'
+    ));
+    var l2 = await snap();
+    var l2New = { names: l2.names.slice(second.logBefore), metas: l2.metas.slice(second.logBefore) };
+    var decline = l2New.metas.filter(function (m, i) {
+      return String(l2New.names[i] || '').indexOf('course switch declined: no course') === 0;
+    })[0] || null;
+    check('240b-C 只剩 ended：不导航、不 picked，decline 的 pEnded=1 且提示逐字点名跳过已结束课程',
+      second.claimed === true && second.navCount === 0 && second.counts.pEnded === 1 &&
+      cnt(l2New, 'course switch picked next') === 0 &&
+      cnt(l2New, 'course switch declined: no course') === 1 && !!decline &&
+      Number(decline.pEnded) === 1 && String(decline.hint || '').indexOf('课程首页明说「课程已结束」') !== -1,
+      JSON.stringify({ second: second, names: l2New.names, metas: l2New.metas }));
+
+    await ctx.client.evaluate('(function(){history.replaceState(null,"",location.pathname);return 1;})()');
+    check('整条 ended 拦截零模型请求（探针结论直接喂生产排序，换课本身不花钱）',
+      ctx.mock.requests.length === reqBefore,
+      JSON.stringify({ before: reqBefore, after: ctx.mock.requests.length }));
+  }
+});
+
 
 /** ---- 批次 87 ①：换课落在课程首页之后，**进门**这一步真的发生 ----
  * 现场那条链（2016-11-16 逐跳量过，见 `src/page/64-tasks-loop.js` 里 `_COURSE_HOME_BASE` 的注释）：
