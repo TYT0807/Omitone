@@ -15676,6 +15676,31 @@ SCENARIOS.push({
       'app._isQuizSkipWindowLive=function(){return false;};app._shouldHoldQuizBeforeNext=function(){return false;};' +
       'app._switchToNextLearningCard=function(){sw++;return true;};app.nextUnit();app._switchToNextLearningCard=old;r.nextGate=sw;' +
       '}catch(eN){r.nextError=String(eN&&eN.message||eN);}' +
+      // T-B（批次 20-G 的反向）：ledger 一个字不改，只把平台那一枚 class 补上 ——
+      // 「不可跳过」的另一半是「平台一旦改口，这一节立刻放行」，否则 blocked 就成了永久锁。
+      // 只加缺 class 又带任务点图标那一只（夹具里另两只本来就有），命中数自证翻的是谁。
+      'function flipBox(add){var hit=0;' +
+      '  function w(doc,d){if(!doc||d>4)return;' +
+      '    try{Array.prototype.forEach.call(doc.querySelectorAll(".ans-attach-ct"),function(b){' +
+      '      if(!/讨论/.test(String(b.innerText||"")))return;' +
+      '      var ic=null;try{ic=b.querySelector(".ans-job-icon");}catch(e){}if(!ic)return;' +
+      '      if(add&&String(b.className||"").indexOf("ans-job-finished")<0){' +
+      '        b.setAttribute("data-tb-flip",String(b.className||""));' +
+      '        b.className=(String(b.className||"")+" ans-job-finished").trim();hit++;' +
+      '      }else if(!add&&b.hasAttribute("data-tb-flip")){' +
+      '        b.className=String(b.getAttribute("data-tb-flip")||"");b.removeAttribute("data-tb-flip");hit++;}' +
+      '    });}catch(e){}' +
+      '    try{Array.prototype.forEach.call(doc.querySelectorAll("iframe"),function(f){' +
+      '      try{w(f.contentDocument,d+1);}catch(e){}});}catch(e){}}' +
+      '  w(document,0);return hit;}' +
+      'r.flipped=flipBox(true);' +
+      'reset();r.p5=app._discussionPendingInfo();r.h5=app._shouldHoldDiscussionBeforeFinish();' +
+      // 放行要量在同一个漏斗上：nextUnit 只读 blocked（64 片段那条注释），不调 hold 谓词
+      'try{var sw3=0,old3=app._switchToNextLearningCard;app._switchToNextLearningCard=function(){sw3++;return true;};' +
+      'app.nextUnit();app._switchToNextLearningCard=old3;r.flipGate=sw3;}catch(eF){r.flipError=String(eF&&eF.message||eF);}' +
+      // 翻回来：下面那枚正控必须读的还是 HEAD 那个形状（只有 ledger 那一格是变量）
+      'r.reverted=flipBox(false);' +
+      'reset();r.p6=app._discussionPendingInfo();' +
       // 正控：把本地 done/try 清掉、缓存失效后，同一个 nextUnit 必须真翻页；否则 T-A 可能只是“上游早退”
       'try{if(todo){try{var md=app._discussionDoneMap();delete md[todo.key];delete md["try|"+todo.key];localStorage.setItem(app._discussionStoreKey,JSON.stringify(md));}catch(eD){}' +
       'app._discussionPendingCache=null;var sw2=0;app._switchToNextLearningCard=function(){sw2++;return true;};' +
@@ -15707,6 +15732,14 @@ SCENARIOS.push({
     check('blocked 时直调 nextUnit 不翻页（唯一漏斗挡住）',
       !!probe && probe.nextGate === 0 && !probe.nextError,
       JSON.stringify(probe && { nextGate: probe.nextGate, nextError: probe.nextError }));
+    check('平台把那只未完成讨论盒补上 ans-job-finished 后：blocked 归 0、整节不再按住、同一个 nextUnit 真翻页（ledger 一字未改）',
+      !!probe && probe.flipped === 1 && probe.p5 && probe.p5.pending === 0 && probe.p5.blocked === 0 &&
+      probe.p5.total === 3 && probe.h5 && probe.h5.hold === false && probe.h5.reason === 'all-recorded' &&
+      probe.flipGate === 1 && !probe.flipError,
+      JSON.stringify(probe && { flipped: probe.flipped, p5: probe.p5, h5: probe.h5, flipGate: probe.flipGate, flipError: probe.flipError }));
+    check('摘掉刚加的那枚 class 后 blocked 又回到 1：上面那条只由平台 class 驱动，交给正控的仍是原形状',
+      !!probe && probe.reverted === 1 && probe.p6 && probe.p6.blocked === 1 && probe.p6.pending === 1 &&
+      probe.p6.total === 3, JSON.stringify(probe && { reverted: probe.reverted, p6: probe.p6 }));
     check('正控：解除 blocked（清本地 done/try）后同一个 nextUnit 真的翻页，T-A 不是上游早退造成的假绿',
       !!probe && probe.nextRelease === 1 && !probe.nextReleaseError,
       JSON.stringify(probe && { nextRelease: probe.nextRelease, nextReleaseError: probe.nextReleaseError }));

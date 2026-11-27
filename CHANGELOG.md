@@ -21,7 +21,9 @@
 - 现场取证：`workId=58112473` 的页面已用 `.workbuddy/pause-live-quiz.expr` 暂停 1 小时
   （`_quizApiFailUntil` 生效、`pending:false`），没有提交、没有导航、没有刷新；证据
   `.workbuddy/field-quiz-paused.json`。
-- 集成 **856 / 856**；全量 e2e **156 场景 / 1749 项**；`check.js` EXIT=0。
+- 合入搭档 9b9cc386 的讨论盒 T-B：平台把未完成讨论补上 `ans-job-finished` 后 blocked 归 0、整节放行、
+  同一个 `nextUnit()` 真翻页；摘掉 class 又回到 blocked，证明这条只由平台 class 驱动（定向 14/14）。
+- 集成 **856 / 856**；全量 e2e **156 场景 / 1751 项**；`check.js` EXIT=0。
 - **门面**：`课程目录全打勾、但这一节还有没交的作业或考试时，不再当作刷完换课`、
   `计算题的正确答案是 0 时，不再被当成空答案反复问模型`（预览说明与 main README）
 
