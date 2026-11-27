@@ -18,9 +18,10 @@
 - 现场 22 题作业页的正确答案 `0` 被 `_isReadableQuizTextAnswer` 当成空答案反复拒绝，随后
   `clear stale quiz answers` 再问模型，形成烧 token 的循环。现在 `short` 允许单字符数字（0/1/…），
   单字母、`true`、`证明略` 与原始 LaTeX 仍被拒；填空题单字符行为不变。
-- 现场取证：`workId=58112473` 的页面已用 `.workbuddy/pause-live-quiz.expr` 暂停 1 小时
-  （`_quizApiFailUntil` 生效、`pending:false`），没有提交、没有导航、没有刷新；证据
-  `.workbuddy/field-quiz-paused.json`。
+- 现场取证：旧构建曾在 `workId=58112473` 的页面反复重问（先用 `.workbuddy/pause-live-quiz.expr`
+  冻结 1 小时止住烧 token）；09:05 只刷新这枚作业页到 `rev=91e5558613`（学习页没动），
+  新构建 **22/22** 填答（`quiz fill audit ok total=22 withValue=22`，无 rejected），
+  提交成功页原话「提交成功 等待教师批阅 提交时间：11-27 09:05」；没有第二次提交、没有改答案。
 - 合入搭档 9b9cc386 的讨论盒 T-B：平台把未完成讨论补上 `ans-job-finished` 后 blocked 归 0、整节放行、
   同一个 `nextUnit()` 真翻页；摘掉 class 又回到 blocked，证明这条只由平台 class 驱动（定向 14/14）。
 - 集成 **856 / 856**；全量 e2e **156 场景 / 1751 项**；`check.js` EXIT=0。
