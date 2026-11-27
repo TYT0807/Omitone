@@ -6786,6 +6786,7 @@ async function testCourseHomeProbeSignals() {
     for (var p = 0; p < (o.prog || 0); p++) s += '<span class="catalog_jindu">中</span>';
     if (o.jobs) s += '<div class="catalog_ressbar">已完成任务点：' + o.jobs + '</div>';
     if (o.empty) s += '<p>暂无章节内容</p>';
+    if (o.ended) s += '<p>课程已结束</p>';
     if (o.denied) s += '<p>很抱歉，您没有权限访问这个页面</p>';
     if (o.login) s += '<p>请登录</p>';
     return s + '</body></html>';
@@ -6805,6 +6806,9 @@ async function testCourseHomeProbeSignals() {
   var vEmpty = harness.classify(homeHtml({ jobs: '0 / 0', empty: true }));
   check('① 站点原话「暂无章节内容」→ 单独一格「目录为空」，哪怕同一页也写着「0 / 0」也轮不到它说话（现场：数据库原理及应用 / 安全知识竞赛）',
     vEmpty.verdict === 'empty' && vEmpty.why === 'site-says-no-catalog', JSON.stringify(vEmpty));
+  var vEnded = harness.classify(homeHtml({ ended: true, jobs: '0 / 10', toOld: 5, done: 2, prog: 1 }));
+  check('① 站点原话「课程已结束」单独成一格，优先于任何任务点计数 —— 卡片没有结束日期时靠它拦住已结束课程',
+    vEnded.verdict === 'ended' && vEnded.why === 'site-says-course-ended', JSON.stringify(vEnded));
   var v403 = harness.classify(homeHtml({ denied: true, jobs: '0 / 10', toOld: 3 }));
   var vLogin = harness.classify(homeHtml({ login: true }));
   var vEnc = harness.classify(homeHtml({ enc: 'none', jobs: '3 / 10', toOld: 4 }));

@@ -388,6 +388,8 @@ importScripts('libs/api-url.js', 'libs/prompt.js', 'libs/thinking.js', 'libs/run
     // 课号班号必须成对来自同一张卡片，所以这一格的名字直接点名去查那一处，别推给站点。
     if (/很抱歉，您没有权限访问这个页面/.test(b)) { out.verdict = 'blocked'; out.why = 'server-denied-check-own-clazzid'; return out; }
     if (/请登录|passport2/.test(b) && b.length < 3000) { out.verdict = 'blocked'; out.why = 'need-login'; return out; }
+    // 卡片没有结束日期时，站点自己的课程首页仍会写「课程已结束」——这比任何任务点计数都硬。
+    if (/课程已结束/.test(b)) { out.verdict = 'ended'; out.why = 'site-says-course-ended'; return out; }
     var toOlds = b.match(/toOld\('(\d+)',\s*'(\d+)',\s*'(\d+)'(?:,\s*(\d+))?\)/g);
     out.toOld = toOlds ? toOlds.length : 0;
     out.doneRows = b.split('icon_yiwanc').length - 1;

@@ -1272,7 +1272,7 @@
      */
     _courseProbeCounts: function () {
       var cache = this._courseProbeCache;
-      var out = { pAsk: 'no', pRows: -1, pNeed: -1, pDone: -1, pNoPts: -1, pUnread: -1, pBlocked: -1, pEmpty: -1, pSkip: -1, pMs: -1 };
+      var out = { pAsk: 'no', pRows: -1, pNeed: -1, pDone: -1, pNoPts: -1, pUnread: -1, pBlocked: -1, pEmpty: -1, pSkip: -1, pEnded: -1, pMs: -1 };
       if (!cache) return out;
       if (!cache.answered) { out.pAsk = 'pending'; return out; }
       if (!cache.ok) { out.pAsk = 'fail'; out.pWhy = String(cache.why || '').slice(0, 80); return out; }
@@ -1286,7 +1286,7 @@
       //    而 `0` 在这一族日志里读起来正是「确认没有」—— 凭空多出一条方向是放行的断言
       //    （AGENTS §2 #2 同一族），没数到的那几类也会一直挂着 -1 像是读不出。
       //    判法与格位只在这张表里写一次：新增一型只要加一行，别在下面的链上补 else if。
-      var FIELD = { need: 'pNeed', done: 'pDone', nopoints: 'pNoPts', blocked: 'pBlocked', empty: 'pEmpty', skip: 'pSkip' };
+      var FIELD = { need: 'pNeed', done: 'pDone', nopoints: 'pNoPts', blocked: 'pBlocked', empty: 'pEmpty', skip: 'pSkip', ended: 'pEnded' };
       for (var f in FIELD) { if (Object.prototype.hasOwnProperty.call(FIELD, f)) out[FIELD[f]] = 0; }
       out.pUnread = 0;
       for (var i = 0; i < keys.length; i++) {
@@ -1306,10 +1306,11 @@
       empty: '站点说这一门暂无章节内容',
       blocked: '这一门现在问不出进不进得去（进不去 ≠ 刷完了）',
       unreadable: '站点没给出读得出的进度（进去让目录判）',
-      skip: '这一轮没来得及问它'
+      skip: '这一轮没来得及问它',
+      ended: '站点说这一门已经结束'
     },
     // 判法 → 挑选优先级（小的先挑）。`skip` 与 `unreadable` 同格：都没答案，都照旧许进门。
-    _COURSE_PROBE_RANK: { need: 0, unreadable: 1, skip: 1, nopoints: 2, done: 3, blocked: 4, empty: 5 },
+    _COURSE_PROBE_RANK: { need: 0, unreadable: 1, skip: 1, nopoints: 2, done: 3, blocked: 4, empty: 5, ended: 6 },
 
     /**
      * 批次 97：把「这一门在挑选里排第几」算成一个数（小的先挑）。
@@ -1496,6 +1497,8 @@
         for (var u = 0; u < ordered.length; u++) {
           var uc = ordered[u].card;
           if (uc.courseId && ledger.tried.indexOf(uc.courseId) !== -1) continue;
+          // 课程首页明说「课程已结束」：进去只会再出来一圈，直接跳过（卡片没有结束日期时靠这一格）。
+          if (ordered[u].row && String(ordered[u].row.verdict || '') === 'ended') continue;
           best = { card: uc, ratio: NaN, blind: true, probe: ordered[u].row };
           break;
         }
@@ -1507,6 +1510,7 @@
           hint: '用户中心里的卡片这一轮**都进过了**：写得到「任务点进度 a/b」的要么学完、要么进过，' +
             '读不到那一行的 ' + cards.unknown.length + ' 张也都进去让目录判过一遍了（判据是目录的完成勾，不是卡片那一行）。' +
             (cards.ended ? '另有 ' + cards.ended + ' 张卡片的开课时间已经结束，跳过没进。' : '') +
+            (Number(ev.pEnded) > 0 ? '另有 ' + ev.pEnded + ' 门课程首页明说「课程已结束」，跳过没进。' : '') +
             (cards.noClazz ? '另有 ' + cards.noClazz + ' 张卡片上「课程号 + 班号」配不齐 —— 那一族是**进不去**，不是刷完了。' : '') +
             '所以这一次没有下一门 —— 要么真的全刷完了，要么等六小时换课名单重新起账再试',
           everyMs: 0
