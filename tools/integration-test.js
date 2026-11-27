@@ -12556,6 +12556,30 @@ async function testHumanizeQuizAnswerText() {
     JSON.stringify({ html: multiHtml }));
 }
 
+async function testCourseCardEndedByText() {
+  console.log('\n[49] 换课候选：课程卡片结束日已过时不再进门'); 
+
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = loop.indexOf('_courseCardEndedByText: function');
+  var start = at >= 0 ? loop.indexOf('function', at) : -1;
+  var end = start >= 0 ? loop.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('49-0 取出卡片结束日判据', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['return (' + loop.slice(start, end) + '\n    })'])();
+  check('49-0 取出卡片结束日判据', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  check('49-A 结束日在过去 → true；未来 → false；没有日期 → false（不拿猜的当结论）', 
+    fn('开课时间：2025-01-01～2025-02-01') === true &&
+    fn('开课时间：2099-01-01～2099-02-01') === false &&
+    fn('线性代数 杜鹏') === false,
+    JSON.stringify({ past: fn('开课时间：2025-01-01～2025-02-01'), future: fn('开课时间：2099-01-01～2099-02-01'), none: fn('线性代数 杜鹏') }));
+  check('49-B 站点卡片里的全角冒号 / 波浪号 / 短横都认', 
+    fn('开课时间: 2025/01/01~2025/02/01') === true &&
+    fn('开课时间：2025-01-01 至 2025-02-01') === true,
+    JSON.stringify({ slash: fn('开课时间: 2025/01/01~2025/02/01'), zhi: fn('开课时间：2025-01-01 至 2025-02-01') }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12621,6 +12645,7 @@ async function main() {
   await testAuditPartialBlanks();
   await testUEditorAnswerWrite();
   await testHumanizeQuizAnswerText();
+  await testCourseCardEndedByText();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

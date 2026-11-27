@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（48 个）：
+ * 本段的方法（49 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -20,7 +20,7 @@
  *   _getCurrentVisibleLearningTaskType、_isAssessmentLearningCard、
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
  *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_leaveFinishedCourse、
- *   _coursePickRequested、_courseHomeUrl、_readCourseCards、_pickNextCourseFromUserCenter、
+ *   _coursePickRequested、_courseHomeUrl、_courseCardEndedByText、_readCourseCards、_pickNextCourseFromUserCenter、
  *   _askStudyTabState、_courseProbeCounts、_courseProbeWeight、_orderBlindByProbe、
  *   _askCourseProbe、_courseProbeDeferred、_displacedStudyPagePlan、_speakDisplacedStudyPage、
  *   _enterChapterFromCourseHome、_enterCourseHomeChapter、
@@ -1118,8 +1118,21 @@
      *    这里必须**跳过那一帧**继续走（裸读会当场打断整拍），结果退化成 decline 而不是崩 —— 与
      *    README §6 #2 是同一条规矩。e2e 的夹具因此刻意把卡片只放在子帧里，顶层一枚都不放。
      */
+    /**
+     * 课程卡片上的「开课时间：2026-11-13～2027-02-13」结束日早于今天时，这一门已经结束。
+     * 只认站点自己印在卡片上的日期；没有日期/读不出就交 false（不拿猜的当结论）。
+     */
+    _courseCardEndedByText: function (text) {
+      var m = String(text == null ? '' : text).match(
+        /开课时间\s*[:：]?\s*\d{4}\s*[-/]\s*\d{2}\s*[-/]\s*\d{2}\s*[～~至-]\s*(\d{4})\s*[-/]\s*(\d{2})\s*[-/]\s*(\d{2})/
+      );
+      if (!m) return false;
+      var end = Date.parse(m[1] + '-' + m[2] + '-' + m[3] + 'T23:59:59');
+      return !isNaN(end) && end < Date.now();
+    },
+
     _readCourseCards: function () {
-      var res = { picked: [], unknown: [], noProg: 0, noClazz: 0, docs: 0 };
+      var res = { picked: [], unknown: [], noProg: 0, noClazz: 0, docs: 0, ended: 0 };
       var docs = [];
       try { docs.push(document); } catch (eTop) { docs = []; }
       try {
@@ -1138,6 +1151,8 @@
         for (var j = 0; j < list.length; j++) {
           var txt = '';
           try { txt = String(list[j].innerText || '').replace(/\s+/g, ' '); } catch (eT) { txt = ''; }
+          // 已结束的课不再作为换课候选：用户现场看到插件进了结课的课，空转一圈才回来。
+          if (this._courseCardEndedByText(txt)) { res.ended++; continue; }
           var href = '';
           try {
             var a = list[j].querySelector('a[href*="stucoursemiddle"]');
@@ -1367,7 +1382,7 @@
       if (justDone && ledger.tried.indexOf(justDone) === -1) ledger.tried.push(justDone);
       var cards = this._readCourseCards();
       var budget = this._courseSwitchBudget(cards);
-      var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, rev: this._codeRev() };
+      var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, ended: cards.ended, rev: this._codeRev() };
       if (!this.configs.autoNextCourse) {
         this._coursePickDone = true;
         emitRuntimeLog('warn', 'course switch declined: auto switch is off', Object.assign({
@@ -1416,6 +1431,7 @@
         emitRuntimeLog('warn', 'course switch declined: no course with unfinished task points', Object.assign({
           hint: '用户中心里的卡片这一轮**都进过了**：写得到「任务点进度 a/b」的要么学完、要么进过，' +
             '读不到那一行的 ' + cards.unknown.length + ' 张也都进去让目录判过一遍了（判据是目录的完成勾，不是卡片那一行）。' +
+            (cards.ended ? '另有 ' + cards.ended + ' 张卡片的开课时间已经结束，跳过没进。' : '') +
             (cards.noClazz ? '另有 ' + cards.noClazz + ' 张卡片上「课程号 + 班号」配不齐 —— 那一族是**进不去**，不是刷完了。' : '') +
             '所以这一次没有下一门 —— 要么真的全刷完了，要么等六小时换课名单重新起账再试',
           everyMs: 0
