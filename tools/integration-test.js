@@ -12266,6 +12266,12 @@ async function testFillRichAndReadablePrompt() {
     logs.some(function (l) { return l.message === 'fill rich blanks distributed' && l.meta && l.meta.count === 4; }),
     JSON.stringify(logs));
 
+  writes.length = 0;
+  var arrayRet = made.call(app, el, ['14', '-14', '-11', '-11']);
+  check('⑥ 模型按数组回四个空时也逐框分发（不能 String() 拼成 14,-14,… 整串）',
+    arrayRet === 4 && writes.length === 4 && writes.map(function (w) { return w.val; }).join('|') === '14|-14|-11|-11',
+    JSON.stringify({ ret: arrayRet, writes: writes }));
+
   var convAt = dom.indexOf('_latexToReadableText: function');
   var convStart = convAt >= 0 ? dom.indexOf('function', convAt) : -1;
   var convEnd = convStart >= 0 ? dom.indexOf('\n    },', convStart) : -1;
@@ -12402,6 +12408,154 @@ async function testShortNumericSingleChar() {
     JSON.stringify({ zero: fn('0', 'fill'), x: fn('x', 'fill') }));
 }
 
+async function testAuditPartialBlanks() {
+  console.log('\n[46] 一题多空：只要还有一只可见框是空的，提交前审计必须点名'); 
+
+  var dom = fs.readFileSync(path.join(ROOT, 'src/page/75-quiz-dom.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = dom.indexOf('_auditQuizFillBeforeSubmit: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('46-0 取出提交前审计', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var logs = [];
+  var fn = Reflect.construct(Function, ['emitRuntimeLog',
+    'return (' + dom.slice(start, end) + '\n    })'])(
+    function (level, message, meta) { logs.push({ level: level, message: message, meta: meta }); }
+  );
+  check('46-0 取出提交前审计', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+
+  var q = { index: 3, type: 'fill', _element: {} };
+  var partialApp = {
+    _getQuizQuestionFilledValue: function () { return true; },
+    _detectQuestionType: function () { return 'fill'; },
+    _collectAnswerEditableNodes: function () {
+      return [{ tagName: 'DIV', innerText: '14' }, { tagName: 'DIV', innerText: '' }];
+    },
+    _readVisibleAnswerText: function () { return '14'; },
+    _hasVisibleChoiceSelection: function () { return false; },
+    _logMissingChoiceSelection: function () {}
+  };
+  var partial = fn.call(partialApp, [q], null);
+  check('46-A 四空只写了一空：审计报 partial=[3]、不把整题算成可见', 
+    partial && partial.level === 'warn' && partial.meta && String(partial.meta.partial) === '3' &&
+    partial.meta.textVisible === 0 && partial.label === 'quiz fill audit: text answer leaves blank boxes',
+    JSON.stringify(partial));
+
+  var fullApp = {
+    _getQuizQuestionFilledValue: function () { return true; },
+    _detectQuestionType: function () { return 'fill'; },
+    _collectAnswerEditableNodes: function () {
+      return [{ tagName: 'DIV', innerText: '14' }, { tagName: 'DIV', innerText: '-14' }];
+    },
+    _readVisibleAnswerText: function () { return '14|||-14'; },
+    _hasVisibleChoiceSelection: function () { return false; },
+    _logMissingChoiceSelection: function () {}
+  };
+  var full = fn.call(fullApp, [q], null);
+  check('46-B 每一空都有字：partial 为空、审计 ok', 
+    full && full.level === 'info' && full.meta && Array.isArray(full.meta.partial) &&
+    full.meta.partial.length === 0 && full.meta.textVisible === 1,
+    JSON.stringify(full));
+}
+
+async function testUEditorAnswerWrite() {
+  console.log('\n[47] 填空空位是 UEditor 时，答案要同时写进 UE 正文（现场第 4 题四空被清空的根因）'); 
+
+  var dom = fs.readFileSync(path.join(ROOT, 'src/page/75-quiz-dom.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = dom.indexOf('_writeAnswerText: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('47-0 取出文字写入器', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var writes = [];
+  var ueWrites = [];
+  var win = {
+    UE: { instants: { answerEditor4062542931: { setContent: function (html) { ueWrites.push(String(html)); } } } },
+    HTMLInputElement: { prototype: {} },
+    HTMLTextAreaElement: { prototype: {} }
+  };
+  var fn = Reflect.construct(Function, ['window', 'Event',
+    'return (' + dom.slice(start, end) + '\n    })'])(win,
+    function (type) { this.type = type; });
+  var app = { _answerToHtml: function (v) { return '<p>' + v + '</p>'; } };
+  var node = {
+    tagName: 'TEXTAREA', id: 'answerEditor4062542931', name: 'answerEditor4062542931',
+    value: '', dispatchEvent: function (ev) { writes.push(String(ev && ev.type || '')); }
+  };
+  var ok = fn.call(app, node, '14');
+  check('47-0 取出文字写入器', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  check('47-A UEditor 实例按 id 命中：setContent 收到答案，底层 textarea 也同步', 
+    ok === true && ueWrites.length === 1 && ueWrites[0] === '<p>14</p>' && node.value === '14',
+    JSON.stringify({ ok: ok, ue: ueWrites, value: node.value }));
+  check('47-B 没有 UE 实例时照旧写 textarea（不把普通输入框一起废掉）', 
+    (function () {
+      var plain = { tagName: 'TEXTAREA', id: 'plain', value: '', dispatchEvent: function () {} };
+      var fn2 = Reflect.construct(Function, ['window', 'Event',
+        'return (' + dom.slice(start, end) + '\n    })'])({ HTMLInputElement: { prototype: {} }, HTMLTextAreaElement: { prototype: {} } },
+        function (type) { this.type = type; });
+      return fn2.call(app, plain, 'x') === true && plain.value === 'x';
+    })(), JSON.stringify({ node: node.value }));
+
+  var bucketWrites = [];
+  var bucketWin = {
+    UE: { instants: { ueditorInstant1: { key: 'answerEditor4062542931', setContent: function (html) { bucketWrites.push(String(html)); }, sync: function () {} } } },
+    HTMLInputElement: { prototype: {} },
+    HTMLTextAreaElement: { prototype: {} }
+  };
+  var fn3 = Reflect.construct(Function, ['window', 'Event',
+    'return (' + dom.slice(start, end) + '\n    })'])(bucketWin, function (type) { this.type = type; });
+  var bucketNode = { tagName: 'TEXTAREA', id: 'answerEditor4062542931', value: '', dispatchEvent: function () {} };
+  var bucketOk = fn3.call(app, bucketNode, '14');
+  check('47-C 实例桶键是 ueditorInstant1、编辑器 key 才是 answerEditor… 时也要命中',
+    bucketOk === true && bucketWrites.length === 1 && bucketNode.value === '14',
+    JSON.stringify({ ok: bucketOk, writes: bucketWrites, value: bucketNode.value }));
+}
+
+async function testHumanizeQuizAnswerText() {
+  console.log('\n[48] 计算/证明答案的前缀与幂写法清洗（现场“第1题：”“a^2”）'); 
+
+  var dom = fs.readFileSync(path.join(ROOT, 'src/page/75-quiz-dom.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = dom.indexOf('_humanizeQuizAnswerText: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('48-0 取出答案清洗器', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['return (' + dom.slice(start, end) + '\n    })'])();
+  check('48-0 取出答案清洗器', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  check('48-A 剥掉“第1题：/1. /答案：”前缀', 
+    fn('第1题：证明：由行列式性质').indexOf('第1题') === -1 && fn('第1题：证明：由行列式性质').indexOf('证明') === 0 &&
+    fn('1. 计算行列式').indexOf('计算行列式') === 0 && fn('答案：a^2').indexOf('答案') === -1,
+    JSON.stringify({ a: fn('第1题：证明：由行列式性质'), b: fn('1. 计算行列式'), c: fn('答案：a^2') }));
+  check('48-B 幂写法转上标（a^2 / x^{n+1} / A^(-1)）', 
+    fn('a^2+b^2') === 'a²+b²' && fn('x^{n+1}') === 'xⁿ⁺¹' && fn('A^(-1)') === 'A⁻¹',
+    JSON.stringify({ a: fn('a^2+b^2'), b: fn('x^{n+1}'), c: fn('A^(-1)') }));
+  check('48-C 多空答案的 ||| 原样保留（不能把分隔符洗掉）', 
+    fn('14|||-14|||-11|||-11') === '14|||-14|||-11|||-11',
+    JSON.stringify({ v: fn('14|||-14|||-11|||-11') }));
+  var formatted = fn('证明：由第一行展开得到D=0。再化简得结论。');
+  check('48-D 证明/计算按句号分段，“证明：”单独成行（不再是一整块拥挤文字）',
+    formatted.indexOf('证明：\n') === 0 && (formatted.match(/\n/g) || []).length >= 2,
+    JSON.stringify({ formatted: formatted }));
+
+  var htmlAt = dom.indexOf('_answerToHtml: function');
+  var htmlStart = htmlAt >= 0 ? dom.indexOf('function', htmlAt) : -1;
+  var htmlEnd = htmlStart >= 0 ? dom.indexOf('\n    },', htmlStart) : -1;
+  var htmlFn = htmlStart >= 0 && htmlEnd > htmlStart
+    ? Reflect.construct(Function, ['return (' + dom.slice(htmlStart, htmlEnd) + '\n    })'])()
+    : null;
+  var multiHtml = htmlFn ? htmlFn('第一段\n第二段') : '';
+  check('48-E 多行答案写成多个 <p>（UEditor 才会真的断行；单个 <p> 里的 \\n 会被当空格）',
+    multiHtml === '<p>第一段</p><p>第二段</p>' &&
+    htmlFn('a < b') === '<p>a &lt; b</p>',
+    JSON.stringify({ html: multiHtml }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12464,6 +12618,9 @@ async function main() {
   await testFillRichAndReadablePrompt();
   await testCourseEndBlocksUnfinishedWork();
   await testShortNumericSingleChar();
+  await testAuditPartialBlanks();
+  await testUEditorAnswerWrite();
+  await testHumanizeQuizAnswerText();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

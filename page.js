@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '91e5558613';
+var OMITONE_CODE_REV = '74d9e4abed';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -18088,6 +18088,44 @@ var OMITONE_CODE_REV = '91e5558613';
       return s;
     },
 
+    _humanizeQuizAnswerText: function (answer) {
+      var s = Array.isArray(answer) ? answer.join('|||') : String(answer == null ? '' : answer).trim();
+      if (!s) return '';
+      if (s.indexOf('|||') !== -1) return s;
+      // 模型按批次内序号自报“第1题：/1. 答案：”，那不是答案内容，直接剥掉。
+      var prefix = /^\s*(?:第\s*[0-9一二三四五六七八九十百]+\s*题|问题\s*[0-9]+|Q\s*[0-9]+|\d+\s*[.、．)）])\s*[:：、.]?\s*/i;
+      for (var guard = 0; guard < 3 && prefix.test(s); guard++) s = s.replace(prefix, '');
+      s = s.replace(/^\s*(?:答案|答)\s*[:：]\s*/, '');
+      var sup = {
+        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
+        '+': '⁺', '-': '⁻', 'n': 'ⁿ', 'i': 'ⁱ', 'k': 'ᵏ', 'm': 'ᵐ', 'T': 'ᵀ',
+        'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ', 'd': 'ᵈ', 'e': 'ᵉ', 'f': 'ᶠ', 'g': 'ᵍ', 'h': 'ʰ',
+        'j': 'ʲ', 'l': 'ˡ', 'o': 'ᵒ', 'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
+        'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ'
+      };
+      function toSup(t) {
+        var out = '';
+        for (var i = 0; i < t.length; i++) {
+          var one = sup[t.charAt(i)];
+          if (!one) return null;
+          out += one;
+        }
+        return out;
+      }
+      // 把 `a^2` / `x^{n+1}` / `A^(-1)` 这类源码式幂写成上标符号；认不全就保留原文。
+      s = s.replace(/\^\{([^{}]+)\}|\^\(([^()]+)\)|\^(-?\d+|[A-Za-z])(?![\w])/g, function (m, braced, paren, single) {
+        var raw = braced || paren || single || '';
+        var supText = toSup(raw);
+        return supText == null ? m : supText;
+      });
+      // 现场模型常把整道证明/计算压成一行；按句号断开，并把“证明/计算/解”单独提成一行。
+      s = s.replace(/^(证明|计算|解)\s*[:：]\s*/, '$1：\n');
+      s = s.replace(/。\s*/g, '。\n');
+      s = s.replace(/\s*(结论\s*[:：])/g, '\n$1');
+      s = s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      return s;
+    },
+
     _isReadableQuizTextAnswer: function (answer, type) {
       var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
       if (!s) return false;
@@ -18126,6 +18164,9 @@ var OMITONE_CODE_REV = '91e5558613';
           return;
         }
         var finalAnswer = self._avoidKnownWrongAnswer(answerItem.answer, type, question, preferredDoc || null);
+        if (type === 'short' || type === 'fill') {
+          finalAnswer = self._humanizeQuizAnswerText(finalAnswer);
+        }
         console.log('[Omitone] fill question', answerItem.index, 'type', type, 'answer', finalAnswer);
         // 考试/测试里的简答、证明、计算与填空：模型回 true/略/不会 或原始 LaTeX 时，
         // 先尝试把常见 LaTeX 转成人类可读写法；转完仍不可读才留空按住（现场 2026-11-26）。
@@ -18890,9 +18931,35 @@ var OMITONE_CODE_REV = '91e5558613';
         // 旧兜底把整串 `14|||-14|||-11` 写进了**每一只**框，用户看到的是分隔符垃圾。
         // 这里先把 `|||` 按空切开，再逐框写一条；分不到才退回旧的一整串。
         try {
+          // 数组答案（模型按多空直接回 JSON 数组）在富文本分支里以前会被 String() 拼成
+          // `14,-14,-11,-11`，既分不进四个框、又不像 `|||` 那样能被拆开。先统一成 `|||`。
+          var richValue = Array.isArray(value)
+            ? value.map(function (part) { return String(part == null ? '' : part).trim(); }).join('|||')
+            : String(value == null ? '' : value);
           var richTargets = this._collectAnswerEditableNodes(el) || [];
+          var wantedParts = this._splitFillAnswerParts(richValue, 2).parts.length;
+          // 富文本 iframe 常常比题干晚一拍长出来：先写到的框可能只有一只，多空就会漏。
+          // 留一个有界的补写窗口，让 UEditor 把其余空框挂上来后再按空分发一次。
+          if (wantedParts > 1 && richTargets.length < wantedParts) {
+            var richRetry = Number(el._omFillRichRetry || 0);
+            if (richRetry < 3) {
+              el._omFillRichRetry = richRetry + 1;
+              try {
+                emitRuntimeLog('info', 'fill rich blanks waiting for editors', {
+                  qid: String(this._getQuestionIdFromElement(el) || '').slice(0, 24),
+                  targets: richTargets.length,
+                  parts: wantedParts,
+                  retry: richRetry + 1
+                });
+              } catch (eRichLog) {}
+              var retrySelf = this;
+              setTimeout(function () {
+                try { retrySelf._fillText(el, answer); } catch (eRichRetry) {}
+              }, 900);
+            }
+          }
           if (richTargets.length > 1) {
-            var rawRich = String(value == null ? '' : value).trim();
+            var rawRich = richValue.trim();
             var splitRich = this._splitFillAnswerParts(rawRich, richTargets.length);
             if (splitRich.parts.length === richTargets.length) {
               var richWritten = 0;
@@ -18921,7 +18988,7 @@ var OMITONE_CODE_REV = '91e5558613';
           }
         } catch (eRich) {}
         // 只有一只富文本框时，多空答案不能再把 `|||` 原样写进去；用中文分号连成一句人话。
-        var oneBoxValue = String(value == null ? '' : value);
+        var oneBoxValue = richValue;
         try {
           var oneBoxParts = this._splitFillAnswerParts(oneBoxValue, 2);
           if (oneBoxParts.parts.length > 1) oneBoxValue = oneBoxParts.parts.join('；');
@@ -19199,9 +19266,14 @@ var OMITONE_CODE_REV = '91e5558613';
 
     /** 答案文本 → 富文本里的 HTML。转义是必需的：答案里的 `<` 不许被当成标签注进页面。 */
     _answerToHtml: function (value) {
-      return '<p>' + String(value == null ? '' : value)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/\n/g, '<br>') + '</p>';
+      var esc = function (line) {
+        return String(line == null ? '' : line)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      };
+      // UEditor 会把单个 <p> 里的 `\n`/`<br>` 归一成空白；每一步单独一个 <p> 才会真断行。
+      var lines = String(value == null ? '' : value).replace(/\r\n/g, '\n').split('\n');
+      if (lines.length <= 1) return '<p>' + esc(lines[0] || '') + '</p>';
+      return lines.map(function (line) { return line ? '<p>' + esc(line) + '</p>' : '<p><br></p>'; }).join('');
     },
 
     /**
@@ -19211,6 +19283,33 @@ var OMITONE_CODE_REV = '91e5558613';
     _writeAnswerText: function (node, value) {
       try {
         var tag = String(node.tagName || '').toLowerCase();
+        // 学习通填空题的每个空常是 UEditor：底层 textarea 只是它的影子域，页面显示与提交读的是
+        // UE 实例的正文。只写 textarea 会“看起来写了、框里却空着”，提交时又被 UE 序列化回空。
+        var ueKey = String(node.id || node.name || '');
+        var ueEditor = null;
+        try {
+          if (ueKey && window.UE && window.UE.instants) {
+            var ueInstants = window.UE.instants;
+            ueEditor = ueInstants[ueKey] || null;
+            if (!ueEditor) {
+              // 现场 UEditor 实例的桶键是 `ueditorInstant1…`，textarea 的 id 才是
+              // `answerEditor…`；必须按编辑器自己的 key/id 找，不能拿桶键当编辑器名。
+              for (var ueName in ueInstants) {
+                var ueCand = ueInstants[ueName];
+                if (String((ueCand && (ueCand.key || ueCand.id)) || '') === ueKey) {
+                  ueEditor = ueCand;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (eUe) { ueEditor = null; }
+        if (ueEditor && typeof ueEditor.setContent === 'function') {
+          try {
+            ueEditor.setContent(this._answerToHtml(value));
+            if (typeof ueEditor.sync === 'function') ueEditor.sync();
+          } catch (eSet) {}
+        }
         if (tag === 'input' || tag === 'textarea') {
           var proto = tag === 'input' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
           var setter = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -19630,6 +19729,7 @@ var OMITONE_CODE_REV = '91e5558613';
       var auditTextVisible = 0;
       var auditMissing = [];
       var auditTextHidden = [];
+      var auditPartial = [];
       for (var ai = 0; ai < submitQuestions.length; ai++) {
         var aq = submitQuestions[ai];
         var aEl = aq && aq._element;
@@ -19649,7 +19749,27 @@ var OMITONE_CODE_REV = '91e5558613';
           // ⚠️ 只有这一条能抓住「长题不答却交了」—— withValue 对它是恒真的。
           auditText++;
           var aTextVisible = false;
-          try { aTextVisible = !!String(this._readVisibleAnswerText(aEl) || '').trim(); } catch (eT) {}
+          var aNodes = [];
+          try { aNodes = this._collectAnswerEditableNodes(aEl) || []; } catch (eNodes) { aNodes = []; }
+          if (aNodes.length > 1) {
+            // 一题多空：整题"有字"不够，必须**每一只可见框**都有字。
+            // 旧审计只看整题的非空拼接，四个空里只写了一个也会报 ok（现场用户看到的就是空格）。
+            var emptyBoxes = 0;
+            for (var an = 0; an < aNodes.length; an++) {
+              var oneText = '';
+              try {
+                var nodeTag = String(aNodes[an].tagName || '').toLowerCase();
+                oneText = (nodeTag === 'input' || nodeTag === 'textarea')
+                  ? String(aNodes[an].value || '')
+                  : String(aNodes[an].innerText || aNodes[an].textContent || '');
+              } catch (eOne) { oneText = ''; }
+              if (!oneText.trim()) emptyBoxes++;
+            }
+            aTextVisible = emptyBoxes === 0;
+            if (emptyBoxes > 0) auditPartial.push(aq.index != null ? aq.index : ai);
+          } else {
+            try { aTextVisible = !!String(this._readVisibleAnswerText(aEl) || '').trim(); } catch (eT) {}
+          }
           if (aTextVisible) auditTextVisible++;
           else auditTextHidden.push(aq.index != null ? aq.index : ai);
           continue;
@@ -19671,9 +19791,11 @@ var OMITONE_CODE_REV = '91e5558613';
         }
       }
       var auditBad = auditChecked < auditChoice || auditTextVisible < auditText;
-      var auditLabel = auditTextVisible < auditText
-        ? 'quiz fill audit: text answer not in a visible box'
-        : (auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok');
+      var auditLabel = auditPartial.length
+        ? 'quiz fill audit: text answer leaves blank boxes'
+        : (auditTextVisible < auditText
+          ? 'quiz fill audit: text answer not in a visible box'
+          : (auditChecked < auditChoice ? 'quiz fill audit: value without visible selection' : 'quiz fill audit ok'));
       var meta = {
         total: submitQuestions.length,
         withValue: auditValue,
@@ -19683,7 +19805,8 @@ var OMITONE_CODE_REV = '91e5558613';
         textVisible: auditTextVisible,
         // 只报"4/5"没法定位是哪一题，下一次照样要人肉数 —— 把题号带上
         missing: auditMissing.slice(0, 8),
-        textHidden: auditTextHidden.slice(0, 8)
+        textHidden: auditTextHidden.slice(0, 8),
+        partial: auditPartial.slice(0, 8)
       };
       emitRuntimeLog(auditBad ? 'warn' : 'info', auditLabel, meta);
       return { label: auditLabel, level: auditBad ? 'warn' : 'info', meta: meta };
@@ -19718,7 +19841,18 @@ var OMITONE_CODE_REV = '91e5558613';
         return false;
       }
 
-      this._auditQuizFillBeforeSubmit(submitQuestions, effectiveDoc || submitDoc);
+      var fillAudit = this._auditQuizFillBeforeSubmit(submitQuestions, effectiveDoc || submitDoc);
+      if (fillAudit && fillAudit.meta && fillAudit.meta.partial && fillAudit.meta.partial.length) {
+        var partialKey = String(currentKey || '') + '|' + fillAudit.meta.partial.join(',');
+        if (this._quizPartialBlockedKey !== partialKey) {
+          this._quizPartialBlockedKey = partialKey;
+          emitRuntimeLog('warn', 'block quiz submit because multi-blank answer left blanks', {
+            partial: fillAudit.meta.partial,
+            key: currentKey
+          });
+        }
+        return false;
+      }
 
       if (!this._quizReadyToSubmit || (this._quizReadyWorkKey && this._quizReadyWorkKey !== currentKey)) {
         emitRuntimeLog('warn', 'block quiz submit without ready state', { key: currentKey });
@@ -19785,6 +19919,22 @@ var OMITONE_CODE_REV = '91e5558613';
       if (this._quizLastSubmitAttemptAt && now - this._quizLastSubmitAttemptAt < 3000) return true;
 
       var self = this;
+      // 站点确认框不一定在 900ms 内长出来（现场 #popok 在 1.2s 后才可见）。
+      // 两拍都先走真正的确认框识别，再退回按文字找按钮，避免只点一次、错过就永远 pending。
+      var tryConfirm = function () {
+        try {
+          var dlg = self._checkSubmitConfirmDialog();
+          if (dlg) {
+            self._handleSubmitConfirmDialog(dlg);
+            return true;
+          }
+        } catch (eDlg) {}
+        var confirm = self._findButtonByText(['确认', '确定', '提交', '交卷']);
+        if (confirm) {
+          try { confirm.click(); return true; } catch (eBtn) {}
+        }
+        return false;
+      };
       if (submitDoc) {
         try {
           var quizWindow = submitDoc.defaultView || submitDoc.parentWindow;
@@ -19797,18 +19947,8 @@ var OMITONE_CODE_REV = '91e5558613';
               try { quizWindow.btnBlueSubmit(); } catch (e) { console.error('[Omitone] btnBlueSubmit failed', e); }
             }, 300);
 
-            setTimeout(function () {
-              try {
-                var maybePop = document.getElementById('workpop');
-                if (maybePop && visible(maybePop)) {
-                  var okBtn = maybePop.querySelector('#popok');
-                  if (okBtn) {
-                    console.log('[Omitone] confirm submit via #popok');
-                    okBtn.click();
-                  }
-                }
-              } catch (e2) {}
-            }, 1200);
+            setTimeout(tryConfirm, 1200);
+            setTimeout(tryConfirm, 2600);
             return true;
           }
         } catch (directErr) {
@@ -19823,12 +19963,8 @@ var OMITONE_CODE_REV = '91e5558613';
         try { submit.click(); } catch (e) {}
       }, 300);
 
-      setTimeout(function () {
-        var confirm = self._findButtonByText(['确认', '确定', '提交', '交卷']);
-        if (confirm) {
-          try { confirm.click(); } catch (e2) {}
-        }
-      }, 900);
+      setTimeout(tryConfirm, 900);
+      setTimeout(tryConfirm, 2400);
 
       return true;
     },
