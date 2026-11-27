@@ -538,6 +538,55 @@ function buildExamWorkHtml() {
     '</body></html>';
 }
 
+/** 老引擎作业页：随机选项字母在 data，交卷验证码只在 addTimes 超过上限后出现。 */
+function buildOldEngineWork232Html() {
+  function option(visible, data, text) {
+    return '      <li class="before-after" qid="2321" qtype="1" onclick="addChoice(this)">' +
+      '<a class="fl after"><span class="num_option choice2321" data="' + data + '">' +
+      visible + '</span> ' + text + '</a></li>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>作业 - 学习通</title></head><body>' +
+    '<input type="hidden" id="courseId" value="232"><input type="hidden" id="classId" value="232">' +
+    '<input type="hidden" id="workId" value="232"><input type="hidden" id="jobid" value="job-232">' +
+    '<div class="TiMu" qid="2321"><div class="Pt1"><span class="fontLabel">1.</span>' +
+    '以下哪些属于操作系统核心功能？</div><ul class="Zy_ulTop">' +
+    option('A', 'B', '进程管理') + option('B', 'A', '内存管理') + option('C', 'C', '文件系统管理') +
+    '</ul><input type="hidden" id="answer2321" value="">' +
+    '<input type="hidden" id="answertype2321" value="1"></div>' +
+    '<input type="hidden" id="addTimes" value="0"><input type="hidden" id="limitWorkSubmitTimes" value="0">' +
+    '<a class="btnSubmit workBtnIndex" onclick="btnBlueSubmit()">提交</a>' +
+    '<div id="verifyCodeWin" class="AlertCon02" style="display:none">' +
+    '<input id="inputCode" type="text"><img id="workVerifyImg" src="/verifyCode/stuWork?123" width="120" height="40">' +
+    '<a onclick="workVerifyCode()">看不清</a><a class="bluebtn" onclick="verifyCode()">确定</a></div>' +
+    '<div id="workFailAlert" class="AlertCon02" style="display:none">作业提交失败！' +
+    '<button id="knowFail">知道了</button></div>' +
+    '<script>' +
+    'window.__b232={addTimes:0,submits:0,lastResponse:null,initialImg:document.getElementById("workVerifyImg").src};' +
+    'function addChoice(li){var qid=li.getAttribute("qid");var selected=li.classList.toggle("check_answer_dx");' +
+    '  var values=Array.from(document.querySelectorAll(".choice"+qid+".check_answer_dx")).map(function(n){' +
+    '    return n.getAttribute("data");});document.getElementById("answer"+qid).value=values.join("");}' +
+    'function btnBlueSubmit(){window.__b232.addTimes++;document.getElementById("addTimes").value=String(window.__b232.addTimes);' +
+    '  var add=Number(document.getElementById("addTimes").value);var limit=Number(document.getElementById("limitWorkSubmitTimes").value);' +
+    '  if(add>limit)document.getElementById("verifyCodeWin").style.display="block";}' +
+    'function workVerifyCode(){document.getElementById("workVerifyImg").src="/verifyCode/stuWork?"+Date.now();}' +
+    'function hideWorkVerify(){document.getElementById("verifyCodeWin").style.display="none";}' +
+    'document.getElementById("knowFail").addEventListener("click",function(){' +
+    '  document.getElementById("workFailAlert").style.display="none";});' +
+    'function verifyCode(){var code=document.getElementById("inputCode").value;var body=new URLSearchParams();' +
+    '  body.set("answer2321",document.getElementById("answer2321").value);' +
+    '  body.set("answertype2321",document.getElementById("answertype2321").value);body.set("pyFlag",code);' +
+    '  window.__b232.submits++;fetch("/mooc-ans/work/addStudentWorkNewWeb?workId=232",{method:"POST",' +
+    '    headers:{"Content-Type":"application/x-www-form-urlencoded"},body:body.toString()}).then(function(r){return r.json();})' +
+    '  .then(function(data){window.__b232.lastResponse=data;if(!data.status){' +
+    '      document.getElementById("workFailAlert").style.display="block";' +
+    '      document.getElementById("workVerifyImg").src=data.captchaSrc||("/verifyCode/stuWork?"+Date.now());' +
+    '    }else{document.getElementById("verifyCodeWin").style.display="none";' +
+    '      var s=document.createElement("div");s.className="answerScore";s.textContent="success!";document.body.appendChild(s);}})' +
+    '  .catch(function(e){window.__b232.lastResponse={error:String(e)};});}' +
+    '</script></body></html>';
+}
+
 /**
  * 章节测验页的**现场形状**（批次 23/24，2026-11-12 量出来的，不是拍的）。
  *
@@ -2724,6 +2773,7 @@ var MOCK_PAGES = {
   '/quiz-inner': buildChapterQuizInnerHtml,
   '/exam-work': buildExamWorkHtml,
   '/exam/test': buildExamTestHtml,
+  '/mooc-ans/work/doHomeWorkNew': buildOldEngineWork232Html,
   '/quiz-result': buildQuizResultHtml,
   '/weird': buildWeirdHtml,
   '/media': buildMediaHtml,
@@ -3257,6 +3307,8 @@ function startMockServer() {
   };
   // 场景按这一格数「站点到底收到过几发」，与 `requests`（模型那几发 = 钱）分开记
   var quizValidations = [];
+  // 老引擎作业交卷：记录表单原样字段，空 pyFlag 与成功 pyFlag 各走一支。
+  var oldEngineSubmits = [];
   // 场景用它让接口返回指定状态码（401 / 403 / 500 …）。
   // 不改它时一律 200 —— 否则所有"正常答题"场景会一起挂掉。
   var forcedStatus = 0;
@@ -3309,6 +3361,43 @@ function startMockServer() {
       scanFixture(urlPath, workHtml);
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       return res.end(workHtml);
+    }
+
+    if (urlPath === '/verifyCode/stuWork') {
+      res.writeHead(200, {
+        'Content-Type': 'image/svg+xml; charset=utf-8',
+        'Cache-Control': 'no-store'
+      });
+      return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40">' +
+        '<rect width="120" height="40" fill="#eef3ff"/>' +
+        '<text x="16" y="27" font-family="monospace" font-size="22" fill="#1c1f26">7X2K</text></svg>');
+    }
+
+    if (urlPath === '/mooc-ans/work/addStudentWorkNewWeb' && req.method === 'POST') {
+      var oldChunks = [];
+      req.on('data', function (chunk) { oldChunks.push(chunk); });
+      req.on('end', function () {
+        var raw = Buffer.concat(oldChunks).toString('utf8');
+        var form = new URLSearchParams(raw);
+        var fields = {};
+        form.forEach(function (value, key) { fields[key] = value; });
+        var accepted = String(fields.pyFlag || '').trim().length > 0;
+        oldEngineSubmits.push({
+          raw: raw,
+          fields: fields,
+          accepted: accepted,
+          msg: accepted ? 'success!' : '作业提交失败！'
+        });
+        res.writeHead(200, {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'no-store'
+        });
+        return res.end(JSON.stringify(accepted
+          ? { msg: 'success!', status: true }
+          : { msg: '作业提交失败！', status: false, captchaSrc: '/verifyCode/stuWork?' + Date.now() }));
+      });
+      return;
     }
 
     /**
@@ -3397,7 +3486,10 @@ function startMockServer() {
         var content = JSON.stringify(answers);
         var finishReason = 'stop';
 
-        if (responseMode === 'flat-multi') {
+        if (responseMode === 'old-engine-order') {
+          // 位置答案 A/C/B 依次点到 data B/A/C，旧实现会落 BAC；生产必须收敛成 ABC。
+          content = JSON.stringify([['A', 'C', 'B']]);
+        } else if (responseMode === 'flat-multi') {
           // 现场实测的形状：模型答多选时**把选项字母摊平**成一项一个字母。
           // 5 题（3 多选 + 2 填空）会回成 13 项：
           //   ["A","B","C","D","A","B","C","D","A","B","C","人工智能通识","人工智能"]
@@ -3458,6 +3550,7 @@ function startMockServer() {
         requests: requests,
         // 批次 78：站点那几发交卷请求（与 `requests` = 模型那几发 = 钱，分开数）
         quizValidations: quizValidations,
+        oldEngineSubmits: oldEngineSubmits,
         setStatus: function (code) { forcedStatus = code || 0; },
         setResponseMode: function (mode) { responseMode = mode || ''; }
       });
@@ -15104,6 +15197,142 @@ SCENARIOS.push({
     check('认出已完成之后不再继续 hold（否则会重扫重答）',
       monitored.holding === false && monitored.pending === false && monitored.answered === true,
       JSON.stringify(monitored));
+  }
+});
+
+SCENARIOS.push({
+  name: '232 老引擎随机选项按字母序交卷且空验证码不重提',
+  path: '/mooc-ans/work/doHomeWorkNew',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var baseConfig = await ctx.client.evaluate('JSON.parse(JSON.stringify(window._xxtApp.configs || {}))');
+    var baseGiveUp = await ctx.client.evaluate(
+      '(function(){try{return localStorage.getItem(window._xxtApp._taskGiveUpStoreKey);}catch(e){return null;}})()'
+    );
+    var cfg = {
+      apiType: 'openai',
+      apiUrl: 'http://127.0.0.1:' + PORT,
+      apiKey: 'e2e-key',
+      model: 'e2e-model',
+      enableQuiz: true,
+      enableCaptcha: true,
+      enableDiscussion: false,
+      autoNext: false,
+      randomAnswer: false,
+      quizRejectGiveUp: false
+    };
+    await writeConfig(ctx.extensionId, cfg);
+    await sleep(600);
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;a.configs=Object.assign({},a.configs,' + JSON.stringify(cfg) + ');' +
+      'a._clearTickLoop();a._clearCheckInterval();a._resetRuntimeState();a._setQuizApiFailUntil(0);' +
+      'try{sessionStorage.clear();}catch(e){}' +
+      'try{localStorage.removeItem(a._taskGiveUpStoreKey);}catch(e2){}return true;})()'
+    );
+
+    try {
+    var shape = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;var q=document.querySelector(".TiMu[qid=\\"2321\\"]");' +
+      'var lis=q?Array.from(q.querySelectorAll("li.before-after[qid][qtype][onclick*=\\"addChoice\\"]")):[];' +
+      'var badges=lis.map(function(li){return li.querySelector(".num_option");});' +
+      'return {question:!!q,type:q?a._detectQuestionType(q):"",lis:lis.length,' +
+      '  visible:badges.map(function(b){return b?b.textContent.trim():"";}),' +
+      '  data:badges.map(function(b){return b?b.getAttribute("data"):"";}),' +
+      '  answer:!!document.getElementById("answer2321"),answertype:!!document.getElementById("answertype2321"),' +
+      '  submit:!!document.querySelector(".btnSubmit.workBtnIndex[onclick*=\\"btnBlueSubmit\\"]"),' +
+      '  verify:!!document.querySelector("#verifyCodeWin.AlertCon02 #inputCode"),' +
+      '  img:!!document.querySelector("#verifyCodeWin.AlertCon02 #workVerifyImg"),' +
+      '  verifyFn:typeof window.verifyCode==="function",refreshFn:typeof window.workVerifyCode==="function"};})()'
+    );
+    check('232-A 老引擎形状自证：li.before-after 带 qid/qtype/addChoice，徽标可见字母与 data 不同，' +
+      '隐藏域、workBtnIndex 提交键、AlertCon02 验证码窗与两个站点函数都在', !!shape && shape.question === true &&
+      shape.type === 'multiple' && shape.lis === 3 && shape.visible.join(',') === 'A,B,C' &&
+      shape.data.join(',') === 'B,A,C' && shape.answer === true && shape.answertype === true &&
+      shape.submit === true && shape.verify === true && shape.img === true &&
+      shape.verifyFn === true && shape.refreshFn === true, JSON.stringify(shape));
+
+    var initialImg = await ctx.client.evaluate('window.__b232.initialImg');
+    await ctx.client.evaluate('window.verifyCode(); true');
+    var waitOldEngine = async function (count, timeoutMs) {
+      var deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (ctx.mock.oldEngineSubmits.length >= count) return true;
+        await sleep(100);
+      }
+      return false;
+    };
+    var failedPosted = await waitOldEngine(1, 5000);
+    var failed = ctx.mock.oldEngineSubmits[0] || null;
+    var failedState = await ctx.client.evaluate(
+      '(function(){return {response:window.__b232.lastResponse,img:document.getElementById("workVerifyImg").src,' +
+      '  alert:document.getElementById("workFailAlert").style.display};})()'
+    );
+    check('232-B 空 pyFlag 真发 POST 后被平台精确回「作业提交失败！」并重发验证码图', failedPosted === true &&
+      !!failed && failed.accepted === false && failed.fields.pyFlag === '' && failed.fields.answer2321 === '' &&
+      failedState.response && failedState.response.status === false &&
+      failedState.response.msg === '作业提交失败！' && failedState.img !== initialImg &&
+      failedState.alert === 'block', JSON.stringify({ failed: failed, state: failedState }));
+
+    ctx.mock.setResponseMode('old-engine-order');
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;a._recognizeCaptchaImage=function(){' +
+      '  return Promise.resolve({ok:true,code:"7X2K"});};a._handleQuiz(null);return true;})()'
+    );
+    var answered = await waitFor(ctx.client,
+      'window._xxtApp._quizReadyToSubmit === true && window.__b232.addTimes === 1', 20000);
+    var filled = await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;return {ready:a._quizReadyToSubmit===true,' +
+      '  answer:document.getElementById("answer2321").value,' +
+      '  selected:document.querySelectorAll(".choice2321.check_answer_dx").length,' +
+      '  addTimes:window.__b232.addTimes,verify:document.getElementById("verifyCodeWin").style.display};})()'
+    );
+    check('232-C 真实答题链把位置答案 A/C/B 落到随机 data 选项，最终隐藏域按字母序写成 ABC', answered === true &&
+      filled.ready === true && filled.answer === 'ABC' && filled.selected === 3 &&
+      filled.addTimes === 1 && filled.verify === 'block' && ctx.mock.oldEngineSubmits.length === 1,
+      JSON.stringify({ answered: answered, filled: filled }));
+
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;a._handleSubmitConfirmDialog(document.getElementById("verifyCodeWin"));return true;})()'
+    );
+    var codeFilled = await waitFor(ctx.client, 'document.getElementById("inputCode").value === "7X2K"', 5000);
+    var held = await ctx.client.evaluate(
+      '(function(){return {code:document.getElementById("inputCode").value,submits:window.__b232.submits,' +
+      '  alert:document.getElementById("workFailAlert").style.display};})()'
+    );
+    check('232-D 空验证码窗先识别填码，不点确定；填码前 POST 仍只有空 pyFlag 那一发', codeFilled === true &&
+      held.code === '7X2K' && held.submits === 1 && ctx.mock.oldEngineSubmits.length === 1 &&
+      held.alert === 'none', JSON.stringify(held));
+
+    await ctx.client.evaluate(
+      '(function(){var a=window._xxtApp;a._submitConfirmLastClickAt=0;' +
+      'a._handleSubmitConfirmDialog(document.getElementById("verifyCodeWin"));return true;})()'
+    );
+    var successPosted = await waitOldEngine(2, 5000);
+    // 夹具只记到 POST；页面 fetch 的 .then 还要一拍才把 lastResponse 翻成 success。
+    await waitFor(ctx.client, 'window.__b232.lastResponse && window.__b232.lastResponse.status === true', 5000);
+    var success = ctx.mock.oldEngineSubmits[1] || null;
+    var successState = await ctx.client.evaluate(
+      '(function(){return {response:window.__b232.lastResponse,submits:window.__b232.submits,' +
+      '  answer:document.getElementById("answer2321").value,score:document.querySelector(".answerScore")?' +
+      '    document.querySelector(".answerScore").textContent:""};})()'
+    );
+    check('232-E 确定键真提交：pyFlag 非空、answer2321=ABC、answertype=1，平台回 success!', successPosted === true &&
+      !!success && success.accepted === true && success.fields.pyFlag === '7X2K' &&
+      success.fields.answer2321 === 'ABC' && success.fields.answertype2321 === '1' &&
+      successState.response && successState.response.status === true && successState.response.msg === 'success!' &&
+      successState.submits === 2 && successState.answer === 'ABC' && successState.score === 'success!',
+      JSON.stringify({ success: success, state: successState }));
+    } finally {
+      ctx.mock.setResponseMode('');
+      await ctx.client.evaluate(
+        '(function(){var a=window._xxtApp;a._clearTickLoop();a._clearCheckInterval();a._resetRuntimeState();' +
+        'a.configs=' + JSON.stringify(baseConfig) + ';' +
+        'try{var raw=' + JSON.stringify(baseGiveUp) + ';if(raw===null){' +
+        '  localStorage.removeItem(a._taskGiveUpStoreKey);}else{' +
+        '  localStorage.setItem(a._taskGiveUpStoreKey,raw);}}catch(e){}return true;})()'
+      );
+      await writeConfig(ctx.extensionId, baseConfig);
+    }
   }
 });
 
