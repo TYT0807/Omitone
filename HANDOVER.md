@@ -2148,7 +2148,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
-| e2e 基线 | 真实 Edge **157 场景 / 1759 项**（2026-11-27 批次 237 全绿，`.workbuddy/e2e-237-full.log`；换课跳过结束日已过的课程卡片，三份实战作业已由插件提交） |
+| e2e 基线 | 真实 Edge **158 场景 / 1769 项**（2026-11-27 批次 238 全绿，`.workbuddy/e2e-238-full.log`；补「确认框晚 1.5 秒」回归，三份实战作业已由插件提交） |
 
 ---
 

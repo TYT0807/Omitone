@@ -569,24 +569,45 @@ function buildQuizRealHtml() {
     '</form>' +
     '<script>' +
     'window.__omBlueCalls = 0; window.__omOkCalls = 0; window.__submitted = false;' +
-    // 站点自己的提交函数：先弹自己的确认框（#workpop + #popok），点确定才真的交卷。
-    'window.btnBlueSubmit = function(){' +
-    '  window.__omBlueCalls++;' +
+    // 站点确认框不一定在插件第一拍之前就位（现场 #popok 在 1.2s 之后才可见）。
+    // ?late=N 让确认框延迟 N 毫秒才长出来，?blue=0 把站点自己的 btnBlueSubmit 摘掉，
+    // 于是两条交卷链路（点 btnBlueSubmit 与各按文字找提交键）都能演到"确认框晚弹出"那一形。
+    // 两个参数都不给时行为与改动前逐字相同 —— 旧场景读的还是同一份形状。
+    'var _q = String(location.search || "");' +
+    'var _late = Math.max(0, Number((_q.match(/[?&]late=(\\d+)/) || [])[1] || 0) || 0);' +
+    'window.__lateMs = _late; window.__blueFirstAt = 0; window.__popAt = 0; window.__okAt = 0; window.__clicks = [];' +
+    // 抓取阶段记"点到提交键与确定以外的哪枚元素"—— 第二拍之前误点别的东西要靠这里读，不许推。
+    'document.addEventListener("click", function(ev){' +
+    '  var el = ev && ev.target; var id = el ? String(el.id || "") : "";' +
+    '  if (id === "submitBtn" || id === "popok") return;' +
+    '  window.__clicks.push({ at: Date.now(), id: id, tag: String((el && el.tagName) || ""),' +
+    '    text: String((el && (el.innerText || el.value)) || "").slice(0, 16) });' +
+    '}, true);' +
+    'function mkPop(){' +
     '  if (window.__submitted || document.getElementById("workpop")) return;' +
+    '  window.__popAt = Date.now();' +
     '  var pop = document.createElement("div");' +
     '  pop.id = "workpop"; pop.style.display = "block";' +
     '  pop.innerHTML = \'<div id="popcontent">请完成所有题目，确认提交？</div><a id="popok">确定</a>\';' +
     '  document.body.appendChild(pop);' +
     '  document.getElementById("popok").addEventListener("click", function(){' +
-    '    window.__omOkCalls++; window.__submitted = true;' +
+    '    window.__okAt = Date.now(); window.__omOkCalls++; window.__submitted = true;' +
     '    Array.from(document.querySelectorAll("input,textarea")).forEach(function(i){ i.disabled = true; });' +
     '    Array.from(document.querySelectorAll(".TiMu")).forEach(function(q){' +
     '      var d = document.createElement("div"); d.className = "status"; d.textContent = "已完成"; q.appendChild(d);' +
     '    });' +
     '    if (pop.parentNode) pop.parentNode.removeChild(pop);' +
     '  });' +
-    '};' +
-    'document.getElementById("submitBtn").addEventListener("click", function(){ window.btnBlueSubmit(); });' +
+    '}' +
+    'function siteSubmit(){' +
+    '  window.__omBlueCalls++;' +
+    '  if (!window.__blueFirstAt) window.__blueFirstAt = Date.now();' +
+    '  if (window.__submitted || document.getElementById("workpop")) return;' +
+    '  if (_late > 0) { setTimeout(mkPop, _late); } else { mkPop(); }' +
+    '}' +
+    // blue=0：站点没有 btnBlueSubmit，插件只能走"按文字找提交键"那一支（900ms + 2400ms 两拍）。
+    'if (!/[?&]blue=0/.test(_q)) { window.btnBlueSubmit = siteSubmit; }' +
+    'document.getElementById("submitBtn").addEventListener("click", function(){ siteSubmit(); });' +
     '</script>'
   );
 }
@@ -21584,6 +21605,159 @@ SCENARIOS.push({
       diffStoreKeys(cfgStoreBefore, cfgBack, ['config']).length === 0,
       JSON.stringify({ differ: diffStoreKeys(cfgStoreBefore, cfgBack, ['config']),
         hasBefore: cfgStoreBefore.has.config, hasAfter: cfgBack.has.config }).slice(0, 200));
+  }
+});
+
+// ── 专项：站点确认框晚弹出，第二拍仍要点掉它（近期那次修复的回归）──────────────
+// 现场：`#popok` 不一定在插件第一拍之前就位（实测 1.2s 之后才可见），只补 900ms 那一拍
+// 等于"点了个空"—— 卷子在站点那一侧根本没交出去，而日志看起来一切正常。
+// 生产侧现在两条交卷链路各排两拍（真源 src/page/75-quiz-dom.js:2432-2433 与 :2448-2449）：
+//   · 页面有 btnBlueSubmit → 1200ms + 2600ms
+//   · 只能按文字找提交键 → 900ms + 2400ms
+// 这一场把确认框推迟到 1500ms 才长出来（第一拍必然扑空），要求**第二拍**把它点掉、
+// 页面真的进入已提交状态；两条链路各演一次，另加一条"不延迟仍能点掉"的负控。
+// ⚠️ 摘掉第二拍（把那行 setTimeout 删掉）应当只红"第二拍点掉"那一格，负控照旧绿 ——
+//    第一拍仍会在 late=0 那一形上兜住，这正是"两拍各承重"的证据。
+var LATE_POP_BEAT = { blue: { first: 1200, second: 2600 }, submit: { first: 900, second: 2400 } };
+SCENARIOS.push({
+  name: '确认框晚 1.5 秒才长出来：两条交卷链路的第二拍都还点得到 #popok',
+  path: '/quiz-real',
+  run: async function (ctx) {
+    var writer = await initConfigWriter(ctx.extensionId);
+    var cfgStoreBefore = await readPopupStore(writer, ['config']);
+    await writeConfig(ctx.extensionId, Object.assign({}, (cfgStoreBefore.val && cfgStoreBefore.val.config) || {}, {
+      enableQuiz: true, randomAnswer: true, apiKey: '', hasApiKey: false,
+      autoNext: false, enableCaptcha: false, enableDiscussion: false,
+      randomAnswerReviewSec: 2
+    }));
+
+    // 把这一页送去指定形状（?late= / ?blue=0）并等它自己交回 ready + app。
+    // ⚠️ location.search 赋值是**整页导航**，执行上下文会被掀掉 —— 那条 rejection 是预期内的，
+    //    所以只能"发完再轮询"，不许在同一次 evaluate 里等（批次 48 同款写法）。
+    var gotoShape = async function (search) {
+      try {
+        await ctx.client.evaluate('(async function(){ location.search = "' + search + '"; return 1; })()');
+      } catch (e) { /* 导航掀掉上下文：预期 */ }
+      var st = null;
+      for (var f = 0; f < 40; f++) {
+        await sleep(250);
+        try {
+          st = await ctx.client.evaluate('(function(){return {ready:document.readyState,' +
+            'app:!!window._xxtApp,late:(typeof window.__lateMs==="number"?window.__lateMs:-1),' +
+            'blue:typeof window.btnBlueSubmit};})()');
+        } catch (e) { continue; }
+        if (st && st.ready === 'complete' && st.app === true) break;
+      }
+      return st;
+    };
+
+    // 跑一轮：抠题 → 留检查窗口 → 窗口过完自己调一次提交，再按两拍各采样一次。
+    // marks 由外面算好送进去（"第一拍之后"与"第二拍之后"各一格），读数全部来自页面。
+    var drive = async function (search, beat) {
+      var st = await gotoShape(search);
+      var ev = await ctx.client.evaluate(
+        '(async function(){var app=window._xxtApp;' +
+        'if(!app) return {noApp:true};' +
+        'var nap=function(ms){return new Promise(function(r){setTimeout(r,ms);});};' +
+        'app.configs=Object.assign({},app.configs,{enableQuiz:true,randomAnswer:true,apiKey:"",hasApiKey:false,' +
+        'autoNext:false,enableCaptcha:false,enableDiscussion:false,randomAnswerReviewSec:2});' +
+        'app._setQuizApiFailUntil(0);' +
+        'app._quizAnswered=false;app._quizInProgress=false;app._quizSubmitPending=false;' +
+        'app._quizReadyToSubmit=false;app._quizReadyWorkKey="";app._quizCurrentQuestions=null;' +
+        'app._quizReviewPaperKey="";app._quizReviewUntil=0;' +
+        'window.__omBlueCalls=0;window.__omOkCalls=0;window.__submitted=false;' +
+        'window.__blueFirstAt=0;window.__popAt=0;window.__okAt=0;window.__clicks=[];' +
+        'var out={lateMs:window.__lateMs,blueType:typeof window.btnBlueSubmit};' +
+        'await app._handleQuiz(null);' +
+        'out.ready=false;' +
+        'for(var i=0;i<40;i++){if(app._quizReadyToSubmit===true){out.ready=true;break;}await nap(300);}' +
+        'var w=0;while((app._quizReviewUntil||0)-Date.now()>0&&w<40){await nap(200);w++;}' +
+        'out.t0=Date.now();' +
+        'app._maybeSubmitQuiz(null);' +
+        'var marks=' + JSON.stringify([beat.first + 250, beat.second + 350]) + ';' +
+        'out.beats=[];var prev=0;' +
+        'for(var s=0;s<marks.length;s++){await nap(marks[s]-prev);prev=marks[s];' +
+        '  out.beats.push({at:Date.now()-out.t0,ok:window.__omOkCalls||0,blue:window.__omBlueCalls||0,' +
+        '    sub:window.__submitted===true,popAt:window.__popAt?(window.__popAt-out.t0):-1});}' +
+        'out.popAt=window.__popAt?(window.__popAt-out.t0):-1;' +
+        'out.okAt=window.__okAt?(window.__okAt-out.t0):-1;' +
+        'out.blueFirst=window.__blueFirstAt?(window.__blueFirstAt-out.t0):-1;' +
+        'out.ok=window.__omOkCalls||0;out.submitted=window.__submitted===true;' +
+        // "不误点"只能量"从调提交到点掉确定"这一窗：更早的那批点击是**回填答案**（本来就该点）——
+        // 第一版拿 popAt 之前全部点击当判据，读到的是选项 LI/LABEL，红的就是这条口径。
+        'var _ck=window.__clicks||[];' +
+        'out.beforeCall=_ck.filter(function(c){return c.at<=out.t0;}).length;' +
+        'out.inGap=_ck.filter(function(c){return c.at>out.t0&&window.__popAt&&c.at<=window.__popAt;})' +
+        '  .map(function(c){return c.tag+"#"+c.id+":"+c.text;});' +
+        'out.toOk=_ck.filter(function(c){return c.at>out.t0&&window.__okAt&&c.at<=window.__okAt;})' +
+        '  .map(function(c){return c.tag+"#"+c.id+":"+c.text;});' +
+        'return out;})()');
+      return { st: st, ev: ev };
+    };
+    var brief = function (r) {
+      var ev = r.ev || {};
+      return JSON.stringify({ late: ev.lateMs, blue: ev.blueType, ready: ev.ready, pop: ev.popAt,
+        okAt: ev.okAt, ok: ev.ok, sub: ev.submitted, first: ev.blueFirst,
+        b0: (ev.beats || [])[0], b1: (ev.beats || [])[1],
+        inGap: (ev.inGap || []).slice(0, 3), toOk: (ev.toOk || []).slice(0, 3),
+        beforeCall: ev.beforeCall, clicks: (ev.beforeCall || 0) + (ev.toOk || []).length }).slice(0, 460);
+    };
+
+    // ① 负控：确认框立刻就位 —— 第一拍就该点掉（这一形证明"这一页本来就能交卷"）
+    var ctrl = await drive('?late=0', LATE_POP_BEAT.blue);
+    check('前提（负控）：不延迟时确认框在第一拍之前就位',
+      !!ctrl.st && ctrl.st.blue === 'function' && ctrl.ev && ctrl.ev.lateMs === 0 &&
+      ctrl.ev.ready === true && ctrl.ev.popAt >= 0 &&
+      ctrl.ev.popAt < LATE_POP_BEAT.blue.first,
+      brief(ctrl));
+    check('负控：不延迟时第一拍（1200ms）就点掉 #popok，卷子真的交出去了',
+      !!ctrl.ev && ctrl.ev.ok === 1 && ctrl.ev.submitted === true &&
+      ctrl.ev.okAt > ctrl.ev.popAt &&
+      ctrl.ev.okAt <= LATE_POP_BEAT.blue.first + 900,
+      brief(ctrl));
+
+    // ② 有 btnBlueSubmit 那一形：确认框 1500ms 才长出来 → 第一拍（1200）必然扑空，靠第二拍（2600）
+    var beatB = LATE_POP_BEAT.blue;
+    var lateBlue = await drive('?late=1500', beatB);
+    check('前提：站点确认框比第一拍（1200ms）晚才长出来',
+      !!lateBlue.st && lateBlue.st.blue === 'function' && lateBlue.ev &&
+      lateBlue.ev.lateMs === 1500 && lateBlue.ev.ready === true &&
+      lateBlue.ev.popAt > beatB.first,
+      brief(lateBlue));
+    check('★ 第一拍扑空之后，第二拍（2600ms）仍把 #popok 点掉',
+      !!lateBlue.ev && lateBlue.ev.ok === 1 && lateBlue.ev.submitted === true &&
+      lateBlue.ev.okAt > lateBlue.ev.popAt &&
+      lateBlue.ev.okAt >= beatB.second - 300 && lateBlue.ev.okAt <= beatB.second + 900,
+      brief(lateBlue));
+    check('第一拍之后确实还什么都没点到（不是"两拍都点到、只是记录晚了"）',
+      !!lateBlue.ev && (lateBlue.ev.beats || []).length === 2 &&
+      lateBlue.ev.beats[0].ok === 0 && lateBlue.ev.beats[0].sub === false &&
+      lateBlue.ev.beats[1].ok >= 1 && lateBlue.ev.beats[1].sub === true,
+      brief(lateBlue));
+    check('第二拍之前没有误点提交键与确定之外的元素',
+      !!lateBlue.ev && (lateBlue.ev.inGap || []).length === 0 && (lateBlue.ev.toOk || []).length === 0,
+      brief(lateBlue));
+
+    // ③ 没有 btnBlueSubmit 那一形：走"按文字找提交键"，两拍是 900 与 2400
+    var beatS = LATE_POP_BEAT.submit;
+    var lateSub = await drive('?late=1500&blue=0', beatS);
+    check('前提：摘掉 btnBlueSubmit 后确认框仍晚于第一拍（900ms）',
+      !!lateSub.st && lateSub.st.blue === 'undefined' && lateSub.ev &&
+      lateSub.ev.lateMs === 1500 && lateSub.ev.ready === true &&
+      lateSub.ev.popAt > beatS.first,
+      brief(lateSub));
+    check('★ 按文字找提交键那一支：第二拍（2400ms）也点得到 #popok',
+      !!lateSub.ev && lateSub.ev.ok === 1 && lateSub.ev.submitted === true &&
+      lateSub.ev.okAt > lateSub.ev.popAt &&
+      lateSub.ev.okAt >= beatS.second - 300 && lateSub.ev.okAt <= beatS.second + 900,
+      brief(lateSub));
+
+    // 交回进门那份存储（同批次 24 那场的纪律：改过存储就要自己收）
+    await handBackPopupStore(writer, cfgStoreBefore, ['config']);
+    var cfgBack = await readPopupStore(writer, ['config']);
+    check('这一场把存储里的 config 交回进门那份',
+      diffStoreKeys(cfgStoreBefore, cfgBack, ['config']).length === 0,
+      JSON.stringify({ differ: diffStoreKeys(cfgStoreBefore, cfgBack, ['config']) }).slice(0, 200));
   }
 });
 
