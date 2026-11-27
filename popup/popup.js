@@ -1102,11 +1102,12 @@ function updateThinkingHint() {
     return escapeHtml(OmitoneThinking.describe(cfg, { tier: tier })) + escapeHtml(seen);
   });
   els.thinkingHint.innerHTML =
-    "下限 = 至少想到这一档；上限 = 最多花到这一档。<b>两格拉开，中间交给模型自己定</b>，"
-    + "钱只按上限备（不替它决定每次都想满）。<br>"
-    + "「测试」= 章节测验与弹题，「考试」= 作业 / 考试卷。<b>考试那行的下限选「高」</b>，"
-    + "模型没答上的题会<b>停下来等</b>（下一拍重问，或你手动作答后自动提交），不拿猜测占位交卷。<br><br>"
-    + "<b>当前实际发送：</b><br>" + lines.join("<br>");
+    "下限 = 至少想到这一档，上限 = 最多花到这一档；<b>两格拉开放给模型自定</b>，成本按上限备。<br>"
+    + "<b>刷课</b>：视频与页面任务点的普通问答；<b>测试</b>：刷课中遇到的章节测验、视频弹题；"
+    + "<b>考试</b>：单独打开的整份卷子 —— 标题带「作业」或「考试」都算（作业也算考试档）。<br>"
+    + "考试那行想更稳可把下限调「高」；模型没答上会<b>停下来等</b>，不拿猜测占位交卷。<br>"
+    + "<details class=\"think-actual\"><summary>当前实际发送（点开）</summary>"
+    + lines.join("<br>") + "</details>";
 }
 
 function escapeHtml(text) {
