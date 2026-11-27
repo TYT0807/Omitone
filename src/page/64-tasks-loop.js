@@ -781,7 +781,17 @@
      */
     _isCourseAtEnd: function (scan) {
       var s = scan || this._catalogCourseScan();
-      return !!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0));
+      if (!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      // 目录只记录章节叶子，当前章节里的必做作业/考试可能仍未交；附件清单与任务点调度同源。
+      try {
+        var attachments = this._getChaoxingAttachments ? this._getChaoxingAttachments() : [];
+        for (var i = 0; i < attachments.length; i++) {
+          var attachment = attachments[i];
+          if (!attachment || this._kindFromAttachment(attachment) !== 'quiz') continue;
+          if (this._getAttachmentWorkType(attachment) === 'job') return false;
+        }
+      } catch (eAtEndAttachments) {}
+      return true;
     },
 
     // 用户中心（课程卡片列表）的地址。现场实测域名是 `i.mooc.chaoxing.com`（2026-11-16，

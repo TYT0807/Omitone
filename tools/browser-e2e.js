@@ -24459,6 +24459,21 @@ SCENARIOS.push({
       s4.leaves === 3 && s4.unfinished === 0 && s4.activeLeft === 'NaN' && s4.atEnd === true,
       JSON.stringify(s4));
 
+    // ③-b 目录全勾不等于这一门没有事：当前章节的必做作业还没交时不许换课。
+    // 附件用站点自己的 `window.attachments` 形状，`nodeId_` 与这一页 chapterId 对齐。
+    var s4b = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var before=window.__b82nav.length;' +
+      'window.attachments=[{jobid:"work-1",isPassed:false,job:true,' +
+      'property:{module:"work",type:"work",_jobid:"work-1"},otherInfo:"nodeId_9000049302"}];' +
+      'var sc=app._catalogCourseScan();var atEnd=app._isCourseAtEnd(sc);' +
+      'var left=app._leaveFinishedCourse("probe");var nav=window.__b82nav.length-before;' +
+      'delete window.attachments;' +
+      'return JSON.stringify({atEnd:atEnd,left:left,nav:nav,attachments:0});})()'
+    ));
+    check('目录全勾 + 当前章节还有未交作业：_isCourseAtEnd=false，换课出口一次导航都不发',
+      s4b.atEnd === false && s4b.left === false && s4b.nav === 0, JSON.stringify(s4b));
+
     // ④ 走真那条链：空转 30 秒 + 上一次已经点过前进 → 原来这里打的是误导的 error
     var s5 = JSON.parse(await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +

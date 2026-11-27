@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd5e691e591';
+var OMITONE_CODE_REV = '91e5558613';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -10738,7 +10738,17 @@ var OMITONE_CODE_REV = 'd5e691e591';
      */
     _isCourseAtEnd: function (scan) {
       var s = scan || this._catalogCourseScan();
-      return !!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0));
+      if (!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      // 目录只记录章节叶子，当前章节里的必做作业/考试可能仍未交；附件清单与任务点调度同源。
+      try {
+        var attachments = this._getChaoxingAttachments ? this._getChaoxingAttachments() : [];
+        for (var i = 0; i < attachments.length; i++) {
+          var attachment = attachments[i];
+          if (!attachment || this._kindFromAttachment(attachment) !== 'quiz') continue;
+          if (this._getAttachmentWorkType(attachment) === 'job') return false;
+        }
+      } catch (eAtEndAttachments) {}
+      return true;
     },
 
     // 用户中心（课程卡片列表）的地址。现场实测域名是 `i.mooc.chaoxing.com`（2026-11-16，
@@ -18082,8 +18092,11 @@ var OMITONE_CODE_REV = 'd5e691e591';
       var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
       if (!s) return false;
       if (/^(true|false|对|错|正确|错误|是|否|略|证明略|不会|暂无|无)$/i.test(s)) return false;
-      // 填空题的合法答案可能就一个字符（0/1/x）；简答/证明才要求至少两个字，避免把单字答案误杀。
-      if (s.replace(/\s+/g, '').length < (String(type || '') === 'fill' ? 1 : 2)) return false;
+      // 填空题的合法答案可能就一个字符（0/1/x）；简答/计算题的数值答案也可能只有一位（0/1/…）。
+      // 现场第 11、12 题正确答案都是 0，旧闸把它当空答案反复重问模型。
+      var compact = s.replace(/\s+/g, '');
+      var minLen = String(type || '') === 'fill' ? 1 : 2;
+      if (compact.length < minLen && !(String(type || '') === 'short' && /^[0-9]$/.test(compact))) return false;
       // 原始 LaTeX 源码对用户是“乱码”；提示词已要求常用数学符号，这里兜底拦一次。
       if (/\\[a-zA-Z]+|\\[{}]/.test(s)) return false;
       return true;

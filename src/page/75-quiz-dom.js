@@ -574,8 +574,11 @@
       var s = String(Array.isArray(answer) ? answer.join('|||') : (answer == null ? '' : answer)).trim();
       if (!s) return false;
       if (/^(true|false|对|错|正确|错误|是|否|略|证明略|不会|暂无|无)$/i.test(s)) return false;
-      // 填空题的合法答案可能就一个字符（0/1/x）；简答/证明才要求至少两个字，避免把单字答案误杀。
-      if (s.replace(/\s+/g, '').length < (String(type || '') === 'fill' ? 1 : 2)) return false;
+      // 填空题的合法答案可能就一个字符（0/1/x）；简答/计算题的数值答案也可能只有一位（0/1/…）。
+      // 现场第 11、12 题正确答案都是 0，旧闸把它当空答案反复重问模型。
+      var compact = s.replace(/\s+/g, '');
+      var minLen = String(type || '') === 'fill' ? 1 : 2;
+      if (compact.length < minLen && !(String(type || '') === 'short' && /^[0-9]$/.test(compact))) return false;
       // 原始 LaTeX 源码对用户是“乱码”；提示词已要求常用数学符号，这里兜底拦一次。
       if (/\\[a-zA-Z]+|\\[{}]/.test(s)) return false;
       return true;

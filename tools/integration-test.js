@@ -12288,6 +12288,120 @@ async function testFillRichAndReadablePrompt() {
   }
 }
 
+async function testCourseEndBlocksUnfinishedWork() {
+  console.log('\n[44] 课程尽头：目录全勾但当前章节仍有未交作业/考试时不许换课（#54）');
+
+  var read = function (rel) {
+    return fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
+  };
+  var detect = read('src/page/60-tasks-detect.js');
+  var loop = read('src/page/64-tasks-loop.js');
+  var boundsOf = function (src, name) {
+    var at = src.indexOf(name + ': function');
+    if (at < 0) return { start: -1, end: -1 };
+    var start = src.indexOf('function', at);
+    var end = src.indexOf('\n    },', start);
+    return { start: start, end: end };
+  };
+  var buildFrom = function (src, name, inj) {
+    var r = boundsOf(src, name);
+    if (r.start < 0 || r.end <= r.start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(r.start, r.end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  };
+
+  var isEndFn = buildFrom(loop, '_isCourseAtEnd');
+  var leaveFn = buildFrom(loop, '_leaveFinishedCourse', {
+    emitRuntimeLog: function (level, message, meta) { logs.push({ level: level, message: message, meta: meta || null }); },
+    location: { search: '' }
+  });
+  var logs = [];
+  var kindFn = buildFrom(detect, '_kindFromAttachment');
+  var workTypeFn = buildFrom(detect, '_getAttachmentWorkType');
+  check('44-0 取出尽头判据、换课出口与附件仲裁三件真源',
+    typeof isEndFn === 'function' && typeof leaveFn === 'function' &&
+    typeof kindFn === 'function' && typeof workTypeFn === 'function',
+    JSON.stringify({ isEnd: typeof isEndFn, leave: typeof leaveFn, kind: typeof kindFn, workType: typeof workTypeFn }));
+  if (typeof isEndFn !== 'function' || typeof leaveFn !== 'function' ||
+      typeof kindFn !== 'function' || typeof workTypeFn !== 'function') return;
+
+  var scan = { ready: true, leaves: 2, unfinished: 0, activeLeft: 0, courseId: '900000377' };
+  var runCase = function (attachments) {
+    logs = [];
+    var nav = [];
+    var app = {
+      _getChaoxingAttachments: function () { return attachments; },
+      _kindFromAttachment: kindFn,
+      _getAttachmentWorkType: workTypeFn,
+      _catalogCourseScan: function () { return scan; },
+      _isCourseAtEnd: isEndFn,
+      _courseSwitchAt: 0,
+      _codeRev: function () { return 'test-rev'; },
+      configs: { autoNextCourse: true },
+      _COURSE_PICKER_BASE: 'https://i.mooc.chaoxing.com/space/index?ws=2',
+      _gotoUrl: function (url) { nav.push(url); }
+    };
+    var atEnd = isEndFn.call(app, scan);
+    var left = leaveFn.call(app, 'next-unit');
+    return { atEnd: atEnd, left: left, nav: nav, logs: logs.slice() };
+  };
+
+  var workResult = runCase([{ isPassed: false, job: true, property: { module: 'work', type: 'work', _jobid: 'work-1' } }]);
+  check('44-A 目录全勾 + 当前章节有未交 work：_isCourseAtEnd=false，换课出口不导航',
+    workResult.atEnd === false && workResult.left === false && workResult.nav.length === 0,
+    JSON.stringify(workResult));
+
+  var examResult = runCase([{ isPassed: false, job: true, property: { module: 'exam', type: 'exam', _jobid: 'exam-1' } }]);
+  check('44-B 目录全勾 + 当前章节有未交 exam：同样不许换课',
+    examResult.atEnd === false && examResult.left === false && examResult.nav.length === 0,
+    JSON.stringify(examResult));
+
+  var finishedResult = runCase([{ isPassed: true, job: true, property: { module: 'work', type: 'work', _jobid: 'work-1' } }]);
+  check('44-C work 已完成：尽头判定与换课出口照旧放行',
+    finishedResult.atEnd === true && finishedResult.left === true && finishedResult.nav.length === 1,
+    JSON.stringify(finishedResult));
+
+  var notJobResult = runCase([{ isPassed: false, job: false, property: { module: 'work', type: 'work', _jobid: 'work-1' } }]);
+  check('44-D 显式 job:false 的 work 不是任务点，不许误挡换课',
+    notJobResult.atEnd === true && notJobResult.left === true && notJobResult.nav.length === 1,
+    JSON.stringify(notJobResult));
+
+  var mediaResult = runCase([{ isPassed: false, job: true, property: { module: 'insertvideo', type: 'video', _jobid: 'video-1' } }]);
+  check('44-E 未完成视频不冒充 work/exam，不改变本补丁的换课边界',
+    mediaResult.atEnd === true && mediaResult.left === true && mediaResult.nav.length === 1,
+    JSON.stringify(mediaResult));
+
+  var emptyResult = runCase([]);
+  check('44-F 附件清单为空（这一页没有工作/考试）时照旧放行，别把没有附件读成“读不出”',
+    emptyResult.atEnd === true && emptyResult.left === true && emptyResult.nav.length === 1,
+    JSON.stringify(emptyResult));
+}
+
+async function testShortNumericSingleChar() {
+  console.log('\n[45] 计算题 short 的单字符数字答案（现场正确答案 0 被反复误拒）');
+
+  var dom = fs.readFileSync(path.join(ROOT, 'src/page/75-quiz-dom.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = dom.indexOf('_isReadableQuizTextAnswer: function');
+  var start = at >= 0 ? dom.indexOf('function', at) : -1;
+  var end = start >= 0 ? dom.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('45-0 取出可读性闸', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['return (' + dom.slice(start, end) + '\n    })'])();
+  check('45-0 取出可读性闸', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  check('45-A short 的单字符数字与两位数都算可读（0 / 1 / 40）',
+    fn('0', 'short') === true && fn('1', 'short') === true && fn('40', 'short') === true,
+    JSON.stringify({ zero: fn('0', 'short'), one: fn('1', 'short'), forty: fn('40', 'short') }));
+  check('45-B 单字母、true、证明略与原始 LaTeX 仍被拒（不是把闸整个放宽）',
+    fn('a', 'short') === false && fn('true', 'short') === false &&
+    fn('证明略', 'short') === false && fn('\\frac{1}{2}', 'short') === false,
+    JSON.stringify({ a: fn('a', 'short'), t: fn('true', 'short'), lue: fn('证明略', 'short'), tex: fn('\\frac{1}{2}', 'short') }));
+  check('45-C 填空的单字符照旧放行', fn('0', 'fill') === true && fn('x', 'fill') === true,
+    JSON.stringify({ zero: fn('0', 'fill'), x: fn('x', 'fill') }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12348,6 +12462,8 @@ async function main() {
   await testCurrentTitleFallback();
   await testQuizResultGrade();
   await testFillRichAndReadablePrompt();
+  await testCourseEndBlocksUnfinishedWork();
+  await testShortNumericSingleChar();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
