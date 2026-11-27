@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（49 个）：
+ * 本段的方法（50 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -19,7 +19,7 @@
  *   _getLearningCards、_getLearningCardText、_getActiveLearningCardIndex、
  *   _getCurrentVisibleLearningTaskType、_isAssessmentLearningCard、
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
- *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_leaveFinishedCourse、
+ *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_courseHomeVeto、_leaveFinishedCourse、
  *   _coursePickRequested、_courseHomeUrl、_courseCardEndedByText、_readCourseCards、_pickNextCourseFromUserCenter、
  *   _askStudyTabState、_courseProbeCounts、_courseProbeWeight、_orderBlindByProbe、
  *   _askCourseProbe、_courseProbeDeferred、_displacedStudyPagePlan、_speakDisplacedStudyPage、
@@ -853,6 +853,45 @@
      *    sessionStorage 里（换课永远要经过这一页，账就写在这页，天然不会丢）。
      * @returns {boolean} true = 这一拍我认领了（要么已经走人，要么明确决定留下），别再打"卡住"那条 error
      */
+    /**
+     * 课程尽头再问一次**整门课**的课程首页：目录只记章节叶子，作业/考试可能挂在附件清单里，
+     * 而当前章过滤看不到前章。用已有 course_home_probe 的 `X/Y` 做课程级否决；
+     * 探针是异步的，第一拍只认领、不导航，下一拍读缓存再决定。
+     */
+    _courseHomeVeto: function (scan, now) {
+      var cid = String((scan && scan.courseId) || '');
+      var clazz = '';
+      try {
+        var cl = document.getElementById('curClazzId');
+        clazz = cl && cl.value != null ? String(cl.value).replace(/\s+/g, '') : '';
+      } catch (eCl) { clazz = ''; }
+      if (!clazz) {
+        try { clazz = String((String(location.href || '').match(/[?&]clazz[iI][dD]=(\d+)/) || [])[1] || ''); } catch (eUrl) {}
+      }
+      if (!cid || !clazz) return { state: 'unknown' };
+      var key = cid + ':' + clazz;
+      var cache = this._courseProbeCache;
+      var row = cache && cache.ok && cache.rows ? cache.rows[key] : null;
+      if (!row && cache && cache.scope === 'current' && cache.answered) {
+        return { state: 'unreadable', why: cache.ok ? 'no-row' : String(cache.why || 'probe-fail').slice(0, 40) };
+      }
+      if (!row) {
+        var pending = cache && cache.scope === 'current' && !cache.answered;
+        if (!pending) this._askCourseProbe(now, [{ courseId: cid, clazzId: clazz }], true);
+        var after = this._courseProbeCache;
+        if (after && !after.answered) {
+          if (now - Number(after.pendingAt || 0) > COURSE_PROBE_DEFER_MS) {
+            return { state: 'unreadable', why: 'probe-timeout' };
+          }
+          return { state: 'pending' };
+        }
+        row = after && after.ok && after.rows ? after.rows[key] : null;
+      }
+      if (row && row.verdict === 'need') return { state: 'need', row: row };
+      if (row && row.verdict === 'unreadable') return { state: 'unreadable', row: row };
+      return { state: 'ok', row: row || null };
+    },
+
     _leaveFinishedCourse: function (reason) {
       // 讨论 blocked（平台说没做完、本地重试预算用完）时不许换课离开最后一节：
       // next-noop 这条链直接调本函数，不经过 nextUnit 的那道闸（用户口径：不可跳过）。
@@ -879,6 +918,33 @@
       } catch (eDiscLeave) {}
       var scan = this._catalogCourseScan();
       if (!this._isCourseAtEnd(scan)) return false;
+      var homeVeto = this._courseHomeVeto(scan, Date.now());
+      if (homeVeto.state !== 'ok' && homeVeto.state !== 'unknown') {
+        var nowVeto = Date.now();
+        if (!this._courseEndProbeLogAt || nowVeto - this._courseEndProbeLogAt > 60000) {
+          this._courseEndProbeLogAt = nowVeto;
+          if (homeVeto.state === 'pending') {
+            emitRuntimeLog('info', 'course end probe pending', {
+              hint: '目录全勾了，但先问一次站点自己的课程首页「任务点 X/Y」再换课；最多等 24 秒',
+              courseId: String(scan.courseId || ''),
+              ms: COURSE_PROBE_DEFER_MS
+            });
+          } else if (homeVeto.state === 'need') {
+            emitRuntimeLog('warn', 'course leave blocked by course-home unfinished', {
+              hint: '站点课程首页还写着「已完成任务点 X/Y」没满，这一门先不换；前章未交的作业/考试也可能在这里',
+              jobs: String((homeVeto.row && homeVeto.row.jobs) || ''),
+              why: String((homeVeto.row && homeVeto.row.why) || '')
+            });
+          } else {
+            emitRuntimeLog('warn', 'course end probe unreadable, fallback to current chapter', {
+              hint: '课程首页这次没给出可读进度；不把它当成「没有未交卷」，只按当前章与目录继续',
+              why: String(homeVeto.why || (homeVeto.row && homeVeto.row.why) || '')
+            });
+          }
+        }
+        if (homeVeto.state === 'pending') return true;
+        if (homeVeto.state === 'need') return false;
+      }
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
       this._courseSwitchAt = Date.now();
       var ev = {
@@ -1287,10 +1353,13 @@
      * @param {number} now 本次判定的时间基准
      * @param {Array} blind 卡片上没写「任务点进度」的那一族候选
      */
-    _askCourseProbe: function (now, blind) {
+    _askCourseProbe: function (now, blind, force) {
       var cache = this._courseProbeCache;
-      if (cache && !cache.answered && cache.pendingAt && now - cache.pendingAt < COURSE_PROBE_PENDING_MS) return;
-      if (cache && cache.answered && now - cache.at < COURSE_PROBE_FRESH_MS) return;
+      // `force` 用于课程尽头单独问当前这一门：不能吃用户中心那份候选缓存。
+      if (!force && cache && cache.scope !== 'current') {
+        if (!cache.answered && cache.pendingAt && now - cache.pendingAt < COURSE_PROBE_PENDING_MS) return;
+        if (cache.answered && now - cache.at < COURSE_PROBE_FRESH_MS) return;
+      }
       var list = [];
       for (var i = 0; i < (blind || []).length; i++) {
         var card = blind[i];
@@ -1298,7 +1367,11 @@
         list.push({ cid: String(card.courseId), clazz: String(card.clazzId) });
       }
       if (!list.length) return;   // 没有盲候选就别敲后台
-      this._courseProbeCache = { pendingAt: now, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: '' };
+      var probeScope = force ? 'current' : 'pick';
+      this._courseProbeCache = {
+        scope: probeScope,
+        pendingAt: now, at: 0, answered: false, ok: false, rows: {}, asked: 0, ms: -1, why: ''
+      };
       var self = this;
       // ⚠️ `_withTimeout` 超时交回的是 `undefined`（AGENTS §2 #2），所以下面先认 `!data`
       Promise.resolve(this._withTimeout(bridgeSend('course_home_probe', { list: list }), COURSE_PROBE_ASK_MS)).then(function (data) {
@@ -1311,6 +1384,7 @@
           }
         }
         self._courseProbeCache = {
+          scope: probeScope,
           pendingAt: 0,
           at: Date.now(),
           answered: true,
@@ -1322,6 +1396,7 @@
         };
       }).catch(function () {
         self._courseProbeCache = {
+          scope: probeScope,
           pendingAt: 0, at: Date.now(), answered: true, ok: false, rows: {}, asked: -1, ms: -1,
           why: '问后台这条路本身抛了'
         };

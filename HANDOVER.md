@@ -1173,7 +1173,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 873 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 876 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |
@@ -2148,7 +2148,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 | 运行方式 | 加载解压缩目录；用户密钥存 `chrome.storage.local`，无任何自有服务器 |
 | 用户是谁 | 两拨人：**不懂 GitHub 的同学**（只点 README 顶部那个下载链接）、**会写代码的接手者**。文档要分开写 |
 | 许可 | GPL-3.0（上游作者意愿优先，见 README 末尾致谢与侵权处理） |
-| e2e 基线 | 真实 Edge **158 场景 / 1769 项**（2026-11-27 批次 238 全绿，`.workbuddy/e2e-238-full.log`；补「确认框晚 1.5 秒」回归，三份实战作业已由插件提交） |
+| e2e 基线 | 真实 Edge **158 场景 / 1771 项**（2026-11-27 批次 239 全绿，`.workbuddy/e2e-239b-full.log`；课程尽头先问课程首页 X/Y，没满不换课） |
 
 ---
 

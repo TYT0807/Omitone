@@ -24707,7 +24707,10 @@ SCENARIOS.push({
       //    这里种的"40 秒前"永远够不到，`_leaveFinishedCourse` 一次都不会被问到，
       //    表现恰好是"日志一条都没有"。`'off'` 让 `perfFactor()` 直接返回 1，
       //    顺带挡掉另一条同形 poison：全量跑机器忙，`auto` 会因 fps<45 自己升到 1.5/2。
-      'app.configs.autoNext=true;app.configs.autoNextCourse=true;app.configs.slowMachineMode="off";return 1;})()'
+      'app.configs.autoNext=true;app.configs.autoNextCourse=true;app.configs.slowMachineMode="off";' +
+      // 这一场测的是“目录全勾 → 回用户中心”，课程首页探针预置成 done，别让 pending 抢走第一拍。
+      'app._courseProbeCache={scope:"current",answered:true,ok:true,asked:1,ms:1,rows:{"900000001:900000002":{verdict:"done",jobs:"3/3",why:"jobs-all-done"}}};' +
+      'return 1;})()'
     );
 
     async function snap() {
@@ -24816,6 +24819,25 @@ SCENARIOS.push({
     ));
     check('目录全勾 + 当前章节还有未交作业：_isCourseAtEnd=false，换课出口一次导航都不发',
       s4b.atEnd === false && s4b.left === false && s4b.nav === 0, JSON.stringify(s4b));
+
+    // ③-c 当前章附件看不到前章时，课程首页 X/Y 仍能兜住：站点说没做完就不许换课。
+    var s4c = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var key="900000001:900000002";' +
+      'app._courseProbeCache={scope:"current",answered:true,ok:true,asked:1,ms:1,' +
+      'rows:{}};app._courseProbeCache.rows[key]={verdict:"need",jobs:"2/3",why:"jobs"};' +
+      'var before=window.__b82nav.length;var left=app._leaveFinishedCourse("probe");' +
+      'var nav=window.__b82nav.length-before;' +
+      'app._courseProbeCache={scope:"current",answered:true,ok:true,asked:1,ms:1,' +
+      'rows:{}};app._courseProbeCache.rows[key]={verdict:"done",jobs:"3/3",why:"jobs-all-done"};' +
+      'return JSON.stringify({left:left,nav:nav});})()'
+    ));
+    var l4c = await snap();
+    check('目录全勾 + 课程首页 X/Y 没满：_leaveFinishedCourse 返回 false，一次导航都不发',
+      s4c.left === false && s4c.nav === 0, JSON.stringify(s4c));
+    check('被课程首页挡住时点名说清是 X/Y 没满，不退回误导的 study stuck',
+      cnt(l4c, 'course leave blocked by course-home unfinished') === 1 &&
+      cnt(l4c, 'study stuck') === 0, JSON.stringify({ names: l4c.names.slice(-8) }));
 
     // ④ 走真那条链：空转 30 秒 + 上一次已经点过前进 → 原来这里打的是误导的 error
     var s5 = JSON.parse(await ctx.client.evaluate(

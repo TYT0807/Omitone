@@ -12342,6 +12342,7 @@ async function testCourseEndBlocksUnfinishedWork() {
       _getAttachmentWorkType: workTypeFn,
       _catalogCourseScan: function () { return scan; },
       _isCourseAtEnd: isEndFn,
+      _courseHomeVeto: function () { return { state: 'unknown' }; },
       _courseSwitchAt: 0,
       _codeRev: function () { return 'test-rev'; },
       configs: { autoNextCourse: true },
@@ -12580,6 +12581,49 @@ async function testCourseCardEndedByText() {
     JSON.stringify({ slash: fn('开课时间: 2025/01/01~2025/02/01'), zhi: fn('开课时间：2025-01-01 至 2025-02-01') }));
 }
 
+async function testCourseHomeVeto() {
+  console.log('\n[50] 课程尽头：课程首页 X/Y 没满时不许换课（当前章附件看不到前章）'); 
+
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = loop.indexOf('_courseHomeVeto: function');
+  var start = at >= 0 ? loop.indexOf('function', at) : -1;
+  var end = start >= 0 ? loop.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('50-0 取出课程级否决', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['document', 'location', 'COURSE_PROBE_DEFER_MS',
+    'return (' + loop.slice(start, end) + '\n    })'])(
+    { getElementById: function () { return { value: '900000002' }; } },
+    { href: '' }, 24000
+  );
+  check('50-0 取出课程级否决', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  var scan = { courseId: '900000001' };
+  var key = '900000001:900000002';
+  var app = {
+    _courseProbeCache: { scope: 'current', answered: true, ok: true, rows: {} },
+    _askCourseProbe: function () {}
+  };
+  app._courseProbeCache.rows[key] = { verdict: 'need', jobs: '1/2', why: 'jobs' };
+  var need = fn.call(app, scan, 1000);
+  app._courseProbeCache.rows[key] = { verdict: 'done', jobs: '2/2', why: 'jobs-all-done' };
+  var done = fn.call(app, scan, 1000);
+  app._courseProbeCache = { scope: 'current', answered: true, ok: false, rows: {}, why: 'fail' };
+  var fail = fn.call(app, scan, 1000);
+  var asked = 0;
+  app._courseProbeCache = null;
+  app._askCourseProbe = function () {
+    asked++;
+    this._courseProbeCache = { scope: 'current', answered: false, ok: false, pendingAt: 1000, rows: {} };
+  };
+  var pending = fn.call(app, scan, 1000);
+  check('50-A 课程首页说还有任务点（need）→ 否决换课；说已完成 → 放行',
+    need.state === 'need' && done.state === 'ok', JSON.stringify({ need: need, done: done }));
+  check('50-B 探针还没答 → pending（这一拍不导航）；读不出 → unreadable（不冒充没有未交卷）',
+    pending.state === 'pending' && fail.state === 'unreadable' && asked === 1,
+    JSON.stringify({ pending: pending, fail: fail, asked: asked }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12646,6 +12690,7 @@ async function main() {
   await testUEditorAnswerWrite();
   await testHumanizeQuizAnswerText();
   await testCourseCardEndedByText();
+  await testCourseHomeVeto();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

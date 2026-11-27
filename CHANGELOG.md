@@ -8,12 +8,24 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 239 · 2026-11-27 · 课程尽头先问课程首页 X/Y，没做完不换走
+
+- 合作搭档 9cc98d91 的只读结论：`window.attachments` 的原始作用域读不出，当前实现只能保证看到当前章；
+  前章未交的作业/考试可能漏。现在 `_leaveFinishedCourse` 在目录全勾后，先用已有 `course_home_probe`
+  问当前课程的首页（不导航、不刷新，异步缓存）：`X/Y` 没满 → `course leave blocked by course-home unfinished`，
+  返回 false，不换课；探针没答 → 认领这一拍、下一拍再判（最多等 24 秒）；读不出 → 明确说
+  `course end probe unreadable, fallback to current chapter`，不冒充“没有未交卷”。
+- 探针缓存加了 `scope: current/pick`：课程尽头的当前课问询不会污染用户中心挑下一门的候选缓存；
+  `_isCourseAtEnd` 仍然是同步函数，没有改成 async。
+- 集成 **876 / 876**；全量 e2e **158 场景 / 1771 项**；`check.js` EXIT=0。
+- **门面**：`换课前会先看课程首页的任务点 X/Y，没做完不换走`（预览说明与 main README）
+
 ### 批次 238 · 2026-11-27 · 补“站点确认框晚 1.5 秒才出现”的回归
 
 - 合入搭档 9b9cc386 的 `/quiz-real` 夹具扩展：`?late=N` 延迟 `#workpop/#popok`、`?blue=0` 摘掉 `btnBlueSubmit`
   逼出“按文字找提交键”那支；新场景验证两条交卷链路的第二拍（1200/2600 与 900/2400）都还能点到 `#popok`。
 - 定向 10/10；反向验证把两拍挪到 260000/240000 只红新加的三条；邻居旧场景 16/16 全绿。
-- 只动 `tools/browser-e2e.js`，生产代码 0 行；全量 **158 场景 / 1769 项**。
+- 只动 `tools/browser-e2e.js`，生产代码 0 行；全量 **158 场景 / 1769 项**。 <!-- 历史计数:start --><!-- 历史计数:end -->
 - 集成 **873 / 873**；`check.js` EXIT=0。
 - **门面**：不用补（测试台补断言，用户可见行为不变）
 
