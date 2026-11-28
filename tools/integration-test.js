@@ -12635,6 +12635,44 @@ async function testCourseHomeVeto() {
     JSON.stringify({ pending: pending, fail: fail, asked: asked }));
 }
 
+async function testCatalogUnfinishedCount() {
+  console.log('\n[51] 目录 jobUnfinishCount：显式 0 才算 0，脏值一律读不出（NaN）');
+
+  var detect = fs.readFileSync(path.join(ROOT, 'src/page/60-tasks-detect.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = detect.indexOf('_catalogUnfinishedCount: function');
+  var start = at >= 0 ? detect.indexOf('function', at) : -1;
+  var end = start >= 0 ? detect.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('51-0 取出目录未完成计数', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['return (' + detect.slice(start, end) + '\n    })'])();
+  check('51-0 取出目录未完成计数', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+
+  function item(input) { return { querySelector: function () { return input; } }; }
+  function input(value, attr) {
+    var el = { value: value };
+    if (attr !== undefined) el.getAttribute = function () { return attr; };
+    return el;
+  }
+  var cases = [
+    { name: '没有 input → NaN（缺证据不是 0）', got: fn(item(null)), want: 'NaN' },
+    { name: '空串 → NaN', got: fn(item(input(''))), want: 'NaN' },
+    { name: '非数字 abc → NaN', got: fn(item(input('abc'))), want: 'NaN' },
+    { name: '负号 -1 → NaN（不许被吃成 1）', got: fn(item(input('-1'))), want: 'NaN' },
+    { name: '科学计数法 1e2 → NaN（不许被吃成 12）', got: fn(item(input('1e2'))), want: 'NaN' },
+    { name: '显式 0 → 0', got: fn(item(input('0'))), want: 0 },
+    { name: '正常 12 → 12', got: fn(item(input('12'))), want: 12 },
+    { name: 'value 为 undefined 但带 value 属性 → 取属性值 3', got: fn(item(input(undefined, '3'))), want: 3 }
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    var c = cases[i];
+    var ok = c.want === 'NaN' ? Number.isNaN(c.got) : c.got === c.want;
+    check('51-' + String.fromCharCode(65 + i) + ' ' + c.name, ok,
+      JSON.stringify({ got: Number.isNaN(c.got) ? 'NaN' : c.got, want: c.want }));
+  }
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12702,6 +12740,7 @@ async function main() {
   await testHumanizeQuizAnswerText();
   await testCourseCardEndedByText();
   await testCourseHomeVeto();
+  await testCatalogUnfinishedCount();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

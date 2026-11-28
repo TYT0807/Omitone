@@ -1418,6 +1418,37 @@ function buildCourseEndHtml() {
     '</body></html>';
 }
 
+/** 批次 246：平台 next 会整组跳时，目录补刷必须从最前面找未完成叶。 */
+function buildCatalogJump246Html() {
+  function leaf(cid, name, pending) {
+    var marker = pending
+      ? '<input type="hidden" value="1" class="jobUnfinishCount">' +
+        '<span class="catalog_points_yi prevTips"><span class="prevHoverTips">1个待完成任务点<i></i></span></span>'
+      : '<span class="icon_Completed prevTips"><span class="prevHoverTips">已完成<i></i></span></span>';
+    return '<div class="posCatalog_select' + (cid === '900004926' ? ' posCatalog_active' : '') +
+      '" id="cur' + cid + '">' +
+      '<span class="posCatalog_name" title="' + name + '" onclick="getTeacherAjax(\'900000246\',\'900000247\',\'' + cid + '\');">' +
+      name + '</span>' + marker + '</div>';
+  }
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">' +
+    '<title>课程学习 - 学习通</title></head><body>' +
+    '<input type="hidden" id="curCourseId" value="900000246">' +
+    '<input type="hidden" id="curChapterId" value="900004926">' +
+    '<div id="curCatalog"><div id="con1">' +
+    leaf('900004921', '2.1.2.1 已完成', false) +
+    leaf('900004922', '2.1.2.2 最前面待完成', true) +
+    leaf('900004923', '2.1.2.3 已完成', false) +
+    leaf('900004924', '2.1.2.4 第二条待完成', true) +
+    leaf('900004926', '2.1.2.6 当前节也待完成', true) +
+    leaf('900004928', '2.1.2.8 当前节后面待完成', true) +
+    '</div></div>' +
+    '<button id="prevNextFocusNext" onclick="window.__catalog246PlatformNext++;">平台下一节</button>' +
+    '<script>window.__catalog246Clicks=[];window.__catalog246PlatformNext=0;' +
+    'function getTeacherAjax(courseId,clazzId,chapterId){window.__catalog246Clicks.push(String(chapterId));' +
+    'var c=document.getElementById("curChapterId");if(c)c.value=String(chapterId);}</script>' +
+    '</body></html>';
+}
+
 /**
  * ---- 批次 82-C 的夹具：用户中心那一页（顶层 + 装卡片的那个帧）----
  *
@@ -2814,6 +2845,8 @@ var MOCK_PAGES = {
   '/catalog-cards': buildCatalogCardsHtml,
   // 批次 82-A/B：目录里还剩两节没做完的刷课页（认尽头 + 回用户中心）
   '/course-end': buildCourseEndHtml,
+  // 批次 246：当前节靠后，平台 next 会跳组，目录补刷应从最前面接管
+  '/catalog-246-jump': buildCatalogJump246Html,
   // 批次 82-C：用户中心那一页 —— 顶层一枚卡片都没有，卡片全在 #frame_content 里（现场形状）
   '/course-pick': buildUserCenterTopHtml,
   '/course-pick-inner': buildUserCenterCardsHtml,
@@ -25340,6 +25373,64 @@ SCENARIOS.push({
     check('整条「认尽头 → 回用户中心」零模型请求（换课不花钱，问模型才是花钱的那一步）',
       ctx.mock.requests.length === reqBefore,
       JSON.stringify({ before: reqBefore, after: ctx.mock.requests.length }));
+  }
+});
+
+SCENARIOS.push({
+  name: '批次246 平台下一节跳组：目录补刷选最前面待完成叶，当前节不选自己',
+  path: '/catalog-246-jump?chapterId=900004926&courseId=900000246&clazzid=900000247&cpi=900000248',
+  noAutoResume: true,
+  run: async function (ctx) {
+    var shape = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;' +
+      'var rows=document.querySelectorAll(".posCatalog_select:not(.firstLayer)");' +
+      'var ids=[],pending=[],clickable=0,current=String((document.getElementById("curChapterId")||{}).value||"");' +
+      'for(var i=0;i<rows.length;i++){var id=String(rows[i].id||"").replace(/^cur/,"");ids.push(id);' +
+      '  if(app._catalogUnfinishedCount(rows[i])>0)pending.push(id);' +
+      '  if(rows[i].querySelector(".posCatalog_name[onclick*=getTeacherAjax]"))clickable++;}' +
+      'var ci=ids.indexOf(current),after="";for(var j=ci+1;j<rows.length;j++){' +
+      '  if(app._catalogUnfinishedCount(rows[j])>0){after=ids[j];break;}}' +
+      'return JSON.stringify({ids:ids,current:current,currentPending:pending.indexOf(current)!==-1,' +
+      'firstPending:pending[0]||"",afterCurrent:after,clickable:clickable,' +
+      'platformButton:!!document.getElementById("prevNextFocusNext"),platformNext:window.__catalog246PlatformNext});})()'
+    ));
+    check('夹具自证：当前节 2.1.2.6 靠后且自己也有未完成计数，前面有 2.1.2.2/2.1.2.4，' +
+      '后面有 2.1.2.8；六条目录叶都可点，平台 next 按钮在场但尚未点击',
+      shape.ids.length === 6 && shape.currentPending === true && !!shape.firstPending &&
+      shape.ids.indexOf(shape.firstPending) < shape.ids.indexOf(shape.current) &&
+      shape.ids.indexOf(shape.afterCurrent) > shape.ids.indexOf(shape.current) &&
+      shape.clickable === 6 && shape.platformButton === true && shape.platformNext === 0,
+      JSON.stringify(shape));
+
+    var fired = JSON.parse(await ctx.client.evaluate(
+      '(function(){var app=window._xxtApp;app._clearTickLoop();app._clearCheckInterval();' +
+      'app.configs.autoNext=true;app.configs.restudy=false;' +
+      'window.__catalog246Logs=[];if(!window.__catalog246Bound){window.__catalog246Bound=true;' +
+      '  window.addEventListener("message",function(e){var m=e.data;' +
+      '    if(m&&m.source==="xxt_app"&&m.type==="runtime_log")window.__catalog246Logs.push(m);});}' +
+      'var claimed=app._gotoNextUnfinishedCatalogLeaf("test");' +
+      'return JSON.stringify({claimed:claimed,clicks:(window.__catalog246Clicks||[]).slice(),' +
+      'platformNext:window.__catalog246PlatformNext});})()'
+    ));
+    await sleep(350);
+    var logs = JSON.parse(await ctx.client.evaluate(
+      '(function(){return JSON.stringify((window.__catalog246Logs||[]).map(function(m){' +
+      'return {message:String(m.message||""),meta:(m&&m.meta)||{}};}));})()'
+    ));
+
+    check('目录补刷接管：真实调用生产方法后选中的是目录最前面那条 pending，' +
+      '不是当前节后面的 2.1.2.8，而且只点一发',
+      fired.claimed === true && fired.clicks.length === 1 &&
+      fired.clicks[0] === shape.firstPending && fired.clicks[0] !== shape.afterCurrent,
+      JSON.stringify({ shape: shape, fired: fired }));
+    check('当前节自己不选：即使当前叶自己也有 jobUnfinishCount>0，点击清单里也没有当前 chapterId',
+      fired.clicks.indexOf(shape.current) === -1, JSON.stringify({ current: shape.current, clicks: fired.clicks }));
+    check('平台 next 没有接手：目录补刷这一发不点击 #prevNextFocusNext',
+      fired.platformNext === 0, JSON.stringify(fired));
+    check('补刷日志与实际点击一致：reason=test，chapterId 逐字等于这一发真点下去的目录叶',
+      logs.length === 1 && logs[0].message === 'jump to unfinished catalog leaf' &&
+      logs[0].meta.reason === 'test' && logs[0].meta.chapterId === fired.clicks[0],
+      JSON.stringify({ logs: logs, clicks: fired.clicks }));
   }
 });
 

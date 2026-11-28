@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'cbcee89a49';
+var OMITONE_CODE_REV = '6efc25b6e9';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -5986,9 +5986,12 @@ var OMITONE_CODE_REV = 'cbcee89a49';
       var n = null;
       try { n = item.querySelector('.jobUnfinishCount, input[name="jobUnfinishCount"]'); } catch (e) { return NaN; }
       if (!n) return NaN;
-      var raw = String(n.value !== undefined && n.value !== null ? n.value : (n.getAttribute && n.getAttribute('value')) || '');
-      var num = Number(raw.replace(/[^0-9]/g, ''));
-      return raw === '' || isNaN(num) ? NaN : num;
+      var raw = String(n.value !== undefined && n.value !== null ? n.value : (n.getAttribute && n.getAttribute('value')) || '').trim();
+      // 只认纯十进制整数：旧实现用 `replace(/[^0-9]/g,'')` 会把 "-1" 读成 1、
+      // "1e2" 读成 12 —— 负号/科学计数法被吃掉就成了"凭空多出一条待办"。
+      if (!/^\d+$/.test(raw)) return NaN;
+      var num = Number(raw);
+      return isNaN(num) ? NaN : num;
     },
 
     /**
