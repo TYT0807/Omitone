@@ -11848,6 +11848,7 @@ async function testReadV2Task() {
     _isQuizSkipWindowLive: function () { return false; },
     _shouldHoldQuizBeforeNext: function () { return false; },
     _switchToNextLearningCard: function () { return false; },
+    _gotoNextUnfinishedCatalogLeaf: function () { return false; },
     _dismissPopups: function () {},
     _leaveFinishedCourse: function (reason) { leaveCalls.push(reason); return true; },
     _resetRuntimeState: function () { resetCalls++; }

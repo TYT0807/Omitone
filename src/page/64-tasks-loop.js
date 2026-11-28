@@ -11,7 +11,7 @@
  * ⚠️ _isJobCompleted 拿不准时必须返回 true（它喂给放弃计数，误判会把必做任务点跳过）
  * 章节内学习卡片（小节）的定位与切换、下一步推进
  *
- * 本段的方法（50 个）：
+ * 本段的方法（51 个）：
  *   _tickProgress、_startTickLoop、_clearTickLoop、_runTick、_tick、_taskGiveUpMap、_taskPointKey、
  *   _isTaskGivenUp、_markTaskGivenUp、_clearTaskGiveUp、_taskGiveUpList、
  *   _isJobCompleted、_taskProgressSnapshot、_countTaskIncomplete、
@@ -19,7 +19,7 @@
  *   _getLearningCards、_getLearningCardText、_getActiveLearningCardIndex、
  *   _getCurrentVisibleLearningTaskType、_isAssessmentLearningCard、
  *   _looksLikeVideoLearningCard、_findFallbackNextLearningCardIndex、
- *   _switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_courseHomeVeto、_leaveFinishedCourse、
+ *   _gotoNextUnfinishedCatalogLeaf、_switchToNextLearningCard、nextUnit、_codeRev、_gotoUrl、_isCourseAtEnd、_courseSwitchBudget、_courseHomeVeto、_leaveFinishedCourse、
  *   _coursePickRequested、_courseHomeUrl、_courseCardEndedByText、_readCourseCards、_pickNextCourseFromUserCenter、
  *   _askStudyTabState、_courseProbeCounts、_courseProbeWeight、_orderBlindByProbe、
  *   _askCourseProbe、_courseProbeDeferred、_displacedStudyPagePlan、_speakDisplacedStudyPage、
@@ -661,6 +661,61 @@
       return -1;
     },
 
+    /**
+     * 平台的「下一节」会整组跳过某些小节：现场体育课从 1.5 直接到 3.1，
+     * 把 2.1.2.2～2.1.2.8 七个小节（目录里都写着「1个待完成任务点」、视频也能看）
+     * 全跳过去了。所以离开当前节之前，先在目录里找**下一个还有任务点未完成的小节**，
+     * 点它自己的 `getTeacherAjax(...)`，别让平台的 next 按钮替我们选。
+     *
+     * 只认 `input.jobUnfinishCount > 0`：这是目录自己给的可数证据；已关闭/锁住的
+     * 小节没有这个计数（现场 2.1.1.x 就是），不能拿它们当目标。
+     */
+    _gotoNextUnfinishedCatalogLeaf: function (reason) {
+      var rows = [];
+      try { rows = Array.prototype.slice.call(document.querySelectorAll('.posCatalog_select:not(.firstLayer)')); } catch (e0) { return false; }
+      if (!rows.length) return false;
+      var currentId = '';
+      try { currentId = String(this._getCurrentChapterId() || ''); } catch (e1) { currentId = ''; }
+      var currentIndex = -1;
+      for (var i = 0; i < rows.length; i++) {
+        if (currentId && rows[i].id === 'cur' + currentId) { currentIndex = i; break; }
+      }
+      var self = this;
+      var pick = function (row) {
+        if (!row) return null;
+        if (currentId && row.id === 'cur' + currentId) return null;
+        try { if (row.querySelector('.icon_Completed')) return null; } catch (e2) { return null; }
+        var n = self._catalogUnfinishedCount(row);
+        if (!(Number(n) > 0)) return null;
+        var click = row.querySelector('.posCatalog_name[onclick*="getTeacherAjax"]') || null;
+        return click ? { row: row, click: click } : null;
+      };
+      /**
+       * ⚠️ 必须从目录**最前面**找，不是从当前节往后找。
+       * 现场 2026-11-28：手动点开 2.1.2.7 之后，后面的兜底只往后找到 2.1.2.8，
+       * 而 2.1.2.2～2.1.2.5 还在前面没刷 —— 用户看到的就是"它没有从第二节前面开始"。
+       * 平台 next 按钮会整组跳，插件要补的是**整个目录里第一条没做完的小节**。
+       */
+      var target = null;
+      for (var b = 0; b < rows.length && !target; b++) {
+        if (b === currentIndex) continue;
+        target = pick(rows[b]);
+      }
+      if (!target) return false;
+      try { target.click.click(); } catch (e3) { return false; }
+      var text = '';
+      try { text = textOf(target.row).slice(0, 80); } catch (e4) { text = ''; }
+      emitRuntimeLog('info', 'jump to unfinished catalog leaf', {
+        reason: reason || '',
+        chapterId: String(target.row.id || '').replace(/^cur/, ''),
+        text: text
+      });
+      this._lastLearningTabSwitchAt = Date.now();
+      this._resetRuntimeState();
+      return true;
+    },
+
+
     _switchToNextLearningCard: function (reason) {
       var cards = this._getLearningCards();
       if (cards.length <= 1) return false;
@@ -743,6 +798,7 @@
         }
       } catch (eDisc) {}
       if (this._switchToNextLearningCard('next-unit')) return;
+      if (this._gotoNextUnfinishedCatalogLeaf('next-unit')) return;
       this._dismissPopups();
       try {
         var nextButton = document.querySelector('#prevNextFocusNext');

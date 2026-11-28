@@ -12,6 +12,9 @@
 >   改成当前标签页打开 + 回程网址 `omitoneKey` / `omitoneReturn` / `omitoneDisc` 回执（`window.name` 会被 groupweb 覆盖）；
 >   成功判据补「有旧回复时不许拿编辑区清空兜底」，扫描不再烧重试额度，兜底入口拒绝 `topicList`，
 >   `isFinished=false` 但回帖真落地时按 `ok|` 账继续并补 `completeTopic`。集成 878 / 878；全量 e2e **161 场景 / 1791 项**全绿。
+>   批次 **246（2026-11-28）**：平台「下一节」会整组跳过 `2.1.2.x` 这类前置小节（父级已关闭、子节实际可看），
+>   新增 `_gotoNextUnfinishedCatalogLeaf`：next 之前**从目录最前面**找 `jobUnfinishCount>0` 的第一小节并点 `getTeacherAjax`；
+>   现场 `2.1.2.7 → 2.1.2.2` 已复验（第一版只往后找，前面的小节仍被留在后面）。已结束/过期开放窗口的课程仍按批次 245 的 `ended` 口径处理。
 >   批次 **122 = 只读取证与台账轮，一行生产代码没动**：会话任务 #22 的病因量到毫秒 —— 2437 发只读紧采样证明地板句的 120 秒节拍正是「60 秒刷新窗把已答 cache 覆盖成待问 stub」那一拍自己交出来的（4/4 次落笔与一次刷新同拍、`cache.at` 只比 `_idleDeclineLogAt` 晚 2–4 毫秒）；同一次实验也量到 `pendingAt>0` 与 `plan:asking` **各 0 次** —— 瞬态只有 2–4 毫秒宽，**外部采样读不到不等于没发生**（新方法论进技能 R35）。修后现场验收尺 = `node .workbuddy/floor22-tight.cjs` 要求**刷新照旧、emits 归 0**。新 HEAD `846ee10` 上闸门复跑：`node tools/check.js` EXIT=0、`npm test` EXIT=0（集成 441 / 441、验收 46 例）、`npm run concat:check` 通过；全量 e2e 沿用 23:14:04 那份，并用 `find … -newermt` 为空证明它覆盖的是已提交那棵树。
 >   批次 **136 = 2026-11-20 构建身份轮**（本会话任务 #28 / #29，提交 `c3e709f` / `69a8657` / `3003fbd`）：`npm run concat` 现在**会把桥戳写进 `content.js` 第 1 行** —— 那是 `OMITONE_CODE_REV_BRIDGE`，按 `manifest.content_scripts[0].js` 列出的那批文件算出来（换行归一、先摘掉戳行自己），并进**已有的第 14 项**（没有新开自检项）。⚠️ **这条管到邻居的工作流**：改了 `libs/*` 或 `src/page/*` 而不跑 `npm run concat`，第 14 项当场拦下 —— 过去只有 `page.js` 那半截有人管，桥这一半没人管，于是「提示词换了、戳没换」这种读数会一直活着。`background.js` **刻意不加戳**（MV3 每次唤醒重读字节，由 `sha256` 与 `ping.startedAt >= mtime` 两条已有读数闭合），口径连同「**服务到的字节 == 磁盘 ≠ 已注入页面的那一份 == 磁盘**，后者要 F5」一起进了 AGENTS §7.7。现场 12:42 读到页面自报 `rev` 与盘上 `page.js` **逐字相同**，而 `bridgeCode:` 要等下一次真注入才出得来。另修 `tools/field-logs.js`：问不到 service_worker 不再说「扩展没装」，改说**读不出**（实测后台回收后这条目标整个从 `/json/list` 消失，25 秒 3→2 条）——**「唤醒后台」那一手没有干净办法，仍是缺口，待裁**。
 > - **另一个 Omite 现场会话落的**：批次 115 / 117（现场取证三件 + 说明书日志名表机检，提交 `3f352f4` / `25a7e38` / `28d50ab` / `baf58af`）。今晚现场串行刷课正常（巡逻见单枚 studentstudy 标签）。
