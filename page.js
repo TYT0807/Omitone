@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = 'd99704968f';
+var OMITONE_CODE_REV = '1f5bb4262f';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -6003,7 +6003,7 @@ var OMITONE_CODE_REV = 'd99704968f';
      * `zero-task` 只认**显式 0**；没有 input / NaN / 文字读不出都是 unreadable，不是 0。
      * ⚠️ 这一版只负责“读得回来”；nextUnit 仍走批次 246 的补刷，离开仍走原闸。
      */
-    _catalogLeafStates: function (items) {
+    _catalogLeafStates: function (items, currentChapterId) {
       var list = [];
       try { list = Array.prototype.slice.call(items || []); } catch (e0) { list = []; }
       var counts = { conflict: 0, 'has-work': 0, locked: 0, unreadable: 0, completed: 0, 'zero-task': 0 };
@@ -6041,6 +6041,20 @@ var OMITONE_CODE_REV = 'd99704968f';
           rec.hasClick = !!click;
           rec.pendingText = pendingText;
           rec.locked = locked;
+          /**
+           * P3 自愈：目录说这一节 0/已完成/锁定/读不出，但**当前页**已经挂出了
+           * 未完成任务点（`_getChaoxingAttachments()` 非空且当前节未完成）——
+           * 以页面上的活证据为准，把当前叶升成 has-work。只改索引读数，不改推进。
+           */
+          try {
+            var isCurrent = currentChapterId && rec.id === 'cur' + String(currentChapterId);
+            var weakState = rec.state === 'zero-task' || rec.state === 'completed' ||
+              rec.state === 'locked' || rec.state === 'unreadable';
+            if (isCurrent && weakState && typeof this._isCurrentCompleted === 'function' && !this._isCurrentCompleted()) {
+              var atts = typeof this._getChaoxingAttachments === 'function' ? (this._getChaoxingAttachments() || []) : [];
+              if (atts && atts.length) { rec.state = 'has-work'; rec.reason = 'current-attachments'; }
+            }
+          } catch (eCurrent) {}
         } catch (eRec) {
           rec.err = String(eRec && eRec.message || eRec).slice(0, 120);
         }
@@ -6081,7 +6095,9 @@ var OMITONE_CODE_REV = 'd99704968f';
       }
       if (!items || !items.length) return out;
       try {
-        out.index = this._catalogLeafStates(items);
+        var idxChapter = '';
+        try { idxChapter = String(this._getCurrentChapterId() || ''); } catch (eIdxCh) { idxChapter = ''; }
+        out.index = this._catalogLeafStates(items, idxChapter);
         var idxNow = Date.now();
         if (!this._catalogIndexLogAt || idxNow - this._catalogIndexLogAt > 30000) {
           this._catalogIndexLogAt = idxNow;

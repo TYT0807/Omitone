@@ -12740,6 +12740,21 @@ async function testCatalogLeafStates() {
     out.counts.completed === 1 && out.counts['has-work'] === 3 && out.counts.locked === 1 &&
     out.counts.unreadable === 2 && out.counts['zero-task'] === 1 && out.counts.conflict === 2,
     JSON.stringify(out.counts));
+
+  // P3：当前叶目录写 0/已完成，但页面已经挂出附件且当前节未完成 → 以页面活证据升 has-work。
+  var curRow = fake({ id: 'cur20', count: '0' });
+  var healApp = Object.assign({}, app, {
+    _isCurrentCompleted: function () { return false; },
+    _getChaoxingAttachments: function () { return [{}]; }
+  });
+  var healed = statesFn.call(healApp, [curRow], '20');
+  check('52-I 当前叶目录写零但有未完成附件 → 自愈升 has-work（页面活证据优先）',
+    healed.rows[0].state === 'has-work' && healed.rows[0].reason === 'current-attachments',
+    JSON.stringify(healed.rows[0]));
+  var doneApp = Object.assign({}, healApp, { _isCurrentCompleted: function () { return true; } });
+  var remained = statesFn.call(doneApp, [fake({ id: 'cur20', count: '0' })], '20');
+  check('52-J 当前节已完成 → 不把 zero-task 误升成 has-work',
+    remained.rows[0].state === 'zero-task', JSON.stringify(remained.rows[0]));
 }
 
 async function testCatalogJumpByState() {
