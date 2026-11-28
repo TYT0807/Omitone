@@ -398,7 +398,10 @@
           at: Date.now(),
           name: String((info && info.name) || '').slice(0, 60),
           reason: String((info && info.reason) || ''),
-          attempts: Number((info && info.attempts) || 0)
+          attempts: Number((info && info.attempts) || 0),
+          // 这一枚任务点长在哪枚目录叶上（`cur<chapterId>`）。目录索引据此把整叶标成
+          // 「没有可做的」—— 否则 P2 会反复点回同一枚已放弃的小节（现场 2026-11-28）。
+          leaf: String((info && info.leaf) || '').slice(0, 40)
         };
         localStorage.setItem(this._taskGiveUpStoreKey, JSON.stringify(map));
       } catch (e) {}
@@ -507,7 +510,12 @@
         return;
       }
 
-      this._markTaskGivenUp(key, { name: job.name, reason: reason || 'incomplete', attempts: attempts });
+      var giveUpLeaf = '';
+      try {
+        var leafM = String((job.attachment && job.attachment.otherInfo) || '').match(/nodeId_(\d+)/i);
+        if (leafM && leafM[1]) giveUpLeaf = 'cur' + leafM[1];
+      } catch (eLeaf) {}
+      this._markTaskGivenUp(key, { name: job.name, reason: reason || 'incomplete', attempts: attempts, leaf: giveUpLeaf });
       var giveUpPayload = {
         name: String(job.name || '').slice(0, 40),
         attempts: attempts,

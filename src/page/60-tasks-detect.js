@@ -195,6 +195,21 @@
       try { list = Array.prototype.slice.call(items || []); } catch (e0) { list = []; }
       var counts = { conflict: 0, 'has-work': 0, locked: 0, unreadable: 0, completed: 0, 'zero-task': 0 };
       var rows = [];
+      // 24 小时放弃名单里的任务点长在哪几枚目录叶上 —— 这些叶对我们是「没有可做的」。
+      // 不这么标，P2 会反复点回同一枚已放弃的小节（现场 2026-11-28：视频进放弃名单后，
+      // 节被交出去、下一拍又跳回同一节，整门课钉死）。`_isTaskGivenUp` 自带 24 小时窗口。
+      var givenLeaves = {};
+      try {
+        if (typeof this._taskGiveUpMap === 'function') {
+          var giveMap0 = this._taskGiveUpMap() || {};
+          for (var gk in giveMap0) {
+            var gr = giveMap0[gk];
+            if (!gr || !gr.leaf) continue;
+            if (typeof this._isTaskGivenUp === 'function' && !this._isTaskGivenUp(gk)) continue;
+            givenLeaves[gr.leaf] = true;
+          }
+        }
+      } catch (eGiven) { givenLeaves = {}; }
       for (var i = 0; i < list.length; i++) {
         var item = list[i];
         var rec = { id: '', text: '', state: 'unreadable', count: 'NaN' };
@@ -275,6 +290,14 @@
               if (atts && atts.length) { rec.state = 'has-work'; rec.reason = 'current-attachments'; }
             }
           } catch (eCurrent) {}
+          // 放弃名单覆盖自愈结果：这一叶唯一的任务点 24 小时内不再尝试，
+          // 就按「没有可做的」交给选点与离开闸（否则会反复点回同一节）。
+          try {
+            if (givenLeaves[rec.id] && (rec.state === 'has-work' || rec.state === 'conflict')) {
+              rec.state = 'zero-task';
+              rec.reason = 'given-up';
+            }
+          } catch (eGivenRec) {}
         } catch (eRec) {
           rec.err = String(eRec && eRec.message || eRec).slice(0, 120);
         }
@@ -1752,7 +1775,8 @@
             // 已经在"放弃名单"里的任务点直接跳过：这类任务点多半被老师设成防拖拽/
             // 不可翻页，或者本身不计分。反复重试只会耗时间（尤其是反复回到同一章时）。
             // 名单 24 小时自动过期，控制台 xxtAI.clearTaskGiveUp() 也能立刻清掉。
-            if (this._isTaskGivenUp(this._taskPointKey({ jobid: targetJobId, attachment: attachment, name: jobName }))) {
+            var giveUpTaskKey = this._taskPointKey({ jobid: targetJobId, attachment: attachment, name: jobName });
+            if (this._isTaskGivenUp(giveUpTaskKey)) {
               if (!this._taskGiveUpLogged) this._taskGiveUpLogged = Object.create(null);
               var giveUpKey = String(targetJobId || jobName);
               if (!this._taskGiveUpLogged[giveUpKey]) {
@@ -1761,6 +1785,50 @@
                   name: String(jobName || '').slice(0, 40),
                   hint: '24 小时内不再尝试；xxtAI.clearTaskGiveUp() 可清除'
                 });
+              }
+              // 老记录里没有 leaf（批次 255 之前写下的）——在这里补上，索引下一拍就能
+              // 把整枚目录叶标成「没有可做的」，P2 不再反复点回同一枚已放弃的小节。
+              try {
+                var leafM = String((attachment && attachment.otherInfo) || '').match(/nodeId_(\d+)/i);
+                if (leafM && leafM[1]) {
+                  var giveMap = this._taskGiveUpMap();
+                  var giveRec = giveMap[giveUpTaskKey];
+                  if (giveRec && !giveRec.leaf) {
+                    giveRec.leaf = 'cur' + leafM[1];
+                    localStorage.setItem(this._taskGiveUpStoreKey, JSON.stringify(giveMap));
+                  }
+                }
+              } catch (eBackfill) {}
+              // 现场（2026-11-28）：放弃名单里的视频任务点，站点仍让它自己播/重播，
+              // `_isActiveStudyJobPending` 每拍为真 —— runner 永远在等一支已经放弃的视频，
+              // 目录又写着 1 个待完成，整节死锁（10 分钟没有前进）。
+              // 放弃即按停并隔离这一枚播放器，让守护把节交出去。
+              // 30 秒一次即可：搜索每秒都跑，站点重播时下个窗口会再按一次，
+              // 但别把 `clear media pending` 每秒刷进 200 条日志环。
+              var pauseKey = String(giveUpTaskKey || giveUpKey);
+              var pauseNow = Date.now();
+              var lastPause = (this._givenUpMediaPaused && this._givenUpMediaPaused[pauseKey]) || 0;
+              if (!lastPause || pauseNow - lastPause > 30000) {
+                try {
+                  var gdoc = this._safeDocOf(frame);
+                  var gmedia = (gdoc && gdoc.querySelector('video,audio')) || this._videoEl || null;
+                  if (gmedia) {
+                    try { gmedia.pause(); } catch (eGPause) {}
+                    if (!this._mediaQuarantine) this._mediaQuarantine = new WeakMap();
+                    this._mediaQuarantine.set(gmedia, {
+                      job: { jobid: targetJobId, name: jobName, attachment: attachment },
+                      quarantined: Date.now(),
+                      at: Date.now(),
+                      code: 0,
+                      message: 'task-given-up',
+                      currentTime: Number(gmedia.currentTime || 0),
+                      duration: Number(gmedia.duration || 0)
+                    });
+                    this._clearMediaPendingState('task-given-up');
+                  }
+                } catch (eGMedia) {}
+                if (!this._givenUpMediaPaused) this._givenUpMediaPaused = Object.create(null);
+                this._givenUpMediaPaused[pauseKey] = pauseNow;
               }
               noteReject(frame, '这个任务点在"放弃名单"里（24 小时内不再尝试）');
               continue;

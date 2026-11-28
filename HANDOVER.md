@@ -35,6 +35,12 @@
 >   地址上有 `omitoneDone=212743054`、日志环里那句 0 条）。换课地址补 `omitoneWhy=`，选课页把 `omitoneDone` /
 >   `omitoneWhy` 写进现有 `course switch picked next / declined` 的取证（`done` / `why` 两格），不新开日志名；
 >   集成 54-D 与两条定向 e2e（23/23、16/16）钉住地址与取证。集成 924 / 924；全量 e2e 162 / 1797 全绿。
+>   批次 **255（2026-11-28）放弃名单视频不再钉死整节**：现场 1.1.1 的视频播完两遍平台都没记完成，
+>   进 24 小时放弃名单后站点仍自动播/重播，`_isActiveStudyJobPending` 每拍为真、P2 又反复点回同一节。
+>   现在放弃分支按停播放器 + 隔离 + 清 pending（30 秒一次），放弃记录存 `leaf`（`cur<chapterId>`），
+>   索引把该叶标 `zero-task`（reason=given-up），P2 跳过、离开闸不拦；老记录在搜索到时回填。
+>   现场部署后 P2 从 1.1.1 直接跳到 **1.1.3**（跳过放弃叶与当前节），视频重新开始播。
+>   集成 927 / 927；全量 e2e 162 / 1797 全绿。
 >   批次 **122 = 只读取证与台账轮，一行生产代码没动**：会话任务 #22 的病因量到毫秒 —— 2437 发只读紧采样证明地板句的 120 秒节拍正是「60 秒刷新窗把已答 cache 覆盖成待问 stub」那一拍自己交出来的（4/4 次落笔与一次刷新同拍、`cache.at` 只比 `_idleDeclineLogAt` 晚 2–4 毫秒）；同一次实验也量到 `pendingAt>0` 与 `plan:asking` **各 0 次** —— 瞬态只有 2–4 毫秒宽，**外部采样读不到不等于没发生**（新方法论进技能 R35）。修后现场验收尺 = `node .workbuddy/floor22-tight.cjs` 要求**刷新照旧、emits 归 0**。新 HEAD `846ee10` 上闸门复跑：`node tools/check.js` EXIT=0、`npm test` EXIT=0（集成 441 / 441、验收 46 例）、`npm run concat:check` 通过；全量 e2e 沿用 23:14:04 那份，并用 `find … -newermt` 为空证明它覆盖的是已提交那棵树。
 >   批次 **136 = 2026-11-20 构建身份轮**（本会话任务 #28 / #29，提交 `c3e709f` / `69a8657` / `3003fbd`）：`npm run concat` 现在**会把桥戳写进 `content.js` 第 1 行** —— 那是 `OMITONE_CODE_REV_BRIDGE`，按 `manifest.content_scripts[0].js` 列出的那批文件算出来（换行归一、先摘掉戳行自己），并进**已有的第 14 项**（没有新开自检项）。⚠️ **这条管到邻居的工作流**：改了 `libs/*` 或 `src/page/*` 而不跑 `npm run concat`，第 14 项当场拦下 —— 过去只有 `page.js` 那半截有人管，桥这一半没人管，于是「提示词换了、戳没换」这种读数会一直活着。`background.js` **刻意不加戳**（MV3 每次唤醒重读字节，由 `sha256` 与 `ping.startedAt >= mtime` 两条已有读数闭合），口径连同「**服务到的字节 == 磁盘 ≠ 已注入页面的那一份 == 磁盘**，后者要 F5」一起进了 AGENTS §7.7。现场 12:42 读到页面自报 `rev` 与盘上 `page.js` **逐字相同**，而 `bridgeCode:` 要等下一次真注入才出得来。另修 `tools/field-logs.js`：问不到 service_worker 不再说「扩展没装」，改说**读不出**（实测后台回收后这条目标整个从 `/json/list` 消失，25 秒 3→2 条）——**「唤醒后台」那一手没有干净办法，仍是缺口，待裁**。
 > - **另一个 Omite 现场会话落的**：批次 115 / 117（现场取证三件 + 说明书日志名表机检，提交 `3f352f4` / `25a7e38` / `28d50ab` / `baf58af`）。今晚现场串行刷课正常（巡逻见单枚 studentstudy 标签）。
@@ -1200,7 +1206,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 924 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 927 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |

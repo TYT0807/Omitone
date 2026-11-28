@@ -10597,11 +10597,13 @@ async function testVoteEndedParkPersistent() {
   var insideEnded = markSites.length === 1 && endedAt >= 0 && nextAt > endedAt &&
     markSites[0] > endedAt && markSites[0] < nextAt;
   var newLedger = countStr(run, 'omitone_vote') + countStr(cons, 'omitone_vote');
-  var readGate = countStr(detect, 'this._isTaskGivenUp(this._taskPointKey(');
+  var readGate = countStr(detect, 'this._isTaskGivenUp(this._taskPointKey(') +
+    ((countStr(detect, 'var giveUpTaskKey = this._taskPointKey(') === 1 &&
+      countStr(detect, 'this._isTaskGivenUp(giveUpTaskKey)') === 1) ? 1 : 0);
   check('⑦ 记账只走已有的那本账：62 片段里对 localStorage 直接动手 0 处、没有任何 `omitone_vote` 那样的新存储键、'
     + '`_markTaskGivenUp` 在投票这一族只有一个调用点且落在 ended 那一支之内（按字符偏移判），'
-    + '而读取侧那道闸仍然是 `_isTaskGivenUp(this._taskPointKey(...))` 这一句原样 —— '
-    + '写入口改了、读出口没改，症状与改之前一模一样，而且一条报错都不留（AGENTS §2 #18）',
+    + '而读取侧那道闸仍然是 `_isTaskGivenUp(this._taskPointKey(...))`（批次 255 允许先落到 `giveUpTaskKey` 再加 leaf 回填，'
+    + '但读出口必须还是同一把尺）—— 写入口改了、读出口没改，症状与改之前一模一样，而且一条报错都不留（AGENTS §2 #18）',
     directLs === 0 && newLedger === 0 && insideEnded && readGate === 1,
     JSON.stringify({ directLs: directLs, markSites: markSites, endedAt: endedAt, nextAt: nextAt, newLedger: newLedger, readGate: readGate }));
 }
@@ -12783,6 +12785,15 @@ async function testCatalogLeafStates() {
   check('52-L 行内显式 0（catalog_points_yi=0）→ zero-task；orangeNew>0 → has-work',
     rowOf('cur13').state === 'zero-task' && rowOf('cur14').state === 'has-work',
     JSON.stringify({ cur13: rowOf('cur13'), cur14: rowOf('cur14') }));
+  // 批次 255：放弃名单里的任务点整叶标成 zero-task —— 否则 P2 会反复点回同一枚已放弃的小节。
+  var givenApp = Object.assign({}, app, {
+    _taskGiveUpMap: function () { return { 'job:g1': { at: Date.now(), leaf: 'cur90' } }; },
+    _isTaskGivenUp: function (k) { return k === 'job:g1'; }
+  });
+  var givenOut = statesFn.call(givenApp, [fake({ id: 'cur90', count: '1' })]);
+  check('52-M 放弃名单里的任务点所在叶 → zero-task（reason=given-up），P2 不点、离开闸不拦',
+    givenOut.rows[0].state === 'zero-task' && givenOut.rows[0].reason === 'given-up',
+    JSON.stringify(givenOut.rows[0]));
 
   // P3：当前叶目录写 0/已完成，但页面已经挂出附件且当前节未完成 → 以页面活证据升 has-work。
   var curRow = fake({ id: 'cur20', count: '0' });
@@ -13047,6 +13058,22 @@ async function testOcsRunnerFlagReleased() {
     JSON.stringify({ flag: app._ocsStudyStarted, token: app._ocsStudyRunToken, logs: logs.slice(-3) }));
 }
 
+async function testGivenUpMediaPaused() {
+  console.log('\n[57] 放弃名单里的媒体任务点要按停播放器并隔离（现场死锁：runner 永远在等一支已放弃的视频）');
+
+  var detect = fs.readFileSync(path.join(ROOT, 'src/page/60-tasks-detect.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = detect.indexOf('skip task point in give-up list');
+  var seg = at >= 0 ? detect.slice(at, at + 2800) : '';
+  check('57-A 放弃分支在拒绝帧之前按停播放器、写隔离表并清 pending，并给老记录回填 leaf（缺一格，站点自己播/重播时 runner 仍会等或 P2 仍会点回）',
+    /gmedia\.pause\(\)/.test(seg) && /_mediaQuarantine\.set\(gmedia/.test(seg) &&
+    /_clearMediaPendingState\('task-given-up'\)/.test(seg) && /giveRec\.leaf = 'cur' \+ leafM\[1\]/.test(seg),
+    JSON.stringify({ at: at, pause: /gmedia\.pause\(\)/.test(seg), quarantined: /_mediaQuarantine\.set\(gmedia/.test(seg) }));
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  check('57-B 放弃记录里存 leaf（新放弃当场就能被目录索引看见，不必等下一次搜索回填）',
+    /_markTaskGivenUp: function[\s\S]{0,600}leaf:/.test(loop),
+    JSON.stringify({ markAt: loop.indexOf('_markTaskGivenUp: function') }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -13120,6 +13147,7 @@ async function main() {
   await testCourseLeaveUnreadable();
   await testCourseAtEndByIndex();
   await testOcsRunnerFlagReleased();
+  await testGivenUpMediaPaused();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

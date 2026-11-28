@@ -151,7 +151,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `60-tasks-detect.js`
 
-*2540 行 / 49 方法*
+*2608 行 / 49 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job
@@ -172,7 +172,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `64-tasks-loop.js`
 
-*1876 行 / 51 方法*
+*1884 行 / 51 方法*
 
 **主 tick 循环 `_runTick` / `_tick`**（⚠️ 它的判定顺序就是仲裁顺序，改它是高风险操作）、
 任务点完成度快照与「做不完就放弃」名单（`_taskGiveUpMap` / `_markTaskGivenUp` / `_countTaskIncomplete`）、

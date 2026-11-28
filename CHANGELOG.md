@@ -8,6 +8,26 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 255 · 2026-11-28 · 放弃名单里的视频不再把整节钉死
+
+- 现场（课程 260986887 的 1.1.1）：一支 576.9 秒视频播完两遍，平台都没记完成任务点；
+  第 3 次 `task point stuck, will retry {attempts:3,limit:4}` 后进 24 小时放弃名单。
+  之后搜索每秒拒掉这一帧（`skip task point in give-up list`），但站点仍让视频自己播/重播，
+  `_isActiveStudyJobPending` 每拍为真 —— runner 永远在等一支已放弃的视频；目录又写着 1 个待完成，
+  P2 还反复点回同一节（放弃记录里没有「长在哪枚目录叶」）。整门课钉死 10 分钟没有前进。
+- `_searchChaoxingJobOcs` 的放弃分支：把这一帧的播放器按停、写进 `_mediaQuarantine` 并
+  `_clearMediaPendingState('task-given-up')`，runner 这才能把节交出去；按任务点 30 秒最多按一次，
+  不把 `clear media pending` 每秒刷进日志环。
+- 放弃记录新增 `leaf`（`cur<chapterId>`，从附件的 `nodeId_` 读）：`_taskGiveUpMap` 里带 `leaf`
+  且仍在 24 小时窗口内的，`_catalogLeafStates` 把整叶标成 `zero-task`（`reason:"given-up"`）——
+  P2 不再点它、`_isCourseAtEnd` 也不拦。老记录（没有 `leaf`）在放弃分支第一次被搜索到时回填。
+- 现场验收（新版部署后）：P2 从 1.1.1 直接跳到 **1.1.3**（1.1.1 是放弃叶、1.1.2 是当前节），
+  页面落到 1.1.3 的学习页，视频开始播放。
+- 集成 [52] 补 M（放弃叶 → zero-task）、[57] 三格（放弃分支按停/隔离/清 pending + 回填 leaf、
+  记录里存 leaf）；[34] ⑦ 的读出口对账允许先落到 `giveUpTaskKey`。集成 **927 / 927**；
+  全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（判据与日志，门面那页没有对应承诺）
+
 ### 批次 254 · 2026-11-28 · 换课日志在真导航下不再丢
 
 - 现场（批次 252 同一趟）：本科体育按「剩余全过期」离开时，用户中心页的地址是
