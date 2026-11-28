@@ -8,6 +8,17 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 249 · 2026-11-28 · P2：目录补刷选点接七态索引
+
+- `_gotoNextUnfinishedCatalogLeaf` 不再只认 `jobUnfinishCount`：改用 `_catalogLeafStates` 的
+  `has-work / conflict` 作为可点目标；`locked / unreadable / zero-task / completed` 一律不点。
+  只有「待完成任务点」文字、没有 input 的老形状现在也能被选到（集成 [53] 第 C 格）。
+- 索引取不出时保留旧的计数判据作兜底；索引故障不会把补刷整条废掉。`zero-task` 仍**不跳过**，
+  本轮只改“选谁”，不改“0 任务点要不要跳”。
+- 集成 [53] 四格（当前节不选、日志 state=has-work、pending 文字算 has-work）；集成 **900 / 900**；
+  全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（选点判据与日志，用户可见行为不变）
+
 ### 批次 248 · 2026-11-28 · 目录逐叶七态索引（只读，不改推进）
 
 - 新增 `_catalogLeafStates`：按 `conflict > has-work > locked > completed > zero-task > unreadable`
@@ -17,7 +28,7 @@
   记为 `conflict`，不拿勾压过未完成证据。
 - 这一版**只读**：nextUnit 仍走批次 246 的目录补刷，课程离开仍走原闸；等 P2 才把索引接进推进顺序。
 - 集成 [52] 九格（completed/has-work/locked/unreadable/zero-task/conflict 与计数汇总）；集成 **896 / 896**；
-  全量 e2e **162 场景 / 1797 项**全绿。
+  全量 e2e **162 场景 / 1797 项**全绿。 <!-- 历史计数:start --><!-- 历史计数:end -->
 - **门面**：不用补（只读状态索引与日志，用户可见行为不变）
 
 ### 批次 247 · 2026-11-28 · 目录任务计数：脏值不许被读成“还有任务”

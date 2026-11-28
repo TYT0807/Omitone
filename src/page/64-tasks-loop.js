@@ -681,14 +681,34 @@
         if (currentId && rows[i].id === 'cur' + currentId) { currentIndex = i; break; }
       }
       var self = this;
+      /**
+       * P2：选点用 P1 的七态索引，不再只认 `jobUnfinishCount`。
+       * 目标只允许 `has-work` 或 `conflict`；`conflict` 是「勾与未完成计数同时在场」，
+       * 按未完成证据优先。`locked / unreadable / zero-task / completed` 都不点。
+       * 索引取不出时保留旧计数判据（`_catalogUnfinishedCount > 0`），不让索引故障把补刷废掉。
+       */
+      var stateById = null;
+      try {
+        var index = this._catalogLeafStates(rows);
+        if (index && index.rows) {
+          stateById = {};
+          for (var s = 0; s < index.rows.length; s++) stateById[index.rows[s].id] = index.rows[s];
+        }
+      } catch (eIdx) { stateById = null; }
       var pick = function (row) {
         if (!row) return null;
         if (currentId && row.id === 'cur' + currentId) return null;
-        try { if (row.querySelector('.icon_Completed')) return null; } catch (e2) { return null; }
-        var n = self._catalogUnfinishedCount(row);
-        if (!(Number(n) > 0)) return null;
+        var state = stateById && stateById[row.id];
+        if (state) {
+          if (state.state !== 'has-work' && state.state !== 'conflict') return null;
+          if (!state.hasClick) return null;
+        } else {
+          try { if (row.querySelector('.icon_Completed')) return null; } catch (e2) { return null; }
+          var n = self._catalogUnfinishedCount(row);
+          if (!(Number(n) > 0)) return null;
+        }
         var click = row.querySelector('.posCatalog_name[onclick*="getTeacherAjax"]') || null;
-        return click ? { row: row, click: click } : null;
+        return click ? { row: row, click: click, state: state ? state.state : '' } : null;
       };
       /**
        * ⚠️ 必须从目录**最前面**找，不是从当前节往后找。
@@ -708,6 +728,7 @@
       emitRuntimeLog('info', 'jump to unfinished catalog leaf', {
         reason: reason || '',
         chapterId: String(target.row.id || '').replace(/^cur/, ''),
+        state: String(target.state || ''),
         text: text
       });
       this._lastLearningTabSwitchAt = Date.now();

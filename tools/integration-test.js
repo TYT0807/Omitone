@@ -12742,6 +12742,73 @@ async function testCatalogLeafStates() {
     JSON.stringify(out.counts));
 }
 
+async function testCatalogJumpByState() {
+  console.log('\n[53] 目录补刷选点走七态：pending 文字也算 has-work，当前节不选');
+
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  var detect = fs.readFileSync(path.join(ROOT, 'src/page/60-tasks-detect.js'), 'utf8').replace(/\r\n/g, '\n');
+  function build(src, name, inj) {
+    var at = src.indexOf(name + ': function');
+    var start = at >= 0 ? src.indexOf('function', at) : -1;
+    var end = start >= 0 ? src.indexOf('\n    },', start) : -1;
+    if (start < 0 || end <= start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + src.slice(start, end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  }
+  var textOf = function (el) { return String(el && el.text || ''); };
+  var countFn = build(detect, '_catalogUnfinishedCount');
+  var statesFn = build(detect, '_catalogLeafStates', { textOf: textOf });
+  var clicks = [];
+  var logs = [];
+  var fakeDoc = { querySelectorAll: function () { return fakeDoc.rows || []; } };
+  var jumpFn = build(loop, '_gotoNextUnfinishedCatalogLeaf', {
+    document: fakeDoc,
+    textOf: textOf,
+    emitRuntimeLog: function (level, msg, meta) { logs.push({ level: level, msg: msg, meta: meta || null }); }
+  });
+  check('53-0 取出目录补刷与七态索引', typeof jumpFn === 'function' && typeof statesFn === 'function' && typeof countFn === 'function',
+    JSON.stringify({ jump: typeof jumpFn, states: typeof statesFn, count: typeof countFn }));
+  if (typeof jumpFn !== 'function' || typeof statesFn !== 'function' || typeof countFn !== 'function') return;
+
+  function row(id, o) {
+    var click = { click: function () { clicks.push(id); } };
+    return {
+      id: 'cur' + id, className: '', text: o.text || '',
+      querySelector: function (sel) {
+        if (sel.indexOf('icon_Completed') >= 0) return o.done ? {} : null;
+        if (sel.indexOf('posCatalog_name') >= 0) return click;
+        if (sel.indexOf('catalog_points_yi') >= 0) return o.pendingText ? { text: '1个待完成任务点1' } : null;
+        if (sel.indexOf('jobUnfinishCount') >= 0) return o.count === undefined ? null : { value: o.count };
+        return null;
+      }
+    };
+  }
+  var app = {
+    _catalogLeafStates: statesFn,
+    _catalogUnfinishedCount: countFn,
+    _getCurrentChapterId: function () { return '2'; },
+    _resetRuntimeState: function () {},
+    _lastLearningTabSwitchAt: 0
+  };
+
+  fakeDoc.rows = [row('1', { count: '1' }), row('2', { count: '1' }), row('3', { pendingText: true })];
+  var first = jumpFn.call(app, 'test');
+  check('53-A 第一条计数为 1 的叶被选中，当前节 2 不选', first === true && clicks.join(',') === '1',
+    JSON.stringify({ ret: first, clicks: clicks }));
+  var firstLog = logs[logs.length - 1];
+  check('53-B 补刷日志带 state=has-work，且 chapterId 与点击一致',
+    !!firstLog && firstLog.msg === 'jump to unfinished catalog leaf' &&
+    firstLog.meta.chapterId === '1' && firstLog.meta.state === 'has-work',
+    JSON.stringify(firstLog));
+
+  clicks.length = 0;
+  fakeDoc.rows = [row('1', { done: true }), row('2', { count: '1' }), row('3', { pendingText: true }), row('4', { count: '1' })];
+  var second = jumpFn.call(app, 'test');
+  check('53-C 第一条已勾，后面的 pending 文字也算 has-work → 选 3（不是只认 jobUnfinishCount）',
+    second === true && clicks.join(',') === '3', JSON.stringify({ ret: second, clicks: clicks, logs: logs.slice(-2) }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12811,6 +12878,7 @@ async function main() {
   await testCourseHomeVeto();
   await testCatalogUnfinishedCount();
   await testCatalogLeafStates();
+  await testCatalogJumpByState();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——
