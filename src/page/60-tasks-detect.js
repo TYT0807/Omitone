@@ -1528,7 +1528,23 @@
           if (appRef._maybeHoldSkipForUnparsedQuiz(sig, src)) item.delay = 'quiz-parse';
           // 批次 19-B：帧**自己说还没加载好**（「正在为您加载文件…」或整张白纸）时，
           // 给发现窗口加一个有界延时。同样不改准入判据，只把"这一节做完了"往后推。
-          if (appRef._noteTaskFrameStillLoading(sig, src, (attachments || []).length > 0)) item.loading = 'frame-loading';
+          //
+          // ⚠️ 批次 253 现场：空白帧还必须像**任务帧**才配等。实测一个视频页里躺着
+          // `#mindmap` / `#reportFrame` / `#popFrameId` / `#hidePopFrameId` / `voteIframe`
+          // 五枚空白辅助 iframe（src 空、可读、无内容），而附件清单里还有那条任务点 ——
+          // `hasInventory` 为真，于是每节白等 15 秒。真任务帧的 class/jobid 是认得出来的
+          // （现场 `ans-attach-online ans-insertvideo-online` + `jobid=…`），空白辅助帧没有。
+          var taskish = false;
+          try {
+            var fcls = String(frame && frame.className || '');
+            var fid = String(frame && frame.id || '');
+            var fname = String(frame && frame.getAttribute && frame.getAttribute('name') || '');
+            var fjob = String(frame && frame.getAttribute &&
+              (frame.getAttribute('jobid') || frame.getAttribute('data')) || '');
+            taskish = !!(fjob || /ans-attach|attach-online|insertvideo|insertdoc|insertbbs|ans-job|jobid/i
+              .test(fcls + ' ' + fid + ' ' + fname));
+          } catch (eTaskish) { taskish = false; }
+          if (appRef._noteTaskFrameStillLoading(sig, src, (attachments || []).length > 0, taskish)) item.loading = 'frame-loading';
         }
         rejects.push(item);
       };
@@ -1902,13 +1918,17 @@
      * 同一窗口内不续期、用完放行 —— 不许把「跳过」换成另一种「磨蹭」。
      * 返回窗口终点（0 = 这一族不算还在加载，或本卡片的窗口已经用掉）。
      */
-    _noteTaskFrameStillLoading: function (sig, src, hasInventory) {
+    _noteTaskFrameStillLoading: function (sig, src, hasInventory, taskish) {
       if (!sig) return 0;
       var text = String(sig.text || '');
       var saysLoading = /正在[^。\n]{0,8}加载|加载中|loading/i.test(text);
       var blank = !text.replace(/\s+/g, '') && !(Number(sig.qTotal) || 0) &&
         !(Number(sig.video) || 0) && !(Number(sig.answer) || 0) && !(Number(sig.pan) || 0);
-      if (!saysLoading && !(blank && hasInventory)) return 0;
+      // 第四参缺省按「像任务帧」处理（老调用点与测试只传三个参）；
+      // 明确不像（空白辅助 iframe：mindmap / reportFrame / popFrameId / voteIframe …）时，
+      // 不许靠「有附件」这一条白等 —— 那是批次 253 现场量到的每节 15 秒空耗。
+      var taskLike = taskish === undefined ? true : !!taskish;
+      if (!saysLoading && !(blank && hasInventory && taskLike)) return 0;
       var now = Date.now();
       if (this._taskFrameLoadingUntil > now) return this._taskFrameLoadingUntil;
       var scope = '';
@@ -1919,6 +1939,7 @@
       emitRuntimeLog('warn', 'task frame still loading, search window extended', {
         src: String(src || '').slice(0, 40),
         why: saysLoading ? 'loading-text' : 'blank-frame-with-attachments',
+        taskish: taskLike,
         text: text.slice(0, 24),
         holdMs: this._taskFrameLoadingUntil - now,
         hint: '帧里还写着「正在加载」（或整张白纸、可清单上明明有任务点）—— 这不叫"这一节做完了"。' +

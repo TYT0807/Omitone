@@ -8,6 +8,25 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 253 · 2026-11-28 · #49 切节提速：空白辅助 iframe 不再白等 15 秒
+
+- 现场量到每支视频结束都多等约 15 秒（`task frame still loading … blank-frame-with-attachments`）。
+  抓到的样本（21:19:59）：hold 还剩 14.8 秒、`completed=false`、`mediaPending=false`、附件只有一条空名 stub；
+  同一刻帧清单里躺着 `#mindmap` / `#reportFrame` / `#popFrameId` / `#hidePopFrameId` / `voteIframe` /
+  `.edui-default` 六枚**空白辅助 iframe**（src 空、可读、无内容），而真任务帧是
+  `iframe.ans-attach-online.ans-insertvideo-online` + `jobid` —— 旧判据「白纸 + 清单有附件」把辅助帧也算成任务帧。
+- `_noteTaskFrameStillLoading` 增加第 4 参 `taskish`：空白帧必须像任务帧（class / id / name 命中
+  `ans-attach|insertvideo|insertdoc|insertbbs|ans-job`，或带 `jobid` / `data`）才给 15 秒等待；
+  帧里写着「正在加载」的原话仍然无条件等待（那是正面证据，不靠身份）。拒绝帧那一侧把身份算好再交进去。
+- 现场复验（新版 `fd9f14ed52`）：同一门课、同一支 655.1 秒视频（2x），结束**不再出现**
+  `task frame still loading`，`study finished` 的 `waitedMs` 329.9 秒（视频 2x 约 327.5 秒，overhead 约 2.4 秒），
+  `study finished → study next unit` 只剩 5 秒（旧版每节约 16 秒 overhead）。
+- 固定 5 秒的收尾等待**没动**：那是平台记账窗口，现场没量到可以安全缩短的证据。
+- 集成 ⑤ 补三格（空白辅助帧不等 / 带身份仍等 / 「正在加载」压过身份）+ 一格静态接线；集成 **924 / 924**；
+  两刀反向验证：忽略 `taskish` → 只红辅助帧那格，调用点漏传 → 只红接线那格。
+  全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（只随构建重算了体积数字，没有新增用户可见文案）
+
 ### 批次 252 · 2026-11-28 · P5 现场：过期锁定节不再把课程钉死 + OCS 循环僵尸旗
 
 - 现场（本科体育 212743054）量到：`2.1` / `2.1.1.x` 的「本章节暂未开放…开放时间：2026-05-21 至 2026-06-12」

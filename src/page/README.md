@@ -151,7 +151,7 @@ app 的入口与生命周期：`run` / `play` / `_assertActive` / `_resetRuntime
 
 ### `60-tasks-detect.js`
 
-*2519 行 / 49 方法*
+*2540 行 / 49 方法*
 
 任务点的**识别与搜索**：从页面里找出「这一章还有哪些任务点没做」—— 附件列表、iframe 探测、
 任务点分类（`_classifyTaskFrame`）、把识别结果拼成可执行的 job

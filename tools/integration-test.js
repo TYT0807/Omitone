@@ -3797,6 +3797,10 @@ async function testOcsDiscoveryWindow() {
     typeof stillLoading);
   check('⑤拒绝帧的取证里接上了这道闸（只记日志不接判据 = 白取证）',
     /_noteTaskFrameStillLoading\(\s*sig\s*,/.test(detect.slice(0, rAt)), 'caller missing');
+  check('⑤拒绝帧把「像不像任务帧」算出来交给闸（不算就等于没修）',
+    /_noteTaskFrameStillLoading\(\s*sig\s*,\s*src\s*,\s*\(attachments \|\| \[\]\)\.length > 0\s*,\s*taskish\s*\)/.test(detect.slice(0, rAt)) &&
+    /ans-attach\|attach-online\|insertvideo\|insertdoc\|insertbbs\|ans-job\|jobid/.test(detect.slice(0, rAt)),
+    'taskish missing');
   check('⑤runner 把加载窗当第 4 个实参交给续窗算术（不传 = 认了证据却不续期）',
     /_noteOcsDiscoveryTick\(\s*discovery\s*,\s*liveInventory\s*,\s*Date\.now\(\)\s*,\s*self\._taskFrameLoadingUntil\s*\)/.test(runnerBody),
     runnerBody.slice(runnerBody.indexOf('_noteOcsDiscoveryTick('), runnerBody.indexOf('_noteOcsDiscoveryTick(') + 120).replace(/\s+/g, ' '));
@@ -3829,10 +3833,26 @@ async function testOcsDiscoveryWindow() {
         blankRet > Date.now() && logs[logs.length - 1].meta.why === 'blank-frame-with-attachments',
         JSON.stringify({ ret: blankRet, why: logs[logs.length - 1].meta.why }));
 
+      // 批次 253 现场：视频页里躺着 #mindmap / #reportFrame / #popFrameId / voteIframe 等空白辅助帧，
+      // 「有附件」这一条让它们每节白等 15 秒；空白帧必须像任务帧才配等。
+      var helper = mk();
+      var helperRet = stillLoading.call(helper, { text: '', textLen: 0, qTotal: 0, video: 0, answer: 0, pan: 0 }, '', true, false);
+      check('⑤空白辅助帧（不像任务帧）即使清单有附件也不等 —— 现场每节 15 秒空耗就是它',
+        helperRet === 0 && helper._taskFrameLoadingUntil === 0, JSON.stringify({ ret: helperRet }));
+      var taskFrame = mk();
+      var taskRet = stillLoading.call(taskFrame, { text: '', textLen: 0, qTotal: 0, video: 0, answer: 0, pan: 0 }, 'attach', true, true);
+      check('⑤空白但带任务帧身份（ans-attach / jobid）仍然等（真任务帧晚渲染那一族不受影响）',
+        taskRet > Date.now() && taskFrame._taskFrameLoadingUntil === taskRet, JSON.stringify({ ret: taskRet - Date.now() }));
+      var helperSays = mk();
+      var helperSaysRet = stillLoading.call(helperSays, { text: '正在为您加载文件...', textLen: 10, qTotal: 0, video: 0, answer: 0, pan: 0 }, '', true, false);
+      check('⑤「正在加载」原话压过任务帧身份：不像任务帧也照等',
+        helperSaysRet > Date.now(), JSON.stringify({ ret: helperSaysRet - Date.now() }));
+
       var c = mk();
+      var logsBeforeNoInv = logs.length;
       var noInv = stillLoading.call(c, { text: '', textLen: 0, qTotal: 0, video: 0, answer: 0, pan: 0 }, 'readcache', false);
       check('⑤白纸**且清单也空**不认（真空章节不许被磨蹭拖住，那是另一种翻过去）',
-        noInv === 0 && c._taskFrameLoadingUntil === 0 && logs.length === 2, JSON.stringify({ ret: noInv, logs: logs.length }));
+        noInv === 0 && c._taskFrameLoadingUntil === 0 && logs.length === logsBeforeNoInv, JSON.stringify({ ret: noInv, logs: logs.length - logsBeforeNoInv }));
 
       var d = mk();
       var busy = stillLoading.call(d, { text: '下列哪个选项是正确的', textLen: 10, qTotal: 5, video: 0, answer: 4, pan: 0 }, 'readcache', true);
