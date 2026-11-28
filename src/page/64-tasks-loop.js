@@ -1097,7 +1097,8 @@
       var url = '';
       try {
         url = this._COURSE_PICKER_BASE + '&omitonePick=1' +
-          (scan.courseId ? '&omitoneDone=' + encodeURIComponent(scan.courseId) : '');
+          (scan.courseId ? '&omitoneDone=' + encodeURIComponent(scan.courseId) : '') +
+          '&omitoneWhy=' + encodeURIComponent(expiredOnly ? 'expired' : String(reason || 'finished'));
       } catch (eU) { url = ''; }
       if (!url) return false;
       emitRuntimeLog('warn', 'course finished, back to user center', Object.assign({
@@ -1587,9 +1588,15 @@
       var justDone = '';
       try { justDone = String((String(location.search || '').match(/[?&]omitoneDone=(\d+)/) || [])[1] || ''); } catch (eD) { justDone = ''; }
       if (justDone && ledger.tried.indexOf(justDone) === -1) ledger.tried.push(justDone);
+      // 上一门为什么结束（finished / expired / next-noop …）。真导航会把上一页那条
+      // `course finished` 的 postMessage 掐掉（现场 2026-11-28：地址上有 omitoneDone，
+      // 日志环里却没有那一句），所以原因跟着地址一起过来，由这一页的换课日志落账。
+      var doneWhy = '';
+      try { doneWhy = String((String(location.search || '').match(/[?&]omitoneWhy=([^&]*)/) || [])[1] || ''); } catch (eW) { doneWhy = ''; }
+      try { doneWhy = decodeURIComponent(doneWhy).slice(0, 24); } catch (eW2) {}
       var cards = this._readCourseCards();
       var budget = this._courseSwitchBudget(cards);
-      var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, ended: cards.ended, rev: this._codeRev() };
+      var ev = { sw: ledger.sw, limit: budget, tried: ledger.tried.length, cards: cards.picked.length, noProg: cards.noProg, unknown: cards.unknown.length, noClazz: cards.noClazz, ended: cards.ended, rev: this._codeRev(), done: justDone, why: doneWhy };
       if (!this.configs.autoNextCourse) {
         this._coursePickDone = true;
         emitRuntimeLog('warn', 'course switch declined: auto switch is off', Object.assign({

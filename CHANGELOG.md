@@ -8,6 +8,20 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 254 · 2026-11-28 · 换课日志在真导航下不再丢
+
+- 现场（批次 252 同一趟）：本科体育按「剩余全过期」离开时，用户中心页的地址是
+  `space/index?ws=2&omitonePick=1&omitoneDone=212743054`，换课确实发生、新学习页也进去了，
+  但日志环里 `course finished, back to user center` 与 `course leave despite course-home need, remaining expired`
+  **各 0 条** —— 上一页 emit 出去的那条 postMessage 被紧随其后的导航掐掉了。
+- 换课地址补 `omitoneWhy=`（`expired` / `next-unit` / `next-noop` / `idle-stuck` …），
+  选课页把 `omitoneDone` 与 `omitoneWhy` 一起写进**现有**的 `course switch picked next / declined …`
+  日志取证（新增 `done` / `why` 两格），不另开日志名 —— 真导航掐掉上一页那条时，回执还在。
+- 集成 54-D 扩展：离开时导航地址必须带 `omitoneWhy=expired`；
+  定向 e2e 两条场景 23/23 与 16/16（挑课那条的取证现在要读出 `done=900000013` / `why=expired`；
+  尽头那条的导航地址要带 `omitoneWhy=`）。全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（日志取证字段，用户可见文案不变）
+
 ### 批次 253 · 2026-11-28 · #49 切节提速：空白辅助 iframe 不再白等 15 秒
 
 - 现场量到每支视频结束都多等约 15 秒（`task frame still loading … blank-frame-with-attachments`）。

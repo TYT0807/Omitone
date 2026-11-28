@@ -12893,7 +12893,7 @@ async function testCourseLeaveUnreadable() {
       _courseSwitchAt: 0,
       configs: { autoNextCourse: true },
       _codeRev: function () { return ''; },
-      _gotoUrl: function () { this.navigated = true; }
+      _gotoUrl: function (u) { this.navigated = true; this.navUrl = String(u || ''); }
     };
   }
   var unreadable = appWith('unreadable');
@@ -12929,8 +12929,9 @@ async function testCourseLeaveUnreadable() {
   var rNeedExpired = leave.call(needExpired, 'test');
   var rNeedMixed = leave.call(needMixed, 'test');
   var rNeedWork = leave.call(needWork, 'test');
-  check('54-D 课程首页 need，但目录剩余全是已过期锁定节 → 允许离开（过期任务点不能补交）',
-    rNeedExpired === true && needExpired.navigated === true, JSON.stringify({ ret: rNeedExpired }));
+  check('54-D 课程首页 need，但目录剩余全是已过期锁定节 → 允许离开（过期任务点不能补交），地址带 omitoneWhy=expired',
+    rNeedExpired === true && needExpired.navigated === true && String(needExpired.navUrl||'').indexOf('omitoneWhy=expired') >= 0,
+    JSON.stringify({ ret: rNeedExpired, nav: needExpired.navUrl }));
   check('54-E need + 还有一个未到开放时间的锁定节 → 不离开',
     rNeedMixed === false && !needMixed.navigated, JSON.stringify({ ret: rNeedMixed }));
   check('54-F need + 还有可做小节（has-work）→ 不离开',

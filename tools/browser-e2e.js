@@ -25324,11 +25324,12 @@ SCENARIOS.push({
       s5.guards.video === false && String(s5.guards.keyHead || '').length > 3 &&
       s5.guards.slow === 'off', JSON.stringify(s5));
     check('到尽头这一拍：接管（handled=true）、发**且只发**一次导航，地址是用户中心那一条，' +
-      '带着 omitonePick=1 与刚刷完的课程号 omitoneDone=900000001',
+      '带着 omitonePick=1、刚刷完的课程号 omitoneDone=900000001 与原因 omitoneWhy=…（真导航会把上一页那条日志掐掉，原因得跟着地址走）',
       s5.handled === true && s5.nav.length === 1 &&
       s5.nav[0].indexOf('https://i.mooc.chaoxing.com/space/index?ws=2') === 0 &&
       s5.nav[0].indexOf('omitonePick=1') !== -1 &&
-      s5.nav[0].indexOf('omitoneDone=900000001') !== -1, JSON.stringify(s5));
+      s5.nav[0].indexOf('omitoneDone=900000001') !== -1 &&
+      s5.nav[0].indexOf('omitoneWhy=') !== -1, JSON.stringify(s5));
     check('换课那一拍不点「下一节」也不切学习卡片（unit=0 / card=0），并把"空够 30 秒"的计时清零',
       s5.unit === 0 && s5.card === 0 && s5.emptySince === 0, JSON.stringify(s5));
 
@@ -25574,7 +25575,7 @@ SCENARIOS.push({
     // ④ 打上标记（用 history.replaceState，让生产那条 `_coursePickRequested()` 谓词真跑）
     var s4 = JSON.parse(await ctx.client.evaluate(
       '(function(){var app=window._xxtApp;' +
-      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1&omitoneDone=900000013");' +
+      'history.replaceState(null,"",location.pathname+"?ws=2&omitonePick=1&omitoneDone=900000013&omitoneWhy=expired");' +
       'app._coursePickDone=false;window.__b83nav.length=0;' +
       'try{sessionStorage.removeItem("omitone:course-switch");}catch(e){}' +
       'var d=document.getElementById("frame_content").contentDocument;' +
@@ -25609,12 +25610,13 @@ SCENARIOS.push({
     check('换过一次的账落在这一页自己的 sessionStorage：sw=1，tried 里带着刚从 URL 读回来的那门 900000013',
       s4.sw === 1 && (s4.tried || []).indexOf('900000013') !== -1, JSON.stringify(s4));
     check('挑成一次出「course switch picked next」，取证里带上 sw / cards / noProg / unknown / noClazz / limit，' +
-      '并且 blind=0（这一门是**读得到进度**挑中的，不是兜底那一路）',
+      '并且 blind=0；同时带着 from-URL 的回执 done=刚刷完那门、why=上一门为什么结束（真导航掐掉上一页那条日志时靠它）',
       cnt(l4, 'course switch picked next') === 1 &&
       (l4.metas.filter(function (m) {
         return String(m && m.cards) === '3' && Number(m && m.noProg) === 2 &&
           Number(m && m.unknown) === 1 && Number(m && m.noClazz) === 1 &&
-          Number(m && m.limit) === 30 && Number(m && m.blind) === 0;
+          Number(m && m.limit) === 30 && Number(m && m.blind) === 0 &&
+          String(m && m.done) === '900000013' && String(m && m.why) === 'expired';
       })).length >= 1,
       JSON.stringify({ names: l4.names.slice(-5), metas: l4.metas.slice(-2) }));
 
