@@ -19,6 +19,13 @@
 >   `_catalogCourseScan` 附带 `index` 并每 30 秒打 `catalog index summary`；**不改推进顺序**。集成 896 / 896；全量 e2e 162 / 1797 全绿。 <!-- 历史计数:start --><!-- 历史计数:end -->
 >   批次 **247（2026-11-28）P0 覆盖**：`_catalogUnfinishedCount` 只认纯十进制整数，负号/科学计数法与空串一律 `NaN`；
 >   集成 [51] 九格（887 / 887）；合入搭档 9cc98d91 的批次 246 e2e 场景 6/6（窄反向只红最前面那条）；全量 e2e **162 场景 / 1797 项**全绿。 <!-- 历史计数:start --><!-- 历史计数:end -->已结束/过期开放窗口的课程仍按批次 245 的 `ended` 口径处理。
+>   批次 **249~252（2026-11-28）P2~P5 + 现场两修**：P2 补刷选点接七态、P3 当前叶活附件自愈、P4 课程首页读不出不换课；
+>   P5 现场量到「本章节暂未开放」藏在 `span.catalog_points_er` 的 hover 提示里（`innerText` 读不到），索引把 10 个过期锁定节
+>   读成 `unreadable`、课程首页因此卡在 `need 18/26` 永不离开；现在按隐藏原话认 `locked`、按「至 YYYY-MM-DD」判 `expired`，
+>   显式 `catalog_points_yi=0` 认 `zero-task`、`orangeNew>0` 算 `has-work`；`_isCourseAtEnd` 与离开闸允许「剩余全是过期锁定」时
+>   按刷完换走（现场 212743054 → 260986887 已复验；新课 158 叶 = 完成 151 / 有任务 7 / 读不出 0）。另修 OCS 循环
+>   `_ocsStudyStarted` 僵尸旗（`nextUnit()` 在 pending 分支提前 return，循环跑完没人放倒；现场旗子 true、10 分钟无
+>   `study begin`）：运行令牌 + `finally` 保证任何出口都放旗。集成 920 / 920；全量 e2e **162 场景 / 1797 项**全绿。
 >   批次 **122 = 只读取证与台账轮，一行生产代码没动**：会话任务 #22 的病因量到毫秒 —— 2437 发只读紧采样证明地板句的 120 秒节拍正是「60 秒刷新窗把已答 cache 覆盖成待问 stub」那一拍自己交出来的（4/4 次落笔与一次刷新同拍、`cache.at` 只比 `_idleDeclineLogAt` 晚 2–4 毫秒）；同一次实验也量到 `pendingAt>0` 与 `plan:asking` **各 0 次** —— 瞬态只有 2–4 毫秒宽，**外部采样读不到不等于没发生**（新方法论进技能 R35）。修后现场验收尺 = `node .workbuddy/floor22-tight.cjs` 要求**刷新照旧、emits 归 0**。新 HEAD `846ee10` 上闸门复跑：`node tools/check.js` EXIT=0、`npm test` EXIT=0（集成 441 / 441、验收 46 例）、`npm run concat:check` 通过；全量 e2e 沿用 23:14:04 那份，并用 `find … -newermt` 为空证明它覆盖的是已提交那棵树。
 >   批次 **136 = 2026-11-20 构建身份轮**（本会话任务 #28 / #29，提交 `c3e709f` / `69a8657` / `3003fbd`）：`npm run concat` 现在**会把桥戳写进 `content.js` 第 1 行** —— 那是 `OMITONE_CODE_REV_BRIDGE`，按 `manifest.content_scripts[0].js` 列出的那批文件算出来（换行归一、先摘掉戳行自己），并进**已有的第 14 项**（没有新开自检项）。⚠️ **这条管到邻居的工作流**：改了 `libs/*` 或 `src/page/*` 而不跑 `npm run concat`，第 14 项当场拦下 —— 过去只有 `page.js` 那半截有人管，桥这一半没人管，于是「提示词换了、戳没换」这种读数会一直活着。`background.js` **刻意不加戳**（MV3 每次唤醒重读字节，由 `sha256` 与 `ping.startedAt >= mtime` 两条已有读数闭合），口径连同「**服务到的字节 == 磁盘 ≠ 已注入页面的那一份 == 磁盘**，后者要 F5」一起进了 AGENTS §7.7。现场 12:42 读到页面自报 `rev` 与盘上 `page.js` **逐字相同**，而 `bridgeCode:` 要等下一次真注入才出得来。另修 `tools/field-logs.js`：问不到 service_worker 不再说「扩展没装」，改说**读不出**（实测后台回收后这条目标整个从 `/json/list` 消失，25 秒 3→2 条）——**「唤醒后台」那一手没有干净办法，仍是缺口，待裁**。
 > - **另一个 Omite 现场会话落的**：批次 115 / 117（现场取证三件 + 说明书日志名表机检，提交 `3f352f4` / `25a7e38` / `28d50ab` / `baf58af`）。今晚现场串行刷课正常（巡逻见单枚 studentstudy 标签）。
@@ -1184,7 +1191,7 @@ node tools/check-concurrency.js --quiet; echo "EXIT=$?"   # 0=quiet/restored-not
 
 | 你动了什么 | 必须跑什么 | 判据 |
 | --- | --- | --- |
-| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 906 项 + worker 126 项 + 根目录那批秒级独立套件） |
+| 任何东西 | `npm test` | **全绿**（自检 39 项 + 提示词基准 + 集成 920 项 + worker 126 项 + 根目录那批秒级独立套件） |
 | 答题链路 / 抠题 / 媒体 / 任务点调度 / `content.js` | `npm run e2e` | **全绿**（约 1~2 分钟，会起一个独立 Edge 临时 profile，不碰你正在用的浏览器）。**别在这里写死项数** —— 精确数字由 `npm run check` 对着 `.workbuddy/e2e-counts.json` 核，写死一份就会漂 |
 | 提示词（`libs/prompt.js`） | `npm run bench` | 总 token **不反弹**，且「前缀缓存可命中性」那一节**不能变差** |
 | 发版前 | `node tools/publish-audit.js` | 无密钥 / 本机路径 / 邮箱 / 大文件误入公开仓库 |

@@ -1,4 +1,4 @@
-var OMITONE_CODE_REV = '857b894008';
+var OMITONE_CODE_REV = '72be82802c';
 /**
  * Omitone page runtime for Chaoxing.
  * Runs in the page context and talks to the isolated content script bridge.
@@ -6018,29 +6018,62 @@ var OMITONE_CODE_REV = '857b894008';
           try { done = !!item.querySelector('.icon_Completed, .icon_completed'); } catch (eDone) { done = false; }
           var click = null;
           try { click = item.querySelector('.posCatalog_name[onclick*="getTeacherAjax"]'); } catch (eClick) { click = null; }
+          // 锁定原话藏在 hover 提示里，`innerText` 读不到（现场 `catalog_points_er prepTips tipTime`
+          // 是隐藏的），所以单独用 `textContent` 读一回；这是「暂未开放/已关闭」唯一的真源。
+          var tipText = '';
+          try {
+            var tipEl = item.querySelector('.catalog_points_er, .tipTime');
+            if (tipEl) tipText = String(tipEl.textContent || tipEl.text || '').replace(/\s+/g, ' ').trim();
+          } catch (eTip) { tipText = ''; }
           var pendingText = false;
+          var yiZero = false;
           try {
             var yi = item.querySelector('.catalog_points_yi');
             if (yi) {
-              var nums = String(textOf(yi)).match(/\d+/g) || [];
+              var yiRaw = String(textOf(yi)).trim();
+              var nums = yiRaw.match(/\d+/g) || [];
               for (var n = 0; n < nums.length; n++) if (Number(nums[n]) > 0) { pendingText = true; break; }
+              // 显式 0 才认 zero-task；「0个待完成」这种带字的形状照样是显式 0。
+              if (!pendingText && /^\d+$/.test(yiRaw) && Number(yiRaw) === 0) yiZero = true;
+              else if (!pendingText && nums.length === 1 && Number(nums[0]) === 0) yiZero = true;
             }
           } catch (eYi) { pendingText = false; }
+          var orangeNew = false;
+          try {
+            var orange = item.querySelector('.orangeNew');
+            if (orange) {
+              var ot = String(textOf(orange)).trim();
+              if (/^\d+$/.test(ot) && Number(ot) > 0) orangeNew = true;
+            }
+          } catch (eOrange) { orangeNew = false; }
           var count = this._catalogUnfinishedCount(item);
           var countKnown = !isNaN(count);
-          var hasWork = (countKnown && count > 0) || pendingText;
-          var locked = /需完成之前闯关任务点|未解锁|暂未开放|已关闭|locked/i.test(String(item.className || '') + ' ' + rec.text);
+          var hasWork = (countKnown && count > 0) || pendingText || orangeNew;
+          var locked = /需完成之前闯关任务点|未解锁|暂未开放|已关闭|locked/i.test(String(item.className || '') + ' ' + rec.text + ' ' + tipText);
+          // 「开放窗口已经过去」与「还没到开放时间」分开：前者不能再补，后者要等解锁。
+          var expired = false;
+          if (locked && tipText) {
+            var wm = /至\s*(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?/.exec(tipText);
+            if (wm) {
+              var endTs = new Date(Number(wm[1]), Number(wm[2]) - 1, Number(wm[3]),
+                wm[4] ? Number(wm[4]) : 23, wm[5] ? Number(wm[5]) : 59, 59).getTime();
+              expired = endTs > 0 && endTs < Date.now();
+            }
+          }
           if (done && hasWork) rec.state = 'conflict';
           else if (hasWork) rec.state = 'has-work';
           else if (locked) rec.state = 'locked';
           else if (done) rec.state = 'completed';
           else if (countKnown && count === 0) rec.state = 'zero-task';
+          else if (yiZero) rec.state = 'zero-task';
           else rec.state = 'unreadable';
           rec.count = countKnown ? count : 'NaN';
           rec.done = done;
           rec.hasClick = !!click;
           rec.pendingText = pendingText;
           rec.locked = locked;
+          rec.expired = expired;
+          rec.tip = tipText.slice(0, 140);
           /**
            * P3 自愈：目录说这一节 0/已完成/锁定/读不出，但**当前页**已经挂出了
            * 未完成任务点（`_getChaoxingAttachments()` 非空且当前节未完成）——
@@ -7748,6 +7781,14 @@ var OMITONE_CODE_REV = '857b894008';
         return false;
       }
       this._ocsStudyStarted = true;
+      // ⚠️ 这一轮的身份。循环的**每个出口**都要把旗子放倒 —— 现场实测（2026-11-28）：
+      // `nextUnit()` 走「课程尽头探针 pending、这一拍先认领」那条路时会在
+      // `_resetRuntimeState()` 之前 return，而老实现只在异常/几个特定出口清旗；
+      // 循环正常跑完后旗子留在 true，`_ensureOcsStudyRunner` 从此每次直接 return true，
+      // 整页再也不开新一轮（现场读回：旗子 true、10 分钟一条 `study begin` 都没有）。
+      // 令牌保证迟到的旧循环不会把**新**一轮的旗子放倒。
+      var runToken = {};
+      this._ocsStudyRunToken = runToken;
       var version = this._runtimeVersion || 0;
       var self = this;
       (async function () {
@@ -8061,6 +8102,11 @@ var OMITONE_CODE_REV = '857b894008';
           self._ocsStudyStarted = false;
           emitRuntimeLog('error', 'study runner error', { message: e && e.message ? e.message : String(e) });
           throw e;
+        } finally {
+          if (self._ocsStudyRunToken === runToken) {
+            self._ocsStudyStarted = false;
+            self._ocsStudyRunToken = null;
+          }
         }
       })();
       return true;
@@ -10915,7 +10961,21 @@ var OMITONE_CODE_REV = '857b894008';
      */
     _isCourseAtEnd: function (scan) {
       var s = scan || this._catalogCourseScan();
-      if (!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      if (!(s && s.ready && s.leaves > 0)) return false;
+      var idx = s.index && s.index.counts && s.index.rows ? s.index : null;
+      if (idx) {
+        // 七态索引在场时以它为准：还有可做的、读不出的、或未到开放时间的锁定节，
+        // 都不算尽头；`zero-task` 与「窗口已过」的锁定节不拦。
+        var cnt = idx.counts;
+        if ((cnt['has-work'] || 0) > 0 || (cnt.conflict || 0) > 0 || (cnt.unreadable || 0) > 0) return false;
+        if (Number(s.activeLeft) > 0) return false;
+        var idxRows = idx.rows || [];
+        for (var ri = 0; ri < idxRows.length; ri++) {
+          if (idxRows[ri].state === 'locked' && !idxRows[ri].expired) return false;
+        }
+      } else {
+        if (!(s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      }
       // 目录只记录章节叶子，当前章节里的必做作业/考试可能仍未交；附件清单与任务点调度同源。
       try {
         var attachments = this._getChaoxingAttachments ? this._getChaoxingAttachments() : [];
@@ -11056,10 +11116,40 @@ var OMITONE_CODE_REV = '857b894008';
       if (!this._isCourseAtEnd(scan)) return false;
       var homeVeto = this._courseHomeVeto(scan, Date.now());
       if (homeVeto.state !== 'ok' && homeVeto.state !== 'unknown') {
+        /**
+         * 课程首页的 X/Y 会把「开放窗口已过」的任务点一直算在分母里（现场 18/26，
+         * 差的 8 个全是 2026-06-12 就到期的锁定节），`need` 因此永远消不掉。
+         * 只有目录自己证明「剩下的未完成全是已过期锁定节」时才放行；读不出/
+         * 还有可做的/未到开放时间的锁定一律照旧拦住。
+         */
+        var expiredOnly = false;
+        var expiredN = 0;
+        try {
+          var idxEnd = scan && scan.index;
+          if (homeVeto.state === 'need' && idxEnd && idxEnd.counts && idxEnd.rows) {
+            var cEnd = idxEnd.counts;
+            expiredOnly = (cEnd['has-work'] || 0) === 0 && (cEnd.conflict || 0) === 0 &&
+              (cEnd.unreadable || 0) === 0 && !(Number(scan.activeLeft) > 0);
+            var rowsEnd = idxEnd.rows || [];
+            for (var ri = 0; ri < rowsEnd.length; ri++) {
+              if (rowsEnd[ri].state !== 'locked') continue;
+              if (!rowsEnd[ri].expired) { expiredOnly = false; break; }
+              expiredN++;
+            }
+            if (expiredN === 0) expiredOnly = false;
+          }
+        } catch (eExpired) { expiredOnly = false; expiredN = 0; }
         var nowVeto = Date.now();
         if (!this._courseEndProbeLogAt || nowVeto - this._courseEndProbeLogAt > 60000) {
           this._courseEndProbeLogAt = nowVeto;
-          if (homeVeto.state === 'pending') {
+          if (expiredOnly) {
+            emitRuntimeLog('info', 'course leave despite course-home need, remaining expired', {
+              hint: '站点课程首页的任务点没满，但目录里剩下的未完成小节开放窗口都已过去，不能再补；这一门按刷完换走',
+              jobs: String((homeVeto.row && homeVeto.row.jobs) || ''),
+              expired: expiredN,
+              why: 'all-remaining-expired'
+            });
+          } else if (homeVeto.state === 'pending') {
             emitRuntimeLog('info', 'course end probe pending', {
               hint: '目录全勾了，但先问一次站点自己的课程首页「任务点 X/Y」再换课；最多等 24 秒',
               courseId: String(scan.courseId || ''),
@@ -11079,7 +11169,7 @@ var OMITONE_CODE_REV = '857b894008';
           }
         }
         if (homeVeto.state === 'pending') return true;
-        if (homeVeto.state === 'need' || homeVeto.state === 'unreadable') return false;
+        if (!expiredOnly && (homeVeto.state === 'need' || homeVeto.state === 'unreadable')) return false;
       }
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
       this._courseSwitchAt = Date.now();
@@ -11090,6 +11180,14 @@ var OMITONE_CODE_REV = '857b894008';
         rev: this._codeRev(),
         activeLeft: Number(scan.activeLeft) > 0 ? scan.activeLeft : 0
       };
+      try {
+        if (scan.index && scan.index.counts) {
+          ev.hasWork = scan.index.counts['has-work'] || 0;
+          ev.zeroTask = scan.index.counts['zero-task'] || 0;
+          ev.locked = scan.index.counts.locked || 0;
+          ev.unreadable = scan.index.counts.unreadable || 0;
+        }
+      } catch (eEv) {}
       if (!this.configs.autoNextCourse) {
         emitRuntimeLog('warn', 'course finished, auto switch is off', Object.assign({
           hint: '目录里 ' + scan.leaves + ' 个小节全打了完成勾、站点的「下一节」也点不动 —— 这一门**刷完了**。' +

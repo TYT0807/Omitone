@@ -12701,7 +12701,15 @@ async function testCatalogLeafStates() {
       querySelector: function (sel) {
         if (sel.indexOf('icon_Completed') >= 0) return o.done ? {} : null;
         if (sel.indexOf('posCatalog_name') >= 0) return o.noClick ? null : {};
-        if (sel.indexOf('catalog_points_yi') >= 0) return o.pendingText ? { text: '1个待完成任务点1' } : null;
+        if (sel.indexOf('catalog_points_er') >= 0 || sel.indexOf('tipTime') >= 0) {
+          return o.tip === undefined ? null : { textContent: o.tip, text: o.tip };
+        }
+        if (sel.indexOf('orangeNew') >= 0) return o.orange === undefined ? null : { text: String(o.orange) };
+        if (sel.indexOf('catalog_points_yi') >= 0) {
+          if (o.pendingText) return { text: '1个待完成任务点1' };
+          if (o.yiText !== undefined) return { text: String(o.yiText) };
+          return null;
+        }
         if (sel.indexOf('jobUnfinishCount') >= 0) return o.count === undefined ? null : { value: o.count };
         return null;
       }
@@ -12718,10 +12726,16 @@ async function testCatalogLeafStates() {
     fake({ id: 'cur7', pendingText: true }),
     fake({ id: 'cur8', done: true, pendingText: true }),
     fake({ id: 'cur9', count: 'abc' }),
-    fake({ id: 'cur10', count: '1', noClick: true })
+    fake({ id: 'cur10', count: '1', noClick: true }),
+    // 现场（本科体育 2.1/2.1.1.x）：锁定原话藏在 hover 提示里，innerText 读不到；窗口已过要能分开。
+    fake({ id: 'cur11', tip: '本章节暂未开放，不能查看。开放时间： 2026-05-21 22:56 至 2026-06-12 22:56' }),
+    fake({ id: 'cur12', tip: '本章节暂未开放，不能查看。开放时间： 2099-05-21 22:56 至 2099-06-12 22:56' }),
+    // 现场（2.1.2 / 2.1.2.1）：可点、没有 input，行内显式写着 0。
+    fake({ id: 'cur13', yiText: '0' }),
+    fake({ id: 'cur14', orange: '2' })
   ];
   var out = statesFn.call(app, rows);
-  check('52-A 十行全部有状态，total=10', out.total === 10 && out.rows.length === 10 && Object.keys(out.counts).length === 6,
+  check('52-A 十四行全部有状态，total=14', out.total === 14 && out.rows.length === 14 && Object.keys(out.counts).length === 6,
     JSON.stringify({ total: out.total, rows: out.rows.length, counts: out.counts }));
   function stateOf(id) { var hit = out.rows.filter(function (r) { return r.id === id; })[0]; return hit && hit.state; }
   check('52-B 勾 + 无计数 → completed；显式 0 且无其他标记 → zero-task',
@@ -12736,10 +12750,19 @@ async function testCatalogLeafStates() {
     stateOf('cur9') === 'unreadable', JSON.stringify({ state: stateOf('cur9'), row: out.rows.filter(function (r) { return r.id === 'cur9'; })[0] }));
   check('52-G 有计数但目录叶没有 getTeacherAjax 可点目标 → 仍是 has-work（计数是硬证据）',
     stateOf('cur10') === 'has-work', JSON.stringify(out.rows.filter(function (r) { return r.id === 'cur10'; })[0]));
-  check('52-H 计数汇总逐格对得上（completed 1 / has-work 3 / locked 1 / unreadable 2 / zero-task 1 / conflict 2）',
-    out.counts.completed === 1 && out.counts['has-work'] === 3 && out.counts.locked === 1 &&
-    out.counts.unreadable === 2 && out.counts['zero-task'] === 1 && out.counts.conflict === 2,
+  check('52-H 计数汇总逐格对得上（completed 1 / has-work 4 / locked 3 / unreadable 2 / zero-task 2 / conflict 2）',
+    out.counts.completed === 1 && out.counts['has-work'] === 4 && out.counts.locked === 3 &&
+    out.counts.unreadable === 2 && out.counts['zero-task'] === 2 && out.counts.conflict === 2,
     JSON.stringify(out.counts));
+  var rowOf = function (id) { return out.rows.filter(function (r) { return r.id === id; })[0] || {}; };
+  check('52-K 锁定原话只在隐藏提示里也能认出来；窗口已过 → expired=true，未到开放时间 → expired=false',
+    rowOf('cur11').state === 'locked' && rowOf('cur11').expired === true &&
+    rowOf('cur12').state === 'locked' && rowOf('cur12').expired === false &&
+    rowOf('cur3').state === 'locked' && rowOf('cur3').expired === false,
+    JSON.stringify({ cur11: rowOf('cur11'), cur12: rowOf('cur12'), cur3: rowOf('cur3') }));
+  check('52-L 行内显式 0（catalog_points_yi=0）→ zero-task；orangeNew>0 → has-work',
+    rowOf('cur13').state === 'zero-task' && rowOf('cur14').state === 'has-work',
+    JSON.stringify({ cur13: rowOf('cur13'), cur14: rowOf('cur14') }));
 
   // P3：当前叶目录写 0/已完成，但页面已经挂出附件且当前节未完成 → 以页面活证据升 has-work。
   var curRow = fake({ id: 'cur20', count: '0' });
@@ -12841,12 +12864,12 @@ async function testCourseLeaveUnreadable() {
   check('54-0 取出课程离开闸', typeof leave === 'function', JSON.stringify({ fn: typeof leave }));
   if (typeof leave !== 'function') return;
 
-  function appWith(state) {
+  function appWith(state, index) {
     return {
       _discussionPendingInfo: function () { return { blocked: 0 }; },
-      _catalogCourseScan: function () { return { courseId: '900000001', leaves: 1, unfinished: 0, activeLeft: NaN }; },
+      _catalogCourseScan: function () { return { courseId: '900000001', leaves: 15, unfinished: 12, activeLeft: NaN, index: index || null }; },
       _isCourseAtEnd: function () { return true; },
-      _courseHomeVeto: function () { return { state: state, why: 'probe-fail' }; },
+      _courseHomeVeto: function () { return { state: state, why: 'probe-fail', row: { jobs: '18/26' } }; },
       _courseSwitchAt: 0,
       configs: { autoNextCourse: true },
       _codeRev: function () { return ''; },
@@ -12865,6 +12888,142 @@ async function testCourseLeaveUnreadable() {
     rNeed === false && !need.navigated, JSON.stringify({ ret: rNeed }));
   check('54-C 探针还没答（pending）→ 这一拍认领、不导航（原有行为保持）',
     rPending === true && !pending.navigated, JSON.stringify({ ret: rPending }));
+
+  // #51 现场（本科体育）：课程首页 18/26 差的那 8 个任务点全在「开放窗口已过」的锁定节里，
+  // 分母永远消不掉。只有目录自己证明「剩余未完成全是过期锁定」时才允许离开。
+  var expiredIdx = {
+    counts: { 'has-work': 0, conflict: 0, locked: 3, unreadable: 0, completed: 10, 'zero-task': 2 },
+    rows: [{ state: 'locked', expired: true }, { state: 'locked', expired: true }, { state: 'locked', expired: true }]
+  };
+  var mixedIdx = {
+    counts: { 'has-work': 0, conflict: 0, locked: 2, unreadable: 0, completed: 10, 'zero-task': 2 },
+    rows: [{ state: 'locked', expired: true }, { state: 'locked', expired: false }]
+  };
+  var workIdx = {
+    counts: { 'has-work': 1, conflict: 0, locked: 1, unreadable: 0, completed: 10, 'zero-task': 2 },
+    rows: [{ state: 'locked', expired: true }]
+  };
+  var needExpired = appWith('need', expiredIdx);
+  var needMixed = appWith('need', mixedIdx);
+  var needWork = appWith('need', workIdx);
+  var rNeedExpired = leave.call(needExpired, 'test');
+  var rNeedMixed = leave.call(needMixed, 'test');
+  var rNeedWork = leave.call(needWork, 'test');
+  check('54-D 课程首页 need，但目录剩余全是已过期锁定节 → 允许离开（过期任务点不能补交）',
+    rNeedExpired === true && needExpired.navigated === true, JSON.stringify({ ret: rNeedExpired }));
+  check('54-E need + 还有一个未到开放时间的锁定节 → 不离开',
+    rNeedMixed === false && !needMixed.navigated, JSON.stringify({ ret: rNeedMixed }));
+  check('54-F need + 还有可做小节（has-work）→ 不离开',
+    rNeedWork === false && !needWork.navigated, JSON.stringify({ ret: rNeedWork }));
+}
+
+async function testCourseAtEndByIndex() {
+  console.log('\n[55] 课程尽头判定走七态索引：过期锁定与 0 任务点不拦，读不出/未到期/可做才拦');
+
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = loop.indexOf('_isCourseAtEnd: function');
+  var start = at >= 0 ? loop.indexOf('function', at) : -1;
+  var end = start >= 0 ? loop.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('55-0 取出课程尽头判定', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var fn = Reflect.construct(Function, ['return (' + loop.slice(start, end) + '\n    })'])();
+  check('55-0 取出课程尽头判定', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  if (typeof fn !== 'function') return;
+
+  function app(attachments) {
+    return {
+      _getChaoxingAttachments: function () { return attachments || []; },
+      _kindFromAttachment: function (a) { return a && a.kind; },
+      _getAttachmentWorkType: function (a) { return a && a.workType; }
+    };
+  }
+  function mkScan(index) {
+    return { ready: true, leaves: 15, unfinished: 12, activeLeft: NaN, courseId: '900000001', index: index };
+  }
+  var clean = {
+    counts: { 'has-work': 0, conflict: 0, locked: 3, unreadable: 0, completed: 10, 'zero-task': 2 },
+    rows: [{ state: 'locked', expired: true }, { state: 'locked', expired: true }]
+  };
+  function variant(mut) {
+    var copy = JSON.parse(JSON.stringify(clean));
+    mut(copy);
+    return copy;
+  }
+
+  check('55-A 只剩已完成/0 任务点/已过期锁定 → 尽头成立（unfinished=12 不再是否决依据）',
+    fn.call(app(), mkScan(clean)) === true, JSON.stringify({ atEnd: fn.call(app(), mkScan(clean)) }));
+
+  var busy = variant(function (c) { c.counts['has-work'] = 1; });
+  var unread = variant(function (c) { c.counts.unreadable = 1; });
+  check('55-B 还有可做小节（has-work）或读不出的叶 → 不认尽头',
+    fn.call(app(), mkScan(busy)) === false && fn.call(app(), mkScan(unread)) === false,
+    JSON.stringify({ busy: fn.call(app(), mkScan(busy)), unread: fn.call(app(), mkScan(unread)) }));
+
+  var future = variant(function (c) { c.rows.push({ state: 'locked', expired: false }); });
+  var leftBusy = mkScan(clean); leftBusy.activeLeft = 1;
+  check('55-C 锁定但未到开放时间 / 当前节还有剩余任务点 → 不认尽头',
+    fn.call(app(), mkScan(future)) === false && fn.call(app(), leftBusy) === false,
+    JSON.stringify({ future: fn.call(app(), mkScan(future)), activeLeft: fn.call(app(), leftBusy) }));
+
+  check('55-D 目录干净但当前章还有未交作业（quiz job）→ 不认尽头',
+    fn.call(app([{ kind: 'quiz', workType: 'job' }]), mkScan(clean)) === false,
+    JSON.stringify({ atEnd: fn.call(app([{ kind: 'quiz', workType: 'job' }]), mkScan(clean)) }));
+
+  var noIdx0 = { ready: true, leaves: 3, unfinished: 0, activeLeft: NaN, courseId: '900000001' };
+  var noIdx2 = { ready: true, leaves: 3, unfinished: 2, activeLeft: NaN, courseId: '900000001' };
+  check('55-E 没有索引时退回旧判据：unfinished=0 才成立，2 不成立',
+    fn.call(app(), noIdx0) === true && fn.call(app(), noIdx2) === false,
+    JSON.stringify({ zero: fn.call(app(), noIdx0), two: fn.call(app(), noIdx2) }));
+}
+
+async function testOcsRunnerFlagReleased() {
+  console.log('\n[56] OCS 循环任何出口都要放倒 _ocsStudyStarted（否则整页再也起不了新一轮）');
+
+  var detect = fs.readFileSync(path.join(ROOT, 'src/page/60-tasks-detect.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = detect.indexOf('_ensureOcsStudyRunner: function');
+  var start = at >= 0 ? detect.indexOf('function', at) : -1;
+  var end = start >= 0 ? detect.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('56-0 取出 OCS 循环启动器', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var logs = [];
+  var fn = Reflect.construct(Function, ['sleep', 'emitRuntimeLog', 'scaledMs',
+    'return (' + detect.slice(start, end) + '\n    })'])(
+    function () { return Promise.resolve(); },
+    function (level, msg) { logs.push({ level: level, msg: msg }); },
+    function (ms) { return ms; }
+  );
+  check('56-0 取出 OCS 循环启动器', typeof fn === 'function', JSON.stringify({ fn: typeof fn }));
+  if (typeof fn !== 'function') return;
+
+  var app = {
+    _ocsStudyStarted: false,
+    _runtimeVersion: 7,
+    _getMainWindow: function () { return {}; },
+    _safeWinDoc: function () { return {}; },
+    _getChaoxingAttachments: function () { return []; },
+    _tickProgress: function () {},
+    _isActiveStudyJobPending: function () { return false; },
+    _searchChaoxingJobOcs: function () { return null; },
+    _isQuizLearningPending: function () { return false; },
+    _shouldHoldDiscussionBeforeFinish: function () { return { hold: false, pending: 0 }; },
+    _noteOcsDiscoveryTick: function () { return false; },
+    _taskDiscoveryWindowMs: function () { return 0; },
+    configs: { autoNext: false },
+    nextUnit: function () { this.nextUnitCalls = (this.nextUnitCalls || 0) + 1; }
+  };
+  var started = fn.call(app);
+  check('56-A 空闲页会启动一轮（旗子置真、令牌留下）',
+    started === true && app._ocsStudyStarted === true && !!app._ocsStudyRunToken,
+    JSON.stringify({ started: started, flag: app._ocsStudyStarted, token: !!app._ocsStudyRunToken }));
+
+  await new Promise(function (r) { setTimeout(r, 60); });
+  check('56-B 这一轮正常跑完后旗子必须放倒、令牌清空（老实现留 true → 整页永远起不了新一轮）',
+    app._ocsStudyStarted === false && app._ocsStudyRunToken === null,
+    JSON.stringify({ flag: app._ocsStudyStarted, token: app._ocsStudyRunToken, logs: logs.slice(-3) }));
 }
 
 async function main() {
@@ -12938,6 +13097,8 @@ async function main() {
   await testCatalogLeafStates();
   await testCatalogJumpByState();
   await testCourseLeaveUnreadable();
+  await testCourseAtEndByIndex();
+  await testOcsRunnerFlagReleased();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

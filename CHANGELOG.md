@@ -8,6 +8,33 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 252 · 2026-11-28 · P5 现场：过期锁定节不再把课程钉死 + OCS 循环僵尸旗
+
+- 现场（本科体育 212743054）量到：`2.1` / `2.1.1.x` 的「本章节暂未开放…开放时间：2026-05-21 至 2026-06-12」
+  藏在 hover 提示 `span.catalog_points_er` 里，`innerText` 读不到 —— 索引把 10 个节全读成 `unreadable`；
+  课程首页 `need 18/26` 差的 8 个任务点正是这批已过期节，于是 `unfinished` 永远 >0、离开闸永远 `need`，
+  这一门既到不了尽头也换不走。
+- `_catalogLeafStates`：锁定原话改从 `catalog_points_er / tipTime` 的 `textContent` 读；按
+  「至 YYYY-MM-DD HH:MM」解析开放窗口并给出 `expired`（已过 / 未到分开）；显式
+  `catalog_points_yi=0` 认 `zero-task`；`orangeNew>0` 算 `has-work`。
+- `_isCourseAtEnd` 改走七态索引：`has-work / conflict / unreadable`、未到开放时间的 `locked`、
+  当前节 `activeLeft>0` 才否决；`zero-task` 与已过期 `locked` 不拦；索引取不到时退回旧
+  `unfinished===0` 判据。
+- `_leaveFinishedCourse`：课程首页 `need` 但目录自己证明「剩余未完成全是已过期锁定节」时允许离开，
+  日志 `course leave despite course-home need, remaining expired`；未到期锁定、读不出、还有可做的一律照旧拦住。
+- 现场同轮抓到第二个缺陷：`nextUnit()` 走「课程尽头探针 pending、这一拍先认领」时会在
+  `_resetRuntimeState()` 之前 return，而 OCS 循环正常跑完后没人把 `_ocsStudyStarted` 放倒 ——
+  旗子永远为真、整页再也不开新一轮（现场读回旗子 true、10 分钟一条 `study begin` 都没有）。
+  改成运行令牌 + `finally`：任何出口都放旗，迟到的旧循环不会放倒新一轮的旗。
+- 现场验收：212743054 七态 = completed 14 / locked 10（全 expired）/ zero-task 2 / unreadable 0 /
+  has-work 0，`_isCourseAtEnd=true`；在 `need 18/26` 下离开并换到 260986887（用户中心日志带
+  `omitonePick=1&omitoneDone=212743054`）；新课 158 叶 = completed 151 / has-work 7 / unreadable 0。
+- 集成 [52] 补 K/L（隐藏提示 + expired、显式 0、orangeNew）、[54] 补 D/E/F（need + 全过期放行 /
+  未到期拦住 / 有活拦住）、[55] 六格（索引尽头判定）、[56] 三格（循环放旗）；四刀反向验证：
+  A → 56-B、B → 52-K（52-H 计数汇总合法连带）、C → 55-C、D → 54-D，各自只红该红的那一格。
+  集成 **920 / 920**；全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（目录判据与换课闸，门面那页没有对应承诺）
+
 ### 批次 251 · 2026-11-28 · P4：课程首页读不出时不再换课
 
 - `_courseHomeVeto` 把 `blocked` 也归入 `unreadable`，不再被当成 `ok`。

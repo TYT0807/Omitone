@@ -858,7 +858,21 @@
      */
     _isCourseAtEnd: function (scan) {
       var s = scan || this._catalogCourseScan();
-      if (!(s && s.ready && s.leaves > 0 && s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      if (!(s && s.ready && s.leaves > 0)) return false;
+      var idx = s.index && s.index.counts && s.index.rows ? s.index : null;
+      if (idx) {
+        // 七态索引在场时以它为准：还有可做的、读不出的、或未到开放时间的锁定节，
+        // 都不算尽头；`zero-task` 与「窗口已过」的锁定节不拦。
+        var cnt = idx.counts;
+        if ((cnt['has-work'] || 0) > 0 || (cnt.conflict || 0) > 0 || (cnt.unreadable || 0) > 0) return false;
+        if (Number(s.activeLeft) > 0) return false;
+        var idxRows = idx.rows || [];
+        for (var ri = 0; ri < idxRows.length; ri++) {
+          if (idxRows[ri].state === 'locked' && !idxRows[ri].expired) return false;
+        }
+      } else {
+        if (!(s.unfinished === 0 && !(Number(s.activeLeft) > 0))) return false;
+      }
       // 目录只记录章节叶子，当前章节里的必做作业/考试可能仍未交；附件清单与任务点调度同源。
       try {
         var attachments = this._getChaoxingAttachments ? this._getChaoxingAttachments() : [];
@@ -999,10 +1013,40 @@
       if (!this._isCourseAtEnd(scan)) return false;
       var homeVeto = this._courseHomeVeto(scan, Date.now());
       if (homeVeto.state !== 'ok' && homeVeto.state !== 'unknown') {
+        /**
+         * 课程首页的 X/Y 会把「开放窗口已过」的任务点一直算在分母里（现场 18/26，
+         * 差的 8 个全是 2026-06-12 就到期的锁定节），`need` 因此永远消不掉。
+         * 只有目录自己证明「剩下的未完成全是已过期锁定节」时才放行；读不出/
+         * 还有可做的/未到开放时间的锁定一律照旧拦住。
+         */
+        var expiredOnly = false;
+        var expiredN = 0;
+        try {
+          var idxEnd = scan && scan.index;
+          if (homeVeto.state === 'need' && idxEnd && idxEnd.counts && idxEnd.rows) {
+            var cEnd = idxEnd.counts;
+            expiredOnly = (cEnd['has-work'] || 0) === 0 && (cEnd.conflict || 0) === 0 &&
+              (cEnd.unreadable || 0) === 0 && !(Number(scan.activeLeft) > 0);
+            var rowsEnd = idxEnd.rows || [];
+            for (var ri = 0; ri < rowsEnd.length; ri++) {
+              if (rowsEnd[ri].state !== 'locked') continue;
+              if (!rowsEnd[ri].expired) { expiredOnly = false; break; }
+              expiredN++;
+            }
+            if (expiredN === 0) expiredOnly = false;
+          }
+        } catch (eExpired) { expiredOnly = false; expiredN = 0; }
         var nowVeto = Date.now();
         if (!this._courseEndProbeLogAt || nowVeto - this._courseEndProbeLogAt > 60000) {
           this._courseEndProbeLogAt = nowVeto;
-          if (homeVeto.state === 'pending') {
+          if (expiredOnly) {
+            emitRuntimeLog('info', 'course leave despite course-home need, remaining expired', {
+              hint: '站点课程首页的任务点没满，但目录里剩下的未完成小节开放窗口都已过去，不能再补；这一门按刷完换走',
+              jobs: String((homeVeto.row && homeVeto.row.jobs) || ''),
+              expired: expiredN,
+              why: 'all-remaining-expired'
+            });
+          } else if (homeVeto.state === 'pending') {
             emitRuntimeLog('info', 'course end probe pending', {
               hint: '目录全勾了，但先问一次站点自己的课程首页「任务点 X/Y」再换课；最多等 24 秒',
               courseId: String(scan.courseId || ''),
@@ -1022,7 +1066,7 @@
           }
         }
         if (homeVeto.state === 'pending') return true;
-        if (homeVeto.state === 'need' || homeVeto.state === 'unreadable') return false;
+        if (!expiredOnly && (homeVeto.state === 'need' || homeVeto.state === 'unreadable')) return false;
       }
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
       this._courseSwitchAt = Date.now();
@@ -1033,6 +1077,14 @@
         rev: this._codeRev(),
         activeLeft: Number(scan.activeLeft) > 0 ? scan.activeLeft : 0
       };
+      try {
+        if (scan.index && scan.index.counts) {
+          ev.hasWork = scan.index.counts['has-work'] || 0;
+          ev.zeroTask = scan.index.counts['zero-task'] || 0;
+          ev.locked = scan.index.counts.locked || 0;
+          ev.unreadable = scan.index.counts.unreadable || 0;
+        }
+      } catch (eEv) {}
       if (!this.configs.autoNextCourse) {
         emitRuntimeLog('warn', 'course finished, auto switch is off', Object.assign({
           hint: '目录里 ' + scan.leaves + ' 个小节全打了完成勾、站点的「下一节」也点不动 —— 这一门**刷完了**。' +
