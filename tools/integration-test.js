@@ -12673,6 +12673,75 @@ async function testCatalogUnfinishedCount() {
   }
 }
 
+async function testCatalogLeafStates() {
+  console.log('\n[52] 目录逐叶七态：冲突优先、显式 0 才算 zero-task、脏值落 unreadable');
+
+  var detect = fs.readFileSync(path.join(ROOT, 'src/page/60-tasks-detect.js'), 'utf8').replace(/\r\n/g, '\n');
+  function build(name, inj) {
+    var at = detect.indexOf(name + ': function');
+    var start = at >= 0 ? detect.indexOf('function', at) : -1;
+    var end = start >= 0 ? detect.indexOf('\n    },', start) : -1;
+    if (start < 0 || end <= start) return null;
+    var names = Object.keys(inj || {});
+    var made = Reflect.construct(Function, names.concat(['return (' + detect.slice(start, end) + '\n    })']));
+    return made.apply(null, names.map(function (k) { return inj[k]; }));
+  }
+  var countFn = build('_catalogUnfinishedCount');
+  var statesFn = build('_catalogLeafStates', { textOf: function (el) { return String(el && el.text || ''); } });
+  check('52-0 取出目录七态索引', typeof statesFn === 'function' && typeof countFn === 'function',
+    JSON.stringify({ states: typeof statesFn, count: typeof countFn }));
+  if (typeof statesFn !== 'function' || typeof countFn !== 'function') return;
+  var app = { _catalogUnfinishedCount: countFn };
+
+  function fake(o) {
+    return {
+      id: o.id || 'cur' + Math.random(),
+      className: o.className || '',
+      text: o.text || '',
+      querySelector: function (sel) {
+        if (sel.indexOf('icon_Completed') >= 0) return o.done ? {} : null;
+        if (sel.indexOf('posCatalog_name') >= 0) return o.noClick ? null : {};
+        if (sel.indexOf('catalog_points_yi') >= 0) return o.pendingText ? { text: '1个待完成任务点1' } : null;
+        if (sel.indexOf('jobUnfinishCount') >= 0) return o.count === undefined ? null : { value: o.count };
+        return null;
+      }
+    };
+  }
+
+  var rows = [
+    fake({ id: 'cur1', done: true }),
+    fake({ id: 'cur2', count: '1' }),
+    fake({ id: 'cur3', text: '本章节暂未开放，不能查看' }),
+    fake({ id: 'cur4' }),
+    fake({ id: 'cur5', count: '0' }),
+    fake({ id: 'cur6', done: true, count: '1' }),
+    fake({ id: 'cur7', pendingText: true }),
+    fake({ id: 'cur8', done: true, pendingText: true }),
+    fake({ id: 'cur9', count: 'abc' }),
+    fake({ id: 'cur10', count: '1', noClick: true })
+  ];
+  var out = statesFn.call(app, rows);
+  check('52-A 十行全部有状态，total=10', out.total === 10 && out.rows.length === 10 && Object.keys(out.counts).length === 6,
+    JSON.stringify({ total: out.total, rows: out.rows.length, counts: out.counts }));
+  function stateOf(id) { var hit = out.rows.filter(function (r) { return r.id === id; })[0]; return hit && hit.state; }
+  check('52-B 勾 + 无计数 → completed；显式 0 且无其他标记 → zero-task',
+    stateOf('cur1') === 'completed' && stateOf('cur5') === 'zero-task', JSON.stringify(out.rows.map(function (r) { return [r.id, r.state]; })));
+  check('52-C 有计数 → has-work；只有「待完成任务点」文字也算 has-work',
+    stateOf('cur2') === 'has-work' && stateOf('cur7') === 'has-work', JSON.stringify(out.rows.map(function (r) { return [r.id, r.state]; })));
+  check('52-D 锁定文字 → locked；没有计数/勾/锁定 → unreadable',
+    stateOf('cur3') === 'locked' && stateOf('cur4') === 'unreadable', JSON.stringify(out.rows.map(function (r) { return [r.id, r.state]; })));
+  check('52-E 勾 + 未完成计数同时在场 → conflict（勾不许压过未完成证据）',
+    stateOf('cur6') === 'conflict' && stateOf('cur8') === 'conflict', JSON.stringify(out.rows.map(function (r) { return [r.id, r.state]; })));
+  check('52-F 脏值 abc → unreadable，不是 zero-task',
+    stateOf('cur9') === 'unreadable', JSON.stringify({ state: stateOf('cur9'), row: out.rows.filter(function (r) { return r.id === 'cur9'; })[0] }));
+  check('52-G 有计数但目录叶没有 getTeacherAjax 可点目标 → 仍是 has-work（计数是硬证据）',
+    stateOf('cur10') === 'has-work', JSON.stringify(out.rows.filter(function (r) { return r.id === 'cur10'; })[0]));
+  check('52-H 计数汇总逐格对得上（completed 1 / has-work 3 / locked 1 / unreadable 2 / zero-task 1 / conflict 2）',
+    out.counts.completed === 1 && out.counts['has-work'] === 3 && out.counts.locked === 1 &&
+    out.counts.unreadable === 2 && out.counts['zero-task'] === 1 && out.counts.conflict === 2,
+    JSON.stringify(out.counts));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12741,6 +12810,7 @@ async function main() {
   await testCourseCardEndedByText();
   await testCourseHomeVeto();
   await testCatalogUnfinishedCount();
+  await testCatalogLeafStates();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

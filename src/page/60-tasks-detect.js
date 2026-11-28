@@ -14,9 +14,9 @@
  *    （等页面版本号变化才退出），里面还可能有 `await job.func()`。它们都调了
  *    `this._tickProgress(...)` 刷心跳 —— **别删**，否则正常推进的一轮会被看门狗当成卡死。
  *
- * 本段的方法（48 个）：
+ * 本段的方法（49 个）：
  *   _detectPageChange、_isCurrentCompleted、_skipIfCompleted、_hasTaskPoint、
- *   _catalogItemForChapter、_catalogUnfinishedCount、_catalogCourseScan、
+ *   _catalogItemForChapter、_catalogUnfinishedCount、_catalogLeafStates、_catalogCourseScan、
  *   _classifyTaskFrame、_collectVisibleTaskFrames、_getChaoxingAttachments、
  *   _getChaoxingFrameData、_findJobIdInAncestorFrames、_detectChaoxingJobElements、
  *   _matchChaoxingAttachment、_kindFromAttachment、_kindFromChaoxingElements、
@@ -182,6 +182,63 @@
     },
 
     /**
+     * P1（批次 248）：逐叶七态索引 —— **只读**，先不改变任何推进顺序。
+     *
+     * 用来把现在混在 `unfinished` 里的四类东西分开：
+     *   conflict / has-work / locked / unreadable / completed / zero-task（外加 total）。
+     * 判据优先级：conflict > has-work > locked > completed > zero-task > unreadable。
+     * `zero-task` 只认**显式 0**；没有 input / NaN / 文字读不出都是 unreadable，不是 0。
+     * ⚠️ 这一版只负责“读得回来”；nextUnit 仍走批次 246 的补刷，离开仍走原闸。
+     */
+    _catalogLeafStates: function (items) {
+      var list = [];
+      try { list = Array.prototype.slice.call(items || []); } catch (e0) { list = []; }
+      var counts = { conflict: 0, 'has-work': 0, locked: 0, unreadable: 0, completed: 0, 'zero-task': 0 };
+      var rows = [];
+      for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+        var rec = { id: '', text: '', state: 'unreadable', count: 'NaN' };
+        try {
+          rec.id = String(item.id || '');
+          rec.text = textOf(item).slice(0, 120);
+          var done = false;
+          try { done = !!item.querySelector('.icon_Completed, .icon_completed'); } catch (eDone) { done = false; }
+          var click = null;
+          try { click = item.querySelector('.posCatalog_name[onclick*="getTeacherAjax"]'); } catch (eClick) { click = null; }
+          var pendingText = false;
+          try {
+            var yi = item.querySelector('.catalog_points_yi');
+            if (yi) {
+              var nums = String(textOf(yi)).match(/\d+/g) || [];
+              for (var n = 0; n < nums.length; n++) if (Number(nums[n]) > 0) { pendingText = true; break; }
+            }
+          } catch (eYi) { pendingText = false; }
+          var count = this._catalogUnfinishedCount(item);
+          var countKnown = !isNaN(count);
+          var hasWork = (countKnown && count > 0) || pendingText;
+          var locked = /需完成之前闯关任务点|未解锁|暂未开放|已关闭|locked/i.test(String(item.className || '') + ' ' + rec.text);
+          if (done && hasWork) rec.state = 'conflict';
+          else if (hasWork) rec.state = 'has-work';
+          else if (locked) rec.state = 'locked';
+          else if (done) rec.state = 'completed';
+          else if (countKnown && count === 0) rec.state = 'zero-task';
+          else rec.state = 'unreadable';
+          rec.count = countKnown ? count : 'NaN';
+          rec.done = done;
+          rec.hasClick = !!click;
+          rec.pendingText = pendingText;
+          rec.locked = locked;
+        } catch (eRec) {
+          rec.err = String(eRec && eRec.message || eRec).slice(0, 120);
+        }
+        counts[rec.state] = (counts[rec.state] || 0) + 1;
+        rows.push(rec);
+      }
+      return { total: list.length, counts: counts, rows: rows };
+    },
+
+
+    /**
      * 批次 82-A：**整门课**还有没有小节没做完 ——「刷课的尽头」的判据，全程只读。
      *
      * 依据是现场量出来的（2026-11-16，一门 74 个小节的课，**74 个无一例外**）：
@@ -210,6 +267,24 @@
         if (items && !items.length) items = null;
       }
       if (!items || !items.length) return out;
+      try {
+        out.index = this._catalogLeafStates(items);
+        var idxNow = Date.now();
+        if (!this._catalogIndexLogAt || idxNow - this._catalogIndexLogAt > 30000) {
+          this._catalogIndexLogAt = idxNow;
+          emitRuntimeLog('info', 'catalog index summary', {
+            total: out.index.total,
+            conflict: out.index.counts.conflict || 0,
+            'has-work': out.index.counts['has-work'] || 0,
+            locked: out.index.counts.locked || 0,
+            unreadable: out.index.counts.unreadable || 0,
+            completed: out.index.counts.completed || 0,
+            'zero-task': out.index.counts['zero-task'] || 0
+          });
+        }
+      } catch (eIdx) {
+        out.index = { err: String(eIdx && eIdx.message || eIdx).slice(0, 120) };
+      }
       for (var i = 0; i < items.length; i++) {
         out.leaves++;
         var done = false;
