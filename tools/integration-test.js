@@ -12824,6 +12824,49 @@ async function testCatalogJumpByState() {
     second === true && clicks.join(',') === '3', JSON.stringify({ ret: second, clicks: clicks, logs: logs.slice(-2) }));
 }
 
+async function testCourseLeaveUnreadable() {
+  console.log('\n[54] 课程首页探针读不出时不换课（P4：unreadable 不再回退放行）');
+
+  var loop = fs.readFileSync(path.join(ROOT, 'src/page/64-tasks-loop.js'), 'utf8').replace(/\r\n/g, '\n');
+  var at = loop.indexOf('_leaveFinishedCourse: function');
+  var start = at >= 0 ? loop.indexOf('function', at) : -1;
+  var end = start >= 0 ? loop.indexOf('\n    },', start) : -1;
+  if (start < 0 || end <= start) {
+    check('54-0 取出课程离开闸', false, JSON.stringify({ start: start, end: end }));
+    return;
+  }
+  var logs = [];
+  var leave = Reflect.construct(Function, ['emitRuntimeLog', 'COURSE_PROBE_DEFER_MS',
+    'return (' + loop.slice(start, end) + '\n    })'])(function (level, msg, meta) { logs.push({ level: level, msg: msg, meta: meta || null }); }, 24000);
+  check('54-0 取出课程离开闸', typeof leave === 'function', JSON.stringify({ fn: typeof leave }));
+  if (typeof leave !== 'function') return;
+
+  function appWith(state) {
+    return {
+      _discussionPendingInfo: function () { return { blocked: 0 }; },
+      _catalogCourseScan: function () { return { courseId: '900000001', leaves: 1, unfinished: 0, activeLeft: NaN }; },
+      _isCourseAtEnd: function () { return true; },
+      _courseHomeVeto: function () { return { state: state, why: 'probe-fail' }; },
+      _courseSwitchAt: 0,
+      configs: { autoNextCourse: true },
+      _codeRev: function () { return ''; },
+      _gotoUrl: function () { this.navigated = true; }
+    };
+  }
+  var unreadable = appWith('unreadable');
+  var need = appWith('need');
+  var pending = appWith('pending');
+  var rUnreadable = leave.call(unreadable, 'test');
+  var rNeed = leave.call(need, 'test');
+  var rPending = leave.call(pending, 'test');
+  check('54-A 课程首页 unreadable → 不离开（返回 false），不再回退放行',
+    rUnreadable === false && !unreadable.navigated, JSON.stringify({ ret: rUnreadable, meta: logs[logs.length - 1] }));
+  check('54-B 课程首页 need → 不离开（原有行为保持）',
+    rNeed === false && !need.navigated, JSON.stringify({ ret: rNeed }));
+  check('54-C 探针还没答（pending）→ 这一拍认领、不导航（原有行为保持）',
+    rPending === true && !pending.navigated, JSON.stringify({ ret: rPending }));
+}
+
 async function main() {
   console.log('\nOmitone 集成测试（真实 content.js + libs/prompt.js，打桩 chrome.*）');
 
@@ -12894,6 +12937,7 @@ async function main() {
   await testCatalogUnfinishedCount();
   await testCatalogLeafStates();
   await testCatalogJumpByState();
+  await testCourseLeaveUnreadable();
 
   // 落盘断言总数，供 `npm run check` 核对文档里写的「集成 N 项」。
   // 静态数不出来（每个用例的断言数是动态的），只能由测试自己交出来 ——

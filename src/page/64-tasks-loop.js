@@ -965,7 +965,9 @@
         row = after && after.ok && after.rows ? after.rows[key] : null;
       }
       if (row && row.verdict === 'need') return { state: 'need', row: row };
-      if (row && row.verdict === 'unreadable') return { state: 'unreadable', row: row };
+      if (row && (row.verdict === 'unreadable' || row.verdict === 'blocked')) {
+        return { state: 'unreadable', row: row };
+      }
       return { state: 'ok', row: row || null };
     },
 
@@ -1013,14 +1015,14 @@
               why: String((homeVeto.row && homeVeto.row.why) || '')
             });
           } else {
-            emitRuntimeLog('warn', 'course end probe unreadable, fallback to current chapter', {
-              hint: '课程首页这次没给出可读进度；不把它当成「没有未交卷」，只按当前章与目录继续',
+            emitRuntimeLog('warn', 'course leave blocked by unreadable course home', {
+              hint: '课程首页这次没给出可读进度；不把它当成「没有未交卷」，这一门先不换走',
               why: String(homeVeto.why || (homeVeto.row && homeVeto.row.why) || '')
             });
           }
         }
         if (homeVeto.state === 'pending') return true;
-        if (homeVeto.state === 'need') return false;
+        if (homeVeto.state === 'need' || homeVeto.state === 'unreadable') return false;
       }
       if (this._courseSwitchAt && Date.now() - this._courseSwitchAt < 60000) return true;
       this._courseSwitchAt = Date.now();

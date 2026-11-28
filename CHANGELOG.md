@@ -8,6 +8,15 @@
 
 ## 1.3.2 — 实验版（未发布，`exp/1.3.2` 支线）
 
+### 批次 251 · 2026-11-28 · P4：课程首页读不出时不再换课
+
+- `_courseHomeVeto` 把 `blocked` 也归入 `unreadable`，不再被当成 `ok`。
+- `_leaveFinishedCourse` 遇到 `unreadable` 直接不离开（返回 false），日志改成
+  `course leave blocked by unreadable course home`；`need` 照旧不离开，`pending` 照旧认领这一拍。
+- 集成 [54] 三格（unreadable / need / pending）；集成 **906 / 906**；
+  全量 e2e **162 场景 / 1797 项**全绿。
+- **门面**：不用补（离开闸与日志，用户可见行为不变）
+
 ### 批次 250 · 2026-11-28 · P3：当前叶以页面活附件自愈目录索引
 
 - `_catalogLeafStates` 接受当前章节号；当目录把当前叶写成 `zero-task / completed / locked / unreadable`，
@@ -15,7 +24,7 @@
   （`reason:"current-attachments"`）。只改索引读数，不改推进顺序。
 - 当前节已完成时不升格，避免把真正的 0 任务点误判成还有活；锁定/读不出仍保留自己的状态。
 - 集成 [52] 补 I/J 两格（活附件升格、已完成不升格）；集成 **902 / 902**；
-  全量 e2e **162 场景 / 1797 项**全绿。
+  全量 e2e **162 场景 / 1797 项**全绿。 <!-- 历史计数:start --><!-- 历史计数:end -->
 - **门面**：不用补（索引自愈读数，用户可见行为不变）
 
 ### 批次 249 · 2026-11-28 · P2：目录补刷选点接七态索引
