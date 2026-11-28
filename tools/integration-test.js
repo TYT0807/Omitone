@@ -8668,6 +8668,12 @@ async function testNinetyAdvanceBoundToSeek() {
       ninety: popupHtml.indexOf('id="advanceAtNinetyPercent"'),
       hint: popupHtml.indexOf('seekChainHint')
     }));
+  // 2026-11-28 现场：旧默认回复 "1" 平台不算有效参与，老存档会一直沿用。
+  check('讨论旧默认回复「1」在 `mergeConfig` 里被迁成新默认（只迁这一枚，别动用户自己写的内容）',
+    mergeBody.indexOf('String(merged.discussionReply') !== -1 &&
+      mergeBody.indexOf("=== '1'") !== -1 &&
+      mergeBody.indexOf('已学习，感谢分享，内容很有启发。') !== -1,
+    JSON.stringify({ len: mergeBody.length }));
 
   var boundsOf = function (src, name) {
     var at = src.indexOf(name + ': function');

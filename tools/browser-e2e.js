@@ -15262,6 +15262,8 @@ SCENARIOS.push({
       return false;
     };
     var failedPosted = await waitOldEngine(1, 5000);
+    // mock 已记账，页面 fetch 的 .then 还要一拍才把 lastResponse 翻成失败回执。
+    await waitFor(ctx.client, 'window.__b232.lastResponse && window.__b232.lastResponse.status === false', 5000);
     var failed = ctx.mock.oldEngineSubmits[0] || null;
     var failedState = await ctx.client.evaluate(
       '(function(){return {response:window.__b232.lastResponse,img:document.getElementById("workVerifyImg").src,' +
@@ -16297,9 +16299,9 @@ SCENARIOS.push({
       probe.taskKeyBack === probe.todoKey && probe.uFlip === 0 && probe.uBack === 1,
       JSON.stringify(probe && { flipFind: probe.flipFind, taskKeyFlip: probe.taskKeyFlip, unflipFind: probe.unflipFind,
         taskKeyBack: probe.taskKeyBack, todoKey: probe.todoKey, uFlip: probe.uFlip, uBack: probe.uBack }));
-    check('翻转那一支不烧自愈额度（class 先赢），摘回 class 那一次照旧烧一发',
-      !!probe && typeof probe.triedBeforeFlip === 'number' && probe.triedBeforeFlip >= 1 &&
-      probe.triedAfterFlip === probe.triedBeforeFlip && probe.triedAfterBack === probe.triedBeforeFlip + 1,
+    check('找帖扫描本身不烧自愈额度（旧实现扫三次就烧光；额度只在实际打开话题页时记）',
+      !!probe && probe.triedBeforeFlip === 0 &&
+      probe.triedAfterFlip === probe.triedBeforeFlip && probe.triedAfterBack === probe.triedBeforeFlip,
       JSON.stringify(probe && [probe.triedBeforeFlip, probe.triedAfterFlip, probe.triedAfterBack]));
     check('额度烧尽（3 次）后不再无限自愈，但也不许跳过：pending 仍为 1、整节按住并点名 blocked',
       !!probe && probe.healSpent === false && probe.p4 && probe.p4.pending === 1 && probe.p4.blocked === 1
@@ -16902,24 +16904,30 @@ SCENARIOS.push({
       'var targets=app._collectDiscussionTargets();' +
       'if(!targets.length) return {targets:0};' +
       'var key=String(targets[0].key);' +
-      // 模拟"旧版本留下的标记"：2 分钟前记成已发，而平台（mock）仍说未完成
-      'var map=app._discussionDoneMap(); map[key]=Date.now()-120000;' +
+      // 模拟"旧版本留下的标记"：2 分钟前记成已发、还带着被扫描烧出来的 try|2，
+      // 而平台（mock）仍说未完成。schema 3 的口径是**只清 try、保留 done**。
+      'var map=app._discussionDoneMap(); map[key]=Date.now()-120000; map["try|"+key]=2;' +
       'localStorage.setItem(app._discussionStoreKey, JSON.stringify(map));' +
+      'try{localStorage.removeItem(app._discussionStoreKey+"_schema");}catch(eS){}' +
       'var before=app._isDiscussionDone(key);' +
       'var task=await app._findDiscussionTask();' +
       'var healed=!!task && String(task.key)===key;' +
-      // 升级迁移：schema 没记录过 → 旧名单整体作废
       'app._migrateDiscussionDoneOnce();' +
-      'var afterMigrate=Object.keys(app._discussionDoneMap()).length;' +
-      'return {targets:targets.length, before:before, healed:healed, afterMigrate:afterMigrate};' +
+      'var mapAfter=app._discussionDoneMap();' +
+      'var afterMigrate=Object.keys(mapAfter).length;' +
+      'var doneKept=!!mapAfter[key], tryLeft=!!mapAfter["try|"+key];' +
+      'var schema=String(localStorage.getItem(app._discussionStoreKey+"_schema")||"");' +
+      'return {targets:targets.length, before:before, healed:healed, afterMigrate:afterMigrate,' +
+      '  doneKept:doneKept, tryLeft:tryLeft, schema:schema};' +
       '})()'
     );
     check('前置条件：这一页有讨论候选', !!probe && probe.targets >= 1, JSON.stringify(probe));
     check('前置条件：那条"已发过"标记确实还在', !!probe && probe.before === true, JSON.stringify(probe));
     check('平台说没完成 + 标记已过期 → 仍能重新排进待做（旧实现会被它永久挡住）',
       !!probe && probe.healed === true, JSON.stringify(probe));
-    check('升级后旧名单被整体作废一次（不需要用户手敲命令）',
-      !!probe && probe.afterMigrate === 0, JSON.stringify(probe));
+    check('升级只清重试计数、保留已发标记（schema 3：让平台仍 false 的讨论能核对一次，已发过的不会重复发）',
+      !!probe && probe.afterMigrate === 1 && probe.doneKept === true &&
+      probe.tryLeft === false && probe.schema === '3', JSON.stringify(probe));
   }
 });
 
@@ -16943,21 +16951,27 @@ SCENARIOS.push({
       '(function(){var app=window._xxtApp;' +
       'var ed=app._findDiscussionEditor();' +
       'if(!ed) return {noEditor:true};' +
+      // 造一条"提交前就存在"的旧回复：这一格旧实现会走 ④「编辑区空了 + 列表非空」判成功，
+      // 而现场的真因恰恰是**有 19 条旧回复、点了没发出去**。只有一个空列表时量不到它。
+      'var list=document.querySelector(".topicDetail_replyList");' +
+      'if(list && list.querySelectorAll(".topicDetail_replyItem").length<1){' +
+      '  var old=document.createElement("div");old.className="topicDetail_replyItem";old.textContent="旧回复";list.appendChild(old);}' +
       'ed.value="";' +
       'app._discussionBefore=app._discussionBaseline();' +
       'app._discussionFilledOk=false;' +          // 模拟"填不进去"
       'var withoutFill=app._discussionSuccessHint();' +
       'app._discussionFilledOk=true;' +           // 正常路径：确认填过
       'var withFill=app._discussionSuccessHint();' +
-      'return {noEditor:false, withoutFill:withoutFill, withFill:withFill};})()'
+      'return {noEditor:false, withoutFill:withoutFill, withFill:withFill,' +
+      '  items:list?list.querySelectorAll(".topicDetail_replyItem").length:-1};})()'
     );
     check('前置条件：讨论页找得到回复编辑器', !!probe && probe.noEditor !== true, JSON.stringify(probe));
     check('内容没填进去过 → 空编辑区**不能**算成功（旧实现会误判 → 这条讨论被记成已做却从没发出）',
       !!probe && probe.withoutFill === false, JSON.stringify(probe));
     // 这条是本次的真因：页面有回复列表、条目却没多出来，而只是"编辑区空了" ——
     // 旧实现会判成功（默认回复是 "1"，文本匹配也近乎恒真），于是发失败也被记成已做。
-    check('有回复列表但条目没多 → 即使填过、编辑区也空了，仍**不能**算成功（旧实现会误判）',
-      !!probe && probe.withFill === false, JSON.stringify(probe));
+    check('有旧回复且条目没多 → 即使填过、编辑区也空了，仍**不能**算成功（旧实现会误判）',
+      !!probe && probe.withFill === false && probe.items >= 1, JSON.stringify(probe));
   }
 });
 

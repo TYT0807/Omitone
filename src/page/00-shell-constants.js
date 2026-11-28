@@ -121,7 +121,7 @@
     muted: false,
     // 讨论任务点：自动打开讨论页并发布评论（内容见 discussionReply），完成后自动返回继续刷课
     enableDiscussion: true,
-    discussionReply: '1',
+    discussionReply: '已学习，感谢分享，内容很有启发。',
     discussionTimeoutMs: 90000,
     // 投票任务点（insertvote）：点开平台自己的投票覆盖层、随手勾第一项、提交。
     // 不计分，只要把任务盒翻成已完成；关掉它就会停在「还有任务点未完成」那一节。
@@ -271,6 +271,12 @@
     merged.advanceAtNinetyPercent = true;
     // #47：静音开关已退役，旧存档里的 true 在这里被忽略。
     merged.muted = false;
+    // 旧默认回复是「1」。2026-11-28 现场：这条回帖平台不算有效参与（帖子在、任务点仍 false），
+    // 且默认值只对"没存过这个键"的新用户生效，老用户会一直沿用「1」。
+    // 只迁这一枚旧默认；用户自己改过的其他内容一个字都不动。
+    if (String(merged.discussionReply || '').trim() === '1') {
+      merged.discussionReply = '已学习，感谢分享，内容很有启发。';
+    }
     return merged;
   }
 

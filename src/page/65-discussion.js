@@ -8,10 +8,12 @@
  *
  * 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重
  *
- * 本段的方法（53 个）：
+ * 本段的方法（61 个）：
  *   _discussionDoneMap、_markDiscussionDone、_isDiscussionDone、
  *   _unmarkDiscussionDone、_discussionPendingKey、_getDiscussionTries、
  *   _bumpDiscussionTry、_migrateDiscussionDoneOnce、_bindDiscussionOutcome、
+ *   _isDiscussionLanded、_markDiscussionLanded、_findDiscussionModuleByKey、
+ *   _discussionModuleFinishedByKey、_completeDiscussionModule、
  *   _discussionNameOf、_isDiscussionAttachment、_logDiscussionHandoffOnce、
  *   _findDiscussionEntry、_isDiscussionContext、_discussionFinishedFlagOf、
  *   _scopedDiscussionFinishedFlag、_discussionBoxFinishedFlag、
@@ -27,6 +29,7 @@
  *   _computeDiscussionPage、_isStudyCourseHref、_discussionReturnFresh、
  *   _declineDiscussionPage、_quizInFlightForDiscussion、_isDiscussionPage、
  *   _waitDiscussionReady、_discussionStudyKeyOfName、_handleDiscussionFailure、
+ *   _discussionReturnTargetUrl、_discussionReturnWithMarker、_consumeDiscussionReturnMarker、
  *   _consumeDiscussionWindowName、_announceDiscussionOutcome、_runDiscussionMode
  * ========================================================================== */
 // @omitone-part-header-end
@@ -120,19 +123,138 @@
      * 之后写标记的都是新逻辑（失败会撤），不再需要这种清理。
      */
     _migrateDiscussionDoneOnce: function () {
-      var SCHEMA = '2';
+      /**
+       * schema 3（2026-11-28）：只清 `try|` 重试计数，**不清 `done` 标记**。
+       *
+       * 为什么不再整份清空：schema 2 那一轮清空是为了救"发失败被记成已发"的旧账；
+       * 现在的现场问题反过来 —— 回帖**真发出去了**（回复列表 20→21、文本匹配），
+       * 平台却把任务点判成未完成，旧逻辑把重试额度烧到 3 后永久按住。
+       * 清掉 try 计数让自愈链重新开一次话题页；那页上的 `page|` 账会挡住重复发帖，
+       * 只把"这条已经发过"的成功结果递回来。done 保留，才不会把所有旧讨论全重开一遍。
+       */
+      var SCHEMA = '3';
       try {
         if (String(localStorage.getItem(this._discussionStoreKey + '_schema') || '') === SCHEMA) return;
-        var dropped = Object.keys(this._discussionDoneMap()).length;
-        localStorage.removeItem(this._discussionStoreKey);
+        var map = this._discussionDoneMap();
+        var dropped = 0;
+        Object.keys(map).forEach(function (k) {
+          if (k.indexOf('try|') === 0) { delete map[k]; dropped++; }
+        });
+        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
         localStorage.setItem(this._discussionStoreKey + '_schema', SCHEMA);
         if (dropped) {
-          emitRuntimeLog('warn', 'discussion done list reset after upgrade', {
+          emitRuntimeLog('warn', 'discussion retry counters reset after upgrade', {
             dropped: dropped,
-            hint: '旧版本会把"发失败"也记成已发，升级后统一作废一次，让这些页面重新扫'
+            hint: '只清重试计数，不清"已发"标记；让平台仍说未完成的讨论能重新核对一次，已发过的不会重复发帖'
           });
         }
       } catch (e) {}
+    },
+
+
+    /**
+     * 「这条讨论的回帖**真的落在话题页上**」那本账（`ok|` 前缀，与 `done` 分开）。
+     *
+     * `done` 是"准备打开 / 发过"的防重标记，打开前就写；`ok|` 只在讨论页拿到
+     * 「列表变多 / 文本出现 / 平台说成功」三选一的真证据之后才写。
+     * 学习循环用它回答"平台仍说没做完，但我们是不是已经发了" —— 两者必须分开，
+     * 否则又会回到"发失败也当已发、整节永久按住"。
+     */
+    _isDiscussionLanded: function (key) {
+      var k = String(key || '');
+      if (!k) return false;
+      try {
+        var at = Number(this._discussionDoneMap()['ok|' + k] || 0);
+        return !!at && Date.now() - at < 24 * 3600 * 1000;
+      } catch (e) { return false; }
+    },
+
+
+    /**
+     * 把"回帖真的发出去了"记下来，并补发平台自己的完成信号。
+     * 注意：平台这次没把 `isFinished` 翻成 true（现场 2026-11-28），但外层 insertbbs
+     * 只等一条 `{opType:"completeTopic"}` 就调 `JC.completed(jobindex)`；
+     * 这条信号和平台脚本自己发的那条逐字相同，补发它把任务盒落成 `ans-job-finished`。
+     */
+    _markDiscussionLanded: function (key, source) {
+      var k = String(key || '');
+      if (!k) {
+        emitRuntimeLog('warn', 'discussion reply landed without key', { source: String(source || '') });
+        return false;
+      }
+      try {
+        var map = this._discussionDoneMap();
+        map['ok|' + k] = Date.now();
+        localStorage.setItem(this._discussionStoreKey, JSON.stringify(map));
+      } catch (e) {}
+      emitRuntimeLog('info', 'discussion reply landed', { key: k.slice(0, 40), source: String(source || '') });
+      try {
+        var job = this._completeDiscussionModule(k, source);
+        if (job && job.catch) job.catch(function () {});
+      } catch (e2) {}
+      return true;
+    },
+
+
+    _findDiscussionModuleByKey: function (key) {
+      var k = String(key || '');
+      if (!k) return null;
+      var frames = [];
+      try { frames = this._findDiscussionModuleFrames() || []; } catch (e0) { return null; }
+      for (var i = 0; i < frames.length; i++) {
+        var f = frames[i].frame || frames[i];
+        try {
+          var d = f.contentDocument;
+          if (!d) continue;
+          var card = d.querySelector('#topicMainDiv[data]');
+          if (!card) {
+            var inner = d.querySelector('iframe');
+            var idoc = inner && inner.contentDocument;
+            card = idoc && idoc.querySelector('#topicMainDiv[data]');
+          }
+          var url = card && card.getAttribute('data');
+          if (!url) continue;
+          var norm = String(url).replace(/&amp;/g, '&');
+          if (this._discussionKeyOf(norm) === k) return f;
+        } catch (e1) {}
+      }
+      return null;
+    },
+
+
+    _discussionModuleFinishedByKey: function (key) {
+      var f = this._findDiscussionModuleByKey(key);
+      if (!f) return false;
+      var el = f;
+      for (var d = 0; d < 4 && el; d++) {
+        try { if (el.classList && el.classList.contains('ans-job-finished')) return true; } catch (e0) {}
+        el = el.parentElement;
+      }
+      return false;
+    },
+
+
+    _completeDiscussionModule: async function (key, source) {
+      var k = String(key || '');
+      if (!k) return false;
+      var deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        var f = this._findDiscussionModuleByKey(k);
+        if (f && f.contentWindow) {
+          try { f.contentWindow.postMessage({ opType: 'completeTopic' }, '*'); } catch (e0) {}
+          await sleep(300);
+          var green = this._discussionModuleFinishedByKey(k);
+          emitRuntimeLog(green ? 'info' : 'warn',
+            green ? 'discussion module marked finished' : 'discussion complete signal sent but card not green',
+            { key: k.slice(0, 40), source: String(source || '') });
+          return green;
+        }
+        await sleep(400);
+      }
+      emitRuntimeLog('warn', 'discussion complete signal could not find module', {
+        key: k.slice(0, 40), source: String(source || '')
+      });
+      return false;
     },
 
 
@@ -151,7 +273,12 @@
       try {
         window.addEventListener('message', function (ev) {
           var data = ev && ev.data;
-          if (!data || typeof data !== 'object' || data.omitoneDiscussion !== 'failed') return;
+          if (!data || typeof data !== 'object') return;
+          if (data.omitoneDiscussion === 'ok') {
+            self._markDiscussionLanded(String(data.key || ''), 'postmessage');
+            return;
+          }
+          if (data.omitoneDiscussion !== 'failed') return;
           // 键优先取讨论页递回来的那一份；本内存里的 `_discussionLastOpenedKey`
           // 只是"同一个文档里重开"才有效，跳回来时它是空的
           self._handleDiscussionFailure(String(data.key || ''), 'postmessage');
@@ -224,6 +351,10 @@
       var NAV = /目录|笔记|标注|章节|任务点|排行|公告|作业|考试/;
       var NAV_ALL = new RegExp(NAV.source, 'g');
       var TOPIC_HREF = /topic|bbscircle|groupweb|discuss/i;
+      // 2026-11-28 现场：课程页上那条「讨论」是**话题列表**（topicList），不是任务话题。
+      // 旧兜底把它当成讨论入口，于是同标签页导航到一个「你没有权限操作」的空页，
+      // 找不到编辑区、烧掉 3 次重试、整节永久按住。话题列表永远不是可发帖的任务页。
+      var BAD_HREF = /topicList|topiclist|topic_list/i;
       var docs = [];
       try {
         var mainDoc = this._getMainDocument();
@@ -250,6 +381,7 @@
           if (navHits >= 2) continue;
           var link = node.tagName === 'A' ? node : node.querySelector('a[href]');
           var href = link ? String(link.getAttribute('href') || '') : String(node.getAttribute('href') || '');
+          if (href && BAD_HREF.test(href)) continue;
           var nameHit = !!(preferredName && text.indexOf(preferredName) >= 0);
           var hrefHit = !!href && href !== '#' && !/^javascript:/i.test(href) && TOPIC_HREF.test(href);
           // 讨论区网址没有、真名也没对上 → 只剩"页面上随便一个写着讨论的节点"，拒绝
@@ -767,11 +899,12 @@
       var now = Date.now();
       if (now - (this._discussionSettledLogAt || 0) < 60000) return;
       this._discussionSettledLogAt = now;
-      var out = { serverFinished: 0, believeLocal: 0, tryBudget: 0, unexplained: 0 };
+      var out = { serverFinished: 0, believeLocal: 0, landed: 0, tryBudget: 0, unexplained: 0 };
       var list = targets || [];
       for (var i = 0; i < list.length; i++) {
         var t = list[i];
         if (t.finished) out.serverFinished++;
+        else if (self._isDiscussionLanded(t.key) || self._discussionModuleFinishedByKey(t.key)) out.landed++;
         else if (!self._isDiscussionDone(t.key)) out.unexplained++;
         else if (t.finishedKnown === true) out.tryBudget++;
         else out.believeLocal++;
@@ -780,11 +913,12 @@
         total: list.length,
         serverFinished: out.serverFinished,
         believeLocal: out.believeLocal,
+        landed: out.landed,
         tryBudget: out.tryBudget,
         unexplained: out.unexplained,
         hint: out.tryBudget
           ? '有话题被重试预算挡住（平台确实说了"没完成"而我们连试 3 次）—— 需要人看一眼，或清掉本地 omitone_discussion_done'
-          : 'believeLocal 指的是 #isFinished 读不出结论、只有我们本地记过"已发"，20-A 之后不再拿它当"未完成"重开'
+          : 'landed 是真在话题页上发出去过（回复列表变多/文本出现），平台 isFinished 仍 false 时也不再按住整节'
       });
     },
 
@@ -800,6 +934,7 @@
     _discussionHealEligible: function (t) {
       if (!t || t.finishedKnown !== true) return false;      // 平台没表态：本地记录是唯一证据，不许重开
       if (!this._isDiscussionDone(t.key)) return false;      // 没记过账：它本来就是 pending
+      if (this._isDiscussionLanded(t.key) || this._discussionModuleFinishedByKey(t.key)) return false; // 已经真发过，不再重开
       var markedAt = Number(this._discussionDoneMap()[t.key] || 0);
       if (!markedAt || Date.now() - markedAt < 90000) return false;   // 刚发过，先给平台时间刷新
       return this._getDiscussionTries(t.key) < 3;                    // 最多三次，别把整节锁死
@@ -817,6 +952,7 @@
         var self1 = this;
         var pending = targets.filter(function (t) {
           if (t.finished) return false;
+          if (self1._isDiscussionLanded(t.key) || self1._discussionModuleFinishedByKey(t.key)) return false;
           if (!self1._isDiscussionDone(t.key)) return true;
           // ── 自愈：本地记过"已发"，但**平台说这个讨论还没完成** ──
           // 那多半是当时发失败了（跨域那会儿撤不掉标记，见 ⑲）。
@@ -824,8 +960,10 @@
           // ⚠️ 前提是平台**真的说了"还没完成"**（批次 20-A）：`#isFinished` 空串时
           // `finishedKnown` 不是 true，这条标志读不出结论 —— 此时本地那份记录是唯一证据，
           // 拿它去烧 3 次预算只会把这一节做成"既不再发帖、也永远不推进"（实测现场）。
+          // ⚠️ 这里**不许**记重试次数：这一支每 3 秒被扫一次，旧实现扫描三次就把
+          // 额度烧光（2026-11-28 现场：一次话题页都没打开就 blocked）。次数只在实际
+          // 打开话题页时记（`_tryDiscussionTask`）。
           if (!self1._discussionHealEligible(t)) return false;
-          self1._bumpDiscussionTry(t.key);
           return true;
         });
         if (!pending.length) {
@@ -860,6 +998,7 @@
         // `if (this._isDiscussionDone(task.key)) return false;` 于是直接放弃 ——
         // **同一页挂两个讨论时，第二个永远没机会**（2026-10-17 现场）。
         if (this._isDiscussionDone(moduleKey)) continue;
+        if (this._isDiscussionLanded(moduleKey) || this._discussionModuleFinishedByKey(moduleKey)) continue;
         return {
           key: moduleKey,
           name: String((modules[i].data && modules[i].data.title) || '讨论').slice(0, 60),
@@ -895,6 +1034,7 @@
         // 链接部分同样走哈希，避免 slice 截断造成的碰撞
         var fallbackKey = String(names[n] || entry.text || '讨论').slice(0, 40) + '|' + this._discussionKeyOf(entry.href || '');
         if (this._isDiscussionDone(fallbackKey)) continue;
+        if (this._isDiscussionLanded(fallbackKey) || this._discussionModuleFinishedByKey(fallbackKey)) continue;
         return {
           key: fallbackKey,
           name: names[n] || entry.text || '讨论',
@@ -941,6 +1081,10 @@
           var blocked = 0;
           var todo = targets.filter(function (t) {
             if (t.finished) return false;
+            // 真发出去过（ok| 账）或课程页自己的任务盒已经翻绿：平台 `isFinished=false`
+            // 也不许再按住这一节 —— 2026-11-28 现场，回帖在话题页上真长出来了，
+            // 平台却一直不回 true；继续按着只会把整门课卡死。
+            if (self._isDiscussionLanded(t.key) || self._discussionModuleFinishedByKey(t.key)) return false;
             // 「本地已记过」= 已经发过（或已开过）这个讨论，成败由讨论页那边的回执决定，
             // 不该再让学习循环为它按住这一节 —— 否则发不出去的话题会把整节锁到永远。
             if (!self._isDiscussionDone(t.key)) return true;
@@ -1021,7 +1165,10 @@
         }
         return { hold: true, reason: 'discussion-blocked', pending: info.pending, total: info.total, source: info.source, blocked: info.blocked, heldMs: 0, budgetMs: 0 };
       }
-      var budgetMs = info.source === 'cards' ? 90000 : 20000;
+      // 90 秒与自愈的 90 秒相等：预算会在自愈刚生效那一刻烧完，整节被推走 ——
+  // 2026-11-28 现场（话题页回帖已发、平台仍 false）就是这么漏掉一次核对的。
+  // cards 给 150 秒，留出「自愈开话题页 + 页面往返 + 回执」的时间。
+  var budgetMs = info.source === 'cards' ? 150000 : 20000;
       if (this._discussionHoldKey !== info.sig) {
         this._discussionHoldKey = info.sig;
         this._discussionHoldSinceAt = now;
@@ -1047,6 +1194,8 @@
       this._bindDiscussionOutcome();
       // 同一标签页跳过去又跳回来时没有 opener，结果只写在 window.name 里（批次 20-F）
       this._consumeDiscussionWindowName();
+      // 新通道：回程网址上的 omitoneDisc 标记（window.name 被 groupweb 覆盖后唯一可靠的）
+      this._consumeDiscussionReturnMarker();
       // 旧版本留下的"已发过"记录不可信，升级后自动作废一次（不需要用户敲命令）
       this._migrateDiscussionDoneOnce();
       if (this._discussionBusy) return true;
@@ -1091,22 +1240,35 @@
         if (href && href !== '#' && !/^javascript:/i.test(href)) {
           var absolute = href;
           try { absolute = new URL(href, location.href).href; } catch (e2) {}
-          var opened = null;
-          try { opened = window.open(absolute, '_blank'); } catch (e3) { opened = null; }
-          if (opened) {
-            this._discussionWindow = opened;
-            navigated = true;
-            emitRuntimeLog('info', 'discussion task opened in new tab', {
-              name: String(task.name).slice(0, 40),
-              url: String(absolute).slice(0, 120)
-            });
-          } else {
-            // 弹窗被拦截：改成当前标签页打开，发完评论会自动返回
-            emitRuntimeLog('info', 'discussion popup blocked, open in current tab', { name: String(task.name).slice(0, 40) });
-            location.href = absolute;
-            navigated = true;
-          }
+          /**
+           * 把「这是哪条任务、回哪一页」带在**讨论页自己的网址**上。
+           * `window.name` 在这代 groupweb 页上不可靠：站点自己会把它写成一段函数源码
+           * （现场读回 `function name(temp){…}`），插件写的 `omitoneD|…` 读不回来。
+           * 回程网址带 `omitoneReturn`，讨论页发完直接整页导航回来，刷课页在地址上读结果。
+           */
+          try {
+            var u = new URL(absolute, location.href);
+            u.searchParams.set('omitoneKey', String(task.key || ''));
+            u.searchParams.set('omitoneReturn', String(location.href || ''));
+            absolute = u.href;
+          } catch (eParam) {}
+          /**
+           * ⚠️ 讨论页必须**占用当前标签页**，不许再优先 `window.open` 开新标签页。
+           * 2026-11-28 现场（课程 260434535）：新标签页里点「回复」平台直接回
+           * 「发布失败，请勿同时在多个网页发布话题或回复！」；同一标签页里发同一句话，
+           * 回复列表 20→21、`discussion reply confirmed` 带 grew/hasContent 两格真证据。
+           * 所以"开新标签页更安全"在这代站点上是反的 —— 它会让每一条讨论都发不出去。
+           * 当前标签页打开后，讨论页发完会 `history.back()` 回来（同标签页历史里有一条）。
+           */
+          this._bumpDiscussionTry(task.key);
+          emitRuntimeLog('info', 'discussion open in current tab', {
+            name: String(task.name).slice(0, 40),
+            url: String(absolute).slice(0, 120)
+          });
+          location.href = absolute;
+          navigated = true;
         } else if (task.el && typeof task.el.click === 'function') {
+          this._bumpDiscussionTry(task.key);
           emitRuntimeLog('info', 'discussion task entry clicked', { name: String(task.name).slice(0, 40) });
           task.el.click();
           navigated = true;
@@ -1338,7 +1500,7 @@
      * 2026-10-17 三个讨论丢了一个，日志明明写着 `confirmed`，却完全看不出是靠哪条过的。
      */
     _discussionEvidence: function () {
-      var content = String(this.configs.discussionReply || '1').trim();
+      var content = String(this.configs.discussionReply || '已学习，感谢分享，内容很有启发。').trim();
       var before = this._discussionBefore || { count: 0, text: '', listPresent: false };
       var ev = {
         contentLen: content.length,
@@ -1408,6 +1570,15 @@
       var ev = this._discussionEvidence();
       if (ev.rejectedText) return false;
       if (ev.grew || ev.hasContent || ev.successText) return true;
+      /**
+       * ⚠️ 只有**提交前列表本来就空**时，才允许用"编辑区被清空"兜底。
+       * 2026-11-28 现场：话题页有 19 条旧回复，插件点了 `.addReply`，服务器回
+       * 「发布失败，请勿同时在多个网页发布话题或回复！」；页面的错误提示几秒后消失，
+       * 而编辑区被脚本清空 —— 旧实现走 ④ 判成功，把"一条都没发出去"记成已发，
+       * 于是整节讨论永远等平台、重试额度还被烧光。
+       * 有可信基线（`beforeItems > 0`）时只认"条目变多 / 文本真出现 / 平台说成功"。
+       */
+      if (ev.listPresent && Number(ev.beforeItems) > 0) return false;
       if (ev.listPresent && ev.filled && ev.cleared && ev.items >= 1) return true;
       if (!ev.listPresent && ev.filled && ev.editorEmpty === true) return true;
       return false;
@@ -1601,9 +1772,14 @@
     // 刷课页在同一个标签页跳过来时把它的键写在 window.name 里（见 _tryDiscussionTask）
     _discussionStudyKeyOfName: function () {
       var raw = '';
-      try { raw = String(window.name || ''); } catch (e0) { return ''; }
-      if (raw.indexOf('omitoneD|') !== 0) return '';
-      return raw.slice(9).slice(0, 80);
+      try { raw = String(window.name || ''); } catch (e0) { raw = ''; }
+      if (raw.indexOf('omitoneD|') === 0) return raw.slice(9).slice(0, 80);
+      // window.name 会被 groupweb 自己覆盖（现场读回是一段函数源码）—— 首选网址上的显式键。
+      try {
+        var hit = /[?&]omitoneKey=([^&#]+)/.exec(String(location.search || ''));
+        if (hit) return decodeURIComponent(hit[1]).slice(0, 80);
+      } catch (e1) {}
+      return '';
     },
 
 
@@ -1616,9 +1792,9 @@
     _handleDiscussionFailure: function (keyIn, source) {
       var key = String(keyIn || this._discussionLastOpenedKey || '');
       if (!key) return false;
-      var tries = this._bumpDiscussionTry(key);
+      var tries = this._getDiscussionTries(key);   // 打开话题页时已经记过一次，这里不再加倍
       var limit = 3;   // 最多重试 3 次：平台若压根发不出去，无限重开只会空转
-      if (tries > limit) {
+      if (tries >= limit) {
         emitRuntimeLog('warn', 'discussion reply keeps failing, give up for now', {
           key: key.slice(0, 40),
           tries: tries,
@@ -1638,6 +1814,62 @@
     },
 
 
+    _discussionReturnTargetUrl: function () {
+      try {
+        var hit = /[?&]omitoneReturn=([^&#]+)/.exec(String(location.search || ''));
+        if (hit) return decodeURIComponent(hit[1]);
+      } catch (e0) {}
+      // 跨域时这份 localStorage 是讨论页自己的，读不到刷课页那份；留着只是兜底。
+      try { return String(localStorage.getItem('omitone_return_url') || ''); } catch (e1) { return ''; }
+    },
+
+
+    _discussionReturnWithMarker: function (url, ok, key) {
+      var flag = ok ? 'ok' : 'failed';
+      try {
+        var u = new URL(String(url || ''), location.href);
+        u.searchParams.set('omitoneDisc', flag);
+        u.searchParams.set('omitoneDiscKey', String(key || ''));
+        return u.href;
+      } catch (e0) {
+        var sep = String(url || '').indexOf('?') >= 0 ? '&' : '?';
+        return String(url || '') + sep + 'omitoneDisc=' + flag +
+          '&omitoneDiscKey=' + encodeURIComponent(String(key || ''));
+      }
+    },
+
+
+    /**
+     * 读回讨论页通过**回程网址**带回来的结果（`omitoneDisc=ok|failed`）。
+     * 这条通道不依赖 window.name（会被 groupweb 覆盖），也不依赖 opener（同标签页没有）。
+     * 读完立刻把标记从地址栏抹掉，避免刷新/转发时重复处理。
+     */
+    _consumeDiscussionReturnMarker: function () {
+      var search = '';
+      try { search = String(location.search || ''); } catch (e0) { return; }
+      var hit = /[?&]omitoneDisc=(ok|failed)/.exec(search);
+      if (!hit) return;
+      var key = '';
+      try {
+        var kh = /[?&]omitoneDiscKey=([^&#]*)/.exec(search);
+        if (kh) key = decodeURIComponent(kh[1]);
+      } catch (e1) { key = ''; }
+      try {
+        var u = new URL(location.href);
+        u.searchParams.delete('omitoneDisc');
+        u.searchParams.delete('omitoneDiscKey');
+        u.searchParams.delete('omitoneKey');
+        u.searchParams.delete('omitoneReturn');
+        history.replaceState(null, '', u.pathname + (u.search || '') + (u.hash || ''));
+      } catch (e2) {}
+      if (hit[1] === 'ok') {
+        this._markDiscussionLanded(key, 'return-marker');
+        return;
+      }
+      this._handleDiscussionFailure(key, 'return-marker');
+    },
+
+
     /**
      * 刷课页侧：读回讨论页用 `window.name` 递回来的结果（批次 20-F）。
      *
@@ -1646,18 +1878,19 @@
      * `window.opener` 压根不存在，postMessage 那条路是死的。
      */
     _consumeDiscussionWindowName: function () {
-      if (this._discussionNameRead) return;
-      this._discussionNameRead = true;
       var raw = '';
       try { raw = String(window.name || ''); } catch (e0) { return; }
       if (raw.indexOf('omitoneX|') !== 0 && raw.indexOf('omitoneOK|') !== 0) return;
+      // 不在这里设"只读一次"的闸：首次进页面时 window.name 还是空的，
+      // 设了闸会让**从讨论页回来那一趟**（尤其 bfcache 还原）读不到成功标记。
+      this._discussionNameRead = true;
       var key = raw.slice(9);
       try { window.name = ''; } catch (e1) {}
       if (raw.indexOf('omitoneX|') === 0) {
         this._handleDiscussionFailure(key, 'window-name');
         return;
       }
-      emitRuntimeLog('info', 'discussion reply landed', { key: key.slice(0, 40), source: 'window-name' });
+      this._markDiscussionLanded(key, 'window-name');
     },
 
 
@@ -1676,8 +1909,8 @@
     _announceDiscussionOutcome: function (ok, studyKey) {
       var key = String(studyKey || '');
       try {
-        if (!ok && window.opener && !window.opener.closed) {
-          window.opener.postMessage({ omitoneDiscussion: 'failed', key: key }, '*');
+        if (window.opener && !window.opener.closed) {
+          window.opener.postMessage({ omitoneDiscussion: ok ? 'ok' : 'failed', key: key }, '*');
         }
       } catch (eNotify) {}
       try { window.name = (ok ? 'omitoneOK|' : 'omitoneX|') + key; } catch (eName) {}
@@ -1707,6 +1940,34 @@
             hint: '本站记过这条回帖（24 小时内），不再重复发帖；要强制重发清掉 groupweb 这个源里的 omitone_discussion_done'
           });
         }
+        /**
+         * 跳过**不等于沉默**：这条话题的账是上一次真发成功后写的。
+         * 把成功结果递回刷课页（同标签页用 window.name，弹窗用 opener），
+         * 刷课页才能补发 `completeTopic` 并把 `ok|` 那本账补上 ——
+         * 否则平台 `isFinished=false` 时它会永远以为是"发了但没确认"。
+         */
+        var skipStudyKey = this._discussionStudyKeyOfName();
+        if (skipStudyKey) this._announceDiscussionOutcome(true, skipStudyKey);
+        // 跳过也必须**离开这一页**，否则同标签页打开时会永远停在话题页。
+        await sleep(300);
+        try {
+          if (window.opener && !window.opener.closed) {
+            emitRuntimeLog('info', 'discussion done, closing this tab', {});
+            window.close();
+            return;
+          }
+        } catch (eClose) {}
+        var skipReturnTarget = this._discussionReturnTargetUrl();
+        if (skipReturnTarget) {
+          location.href = this._discussionReturnWithMarker(skipReturnTarget, true, skipStudyKey || '');
+          return;
+        }
+        if (history.length > 1) {
+          emitRuntimeLog('info', 'discussion done, going back to study page', {});
+          history.back();
+          return;
+        }
+        emitRuntimeLog('info', 'discussion done, waiting for redirect', {});
         return;
       }
       this._discussionBusy = true;
@@ -1744,7 +2005,7 @@
         // ⚠️ 存下**这一块**编辑区：提交后的证据要量"刚填过的那个节点现在空不空"，
         // 而不是"再找一次页面上最大的输入区"（批次 20-B，页面一改版就会挑到别处）。
         this._discussionEditorEl = editor;
-        var content = String(this.configs.discussionReply || '1');
+        var content = String(this.configs.discussionReply || '已学习，感谢分享，内容很有启发。');
         var filledOk = this._fillDiscussionEditor(editor, content) === true;
         if (!filledOk) {
           // 页面可能还没就绪（脚本刚注入），等一拍再试一次
@@ -1825,12 +2086,14 @@
           ev = ev || this._discussionEvidence();
           ev.content = String(content || '').slice(0, 20);
           ev.attempts = attempts;
-          // 20-F：本站这份账在"**确实没发出去**"的三种情形撤回 ——
+          // 20-F：本站这份账在"**确实没发出去**"的四种情形撤回 ——
           // 没填上（filled=false）、平台明说失败（rejectedText=true）、
-          // 或**文字还留在框里**（editorEmpty=false ⇒ 这一下压根没生效）。
-          // 最后一种原先是留着不撤的，理由"大概率已发出" —— 实测恰恰相反：
-          // 23:08 那条就是这么被记成"已发"、再也没重试过，整节卡在讨论任务点上。
-          if (!ev.filled || ev.rejectedText === true || ev.editorEmpty === false) {
+          // **文字还留在框里**（editorEmpty=false ⇒ 这一下压根没生效），
+          // 或**有可信基线、条目没变多、文本也没出现**（平台错误提示消失后编辑区被清空，
+          // 旧实现会把这一格误判成成功）。最后一种必须撤账，否则这一话题 24 小时内不再重试。
+          var noVisiblePost = ev.listPresent && Number(ev.beforeItems) > 0 &&
+            !ev.grew && !ev.hasContent;
+          if (!ev.filled || ev.rejectedText === true || ev.editorEmpty === false || noVisiblePost) {
             this._unmarkDiscussionDone(pageKey);
             ev.pageKeyReleased = true;
           }
@@ -1840,8 +2103,7 @@
         this._announceDiscussionOutcome(confirmed, studyKey);
 
         await sleep(600);
-        var returnUrl = '';
-        try { returnUrl = localStorage.getItem('omitone_return_url') || ''; } catch (e0) {}
+        var returnTarget = this._discussionReturnTargetUrl();
 
         try {
           if (window.opener && !window.opener.closed) {
@@ -1851,13 +2113,14 @@
           }
         } catch (e1) {}
 
+        // 同标签页：带着 ok/failed 标记整页导航回刷课页（window.name 被站点覆盖时也能到）
+        if (returnTarget) {
+          location.href = this._discussionReturnWithMarker(returnTarget, confirmed, studyKey);
+          return;
+        }
         if (history.length > 1) {
           emitRuntimeLog('info', 'discussion done, going back to study page', {});
           history.back();
-          return;
-        }
-        if (returnUrl) {
-          location.href = returnUrl;
           return;
         }
         emitRuntimeLog('info', 'discussion done, waiting for redirect', {});

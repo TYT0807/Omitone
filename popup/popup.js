@@ -19,7 +19,7 @@ const DEFAULTS = {
   enableVote: true,
   // API 连接状态行展示用：失败原因（分类后人话，libs/api-error.js 写入）
   apiConnectionError: "",
-  discussionReply: "1",
+  discussionReply: "已学习，感谢分享，内容很有启发。",
   systemPrompt: "",
   restudy: false,
   providerPreset: "deepseek",
@@ -1149,7 +1149,7 @@ async function saveToggleConfig(showToast = true) {
     })(),
     enableDiscussion: enableDiscussionVal,
     enableVote: enableVoteVal,
-    discussionReply: els.discussionReply.value.trim() || "1",
+    discussionReply: els.discussionReply.value.trim() || "已学习，感谢分享，内容很有启发。",
     systemPrompt: els.systemPrompt.value.trim(),
     restudy: restudyVal
   });
@@ -1552,7 +1552,12 @@ async function load() {
   els.randomAnswerReviewSec.value = config.randomAnswerReviewSec !== undefined ? String(config.randomAnswerReviewSec) : "30";
   // 思考强度三行：回填走 rangeForTier（认新键、也认没写过新键的老用户），见那函数上的注释。
   renderThinkingSelects(config);
-  els.discussionReply.value = config.discussionReply || "1";
+  // 旧默认是 "1"：现场确认平台不把它算有效参与，老用户读回时统一换成新默认。
+  els.discussionReply.value = (
+    String(config.discussionReply || "").trim() === "1"
+      ? "已学习，感谢分享，内容很有启发。"
+      : (config.discussionReply || "已学习，感谢分享，内容很有启发。")
+  );
   els.systemPrompt.value = config.systemPrompt || "";
   if (!config.apiUrl || !config.model) {
     applyProviderPreset(els.providerPreset.value);

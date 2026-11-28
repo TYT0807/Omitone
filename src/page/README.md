@@ -85,8 +85,8 @@ wc -l src/page/*.js         # 行数
 node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对得上（十格自证：--selftest）
 ```
 
-（跑出来大概是：14 个域片段合计 **573 个 app 方法**，加上 `90-` 里
-**10 个挂在 `window.xxtAI` 上的手动入口** = 583 个方法；状态字段 184 个。
+（跑出来大概是：14 个域片段合计 **581 个 app 方法**，加上 `90-` 里
+**10 个挂在 `window.xxtAI` 上的手动入口** = 591 个方法；状态字段 184 个。
 ⚠️ 这三个数**就是各片段头部自己声明的个数之和** —— `npm run check` 第 15 项逐段核头部、
 第 26 项核这一页有没有把头部抄对，所以改完代码不必来改这一页：**跑一次 `npm run check`，
 它会把该填的数字直接报给你**。）
@@ -98,7 +98,7 @@ node tools/audit-slice-stats.js   # 这一页的快照数字与实际对不对�
 
 ### `00-shell-constants.js`
 
-*460 行*
+*466 行*
 
 IIFE 外壳、全部常量（`INSTANCE_ID` / `APP_NAME` / `DEFAULT_CONFIG` / 各种超时阈值）、
 **运行日志出口 `emitRuntimeLog` 与日志缓冲**、桥接消息（`bridgeSend` / `bridgeCallbacks` /
@@ -182,7 +182,7 @@ OCS 风格的任务点搜索（`_searchChaoxingJobOcs` / `_ensureOcsStudyRunner`
 
 ### `65-discussion.js`
 
-*1869 行 / 53 方法*
+*2132 行 / 61 方法*
 
 讨论任务点的查找、编辑、提交，以及「已做过」的本地去重。
 讨论任务点不在课程 iframe 内，点开会跳到独立讨论页 —— 所以它有一整套自己的页面判定与流程。
